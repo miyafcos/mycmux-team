@@ -13,7 +13,32 @@ A Linux-native GUI terminal workspace manager inspired by [cmux](https://github.
 
 ## Installation
 
-### Prerequisites
+### Quick Install (Recommended)
+
+Download artifacts from the latest release:
+
+<https://github.com/cai0baa/cmux-for-linux/releases/latest>
+
+#### AppImage (works on most Linux distros)
+
+```bash
+# Download the latest *.AppImage asset from Releases
+gh release download --repo cai0baa/cmux-for-linux --pattern "*.AppImage"
+chmod +x ./*.AppImage
+./*.AppImage
+```
+
+#### Debian/Ubuntu (.deb)
+
+```bash
+# Download the latest *.deb asset from Releases
+gh release download --repo cai0baa/cmux-for-linux --pattern "*.deb"
+sudo apt install ./*.deb
+```
+
+### Build from Source
+
+#### Prerequisites
 
 - [Rust](https://rustup.rs/) (latest stable)
 - [Node.js](https://nodejs.org/) (v18+)
@@ -29,12 +54,10 @@ A Linux-native GUI terminal workspace manager inspired by [cmux](https://github.
   sudo pacman -S webkit2gtk-4.1 base-devel curl wget file openssl appmenu-gtk-module libappindicator-gtk3 librsvg
   ```
 
-### Build from Source
-
 ```bash
 # Clone the repository
-git clone https://github.com/YOUR_USERNAME/cmux-linux.git
-cd cmux-linux
+git clone https://github.com/cai0baa/cmux-for-linux.git
+cd cmux-for-linux
 
 # Install dependencies
 npm install
