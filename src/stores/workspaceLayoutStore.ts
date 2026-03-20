@@ -21,29 +21,46 @@ function makeTab(workspaceId: string, paneId: string, agentId: string, type: Pan
   };
 }
 
+interface BuildPanesResult {
+  panes: Pane[];
+  splitRows: string[][];
+}
+
 function buildPanes(
   workspaceId: string,
   gridTemplateId: GridTemplateId,
   agentAssignments?: Record<number, string>,
-): Pane[] {
+): BuildPanesResult {
   const template = getGridTemplate(gridTemplateId);
   const defaultAgentId = getDefaultAgent().id;
   const panes: Pane[] = [];
+  const splitRows: string[][] = [];
 
-  for (let i = 0; i < template.paneCount; i++) {
-    const paneId = uuid();
-    const agentId = agentAssignments?.[i] ?? defaultAgentId;
-    const tab = makeTab(workspaceId, paneId, agentId);
-    panes.push({
-      id: paneId,
-      agentId,
-      sessionId: tab.sessionId,
-      tabs: [tab],
-      activeTabId: tab.id,
-    });
+  let paneIndex = 0;
+  for (let r = 0; r < template.rows; r++) {
+    const row: string[] = [];
+    for (let c = 0; c < template.cols; c++) {
+      if (paneIndex < template.paneCount) {
+        const paneId = uuid();
+        const agentId = agentAssignments?.[paneIndex] ?? defaultAgentId;
+        const tab = makeTab(workspaceId, paneId, agentId);
+        panes.push({
+          id: paneId,
+          agentId,
+          sessionId: tab.sessionId,
+          tabs: [tab],
+          activeTabId: tab.id,
+        });
+        row.push(paneId);
+        paneIndex++;
+      }
+    }
+    if (row.length > 0) {
+      splitRows.push(row);
+    }
   }
 
-  return panes;
+  return { panes, splitRows };
 }
 
 interface WorkspaceLayoutState {
@@ -66,7 +83,7 @@ interface WorkspaceLayoutState {
     workspaceId: string,
     gridTemplateId: GridTemplateId,
     agentAssignments?: Record<number, string>
-  ) => Pane[];
+  ) => BuildPanesResult;
 }
 
 export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
@@ -96,8 +113,8 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
     const workspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
     if (!workspace) return;
 
-    const agId =
-      agentId ?? workspace.panes.find((p) => p.id === afterPaneId)?.agentId ?? getDefaultAgent().id;
+    // Always use default agent for new split panes (unless explicitly specified)
+    const agId = agentId ?? getDefaultAgent().id;
     const paneId = uuid();
     const tab = makeTab(workspaceId, paneId, agId);
     const newPane: Pane = {

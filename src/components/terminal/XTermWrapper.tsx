@@ -267,7 +267,6 @@ export default memo(function XTermWrapper({
       let sessionStarted = false;
       unlistenExit = await onPtyExit(sessionId, () => {
         if (disposed || !sessionStarted) return;
-        term!.writeln("\r\n\x1b[33m[Process exited]\x1b[0m");
         onExit?.();
       });
 

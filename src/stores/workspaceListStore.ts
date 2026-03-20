@@ -21,6 +21,7 @@ interface WorkspaceListState {
     name: string,
     gridTemplateId: GridTemplateId,
     panes: Workspace["panes"],
+    splitRows: string[][],
     color?: string,
   ) => Workspace;
   removeWorkspace: (id: string) => void;
@@ -45,7 +46,7 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
     return get().workspaces.find((w) => w.id === id);
   },
 
-  createWorkspace: (name, gridTemplateId, panes, color) => {
+  createWorkspace: (name, gridTemplateId, panes, splitRows, color) => {
     const start = performance.now();
     
     const id = uuid();
@@ -57,6 +58,7 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
       name,
       gridTemplateId,
       panes,
+      splitRows,
       status: "running",
       createdAt: Date.now(),
       color: autoColor,

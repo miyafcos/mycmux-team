@@ -2,6 +2,23 @@
 
 A Linux-native GUI terminal workspace manager inspired by [cmux](https://github.com/manaflow-ai/cmux) (macOS). Built with Tauri v2, React, and xterm.js.
 
+## Why I built this
+
+My first idea was to just add Linux support for CMUX directly, but after reading the PRs from their repo, I realized that if they really want to add support, they will eventually.
+
+And that's where this project comes to life! I wanted to create something inspired by cmux for Linux. I know Linux has tmux which is actually great, however the UI/UX from cmux has me fallen in love.
+
+This project is open source for now, but I have plans and more features for the future.
+
+CMux Linux is built to bring a fast, keyboard-first terminal workspace experience to Linux with a native desktop app feel. The goal is to make multi-pane, multi-workspace development smooth without forcing users into a browser-only workflow or heavy IDE.
+
+## Project direction
+
+- **Near term**: stable Linux releases with easy install paths (AppImage + `.deb`)
+- **Product quality**: stronger polish in interaction, performance, and accessibility
+- **Power features**: richer automation and agent workflows over time
+- **Distribution**: broader packaging options (for example Flatpak) after core release flow is stable
+
 ## Features
 
 - **Workspaces**: Organize terminals into separate workspaces with quick switching
