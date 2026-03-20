@@ -1,6 +1,6 @@
 # cmux-linux
 
-A Linux-native GUI terminal workspace manager inspired by [cmux](https://github.com/anthropics/cmux) (macOS). Built with Tauri v2, React, and xterm.js.
+A Linux-native GUI terminal workspace manager inspired by [cmux](https://github.com/manaflow-ai/cmux) (macOS). Built with Tauri v2, React, and xterm.js.
 
 ## Features
 
@@ -123,5 +123,5 @@ GPL v3 - See [LICENSE](LICENSE) for details.
 
 ## Acknowledgments
 
-- Inspired by [cmux](https://github.com/anthropics/cmux) from ManaFlow
+- Inspired by [cmux](https://github.com/manaflow-ai/cmux) from ManaFlow
 - Built with [Tauri](https://tauri.app/), [xterm.js](https://xtermjs.org/), and [React](https://react.dev/)
