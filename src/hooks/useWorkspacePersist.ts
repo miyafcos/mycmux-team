@@ -65,7 +65,7 @@ export function useWorkspacePersist() {
                 const agentAssignments = Object.fromEntries(
                   cfg.panes.map((p, i) => [i, p.agent_id]),
                 );
-                const panes = layoutStore.buildInitialPanes(
+                const { panes, splitRows } = layoutStore.buildInitialPanes(
                   workspaceId, 
                   cfg.grid_template_id as Workspace["gridTemplateId"],
                   agentAssignments
@@ -82,6 +82,7 @@ export function useWorkspacePersist() {
                   cfg.name,
                   cfg.grid_template_id as Workspace["gridTemplateId"],
                   panes,
+                  splitRows,
                 );
               }
               const bootstrapWs = listStore.workspaces[0];

@@ -1,4 +1,4 @@
-import { memo, useCallback, useState } from "react";
+import { memo, useCallback } from "react";
 import type { Pane, PaneTab } from "../../types";
 import PaneTabBar from "./PaneTabBar";
 import XTermWrapper from "../terminal/XTermWrapper";
@@ -18,26 +18,6 @@ interface TerminalPaneProps {
   onSplitDown?: () => void;
 }
 
-// Per-tab exit/restart state lives here
-function useTabState() {
-  const [tabStates, setTabStates] = useState<Record<string, { exited: boolean; restartKey: number }>>({});
-
-  const getTabState = (tabId: string) => tabStates[tabId] ?? { exited: false, restartKey: 0 };
-
-  const setExited = useCallback((tabId: string) => {
-    setTabStates((s) => ({ ...s, [tabId]: { ...s[tabId], exited: true, restartKey: s[tabId]?.restartKey ?? 0 } }));
-  }, []);
-
-  const restartTab = useCallback((tabId: string) => {
-    setTabStates((s) => ({
-      ...s,
-      [tabId]: { exited: false, restartKey: (s[tabId]?.restartKey ?? 0) + 1 },
-    }));
-  }, []);
-
-  return { getTabState, setExited, restartTab };
-}
-
 export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitRight, onSplitDown }: TerminalPaneProps) {
   const paneMeta = usePaneMetadataStore((s) => s.metadata[pane.sessionId]);
   const notificationCount = paneMeta?.notificationCount ?? 0;
@@ -55,8 +35,6 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
   const isActive = activePaneId === pane.sessionId;
   const isFlashing = flashingPaneIds.has(pane.sessionId);
   const isZoomed = zoomedPaneId === pane.id;
-
-  const { getTabState, setExited, restartTab } = useTabState();
 
   const handleFocus = useCallback(() => {
     setActivePaneId(pane.sessionId);
@@ -142,7 +120,6 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
         {/* Render all tabs — hide inactive ones to preserve PTY state */}
         {pane.tabs.map((tab) => {
           const isActiveTab = tab.id === pane.activeTabId;
-          const { exited, restartKey } = getTabState(tab.id);
           const agent = getAgent(tab.agentId) ?? getDefaultAgent();
 
           return (
@@ -158,46 +135,14 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
               {tab.type === "browser" ? (
                 <BrowserPane sessionId={tab.sessionId} />
               ) : (
-                <>
-                  <XTermWrapper
-                    key={`${tab.sessionId}-${restartKey}`}
-                    sessionId={tab.sessionId}
-                    command={agent.command}
-                    args={agent.args}
-                    onExit={() => setExited(tab.id)}
-                    suppressNotifications={isActive && tab.id === pane.activeTabId}
-                    onZoomToggle={handleZoomToggle}
-                    cwd={paneCwd}
-                  />
-                  {exited && (
-                    <div
-                      style={{
-                        position: "absolute",
-                        bottom: 12,
-                        left: "50%",
-                        transform: "translateX(-50%)",
-                        display: "flex",
-                        gap: 8,
-                      }}
-                    >
-                      <button
-                        onClick={() => restartTab(tab.id)}
-                        style={{
-                          background: "rgba(30,30,30,0.92)",
-                          border: "1px solid var(--cmux-border)",
-                          borderRadius: 4,
-                          color: "var(--cmux-text)",
-                          cursor: "pointer",
-                          fontSize: 12,
-                          fontFamily: "'JetBrains Mono', monospace",
-                          padding: "4px 12px",
-                        }}
-                      >
-                        ↺ Restart
-                      </button>
-                    </div>
-                  )}
-                </>
+                <XTermWrapper
+                  sessionId={tab.sessionId}
+                  command={agent.command}
+                  args={agent.args}
+                  suppressNotifications={isActive && tab.id === pane.activeTabId}
+                  onZoomToggle={handleZoomToggle}
+                  cwd={paneCwd}
+                />
               )}
             </div>
           );

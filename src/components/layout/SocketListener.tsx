@@ -39,11 +39,12 @@ export default function SocketListener() {
           case "workspace.new":
             const workspaceId = crypto.randomUUID();
             const template = args?.template || "1x1";
-            const panes = layoutStore.buildInitialPanes(workspaceId, template);
+            const { panes, splitRows } = layoutStore.buildInitialPanes(workspaceId, template);
             const ws = listStore.createWorkspace(
               args?.name || `Workspace ${listStore.workspaces.length + 1}`,
               template,
-              panes
+              panes,
+              splitRows
             );
             result = { id: ws.id, name: ws.name };
             break;
