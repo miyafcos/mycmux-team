@@ -32,8 +32,8 @@ export default function ThemeSwitcher({ onClose, onOpenKeybindings }: ThemeSwitc
         onClick={(e) => e.stopPropagation()}
         style={{
           width: 360,
-          background: "#141414",
-          border: "1px solid #2a2a2a",
+          background: "var(--cmux-surface)",
+          border: "1px solid var(--cmux-border)",
           borderRadius: 8,
           padding: 20,
           display: "flex",
@@ -44,7 +44,7 @@ export default function ThemeSwitcher({ onClose, onOpenKeybindings }: ThemeSwitc
         <div
           style={{
             fontSize: 14,
-            color: "#ededed",
+            color: "var(--cmux-text)",
             fontFamily: "'JetBrains Mono', monospace",
             fontWeight: 600,
           }}
@@ -56,7 +56,7 @@ export default function ThemeSwitcher({ onClose, onOpenKeybindings }: ThemeSwitc
           <div
             style={{
               fontSize: 12,
-              color: "#a3a3a3",
+              color: "var(--cmux-text-secondary)",
               marginBottom: 8,
               fontFamily: "'JetBrains Mono', monospace",
             }}
@@ -81,12 +81,12 @@ export default function ThemeSwitcher({ onClose, onOpenKeybindings }: ThemeSwitc
                   padding: "6px 10px",
                   background:
                     currentId === theme.id
-                      ? theme.chrome.surface
-                      : "#1a1a1a",
+                      ? "var(--cmux-hover)"
+                      : "transparent",
                   border:
                     currentId === theme.id
-                      ? `1px solid ${theme.chrome.accent}`
-                      : "1px solid #2a2a2a",
+                      ? `1px solid var(--cmux-accent)`
+                      : "1px solid var(--cmux-border)",
                   borderRadius: 4,
                   cursor: "pointer",
                   textAlign: "left",
@@ -107,8 +107,8 @@ export default function ThemeSwitcher({ onClose, onOpenKeybindings }: ThemeSwitc
                     fontSize: 11,
                     color:
                       currentId === theme.id
-                        ? theme.chrome.accent
-                        : "#a3a3a3",
+                        ? "var(--cmux-accent)"
+                        : "var(--cmux-text-secondary)",
                     fontFamily: "'JetBrains Mono', monospace",
                     overflow: "hidden",
                     textOverflow: "ellipsis",
@@ -126,7 +126,7 @@ export default function ThemeSwitcher({ onClose, onOpenKeybindings }: ThemeSwitc
           <div
             style={{
               fontSize: 12,
-              color: "#a3a3a3",
+              color: "var(--cmux-text-secondary)",
               marginBottom: 8,
               fontFamily: "'JetBrains Mono', monospace",
             }}
@@ -147,10 +147,10 @@ export default function ThemeSwitcher({ onClose, onOpenKeybindings }: ThemeSwitc
           <button
             onClick={onOpenKeybindings}
             style={{
-              background: "#1a1a1a",
-              border: "1px solid #2a2a2a",
+              background: "transparent",
+              border: "1px solid var(--cmux-border)",
               borderRadius: 4,
-              color: "#a3a3a3",
+              color: "var(--cmux-text-secondary)",
               padding: "6px 16px",
               fontSize: 12,
               fontFamily: "'JetBrains Mono', monospace",
@@ -163,10 +163,10 @@ export default function ThemeSwitcher({ onClose, onOpenKeybindings }: ThemeSwitc
           <button
             onClick={onClose}
             style={{
-              background: "#1a1a1a",
-              border: "1px solid #2a2a2a",
+              background: "transparent",
+              border: "1px solid var(--cmux-border)",
               borderRadius: 4,
-              color: "#a3a3a3",
+              color: "var(--cmux-text-secondary)",
               padding: "6px 16px",
               fontSize: 12,
               fontFamily: "'JetBrains Mono', monospace",

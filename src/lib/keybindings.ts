@@ -61,8 +61,7 @@ export const KEYBINDING_DEFINITIONS: KeybindingDefinition[] = [
   { action: "pane.split.right", title: "Split pane right", category: "Pane", defaultShortcut: "ctrl+alt+d" },
   { action: "pane.split.down", title: "Split pane down", category: "Pane", defaultShortcut: "ctrl+alt+shift+d" },
   { action: "pane.close", title: "Close active pane", category: "Pane", defaultShortcut: "ctrl+alt+w" },
-  // Browser pane disabled for now (too laggy)
-  // { action: "pane.newBrowserTab", title: "Open browser tab in pane", category: "Pane", defaultShortcut: "ctrl+shift+l" },
+  { action: "pane.newBrowserTab", title: "Open browser tab in pane", category: "Pane", defaultShortcut: "ctrl+shift+l" },
   { action: "pane.zoom.toggle", title: "Toggle pane zoom", category: "Pane", defaultShortcut: "ctrl+shift+enter" },
 
   { action: "terminal.search", title: "Find in terminal", category: "Terminal", defaultShortcut: "ctrl+shift+f" },
@@ -78,8 +77,6 @@ export const DEFAULT_KEYBINDINGS: Record<KeybindingActionId, string> = {
     },
     {} as Record<KeybindingActionId, string>,
   ),
-  // Disabled features still need a default to satisfy the type
-  "pane.newBrowserTab": "",
 };
 
 function normalizeKey(key: string): string {

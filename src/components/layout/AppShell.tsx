@@ -16,6 +16,7 @@ import CommandPalette from "./CommandPalette";
 import SocketListener from "./SocketListener";
 import KeybindingsModal from "./KeybindingsModal";
 import { useKeybindingStore } from "../../stores/keybindingStore";
+import { useThemeStore } from "../../stores/themeStore";
 
 type Direction = "up" | "down" | "left" | "right";
 
@@ -118,6 +119,19 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
   const isKeybindingsOpen = useUiStore((s) => s.isKeybindingsOpen);
   const setIsKeybindingsOpen = useUiStore((s) => s.setIsKeybindingsOpen);
   const getActionsForEvent = useKeybindingStore((s) => s.getActionsForEvent);
+  const currentTheme = useThemeStore((s) => s.theme);
+
+  const themeVars = {
+    "--cmux-bg": currentTheme.chrome.background,
+    "--cmux-sidebar": currentTheme.chrome.surface,
+    "--cmux-title-bg": currentTheme.chrome.background,
+    "--cmux-surface": currentTheme.chrome.surface,
+    "--cmux-accent": currentTheme.chrome.accent,
+    "--cmux-border": currentTheme.chrome.border,
+    "--cmux-text": currentTheme.chrome.text,
+    "--cmux-text-secondary": currentTheme.chrome.textMuted,
+    "--cmux-text-tertiary": currentTheme.chrome.textMuted,
+  } as React.CSSProperties;
 
   const handleNewWorkspace = useCallback(() => {
     setShowSetup(true);
@@ -273,19 +287,36 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
           const activePane = activeWs?.panes.find((p) => p.sessionId === apid);
           if (activeWs && activePane) {
             removePaneFromWorkspace(activeWs.id, activePane.id);
+            // Focus a remaining pane after close
+            const remaining = activeWs.panes.filter((p) => p.id !== activePane.id);
+            if (remaining.length > 0) {
+              const neighbor =
+                findPaneInDirection(apid!, "right", remaining) ||
+                findPaneInDirection(apid!, "down", remaining) ||
+                findPaneInDirection(apid!, "left", remaining) ||
+                findPaneInDirection(apid!, "up", remaining) ||
+                remaining[0].sessionId;
+              setActivePaneId(neighbor);
+              setTimeout(() => {
+                const el = document.querySelector<HTMLElement>(`[data-session-id="${neighbor}"]`);
+                const textarea = el?.querySelector<HTMLTextAreaElement>("textarea");
+                if (textarea) textarea.focus(); else el?.focus();
+              }, 0);
+            } else {
+              setActivePaneId(null);
+            }
           }
           break;
         }
 
-        // Browser pane disabled for now (too laggy)
-        // case "pane.newBrowserTab": {
-        //   const activeWs = ws.find((w) => w.id === aid);
-        //   const activePane = activeWs?.panes.find((p) => p.sessionId === apid);
-        //   if (activeWs && activePane) {
-        //     addTabToPane(activeWs.id, activePane.id, undefined, "browser");
-        //   }
-        //   break;
-        // }
+        case "pane.newBrowserTab": {
+          const activeWs = ws.find((w) => w.id === aid);
+          const activePane = activeWs?.panes.find((p) => p.sessionId === apid);
+          if (activeWs && activePane) {
+            addTabToPane(activeWs.id, activePane.id, undefined, "browser");
+          }
+          break;
+        }
 
         case "pane.focus.right":
         case "pane.focus.left":
@@ -347,6 +378,7 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
     <div
       className={uiVariant === "cmux" ? "ui-cmux" : undefined}
       style={{
+        ...themeVars,
         width: "100vw",
         height: "100vh",
         display: "flex",

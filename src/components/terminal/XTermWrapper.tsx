@@ -14,6 +14,7 @@ import {
 } from "../../lib/ipc";
 import { usePaneMetadataStore, useUiStore } from "../../stores/workspaceStore";
 import { useKeybindingStore } from "../../stores/keybindingStore";
+import { useThemeStore } from "../../stores/themeStore";
 import type { ITheme } from "@xterm/xterm";
 
 interface XTermWrapperProps {
@@ -113,9 +114,24 @@ export default memo(function XTermWrapper({
 }: XTermWrapperProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const searchAddonRef = useRef<SearchAddon | null>(null);
+  const termRef = useRef<Terminal | null>(null);
+  const fitAddonRef = useRef<FitAddon | null>(null);
+  
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const searchInputRef = useRef<HTMLInputElement>(null);
+
+  const storeTheme = useThemeStore((s) => s.theme);
+  const storeFontSize = useThemeStore((s) => s.fontSize);
+
+  // Dynamically update terminal theme and font size
+  useEffect(() => {
+    if (termRef.current) {
+      termRef.current.options.theme = storeTheme.terminal;
+      termRef.current.options.fontSize = storeFontSize;
+      setTimeout(() => fitAddonRef.current?.fit(), 10);
+    }
+  }, [storeTheme, storeFontSize]);
 
   useEffect(() => {
     const mountStart = performance.now();
@@ -158,8 +174,10 @@ export default memo(function XTermWrapper({
         scrollback: 5000,
         smoothScrollDuration: 0,
       });
+      termRef.current = term;
 
       fitAddon = new FitAddon();
+      fitAddonRef.current = fitAddon;
       const searchAddon = new SearchAddon();
       searchAddonRef.current = searchAddon;
       

@@ -30,12 +30,12 @@ AI agent terminal workspace built with Tauri v2 + React + xterm.js.
 - [keyboard-shortcuts.md](features/implemented/keyboard-shortcuts.md) — All shortcuts with behaviors
 - [browser-pane.md](features/implemented/browser-pane.md) — iframe browser, URL bar, limitations
 - [config-detection.md](features/implemented/config-detection.md) — ghostty/alacritty/kitty auto-detection
+- [search-and-command-palette.md](features/implemented/search-and-command-palette.md) — Terminal find bar, Ctrl+Shift+P palette
+- [socket-api-and-automation.md](features/implemented/socket-api-and-automation.md) — Unix socket JSON-RPC, CLI tool
 
 ### Features — Pending (from cmux reference)
-- [search-and-command-palette.md](features/pending/search-and-command-palette.md) — Terminal find bar, Ctrl+Shift+P palette
 - [ssh-remote-sessions.md](features/pending/ssh-remote-sessions.md) — SSH daemon, reconnect, port forwarding
 - [rich-browser.md](features/pending/rich-browser.md) — Profiles, history, DevTools, search engine
-- [socket-api-and-automation.md](features/pending/socket-api-and-automation.md) — Unix socket JSON-RPC, CLI tool
 - [input-and-interaction.md](features/pending/input-and-interaction.md) — Copy mode, broadcast, drag-drop, zoom, keybindings
 - [accessibility-and-motion.md](features/pending/accessibility-and-motion.md) — ARIA, high contrast, reduced motion, i18n
 - [ui-polish.md](features/pending/ui-polish.md) — Glassmorphism, error states, notification sounds, light theme
