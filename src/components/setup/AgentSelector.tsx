@@ -32,9 +32,10 @@ export default function AgentSelector({ value, onChange, slotIndex }: AgentSelec
         onChange={(e) => onChange(e.target.value)}
         style={{
           flex: 1,
-          background: "#1a1a1a",
-          color: "#ededed",
-          border: "1px solid #2a2a2a",
+          backgroundColor: "transparent",
+          color: "var(--cmux-text)",
+          colorScheme: "dark",
+          border: "1px solid var(--cmux-border)",
           borderRadius: 4,
           padding: "4px 8px",
           fontSize: 12,
@@ -44,7 +45,7 @@ export default function AgentSelector({ value, onChange, slotIndex }: AgentSelec
         }}
       >
         {BUILT_IN_AGENTS.map((agent) => (
-          <option key={agent.id} value={agent.id}>
+          <option key={agent.id} value={agent.id} style={{ backgroundColor: "var(--cmux-surface)", color: "var(--cmux-text)" }}>
             {agent.icon} {agent.name}
           </option>
         ))}

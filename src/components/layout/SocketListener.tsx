@@ -1,12 +1,13 @@
 import { useEffect } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { 
-  useWorkspaceListStore, 
-  useWorkspaceLayoutStore, 
-  useUiStore 
+import {
+  useWorkspaceListStore,
+  useWorkspaceLayoutStore,
+  useUiStore
 } from "../../stores/workspaceStore";
 import { sendSocketResponse } from "../../lib/ipc";
 import { useThemeStore } from "../../stores/themeStore";
+import { useBrowserStore } from "../../stores/browserStore";
 
 interface SocketRequest {
   id: number;
@@ -85,14 +86,65 @@ export default function SocketListener() {
             }
             break;
 
-          case "pane.close":
-            if (listStore.activeWorkspaceId && uiStore.activePaneId) {
-              layoutStore.removePaneFromWorkspace(listStore.activeWorkspaceId, uiStore.activePaneId);
+          case "pane.close": {
+            const wsId = listStore.activeWorkspaceId;
+            const paneId = uiStore.activePaneId;
+            if (wsId && paneId) {
+              const ws = listStore.workspaces.find((w) => w.id === wsId);
+              const pane = ws?.panes.find((p) => p.sessionId === paneId);
+              layoutStore.removePaneFromWorkspace(wsId, paneId);
+              // Focus a remaining pane
+              if (ws && pane) {
+                const remaining = ws.panes.filter((p) => p.id !== pane.id);
+                if (remaining.length > 0) {
+                  uiStore.setActivePaneId(remaining[0].sessionId);
+                } else {
+                  uiStore.setActivePaneId(null);
+                }
+              }
               result = { success: true };
             } else {
               error = "No active pane to close";
             }
             break;
+          }
+
+          case "browser.navigate":
+          case "browser.back":
+          case "browser.forward":
+          case "browser.reload":
+          case "browser.eval":
+          case "browser.snapshot":
+          case "browser.screenshot":
+          case "browser.status": {
+            // Find the target browser pane session ID
+            const targetPaneId = (() => {
+              if (args?.pane_id) return args.pane_id as string;
+              // Default to first browser tab in active workspace
+              const activeWs = listStore.workspaces.find(
+                (w) => w.id === listStore.activeWorkspaceId
+              );
+              if (!activeWs) return null;
+              for (const pane of activeWs.panes) {
+                const browserTab = pane.tabs.find((t) => t.type === "browser");
+                if (browserTab) return browserTab.sessionId;
+              }
+              return null;
+            })();
+
+            if (!targetPaneId) {
+              error = "No browser pane found";
+              break;
+            }
+
+            const cmdType = cmd.replace("browser.", "") as any;
+            result = await useBrowserStore.getState().dispatch(targetPaneId, {
+              type: cmdType,
+              url: args?.url,
+              script: args?.script,
+            });
+            break;
+          }
 
           case "theme.set":
             if (args?.id) {

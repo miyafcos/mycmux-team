@@ -37,14 +37,14 @@ export default function WorkspaceSetup({ onLaunch, onCancel }: WorkspaceSetupPro
         display: "flex",
         justifyContent: "center",
         alignItems: "center",
-        background: "#0a0a0a",
+        background: "var(--cmux-bg)",
       }}
     >
       <div
         style={{
           width: 420,
-          background: "#141414",
-          border: "1px solid #2a2a2a",
+          background: "var(--cmux-surface)",
+          border: "1px solid var(--cmux-border)",
           borderRadius: 8,
           padding: 24,
           display: "flex",
@@ -55,7 +55,7 @@ export default function WorkspaceSetup({ onLaunch, onCancel }: WorkspaceSetupPro
         <div
           style={{
             fontSize: 14,
-            color: "#ededed",
+            color: "var(--cmux-text)",
             fontFamily: "'JetBrains Mono', monospace",
             fontWeight: 600,
           }}
@@ -67,7 +67,7 @@ export default function WorkspaceSetup({ onLaunch, onCancel }: WorkspaceSetupPro
           <div
             style={{
               fontSize: 12,
-              color: "#a3a3a3",
+              color: "var(--cmux-text-secondary)",
               marginBottom: 6,
               fontFamily: "'JetBrains Mono', monospace",
             }}
@@ -81,9 +81,10 @@ export default function WorkspaceSetup({ onLaunch, onCancel }: WorkspaceSetupPro
             onKeyDown={(e) => e.key === "Enter" && handleLaunch()}
             style={{
               width: "100%",
-              background: "#1a1a1a",
-              color: "#ededed",
-              border: "1px solid #2a2a2a",
+              backgroundColor: "transparent",
+              color: "var(--cmux-text)",
+              colorScheme: "dark",
+              border: "1px solid var(--cmux-border)",
               borderRadius: 4,
               padding: "6px 10px",
               fontSize: 13,
@@ -98,7 +99,7 @@ export default function WorkspaceSetup({ onLaunch, onCancel }: WorkspaceSetupPro
           <div
             style={{
               fontSize: 12,
-              color: "#a3a3a3",
+              color: "var(--cmux-text-secondary)",
               marginBottom: 6,
               fontFamily: "'JetBrains Mono', monospace",
             }}
@@ -138,10 +139,10 @@ export default function WorkspaceSetup({ onLaunch, onCancel }: WorkspaceSetupPro
           <button
             onClick={onCancel}
             style={{
-              background: "#1a1a1a",
-              border: "1px solid #2a2a2a",
+              background: "transparent",
+              border: "1px solid var(--cmux-border)",
               borderRadius: 4,
-              color: "#a3a3a3",
+              color: "var(--cmux-text-secondary)",
               padding: "6px 16px",
               fontSize: 12,
               fontFamily: "'JetBrains Mono', monospace",
@@ -153,7 +154,7 @@ export default function WorkspaceSetup({ onLaunch, onCancel }: WorkspaceSetupPro
           <button
             onClick={handleLaunch}
             style={{
-              background: "#89b4fa",
+              background: "var(--cmux-accent)",
               border: "none",
               borderRadius: 4,
               color: "#0a0a0a",

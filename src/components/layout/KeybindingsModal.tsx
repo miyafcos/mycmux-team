@@ -91,13 +91,13 @@ export default function KeybindingsModal({ onClose }: KeybindingsModalProps) {
           overflow: "hidden",
           display: "flex",
           flexDirection: "column",
-          background: "var(--cmux-surface, #141414)",
-          border: "1px solid var(--cmux-border, #2a2a2a)",
+          background: "var(--cmux-surface)",
+          border: "1px solid var(--cmux-border)",
           borderRadius: 8,
         }}
       >
-        <div style={{ padding: "14px 16px", borderBottom: "1px solid var(--cmux-border, #2a2a2a)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <div style={{ color: "var(--cmux-text, #ededed)", fontFamily: "'JetBrains Mono', monospace", fontSize: 13, fontWeight: 700 }}>
+        <div style={{ padding: "14px 16px", borderBottom: "1px solid var(--cmux-border)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ color: "var(--cmux-text)", fontFamily: "'JetBrains Mono', monospace", fontSize: 13, fontWeight: 700 }}>
             Keyboard Shortcuts
           </div>
           <div style={{ display: "flex", gap: 8 }}>
@@ -105,8 +105,8 @@ export default function KeybindingsModal({ onClose }: KeybindingsModalProps) {
               onClick={resetAll}
               style={{
                 background: "transparent",
-                border: "1px solid var(--cmux-border, #2a2a2a)",
-                color: "var(--cmux-text-secondary, #b0b0b0)",
+                border: "1px solid var(--cmux-border)",
+                color: "var(--cmux-text-secondary)",
                 borderRadius: 4,
                 padding: "6px 10px",
                 fontSize: 11,
@@ -119,9 +119,9 @@ export default function KeybindingsModal({ onClose }: KeybindingsModalProps) {
             <button
               onClick={onClose}
               style={{
-                background: "var(--cmux-accent, #4b8bff)",
-                border: "1px solid var(--cmux-accent, #4b8bff)",
-                color: "#fff",
+                background: "var(--cmux-accent)",
+                border: "1px solid var(--cmux-accent)",
+                color: "#0a0a0a",
                 borderRadius: 4,
                 padding: "6px 10px",
                 fontSize: 11,
@@ -134,7 +134,7 @@ export default function KeybindingsModal({ onClose }: KeybindingsModalProps) {
           </div>
         </div>
 
-        <div style={{ padding: "10px 16px", color: "var(--cmux-text-tertiary, #888)", fontSize: 11, fontFamily: "'JetBrains Mono', monospace", borderBottom: "1px solid var(--cmux-border, #2a2a2a)" }}>
+        <div style={{ padding: "10px 16px", color: "var(--cmux-text-tertiary)", fontSize: 11, fontFamily: "'JetBrains Mono', monospace", borderBottom: "1px solid var(--cmux-border)" }}>
           Click Rebind, then press a shortcut. Press Backspace/Delete to clear.
         </div>
 
@@ -157,16 +157,16 @@ export default function KeybindingsModal({ onClose }: KeybindingsModalProps) {
                   borderBottom: "1px solid rgba(255,255,255,0.04)",
                 }}
               >
-                <div style={{ fontSize: 11, color: "var(--cmux-text-tertiary, #888)", fontFamily: "'JetBrains Mono', monospace" }}>
+                <div style={{ fontSize: 11, color: "var(--cmux-text-tertiary)", fontFamily: "'JetBrains Mono', monospace" }}>
                   {def.category}
                 </div>
-                <div style={{ fontSize: 12, color: "var(--cmux-text, #ededed)", fontFamily: "'JetBrains Mono', monospace" }}>
+                <div style={{ fontSize: 12, color: "var(--cmux-text)", fontFamily: "'JetBrains Mono', monospace" }}>
                   {def.title}
                 </div>
                 <div
                   style={{
                     fontSize: 12,
-                    color: hasConflict ? "#ff6b6b" : "var(--cmux-text-secondary, #b0b0b0)",
+                    color: hasConflict ? "#ff6b6b" : "var(--cmux-text-secondary)",
                     fontFamily: "'JetBrains Mono', monospace",
                   }}
                 >
@@ -178,8 +178,8 @@ export default function KeybindingsModal({ onClose }: KeybindingsModalProps) {
                     onClick={() => setCapturing(def.action)}
                     style={{
                       background: "transparent",
-                      border: "1px solid var(--cmux-border, #2a2a2a)",
-                      color: "var(--cmux-text-secondary, #b0b0b0)",
+                      border: "1px solid var(--cmux-border)",
+                      color: "var(--cmux-text-secondary)",
                       borderRadius: 4,
                       padding: "4px 8px",
                       fontSize: 11,
@@ -194,8 +194,8 @@ export default function KeybindingsModal({ onClose }: KeybindingsModalProps) {
                     disabled={!overridden}
                     style={{
                       background: "transparent",
-                      border: "1px solid var(--cmux-border, #2a2a2a)",
-                      color: overridden ? "var(--cmux-text-secondary, #b0b0b0)" : "#666",
+                      border: "1px solid var(--cmux-border)",
+                      color: overridden ? "var(--cmux-text-secondary)" : "var(--cmux-text-tertiary)",
                       borderRadius: 4,
                       padding: "4px 8px",
                       fontSize: 11,

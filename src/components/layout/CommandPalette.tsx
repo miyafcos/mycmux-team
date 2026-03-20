@@ -19,10 +19,12 @@ export default function CommandPalette() {
   const setActiveWorkspace = useWorkspaceListStore((s) => s.setActiveWorkspace);
   const setIsKeybindingsOpen = useUiStore((s) => s.setIsKeybindingsOpen);
   const setTheme = useThemeStore((s) => s.setTheme);
+  const currentThemeId = useThemeStore((s) => s.themeId);
 
   const [query, setQuery] = useState("");
   const [selectedIndex, setSelectedIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
 
   // Create workspace function
   const createWorkspace = useCallback((name: string, gridTemplateId: "1x1" | "2x1") => {
@@ -77,7 +79,7 @@ export default function CommandPalette() {
     THEMES.forEach((theme) => {
       arr.push({
         id: `theme-switch-${theme.id}`,
-        title: `Theme: ${theme.name}`,
+        title: `Theme: ${theme.name}${theme.id === currentThemeId ? " (Active)" : ""}`,
         category: "Theme",
         perform: () => setTheme(theme.id),
       });
@@ -91,7 +93,7 @@ export default function CommandPalette() {
     });
 
     return arr;
-  }, [workspaces, activeWorkspaceId, setActiveWorkspace, createWorkspace, setTheme, setIsKeybindingsOpen]);
+  }, [workspaces, activeWorkspaceId, setActiveWorkspace, createWorkspace, setTheme, setIsKeybindingsOpen, currentThemeId]);
 
   // Fuzzy search
   const fuse = useMemo(
@@ -104,10 +106,18 @@ export default function CommandPalette() {
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "ArrowDown") {
       e.preventDefault();
-      setSelectedIndex((prev) => (prev + 1) % results.length);
+      setSelectedIndex((prev) => {
+        const next = (prev + 1) % results.length;
+        scrollToIndex(next);
+        return next;
+      });
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
-      setSelectedIndex((prev) => (prev - 1 + results.length) % results.length);
+      setSelectedIndex((prev) => {
+        const next = (prev - 1 + results.length) % results.length;
+        scrollToIndex(next);
+        return next;
+      });
     } else if (e.key === "Enter") {
       e.preventDefault();
       const selected = results[selectedIndex];
@@ -118,6 +128,14 @@ export default function CommandPalette() {
     } else if (e.key === "Escape") {
       e.preventDefault();
       setIsPaletteOpen(false);
+    }
+  };
+
+  const scrollToIndex = (index: number) => {
+    if (!listRef.current) return;
+    const item = listRef.current.children[index] as HTMLElement;
+    if (item) {
+      item.scrollIntoView({ block: "nearest" });
     }
   };
 
@@ -145,8 +163,8 @@ export default function CommandPalette() {
         style={{
           width: 600,
           maxWidth: "90%",
-          backgroundColor: "var(--cmux-bg, #1e1e1e)",
-          border: "1px solid var(--cmux-border, #333)",
+          backgroundColor: "var(--cmux-surface)",
+          border: "1px solid var(--cmux-border)",
           borderRadius: 8,
           boxShadow: "0 10px 30px rgba(0,0,0,0.5)",
           display: "flex",
@@ -155,7 +173,7 @@ export default function CommandPalette() {
         }}
         onClick={(e) => e.stopPropagation()}
       >
-        <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--cmux-border, #333)" }}>
+        <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--cmux-border)" }}>
           <input
             ref={inputRef}
             type="text"
@@ -170,16 +188,16 @@ export default function CommandPalette() {
               width: "100%",
               background: "transparent",
               border: "none",
-              color: "var(--cmux-text, #fff)",
+              color: "var(--cmux-text)",
               fontSize: 16,
               outline: "none",
               fontFamily: "'JetBrains Mono', monospace",
             }}
           />
         </div>
-        <div style={{ maxHeight: 400, overflowY: "auto", padding: "8px 0" }}>
+        <div ref={listRef} style={{ maxHeight: 400, overflowY: "auto", padding: "8px 0" }}>
           {results.length === 0 ? (
-            <div style={{ padding: "12px 16px", color: "#666", fontSize: 13 }}>No results found.</div>
+            <div style={{ padding: "12px 16px", color: "var(--cmux-text-secondary)", fontSize: 13 }}>No results found.</div>
           ) : (
             results.map((action, idx) => (
               <div
@@ -195,12 +213,12 @@ export default function CommandPalette() {
                   justifyContent: "space-between",
                   alignItems: "center",
                   cursor: "pointer",
-                  backgroundColor: idx === selectedIndex ? "var(--cmux-selection, #2a2a2a)" : "transparent",
-                  color: "var(--cmux-text, #fff)",
+                  backgroundColor: idx === selectedIndex ? "var(--cmux-hover)" : "transparent",
+                  color: "var(--cmux-text)",
                 }}
               >
                 <span style={{ fontSize: 13, fontFamily: "'JetBrains Mono', monospace" }}>{action.title}</span>
-                <span style={{ fontSize: 11, color: "#888", fontFamily: "'JetBrains Mono', monospace" }}>{action.category}</span>
+                <span style={{ fontSize: 11, color: "var(--cmux-text-tertiary)", fontFamily: "'JetBrains Mono', monospace" }}>{action.category}</span>
               </div>
             ))
           )}
