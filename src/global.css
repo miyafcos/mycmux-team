@@ -9,6 +9,11 @@
   --cmux-title-bg: #111111;
   --cmux-surface: #161616;
   --cmux-hover: rgba(255, 255, 255, 0.06);
+
+  --status-working: #3b82f6;
+  --status-waiting: #f59e0b;
+  --status-done:    #10b981;
+  --status-error:   #ef4444;
 }
 
 .ui-cmux {

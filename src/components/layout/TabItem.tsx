@@ -1,5 +1,11 @@
 import { memo } from "react";
 
+interface StatusCounts {
+  working: number;
+  waiting: number;
+  done: number;
+}
+
 interface TabItemProps {
   uiVariant?: "default" | "cmux";
   name: string;
@@ -9,12 +15,33 @@ interface TabItemProps {
   gitBranch?: string;
   notificationCount?: number;
   lastLogLine?: string;
+  statusCounts?: StatusCounts;
   active: boolean;
   onClick: () => void;
   onClose: () => void;
 }
 
-export default memo(function TabItem({ uiVariant = "default", name, color, paneCount, cwd, gitBranch, notificationCount, lastLogLine, active, onClick, onClose }: TabItemProps) {
+function StatusPip({ count, color, pulse }: { count: number; color: string; pulse?: boolean }) {
+  return (
+    <span style={{ display: "flex", alignItems: "center", gap: 3 }}>
+      <span style={{
+        width: 6,
+        height: 6,
+        borderRadius: "50%",
+        background: color,
+        flexShrink: 0,
+        boxShadow: pulse ? `0 0 4px ${color}` : "none",
+        animation: pulse ? "agentPulse 1.2s ease-in-out infinite" : "none",
+      }} />
+      {count > 1 && (
+        <span style={{ fontSize: 10, color, fontWeight: 600, lineHeight: 1 }}>{count}</span>
+      )}
+    </span>
+  );
+}
+
+export default memo(function TabItem({ uiVariant = "default", name, color, paneCount, cwd, gitBranch, notificationCount, lastLogLine, statusCounts, active, onClick, onClose }: TabItemProps) {
+  const hasAgents = statusCounts && (statusCounts.working + statusCounts.waiting + statusCounts.done) > 0;
   return (
     <div
       onClick={onClick}
@@ -101,6 +128,13 @@ export default memo(function TabItem({ uiVariant = "default", name, color, paneC
             </span>
           )}
         </div>
+        {hasAgents && (
+          <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 1 }}>
+            {statusCounts!.working > 0 && <StatusPip count={statusCounts!.working} color="var(--status-working)" pulse />}
+            {statusCounts!.waiting > 0 && <StatusPip count={statusCounts!.waiting} color="var(--status-waiting)" />}
+            {statusCounts!.done > 0    && <StatusPip count={statusCounts!.done}    color="var(--status-done)" />}
+          </div>
+        )}
         {lastLogLine && (
           <span style={{
             fontSize: "12px",
