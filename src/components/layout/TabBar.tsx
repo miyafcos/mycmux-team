@@ -41,15 +41,21 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
         {workspaces.map((ws) => {
           let totalWsNotifications = 0;
           let lastLog: string | undefined;
+          const statusCounts = { working: 0, waiting: 0, done: 0 };
           for (const pane of ws.panes) {
-            const m = paneMetadata[pane.sessionId];
+            // Use active tab's sessionId for metadata lookup (tabs have the agent status)
+            const activeTabSessionId = pane.tabs.find((t) => t.id === pane.activeTabId)?.sessionId;
+            const m = activeTabSessionId ? paneMetadata[activeTabSessionId] : undefined;
             if (m) {
               totalWsNotifications += m.notificationCount ?? 0;
               if (m.lastLogLine) lastLog = m.lastLogLine;
+              if (m.agentStatus && m.agentStatus !== "idle") {
+                statusCounts[m.agentStatus as keyof typeof statusCounts]++;
+              }
             }
           }
-          const firstSessionId = ws.panes[0]?.sessionId;
-          const firstPaneMeta = firstSessionId ? paneMetadata[firstSessionId] : undefined;
+          const firstActiveTabSessionId = ws.panes[0]?.tabs.find((t) => t.id === ws.panes[0]?.activeTabId)?.sessionId;
+          const firstPaneMeta = firstActiveTabSessionId ? paneMetadata[firstActiveTabSessionId] : undefined;
           return (
             <TabItem
               key={ws.id}
@@ -61,6 +67,7 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
               gitBranch={firstPaneMeta?.gitBranch}
               notificationCount={totalWsNotifications || undefined}
               lastLogLine={lastLog}
+              statusCounts={statusCounts}
               active={ws.id === activeId}
               onClick={() => setActive(ws.id)}
               onClose={() => onCloseWorkspace(ws.id)}

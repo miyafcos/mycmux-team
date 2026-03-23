@@ -61,10 +61,18 @@ const GlobeIcon = () => (
 );
 
 const STATUS_CONFIG: Record<AgentStatus, { color: string; title: string; pulse: boolean }> = {
-  working: { color: "#f9e2af", title: "Working", pulse: true },
-  waiting: { color: "#f38ba8", title: "Waiting for input", pulse: false },
-  done:    { color: "#a6e3a1", title: "Done", pulse: false },
-  idle:    { color: "transparent", title: "", pulse: false },
+  working: { color: "var(--status-working)", title: "Working",           pulse: true  },
+  waiting: { color: "var(--status-waiting)", title: "Waiting for input", pulse: false },
+  done:    { color: "var(--status-done)",    title: "Done",              pulse: false },
+  idle:    { color: "transparent",           title: "",                  pulse: false },
+};
+
+const AGENT_LABELS: Record<string, string> = {
+  "claude-code": "Claude Code",
+  "gemini":      "Gemini",
+  "codex":       "Codex",
+  "aider":       "Aider",
+  "shell":       "Shell",
 };
 
 function AgentStatusDot({ status }: { status: AgentStatus }) {
@@ -98,13 +106,23 @@ export default memo(function PaneTabBar({
 }: PaneTabBarProps) {
   const allMetadata = usePaneMetadataStore((s) => s.metadata);
 
+  // Derive active tab's agent status for the status bar
+  const activeTab = pane.tabs.find((t) => t.id === pane.activeTabId);
+  const activeMeta = activeTab ? allMetadata[activeTab.sessionId] : undefined;
+  const activeStatus: AgentStatus = activeMeta?.agentStatus ?? "idle";
+  const activeLastLog = activeMeta?.lastLogLine;
+  const activeAgentLabel = activeTab
+    ? (AGENT_LABELS[activeTab.agentId ?? ""] ?? getAgent(activeTab.agentId)?.name ?? "Shell")
+    : "Shell";
+  const showStatusBar = activeStatus !== "idle" && activeTab?.type !== "browser";
+  const statusCfg = STATUS_CONFIG[activeStatus];
+
   return (
     <div
       className="pane-tabbar"
       style={{
-        height: 36,
         display: "flex",
-        alignItems: "center",
+        flexDirection: "column",
         background: "#1a1a1a",
         borderBottom: hasNotification
           ? "1px solid rgba(255, 59, 48, 0.5)"
@@ -116,6 +134,50 @@ export default memo(function PaneTabBar({
         zIndex: 10,
       }}
     >
+      {/* Agent status bar — shown above tabs when an agent is active */}
+      {showStatusBar && (
+        <div
+          style={{
+            height: 22,
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            padding: "0 10px",
+            borderBottom: `1px solid ${statusCfg.color}22`,
+            background: `${statusCfg.color}0d`,
+            overflow: "hidden",
+          }}
+        >
+          <span
+            style={{
+              width: 6,
+              height: 6,
+              borderRadius: "50%",
+              background: statusCfg.color,
+              flexShrink: 0,
+              boxShadow: statusCfg.pulse ? `0 0 5px ${statusCfg.color}` : "none",
+              animation: statusCfg.pulse ? "agentPulse 1.2s ease-in-out infinite" : "none",
+            }}
+          />
+          <span style={{ fontSize: 11, color: statusCfg.color, fontWeight: 600, flexShrink: 0, textTransform: "uppercase", letterSpacing: "0.04em" }}>
+            {statusCfg.title}
+          </span>
+          <span style={{ fontSize: 11, color: "var(--cmux-text-tertiary)", flexShrink: 0 }}>
+            {activeAgentLabel}
+          </span>
+          {activeLastLog && (
+            <>
+              <span style={{ fontSize: 11, color: "var(--cmux-text-tertiary)", flexShrink: 0 }}>—</span>
+              <span style={{ fontSize: 11, color: "var(--cmux-text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
+                {activeLastLog}
+              </span>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* Tab pills row */}
+      <div style={{ height: 36, display: "flex", alignItems: "center" }}>
       {/* Tab pills — overflow:hidden here to clip tab text, not the dropdown */}
       <div style={{ display: "flex", alignItems: "center", flex: 1, overflow: "hidden", minWidth: 0 }}>
         {pane.tabs.map((tab) => {
@@ -232,6 +294,7 @@ export default memo(function PaneTabBar({
           </button>
         )}
       </div>
+      </div>{/* end tab pills row */}
     </div>
   );
 });
