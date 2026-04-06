@@ -184,6 +184,15 @@ canvas {
   100% { opacity: 0; }
 }
 
+/* Japanese IME composition styling */
+.xterm .composition-view {
+  background: var(--cmux-surface) !important;
+  color: var(--cmux-text) !important;
+  border: 1px solid var(--cmux-accent) !important;
+  padding: 2px 4px;
+  font-size: inherit;
+}
+
 /* Accessibility: Reduced Motion */
 @media (prefers-reduced-motion: reduce) {
   *,
