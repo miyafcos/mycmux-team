@@ -193,6 +193,18 @@ canvas {
   font-size: inherit;
 }
 
+/* Active pane border overlay — uses ::after pseudo-element to avoid
+   Allotment's overflow:hidden clipping on .splitViewView wrappers. */
+.terminal-pane-border::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 10;
+  border: var(--pane-border-width, 1px) solid var(--pane-border-color, transparent);
+  transition: border-color 0.15s, border-width 0.15s;
+}
+
 /* Accessibility: Reduced Motion */
 @media (prefers-reduced-motion: reduce) {
   *,
