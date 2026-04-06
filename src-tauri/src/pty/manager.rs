@@ -79,6 +79,19 @@ impl SessionManager {
         }
     }
 
+    pub fn kill_all(&self) {
+        let keys: Vec<String> = self
+            .sessions
+            .iter()
+            .map(|entry| entry.key().clone())
+            .collect();
+        for key in keys {
+            if let Some((_, session)) = self.sessions.remove(&key) {
+                let _ = session.kill();
+            }
+        }
+    }
+
     pub fn iter_pids(&self) -> Vec<(String, Option<u32>)> {
         self.sessions
             .iter()

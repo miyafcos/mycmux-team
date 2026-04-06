@@ -93,6 +93,25 @@ export function preloadTerminalConfig(): void {
   }
 }
 
+// ─── Path utilities ─────────────────────────────────────────────────────────
+
+export async function isDirectory(path: string): Promise<boolean> {
+  return invoke("is_directory", { path });
+}
+
+export async function getLaunchCwd(): Promise<string | null> {
+  return invoke("get_launch_cwd");
+}
+
+export interface DefaultShellInfo {
+  command: string;
+  args: string[];
+}
+
+export async function getDefaultShell(): Promise<DefaultShellInfo> {
+  return invoke("get_default_shell");
+}
+
 // ─── Window / leader election ────────────────────────────────────────────────
 
 export async function claimLeader(): Promise<boolean> {

@@ -1,12 +1,22 @@
 import type { AgentDefinition } from "../types";
+import { getDefaultShell } from "./ipc";
+
+// Resolved at runtime via IPC — falls back to /bin/bash until loaded
+let _detectedShell = { command: "/bin/bash", args: [] as string[] };
+
+export async function initDefaultShell(): Promise<void> {
+  try {
+    _detectedShell = await getDefaultShell();
+  } catch { /* keep fallback */ }
+}
 
 export const BUILT_IN_AGENTS: AgentDefinition[] = [
   {
     id: "shell",
     name: "Shell",
     description: "Default system shell",
-    command: "/bin/bash",
-    args: [],
+    get command() { return _detectedShell.command; },
+    get args() { return _detectedShell.args; },
     icon: "$",
     color: "#a6e3a1",
   },

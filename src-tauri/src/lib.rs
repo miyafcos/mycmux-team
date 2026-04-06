@@ -36,6 +36,9 @@ pub fn run() {
             commands::terminal::kill_session,
             commands::terminal::get_terminal_config,
             commands::terminal::get_all_cwds,
+            commands::terminal::is_directory,
+            commands::terminal::get_launch_cwd,
+            commands::terminal::get_default_shell,
             commands::workspace::load_persistent_data,
             commands::workspace::save_workspaces,
             commands::workspace::save_settings,
@@ -78,6 +81,15 @@ pub fn run() {
             {
                 app.manage(browser::PlatformBrowserManager::new());
             }
+
+            // Kill all PTY sessions when the main window closes
+            let mgr = state.session_manager.clone();
+            let main_window = app.get_webview_window("main").unwrap();
+            main_window.on_window_event(move |event| {
+                if let tauri::WindowEvent::Destroyed = event {
+                    mgr.kill_all();
+                }
+            });
 
             #[cfg(debug_assertions)]
             {

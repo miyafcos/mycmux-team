@@ -1,9 +1,9 @@
 use std::collections::HashMap;
-use std::fs;
 use std::process::Command;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
+use sysinfo::{Pid, System, ProcessesToUpdate, ProcessRefreshKind};
 use tauri::{AppHandle, Emitter};
 
 use super::manager::SessionManager;
@@ -16,93 +16,108 @@ pub struct PtyMetadata {
     pub process_name: Option<String>,
 }
 
+/// Get the CWD of a process using sysinfo (cross-platform).
+fn get_process_cwd(sys: &System, pid: u32) -> Option<String> {
+    let sysinfo_pid = Pid::from_u32(pid);
+    sys.process(sysinfo_pid)
+        .and_then(|p| p.cwd().map(|c| c.to_string_lossy().to_string()))
+}
+
+/// Get the foreground (child) process name.
+/// Walks child processes and returns the name of the deepest child.
+fn get_foreground_process_name(sys: &System, shell_pid: u32) -> Option<String> {
+    let sysinfo_pid = Pid::from_u32(shell_pid);
+
+    // Find direct children of the shell process
+    let children: Vec<_> = sys
+        .processes()
+        .values()
+        .filter(|p| p.parent() == Some(sysinfo_pid))
+        .collect();
+
+    if let Some(child) = children.last() {
+        Some(child.name().to_string_lossy().to_string())
+    } else {
+        // No children — return the shell process name itself
+        sys.process(sysinfo_pid)
+            .map(|p| p.name().to_string_lossy().to_string())
+    }
+}
+
 pub fn start_monitor(app_handle: AppHandle, manager: Arc<SessionManager>) {
     thread::spawn(move || {
+        let mut sys = System::new();
         let mut last_metadata: HashMap<String, PtyMetadata> = HashMap::new();
 
         loop {
             thread::sleep(Duration::from_secs(2));
 
+            // Refresh process info
+            sys.refresh_processes_specifics(
+                ProcessesToUpdate::All,
+                true,
+                ProcessRefreshKind::everything(),
+            );
+
             let pids = manager.iter_pids();
 
             for (session_id, pid_opt) in pids {
                 if let Some(pid) = pid_opt {
-                    #[cfg(target_os = "linux")]
-                    let proc_path = format!("/proc/{pid}/cwd");
+                    let cwd = match get_process_cwd(&sys, pid) {
+                        Some(c) if !c.is_empty() => c,
+                        _ => continue,
+                    };
 
-                    #[cfg(not(target_os = "linux"))]
-                    let proc_path = String::new(); // Not implemented for non-linux yet
+                    // Check if CWD changed to avoid spamming git commands
+                    let needs_git_check = match last_metadata.get(&session_id) {
+                        Some(meta) => meta.cwd != cwd,
+                        None => true,
+                    };
 
-                    if let Ok(cwd_path) = fs::read_link(&proc_path) {
-                        let cwd = cwd_path.to_string_lossy().to_string();
-
-                        // Check if CWD changed to avoid spamming git commands
-                        let needs_git_check = match last_metadata.get(&session_id) {
-                            Some(meta) => meta.cwd != cwd,
-                            None => true,
-                        };
-
-                        let git_branch = if needs_git_check {
-                            // Run git rev-parse
-                            if let Ok(output) = Command::new("git")
-                                .args(["rev-parse", "--abbrev-ref", "HEAD"])
-                                .current_dir(&cwd)
-                                .output()
-                            {
+                    let git_branch = if needs_git_check {
+                        Command::new("git")
+                            .args(["rev-parse", "--abbrev-ref", "HEAD"])
+                            .current_dir(&cwd)
+                            .output()
+                            .ok()
+                            .and_then(|output| {
                                 if output.status.success() {
-                                    Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+                                    Some(
+                                        String::from_utf8_lossy(&output.stdout)
+                                            .trim()
+                                            .to_string(),
+                                    )
                                 } else {
                                     None
                                 }
-                            } else {
-                                None
-                            }
-                        } else {
-                            // Keep previous git branch
-                            last_metadata
-                                .get(&session_id)
-                                .and_then(|m| m.git_branch.clone())
-                        };
+                            })
+                    } else {
+                        last_metadata
+                            .get(&session_id)
+                            .and_then(|m| m.git_branch.clone())
+                    };
 
-                        // Capture foreground process name
-                        #[cfg(target_os = "linux")]
-                        let process_name = {
-                            // Find child processes of the PTY shell
-                            let children_path = format!("/proc/{pid}/task/{pid}/children");
-                            if let Ok(children) = fs::read_to_string(&children_path) {
-                                // Get the last child (foreground process)
-                                children.split_whitespace().last()
-                                    .and_then(|child_pid| {
-                                        fs::read_to_string(format!("/proc/{child_pid}/comm")).ok()
-                                    })
-                                    .map(|name| name.trim().to_string())
-                            } else {
-                                // Fall back to the shell process itself
-                                fs::read_to_string(format!("/proc/{pid}/comm"))
-                                    .ok()
-                                    .map(|name| name.trim().to_string())
-                            }
-                        };
+                    let process_name = get_foreground_process_name(&sys, pid);
 
-                        #[cfg(not(target_os = "linux"))]
-                        let process_name: Option<String> = None;
+                    let metadata = PtyMetadata {
+                        session_id: session_id.clone(),
+                        cwd: cwd.clone(),
+                        git_branch: git_branch.clone(),
+                        process_name: process_name.clone(),
+                    };
 
-                        let metadata = PtyMetadata {
-                            session_id: session_id.clone(),
-                            cwd: cwd.clone(),
-                            git_branch: git_branch.clone(),
-                            process_name: process_name.clone(),
-                        };
-
-                        let changed = match last_metadata.get(&session_id) {
-                            Some(old) => old.cwd != cwd || old.git_branch != git_branch || old.process_name != process_name,
-                            None => true,
-                        };
-
-                        if changed {
-                            last_metadata.insert(session_id.clone(), metadata.clone());
-                            let _ = app_handle.emit("pty_metadata", metadata);
+                    let changed = match last_metadata.get(&session_id) {
+                        Some(old) => {
+                            old.cwd != cwd
+                                || old.git_branch != git_branch
+                                || old.process_name != process_name
                         }
+                        None => true,
+                    };
+
+                    if changed {
+                        last_metadata.insert(session_id.clone(), metadata.clone());
+                        let _ = app_handle.emit("pty_metadata", metadata);
                     }
                 }
             }

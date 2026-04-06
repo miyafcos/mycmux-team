@@ -1,15 +1,18 @@
 import { useEffect, useState } from "react";
-import { 
-  useWorkspaceListStore, 
+import { getCurrentWebview } from "@tauri-apps/api/webview";
+import {
+  useWorkspaceListStore,
   useWorkspaceLayoutStore,
-  usePaneMetadataStore 
+  usePaneMetadataStore
 } from "./stores/workspaceStore";
 import { useWorkspacePersist } from "./hooks/useWorkspacePersist";
-import { preloadTerminalConfig, onPtyMetadata } from "./lib/ipc";
+import { preloadTerminalConfig, onPtyMetadata, isDirectory, writeToSession, getLaunchCwd } from "./lib/ipc";
 import AppShell from "./components/layout/AppShell";
+import { initDefaultShell } from "./lib/agents";
 
 // Kick off config fetch immediately — will be cached by the time terminals mount
 preloadTerminalConfig();
+initDefaultShell();
 
 function App() {
   const [ready, setReady] = useState(false);
@@ -18,16 +21,32 @@ function App() {
   useWorkspacePersist();
 
   useEffect(() => {
-    const listStore = useWorkspaceListStore.getState();
-    if (listStore.workspaces.length === 0) {
-      // Create initial workspace
-      const workspaceId = crypto.randomUUID();
-      const { panes, splitRows } = useWorkspaceLayoutStore.getState().buildInitialPanes(workspaceId, "1x1");
-      listStore.createWorkspace("Terminal", "1x1", panes, splitRows);
-    }
-    setReady(true);
+    async function bootstrap() {
+      const listStore = useWorkspaceListStore.getState();
+      if (listStore.workspaces.length === 0) {
+        // Check if app was launched with a folder path argument
+        let launchCwd: string | null = null;
+        try {
+          launchCwd = await getLaunchCwd();
+        } catch { /* ignore */ }
 
-    const unlistenPromise = onPtyMetadata((meta) => {
+        const workspaceId = crypto.randomUUID();
+        const { panes, splitRows } = useWorkspaceLayoutStore.getState().buildInitialPanes(workspaceId, "1x1");
+
+        if (launchCwd) {
+          for (const pane of panes) {
+            pane.cwd = launchCwd;
+          }
+        }
+
+        listStore.createWorkspace("Terminal", "1x1", panes, splitRows);
+      }
+      setReady(true);
+    }
+    bootstrap();
+
+    // PTY metadata listener
+    const unlistenMeta = onPtyMetadata((meta) => {
       usePaneMetadataStore.getState().setMetadata(meta.session_id, {
         cwd: meta.cwd,
         gitBranch: meta.git_branch,
@@ -35,8 +54,44 @@ function App() {
       });
     });
 
+    // Drag-and-drop: route folder drops to the correct terminal pane
+    const unlistenDragDrop = getCurrentWebview().onDragDropEvent(async (event) => {
+      if (event.payload.type !== "drop") return;
+      const { paths, position } = event.payload;
+      if (!paths || paths.length === 0) return;
+
+      // Convert physical pixels to CSS pixels
+      const scale = window.devicePixelRatio || 1;
+      const cssX = position.x / scale;
+      const cssY = position.y / scale;
+
+      // Find the terminal pane under the drop position
+      const el = document.elementFromPoint(cssX, cssY);
+      const paneEl = el?.closest("[data-session-id]");
+      if (!paneEl) return;
+      const sessionId = paneEl.getAttribute("data-session-id");
+      if (!sessionId) return;
+
+      if (paths.length === 1) {
+        try {
+          const isDir = await isDirectory(paths[0]);
+          if (isDir) {
+            // Normalize backslashes for Git Bash compatibility
+            const normalized = paths[0].replace(/\\/g, "/");
+            await writeToSession(sessionId, `cd "${normalized}"\r`);
+            return;
+          }
+        } catch { /* fall through to paste */ }
+      }
+
+      // Paste file paths as quoted strings
+      const quoted = paths.map((p) => `"${p}"`).join(" ");
+      await writeToSession(sessionId, quoted + " ");
+    });
+
     return () => {
-      unlistenPromise.then((unlisten) => unlisten());
+      unlistenMeta.then((f) => f());
+      unlistenDragDrop.then((f) => f());
     };
   }, []);
 
