@@ -140,8 +140,8 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
         display: "flex",
         flexDirection: "column",
         overflow: "hidden",
-        boxShadow: `inset 0 0 0 ${borderWidth}px ${borderColor}`,
-        transition: "box-shadow 0.15s",
+        outline: `${borderWidth}px solid ${borderColor}`,
+        outlineOffset: `-${borderWidth}px`,
       }}
     >
       {/* Flash overlay */}
