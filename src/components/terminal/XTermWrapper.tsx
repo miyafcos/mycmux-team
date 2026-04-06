@@ -137,6 +137,17 @@ export default memo(function XTermWrapper({
     }
   }, [storeTheme, storeFontSize]);
 
+  // Scroll to bottom when pane becomes visible (workspace switch, focus change)
+  useEffect(() => {
+    if (suppressNotifications && termRef.current) {
+      // suppressNotifications=true means this pane is active+visible
+      setTimeout(() => {
+        termRef.current?.scrollToBottom();
+        fitAddonRef.current?.fit();
+      }, 50);
+    }
+  }, [suppressNotifications]);
+
   useEffect(() => {
     const mountStart = performance.now();
     console.log(`[PERF] XTermWrapper mounting for session ${sessionId}`);
