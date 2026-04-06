@@ -177,6 +177,7 @@ export default memo(function XTermWrapper({
         allowTransparency: false,
         scrollback: 5000,
         smoothScrollDuration: 0,
+        rightClickSelectsWord: true,
       });
       termRef.current = term;
 
@@ -234,6 +235,15 @@ export default memo(function XTermWrapper({
         
         // No app shortcut match → let xterm handle it normally (typing, Ctrl+C, etc.)
         return true;
+      });
+
+      // Auto-copy selection to clipboard (WezTerm-style)
+      term.onSelectionChange(() => {
+        if (disposed || !term) return;
+        const selection = term.getSelection();
+        if (selection) {
+          navigator.clipboard.writeText(selection).catch(() => {});
+        }
       });
 
       // Send user keystrokes to PTY — plain text, no encoding
