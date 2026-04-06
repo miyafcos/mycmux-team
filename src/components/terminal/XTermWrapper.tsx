@@ -259,7 +259,9 @@ export default memo(function XTermWrapper({
         const ce = e as ClipboardEvent;
         const text = ce.clipboardData?.getData("text");
         if (text) {
-          writeToSession(sessionId, text).catch(console.error);
+          // Normalize line endings: \r\n → \r, then \n → \r (PTY expects \r as Enter)
+          const normalized = text.replace(/\r\n/g, "\r").replace(/\n/g, "\r");
+          writeToSession(sessionId, normalized).catch(console.error);
           ce.preventDefault();
           ce.stopPropagation();
         }

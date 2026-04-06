@@ -123,6 +123,7 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
       tabIndex={-1}
       onFocus={handleFocus}
       onBlur={handleBlur}
+      className="terminal-pane-border"
       style={{
         ...(isZoomed ? {
           position: "fixed",
@@ -140,9 +141,9 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
         display: "flex",
         flexDirection: "column",
         overflow: "hidden",
-        border: `${borderWidth}px solid ${borderColor}`,
-        boxSizing: "border-box" as const,
-      }}
+        ["--pane-border-width" as string]: `${borderWidth}px`,
+        ["--pane-border-color" as string]: borderColor,
+      } as React.CSSProperties & Record<string, string>}
     >
       {/* Flash overlay */}
       {isFlashing && (
