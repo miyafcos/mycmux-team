@@ -126,8 +126,10 @@ export function useWorkspacePersist() {
         for (const ws of state.workspaces) {
           for (const pane of ws.panes) {
             const cwd = lastCwds[pane.sessionId] ?? metaState[pane.sessionId]?.cwd ?? pane.cwd;
-            const proc = metaState[pane.sessionId]?.processTitle;
-            if (cwd && proc) {
+            const proc = metaState[pane.sessionId]?.processTitle
+              ?? metaState[pane.sessionId]?.lastLogLine
+              ?? "";
+            if (cwd) {
               restoreEntries.push([cwd, proc]);
             }
           }

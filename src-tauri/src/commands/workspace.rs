@@ -34,7 +34,11 @@ pub fn write_restore_manifest(entries: Vec<(String, String)>) -> Result<(), Stri
     std::fs::create_dir_all(&path).map_err(|e| format!("mkdir: {e}"))?;
     path.push("restore.json");
 
-    let map: HashMap<String, String> = entries.into_iter().collect();
+    // Normalize paths to forward slashes for Git Bash compatibility
+    let map: HashMap<String, String> = entries
+        .into_iter()
+        .map(|(cwd, proc)| (cwd.replace('\\', "/"), proc))
+        .collect();
     let json = serde_json::to_string_pretty(&map).map_err(|e| format!("json: {e}"))?;
     std::fs::write(&path, json).map_err(|e| format!("write: {e}"))?;
     Ok(())

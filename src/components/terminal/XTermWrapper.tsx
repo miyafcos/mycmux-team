@@ -253,9 +253,9 @@ export default memo(function XTermWrapper({
           return false;
         }
 
-        // Shift+Enter → send literal newline without executing
+        // Shift+Enter → send modified Enter (Kitty protocol) for multiline input
         if (e.key === "Enter" && e.shiftKey && !e.ctrlKey && !e.altKey) {
-          writeToSession(sessionId, "\n").catch(console.error);
+          writeToSession(sessionId, "\x1b[13;2u").catch(console.error);
           return false;
         }
 
