@@ -152,7 +152,7 @@ canvas {
 /* Collapse allotment sash to 1px — eliminates the 8px black stripe between split panes.
    !important needed because allotment/dist/style.css loads after global.css and would override. */
 :root {
-  --sash-size: 1px !important;
+  --sash-size: 4px !important;
 }
 
 /* Keep a thin visible divider and accent it on hover */

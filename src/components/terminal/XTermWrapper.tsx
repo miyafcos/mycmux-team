@@ -9,6 +9,7 @@ import {
   createSession,
   writeToSession,
   resizeSession,
+  killSession,
   onPtyExit,
   getTerminalConfig,
 } from "../../lib/ipc";
@@ -225,11 +226,10 @@ export default memo(function XTermWrapper({
           return false;
         }
         
-        // Shift+Enter → send as \x1b[13;2u (kitty protocol) which most apps understand,
-        // but many shells/apps just want \r — send the CSI form so it round-trips correctly.
+        // Shift+Enter → send literal newline (carriage return) without executing
         if (e.key === "Enter" && e.shiftKey && !e.ctrlKey && !e.altKey) {
-          writeToSession(sessionId, "\x1b[13;2u").catch(console.error);
-          return false; // prevent xterm's default handling
+          writeToSession(sessionId, "\r").catch(console.error);
+          return false;
         }
         
         // No app shortcut match → let xterm handle it normally (typing, Ctrl+C, etc.)
@@ -383,6 +383,7 @@ export default memo(function XTermWrapper({
       if (logThrottle) { clearTimeout(logThrottle); logThrottle = null; }
       resizeObserver?.disconnect();
       unlistenExit?.();
+      killSession(sessionId).catch(() => {});
       term?.dispose();
       searchAddonRef.current = null;
       console.log(`[PERF] XTermWrapper unmounted for session ${sessionId} - mount duration: ${(cleanupStart - mountStart).toFixed(2)}ms, cleanup: ${(performance.now() - cleanupStart).toFixed(2)}ms`);
@@ -422,24 +423,8 @@ export default memo(function XTermWrapper({
     containerRef.current?.querySelector("textarea")?.focus();
   }, []);
 
-  const handleDrop = useCallback((e: React.DragEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      const paths = Array.from(e.dataTransfer.files).map((f) => {
-        const path = (f as any).path || f.name;
-        // Escape spaces
-        return `"${path}"`;
-      });
-      writeToSession(sessionId, paths.join(" ") + " ").catch(console.error);
-    }
-  }, [sessionId]);
-
-  const handleDragOver = useCallback((e: React.DragEvent<HTMLDivElement>) => {
-    e.preventDefault();
-  }, []);
-
   return (
-    <div style={{ position: "relative", width: "100%", height: "100%" }} onDrop={handleDrop} onDragOver={handleDragOver}>
+    <div style={{ position: "relative", width: "100%", height: "100%" }}>
       {isSearchOpen && (
         <div style={{
           position: "absolute",

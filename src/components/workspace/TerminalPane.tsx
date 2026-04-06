@@ -73,7 +73,10 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
 
   const handleSelectTab = useCallback((tabId: string) => {
     setActivePaneTab(workspaceId, pane.id, tabId);
-  }, [workspaceId, pane.id, setActivePaneTab]);
+    // Update active pane when switching tabs
+    const tab = pane.tabs.find((t) => t.id === tabId);
+    if (tab) setActivePaneId(tab.sessionId);
+  }, [workspaceId, pane.id, pane.tabs, setActivePaneTab, setActivePaneId]);
 
   const handleZoomToggle = useCallback(() => {
     const currentZoomed = useUiStore.getState().zoomedPaneId;

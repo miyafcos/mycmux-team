@@ -108,3 +108,77 @@ pub fn get_all_cwds(state: State<'_, AppState>) -> Result<HashMap<String, String
 
     Ok(cwds)
 }
+
+#[derive(serde::Serialize)]
+pub struct DefaultShellInfo {
+    pub command: String,
+    pub args: Vec<String>,
+}
+
+#[tauri::command]
+pub fn get_default_shell() -> DefaultShellInfo {
+    // Check SHELL env var first (works on Unix and Git Bash on Windows)
+    if let Ok(shell) = std::env::var("SHELL") {
+        if std::path::Path::new(&shell).exists() {
+            return DefaultShellInfo {
+                command: shell,
+                args: vec![],
+            };
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        // Git Bash
+        let git_bash = "C:\\Program Files\\Git\\bin\\bash.exe";
+        if std::path::Path::new(git_bash).exists() {
+            return DefaultShellInfo {
+                command: git_bash.to_string(),
+                args: vec!["--login".to_string()],
+            };
+        }
+        // PowerShell
+        let pwsh = "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
+        if std::path::Path::new(pwsh).exists() {
+            return DefaultShellInfo {
+                command: pwsh.to_string(),
+                args: vec![],
+            };
+        }
+        // cmd.exe fallback
+        return DefaultShellInfo {
+            command: std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string()),
+            args: vec![],
+        };
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    DefaultShellInfo {
+        command: "/bin/bash".to_string(),
+        args: vec![],
+    }
+}
+
+#[tauri::command]
+pub fn is_directory(path: String) -> bool {
+    std::path::Path::new(&path).is_dir()
+}
+
+#[tauri::command]
+pub fn get_launch_cwd() -> Option<String> {
+    for arg in std::env::args().skip(1) {
+        if arg.starts_with('-') {
+            continue;
+        }
+        let path = std::path::Path::new(&arg);
+        if path.is_dir() {
+            if let Ok(canonical) = path.canonicalize() {
+                let s = canonical.to_string_lossy().to_string();
+                // Strip Windows UNC prefix (\\?\)
+                return Some(s.strip_prefix(r"\\?\").unwrap_or(&s).to_string());
+            }
+            return Some(arg);
+        }
+    }
+    None
+}
