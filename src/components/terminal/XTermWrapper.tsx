@@ -282,27 +282,38 @@ export default memo(function XTermWrapper({
           const buf = term.buffer.active;
           const y = buf.baseY + buf.cursorY;
           let lastLine = "";
+          const recentLines: string[] = [];
 
+          // Collect last 10 non-empty lines for context-aware detection
           for (let i = y; i >= Math.max(0, y - 10); i--) {
             const lineObj = buf.getLine(i);
             if (lineObj) {
               const text = lineObj.translateToString(true).trim();
               if (text.length > 0) {
-                lastLine = text;
-                break;
+                recentLines.unshift(text);
+                if (!lastLine) lastLine = text;
               }
             }
           }
+          const recentBlock = recentLines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
 
           if (lastLine.length > 0 && lastLine !== _lastParsedOut) {
             _lastParsedOut = lastLine;
 
             // Detect Claude Code agent status from output patterns
+            // Scan the recent block (multiple lines) for accurate detection
             let agentStatus: AgentStatus | undefined;
             const stripped = lastLine.replace(/\x1b\[[0-9;]*m/g, "").trim();
-            if (/(\u2737|\u2731|esc to interrupt)/i.test(stripped) || /working\.\.\./i.test(stripped)) {
+            if (/(\u2737|\u2731|esc to interrupt)/i.test(recentBlock) || /working\.\.\./i.test(stripped)) {
               agentStatus = "working";
-            } else if (/\?\s*(Yes|No|\[y\/n\])/i.test(stripped) || /do you want to/i.test(stripped) || /press enter/i.test(stripped)) {
+            } else if (
+              /\?\s*(Yes|No|\[y\/n\])/i.test(recentBlock) ||
+              /do you want to/i.test(recentBlock) ||
+              /press enter/i.test(recentBlock) ||
+              /esc to cancel/i.test(recentBlock) ||
+              /^\s*\d+\.\s*(Yes|No)/m.test(recentBlock) ||
+              /\(y\/n\)/i.test(recentBlock)
+            ) {
               agentStatus = "waiting";
             } else if (/\u2713\s*(done|complete|finished)/i.test(stripped) || /^>\s*$/.test(stripped) || /\$\s*$/.test(stripped)) {
               agentStatus = "done";
