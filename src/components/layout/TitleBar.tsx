@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useWorkspaceListStore, useUiStore, usePaneMetadataStore } from "../../stores/workspaceStore";
 import NotificationPanel from "./NotificationPanel";
@@ -59,6 +59,18 @@ export default function TitleBar({ uiVariant = "default", onNewWorkspace }: Titl
     (sum, m) => sum + (m.notificationCount ?? 0),
     0,
   );
+
+  // Manual double-click detection for drag region compatibility
+  const lastClickRef = useRef(0);
+  const handleTitleBarClick = () => {
+    const now = Date.now();
+    if (now - lastClickRef.current < 300) {
+      getCurrentWindow().toggleMaximize().catch(console.error);
+      lastClickRef.current = 0;
+    } else {
+      lastClickRef.current = now;
+    }
+  };
 
   const handleMinimize = () => getCurrentWindow().minimize().catch(console.error);
   const handleMaximize = () => getCurrentWindow().toggleMaximize().catch(console.error);
@@ -168,10 +180,10 @@ export default function TitleBar({ uiVariant = "default", onNewWorkspace }: Titl
         </button>
       </div>
 
-      {/* Center: TERMINAL · WorkspaceName (drag region + double-click maximize) */}
+      {/* Center: TERMINAL · WorkspaceName (drag region + click-based maximize) */}
       <div
         data-tauri-drag-region
-        onDoubleClick={handleMaximize}
+        onClick={handleTitleBarClick}
         style={{
           flex: 1,
           display: "flex",

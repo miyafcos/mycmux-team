@@ -160,7 +160,7 @@ export default memo(function XTermWrapper({
       const cfg = cachedConfig;
       const initTheme = theme ?? cfg?.theme ?? DEFAULT_THEME;
       const initFontSize = fontSize ?? cfg?.fontSize ?? 14;
-      const initFontFamily = fontFamily ?? cfg?.fontFamily ?? "'JetBrainsMono Nerd Font Mono', 'JetBrains Mono', 'Geist Mono', 'SF Mono', monospace";
+      const initFontFamily = fontFamily ?? cfg?.fontFamily ?? "'JetBrainsMono Nerd Font Mono', 'JetBrains Mono', 'Geist Mono', 'BIZ UDGothic', 'MS Gothic', monospace";
 
       term = new Terminal({
         cursorBlink: true,
@@ -169,13 +169,13 @@ export default memo(function XTermWrapper({
         fontFamily: initFontFamily,
         fontWeight: 400,
         fontWeightBold: 600,
-        letterSpacing: -1,
-        lineHeight: 1.0,
+        letterSpacing: 0,
+        lineHeight: 1.15,
         rescaleOverlappingGlyphs: true,
         customGlyphs: true,
         theme: initTheme,
         allowTransparency: false,
-        scrollback: 5000,
+        scrollback: 10000,
         smoothScrollDuration: 0,
         rightClickSelectsWord: true,
       });
