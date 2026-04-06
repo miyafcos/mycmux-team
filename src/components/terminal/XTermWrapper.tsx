@@ -237,21 +237,8 @@ export default memo(function XTermWrapper({
           return false;
         }
         
-        // Ctrl+V → paste from clipboard
-        if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "v") {
-          navigator.clipboard.readText().then((text) => {
-            if (text) writeToSession(sessionId, text).catch(console.error);
-          }).catch(() => {});
-          return false;
-        }
-
-        // Ctrl+Shift+V → also paste (common terminal convention)
-        if (e.ctrlKey && e.shiftKey && !e.altKey && e.key.toLowerCase() === "v") {
-          navigator.clipboard.readText().then((text) => {
-            if (text) writeToSession(sessionId, text).catch(console.error);
-          }).catch(() => {});
-          return false;
-        }
+        // Ctrl+V / Ctrl+Shift+V paste: handled natively by xterm.js via browser paste event.
+        // Do NOT add custom paste handlers here — they cause double-paste.
 
         // Shift+Enter → send modified Enter (Kitty protocol) for multiline input
         if (e.key === "Enter" && e.shiftKey && !e.ctrlKey && !e.altKey) {
@@ -288,6 +275,7 @@ export default memo(function XTermWrapper({
       });
 
       let _lastParsedOut = "";
+      let _prevAgentStatus: AgentStatus = "idle";
       term.onWriteParsed(() => {
         if (!term) return;
         // Throttle to 500ms — prevents hammering Zustand on every keystroke
@@ -301,71 +289,76 @@ export default memo(function XTermWrapper({
           const recentLines: string[] = [];
 
           // Collect last 10 non-empty lines for context-aware detection
-          for (let i = y; i >= Math.max(0, y - 10); i--) {
+          for (let i = Math.max(0, y - 10); i <= y; i++) {
             const lineObj = buf.getLine(i);
             if (lineObj) {
               const text = lineObj.translateToString(true).trim();
               if (text.length > 0) {
-                recentLines.unshift(text);
-                if (!lastLine) lastLine = text;
+                recentLines.push(text);
+                lastLine = text;
               }
             }
           }
           const recentBlock = recentLines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+          const stripped = lastLine.replace(/\x1b\[[0-9;]*m/g, "").trim();
 
-          if (lastLine.length > 0 && lastLine !== _lastParsedOut) {
-            _lastParsedOut = lastLine;
+          // Detect agent status EVERY cycle (not gated by lastLine change)
+          // working: check LAST LINE only (avoids stale working text in recentBlock)
+          // waiting: check RECENT BLOCK (multi-line prompts)
+          let agentStatus: AgentStatus = "idle";
+          if (/(\u2737|\u2731|esc to interrupt)/i.test(stripped) || /working\.\.\./i.test(stripped)) {
+            agentStatus = "working";
+          } else if (
+            /\?\s*(Yes|No|\[y\/n\])/i.test(recentBlock) ||
+            /do you want to/i.test(recentBlock) ||
+            /press enter/i.test(recentBlock) ||
+            /esc to cancel/i.test(recentBlock) ||
+            /^\s*\d+\.\s*(Yes|No)/m.test(recentBlock) ||
+            /\(y\/n\)/i.test(recentBlock) ||
+            /Tab to amend/i.test(recentBlock)
+          ) {
+            agentStatus = "waiting";
+          } else if (/\u2713\s*(done|complete|finished)/i.test(stripped) || /^>\s*$/.test(stripped) || /\$\s*$/.test(stripped)) {
+            agentStatus = "done";
+          }
 
-            // Detect Claude Code agent status from output patterns
-            // Scan the recent block (multiple lines) for accurate detection
-            let agentStatus: AgentStatus | undefined;
-            const stripped = lastLine.replace(/\x1b\[[0-9;]*m/g, "").trim();
-            if (/(\u2737|\u2731|esc to interrupt)/i.test(recentBlock) || /working\.\.\./i.test(stripped)) {
-              agentStatus = "working";
-            } else if (
-              /\?\s*(Yes|No|\[y\/n\])/i.test(recentBlock) ||
-              /do you want to/i.test(recentBlock) ||
-              /press enter/i.test(recentBlock) ||
-              /esc to cancel/i.test(recentBlock) ||
-              /^\s*\d+\.\s*(Yes|No)/m.test(recentBlock) ||
-              /\(y\/n\)/i.test(recentBlock)
-            ) {
-              agentStatus = "waiting";
-            } else if (/\u2713\s*(done|complete|finished)/i.test(stripped) || /^>\s*$/.test(stripped) || /\$\s*$/.test(stripped)) {
-              agentStatus = "done";
-            }
-
-            // Filter out terminal chrome / status bar noise before storing as log line.
-            // These patterns match Claude Code's bottom status bar (token cost, session info)
-            // and other terminal UI lines that aren't meaningful agent output.
-            const isNoiseLine =
-              /\d+k?\s+tokens/i.test(stripped) ||
-              /access \d+/i.test(stripped) ||
-              /past research/i.test(stripped) ||
-              /http:\/\/localhost/i.test(stripped) ||
-              /^\s*[\u2500-\u257F]+\s*$/.test(stripped) || // box-drawing chars only
-              stripped.length < 3;
-
-            // When agent returns to shell prompt (done/idle), clear the log line.
-            // For noise lines, omit the key entirely so the previous meaningful value is preserved.
-            const isShellPrompt = /^>\s*$/.test(stripped) || /\$\s*$/.test(stripped);
-            const logLineUpdate = isShellPrompt
-              ? { lastLogLine: undefined }          // clear on shell prompt
-              : isNoiseLine
-                ? {}                               // preserve previous value for noise
-                : { lastLogLine: lastLine };       // update with meaningful line
-
-            usePaneMetadataStore.getState().setMetadata(sessionId, {
-              ...logLineUpdate,
-              ...(agentStatus ? { agentStatus } : {}),
-            });
-            // Trigger notification ONLY when agent needs user approval (waiting status)
-            if (!suppressNotifications && agentStatus === "waiting") {
+          // Notify when status transitions TO waiting (not repeatedly)
+          if (agentStatus === "waiting" && _prevAgentStatus !== "waiting") {
+            if (!suppressNotifications) {
               const activePaneId = useUiStore.getState().activePaneId;
               if (activePaneId !== sessionId) {
                 usePaneMetadataStore.getState().incrementNotification(sessionId);
               }
             }
+          }
+          _prevAgentStatus = agentStatus;
+
+          // Update metadata (log line + status) only when content changes
+          if (lastLine.length > 0 && lastLine !== _lastParsedOut) {
+            _lastParsedOut = lastLine;
+
+            const isNoiseLine =
+              /\d+k?\s+tokens/i.test(stripped) ||
+              /access \d+/i.test(stripped) ||
+              /past research/i.test(stripped) ||
+              /http:\/\/localhost/i.test(stripped) ||
+              /^\s*[\u2500-\u257F]+\s*$/.test(stripped) ||
+              stripped.length < 3;
+
+            const isShellPrompt = /^>\s*$/.test(stripped) || /\$\s*$/.test(stripped);
+            const logLineUpdate = isShellPrompt
+              ? { lastLogLine: undefined }
+              : isNoiseLine
+                ? {}
+                : { lastLogLine: lastLine };
+
+            usePaneMetadataStore.getState().setMetadata(sessionId, {
+              ...logLineUpdate,
+              agentStatus,
+            });
+          } else {
+            // Even if log line didn't change, update agentStatus
+            usePaneMetadataStore.getState().setMetadata(sessionId, { agentStatus });
           }
         }, 500);
       });
