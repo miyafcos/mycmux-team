@@ -161,6 +161,7 @@ export default memo(function XTermWrapper({
     let resizeObserver: ResizeObserver | null = null;
     let resizeTimeout: ReturnType<typeof setTimeout>;
     let logThrottle: ReturnType<typeof setTimeout> | null = null;
+    let handlePaste: ((e: Event) => void) | null = null;
 
     async function init() {
       if (disposed) return;
@@ -237,8 +238,11 @@ export default memo(function XTermWrapper({
           return false;
         }
         
-        // Ctrl+V / Ctrl+Shift+V paste: handled natively by xterm.js via browser paste event.
-        // Do NOT add custom paste handlers here — they cause double-paste.
+        // Ctrl+V: trigger browser paste event (which our container paste handler intercepts)
+        if (e.ctrlKey && e.key.toLowerCase() === "v") {
+          document.execCommand("paste");
+          return false;
+        }
 
         // Shift+Enter → send modified Enter (Kitty protocol) for multiline input
         if (e.key === "Enter" && e.shiftKey && !e.ctrlKey && !e.altKey) {
@@ -249,6 +253,18 @@ export default memo(function XTermWrapper({
         // No app shortcut match → let xterm handle it normally (typing, Ctrl+C, etc.)
         return true;
       });
+
+      // Paste handler: intercept browser paste event, send to PTY, block xterm's handler
+      handlePaste = (e: Event) => {
+        const ce = e as ClipboardEvent;
+        const text = ce.clipboardData?.getData("text");
+        if (text) {
+          writeToSession(sessionId, text).catch(console.error);
+          ce.preventDefault();
+          ce.stopPropagation();
+        }
+      };
+      container!.addEventListener("paste", handlePaste, true);
 
       // Auto-copy selection to clipboard (WezTerm-style)
       term.onSelectionChange(() => {
@@ -423,8 +439,7 @@ export default memo(function XTermWrapper({
       if (logThrottle) { clearTimeout(logThrottle); logThrottle = null; }
       resizeObserver?.disconnect();
       unlistenExit?.();
-      // NOTE: Do NOT killSession here — Allotment may remount surviving panes
-      // on sibling removal. Session killing is handled by the close/remove handlers.
+      if (handlePaste) container?.removeEventListener("paste", handlePaste, true);
       term?.dispose();
       searchAddonRef.current = null;
       console.log(`[PERF] XTermWrapper unmounted for session ${sessionId} - mount duration: ${(cleanupStart - mountStart).toFixed(2)}ms, cleanup: ${(performance.now() - cleanupStart).toFixed(2)}ms`);
