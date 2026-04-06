@@ -42,10 +42,17 @@ export default function TitleBar({ uiVariant = "default", onNewWorkspace }: Titl
   useEffect(() => {
     const win = getCurrentWindow();
     win.isMaximized().then(setIsMaximized).catch(() => {});
-    const unlisten = win.onResized(() => {
+    // Track maximize state via both resize and move events
+    const unlistenResize = win.onResized(() => {
       win.isMaximized().then(setIsMaximized).catch(() => {});
     });
-    return () => { unlisten.then((f) => f()); };
+    const unlistenMove = win.onMoved(() => {
+      win.isMaximized().then(setIsMaximized).catch(() => {});
+    });
+    return () => {
+      unlistenResize.then((f) => f());
+      unlistenMove.then((f) => f());
+    };
   }, []);
 
   const totalNotifications = Object.values(paneMetadata).reduce(
@@ -62,7 +69,6 @@ export default function TitleBar({ uiVariant = "default", onNewWorkspace }: Titl
   return (
     <div
       data-tauri-drag-region
-      onDoubleClick={handleMaximize}
       style={{
         height: 36,
         display: "flex",
@@ -162,9 +168,10 @@ export default function TitleBar({ uiVariant = "default", onNewWorkspace }: Titl
         </button>
       </div>
 
-      {/* Center: TERMINAL · WorkspaceName (drag region) */}
+      {/* Center: TERMINAL · WorkspaceName (drag region + double-click maximize) */}
       <div
         data-tauri-drag-region
+        onDoubleClick={handleMaximize}
         style={{
           flex: 1,
           display: "flex",

@@ -14,6 +14,12 @@ import { initDefaultShell } from "./lib/agents";
 preloadTerminalConfig();
 initDefaultShell();
 
+// Prevent unhandled promise rejections from crashing the app
+window.addEventListener("unhandledrejection", (e) => {
+  console.warn("[mycmux] unhandled rejection:", e.reason);
+  e.preventDefault();
+});
+
 function App() {
   const [ready, setReady] = useState(false);
   const uiVariant = import.meta.env.VITE_UI_VARIANT === "cmux" ? "cmux" : "default";
@@ -90,8 +96,8 @@ function App() {
     });
 
     return () => {
-      unlistenMeta.then((f) => f());
-      unlistenDragDrop.then((f) => f());
+      unlistenMeta.then((f) => f()).catch(() => {});
+      unlistenDragDrop.then((f) => f()).catch(() => {});
     };
   }, []);
 

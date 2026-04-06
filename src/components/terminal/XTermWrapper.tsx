@@ -312,8 +312,8 @@ export default memo(function XTermWrapper({
               ...logLineUpdate,
               ...(agentStatus ? { agentStatus } : {}),
             });
-            // Trigger notification only when pane is not active and not suppressed
-            if (!suppressNotifications) {
+            // Trigger notification ONLY when agent needs user approval (waiting status)
+            if (!suppressNotifications && agentStatus === "waiting") {
               const activePaneId = useUiStore.getState().activePaneId;
               if (activePaneId !== sessionId) {
                 usePaneMetadataStore.getState().incrementNotification(sessionId);

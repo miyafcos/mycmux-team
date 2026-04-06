@@ -43,8 +43,8 @@ export default memo(function TerminalGrid({
 
     return (
       <Allotment vertical separator={false}>
-        {rows.map((row) => (
-          <Allotment.Pane key={row.join("-")}>
+        {rows.map((row, rowIdx) => (
+          <Allotment.Pane key={`row-${rowIdx}`}>
             <Allotment separator={false}>
               {row.map((paneId) => {
                 const pane = paneMap[paneId];
