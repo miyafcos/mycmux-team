@@ -42,6 +42,7 @@ pub fn run() {
             commands::workspace::load_persistent_data,
             commands::workspace::save_workspaces,
             commands::workspace::save_settings,
+            commands::workspace::write_restore_manifest,
             commands::window::claim_leader,
             commands::window::get_window_count,
             socket::socket_response,

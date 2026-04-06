@@ -10,6 +10,7 @@ import {
   getAllCwds,
   claimLeader,
   saveSettings,
+  writeRestoreManifest,
   type WorkspaceConfig,
 } from "../lib/ipc";
 import type { Workspace } from "../types";
@@ -26,6 +27,7 @@ function toConfig(ws: Workspace, cwds: Record<string, string>): WorkspaceConfig 
       agent_id: p.agentId,
       label: p.label ?? null,
       cwd: cwds[p.sessionId] ?? metaState[p.sessionId]?.cwd ?? p.cwd ?? null,
+      last_process: metaState[p.sessionId]?.processTitle ?? null,
     })),
     created_at: ws.createdAt,
   };
@@ -117,6 +119,22 @@ export function useWorkspacePersist() {
           font_size: themeState.fontSize,
           keybindings: keybindingState.overrides,
         });
+
+        // Write restore manifest for auto-resume on restart
+        const metaState = usePaneMetadataStore.getState().metadata;
+        const restoreEntries: [string, string][] = [];
+        for (const ws of state.workspaces) {
+          for (const pane of ws.panes) {
+            const cwd = lastCwds[pane.sessionId] ?? metaState[pane.sessionId]?.cwd ?? pane.cwd;
+            const proc = metaState[pane.sessionId]?.processTitle;
+            if (cwd && proc) {
+              restoreEntries.push([cwd, proc]);
+            }
+          }
+        }
+        if (restoreEntries.length > 0) {
+          writeRestoreManifest(restoreEntries).catch(() => {});
+        }
       } catch (err) {
         console.warn("[persist] Failed to save with CWD:", err);
       }
