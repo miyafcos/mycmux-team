@@ -47,13 +47,14 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
 
   // Map status to rgba border colors (inactive panes get 40% opacity)
   const STATUS_BORDERS = {
-    working: { active: "rgba(59, 130, 246, 0.9)", inactive: "rgba(59, 130, 246, 0.35)" },
-    waiting: { active: "rgba(245, 158, 11, 0.9)", inactive: "rgba(245, 158, 11, 0.35)" },
-    done:    { active: "rgba(16, 185, 129, 0.9)", inactive: "rgba(16, 185, 129, 0.35)" },
-    idle:    { active: "rgba(10, 132, 255, 0.5)",  inactive: "transparent" },
+    working: { active: "rgba(59, 130, 246, 0.9)", inactive: "rgba(59, 130, 246, 0.25)" },
+    waiting: { active: "rgba(245, 158, 11, 1.0)", inactive: "rgba(245, 158, 11, 0.35)" },
+    done:    { active: "rgba(16, 185, 129, 0.9)", inactive: "rgba(16, 185, 129, 0.25)" },
+    idle:    { active: "var(--cmux-accent, rgba(10, 132, 255, 0.7))", inactive: "transparent" },
   };
   const statusKey = (agentStatus in STATUS_BORDERS ? agentStatus : "idle") as keyof typeof STATUS_BORDERS;
   const borderColor = isZoomed ? "transparent" : (isActive ? STATUS_BORDERS[statusKey].active : STATUS_BORDERS[statusKey].inactive);
+  const borderWidth = isActive && !isZoomed ? 2 : 1;
 
   const handleFocus = useCallback(() => {
     setActivePaneId(pane.sessionId);
@@ -135,8 +136,8 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
         display: "flex",
         flexDirection: "column",
         overflow: "hidden",
-        outline: `1px solid ${borderColor}`,
-        transition: "outline 0.2s",
+        outline: `${borderWidth}px solid ${borderColor}`,
+        transition: "outline 0.15s",
       }}
     >
       {/* Flash overlay */}

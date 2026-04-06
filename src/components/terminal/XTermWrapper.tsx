@@ -237,12 +237,28 @@ export default memo(function XTermWrapper({
           return false;
         }
         
-        // Shift+Enter → send literal newline (carriage return) without executing
-        if (e.key === "Enter" && e.shiftKey && !e.ctrlKey && !e.altKey) {
-          writeToSession(sessionId, "\r").catch(console.error);
+        // Ctrl+V → paste from clipboard
+        if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "v") {
+          navigator.clipboard.readText().then((text) => {
+            if (text) writeToSession(sessionId, text).catch(console.error);
+          }).catch(() => {});
           return false;
         }
-        
+
+        // Ctrl+Shift+V → also paste (common terminal convention)
+        if (e.ctrlKey && e.shiftKey && !e.altKey && e.key.toLowerCase() === "v") {
+          navigator.clipboard.readText().then((text) => {
+            if (text) writeToSession(sessionId, text).catch(console.error);
+          }).catch(() => {});
+          return false;
+        }
+
+        // Shift+Enter → send literal newline without executing
+        if (e.key === "Enter" && e.shiftKey && !e.ctrlKey && !e.altKey) {
+          writeToSession(sessionId, "\n").catch(console.error);
+          return false;
+        }
+
         // No app shortcut match → let xterm handle it normally (typing, Ctrl+C, etc.)
         return true;
       });
