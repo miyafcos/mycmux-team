@@ -84,17 +84,19 @@ pub fn run() {
 
             // Kill all PTY sessions when the main window closes
             let mgr = state.session_manager.clone();
-            let main_window = app.get_webview_window("main").unwrap();
-            main_window.on_window_event(move |event| {
-                if let tauri::WindowEvent::Destroyed = event {
-                    mgr.kill_all();
-                }
-            });
+            if let Some(main_window) = app.get_webview_window("main") {
+                main_window.on_window_event(move |event| {
+                    if let tauri::WindowEvent::Destroyed = event {
+                        mgr.kill_all();
+                    }
+                });
+            }
 
             #[cfg(debug_assertions)]
             {
-                let webview = app.get_webview_window("main").unwrap();
-                webview.open_devtools();
+                if let Some(webview) = app.get_webview_window("main") {
+                    webview.open_devtools();
+                }
             }
             Ok(())
         })
