@@ -9,7 +9,6 @@ import {
   createSession,
   writeToSession,
   resizeSession,
-  killSession,
   onPtyExit,
   getTerminalConfig,
 } from "../../lib/ipc";
@@ -404,7 +403,8 @@ export default memo(function XTermWrapper({
       if (logThrottle) { clearTimeout(logThrottle); logThrottle = null; }
       resizeObserver?.disconnect();
       unlistenExit?.();
-      killSession(sessionId).catch(() => {});
+      // NOTE: Do NOT killSession here — Allotment may remount surviving panes
+      // on sibling removal. Session killing is handled by the close/remove handlers.
       term?.dispose();
       searchAddonRef.current = null;
       console.log(`[PERF] XTermWrapper unmounted for session ${sessionId} - mount duration: ${(cleanupStart - mountStart).toFixed(2)}ms, cleanup: ${(performance.now() - cleanupStart).toFixed(2)}ms`);

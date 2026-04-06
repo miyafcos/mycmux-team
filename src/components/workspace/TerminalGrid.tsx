@@ -3,6 +3,7 @@ import { Allotment } from "allotment";
 import "allotment/dist/style.css";
 import type { Pane, GridTemplateId } from "../../types";
 import { useWorkspaceLayoutStore } from "../../stores/workspaceStore";
+import { killSession } from "../../lib/ipc";
 import TerminalPane from "./TerminalPane";
 import { ErrorBoundary } from "../layout/ErrorBoundary";
 
@@ -22,8 +23,15 @@ export default memo(function TerminalGrid({
   const addPaneToWorkspace = useWorkspaceLayoutStore((s) => s.addPaneToWorkspace);
 
   const handleClose = useCallback((paneId: string) => {
+    // Kill all PTY sessions in this pane before removing it from state
+    const pane = panes.find((p) => p.id === paneId);
+    if (pane) {
+      for (const tab of pane.tabs) {
+        killSession(tab.sessionId).catch(() => {});
+      }
+    }
     removePaneFromWorkspace(workspaceId, paneId);
-  }, [workspaceId, removePaneFromWorkspace]);
+  }, [workspaceId, panes, removePaneFromWorkspace]);
 
   const handleSplitRight = useCallback((paneId: string) => {
     addPaneToWorkspace(workspaceId, paneId, "right");

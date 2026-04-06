@@ -12,6 +12,7 @@ import {
 } from "../../stores/workspaceStore";
 import { useWorkspaceListStore } from "../../stores/workspaceListStore";
 import { getAgent, getDefaultAgent } from "../../lib/agents";
+import { killSession } from "../../lib/ipc";
 
 interface TerminalPaneProps {
   pane: Pane;
@@ -68,8 +69,11 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
   }, [workspaceId, pane.id, addTabToPane]);
 
   const handleRemoveTab = useCallback((tabId: string) => {
+    // Kill the PTY session for this tab before removing
+    const tab = pane.tabs.find((t) => t.id === tabId);
+    if (tab) killSession(tab.sessionId).catch(() => {});
     removeTabFromPane(workspaceId, pane.id, tabId);
-  }, [workspaceId, pane.id, removeTabFromPane]);
+  }, [workspaceId, pane.id, pane.tabs, removeTabFromPane]);
 
   const handleSelectTab = useCallback((tabId: string) => {
     setActivePaneTab(workspaceId, pane.id, tabId);
