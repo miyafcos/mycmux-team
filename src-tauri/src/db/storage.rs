@@ -8,6 +8,8 @@ pub struct PaneConfig {
     pub agent_id: String,
     pub label: Option<String>,
     pub cwd: Option<String>,
+    #[serde(default)]
+    pub last_process: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -128,6 +128,7 @@ export interface PaneConfig {
   agent_id: string;
   label: string | null;
   cwd?: string | null;
+  last_process?: string | null;
 }
 
 export interface WorkspaceConfig {
@@ -161,6 +162,10 @@ export async function saveWorkspaces(
 
 export async function saveSettings(settings: AppSettings): Promise<void> {
   return invoke("save_settings", { settings });
+}
+
+export async function writeRestoreManifest(entries: [string, string][]): Promise<void> {
+  return invoke("write_restore_manifest", { entries });
 }
 
 export async function sendSocketResponse(id: number, result: any, error: string | null): Promise<void> {
