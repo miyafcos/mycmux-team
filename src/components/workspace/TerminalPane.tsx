@@ -70,18 +70,22 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
   }, [workspaceId, pane.id, addTabToPane]);
 
   const handleRemoveTab = useCallback((tabId: string) => {
-    // Kill the PTY session for this tab before removing
-    const tab = pane.tabs.find((t) => t.id === tabId);
+    // Kill the PTY session — read fresh state to avoid stale closure
+    const ws = useWorkspaceListStore.getState().getWorkspace(workspaceId);
+    const p = ws?.panes.find((x) => x.id === pane.id);
+    const tab = p?.tabs.find((t) => t.id === tabId);
     if (tab) killSession(tab.sessionId).catch(() => {});
     removeTabFromPane(workspaceId, pane.id, tabId);
-  }, [workspaceId, pane.id, pane.tabs, removeTabFromPane]);
+  }, [workspaceId, pane.id, removeTabFromPane]);
 
   const handleSelectTab = useCallback((tabId: string) => {
     setActivePaneTab(workspaceId, pane.id, tabId);
-    // Update active pane when switching tabs
-    const tab = pane.tabs.find((t) => t.id === tabId);
+    // Update active pane when switching tabs — read fresh state to avoid stale closure
+    const ws = useWorkspaceListStore.getState().getWorkspace(workspaceId);
+    const p = ws?.panes.find((x) => x.id === pane.id);
+    const tab = p?.tabs.find((t) => t.id === tabId);
     if (tab) setActivePaneId(tab.sessionId);
-  }, [workspaceId, pane.id, pane.tabs, setActivePaneTab, setActivePaneId]);
+  }, [workspaceId, pane.id, setActivePaneTab, setActivePaneId]);
 
   const handleZoomToggle = useCallback(() => {
     const currentZoomed = useUiStore.getState().zoomedPaneId;
@@ -136,8 +140,8 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
         display: "flex",
         flexDirection: "column",
         overflow: "hidden",
-        outline: `${borderWidth}px solid ${borderColor}`,
-        transition: "outline 0.15s",
+        boxShadow: `inset 0 0 0 ${borderWidth}px ${borderColor}`,
+        transition: "box-shadow 0.15s",
       }}
     >
       {/* Flash overlay */}
