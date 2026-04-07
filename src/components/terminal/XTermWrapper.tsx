@@ -18,6 +18,27 @@ import { useKeybindingStore } from "../../stores/keybindingStore";
 import { useThemeStore } from "../../stores/themeStore";
 import type { ITheme } from "@xterm/xterm";
 
+// Notification sound via Web Audio API — short gentle chime
+let _audioCtx: AudioContext | null = null;
+function playNotificationSound() {
+  try {
+    if (!_audioCtx) _audioCtx = new AudioContext();
+    const ctx = _audioCtx;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.frequency.value = 880; // A5
+    osc.type = "sine";
+    gain.gain.setValueAtTime(0.15, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.3);
+    osc.start(ctx.currentTime);
+    osc.stop(ctx.currentTime + 0.3);
+  } catch {
+    // Audio not available — silent fallback
+  }
+}
+
 interface XTermWrapperProps {
   sessionId: string;
   command: string;
@@ -294,21 +315,18 @@ export default memo(function XTermWrapper({
           const buf = term.buffer.active;
           const y = buf.baseY + buf.cursorY;
           let lastLine = "";
-          const recentLines: string[] = [];
 
-          // Collect last 10 non-empty lines for context-aware detection
-          for (let i = y; i >= Math.max(0, y - 10); i--) {
+          // Find the most recent non-empty line (current cursor position)
+          for (let i = y; i >= Math.max(0, y - 3); i--) {
             const lineObj = buf.getLine(i);
             if (lineObj) {
               const text = lineObj.translateToString(true).trim();
               if (text.length > 0) {
-                recentLines.unshift(text);
                 if (!lastLine) lastLine = text;
+                break;
               }
             }
           }
-          const recentBlock = recentLines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
-
           if (lastLine.length > 0 && lastLine !== _lastParsedOut) {
             _lastParsedOut = lastLine;
 
@@ -316,18 +334,32 @@ export default memo(function XTermWrapper({
             // Scan the recent block (multiple lines) for accurate detection
             let agentStatus: AgentStatus | undefined;
             const stripped = lastLine.replace(/\x1b\[[0-9;]*m/g, "").trim();
-            if (/(\u2737|\u2731|esc to interrupt)/i.test(recentBlock) || /working\.\.\./i.test(stripped)) {
+            // Detect agent status — patterns tuned for Claude Code CLI.
+            // Only checks the current line (stripped) to avoid false positives.
+            const isSpinner = /(\u2737|\u2731|\u25cf|\u25cb)/.test(stripped);
+            const isWorking = isSpinner || /working\.\.\./i.test(stripped);
+            // "esc to interrupt" in status bar should NOT trigger working by itself
+            const isStatusBar = /esc to interrupt/i.test(stripped) && !isSpinner;
+
+            if (isWorking && !isStatusBar) {
               agentStatus = "working";
             } else if (
-              /\?\s*(Yes|No|\[y\/n\])/i.test(recentBlock) ||
-              /do you want to/i.test(recentBlock) ||
-              /press enter/i.test(recentBlock) ||
-              /esc to cancel/i.test(recentBlock) ||
-              /^\s*\d+\.\s*(Yes|No)/m.test(recentBlock) ||
-              /\(y\/n\)/i.test(recentBlock)
+              // Claude Code tool approval: "Allow X? (y/n)" on the CURRENT line
+              /allow\s+.*\?\s*\(y\/n\)/i.test(stripped) ||
+              // AskUserQuestion: numbered choices on current line
+              /^\s*\d+\.\s+.+\(.*\)/.test(stripped) ||
+              // Direct yes/no on current line only
+              /\(y\/n\)\s*$/i.test(stripped) ||
+              /\[y\/N\]/i.test(stripped) ||
+              // "Type your answer/response" prompt (Claude Code AskUser)
+              /type your (answer|response)/i.test(stripped)
             ) {
               agentStatus = "waiting";
-            } else if (/\u2713\s*(done|complete|finished)/i.test(stripped) || /^>\s*$/.test(stripped) || /\$\s*$/.test(stripped)) {
+            } else if (
+              /\u2713\s*(done|complete|finished)/i.test(stripped) ||
+              /^>\s*$/.test(stripped) ||
+              /\$\s*$/.test(stripped)
+            ) {
               agentStatus = "done";
             }
 
@@ -360,6 +392,7 @@ export default memo(function XTermWrapper({
               const activePaneId = useUiStore.getState().activePaneId;
               if (activePaneId !== sessionId) {
                 usePaneMetadataStore.getState().incrementNotification(sessionId);
+                playNotificationSound();
               }
             }
           }
