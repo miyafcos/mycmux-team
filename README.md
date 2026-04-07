@@ -1,6 +1,6 @@
 # ptrcode
 
-クロスプラットフォーム対応のAIエージェント用ターミナルワークスペース。Tauri v2、React、xterm.js で構築。[cmux](https://github.com/manaflow-ai/cmux)（macOS用）にインスパイアされたプロジェクト。
+AIエージェント用ターミナルワークスペース。Tauri v2、React、xterm.js で構築。[cmux](https://github.com/manaflow-ai/cmux)にインスパイアされたプロジェクト。
 
 ## 作った経緯
 
