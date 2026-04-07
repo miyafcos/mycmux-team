@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="theme-color" content="#1a1b26">
+  <title>mycmux Remote</title>
+  <link rel="manifest" href="/manifest.json">
+  <link rel="apple-touch-icon" href="data:,">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div id="app">
+    <!-- Dashboard View -->
+    <div id="dashboard-view">
+      <header id="header">
+        <h1>mycmux</h1>
+        <div id="header-actions">
+          <button id="refresh-btn" title="Refresh">↻</button>
+          <button id="new-session-btn">+ New</button>
+        </div>
+      </header>
+      <div id="workspace-list"></div>
+    </div>
+
+    <!-- Terminal View -->
+    <div id="terminal-view" class="hidden">
+      <header id="terminal-header">
+        <button id="back-btn">← Back</button>
+        <span id="session-info"></span>
+      </header>
+      <div id="terminal-container"></div>
+      <div id="toolbar">
+        <button data-key="Escape">Esc</button>
+        <button data-key="Tab">Tab</button>
+        <button id="ctrl-btn" data-modifier="ctrl">Ctrl</button>
+        <button id="alt-btn" data-modifier="alt">Alt</button>
+        <button data-key="ArrowUp">↑</button>
+        <button data-key="ArrowDown">↓</button>
+        <button data-key="ArrowLeft">←</button>
+        <button data-key="ArrowRight">→</button>
+        <button data-seq="|">|</button>
+      </div>
+    </div>
+
+    <!-- Status Overlay -->
+    <div id="status-overlay" class="hidden">
+      <div id="status-content">
+        <span id="status-text">Connecting...</span>
+        <button id="retry-btn" class="hidden">Retry</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-canvas@0.7.0/lib/addon-canvas.min.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

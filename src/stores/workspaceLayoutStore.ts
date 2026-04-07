@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { v4 as uuid } from "uuid";
 import type { Pane, PaneTab, GridTemplateId } from "../types";
+import type { PaneConfig } from "../lib/ipc";
 import { getGridTemplate } from "../lib/gridTemplates";
 import { getDefaultAgent } from "../lib/agents";
 import { makeSessionId } from "../lib/constants";
@@ -84,11 +85,66 @@ interface WorkspaceLayoutState {
     gridTemplateId: GridTemplateId,
     agentAssignments?: Record<number, string>
   ) => BuildPanesResult;
+
+  restorePanes: (
+    workspaceId: string,
+    configs: PaneConfig[],
+    savedSplitRows: number[][] | null,
+    gridTemplateId: GridTemplateId,
+  ) => BuildPanesResult;
 }
 
 export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
   buildInitialPanes: (workspaceId, gridTemplateId, agentAssignments) => {
     return buildPanes(workspaceId, gridTemplateId, agentAssignments);
+  },
+
+  restorePanes: (workspaceId, configs, savedSplitRows, gridTemplateId) => {
+    const defaultAgentId = getDefaultAgent().id;
+    const panes: Pane[] = configs.map((pc) => {
+      const paneId = uuid();
+      const agentId = pc.agent_id || defaultAgentId;
+      const tab = makeTab(workspaceId, paneId, agentId);
+      return {
+        id: paneId,
+        agentId,
+        sessionId: tab.sessionId,
+        tabs: [tab],
+        activeTabId: tab.id,
+        cwd: pc.cwd ?? undefined,
+        label: pc.label ?? undefined,
+        lastProcess: pc.last_process ?? undefined,
+        claudeSessionId: pc.claude_session_id ?? undefined,
+      };
+    });
+
+    let splitRows: string[][];
+    if (savedSplitRows && savedSplitRows.length > 0) {
+      splitRows = savedSplitRows
+        .map((row) => row.map((idx) => panes[idx]?.id).filter(Boolean) as string[])
+        .filter((row) => row.length > 0);
+    } else {
+      const template = getGridTemplate(gridTemplateId);
+      splitRows = [];
+      let idx = 0;
+      for (let r = 0; r < template.rows && idx < panes.length; r++) {
+        const row: string[] = [];
+        for (let c = 0; c < template.cols && idx < panes.length; c++) {
+          row.push(panes[idx].id);
+          idx++;
+        }
+        if (row.length > 0) splitRows.push(row);
+      }
+      if (idx < panes.length) {
+        const lastRow = splitRows[splitRows.length - 1] ?? [];
+        for (; idx < panes.length; idx++) {
+          lastRow.push(panes[idx].id);
+        }
+        if (splitRows.length === 0) splitRows.push(lastRow);
+      }
+    }
+
+    return { panes, splitRows };
   },
 
   removePaneFromWorkspace: (workspaceId, paneId) => {

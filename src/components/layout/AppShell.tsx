@@ -309,15 +309,6 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
           break;
         }
 
-        case "pane.newBrowserTab": {
-          const activeWs = ws.find((w) => w.id === aid);
-          const activePane = activeWs?.panes.find((p) => p.sessionId === apid);
-          if (activeWs && activePane) {
-            addTabToPane(activeWs.id, activePane.id, undefined, "browser");
-          }
-          break;
-        }
-
         case "pane.focus.right":
         case "pane.focus.left":
         case "pane.focus.up":

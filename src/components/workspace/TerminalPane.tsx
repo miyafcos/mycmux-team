@@ -1,10 +1,8 @@
 import { memo, useCallback } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import ErrorBoundary from "../common/ErrorBoundary";
 import type { Pane, PaneTab } from "../../types";
 import PaneTabBar from "./PaneTabBar";
 import XTermWrapper from "../terminal/XTermWrapper";
-import BrowserPane from "../browser/BrowserPane";
 import {
   useWorkspaceLayoutStore,
   useUiStore,
@@ -92,31 +90,6 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
     setZoomedPaneId(currentZoomed === pane.id ? null : pane.id);
   }, [pane.id, setZoomedPaneId]);
 
-  // Open clicked URLs in the browser pane (reuse existing or create new)
-  const handleUrlClick = useCallback((url: string) => {
-    const workspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
-    const currentPane = workspace?.panes.find((p) => p.id === pane.id);
-    const existingBrowser = currentPane?.tabs.find((t) => t.type === "browser");
-
-    if (existingBrowser) {
-      // Switch to the browser tab and navigate
-      setActivePaneTab(workspaceId, pane.id, existingBrowser.id);
-      invoke("browser_navigate", { sessionId: existingBrowser.sessionId, url }).catch(console.error);
-    } else {
-      // Create a new browser tab, then navigate after it mounts
-      addTabToPane(workspaceId, pane.id, undefined, "browser");
-      // Give BrowserPane time to mount and create the webview
-      setTimeout(() => {
-        const updated = useWorkspaceListStore.getState().getWorkspace(workspaceId);
-        const updatedPane = updated?.panes.find((p) => p.id === pane.id);
-        const newBrowser = updatedPane?.tabs.find((t) => t.type === "browser");
-        if (newBrowser) {
-          invoke("browser_navigate", { sessionId: newBrowser.sessionId, url }).catch(console.error);
-        }
-      }, 800);
-    }
-  }, [workspaceId, pane.id, addTabToPane, setActivePaneTab]);
-
   return (
     <div
       data-session-id={pane.sessionId}
@@ -189,19 +162,14 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
               }}
             >
               <ErrorBoundary>
-                {tab.type === "browser" ? (
-                  <BrowserPane sessionId={tab.sessionId} />
-                ) : (
-                  <XTermWrapper
-                    sessionId={tab.sessionId}
-                    command={agent.command}
-                    args={agent.args}
-                    suppressNotifications={isActive && tab.id === pane.activeTabId}
-                    onZoomToggle={handleZoomToggle}
-                    onUrlClick={handleUrlClick}
-                    cwd={paneCwd}
-                  />
-                )}
+                <XTermWrapper
+                  sessionId={tab.sessionId}
+                  command={agent.command}
+                  args={agent.args}
+                  suppressNotifications={isActive && tab.id === pane.activeTabId}
+                  onZoomToggle={handleZoomToggle}
+                  cwd={paneCwd}
+                />
               </ErrorBoundary>
             </div>
           );

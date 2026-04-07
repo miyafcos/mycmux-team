@@ -23,6 +23,16 @@ tokio = { version = "1", features = ["full"] }
 sysinfo = "0.38.4"
 dirs = "6.0.0"
 
+# Remote terminal (WebSocket server for iPhone access)
+axum = { version = "0.8", features = ["ws"] }
+tower-http = { version = "0.6", features = ["cors"] }
+qrcode = { version = "0.14", default-features = false }
+rust-embed = "8"
+uuid = { version = "1", features = ["v4"] }
+rand = "0.8.5"
+hex = "0.4"
+futures-util = "0.3"
+
 # Linux-specific dependencies (GTK + WebKitGTK for browser pane)
 [target.'cfg(target_os = "linux")'.dependencies]
 wry = { version = "0.54", features = [] }

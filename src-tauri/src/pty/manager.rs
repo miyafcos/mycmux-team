@@ -25,6 +25,7 @@ impl SessionManager {
         data_channel: Channel<Vec<u8>>,
         app_handle: AppHandle,
         cwd: Option<String>,
+        env: Option<std::collections::HashMap<String, String>>,
     ) -> Result<(), String> {
         let session = PtySession::spawn(
             session_id.clone(),
@@ -35,6 +36,7 @@ impl SessionManager {
             data_channel,
             app_handle,
             cwd,
+            env,
         )?;
         self.sessions.insert(session_id, session);
         Ok(())
@@ -97,5 +99,10 @@ impl SessionManager {
             .iter()
             .map(|entry| (entry.key().clone(), entry.value().process_id()))
             .collect()
+    }
+
+    /// Get a reference to a session by ID.
+    pub fn get(&self, session_id: &str) -> Option<dashmap::mapref::one::Ref<'_, String, PtySession>> {
+        self.sessions.get(session_id)
     }
 }

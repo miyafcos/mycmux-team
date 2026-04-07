@@ -10,6 +10,8 @@ pub struct PaneConfig {
     pub cwd: Option<String>,
     #[serde(default)]
     pub last_process: Option<String>,
+    #[serde(default)]
+    pub claude_session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -19,6 +21,8 @@ pub struct WorkspaceConfig {
     pub grid_template_id: String,
     pub panes: Vec<PaneConfig>,
     pub created_at: u64,
+    #[serde(default)]
+    pub split_rows: Option<Vec<Vec<usize>>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

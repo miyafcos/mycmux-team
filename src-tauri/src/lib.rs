@@ -1,8 +1,8 @@
-mod browser;
 mod commands;
 mod db;
 mod events;
 mod pty;
+mod remote;
 mod socket;
 pub mod terminal_config;
 
@@ -13,13 +13,17 @@ use std::sync::Arc;
 pub struct AppState {
     pub session_manager: Arc<SessionManager>,
     pub bootstrapped: AtomicBool,
+    pub metadata_store: pty::monitor::MetadataStore,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let metadata_store = pty::monitor::new_metadata_store();
+
     let state = AppState {
         session_manager: Arc::new(SessionManager::new()),
         bootstrapped: AtomicBool::new(false),
+        metadata_store: metadata_store.clone(),
     };
 
     tauri::Builder::default()
@@ -39,6 +43,8 @@ pub fn run() {
             commands::terminal::is_directory,
             commands::terminal::get_launch_cwd,
             commands::terminal::get_default_shell,
+            commands::terminal::get_claude_session_id,
+            commands::terminal::read_pane_session_mappings,
             commands::workspace::load_persistent_data,
             commands::workspace::save_workspaces,
             commands::workspace::save_settings,
@@ -46,42 +52,25 @@ pub fn run() {
             commands::window::claim_leader,
             commands::window::get_window_count,
             socket::socket_response,
-            commands::browser::browser_create,
-            commands::browser::browser_destroy,
-            commands::browser::browser_set_bounds,
-            commands::browser::browser_navigate,
-            commands::browser::browser_eval,
-            commands::browser::browser_status,
-            commands::browser::browser_snapshot,
         ])
         .setup(|#[allow(unused)] app| {
             use tauri::Manager;
 
             let app_handle = app.handle().clone();
             let state = app.state::<AppState>();
-            pty::monitor::start_monitor(app_handle.clone(), state.session_manager.clone());
+            let ms = state.metadata_store.clone();
+            pty::monitor::start_monitor(
+                app_handle.clone(),
+                state.session_manager.clone(),
+                ms.clone(),
+            );
 
             socket::start_socket_listener(app_handle.clone());
-
-            // Initialize platform-specific browser manager.
-            // Linux: GTK Overlay with webkit2gtk
-            // macOS: NSView with WKWebView (stub)
-            // Windows: HWND with WebView2 (stub)
-            #[cfg(target_os = "linux")]
-            {
-                let webview_window = app.get_webview_window("main").unwrap();
-                let fixed = browser::linux::LinuxBrowserManager::init_gtk_overlay(&webview_window)
-                    .expect("Failed to initialize GTK overlay for browser panes");
-                app.manage(browser::PlatformBrowserManager::new(fixed));
-            }
-            #[cfg(target_os = "macos")]
-            {
-                app.manage(browser::PlatformBrowserManager::new());
-            }
-            #[cfg(target_os = "windows")]
-            {
-                app.manage(browser::PlatformBrowserManager::new());
-            }
+            remote::start_remote_server(
+                app_handle.clone(),
+                state.session_manager.clone(),
+                ms,
+            );
 
             // Kill all PTY sessions when the main window closes
             let mgr = state.session_manager.clone();

@@ -6,6 +6,8 @@ use std::time::Duration;
 use sysinfo::{Pid, System, ProcessesToUpdate, ProcessRefreshKind};
 use tauri::{AppHandle, Emitter};
 
+use dashmap::DashMap;
+
 use super::manager::SessionManager;
 
 #[derive(Clone, serde::Serialize)]
@@ -14,6 +16,13 @@ pub struct PtyMetadata {
     pub cwd: String,
     pub git_branch: Option<String>,
     pub process_name: Option<String>,
+}
+
+/// Shared metadata store accessible from remote server.
+pub type MetadataStore = Arc<DashMap<String, PtyMetadata>>;
+
+pub fn new_metadata_store() -> MetadataStore {
+    Arc::new(DashMap::new())
 }
 
 /// Get the CWD of a process using sysinfo (cross-platform).
@@ -44,7 +53,7 @@ fn get_foreground_process_name(sys: &System, shell_pid: u32) -> Option<String> {
     }
 }
 
-pub fn start_monitor(app_handle: AppHandle, manager: Arc<SessionManager>) {
+pub fn start_monitor(app_handle: AppHandle, manager: Arc<SessionManager>, metadata_store: MetadataStore) {
     thread::spawn(move || {
         let mut sys = System::new();
         let mut last_metadata: HashMap<String, PtyMetadata> = HashMap::new();
@@ -117,6 +126,8 @@ pub fn start_monitor(app_handle: AppHandle, manager: Arc<SessionManager>) {
 
                     if changed {
                         last_metadata.insert(session_id.clone(), metadata.clone());
+                        // Also update the shared metadata store for remote access
+                        metadata_store.insert(session_id.clone(), metadata.clone());
                         let _ = app_handle.emit("pty_metadata", metadata);
                     }
                 }
@@ -126,6 +137,7 @@ pub fn start_monitor(app_handle: AppHandle, manager: Arc<SessionManager>) {
             let active_keys: std::collections::HashSet<String> =
                 manager.iter_pids().into_iter().map(|(k, _)| k).collect();
             last_metadata.retain(|k, _| active_keys.contains(k));
+            metadata_store.retain(|k, _| active_keys.contains(k));
         }
     });
 }

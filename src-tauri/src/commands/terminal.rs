@@ -44,9 +44,10 @@ pub fn create_session(
     rows: u16,
     on_data: Channel<Vec<u8>>,
     cwd: Option<String>,
+    env: Option<HashMap<String, String>>,
 ) -> Result<(), String> {
     state.session_manager.create(
-        session_id, &command, &args, cols, rows, on_data, app_handle, cwd,
+        session_id, &command, &args, cols, rows, on_data, app_handle, cwd, env,
     )
 }
 
@@ -157,6 +158,74 @@ pub fn get_default_shell() -> DefaultShellInfo {
         command: "/bin/bash".to_string(),
         args: vec![],
     }
+}
+
+/// Read pane-session mapping files written by launcher.sh
+/// Returns a map of pane_session_id → claude_session_id
+#[tauri::command]
+pub fn read_pane_session_mappings() -> HashMap<String, String> {
+    let mut result = HashMap::new();
+    if let Some(home) = dirs::home_dir() {
+        let map_dir = home.join(".mycmux").join("pane-sessions");
+        if let Ok(entries) = std::fs::read_dir(&map_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) == Some("txt") {
+                    if let Some(pane_id) = path.file_stem().and_then(|s| s.to_str()) {
+                        if let Ok(session_id) = std::fs::read_to_string(&path) {
+                            let sid = session_id.trim().to_string();
+                            if !sid.is_empty() {
+                                result.insert(pane_id.to_string(), sid);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    result
+}
+
+#[tauri::command]
+pub fn get_claude_session_id(cwd: String) -> Option<String> {
+    let home = dirs::home_dir()?;
+    // Normalize Git Bash paths (/c/Users/...) to Windows paths (C:\Users\...)
+    let normalized = if cwd.starts_with('/') && cwd.len() > 2 && cwd.as_bytes()[2] == b'/' {
+        format!(
+            "{}:{}",
+            cwd[1..2].to_uppercase(),
+            cwd[2..].replace('/', "\\")
+        )
+    } else {
+        cwd.clone()
+    };
+    let mangled = normalized
+        .replace(':', "-")
+        .replace('\\', "-")
+        .replace('/', "-");
+    let project_dir = home.join(".claude").join("projects").join(&mangled);
+    if !project_dir.exists() {
+        return None;
+    }
+
+    let mut best: Option<(String, std::time::SystemTime)> = None;
+    if let Ok(entries) = std::fs::read_dir(&project_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
+                if let Ok(meta) = entry.metadata() {
+                    if let Ok(mtime) = meta.modified() {
+                        if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                            if best.is_none() || mtime > best.as_ref().unwrap().1 {
+                                best = Some((stem.to_string(), mtime));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    best.map(|(id, _)| id)
 }
 
 #[tauri::command]

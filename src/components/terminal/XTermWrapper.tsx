@@ -161,7 +161,6 @@ export default memo(function XTermWrapper({
     let resizeObserver: ResizeObserver | null = null;
     let resizeTimeout: ReturnType<typeof setTimeout>;
     let logThrottle: ReturnType<typeof setTimeout> | null = null;
-    let handlePaste: ((e: Event) => void) | null = null;
 
     async function init() {
       if (disposed) return;
@@ -238,35 +237,15 @@ export default memo(function XTermWrapper({
           return false;
         }
         
-        // Ctrl+V: trigger browser paste event (which our container paste handler intercepts)
-        if (e.ctrlKey && e.key.toLowerCase() === "v") {
-          document.execCommand("paste");
-          return false;
-        }
-
-        // Shift+Enter → send modified Enter (Kitty protocol) for multiline input
+        // Shift+Enter → bracketed paste with newline (Claude Code interprets as insert, not submit)
         if (e.key === "Enter" && e.shiftKey && !e.ctrlKey && !e.altKey) {
-          writeToSession(sessionId, "\x1b[13;2u").catch(console.error);
+          writeToSession(sessionId, "\x1b[200~\n\x1b[201~").catch(console.error);
           return false;
         }
-
+        
         // No app shortcut match → let xterm handle it normally (typing, Ctrl+C, etc.)
         return true;
       });
-
-      // Paste handler: intercept browser paste event, send to PTY, block xterm's handler
-      handlePaste = (e: Event) => {
-        const ce = e as ClipboardEvent;
-        const text = ce.clipboardData?.getData("text");
-        if (text) {
-          // Normalize line endings: \r\n → \r, then \n → \r (PTY expects \r as Enter)
-          const normalized = text.replace(/\r\n/g, "\r").replace(/\n/g, "\r");
-          writeToSession(sessionId, normalized).catch(console.error);
-          ce.preventDefault();
-          ce.stopPropagation();
-        }
-      };
-      container!.addEventListener("paste", handlePaste, true);
 
       // Auto-copy selection to clipboard (WezTerm-style)
       term.onSelectionChange(() => {
@@ -277,9 +256,21 @@ export default memo(function XTermWrapper({
         }
       });
 
-      // Send user keystrokes to PTY — plain text, no encoding
+      // Send user keystrokes to PTY — chunk large pastes to avoid PTY buffer overflow
+      const PASTE_CHUNK = 1024;
       term.onData((data) => {
-        writeToSession(sessionId, data).catch(console.error);
+        if (data.length <= PASTE_CHUNK) {
+          writeToSession(sessionId, data).catch(console.error);
+        } else {
+          let offset = 0;
+          const sendNext = () => {
+            if (offset >= data.length) return;
+            const chunk = data.slice(offset, offset + PASTE_CHUNK);
+            offset += PASTE_CHUNK;
+            writeToSession(sessionId, chunk).then(sendNext).catch(console.error);
+          };
+          sendNext();
+        }
       });
 
       term.onBinary((data) => {
@@ -293,7 +284,6 @@ export default memo(function XTermWrapper({
       });
 
       let _lastParsedOut = "";
-      let _prevAgentStatus: AgentStatus = "idle";
       term.onWriteParsed(() => {
         if (!term) return;
         // Throttle to 500ms — prevents hammering Zustand on every keystroke
@@ -307,76 +297,71 @@ export default memo(function XTermWrapper({
           const recentLines: string[] = [];
 
           // Collect last 10 non-empty lines for context-aware detection
-          for (let i = Math.max(0, y - 10); i <= y; i++) {
+          for (let i = y; i >= Math.max(0, y - 10); i--) {
             const lineObj = buf.getLine(i);
             if (lineObj) {
               const text = lineObj.translateToString(true).trim();
               if (text.length > 0) {
-                recentLines.push(text);
-                lastLine = text;
+                recentLines.unshift(text);
+                if (!lastLine) lastLine = text;
               }
             }
           }
           const recentBlock = recentLines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
-          const stripped = lastLine.replace(/\x1b\[[0-9;]*m/g, "").trim();
 
-          // Detect agent status EVERY cycle (not gated by lastLine change)
-          // working: check LAST LINE only (avoids stale working text in recentBlock)
-          // waiting: check RECENT BLOCK (multi-line prompts)
-          let agentStatus: AgentStatus = "idle";
-          if (/(\u2737|\u2731|esc to interrupt)/i.test(stripped) || /working\.\.\./i.test(stripped)) {
-            agentStatus = "working";
-          } else if (
-            /\?\s*(Yes|No|\[y\/n\])/i.test(recentBlock) ||
-            /do you want to/i.test(recentBlock) ||
-            /press enter/i.test(recentBlock) ||
-            /esc to cancel/i.test(recentBlock) ||
-            /^\s*\d+\.\s*(Yes|No)/m.test(recentBlock) ||
-            /\(y\/n\)/i.test(recentBlock) ||
-            /Tab to amend/i.test(recentBlock)
-          ) {
-            agentStatus = "waiting";
-          } else if (/\u2713\s*(done|complete|finished)/i.test(stripped) || /^>\s*$/.test(stripped) || /\$\s*$/.test(stripped)) {
-            agentStatus = "done";
-          }
-
-          // Notify when status transitions TO waiting (not repeatedly)
-          if (agentStatus === "waiting" && _prevAgentStatus !== "waiting") {
-            if (!suppressNotifications) {
-              const activePaneId = useUiStore.getState().activePaneId;
-              if (activePaneId !== sessionId) {
-                usePaneMetadataStore.getState().incrementNotification(sessionId);
-              }
-            }
-          }
-          _prevAgentStatus = agentStatus;
-
-          // Update metadata (log line + status) only when content changes
           if (lastLine.length > 0 && lastLine !== _lastParsedOut) {
             _lastParsedOut = lastLine;
 
+            // Detect Claude Code agent status from output patterns
+            // Scan the recent block (multiple lines) for accurate detection
+            let agentStatus: AgentStatus | undefined;
+            const stripped = lastLine.replace(/\x1b\[[0-9;]*m/g, "").trim();
+            if (/(\u2737|\u2731|esc to interrupt)/i.test(recentBlock) || /working\.\.\./i.test(stripped)) {
+              agentStatus = "working";
+            } else if (
+              /\?\s*(Yes|No|\[y\/n\])/i.test(recentBlock) ||
+              /do you want to/i.test(recentBlock) ||
+              /press enter/i.test(recentBlock) ||
+              /esc to cancel/i.test(recentBlock) ||
+              /^\s*\d+\.\s*(Yes|No)/m.test(recentBlock) ||
+              /\(y\/n\)/i.test(recentBlock)
+            ) {
+              agentStatus = "waiting";
+            } else if (/\u2713\s*(done|complete|finished)/i.test(stripped) || /^>\s*$/.test(stripped) || /\$\s*$/.test(stripped)) {
+              agentStatus = "done";
+            }
+
+            // Filter out terminal chrome / status bar noise before storing as log line.
+            // These patterns match Claude Code's bottom status bar (token cost, session info)
+            // and other terminal UI lines that aren't meaningful agent output.
             const isNoiseLine =
               /\d+k?\s+tokens/i.test(stripped) ||
               /access \d+/i.test(stripped) ||
               /past research/i.test(stripped) ||
               /http:\/\/localhost/i.test(stripped) ||
-              /^\s*[\u2500-\u257F]+\s*$/.test(stripped) ||
+              /^\s*[\u2500-\u257F]+\s*$/.test(stripped) || // box-drawing chars only
               stripped.length < 3;
 
+            // When agent returns to shell prompt (done/idle), clear the log line.
+            // For noise lines, omit the key entirely so the previous meaningful value is preserved.
             const isShellPrompt = /^>\s*$/.test(stripped) || /\$\s*$/.test(stripped);
             const logLineUpdate = isShellPrompt
-              ? { lastLogLine: undefined }
+              ? { lastLogLine: undefined }          // clear on shell prompt
               : isNoiseLine
-                ? {}
-                : { lastLogLine: lastLine };
+                ? {}                               // preserve previous value for noise
+                : { lastLogLine: lastLine };       // update with meaningful line
 
             usePaneMetadataStore.getState().setMetadata(sessionId, {
               ...logLineUpdate,
-              agentStatus,
+              ...(agentStatus ? { agentStatus } : {}),
             });
-          } else {
-            // Even if log line didn't change, update agentStatus
-            usePaneMetadataStore.getState().setMetadata(sessionId, { agentStatus });
+            // Trigger notification ONLY when agent needs user approval (waiting status)
+            if (!suppressNotifications && agentStatus === "waiting") {
+              const activePaneId = useUiStore.getState().activePaneId;
+              if (activePaneId !== sessionId) {
+                usePaneMetadataStore.getState().incrementNotification(sessionId);
+              }
+            }
           }
         }, 500);
       });
@@ -441,7 +426,8 @@ export default memo(function XTermWrapper({
       if (logThrottle) { clearTimeout(logThrottle); logThrottle = null; }
       resizeObserver?.disconnect();
       unlistenExit?.();
-      if (handlePaste) container?.removeEventListener("paste", handlePaste, true);
+      // NOTE: Do NOT killSession here — Allotment may remount surviving panes
+      // on sibling removal. Session killing is handled by the close/remove handlers.
       term?.dispose();
       searchAddonRef.current = null;
       console.log(`[PERF] XTermWrapper unmounted for session ${sessionId} - mount duration: ${(cleanupStart - mountStart).toFixed(2)}ms, cleanup: ${(performance.now() - cleanupStart).toFixed(2)}ms`);
