@@ -336,9 +336,10 @@ export default memo(function XTermWrapper({
             const stripped = lastLine.replace(/\x1b\[[0-9;]*m/g, "").trim();
             // Detect agent status — patterns tuned for Claude Code CLI.
             // Only checks the current line (stripped) to avoid false positives.
-            const isSpinner = /(\u2737|\u2731|\u25cf|\u25cb)/.test(stripped);
+            // Spinner: standard Unicode spinners + Braille patterns used by Claude Code / Ink
+            const isSpinner = /[\u2800-\u28FF\u25CF\u25CB\u25D0-\u25D3\u2737\u2731\u280B\u2819\u2839\u2838\u283C\u2834\u2826\u2827\u2807\u280F]/.test(stripped);
             const isWorking = isSpinner || /working\.\.\./i.test(stripped);
-            // "esc to interrupt" in status bar should NOT trigger working by itself
+            // "esc to interrupt" alone on status bar → not working. With spinner → working.
             const isStatusBar = /esc to interrupt/i.test(stripped) && !isSpinner;
 
             if (isWorking && !isStatusBar) {
@@ -385,7 +386,7 @@ export default memo(function XTermWrapper({
 
             usePaneMetadataStore.getState().setMetadata(sessionId, {
               ...logLineUpdate,
-              ...(agentStatus ? { agentStatus } : {}),
+              agentStatus, // always write — clears stale status when no pattern matches
             });
             // Trigger notification ONLY when agent needs user approval (waiting status)
             if (!suppressNotifications && agentStatus === "waiting") {
