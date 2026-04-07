@@ -186,6 +186,7 @@ export default memo(function XTermWrapper({
         scrollback: 10000,
         smoothScrollDuration: 0,
         rightClickSelectsWord: true,
+        minimumContrastRatio: 4.5,
       });
       termRef.current = term;
 
