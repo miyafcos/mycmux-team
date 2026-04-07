@@ -72,29 +72,6 @@ function buildThemeFromConfig(cfg: { background: string; foreground: string; ans
   return theme;
 }
 
-const DEFAULT_THEME: ITheme = {
-  background: "#0a0a0a",
-  foreground: "#ededed",
-  cursor: "#f5e0dc",
-  selectionBackground: "#404040",
-  black: "#171717",
-  red: "#f38ba8",
-  green: "#a6e3a1",
-  yellow: "#f9e2af",
-  blue: "#89b4fa",
-  magenta: "#f5c2e7",
-  cyan: "#94e2d5",
-  white: "#bac2de",
-  brightBlack: "#585b70",
-  brightRed: "#f38ba8",
-  brightGreen: "#a6e3a1",
-  brightYellow: "#f9e2af",
-  brightBlue: "#89b4fa",
-  brightMagenta: "#f5c2e7",
-  brightCyan: "#94e2d5",
-  brightWhite: "#ededed",
-};
-
 // Cache terminal config globally — fetched once, reused across all panes
 let cachedConfig: { theme: ITheme; fontSize: number; fontFamily: string } | null = null;
 let configPromise: Promise<void> | null = null;
@@ -189,7 +166,7 @@ export default memo(function XTermWrapper({
 
       // Use cached config if available (instant), otherwise use defaults
       const cfg = cachedConfig;
-      const initTheme = theme ?? cfg?.theme ?? DEFAULT_THEME;
+      const initTheme = theme ?? storeTheme.terminal;
       const initFontSize = fontSize ?? cfg?.fontSize ?? 14;
       const initFontFamily = fontFamily ?? cfg?.fontFamily ?? "'JetBrainsMono Nerd Font Mono', 'JetBrains Mono', 'Geist Mono', 'BIZ UDGothic', 'MS Gothic', monospace";
 
@@ -439,11 +416,10 @@ export default memo(function XTermWrapper({
       });
       resizeObserver.observe(container!);
 
-      // If config wasn't cached yet, apply it once loaded (only for first terminal)
-      if (!cfg && !theme && !fontSize && !fontFamily) {
+      // If config wasn't cached yet, apply font settings once loaded (theme comes from store)
+      if (!cfg && !fontSize && !fontFamily) {
         ensureConfigLoaded().then(() => {
           if (disposed || !term || !cachedConfig) return;
-          term.options.theme = cachedConfig.theme;
           term.options.fontSize = cachedConfig.fontSize;
           term.options.fontFamily = cachedConfig.fontFamily;
           fitAddon?.fit();
