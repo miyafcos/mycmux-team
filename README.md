@@ -4,17 +4,15 @@
 
 ## 作った経緯
 
-最初は cmux に直接 Linux サポートを追加しようと考えた。ただ、リポジトリの PR を読んでみると、本家が対応する気があればいずれやるだろうと判断した。
+cmux の UI/UX に惹かれて、macOS・Windows で動くものを自分で作ることにした。
 
-そこで、cmux にインスパイアされつつ Linux・macOS・Windows で動くものを自分で作ることにした。Linux には tmux があって実際優秀だが、cmux の UI/UX に惹かれた。
+オープンソースで公開中。今後はマルチエージェント連携ワークフローを重点的に開発予定。
 
-オープンソースで公開中。今後の計画として、特にマルチエージェント連携ワークフローを重点的に開発予定。
-
-ptrcode は、高速でキーボード中心のターミナルワークスペース体験を全プラットフォームにネイティブアプリの感覚で提供することを目指している。マルチペイン・マルチワークスペースの開発を、ブラウザ限定のワークフローや重い IDE に縛られずスムーズに行える。
+高速でキーボード中心のターミナルワークスペースを、ネイティブアプリの感覚で使える。マルチペイン・マルチワークスペースの開発を、ブラウザや重い IDE に縛られずスムーズに行える。
 
 ## プロジェクトの方向性
 
-- **短期**: 安定したクロスプラットフォームリリースと簡単なインストール手段
+- **短期**: 安定したリリースと簡単なインストール手段
 - **品質向上**: 操作感・パフォーマンス・アクセシビリティの磨き込み
 - **上位機能**: マルチエージェントスウォーム連携（ptrcode の差別化ポイント）
 - **配布**: コアのリリースフローが安定した後、パッケージング手段を拡充
@@ -27,7 +25,7 @@ ptrcode は、高速でキーボード中心のターミナルワークスペー
 - **コマンドパレット**: あいまい検索で全コマンドに素早くアクセス
 - **キーバインドのカスタマイズ**: 任意のショートカットを自由にリマップ
 - **状態の永続化**: ワークスペースとレイアウトをセッションをまたいで保存
-- **クロスプラットフォーム**: Linux、macOS、Windows 対応
+- **クロスプラットフォーム**: macOS、Windows 対応
 
 ## インストール
 
@@ -36,21 +34,6 @@ ptrcode は、高速でキーボード中心のターミナルワークスペー
 最新リリースからアーティファクトをダウンロード:
 
 <https://github.com/cai0baa/ptrcode/releases/latest>
-
-#### AppImage（Linux、ほとんどのディストロで動作）
-
-```bash
-gh release download --repo cai0baa/ptrcode --pattern "*.AppImage"
-chmod +x ./*.AppImage
-./*.AppImage
-```
-
-#### Debian/Ubuntu (.deb)
-
-```bash
-gh release download --repo cai0baa/ptrcode --pattern "*.deb"
-sudo apt install ./*.deb
-```
 
 #### macOS (.dmg)
 
@@ -81,15 +64,6 @@ gh release download --repo cai0baa/ptrcode --pattern "*.zip"
 - システム依存パッケージ:
 
   ```bash
-  # Debian/Ubuntu
-  sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file libssl-dev libayatana-appindicator3-dev librsvg2-dev
-
-  # Fedora
-  sudo dnf install webkit2gtk4.1-devel openssl-devel curl wget file libappindicator-gtk3-devel librsvg2-devel
-
-  # Arch
-  sudo pacman -S webkit2gtk-4.1 base-devel curl wget file openssl appmenu-gtk-module libappindicator-gtk3 librsvg2
-
   # macOS — Xcode Command Line Tools をインストール
   xcode-select --install
 
