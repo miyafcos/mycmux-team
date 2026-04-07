@@ -21,7 +21,6 @@ export type KeybindingActionId =
   | "pane.split.right"
   | "pane.split.down"
   | "pane.close"
-  | "pane.newBrowserTab"
   | "palette.open"
   | "settings.keybindings"
   | "pane.zoom.toggle"
@@ -61,7 +60,6 @@ export const KEYBINDING_DEFINITIONS: KeybindingDefinition[] = [
   { action: "pane.split.right", title: "Split pane right", category: "Pane", defaultShortcut: "ctrl+alt+d" },
   { action: "pane.split.down", title: "Split pane down", category: "Pane", defaultShortcut: "ctrl+alt+shift+d" },
   { action: "pane.close", title: "Close active pane", category: "Pane", defaultShortcut: "ctrl+alt+w" },
-  { action: "pane.newBrowserTab", title: "Open browser tab in pane", category: "Pane", defaultShortcut: "ctrl+shift+l" },
   { action: "pane.zoom.toggle", title: "Toggle pane zoom", category: "Pane", defaultShortcut: "ctrl+shift+enter" },
 
   { action: "terminal.search", title: "Find in terminal", category: "Terminal", defaultShortcut: "ctrl+shift+f" },

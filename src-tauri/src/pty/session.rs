@@ -8,10 +8,18 @@ use tauri::{AppHandle, Emitter};
 
 use crate::events;
 
+use std::collections::VecDeque;
+use std::sync::Arc;
+use tokio::sync::broadcast;
+
+const SCROLLBACK_CAP: usize = 32 * 1024; // 32 KB
+
 pub struct PtySession {
     child: Mutex<Box<dyn Child + Send + Sync>>,
     master: Mutex<Box<dyn MasterPty + Send>>,
     writer: Mutex<Box<dyn Write + Send>>,
+    pub broadcast: broadcast::Sender<Vec<u8>>,
+    scrollback: Arc<Mutex<VecDeque<u8>>>,
 }
 
 // Safety: All fields are behind Mutex, access is serialized.
@@ -27,6 +35,7 @@ impl PtySession {
         data_channel: Channel<Vec<u8>>,
         app_handle: AppHandle,
         cwd: Option<String>,
+        env: Option<std::collections::HashMap<String, String>>,
     ) -> Result<Self, String> {
         let pty_system = native_pty_system();
 
@@ -47,6 +56,12 @@ impl PtySession {
         cmd.env("COLORTERM", "truecolor");
         cmd.env("TERM_PROGRAM", "ptrterminal");
         cmd.env("TERM_PROGRAM_VERSION", env!("CARGO_PKG_VERSION"));
+
+        if let Some(ref extra_env) = env {
+            for (k, v) in extra_env {
+                cmd.env(k, v);
+            }
+        }
 
         if let Some(dir) = cwd {
             cmd.cwd(dir);
@@ -70,6 +85,12 @@ impl PtySession {
             .try_clone_reader()
             .map_err(|e| format!("Failed to get PTY reader: {e}"))?;
 
+        // Create broadcast channel and scrollback for remote clients
+        let (broadcast_tx, _) = broadcast::channel::<Vec<u8>>(256);
+        let scrollback = Arc::new(Mutex::new(VecDeque::with_capacity(SCROLLBACK_CAP)));
+        let broadcast_tx_clone = broadcast_tx.clone();
+        let sb_clone = scrollback.clone();
+
         // Spawn reader thread — blocking I/O, not tokio
         let sid = session_id.clone();
         let handle = app_handle.clone();
@@ -86,6 +107,18 @@ impl PtySession {
                         // Send raw bytes through Channel — arrives as ArrayBuffer in JS
                         let _ = data_channel.send(buf[..n].to_vec());
                         let send_micros = send_start.elapsed().as_micros();
+
+                        // Also send to broadcast for remote clients
+                        let _ = broadcast_tx_clone.send(buf[..n].to_vec());
+                        // Append to scrollback ring buffer
+                        if let Ok(mut sb) = sb_clone.lock() {
+                            for &byte in &buf[..n] {
+                                if sb.len() >= SCROLLBACK_CAP {
+                                    sb.pop_front();
+                                }
+                                sb.push_back(byte);
+                            }
+                        }
 
                         // Log every 100th read to avoid spam
                         if read_micros > 1000 || send_micros > 1000 {
@@ -106,6 +139,8 @@ impl PtySession {
             child: Mutex::new(child),
             master: Mutex::new(pair.master),
             writer: Mutex::new(writer),
+            broadcast: broadcast_tx,
+            scrollback,
         })
     }
 
@@ -119,10 +154,13 @@ impl PtySession {
         let lock_micros = start.elapsed().as_micros();
         let write_start = Instant::now();
 
-        writer
-            .write_all(data)
-            .map_err(|e| format!("Write failed: {e}"))?;
-        writer.flush().map_err(|e| format!("Flush failed: {e}"))?;
+        // Chunk writes to avoid PTY buffer overflow (conpty ~4KB limit)
+        for chunk in data.chunks(1024) {
+            writer
+                .write_all(chunk)
+                .map_err(|e| format!("Write failed: {e}"))?;
+            writer.flush().map_err(|e| format!("Flush failed: {e}"))?;
+        }
 
         let write_micros = write_start.elapsed().as_micros();
         let total_micros = start.elapsed().as_micros();
@@ -167,5 +205,12 @@ impl PtySession {
         } else {
             None
         }
+    }
+
+    pub fn get_scrollback(&self) -> Vec<u8> {
+        self.scrollback
+            .lock()
+            .map(|sb| sb.iter().copied().collect())
+            .unwrap_or_default()
     }
 }

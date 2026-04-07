@@ -22,8 +22,7 @@ export interface PaneTab {
   sessionId: string;
   agentId: string;
   label?: string;
-  /** 'terminal' or 'browser' */
-  type?: "terminal" | "browser";
+  type?: "terminal";
 }
 
 export interface Pane {
@@ -38,6 +37,8 @@ export interface Pane {
   label?: string;
   cwd?: string;
   gitBranch?: string;
+  lastProcess?: string;
+  claudeSessionId?: string;
 }
 
 export type WorkspaceStatus = "setup" | "running" | "stopped";

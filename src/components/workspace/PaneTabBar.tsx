@@ -52,14 +52,6 @@ const PlusIcon = () => (
   </svg>
 );
 
-const GlobeIcon = () => (
-  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <circle cx="12" cy="12" r="10"></circle>
-    <line x1="2" y1="12" x2="22" y2="12"></line>
-    <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
-  </svg>
-);
-
 const STATUS_CONFIG: Record<AgentStatus, { color: string; title: string; pulse: boolean }> = {
   working: { color: "var(--status-working)", title: "Working",           pulse: true  },
   waiting: { color: "var(--status-waiting)", title: "Waiting for input", pulse: false },
@@ -114,7 +106,7 @@ export default memo(function PaneTabBar({
   const activeAgentLabel = activeTab
     ? (AGENT_LABELS[activeTab.agentId ?? ""] ?? getAgent(activeTab.agentId)?.name ?? "Shell")
     : "Shell";
-  const showStatusBar = activeStatus !== "idle" && activeTab?.type !== "browser";
+  const showStatusBar = activeStatus !== "idle";
   const statusCfg = STATUS_CONFIG[activeStatus];
 
   return (
@@ -188,9 +180,7 @@ export default memo(function PaneTabBar({
           const tabCwd = tabMeta?.cwd;
           const agentStatus = tabMeta?.agentStatus ?? "idle";
           const label = tab.label
-            ?? (tab.type === "browser"
-              ? "Browser"
-              : tabProcessTitle
+            ?? (tabProcessTitle
                 ? tabProcessTitle
                 : (isActive && tabCwd ? tabCwd.split("/").pop() || agent.name : agent.name));
 
@@ -219,8 +209,7 @@ export default memo(function PaneTabBar({
               {hasNotification && isActive && (
                 <span style={{ width: 5, height: 5, borderRadius: "50%", background: "#ff3b30", flexShrink: 0 }} />
               )}
-              {/* agent status badge (only on terminal tabs) */}
-              {tab.type !== "browser" && <AgentStatusDot status={agentStatus} />}
+              <AgentStatusDot status={agentStatus} />
               {/* folder icon */}
               <span style={{ color: isActive ? "var(--cmux-accent)" : "var(--cmux-text-tertiary)", flexShrink: 0 }}>
                 <FolderIcon />
@@ -266,16 +255,6 @@ export default memo(function PaneTabBar({
       >
         <PlusIcon />
       </button>
-      {/* Add browser tab */}
-      <button
-        className="pane-action-btn"
-        onClick={() => onAddTab?.(undefined, "browser")}
-        title="New browser tab"
-        style={{ margin: "0 2px", padding: "3px 5px", flexShrink: 0 }}
-      >
-        <GlobeIcon />
-      </button>
-
       {/* Right: split + close pane buttons */}
       <div style={{ display: "flex", alignItems: "center", gap: 2, paddingRight: 6, flexShrink: 0 }}>
         {onSplitRight && (

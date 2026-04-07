@@ -9,6 +9,7 @@ export async function createSession(
   rows: number,
   onData: (data: ArrayBuffer) => void,
   cwd?: string,
+  env?: Record<string, string>,
 ): Promise<void> {
   const channel = new Channel<ArrayBuffer>();
   channel.onmessage = onData;
@@ -20,6 +21,7 @@ export async function createSession(
     rows,
     onData: channel,
     cwd: cwd ?? null,
+    env: env ?? null,
   });
 }
 
@@ -129,6 +131,7 @@ export interface PaneConfig {
   label: string | null;
   cwd?: string | null;
   last_process?: string | null;
+  claude_session_id?: string | null;
 }
 
 export interface WorkspaceConfig {
@@ -137,6 +140,7 @@ export interface WorkspaceConfig {
   grid_template_id: string;
   panes: PaneConfig[];
   created_at: number;
+  split_rows?: number[][] | null;
 }
 
 export interface AppSettings {
@@ -166,6 +170,14 @@ export async function saveSettings(settings: AppSettings): Promise<void> {
 
 export async function writeRestoreManifest(entries: [string, string][]): Promise<void> {
   return invoke("write_restore_manifest", { entries });
+}
+
+export async function getClaudeSessionId(cwd: string): Promise<string | null> {
+  return invoke("get_claude_session_id", { cwd });
+}
+
+export async function readPaneSessionMappings(): Promise<Record<string, string>> {
+  return invoke("read_pane_session_mappings");
 }
 
 export async function sendSocketResponse(id: number, result: any, error: string | null): Promise<void> {

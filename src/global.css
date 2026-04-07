@@ -29,7 +29,9 @@
   --cmux-hover: rgba(255, 255, 255, 0.07);
 }
 
-* {
+*,
+*::before,
+*::after {
   margin: 0;
   padding: 0;
   box-sizing: border-box;

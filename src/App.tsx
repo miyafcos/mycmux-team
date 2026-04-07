@@ -5,7 +5,8 @@ import {
   useWorkspaceLayoutStore,
   usePaneMetadataStore
 } from "./stores/workspaceStore";
-import { useWorkspacePersist } from "./hooks/useWorkspacePersist";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { useWorkspacePersist, persistLoaded } from "./components/layout/SocketListener";
 import { preloadTerminalConfig, onPtyMetadata, isDirectory, writeToSession, getLaunchCwd } from "./lib/ipc";
 import AppShell from "./components/layout/AppShell";
 import { initDefaultShell } from "./lib/agents";
@@ -28,6 +29,7 @@ function App() {
 
   useEffect(() => {
     async function bootstrap() {
+      await persistLoaded;
       const listStore = useWorkspaceListStore.getState();
       if (listStore.workspaces.length === 0) {
         // Check if app was launched with a folder path argument
@@ -84,7 +86,7 @@ function App() {
           if (isDir) {
             // Normalize backslashes for Git Bash compatibility
             const normalized = paths[0].replace(/\\/g, "/");
-            await writeToSession(sessionId, `cd "${normalized}"\r`);
+            await writeToSession(sessionId, `cd "${normalized}"`);
             return;
           }
         } catch { /* fall through to paste */ }
@@ -100,6 +102,12 @@ function App() {
       unlistenDragDrop.then((f) => f()).catch(() => {});
     };
   }, []);
+
+  useEffect(() => {
+    if (ready) {
+      getCurrentWindow().show().catch(console.error);
+    }
+  }, [ready]);
 
   if (!ready) {
     return (
