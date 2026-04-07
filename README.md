@@ -1,43 +1,43 @@
 # ptrcode
 
-A cross-platform AI agent terminal workspace. Built with Tauri v2, React, and xterm.js. Inspired by [cmux](https://github.com/manaflow-ai/cmux) (macOS).
+クロスプラットフォーム対応のAIエージェント用ターミナルワークスペース。Tauri v2、React、xterm.js で構築。[cmux](https://github.com/manaflow-ai/cmux)（macOS用）にインスパイアされたプロジェクト。
 
-## Why I built this
+## 作った経緯
 
-My first idea was to just add Linux support for cmux directly, but after reading the PRs from their repo, I realized that if they really want to add support, they will eventually.
+最初は cmux に直接 Linux サポートを追加しようと考えた。ただ、リポジトリの PR を読んでみると、本家が対応する気があればいずれやるだろうと判断した。
 
-And that's where this project comes to life! I wanted to create something inspired by cmux that runs on Linux, macOS, and Windows. I know Linux has tmux which is actually great, however the UI/UX from cmux has me fallen in love.
+そこで、cmux にインスパイアされつつ Linux・macOS・Windows で動くものを自分で作ることにした。Linux には tmux があって実際優秀だが、cmux の UI/UX に惹かれた。
 
-This project is open source. I have plans and more features for the future — especially multi-agent coordination workflows.
+オープンソースで公開中。今後の計画として、特にマルチエージェント連携ワークフローを重点的に開発予定。
 
-ptrcode is built to bring a fast, keyboard-first terminal workspace experience to all platforms with a native desktop app feel. The goal is to make multi-pane, multi-workspace development smooth without forcing users into a browser-only workflow or heavy IDE.
+ptrcode は、高速でキーボード中心のターミナルワークスペース体験を全プラットフォームにネイティブアプリの感覚で提供することを目指している。マルチペイン・マルチワークスペースの開発を、ブラウザ限定のワークフローや重い IDE に縛られずスムーズに行える。
 
-## Project direction
+## プロジェクトの方向性
 
-- **Near term**: stable cross-platform releases with easy install paths
-- **Product quality**: stronger polish in interaction, performance, and accessibility
-- **Power features**: multi-agent swarm coordination (ptrcode's key differentiator)
-- **Distribution**: broader packaging options after core release flow is stable
+- **短期**: 安定したクロスプラットフォームリリースと簡単なインストール手段
+- **品質向上**: 操作感・パフォーマンス・アクセシビリティの磨き込み
+- **上位機能**: マルチエージェントスウォーム連携（ptrcode の差別化ポイント）
+- **配布**: コアのリリースフローが安定した後、パッケージング手段を拡充
 
-## Features
+## 機能
 
-- **Workspaces**: Organize terminals into separate workspaces with quick switching
-- **Flexible Pane Layouts**: Split panes horizontally and vertically with resizable dividers
-- **Position-Based Navigation**: Navigate between panes using arrow keys based on actual screen position
-- **Command Palette**: Quick access to all commands via fuzzy search
-- **Customizable Keybindings**: Remap any shortcut to your preference
-- **Persistent State**: Workspaces and layouts are saved across sessions
-- **Cross-platform**: Linux, macOS, and Windows
+- **ワークスペース**: ターミナルを別々のワークスペースに整理し、素早く切り替え
+- **柔軟なペインレイアウト**: 水平・垂直に分割可能、リサイズ対応のディバイダー付き
+- **位置ベースのナビゲーション**: 画面上の実際の位置に基づいて矢印キーでペイン間を移動
+- **コマンドパレット**: あいまい検索で全コマンドに素早くアクセス
+- **キーバインドのカスタマイズ**: 任意のショートカットを自由にリマップ
+- **状態の永続化**: ワークスペースとレイアウトをセッションをまたいで保存
+- **クロスプラットフォーム**: Linux、macOS、Windows 対応
 
-## Installation
+## インストール
 
-### Quick Install (Recommended)
+### クイックインストール（推奨）
 
-Download artifacts from the latest release:
+最新リリースからアーティファクトをダウンロード:
 
 <https://github.com/cai0baa/ptrcode/releases/latest>
 
-#### AppImage (Linux, works on most distros)
+#### AppImage（Linux、ほとんどのディストロで動作）
 
 ```bash
 gh release download --repo cai0baa/ptrcode --pattern "*.AppImage"
@@ -58,27 +58,27 @@ sudo apt install ./*.deb
 gh release download --repo cai0baa/ptrcode --pattern "*.dmg"
 ```
 
-Open the `.dmg` and drag ptrcode to Applications.
+`.dmg` を開いて ptrcode を Applications にドラッグ。
 
-> **macOS Security Warning**: Because ptrcode is not yet notarized with Apple, macOS will show an "unverified developer" warning on first open. To bypass: right-click the app → **Open** → Open. Or from Terminal: `xattr -d com.apple.quarantine /Applications/ptrcode.app`
+> **macOS セキュリティ警告**: ptrcode はまだ Apple の公証を取得していないため、初回起動時に「未確認の開発元」警告が表示される。回避方法: アプリを右クリック → **開く** → 開く。またはターミナルで: `xattr -d com.apple.quarantine /Applications/ptrcode.app`
 
-#### Windows (.zip portable or NSIS installer)
+#### Windows（.zip ポータブル版または NSIS インストーラー）
 
 ```bash
 gh release download --repo cai0baa/ptrcode --pattern "*.zip"
 ```
 
-Extract and run `ptrcode.exe`.
+展開して `ptrcode.exe` を実行。
 
-> **Windows Security Warning**: Because ptrcode is not yet code-signed with an Authenticode certificate, Windows SmartScreen will warn "Windows protected your PC". Click **More info** → **Run anyway** to proceed.
+> **Windows セキュリティ警告**: ptrcode はまだ Authenticode 証明書でコード署名されていないため、Windows SmartScreen が「Windows によって PC が保護されました」と警告する。**詳細情報** → **実行** をクリックして続行。
 
-### Build from Source
+### ソースからビルド
 
-#### Prerequisites
+#### 前提条件
 
-- [Rust](https://rustup.rs/) (latest stable)
-- [Node.js](https://nodejs.org/) (v18+)
-- System dependencies:
+- [Rust](https://rustup.rs/)（最新安定版）
+- [Node.js](https://nodejs.org/)（v18以上）
+- システム依存パッケージ:
 
   ```bash
   # Debian/Ubuntu
@@ -88,75 +88,75 @@ Extract and run `ptrcode.exe`.
   sudo dnf install webkit2gtk4.1-devel openssl-devel curl wget file libappindicator-gtk3-devel librsvg2-devel
 
   # Arch
-  sudo pacman -S webkit2gtk-4.1 base-devel curl wget file openssl appmenu-gtk-module libappindicator-gtk3 librsvg
+  sudo pacman -S webkit2gtk-4.1 base-devel curl wget file openssl appmenu-gtk-module libappindicator-gtk3 librsvg2
 
-  # macOS — install Xcode Command Line Tools
+  # macOS — Xcode Command Line Tools をインストール
   xcode-select --install
 
-  # Windows — install Visual Studio Build Tools with C++ workload
+  # Windows — Visual Studio Build Tools の C++ ワークロードをインストール
   ```
 
 ```bash
 git clone https://github.com/cai0baa/ptrcode.git
 cd ptrcode
 npm install
-npm run tauri dev       # development
-npm run tauri build     # production build
+npm run tauri dev       # 開発モード
+npm run tauri build     # 本番ビルド
 ```
 
-## Keyboard Shortcuts
+## キーボードショートカット
 
-All shortcuts use Ctrl-based modifiers.
+ショートカットはすべて Ctrl ベースの修飾キーを使用。
 
-### Global
+### グローバル
 
-| Shortcut | Action |
+| ショートカット | 動作 |
 |----------|--------|
-| `Ctrl+B` | Toggle sidebar |
-| `Ctrl+Shift+P` | Open command palette |
-| `Ctrl+,` | Open keyboard shortcuts |
+| `Ctrl+B` | サイドバーの表示切替 |
+| `Ctrl+Shift+P` | コマンドパレットを開く |
+| `Ctrl+,` | キーボードショートカット設定を開く |
 
-### Workspace
+### ワークスペース
 
-| Shortcut | Action |
+| ショートカット | 動作 |
 |----------|--------|
-| `Ctrl+Shift+N` | New workspace |
-| `Ctrl+Tab` | Next workspace |
-| `Ctrl+Shift+Tab` | Previous workspace |
-| `Ctrl+Shift+W` | Close workspace |
-| `Ctrl+1` - `Ctrl+8` | Jump to workspace 1-8 |
-| `Ctrl+9` | Jump to last workspace |
+| `Ctrl+Shift+N` | 新しいワークスペース |
+| `Ctrl+Tab` | 次のワークスペース |
+| `Ctrl+Shift+Tab` | 前のワークスペース |
+| `Ctrl+Shift+W` | ワークスペースを閉じる |
+| `Ctrl+1` - `Ctrl+8` | ワークスペース 1〜8 にジャンプ |
+| `Ctrl+9` | 最後のワークスペースにジャンプ |
 
-### Pane
+### ペイン
 
-| Shortcut | Action |
+| ショートカット | 動作 |
 |----------|--------|
-| `Ctrl+Alt+D` | Split pane right |
-| `Ctrl+Alt+Shift+D` | Split pane down |
-| `Ctrl+Alt+W` | Close active pane |
-| `Ctrl+Alt+Arrow` | Focus pane in direction |
-| `Ctrl+Shift+Enter` | Toggle pane zoom |
-| `Ctrl+Shift+H` | Flash focused pane |
+| `Ctrl+Alt+D` | ペインを右に分割 |
+| `Ctrl+Alt+Shift+D` | ペインを下に分割 |
+| `Ctrl+Alt+W` | アクティブなペインを閉じる |
+| `Ctrl+Alt+Arrow` | 指定方向のペインにフォーカス |
+| `Ctrl+Shift+Enter` | ペインのズーム切替 |
+| `Ctrl+Shift+H` | フォーカス中のペインをフラッシュ |
 
-### Terminal
+### ターミナル
 
-| Shortcut | Action |
+| ショートカット | 動作 |
 |----------|--------|
-| `Ctrl+Shift+F` | Find in terminal |
+| `Ctrl+Shift+F` | ターミナル内検索 |
 
-## Architecture
+## アーキテクチャ
 
-- **Frontend**: React 19 + TypeScript + Vite
-- **Backend**: Tauri v2 (Rust)
-- **Terminal**: xterm.js with WebGL renderer
-- **State Management**: Zustand with Immer
-- **Layout**: Allotment (split panes)
+- **フロントエンド**: React 19 + TypeScript + Vite
+- **バックエンド**: Tauri v2（Rust）
+- **ターミナル**: xterm.js（WebGL レンダラー）
+- **状態管理**: Zustand + Immer
+- **レイアウト**: Allotment（分割ペイン）
 
-## License
+## ライセンス
 
-GPL v3 - See [LICENSE](LICENSE) for details.
+GPL v3 - 詳細は [LICENSE](LICENSE) を参照。
 
-## Acknowledgments
+## 謝辞
 
-- Inspired by [cmux](https://github.com/manaflow-ai/cmux) from ManaFlow
-- Built with [Tauri](https://tauri.app/), [xterm.js](https://xtermjs.org/), and [React](https://react.dev/)
+- ManaFlow の [cmux](https://github.com/manaflow-ai/cmux) にインスパイアされた
+- [Tauri](https://tauri.app/)、[xterm.js](https://xtermjs.org/)、[React](https://react.dev/) で構築
