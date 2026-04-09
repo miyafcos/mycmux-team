@@ -230,7 +230,7 @@ fn parse_ghostty_colors(content: &str) -> Option<UserColors> {
 // ─── Alacritty ────────────────────────────────────────────────────────────────
 
 fn load_alacritty(
-    home: &PathBuf,
+    _home: &PathBuf,
     config_dir: &PathBuf,
 ) -> Option<(String, f32, Option<UserColors>)> {
     // Alacritty config locations:
@@ -419,7 +419,7 @@ fn load_kitty(config_dir: &PathBuf) -> Option<(String, f32, Option<UserColors>)>
 // ─── Windows Terminal ─────────────────────────────────────────────────────────
 
 #[cfg(windows)]
-fn load_windows_terminal(home: &PathBuf) -> Option<(String, f32, Option<UserColors>)> {
+fn load_windows_terminal(_home: &PathBuf) -> Option<(String, f32, Option<UserColors>)> {
     // Windows Terminal settings location:
     // %LOCALAPPDATA%\Packages\Microsoft.WindowsTerminal_8wekyb3d8bbwe\LocalState\settings.json
     // or for Windows Terminal Preview:

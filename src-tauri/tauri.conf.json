@@ -29,7 +29,7 @@
     "targets": "all",
     "category": "Utility",
     "shortDescription": "Cross-platform terminal workspace manager",
-    "longDescription": "ptrcode is a cross-platform terminal workspace manager built with Tauri and React. Features include workspaces, split panes, embedded browser, and a socket API for automation.",
+    "longDescription": "mycmux is an AI agent terminal workspace built with Tauri and React. Features include workspaces, split panes, remote terminal access, and a socket API for automation.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

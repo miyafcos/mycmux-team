@@ -23,27 +23,60 @@
           <button id="new-session-btn">+ New</button>
         </div>
       </header>
-      <div id="workspace-list"></div>
+      <div id="workspace-list"><div class="empty-state"><div class="empty-state-desc">Loading...</div></div></div>
     </div>
 
     <!-- Terminal View -->
     <div id="terminal-view" class="hidden">
       <header id="terminal-header">
-        <button id="back-btn">← Back</button>
-        <span id="session-info"></span>
+        <button id="back-btn">←</button>
+        <div id="header-info">
+          <span id="session-info"></span>
+          <span id="agent-status" class="status-idle">Idle</span>
+        </div>
+        <span id="conn-dot" class="conn-dot"></span>
       </header>
       <div id="terminal-container"></div>
-      <div id="toolbar">
-        <button data-key="Escape">Esc</button>
-        <button data-key="Tab">Tab</button>
-        <button id="ctrl-btn" data-modifier="ctrl">Ctrl</button>
-        <button id="alt-btn" data-modifier="alt">Alt</button>
-        <button data-key="ArrowUp">↑</button>
-        <button data-key="ArrowDown">↓</button>
-        <button data-key="ArrowLeft">←</button>
-        <button data-key="ArrowRight">→</button>
-        <button data-seq="|">|</button>
+
+      <!-- Approval bar (shown when Claude asks y/n) -->
+      <div id="approval-bar" class="hidden">
+        <span id="approval-label">Allow?</span>
+        <div id="approval-buttons">
+          <button id="approve-btn" class="approve-action allow">✓ Allow</button>
+          <button id="deny-btn" class="approve-action deny">✕ Deny</button>
+        </div>
       </div>
+
+      <!-- Prompt input bar (shown when idle) -->
+      <div id="prompt-bar" class="hidden">
+        <input id="prompt-input" type="text" placeholder="Ask Claude..." autocomplete="off" autocorrect="off" spellcheck="false">
+        <button id="prompt-send">↑</button>
+      </div>
+
+      <div id="toolbar">
+        <div class="toolbar-row">
+          <button data-action="enter">Enter</button>
+          <button data-action="bs">BS</button>
+          <button data-action="ctrl-c">C-c</button>
+          <button data-action="ctrl-d">C-d</button>
+          <button data-action="ctrl-z">C-z</button>
+          <button data-key="Tab">Tab</button>
+          <button data-key="Escape">Esc</button>
+          <button data-seq="|">|</button>
+          <button data-seq="/">/</button>
+          <button data-seq="~">~</button>
+          <button data-seq="-">-</button>
+        </div>
+        <div class="toolbar-row">
+          <button id="ctrl-btn" data-modifier="ctrl">Ctrl</button>
+          <button id="alt-btn" data-modifier="alt">Alt</button>
+          <button data-key="ArrowUp">↑</button>
+          <button data-key="ArrowDown">↓</button>
+          <button data-key="ArrowLeft">←</button>
+          <button data-key="ArrowRight">→</button>
+        </div>
+      </div>
+      <div id="reconnect-toast" class="hidden">Reconnecting...</div>
     </div>
 
     <!-- Status Overlay -->
@@ -55,9 +88,9 @@
     </div>
   </div>
 
-  <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-canvas@0.7.0/lib/addon-canvas.min.js"></script>
+  <script async src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
+  <script async src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
+  <script async src="https://cdn.jsdelivr.net/npm/@xterm/addon-canvas@0.7.0/lib/addon-canvas.min.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

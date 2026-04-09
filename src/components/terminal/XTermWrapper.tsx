@@ -117,7 +117,8 @@ export default memo(function XTermWrapper({
   const searchAddonRef = useRef<SearchAddon | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
-  
+  const isAtBottomRef = useRef(true);
+
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -134,13 +135,14 @@ export default memo(function XTermWrapper({
     }
   }, [storeTheme, storeFontSize]);
 
-  // Scroll to bottom when pane becomes visible (workspace switch, focus change)
+  // Scroll to bottom when pane becomes visible — only if user was at bottom before switching
   useEffect(() => {
     if (suppressNotifications && termRef.current) {
-      // suppressNotifications=true means this pane is active+visible
       setTimeout(() => {
-        termRef.current?.scrollToBottom();
         fitAddonRef.current?.fit();
+        if (isAtBottomRef.current) {
+          termRef.current?.scrollToBottom();
+        }
       }, 50);
     }
   }, [suppressNotifications]);
@@ -206,6 +208,13 @@ export default memo(function XTermWrapper({
       }));
 
       term.open(container!);
+
+      // Track whether viewport is scrolled to the bottom
+      term.onScroll(() => {
+        if (!term) return;
+        const buf = term.buffer.active;
+        isAtBottomRef.current = buf.viewportY >= buf.baseY;
+      });
 
       // Forward modifier+key combos that xterm intercepts before the PTY sees them
       term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
@@ -284,7 +293,7 @@ export default memo(function XTermWrapper({
 
       let _lastParsedOut = "";
       term.onWriteParsed(() => {
-        if (!term) return;
+        if (!term || disposed) return;
         // Throttle to 500ms — prevents hammering Zustand on every keystroke
         if (logThrottle) return;
         logThrottle = setTimeout(() => {
@@ -314,8 +323,9 @@ export default memo(function XTermWrapper({
             const stripped = lastLine.replace(/\x1b\[[0-9;]*m/g, "").trim();
             // Detect agent status — patterns tuned for Claude Code CLI.
             // Only checks the current line (stripped) to avoid false positives.
-            // Spinner: standard Unicode spinners + Braille patterns used by Claude Code / Ink
-            const isSpinner = /[\u2800-\u28FF\u25CF\u25CB\u25D0-\u25D3\u2737\u2731\u280B\u2819\u2839\u2838\u283C\u2834\u2826\u2827\u2807\u280F]/.test(stripped);
+            // Spinner: only the specific Braille chars used by Claude Code / Ink spinners
+            // (not the full U+2800-28FF range which includes box-drawing used by tree/ls)
+            const isSpinner = /[\u25CF\u25CB\u25D0-\u25D3\u2737\u2731\u280B\u2819\u2839\u2838\u283C\u2834\u2826\u2827\u2807\u280F]/.test(stripped) && stripped.length < 80;
             const isWorking = isSpinner || /working\.\.\./i.test(stripped);
             // "esc to interrupt" alone on status bar → not working. With spinner → working.
             const isStatusBar = /esc to interrupt/i.test(stripped) && !isSpinner;
@@ -397,7 +407,7 @@ export default memo(function XTermWrapper({
       try {
         await createSession(sessionId, command, args, cols, rows, (rawData: ArrayBuffer) => {
           if (disposed || !term) return;
-          term.write(new Uint8Array(rawData));
+          try { term.write(new Uint8Array(rawData)); } catch { /* disposed between check and write */ }
         }, cwd);
         sessionStarted = true;
         console.log(`[PERF] Terminal session created - ${(performance.now() - initStart).toFixed(2)}ms`);

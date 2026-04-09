@@ -4,9 +4,12 @@ use axum::response::IntoResponse;
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use std::sync::Arc;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, mpsc, Notify};
 
 use super::RemoteState;
+
+/// Scrollback chunk size (16 KB) to avoid freezing mobile clients.
+const SCROLLBACK_CHUNK_SIZE: usize = 16 * 1024;
 
 #[derive(Deserialize)]
 pub struct WsQuery {
@@ -28,28 +31,66 @@ pub async fn ws_upgrade(
 }
 
 async fn handle_ws(socket: WebSocket, state: Arc<RemoteState>, query: WsQuery) {
-    let attach_session = query.session.as_deref().filter(|s| *s != "new");
+    let session_param = query.session.as_deref().unwrap_or("");
 
-    if let Some(session_id) = attach_session {
-        let bridge_data = {
-            if let Some(session) = state.app_session_manager.get(session_id) {
-                let rx = session.broadcast.subscribe();
-                let sb = session.get_scrollback();
-                Some((rx, sb))
-            } else {
-                None
-            }
-        };
-        if let Some((rx, sb)) = bridge_data {
-            let sid = session_id.to_string();
-            handle_app_session_bridge(socket, state, sid, rx, sb).await;
-            return;
-        }
+    // Explicit "new" → create a fresh remote shell
+    if session_param == "new" {
+        handle_new_remote_session(socket, state).await;
+        return;
     }
 
-    handle_new_remote_session(socket, state).await;
+    // No session specified → also create new
+    if session_param.is_empty() {
+        handle_new_remote_session(socket, state).await;
+        return;
+    }
+
+    // Try to attach to existing app session
+    let bridge_data = {
+        if let Some(session) = state.app_session_manager.get(session_param) {
+            let rx = session.broadcast.subscribe();
+            let sb = session.get_scrollback();
+            Some((rx, sb))
+        } else {
+            None
+        }
+    };
+
+    if let Some((rx, sb)) = bridge_data {
+        handle_app_session_bridge(socket, state, session_param.to_string(), rx, sb).await;
+    } else {
+        // Session not found — send error instead of silently creating a new shell
+        let (mut sink, _) = socket.split();
+        let msg = format!(
+            r#"{{"type":"error","msg":"Session '{}' not found"}}"#,
+            session_param.replace('"', "")
+        );
+        let _ = sink.send(Message::Text(msg.into())).await;
+        let _ = sink.close().await;
+    }
 }
 
+
+/// Send scrollback in 16KB chunks to avoid freezing mobile clients.
+async fn send_scrollback_chunked(
+    sink: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+    scrollback: &[u8],
+) -> bool {
+    if scrollback.is_empty() {
+        return true;
+    }
+    for chunk in scrollback.chunks(SCROLLBACK_CHUNK_SIZE) {
+        if sink
+            .send(Message::Binary(chunk.to_vec().into()))
+            .await
+            .is_err()
+        {
+            return false;
+        }
+        tokio::task::yield_now().await;
+    }
+    true
+}
 
 async fn handle_app_session_bridge(
     socket: WebSocket,
@@ -65,28 +106,56 @@ async fn handle_app_session_bridge(
         return;
     }
 
-    if !scrollback.is_empty() {
-        let _ = sink.send(Message::Binary(scrollback.into())).await;
+    // Send scrollback in chunks
+    if !send_scrollback_chunked(&mut sink, &scrollback).await {
+        return;
     }
+
+    // Flow control: shared pause state
+    let pause_notify = Arc::new(Notify::new());
+    let paused = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    // Channel for control responses (pong) from recv_task to send_task
+    let (ctrl_tx, mut ctrl_rx) = mpsc::unbounded_channel::<String>();
+
+    let pause_notify_send = pause_notify.clone();
+    let paused_send = paused.clone();
 
     let mut send_task = tokio::spawn(async move {
         loop {
-            match rx.recv().await {
-                Ok(data) => {
-                    if sink.send(Message::Binary(data.into())).await.is_err() {
+            // If paused by flow control, wait until client resumes
+            if paused_send.load(std::sync::atomic::Ordering::Relaxed) {
+                pause_notify_send.notified().await;
+                continue;
+            }
+            tokio::select! {
+                result = rx.recv() => {
+                    match result {
+                        Ok(data) => {
+                            if sink.send(Message::Binary(data.into())).await.is_err() {
+                                break;
+                            }
+                        }
+                        Err(broadcast::error::RecvError::Lagged(n)) => {
+                            eprintln!("[remote] WebSocket lagged on app session, skipped {n} messages");
+                        }
+                        Err(broadcast::error::RecvError::Closed) => break,
+                    }
+                }
+                Some(ctrl_msg) = ctrl_rx.recv() => {
+                    if sink.send(Message::Text(ctrl_msg.into())).await.is_err() {
                         break;
                     }
                 }
-                Err(broadcast::error::RecvError::Lagged(n)) => {
-                    eprintln!("[remote] WebSocket lagged on app session, skipped {n} messages");
-                }
-                Err(broadcast::error::RecvError::Closed) => break,
             }
         }
     });
 
     let session_id_clone = session_id.clone();
     let state_clone = state.clone();
+    let pause_notify_recv = pause_notify.clone();
+    let paused_recv = paused.clone();
+
     let mut recv_task = tokio::spawn(async move {
         while let Some(msg_result) = stream.next().await {
             let msg = match msg_result {
@@ -100,7 +169,14 @@ async fn handle_app_session_bridge(
                     }
                 }
                 Message::Text(text) => {
-                    handle_app_control(&text, &session_id_clone, &state_clone);
+                    handle_app_control(
+                        &text,
+                        &session_id_clone,
+                        &state_clone,
+                        &paused_recv,
+                        &pause_notify_recv,
+                        &ctrl_tx,
+                    );
                 }
                 Message::Close(_) => break,
                 _ => {}
@@ -114,7 +190,14 @@ async fn handle_app_session_bridge(
     }
 }
 
-fn handle_app_control(text: &str, session_id: &str, state: &RemoteState) {
+fn handle_app_control(
+    text: &str,
+    session_id: &str,
+    state: &RemoteState,
+    paused: &std::sync::atomic::AtomicBool,
+    pause_notify: &Notify,
+    ctrl_tx: &mpsc::UnboundedSender<String>,
+) {
     #[derive(Deserialize)]
     struct ControlMsg {
         r#type: String,
@@ -131,7 +214,16 @@ fn handle_app_control(text: &str, session_id: &str, state: &RemoteState) {
                     }
                 }
             }
-            "ping" => {}
+            "ping" => {
+                let _ = ctrl_tx.send(r#"{"type":"pong"}"#.to_string());
+            }
+            "pause" => {
+                paused.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            "resume" => {
+                paused.store(false, std::sync::atomic::Ordering::Relaxed);
+                pause_notify.notify_one();
+            }
             _ => {}
         }
     }
@@ -156,10 +248,11 @@ async fn handle_new_remote_session(socket: WebSocket, state: Arc<RemoteState>) {
         return;
     }
 
+    // Send scrollback in chunks
     if let Some(session) = state.sessions.get(&session_id) {
         let sb = session.get_scrollback();
-        if !sb.is_empty() {
-            let _ = sink.send(Message::Binary(sb.into())).await;
+        if !send_scrollback_chunked(&mut sink, &sb).await {
+            return;
         }
     }
 

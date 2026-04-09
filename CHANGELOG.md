@@ -1,8 +1,26 @@
 # Changelog
 
-All notable changes to ptrterminal are documented here.
+All notable changes to mycmux are documented here.
 
 ---
+
+## [0.2.0] — 2026-04-07
+
+### Added
+
+- Remote Terminal dashboard with WebSocket-based browser access
+- Existing session monitoring flow for iPhone / remote viewer use
+- Three new bundled themes: Berry Cream, Ocean Mist, Matcha Latte
+
+### Fixed
+
+- `Shift+Enter` handling for Kitty-style terminal input
+- Metadata alignment for Windows deployment and local update scripts
+
+### Notes
+
+- This release matches the currently used local `mycmux` build.
+- Some internal docs and legacy artifacts still mention `ptrterminal` / `ptrcode`.
 
 ## [0.1.3] — 2026-03-20
 

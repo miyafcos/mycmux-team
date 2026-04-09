@@ -37,7 +37,7 @@ impl Default for AppSettings {
     fn default() -> Self {
         Self {
             font_size: 14,
-            theme_id: "catppuccin-mocha".to_string(),
+            theme_id: "yoru-cafe".to_string(),
             keybindings: HashMap::new(),
         }
     }
