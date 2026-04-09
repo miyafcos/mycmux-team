@@ -36,6 +36,13 @@
   var refreshInterval = null;
   var currentSessionId = null;
   var currentView = null; // "dashboard" or "terminal"
+  var pingTimer = null;
+  var lastPongTime = 0;
+  var disconnectTime = 0;
+  var reconnectEnabled = false;
+  var reconnectAttempts = 0;
+  var pendingWrites = 0;
+  var flowPaused = false;
 
   // --- DOM refs ---
   var dashboardView = document.getElementById("dashboard-view");
@@ -46,6 +53,102 @@
   var statusText = document.getElementById("status-text");
   var retryBtn = document.getElementById("retry-btn");
   var refreshBtn = document.getElementById("refresh-btn");
+  var connDot = document.getElementById("conn-dot");
+  var reconnectToast = document.getElementById("reconnect-toast");
+  var approvalBar = document.getElementById("approval-bar");
+  var approvalLabel = document.getElementById("approval-label");
+  var approveBtn = document.getElementById("approve-btn");
+  var denyBtn = document.getElementById("deny-btn");
+  var promptBar = document.getElementById("prompt-bar");
+  var promptInput = document.getElementById("prompt-input");
+  var promptSend = document.getElementById("prompt-send");
+  var agentStatusEl = document.getElementById("agent-status");
+  var toolbar = document.getElementById("toolbar");
+  var agentState = "idle"; // "idle" | "working" | "waiting"
+
+  // --- Agent status detection (from terminal output) ---
+  function detectAgentStatus(text) {
+    var stripped = text.replace(/\x1b\[[0-9;]*m/g, "").trim();
+    if (!stripped) return;
+
+    // Approval prompt detection
+    var isApproval = /allow\s+.*\?\s*\(y\/n\)/i.test(stripped) ||
+      /\(y\/n\)\s*$/i.test(stripped) ||
+      /\[y\/N\]/i.test(stripped) ||
+      /type your (answer|response)/i.test(stripped);
+
+    if (isApproval) {
+      setAgentState("waiting");
+      showApprovalBar(stripped);
+      return;
+    }
+
+    // Working detection (spinners, "working...")
+    var isSpinner = /[\u2800-\u28FF\u25CF\u25CB\u25D0-\u25D3]/.test(stripped);
+    var isWorking = isSpinner || /working\.\.\./i.test(stripped);
+    if (isWorking) {
+      setAgentState("working");
+      hideApprovalBar();
+      return;
+    }
+
+    // Idle detection (shell prompt)
+    if (/^>\s*$/.test(stripped) || /\$\s*$/.test(stripped)) {
+      setAgentState("idle");
+      hideApprovalBar();
+    }
+  }
+
+  function setAgentState(state) {
+    agentState = state;
+    if (!agentStatusEl) return;
+    agentStatusEl.className = "status-" + state;
+    agentStatusEl.textContent = state === "working" ? "Working..." : state === "waiting" ? "Waiting" : "Idle";
+
+    // Show/hide prompt bar based on state
+    if (promptBar) {
+      if (state === "idle" && currentView === "terminal") {
+        promptBar.classList.remove("hidden");
+      } else {
+        promptBar.classList.add("hidden");
+      }
+    }
+
+    // Show/hide toolbar (hide when approval bar is visible)
+    if (toolbar) {
+      toolbar.style.display = (state === "waiting") ? "none" : "";
+    }
+  }
+
+  function showApprovalBar(text) {
+    if (!approvalBar) return;
+    // Extract tool name from "Allow Bash? (y/n)" pattern
+    var match = text.match(/allow\s+(\w+)/i);
+    approvalLabel.textContent = match ? "Allow " + match[1] + "?" : "Approve?";
+    approvalBar.classList.remove("hidden");
+  }
+
+  function hideApprovalBar() {
+    if (!approvalBar) return;
+    approvalBar.classList.add("hidden");
+  }
+
+  // --- Connection indicator ---
+  function setConnState(state) {
+    if (!connDot) return;
+    connDot.className = "conn-dot " + state;
+  }
+
+  function showToast(msg) {
+    if (!reconnectToast) return;
+    reconnectToast.textContent = msg;
+    reconnectToast.classList.remove("hidden");
+  }
+
+  function hideToast() {
+    if (!reconnectToast) return;
+    reconnectToast.classList.add("hidden");
+  }
 
   // --- Status overlay ---
   function showStatus(msg, showRetry) {
@@ -71,8 +174,14 @@
   function onRoute() {
     var hash = window.location.hash || "#/dashboard";
     if (hash.startsWith("#/terminal/")) {
-      var sid = hash.slice("#/terminal/".length);
-      showTerminal(sid);
+      var rest = hash.slice("#/terminal/".length);
+      var qIdx = rest.indexOf("?");
+      var sid = qIdx >= 0 ? rest.slice(0, qIdx) : rest;
+      var label = "";
+      if (qIdx >= 0) {
+        try { label = new URLSearchParams(rest.slice(qIdx)).get("label") || ""; } catch(e) {}
+      }
+      showTerminal(sid, label);
     } else {
       showDashboard();
     }
@@ -148,6 +257,8 @@
       html += '<div class="workspace-card">';
       html += '<div class="workspace-card-header">';
       html += '<span class="workspace-name">' + escHtml(ws.name) + "</span>";
+      var paneCount = (ws.panes || []).length;
+      html += '<span class="session-count">' + paneCount + "</span>";
       if (ws.grid_template) {
         html += '<span class="grid-badge">' + escHtml(ws.grid_template) + "</span>";
       }
@@ -181,7 +292,7 @@
         }
 
         html += "</div>"; // .pane-info
-        html += '<button class="pane-connect" data-session="' + escAttr(pane.session_id) + '">Connect</button>';
+        html += '<button class="pane-connect" data-session="' + escAttr(pane.session_id) + '" data-label="' + escAttr(pane.label || "") + '">Connect</button>';
         html += "</div>"; // .pane-row
       }
 
@@ -194,7 +305,8 @@
     var connectBtns = workspaceList.querySelectorAll(".pane-connect");
     for (var k = 0; k < connectBtns.length; k++) {
       connectBtns[k].addEventListener("click", function () {
-        navigate("#/terminal/" + this.dataset.session);
+        var label = this.dataset.label || "";
+        navigate("#/terminal/" + this.dataset.session + (label ? "?label=" + encodeURIComponent(label) : ""));
       });
     }
   }
@@ -211,7 +323,7 @@
   function shortenPath(p) {
     if (!p) return "";
     // Show last 2 segments
-    var parts = p.replace(/\/g, "/").split("/");
+    var parts = p.replace(/\\/g, "/").split("/");
     if (parts.length <= 2) return p;
     return ".../" + parts.slice(-2).join("/");
   }
@@ -222,7 +334,7 @@
 
     term = new Terminal({
       cursorBlink: true,
-      fontSize: 15,
+      fontSize: 16,
       fontFamily: "'Menlo', 'Consolas', 'Courier New', monospace",
       theme: {
         background: "#1a1b26",
@@ -278,6 +390,8 @@
   function connectWs(sessionId) {
     disconnectWs();
     currentSessionId = sessionId;
+    reconnectEnabled = true;
+    setConnState("connecting");
 
     var token = getToken();
     if (!token) {
@@ -295,23 +409,75 @@
 
     ws.onopen = function () {
       hideStatus();
+      hideToast();
+      setConnState("connected");
       reconnectDelay = 1000;
-      if (fitAddon) {
-        setTimeout(function () { fitAddon.fit(); }, 50);
+      reconnectAttempts = 0;
+      disconnectTime = 0;
+      pendingWrites = 0;
+      flowPaused = false;
+
+      // Fit terminal and send resize at multiple timings
+      function fitAndResize() {
+        if (fitAddon) fitAddon.fit();
+        if (term && ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+        }
       }
+      setTimeout(fitAndResize, 50);
+      setTimeout(fitAndResize, 300);
+      setTimeout(fitAndResize, 800);
+
+      // Focus terminal after scrollback replay
+      setTimeout(function () { if (term) term.focus(); }, 200);
+
+      // Start keepalive ping
+      startPing();
     };
 
     ws.onmessage = function (event) {
       if (!term) return;
       if (event.data instanceof ArrayBuffer) {
-        term.write(new Uint8Array(event.data));
+        // Detect agent status from output
+        try {
+          var chunk = new TextDecoder().decode(event.data);
+          detectAgentStatus(chunk);
+        } catch(e) {}
+        // Flow control: track pending writes
+        pendingWrites++;
+        term.write(new Uint8Array(event.data), function () {
+          pendingWrites--;
+          // Low water mark: resume if we were paused
+          if (flowPaused && pendingWrites < 2) {
+            flowPaused = false;
+            if (ws && ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: "resume" }));
+            }
+          }
+        });
+        // High water mark: pause server output
+        if (!flowPaused && pendingWrites > 5) {
+          flowPaused = true;
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: "pause" }));
+          }
+        }
       } else {
         try {
           var msg = JSON.parse(event.data);
           if (msg.type === "connected") {
-            sessionInfo.textContent = msg.session_id || sessionId;
+            sessionInfo.textContent = shortenSessionId(msg.session_id || sessionId);
+          } else if (msg.type === "pong") {
+            lastPongTime = Date.now();
+          } else if (msg.type === "error") {
+            reconnectEnabled = false;
+            showToast(msg.msg || "Error");
+            setConnState("disconnected");
+            setTimeout(function () { navigate("#/dashboard"); }, 2000);
           } else if (msg.type === "exit") {
+            reconnectEnabled = false;
             term.write("\r\n[Process exited with code " + msg.code + "]\r\n");
+            setConnState("disconnected");
           }
         } catch (e) {
           term.write(event.data);
@@ -320,8 +486,20 @@
     };
 
     ws.onclose = function () {
-      if (currentView === "terminal" && currentSessionId === sessionId) {
-        scheduleReconnect(sessionId);
+      stopPing();
+      setConnState("disconnected");
+      if (reconnectEnabled && currentView === "terminal" && currentSessionId === sessionId) {
+        if (!disconnectTime) disconnectTime = Date.now();
+        var elapsed = Date.now() - disconnectTime;
+        if (elapsed < 60000) {
+          // Brief disconnect: small toast, keep terminal visible
+          reconnectAttempts++;
+          showToast("Reconnecting #" + reconnectAttempts + " (" + Math.ceil(reconnectDelay / 1000) + "s)");
+          scheduleReconnect(sessionId);
+        } else {
+          // Long disconnect: full overlay
+          showStatus("Disconnected", true);
+        }
       }
     };
 
@@ -331,6 +509,8 @@
   }
 
   function disconnectWs() {
+    stopPing();
+    reconnectEnabled = false;
     if (reconnectTimer) {
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
@@ -344,16 +524,48 @@
   }
 
   function scheduleReconnect(sessionId) {
-    showStatus("Reconnecting...");
     if (reconnectTimer) clearTimeout(reconnectTimer);
     reconnectTimer = setTimeout(function () {
-      reconnectDelay = Math.min(reconnectDelay * 2, 30000);
+      reconnectDelay = Math.min(reconnectDelay * 2, 60000);
       connectWs(sessionId);
     }, reconnectDelay);
   }
 
+  function startPing() {
+    stopPing();
+    lastPongTime = Date.now();
+    pingTimer = setInterval(function () {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        // Check for zombie connection (no pong within 45s)
+        if (Date.now() - lastPongTime > 45000) {
+          console.warn("[remote] No pong received in 45s, reconnecting");
+          ws.close();
+          return;
+        }
+        ws.send(JSON.stringify({ type: "ping" }));
+      }
+    }, 30000);
+  }
+
+  function stopPing() {
+    if (pingTimer) {
+      clearInterval(pingTimer);
+      pingTimer = null;
+    }
+  }
+
+  function shortenSessionId(sid) {
+    if (!sid) return "";
+    var parts = sid.split("-");
+    if (parts.length > 6) {
+      return parts.slice(-2).join("-");
+    }
+    return sid.length > 20 ? "..." + sid.slice(-16) : sid;
+  }
+
+
   // --- View switching ---
-  function showTerminal(sessionId) {
+  function showTerminal(sessionId, label) {
     currentView = "terminal";
     stopAutoRefresh();
 
@@ -361,20 +573,28 @@
     terminalView.classList.remove("hidden");
 
     initTerminal();
-    sessionInfo.textContent = sessionId;
+    sessionInfo.textContent = label || shortenSessionId(sessionId);
 
-    // Clear terminal for fresh connection
-    if (term) {
+    // Only clear when switching to a DIFFERENT session
+    if (currentSessionId !== sessionId && term) {
       term.clear();
     }
 
     connectWs(sessionId);
 
-    // Fit after layout settles
-    setTimeout(function () {
-      if (fitAddon) fitAddon.fit();
-      if (term) term.focus();
-    }, 100);
+    // Fit at multiple timings to ensure layout is correct
+    function doFit() {
+      if (fitAddon) {
+        fitAddon.fit();
+        // Send resize to server after fit
+        if (term && ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+        }
+      }
+    }
+    setTimeout(function () { doFit(); if (term) term.focus(); }, 100);
+    setTimeout(doFit, 500);
+    setTimeout(doFit, 1000);
   }
 
   function showDashboard() {
@@ -383,6 +603,8 @@
 
     disconnectWs();
     hideStatus();
+    hideToast();
+    setConnState("");
 
     terminalView.classList.add("hidden");
     dashboardView.classList.remove("hidden");
@@ -390,11 +612,14 @@
     loadState();
     startAutoRefresh();
   }
-
   // --- Viewport resize (iOS keyboard) ---
+  var resizeDebounceTimer = null;
   function handleResize() {
     if (currentView === "terminal" && fitAddon) {
-      setTimeout(function () { fitAddon.fit(); }, 100);
+      if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
+      resizeDebounceTimer = setTimeout(function () {
+        fitAddon.fit();
+      }, 150);
     }
   }
 
@@ -404,6 +629,14 @@
   window.addEventListener("resize", handleResize);
 
   // --- Touch toolbar ---
+  var DIRECT_SEQS = {
+    "enter": "\r",
+    "bs": "\x7f",
+    "ctrl-c": "\x03",
+    "ctrl-d": "\x04",
+    "ctrl-z": "\x1a"
+  };
+
   var SPECIAL_KEYS = {
     Escape: "\x1b",
     Tab: "\t",
@@ -418,6 +651,7 @@
     if (!btn || !term) return;
 
     var modifier = btn.dataset.modifier;
+    var action = btn.dataset.action;
     var key = btn.dataset.key;
     var seq = btn.dataset.seq;
 
@@ -443,7 +677,7 @@
       return;
     }
 
-    var data = seq || SPECIAL_KEYS[key] || "";
+    var data = DIRECT_SEQS[action] || seq || SPECIAL_KEYS[key] || "";
     if (!data) return;
 
     if (ctrlActive && data.length === 1) {
@@ -467,6 +701,74 @@
     term.focus();
   });
 
+  // Long-press repeat for arrow keys
+  var repeatTimer = null;
+  var repeatInterval = null;
+  document.getElementById("toolbar").addEventListener("touchstart", function (e) {
+    var btn = e.target.closest("button");
+    if (!btn) return;
+    var key = btn.dataset.key;
+    if (!key || !SPECIAL_KEYS[key]) return;
+    var seq = SPECIAL_KEYS[key];
+    // Start repeat after 400ms hold, then every 80ms
+    repeatTimer = setTimeout(function () {
+      repeatInterval = setInterval(function () {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(new TextEncoder().encode(seq));
+        }
+      }, 80);
+    }, 400);
+  }, { passive: true });
+
+  function stopRepeat() {
+    if (repeatTimer) { clearTimeout(repeatTimer); repeatTimer = null; }
+    if (repeatInterval) { clearInterval(repeatInterval); repeatInterval = null; }
+  }
+  document.getElementById("toolbar").addEventListener("touchend", stopRepeat);
+  document.getElementById("toolbar").addEventListener("touchcancel", stopRepeat);
+
+  // --- Approval buttons ---
+  if (approveBtn) {
+    approveBtn.addEventListener("click", function () {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(new TextEncoder().encode("y\n"));
+      }
+      hideApprovalBar();
+      setAgentState("working");
+      if (term) term.focus();
+    });
+  }
+  if (denyBtn) {
+    denyBtn.addEventListener("click", function () {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(new TextEncoder().encode("n\n"));
+      }
+      hideApprovalBar();
+      setAgentState("working");
+      if (term) term.focus();
+    });
+  }
+
+  // --- Prompt input ---
+  if (promptSend) {
+    promptSend.addEventListener("click", function () {
+      var text = promptInput.value.trim();
+      if (text && ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(new TextEncoder().encode(text + "\n"));
+        promptInput.value = "";
+        setAgentState("working");
+      }
+    });
+  }
+  if (promptInput) {
+    promptInput.addEventListener("keydown", function (e) {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        promptSend.click();
+      }
+    });
+  }
+
   // --- Button handlers ---
   document.getElementById("back-btn").addEventListener("click", function () {
     navigate("#/dashboard");
@@ -485,6 +787,9 @@
   retryBtn.addEventListener("click", function () {
     if (currentView === "terminal" && currentSessionId) {
       reconnectDelay = 1000;
+      disconnectTime = 0;
+      reconnectAttempts = 0;
+      hideStatus();
       connectWs(currentSessionId);
     } else {
       hideStatus();
@@ -501,10 +806,11 @@
         loadState();
         startAutoRefresh();
       } else if (currentView === "terminal") {
-        // Reconnect if disconnected
         if (!ws || ws.readyState !== WebSocket.OPEN) {
           if (currentSessionId) {
             reconnectDelay = 1000;
+            disconnectTime = 0;
+            reconnectAttempts = 0;
             connectWs(currentSessionId);
           }
         }

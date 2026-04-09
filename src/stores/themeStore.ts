@@ -13,8 +13,8 @@ interface ThemeState {
 }
 
 export const useThemeStore = create<ThemeState>((set) => ({
-  themeId: "midnight",
-  theme: getTheme("midnight"),
+  themeId: "mayonaka",
+  theme: getTheme("mayonaka"),
   fontSize: 14,
 
   setTheme: (id) => {
@@ -27,7 +27,7 @@ export const useThemeStore = create<ThemeState>((set) => ({
   },
 
   hydrateSettings: (settings) => {
-    const nextThemeId = settings.themeId ?? "midnight";
+    const nextThemeId = settings.themeId ?? "mayonaka";
     const nextTheme = getTheme(nextThemeId);
     const nextFont = typeof settings.fontSize === "number"
       ? Math.max(10, Math.min(24, settings.fontSize))

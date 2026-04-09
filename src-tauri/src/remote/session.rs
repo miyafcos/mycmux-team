@@ -22,7 +22,7 @@ unsafe impl Sync for RemotePtySession {}
 
 impl RemotePtySession {
     pub fn spawn(
-        session_id: String,
+        _session_id: String,
         command: &str,
         args: &[String],
         cols: u16,
@@ -180,6 +180,7 @@ impl RemoteSessionManager {
         self.sessions.get(id)
     }
 
+    #[allow(dead_code)] // Reserved for graceful shutdown
     pub fn kill_all(&self) {
         let keys: Vec<String> = self.sessions.iter().map(|e| e.key().clone()).collect();
         for k in keys {

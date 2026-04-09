@@ -1,12 +1,12 @@
 [package]
-name = "ptrterminal"
-version = "0.1.3"
-description = "AI agent terminal workspace"
-authors = ["cai0"]
+name = "mycmux"
+version = "0.2.0"
+description = "mycmux - AI agent terminal workspace"
+authors = ["miyafcos"]
 edition = "2021"
 
 [lib]
-name = "ptrterminal_lib"
+name = "mycmux_lib"
 crate-type = ["lib", "cdylib", "staticlib"]
 
 [build-dependencies]

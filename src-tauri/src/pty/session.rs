@@ -54,7 +54,7 @@ impl PtySession {
         cmd.args(args);
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
-        cmd.env("TERM_PROGRAM", "ptrterminal");
+        cmd.env("TERM_PROGRAM", "mycmux");
         cmd.env("TERM_PROGRAM_VERSION", env!("CARGO_PKG_VERSION"));
 
         if let Some(ref extra_env) = env {
@@ -64,7 +64,11 @@ impl PtySession {
         }
 
         if let Some(dir) = cwd {
-            cmd.cwd(dir);
+            if std::path::Path::new(&dir).is_dir() {
+                cmd.cwd(dir);
+            } else if let Some(home) = dirs::home_dir() {
+                cmd.cwd(home);
+            }
         }
 
         let child = pair

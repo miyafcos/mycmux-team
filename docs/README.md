@@ -1,8 +1,10 @@
-# ptrterminal Documentation
+# mycmux Documentation
 
 AI agent terminal workspace built with Tauri v2 + React + xterm.js.
 
 ## Navigation
+
+- [current-state.md](current-state.md) — Current source of truth, local paths, build/deploy flow, and session handoff notes
 
 ### Infrastructure
 - [stack.md](infrastructure/stack.md) — Tech stack with versions & rationale
