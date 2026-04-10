@@ -118,24 +118,28 @@ pub struct DefaultShellInfo {
 
 #[tauri::command]
 pub fn get_default_shell() -> DefaultShellInfo {
-    // Check SHELL env var first (works on Unix and Git Bash on Windows)
-    if let Ok(shell) = std::env::var("SHELL") {
-        if std::path::Path::new(&shell).exists() {
-            return DefaultShellInfo {
-                command: shell,
-                args: vec![],
-            };
-        }
-    }
-
     #[cfg(target_os = "windows")]
     {
+        if let Ok(shell) = std::env::var("SHELL") {
+            if std::path::Path::new(&shell).exists() {
+                let lower = shell.to_ascii_lowercase();
+                let args = if lower.ends_with("bash.exe") {
+                    vec!["--login".to_string(), "-i".to_string()]
+                } else {
+                    vec![]
+                };
+                return DefaultShellInfo {
+                    command: shell,
+                    args,
+                };
+            }
+        }
         // Git Bash
         let git_bash = "C:\\Program Files\\Git\\bin\\bash.exe";
         if std::path::Path::new(git_bash).exists() {
             return DefaultShellInfo {
                 command: git_bash.to_string(),
-                args: vec!["--login".to_string()],
+                args: vec!["--login".to_string(), "-i".to_string()],
             };
         }
         // PowerShell
@@ -154,9 +158,20 @@ pub fn get_default_shell() -> DefaultShellInfo {
     }
 
     #[cfg(not(target_os = "windows"))]
-    DefaultShellInfo {
-        command: "/bin/bash".to_string(),
-        args: vec![],
+    {
+        if let Ok(shell) = std::env::var("SHELL") {
+            if std::path::Path::new(&shell).exists() {
+                return DefaultShellInfo {
+                    command: shell,
+                    args: vec![],
+                };
+            }
+        }
+
+        DefaultShellInfo {
+            command: "/bin/bash".to_string(),
+            args: vec![],
+        }
     }
 }
 

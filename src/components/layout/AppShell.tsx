@@ -133,6 +133,12 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
     "--cmux-text-tertiary": currentTheme.chrome.textMuted,
   } as React.CSSProperties;
 
+  useEffect(() => {
+    if (workspaces.length === 0) {
+      setShowSetup(true);
+    }
+  }, [workspaces.length]);
+
   const handleNewWorkspace = useCallback(() => {
     setShowSetup(true);
   }, []);
@@ -158,7 +164,10 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
         gridTemplateId,
         panes,
         splitRows,
-        color
+        {
+          id: workspaceId,
+          color,
+        },
       );
       
       setShowSetup(false);

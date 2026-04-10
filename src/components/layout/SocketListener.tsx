@@ -2,7 +2,8 @@ import { useEffect, useRef } from "react";
 import { 
   useWorkspaceListStore, 
   useWorkspaceLayoutStore,
-  usePaneMetadataStore 
+  usePaneMetadataStore,
+  useUiStore,
 } from "../../stores/workspaceStore";
 import {
   loadPersistentData,
@@ -21,7 +22,7 @@ import { useKeybindingStore } from "../../stores/keybindingStore";
 function toConfig(
   ws: Workspace,
   cwds: Record<string, string>,
-  claudeSessionIds: Record<string, string>,
+  toolSessionIds: Record<string, string>,
 ): WorkspaceConfig {
   const metaState = usePaneMetadataStore.getState().metadata;
   const paneIdToIndex = new Map(ws.panes.map((p, i) => [p.id, i]));
@@ -33,15 +34,44 @@ function toConfig(
     id: ws.id,
     name: ws.name,
     grid_template_id: ws.gridTemplateId,
-    panes: ws.panes.map((p) => ({
-      agent_id: p.agentId,
-      label: p.label ?? null,
-      cwd: cwds[p.sessionId] ?? metaState[p.sessionId]?.cwd ?? p.cwd ?? null,
-      last_process: metaState[p.sessionId]?.processTitle ?? null,
-      claude_session_id: claudeSessionIds[p.sessionId] ?? null,
-    })),
+    panes: ws.panes.map((p) => {
+      const activeTab = p.tabs.find((tab) => tab.id === p.activeTabId) ?? p.tabs[0];
+      const activeMeta = activeTab ? metaState[activeTab.sessionId] : undefined;
+      const activeCwd = activeTab
+        ? cwds[activeTab.sessionId] ?? activeMeta?.cwd ?? activeTab.cwd ?? p.cwd ?? null
+        : p.cwd ?? null;
+      const activeLastProcess = activeMeta?.processTitle ?? activeTab?.lastProcess ?? p.lastProcess ?? null;
+      const activeToolSessionId = activeTab
+        ? toolSessionIds[activeTab.sessionId] ?? activeTab.claudeSessionId ?? p.claudeSessionId ?? null
+        : p.claudeSessionId ?? null;
+
+      return {
+        pane_id: p.id,
+        agent_id: activeTab?.agentId ?? p.agentId,
+        label: p.label ?? null,
+        cwd: activeCwd,
+        last_process: activeLastProcess,
+        claude_session_id: activeToolSessionId,
+        active_tab_id: p.activeTabId,
+        tabs: p.tabs.map((tab) => {
+          const tabMeta = metaState[tab.sessionId];
+          return {
+            tab_id: tab.id,
+            agent_id: tab.agentId,
+            label: tab.label ?? null,
+            type: tab.type ?? "terminal",
+            cwd: cwds[tab.sessionId] ?? tabMeta?.cwd ?? tab.cwd ?? null,
+            last_process: tabMeta?.processTitle ?? tab.lastProcess ?? null,
+            claude_session_id: toolSessionIds[tab.sessionId] ?? tab.claudeSessionId ?? null,
+          };
+        }),
+      };
+    }),
     created_at: ws.createdAt,
+    color: ws.color ?? null,
     split_rows,
+    row_sizes: ws.rowSizes ?? null,
+    column_sizes: ws.columnSizes ?? null,
   };
 }
 
@@ -77,12 +107,12 @@ export function useWorkspacePersist() {
           if (data.workspaces.length > 0) {
             const listStore = useWorkspaceListStore.getState();
             const layoutStore = useWorkspaceLayoutStore.getState();
+            let restoredActivePaneSessionId: string | null = null;
 
             if (listStore.workspaces.length <= 1) {
               for (const cfg of data.workspaces) {
-                const workspaceId = crypto.randomUUID();
                 const { panes, splitRows } = layoutStore.restorePanes(
-                  workspaceId,
+                  cfg.id,
                   cfg.panes,
                   cfg.split_rows ?? null,
                   cfg.grid_template_id as Workspace["gridTemplateId"],
@@ -93,12 +123,38 @@ export function useWorkspacePersist() {
                   cfg.grid_template_id as Workspace["gridTemplateId"],
                   panes,
                   splitRows,
+                  {
+                    id: cfg.id,
+                    createdAt: cfg.created_at,
+                    color: cfg.color ?? undefined,
+                    rowSizes: cfg.row_sizes ?? undefined,
+                    columnSizes: cfg.column_sizes ?? undefined,
+                    activate: false,
+                  },
                 );
+
+                if (cfg.id === data.active_workspace_id && data.active_pane_id) {
+                  const activePane = panes.find((pane) => pane.id === data.active_pane_id);
+                  restoredActivePaneSessionId = activePane?.sessionId ?? null;
+                }
               }
               const bootstrapWs = listStore.workspaces[0];
               if (bootstrapWs && data.workspaces.length > 0) {
                 listStore.removeWorkspace(bootstrapWs.id);
               }
+
+              const fallbackWorkspaceId = data.workspaces[data.workspaces.length - 1]?.id ?? null;
+              const nextActiveWorkspaceId =
+                data.active_workspace_id ?? fallbackWorkspaceId ?? data.workspaces[0]?.id ?? null;
+
+              if (nextActiveWorkspaceId) {
+                useWorkspaceListStore.getState().setActiveWorkspace(nextActiveWorkspaceId);
+              }
+              if (!restoredActivePaneSessionId && nextActiveWorkspaceId) {
+                restoredActivePaneSessionId =
+                  useWorkspaceListStore.getState().getWorkspace(nextActiveWorkspaceId)?.panes[0]?.sessionId ?? null;
+              }
+              useUiStore.getState().setActivePaneId(restoredActivePaneSessionId);
             }
           }
           _resolveLoaded();
@@ -119,16 +175,23 @@ export function useWorkspacePersist() {
       try {
         lastCwds = await getAllCwds();
         const state = useWorkspaceListStore.getState();
+        const uiState = useUiStore.getState();
         const metaState = usePaneMetadataStore.getState().metadata;
 
-        // Read pane → claude-session-id mappings written by launcher.sh
-        let claudeSessionIds: Record<string, string> = {};
+        // Read pane → tool-session-id mappings written by launcher.sh
+        let toolSessionIds: Record<string, string> = {};
         try {
-          claudeSessionIds = await readPaneSessionMappings();
+          toolSessionIds = await readPaneSessionMappings();
         } catch { /* ignore */ }
 
-        const configs = state.workspaces.map((ws) => toConfig(ws, lastCwds, claudeSessionIds));
-        await saveWorkspaces(configs);
+        const configs = state.workspaces.map((ws) => toConfig(ws, lastCwds, toolSessionIds));
+        const activeWorkspaceId = state.activeWorkspaceId ?? null;
+        const activePaneKey = activeWorkspaceId
+          ? state.workspaces
+              .find((ws) => ws.id === activeWorkspaceId)
+              ?.panes.find((pane) => pane.sessionId === uiState.activePaneId)?.id ?? null
+          : null;
+        await saveWorkspaces(configs, activeWorkspaceId, activePaneKey);
 
         const themeState = useThemeStore.getState();
         const keybindingState = useKeybindingStore.getState();
@@ -142,9 +205,11 @@ export function useWorkspacePersist() {
         const restoreEntries: [string, string][] = [];
         for (const ws of state.workspaces) {
           for (const pane of ws.panes) {
-            const cwd = lastCwds[pane.sessionId] ?? metaState[pane.sessionId]?.cwd ?? pane.cwd;
-            const proc = metaState[pane.sessionId]?.processTitle
-              ?? metaState[pane.sessionId]?.lastLogLine
+            const activeTab = pane.tabs.find((tab) => tab.id === pane.activeTabId);
+            const activeSessionId = activeTab?.sessionId ?? pane.sessionId;
+            const cwd = lastCwds[activeSessionId] ?? metaState[activeSessionId]?.cwd ?? activeTab?.cwd ?? pane.cwd;
+            const proc = metaState[activeSessionId]?.processTitle
+              ?? metaState[activeSessionId]?.lastLogLine
               ?? "";
             if (cwd) {
               restoreEntries.push([cwd, proc]);
@@ -162,11 +227,17 @@ export function useWorkspacePersist() {
     const unsub = useWorkspaceListStore.subscribe(() => {
       sync();
     });
+    const unsubUi = useUiStore.subscribe((state, prevState) => {
+      if (state.activePaneId !== prevState.activePaneId) {
+        sync();
+      }
+    });
 
     const interval = setInterval(sync, 10000);
 
     return () => {
       unsub();
+      unsubUi();
       clearInterval(interval);
     };
   }, []);

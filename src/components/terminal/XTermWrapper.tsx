@@ -17,6 +17,7 @@ import type { AgentStatus } from "../../stores/paneMetadataStoreCompat";
 import { useKeybindingStore } from "../../stores/keybindingStore";
 import { useThemeStore } from "../../stores/themeStore";
 import type { ITheme } from "@xterm/xterm";
+import { markStartupSessionSettled } from "../../lib/startupSessionGate";
 
 // Notification sound via Web Audio API — short gentle chime
 let _audioCtx: AudioContext | null = null;
@@ -51,6 +52,9 @@ interface XTermWrapperProps {
   onZoomToggle?: () => void;
   onUrlClick?: (url: string) => void;
   cwd?: string;
+  resumeMode?: "claude" | "claude-codex" | "codex";
+  resumeSessionId?: string;
+  launchEnv?: Record<string, string>;
 }
 
 const ANSI_KEYS: (keyof ITheme)[] = [
@@ -75,6 +79,66 @@ function buildThemeFromConfig(cfg: { background: string; foreground: string; ans
 // Cache terminal config globally — fetched once, reused across all panes
 let cachedConfig: { theme: ITheme; fontSize: number; fontFamily: string } | null = null;
 let configPromise: Promise<void> | null = null;
+const consumedResumeTokens = new Set<string>();
+
+const CODING_AGENT_HINT_PATTERN = /\b(?:ctrl|cmd|alt|shift)\+[\w?]+/gi;
+
+function isShortcutHintLine(line: string): boolean {
+  const shortcutCount = (line.match(CODING_AGENT_HINT_PATTERN) ?? []).length;
+  return (
+    shortcutCount >= 2
+    || /shift\+enter/i.test(line)
+    || /enter\s+(?:to|=)\s*(?:send|submit|continue|confirm)/i.test(line)
+    || /esc\s+to\s+(?:interrupt|cancel)/i.test(line)
+  );
+}
+
+function getShiftEnterSequence(command: string, processTitle?: string): string {
+  const commandParts = command.split(/[\\/]/);
+  const commandName = commandParts[commandParts.length - 1]
+    ?.replace(/\.exe$/i, "")
+    .toLowerCase();
+  const processParts = processTitle?.split(/[\\/]/);
+  const processName = processParts?.[processParts.length - 1]
+    ?.replace(/\.exe$/i, "")
+    .toLowerCase();
+  if (commandName === "codex" || processName === "codex") {
+    return "\x1b[13;2u";
+  }
+  return "\x1b[200~\n\x1b[201~";
+}
+
+function claimResumeEnv(
+  sessionId: string,
+  resumeMode?: "claude" | "claude-codex" | "codex",
+  resumeSessionId?: string,
+  cwd?: string,
+): { env?: Record<string, string>; token?: string } {
+  if (!resumeMode) return {};
+
+  const token = `${resumeMode}:${resumeSessionId ?? cwd ?? sessionId}`;
+  if (consumedResumeTokens.has(token)) {
+    return {};
+  }
+
+  consumedResumeTokens.add(token);
+
+  const env: Record<string, string> = {
+    MYCMUX_RESUME: resumeMode,
+    MYCMUX_PANE_SESSION_ID: sessionId,
+  };
+  if (resumeSessionId) {
+    env.MYCMUX_SESSION_ID = resumeSessionId;
+  }
+
+  return { env, token };
+}
+
+function releaseResumeToken(token?: string): void {
+  if (token) {
+    consumedResumeTokens.delete(token);
+  }
+}
 
 function ensureConfigLoaded(): Promise<void> {
   if (cachedConfig) return Promise.resolve();
@@ -112,6 +176,9 @@ export default memo(function XTermWrapper({
   onZoomToggle,
   onUrlClick,
   cwd,
+  resumeMode,
+  resumeSessionId,
+  launchEnv,
 }: XTermWrapperProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const searchAddonRef = useRef<SearchAddon | null>(null);
@@ -161,6 +228,20 @@ export default memo(function XTermWrapper({
     let resizeObserver: ResizeObserver | null = null;
     let resizeTimeout: ReturnType<typeof setTimeout>;
     let logThrottle: ReturnType<typeof setTimeout> | null = null;
+    let startupSettleTimeout: ReturnType<typeof setTimeout> | null = null;
+    let startupSettled = false;
+
+    const settleStartupSession = (): void => {
+      if (startupSettled) {
+        return;
+      }
+      startupSettled = true;
+      if (startupSettleTimeout) {
+        clearTimeout(startupSettleTimeout);
+        startupSettleTimeout = null;
+      }
+      markStartupSessionSettled(sessionId);
+    };
 
     async function init() {
       if (disposed) return;
@@ -170,7 +251,7 @@ export default memo(function XTermWrapper({
       const cfg = cachedConfig;
       const initTheme = theme ?? storeTheme.terminal;
       const initFontSize = fontSize ?? cfg?.fontSize ?? 14;
-      const initFontFamily = fontFamily ?? cfg?.fontFamily ?? "'JetBrainsMono Nerd Font Mono', 'JetBrains Mono', 'Geist Mono', 'BIZ UDGothic', 'MS Gothic', monospace";
+      const initFontFamily = fontFamily ?? cfg?.fontFamily ?? "'JetBrainsMono Nerd Font Mono', 'JetBrains Mono', 'Geist Mono', 'SF Mono', 'BIZ UDGothic', 'MS Gothic', monospace";
 
       term = new Terminal({
         cursorBlink: true,
@@ -179,13 +260,13 @@ export default memo(function XTermWrapper({
         fontFamily: initFontFamily,
         fontWeight: 400,
         fontWeightBold: 600,
-        letterSpacing: 0,
-        lineHeight: 1.15,
+        letterSpacing: -1,
+        lineHeight: 1.0,
         rescaleOverlappingGlyphs: true,
         customGlyphs: true,
         theme: initTheme,
         allowTransparency: false,
-        scrollback: 10000,
+        scrollback: 5000,
         smoothScrollDuration: 0,
         rightClickSelectsWord: true,
         minimumContrastRatio: 4.5,
@@ -245,9 +326,10 @@ export default memo(function XTermWrapper({
           return false;
         }
         
-        // Shift+Enter → bracketed paste with newline (Claude Code interprets as insert, not submit)
+        // Shift+Enter is used for multiline prompts by coding agents.
         if (e.key === "Enter" && e.shiftKey && !e.ctrlKey && !e.altKey) {
-          writeToSession(sessionId, "\x1b[200~\n\x1b[201~").catch(console.error);
+          const processTitle = usePaneMetadataStore.getState().metadata[sessionId]?.processTitle;
+          writeToSession(sessionId, getShiftEnterSequence(command, processTitle)).catch(console.error);
           return false;
         }
         
@@ -326,9 +408,9 @@ export default memo(function XTermWrapper({
             // Spinner: only the specific Braille chars used by Claude Code / Ink spinners
             // (not the full U+2800-28FF range which includes box-drawing used by tree/ls)
             const isSpinner = /[\u25CF\u25CB\u25D0-\u25D3\u2737\u2731\u280B\u2819\u2839\u2838\u283C\u2834\u2826\u2827\u2807\u280F]/.test(stripped) && stripped.length < 80;
-            const isWorking = isSpinner || /working\.\.\./i.test(stripped);
-            // "esc to interrupt" alone on status bar → not working. With spinner → working.
-            const isStatusBar = /esc to interrupt/i.test(stripped) && !isSpinner;
+            const isWorking = isSpinner || /working\.\.\.|thinking\.\.\.|analyzing|executing|applying/i.test(stripped);
+            // "esc to interrupt" or hotkey legends alone on the status bar are not work signals.
+            const isStatusBar = (isShortcutHintLine(stripped) || /esc to interrupt/i.test(stripped)) && !isSpinner;
 
             if (isWorking && !isStatusBar) {
               agentStatus = "working";
@@ -341,7 +423,10 @@ export default memo(function XTermWrapper({
               /\(y\/n\)\s*$/i.test(stripped) ||
               /\[y\/N\]/i.test(stripped) ||
               // "Type your answer/response" prompt (Claude Code AskUser)
-              /type your (answer|response)/i.test(stripped)
+              /type your (answer|response)/i.test(stripped) ||
+              /press enter to (continue|confirm|submit)/i.test(stripped) ||
+              /hit enter to /i.test(stripped) ||
+              /\bapprove\b.*\?/i.test(stripped)
             ) {
               agentStatus = "waiting";
             } else if (
@@ -360,6 +445,7 @@ export default memo(function XTermWrapper({
               /access \d+/i.test(stripped) ||
               /past research/i.test(stripped) ||
               /http:\/\/localhost/i.test(stripped) ||
+              isShortcutHintLine(stripped) ||
               /^\s*[\u2500-\u257F]+\s*$/.test(stripped) || // box-drawing chars only
               stripped.length < 3;
 
@@ -380,8 +466,10 @@ export default memo(function XTermWrapper({
             if (!suppressNotifications && agentStatus === "waiting") {
               const activePaneId = useUiStore.getState().activePaneId;
               if (activePaneId !== sessionId) {
-                usePaneMetadataStore.getState().incrementNotification(sessionId);
-                playNotificationSound();
+                const didNotify = usePaneMetadataStore.getState().notifyWaiting(sessionId, stripped);
+                if (didNotify) {
+                  playNotificationSound();
+                }
               }
             }
           }
@@ -403,15 +491,30 @@ export default memo(function XTermWrapper({
       fitAddon.fit();
       const cols = term.cols;
       const rows = term.rows;
+      const { env: resumeEnv, token: resumeToken } = claimResumeEnv(
+        sessionId,
+        resumeMode,
+        resumeSessionId,
+        cwd,
+      );
+      const sessionEnv = launchEnv || resumeEnv
+        ? { ...(launchEnv ?? {}), ...(resumeEnv ?? {}) }
+        : undefined;
 
       try {
         await createSession(sessionId, command, args, cols, rows, (rawData: ArrayBuffer) => {
           if (disposed || !term) return;
+          settleStartupSession();
           try { term.write(new Uint8Array(rawData)); } catch { /* disposed between check and write */ }
-        }, cwd);
+        }, cwd, sessionEnv);
         sessionStarted = true;
+        startupSettleTimeout = setTimeout(() => {
+          settleStartupSession();
+        }, 250);
         console.log(`[PERF] Terminal session created - ${(performance.now() - initStart).toFixed(2)}ms`);
       } catch (err) {
+        releaseResumeToken(resumeToken);
+        settleStartupSession();
         console.error("[XTermWrapper] Failed to create session:", err);
         term.writeln(`\r\n\x1b[31mFailed to start: ${err}\x1b[0m`);
       }
@@ -444,6 +547,9 @@ export default memo(function XTermWrapper({
       disposed = true;
       const cleanupStart = performance.now();
       clearTimeout(resizeTimeout);
+      if (startupSettleTimeout) {
+        clearTimeout(startupSettleTimeout);
+      }
       if (logThrottle) { clearTimeout(logThrottle); logThrottle = null; }
       resizeObserver?.disconnect();
       unlistenExit?.();
@@ -538,6 +644,7 @@ export default memo(function XTermWrapper({
           overflow: "hidden",
           position: "relative",
           contain: "strict",
+          background: "var(--cmux-bg, #0a0a0a)",
         }}
       />
     </div>

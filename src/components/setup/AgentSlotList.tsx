@@ -24,7 +24,7 @@ export default function AgentSlotList({ paneCount, assignments, onChange }: Agen
           <AgentSelector
             key={i}
             slotIndex={i}
-            value={assignments[i] ?? "shell"}
+            value={assignments[i] ?? "shell-starter"}
             onChange={(agentId) => onChange({ ...assignments, [i]: agentId })}
           />
         ))}

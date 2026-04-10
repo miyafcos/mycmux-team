@@ -51,6 +51,7 @@ pub fn run() {
             commands::workspace::write_restore_manifest,
             commands::window::claim_leader,
             commands::window::get_window_count,
+            commands::window::reveal_main_window,
             socket::socket_response,
         ])
         .setup(|#[allow(unused)] app| {
@@ -58,6 +59,8 @@ pub fn run() {
 
             let app_handle = app.handle().clone();
             let state = app.state::<AppState>();
+            #[cfg(target_os = "windows")]
+            crate::pty::windows_console::start_startup_flash_suppression(std::process::id());
             let ms = state.metadata_store.clone();
             pty::monitor::start_monitor(
                 app_handle.clone(),
@@ -75,6 +78,10 @@ pub fn run() {
             // Kill all PTY sessions when the main window closes
             let mgr = state.session_manager.clone();
             if let Some(main_window) = app.get_webview_window("main") {
+                if let Some(icon) = app.default_window_icon().cloned() {
+                    let _ = main_window.set_icon(icon);
+                }
+
                 main_window.on_window_event(move |event| {
                     if let tauri::WindowEvent::Destroyed = event {
                         mgr.kill_all();

@@ -1,5 +1,7 @@
 import { useEffect, useRef, useMemo } from "react";
-import { useWorkspaceListStore, usePaneMetadataStore } from "../../stores/workspaceStore";
+import { useWorkspaceListStore, usePaneMetadataStore, useWorkspaceLayoutStore } from "../../stores/workspaceStore";
+import { useUiStore } from "../../stores/uiStore";
+import { getAgent } from "../../lib/agents";
 
 interface NotificationPanelProps {
   onClose: () => void;
@@ -8,29 +10,47 @@ interface NotificationPanelProps {
 export default function NotificationPanel({ onClose }: NotificationPanelProps) {
   const workspaces = useWorkspaceListStore((s) => s.workspaces);
   const setActive = useWorkspaceListStore((s) => s.setActiveWorkspace);
+  const setActivePaneTab = useWorkspaceLayoutStore((s) => s.setActivePaneTab);
   const paneMetadata = usePaneMetadataStore((s) => s.metadata);
   const clearNotification = usePaneMetadataStore((s) => s.clearNotification);
+  const setActivePaneId = useUiStore((s) => s.setActivePaneId);
   const panelRef = useRef<HTMLDivElement>(null);
 
   // Collect all panes with notifications (memoized to avoid O(n*m) rebuild)
   const notifications = useMemo(() => {
-    const result: { workspaceId: string; workspaceName: string; workspaceColor: string; sessionId: string; count: number; lastLogLine?: string }[] = [];
+    const result: {
+      workspaceId: string;
+      workspaceName: string;
+      workspaceColor: string;
+      paneId: string;
+      tabId: string;
+      sessionId: string;
+      count: number;
+      label: string;
+      lastLogLine?: string;
+    }[] = [];
     for (const ws of workspaces) {
       for (const pane of ws.panes) {
-        const m = paneMetadata[pane.sessionId];
-        if (m && (m.notificationCount ?? 0) > 0) {
-          result.push({
-            workspaceId: ws.id,
-            workspaceName: ws.name,
-            workspaceColor: ws.color ?? "#0A84FF",
-            sessionId: pane.sessionId,
-            count: m.notificationCount ?? 0,
-            lastLogLine: m.lastLogLine,
-          });
+        for (const tab of pane.tabs) {
+          const m = paneMetadata[tab.sessionId];
+          if (m && (m.notificationCount ?? 0) > 0) {
+            const agentName = getAgent(tab.agentId)?.name ?? "Shell";
+            result.push({
+              workspaceId: ws.id,
+              workspaceName: ws.name,
+              workspaceColor: ws.color ?? "#0A84FF",
+              paneId: pane.id,
+              tabId: tab.id,
+              sessionId: tab.sessionId,
+              count: m.notificationCount ?? 0,
+              label: tab.label ?? m.processTitle ?? m.cwd?.split("/").pop() ?? agentName,
+              lastLogLine: m.lastLogLine,
+            });
+          }
         }
       }
     }
-    return result;
+    return result.sort((a, b) => b.count - a.count);
   }, [workspaces, paneMetadata]);
 
   // Close on outside click
@@ -49,6 +69,20 @@ export default function NotificationPanel({ onClose }: NotificationPanelProps) {
       clearNotification(n.sessionId);
     }
     onClose();
+  }
+
+  function focusPane(sessionId: string) {
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        const el = document.querySelector<HTMLElement>(`[data-session-id="${sessionId}"]`);
+        const textarea = el?.querySelector<HTMLTextAreaElement>("textarea");
+        if (textarea) {
+          textarea.focus();
+        } else {
+          el?.focus();
+        }
+      });
+    });
   }
 
   return (
@@ -94,8 +128,11 @@ export default function NotificationPanel({ onClose }: NotificationPanelProps) {
               key={n.sessionId}
               onClick={() => {
                 setActive(n.workspaceId);
+                setActivePaneTab(n.workspaceId, n.paneId, n.tabId);
+                setActivePaneId(n.sessionId);
                 clearNotification(n.sessionId);
                 onClose();
+                focusPane(n.sessionId);
               }}
               style={{
                 cursor: "pointer",
@@ -115,6 +152,9 @@ export default function NotificationPanel({ onClose }: NotificationPanelProps) {
                 }} />
                 {/* Workspace name */}
                 <span style={{ flex: 1, fontWeight: 500, fontSize: 12 }}>{n.workspaceName}</span>
+                <span style={{ color: "var(--cmux-text-tertiary)", fontSize: 11, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {n.label}
+                </span>
                 {/* Count badge */}
                 <span style={{
                   background: "#007aff",

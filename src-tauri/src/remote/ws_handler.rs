@@ -335,17 +335,22 @@ fn handle_control(text: &str, session_id: &str, state: &RemoteState) {
 
 /// Replicate get_default_shell() logic from commands/terminal.rs
 fn get_default_shell() -> (String, Vec<String>) {
-    if let Ok(shell) = std::env::var("SHELL") {
-        if std::path::Path::new(&shell).exists() {
-            return (shell, vec![]);
-        }
-    }
-
     #[cfg(target_os = "windows")]
     {
+        if let Ok(shell) = std::env::var("SHELL") {
+            if std::path::Path::new(&shell).exists() {
+                let lower = shell.to_ascii_lowercase();
+                let args = if lower.ends_with("bash.exe") {
+                    vec!["--login".to_string(), "-i".to_string()]
+                } else {
+                    vec![]
+                };
+                return (shell, args);
+            }
+        }
         let git_bash = r"C:\Program Files\Git\bin\bash.exe";
         if std::path::Path::new(git_bash).exists() {
-            return (git_bash.to_string(), vec!["--login".to_string()]);
+            return (git_bash.to_string(), vec!["--login".to_string(), "-i".to_string()]);
         }
         let pwsh = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe";
         if std::path::Path::new(pwsh).exists() {
@@ -359,6 +364,11 @@ fn get_default_shell() -> (String, Vec<String>) {
 
     #[cfg(not(target_os = "windows"))]
     {
+        if let Ok(shell) = std::env::var("SHELL") {
+            if std::path::Path::new(&shell).exists() {
+                return (shell, vec![]);
+            }
+        }
         ("/bin/bash".to_string(), vec![])
     }
 }

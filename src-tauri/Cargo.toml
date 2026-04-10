@@ -48,4 +48,7 @@ objc = "0.2"
 # Windows-specific dependencies (WebView2 via wry)
 [target.'cfg(target_os = "windows")'.dependencies]
 wry = { version = "0.54", features = [] }
-windows = { version = "0.58", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+windows = { version = "0.58", features = ["Win32_Foundation", "Win32_UI_Accessibility", "Win32_UI_WindowsAndMessaging"] }
+
+[patch.crates-io]
+portable-pty = { path = "vendor/portable-pty-0.8.1" }

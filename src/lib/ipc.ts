@@ -124,14 +124,31 @@ export async function getWindowCount(): Promise<number> {
   return invoke("get_window_count");
 }
 
+export async function revealMainWindow(): Promise<void> {
+  return invoke("reveal_main_window");
+}
+
 // ─── Persistence commands ────────────────────────────────────────────────────
 
+export interface PaneTabConfig {
+  tab_id?: string | null;
+  agent_id: string;
+  label?: string | null;
+  type?: "terminal" | null;
+  cwd?: string | null;
+  last_process?: string | null;
+  claude_session_id?: string | null;
+}
+
 export interface PaneConfig {
+  pane_id?: string | null;
   agent_id: string;
   label: string | null;
   cwd?: string | null;
   last_process?: string | null;
   claude_session_id?: string | null;
+  active_tab_id?: string | null;
+  tabs?: PaneTabConfig[] | null;
 }
 
 export interface WorkspaceConfig {
@@ -140,7 +157,10 @@ export interface WorkspaceConfig {
   grid_template_id: string;
   panes: PaneConfig[];
   created_at: number;
+  color?: string | null;
   split_rows?: number[][] | null;
+  row_sizes?: number[] | null;
+  column_sizes?: number[][] | null;
 }
 
 export interface AppSettings {
@@ -152,6 +172,8 @@ export interface AppSettings {
 export interface PersistentData {
   workspaces: WorkspaceConfig[];
   settings: AppSettings;
+  active_workspace_id?: string | null;
+  active_pane_id?: string | null;
 }
 
 export async function loadPersistentData(): Promise<PersistentData> {
@@ -160,8 +182,14 @@ export async function loadPersistentData(): Promise<PersistentData> {
 
 export async function saveWorkspaces(
   workspaces: WorkspaceConfig[],
+  activeWorkspaceId?: string | null,
+  activePaneId?: string | null,
 ): Promise<void> {
-  return invoke("save_workspaces", { workspaces });
+  return invoke("save_workspaces", {
+    workspaces,
+    activeWorkspaceId: activeWorkspaceId ?? null,
+    activePaneId: activePaneId ?? null,
+  });
 }
 
 export async function saveSettings(settings: AppSettings): Promise<void> {

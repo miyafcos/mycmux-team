@@ -12,14 +12,35 @@ import { useWorkspaceListStore } from "./workspaceListStore";
  * Handles pane CRUD and layout (splitRows)
  */
 
-function makeTab(workspaceId: string, paneId: string, agentId: string, type: PaneTab["type"] = "terminal"): PaneTab {
-  const tabId = uuid();
+function makeTab(
+  workspaceId: string,
+  paneId: string,
+  agentId: string,
+  type: PaneTab["type"] = "terminal",
+  options?: Partial<Pick<PaneTab, "id" | "label" | "cwd" | "lastProcess" | "claudeSessionId">>,
+): PaneTab {
+  const tabId = options?.id ?? uuid();
   return {
     id: tabId,
     sessionId: makeSessionId(workspaceId, `${paneId}-${tabId}`),
     agentId,
+    label: options?.label,
     type,
+    cwd: options?.cwd,
+    lastProcess: options?.lastProcess,
+    claudeSessionId: options?.claudeSessionId,
   };
+}
+
+function normalizeRestoredAgentId(
+  agentId: string | null | undefined,
+  lastProcess: string | null | undefined,
+  claudeSessionId: string | null | undefined,
+): string {
+  if (agentId === "shell" && !lastProcess && !claudeSessionId) {
+    return "shell-starter";
+  }
+  return agentId || getDefaultAgent().id;
 }
 
 interface BuildPanesResult {
@@ -78,6 +99,7 @@ interface WorkspaceLayoutState {
   addTabToPane: (workspaceId: string, paneId: string, agentId?: string, type?: PaneTab["type"]) => void;
   removeTabFromPane: (workspaceId: string, paneId: string, tabId: string) => void;
   setActivePaneTab: (workspaceId: string, paneId: string, tabId: string) => void;
+  setTabAgentId: (workspaceId: string, paneId: string, tabId: string, agentId: string) => void;
   
   // Helper to build initial panes for new workspace
   buildInitialPanes: (
@@ -102,19 +124,46 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
   restorePanes: (workspaceId, configs, savedSplitRows, gridTemplateId) => {
     const defaultAgentId = getDefaultAgent().id;
     const panes: Pane[] = configs.map((pc) => {
-      const paneId = uuid();
-      const agentId = pc.agent_id || defaultAgentId;
-      const tab = makeTab(workspaceId, paneId, agentId);
+      const paneId = pc.pane_id ?? uuid();
+      const tabs = pc.tabs && pc.tabs.length > 0
+        ? pc.tabs.map((tabConfig) => {
+            const tabAgentId = normalizeRestoredAgentId(
+              tabConfig.agent_id || pc.agent_id,
+              tabConfig.last_process,
+              tabConfig.claude_session_id,
+            ) || defaultAgentId;
+            return makeTab(
+              workspaceId,
+              paneId,
+              tabAgentId,
+              tabConfig.type ?? "terminal",
+              {
+                id: tabConfig.tab_id ?? undefined,
+                label: tabConfig.label ?? undefined,
+                cwd: tabConfig.cwd ?? undefined,
+                lastProcess: tabConfig.last_process ?? undefined,
+                claudeSessionId: tabConfig.claude_session_id ?? undefined,
+              },
+            );
+          })
+        : [makeTab(workspaceId, paneId, normalizeRestoredAgentId(pc.agent_id, pc.last_process, pc.claude_session_id) || defaultAgentId, "terminal", {
+            label: pc.label ?? undefined,
+            cwd: pc.cwd ?? undefined,
+            lastProcess: pc.last_process ?? undefined,
+            claudeSessionId: pc.claude_session_id ?? undefined,
+          })];
+      const activeTab = tabs.find((tab) => tab.id === pc.active_tab_id) ?? tabs[0];
+      const agentId = activeTab?.agentId || normalizeRestoredAgentId(pc.agent_id, pc.last_process, pc.claude_session_id) || defaultAgentId;
       return {
         id: paneId,
         agentId,
-        sessionId: tab.sessionId,
-        tabs: [tab],
-        activeTabId: tab.id,
-        cwd: pc.cwd ?? undefined,
+        sessionId: activeTab.sessionId,
+        tabs,
+        activeTabId: activeTab.id,
+        cwd: activeTab.cwd ?? pc.cwd ?? undefined,
         label: pc.label ?? undefined,
-        lastProcess: pc.last_process ?? undefined,
-        claudeSessionId: pc.claude_session_id ?? undefined,
+        lastProcess: activeTab.lastProcess ?? pc.last_process ?? undefined,
+        claudeSessionId: activeTab.claudeSessionId ?? pc.claude_session_id ?? undefined,
       };
     });
 
@@ -162,7 +211,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
         .filter((row) => row.length > 0);
     }
 
-    useWorkspaceListStore.getState()._updateWorkspacePanes(workspaceId, newPanes, newSplitRows);
+    useWorkspaceListStore.getState()._updateWorkspacePanes(workspaceId, newPanes, newSplitRows, true);
   },
 
   addPaneToWorkspace: (workspaceId, afterPaneId, direction, agentId) => {
@@ -206,7 +255,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
       }
     }
 
-    useWorkspaceListStore.getState()._updateWorkspacePanes(workspaceId, newPanes, newSplitRows);
+    useWorkspaceListStore.getState()._updateWorkspacePanes(workspaceId, newPanes, newSplitRows, true);
   },
 
   addTabToPane: (workspaceId, paneId, agentId, type = "terminal") => {
@@ -234,16 +283,42 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
     const workspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
     if (!workspace) return;
 
+    let removedPane = false;
     const newPanes = workspace.panes.flatMap((p) => {
       if (p.id !== paneId) return [p];
       const remaining = p.tabs.filter((t) => t.id !== tabId);
-      if (remaining.length === 0) return []; // remove pane if no tabs left
+      if (remaining.length === 0) {
+        if (workspace.panes.length <= 1) {
+          return [p];
+        }
+        removedPane = true;
+        return [];
+      }
       const newActiveId = p.activeTabId === tabId ? remaining[remaining.length - 1].id : p.activeTabId;
       const activeTab = remaining.find((t) => t.id === newActiveId) ?? remaining[0];
-      return [{ ...p, tabs: remaining, activeTabId: newActiveId, sessionId: activeTab.sessionId }];
+      return [{
+        ...p,
+        tabs: remaining,
+        activeTabId: newActiveId,
+        sessionId: activeTab.sessionId,
+        cwd: activeTab.cwd ?? p.cwd,
+        lastProcess: activeTab.lastProcess ?? p.lastProcess,
+        claudeSessionId: activeTab.claudeSessionId ?? p.claudeSessionId,
+      }];
     });
 
-    useWorkspaceListStore.getState()._updateWorkspacePanes(workspaceId, newPanes);
+    const nextSplitRows = removedPane && workspace.splitRows
+      ? workspace.splitRows
+          .map((row) => row.filter((id) => id !== paneId))
+          .filter((row) => row.length > 0)
+      : undefined;
+
+    useWorkspaceListStore.getState()._updateWorkspacePanes(
+      workspaceId,
+      newPanes,
+      nextSplitRows,
+      removedPane,
+    );
   },
 
   setActivePaneTab: (workspaceId, paneId, tabId) => {
@@ -254,7 +329,36 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
       if (p.id !== paneId) return p;
       const tab = p.tabs.find((t) => t.id === tabId);
       if (!tab) return p;
-      return { ...p, activeTabId: tabId, sessionId: tab.sessionId };
+      return {
+        ...p,
+        activeTabId: tabId,
+        sessionId: tab.sessionId,
+        cwd: tab.cwd ?? p.cwd,
+        lastProcess: tab.lastProcess ?? p.lastProcess,
+        claudeSessionId: tab.claudeSessionId ?? p.claudeSessionId,
+      };
+    });
+
+    useWorkspaceListStore.getState()._updateWorkspacePanes(workspaceId, newPanes);
+  },
+
+  setTabAgentId: (workspaceId, paneId, tabId, agentId) => {
+    const workspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
+    if (!workspace) return;
+
+    const newPanes = workspace.panes.map((pane) => {
+      if (pane.id !== paneId) return pane;
+      const tabs = pane.tabs.map((tab) =>
+        tab.id === tabId
+          ? { ...tab, agentId }
+          : tab,
+      );
+      const activeTab = tabs.find((tab) => tab.id === pane.activeTabId) ?? tabs[0];
+      return {
+        ...pane,
+        tabs,
+        agentId: activeTab.agentId,
+      };
     });
 
     useWorkspaceListStore.getState()._updateWorkspacePanes(workspaceId, newPanes);

@@ -54,8 +54,11 @@ impl PtySession {
         cmd.args(args);
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
-        cmd.env("TERM_PROGRAM", "mycmux");
+        // Keep the legacy TERM_PROGRAM for shell launcher compatibility.
+        // The public app name is exposed separately via MYCMUX_TERM_PROGRAM.
+        cmd.env("TERM_PROGRAM", "ptrterminal");
         cmd.env("TERM_PROGRAM_VERSION", env!("CARGO_PKG_VERSION"));
+        cmd.env("MYCMUX_TERM_PROGRAM", "mycmux");
 
         if let Some(ref extra_env) = env {
             for (k, v) in extra_env {
@@ -75,6 +78,9 @@ impl PtySession {
             .slave
             .spawn_command(cmd)
             .map_err(|e| format!("Failed to spawn command: {e}"))?;
+
+        #[cfg(target_os = "windows")]
+        crate::pty::windows_console::suppress_spawn_flash(std::process::id());
 
         // Drop slave — we only need master
         drop(pair.slave);

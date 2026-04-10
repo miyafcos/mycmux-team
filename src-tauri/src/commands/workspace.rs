@@ -12,9 +12,13 @@ pub fn load_persistent_data(app_handle: AppHandle) -> Result<PersistentData, Str
 pub fn save_workspaces(
     app_handle: AppHandle,
     workspaces: Vec<WorkspaceConfig>,
+    active_workspace_id: Option<String>,
+    active_pane_id: Option<String>,
 ) -> Result<(), String> {
     let mut data = storage::load(&app_handle).unwrap_or_default();
     data.workspaces = workspaces;
+    data.active_workspace_id = active_workspace_id;
+    data.active_pane_id = active_pane_id;
     storage::save(&app_handle, &data)
 }
 

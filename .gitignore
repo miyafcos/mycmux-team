@@ -39,6 +39,7 @@ BridgeSpace.deb
 # Logs
 *.log
 npm-debug.log*
+tmp/
 
 # TypeScript cache
 *.tsbuildinfo
