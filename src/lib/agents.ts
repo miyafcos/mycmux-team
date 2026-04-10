@@ -12,15 +12,6 @@ export async function initDefaultShell(): Promise<void> {
 
 export const BUILT_IN_AGENTS: AgentDefinition[] = [
   {
-    id: "shell-starter",
-    name: "Shell",
-    description: "Native startup chooser",
-    command: "",
-    args: [],
-    icon: "$",
-    color: "#a6e3a1",
-  },
-  {
     id: "shell",
     name: "Shell",
     description: "Default system shell",

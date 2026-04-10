@@ -2,7 +2,6 @@ import { memo, useCallback, useEffect, useState } from "react";
 import ErrorBoundary from "../common/ErrorBoundary";
 import type { Pane, PaneTab } from "../../types";
 import PaneTabBar from "./PaneTabBar";
-import PaneStarter from "./PaneStarter";
 import XTermWrapper from "../terminal/XTermWrapper";
 import {
   useWorkspaceLayoutStore,
@@ -42,8 +41,6 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
   const addTabToPane = useWorkspaceLayoutStore((s) => s.addTabToPane);
   const removeTabFromPane = useWorkspaceLayoutStore((s) => s.removeTabFromPane);
   const setActivePaneTab = useWorkspaceLayoutStore((s) => s.setActivePaneTab);
-  const setTabAgentId = useWorkspaceLayoutStore((s) => s.setTabAgentId);
-  const [launchTargets, setLaunchTargets] = useState<Record<string, string>>({});
 
   const isActive = activePaneId === pane.sessionId;
   const isFlashing = pane.tabs.some((tab) => flashingPaneIds.has(tab.sessionId));
@@ -106,13 +103,6 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
     const currentZoomed = useUiStore.getState().zoomedPaneId;
     setZoomedPaneId(currentZoomed === pane.id ? null : pane.id);
   }, [pane.id, setZoomedPaneId]);
-
-  const handleStarterSelect = useCallback((tabId: string, target: string) => {
-    setLaunchTargets((prev) => ({ ...prev, [tabId]: target }));
-    setTabAgentId(workspaceId, pane.id, tabId, "shell");
-    setActivePaneTab(workspaceId, pane.id, tabId);
-    setActivePaneId(pane.sessionId);
-  }, [pane.id, setActivePaneId, setActivePaneTab, setTabAgentId, workspaceId, pane.sessionId]);
 
   useEffect(() => {
     setMountedTabIds((prev) => {
@@ -185,13 +175,11 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
         {/* Render all tabs — hide inactive ones to preserve PTY state */}
         {pane.tabs.filter((tab) => mountedTabIds.has(tab.id)).map((tab) => {
           const isActiveTab = tab.id === pane.activeTabId;
-          const agent = getAgent(tab.agentId) ?? getDefaultAgent();
+          const resolvedAgentId = tab.agentId === "shell-starter" ? "shell" : tab.agentId;
+          const agent = getAgent(resolvedAgentId) ?? getDefaultAgent();
           const tabMeta = allMetadata[tab.sessionId];
           const tabCwd = tabMeta?.cwd ?? tab.cwd ?? paneCwd;
           const resumeMode = getResumeMode(tabMeta?.processTitle ?? tab.lastProcess);
-          const isStarter = tab.agentId === "shell-starter";
-          const launchTarget = launchTargets[tab.id];
-          const launchEnv = launchTarget ? { MYCMUX_LAUNCH_TARGET: launchTarget } : undefined;
 
           return (
             <div
@@ -204,21 +192,16 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
               }}
             >
               <ErrorBoundary>
-                {isStarter ? (
-                  <PaneStarter onSelect={(target) => handleStarterSelect(tab.id, target)} />
-                ) : (
-                  <XTermWrapper
-                    sessionId={tab.sessionId}
-                    command={agent.command}
-                    args={agent.args}
-                    suppressNotifications={isActive && tab.id === pane.activeTabId}
-                    onZoomToggle={handleZoomToggle}
-                    cwd={tabCwd}
-                    resumeMode={resumeMode}
-                    resumeSessionId={tab.claudeSessionId}
-                    launchEnv={launchEnv}
-                  />
-                )}
+                <XTermWrapper
+                  sessionId={tab.sessionId}
+                  command={agent.command}
+                  args={agent.args}
+                  suppressNotifications={isActive && tab.id === pane.activeTabId}
+                  onZoomToggle={handleZoomToggle}
+                  cwd={tabCwd}
+                  resumeMode={resumeMode}
+                  resumeSessionId={tab.claudeSessionId}
+                />
               </ErrorBoundary>
             </div>
           );
