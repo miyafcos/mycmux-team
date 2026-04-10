@@ -34,11 +34,9 @@ function makeTab(
 
 function normalizeRestoredAgentId(
   agentId: string | null | undefined,
-  lastProcess: string | null | undefined,
-  claudeSessionId: string | null | undefined,
 ): string {
-  if (agentId === "shell" && !lastProcess && !claudeSessionId) {
-    return "shell-starter";
+  if (agentId === "shell-starter") {
+    return "shell";
   }
   return agentId || getDefaultAgent().id;
 }
@@ -129,8 +127,6 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
         ? pc.tabs.map((tabConfig) => {
             const tabAgentId = normalizeRestoredAgentId(
               tabConfig.agent_id || pc.agent_id,
-              tabConfig.last_process,
-              tabConfig.claude_session_id,
             ) || defaultAgentId;
             return makeTab(
               workspaceId,
@@ -146,14 +142,14 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
               },
             );
           })
-        : [makeTab(workspaceId, paneId, normalizeRestoredAgentId(pc.agent_id, pc.last_process, pc.claude_session_id) || defaultAgentId, "terminal", {
+        : [makeTab(workspaceId, paneId, normalizeRestoredAgentId(pc.agent_id) || defaultAgentId, "terminal", {
             label: pc.label ?? undefined,
             cwd: pc.cwd ?? undefined,
             lastProcess: pc.last_process ?? undefined,
             claudeSessionId: pc.claude_session_id ?? undefined,
           })];
       const activeTab = tabs.find((tab) => tab.id === pc.active_tab_id) ?? tabs[0];
-      const agentId = activeTab?.agentId || normalizeRestoredAgentId(pc.agent_id, pc.last_process, pc.claude_session_id) || defaultAgentId;
+      const agentId = activeTab?.agentId || normalizeRestoredAgentId(pc.agent_id) || defaultAgentId;
       return {
         id: paneId,
         agentId,

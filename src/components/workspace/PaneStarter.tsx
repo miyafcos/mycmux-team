@@ -1,11 +1,11 @@
 const START_OPTIONS = [
-  { id: "claude", label: "1. Claude Code", hint: "Standard Claude Code launch" },
-  { id: "claude-resume", label: "2. Claude Code (resume)", hint: "Resume prompt via launcher" },
-  { id: "claude-auto-mode", label: "3. Claude Code (auto-mode)", hint: "Launch with auto-mode" },
-  { id: "codex", label: "4. Codex", hint: "Standard Codex launch" },
-  { id: "codex-resume", label: "5. Codex (resume)", hint: "Resume prompt via launcher" },
-  { id: "claude-codex", label: "6. claude-codex", hint: "Claude-on-Codex hybrid route" },
-  { id: "custom", label: "7. Custom...", hint: "Open custom command prompt" },
+  { id: "claude", label: "1. Claude Code" },
+  { id: "claude-resume", label: "2. Claude Code (resume)" },
+  { id: "claude-auto-mode", label: "3. Claude Code (auto-mode)" },
+  { id: "codex", label: "4. Codex" },
+  { id: "codex-resume", label: "5. Codex (resume)" },
+  { id: "claude-codex", label: "6. claude-codex" },
+  { id: "custom", label: "7. Custom..." },
 ] as const;
 
 type StartOptionId = typeof START_OPTIONS[number]["id"] | "shell";
@@ -15,6 +15,32 @@ interface PaneStarterProps {
 }
 
 export default function PaneStarter({ onSelect }: PaneStarterProps) {
+  const panelStyle: React.CSSProperties = {
+    width: 420,
+    maxWidth: "100%",
+    background: "var(--cmux-surface)",
+    border: "1px solid var(--cmux-border)",
+    borderRadius: 8,
+    padding: 24,
+    display: "flex",
+    flexDirection: "column",
+    gap: 10,
+    boxSizing: "border-box",
+  };
+
+  const buttonStyle: React.CSSProperties = {
+    width: "100%",
+    textAlign: "left",
+    background: "transparent",
+    border: "1px solid var(--cmux-border)",
+    borderRadius: 4,
+    color: "var(--cmux-text)",
+    padding: "8px 10px",
+    fontSize: 12,
+    fontFamily: "'JetBrains Mono', monospace",
+    cursor: "pointer",
+  };
+
   return (
     <div
       style={{
@@ -28,76 +54,42 @@ export default function PaneStarter({ onSelect }: PaneStarterProps) {
         boxSizing: "border-box",
       }}
     >
-      <div
-        style={{
-          width: "min(460px, 100%)",
-          border: "1px solid var(--cmux-border)",
-          borderRadius: 10,
-          background: "rgba(18, 24, 38, 0.92)",
-          boxShadow: "0 10px 24px rgba(0, 0, 0, 0.28)",
-          padding: 18,
-          display: "flex",
-          flexDirection: "column",
-          gap: 10,
-        }}
-      >
+      <div style={panelStyle}>
         <div
           style={{
             fontSize: 13,
             fontWeight: 700,
             color: "var(--cmux-text)",
             fontFamily: "'JetBrains Mono', monospace",
-            letterSpacing: "0.04em",
           }}
         >
           Launch
         </div>
         <div
           style={{
-            fontSize: 11,
+            fontSize: 12,
             color: "var(--cmux-text-secondary)",
             fontFamily: "'JetBrains Mono', monospace",
-            marginBottom: 2,
+            marginBottom: 4,
           }}
         >
-          Select a startup target for this pane.
+          Select target
         </div>
         {START_OPTIONS.map((option) => (
           <button
             key={option.id}
             onClick={() => onSelect(option.id)}
-            style={{
-              width: "100%",
-              textAlign: "left",
-              border: "1px solid var(--cmux-border)",
-              borderRadius: 8,
-              background: "rgba(255,255,255,0.03)",
-              color: "var(--cmux-text)",
-              padding: "10px 12px",
-              cursor: "pointer",
-              fontFamily: "'JetBrains Mono', monospace",
-              display: "flex",
-              flexDirection: "column",
-              gap: 4,
-            }}
+            style={buttonStyle}
           >
-            <span style={{ fontSize: 12, fontWeight: 700 }}>{option.label}</span>
-            <span style={{ fontSize: 10, color: "var(--cmux-text-secondary)" }}>{option.hint}</span>
+            {option.label}
           </button>
         ))}
         <button
           onClick={() => onSelect("shell")}
           style={{
-            width: "100%",
-            textAlign: "left",
-            border: "1px dashed var(--cmux-border)",
-            borderRadius: 8,
-            background: "transparent",
+            ...buttonStyle,
             color: "var(--cmux-text-secondary)",
-            padding: "10px 12px",
-            cursor: "pointer",
-            fontFamily: "'JetBrains Mono', monospace",
-            fontSize: 12,
+            marginTop: 4,
           }}
         >
           Shell prompt

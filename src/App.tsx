@@ -65,7 +65,7 @@ function App() {
       const startupSessionIds = startupWorkspace
         ? startupWorkspace.panes.flatMap((pane) => {
             const activeTab = pane.tabs.find((tab) => tab.id === pane.activeTabId) ?? pane.tabs[0];
-            return activeTab.agentId === "shell-starter" ? [] : [activeTab.sessionId];
+            return [activeTab.sessionId];
           })
         : [];
       prepareStartupSessionGate(startupSessionIds);
