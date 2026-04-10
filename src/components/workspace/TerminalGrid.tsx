@@ -1,4 +1,4 @@
-import { useCallback, useMemo, memo } from "react";
+import { useCallback, useMemo, memo, useRef } from "react";
 import { Allotment } from "allotment";
 import "allotment/dist/style.css";
 import type { Pane, GridTemplateId } from "../../types";
@@ -44,18 +44,48 @@ export default memo(function TerminalGrid({
   }, [workspaceId, addPaneToWorkspace]);
 
   const paneMap = useMemo(() => Object.fromEntries(panes.map((p) => [p.id, p])), [panes]);
+  const rowKeyStateRef = useRef<{
+    nextId: number;
+    entries: Array<{ key: string; paneIds: string[] }>;
+  }>({
+    nextId: 0,
+    entries: [],
+  });
 
   // Always use splitRows for consistent React tree structure
   // This prevents component remounting when pane count changes
   if (splitRows) {
     // Use splitRows if available, otherwise flat horizontal layout
     const rows: string[][] = splitRows ?? [panes.map((p) => p.id)];
+    const nextEntries: Array<{ key: string; paneIds: string[] }> = [];
+    const availableEntries = [...rowKeyStateRef.current.entries];
+    const keyedRows = rows.map((row) => {
+      let bestIdx = -1;
+      let bestOverlap = 0;
+
+      for (let idx = 0; idx < availableEntries.length; idx++) {
+        const overlap = availableEntries[idx].paneIds.filter((paneId) => row.includes(paneId)).length;
+        if (overlap > bestOverlap) {
+          bestOverlap = overlap;
+          bestIdx = idx;
+        }
+      }
+
+      const entry = bestIdx >= 0
+        ? availableEntries.splice(bestIdx, 1)[0]
+        : { key: `row-${workspaceId}-${rowKeyStateRef.current.nextId++}`, paneIds: row };
+      const nextEntry = { key: entry.key, paneIds: row };
+      nextEntries.push(nextEntry);
+      return { row, key: nextEntry.key };
+    });
+
+    rowKeyStateRef.current.entries = nextEntries;
 
     return (
       <Allotment vertical separator={false}>
-        {rows.map((row, rowIdx) => (
-          <Allotment.Pane key={`row-${rowIdx}`}>
-            <Allotment separator={false}>
+        {keyedRows.map(({ row, key }) => (
+          <Allotment.Pane key={key}>
+            <Allotment key={`columns-${key}`} separator={false}>
               {row.map((paneId) => {
                 const pane = paneMap[paneId];
                 if (!pane) return null;

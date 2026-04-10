@@ -60,6 +60,7 @@ const STATUS_CONFIG: Record<AgentStatus, { color: string; title: string; pulse: 
 };
 
 const AGENT_LABELS: Record<string, string> = {
+  "shell-starter": "Shell",
   "claude-code": "Claude Code",
   "gemini":      "Gemini",
   "codex":       "Codex",
@@ -176,6 +177,7 @@ export default memo(function PaneTabBar({
           const agent = getAgent(tab.agentId) ?? getDefaultAgent();
           const isActive = tab.id === pane.activeTabId;
           const tabMeta = allMetadata[tab.sessionId];
+          const tabNotificationCount = tabMeta?.notificationCount ?? 0;
           const tabProcessTitle = tabMeta?.processTitle;
           const tabCwd = tabMeta?.cwd;
           const agentStatus = tabMeta?.agentStatus ?? "idle";
@@ -206,7 +208,7 @@ export default memo(function PaneTabBar({
               }}
             >
               {/* notification dot */}
-              {hasNotification && isActive && (
+              {tabNotificationCount > 0 && (
                 <span style={{ width: 5, height: 5, borderRadius: "50%", background: "#ff3b30", flexShrink: 0 }} />
               )}
               <AgentStatusDot status={agentStatus} />

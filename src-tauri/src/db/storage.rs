@@ -4,7 +4,25 @@ use std::fs;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PaneTabConfig {
+    #[serde(default)]
+    pub tab_id: Option<String>,
+    pub agent_id: String,
+    pub label: Option<String>,
+    #[serde(default)]
+    pub r#type: Option<String>,
+    #[serde(default)]
+    pub cwd: Option<String>,
+    #[serde(default)]
+    pub last_process: Option<String>,
+    #[serde(default)]
+    pub claude_session_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PaneConfig {
+    #[serde(default)]
+    pub pane_id: Option<String>,
     pub agent_id: String,
     pub label: Option<String>,
     pub cwd: Option<String>,
@@ -12,6 +30,10 @@ pub struct PaneConfig {
     pub last_process: Option<String>,
     #[serde(default)]
     pub claude_session_id: Option<String>,
+    #[serde(default)]
+    pub active_tab_id: Option<String>,
+    #[serde(default)]
+    pub tabs: Option<Vec<PaneTabConfig>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -22,7 +44,13 @@ pub struct WorkspaceConfig {
     pub panes: Vec<PaneConfig>,
     pub created_at: u64,
     #[serde(default)]
+    pub color: Option<String>,
+    #[serde(default)]
     pub split_rows: Option<Vec<Vec<usize>>>,
+    #[serde(default)]
+    pub row_sizes: Option<Vec<f64>>,
+    #[serde(default)]
+    pub column_sizes: Option<Vec<Vec<f64>>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -47,6 +75,10 @@ impl Default for AppSettings {
 pub struct PersistentData {
     pub workspaces: Vec<WorkspaceConfig>,
     pub settings: AppSettings,
+    #[serde(default)]
+    pub active_workspace_id: Option<String>,
+    #[serde(default)]
+    pub active_pane_id: Option<String>,
 }
 
 impl Default for PersistentData {
@@ -54,6 +86,8 @@ impl Default for PersistentData {
         Self {
             workspaces: Vec::new(),
             settings: AppSettings::default(),
+            active_workspace_id: None,
+            active_pane_id: None,
         }
     }
 }

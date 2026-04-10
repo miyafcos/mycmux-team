@@ -9,6 +9,7 @@ export interface PaneMetadata {
   gitBranch?: string;
   processTitle?: string;
   agentStatus?: AgentStatus;
+  lastNotificationKey?: string;
 }
 
 export interface PaneMetadataState {
@@ -16,6 +17,7 @@ export interface PaneMetadataState {
   flashingPaneIds: Set<string>;
   setMetadata: (sessionId: string, data: Partial<PaneMetadata>) => void;
   incrementNotification: (sessionId: string) => void;
+  notifyWaiting: (sessionId: string, notificationKey: string) => boolean;
   clearNotification: (sessionId: string) => void;
   triggerFlash: (sessionId: string) => void;
 }
@@ -27,10 +29,13 @@ export const usePaneMetadataStore = create<PaneMetadataState>((set) => ({
   setMetadata: (sessionId, data) => set((state) => {
     const start = performance.now();
     const prev = state.metadata[sessionId];
+    const nextData = data.agentStatus && data.agentStatus !== "waiting"
+      ? { ...data, lastNotificationKey: undefined }
+      : data;
     // Skip update if nothing actually changed
     if (prev) {
-      const keys = Object.keys(data) as (keyof PaneMetadata)[];
-      const changed = keys.some((k) => prev[k] !== data[k]);
+      const keys = Object.keys(nextData) as (keyof PaneMetadata)[];
+      const changed = keys.some((k) => prev[k] !== nextData[k]);
       if (!changed) {
         console.log(`[PERF] setMetadata skipped (no changes) - ${(performance.now() - start).toFixed(2)}ms`);
         return state;
@@ -39,7 +44,7 @@ export const usePaneMetadataStore = create<PaneMetadataState>((set) => ({
     const result = {
       metadata: {
         ...state.metadata,
-        [sessionId]: { ...prev, ...data },
+        [sessionId]: { ...prev, ...nextData },
       },
     };
     console.log(`[PERF] setMetadata completed - ${(performance.now() - start).toFixed(2)}ms`);
@@ -59,6 +64,51 @@ export const usePaneMetadataStore = create<PaneMetadataState>((set) => ({
     console.log(`[PERF] incrementNotification (${oldCount} -> ${oldCount + 1}) - ${(performance.now() - start).toFixed(2)}ms`);
     return result;
   }),
+
+  notifyWaiting: (sessionId, notificationKey) => {
+    const normalizedKey = notificationKey.trim();
+    let didNotify = false;
+
+    set((state) => {
+      const prev = state.metadata[sessionId];
+      const oldCount = prev?.notificationCount || 0;
+      const alreadyNotified =
+        prev?.agentStatus === "waiting" &&
+        prev?.lastNotificationKey === normalizedKey;
+
+      if (alreadyNotified) {
+        return state;
+      }
+
+      didNotify = true;
+      const nextFlashingPaneIds = new Set(state.flashingPaneIds);
+      nextFlashingPaneIds.add(sessionId);
+
+      return {
+        metadata: {
+          ...state.metadata,
+          [sessionId]: {
+            ...prev,
+            notificationCount: oldCount + 1,
+            lastNotificationKey: normalizedKey,
+          },
+        },
+        flashingPaneIds: nextFlashingPaneIds,
+      };
+    });
+
+    if (didNotify) {
+      setTimeout(() => {
+        set((state) => {
+          const next = new Set(state.flashingPaneIds);
+          next.delete(sessionId);
+          return { flashingPaneIds: next };
+        });
+      }, 900);
+    }
+
+    return didNotify;
+  },
   
   clearNotification: (sessionId) => set((state) => ({
     metadata: {

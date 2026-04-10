@@ -23,6 +23,9 @@ export interface PaneTab {
   agentId: string;
   label?: string;
   type?: "terminal";
+  cwd?: string;
+  lastProcess?: string;
+  claudeSessionId?: string;
 }
 
 export interface Pane {
@@ -53,4 +56,8 @@ export interface Workspace {
   color?: string;
   /** Each entry is a row of pane IDs for dynamic split tracking */
   splitRows?: string[][];
+  /** Saved vertical split sizes for top-level rows */
+  rowSizes?: number[];
+  /** Saved horizontal split sizes for each row */
+  columnSizes?: number[][];
 }

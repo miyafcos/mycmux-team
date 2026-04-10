@@ -31,7 +31,7 @@ Shortcuts now use a centralized keybinding system with defaults + user overrides
 | `Ctrl+Shift+L` | Open browser tab in active pane |
 | `Ctrl+Shift+Enter` | Toggle pane zoom |
 | `Ctrl+Shift+F` | Find in terminal |
-| `Shift+Enter` | Send kitty protocol `\x1b[13;2u` |
+| `Shift+Enter` | Send kitty protocol `\x1b[13;2u` for Codex panes, bracketed-paste newline for other panes |
 
 ## User Remapping
 

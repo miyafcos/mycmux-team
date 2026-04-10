@@ -25,7 +25,7 @@ User keystroke
         → PTY master fd → child process stdin
 ```
 
-- **Custom key handling**: `attachCustomKeyEventHandler` intercepts Shift+Enter before xterm processes it, sends `\x1b[13;2u` (kitty protocol)
+- **Custom key handling**: `attachCustomKeyEventHandler` intercepts Shift+Enter before xterm processes it. Codex panes receive `\x1b[13;2u` (kitty protocol); other panes receive a bracketed-paste newline.
 
 ## Terminal Resize
 

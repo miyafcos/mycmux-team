@@ -1,8 +1,18 @@
 import { create } from "zustand";
 import { v4 as uuid } from "uuid";
 import type { Workspace, GridTemplateId } from "../types";
+import { useUiStore } from "./uiStore";
 
 const WORKSPACE_COLORS = ["#89b4fa", "#a6e3a1", "#f9e2af", "#f38ba8", "#94e2d5", "#f5c2e7"];
+
+interface CreateWorkspaceOptions {
+  id?: string;
+  createdAt?: number;
+  color?: string;
+  rowSizes?: number[];
+  columnSizes?: number[][];
+  activate?: boolean;
+}
 
 /**
  * Workspace List Store - Manages workspace CRUD and active selection
@@ -22,15 +32,25 @@ interface WorkspaceListState {
     gridTemplateId: GridTemplateId,
     panes: Workspace["panes"],
     splitRows: string[][],
-    color?: string,
+    options?: CreateWorkspaceOptions,
   ) => Workspace;
   removeWorkspace: (id: string) => void;
   setActiveWorkspace: (id: string) => void;
   renameWorkspace: (id: string, name: string) => void;
   setWorkspaceStatus: (id: string, status: Workspace["status"]) => void;
+  setWorkspaceLayoutMetrics: (
+    id: string,
+    rowSizes?: number[],
+    columnSizes?: number[][],
+  ) => void;
   
   // Internal update for layout store to modify panes
-  _updateWorkspacePanes: (id: string, panes: Workspace["panes"], splitRows?: string[][]) => void;
+  _updateWorkspacePanes: (
+    id: string,
+    panes: Workspace["panes"],
+    splitRows?: string[][],
+    resetLayoutMetrics?: boolean,
+  ) => void;
 }
 
 export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
@@ -46,12 +66,12 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
     return get().workspaces.find((w) => w.id === id);
   },
 
-  createWorkspace: (name, gridTemplateId, panes, splitRows, color) => {
+  createWorkspace: (name, gridTemplateId, panes, splitRows, options) => {
     const start = performance.now();
     
-    const id = uuid();
+    const id = options?.id ?? uuid();
     const { workspaces } = get();
-    const autoColor = color ?? WORKSPACE_COLORS[workspaces.length % WORKSPACE_COLORS.length];
+    const autoColor = options?.color ?? WORKSPACE_COLORS[workspaces.length % WORKSPACE_COLORS.length];
     
     const workspace: Workspace = {
       id,
@@ -60,13 +80,15 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
       panes,
       splitRows,
       status: "running",
-      createdAt: Date.now(),
+      createdAt: options?.createdAt ?? Date.now(),
       color: autoColor,
+      rowSizes: options?.rowSizes,
+      columnSizes: options?.columnSizes,
     };
 
     set((state) => ({
       workspaces: [...state.workspaces, workspace],
-      activeWorkspaceId: id,
+      activeWorkspaceId: options?.activate === false ? state.activeWorkspaceId : id,
     }));
 
     console.log(`[PERF] Workspace create (list store): ${(performance.now() - start).toFixed(2)}ms`);
@@ -86,7 +108,13 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
 
   setActiveWorkspace: (id) => {
     const start = performance.now();
+    const workspace = get().workspaces.find((w) => w.id === id);
+    const currentActivePaneId = useUiStore.getState().activePaneId;
+    const nextActivePaneId = workspace?.panes.find((pane) => pane.sessionId === currentActivePaneId)?.sessionId
+      ?? workspace?.panes[0]?.sessionId
+      ?? null;
     set({ activeWorkspaceId: id });
+    useUiStore.getState().setActivePaneId(nextActivePaneId);
     console.log(`[PERF] Workspace switch (list store): ${(performance.now() - start).toFixed(2)}ms`);
   },
 
@@ -106,11 +134,26 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
     }));
   },
 
-  _updateWorkspacePanes: (id, panes, splitRows) => {
+  setWorkspaceLayoutMetrics: (id, rowSizes, columnSizes) => {
     set((state) => ({
       workspaces: state.workspaces.map((w) =>
         w.id === id
-          ? { ...w, panes, ...(splitRows !== undefined && { splitRows }) }
+          ? { ...w, rowSizes, columnSizes }
+          : w
+      ),
+    }));
+  },
+
+  _updateWorkspacePanes: (id, panes, splitRows, resetLayoutMetrics = false) => {
+    set((state) => ({
+      workspaces: state.workspaces.map((w) =>
+        w.id === id
+          ? {
+              ...w,
+              panes,
+              ...(splitRows !== undefined && { splitRows }),
+              ...(resetLayoutMetrics ? { rowSizes: undefined, columnSizes: undefined } : {}),
+            }
           : w
       ),
     }));

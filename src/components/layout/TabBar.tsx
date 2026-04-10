@@ -43,14 +43,14 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
           let lastLog: string | undefined;
           const statusCounts = { working: 0, waiting: 0, done: 0 };
           for (const pane of ws.panes) {
-            // Use active tab's sessionId for metadata lookup (tabs have the agent status)
-            const activeTabSessionId = pane.tabs.find((t) => t.id === pane.activeTabId)?.sessionId;
-            const m = activeTabSessionId ? paneMetadata[activeTabSessionId] : undefined;
-            if (m) {
-              totalWsNotifications += m.notificationCount ?? 0;
-              if (m.lastLogLine) lastLog = m.lastLogLine;
-              if (m.agentStatus && m.agentStatus !== "idle") {
-                statusCounts[m.agentStatus as keyof typeof statusCounts]++;
+            for (const tab of pane.tabs) {
+              const m = paneMetadata[tab.sessionId];
+              if (m) {
+                totalWsNotifications += m.notificationCount ?? 0;
+                if (m.lastLogLine) lastLog = m.lastLogLine;
+                if (m.agentStatus && m.agentStatus !== "idle") {
+                  statusCounts[m.agentStatus as keyof typeof statusCounts]++;
+                }
               }
             }
           }
