@@ -136,17 +136,11 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
               {
                 id: tabConfig.tab_id ?? undefined,
                 label: tabConfig.label ?? undefined,
-                cwd: tabConfig.cwd ?? undefined,
-                lastProcess: tabConfig.last_process ?? undefined,
-                claudeSessionId: tabConfig.claude_session_id ?? undefined,
               },
             );
           })
         : [makeTab(workspaceId, paneId, normalizeRestoredAgentId(pc.agent_id) || defaultAgentId, "terminal", {
             label: pc.label ?? undefined,
-            cwd: pc.cwd ?? undefined,
-            lastProcess: pc.last_process ?? undefined,
-            claudeSessionId: pc.claude_session_id ?? undefined,
           })];
       const activeTab = tabs.find((tab) => tab.id === pc.active_tab_id) ?? tabs[0];
       const agentId = activeTab?.agentId || normalizeRestoredAgentId(pc.agent_id) || defaultAgentId;
@@ -156,10 +150,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
         sessionId: activeTab.sessionId,
         tabs,
         activeTabId: activeTab.id,
-        cwd: activeTab.cwd ?? pc.cwd ?? undefined,
         label: pc.label ?? undefined,
-        lastProcess: activeTab.lastProcess ?? pc.last_process ?? undefined,
-        claudeSessionId: activeTab.claudeSessionId ?? pc.claude_session_id ?? undefined,
       };
     });
 
@@ -255,7 +246,6 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
   },
 
   addTabToPane: (workspaceId, paneId, agentId, type = "terminal") => {
-    const start = performance.now();
     const workspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
     if (!workspace) return;
 
@@ -272,7 +262,6 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
     });
 
     useWorkspaceListStore.getState()._updateWorkspacePanes(workspaceId, newPanes);
-    console.log(`[PERF] Tab create (layout store): ${(performance.now() - start).toFixed(2)}ms`);
   },
 
   removeTabFromPane: (workspaceId, paneId, tabId) => {

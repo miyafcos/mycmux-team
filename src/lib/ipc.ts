@@ -196,17 +196,6 @@ export async function saveSettings(settings: AppSettings): Promise<void> {
   return invoke("save_settings", { settings });
 }
 
-export async function writeRestoreManifest(entries: [string, string][]): Promise<void> {
-  return invoke("write_restore_manifest", { entries });
-}
-
-export async function getClaudeSessionId(cwd: string): Promise<string | null> {
-  return invoke("get_claude_session_id", { cwd });
-}
-
-export async function readPaneSessionMappings(): Promise<Record<string, string>> {
-  return invoke("read_pane_session_mappings");
-}
 
 export async function sendSocketResponse(id: number, result: any, error: string | null): Promise<void> {
   return invoke("socket_response", { id, result, error });

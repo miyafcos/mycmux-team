@@ -165,7 +165,7 @@ export const TerminalGrid = memo(function TerminalGrid({
 
 // Wrapper: renders ALL workspaces simultaneously, hides inactive ones with CSS.
 // This prevents xterm.js unmount/remount on workspace switch, keeping sessions alive.
-export default function WorkspaceView() {
+export default memo(function WorkspaceView() {
   const activeId = useWorkspaceListStore((s) => s.activeWorkspaceId);
   const workspaces = useWorkspaceListStore((s) => s.workspaces);
   const [mountedWorkspaceIds, setMountedWorkspaceIds] = useState<Set<string>>(() => new Set());
@@ -210,4 +210,4 @@ export default function WorkspaceView() {
         })}
     </div>
   );
-}
+});

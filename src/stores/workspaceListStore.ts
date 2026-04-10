@@ -67,8 +67,6 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
   },
 
   createWorkspace: (name, gridTemplateId, panes, splitRows, options) => {
-    const start = performance.now();
-    
     const id = options?.id ?? uuid();
     const { workspaces } = get();
     const autoColor = options?.color ?? WORKSPACE_COLORS[workspaces.length % WORKSPACE_COLORS.length];
@@ -91,7 +89,6 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
       activeWorkspaceId: options?.activate === false ? state.activeWorkspaceId : id,
     }));
 
-    console.log(`[PERF] Workspace create (list store): ${(performance.now() - start).toFixed(2)}ms`);
     return workspace;
   },
 
@@ -107,7 +104,6 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
   },
 
   setActiveWorkspace: (id) => {
-    const start = performance.now();
     const workspace = get().workspaces.find((w) => w.id === id);
     const currentActivePaneId = useUiStore.getState().activePaneId;
     const nextActivePaneId = workspace?.panes.find((pane) => pane.sessionId === currentActivePaneId)?.sessionId
@@ -115,7 +111,6 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
       ?? null;
     set({ activeWorkspaceId: id });
     useUiStore.getState().setActivePaneId(nextActivePaneId);
-    console.log(`[PERF] Workspace switch (list store): ${(performance.now() - start).toFixed(2)}ms`);
   },
 
   renameWorkspace: (id, name) => {

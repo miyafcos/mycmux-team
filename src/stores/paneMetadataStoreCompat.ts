@@ -14,55 +14,42 @@ export interface PaneMetadata {
 
 export interface PaneMetadataState {
   metadata: Record<string, PaneMetadata>;
-  flashingPaneIds: Set<string>;
   setMetadata: (sessionId: string, data: Partial<PaneMetadata>) => void;
   incrementNotification: (sessionId: string) => void;
   notifyWaiting: (sessionId: string, notificationKey: string) => boolean;
   clearNotification: (sessionId: string) => void;
-  triggerFlash: (sessionId: string) => void;
 }
 
 export const usePaneMetadataStore = create<PaneMetadataState>((set) => ({
   metadata: {},
-  flashingPaneIds: new Set(),
-  
+
   setMetadata: (sessionId, data) => set((state) => {
-    const start = performance.now();
     const prev = state.metadata[sessionId];
     const nextData = data.agentStatus && data.agentStatus !== "waiting"
       ? { ...data, lastNotificationKey: undefined }
       : data;
-    // Skip update if nothing actually changed
     if (prev) {
       const keys = Object.keys(nextData) as (keyof PaneMetadata)[];
       const changed = keys.some((k) => prev[k] !== nextData[k]);
-      if (!changed) {
-        console.log(`[PERF] setMetadata skipped (no changes) - ${(performance.now() - start).toFixed(2)}ms`);
-        return state;
-      }
+      if (!changed) return state;
     }
-    const result = {
+    return {
       metadata: {
         ...state.metadata,
         [sessionId]: { ...prev, ...nextData },
       },
     };
-    console.log(`[PERF] setMetadata completed - ${(performance.now() - start).toFixed(2)}ms`);
-    return result;
   }),
-  
+
   incrementNotification: (sessionId) => set((state) => {
-    const start = performance.now();
     const prev = state.metadata[sessionId];
     const oldCount = prev?.notificationCount || 0;
-    const result = {
+    return {
       metadata: {
         ...state.metadata,
         [sessionId]: { ...prev, notificationCount: oldCount + 1 },
       },
     };
-    console.log(`[PERF] incrementNotification (${oldCount} -> ${oldCount + 1}) - ${(performance.now() - start).toFixed(2)}ms`);
-    return result;
   }),
 
   notifyWaiting: (sessionId, notificationKey) => {
@@ -81,8 +68,6 @@ export const usePaneMetadataStore = create<PaneMetadataState>((set) => ({
       }
 
       didNotify = true;
-      const nextFlashingPaneIds = new Set(state.flashingPaneIds);
-      nextFlashingPaneIds.add(sessionId);
 
       return {
         metadata: {
@@ -93,23 +78,12 @@ export const usePaneMetadataStore = create<PaneMetadataState>((set) => ({
             lastNotificationKey: normalizedKey,
           },
         },
-        flashingPaneIds: nextFlashingPaneIds,
       };
     });
 
-    if (didNotify) {
-      setTimeout(() => {
-        set((state) => {
-          const next = new Set(state.flashingPaneIds);
-          next.delete(sessionId);
-          return { flashingPaneIds: next };
-        });
-      }, 900);
-    }
-
     return didNotify;
   },
-  
+
   clearNotification: (sessionId) => set((state) => ({
     metadata: {
       ...state.metadata,
@@ -119,19 +93,4 @@ export const usePaneMetadataStore = create<PaneMetadataState>((set) => ({
       }
     }
   })),
-  
-  triggerFlash: (sessionId) => {
-    set((state) => {
-      const next = new Set(state.flashingPaneIds);
-      next.add(sessionId);
-      return { flashingPaneIds: next };
-    });
-    setTimeout(() => {
-      set((state) => {
-        const next = new Set(state.flashingPaneIds);
-        next.delete(sessionId);
-        return { flashingPaneIds: next };
-      });
-    }, 900);
-  },
 }));

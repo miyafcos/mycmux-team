@@ -12,15 +12,6 @@ import { useWorkspaceListStore } from "../../stores/workspaceListStore";
 import { getAgent, getDefaultAgent } from "../../lib/agents";
 import { killSession } from "../../lib/ipc";
 
-function getResumeMode(lastProcess?: string): "claude" | "claude-codex" | "codex" | undefined {
-  const normalized = lastProcess?.toLowerCase();
-  if (!normalized) return undefined;
-  if (normalized.includes("claude-codex") || normalized.includes("claude codex")) return "claude-codex";
-  if (normalized.includes("claude")) return "claude";
-  if (normalized.includes("codex")) return "codex";
-  return undefined;
-}
-
 interface TerminalPaneProps {
   pane: Pane;
   workspaceId: string;
@@ -30,48 +21,45 @@ interface TerminalPaneProps {
 }
 
 export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitRight, onSplitDown }: TerminalPaneProps) {
-  const allMetadata = usePaneMetadataStore((s) => s.metadata);
-  const paneMeta = allMetadata[pane.sessionId];
-  const flashingPaneIds = usePaneMetadataStore((s) => s.flashingPaneIds);
-  const activePaneId = useUiStore((s) => s.activePaneId);
+  // Derived boolean selectors — only re-renders when THIS pane's state actually changes
+  const isActive = useUiStore((s) => s.activePaneId === pane.sessionId);
+  const isZoomed = useUiStore((s) => s.zoomedPaneId === pane.id);
   const setActivePaneId = useUiStore((s) => s.setActivePaneId);
-  const zoomedPaneId = useUiStore((s) => s.zoomedPaneId);
   const setZoomedPaneId = useUiStore((s) => s.setZoomedPaneId);
+
+  // Granular metadata selectors — only re-renders when notification count changes
+  const notificationCount = usePaneMetadataStore((s) =>
+    pane.tabs.reduce((sum, tab) => sum + (s.metadata[tab.sessionId]?.notificationCount ?? 0), 0)
+  );
   const clearNotification = usePaneMetadataStore((s) => s.clearNotification);
+
   const addTabToPane = useWorkspaceLayoutStore((s) => s.addTabToPane);
   const removeTabFromPane = useWorkspaceLayoutStore((s) => s.removeTabFromPane);
   const setActivePaneTab = useWorkspaceLayoutStore((s) => s.setActivePaneTab);
 
-  const isActive = activePaneId === pane.sessionId;
-  const isFlashing = pane.tabs.some((tab) => flashingPaneIds.has(tab.sessionId));
-  const isZoomed = zoomedPaneId === pane.id;
+  const hasNotification = notificationCount > 0;
   const [mountedTabIds, setMountedTabIds] = useState<Set<string>>(() => new Set([pane.activeTabId]));
 
-  // Agent status from active tab's metadata
-  const activeTab = pane.tabs.find((t) => t.id === pane.activeTabId);
-  const activeTabMeta = activeTab ? allMetadata[activeTab.sessionId] : undefined;
-  const notificationCount = pane.tabs.reduce(
-    (sum, tab) => sum + (allMetadata[tab.sessionId]?.notificationCount ?? 0),
-    0,
-  );
-  const paneCwd = paneMeta?.cwd ?? activeTabMeta?.cwd ?? activeTab?.cwd ?? pane.cwd;
-  const agentStatus = activeTabMeta?.agentStatus ?? "idle";
-
-  // Map status to rgba border colors (inactive panes get 40% opacity)
-  const STATUS_BORDERS = {
-    working: { active: "rgba(59, 130, 246, 0.9)", inactive: "rgba(59, 130, 246, 0.25)" },
-    waiting: { active: "rgba(245, 158, 11, 1.0)", inactive: "rgba(245, 158, 11, 0.35)" },
-    done:    { active: "rgba(16, 185, 129, 0.9)", inactive: "rgba(16, 185, 129, 0.25)" },
-    idle:    { active: "var(--cmux-accent, rgba(10, 132, 255, 0.7))", inactive: "transparent" },
-  };
-  const statusKey = (agentStatus in STATUS_BORDERS ? agentStatus : "idle") as keyof typeof STATUS_BORDERS;
-  const borderColor = isZoomed ? "transparent" : (isActive ? STATUS_BORDERS[statusKey].active : STATUS_BORDERS[statusKey].inactive);
+  // Two-state border: active (accent) or inactive (transparent).
+  // Notification border is handled by the CSS .has-notification class.
+  const borderColor = isZoomed
+    ? "transparent"
+    : isActive
+      ? "var(--cmux-accent, rgba(10, 132, 255, 0.7))"
+      : "transparent";
   const borderWidth = isActive && !isZoomed ? 2 : 1;
 
   const handleFocus = useCallback(() => {
     setActivePaneId(pane.sessionId);
-    clearNotification(pane.sessionId);
-  }, [pane.sessionId, setActivePaneId, clearNotification]);
+    // Read current tabs from store at call time (avoids stale pane.tabs dependency)
+    const ws = useWorkspaceListStore.getState().getWorkspace(workspaceId);
+    const p = ws?.panes.find((x) => x.id === pane.id);
+    if (p) {
+      for (const tab of p.tabs) {
+        clearNotification(tab.sessionId);
+      }
+    }
+  }, [pane.sessionId, pane.id, workspaceId, setActivePaneId, clearNotification]);
 
   const handleBlur = useCallback(() => {
     setActivePaneId(null);
@@ -82,7 +70,6 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
   }, [workspaceId, pane.id, addTabToPane]);
 
   const handleRemoveTab = useCallback((tabId: string) => {
-    // Kill the PTY session — read fresh state to avoid stale closure
     const ws = useWorkspaceListStore.getState().getWorkspace(workspaceId);
     const p = ws?.panes.find((x) => x.id === pane.id);
     const tab = p?.tabs.find((t) => t.id === tabId);
@@ -92,7 +79,6 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
 
   const handleSelectTab = useCallback((tabId: string) => {
     setActivePaneTab(workspaceId, pane.id, tabId);
-    // Update active pane when switching tabs — read fresh state to avoid stale closure
     const ws = useWorkspaceListStore.getState().getWorkspace(workspaceId);
     const p = ws?.panes.find((x) => x.id === pane.id);
     const tab = p?.tabs.find((t) => t.id === tabId);
@@ -115,13 +101,17 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
     });
   }, [pane.activeTabId]);
 
+  // Resolve CWD from pane/tab static data (metadata CWD handled by PTY monitor internally)
+  const activeTab = pane.tabs.find((t) => t.id === pane.activeTabId);
+  const paneCwd = activeTab?.cwd ?? pane.cwd;
+
   return (
     <div
       data-session-id={pane.sessionId}
       tabIndex={-1}
       onFocus={handleFocus}
       onBlur={handleBlur}
-      className="terminal-pane-border"
+      className={`terminal-pane-border${hasNotification ? ' has-notification' : ''}`}
       style={{
         ...(isZoomed ? {
           position: "fixed",
@@ -144,25 +134,10 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
         ["--pane-border-color" as string]: borderColor,
       } as React.CSSProperties & Record<string, string>}
     >
-      {/* Flash overlay */}
-      {isFlashing && (
-        <div
-          style={{
-            position: "absolute",
-            inset: 0,
-            pointerEvents: "none",
-            zIndex: 20,
-            borderRadius: 2,
-            animation: "paneFlash 0.9s ease-out",
-            border: "3px solid var(--cmux-accent)",
-          }}
-        />
-      )}
-
       <PaneTabBar
         pane={pane}
         workspaceId={workspaceId}
-        hasNotification={notificationCount > 0}
+        hasNotification={hasNotification}
         onClose={onClose}
         onSplitRight={onSplitRight}
         onSplitDown={onSplitDown}
@@ -172,14 +147,11 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
       />
 
       <div style={{ flex: 1, minHeight: 0, overflow: "hidden", position: "relative", background: "var(--cmux-bg, #0a0a0a)" }}>
-        {/* Render all tabs — hide inactive ones to preserve PTY state */}
         {pane.tabs.filter((tab) => mountedTabIds.has(tab.id)).map((tab) => {
           const isActiveTab = tab.id === pane.activeTabId;
           const resolvedAgentId = tab.agentId === "shell-starter" ? "shell" : tab.agentId;
           const agent = getAgent(resolvedAgentId) ?? getDefaultAgent();
-          const tabMeta = allMetadata[tab.sessionId];
-          const tabCwd = tabMeta?.cwd ?? tab.cwd ?? paneCwd;
-          const resumeMode = getResumeMode(tabMeta?.processTitle ?? tab.lastProcess);
+          const tabCwd = tab.cwd ?? paneCwd;
 
           return (
             <div
@@ -199,8 +171,6 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
                   suppressNotifications={isActive && tab.id === pane.activeTabId}
                   onZoomToggle={handleZoomToggle}
                   cwd={tabCwd}
-                  resumeMode={resumeMode}
-                  resumeSessionId={tab.claudeSessionId}
                 />
               </ErrorBoundary>
             </div>
