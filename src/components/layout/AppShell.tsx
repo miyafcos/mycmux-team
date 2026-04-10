@@ -1,10 +1,9 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import type { GridTemplateId } from "../../types";
-import { 
-  useWorkspaceListStore, 
-  useWorkspaceLayoutStore, 
-  useUiStore, 
-  usePaneMetadataStore 
+import {
+  useWorkspaceListStore,
+  useWorkspaceLayoutStore,
+  useUiStore,
 } from "../../stores/workspaceStore";
 import { killSession } from "../../lib/ipc";
 import { SIDEBAR_WIDTH } from "../../lib/constants";
@@ -110,7 +109,6 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
   const toggleSidebar = useUiStore((s) => s.toggleSidebar);
   const setActivePaneId = useUiStore((s) => s.setActivePaneId);
   const activePaneId = useUiStore((s) => s.activePaneId);
-  const triggerFlash = usePaneMetadataStore((s) => s.triggerFlash);
   const addPaneToWorkspace = useWorkspaceLayoutStore((s) => s.addPaneToWorkspace);
   const removePaneFromWorkspace = useWorkspaceLayoutStore((s) => s.removePaneFromWorkspace);
   const addTabToPane = useWorkspaceLayoutStore((s) => s.addTabToPane);
@@ -224,10 +222,6 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
 
         case "palette.open":
           setIsPaletteOpen(true);
-          break;
-
-        case "pane.flash":
-          if (apid) triggerFlash(apid);
           break;
 
         case "workspace.close":
@@ -363,7 +357,6 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
     isKeybindingsOpen,
     setIsKeybindingsOpen,
     setIsPaletteOpen,
-    triggerFlash,
     handleCloseWorkspace,
     toggleSidebar,
     setShowSetup,

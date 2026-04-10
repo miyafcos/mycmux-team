@@ -78,7 +78,7 @@ pub fn start_monitor(app_handle: AppHandle, manager: Arc<SessionManager>, metada
         let mut last_metadata: HashMap<String, PtyMetadata> = HashMap::new();
 
         loop {
-            thread::sleep(Duration::from_secs(2));
+            thread::sleep(Duration::from_secs(3));
 
             // Refresh process info
             sys.refresh_processes_specifics(

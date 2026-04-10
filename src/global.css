@@ -14,6 +14,7 @@
   --status-waiting: #f59e0b;
   --status-done:    #10b981;
   --status-error:   #ef4444;
+  --notification-color: #22d3ee;
 }
 
 .ui-cmux {
@@ -177,13 +178,10 @@ canvas {
   50%       { opacity: 0.35; }
 }
 
-/* Flash / attention animation */
-@keyframes paneFlash {
-  0%   { opacity: 0; }
-  15%  { opacity: 1; }
-  40%  { opacity: 0.3; }
-  65%  { opacity: 1; }
-  100% { opacity: 0; }
+/* Notification pulse — persistent breathing for panes needing attention */
+@keyframes notificationPulse {
+  0%, 100% { border-color: var(--notification-color, #22d3ee); }
+  50%      { border-color: color-mix(in srgb, var(--notification-color, #22d3ee) 40%, transparent); }
 }
 
 /* Japanese IME composition styling */
@@ -205,6 +203,13 @@ canvas {
   z-index: 10;
   border: var(--pane-border-width, 1px) solid var(--pane-border-color, transparent);
   transition: border-color 0.15s, border-width 0.15s;
+}
+
+/* Persistent notification border — overrides normal pane border */
+.terminal-pane-border.has-notification::after {
+  border-width: 2px;
+  border-color: var(--notification-color, #22d3ee);
+  animation: notificationPulse 2.5s ease-in-out infinite;
 }
 
 /* Accessibility: Reduced Motion */

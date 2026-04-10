@@ -39,7 +39,6 @@ let gate = createGate([]);
 
 export function prepareStartupSessionGate(sessionIds: string[]): void {
   gate = createGate(sessionIds);
-  console.log(`[startup] prepared session gate for ${sessionIds.length} visible sessions`);
 }
 
 export function markStartupSessionSettled(sessionId: string): void {
@@ -50,8 +49,6 @@ export function markStartupSessionSettled(sessionId: string): void {
   if (!gate.pending.delete(sessionId)) {
     return;
   }
-
-  console.log(`[startup] session settled: ${sessionId} (${gate.pending.size} remaining)`);
 
   if (gate.pending.size === 0) {
     gate.resolveReady?.();

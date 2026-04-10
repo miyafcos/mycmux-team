@@ -52,8 +52,6 @@ interface XTermWrapperProps {
   onZoomToggle?: () => void;
   onUrlClick?: (url: string) => void;
   cwd?: string;
-  resumeMode?: "claude" | "claude-codex" | "codex";
-  resumeSessionId?: string;
   launchEnv?: Record<string, string>;
 }
 
@@ -76,11 +74,27 @@ function buildThemeFromConfig(cfg: { background: string; foreground: string; ans
   return theme;
 }
 
+// Chunk large pastes to avoid PTY buffer overflow
+const PASTE_CHUNK = 1024;
+
+function chunkedWrite(sessionId: string, data: string): void {
+  if (data.length <= PASTE_CHUNK) {
+    writeToSession(sessionId, data).catch(console.error);
+  } else {
+    let offset = 0;
+    const sendNext = () => {
+      if (offset >= data.length) return;
+      const chunk = data.slice(offset, offset + PASTE_CHUNK);
+      offset += PASTE_CHUNK;
+      writeToSession(sessionId, chunk).then(sendNext).catch(console.error);
+    };
+    sendNext();
+  }
+}
+
 // Cache terminal config globally — fetched once, reused across all panes
 let cachedConfig: { theme: ITheme; fontSize: number; fontFamily: string } | null = null;
 let configPromise: Promise<void> | null = null;
-const consumedResumeTokens = new Set<string>();
-
 const CODING_AGENT_HINT_PATTERN = /\b(?:ctrl|cmd|alt|shift)\+[\w?]+/gi;
 
 function isShortcutHintLine(line: string): boolean {
@@ -106,38 +120,6 @@ function getShiftEnterSequence(command: string, processTitle?: string): string {
     return "\x1b[13;2u";
   }
   return "\x1b[200~\n\x1b[201~";
-}
-
-function claimResumeEnv(
-  sessionId: string,
-  resumeMode?: "claude" | "claude-codex" | "codex",
-  resumeSessionId?: string,
-  cwd?: string,
-): { env?: Record<string, string>; token?: string } {
-  if (!resumeMode) return {};
-
-  const token = `${resumeMode}:${resumeSessionId ?? cwd ?? sessionId}`;
-  if (consumedResumeTokens.has(token)) {
-    return {};
-  }
-
-  consumedResumeTokens.add(token);
-
-  const env: Record<string, string> = {
-    MYCMUX_RESUME: resumeMode,
-    MYCMUX_PANE_SESSION_ID: sessionId,
-  };
-  if (resumeSessionId) {
-    env.MYCMUX_SESSION_ID = resumeSessionId;
-  }
-
-  return { env, token };
-}
-
-function releaseResumeToken(token?: string): void {
-  if (token) {
-    consumedResumeTokens.delete(token);
-  }
 }
 
 function ensureConfigLoaded(): Promise<void> {
@@ -176,8 +158,6 @@ export default memo(function XTermWrapper({
   onZoomToggle,
   onUrlClick,
   cwd,
-  resumeMode,
-  resumeSessionId,
   launchEnv,
 }: XTermWrapperProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -215,9 +195,6 @@ export default memo(function XTermWrapper({
   }, [suppressNotifications]);
 
   useEffect(() => {
-    const mountStart = performance.now();
-    console.log(`[PERF] XTermWrapper mounting for session ${sessionId}`);
-    
     const container = containerRef.current;
     if (!container) return;
 
@@ -245,8 +222,6 @@ export default memo(function XTermWrapper({
 
     async function init() {
       if (disposed) return;
-      const initStart = performance.now();
-
       // Use cached config if available (instant), otherwise use defaults
       const cfg = cachedConfig;
       const initTheme = theme ?? storeTheme.terminal;
@@ -301,6 +276,14 @@ export default memo(function XTermWrapper({
       term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
         if (e.type !== "keydown") return true;
 
+        // Ctrl+V: paste from clipboard instead of sending raw \x16
+        if (e.key === "v" && e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey) {
+          navigator.clipboard.readText().then((text) => {
+            if (text && !disposed) chunkedWrite(sessionId, text);
+          }).catch(() => {});
+          return false;
+        }
+
         const keybindingStore = useKeybindingStore.getState();
         
         // Check if this event matches ANY app shortcut
@@ -346,21 +329,9 @@ export default memo(function XTermWrapper({
         }
       });
 
-      // Send user keystrokes to PTY — chunk large pastes to avoid PTY buffer overflow
-      const PASTE_CHUNK = 1024;
+      // Send user keystrokes to PTY
       term.onData((data) => {
-        if (data.length <= PASTE_CHUNK) {
-          writeToSession(sessionId, data).catch(console.error);
-        } else {
-          let offset = 0;
-          const sendNext = () => {
-            if (offset >= data.length) return;
-            const chunk = data.slice(offset, offset + PASTE_CHUNK);
-            offset += PASTE_CHUNK;
-            writeToSession(sessionId, chunk).then(sendNext).catch(console.error);
-          };
-          sendNext();
-        }
+        chunkedWrite(sessionId, data);
       });
 
       term.onBinary((data) => {
@@ -491,15 +462,7 @@ export default memo(function XTermWrapper({
       fitAddon.fit();
       const cols = term.cols;
       const rows = term.rows;
-      const { env: resumeEnv, token: resumeToken } = claimResumeEnv(
-        sessionId,
-        resumeMode,
-        resumeSessionId,
-        cwd,
-      );
-      const sessionEnv = launchEnv || resumeEnv
-        ? { ...(launchEnv ?? {}), ...(resumeEnv ?? {}) }
-        : undefined;
+      const sessionEnv = launchEnv || undefined;
 
       try {
         await createSession(sessionId, command, args, cols, rows, (rawData: ArrayBuffer) => {
@@ -511,9 +474,7 @@ export default memo(function XTermWrapper({
         startupSettleTimeout = setTimeout(() => {
           settleStartupSession();
         }, 250);
-        console.log(`[PERF] Terminal session created - ${(performance.now() - initStart).toFixed(2)}ms`);
       } catch (err) {
-        releaseResumeToken(resumeToken);
         settleStartupSession();
         console.error("[XTermWrapper] Failed to create session:", err);
         term.writeln(`\r\n\x1b[31mFailed to start: ${err}\x1b[0m`);
@@ -545,7 +506,6 @@ export default memo(function XTermWrapper({
 
     return () => {
       disposed = true;
-      const cleanupStart = performance.now();
       clearTimeout(resizeTimeout);
       if (startupSettleTimeout) {
         clearTimeout(startupSettleTimeout);
@@ -557,7 +517,6 @@ export default memo(function XTermWrapper({
       // on sibling removal. Session killing is handled by the close/remove handlers.
       term?.dispose();
       searchAddonRef.current = null;
-      console.log(`[PERF] XTermWrapper unmounted for session ${sessionId} - mount duration: ${(cleanupStart - mountStart).toFixed(2)}ms, cleanup: ${(performance.now() - cleanupStart).toFixed(2)}ms`);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
