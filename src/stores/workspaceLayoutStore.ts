@@ -9,7 +9,7 @@ import { useWorkspaceListStore } from "./workspaceListStore";
 
 /**
  * Workspace Layout Store - Manages panes within workspaces
- * Handles pane CRUD and layout (splitRows)
+ * Handles pane CRUD and layout (splitColumns)
  */
 
 function makeTab(
@@ -43,7 +43,7 @@ function normalizeRestoredAgentId(
 
 interface BuildPanesResult {
   panes: Pane[];
-  splitRows: string[][];
+  splitColumns: string[][];
 }
 
 function buildPanes(
@@ -54,12 +54,13 @@ function buildPanes(
   const template = getGridTemplate(gridTemplateId);
   const defaultAgentId = getDefaultAgent().id;
   const panes: Pane[] = [];
-  const splitRows: string[][] = [];
+  const splitColumns: string[][] = [];
 
+  // Column-major fill: iterate columns first, then rows within each column
   let paneIndex = 0;
-  for (let r = 0; r < template.rows; r++) {
-    const row: string[] = [];
-    for (let c = 0; c < template.cols; c++) {
+  for (let c = 0; c < template.cols; c++) {
+    const col: string[] = [];
+    for (let r = 0; r < template.rows; r++) {
       if (paneIndex < template.paneCount) {
         const paneId = uuid();
         const agentId = agentAssignments?.[paneIndex] ?? defaultAgentId;
@@ -71,16 +72,16 @@ function buildPanes(
           tabs: [tab],
           activeTabId: tab.id,
         });
-        row.push(paneId);
+        col.push(paneId);
         paneIndex++;
       }
     }
-    if (row.length > 0) {
-      splitRows.push(row);
+    if (col.length > 0) {
+      splitColumns.push(col);
     }
   }
 
-  return { panes, splitRows };
+  return { panes, splitColumns };
 }
 
 interface WorkspaceLayoutState {
@@ -109,7 +110,7 @@ interface WorkspaceLayoutState {
   restorePanes: (
     workspaceId: string,
     configs: PaneConfig[],
-    savedSplitRows: number[][] | null,
+    savedSplitColumns: number[][] | null,
     gridTemplateId: GridTemplateId,
   ) => BuildPanesResult;
 }
@@ -119,7 +120,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
     return buildPanes(workspaceId, gridTemplateId, agentAssignments);
   },
 
-  restorePanes: (workspaceId, configs, savedSplitRows, gridTemplateId) => {
+  restorePanes: (workspaceId, configs, savedSplitColumns, gridTemplateId) => {
     const defaultAgentId = getDefaultAgent().id;
     const panes: Pane[] = configs.map((pc) => {
       const paneId = pc.pane_id ?? uuid();
@@ -154,33 +155,34 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
       };
     });
 
-    let splitRows: string[][];
-    if (savedSplitRows && savedSplitRows.length > 0) {
-      splitRows = savedSplitRows
-        .map((row) => row.map((idx) => panes[idx]?.id).filter(Boolean) as string[])
-        .filter((row) => row.length > 0);
+    let splitColumns: string[][];
+    if (savedSplitColumns && savedSplitColumns.length > 0) {
+      splitColumns = savedSplitColumns
+        .map((col) => col.map((idx) => panes[idx]?.id).filter(Boolean) as string[])
+        .filter((col) => col.length > 0);
     } else {
+      // Column-major fallback from grid template
       const template = getGridTemplate(gridTemplateId);
-      splitRows = [];
+      splitColumns = [];
       let idx = 0;
-      for (let r = 0; r < template.rows && idx < panes.length; r++) {
-        const row: string[] = [];
-        for (let c = 0; c < template.cols && idx < panes.length; c++) {
-          row.push(panes[idx].id);
+      for (let c = 0; c < template.cols && idx < panes.length; c++) {
+        const col: string[] = [];
+        for (let r = 0; r < template.rows && idx < panes.length; r++) {
+          col.push(panes[idx].id);
           idx++;
         }
-        if (row.length > 0) splitRows.push(row);
+        if (col.length > 0) splitColumns.push(col);
       }
       if (idx < panes.length) {
-        const lastRow = splitRows[splitRows.length - 1] ?? [];
+        const lastCol = splitColumns[splitColumns.length - 1] ?? [];
         for (; idx < panes.length; idx++) {
-          lastRow.push(panes[idx].id);
+          lastCol.push(panes[idx].id);
         }
-        if (splitRows.length === 0) splitRows.push(lastRow);
+        if (splitColumns.length === 0) splitColumns.push(lastCol);
       }
     }
 
-    return { panes, splitRows };
+    return { panes, splitColumns };
   },
 
   removePaneFromWorkspace: (workspaceId, paneId) => {
@@ -189,16 +191,16 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
     if (workspace.panes.length <= 1) return; // never remove last pane
 
     const newPanes = workspace.panes.filter((p) => p.id !== paneId);
-    
-    // Update splitRows if present
-    let newSplitRows = workspace.splitRows;
-    if (newSplitRows) {
-      newSplitRows = newSplitRows
-        .map((row) => row.filter((id) => id !== paneId))
-        .filter((row) => row.length > 0);
+
+    // Update splitColumns if present
+    let newSplitColumns = workspace.splitColumns;
+    if (newSplitColumns) {
+      newSplitColumns = newSplitColumns
+        .map((col) => col.filter((id) => id !== paneId))
+        .filter((col) => col.length > 0);
     }
 
-    useWorkspaceListStore.getState()._updateWorkspacePanes(workspaceId, newPanes, newSplitRows, true);
+    useWorkspaceListStore.getState()._updateWorkspacePanes(workspaceId, newPanes, newSplitColumns, true);
   },
 
   addPaneToWorkspace: (workspaceId, afterPaneId, direction, agentId) => {
@@ -218,31 +220,31 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
     };
     const newPanes = [...workspace.panes, newPane];
 
-    // Initialize splitRows if not present
-    const existingRows: string[][] = workspace.splitRows ?? [workspace.panes.map((p) => p.id)];
+    // Initialize splitColumns if not present (single column with all panes)
+    const existingColumns: string[][] = workspace.splitColumns ?? [workspace.panes.map((p) => p.id)];
 
-    let newSplitRows: string[][];
-    if (direction === "right") {
-      // Insert new pane ID after afterPaneId in its row
-      newSplitRows = existingRows.map((row) => {
-        const idx = row.indexOf(afterPaneId);
-        if (idx === -1) return row;
-        const newRow = [...row];
-        newRow.splice(idx + 1, 0, paneId);
-        return newRow;
+    let newSplitColumns: string[][];
+    if (direction === "down") {
+      // Insert new pane after afterPaneId in its column (same column, below)
+      newSplitColumns = existingColumns.map((col) => {
+        const idx = col.indexOf(afterPaneId);
+        if (idx === -1) return col;
+        const newCol = [...col];
+        newCol.splice(idx + 1, 0, paneId);
+        return newCol;
       });
     } else {
-      // direction === "down": insert new row after the row containing afterPaneId
-      newSplitRows = [];
-      for (const row of existingRows) {
-        newSplitRows.push(row);
-        if (row.includes(afterPaneId)) {
-          newSplitRows.push([paneId]);
+      // direction === "right": insert new column after the column containing afterPaneId
+      newSplitColumns = [];
+      for (const col of existingColumns) {
+        newSplitColumns.push(col);
+        if (col.includes(afterPaneId)) {
+          newSplitColumns.push([paneId]);
         }
       }
     }
 
-    useWorkspaceListStore.getState()._updateWorkspacePanes(workspaceId, newPanes, newSplitRows, true);
+    useWorkspaceListStore.getState()._updateWorkspacePanes(workspaceId, newPanes, newSplitColumns, true);
   },
 
   addTabToPane: (workspaceId, paneId, agentId, type = "terminal") => {
@@ -292,16 +294,16 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
       }];
     });
 
-    const nextSplitRows = removedPane && workspace.splitRows
-      ? workspace.splitRows
-          .map((row) => row.filter((id) => id !== paneId))
-          .filter((row) => row.length > 0)
+    const nextSplitColumns = removedPane && workspace.splitColumns
+      ? workspace.splitColumns
+          .map((col) => col.filter((id) => id !== paneId))
+          .filter((col) => col.length > 0)
       : undefined;
 
     useWorkspaceListStore.getState()._updateWorkspacePanes(
       workspaceId,
       newPanes,
-      nextSplitRows,
+      nextSplitColumns,
       removedPane,
     );
   },

@@ -158,9 +158,9 @@ export interface WorkspaceConfig {
   panes: PaneConfig[];
   created_at: number;
   color?: string | null;
-  split_rows?: number[][] | null;
-  row_sizes?: number[] | null;
-  column_sizes?: number[][] | null;
+  split_columns?: number[][] | null;
+  column_widths?: number[] | null;
+  row_heights_per_col?: number[][] | null;
 }
 
 export interface AppSettings {

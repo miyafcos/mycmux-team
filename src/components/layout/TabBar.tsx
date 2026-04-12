@@ -38,7 +38,7 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
       }}
     >
       <div style={{ flex: 1 }}>
-        {workspaces.map((ws) => {
+        {workspaces.map((ws, wsIndex) => {
           let totalWsNotifications = 0;
           let lastLog: string | undefined;
           const statusCounts = { working: 0, waiting: 0, done: 0 };
@@ -60,6 +60,7 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
             <TabItem
               key={ws.id}
               uiVariant={uiVariant}
+              index={wsIndex}
               name={ws.name}
               color={ws.color}
               paneCount={ws.panes.length}

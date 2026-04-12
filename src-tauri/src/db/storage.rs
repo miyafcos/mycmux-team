@@ -45,12 +45,20 @@ pub struct WorkspaceConfig {
     pub created_at: u64,
     #[serde(default)]
     pub color: Option<String>,
+    // Legacy row-first fields (kept for deserialization of old data)
     #[serde(default)]
     pub split_rows: Option<Vec<Vec<usize>>>,
     #[serde(default)]
     pub row_sizes: Option<Vec<f64>>,
     #[serde(default)]
     pub column_sizes: Option<Vec<Vec<f64>>>,
+    // New column-first layout fields
+    #[serde(default)]
+    pub split_columns: Option<Vec<Vec<usize>>>,
+    #[serde(default)]
+    pub column_widths: Option<Vec<f64>>,
+    #[serde(default)]
+    pub row_heights_per_col: Option<Vec<Vec<f64>>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
