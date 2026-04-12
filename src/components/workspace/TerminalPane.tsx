@@ -11,6 +11,7 @@ import {
 import { useWorkspaceListStore } from "../../stores/workspaceListStore";
 import { getAgent, getDefaultAgent } from "../../lib/agents";
 import { killSession } from "../../lib/ipc";
+import { evictTerminalCache } from "../terminal/XTermWrapper";
 
 interface TerminalPaneProps {
   pane: Pane;
@@ -73,7 +74,10 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
     const ws = useWorkspaceListStore.getState().getWorkspace(workspaceId);
     const p = ws?.panes.find((x) => x.id === pane.id);
     const tab = p?.tabs.find((t) => t.id === tabId);
-    if (tab) killSession(tab.sessionId).catch(() => {});
+    if (tab) {
+      evictTerminalCache(tab.sessionId);
+      killSession(tab.sessionId).catch(() => {});
+    }
     removeTabFromPane(workspaceId, pane.id, tabId);
   }, [workspaceId, pane.id, removeTabFromPane]);
 

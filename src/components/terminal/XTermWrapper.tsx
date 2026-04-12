@@ -95,6 +95,28 @@ function chunkedWrite(sessionId: string, data: string): void {
 // Cache terminal config globally — fetched once, reused across all panes
 let cachedConfig: { theme: ITheme; fontSize: number; fontFamily: string } | null = null;
 let configPromise: Promise<void> | null = null;
+
+// --- Terminal instance cache ---
+// Prevents xterm destruction when Allotment restructuring causes React to
+// unmount/remount XTermWrapper. Keyed by sessionId.
+interface CachedTerm {
+  term: Terminal;
+  fitAddon: FitAddon;
+  searchAddon: SearchAddon;
+  xtermElement: HTMLElement;
+  unlistenExit: (() => void) | null;
+}
+const termCache = new Map<string, CachedTerm>();
+
+/** Call before killSession to dispose the cached terminal */
+export function evictTerminalCache(sessionId: string): void {
+  const cached = termCache.get(sessionId);
+  if (cached) {
+    cached.unlistenExit?.();
+    cached.term.dispose();
+    termCache.delete(sessionId);
+  }
+}
 const CODING_AGENT_HINT_PATTERN = /\b(?:ctrl|cmd|alt|shift)\+[\w?]+/gi;
 
 function isShortcutHintLine(line: string): boolean {
@@ -199,11 +221,50 @@ export default memo(function XTermWrapper({
     if (!container) return;
 
     let disposed = false;
+    let resizeObserver: ResizeObserver | null = null;
+    let resizeTimeout: ReturnType<typeof setTimeout>;
+
+    // --- Reattach cached terminal (survived Allotment restructuring) ---
+    const cached = termCache.get(sessionId);
+    if (cached) {
+      termCache.delete(sessionId);
+      container.appendChild(cached.xtermElement);
+      termRef.current = cached.term;
+      fitAddonRef.current = cached.fitAddon;
+      searchAddonRef.current = cached.searchAddon;
+
+      // Re-fit after reattach
+      setTimeout(() => {
+        if (disposed) return;
+        cached.fitAddon.fit();
+        resizeSession(sessionId, cached.term.cols, cached.term.rows).catch(console.error);
+      }, 30);
+
+      resizeObserver = new ResizeObserver(() => {
+        clearTimeout(resizeTimeout);
+        resizeTimeout = setTimeout(() => {
+          if (disposed) return;
+          cached.fitAddon.fit();
+          resizeSession(sessionId, cached.term.cols, cached.term.rows).catch(console.error);
+        }, 50);
+      });
+      resizeObserver.observe(container);
+
+      return () => {
+        disposed = true;
+        clearTimeout(resizeTimeout);
+        resizeObserver?.disconnect();
+        // Cache again for potential future remount
+        const el = cached.xtermElement;
+        if (el.parentNode === container) container.removeChild(el);
+        termCache.set(sessionId, cached);
+      };
+    }
+
+    // --- First mount: create new terminal + PTY session ---
     let unlistenExit: (() => void) | null = null;
     let term: Terminal | null = null;
     let fitAddon: FitAddon | null = null;
-    let resizeObserver: ResizeObserver | null = null;
-    let resizeTimeout: ReturnType<typeof setTimeout>;
     let logThrottle: ReturnType<typeof setTimeout> | null = null;
     let startupSettleTimeout: ReturnType<typeof setTimeout> | null = null;
     let startupSettled = false;
@@ -512,10 +573,22 @@ export default memo(function XTermWrapper({
       }
       if (logThrottle) { clearTimeout(logThrottle); logThrottle = null; }
       resizeObserver?.disconnect();
-      unlistenExit?.();
-      // NOTE: Do NOT killSession here — Allotment may remount surviving panes
-      // on sibling removal. Session killing is handled by the close/remove handlers.
-      term?.dispose();
+      // Cache terminal for potential remount instead of disposing.
+      // Allotment may remount surviving panes on sibling removal.
+      if (term && term.element) {
+        const el = term.element;
+        if (el.parentNode === container) container.removeChild(el);
+        termCache.set(sessionId, {
+          term,
+          fitAddon: fitAddon!,
+          searchAddon: searchAddonRef.current!,
+          xtermElement: el,
+          unlistenExit,
+        });
+      } else {
+        unlistenExit?.();
+        term?.dispose();
+      }
       searchAddonRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps

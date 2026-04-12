@@ -6,6 +6,7 @@ import {
   useUiStore,
 } from "../../stores/workspaceStore";
 import { killSession } from "../../lib/ipc";
+import { evictTerminalCache } from "../terminal/XTermWrapper";
 import { SIDEBAR_WIDTH } from "../../lib/constants";
 import TabBar from "./TabBar";
 import TitleBar from "./TitleBar";
@@ -179,6 +180,7 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
       if (ws) {
         for (const pane of ws.panes) {
           for (const tab of pane.tabs) {
+            evictTerminalCache(tab.sessionId);
             killSession(tab.sessionId).catch(() => {});
           }
         }
@@ -288,7 +290,11 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
         case "pane.close": {
           const activeWs = ws.find((w) => w.id === aid);
           const activePane = activeWs?.panes.find((p) => p.sessionId === apid);
-          if (activeWs && activePane) {
+          if (activeWs && activePane && activeWs.panes.length > 1) {
+            for (const tab of activePane.tabs) {
+              evictTerminalCache(tab.sessionId);
+              killSession(tab.sessionId).catch(() => {});
+            }
             removePaneFromWorkspace(activeWs.id, activePane.id);
             // Focus a remaining pane after close
             const remaining = activeWs.panes.filter((p) => p.id !== activePane.id);

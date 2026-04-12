@@ -15,6 +15,21 @@ import type { Workspace } from "../../types";
 import { useThemeStore } from "../../stores/themeStore";
 import { useKeybindingStore } from "../../stores/keybindingStore";
 
+/** Transpose row-major split indices to column-major for legacy data migration */
+function transposeSplitRowsToCols(splitRows: number[][]): number[][] {
+  if (!splitRows.length) return [];
+  const maxCols = Math.max(...splitRows.map((r) => r.length));
+  const cols: number[][] = [];
+  for (let c = 0; c < maxCols; c++) {
+    const col: number[] = [];
+    for (const row of splitRows) {
+      if (c < row.length) col.push(row[c]);
+    }
+    if (col.length > 0) cols.push(col);
+  }
+  return cols;
+}
+
 function toConfig(ws: Workspace): WorkspaceConfig {
   const paneIdToIndex = new Map(ws.panes.map((p, i) => [p.id, i]));
   const split_columns = ws.splitColumns
@@ -90,11 +105,13 @@ export function useWorkspacePersist() {
 
             if (listStore.workspaces.length <= 1) {
               for (const cfg of data.workspaces) {
-                // Use split_columns if available; old split_rows data is ignored (layout rebuilds from template)
+                // Use split_columns if available; fall back to transposed split_rows for old data
+                const splitData = cfg.split_columns
+                  ?? (cfg.split_rows ? transposeSplitRowsToCols(cfg.split_rows) : null);
                 const { panes, splitColumns } = layoutStore.restorePanes(
                   cfg.id,
                   cfg.panes,
-                  cfg.split_columns ?? null,
+                  splitData,
                   cfg.grid_template_id as Workspace["gridTemplateId"],
                 );
 

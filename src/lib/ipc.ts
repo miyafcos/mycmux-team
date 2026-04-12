@@ -161,6 +161,11 @@ export interface WorkspaceConfig {
   split_columns?: number[][] | null;
   column_widths?: number[] | null;
   row_heights_per_col?: number[][] | null;
+  // Legacy fields (read-only, for migration from older data formats)
+  split_rows?: number[][] | null;
+  row_sizes?: number[] | null;
+  column_sizes?: number[][] | null;
+  layout_tree?: unknown | null;
 }
 
 export interface AppSettings {

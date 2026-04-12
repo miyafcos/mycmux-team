@@ -5,6 +5,7 @@ import type { Pane, GridTemplateId } from "../../types";
 import { useWorkspaceLayoutStore } from "../../stores/workspaceStore";
 import { useWorkspaceListStore } from "../../stores/workspaceListStore";
 import { killSession } from "../../lib/ipc";
+import { evictTerminalCache } from "../terminal/XTermWrapper";
 import TerminalPane from "./TerminalPane";
 import { ErrorBoundary } from "../layout/ErrorBoundary";
 
@@ -28,9 +29,11 @@ export const TerminalGrid = memo(function TerminalGrid({
   const handleClose = useCallback((paneId: string) => {
     // Kill all PTY sessions — read fresh state to avoid stale closure
     const ws = useWorkspaceListStore.getState().getWorkspace(workspaceId);
-    const pane = ws?.panes.find((p) => p.id === paneId);
+    if (!ws || ws.panes.length <= 1) return;
+    const pane = ws.panes.find((p) => p.id === paneId);
     if (pane) {
       for (const tab of pane.tabs) {
+        evictTerminalCache(tab.sessionId);
         killSession(tab.sessionId).catch(() => {});
       }
     }
