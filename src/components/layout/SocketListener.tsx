@@ -209,11 +209,15 @@ export function useWorkspacePersist() {
 
     const interval = setInterval(sync, 10000);
 
+    const handleBeforeUnload = () => { sync(); };
+    window.addEventListener("beforeunload", handleBeforeUnload);
+
     return () => {
       unsub();
       unsubUi();
       clearInterval(interval);
       if (debounceTimer) clearTimeout(debounceTimer);
+      window.removeEventListener("beforeunload", handleBeforeUnload);
     };
   }, []);
 }

@@ -4,6 +4,7 @@ import {
   useWorkspaceListStore,
   useWorkspaceLayoutStore,
   useUiStore,
+  usePaneMetadataStore,
 } from "../../stores/workspaceStore";
 import { killSession } from "../../lib/ipc";
 import { evictTerminalCache } from "../terminal/XTermWrapper";
@@ -182,6 +183,7 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
           for (const tab of pane.tabs) {
             evictTerminalCache(tab.sessionId);
             killSession(tab.sessionId).catch(() => {});
+            usePaneMetadataStore.getState().removeMetadata(tab.sessionId);
           }
         }
       }
@@ -294,6 +296,7 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
             for (const tab of activePane.tabs) {
               evictTerminalCache(tab.sessionId);
               killSession(tab.sessionId).catch(() => {});
+              usePaneMetadataStore.getState().removeMetadata(tab.sessionId);
             }
             removePaneFromWorkspace(activeWs.id, activePane.id);
             // Focus a remaining pane after close

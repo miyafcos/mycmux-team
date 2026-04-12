@@ -13,6 +13,7 @@ import {
   waitForStartupSessionGate,
 } from "./lib/startupSessionGate";
 import AppShell from "./components/layout/AppShell";
+import ErrorBoundary from "./components/common/ErrorBoundary";
 import { initDefaultShell } from "./lib/agents";
 
 // Kick off config fetch immediately — will be cached by the time terminals mount
@@ -181,7 +182,9 @@ function App() {
 
   return (
     <div style={{ position: "relative", width: "100vw", height: "100vh", background: "#0a0a0a" }}>
-      <AppShell uiVariant={uiVariant} />
+      <ErrorBoundary>
+        <AppShell uiVariant={uiVariant} />
+      </ErrorBoundary>
       {startupMaskVisible && (
         <div
           style={{

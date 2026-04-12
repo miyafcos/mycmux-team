@@ -130,9 +130,9 @@ impl PtySession {
                             }
                         }
 
-                        // Log every 100th read to avoid spam
-                        if read_micros > 1000 || send_micros > 1000 {
-                            println!(
+                        // Log slow reads in debug builds only
+                        if cfg!(debug_assertions) && (read_micros > 1000 || send_micros > 1000) {
+                            eprintln!(
                                 "[PERF] PTY read: {}μs, channel send: {}μs, bytes: {}",
                                 read_micros, send_micros, n
                             );
@@ -175,9 +175,9 @@ impl PtySession {
         let write_micros = write_start.elapsed().as_micros();
         let total_micros = start.elapsed().as_micros();
 
-        // Log slow writes (>1ms total)
-        if total_micros > 1000 {
-            println!(
+        // Log slow writes in debug builds only
+        if cfg!(debug_assertions) && total_micros > 1000 {
+            eprintln!(
                 "[PERF] PTY write: lock={}μs, write+flush={}μs, total={}μs, bytes={}",
                 lock_micros,
                 write_micros,
@@ -222,5 +222,11 @@ impl PtySession {
             .lock()
             .map(|sb| sb.iter().copied().collect())
             .unwrap_or_default()
+    }
+}
+
+impl Drop for PtySession {
+    fn drop(&mut self) {
+        let _ = self.kill();
     }
 }

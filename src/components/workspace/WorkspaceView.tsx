@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, memo, useRef, useState } from "react";
 import { Allotment } from "allotment";
 import "allotment/dist/style.css";
 import type { Pane, GridTemplateId } from "../../types";
-import { useWorkspaceLayoutStore } from "../../stores/workspaceStore";
+import { useWorkspaceLayoutStore, usePaneMetadataStore } from "../../stores/workspaceStore";
 import { useWorkspaceListStore } from "../../stores/workspaceListStore";
 import { killSession } from "../../lib/ipc";
 import { evictTerminalCache } from "../terminal/XTermWrapper";
@@ -35,6 +35,7 @@ export const TerminalGrid = memo(function TerminalGrid({
       for (const tab of pane.tabs) {
         evictTerminalCache(tab.sessionId);
         killSession(tab.sessionId).catch(() => {});
+        usePaneMetadataStore.getState().removeMetadata(tab.sessionId);
       }
     }
     removePaneFromWorkspace(workspaceId, paneId);
@@ -56,6 +57,8 @@ export const TerminalGrid = memo(function TerminalGrid({
     nextId: 0,
     entries: [],
   });
+  const colResizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const rowResizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Column-first layout: outer = horizontal columns, inner = vertical rows within each column
   if (splitColumns) {
@@ -92,8 +95,11 @@ export const TerminalGrid = memo(function TerminalGrid({
         separator={false}
         defaultSizes={columnWidths}
         onChange={(sizes) => {
-          const currentWorkspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
-          setWorkspaceLayoutMetrics(workspaceId, sizes, currentWorkspace?.rowHeightsPerCol);
+          if (colResizeTimerRef.current) clearTimeout(colResizeTimerRef.current);
+          colResizeTimerRef.current = setTimeout(() => {
+            const currentWorkspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
+            setWorkspaceLayoutMetrics(workspaceId, sizes, currentWorkspace?.rowHeightsPerCol);
+          }, 200);
         }}
       >
         {keyedCols.map(({ col, key }, colIdx) => (
@@ -104,15 +110,18 @@ export const TerminalGrid = memo(function TerminalGrid({
               separator={false}
               defaultSizes={rowHeightsPerCol?.[colIdx]?.length === col.length ? rowHeightsPerCol[colIdx] : undefined}
               onChange={(sizes) => {
-                const currentWorkspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
-                const currentRowHeights = currentWorkspace?.rowHeightsPerCol;
-                const nextRowHeights = cols.map((currentCol, currentColIdx) => {
-                  if (currentColIdx === colIdx) return sizes;
-                  return currentRowHeights?.[currentColIdx]?.length === currentCol.length
-                    ? currentRowHeights[currentColIdx]
-                    : [];
-                });
-                setWorkspaceLayoutMetrics(workspaceId, currentWorkspace?.columnWidths, nextRowHeights);
+                if (rowResizeTimerRef.current) clearTimeout(rowResizeTimerRef.current);
+                rowResizeTimerRef.current = setTimeout(() => {
+                  const currentWorkspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
+                  const currentRowHeights = currentWorkspace?.rowHeightsPerCol;
+                  const nextRowHeights = cols.map((currentCol, currentColIdx) => {
+                    if (currentColIdx === colIdx) return sizes;
+                    return currentRowHeights?.[currentColIdx]?.length === currentCol.length
+                      ? currentRowHeights[currentColIdx]
+                      : [];
+                  });
+                  setWorkspaceLayoutMetrics(workspaceId, currentWorkspace?.columnWidths, nextRowHeights);
+                }, 200);
               }}
             >
               {col.map((paneId) => {
@@ -182,6 +191,23 @@ export default memo(function WorkspaceView() {
       return next;
     });
   }, [activeId]);
+
+  // Prune mounted IDs for deleted workspaces
+  useEffect(() => {
+    const currentIds = new Set(workspaces.map((ws) => ws.id));
+    setMountedWorkspaceIds((prev) => {
+      let changed = false;
+      for (const id of prev) {
+        if (!currentIds.has(id)) { changed = true; break; }
+      }
+      if (!changed) return prev;
+      const next = new Set<string>();
+      for (const id of prev) {
+        if (currentIds.has(id)) next.add(id);
+      }
+      return next;
+    });
+  }, [workspaces]);
 
   return (
     <div style={{ position: "relative", width: "100%", height: "100%" }}>
