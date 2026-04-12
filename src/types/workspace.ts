@@ -54,10 +54,10 @@ export interface Workspace {
   status: WorkspaceStatus;
   createdAt: number;
   color?: string;
-  /** Each entry is a row of pane IDs for dynamic split tracking */
-  splitRows?: string[][];
-  /** Saved vertical split sizes for top-level rows */
-  rowSizes?: number[];
-  /** Saved horizontal split sizes for each row */
-  columnSizes?: number[][];
+  /** Each entry is a column of pane IDs for dynamic split tracking (column-first layout) */
+  splitColumns?: string[][];
+  /** Saved widths for top-level columns (outer horizontal Allotment) */
+  columnWidths?: number[];
+  /** Saved row heights within each column (inner vertical Allotment per column) */
+  rowHeightsPerCol?: number[][];
 }

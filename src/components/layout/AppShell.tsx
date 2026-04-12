@@ -150,18 +150,18 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
     ) => {
       // Build panes using layout store
       const workspaceId = crypto.randomUUID();
-      const { panes, splitRows } = useWorkspaceLayoutStore.getState().buildInitialPanes(
-        workspaceId, 
-        gridTemplateId, 
+      const { panes, splitColumns } = useWorkspaceLayoutStore.getState().buildInitialPanes(
+        workspaceId,
+        gridTemplateId,
         agentAssignments
       );
-      
+
       // Create workspace in list store
       useWorkspaceListStore.getState().createWorkspace(
         name,
         gridTemplateId,
         panes,
-        splitRows,
+        splitColumns,
         {
           id: workspaceId,
           color,

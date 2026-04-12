@@ -8,6 +8,7 @@ interface StatusCounts {
 
 interface TabItemProps {
   uiVariant?: "default" | "cmux";
+  index: number;
   name: string;
   color?: string;
   paneCount: number;
@@ -40,7 +41,7 @@ function StatusPip({ count, color, pulse }: { count: number; color: string; puls
   );
 }
 
-export default memo(function TabItem({ uiVariant = "default", name, color, paneCount, cwd, gitBranch, notificationCount, lastLogLine, statusCounts, active, onClick, onClose }: TabItemProps) {
+export default memo(function TabItem({ uiVariant = "default", index, name, color, paneCount, cwd, gitBranch, notificationCount, lastLogLine, statusCounts, active, onClick, onClose }: TabItemProps) {
   const hasAgents = statusCounts && (statusCounts.working + statusCounts.waiting + statusCounts.done) > 0;
   return (
     <div
@@ -52,18 +53,19 @@ export default memo(function TabItem({ uiVariant = "default", name, color, paneC
         justifyContent: "space-between",
         padding: "8px 12px",
         cursor: "pointer",
-        background: active
-          ? (uiVariant === "cmux" ? "rgba(255,255,255,0.07)" : "var(--cmux-accent)")
-          : "transparent",
+        background: active ? "rgba(255,255,255,0.06)" : "transparent",
         color: active
           ? (uiVariant === "cmux" ? "#f3f3f3" : "#ffffff")
           : "var(--cmux-text-secondary)",
         fontSize: "13px",
         fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
         userSelect: "none",
-        transition: "background 0.1s, color 0.1s",
-        borderRadius: uiVariant === "cmux" ? "8px" : "6px",
-        margin: "0 8px",
+        transition: "background 0.1s, color 0.1s, border-color 0.1s",
+        borderRadius: uiVariant === "cmux" ? "0 8px 8px 0" : "0 6px 6px 0",
+        borderLeft: active
+          ? `3px solid ${color || "var(--cmux-accent)"}`
+          : "3px solid transparent",
+        margin: "0 8px 0 0",
         marginTop: "4px"
       }}
       onMouseEnter={(e) => {
@@ -81,6 +83,20 @@ export default memo(function TabItem({ uiVariant = "default", name, color, paneC
     >
       <div style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 0, overflow: "hidden", flex: 1 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+          {index < 9 && (
+            <span style={{
+              fontSize: 10,
+              fontWeight: 500,
+              color: active ? "rgba(255,255,255,0.45)" : "var(--cmux-text-tertiary)",
+              fontFamily: "monospace",
+              flexShrink: 0,
+              minWidth: 12,
+              textAlign: "center",
+              lineHeight: 1,
+            }}>
+              {index + 1}
+            </span>
+          )}
           {color && (
             <div style={{
               width: 8,

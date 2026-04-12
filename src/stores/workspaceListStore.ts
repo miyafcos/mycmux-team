@@ -9,8 +9,8 @@ interface CreateWorkspaceOptions {
   id?: string;
   createdAt?: number;
   color?: string;
-  rowSizes?: number[];
-  columnSizes?: number[][];
+  columnWidths?: number[];
+  rowHeightsPerCol?: number[][];
   activate?: boolean;
 }
 
@@ -31,7 +31,7 @@ interface WorkspaceListState {
     name: string,
     gridTemplateId: GridTemplateId,
     panes: Workspace["panes"],
-    splitRows: string[][],
+    splitColumns: string[][],
     options?: CreateWorkspaceOptions,
   ) => Workspace;
   removeWorkspace: (id: string) => void;
@@ -40,15 +40,15 @@ interface WorkspaceListState {
   setWorkspaceStatus: (id: string, status: Workspace["status"]) => void;
   setWorkspaceLayoutMetrics: (
     id: string,
-    rowSizes?: number[],
-    columnSizes?: number[][],
+    columnWidths?: number[],
+    rowHeightsPerCol?: number[][],
   ) => void;
   
   // Internal update for layout store to modify panes
   _updateWorkspacePanes: (
     id: string,
     panes: Workspace["panes"],
-    splitRows?: string[][],
+    splitColumns?: string[][],
     resetLayoutMetrics?: boolean,
   ) => void;
 }
@@ -66,22 +66,22 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
     return get().workspaces.find((w) => w.id === id);
   },
 
-  createWorkspace: (name, gridTemplateId, panes, splitRows, options) => {
+  createWorkspace: (name, gridTemplateId, panes, splitColumns, options) => {
     const id = options?.id ?? uuid();
     const { workspaces } = get();
     const autoColor = options?.color ?? WORKSPACE_COLORS[workspaces.length % WORKSPACE_COLORS.length];
-    
+
     const workspace: Workspace = {
       id,
       name,
       gridTemplateId,
       panes,
-      splitRows,
+      splitColumns,
       status: "running",
       createdAt: options?.createdAt ?? Date.now(),
       color: autoColor,
-      rowSizes: options?.rowSizes,
-      columnSizes: options?.columnSizes,
+      columnWidths: options?.columnWidths,
+      rowHeightsPerCol: options?.rowHeightsPerCol,
     };
 
     set((state) => ({
@@ -129,25 +129,25 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
     }));
   },
 
-  setWorkspaceLayoutMetrics: (id, rowSizes, columnSizes) => {
+  setWorkspaceLayoutMetrics: (id, columnWidths, rowHeightsPerCol) => {
     set((state) => ({
       workspaces: state.workspaces.map((w) =>
         w.id === id
-          ? { ...w, rowSizes, columnSizes }
+          ? { ...w, columnWidths, rowHeightsPerCol }
           : w
       ),
     }));
   },
 
-  _updateWorkspacePanes: (id, panes, splitRows, resetLayoutMetrics = false) => {
+  _updateWorkspacePanes: (id, panes, splitColumns, resetLayoutMetrics = false) => {
     set((state) => ({
       workspaces: state.workspaces.map((w) =>
         w.id === id
           ? {
               ...w,
               panes,
-              ...(splitRows !== undefined && { splitRows }),
-              ...(resetLayoutMetrics ? { rowSizes: undefined, columnSizes: undefined } : {}),
+              ...(splitColumns !== undefined && { splitColumns }),
+              ...(resetLayoutMetrics ? { columnWidths: undefined, rowHeightsPerCol: undefined } : {}),
             }
           : w
       ),

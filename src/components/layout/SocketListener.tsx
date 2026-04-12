@@ -17,9 +17,9 @@ import { useKeybindingStore } from "../../stores/keybindingStore";
 
 function toConfig(ws: Workspace): WorkspaceConfig {
   const paneIdToIndex = new Map(ws.panes.map((p, i) => [p.id, i]));
-  const split_rows = ws.splitRows
-    ?.map((row) => row.map((id) => paneIdToIndex.get(id)).filter((i): i is number => i !== undefined))
-    .filter((row) => row.length > 0) ?? null;
+  const split_columns = ws.splitColumns
+    ?.map((col) => col.map((id) => paneIdToIndex.get(id)).filter((i): i is number => i !== undefined))
+    .filter((col) => col.length > 0) ?? null;
 
   return {
     id: ws.id,
@@ -48,9 +48,9 @@ function toConfig(ws: Workspace): WorkspaceConfig {
     }),
     created_at: ws.createdAt,
     color: ws.color ?? null,
-    split_rows,
-    row_sizes: ws.rowSizes ?? null,
-    column_sizes: ws.columnSizes ?? null,
+    split_columns,
+    column_widths: ws.columnWidths ?? null,
+    row_heights_per_col: ws.rowHeightsPerCol ?? null,
   };
 }
 
@@ -90,10 +90,11 @@ export function useWorkspacePersist() {
 
             if (listStore.workspaces.length <= 1) {
               for (const cfg of data.workspaces) {
-                const { panes, splitRows } = layoutStore.restorePanes(
+                // Use split_columns if available; old split_rows data is ignored (layout rebuilds from template)
+                const { panes, splitColumns } = layoutStore.restorePanes(
                   cfg.id,
                   cfg.panes,
-                  cfg.split_rows ?? null,
+                  cfg.split_columns ?? null,
                   cfg.grid_template_id as Workspace["gridTemplateId"],
                 );
 
@@ -101,13 +102,13 @@ export function useWorkspacePersist() {
                   cfg.name,
                   cfg.grid_template_id as Workspace["gridTemplateId"],
                   panes,
-                  splitRows,
+                  splitColumns,
                   {
                     id: cfg.id,
                     createdAt: cfg.created_at,
                     color: cfg.color ?? undefined,
-                    rowSizes: cfg.row_sizes ?? undefined,
-                    columnSizes: cfg.column_sizes ?? undefined,
+                    columnWidths: cfg.column_widths ?? undefined,
+                    rowHeightsPerCol: cfg.row_heights_per_col ?? undefined,
                     activate: false,
                   },
                 );

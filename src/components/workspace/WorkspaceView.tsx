@@ -12,13 +12,13 @@ interface TerminalGridProps {
   workspaceId: string;
   gridTemplateId: GridTemplateId;
   panes: Pane[];
-  splitRows?: string[][];
+  splitColumns?: string[][];
 }
 
 export const TerminalGrid = memo(function TerminalGrid({
   workspaceId,
   panes,
-  splitRows,
+  splitColumns,
 }: TerminalGridProps) {
   const removePaneFromWorkspace = useWorkspaceLayoutStore((s) => s.removePaneFromWorkspace);
   const addPaneToWorkspace = useWorkspaceLayoutStore((s) => s.addPaneToWorkspace);
@@ -46,7 +46,7 @@ export const TerminalGrid = memo(function TerminalGrid({
   }, [workspaceId, addPaneToWorkspace]);
 
   const paneMap = useMemo(() => Object.fromEntries(panes.map((p) => [p.id, p])), [panes]);
-  const rowKeyStateRef = useRef<{
+  const colKeyStateRef = useRef<{
     nextId: number;
     entries: Array<{ key: string; paneIds: string[] }>;
   }>({
@@ -54,22 +54,20 @@ export const TerminalGrid = memo(function TerminalGrid({
     entries: [],
   });
 
-  // Always use splitRows for consistent React tree structure
-  // This prevents component remounting when pane count changes
-  if (splitRows) {
-    // Use splitRows if available, otherwise flat horizontal layout
-    const rows: string[][] = splitRows ?? [panes.map((p) => p.id)];
-    const rowSizes = workspace?.rowSizes?.length === rows.length ? workspace.rowSizes : undefined;
-    const columnSizes = workspace?.columnSizes;
+  // Column-first layout: outer = horizontal columns, inner = vertical rows within each column
+  if (splitColumns) {
+    const cols: string[][] = splitColumns ?? [panes.map((p) => p.id)];
+    const columnWidths = workspace?.columnWidths?.length === cols.length ? workspace.columnWidths : undefined;
+    const rowHeightsPerCol = workspace?.rowHeightsPerCol;
     const nextEntries: Array<{ key: string; paneIds: string[] }> = [];
-    const availableEntries = [...rowKeyStateRef.current.entries];
+    const availableEntries = [...colKeyStateRef.current.entries];
 
-    const keyedRows = rows.map((row) => {
+    const keyedCols = cols.map((col) => {
       let bestIdx = -1;
       let bestOverlap = 0;
 
       for (let idx = 0; idx < availableEntries.length; idx++) {
-        const overlap = availableEntries[idx].paneIds.filter((paneId) => row.includes(paneId)).length;
+        const overlap = availableEntries[idx].paneIds.filter((paneId) => col.includes(paneId)).length;
         if (overlap > bestOverlap) {
           bestOverlap = overlap;
           bestIdx = idx;
@@ -78,43 +76,43 @@ export const TerminalGrid = memo(function TerminalGrid({
 
       const entry = bestIdx >= 0
         ? availableEntries.splice(bestIdx, 1)[0]
-        : { key: `row-${workspaceId}-${rowKeyStateRef.current.nextId++}`, paneIds: row };
-      const nextEntry = { key: entry.key, paneIds: row };
+        : { key: `col-${workspaceId}-${colKeyStateRef.current.nextId++}`, paneIds: col };
+      const nextEntry = { key: entry.key, paneIds: col };
       nextEntries.push(nextEntry);
-      return { row, key: nextEntry.key };
+      return { col, key: nextEntry.key };
     });
 
-    rowKeyStateRef.current.entries = nextEntries;
+    colKeyStateRef.current.entries = nextEntries;
 
     return (
       <Allotment
-        vertical
         separator={false}
-        defaultSizes={rowSizes}
+        defaultSizes={columnWidths}
         onChange={(sizes) => {
           const currentWorkspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
-          setWorkspaceLayoutMetrics(workspaceId, sizes, currentWorkspace?.columnSizes);
+          setWorkspaceLayoutMetrics(workspaceId, sizes, currentWorkspace?.rowHeightsPerCol);
         }}
       >
-        {keyedRows.map(({ row, key }, rowIdx) => (
+        {keyedCols.map(({ col, key }, colIdx) => (
           <Allotment.Pane key={key}>
             <Allotment
-              key={`columns-${key}`}
+              vertical
+              key={`rows-${key}`}
               separator={false}
-              defaultSizes={columnSizes?.[rowIdx]?.length === row.length ? columnSizes[rowIdx] : undefined}
+              defaultSizes={rowHeightsPerCol?.[colIdx]?.length === col.length ? rowHeightsPerCol[colIdx] : undefined}
               onChange={(sizes) => {
                 const currentWorkspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
-                const currentColumnSizes = currentWorkspace?.columnSizes;
-                const nextColumnSizes = rows.map((currentRow, currentRowIdx) => {
-                  if (currentRowIdx === rowIdx) return sizes;
-                  return currentColumnSizes?.[currentRowIdx]?.length === currentRow.length
-                    ? currentColumnSizes[currentRowIdx]
+                const currentRowHeights = currentWorkspace?.rowHeightsPerCol;
+                const nextRowHeights = cols.map((currentCol, currentColIdx) => {
+                  if (currentColIdx === colIdx) return sizes;
+                  return currentRowHeights?.[currentColIdx]?.length === currentCol.length
+                    ? currentRowHeights[currentColIdx]
                     : [];
                 });
-                setWorkspaceLayoutMetrics(workspaceId, currentWorkspace?.rowSizes, nextColumnSizes);
+                setWorkspaceLayoutMetrics(workspaceId, currentWorkspace?.columnWidths, nextRowHeights);
               }}
             >
-              {row.map((paneId) => {
+              {col.map((paneId) => {
                 const pane = paneMap[paneId];
                 if (!pane) return null;
                 return (
@@ -138,12 +136,12 @@ export const TerminalGrid = memo(function TerminalGrid({
     );
   }
 
-  // Fallback: no splitRows (should not happen with current store logic)
-  // Render a flat horizontal layout
+  // Fallback: no splitColumns (should not happen with current store logic)
+  // Render a single-column vertical layout
   return (
-    <Allotment vertical separator={false}>
+    <Allotment separator={false}>
       <Allotment.Pane>
-        <Allotment separator={false}>
+        <Allotment vertical separator={false}>
           {panes.map((pane) => (
             <Allotment.Pane key={pane.id}>
               <ErrorBoundary>
@@ -203,7 +201,7 @@ export default memo(function WorkspaceView() {
                 workspaceId={ws.id}
                 gridTemplateId={ws.gridTemplateId}
                 panes={ws.panes}
-                splitRows={ws.splitRows}
+                splitColumns={ws.splitColumns}
               />
             </div>
           );
