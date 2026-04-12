@@ -18,6 +18,7 @@ export interface PaneMetadataState {
   incrementNotification: (sessionId: string) => void;
   notifyWaiting: (sessionId: string, notificationKey: string) => boolean;
   clearNotification: (sessionId: string) => void;
+  removeMetadata: (sessionId: string) => void;
 }
 
 export const usePaneMetadataStore = create<PaneMetadataState>((set) => ({
@@ -93,4 +94,9 @@ export const usePaneMetadataStore = create<PaneMetadataState>((set) => ({
       }
     }
   })),
+
+  removeMetadata: (sessionId) => set((state) => {
+    const { [sessionId]: _, ...rest } = state.metadata;
+    return { metadata: rest };
+  }),
 }));

@@ -77,6 +77,7 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
     if (tab) {
       evictTerminalCache(tab.sessionId);
       killSession(tab.sessionId).catch(() => {});
+      usePaneMetadataStore.getState().removeMetadata(tab.sessionId);
     }
     removeTabFromPane(workspaceId, pane.id, tabId);
   }, [workspaceId, pane.id, removeTabFromPane]);

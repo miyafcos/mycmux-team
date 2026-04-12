@@ -122,7 +122,9 @@ pub fn load(app_handle: &tauri::AppHandle) -> Result<PersistentData, String> {
 
 pub fn save(app_handle: &tauri::AppHandle, data: &PersistentData) -> Result<(), String> {
     let path = data_path(app_handle)?;
+    let tmp_path = path.with_extension("json.tmp");
     let json =
         serde_json::to_string_pretty(data).map_err(|e| format!("Failed to serialize data: {e}"))?;
-    fs::write(&path, json).map_err(|e| format!("Failed to write data file: {e}"))
+    fs::write(&tmp_path, &json).map_err(|e| format!("Failed to write temp data file: {e}"))?;
+    fs::rename(&tmp_path, &path).map_err(|e| format!("Failed to rename data file: {e}"))
 }
