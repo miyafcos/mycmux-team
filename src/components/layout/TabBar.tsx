@@ -1,3 +1,4 @@
+import { useRef, useState, useCallback, useEffect } from "react";
 import { useWorkspaceListStore, usePaneMetadataStore } from "../../stores/workspaceStore";
 import { SIDEBAR_WIDTH } from "../../lib/constants";
 import TabItem from "./TabItem";
@@ -19,7 +20,72 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
   const workspaces = useWorkspaceListStore((s) => s.workspaces);
   const activeId = useWorkspaceListStore((s) => s.activeWorkspaceId);
   const setActive = useWorkspaceListStore((s) => s.setActiveWorkspace);
+  const reorder = useWorkspaceListStore((s) => s.reorderWorkspaces);
+  const rename = useWorkspaceListStore((s) => s.renameWorkspace);
   const paneMetadata = usePaneMetadataStore((s) => s.metadata);
+
+  const [dragIndex, setDragIndex] = useState<number | null>(null);
+  const [dropIndex, setDropIndex] = useState<number | null>(null);
+  const itemRefs = useRef<(HTMLDivElement | null)[]>([]);
+  const startY = useRef(0);
+  const dragging = useRef(false);
+  const pointerIdRef = useRef<number | null>(null);
+  const dragElRef = useRef<HTMLElement | null>(null);
+
+  const handlePointerDown = useCallback((e: React.PointerEvent, index: number) => {
+    if (e.button !== 0) return;
+    const target = e.target as HTMLElement;
+    if (target.tagName === "BUTTON" || target.tagName === "INPUT" || target.closest("button, input")) return;
+    startY.current = e.clientY;
+    dragging.current = false;
+    pointerIdRef.current = e.pointerId;
+    dragElRef.current = e.currentTarget as HTMLElement;
+    setDragIndex(index);
+  }, []);
+
+  const handlePointerMove = useCallback((e: React.PointerEvent) => {
+    if (dragIndex === null) return;
+    if (!dragging.current) {
+      if (Math.abs(e.clientY - startY.current) < 5) return;
+      dragging.current = true;
+      if (dragElRef.current && pointerIdRef.current !== null) {
+        dragElRef.current.setPointerCapture(pointerIdRef.current);
+      }
+    }
+    const y = e.clientY;
+    let target = 0;
+    for (let i = 0; i < itemRefs.current.length; i++) {
+      const el = itemRefs.current[i];
+      if (!el) continue;
+      const rect = el.getBoundingClientRect();
+      if (y > rect.top + rect.height / 2) target = i + 1;
+    }
+    target = Math.min(target, workspaces.length - 1);
+    setDropIndex(target === dragIndex ? null : target);
+  }, [dragIndex, workspaces.length]);
+
+  const handlePointerUp = useCallback(() => {
+    if (dragIndex !== null && dropIndex !== null && dragging.current) {
+      reorder(dragIndex, dropIndex);
+    }
+    setDragIndex(null);
+    setDropIndex(null);
+    dragging.current = false;
+    pointerIdRef.current = null;
+    dragElRef.current = null;
+  }, [dragIndex, dropIndex, reorder]);
+
+  useEffect(() => {
+    const up = () => {
+      if (dragIndex !== null) {
+        setDragIndex(null);
+        setDropIndex(null);
+        dragging.current = false;
+      }
+    };
+    window.addEventListener("pointerup", up);
+    return () => window.removeEventListener("pointerup", up);
+  }, [dragIndex]);
 
   return (
     <div
@@ -56,23 +122,38 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
           }
           const firstActiveTabSessionId = ws.panes[0]?.tabs.find((t) => t.id === ws.panes[0]?.activeTabId)?.sessionId;
           const firstPaneMeta = firstActiveTabSessionId ? paneMetadata[firstActiveTabSessionId] : undefined;
+          const isDragged = dragging.current && dragIndex === wsIndex;
+          const showLine = dragging.current && dropIndex === wsIndex && dragIndex !== wsIndex;
           return (
-            <TabItem
+            <div
               key={ws.id}
-              uiVariant={uiVariant}
-              index={wsIndex}
-              name={ws.name}
-              color={ws.color}
-              paneCount={ws.panes.length}
-              cwd={firstPaneMeta?.cwd}
-              gitBranch={firstPaneMeta?.gitBranch}
-              notificationCount={totalWsNotifications || undefined}
-              lastLogLine={lastLog}
-              statusCounts={statusCounts}
-              active={ws.id === activeId}
-              onClick={() => setActive(ws.id)}
-              onClose={() => onCloseWorkspace(ws.id)}
-            />
+              ref={(el) => { itemRefs.current[wsIndex] = el; }}
+              onPointerDown={(e) => handlePointerDown(e, wsIndex)}
+              onPointerMove={handlePointerMove}
+              onPointerUp={handlePointerUp}
+              style={{
+                touchAction: "none",
+                opacity: isDragged ? 0.35 : 1,
+                borderTop: showLine ? "2px solid var(--cmux-accent, #007aff)" : "2px solid transparent",
+              }}
+            >
+              <TabItem
+                uiVariant={uiVariant}
+                index={wsIndex}
+                name={ws.name}
+                color={ws.color}
+                paneCount={ws.panes.length}
+                cwd={firstPaneMeta?.cwd}
+                gitBranch={firstPaneMeta?.gitBranch}
+                notificationCount={totalWsNotifications || undefined}
+                lastLogLine={lastLog}
+                statusCounts={statusCounts}
+                active={ws.id === activeId}
+                onClick={() => { if (!dragging.current) setActive(ws.id); }}
+                onClose={() => onCloseWorkspace(ws.id)}
+                onRename={(newName) => rename(ws.id, newName)}
+              />
+            </div>
           );
         })}
       </div>

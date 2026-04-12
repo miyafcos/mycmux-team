@@ -1,4 +1,4 @@
-import { memo } from "react";
+import { memo, useState, useRef, useCallback, useEffect } from "react";
 
 interface StatusCounts {
   working: number;
@@ -20,6 +20,7 @@ interface TabItemProps {
   active: boolean;
   onClick: () => void;
   onClose: () => void;
+  onRename?: (newName: string) => void;
 }
 
 function StatusPip({ count, color, pulse }: { count: number; color: string; pulse?: boolean }) {
@@ -41,11 +42,44 @@ function StatusPip({ count, color, pulse }: { count: number; color: string; puls
   );
 }
 
-export default memo(function TabItem({ uiVariant = "default", index, name, color, paneCount, cwd, gitBranch, notificationCount, lastLogLine, statusCounts, active, onClick, onClose }: TabItemProps) {
+export default memo(function TabItem({ uiVariant = "default", index, name, color, paneCount, cwd, gitBranch, notificationCount, lastLogLine, statusCounts, active, onClick, onClose, onRename }: TabItemProps) {
   const hasAgents = statusCounts && (statusCounts.working + statusCounts.waiting + statusCounts.done) > 0;
+  const [editing, setEditing] = useState(false);
+  const [editValue, setEditValue] = useState(name);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (editing) {
+      setEditValue(name);
+      setTimeout(() => {
+        inputRef.current?.focus();
+        inputRef.current?.select();
+      }, 0);
+    }
+  }, [editing, name]);
+
+  const commitRename = useCallback(() => {
+    const trimmed = editValue.trim();
+    if (trimmed && trimmed !== name && onRename) {
+      onRename(trimmed);
+    }
+    setEditing(false);
+  }, [editValue, name, onRename]);
+
+  const handleDoubleClick = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (onRename) setEditing(true);
+  }, [onRename]);
+
+  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
+    if (e.key === "Enter") commitRename();
+    if (e.key === "Escape") setEditing(false);
+  }, [commitRename]);
+
   return (
     <div
       onClick={onClick}
+      onDoubleClick={handleDoubleClick}
       className={uiVariant === "cmux" ? "cmux-workspace-item" : undefined}
       style={{
         display: "flex",
@@ -124,16 +158,40 @@ export default memo(function TabItem({ uiVariant = "default", index, name, color
               {notificationCount}
             </span>
           ) : null}
-          <span
-            style={{
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-              fontWeight: active ? 600 : 500,
-            }}
-          >
-            {name}
-          </span>
+          {editing ? (
+            <input
+              ref={inputRef}
+              value={editValue}
+              onChange={(e) => setEditValue(e.target.value)}
+              onBlur={commitRename}
+              onKeyDown={handleKeyDown}
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                background: "rgba(255,255,255,0.1)",
+                border: "1px solid var(--cmux-accent, #007aff)",
+                borderRadius: 4,
+                color: "inherit",
+                fontSize: "inherit",
+                fontWeight: 600,
+                fontFamily: "inherit",
+                padding: "1px 4px",
+                outline: "none",
+                width: "100%",
+                minWidth: 0,
+              }}
+            />
+          ) : (
+            <span
+              style={{
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+                fontWeight: active ? 600 : 500,
+              }}
+            >
+              {name}
+            </span>
+          )}
           {paneCount > 1 && (
             <span className="cmux-pill" style={{
               flexShrink: 0,

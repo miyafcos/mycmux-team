@@ -38,6 +38,7 @@ interface WorkspaceListState {
   setActiveWorkspace: (id: string) => void;
   renameWorkspace: (id: string, name: string) => void;
   setWorkspaceStatus: (id: string, status: Workspace["status"]) => void;
+  reorderWorkspaces: (fromIndex: number, toIndex: number) => void;
   setWorkspaceLayoutMetrics: (
     id: string,
     columnWidths?: number[],
@@ -127,6 +128,16 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
         w.id === id ? { ...w, status } : w
       ),
     }));
+  },
+
+  reorderWorkspaces: (fromIndex, toIndex) => {
+    set((state) => {
+      if (fromIndex === toIndex) return state;
+      const next = [...state.workspaces];
+      const [moved] = next.splice(fromIndex, 1);
+      next.splice(toIndex, 0, moved);
+      return { workspaces: next };
+    });
   },
 
   setWorkspaceLayoutMetrics: (id, columnWidths, rowHeightsPerCol) => {
