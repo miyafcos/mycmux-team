@@ -341,7 +341,7 @@ fn get_default_shell() -> (String, Vec<String>) {
             if std::path::Path::new(&shell).exists() {
                 let lower = shell.to_ascii_lowercase();
                 let args = if lower.ends_with("bash.exe") {
-                    vec!["--login".to_string(), "-i".to_string()]
+                    vec!["-i".to_string()]
                 } else {
                     vec![]
                 };
@@ -350,7 +350,7 @@ fn get_default_shell() -> (String, Vec<String>) {
         }
         let git_bash = r"C:\Program Files\Git\bin\bash.exe";
         if std::path::Path::new(git_bash).exists() {
-            return (git_bash.to_string(), vec!["--login".to_string(), "-i".to_string()]);
+            return (git_bash.to_string(), vec!["-i".to_string()]);
         }
         let pwsh = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe";
         if std::path::Path::new(pwsh).exists() {
