@@ -13,7 +13,7 @@ export const THEMES: ThemeDefinition[] = [
     id: "mayonaka",
     name: "真夜中",
     group: "calm-dark",
-    description: "純黒・やわらかい差し色",
+    description: "黒系・静かな差し色",
     terminal: {
       background: "#07090d",
       foreground: "#edf2f7",
@@ -49,7 +49,7 @@ export const THEMES: ThemeDefinition[] = [
     id: "kyokuya",
     name: "極夜",
     group: "calm-dark",
-    description: "寒色・北欧トーン",
+    description: "青灰系・北欧",
     terminal: {
       background: "#2e3440",
       foreground: "#d8dee9",
@@ -85,7 +85,7 @@ export const THEMES: ThemeDefinition[] = [
     id: "yoi-ai",
     name: "宵藍",
     group: "calm-dark",
-    description: "藍色・レトロ端末",
+    description: "藍系・レトロ端末",
     terminal: {
       background: "#002b36",
       foreground: "#93a1a1",
@@ -121,7 +121,7 @@ export const THEMES: ThemeDefinition[] = [
     id: "shinkai",
     name: "深海",
     group: "calm-dark",
-    description: "深海・ティール",
+    description: "青緑系・深海",
     terminal: {
       background: "#07131c",
       foreground: "#cde7f4",
@@ -157,7 +157,7 @@ export const THEMES: ThemeDefinition[] = [
     id: "chikurin",
     name: "竹林",
     group: "calm-dark",
-    description: "森林・深緑",
+    description: "緑系・森林",
     terminal: {
       background: "#121b16",
       foreground: "#d7e5d8",
@@ -229,7 +229,7 @@ export const THEMES: ThemeDefinition[] = [
     id: "yogiri",
     name: "夜霧",
     group: "vivid-dark",
-    description: "ネオン紫・シアン",
+    description: "紫系・ネオン",
     terminal: {
       background: "#1e1733",
       foreground: "#f8f4ff",
@@ -265,7 +265,7 @@ export const THEMES: ThemeDefinition[] = [
     id: "ginga",
     name: "銀河",
     group: "vivid-dark",
-    description: "宇宙紺・マゼンタ",
+    description: "紺系・宇宙",
     terminal: {
       background: "#0a1020",
       foreground: "#f5f7ff",
@@ -301,7 +301,7 @@ export const THEMES: ThemeDefinition[] = [
     id: "sango",
     name: "珊瑚",
     group: "vivid-dark",
-    description: "珊瑚・プラム",
+    description: "赤紫系・珊瑚",
     terminal: {
       background: "#2b1824",
       foreground: "#fff3f7",
@@ -337,7 +337,7 @@ export const THEMES: ThemeDefinition[] = [
     id: "raimei",
     name: "雷鳴",
     group: "vivid-dark",
-    description: "雷光・イエロー",
+    description: "黄系・雷光",
     terminal: {
       background: "#17191d",
       foreground: "#f8fafc",
@@ -373,7 +373,7 @@ export const THEMES: ThemeDefinition[] = [
     id: "yougan",
     name: "溶岩",
     group: "vivid-dark",
-    description: "溶岩・朱赤",
+    description: "赤系・溶岩",
     terminal: {
       background: "#120909",
       foreground: "#ffe6df",
@@ -409,7 +409,7 @@ export const THEMES: ThemeDefinition[] = [
     id: "kogane",
     name: "黄金",
     group: "vivid-dark",
-    description: "黒金・ラグジュアリー",
+    description: "金系・ラグジュアリー",
     terminal: {
       background: "#15120a",
       foreground: "#f7f1dc",
@@ -445,7 +445,7 @@ export const THEMES: ThemeDefinition[] = [
     id: "asanagi",
     name: "朝凪",
     group: "light",
-    description: "ニュートラル青灰",
+    description: "青灰系・ニュートラル",
     terminal: {
       background: "#f4f7fb",
       foreground: "#223042",
@@ -481,7 +481,7 @@ export const THEMES: ThemeDefinition[] = [
     id: "kinari",
     name: "生成り",
     group: "light",
-    description: "和紙・セピア",
+    description: "ベージュ系・和紙",
     terminal: {
       background: "#fbf3e4",
       foreground: "#4a3b2a",
@@ -517,7 +517,7 @@ export const THEMES: ThemeDefinition[] = [
     id: "geppaku",
     name: "月白",
     group: "light",
-    description: "氷色・クリア",
+    description: "氷青系・クリア",
     terminal: {
       background: "#f6fbff",
       foreground: "#24374a",
@@ -553,7 +553,7 @@ export const THEMES: ThemeDefinition[] = [
     id: "sakura",
     name: "桜",
     group: "light",
-    description: "桜色・やわらかい赤",
+    description: "桃系・桜",
     terminal: {
       background: "#fff5f7",
       foreground: "#4c2d38",
@@ -589,7 +589,7 @@ export const THEMES: ThemeDefinition[] = [
     id: "wakaba",
     name: "若葉",
     group: "light",
-    description: "若葉・ミント",
+    description: "緑系・若葉",
     terminal: {
       background: "#f3fbf5",
       foreground: "#264133",
@@ -625,7 +625,7 @@ export const THEMES: ThemeDefinition[] = [
     id: "hakuchuumu",
     name: "白昼夢",
     group: "light",
-    description: "パステル・夢色",
+    description: "パステル系・夢色",
     terminal: {
       background: "#fcf8ff",
       foreground: "#473a54",
