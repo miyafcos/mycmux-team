@@ -56,16 +56,21 @@ interface XTermWrapperProps {
 // Approval-prompt detection patterns. Pattern index is used as the
 // notification key so the same approval fires only once per occurrence.
 const APPROVAL_PATTERNS: readonly RegExp[] = [
-  /allow\s+.*\?\s*\(y\/n\)/i,               // 1: Claude Code tool approval
+  /allow\s+.*\?\s*\(y\/n\)/i,                // 1: Claude Code tool approval
   /^\s*\d+\.\s+.+\(.*\)/,                    // 2: AskUserQuestion numbered choice
   /\(y\/n\)\s*$/i,                           // 3: generic (y/n)
   /\[y\/N\]/i,                               // 4: shell-style [y/N]
   /type your (answer|response)/i,            // 5: Claude AskUser open prompt
-  /press enter to (continue|confirm|submit)/i, // 6
+  /press enter to (continue|confirm|submit|send|select)/i, // 6
   /hit enter to /i,                          // 7
   /\bapprove\b.*\?/i,                        // 8: generic approve?
   /do you want to (proceed|continue)/i,      // 9: Claude Code "Do you want to proceed?"
   /❯\s+\d+\.\s+/,                            // 10: Ink-style ❯ 1. Yes selection cursor
+  /[❯▶▸»●◉]\s+(?:\d+\.|yes\b|no\b)/i,        // 11: cursor-glyph variants (incl. dot)
+  /enter\s+to\s+(?:select|confirm|send|submit|continue)/i, // 12: "Enter to select" hint
+  /esc\s+to\s+(?:cancel|exit|quit)/i,        // 13: "Esc to cancel" hint
+  /↑\/↓/,                                    // 14: arrow-nav hint (very specific to selection menus)
+  /ask user question/i,                      // 15: Claude Code AskUserQuestion box title
 ] as const;
 
 // Scan the last N lines of the terminal buffer for an approval pattern.
@@ -365,11 +370,13 @@ export default memo(function XTermWrapper({
       term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
         if (e.type !== "keydown") return true;
 
-        // Ctrl+V: paste from clipboard instead of sending raw \x16
+        // Ctrl+V: suppress xterm's built-in keydown handler so it doesn't
+        // emit the raw \x16 control byte. The actual clipboard paste is
+        // handled by xterm's own paste event listener, which fires
+        // independently and routes through term.onData → chunkedWrite.
+        // Doing nothing here (just returning false) avoids the double-paste
+        // that happened when we also called clipboard.readText() manually.
         if (e.key === "v" && e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey) {
-          navigator.clipboard.readText().then((text) => {
-            if (text && !disposed) chunkedWrite(sessionId, text);
-          }).catch(() => {});
           return false;
         }
 

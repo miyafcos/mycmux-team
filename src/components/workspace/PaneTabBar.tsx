@@ -8,9 +8,11 @@ interface PaneTabBarProps {
   pane: Pane;
   workspaceId: string;
   hasNotification?: boolean;
+  isZoomed?: boolean;
   onClose?: () => void;
   onSplitRight?: () => void;
   onSplitDown?: () => void;
+  onZoomToggle?: () => void;
   onAddTab?: (agentId?: string, type?: PaneTab["type"]) => void;
   onRemoveTab?: (tabId: string) => void;
   onSelectTab?: (tabId: string) => void;
@@ -35,6 +37,24 @@ const SplitDownIcon = () => (
     <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
     <line x1="3" y1="12" x2="21" y2="12"></line>
     <line x1="12" y1="12" x2="12" y2="21"></line>
+  </svg>
+);
+
+const MaximizeIcon = () => (
+  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+    <polyline points="15 3 21 3 21 9"></polyline>
+    <polyline points="9 21 3 21 3 15"></polyline>
+    <line x1="21" y1="3" x2="14" y2="10"></line>
+    <line x1="3" y1="21" x2="10" y2="14"></line>
+  </svg>
+);
+
+const MinimizeIcon = () => (
+  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+    <polyline points="4 14 10 14 10 20"></polyline>
+    <polyline points="20 10 14 10 14 4"></polyline>
+    <line x1="14" y1="10" x2="21" y2="3"></line>
+    <line x1="3" y1="21" x2="10" y2="14"></line>
   </svg>
 );
 
@@ -87,9 +107,11 @@ function AgentStatusDot({ status }: { status: EffectiveStatus }) {
 export default memo(function PaneTabBar({
   pane,
   hasNotification,
+  isZoomed,
   onClose,
   onSplitRight,
   onSplitDown,
+  onZoomToggle,
   onAddTab,
   onRemoveTab,
   onSelectTab,
@@ -256,7 +278,7 @@ export default memo(function PaneTabBar({
       >
         <PlusIcon />
       </button>
-      {/* Right: split + close pane buttons */}
+      {/* Right: split + zoom + close pane buttons */}
       <div style={{ display: "flex", alignItems: "center", gap: 2, paddingRight: 6, flexShrink: 0 }}>
         {onSplitRight && (
           <button className="pane-action-btn" onClick={onSplitRight} title="Split right">
@@ -266,6 +288,15 @@ export default memo(function PaneTabBar({
         {onSplitDown && (
           <button className="pane-action-btn" onClick={onSplitDown} title="Split down">
             <SplitDownIcon />
+          </button>
+        )}
+        {onZoomToggle && (
+          <button
+            className="pane-action-btn"
+            onClick={onZoomToggle}
+            title={isZoomed ? "Restore pane (Ctrl+Shift+Enter)" : "Zoom pane (Ctrl+Shift+Enter)"}
+          >
+            {isZoomed ? <MinimizeIcon /> : <MaximizeIcon />}
           </button>
         )}
         {onClose && (
