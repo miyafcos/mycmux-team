@@ -1,6 +1,7 @@
 import { useRef, useState, useCallback, useEffect } from "react";
 import { useWorkspaceListStore, usePaneMetadataStore } from "../../stores/workspaceStore";
 import { SIDEBAR_WIDTH } from "../../lib/constants";
+import { deriveEffectiveStatus } from "../../lib/notificationStatus";
 import TabItem from "./TabItem";
 
 const PlusIcon = () => (
@@ -108,7 +109,7 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
           let totalWsNotifications = 0;
           let totalWsWorkDone = 0;
           let lastLog: string | undefined;
-          const statusCounts = { working: 0, waiting: 0, done: 0 };
+          const statusCounts = { working: 0, waiting: 0 };
           for (const pane of ws.panes) {
             for (const tab of pane.tabs) {
               const m = paneMetadata[tab.sessionId];
@@ -116,8 +117,9 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
                 totalWsNotifications += m.notificationCount ?? 0;
                 totalWsWorkDone += m.workDoneCount ?? 0;
                 if (m.lastLogLine) lastLog = m.lastLogLine;
-                if (m.agentStatus && m.agentStatus !== "idle") {
-                  statusCounts[m.agentStatus as keyof typeof statusCounts]++;
+                const eff = deriveEffectiveStatus(m);
+                if (eff === "working" || eff === "waiting") {
+                  statusCounts[eff]++;
                 }
               }
             }

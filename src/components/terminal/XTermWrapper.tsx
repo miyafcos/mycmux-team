@@ -13,7 +13,6 @@ import {
   getTerminalConfig,
 } from "../../lib/ipc";
 import { usePaneMetadataStore, useUiStore } from "../../stores/workspaceStore";
-import type { AgentStatus } from "../../stores/paneMetadataStoreCompat";
 import { useKeybindingStore } from "../../stores/keybindingStore";
 import { useThemeStore } from "../../stores/themeStore";
 import type { ITheme } from "@xterm/xterm";
@@ -68,14 +67,6 @@ const APPROVAL_PATTERNS: readonly RegExp[] = [
   /do you want to (proceed|continue)/i,      // 9: Claude Code "Do you want to proceed?"
   /❯\s+\d+\.\s+/,                            // 10: Ink-style ❯ 1. Yes selection cursor
 ] as const;
-
-const WORKING_PATTERN = /working\.\.\.|thinking\.\.\.|analyzing|executing|applying/i;
-const SPINNER_CHARS = /[\u25CF\u25CB\u25D0-\u25D3\u2737\u2731\u280B\u2819\u2839\u2838\u283C\u2834\u2826\u2827\u2807\u280F]/;
-const DONE_PATTERNS = [
-  /\u2713\s*(done|complete|finished)/i,
-  /^>\s*$/,
-  /\$\s*$/,
-];
 
 // Scan the last N lines of the terminal buffer for an approval pattern.
 // Returns the matched pattern index (1-based) or 0 if nothing matched.
@@ -443,29 +434,34 @@ export default memo(function XTermWrapper({
       });
 
       let _lastLogLine = "";
+      let _lastScanSignature = "";
 
+      // runScan is approval-only. Working/done states are authoritatively
+      // derived from Rust sysinfo process monitoring (see App.tsx pty_metadata
+      // handler and processIsShell in the metadata store), so we never touch
+      // agentStatus for anything other than "waiting" here.
       const runScan = () => {
         if (!term || disposed) return;
         let buf;
         try {
-          // If term was disposed externally (evictTerminalCache), buffer access
-          // may throw. Guard to avoid crashing the notification pipeline.
           buf = term.buffer.active;
         } catch {
           return;
         }
-        // Scan the bottom 8 visible rows (not the cursor row alone).
-        // Claude Code approval prompts are multi-line boxes and the
-        // decisive "(y/n)" or "❯ 1. Yes" line may not be at the cursor.
-        const rows = term.rows;
-        const start = buf.baseY + Math.max(0, rows - 8);
-        const end = buf.baseY + rows - 1;
+        // Scan the bottom 8 rows of scrollback — Claude Code approval boxes
+        // span multiple lines and the decisive "(y/n)" or "❯ 1. Yes" line may
+        // sit above the cursor.
+        const bottom = buf.length - 1;
+        const top = Math.max(0, bottom - 7);
         const scanLines: string[] = [];
         let lastNonEmpty = "";
-        for (let i = start; i <= end; i++) {
+        for (let i = top; i <= bottom; i++) {
           const lineObj = buf.getLine(i);
           if (!lineObj) continue;
-          const text = lineObj.translateToString(true).replace(/\x1b\[[0-9;]*m/g, "").trim();
+          const text = lineObj
+            .translateToString(true)
+            .replace(/\x1b\[[0-9;]*m/g, "")
+            .trim();
           if (text.length > 0) {
             scanLines.push(text);
             lastNonEmpty = text;
@@ -473,24 +469,15 @@ export default memo(function XTermWrapper({
         }
         if (scanLines.length === 0) return;
 
-        // 1. Agent status detection — check any of the scanned lines.
-        let agentStatus: AgentStatus | undefined;
-        const approvalPatternId = scanForApproval(scanLines);
-        const isSpinner = scanLines.some((l) => SPINNER_CHARS.test(l) && l.length < 80);
-        const isWorking = isSpinner || scanLines.some((l) => WORKING_PATTERN.test(l));
-        const isStatusBarOnly =
-          !isSpinner &&
-          scanLines.every((l) => isShortcutHintLine(l) || /esc to interrupt/i.test(l));
+        // Signature: a cheap "did anything change?" fingerprint of the bottom
+        // 3 scanned lines. Used to decide whether a missing approval pattern
+        // means the user has actually responded (fresh output) vs the scan
+        // simply landed on the same frame.
+        const signature = scanLines.slice(-3).join("\n");
+        const scanChanged = signature !== _lastScanSignature;
+        _lastScanSignature = signature;
 
-        if (approvalPatternId > 0) {
-          agentStatus = "waiting";
-        } else if (isWorking && !isStatusBarOnly) {
-          agentStatus = "working";
-        } else if (DONE_PATTERNS.some((re) => re.test(lastNonEmpty))) {
-          agentStatus = "done";
-        }
-
-        // 2. Log line extraction — same noise filter as before, based on last non-empty line.
+        // Last-log-line display update (unchanged noise filter).
         const isNoiseLine =
           /\d+k?\s+tokens/i.test(lastNonEmpty) ||
           /access \d+/i.test(lastNonEmpty) ||
@@ -499,23 +486,22 @@ export default memo(function XTermWrapper({
           isShortcutHintLine(lastNonEmpty) ||
           /^\s*[\u2500-\u257F]+\s*$/.test(lastNonEmpty) ||
           lastNonEmpty.length < 3;
-        const isShellPrompt = /^>\s*$/.test(lastNonEmpty) || /\$\s*$/.test(lastNonEmpty);
         const logChanged = lastNonEmpty !== _lastLogLine;
+        if (!isNoiseLine && logChanged) {
+          _lastLogLine = lastNonEmpty;
+          usePaneMetadataStore.getState().setMetadata(sessionId, {
+            lastLogLine: lastNonEmpty,
+          });
+        }
 
-        const logLineUpdate = isShellPrompt
-          ? { lastLogLine: undefined }
-          : isNoiseLine
-            ? {}
-            : logChanged ? { lastLogLine: lastNonEmpty } : {};
-        if (!isNoiseLine) _lastLogLine = lastNonEmpty;
-
-        usePaneMetadataStore.getState().setMetadata(sessionId, {
-          ...logLineUpdate,
-          agentStatus,
-        });
-
-        // 3. Notification firing — single authoritative activePaneId read.
-        if (agentStatus === "waiting" && approvalPatternId > 0) {
+        // Approval handling.
+        const approvalPatternId = scanForApproval(scanLines);
+        if (approvalPatternId > 0) {
+          // Approval prompt is on screen — set waiting (sticky) and fire the
+          // notification for non-active panes.
+          usePaneMetadataStore.getState().setMetadata(sessionId, {
+            agentStatus: "waiting",
+          });
           const activePaneId = useUiStore.getState().activePaneId;
           if (activePaneId !== sessionId) {
             const didNotify = usePaneMetadataStore
@@ -524,6 +510,14 @@ export default memo(function XTermWrapper({
             if (didNotify) {
               playNotificationSound();
             }
+          }
+        } else if (scanChanged) {
+          // No approval pattern and the output has moved on — user probably
+          // responded. Clear waiting. processIsShell from sysinfo will still
+          // keep the working indicator lit while Claude runs.
+          const prevStatus = usePaneMetadataStore.getState().metadata[sessionId]?.agentStatus;
+          if (prevStatus === "waiting") {
+            usePaneMetadataStore.getState().clearAgentStatus(sessionId);
           }
         }
       };

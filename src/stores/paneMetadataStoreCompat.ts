@@ -9,6 +9,7 @@ export interface PaneMetadata {
   cwd?: string;
   gitBranch?: string;
   processTitle?: string;
+  processIsShell?: boolean;
   agentStatus?: AgentStatus;
   lastNotificationKey?: string;
 }
@@ -16,6 +17,7 @@ export interface PaneMetadata {
 export interface PaneMetadataState {
   metadata: Record<string, PaneMetadata>;
   setMetadata: (sessionId: string, data: Partial<PaneMetadata>) => void;
+  clearAgentStatus: (sessionId: string) => void;
   incrementNotification: (sessionId: string) => void;
   notifyWaiting: (sessionId: string, patternId: number) => boolean;
   notifyWorkDone: (sessionId: string) => boolean;
@@ -23,14 +25,29 @@ export interface PaneMetadataState {
   removeMetadata: (sessionId: string) => void;
 }
 
+// Drop undefined-valued keys so a partial update never accidentally clears
+// a previously-set field. Use clearAgentStatus for explicit clears.
+function dropUndefined<T extends object>(data: T): Partial<T> {
+  const out: Partial<T> = {};
+  for (const key of Object.keys(data) as (keyof T)[]) {
+    const value = data[key];
+    if (value !== undefined) out[key] = value;
+  }
+  return out;
+}
+
 export const usePaneMetadataStore = create<PaneMetadataState>((set) => ({
   metadata: {},
 
   setMetadata: (sessionId, data) => set((state) => {
+    const filtered = dropUndefined(data);
+    if (Object.keys(filtered).length === 0) return state;
     const prev = state.metadata[sessionId];
-    const nextData = data.agentStatus && data.agentStatus !== "waiting"
-      ? { ...data, lastNotificationKey: undefined }
-      : data;
+    // Reset the approval-notification dedupe key when the agent leaves waiting.
+    const nextData: Partial<PaneMetadata> =
+      filtered.agentStatus && filtered.agentStatus !== "waiting"
+        ? { ...filtered, lastNotificationKey: undefined }
+        : filtered;
     if (prev) {
       const keys = Object.keys(nextData) as (keyof PaneMetadata)[];
       const changed = keys.some((k) => prev[k] !== nextData[k]);
@@ -40,6 +57,17 @@ export const usePaneMetadataStore = create<PaneMetadataState>((set) => ({
       metadata: {
         ...state.metadata,
         [sessionId]: { ...prev, ...nextData },
+      },
+    };
+  }),
+
+  clearAgentStatus: (sessionId) => set((state) => {
+    const prev = state.metadata[sessionId];
+    if (!prev || prev.agentStatus === undefined) return state;
+    return {
+      metadata: {
+        ...state.metadata,
+        [sessionId]: { ...prev, agentStatus: undefined, lastNotificationKey: undefined },
       },
     };
   }),
@@ -77,6 +105,7 @@ export const usePaneMetadataStore = create<PaneMetadataState>((set) => ({
           ...state.metadata,
           [sessionId]: {
             ...prev,
+            agentStatus: "waiting",
             notificationCount: oldCount + 1,
             lastNotificationKey: normalizedKey,
           },

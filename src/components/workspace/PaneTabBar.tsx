@@ -2,7 +2,7 @@ import { memo } from "react";
 import type { Pane, PaneTab } from "../../types";
 import { getAgent, getDefaultAgent } from "../../lib/agents";
 import { usePaneMetadataStore } from "../../stores/workspaceStore";
-import type { AgentStatus } from "../../stores/paneMetadataStoreCompat";
+import { deriveEffectiveStatus, type EffectiveStatus } from "../../lib/notificationStatus";
 
 interface PaneTabBarProps {
   pane: Pane;
@@ -52,11 +52,10 @@ const PlusIcon = () => (
   </svg>
 );
 
-const STATUS_CONFIG: Record<AgentStatus, { color: string; title: string; pulse: boolean }> = {
-  working: { color: "var(--status-working)", title: "Working",           pulse: true  },
-  waiting: { color: "var(--status-waiting)", title: "Waiting for input", pulse: false },
-  done:    { color: "var(--status-done)",    title: "Done",              pulse: false },
-  idle:    { color: "transparent",           title: "",                  pulse: false },
+const STATUS_CONFIG: Record<EffectiveStatus, { color: string; title: string }> = {
+  working: { color: "var(--status-working)", title: "Running" },
+  waiting: { color: "var(--status-waiting)", title: "Waiting for input" },
+  idle:    { color: "transparent",           title: "" },
 };
 
 const AGENT_LABELS: Record<string, string> = {
@@ -68,7 +67,7 @@ const AGENT_LABELS: Record<string, string> = {
   "shell":       "Shell",
 };
 
-function AgentStatusDot({ status }: { status: AgentStatus }) {
+function AgentStatusDot({ status }: { status: EffectiveStatus }) {
   const cfg = STATUS_CONFIG[status];
   if (status === "idle" || !cfg) return null;
   return (
@@ -80,8 +79,6 @@ function AgentStatusDot({ status }: { status: AgentStatus }) {
         borderRadius: "50%",
         background: cfg.color,
         flexShrink: 0,
-        boxShadow: cfg.pulse ? `0 0 4px ${cfg.color}` : "none",
-        animation: cfg.pulse ? "agentPulse 1.2s ease-in-out infinite" : "none",
       }}
     />
   );
@@ -102,7 +99,7 @@ export default memo(function PaneTabBar({
   // Derive active tab's agent status for the status bar
   const activeTab = pane.tabs.find((t) => t.id === pane.activeTabId);
   const activeMeta = activeTab ? allMetadata[activeTab.sessionId] : undefined;
-  const activeStatus: AgentStatus = activeMeta?.agentStatus ?? "idle";
+  const activeStatus: EffectiveStatus = deriveEffectiveStatus(activeMeta);
   const activeLastLog = activeMeta?.lastLogLine;
   const activeAgentLabel = activeTab
     ? (AGENT_LABELS[activeTab.agentId ?? ""] ?? getAgent(activeTab.agentId)?.name ?? "Shell")
@@ -148,8 +145,6 @@ export default memo(function PaneTabBar({
               borderRadius: "50%",
               background: statusCfg.color,
               flexShrink: 0,
-              boxShadow: statusCfg.pulse ? `0 0 5px ${statusCfg.color}` : "none",
-              animation: statusCfg.pulse ? "agentPulse 1.2s ease-in-out infinite" : "none",
             }}
           />
           <span style={{ fontSize: 11, color: statusCfg.color, fontWeight: 600, flexShrink: 0, textTransform: "uppercase", letterSpacing: "0.04em" }}>
@@ -181,7 +176,7 @@ export default memo(function PaneTabBar({
           const tabWorkDoneCount = tabMeta?.workDoneCount ?? 0;
           const tabProcessTitle = tabMeta?.processTitle;
           const tabCwd = tabMeta?.cwd;
-          const agentStatus = tabMeta?.agentStatus ?? "idle";
+          const tabEffectiveStatus = deriveEffectiveStatus(tabMeta);
           const label = tab.label
             ?? (tabProcessTitle
                 ? tabProcessTitle
@@ -208,14 +203,14 @@ export default memo(function PaneTabBar({
                 transition: "background 0.1s",
               }}
             >
-              {/* notification dot: red = approval waiting, green = work done */}
+              {/* notification dot: amber = approval waiting, emerald = work done */}
               {tabNotificationCount > 0 && (
-                <span title="Waiting for approval" style={{ width: 5, height: 5, borderRadius: "50%", background: "#ff3b30", flexShrink: 0 }} />
+                <span title="Waiting for approval" style={{ width: 5, height: 5, borderRadius: "50%", background: "var(--status-waiting)", flexShrink: 0 }} />
               )}
               {tabNotificationCount === 0 && tabWorkDoneCount > 0 && (
-                <span title="Work done" style={{ width: 5, height: 5, borderRadius: "50%", background: "#30d158", flexShrink: 0 }} />
+                <span title="Work done" style={{ width: 5, height: 5, borderRadius: "50%", background: "var(--status-done)", flexShrink: 0 }} />
               )}
-              <AgentStatusDot status={agentStatus} />
+              <AgentStatusDot status={tabEffectiveStatus} />
               {/* folder icon */}
               <span style={{ color: isActive ? "var(--cmux-accent)" : "var(--cmux-text-tertiary)", flexShrink: 0 }}>
                 <FolderIcon />

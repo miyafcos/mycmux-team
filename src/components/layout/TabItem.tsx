@@ -3,7 +3,6 @@ import { memo, useState, useRef, useCallback, useEffect } from "react";
 interface StatusCounts {
   working: number;
   waiting: number;
-  done: number;
 }
 
 interface TabItemProps {
@@ -24,7 +23,7 @@ interface TabItemProps {
   onRename?: (newName: string) => void;
 }
 
-function StatusPip({ count, color, pulse }: { count: number; color: string; pulse?: boolean }) {
+function StatusPip({ count, color }: { count: number; color: string }) {
   return (
     <span style={{ display: "flex", alignItems: "center", gap: 3 }}>
       <span style={{
@@ -33,8 +32,6 @@ function StatusPip({ count, color, pulse }: { count: number; color: string; puls
         borderRadius: "50%",
         background: color,
         flexShrink: 0,
-        boxShadow: pulse ? `0 0 4px ${color}` : "none",
-        animation: pulse ? "agentPulse 1.2s ease-in-out infinite" : "none",
       }} />
       {count > 1 && (
         <span style={{ fontSize: 10, color, fontWeight: 600, lineHeight: 1 }}>{count}</span>
@@ -44,7 +41,7 @@ function StatusPip({ count, color, pulse }: { count: number; color: string; puls
 }
 
 export default memo(function TabItem({ uiVariant = "default", index, name, color, paneCount, cwd, gitBranch, notificationCount, workDoneCount, lastLogLine, statusCounts, active, onClick, onClose, onRename }: TabItemProps) {
-  const hasAgents = statusCounts && (statusCounts.working + statusCounts.waiting + statusCounts.done) > 0;
+  const hasAgents = statusCounts && (statusCounts.working + statusCounts.waiting) > 0;
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState(name);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -144,8 +141,8 @@ export default memo(function TabItem({ uiVariant = "default", index, name, color
           )}
           {notificationCount ? (
             <span title="Waiting for approval" style={{
-              background: "#ff3b30",
-              color: "white",
+              background: "var(--status-waiting)",
+              color: "#1a1a1a",
               fontSize: "9px",
               fontWeight: "bold",
               borderRadius: "50%",
@@ -160,8 +157,8 @@ export default memo(function TabItem({ uiVariant = "default", index, name, color
             </span>
           ) : workDoneCount ? (
             <span title="Work done" style={{
-              background: "#30d158",
-              color: "white",
+              background: "var(--status-done)",
+              color: "#1a1a1a",
               fontSize: "9px",
               fontWeight: "bold",
               borderRadius: "50%",
@@ -221,9 +218,8 @@ export default memo(function TabItem({ uiVariant = "default", index, name, color
         </div>
         {hasAgents && (
           <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 1 }}>
-            {statusCounts!.working > 0 && <StatusPip count={statusCounts!.working} color="var(--status-working)" pulse />}
+            {statusCounts!.working > 0 && <StatusPip count={statusCounts!.working} color="var(--status-working)" />}
             {statusCounts!.waiting > 0 && <StatusPip count={statusCounts!.waiting} color="var(--status-waiting)" />}
-            {statusCounts!.done > 0    && <StatusPip count={statusCounts!.done}    color="var(--status-done)" />}
           </div>
         )}
         {lastLogLine && (

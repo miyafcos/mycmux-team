@@ -8,6 +8,7 @@ import {
 import { useWorkspacePersist, persistLoaded } from "./components/layout/SocketListener";
 import { preloadTerminalConfig, onPtyMetadata, onPtyWorkDone, isDirectory, writeToSession, getLaunchCwd, revealMainWindow } from "./lib/ipc";
 import { useUiStore } from "./stores/uiStore";
+import { isShellProcess } from "./lib/notificationStatus";
 import {
   getStartupSessionGateSnapshot,
   prepareStartupSessionGate,
@@ -77,18 +78,21 @@ function App() {
     }
     bootstrap();
 
-    // PTY metadata listener
+    // PTY metadata listener — also computes processIsShell which drives the
+    // authoritative "working" indicator (blue dot). Rust sysinfo polls every
+    // 3 seconds so this is a deterministic, non-flickering signal.
     const unlistenMeta = onPtyMetadata((meta) => {
       usePaneMetadataStore.getState().setMetadata(meta.session_id, {
         cwd: meta.cwd,
         gitBranch: meta.git_branch,
         processTitle: meta.process_name ?? undefined,
+        processIsShell: isShellProcess(meta.process_name ?? undefined),
       });
     });
 
-    // Work-done listener: backend detects a foreground process transition from
-    // a working process (claude/node/python/…) back to a shell and emits this
-    // event. Badge the pane with a green dot unless it's currently focused.
+    // Work-done listener: backend detects a foreground process transition
+    // from a working process (claude/node/python/…) back to a shell and
+    // emits this event. Badge the pane unless it's currently focused.
     const unlistenWorkDone = onPtyWorkDone((evt) => {
       const activePaneId = useUiStore.getState().activePaneId;
       if (activePaneId === evt.session_id) return;
