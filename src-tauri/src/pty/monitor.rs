@@ -1,5 +1,9 @@
 use std::collections::HashMap;
 use std::process::Command;
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -124,11 +128,15 @@ pub fn start_monitor(app_handle: AppHandle, manager: Arc<SessionManager>, metada
                         let cwd_clone = cwd.clone();
                         let (tx, rx) = std::sync::mpsc::channel();
                         thread::spawn(move || {
-                            let result = Command::new("git")
+                            let mut git_cmd = Command::new("git");
+                            git_cmd
                                 .args(["rev-parse", "--abbrev-ref", "HEAD"])
                                 .current_dir(&cwd_clone)
                                 .stdout(std::process::Stdio::piped())
-                                .stderr(std::process::Stdio::null())
+                                .stderr(std::process::Stdio::null());
+                            #[cfg(target_os = "windows")]
+                            git_cmd.creation_flags(CREATE_NO_WINDOW);
+                            let result = git_cmd
                                 .output()
                                 .ok()
                                 .and_then(|output| {
