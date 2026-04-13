@@ -14,6 +14,7 @@ import {
 } from "../../lib/ipc";
 import { usePaneMetadataStore, useUiStore } from "../../stores/workspaceStore";
 import { useKeybindingStore } from "../../stores/keybindingStore";
+import { useSettingsStore } from "../../stores/settingsStore";
 import { useThemeStore } from "../../stores/themeStore";
 import type { ITheme } from "@xterm/xterm";
 import { markStartupSessionSettled } from "../../lib/startupSessionGate";
@@ -514,7 +515,7 @@ export default memo(function XTermWrapper({
             const didNotify = usePaneMetadataStore
               .getState()
               .notifyWaiting(sessionId, approvalPatternId);
-            if (didNotify) {
+            if (didNotify && useSettingsStore.getState().notificationSoundEnabled) {
               playNotificationSound();
             }
           }
