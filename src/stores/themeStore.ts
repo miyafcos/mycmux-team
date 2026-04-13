@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import type { ThemeDefinition } from "../types";
-import { getTheme } from "../components/theme/themeDefinitions";
+import { DEFAULT_THEME_ID, getTheme, resolveThemeId } from "../components/theme/themeDefinitions";
 
 interface ThemeState {
   themeId: string;
@@ -13,13 +13,14 @@ interface ThemeState {
 }
 
 export const useThemeStore = create<ThemeState>((set) => ({
-  themeId: "mayonaka",
-  theme: getTheme("mayonaka"),
+  themeId: DEFAULT_THEME_ID,
+  theme: getTheme(DEFAULT_THEME_ID),
   fontSize: 14,
 
   setTheme: (id) => {
-    const theme = getTheme(id);
-    set({ themeId: id, theme });
+    const nextThemeId = resolveThemeId(id);
+    const theme = getTheme(nextThemeId);
+    set({ themeId: nextThemeId, theme });
   },
 
   setFontSize: (fontSize) => {
@@ -27,7 +28,7 @@ export const useThemeStore = create<ThemeState>((set) => ({
   },
 
   hydrateSettings: (settings) => {
-    const nextThemeId = settings.themeId ?? "mayonaka";
+    const nextThemeId = resolveThemeId(settings.themeId ?? DEFAULT_THEME_ID);
     const nextTheme = getTheme(nextThemeId);
     const nextFont = typeof settings.fontSize === "number"
       ? Math.max(10, Math.min(24, settings.fontSize))

@@ -11,4 +11,4 @@ export type { TerminalStatus, TerminalSession } from "./terminal";
 
 export type { AgentDefinition } from "./agent";
 
-export type { TerminalColors, ThemeDefinition } from "./theme";
+export type { TerminalColors, ThemeDefinition, ThemeGroup } from "./theme";

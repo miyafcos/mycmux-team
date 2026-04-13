@@ -21,9 +21,13 @@ export interface TerminalColors {
   brightWhite: string;
 }
 
+export type ThemeGroup = "calm-dark" | "vivid-dark" | "light";
+
 export interface ThemeDefinition {
   id: string;
   name: string;
+  group: ThemeGroup;
+  description: string;
   terminal: TerminalColors;
   chrome: {
     background: string;
