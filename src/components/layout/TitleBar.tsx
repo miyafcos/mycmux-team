@@ -56,7 +56,7 @@ export default function TitleBar({ uiVariant = "default", onNewWorkspace }: Titl
   }, []);
 
   const totalNotifications = Object.values(paneMetadata).reduce(
-    (sum, m) => sum + (m.notificationCount ?? 0),
+    (sum, m) => sum + (m.notificationCount ?? 0) + (m.workDoneCount ?? 0),
     0,
   );
 

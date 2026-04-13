@@ -68,6 +68,20 @@ export function onPtyMetadata(
   });
 }
 
+export interface PtyWorkDone {
+  session_id: string;
+  prev_process: string;
+  current_process: string;
+}
+
+export function onPtyWorkDone(
+  callback: (evt: PtyWorkDone) => void,
+): Promise<UnlistenFn> {
+  return listen<PtyWorkDone>("pty_work_done", (event) => {
+    callback(event.payload);
+  });
+}
+
 // ─── Terminal config ─────────────────────────────────────────────────────────
 
 export interface TerminalConfig {

@@ -106,6 +106,7 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
       <div style={{ flex: 1 }}>
         {workspaces.map((ws, wsIndex) => {
           let totalWsNotifications = 0;
+          let totalWsWorkDone = 0;
           let lastLog: string | undefined;
           const statusCounts = { working: 0, waiting: 0, done: 0 };
           for (const pane of ws.panes) {
@@ -113,6 +114,7 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
               const m = paneMetadata[tab.sessionId];
               if (m) {
                 totalWsNotifications += m.notificationCount ?? 0;
+                totalWsWorkDone += m.workDoneCount ?? 0;
                 if (m.lastLogLine) lastLog = m.lastLogLine;
                 if (m.agentStatus && m.agentStatus !== "idle") {
                   statusCounts[m.agentStatus as keyof typeof statusCounts]++;
@@ -146,6 +148,7 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
                 cwd={firstPaneMeta?.cwd}
                 gitBranch={firstPaneMeta?.gitBranch}
                 notificationCount={totalWsNotifications || undefined}
+                workDoneCount={totalWsWorkDone || undefined}
                 lastLogLine={lastLog}
                 statusCounts={statusCounts}
                 active={ws.id === activeId}

@@ -22,15 +22,27 @@ interface TerminalPaneProps {
 }
 
 export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitRight, onSplitDown }: TerminalPaneProps) {
-  // Derived boolean selectors — only re-renders when THIS pane's state actually changes
-  const isActive = useUiStore((s) => s.activePaneId === pane.sessionId);
+  // Derived boolean selectors — only re-renders when THIS pane's state actually changes.
+  // isActive now checks against any of this pane's tab sessionIds so that it
+  // works both when focus fires on pane.sessionId and when a specific tab is selected.
+  const activePaneId = useUiStore((s) => s.activePaneId);
+  const isActive = activePaneId !== null && (
+    activePaneId === pane.sessionId ||
+    pane.tabs.some((t) => t.sessionId === activePaneId)
+  );
   const isZoomed = useUiStore((s) => s.zoomedPaneId === pane.id);
   const setActivePaneId = useUiStore((s) => s.setActivePaneId);
   const setZoomedPaneId = useUiStore((s) => s.setZoomedPaneId);
 
-  // Granular metadata selectors — only re-renders when notification count changes
+  // Granular metadata selectors — only re-renders when notification/done count changes
   const notificationCount = usePaneMetadataStore((s) =>
-    pane.tabs.reduce((sum, tab) => sum + (s.metadata[tab.sessionId]?.notificationCount ?? 0), 0)
+    pane.tabs.reduce(
+      (sum, tab) =>
+        sum +
+        (s.metadata[tab.sessionId]?.notificationCount ?? 0) +
+        (s.metadata[tab.sessionId]?.workDoneCount ?? 0),
+      0,
+    ),
   );
   const clearNotification = usePaneMetadataStore((s) => s.clearNotification);
 
@@ -51,10 +63,13 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
   const borderWidth = isActive && !isZoomed ? 2 : 1;
 
   const handleFocus = useCallback(() => {
-    setActivePaneId(pane.sessionId);
     // Read current tabs from store at call time (avoids stale pane.tabs dependency)
     const ws = useWorkspaceListStore.getState().getWorkspace(workspaceId);
     const p = ws?.panes.find((x) => x.id === pane.id);
+    // Set activePaneId to the *currently visible* tab's sessionId so that
+    // XTermWrapper notification suppression can use a single store check.
+    const activeTab = p?.tabs.find((t) => t.id === p.activeTabId);
+    setActivePaneId(activeTab?.sessionId ?? pane.sessionId);
     if (p) {
       for (const tab of p.tabs) {
         clearNotification(tab.sessionId);
@@ -173,7 +188,6 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
                   sessionId={tab.sessionId}
                   command={agent.command}
                   args={agent.args}
-                  suppressNotifications={isActive && tab.id === pane.activeTabId}
                   onZoomToggle={handleZoomToggle}
                   cwd={tabCwd}
                 />
