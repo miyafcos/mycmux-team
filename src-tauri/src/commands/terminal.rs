@@ -124,7 +124,7 @@ pub fn get_default_shell() -> DefaultShellInfo {
             if std::path::Path::new(&shell).exists() {
                 let lower = shell.to_ascii_lowercase();
                 let args = if lower.ends_with("bash.exe") {
-                    vec!["--login".to_string(), "-i".to_string()]
+                    vec!["-i".to_string()]
                 } else {
                     vec![]
                 };
@@ -139,7 +139,7 @@ pub fn get_default_shell() -> DefaultShellInfo {
         if std::path::Path::new(git_bash).exists() {
             return DefaultShellInfo {
                 command: git_bash.to_string(),
-                args: vec!["--login".to_string(), "-i".to_string()],
+                args: vec!["-i".to_string()],
             };
         }
         // PowerShell
