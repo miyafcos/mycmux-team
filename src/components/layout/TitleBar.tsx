@@ -2,6 +2,8 @@ import { useState, useEffect, useRef } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useWorkspaceListStore, useUiStore, usePaneMetadataStore } from "../../stores/workspaceStore";
 import NotificationPanel from "./NotificationPanel";
+import SettingsMenu from "./SettingsMenu";
+import ThemeSwitcher from "../theme/ThemeSwitcher";
 
 interface TitleBarProps {
   uiVariant?: "default" | "cmux";
@@ -32,11 +34,20 @@ const PlusIcon = () => (
   </svg>
 );
 
+const SettingsIcon = () => (
+  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+    <circle cx="12" cy="12" r="3"></circle>
+    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33 1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82 1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+  </svg>
+);
+
 export default function TitleBar({ uiVariant = "default", onNewWorkspace }: TitleBarProps) {
   const activeWorkspace = useWorkspaceListStore((s) => s.getActiveWorkspace());
   const toggleSidebar = useUiStore((s) => s.toggleSidebar);
   const paneMetadata = usePaneMetadataStore((s) => s.metadata);
   const [notificationPanelOpen, setNotificationPanelOpen] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isThemeSwitcherOpen, setIsThemeSwitcherOpen] = useState(false);
   const [isMaximized, setIsMaximized] = useState(false);
 
   useEffect(() => {
@@ -75,6 +86,13 @@ export default function TitleBar({ uiVariant = "default", onNewWorkspace }: Titl
   const handleMinimize = () => getCurrentWindow().minimize().catch(console.error);
   const handleMaximize = () => getCurrentWindow().toggleMaximize().catch(console.error);
   const handleClose = () => getCurrentWindow().close().catch(console.error);
+  const handleOpenThemes = () => setIsThemeSwitcherOpen(true);
+  const handleOpenKeybindings = () => useUiStore.getState().setIsKeybindingsOpen(true);
+  const handleOpenCommandPalette = () => useUiStore.getState().setIsPaletteOpen(true);
+  const handleThemeSwitcherKeybindings = () => {
+    setIsThemeSwitcherOpen(false);
+    useUiStore.getState().setIsKeybindingsOpen(true);
+  };
 
   const groupMinWidth = 100;
 
@@ -226,6 +244,35 @@ export default function TitleBar({ uiVariant = "default", onNewWorkspace }: Titl
 
       {/* Right group: Minimize, Close */}
       <div style={{ display: "flex", alignItems: "center", gap: 2, paddingRight: 8, minWidth: groupMinWidth, justifyContent: "flex-end" }}>
+        <div style={{ position: "relative" }}>
+          <button
+            onClick={() => setIsSettingsOpen((v) => !v)}
+            title="Settings"
+            className={uiVariant === "cmux" ? "cmux-title-btn" : undefined}
+            style={{
+              background: "none",
+              border: "none",
+              color: "var(--cmux-text-tertiary)",
+              cursor: "pointer",
+              padding: "3px 6px",
+              borderRadius: 3,
+              display: "flex",
+              alignItems: "center",
+            }}
+            onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(255,255,255,0.08)")}
+            onMouseLeave={(e) => (e.currentTarget.style.background = "none")}
+          >
+            <SettingsIcon />
+          </button>
+          {isSettingsOpen && (
+            <SettingsMenu
+              onClose={() => setIsSettingsOpen(false)}
+              onOpenThemes={handleOpenThemes}
+              onOpenKeybindings={handleOpenKeybindings}
+              onOpenCommandPalette={handleOpenCommandPalette}
+            />
+          )}
+        </div>
         <button
           onClick={handleMinimize}
           title="Minimize"
@@ -303,6 +350,12 @@ export default function TitleBar({ uiVariant = "default", onNewWorkspace }: Titl
           </svg>
         </button>
       </div>
+      {isThemeSwitcherOpen && (
+        <ThemeSwitcher
+          onClose={() => setIsThemeSwitcherOpen(false)}
+          onOpenKeybindings={handleThemeSwitcherKeybindings}
+        />
+      )}
     </div>
   );
 }
