@@ -48,11 +48,44 @@ interface XTermWrapperProps {
   theme?: ITheme;
   fontSize?: number;
   fontFamily?: string;
-  suppressNotifications?: boolean;
   onZoomToggle?: () => void;
   onUrlClick?: (url: string) => void;
   cwd?: string;
   launchEnv?: Record<string, string>;
+}
+
+// Approval-prompt detection patterns. Pattern index is used as the
+// notification key so the same approval fires only once per occurrence.
+const APPROVAL_PATTERNS: readonly RegExp[] = [
+  /allow\s+.*\?\s*\(y\/n\)/i,               // 1: Claude Code tool approval
+  /^\s*\d+\.\s+.+\(.*\)/,                    // 2: AskUserQuestion numbered choice
+  /\(y\/n\)\s*$/i,                           // 3: generic (y/n)
+  /\[y\/N\]/i,                               // 4: shell-style [y/N]
+  /type your (answer|response)/i,            // 5: Claude AskUser open prompt
+  /press enter to (continue|confirm|submit)/i, // 6
+  /hit enter to /i,                          // 7
+  /\bapprove\b.*\?/i,                        // 8: generic approve?
+  /do you want to (proceed|continue)/i,      // 9: Claude Code "Do you want to proceed?"
+  /❯\s+\d+\.\s+/,                            // 10: Ink-style ❯ 1. Yes selection cursor
+] as const;
+
+const WORKING_PATTERN = /working\.\.\.|thinking\.\.\.|analyzing|executing|applying/i;
+const SPINNER_CHARS = /[\u25CF\u25CB\u25D0-\u25D3\u2737\u2731\u280B\u2819\u2839\u2838\u283C\u2834\u2826\u2827\u2807\u280F]/;
+const DONE_PATTERNS = [
+  /\u2713\s*(done|complete|finished)/i,
+  /^>\s*$/,
+  /\$\s*$/,
+];
+
+// Scan the last N lines of the terminal buffer for an approval pattern.
+// Returns the matched pattern index (1-based) or 0 if nothing matched.
+function scanForApproval(lines: string[]): number {
+  for (const line of lines) {
+    for (let i = 0; i < APPROVAL_PATTERNS.length; i++) {
+      if (APPROVAL_PATTERNS[i].test(line)) return i + 1;
+    }
+  }
+  return 0;
 }
 
 const ANSI_KEYS: (keyof ITheme)[] = [
@@ -176,7 +209,6 @@ export default memo(function XTermWrapper({
   theme,
   fontSize,
   fontFamily,
-  suppressNotifications = false,
   onZoomToggle,
   onUrlClick,
   cwd,
@@ -195,6 +227,10 @@ export default memo(function XTermWrapper({
   const storeTheme = useThemeStore((s) => s.theme);
   const storeFontSize = useThemeStore((s) => s.fontSize);
 
+  // Single source of truth: is this tab the currently-focused terminal?
+  // Used for both scroll-to-bottom-on-activate and notification suppression.
+  const isActivePane = useUiStore((s) => s.activePaneId === sessionId);
+
   // Dynamically update terminal theme and font size
   useEffect(() => {
     if (termRef.current) {
@@ -204,9 +240,9 @@ export default memo(function XTermWrapper({
     }
   }, [storeTheme, storeFontSize]);
 
-  // Scroll to bottom when pane becomes visible — only if user was at bottom before switching
+  // Scroll to bottom when this tab becomes active — only if user was at bottom before switching
   useEffect(() => {
-    if (suppressNotifications && termRef.current) {
+    if (isActivePane && termRef.current) {
       setTimeout(() => {
         fitAddonRef.current?.fit();
         if (isAtBottomRef.current) {
@@ -214,7 +250,7 @@ export default memo(function XTermWrapper({
         }
       }, 50);
     }
-  }, [suppressNotifications]);
+  }, [isActivePane]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -266,6 +302,7 @@ export default memo(function XTermWrapper({
     let term: Terminal | null = null;
     let fitAddon: FitAddon | null = null;
     let logThrottle: ReturnType<typeof setTimeout> | null = null;
+    let idleFlush: ReturnType<typeof setTimeout> | null = null;
     let startupSettleTimeout: ReturnType<typeof setTimeout> | null = null;
     let startupSettled = false;
 
@@ -405,107 +442,110 @@ export default memo(function XTermWrapper({
         usePaneMetadataStore.getState().setMetadata(sessionId, { processTitle: title });
       });
 
-      let _lastParsedOut = "";
+      let _lastLogLine = "";
+
+      const runScan = () => {
+        if (!term || disposed) return;
+        let buf;
+        try {
+          // If term was disposed externally (evictTerminalCache), buffer access
+          // may throw. Guard to avoid crashing the notification pipeline.
+          buf = term.buffer.active;
+        } catch {
+          return;
+        }
+        // Scan the bottom 8 visible rows (not the cursor row alone).
+        // Claude Code approval prompts are multi-line boxes and the
+        // decisive "(y/n)" or "❯ 1. Yes" line may not be at the cursor.
+        const rows = term.rows;
+        const start = buf.baseY + Math.max(0, rows - 8);
+        const end = buf.baseY + rows - 1;
+        const scanLines: string[] = [];
+        let lastNonEmpty = "";
+        for (let i = start; i <= end; i++) {
+          const lineObj = buf.getLine(i);
+          if (!lineObj) continue;
+          const text = lineObj.translateToString(true).replace(/\x1b\[[0-9;]*m/g, "").trim();
+          if (text.length > 0) {
+            scanLines.push(text);
+            lastNonEmpty = text;
+          }
+        }
+        if (scanLines.length === 0) return;
+
+        // 1. Agent status detection — check any of the scanned lines.
+        let agentStatus: AgentStatus | undefined;
+        const approvalPatternId = scanForApproval(scanLines);
+        const isSpinner = scanLines.some((l) => SPINNER_CHARS.test(l) && l.length < 80);
+        const isWorking = isSpinner || scanLines.some((l) => WORKING_PATTERN.test(l));
+        const isStatusBarOnly =
+          !isSpinner &&
+          scanLines.every((l) => isShortcutHintLine(l) || /esc to interrupt/i.test(l));
+
+        if (approvalPatternId > 0) {
+          agentStatus = "waiting";
+        } else if (isWorking && !isStatusBarOnly) {
+          agentStatus = "working";
+        } else if (DONE_PATTERNS.some((re) => re.test(lastNonEmpty))) {
+          agentStatus = "done";
+        }
+
+        // 2. Log line extraction — same noise filter as before, based on last non-empty line.
+        const isNoiseLine =
+          /\d+k?\s+tokens/i.test(lastNonEmpty) ||
+          /access \d+/i.test(lastNonEmpty) ||
+          /past research/i.test(lastNonEmpty) ||
+          /http:\/\/localhost/i.test(lastNonEmpty) ||
+          isShortcutHintLine(lastNonEmpty) ||
+          /^\s*[\u2500-\u257F]+\s*$/.test(lastNonEmpty) ||
+          lastNonEmpty.length < 3;
+        const isShellPrompt = /^>\s*$/.test(lastNonEmpty) || /\$\s*$/.test(lastNonEmpty);
+        const logChanged = lastNonEmpty !== _lastLogLine;
+
+        const logLineUpdate = isShellPrompt
+          ? { lastLogLine: undefined }
+          : isNoiseLine
+            ? {}
+            : logChanged ? { lastLogLine: lastNonEmpty } : {};
+        if (!isNoiseLine) _lastLogLine = lastNonEmpty;
+
+        usePaneMetadataStore.getState().setMetadata(sessionId, {
+          ...logLineUpdate,
+          agentStatus,
+        });
+
+        // 3. Notification firing — single authoritative activePaneId read.
+        if (agentStatus === "waiting" && approvalPatternId > 0) {
+          const activePaneId = useUiStore.getState().activePaneId;
+          if (activePaneId !== sessionId) {
+            const didNotify = usePaneMetadataStore
+              .getState()
+              .notifyWaiting(sessionId, approvalPatternId);
+            if (didNotify) {
+              playNotificationSound();
+            }
+          }
+        }
+      };
+
       term.onWriteParsed(() => {
         if (!term || disposed) return;
-        // Throttle to 500ms — prevents hammering Zustand on every keystroke
+        // Leading scan via throttle (150ms) + trailing idle flush (200ms after
+        // last write). The combination catches both mid-stream approval lines
+        // and the "final frame" that fell into a throttle gap.
+        if (idleFlush) {
+          clearTimeout(idleFlush);
+          idleFlush = null;
+        }
+        idleFlush = setTimeout(() => {
+          idleFlush = null;
+          runScan();
+        }, 200);
         if (logThrottle) return;
         logThrottle = setTimeout(() => {
           logThrottle = null;
-          if (!term || disposed) return;
-          const buf = term.buffer.active;
-          const y = buf.baseY + buf.cursorY;
-          let lastLine = "";
-
-          // Find the most recent non-empty line (current cursor position)
-          for (let i = y; i >= Math.max(0, y - 3); i--) {
-            const lineObj = buf.getLine(i);
-            if (lineObj) {
-              const text = lineObj.translateToString(true).trim();
-              if (text.length > 0) {
-                if (!lastLine) lastLine = text;
-                break;
-              }
-            }
-          }
-          if (lastLine.length > 0 && lastLine !== _lastParsedOut) {
-            _lastParsedOut = lastLine;
-
-            // Detect Claude Code agent status from output patterns
-            // Scan the recent block (multiple lines) for accurate detection
-            let agentStatus: AgentStatus | undefined;
-            const stripped = lastLine.replace(/\x1b\[[0-9;]*m/g, "").trim();
-            // Detect agent status — patterns tuned for Claude Code CLI.
-            // Only checks the current line (stripped) to avoid false positives.
-            // Spinner: only the specific Braille chars used by Claude Code / Ink spinners
-            // (not the full U+2800-28FF range which includes box-drawing used by tree/ls)
-            const isSpinner = /[\u25CF\u25CB\u25D0-\u25D3\u2737\u2731\u280B\u2819\u2839\u2838\u283C\u2834\u2826\u2827\u2807\u280F]/.test(stripped) && stripped.length < 80;
-            const isWorking = isSpinner || /working\.\.\.|thinking\.\.\.|analyzing|executing|applying/i.test(stripped);
-            // "esc to interrupt" or hotkey legends alone on the status bar are not work signals.
-            const isStatusBar = (isShortcutHintLine(stripped) || /esc to interrupt/i.test(stripped)) && !isSpinner;
-
-            if (isWorking && !isStatusBar) {
-              agentStatus = "working";
-            } else if (
-              // Claude Code tool approval: "Allow X? (y/n)" on the CURRENT line
-              /allow\s+.*\?\s*\(y\/n\)/i.test(stripped) ||
-              // AskUserQuestion: numbered choices on current line
-              /^\s*\d+\.\s+.+\(.*\)/.test(stripped) ||
-              // Direct yes/no on current line only
-              /\(y\/n\)\s*$/i.test(stripped) ||
-              /\[y\/N\]/i.test(stripped) ||
-              // "Type your answer/response" prompt (Claude Code AskUser)
-              /type your (answer|response)/i.test(stripped) ||
-              /press enter to (continue|confirm|submit)/i.test(stripped) ||
-              /hit enter to /i.test(stripped) ||
-              /\bapprove\b.*\?/i.test(stripped)
-            ) {
-              agentStatus = "waiting";
-            } else if (
-              /\u2713\s*(done|complete|finished)/i.test(stripped) ||
-              /^>\s*$/.test(stripped) ||
-              /\$\s*$/.test(stripped)
-            ) {
-              agentStatus = "done";
-            }
-
-            // Filter out terminal chrome / status bar noise before storing as log line.
-            // These patterns match Claude Code's bottom status bar (token cost, session info)
-            // and other terminal UI lines that aren't meaningful agent output.
-            const isNoiseLine =
-              /\d+k?\s+tokens/i.test(stripped) ||
-              /access \d+/i.test(stripped) ||
-              /past research/i.test(stripped) ||
-              /http:\/\/localhost/i.test(stripped) ||
-              isShortcutHintLine(stripped) ||
-              /^\s*[\u2500-\u257F]+\s*$/.test(stripped) || // box-drawing chars only
-              stripped.length < 3;
-
-            // When agent returns to shell prompt (done/idle), clear the log line.
-            // For noise lines, omit the key entirely so the previous meaningful value is preserved.
-            const isShellPrompt = /^>\s*$/.test(stripped) || /\$\s*$/.test(stripped);
-            const logLineUpdate = isShellPrompt
-              ? { lastLogLine: undefined }          // clear on shell prompt
-              : isNoiseLine
-                ? {}                               // preserve previous value for noise
-                : { lastLogLine: lastLine };       // update with meaningful line
-
-            usePaneMetadataStore.getState().setMetadata(sessionId, {
-              ...logLineUpdate,
-              agentStatus, // always write — clears stale status when no pattern matches
-            });
-            // Trigger notification ONLY when agent needs user approval (waiting status)
-            if (!suppressNotifications && agentStatus === "waiting") {
-              const activePaneId = useUiStore.getState().activePaneId;
-              if (activePaneId !== sessionId) {
-                const didNotify = usePaneMetadataStore.getState().notifyWaiting(sessionId, stripped);
-                if (didNotify) {
-                  playNotificationSound();
-                }
-              }
-            }
-          }
-        }, 500);
+          runScan();
+        }, 150);
       });
 
       // Register exit listener before spawning PTY to avoid race
@@ -566,15 +606,18 @@ export default memo(function XTermWrapper({
     init();
 
     return () => {
-      disposed = true;
       clearTimeout(resizeTimeout);
       if (startupSettleTimeout) {
         clearTimeout(startupSettleTimeout);
       }
       if (logThrottle) { clearTimeout(logThrottle); logThrottle = null; }
+      if (idleFlush) { clearTimeout(idleFlush); idleFlush = null; }
       resizeObserver?.disconnect();
       // Cache terminal for potential remount instead of disposing.
       // Allotment may remount surviving panes on sibling removal.
+      // Intentionally do NOT flip `disposed` when caching — the onWriteParsed
+      // handler captured by this closure remains registered on the cached
+      // Terminal and must keep updating the metadata store after remount.
       if (term && term.element) {
         const el = term.element;
         if (el.parentNode === container) container.removeChild(el);
@@ -586,6 +629,7 @@ export default memo(function XTermWrapper({
           unlistenExit,
         });
       } else {
+        disposed = true;
         unlistenExit?.();
         term?.dispose();
       }

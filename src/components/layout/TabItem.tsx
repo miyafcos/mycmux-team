@@ -15,6 +15,7 @@ interface TabItemProps {
   cwd?: string;
   gitBranch?: string;
   notificationCount?: number;
+  workDoneCount?: number;
   lastLogLine?: string;
   statusCounts?: StatusCounts;
   active: boolean;
@@ -42,7 +43,7 @@ function StatusPip({ count, color, pulse }: { count: number; color: string; puls
   );
 }
 
-export default memo(function TabItem({ uiVariant = "default", index, name, color, paneCount, cwd, gitBranch, notificationCount, lastLogLine, statusCounts, active, onClick, onClose, onRename }: TabItemProps) {
+export default memo(function TabItem({ uiVariant = "default", index, name, color, paneCount, cwd, gitBranch, notificationCount, workDoneCount, lastLogLine, statusCounts, active, onClick, onClose, onRename }: TabItemProps) {
   const hasAgents = statusCounts && (statusCounts.working + statusCounts.waiting + statusCounts.done) > 0;
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState(name);
@@ -142,8 +143,8 @@ export default memo(function TabItem({ uiVariant = "default", index, name, color
             }} />
           )}
           {notificationCount ? (
-            <span style={{
-              background: "#007aff",
+            <span title="Waiting for approval" style={{
+              background: "#ff3b30",
               color: "white",
               fontSize: "9px",
               fontWeight: "bold",
@@ -156,6 +157,22 @@ export default memo(function TabItem({ uiVariant = "default", index, name, color
               flexShrink: 0
             }}>
               {notificationCount}
+            </span>
+          ) : workDoneCount ? (
+            <span title="Work done" style={{
+              background: "#30d158",
+              color: "white",
+              fontSize: "9px",
+              fontWeight: "bold",
+              borderRadius: "50%",
+              width: "14px",
+              height: "14px",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              flexShrink: 0
+            }}>
+              {workDoneCount}
             </span>
           ) : null}
           {editing ? (

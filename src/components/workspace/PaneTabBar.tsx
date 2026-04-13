@@ -178,6 +178,7 @@ export default memo(function PaneTabBar({
           const isActive = tab.id === pane.activeTabId;
           const tabMeta = allMetadata[tab.sessionId];
           const tabNotificationCount = tabMeta?.notificationCount ?? 0;
+          const tabWorkDoneCount = tabMeta?.workDoneCount ?? 0;
           const tabProcessTitle = tabMeta?.processTitle;
           const tabCwd = tabMeta?.cwd;
           const agentStatus = tabMeta?.agentStatus ?? "idle";
@@ -207,9 +208,12 @@ export default memo(function PaneTabBar({
                 transition: "background 0.1s",
               }}
             >
-              {/* notification dot */}
+              {/* notification dot: red = approval waiting, green = work done */}
               {tabNotificationCount > 0 && (
-                <span style={{ width: 5, height: 5, borderRadius: "50%", background: "#ff3b30", flexShrink: 0 }} />
+                <span title="Waiting for approval" style={{ width: 5, height: 5, borderRadius: "50%", background: "#ff3b30", flexShrink: 0 }} />
+              )}
+              {tabNotificationCount === 0 && tabWorkDoneCount > 0 && (
+                <span title="Work done" style={{ width: 5, height: 5, borderRadius: "50%", background: "#30d158", flexShrink: 0 }} />
               )}
               <AgentStatusDot status={agentStatus} />
               {/* folder icon */}

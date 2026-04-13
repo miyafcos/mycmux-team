@@ -18,6 +18,23 @@ pub struct PtyMetadata {
     pub process_name: Option<String>,
 }
 
+#[derive(Clone, serde::Serialize)]
+pub struct PtyWorkDone {
+    pub session_id: String,
+    pub prev_process: String,
+    pub current_process: String,
+}
+
+/// Shell processes that signal "back to idle" when the foreground switches to them.
+fn is_shell_process(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    let leaf = lower.strip_suffix(".exe").unwrap_or(&lower);
+    matches!(
+        leaf,
+        "bash" | "sh" | "zsh" | "fish" | "pwsh" | "powershell" | "cmd" | "dash" | "ksh"
+    )
+}
+
 /// Shared metadata store accessible from remote server.
 pub type MetadataStore = Arc<DashMap<String, PtyMetadata>>;
 
@@ -138,6 +155,27 @@ pub fn start_monitor(app_handle: AppHandle, manager: Arc<SessionManager>, metada
 
                     let process_name = get_foreground_process_name(&sys, pid);
 
+                    // Detect work→idle transition: previous foreground was a non-shell
+                    // process (claude/node/python/…) and current is a shell.
+                    // Emit a one-shot "pty_work_done" event so the UI can badge the pane.
+                    if let (Some(prev_meta), Some(current)) =
+                        (last_metadata.get(&session_id), process_name.as_ref())
+                    {
+                        if let Some(prev) = prev_meta.process_name.as_ref() {
+                            if !is_shell_process(prev)
+                                && is_shell_process(current)
+                                && prev != current
+                            {
+                                let evt = PtyWorkDone {
+                                    session_id: session_id.clone(),
+                                    prev_process: prev.clone(),
+                                    current_process: current.to_string(),
+                                };
+                                let _ = app_handle.emit("pty_work_done", evt);
+                            }
+                        }
+                    }
+
                     let metadata = PtyMetadata {
                         session_id: session_id.clone(),
                         cwd: cwd.clone(),
@@ -154,8 +192,10 @@ pub fn start_monitor(app_handle: AppHandle, manager: Arc<SessionManager>, metada
                         None => true,
                     };
 
+                    // Always track last_metadata for work-done detection, even if
+                    // not "changed" enough to re-emit pty_metadata.
+                    last_metadata.insert(session_id.clone(), metadata.clone());
                     if changed {
-                        last_metadata.insert(session_id.clone(), metadata.clone());
                         // Also update the shared metadata store for remote access
                         metadata_store.insert(session_id.clone(), metadata.clone());
                         let _ = app_handle.emit("pty_metadata", metadata);

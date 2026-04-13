@@ -26,6 +26,7 @@ export default function NotificationPanel({ onClose }: NotificationPanelProps) {
       tabId: string;
       sessionId: string;
       count: number;
+      kind: "waiting" | "done";
       label: string;
       lastLogLine?: string;
     }[] = [];
@@ -33,8 +34,10 @@ export default function NotificationPanel({ onClose }: NotificationPanelProps) {
       for (const pane of ws.panes) {
         for (const tab of pane.tabs) {
           const m = paneMetadata[tab.sessionId];
-          if (m && (m.notificationCount ?? 0) > 0) {
-            const agentName = getAgent(tab.agentId)?.name ?? "Shell";
+          if (!m) continue;
+          const agentName = getAgent(tab.agentId)?.name ?? "Shell";
+          const label = tab.label ?? m.processTitle ?? m.cwd?.split("/").pop() ?? agentName;
+          if ((m.notificationCount ?? 0) > 0) {
             result.push({
               workspaceId: ws.id,
               workspaceName: ws.name,
@@ -43,14 +46,32 @@ export default function NotificationPanel({ onClose }: NotificationPanelProps) {
               tabId: tab.id,
               sessionId: tab.sessionId,
               count: m.notificationCount ?? 0,
-              label: tab.label ?? m.processTitle ?? m.cwd?.split("/").pop() ?? agentName,
+              kind: "waiting",
+              label,
+              lastLogLine: m.lastLogLine,
+            });
+          } else if ((m.workDoneCount ?? 0) > 0) {
+            result.push({
+              workspaceId: ws.id,
+              workspaceName: ws.name,
+              workspaceColor: ws.color ?? "#0A84FF",
+              paneId: pane.id,
+              tabId: tab.id,
+              sessionId: tab.sessionId,
+              count: m.workDoneCount ?? 0,
+              kind: "done",
+              label,
               lastLogLine: m.lastLogLine,
             });
           }
         }
       }
     }
-    return result.sort((a, b) => b.count - a.count);
+    // Waiting (approval) sorts ahead of done.
+    return result.sort((a, b) => {
+      if (a.kind !== b.kind) return a.kind === "waiting" ? -1 : 1;
+      return b.count - a.count;
+    });
   }, [workspaces, paneMetadata]);
 
   // Close on outside click
@@ -155,9 +176,9 @@ export default function NotificationPanel({ onClose }: NotificationPanelProps) {
                 <span style={{ color: "var(--cmux-text-tertiary)", fontSize: 11, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                   {n.label}
                 </span>
-                {/* Count badge */}
+                {/* Count badge — red for approval waiting, green for work done */}
                 <span style={{
-                  background: "#007aff",
+                  background: n.kind === "waiting" ? "#ff3b30" : "#30d158",
                   color: "white",
                   fontSize: 9,
                   fontWeight: "bold",

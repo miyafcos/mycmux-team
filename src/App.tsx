@@ -6,7 +6,8 @@ import {
   usePaneMetadataStore
 } from "./stores/workspaceStore";
 import { useWorkspacePersist, persistLoaded } from "./components/layout/SocketListener";
-import { preloadTerminalConfig, onPtyMetadata, isDirectory, writeToSession, getLaunchCwd, revealMainWindow } from "./lib/ipc";
+import { preloadTerminalConfig, onPtyMetadata, onPtyWorkDone, isDirectory, writeToSession, getLaunchCwd, revealMainWindow } from "./lib/ipc";
+import { useUiStore } from "./stores/uiStore";
 import {
   getStartupSessionGateSnapshot,
   prepareStartupSessionGate,
@@ -85,6 +86,15 @@ function App() {
       });
     });
 
+    // Work-done listener: backend detects a foreground process transition from
+    // a working process (claude/node/python/…) back to a shell and emits this
+    // event. Badge the pane with a green dot unless it's currently focused.
+    const unlistenWorkDone = onPtyWorkDone((evt) => {
+      const activePaneId = useUiStore.getState().activePaneId;
+      if (activePaneId === evt.session_id) return;
+      usePaneMetadataStore.getState().notifyWorkDone(evt.session_id);
+    });
+
     // Drag-and-drop: route folder drops to the correct terminal pane
     const unlistenDragDrop = getCurrentWebview().onDragDropEvent(async (event) => {
       if (event.payload.type !== "drop") return;
@@ -124,6 +134,7 @@ function App() {
 
     return () => {
       unlistenMeta.then((f) => f()).catch(() => {});
+      unlistenWorkDone.then((f) => f()).catch(() => {});
       unlistenDragDrop.then((f) => f()).catch(() => {});
     };
   }, []);

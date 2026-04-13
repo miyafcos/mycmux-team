@@ -5,6 +5,7 @@ export type AgentStatus = "working" | "waiting" | "done" | "idle";
 export interface PaneMetadata {
   lastLogLine?: string;
   notificationCount?: number;
+  workDoneCount?: number;
   cwd?: string;
   gitBranch?: string;
   processTitle?: string;
@@ -16,7 +17,8 @@ export interface PaneMetadataState {
   metadata: Record<string, PaneMetadata>;
   setMetadata: (sessionId: string, data: Partial<PaneMetadata>) => void;
   incrementNotification: (sessionId: string) => void;
-  notifyWaiting: (sessionId: string, notificationKey: string) => boolean;
+  notifyWaiting: (sessionId: string, patternId: number) => boolean;
+  notifyWorkDone: (sessionId: string) => boolean;
   clearNotification: (sessionId: string) => void;
   removeMetadata: (sessionId: string) => void;
 }
@@ -53,8 +55,8 @@ export const usePaneMetadataStore = create<PaneMetadataState>((set) => ({
     };
   }),
 
-  notifyWaiting: (sessionId, notificationKey) => {
-    const normalizedKey = notificationKey.trim();
+  notifyWaiting: (sessionId, patternId) => {
+    const normalizedKey = `w:${patternId}`;
     let didNotify = false;
 
     set((state) => {
@@ -85,12 +87,29 @@ export const usePaneMetadataStore = create<PaneMetadataState>((set) => ({
     return didNotify;
   },
 
+  notifyWorkDone: (sessionId) => {
+    let didNotify = false;
+    set((state) => {
+      const prev = state.metadata[sessionId];
+      const oldCount = prev?.workDoneCount || 0;
+      didNotify = true;
+      return {
+        metadata: {
+          ...state.metadata,
+          [sessionId]: { ...prev, workDoneCount: oldCount + 1 },
+        },
+      };
+    });
+    return didNotify;
+  },
+
   clearNotification: (sessionId) => set((state) => ({
     metadata: {
       ...state.metadata,
       [sessionId]: {
         ...state.metadata[sessionId],
-        notificationCount: 0
+        notificationCount: 0,
+        workDoneCount: 0,
       }
     }
   })),
