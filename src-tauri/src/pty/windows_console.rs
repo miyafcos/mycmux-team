@@ -31,6 +31,24 @@ struct WindowHideState {
 }
 
 #[cfg(target_os = "windows")]
+fn should_hide_console_process(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "openconsole.exe"
+            | "conhost.exe"
+            | "cmd.exe"
+            | "powershell.exe"
+            | "pwsh.exe"
+            | "bash.exe"
+            | "sh.exe"
+            | "zsh.exe"
+            | "fish.exe"
+            | "nu.exe"
+            | "nushell.exe"
+    )
+}
+
+#[cfg(target_os = "windows")]
 static FLASH_SUPPRESSION_ROOT_PID: AtomicU32 = AtomicU32::new(0);
 #[cfg(target_os = "windows")]
 static FLASH_EVENT_HOOK_STARTED: AtomicBool = AtomicBool::new(false);
@@ -47,7 +65,7 @@ unsafe extern "system" fn hide_descendant_window(hwnd: HWND, lparam: LPARAM) -> 
         && state
             .target_pids
             .get(&pid)
-            .is_some_and(|name| name.eq_ignore_ascii_case("openconsole.exe"))
+            .is_some_and(|name| should_hide_console_process(name))
     {
         let _ = ShowWindow(hwnd, SW_HIDE);
         let _ = SetWindowPos(
@@ -143,7 +161,7 @@ fn hide_window_if_openconsole_descendant(hwnd: HWND, root_pid: u32) {
     }
     if target_pids
         .get(&pid)
-        .is_some_and(|name| name.eq_ignore_ascii_case("openconsole.exe"))
+        .is_some_and(|name| should_hide_console_process(name))
     {
         unsafe {
             let _ = ShowWindow(hwnd, SW_HIDE);
