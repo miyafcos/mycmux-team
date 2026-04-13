@@ -85,10 +85,8 @@ export default memo(function TabItem({ uiVariant = "default", index, name, color
         justifyContent: "space-between",
         padding: "8px 12px",
         cursor: "pointer",
-        background: active ? "rgba(255,255,255,0.06)" : "transparent",
-        color: active
-          ? (uiVariant === "cmux" ? "#f3f3f3" : "#ffffff")
-          : "var(--cmux-text-secondary)",
+        background: active ? "rgba(255,255,255,0.08)" : "transparent",
+        color: active ? "var(--cmux-text)" : "var(--cmux-text-secondary)",
         fontSize: "13px",
         fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
         userSelect: "none",
@@ -102,7 +100,7 @@ export default memo(function TabItem({ uiVariant = "default", index, name, color
       }}
       onMouseEnter={(e) => {
         if (!active) {
-          e.currentTarget.style.background = "rgba(255, 255, 255, 0.05)";
+          e.currentTarget.style.background = "rgba(255, 255, 255, 0.06)";
           e.currentTarget.style.color = "var(--cmux-text)";
         }
       }}
@@ -119,7 +117,7 @@ export default memo(function TabItem({ uiVariant = "default", index, name, color
             <span style={{
               fontSize: 10,
               fontWeight: 500,
-              color: active ? "rgba(255,255,255,0.45)" : "var(--cmux-text-tertiary)",
+              color: "var(--cmux-text-tertiary)",
               fontFamily: "monospace",
               flexShrink: 0,
               minWidth: 12,
@@ -209,8 +207,8 @@ export default memo(function TabItem({ uiVariant = "default", index, name, color
           {paneCount > 1 && (
             <span className="cmux-pill" style={{
               flexShrink: 0,
-              background: active ? "rgba(255,255,255,0.2)" : "rgba(255,255,255,0.1)",
-              color: active ? "#ffffff" : "var(--cmux-text-secondary)"
+              background: active ? "rgba(255,255,255,0.22)" : "rgba(255,255,255,0.12)",
+              color: active ? "var(--cmux-text)" : "var(--cmux-text-secondary)"
             }}>
               {paneCount}
             </span>
@@ -225,7 +223,7 @@ export default memo(function TabItem({ uiVariant = "default", index, name, color
         {lastLogLine && (
           <span style={{
             fontSize: "12px",
-            color: active ? "rgba(255,255,255,0.85)" : "var(--cmux-text-secondary)",
+            color: active ? "var(--cmux-text)" : "var(--cmux-text-secondary)",
             overflow: "hidden",
             textOverflow: "ellipsis",
             whiteSpace: "nowrap",
@@ -236,7 +234,7 @@ export default memo(function TabItem({ uiVariant = "default", index, name, color
         )}
         <span style={{
           fontSize: "11px",
-          color: active ? "rgba(255,255,255,0.6)" : "var(--cmux-text-tertiary)",
+          color: "var(--cmux-text-tertiary)",
           overflow: "hidden",
           textOverflow: "ellipsis",
           whiteSpace: "nowrap",
@@ -255,7 +253,7 @@ export default memo(function TabItem({ uiVariant = "default", index, name, color
         style={{
           background: "none",
           border: "none",
-          color: active ? "rgba(255,255,255,0.6)" : "var(--cmux-text-tertiary)",
+          color: "var(--cmux-text-tertiary)",
           cursor: "pointer",
           fontSize: "12px",
           padding: "2px 4px",
@@ -265,10 +263,10 @@ export default memo(function TabItem({ uiVariant = "default", index, name, color
           transition: "opacity 0.1s, color 0.1s",
         }}
         onMouseEnter={(e) => {
-          e.currentTarget.style.color = active ? "#ffffff" : "var(--cmux-text)";
+          e.currentTarget.style.color = "var(--cmux-text)";
         }}
         onMouseLeave={(e) => {
-          e.currentTarget.style.color = active ? "rgba(255,255,255,0.6)" : "var(--cmux-text-tertiary)";
+          e.currentTarget.style.color = "var(--cmux-text-tertiary)";
         }}
         title="Close workspace"
         className="tab-close-btn"

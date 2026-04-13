@@ -102,7 +102,14 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
         overflowY: "auto",
         overflowX: "hidden",
         position: "relative",
-      }}
+        // Theme-adaptive sidebar text contrast. AppShell aliases
+        // --cmux-text-secondary and --cmux-text-tertiary to chrome.textMuted
+        // which is often too dim to read workspace labels against. Derive
+        // brighter variants from the theme's own --cmux-text so the cascade
+        // stays theme-aware (works on both dark and light themes).
+        "--cmux-text-secondary": "color-mix(in srgb, var(--cmux-text) 82%, transparent)",
+        "--cmux-text-tertiary":  "color-mix(in srgb, var(--cmux-text) 58%, transparent)",
+      } as React.CSSProperties}
     >
       <div style={{ flex: 1 }}>
         {workspaces.map((ws, wsIndex) => {
