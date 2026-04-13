@@ -158,9 +158,11 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
         pane={pane}
         workspaceId={workspaceId}
         hasNotification={hasNotification}
+        isZoomed={isZoomed}
         onClose={onClose}
         onSplitRight={onSplitRight}
         onSplitDown={onSplitDown}
+        onZoomToggle={handleZoomToggle}
         onAddTab={handleAddTab}
         onRemoveTab={handleRemoveTab}
         onSelectTab={handleSelectTab}
