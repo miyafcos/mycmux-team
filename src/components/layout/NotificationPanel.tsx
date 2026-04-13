@@ -176,10 +176,10 @@ export default function NotificationPanel({ onClose }: NotificationPanelProps) {
                 <span style={{ color: "var(--cmux-text-tertiary)", fontSize: 11, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                   {n.label}
                 </span>
-                {/* Count badge — red for approval waiting, green for work done */}
+                {/* Count badge — amber for approval waiting, emerald for work done */}
                 <span style={{
-                  background: n.kind === "waiting" ? "#ff3b30" : "#30d158",
-                  color: "white",
+                  background: n.kind === "waiting" ? "var(--status-waiting)" : "var(--status-done)",
+                  color: "#1a1a1a",
                   fontSize: 9,
                   fontWeight: "bold",
                   borderRadius: "50%",
