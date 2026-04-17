@@ -72,6 +72,10 @@ const APPROVAL_PATTERNS: readonly RegExp[] = [
   /esc\s+to\s+(?:cancel|exit|quit)/i,        // 13: "Esc to cancel" hint
   /↑\/↓/,                                    // 14: arrow-nav hint (very specific to selection menus)
   /ask user question/i,                      // 15: Claude Code AskUserQuestion box title
+  /would you like to (proceed|continue)/i,   // 16: plan-mode "Would you like to proceed?"
+  /shift\s*\+\s*tab to approve/i,            // 17: plan approval footer hint
+  /ctrl-g to edit/i,                         // 18: plan approval edit hint
+  /hook [A-Za-z]+ requires confirmation/i,   // 19: Claude Code Bash hook confirmation
 ] as const;
 
 // Scan the last N lines of the terminal buffer for an approval pattern.
@@ -145,6 +149,36 @@ export function evictTerminalCache(sessionId: string): void {
     cached.unlistenExit?.();
     cached.term.dispose();
     termCache.delete(sessionId);
+  }
+}
+
+/** Read the last N non-empty lines of a pane's xterm buffer, ANSI/control-char stripped. */
+export function getTerminalBufferLines(sessionId: string, maxLines: number): string[] {
+  const cached = termCache.get(sessionId);
+  if (!cached || maxLines <= 0) return [];
+  try {
+    const buf = cached.term.buffer.active;
+    const bottom = buf.length - 1;
+    if (bottom < 0) return [];
+    const top = Math.max(0, bottom - maxLines * 2);
+    const result: string[] = [];
+    for (let i = bottom; i >= top; i--) {
+      const lineObj = buf.getLine(i);
+      if (!lineObj) continue;
+      const text = lineObj
+        .translateToString(true)
+        .replace(/\x1b\[[0-9;]*[A-Za-z]/g, "")
+        .replace(/\x1b\].*?\x07/g, "")
+        .replace(/[\x00-\x08\x0b-\x0c\x0e-\x1f\x7f]/g, "")
+        .trim();
+      if (text.length > 0) {
+        result.push(text);
+        if (result.length >= maxLines) break;
+      }
+    }
+    return result.reverse();
+  } catch {
+    return [];
   }
 }
 const CODING_AGENT_HINT_PATTERN = /\b(?:ctrl|cmd|alt|shift)\+[\w?]+/gi;
@@ -429,6 +463,13 @@ export default memo(function XTermWrapper({
       // Send user keystrokes to PTY
       term.onData((data) => {
         chunkedWrite(sessionId, data);
+        try {
+          window.dispatchEvent(
+            new CustomEvent("mycmux:keystroke", { detail: { sessionId, data } }),
+          );
+        } catch {
+          // ignore dispatch failures — buddy is non-critical
+        }
       });
 
       term.onBinary((data) => {
@@ -456,11 +497,11 @@ export default memo(function XTermWrapper({
         } catch {
           return;
         }
-        // Scan the bottom 8 rows of scrollback — Claude Code approval boxes
+        // Scan the bottom 16 rows of scrollback — Claude Code approval boxes
         // span multiple lines and the decisive "(y/n)" or "❯ 1. Yes" line may
         // sit above the cursor.
         const bottom = buf.length - 1;
-        const top = Math.max(0, bottom - 7);
+        const top = Math.max(0, bottom - 15);
         const scanLines: string[] = [];
         let lastNonEmpty = "";
         for (let i = top; i <= bottom; i++) {
@@ -511,7 +552,7 @@ export default memo(function XTermWrapper({
             agentStatus: "waiting",
           });
           const activePaneId = useUiStore.getState().activePaneId;
-          if (activePaneId !== sessionId) {
+          if (activePaneId !== sessionId && useSettingsStore.getState().notificationsEnabled) {
             const didNotify = usePaneMetadataStore
               .getState()
               .notifyWaiting(sessionId, approvalPatternId);
