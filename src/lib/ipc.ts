@@ -58,6 +58,7 @@ export interface PtyMetadata {
   cwd: string;
   git_branch?: string;
   process_name?: string;
+  claude_session_id?: string;
 }
 
 export function onPtyMetadata(

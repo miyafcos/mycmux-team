@@ -194,11 +194,18 @@ export default memo(function TabItem({ uiVariant = "default", index, name, color
             />
           ) : (
             <span
+              title={name}
               style={{
+                flex: 1,
+                minWidth: 0,
+                display: "-webkit-box",
+                WebkitLineClamp: 2,
+                WebkitBoxOrient: "vertical",
                 overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
+                wordBreak: "break-word",
+                fontSize: 14,
                 fontWeight: active ? 600 : 500,
+                lineHeight: 1.25,
               }}
             >
               {name}

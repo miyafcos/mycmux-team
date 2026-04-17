@@ -12,12 +12,14 @@ export interface PaneMetadata {
   processIsShell?: boolean;
   agentStatus?: AgentStatus;
   lastNotificationKey?: string;
+  claudeSessionId?: string;
 }
 
 export interface PaneMetadataState {
   metadata: Record<string, PaneMetadata>;
   setMetadata: (sessionId: string, data: Partial<PaneMetadata>) => void;
   clearAgentStatus: (sessionId: string) => void;
+  clearClaudeSessionId: (sessionId: string) => void;
   incrementNotification: (sessionId: string) => void;
   notifyWaiting: (sessionId: string, patternId: number) => boolean;
   notifyWorkDone: (sessionId: string) => boolean;
@@ -68,6 +70,17 @@ export const usePaneMetadataStore = create<PaneMetadataState>((set) => ({
       metadata: {
         ...state.metadata,
         [sessionId]: { ...prev, agentStatus: undefined, lastNotificationKey: undefined },
+      },
+    };
+  }),
+
+  clearClaudeSessionId: (sessionId) => set((state) => {
+    const prev = state.metadata[sessionId];
+    if (!prev?.claudeSessionId) return state;
+    return {
+      metadata: {
+        ...state.metadata,
+        [sessionId]: { ...prev, claudeSessionId: undefined },
       },
     };
   }),

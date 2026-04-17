@@ -3,6 +3,7 @@ import {
   useWorkspaceListStore,
   useWorkspaceLayoutStore,
   useUiStore,
+  usePaneMetadataStore,
 } from "../../stores/workspaceStore";
 import {
   loadPersistentData,
@@ -36,29 +37,35 @@ function toConfig(ws: Workspace): WorkspaceConfig {
     ?.map((col) => col.map((id) => paneIdToIndex.get(id)).filter((i): i is number => i !== undefined))
     .filter((col) => col.length > 0) ?? null;
 
+  const metaState = usePaneMetadataStore.getState().metadata;
+
   return {
     id: ws.id,
     name: ws.name,
     grid_template_id: ws.gridTemplateId,
     panes: ws.panes.map((p) => {
       const activeTab = p.tabs.find((tab) => tab.id === p.activeTabId) ?? p.tabs[0];
+      const paneMeta = metaState[p.sessionId];
       return {
         pane_id: p.id,
         agent_id: activeTab?.agentId ?? p.agentId,
         label: p.label ?? null,
-        cwd: null,
+        cwd: paneMeta?.cwd ?? null,
         last_process: null,
-        claude_session_id: null,
+        claude_session_id: paneMeta?.claudeSessionId ?? null,
         active_tab_id: p.activeTabId,
-        tabs: p.tabs.map((tab) => ({
-          tab_id: tab.id,
-          agent_id: tab.agentId,
-          label: tab.label ?? null,
-          type: tab.type ?? "terminal",
-          cwd: null,
-          last_process: null,
-          claude_session_id: null,
-        })),
+        tabs: p.tabs.map((tab) => {
+          const tabMeta = metaState[tab.sessionId];
+          return {
+            tab_id: tab.id,
+            agent_id: tab.agentId,
+            label: tab.label ?? null,
+            type: tab.type ?? "terminal",
+            cwd: tabMeta?.cwd ?? null,
+            last_process: null,
+            claude_session_id: tabMeta?.claudeSessionId ?? null,
+          };
+        }),
       };
     }),
     created_at: ws.createdAt,
