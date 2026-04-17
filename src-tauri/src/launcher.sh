@@ -128,7 +128,14 @@ if [ -n "$MYCMUX_RESUME" ]; then
     claude*)
       __track_claude_session "$MYCMUX_PANE_SESSION_ID" &
       if [ -n "$MYCMUX_SESSION_ID" ]; then
-        eval "claude --allow-dangerously-skip-permissions --permission-mode auto --resume $MYCMUX_SESSION_ID"
+        # Validate session file still exists before resume
+        local __project_dir
+        __project_dir=$(__get_claude_project_dir)
+        if [ -f "$__project_dir/$MYCMUX_SESSION_ID.jsonl" ]; then
+          eval "claude --allow-dangerously-skip-permissions --permission-mode auto --resume $MYCMUX_SESSION_ID"
+        else
+          eval "claude --allow-dangerously-skip-permissions --permission-mode auto --continue"
+        fi
       else
         eval "claude --allow-dangerously-skip-permissions --permission-mode auto --continue"
       fi

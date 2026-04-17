@@ -29,8 +29,12 @@ export default function SettingsMenu({
   onOpenCommandPalette,
 }: SettingsMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
+  const notificationsEnabled = useSettingsStore((s) => s.notificationsEnabled);
+  const setNotificationsEnabled = useSettingsStore((s) => s.setNotificationsEnabled);
   const notificationSoundEnabled = useSettingsStore((s) => s.notificationSoundEnabled);
   const setNotificationSoundEnabled = useSettingsStore((s) => s.setNotificationSoundEnabled);
+  const buddyEnabled = useSettingsStore((s) => s.buddyEnabled);
+  const setBuddyEnabled = useSettingsStore((s) => s.setBuddyEnabled);
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -106,6 +110,47 @@ export default function SettingsMenu({
 
       <label
         style={{
+          padding: "10px 12px 4px",
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          fontSize: 12,
+          color: "var(--cmux-text)",
+          cursor: "pointer",
+        }}
+      >
+        <input
+          type="checkbox"
+          checked={notificationsEnabled}
+          onChange={(e) => setNotificationsEnabled(e.target.checked)}
+        />
+        <span>通知</span>
+      </label>
+
+      <label
+        style={{
+          padding: "4px 12px 10px",
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          fontSize: 12,
+          color: notificationsEnabled ? "var(--cmux-text)" : "var(--cmux-text-dim, rgba(255,255,255,0.4))",
+          cursor: notificationsEnabled ? "pointer" : "not-allowed",
+        }}
+      >
+        <input
+          type="checkbox"
+          checked={notificationSoundEnabled}
+          disabled={!notificationsEnabled}
+          onChange={(e) => setNotificationSoundEnabled(e.target.checked)}
+        />
+        <span>通知サウンド</span>
+      </label>
+
+      <div style={{ height: 1, background: "var(--cmux-border)" }} />
+
+      <label
+        style={{
           padding: "10px 12px",
           display: "flex",
           alignItems: "center",
@@ -117,10 +162,10 @@ export default function SettingsMenu({
       >
         <input
           type="checkbox"
-          checked={notificationSoundEnabled}
-          onChange={(e) => setNotificationSoundEnabled(e.target.checked)}
+          checked={buddyEnabled}
+          onChange={(e) => setBuddyEnabled(e.target.checked)}
         />
-        <span>通知サウンド</span>
+        <span>Claude Buddy</span>
       </label>
     </div>
   );

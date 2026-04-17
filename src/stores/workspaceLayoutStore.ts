@@ -137,11 +137,15 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
               {
                 id: tabConfig.tab_id ?? undefined,
                 label: tabConfig.label ?? undefined,
+                cwd: tabConfig.cwd ?? pc.cwd ?? undefined,
+                claudeSessionId: tabConfig.claude_session_id ?? undefined,
               },
             );
           })
         : [makeTab(workspaceId, paneId, normalizeRestoredAgentId(pc.agent_id) || defaultAgentId, "terminal", {
             label: pc.label ?? undefined,
+            cwd: pc.cwd ?? undefined,
+            claudeSessionId: pc.claude_session_id ?? undefined,
           })];
       const activeTab = tabs.find((tab) => tab.id === pc.active_tab_id) ?? tabs[0];
       const agentId = activeTab?.agentId || normalizeRestoredAgentId(pc.agent_id) || defaultAgentId;

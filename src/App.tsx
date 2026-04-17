@@ -87,6 +87,7 @@ function App() {
         gitBranch: meta.git_branch,
         processTitle: meta.process_name ?? undefined,
         processIsShell: isShellProcess(meta.process_name ?? undefined),
+        claudeSessionId: meta.claude_session_id ?? undefined,
       });
     });
 
@@ -94,6 +95,10 @@ function App() {
     // from a working process (claude/node/python/…) back to a shell and
     // emits this event. Badge the pane unless it's currently focused.
     const unlistenWorkDone = onPtyWorkDone((evt) => {
+      // Claude → shell transition = intentional exit → clear claudeSessionId
+      if (evt.prev_process.toLowerCase().includes("claude")) {
+        usePaneMetadataStore.getState().clearClaudeSessionId(evt.session_id);
+      }
       const activePaneId = useUiStore.getState().activePaneId;
       if (activePaneId === evt.session_id) return;
       usePaneMetadataStore.getState().notifyWorkDone(evt.session_id);

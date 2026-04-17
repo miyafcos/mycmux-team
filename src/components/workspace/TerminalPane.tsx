@@ -192,6 +192,18 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
                   args={agent.args}
                   onZoomToggle={handleZoomToggle}
                   cwd={tabCwd}
+                  launchEnv={(() => {
+                    const env: Record<string, string> = {
+                      MYCMUX_PANE_SESSION_ID: tab.sessionId,
+                    };
+                    if (tab.claudeSessionId) {
+                      // claudeSessionId is detected from ~/.claude/projects/ so always resume as claude.
+                      // The shell agent launches bash → launcher.sh handles MYCMUX_RESUME.
+                      env.MYCMUX_RESUME = "claude";
+                      env.MYCMUX_SESSION_ID = tab.claudeSessionId;
+                    }
+                    return env;
+                  })()}
                 />
               </ErrorBoundary>
             </div>

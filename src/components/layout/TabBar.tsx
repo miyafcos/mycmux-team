@@ -1,7 +1,9 @@
 import { useRef, useState, useCallback, useEffect } from "react";
 import { useWorkspaceListStore, usePaneMetadataStore } from "../../stores/workspaceStore";
+import { useSettingsStore } from "../../stores/settingsStore";
 import { SIDEBAR_WIDTH } from "../../lib/constants";
 import { deriveEffectiveStatus } from "../../lib/notificationStatus";
+import { BuddyWidget } from "../../buddy/BuddyWidget";
 import TabItem from "./TabItem";
 
 const PlusIcon = () => (
@@ -24,6 +26,7 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
   const reorder = useWorkspaceListStore((s) => s.reorderWorkspaces);
   const rename = useWorkspaceListStore((s) => s.renameWorkspace);
   const paneMetadata = usePaneMetadataStore((s) => s.metadata);
+  const buddyEnabled = useSettingsStore((s) => s.buddyEnabled);
 
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [dropIndex, setDropIndex] = useState<number | null>(null);
@@ -99,7 +102,7 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
         background: uiVariant === "cmux" ? "#151515" : "var(--cmux-sidebar)",
         borderRight: "1px solid var(--cmux-border)",
         flexShrink: 0,
-        overflowY: "auto",
+        overflowY: "hidden",
         overflowX: "hidden",
         position: "relative",
         // Theme-adaptive sidebar text contrast. AppShell aliases
@@ -111,7 +114,7 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
         "--cmux-text-tertiary":  "color-mix(in srgb, var(--cmux-text) 58%, transparent)",
       } as React.CSSProperties}
     >
-      <div style={{ flex: 1 }}>
+      <div style={{ flex: 1, minHeight: 0, overflowY: "auto", overflowX: "hidden" }}>
         {workspaces.map((ws, wsIndex) => {
           let totalWsNotifications = 0;
           let totalWsWorkDone = 0;
@@ -169,6 +172,8 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
           );
         })}
       </div>
+
+      {buddyEnabled && <BuddyWidget />}
 
       {/* New workspace button at bottom */}
       <button

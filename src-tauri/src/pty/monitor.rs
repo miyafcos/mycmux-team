@@ -20,6 +20,7 @@ pub struct PtyMetadata {
     pub cwd: String,
     pub git_branch: Option<String>,
     pub process_name: Option<String>,
+    pub claude_session_id: Option<String>,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -44,6 +45,47 @@ pub type MetadataStore = Arc<DashMap<String, PtyMetadata>>;
 
 pub fn new_metadata_store() -> MetadataStore {
     Arc::new(DashMap::new())
+}
+
+/// Detect the active Claude Code session ID by finding the most recently
+/// modified `.jsonl` file in `~/.claude/projects/<mangled-cwd>/`.
+fn detect_claude_session_id(cwd: &str) -> Option<String> {
+    let home = dirs::home_dir()?;
+    // Normalize Git Bash paths (/c/Users/...) to Windows paths (C:\Users\...)
+    let normalized = if cwd.starts_with('/') && cwd.len() > 2 && cwd.as_bytes()[2] == b'/' {
+        format!(
+            "{}:{}",
+            cwd[1..2].to_uppercase(),
+            cwd[2..].replace('/', "\\")
+        )
+    } else {
+        cwd.to_string()
+    };
+    let mangled = normalized
+        .replace(':', "-")
+        .replace('\\', "-")
+        .replace('/', "-");
+    let project_dir = home.join(".claude").join("projects").join(&mangled);
+    if !project_dir.exists() {
+        return None;
+    }
+
+    let mut best: Option<(String, std::time::SystemTime)> = None;
+    for entry in std::fs::read_dir(&project_dir).ok()?.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
+            if let Ok(meta) = entry.metadata() {
+                if let Ok(mtime) = meta.modified() {
+                    if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                        if best.is_none() || mtime > best.as_ref().unwrap().1 {
+                            best = Some((stem.to_string(), mtime));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    best.map(|(id, _)| id)
 }
 
 /// System/infrastructure processes to skip when detecting the foreground process.
@@ -163,6 +205,20 @@ pub fn start_monitor(app_handle: AppHandle, manager: Arc<SessionManager>, metada
 
                     let process_name = get_foreground_process_name(&sys, pid);
 
+                    // Detect Claude Code session ID when claude is the foreground process.
+                    // When claude exits, preserve the last detected ID from previous metadata.
+                    let claude_session_id = match process_name.as_deref() {
+                        Some(name)
+                            if name.to_ascii_lowercase().contains("claude")
+                                && !is_shell_process(name) =>
+                        {
+                            detect_claude_session_id(&cwd)
+                        }
+                        _ => last_metadata
+                            .get(&session_id)
+                            .and_then(|m| m.claude_session_id.clone()),
+                    };
+
                     // Detect work→idle transition: previous foreground was a non-shell
                     // process (claude/node/python/…) and current is a shell.
                     // Emit a one-shot "pty_work_done" event so the UI can badge the pane.
@@ -189,6 +245,7 @@ pub fn start_monitor(app_handle: AppHandle, manager: Arc<SessionManager>, metada
                         cwd: cwd.clone(),
                         git_branch: git_branch.clone(),
                         process_name: process_name.clone(),
+                        claude_session_id: claude_session_id.clone(),
                     };
 
                     let changed = match last_metadata.get(&session_id) {
@@ -196,6 +253,7 @@ pub fn start_monitor(app_handle: AppHandle, manager: Arc<SessionManager>, metada
                             old.cwd != cwd
                                 || old.git_branch != git_branch
                                 || old.process_name != process_name
+                                || old.claude_session_id != claude_session_id
                         }
                         None => true,
                     };
