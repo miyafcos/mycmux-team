@@ -10,8 +10,7 @@ import {
 } from "../../stores/workspaceStore";
 import { useWorkspaceListStore } from "../../stores/workspaceListStore";
 import { getAgent, getDefaultAgent } from "../../lib/agents";
-import { killSession, writeToSession } from "../../lib/ipc";
-import { quoteShellPath } from "../../lib/paths";
+import { killSession } from "../../lib/ipc";
 import { evictTerminalCache } from "../terminal/XTermWrapper";
 
 interface TerminalPaneProps {
@@ -111,27 +110,6 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
     setZoomedPaneId(currentZoomed === pane.id ? null : pane.id);
   }, [pane.id, setZoomedPaneId]);
 
-  const handleInternalDragOver = useCallback((e: React.DragEvent<HTMLDivElement>) => {
-    // Only accept our own internal MIME so we don't interfere with other drops.
-    if (e.dataTransfer.types.includes("application/x-mycmux-path")) {
-      e.preventDefault();
-      e.dataTransfer.dropEffect = "copy";
-    }
-  }, []);
-
-  const handleInternalDrop = useCallback(
-    (e: React.DragEvent<HTMLDivElement>) => {
-      const path = e.dataTransfer.getData("application/x-mycmux-path");
-      if (!path) return;
-      e.preventDefault();
-      e.stopPropagation();
-      const activeTab = pane.tabs.find((t) => t.id === pane.activeTabId);
-      const targetSessionId = activeTab?.sessionId ?? pane.sessionId;
-      void writeToSession(targetSessionId, quoteShellPath(path) + " ");
-    },
-    [pane.tabs, pane.activeTabId, pane.sessionId],
-  );
-
   useEffect(() => {
     setMountedTabIds((prev) => {
       if (prev.has(pane.activeTabId)) {
@@ -153,8 +131,6 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
       tabIndex={-1}
       onFocus={handleFocus}
       onBlur={handleBlur}
-      onDragOver={handleInternalDragOver}
-      onDrop={handleInternalDrop}
       className={`terminal-pane-border${hasNotification ? ' has-notification' : ''}`}
       style={{
         ...(isZoomed ? {
