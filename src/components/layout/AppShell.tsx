@@ -8,7 +8,7 @@ import {
 } from "../../stores/workspaceStore";
 import { killSession } from "../../lib/ipc";
 import { evictTerminalCache } from "../terminal/XTermWrapper";
-import { SIDEBAR_WIDTH } from "../../lib/constants";
+import { SIDEBAR_WIDTH, RIGHT_SIDEBAR_WIDTH } from "../../lib/constants";
 import TabBar from "./TabBar";
 import TitleBar from "./TitleBar";
 import WorkspaceView from "../workspace/WorkspaceView";
@@ -16,6 +16,7 @@ import WorkspaceSetup from "../setup/WorkspaceSetup";
 import CommandPalette from "./CommandPalette";
 import SocketListener from "./SocketListener";
 import KeybindingsModal from "./KeybindingsModal";
+import FileExplorerSidebar from "./FileExplorerSidebar";
 import { useKeybindingStore } from "../../stores/keybindingStore";
 import { useThemeStore } from "../../stores/themeStore";
 
@@ -106,6 +107,7 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
   const workspaces = useWorkspaceListStore((s) => s.workspaces);
   const activeId = useWorkspaceListStore((s) => s.activeWorkspaceId);
   const sidebarCollapsed = useUiStore((s) => s.sidebarCollapsed);
+  const rightSidebarCollapsed = useUiStore((s) => s.rightSidebarCollapsed);
   const setActiveWorkspace = useWorkspaceListStore((s) => s.setActiveWorkspace);
   const removeWorkspace = useWorkspaceListStore((s) => s.removeWorkspace);
   const toggleSidebar = useUiStore((s) => s.toggleSidebar);
@@ -417,6 +419,19 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
               <WorkspaceSetup onLaunch={handleLaunch} onCancel={handleCancelSetup} />
             </div>
           )}
+        </div>
+
+        {/* Right sidebar — file explorer. Kept mounted so state survives collapse. */}
+        <div
+          style={{
+            width: rightSidebarCollapsed ? 0 : RIGHT_SIDEBAR_WIDTH,
+            overflow: "hidden",
+            flexShrink: 0,
+            transition: "width 0.2s ease",
+            borderLeft: rightSidebarCollapsed ? "none" : "1px solid var(--cmux-border)",
+          }}
+        >
+          <FileExplorerSidebar />
         </div>
       </div>
     </div>

@@ -40,3 +40,15 @@ export function basename(path: string | null | undefined): string {
   const idx = trimmed.lastIndexOf(sep);
   return idx >= 0 ? trimmed.slice(idx + 1) : trimmed;
 }
+
+/**
+ * Quote a filesystem path for insertion into a shell command line. Backslashes
+ * are converted to forward slashes so Git Bash and Claude Code accept the
+ * result verbatim. Embedded double-quotes get backslash-escaped — rare but it
+ * keeps the insertion from silently breaking the user's command.
+ */
+export function quoteShellPath(path: string): string {
+  const normalized = path.replace(/\\/g, "/");
+  const escaped = normalized.replace(/"/g, '\\"');
+  return `"${escaped}"`;
+}

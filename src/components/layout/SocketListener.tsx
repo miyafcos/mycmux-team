@@ -10,11 +10,13 @@ import {
   saveWorkspaces,
   claimLeader,
   saveSettings,
+  onFsChanged,
   type WorkspaceConfig,
 } from "../../lib/ipc";
 import type { Workspace } from "../../types";
 import { useThemeStore } from "../../stores/themeStore";
 import { useKeybindingStore } from "../../stores/keybindingStore";
+import { useFileExplorerStore } from "../../stores/fileExplorerStore";
 
 /** Transpose row-major split indices to column-major for legacy data migration */
 function transposeSplitRowsToCols(splitRows: number[][]): number[][] {
@@ -104,6 +106,9 @@ export function useWorkspacePersist() {
             fontSize: data.settings.font_size,
           });
           useKeybindingStore.getState().hydrateOverrides(data.settings.keybindings ?? {});
+          if (data.pinned_roots && data.pinned_roots.length > 0) {
+            useFileExplorerStore.getState().setRoots(data.pinned_roots);
+          }
 
           if (data.workspaces.length > 0) {
             const listStore = useWorkspaceListStore.getState();
@@ -245,6 +250,18 @@ export function useWorkspacePersist() {
       unsubUi();
       if (debounceTimer) clearTimeout(debounceTimer);
       window.removeEventListener("beforeunload", handleBeforeUnload);
+    };
+  }, []);
+
+  // Subscribe to fs_changed events from notify watcher — invalidate the
+  // affected directory so the explorer re-fetches on next expand (or
+  // immediately if already open).
+  useEffect(() => {
+    const unlisten = onFsChanged((payload) => {
+      useFileExplorerStore.getState().invalidate(payload.path);
+    });
+    return () => {
+      unlisten.then((f) => f()).catch(() => {});
     };
   }, []);
 }

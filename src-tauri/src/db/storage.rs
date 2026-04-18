@@ -95,6 +95,13 @@ impl Default for AppSettings {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PinnedRoot {
+    pub id: String,
+    pub path: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PersistentData {
     pub workspaces: Vec<WorkspaceConfig>,
     pub settings: AppSettings,
@@ -102,6 +109,8 @@ pub struct PersistentData {
     pub active_workspace_id: Option<String>,
     #[serde(default)]
     pub active_pane_id: Option<String>,
+    #[serde(default)]
+    pub pinned_roots: Vec<PinnedRoot>,
 }
 
 impl Default for PersistentData {
@@ -111,6 +120,7 @@ impl Default for PersistentData {
             settings: AppSettings::default(),
             active_workspace_id: None,
             active_pane_id: None,
+            pinned_roots: Vec::new(),
         }
     }
 }
