@@ -8,6 +8,9 @@ use tauri::{AppHandle, Emitter};
 
 use crate::events;
 
+use super::monitor::{MetadataStore, PtyMetadata};
+use super::osc7::Osc7Parser;
+
 use std::collections::VecDeque;
 use std::sync::Arc;
 use tokio::sync::broadcast;
@@ -36,6 +39,7 @@ impl PtySession {
         app_handle: AppHandle,
         cwd: Option<String>,
         env: Option<std::collections::HashMap<String, String>>,
+        metadata_store: MetadataStore,
     ) -> Result<Self, String> {
         let pty_system = native_pty_system();
 
@@ -106,12 +110,49 @@ impl PtySession {
         let handle = app_handle.clone();
         thread::spawn(move || {
             let mut buf = [0u8; 4096]; // 4KB — matches OS page size
+            let mut osc7 = Osc7Parser::new();
             loop {
                 let read_start = Instant::now();
                 match reader.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
                         let read_micros = read_start.elapsed().as_micros();
+
+                        // OSC 7: side-channel CWD observation. Bytes are NOT stripped —
+                        // xterm.js ignores unknown OSCs, so passing them through is safe.
+                        if let Some(cwd_raw) = osc7.feed(&buf[..n]) {
+                            let cwd = cwd_raw
+                                .trim_end_matches(['\n', '\r'])
+                                .trim_end_matches('/')
+                                .to_string();
+                            if !cwd.is_empty() {
+                                let prev = metadata_store.get(&sid).map(|m| m.clone());
+                                let should_emit = match &prev {
+                                    Some(m) => m.cwd != cwd,
+                                    None => true,
+                                };
+                                if should_emit {
+                                    let meta = match prev {
+                                        Some(old) => PtyMetadata {
+                                            session_id: sid.clone(),
+                                            cwd: cwd.clone(),
+                                            git_branch: old.git_branch.clone(),
+                                            process_name: old.process_name.clone(),
+                                            claude_session_id: old.claude_session_id.clone(),
+                                        },
+                                        None => PtyMetadata {
+                                            session_id: sid.clone(),
+                                            cwd: cwd.clone(),
+                                            git_branch: None,
+                                            process_name: None,
+                                            claude_session_id: None,
+                                        },
+                                    };
+                                    metadata_store.insert(sid.clone(), meta.clone());
+                                    let _ = handle.emit("pty_metadata", meta);
+                                }
+                            }
+                        }
 
                         let send_start = Instant::now();
                         // Send raw bytes through Channel — arrives as ArrayBuffer in JS

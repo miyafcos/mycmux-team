@@ -3,6 +3,7 @@ import type { Pane, PaneTab } from "../../types";
 import { getAgent, getDefaultAgent } from "../../lib/agents";
 import { usePaneMetadataStore } from "../../stores/workspaceStore";
 import { deriveEffectiveStatus, type EffectiveStatus } from "../../lib/notificationStatus";
+import { shortenPath } from "../../lib/paths";
 
 interface PaneTabBarProps {
   pane: Pane;
@@ -180,6 +181,52 @@ export default memo(function PaneTabBar({
               <span style={{ fontSize: 11, color: "var(--cmux-text-tertiary)", flexShrink: 0 }}>—</span>
               <span style={{ fontSize: 11, color: "var(--cmux-text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
                 {activeLastLog}
+              </span>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* CWD + git branch breadcrumb — shown whenever metadata is available */}
+      {activeMeta?.cwd && (
+        <div
+          style={{
+            height: 18,
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            padding: "0 10px",
+            borderBottom: "1px solid var(--cmux-border)",
+            overflow: "hidden",
+            fontSize: 11,
+            fontFamily: "'JetBrains Mono', 'Geist Mono', monospace",
+            color: "var(--cmux-text-tertiary)",
+            flexShrink: 0,
+          }}
+        >
+          <span
+            title={activeMeta.cwd}
+            style={{
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+              flex: 1,
+              minWidth: 0,
+            }}
+          >
+            {shortenPath(activeMeta.cwd, 64)}
+          </span>
+          {activeMeta.gitBranch && (
+            <>
+              <span style={{ flexShrink: 0, opacity: 0.7 }}>⎇</span>
+              <span
+                style={{
+                  flexShrink: 0,
+                  color: "var(--cmux-text-secondary)",
+                  fontWeight: 500,
+                }}
+              >
+                {activeMeta.gitBranch}
               </span>
             </>
           )}

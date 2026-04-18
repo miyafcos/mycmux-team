@@ -75,6 +75,11 @@ pub struct AppSettings {
     /// instead of a fixed interval. Rollback switch for Phase A.
     #[serde(default = "default_true")]
     pub dirty_save_mode: bool,
+    /// When true, inject a shell-specific OSC 7 hook so CWD updates flow
+    /// instantly from bash/fish (zsh/pwsh fall back to sysinfo). Rollback
+    /// switch for Phase B.
+    #[serde(default = "default_true")]
+    pub osc7_tracking_enabled: bool,
 }
 
 impl Default for AppSettings {
@@ -84,6 +89,7 @@ impl Default for AppSettings {
             theme_id: "yoru-cafe".to_string(),
             keybindings: HashMap::new(),
             dirty_save_mode: true,
+            osc7_tracking_enabled: true,
         }
     }
 }

@@ -2,6 +2,7 @@ use dashmap::DashMap;
 use tauri::ipc::Channel;
 use tauri::AppHandle;
 
+use super::monitor::MetadataStore;
 use super::session::PtySession;
 
 pub struct SessionManager {
@@ -26,6 +27,7 @@ impl SessionManager {
         app_handle: AppHandle,
         cwd: Option<String>,
         env: Option<std::collections::HashMap<String, String>>,
+        metadata_store: MetadataStore,
     ) -> Result<(), String> {
         let session = PtySession::spawn(
             session_id.clone(),
@@ -37,6 +39,7 @@ impl SessionManager {
             app_handle,
             cwd,
             env,
+            metadata_store,
         )?;
         self.sessions.insert(session_id, session);
         Ok(())

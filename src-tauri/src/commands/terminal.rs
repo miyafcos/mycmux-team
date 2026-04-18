@@ -46,9 +46,61 @@ pub fn create_session(
     cwd: Option<String>,
     env: Option<HashMap<String, String>>,
 ) -> Result<(), String> {
+    let mut args = args;
+    let mut env_map = env.unwrap_or_default();
+    inject_osc7_hook(&command, &mut args, &mut env_map);
     state.session_manager.create(
-        session_id, &command, &args, cols, rows, on_data, app_handle, cwd, env,
+        session_id,
+        &command,
+        &args,
+        cols,
+        rows,
+        on_data,
+        app_handle,
+        cwd,
+        Some(env_map),
+        state.metadata_store.clone(),
     )
+}
+
+/// Inject a shell-specific OSC 7 emission hook so the PTY reader can observe
+/// CWD changes immediately. Silent no-op for shells we don't know how to hook
+/// (PowerShell, cmd.exe, zsh for now) — sysinfo monitor remains the fallback.
+fn inject_osc7_hook(
+    command: &str,
+    args: &mut Vec<String>,
+    env: &mut HashMap<String, String>,
+) {
+    // Allow the frontend to opt out at spawn time by setting MYCMUX_OSC7=0.
+    if env.get("MYCMUX_OSC7").map(|v| v == "0").unwrap_or(false) {
+        return;
+    }
+    let lower = command.to_ascii_lowercase();
+    let leaf = lower.rsplit(|c| c == '/' || c == '\\').next().unwrap_or("");
+    let shell = leaf.strip_suffix(".exe").unwrap_or(leaf);
+
+    match shell {
+        "bash" | "sh" => {
+            let hook = r#"printf '\e]7;file://%s%s\a' "${HOSTNAME:-localhost}" "$PWD""#;
+            let existing = env.get("PROMPT_COMMAND").cloned().unwrap_or_default();
+            let combined = if existing.is_empty() {
+                hook.to_string()
+            } else {
+                // Run the hook after user's PROMPT_COMMAND so their exit
+                // status logic is preserved.
+                format!("{};{}", existing, hook)
+            };
+            env.insert("PROMPT_COMMAND".into(), combined);
+        }
+        "fish" => {
+            let init = r#"function __mycmux_osc7 --on-event fish_prompt; printf '\e]7;file://%s%s\a' (hostname) $PWD; end"#;
+            args.insert(0, "--init-command".into());
+            args.insert(1, init.into());
+        }
+        // zsh: needs ZDOTDIR override + precmd hook; deferred.
+        // pwsh / powershell / cmd: no OSC 7 equivalent; sysinfo handles them.
+        _ => {}
+    }
 }
 
 #[tauri::command]
