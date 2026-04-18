@@ -11,12 +11,14 @@ import {
   claimLeader,
   saveSettings,
   onFsChanged,
+  writeToSession,
   type WorkspaceConfig,
 } from "../../lib/ipc";
 import type { Workspace } from "../../types";
 import { useThemeStore } from "../../stores/themeStore";
 import { useKeybindingStore } from "../../stores/keybindingStore";
 import { useFileExplorerStore } from "../../stores/fileExplorerStore";
+import { quoteShellPath } from "../../lib/paths";
 
 /** Transpose row-major split indices to column-major for legacy data migration */
 function transposeSplitRowsToCols(splitRows: number[][]): number[][] {
@@ -262,6 +264,52 @@ export function useWorkspacePersist() {
     });
     return () => {
       unlisten.then((f) => f()).catch(() => {});
+    };
+  }, []);
+
+  // Internal drag-and-drop: when the user drags a row out of the file
+  // explorer and drops it on any pane, insert the quoted path at the PTY
+  // cursor. We listen on document (native, capture phase) because WebView2
+  // on Windows and xterm.js can each swallow drop events before React's
+  // delegated listeners see them. The MIME check keeps this handler
+  // disjoint from Tauri's OS-drag pipeline, which still fires `cd` for
+  // external folder drops.
+  useEffect(() => {
+    const handleDragOver = (e: DragEvent) => {
+      const types = e.dataTransfer?.types;
+      if (types && Array.from(types).includes("application/x-mycmux-path")) {
+        e.preventDefault();
+        if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+      }
+    };
+    const handleDrop = (e: DragEvent) => {
+      const path = e.dataTransfer?.getData("application/x-mycmux-path");
+      if (!path) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const target = e.target as Element | null;
+      const paneEl = target?.closest("[data-session-id]");
+      const paneSessionId = paneEl?.getAttribute("data-session-id") ?? null;
+      if (!paneSessionId) return;
+      // Resolve active tab's session id — multi-tab panes route input there.
+      const wsList = useWorkspaceListStore.getState().workspaces;
+      let targetSessionId = paneSessionId;
+      outer: for (const ws of wsList) {
+        for (const pane of ws.panes) {
+          if (pane.sessionId === paneSessionId) {
+            const activeTab = pane.tabs.find((t) => t.id === pane.activeTabId);
+            targetSessionId = activeTab?.sessionId ?? paneSessionId;
+            break outer;
+          }
+        }
+      }
+      void writeToSession(targetSessionId, quoteShellPath(path) + " ");
+    };
+    document.addEventListener("dragover", handleDragOver, true);
+    document.addEventListener("drop", handleDrop, true);
+    return () => {
+      document.removeEventListener("dragover", handleDragOver, true);
+      document.removeEventListener("drop", handleDrop, true);
     };
   }, []);
 }

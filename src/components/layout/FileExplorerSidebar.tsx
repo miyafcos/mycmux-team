@@ -15,7 +15,7 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 
 import { useFileExplorerStore } from "../../stores/fileExplorerStore";
 import { normalizePath, type FileEntry, type PinnedRoot } from "../../lib/ipc";
-import { basename, quoteShellPath } from "../../lib/paths";
+import { basename, pathSegmentsUnder, quoteShellPath } from "../../lib/paths";
 
 const ROW_HEIGHT = 24;
 const INDENT_PX = 14;
@@ -66,22 +66,27 @@ export default memo(function FileExplorerSidebar() {
   const handleJumpToPath = useCallback(
     async (path: string) => {
       try {
-        const normalized = await normalizePath(path);
         if (!activeRoot) return { ok: false, message: "ルートが未設定です" };
-        // Expand every ancestor from root down to the target so the path is visible.
-        if (!normalized.startsWith(activeRoot.path)) {
+        const normalized = await normalizePath(path);
+        const segments = pathSegmentsUnder(normalized, activeRoot.path);
+        if (segments === null) {
           return { ok: false, message: "現在のルート外です" };
         }
-        const rest = normalized.slice(activeRoot.path.length).replace(/^[\\/]/, "");
-        const segments = rest.split(/[\\/]+/).filter(Boolean);
+        // Walk down using the *actual* entry paths returned by list_directory so
+        // we never trip over Windows case-folding (user types `src` but the
+        // folder is `Src`). Each ensureLoaded resolves before the next lookup.
         let cursor = activeRoot.path;
-        for (let i = 0; i < segments.length; i++) {
+        for (const seg of segments) {
           await setExpanded(cursor, true);
-          cursor = cursor.endsWith("/") || cursor.endsWith("\\")
-            ? `${cursor}${segments[i]}`
-            : `${cursor}/${segments[i]}`;
+          const children = useFileExplorerStore.getState().entries[cursor];
+          if (!children) break;
+          const match = children.find(
+            (e) => e.name.toLowerCase() === seg.toLowerCase(),
+          );
+          if (!match) break;
+          cursor = match.path;
         }
-        useFileExplorerStore.getState().setSelectedPath(normalized);
+        useFileExplorerStore.getState().setSelectedPath(cursor);
         return { ok: true, message: "" };
       } catch (err) {
         return { ok: false, message: String(err) };
