@@ -11,6 +11,13 @@ import {
 type EntriesMap = Record<string, FileEntry[]>;
 type ErrorsMap = Record<string, string>;
 
+export interface DragState {
+  path: string;
+  name: string;
+  x: number;
+  y: number;
+}
+
 interface FileExplorerState {
   roots: PinnedRoot[];
   activeRootId: string | null;
@@ -20,6 +27,7 @@ interface FileExplorerState {
   loadingPaths: Set<string>;
   expanded: Set<string>;
   selectedPath: string | null;
+  dragging: DragState | null;
 
   // Root management
   setRoots: (roots: PinnedRoot[]) => void;
@@ -35,6 +43,11 @@ interface FileExplorerState {
   refresh: (path: string) => Promise<void>;
   invalidate: (path: string) => void;
   setSelectedPath: (path: string | null) => void;
+
+  // Manual drag (HTML5 DnD is swallowed by WebView2 when Tauri dragDrop is on)
+  startDrag: (path: string, name: string, x: number, y: number) => void;
+  updateDrag: (x: number, y: number) => void;
+  endDrag: () => void;
 }
 
 function basename(path: string): string {
@@ -59,6 +72,7 @@ export const useFileExplorerStore = create<FileExplorerState>((set, get) => ({
   loadingPaths: new Set(),
   expanded: new Set(),
   selectedPath: null,
+  dragging: null,
 
   setRoots: (roots) => {
     set((state) => ({
@@ -184,4 +198,11 @@ export const useFileExplorerStore = create<FileExplorerState>((set, get) => ({
       void get().ensureLoaded(path);
     }
   },
+
+  startDrag: (path, name, x, y) => set({ dragging: { path, name, x, y } }),
+  updateDrag: (x, y) =>
+    set((state) =>
+      state.dragging ? { dragging: { ...state.dragging, x, y } } : state,
+    ),
+  endDrag: () => set({ dragging: null }),
 }));
