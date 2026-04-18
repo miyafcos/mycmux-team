@@ -14,7 +14,13 @@ import { v4 as uuidv4 } from "uuid";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 
 import { useFileExplorerStore } from "../../stores/fileExplorerStore";
-import { normalizePath, type FileEntry, type PinnedRoot } from "../../lib/ipc";
+import { useWorkspaceListStore } from "../../stores/workspaceListStore";
+import {
+  normalizePath,
+  writeToSession,
+  type FileEntry,
+  type PinnedRoot,
+} from "../../lib/ipc";
 import { basename, pathSegmentsUnder, quoteShellPath } from "../../lib/paths";
 
 const ROW_HEIGHT = 24;
@@ -119,6 +125,38 @@ export default memo(function FileExplorerSidebar() {
           </div>
         )}
       </div>
+      <DragPreview />
+    </div>
+  );
+});
+
+// ─── Drag preview (cursor-following ghost during manual drag) ───────────────
+
+const DragPreview = memo(function DragPreview() {
+  const dragging = useFileExplorerStore((s) => s.dragging);
+  if (!dragging) return null;
+  return (
+    <div
+      style={{
+        position: "fixed",
+        left: dragging.x + 12,
+        top: dragging.y + 12,
+        pointerEvents: "none",
+        zIndex: 9999,
+        background: "var(--cmux-surface, #1a1a1a)",
+        color: "var(--cmux-text, #ddd)",
+        border: "1px solid var(--cmux-border)",
+        borderRadius: 4,
+        padding: "3px 10px",
+        fontSize: 11,
+        boxShadow: "0 4px 12px rgba(0, 0, 0, 0.5)",
+        maxWidth: 320,
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+        whiteSpace: "nowrap",
+      }}
+    >
+      {dragging.name}
     </div>
   );
 });
@@ -354,24 +392,108 @@ function TreeRow({
   onToggle: () => void;
   onSelect: () => void;
 }) {
+  const justDraggedRef = useRef(false);
+
   const handleClick = useCallback(() => {
+    // If a drag just concluded, swallow the synthetic click so the user's
+    // drop doesn't also collapse/expand the source row.
+    if (justDraggedRef.current) {
+      justDraggedRef.current = false;
+      return;
+    }
     onSelect();
     if (isDir && hasChildren) onToggle();
   }, [isDir, hasChildren, onSelect, onToggle]);
 
-  const handleDragStart = useCallback(
-    (e: React.DragEvent<HTMLDivElement>) => {
-      e.dataTransfer.setData("application/x-mycmux-path", path);
-      e.dataTransfer.setData("text/plain", quoteShellPath(path));
-      e.dataTransfer.effectAllowed = "copy";
+  const handlePointerDown = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      // Left button only; ignore touch/pen for now.
+      if (e.button !== 0 || e.pointerType === "touch") return;
+
+      const startX = e.clientX;
+      const startY = e.clientY;
+      const THRESHOLD_SQ = 16; // 4px in any direction
+      let started = false;
+
+      const store = useFileExplorerStore.getState();
+
+      const onMove = (ev: PointerEvent) => {
+        if (!started) {
+          const dx = ev.clientX - startX;
+          const dy = ev.clientY - startY;
+          if (dx * dx + dy * dy < THRESHOLD_SQ) return;
+          started = true;
+          document.body.style.userSelect = "none";
+          document.body.style.cursor = "grabbing";
+          store.startDrag(path, name, ev.clientX, ev.clientY);
+        } else {
+          useFileExplorerStore.getState().updateDrag(ev.clientX, ev.clientY);
+        }
+      };
+
+      const cleanup = () => {
+        window.removeEventListener("pointermove", onMove, true);
+        window.removeEventListener("pointerup", onUp, true);
+        window.removeEventListener("pointercancel", onCancel, true);
+        window.removeEventListener("keydown", onKey, true);
+      };
+
+      const onUp = (ev: PointerEvent) => {
+        cleanup();
+        if (!started) return;
+        document.body.style.userSelect = "";
+        document.body.style.cursor = "";
+        justDraggedRef.current = true;
+        // Clear the flag on the next tick in case the click event never fires.
+        setTimeout(() => {
+          justDraggedRef.current = false;
+        }, 0);
+
+        const el = document.elementFromPoint(ev.clientX, ev.clientY);
+        const paneEl = el?.closest("[data-session-id]");
+        const paneSessionId = paneEl?.getAttribute("data-session-id") ?? null;
+        if (paneSessionId) {
+          const wsList = useWorkspaceListStore.getState().workspaces;
+          let targetSessionId = paneSessionId;
+          outer: for (const ws of wsList) {
+            for (const p of ws.panes) {
+              if (p.sessionId === paneSessionId) {
+                const activeTab = p.tabs.find((t) => t.id === p.activeTabId);
+                targetSessionId = activeTab?.sessionId ?? paneSessionId;
+                break outer;
+              }
+            }
+          }
+          void writeToSession(targetSessionId, quoteShellPath(path) + " ");
+        }
+        useFileExplorerStore.getState().endDrag();
+      };
+
+      const onCancel = () => {
+        cleanup();
+        if (started) {
+          document.body.style.userSelect = "";
+          document.body.style.cursor = "";
+          useFileExplorerStore.getState().endDrag();
+        }
+      };
+
+      const onKey = (ev: KeyboardEvent) => {
+        if (ev.key === "Escape") onCancel();
+      };
+
+      // Capture phase so xterm or other libs can't stopPropagation before us.
+      window.addEventListener("pointermove", onMove, true);
+      window.addEventListener("pointerup", onUp, true);
+      window.addEventListener("pointercancel", onCancel, true);
+      window.addEventListener("keydown", onKey, true);
     },
-    [path],
+    [path, name],
   );
 
   return (
     <div
-      draggable
-      onDragStart={handleDragStart}
+      onPointerDown={handlePointerDown}
       onClick={handleClick}
       className={`file-explorer-row${selected ? " selected" : ""}`}
       style={{
