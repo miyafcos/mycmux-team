@@ -61,12 +61,20 @@ pub struct WorkspaceConfig {
     pub row_heights_per_col: Option<Vec<Vec<f64>>>,
 }
 
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
     pub font_size: u16,
     pub theme_id: String,
     #[serde(default)]
     pub keybindings: HashMap<String, String>,
+    /// When true, persistence is triggered by Zustand subscribers + debounce
+    /// instead of a fixed interval. Rollback switch for Phase A.
+    #[serde(default = "default_true")]
+    pub dirty_save_mode: bool,
 }
 
 impl Default for AppSettings {
@@ -75,6 +83,7 @@ impl Default for AppSettings {
             font_size: 14,
             theme_id: "yoru-cafe".to_string(),
             keybindings: HashMap::new(),
+            dirty_save_mode: true,
         }
     }
 }

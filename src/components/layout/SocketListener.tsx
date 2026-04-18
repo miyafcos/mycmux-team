@@ -170,10 +170,15 @@ export function useWorkspacePersist() {
       });
   }, []);
 
-  // Auto-save — only leader saves
+  // Auto-save — only leader saves. Dirty-flag + debounce (interval retired).
   useEffect(() => {
+    let dirty = false;
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+
     const sync = async () => {
       if (!isLeader.current) return;
+      if (!dirty) return;
+      dirty = false;
       try {
         const state = useWorkspaceListStore.getState();
         const uiState = useUiStore.getState();
@@ -195,34 +200,49 @@ export function useWorkspacePersist() {
           keybindings: keybindingState.overrides,
         });
       } catch (err) {
+        dirty = true; // allow next trigger to retry
         console.warn("[persist] Failed to save:", err);
       }
     };
 
-    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
     const debouncedSync = () => {
       if (debounceTimer) clearTimeout(debounceTimer);
       debounceTimer = setTimeout(sync, 500);
     };
 
-    const unsub = useWorkspaceListStore.subscribe(() => {
+    const markDirty = () => {
+      dirty = true;
       debouncedSync();
-    });
+    };
+
+    const unsubList = useWorkspaceListStore.subscribe(markDirty);
+    const unsubLayout = useWorkspaceLayoutStore.subscribe(markDirty);
+    const unsubMeta = usePaneMetadataStore.subscribe(markDirty);
+    const unsubTheme = useThemeStore.subscribe(markDirty);
+    const unsubKeys = useKeybindingStore.subscribe(markDirty);
     const unsubUi = useUiStore.subscribe((state, prevState) => {
-      if (state.activePaneId !== prevState.activePaneId) {
-        debouncedSync();
-      }
+      if (state.activePaneId !== prevState.activePaneId) markDirty();
     });
 
-    const interval = setInterval(sync, 10000);
-
-    const handleBeforeUnload = () => { sync(); };
+    const handleBeforeUnload = () => {
+      if (dirty) {
+        // Flush synchronously on unload — debounce timer won't fire in time.
+        if (debounceTimer) {
+          clearTimeout(debounceTimer);
+          debounceTimer = null;
+        }
+        void sync();
+      }
+    };
     window.addEventListener("beforeunload", handleBeforeUnload);
 
     return () => {
-      unsub();
+      unsubList();
+      unsubLayout();
+      unsubMeta();
+      unsubTheme();
+      unsubKeys();
       unsubUi();
-      clearInterval(interval);
       if (debounceTimer) clearTimeout(debounceTimer);
       window.removeEventListener("beforeunload", handleBeforeUnload);
     };

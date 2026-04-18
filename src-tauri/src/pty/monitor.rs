@@ -141,7 +141,10 @@ pub fn start_monitor(app_handle: AppHandle, manager: Arc<SessionManager>, metada
         let mut last_metadata: HashMap<String, PtyMetadata> = HashMap::new();
 
         loop {
-            thread::sleep(Duration::from_secs(3));
+            // 5s cadence: OSC 7 handles CWD instantly for bash/zsh/fish;
+            // sysinfo is now the fallback for cmd.exe / PowerShell and the
+            // safety net that fills in git_branch / process_name.
+            thread::sleep(Duration::from_secs(5));
 
             // Refresh process info
             sys.refresh_processes_specifics(
