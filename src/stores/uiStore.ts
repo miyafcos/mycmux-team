@@ -6,12 +6,15 @@ import { create } from "zustand";
  */
 interface UiState {
   sidebarCollapsed: boolean;
+  rightSidebarCollapsed: boolean;
   isPaletteOpen: boolean;
   isKeybindingsOpen: boolean;
   activePaneId: string | null;
   zoomedPaneId: string | null;
 
   toggleSidebar: () => void;
+  toggleRightSidebar: () => void;
+  setRightSidebarCollapsed: (collapsed: boolean) => void;
   togglePalette: () => void;
   setIsPaletteOpen: (open: boolean) => void;
   setIsKeybindingsOpen: (open: boolean) => void;
@@ -21,12 +24,16 @@ interface UiState {
 
 export const useUiStore = create<UiState>((set) => ({
   sidebarCollapsed: false,
+  rightSidebarCollapsed: true,
   isPaletteOpen: false,
   isKeybindingsOpen: false,
   activePaneId: null,
   zoomedPaneId: null,
 
   toggleSidebar: () => set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed })),
+  toggleRightSidebar: () =>
+    set((state) => ({ rightSidebarCollapsed: !state.rightSidebarCollapsed })),
+  setRightSidebarCollapsed: (collapsed) => set({ rightSidebarCollapsed: collapsed }),
   togglePalette: () => set((state) => ({ isPaletteOpen: !state.isPaletteOpen })),
   setIsPaletteOpen: (open) => set({ isPaletteOpen: open }),
   setIsKeybindingsOpen: (open) => set({ isKeybindingsOpen: open }),

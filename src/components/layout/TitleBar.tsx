@@ -17,6 +17,13 @@ const SidebarIcon = () => (
   </svg>
 );
 
+const RightSidebarIcon = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+    <line x1="15" y1="3" x2="15" y2="21"></line>
+  </svg>
+);
+
 const BellIcon = ({ count }: { count?: number }) => (
   <div style={{ position: "relative", display: "flex" }}>
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -44,6 +51,7 @@ const SettingsIcon = () => (
 export default function TitleBar({ uiVariant = "default", onNewWorkspace }: TitleBarProps) {
   const activeWorkspace = useWorkspaceListStore((s) => s.getActiveWorkspace());
   const toggleSidebar = useUiStore((s) => s.toggleSidebar);
+  const toggleRightSidebar = useUiStore((s) => s.toggleRightSidebar);
   const paneMetadata = usePaneMetadataStore((s) => s.metadata);
   const [notificationPanelOpen, setNotificationPanelOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -244,6 +252,31 @@ export default function TitleBar({ uiVariant = "default", onNewWorkspace }: Titl
 
       {/* Right group: Minimize, Close */}
       <div style={{ display: "flex", alignItems: "center", gap: 2, paddingRight: 8, minWidth: groupMinWidth, justifyContent: "flex-end" }}>
+        <button
+          onClick={toggleRightSidebar}
+          title="Toggle File Explorer"
+          className={uiVariant === "cmux" ? "cmux-title-btn" : undefined}
+          style={{
+            background: "none",
+            border: "none",
+            color: "var(--cmux-text-tertiary)",
+            cursor: "pointer",
+            padding: "3px 6px",
+            borderRadius: 3,
+            display: "flex",
+            alignItems: "center",
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.background = "rgba(255,255,255,0.08)";
+            e.currentTarget.style.color = "var(--cmux-text-secondary)";
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.background = "none";
+            e.currentTarget.style.color = "var(--cmux-text-tertiary)";
+          }}
+        >
+          <RightSidebarIcon />
+        </button>
         <div style={{ position: "relative" }}>
           <button
             onClick={() => setIsSettingsOpen((v) => !v)}
