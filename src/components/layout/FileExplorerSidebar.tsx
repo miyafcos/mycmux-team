@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useRef, useState } from "react";
 import {
   ChevronDown,
   ChevronRight,
+  ExternalLink,
   File as FileIcon,
   Folder,
   FolderOpen,
@@ -17,6 +18,7 @@ import { useFileExplorerStore } from "../../stores/fileExplorerStore";
 import { useWorkspaceListStore } from "../../stores/workspaceListStore";
 import {
   normalizePath,
+  revealInExplorer,
   writeToSession,
   type FileEntry,
   type PinnedRoot,
@@ -126,9 +128,97 @@ export default memo(function FileExplorerSidebar() {
         )}
       </div>
       <DragPreview />
+      <ContextMenu />
     </div>
   );
 });
+
+// ─── Context menu (right-click on a tree row) ───────────────────────────────
+
+const ContextMenu = memo(function ContextMenu() {
+  const ctx = useFileExplorerStore((s) => s.contextMenu);
+  const closeContextMenu = useFileExplorerStore((s) => s.closeContextMenu);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!ctx) return;
+    const onMouseDown = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        closeContextMenu();
+      }
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") closeContextMenu();
+    };
+    window.addEventListener("mousedown", onMouseDown, true);
+    window.addEventListener("keydown", onKey, true);
+    return () => {
+      window.removeEventListener("mousedown", onMouseDown, true);
+      window.removeEventListener("keydown", onKey, true);
+    };
+  }, [ctx, closeContextMenu]);
+
+  if (!ctx) return null;
+
+  const handleReveal = async () => {
+    try {
+      await revealInExplorer(ctx.path);
+    } catch (err) {
+      console.warn("[fileExplorer] reveal failed:", err);
+    } finally {
+      closeContextMenu();
+    }
+  };
+
+  return (
+    <div
+      ref={menuRef}
+      style={{
+        position: "fixed",
+        left: ctx.x,
+        top: ctx.y,
+        zIndex: 9999,
+        background: "var(--cmux-surface, #1a1a1a)",
+        color: "var(--cmux-text, #ddd)",
+        border: "1px solid var(--cmux-border)",
+        borderRadius: 4,
+        padding: 4,
+        boxShadow: "0 4px 12px rgba(0, 0, 0, 0.5)",
+        minWidth: 180,
+      }}
+    >
+      <button
+        type="button"
+        onClick={handleReveal}
+        style={contextMenuItemStyle}
+        onMouseEnter={(e) => {
+          e.currentTarget.style.background = "var(--cmux-hover)";
+        }}
+        onMouseLeave={(e) => {
+          e.currentTarget.style.background = "transparent";
+        }}
+      >
+        <ExternalLink size={12} />
+        <span>エクスプローラーで開く</span>
+      </button>
+    </div>
+  );
+});
+
+const contextMenuItemStyle: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 6,
+  width: "100%",
+  padding: "4px 10px",
+  background: "transparent",
+  border: "none",
+  color: "var(--cmux-text, #ddd)",
+  fontSize: 12,
+  cursor: "pointer",
+  textAlign: "left",
+  borderRadius: 3,
+};
 
 // ─── Drag preview (cursor-following ghost during manual drag) ───────────────
 
@@ -491,10 +581,22 @@ function TreeRow({
     [path, name],
   );
 
+  const handleContextMenu = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      e.preventDefault();
+      e.stopPropagation();
+      useFileExplorerStore
+        .getState()
+        .openContextMenu({ path, isDir, x: e.clientX, y: e.clientY });
+    },
+    [path, isDir],
+  );
+
   return (
     <div
       onPointerDown={handlePointerDown}
       onClick={handleClick}
+      onContextMenu={handleContextMenu}
       className={`file-explorer-row${selected ? " selected" : ""}`}
       style={{
         ...rowStyle,
