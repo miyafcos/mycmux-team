@@ -14,8 +14,8 @@ type EntriesMap = Record<string, FileEntry[]>;
 type ErrorsMap = Record<string, string>;
 
 export interface DragState {
-  path: string;
-  name: string;
+  paths: string[];
+  primaryName: string;
   x: number;
   y: number;
 }
@@ -45,6 +45,8 @@ interface FileExplorerState {
   loadingPaths: Set<string>;
   expanded: Set<string>;
   selectedPath: string | null;
+  selectedPaths: Set<string>;
+  selectionAnchorPath: string | null;
   dragging: DragState | null;
   contextMenu: ContextMenuState | null;
 
@@ -60,11 +62,18 @@ interface FileExplorerState {
   refresh: (path: string) => Promise<void>;
   invalidate: (path: string) => void;
   setSelectedPath: (path: string | null) => void;
+  toggleSelectedPath: (path: string) => void;
+  selectPathRange: (
+    targetPath: string,
+    orderedPaths: string[],
+    additive: boolean,
+  ) => void;
+  clearSelection: () => void;
   setSortMode: (mode: SortMode) => void;
   startCreating: (parentPath: string, kind: "file" | "folder") => void;
   cancelCreating: () => void;
 
-  startDrag: (path: string, name: string, x: number, y: number) => void;
+  startDrag: (paths: string[], primaryName: string, x: number, y: number) => void;
   updateDrag: (x: number, y: number) => void;
   endDrag: () => void;
 
@@ -98,6 +107,8 @@ export const useFileExplorerStore = create<FileExplorerState>()(
       loadingPaths: new Set(),
       expanded: new Set(),
       selectedPath: null,
+      selectedPaths: new Set(),
+      selectionAnchorPath: null,
       dragging: null,
       contextMenu: null,
 
@@ -147,7 +158,71 @@ export const useFileExplorerStore = create<FileExplorerState>()(
       },
 
       setActiveRootId: (id) => set({ activeRootId: id }),
-      setSelectedPath: (path) => set({ selectedPath: path }),
+      setSelectedPath: (path) =>
+        set({
+          selectedPath: path,
+          selectedPaths: path ? new Set([path]) : new Set(),
+          selectionAnchorPath: path,
+        }),
+      toggleSelectedPath: (path) =>
+        set((state) => {
+          const selectedPaths = new Set(state.selectedPaths);
+          if (selectedPaths.has(path)) {
+            selectedPaths.delete(path);
+          } else {
+            selectedPaths.add(path);
+          }
+          const selectedPath = selectedPaths.has(path)
+            ? path
+            : state.selectedPath === path
+              ? (() => {
+                  const remaining = Array.from(selectedPaths);
+                  return remaining.length > 0 ? remaining[remaining.length - 1] : null;
+                })()
+              : state.selectedPath;
+          return {
+            selectedPath,
+            selectedPaths,
+            selectionAnchorPath: path,
+          };
+        }),
+      selectPathRange: (targetPath, orderedPaths, additive) =>
+        set((state) => {
+          const anchorPath = state.selectionAnchorPath ?? state.selectedPath ?? targetPath;
+          const anchorIndex = orderedPaths.indexOf(anchorPath);
+          const targetIndex = orderedPaths.indexOf(targetPath);
+          const selectedPaths = additive ? new Set(state.selectedPaths) : new Set<string>();
+
+          if (anchorIndex < 0 || targetIndex < 0) {
+            selectedPaths.add(targetPath);
+            return {
+              selectedPath: targetPath,
+              selectedPaths,
+              selectionAnchorPath: anchorPath,
+            };
+          }
+
+          const [start, end] =
+            anchorIndex <= targetIndex
+              ? [anchorIndex, targetIndex]
+              : [targetIndex, anchorIndex];
+
+          for (const path of orderedPaths.slice(start, end + 1)) {
+            selectedPaths.add(path);
+          }
+
+          return {
+            selectedPath: targetPath,
+            selectedPaths,
+            selectionAnchorPath: anchorPath,
+          };
+        }),
+      clearSelection: () =>
+        set({
+          selectedPath: null,
+          selectedPaths: new Set(),
+          selectionAnchorPath: null,
+        }),
       setSortMode: (mode) => set({ sortMode: mode }),
       startCreating: (parentPath, kind) => set({ creatingIn: { parentPath, kind } }),
       cancelCreating: () => set({ creatingIn: null }),
@@ -231,7 +306,8 @@ export const useFileExplorerStore = create<FileExplorerState>()(
         }
       },
 
-      startDrag: (path, name, x, y) => set({ dragging: { path, name, x, y } }),
+      startDrag: (paths, primaryName, x, y) =>
+        set({ dragging: { paths, primaryName, x, y } }),
       updateDrag: (x, y) =>
         set((state) =>
           state.dragging ? { dragging: { ...state.dragging, x, y } } : state,
