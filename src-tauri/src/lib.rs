@@ -58,6 +58,7 @@ pub fn run() {
             commands::fs::save_pinned_roots,
             commands::fs::watch_root,
             commands::fs::unwatch_root,
+            commands::fs::reveal_in_explorer,
             commands::window::claim_leader,
             commands::window::get_window_count,
             commands::window::reveal_main_window,

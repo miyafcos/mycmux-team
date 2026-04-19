@@ -101,3 +101,54 @@ pub fn unwatch_root(state: State<'_, AppState>, path: String) -> Result<(), Stri
         .ok_or_else(|| "fs watcher not ready".to_string())?;
     watcher.unwatch(&PathBuf::from(path))
 }
+
+/// Open the target in the OS file manager. Files are "revealed" (parent
+/// opened with the file selected); directories are opened directly.
+/// Cross-platform; mycmux ships on Windows so that path is the one
+/// exercised in production.
+#[tauri::command]
+pub fn reveal_in_explorer(path: String) -> Result<(), String> {
+    let pb = PathBuf::from(&path);
+    let is_dir = pb.is_dir();
+    #[cfg(target_os = "windows")]
+    {
+        let arg = if is_dir {
+            path.clone()
+        } else {
+            format!("/select,{}", path)
+        };
+        std::process::Command::new("explorer.exe")
+            .arg(arg)
+            .spawn()
+            .map_err(|e| format!("failed to launch explorer.exe: {e}"))?;
+        return Ok(());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let mut cmd = std::process::Command::new("open");
+        if !is_dir {
+            cmd.arg("-R");
+        }
+        cmd.arg(&path)
+            .spawn()
+            .map_err(|e| format!("failed to launch open: {e}"))?;
+        return Ok(());
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let target = if is_dir {
+            path.clone()
+        } else {
+            pb.parent()
+                .map(|x| x.to_string_lossy().to_string())
+                .unwrap_or_else(|| path.clone())
+        };
+        std::process::Command::new("xdg-open")
+            .arg(target)
+            .spawn()
+            .map_err(|e| format!("failed to launch xdg-open: {e}"))?;
+        return Ok(());
+    }
+    #[allow(unreachable_code)]
+    Err("unsupported platform".into())
+}

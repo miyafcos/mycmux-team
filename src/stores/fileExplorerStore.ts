@@ -18,6 +18,13 @@ export interface DragState {
   y: number;
 }
 
+export interface ContextMenuState {
+  path: string;
+  isDir: boolean;
+  x: number;
+  y: number;
+}
+
 interface FileExplorerState {
   roots: PinnedRoot[];
   activeRootId: string | null;
@@ -28,6 +35,7 @@ interface FileExplorerState {
   expanded: Set<string>;
   selectedPath: string | null;
   dragging: DragState | null;
+  contextMenu: ContextMenuState | null;
 
   // Root management
   setRoots: (roots: PinnedRoot[]) => void;
@@ -48,6 +56,10 @@ interface FileExplorerState {
   startDrag: (path: string, name: string, x: number, y: number) => void;
   updateDrag: (x: number, y: number) => void;
   endDrag: () => void;
+
+  // Context menu (right-click on a tree row)
+  openContextMenu: (state: ContextMenuState) => void;
+  closeContextMenu: () => void;
 }
 
 function basename(path: string): string {
@@ -73,6 +85,7 @@ export const useFileExplorerStore = create<FileExplorerState>((set, get) => ({
   expanded: new Set(),
   selectedPath: null,
   dragging: null,
+  contextMenu: null,
 
   setRoots: (roots) => {
     set((state) => ({
@@ -205,4 +218,7 @@ export const useFileExplorerStore = create<FileExplorerState>((set, get) => ({
       state.dragging ? { dragging: { ...state.dragging, x, y } } : state,
     ),
   endDrag: () => set({ dragging: null }),
+
+  openContextMenu: (state) => set({ contextMenu: state }),
+  closeContextMenu: () => set({ contextMenu: null }),
 }));

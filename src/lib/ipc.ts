@@ -256,6 +256,10 @@ export async function unwatchRoot(path: string): Promise<void> {
   return invoke("unwatch_root", { path });
 }
 
+export async function revealInExplorer(path: string): Promise<void> {
+  return invoke("reveal_in_explorer", { path });
+}
+
 export interface FsChangedPayload {
   path: string;
 }
