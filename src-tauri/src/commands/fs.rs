@@ -13,6 +13,35 @@ pub struct FileEntry {
     pub name: String,
     pub path: String,
     pub is_dir: bool,
+    pub modified: Option<u64>,
+}
+
+/// Validate a user-supplied leaf name for create_file / create_folder.
+/// Defense in depth - the UI also caps input to bare filenames, but the
+/// command layer never trusts the frontend.
+fn validate_leaf_name(name: &str) -> Result<&str, String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err("name is empty".into());
+    }
+    if trimmed.contains('/') || trimmed.contains('\\') {
+        return Err("name must not contain path separators".into());
+    }
+    if trimmed == "." || trimmed == ".." {
+        return Err("invalid name".into());
+    }
+    const RESERVED: &[&str] = &[
+        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7",
+        "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8",
+        "LPT9",
+    ];
+    let upper = trimmed.to_ascii_uppercase();
+    for reserved in RESERVED {
+        if upper == *reserved || upper.starts_with(&format!("{reserved}.")) {
+            return Err("reserved name on Windows".into());
+        }
+    }
+    Ok(trimmed)
 }
 
 /// Convert a user-supplied path to a canonical absolute form.
@@ -55,10 +84,19 @@ pub fn list_directory(path: String) -> Result<Vec<FileEntry>, String> {
         let name = entry.file_name().to_string_lossy().to_string();
         let entry_path = entry.path().to_string_lossy().to_string();
         let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+        // NOTE: entry.metadata() follows symlinks. mycmux's existing
+        // list_directory keeps that behavior in Iteration 3.
+        let modified = entry
+            .metadata()
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs());
         entries.push(FileEntry {
             name,
             path: entry_path,
             is_dir,
+            modified,
         });
         if entries.len() >= 5000 {
             break;
@@ -151,4 +189,80 @@ pub fn reveal_in_explorer(path: String) -> Result<(), String> {
     }
     #[allow(unreachable_code)]
     Err("unsupported platform".into())
+}
+
+/// Open a file with the OS default application. For directories this is a
+/// no-op in spirit (the UI hides this menu item for dirs). Cross-platform;
+/// Windows uses rundll32 so no console flash.
+#[tauri::command]
+pub fn open_with_default(path: String) -> Result<(), String> {
+    let pb = PathBuf::from(&path);
+    if !pb.exists() {
+        return Err(format!("path does not exist: {path}"));
+    }
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        std::process::Command::new("rundll32.exe")
+            .args(["url.dll,FileProtocolHandler", &path])
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+            .map_err(|e| format!("failed to launch default app: {e}"))?;
+        return Ok(());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| format!("failed to launch open: {e}"))?;
+        return Ok(());
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| format!("failed to launch xdg-open: {e}"))?;
+        return Ok(());
+    }
+    #[allow(unreachable_code)]
+    Err("unsupported platform".into())
+}
+
+/// Create an empty file atomically via O_CREAT|O_EXCL (create_new). Returns
+/// the absolute path so the frontend can select it after refresh.
+#[tauri::command]
+pub fn create_file(parent: String, name: String) -> Result<String, String> {
+    let parent_pb = PathBuf::from(&parent);
+    if !parent_pb.is_dir() {
+        return Err(format!("parent is not a directory: {parent}"));
+    }
+    let leaf = validate_leaf_name(&name)?;
+    let target = parent_pb.join(leaf);
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&target)
+        .map_err(|e| format!("create_file failed: {e}"))?;
+    Ok(target.to_string_lossy().to_string())
+}
+
+/// Create a single directory (non-recursive). `name` must not contain
+/// separators or be a reserved name.
+#[tauri::command]
+pub fn create_folder(parent: String, name: String) -> Result<String, String> {
+    let parent_pb = PathBuf::from(&parent);
+    if !parent_pb.is_dir() {
+        return Err(format!("parent is not a directory: {parent}"));
+    }
+    let leaf = validate_leaf_name(&name)?;
+    let target = parent_pb.join(leaf);
+    if target.exists() {
+        return Err(format!("already exists: {}", target.to_string_lossy()));
+    }
+    fs::create_dir(&target).map_err(|e| format!("create_dir failed: {e}"))?;
+    Ok(target.to_string_lossy().to_string())
 }

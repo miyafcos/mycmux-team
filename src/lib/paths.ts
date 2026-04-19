@@ -89,3 +89,17 @@ export function pathSegmentsUnder(child: string, root: string): string[] | null 
   const rest = c.slice(r.length).replace(/^\/+/, "");
   return rest.split("/").filter(Boolean);
 }
+
+/**
+ * Split a filename into base and the last extension. Dotfiles like
+ * `.gitignore` are treated as having no extension.
+ */
+export function splitExtension(name: string): { base: string; ext: string } {
+  if (!name) return { base: "", ext: "" };
+  if (name.startsWith(".") && name.indexOf(".", 1) < 0) {
+    return { base: name, ext: "" };
+  }
+  const idx = name.lastIndexOf(".");
+  if (idx <= 0) return { base: name, ext: "" };
+  return { base: name.slice(0, idx), ext: name.slice(idx) };
+}
