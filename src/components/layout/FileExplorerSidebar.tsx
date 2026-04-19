@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   ArrowDown,
   ArrowUp,
@@ -10,6 +10,7 @@ import {
   Folder,
   FolderOpen,
   FolderPlus,
+  MoreHorizontal,
   Plus,
   RefreshCw,
   X,
@@ -88,6 +89,67 @@ function truncateErrorForUi(msg: string, max = 80): string {
   return `${msg.slice(0, max - 1)}…`;
 }
 
+type FileExplorerSnapshot = ReturnType<typeof useFileExplorerStore.getState>;
+
+function collectVisiblePaths(
+  parentPath: string,
+  state: FileExplorerSnapshot,
+  acc: string[],
+): void {
+  const children = sortEntries(state.entries[parentPath], state.sortMode);
+  if (!children) return;
+  for (const entry of children) {
+    acc.push(entry.path);
+    if (entry.is_dir && state.expanded.has(entry.path)) {
+      collectVisiblePaths(entry.path, state, acc);
+    }
+  }
+}
+
+function getVisibleOrderedPaths(state: FileExplorerSnapshot): string[] {
+  const activeRoot = state.roots.find((root) => root.id === state.activeRootId) ?? null;
+  if (!activeRoot) return [];
+  const orderedPaths: string[] = [];
+  collectVisiblePaths(activeRoot.path, state, orderedPaths);
+  return orderedPaths;
+}
+
+function getOrderedDragPaths(
+  state: FileExplorerSnapshot,
+  originPath: string,
+): string[] {
+  if (!state.selectedPaths.has(originPath)) {
+    return [originPath];
+  }
+  const ordered = getVisibleOrderedPaths(state).filter((path) =>
+    state.selectedPaths.has(path),
+  );
+  return ordered.length > 0 ? ordered : [originPath];
+}
+
+function clampMenuPosition(
+  preferredLeft: number,
+  preferredTop: number,
+  width: number,
+  height: number,
+): { left: number; top: number } {
+  const pad = 8;
+  let left = preferredLeft;
+  let top = preferredTop;
+
+  if (left + width + pad > window.innerWidth) {
+    left = Math.max(pad, preferredLeft - width);
+  }
+  if (top + height + pad > window.innerHeight) {
+    top = Math.max(pad, window.innerHeight - height - pad);
+  }
+
+  left = Math.max(pad, Math.min(left, window.innerWidth - width - pad));
+  top = Math.max(pad, Math.min(top, window.innerHeight - height - pad));
+
+  return { left, top };
+}
+
 const ROW_HEIGHT = 24;
 const INDENT_PX = 14;
 
@@ -100,6 +162,8 @@ export default memo(function FileExplorerSidebar() {
   const refresh = useFileExplorerStore((s) => s.refresh);
   const ensureLoaded = useFileExplorerStore((s) => s.ensureLoaded);
   const setExpanded = useFileExplorerStore((s) => s.setExpanded);
+  const clearSelection = useFileExplorerStore((s) => s.clearSelection);
+  const closeContextMenu = useFileExplorerStore((s) => s.closeContextMenu);
 
   const activeRoot = roots.find((r) => r.id === activeRootId) ?? null;
 
@@ -172,22 +236,20 @@ export default memo(function FileExplorerSidebar() {
         onSelect={setActiveRootId}
         onAdd={handleAddRoot}
         onRemove={handleRemoveRoot}
+        onRemoveRoot={removeRoot}
         onRefresh={handleRefresh}
       />
       <PathInput onSubmit={handleJumpToPath} />
       <div
         className="file-explorer-tree"
         style={treeScrollStyle}
-        onContextMenu={(e) => {
-          if (!activeRoot) return;
-          e.preventDefault();
-          useFileExplorerStore.getState().openContextMenu({
-            path: activeRoot.path,
-            isDir: true,
-            x: e.clientX,
-            y: e.clientY,
-          });
+        onClick={(e) => {
+          if (e.target !== e.currentTarget) return;
+          if (e.ctrlKey || e.metaKey || e.shiftKey) return;
+          clearSelection();
+          closeContextMenu();
         }}
+        onContextMenu={(e) => e.preventDefault()}
       >
         {activeRoot ? (
           <RootNode root={activeRoot} />
@@ -213,6 +275,7 @@ const ContextMenu = memo(function ContextMenu() {
   const startCreating = useFileExplorerStore((s) => s.startCreating);
   const setExpanded = useFileExplorerStore((s) => s.setExpanded);
   const menuRef = useRef<HTMLDivElement>(null);
+  const [menuPos, setMenuPos] = useState({ left: 0, top: 0 });
 
   useEffect(() => {
     if (!ctx) return;
@@ -231,6 +294,17 @@ const ContextMenu = memo(function ContextMenu() {
       window.removeEventListener("keydown", onKey, true);
     };
   }, [ctx, closeContextMenu]);
+
+  useLayoutEffect(() => {
+    if (!ctx || !menuRef.current) return;
+
+    const rect = menuRef.current.getBoundingClientRect();
+    const { left, top } = clampMenuPosition(ctx.x, ctx.y, rect.width, rect.height);
+
+    setMenuPos((prev) =>
+      prev.left === left && prev.top === top ? prev : { left, top },
+    );
+  }, [ctx]);
 
   if (!ctx) return null;
 
@@ -271,8 +345,8 @@ const ContextMenu = memo(function ContextMenu() {
       ref={menuRef}
       style={{
         position: "fixed",
-        left: ctx.x,
-        top: ctx.y,
+        left: menuPos.left,
+        top: menuPos.top,
         zIndex: 9999,
         background: "var(--cmux-surface, #1a1a1a)",
         color: "var(--cmux-text, #ddd)",
@@ -339,6 +413,10 @@ function MenuItem({
 const DragPreview = memo(function DragPreview() {
   const dragging = useFileExplorerStore((s) => s.dragging);
   if (!dragging) return null;
+  const label =
+    dragging.paths.length <= 1
+      ? dragging.primaryName
+      : `${dragging.primaryName} + ${dragging.paths.length - 1} items`;
   return (
     <div
       style={{
@@ -360,7 +438,7 @@ const DragPreview = memo(function DragPreview() {
         whiteSpace: "nowrap",
       }}
     >
-      {dragging.name}
+      {label}
     </div>
   );
 });
@@ -371,6 +449,7 @@ const RootSwitcher = memo(function RootSwitcher({
   onSelect,
   onAdd,
   onRemove,
+  onRemoveRoot,
   onRefresh,
 }: {
   roots: PinnedRoot[];
@@ -378,21 +457,76 @@ const RootSwitcher = memo(function RootSwitcher({
   onSelect: (id: string) => void;
   onAdd: () => void;
   onRemove: () => void;
+  onRemoveRoot: (id: string) => void;
   onRefresh: () => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
+  const actionMenuRef = useRef<HTMLDivElement>(null);
+  const [rootActionMenu, setRootActionMenu] = useState<{
+    rootId: string;
+    x: number;
+    y: number;
+  } | null>(null);
+  const [actionMenuPos, setActionMenuPos] = useState({ left: 0, top: 0 });
 
   useEffect(() => {
-    if (!menuOpen) return;
+    if (!menuOpen && !rootActionMenu) return;
     const handler = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+      const target = e.target as Node;
+      const insideRootMenu = !!menuRef.current?.contains(target);
+      const insideActionMenu = !!actionMenuRef.current?.contains(target);
+      if (!insideRootMenu && !insideActionMenu) {
+        setMenuOpen(false);
+        setRootActionMenu(null);
+      }
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setRootActionMenu(null);
         setMenuOpen(false);
       }
     };
     window.addEventListener("mousedown", handler);
-    return () => window.removeEventListener("mousedown", handler);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", handler);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [menuOpen, rootActionMenu]);
+
+  useEffect(() => {
+    if (!menuOpen) {
+      setRootActionMenu(null);
+    }
   }, [menuOpen]);
+
+  useEffect(() => {
+    if (roots.length === 0) {
+      setMenuOpen(false);
+      setRootActionMenu(null);
+    }
+  }, [roots.length]);
+
+  useLayoutEffect(() => {
+    if (!rootActionMenu || !actionMenuRef.current) return;
+    const rect = actionMenuRef.current.getBoundingClientRect();
+    const { left, top } = clampMenuPosition(
+      rootActionMenu.x,
+      rootActionMenu.y,
+      rect.width,
+      rect.height,
+    );
+    setActionMenuPos((prev) =>
+      prev.left === left && prev.top === top ? prev : { left, top },
+    );
+  }, [rootActionMenu]);
+
+  const handleRemoveFromList = useCallback(() => {
+    if (!rootActionMenu) return;
+    onRemoveRoot(rootActionMenu.rootId);
+    setRootActionMenu(null);
+  }, [onRemoveRoot, rootActionMenu]);
 
   return (
     <div style={rootSwitcherStyle}>
@@ -422,27 +556,71 @@ const RootSwitcher = memo(function RootSwitcher({
       {menuOpen && roots.length > 0 && (
         <div ref={menuRef} style={rootMenuStyle}>
           {roots.map((root) => (
-            <button
-              key={root.id}
-              type="button"
-              style={{
-                ...rootMenuItemStyle,
-                background: root.id === activeRoot?.id ? "var(--cmux-hover)" : "transparent",
-              }}
-              onClick={() => {
-                onSelect(root.id);
-                setMenuOpen(false);
-              }}
-            >
-              <Folder size={12} />
-              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {root.name}
-              </span>
-              <span style={rootMenuPathStyle} title={root.path}>
-                {root.path}
-              </span>
-            </button>
+            <div key={root.id} style={rootMenuRowStyle}>
+              <button
+                type="button"
+                style={{
+                  ...rootMenuItemStyle,
+                  background: root.id === activeRoot?.id ? "var(--cmux-hover)" : "transparent",
+                }}
+                onClick={() => {
+                  onSelect(root.id);
+                  setMenuOpen(false);
+                }}
+              >
+                <Folder size={12} />
+                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {root.name}
+                </span>
+                <span style={rootMenuPathStyle} title={root.path}>
+                  {root.path}
+                </span>
+              </button>
+              <button
+                type="button"
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  const rect = e.currentTarget.getBoundingClientRect();
+                  setRootActionMenu((prev) =>
+                    prev?.rootId === root.id
+                      ? null
+                      : {
+                          rootId: root.id,
+                          x: rect.right + 4,
+                          y: rect.bottom + 2,
+                        },
+                  );
+                }}
+                style={{
+                  ...rootMenuActionButtonStyle,
+                  background: root.id === activeRoot?.id ? "rgba(255, 255, 255, 0.04)" : "transparent",
+                }}
+                tabIndex={-1}
+                aria-label={`${root.name} actions`}
+              >
+                <MoreHorizontal size={12} />
+              </button>
+            </div>
           ))}
+        </div>
+      )}
+      {rootActionMenu && (
+        <div
+          ref={actionMenuRef}
+          style={{
+            ...floatingMenuStyle,
+            left: actionMenuPos.left,
+            top: actionMenuPos.top,
+            minWidth: 170,
+          }}
+        >
+          <MenuItem
+            icon={<X size={12} />}
+            label="一覧から削除"
+            onClick={handleRemoveFromList}
+          />
         </div>
       )}
     </div>
@@ -597,8 +775,7 @@ const TreeNode = memo(function TreeNode({
   const children = useFileExplorerStore((s) => s.entries[entry.path]);
   const childError = useFileExplorerStore((s) => s.errors[entry.path]);
   const toggleExpand = useFileExplorerStore((s) => s.toggleExpand);
-  const selected = useFileExplorerStore((s) => s.selectedPath === entry.path);
-  const setSelected = useFileExplorerStore((s) => s.setSelectedPath);
+  const selected = useFileExplorerStore((s) => s.selectedPaths.has(entry.path));
 
   return (
     <>
@@ -611,7 +788,6 @@ const TreeNode = memo(function TreeNode({
         name={entry.name}
         path={entry.path}
         onToggle={() => toggleExpand(entry.path)}
-        onSelect={() => setSelected(entry.path)}
       />
       {entry.is_dir && expanded && (
         <ChildList
@@ -772,7 +948,6 @@ function TreeRow({
   name,
   path,
   onToggle,
-  onSelect,
 }: {
   depth: number;
   isDir: boolean;
@@ -782,27 +957,75 @@ function TreeRow({
   name: string;
   path: string;
   onToggle: () => void;
-  onSelect: () => void;
 }) {
   const justDraggedRef = useRef(false);
+  const selectionHandledOnMouseDownRef = useRef(false);
 
-  const handleClick = useCallback(() => {
+  const handleMouseDown = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+
+    const store = useFileExplorerStore.getState();
+    const orderedPaths = getVisibleOrderedPaths(store);
+    const ctrlLike = e.ctrlKey || e.metaKey;
+
+    if (e.shiftKey) {
+      e.preventDefault();
+      e.stopPropagation();
+      selectionHandledOnMouseDownRef.current = true;
+      store.selectPathRange(path, orderedPaths, ctrlLike);
+      store.closeContextMenu();
+      return;
+    }
+
+    if (ctrlLike) {
+      e.preventDefault();
+      e.stopPropagation();
+      selectionHandledOnMouseDownRef.current = true;
+      store.toggleSelectedPath(path);
+      store.closeContextMenu();
+      return;
+    }
+
+    store.setSelectedPath(path);
+    store.closeContextMenu();
+    selectionHandledOnMouseDownRef.current = false;
+  }, [path]);
+
+  const handleClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     if (justDraggedRef.current) {
       justDraggedRef.current = false;
       return;
     }
-    onSelect();
-    if (isDir && hasChildren) onToggle();
-  }, [hasChildren, isDir, onSelect, onToggle]);
+    if (selectionHandledOnMouseDownRef.current) {
+      selectionHandledOnMouseDownRef.current = false;
+      return;
+    }
+    e.preventDefault();
+    e.stopPropagation();
+
+    const store = useFileExplorerStore.getState();
+    if (isDir) {
+      onToggle();
+      return;
+    }
+    store.openContextMenu({
+      path,
+      isDir,
+      x: e.clientX,
+      y: e.clientY,
+    });
+  }, [isDir, onToggle, path]);
 
   const handlePointerDown = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
       if (e.button !== 0 || e.pointerType === "touch") return;
+      if (e.ctrlKey || e.metaKey || e.shiftKey) return;
 
       const startX = e.clientX;
       const startY = e.clientY;
       const thresholdSq = 16;
       let started = false;
+      let dragPaths: string[] = [];
 
       const store = useFileExplorerStore.getState();
 
@@ -812,9 +1035,10 @@ function TreeRow({
           const dy = ev.clientY - startY;
           if (dx * dx + dy * dy < thresholdSq) return;
           started = true;
+          dragPaths = getOrderedDragPaths(useFileExplorerStore.getState(), path);
           document.body.style.userSelect = "none";
           document.body.style.cursor = "grabbing";
-          store.startDrag(path, name, ev.clientX, ev.clientY);
+          store.startDrag(dragPaths, name, ev.clientX, ev.clientY);
         } else {
           useFileExplorerStore.getState().updateDrag(ev.clientX, ev.clientY);
         }
@@ -852,7 +1076,10 @@ function TreeRow({
               }
             }
           }
-          void writeToSession(targetSessionId, `${quoteShellPath(path)} `);
+          const shellPayload = (dragPaths.length > 0 ? dragPaths : [path])
+            .map((dragPath) => quoteShellPath(dragPath))
+            .join(" ");
+          void writeToSession(targetSessionId, `${shellPayload} `);
         }
         useFileExplorerStore.getState().endDrag();
       };
@@ -878,15 +1105,31 @@ function TreeRow({
     [name, path],
   );
 
-  const handleContextMenu = useCallback(
-    (e: React.MouseEvent<HTMLDivElement>) => {
+  const handleChevronClick = useCallback(
+    (e: React.MouseEvent<HTMLButtonElement>) => {
       e.preventDefault();
       e.stopPropagation();
-      useFileExplorerStore.getState().openContextMenu({
+      useFileExplorerStore.getState().setSelectedPath(path);
+      useFileExplorerStore.getState().closeContextMenu();
+      if (hasChildren) {
+        onToggle();
+      }
+    },
+    [hasChildren, onToggle, path],
+  );
+
+  const handleActionButtonClick = useCallback(
+    (e: React.MouseEvent<HTMLButtonElement>) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const store = useFileExplorerStore.getState();
+      store.setSelectedPath(path);
+      const rect = e.currentTarget.getBoundingClientRect();
+      store.openContextMenu({
         path,
         isDir,
-        x: e.clientX,
-        y: e.clientY,
+        x: rect.right,
+        y: rect.bottom + 2,
       });
     },
     [isDir, path],
@@ -910,22 +1153,43 @@ function TreeRow({
 
   return (
     <div
+      onMouseDown={handleMouseDown}
       onPointerDown={handlePointerDown}
       onClick={handleClick}
-      onContextMenu={handleContextMenu}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+      }}
       className={`file-explorer-row${selected ? " selected" : ""}`}
       style={{
         ...rowStyle,
         paddingLeft: depth * INDENT_PX + 6,
-        background: selected ? "var(--cmux-hover)" : "transparent",
+        background: selected ? "rgba(10, 132, 255, 0.18)" : "transparent",
+        boxShadow: selected
+          ? "inset 2px 0 0 var(--cmux-accent, #0a84ff), inset 0 0 0 1px rgba(10, 132, 255, 0.22)"
+          : "none",
+        color: selected ? "var(--cmux-text, #ddd)" : "var(--cmux-text-secondary, #aaa)",
       }}
       title={path}
     >
-      <span style={chevronSlotStyle}>
-        {hasChildren ? (
-          expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />
-        ) : null}
-      </span>
+      <button
+        type="button"
+        disabled={!hasChildren}
+        onPointerDown={(e) => e.stopPropagation()}
+        onClick={handleChevronClick}
+        style={{
+          ...chevronButtonStyle,
+          cursor: hasChildren ? "pointer" : "default",
+        }}
+        tabIndex={-1}
+        aria-label={expanded ? "Collapse folder" : "Expand folder"}
+      >
+        <span style={chevronSlotStyle}>
+          {hasChildren ? (
+            expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />
+          ) : null}
+        </span>
+      </button>
       <span style={iconSlotStyle}>
         {isDir ? (
           expanded ? <FolderOpen size={14} strokeWidth={1.5} /> : <Folder size={14} strokeWidth={1.5} />
@@ -934,6 +1198,21 @@ function TreeRow({
         )}
       </span>
       {renderName()}
+      <button
+        type="button"
+        onPointerDown={(e) => e.stopPropagation()}
+        onMouseDown={(e) => e.stopPropagation()}
+        onClick={handleActionButtonClick}
+        style={{
+          ...rowActionButtonStyle,
+          opacity: selected ? 1 : 0.72,
+          color: selected ? "var(--cmux-text, #ddd)" : "var(--cmux-text-secondary, #888)",
+        }}
+        tabIndex={-1}
+        aria-label="Open item actions"
+      >
+        <MoreHorizontal size={12} />
+      </button>
     </div>
   );
 }
@@ -1028,9 +1307,16 @@ const rootMenuStyle: React.CSSProperties = {
   padding: 4,
 };
 
+const rootMenuRowStyle: React.CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "minmax(0, 1fr) 20px",
+  gap: 4,
+  alignItems: "center",
+};
+
 const rootMenuItemStyle: React.CSSProperties = {
   display: "grid",
-  gridTemplateColumns: "14px auto 1fr",
+  gridTemplateColumns: "14px auto minmax(0, 1fr)",
   gap: 6,
   alignItems: "center",
   width: "100%",
@@ -1094,6 +1380,7 @@ const rowStyle: React.CSSProperties = {
   gap: 4,
   cursor: "pointer",
   color: "var(--cmux-text-secondary, #aaa)",
+  borderRadius: 4,
 };
 
 const chevronSlotStyle: React.CSSProperties = {
@@ -1105,6 +1392,20 @@ const chevronSlotStyle: React.CSSProperties = {
   flexShrink: 0,
 };
 
+const chevronButtonStyle: React.CSSProperties = {
+  width: 14,
+  minWidth: 14,
+  height: 18,
+  padding: 0,
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  background: "transparent",
+  border: "none",
+  cursor: "pointer",
+  flexShrink: 0,
+};
+
 const iconSlotStyle: React.CSSProperties = {
   width: 14,
   display: "flex",
@@ -1112,6 +1413,40 @@ const iconSlotStyle: React.CSSProperties = {
   justifyContent: "center",
   color: "var(--cmux-text-secondary, #888)",
   flexShrink: 0,
+};
+
+const rowActionButtonStyle: React.CSSProperties = {
+  width: 18,
+  minWidth: 18,
+  height: 18,
+  padding: 0,
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  background: "transparent",
+  border: "none",
+  borderRadius: 4,
+  cursor: "pointer",
+  flexShrink: 0,
+};
+
+const rootMenuActionButtonStyle: React.CSSProperties = {
+  ...rowActionButtonStyle,
+  width: 20,
+  minWidth: 20,
+  height: 20,
+  color: "var(--cmux-text-secondary, #888)",
+};
+
+const floatingMenuStyle: React.CSSProperties = {
+  position: "fixed",
+  zIndex: 9999,
+  background: "var(--cmux-surface, #1a1a1a)",
+  color: "var(--cmux-text, #ddd)",
+  border: "1px solid var(--cmux-border)",
+  borderRadius: 4,
+  padding: 4,
+  boxShadow: "0 4px 12px rgba(0, 0, 0, 0.5)",
 };
 
 const nameStyle: React.CSSProperties = {
