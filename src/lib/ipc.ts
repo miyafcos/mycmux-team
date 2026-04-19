@@ -228,6 +228,7 @@ export interface FileEntry {
   name: string;
   path: string;
   is_dir: boolean;
+  modified?: number;
 }
 
 export interface PinnedRoot {
@@ -258,6 +259,18 @@ export async function unwatchRoot(path: string): Promise<void> {
 
 export async function revealInExplorer(path: string): Promise<void> {
   return invoke("reveal_in_explorer", { path });
+}
+
+export async function openWithDefault(path: string): Promise<void> {
+  return invoke("open_with_default", { path });
+}
+
+export async function createFile(parent: string, name: string): Promise<string> {
+  return invoke("create_file", { parent, name });
+}
+
+export async function createFolder(parent: string, name: string): Promise<string> {
+  return invoke("create_folder", { parent, name });
 }
 
 export interface FsChangedPayload {

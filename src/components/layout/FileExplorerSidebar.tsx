@@ -1,9 +1,12 @@
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import {
+  ArrowDown,
+  ArrowUp,
   ChevronDown,
   ChevronRight,
   ExternalLink,
   File as FileIcon,
+  FilePlus,
   Folder,
   FolderOpen,
   FolderPlus,
@@ -14,16 +17,76 @@ import {
 import { v4 as uuidv4 } from "uuid";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 
-import { useFileExplorerStore } from "../../stores/fileExplorerStore";
+import {
+  useFileExplorerStore,
+  type SortMode,
+} from "../../stores/fileExplorerStore";
 import { useWorkspaceListStore } from "../../stores/workspaceListStore";
 import {
+  createFile,
+  createFolder,
   normalizePath,
+  openWithDefault,
   revealInExplorer,
   writeToSession,
   type FileEntry,
   type PinnedRoot,
 } from "../../lib/ipc";
-import { basename, pathSegmentsUnder, quoteShellPath } from "../../lib/paths";
+import {
+  basename,
+  pathSegmentsUnder,
+  quoteShellPath,
+  splitExtension,
+} from "../../lib/paths";
+
+const SORT_CYCLE: SortMode[] = ["name-asc", "name-desc", "mtime-desc", "mtime-asc"];
+
+const SORT_LABEL_BASE: Record<SortMode, string> = {
+  "name-asc": "名前",
+  "name-desc": "名前",
+  "mtime-desc": "更新",
+  "mtime-asc": "更新",
+};
+
+const NAME_COLLATOR = new Intl.Collator(undefined, {
+  sensitivity: "base",
+  numeric: true,
+});
+
+function sortEntries(
+  entries: FileEntry[] | undefined,
+  mode: SortMode,
+): FileEntry[] | undefined {
+  if (!entries) return entries;
+  const cmp = (a: FileEntry, b: FileEntry): number => {
+    switch (mode) {
+      case "name-asc":
+        return NAME_COLLATOR.compare(a.name, b.name);
+      case "name-desc":
+        return NAME_COLLATOR.compare(b.name, a.name);
+      case "mtime-desc": {
+        const am = a.modified ?? 0;
+        const bm = b.modified ?? 0;
+        if (am === bm) return NAME_COLLATOR.compare(a.name, b.name);
+        return bm - am;
+      }
+      case "mtime-asc": {
+        const am = a.modified ?? Number.MAX_SAFE_INTEGER;
+        const bm = b.modified ?? Number.MAX_SAFE_INTEGER;
+        if (am === bm) return NAME_COLLATOR.compare(a.name, b.name);
+        return am - bm;
+      }
+    }
+  };
+  const dirs = entries.filter((entry) => entry.is_dir);
+  const files = entries.filter((entry) => !entry.is_dir);
+  return [...dirs.sort(cmp), ...files.sort(cmp)];
+}
+
+function truncateErrorForUi(msg: string, max = 80): string {
+  if (msg.length <= max) return msg;
+  return `${msg.slice(0, max - 1)}…`;
+}
 
 const ROW_HEIGHT = 24;
 const INDENT_PX = 14;
@@ -40,7 +103,6 @@ export default memo(function FileExplorerSidebar() {
 
   const activeRoot = roots.find((r) => r.id === activeRootId) ?? null;
 
-  // Ensure active root's top level is loaded whenever the root changes.
   useEffect(() => {
     if (activeRoot) {
       void ensureLoaded(activeRoot.path);
@@ -74,22 +136,21 @@ export default memo(function FileExplorerSidebar() {
   const handleJumpToPath = useCallback(
     async (path: string) => {
       try {
-        if (!activeRoot) return { ok: false, message: "ルートが未設定です" };
+        if (!activeRoot) {
+          return { ok: false, message: "ルートが未設定です" };
+        }
         const normalized = await normalizePath(path);
         const segments = pathSegmentsUnder(normalized, activeRoot.path);
         if (segments === null) {
-          return { ok: false, message: "現在のルート外です" };
+          return { ok: false, message: "現在のルート配下ではありません" };
         }
-        // Walk down using the *actual* entry paths returned by list_directory so
-        // we never trip over Windows case-folding (user types `src` but the
-        // folder is `Src`). Each ensureLoaded resolves before the next lookup.
         let cursor = activeRoot.path;
         for (const seg of segments) {
           await setExpanded(cursor, true);
           const children = useFileExplorerStore.getState().entries[cursor];
           if (!children) break;
           const match = children.find(
-            (e) => e.name.toLowerCase() === seg.toLowerCase(),
+            (entry) => entry.name.toLowerCase() === seg.toLowerCase(),
           );
           if (!match) break;
           cursor = match.path;
@@ -114,7 +175,20 @@ export default memo(function FileExplorerSidebar() {
         onRefresh={handleRefresh}
       />
       <PathInput onSubmit={handleJumpToPath} />
-      <div className="file-explorer-tree" style={treeScrollStyle}>
+      <div
+        className="file-explorer-tree"
+        style={treeScrollStyle}
+        onContextMenu={(e) => {
+          if (!activeRoot) return;
+          e.preventDefault();
+          useFileExplorerStore.getState().openContextMenu({
+            path: activeRoot.path,
+            isDir: true,
+            x: e.clientX,
+            y: e.clientY,
+          });
+        }}
+      >
         {activeRoot ? (
           <RootNode root={activeRoot} />
         ) : (
@@ -133,11 +207,11 @@ export default memo(function FileExplorerSidebar() {
   );
 });
 
-// ─── Context menu (right-click on a tree row) ───────────────────────────────
-
 const ContextMenu = memo(function ContextMenu() {
   const ctx = useFileExplorerStore((s) => s.contextMenu);
   const closeContextMenu = useFileExplorerStore((s) => s.closeContextMenu);
+  const startCreating = useFileExplorerStore((s) => s.startCreating);
+  const setExpanded = useFileExplorerStore((s) => s.setExpanded);
   const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -159,6 +233,28 @@ const ContextMenu = memo(function ContextMenu() {
   }, [ctx, closeContextMenu]);
 
   if (!ctx) return null;
+
+  const handleOpen = async () => {
+    try {
+      await openWithDefault(ctx.path);
+    } catch (err) {
+      console.warn("[fileExplorer] openWithDefault failed:", err);
+    } finally {
+      closeContextMenu();
+    }
+  };
+
+  const handleNewFile = async () => {
+    await setExpanded(ctx.path, true);
+    startCreating(ctx.path, "file");
+    closeContextMenu();
+  };
+
+  const handleNewFolder = async () => {
+    await setExpanded(ctx.path, true);
+    startCreating(ctx.path, "folder");
+    closeContextMenu();
+  };
 
   const handleReveal = async () => {
     try {
@@ -184,43 +280,61 @@ const ContextMenu = memo(function ContextMenu() {
         borderRadius: 4,
         padding: 4,
         boxShadow: "0 4px 12px rgba(0, 0, 0, 0.5)",
-        minWidth: 180,
+        minWidth: 200,
       }}
     >
-      <button
-        type="button"
+      {!ctx.isDir && (
+        <MenuItem icon={<FileIcon size={12} />} label="開く" onClick={handleOpen} />
+      )}
+      {ctx.isDir && (
+        <>
+          <MenuItem
+            icon={<FilePlus size={12} />}
+            label="新規ファイル"
+            onClick={handleNewFile}
+          />
+          <MenuItem
+            icon={<FolderPlus size={12} />}
+            label="新規フォルダ"
+            onClick={handleNewFolder}
+          />
+        </>
+      )}
+      <MenuItem
+        icon={<ExternalLink size={12} />}
+        label="エクスプローラーで開く"
         onClick={handleReveal}
-        style={contextMenuItemStyle}
-        onMouseEnter={(e) => {
-          e.currentTarget.style.background = "var(--cmux-hover)";
-        }}
-        onMouseLeave={(e) => {
-          e.currentTarget.style.background = "transparent";
-        }}
-      >
-        <ExternalLink size={12} />
-        <span>エクスプローラーで開く</span>
-      </button>
+      />
     </div>
   );
 });
 
-const contextMenuItemStyle: React.CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  gap: 6,
-  width: "100%",
-  padding: "4px 10px",
-  background: "transparent",
-  border: "none",
-  color: "var(--cmux-text, #ddd)",
-  fontSize: 12,
-  cursor: "pointer",
-  textAlign: "left",
-  borderRadius: 3,
-};
-
-// ─── Drag preview (cursor-following ghost during manual drag) ───────────────
+function MenuItem({
+  icon,
+  label,
+  onClick,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      style={contextMenuItemStyle}
+      onMouseEnter={(e) => {
+        e.currentTarget.style.background = "var(--cmux-hover)";
+      }}
+      onMouseLeave={(e) => {
+        e.currentTarget.style.background = "transparent";
+      }}
+    >
+      {icon}
+      <span>{label}</span>
+    </button>
+  );
+}
 
 const DragPreview = memo(function DragPreview() {
   const dragging = useFileExplorerStore((s) => s.dragging);
@@ -250,8 +364,6 @@ const DragPreview = memo(function DragPreview() {
     </div>
   );
 });
-
-// ─── Root switcher (top bar) ─────────────────────────────────────────────────
 
 const RootSwitcher = memo(function RootSwitcher({
   roots,
@@ -287,7 +399,7 @@ const RootSwitcher = memo(function RootSwitcher({
       <button
         type="button"
         style={rootNameButtonStyle}
-        onClick={() => setMenuOpen((v) => !v)}
+        onClick={() => setMenuOpen((open) => !open)}
         disabled={roots.length === 0}
         title={activeRoot?.path ?? "ルート未設定"}
       >
@@ -297,6 +409,7 @@ const RootSwitcher = memo(function RootSwitcher({
         {roots.length > 1 ? <ChevronDown size={12} /> : null}
       </button>
       <div style={{ flex: 1 }} />
+      <SortToggleButton />
       <IconButton title="ルート追加" onClick={onAdd}>
         <Plus size={14} />
       </IconButton>
@@ -308,25 +421,25 @@ const RootSwitcher = memo(function RootSwitcher({
       </IconButton>
       {menuOpen && roots.length > 0 && (
         <div ref={menuRef} style={rootMenuStyle}>
-          {roots.map((r) => (
+          {roots.map((root) => (
             <button
-              key={r.id}
+              key={root.id}
               type="button"
               style={{
                 ...rootMenuItemStyle,
-                background: r.id === activeRoot?.id ? "var(--cmux-hover)" : "transparent",
+                background: root.id === activeRoot?.id ? "var(--cmux-hover)" : "transparent",
               }}
               onClick={() => {
-                onSelect(r.id);
+                onSelect(root.id);
                 setMenuOpen(false);
               }}
             >
               <Folder size={12} />
               <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {r.name}
+                {root.name}
               </span>
-              <span style={rootMenuPathStyle} title={r.path}>
-                {r.path}
+              <span style={rootMenuPathStyle} title={root.path}>
+                {root.path}
               </span>
             </button>
           ))}
@@ -336,7 +449,44 @@ const RootSwitcher = memo(function RootSwitcher({
   );
 });
 
-// ─── Path input ──────────────────────────────────────────────────────────────
+const SortToggleButton = memo(function SortToggleButton() {
+  const sortMode = useFileExplorerStore((s) => s.sortMode);
+  const setSortMode = useFileExplorerStore((s) => s.setSortMode);
+
+  const handleClick = useCallback(() => {
+    const idx = SORT_CYCLE.indexOf(sortMode);
+    const next = SORT_CYCLE[(idx + 1) % SORT_CYCLE.length];
+    setSortMode(next);
+  }, [sortMode, setSortMode]);
+
+  const isAsc = sortMode.endsWith("-asc");
+  const DirIcon = isAsc ? ArrowUp : ArrowDown;
+  const label = SORT_LABEL_BASE[sortMode];
+
+  return (
+    <button
+      type="button"
+      onClick={handleClick}
+      title={`並び替え: ${label} ${isAsc ? "昇順" : "降順"} (クリックで切替)`}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 3,
+        height: 22,
+        padding: "0 6px",
+        background: "transparent",
+        border: "none",
+        color: "var(--cmux-text-secondary, #888)",
+        fontSize: 10,
+        cursor: "pointer",
+        borderRadius: 4,
+      }}
+    >
+      <DirIcon size={12} />
+      <span>{label}</span>
+    </button>
+  );
+});
 
 const PathInput = memo(function PathInput({
   onSubmit,
@@ -348,14 +498,14 @@ const PathInput = memo(function PathInput({
 
   const handleSubmit = useCallback(async () => {
     if (!value.trim()) return;
-    const res = await onSubmit(value.trim());
-    if (!res.ok) {
-      setError(res.message);
+    const result = await onSubmit(value.trim());
+    if (!result.ok) {
+      setError(result.message);
     } else {
       setError(null);
       setValue("");
     }
-  }, [value, onSubmit]);
+  }, [onSubmit, value]);
 
   return (
     <div style={pathInputContainerStyle}>
@@ -372,7 +522,7 @@ const PathInput = memo(function PathInput({
             void handleSubmit();
           }
         }}
-        placeholder="パス貼付 → Enter"
+        placeholder="パス入力 → Enter"
         spellCheck={false}
         style={pathInputStyle}
       />
@@ -381,43 +531,54 @@ const PathInput = memo(function PathInput({
   );
 });
 
-// ─── Tree rendering ──────────────────────────────────────────────────────────
-
 const RootNode = memo(function RootNode({ root }: { root: PinnedRoot }) {
   const entries = useFileExplorerStore((s) => s.entries[root.path]);
   const error = useFileExplorerStore((s) => s.errors[root.path]);
-
-  // The active root is always implicitly expanded: it's the tree's viewport.
-  // Children render at depth 0 so there's no wasted left gutter.
-  return <ChildList entries={entries} error={error} depth={0} />;
+  return <ChildList entries={entries} error={error} depth={0} parentPath={root.path} />;
 });
 
 const ChildList = memo(function ChildList({
   entries,
   error,
   depth,
+  parentPath,
 }: {
   entries: FileEntry[] | undefined;
   error: string | undefined;
   depth: number;
+  parentPath: string;
 }) {
+  const sortMode = useFileExplorerStore((s) => s.sortMode);
+  const creatingIn = useFileExplorerStore((s) => s.creatingIn);
+  const sorted = sortEntries(entries, sortMode);
+  const showCreating = !!creatingIn && creatingIn.parentPath === parentPath;
+
   if (error) {
     return <div style={{ ...errorRowStyle, paddingLeft: depth * INDENT_PX + 8 }}>error: {error}</div>;
   }
-  if (!entries) {
-    return (
-      <div style={{ ...loadingRowStyle, paddingLeft: depth * INDENT_PX + 8 }}>読み込み中...</div>
-    );
+  if (!sorted && !showCreating) {
+    return <div style={{ ...loadingRowStyle, paddingLeft: depth * INDENT_PX + 8 }}>読み込み中...</div>;
   }
-  if (entries.length === 0) {
+  if (sorted && sorted.length === 0 && !showCreating) {
     return <div style={{ ...emptyRowStyle, paddingLeft: depth * INDENT_PX + 8 }}>(空)</div>;
   }
-  const cappedNotice = entries.length >= 5000 ? (
-    <div style={{ ...emptyRowStyle, paddingLeft: depth * INDENT_PX + 8 }}>... (5000 件で打切り)</div>
+
+  const cappedNotice = sorted && sorted.length >= 5000 ? (
+    <div style={{ ...emptyRowStyle, paddingLeft: depth * INDENT_PX + 8 }}>
+      ... (5000 件で打切り)
+    </div>
   ) : null;
+
   return (
     <>
-      {entries.map((entry) => (
+      {showCreating && creatingIn && (
+        <CreateRow
+          parentPath={creatingIn.parentPath}
+          kind={creatingIn.kind}
+          depth={depth}
+        />
+      )}
+      {sorted?.map((entry) => (
         <TreeNode key={entry.path} entry={entry} depth={depth} />
       ))}
       {cappedNotice}
@@ -453,13 +614,154 @@ const TreeNode = memo(function TreeNode({
         onSelect={() => setSelected(entry.path)}
       />
       {entry.is_dir && expanded && (
-        <ChildList entries={children} error={childError} depth={depth + 1} />
+        <ChildList
+          entries={children}
+          error={childError}
+          depth={depth + 1}
+          parentPath={entry.path}
+        />
       )}
     </>
   );
 });
 
-// ─── Single row ──────────────────────────────────────────────────────────────
+const CreateRow = memo(function CreateRow({
+  parentPath,
+  kind,
+  depth,
+}: {
+  parentPath: string;
+  kind: "file" | "folder";
+  depth: number;
+}) {
+  const [value, setValue] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const committedRef = useRef(false);
+
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, []);
+
+  useEffect(() => {
+    const onMouseDown = (e: MouseEvent) => {
+      if (committedRef.current) return;
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        useFileExplorerStore.getState().cancelCreating();
+      }
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !committedRef.current) {
+        useFileExplorerStore.getState().cancelCreating();
+      }
+    };
+    window.addEventListener("mousedown", onMouseDown, true);
+    window.addEventListener("keydown", onKey, true);
+    return () => {
+      window.removeEventListener("mousedown", onMouseDown, true);
+      window.removeEventListener("keydown", onKey, true);
+    };
+  }, []);
+
+  const commit = useCallback(async () => {
+    const name = value.trim();
+    if (!name) {
+      useFileExplorerStore.getState().cancelCreating();
+      return;
+    }
+    committedRef.current = true;
+    try {
+      const newPath =
+        kind === "file"
+          ? await createFile(parentPath, name)
+          : await createFolder(parentPath, name);
+      useFileExplorerStore.getState().cancelCreating();
+      await useFileExplorerStore.getState().refresh(parentPath);
+      useFileExplorerStore.getState().setSelectedPath(newPath);
+    } catch (err) {
+      committedRef.current = false;
+      setError(String(err));
+      requestAnimationFrame(() => inputRef.current?.focus());
+    }
+  }, [kind, parentPath, value]);
+
+  return (
+    <div
+      ref={containerRef}
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        paddingLeft: depth * INDENT_PX + 6,
+        paddingRight: 6,
+        paddingTop: 1,
+        paddingBottom: 1,
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+        <span style={chevronSlotStyle} />
+        <span style={iconSlotStyle}>
+          {kind === "folder" ? (
+            <Folder size={14} strokeWidth={1.5} />
+          ) : (
+            <FileIcon size={14} strokeWidth={1.5} />
+          )}
+        </span>
+        <input
+          ref={inputRef}
+          type="text"
+          value={value}
+          onChange={(e) => {
+            setValue(e.target.value);
+            if (error) setError(null);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+              e.preventDefault();
+              void commit();
+            } else if (e.key === "Escape") {
+              e.preventDefault();
+              useFileExplorerStore.getState().cancelCreating();
+            }
+          }}
+          placeholder={kind === "folder" ? "フォルダ名" : "ファイル名"}
+          spellCheck={false}
+          style={{
+            flex: 1,
+            minWidth: 0,
+            height: 20,
+            padding: "1px 4px",
+            background: "var(--cmux-bg, #0a0a0a)",
+            border: "1px solid var(--cmux-accent, rgba(10, 132, 255, 0.7))",
+            borderRadius: 3,
+            color: "var(--cmux-text)",
+            fontSize: 11,
+            fontFamily: "inherit",
+            outline: "none",
+          }}
+        />
+      </div>
+      {error && (
+        <div
+          style={{
+            color: "#ff6b6b",
+            fontSize: 10,
+            marginTop: 2,
+            marginLeft: 32,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+            maxWidth: "100%",
+          }}
+          title={error}
+        >
+          {truncateErrorForUi(error)}
+        </div>
+      )}
+    </div>
+  );
+});
 
 function TreeRow({
   depth,
@@ -485,24 +787,21 @@ function TreeRow({
   const justDraggedRef = useRef(false);
 
   const handleClick = useCallback(() => {
-    // If a drag just concluded, swallow the synthetic click so the user's
-    // drop doesn't also collapse/expand the source row.
     if (justDraggedRef.current) {
       justDraggedRef.current = false;
       return;
     }
     onSelect();
     if (isDir && hasChildren) onToggle();
-  }, [isDir, hasChildren, onSelect, onToggle]);
+  }, [hasChildren, isDir, onSelect, onToggle]);
 
   const handlePointerDown = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
-      // Left button only; ignore touch/pen for now.
       if (e.button !== 0 || e.pointerType === "touch") return;
 
       const startX = e.clientX;
       const startY = e.clientY;
-      const THRESHOLD_SQ = 16; // 4px in any direction
+      const thresholdSq = 16;
       let started = false;
 
       const store = useFileExplorerStore.getState();
@@ -511,7 +810,7 @@ function TreeRow({
         if (!started) {
           const dx = ev.clientX - startX;
           const dy = ev.clientY - startY;
-          if (dx * dx + dy * dy < THRESHOLD_SQ) return;
+          if (dx * dx + dy * dy < thresholdSq) return;
           started = true;
           document.body.style.userSelect = "none";
           document.body.style.cursor = "grabbing";
@@ -534,7 +833,6 @@ function TreeRow({
         document.body.style.userSelect = "";
         document.body.style.cursor = "";
         justDraggedRef.current = true;
-        // Clear the flag on the next tick in case the click event never fires.
         setTimeout(() => {
           justDraggedRef.current = false;
         }, 0);
@@ -543,18 +841,18 @@ function TreeRow({
         const paneEl = el?.closest("[data-session-id]");
         const paneSessionId = paneEl?.getAttribute("data-session-id") ?? null;
         if (paneSessionId) {
-          const wsList = useWorkspaceListStore.getState().workspaces;
+          const workspaces = useWorkspaceListStore.getState().workspaces;
           let targetSessionId = paneSessionId;
-          outer: for (const ws of wsList) {
-            for (const p of ws.panes) {
-              if (p.sessionId === paneSessionId) {
-                const activeTab = p.tabs.find((t) => t.id === p.activeTabId);
+          outer: for (const workspace of workspaces) {
+            for (const pane of workspace.panes) {
+              if (pane.sessionId === paneSessionId) {
+                const activeTab = pane.tabs.find((tab) => tab.id === pane.activeTabId);
                 targetSessionId = activeTab?.sessionId ?? paneSessionId;
                 break outer;
               }
             }
           }
-          void writeToSession(targetSessionId, quoteShellPath(path) + " ");
+          void writeToSession(targetSessionId, `${quoteShellPath(path)} `);
         }
         useFileExplorerStore.getState().endDrag();
       };
@@ -572,25 +870,43 @@ function TreeRow({
         if (ev.key === "Escape") onCancel();
       };
 
-      // Capture phase so xterm or other libs can't stopPropagation before us.
       window.addEventListener("pointermove", onMove, true);
       window.addEventListener("pointerup", onUp, true);
       window.addEventListener("pointercancel", onCancel, true);
       window.addEventListener("keydown", onKey, true);
     },
-    [path, name],
+    [name, path],
   );
 
   const handleContextMenu = useCallback(
     (e: React.MouseEvent<HTMLDivElement>) => {
       e.preventDefault();
       e.stopPropagation();
-      useFileExplorerStore
-        .getState()
-        .openContextMenu({ path, isDir, x: e.clientX, y: e.clientY });
+      useFileExplorerStore.getState().openContextMenu({
+        path,
+        isDir,
+        x: e.clientX,
+        y: e.clientY,
+      });
     },
-    [path, isDir],
+    [isDir, path],
   );
+
+  const renderName = () => {
+    if (isDir) {
+      return <span style={nameStyle}>{name}</span>;
+    }
+    const { base, ext } = splitExtension(name);
+    if (!ext) {
+      return <span style={nameStyle}>{name}</span>;
+    }
+    return (
+      <>
+        <span style={{ ...nameStyle, flex: 1, minWidth: 0 }}>{base}</span>
+        <span style={{ flexShrink: 0, color: "var(--cmux-text-secondary, #888)" }}>{ext}</span>
+      </>
+    );
+  };
 
   return (
     <div
@@ -617,12 +933,10 @@ function TreeRow({
           <FileIcon size={14} strokeWidth={1.5} />
         )}
       </span>
-      <span style={nameStyle}>{name}</span>
+      {renderName()}
     </div>
   );
 }
-
-// ─── Shared small components ─────────────────────────────────────────────────
 
 function IconButton({
   children,
@@ -652,8 +966,6 @@ function IconButton({
   );
 }
 
-// ─── Inline styles ──────────────────────────────────────────────────────────
-
 const sidebarStyle: React.CSSProperties = {
   display: "flex",
   flexDirection: "column",
@@ -680,7 +992,7 @@ const rootNameButtonStyle: React.CSSProperties = {
   gap: 4,
   padding: "2px 6px",
   height: 24,
-  maxWidth: 160,
+  maxWidth: 140,
   background: "transparent",
   border: "none",
   color: "var(--cmux-text)",
@@ -852,3 +1164,17 @@ const emptyRowStyle: React.CSSProperties = {
   fontStyle: "italic",
 };
 
+const contextMenuItemStyle: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 6,
+  width: "100%",
+  padding: "4px 10px",
+  background: "transparent",
+  border: "none",
+  color: "var(--cmux-text, #ddd)",
+  fontSize: 12,
+  cursor: "pointer",
+  textAlign: "left",
+  borderRadius: 3,
+};
