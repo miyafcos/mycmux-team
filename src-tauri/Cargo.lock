@@ -2153,7 +2153,7 @@ dependencies = [
 
 [[package]]
 name = "mycmux-lite"
-version = "0.2.0"
+version = "0.3.0-lite.1"
 dependencies = [
  "axum",
  "cocoa",
