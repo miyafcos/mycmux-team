@@ -27,11 +27,25 @@ jobs:
           node-version: "20"
           cache: "npm"
 
-      # Make MSVC link.exe / cl.exe visible to cargo on windows-latest.
-      # Without this the toolchain-stable host tools fail with
-      # "linker `link.exe` not found" because the Visual Studio install dir
-      # is not on PATH by default.
-      - uses: ilammy/msvc-dev-cmd@v1
+      # Persist MSVC env (PATH/INCLUDE/LIB/...) into $env:GITHUB_ENV so that
+      # cargo/link.exe is reachable from every subsequent step (tauri-action
+      # spawns its own shell, so env from `ilammy/msvc-dev-cmd@v1` alone is
+      # not always inherited reliably).
+      - name: Persist MSVC env to GITHUB_ENV
+        shell: pwsh
+        run: |
+          $vswhere = "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsInstall = & $vswhere -latest -property installationPath
+          if (-not $vsInstall) { throw "Visual Studio install not found via vswhere" }
+          $vcvars = Join-Path $vsInstall "VC\Auxiliary\Build\vcvarsall.bat"
+          if (-not (Test-Path $vcvars)) { throw "vcvarsall.bat not found at $vcvars" }
+          $output = cmd /c "`"$vcvars`" x64 && set" 2>$null
+          foreach ($line in $output) {
+            if ($line -match "^([^=]+)=(.*)$") {
+              "$($matches[1])=$($matches[2])" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            }
+          }
+          Write-Host "Persisted MSVC env from $vsInstall"
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -71,11 +85,25 @@ jobs:
           node-version: "20"
           cache: "npm"
 
-      # Make MSVC link.exe / cl.exe visible to cargo on windows-latest.
-      # Without this the toolchain-stable host tools fail with
-      # "linker `link.exe` not found" because the Visual Studio install dir
-      # is not on PATH by default.
-      - uses: ilammy/msvc-dev-cmd@v1
+      # Persist MSVC env (PATH/INCLUDE/LIB/...) into $env:GITHUB_ENV so that
+      # cargo/link.exe is reachable from every subsequent step (tauri-action
+      # spawns its own shell, so env from `ilammy/msvc-dev-cmd@v1` alone is
+      # not always inherited reliably).
+      - name: Persist MSVC env to GITHUB_ENV
+        shell: pwsh
+        run: |
+          $vswhere = "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsInstall = & $vswhere -latest -property installationPath
+          if (-not $vsInstall) { throw "Visual Studio install not found via vswhere" }
+          $vcvars = Join-Path $vsInstall "VC\Auxiliary\Build\vcvarsall.bat"
+          if (-not (Test-Path $vcvars)) { throw "vcvarsall.bat not found at $vcvars" }
+          $output = cmd /c "`"$vcvars`" x64 && set" 2>$null
+          foreach ($line in $output) {
+            if ($line -match "^([^=]+)=(.*)$") {
+              "$($matches[1])=$($matches[2])" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            }
+          }
+          Write-Host "Persisted MSVC env from $vsInstall"
 
       - uses: dtolnay/rust-toolchain@stable
 
