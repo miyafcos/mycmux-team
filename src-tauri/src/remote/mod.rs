@@ -55,7 +55,7 @@ pub fn start_remote_server(
         // Write port file for discovery
         let port_file = match dirs::home_dir() {
             Some(mut p) => {
-                p.push(".mycmux");
+                p.push(".mycmux-lite");
                 std::fs::create_dir_all(&p).ok();
                 p.push("remote.port");
                 let _ = std::fs::write(&p, port.to_string());

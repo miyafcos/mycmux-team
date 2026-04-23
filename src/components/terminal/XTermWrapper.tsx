@@ -463,13 +463,6 @@ export default memo(function XTermWrapper({
       // Send user keystrokes to PTY
       term.onData((data) => {
         chunkedWrite(sessionId, data);
-        try {
-          window.dispatchEvent(
-            new CustomEvent("mycmux:keystroke", { detail: { sessionId, data } }),
-          );
-        } catch {
-          // ignore dispatch failures — buddy is non-critical
-        }
       });
 
       term.onBinary((data) => {

@@ -33,8 +33,6 @@ export default function SettingsMenu({
   const setNotificationsEnabled = useSettingsStore((s) => s.setNotificationsEnabled);
   const notificationSoundEnabled = useSettingsStore((s) => s.notificationSoundEnabled);
   const setNotificationSoundEnabled = useSettingsStore((s) => s.setNotificationSoundEnabled);
-  const buddyEnabled = useSettingsStore((s) => s.buddyEnabled);
-  const setBuddyEnabled = useSettingsStore((s) => s.setBuddyEnabled);
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -145,27 +143,6 @@ export default function SettingsMenu({
           onChange={(e) => setNotificationSoundEnabled(e.target.checked)}
         />
         <span>通知サウンド</span>
-      </label>
-
-      <div style={{ height: 1, background: "var(--cmux-border)" }} />
-
-      <label
-        style={{
-          padding: "10px 12px",
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-          fontSize: 12,
-          color: "var(--cmux-text)",
-          cursor: "pointer",
-        }}
-      >
-        <input
-          type="checkbox"
-          checked={buddyEnabled}
-          onChange={(e) => setBuddyEnabled(e.target.checked)}
-        />
-        <span>Claude Buddy</span>
       </label>
     </div>
   );

@@ -2,7 +2,6 @@ import { useEffect, useState, useRef, useMemo, useCallback } from "react";
 import Fuse from "fuse.js";
 import { useWorkspaceListStore, useWorkspaceLayoutStore, useUiStore } from "../../stores/workspaceStore";
 import { useThemeStore } from "../../stores/themeStore";
-import { useSettingsStore } from "../../stores/settingsStore";
 import { THEMES } from "../theme/themeDefinitions";
 
 interface Action {
@@ -21,8 +20,6 @@ export default function CommandPalette() {
   const setIsKeybindingsOpen = useUiStore((s) => s.setIsKeybindingsOpen);
   const setTheme = useThemeStore((s) => s.setTheme);
   const currentThemeId = useThemeStore((s) => s.themeId);
-  const toggleBuddy = useSettingsStore((s) => s.toggleBuddy);
-  const buddyEnabled = useSettingsStore((s) => s.buddyEnabled);
 
   const [query, setQuery] = useState("");
   const [selectedIndex, setSelectedIndex] = useState(0);
@@ -97,15 +94,8 @@ export default function CommandPalette() {
       perform: () => setIsKeybindingsOpen(true),
     });
 
-    arr.push({
-      id: "buddy-toggle",
-      title: `Claude Buddy: ${buddyEnabled ? "OFF にする" : "ON にする"}`,
-      category: "Settings",
-      perform: () => toggleBuddy(),
-    });
-
     return arr;
-  }, [workspaces, activeWorkspaceId, setActiveWorkspace, createWorkspace, setTheme, setIsKeybindingsOpen, currentThemeId, toggleBuddy, buddyEnabled]);
+  }, [workspaces, activeWorkspaceId, setActiveWorkspace, createWorkspace, setTheme, setIsKeybindingsOpen, currentThemeId]);
 
   // Fuzzy search
   const fuse = useMemo(

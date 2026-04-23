@@ -100,7 +100,7 @@ async fn handle_connection(
 /// Get the path to the port file for socket discovery
 fn get_port_file_path() -> std::path::PathBuf {
     let mut path = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
-    path.push(".mycmux");
+    path.push(".mycmux-lite");
     std::fs::create_dir_all(&path).ok();
     path.push("mycmux.port");
     path

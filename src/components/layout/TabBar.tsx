@@ -1,9 +1,7 @@
 import { useRef, useState, useCallback, useEffect } from "react";
 import { useWorkspaceListStore, usePaneMetadataStore } from "../../stores/workspaceStore";
-import { useSettingsStore } from "../../stores/settingsStore";
 import { SIDEBAR_WIDTH } from "../../lib/constants";
 import { deriveEffectiveStatus } from "../../lib/notificationStatus";
-import { BuddyWidget } from "../../buddy/BuddyWidget";
 import TabItem from "./TabItem";
 
 const PlusIcon = () => (
@@ -26,7 +24,6 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
   const reorder = useWorkspaceListStore((s) => s.reorderWorkspaces);
   const rename = useWorkspaceListStore((s) => s.renameWorkspace);
   const paneMetadata = usePaneMetadataStore((s) => s.metadata);
-  const buddyEnabled = useSettingsStore((s) => s.buddyEnabled);
 
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [dropIndex, setDropIndex] = useState<number | null>(null);
@@ -172,8 +169,6 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
           );
         })}
       </div>
-
-      {buddyEnabled && <BuddyWidget />}
 
       {/* New workspace button at bottom */}
       <button

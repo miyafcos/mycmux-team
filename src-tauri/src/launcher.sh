@@ -6,7 +6,7 @@ __write_session_mapping() {
   local pane_id="$1"
   local session_id="$2"
   [ -z "$pane_id" ] || [ -z "$session_id" ] && return
-  local map_dir="$HOME/.mycmux/pane-sessions"
+  local map_dir="$HOME/.mycmux-lite/pane-sessions"
   mkdir -p "$map_dir" 2>/dev/null
   echo "$session_id" > "$map_dir/$pane_id.txt"
 }
@@ -187,7 +187,7 @@ if [ -n "$MYCMUX_LAUNCH_TARGET" ]; then
   esac
 fi
 
-__RESTORE_FILE="$HOME/.mycmux/restore.json"
+__RESTORE_FILE="$HOME/.mycmux-lite/restore.json"
 if [ -z "$cmd" ] && [ -f "$__RESTORE_FILE" ]; then
   __CWD="$(pwd)"
   __RESTORE_CMD=$(python -c "

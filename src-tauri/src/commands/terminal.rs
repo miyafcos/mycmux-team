@@ -234,7 +234,7 @@ pub fn get_default_shell() -> DefaultShellInfo {
 pub fn read_pane_session_mappings() -> HashMap<String, String> {
     let mut result = HashMap::new();
     if let Some(home) = dirs::home_dir() {
-        let map_dir = home.join(".mycmux").join("pane-sessions");
+        let map_dir = home.join(".mycmux-lite").join("pane-sessions");
         if let Ok(entries) = std::fs::read_dir(&map_dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
