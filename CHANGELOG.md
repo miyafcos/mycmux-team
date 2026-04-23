@@ -1,150 +1,49 @@
-# Changelog
+# Changelog (mycmux-lite)
 
-All notable changes to mycmux are documented here.
+All notable changes to the **team-distribution** (`release/public-lite` → `mycmux-team`) build of mycmux-lite. The upstream personal `master` build of mycmux has its own changelog at `miyafcos/mycmux:CHANGELOG.md`.
 
 ---
 
-## [0.2.0] — 2026-04-07
+## [0.3.0-lite.1] — 2026-04-23
 
-### Added
+### Performance
 
-- Remote Terminal dashboard with WebSocket-based browser access
-- Existing session monitoring flow for iPhone / remote viewer use
-- Three new bundled themes: Berry Cream, Ocean Mist, Matcha Latte
+- **Stop hidden workspaces/tabs from running in background.** Cherry-picked from upstream personal v0.3.0. Previously every workspace and tab kept its xterm instance alive with `runScan()` firing every 150 ms; renderer + GPU process were burning ~3 hours of CPU per ~9 hours of use. Now the workspace mount set is an LRU capped at 3, panes render only the active tab, `XTermWrapper` disposes its `onWriteParsed` / `onPtyExit` listeners on cache and re-registers them on reattach, and `runScan` is gated by `isActivePane`.
 
-### Fixed
+### Features
 
-- `Shift+Enter` handling for Kitty-style terminal input
-- Metadata alignment for Windows deployment and local update scripts
+- **In-app auto-update** via `tauri-plugin-updater` v2. Settings → 更新を確認 で `latest.json` を確認 → 署名検証 → ダウンロード → 自動再起動。lite 用署名鍵は個人版と分離。endpoint = `https://github.com/miyafcos/mycmux-team/releases/latest/download/latest.json`。
+
+### Build / release
+
+- **`build-lite.ps1`** が個人版用 `build-personal.ps1` と分離。ブランチ確認 + working tree clean 確認 + MSVC 環境読込 + ビルド + タイムスタンプ付きバックアップ + 配置 + 配布アセット集約を1コマンドで。
+- **GitHub Actions `release.yml`** が tag 名で `build-lite` ジョブを起動 (`v*-lite.*`)。`TAURI_KEY_LITE` secret で署名。
+- **タグ命名**: lite は `vX.Y.Z-lite.N` (例 `v0.3.0-lite.1`, `v0.3.0-lite.2`)。
 
 ### Notes
 
-- This release matches the currently used local `mycmux` build.
-- Some internal docs and legacy artifacts still mention `ptrterminal` / `ptrcode`.
-
-## [0.1.3] — 2026-03-20
-
-### Added: Native Browser Pane via wry/WebKit2GTK
-
-#### What changed
-
-Replaced the `<iframe>`-based browser pane with a native wry child webview embedded directly in the GTK window. Each browser tab now gets a real WebKit2GTK webview instance, fully capable of loading any website regardless of `X-Frame-Options` or cross-origin restrictions.
-
-#### Why
-
-The iframe approach was fundamentally limited:
-- Most real websites (`google.com`, `github.com`, etc.) set `X-Frame-Options: DENY` or `Content-Security-Policy: frame-ancestors 'none'`, causing blank panes.
-- JavaScript execution from the host was blocked by same-origin policy — the agent could not automate iframe content.
-- History navigation (`back`/`forward`) silently failed on cross-origin navigations.
-
-The native webview approach resolves all of these by running WebKit as a child X11 window positioned inside the GTK layout, with privileged JavaScript execution from the Rust host process.
-
-#### GTK window restructuring (`src-tauri/src/lib.rs`)
-
-On Linux, the GTK window hierarchy is restructured at startup:
-
-```
-Before:
-  GtkApplicationWindow → GtkBox (vbox) → WebKitWebView (React UI)
-
-After:
-  GtkApplicationWindow → GtkOverlay → GtkBox (vbox) → WebKitWebView (React UI)
-                                    ↘ GtkFixed (floating layer for browser panes)
-```
-
-A `gtk::Overlay` wraps the existing vbox so a `gtk::Fixed` container can float on top without displacing the React UI. The Fixed is used because wry's `build_gtk()` only supports absolute positioning when the container is a `GtkFixed` — with a `GtkBox` it ignores bounds entirely and fills the box.
-
-`overlay.set_overlay_pass_through(&fixed, true)` is applied to the Fixed so GTK routes input events through it to the React UI in areas where no browser child window is present. Without this, the Fixed intercepts all clicks and keypresses everywhere, breaking the entire app.
-
-#### BrowserManager (`src-tauri/src/commands/browser.rs`)
-
-New Tauri state struct managing all active browser panes:
-
-```rust
-pub struct BrowserManager {
-    panes: DashMap<String, BrowserPane>,
-    fixed: gtk::Fixed,
-}
-```
-
-`DashMap` provides lock-free concurrent access. `Send + Sync` are manually declared because GTK types don't implement them — all GTK calls are safe because they occur on the GTK main thread.
-
-New Tauri commands exposed:
-- `browser_create(session_id, x, y, w, h)` — create and position a webview
-- `browser_destroy(session_id)` — destroy a webview and free its resources
-- `browser_set_bounds(session_id, x, y, w, h)` — reposition/resize
-- `browser_navigate(session_id, url)` — load a URL
-- `browser_eval(session_id, script)` — execute JavaScript, return result
-- `browser_status(session_id)` — check if a session exists
-- `browser_snapshot(session_id)` — return DOM text content for agent inspection
-
-#### BrowserPane component (`src/components/browser/BrowserPane.tsx`)
-
-Rewritten to manage the webview lifecycle:
-- Calls `browser_create` on mount with the container element's `getBoundingClientRect()` coordinates.
-- Installs a `ResizeObserver` to call `browser_set_bounds` when the pane is resized.
-- Calls `browser_destroy` on unmount.
-- URL bar normalizes input (auto-prepends `https://`) and calls `browser_navigate`.
-
-#### Socket API — new browser automation commands (`src/components/layout/SocketListener.tsx`)
-
-New commands available to external agents via the Unix socket:
-
-| Command | Description |
-|---------|-------------|
-| `browser.navigate` | Navigate the browser pane to a URL |
-| `browser.eval` | Execute arbitrary JavaScript, return result |
-| `browser.snapshot` | Get a DOM text snapshot for reading page content |
-| `browser.status` | Check whether a browser session is alive |
-| `browser.click` | Click a CSS selector (injected via `browser_eval`) |
-| `browser.fill` | Fill an input field with text (injected via `browser_eval`) |
-| `browser.wait` | Poll until a condition is met (load, selector, URL, text) |
-
-`browser.click` and `browser.fill` dispatch native DOM events (`MouseEvent`, `Event('input')`, `Event('change')`) so the page receives them as real user interactions, not synthetic attribute writes.
-
-`browser.wait` polls `browser_eval` in 200ms intervals up to a configurable timeout.
-
-Removed commands that depended on the old iframe API: `browser.back`, `browser.forward`, `browser.reload`, `browser.screenshot`.
-
-#### Dependencies added
-
-```toml
-[target.'cfg(target_os = "linux")'.dependencies]
-wry = { version = "0.54" }
-webkit2gtk = { version = "2.0" }
-gtk = { version = "0.18" }
-```
-
-These are Linux-only; non-Linux builds are unaffected.
+- 安全タグ `pre-cpu-fix-lite-2026-04-23` を用意。問題発生時は `git reset --hard pre-cpu-fix-lite-2026-04-23` で戻れる。
+- 詳細プラン: `.claude/plans/1e57cfe-initial-witty-marble.md`、観測ベースライン: `.claude/plans/mycmux-cpu-investigation-baseline.md`。
 
 ---
 
-## [0.1.2] — 2026-03-18
+## [0.2.0] — 2026-04-22
 
-### Added
+Initial team-distribution build, derived from mycmux personal v0.2.0.
 
-- Browser keybindings relay: keydown events inside the browser pane are forwarded to the parent window so global shortcuts (workspace switch, pane split) continue to work while the browser is focused.
-- Pane close focus fix: closing a pane now moves focus to the next available pane rather than losing focus entirely.
-- Browser agent API: initial socket commands for browser control (`browser.navigate`, `browser.back`, `browser.forward`, `browser.reload`, `browser.eval`, `browser.screenshot`, `browser.status`).
+### Removed (vs. mycmux personal)
 
----
+- File Explorer Sidebar (`FileExplorerSidebar.tsx`, `PathJumper.tsx`, `fileExplorerStore.ts`) — 1449+728+447 行
+- Buddy / Persona / Codex bridge / sensor tails / session_log
+- fs watcher (Rust `notify`, `ignore`, `tempfile` クレート)
+- `tauri-plugin-dialog` (file dialog 不要)
+- 古い build/package スクリプト (`build-and-update.ps1`, `deploy-update.ps1`, `package-source.ps1`)
+- `docs/` ディレクトリ (個人版の設計メモ)
 
-## [0.1.1] — 2026-03-17
+### Brand split
 
-### Fixed
-
-- Pane split preserves PTY session context: splitting a terminal pane no longer resets the shell session ID, preventing duplicate session creation.
-
----
-
-## [0.1.0] — 2026-03-15
-
-Initial release.
-
-- Multi-workspace terminal multiplexer built on Tauri + xterm.js
-- Pane splitting (horizontal/vertical), drag-to-resize
-- Workspace persistence across sessions
-- Theme system (auto-detects Ghostty/Alacritty/Kitty config)
-- Notification system
-- Unix socket API for external control
-- Custom title bar with workspace display
+- 製品名: `mycmux-lite`
+- Bundle ID: `com.miyazaki.mycmux-lite`
+- config dir: `~/.mycmux-lite/`
+- localStorage key: `mycmux-lite-settings`
+- 個人版 (`mycmux`) と同一マシンで並行起動可能。
