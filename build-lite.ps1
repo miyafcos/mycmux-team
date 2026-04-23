@@ -13,7 +13,11 @@
 # Usage:
 #   powershell -ExecutionPolicy Bypass -File build-lite.ps1
 
-$ErrorActionPreference = "Stop"
+# NOTE: do NOT set $ErrorActionPreference = "Stop" globally.
+# `cmd /c "vcvarsall.bat x64"` writes harmless warnings to stderr (e.g. when
+# vswhere.exe is not on PATH); under "Stop" PowerShell promotes that to a
+# terminating error and the build aborts before npm even runs.
+$ErrorActionPreference = "Continue"
 $repoRoot = "C:\Users\miyaz\cmux-for-linux-dev"
 $distDir  = "C:\Users\miyaz\mycmux-lite-app"
 $uploadDir = Join-Path $repoRoot "dist-uploads"
@@ -42,8 +46,11 @@ if (-not (Test-Path $vsPath)) {
     Write-Error "vcvarsall.bat not found at $vsPath"
     exit 1
 }
-$env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
-$vcOutput = cmd /c "`"$vsPath`" x64 && set" 2>&1
+# Make sure cargo + the VS Installer (where vswhere.exe lives) are on PATH.
+$env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH;C:\Program Files (x86)\Microsoft Visual Studio\Installer"
+# Suppress stderr from vcvarsall.bat — the noisy warnings are harmless and we
+# only care about the env-var dump after the `set` invocation.
+$vcOutput = cmd /c "`"$vsPath`" x64 && set" 2>$null
 foreach ($line in $vcOutput) {
     if ($line -match "^([^=]+)=(.*)$") {
         [Environment]::SetEnvironmentVariable($matches[1], $matches[2], "Process")
