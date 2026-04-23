@@ -194,7 +194,6 @@ export interface PersistentData {
   settings: AppSettings;
   active_workspace_id?: string | null;
   active_pane_id?: string | null;
-  pinned_roots?: PinnedRoot[];
 }
 
 export async function loadPersistentData(): Promise<PersistentData> {
@@ -220,83 +219,4 @@ export async function saveSettings(settings: AppSettings): Promise<void> {
 
 export async function sendSocketResponse(id: number, result: any, error: string | null): Promise<void> {
   return invoke("socket_response", { id, result, error });
-}
-
-// ─── File explorer commands ──────────────────────────────────────────────────
-
-export interface FileEntry {
-  name: string;
-  path: string;
-  is_dir: boolean;
-  modified?: number;
-}
-
-export interface PinnedRoot {
-  id: string;
-  path: string;
-  name: string;
-}
-
-export async function listDirectory(path: string): Promise<FileEntry[]> {
-  return invoke("list_directory", { path });
-}
-
-export async function walkTree(
-  root: string,
-  excludes: string[] = [],
-  maxDepth?: number,
-  limit?: number,
-  includeHidden = false,
-): Promise<FileEntry[]> {
-  return invoke("walk_tree", {
-    root,
-    excludes,
-    maxDepth: maxDepth ?? null,
-    limit: limit ?? null,
-    includeHidden,
-  });
-}
-
-export async function normalizePath(path: string): Promise<string> {
-  return invoke("normalize_path", { path });
-}
-
-export async function savePinnedRoots(pinnedRoots: PinnedRoot[]): Promise<void> {
-  return invoke("save_pinned_roots", { pinnedRoots });
-}
-
-export async function watchRoot(path: string): Promise<void> {
-  return invoke("watch_root", { path });
-}
-
-export async function unwatchRoot(path: string): Promise<void> {
-  return invoke("unwatch_root", { path });
-}
-
-export async function revealInExplorer(path: string): Promise<void> {
-  return invoke("reveal_in_explorer", { path });
-}
-
-export async function openWithDefault(path: string): Promise<void> {
-  return invoke("open_with_default", { path });
-}
-
-export async function createFile(parent: string, name: string): Promise<string> {
-  return invoke("create_file", { parent, name });
-}
-
-export async function createFolder(parent: string, name: string): Promise<string> {
-  return invoke("create_folder", { parent, name });
-}
-
-export interface FsChangedPayload {
-  path: string;
-}
-
-export function onFsChanged(
-  callback: (payload: FsChangedPayload) => void,
-): Promise<UnlistenFn> {
-  return listen<FsChangedPayload>("fs_changed", (event) => {
-    callback(event.payload);
-  });
 }

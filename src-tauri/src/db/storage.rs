@@ -94,13 +94,6 @@ impl Default for AppSettings {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PinnedRoot {
-    pub id: String,
-    pub path: String,
-    pub name: String,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PersistentData {
     pub workspaces: Vec<WorkspaceConfig>,
@@ -109,8 +102,6 @@ pub struct PersistentData {
     pub active_workspace_id: Option<String>,
     #[serde(default)]
     pub active_pane_id: Option<String>,
-    #[serde(default)]
-    pub pinned_roots: Vec<PinnedRoot>,
 }
 
 fn data_path(app_handle: &tauri::AppHandle) -> Result<PathBuf, String> {

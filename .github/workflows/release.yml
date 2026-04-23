@@ -59,20 +59,16 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: ${{ github.ref_name }}
-          releaseName: "CMux ${{ github.ref_name }}"
+          releaseName: "mycmux-lite ${{ github.ref_name }}"
           releaseBody: |
-            ## CMux ${{ github.ref_name }}
-            
-            Cross-platform terminal workspace manager.
-            
+            ## mycmux-lite ${{ github.ref_name }}
+
+            Team-shared terminal workspace.
+
             ### Downloads
             - **Linux**: `.deb` (Debian/Ubuntu) or `.AppImage` (universal)
-            - **macOS**: `.dmg` (see macOS build)
-            - **Windows**: `.exe` installer (see Windows build)
-            
-            ### Notes
-            - Browser pane is fully functional on Linux
-            - macOS/Windows: Terminal works, browser pane coming soon
+            - **macOS**: `.dmg`
+            - **Windows**: `.exe` installer / `.zip` portable
           releaseDraft: true
           prerelease: false
 
@@ -115,7 +111,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: ${{ github.ref_name }}
-          releaseName: "CMux ${{ github.ref_name }}"
+          releaseName: "mycmux-lite ${{ github.ref_name }}"
           releaseDraft: true
           prerelease: false
           args: --target ${{ matrix.target }}
@@ -149,6 +145,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: ${{ github.ref_name }}
-          releaseName: "CMux ${{ github.ref_name }}"
+          releaseName: "mycmux-lite ${{ github.ref_name }}"
           releaseDraft: true
           prerelease: false
