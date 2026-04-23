@@ -130,7 +130,7 @@ fn parse_skill_inventory(raw: &str) -> Vec<(String, SkillEntry)> {
 
         // top-level keys start at column 0
         if !line.starts_with(' ') {
-            let mut f = flush;
+            let f = flush;
             f(&mut current_name, &mut current, &mut out);
             in_skills = line.trim_end().starts_with("skills:");
             continue;
@@ -144,7 +144,7 @@ fn parse_skill_inventory(raw: &str) -> Vec<(String, SkillEntry)> {
         if line.starts_with("  ") && !line.starts_with("    ") {
             let trimmed = line.trim();
             if let Some(name) = trimmed.strip_suffix(':') {
-                let mut f = flush;
+                let f = flush;
                 f(&mut current_name, &mut current, &mut out);
                 if is_identifier(name) {
                     current_name = Some(name.to_string());
@@ -166,7 +166,7 @@ fn parse_skill_inventory(raw: &str) -> Vec<(String, SkillEntry)> {
         }
     }
 
-    let mut f = flush;
+    let f = flush;
     f(&mut current_name, &mut current, &mut out);
     out
 }
@@ -180,7 +180,7 @@ fn clean_scalar(raw: &str) -> String {
 fn parse_inline_list(raw: &str) -> Vec<String> {
     let s = raw.trim().trim_start_matches('[').trim_end_matches(']');
     s.split(',')
-        .map(|token| clean_scalar(token))
+        .map(clean_scalar)
         .filter(|t| !t.is_empty())
         .collect()
 }
@@ -323,10 +323,8 @@ fn extract_section(raw: &str, heading_substring: &str) -> Option<String> {
         let level = heading_level(line);
         if let Some(lvl) = level {
             let title = line.trim_start_matches('#').trim();
-            if capturing {
-                if lvl <= section_level {
-                    break;
-                }
+            if capturing && lvl <= section_level {
+                break;
             }
             if !capturing && title.contains(heading_substring) {
                 capturing = true;
@@ -397,7 +395,7 @@ fn truncate_chars(s: &str, max_chars: usize) -> String {
     let mut out = String::new();
     for (i, c) in s.chars().enumerate() {
         if i >= max_chars {
-            out.push_str("…");
+            out.push('…');
             break;
         }
         out.push(c);

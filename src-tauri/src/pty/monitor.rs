@@ -61,10 +61,7 @@ fn detect_claude_session_id(cwd: &str) -> Option<String> {
     } else {
         cwd.to_string()
     };
-    let mangled = normalized
-        .replace(':', "-")
-        .replace('\\', "-")
-        .replace('/', "-");
+    let mangled = normalized.replace([':', '\\', '/'], "-");
     let project_dir = home.join(".claude").join("projects").join(&mangled);
     if !project_dir.exists() {
         return None;

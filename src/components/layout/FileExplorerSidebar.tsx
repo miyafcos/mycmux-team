@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { v4 as uuidv4 } from "uuid";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import PathJumper from "./PathJumper";
 
 import {
   useFileExplorerStore,
@@ -162,6 +163,7 @@ export default memo(function FileExplorerSidebar() {
   const refresh = useFileExplorerStore((s) => s.refresh);
   const ensureLoaded = useFileExplorerStore((s) => s.ensureLoaded);
   const setExpanded = useFileExplorerStore((s) => s.setExpanded);
+  const addRecentJump = useFileExplorerStore((s) => s.addRecentJump);
   const clearSelection = useFileExplorerStore((s) => s.clearSelection);
   const closeContextMenu = useFileExplorerStore((s) => s.closeContextMenu);
 
@@ -220,12 +222,13 @@ export default memo(function FileExplorerSidebar() {
           cursor = match.path;
         }
         useFileExplorerStore.getState().setSelectedPath(cursor);
+        addRecentJump(normalized);
         return { ok: true, message: "" };
       } catch (err) {
         return { ok: false, message: String(err) };
       }
     },
-    [activeRoot, setExpanded],
+    [activeRoot, addRecentJump, setExpanded],
   );
 
   return (
@@ -239,7 +242,7 @@ export default memo(function FileExplorerSidebar() {
         onRemoveRoot={removeRoot}
         onRefresh={handleRefresh}
       />
-      <PathInput onSubmit={handleJumpToPath} />
+      <PathJumper onJump={handleJumpToPath} />
       <div
         className="file-explorer-tree"
         style={treeScrollStyle}
@@ -663,49 +666,6 @@ const SortToggleButton = memo(function SortToggleButton() {
       <DirIcon size={12} />
       <span>{label}</span>
     </button>
-  );
-});
-
-const PathInput = memo(function PathInput({
-  onSubmit,
-}: {
-  onSubmit: (path: string) => Promise<{ ok: boolean; message: string }>;
-}) {
-  const [value, setValue] = useState("");
-  const [error, setError] = useState<string | null>(null);
-
-  const handleSubmit = useCallback(async () => {
-    if (!value.trim()) return;
-    const result = await onSubmit(value.trim());
-    if (!result.ok) {
-      setError(result.message);
-    } else {
-      setError(null);
-      setValue("");
-    }
-  }, [onSubmit, value]);
-
-  return (
-    <div style={pathInputContainerStyle}>
-      <input
-        type="text"
-        value={value}
-        onChange={(e) => {
-          setValue(e.target.value);
-          if (error) setError(null);
-        }}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") {
-            e.preventDefault();
-            void handleSubmit();
-          }
-        }}
-        placeholder="パス入力 → Enter"
-        spellCheck={false}
-        style={pathInputStyle}
-      />
-      {error ? <div style={pathErrorStyle}>{error}</div> : null}
-    </div>
   );
 });
 
@@ -1336,32 +1296,6 @@ const rootMenuPathStyle: React.CSSProperties = {
   textOverflow: "ellipsis",
   whiteSpace: "nowrap",
   textAlign: "right",
-};
-
-const pathInputContainerStyle: React.CSSProperties = {
-  padding: "6px",
-  borderBottom: "1px solid var(--cmux-border)",
-};
-
-const pathInputStyle: React.CSSProperties = {
-  width: "100%",
-  height: 24,
-  padding: "2px 6px",
-  background: "var(--cmux-bg, #0a0a0a)",
-  border: "1px solid var(--cmux-border)",
-  borderRadius: 4,
-  color: "var(--cmux-text)",
-  fontSize: 11,
-  fontFamily: "inherit",
-  outline: "none",
-  boxSizing: "border-box",
-};
-
-const pathErrorStyle: React.CSSProperties = {
-  marginTop: 4,
-  color: "#ff6b6b",
-  fontSize: 10,
-  lineHeight: 1.3,
 };
 
 const treeScrollStyle: React.CSSProperties = {

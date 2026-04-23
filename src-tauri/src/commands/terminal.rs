@@ -34,6 +34,7 @@ pub fn get_terminal_config() -> TerminalConfigPayload {
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub fn create_session(
     app_handle: AppHandle,
     state: State<'_, AppState>,
@@ -76,7 +77,7 @@ fn inject_osc7_hook(
         return;
     }
     let lower = command.to_ascii_lowercase();
-    let leaf = lower.rsplit(|c| c == '/' || c == '\\').next().unwrap_or("");
+    let leaf = lower.rsplit(['/', '\\']).next().unwrap_or("");
     let shell = leaf.strip_suffix(".exe").unwrap_or(leaf);
 
     match shell {
@@ -203,10 +204,10 @@ pub fn get_default_shell() -> DefaultShellInfo {
             };
         }
         // cmd.exe fallback
-        return DefaultShellInfo {
+        DefaultShellInfo {
             command: std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string()),
             args: vec![],
-        };
+        }
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -266,10 +267,7 @@ pub fn get_claude_session_id(cwd: String) -> Option<String> {
     } else {
         cwd.clone()
     };
-    let mangled = normalized
-        .replace(':', "-")
-        .replace('\\', "-")
-        .replace('/', "-");
+    let mangled = normalized.replace([':', '\\', '/'], "-");
     let project_dir = home.join(".claude").join("projects").join(&mangled);
     if !project_dir.exists() {
         return None;

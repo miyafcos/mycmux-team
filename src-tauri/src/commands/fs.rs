@@ -1,6 +1,10 @@
+use ignore::WalkBuilder;
 use serde::Serialize;
+use std::collections::HashSet;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+#[cfg(target_os = "windows")]
+use std::os::windows::fs::MetadataExt;
 
 use tauri::State;
 
@@ -14,6 +18,60 @@ pub struct FileEntry {
     pub path: String,
     pub is_dir: bool,
     pub modified: Option<u64>,
+}
+
+const DEFAULT_WALK_EXCLUDES: &[&str] = &[
+    ".git",
+    "node_modules",
+    "target",
+    "dist",
+    "build",
+    ".next",
+    "__pycache__",
+    ".venv",
+    ".cache",
+];
+
+fn modified_at_unix_secs(path: &Path) -> Option<u64> {
+    fs::metadata(path)
+        .ok()
+        .and_then(|metadata| metadata.modified().ok())
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_secs())
+}
+
+fn is_hidden_path(path: &Path, name: &str, include_hidden: bool) -> bool {
+    if include_hidden {
+        return false;
+    }
+
+    if name.starts_with('.') {
+        return true;
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
+        if let Ok(metadata) = fs::metadata(path) {
+            return metadata.file_attributes() & FILE_ATTRIBUTE_HIDDEN != 0;
+        }
+    }
+
+    false
+}
+
+fn should_skip_walk_entry(
+    entry: &ignore::DirEntry,
+    excludes: &HashSet<String>,
+    include_hidden: bool,
+) -> bool {
+    if entry.depth() == 0 {
+        return false;
+    }
+
+    let name = entry.file_name().to_string_lossy();
+    excludes.contains(&name.to_ascii_lowercase())
+        || is_hidden_path(entry.path(), name.as_ref(), include_hidden)
 }
 
 /// Validate a user-supplied leaf name for create_file / create_folder.
@@ -108,6 +166,81 @@ pub fn list_directory(path: String) -> Result<Vec<FileEntry>, String> {
         (false, true) => std::cmp::Ordering::Greater,
         _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
     });
+
+    Ok(entries)
+}
+
+#[tauri::command]
+pub fn walk_tree(
+    root: String,
+    excludes: Vec<String>,
+    max_depth: Option<usize>,
+    limit: Option<usize>,
+    include_hidden: Option<bool>,
+) -> Result<Vec<FileEntry>, String> {
+    let root_path = PathBuf::from(&root);
+    if !root_path.is_dir() {
+        return Err(format!("not a directory: {root}"));
+    }
+
+    let max_depth = max_depth.unwrap_or(10);
+    let limit = limit.unwrap_or(50_000);
+    let include_hidden = include_hidden.unwrap_or(false);
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+
+    let exclude_names: HashSet<String> = excludes
+        .into_iter()
+        .chain(DEFAULT_WALK_EXCLUDES.iter().map(|name| (*name).to_string()))
+        .map(|name| name.trim().to_ascii_lowercase())
+        .filter(|name| !name.is_empty())
+        .collect();
+
+    let mut builder = WalkBuilder::new(&root_path);
+    let filter_excludes = exclude_names.clone();
+    builder
+        .hidden(false)
+        .follow_links(false)
+        .max_depth(Some(max_depth))
+        .filter_entry(move |entry| {
+            !should_skip_walk_entry(entry, &filter_excludes, include_hidden)
+        });
+    let walker = builder.build();
+
+    let mut entries = Vec::new();
+    for result in walker {
+        let Ok(dir_entry) = result else {
+            continue;
+        };
+        if dir_entry.depth() == 0 || dir_entry.depth() > max_depth {
+            continue;
+        }
+
+        let path = dir_entry.path();
+        let name = dir_entry.file_name().to_string_lossy().to_string();
+        if exclude_names.contains(&name.to_ascii_lowercase())
+            || is_hidden_path(path, &name, include_hidden)
+        {
+            continue;
+        }
+
+        let is_dir = dir_entry
+            .file_type()
+            .map(|file_type| file_type.is_dir())
+            .unwrap_or_else(|| path.is_dir());
+
+        entries.push(FileEntry {
+            name,
+            path: path.to_string_lossy().to_string(),
+            is_dir,
+            modified: modified_at_unix_secs(path),
+        });
+
+        if entries.len() >= limit {
+            break;
+        }
+    }
 
     Ok(entries)
 }

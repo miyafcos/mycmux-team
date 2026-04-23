@@ -356,10 +356,10 @@ fn get_default_shell() -> (String, Vec<String>) {
         if std::path::Path::new(pwsh).exists() {
             return (pwsh.to_string(), vec![]);
         }
-        return (
+        (
             std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string()),
             vec![],
-        );
+        )
     }
 
     #[cfg(not(target_os = "windows"))]
