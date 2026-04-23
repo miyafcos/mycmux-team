@@ -7,11 +7,15 @@ import {
   listDirectory,
   savePinnedRoots,
   unwatchRoot,
+  walkTree,
   watchRoot,
 } from "../lib/ipc";
 
 type EntriesMap = Record<string, FileEntry[]>;
 type ErrorsMap = Record<string, string>;
+type SearchIndexMap = Record<string, FileEntry[]>;
+type SearchIndexStatus = "idle" | "building" | "ready" | "error";
+type SearchIndexStatusMap = Record<string, SearchIndexStatus>;
 
 export interface DragState {
   paths: string[];
@@ -38,6 +42,9 @@ interface FileExplorerState {
   roots: PinnedRoot[];
   activeRootId: string | null;
   sortMode: SortMode;
+  recentJumps: string[];
+  searchIndex: SearchIndexMap;
+  searchIndexStatus: SearchIndexStatusMap;
   creatingIn: CreatingInState | null;
 
   entries: EntriesMap;
@@ -55,6 +62,8 @@ interface FileExplorerState {
   removeRoot: (id: string) => void;
   renameRoot: (id: string, name: string) => void;
   setActiveRootId: (id: string | null) => void;
+  addRecentJump: (path: string) => void;
+  buildSearchIndex: (rootPath: string) => Promise<void>;
 
   toggleExpand: (path: string) => Promise<void>;
   setExpanded: (path: string, expanded: boolean) => Promise<void>;
@@ -101,6 +110,9 @@ export const useFileExplorerStore = create<FileExplorerState>()(
       roots: [],
       activeRootId: null,
       sortMode: "name-asc",
+      recentJumps: [],
+      searchIndex: {},
+      searchIndexStatus: {},
       creatingIn: null,
       entries: {},
       errors: {},
@@ -133,15 +145,35 @@ export const useFileExplorerStore = create<FileExplorerState>()(
         void watchRoot(normalized.path).catch((err) =>
           console.warn("[fileExplorer] watchRoot failed:", err),
         );
+        void get().buildSearchIndex(normalized.path);
       },
 
       removeRoot: (id) => {
         const { roots, activeRootId } = get();
         const target = roots.find((r) => r.id === id);
         const next = roots.filter((r) => r.id !== id);
-        set({
-          roots: next,
-          activeRootId: activeRootId === id ? next[0]?.id ?? null : activeRootId,
+        set((state) => {
+          if (!target) {
+            return {
+              roots: next,
+              activeRootId: activeRootId === id ? next[0]?.id ?? null : activeRootId,
+            };
+          }
+
+          const nextSearchIndex = { ...state.searchIndex };
+          const nextSearchIndexStatus = { ...state.searchIndexStatus };
+          const nextErrors = { ...state.errors };
+          delete nextSearchIndex[target.path];
+          delete nextSearchIndexStatus[target.path];
+          delete nextErrors[target.path];
+
+          return {
+            roots: next,
+            activeRootId: activeRootId === id ? next[0]?.id ?? null : activeRootId,
+            errors: nextErrors,
+            searchIndex: nextSearchIndex,
+            searchIndexStatus: nextSearchIndexStatus,
+          };
         });
         void persistRoots(next);
         if (target) {
@@ -157,7 +189,88 @@ export const useFileExplorerStore = create<FileExplorerState>()(
         void persistRoots(roots);
       },
 
-      setActiveRootId: (id) => set({ activeRootId: id }),
+      setActiveRootId: (id) => {
+        set({ activeRootId: id });
+        const root = get().roots.find((entry) => entry.id === id);
+        if (!root) {
+          return;
+        }
+
+        const status = get().searchIndexStatus[root.path] ?? "idle";
+        if (status !== "ready" && status !== "building") {
+          void get().buildSearchIndex(root.path);
+        }
+      },
+      addRecentJump: (path) =>
+        set((state) => {
+          const trimmed = path.trim();
+          if (!trimmed) {
+            return state;
+          }
+
+          return {
+            recentJumps: [
+              trimmed,
+              ...state.recentJumps.filter((entry) => entry !== trimmed),
+            ].slice(0, 20),
+          };
+        }),
+      buildSearchIndex: async (rootPath) => {
+        const status = get().searchIndexStatus[rootPath] ?? "idle";
+        if (status === "building") {
+          return;
+        }
+
+        set((state) => ({
+          searchIndexStatus: { ...state.searchIndexStatus, [rootPath]: "building" },
+        }));
+
+        try {
+          const result = await walkTree(rootPath, [], 10, 50_000, false);
+          set((state) => {
+            const rootStillExists = state.roots.some((root) => root.path === rootPath);
+            const nextErrors = { ...state.errors };
+            delete nextErrors[rootPath];
+
+            if (!rootStillExists) {
+              const nextSearchIndex = { ...state.searchIndex };
+              const nextSearchIndexStatus = { ...state.searchIndexStatus };
+              delete nextSearchIndex[rootPath];
+              delete nextSearchIndexStatus[rootPath];
+              return {
+                errors: nextErrors,
+                searchIndex: nextSearchIndex,
+                searchIndexStatus: nextSearchIndexStatus,
+              };
+            }
+
+            return {
+              errors: nextErrors,
+              searchIndex: { ...state.searchIndex, [rootPath]: result },
+              searchIndexStatus: { ...state.searchIndexStatus, [rootPath]: "ready" },
+            };
+          });
+        } catch (err) {
+          const message = String(err);
+          set((state) => {
+            if (!state.roots.some((root) => root.path === rootPath)) {
+              const nextSearchIndex = { ...state.searchIndex };
+              const nextSearchIndexStatus = { ...state.searchIndexStatus };
+              delete nextSearchIndex[rootPath];
+              delete nextSearchIndexStatus[rootPath];
+              return {
+                searchIndex: nextSearchIndex,
+                searchIndexStatus: nextSearchIndexStatus,
+              };
+            }
+
+            return {
+              errors: { ...state.errors, [rootPath]: message },
+              searchIndexStatus: { ...state.searchIndexStatus, [rootPath]: "error" },
+            };
+          });
+        }
+      },
       setSelectedPath: (path) =>
         set({
           selectedPath: path,
@@ -284,12 +397,16 @@ export const useFileExplorerStore = create<FileExplorerState>()(
       },
 
       refresh: async (path) => {
+        const isRoot = get().roots.some((root) => root.path === path);
         set((state) => {
           const nextEntries = { ...state.entries };
           delete nextEntries[path];
           return { entries: nextEntries };
         });
         await get().ensureLoaded(path);
+        if (isRoot) {
+          void get().buildSearchIndex(path);
+        }
       },
 
       invalidate: (path) => {
@@ -320,7 +437,10 @@ export const useFileExplorerStore = create<FileExplorerState>()(
     {
       name: "mycmux:fileExplorer",
       storage: createJSONStorage(() => localStorage),
-      partialize: (state) => ({ sortMode: state.sortMode }),
+      partialize: (state) => ({
+        sortMode: state.sortMode,
+        recentJumps: state.recentJumps,
+      }),
       version: 1,
     },
   ),

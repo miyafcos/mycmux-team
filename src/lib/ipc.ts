@@ -241,6 +241,22 @@ export async function listDirectory(path: string): Promise<FileEntry[]> {
   return invoke("list_directory", { path });
 }
 
+export async function walkTree(
+  root: string,
+  excludes: string[] = [],
+  maxDepth?: number,
+  limit?: number,
+  includeHidden = false,
+): Promise<FileEntry[]> {
+  return invoke("walk_tree", {
+    root,
+    excludes,
+    maxDepth: maxDepth ?? null,
+    limit: limit ?? null,
+    includeHidden,
+  });
+}
+
 export async function normalizePath(path: string): Promise<string> {
   return invoke("normalize_path", { path });
 }

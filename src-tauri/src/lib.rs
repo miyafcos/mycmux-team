@@ -54,6 +54,7 @@ pub fn run() {
             commands::workspace::save_workspaces,
             commands::workspace::save_settings,
             commands::fs::list_directory,
+            commands::fs::walk_tree,
             commands::fs::normalize_path,
             commands::fs::save_pinned_roots,
             commands::fs::watch_root,

@@ -29,6 +29,7 @@ pub struct PtySession {
 unsafe impl Sync for PtySession {}
 
 impl PtySession {
+    #[allow(clippy::too_many_arguments)]
     pub fn spawn(
         session_id: String,
         command: &str,

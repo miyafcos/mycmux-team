@@ -2,7 +2,7 @@
 /// can match the look of their native terminal.
 ///
 /// Detection order: ghostty → alacritty → kitty → system defaults.
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
 pub struct TerminalUserConfig {
@@ -131,7 +131,7 @@ pub fn load() -> TerminalUserConfig {
 
 // ─── Ghostty ──────────────────────────────────────────────────────────────────
 
-fn load_ghostty(home: &PathBuf, config_dir: &PathBuf) -> Option<(String, f32, Option<UserColors>)> {
+fn load_ghostty(home: &Path, config_dir: &Path) -> Option<(String, f32, Option<UserColors>)> {
     // Ghostty config locations:
     // - Linux: ~/.config/ghostty/config
     // - macOS: ~/Library/Application Support/com.mitchellh.ghostty/config or ~/.config/ghostty/config
@@ -230,8 +230,8 @@ fn parse_ghostty_colors(content: &str) -> Option<UserColors> {
 // ─── Alacritty ────────────────────────────────────────────────────────────────
 
 fn load_alacritty(
-    _home: &PathBuf,
-    config_dir: &PathBuf,
+    _home: &Path,
+    config_dir: &Path,
 ) -> Option<(String, f32, Option<UserColors>)> {
     // Alacritty config locations:
     // - Linux: ~/.config/alacritty/alacritty.toml
@@ -291,7 +291,7 @@ fn load_alacritty(
     // Parse colors: prefer omarchy theme file, fall back to main config
     let color_source = theme_content
         .as_deref()
-        .or_else(|| main_content.as_deref())
+        .or(main_content.as_deref())
         .unwrap();
     let colors = parse_alacritty_colors(color_source);
 
@@ -362,7 +362,7 @@ fn set_ansi(ansi: &mut [[u8; 3]; 16], range: std::ops::Range<usize>, line: &str,
 
 // ─── Kitty ────────────────────────────────────────────────────────────────────
 
-fn load_kitty(config_dir: &PathBuf) -> Option<(String, f32, Option<UserColors>)> {
+fn load_kitty(config_dir: &Path) -> Option<(String, f32, Option<UserColors>)> {
     // Kitty config location: ~/.config/kitty/kitty.conf (same on Linux/macOS)
     let config_path = config_dir.join("kitty/kitty.conf");
     let content = std::fs::read_to_string(&config_path).ok()?;
@@ -558,8 +558,8 @@ fn parse_windows_terminal_colors(settings: &serde_json::Value) -> Option<UserCol
 fn strip_key<'a>(line: &'a str, key: &str) -> Option<&'a str> {
     let line = line.trim();
     // Support both `key = value` and `key=value`.
-    let rest = if line.starts_with(key) {
-        let rest = line[key.len()..].trim_start();
+    let rest = if let Some(stripped) = line.strip_prefix(key) {
+        let rest = stripped.trim_start();
         rest.strip_prefix('=')?
     } else {
         return None;

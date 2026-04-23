@@ -16,6 +16,7 @@ impl SessionManager {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn create(
         &self,
         session_id: String,
