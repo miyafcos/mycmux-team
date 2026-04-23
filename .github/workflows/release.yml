@@ -27,6 +27,12 @@ jobs:
           node-version: "20"
           cache: "npm"
 
+      # Make MSVC link.exe / cl.exe visible to cargo on windows-latest.
+      # Without this the toolchain-stable host tools fail with
+      # "linker `link.exe` not found" because the Visual Studio install dir
+      # is not on PATH by default.
+      - uses: ilammy/msvc-dev-cmd@v1
+
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
@@ -64,6 +70,12 @@ jobs:
         with:
           node-version: "20"
           cache: "npm"
+
+      # Make MSVC link.exe / cl.exe visible to cargo on windows-latest.
+      # Without this the toolchain-stable host tools fail with
+      # "linker `link.exe` not found" because the Visual Studio install dir
+      # is not on PATH by default.
+      - uses: ilammy/msvc-dev-cmd@v1
 
       - uses: dtolnay/rust-toolchain@stable
 
