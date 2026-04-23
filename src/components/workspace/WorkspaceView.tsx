@@ -9,6 +9,8 @@ import { evictTerminalCache } from "../terminal/XTermWrapper";
 import TerminalPane from "./TerminalPane";
 import { ErrorBoundary } from "../layout/ErrorBoundary";
 
+const MAX_MOUNTED_WORKSPACES = 3;
+
 interface TerminalGridProps {
   workspaceId: string;
   gridTemplateId: GridTemplateId;
@@ -173,22 +175,25 @@ export const TerminalGrid = memo(function TerminalGrid({
   );
 });
 
-// Wrapper: renders ALL workspaces simultaneously, hides inactive ones with CSS.
-// This prevents xterm.js unmount/remount on workspace switch, keeping sessions alive.
+// Wrapper: keeps only a small LRU of workspaces mounted at once.
 export default memo(function WorkspaceView() {
   const activeId = useWorkspaceListStore((s) => s.activeWorkspaceId);
   const workspaces = useWorkspaceListStore((s) => s.workspaces);
-  const [mountedWorkspaceIds, setMountedWorkspaceIds] = useState<Set<string>>(() => new Set());
+  const [mountedWorkspaceIds, setMountedWorkspaceIds] = useState<string[]>([]);
 
   useEffect(() => {
     if (!activeId) return;
     setMountedWorkspaceIds((prev) => {
-      if (prev.has(activeId)) {
+      const next = prev.filter((id) => id !== activeId);
+      next.push(activeId);
+      const trimmed = next.slice(-MAX_MOUNTED_WORKSPACES);
+      if (
+        trimmed.length === prev.length
+        && trimmed.every((id, index) => id === prev[index])
+      ) {
         return prev;
       }
-      const next = new Set(prev);
-      next.add(activeId);
-      return next;
+      return trimmed;
     });
   }, [activeId]);
 
@@ -196,14 +201,18 @@ export default memo(function WorkspaceView() {
   useEffect(() => {
     const currentIds = new Set(workspaces.map((ws) => ws.id));
     setMountedWorkspaceIds((prev) => {
-      let changed = false;
-      for (const id of prev) {
-        if (!currentIds.has(id)) { changed = true; break; }
-      }
-      if (!changed) return prev;
-      const next = new Set<string>();
-      for (const id of prev) {
-        if (currentIds.has(id)) next.add(id);
+      const next = prev.filter((id) => currentIds.has(id));
+      if (next.length === prev.length) {
+        let changed = false;
+        for (let i = 0; i < prev.length; i++) {
+          if (next[i] !== prev[i]) {
+            changed = true;
+            break;
+          }
+        }
+        if (!changed) {
+          return prev;
+        }
       }
       return next;
     });
@@ -212,7 +221,7 @@ export default memo(function WorkspaceView() {
   return (
     <div style={{ position: "relative", width: "100%", height: "100%" }}>
       {workspaces
-        .filter((ws) => ws.panes.length > 0 && (mountedWorkspaceIds.has(ws.id) || ws.id === activeId))
+        .filter((ws) => ws.panes.length > 0 && (mountedWorkspaceIds.includes(ws.id) || ws.id === activeId))
         .map((ws) => {
           const isActive = ws.id === activeId;
           return (

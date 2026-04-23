@@ -261,6 +261,11 @@ export default memo(function XTermWrapper({
   // Single source of truth: is this tab the currently-focused terminal?
   // Used for both scroll-to-bottom-on-activate and notification suppression.
   const isActivePane = useUiStore((s) => s.activePaneId === sessionId);
+  const isActivePaneRef = useRef(isActivePane);
+
+  useEffect(() => {
+    isActivePaneRef.current = isActivePane;
+  }, [isActivePane]);
 
   // Dynamically update terminal theme and font size
   useEffect(() => {
@@ -271,7 +276,7 @@ export default memo(function XTermWrapper({
     }
   }, [storeTheme, storeFontSize]);
 
-  // Scroll to bottom when this tab becomes active — only if user was at bottom before switching
+  // Scroll to bottom when this tab becomes active only if the user was already at bottom.
   useEffect(() => {
     if (isActivePane && termRef.current) {
       setTimeout(() => {
@@ -288,54 +293,43 @@ export default memo(function XTermWrapper({
     if (!container) return;
 
     let disposed = false;
+    let termDisposed = false;
     let resizeObserver: ResizeObserver | null = null;
-    let resizeTimeout: ReturnType<typeof setTimeout>;
-
-    // --- Reattach cached terminal (survived Allotment restructuring) ---
-    const cached = termCache.get(sessionId);
-    if (cached) {
-      termCache.delete(sessionId);
-      container.appendChild(cached.xtermElement);
-      termRef.current = cached.term;
-      fitAddonRef.current = cached.fitAddon;
-      searchAddonRef.current = cached.searchAddon;
-
-      // Re-fit after reattach
-      setTimeout(() => {
-        if (disposed) return;
-        cached.fitAddon.fit();
-        resizeSession(sessionId, cached.term.cols, cached.term.rows).catch(console.error);
-      }, 30);
-
-      resizeObserver = new ResizeObserver(() => {
-        clearTimeout(resizeTimeout);
-        resizeTimeout = setTimeout(() => {
-          if (disposed) return;
-          cached.fitAddon.fit();
-          resizeSession(sessionId, cached.term.cols, cached.term.rows).catch(console.error);
-        }, 50);
-      });
-      resizeObserver.observe(container);
-
-      return () => {
-        disposed = true;
-        clearTimeout(resizeTimeout);
-        resizeObserver?.disconnect();
-        // Cache again for potential future remount
-        const el = cached.xtermElement;
-        if (el.parentNode === container) container.removeChild(el);
-        termCache.set(sessionId, cached);
-      };
-    }
-
-    // --- First mount: create new terminal + PTY session ---
+    let resizeTimeout: ReturnType<typeof setTimeout> | null = null;
     let unlistenExit: (() => void) | null = null;
+    let writeParsedDisposable: { dispose: () => void } | null = null;
+    let scrollDisposable: { dispose: () => void } | null = null;
     let term: Terminal | null = null;
     let fitAddon: FitAddon | null = null;
     let logThrottle: ReturnType<typeof setTimeout> | null = null;
     let idleFlush: ReturnType<typeof setTimeout> | null = null;
     let startupSettleTimeout: ReturnType<typeof setTimeout> | null = null;
     let startupSettled = false;
+    let sessionStarted = false;
+    let lastLogLine = "";
+    let lastScanSignature = "";
+
+    const clearResizeTimer = (): void => {
+      if (resizeTimeout) {
+        clearTimeout(resizeTimeout);
+        resizeTimeout = null;
+      }
+    };
+
+    const clearScanTimers = (): void => {
+      if (startupSettleTimeout) {
+        clearTimeout(startupSettleTimeout);
+        startupSettleTimeout = null;
+      }
+      if (logThrottle) {
+        clearTimeout(logThrottle);
+        logThrottle = null;
+      }
+      if (idleFlush) {
+        clearTimeout(idleFlush);
+        idleFlush = null;
+      }
+    };
 
     const settleStartupSession = (): void => {
       if (startupSettled) {
@@ -349,9 +343,239 @@ export default memo(function XTermWrapper({
       markStartupSessionSettled(sessionId);
     };
 
-    async function init() {
+    const scheduleResize = (currentTerm: Terminal, currentFitAddon: FitAddon, delay: number): void => {
+      clearResizeTimer();
+      resizeTimeout = setTimeout(() => {
+        resizeTimeout = null;
+        if (disposed || termDisposed) return;
+        currentFitAddon.fit();
+        resizeSession(sessionId, currentTerm.cols, currentTerm.rows).catch(console.error);
+      }, delay);
+    };
+
+    const registerResizeObserver = (currentTerm: Terminal, currentFitAddon: FitAddon): void => {
+      resizeObserver?.disconnect();
+      resizeObserver = new ResizeObserver(() => {
+        scheduleResize(currentTerm, currentFitAddon, 50);
+      });
+      resizeObserver.observe(container);
+    };
+
+    const registerScrollListener = (currentTerm: Terminal): void => {
+      scrollDisposable?.dispose();
+      scrollDisposable = currentTerm.onScroll(() => {
+        if (termDisposed) return;
+        const buf = currentTerm.buffer.active;
+        isAtBottomRef.current = buf.viewportY >= buf.baseY;
+      });
+    };
+
+    const attachTerminalKeyHandler = (currentTerm: Terminal): void => {
+      currentTerm.attachCustomKeyEventHandler((e: KeyboardEvent) => {
+        if (e.type !== "keydown") return true;
+
+        if (e.key === "v" && e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey) {
+          return false;
+        }
+
+        const keybindingStore = useKeybindingStore.getState();
+        const actions = keybindingStore.getActionsForEvent(e);
+
+        if (actions.length > 0) {
+          if (actions.includes("terminal.search")) {
+            setIsSearchOpen(true);
+            setTimeout(() => searchInputRef.current?.focus(), 50);
+            return false;
+          }
+
+          if (actions.includes("pane.zoom.toggle")) {
+            onZoomToggle?.();
+            return false;
+          }
+
+          return false;
+        }
+
+        if (e.key === "Enter" && e.shiftKey && !e.ctrlKey && !e.altKey) {
+          const processTitle = usePaneMetadataStore.getState().metadata[sessionId]?.processTitle;
+          writeToSession(sessionId, getShiftEnterSequence(command, processTitle)).catch(console.error);
+          return false;
+        }
+
+        return true;
+      });
+    };
+
+    const runScan = (): void => {
+      if (!term || disposed || !isActivePaneRef.current) return;
+      let buf;
+      try {
+        buf = term.buffer.active;
+      } catch {
+        return;
+      }
+
+      const bottom = buf.length - 1;
+      const top = Math.max(0, bottom - 15);
+      const scanLines: string[] = [];
+      let lastNonEmpty = "";
+      for (let i = top; i <= bottom; i++) {
+        const lineObj = buf.getLine(i);
+        if (!lineObj) continue;
+        const text = lineObj
+          .translateToString(true)
+          .replace(/\x1b\[[0-9;]*m/g, "")
+          .trim();
+        if (text.length > 0) {
+          scanLines.push(text);
+          lastNonEmpty = text;
+        }
+      }
+      if (scanLines.length === 0) return;
+
+      const signature = scanLines.slice(-3).join("\n");
+      const scanChanged = signature !== lastScanSignature;
+      lastScanSignature = signature;
+
+      const isNoiseLine =
+        /\d+k?\s+tokens/i.test(lastNonEmpty) ||
+        /access \d+/i.test(lastNonEmpty) ||
+        /past research/i.test(lastNonEmpty) ||
+        /http:\/\/localhost/i.test(lastNonEmpty) ||
+        isShortcutHintLine(lastNonEmpty) ||
+        /^\s*[\u2500-\u257F]+\s*$/.test(lastNonEmpty) ||
+        lastNonEmpty.length < 3;
+      const logChanged = lastNonEmpty !== lastLogLine;
+      if (!isNoiseLine && logChanged) {
+        lastLogLine = lastNonEmpty;
+        usePaneMetadataStore.getState().setMetadata(sessionId, {
+          lastLogLine: lastNonEmpty,
+        });
+      }
+
+      const approvalPatternId = scanForApproval(scanLines);
+      if (approvalPatternId > 0) {
+        usePaneMetadataStore.getState().setMetadata(sessionId, {
+          agentStatus: "waiting",
+        });
+        const activePaneId = useUiStore.getState().activePaneId;
+        if (activePaneId !== sessionId && useSettingsStore.getState().notificationsEnabled) {
+          const didNotify = usePaneMetadataStore.getState().notifyWaiting(sessionId, approvalPatternId);
+          if (didNotify && useSettingsStore.getState().notificationSoundEnabled) {
+            playNotificationSound();
+          }
+        }
+      } else if (scanChanged) {
+        const prevStatus = usePaneMetadataStore.getState().metadata[sessionId]?.agentStatus;
+        if (prevStatus === "waiting") {
+          usePaneMetadataStore.getState().clearAgentStatus(sessionId);
+        }
+      }
+    };
+
+    const registerScanListener = (currentTerm: Terminal): void => {
+      writeParsedDisposable?.dispose();
+      writeParsedDisposable = currentTerm.onWriteParsed(() => {
+        if (disposed) return;
+        if (idleFlush) {
+          clearTimeout(idleFlush);
+          idleFlush = null;
+        }
+        idleFlush = setTimeout(() => {
+          idleFlush = null;
+          runScan();
+        }, 200);
+        if (logThrottle) return;
+        logThrottle = setTimeout(() => {
+          logThrottle = null;
+          runScan();
+        }, 150);
+      });
+    };
+
+    const registerExitListener = async (): Promise<void> => {
+      const nextUnlisten = await onPtyExit(sessionId, () => {
+        if (disposed || !sessionStarted) return;
+        onExit?.();
+      });
+      if (disposed) {
+        nextUnlisten();
+        return;
+      }
+      unlistenExit?.();
+      unlistenExit = nextUnlisten;
+    };
+
+    const cacheCurrentTerminal = (): void => {
+      const currentSearchAddon = searchAddonRef.current;
+      if (term && term.element && fitAddon && currentSearchAddon) {
+        const element = term.element;
+        if (element.parentNode === container) {
+          container.removeChild(element);
+        }
+        termCache.set(sessionId, {
+          term,
+          fitAddon,
+          searchAddon: currentSearchAddon,
+          xtermElement: element,
+          unlistenExit: null,
+        });
+        return;
+      }
+      if (term) {
+        termDisposed = true;
+        term.dispose();
+      }
+    };
+
+    const cleanup = (): void => {
+      clearResizeTimer();
+      clearScanTimers();
+      resizeObserver?.disconnect();
+      resizeObserver = null;
+      disposed = true;
+      writeParsedDisposable?.dispose();
+      writeParsedDisposable = null;
+      scrollDisposable?.dispose();
+      scrollDisposable = null;
+      unlistenExit?.();
+      unlistenExit = null;
+      cacheCurrentTerminal();
+      searchAddonRef.current = null;
+      termRef.current = null;
+      fitAddonRef.current = null;
+    };
+
+    const attachCachedTerminal = (cached: CachedTerm): void => {
+      cached.unlistenExit?.();
+      termCache.delete(sessionId);
+      container.appendChild(cached.xtermElement);
+      term = cached.term;
+      fitAddon = cached.fitAddon;
+      sessionStarted = true;
+      termRef.current = cached.term;
+      fitAddonRef.current = cached.fitAddon;
+      searchAddonRef.current = cached.searchAddon;
+      registerScrollListener(cached.term);
+      attachTerminalKeyHandler(cached.term);
+      registerScanListener(cached.term);
+      void registerExitListener();
+      setTimeout(() => {
+        if (disposed || termDisposed) return;
+        cached.fitAddon.fit();
+        resizeSession(sessionId, cached.term.cols, cached.term.rows).catch(console.error);
+      }, 30);
+      registerResizeObserver(cached.term, cached.fitAddon);
+    };
+
+    const cached = termCache.get(sessionId);
+    if (cached) {
+      attachCachedTerminal(cached);
+      return cleanup;
+    }
+
+    async function init(): Promise<void> {
       if (disposed) return;
-      // Use cached config if available (instant), otherwise use defaults
       const cfg = cachedConfig;
       const initTheme = theme ?? storeTheme.terminal;
       const initFontSize = fontSize ?? cfg?.fontSize ?? 14;
@@ -381,7 +605,7 @@ export default memo(function XTermWrapper({
       fitAddonRef.current = fitAddon;
       const searchAddon = new SearchAddon();
       searchAddonRef.current = searchAddon;
-      
+
       term.loadAddon(fitAddon);
       term.loadAddon(searchAddon);
       term.loadAddon(new WebLinksAddon((_e, uri) => {
@@ -393,74 +617,17 @@ export default memo(function XTermWrapper({
       }));
 
       term.open(container!);
+      registerScrollListener(term);
+      attachTerminalKeyHandler(term);
 
-      // Track whether viewport is scrolled to the bottom
-      term.onScroll(() => {
-        if (!term) return;
-        const buf = term.buffer.active;
-        isAtBottomRef.current = buf.viewportY >= buf.baseY;
-      });
-
-      // Forward modifier+key combos that xterm intercepts before the PTY sees them
-      term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
-        if (e.type !== "keydown") return true;
-
-        // Ctrl+V: suppress xterm's built-in keydown handler so it doesn't
-        // emit the raw \x16 control byte. The actual clipboard paste is
-        // handled by xterm's own paste event listener, which fires
-        // independently and routes through term.onData → chunkedWrite.
-        // Doing nothing here (just returning false) avoids the double-paste
-        // that happened when we also called clipboard.readText() manually.
-        if (e.key === "v" && e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey) {
-          return false;
-        }
-
-        const keybindingStore = useKeybindingStore.getState();
-        
-        // Check if this event matches ANY app shortcut
-        const actions = keybindingStore.getActionsForEvent(e);
-        
-        // If it matches an app shortcut, let it bubble to AppShell's window listener
-        // by returning false (tells xterm to NOT handle it)
-        if (actions.length > 0) {
-          // Handle terminal-specific shortcuts here before bubbling
-          if (actions.includes("terminal.search")) {
-            setIsSearchOpen(true);
-            setTimeout(() => searchInputRef.current?.focus(), 50);
-            return false;
-          }
-          
-          if (actions.includes("pane.zoom.toggle")) {
-            onZoomToggle?.();
-            return false;
-          }
-          
-          // For all other shortcuts (pane split, workspace nav, etc.),
-          // return false to let the event bubble to AppShell
-          return false;
-        }
-        
-        // Shift+Enter is used for multiline prompts by coding agents.
-        if (e.key === "Enter" && e.shiftKey && !e.ctrlKey && !e.altKey) {
-          const processTitle = usePaneMetadataStore.getState().metadata[sessionId]?.processTitle;
-          writeToSession(sessionId, getShiftEnterSequence(command, processTitle)).catch(console.error);
-          return false;
-        }
-        
-        // No app shortcut match → let xterm handle it normally (typing, Ctrl+C, etc.)
-        return true;
-      });
-
-      // Auto-copy selection to clipboard (WezTerm-style)
       term.onSelectionChange(() => {
-        if (disposed || !term) return;
+        if (termDisposed || !term) return;
         const selection = term.getSelection();
         if (selection) {
           navigator.clipboard.writeText(selection).catch(() => {});
         }
       });
 
-      // Send user keystrokes to PTY
       term.onData((data) => {
         chunkedWrite(sessionId, data);
       });
@@ -469,130 +636,15 @@ export default memo(function XTermWrapper({
         writeToSession(sessionId, data).catch(console.error);
       });
 
-      // Track terminal title changes (set via escape sequences by shells/apps)
       term.onTitleChange((title) => {
-        if (disposed || !title) return;
+        if (termDisposed || !title) return;
         usePaneMetadataStore.getState().setMetadata(sessionId, { processTitle: title });
       });
 
-      let _lastLogLine = "";
-      let _lastScanSignature = "";
+      registerScanListener(term);
+      await registerExitListener();
 
-      // runScan is approval-only. Working/done states are authoritatively
-      // derived from Rust sysinfo process monitoring (see App.tsx pty_metadata
-      // handler and processIsShell in the metadata store), so we never touch
-      // agentStatus for anything other than "waiting" here.
-      const runScan = () => {
-        if (!term || disposed) return;
-        let buf;
-        try {
-          buf = term.buffer.active;
-        } catch {
-          return;
-        }
-        // Scan the bottom 16 rows of scrollback — Claude Code approval boxes
-        // span multiple lines and the decisive "(y/n)" or "❯ 1. Yes" line may
-        // sit above the cursor.
-        const bottom = buf.length - 1;
-        const top = Math.max(0, bottom - 15);
-        const scanLines: string[] = [];
-        let lastNonEmpty = "";
-        for (let i = top; i <= bottom; i++) {
-          const lineObj = buf.getLine(i);
-          if (!lineObj) continue;
-          const text = lineObj
-            .translateToString(true)
-            .replace(/\x1b\[[0-9;]*m/g, "")
-            .trim();
-          if (text.length > 0) {
-            scanLines.push(text);
-            lastNonEmpty = text;
-          }
-        }
-        if (scanLines.length === 0) return;
-
-        // Signature: a cheap "did anything change?" fingerprint of the bottom
-        // 3 scanned lines. Used to decide whether a missing approval pattern
-        // means the user has actually responded (fresh output) vs the scan
-        // simply landed on the same frame.
-        const signature = scanLines.slice(-3).join("\n");
-        const scanChanged = signature !== _lastScanSignature;
-        _lastScanSignature = signature;
-
-        // Last-log-line display update (unchanged noise filter).
-        const isNoiseLine =
-          /\d+k?\s+tokens/i.test(lastNonEmpty) ||
-          /access \d+/i.test(lastNonEmpty) ||
-          /past research/i.test(lastNonEmpty) ||
-          /http:\/\/localhost/i.test(lastNonEmpty) ||
-          isShortcutHintLine(lastNonEmpty) ||
-          /^\s*[\u2500-\u257F]+\s*$/.test(lastNonEmpty) ||
-          lastNonEmpty.length < 3;
-        const logChanged = lastNonEmpty !== _lastLogLine;
-        if (!isNoiseLine && logChanged) {
-          _lastLogLine = lastNonEmpty;
-          usePaneMetadataStore.getState().setMetadata(sessionId, {
-            lastLogLine: lastNonEmpty,
-          });
-        }
-
-        // Approval handling.
-        const approvalPatternId = scanForApproval(scanLines);
-        if (approvalPatternId > 0) {
-          // Approval prompt is on screen — set waiting (sticky) and fire the
-          // notification for non-active panes.
-          usePaneMetadataStore.getState().setMetadata(sessionId, {
-            agentStatus: "waiting",
-          });
-          const activePaneId = useUiStore.getState().activePaneId;
-          if (activePaneId !== sessionId && useSettingsStore.getState().notificationsEnabled) {
-            const didNotify = usePaneMetadataStore
-              .getState()
-              .notifyWaiting(sessionId, approvalPatternId);
-            if (didNotify && useSettingsStore.getState().notificationSoundEnabled) {
-              playNotificationSound();
-            }
-          }
-        } else if (scanChanged) {
-          // No approval pattern and the output has moved on — user probably
-          // responded. Clear waiting. processIsShell from sysinfo will still
-          // keep the working indicator lit while Claude runs.
-          const prevStatus = usePaneMetadataStore.getState().metadata[sessionId]?.agentStatus;
-          if (prevStatus === "waiting") {
-            usePaneMetadataStore.getState().clearAgentStatus(sessionId);
-          }
-        }
-      };
-
-      term.onWriteParsed(() => {
-        if (!term || disposed) return;
-        // Leading scan via throttle (150ms) + trailing idle flush (200ms after
-        // last write). The combination catches both mid-stream approval lines
-        // and the "final frame" that fell into a throttle gap.
-        if (idleFlush) {
-          clearTimeout(idleFlush);
-          idleFlush = null;
-        }
-        idleFlush = setTimeout(() => {
-          idleFlush = null;
-          runScan();
-        }, 200);
-        if (logThrottle) return;
-        logThrottle = setTimeout(() => {
-          logThrottle = null;
-          runScan();
-        }, 150);
-      });
-
-      // Register exit listener before spawning PTY to avoid race
-      let sessionStarted = false;
-      unlistenExit = await onPtyExit(sessionId, () => {
-        if (disposed || !sessionStarted) return;
-        onExit?.();
-      });
-
-      if (disposed) {
-        unlistenExit?.();
+      if (disposed || !term || !fitAddon) {
         return;
       }
 
@@ -603,9 +655,13 @@ export default memo(function XTermWrapper({
 
       try {
         await createSession(sessionId, command, args, cols, rows, (rawData: ArrayBuffer) => {
-          if (disposed || !term) return;
+          if (termDisposed || !term) return;
           settleStartupSession();
-          try { term.write(new Uint8Array(rawData)); } catch { /* disposed between check and write */ }
+          try {
+            term.write(new Uint8Array(rawData));
+          } catch {
+            // term disposed between check and write
+          }
         }, cwd, sessionEnv);
         sessionStarted = true;
         startupSettleTimeout = setTimeout(() => {
@@ -617,21 +673,11 @@ export default memo(function XTermWrapper({
         term.writeln(`\r\n\x1b[31mFailed to start: ${err}\x1b[0m`);
       }
 
-      // Resize observer — 50ms debounce (was 100ms)
-      resizeObserver = new ResizeObserver(() => {
-        clearTimeout(resizeTimeout);
-        resizeTimeout = setTimeout(() => {
-          if (disposed || !fitAddon || !term) return;
-          fitAddon.fit();
-          resizeSession(sessionId, term.cols, term.rows).catch(console.error);
-        }, 50);
-      });
-      resizeObserver.observe(container!);
+      registerResizeObserver(term, fitAddon);
 
-      // If config wasn't cached yet, apply font settings once loaded (theme comes from store)
       if (!cfg && !fontSize && !fontFamily) {
         ensureConfigLoaded().then(() => {
-          if (disposed || !term || !cachedConfig) return;
+          if (disposed || termDisposed || !term || !cachedConfig) return;
           term.options.fontSize = cachedConfig.fontSize;
           term.options.fontFamily = cachedConfig.fontFamily;
           fitAddon?.fit();
@@ -639,38 +685,9 @@ export default memo(function XTermWrapper({
       }
     }
 
-    init();
+    void init();
 
-    return () => {
-      clearTimeout(resizeTimeout);
-      if (startupSettleTimeout) {
-        clearTimeout(startupSettleTimeout);
-      }
-      if (logThrottle) { clearTimeout(logThrottle); logThrottle = null; }
-      if (idleFlush) { clearTimeout(idleFlush); idleFlush = null; }
-      resizeObserver?.disconnect();
-      // Cache terminal for potential remount instead of disposing.
-      // Allotment may remount surviving panes on sibling removal.
-      // Intentionally do NOT flip `disposed` when caching — the onWriteParsed
-      // handler captured by this closure remains registered on the cached
-      // Terminal and must keep updating the metadata store after remount.
-      if (term && term.element) {
-        const el = term.element;
-        if (el.parentNode === container) container.removeChild(el);
-        termCache.set(sessionId, {
-          term,
-          fitAddon: fitAddon!,
-          searchAddon: searchAddonRef.current!,
-          xtermElement: el,
-          unlistenExit,
-        });
-      } else {
-        disposed = true;
-        unlistenExit?.();
-        term?.dispose();
-      }
-      searchAddonRef.current = null;
-    };
+    return cleanup;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
 
