@@ -1,5 +1,9 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useSettingsStore } from "../../stores/settingsStore";
+import { check } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
+
+type UpdateStatus = "idle" | "checking" | "latest" | "downloading" | "ready" | "error";
 
 interface SettingsMenuProps {
   onClose: () => void;
@@ -33,6 +37,31 @@ export default function SettingsMenu({
   const setNotificationsEnabled = useSettingsStore((s) => s.setNotificationsEnabled);
   const notificationSoundEnabled = useSettingsStore((s) => s.notificationSoundEnabled);
   const setNotificationSoundEnabled = useSettingsStore((s) => s.setNotificationSoundEnabled);
+
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatus>("idle");
+  const [updateMsg, setUpdateMsg] = useState<string>("");
+
+  const handleCheckUpdate = async () => {
+    setUpdateStatus("checking");
+    setUpdateMsg("確認中…");
+    try {
+      const update = await check();
+      if (update) {
+        setUpdateStatus("downloading");
+        setUpdateMsg(`v${update.version} を取得中…`);
+        await update.downloadAndInstall();
+        setUpdateStatus("ready");
+        setUpdateMsg("インストール完了。再起動します…");
+        await relaunch();
+      } else {
+        setUpdateStatus("latest");
+        setUpdateMsg("最新版です");
+      }
+    } catch (e) {
+      setUpdateStatus("error");
+      setUpdateMsg(`エラー: ${String(e)}`);
+    }
+  };
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -144,6 +173,37 @@ export default function SettingsMenu({
         />
         <span>通知サウンド</span>
       </label>
+
+      <div style={{ height: 1, background: "var(--cmux-border)" }} />
+
+      <button
+        onClick={handleCheckUpdate}
+        disabled={updateStatus === "checking" || updateStatus === "downloading"}
+        style={{
+          ...itemStyle,
+          opacity: (updateStatus === "checking" || updateStatus === "downloading") ? 0.5 : 1,
+          cursor: (updateStatus === "checking" || updateStatus === "downloading") ? "wait" : "pointer",
+        }}
+        onMouseEnter={(e) => {
+          if (updateStatus !== "checking" && updateStatus !== "downloading") {
+            e.currentTarget.style.background = "rgba(255,255,255,0.05)";
+          }
+        }}
+        onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+      >
+        <span>更新を確認</span>
+      </button>
+      {updateMsg && (
+        <div style={{
+          padding: "0 12px 8px",
+          fontSize: 11,
+          color: updateStatus === "error"
+            ? "#ff6b6b"
+            : "var(--cmux-text-dim, rgba(255,255,255,0.55))",
+        }}>
+          {updateMsg}
+        </div>
+      )}
     </div>
   );
 }
