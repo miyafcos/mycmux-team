@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useState } from "react";
+import { memo, useCallback } from "react";
 import ErrorBoundary from "../common/ErrorBoundary";
 import type { Pane, PaneTab } from "../../types";
 import PaneTabBar from "./PaneTabBar";
@@ -22,7 +22,7 @@ interface TerminalPaneProps {
 }
 
 export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitRight, onSplitDown }: TerminalPaneProps) {
-  // Derived boolean selectors — only re-renders when THIS pane's state actually changes.
+  // Derived boolean selectors only re-render when THIS pane's state actually changes.
   // isActive now checks against any of this pane's tab sessionIds so that it
   // works both when focus fires on pane.sessionId and when a specific tab is selected.
   const activePaneId = useUiStore((s) => s.activePaneId);
@@ -34,7 +34,7 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
   const setActivePaneId = useUiStore((s) => s.setActivePaneId);
   const setZoomedPaneId = useUiStore((s) => s.setZoomedPaneId);
 
-  // Granular metadata selectors — only re-renders when notification/done count changes
+  // Granular metadata selectors only re-render when notification/done count changes.
   const notificationCount = usePaneMetadataStore((s) =>
     pane.tabs.reduce(
       (sum, tab) =>
@@ -51,7 +51,6 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
   const setActivePaneTab = useWorkspaceLayoutStore((s) => s.setActivePaneTab);
 
   const hasNotification = notificationCount > 0;
-  const [mountedTabIds, setMountedTabIds] = useState<Set<string>>(() => new Set([pane.activeTabId]));
 
   // Two-state border: active (accent) or inactive (transparent).
   // Notification border is handled by the CSS .has-notification class.
@@ -66,7 +65,7 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
     // Read current tabs from store at call time (avoids stale pane.tabs dependency)
     const ws = useWorkspaceListStore.getState().getWorkspace(workspaceId);
     const p = ws?.panes.find((x) => x.id === pane.id);
-    // Set activePaneId to the *currently visible* tab's sessionId so that
+    // Set activePaneId to the currently visible tab's sessionId so that
     // XTermWrapper notification suppression can use a single store check.
     const activeTab = p?.tabs.find((t) => t.id === p.activeTabId);
     setActivePaneId(activeTab?.sessionId ?? pane.sessionId);
@@ -110,20 +109,11 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
     setZoomedPaneId(currentZoomed === pane.id ? null : pane.id);
   }, [pane.id, setZoomedPaneId]);
 
-  useEffect(() => {
-    setMountedTabIds((prev) => {
-      if (prev.has(pane.activeTabId)) {
-        return prev;
-      }
-      const next = new Set(prev);
-      next.add(pane.activeTabId);
-      return next;
-    });
-  }, [pane.activeTabId]);
-
   // Resolve CWD from pane/tab static data (metadata CWD handled by PTY monitor internally)
   const activeTab = pane.tabs.find((t) => t.id === pane.activeTabId);
   const paneCwd = activeTab?.cwd ?? pane.cwd;
+  const resolvedAgentId = activeTab?.agentId === "shell-starter" ? "shell" : activeTab?.agentId;
+  const agent = resolvedAgentId ? (getAgent(resolvedAgentId) ?? getDefaultAgent()) : null;
 
   return (
     <div
@@ -131,7 +121,7 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
       tabIndex={-1}
       onFocus={handleFocus}
       onBlur={handleBlur}
-      className={`terminal-pane-border${hasNotification ? ' has-notification' : ''}`}
+      className={`terminal-pane-border${hasNotification ? " has-notification" : ""}`}
       style={{
         ...(isZoomed ? {
           position: "fixed",
@@ -169,46 +159,38 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
       />
 
       <div style={{ flex: 1, minHeight: 0, overflow: "hidden", position: "relative", background: "var(--cmux-bg, #0a0a0a)" }}>
-        {pane.tabs.filter((tab) => mountedTabIds.has(tab.id)).map((tab) => {
-          const isActiveTab = tab.id === pane.activeTabId;
-          const resolvedAgentId = tab.agentId === "shell-starter" ? "shell" : tab.agentId;
-          const agent = getAgent(resolvedAgentId) ?? getDefaultAgent();
-          const tabCwd = tab.cwd ?? paneCwd;
-
-          return (
-            <div
-              key={tab.id}
-              style={{
-                position: "absolute",
-                inset: 0,
-                display: isActiveTab ? "flex" : "none",
-                flexDirection: "column",
-              }}
-            >
-              <ErrorBoundary>
-                <XTermWrapper
-                  sessionId={tab.sessionId}
-                  command={agent.command}
-                  args={agent.args}
-                  onZoomToggle={handleZoomToggle}
-                  cwd={tabCwd}
-                  launchEnv={(() => {
-                    const env: Record<string, string> = {
-                      MYCMUX_PANE_SESSION_ID: tab.sessionId,
-                    };
-                    if (tab.claudeSessionId) {
-                      // claudeSessionId is detected from ~/.claude/projects/ so always resume as claude.
-                      // The shell agent launches bash → launcher.sh handles MYCMUX_RESUME.
-                      env.MYCMUX_RESUME = "claude";
-                      env.MYCMUX_SESSION_ID = tab.claudeSessionId;
-                    }
-                    return env;
-                  })()}
-                />
-              </ErrorBoundary>
-            </div>
-          );
-        })}
+        {activeTab && agent ? (
+          <div
+            style={{
+              position: "absolute",
+              inset: 0,
+              display: "flex",
+              flexDirection: "column",
+            }}
+          >
+            <ErrorBoundary>
+              <XTermWrapper
+                sessionId={activeTab.sessionId}
+                command={agent.command}
+                args={agent.args}
+                onZoomToggle={handleZoomToggle}
+                cwd={activeTab.cwd ?? paneCwd}
+                launchEnv={(() => {
+                  const env: Record<string, string> = {
+                    MYCMUX_PANE_SESSION_ID: activeTab.sessionId,
+                  };
+                  if (activeTab.claudeSessionId) {
+                    // claudeSessionId is detected from ~/.claude/projects/ so always resume as claude.
+                    // The shell agent launches bash and launcher.sh handles MYCMUX_RESUME.
+                    env.MYCMUX_RESUME = "claude";
+                    env.MYCMUX_SESSION_ID = activeTab.claudeSessionId;
+                  }
+                  return env;
+                })()}
+              />
+            </ErrorBoundary>
+          </div>
+        ) : null}
       </div>
     </div>
   );
