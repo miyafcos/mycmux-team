@@ -298,6 +298,7 @@ export default memo(function XTermWrapper({
     let scrollDisposable: { dispose: () => void } | null = null;
     let term: Terminal | null = null;
     let fitAddon: FitAddon | null = null;
+    let removeCompositionGuard: (() => void) | null = null;
     let logThrottle: ReturnType<typeof setTimeout> | null = null;
     let idleFlush: ReturnType<typeof setTimeout> | null = null;
     let backgroundScanThrottle: ReturnType<typeof setTimeout> | null = null;
@@ -306,6 +307,12 @@ export default memo(function XTermWrapper({
     let sessionStarted = false;
     let lastLogLine = "";
     let lastScanSignature = "";
+    let isImeComposing = false;
+    let resizePendingDuringComposition = false;
+    let lastObservedWidth = -1;
+    let lastObservedHeight = -1;
+    let lastSentCols = -1;
+    let lastSentRows = -1;
 
     const clearResizeTimer = (): void => {
       if (resizeTimeout) {
@@ -345,12 +352,32 @@ export default memo(function XTermWrapper({
       markStartupSessionSettled(sessionId);
     };
 
+    const didContainerSizeChange = (): boolean => {
+      const rect = container.getBoundingClientRect();
+      const width = Math.round(rect.width);
+      const height = Math.round(rect.height);
+      if (width === lastObservedWidth && height === lastObservedHeight) {
+        return false;
+      }
+      lastObservedWidth = width;
+      lastObservedHeight = height;
+      return true;
+    };
+
     const scheduleResize = (currentTerm: Terminal, currentFitAddon: FitAddon, delay: number): void => {
+      if (isImeComposing) {
+        resizePendingDuringComposition = true;
+        return;
+      }
       clearResizeTimer();
       resizeTimeout = setTimeout(() => {
         resizeTimeout = null;
         if (disposed || termDisposed) return;
+        if (!didContainerSizeChange()) return;
         currentFitAddon.fit();
+        if (currentTerm.cols === lastSentCols && currentTerm.rows === lastSentRows) return;
+        lastSentCols = currentTerm.cols;
+        lastSentRows = currentTerm.rows;
         resizeSession(sessionId, currentTerm.cols, currentTerm.rows).catch(console.error);
       }, delay);
     };
@@ -370,6 +397,35 @@ export default memo(function XTermWrapper({
         const buf = currentTerm.buffer.active;
         isAtBottomRef.current = buf.viewportY >= buf.baseY;
       });
+    };
+
+    const registerCompositionGuard = (currentTerm: Terminal, currentFitAddon: FitAddon): void => {
+      removeCompositionGuard?.();
+      const textarea = currentTerm.textarea;
+      if (!textarea) {
+        removeCompositionGuard = null;
+        return;
+      }
+
+      const handleCompositionStart = (): void => {
+        isImeComposing = true;
+        resizePendingDuringComposition = false;
+        clearResizeTimer();
+      };
+      const handleCompositionEnd = (): void => {
+        isImeComposing = false;
+        if (resizePendingDuringComposition) {
+          resizePendingDuringComposition = false;
+          scheduleResize(currentTerm, currentFitAddon, 80);
+        }
+      };
+
+      textarea.addEventListener("compositionstart", handleCompositionStart);
+      textarea.addEventListener("compositionend", handleCompositionEnd);
+      removeCompositionGuard = () => {
+        textarea.removeEventListener("compositionstart", handleCompositionStart);
+        textarea.removeEventListener("compositionend", handleCompositionEnd);
+      };
     };
 
     const attachTerminalKeyHandler = (currentTerm: Terminal): void => {
@@ -548,6 +604,8 @@ export default memo(function XTermWrapper({
       writeParsedDisposable = null;
       scrollDisposable?.dispose();
       scrollDisposable = null;
+      removeCompositionGuard?.();
+      removeCompositionGuard = null;
       unlistenExit?.();
       unlistenExit = null;
       cacheCurrentTerminal();
@@ -567,12 +625,16 @@ export default memo(function XTermWrapper({
       fitAddonRef.current = cached.fitAddon;
       searchAddonRef.current = cached.searchAddon;
       registerScrollListener(cached.term);
+      registerCompositionGuard(cached.term, cached.fitAddon);
       attachTerminalKeyHandler(cached.term);
       registerScanListener(cached.term);
       void registerExitListener();
       setTimeout(() => {
         if (disposed || termDisposed) return;
         cached.fitAddon.fit();
+        lastSentCols = cached.term.cols;
+        lastSentRows = cached.term.rows;
+        didContainerSizeChange();
         resizeSession(sessionId, cached.term.cols, cached.term.rows).catch(console.error);
       }, 30);
       registerResizeObserver(cached.term, cached.fitAddon);
@@ -628,6 +690,7 @@ export default memo(function XTermWrapper({
 
       term.open(container!);
       registerScrollListener(term);
+      registerCompositionGuard(term, fitAddon);
       attachTerminalKeyHandler(term);
 
       term.onSelectionChange(() => {
@@ -661,6 +724,9 @@ export default memo(function XTermWrapper({
       fitAddon.fit();
       const cols = term.cols;
       const rows = term.rows;
+      lastSentCols = cols;
+      lastSentRows = rows;
+      didContainerSizeChange();
       const sessionEnv = launchEnv || undefined;
 
       try {
