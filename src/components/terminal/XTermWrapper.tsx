@@ -76,6 +76,8 @@ const APPROVAL_PATTERNS: readonly RegExp[] = [
   /shift\s*\+\s*tab to approve/i,            // 17: plan approval footer hint
   /ctrl-g to edit/i,                         // 18: plan approval edit hint
   /hook [A-Za-z]+ requires confirmation/i,   // 19: Claude Code Bash hook confirmation
+  /would you like to run the following command\?/i, // 20: Codex command approval
+  /^\s*(?:[›>]\s*)?\d+\.\s+(?:yes|no)\b/i,   // 21: Codex numbered choices
 ] as const;
 
 // Scan the last N lines of the terminal buffer for an approval pattern.
@@ -259,13 +261,8 @@ export default memo(function XTermWrapper({
   const storeFontSize = useThemeStore((s) => s.fontSize);
 
   // Single source of truth: is this tab the currently-focused terminal?
-  // Used for both scroll-to-bottom-on-activate and notification suppression.
+  // Used for scroll-to-bottom-on-activate.
   const isActivePane = useUiStore((s) => s.activePaneId === sessionId);
-  const isActivePaneRef = useRef(isActivePane);
-
-  useEffect(() => {
-    isActivePaneRef.current = isActivePane;
-  }, [isActivePane]);
 
   // Dynamically update terminal theme and font size
   useEffect(() => {
@@ -303,6 +300,7 @@ export default memo(function XTermWrapper({
     let fitAddon: FitAddon | null = null;
     let logThrottle: ReturnType<typeof setTimeout> | null = null;
     let idleFlush: ReturnType<typeof setTimeout> | null = null;
+    let backgroundScanThrottle: ReturnType<typeof setTimeout> | null = null;
     let startupSettleTimeout: ReturnType<typeof setTimeout> | null = null;
     let startupSettled = false;
     let sessionStarted = false;
@@ -328,6 +326,10 @@ export default memo(function XTermWrapper({
       if (idleFlush) {
         clearTimeout(idleFlush);
         idleFlush = null;
+      }
+      if (backgroundScanThrottle) {
+        clearTimeout(backgroundScanThrottle);
+        backgroundScanThrottle = null;
       }
     };
 
@@ -406,8 +408,8 @@ export default memo(function XTermWrapper({
       });
     };
 
-    const runScan = (): void => {
-      if (!term || disposed || !isActivePaneRef.current) return;
+    const runScan = (allowDetached = false): void => {
+      if (!term || termDisposed || (!allowDetached && disposed)) return;
       let buf;
       try {
         buf = term.buffer.active;
@@ -471,6 +473,14 @@ export default memo(function XTermWrapper({
           usePaneMetadataStore.getState().clearAgentStatus(sessionId);
         }
       }
+    };
+
+    const scheduleBackgroundScan = (): void => {
+      if (!term || backgroundScanThrottle) return;
+      backgroundScanThrottle = setTimeout(() => {
+        backgroundScanThrottle = null;
+        runScan(true);
+      }, 150);
     };
 
     const registerScanListener = (currentTerm: Terminal): void => {
@@ -658,7 +668,11 @@ export default memo(function XTermWrapper({
           if (termDisposed || !term) return;
           settleStartupSession();
           try {
-            term.write(new Uint8Array(rawData));
+            term.write(new Uint8Array(rawData), () => {
+              if (disposed) {
+                scheduleBackgroundScan();
+              }
+            });
           } catch {
             // term disposed between check and write
           }
