@@ -2,7 +2,7 @@ use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize}
 use std::io::{Read, Write};
 use std::sync::Mutex;
 use std::thread;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Emitter};
 
@@ -13,9 +13,13 @@ use super::osc7::Osc7Parser;
 
 use std::collections::VecDeque;
 use std::sync::Arc;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, mpsc};
 
 const SCROLLBACK_CAP: usize = 32 * 1024; // 32 KB
+const FRONTEND_QUEUE_CAP: usize = 64;
+const FRONTEND_FLUSH_INTERVAL_MS: u64 = 8;
+const FRONTEND_BATCH_MAX_BYTES: usize = 64 * 1024;
+const FRONTEND_FULL_RETRY_DELAY_MS: u64 = 1;
 
 pub struct PtySession {
     child: Mutex<Box<dyn Child + Send + Sync>>,
@@ -105,6 +109,26 @@ impl PtySession {
         let scrollback = Arc::new(Mutex::new(VecDeque::with_capacity(SCROLLBACK_CAP)));
         let broadcast_tx_clone = broadcast_tx.clone();
         let sb_clone = scrollback.clone();
+        let (frontend_tx, mut frontend_rx) = mpsc::channel::<Vec<u8>>(FRONTEND_QUEUE_CAP);
+
+        tauri::async_runtime::spawn(async move {
+            while let Some(first_chunk) = frontend_rx.recv().await {
+                let mut batch = first_chunk;
+
+                while batch.len() < FRONTEND_BATCH_MAX_BYTES {
+                    match frontend_rx.try_recv() {
+                        Ok(chunk) => batch.extend_from_slice(&chunk),
+                        Err(mpsc::error::TryRecvError::Empty) => break,
+                        Err(mpsc::error::TryRecvError::Disconnected) => break,
+                    }
+                }
+
+                // Tauri Channel is unbounded, so this forwarder rate-limits
+                // frontend IPC instead of draining the bounded queue instantly.
+                let _ = data_channel.send(batch);
+                tokio::time::sleep(Duration::from_millis(FRONTEND_FLUSH_INTERVAL_MS)).await;
+            }
+        });
 
         // Spawn reader thread — blocking I/O, not tokio
         let sid = session_id.clone();
@@ -112,6 +136,7 @@ impl PtySession {
         thread::spawn(move || {
             let mut buf = [0u8; 4096]; // 4KB — matches OS page size
             let mut osc7 = Osc7Parser::new();
+            let mut frontend_open = true;
             loop {
                 let read_start = Instant::now();
                 match reader.read(&mut buf) {
@@ -156,19 +181,40 @@ impl PtySession {
                         }
 
                         let send_start = Instant::now();
-                        // Send raw bytes through Channel — arrives as ArrayBuffer in JS
-                        let _ = data_channel.send(buf[..n].to_vec());
+                        let chunk = buf[..n].to_vec();
+                        if frontend_open {
+                            match frontend_tx.try_send(chunk.clone()) {
+                                Ok(()) => {}
+                                Err(mpsc::error::TrySendError::Full(chunk)) => {
+                                    thread::sleep(Duration::from_millis(
+                                        FRONTEND_FULL_RETRY_DELAY_MS,
+                                    ));
+                                    match frontend_tx.try_send(chunk) {
+                                        Ok(()) => {}
+                                        Err(mpsc::error::TrySendError::Full(_)) => {
+                                            // Prefer dropping display-only frontend data over
+                                            // blocking the PTY reader and stalling the shell.
+                                        }
+                                        Err(mpsc::error::TrySendError::Closed(_)) => {
+                                            frontend_open = false;
+                                        }
+                                    }
+                                }
+                                Err(mpsc::error::TrySendError::Closed(_)) => {
+                                    frontend_open = false;
+                                }
+                            }
+                        }
                         let send_micros = send_start.elapsed().as_micros();
 
                         // Also send to broadcast for remote clients
-                        let _ = broadcast_tx_clone.send(buf[..n].to_vec());
+                        let _ = broadcast_tx_clone.send(chunk.clone());
                         // Append to scrollback ring buffer
                         if let Ok(mut sb) = sb_clone.lock() {
-                            for &byte in &buf[..n] {
-                                if sb.len() >= SCROLLBACK_CAP {
-                                    sb.pop_front();
-                                }
-                                sb.push_back(byte);
+                            sb.extend(chunk.iter().copied());
+                            let overflow = sb.len().saturating_sub(SCROLLBACK_CAP);
+                            if overflow > 0 {
+                                drop(sb.drain(..overflow));
                             }
                         }
 
