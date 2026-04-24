@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { getVersion } from "@tauri-apps/api/app";
 import { useSettingsStore } from "../../stores/settingsStore";
 import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
@@ -40,6 +41,7 @@ export default function SettingsMenu({
 
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>("idle");
   const [updateMsg, setUpdateMsg] = useState<string>("");
+  const [currentVersion, setCurrentVersion] = useState<string>("読み込み中…");
 
   const handleCheckUpdate = async () => {
     setUpdateStatus("checking");
@@ -47,6 +49,8 @@ export default function SettingsMenu({
     try {
       const update = await check();
       if (update) {
+        setUpdateMsg(`更新があります: v${update.version}`);
+        await new Promise((resolve) => window.setTimeout(resolve, 150));
         setUpdateStatus("downloading");
         setUpdateMsg(`v${update.version} を取得中…`);
         await update.downloadAndInstall();
@@ -58,8 +62,9 @@ export default function SettingsMenu({
         setUpdateMsg("最新版です");
       }
     } catch (e) {
+      console.error("Failed to check or install update", e);
       setUpdateStatus("error");
-      setUpdateMsg(`エラー: ${String(e)}`);
+      setUpdateMsg("更新に失敗しました");
     }
   };
 
@@ -72,6 +77,27 @@ export default function SettingsMenu({
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, [onClose]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    getVersion()
+      .then((version) => {
+        if (!cancelled) {
+          setCurrentVersion(`v${version}`);
+        }
+      })
+      .catch((e) => {
+        console.error("Failed to load app version", e);
+        if (!cancelled) {
+          setCurrentVersion("不明");
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   return (
     <div
@@ -175,6 +201,10 @@ export default function SettingsMenu({
       </label>
 
       <div style={{ height: 1, background: "var(--cmux-border)" }} />
+
+      <div style={{ padding: "8px 12px 0", fontSize: 11, color: "var(--cmux-text-dim, rgba(255,255,255,0.55))" }}>
+        現在のバージョン: {currentVersion}
+      </div>
 
       <button
         onClick={handleCheckUpdate}
