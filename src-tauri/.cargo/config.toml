@@ -1,2 +1,3 @@
-[target.x86_64-pc-windows-msvc]
-linker = "C:\\Program Files (x86)\\Microsoft Visual Studio\\2022\\BuildTools\\VC\\Tools\\MSVC\\14.44.35207\\bin\\Hostx64\\x64\\link.exe"
+# Do not hardcode a local MSVC linker path here.
+# Local and GitHub builds rely on vcvarsall / the runner environment
+# to put the correct link.exe on PATH.
