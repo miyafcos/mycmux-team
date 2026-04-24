@@ -55,6 +55,14 @@ jobs:
 
       - run: npm ci
 
+      - name: Enable updater artifacts
+        shell: pwsh
+        run: |
+          $configPath = "src-tauri/tauri.conf.json"
+          $config = Get-Content -Path $configPath -Raw | ConvertFrom-Json
+          $config.bundle | Add-Member -MemberType NoteProperty -Name createUpdaterArtifacts -Value $true -Force
+          $config | ConvertTo-Json -Depth 100 | Set-Content -Path $configPath -Encoding utf8
+
       - name: Build & sign (mycmux personal)
         uses: tauri-apps/tauri-action@v0
         env:
@@ -112,6 +120,14 @@ jobs:
           workspaces: src-tauri
 
       - run: npm ci
+
+      - name: Enable updater artifacts
+        shell: pwsh
+        run: |
+          $configPath = "src-tauri/tauri.conf.json"
+          $config = Get-Content -Path $configPath -Raw | ConvertFrom-Json
+          $config.bundle | Add-Member -MemberType NoteProperty -Name createUpdaterArtifacts -Value $true -Force
+          $config | ConvertTo-Json -Depth 100 | Set-Content -Path $configPath -Encoding utf8
 
       - name: Build & sign (mycmux-lite)
         uses: tauri-apps/tauri-action@v0
