@@ -1,5 +1,16 @@
 # Changelog (mycmux-lite)
 
+## [0.3.2-lite.1] - 2026-04-24
+
+### Fixed
+
+- Bounded the PTY-to-frontend IPC path so stalled WebView rendering cannot grow the Tauri Channel queue without limit.
+- Removed the hardcoded local MSVC linker path so GitHub-hosted Windows runners use the runner-provided `link.exe`.
+- Enabled updater artifact generation in GitHub Actions so public lite releases include `latest.json` and signed installer metadata.
+- Kept the app/package version numeric as `0.3.2` for Windows MSI compatibility; the public release tag remains `v0.3.2-lite.1`.
+
+---
+
 All notable changes to the **team-distribution** (`release/public-lite` → `mycmux-team`) build of mycmux-lite. The upstream personal `master` build of mycmux has its own changelog at `miyafcos/mycmux:CHANGELOG.md`.
 
 ---
