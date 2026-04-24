@@ -1,5 +1,15 @@
 # Changelog (mycmux-lite)
 
+## [0.3.3-lite.1] - 2026-04-24
+
+### Fixed
+
+- Detected Codex approval prompts in cached/background panes without reintroducing the high-frequency `runScan()` loop.
+- Completed the Settings updater UI with current-version display, explicit update-available status, and console logging for update failures.
+- Kept the app/package version numeric as `0.3.3` for Windows MSI compatibility; the public release tag is `v0.3.3-lite.1`.
+
+---
+
 ## [0.3.2-lite.1] - 2026-04-24
 
 ### Fixed
