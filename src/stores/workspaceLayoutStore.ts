@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { v4 as uuid } from "uuid";
-import type { Pane, PaneTab, GridTemplateId } from "../types";
+import type { Pane, PaneTab, GridTemplateId, Workspace } from "../types";
 import type { PaneConfig } from "../lib/ipc";
 import { getGridTemplate } from "../lib/gridTemplates";
 import { getDefaultAgent } from "../lib/agents";
@@ -46,6 +46,8 @@ interface BuildPanesResult {
   splitColumns: string[][];
 }
 
+type SplitInsertDirection = "left" | "right" | "up" | "down";
+
 function buildPanes(
   workspaceId: string,
   gridTemplateId: GridTemplateId,
@@ -84,6 +86,83 @@ function buildPanes(
   return { panes, splitColumns };
 }
 
+function cloneSplitColumns(workspace: Workspace): string[][] {
+  const columns = workspace.splitColumns && workspace.splitColumns.length > 0
+    ? workspace.splitColumns
+    : [workspace.panes.map((pane) => pane.id)];
+  return columns
+    .map((col) => [...col])
+    .filter((col) => col.length > 0);
+}
+
+function removePaneIdFromColumns(columns: string[][], paneId: string): string[][] {
+  return columns
+    .map((col) => col.filter((id) => id !== paneId))
+    .filter((col) => col.length > 0);
+}
+
+function insertPaneIdIntoColumns(
+  columns: string[][],
+  targetPaneId: string,
+  insertedPaneId: string,
+  direction: SplitInsertDirection,
+): string[][] | null {
+  const next = columns.map((col) => [...col]);
+  const colIdx = next.findIndex((col) => col.includes(targetPaneId));
+  if (colIdx === -1) return null;
+
+  if (direction === "left" || direction === "right") {
+    next.splice(direction === "left" ? colIdx : colIdx + 1, 0, [insertedPaneId]);
+    return next;
+  }
+
+  const rowIdx = next[colIdx].indexOf(targetPaneId);
+  if (rowIdx === -1) return null;
+  next[colIdx].splice(direction === "up" ? rowIdx : rowIdx + 1, 0, insertedPaneId);
+  return next;
+}
+
+function makePaneFromTab(paneId: string, tab: PaneTab): Pane {
+  return {
+    id: paneId,
+    agentId: tab.agentId,
+    sessionId: tab.sessionId,
+    tabs: [tab],
+    activeTabId: tab.id,
+    cwd: tab.cwd,
+    lastProcess: tab.lastProcess,
+    claudeSessionId: tab.claudeSessionId,
+  };
+}
+
+function applyActiveTabFields(pane: Pane, activeTab: PaneTab): Pane {
+  return {
+    ...pane,
+    agentId: activeTab.agentId,
+    activeTabId: activeTab.id,
+    sessionId: activeTab.sessionId,
+    cwd: activeTab.cwd ?? pane.cwd,
+    lastProcess: activeTab.lastProcess ?? pane.lastProcess,
+    claudeSessionId: activeTab.claudeSessionId ?? pane.claudeSessionId,
+  };
+}
+
+function removeTabFromPane(pane: Pane, tabId: string): Pane | null {
+  const remaining = pane.tabs.filter((tab) => tab.id !== tabId);
+  if (remaining.length === 0) return null;
+  const preferredActiveId = pane.activeTabId === tabId
+    ? remaining[remaining.length - 1].id
+    : pane.activeTabId;
+  const activeTab = remaining.find((tab) => tab.id === preferredActiveId) ?? remaining[0];
+  return applyActiveTabFields({ ...pane, tabs: remaining }, activeTab);
+}
+
+function appendTabsToPane(pane: Pane, tabs: PaneTab[], activeTabId: string): Pane {
+  const nextTabs = [...pane.tabs, ...tabs];
+  const activeTab = nextTabs.find((tab) => tab.id === activeTabId) ?? tabs[0] ?? nextTabs[0];
+  return applyActiveTabFields({ ...pane, tabs: nextTabs }, activeTab);
+}
+
 interface WorkspaceLayoutState {
   // Pane operations
   removePaneFromWorkspace: (workspaceId: string, paneId: string) => void;
@@ -99,6 +178,47 @@ interface WorkspaceLayoutState {
   removeTabFromPane: (workspaceId: string, paneId: string, tabId: string) => void;
   setActivePaneTab: (workspaceId: string, paneId: string, tabId: string) => void;
   setTabAgentId: (workspaceId: string, paneId: string, tabId: string, agentId: string) => void;
+  moveTabToPane: (
+    sourceWorkspaceId: string,
+    sourcePaneId: string,
+    tabId: string,
+    targetWorkspaceId: string,
+    targetPaneId: string,
+  ) => void;
+  moveTabToSplit: (
+    sourceWorkspaceId: string,
+    sourcePaneId: string,
+    tabId: string,
+    targetWorkspaceId: string,
+    targetPaneId: string,
+    direction: SplitInsertDirection,
+  ) => void;
+  movePaneToPane: (
+    sourceWorkspaceId: string,
+    sourcePaneId: string,
+    targetWorkspaceId: string,
+    targetPaneId: string,
+  ) => void;
+  movePaneToSplit: (
+    sourceWorkspaceId: string,
+    sourcePaneId: string,
+    targetWorkspaceId: string,
+    targetPaneId: string,
+    direction: SplitInsertDirection,
+  ) => void;
+  moveTabToNewWorkspace: (
+    sourceWorkspaceId: string,
+    sourcePaneId: string,
+    tabId: string,
+    targetWorkspaceId: string,
+    workspaceName: string,
+  ) => boolean;
+  movePaneToNewWorkspace: (
+    sourceWorkspaceId: string,
+    sourcePaneId: string,
+    targetWorkspaceId: string,
+    workspaceName: string,
+  ) => boolean;
   
   // Helper to build initial panes for new workspace
   buildInitialPanes: (
@@ -310,6 +430,307 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
       nextSplitColumns,
       removedPane,
     );
+  },
+
+  moveTabToPane: (sourceWorkspaceId, sourcePaneId, tabId, targetWorkspaceId, targetPaneId) => {
+    const listStore = useWorkspaceListStore.getState();
+    const sourceWorkspace = listStore.getWorkspace(sourceWorkspaceId);
+    const targetWorkspace = listStore.getWorkspace(targetWorkspaceId);
+    if (!sourceWorkspace || !targetWorkspace) return;
+
+    const sourcePane = sourceWorkspace.panes.find((pane) => pane.id === sourcePaneId);
+    const targetPane = targetWorkspace.panes.find((pane) => pane.id === targetPaneId);
+    const tab = sourcePane?.tabs.find((candidate) => candidate.id === tabId);
+    if (!sourcePane || !targetPane || !tab) return;
+
+    if (sourceWorkspaceId === targetWorkspaceId && sourcePaneId === targetPaneId) {
+      const newPanes = sourceWorkspace.panes.map((pane) =>
+        pane.id === sourcePaneId ? applyActiveTabFields(pane, tab) : pane,
+      );
+      listStore._updateWorkspacePanes(sourceWorkspaceId, newPanes);
+      return;
+    }
+
+    if (sourceWorkspaceId === targetWorkspaceId) {
+      let removedSourcePane = false;
+      const newPanes = sourceWorkspace.panes.flatMap((pane) => {
+        if (pane.id === sourcePaneId) {
+          const updated = removeTabFromPane(pane, tabId);
+          if (!updated) {
+            removedSourcePane = true;
+            return [];
+          }
+          return [updated];
+        }
+        if (pane.id === targetPaneId) {
+          return [appendTabsToPane(pane, [tab], tab.id)];
+        }
+        return [pane];
+      });
+      const nextSplitColumns = removedSourcePane
+        ? removePaneIdFromColumns(cloneSplitColumns(sourceWorkspace), sourcePaneId)
+        : undefined;
+      listStore._updateWorkspacePanes(
+        sourceWorkspaceId,
+        newPanes,
+        nextSplitColumns,
+        removedSourcePane,
+      );
+      return;
+    }
+
+    let removedSourcePane = false;
+    const sourcePanes = sourceWorkspace.panes.flatMap((pane) => {
+      if (pane.id !== sourcePaneId) return [pane];
+      const updated = removeTabFromPane(pane, tabId);
+      if (!updated) {
+        removedSourcePane = true;
+        return [];
+      }
+      return [updated];
+    });
+    const targetPanes = targetWorkspace.panes.map((pane) =>
+      pane.id === targetPaneId ? appendTabsToPane(pane, [tab], tab.id) : pane,
+    );
+
+    const sourceSplitColumns = removedSourcePane
+      ? removePaneIdFromColumns(cloneSplitColumns(sourceWorkspace), sourcePaneId)
+      : undefined;
+    listStore._updateWorkspacePanes(
+      sourceWorkspaceId,
+      sourcePanes,
+      sourceSplitColumns,
+      removedSourcePane,
+    );
+    listStore._updateWorkspacePanes(targetWorkspaceId, targetPanes);
+    if (sourcePanes.length === 0) {
+      listStore.removeWorkspace(sourceWorkspaceId);
+    }
+  },
+
+  moveTabToSplit: (sourceWorkspaceId, sourcePaneId, tabId, targetWorkspaceId, targetPaneId, direction) => {
+    const listStore = useWorkspaceListStore.getState();
+    const sourceWorkspace = listStore.getWorkspace(sourceWorkspaceId);
+    const targetWorkspace = listStore.getWorkspace(targetWorkspaceId);
+    if (!sourceWorkspace || !targetWorkspace) return;
+
+    const sourcePane = sourceWorkspace.panes.find((pane) => pane.id === sourcePaneId);
+    const targetPane = targetWorkspace.panes.find((pane) => pane.id === targetPaneId);
+    const tab = sourcePane?.tabs.find((candidate) => candidate.id === tabId);
+    if (!sourcePane || !targetPane || !tab) return;
+    if (sourceWorkspaceId === targetWorkspaceId && sourcePaneId === targetPaneId && sourcePane.tabs.length <= 1) return;
+
+    const newPane = makePaneFromTab(uuid(), tab);
+
+    if (sourceWorkspaceId === targetWorkspaceId) {
+      let removedSourcePane = false;
+      const panesAfterSource = sourceWorkspace.panes.flatMap((pane) => {
+        if (pane.id !== sourcePaneId) return [pane];
+        const updated = removeTabFromPane(pane, tabId);
+        if (!updated) {
+          removedSourcePane = true;
+          return [];
+        }
+        return [updated];
+      });
+      if (!panesAfterSource.some((pane) => pane.id === targetPaneId)) return;
+      const baseColumns = removedSourcePane
+        ? removePaneIdFromColumns(cloneSplitColumns(sourceWorkspace), sourcePaneId)
+        : cloneSplitColumns(sourceWorkspace);
+      const nextSplitColumns = insertPaneIdIntoColumns(baseColumns, targetPaneId, newPane.id, direction);
+      if (!nextSplitColumns) return;
+      listStore._updateWorkspacePanes(
+        sourceWorkspaceId,
+        [...panesAfterSource, newPane],
+        nextSplitColumns,
+        true,
+      );
+      return;
+    }
+
+    let removedSourcePane = false;
+    const sourcePanes = sourceWorkspace.panes.flatMap((pane) => {
+      if (pane.id !== sourcePaneId) return [pane];
+      const updated = removeTabFromPane(pane, tabId);
+      if (!updated) {
+        removedSourcePane = true;
+        return [];
+      }
+      return [updated];
+    });
+    const targetColumns = insertPaneIdIntoColumns(
+      cloneSplitColumns(targetWorkspace),
+      targetPaneId,
+      newPane.id,
+      direction,
+    );
+    if (!targetColumns) return;
+
+    const sourceSplitColumns = removedSourcePane
+      ? removePaneIdFromColumns(cloneSplitColumns(sourceWorkspace), sourcePaneId)
+      : undefined;
+    listStore._updateWorkspacePanes(
+      sourceWorkspaceId,
+      sourcePanes,
+      sourceSplitColumns,
+      removedSourcePane,
+    );
+    listStore._updateWorkspacePanes(
+      targetWorkspaceId,
+      [...targetWorkspace.panes, newPane],
+      targetColumns,
+      true,
+    );
+    if (sourcePanes.length === 0) {
+      listStore.removeWorkspace(sourceWorkspaceId);
+    }
+  },
+
+  movePaneToPane: (sourceWorkspaceId, sourcePaneId, targetWorkspaceId, targetPaneId) => {
+    const listStore = useWorkspaceListStore.getState();
+    const sourceWorkspace = listStore.getWorkspace(sourceWorkspaceId);
+    const targetWorkspace = listStore.getWorkspace(targetWorkspaceId);
+    if (!sourceWorkspace || !targetWorkspace) return;
+
+    const sourcePane = sourceWorkspace.panes.find((pane) => pane.id === sourcePaneId);
+    const targetPane = targetWorkspace.panes.find((pane) => pane.id === targetPaneId);
+    if (!sourcePane || !targetPane) return;
+    if (sourceWorkspaceId === targetWorkspaceId && sourcePaneId === targetPaneId) return;
+
+    if (sourceWorkspaceId === targetWorkspaceId) {
+      const newPanes = sourceWorkspace.panes.flatMap((pane) => {
+        if (pane.id === sourcePaneId) return [];
+        if (pane.id === targetPaneId) {
+          return [appendTabsToPane(pane, sourcePane.tabs, sourcePane.activeTabId)];
+        }
+        return [pane];
+      });
+      const nextSplitColumns = removePaneIdFromColumns(cloneSplitColumns(sourceWorkspace), sourcePaneId);
+      listStore._updateWorkspacePanes(sourceWorkspaceId, newPanes, nextSplitColumns, true);
+      return;
+    }
+
+    const sourcePanes = sourceWorkspace.panes.filter((pane) => pane.id !== sourcePaneId);
+    const sourceSplitColumns = removePaneIdFromColumns(cloneSplitColumns(sourceWorkspace), sourcePaneId);
+    const targetPanes = targetWorkspace.panes.map((pane) =>
+      pane.id === targetPaneId
+        ? appendTabsToPane(pane, sourcePane.tabs, sourcePane.activeTabId)
+        : pane,
+    );
+    listStore._updateWorkspacePanes(sourceWorkspaceId, sourcePanes, sourceSplitColumns, true);
+    listStore._updateWorkspacePanes(targetWorkspaceId, targetPanes);
+    if (sourcePanes.length === 0) {
+      listStore.removeWorkspace(sourceWorkspaceId);
+    }
+  },
+
+  movePaneToSplit: (sourceWorkspaceId, sourcePaneId, targetWorkspaceId, targetPaneId, direction) => {
+    const listStore = useWorkspaceListStore.getState();
+    const sourceWorkspace = listStore.getWorkspace(sourceWorkspaceId);
+    const targetWorkspace = listStore.getWorkspace(targetWorkspaceId);
+    if (!sourceWorkspace || !targetWorkspace) return;
+
+    const sourcePane = sourceWorkspace.panes.find((pane) => pane.id === sourcePaneId);
+    const targetPane = targetWorkspace.panes.find((pane) => pane.id === targetPaneId);
+    if (!sourcePane || !targetPane) return;
+    if (sourceWorkspaceId === targetWorkspaceId && sourcePaneId === targetPaneId) return;
+
+    if (sourceWorkspaceId === targetWorkspaceId) {
+      const baseColumns = removePaneIdFromColumns(cloneSplitColumns(sourceWorkspace), sourcePaneId);
+      const nextSplitColumns = insertPaneIdIntoColumns(baseColumns, targetPaneId, sourcePaneId, direction);
+      if (!nextSplitColumns) return;
+      listStore._updateWorkspacePanes(sourceWorkspaceId, sourceWorkspace.panes, nextSplitColumns, true);
+      return;
+    }
+
+    const sourcePanes = sourceWorkspace.panes.filter((pane) => pane.id !== sourcePaneId);
+    const sourceSplitColumns = removePaneIdFromColumns(cloneSplitColumns(sourceWorkspace), sourcePaneId);
+    const targetColumns = insertPaneIdIntoColumns(
+      cloneSplitColumns(targetWorkspace),
+      targetPaneId,
+      sourcePaneId,
+      direction,
+    );
+    if (!targetColumns) return;
+
+    listStore._updateWorkspacePanes(sourceWorkspaceId, sourcePanes, sourceSplitColumns, true);
+    listStore._updateWorkspacePanes(
+      targetWorkspaceId,
+      [...targetWorkspace.panes, sourcePane],
+      targetColumns,
+      true,
+    );
+    if (sourcePanes.length === 0) {
+      listStore.removeWorkspace(sourceWorkspaceId);
+    }
+  },
+
+  moveTabToNewWorkspace: (sourceWorkspaceId, sourcePaneId, tabId, targetWorkspaceId, workspaceName) => {
+    const listStore = useWorkspaceListStore.getState();
+    const sourceWorkspace = listStore.getWorkspace(sourceWorkspaceId);
+    if (!sourceWorkspace) return false;
+
+    const sourcePane = sourceWorkspace.panes.find((pane) => pane.id === sourcePaneId);
+    const tab = sourcePane?.tabs.find((candidate) => candidate.id === tabId);
+    if (!sourcePane || !tab) return false;
+
+    let removedSourcePane = false;
+    const sourcePanes = sourceWorkspace.panes.flatMap((pane) => {
+      if (pane.id !== sourcePaneId) return [pane];
+      const updated = removeTabFromPane(pane, tabId);
+      if (!updated) {
+        removedSourcePane = true;
+        return [];
+      }
+      return [updated];
+    });
+    const sourceSplitColumns = removedSourcePane
+      ? removePaneIdFromColumns(cloneSplitColumns(sourceWorkspace), sourcePaneId)
+      : undefined;
+    const newPane = makePaneFromTab(uuid(), tab);
+
+    listStore._updateWorkspacePanes(
+      sourceWorkspaceId,
+      sourcePanes,
+      sourceSplitColumns,
+      removedSourcePane,
+    );
+    listStore.createWorkspace(
+      workspaceName,
+      "1x1",
+      [newPane],
+      [[newPane.id]],
+      { id: targetWorkspaceId },
+    );
+    if (sourcePanes.length === 0) {
+      listStore.removeWorkspace(sourceWorkspaceId);
+    }
+    return true;
+  },
+
+  movePaneToNewWorkspace: (sourceWorkspaceId, sourcePaneId, targetWorkspaceId, workspaceName) => {
+    const listStore = useWorkspaceListStore.getState();
+    const sourceWorkspace = listStore.getWorkspace(sourceWorkspaceId);
+    if (!sourceWorkspace) return false;
+
+    const sourcePane = sourceWorkspace.panes.find((pane) => pane.id === sourcePaneId);
+    if (!sourcePane) return false;
+
+    const sourcePanes = sourceWorkspace.panes.filter((pane) => pane.id !== sourcePaneId);
+    const sourceSplitColumns = removePaneIdFromColumns(cloneSplitColumns(sourceWorkspace), sourcePaneId);
+
+    listStore._updateWorkspacePanes(sourceWorkspaceId, sourcePanes, sourceSplitColumns, true);
+    listStore.createWorkspace(
+      workspaceName,
+      "1x1",
+      [sourcePane],
+      [[sourcePane.id]],
+      { id: targetWorkspaceId },
+    );
+    if (sourcePanes.length === 0) {
+      listStore.removeWorkspace(sourceWorkspaceId);
+    }
+    return true;
   },
 
   setActivePaneTab: (workspaceId, paneId, tabId) => {

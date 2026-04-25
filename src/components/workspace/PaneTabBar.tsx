@@ -3,6 +3,7 @@ import type { Pane, PaneTab } from "../../types";
 import { getAgent, getDefaultAgent } from "../../lib/agents";
 import { usePaneMetadataStore } from "../../stores/workspaceStore";
 import { deriveEffectiveStatus, type EffectiveStatus } from "../../lib/notificationStatus";
+import { usePaneDragSource } from "../../hooks/usePaneDragSource";
 
 interface PaneTabBarProps {
   pane: Pane;
@@ -106,6 +107,7 @@ function AgentStatusDot({ status }: { status: EffectiveStatus }) {
 
 export default memo(function PaneTabBar({
   pane,
+  workspaceId,
   hasNotification,
   isZoomed,
   onClose,
@@ -117,6 +119,7 @@ export default memo(function PaneTabBar({
   onSelectTab,
 }: PaneTabBarProps) {
   const allMetadata = usePaneMetadataStore((s) => s.metadata);
+  const { beginPointerDrag, shouldSuppressClick } = usePaneDragSource();
 
   // Derive active tab's agent status for the status bar
   const activeTab = pane.tabs.find((t) => t.id === pane.activeTabId);
@@ -128,16 +131,28 @@ export default memo(function PaneTabBar({
     : "Shell";
   const showStatusBar = activeStatus !== "idle";
   const statusCfg = STATUS_CONFIG[activeStatus];
+  const paneDragLabel = activeMeta?.processTitle ?? activeTab?.label ?? activeAgentLabel;
 
   return (
     <div
       className="pane-tabbar"
+      onPointerDown={(event) => {
+        const target = event.target as HTMLElement;
+        if (target.closest(".pane-tab-pill, button, input, textarea, select")) return;
+        beginPointerDrag(event, {
+          kind: "pane",
+          workspaceId,
+          paneId: pane.id,
+          label: paneDragLabel,
+          tabCount: pane.tabs.length,
+        });
+      }}
       style={{
         display: "flex",
         flexDirection: "column",
-        background: "#1a1a1a",
+        background: "var(--cmux-surface)",
         borderBottom: hasNotification
-          ? "1px solid rgba(255, 59, 48, 0.5)"
+          ? "1px solid color-mix(in srgb, var(--notification-color) 58%, transparent)"
           : "1px solid var(--cmux-border)",
         flexShrink: 0,
         userSelect: "none",
@@ -155,8 +170,8 @@ export default memo(function PaneTabBar({
             alignItems: "center",
             gap: 6,
             padding: "0 10px",
-            borderBottom: `1px solid ${statusCfg.color}22`,
-            background: `${statusCfg.color}0d`,
+            borderBottom: `1px solid color-mix(in srgb, ${statusCfg.color} 38%, transparent)`,
+            background: `color-mix(in srgb, ${statusCfg.color} 10%, transparent)`,
             overflow: "hidden",
           }}
         >
@@ -207,7 +222,21 @@ export default memo(function PaneTabBar({
           return (
             <div
               key={tab.id}
-              onClick={() => onSelectTab?.(tab.id)}
+              onPointerDown={(event) => beginPointerDrag(event, {
+                kind: "tab",
+                workspaceId,
+                paneId: pane.id,
+                tabId: tab.id,
+                label,
+              })}
+              onClick={(event) => {
+                if (shouldSuppressClick()) {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  return;
+                }
+                onSelectTab?.(tab.id);
+              }}
               title={label}
               className={`pane-tab-pill ${isActive ? "is-active" : ""}`}
               style={{
@@ -218,7 +247,7 @@ export default memo(function PaneTabBar({
                 height: 36,
                 maxWidth: 160,
                 cursor: "pointer",
-                background: isActive ? "rgba(255,255,255,0.06)" : "transparent",
+                background: isActive ? "var(--cmux-selected)" : "transparent",
                 borderRight: "1px solid var(--cmux-border)",
                 borderBottom: isActive ? `2px solid var(--cmux-accent)` : "2px solid transparent",
                 flexShrink: 0,

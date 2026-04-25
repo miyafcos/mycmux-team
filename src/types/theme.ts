@@ -22,12 +22,21 @@ export interface TerminalColors {
 }
 
 export type ThemeGroup = "calm-dark" | "vivid-dark" | "light";
+export type ThemeColorScheme = "dark" | "light";
+
+export interface ThemeStatusColors {
+  working: string;
+  waiting: string;
+  done: string;
+  error: string;
+}
 
 export interface ThemeDefinition {
   id: string;
   name: string;
   group: ThemeGroup;
   description: string;
+  colorScheme: ThemeColorScheme;
   terminal: TerminalColors;
   chrome: {
     background: string;
@@ -35,6 +44,12 @@ export interface ThemeDefinition {
     border: string;
     text: string;
     textMuted: string;
+    textDim: string;
     accent: string;
+    hover: string;
+    selected: string;
+    danger: string;
   };
+  status: ThemeStatusColors;
+  notification: string;
 }

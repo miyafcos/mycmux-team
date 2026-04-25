@@ -48,6 +48,7 @@ pub fn run() {
             commands::terminal::get_claude_session_id,
             commands::terminal::read_pane_session_mappings,
             commands::workspace::load_persistent_data,
+            commands::workspace::save_persistent_data,
             commands::workspace::save_workspaces,
             commands::workspace::save_settings,
             commands::window::claim_leader,

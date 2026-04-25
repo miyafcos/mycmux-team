@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PaneTabConfig {
@@ -65,6 +66,10 @@ fn default_true() -> bool {
     true
 }
 
+fn default_schema_version() -> u32 {
+    1
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
     pub font_size: u16,
@@ -94,14 +99,36 @@ impl Default for AppSettings {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PersistentData {
+    #[serde(default = "default_schema_version")]
+    pub schema_version: u32,
     pub workspaces: Vec<WorkspaceConfig>,
     pub settings: AppSettings,
     #[serde(default)]
     pub active_workspace_id: Option<String>,
     #[serde(default)]
     pub active_pane_id: Option<String>,
+    #[serde(default)]
+    pub active_tab_id: Option<String>,
+}
+
+impl Default for PersistentData {
+    fn default() -> Self {
+        Self {
+            schema_version: 1,
+            workspaces: Vec::new(),
+            settings: AppSettings::default(),
+            active_workspace_id: None,
+            active_pane_id: None,
+            active_tab_id: None,
+        }
+    }
+}
+
+fn save_lock() -> &'static Mutex<()> {
+    static SAVE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    SAVE_LOCK.get_or_init(|| Mutex::new(()))
 }
 
 fn data_path(app_handle: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -125,6 +152,25 @@ pub fn load(app_handle: &tauri::AppHandle) -> Result<PersistentData, String> {
 }
 
 pub fn save(app_handle: &tauri::AppHandle, data: &PersistentData) -> Result<(), String> {
+    let _guard = save_lock()
+        .lock()
+        .map_err(|e| format!("Failed to lock data file: {e}"))?;
+    save_unlocked(app_handle, data)
+}
+
+pub fn update<F>(app_handle: &tauri::AppHandle, updater: F) -> Result<(), String>
+where
+    F: FnOnce(&mut PersistentData),
+{
+    let _guard = save_lock()
+        .lock()
+        .map_err(|e| format!("Failed to lock data file: {e}"))?;
+    let mut data = load(app_handle).unwrap_or_default();
+    updater(&mut data);
+    save_unlocked(app_handle, &data)
+}
+
+fn save_unlocked(app_handle: &tauri::AppHandle, data: &PersistentData) -> Result<(), String> {
     let path = data_path(app_handle)?;
     let tmp_path = path.with_extension("json.tmp");
     let json =

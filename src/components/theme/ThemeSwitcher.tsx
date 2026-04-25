@@ -207,7 +207,7 @@ export default function ThemeSwitcher({ onClose, onOpenKeybindings }: ThemeSwitc
                           gap: 10,
                           padding: "10px 12px",
                           minHeight: 58,
-                          background: isActive ? "var(--cmux-hover)" : "rgba(127,127,127,0.06)",
+                          background: isActive ? "var(--cmux-selected)" : "color-mix(in srgb, var(--cmux-text) 5%, transparent)",
                           border: isActive
                             ? "1px solid var(--cmux-accent)"
                             : "1px solid var(--cmux-border)",

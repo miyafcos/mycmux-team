@@ -252,6 +252,7 @@ export default memo(function XTermWrapper({
   const termRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const isAtBottomRef = useRef(true);
+  const syncResizeRef = useRef<(force?: boolean) => void>(() => {});
 
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
@@ -269,7 +270,7 @@ export default memo(function XTermWrapper({
     if (termRef.current) {
       termRef.current.options.theme = storeTheme.terminal;
       termRef.current.options.fontSize = storeFontSize;
-      setTimeout(() => fitAddonRef.current?.fit(), 10);
+      setTimeout(() => syncResizeRef.current(true), 10);
     }
   }, [storeTheme, storeFontSize]);
 
@@ -277,7 +278,7 @@ export default memo(function XTermWrapper({
   useEffect(() => {
     if (isActivePane && termRef.current) {
       setTimeout(() => {
-        fitAddonRef.current?.fit();
+        syncResizeRef.current(true);
         if (isAtBottomRef.current) {
           termRef.current?.scrollToBottom();
         }
@@ -292,7 +293,7 @@ export default memo(function XTermWrapper({
     let disposed = false;
     let termDisposed = false;
     let resizeObserver: ResizeObserver | null = null;
-    let resizeTimeout: ReturnType<typeof setTimeout> | null = null;
+    let resizeTimers: ReturnType<typeof setTimeout>[] = [];
     let unlistenExit: (() => void) | null = null;
     let writeParsedDisposable: { dispose: () => void } | null = null;
     let scrollDisposable: { dispose: () => void } | null = null;
@@ -315,10 +316,10 @@ export default memo(function XTermWrapper({
     let lastSentRows = -1;
 
     const clearResizeTimer = (): void => {
-      if (resizeTimeout) {
-        clearTimeout(resizeTimeout);
-        resizeTimeout = null;
+      for (const timer of resizeTimers) {
+        clearTimeout(timer);
       }
+      resizeTimers = [];
     };
 
     const clearScanTimers = (): void => {
@@ -352,7 +353,7 @@ export default memo(function XTermWrapper({
       markStartupSessionSettled(sessionId);
     };
 
-    const didContainerSizeChange = (): boolean => {
+    const rememberContainerSize = (): boolean => {
       const rect = container.getBoundingClientRect();
       const width = Math.round(rect.width);
       const height = Math.round(rect.height);
@@ -364,28 +365,61 @@ export default memo(function XTermWrapper({
       return true;
     };
 
-    const scheduleResize = (currentTerm: Terminal, currentFitAddon: FitAddon, delay: number): void => {
+    const fitAndSyncResize = (currentTerm: Terminal, currentFitAddon: FitAddon, force = false): void => {
+      if (disposed || termDisposed) return;
       if (isImeComposing) {
         resizePendingDuringComposition = true;
         return;
       }
-      clearResizeTimer();
-      resizeTimeout = setTimeout(() => {
-        resizeTimeout = null;
-        if (disposed || termDisposed) return;
-        if (!didContainerSizeChange()) return;
+
+      const rect = container.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return;
+
+      rememberContainerSize();
+      try {
         currentFitAddon.fit();
-        if (currentTerm.cols === lastSentCols && currentTerm.rows === lastSentRows) return;
-        lastSentCols = currentTerm.cols;
-        lastSentRows = currentTerm.rows;
+      } catch {
+        return;
+      }
+
+      if (currentTerm.cols <= 0 || currentTerm.rows <= 0) return;
+      if (!force && currentTerm.cols === lastSentCols && currentTerm.rows === lastSentRows) return;
+
+      lastSentCols = currentTerm.cols;
+      lastSentRows = currentTerm.rows;
+      if (sessionStarted) {
         resizeSession(sessionId, currentTerm.cols, currentTerm.rows).catch(console.error);
+      }
+    };
+
+    syncResizeRef.current = (force = false) => {
+      if (!term || !fitAddon) return;
+      fitAndSyncResize(term, fitAddon, force);
+    };
+
+    const scheduleResize = (currentTerm: Terminal, currentFitAddon: FitAddon, delay: number, force = false): void => {
+      if (isImeComposing) {
+        resizePendingDuringComposition = true;
+        return;
+      }
+      const timer = setTimeout(() => {
+        resizeTimers = resizeTimers.filter((entry) => entry !== timer);
+        fitAndSyncResize(currentTerm, currentFitAddon, force);
       }, delay);
+      resizeTimers.push(timer);
+    };
+
+    const scheduleResizeBurst = (currentTerm: Terminal, currentFitAddon: FitAddon): void => {
+      clearResizeTimer();
+      scheduleResize(currentTerm, currentFitAddon, 30);
+      scheduleResize(currentTerm, currentFitAddon, 90);
+      scheduleResize(currentTerm, currentFitAddon, 180, true);
     };
 
     const registerResizeObserver = (currentTerm: Terminal, currentFitAddon: FitAddon): void => {
       resizeObserver?.disconnect();
       resizeObserver = new ResizeObserver(() => {
-        scheduleResize(currentTerm, currentFitAddon, 50);
+        scheduleResizeBurst(currentTerm, currentFitAddon);
       });
       resizeObserver.observe(container);
     };
@@ -416,7 +450,7 @@ export default memo(function XTermWrapper({
         isImeComposing = false;
         if (resizePendingDuringComposition) {
           resizePendingDuringComposition = false;
-          scheduleResize(currentTerm, currentFitAddon, 80);
+          scheduleResize(currentTerm, currentFitAddon, 80, true);
         }
       };
 
@@ -612,6 +646,7 @@ export default memo(function XTermWrapper({
       searchAddonRef.current = null;
       termRef.current = null;
       fitAddonRef.current = null;
+      syncResizeRef.current = () => {};
     };
 
     const attachCachedTerminal = (cached: CachedTerm): void => {
@@ -631,11 +666,7 @@ export default memo(function XTermWrapper({
       void registerExitListener();
       setTimeout(() => {
         if (disposed || termDisposed) return;
-        cached.fitAddon.fit();
-        lastSentCols = cached.term.cols;
-        lastSentRows = cached.term.rows;
-        didContainerSizeChange();
-        resizeSession(sessionId, cached.term.cols, cached.term.rows).catch(console.error);
+        fitAndSyncResize(cached.term, cached.fitAddon, true);
       }, 30);
       registerResizeObserver(cached.term, cached.fitAddon);
     };
@@ -721,12 +752,11 @@ export default memo(function XTermWrapper({
         return;
       }
 
-      fitAddon.fit();
+      fitAndSyncResize(term, fitAddon, true);
       const cols = term.cols;
       const rows = term.rows;
       lastSentCols = cols;
       lastSentRows = rows;
-      didContainerSizeChange();
       const sessionEnv = launchEnv || undefined;
 
       try {
@@ -760,7 +790,9 @@ export default memo(function XTermWrapper({
           if (disposed || termDisposed || !term || !cachedConfig) return;
           term.options.fontSize = cachedConfig.fontSize;
           term.options.fontFamily = cachedConfig.fontFamily;
-          fitAddon?.fit();
+          if (fitAddon) {
+            fitAndSyncResize(term, fitAddon, true);
+          }
         });
       }
     }

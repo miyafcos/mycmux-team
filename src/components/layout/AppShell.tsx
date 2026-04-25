@@ -12,6 +12,7 @@ import { SIDEBAR_WIDTH } from "../../lib/constants";
 import TabBar from "./TabBar";
 import TitleBar from "./TitleBar";
 import WorkspaceView from "../workspace/WorkspaceView";
+import PaneDragOverlay from "../workspace/PaneDragOverlay";
 import WorkspaceSetup from "../setup/WorkspaceSetup";
 import CommandPalette from "./CommandPalette";
 import SocketListener from "./SocketListener";
@@ -130,7 +131,17 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
     "--cmux-border": currentTheme.chrome.border,
     "--cmux-text": currentTheme.chrome.text,
     "--cmux-text-secondary": currentTheme.chrome.textMuted,
-    "--cmux-text-tertiary": currentTheme.chrome.textMuted,
+    "--cmux-text-tertiary": currentTheme.chrome.textDim,
+    "--cmux-text-dim": currentTheme.chrome.textDim,
+    "--cmux-hover": currentTheme.chrome.hover,
+    "--cmux-selected": currentTheme.chrome.selected,
+    "--cmux-red": currentTheme.chrome.danger,
+    "--status-working": currentTheme.status.working,
+    "--status-waiting": currentTheme.status.waiting,
+    "--status-done": currentTheme.status.done,
+    "--status-error": currentTheme.status.error,
+    "--notification-color": currentTheme.notification,
+    colorScheme: currentTheme.colorScheme,
   } as React.CSSProperties;
 
   useEffect(() => {
@@ -410,6 +421,7 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
         {/* Main content — WorkspaceView always mounted to keep terminals alive */}
         <div style={{ flex: 1, overflow: "hidden", minWidth: 0, position: "relative" }}>
           <WorkspaceView />
+          <PaneDragOverlay />
           <CommandPalette />
           {isKeybindingsOpen && <KeybindingsModal onClose={() => setIsKeybindingsOpen(false)} />}
           {showSetup && (

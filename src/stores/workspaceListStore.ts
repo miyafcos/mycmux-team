@@ -1,9 +1,8 @@
 import { create } from "zustand";
 import { v4 as uuid } from "uuid";
 import type { Workspace, GridTemplateId } from "../types";
+import { WORKSPACE_COLORS } from "../lib/workspaceColors";
 import { useUiStore } from "./uiStore";
-
-const WORKSPACE_COLORS = ["#89b4fa", "#a6e3a1", "#f9e2af", "#f38ba8", "#94e2d5", "#f5c2e7"];
 
 interface CreateWorkspaceOptions {
   id?: string;

@@ -85,7 +85,7 @@ export default memo(function TabItem({ uiVariant = "default", index, name, color
         justifyContent: "space-between",
         padding: "8px 12px",
         cursor: "pointer",
-        background: active ? "rgba(255,255,255,0.08)" : "transparent",
+        background: active ? "var(--cmux-selected)" : "transparent",
         color: active ? "var(--cmux-text)" : "var(--cmux-text-secondary)",
         fontSize: "13px",
         fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
@@ -100,7 +100,7 @@ export default memo(function TabItem({ uiVariant = "default", index, name, color
       }}
       onMouseEnter={(e) => {
         if (!active) {
-          e.currentTarget.style.background = "rgba(255, 255, 255, 0.06)";
+          e.currentTarget.style.background = "var(--cmux-hover)";
           e.currentTarget.style.color = "var(--cmux-text)";
         }
       }}
@@ -135,6 +135,7 @@ export default memo(function TabItem({ uiVariant = "default", index, name, color
               background: color,
               flexShrink: 0,
               opacity: active ? 1 : 0.7,
+              boxShadow: "0 0 0 1px color-mix(in srgb, var(--cmux-bg) 72%, transparent), 0 0 0 2px color-mix(in srgb, var(--cmux-text) 18%, transparent)",
             }} />
           )}
           {notificationCount ? (
@@ -179,7 +180,7 @@ export default memo(function TabItem({ uiVariant = "default", index, name, color
               onKeyDown={handleKeyDown}
               onClick={(e) => e.stopPropagation()}
               style={{
-                background: "rgba(255,255,255,0.1)",
+                background: "var(--cmux-selected)",
                 border: "1px solid var(--cmux-accent, #007aff)",
                 borderRadius: 4,
                 color: "inherit",
@@ -214,7 +215,7 @@ export default memo(function TabItem({ uiVariant = "default", index, name, color
           {paneCount > 1 && (
             <span className="cmux-pill" style={{
               flexShrink: 0,
-              background: active ? "rgba(255,255,255,0.22)" : "rgba(255,255,255,0.12)",
+              background: active ? "color-mix(in srgb, var(--cmux-text) 22%, transparent)" : "color-mix(in srgb, var(--cmux-text) 12%, transparent)",
               color: active ? "var(--cmux-text)" : "var(--cmux-text-secondary)"
             }}>
               {paneCount}
