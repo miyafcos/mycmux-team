@@ -33,8 +33,8 @@ export default function GridPreview({ template, selected, onClick }: GridPreview
         alignItems: "center",
         gap: 6,
         padding: 8,
-        background: selected ? "#1e293b" : "#1a1a1a",
-        border: selected ? "1px solid #89b4fa" : "1px solid #2a2a2a",
+        background: selected ? "var(--cmux-selected)" : "var(--cmux-surface)",
+        border: selected ? "1px solid var(--cmux-accent)" : "1px solid var(--cmux-border)",
         borderRadius: 6,
         cursor: "pointer",
         transition: "border-color 0.15s",
@@ -49,7 +49,7 @@ export default function GridPreview({ template, selected, onClick }: GridPreview
             width={cell.w}
             height={cell.h}
             rx={2}
-            fill={selected ? "#89b4fa" : "#404040"}
+            fill={selected ? "var(--cmux-accent)" : "var(--cmux-text-tertiary)"}
             opacity={selected ? 0.6 : 0.4}
           />
         ))}
@@ -57,7 +57,7 @@ export default function GridPreview({ template, selected, onClick }: GridPreview
       <span
         style={{
           fontSize: 10,
-          color: selected ? "#89b4fa" : "#707070",
+          color: selected ? "var(--cmux-accent)" : "var(--cmux-text-tertiary)",
           fontFamily: "'JetBrains Mono', monospace",
         }}
       >

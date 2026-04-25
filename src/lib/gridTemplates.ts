@@ -3,6 +3,8 @@ import type { GridTemplate, GridTemplateId } from "../types";
 export const GRID_TEMPLATES: Record<GridTemplateId, GridTemplate> = {
   "1x1": { id: "1x1", label: "Single", rows: 1, cols: 1, paneCount: 1 },
   "2x1": { id: "2x1", label: "2 Columns", rows: 1, cols: 2, paneCount: 2 },
+  "3x1": { id: "3x1", label: "3 Columns", rows: 1, cols: 3, paneCount: 3 },
+  "4x1": { id: "4x1", label: "4 Columns", rows: 1, cols: 4, paneCount: 4 },
   "1x2": { id: "1x2", label: "2 Rows", rows: 2, cols: 1, paneCount: 2 },
   "2x2": { id: "2x2", label: "2x2 Grid", rows: 2, cols: 2, paneCount: 4 },
   "3x2": { id: "3x2", label: "3x2 Grid", rows: 2, cols: 3, paneCount: 6 },

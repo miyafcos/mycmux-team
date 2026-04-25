@@ -190,14 +190,20 @@ export interface AppSettings {
 }
 
 export interface PersistentData {
+  schema_version?: number;
   workspaces: WorkspaceConfig[];
   settings: AppSettings;
   active_workspace_id?: string | null;
   active_pane_id?: string | null;
+  active_tab_id?: string | null;
 }
 
 export async function loadPersistentData(): Promise<PersistentData> {
   return invoke("load_persistent_data");
+}
+
+export async function savePersistentData(data: PersistentData): Promise<void> {
+  return invoke("save_persistent_data", { data });
 }
 
 export async function saveWorkspaces(

@@ -8,7 +8,7 @@ interface GridPickerProps {
 }
 
 const DISPLAY_ORDER: GridTemplateId[] = [
-  "1x1", "2x1", "1x2", "2x2", "3x2", "2x3", "3x3", "4x4",
+  "1x1", "2x1", "3x1", "4x1", "2x2", "3x2", "1x2", "2x3",
 ];
 
 export default function GridPicker({ selected, onSelect }: GridPickerProps) {

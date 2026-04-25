@@ -1,5 +1,6 @@
 import { useRef, useState, useCallback, useEffect } from "react";
 import { useWorkspaceListStore, usePaneMetadataStore } from "../../stores/workspaceStore";
+import { usePaneDragStore } from "../../stores/paneDragStore";
 import { SIDEBAR_WIDTH } from "../../lib/constants";
 import { deriveEffectiveStatus } from "../../lib/notificationStatus";
 import TabItem from "./TabItem";
@@ -24,6 +25,9 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
   const reorder = useWorkspaceListStore((s) => s.reorderWorkspaces);
   const rename = useWorkspaceListStore((s) => s.renameWorkspace);
   const paneMetadata = usePaneMetadataStore((s) => s.metadata);
+  const paneDragActive = usePaneDragStore((s) => s.item !== null);
+  const hoverWorkspaceId = usePaneDragStore((s) => s.hoverWorkspaceId);
+  const newWorkspaceDropActive = usePaneDragStore((s) => s.target?.kind === "new-workspace");
 
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [dropIndex, setDropIndex] = useState<number | null>(null);
@@ -34,6 +38,7 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
   const dragElRef = useRef<HTMLElement | null>(null);
 
   const handlePointerDown = useCallback((e: React.PointerEvent, index: number) => {
+    if (paneDragActive) return;
     if (e.button !== 0) return;
     const target = e.target as HTMLElement;
     if (target.tagName === "BUTTON" || target.tagName === "INPUT" || target.closest("button, input")) return;
@@ -42,9 +47,10 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
     pointerIdRef.current = e.pointerId;
     dragElRef.current = e.currentTarget as HTMLElement;
     setDragIndex(index);
-  }, []);
+  }, [paneDragActive]);
 
   const handlePointerMove = useCallback((e: React.PointerEvent) => {
+    if (paneDragActive) return;
     if (dragIndex === null) return;
     if (!dragging.current) {
       if (Math.abs(e.clientY - startY.current) < 5) return;
@@ -63,9 +69,10 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
     }
     target = Math.min(target, workspaces.length - 1);
     setDropIndex(target === dragIndex ? null : target);
-  }, [dragIndex, workspaces.length]);
+  }, [dragIndex, paneDragActive, workspaces.length]);
 
   const handlePointerUp = useCallback(() => {
+    if (paneDragActive) return;
     if (dragIndex !== null && dropIndex !== null && dragging.current) {
       reorder(dragIndex, dropIndex);
     }
@@ -74,7 +81,7 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
     dragging.current = false;
     pointerIdRef.current = null;
     dragElRef.current = null;
-  }, [dragIndex, dropIndex, reorder]);
+  }, [dragIndex, dropIndex, paneDragActive, reorder]);
 
   useEffect(() => {
     const up = () => {
@@ -96,7 +103,7 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
         height: "100%",
         display: "flex",
         flexDirection: "column",
-        background: uiVariant === "cmux" ? "#151515" : "var(--cmux-sidebar)",
+        background: "var(--cmux-sidebar)",
         borderRight: "1px solid var(--cmux-border)",
         flexShrink: 0,
         overflowY: "hidden",
@@ -135,9 +142,11 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
           const firstPaneMeta = firstActiveTabSessionId ? paneMetadata[firstActiveTabSessionId] : undefined;
           const isDragged = dragging.current && dragIndex === wsIndex;
           const showLine = dragging.current && dropIndex === wsIndex && dragIndex !== wsIndex;
+          const isPaneDropHover = paneDragActive && hoverWorkspaceId === ws.id;
           return (
             <div
               key={ws.id}
+              data-dnd-workspace-target-id={ws.id}
               ref={(el) => { itemRefs.current[wsIndex] = el; }}
               onPointerDown={(e) => handlePointerDown(e, wsIndex)}
               onPointerMove={handlePointerMove}
@@ -146,6 +155,9 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
                 touchAction: "none",
                 opacity: isDragged ? 0.35 : 1,
                 borderTop: showLine ? "2px solid var(--cmux-accent, #007aff)" : "2px solid transparent",
+                outline: isPaneDropHover ? "1px solid var(--cmux-accent, #007aff)" : "1px solid transparent",
+                outlineOffset: -2,
+                background: isPaneDropHover ? "color-mix(in srgb, var(--cmux-accent) 16%, transparent)" : undefined,
               }}
             >
               <TabItem
@@ -172,6 +184,8 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
 
       {/* New workspace button at bottom */}
       <button
+        type="button"
+        data-dnd-new-workspace-target="true"
         onClick={onNewWorkspace}
         title="New workspace (Ctrl+Shift+N)"
         className={uiVariant === "cmux" ? "cmux-title-btn" : undefined}
@@ -180,22 +194,33 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
           alignItems: "center",
           gap: 8,
           width: "100%",
-          background: "none",
+          background: newWorkspaceDropActive
+            ? "color-mix(in srgb, var(--cmux-accent) 18%, transparent)"
+            : "none",
           border: "none",
-          borderTop: "1px solid var(--cmux-border)",
-          color: "var(--cmux-text-tertiary)",
+          borderTop: newWorkspaceDropActive
+            ? "1px solid color-mix(in srgb, var(--cmux-accent) 70%, var(--cmux-border))"
+            : "1px solid var(--cmux-border)",
+          color: newWorkspaceDropActive ? "var(--cmux-text)" : "var(--cmux-text-tertiary)",
           cursor: "pointer",
           padding: "10px 16px",
           fontSize: 12,
           fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
           textAlign: "left",
           flexShrink: 0,
+          outline: newWorkspaceDropActive ? "1px solid var(--cmux-accent)" : "1px solid transparent",
+          outlineOffset: -3,
+          boxShadow: newWorkspaceDropActive
+            ? "inset 0 0 0 1px color-mix(in srgb, var(--cmux-accent) 38%, transparent)"
+            : "none",
         }}
         onMouseEnter={(e) => {
-          e.currentTarget.style.background = uiVariant === "cmux" ? "var(--cmux-hover)" : "rgba(255,255,255,0.04)";
+          if (paneDragActive) return;
+          e.currentTarget.style.background = "var(--cmux-hover)";
           e.currentTarget.style.color = "var(--cmux-text-secondary)";
         }}
         onMouseLeave={(e) => {
+          if (paneDragActive) return;
           e.currentTarget.style.background = "none";
           e.currentTarget.style.color = "var(--cmux-text-tertiary)";
         }}

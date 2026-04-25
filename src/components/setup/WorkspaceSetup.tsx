@@ -1,10 +1,9 @@
 import { useState } from "react";
 import type { GridTemplateId } from "../../types";
 import { getGridTemplate } from "../../lib/gridTemplates";
+import { WORKSPACE_COLORS } from "../../lib/workspaceColors";
 import GridPicker from "./GridPicker";
 import AgentSlotList from "./AgentSlotList";
-
-const COLOR_PALETTE = ["#89b4fa", "#a6e3a1", "#f9e2af", "#f38ba8", "#94e2d5", "#f5c2e7"];
 
 interface WorkspaceSetupProps {
   onLaunch: (
@@ -18,7 +17,7 @@ interface WorkspaceSetupProps {
 
 export default function WorkspaceSetup({ onLaunch, onCancel }: WorkspaceSetupProps) {
   const [name, setName] = useState("");
-  const [gridId, setGridId] = useState<GridTemplateId>("2x2");
+  const [gridId, setGridId] = useState<GridTemplateId>("3x1");
   const [assignments, setAssignments] = useState<Record<number, string>>({});
   const [selectedColor, setSelectedColor] = useState<string | undefined>(undefined);
 
@@ -83,7 +82,7 @@ export default function WorkspaceSetup({ onLaunch, onCancel }: WorkspaceSetupPro
               width: "100%",
               backgroundColor: "transparent",
               color: "var(--cmux-text)",
-              colorScheme: "dark",
+              colorScheme: "inherit",
               border: "1px solid var(--cmux-border)",
               borderRadius: 4,
               padding: "6px 10px",
@@ -107,7 +106,7 @@ export default function WorkspaceSetup({ onLaunch, onCancel }: WorkspaceSetupPro
             Color
           </div>
           <div style={{ display: "flex", gap: 8 }}>
-            {COLOR_PALETTE.map((c) => (
+            {WORKSPACE_COLORS.map((c) => (
               <button
                 key={c}
                 onClick={() => setSelectedColor(selectedColor === c ? undefined : c)}
@@ -116,11 +115,11 @@ export default function WorkspaceSetup({ onLaunch, onCancel }: WorkspaceSetupPro
                   height: 20,
                   borderRadius: "50%",
                   background: c,
-                  border: selectedColor === c ? "2px solid #ffffff" : "2px solid transparent",
+                  border: selectedColor === c ? "2px solid var(--cmux-text)" : "2px solid transparent",
                   cursor: "pointer",
                   padding: 0,
                   outline: "none",
-                  boxShadow: selectedColor === c ? `0 0 0 1px ${c}` : "none",
+                  boxShadow: selectedColor === c ? `0 0 0 1px ${c}, 0 0 0 3px color-mix(in srgb, var(--cmux-bg) 76%, transparent)` : "0 0 0 1px color-mix(in srgb, var(--cmux-text) 14%, transparent)",
                 }}
                 title={c}
               />

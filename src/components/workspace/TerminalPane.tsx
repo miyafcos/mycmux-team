@@ -12,6 +12,7 @@ import { useWorkspaceListStore } from "../../stores/workspaceListStore";
 import { getAgent, getDefaultAgent } from "../../lib/agents";
 import { killSession } from "../../lib/ipc";
 import { evictTerminalCache } from "../terminal/XTermWrapper";
+import { usePaneDragStore } from "../../stores/paneDragStore";
 
 interface TerminalPaneProps {
   pane: Pane;
@@ -33,6 +34,12 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
   const isZoomed = useUiStore((s) => s.zoomedPaneId === pane.id);
   const setActivePaneId = useUiStore((s) => s.setActivePaneId);
   const setZoomedPaneId = useUiStore((s) => s.setZoomedPaneId);
+  const dragItem = usePaneDragStore((s) => s.item);
+  const dropTarget = usePaneDragStore((s) =>
+    s.target?.kind === "pane" && s.target.workspaceId === workspaceId && s.target.paneId === pane.id
+      ? s.target
+      : null,
+  );
 
   // Granular metadata selectors only re-render when notification/done count changes.
   const notificationCount = usePaneMetadataStore((s) =>
@@ -114,10 +121,22 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
   const paneCwd = activeTab?.cwd ?? pane.cwd;
   const resolvedAgentId = activeTab?.agentId === "shell-starter" ? "shell" : activeTab?.agentId;
   const agent = resolvedAgentId ? (getAgent(resolvedAgentId) ?? getDefaultAgent()) : null;
+  const dropPreviewClass = dropTarget && dragItem
+    ? [
+        "pane-drop-preview",
+        `pane-drop-preview--${dropTarget.zone}`,
+        dropTarget.zone === "center"
+          ? (dragItem.kind === "tab" ? "pane-drop-preview--attach-tab" : "pane-drop-preview--merge-pane")
+          : "pane-drop-preview--split",
+        `pane-drop-preview--source-${dragItem.kind}`,
+      ].join(" ")
+    : null;
 
   return (
     <div
       data-session-id={pane.sessionId}
+      data-dnd-workspace-id={workspaceId}
+      data-dnd-pane-id={pane.id}
       tabIndex={-1}
       onFocus={handleFocus}
       onBlur={handleBlur}
@@ -192,6 +211,9 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
           </div>
         ) : null}
       </div>
+      {dropPreviewClass && (
+        <div className={dropPreviewClass} />
+      )}
     </div>
   );
 });

@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   useWorkspaceListStore,
   useWorkspaceLayoutStore,
@@ -7,9 +8,8 @@ import {
 } from "../../stores/workspaceStore";
 import {
   loadPersistentData,
-  saveWorkspaces,
   claimLeader,
-  saveSettings,
+  savePersistentData,
   type WorkspaceConfig,
 } from "../../lib/ipc";
 import type { Workspace } from "../../types";
@@ -33,7 +33,8 @@ function transposeSplitRowsToCols(splitRows: number[][]): number[][] {
 
 function toConfig(ws: Workspace): WorkspaceConfig {
   const paneIdToIndex = new Map(ws.panes.map((p, i) => [p.id, i]));
-  const split_columns = ws.splitColumns
+  const splitColumns = normalizeSplitColumns(ws);
+  const split_columns = splitColumns
     ?.map((col) => col.map((id) => paneIdToIndex.get(id)).filter((i): i is number => i !== undefined))
     .filter((col) => col.length > 0) ?? null;
 
@@ -46,13 +47,16 @@ function toConfig(ws: Workspace): WorkspaceConfig {
     panes: ws.panes.map((p) => {
       const activeTab = p.tabs.find((tab) => tab.id === p.activeTabId) ?? p.tabs[0];
       const paneMeta = metaState[p.sessionId];
+      const paneCwd = paneMeta?.cwd ?? activeTab?.cwd ?? p.cwd ?? null;
+      const paneClaudeSessionId =
+        paneMeta?.claudeSessionId ?? activeTab?.claudeSessionId ?? p.claudeSessionId ?? null;
       return {
         pane_id: p.id,
         agent_id: activeTab?.agentId ?? p.agentId,
         label: p.label ?? null,
-        cwd: paneMeta?.cwd ?? null,
+        cwd: paneCwd,
         last_process: null,
-        claude_session_id: paneMeta?.claudeSessionId ?? null,
+        claude_session_id: paneClaudeSessionId,
         active_tab_id: p.activeTabId,
         tabs: p.tabs.map((tab) => {
           const tabMeta = metaState[tab.sessionId];
@@ -61,9 +65,9 @@ function toConfig(ws: Workspace): WorkspaceConfig {
             agent_id: tab.agentId,
             label: tab.label ?? null,
             type: tab.type ?? "terminal",
-            cwd: tabMeta?.cwd ?? null,
+            cwd: tabMeta?.cwd ?? tab.cwd ?? paneCwd,
             last_process: null,
-            claude_session_id: tabMeta?.claudeSessionId ?? null,
+            claude_session_id: tabMeta?.claudeSessionId ?? tab.claudeSessionId ?? null,
           };
         }),
       };
@@ -71,9 +75,34 @@ function toConfig(ws: Workspace): WorkspaceConfig {
     created_at: ws.createdAt,
     color: ws.color ?? null,
     split_columns,
-    column_widths: ws.columnWidths ?? null,
-    row_heights_per_col: ws.rowHeightsPerCol ?? null,
+    column_widths: normalizeColumnWidths(ws, splitColumns),
+    row_heights_per_col: normalizeRowHeightsPerCol(ws, splitColumns),
   };
+}
+
+function normalizeSplitColumns(ws: Workspace): string[][] | null {
+  const columns = ws.splitColumns
+    ?.map((col) => col.filter((id) => ws.panes.some((pane) => pane.id === id)))
+    .filter((col) => col.length > 0);
+  return columns && columns.length > 0 ? columns : null;
+}
+
+function normalizeColumnWidths(ws: Workspace, splitColumns: string[][] | null): number[] | null {
+  if (!splitColumns || !ws.columnWidths || ws.columnWidths.length !== splitColumns.length) {
+    return null;
+  }
+  return ws.columnWidths;
+}
+
+function normalizeRowHeightsPerCol(ws: Workspace, splitColumns: string[][] | null): number[][] | null {
+  if (!splitColumns || !ws.rowHeightsPerCol) {
+    return null;
+  }
+  const rows = splitColumns.map((col, idx) => {
+    const saved = ws.rowHeightsPerCol?.[idx];
+    return saved && saved.length === col.length ? saved : [];
+  });
+  return rows.some((row) => row.length > 0) ? rows : null;
 }
 
 let _resolveLoaded: () => void;
@@ -84,6 +113,7 @@ export const persistLoaded = new Promise<void>((resolve) => {
 export function useWorkspacePersist() {
   const loaded = useRef(false);
   const isLeader = useRef(false);
+  const lastActivePaneSessionId = useRef<string | null>(null);
 
   // Load on mount — only leader bootstraps
   useEffect(() => {
@@ -137,9 +167,12 @@ export function useWorkspacePersist() {
                   },
                 );
 
-                if (cfg.id === data.active_workspace_id && data.active_pane_id) {
-                  const activePane = panes.find((pane) => pane.id === data.active_pane_id);
-                  restoredActivePaneSessionId = activePane?.sessionId ?? null;
+                if (cfg.id === data.active_workspace_id) {
+                  const activePane = data.active_pane_id
+                    ? panes.find((pane) => pane.id === data.active_pane_id)
+                    : panes.find((pane) => pane.tabs.some((tab) => tab.id === data.active_tab_id));
+                  const activeTab = activePane?.tabs.find((tab) => tab.id === data.active_tab_id);
+                  restoredActivePaneSessionId = activeTab?.sessionId ?? activePane?.sessionId ?? null;
                 }
               }
               const bootstrapWs = listStore.workspaces[0];
@@ -158,6 +191,7 @@ export function useWorkspacePersist() {
                 restoredActivePaneSessionId =
                   useWorkspaceListStore.getState().getWorkspace(nextActiveWorkspaceId)?.panes[0]?.sessionId ?? null;
               }
+              lastActivePaneSessionId.current = restoredActivePaneSessionId;
               useUiStore.getState().setActivePaneId(restoredActivePaneSessionId);
             }
           }
@@ -174,34 +208,59 @@ export function useWorkspacePersist() {
   useEffect(() => {
     let dirty = false;
     let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+    let syncInFlight: Promise<void> | null = null;
+    let closing = false;
 
-    const sync = async () => {
-      if (!isLeader.current) return;
-      if (!dirty) return;
-      dirty = false;
-      try {
-        const state = useWorkspaceListStore.getState();
-        const uiState = useUiStore.getState();
+    const buildSnapshot = () => {
+      const state = useWorkspaceListStore.getState();
+      const uiState = useUiStore.getState();
+      const activeWorkspaceId = state.activeWorkspaceId ?? null;
+      const activeWorkspace = activeWorkspaceId
+        ? state.workspaces.find((ws) => ws.id === activeWorkspaceId)
+        : null;
+      const activeSessionId = uiState.activePaneId ?? lastActivePaneSessionId.current;
+      const activePane = activeWorkspace?.panes.find((pane) =>
+        pane.sessionId === activeSessionId || pane.tabs.some((tab) => tab.sessionId === activeSessionId),
+      ) ?? activeWorkspace?.panes[0] ?? null;
+      const activeTab = activePane?.tabs.find((tab) => tab.sessionId === activeSessionId)
+        ?? activePane?.tabs.find((tab) => tab.id === activePane.activeTabId)
+        ?? activePane?.tabs[0]
+        ?? null;
+      const themeState = useThemeStore.getState();
+      const keybindingState = useKeybindingStore.getState();
 
-        const configs = state.workspaces.map((ws) => toConfig(ws));
-        const activeWorkspaceId = state.activeWorkspaceId ?? null;
-        const activePaneKey = activeWorkspaceId
-          ? state.workspaces
-              .find((ws) => ws.id === activeWorkspaceId)
-              ?.panes.find((pane) => pane.sessionId === uiState.activePaneId)?.id ?? null
-          : null;
-        await saveWorkspaces(configs, activeWorkspaceId, activePaneKey);
-
-        const themeState = useThemeStore.getState();
-        const keybindingState = useKeybindingStore.getState();
-        await saveSettings({
+      return {
+        schema_version: 1,
+        workspaces: state.workspaces.map((ws) => toConfig(ws)),
+        settings: {
           theme_id: themeState.themeId,
           font_size: themeState.fontSize,
           keybindings: keybindingState.overrides,
-        });
+        },
+        active_workspace_id: activeWorkspaceId,
+        active_pane_id: activePane?.id ?? null,
+        active_tab_id: activeTab?.id ?? null,
+      };
+    };
+
+    const sync = async (force = false) => {
+      if (!isLeader.current) return;
+      if (syncInFlight) {
+        await syncInFlight.catch(() => {});
+      }
+      if (!dirty && !force) return;
+      dirty = false;
+      const run = savePersistentData(buildSnapshot());
+      syncInFlight = run;
+      try {
+        await run;
       } catch (err) {
         dirty = true; // allow next trigger to retry
         console.warn("[persist] Failed to save:", err);
+      } finally {
+        if (syncInFlight === run) {
+          syncInFlight = null;
+        }
       }
     };
 
@@ -221,6 +280,9 @@ export function useWorkspacePersist() {
     const unsubTheme = useThemeStore.subscribe(markDirty);
     const unsubKeys = useKeybindingStore.subscribe(markDirty);
     const unsubUi = useUiStore.subscribe((state, prevState) => {
+      if (state.activePaneId) {
+        lastActivePaneSessionId.current = state.activePaneId;
+      }
       if (state.activePaneId !== prevState.activePaneId) markDirty();
     });
 
@@ -231,10 +293,26 @@ export function useWorkspacePersist() {
           clearTimeout(debounceTimer);
           debounceTimer = null;
         }
-        void sync();
+        void sync(true);
       }
     };
     window.addEventListener("beforeunload", handleBeforeUnload);
+
+    const unlistenCloseRequested = getCurrentWindow().onCloseRequested(async (event) => {
+      if (closing) return;
+      if (!dirty && !syncInFlight) return;
+      event.preventDefault();
+      closing = true;
+      if (debounceTimer) {
+        clearTimeout(debounceTimer);
+        debounceTimer = null;
+      }
+      try {
+        await sync(true);
+      } finally {
+        await getCurrentWindow().close();
+      }
+    });
 
     return () => {
       unsubList();
@@ -245,6 +323,7 @@ export function useWorkspacePersist() {
       unsubUi();
       if (debounceTimer) clearTimeout(debounceTimer);
       window.removeEventListener("beforeunload", handleBeforeUnload);
+      unlistenCloseRequested.then((f) => f()).catch(() => {});
     };
   }, []);
 
