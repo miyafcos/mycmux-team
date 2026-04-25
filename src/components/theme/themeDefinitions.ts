@@ -704,9 +704,9 @@ const THEME_DRAFTS: ThemeDraft[] = [
   },
   {
     id: "graphite",
-    name: "Graphite",
+    name: "石墨",
     group: "calm-dark",
-    description: "neutral dark / graphite",
+    description: "無彩色・中間コントラスト",
     terminal: {
       background: "#101214",
       foreground: "#d6dde4",
@@ -740,9 +740,9 @@ const THEME_DRAFTS: ThemeDraft[] = [
   },
   {
     id: "carbon",
-    name: "Carbon",
+    name: "炭黒",
     group: "calm-dark",
-    description: "black dark / low glare",
+    description: "黒系・低グレア",
     terminal: {
       background: "#050607",
       foreground: "#d1d5db",
@@ -776,9 +776,9 @@ const THEME_DRAFTS: ThemeDraft[] = [
   },
   {
     id: "arctic-night",
-    name: "Arctic Night",
+    name: "氷夜",
     group: "calm-dark",
-    description: "cold dark / blue gray",
+    description: "青灰系・寒色",
     terminal: {
       background: "#0b1320",
       foreground: "#dce7f3",
@@ -812,9 +812,9 @@ const THEME_DRAFTS: ThemeDraft[] = [
   },
   {
     id: "walnut",
-    name: "Walnut",
+    name: "胡桃",
     group: "calm-dark",
-    description: "warm dark / wood",
+    description: "茶系・木質",
     terminal: {
       background: "#1b1510",
       foreground: "#eadfce",
@@ -848,9 +848,9 @@ const THEME_DRAFTS: ThemeDraft[] = [
   },
   {
     id: "lagoon",
-    name: "Lagoon",
+    name: "碧湖",
     group: "calm-dark",
-    description: "teal dark / lagoon",
+    description: "青緑系・水面",
     terminal: {
       background: "#06191c",
       foreground: "#d5f2f1",
@@ -884,9 +884,9 @@ const THEME_DRAFTS: ThemeDraft[] = [
   },
   {
     id: "ember",
-    name: "Ember",
+    name: "熾火",
     group: "vivid-dark",
-    description: "orange dark / ember",
+    description: "橙系・火種",
     terminal: {
       background: "#170d0a",
       foreground: "#ffe7d6",
@@ -920,9 +920,9 @@ const THEME_DRAFTS: ThemeDraft[] = [
   },
   {
     id: "aurora",
-    name: "Aurora",
+    name: "極光",
     group: "vivid-dark",
-    description: "green purple / aurora",
+    description: "緑紫系・発光",
     terminal: {
       background: "#0b1020",
       foreground: "#e8f2ff",
@@ -956,9 +956,9 @@ const THEME_DRAFTS: ThemeDraft[] = [
   },
   {
     id: "synthwave",
-    name: "Synthwave",
+    name: "電紫",
     group: "vivid-dark",
-    description: "magenta cyan / neon",
+    description: "紫青系・ネオン",
     terminal: {
       background: "#160824",
       foreground: "#f6e8ff",
@@ -992,9 +992,9 @@ const THEME_DRAFTS: ThemeDraft[] = [
   },
   {
     id: "signal",
-    name: "Signal",
+    name: "信号灯",
     group: "vivid-dark",
-    description: "amber black / terminal",
+    description: "黄黒系・端末",
     terminal: {
       background: "#080806",
       foreground: "#f7e7b3",
@@ -1028,9 +1028,9 @@ const THEME_DRAFTS: ThemeDraft[] = [
   },
   {
     id: "paper",
-    name: "Paper",
+    name: "白紙",
     group: "light",
-    description: "neutral light / paper",
+    description: "白系・紙面",
     terminal: {
       background: "#fbfaf7",
       foreground: "#2d3136",
@@ -1064,9 +1064,9 @@ const THEME_DRAFTS: ThemeDraft[] = [
   },
   {
     id: "mist",
-    name: "Mist",
+    name: "薄霧",
     group: "light",
-    description: "cool light / mist",
+    description: "青白系・霧",
     terminal: {
       background: "#f5f8fb",
       foreground: "#243241",
@@ -1100,9 +1100,9 @@ const THEME_DRAFTS: ThemeDraft[] = [
   },
   {
     id: "ink-day",
-    name: "Ink Day",
+    name: "墨昼",
     group: "light",
-    description: "high contrast / daylight",
+    description: "高コントラスト・昼光",
     terminal: {
       background: "#ffffff",
       foreground: "#161a20",
@@ -1136,7 +1136,49 @@ const THEME_DRAFTS: ThemeDraft[] = [
   },
 ];
 
-export const THEMES: ThemeDefinition[] = THEME_DRAFTS.map(completeTheme);
+const THEME_DISPLAY_ORDER = [
+  "mayonaka",
+  "shinkai",
+  "walnut",
+  "chikurin",
+  "kyokuya",
+  "yoi-ai",
+  "lagoon",
+  "graphite",
+  "arctic-night",
+  "seijaku",
+  "carbon",
+  "yogiri",
+  "raimei",
+  "sango",
+  "aurora",
+  "yougan",
+  "synthwave",
+  "kogane",
+  "ember",
+  "signal",
+  "asanagi",
+  "kinari",
+  "wakaba",
+  "geppaku",
+  "sakura",
+  "paper",
+  "hakuchuumu",
+  "mist",
+  "ink-day",
+] as const;
+
+const THEME_ORDER_INDEX = new Map<string, number>(
+  THEME_DISPLAY_ORDER.map((id, index) => [id, index]),
+);
+
+export const THEMES: ThemeDefinition[] = THEME_DRAFTS
+  .map(completeTheme)
+  .sort((a, b) => {
+    const orderA = THEME_ORDER_INDEX.get(a.id) ?? Number.MAX_SAFE_INTEGER;
+    const orderB = THEME_ORDER_INDEX.get(b.id) ?? Number.MAX_SAFE_INTEGER;
+    return orderA - orderB;
+  });
 
 const THEME_ALIASES: Record<string, string> = {
   "yoru-cafe": "mayonaka",

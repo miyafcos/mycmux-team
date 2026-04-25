@@ -54,6 +54,7 @@ pub fn run() {
             commands::window::claim_leader,
             commands::window::get_window_count,
             commands::window::reveal_main_window,
+            commands::window::quit_app,
             socket::socket_response,
         ])
         .setup(|#[allow(unused)] app| {

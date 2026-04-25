@@ -143,6 +143,10 @@ export async function revealMainWindow(): Promise<void> {
   return invoke("reveal_main_window");
 }
 
+export async function quitApp(): Promise<void> {
+  return invoke("quit_app");
+}
+
 // ─── Persistence commands ────────────────────────────────────────────────────
 
 export interface PaneTabConfig {

@@ -66,3 +66,10 @@ pub fn reveal_main_window(app: AppHandle) -> Result<(), String> {
     })
     .map_err(|e| e.to_string())
 }
+
+#[tauri::command]
+pub fn quit_app(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    state.session_manager.kill_all();
+    app.exit(0);
+    Ok(())
+}

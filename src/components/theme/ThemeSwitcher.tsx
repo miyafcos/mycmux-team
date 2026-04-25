@@ -118,7 +118,7 @@ export default function ThemeSwitcher({ onClose, onOpenKeybindings }: ThemeSwitc
               fontWeight: 600,
             }}
           >
-            Settings
+            設定
           </div>
           <div style={{ textAlign: "right" }}>
             <div
@@ -152,7 +152,7 @@ export default function ThemeSwitcher({ onClose, onOpenKeybindings }: ThemeSwitc
               fontFamily: "'JetBrains Mono', monospace",
             }}
           >
-            Theme Library
+            テーマ
           </div>
 
           <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
@@ -263,7 +263,7 @@ export default function ThemeSwitcher({ onClose, onOpenKeybindings }: ThemeSwitc
               fontFamily: "'JetBrains Mono', monospace",
             }}
           >
-            Font Size: {fontSize}px
+            フォントサイズ: {fontSize}px
           </div>
           <input
             type="range"
@@ -290,7 +290,7 @@ export default function ThemeSwitcher({ onClose, onOpenKeybindings }: ThemeSwitc
               marginRight: 8,
             }}
           >
-            Keyboard Shortcuts
+            キーボードショートカット
           </button>
           <button
             onClick={onClose}
@@ -305,7 +305,7 @@ export default function ThemeSwitcher({ onClose, onOpenKeybindings }: ThemeSwitc
               cursor: "pointer",
             }}
           >
-            Done
+            閉じる
           </button>
         </div>
       </div>
