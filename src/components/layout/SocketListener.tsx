@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { confirm } from "@tauri-apps/plugin-dialog";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   useWorkspaceListStore,
@@ -10,11 +11,13 @@ import {
   loadPersistentData,
   claimLeader,
   savePersistentData,
+  quitApp,
   type WorkspaceConfig,
 } from "../../lib/ipc";
 import type { Workspace } from "../../types";
 import { useThemeStore } from "../../stores/themeStore";
 import { useKeybindingStore } from "../../stores/keybindingStore";
+import { deriveEffectiveStatus } from "../../lib/notificationStatus";
 
 /** Transpose row-major split indices to column-major for legacy data migration */
 function transposeSplitRowsToCols(splitRows: number[][]): number[][] {
@@ -210,6 +213,7 @@ export function useWorkspacePersist() {
     let debounceTimer: ReturnType<typeof setTimeout> | null = null;
     let syncInFlight: Promise<void> | null = null;
     let closing = false;
+    let closePromptOpen = false;
 
     const buildSnapshot = () => {
       const state = useWorkspaceListStore.getState();
@@ -274,6 +278,33 @@ export function useWorkspacePersist() {
       debouncedSync();
     };
 
+    const countBusySessions = () => {
+      const { workspaces } = useWorkspaceListStore.getState();
+      const { metadata } = usePaneMetadataStore.getState();
+      const sessionIds = new Set<string>();
+
+      for (const workspace of workspaces) {
+        for (const pane of workspace.panes) {
+          if (pane.tabs.length === 0) {
+            sessionIds.add(pane.sessionId);
+            continue;
+          }
+          for (const tab of pane.tabs) {
+            sessionIds.add(tab.sessionId);
+          }
+        }
+      }
+
+      let busyCount = 0;
+      for (const sessionId of sessionIds) {
+        const status = deriveEffectiveStatus(metadata[sessionId]);
+        if (status === "working" || status === "waiting") {
+          busyCount += 1;
+        }
+      }
+      return busyCount;
+    };
+
     const unsubList = useWorkspaceListStore.subscribe(markDirty);
     const unsubLayout = useWorkspaceLayoutStore.subscribe(markDirty);
     const unsubMeta = usePaneMetadataStore.subscribe(markDirty);
@@ -299,9 +330,36 @@ export function useWorkspacePersist() {
     window.addEventListener("beforeunload", handleBeforeUnload);
 
     const unlistenCloseRequested = getCurrentWindow().onCloseRequested(async (event) => {
-      if (closing) return;
-      if (!dirty && !syncInFlight) return;
+      if (closing || closePromptOpen) {
+        event.preventDefault();
+        return;
+      }
+      const busyCount = countBusySessions();
+      if (!dirty && !syncInFlight && busyCount === 0) return;
       event.preventDefault();
+
+      if (busyCount > 0) {
+        closePromptOpen = true;
+        let shouldQuit = false;
+        try {
+          shouldQuit = await confirm(
+            `実行中または入力待ちのセッションが ${busyCount} 件あります。終了するとすべての端末を閉じます。終了しますか？`,
+            {
+              title: "mycmux を終了",
+              kind: "warning",
+              okLabel: "終了",
+              cancelLabel: "キャンセル",
+            },
+          );
+        } catch (err) {
+          console.warn("[persist] Failed to show quit confirmation:", err);
+          return;
+        } finally {
+          closePromptOpen = false;
+        }
+        if (!shouldQuit) return;
+      }
+
       closing = true;
       if (debounceTimer) {
         clearTimeout(debounceTimer);
@@ -310,7 +368,7 @@ export function useWorkspacePersist() {
       try {
         await sync(true);
       } finally {
-        await getCurrentWindow().close();
+        await quitApp();
       }
     });
 
