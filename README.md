@@ -2,7 +2,7 @@
 
 チーム配布用のターミナルワークスペース。Tauri v2 + React + xterm.js 製。
 
-[mycmux](https://github.com/miyafcos/mycmux)（個人版）からファイルエクスプローラーサイドバーと AI バディ機能を取り除いた、チーム配布向けの軽量版。
+`mycmux-lite` は、チーム配布向けにファイルエクスプローラーサイドバーと AI バディ機能を取り除いた軽量版。配布元は [mycmux-team](https://github.com/miyafcos/mycmux-team)。
 
 ## 機能
 
@@ -20,7 +20,7 @@
 - 右サイドバー（ファイルエクスプローラー、Ctrl+P パスジャンパー、ファイル検索）
 - AI コンパニオンウィジェット（Claude Buddy）
 
-動作が不安定だったため、チーム配布前に取り外してある。必要になったら個人版 [mycmux](https://github.com/miyafcos/mycmux) を参照。
+動作が不安定だったため、チーム配布前に取り外してある。必要になったら [mycmux-team](https://github.com/miyafcos/mycmux-team) の最新版を参照。
 
 ## インストール
 
