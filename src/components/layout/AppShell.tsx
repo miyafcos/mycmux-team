@@ -19,6 +19,7 @@ import SocketListener from "./SocketListener";
 import KeybindingsModal from "./KeybindingsModal";
 import { useKeybindingStore } from "../../stores/keybindingStore";
 import { useThemeStore } from "../../stores/themeStore";
+import { confirm } from "@tauri-apps/plugin-dialog";
 
 type Direction = "up" | "down" | "left" | "right";
 
@@ -187,7 +188,17 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
   );
 
   const handleCloseWorkspace = useCallback(
-    (id: string) => {
+    async (id: string) => {
+      const wsName = workspaces.find((w) => w.id === id)?.name ?? "ワークスペース";
+      const shouldClose = await confirm(`ワークスペース「${wsName}」を閉じますか？`, {
+        title: "ワークスペースを閉じる",
+        kind: "warning",
+        okLabel: "閉じる",
+        cancelLabel: "キャンセル",
+      }).catch(() => false);
+
+      if (!shouldClose) return;
+
       const ws = workspaces.find((w) => w.id === id);
       if (ws) {
         for (const pane of ws.panes) {
