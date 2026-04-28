@@ -11,13 +11,19 @@ import {
   loadPersistentData,
   claimLeader,
   savePersistentData,
+  readAgentSessionMappings,
   quitApp,
+  type AgentSessionMapping,
+  type PaneConfig,
+  type PaneTabConfig,
   type WorkspaceConfig,
 } from "../../lib/ipc";
-import type { Workspace } from "../../types";
+import type { AgentSessionKind, PaneTab, Workspace } from "../../types";
 import { useThemeStore } from "../../stores/themeStore";
 import { useKeybindingStore } from "../../stores/keybindingStore";
 import { deriveEffectiveStatus } from "../../lib/notificationStatus";
+import { makeSessionId } from "../../lib/constants";
+import { getTerminalBufferLines } from "../terminal/XTermWrapper";
 
 /** Transpose row-major split indices to column-major for legacy data migration */
 function transposeSplitRowsToCols(splitRows: number[][]): number[][] {
@@ -32,55 +38,6 @@ function transposeSplitRowsToCols(splitRows: number[][]): number[][] {
     if (col.length > 0) cols.push(col);
   }
   return cols;
-}
-
-function toConfig(ws: Workspace): WorkspaceConfig {
-  const paneIdToIndex = new Map(ws.panes.map((p, i) => [p.id, i]));
-  const splitColumns = normalizeSplitColumns(ws);
-  const split_columns = splitColumns
-    ?.map((col) => col.map((id) => paneIdToIndex.get(id)).filter((i): i is number => i !== undefined))
-    .filter((col) => col.length > 0) ?? null;
-
-  const metaState = usePaneMetadataStore.getState().metadata;
-
-  return {
-    id: ws.id,
-    name: ws.name,
-    grid_template_id: ws.gridTemplateId,
-    panes: ws.panes.map((p) => {
-      const activeTab = p.tabs.find((tab) => tab.id === p.activeTabId) ?? p.tabs[0];
-      const paneMeta = metaState[p.sessionId];
-      const paneCwd = paneMeta?.cwd ?? activeTab?.cwd ?? p.cwd ?? null;
-      const paneClaudeSessionId =
-        paneMeta?.claudeSessionId ?? activeTab?.claudeSessionId ?? p.claudeSessionId ?? null;
-      return {
-        pane_id: p.id,
-        agent_id: activeTab?.agentId ?? p.agentId,
-        label: p.label ?? null,
-        cwd: paneCwd,
-        last_process: null,
-        claude_session_id: paneClaudeSessionId,
-        active_tab_id: p.activeTabId,
-        tabs: p.tabs.map((tab) => {
-          const tabMeta = metaState[tab.sessionId];
-          return {
-            tab_id: tab.id,
-            agent_id: tab.agentId,
-            label: tab.label ?? null,
-            type: tab.type ?? "terminal",
-            cwd: tabMeta?.cwd ?? tab.cwd ?? paneCwd,
-            last_process: null,
-            claude_session_id: tabMeta?.claudeSessionId ?? tab.claudeSessionId ?? null,
-          };
-        }),
-      };
-    }),
-    created_at: ws.createdAt,
-    color: ws.color ?? null,
-    split_columns,
-    column_widths: normalizeColumnWidths(ws, splitColumns),
-    row_heights_per_col: normalizeRowHeightsPerCol(ws, splitColumns),
-  };
 }
 
 function normalizeSplitColumns(ws: Workspace): string[][] | null {
@@ -108,6 +65,291 @@ function normalizeRowHeightsPerCol(ws: Workspace, splitColumns: string[][] | nul
   return rows.some((row) => row.length > 0) ? rows : null;
 }
 
+function inferAgentKindFromAgentId(agentId?: string | null): AgentSessionKind | null {
+  if (agentId === "claude-code") return "claude";
+  if (agentId === "codex") return "codex";
+  return null;
+}
+
+function inferAgentKindFromProcessTitle(processTitle?: string): AgentSessionKind | null {
+  const lowerTitle = processTitle?.toLowerCase() ?? "";
+  if (lowerTitle.includes("claude-codex")) return "claude-codex";
+  if (lowerTitle.includes("claude")) return "claude";
+  if (lowerTitle.includes("codex")) return "codex";
+  return null;
+}
+
+function resolveAgentSession(
+  tab: PaneTab | undefined,
+  meta: ReturnType<typeof usePaneMetadataStore.getState>["metadata"][string] | undefined,
+  mapping?: AgentSessionMapping,
+): { kind: AgentSessionKind | null; sessionId: string | null; claudeSessionId: string | null } {
+  const processKind = inferAgentKindFromProcessTitle(meta?.processTitle);
+  const tabKind = tab?.agentKind ?? inferAgentKindFromAgentId(tab?.agentId);
+  const mappingKind = mapping?.agent_kind ?? processKind ?? tabKind;
+  const canUseMapping = Boolean(
+    mapping
+    && mappingKind
+    && (
+      !meta?.processIsShell
+      && (
+        processKind === mappingKind
+        || tabKind === mappingKind
+        || Boolean(mapping.agent_kind && meta && !processKind && !tabKind)
+      )
+    ),
+  );
+  const claudeSessionId = canUseMapping && mappingKind === "claude"
+    ? mapping?.session_id ?? null
+    : meta?.claudeSessionId ?? tab?.claudeSessionId ?? null;
+  const sessionId = meta?.agentSessionId ?? tab?.agentSessionId ?? (canUseMapping ? mapping?.session_id : null) ?? claudeSessionId ?? null;
+  const kind = meta?.agentKind ?? tab?.agentKind ?? (canUseMapping ? mappingKind : null) ?? (claudeSessionId ? "claude" : null);
+  return {
+    kind: sessionId ? kind : null,
+    sessionId,
+    claudeSessionId,
+  };
+}
+
+function getTerminalSnapshot(sessionId: string): string[] | null {
+  const lines = getTerminalBufferLines(sessionId, 160);
+  return lines.length > 0 ? lines : null;
+}
+
+function applyMappingsToConfig(
+  cfg: WorkspaceConfig,
+  agentMappings: Record<string, AgentSessionMapping>,
+): WorkspaceConfig {
+  return {
+    ...cfg,
+    panes: cfg.panes.map((paneConfig) => {
+      const paneId = paneConfig.pane_id;
+      if (!paneId) return paneConfig;
+
+      const paneSessionId = makeSessionId(cfg.id, paneId);
+      const paneMapping = agentMappings[paneSessionId];
+      const tabs = paneConfig.tabs?.map((tabConfig) => {
+        const tabId = tabConfig.tab_id;
+        if (!tabId) return tabConfig;
+        const tabSessionId = makeSessionId(cfg.id, `${paneId}-${tabId}`);
+        const tabMapping = agentMappings[tabSessionId];
+        const tabKind = tabConfig.agent_kind
+          ?? (tabConfig.claude_session_id ? "claude" : null)
+          ?? inferAgentKindFromAgentId(tabConfig.agent_id || paneConfig.agent_id);
+        if (!tabMapping?.agent_kind || tabKind !== tabMapping.agent_kind) return tabConfig;
+        return {
+          ...tabConfig,
+          agent_kind: tabConfig.agent_kind ?? tabMapping.agent_kind,
+          agent_session_id: tabConfig.agent_session_id ?? tabMapping.session_id,
+          claude_session_id: tabMapping.agent_kind === "claude"
+            ? tabConfig.claude_session_id ?? tabMapping.session_id
+            : tabConfig.claude_session_id,
+        };
+      });
+
+      if (!paneMapping?.agent_kind) {
+        return tabs ? { ...paneConfig, tabs } : paneConfig;
+      }
+      const paneKind = paneConfig.agent_kind
+        ?? (paneConfig.claude_session_id ? "claude" : null)
+        ?? inferAgentKindFromAgentId(paneConfig.agent_id);
+      if (paneKind !== paneMapping.agent_kind) {
+        return tabs ? { ...paneConfig, tabs } : paneConfig;
+      }
+      return {
+        ...paneConfig,
+        tabs,
+        agent_kind: paneConfig.agent_kind ?? paneMapping.agent_kind,
+        agent_session_id: paneConfig.agent_session_id ?? paneMapping.session_id,
+        claude_session_id: paneMapping.agent_kind === "claude"
+          ? paneConfig.claude_session_id ?? paneMapping.session_id
+          : paneConfig.claude_session_id,
+      };
+    }),
+  };
+}
+
+function getConfigAgentSessionKey(
+  kind: AgentSessionKind | null | undefined,
+  sessionId: string | null | undefined,
+): string | null {
+  if (!kind || !sessionId) return null;
+  return `${kind}:${sessionId}`;
+}
+
+function getTabAgentSessionKey(tab: PaneTabConfig): string | null {
+  const kind = tab.agent_kind ?? (tab.claude_session_id ? "claude" : null);
+  const sessionId = tab.agent_session_id ?? tab.claude_session_id ?? null;
+  return getConfigAgentSessionKey(kind, sessionId);
+}
+
+function clearTabAgentSession(tab: PaneTabConfig): PaneTabConfig {
+  return {
+    ...tab,
+    claude_session_id: null,
+    agent_kind: null,
+    agent_session_id: null,
+  };
+}
+
+function clearAgentTerminalSnapshot(tab: PaneTabConfig): PaneTabConfig {
+  return {
+    ...tab,
+    terminal_snapshot: null,
+  };
+}
+
+function agentIdForSessionKind(kind: AgentSessionKind | null | undefined): string | null {
+  if (kind === "claude") return "claude-code";
+  if (kind === "codex") return "codex";
+  if (kind === "claude-codex") return "shell-starter";
+  return null;
+}
+
+function normalizeAgentSessionTab(tab: PaneTabConfig): PaneTabConfig {
+  const kind = tab.agent_kind ?? (tab.claude_session_id ? "claude" : null);
+  const agentId = agentIdForSessionKind(kind);
+  return {
+    ...clearAgentTerminalSnapshot(tab),
+    agent_id: agentId ?? tab.agent_id,
+  };
+}
+
+function syncPaneAgentSessionFromActiveTab(pane: PaneConfig, tabs: PaneTabConfig[] | null | undefined): PaneConfig {
+  if (!tabs || tabs.length === 0) {
+    return pane;
+  }
+  const activeTab = tabs.find((tab) => tab.tab_id === pane.active_tab_id) ?? tabs[0];
+  const kind = activeTab.agent_kind ?? (activeTab.claude_session_id ? "claude" : null);
+  const sessionId = activeTab.agent_session_id ?? activeTab.claude_session_id ?? null;
+  return {
+    ...pane,
+    tabs,
+    agent_id: activeTab.agent_id ?? pane.agent_id,
+    claude_session_id: kind === "claude" ? sessionId : null,
+    agent_kind: sessionId ? kind : null,
+    agent_session_id: sessionId,
+  };
+}
+
+function dedupeAgentSessionsInConfigs(
+  configs: WorkspaceConfig[],
+  activeWorkspaceId: string | null | undefined,
+  activePaneId: string | null | undefined,
+  activeTabId: string | null | undefined,
+): WorkspaceConfig[] {
+  const winningCandidateIds = new Set<string>();
+  const claimedKeys = new Set<string>();
+  const candidates: Array<{
+    candidateId: string;
+    key: string;
+    isActive: boolean;
+    order: number;
+  }> = [];
+  let order = 0;
+
+  configs.forEach((cfg, workspaceIndex) => {
+    const isActiveWorkspace = cfg.id === activeWorkspaceId;
+    cfg.panes.forEach((pane, paneIndex) => {
+      const tabs = pane.tabs ?? [];
+      tabs.forEach((tab, tabIndex) => {
+        const key = getTabAgentSessionKey(tab);
+        if (!key) return;
+        const isActivePane = isActiveWorkspace && pane.pane_id === activePaneId;
+        const isActiveTab = isActiveWorkspace && tab.tab_id === activeTabId;
+        const isPaneActiveTab = isActivePane && tab.tab_id === pane.active_tab_id;
+        candidates.push({
+          candidateId: `${workspaceIndex}:${paneIndex}:${tabIndex}`,
+          key,
+          isActive: isActiveTab || isPaneActiveTab,
+          order: order++,
+        });
+      });
+    });
+  });
+
+  candidates
+    .sort((a, b) => Number(b.isActive) - Number(a.isActive) || a.order - b.order)
+    .forEach((candidate) => {
+      if (claimedKeys.has(candidate.key)) return;
+      claimedKeys.add(candidate.key);
+      winningCandidateIds.add(candidate.candidateId);
+    });
+
+  return configs.map((cfg, workspaceIndex) => ({
+    ...cfg,
+    panes: cfg.panes.map((pane, paneIndex) => {
+      if (!pane.tabs || pane.tabs.length === 0) return pane;
+      const tabs = pane.tabs.map((tab, tabIndex) => {
+        const key = getTabAgentSessionKey(tab);
+        if (!key) return tab;
+        const candidateId = `${workspaceIndex}:${paneIndex}:${tabIndex}`;
+        return winningCandidateIds.has(candidateId)
+          ? normalizeAgentSessionTab(tab)
+          : clearTabAgentSession(tab);
+      });
+      return syncPaneAgentSessionFromActiveTab(pane, tabs);
+    }),
+  }));
+}
+
+function toConfig(ws: Workspace, agentMappings: Record<string, AgentSessionMapping> = {}): WorkspaceConfig {
+  const paneIdToIndex = new Map(ws.panes.map((p, i) => [p.id, i]));
+  const splitColumns = normalizeSplitColumns(ws);
+  const split_columns = splitColumns
+    ?.map((col) => col.map((id) => paneIdToIndex.get(id)).filter((i): i is number => i !== undefined))
+    .filter((col) => col.length > 0) ?? null;
+
+  const metaState = usePaneMetadataStore.getState().metadata;
+
+  return {
+    id: ws.id,
+    name: ws.name,
+    grid_template_id: ws.gridTemplateId,
+    panes: ws.panes.map((p) => {
+      const activeTab = p.tabs.find((tab) => tab.id === p.activeTabId) ?? p.tabs[0];
+      const paneMeta = metaState[p.sessionId];
+      const paneCwd = paneMeta?.cwd ?? activeTab?.cwd ?? p.cwd ?? null;
+      const paneAgentSession = resolveAgentSession(activeTab, paneMeta, activeTab ? agentMappings[activeTab.sessionId] : undefined);
+      const paneClaudeSessionId = paneAgentSession.claudeSessionId ?? p.claudeSessionId ?? null;
+      return {
+        pane_id: p.id,
+        agent_id: agentIdForSessionKind(paneAgentSession.kind) ?? activeTab?.agentId ?? p.agentId,
+        label: p.label ?? null,
+        cwd: paneCwd,
+        last_process: null,
+        claude_session_id: paneClaudeSessionId,
+        agent_kind: paneAgentSession.kind,
+        agent_session_id: paneAgentSession.sessionId,
+        active_tab_id: p.activeTabId,
+        tabs: p.tabs.map((tab) => {
+          const tabMeta = metaState[tab.sessionId];
+          const tabAgentSession = resolveAgentSession(tab, tabMeta, agentMappings[tab.sessionId]);
+          return {
+            tab_id: tab.id,
+            agent_id: agentIdForSessionKind(tabAgentSession.kind) ?? tab.agentId,
+            label: tab.label ?? null,
+            type: tab.type ?? "terminal",
+            cwd: tabMeta?.cwd ?? tab.cwd ?? paneCwd,
+            last_process: null,
+            claude_session_id: tabAgentSession.claudeSessionId,
+            agent_kind: tabAgentSession.kind,
+            agent_session_id: tabAgentSession.sessionId,
+            terminal_snapshot: tabAgentSession.sessionId
+              ? null
+              : getTerminalSnapshot(tab.sessionId) ?? tab.terminalSnapshot ?? null,
+          };
+        }),
+      };
+    }),
+    created_at: ws.createdAt,
+    color: ws.color ?? null,
+    split_columns,
+    column_widths: normalizeColumnWidths(ws, splitColumns),
+    row_heights_per_col: normalizeRowHeightsPerCol(ws, splitColumns),
+  };
+}
+
 let _resolveLoaded: () => void;
 export const persistLoaded = new Promise<void>((resolve) => {
   _resolveLoaded = resolve;
@@ -131,7 +373,13 @@ export function useWorkspacePersist() {
           return;
         }
         // Leader: load persisted data
-        return loadPersistentData().then((data) => {
+        return loadPersistentData().then(async (data) => {
+          let startupAgentMappings: Record<string, AgentSessionMapping> = {};
+          try {
+            startupAgentMappings = await readAgentSessionMappings();
+          } catch (err) {
+            console.warn("[persist] Failed to read startup agent session mappings:", err);
+          }
           useThemeStore.getState().hydrateSettings({
             themeId: data.settings.theme_id,
             fontSize: data.settings.font_size,
@@ -142,9 +390,16 @@ export function useWorkspacePersist() {
             const listStore = useWorkspaceListStore.getState();
             const layoutStore = useWorkspaceLayoutStore.getState();
             let restoredActivePaneSessionId: string | null = null;
+            const bootstrapWorkspaceIds = new Set(listStore.workspaces.map((ws) => ws.id));
+            const restoredConfigs = dedupeAgentSessionsInConfigs(
+              data.workspaces.map((cfg) => applyMappingsToConfig(cfg, startupAgentMappings)),
+              data.active_workspace_id,
+              data.active_pane_id,
+              data.active_tab_id,
+            );
 
             if (listStore.workspaces.length <= 1) {
-              for (const cfg of data.workspaces) {
+              for (const cfg of restoredConfigs) {
                 // Use split_columns if available; fall back to transposed split_rows for old data
                 const splitData = cfg.split_columns
                   ?? (cfg.split_rows ? transposeSplitRowsToCols(cfg.split_rows) : null);
@@ -178,14 +433,18 @@ export function useWorkspacePersist() {
                   restoredActivePaneSessionId = activeTab?.sessionId ?? activePane?.sessionId ?? null;
                 }
               }
-              const bootstrapWs = listStore.workspaces[0];
-              if (bootstrapWs && data.workspaces.length > 0) {
-                listStore.removeWorkspace(bootstrapWs.id);
+              const restoredWorkspaceIds = new Set(restoredConfigs.map((cfg) => cfg.id));
+              for (const bootstrapId of bootstrapWorkspaceIds) {
+                if (!restoredWorkspaceIds.has(bootstrapId)) {
+                  listStore.removeWorkspace(bootstrapId);
+                }
               }
 
-              const fallbackWorkspaceId = data.workspaces[data.workspaces.length - 1]?.id ?? null;
+              const fallbackWorkspaceId = restoredConfigs[restoredConfigs.length - 1]?.id ?? null;
               const nextActiveWorkspaceId =
-                data.active_workspace_id ?? fallbackWorkspaceId ?? data.workspaces[0]?.id ?? null;
+                data.active_workspace_id && restoredWorkspaceIds.has(data.active_workspace_id)
+                  ? data.active_workspace_id
+                  : fallbackWorkspaceId ?? restoredConfigs[0]?.id ?? null;
 
               if (nextActiveWorkspaceId) {
                 useWorkspaceListStore.getState().setActiveWorkspace(nextActiveWorkspaceId);
@@ -215,7 +474,7 @@ export function useWorkspacePersist() {
     let closing = false;
     let closePromptOpen = false;
 
-    const buildSnapshot = () => {
+    const buildSnapshot = (agentMappings: Record<string, AgentSessionMapping> = {}) => {
       const state = useWorkspaceListStore.getState();
       const uiState = useUiStore.getState();
       const activeWorkspaceId = state.activeWorkspaceId ?? null;
@@ -233,9 +492,16 @@ export function useWorkspacePersist() {
       const themeState = useThemeStore.getState();
       const keybindingState = useKeybindingStore.getState();
 
+      const workspaces = dedupeAgentSessionsInConfigs(
+        state.workspaces.map((ws) => toConfig(ws, agentMappings)),
+        activeWorkspaceId,
+        activePane?.id ?? null,
+        activeTab?.id ?? null,
+      );
+
       return {
         schema_version: 1,
-        workspaces: state.workspaces.map((ws) => toConfig(ws)),
+        workspaces,
         settings: {
           theme_id: themeState.themeId,
           font_size: themeState.fontSize,
@@ -253,8 +519,14 @@ export function useWorkspacePersist() {
         await syncInFlight.catch(() => {});
       }
       if (!dirty && !force) return;
+      let agentMappings: Record<string, AgentSessionMapping> = {};
+      try {
+        agentMappings = await readAgentSessionMappings();
+      } catch (err) {
+        console.warn("[persist] Failed to read agent session mappings:", err);
+      }
       dirty = false;
-      const run = savePersistentData(buildSnapshot());
+      const run = savePersistentData(buildSnapshot(agentMappings));
       syncInFlight = run;
       try {
         await run;
@@ -335,7 +607,6 @@ export function useWorkspacePersist() {
         return;
       }
       const busyCount = countBusySessions();
-      if (!dirty && !syncInFlight && busyCount === 0) return;
       event.preventDefault();
 
       if (busyCount > 0) {

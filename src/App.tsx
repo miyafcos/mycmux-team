@@ -6,9 +6,19 @@ import {
   usePaneMetadataStore
 } from "./stores/workspaceStore";
 import { useWorkspacePersist, persistLoaded } from "./components/layout/SocketListener";
-import { preloadTerminalConfig, onPtyMetadata, onPtyWorkDone, isDirectory, writeToSession, getLaunchCwd, revealMainWindow } from "./lib/ipc";
+import {
+  preloadTerminalConfig,
+  onPtyMetadata,
+  onPtyWorkDone,
+  isDirectory,
+  writeToSession,
+  getLaunchCwd,
+  revealMainWindow,
+  readAgentSessionMappings,
+} from "./lib/ipc";
 import { useUiStore } from "./stores/uiStore";
 import { isShellProcess } from "./lib/notificationStatus";
+import type { AgentSessionKind } from "./types";
 import {
   getStartupSessionGateSnapshot,
   prepareStartupSessionGate,
@@ -26,6 +36,53 @@ window.addEventListener("unhandledrejection", (e) => {
   console.warn("[mycmux] unhandled rejection:", e.reason);
   e.preventDefault();
 });
+
+function inferAgentKindFromProcessTitle(processTitle?: string): AgentSessionKind | null {
+  const lowerTitle = processTitle?.toLowerCase() ?? "";
+  if (lowerTitle.includes("claude-codex")) return "claude-codex";
+  if (lowerTitle.includes("claude")) return "claude";
+  if (lowerTitle.includes("codex")) return "codex";
+  return null;
+}
+
+function inferAgentKindFromTab(sessionId: string): AgentSessionKind | null {
+  const { workspaces } = useWorkspaceListStore.getState();
+  for (const workspace of workspaces) {
+    for (const pane of workspace.panes) {
+      for (const tab of pane.tabs) {
+        if (tab.sessionId !== sessionId) continue;
+        if (tab.agentKind) return tab.agentKind;
+        if (tab.agentId === "claude-code") return "claude";
+        if (tab.agentId === "codex") return "codex";
+      }
+    }
+  }
+  return null;
+}
+
+async function applyAgentSessionMappings(): Promise<void> {
+  const mappings = await readAgentSessionMappings();
+  for (const [sessionId, mapping] of Object.entries(mappings)) {
+    const current = usePaneMetadataStore.getState().metadata[sessionId];
+    if (current?.processIsShell) {
+      continue;
+    }
+    const processKind = inferAgentKindFromProcessTitle(current?.processTitle);
+    const tabKind = inferAgentKindFromTab(sessionId);
+    const kind = mapping.agent_kind ?? processKind ?? tabKind;
+    if (!kind) {
+      continue;
+    }
+    if (!processKind && tabKind !== kind) {
+      continue;
+    }
+    usePaneMetadataStore.getState().setMetadata(sessionId, {
+      agentKind: kind,
+      agentSessionId: mapping.session_id,
+      claudeSessionId: kind === "claude" ? mapping.session_id : current?.claudeSessionId,
+    });
+  }
+}
 
 function App() {
   const [ready, setReady] = useState(false);
@@ -82,12 +139,19 @@ function App() {
     // authoritative "working" indicator (blue dot). Rust sysinfo polls every
     // 3 seconds so this is a deterministic, non-flickering signal.
     const unlistenMeta = onPtyMetadata((meta) => {
+      const processIsShell = isShellProcess(meta.process_name ?? undefined);
+      if (processIsShell) {
+        usePaneMetadataStore.getState().clearAgentSessionId(meta.session_id);
+        usePaneMetadataStore.getState().clearClaudeSessionId(meta.session_id);
+      }
       usePaneMetadataStore.getState().setMetadata(meta.session_id, {
         cwd: meta.cwd,
         gitBranch: meta.git_branch,
         processTitle: meta.process_name ?? undefined,
-        processIsShell: isShellProcess(meta.process_name ?? undefined),
-        claudeSessionId: meta.claude_session_id ?? undefined,
+        processIsShell,
+        claudeSessionId: processIsShell ? undefined : meta.claude_session_id ?? undefined,
+        agentKind: processIsShell ? undefined : meta.agent_kind ?? undefined,
+        agentSessionId: processIsShell ? undefined : meta.agent_session_id ?? undefined,
       });
     });
 
@@ -95,8 +159,12 @@ function App() {
     // from a working process (claude/node/python/…) back to a shell and
     // emits this event. Badge the pane unless it's currently focused.
     const unlistenWorkDone = onPtyWorkDone((evt) => {
-      // Claude → shell transition = intentional exit → clear claudeSessionId
-      if (evt.prev_process.toLowerCase().includes("claude")) {
+      const prevProcess = evt.prev_process.toLowerCase();
+      // Agent -> shell transition = intentional exit, not a restart restore target.
+      if (prevProcess.includes("claude") || prevProcess.includes("codex")) {
+        usePaneMetadataStore.getState().clearAgentSessionId(evt.session_id);
+      }
+      if (prevProcess.includes("claude")) {
         usePaneMetadataStore.getState().clearClaudeSessionId(evt.session_id);
       }
       const activePaneId = useUiStore.getState().activePaneId;
@@ -141,10 +209,20 @@ function App() {
       await writeToSession(sessionId, quoted + " ");
     });
 
+    void applyAgentSessionMappings().catch((error) => {
+      console.warn("[sessions] Failed to read agent session mappings:", error);
+    });
+    const mappingTimer = window.setInterval(() => {
+      void applyAgentSessionMappings().catch((error) => {
+        console.warn("[sessions] Failed to read agent session mappings:", error);
+      });
+    }, 10000);
+
     return () => {
       unlistenMeta.then((f) => f()).catch(() => {});
       unlistenWorkDone.then((f) => f()).catch(() => {});
       unlistenDragDrop.then((f) => f()).catch(() => {});
+      window.clearInterval(mappingTimer);
     };
   }, []);
 

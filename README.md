@@ -51,6 +51,8 @@ npm run tauri dev
 
 dangerous は承認やサンドボックスを弱める起動方法です。通常作業は 1 / 2 / 4 / 5 / 7 / 8 を使ってください。
 
+Codex は `--no-alt-screen` 付きで起動します。ターミナルのスクロール履歴を残し、入力欄表示のちらつきや復元時の表示崩れを抑えるためです。
+
 ## ワークスペース、ペイン、タブ
 
 - ワークスペース: 左の一覧に並ぶ作業単位です。案件や作業テーマごとに分けます。
@@ -120,6 +122,7 @@ npm install
 cmd /c npx tsc --noEmit
 cargo check --manifest-path src-tauri/Cargo.toml
 cargo test --manifest-path src-tauri/Cargo.toml --lib
+cargo clippy --manifest-path src-tauri/Cargo.toml --release -- -D warnings
 cmd /c npm run tauri build
 ```
 

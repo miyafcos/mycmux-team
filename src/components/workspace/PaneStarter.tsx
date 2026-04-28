@@ -1,11 +1,13 @@
 const START_OPTIONS = [
   { id: "claude", label: "1. Claude Code" },
   { id: "claude-resume", label: "2. Claude Code (resume)" },
-  { id: "claude-auto-mode", label: "3. Claude Code (auto-mode)" },
+  { id: "claude-dangerous", label: "3. Claude Code (dangerous)" },
   { id: "codex", label: "4. Codex" },
   { id: "codex-resume", label: "5. Codex (resume)" },
-  { id: "claude-codex", label: "6. claude-codex" },
-  { id: "custom", label: "7. Custom..." },
+  { id: "codex-dangerous", label: "6. Codex (dangerous)" },
+  { id: "claude-codex", label: "7. claude-codex" },
+  { id: "claude-codex-resume", label: "8. claude-codex (resume)" },
+  { id: "custom", label: "9. Custom..." },
 ] as const;
 
 type StartOptionId = typeof START_OPTIONS[number]["id"] | "shell";

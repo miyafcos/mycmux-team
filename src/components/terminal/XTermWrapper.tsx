@@ -52,6 +52,7 @@ interface XTermWrapperProps {
   onUrlClick?: (url: string) => void;
   cwd?: string;
   launchEnv?: Record<string, string>;
+  initialReplay?: string[];
 }
 
 // Approval-prompt detection patterns. Pattern index is used as the
@@ -143,6 +144,7 @@ interface CachedTerm {
   unlistenExit: (() => void) | null;
 }
 const termCache = new Map<string, CachedTerm>();
+const liveTerms = new Map<string, Terminal>();
 
 /** Call before killSession to dispose the cached terminal */
 export function evictTerminalCache(sessionId: string): void {
@@ -156,10 +158,10 @@ export function evictTerminalCache(sessionId: string): void {
 
 /** Read the last N non-empty lines of a pane's xterm buffer, ANSI/control-char stripped. */
 export function getTerminalBufferLines(sessionId: string, maxLines: number): string[] {
-  const cached = termCache.get(sessionId);
-  if (!cached || maxLines <= 0) return [];
+  const term = liveTerms.get(sessionId) ?? termCache.get(sessionId)?.term;
+  if (!term || maxLines <= 0) return [];
   try {
-    const buf = cached.term.buffer.active;
+    const buf = term.buffer.active;
     const bottom = buf.length - 1;
     if (bottom < 0) return [];
     const top = Math.max(0, bottom - maxLines * 2);
@@ -246,6 +248,7 @@ export default memo(function XTermWrapper({
   onUrlClick,
   cwd,
   launchEnv,
+  initialReplay,
 }: XTermWrapperProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const searchAddonRef = useRef<SearchAddon | null>(null);
@@ -643,6 +646,9 @@ export default memo(function XTermWrapper({
       unlistenExit?.();
       unlistenExit = null;
       cacheCurrentTerminal();
+      if (term && liveTerms.get(sessionId) === term) {
+        liveTerms.delete(sessionId);
+      }
       searchAddonRef.current = null;
       termRef.current = null;
       fitAddonRef.current = null;
@@ -656,6 +662,7 @@ export default memo(function XTermWrapper({
       term = cached.term;
       fitAddon = cached.fitAddon;
       sessionStarted = true;
+      liveTerms.set(sessionId, cached.term);
       termRef.current = cached.term;
       fitAddonRef.current = cached.fitAddon;
       searchAddonRef.current = cached.searchAddon;
@@ -720,6 +727,10 @@ export default memo(function XTermWrapper({
       }));
 
       term.open(container!);
+      liveTerms.set(sessionId, term);
+      if (initialReplay && initialReplay.length > 0) {
+        term.write(`${initialReplay.join("\r\n")}\r\n`);
+      }
       registerScrollListener(term);
       registerCompositionGuard(term, fitAddon);
       attachTerminalKeyHandler(term);

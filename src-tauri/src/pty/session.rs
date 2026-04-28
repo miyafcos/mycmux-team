@@ -165,6 +165,8 @@ impl PtySession {
                                             git_branch: old.git_branch.clone(),
                                             process_name: old.process_name.clone(),
                                             claude_session_id: old.claude_session_id.clone(),
+                                            agent_kind: old.agent_kind.clone(),
+                                            agent_session_id: old.agent_session_id.clone(),
                                         },
                                         None => PtyMetadata {
                                             session_id: sid.clone(),
@@ -172,6 +174,8 @@ impl PtySession {
                                             git_branch: None,
                                             process_name: None,
                                             claude_session_id: None,
+                                            agent_kind: None,
+                                            agent_session_id: None,
                                         },
                                     };
                                     metadata_store.insert(sid.clone(), meta.clone());

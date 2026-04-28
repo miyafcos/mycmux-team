@@ -1,5 +1,6 @@
 import { invoke, Channel } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import type { AgentSessionKind } from "../types";
 
 export async function createSession(
   sessionId: string,
@@ -59,6 +60,8 @@ export interface PtyMetadata {
   git_branch?: string;
   process_name?: string;
   claude_session_id?: string;
+  agent_kind?: AgentSessionKind;
+  agent_session_id?: string;
 }
 
 export function onPtyMetadata(
@@ -120,6 +123,15 @@ export async function getLaunchCwd(): Promise<string | null> {
   return invoke("get_launch_cwd");
 }
 
+export interface AgentSessionMapping {
+  agent_kind?: AgentSessionKind | null;
+  session_id: string;
+}
+
+export async function readAgentSessionMappings(): Promise<Record<string, AgentSessionMapping>> {
+  return invoke("read_agent_session_mappings");
+}
+
 export interface DefaultShellInfo {
   command: string;
   args: string[];
@@ -157,6 +169,9 @@ export interface PaneTabConfig {
   cwd?: string | null;
   last_process?: string | null;
   claude_session_id?: string | null;
+  agent_kind?: AgentSessionKind | null;
+  agent_session_id?: string | null;
+  terminal_snapshot?: string[] | null;
 }
 
 export interface PaneConfig {
@@ -166,6 +181,8 @@ export interface PaneConfig {
   cwd?: string | null;
   last_process?: string | null;
   claude_session_id?: string | null;
+  agent_kind?: AgentSessionKind | null;
+  agent_session_id?: string | null;
   active_tab_id?: string | null;
   tabs?: PaneTabConfig[] | null;
 }

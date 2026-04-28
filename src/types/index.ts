@@ -1,6 +1,7 @@
 export type {
   GridTemplateId,
   GridTemplate,
+  AgentSessionKind,
   PaneTab,
   Pane,
   WorkspaceStatus,
