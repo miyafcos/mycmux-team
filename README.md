@@ -1,118 +1,128 @@
 # mycmux-lite
 
-チーム配布用のターミナルワークスペース。Tauri v2 + React + xterm.js 製。
+`mycmux-lite` は、チーム配布向けの軽量版ターミナルワークスペースです。Tauri v2 + React + xterm.js で動き、Claude Code / Codex / claude-codex をワークスペース、ペイン、タブ単位で並べて使えます。
 
-`mycmux-lite` は、チーム配布向けにファイルエクスプローラーサイドバーと AI バディ機能を取り除いた軽量版。配布元は [mycmux-team](https://github.com/miyafcos/mycmux-team)。
+公開配布先: <https://github.com/miyafcos/mycmux-team>
 
-## 機能
+## 通常版との違い
 
-- **ワークスペース**: ターミナルを別々のワークスペースに整理し、素早く切り替え
-- **柔軟なペインレイアウト**: 水平・垂直に分割可能、リサイズ対応のディバイダー付き
-- **位置ベースのナビゲーション**: 画面上の実際の位置に基づいて矢印キーでペイン間を移動
-- **コマンドパレット**: あいまい検索で全コマンドに素早くアクセス
-- **キーバインドのカスタマイズ**: 任意のショートカットを自由にリマップ
-- **状態の永続化**: ワークスペースとレイアウトをセッションをまたいで保存
-- **リモートターミナル**: WebSocket / QR コード経由で iPhone からアクセス可能（Tailscale 対応）
-- **クロスプラットフォーム**: macOS、Windows 対応
+lite では、チーム配布前に不安定だった機能を外しています。
 
-## このフォークで削除した機能
+- ファイルエクスプローラーサイドバー
+- Ctrl+P パスジャンパー
+- AI Buddy ウィジェット
 
-- 右サイドバー（ファイルエクスプローラー、Ctrl+P パスジャンパー、ファイル検索）
-- AI コンパニオンウィジェット（Claude Buddy）
-
-動作が不安定だったため、チーム配布前に取り外してある。必要になったら [mycmux-team](https://github.com/miyafcos/mycmux-team) の最新版を参照。
+ターミナル、ワークスペース、ペイン分割、タブ移動、セッション復元は使えます。
 
 ## インストール
 
-### リリースから
+lite の最新配布版は `v0.3.4-lite.2` です。Windows では Releases から `mycmux-lite_*_x64-setup.exe` をダウンロードして実行します。
 
-```bash
-gh release download --repo miyafcos/mycmux-team --pattern "*.zip"   # Windows
-gh release download --repo miyafcos/mycmux-team --pattern "*.dmg"   # macOS
+```powershell
+gh release download v0.3.4-lite.2 --repo miyafcos/mycmux-team --pattern "mycmux-lite_*_x64-setup.exe"
 ```
 
-Windows: `.zip` を展開して `mycmux-lite.exe` を実行。
-macOS: `.dmg` を開いて Applications にドラッグ。
+SmartScreen が出る場合は「詳細情報」から実行してください。現在の配布物は Authenticode 署名なしです。
 
-> **Windows**: Authenticode 署名なし。SmartScreen が警告したら「詳細情報 → 実行」で続行。
-> **macOS**: Apple 公証なし。初回起動は右クリック → 開く → 開く、または `xattr -d com.apple.quarantine /Applications/mycmux-lite.app`。
+ソースから起動する場合:
 
-### ソースからビルド
-
-必要環境:
-- [Rust](https://rustup.rs/)（最新安定版）
-- [Node.js](https://nodejs.org/)（v18 以上）
-- Windows は Visual Studio Build Tools の C++ ワークロード、macOS は Xcode Command Line Tools
-
-```bash
+```powershell
 git clone https://github.com/miyafcos/mycmux-team.git
 cd mycmux-team
 npm install
-npm run tauri dev       # 開発モード
-npm run tauri build     # 本番ビルド
+npm run tauri dev
 ```
 
-## キーボードショートカット
+## 最初の使い方
 
-修飾キーはすべて Ctrl ベース。設定画面から自由にリマップ可。
+新しいペインやタブを開くと、Launch メニューが出ます。
 
-### グローバル
+| 番号 | 起動候補 | 用途 |
+| --- | --- | --- |
+| 1 | Claude Code | Claude Code を新規起動 |
+| 2 | Claude Code (resume) | Claude Code の既存セッションを再開 |
+| 3 | Claude Code (dangerous) | `claude --dangerously-skip-permissions` で起動 |
+| 4 | Codex | Codex を新規起動 |
+| 5 | Codex (resume) | Codex の既存セッションを再開 |
+| 6 | Codex (dangerous) | `codex --dangerously-bypass-approvals-and-sandbox` で起動 |
+| 7 | claude-codex | claude-codex を新規起動 |
+| 8 | claude-codex (resume) | claude-codex の既存セッションを再開 |
+| 9 | Custom... | 任意コマンドを入力 |
 
-| ショートカット | 動作 |
-|----------|--------|
-| `Ctrl+B` | サイドバーの表示切替 |
-| `Ctrl+Shift+P` | コマンドパレットを開く |
-| `Ctrl+,` | キーボードショートカット設定を開く |
+dangerous は承認やサンドボックスを弱める起動方法です。通常作業は 1 / 2 / 4 / 5 / 7 / 8 を使ってください。
 
-### ワークスペース
+## ワークスペース、ペイン、タブ
 
-| ショートカット | 動作 |
-|----------|--------|
-| `Ctrl+Shift+N` | 新しいワークスペース |
-| `Ctrl+Tab` | 次のワークスペース |
-| `Ctrl+Shift+Tab` | 前のワークスペース |
-| `Ctrl+Shift+W` | ワークスペースを閉じる |
-| `Ctrl+1` - `Ctrl+8` | ワークスペース 1〜8 にジャンプ |
-| `Ctrl+9` | 最後のワークスペースにジャンプ |
+- ワークスペース: 左の一覧に並ぶ作業単位です。案件や作業テーマごとに分けます。
+- ペイン: 画面分割された領域です。左右・上下に分割できます。
+- タブ: 1つのペイン内に複数のターミナルを持てます。
 
-### ペイン
+タブやペインはドラッグできます。
 
-| ショートカット | 動作 |
-|----------|--------|
-| `Ctrl+Alt+D` | ペインを右に分割 |
-| `Ctrl+Alt+Shift+D` | ペインを下に分割 |
-| `Ctrl+Alt+W` | アクティブなペインを閉じる |
-| `Ctrl+Alt+Arrow` | 指定方向のペインにフォーカス |
-| `Ctrl+Shift+Enter` | ペインのズーム切替 |
-| `Ctrl+Shift+H` | フォーカス中のペインをフラッシュ |
+- タブを別ペインへドラッグすると、そのペインへ移動します。
+- タブをペイン中央へドロップすると、既存ペインのタブとして合流します。
+- タブをペイン端へドロップすると、その方向に分割して移動します。
+- タブやペインを左のワークスペース一覧へドラッグすると、別ワークスペースへ移動できます。
+- 左下の `New workspace` へドロップすると、新しいワークスペースとして切り出せます。
+
+## ショートカット
+
+ショートカットは `Ctrl+,` から変更できます。
+
+### 全体
+
+| 操作 | ショートカット |
+| --- | --- |
+| サイドバー表示/非表示 | `Ctrl+B` |
+| コマンドパレット | `Ctrl+Shift+P` |
+| ショートカット設定 | `Ctrl+,` |
+
+### ワークスペース移動
+
+| 操作 | ショートカット |
+| --- | --- |
+| 新規ワークスペース | `Ctrl+Shift+N` |
+| 次のワークスペース | `Ctrl+Tab` |
+| 前のワークスペース | `Ctrl+Shift+Tab` |
+| ワークスペース 1-8 へ移動 | `Ctrl+1` - `Ctrl+8` |
+| 最後のワークスペースへ移動 | `Ctrl+9` |
+| ワークスペースを閉じる | `Ctrl+Shift+W` |
+
+ワークスペースを閉じるときは確認ダイアログが出ます。誤ってショートカットを押しても即削除されません。
+
+### ペイン操作
+
+| 操作 | ショートカット |
+| --- | --- |
+| 右に分割 | `Ctrl+Alt+D` |
+| 下に分割 | `Ctrl+Alt+Shift+D` |
+| アクティブペインを閉じる | `Ctrl+Alt+W` |
+| 左/右/上/下のペインへフォーカス | `Ctrl+Alt+Arrow` |
+| ペインを拡大/戻す | `Ctrl+Shift+Enter` |
+| フォーカス中ペインを点滅表示 | `Ctrl+Shift+H` |
 
 ### ターミナル
 
-| ショートカット | 動作 |
-|----------|--------|
-| `Ctrl+Shift+F` | ターミナル内検索 |
+| 操作 | ショートカット |
+| --- | --- |
+| ターミナル内検索 | `Ctrl+Shift+F` |
 
-## アーキテクチャ
+## セッション復元
 
-- **フロントエンド**: React 19 + TypeScript + Vite
-- **バックエンド**: Tauri v2（Rust）
-- **ターミナル**: xterm.js（WebGL レンダラー）
-- **状態管理**: Zustand + Immer
-- **レイアウト**: Allotment（分割ペイン）
+アプリ終了後に再起動すると、ワークスペース、ペイン、タブ、作業ディレクトリ、直前のターミナル表示を復元します。Claude Code / Codex / claude-codex は保存済みのセッションIDがある場合、resume 起動を優先します。
+
+復元できない場合でも、直前の会話表示と作業場所は残るため、その上から Launch メニューで再開できます。
+
+## 開発
+
+```powershell
+npm install
+cmd /c npx tsc --noEmit
+cargo check --manifest-path src-tauri/Cargo.toml
+cargo test --manifest-path src-tauri/Cargo.toml --lib
+cmd /c npm run tauri build
+```
 
 ## ライセンス
 
-GPL-3.0 - 詳細は [LICENSE](LICENSE) を参照。
-
-## 上流とクレジット
-
-このプロジェクトは以下のオープンソースプロジェクトの派生です。
-
-- [cai0baa/cmux-for-linux](https://github.com/cai0baa/cmux-for-linux) - 直接のフォーク元（GPL-3.0）
-- [ManaFlow の cmux](https://github.com/manaflow-ai/cmux) - オリジナルの cmux
-
-GPL-3.0 の条件に従って、ソースコードと変更点を公開しています。
-
-- [Tauri](https://tauri.app/)
-- [xterm.js](https://xtermjs.org/)
-- [React](https://react.dev/)
+GPL-3.0。詳しくは [LICENSE](LICENSE) を参照してください。
