@@ -339,6 +339,8 @@ export default memo(function XTermWrapper({
     let outputCursorRestoreTimer: ReturnType<typeof setTimeout> | null = null;
     let suppressCursorDuringOutput = startsAsCodex(command, args);
     const outputDecoder = new TextDecoder();
+    const outputEncoder = new TextEncoder();
+    const hideCursorBytes = outputEncoder.encode("\x1b[?25l");
     let lastObservedWidth = -1;
     let lastObservedHeight = -1;
     const cachedSize = terminalSizeCache.get(sessionId);
@@ -389,27 +391,28 @@ export default memo(function XTermWrapper({
       }
     };
 
-    const hideOutputCursorDuringBurst = (currentTerm: Terminal, text: string): void => {
+    const shouldHideOutputCursorDuringBurst = (currentTerm: Terminal, text: string): boolean => {
       if (!suppressCursorDuringOutput && looksLikeCodexOutput(text)) {
         suppressCursorDuringOutput = true;
       }
-      if (!suppressCursorDuringOutput || text.length === 0) return;
+      if (!suppressCursorDuringOutput || text.length === 0) return false;
 
       clearOutputCursorTimer();
-      if (!outputCursorHidden) {
-        outputCursorHidden = true;
-        try {
-          currentTerm.write("\x1b[?25l");
-        } catch {
-          return;
-        }
-      }
+      outputCursorHidden = true;
       outputCursorRestoreTimer = setTimeout(() => {
         outputCursorRestoreTimer = null;
         if (!disposed && !termDisposed) {
           showOutputCursor(currentTerm);
         }
       }, 1500);
+      return true;
+    };
+
+    const appendHideCursor = (chunk: Uint8Array): Uint8Array => {
+      const next = new Uint8Array(chunk.length + hideCursorBytes.length);
+      next.set(chunk);
+      next.set(hideCursorBytes, chunk.length);
+      return next;
     };
 
     const settleStartupSession = (): void => {
@@ -851,9 +854,12 @@ export default memo(function XTermWrapper({
           if (termDisposed || !term) return;
           settleStartupSession();
           const chunk = new Uint8Array(rawData);
-          hideOutputCursorDuringBurst(term, outputDecoder.decode(chunk, { stream: true }));
+          const hideCursor = shouldHideOutputCursorDuringBurst(
+            term,
+            outputDecoder.decode(chunk, { stream: true }),
+          );
           try {
-            term.write(chunk, () => {
+            term.write(hideCursor ? appendHideCursor(chunk) : chunk, () => {
               if (disposed) {
                 scheduleBackgroundScan();
               }
