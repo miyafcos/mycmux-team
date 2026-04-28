@@ -145,6 +145,7 @@ interface CachedTerm {
 }
 const termCache = new Map<string, CachedTerm>();
 const liveTerms = new Map<string, Terminal>();
+const terminalSizeCache = new Map<string, { cols: number; rows: number }>();
 
 /** Call before killSession to dispose the cached terminal */
 export function evictTerminalCache(sessionId: string): void {
@@ -154,6 +155,7 @@ export function evictTerminalCache(sessionId: string): void {
     cached.term.dispose();
     termCache.delete(sessionId);
   }
+  terminalSizeCache.delete(sessionId);
 }
 
 /** Read the last N non-empty lines of a pane's xterm buffer, ANSI/control-char stripped. */
@@ -315,8 +317,9 @@ export default memo(function XTermWrapper({
     let resizePendingDuringComposition = false;
     let lastObservedWidth = -1;
     let lastObservedHeight = -1;
-    let lastSentCols = -1;
-    let lastSentRows = -1;
+    const cachedSize = terminalSizeCache.get(sessionId);
+    let lastSentCols = cachedSize?.cols ?? -1;
+    let lastSentRows = cachedSize?.rows ?? -1;
 
     const clearResizeTimer = (): void => {
       for (const timer of resizeTimers) {
@@ -368,7 +371,7 @@ export default memo(function XTermWrapper({
       return true;
     };
 
-    const fitAndSyncResize = (currentTerm: Terminal, currentFitAddon: FitAddon, force = false): void => {
+    const fitAndSyncResize = (currentTerm: Terminal, currentFitAddon: FitAddon, _force = false): void => {
       if (disposed || termDisposed) return;
       if (isImeComposing) {
         resizePendingDuringComposition = true;
@@ -386,10 +389,11 @@ export default memo(function XTermWrapper({
       }
 
       if (currentTerm.cols <= 0 || currentTerm.rows <= 0) return;
-      if (!force && currentTerm.cols === lastSentCols && currentTerm.rows === lastSentRows) return;
+      if (currentTerm.cols === lastSentCols && currentTerm.rows === lastSentRows) return;
 
       lastSentCols = currentTerm.cols;
       lastSentRows = currentTerm.rows;
+      terminalSizeCache.set(sessionId, { cols: currentTerm.cols, rows: currentTerm.rows });
       if (sessionStarted) {
         resizeSession(sessionId, currentTerm.cols, currentTerm.rows).catch(console.error);
       }
@@ -698,7 +702,7 @@ export default memo(function XTermWrapper({
         fontFamily: initFontFamily,
         fontWeight: 400,
         fontWeightBold: 600,
-        letterSpacing: -1,
+        letterSpacing: 0,
         lineHeight: 1.0,
         rescaleOverlappingGlyphs: true,
         customGlyphs: true,
@@ -768,6 +772,7 @@ export default memo(function XTermWrapper({
       const rows = term.rows;
       lastSentCols = cols;
       lastSentRows = rows;
+      terminalSizeCache.set(sessionId, { cols, rows });
       const sessionEnv = launchEnv || undefined;
 
       try {
