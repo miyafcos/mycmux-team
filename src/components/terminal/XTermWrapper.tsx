@@ -214,6 +214,26 @@ function getShiftEnterSequence(command: string, processTitle?: string): string {
   return "\x1b[200~\n\x1b[201~";
 }
 
+function getCommandName(command: string): string {
+  return command
+    .split(/[\\/]/)
+    .pop()
+    ?.replace(/\.(exe|cmd|bat|com)$/i, "")
+    .toLowerCase() ?? "";
+}
+
+function startsAsCodex(command: string, args: string[]): boolean {
+  return getCommandName(command) === "codex" || args.some((arg) => /\bcodex\b/i.test(arg));
+}
+
+function looksLikeCodexOutput(text: string): boolean {
+  return (
+    text.includes("OpenAI Codex")
+    || /esc\s+to\s+interrupt/i.test(text)
+    || /\bgpt-5(?:\.\d+)?\b/i.test(text)
+  );
+}
+
 function ensureConfigLoaded(): Promise<void> {
   if (cachedConfig) return Promise.resolve();
   if (configPromise) return configPromise;
@@ -315,6 +335,10 @@ export default memo(function XTermWrapper({
     let lastScanSignature = "";
     let isImeComposing = false;
     let resizePendingDuringComposition = false;
+    let outputCursorHidden = false;
+    let outputCursorRestoreTimer: ReturnType<typeof setTimeout> | null = null;
+    let suppressCursorDuringOutput = startsAsCodex(command, args);
+    const outputDecoder = new TextDecoder();
     let lastObservedWidth = -1;
     let lastObservedHeight = -1;
     const cachedSize = terminalSizeCache.get(sessionId);
@@ -347,6 +371,47 @@ export default memo(function XTermWrapper({
       }
     };
 
+    const clearOutputCursorTimer = (): void => {
+      if (outputCursorRestoreTimer) {
+        clearTimeout(outputCursorRestoreTimer);
+        outputCursorRestoreTimer = null;
+      }
+    };
+
+    const showOutputCursor = (currentTerm: Terminal | null = term): void => {
+      clearOutputCursorTimer();
+      if (!outputCursorHidden || !currentTerm || termDisposed) return;
+      outputCursorHidden = false;
+      try {
+        currentTerm.write("\x1b[?25h");
+      } catch {
+        // Terminal may be disposing.
+      }
+    };
+
+    const hideOutputCursorDuringBurst = (currentTerm: Terminal, text: string): void => {
+      if (!suppressCursorDuringOutput && looksLikeCodexOutput(text)) {
+        suppressCursorDuringOutput = true;
+      }
+      if (!suppressCursorDuringOutput || text.length === 0) return;
+
+      clearOutputCursorTimer();
+      if (!outputCursorHidden) {
+        outputCursorHidden = true;
+        try {
+          currentTerm.write("\x1b[?25l");
+        } catch {
+          return;
+        }
+      }
+      outputCursorRestoreTimer = setTimeout(() => {
+        outputCursorRestoreTimer = null;
+        if (!disposed && !termDisposed) {
+          showOutputCursor(currentTerm);
+        }
+      }, 1500);
+    };
+
     const settleStartupSession = (): void => {
       if (startupSettled) {
         return;
@@ -371,7 +436,7 @@ export default memo(function XTermWrapper({
       return true;
     };
 
-    const fitAndSyncResize = (currentTerm: Terminal, currentFitAddon: FitAddon, _force = false): void => {
+    const fitAndSyncResize = (currentTerm: Terminal, currentFitAddon: FitAddon, force = false): void => {
       if (disposed || termDisposed) return;
       if (isImeComposing) {
         resizePendingDuringComposition = true;
@@ -381,7 +446,9 @@ export default memo(function XTermWrapper({
       const rect = container.getBoundingClientRect();
       if (rect.width <= 0 || rect.height <= 0) return;
 
-      rememberContainerSize();
+      const containerSizeChanged = rememberContainerSize();
+      if (!force && !containerSizeChanged) return;
+
       try {
         currentFitAddon.fit();
       } catch {
@@ -420,7 +487,7 @@ export default memo(function XTermWrapper({
       clearResizeTimer();
       scheduleResize(currentTerm, currentFitAddon, 30);
       scheduleResize(currentTerm, currentFitAddon, 90);
-      scheduleResize(currentTerm, currentFitAddon, 180, true);
+      scheduleResize(currentTerm, currentFitAddon, 180);
     };
 
     const registerResizeObserver = (currentTerm: Terminal, currentFitAddon: FitAddon): void => {
@@ -649,6 +716,7 @@ export default memo(function XTermWrapper({
       removeCompositionGuard = null;
       unlistenExit?.();
       unlistenExit = null;
+      showOutputCursor(term);
       cacheCurrentTerminal();
       if (term && liveTerms.get(sessionId) === term) {
         liveTerms.delete(sessionId);
@@ -670,6 +738,7 @@ export default memo(function XTermWrapper({
       termRef.current = cached.term;
       fitAddonRef.current = cached.fitAddon;
       searchAddonRef.current = cached.searchAddon;
+      cached.term.write("\x1b[?25h");
       registerScrollListener(cached.term);
       registerCompositionGuard(cached.term, cached.fitAddon);
       attachTerminalKeyHandler(cached.term);
@@ -748,10 +817,12 @@ export default memo(function XTermWrapper({
       });
 
       term.onData((data) => {
+        showOutputCursor(term);
         chunkedWrite(sessionId, data);
       });
 
       term.onBinary((data) => {
+        showOutputCursor(term);
         writeToSession(sessionId, data).catch(console.error);
       });
 
@@ -779,8 +850,10 @@ export default memo(function XTermWrapper({
         await createSession(sessionId, command, args, cols, rows, (rawData: ArrayBuffer) => {
           if (termDisposed || !term) return;
           settleStartupSession();
+          const chunk = new Uint8Array(rawData);
+          hideOutputCursorDuringBurst(term, outputDecoder.decode(chunk, { stream: true }));
           try {
-            term.write(new Uint8Array(rawData), () => {
+            term.write(chunk, () => {
               if (disposed) {
                 scheduleBackgroundScan();
               }

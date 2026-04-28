@@ -161,46 +161,6 @@ export default memo(function PaneTabBar({
         zIndex: 10,
       }}
     >
-      {/* Agent status bar — shown above tabs when an agent is active */}
-      {showStatusBar && (
-        <div
-          style={{
-            height: 22,
-            display: "flex",
-            alignItems: "center",
-            gap: 6,
-            padding: "0 10px",
-            borderBottom: `1px solid color-mix(in srgb, ${statusCfg.color} 38%, transparent)`,
-            background: `color-mix(in srgb, ${statusCfg.color} 10%, transparent)`,
-            overflow: "hidden",
-          }}
-        >
-          <span
-            style={{
-              width: 6,
-              height: 6,
-              borderRadius: "50%",
-              background: statusCfg.color,
-              flexShrink: 0,
-            }}
-          />
-          <span style={{ fontSize: 11, color: statusCfg.color, fontWeight: 600, flexShrink: 0, textTransform: "uppercase", letterSpacing: "0.04em" }}>
-            {statusCfg.title}
-          </span>
-          <span style={{ fontSize: 11, color: "var(--cmux-text-tertiary)", flexShrink: 0 }}>
-            {activeAgentLabel}
-          </span>
-          {activeLastLog && (
-            <>
-              <span style={{ fontSize: 11, color: "var(--cmux-text-tertiary)", flexShrink: 0 }}>—</span>
-              <span style={{ fontSize: 11, color: "var(--cmux-text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
-                {activeLastLog}
-              </span>
-            </>
-          )}
-        </div>
-      )}
-
       {/* Tab pills row */}
       <div style={{ height: 36, display: "flex", alignItems: "center" }}>
       {/* Tab pills — overflow:hidden here to clip tab text, not the dropdown */}
@@ -297,6 +257,50 @@ export default memo(function PaneTabBar({
           );
         })}
       </div>
+
+      {showStatusBar && (
+        <div
+          style={{
+            height: 22,
+            maxWidth: "min(360px, 38%)",
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            padding: "0 8px",
+            marginLeft: 6,
+            border: `1px solid color-mix(in srgb, ${statusCfg.color} 38%, transparent)`,
+            borderRadius: 4,
+            background: `color-mix(in srgb, ${statusCfg.color} 10%, transparent)`,
+            overflow: "hidden",
+            flexShrink: 1,
+            minWidth: 120,
+          }}
+        >
+          <span
+            style={{
+              width: 6,
+              height: 6,
+              borderRadius: "50%",
+              background: statusCfg.color,
+              flexShrink: 0,
+            }}
+          />
+          <span style={{ fontSize: 11, color: statusCfg.color, fontWeight: 600, flexShrink: 0, textTransform: "uppercase", letterSpacing: "0.04em" }}>
+            {statusCfg.title}
+          </span>
+          <span style={{ fontSize: 11, color: "var(--cmux-text-tertiary)", flexShrink: 0 }}>
+            {activeAgentLabel}
+          </span>
+          {activeLastLog && (
+            <>
+              <span style={{ fontSize: 11, color: "var(--cmux-text-tertiary)", flexShrink: 0 }}>—</span>
+              <span style={{ fontSize: 11, color: "var(--cmux-text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
+                {activeLastLog}
+              </span>
+            </>
+          )}
+        </div>
+      )}
 
       {/* Add terminal tab — direct, no dropdown */}
       <button
