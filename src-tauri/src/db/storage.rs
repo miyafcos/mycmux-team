@@ -18,6 +18,12 @@ pub struct PaneTabConfig {
     pub last_process: Option<String>,
     #[serde(default)]
     pub claude_session_id: Option<String>,
+    #[serde(default)]
+    pub agent_kind: Option<String>,
+    #[serde(default)]
+    pub agent_session_id: Option<String>,
+    #[serde(default)]
+    pub terminal_snapshot: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -31,6 +37,10 @@ pub struct PaneConfig {
     pub last_process: Option<String>,
     #[serde(default)]
     pub claude_session_id: Option<String>,
+    #[serde(default)]
+    pub agent_kind: Option<String>,
+    #[serde(default)]
+    pub agent_session_id: Option<String>,
     #[serde(default)]
     pub active_tab_id: Option<String>,
     #[serde(default)]

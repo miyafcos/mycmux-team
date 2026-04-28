@@ -1,4 +1,5 @@
 import AgentSelector from "./AgentSelector";
+import { getDefaultAgent } from "../../lib/agents";
 
 interface AgentSlotListProps {
   paneCount: number;
@@ -7,6 +8,7 @@ interface AgentSlotListProps {
 }
 
 export default function AgentSlotList({ paneCount, assignments, onChange }: AgentSlotListProps) {
+  const defaultAgentId = getDefaultAgent().id;
   return (
     <div>
       <div
@@ -24,7 +26,7 @@ export default function AgentSlotList({ paneCount, assignments, onChange }: Agen
           <AgentSelector
             key={i}
             slotIndex={i}
-            value={assignments[i] ?? "shell"}
+            value={assignments[i] ?? defaultAgentId}
             onChange={(agentId) => onChange({ ...assignments, [i]: agentId })}
           />
         ))}

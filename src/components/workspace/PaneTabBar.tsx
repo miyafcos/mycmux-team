@@ -80,7 +80,7 @@ const STATUS_CONFIG: Record<EffectiveStatus, { color: string; title: string }> =
 };
 
 const AGENT_LABELS: Record<string, string> = {
-  "shell-starter": "Shell",
+  "shell-starter": "Launch Menu",
   "claude-code": "Claude Code",
   "gemini":      "Gemini",
   "codex":       "Codex",

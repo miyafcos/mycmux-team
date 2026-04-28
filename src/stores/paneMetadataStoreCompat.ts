@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import type { AgentSessionKind } from "../types";
 
 export type AgentStatus = "working" | "waiting" | "done" | "idle";
 
@@ -13,6 +14,8 @@ export interface PaneMetadata {
   agentStatus?: AgentStatus;
   lastNotificationKey?: string;
   claudeSessionId?: string;
+  agentKind?: AgentSessionKind;
+  agentSessionId?: string;
 }
 
 export interface PaneMetadataState {
@@ -20,6 +23,7 @@ export interface PaneMetadataState {
   setMetadata: (sessionId: string, data: Partial<PaneMetadata>) => void;
   clearAgentStatus: (sessionId: string) => void;
   clearClaudeSessionId: (sessionId: string) => void;
+  clearAgentSessionId: (sessionId: string) => void;
   incrementNotification: (sessionId: string) => void;
   notifyWaiting: (sessionId: string, patternId: number) => boolean;
   notifyWorkDone: (sessionId: string) => boolean;
@@ -81,6 +85,21 @@ export const usePaneMetadataStore = create<PaneMetadataState>((set) => ({
       metadata: {
         ...state.metadata,
         [sessionId]: { ...prev, claudeSessionId: undefined },
+      },
+    };
+  }),
+
+  clearAgentSessionId: (sessionId) => set((state) => {
+    const prev = state.metadata[sessionId];
+    if (!prev?.agentSessionId && !prev?.agentKind) return state;
+    return {
+      metadata: {
+        ...state.metadata,
+        [sessionId]: {
+          ...prev,
+          agentKind: undefined,
+          agentSessionId: undefined,
+        },
       },
     };
   }),

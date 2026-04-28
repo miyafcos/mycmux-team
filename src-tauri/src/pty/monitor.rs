@@ -1,7 +1,8 @@
 use std::collections::HashMap;
-use std::process::Command;
+use std::io::BufRead;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
+use std::process::Command;
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 use std::sync::Arc;
@@ -21,6 +22,8 @@ pub struct PtyMetadata {
     pub git_branch: Option<String>,
     pub process_name: Option<String>,
     pub claude_session_id: Option<String>,
+    pub agent_kind: Option<String>,
+    pub agent_session_id: Option<String>,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -85,11 +88,143 @@ fn detect_claude_session_id(cwd: &str) -> Option<String> {
     best.map(|(id, _)| id)
 }
 
+fn detect_claude_codex_session_id(cwd: &str) -> Option<String> {
+    let home = dirs::home_dir()?;
+    let normalized = if cwd.starts_with('/') && cwd.len() > 2 && cwd.as_bytes()[2] == b'/' {
+        format!(
+            "{}:{}",
+            cwd[1..2].to_uppercase(),
+            cwd[2..].replace('/', "\\")
+        )
+    } else {
+        cwd.to_string()
+    };
+    let mangled = normalized.replace([':', '\\', '/'], "-");
+    let project_dir = home
+        .join(".claude-codex")
+        .join("config")
+        .join("projects")
+        .join(&mangled);
+    if !project_dir.exists() {
+        return None;
+    }
+
+    let mut best: Option<(String, std::time::SystemTime)> = None;
+    for entry in std::fs::read_dir(&project_dir).ok()?.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
+            if let Ok(meta) = entry.metadata() {
+                if let Ok(mtime) = meta.modified() {
+                    if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                        if best.is_none() || mtime > best.as_ref().unwrap().1 {
+                            best = Some((stem.to_string(), mtime));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    best.map(|(id, _)| id)
+}
+
+fn normalize_cwd_key(cwd: &str) -> String {
+    let normalized = if cwd.starts_with('/') && cwd.len() > 2 && cwd.as_bytes()[2] == b'/' {
+        format!(
+            "{}:{}",
+            cwd[1..2].to_uppercase(),
+            cwd[2..].replace('/', "\\")
+        )
+    } else {
+        cwd.replace('/', "\\")
+    };
+    normalized
+        .trim_end_matches(['\\', '/'])
+        .to_ascii_lowercase()
+}
+
+fn codex_session_meta(path: &std::path::Path) -> Option<(String, String)> {
+    let file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(_) => return None,
+    };
+    let mut lines = std::io::BufReader::new(file).lines();
+    let Some(Ok(line)) = lines.next() else {
+        return None;
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {
+        return None;
+    };
+    let payload = value.get("payload")?;
+    let id = payload.get("id").and_then(|id| id.as_str())?;
+    let cwd = payload.get("cwd").and_then(|cwd| cwd.as_str())?;
+    if id.trim().is_empty() {
+        return None;
+    }
+    Some((id.to_string(), cwd.to_string()))
+}
+
+fn codex_session_id_for_cwd(path: &std::path::Path, cwd_key: &str) -> Option<String> {
+    let (payload_id, payload_cwd) = codex_session_meta(path)?;
+    if normalize_cwd_key(&payload_cwd) == cwd_key {
+        Some(payload_id)
+    } else {
+        None
+    }
+}
+
+fn visit_codex_sessions_dir(
+    dir: &std::path::Path,
+    cwd_key: &str,
+    best: &mut Option<(String, std::time::SystemTime)>,
+) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            visit_codex_sessions_dir(&path, cwd_key, best);
+            continue;
+        }
+        if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+            continue;
+        }
+        let Some(session_id) = codex_session_id_for_cwd(&path, cwd_key) else {
+            continue;
+        };
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        let Ok(modified) = metadata.modified() else {
+            continue;
+        };
+        if best.is_none() || modified > best.as_ref().unwrap().1 {
+            *best = Some((session_id, modified));
+        }
+    }
+}
+
+fn detect_codex_session_id(cwd: &str) -> Option<String> {
+    let home = dirs::home_dir()?;
+    let sessions_dir = home.join(".codex").join("sessions");
+    if !sessions_dir.exists() {
+        return None;
+    }
+    let cwd_key = normalize_cwd_key(cwd);
+    let mut best: Option<(String, std::time::SystemTime)> = None;
+    visit_codex_sessions_dir(&sessions_dir, &cwd_key, &mut best);
+    best.map(|(id, _)| id)
+}
+
 /// System/infrastructure processes to skip when detecting the foreground process.
 fn is_system_process(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
     let leaf = lower.strip_suffix(".exe").unwrap_or(&lower);
-    matches!(leaf, "conhost" | "csrss" | "wininit" | "winlogon" | "dwm" | "fontdrvhost")
+    matches!(
+        leaf,
+        "conhost" | "csrss" | "wininit" | "winlogon" | "dwm" | "fontdrvhost"
+    )
 }
 
 /// Follow the newest child chain to find the foreground process PID,
@@ -99,8 +234,7 @@ fn deepest_child_pid(sys: &System, pid: Pid) -> Pid {
         .processes()
         .iter()
         .filter(|(_, process)| {
-            process.parent() == Some(pid)
-                && !is_system_process(&process.name().to_string_lossy())
+            process.parent() == Some(pid) && !is_system_process(&process.name().to_string_lossy())
         })
         .max_by_key(|(child_pid, _)| child_pid.as_u32())
         .map(|(child_pid, _)| *child_pid);
@@ -132,7 +266,11 @@ fn get_foreground_process_name(sys: &System, shell_pid: u32) -> Option<String> {
         .map(|p| p.name().to_string_lossy().to_string())
 }
 
-pub fn start_monitor(app_handle: AppHandle, manager: Arc<SessionManager>, metadata_store: MetadataStore) {
+pub fn start_monitor(
+    app_handle: AppHandle,
+    manager: Arc<SessionManager>,
+    metadata_store: MetadataStore,
+) {
     thread::spawn(move || {
         let mut sys = System::new();
         let mut last_metadata: HashMap<String, PtyMetadata> = HashMap::new();
@@ -178,16 +316,13 @@ pub fn start_monitor(app_handle: AppHandle, manager: Arc<SessionManager>, metada
                                 .stderr(std::process::Stdio::null());
                             #[cfg(target_os = "windows")]
                             git_cmd.creation_flags(CREATE_NO_WINDOW);
-                            let result = git_cmd
-                                .output()
-                                .ok()
-                                .and_then(|output| {
-                                    if output.status.success() {
-                                        Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
-                                    } else {
-                                        None
-                                    }
-                                });
+                            let result = git_cmd.output().ok().and_then(|output| {
+                                if output.status.success() {
+                                    Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+                                } else {
+                                    None
+                                }
+                            });
                             let _ = tx.send(result);
                         });
                         match rx.recv_timeout(Duration::from_secs(2)) {
@@ -205,19 +340,51 @@ pub fn start_monitor(app_handle: AppHandle, manager: Arc<SessionManager>, metada
 
                     let process_name = get_foreground_process_name(&sys, pid);
 
-                    // Detect Claude Code session ID when claude is the foreground process.
-                    // When claude exits, preserve the last detected ID from previous metadata.
-                    let claude_session_id = match process_name.as_deref() {
-                        Some(name)
-                            if name.to_ascii_lowercase().contains("claude")
-                                && !is_shell_process(name) =>
-                        {
-                            detect_claude_session_id(&cwd)
-                        }
-                        _ => last_metadata
-                            .get(&session_id)
-                            .and_then(|m| m.claude_session_id.clone()),
-                    };
+                    // Detect coding-agent session IDs only while that agent is foreground.
+                    // When an agent exits, preserve the last ID in backend metadata; the
+                    // frontend clears it when the foreground process returns to a shell.
+                    let lower_process = process_name
+                        .as_deref()
+                        .map(|name| name.to_ascii_lowercase());
+                    let previous_metadata = last_metadata.get(&session_id);
+                    let (agent_kind, agent_session_id, claude_session_id) =
+                        match (process_name.as_deref(), lower_process.as_deref()) {
+                            (Some(name), Some(lower))
+                                if lower.contains("claude-codex") && !is_shell_process(name) =>
+                            {
+                                let detected = detect_claude_codex_session_id(&cwd);
+                                (
+                                    detected.as_ref().map(|_| "claude-codex".to_string()),
+                                    detected,
+                                    previous_metadata.and_then(|m| m.claude_session_id.clone()),
+                                )
+                            }
+                            (Some(name), Some(lower))
+                                if lower.contains("claude") && !is_shell_process(name) =>
+                            {
+                                let detected = detect_claude_session_id(&cwd);
+                                (
+                                    detected.as_ref().map(|_| "claude".to_string()),
+                                    detected.clone(),
+                                    detected,
+                                )
+                            }
+                            (Some(name), Some(lower))
+                                if lower.contains("codex") && !is_shell_process(name) =>
+                            {
+                                let detected = detect_codex_session_id(&cwd);
+                                (
+                                    detected.as_ref().map(|_| "codex".to_string()),
+                                    detected,
+                                    previous_metadata.and_then(|m| m.claude_session_id.clone()),
+                                )
+                            }
+                            _ => (
+                                previous_metadata.and_then(|m| m.agent_kind.clone()),
+                                previous_metadata.and_then(|m| m.agent_session_id.clone()),
+                                previous_metadata.and_then(|m| m.claude_session_id.clone()),
+                            ),
+                        };
 
                     // Detect work→idle transition: previous foreground was a non-shell
                     // process (claude/node/python/…) and current is a shell.
@@ -246,6 +413,8 @@ pub fn start_monitor(app_handle: AppHandle, manager: Arc<SessionManager>, metada
                         git_branch: git_branch.clone(),
                         process_name: process_name.clone(),
                         claude_session_id: claude_session_id.clone(),
+                        agent_kind: agent_kind.clone(),
+                        agent_session_id: agent_session_id.clone(),
                     };
 
                     let changed = match last_metadata.get(&session_id) {
@@ -254,6 +423,8 @@ pub fn start_monitor(app_handle: AppHandle, manager: Arc<SessionManager>, metada
                                 || old.git_branch != git_branch
                                 || old.process_name != process_name
                                 || old.claude_session_id != claude_session_id
+                                || old.agent_kind != agent_kind
+                                || old.agent_session_id != agent_session_id
                         }
                         None => true,
                     };

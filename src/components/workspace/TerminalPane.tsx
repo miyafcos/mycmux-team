@@ -1,6 +1,6 @@
 import { memo, useCallback } from "react";
 import ErrorBoundary from "../common/ErrorBoundary";
-import type { Pane, PaneTab } from "../../types";
+import type { AgentSessionKind, Pane, PaneTab } from "../../types";
 import PaneTabBar from "./PaneTabBar";
 import XTermWrapper from "../terminal/XTermWrapper";
 import {
@@ -20,6 +20,66 @@ interface TerminalPaneProps {
   onClose?: () => void;
   onSplitRight?: () => void;
   onSplitDown?: () => void;
+}
+
+function isShellLauncher(agentId: string | undefined, command: string): boolean {
+  if (agentId === "shell" || agentId === "shell-starter") return true;
+  const leaf = command.toLowerCase().split(/[\\/]/).pop()?.replace(/\.exe$/, "");
+  return leaf === "bash" || leaf === "sh";
+}
+
+function resolveSavedAgentSession(tab: PaneTab): { kind: AgentSessionKind; sessionId: string } | null {
+  if (tab.agentKind && tab.agentSessionId) {
+    return { kind: tab.agentKind, sessionId: tab.agentSessionId };
+  }
+  if (tab.claudeSessionId) {
+    return { kind: "claude", sessionId: tab.claudeSessionId };
+  }
+  return null;
+}
+
+function buildLaunchArgs(
+  command: string,
+  args: string[],
+  agentId: string | undefined,
+  savedSession: { kind: AgentSessionKind; sessionId: string } | null,
+  newSessionId: string | undefined,
+  cwd: string | undefined,
+): string[] {
+  if (!savedSession) {
+    if (agentId === "claude-code" && newSessionId) {
+      return [
+        ...args,
+        "--dangerously-skip-permissions",
+        "--permission-mode",
+        "bypassPermissions",
+        "--session-id",
+        newSessionId,
+      ];
+    }
+    return args;
+  }
+  if (isShellLauncher(agentId, command)) return args;
+  switch (savedSession.kind) {
+    case "claude":
+      return [
+        "--dangerously-skip-permissions",
+        "--permission-mode",
+        "bypassPermissions",
+        "--resume",
+        savedSession.sessionId,
+      ];
+    case "codex":
+      return [
+        "resume",
+        "--no-alt-screen",
+        ...(cwd ? ["-C", cwd] : []),
+        savedSession.sessionId,
+      ];
+    case "claude-codex":
+      return ["--resume", savedSession.sessionId];
+  }
+  return args;
 }
 
 export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitRight, onSplitDown }: TerminalPaneProps) {
@@ -119,8 +179,12 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
   // Resolve CWD from pane/tab static data (metadata CWD handled by PTY monitor internally)
   const activeTab = pane.tabs.find((t) => t.id === pane.activeTabId);
   const paneCwd = activeTab?.cwd ?? pane.cwd;
-  const resolvedAgentId = activeTab?.agentId === "shell-starter" ? "shell" : activeTab?.agentId;
+  const resolvedAgentId = activeTab?.agentId;
   const agent = resolvedAgentId ? (getAgent(resolvedAgentId) ?? getDefaultAgent()) : null;
+  const savedAgentSession = activeTab ? resolveSavedAgentSession(activeTab) : null;
+  const launchArgs = agent
+    ? buildLaunchArgs(agent.command, agent.args, resolvedAgentId, savedAgentSession, activeTab?.id, activeTab?.cwd ?? paneCwd)
+    : [];
   const dropPreviewClass = dropTarget && dragItem
     ? [
         "pane-drop-preview",
@@ -191,18 +255,24 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
               <XTermWrapper
                 sessionId={activeTab.sessionId}
                 command={agent.command}
-                args={agent.args}
+                args={launchArgs}
                 onZoomToggle={handleZoomToggle}
                 cwd={activeTab.cwd ?? paneCwd}
+                initialReplay={savedAgentSession ? undefined : activeTab.terminalSnapshot}
                 launchEnv={(() => {
                   const env: Record<string, string> = {
                     MYCMUX_PANE_SESSION_ID: activeTab.sessionId,
+                    MYCMUX_TAB_ID: activeTab.id,
                   };
-                  if (activeTab.claudeSessionId) {
-                    // claudeSessionId is detected from ~/.claude/projects/ so always resume as claude.
-                    // The shell agent launches bash and launcher.sh handles MYCMUX_RESUME.
-                    env.MYCMUX_RESUME = "claude";
-                    env.MYCMUX_SESSION_ID = activeTab.claudeSessionId;
+                  if (resolvedAgentId === "shell-starter") {
+                    env.__CMUX_LAUNCHER_DONE = "1";
+                  }
+                  if (savedAgentSession) {
+                    env.MYCMUX_AGENT_KIND = savedAgentSession.kind;
+                    env.MYCMUX_SESSION_ID = savedAgentSession.sessionId;
+                    env.MYCMUX_RESUME = savedAgentSession.kind;
+                  } else if (resolvedAgentId === "claude-code") {
+                    env.MYCMUX_AGENT_KIND = "claude";
                   }
                   return env;
                 })()}

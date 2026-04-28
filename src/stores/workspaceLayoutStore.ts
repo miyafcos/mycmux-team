@@ -17,7 +17,7 @@ function makeTab(
   paneId: string,
   agentId: string,
   type: PaneTab["type"] = "terminal",
-  options?: Partial<Pick<PaneTab, "id" | "label" | "cwd" | "lastProcess" | "claudeSessionId">>,
+  options?: Partial<Pick<PaneTab, "id" | "label" | "cwd" | "lastProcess" | "claudeSessionId" | "agentKind" | "agentSessionId" | "terminalSnapshot">>,
 ): PaneTab {
   const tabId = options?.id ?? uuid();
   return {
@@ -29,15 +29,15 @@ function makeTab(
     cwd: options?.cwd,
     lastProcess: options?.lastProcess,
     claudeSessionId: options?.claudeSessionId,
+    agentKind: options?.agentKind,
+    agentSessionId: options?.agentSessionId,
+    terminalSnapshot: options?.terminalSnapshot,
   };
 }
 
 function normalizeRestoredAgentId(
   agentId: string | null | undefined,
 ): string {
-  if (agentId === "shell-starter") {
-    return "shell";
-  }
   return agentId || getDefaultAgent().id;
 }
 
@@ -132,6 +132,8 @@ function makePaneFromTab(paneId: string, tab: PaneTab): Pane {
     cwd: tab.cwd,
     lastProcess: tab.lastProcess,
     claudeSessionId: tab.claudeSessionId,
+    agentKind: tab.agentKind,
+    agentSessionId: tab.agentSessionId,
   };
 }
 
@@ -144,6 +146,8 @@ function applyActiveTabFields(pane: Pane, activeTab: PaneTab): Pane {
     cwd: activeTab.cwd ?? pane.cwd,
     lastProcess: activeTab.lastProcess ?? pane.lastProcess,
     claudeSessionId: activeTab.claudeSessionId ?? pane.claudeSessionId,
+    agentKind: activeTab.agentKind ?? pane.agentKind,
+    agentSessionId: activeTab.agentSessionId ?? pane.agentSessionId,
   };
 }
 
@@ -259,6 +263,9 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
                 label: tabConfig.label ?? undefined,
                 cwd: tabConfig.cwd ?? pc.cwd ?? undefined,
                 claudeSessionId: tabConfig.claude_session_id ?? undefined,
+                agentKind: tabConfig.agent_kind ?? (tabConfig.claude_session_id ? "claude" : undefined),
+                agentSessionId: tabConfig.agent_session_id ?? tabConfig.claude_session_id ?? undefined,
+                terminalSnapshot: tabConfig.terminal_snapshot ?? undefined,
               },
             );
           })
@@ -266,6 +273,8 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
             label: pc.label ?? undefined,
             cwd: pc.cwd ?? undefined,
             claudeSessionId: pc.claude_session_id ?? undefined,
+            agentKind: pc.agent_kind ?? (pc.claude_session_id ? "claude" : undefined),
+            agentSessionId: pc.agent_session_id ?? pc.claude_session_id ?? undefined,
           })];
       const activeTab = tabs.find((tab) => tab.id === pc.active_tab_id) ?? tabs[0];
       const agentId = activeTab?.agentId || normalizeRestoredAgentId(pc.agent_id) || defaultAgentId;
@@ -415,6 +424,8 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
         cwd: activeTab.cwd ?? p.cwd,
         lastProcess: activeTab.lastProcess ?? p.lastProcess,
         claudeSessionId: activeTab.claudeSessionId ?? p.claudeSessionId,
+        agentKind: activeTab.agentKind ?? p.agentKind,
+        agentSessionId: activeTab.agentSessionId ?? p.agentSessionId,
       }];
     });
 
@@ -748,6 +759,8 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
         cwd: tab.cwd ?? p.cwd,
         lastProcess: tab.lastProcess ?? p.lastProcess,
         claudeSessionId: tab.claudeSessionId ?? p.claudeSessionId,
+        agentKind: tab.agentKind ?? p.agentKind,
+        agentSessionId: tab.agentSessionId ?? p.agentSessionId,
       };
     });
 
@@ -762,7 +775,13 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
       if (pane.id !== paneId) return pane;
       const tabs = pane.tabs.map((tab) =>
         tab.id === tabId
-          ? { ...tab, agentId }
+          ? {
+              ...tab,
+              agentId,
+              claudeSessionId: undefined,
+              agentKind: undefined,
+              agentSessionId: undefined,
+            }
           : tab,
       );
       const activeTab = tabs.find((tab) => tab.id === pane.activeTabId) ?? tabs[0];

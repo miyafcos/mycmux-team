@@ -16,6 +16,26 @@ pub struct AppState {
     pub metadata_store: pty::monitor::MetadataStore,
 }
 
+fn install_launcher_script() -> Result<(), String> {
+    let home = dirs::home_dir().ok_or_else(|| "Failed to resolve home directory".to_string())?;
+    let bin_dir = home.join(".mycmux-lite").join("bin");
+    std::fs::create_dir_all(&bin_dir)
+        .map_err(|e| format!("Failed to create launcher directory: {e}"))?;
+
+    let target = bin_dir.join("launcher.sh");
+    let contents = include_str!("launcher.sh").replace("\r\n", "\n");
+    let needs_write = std::fs::read_to_string(&target)
+        .map(|current| current.replace("\r\n", "\n") != contents)
+        .unwrap_or(true);
+
+    if needs_write {
+        std::fs::write(&target, contents)
+            .map_err(|e| format!("Failed to write launcher script: {e}"))?;
+    }
+
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let metadata_store = pty::monitor::new_metadata_store();
@@ -48,6 +68,7 @@ pub fn run() {
             commands::terminal::get_default_shell,
             commands::terminal::get_claude_session_id,
             commands::terminal::read_pane_session_mappings,
+            commands::terminal::read_agent_session_mappings,
             commands::workspace::load_persistent_data,
             commands::workspace::save_persistent_data,
             commands::workspace::save_workspaces,
@@ -65,6 +86,9 @@ pub fn run() {
             let state = app.state::<AppState>();
             #[cfg(target_os = "windows")]
             crate::pty::windows_console::start_startup_flash_suppression(std::process::id());
+            if let Err(err) = install_launcher_script() {
+                eprintln!("[launcher] failed to install launcher.sh: {err}");
+            }
             let ms = state.metadata_store.clone();
             pty::monitor::start_monitor(
                 app_handle.clone(),
@@ -73,11 +97,7 @@ pub fn run() {
             );
 
             socket::start_socket_listener(app_handle.clone());
-            remote::start_remote_server(
-                app_handle.clone(),
-                state.session_manager.clone(),
-                ms,
-            );
+            remote::start_remote_server(app_handle.clone(), state.session_manager.clone(), ms);
 
             // Kill all PTY sessions when the main window closes
             let mgr = state.session_manager.clone();

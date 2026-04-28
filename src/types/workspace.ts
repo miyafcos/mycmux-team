@@ -28,6 +28,9 @@ export interface PaneTab {
   cwd?: string;
   lastProcess?: string;
   claudeSessionId?: string;
+  agentKind?: AgentSessionKind;
+  agentSessionId?: string;
+  terminalSnapshot?: string[];
 }
 
 export interface Pane {
@@ -44,7 +47,11 @@ export interface Pane {
   gitBranch?: string;
   lastProcess?: string;
   claudeSessionId?: string;
+  agentKind?: AgentSessionKind;
+  agentSessionId?: string;
 }
+
+export type AgentSessionKind = "claude" | "codex" | "claude-codex";
 
 export type WorkspaceStatus = "setup" | "running" | "stopped";
 
