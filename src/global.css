@@ -145,6 +145,43 @@ div:hover>.tab-close-btn {
   background: transparent;
 }
 
+.xterm-codex-cursor .xterm-cursor-layer,
+.xterm-codex-cursor .xterm-cursor-layer *,
+.xterm-codex-cursor .xterm-cursor,
+.xterm-codex-cursor .xterm-cursor-block,
+.xterm-codex-cursor .xterm-cursor-bar,
+.xterm-codex-cursor .xterm-cursor-underline {
+  animation: none !important;
+  opacity: 0 !important;
+  visibility: hidden !important;
+}
+
+.xterm-codex-cursor .xterm-helper-textarea,
+.xterm-codex-cursor textarea {
+  caret-color: transparent !important;
+  color: transparent !important;
+  text-shadow: none !important;
+}
+
+.codex-fixed-cursor {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 20;
+  width: 2px;
+  min-height: 12px;
+  background: var(--cmux-text, #ededed);
+  opacity: 0;
+  pointer-events: none;
+  animation: none !important;
+  transition: none !important;
+  will-change: transform;
+}
+
+.xterm-codex-cursor.codex-fixed-cursor-visible .codex-fixed-cursor {
+  opacity: 1;
+}
+
 /* WebKitGTK font rendering improvements */
 .xterm-rows {
   font-variant-ligatures: none;
