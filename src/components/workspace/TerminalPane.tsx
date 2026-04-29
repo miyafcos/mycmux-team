@@ -100,6 +100,10 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
       ? s.target
       : null,
   );
+  const activeTab = pane.tabs.find((t) => t.id === pane.activeTabId);
+  const activeTabMetadataAgentKind = usePaneMetadataStore((s) =>
+    activeTab ? s.metadata[activeTab.sessionId]?.agentKind : undefined,
+  );
 
   // Granular metadata selectors only re-render when notification/done count changes.
   const notificationCount = usePaneMetadataStore((s) =>
@@ -177,7 +181,6 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
   }, [pane.id, setZoomedPaneId]);
 
   // Resolve CWD from pane/tab static data (metadata CWD handled by PTY monitor internally)
-  const activeTab = pane.tabs.find((t) => t.id === pane.activeTabId);
   const paneCwd = activeTab?.cwd ?? pane.cwd;
   const resolvedAgentId = activeTab?.agentId;
   const agent = resolvedAgentId ? (getAgent(resolvedAgentId) ?? getDefaultAgent()) : null;
@@ -256,6 +259,8 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
                 sessionId={activeTab.sessionId}
                 command={agent.command}
                 args={launchArgs}
+                agentId={resolvedAgentId}
+                agentKind={savedAgentSession?.kind ?? activeTab.agentKind ?? activeTabMetadataAgentKind}
                 onZoomToggle={handleZoomToggle}
                 cwd={activeTab.cwd ?? paneCwd}
                 initialReplay={savedAgentSession ? undefined : activeTab.terminalSnapshot}

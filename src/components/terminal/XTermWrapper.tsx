@@ -44,6 +44,8 @@ interface XTermWrapperProps {
   sessionId: string;
   command: string;
   args?: string[];
+  agentId?: string;
+  agentKind?: "claude" | "codex" | "claude-codex";
   onExit?: () => void;
   theme?: ITheme;
   fontSize?: number;
@@ -147,6 +149,26 @@ const termCache = new Map<string, CachedTerm>();
 const liveTerms = new Map<string, Terminal>();
 const terminalSizeCache = new Map<string, { cols: number; rows: number }>();
 
+type TerminalWithRenderDimensions = Terminal & {
+  _core?: {
+    _renderService?: {
+      dimensions?: {
+        css?: {
+          cell?: {
+            width: number;
+            height: number;
+          };
+        };
+      };
+    };
+  };
+};
+
+interface CodexCursorPosition {
+  x: number;
+  y: number;
+}
+
 /** Call before killSession to dispose the cached terminal */
 export function evictTerminalCache(sessionId: string): void {
   const cached = termCache.get(sessionId);
@@ -222,15 +244,42 @@ function getCommandName(command: string): string {
     .toLowerCase() ?? "";
 }
 
-function startsAsCodex(command: string, args: string[]): boolean {
-  return getCommandName(command) === "codex" || args.some((arg) => /\bcodex\b/i.test(arg));
+function startsAsCodex(
+  command: string,
+  args: string[],
+  agentId?: string,
+  agentKind?: string,
+  launchEnv?: Record<string, string>,
+): boolean {
+  if (agentId === "codex" || agentKind === "codex" || agentKind === "claude-codex") return true;
+  if (
+    launchEnv?.MYCMUX_AGENT_KIND === "codex"
+    || launchEnv?.MYCMUX_AGENT_KIND === "claude-codex"
+    || launchEnv?.MYCMUX_RESUME === "codex"
+    || launchEnv?.MYCMUX_RESUME === "claude-codex"
+  ) {
+    return true;
+  }
+  if (getCommandName(command) === "codex") return true;
+  return args.some((arg) => getCommandName(arg) === "codex");
+}
+
+function looksLikeCodexModelStatusLine(line: string): boolean {
+  return /\bgpt-5(?:\.\d+)?\b.*[\u00b7\u2022]\s*(?:~|[A-Za-z]:\\|\/)/i.test(line);
+}
+
+function looksLikeCodexPromptLine(line: string): boolean {
+  return (
+    /^\s*[›❯>»▶▸]\s+/.test(line)
+    && !/\b(?:working|thinking|running|executing|searching|analyzing)\b/i.test(line)
+  ) || looksLikeCodexModelStatusLine(line);
 }
 
 function looksLikeCodexOutput(text: string): boolean {
   return (
-    text.includes("OpenAI Codex")
-    || /esc\s+to\s+interrupt/i.test(text)
-    || /\bgpt-5(?:\.\d+)?\b/i.test(text)
+    /\bOpenAI\s+Codex\b/i.test(text)
+    || /\bCodex session starting\b/i.test(text)
+    || text.split(/\r?\n/).some((line) => looksLikeCodexModelStatusLine(line.trim()))
   );
 }
 
@@ -262,6 +311,8 @@ export default memo(function XTermWrapper({
   sessionId,
   command,
   args = [],
+  agentId,
+  agentKind,
   onExit,
   theme,
   fontSize,
@@ -273,6 +324,8 @@ export default memo(function XTermWrapper({
   initialReplay,
 }: XTermWrapperProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const codexFixedCursorRef = useRef<HTMLDivElement>(null);
+  const codexCursorStyleActiveRef = useRef(false);
   const searchAddonRef = useRef<SearchAddon | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
@@ -285,6 +338,34 @@ export default memo(function XTermWrapper({
 
   const storeTheme = useThemeStore((s) => s.theme);
   const storeFontSize = useThemeStore((s) => s.fontSize);
+  const argsKey = args.join("\u0000");
+  const launchEnvKey = launchEnv
+    ? Object.entries(launchEnv)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, value]) => `${key}=${value}`)
+      .join("\u0000")
+    : "";
+
+  useEffect(() => {
+    if (!startsAsCodex(command, args, agentId, agentKind, launchEnv)) return;
+    codexCursorStyleActiveRef.current = true;
+
+    const currentTerm = termRef.current;
+    const container = containerRef.current;
+    if (!currentTerm || !container) return;
+
+    currentTerm.options.cursorStyle = "bar";
+    currentTerm.options.cursorBlink = false;
+    currentTerm.options.cursorInactiveStyle = "none";
+    currentTerm.options.cursorWidth = 1;
+    currentTerm.options.theme = {
+      ...currentTerm.options.theme,
+      cursor: "rgba(0, 0, 0, 0)",
+      cursorAccent: "rgba(0, 0, 0, 0)",
+    };
+    container.classList.add("xterm-codex-cursor");
+    container.classList.remove("codex-fixed-cursor-visible");
+  }, [sessionId, command, argsKey, agentId, agentKind, launchEnvKey]);
 
   // Single source of truth: is this tab the currently-focused terminal?
   // Used for scroll-to-bottom-on-activate.
@@ -322,6 +403,7 @@ export default memo(function XTermWrapper({
     let unlistenExit: (() => void) | null = null;
     let writeParsedDisposable: { dispose: () => void } | null = null;
     let scrollDisposable: { dispose: () => void } | null = null;
+    let cursorParserDisposables: { dispose: () => void }[] = [];
     let term: Terminal | null = null;
     let fitAddon: FitAddon | null = null;
     let removeCompositionGuard: (() => void) | null = null;
@@ -335,12 +417,14 @@ export default memo(function XTermWrapper({
     let lastScanSignature = "";
     let isImeComposing = false;
     let resizePendingDuringComposition = false;
-    let outputCursorHidden = false;
-    let outputCursorRestoreTimer: ReturnType<typeof setTimeout> | null = null;
-    let suppressCursorDuringOutput = startsAsCodex(command, args);
+    let usesCodexCursorStyle = codexCursorStyleActiveRef.current || startsAsCodex(command, args, agentId, agentKind, launchEnv);
+    if (usesCodexCursorStyle) {
+      codexCursorStyleActiveRef.current = true;
+    }
+    let codexCursorSuppressed = false;
+    let codexDetectionBuffer = "";
+    let lastCodexPromptCursorPosition: CodexCursorPosition | null = null;
     const outputDecoder = new TextDecoder();
-    const outputEncoder = new TextEncoder();
-    const hideCursorBytes = outputEncoder.encode("\x1b[?25l");
     let lastObservedWidth = -1;
     let lastObservedHeight = -1;
     const cachedSize = terminalSizeCache.get(sessionId);
@@ -373,46 +457,168 @@ export default memo(function XTermWrapper({
       }
     };
 
-    const clearOutputCursorTimer = (): void => {
-      if (outputCursorRestoreTimer) {
-        clearTimeout(outputCursorRestoreTimer);
-        outputCursorRestoreTimer = null;
+    const applyDefaultCursorStyle = (currentTerm: Terminal | null = term): void => {
+      if (!currentTerm || termDisposed) return;
+      currentTerm.options.cursorStyle = "block";
+      currentTerm.options.cursorBlink = true;
+      container.classList.remove("xterm-codex-cursor", "codex-fixed-cursor-visible");
+    };
+
+    const positionCodexFixedCursor = (
+      currentTerm: Terminal | null = term,
+      updatePosition = false,
+      targetPosition?: CodexCursorPosition | null,
+    ): void => {
+      if (!currentTerm || termDisposed) return;
+      const cursorEl = codexFixedCursorRef.current;
+      if (!cursorEl) return;
+
+      container.classList.add("xterm-codex-cursor", "codex-fixed-cursor-visible");
+      if (!updatePosition && cursorEl.dataset.positioned === "1") return;
+
+      const termElement = currentTerm.element;
+      const screen = termElement?.querySelector<HTMLElement>(".xterm-screen");
+      const rows = termElement?.querySelector<HTMLElement>(".xterm-rows");
+      const anchor = screen ?? rows ?? termElement;
+      if (!anchor) return;
+
+      const containerRect = container.getBoundingClientRect();
+      const anchorRect = anchor.getBoundingClientRect();
+      const privateTerm = currentTerm as TerminalWithRenderDimensions;
+      const cell = privateTerm._core?._renderService?.dimensions?.css?.cell;
+      const cellWidth = cell?.width || (anchorRect.width > 0 ? anchorRect.width / Math.max(currentTerm.cols, 1) : 8);
+      const cellHeight = cell?.height || (anchorRect.height > 0 ? anchorRect.height / Math.max(currentTerm.rows, 1) : 16);
+      const cursorX = Math.max(0, Math.min(targetPosition?.x ?? currentTerm.buffer.active.cursorX, Math.max(currentTerm.cols - 1, 0)));
+      const cursorY = Math.max(0, Math.min(targetPosition?.y ?? currentTerm.buffer.active.cursorY, Math.max(currentTerm.rows - 1, 0)));
+      const left = anchorRect.left - containerRect.left + cursorX * cellWidth;
+      const top = anchorRect.top - containerRect.top + cursorY * cellHeight;
+
+      cursorEl.style.transform = `translate(${Math.round(left)}px, ${Math.round(top)}px)`;
+      cursorEl.style.height = `${Math.max(1, Math.round(cellHeight))}px`;
+      cursorEl.dataset.positioned = "1";
+    };
+
+    const getCodexPromptCursorPosition = (currentTerm: Terminal): CodexCursorPosition | null => {
+      const buf = currentTerm.buffer.active;
+      const viewportTop = buf.viewportY;
+      const viewportBottom = Math.min(buf.length - 1, viewportTop + currentTerm.rows - 1);
+      for (let lineIndex = viewportBottom; lineIndex >= viewportTop; lineIndex--) {
+        const lineObj = buf.getLine(lineIndex);
+        if (!lineObj) continue;
+        const rawText = lineObj.translateToString(false);
+        const text = rawText.trim();
+        if (!looksLikeCodexPromptLine(text)) continue;
+        const visibleRow = lineIndex - viewportTop;
+        const cursorX = Math.max(0, Math.min(rawText.trimEnd().length, Math.max(currentTerm.cols - 1, 0)));
+        return { x: cursorX, y: visibleRow };
+      }
+      return null;
+    };
+
+    const positionCodexCursorOnInputLine = (
+      currentTerm: Terminal | null = term,
+      updatePosition = false,
+    ): void => {
+      if (!currentTerm || termDisposed) return;
+      const promptPosition = getCodexPromptCursorPosition(currentTerm);
+      if (promptPosition) {
+        lastCodexPromptCursorPosition = promptPosition;
+        positionCodexFixedCursor(currentTerm, true, promptPosition);
+        return;
+      }
+      if (lastCodexPromptCursorPosition) {
+        positionCodexFixedCursor(currentTerm, updatePosition, lastCodexPromptCursorPosition);
+        return;
+      }
+      positionCodexFixedCursor(currentTerm, updatePosition);
+    };
+
+    const applyCodexCursorStyle = (currentTerm: Terminal | null = term): void => {
+      if (!currentTerm || termDisposed) return;
+      codexCursorStyleActiveRef.current = true;
+      currentTerm.options.cursorStyle = "bar";
+      currentTerm.options.cursorBlink = false;
+      currentTerm.options.cursorInactiveStyle = "none";
+      currentTerm.options.cursorWidth = 1;
+      currentTerm.options.theme = {
+        ...currentTerm.options.theme,
+        cursor: "rgba(0, 0, 0, 0)",
+        cursorAccent: "rgba(0, 0, 0, 0)",
+      };
+      container.classList.add("xterm-codex-cursor");
+    };
+
+    const ensureCodexCursorStyleActive = (): boolean => {
+      if (codexCursorStyleActiveRef.current) {
+        usesCodexCursorStyle = true;
+      }
+      return usesCodexCursorStyle;
+    };
+
+    const hideCodexCursor = (currentTerm: Terminal | null = term): void => {
+      if (!currentTerm || termDisposed) return;
+      applyCodexCursorStyle(currentTerm);
+      container.classList.remove("codex-fixed-cursor-visible");
+      if (codexCursorSuppressed) return;
+      codexCursorSuppressed = true;
+      currentTerm.write("\x1b[?25l");
+    };
+
+    const showCodexCursor = (currentTerm: Terminal | null = term): void => {
+      if (!currentTerm || termDisposed) return;
+      applyCodexCursorStyle(currentTerm);
+      if (!getCodexPromptCursorPosition(currentTerm)) {
+        container.classList.remove("codex-fixed-cursor-visible");
+        return;
+      }
+      codexCursorSuppressed = false;
+      positionCodexCursorOnInputLine(currentTerm, true);
+    };
+
+    const updateCursorStyleForOutput = (currentTerm: Terminal, text: string): void => {
+      ensureCodexCursorStyleActive();
+      if (!usesCodexCursorStyle && text.length > 0) {
+        codexDetectionBuffer = `${codexDetectionBuffer}${text}`.slice(-4096);
+      }
+      if (!usesCodexCursorStyle && looksLikeCodexOutput(codexDetectionBuffer || text)) {
+        usesCodexCursorStyle = true;
+        codexCursorStyleActiveRef.current = true;
+      }
+      if (usesCodexCursorStyle) {
+        applyCodexCursorStyle(currentTerm);
       }
     };
 
-    const showOutputCursor = (currentTerm: Terminal | null = term): void => {
-      clearOutputCursorTimer();
-      if (!outputCursorHidden || !currentTerm || termDisposed) return;
-      outputCursorHidden = false;
-      try {
-        currentTerm.write("\x1b[?25h");
-      } catch {
-        // Terminal may be disposing.
+    const clearCursorParserHandlers = (): void => {
+      for (const disposable of cursorParserDisposables) {
+        disposable.dispose();
       }
+      cursorParserDisposables = [];
     };
 
-    const shouldHideOutputCursorDuringBurst = (currentTerm: Terminal, text: string): boolean => {
-      if (!suppressCursorDuringOutput && looksLikeCodexOutput(text)) {
-        suppressCursorDuringOutput = true;
-      }
-      if (!suppressCursorDuringOutput || text.length === 0) return false;
-
-      clearOutputCursorTimer();
-      outputCursorHidden = true;
-      outputCursorRestoreTimer = setTimeout(() => {
-        outputCursorRestoreTimer = null;
-        if (!disposed && !termDisposed) {
-          showOutputCursor(currentTerm);
-        }
-      }, 1500);
-      return true;
-    };
-
-    const appendHideCursor = (chunk: Uint8Array): Uint8Array => {
-      const next = new Uint8Array(chunk.length + hideCursorBytes.length);
-      next.set(chunk);
-      next.set(hideCursorBytes, chunk.length);
-      return next;
+    const registerCursorParserHandlers = (currentTerm: Terminal): void => {
+      clearCursorParserHandlers();
+      cursorParserDisposables = [
+        currentTerm.parser.registerCsiHandler({ intermediates: " ", final: "q" }, () => {
+          if (!ensureCodexCursorStyleActive()) return false;
+          applyCodexCursorStyle(currentTerm);
+          return true;
+        }),
+        currentTerm.parser.registerCsiHandler({ prefix: "?", final: "h" }, (params) => {
+          if (!ensureCodexCursorStyleActive()) return false;
+          applyCodexCursorStyle(currentTerm);
+          if (params.includes(12)) return true;
+          if (params.includes(25)) return true;
+          return false;
+        }),
+        currentTerm.parser.registerCsiHandler({ prefix: "?", final: "l" }, (params) => {
+          if (!ensureCodexCursorStyleActive()) return false;
+          if (params.includes(25)) return true;
+          if (!params.includes(12)) return false;
+          applyCodexCursorStyle(currentTerm);
+          return true;
+        }),
+      ];
     };
 
     const settleStartupSession = (): void => {
@@ -623,6 +829,13 @@ export default memo(function XTermWrapper({
       }
 
       const approvalPatternId = scanForApproval(scanLines);
+      if (usesCodexCursorStyle) {
+        if (approvalPatternId > 0 || looksLikeCodexPromptLine(lastNonEmpty)) {
+          showCodexCursor(term);
+        } else {
+          hideCodexCursor(term);
+        }
+      }
       if (approvalPatternId > 0) {
         usePaneMetadataStore.getState().setMetadata(sessionId, {
           agentStatus: "waiting",
@@ -715,11 +928,11 @@ export default memo(function XTermWrapper({
       writeParsedDisposable = null;
       scrollDisposable?.dispose();
       scrollDisposable = null;
+      clearCursorParserHandlers();
       removeCompositionGuard?.();
       removeCompositionGuard = null;
       unlistenExit?.();
       unlistenExit = null;
-      showOutputCursor(term);
       cacheCurrentTerminal();
       if (term && liveTerms.get(sessionId) === term) {
         liveTerms.delete(sessionId);
@@ -741,9 +954,15 @@ export default memo(function XTermWrapper({
       termRef.current = cached.term;
       fitAddonRef.current = cached.fitAddon;
       searchAddonRef.current = cached.searchAddon;
-      cached.term.write("\x1b[?25h");
       registerScrollListener(cached.term);
       registerCompositionGuard(cached.term, cached.fitAddon);
+      registerCursorParserHandlers(cached.term);
+      updateCursorStyleForOutput(cached.term, getTerminalBufferLines(sessionId, 40).join("\n"));
+      if (usesCodexCursorStyle) {
+        applyCodexCursorStyle(cached.term);
+      } else {
+        applyDefaultCursorStyle(cached.term);
+      }
       attachTerminalKeyHandler(cached.term);
       registerScanListener(cached.term);
       void registerExitListener();
@@ -768,8 +987,8 @@ export default memo(function XTermWrapper({
       const initFontFamily = fontFamily ?? cfg?.fontFamily ?? "'JetBrainsMono Nerd Font Mono', 'JetBrains Mono', 'Geist Mono', 'SF Mono', 'BIZ UDGothic', 'MS Gothic', monospace";
 
       term = new Terminal({
-        cursorBlink: true,
-        cursorStyle: "block",
+        cursorBlink: !usesCodexCursorStyle,
+        cursorStyle: usesCodexCursorStyle ? "bar" : "block",
         fontSize: initFontSize,
         fontFamily: initFontFamily,
         fontWeight: 400,
@@ -805,10 +1024,16 @@ export default memo(function XTermWrapper({
       term.open(container!);
       liveTerms.set(sessionId, term);
       if (initialReplay && initialReplay.length > 0) {
-        term.write(`${initialReplay.join("\r\n")}\r\n`);
+        updateCursorStyleForOutput(term, initialReplay.join("\n"));
+      }
+      if (initialReplay && initialReplay.length > 0) {
+        term.write(`${initialReplay.join("\r\n")}\r\n`, () => {
+          if (usesCodexCursorStyle) showCodexCursor(term);
+        });
       }
       registerScrollListener(term);
       registerCompositionGuard(term, fitAddon);
+      registerCursorParserHandlers(term);
       attachTerminalKeyHandler(term);
 
       term.onSelectionChange(() => {
@@ -820,12 +1045,16 @@ export default memo(function XTermWrapper({
       });
 
       term.onData((data) => {
-        showOutputCursor(term);
+        if (ensureCodexCursorStyleActive()) {
+          showCodexCursor(term);
+        }
         chunkedWrite(sessionId, data);
       });
 
       term.onBinary((data) => {
-        showOutputCursor(term);
+        if (ensureCodexCursorStyleActive()) {
+          showCodexCursor(term);
+        }
         writeToSession(sessionId, data).catch(console.error);
       });
 
@@ -854,12 +1083,17 @@ export default memo(function XTermWrapper({
           if (termDisposed || !term) return;
           settleStartupSession();
           const chunk = new Uint8Array(rawData);
-          const hideCursor = shouldHideOutputCursorDuringBurst(
-            term,
-            outputDecoder.decode(chunk, { stream: true }),
-          );
+          const decodedText = outputDecoder.decode(chunk, { stream: true });
+          updateCursorStyleForOutput(term, decodedText);
+          const output = usesCodexCursorStyle ? `\x1b[?25l${decodedText}\x1b[?25l` : chunk;
+          if (usesCodexCursorStyle) {
+            hideCodexCursor(term);
+          }
           try {
-            term.write(hideCursor ? appendHideCursor(chunk) : chunk, () => {
+            term.write(output, () => {
+              if (ensureCodexCursorStyleActive()) {
+                applyCodexCursorStyle(term);
+              }
               if (disposed) {
                 scheduleBackgroundScan();
               }
@@ -982,7 +1216,13 @@ export default memo(function XTermWrapper({
           contain: "strict",
           background: "var(--cmux-bg, #0a0a0a)",
         }}
-      />
+      >
+        <div
+          ref={codexFixedCursorRef}
+          className="codex-fixed-cursor"
+          aria-hidden="true"
+        />
+      </div>
     </div>
   );
 });
