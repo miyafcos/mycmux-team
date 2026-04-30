@@ -15,7 +15,7 @@ import {
 import { usePaneMetadataStore, useUiStore } from "../../stores/workspaceStore";
 import { useKeybindingStore } from "../../stores/keybindingStore";
 import { useSettingsStore } from "../../stores/settingsStore";
-import { useThemeStore } from "../../stores/themeStore";
+import { DEFAULT_TERMINAL_FONT_FAMILY, useThemeStore } from "../../stores/themeStore";
 import type { ITheme } from "@xterm/xterm";
 import { markStartupSessionSettled } from "../../lib/startupSessionGate";
 
@@ -148,10 +148,7 @@ interface CachedTerm {
 const termCache = new Map<string, CachedTerm>();
 const liveTerms = new Map<string, Terminal>();
 const terminalSizeCache = new Map<string, { cols: number; rows: number }>();
-const DEFAULT_TERMINAL_FONT_FAMILY = "'JetBrainsMono Nerd Font Mono', 'JetBrains Mono', 'Geist Mono', 'SF Mono', Consolas, 'MS Gothic', monospace";
-const CODEX_TERMINAL_FONT_FAMILY = "'Cascadia Mono', 'Cascadia Code', 'JetBrains Mono', 'Geist Mono', Consolas, 'MS Gothic', monospace";
-const DEFAULT_TERMINAL_LINE_HEIGHT = 1.04;
-const CODEX_TERMINAL_LINE_HEIGHT = 1.08;
+const DEFAULT_TERMINAL_LINE_HEIGHT = 1.0;
 
 type TerminalWithRenderDimensions = Terminal & {
   _core?: {
@@ -183,19 +180,23 @@ interface MarkdownTablePreview {
 }
 
 const CODEX_FIXED_CURSOR_ENABLED = false;
+const MARKDOWN_TABLE_PREVIEW_ENABLED = false;
 
 function resolveTerminalFontFamily(base: string, isCodex: boolean, explicitFontFamily: boolean): string {
-  if (!isCodex || explicitFontFamily) return base;
-  return CODEX_TERMINAL_FONT_FAMILY;
+  void isCodex;
+  void explicitFontFamily;
+  return base;
 }
 
 function resolveTerminalFontSize(base: number, isCodex: boolean, explicitFontSize: boolean): number {
-  if (!isCodex || explicitFontSize) return base;
-  return Math.max(13, Math.min(base, 14));
+  void isCodex;
+  void explicitFontSize;
+  return base;
 }
 
 function resolveTerminalLineHeight(isCodex: boolean): number {
-  return isCodex ? CODEX_TERMINAL_LINE_HEIGHT : DEFAULT_TERMINAL_LINE_HEIGHT;
+  void isCodex;
+  return DEFAULT_TERMINAL_LINE_HEIGHT;
 }
 
 function stripTerminalControls(text: string): string {
@@ -296,10 +297,100 @@ function extractLatestMarkdownTable(text: string): MarkdownTablePreview | null {
   return latest;
 }
 
-function toCssTextAlign(alignment: MarkdownTableAlignment): "left" | "center" | "right" {
-  if (alignment === "center") return "center";
-  if (alignment === "right") return "right";
-  return "left";
+function clipMarkdownCell(value: string, maxWidth: number): string {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (normalized.length <= maxWidth) return normalized;
+  return `${normalized.slice(0, Math.max(1, maxWidth - 1))}…`;
+}
+
+function padMarkdownCell(value: string, width: number, alignment: MarkdownTableAlignment): string {
+  const left = alignment === "right"
+    ? Math.max(0, width - value.length)
+    : alignment === "center"
+      ? Math.floor(Math.max(0, width - value.length) / 2)
+      : 0;
+  const right = Math.max(0, width - value.length - left);
+  return `${" ".repeat(left)}${value}${" ".repeat(right)}`;
+}
+
+function renderMarkdownTableForTerminal(
+  header: string[],
+  alignments: MarkdownTableAlignment[],
+  rows: string[][],
+): string[] {
+  const width = header.length;
+  const clippedHeader = normalizeMarkdownTableRow(header, width).map((cell) => clipMarkdownCell(cell, 36));
+  const clippedRows = rows.map((row) => normalizeMarkdownTableRow(row, width).map((cell) => clipMarkdownCell(cell, 44)));
+  const columnWidths = clippedHeader.map((cell, index) => {
+    const rowWidth = clippedRows.reduce((max, row) => Math.max(max, row[index]?.length ?? 0), 0);
+    return Math.max(3, Math.min(44, Math.max(cell.length, rowWidth)));
+  });
+
+  const renderRow = (cells: string[]): string => {
+    return `| ${cells.map((cell, index) => padMarkdownCell(cell, columnWidths[index], alignments[index] ?? "left")).join(" | ")} |`;
+  };
+
+  const divider = `| ${columnWidths
+    .map((cellWidth, index) => {
+      const dashes = "-".repeat(cellWidth);
+      const alignment = alignments[index] ?? "default";
+      if (alignment === "center") return `:${dashes.slice(1, -1) || "-"}:`;
+      if (alignment === "right") return `${dashes.slice(0, -1) || "-"}:`;
+      if (alignment === "left") return `:${dashes.slice(1) || "-"}`;
+      return dashes;
+    })
+    .join(" | ")} |`;
+
+  return [renderRow(clippedHeader), divider, ...clippedRows.map(renderRow)];
+}
+
+function formatMarkdownTablesForTerminal(text: string): string {
+  if (!text.includes("|") || /[\x1b\x9b]/.test(text)) return text;
+
+  const newline = text.includes("\r\n") ? "\r\n" : "\n";
+  const hasTrailingNewline = /(?:\r\n|\n|\r)$/.test(text);
+  const lines = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
+  if (hasTrailingNewline) {
+    lines.pop();
+  }
+
+  let changed = false;
+  const output: string[] = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const header = splitMarkdownTableRow(lines[i]);
+    const divider = i + 1 < lines.length ? splitMarkdownTableRow(lines[i + 1]) : null;
+    if (!header || !divider || header.length !== divider.length) {
+      output.push(lines[i]);
+      continue;
+    }
+
+    const alignments = parseMarkdownTableDivider(divider);
+    if (!alignments) {
+      output.push(lines[i]);
+      continue;
+    }
+
+    const rows: string[][] = [];
+    let nextIndex = i + 2;
+    for (; nextIndex < lines.length; nextIndex++) {
+      const row = splitMarkdownTableRow(lines[nextIndex]);
+      if (!row || row.length < 2) break;
+      rows.push(normalizeMarkdownTableRow(row, header.length));
+    }
+
+    if (rows.length === 0) {
+      output.push(lines[i]);
+      continue;
+    }
+
+    output.push(...renderMarkdownTableForTerminal(header, alignments, rows));
+    i = nextIndex - 1;
+    changed = true;
+  }
+
+  if (!changed) return text;
+  return `${output.join(newline)}${hasTrailingNewline ? newline : ""}`;
 }
 
 /** Call before killSession to dispose the cached terminal */
@@ -470,11 +561,12 @@ export default memo(function XTermWrapper({
 
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
-  const [markdownTablePreview, setMarkdownTablePreview] = useState<MarkdownTablePreview | null>(null);
+  const [, setMarkdownTablePreview] = useState<MarkdownTablePreview | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   const storeTheme = useThemeStore((s) => s.theme);
   const storeFontSize = useThemeStore((s) => s.fontSize);
+  const storeFontFamily = useThemeStore((s) => s.fontFamily);
   const argsKey = args.join("\u0000");
   const launchEnvKey = launchEnv
     ? Object.entries(launchEnv)
@@ -491,13 +583,11 @@ export default memo(function XTermWrapper({
     const container = containerRef.current;
     if (!currentTerm || !container) return;
 
-    currentTerm.options.cursorStyle = "bar";
-    currentTerm.options.cursorBlink = true;
-    currentTerm.options.cursorInactiveStyle = "outline";
-    currentTerm.options.cursorWidth = 1;
     if (CODEX_FIXED_CURSOR_ENABLED) {
+      currentTerm.options.cursorStyle = "bar";
       currentTerm.options.cursorBlink = false;
       currentTerm.options.cursorInactiveStyle = "none";
+      currentTerm.options.cursorWidth = 1;
       currentTerm.options.theme = {
         ...currentTerm.options.theme,
         cursor: "rgba(0, 0, 0, 0)",
@@ -519,12 +609,13 @@ export default memo(function XTermWrapper({
     if (termRef.current) {
       termRef.current.options.theme = storeTheme.terminal;
       termRef.current.options.fontSize = storeFontSize;
+      termRef.current.options.fontFamily = storeFontFamily;
       setTimeout(() => syncResizeRef.current(true), 10);
     }
-  }, [storeTheme, storeFontSize]);
+  }, [storeTheme, storeFontSize, storeFontFamily]);
 
   const updateMarkdownTablePreview = useCallback((text: string, isCodex: boolean): void => {
-    if (!isCodex || text.length === 0) return;
+    if (!MARKDOWN_TABLE_PREVIEW_ENABLED || !isCodex || text.length === 0) return;
     markdownPreviewTextRef.current = `${markdownPreviewTextRef.current}${text}`.slice(-32000);
     const nextPreview = extractLatestMarkdownTable(markdownPreviewTextRef.current);
     if (!nextPreview) return;
@@ -533,13 +624,6 @@ export default memo(function XTermWrapper({
     if (nextPreview.id === dismissedMarkdownPreviewIdRef.current) return;
     setMarkdownTablePreview(nextPreview);
   }, []);
-
-  const closeMarkdownTablePreview = useCallback((): void => {
-    if (markdownTablePreview) {
-      dismissedMarkdownPreviewIdRef.current = markdownTablePreview.id;
-    }
-    setMarkdownTablePreview(null);
-  }, [markdownTablePreview]);
 
   // Scroll to bottom when this tab becomes active only if the user was already at bottom.
   useEffect(() => {
@@ -697,17 +781,14 @@ export default memo(function XTermWrapper({
     const applyCodexCursorStyle = (currentTerm: Terminal | null = term): void => {
       if (!currentTerm || termDisposed) return;
       codexCursorStyleActiveRef.current = true;
-      currentTerm.options.cursorStyle = "bar";
-      currentTerm.options.cursorBlink = true;
-      currentTerm.options.cursorInactiveStyle = "outline";
-      currentTerm.options.cursorWidth = 1;
-      currentTerm.options.fontSize = resolveTerminalFontSize(currentTerm.options.fontSize ?? 14, true, fontSize !== undefined);
-      currentTerm.options.fontFamily = resolveTerminalFontFamily(currentTerm.options.fontFamily ?? DEFAULT_TERMINAL_FONT_FAMILY, true, fontFamily !== undefined);
-      currentTerm.options.lineHeight = resolveTerminalLineHeight(true);
       if (!CODEX_FIXED_CURSOR_ENABLED) {
         container.classList.remove("xterm-codex-cursor", "codex-fixed-cursor-visible");
         return;
       }
+      currentTerm.options.cursorStyle = "bar";
+      currentTerm.options.cursorBlink = false;
+      currentTerm.options.cursorInactiveStyle = "none";
+      currentTerm.options.cursorWidth = 1;
       currentTerm.options.theme = {
         ...currentTerm.options.theme,
         cursor: "rgba(0, 0, 0, 0)",
@@ -725,8 +806,11 @@ export default memo(function XTermWrapper({
 
     const hideCodexCursor = (currentTerm: Terminal | null = term): void => {
       if (!currentTerm || termDisposed) return;
+      if (!CODEX_FIXED_CURSOR_ENABLED) {
+        container.classList.remove("xterm-codex-cursor", "codex-fixed-cursor-visible");
+        return;
+      }
       applyCodexCursorStyle(currentTerm);
-      if (!CODEX_FIXED_CURSOR_ENABLED) return;
       container.classList.remove("codex-fixed-cursor-visible");
       if (codexCursorSuppressed) return;
       codexCursorSuppressed = true;
@@ -735,8 +819,11 @@ export default memo(function XTermWrapper({
 
     const showCodexCursor = (currentTerm: Terminal | null = term): void => {
       if (!currentTerm || termDisposed) return;
+      if (!CODEX_FIXED_CURSOR_ENABLED) {
+        container.classList.remove("xterm-codex-cursor", "codex-fixed-cursor-visible");
+        return;
+      }
       applyCodexCursorStyle(currentTerm);
-      if (!CODEX_FIXED_CURSOR_ENABLED) return;
       if (!getCodexPromptCursorPosition(currentTerm)) {
         container.classList.remove("codex-fixed-cursor-visible");
         return;
@@ -770,11 +857,13 @@ export default memo(function XTermWrapper({
       clearCursorParserHandlers();
       cursorParserDisposables = [
         currentTerm.parser.registerCsiHandler({ intermediates: " ", final: "q" }, () => {
+          if (!CODEX_FIXED_CURSOR_ENABLED) return false;
           if (!ensureCodexCursorStyleActive()) return false;
           applyCodexCursorStyle(currentTerm);
           return true;
         }),
         currentTerm.parser.registerCsiHandler({ prefix: "?", final: "h" }, (params) => {
+          if (!CODEX_FIXED_CURSOR_ENABLED) return false;
           if (!ensureCodexCursorStyleActive()) return false;
           applyCodexCursorStyle(currentTerm);
           if (params.includes(12)) return true;
@@ -782,6 +871,7 @@ export default memo(function XTermWrapper({
           return false;
         }),
         currentTerm.parser.registerCsiHandler({ prefix: "?", final: "l" }, (params) => {
+          if (!CODEX_FIXED_CURSOR_ENABLED) return false;
           if (!ensureCodexCursorStyleActive()) return false;
           if (params.includes(25)) return true;
           if (!params.includes(12)) return false;
@@ -864,11 +954,13 @@ export default memo(function XTermWrapper({
 
     const scheduleResizeBurst = (currentTerm: Terminal, currentFitAddon: FitAddon): void => {
       clearResizeTimer();
+      if (usesCodexCursorStyle) {
+        scheduleResize(currentTerm, currentFitAddon, 90);
+        return;
+      }
       scheduleResize(currentTerm, currentFitAddon, 30);
       scheduleResize(currentTerm, currentFitAddon, 90);
       scheduleResize(currentTerm, currentFitAddon, 180);
-      scheduleResize(currentTerm, currentFitAddon, 320, true);
-      scheduleResize(currentTerm, currentFitAddon, 560, true);
     };
 
     const registerResizeObserver = (currentTerm: Terminal, currentFitAddon: FitAddon): void => {
@@ -1126,6 +1218,9 @@ export default memo(function XTermWrapper({
       termRef.current = cached.term;
       fitAddonRef.current = cached.fitAddon;
       searchAddonRef.current = cached.searchAddon;
+      cached.term.options.theme = storeTheme.terminal;
+      cached.term.options.fontSize = storeFontSize;
+      cached.term.options.fontFamily = storeFontFamily;
       registerScrollListener(cached.term);
       registerCompositionGuard(cached.term, cached.fitAddon);
       registerCursorParserHandlers(cached.term);
@@ -1157,14 +1252,14 @@ export default memo(function XTermWrapper({
       if (disposed) return;
       const cfg = cachedConfig;
       const initTheme = theme ?? storeTheme.terminal;
-      const baseFontSize = fontSize ?? cfg?.fontSize ?? 14;
-      const baseFontFamily = fontFamily ?? cfg?.fontFamily ?? DEFAULT_TERMINAL_FONT_FAMILY;
+      const baseFontSize = fontSize ?? storeFontSize ?? cfg?.fontSize ?? 14;
+      const baseFontFamily = fontFamily ?? storeFontFamily ?? cfg?.fontFamily ?? DEFAULT_TERMINAL_FONT_FAMILY;
       const initFontSize = resolveTerminalFontSize(baseFontSize, usesCodexCursorStyle, fontSize !== undefined);
       const initFontFamily = resolveTerminalFontFamily(baseFontFamily, usesCodexCursorStyle, fontFamily !== undefined);
 
       term = new Terminal({
-        cursorBlink: !usesCodexCursorStyle,
-        cursorStyle: usesCodexCursorStyle ? "bar" : "block",
+        cursorBlink: !(usesCodexCursorStyle && CODEX_FIXED_CURSOR_ENABLED),
+        cursorStyle: usesCodexCursorStyle && CODEX_FIXED_CURSOR_ENABLED ? "bar" : "block",
         fontSize: initFontSize,
         fontFamily: initFontFamily,
         fontWeight: 400,
@@ -1200,12 +1295,12 @@ export default memo(function XTermWrapper({
       term.open(container!);
       liveTerms.set(sessionId, term);
       if (initialReplay && initialReplay.length > 0) {
-        const replayText = initialReplay.join("\n");
+        const replayText = formatMarkdownTablesForTerminal(initialReplay.join("\n"));
         updateCursorStyleForOutput(term, replayText);
         updateMarkdownTablePreview(replayText, usesCodexCursorStyle);
       }
       if (initialReplay && initialReplay.length > 0) {
-        term.write(`${initialReplay.join("\r\n")}\r\n`, () => {
+        term.write(`${formatMarkdownTablesForTerminal(initialReplay.join("\r\n"))}\r\n`, () => {
           if (usesCodexCursorStyle) showCodexCursor(term);
         });
       }
@@ -1262,11 +1357,14 @@ export default memo(function XTermWrapper({
           settleStartupSession();
           const chunk = new Uint8Array(rawData);
           const decodedText = outputDecoder.decode(chunk, { stream: true });
+          const displayText = usesCodexCursorStyle ? formatMarkdownTablesForTerminal(decodedText) : decodedText;
           updateCursorStyleForOutput(term, decodedText);
-          updateMarkdownTablePreview(decodedText, usesCodexCursorStyle);
+          updateMarkdownTablePreview(displayText, usesCodexCursorStyle);
           const output = usesCodexCursorStyle && CODEX_FIXED_CURSOR_ENABLED
-            ? `\x1b[?25l${decodedText}\x1b[?25l`
-            : chunk;
+            ? `\x1b[?25l${displayText}\x1b[?25l`
+            : usesCodexCursorStyle
+              ? displayText
+              : chunk;
           if (usesCodexCursorStyle) {
             hideCodexCursor(term);
           }
@@ -1298,8 +1396,8 @@ export default memo(function XTermWrapper({
       if (!cfg && !fontSize && !fontFamily) {
         ensureConfigLoaded().then(() => {
           if (disposed || termDisposed || !term || !cachedConfig) return;
-          term.options.fontSize = resolveTerminalFontSize(cachedConfig.fontSize, usesCodexCursorStyle, fontSize !== undefined);
-          term.options.fontFamily = resolveTerminalFontFamily(cachedConfig.fontFamily, usesCodexCursorStyle, fontFamily !== undefined);
+          term.options.fontSize = resolveTerminalFontSize(fontSize ?? storeFontSize ?? cachedConfig.fontSize, usesCodexCursorStyle, fontSize !== undefined);
+          term.options.fontFamily = resolveTerminalFontFamily(fontFamily ?? storeFontFamily ?? cachedConfig.fontFamily, usesCodexCursorStyle, fontFamily !== undefined);
           term.options.lineHeight = resolveTerminalLineHeight(usesCodexCursorStyle);
           if (fitAddon) {
             fitAndSyncResize(term, fitAddon, true);
@@ -1386,51 +1484,6 @@ export default memo(function XTermWrapper({
           <button onClick={() => searchAddonRef.current?.findPrevious(searchQuery)} style={searchBtnStyle}>↑</button>
           <button onClick={() => searchAddonRef.current?.findNext(searchQuery)} style={searchBtnStyle}>↓</button>
           <button onClick={closeSearch} style={searchBtnStyle}>✕</button>
-        </div>
-      )}
-      {markdownTablePreview && (
-        <div className="markdown-table-preview">
-          <div className="markdown-table-preview__toolbar">
-            <button
-              type="button"
-              className="markdown-table-preview__close"
-              onClick={closeMarkdownTablePreview}
-              title="Close"
-              aria-label="Close table preview"
-            >
-              ×
-            </button>
-          </div>
-          <div className="markdown-table-preview__scroll">
-            <table className="markdown-table-preview__table">
-              <thead>
-                <tr>
-                  {markdownTablePreview.header.map((cell, index) => (
-                    <th
-                      key={`h-${index}`}
-                      style={{ textAlign: toCssTextAlign(markdownTablePreview.alignments[index] ?? "default") }}
-                    >
-                      {cell}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {markdownTablePreview.rows.map((row, rowIndex) => (
-                  <tr key={`r-${rowIndex}`}>
-                    {markdownTablePreview.header.map((_, colIndex) => (
-                      <td
-                        key={`c-${rowIndex}-${colIndex}`}
-                        style={{ textAlign: toCssTextAlign(markdownTablePreview.alignments[colIndex] ?? "default") }}
-                      >
-                        {row[colIndex] ?? ""}
-                      </td>
-                    ))}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
         </div>
       )}
       <div

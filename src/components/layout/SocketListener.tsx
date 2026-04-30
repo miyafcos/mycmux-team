@@ -383,6 +383,7 @@ export function useWorkspacePersist() {
           useThemeStore.getState().hydrateSettings({
             themeId: data.settings.theme_id,
             fontSize: data.settings.font_size,
+            fontFamily: data.settings.font_family,
           });
           useKeybindingStore.getState().hydrateOverrides(data.settings.keybindings ?? {});
 
@@ -505,6 +506,7 @@ export function useWorkspacePersist() {
         settings: {
           theme_id: themeState.themeId,
           font_size: themeState.fontSize,
+          font_family: themeState.fontFamily,
           keybindings: keybindingState.overrides,
         },
         active_workspace_id: activeWorkspaceId,
