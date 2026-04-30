@@ -59,8 +59,6 @@ export const TerminalGrid = memo(function TerminalGrid({
     nextId: 0,
     entries: [],
   });
-  const colResizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const rowResizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Column-first layout: outer = horizontal columns, inner = vertical rows within each column
   if (splitColumns) {
@@ -96,12 +94,9 @@ export const TerminalGrid = memo(function TerminalGrid({
       <Allotment
         separator={false}
         defaultSizes={columnWidths}
-        onChange={(sizes) => {
-          if (colResizeTimerRef.current) clearTimeout(colResizeTimerRef.current);
-          colResizeTimerRef.current = setTimeout(() => {
-            const currentWorkspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
-            setWorkspaceLayoutMetrics(workspaceId, sizes, currentWorkspace?.rowHeightsPerCol);
-          }, 200);
+        onDragEnd={(sizes) => {
+          const currentWorkspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
+          setWorkspaceLayoutMetrics(workspaceId, sizes, currentWorkspace?.rowHeightsPerCol);
         }}
       >
         {keyedCols.map(({ col, key }, colIdx) => (
@@ -111,19 +106,16 @@ export const TerminalGrid = memo(function TerminalGrid({
               key={`rows-${key}`}
               separator={false}
               defaultSizes={rowHeightsPerCol?.[colIdx]?.length === col.length ? rowHeightsPerCol[colIdx] : undefined}
-              onChange={(sizes) => {
-                if (rowResizeTimerRef.current) clearTimeout(rowResizeTimerRef.current);
-                rowResizeTimerRef.current = setTimeout(() => {
-                  const currentWorkspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
-                  const currentRowHeights = currentWorkspace?.rowHeightsPerCol;
-                  const nextRowHeights = cols.map((currentCol, currentColIdx) => {
-                    if (currentColIdx === colIdx) return sizes;
-                    return currentRowHeights?.[currentColIdx]?.length === currentCol.length
-                      ? currentRowHeights[currentColIdx]
-                      : [];
-                  });
-                  setWorkspaceLayoutMetrics(workspaceId, currentWorkspace?.columnWidths, nextRowHeights);
-                }, 200);
+              onDragEnd={(sizes) => {
+                const currentWorkspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
+                const currentRowHeights = currentWorkspace?.rowHeightsPerCol;
+                const nextRowHeights = cols.map((currentCol, currentColIdx) => {
+                  if (currentColIdx === colIdx) return sizes;
+                  return currentRowHeights?.[currentColIdx]?.length === currentCol.length
+                    ? currentRowHeights[currentColIdx]
+                    : [];
+                });
+                setWorkspaceLayoutMetrics(workspaceId, currentWorkspace?.columnWidths, nextRowHeights);
               }}
             >
               {col.map((paneId) => {

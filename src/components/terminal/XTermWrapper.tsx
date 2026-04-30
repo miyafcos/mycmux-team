@@ -169,6 +169,8 @@ interface CodexCursorPosition {
   y: number;
 }
 
+const CODEX_FIXED_CURSOR_ENABLED = false;
+
 /** Call before killSession to dispose the cached terminal */
 export function evictTerminalCache(sessionId: string): void {
   const cached = termCache.get(sessionId);
@@ -355,15 +357,21 @@ export default memo(function XTermWrapper({
     if (!currentTerm || !container) return;
 
     currentTerm.options.cursorStyle = "bar";
-    currentTerm.options.cursorBlink = false;
-    currentTerm.options.cursorInactiveStyle = "none";
+    currentTerm.options.cursorBlink = true;
+    currentTerm.options.cursorInactiveStyle = "outline";
     currentTerm.options.cursorWidth = 1;
-    currentTerm.options.theme = {
-      ...currentTerm.options.theme,
-      cursor: "rgba(0, 0, 0, 0)",
-      cursorAccent: "rgba(0, 0, 0, 0)",
-    };
-    container.classList.add("xterm-codex-cursor");
+    if (CODEX_FIXED_CURSOR_ENABLED) {
+      currentTerm.options.cursorBlink = false;
+      currentTerm.options.cursorInactiveStyle = "none";
+      currentTerm.options.theme = {
+        ...currentTerm.options.theme,
+        cursor: "rgba(0, 0, 0, 0)",
+        cursorAccent: "rgba(0, 0, 0, 0)",
+      };
+      container.classList.add("xterm-codex-cursor");
+    } else {
+      container.classList.remove("xterm-codex-cursor");
+    }
     container.classList.remove("codex-fixed-cursor-visible");
   }, [sessionId, command, argsKey, agentId, agentKind, launchEnvKey]);
 
@@ -537,9 +545,13 @@ export default memo(function XTermWrapper({
       if (!currentTerm || termDisposed) return;
       codexCursorStyleActiveRef.current = true;
       currentTerm.options.cursorStyle = "bar";
-      currentTerm.options.cursorBlink = false;
-      currentTerm.options.cursorInactiveStyle = "none";
+      currentTerm.options.cursorBlink = true;
+      currentTerm.options.cursorInactiveStyle = "outline";
       currentTerm.options.cursorWidth = 1;
+      if (!CODEX_FIXED_CURSOR_ENABLED) {
+        container.classList.remove("xterm-codex-cursor", "codex-fixed-cursor-visible");
+        return;
+      }
       currentTerm.options.theme = {
         ...currentTerm.options.theme,
         cursor: "rgba(0, 0, 0, 0)",
@@ -558,6 +570,7 @@ export default memo(function XTermWrapper({
     const hideCodexCursor = (currentTerm: Terminal | null = term): void => {
       if (!currentTerm || termDisposed) return;
       applyCodexCursorStyle(currentTerm);
+      if (!CODEX_FIXED_CURSOR_ENABLED) return;
       container.classList.remove("codex-fixed-cursor-visible");
       if (codexCursorSuppressed) return;
       codexCursorSuppressed = true;
@@ -567,6 +580,7 @@ export default memo(function XTermWrapper({
     const showCodexCursor = (currentTerm: Terminal | null = term): void => {
       if (!currentTerm || termDisposed) return;
       applyCodexCursorStyle(currentTerm);
+      if (!CODEX_FIXED_CURSOR_ENABLED) return;
       if (!getCodexPromptCursorPosition(currentTerm)) {
         container.classList.remove("codex-fixed-cursor-visible");
         return;
@@ -1085,7 +1099,9 @@ export default memo(function XTermWrapper({
           const chunk = new Uint8Array(rawData);
           const decodedText = outputDecoder.decode(chunk, { stream: true });
           updateCursorStyleForOutput(term, decodedText);
-          const output = usesCodexCursorStyle ? `\x1b[?25l${decodedText}\x1b[?25l` : chunk;
+          const output = usesCodexCursorStyle && CODEX_FIXED_CURSOR_ENABLED
+            ? `\x1b[?25l${decodedText}\x1b[?25l`
+            : chunk;
           if (usesCodexCursorStyle) {
             hideCodexCursor(term);
           }
@@ -1217,11 +1233,13 @@ export default memo(function XTermWrapper({
           background: "var(--cmux-bg, #0a0a0a)",
         }}
       >
-        <div
-          ref={codexFixedCursorRef}
-          className="codex-fixed-cursor"
-          aria-hidden="true"
-        />
+        {CODEX_FIXED_CURSOR_ENABLED && (
+          <div
+            ref={codexFixedCursorRef}
+            className="codex-fixed-cursor"
+            aria-hidden="true"
+          />
+        )}
       </div>
     </div>
   );
