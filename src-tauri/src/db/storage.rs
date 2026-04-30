@@ -80,9 +80,15 @@ fn default_schema_version() -> u32 {
     1
 }
 
+fn default_font_family() -> String {
+    "'JetBrainsMono Nerd Font Mono', 'JetBrains Mono', 'Geist Mono', 'SF Mono', 'BIZ UDGothic', 'MS Gothic', monospace".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
     pub font_size: u16,
+    #[serde(default = "default_font_family")]
+    pub font_family: String,
     pub theme_id: String,
     #[serde(default)]
     pub keybindings: HashMap<String, String>,
@@ -101,6 +107,7 @@ impl Default for AppSettings {
     fn default() -> Self {
         Self {
             font_size: 14,
+            font_family: default_font_family(),
             theme_id: "yoru-cafe".to_string(),
             keybindings: HashMap::new(),
             dirty_save_mode: true,

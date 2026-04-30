@@ -206,6 +206,7 @@ export interface WorkspaceConfig {
 
 export interface AppSettings {
   font_size: number;
+  font_family: string;
   theme_id: string;
   keybindings?: Record<string, string>;
 }
