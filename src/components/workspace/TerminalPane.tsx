@@ -12,7 +12,7 @@ import { useWorkspaceListStore } from "../../stores/workspaceListStore";
 import { getAgent, getDefaultAgent } from "../../lib/agents";
 import { killSession } from "../../lib/ipc";
 import { evictTerminalCache } from "../terminal/XTermWrapper";
-import { usePaneDragStore } from "../../stores/paneDragStore";
+import { usePaneDragStore, type PaneDragItem, type PaneDropTarget } from "../../stores/paneDragStore";
 
 interface TerminalPaneProps {
   pane: Pane;
@@ -80,6 +80,24 @@ function buildLaunchArgs(
       return ["--resume", savedSession.sessionId];
   }
   return args;
+}
+
+function getDropPreviewLabel(item: PaneDragItem, target: PaneDropTarget): string {
+  if (target.kind === "new-workspace") {
+    return item.kind === "tab" ? "Move tab to new workspace" : "Move pane to new workspace";
+  }
+  if (target.zone === "center") {
+    return item.kind === "tab" ? "Attach tab here" : "Merge panes";
+  }
+  const direction = {
+    left: "left",
+    right: "right",
+    up: "above",
+    down: "below",
+  }[target.zone];
+  return item.kind === "tab"
+    ? `Split tab ${direction}`
+    : `Split pane ${direction}`;
 }
 
 export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitRight, onSplitDown }: TerminalPaneProps) {
@@ -198,6 +216,9 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
         `pane-drop-preview--source-${dragItem.kind}`,
       ].join(" ")
     : null;
+  const dropPreviewLabel = dropTarget && dragItem
+    ? getDropPreviewLabel(dragItem, dropTarget)
+    : null;
 
   return (
     <div
@@ -287,7 +308,11 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
         ) : null}
       </div>
       {dropPreviewClass && (
-        <div className={dropPreviewClass} />
+        <div className={dropPreviewClass}>
+          {dropPreviewLabel && (
+            <span className="pane-drop-preview__label">{dropPreviewLabel}</span>
+          )}
+        </div>
       )}
     </div>
   );
