@@ -9,12 +9,12 @@ import { useUiStore } from "../stores/uiStore";
 import { useWorkspaceLayoutStore } from "../stores/workspaceLayoutStore";
 import { useWorkspaceListStore } from "../stores/workspaceListStore";
 
-const DRAG_THRESHOLD_PX = 5;
+const DRAG_THRESHOLD_PX = 9;
 const WORKSPACE_HOVER_DELAY_MS = 350;
 
 function getDropZone(rect: DOMRect, x: number, y: number): PaneDropZone {
-  const horizontalBand = Math.min(88, Math.max(32, rect.width * 0.22));
-  const verticalBand = Math.min(76, Math.max(28, rect.height * 0.22));
+  const horizontalBand = Math.min(72, Math.max(24, rect.width * 0.16));
+  const verticalBand = Math.min(60, Math.max(22, rect.height * 0.16));
   const distances = [
     { zone: "left" as const, value: x - rect.left, limit: horizontalBand },
     { zone: "right" as const, value: rect.right - x, limit: horizontalBand },
