@@ -148,6 +148,10 @@ interface CachedTerm {
 const termCache = new Map<string, CachedTerm>();
 const liveTerms = new Map<string, Terminal>();
 const terminalSizeCache = new Map<string, { cols: number; rows: number }>();
+const DEFAULT_TERMINAL_FONT_FAMILY = "'JetBrainsMono Nerd Font Mono', 'JetBrains Mono', 'Geist Mono', 'SF Mono', Consolas, 'MS Gothic', monospace";
+const CODEX_TERMINAL_FONT_FAMILY = "'Cascadia Mono', 'Cascadia Code', 'JetBrains Mono', 'Geist Mono', Consolas, 'MS Gothic', monospace";
+const DEFAULT_TERMINAL_LINE_HEIGHT = 1.04;
+const CODEX_TERMINAL_LINE_HEIGHT = 1.08;
 
 type TerminalWithRenderDimensions = Terminal & {
   _core?: {
@@ -170,6 +174,20 @@ interface CodexCursorPosition {
 }
 
 const CODEX_FIXED_CURSOR_ENABLED = false;
+
+function resolveTerminalFontFamily(base: string, isCodex: boolean, explicitFontFamily: boolean): string {
+  if (!isCodex || explicitFontFamily) return base;
+  return CODEX_TERMINAL_FONT_FAMILY;
+}
+
+function resolveTerminalFontSize(base: number, isCodex: boolean, explicitFontSize: boolean): number {
+  if (!isCodex || explicitFontSize) return base;
+  return Math.max(13, Math.min(base, 14));
+}
+
+function resolveTerminalLineHeight(isCodex: boolean): number {
+  return isCodex ? CODEX_TERMINAL_LINE_HEIGHT : DEFAULT_TERMINAL_LINE_HEIGHT;
+}
 
 /** Call before killSession to dispose the cached terminal */
 export function evictTerminalCache(sessionId: string): void {
@@ -548,6 +566,9 @@ export default memo(function XTermWrapper({
       currentTerm.options.cursorBlink = true;
       currentTerm.options.cursorInactiveStyle = "outline";
       currentTerm.options.cursorWidth = 1;
+      currentTerm.options.fontSize = resolveTerminalFontSize(currentTerm.options.fontSize ?? 14, true, fontSize !== undefined);
+      currentTerm.options.fontFamily = resolveTerminalFontFamily(currentTerm.options.fontFamily ?? DEFAULT_TERMINAL_FONT_FAMILY, true, fontFamily !== undefined);
+      currentTerm.options.lineHeight = resolveTerminalLineHeight(true);
       if (!CODEX_FIXED_CURSOR_ENABLED) {
         container.classList.remove("xterm-codex-cursor", "codex-fixed-cursor-visible");
         return;
@@ -711,6 +732,8 @@ export default memo(function XTermWrapper({
       scheduleResize(currentTerm, currentFitAddon, 30);
       scheduleResize(currentTerm, currentFitAddon, 90);
       scheduleResize(currentTerm, currentFitAddon, 180);
+      scheduleResize(currentTerm, currentFitAddon, 320, true);
+      scheduleResize(currentTerm, currentFitAddon, 560, true);
     };
 
     const registerResizeObserver = (currentTerm: Terminal, currentFitAddon: FitAddon): void => {
@@ -997,8 +1020,10 @@ export default memo(function XTermWrapper({
       if (disposed) return;
       const cfg = cachedConfig;
       const initTheme = theme ?? storeTheme.terminal;
-      const initFontSize = fontSize ?? cfg?.fontSize ?? 14;
-      const initFontFamily = fontFamily ?? cfg?.fontFamily ?? "'JetBrainsMono Nerd Font Mono', 'JetBrains Mono', 'Geist Mono', 'SF Mono', 'BIZ UDGothic', 'MS Gothic', monospace";
+      const baseFontSize = fontSize ?? cfg?.fontSize ?? 14;
+      const baseFontFamily = fontFamily ?? cfg?.fontFamily ?? DEFAULT_TERMINAL_FONT_FAMILY;
+      const initFontSize = resolveTerminalFontSize(baseFontSize, usesCodexCursorStyle, fontSize !== undefined);
+      const initFontFamily = resolveTerminalFontFamily(baseFontFamily, usesCodexCursorStyle, fontFamily !== undefined);
 
       term = new Terminal({
         cursorBlink: !usesCodexCursorStyle,
@@ -1008,7 +1033,7 @@ export default memo(function XTermWrapper({
         fontWeight: 400,
         fontWeightBold: 600,
         letterSpacing: 0,
-        lineHeight: 1.0,
+        lineHeight: resolveTerminalLineHeight(usesCodexCursorStyle),
         rescaleOverlappingGlyphs: true,
         customGlyphs: true,
         theme: initTheme,
@@ -1133,8 +1158,9 @@ export default memo(function XTermWrapper({
       if (!cfg && !fontSize && !fontFamily) {
         ensureConfigLoaded().then(() => {
           if (disposed || termDisposed || !term || !cachedConfig) return;
-          term.options.fontSize = cachedConfig.fontSize;
-          term.options.fontFamily = cachedConfig.fontFamily;
+          term.options.fontSize = resolveTerminalFontSize(cachedConfig.fontSize, usesCodexCursorStyle, fontSize !== undefined);
+          term.options.fontFamily = resolveTerminalFontFamily(cachedConfig.fontFamily, usesCodexCursorStyle, fontFamily !== undefined);
+          term.options.lineHeight = resolveTerminalLineHeight(usesCodexCursorStyle);
           if (fitAddon) {
             fitAndSyncResize(term, fitAddon, true);
           }
