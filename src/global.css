@@ -89,6 +89,87 @@ div:hover>.tab-close-btn {
   background: transparent !important;
 }
 
+.markdown-table-preview {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 12px;
+  z-index: 46;
+  max-height: min(42%, 360px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--cmux-bg, #0a0a0a) 94%, var(--cmux-text, #ededed));
+  border: 1px solid color-mix(in srgb, var(--cmux-border, rgba(255,255,255,0.1)) 78%, var(--cmux-text, #ededed));
+  box-shadow: 0 16px 42px rgba(0, 0, 0, 0.42);
+  color: var(--cmux-text, #ededed);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Yu Gothic UI", sans-serif;
+}
+
+.markdown-table-preview__toolbar {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  min-height: 26px;
+  padding: 3px 6px;
+  border-bottom: 1px solid var(--cmux-border, rgba(255,255,255,0.1));
+}
+
+.markdown-table-preview__close {
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--cmux-text-secondary, rgba(255,255,255,0.6));
+  cursor: pointer;
+  font-size: 17px;
+  line-height: 20px;
+}
+
+.markdown-table-preview__close:hover {
+  background: var(--cmux-hover, rgba(255,255,255,0.06));
+  color: var(--cmux-text, #ededed);
+}
+
+.markdown-table-preview__scroll {
+  overflow: auto;
+  padding: 0 10px 10px;
+}
+
+.markdown-table-preview__table {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.markdown-table-preview__table th,
+.markdown-table-preview__table td {
+  max-width: 420px;
+  padding: 7px 10px;
+  border-right: 1px solid var(--cmux-border, rgba(255,255,255,0.1));
+  border-bottom: 1px solid var(--cmux-border, rgba(255,255,255,0.1));
+  vertical-align: top;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.markdown-table-preview__table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: color-mix(in srgb, var(--cmux-surface, #161616) 88%, var(--cmux-text, #ededed));
+  color: var(--cmux-text, #ededed);
+  font-weight: 650;
+}
+
+.markdown-table-preview__table td {
+  color: var(--cmux-text-secondary, rgba(255,255,255,0.72));
+}
+
 /* Pane action buttons */
 .pane-action-btn {
   background: none;

@@ -173,6 +173,15 @@ interface CodexCursorPosition {
   y: number;
 }
 
+type MarkdownTableAlignment = "left" | "center" | "right" | "default";
+
+interface MarkdownTablePreview {
+  id: string;
+  header: string[];
+  alignments: MarkdownTableAlignment[];
+  rows: string[][];
+}
+
 const CODEX_FIXED_CURSOR_ENABLED = false;
 
 function resolveTerminalFontFamily(base: string, isCodex: boolean, explicitFontFamily: boolean): string {
@@ -187,6 +196,110 @@ function resolveTerminalFontSize(base: number, isCodex: boolean, explicitFontSiz
 
 function resolveTerminalLineHeight(isCodex: boolean): number {
   return isCodex ? CODEX_TERMINAL_LINE_HEIGHT : DEFAULT_TERMINAL_LINE_HEIGHT;
+}
+
+function stripTerminalControls(text: string): string {
+  return text
+    .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, "")
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .replace(/[\x00-\x08\x0b-\x0c\x0e-\x1f\x7f]/g, "");
+}
+
+function splitMarkdownTableRow(line: string): string[] | null {
+  const trimmed = line.trim();
+  if (!trimmed.includes("|")) return null;
+  let body = trimmed;
+  if (body.startsWith("|")) body = body.slice(1);
+  if (body.endsWith("|")) body = body.slice(0, -1);
+
+  const cells: string[] = [];
+  let cell = "";
+  let escaped = false;
+  for (const char of body) {
+    if (escaped) {
+      cell += char;
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (char === "|") {
+      cells.push(cell.trim());
+      cell = "";
+      continue;
+    }
+    cell += char;
+  }
+  cells.push(cell.trim());
+  return cells.length >= 2 ? cells : null;
+}
+
+function parseMarkdownTableDivider(cells: string[]): MarkdownTableAlignment[] | null {
+  const alignments: MarkdownTableAlignment[] = [];
+  for (const cell of cells) {
+    const value = cell.trim();
+    if (!/^:?-{3,}:?$/.test(value)) return null;
+    if (value.startsWith(":") && value.endsWith(":")) {
+      alignments.push("center");
+    } else if (value.endsWith(":")) {
+      alignments.push("right");
+    } else if (value.startsWith(":")) {
+      alignments.push("left");
+    } else {
+      alignments.push("default");
+    }
+  }
+  return alignments;
+}
+
+function normalizeMarkdownTableRow(cells: string[], width: number): string[] {
+  return Array.from({ length: width }, (_, index) => cells[index]?.trim() ?? "");
+}
+
+function extractLatestMarkdownTable(text: string): MarkdownTablePreview | null {
+  const lines = stripTerminalControls(text)
+    .split("\n")
+    .map((line) => line.trimEnd());
+  let latest: MarkdownTablePreview | null = null;
+
+  for (let i = 0; i < lines.length - 1; i++) {
+    const header = splitMarkdownTableRow(lines[i]);
+    const divider = splitMarkdownTableRow(lines[i + 1]);
+    if (!header || !divider || header.length !== divider.length) continue;
+
+    const alignments = parseMarkdownTableDivider(divider);
+    if (!alignments) continue;
+
+    const rows: string[][] = [];
+    for (let rowIndex = i + 2; rowIndex < lines.length; rowIndex++) {
+      const row = splitMarkdownTableRow(lines[rowIndex]);
+      if (!row || row.length < 2) break;
+      rows.push(normalizeMarkdownTableRow(row, header.length));
+    }
+    if (rows.length === 0) continue;
+
+    const normalizedHeader = normalizeMarkdownTableRow(header, header.length);
+    const idSource = [normalizedHeader.join("|"), ...rows.map((row) => row.join("|"))].join("\n");
+    latest = {
+      id: `${idSource.length}:${idSource.slice(-240)}`,
+      header: normalizedHeader,
+      alignments,
+      rows,
+    };
+    i += rows.length + 1;
+  }
+
+  return latest;
+}
+
+function toCssTextAlign(alignment: MarkdownTableAlignment): "left" | "center" | "right" {
+  if (alignment === "center") return "center";
+  if (alignment === "right") return "right";
+  return "left";
 }
 
 /** Call before killSession to dispose the cached terminal */
@@ -351,9 +464,13 @@ export default memo(function XTermWrapper({
   const fitAddonRef = useRef<FitAddon | null>(null);
   const isAtBottomRef = useRef(true);
   const syncResizeRef = useRef<(force?: boolean) => void>(() => {});
+  const markdownPreviewTextRef = useRef("");
+  const markdownPreviewIdRef = useRef<string | null>(null);
+  const dismissedMarkdownPreviewIdRef = useRef<string | null>(null);
 
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const [markdownTablePreview, setMarkdownTablePreview] = useState<MarkdownTablePreview | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   const storeTheme = useThemeStore((s) => s.theme);
@@ -405,6 +522,24 @@ export default memo(function XTermWrapper({
       setTimeout(() => syncResizeRef.current(true), 10);
     }
   }, [storeTheme, storeFontSize]);
+
+  const updateMarkdownTablePreview = useCallback((text: string, isCodex: boolean): void => {
+    if (!isCodex || text.length === 0) return;
+    markdownPreviewTextRef.current = `${markdownPreviewTextRef.current}${text}`.slice(-32000);
+    const nextPreview = extractLatestMarkdownTable(markdownPreviewTextRef.current);
+    if (!nextPreview) return;
+    if (nextPreview.id === markdownPreviewIdRef.current) return;
+    markdownPreviewIdRef.current = nextPreview.id;
+    if (nextPreview.id === dismissedMarkdownPreviewIdRef.current) return;
+    setMarkdownTablePreview(nextPreview);
+  }, []);
+
+  const closeMarkdownTablePreview = useCallback((): void => {
+    if (markdownTablePreview) {
+      dismissedMarkdownPreviewIdRef.current = markdownTablePreview.id;
+    }
+    setMarkdownTablePreview(null);
+  }, [markdownTablePreview]);
 
   // Scroll to bottom when this tab becomes active only if the user was already at bottom.
   useEffect(() => {
@@ -994,7 +1129,9 @@ export default memo(function XTermWrapper({
       registerScrollListener(cached.term);
       registerCompositionGuard(cached.term, cached.fitAddon);
       registerCursorParserHandlers(cached.term);
-      updateCursorStyleForOutput(cached.term, getTerminalBufferLines(sessionId, 40).join("\n"));
+      const cachedBufferText = getTerminalBufferLines(sessionId, 80).join("\n");
+      updateCursorStyleForOutput(cached.term, cachedBufferText);
+      updateMarkdownTablePreview(cachedBufferText, usesCodexCursorStyle);
       if (usesCodexCursorStyle) {
         applyCodexCursorStyle(cached.term);
       } else {
@@ -1063,7 +1200,9 @@ export default memo(function XTermWrapper({
       term.open(container!);
       liveTerms.set(sessionId, term);
       if (initialReplay && initialReplay.length > 0) {
-        updateCursorStyleForOutput(term, initialReplay.join("\n"));
+        const replayText = initialReplay.join("\n");
+        updateCursorStyleForOutput(term, replayText);
+        updateMarkdownTablePreview(replayText, usesCodexCursorStyle);
       }
       if (initialReplay && initialReplay.length > 0) {
         term.write(`${initialReplay.join("\r\n")}\r\n`, () => {
@@ -1124,6 +1263,7 @@ export default memo(function XTermWrapper({
           const chunk = new Uint8Array(rawData);
           const decodedText = outputDecoder.decode(chunk, { stream: true });
           updateCursorStyleForOutput(term, decodedText);
+          updateMarkdownTablePreview(decodedText, usesCodexCursorStyle);
           const output = usesCodexCursorStyle && CODEX_FIXED_CURSOR_ENABLED
             ? `\x1b[?25l${decodedText}\x1b[?25l`
             : chunk;
@@ -1246,6 +1386,51 @@ export default memo(function XTermWrapper({
           <button onClick={() => searchAddonRef.current?.findPrevious(searchQuery)} style={searchBtnStyle}>↑</button>
           <button onClick={() => searchAddonRef.current?.findNext(searchQuery)} style={searchBtnStyle}>↓</button>
           <button onClick={closeSearch} style={searchBtnStyle}>✕</button>
+        </div>
+      )}
+      {markdownTablePreview && (
+        <div className="markdown-table-preview">
+          <div className="markdown-table-preview__toolbar">
+            <button
+              type="button"
+              className="markdown-table-preview__close"
+              onClick={closeMarkdownTablePreview}
+              title="Close"
+              aria-label="Close table preview"
+            >
+              ×
+            </button>
+          </div>
+          <div className="markdown-table-preview__scroll">
+            <table className="markdown-table-preview__table">
+              <thead>
+                <tr>
+                  {markdownTablePreview.header.map((cell, index) => (
+                    <th
+                      key={`h-${index}`}
+                      style={{ textAlign: toCssTextAlign(markdownTablePreview.alignments[index] ?? "default") }}
+                    >
+                      {cell}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {markdownTablePreview.rows.map((row, rowIndex) => (
+                  <tr key={`r-${rowIndex}`}>
+                    {markdownTablePreview.header.map((_, colIndex) => (
+                      <td
+                        key={`c-${rowIndex}-${colIndex}`}
+                        style={{ textAlign: toCssTextAlign(markdownTablePreview.alignments[colIndex] ?? "default") }}
+                      >
+                        {row[colIndex] ?? ""}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
       <div
