@@ -1,7 +1,6 @@
 import { useState } from "react";
 import type { GridTemplateId } from "../../types";
 import { getGridTemplate } from "../../lib/gridTemplates";
-import { WORKSPACE_COLORS } from "../../lib/workspaceColors";
 import GridPicker from "./GridPicker";
 import AgentSlotList from "./AgentSlotList";
 
@@ -10,7 +9,6 @@ interface WorkspaceSetupProps {
     name: string,
     gridTemplateId: GridTemplateId,
     agentAssignments: Record<number, string>,
-    color?: string,
   ) => void;
   onCancel: () => void;
 }
@@ -19,13 +17,12 @@ export default function WorkspaceSetup({ onLaunch, onCancel }: WorkspaceSetupPro
   const [name, setName] = useState("");
   const [gridId, setGridId] = useState<GridTemplateId>("3x1");
   const [assignments, setAssignments] = useState<Record<number, string>>({});
-  const [selectedColor, setSelectedColor] = useState<string | undefined>(undefined);
 
   const template = getGridTemplate(gridId);
 
   function handleLaunch() {
     const wsName = name.trim() || `Workspace ${Date.now() % 10000}`;
-    onLaunch(wsName, gridId, assignments, selectedColor);
+    onLaunch(wsName, gridId, assignments);
   }
 
   return (
@@ -92,39 +89,6 @@ export default function WorkspaceSetup({ onLaunch, onCancel }: WorkspaceSetupPro
               boxSizing: "border-box",
             }}
           />
-        </div>
-
-        <div>
-          <div
-            style={{
-              fontSize: 12,
-              color: "var(--cmux-text-secondary)",
-              marginBottom: 6,
-              fontFamily: "'JetBrains Mono', monospace",
-            }}
-          >
-            Color
-          </div>
-          <div style={{ display: "flex", gap: 8 }}>
-            {WORKSPACE_COLORS.map((c) => (
-              <button
-                key={c}
-                onClick={() => setSelectedColor(selectedColor === c ? undefined : c)}
-                style={{
-                  width: 20,
-                  height: 20,
-                  borderRadius: "50%",
-                  background: c,
-                  border: selectedColor === c ? "2px solid var(--cmux-text)" : "2px solid transparent",
-                  cursor: "pointer",
-                  padding: 0,
-                  outline: "none",
-                  boxShadow: selectedColor === c ? `0 0 0 1px ${c}, 0 0 0 3px color-mix(in srgb, var(--cmux-bg) 76%, transparent)` : "0 0 0 1px color-mix(in srgb, var(--cmux-text) 14%, transparent)",
-                }}
-                title={c}
-              />
-            ))}
-          </div>
         </div>
 
         <GridPicker selected={gridId} onSelect={setGridId} />

@@ -1,7 +1,6 @@
 import { create } from "zustand";
 import { v4 as uuid } from "uuid";
 import type { Workspace, GridTemplateId } from "../types";
-import { WORKSPACE_COLORS } from "../lib/workspaceColors";
 import { useUiStore } from "./uiStore";
 
 interface CreateWorkspaceOptions {
@@ -68,8 +67,6 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
 
   createWorkspace: (name, gridTemplateId, panes, splitColumns, options) => {
     const id = options?.id ?? uuid();
-    const { workspaces } = get();
-    const autoColor = options?.color ?? WORKSPACE_COLORS[workspaces.length % WORKSPACE_COLORS.length];
 
     const workspace: Workspace = {
       id,
@@ -79,7 +76,7 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
       splitColumns,
       status: "running",
       createdAt: options?.createdAt ?? Date.now(),
-      color: autoColor,
+      color: options?.color,
       columnWidths: options?.columnWidths,
       rowHeightsPerCol: options?.rowHeightsPerCol,
     };

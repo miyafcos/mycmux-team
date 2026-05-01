@@ -160,7 +160,6 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
       name: string,
       gridTemplateId: GridTemplateId,
       agentAssignments: Record<number, string>,
-      color?: string,
     ) => {
       // Build panes using layout store
       const workspaceId = crypto.randomUUID();
@@ -178,7 +177,6 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
         splitColumns,
         {
           id: workspaceId,
-          color,
         },
       );
       

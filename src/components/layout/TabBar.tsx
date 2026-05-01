@@ -118,7 +118,23 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
         "--cmux-text-tertiary":  "color-mix(in srgb, var(--cmux-text) 58%, transparent)",
       } as React.CSSProperties}
     >
-      <div style={{ flex: 1, minHeight: 0, overflowY: "auto", overflowX: "hidden" }}>
+      <div
+        style={{
+          padding: "10px 12px 6px 16px",
+          borderBottom: "1px solid var(--cmux-border)",
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          color: "var(--cmux-text-tertiary)",
+          fontSize: 11,
+          fontWeight: 600,
+          letterSpacing: 0,
+        }}
+      >
+        <span>Workspaces</span>
+        <span>{workspaces.length}</span>
+      </div>
+      <div style={{ flex: 1, minHeight: 0, overflowY: "auto", overflowX: "hidden", paddingTop: 4 }}>
         {workspaces.map((ws, wsIndex) => {
           let totalWsNotifications = 0;
           let totalWsWorkDone = 0;
@@ -162,9 +178,7 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
             >
               <TabItem
                 uiVariant={uiVariant}
-                index={wsIndex}
                 name={ws.name}
-                color={ws.color}
                 paneCount={ws.panes.length}
                 cwd={firstPaneMeta?.cwd}
                 gitBranch={firstPaneMeta?.gitBranch}
