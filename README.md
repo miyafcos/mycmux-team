@@ -6,7 +6,18 @@ lite 版は、通常版 mycmux からファイルサイドバー、パスジャ�
 
 公開配布先: <https://github.com/miyafcos/mycmux-team>
 
-![mycmux-lite overview](docs/images/mycmux-lite-overview.svg)
+![mycmux-lite 実機スクリーンショット](docs/images/mycmux-lite-screenshot.png)
+
+スクリーンショット内の端末本文と作業名は、公開用のサンプル表示に差し替えています。
+
+## 画面の見方
+
+| 番号 | 場所 | できること |
+| --- | --- | --- |
+| 1 | Workspaces | 作業テーマごとにワークスペースを切り替える |
+| 2 | Launch menu | Claude Code、Codex、resume 起動、任意コマンドを選ぶ |
+| 3 | Parallel pane | 複数エージェントやログを横に並べて確認する |
+| 4 | Selected pane | 黄色の枠で現在の操作対象を見分ける |
 
 ## 何ができるか
 
@@ -17,8 +28,6 @@ lite 版は、通常版 mycmux からファイルサイドバー、パスジャ�
 - Codex の Markdown 表を崩れにくく表示し、ログや回答を読みやすくする
 - フォント、テーマ、背景画像を切り替えて、作業画面を見やすくする
 - セッション復元で、前回の作業場所と表示内容から再開する
-
-![mycmux-lite workflow](docs/images/mycmux-lite-workflow.svg)
 
 ## 通常版との違い
 
