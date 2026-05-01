@@ -14,8 +14,12 @@ export type { AgentDefinition } from "./agent";
 
 export type {
   TerminalColors,
+  ThemeBackgroundMode,
+  ThemeBackgroundSettings,
   ThemeColorScheme,
   ThemeDefinition,
   ThemeGroup,
   ThemeStatusColors,
+  ThemeTweakColorKey,
+  ThemeTweaks,
 } from "./theme";

@@ -77,6 +77,7 @@ export default memo(function TabItem({ uiVariant = "default", name, paneCount, c
       onClick={onClick}
       onDoubleClick={handleDoubleClick}
       className={uiVariant === "cmux" ? "cmux-workspace-item" : undefined}
+      data-active-workspace={active ? "true" : undefined}
       style={{
         display: "flex",
         alignItems: "center",
@@ -88,13 +89,13 @@ export default memo(function TabItem({ uiVariant = "default", name, paneCount, c
         fontSize: "13px",
         fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
         userSelect: "none",
-        transition: "background 0.1s, color 0.1s, border-color 0.1s",
+        transition: "background 0.1s, color 0.1s, border-color 0.1s, box-shadow 0.1s",
         borderRadius: uiVariant === "cmux" ? "0 6px 6px 0" : "0 6px 6px 0",
         borderLeft: active ? "3px solid var(--cmux-accent)" : "3px solid transparent",
         boxShadow: active ? "inset 0 0 0 1px color-mix(in srgb, var(--cmux-text) 10%, transparent)" : "none",
         margin: "0 8px 0 0",
-        marginTop: "2px"
-      }}
+        marginTop: "2px",
+      } as React.CSSProperties & Record<string, string | number>}
       onMouseEnter={(e) => {
         if (!active) {
           e.currentTarget.style.background = "var(--cmux-hover)";

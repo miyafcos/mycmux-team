@@ -113,6 +113,31 @@ function buildThemeFromConfig(cfg: { background: string; foreground: string; ans
   return theme;
 }
 
+function colorWithOpacity(color: string | undefined, opacity: number): string | undefined {
+  if (!color || opacity >= 0.995) {
+    return color;
+  }
+
+  const shortHex = /^#([0-9a-f]{3})$/i.exec(color);
+  const fullHex = /^#([0-9a-f]{6})$/i.exec(color);
+  const hex = fullHex?.[1] ?? shortHex?.[1].split("").map((char) => `${char}${char}`).join("");
+  if (!hex) {
+    return color;
+  }
+
+  const red = parseInt(hex.slice(0, 2), 16);
+  const green = parseInt(hex.slice(2, 4), 16);
+  const blue = parseInt(hex.slice(4, 6), 16);
+  return `rgba(${red}, ${green}, ${blue}, ${opacity})`;
+}
+
+function withTerminalOpacity(theme: ITheme, opacity: number, mediaActive: boolean): ITheme {
+  return {
+    ...theme,
+    background: mediaActive ? "rgba(0, 0, 0, 0)" : colorWithOpacity(theme.background, opacity),
+  };
+}
+
 // Chunk large pastes to avoid PTY buffer overflow
 const PASTE_CHUNK = 1024;
 
@@ -539,6 +564,11 @@ export default memo(function XTermWrapper({
   const storeTheme = useThemeStore((s) => s.theme);
   const storeFontSize = useThemeStore((s) => s.fontSize);
   const storeFontFamily = useThemeStore((s) => s.fontFamily);
+  const storeBackground = useThemeStore((s) => s.themeTweaks.background);
+  const mediaBackgroundActive = storeBackground.mode === "preset" || (
+    storeBackground.mode === "image" && storeBackground.imagePath.length > 0
+  );
+  const terminalOpacity = mediaBackgroundActive ? storeBackground.terminalOpacity : 1;
 
   // Single source of truth: is this tab the currently-focused terminal?
   // Used for scroll-to-bottom-on-activate.
@@ -547,12 +577,12 @@ export default memo(function XTermWrapper({
   // Dynamically update terminal theme and font size
   useEffect(() => {
     if (termRef.current) {
-      termRef.current.options.theme = storeTheme.terminal;
+      termRef.current.options.theme = withTerminalOpacity(storeTheme.terminal, terminalOpacity, mediaBackgroundActive);
       termRef.current.options.fontSize = storeFontSize;
       termRef.current.options.fontFamily = storeFontFamily;
       setTimeout(() => syncResizeRef.current(true), 10);
     }
-  }, [storeTheme, storeFontSize, storeFontFamily]);
+  }, [storeTheme, storeFontSize, storeFontFamily, terminalOpacity, mediaBackgroundActive]);
 
   // Scroll to bottom when this tab becomes active only if the user was already at bottom.
   useEffect(() => {
@@ -986,7 +1016,7 @@ export default memo(function XTermWrapper({
     async function init(): Promise<void> {
       if (disposed) return;
       const cfg = cachedConfig;
-      const initTheme = theme ?? storeTheme.terminal;
+      const initTheme = withTerminalOpacity(theme ?? storeTheme.terminal, terminalOpacity, mediaBackgroundActive);
       const baseFontSize = fontSize ?? storeFontSize ?? cfg?.fontSize ?? 14;
       const baseFontFamily = fontFamily ?? storeFontFamily ?? cfg?.fontFamily ?? DEFAULT_TERMINAL_FONT_FAMILY;
       const initFontSize = resolveTerminalFontSize(baseFontSize, formatsCodexOutput, fontSize !== undefined);
@@ -997,18 +1027,18 @@ export default memo(function XTermWrapper({
         cursorStyle: "block",
         fontSize: initFontSize,
         fontFamily: initFontFamily,
-        fontWeight: 400,
-        fontWeightBold: 600,
+        fontWeight: 500,
+        fontWeightBold: 700,
         letterSpacing: 0,
         lineHeight: resolveTerminalLineHeight(formatsCodexOutput),
         rescaleOverlappingGlyphs: true,
         customGlyphs: true,
         theme: initTheme,
-        allowTransparency: false,
+        allowTransparency: true,
         scrollback: 5000,
         smoothScrollDuration: 0,
         rightClickSelectsWord: true,
-        minimumContrastRatio: 4.5,
+        minimumContrastRatio: 7,
       });
       termRef.current = term;
 
@@ -1164,7 +1194,7 @@ export default memo(function XTermWrapper({
           top: 8,
           right: 16,
           zIndex: 50,
-          background: "var(--cmux-bg, #1a1a1a)",
+          background: "var(--cmux-surface, var(--cmux-bg, #1a1a1a))",
           border: "1px solid var(--cmux-border, #333)",
           borderRadius: 6,
           padding: "4px 8px",
@@ -1206,7 +1236,7 @@ export default memo(function XTermWrapper({
           overflow: "hidden",
           position: "relative",
           contain: "strict",
-          background: "var(--cmux-bg, #0a0a0a)",
+          background: "var(--cmux-terminal-bg, var(--cmux-bg, #0a0a0a))",
         }}
       >
       </div>
