@@ -7,9 +7,7 @@ interface StatusCounts {
 
 interface TabItemProps {
   uiVariant?: "default" | "cmux";
-  index: number;
   name: string;
-  color?: string;
   paneCount: number;
   cwd?: string;
   gitBranch?: string;
@@ -40,7 +38,7 @@ function StatusPip({ count, color }: { count: number; color: string }) {
   );
 }
 
-export default memo(function TabItem({ uiVariant = "default", index, name, color, paneCount, cwd, gitBranch, notificationCount, workDoneCount, lastLogLine, statusCounts, active, onClick, onClose, onRename }: TabItemProps) {
+export default memo(function TabItem({ uiVariant = "default", name, paneCount, cwd, gitBranch, notificationCount, workDoneCount, lastLogLine, statusCounts, active, onClick, onClose, onRename }: TabItemProps) {
   const hasAgents = statusCounts && (statusCounts.working + statusCounts.waiting) > 0;
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState(name);
@@ -83,7 +81,7 @@ export default memo(function TabItem({ uiVariant = "default", index, name, color
         display: "flex",
         alignItems: "center",
         justifyContent: "space-between",
-        padding: "8px 12px",
+        padding: "9px 10px 9px 12px",
         cursor: "pointer",
         background: active ? "var(--cmux-selected)" : "transparent",
         color: active ? "var(--cmux-text)" : "var(--cmux-text-secondary)",
@@ -91,12 +89,11 @@ export default memo(function TabItem({ uiVariant = "default", index, name, color
         fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
         userSelect: "none",
         transition: "background 0.1s, color 0.1s, border-color 0.1s",
-        borderRadius: uiVariant === "cmux" ? "0 8px 8px 0" : "0 6px 6px 0",
-        borderLeft: active
-          ? `3px solid ${color || "var(--cmux-accent)"}`
-          : "3px solid transparent",
+        borderRadius: uiVariant === "cmux" ? "0 6px 6px 0" : "0 6px 6px 0",
+        borderLeft: active ? "3px solid var(--cmux-accent)" : "3px solid transparent",
+        boxShadow: active ? "inset 0 0 0 1px color-mix(in srgb, var(--cmux-text) 10%, transparent)" : "none",
         margin: "0 8px 0 0",
-        marginTop: "4px"
+        marginTop: "2px"
       }}
       onMouseEnter={(e) => {
         if (!active) {
@@ -111,33 +108,8 @@ export default memo(function TabItem({ uiVariant = "default", index, name, color
         }
       }}
     >
-      <div style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 0, overflow: "hidden", flex: 1 }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 5, minWidth: 0, overflow: "hidden", flex: 1 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-          {index < 9 && (
-            <span style={{
-              fontSize: 10,
-              fontWeight: 500,
-              color: "var(--cmux-text-tertiary)",
-              fontFamily: "monospace",
-              flexShrink: 0,
-              minWidth: 12,
-              textAlign: "center",
-              lineHeight: 1,
-            }}>
-              {index + 1}
-            </span>
-          )}
-          {color && (
-            <div style={{
-              width: 8,
-              height: 8,
-              borderRadius: "50%",
-              background: color,
-              flexShrink: 0,
-              opacity: active ? 1 : 0.7,
-              boxShadow: "0 0 0 1px color-mix(in srgb, var(--cmux-bg) 72%, transparent), 0 0 0 2px color-mix(in srgb, var(--cmux-text) 18%, transparent)",
-            }} />
-          )}
           {notificationCount ? (
             <span title="Waiting for approval" style={{
               background: "var(--status-waiting)",
@@ -212,18 +184,16 @@ export default memo(function TabItem({ uiVariant = "default", index, name, color
               {name}
             </span>
           )}
-          {paneCount > 1 && (
-            <span className="cmux-pill" style={{
-              flexShrink: 0,
-              background: active ? "color-mix(in srgb, var(--cmux-text) 22%, transparent)" : "color-mix(in srgb, var(--cmux-text) 12%, transparent)",
-              color: active ? "var(--cmux-text)" : "var(--cmux-text-secondary)"
-            }}>
-              {paneCount}
-            </span>
-          )}
+          <span className="cmux-pill" style={{
+            flexShrink: 0,
+            background: active ? "color-mix(in srgb, var(--cmux-text) 16%, transparent)" : "color-mix(in srgb, var(--cmux-text) 9%, transparent)",
+            color: active ? "var(--cmux-text)" : "var(--cmux-text-tertiary)"
+          }}>
+            {paneCount} {paneCount === 1 ? "pane" : "panes"}
+          </span>
         </div>
         {hasAgents && (
-          <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 1 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
             {statusCounts!.working > 0 && <StatusPip count={statusCounts!.working} color="var(--status-working)" />}
             {statusCounts!.waiting > 0 && <StatusPip count={statusCounts!.waiting} color="var(--status-waiting)" />}
           </div>

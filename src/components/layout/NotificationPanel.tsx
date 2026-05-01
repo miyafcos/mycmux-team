@@ -21,7 +21,6 @@ export default function NotificationPanel({ onClose }: NotificationPanelProps) {
     const result: {
       workspaceId: string;
       workspaceName: string;
-      workspaceColor: string;
       paneId: string;
       tabId: string;
       sessionId: string;
@@ -41,7 +40,6 @@ export default function NotificationPanel({ onClose }: NotificationPanelProps) {
             result.push({
               workspaceId: ws.id,
               workspaceName: ws.name,
-              workspaceColor: ws.color ?? "#0A84FF",
               paneId: pane.id,
               tabId: tab.id,
               sessionId: tab.sessionId,
@@ -54,7 +52,6 @@ export default function NotificationPanel({ onClose }: NotificationPanelProps) {
             result.push({
               workspaceId: ws.id,
               workspaceName: ws.name,
-              workspaceColor: ws.color ?? "#0A84FF",
               paneId: pane.id,
               tabId: tab.id,
               sessionId: tab.sessionId,
@@ -163,15 +160,6 @@ export default function NotificationPanel({ onClose }: NotificationPanelProps) {
               onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
             >
               <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px" }}>
-                {/* Workspace color dot */}
-                <span style={{
-                  width: 8,
-                  height: 8,
-                  borderRadius: "50%",
-                  background: n.workspaceColor,
-                  flexShrink: 0,
-                }} />
-                {/* Workspace name */}
                 <span style={{ flex: 1, fontWeight: 500, fontSize: 12 }}>{n.workspaceName}</span>
                 <span style={{ color: "var(--cmux-text-tertiary)", fontSize: 11, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                   {n.label}
@@ -195,7 +183,7 @@ export default function NotificationPanel({ onClose }: NotificationPanelProps) {
               </div>
               {n.lastLogLine && (
                 <div style={{
-                  padding: "0 12px 8px 28px",
+                  padding: "0 12px 8px 12px",
                   fontSize: 11,
                   color: "var(--cmux-text-secondary)",
                   fontFamily: "monospace",

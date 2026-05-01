@@ -343,7 +343,6 @@ function toConfig(ws: Workspace, agentMappings: Record<string, AgentSessionMappi
       };
     }),
     created_at: ws.createdAt,
-    color: ws.color ?? null,
     split_columns,
     column_widths: normalizeColumnWidths(ws, splitColumns),
     row_heights_per_col: normalizeRowHeightsPerCol(ws, splitColumns),
@@ -419,7 +418,6 @@ export function useWorkspacePersist() {
                   {
                     id: cfg.id,
                     createdAt: cfg.created_at,
-                    color: cfg.color ?? undefined,
                     columnWidths: cfg.column_widths ?? undefined,
                     rowHeightsPerCol: cfg.row_heights_per_col ?? undefined,
                     activate: false,

@@ -14,6 +14,15 @@ export interface TerminalFontPreset {
 export const DEFAULT_TERMINAL_FONT_FAMILY =
   "'JetBrainsMono Nerd Font Mono', 'JetBrains Mono', 'Geist Mono', 'SF Mono', 'BIZ UDGothic', 'MS Gothic', monospace";
 
+const LEGACY_CASCADIA_FONT_FAMILY =
+  "'Cascadia Mono', 'Cascadia Code', 'BIZ UDGothic', 'MS Gothic', monospace";
+const LEGACY_CONSOLAS_FONT_FAMILY = "Consolas, 'BIZ UDGothic', 'MS Gothic', monospace";
+const LEGACY_MEIRYO_FONT_FAMILY = "'Meiryo', 'Meiryo UI', 'BIZ UDGothic', 'Cascadia Mono', monospace";
+const LEGACY_YU_GOTHIC_FONT_FAMILY = "'Yu Gothic UI', 'Yu Gothic', 'BIZ UDGothic', 'Cascadia Mono', monospace";
+const HG_GOTHIC_FONT_FAMILY = "'HGｺﾞｼｯｸM', 'HGPｺﾞｼｯｸM', 'BIZ UDGothic', 'MS Gothic', monospace";
+const BIZ_UDMINCHO_FONT_FAMILY =
+  "'BIZ UDMincho', 'BIZ UDPMincho', 'Yu Mincho', 'MS Mincho', 'BIZ UDGothic', monospace";
+
 export const TERMINAL_FONT_PRESETS: TerminalFontPreset[] = [
   {
     id: "jetbrains-ja",
@@ -25,11 +34,27 @@ export const TERMINAL_FONT_PRESETS: TerminalFontPreset[] = [
   },
   {
     id: "biz-readable",
-    label: "BIZ UDGothic",
+    label: "BIZ UDゴシック",
     value: "'BIZ UDGothic', 'Cascadia Mono', 'JetBrains Mono', 'MS Gothic', monospace",
     sample: "Aa 0123 日本語",
     description: "日本語が太めで、長文や説明文を追いやすい",
     tags: ["日本語重視", "太め", "読みやすい"],
+  },
+  {
+    id: "hg-gothic-m",
+    label: "HGゴシックM",
+    value: HG_GOTHIC_FONT_FAMILY,
+    sample: "Aa 0123 日本語",
+    description: "少し太めの日本語ゴシック。細すぎず、画面上で文字を追いやすい",
+    tags: ["日本語", "太め", "見やすい"],
+  },
+  {
+    id: "ms-gothic",
+    label: "MSゴシック",
+    value: "'MS Gothic', 'BIZ UDGothic', monospace",
+    sample: "Aa 0123 日本語",
+    description: "昔ながらの完全等幅寄りで、日本語表の列が揃いやすい",
+    tags: ["等幅", "表", "日本語"],
   },
   {
     id: "ud-kyokasho",
@@ -40,28 +65,12 @@ export const TERMINAL_FONT_PRESETS: TerminalFontPreset[] = [
     tags: ["日本語きれい", "雰囲気", "本文向き"],
   },
   {
-    id: "cascadia",
-    label: "Cascadia Mono",
-    value: "'Cascadia Mono', 'Cascadia Code', 'BIZ UDGothic', 'MS Gothic', monospace",
+    id: "biz-udmincho",
+    label: "BIZ UD明朝",
+    value: BIZ_UDMINCHO_FONT_FAMILY,
     sample: "Aa 0123 日本語",
-    description: "Windows 標準に近い丸みで、記号と数字が見やすい",
-    tags: ["Windows", "数字", "記号"],
-  },
-  {
-    id: "consolas",
-    label: "Consolas",
-    value: "Consolas, 'BIZ UDGothic', 'MS Gothic', monospace",
-    sample: "Aa 0123 日本語",
-    description: "細めで密度が高く、ログやコードを広く見たい時向き",
-    tags: ["細め", "高密度", "ログ"],
-  },
-  {
-    id: "ms-gothic",
-    label: "MS Gothic",
-    value: "'MS Gothic', 'BIZ UDGothic', monospace",
-    sample: "Aa 0123 日本語",
-    description: "昔ながらの完全等幅寄りで、日本語表の列が揃いやすい",
-    tags: ["等幅", "表", "日本語"],
+    description: "明朝系で雰囲気が大きく変わり、文章が落ち着いて見える",
+    tags: ["明朝", "上品", "文章"],
   },
 ];
 
@@ -84,6 +93,16 @@ function normalizeFontFamily(value: unknown): string {
   const trimmed = value.trim();
   if (!trimmed || trimmed.length > 180 || /[\r\n]/.test(trimmed)) {
     return DEFAULT_TERMINAL_FONT_FAMILY;
+  }
+  if (
+    trimmed === LEGACY_CASCADIA_FONT_FAMILY ||
+    trimmed === LEGACY_MEIRYO_FONT_FAMILY ||
+    trimmed === LEGACY_YU_GOTHIC_FONT_FAMILY
+  ) {
+    return HG_GOTHIC_FONT_FAMILY;
+  }
+  if (trimmed === LEGACY_CONSOLAS_FONT_FAMILY) {
+    return BIZ_UDMINCHO_FONT_FAMILY;
   }
   return trimmed;
 }
