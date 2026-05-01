@@ -1,6 +1,15 @@
 import { create } from "zustand";
-import type { ThemeDefinition } from "../types";
+import type { ThemeBackgroundSettings, ThemeDefinition, ThemeTweakColorKey, ThemeTweaks } from "../types";
 import { DEFAULT_THEME_ID, getTheme, resolveThemeId } from "../components/theme/themeDefinitions";
+import {
+  DEFAULT_THEME_TWEAKS,
+  THEME_TWEAK_GROUPS,
+  THEME_TWEAK_PRESET_SCOPE,
+  applyThemeTweaks,
+  normalizeThemeColor,
+  normalizeThemeTweaks,
+  readThemeColor,
+} from "../lib/themeTweaks";
 
 export interface TerminalFontPreset {
   id: string;
@@ -22,6 +31,12 @@ const LEGACY_YU_GOTHIC_FONT_FAMILY = "'Yu Gothic UI', 'Yu Gothic', 'BIZ UDGothic
 const HG_GOTHIC_FONT_FAMILY = "'HGｺﾞｼｯｸM', 'HGPｺﾞｼｯｸM', 'BIZ UDGothic', 'MS Gothic', monospace";
 const BIZ_UDMINCHO_FONT_FAMILY =
   "'BIZ UDMincho', 'BIZ UDPMincho', 'Yu Mincho', 'MS Mincho', 'BIZ UDGothic', monospace";
+const MAC_STYLE_FONT_FAMILY =
+  "'SF Mono', 'Menlo', 'Monaco', 'Hiragino Sans', 'Hiragino Kaku Gothic ProN', 'BIZ UDGothic', 'Yu Gothic UI', monospace";
+const CASCADIA_BIZ_FONT_FAMILY =
+  "'Cascadia Code', 'Cascadia Mono', 'BIZ UDGothic', 'Yu Gothic UI', 'MS Gothic', monospace";
+const CONSOLAS_MEIRYO_FONT_FAMILY =
+  "Consolas, 'Meiryo UI', Meiryo, 'BIZ UDGothic', 'MS Gothic', monospace";
 
 export const TERMINAL_FONT_PRESETS: TerminalFontPreset[] = [
   {
@@ -29,48 +44,72 @@ export const TERMINAL_FONT_PRESETS: TerminalFontPreset[] = [
     label: "JetBrains + 日本語",
     value: DEFAULT_TERMINAL_FONT_FAMILY,
     sample: "Aa 0123 日本語",
-    description: "英数が締まり、日本語 fallback も崩れにくい標準",
-    tags: ["標準", "英数くっきり", "日本語OK"],
+    description: "標準。英数字が締まり、日本語も安定",
+    tags: ["標準", "コード"],
+  },
+  {
+    id: "cascadia-biz",
+    label: "Cascadia + BIZ",
+    value: CASCADIA_BIZ_FONT_FAMILY,
+    sample: "Aa 0123 日本語",
+    description: "丸み。Windows Terminal風で数字も読みやすい",
+    tags: ["コード", "Windows"],
+  },
+  {
+    id: "consolas-meiryo",
+    label: "Consolas + メイリオ",
+    value: CONSOLAS_MEIRYO_FONT_FAMILY,
+    sample: "Aa 0123 日本語",
+    description: "軽め。古典的IDE風で画面に余白が出る",
+    tags: ["軽い", "IDE風"],
   },
   {
     id: "biz-readable",
     label: "BIZ UDゴシック",
     value: "'BIZ UDGothic', 'Cascadia Mono', 'JetBrains Mono', 'MS Gothic', monospace",
     sample: "Aa 0123 日本語",
-    description: "日本語が太めで、長文や説明文を追いやすい",
-    tags: ["日本語重視", "太め", "読みやすい"],
+    description: "日本語重視。太めで表と説明文を追いやすい",
+    tags: ["日本語", "表"],
   },
   {
     id: "hg-gothic-m",
     label: "HGゴシックM",
     value: HG_GOTHIC_FONT_FAMILY,
     sample: "Aa 0123 日本語",
-    description: "少し太めの日本語ゴシック。細すぎず、画面上で文字を追いやすい",
-    tags: ["日本語", "太め", "見やすい"],
+    description: "太め。教材やログの日本語が見やすい",
+    tags: ["日本語", "太め"],
   },
   {
     id: "ms-gothic",
     label: "MSゴシック",
     value: "'MS Gothic', 'BIZ UDGothic', monospace",
     sample: "Aa 0123 日本語",
-    description: "昔ながらの完全等幅寄りで、日本語表の列が揃いやすい",
+    description: "等幅。日本語表の列が揃いやすい",
     tags: ["等幅", "表", "日本語"],
+  },
+  {
+    id: "mac-style",
+    label: "Mac風 SF/ヒラギノ",
+    value: MAC_STYLE_FONT_FAMILY,
+    sample: "Aa 0123 日本語",
+    description: "Mac風。細めで画面の印象がすっきりする",
+    tags: ["Mac風", "印象変更"],
   },
   {
     id: "ud-kyokasho",
     label: "UD 教科書体",
     value: "'UD Digi Kyokasho N-R', 'UD Digi Kyokasho N', 'BIZ UDGothic', 'MS Gothic', monospace",
     sample: "Aa 0123 日本語",
-    description: "日本語の形がやわらかく、説明文の雰囲気が大きく変わる",
-    tags: ["日本語きれい", "雰囲気", "本文向き"],
+    description: "教科書体。説明文の雰囲気がやわらかくなる",
+    tags: ["教材", "印象変更"],
   },
   {
     id: "biz-udmincho",
     label: "BIZ UD明朝",
     value: BIZ_UDMINCHO_FONT_FAMILY,
     sample: "Aa 0123 日本語",
-    description: "明朝系で雰囲気が大きく変わり、文章が落ち着いて見える",
-    tags: ["明朝", "上品", "文章"],
+    description: "明朝。文章が落ち着いて見える",
+    tags: ["明朝", "印象変更"],
   },
 ];
 
@@ -79,11 +118,54 @@ interface ThemeState {
   theme: ThemeDefinition;
   fontSize: number;
   fontFamily: string;
+  themeTweaks: ThemeTweaks;
 
   setTheme: (id: string) => void;
   setFontSize: (size: number) => void;
   setFontFamily: (fontFamily: string) => void;
-  hydrateSettings: (settings: { themeId?: string; fontSize?: number; fontFamily?: unknown }) => void;
+  setThemeTweakEnabled: (enabled: boolean) => void;
+  setThemeTweakColor: (key: ThemeTweakColorKey, color: string) => void;
+  applyThemeTweakPreset: (colors: Partial<Record<ThemeTweakColorKey, string>>) => void;
+  setThemeBackground: (background: Partial<ThemeBackgroundSettings>) => void;
+  clearThemeTweakColor: (key: ThemeTweakColorKey) => void;
+  resetThemeTweaks: () => void;
+  hydrateSettings: (settings: { themeId?: string; fontSize?: number; fontFamily?: unknown; themeTweaks?: unknown }) => void;
+}
+
+const ALL_THEME_TWEAK_COLOR_KEYS = Array.from(
+  new Set<ThemeTweakColorKey>(
+    THEME_TWEAK_GROUPS.flatMap((group) => group.fields.map((field) => field.key)),
+  ),
+);
+
+function resolveTheme(themeId: string, tweaks: ThemeTweaks): ThemeDefinition {
+  return applyThemeTweaks(getTheme(themeId), tweaks);
+}
+
+function themeToTweakColors(theme: ThemeDefinition): Partial<Record<ThemeTweakColorKey, string>> {
+  return Object.fromEntries(
+    ALL_THEME_TWEAK_COLOR_KEYS.map((key) => [key, readThemeColor(theme, key)]),
+  ) as Partial<Record<ThemeTweakColorKey, string>>;
+}
+
+function migrateLegacyThemeSettings(themeId: string | undefined, themeTweaksInput: unknown): ThemeTweaks {
+  const resolvedThemeId = resolveThemeId(themeId ?? DEFAULT_THEME_ID);
+  const themeTweaks = normalizeThemeTweaks(themeTweaksInput ?? DEFAULT_THEME_TWEAKS);
+
+  if (resolvedThemeId === DEFAULT_THEME_ID) {
+    return themeTweaks;
+  }
+
+  const legacyThemeColors = themeToTweakColors(getTheme(resolvedThemeId));
+  return normalizeThemeTweaks({
+    ...themeTweaks,
+    enabled: true,
+    colors: {
+      ...legacyThemeColors,
+      ...themeTweaks.colors,
+    },
+    background: themeTweaks.background,
+  });
 }
 
 function normalizeFontFamily(value: unknown): string {
@@ -112,11 +194,29 @@ export const useThemeStore = create<ThemeState>((set) => ({
   theme: getTheme(DEFAULT_THEME_ID),
   fontSize: 14,
   fontFamily: DEFAULT_TERMINAL_FONT_FAMILY,
+  themeTweaks: DEFAULT_THEME_TWEAKS,
 
   setTheme: (id) => {
     const nextThemeId = resolveThemeId(id);
-    const theme = getTheme(nextThemeId);
-    set({ themeId: nextThemeId, theme });
+    set((state) => {
+      const themeTweaks =
+        nextThemeId === DEFAULT_THEME_ID
+          ? state.themeTweaks
+          : normalizeThemeTweaks({
+              ...state.themeTweaks,
+              enabled: true,
+              colors: {
+                ...themeToTweakColors(getTheme(nextThemeId)),
+                ...state.themeTweaks.colors,
+              },
+              background: state.themeTweaks.background,
+            });
+      return {
+        themeId: DEFAULT_THEME_ID,
+        theme: resolveTheme(DEFAULT_THEME_ID, themeTweaks),
+        themeTweaks,
+      };
+    });
   },
 
   setFontSize: (fontSize) => {
@@ -127,18 +227,112 @@ export const useThemeStore = create<ThemeState>((set) => ({
     set({ fontFamily: normalizeFontFamily(fontFamily) });
   },
 
+  setThemeTweakEnabled: (enabled) => {
+    set((state) => {
+      const themeTweaks = normalizeThemeTweaks({
+        ...state.themeTweaks,
+        enabled,
+      });
+      return {
+        themeTweaks,
+        theme: resolveTheme(DEFAULT_THEME_ID, themeTweaks),
+      };
+    });
+  },
+
+  setThemeTweakColor: (key, color) => {
+    const normalizedColor = normalizeThemeColor(color);
+    if (!normalizedColor) {
+      return;
+    }
+
+    set((state) => {
+      const themeTweaks = normalizeThemeTweaks({
+        enabled: true,
+        colors: {
+          ...state.themeTweaks.colors,
+          [key]: normalizedColor,
+        },
+        background: state.themeTweaks.background,
+      });
+      return {
+        themeTweaks,
+        theme: resolveTheme(DEFAULT_THEME_ID, themeTweaks),
+      };
+    });
+  },
+
+  applyThemeTweakPreset: (colors) => {
+    set((state) => {
+      const nextColors = { ...state.themeTweaks.colors };
+      for (const key of THEME_TWEAK_PRESET_SCOPE) {
+        delete nextColors[key];
+      }
+      const themeTweaks = normalizeThemeTweaks({
+        enabled: true,
+        colors: {
+          ...nextColors,
+          ...colors,
+        },
+        background: state.themeTweaks.background,
+      });
+      return {
+        themeTweaks,
+        theme: resolveTheme(DEFAULT_THEME_ID, themeTweaks),
+      };
+    });
+  },
+
+  setThemeBackground: (background) => {
+    set((state) => {
+      const themeTweaks = normalizeThemeTweaks({
+        ...state.themeTweaks,
+        background: {
+          ...state.themeTweaks.background,
+          ...background,
+        },
+      });
+      return {
+        themeTweaks,
+        theme: resolveTheme(DEFAULT_THEME_ID, themeTweaks),
+      };
+    });
+  },
+
+  clearThemeTweakColor: (key) => {
+    set((state) => {
+      const colors = { ...state.themeTweaks.colors };
+      delete colors[key];
+      const themeTweaks = normalizeThemeTweaks({
+        ...state.themeTweaks,
+        colors,
+      });
+      return {
+        themeTweaks,
+        theme: resolveTheme(DEFAULT_THEME_ID, themeTweaks),
+      };
+    });
+  },
+
+  resetThemeTweaks: () => {
+    set(() => ({
+      themeTweaks: DEFAULT_THEME_TWEAKS,
+      theme: resolveTheme(DEFAULT_THEME_ID, DEFAULT_THEME_TWEAKS),
+    }));
+  },
+
   hydrateSettings: (settings) => {
-    const nextThemeId = resolveThemeId(settings.themeId ?? DEFAULT_THEME_ID);
-    const nextTheme = getTheme(nextThemeId);
+    const themeTweaks = migrateLegacyThemeSettings(settings.themeId, settings.themeTweaks);
     const nextFont = typeof settings.fontSize === "number"
       ? Math.max(10, Math.min(24, settings.fontSize))
       : 14;
     const nextFontFamily = normalizeFontFamily(settings.fontFamily);
     set({
-      themeId: nextThemeId,
-      theme: nextTheme,
+      themeId: DEFAULT_THEME_ID,
+      theme: resolveTheme(DEFAULT_THEME_ID, themeTweaks),
       fontSize: nextFont,
       fontFamily: nextFontFamily,
+      themeTweaks,
     });
   },
 }));

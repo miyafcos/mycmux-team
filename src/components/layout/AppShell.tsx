@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from "react";
-import type { GridTemplateId } from "../../types";
+import { convertFileSrc } from "@tauri-apps/api/core";
+import type { GridTemplateId, ThemeBackgroundSettings } from "../../types";
 import {
   useWorkspaceListStore,
   useWorkspaceLayoutStore,
@@ -14,14 +15,120 @@ import TitleBar from "./TitleBar";
 import WorkspaceView from "../workspace/WorkspaceView";
 import PaneDragOverlay from "../workspace/PaneDragOverlay";
 import WorkspaceSetup from "../setup/WorkspaceSetup";
-import CommandPalette from "./CommandPalette";
 import SocketListener from "./SocketListener";
 import KeybindingsModal from "./KeybindingsModal";
 import { useKeybindingStore } from "../../stores/keybindingStore";
 import { useThemeStore } from "../../stores/themeStore";
+import { THEME_BACKGROUND_PRESETS } from "../../lib/themeTweaks";
 import { confirm } from "@tauri-apps/plugin-dialog";
 
 type Direction = "up" | "down" | "left" | "right";
+
+function colorWithOpacity(color: string, opacity: number): string {
+  if (opacity >= 0.995) {
+    return color;
+  }
+
+  const shortHex = /^#([0-9a-f]{3})$/i.exec(color);
+  const fullHex = /^#([0-9a-f]{6})$/i.exec(color);
+  const hex = fullHex?.[1] ?? shortHex?.[1].split("").map((char) => `${char}${char}`).join("");
+  if (!hex) {
+    return color;
+  }
+
+  const red = parseInt(hex.slice(0, 2), 16);
+  const green = parseInt(hex.slice(2, 4), 16);
+  const blue = parseInt(hex.slice(4, 6), 16);
+  return `rgba(${red}, ${green}, ${blue}, ${opacity})`;
+}
+
+function AppBackgroundLayer({ background }: { background: ThemeBackgroundSettings }) {
+  const preset = THEME_BACKGROUND_PRESETS.find((item) => item.id === background.presetId) ?? THEME_BACKGROUND_PRESETS[0];
+  const userImageUrl = background.mode === "image" && background.imagePath
+    ? convertFileSrc(background.imagePath)
+    : "";
+  const presetImageUrl = background.mode === "preset" ? preset.imageUrl : "";
+  const finalImageUrl = userImageUrl || presetImageUrl;
+  const [currentImageUrl, setCurrentImageUrl] = useState(finalImageUrl);
+  const [previousImageUrl, setPreviousImageUrl] = useState("");
+  const [fadeStarted, setFadeStarted] = useState(false);
+  const currentImageUrlRef = useRef(finalImageUrl);
+
+  useEffect(() => {
+    if (finalImageUrl === currentImageUrlRef.current) {
+      return;
+    }
+
+    const previousUrl = currentImageUrlRef.current;
+    currentImageUrlRef.current = finalImageUrl;
+    setPreviousImageUrl(previousUrl);
+    setCurrentImageUrl(finalImageUrl);
+    setFadeStarted(false);
+
+    const frameId = window.requestAnimationFrame(() => setFadeStarted(true));
+    const timeoutId = window.setTimeout(() => {
+      setPreviousImageUrl("");
+    }, 420);
+
+    return () => {
+      window.cancelAnimationFrame(frameId);
+      window.clearTimeout(timeoutId);
+    };
+  }, [finalImageUrl]);
+
+  const hasVisualBackground = Boolean(currentImageUrl || previousImageUrl);
+  const dimOpacity = currentImageUrl
+    ? background.imageDim
+    : previousImageUrl && !fadeStarted
+      ? background.imageDim
+      : 0;
+
+  const renderImageLayer = (imageUrl: string, opacity: number) => {
+    if (!imageUrl) {
+      return null;
+    }
+
+    return (
+      <div
+        style={{
+          position: "absolute",
+          inset: background.imageBlur > 0 ? -24 : 0,
+          backgroundImage: `url("${imageUrl}")`,
+          backgroundSize: "cover",
+          backgroundPosition: "center",
+          backgroundRepeat: "no-repeat",
+          opacity,
+          filter: background.imageBlur > 0 ? `blur(${background.imageBlur}px)` : undefined,
+          transform: background.imageBlur > 0 ? "scale(1.04)" : undefined,
+          transition: "opacity 0.4s ease",
+        }}
+      />
+    );
+  };
+
+  return (
+    <div style={{ position: "absolute", inset: 0, overflow: "hidden", pointerEvents: "none", zIndex: 0 }}>
+      <div style={{ position: "absolute", inset: 0, background: "var(--cmux-bg-solid)" }} />
+      {hasVisualBackground && (
+        <>
+          {renderImageLayer(previousImageUrl, fadeStarted ? 0 : background.imageOpacity)}
+          {renderImageLayer(
+            currentImageUrl,
+            previousImageUrl ? (fadeStarted ? background.imageOpacity : 0) : background.imageOpacity,
+          )}
+          <div
+            style={{
+              position: "absolute",
+              inset: 0,
+              background: `rgba(0, 0, 0, ${dimOpacity})`,
+              transition: "background 0.4s ease",
+            }}
+          />
+        </>
+      )}
+    </div>
+  );
+}
 
 /**
  * Find the best pane to focus when navigating in a direction.
@@ -113,21 +220,30 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
   const toggleSidebar = useUiStore((s) => s.toggleSidebar);
   const setActivePaneId = useUiStore((s) => s.setActivePaneId);
   const activePaneId = useUiStore((s) => s.activePaneId);
+  const zoomedPaneId = useUiStore((s) => s.zoomedPaneId);
   const addPaneToWorkspace = useWorkspaceLayoutStore((s) => s.addPaneToWorkspace);
   const removePaneFromWorkspace = useWorkspaceLayoutStore((s) => s.removePaneFromWorkspace);
   const addTabToPane = useWorkspaceLayoutStore((s) => s.addTabToPane);
-  const setIsPaletteOpen = useUiStore((s) => s.setIsPaletteOpen);
-  const isPaletteOpen = useUiStore((s) => s.isPaletteOpen);
   const isKeybindingsOpen = useUiStore((s) => s.isKeybindingsOpen);
   const setIsKeybindingsOpen = useUiStore((s) => s.setIsKeybindingsOpen);
   const getActionsForEvent = useKeybindingStore((s) => s.getActionsForEvent);
   const currentTheme = useThemeStore((s) => s.theme);
+  const themeBackground = useThemeStore((s) => s.themeTweaks.background);
+  const mediaBackgroundActive = themeBackground.mode === "preset" || (
+    themeBackground.mode === "image" && themeBackground.imagePath.length > 0
+  );
+  const panelOpacity = mediaBackgroundActive ? themeBackground.panelOpacity : 1;
 
   const themeVars = {
-    "--cmux-bg": currentTheme.chrome.background,
-    "--cmux-sidebar": currentTheme.chrome.surface,
-    "--cmux-title-bg": currentTheme.chrome.background,
-    "--cmux-surface": currentTheme.chrome.surface,
+    "--cmux-bg-solid": currentTheme.chrome.background,
+    "--cmux-bg": colorWithOpacity(currentTheme.chrome.background, panelOpacity),
+    "--cmux-sidebar": colorWithOpacity(currentTheme.chrome.surface, panelOpacity),
+    "--cmux-title-bg": colorWithOpacity(currentTheme.chrome.background, panelOpacity),
+    "--cmux-surface": colorWithOpacity(currentTheme.chrome.surface, panelOpacity),
+    "--cmux-terminal-bg": colorWithOpacity(
+      currentTheme.terminal.background,
+      mediaBackgroundActive ? themeBackground.terminalOpacity : 1,
+    ),
     "--cmux-accent": currentTheme.chrome.accent,
     "--cmux-border": currentTheme.chrome.border,
     "--cmux-text": currentTheme.chrome.text,
@@ -223,7 +339,7 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       // Skip if modals are open
-      if (isPaletteOpen || isKeybindingsOpen) return;
+      if (isKeybindingsOpen) return;
 
       // Get all actions that match this keyboard event (BridgeSpace pattern)
       const actions = getActionsForEvent(e);
@@ -242,10 +358,6 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
       switch (action) {
         case "settings.keybindings":
           setIsKeybindingsOpen(true);
-          break;
-
-        case "palette.open":
-          setIsPaletteOpen(true);
           break;
 
         case "workspace.close":
@@ -382,10 +494,8 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [
     getActionsForEvent,
-    isPaletteOpen,
     isKeybindingsOpen,
     setIsKeybindingsOpen,
-    setIsPaletteOpen,
     handleCloseWorkspace,
     toggleSidebar,
     setShowSetup,
@@ -399,20 +509,36 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
   return (
     <div
       className={uiVariant === "cmux" ? "ui-cmux" : undefined}
+      data-cmux-zoom-active={zoomedPaneId ? "true" : undefined}
       style={{
         ...themeVars,
         width: "100vw",
         height: "100vh",
         display: "flex",
         flexDirection: "column",
-        background: "var(--cmux-bg)",
+        position: "relative",
+        overflow: "hidden",
+        background: "var(--cmux-bg-solid)",
       }}
     >
-      <SocketListener />
-      <TitleBar uiVariant={uiVariant} onNewWorkspace={handleNewWorkspace} />
-      <div style={{ flex: 1, display: "flex", flexDirection: "row", overflow: "hidden", minHeight: 0 }}>
+      <AppBackgroundLayer background={themeBackground} />
+      <div style={{ position: "relative", zIndex: 1, width: "100%", height: "100%", display: "flex", flexDirection: "column" }}>
+        <SocketListener />
+        <div data-cmux-hide-during-pane-zoom={zoomedPaneId ? "true" : undefined}>
+          <TitleBar uiVariant={uiVariant} onNewWorkspace={handleNewWorkspace} />
+        </div>
+        <div
+          style={{
+            flex: 1,
+            display: "flex",
+            flexDirection: "row",
+            overflow: zoomedPaneId ? "visible" : "hidden",
+            minHeight: 0,
+          }}
+        >
         {/* Sidebar — kept mounted so terminals don't remount; width animates to 0 */}
         <div
+          data-cmux-hide-during-pane-zoom={zoomedPaneId ? "true" : undefined}
           style={{
             width: sidebarCollapsed ? 0 : SIDEBAR_WIDTH,
             overflow: "hidden",
@@ -428,16 +554,23 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
         </div>
 
         {/* Main content — WorkspaceView always mounted to keep terminals alive */}
-        <div style={{ flex: 1, overflow: "hidden", minWidth: 0, position: "relative" }}>
+        <div
+          style={{
+            flex: 1,
+            overflow: zoomedPaneId ? "visible" : "hidden",
+            minWidth: 0,
+            position: "relative",
+          }}
+        >
           <WorkspaceView />
           <PaneDragOverlay />
-          <CommandPalette />
           {isKeybindingsOpen && <KeybindingsModal onClose={() => setIsKeybindingsOpen(false)} />}
           {showSetup && (
             <div style={{ position: "absolute", inset: 0, zIndex: 50, background: "var(--cmux-bg)" }}>
               <WorkspaceSetup onLaunch={handleLaunch} onCancel={handleCancelSetup} />
             </div>
           )}
+        </div>
         </div>
       </div>
     </div>

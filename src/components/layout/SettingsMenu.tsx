@@ -10,7 +10,6 @@ interface SettingsMenuProps {
   onClose: () => void;
   onOpenThemes: () => void;
   onOpenKeybindings: () => void;
-  onOpenCommandPalette: () => void;
 }
 
 const itemStyle: React.CSSProperties = {
@@ -31,7 +30,6 @@ export default function SettingsMenu({
   onClose,
   onOpenThemes,
   onOpenKeybindings,
-  onOpenCommandPalette,
 }: SettingsMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
   const notificationsEnabled = useSettingsStore((s) => s.notificationsEnabled);
@@ -129,7 +127,7 @@ export default function SettingsMenu({
           onClose();
         }}
         style={itemStyle}
-        onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(255,255,255,0.05)"; }}
+        onMouseEnter={(e) => { e.currentTarget.style.background = "var(--cmux-hover)"; }}
         onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
       >
         <span>Themes</span>
@@ -141,22 +139,10 @@ export default function SettingsMenu({
           onClose();
         }}
         style={itemStyle}
-        onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(255,255,255,0.05)"; }}
+        onMouseEnter={(e) => { e.currentTarget.style.background = "var(--cmux-hover)"; }}
         onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
       >
         <span>Keybindings</span>
-      </button>
-
-      <button
-        onClick={() => {
-          onOpenCommandPalette();
-          onClose();
-        }}
-        style={itemStyle}
-        onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(255,255,255,0.05)"; }}
-        onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
-      >
-        <span>Command palette</span>
       </button>
 
       <div style={{ height: 1, background: "var(--cmux-border)" }} />
@@ -187,7 +173,7 @@ export default function SettingsMenu({
           alignItems: "center",
           gap: 8,
           fontSize: 12,
-          color: notificationsEnabled ? "var(--cmux-text)" : "var(--cmux-text-dim, rgba(255,255,255,0.4))",
+          color: notificationsEnabled ? "var(--cmux-text)" : "var(--cmux-text-dim)",
           cursor: notificationsEnabled ? "pointer" : "not-allowed",
         }}
       >
@@ -199,8 +185,6 @@ export default function SettingsMenu({
         />
         <span>通知サウンド</span>
       </label>
-
-      <div style={{ height: 1, background: "var(--cmux-border)" }} />
 
       <div style={{ padding: "8px 12px 0", fontSize: 11, color: "var(--cmux-text-dim, rgba(255,255,255,0.55))" }}>
         現在のバージョン: {currentVersion}
@@ -216,7 +200,7 @@ export default function SettingsMenu({
         }}
         onMouseEnter={(e) => {
           if (updateStatus !== "checking" && updateStatus !== "downloading") {
-            e.currentTarget.style.background = "rgba(255,255,255,0.05)";
+            e.currentTarget.style.background = "var(--cmux-hover)";
           }
         }}
         onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
@@ -228,8 +212,8 @@ export default function SettingsMenu({
           padding: "0 12px 8px",
           fontSize: 11,
           color: updateStatus === "error"
-            ? "#ff6b6b"
-            : "var(--cmux-text-dim, rgba(255,255,255,0.55))",
+            ? "var(--cmux-red)"
+            : "var(--cmux-text-dim)",
         }}>
           {updateMsg}
         </div>

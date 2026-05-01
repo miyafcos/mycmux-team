@@ -6,7 +6,7 @@
  * 
  * - useWorkspaceListStore: Workspace CRUD, active workspace
  * - useWorkspaceLayoutStore: Pane/tab management within workspaces
- * - useUiStore: UI state (sidebar, palette, zoom)
+ * - useUiStore: UI state (sidebar, keybindings, zoom)
  * - usePaneMetadataStore: Per-pane metadata (notifications, cwd, git branch)
  */
 

@@ -73,10 +73,10 @@ const PlusIcon = () => (
   </svg>
 );
 
-const STATUS_CONFIG: Record<EffectiveStatus, { color: string; title: string }> = {
-  working: { color: "var(--status-working)", title: "Running" },
-  waiting: { color: "var(--status-waiting)", title: "Waiting for input" },
-  idle:    { color: "transparent",           title: "" },
+const STATUS_CONFIG: Record<EffectiveStatus, { color: string; title: string; shape: "circle" | "diamond" }> = {
+  working: { color: "var(--status-working)", title: "Running", shape: "circle" },
+  waiting: { color: "var(--status-waiting)", title: "Waiting for input", shape: "diamond" },
+  idle:    { color: "transparent",           title: "", shape: "circle" },
 };
 
 const AGENT_LABELS: Record<string, string> = {
@@ -95,11 +95,13 @@ function AgentStatusDot({ status }: { status: EffectiveStatus }) {
     <span
       title={cfg.title}
       style={{
-        width: 5,
-        height: 5,
-        borderRadius: "50%",
+        width: cfg.shape === "diamond" ? 7 : 6,
+        height: cfg.shape === "diamond" ? 7 : 6,
+        borderRadius: cfg.shape === "diamond" ? 2 : "50%",
         background: cfg.color,
+        boxShadow: `0 0 0 3px color-mix(in srgb, ${cfg.color} 15%, transparent)`,
         flexShrink: 0,
+        transform: cfg.shape === "diamond" ? "rotate(45deg)" : undefined,
       }}
     />
   );
@@ -150,7 +152,7 @@ export default memo(function PaneTabBar({
       style={{
         display: "flex",
         flexDirection: "column",
-        background: "var(--cmux-surface)",
+        background: "var(--pane-tabbar-bg, var(--cmux-surface))",
         borderBottom: hasNotification
           ? "1px solid color-mix(in srgb, var(--notification-color) 58%, transparent)"
           : "1px solid var(--cmux-border)",
@@ -167,7 +169,7 @@ export default memo(function PaneTabBar({
       <div style={{ display: "flex", alignItems: "center", flex: 1, overflow: "hidden", minWidth: 0 }}>
         {pane.tabs.map((tab) => {
           const agent = getAgent(tab.agentId) ?? getDefaultAgent();
-          const isActive = tab.id === pane.activeTabId;
+          const isTabActive = tab.id === pane.activeTabId;
           const tabMeta = allMetadata[tab.sessionId];
           const tabNotificationCount = tabMeta?.notificationCount ?? 0;
           const tabWorkDoneCount = tabMeta?.workDoneCount ?? 0;
@@ -177,7 +179,7 @@ export default memo(function PaneTabBar({
           const label = tab.label
             ?? (tabProcessTitle
                 ? tabProcessTitle
-                : (isActive && tabCwd ? tabCwd.split("/").pop() || agent.name : agent.name));
+                : (isTabActive && tabCwd ? tabCwd.split("/").pop() || agent.name : agent.name));
 
           return (
             <div
@@ -198,7 +200,7 @@ export default memo(function PaneTabBar({
                 onSelectTab?.(tab.id);
               }}
               title={label}
-              className={`pane-tab-pill ${isActive ? "is-active" : ""}`}
+              className={`pane-tab-pill ${isTabActive ? "is-active" : ""}`}
               style={{
                 display: "flex",
                 alignItems: "center",
@@ -207,9 +209,9 @@ export default memo(function PaneTabBar({
                 height: 36,
                 maxWidth: 160,
                 cursor: "pointer",
-                background: isActive ? "var(--cmux-selected)" : "transparent",
+                background: isTabActive ? "var(--cmux-selected)" : "transparent",
                 borderRight: "1px solid var(--cmux-border)",
-                borderBottom: isActive ? `2px solid var(--cmux-accent)` : "2px solid transparent",
+                borderBottom: isTabActive ? "2px solid var(--cmux-accent)" : "2px solid transparent",
                 flexShrink: 0,
                 transition: "background 0.1s",
               }}
@@ -223,7 +225,7 @@ export default memo(function PaneTabBar({
               )}
               <AgentStatusDot status={tabEffectiveStatus} />
               {/* folder icon */}
-              <span style={{ color: isActive ? "var(--cmux-accent)" : "var(--cmux-text-tertiary)", flexShrink: 0 }}>
+              <span style={{ color: isTabActive ? "var(--cmux-accent)" : "var(--cmux-text-tertiary)", flexShrink: 0 }}>
                 <FolderIcon />
               </span>
               {/* label */}
@@ -232,7 +234,7 @@ export default memo(function PaneTabBar({
                 style={{
                   fontSize: 13,
                   fontFamily: "'JetBrains Mono', 'Geist Mono', monospace",
-                  color: isActive ? "var(--cmux-text)" : "var(--cmux-text-secondary)",
+                  color: isTabActive ? "var(--cmux-text)" : "var(--cmux-text-secondary)",
                   overflow: "hidden",
                   textOverflow: "ellipsis",
                   whiteSpace: "nowrap",
@@ -269,6 +271,7 @@ export default memo(function PaneTabBar({
             padding: "0 8px",
             marginLeft: 6,
             border: `1px solid color-mix(in srgb, ${statusCfg.color} 38%, transparent)`,
+            borderStyle: activeStatus === "waiting" ? "dashed" : "solid",
             borderRadius: 4,
             background: `color-mix(in srgb, ${statusCfg.color} 10%, transparent)`,
             overflow: "hidden",
@@ -280,8 +283,10 @@ export default memo(function PaneTabBar({
             style={{
               width: 6,
               height: 6,
-              borderRadius: "50%",
+              borderRadius: statusCfg.shape === "diamond" ? 2 : "50%",
               background: statusCfg.color,
+              boxShadow: `0 0 0 3px color-mix(in srgb, ${statusCfg.color} 14%, transparent)`,
+              transform: statusCfg.shape === "diamond" ? "rotate(45deg)" : undefined,
               flexShrink: 0,
             }}
           />

@@ -225,6 +225,8 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
       data-session-id={pane.sessionId}
       data-dnd-workspace-id={workspaceId}
       data-dnd-pane-id={pane.id}
+      data-active-pane={isActive && !isZoomed ? "true" : undefined}
+      data-pane-zoomed={isZoomed ? "true" : undefined}
       tabIndex={-1}
       onFocus={handleFocus}
       onBlur={handleBlur}
@@ -237,7 +239,6 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
           right: 0,
           bottom: 0,
           zIndex: 100,
-          background: "var(--cmux-bg, #0a0a0a)",
         } : {
           position: "relative",
           width: "100%",
@@ -246,7 +247,7 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
         display: "flex",
         flexDirection: "column",
         overflow: "hidden",
-        background: "var(--cmux-bg, #0a0a0a)",
+        background: "transparent",
         ["--pane-border-width" as string]: `${borderWidth}px`,
         ["--pane-border-color" as string]: borderColor,
       } as React.CSSProperties & Record<string, string>}
@@ -265,7 +266,7 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
         onSelectTab={handleSelectTab}
       />
 
-      <div style={{ flex: 1, minHeight: 0, overflow: "hidden", position: "relative", background: "var(--cmux-bg, #0a0a0a)" }}>
+      <div style={{ flex: 1, minHeight: 0, overflow: "hidden", position: "relative", background: "transparent" }}>
         {activeTab && agent ? (
           <div
             style={{

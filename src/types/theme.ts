@@ -31,6 +31,60 @@ export interface ThemeStatusColors {
   error: string;
 }
 
+export type ThemeTweakColorKey =
+  | "chrome.background"
+  | "chrome.surface"
+  | "chrome.border"
+  | "chrome.text"
+  | "chrome.textMuted"
+  | "chrome.textDim"
+  | "chrome.accent"
+  | "chrome.danger"
+  | "terminal.background"
+  | "terminal.foreground"
+  | "terminal.cursor"
+  | "terminal.selectionBackground"
+  | "terminal.black"
+  | "terminal.red"
+  | "terminal.green"
+  | "terminal.yellow"
+  | "terminal.blue"
+  | "terminal.magenta"
+  | "terminal.cyan"
+  | "terminal.white"
+  | "terminal.brightBlack"
+  | "terminal.brightRed"
+  | "terminal.brightGreen"
+  | "terminal.brightYellow"
+  | "terminal.brightBlue"
+  | "terminal.brightMagenta"
+  | "terminal.brightCyan"
+  | "terminal.brightWhite"
+  | "status.working"
+  | "status.waiting"
+  | "status.done"
+  | "status.error"
+  | "notification";
+
+export interface ThemeTweaks {
+  enabled: boolean;
+  colors: Partial<Record<ThemeTweakColorKey, string>>;
+  background: ThemeBackgroundSettings;
+}
+
+export type ThemeBackgroundMode = "solid" | "preset" | "image";
+
+export interface ThemeBackgroundSettings {
+  mode: ThemeBackgroundMode;
+  presetId: string;
+  imagePath: string;
+  imageOpacity: number;
+  imageBlur: number;
+  imageDim: number;
+  panelOpacity: number;
+  terminalOpacity: number;
+}
+
 export interface ThemeDefinition {
   id: string;
   name: string;

@@ -21,7 +21,6 @@ export type KeybindingActionId =
   | "pane.split.right"
   | "pane.split.down"
   | "pane.close"
-  | "palette.open"
   | "settings.keybindings"
   | "pane.zoom.toggle"
   | "terminal.search";
@@ -35,7 +34,6 @@ export interface KeybindingDefinition {
 
 export const KEYBINDING_DEFINITIONS: KeybindingDefinition[] = [
   { action: "sidebar.toggle", title: "Toggle sidebar", category: "Global", defaultShortcut: "ctrl+b" },
-  { action: "palette.open", title: "Open command palette", category: "Global", defaultShortcut: "ctrl+shift+p" },
   { action: "settings.keybindings", title: "Open keyboard shortcuts", category: "Global", defaultShortcut: "ctrl+," },
 
   { action: "workspace.new", title: "New workspace", category: "Workspace", defaultShortcut: "ctrl+shift+n" },

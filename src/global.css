@@ -1,5 +1,6 @@
 :root {
   --cmux-bg: #0a0a0a;
+  --cmux-bg-solid: #0a0a0a;
   --cmux-sidebar: #1E1E1E;
   --cmux-accent: #0A84FF;
   --cmux-border: rgba(255, 255, 255, 0.1);
@@ -9,6 +10,7 @@
   --cmux-text-dim: rgba(255, 255, 255, 0.42);
   --cmux-title-bg: #111111;
   --cmux-surface: #161616;
+  --cmux-terminal-bg: #0a0a0a;
   --cmux-hover: rgba(255, 255, 255, 0.06);
   --cmux-selected: rgba(255, 255, 255, 0.08);
   --cmux-red: #ff5555;
@@ -22,9 +24,11 @@
 
 .ui-cmux {
   --cmux-bg: #0b0b0c;
+  --cmux-bg-solid: #0b0b0c;
   --cmux-sidebar: #141415;
   --cmux-title-bg: #0f0f10;
   --cmux-surface: #151516;
+  --cmux-terminal-bg: #0b0b0c;
   --cmux-accent: #3b82f6;
   --cmux-border: rgba(255, 255, 255, 0.08);
   --cmux-text: #ededed;
@@ -78,6 +82,29 @@ div:hover>.tab-close-btn {
   opacity: 1 !important;
 }
 
+/* Icons in chrome (title bar / pane tab bar / sidebars) — bidirectional
+   shadow keeps them readable on both dark and light image backgrounds.
+   White outer glow lifts them off dark areas, dark drop-shadow lifts them
+   off light/saturated areas. */
+button svg,
+.pane-action-btn svg,
+.cmux-title-btn svg {
+  filter:
+    drop-shadow(0 0 1px rgba(255, 255, 255, 0.45))
+    drop-shadow(0 0 2px rgba(0, 0, 0, 0.6))
+    drop-shadow(0 1px 2px rgba(0, 0, 0, 0.4));
+}
+
+/* Brand text + workspace name in TitleBar — same reason */
+[data-tauri-drag-region] > span,
+[data-cmux-brand="true"],
+.pane-tab-label {
+  text-shadow:
+    0 0 2px rgba(255, 255, 255, 0.3),
+    0 0 3px rgba(0, 0, 0, 0.6),
+    0 1px 2px rgba(0, 0, 0, 0.45);
+}
+
 /* xterm.js overrides for crisp rendering */
 .xterm {
   padding: 0;
@@ -115,13 +142,13 @@ div:hover>.tab-close-btn {
   border: 1px solid transparent;
 }
 
-.cmux-workspace-item:hover {
+.cmux-workspace-item:hover:not([data-active-workspace="true"]) {
   background: var(--cmux-hover) !important;
   border-color: var(--cmux-border);
 }
 
 .pane-tabbar {
-  background: var(--cmux-surface) !important;
+  background: var(--pane-tabbar-bg, var(--cmux-surface)) !important;
 }
 
 .pane-tab-pill {
@@ -143,6 +170,10 @@ div:hover>.tab-close-btn {
 .xterm-screen {
   image-rendering: pixelated;
   background: transparent;
+}
+
+.xterm .xterm-screen canvas {
+  background: transparent !important;
 }
 
 /* WebKitGTK font rendering improvements */
@@ -212,7 +243,27 @@ canvas {
   pointer-events: none;
   z-index: 10;
   border: var(--pane-border-width, 1px) solid var(--pane-border-color, transparent);
-  transition: border-color 0.15s, border-width 0.15s;
+  transition: border-color 0.15s, border-width 0.15s, box-shadow 0.15s;
+}
+
+.terminal-pane-border[data-active-pane="true"]::after {
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--cmux-accent) 22%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--cmux-accent) 18%, transparent);
+}
+
+/* A zoomed pane must escape Allotment's pane-level clipping so the app-wide
+   AppShell background remains continuous behind the enlarged terminal. */
+[class*="splitView"]:has(.terminal-pane-border[data-pane-zoomed="true"]) {
+  overflow: visible !important;
+}
+
+/* While a pane is zoomed, hide the underlying layout instead of letting its
+   translucent panels show through as a shadow behind the zoomed terminal. */
+[data-cmux-zoom-active="true"] [data-cmux-hide-during-pane-zoom="true"],
+[data-cmux-zoom-active="true"] .terminal-pane-border:not([data-pane-zoomed="true"]),
+[data-cmux-zoom-active="true"] [class*="sash"] {
+  visibility: hidden !important;
 }
 
 /* Persistent notification border — overrides normal pane border */

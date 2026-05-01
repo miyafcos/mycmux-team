@@ -88,7 +88,6 @@ export default function TitleBar({ uiVariant = "default", onNewWorkspace }: Titl
   const handleClose = () => getCurrentWindow().close().catch(console.error);
   const handleOpenThemes = () => setIsThemeSwitcherOpen(true);
   const handleOpenKeybindings = () => useUiStore.getState().setIsKeybindingsOpen(true);
-  const handleOpenCommandPalette = () => useUiStore.getState().setIsPaletteOpen(true);
   const handleThemeSwitcherKeybindings = () => {
     setIsThemeSwitcherOpen(false);
     useUiStore.getState().setIsKeybindingsOpen(true);
@@ -269,7 +268,6 @@ export default function TitleBar({ uiVariant = "default", onNewWorkspace }: Titl
               onClose={() => setIsSettingsOpen(false)}
               onOpenThemes={handleOpenThemes}
               onOpenKeybindings={handleOpenKeybindings}
-              onOpenCommandPalette={handleOpenCommandPalette}
             />
           )}
         </div>
