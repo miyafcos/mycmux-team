@@ -1,5 +1,17 @@
 # Changelog (mycmux-lite)
 
+## [0.4.1] - 2026-05-04
+
+### Added
+
+- **Settings → CRSM Palette (Ctrl+P) で表示する種類**: 右上 ⚙ メニューに `Claude Code` / `Codex` / `Hybrid (Claude+Codex)` の表示 ON/OFF チェックボックスを追加。OFF にした kind は CRSM Palette のリストとフィルタチップから完全に消える。設定は localStorage 永続化 (デフォルト全 ON)。
+
+### Notes
+
+- master 側で行った Remote Terminal の URL 形式変更 (`#token=` → `?token=`) と embedded client refresh、Settings の Remote セクション追加は **lite には今回反映していない**。lite の Remote パスは現状の v0.4.0 構成のまま動作する (Phase 3-D の RemoteControl 互換化のみ済み)。
+
+---
+
 ## [0.4.0] - 2026-05-04
 
 Synced from upstream personal `master` v0.4.0 plus lite-specific remote terminal hardening.
