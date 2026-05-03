@@ -132,6 +132,7 @@ export interface CrsmSessionEntry {
   label: string;
   preview: string;
   last_activity: string;
+  started_at?: string | null;
   source: string;
   source_path: string;
   transcript_path?: string | null;
@@ -173,6 +174,30 @@ export async function crsmCreateHandoff(
     targetKind,
     recentTurns,
   });
+}
+
+// ─── Remote access commands ─────────────────────────────────────────────────
+
+export interface RemoteClientInfo {
+  id: number;
+  peer_addr: string;
+  connected_at: number;
+  attached_session_id?: string | null;
+}
+
+export interface RemoteInfo {
+  url: string;
+  token_suffix: string;
+  qr_svg: string;
+  connected_clients: RemoteClientInfo[];
+}
+
+export async function getRemoteInfo(): Promise<RemoteInfo> {
+  return invoke("get_remote_info");
+}
+
+export async function rotateRemoteToken(): Promise<RemoteInfo> {
+  return invoke("rotate_remote_token");
 }
 
 export interface AgentSessionMapping {

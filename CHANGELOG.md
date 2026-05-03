@@ -1,5 +1,32 @@
 # Changelog (mycmux-lite)
 
+## [0.4.0] - 2026-05-04
+
+Synced from upstream personal `master` v0.4.0 plus lite-specific remote terminal hardening.
+
+### Fixed
+
+- **CRSM Palette**: Ctrl+P で開いたセッションの env が親プロセス経由で他の PTY に伝播し、新規ペイン作成時に意図せず resume される問題を修正 (`MYCMUX_*` / `__CMUX_LAUNCHER_DONE` を起動時に `std::env::remove_var()` で除去)。**配布物で再発するとチーム全員のシェルで agent モード暴発事故になる重大バグ。**
+- **CRSM Palette**: CRSM CLI 呼び出し時に Windows コンソール窓が一瞬表示される問題を抑制 (`CREATE_NO_WINDOW = 0x08000000`)。
+- **Remote terminal (lite-only)**: WebSocket 接続失敗時に Terminal 読み込みを待ってからステータスバナーで通知。
+
+### Added
+
+- **CRSM Palette**: 詳細サブパネル (右ペイン) で USER / ASSISTANT ブロック分け表示。
+- **CRSM Palette**: cwd フィルタ chip (頻度上位 8 件 + 「他 N 件」展開)。
+- **CRSM Palette**: kind バッジを色分け (Claude オレンジ / Codex 青 / Hybrid 緑)。
+- **CRSM Palette**: 相対時刻表示、開始時刻 (`started_at`) 表示。
+- **CRSM Palette**: 「さらに過去のセッションを読み込む」ボタン (1000 件 → 全件)。
+
+### Changed
+
+- **CRSM Palette**: パネル幅 940px → 1200px、左 480px リスト + 右詳細の 2 カラム構造。
+- **CRSM Palette**: リスト各行を 2 行構造化 (1 行目: kind + label + 時刻 / 2 行目: cwd・source・✏ N ☐ N)。
+- **Persistence**: `agent_session_id` / `agent_kind` / `claude_session_id` を `data.json` に保存しなくなった (再起動後の自動 resume は廃止、Ctrl+P から手動 resume する仕様)。
+- **Remote terminal (lite-only)**: `<script async>` → `<script defer>` で読み込み順を決定的に。
+
+---
+
 ## [0.3.3-lite.1] - 2026-04-24
 
 ### Fixed
