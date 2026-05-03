@@ -18,7 +18,7 @@ import {
   type PaneTabConfig,
   type WorkspaceConfig,
 } from "../../lib/ipc";
-import type { AgentSessionKind, PaneTab, Workspace } from "../../types";
+import type { AgentSessionKind, Workspace } from "../../types";
 import { useThemeStore } from "../../stores/themeStore";
 import { useKeybindingStore } from "../../stores/keybindingStore";
 import { deriveEffectiveStatus } from "../../lib/notificationStatus";
@@ -70,46 +70,6 @@ function inferAgentKindFromAgentId(agentId?: string | null): AgentSessionKind | 
   if (agentId === "codex") return "codex";
   if (agentId === "claude-codex") return "claude-codex";
   return null;
-}
-
-function inferAgentKindFromProcessTitle(processTitle?: string): AgentSessionKind | null {
-  const lowerTitle = processTitle?.toLowerCase() ?? "";
-  if (lowerTitle.includes("claude-codex")) return "claude-codex";
-  if (lowerTitle.includes("claude")) return "claude";
-  if (lowerTitle.includes("codex")) return "codex";
-  return null;
-}
-
-function resolveAgentSession(
-  tab: PaneTab | undefined,
-  meta: ReturnType<typeof usePaneMetadataStore.getState>["metadata"][string] | undefined,
-  mapping?: AgentSessionMapping,
-): { kind: AgentSessionKind | null; sessionId: string | null; claudeSessionId: string | null } {
-  const processKind = inferAgentKindFromProcessTitle(meta?.processTitle);
-  const tabKind = tab?.agentKind ?? inferAgentKindFromAgentId(tab?.agentId);
-  const mappingKind = mapping?.agent_kind ?? processKind ?? tabKind;
-  const canUseMapping = Boolean(
-    mapping
-    && mappingKind
-    && (
-      !meta?.processIsShell
-      && (
-        processKind === mappingKind
-        || tabKind === mappingKind
-        || Boolean(mapping.agent_kind && meta && !processKind && !tabKind)
-      )
-    ),
-  );
-  const claudeSessionId = canUseMapping && mappingKind === "claude"
-    ? mapping?.session_id ?? null
-    : meta?.claudeSessionId ?? tab?.claudeSessionId ?? null;
-  const sessionId = meta?.agentSessionId ?? tab?.agentSessionId ?? (canUseMapping ? mapping?.session_id : null) ?? claudeSessionId ?? null;
-  const kind = meta?.agentKind ?? tab?.agentKind ?? (canUseMapping ? mappingKind : null) ?? (claudeSessionId ? "claude" : null);
-  return {
-    kind: sessionId ? kind : null,
-    sessionId,
-    claudeSessionId,
-  };
 }
 
 function getTerminalSnapshot(sessionId: string): string[] | null {
@@ -294,7 +254,30 @@ function dedupeAgentSessionsInConfigs(
   }));
 }
 
-function toConfig(ws: Workspace, agentMappings: Record<string, AgentSessionMapping> = {}): WorkspaceConfig {
+const EPHEMERAL_LAUNCH_ENV_KEYS = new Set([
+  "MYCMUX_RESUME",
+  "MYCMUX_SESSION_ID",
+  "MYCMUX_HANDOFF",
+  "MYCMUX_HANDOFF_FROM",
+  "MYCMUX_HANDOFF_PROMPT_FILE",
+  "MYCMUX_HANDOFF_FROM_SESSION",
+  "MYCMUX_AGENT_KIND",
+]);
+
+function stripEphemeralLaunchEnv(
+  env: Record<string, string> | null | undefined,
+): Record<string, string> | null {
+  if (!env) return null;
+  const filtered: Record<string, string> = {};
+  for (const [k, v] of Object.entries(env)) {
+    if (!EPHEMERAL_LAUNCH_ENV_KEYS.has(k)) {
+      filtered[k] = v;
+    }
+  }
+  return Object.keys(filtered).length > 0 ? filtered : null;
+}
+
+function toConfig(ws: Workspace, _agentMappings: Record<string, AgentSessionMapping> = {}): WorkspaceConfig {
   const paneIdToIndex = new Map(ws.panes.map((p, i) => [p.id, i]));
   const splitColumns = normalizeSplitColumns(ws);
   const split_columns = splitColumns
@@ -311,36 +294,31 @@ function toConfig(ws: Workspace, agentMappings: Record<string, AgentSessionMappi
       const activeTab = p.tabs.find((tab) => tab.id === p.activeTabId) ?? p.tabs[0];
       const paneMeta = metaState[p.sessionId];
       const paneCwd = paneMeta?.cwd ?? activeTab?.cwd ?? p.cwd ?? null;
-      const paneAgentSession = resolveAgentSession(activeTab, paneMeta, activeTab ? agentMappings[activeTab.sessionId] : undefined);
-      const paneClaudeSessionId = paneAgentSession.claudeSessionId ?? p.claudeSessionId ?? null;
       return {
         pane_id: p.id,
-        agent_id: agentIdForSessionKind(paneAgentSession.kind) ?? activeTab?.agentId ?? p.agentId,
+        agent_id: activeTab?.agentId ?? p.agentId,
         label: p.label ?? null,
         cwd: paneCwd,
         last_process: null,
-        claude_session_id: paneClaudeSessionId,
-        agent_kind: paneAgentSession.kind,
-        agent_session_id: paneAgentSession.sessionId,
-        launch_env: p.launchEnv ?? activeTab?.launchEnv ?? null,
+        claude_session_id: null,
+        agent_kind: null,
+        agent_session_id: null,
+        launch_env: stripEphemeralLaunchEnv(p.launchEnv ?? activeTab?.launchEnv),
         active_tab_id: p.activeTabId,
         tabs: p.tabs.map((tab) => {
           const tabMeta = metaState[tab.sessionId];
-          const tabAgentSession = resolveAgentSession(tab, tabMeta, agentMappings[tab.sessionId]);
           return {
             tab_id: tab.id,
-            agent_id: agentIdForSessionKind(tabAgentSession.kind) ?? tab.agentId,
+            agent_id: tab.agentId,
             label: tab.label ?? null,
             type: tab.type ?? "terminal",
             cwd: tabMeta?.cwd ?? tab.cwd ?? paneCwd,
             last_process: null,
-            claude_session_id: tabAgentSession.claudeSessionId,
-            agent_kind: tabAgentSession.kind,
-            agent_session_id: tabAgentSession.sessionId,
-            launch_env: tab.launchEnv ?? null,
-            terminal_snapshot: tabAgentSession.sessionId
-              ? null
-              : getTerminalSnapshot(tab.sessionId) ?? tab.terminalSnapshot ?? null,
+            claude_session_id: null,
+            agent_kind: null,
+            agent_session_id: null,
+            launch_env: stripEphemeralLaunchEnv(tab.launchEnv),
+            terminal_snapshot: getTerminalSnapshot(tab.sessionId) ?? tab.terminalSnapshot ?? null,
           };
         }),
       };
