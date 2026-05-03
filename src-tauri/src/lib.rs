@@ -56,7 +56,6 @@ pub fn run() {
     }
 
     let metadata_store = pty::monitor::new_metadata_store();
-    let remote_control = Arc::new(remote::RemoteControl::new());
 
     let state = AppState {
         session_manager: Arc::new(SessionManager::new()),
@@ -74,7 +73,6 @@ pub fn run() {
             pending_requests: Arc::new(dashmap::DashMap::new()),
             next_id: std::sync::atomic::AtomicUsize::new(1),
         })
-        .manage(remote_control)
         .invoke_handler(tauri::generate_handler![
             commands::terminal::create_session,
             commands::terminal::write_to_session,
@@ -98,8 +96,6 @@ pub fn run() {
             commands::window::get_window_count,
             commands::window::reveal_main_window,
             commands::window::quit_app,
-            remote::get_remote_info,
-            remote::rotate_remote_token,
             socket::socket_response,
         ])
         .setup(|#[allow(unused)] app| {
@@ -120,13 +116,7 @@ pub fn run() {
             );
 
             socket::start_socket_listener(app_handle.clone());
-            let remote_control = app.state::<Arc<remote::RemoteControl>>().inner().clone();
-            remote::start_remote_server(
-                app_handle.clone(),
-                state.session_manager.clone(),
-                ms,
-                remote_control,
-            );
+            remote::start_remote_server(app_handle.clone(), state.session_manager.clone(), ms);
 
             // Kill all PTY sessions when the main window closes
             let mgr = state.session_manager.clone();
