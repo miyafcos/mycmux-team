@@ -23,11 +23,12 @@ mycmux と mycmux-lite の リリース・配布・自動更新の運用手順�
 
 ## ローカルビルド
 
-### 個人版
+> **重要:** master と lite は git worktree で分離されている。Smart App Control の制約上、ビルドは必ずそれぞれの worktree ディレクトリ内で実行する (別ディレクトリだとブロックされる)。
+
+### 個人版 (master worktree)
 
 ```powershell
-cd C:\Users\miyaz\cmux-for-linux-dev
-git checkout master
+cd C:\Users\miyaz\cmux-for-linux-dev-master
 powershell -ExecutionPolicy Bypass -File build-personal.ps1
 ```
 
@@ -39,11 +40,10 @@ powershell -ExecutionPolicy Bypass -File build-personal.ps1
 5. 既存 `C:\Users\miyaz\mycmux-app\mycmux.exe` をタイムスタンプ付き `.bak-YYYYMMDD-HHmmss` でバックアップ
 6. 新しい exe を配置
 
-### lite
+### lite (release/public-lite worktree)
 
 ```powershell
 cd C:\Users\miyaz\cmux-for-linux-dev
-git checkout release/public-lite
 powershell -ExecutionPolicy Bypass -File build-lite.ps1
 ```
 
@@ -62,7 +62,7 @@ powershell -ExecutionPolicy Bypass -File build-lite.ps1
    git pull origin master
    ```
 2. `package.json` / `src-tauri/Cargo.toml` / `src-tauri/tauri.conf.json` の `version` を更新
-3. `CHANGELOG.md` (個人版) または `CHANGELOG-lite.md` (lite) に新バージョンセクションを追加
+3. `CHANGELOG.md` に新バージョンセクションを追加 (master / lite いずれの worktree でも単一の `CHANGELOG.md` 運用。lite-only / master-only の差分はその中で見出しを分けて明記する)
 4. commit:
    ```powershell
    git commit -am "chore: release v0.3.1"

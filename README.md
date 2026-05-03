@@ -114,12 +114,15 @@ npm run tauri dev
 | ペインを拡大/戻す | `Ctrl+Shift+Enter` |
 | フォーカス中ペインを点滅表示 | `Ctrl+Shift+H` |
 | ターミナル内検索 | `Ctrl+Shift+F` |
+| CRSM Palette (過去セッション一覧) | `Ctrl+P` |
 
 ## セッション復元
 
 アプリ終了後に再起動すると、ワークスペース、ペイン、タブ、作業ディレクトリ、直前のターミナル表示を復元します。
 
-Claude Code / Codex / claude-codex は、保存済みのセッション ID がある場合に resume 起動を優先します。復元できない場合でも、直前の会話表示と作業場所は残るため、その上から Launch メニューで再開できます。
+Claude Code / Codex / claude-codex の前回セッションは、直前の会話表示と作業場所がペインに残ります。再開したい場合は `Ctrl+P` で CRSM Palette を開き、対象のセッションを選んで手動で resume 起動してください。
+
+> v0.4.0 以降、保存済みセッション ID を使った自動 resume 起動は廃止しました。新規ペインに `MYCMUX_RESUME` などの環境変数が伝播してエージェントモードが意図せず暴発する事故 (env 汚染) を防ぐためです。CRSM Palette の手動選択がデフォルトの再開フローになります。
 
 ## 開発
 
