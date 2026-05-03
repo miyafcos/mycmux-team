@@ -6,13 +6,175 @@ pub mod ws_handler;
 use axum::response::{Html, IntoResponse};
 use axum::routing::get;
 use axum::Router;
+use serde::Serialize;
 use session::RemoteSessionManager;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::Emitter;
+use tokio::sync::{broadcast, RwLock};
+
+#[derive(Clone)]
+struct RemoteClient {
+    peer_addr: String,
+    connected_at: u64,
+    attached_session_id: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct RemoteClientSnapshot {
+    id: u64,
+    peer_addr: String,
+    connected_at: u64,
+    attached_session_id: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct RemoteInfo {
+    url: String,
+    token_suffix: String,
+    qr_svg: String,
+    connected_clients: Vec<RemoteClientSnapshot>,
+}
+
+/// Runtime control surface shared between the Tauri command layer and the
+/// embedded axum server. Keeps the public structure of the master worktree so
+/// that lib.rs can be cherry-picked without manual adapt fixes.
+///
+/// Note: `clients` / `next_client_id` / `disconnect_tx` are unused in the lite
+/// build today because lite's `ws_handler` does not yet track per-connection
+/// state. They are kept here so the public API matches master verbatim. The
+/// lite ws_handler can adopt them later (register/unregister around handle_ws,
+/// listen on subscribe_disconnect for token-rotation kicks) without touching
+/// any other module.
+#[allow(dead_code)]
+pub struct RemoteControl {
+    token: RwLock<String>,
+    port: u16,
+    clients: dashmap::DashMap<u64, RemoteClient>,
+    next_client_id: AtomicU64,
+    disconnect_tx: broadcast::Sender<()>,
+}
+
+#[allow(dead_code)]
+impl RemoteControl {
+    pub fn new() -> Self {
+        let (disconnect_tx, _) = broadcast::channel(32);
+        Self {
+            token: RwLock::new(auth::load_or_create_token()),
+            port: configured_port(),
+            clients: dashmap::DashMap::new(),
+            next_client_id: AtomicU64::new(1),
+            disconnect_tx,
+        }
+    }
+
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+
+    pub async fn validate_token(&self, provided: &str) -> bool {
+        let expected = self.token.read().await;
+        auth::validate_token(provided, &expected)
+    }
+
+    pub async fn current_token(&self) -> String {
+        self.token.read().await.clone()
+    }
+
+    pub fn subscribe_disconnect(&self) -> broadcast::Receiver<()> {
+        self.disconnect_tx.subscribe()
+    }
+
+    pub fn register_client(&self, peer_addr: String, attached_session_id: Option<String>) -> u64 {
+        let id = self.next_client_id.fetch_add(1, Ordering::Relaxed);
+        self.clients.insert(
+            id,
+            RemoteClient {
+                peer_addr,
+                connected_at: current_time_ms(),
+                attached_session_id,
+            },
+        );
+        id
+    }
+
+    pub fn update_client_session(&self, id: u64, attached_session_id: Option<String>) {
+        if let Some(mut client) = self.clients.get_mut(&id) {
+            client.attached_session_id = attached_session_id;
+        }
+    }
+
+    pub fn unregister_client(&self, id: u64) {
+        self.clients.remove(&id);
+    }
+
+    pub async fn info(&self) -> RemoteInfo {
+        let token = self.current_token().await;
+        let ip = qr::local_ip().unwrap_or_else(|| "localhost".to_string());
+        let url = qr::connection_url(&ip, self.port, &token);
+        let mut connected_clients: Vec<RemoteClientSnapshot> = self
+            .clients
+            .iter()
+            .map(|entry| RemoteClientSnapshot {
+                id: *entry.key(),
+                peer_addr: entry.peer_addr.clone(),
+                connected_at: entry.connected_at,
+                attached_session_id: entry.attached_session_id.clone(),
+            })
+            .collect();
+        connected_clients.sort_by_key(|client| client.connected_at);
+
+        RemoteInfo {
+            qr_svg: qr::svg_qr(&url),
+            url,
+            token_suffix: token_suffix(&token),
+            connected_clients,
+        }
+    }
+
+    pub async fn rotate_token(&self) -> Result<RemoteInfo, String> {
+        let new_token = auth::rotate_token()?;
+        let suffix = token_suffix(&new_token);
+        {
+            let mut current = self.token.write().await;
+            *current = new_token;
+        }
+        let _ = self.disconnect_tx.send(());
+        eprintln!("[remote] token rotated; new suffix={suffix}");
+        Ok(self.info().await)
+    }
+}
+
+fn configured_port() -> u16 {
+    std::env::var("MYCMUX_REMOTE_PORT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(7681)
+}
+
+#[allow(dead_code)]
+fn current_time_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis().try_into().unwrap_or(u64::MAX))
+        .unwrap_or(0)
+}
+
+fn token_suffix(token: &str) -> String {
+    token
+        .chars()
+        .rev()
+        .take(4)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect()
+}
 
 /// Shared state for the remote server.
 pub struct RemoteState {
-    pub token: String,
+    pub control: Arc<RemoteControl>,
     pub sessions: RemoteSessionManager,
     pub app_session_manager: Arc<crate::pty::manager::SessionManager>,
     pub metadata_store: crate::pty::monitor::MetadataStore,
@@ -29,16 +191,13 @@ pub fn start_remote_server(
     app: tauri::AppHandle,
     session_manager: Arc<crate::pty::manager::SessionManager>,
     metadata_store: crate::pty::monitor::MetadataStore,
+    control: Arc<RemoteControl>,
 ) {
     tauri::async_runtime::spawn(async move {
-        let token = auth::load_or_create_token();
-        let port: u16 = std::env::var("MYCMUX_REMOTE_PORT")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(7681);
+        let port = control.port();
 
         let state = Arc::new(RemoteState {
-            token: token.clone(),
+            control: control.clone(),
             sessions: RemoteSessionManager::new(),
             app_session_manager: session_manager,
             metadata_store,
@@ -67,8 +226,11 @@ pub fn start_remote_server(
             }
         };
 
-        // Print connection info + QR (prefer Tailscale IP for anywhere access)
+        // Print connection info + QR (prefer Tailscale IP for anywhere access).
+        // Lite-only: emit ASCII QR to the launching terminal so chime team users
+        // can scan it without opening Settings → Remote.
         if let Some(ip) = qr::local_ip() {
+            let token = state.control.current_token().await;
             let url = qr::connection_url(&ip, port, &token);
             let via = if ip.starts_with("100.") {
                 "Tailscale"
@@ -107,6 +269,20 @@ pub fn start_remote_server(
             eprintln!("[remote] Server error: {e}");
         }
     });
+}
+
+#[tauri::command]
+pub async fn get_remote_info(
+    control: tauri::State<'_, Arc<RemoteControl>>,
+) -> Result<RemoteInfo, String> {
+    Ok(control.info().await)
+}
+
+#[tauri::command]
+pub async fn rotate_remote_token(
+    control: tauri::State<'_, Arc<RemoteControl>>,
+) -> Result<RemoteInfo, String> {
+    control.rotate_token().await
 }
 
 /// Extract workspace ID from session ID: "pty-{wsId}-{paneId}-{tabId}"
@@ -226,7 +402,7 @@ async fn api_state(
 ) -> impl IntoResponse {
     // Validate token
     let token = params.get("token").map(|s| s.as_str()).unwrap_or("");
-    if !auth::validate_token(token, &state.token) {
+    if !state.control.validate_token(token).await {
         return (axum::http::StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
     }
 
@@ -350,13 +526,10 @@ async fn api_state(
 async fn serve_qr(
     axum::extract::State(state): axum::extract::State<Arc<RemoteState>>,
 ) -> impl axum::response::IntoResponse {
-    let port: u16 = std::env::var("MYCMUX_REMOTE_PORT")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(7681);
-
+    let port = state.control.port();
+    let token = state.control.current_token().await;
     let ip = qr::local_ip().unwrap_or_else(|| "localhost".to_string());
-    let url = qr::connection_url(&ip, port, &state.token);
+    let url = qr::connection_url(&ip, port, &token);
     let svg = qr::svg_qr(&url);
 
     ([(axum::http::header::CONTENT_TYPE, "image/svg+xml")], svg)
