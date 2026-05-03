@@ -254,14 +254,21 @@ function dedupeAgentSessionsInConfigs(
   }));
 }
 
+// Must stay in sync with the remove_var() list in src-tauri/src/lib.rs::run().
+// Anything that lib.rs strips at startup must also be stripped before persistence,
+// otherwise saved launch_env can re-inject MYCMUX_* into a freshly spawned pane on
+// next launch (env-pollution → unintended agent auto-resume).
 const EPHEMERAL_LAUNCH_ENV_KEYS = new Set([
   "MYCMUX_RESUME",
   "MYCMUX_SESSION_ID",
+  "MYCMUX_AGENT_KIND",
   "MYCMUX_HANDOFF",
   "MYCMUX_HANDOFF_FROM",
   "MYCMUX_HANDOFF_PROMPT_FILE",
   "MYCMUX_HANDOFF_FROM_SESSION",
-  "MYCMUX_AGENT_KIND",
+  "MYCMUX_PANE_SESSION_ID",
+  "MYCMUX_TAB_ID",
+  "__CMUX_LAUNCHER_DONE",
 ]);
 
 function stripEphemeralLaunchEnv(

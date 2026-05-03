@@ -53,6 +53,7 @@ pub fn create_session(
     let mut args = args;
     let mut env_map = env.unwrap_or_default();
     validate_agent_restore_request(cwd.as_deref(), &env_map)?;
+    sanitize_launch_env(&mut env_map);
     let command = prepare_spawn_command(&requested_command, &mut args);
     inject_osc7_hook(&command, &mut args, &mut env_map);
     if should_trust_claude_workspace(&requested_command, &env_map) {
@@ -310,6 +311,80 @@ fn agent_restore_error(kind: &str, session_id: &str, cwd: Option<&str>) -> Optio
     Some(format!(
         "Cannot restore {kind} session {session_id} from {cwd}. Saved session was not found ({detail})."
     ))
+}
+
+/// Last-line defense against MYCMUX_* env pollution leaking into a freshly
+/// spawned PTY child.
+///
+/// `validate_agent_restore_request` only rejects *invalid* resume payloads — it
+/// will happily pass through `MYCMUX_RESUME=1` on its own (no MYCMUX_SESSION_ID),
+/// or stray `MYCMUX_PANE_SESSION_ID` / `__CMUX_LAUNCHER_DONE` left over from
+/// persistence or parent shells. Any of those reaching the child triggers
+/// unintended agent auto-resume / kind detection.
+///
+/// Strategy:
+///   - If the payload looks like a *legitimate* resume (`MYCMUX_SESSION_ID` +
+///     a recognized kind in `MYCMUX_RESUME` / `MYCMUX_AGENT_KIND`) or a
+///     legitimate handoff (`MYCMUX_HANDOFF` + `MYCMUX_HANDOFF_FROM_SESSION`),
+///     keep the resume / handoff trio and only strip pane-internal bookkeeping
+///     (`MYCMUX_PANE_SESSION_ID`, `MYCMUX_TAB_ID`, `__CMUX_LAUNCHER_DONE`).
+///   - Otherwise strip *every* MYCMUX_* and `__CMUX_LAUNCHER_DONE`.
+///
+/// Keep this list in sync with `lib.rs::run()` startup `remove_var` and the
+/// frontend `EPHEMERAL_LAUNCH_ENV_KEYS` set in `SocketListener.tsx`.
+fn sanitize_launch_env(env: &mut HashMap<String, String>) {
+    const ALWAYS_INTERNAL: &[&str] = &[
+        "MYCMUX_PANE_SESSION_ID",
+        "MYCMUX_TAB_ID",
+        "__CMUX_LAUNCHER_DONE",
+    ];
+    const RESUME_TRIO: &[&str] = &[
+        "MYCMUX_RESUME",
+        "MYCMUX_SESSION_ID",
+        "MYCMUX_AGENT_KIND",
+    ];
+    const HANDOFF_QUARTET: &[&str] = &[
+        "MYCMUX_HANDOFF",
+        "MYCMUX_HANDOFF_FROM",
+        "MYCMUX_HANDOFF_PROMPT_FILE",
+        "MYCMUX_HANDOFF_FROM_SESSION",
+    ];
+
+    let has_session = env
+        .get("MYCMUX_SESSION_ID")
+        .map(|v| !v.trim().is_empty())
+        .unwrap_or(false);
+    let has_kind = env
+        .get("MYCMUX_RESUME")
+        .or_else(|| env.get("MYCMUX_AGENT_KIND"))
+        .map(|v| v.as_str())
+        .map(is_agent_session_kind)
+        .unwrap_or(false);
+    let legitimate_resume = has_session && has_kind;
+
+    let has_handoff = env
+        .get("MYCMUX_HANDOFF")
+        .map(|v| !v.trim().is_empty())
+        .unwrap_or(false);
+    let has_handoff_from = env
+        .get("MYCMUX_HANDOFF_FROM_SESSION")
+        .map(|v| !v.trim().is_empty())
+        .unwrap_or(false);
+    let legitimate_handoff = has_handoff && has_handoff_from;
+
+    for key in ALWAYS_INTERNAL {
+        env.remove(*key);
+    }
+    if !legitimate_resume {
+        for key in RESUME_TRIO {
+            env.remove(*key);
+        }
+    }
+    if !legitimate_handoff {
+        for key in HANDOFF_QUARTET {
+            env.remove(*key);
+        }
+    }
 }
 
 fn validate_agent_restore_request(
@@ -780,5 +855,112 @@ mod tests {
             session_id,
             &normalize_cwd_key(r"C:\Users\other")
         ));
+    }
+
+    fn env(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn sanitize_drops_pane_internal_keys_when_no_resume_context() {
+        let mut e = env(&[
+            ("MYCMUX_PANE_SESSION_ID", "pane-1"),
+            ("MYCMUX_TAB_ID", "tab-1"),
+            ("__CMUX_LAUNCHER_DONE", "1"),
+            ("FOO", "bar"),
+        ]);
+        sanitize_launch_env(&mut e);
+        assert!(!e.contains_key("MYCMUX_PANE_SESSION_ID"));
+        assert!(!e.contains_key("MYCMUX_TAB_ID"));
+        assert!(!e.contains_key("__CMUX_LAUNCHER_DONE"));
+        assert_eq!(e.get("FOO"), Some(&"bar".to_string()));
+    }
+
+    #[test]
+    fn sanitize_strips_stray_resume_marker_without_session_id() {
+        // Bug class: MYCMUX_RESUME=1 leaks from a parent shell with no SESSION_ID.
+        // Must not reach the child or the agent will auto-resume.
+        let mut e = env(&[("MYCMUX_RESUME", "claude"), ("FOO", "bar")]);
+        sanitize_launch_env(&mut e);
+        assert!(!e.contains_key("MYCMUX_RESUME"));
+        assert_eq!(e.get("FOO"), Some(&"bar".to_string()));
+    }
+
+    #[test]
+    fn sanitize_strips_stray_session_id_without_kind() {
+        let mut e = env(&[("MYCMUX_SESSION_ID", "abc-123")]);
+        sanitize_launch_env(&mut e);
+        assert!(!e.contains_key("MYCMUX_SESSION_ID"));
+    }
+
+    #[test]
+    fn sanitize_keeps_legitimate_resume_payload() {
+        let mut e = env(&[
+            ("MYCMUX_RESUME", "claude"),
+            ("MYCMUX_SESSION_ID", "abc-123"),
+            ("MYCMUX_AGENT_KIND", "claude"),
+            ("MYCMUX_PANE_SESSION_ID", "should-be-stripped"),
+            ("__CMUX_LAUNCHER_DONE", "1"),
+            ("HOME", "/home/u"),
+        ]);
+        sanitize_launch_env(&mut e);
+        assert_eq!(e.get("MYCMUX_RESUME").map(String::as_str), Some("claude"));
+        assert_eq!(
+            e.get("MYCMUX_SESSION_ID").map(String::as_str),
+            Some("abc-123")
+        );
+        assert_eq!(
+            e.get("MYCMUX_AGENT_KIND").map(String::as_str),
+            Some("claude")
+        );
+        assert!(!e.contains_key("MYCMUX_PANE_SESSION_ID"));
+        assert!(!e.contains_key("__CMUX_LAUNCHER_DONE"));
+        assert_eq!(e.get("HOME").map(String::as_str), Some("/home/u"));
+    }
+
+    #[test]
+    fn sanitize_keeps_legitimate_handoff_payload() {
+        let mut e = env(&[
+            ("MYCMUX_HANDOFF", "codex"),
+            ("MYCMUX_HANDOFF_FROM", "claude"),
+            ("MYCMUX_HANDOFF_PROMPT_FILE", "/tmp/p.md"),
+            ("MYCMUX_HANDOFF_FROM_SESSION", "src-sess"),
+            ("MYCMUX_TAB_ID", "should-be-stripped"),
+        ]);
+        sanitize_launch_env(&mut e);
+        assert_eq!(e.get("MYCMUX_HANDOFF").map(String::as_str), Some("codex"));
+        assert_eq!(
+            e.get("MYCMUX_HANDOFF_FROM_SESSION").map(String::as_str),
+            Some("src-sess")
+        );
+        assert!(!e.contains_key("MYCMUX_TAB_ID"));
+    }
+
+    #[test]
+    fn sanitize_drops_partial_handoff_without_from_session() {
+        // Incomplete handoff payload — likely env leak — must be stripped wholesale.
+        let mut e = env(&[
+            ("MYCMUX_HANDOFF", "codex"),
+            ("MYCMUX_HANDOFF_PROMPT_FILE", "/tmp/p.md"),
+        ]);
+        sanitize_launch_env(&mut e);
+        assert!(!e.contains_key("MYCMUX_HANDOFF"));
+        assert!(!e.contains_key("MYCMUX_HANDOFF_PROMPT_FILE"));
+    }
+
+    #[test]
+    fn sanitize_rejects_unknown_agent_kind() {
+        // Spoofing attempt: MYCMUX_RESUME=evil with a SESSION_ID. is_agent_session_kind
+        // should reject "evil" and the whole resume trio must be stripped.
+        let mut e = env(&[
+            ("MYCMUX_RESUME", "evil"),
+            ("MYCMUX_SESSION_ID", "abc-123"),
+        ]);
+        sanitize_launch_env(&mut e);
+        assert!(!e.contains_key("MYCMUX_RESUME"));
+        assert!(!e.contains_key("MYCMUX_SESSION_ID"));
     }
 }
