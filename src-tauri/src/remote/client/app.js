@@ -330,7 +330,12 @@
 
   // --- Terminal ---
   function initTerminal() {
-    if (term) return;
+    if (term) return true;
+
+    if (typeof Terminal === "undefined" || typeof FitAddon === "undefined") {
+      showStatus("Terminal assets are still loading. Reload if this stays.", true);
+      return false;
+    }
 
     term = new Terminal({
       cursorBlink: true,
@@ -385,6 +390,8 @@
         ws.send(JSON.stringify({ type: "resize", cols: size.cols, rows: size.rows }));
       }
     });
+
+    return true;
   }
 
   function connectWs(sessionId) {
@@ -403,11 +410,20 @@
 
     var proto = location.protocol === "https:" ? "wss:" : "ws:";
     var url = proto + "//" + location.host + "/ws?token=" + encodeURIComponent(token) + "&session=" + encodeURIComponent(sessionId);
+    var opened = false;
 
-    ws = new WebSocket(url);
+    try {
+      ws = new WebSocket(url);
+    } catch (e) {
+      reconnectEnabled = false;
+      setConnState("disconnected");
+      showStatus("WebSocket failed: " + e.message, true);
+      return;
+    }
     ws.binaryType = "arraybuffer";
 
     ws.onopen = function () {
+      opened = true;
       hideStatus();
       hideToast();
       setConnState("connected");
@@ -488,6 +504,11 @@
     ws.onclose = function () {
       stopPing();
       setConnState("disconnected");
+      if (!opened) {
+        reconnectEnabled = false;
+        showStatus("WebSocket did not connect. Check Tailscale and reload.", true);
+        return;
+      }
       if (reconnectEnabled && currentView === "terminal" && currentSessionId === sessionId) {
         if (!disconnectTime) disconnectTime = Date.now();
         var elapsed = Date.now() - disconnectTime;
@@ -504,6 +525,9 @@
     };
 
     ws.onerror = function () {
+      if (!opened) {
+        showStatus("WebSocket error. Check Tailscale and reload.", true);
+      }
       if (ws) ws.close();
     };
   }
@@ -572,7 +596,8 @@
     dashboardView.classList.add("hidden");
     terminalView.classList.remove("hidden");
 
-    initTerminal();
+    currentSessionId = sessionId;
+    if (!initTerminal()) return;
     sessionInfo.textContent = label || shortenSessionId(sessionId);
 
     // Only clear when switching to a DIFFERENT session
@@ -790,7 +815,11 @@
       disconnectTime = 0;
       reconnectAttempts = 0;
       hideStatus();
-      connectWs(currentSessionId);
+      if (!term) {
+        showTerminal(currentSessionId, sessionInfo.textContent || "");
+      } else {
+        connectWs(currentSessionId);
+      }
     } else {
       hideStatus();
       loadState();

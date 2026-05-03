@@ -1,5 +1,7 @@
 # mycmux-lite
 
+> Source note: this is the `mycmux-lite.exe` source tree. Edit `C:\Users\miyaz\cmux-for-linux-dev-master` when changing the full `C:\Users\miyaz\mycmux-app\mycmux.exe`; use this worktree only for `C:\Users\miyaz\mycmux-lite-app\mycmux-lite.exe`.
+
 `mycmux-lite` は、チーム配布向けの軽量版ターミナルワークスペースです。Claude Code / Codex / claude-codex を、ワークスペース、ペイン、タブ単位で並べて扱えます。
 
 lite 版は、通常版 mycmux からファイルサイドバー、パスジャンプ、Claude Buddy を外し、ターミナル作業に必要な部分へ絞っています。
