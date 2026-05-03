@@ -21,7 +21,8 @@ import CrsmPalette, { preloadCrsmSessions } from "../CommandPalette/CrsmPalette"
 import { useKeybindingStore } from "../../stores/keybindingStore";
 import { useThemeStore } from "../../stores/themeStore";
 import { THEME_BACKGROUND_PRESETS } from "../../lib/themeTweaks";
-import { confirm } from "@tauri-apps/plugin-dialog";
+import { confirm, message } from "@tauri-apps/plugin-dialog";
+import { listen } from "@tauri-apps/api/event";
 
 type Direction = "up" | "down" | "left" | "right";
 
@@ -272,6 +273,29 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
       setShowSetup(true);
     }
   }, [workspaces.length]);
+
+  // Surface backend remote-server failures (port bind, token validation, etc.)
+  // The Rust side already emits "remote-error"; without a listener the QR panel
+  // would just sit blank and the user would have no way to know it failed.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    listen<string>("remote-error", (event) => {
+      const text = typeof event.payload === "string" && event.payload.length > 0
+        ? event.payload
+        : "Remote terminal encountered an unknown error.";
+      console.error("[remote-error]", text);
+      void message(text, { title: "mycmux Remote Terminal", kind: "error" });
+    })
+      .then((fn) => {
+        unlisten = fn;
+      })
+      .catch((err) => {
+        console.error("Failed to subscribe to remote-error events", err);
+      });
+    return () => {
+      unlisten?.();
+    };
+  }, []);
 
   const handleNewWorkspace = useCallback(() => {
     setShowSetup(true);
