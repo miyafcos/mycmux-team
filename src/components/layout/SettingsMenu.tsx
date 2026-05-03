@@ -186,6 +186,12 @@ export default function SettingsMenu({
         <span>通知サウンド</span>
       </label>
 
+      <div style={{ height: 1, background: "var(--cmux-border)" }} />
+
+      <CrsmPaletteSection />
+
+      <div style={{ height: 1, background: "var(--cmux-border)" }} />
+
       <div style={{ padding: "8px 12px 0", fontSize: 11, color: "var(--cmux-text-dim, rgba(255,255,255,0.55))" }}>
         現在のバージョン: {currentVersion}
       </div>
@@ -219,5 +225,58 @@ export default function SettingsMenu({
         </div>
       )}
     </div>
+  );
+}
+
+// CRSM Palette per-kind visibility checkboxes. Mirrors the existing
+// notification checkbox styling for visual consistency.
+function CrsmPaletteSection() {
+  const showClaude = useSettingsStore((s) => s.crsmShowClaude);
+  const showCodex = useSettingsStore((s) => s.crsmShowCodex);
+  const showClaudeCodex = useSettingsStore((s) => s.crsmShowClaudeCodex);
+  const setShowClaude = useSettingsStore((s) => s.setCrsmShowClaude);
+  const setShowCodex = useSettingsStore((s) => s.setCrsmShowCodex);
+  const setShowClaudeCodex = useSettingsStore((s) => s.setCrsmShowClaudeCodex);
+
+  const rows: Array<{ label: string; checked: boolean; onChange: (v: boolean) => void }> = [
+    { label: "Claude Code", checked: showClaude, onChange: setShowClaude },
+    { label: "Codex", checked: showCodex, onChange: setShowCodex },
+    { label: "Hybrid (Claude+Codex)", checked: showClaudeCodex, onChange: setShowClaudeCodex },
+  ];
+
+  return (
+    <>
+      <div
+        style={{
+          padding: "10px 12px 4px",
+          fontSize: 11,
+          fontWeight: 600,
+          color: "var(--cmux-text-dim, rgba(255,255,255,0.55))",
+        }}
+      >
+        CRSM Palette (Ctrl+P) で表示する種類
+      </div>
+      {rows.map((row, idx) => (
+        <label
+          key={row.label}
+          style={{
+            padding: idx === rows.length - 1 ? "4px 12px 10px" : "4px 12px",
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            fontSize: 12,
+            color: "var(--cmux-text)",
+            cursor: "pointer",
+          }}
+        >
+          <input
+            type="checkbox"
+            checked={row.checked}
+            onChange={(e) => row.onChange(e.target.checked)}
+          />
+          <span>{row.label}</span>
+        </label>
+      ))}
+    </>
   );
 }

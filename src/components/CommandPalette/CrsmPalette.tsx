@@ -11,6 +11,7 @@ import {
   useWorkspaceLayoutStore,
 } from "../../stores/workspaceStore";
 import { useWorkspaceListStore } from "../../stores/workspaceListStore";
+import { useSettingsStore } from "../../stores/settingsStore";
 
 interface CrsmPaletteProps {
   open: boolean;
@@ -71,12 +72,12 @@ const KIND_COLORS: Record<TargetKind, { fg: string; bg: string }> = {
 const LIST_OVERSCAN = 6;
 const LIST_VIEWPORT_FALLBACK = 420;
 const HANDOFF_TIMEOUT_MS = 9000;
-const SESSION_FILTERS: Array<[SessionFilterKind, string]> = [
-  ["all", "すべて"],
-  ["claude", "Claude Code"],
-  ["codex", "Codex"],
-  ["claude-codex", "Hybrid"],
-];
+const SESSION_FILTER_LABELS: Record<SessionFilterKind, string> = {
+  "all": "すべて",
+  "claude": "Claude Code",
+  "codex": "Codex",
+  "claude-codex": "Hybrid",
+};
 
 function defaultTargetFor(kind: TargetKind | undefined): OpenTargetKind {
   return kind ?? "claude";
@@ -268,6 +269,29 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
   const activePaneId = useUiStore((s) => s.activePaneId);
   const addPaneToWorkspaceWithOptions = useWorkspaceLayoutStore((s) => s.addPaneToWorkspaceWithOptions);
 
+  // Per-kind visibility from Settings (right-side gear menu). When the
+  // user disables a kind, that kind disappears from both the session
+  // list and the filter chips.
+  const showClaude = useSettingsStore((s) => s.crsmShowClaude);
+  const showCodex = useSettingsStore((s) => s.crsmShowCodex);
+  const showClaudeCodex = useSettingsStore((s) => s.crsmShowClaudeCodex);
+  const enabledKinds = useMemo(() => {
+    const set = new Set<TargetKind>();
+    if (showClaude) set.add("claude");
+    if (showCodex) set.add("codex");
+    if (showClaudeCodex) set.add("claude-codex");
+    return set;
+  }, [showClaude, showCodex, showClaudeCodex]);
+  const sessionFilters = useMemo<Array<[SessionFilterKind, string]>>(() => {
+    const filters: Array<[SessionFilterKind, string]> = [["all", SESSION_FILTER_LABELS.all]];
+    for (const kind of OPEN_TARGETS) {
+      if (enabledKinds.has(kind)) {
+        filters.push([kind, SESSION_FILTER_LABELS[kind]]);
+      }
+    }
+    return filters;
+  }, [enabledKinds]);
+
   useEffect(() => {
     if (!open) return;
     setError(null);
@@ -300,10 +324,20 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
     };
   }, [open]);
 
+  // If the active filter chip points at a kind the user has just disabled
+  // in Settings, fall back to "all" so the palette is never stuck on an
+  // empty filter the user can no longer clear.
+  useEffect(() => {
+    if (sessionFilter !== "all" && !enabledKinds.has(sessionFilter)) {
+      setSessionFilter("all");
+    }
+  }, [enabledKinds, sessionFilter]);
+
   const filteredByAgent = useMemo(() => {
-    if (sessionFilter === "all") return sessions;
-    return sessions.filter((session) => session.kind === sessionFilter);
-  }, [sessionFilter, sessions]);
+    const visible = sessions.filter((session) => enabledKinds.has(session.kind));
+    if (sessionFilter === "all") return visible;
+    return visible.filter((session) => session.kind === sessionFilter);
+  }, [sessionFilter, sessions, enabledKinds]);
 
   const cwdCounts = useMemo(() => {
     const map = new Map<string, number>();
@@ -515,7 +549,7 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
           <span style={styles.targetText}>{targetSummary(selected, targetKind)}</span>
         </div>
         <div style={styles.filterRow}>
-          {SESSION_FILTERS.map(([kind, label]) => (
+          {sessionFilters.map(([kind, label]) => (
             <button
               key={kind}
               type="button"
