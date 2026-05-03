@@ -284,9 +284,8 @@ fn save_to_path(path: &Path, data: &PersistentData) -> Result<(), String> {
         .map_err(|error| format!("Failed to serialize data: {error}"))?;
 
     write_json_file(&tmp_path, &json)?;
-    replace_data_file(path, &tmp_path).map_err(|error| {
+    replace_data_file(path, &tmp_path).inspect_err(|_| {
         let _ = fs::remove_file(&tmp_path);
-        error
     })
 }
 

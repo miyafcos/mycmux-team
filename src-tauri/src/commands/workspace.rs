@@ -90,7 +90,6 @@ fn sanitize_tab_agent_session(tab: &mut PaneTabConfig, pane_cwd: Option<&str>) {
         }
         tab.agent_kind = Some(kind);
         tab.agent_session_id = Some(session_id);
-        return;
     }
     // Keep persisted resume identity intact when the local session index is
     // temporarily stale or unavailable. The renderer can still decide how to
@@ -144,7 +143,6 @@ fn sanitize_pane_agent_sessions(pane: &mut PaneConfig) {
         }
         pane.agent_kind = Some(kind);
         pane.agent_session_id = Some(session_id.to_string());
-        return;
     }
 }
 
