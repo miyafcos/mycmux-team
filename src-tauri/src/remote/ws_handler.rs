@@ -23,7 +23,7 @@ pub async fn ws_upgrade(
     Query(query): Query<WsQuery>,
     ws: WebSocketUpgrade,
 ) -> impl IntoResponse {
-    if !super::auth::validate_token(&query.token, &state.token) {
+    if !state.control.validate_token(&query.token).await {
         return (axum::http::StatusCode::UNAUTHORIZED, "Invalid token").into_response();
     }
     ws.on_upgrade(move |socket| handle_ws(socket, state, query))
