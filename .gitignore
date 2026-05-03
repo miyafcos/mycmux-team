@@ -44,6 +44,10 @@ tmp/
 # TypeScript cache
 *.tsbuildinfo
 
+# Python test cache
+.pytest_cache/
+__pycache__/
+
 # Tauri
 src-tauri/WixTools/
 src-tauri/target/

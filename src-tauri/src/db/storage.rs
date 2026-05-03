@@ -1,8 +1,10 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::fs;
-use std::path::PathBuf;
+use std::fs::{self, File};
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PaneTabConfig {
@@ -23,6 +25,8 @@ pub struct PaneTabConfig {
     #[serde(default)]
     pub agent_session_id: Option<String>,
     #[serde(default)]
+    pub launch_env: Option<HashMap<String, String>>,
+    #[serde(default)]
     pub terminal_snapshot: Option<Vec<String>>,
 }
 
@@ -41,6 +45,8 @@ pub struct PaneConfig {
     pub agent_kind: Option<String>,
     #[serde(default)]
     pub agent_session_id: Option<String>,
+    #[serde(default)]
+    pub launch_env: Option<HashMap<String, String>>,
     #[serde(default)]
     pub active_tab_id: Option<String>,
     #[serde(default)]
@@ -158,14 +164,135 @@ fn data_path(app_handle: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(dir.join("data.json"))
 }
 
-pub fn load(app_handle: &tauri::AppHandle) -> Result<PersistentData, String> {
-    let path = data_path(app_handle)?;
+fn backup_path_for(path: &Path, reason: &str) -> PathBuf {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("data.json");
+
+    path.with_file_name(format!(
+        "{file_name}.{reason}-{timestamp}-{}.bak",
+        std::process::id()
+    ))
+}
+
+fn quarantine_data_file(path: &Path, reason: &str) -> Result<PathBuf, String> {
+    let backup_path = backup_path_for(path, reason);
+    fs::rename(path, &backup_path).map_err(|error| {
+        format!(
+            "Failed to quarantine {} to {}: {error}",
+            path.display(),
+            backup_path.display()
+        )
+    })?;
+    Ok(backup_path)
+}
+
+fn load_from_path(path: &Path) -> Result<PersistentData, String> {
     if !path.exists() {
         return Ok(PersistentData::default());
     }
-    let contents =
-        fs::read_to_string(&path).map_err(|e| format!("Failed to read data file: {e}"))?;
-    serde_json::from_str(&contents).map_err(|e| format!("Failed to parse data file: {e}"))
+
+    let mut contents = String::new();
+    File::open(path)
+        .map_err(|error| format!("Failed to open {}: {error}", path.display()))?
+        .read_to_string(&mut contents)
+        .map_err(|error| format!("Failed to read {}: {error}", path.display()))?;
+
+    if contents.trim().is_empty() {
+        let _backup_path = quarantine_data_file(path, "empty")?;
+        return Ok(PersistentData::default());
+    }
+
+    match serde_json::from_str::<PersistentData>(&contents) {
+        Ok(data) => Ok(data),
+        Err(_error) => {
+            let _backup_path = quarantine_data_file(path, "corrupt")?;
+            Ok(PersistentData::default())
+        }
+    }
+}
+
+fn write_json_file(path: &Path, json: &str) -> Result<(), String> {
+    let mut file = File::create(path)
+        .map_err(|error| format!("Failed to create {}: {error}", path.display()))?;
+    file.write_all(json.as_bytes())
+        .map_err(|error| format!("Failed to write {}: {error}", path.display()))?;
+    file.sync_all()
+        .map_err(|error| format!("Failed to flush {}: {error}", path.display()))
+}
+
+fn replace_data_file(path: &Path, tmp_path: &Path) -> Result<(), String> {
+    if !path.exists() {
+        return fs::rename(tmp_path, path).map_err(|error| {
+            format!(
+                "Failed to move {} to {}: {error}",
+                tmp_path.display(),
+                path.display()
+            )
+        });
+    }
+
+    let backup_path = backup_path_for(path, "pre-replace");
+    fs::rename(path, &backup_path).map_err(|error| {
+        format!(
+            "Failed to backup {} to {}: {error}",
+            path.display(),
+            backup_path.display()
+        )
+    })?;
+
+    match fs::rename(tmp_path, path) {
+        Ok(()) => {
+            let _ = fs::remove_file(&backup_path);
+            Ok(())
+        }
+        Err(error) => {
+            let _ = fs::rename(&backup_path, path);
+            Err(format!(
+                "Failed to replace {} with {}: {error}",
+                path.display(),
+                tmp_path.display()
+            ))
+        }
+    }
+}
+
+fn save_to_path(path: &Path, data: &PersistentData) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("Failed to create {}: {error}", parent.display()))?;
+    }
+
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("data.json");
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let tmp_path = path.with_file_name(format!(
+        "{file_name}.tmp-{}-{timestamp}",
+        std::process::id()
+    ));
+    let json = serde_json::to_string_pretty(data)
+        .map_err(|error| format!("Failed to serialize data: {error}"))?;
+
+    write_json_file(&tmp_path, &json)?;
+    replace_data_file(path, &tmp_path).map_err(|error| {
+        let _ = fs::remove_file(&tmp_path);
+        error
+    })
+}
+
+pub fn load(app_handle: &tauri::AppHandle) -> Result<PersistentData, String> {
+    let path = data_path(app_handle)?;
+    load_from_path(&path)
 }
 
 pub fn save(app_handle: &tauri::AppHandle, data: &PersistentData) -> Result<(), String> {
@@ -182,16 +309,87 @@ where
     let _guard = save_lock()
         .lock()
         .map_err(|e| format!("Failed to lock data file: {e}"))?;
-    let mut data = load(app_handle).unwrap_or_default();
+    let mut data = load(app_handle)?;
     updater(&mut data);
     save_unlocked(app_handle, &data)
 }
 
 fn save_unlocked(app_handle: &tauri::AppHandle, data: &PersistentData) -> Result<(), String> {
     let path = data_path(app_handle)?;
-    let tmp_path = path.with_extension("json.tmp");
-    let json =
-        serde_json::to_string_pretty(data).map_err(|e| format!("Failed to serialize data: {e}"))?;
-    fs::write(&tmp_path, &json).map_err(|e| format!("Failed to write temp data file: {e}"))?;
-    fs::rename(&tmp_path, &path).map_err(|e| format!("Failed to rename data file: {e}"))
+    save_to_path(&path, data)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn load_from_path_corrupt_json_quarantines_file_and_returns_default() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("data.json");
+        fs::write(&path, "{not valid json").unwrap();
+
+        let data = load_from_path(&path).unwrap();
+
+        assert!(data.workspaces.is_empty());
+        assert!(!path.exists());
+        assert!(fs::read_dir(temp_dir.path()).unwrap().any(|entry| {
+            entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .contains("corrupt")
+        }));
+    }
+
+    #[test]
+    fn load_from_path_empty_file_quarantines_file_and_returns_default() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("data.json");
+        fs::write(&path, "   ").unwrap();
+
+        let data = load_from_path(&path).unwrap();
+
+        assert!(data.workspaces.is_empty());
+        assert!(!path.exists());
+        assert!(fs::read_dir(temp_dir.path()).unwrap().any(|entry| {
+            entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .contains("empty")
+        }));
+    }
+
+    #[test]
+    fn save_to_path_replaces_existing_json() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("data.json");
+        fs::write(&path, r#"{"active_workspace_id":"old"}"#).unwrap();
+        let data = PersistentData {
+            active_workspace_id: Some("next".to_string()),
+            ..Default::default()
+        };
+
+        save_to_path(&path, &data).unwrap();
+        let loaded = load_from_path(&path).unwrap();
+
+        assert_eq!(loaded.active_workspace_id.as_deref(), Some("next"));
+    }
+
+    #[test]
+    fn pane_launch_env_round_trips() {
+        let pane: PaneConfig = serde_json::from_str(
+            r#"{"agent_id":"shell-starter","label":null,"cwd":null,"launch_env":{"MYCMUX_RESUME":"codex"}}"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            pane.launch_env
+                .as_ref()
+                .and_then(|launch_env| launch_env.get("MYCMUX_RESUME"))
+                .map(String::as_str),
+            Some("codex")
+        );
+    }
 }

@@ -70,7 +70,6 @@ async fn handle_ws(socket: WebSocket, state: Arc<RemoteState>, query: WsQuery) {
     }
 }
 
-
 /// Send scrollback in 16KB chunks to avoid freezing mobile clients.
 async fn send_scrollback_chunked(
     sink: &mut futures_util::stream::SplitSink<WebSocket, Message>,
@@ -101,7 +100,8 @@ async fn handle_app_session_bridge(
 ) {
     let (mut sink, mut stream) = socket.split();
 
-    let connected = format!(r#"{{"type":"connected","session_id":"{session_id}","mode":"attach"}}"#);
+    let connected =
+        format!(r#"{{"type":"connected","session_id":"{session_id}","mode":"attach"}}"#);
     if sink.send(Message::Text(connected.into())).await.is_err() {
         return;
     }

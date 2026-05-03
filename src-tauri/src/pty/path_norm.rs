@@ -5,11 +5,7 @@
 /// does not match the drive-letter pattern.
 pub fn posix_drive_to_windows(path: &str) -> String {
     let bytes = path.as_bytes();
-    if bytes.len() >= 3
-        && bytes[0] == b'/'
-        && bytes[1].is_ascii_alphabetic()
-        && bytes[2] == b'/'
-    {
+    if bytes.len() >= 3 && bytes[0] == b'/' && bytes[1].is_ascii_alphabetic() && bytes[2] == b'/' {
         let drive = (bytes[1] as char).to_ascii_uppercase();
         let rest = path[2..].replace('/', "\\");
         format!("{drive}:{rest}")

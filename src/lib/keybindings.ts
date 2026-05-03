@@ -23,7 +23,8 @@ export type KeybindingActionId =
   | "pane.close"
   | "settings.keybindings"
   | "pane.zoom.toggle"
-  | "terminal.search";
+  | "terminal.search"
+  | "crsm.palette";
 
 export interface KeybindingDefinition {
   action: KeybindingActionId;
@@ -35,6 +36,7 @@ export interface KeybindingDefinition {
 export const KEYBINDING_DEFINITIONS: KeybindingDefinition[] = [
   { action: "sidebar.toggle", title: "Toggle sidebar", category: "Global", defaultShortcut: "ctrl+b" },
   { action: "settings.keybindings", title: "Open keyboard shortcuts", category: "Global", defaultShortcut: "ctrl+," },
+  { action: "crsm.palette", title: "Open CRSM palette", category: "Global", defaultShortcut: "ctrl+p" },
 
   { action: "workspace.new", title: "New workspace", category: "Workspace", defaultShortcut: "ctrl+shift+n" },
   { action: "workspace.next", title: "Next workspace", category: "Workspace", defaultShortcut: "ctrl+tab" },

@@ -70,7 +70,11 @@ pub fn start_remote_server(
         // Print connection info + QR (prefer Tailscale IP for anywhere access)
         if let Some(ip) = qr::local_ip() {
             let url = qr::connection_url(&ip, port, &token);
-            let via = if ip.starts_with("100.") { "Tailscale" } else { "LAN" };
+            let via = if ip.starts_with("100.") {
+                "Tailscale"
+            } else {
+                "LAN"
+            };
             println!("\n=== mycmux Remote Terminal ({via}) ===");
             println!("URL: {url}");
             println!();
@@ -88,8 +92,13 @@ pub fn start_remote_server(
             Ok(l) => l,
             Err(e) => {
                 eprintln!("[remote] Failed to bind {addr}: {e}");
-                if let Some(ref pf) = port_file { let _ = std::fs::remove_file(pf); }
-                let _ = state.app_handle.emit("remote-error", format!("Remote terminal failed: port {port} in use"));
+                if let Some(ref pf) = port_file {
+                    let _ = std::fs::remove_file(pf);
+                }
+                let _ = state.app_handle.emit(
+                    "remote-error",
+                    format!("Remote terminal failed: port {port} in use"),
+                );
                 return;
             }
         };
@@ -104,7 +113,11 @@ pub fn start_remote_server(
 fn extract_workspace_id(session_id: &str) -> Option<&str> {
     let rest = session_id.strip_prefix("pty-")?;
     // UUID format: 8-4-4-4-12 = 36 chars
-    if rest.len() >= 36 { Some(&rest[..36]) } else { None }
+    if rest.len() >= 36 {
+        Some(&rest[..36])
+    } else {
+        None
+    }
 }
 
 fn basename(path: &str) -> Option<&str> {
@@ -218,8 +231,7 @@ async fn api_state(
     }
 
     // Read workspace configs from persistent data (for name lookup)
-    let workspaces_data = crate::db::storage::load(&state.app_handle)
-        .unwrap_or_default();
+    let workspaces_data = crate::db::storage::load(&state.app_handle).unwrap_or_default();
 
     // Get live session PIDs and group by workspace ID extracted from session IDs
     let live_pids: Vec<(String, Option<u32>)> = state.app_session_manager.iter_pids();
@@ -270,17 +282,16 @@ async fn api_state(
             let mut pane_data: Vec<(String, Option<u32>, Option<serde_json::Value>)> = Vec::new();
 
             for (session_id, pid) in &sessions {
-                let (cwd, git_branch, process_name) = if let Some(meta) =
-                    state.metadata_store.get(session_id)
-                {
-                    (
-                        Some(meta.cwd.clone()),
-                        meta.git_branch.clone(),
-                        normalize_process_name(meta.process_name.as_deref()),
-                    )
-                } else {
-                    (None, None, None)
-                };
+                let (cwd, git_branch, process_name) =
+                    if let Some(meta) = state.metadata_store.get(session_id) {
+                        (
+                            Some(meta.cwd.clone()),
+                            meta.git_branch.clone(),
+                            normalize_process_name(meta.process_name.as_deref()),
+                        )
+                    } else {
+                        (None, None, None)
+                    };
 
                 let label = build_pane_label(
                     session_id,
@@ -290,16 +301,15 @@ async fn api_state(
                 );
                 pane_labels.push(label);
 
-                let metadata =
-                    if cwd.is_some() || git_branch.is_some() || process_name.is_some() {
-                        Some(serde_json::json!({
-                            "cwd": cwd,
-                            "git_branch": git_branch,
-                            "process_name": process_name,
-                        }))
-                    } else {
-                        None
-                    };
+                let metadata = if cwd.is_some() || git_branch.is_some() || process_name.is_some() {
+                    Some(serde_json::json!({
+                        "cwd": cwd,
+                        "git_branch": git_branch,
+                        "process_name": process_name,
+                    }))
+                } else {
+                    None
+                };
 
                 pane_data.push((session_id.clone(), *pid, metadata));
             }
@@ -321,7 +331,8 @@ async fn api_state(
                 })
                 .collect();
 
-            let name = build_workspace_name(ws_config.map(|w| w.name.as_str()), &pane_labels, ws_index);
+            let name =
+                build_workspace_name(ws_config.map(|w| w.name.as_str()), &pane_labels, ws_index);
 
             Some(serde_json::json!({
                 "id": ws_id,
@@ -348,10 +359,7 @@ async fn serve_qr(
     let url = qr::connection_url(&ip, port, &state.token);
     let svg = qr::svg_qr(&url);
 
-    (
-        [(axum::http::header::CONTENT_TYPE, "image/svg+xml")],
-        svg,
-    )
+    ([(axum::http::header::CONTENT_TYPE, "image/svg+xml")], svg)
 }
 
 /// Serve embedded static client files (index.html, app.js, style.css, manifest.json).
@@ -373,7 +381,10 @@ async fn serve_static(uri: axum::http::Uri) -> impl axum::response::IntoResponse
                 axum::http::StatusCode::OK,
                 [
                     (axum::http::header::CONTENT_TYPE, mime),
-                    (axum::http::header::CACHE_CONTROL, "no-cache, no-store, must-revalidate"),
+                    (
+                        axum::http::header::CACHE_CONTROL,
+                        "no-cache, no-store, must-revalidate",
+                    ),
                 ],
                 file.data.to_vec(),
             )
@@ -384,10 +395,7 @@ async fn serve_static(uri: axum::http::Uri) -> impl axum::response::IntoResponse
             match ClientAssets::get("index.html") {
                 Some(file) => (
                     axum::http::StatusCode::OK,
-                    [(
-                        axum::http::header::CONTENT_TYPE,
-                        "text/html; charset=utf-8",
-                    )],
+                    [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
                     file.data.to_vec(),
                 )
                     .into_response(),
