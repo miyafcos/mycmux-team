@@ -123,6 +123,58 @@ export async function getLaunchCwd(): Promise<string | null> {
   return invoke("get_launch_cwd");
 }
 
+// ─── CRSM commands ──────────────────────────────────────────────────────────
+
+export interface CrsmSessionEntry {
+  kind: "claude" | "codex" | "claude-codex";
+  id: string;
+  cwd: string;
+  label: string;
+  preview: string;
+  last_activity: string;
+  source: string;
+  source_path: string;
+  transcript_path?: string | null;
+  summary_file?: string | null;
+  files_modified: string[];
+  incomplete_tasks: string[];
+}
+
+export interface CrsmHandoffResult {
+  path: string;
+  bootstrap_prompt: string;
+  from_kind: "claude" | "codex" | "claude-codex";
+  target_kind: "claude" | "codex" | "claude-codex";
+  from_session_id: string;
+  cwd: string;
+}
+
+export async function crsmListSessions(
+  query?: string,
+  limit = 200,
+  refresh = false,
+): Promise<CrsmSessionEntry[]> {
+  return invoke("crsm_list_sessions", {
+    query: query?.trim() ? query : null,
+    limit,
+    refresh,
+  });
+}
+
+export async function crsmCreateHandoff(
+  sessionId: string,
+  fromKind: CrsmSessionEntry["kind"],
+  targetKind: CrsmSessionEntry["kind"],
+  recentTurns = 20,
+): Promise<CrsmHandoffResult> {
+  return invoke("crsm_create_handoff", {
+    sessionId,
+    fromKind,
+    targetKind,
+    recentTurns,
+  });
+}
+
 export interface AgentSessionMapping {
   agent_kind?: AgentSessionKind | null;
   session_id: string;
@@ -171,6 +223,7 @@ export interface PaneTabConfig {
   claude_session_id?: string | null;
   agent_kind?: AgentSessionKind | null;
   agent_session_id?: string | null;
+  launch_env?: Record<string, string> | null;
   terminal_snapshot?: string[] | null;
 }
 
@@ -183,6 +236,7 @@ export interface PaneConfig {
   claude_session_id?: string | null;
   agent_kind?: AgentSessionKind | null;
   agent_session_id?: string | null;
+  launch_env?: Record<string, string> | null;
   active_tab_id?: string | null;
   tabs?: PaneTabConfig[] | null;
 }

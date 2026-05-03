@@ -17,7 +17,7 @@ function makeTab(
   paneId: string,
   agentId: string,
   type: PaneTab["type"] = "terminal",
-  options?: Partial<Pick<PaneTab, "id" | "label" | "cwd" | "lastProcess" | "claudeSessionId" | "agentKind" | "agentSessionId" | "terminalSnapshot">>,
+  options?: Partial<Pick<PaneTab, "id" | "label" | "cwd" | "lastProcess" | "claudeSessionId" | "agentKind" | "agentSessionId" | "launchEnv" | "terminalSnapshot">>,
 ): PaneTab {
   const tabId = options?.id ?? uuid();
   return {
@@ -31,6 +31,7 @@ function makeTab(
     claudeSessionId: options?.claudeSessionId,
     agentKind: options?.agentKind,
     agentSessionId: options?.agentSessionId,
+    launchEnv: options?.launchEnv,
     terminalSnapshot: options?.terminalSnapshot,
   };
 }
@@ -134,6 +135,7 @@ function makePaneFromTab(paneId: string, tab: PaneTab): Pane {
     claudeSessionId: tab.claudeSessionId,
     agentKind: tab.agentKind,
     agentSessionId: tab.agentSessionId,
+    launchEnv: tab.launchEnv,
   };
 }
 
@@ -148,6 +150,7 @@ function applyActiveTabFields(pane: Pane, activeTab: PaneTab): Pane {
     claudeSessionId: activeTab.claudeSessionId ?? pane.claudeSessionId,
     agentKind: activeTab.agentKind ?? pane.agentKind,
     agentSessionId: activeTab.agentSessionId ?? pane.agentSessionId,
+    launchEnv: activeTab.launchEnv ?? pane.launchEnv,
   };
 }
 
@@ -175,6 +178,19 @@ interface WorkspaceLayoutState {
     afterPaneId: string,
     direction: "right" | "down",
     agentId?: string
+  ) => void;
+  addPaneToWorkspaceWithOptions: (
+    workspaceId: string,
+    afterPaneId: string,
+    direction: "right" | "down",
+    options: {
+      agentId?: string;
+      label?: string;
+      cwd?: string;
+      agentKind?: PaneTab["agentKind"];
+      agentSessionId?: string;
+      launchEnv?: Record<string, string>;
+    },
   ) => void;
   
   // Tab operations
@@ -265,6 +281,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
                 claudeSessionId: tabConfig.claude_session_id ?? undefined,
                 agentKind: tabConfig.agent_kind ?? (tabConfig.claude_session_id ? "claude" : undefined),
                 agentSessionId: tabConfig.agent_session_id ?? tabConfig.claude_session_id ?? undefined,
+                launchEnv: tabConfig.launch_env ?? pc.launch_env ?? undefined,
                 terminalSnapshot: tabConfig.terminal_snapshot ?? undefined,
               },
             );
@@ -275,6 +292,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
             claudeSessionId: pc.claude_session_id ?? undefined,
             agentKind: pc.agent_kind ?? (pc.claude_session_id ? "claude" : undefined),
             agentSessionId: pc.agent_session_id ?? pc.claude_session_id ?? undefined,
+            launchEnv: pc.launch_env ?? undefined,
           })];
       const activeTab = tabs.find((tab) => tab.id === pc.active_tab_id) ?? tabs[0];
       const agentId = activeTab?.agentId || normalizeRestoredAgentId(pc.agent_id) || defaultAgentId;
@@ -285,6 +303,11 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
         tabs,
         activeTabId: activeTab.id,
         label: pc.label ?? undefined,
+        cwd: activeTab.cwd ?? pc.cwd ?? undefined,
+        claudeSessionId: activeTab.claudeSessionId ?? pc.claude_session_id ?? undefined,
+        agentKind: activeTab.agentKind ?? pc.agent_kind ?? undefined,
+        agentSessionId: activeTab.agentSessionId ?? pc.agent_session_id ?? undefined,
+        launchEnv: activeTab.launchEnv ?? pc.launch_env ?? undefined,
       };
     });
 
@@ -368,6 +391,56 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
       });
     } else {
       // direction === "right": insert new column after the column containing afterPaneId
+      newSplitColumns = [];
+      for (const col of existingColumns) {
+        newSplitColumns.push(col);
+        if (col.includes(afterPaneId)) {
+          newSplitColumns.push([paneId]);
+        }
+      }
+    }
+
+    useWorkspaceListStore.getState()._updateWorkspacePanes(workspaceId, newPanes, newSplitColumns, true);
+  },
+
+  addPaneToWorkspaceWithOptions: (workspaceId, afterPaneId, direction, options) => {
+    const workspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
+    if (!workspace) return;
+
+    const agId = options.agentId ?? getDefaultAgent().id;
+    const paneId = uuid();
+    const tab = makeTab(workspaceId, paneId, agId, "terminal", {
+      label: options.label,
+      cwd: options.cwd,
+      agentKind: options.agentKind,
+      agentSessionId: options.agentSessionId,
+      launchEnv: options.launchEnv,
+    });
+    const newPane: Pane = {
+      id: paneId,
+      agentId: agId,
+      sessionId: tab.sessionId,
+      label: options.label,
+      cwd: options.cwd,
+      agentKind: options.agentKind,
+      agentSessionId: options.agentSessionId,
+      launchEnv: options.launchEnv,
+      tabs: [tab],
+      activeTabId: tab.id,
+    };
+    const newPanes = [...workspace.panes, newPane];
+    const existingColumns: string[][] = workspace.splitColumns ?? [workspace.panes.map((p) => p.id)];
+
+    let newSplitColumns: string[][];
+    if (direction === "down") {
+      newSplitColumns = existingColumns.map((col) => {
+        const idx = col.indexOf(afterPaneId);
+        if (idx === -1) return col;
+        const newCol = [...col];
+        newCol.splice(idx + 1, 0, paneId);
+        return newCol;
+      });
+    } else {
       newSplitColumns = [];
       for (const col of existingColumns) {
         newSplitColumns.push(col);

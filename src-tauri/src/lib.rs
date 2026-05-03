@@ -69,6 +69,8 @@ pub fn run() {
             commands::terminal::get_claude_session_id,
             commands::terminal::read_pane_session_mappings,
             commands::terminal::read_agent_session_mappings,
+            commands::crsm::crsm_list_sessions,
+            commands::crsm::crsm_create_handoff,
             commands::workspace::load_persistent_data,
             commands::workspace::save_persistent_data,
             commands::workspace::save_workspaces,

@@ -229,10 +229,7 @@ fn parse_ghostty_colors(content: &str) -> Option<UserColors> {
 
 // ─── Alacritty ────────────────────────────────────────────────────────────────
 
-fn load_alacritty(
-    _home: &Path,
-    config_dir: &Path,
-) -> Option<(String, f32, Option<UserColors>)> {
+fn load_alacritty(_home: &Path, config_dir: &Path) -> Option<(String, f32, Option<UserColors>)> {
     // Alacritty config locations:
     // - Linux: ~/.config/alacritty/alacritty.toml
     // - macOS: ~/.config/alacritty/alacritty.toml or ~/Library/Application Support/alacritty/alacritty.toml

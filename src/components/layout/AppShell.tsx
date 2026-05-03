@@ -17,6 +17,7 @@ import PaneDragOverlay from "../workspace/PaneDragOverlay";
 import WorkspaceSetup from "../setup/WorkspaceSetup";
 import SocketListener from "./SocketListener";
 import KeybindingsModal from "./KeybindingsModal";
+import CrsmPalette, { preloadCrsmSessions } from "../CommandPalette/CrsmPalette";
 import { useKeybindingStore } from "../../stores/keybindingStore";
 import { useThemeStore } from "../../stores/themeStore";
 import { THEME_BACKGROUND_PRESETS } from "../../lib/themeTweaks";
@@ -212,6 +213,7 @@ interface AppShellProps {
 
 export default function AppShell({ uiVariant = "default" }: AppShellProps) {
   const [showSetup, setShowSetup] = useState(false);
+  const [isCrsmPaletteOpen, setIsCrsmPaletteOpen] = useState(false);
   const workspaces = useWorkspaceListStore((s) => s.workspaces);
   const activeId = useWorkspaceListStore((s) => s.activeWorkspaceId);
   const sidebarCollapsed = useUiStore((s) => s.sidebarCollapsed);
@@ -229,6 +231,10 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
   const getActionsForEvent = useKeybindingStore((s) => s.getActionsForEvent);
   const currentTheme = useThemeStore((s) => s.theme);
   const themeBackground = useThemeStore((s) => s.themeTweaks.background);
+
+  useEffect(() => {
+    preloadCrsmSessions();
+  }, []);
   const mediaBackgroundActive = themeBackground.mode === "preset" || (
     themeBackground.mode === "image" && themeBackground.imagePath.length > 0
   );
@@ -339,7 +345,7 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       // Skip if modals are open
-      if (isKeybindingsOpen) return;
+      if (isKeybindingsOpen || isCrsmPaletteOpen) return;
 
       // Get all actions that match this keyboard event (BridgeSpace pattern)
       const actions = getActionsForEvent(e);
@@ -358,6 +364,10 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
       switch (action) {
         case "settings.keybindings":
           setIsKeybindingsOpen(true);
+          break;
+
+        case "crsm.palette":
+          setIsCrsmPaletteOpen(true);
           break;
 
         case "workspace.close":
@@ -495,6 +505,7 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
   }, [
     getActionsForEvent,
     isKeybindingsOpen,
+    isCrsmPaletteOpen,
     setIsKeybindingsOpen,
     handleCloseWorkspace,
     toggleSidebar,
@@ -565,6 +576,7 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
           <WorkspaceView />
           <PaneDragOverlay />
           {isKeybindingsOpen && <KeybindingsModal onClose={() => setIsKeybindingsOpen(false)} />}
+          <CrsmPalette open={isCrsmPaletteOpen} onClose={() => setIsCrsmPaletteOpen(false)} />
           {showSetup && (
             <div style={{ position: "absolute", inset: 0, zIndex: 50, background: "var(--cmux-bg)" }}>
               <WorkspaceSetup onLaunch={handleLaunch} onCancel={handleCancelSetup} />

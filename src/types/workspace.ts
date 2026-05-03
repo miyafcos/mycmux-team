@@ -30,6 +30,7 @@ export interface PaneTab {
   claudeSessionId?: string;
   agentKind?: AgentSessionKind;
   agentSessionId?: string;
+  launchEnv?: Record<string, string>;
   terminalSnapshot?: string[];
 }
 
@@ -49,6 +50,7 @@ export interface Pane {
   claudeSessionId?: string;
   agentKind?: AgentSessionKind;
   agentSessionId?: string;
+  launchEnv?: Record<string, string>;
 }
 
 export type AgentSessionKind = "claude" | "codex" | "claude-codex";

@@ -1,4 +1,4 @@
-import { memo, useCallback } from "react";
+import { memo, type FocusEvent, useCallback } from "react";
 import ErrorBoundary from "../common/ErrorBoundary";
 import type { AgentSessionKind, Pane, PaneTab } from "../../types";
 import PaneTabBar from "./PaneTabBar";
@@ -165,7 +165,11 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
     }
   }, [pane.sessionId, pane.id, workspaceId, setActivePaneId, clearNotification]);
 
-  const handleBlur = useCallback(() => {
+  const handleBlur = useCallback((event: FocusEvent<HTMLDivElement>) => {
+    const nextTarget = event.relatedTarget as Node | null;
+    if (nextTarget && event.currentTarget.contains(nextTarget)) {
+      return;
+    }
     setActivePaneId(null);
   }, [setActivePaneId]);
 
@@ -288,13 +292,14 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
                 initialReplay={savedAgentSession ? undefined : activeTab.terminalSnapshot}
                 launchEnv={(() => {
                   const env: Record<string, string> = {
+                    ...(activeTab.launchEnv ?? pane.launchEnv ?? {}),
                     MYCMUX_PANE_SESSION_ID: activeTab.sessionId,
                     MYCMUX_TAB_ID: activeTab.id,
                   };
                   if (resolvedAgentId === "shell-starter") {
                     env.__CMUX_LAUNCHER_DONE = "1";
                   }
-                  if (savedAgentSession) {
+                  if (savedAgentSession && !env.MYCMUX_HANDOFF) {
                     env.MYCMUX_AGENT_KIND = savedAgentSession.kind;
                     env.MYCMUX_SESSION_ID = savedAgentSession.sessionId;
                     env.MYCMUX_RESUME = savedAgentSession.kind;

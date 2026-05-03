@@ -186,6 +186,26 @@ __prompt_custom_command() {
 
 cmd=""
 
+if [ -n "$MYCMUX_HANDOFF" ]; then
+  __handoff_file="$MYCMUX_HANDOFF_PROMPT_FILE"
+  __bootstrap="Handoff from previous session. Read \"${__handoff_file}\" and continue from where it left off."
+  case "$MYCMUX_HANDOFF" in
+    claude)
+      __write_session_mapping "$MYCMUX_PANE_SESSION_ID" "claude-handoff" "$MYCMUX_HANDOFF_FROM_SESSION"
+      claude --allow-dangerously-skip-permissions --permission-mode auto "$__bootstrap"
+      ;;
+    codex)
+      __write_session_mapping "$MYCMUX_PANE_SESSION_ID" "codex-handoff" "$MYCMUX_HANDOFF_FROM_SESSION"
+      codex --no-alt-screen "$__bootstrap"
+      ;;
+    claude-codex)
+      __write_session_mapping "$MYCMUX_PANE_SESSION_ID" "claude-codex-handoff" "$MYCMUX_HANDOFF_FROM_SESSION"
+      claude-codex "$__bootstrap"
+      ;;
+  esac
+  return 0 2>/dev/null || exit 0
+fi
+
 if [ -n "$MYCMUX_RESUME" ]; then
   case "$MYCMUX_RESUME" in
     claude-codex*)
@@ -254,6 +274,9 @@ if [ -n "$MYCMUX_LAUNCH_TARGET" ]; then
     claude-codex-resume)
       cmd="claude-codex --resume"
       ;;
+    claude-codex-dangerous)
+      cmd="claude-codex --dangerously-skip-permissions --permission-mode bypassPermissions"
+      ;;
     custom)
       cmd="__custom__"
       ;;
@@ -310,24 +333,26 @@ if [ -z "$cmd" ]; then
   __open_menu_fd
   options=(
     "Claude Code"
-    "Claude Code (resume)"
-    "Claude Code (dangerous)"
     "Codex"
-    "Codex (resume)"
-    "Codex (dangerous)"
     "claude-codex"
+    "Claude Code (dangerous)"
+    "Codex (dangerous)"
+    "claude-codex (dangerous)"
+    "Claude Code (resume)"
+    "Codex (resume)"
     "claude-codex (resume)"
     "Custom..."
   )
 
   commands=(
     "claude --allow-dangerously-skip-permissions --permission-mode auto"
-    "claude --allow-dangerously-skip-permissions --permission-mode auto --resume"
-    "claude --dangerously-skip-permissions --permission-mode bypassPermissions"
     "codex --no-alt-screen"
-    "codex resume --no-alt-screen"
-    "codex --no-alt-screen --dangerously-bypass-approvals-and-sandbox"
     "claude-codex"
+    "claude --dangerously-skip-permissions --permission-mode bypassPermissions"
+    "codex --no-alt-screen --dangerously-bypass-approvals-and-sandbox"
+    "claude-codex --dangerously-skip-permissions --permission-mode bypassPermissions"
+    "claude --allow-dangerously-skip-permissions --permission-mode auto --resume"
+    "codex resume --no-alt-screen"
     "claude-codex --resume"
     "__custom__"
   )
@@ -372,7 +397,14 @@ if [ -z "$cmd" ]; then
         ;;
       k|K) ((selected--)); [ $selected -lt 0 ] && selected=$((count - 1)) ;;
       j|J) ((selected++)); [ $selected -ge $count ] && selected=0 ;;
-      1) selected=0; break ;;
+      1)
+        if IFS= read -rsn1 -t 0.15 -u "$__CMUX_MENU_FD" k2 && [ "$k2" = "0" ]; then
+          selected=9
+        else
+          selected=0
+        fi
+        break
+        ;;
       2) selected=1; break ;;
       3) selected=2; break ;;
       4) selected=3; break ;;
@@ -380,7 +412,8 @@ if [ -z "$cmd" ]; then
       6) selected=5; break ;;
       7) selected=6; break ;;
       8) selected=7; break ;;
-      9|/) selected=8; break ;;
+      9) selected=8; break ;;
+      0|/) selected=9; break ;;
       '') break ;;
       q|Q) tput cnorm >&$__CMUX_MENU_FD 2>/dev/null; return 0 2>/dev/null || exit 0 ;;
     esac

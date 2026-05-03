@@ -5,8 +5,8 @@ use tauri::{AppHandle, Manager, State};
 use windows::Win32::Foundation::RECT;
 #[cfg(target_os = "windows")]
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetWindowRect, HWND_TOP, SW_SHOWNORMAL, SWP_SHOWWINDOW, SetForegroundWindow,
-    SetWindowPos, ShowWindow,
+    GetWindowRect, SetForegroundWindow, SetWindowPos, ShowWindow, HWND_TOP, SWP_SHOWWINDOW,
+    SW_SHOWNORMAL,
 };
 
 use crate::AppState;
@@ -25,15 +25,7 @@ fn ensure_window_bounds(window: &tauri::WebviewWindow) {
             if width < 400 || height < 300 {
                 unsafe {
                     let _ = ShowWindow(native_hwnd, SW_SHOWNORMAL);
-                    let _ = SetWindowPos(
-                        native_hwnd,
-                        HWND_TOP,
-                        120,
-                        80,
-                        1400,
-                        900,
-                        SWP_SHOWWINDOW,
-                    );
+                    let _ = SetWindowPos(native_hwnd, HWND_TOP, 120, 80, 1400, 900, SWP_SHOWWINDOW);
                     let _ = SetForegroundWindow(native_hwnd);
                 }
             }

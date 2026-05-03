@@ -68,6 +68,7 @@ function normalizeRowHeightsPerCol(ws: Workspace, splitColumns: string[][] | nul
 function inferAgentKindFromAgentId(agentId?: string | null): AgentSessionKind | null {
   if (agentId === "claude-code") return "claude";
   if (agentId === "codex") return "codex";
+  if (agentId === "claude-codex") return "claude-codex";
   return null;
 }
 
@@ -321,6 +322,7 @@ function toConfig(ws: Workspace, agentMappings: Record<string, AgentSessionMappi
         claude_session_id: paneClaudeSessionId,
         agent_kind: paneAgentSession.kind,
         agent_session_id: paneAgentSession.sessionId,
+        launch_env: p.launchEnv ?? activeTab?.launchEnv ?? null,
         active_tab_id: p.activeTabId,
         tabs: p.tabs.map((tab) => {
           const tabMeta = metaState[tab.sessionId];
@@ -335,6 +337,7 @@ function toConfig(ws: Workspace, agentMappings: Record<string, AgentSessionMappi
             claude_session_id: tabAgentSession.claudeSessionId,
             agent_kind: tabAgentSession.kind,
             agent_session_id: tabAgentSession.sessionId,
+            launch_env: tab.launchEnv ?? null,
             terminal_snapshot: tabAgentSession.sessionId
               ? null
               : getTerminalSnapshot(tab.sessionId) ?? tab.terminalSnapshot ?? null,

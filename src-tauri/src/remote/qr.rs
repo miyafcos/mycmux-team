@@ -25,10 +25,7 @@ fn tailscale_ip() -> Option<String> {
     ];
     for path in &paths {
         if std::path::Path::new(path).exists() {
-            if let Ok(output) = std::process::Command::new(path)
-                .args(["ip", "-4"])
-                .output()
-            {
+            if let Ok(output) = std::process::Command::new(path).args(["ip", "-4"]).output() {
                 if output.status.success() {
                     let ip = String::from_utf8_lossy(&output.stdout).trim().to_string();
                     if ip.starts_with("100.") {

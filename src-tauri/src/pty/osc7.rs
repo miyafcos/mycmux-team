@@ -284,8 +284,7 @@ mod tests {
 
     #[test]
     fn picks_latest_cwd_when_multiple() {
-        let seq =
-            b"\x1b]7;file:///home/a\x07prompt\x1b]7;file:///home/b\x07prompt";
+        let seq = b"\x1b]7;file:///home/a\x07prompt\x1b]7;file:///home/b\x07prompt";
         assert_eq!(parse_all(seq).as_deref(), Some("/home/b"));
     }
 

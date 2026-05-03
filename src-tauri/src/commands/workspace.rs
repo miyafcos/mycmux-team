@@ -69,19 +69,6 @@ fn agent_id_for_kind(kind: Option<&str>) -> Option<&'static str> {
     }
 }
 
-fn clear_unrestorable_tab(tab: &mut PaneTabConfig, kind: &str, session_id: &str) {
-    tab.agent_id = "shell-starter".to_string();
-    tab.claude_session_id = None;
-    tab.agent_kind = None;
-    tab.agent_session_id = None;
-    tab.terminal_snapshot = Some(vec![
-        format!(
-            "Resume unavailable: {kind} session {session_id} was not found for this workspace."
-        ),
-        "Use the launcher to start a new session or choose resume manually.".to_string(),
-    ]);
-}
-
 fn sanitize_tab_agent_session(tab: &mut PaneTabConfig, pane_cwd: Option<&str>) {
     let kind = infer_agent_kind(
         &tab.agent_id,
@@ -105,7 +92,9 @@ fn sanitize_tab_agent_session(tab: &mut PaneTabConfig, pane_cwd: Option<&str>) {
         tab.agent_session_id = Some(session_id);
         return;
     }
-    clear_unrestorable_tab(tab, &kind, &session_id);
+    // Keep persisted resume identity intact when the local session index is
+    // temporarily stale or unavailable. The renderer can still decide how to
+    // recover, but load must not rewrite the saved session into a shell pane.
 }
 
 fn sync_pane_from_active_tab(pane: &mut PaneConfig) {
@@ -124,6 +113,7 @@ fn sync_pane_from_active_tab(pane: &mut PaneConfig) {
     pane.claude_session_id = active.claude_session_id.clone();
     pane.agent_kind = active.agent_kind.clone();
     pane.agent_session_id = active.agent_session_id.clone();
+    pane.launch_env = active.launch_env.clone();
 }
 
 fn sanitize_pane_agent_sessions(pane: &mut PaneConfig) {
@@ -149,12 +139,13 @@ fn sanitize_pane_agent_sessions(pane: &mut PaneConfig) {
         return;
     };
     if can_restore_agent_session(&kind, session_id, pane.cwd.as_deref()) {
+        if let Some(agent_id) = agent_id_for_kind(Some(kind.as_str())) {
+            pane.agent_id = agent_id.to_string();
+        }
+        pane.agent_kind = Some(kind);
+        pane.agent_session_id = Some(session_id.to_string());
         return;
     }
-    pane.agent_id = "shell-starter".to_string();
-    pane.claude_session_id = None;
-    pane.agent_kind = None;
-    pane.agent_session_id = None;
 }
 
 fn sanitize_agent_sessions(data: &mut PersistentData) {
@@ -162,5 +153,81 @@ fn sanitize_agent_sessions(data: &mut PersistentData) {
         for pane in &mut workspace.panes {
             sanitize_pane_agent_sessions(pane);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn pane_with_session() -> PaneConfig {
+        PaneConfig {
+            pane_id: Some("pane-1".to_string()),
+            agent_id: "codex".to_string(),
+            label: Some("Codex".to_string()),
+            cwd: Some("C:\\missing\\workspace".to_string()),
+            last_process: None,
+            claude_session_id: None,
+            agent_kind: Some("codex".to_string()),
+            agent_session_id: Some("missing-session".to_string()),
+            launch_env: Some(HashMap::from([(
+                "MYCMUX_RESUME".to_string(),
+                "missing-session".to_string(),
+            )])),
+            active_tab_id: None,
+            tabs: None,
+        }
+    }
+
+    #[test]
+    fn sanitize_pane_agent_sessions_keeps_unrestorable_session_identity() {
+        let mut pane = pane_with_session();
+
+        sanitize_pane_agent_sessions(&mut pane);
+
+        assert_eq!(pane.agent_id, "codex");
+        assert_eq!(pane.agent_kind.as_deref(), Some("codex"));
+        assert_eq!(pane.agent_session_id.as_deref(), Some("missing-session"));
+        assert_eq!(
+            pane.launch_env
+                .as_ref()
+                .and_then(|launch_env| launch_env.get("MYCMUX_RESUME"))
+                .map(String::as_str),
+            Some("missing-session")
+        );
+    }
+
+    #[test]
+    fn sync_pane_from_active_tab_preserves_launch_env() {
+        let mut pane = pane_with_session();
+        pane.active_tab_id = Some("tab-1".to_string());
+        pane.tabs = Some(vec![PaneTabConfig {
+            tab_id: Some("tab-1".to_string()),
+            agent_id: "codex".to_string(),
+            label: Some("Codex".to_string()),
+            r#type: None,
+            cwd: None,
+            last_process: None,
+            claude_session_id: None,
+            agent_kind: Some("codex".to_string()),
+            agent_session_id: Some("tab-session".to_string()),
+            launch_env: Some(HashMap::from([(
+                "MYCMUX_RESUME".to_string(),
+                "tab-session".to_string(),
+            )])),
+            terminal_snapshot: None,
+        }]);
+
+        sync_pane_from_active_tab(&mut pane);
+
+        assert_eq!(pane.agent_session_id.as_deref(), Some("tab-session"));
+        assert_eq!(
+            pane.launch_env
+                .as_ref()
+                .and_then(|launch_env| launch_env.get("MYCMUX_RESUME"))
+                .map(String::as_str),
+            Some("tab-session")
+        );
     }
 }

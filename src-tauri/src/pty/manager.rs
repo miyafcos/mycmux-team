@@ -106,7 +106,10 @@ impl SessionManager {
     }
 
     /// Get a reference to a session by ID.
-    pub fn get(&self, session_id: &str) -> Option<dashmap::mapref::one::Ref<'_, String, PtySession>> {
+    pub fn get(
+        &self,
+        session_id: &str,
+    ) -> Option<dashmap::mapref::one::Ref<'_, String, PtySession>> {
         self.sessions.get(session_id)
     }
 }
