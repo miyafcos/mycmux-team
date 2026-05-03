@@ -67,11 +67,18 @@ fn command_output_with_timeout(
     let stderr_file = File::create(&stderr_path)
         .map_err(|error| format!("create {}: {error}", stderr_path.display()))?;
 
-    let mut child = match Command::new(candidate)
+    let mut command = Command::new(candidate);
+    command
         .args(args)
         .stdout(Stdio::from(stdout_file))
-        .stderr(Stdio::from(stderr_file))
-        .spawn()
+        .stderr(Stdio::from(stderr_file));
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    let mut child = match command.spawn()
     {
         Ok(child) => child,
         Err(error) => {
