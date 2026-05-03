@@ -1,24 +1,34 @@
 # build-lite.ps1 — mycmux-lite (team / public) build
 #
 # Requirements:
-#   * Current branch MUST be `release/public-lite` (team-distribution build).
+#   * MUST be run from the lite worktree (typically C:\Users\miyaz\cmux-for-linux-dev,
+#     which is the release/public-lite worktree).
+#   * Current branch MUST be `release/public-lite`.
 #   * Working tree must be clean.
+#   * Smart App Control 制約: build は必ずこの worktree 内で実行。別 worktree (master 側)
+#     からの起動は署名検証でブロックされる。
 #
 # Produces:
-#   * C:\Users\miyaz\cmux-for-linux-dev\src-tauri\target\release\mycmux-lite.exe
+#   * <worktree>\src-tauri\target\release\mycmux-lite.exe
 #   * Deploys to C:\Users\miyaz\mycmux-lite-app\mycmux-lite.exe (timestamped backup).
-#   * Copies signed distribution assets (exe / nsis installer / latest.json / .sig)
-#     to C:\Users\miyaz\cmux-for-linux-dev\dist-uploads\ if present.
+#   * Copies signed distribution assets (NSIS installer / MSI / latest.json / .sig)
+#     to <worktree>\dist-uploads\ if present.
 #
 # Usage:
+#   cd C:\Users\miyaz\cmux-for-linux-dev
 #   powershell -ExecutionPolicy Bypass -File build-lite.ps1
+#   # Pass -Force to auto-kill a running mycmux-lite.exe instead of aborting.
+
+param(
+    [switch]$Force
+)
 
 # NOTE: do NOT set $ErrorActionPreference = "Stop" globally.
 # `cmd /c "vcvarsall.bat x64"` writes harmless warnings to stderr (e.g. when
 # vswhere.exe is not on PATH); under "Stop" PowerShell promotes that to a
 # terminating error and the build aborts before npm even runs.
 $ErrorActionPreference = "Continue"
-$repoRoot = "C:\Users\miyaz\cmux-for-linux-dev"
+$repoRoot = $PSScriptRoot
 $distDir  = "C:\Users\miyaz\mycmux-lite-app"
 $uploadDir = Join-Path $repoRoot "dist-uploads"
 $expectedBranch = "release/public-lite"
@@ -78,11 +88,36 @@ $ts = Get-Date -Format "yyyyMMdd-HHmmss"
 $exeDst = Join-Path $distDir $exeName
 $exeBak = Join-Path $distDir "$exeName.bak-$ts"
 
-if (Test-Path $exeDst) {
-    Copy-Item $exeDst $exeBak -Force
-    Write-Host "Backup saved: $exeBak"
+# 5a. Detect a running exe — Copy-Item -Force still fails on Windows file locks.
+$exeBaseName = [IO.Path]::GetFileNameWithoutExtension($exeName)
+$running = Get-Process -Name $exeBaseName -ErrorAction SilentlyContinue |
+    Where-Object { try { $_.Path -ieq $exeDst } catch { $false } }
+if ($running) {
+    if ($Force) {
+        Write-Host "Stopping running $exeName (PID $($running.Id))..."
+        $running | Stop-Process -Force -ErrorAction Stop
+        Start-Sleep -Milliseconds 500
+    } else {
+        Write-Error "$exeName is currently running (PID $($running.Id)). Close it or rerun with -Force. Build artifact remains at $exeSrc."
+        exit 1
+    }
 }
-Copy-Item $exeSrc $exeDst -Force
+
+if (Test-Path $exeDst) {
+    try {
+        Copy-Item $exeDst $exeBak -Force -ErrorAction Stop
+        Write-Host "Backup saved: $exeBak"
+    } catch {
+        Write-Error "Failed to back up existing exe to $exeBak`: $_"
+        exit 1
+    }
+}
+try {
+    Copy-Item $exeSrc $exeDst -Force -ErrorAction Stop
+} catch {
+    Write-Error "Deploy failed (copy $exeSrc -> $exeDst): $_`nBuild artifact preserved at $exeSrc — investigate file lock or permissions."
+    exit 1
+}
 
 # 6. Collect distribution artifacts (NSIS installer + signature + latest.json)
 if (-not (Test-Path $uploadDir)) { New-Item -ItemType Directory $uploadDir | Out-Null }
