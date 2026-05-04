@@ -560,7 +560,11 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
       <div style={{ position: "relative", zIndex: 1, width: "100%", height: "100%", display: "flex", flexDirection: "column" }}>
         <SocketListener />
         <div data-cmux-hide-during-pane-zoom={zoomedPaneId ? "true" : undefined}>
-          <TitleBar uiVariant={uiVariant} onNewWorkspace={handleNewWorkspace} />
+          <TitleBar
+            uiVariant={uiVariant}
+            onNewWorkspace={handleNewWorkspace}
+            onOpenCrsmPalette={() => setIsCrsmPaletteOpen(true)}
+          />
         </div>
         <div
           style={{

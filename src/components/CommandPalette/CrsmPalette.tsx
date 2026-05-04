@@ -107,11 +107,6 @@ function targetSummary(session: CrsmSessionEntry | undefined, target: OpenTarget
   return `${agentTitle(target)}へ引き継ぎ`;
 }
 
-function nextTarget(kind: OpenTargetKind): OpenTargetKind {
-  const index = OPEN_TARGETS.indexOf(kind);
-  return OPEN_TARGETS[(index + 1) % OPEN_TARGETS.length];
-}
-
 function shortenCwd(cwd: string): string {
   if (!cwd) return "";
   const homeWin = "C:\\Users\\miyaz";
@@ -291,6 +286,13 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
     }
     return filters;
   }, [enabledKinds]);
+  // The 引き継ぎ先 (handoff target) row in the palette must mirror the
+  // Settings toggles too — kinds the user disabled there should not be
+  // an option to hand off into.
+  const enabledTargets = useMemo<OpenTargetKind[]>(
+    () => OPEN_TARGETS.filter((kind) => enabledKinds.has(kind)),
+    [enabledKinds],
+  );
 
   useEffect(() => {
     if (!open) return;
@@ -332,6 +334,17 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
       setSessionFilter("all");
     }
   }, [enabledKinds, sessionFilter]);
+
+  // Same idea for the 引き継ぎ先 selection: if the currently-pinned
+  // target kind is no longer enabled in Settings, snap to the first
+  // remaining enabled target so the user is never stuck pointing at a
+  // hidden option.
+  useEffect(() => {
+    if (enabledTargets.length === 0) return;
+    if (!enabledTargets.includes(targetKind)) {
+      setTargetKind(enabledTargets[0]);
+    }
+  }, [enabledTargets, targetKind]);
 
   const filteredByAgent = useMemo(() => {
     const visible = sessions.filter((session) => enabledKinds.has(session.kind));
@@ -456,7 +469,12 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
       if (event.key === "Tab") {
         event.preventDefault();
         setTargetPinned(true);
-        setTargetKind(nextTarget);
+        setTargetKind((curr) => {
+          if (enabledTargets.length === 0) return curr;
+          const idx = enabledTargets.indexOf(curr);
+          if (idx === -1) return enabledTargets[0];
+          return enabledTargets[(idx + 1) % enabledTargets.length];
+        });
         return;
       }
       if (event.key === "Enter") {
@@ -532,7 +550,7 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
           style={styles.input}
         />
         <div style={styles.targetRow}>
-          {OPEN_TARGETS.map((kind) => (
+          {enabledTargets.map((kind) => (
             <button
               key={kind}
               type="button"

@@ -10,6 +10,7 @@ interface SettingsMenuProps {
   onClose: () => void;
   onOpenThemes: () => void;
   onOpenKeybindings: () => void;
+  onOpenCrsmPalette?: () => void;
 }
 
 const itemStyle: React.CSSProperties = {
@@ -30,6 +31,7 @@ export default function SettingsMenu({
   onClose,
   onOpenThemes,
   onOpenKeybindings,
+  onOpenCrsmPalette,
 }: SettingsMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
   const notificationsEnabled = useSettingsStore((s) => s.notificationsEnabled);
@@ -144,6 +146,21 @@ export default function SettingsMenu({
       >
         <span>Keybindings</span>
       </button>
+
+      {onOpenCrsmPalette && (
+        <button
+          onClick={() => {
+            onOpenCrsmPalette();
+            onClose();
+          }}
+          style={itemStyle}
+          onMouseEnter={(e) => { e.currentTarget.style.background = "var(--cmux-hover)"; }}
+          onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+        >
+          <span>CRSM Palette</span>
+          <span style={{ color: "var(--cmux-text-dim, rgba(255,255,255,0.55))", fontSize: 11 }}>Ctrl+P</span>
+        </button>
+      )}
 
       <div style={{ height: 1, background: "var(--cmux-border)" }} />
 

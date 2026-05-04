@@ -8,6 +8,7 @@ import ThemeSwitcher from "../theme/ThemeSwitcher";
 interface TitleBarProps {
   uiVariant?: "default" | "cmux";
   onNewWorkspace?: () => void;
+  onOpenCrsmPalette?: () => void;
 }
 
 const SidebarIcon = () => (
@@ -41,7 +42,7 @@ const SettingsIcon = () => (
   </svg>
 );
 
-export default function TitleBar({ uiVariant = "default", onNewWorkspace }: TitleBarProps) {
+export default function TitleBar({ uiVariant = "default", onNewWorkspace, onOpenCrsmPalette }: TitleBarProps) {
   const activeWorkspace = useWorkspaceListStore((s) => s.getActiveWorkspace());
   const toggleSidebar = useUiStore((s) => s.toggleSidebar);
   const paneMetadata = usePaneMetadataStore((s) => s.metadata);
@@ -268,6 +269,7 @@ export default function TitleBar({ uiVariant = "default", onNewWorkspace }: Titl
               onClose={() => setIsSettingsOpen(false)}
               onOpenThemes={handleOpenThemes}
               onOpenKeybindings={handleOpenKeybindings}
+              onOpenCrsmPalette={onOpenCrsmPalette}
             />
           )}
         </div>
