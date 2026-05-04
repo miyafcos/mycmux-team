@@ -245,6 +245,7 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
     "--cmux-bg-solid": currentTheme.chrome.background,
     "--cmux-bg": colorWithOpacity(currentTheme.chrome.background, panelOpacity),
     "--cmux-sidebar": colorWithOpacity(currentTheme.chrome.surface, panelOpacity),
+    "--cmux-popover": currentTheme.chrome.surface,
     "--cmux-title-bg": colorWithOpacity(currentTheme.chrome.background, panelOpacity),
     "--cmux-surface": colorWithOpacity(currentTheme.chrome.surface, panelOpacity),
     "--cmux-terminal-bg": colorWithOpacity(

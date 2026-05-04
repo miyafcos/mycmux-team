@@ -108,7 +108,7 @@ export default function SettingsMenu({
         right: 0,
         marginTop: 4,
         width: 260,
-        background: "var(--cmux-sidebar)",
+        background: "var(--cmux-popover)",
         border: "1px solid var(--cmux-border)",
         borderRadius: 6,
         zIndex: 100,
@@ -148,18 +148,21 @@ export default function SettingsMenu({
       </button>
 
       {onOpenCrsmPalette && (
-        <button
-          onClick={() => {
-            onOpenCrsmPalette();
-            onClose();
-          }}
-          style={itemStyle}
-          onMouseEnter={(e) => { e.currentTarget.style.background = "var(--cmux-hover)"; }}
-          onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
-        >
-          <span>CRSM Palette</span>
-          <span style={{ color: "var(--cmux-text-dim, rgba(255,255,255,0.55))", fontSize: 11 }}>Ctrl+P</span>
-        </button>
+        <>
+          <button
+            onClick={() => {
+              onOpenCrsmPalette();
+              onClose();
+            }}
+            style={itemStyle}
+            onMouseEnter={(e) => { e.currentTarget.style.background = "var(--cmux-hover)"; }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+          >
+            <span>Resume</span>
+            <span style={{ color: "var(--cmux-text-dim, rgba(255,255,255,0.55))", fontSize: 11 }}>Ctrl+P</span>
+          </button>
+          <CrsmPaletteSection />
+        </>
       )}
 
       <div style={{ height: 1, background: "var(--cmux-border)" }} />
@@ -205,10 +208,6 @@ export default function SettingsMenu({
 
       <div style={{ height: 1, background: "var(--cmux-border)" }} />
 
-      <CrsmPaletteSection />
-
-      <div style={{ height: 1, background: "var(--cmux-border)" }} />
-
       <div style={{ padding: "8px 12px 0", fontSize: 11, color: "var(--cmux-text-dim, rgba(255,255,255,0.55))" }}>
         現在のバージョン: {currentVersion}
       </div>
@@ -245,8 +244,8 @@ export default function SettingsMenu({
   );
 }
 
-// CRSM Palette per-kind visibility checkboxes. Mirrors the existing
-// notification checkbox styling for visual consistency.
+// Resume (CRSM Palette) per-kind visibility checkboxes. Mirrors the
+// existing notification checkbox styling for visual consistency.
 function CrsmPaletteSection() {
   const showClaude = useSettingsStore((s) => s.crsmShowClaude);
   const showCodex = useSettingsStore((s) => s.crsmShowCodex);
@@ -271,7 +270,7 @@ function CrsmPaletteSection() {
           color: "var(--cmux-text-dim, rgba(255,255,255,0.55))",
         }}
       >
-        CRSM Palette (Ctrl+P) で表示する種類
+        Resume で表示する種類
       </div>
       {rows.map((row, idx) => (
         <label

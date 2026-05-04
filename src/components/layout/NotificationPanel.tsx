@@ -113,7 +113,7 @@ export default function NotificationPanel({ onClose }: NotificationPanelProps) {
         marginTop: 4,
         width: 260,
         maxWidth: "min(260px, calc(100vw - 16px))",
-        background: "var(--cmux-sidebar)",
+        background: "var(--cmux-popover)",
         border: "1px solid var(--cmux-border)",
         borderRadius: 6,
         zIndex: 100,
