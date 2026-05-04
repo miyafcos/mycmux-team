@@ -1,5 +1,16 @@
 # Changelog (mycmux-lite)
 
+## [0.4.4] - 2026-05-04
+
+### Fixed
+
+- **GitHub Actions の release workflow**: `workflow_dispatch` で `tag` input を渡しても `tauri-action` が `github.ref_name` (= branch 名) を見て release upload を skip していた問題を修正。`tagName` / `releaseName` / `releaseBody` を `${{ github.event.inputs.tag || github.ref_name }}` で参照するように変更。
+
+### Changed
+
+- **release.yml の構成**: 旧来の tag 名 suffix (`v0.x.y-lite.n`) で `build-personal` / `build-lite` を振り分けていた `if:` 条件付き 2 job 構成を、repo 別の専用 job 1 つに整理。lite worktree は `build-lite` のみ。lite-suffix tag 運用廃止に伴うシンプル化。
+
+---
 ## [0.4.3] - 2026-05-04
 
 ### Fixed
