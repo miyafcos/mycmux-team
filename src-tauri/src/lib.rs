@@ -135,6 +135,19 @@ pub fn run() {
                     let _ = main_window.set_icon(icon);
                 }
 
+                // macOS: tao 0.34.x has an idle-CPU pathology with `decorations: false`
+                // where every is_zoomed() call triggers NSWindow setStyleMask: → full
+                // NSThemeFrame relayout (sample profiling shows 100% main-thread CPU).
+                // Force native decorations on macOS to bypass it; the visual cost is a
+                // standard title bar but the perf win is decisive.
+                // Also force-show the window because the frontend reveal flow does not
+                // currently fire on macOS (under investigation separately).
+                #[cfg(target_os = "macos")]
+                {
+                    let _ = main_window.set_decorations(true);
+                    let _ = main_window.show();
+                }
+
                 main_window.on_window_event(move |event| {
                     if let tauri::WindowEvent::Destroyed = event {
                         mgr.kill_all();
