@@ -1,5 +1,14 @@
 # Changelog (mycmux-lite)
 
+## [0.5.1] - 2026-05-05
+
+### Changed
+
+- **Resume / CRSM Palette**: Ctrl+P opens quickly from the cached session list, then refreshes CRSM in the background so Claude Code / Codex sessions started outside mycmux, including PowerShell sessions, are picked up automatically.
+- **Resume / CRSM Palette**: Kept the large-history path bounded with request de-duplication, a 10 second auto-refresh cooldown, initial 1000-session loading, and the existing explicit deep load path.
+
+---
+
 ## [0.5.0] - 2026-05-04
 
 ### Notes
