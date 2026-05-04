@@ -1,5 +1,18 @@
 # Changelog (mycmux-lite)
 
+## [0.5.1] - 2026-05-05
+
+### Changed
+
+- **Resume / CRSM Palette**: Ctrl+P opens quickly from the cached session list, then refreshes CRSM in the background so Claude Code / Codex sessions started outside mycmux are picked up automatically.
+- **Resume / CRSM Palette**: Kept the large-history path bounded with request de-duplication, a 10 second auto-refresh cooldown, initial 1000-session loading, and the existing explicit deep load path.
+
+### Notes
+
+- Synced from upstream personal `master` v0.5.1. Buddy-only changes (new `src/buddy/version.ts`) are intentionally excluded — Buddy is removed in lite and BUDDY_VERSION is tracked only in master per the policy noted in v0.5.0.
+
+---
+
 ## [0.5.0] - 2026-05-04
 
 ### Notes
