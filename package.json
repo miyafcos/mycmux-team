@@ -33,7 +33,6 @@
     "allotment": "^1.0.9",
     "framer-motion": "^12.38.0",
     "fuse.js": "^7.1.0",
-    "ghostty-web": "^0.4.0",
     "immer": "^11.1.4",
     "lucide-react": "^1.8.0",
     "react": "^19.0.0",
