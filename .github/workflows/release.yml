@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag to build (e.g. v0.3.0 or v0.3.0-lite.1)"
+        description: "Tag to build (e.g. v0.4.4)"
         required: true
         type: string
 
@@ -15,75 +15,7 @@ permissions:
   contents: write
 
 jobs:
-  # Personal build — fires on tags like v0.3.0 / v0.3.1 (no `-lite.` segment).
-  build-personal:
-    if: ${{ !contains(github.ref_name, '-lite.') }}
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-          cache: "npm"
-
-      # Persist MSVC env (PATH/INCLUDE/LIB/...) into $env:GITHUB_ENV so that
-      # cargo/link.exe is reachable from every subsequent step (tauri-action
-      # spawns its own shell, so env from `ilammy/msvc-dev-cmd@v1` alone is
-      # not always inherited reliably).
-      - name: Persist MSVC env to GITHUB_ENV
-        shell: pwsh
-        run: |
-          $vswhere = "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe"
-          $vsInstall = & $vswhere -latest -property installationPath
-          if (-not $vsInstall) { throw "Visual Studio install not found via vswhere" }
-          $vcvars = Join-Path $vsInstall "VC\Auxiliary\Build\vcvarsall.bat"
-          if (-not (Test-Path $vcvars)) { throw "vcvarsall.bat not found at $vcvars" }
-          $output = cmd /c "`"$vcvars`" x64 && set" 2>$null
-          foreach ($line in $output) {
-            if ($line -match "^([^=]+)=(.*)$") {
-              "$($matches[1])=$($matches[2])" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-            }
-          }
-          Write-Host "Persisted MSVC env from $vsInstall"
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri
-
-      - run: npm ci
-
-      - name: Enable updater artifacts
-        shell: pwsh
-        run: |
-          $configPath = "src-tauri/tauri.conf.json"
-          $config = Get-Content -Path $configPath -Raw | ConvertFrom-Json
-          $config.bundle | Add-Member -MemberType NoteProperty -Name createUpdaterArtifacts -Value $true -Force
-          $config | ConvertTo-Json -Depth 100 | Set-Content -Path $configPath -Encoding utf8
-
-      - name: Build & sign (mycmux personal)
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_KEY_PERSONAL }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PERSONAL_PASSWORD }}
-        with:
-          tagName: ${{ github.ref_name }}
-          releaseName: "mycmux ${{ github.ref_name }}"
-          releaseBody: |
-            mycmux personal build (${{ github.ref_name }}).
-
-            See `CHANGELOG.md` for details.
-
-            **Auto-update**: existing installations will detect this release via the in-app updater (Settings → 更新を確認).
-          releaseDraft: false
-          prerelease: false
-
-  # Lite build — fires on tags like v0.3.0-lite.1.
   build-lite:
-    if: ${{ contains(github.ref_name, '-lite.') }}
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -136,10 +68,10 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_KEY_LITE }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_KEY_LITE_PASSWORD }}
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: "mycmux-lite ${{ github.ref_name }}"
+          tagName: ${{ github.event.inputs.tag || github.ref_name }}
+          releaseName: "mycmux-lite ${{ github.event.inputs.tag || github.ref_name }}"
           releaseBody: |
-            mycmux-lite team build (${{ github.ref_name }}).
+            mycmux-lite team build (${{ github.event.inputs.tag || github.ref_name }}).
 
             See `CHANGELOG.md` for details.
 
