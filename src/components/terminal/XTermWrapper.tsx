@@ -3,6 +3,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { SearchAddon } from "@xterm/addon-search";
+import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 import { open } from "@tauri-apps/plugin-shell";
 import {
@@ -1058,6 +1059,17 @@ export default memo(function XTermWrapper({
       }));
 
       term.open(container!);
+      // GPU renderer (WebGL). Must load AFTER open() since it needs the canvas.
+      // Falls back silently to the default DOM renderer on context loss / failure.
+      try {
+        const webgl = new WebglAddon();
+        webgl.onContextLoss(() => {
+          webgl.dispose();
+        });
+        term.loadAddon(webgl);
+      } catch (err) {
+        console.warn("[xterm] WebGL renderer unavailable, using DOM fallback:", err);
+      }
       liveTerms.set(sessionId, term);
       if (initialReplay && initialReplay.length > 0) {
         const replayText = initialReplay.join("\r\n");
