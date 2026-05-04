@@ -1,5 +1,18 @@
 # Changelog (mycmux-lite)
 
+## [0.4.3] - 2026-05-04
+
+### Fixed
+
+- **壁紙時の Settings / 通知パネル透過**: 壁紙 (media background) を有効にしているとき、Settings メニューと通知ベルのドロップダウンまで `panelOpacity` が乗って文字が読みづらかった問題を解消。新 CSS variable `--cmux-popover` (常に opacity 1) を導入し、popover 系 (Settings 本体 / NotificationPanel) のみ不透明化。TabBar / TitleBar は従来どおり壁紙と調和させる。
+
+### Changed
+
+- **CRSM Palette → Resume にリブランド**: Settings ボタン / 設定セクション見出し / Keybindings 一覧の表示文言を `CRSM Palette` から `Resume` に変更。内部 symbol (`CrsmPalette` コンポーネント、`crsm.palette` action ID、`crsmShow*` 設定キー、Tauri `crsm.rs`、localStorage `mycmux-lite-settings`) は不変のため既存ユーザー設定は保持。
+- **Settings 内の Resume 関連設定を統合**: 「Resume」ボタンと「Resume で表示する種類」(Claude / Codex / Hybrid チェックボックス) を 1 ブロックに集約し、関連設定として認識しやすくした。
+
+---
+
 ## [0.4.2] - 2026-05-04
 
 ### Added
