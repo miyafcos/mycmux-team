@@ -90,6 +90,8 @@ def test_ctrl_p_history_palette_route_remains_wired() -> None:
     assert_contains(app_shell, "<CrsmPalette open={isCrsmPaletteOpen}", "src/components/layout/AppShell.tsx")
     assert_contains(palette, "let cachedCrsmSessions", "src/components/CommandPalette/CrsmPalette.tsx")
     assert_contains(palette, "requestIdleCallback", "src/components/CommandPalette/CrsmPalette.tsx")
+    assert_contains(palette, "autoRefreshCrsmSessions", "src/components/CommandPalette/CrsmPalette.tsx")
+    assert_contains(palette, "crsmListSessions(undefined, limit, refresh)", "src/components/CommandPalette/CrsmPalette.tsx")
     assert_contains(palette, "const ITEM_HEIGHT", "src/components/CommandPalette/CrsmPalette.tsx")
     assert_contains(palette, "virtualSessions.map", "src/components/CommandPalette/CrsmPalette.tsx")
 

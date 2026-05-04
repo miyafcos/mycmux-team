@@ -30,6 +30,7 @@ const MAX_LISTED_SESSIONS_DEEP = 10000;
 const ITEM_HEIGHT = 48;
 const LOAD_MORE_HEIGHT = 38;
 const TOP_CWD_CHIPS = 8;
+const SESSION_AUTO_REFRESH_COOLDOWN_MS = 10_000;
 
 const SOURCE_LABELS: Record<string, string> = {
   "claude-live": "live",
@@ -185,7 +186,8 @@ function formatRelative(iso: string | null | undefined): string {
 let cachedCrsmSessions: CrsmSessionEntry[] | null = null;
 let cachedCrsmSessionsError: string | null = null;
 let cachedCrsmSessionsIsDeep = false;
-let crsmSessionsRequest: Promise<CrsmSessionEntry[]> | null = null;
+let cachedCrsmSessionsRefreshedAt = 0;
+const crsmSessionsRequests = new Map<string, Promise<CrsmSessionEntry[]>>();
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -205,17 +207,30 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): 
   });
 }
 
-function fetchCrsmSessions(deep = false): Promise<CrsmSessionEntry[]> {
-  if (!deep && cachedCrsmSessionsIsDeep && cachedCrsmSessions) {
+function crsmRequestKey(deep: boolean, refresh: boolean): string {
+  return `${refresh ? "refresh" : "cache"}:${deep ? "deep" : "initial"}`;
+}
+
+function storeCrsmSessions(nextSessions: CrsmSessionEntry[], deep: boolean, refresh: boolean): void {
+  cachedCrsmSessions = nextSessions;
+  cachedCrsmSessionsError = null;
+  cachedCrsmSessionsIsDeep = deep;
+  if (refresh) {
+    cachedCrsmSessionsRefreshedAt = Date.now();
+  }
+}
+
+function fetchCrsmSessions(deep = false, refresh = false): Promise<CrsmSessionEntry[]> {
+  if (!refresh && !deep && cachedCrsmSessionsIsDeep && cachedCrsmSessions) {
     return Promise.resolve(cachedCrsmSessions);
   }
-  if (!crsmSessionsRequest) {
+  const key = crsmRequestKey(deep, refresh);
+  let request = crsmSessionsRequests.get(key);
+  if (!request) {
     const limit = deep ? SESSION_FETCH_LIMIT_DEEP : SESSION_FETCH_LIMIT_INITIAL;
-    crsmSessionsRequest = crsmListSessions(undefined, limit, false)
+    request = crsmListSessions(undefined, limit, refresh)
       .then((nextSessions) => {
-        cachedCrsmSessions = nextSessions;
-        cachedCrsmSessionsError = null;
-        cachedCrsmSessionsIsDeep = deep;
+        storeCrsmSessions(nextSessions, deep, refresh);
         return nextSessions;
       })
       .catch((error) => {
@@ -226,16 +241,27 @@ function fetchCrsmSessions(deep = false): Promise<CrsmSessionEntry[]> {
         throw error;
       })
       .finally(() => {
-        crsmSessionsRequest = null;
+        crsmSessionsRequests.delete(key);
       });
+    crsmSessionsRequests.set(key, request);
   }
-  return crsmSessionsRequest;
+  return request;
+}
+
+function autoRefreshCrsmSessions(deep = false): Promise<CrsmSessionEntry[]> {
+  const elapsed = Date.now() - cachedCrsmSessionsRefreshedAt;
+  if (cachedCrsmSessions && elapsed < SESSION_AUTO_REFRESH_COOLDOWN_MS) {
+    return Promise.resolve(cachedCrsmSessions);
+  }
+  return fetchCrsmSessions(deep, true);
 }
 
 export function preloadCrsmSessions(): void {
-  if (cachedCrsmSessions || crsmSessionsRequest || typeof window === "undefined") return;
+  if (cachedCrsmSessions || crsmSessionsRequests.size > 0 || typeof window === "undefined") return;
   const start = () => {
-    void fetchCrsmSessions().catch(() => undefined);
+    void fetchCrsmSessions()
+      .then(() => autoRefreshCrsmSessions().catch(() => undefined))
+      .catch(() => undefined);
   };
   if (typeof window.requestIdleCallback === "function") {
     window.requestIdleCallback(start, { timeout: 2500 });
@@ -308,14 +334,24 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
     }
     if (cachedCrsmSessions) {
       setSessions(cachedCrsmSessions);
+      setDeepLoaded(cachedCrsmSessionsIsDeep);
     }
     const requestId = requestIdRef.current + 1;
     requestIdRef.current = requestId;
+    const applySessions = (nextSessions: CrsmSessionEntry[]) => {
+      setSessions(nextSessions);
+      setDeepLoaded(cachedCrsmSessionsIsDeep);
+      setError(cachedCrsmSessionsError ? `CRSM cache fallback: ${cachedCrsmSessionsError}` : null);
+    };
     fetchCrsmSessions()
       .then((nextSessions) => {
-        if (requestIdRef.current !== requestId) return;
-        setSessions(nextSessions);
-        setError(cachedCrsmSessionsError ? `CRSM cache fallback: ${cachedCrsmSessionsError}` : null);
+        if (requestIdRef.current !== requestId) return undefined;
+        applySessions(nextSessions);
+        return autoRefreshCrsmSessions(cachedCrsmSessionsIsDeep);
+      })
+      .then((nextSessions) => {
+        if (!nextSessions || requestIdRef.current !== requestId) return;
+        applySessions(nextSessions);
       })
       .catch((err) => {
         if (requestIdRef.current !== requestId) return;
