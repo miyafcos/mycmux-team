@@ -1,5 +1,31 @@
 # Changelog (mycmux-lite)
 
+## [0.5.2] - 2026-05-05
+
+### Performance
+
+- **macOS idle CPU pathology**: Force native window decorations on macOS to bypass tao 0.34.x's `setStyleMask:` thrash on `decorations: false`. Idle CPU drops 99.3%, RSS drops 85% (411MB → 75MB) on Apple Silicon (`sample` profile root cause).
+- **Terminal rendering**: Connect xterm's WebGL addon (already in deps but never loaded) with DOM fallback on context loss. Helps both platforms; dramatic on macOS WKWebView.
+- **Bundle**: Drop unused `ghostty-web` dependency.
+
+### Added
+
+- **macOS support**: First-class macOS build path. See README "macOS (ソースビルド)" section. Resume palette finds `crsm` automatically when built at `~/crsm/target/release/crsm`.
+- **Cross-platform shortcuts**: On macOS, `Cmd+…` is treated as equivalent to `Ctrl+…`, so all Windows-authored bindings (Resume, New Workspace, etc.) fire on the native Mac modifier without remapping.
+- `scripts/measure-mac.sh` — bash + osascript baseline harness for launch time, RSS, idle CPU.
+
+### Fixed
+
+- **`terminal_config.rs`**: macOS / Linux build failure where the alacritty loader declared `_home: &Path` (intentionally-unused arg) but referenced `home` inside a `cfg(target_os = "macos")` block.
+- **`crsm` CLI lookup**: Use `std::env::consts::EXE_SUFFIX` instead of hard-coded `.exe`, so Resume finds the binary on Unix.
+- **macOS window visibility**: Force `show()` from the Tauri setup hook on macOS as a temporary bridge; the frontend `reveal_main_window` flow not firing on macOS is tracked separately.
+
+### Notes
+
+- Synced from upstream personal `master` v0.5.2 plus the lite identity/UI variant carry-over.
+
+---
+
 ## [0.5.1] - 2026-05-05
 
 ### Changed

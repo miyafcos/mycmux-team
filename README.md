@@ -76,7 +76,9 @@ Codex は `--no-alt-screen` 付きで起動します。ターミナルのスク�
 
 ## インストール
 
-Windows では Releases から `mycmux-lite_*_x64-setup.exe` をダウンロードして実行します。
+### Windows
+
+Releases から `mycmux-lite_*_x64-setup.exe` をダウンロードして実行します。
 
 ```powershell
 gh release download --repo miyafcos/mycmux-team --pattern "mycmux-lite_*_x64-setup.exe"
@@ -93,9 +95,39 @@ npm install
 npm run tauri dev
 ```
 
+### macOS (ソースビルド)
+
+macOS 向けの公式 release バイナリは現状ありません。ソースから `.app` を作って `/Applications` に置く運用です。Apple Silicon (arm64) を想定。
+
+前提:
+- Xcode Command Line Tools (`xcode-select --install`)
+- Rust (rustup) と Node.js / npm
+
+```bash
+git clone https://github.com/miyafcos/mycmux-team.git ~/dev/mycmux-team
+cd ~/dev/mycmux-team
+npm install
+npm run tauri build
+mv "/Applications/mycmux-lite.app" ~/.Trash/ 2>/dev/null   # 既存があれば
+cp -R src-tauri/target/release/bundle/macos/mycmux-lite.app /Applications/
+xattr -cr /Applications/mycmux-lite.app                    # Gatekeeper の quarantine 属性を除去
+open /Applications/mycmux-lite.app
+```
+
+Resume palette (`Cmd+P`) を使うには `crsm` を別途 build しておく必要があります。
+
+```bash
+git clone https://github.com/miyafcos/crsm.git ~/crsm
+cd ~/crsm
+cargo build --release
+# 以後、mycmux-lite は ~/crsm/target/release/crsm を自動検出します
+```
+
 ## 主なショートカット
 
 ショートカットは `Ctrl+,` から変更できます。
+
+> **macOS**: 表記は `Ctrl+…` ですが、macOS では `Cmd+…` も等価扱いされます。Mac ネイティブ慣習どおり `Cmd+P` で Resume、`Cmd+Shift+N` で新規ワークスペースが開きます。
 
 | 操作 | ショートカット |
 | --- | --- |
@@ -126,6 +158,8 @@ Claude Code / Codex / claude-codex の前回セッションは、直前の会話
 
 ## 開発
 
+### Windows
+
 ```powershell
 npm install
 cmd /c npx tsc --noEmit
@@ -134,6 +168,21 @@ cargo test --manifest-path src-tauri/Cargo.toml --lib
 cargo clippy --manifest-path src-tauri/Cargo.toml --release -- -D warnings
 cmd /c npm run tauri build
 ```
+
+### macOS
+
+```bash
+npm install
+npx tsc --noEmit
+cargo check --manifest-path src-tauri/Cargo.toml
+cargo test --manifest-path src-tauri/Cargo.toml --lib
+cargo clippy --manifest-path src-tauri/Cargo.toml --release -- -D warnings
+npm run tauri build
+# 起動の体感を計りたいときは:
+bash scripts/measure-mac.sh baseline   # /tmp/mycmux-measure-*.json に出力
+```
+
+ビルド成果物は `src-tauri/target/release/bundle/macos/mycmux-lite.app`。`/Applications` に配置するときは `xattr -cr` を忘れずに。
 
 ## ライセンス
 
