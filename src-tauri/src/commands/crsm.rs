@@ -17,20 +17,21 @@ struct CrsmOutput {
 
 fn crsm_candidates() -> Vec<PathBuf> {
     let mut candidates = Vec::new();
+    let exe_name = format!("crsm{}", std::env::consts::EXE_SUFFIX);
     candidates.push(PathBuf::from("crsm"));
     if let Some(home) = dirs::home_dir() {
-        candidates.push(home.join("bin").join("crsm.exe"));
+        candidates.push(home.join("bin").join(&exe_name));
         candidates.push(
             home.join("crsm")
                 .join("target")
                 .join("release")
-                .join("crsm.exe"),
+                .join(&exe_name),
         );
         candidates.push(
             home.join("crsm")
                 .join("target")
                 .join("debug")
-                .join("crsm.exe"),
+                .join(&exe_name),
         );
     }
     candidates
