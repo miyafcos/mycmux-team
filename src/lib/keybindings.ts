@@ -123,11 +123,32 @@ export function shortcutFromKeyboardEvent(e: KeyboardEvent): string {
   return normalizeShortcut(mods.join("+"));
 }
 
+function isMacPlatform(): boolean {
+  if (typeof navigator === "undefined") return false;
+  const uaPlatform = (navigator as { userAgentData?: { platform?: string } }).userAgentData?.platform;
+  if (uaPlatform) return uaPlatform === "macOS";
+  return /Mac/i.test(navigator.platform || "");
+}
+
+const IS_MAC = isMacPlatform();
+
 export function eventMatchesShortcut(e: KeyboardEvent, shortcut?: string): boolean {
   if (!shortcut) return false;
   const normalized = normalizeShortcut(shortcut);
   if (!normalized) return false;
-  return shortcutFromKeyboardEvent(e) === normalized;
+  const eventShortcut = shortcutFromKeyboardEvent(e);
+  if (eventShortcut === normalized) return true;
+  // macOS: bridge Cmd (meta) ↔ Ctrl so Windows-authored defaults (ctrl+...)
+  // also fire on the platform-native Cmd+...
+  if (IS_MAC) {
+    if (normalized.startsWith("ctrl+") && eventShortcut.startsWith("meta+")) {
+      return eventShortcut.slice(5) === normalized.slice(5);
+    }
+    if (normalized.startsWith("meta+") && eventShortcut.startsWith("ctrl+")) {
+      return eventShortcut.slice(5) === normalized.slice(5);
+    }
+  }
+  return false;
 }
 
 export function getActionDefinition(action: KeybindingActionId): KeybindingDefinition {
