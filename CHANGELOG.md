@@ -1,5 +1,14 @@
 # Changelog (mycmux-lite)
 
+## [0.5.0] - 2026-05-04
+
+### Notes
+
+- mycmux personal `master` v0.5.0 (Buddy / Codex Pet bridge 追加) と本体 version を同期するための minor release。**lite には機能差分なし** — Buddy / Codex Pet 関連機能は元から lite に含まれない (lite は Buddy 削除版)。
+- これ以降、mycmux 本体機能の bump は master/lite で揃え、Buddy 関連の単独更新は master 内 `src/buddy/version.ts` の `BUDDY_VERSION` で別管理する運用に変更。
+
+---
+
 ## [0.4.4] - 2026-05-04
 
 ### Fixed
