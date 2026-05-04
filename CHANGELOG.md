@@ -1,5 +1,17 @@
 # Changelog (mycmux-lite)
 
+## [0.4.2] - 2026-05-04
+
+### Added
+
+- **Settings → CRSM Palette ボタン**: 右上 ⚙ メニューに `Themes` / `Keybindings` と並んで `CRSM Palette` ボタンを追加。`Ctrl+P` を覚えていなくても歯車から palette を開ける。
+
+### Changed
+
+- **CRSM Palette 引き継ぎ先連動**: Settings の「CRSM Palette で表示する種類」で OFF にした kind は、palette 内の引き継ぎ先 (handoff target) ボタン行と Tab キー循環からも消える。引き継ぎ先として選べないようになった。
+
+---
+
 ## [0.4.1] - 2026-05-04
 
 ### Added
