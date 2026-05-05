@@ -1,5 +1,17 @@
 # Changelog (mycmux-lite)
 
+## [0.6.0] - 2026-05-05
+
+Stability checkpoint after the v0.5.4 - v0.5.6 series. No code changes from v0.5.6.
+
+### Highlights since v0.5.3
+
+- **Session-history persistence restored (v0.5.6)**: every pane re-attaches to its previous Claude / Codex session on restart.
+- **Terminal renderer toggle (v0.5.5)**: Settings → Terminal renderer (WebGL). Per-OS default — macOS=ON, Windows=OFF, Linux=OFF.
+- **Launcher menu canonicalized (v0.5.4)**: confirmed the 10-item layout (normal → dangerous → resume).
+
+---
+
 ## [0.5.6] - 2026-05-05
 
 ### Fixed
