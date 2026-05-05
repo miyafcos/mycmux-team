@@ -1,5 +1,17 @@
 # Changelog (mycmux-lite)
 
+## [0.5.3] - 2026-05-05
+
+### Fixed (Windows)
+
+- **`terminal_config.rs`**: Suppress unused-variable lint for the alacritty loader's `home` parameter on non-Linux/non-macOS targets (was already fixed in v0.5.2 binaries; this release republishes the same fix under a clean version number).
+
+### Notes
+
+- v0.5.2 tag now points to the Mac release commit (`f4bb193`). The Windows clippy fix that previously shipped under the v0.5.2 tag is republished here as v0.5.3 with no functional change. Auto-update users on v0.5.2 will be moved to v0.5.3.
+
+---
+
 ## [0.5.2] - 2026-05-05
 
 ### Performance
