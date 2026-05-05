@@ -1,6 +1,6 @@
 [package]
 name = "mycmux-lite"
-version = "0.5.5"
+version = "0.5.6"
 description = "Team-shared terminal workspace (lite edition of mycmux)"
 authors = ["miyafcos"]
 license = "GPL-3.0"

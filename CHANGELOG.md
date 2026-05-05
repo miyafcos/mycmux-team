@@ -1,5 +1,17 @@
 # Changelog (mycmux-lite)
 
+## [0.5.6] - 2026-05-05
+
+### Fixed
+
+- **Restore session-history persistence**: `SocketListener.tsx::toConfig` now writes the live `claudeSessionId` / `agentKind` / `agentSessionId` (with tab → pane fallback) into `data.json` instead of forcing them to `null`. Combined with the existing `applyMappingsToConfig` load path that prefers `data.json` over `~/.mycmux-lite/pane-sessions/*.txt` mapping cache, a restart re-attaches every pane to its previous Claude / Codex session — matching the v0.3.x experience that was lost in v0.4.
+
+### Notes
+
+- The historical reason this code path was disabled in v0.4 was a `MYCMUX_*` env-var leak that caused new panes to silently auto-resume into the previously selected agent session, skipping the launcher menu. v0.4.x already rebuilt the env-leak defenses (`std::env::remove_var()` at app startup in `lib.rs`, `sanitize_launch_env()` in `commands/terminal.rs`, and `EPHEMERAL_LAUNCH_ENV_KEYS` filtering in `SocketListener.tsx`), so re-enabling persistence here does not bring the leak back. Synced from upstream personal master v0.5.6.
+
+---
+
 ## [0.5.5] - 2026-05-05
 
 ### Added
