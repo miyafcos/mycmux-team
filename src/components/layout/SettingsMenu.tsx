@@ -38,6 +38,8 @@ export default function SettingsMenu({
   const setNotificationsEnabled = useSettingsStore((s) => s.setNotificationsEnabled);
   const notificationSoundEnabled = useSettingsStore((s) => s.notificationSoundEnabled);
   const setNotificationSoundEnabled = useSettingsStore((s) => s.setNotificationSoundEnabled);
+  const useWebglRenderer = useSettingsStore((s) => s.useWebglRenderer);
+  const setUseWebglRenderer = useSettingsStore((s) => s.setUseWebglRenderer);
 
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>("idle");
   const [updateMsg, setUpdateMsg] = useState<string>("");
@@ -146,6 +148,35 @@ export default function SettingsMenu({
       >
         <span>Keybindings</span>
       </button>
+
+      <div style={{ height: 1, background: "var(--cmux-border)" }} />
+
+      <label
+        style={{
+          padding: "10px 12px",
+          display: "flex",
+          alignItems: "flex-start",
+          gap: 8,
+          fontSize: 12,
+          color: "var(--cmux-text)",
+          cursor: "pointer",
+        }}
+      >
+        <input
+          type="checkbox"
+          checked={useWebglRenderer}
+          onChange={(e) => setUseWebglRenderer(e.target.checked)}
+          style={{ marginTop: 2 }}
+        />
+        <span style={{ display: "flex", flexDirection: "column", gap: 3, minWidth: 0 }}>
+          <span>Terminal renderer (WebGL)</span>
+          <span style={{ fontSize: 11, lineHeight: 1.35, color: "var(--cmux-text-dim, rgba(255,255,255,0.55))" }}>
+            OFF にすると DOM レンダラーで描画 (Windows で文字が薄く見える違和感を回避)。新しいペインから反映
+          </span>
+        </span>
+      </label>
+
+      <div style={{ height: 1, background: "var(--cmux-border)" }} />
 
       {onOpenCrsmPalette && (
         <>

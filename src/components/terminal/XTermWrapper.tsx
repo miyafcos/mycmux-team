@@ -1061,14 +1061,16 @@ export default memo(function XTermWrapper({
       term.open(container!);
       // GPU renderer (WebGL). Must load AFTER open() since it needs the canvas.
       // Falls back silently to the default DOM renderer on context loss / failure.
-      try {
-        const webgl = new WebglAddon();
-        webgl.onContextLoss(() => {
-          webgl.dispose();
-        });
-        term.loadAddon(webgl);
-      } catch (err) {
-        console.warn("[xterm] WebGL renderer unavailable, using DOM fallback:", err);
+      if (useSettingsStore.getState().useWebglRenderer) {
+        try {
+          const webgl = new WebglAddon();
+          webgl.onContextLoss(() => {
+            webgl.dispose();
+          });
+          term.loadAddon(webgl);
+        } catch (err) {
+          console.warn("[xterm] WebGL renderer unavailable, using DOM fallback:", err);
+        }
       }
       liveTerms.set(sessionId, term);
       if (initialReplay && initialReplay.length > 0) {

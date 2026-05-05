@@ -1,5 +1,16 @@
 # Changelog (mycmux-lite)
 
+## [0.5.5] - 2026-05-05
+
+### Added
+
+- Added Settings toggle **Terminal renderer (WebGL)**.
+- Defaults: macOS=ON, Windows=OFF, Linux=OFF.
+- Windows now defaults back to the v0.5.1-style DOM renderer to avoid the darker/heavier Windows WebView2 rendering introduced by always-on WebGL in v0.5.2.
+- Renderer selection takes effect on next pane creation, not on existing live panes.
+
+---
+
 ## [0.5.4] - 2026-05-05
 
 ### Changed
