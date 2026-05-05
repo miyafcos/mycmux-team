@@ -1,5 +1,24 @@
 # Changelog (mycmux-lite)
 
+## [0.5.4] - 2026-05-05
+
+### Changed
+
+- **Launcher menu (`src-tauri/src/launcher.sh`)**: Confirm the canonical 10-item layout grouped as **normal → dangerous → resume**. The repo file already used this order since v0.4; this release ships a refreshed installer so `~/.mycmux-lite/bin/launcher.sh` matches.
+
+  ```
+  1. Claude Code        4. Claude Code (dangerous)   7. Claude Code (resume)
+  2. Codex              5. Codex (dangerous)         8. Codex (resume)
+  3. claude-codex       6. claude-codex (dangerous)  9. claude-codex (resume)
+                                                     0. Custom...
+  ```
+
+### Notes
+
+- No TypeScript / Rust source changes. Synced from upstream personal `master` v0.5.4.
+
+---
+
 ## [0.5.3] - 2026-05-05
 
 ### Fixed (Windows)
