@@ -1,5 +1,24 @@
 # Changelog (mycmux-lite)
 
+## [0.6.1-lite.1] - 2026-05-07
+
+### Fixed
+
+- **Session-history persistence (real fix)**: synced from upstream personal v0.6.1. The v0.5.6 release advertised that every pane re-attaches to its previous Claude / Codex session on restart, but the wiring was incomplete — `onPtyMetadata` only fed `paneMetadataStore`, while `SocketListener.tsx::toConfig` was reading the un-mirrored `Pane.claudeSessionId` / `agentKind` / `agentSessionId`. Saved `data.json` always wrote `null` for those fields, so restart fell back to the launcher menu.
+
+  Fix:
+  - `workspaceListStore.ts`: new `setPaneAgentSessionFromMetadata(sessionId, payload | null)` action that finds the matching tab and mirrors onto the pane when the tab is active. `null` clears.
+  - `App.tsx::onPtyMetadata`: also calls the new action so live agent session metadata is mirrored into `workspaceListStore`. Mirror only fires on truthy `claude_session_id` / `agent_session_id` so the launcher (`crsm` / `shell-starter`) doesn't accidentally clear an in-flight session. Shell return clears.
+  - `App.tsx::applyAgentSessionMappings`: also pushes startup mapping cache (`~/.mycmux-lite/pane-sessions/*.txt` → `paneMetadataStore`) into `workspaceListStore`, so the very first save after restart already captures resumable session ids.
+  - `SocketListener.tsx::toConfig`: 4-level fallback chain (`Pane → activeTab → paneMetadataStore[pane.sessionId] → paneMetadataStore[activeTab.sessionId] → null`).
+
+### Notes
+
+- Existing v0.6.0 `data.json` is not silently rewritten: panes that were saved with `null` agent session ids will appear at the launcher menu after the v0.6.1-lite.1 update. Re-launch the agent on each pane once and the next save captures the live session ids; from then on restart re-attaches automatically.
+- Env-leak defenses (`stripEphemeralLaunchEnv`, `EPHEMERAL_LAUNCH_ENV_KEYS`, `lib.rs::run` `remove_var`) and `dedupeAgentSessionsInConfigs` are intentionally untouched.
+
+---
+
 ## [0.6.0] - 2026-05-05
 
 Stability checkpoint after the v0.5.4 - v0.5.6 series. No code changes from v0.5.6.
