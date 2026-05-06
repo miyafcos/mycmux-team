@@ -81,6 +81,17 @@ async function applyAgentSessionMappings(): Promise<void> {
       agentSessionId: mapping.session_id,
       claudeSessionId: kind === "claude" ? mapping.session_id : current?.claudeSessionId,
     });
+    // Also push into workspaceListStore so the next persistence snapshot
+    // captures the live mapping (paneMetadataStore alone is not read by
+    // toConfig fallback chain at the lowest priority — covered, but mirroring
+    // here lets restore-on-restart hit the highest-precedence Pane.* fields).
+    useWorkspaceListStore.getState().setPaneAgentSessionFromMetadata(sessionId, {
+      claudeSessionId: kind === "claude"
+        ? mapping.session_id
+        : (current?.claudeSessionId ?? undefined),
+      agentKind: kind,
+      agentSessionId: mapping.session_id,
+    });
   }
 }
 
@@ -138,11 +149,19 @@ function App() {
     // PTY metadata listener — also computes processIsShell which drives the
     // authoritative "working" indicator (blue dot). Rust sysinfo polls every
     // 3 seconds so this is a deterministic, non-flickering signal.
+    //
+    // Mirrors agent session metadata into BOTH paneMetadataStore (live UI) AND
+    // workspaceListStore (persisted via toConfig). Without the latter mirror,
+    // toConfig only sees stale Pane.claudeSessionId and saves null, which is
+    // why session restore was broken before v0.6.1.
     const unlistenMeta = onPtyMetadata((meta) => {
       const processIsShell = isShellProcess(meta.process_name ?? undefined);
       if (processIsShell) {
         usePaneMetadataStore.getState().clearAgentSessionId(meta.session_id);
         usePaneMetadataStore.getState().clearClaudeSessionId(meta.session_id);
+        // Also clear the persisted Pane/Tab fields so the next save doesn't
+        // ressurect a stale agent session for a pane that's now back in shell.
+        useWorkspaceListStore.getState().setPaneAgentSessionFromMetadata(meta.session_id, null);
       }
       usePaneMetadataStore.getState().setMetadata(meta.session_id, {
         cwd: meta.cwd,
@@ -153,6 +172,17 @@ function App() {
         agentKind: processIsShell ? undefined : meta.agent_kind ?? undefined,
         agentSessionId: processIsShell ? undefined : meta.agent_session_id ?? undefined,
       });
+      // Mirror live session metadata into workspaceListStore only on truthy
+      // values. Launcher (crsm/shell-starter) reports no claude/agent session,
+      // so this `if` naturally skips and we don't accidentally clear a session
+      // that the user is still mid-using on a tab swap.
+      if (!processIsShell && (meta.claude_session_id || meta.agent_session_id)) {
+        useWorkspaceListStore.getState().setPaneAgentSessionFromMetadata(meta.session_id, {
+          claudeSessionId: meta.claude_session_id ?? undefined,
+          agentKind: (meta.agent_kind as AgentSessionKind | undefined) ?? undefined,
+          agentSessionId: meta.agent_session_id ?? undefined,
+        });
+      }
     });
 
     // Work-done listener: backend detects a foreground process transition

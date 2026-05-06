@@ -300,16 +300,41 @@ function toConfig(ws: Workspace, _agentMappings: Record<string, AgentSessionMapp
     panes: ws.panes.map((p) => {
       const activeTab = p.tabs.find((tab) => tab.id === p.activeTabId) ?? p.tabs[0];
       const paneMeta = metaState[p.sessionId];
+      const activeTabMeta = activeTab ? metaState[activeTab.sessionId] : undefined;
       const paneCwd = paneMeta?.cwd ?? activeTab?.cwd ?? p.cwd ?? null;
+      // 4-level fallback so live agent session metadata never disappears even
+      // if the workspaceListStore mirror lags one event behind:
+      //   1. Pane.{claudeSessionId,agentKind,agentSessionId}
+      //   2. activeTab.{...}
+      //   3. paneMetadataStore[pane.sessionId]
+      //   4. paneMetadataStore[activeTab.sessionId]
+      const liveClaudeId =
+        p.claudeSessionId
+        ?? activeTab?.claudeSessionId
+        ?? paneMeta?.claudeSessionId
+        ?? activeTabMeta?.claudeSessionId
+        ?? null;
+      const liveKind =
+        p.agentKind
+        ?? activeTab?.agentKind
+        ?? paneMeta?.agentKind
+        ?? activeTabMeta?.agentKind
+        ?? null;
+      const liveAgentId =
+        p.agentSessionId
+        ?? activeTab?.agentSessionId
+        ?? paneMeta?.agentSessionId
+        ?? activeTabMeta?.agentSessionId
+        ?? null;
       return {
         pane_id: p.id,
         agent_id: activeTab?.agentId ?? p.agentId,
         label: p.label ?? null,
         cwd: paneCwd,
         last_process: null,
-        claude_session_id: p.claudeSessionId ?? activeTab?.claudeSessionId ?? null,
-        agent_kind: p.agentKind ?? activeTab?.agentKind ?? null,
-        agent_session_id: p.agentSessionId ?? activeTab?.agentSessionId ?? null,
+        claude_session_id: liveClaudeId,
+        agent_kind: liveKind,
+        agent_session_id: liveAgentId,
         launch_env: stripEphemeralLaunchEnv(p.launchEnv ?? activeTab?.launchEnv),
         active_tab_id: p.activeTabId,
         tabs: p.tabs.map((tab) => {
@@ -321,9 +346,9 @@ function toConfig(ws: Workspace, _agentMappings: Record<string, AgentSessionMapp
             type: tab.type ?? "terminal",
             cwd: tabMeta?.cwd ?? tab.cwd ?? paneCwd,
             last_process: null,
-            claude_session_id: tab.claudeSessionId ?? null,
-            agent_kind: tab.agentKind ?? null,
-            agent_session_id: tab.agentSessionId ?? null,
+            claude_session_id: tab.claudeSessionId ?? tabMeta?.claudeSessionId ?? null,
+            agent_kind: tab.agentKind ?? tabMeta?.agentKind ?? null,
+            agent_session_id: tab.agentSessionId ?? tabMeta?.agentSessionId ?? null,
             launch_env: stripEphemeralLaunchEnv(tab.launchEnv),
             terminal_snapshot: getTerminalSnapshot(tab.sessionId) ?? tab.terminalSnapshot ?? null,
           };

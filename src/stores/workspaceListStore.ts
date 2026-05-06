@@ -1,7 +1,13 @@
 import { create } from "zustand";
 import { v4 as uuid } from "uuid";
-import type { Workspace, GridTemplateId } from "../types";
+import type { Workspace, GridTemplateId, AgentSessionKind } from "../types";
 import { useUiStore } from "./uiStore";
+
+export interface PaneAgentSessionPayload {
+  claudeSessionId?: string;
+  agentKind?: AgentSessionKind;
+  agentSessionId?: string;
+}
 
 interface CreateWorkspaceOptions {
   id?: string;
@@ -49,6 +55,17 @@ interface WorkspaceListState {
     panes: Workspace["panes"],
     splitColumns?: string[][],
     resetLayoutMetrics?: boolean,
+  ) => void;
+
+  /**
+   * Sync live agent session metadata (from Rust pty_metadata event) into
+   * Pane.claudeSessionId / agentKind / agentSessionId so that toConfig() can
+   * persist them. `sessionId` matches either pane.sessionId or any tab.sessionId.
+   * Pass `null` to clear (e.g. when the pane returns to a bare shell).
+   */
+  setPaneAgentSessionFromMetadata: (
+    sessionId: string,
+    payload: PaneAgentSessionPayload | null,
   ) => void;
 }
 
@@ -159,5 +176,67 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
           : w
       ),
     }));
+  },
+
+  setPaneAgentSessionFromMetadata: (sessionId, payload) => {
+    set((state) => {
+      let mutated = false;
+      const workspaces = state.workspaces.map((ws) => {
+        let workspaceMutated = false;
+        const panes = ws.panes.map((pane) => {
+          const tabIdx = pane.tabs.findIndex((t) => t.sessionId === sessionId);
+          const isPaneMatch = pane.sessionId === sessionId;
+          if (tabIdx === -1 && !isPaneMatch) return pane;
+
+          const tabs = pane.tabs.map((tab, i) => {
+            if (i !== tabIdx) return tab;
+            if (payload === null) {
+              const next = { ...tab };
+              delete next.claudeSessionId;
+              delete next.agentKind;
+              delete next.agentSessionId;
+              return next;
+            }
+            return {
+              ...tab,
+              claudeSessionId: payload.claudeSessionId ?? tab.claudeSessionId,
+              agentKind: payload.agentKind ?? tab.agentKind,
+              agentSessionId: payload.agentSessionId ?? tab.agentSessionId,
+            };
+          });
+
+          // Mirror the live session onto the pane only when the matched tab is
+          // active (or when the match was on pane.sessionId itself).
+          const matchedTab = tabIdx >= 0 ? pane.tabs[tabIdx] : null;
+          const mirrorOntoPane =
+            isPaneMatch || (matchedTab !== null && matchedTab.id === pane.activeTabId);
+
+          let nextPane: typeof pane;
+          if (!mirrorOntoPane) {
+            nextPane = { ...pane, tabs };
+          } else if (payload === null) {
+            const cleared = { ...pane, tabs };
+            delete cleared.claudeSessionId;
+            delete cleared.agentKind;
+            delete cleared.agentSessionId;
+            nextPane = cleared;
+          } else {
+            nextPane = {
+              ...pane,
+              tabs,
+              claudeSessionId: payload.claudeSessionId ?? pane.claudeSessionId,
+              agentKind: payload.agentKind ?? pane.agentKind,
+              agentSessionId: payload.agentSessionId ?? pane.agentSessionId,
+            };
+          }
+          workspaceMutated = true;
+          return nextPane;
+        });
+        if (!workspaceMutated) return ws;
+        mutated = true;
+        return { ...ws, panes };
+      });
+      return mutated ? { workspaces } : state;
+    });
   },
 }));
