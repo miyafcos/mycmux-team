@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, memo, useRef, useState } from "react";
 import { Allotment } from "allotment";
 import "allotment/dist/style.css";
-import type { Pane, GridTemplateId } from "../../types";
+import type { Pane, GridTemplateId, Workspace } from "../../types";
 import { useWorkspaceLayoutStore, usePaneMetadataStore } from "../../stores/workspaceStore";
 import { useWorkspaceListStore } from "../../stores/workspaceListStore";
 import { killSession } from "../../lib/ipc";
@@ -10,12 +10,27 @@ import TerminalPane from "./TerminalPane";
 import { ErrorBoundary } from "../layout/ErrorBoundary";
 
 const MAX_MOUNTED_WORKSPACES = 3;
+const RESTORE_MOUNT_DELAY_MS = 650;
 
 interface TerminalGridProps {
   workspaceId: string;
   gridTemplateId: GridTemplateId;
   panes: Pane[];
   splitColumns?: string[][];
+}
+
+function paneHasRestorableAgentSession(pane: Pane): boolean {
+  return Boolean(
+    (pane.agentKind && pane.agentSessionId)
+    || pane.claudeSessionId
+    || pane.tabs.some((tab) =>
+      Boolean((tab.agentKind && tab.agentSessionId) || tab.claudeSessionId),
+    ),
+  );
+}
+
+function workspaceHasRestorableAgentSession(workspace: Workspace): boolean {
+  return workspace.panes.some(paneHasRestorableAgentSession);
 }
 
 export const TerminalGrid = memo(function TerminalGrid({
@@ -172,13 +187,33 @@ export default memo(function WorkspaceView() {
   const activeId = useWorkspaceListStore((s) => s.activeWorkspaceId);
   const workspaces = useWorkspaceListStore((s) => s.workspaces);
   const [mountedWorkspaceIds, setMountedWorkspaceIds] = useState<string[]>([]);
+  const [startupRestoreMountedIds, setStartupRestoreMountedIds] = useState<string[]>([]);
+  const restoreWorkspaceIds = useMemo(
+    () => workspaces
+      .filter(workspaceHasRestorableAgentSession)
+      .map((ws) => ws.id),
+    [workspaces],
+  );
+  const restoreWorkspaceIdSet = useMemo(() => new Set(restoreWorkspaceIds), [restoreWorkspaceIds]);
+  const visibleWorkspaceIds = useMemo(() => {
+    const ids = new Set<string>(mountedWorkspaceIds);
+    for (const id of startupRestoreMountedIds) {
+      ids.add(id);
+    }
+    if (activeId) {
+      ids.add(activeId);
+    }
+    return ids;
+  }, [activeId, mountedWorkspaceIds, startupRestoreMountedIds]);
 
   useEffect(() => {
     if (!activeId) return;
     setMountedWorkspaceIds((prev) => {
       const next = prev.filter((id) => id !== activeId);
       next.push(activeId);
-      const trimmed = next.slice(-MAX_MOUNTED_WORKSPACES);
+      const restoreIds = next.filter((id) => restoreWorkspaceIdSet.has(id));
+      const shellOnlyIds = next.filter((id) => !restoreWorkspaceIdSet.has(id));
+      const trimmed = [...shellOnlyIds.slice(-MAX_MOUNTED_WORKSPACES), ...restoreIds];
       if (
         trimmed.length === prev.length
         && trimmed.every((id, index) => id === prev[index])
@@ -187,7 +222,23 @@ export default memo(function WorkspaceView() {
       }
       return trimmed;
     });
-  }, [activeId]);
+  }, [activeId, restoreWorkspaceIdSet]);
+
+  useEffect(() => {
+    const nextRestoreId = restoreWorkspaceIds.find((id) =>
+      id !== activeId && !startupRestoreMountedIds.includes(id),
+    );
+    if (!nextRestoreId) return;
+
+    const timer = window.setTimeout(() => {
+      setStartupRestoreMountedIds((prev) => {
+        if (prev.includes(nextRestoreId)) return prev;
+        return [...prev, nextRestoreId];
+      });
+    }, RESTORE_MOUNT_DELAY_MS);
+
+    return () => window.clearTimeout(timer);
+  }, [activeId, restoreWorkspaceIds, startupRestoreMountedIds]);
 
   // Prune mounted IDs for deleted workspaces
   useEffect(() => {
@@ -208,12 +259,22 @@ export default memo(function WorkspaceView() {
       }
       return next;
     });
-  }, [workspaces]);
+    setStartupRestoreMountedIds((prev) => {
+      const next = prev.filter((id) => currentIds.has(id) && restoreWorkspaceIdSet.has(id));
+      if (
+        next.length === prev.length
+        && next.every((id, index) => id === prev[index])
+      ) {
+        return prev;
+      }
+      return next;
+    });
+  }, [restoreWorkspaceIdSet, workspaces]);
 
   return (
     <div style={{ position: "relative", width: "100%", height: "100%" }}>
       {workspaces
-        .filter((ws) => ws.panes.length > 0 && (mountedWorkspaceIds.includes(ws.id) || ws.id === activeId))
+        .filter((ws) => ws.panes.length > 0 && visibleWorkspaceIds.has(ws.id))
         .map((ws) => {
           const isActive = ws.id === activeId;
           return (

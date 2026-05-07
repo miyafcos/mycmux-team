@@ -77,6 +77,84 @@ function getTerminalSnapshot(sessionId: string): string[] | null {
   return lines.length > 0 ? lines : null;
 }
 
+const STARTUP_RESTORE_AUTOSAVE_BASE_HOLD_MS = 1400;
+const STARTUP_RESTORE_AUTOSAVE_PER_WORKSPACE_MS = 700;
+const STARTUP_RESTORE_AUTOSAVE_MAX_HOLD_MS = 9000;
+
+function getMappingKind(
+  mapping: AgentSessionMapping | undefined,
+  existingKind: AgentSessionKind | null,
+): AgentSessionKind | null {
+  if (!mapping?.session_id) return null;
+  return mapping.agent_kind ?? existingKind ?? "claude";
+}
+
+function getTabConfigKind(
+  tabConfig: PaneTabConfig,
+  fallbackAgentId?: string | null,
+): AgentSessionKind | null {
+  return tabConfig.agent_kind
+    ?? (tabConfig.claude_session_id ? "claude" : null)
+    ?? inferAgentKindFromAgentId(tabConfig.agent_id || fallbackAgentId);
+}
+
+function getTabConfigSessionId(tabConfig: PaneTabConfig): string | null {
+  return tabConfig.agent_session_id ?? tabConfig.claude_session_id ?? null;
+}
+
+function getPaneConfigKind(paneConfig: PaneConfig): AgentSessionKind | null {
+  return paneConfig.agent_kind
+    ?? (paneConfig.claude_session_id ? "claude" : null)
+    ?? inferAgentKindFromAgentId(paneConfig.agent_id);
+}
+
+function getPaneConfigSessionId(paneConfig: PaneConfig): string | null {
+  return paneConfig.agent_session_id ?? paneConfig.claude_session_id ?? null;
+}
+
+function applyMappingToTabConfig(
+  tabConfig: PaneTabConfig,
+  mapping: AgentSessionMapping | undefined,
+  fallbackAgentId?: string | null,
+): PaneTabConfig {
+  const existingKind = getTabConfigKind(tabConfig, fallbackAgentId);
+  const existingSessionId = getTabConfigSessionId(tabConfig);
+  const mappingKind = getMappingKind(mapping, existingKind);
+  if (!mapping?.session_id || !mappingKind) return tabConfig;
+  if (existingSessionId && existingSessionId !== mapping.session_id) return tabConfig;
+  if (existingKind && existingKind !== mappingKind) return tabConfig;
+
+  return {
+    ...tabConfig,
+    agent_kind: tabConfig.agent_kind ?? mappingKind,
+    agent_session_id: tabConfig.agent_session_id ?? mapping.session_id,
+    claude_session_id: mappingKind === "claude"
+      ? tabConfig.claude_session_id ?? mapping.session_id
+      : tabConfig.claude_session_id,
+  };
+}
+
+function applyMappingToPaneConfig(
+  paneConfig: PaneConfig,
+  mapping: AgentSessionMapping | undefined,
+): PaneConfig {
+  const existingKind = getPaneConfigKind(paneConfig);
+  const existingSessionId = getPaneConfigSessionId(paneConfig);
+  const mappingKind = getMappingKind(mapping, existingKind);
+  if (!mapping?.session_id || !mappingKind) return paneConfig;
+  if (existingSessionId && existingSessionId !== mapping.session_id) return paneConfig;
+  if (existingKind && existingKind !== mappingKind) return paneConfig;
+
+  return {
+    ...paneConfig,
+    agent_kind: paneConfig.agent_kind ?? mappingKind,
+    agent_session_id: paneConfig.agent_session_id ?? mapping.session_id,
+    claude_session_id: mappingKind === "claude"
+      ? paneConfig.claude_session_id ?? mapping.session_id
+      : paneConfig.claude_session_id,
+  };
+}
+
 function applyMappingsToConfig(
   cfg: WorkspaceConfig,
   agentMappings: Record<string, AgentSessionMapping>,
@@ -89,45 +167,41 @@ function applyMappingsToConfig(
 
       const paneSessionId = makeSessionId(cfg.id, paneId);
       const paneMapping = agentMappings[paneSessionId];
-      const tabs = paneConfig.tabs?.map((tabConfig) => {
+      const tabs = paneConfig.tabs?.map((tabConfig, index) => {
         const tabId = tabConfig.tab_id;
         if (!tabId) return tabConfig;
         const tabSessionId = makeSessionId(cfg.id, `${paneId}-${tabId}`);
         const tabMapping = agentMappings[tabSessionId];
-        const tabKind = tabConfig.agent_kind
-          ?? (tabConfig.claude_session_id ? "claude" : null)
-          ?? inferAgentKindFromAgentId(tabConfig.agent_id || paneConfig.agent_id);
-        if (!tabMapping?.agent_kind || tabKind !== tabMapping.agent_kind) return tabConfig;
-        return {
-          ...tabConfig,
-          agent_kind: tabConfig.agent_kind ?? tabMapping.agent_kind,
-          agent_session_id: tabConfig.agent_session_id ?? tabMapping.session_id,
-          claude_session_id: tabMapping.agent_kind === "claude"
-            ? tabConfig.claude_session_id ?? tabMapping.session_id
-            : tabConfig.claude_session_id,
-        };
+        const isActiveTab = paneConfig.active_tab_id
+          ? tabId === paneConfig.active_tab_id
+          : index === 0;
+        return applyMappingToTabConfig(
+          tabConfig,
+          tabMapping ?? (isActiveTab ? paneMapping : undefined),
+          paneConfig.agent_id,
+        );
       });
 
-      if (!paneMapping?.agent_kind) {
-        return tabs ? { ...paneConfig, tabs } : paneConfig;
-      }
-      const paneKind = paneConfig.agent_kind
-        ?? (paneConfig.claude_session_id ? "claude" : null)
-        ?? inferAgentKindFromAgentId(paneConfig.agent_id);
-      if (paneKind !== paneMapping.agent_kind) {
-        return tabs ? { ...paneConfig, tabs } : paneConfig;
-      }
-      return {
-        ...paneConfig,
-        tabs,
-        agent_kind: paneConfig.agent_kind ?? paneMapping.agent_kind,
-        agent_session_id: paneConfig.agent_session_id ?? paneMapping.session_id,
-        claude_session_id: paneMapping.agent_kind === "claude"
-          ? paneConfig.claude_session_id ?? paneMapping.session_id
-          : paneConfig.claude_session_id,
-      };
+      const mappedPane = applyMappingToPaneConfig(paneConfig, paneMapping);
+      return tabs ? { ...mappedPane, tabs } : mappedPane;
     }),
   };
+}
+
+function tabConfigHasRestorableAgentSession(tab: PaneTabConfig): boolean {
+  return Boolean((tab.agent_kind && tab.agent_session_id) || tab.claude_session_id);
+}
+
+function paneConfigHasRestorableAgentSession(pane: PaneConfig): boolean {
+  return Boolean(
+    (pane.agent_kind && pane.agent_session_id)
+    || pane.claude_session_id
+    || pane.tabs?.some(tabConfigHasRestorableAgentSession),
+  );
+}
+
+function workspaceConfigHasRestorableAgentSession(cfg: WorkspaceConfig): boolean {
+  return cfg.panes.some(paneConfigHasRestorableAgentSession);
 }
 
 function getConfigAgentSessionKey(
@@ -371,6 +445,7 @@ export function useWorkspacePersist() {
   const loaded = useRef(false);
   const isLeader = useRef(false);
   const lastActivePaneSessionId = useRef<string | null>(null);
+  const startupAutosaveHoldUntil = useRef(0);
 
   // Load on mount — only leader bootstraps
   useEffect(() => {
@@ -410,6 +485,14 @@ export function useWorkspacePersist() {
               data.active_pane_id,
               data.active_tab_id,
             );
+            const startupRestoreTargetCount = restoredConfigs.filter(workspaceConfigHasRestorableAgentSession).length;
+            startupAutosaveHoldUntil.current = startupRestoreTargetCount > 0
+              ? Date.now() + Math.min(
+                  STARTUP_RESTORE_AUTOSAVE_MAX_HOLD_MS,
+                  STARTUP_RESTORE_AUTOSAVE_BASE_HOLD_MS
+                    + startupRestoreTargetCount * STARTUP_RESTORE_AUTOSAVE_PER_WORKSPACE_MS,
+                )
+              : 0;
 
             if (listStore.workspaces.length <= 1) {
               for (const cfg of restoredConfigs) {
@@ -532,6 +615,12 @@ export function useWorkspacePersist() {
         await syncInFlight.catch(() => {});
       }
       if (!dirty && !force) return;
+      const startupHoldRemainingMs = startupAutosaveHoldUntil.current - Date.now();
+      if (!force && startupHoldRemainingMs > 0) {
+        dirty = true;
+        scheduleSync(startupHoldRemainingMs + 100);
+        return;
+      }
       let agentMappings: Record<string, AgentSessionMapping> = {};
       try {
         agentMappings = await readAgentSessionMappings();
@@ -553,9 +642,15 @@ export function useWorkspacePersist() {
       }
     };
 
-    const debouncedSync = () => {
+    function scheduleSync(delayMs = 500): void {
       if (debounceTimer) clearTimeout(debounceTimer);
-      debounceTimer = setTimeout(sync, 500);
+      debounceTimer = setTimeout(() => {
+        void sync();
+      }, delayMs);
+    }
+
+    const debouncedSync = () => {
+      scheduleSync(500);
     };
 
     const markDirty = () => {

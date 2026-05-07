@@ -1,5 +1,17 @@
 # Changelog (mycmux-lite)
 
+## [0.6.2-lite.1] - 2026-05-07
+
+### Fixed
+
+- Synced startup restore behavior from personal v0.6.2. Every workspace with a saved Claude / Codex / claude-codex session, or a matching `~/.mycmux-lite/pane-sessions/*.txt` mapping, is now a restore target instead of only the active workspace.
+- Inactive restore targets mount through a short queue after the active workspace, keeping normal startup responsive while previous sessions resume.
+- `shell-starter` / session-less panes can recover `agent_kind` and `agent_session_id` from pane-session mappings. Existing distinct session IDs are not overwritten by stale mapping files.
+- The workspace LRU mount cap now applies only to shell-only workspaces; restore-target workspaces are not evicted by the cap.
+- Startup autosave is held briefly during restore so `data.json` is less likely to be rewritten with an intermediate session-less state.
+
+---
+
 ## [0.6.1-lite.1] - 2026-05-07
 
 ### Fixed

@@ -132,6 +132,68 @@ def test_resume_and_handoff_environment_contract_remains_wired() -> None:
         assert_contains(palette, snippet, "src/components/CommandPalette/CrsmPalette.tsx")
 
 
+def test_startup_restore_mounts_inactive_saved_session_workspaces() -> None:
+    workspace_view = read_repo_text("src/components/workspace/WorkspaceView.tsx")
+
+    for snippet in [
+        "workspaceHasRestorableAgentSession",
+        "startupRestoreMountedIds",
+        "RESTORE_MOUNT_DELAY_MS",
+        "const visibleWorkspaceIds",
+        "visibleWorkspaceIds.has(ws.id)",
+    ]:
+        assert_contains(workspace_view, snippet, "src/components/workspace/WorkspaceView.tsx")
+
+
+def test_restore_targets_are_not_trimmed_by_lru_mount_cap() -> None:
+    workspace_view = read_repo_text("src/components/workspace/WorkspaceView.tsx")
+
+    for snippet in [
+        "const restoreIds = next.filter((id) => restoreWorkspaceIdSet.has(id));",
+        "const shellOnlyIds = next.filter((id) => !restoreWorkspaceIdSet.has(id));",
+        "const trimmed = [...shellOnlyIds.slice(-MAX_MOUNTED_WORKSPACES), ...restoreIds];",
+    ]:
+        assert_contains(workspace_view, snippet, "src/components/workspace/WorkspaceView.tsx")
+
+
+def test_shell_starter_mapping_can_recover_session_identity() -> None:
+    socket_listener = read_repo_text("src/components/layout/SocketListener.tsx")
+    app = read_repo_text("src/App.tsx")
+
+    for snippet in [
+        'return mapping.agent_kind ?? existingKind ?? "claude";',
+        "tabMapping ?? (isActiveTab ? paneMapping : undefined)",
+        "applyMappingToTabConfig",
+        "applyMappingToPaneConfig",
+        "if (!processKind && tabKind && tabKind !== kind)",
+    ]:
+        source = "src/App.tsx" if snippet.startswith("if (!processKind") else "src/components/layout/SocketListener.tsx"
+        assert_contains(app if source == "src/App.tsx" else socket_listener, snippet, source)
+
+
+def test_existing_session_id_is_not_overwritten_by_mapping() -> None:
+    socket_listener = read_repo_text("src/components/layout/SocketListener.tsx")
+
+    for snippet in [
+        "if (existingSessionId && existingSessionId !== mapping.session_id) return tabConfig;",
+        "if (existingSessionId && existingSessionId !== mapping.session_id) return paneConfig;",
+    ]:
+        assert_contains(socket_listener, snippet, "src/components/layout/SocketListener.tsx")
+
+
+def test_startup_restore_autosave_hold_remains_wired() -> None:
+    socket_listener = read_repo_text("src/components/layout/SocketListener.tsx")
+
+    for snippet in [
+        "STARTUP_RESTORE_AUTOSAVE_BASE_HOLD_MS",
+        "workspaceConfigHasRestorableAgentSession",
+        "startupAutosaveHoldUntil",
+        "const startupHoldRemainingMs = startupAutosaveHoldUntil.current - Date.now();",
+        "scheduleSync(startupHoldRemainingMs + 100);",
+    ]:
+        assert_contains(socket_listener, snippet, "src/components/layout/SocketListener.tsx")
+
+
 def test_data_json_storage_contract_uses_tauri_app_data_dir() -> None:
     storage = read_repo_text("src-tauri/src/db/storage.rs")
 

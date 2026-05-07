@@ -54,6 +54,7 @@ function inferAgentKindFromTab(sessionId: string): AgentSessionKind | null {
         if (tab.agentKind) return tab.agentKind;
         if (tab.agentId === "claude-code") return "claude";
         if (tab.agentId === "codex") return "codex";
+        if (tab.agentId === "claude-codex") return "claude-codex";
       }
     }
   }
@@ -73,7 +74,7 @@ async function applyAgentSessionMappings(): Promise<void> {
     if (!kind) {
       continue;
     }
-    if (!processKind && tabKind !== kind) {
+    if (!processKind && tabKind && tabKind !== kind) {
       continue;
     }
     usePaneMetadataStore.getState().setMetadata(sessionId, {
