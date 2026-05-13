@@ -1,5 +1,57 @@
 # Changelog (mycmux-lite)
 
+## [0.7.1-lite.1] - 2026-05-14
+
+### Diagnostic
+
+v0.7.1-lite.1 は v0.7.2 で予定している display stability fix の根因特定用
+instrumentation リリース。terminal レンダリング層の挙動を可視化する log/counter
+のみ追加し、描画ロジック自体は無変更。TitleBar の文字色 tweak (下記 Changed) のみが
+ユーザー視認可能な変更。
+
+### Added — diagnostics
+
+- **PTY metrics (Rust → stderr, 5 秒ごと)**: 各 session の `reads`, `avg_read_us`,
+  `flushes`, `avg_batch`, `send_err`, `queue_full`, `dropped_chunks`,
+  `dropped_bytes`, `closed` を `[mycmux-diag pty {id}]` で出力。
+- **SessionManager::create handoff log**: `[mycmux-diag manager]` で `new` vs
+  `idempotent` を区別し、idempotent path では古い session の age と新規 channel ID
+  (破棄される側) を log。
+- **Frontend attach epoch + stale message counter** (`[mycmux-diag ipc]`):
+  `createSession()` が `sessionId` 別 epoch を bump し、古い epoch から届く
+  `Channel.onmessage` を `stale_message` として 25 回ごとに log。
+- **xterm 1 秒統計** (`[mycmux-diag xterm:{sid}]`): `writes/s`, `bytes/s`,
+  `webgl=on|fallback|never`, `replays`, `replay_lines` を console に出力。
+- **`WEBGL_LOST` event**: `WebglAddon.onContextLoss` 発火時刻と直近 writes 数を log。
+- **termCache lifecycle log**: `cache_hit`, `cache_miss`, `cache_evict` を console
+  に出力。
+- **initial_replay log**: 起動時の terminal_snapshot 再生量 (`lines`, `bytes`,
+  `source`) を log。
+
+### Changed
+
+- **TitleBar 文字色**: `--cmux-text-tertiary` (white 30%) → `--cmux-text-secondary`
+  (white 60%) に変更。
+
+### Fixed — Usage Meter calibration
+
+v0.7.0-lite.1 の Usage Meter は Anthropic /usage の実値と乖離していた:
+
+- **`cache_read_input_tokens` を加算対象から除外** (`src-tauri/src/usage/claude.rs`):
+  cache_read は Anthropic の rate-limit 計算に含まれない。
+- **`max_20x` 上限校正** (`src-tauri/src/usage/tier_presets.rs`):
+  5h: 220M → **150M tokens**、7d: 1.5B → **500M tokens**。
+- **Codex limit 校正**: 5h: 150 → **20000 messages**、7d: 1500 → **12000 messages**。
+- 上書きは `~/.claude/mycmux-usage-config.json` で可能。
+
+### Out of scope (v0.7.2 で対応予定)
+
+- WebGL renderer の Codex 表示プツプツ問題
+- SessionManager::create の channel 差し替えロジック化
+- scrollback / replay の重複表示 fix
+
+---
+
 ## [0.7.0-lite.1] - 2026-05-13
 
 ### Added
