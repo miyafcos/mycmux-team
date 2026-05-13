@@ -128,7 +128,7 @@ export default function TitleBar({ uiVariant = "default", onNewWorkspace, onOpen
           style={{
             background: "none",
             border: "none",
-            color: "var(--cmux-text-tertiary)",
+            color: "var(--cmux-text-secondary)",
             cursor: "pointer",
             padding: "3px 4px",
             display: "flex",
@@ -141,7 +141,7 @@ export default function TitleBar({ uiVariant = "default", onNewWorkspace, onOpen
           }}
           onMouseLeave={(e) => {
             e.currentTarget.style.background = "none";
-            e.currentTarget.style.color = "var(--cmux-text-tertiary)";
+            e.currentTarget.style.color = "var(--cmux-text-secondary)";
           }}
         >
           <SidebarIcon />
@@ -155,7 +155,7 @@ export default function TitleBar({ uiVariant = "default", onNewWorkspace, onOpen
             style={{
               background: "none",
               border: "none",
-              color: "var(--cmux-text-tertiary)",
+              color: "var(--cmux-text-secondary)",
               cursor: "pointer",
               padding: "3px 6px",
               display: "flex",
@@ -179,7 +179,7 @@ export default function TitleBar({ uiVariant = "default", onNewWorkspace, onOpen
           style={{
             background: "none",
             border: "none",
-            color: "var(--cmux-text-tertiary)",
+            color: "var(--cmux-text-secondary)",
             cursor: "pointer",
             padding: "3px 6px",
             display: "flex",
@@ -192,7 +192,7 @@ export default function TitleBar({ uiVariant = "default", onNewWorkspace, onOpen
           }}
           onMouseLeave={(e) => {
             e.currentTarget.style.background = "none";
-            e.currentTarget.style.color = "var(--cmux-text-tertiary)";
+            e.currentTarget.style.color = "var(--cmux-text-secondary)";
           }}
         >
           <PlusIcon />
@@ -228,12 +228,12 @@ export default function TitleBar({ uiVariant = "default", onNewWorkspace, onOpen
 
         {activeWorkspace && (
           <>
-            <span data-tauri-drag-region style={{ color: "var(--cmux-text-tertiary)", fontSize: 12 }}>·</span>
+            <span data-tauri-drag-region style={{ color: "var(--cmux-text-secondary)", fontSize: 12 }}>·</span>
             <span
               data-tauri-drag-region
               style={{
                 fontSize: 12,
-                color: "var(--cmux-text-tertiary)",
+                color: "var(--cmux-text-secondary)",
                 fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
               }}
             >
@@ -254,7 +254,7 @@ export default function TitleBar({ uiVariant = "default", onNewWorkspace, onOpen
             style={{
               background: "none",
               border: "none",
-              color: "var(--cmux-text-tertiary)",
+              color: "var(--cmux-text-secondary)",
               cursor: "pointer",
               padding: "3px 6px",
               borderRadius: 3,
@@ -282,7 +282,7 @@ export default function TitleBar({ uiVariant = "default", onNewWorkspace, onOpen
           style={{
             background: "none",
             border: "none",
-            color: "var(--cmux-text-tertiary)",
+            color: "var(--cmux-text-secondary)",
             cursor: "pointer",
             padding: "3px 6px",
             borderRadius: 3,
@@ -303,7 +303,7 @@ export default function TitleBar({ uiVariant = "default", onNewWorkspace, onOpen
           style={{
             background: "none",
             border: "none",
-            color: "var(--cmux-text-tertiary)",
+            color: "var(--cmux-text-secondary)",
             cursor: "pointer",
             padding: "3px 6px",
             borderRadius: 3,
@@ -330,7 +330,7 @@ export default function TitleBar({ uiVariant = "default", onNewWorkspace, onOpen
           style={{
             background: "none",
             border: "none",
-            color: "var(--cmux-text-tertiary)",
+            color: "var(--cmux-text-secondary)",
             cursor: "pointer",
             padding: "3px 6px",
             borderRadius: 3,
@@ -343,7 +343,7 @@ export default function TitleBar({ uiVariant = "default", onNewWorkspace, onOpen
           }}
           onMouseLeave={(e) => {
             e.currentTarget.style.background = "none";
-            e.currentTarget.style.color = "var(--cmux-text-tertiary)";
+            e.currentTarget.style.color = "var(--cmux-text-secondary)";
           }}
         >
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">

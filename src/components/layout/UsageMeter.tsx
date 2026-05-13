@@ -70,7 +70,7 @@ export function UsageMeter() {
         gap: 7,
         height: 24,
         padding: "0 5px",
-        color: "var(--cmux-text-tertiary)",
+        color: "var(--cmux-text-secondary)",
         fontSize: 11,
         letterSpacing: 0,
         whiteSpace: "nowrap",
@@ -84,7 +84,7 @@ export function UsageMeter() {
           <FullMeter summary={summary} />
         )
       ) : (
-        <span style={{ color: "var(--cmux-text-tertiary)", fontVariantNumeric: "tabular-nums" }}>
+        <span style={{ color: "var(--cmux-text-secondary)", fontVariantNumeric: "tabular-nums" }}>
           CC -- CX --
         </span>
       )}
@@ -197,7 +197,7 @@ function getSeverity(pct: number): { bar: string; text: string; pulse: boolean }
   }
   return {
     bar: "var(--cmux-usage-ok)",
-    text: "var(--cmux-text-tertiary)",
+    text: "var(--cmux-text-secondary)",
     pulse: false,
   };
 }
@@ -229,6 +229,6 @@ const groupStyle = {
 const compactGroupStyle = {
   display: "inline-flex",
   alignItems: "center",
-  color: "var(--cmux-text-tertiary)",
+  color: "var(--cmux-text-secondary)",
   fontVariantNumeric: "tabular-nums",
 } as const;
