@@ -1,0 +1,6 @@
+{"timestamp":"2026-05-13T08:30:00Z","type":"message","role":"assistant","usage":{"input_tokens":1000,"output_tokens":500}}
+{"timestamp":"2026-05-13T09:30:00Z","type":"meta","label":"not counted"}
+{"timestamp":"2026-05-13T11:30:00Z","type":"message","role":"user","usage":{"total_tokens":800}}
+{"timestamp":"2026-05-13T06:30:00Z","type":"message","role":"assistant"}
+{"timestamp":"2026-05-10T12:00:00Z","type":"meta","label":"not counted"}
+{"timestamp":"2026-05-08T12:00:00Z","type":"message","role":"assistant","usage":{"input_tokens":200,"output_tokens":100}}

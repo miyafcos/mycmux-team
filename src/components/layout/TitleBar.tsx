@@ -4,6 +4,7 @@ import { useWorkspaceListStore, useUiStore, usePaneMetadataStore } from "../../s
 import NotificationPanel from "./NotificationPanel";
 import SettingsMenu from "./SettingsMenu";
 import ThemeSwitcher from "../theme/ThemeSwitcher";
+import { UsageMeter } from "./UsageMeter";
 
 interface TitleBarProps {
   uiVariant?: "default" | "cmux";
@@ -244,6 +245,7 @@ export default function TitleBar({ uiVariant = "default", onNewWorkspace, onOpen
 
       {/* Right group: Minimize, Close */}
       <div style={{ display: "flex", alignItems: "center", gap: 2, paddingRight: 8, minWidth: groupMinWidth, justifyContent: "flex-end" }}>
+        <UsageMeter />
         <div style={{ position: "relative" }}>
           <button
             onClick={() => setIsSettingsOpen((v) => !v)}

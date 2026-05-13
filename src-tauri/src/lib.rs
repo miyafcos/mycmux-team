@@ -5,6 +5,7 @@ mod pty;
 mod remote;
 mod socket;
 pub mod terminal_config;
+mod usage;
 
 use pty::manager::SessionManager;
 use std::sync::atomic::AtomicBool;
@@ -90,6 +91,7 @@ pub fn run() {
             commands::terminal::read_agent_session_mappings,
             commands::crsm::crsm_list_sessions,
             commands::crsm::crsm_create_handoff,
+            commands::usage::get_usage_summary,
             commands::workspace::load_persistent_data,
             commands::workspace::save_persistent_data,
             commands::workspace::save_workspaces,
