@@ -176,6 +176,42 @@ const liveTerms = new Map<string, Terminal>();
 const terminalSizeCache = new Map<string, { cols: number; rows: number }>();
 const DEFAULT_TERMINAL_LINE_HEIGHT = 1.0;
 
+// v0.7.1 diag: per-session aggregated write stats flushed every 1 s on console.
+type DiagWriteStats = {
+  writes: number;
+  bytes: number;
+  webgl: "on" | "fallback" | "never";
+  webglLostAt: number | null;
+  replays: number;
+  replayLines: number;
+};
+const diagWriteStats = new Map<string, DiagWriteStats>();
+
+function diagStatsFor(sessionId: string): DiagWriteStats {
+  let stats = diagWriteStats.get(sessionId);
+  if (!stats) {
+    stats = { writes: 0, bytes: 0, webgl: "never", webglLostAt: null, replays: 0, replayLines: 0 };
+    diagWriteStats.set(sessionId, stats);
+  }
+  return stats;
+}
+
+// Flush per-session write stats once per second. Idle sessions are skipped.
+if (typeof window !== "undefined") {
+  window.setInterval(() => {
+    for (const [sid, s] of diagWriteStats) {
+      if (s.writes === 0 && s.replays === 0 && s.webglLostAt === null) continue;
+      console.log(
+        `[mycmux-diag xterm:${sid}] writes/s=${s.writes} bytes/s=${s.bytes} webgl=${s.webgl} replays=${s.replays} replay_lines=${s.replayLines}`,
+      );
+      s.writes = 0;
+      s.bytes = 0;
+      s.replays = 0;
+      s.replayLines = 0;
+    }
+  }, 1000);
+}
+
 type MarkdownTableAlignment = "left" | "center" | "right" | "default";
 
 function resolveTerminalFontFamily(base: string, isCodex: boolean, explicitFontFamily: boolean): string {
@@ -404,8 +440,10 @@ export function evictTerminalCache(sessionId: string): void {
     cached.unlistenExit?.();
     cached.term.dispose();
     termCache.delete(sessionId);
+    console.log(`[mycmux-diag xterm:${sessionId}] cache_evict`);
   }
   terminalSizeCache.delete(sessionId);
+  diagWriteStats.delete(sessionId);
 }
 
 /** Read the last N non-empty lines of a pane's xterm buffer, ANSI/control-char stripped. */
@@ -1010,9 +1048,11 @@ export default memo(function XTermWrapper({
 
     const cached = termCache.get(sessionId);
     if (cached) {
+      console.log(`[mycmux-diag xterm:${sessionId}] cache_hit`);
       attachCachedTerminal(cached);
       return cleanup;
     }
+    console.log(`[mycmux-diag xterm:${sessionId}] cache_miss`);
 
     async function init(): Promise<void> {
       if (disposed) return;
@@ -1061,14 +1101,24 @@ export default memo(function XTermWrapper({
       term.open(container!);
       // GPU renderer (WebGL). Must load AFTER open() since it needs the canvas.
       // Falls back silently to the default DOM renderer on context loss / failure.
+      const diagStats = diagStatsFor(sessionId);
       if (useSettingsStore.getState().useWebglRenderer) {
         try {
           const webgl = new WebglAddon();
           webgl.onContextLoss(() => {
+            const ts = Date.now();
+            diagStats.webgl = "fallback";
+            diagStats.webglLostAt = ts;
+            const writesSoFar = diagStats.writes;
+            console.log(
+              `[mycmux-diag xterm:${sessionId}] WEBGL_LOST at=${ts} writes_in_window=${writesSoFar}`,
+            );
             webgl.dispose();
           });
           term.loadAddon(webgl);
+          diagStats.webgl = "on";
         } catch (err) {
+          diagStats.webgl = "fallback";
           console.warn("[xterm] WebGL renderer unavailable, using DOM fallback:", err);
         }
       }
@@ -1077,6 +1127,12 @@ export default memo(function XTermWrapper({
         const replayText = initialReplay.join("\r\n");
         const shouldFormatReplay = updateCodexOutputDetection(replayText);
         const displayReplay = shouldFormatReplay ? formatMarkdownTablesForTerminal(replayText) : replayText;
+        const replayBytes = new Blob([displayReplay]).size;
+        diagStats.replays += 1;
+        diagStats.replayLines += initialReplay.length;
+        console.log(
+          `[mycmux-diag xterm:${sessionId}] initial_replay lines=${initialReplay.length} bytes=${replayBytes} source=initialReplay`,
+        );
         term.write(`${displayReplay}\r\n`);
       }
       registerScrollListener(term);
@@ -1127,6 +1183,9 @@ export default memo(function XTermWrapper({
           const decodedText = outputDecoder.decode(chunk, { stream: true });
           const shouldFormatTables = updateCodexOutputDetection(decodedText);
           const output = shouldFormatTables ? formatMarkdownTablesForTerminal(decodedText) : chunk;
+          // v0.7.1 diag: count live writes (per-second flush via diagWriteStats interval).
+          diagStats.writes += 1;
+          diagStats.bytes += typeof output === "string" ? new Blob([output]).size : output.byteLength;
           try {
             term.write(output, () => {
               if (disposed) {

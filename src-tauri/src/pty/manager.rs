@@ -1,4 +1,5 @@
 use dashmap::DashMap;
+use std::time::Instant;
 use tauri::ipc::Channel;
 use tauri::AppHandle;
 
@@ -30,10 +31,27 @@ impl SessionManager {
         env: Option<std::collections::HashMap<String, String>>,
         metadata_store: MetadataStore,
     ) -> Result<(), String> {
+        let new_channel_id = data_channel.id();
         if self.sessions.contains_key(&session_id) {
+            // v0.7.1 diag: idempotent path. The new Channel handle is dropped on
+            // the floor; the existing session's forwarder keeps writing to its
+            // original channel. v0.7.2 will swap channels instead.
+            let age_ms = self
+                .sessions
+                .get(&session_id)
+                .map(|s| s.created_at.elapsed().as_millis())
+                .unwrap_or(0);
+            eprintln!(
+                "[mycmux-diag manager] create_session id={} kind=idempotent age_ms={} new_channel_id={} (dropped)",
+                session_id, age_ms, new_channel_id
+            );
             return Ok(());
         }
 
+        eprintln!(
+            "[mycmux-diag manager] create_session id={} kind=new channel_id={}",
+            session_id, new_channel_id
+        );
         let session = PtySession::spawn(
             session_id.clone(),
             command,
@@ -45,6 +63,7 @@ impl SessionManager {
             cwd,
             env,
             metadata_store,
+            Instant::now(),
         )?;
         self.sessions.insert(session_id, session);
         Ok(())

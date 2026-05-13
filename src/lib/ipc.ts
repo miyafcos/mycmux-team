@@ -2,6 +2,17 @@ import { invoke, Channel } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { AgentSessionKind } from "../types";
 
+// v0.7.1 diag: per-session attach epoch.
+// Each createSession() call bumps the epoch. Channel.onmessage closures
+// captured by older epochs still receive PTY data from the Rust side until
+// the Channel is GC'd; we log when those stale callbacks fire so we can tell
+// whether duplicate terminal output is a result of leaked listeners.
+const sessionAttachEpoch = new Map<string, number>();
+
+export function getCurrentSessionEpoch(sessionId: string): number {
+  return sessionAttachEpoch.get(sessionId) ?? 0;
+}
+
 export async function createSession(
   sessionId: string,
   command: string,
@@ -12,8 +23,27 @@ export async function createSession(
   cwd?: string,
   env?: Record<string, string>,
 ): Promise<void> {
+  const epoch = (sessionAttachEpoch.get(sessionId) ?? 0) + 1;
+  sessionAttachEpoch.set(sessionId, epoch);
   const channel = new Channel<ArrayBuffer>();
-  channel.onmessage = onData;
+  let messageCount = 0;
+  let staleNoticeCount = 0;
+  channel.onmessage = (data) => {
+    messageCount += 1;
+    const current = sessionAttachEpoch.get(sessionId);
+    if (current !== epoch) {
+      if (staleNoticeCount % 25 === 0) {
+        console.log(
+          `[mycmux-diag ipc] stale_message session=${sessionId} attached_epoch=${epoch} current=${current ?? "none"} stale_count=${staleNoticeCount + 1} bytes_this_msg=${data.byteLength}`,
+        );
+      }
+      staleNoticeCount += 1;
+    }
+    onData(data);
+  };
+  console.log(
+    `[mycmux-diag ipc] create_session session=${sessionId} epoch=${epoch} prev_messages=${messageCount}`,
+  );
   return invoke("create_session", {
     sessionId,
     command,

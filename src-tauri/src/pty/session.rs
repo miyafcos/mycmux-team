@@ -20,6 +20,23 @@ const FRONTEND_QUEUE_CAP: usize = 64;
 const FRONTEND_FLUSH_INTERVAL_MS: u64 = 8;
 const FRONTEND_BATCH_MAX_BYTES: usize = 64 * 1024;
 const FRONTEND_FULL_RETRY_DELAY_MS: u64 = 1;
+// v0.7.1 diag: report aggregated PTY metrics every 5 s on stderr.
+const METRICS_FLUSH_INTERVAL_MS: u64 = 5_000;
+
+// v0.7.1 diag: per-session counters shared by reader/forwarder threads.
+// Used only for stderr reports; no behavior change.
+#[derive(Default)]
+pub(crate) struct PtyMetrics {
+    pub reads: std::sync::atomic::AtomicU64,
+    pub read_micros_total: std::sync::atomic::AtomicU64,
+    pub flushes: std::sync::atomic::AtomicU64,
+    pub flushed_bytes: std::sync::atomic::AtomicU64,
+    pub channel_send_errors: std::sync::atomic::AtomicU64,
+    pub frontend_queue_full_retry: std::sync::atomic::AtomicU64,
+    pub dropped_chunks: std::sync::atomic::AtomicU64,
+    pub dropped_bytes: std::sync::atomic::AtomicU64,
+    pub closed_count: std::sync::atomic::AtomicU64,
+}
 
 pub struct PtySession {
     child: Mutex<Box<dyn Child + Send + Sync>>,
@@ -27,6 +44,9 @@ pub struct PtySession {
     writer: Mutex<Box<dyn Write + Send>>,
     pub broadcast: broadcast::Sender<Vec<u8>>,
     scrollback: Arc<Mutex<VecDeque<u8>>>,
+    pub created_at: Instant,
+    #[allow(dead_code)]
+    pub(crate) metrics: Arc<PtyMetrics>,
 }
 
 // Safety: All fields are behind Mutex, access is serialized.
@@ -45,6 +65,7 @@ impl PtySession {
         cwd: Option<String>,
         env: Option<std::collections::HashMap<String, String>>,
         metadata_store: MetadataStore,
+        created_at: Instant,
     ) -> Result<Self, String> {
         let pty_system = native_pty_system();
 
@@ -111,7 +132,51 @@ impl PtySession {
         let sb_clone = scrollback.clone();
         let (frontend_tx, mut frontend_rx) = mpsc::channel::<Vec<u8>>(FRONTEND_QUEUE_CAP);
 
+        // v0.7.1 diag: per-session counters shared by reader/forwarder.
+        let metrics = Arc::new(PtyMetrics::default());
+
+        // v0.7.1 diag: periodic metrics flush to stderr.
+        let metrics_for_log = metrics.clone();
+        let sid_for_log = session_id.clone();
         tauri::async_runtime::spawn(async move {
+            use std::sync::atomic::Ordering;
+            let mut prev_reads: u64 = 0;
+            loop {
+                tokio::time::sleep(Duration::from_millis(METRICS_FLUSH_INTERVAL_MS)).await;
+                let reads = metrics_for_log.reads.load(Ordering::Relaxed);
+                if reads == prev_reads {
+                    continue;
+                }
+                let micros = metrics_for_log.read_micros_total.load(Ordering::Relaxed);
+                let flushes = metrics_for_log.flushes.load(Ordering::Relaxed);
+                let flushed_bytes = metrics_for_log.flushed_bytes.load(Ordering::Relaxed);
+                let send_err = metrics_for_log.channel_send_errors.load(Ordering::Relaxed);
+                let queue_full = metrics_for_log.frontend_queue_full_retry.load(Ordering::Relaxed);
+                let dropped_c = metrics_for_log.dropped_chunks.load(Ordering::Relaxed);
+                let dropped_b = metrics_for_log.dropped_bytes.load(Ordering::Relaxed);
+                let closed = metrics_for_log.closed_count.load(Ordering::Relaxed);
+                let avg_read_us = if reads > 0 { micros / reads } else { 0 };
+                let avg_batch = if flushes > 0 { flushed_bytes / flushes } else { 0 };
+                eprintln!(
+                    "[mycmux-diag pty {}] reads={} avg_read_us={} flushes={} avg_batch={} send_err={} queue_full={} dropped_chunks={} dropped_bytes={} closed={}",
+                    sid_for_log,
+                    reads,
+                    avg_read_us,
+                    flushes,
+                    avg_batch,
+                    send_err,
+                    queue_full,
+                    dropped_c,
+                    dropped_b,
+                    closed,
+                );
+                prev_reads = reads;
+            }
+        });
+
+        let metrics_forwarder = metrics.clone();
+        tauri::async_runtime::spawn(async move {
+            use std::sync::atomic::Ordering;
             while let Some(first_chunk) = frontend_rx.recv().await {
                 let mut batch = first_chunk;
 
@@ -125,7 +190,20 @@ impl PtySession {
 
                 // Tauri Channel is unbounded, so this forwarder rate-limits
                 // frontend IPC instead of draining the bounded queue instantly.
-                let _ = data_channel.send(batch);
+                let batch_len = batch.len();
+                match data_channel.send(batch) {
+                    Ok(()) => {
+                        metrics_forwarder.flushes.fetch_add(1, Ordering::Relaxed);
+                        metrics_forwarder
+                            .flushed_bytes
+                            .fetch_add(batch_len as u64, Ordering::Relaxed);
+                    }
+                    Err(_) => {
+                        metrics_forwarder
+                            .channel_send_errors
+                            .fetch_add(1, Ordering::Relaxed);
+                    }
+                }
                 tokio::time::sleep(Duration::from_millis(FRONTEND_FLUSH_INTERVAL_MS)).await;
             }
         });
@@ -133,7 +211,9 @@ impl PtySession {
         // Spawn reader thread — blocking I/O, not tokio
         let sid = session_id.clone();
         let handle = app_handle.clone();
+        let metrics_reader = metrics.clone();
         thread::spawn(move || {
+            use std::sync::atomic::Ordering;
             let mut buf = [0u8; 4096]; // 4KB — matches OS page size
             let mut osc7 = Osc7Parser::new();
             let mut frontend_open = true;
@@ -143,6 +223,10 @@ impl PtySession {
                     Ok(0) => break,
                     Ok(n) => {
                         let read_micros = read_start.elapsed().as_micros();
+                        metrics_reader.reads.fetch_add(1, Ordering::Relaxed);
+                        metrics_reader
+                            .read_micros_total
+                            .fetch_add(read_micros as u64, Ordering::Relaxed);
 
                         // OSC 7: side-channel CWD observation. Bytes are NOT stripped —
                         // xterm.js ignores unknown OSCs, so passing them through is safe.
@@ -189,22 +273,37 @@ impl PtySession {
                         if frontend_open {
                             match frontend_tx.try_send(chunk.clone()) {
                                 Ok(()) => {}
-                                Err(mpsc::error::TrySendError::Full(chunk)) => {
+                                Err(mpsc::error::TrySendError::Full(rejected)) => {
+                                    metrics_reader
+                                        .frontend_queue_full_retry
+                                        .fetch_add(1, Ordering::Relaxed);
                                     thread::sleep(Duration::from_millis(
                                         FRONTEND_FULL_RETRY_DELAY_MS,
                                     ));
-                                    match frontend_tx.try_send(chunk) {
+                                    match frontend_tx.try_send(rejected) {
                                         Ok(()) => {}
-                                        Err(mpsc::error::TrySendError::Full(_)) => {
+                                        Err(mpsc::error::TrySendError::Full(dropped)) => {
                                             // Prefer dropping display-only frontend data over
                                             // blocking the PTY reader and stalling the shell.
+                                            metrics_reader
+                                                .dropped_chunks
+                                                .fetch_add(1, Ordering::Relaxed);
+                                            metrics_reader
+                                                .dropped_bytes
+                                                .fetch_add(dropped.len() as u64, Ordering::Relaxed);
                                         }
                                         Err(mpsc::error::TrySendError::Closed(_)) => {
+                                            metrics_reader
+                                                .closed_count
+                                                .fetch_add(1, Ordering::Relaxed);
                                             frontend_open = false;
                                         }
                                     }
                                 }
                                 Err(mpsc::error::TrySendError::Closed(_)) => {
+                                    metrics_reader
+                                        .closed_count
+                                        .fetch_add(1, Ordering::Relaxed);
                                     frontend_open = false;
                                 }
                             }
@@ -243,6 +342,8 @@ impl PtySession {
             writer: Mutex::new(writer),
             broadcast: broadcast_tx,
             scrollback,
+            created_at,
+            metrics,
         })
     }
 
