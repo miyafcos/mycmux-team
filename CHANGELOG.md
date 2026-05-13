@@ -1,5 +1,26 @@
 # Changelog (mycmux-lite)
 
+## [0.7.0-lite.1] - 2026-05-13
+
+### Added
+
+- **Usage Meter**: TitleBar right group に Claude Code / Codex のサブスクリプション使用量メーターを追加。5 時間ローリング + 7 日ウィンドウを `CC 5h ▓▓▓░░ 45% 7d ▓▓▓▓░ 62%  CX 5h ▓▓░░░ 23%` の形式で常時表示。80% 閾値で橙、95% で赤 + pulse animation。ホバーで Popover を開き、絶対値・reset 時刻・tier 名を表示。900px / 700px の媒体クエリでコンパクト化 / 非表示。
+- Rust-native の Usage 集計モジュール `src-tauri/src/usage/` と Tauri command `get_usage_summary` を新設。Node 経由の ccusage を起動せずに `~/.claude/projects/**/*.jsonl` および `~/.codex/sessions/**/*.jsonl` を直接集計。差分スキャン用のファイルキャッシュ付き。
+- 上限値は `~/.claude/.credentials.json::rateLimitTier` を基に `tier_presets.rs` の推定値 (max_20x / max_5x / pro) を選択、`~/.claude/mycmux-usage-config.json` で上書き可能。
+
+### Fixed
+
+- **セッション復活 (Symptom A の真因)**: 同一 `session_id` の二重 `create_session` で既存 PTY が破壊されていた問題を `SessionManager::create` を idempotent 化することで解消。
+- **セッション復活 (Symptom B の真因)**: `create_session` の cwd 検証経路と spawn 経路で異なるパスを参照していた問題を統一 (`resolve_launch_cwd` 結果を両者で共有) して解消。
+- **セッション復活 (Symptom C の真因)**: 並列復元時の race を以下で解消 — startup autosave hold を `1400ms + 700ms × workspaces + 500ms × panes` (上限 30s) の動的式に変更、mapping refresh を 10s poll から `startup-restore-complete` window イベント駆動 + 15s フォールバックに切り替え、初回 mount delay を 1200ms に延長 (2 回目以降 650ms)。
+
+### Changed
+
+- `scripts/backfill-sessions.ps1` を DEPRECATED 化 (本リリースで pane config に agent_kind / cwd が完全に保存されるため、起動後の back-fill は不要)。
+- 使用量メーターの推定上限値は ccusage コミュニティデータ由来。Anthropic 公式値ではない旨を `tier_presets.rs` および UI のホバー表示で明示。
+
+---
+
 ## [0.6.2-lite.1] - 2026-05-07
 
 ### Fixed
