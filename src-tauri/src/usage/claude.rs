@@ -29,6 +29,8 @@ pub fn aggregate(
 fn parse_event(value: &Value) -> Option<UsageEvent> {
     let timestamp = parse_timestamp(value)?;
     let usage = value.get("message")?.get("usage")?;
+    // Anthropic の /usage rate-limit は cache_read_input_tokens をカウントしない (検証済)。
+    // 含めると 5h 表示が 70%+ になり、実 /usage の 5% と乖離するため除外。
     let tokens = get_u64(usage, "input_tokens")
         .saturating_add(get_u64(usage, "output_tokens"))
         .saturating_add(get_u64(usage, "cache_creation_input_tokens"));
