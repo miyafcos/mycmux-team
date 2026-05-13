@@ -30,6 +30,10 @@ impl SessionManager {
         env: Option<std::collections::HashMap<String, String>>,
         metadata_store: MetadataStore,
     ) -> Result<(), String> {
+        if self.sessions.contains_key(&session_id) {
+            return Ok(());
+        }
+
         let session = PtySession::spawn(
             session_id.clone(),
             command,

@@ -18,8 +18,9 @@ import {
 } from "./lib/ipc";
 import { useUiStore } from "./stores/uiStore";
 import { isShellProcess } from "./lib/notificationStatus";
-import type { AgentSessionKind } from "./types";
+import type { AgentSessionKind, Pane, PaneTab } from "./types";
 import {
+  STARTUP_RESTORE_COMPLETE_EVENT,
   getStartupSessionGateSnapshot,
   prepareStartupSessionGate,
   waitForStartupSessionGate,
@@ -59,6 +60,18 @@ function inferAgentKindFromTab(sessionId: string): AgentSessionKind | null {
     }
   }
   return null;
+}
+
+function tabHasRestorableAgentSession(tab: PaneTab): boolean {
+  return Boolean((tab.agentKind && tab.agentSessionId) || tab.claudeSessionId);
+}
+
+function paneHasRestorableAgentSession(pane: Pane): boolean {
+  return Boolean(
+    (pane.agentKind && pane.agentSessionId)
+    || pane.claudeSessionId
+    || pane.tabs.some(tabHasRestorableAgentSession),
+  );
 }
 
 async function applyAgentSessionMappings(): Promise<void> {
@@ -131,15 +144,18 @@ function App() {
       }
 
       const currentListState = useWorkspaceListStore.getState();
-      const startupWorkspace = currentListState.activeWorkspaceId
-        ? currentListState.getWorkspace(currentListState.activeWorkspaceId)
-        : currentListState.workspaces[0];
-      const startupSessionIds = startupWorkspace
-        ? startupWorkspace.panes.flatMap((pane) => {
+      const activeWorkspaceId = currentListState.activeWorkspaceId
+        ?? currentListState.workspaces[0]?.id
+        ?? null;
+      const startupSessionIds = currentListState.workspaces.flatMap((workspace) => {
+        const shouldGateWorkspace = workspace.id === activeWorkspaceId
+          || workspace.panes.some(paneHasRestorableAgentSession);
+        if (!shouldGateWorkspace) return [];
+        return workspace.panes.flatMap((pane) => {
             const activeTab = pane.tabs.find((tab) => tab.id === pane.activeTabId) ?? pane.tabs[0];
             return [activeTab.sessionId];
-          })
-        : [];
+          });
+      });
       prepareStartupSessionGate(startupSessionIds);
       setStartupMaskVisible(true);
 
@@ -240,20 +256,21 @@ function App() {
       await writeToSession(sessionId, quoted + " ");
     });
 
-    void applyAgentSessionMappings().catch((error) => {
-      console.warn("[sessions] Failed to read agent session mappings:", error);
-    });
-    const mappingTimer = window.setInterval(() => {
+    const refreshAgentSessionMappings = (): void => {
       void applyAgentSessionMappings().catch((error) => {
         console.warn("[sessions] Failed to read agent session mappings:", error);
       });
-    }, 10000);
+    };
+    refreshAgentSessionMappings();
+    window.addEventListener(STARTUP_RESTORE_COMPLETE_EVENT, refreshAgentSessionMappings);
+    const mappingFallbackTimer = window.setTimeout(refreshAgentSessionMappings, 15000);
 
     return () => {
       unlistenMeta.then((f) => f()).catch(() => {});
       unlistenWorkDone.then((f) => f()).catch(() => {});
       unlistenDragDrop.then((f) => f()).catch(() => {});
-      window.clearInterval(mappingTimer);
+      window.removeEventListener(STARTUP_RESTORE_COMPLETE_EVENT, refreshAgentSessionMappings);
+      window.clearTimeout(mappingFallbackTimer);
     };
   }, []);
 

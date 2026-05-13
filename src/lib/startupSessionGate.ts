@@ -3,10 +3,31 @@ interface StartupSessionGateState {
   pending: Set<string>;
   readyPromise: Promise<void>;
   resolveReady: (() => void) | null;
+  completionEmitted: boolean;
 }
+
+export const STARTUP_RESTORE_COMPLETE_EVENT = "startup-restore-complete";
+export const FIRST_LAUNCH_STORAGE_KEY = "mycmux:first-launch-done";
 
 function createResolvedPromise(): Promise<void> {
   return Promise.resolve();
+}
+
+function markFirstLaunchDone(): void {
+  try {
+    window.localStorage.setItem(FIRST_LAUNCH_STORAGE_KEY, "1");
+  } catch {
+    // Ignore storage failures; restore timing still works without persistence.
+  }
+}
+
+function maybeEmitStartupRestoreComplete(): void {
+  if (gate.completionEmitted || gate.pending.size > 0) {
+    return;
+  }
+  gate.completionEmitted = true;
+  markFirstLaunchDone();
+  window.dispatchEvent(new CustomEvent(STARTUP_RESTORE_COMPLETE_EVENT));
 }
 
 function createGate(sessionIds: string[]): StartupSessionGateState {
@@ -19,6 +40,7 @@ function createGate(sessionIds: string[]): StartupSessionGateState {
       pending,
       readyPromise: createResolvedPromise(),
       resolveReady: null,
+      completionEmitted: false,
     };
   }
 
@@ -32,6 +54,7 @@ function createGate(sessionIds: string[]): StartupSessionGateState {
     pending,
     readyPromise,
     resolveReady,
+    completionEmitted: false,
   };
 }
 
@@ -39,6 +62,9 @@ let gate = createGate([]);
 
 export function prepareStartupSessionGate(sessionIds: string[]): void {
   gate = createGate(sessionIds);
+  if (gate.pending.size === 0) {
+    window.queueMicrotask(maybeEmitStartupRestoreComplete);
+  }
 }
 
 export function markStartupSessionSettled(sessionId: string): void {
@@ -53,6 +79,7 @@ export function markStartupSessionSettled(sessionId: string): void {
   if (gate.pending.size === 0) {
     gate.resolveReady?.();
     gate.resolveReady = null;
+    maybeEmitStartupRestoreComplete();
   }
 }
 

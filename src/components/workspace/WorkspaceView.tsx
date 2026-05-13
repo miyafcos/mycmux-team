@@ -5,12 +5,24 @@ import type { Pane, GridTemplateId, Workspace } from "../../types";
 import { useWorkspaceLayoutStore, usePaneMetadataStore } from "../../stores/workspaceStore";
 import { useWorkspaceListStore } from "../../stores/workspaceListStore";
 import { killSession } from "../../lib/ipc";
+import { FIRST_LAUNCH_STORAGE_KEY } from "../../lib/startupSessionGate";
 import { evictTerminalCache } from "../terminal/XTermWrapper";
 import TerminalPane from "./TerminalPane";
 import { ErrorBoundary } from "../layout/ErrorBoundary";
 
 const MAX_MOUNTED_WORKSPACES = 3;
 const RESTORE_MOUNT_DELAY_MS = 650;
+const FIRST_RESTORE_MOUNT_DELAY_MS = 1200;
+
+function getRestoreMountDelayMs(): number {
+  try {
+    return window.localStorage.getItem(FIRST_LAUNCH_STORAGE_KEY)
+      ? RESTORE_MOUNT_DELAY_MS
+      : FIRST_RESTORE_MOUNT_DELAY_MS;
+  } catch {
+    return FIRST_RESTORE_MOUNT_DELAY_MS;
+  }
+}
 
 interface TerminalGridProps {
   workspaceId: string;
@@ -188,6 +200,7 @@ export default memo(function WorkspaceView() {
   const workspaces = useWorkspaceListStore((s) => s.workspaces);
   const [mountedWorkspaceIds, setMountedWorkspaceIds] = useState<string[]>([]);
   const [startupRestoreMountedIds, setStartupRestoreMountedIds] = useState<string[]>([]);
+  const [restoreMountDelayMs] = useState(getRestoreMountDelayMs);
   const restoreWorkspaceIds = useMemo(
     () => workspaces
       .filter(workspaceHasRestorableAgentSession)
@@ -235,10 +248,10 @@ export default memo(function WorkspaceView() {
         if (prev.includes(nextRestoreId)) return prev;
         return [...prev, nextRestoreId];
       });
-    }, RESTORE_MOUNT_DELAY_MS);
+    }, restoreMountDelayMs);
 
     return () => window.clearTimeout(timer);
-  }, [activeId, restoreWorkspaceIds, startupRestoreMountedIds]);
+  }, [activeId, restoreMountDelayMs, restoreWorkspaceIds, startupRestoreMountedIds]);
 
   // Prune mounted IDs for deleted workspaces
   useEffect(() => {

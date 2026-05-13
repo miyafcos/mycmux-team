@@ -79,7 +79,8 @@ function getTerminalSnapshot(sessionId: string): string[] | null {
 
 const STARTUP_RESTORE_AUTOSAVE_BASE_HOLD_MS = 1400;
 const STARTUP_RESTORE_AUTOSAVE_PER_WORKSPACE_MS = 700;
-const STARTUP_RESTORE_AUTOSAVE_MAX_HOLD_MS = 9000;
+const STARTUP_RESTORE_AUTOSAVE_PER_PANE_MS = 500;
+const STARTUP_RESTORE_AUTOSAVE_MAX_HOLD_MS = 30000;
 
 function getMappingKind(
   mapping: AgentSessionMapping | undefined,
@@ -202,6 +203,19 @@ function paneConfigHasRestorableAgentSession(pane: PaneConfig): boolean {
 
 function workspaceConfigHasRestorableAgentSession(cfg: WorkspaceConfig): boolean {
   return cfg.panes.some(paneConfigHasRestorableAgentSession);
+}
+
+function paneConfigRestorableAgentSessionCount(pane: PaneConfig): number {
+  const tabCount = pane.tabs?.filter(tabConfigHasRestorableAgentSession).length ?? 0;
+  if (tabCount > 0) return tabCount;
+  return paneConfigHasRestorableAgentSession(pane) ? 1 : 0;
+}
+
+function workspaceConfigRestorableAgentSessionCount(cfg: WorkspaceConfig): number {
+  return cfg.panes.reduce(
+    (count, pane) => count + paneConfigRestorableAgentSessionCount(pane),
+    0,
+  );
 }
 
 function getConfigAgentSessionKey(
@@ -485,12 +499,17 @@ export function useWorkspacePersist() {
               data.active_pane_id,
               data.active_tab_id,
             );
-            const startupRestoreTargetCount = restoredConfigs.filter(workspaceConfigHasRestorableAgentSession).length;
-            startupAutosaveHoldUntil.current = startupRestoreTargetCount > 0
+            const startupRestoreTargetWorkspaceCount = restoredConfigs.filter(workspaceConfigHasRestorableAgentSession).length;
+            const startupRestoreTargetPaneCount = restoredConfigs.reduce(
+              (count, cfg) => count + workspaceConfigRestorableAgentSessionCount(cfg),
+              0,
+            );
+            startupAutosaveHoldUntil.current = startupRestoreTargetPaneCount > 0
               ? Date.now() + Math.min(
                   STARTUP_RESTORE_AUTOSAVE_MAX_HOLD_MS,
                   STARTUP_RESTORE_AUTOSAVE_BASE_HOLD_MS
-                    + startupRestoreTargetCount * STARTUP_RESTORE_AUTOSAVE_PER_WORKSPACE_MS,
+                    + startupRestoreTargetWorkspaceCount * STARTUP_RESTORE_AUTOSAVE_PER_WORKSPACE_MS
+                    + startupRestoreTargetPaneCount * STARTUP_RESTORE_AUTOSAVE_PER_PANE_MS,
                 )
               : 0;
 

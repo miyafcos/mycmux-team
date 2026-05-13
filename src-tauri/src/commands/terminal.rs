@@ -53,11 +53,12 @@ pub fn create_session(
     let mut args = args;
     let mut env_map = env.unwrap_or_default();
     validate_agent_restore_request(cwd.as_deref(), &env_map)?;
+    let launch_cwd = resolve_launch_cwd(cwd.as_deref());
     sanitize_launch_env(&mut env_map);
     let command = prepare_spawn_command(&requested_command, &mut args);
     inject_osc7_hook(&command, &mut args, &mut env_map);
     if should_trust_claude_workspace(&requested_command, &env_map) {
-        if let Some(trusted_cwd) = resolve_launch_cwd(cwd.as_deref()) {
+        if let Some(trusted_cwd) = launch_cwd.as_deref() {
             if let Err(error) = ensure_claude_project_trusted(&trusted_cwd) {
                 eprintln!("[claude] failed to mark workspace trusted: {error}");
             }
@@ -72,7 +73,7 @@ pub fn create_session(
         rows,
         on_data,
         app_handle,
-        cwd,
+        launch_cwd,
         Some(env_map),
         state.metadata_store.clone(),
     )
