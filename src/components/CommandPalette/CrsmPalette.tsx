@@ -296,6 +296,9 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
   const showClaude = useSettingsStore((s) => s.crsmShowClaude);
   const showCodex = useSettingsStore((s) => s.crsmShowCodex);
   const showClaudeCodex = useSettingsStore((s) => s.crsmShowClaudeCodex);
+  const hideSessionsWithoutUserMessages = useSettingsStore(
+    (s) => s.hideSessionsWithoutUserMessages,
+  );
   const enabledKinds = useMemo(() => {
     const set = new Set<TargetKind>();
     if (showClaude) set.add("claude");
@@ -388,19 +391,24 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
     return visible.filter((session) => session.kind === sessionFilter);
   }, [sessionFilter, sessions, enabledKinds]);
 
+  const filteredByUserMsg = useMemo(() => {
+    if (!hideSessionsWithoutUserMessages) return filteredByAgent;
+    return filteredByAgent.filter((s) => s.has_user_messages !== false);
+  }, [filteredByAgent, hideSessionsWithoutUserMessages]);
+
   const cwdCounts = useMemo(() => {
     const map = new Map<string, number>();
-    for (const s of filteredByAgent) {
+    for (const s of filteredByUserMsg) {
       map.set(s.cwd, (map.get(s.cwd) ?? 0) + 1);
     }
     return Array.from(map.entries()).sort((a, b) => b[1] - a[1]);
-  }, [filteredByAgent]);
+  }, [filteredByUserMsg]);
 
   const filteredByCwd = useMemo(() => {
-    if (cwdFilters.length === 0) return filteredByAgent;
+    if (cwdFilters.length === 0) return filteredByUserMsg;
     const set = new Set(cwdFilters);
-    return filteredByAgent.filter((s) => set.has(s.cwd));
-  }, [filteredByAgent, cwdFilters]);
+    return filteredByUserMsg.filter((s) => set.has(s.cwd));
+  }, [filteredByUserMsg, cwdFilters]);
 
   const filtered = useMemo(() => {
     if (!query.trim()) return filteredByCwd;

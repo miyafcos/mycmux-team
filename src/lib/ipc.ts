@@ -169,6 +169,7 @@ export interface CrsmSessionEntry {
   summary_file?: string | null;
   files_modified: string[];
   incomplete_tasks: string[];
+  has_user_messages?: boolean;
 }
 
 export interface CrsmHandoffResult {

@@ -12,12 +12,14 @@ interface SettingsState {
   crsmShowClaude: boolean;
   crsmShowCodex: boolean;
   crsmShowClaudeCodex: boolean;
+  hideSessionsWithoutUserMessages: boolean;
   setNotificationsEnabled: (v: boolean) => void;
   setNotificationSoundEnabled: (v: boolean) => void;
   setUseWebglRenderer: (v: boolean) => void;
   setCrsmShowClaude: (v: boolean) => void;
   setCrsmShowCodex: (v: boolean) => void;
   setCrsmShowClaudeCodex: (v: boolean) => void;
+  setHideSessionsWithoutUserMessages: (v: boolean) => void;
 }
 
 function getDefaultUseWebglRenderer(): boolean {
@@ -38,12 +40,14 @@ export const useSettingsStore = create<SettingsState>()(
       crsmShowClaude: true,
       crsmShowCodex: true,
       crsmShowClaudeCodex: true,
+      hideSessionsWithoutUserMessages: true,
       setNotificationsEnabled: (v) => set({ notificationsEnabled: v }),
       setNotificationSoundEnabled: (v) => set({ notificationSoundEnabled: v }),
       setUseWebglRenderer: (v) => set({ useWebglRenderer: v }),
       setCrsmShowClaude: (v) => set({ crsmShowClaude: v }),
       setCrsmShowCodex: (v) => set({ crsmShowCodex: v }),
       setCrsmShowClaudeCodex: (v) => set({ crsmShowClaudeCodex: v }),
+      setHideSessionsWithoutUserMessages: (v) => set({ hideSessionsWithoutUserMessages: v }),
     }),
     { name: "mycmux-lite-settings" },
   ),

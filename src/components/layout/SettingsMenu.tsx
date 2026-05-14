@@ -281,14 +281,23 @@ function CrsmPaletteSection() {
   const showClaude = useSettingsStore((s) => s.crsmShowClaude);
   const showCodex = useSettingsStore((s) => s.crsmShowCodex);
   const showClaudeCodex = useSettingsStore((s) => s.crsmShowClaudeCodex);
+  const hideSessionsWithoutUserMessages = useSettingsStore((s) => s.hideSessionsWithoutUserMessages);
   const setShowClaude = useSettingsStore((s) => s.setCrsmShowClaude);
   const setShowCodex = useSettingsStore((s) => s.setCrsmShowCodex);
   const setShowClaudeCodex = useSettingsStore((s) => s.setCrsmShowClaudeCodex);
+  const setHideSessionsWithoutUserMessages = useSettingsStore(
+    (s) => s.setHideSessionsWithoutUserMessages,
+  );
 
   const rows: Array<{ label: string; checked: boolean; onChange: (v: boolean) => void }> = [
     { label: "Claude Code", checked: showClaude, onChange: setShowClaude },
     { label: "Codex", checked: showCodex, onChange: setShowCodex },
     { label: "Hybrid (Claude+Codex)", checked: showClaudeCodex, onChange: setShowClaudeCodex },
+    {
+      label: "Hide sessions without user messages",
+      checked: hideSessionsWithoutUserMessages,
+      onChange: setHideSessionsWithoutUserMessages,
+    },
   ];
 
   return (

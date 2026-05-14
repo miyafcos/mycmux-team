@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 - Added: Pane tab rename via double-click / context menu. Label is persisted per tab in data.json; empty value restores auto-naming.
+- Added: Resume palette can hide sessions without user messages (toggle in Settings, default ON).
 
 ## [0.7.1-lite.1] - 2026-05-14
 
