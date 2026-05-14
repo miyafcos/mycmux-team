@@ -1,9 +1,11 @@
-import { memo } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import type { Pane, PaneTab } from "../../types";
 import { getAgent, getDefaultAgent } from "../../lib/agents";
 import { usePaneMetadataStore } from "../../stores/workspaceStore";
 import { deriveEffectiveStatus, type EffectiveStatus } from "../../lib/notificationStatus";
 import { usePaneDragSource } from "../../hooks/usePaneDragSource";
+import { useWorkspaceLayoutStore } from "../../stores/workspaceLayoutStore";
 
 interface PaneTabBarProps {
   pane: Pane;
@@ -88,6 +90,77 @@ const AGENT_LABELS: Record<string, string> = {
   "shell":       "Shell",
 };
 
+const tabRenameInputStyle: CSSProperties = {
+  background: "var(--cmux-selected)",
+  border: "1px solid var(--cmux-accent)",
+  borderRadius: 4,
+  padding: "1px 4px",
+  fontSize: "inherit",
+  fontFamily: "inherit",
+  color: "inherit",
+  outline: "none",
+  flex: 1,
+  width: "100%",
+  minWidth: 0,
+};
+
+const paneTabContextMenuStyle: CSSProperties = {
+  position: "fixed",
+  zIndex: 100,
+  background: "var(--cmux-popover)",
+  border: "1px solid var(--cmux-border)",
+  borderRadius: 6,
+  padding: "4px 0",
+  boxShadow: "0 4px 12px rgba(0,0,0,0.2)",
+  minWidth: 160,
+  fontSize: 13,
+};
+
+const paneTabContextMenuItemStyle: CSSProperties = {
+  padding: "6px 12px",
+  cursor: "pointer",
+  color: "var(--cmux-text)",
+  userSelect: "none",
+};
+
+const paneTabContextMenuItemDisabledStyle: CSSProperties = {
+  color: "var(--cmux-text-tertiary)",
+  cursor: "default",
+  opacity: 0.55,
+};
+
+function PaneTabContextMenuItem({
+  children,
+  disabled,
+  onClick,
+}: {
+  children: ReactNode;
+  disabled?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <div
+      role="menuitem"
+      aria-disabled={disabled}
+      onClick={() => {
+        if (!disabled) onClick();
+      }}
+      onMouseEnter={(e) => {
+        if (!disabled) e.currentTarget.style.background = "var(--cmux-hover)";
+      }}
+      onMouseLeave={(e) => {
+        e.currentTarget.style.background = "transparent";
+      }}
+      style={{
+        ...paneTabContextMenuItemStyle,
+        ...(disabled ? paneTabContextMenuItemDisabledStyle : {}),
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
 function AgentStatusDot({ status }: { status: EffectiveStatus }) {
   const cfg = STATUS_CONFIG[status];
   if (status === "idle" || !cfg) return null;
@@ -122,6 +195,13 @@ export default memo(function PaneTabBar({
 }: PaneTabBarProps) {
   const allMetadata = usePaneMetadataStore((s) => s.metadata);
   const { beginPointerDrag, shouldSuppressClick } = usePaneDragSource();
+  const setTabLabel = useWorkspaceLayoutStore((s) => s.setTabLabel);
+  const [editingTabId, setEditingTabId] = useState<string | null>(null);
+  const [editValue, setEditValue] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+  const skipNextBlurCommitRef = useRef(false);
+  const [contextMenu, setContextMenu] = useState<{ tabId: string; x: number; y: number } | null>(null);
+  const contextMenuRef = useRef<HTMLDivElement>(null);
 
   // Derive active tab's agent status for the status bar
   const activeTab = pane.tabs.find((t) => t.id === pane.activeTabId);
@@ -135,7 +215,83 @@ export default memo(function PaneTabBar({
   const statusCfg = STATUS_CONFIG[activeStatus];
   const paneDragLabel = activeMeta?.processTitle ?? activeTab?.label ?? activeAgentLabel;
 
+  const getTabDisplayLabel = useCallback((tab: PaneTab, isTabActive: boolean) => {
+    const agent = getAgent(tab.agentId) ?? getDefaultAgent();
+    const tabMeta = allMetadata[tab.sessionId];
+    const tabProcessTitle = tabMeta?.processTitle;
+    const tabCwd = tabMeta?.cwd;
+    return tab.label
+      ?? (tabProcessTitle
+          ? tabProcessTitle
+          : (isTabActive && tabCwd ? tabCwd.split("/").pop() || agent.name : agent.name));
+  }, [allMetadata]);
+
+  useEffect(() => {
+    if (!editingTabId) return;
+    const timeoutId = window.setTimeout(() => {
+      inputRef.current?.focus();
+      inputRef.current?.select();
+    }, 0);
+    return () => window.clearTimeout(timeoutId);
+  }, [editingTabId]);
+
+  useEffect(() => {
+    if (!contextMenu) return;
+    const onMouseDown = (event: MouseEvent) => {
+      if (contextMenuRef.current && !contextMenuRef.current.contains(event.target as Node)) {
+        setContextMenu(null);
+      }
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setContextMenu(null);
+    };
+    window.addEventListener("mousedown", onMouseDown, true);
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => {
+      window.removeEventListener("mousedown", onMouseDown, true);
+      window.removeEventListener("keydown", onKeyDown, true);
+    };
+  }, [contextMenu]);
+
+  const startEditingTab = useCallback((tabId: string, label: string) => {
+    setContextMenu(null);
+    skipNextBlurCommitRef.current = false;
+    setEditingTabId(tabId);
+    setEditValue(label);
+  }, []);
+
+  const commitTabLabel = useCallback((tab: PaneTab) => {
+    const trimmed = editValue.trim();
+    const nextLabel = trimmed === "" ? undefined : trimmed;
+    if (nextLabel !== tab.label) {
+      setTabLabel(workspaceId, pane.id, tab.id, nextLabel);
+    }
+    setEditingTabId(null);
+  }, [editValue, pane.id, setTabLabel, workspaceId]);
+
+  const handleRenameContextTab = useCallback(() => {
+    if (!contextMenu) return;
+    const tab = pane.tabs.find((candidate) => candidate.id === contextMenu.tabId);
+    if (!tab) {
+      setContextMenu(null);
+      return;
+    }
+    startEditingTab(tab.id, getTabDisplayLabel(tab, tab.id === pane.activeTabId));
+  }, [contextMenu, getTabDisplayLabel, pane.activeTabId, pane.tabs, startEditingTab]);
+
+  const handleResetContextTab = useCallback(() => {
+    if (!contextMenu) return;
+    setTabLabel(workspaceId, pane.id, contextMenu.tabId, undefined);
+    setContextMenu(null);
+  }, [contextMenu, pane.id, setTabLabel, workspaceId]);
+
+  const contextTab = contextMenu
+    ? pane.tabs.find((candidate) => candidate.id === contextMenu.tabId)
+    : undefined;
+  const canResetContextTabName = contextTab?.label !== undefined;
+
   return (
+    <>
     <div
       className="pane-tabbar"
       onPointerDown={(event) => {
@@ -168,29 +324,36 @@ export default memo(function PaneTabBar({
       {/* Tab pills — overflow:hidden here to clip tab text, not the dropdown */}
       <div style={{ display: "flex", alignItems: "center", flex: 1, overflow: "hidden", minWidth: 0 }}>
         {pane.tabs.map((tab) => {
-          const agent = getAgent(tab.agentId) ?? getDefaultAgent();
           const isTabActive = tab.id === pane.activeTabId;
           const tabMeta = allMetadata[tab.sessionId];
           const tabNotificationCount = tabMeta?.notificationCount ?? 0;
           const tabWorkDoneCount = tabMeta?.workDoneCount ?? 0;
-          const tabProcessTitle = tabMeta?.processTitle;
-          const tabCwd = tabMeta?.cwd;
           const tabEffectiveStatus = deriveEffectiveStatus(tabMeta);
-          const label = tab.label
-            ?? (tabProcessTitle
-                ? tabProcessTitle
-                : (isTabActive && tabCwd ? tabCwd.split("/").pop() || agent.name : agent.name));
+          const label = getTabDisplayLabel(tab, isTabActive);
+          const isEditingTab = editingTabId === tab.id;
 
           return (
             <div
               key={tab.id}
-              onPointerDown={(event) => beginPointerDrag(event, {
-                kind: "tab",
-                workspaceId,
-                paneId: pane.id,
-                tabId: tab.id,
-                label,
-              })}
+              onPointerDown={(event) => {
+                if (isEditingTab || event.button !== 0) return;
+                beginPointerDrag(event, {
+                  kind: "tab",
+                  workspaceId,
+                  paneId: pane.id,
+                  tabId: tab.id,
+                  label,
+                });
+              }}
+              onDoubleClick={(e) => {
+                e.stopPropagation();
+                startEditingTab(tab.id, label);
+              }}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setContextMenu({ tabId: tab.id, x: e.clientX, y: e.clientY });
+              }}
               onClick={(event) => {
                 if (shouldSuppressClick()) {
                   event.preventDefault();
@@ -208,7 +371,7 @@ export default memo(function PaneTabBar({
                 padding: "0 8px 0 7px",
                 height: 36,
                 maxWidth: 160,
-                cursor: "pointer",
+                cursor: isEditingTab ? "text" : "pointer",
                 background: isTabActive ? "var(--cmux-selected)" : "transparent",
                 borderRight: "1px solid var(--cmux-border)",
                 borderBottom: isTabActive ? "2px solid var(--cmux-accent)" : "2px solid transparent",
@@ -229,21 +392,51 @@ export default memo(function PaneTabBar({
                 <FolderIcon />
               </span>
               {/* label */}
-              <span
-                className="pane-tab-label"
-                style={{
-                  fontSize: 13,
-                  fontFamily: "'JetBrains Mono', 'Geist Mono', monospace",
-                  color: isTabActive ? "var(--cmux-text)" : "var(--cmux-text-secondary)",
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  whiteSpace: "nowrap",
-                  flex: 1,
-                  minWidth: 0,
-                }}
-              >
-                {label}
-              </span>
+              {isEditingTab ? (
+                <input
+                  ref={inputRef}
+                  value={editValue}
+                  onChange={(e) => setEditValue(e.target.value)}
+                  onBlur={() => {
+                    if (skipNextBlurCommitRef.current) {
+                      skipNextBlurCommitRef.current = false;
+                      return;
+                    }
+                    commitTabLabel(tab);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      commitTabLabel(tab);
+                    }
+                    if (e.key === "Escape") {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      skipNextBlurCommitRef.current = true;
+                      setEditingTabId(null);
+                    }
+                  }}
+                  onClick={(e) => e.stopPropagation()}
+                  style={tabRenameInputStyle}
+                />
+              ) : (
+                <span
+                  className="pane-tab-label"
+                  style={{
+                    fontSize: 13,
+                    fontFamily: "'JetBrains Mono', 'Geist Mono', monospace",
+                    color: isTabActive ? "var(--cmux-text)" : "var(--cmux-text-secondary)",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                    flex: 1,
+                    minWidth: 0,
+                  }}
+                >
+                  {label}
+                </span>
+              )}
               {/* close tab button */}
               {pane.tabs.length > 1 && (
                 <button
@@ -344,6 +537,28 @@ export default memo(function PaneTabBar({
         )}
       </div>
       </div>{/* end tab pills row */}
-    </div>
+      </div>
+      {contextMenu && (
+        <div
+          ref={contextMenuRef}
+          role="menu"
+          style={{
+            ...paneTabContextMenuStyle,
+            top: contextMenu.y,
+            left: contextMenu.x,
+          }}
+        >
+          <PaneTabContextMenuItem onClick={handleRenameContextTab}>
+            Rename
+          </PaneTabContextMenuItem>
+          <PaneTabContextMenuItem
+            disabled={!canResetContextTabName}
+            onClick={handleResetContextTab}
+          >
+            Reset name to auto
+          </PaneTabContextMenuItem>
+        </div>
+      )}
+    </>
   );
 });

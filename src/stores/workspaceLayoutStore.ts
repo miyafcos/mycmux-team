@@ -197,6 +197,7 @@ interface WorkspaceLayoutState {
   addTabToPane: (workspaceId: string, paneId: string, agentId?: string, type?: PaneTab["type"]) => void;
   removeTabFromPane: (workspaceId: string, paneId: string, tabId: string) => void;
   setActivePaneTab: (workspaceId: string, paneId: string, tabId: string) => void;
+  setTabLabel: (workspaceId: string, paneId: string, tabId: string, label: string | undefined) => void;
   setTabAgentId: (workspaceId: string, paneId: string, tabId: string, agentId: string) => void;
   moveTabToPane: (
     sourceWorkspaceId: string,
@@ -837,6 +838,33 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
       };
     });
 
+    useWorkspaceListStore.getState()._updateWorkspacePanes(workspaceId, newPanes);
+  },
+
+  setTabLabel: (workspaceId, paneId, tabId, label) => {
+    const workspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
+    if (!workspace) return;
+
+    const normalizedLabel = label?.trim() === "" || label === undefined ? undefined : label.trim();
+    let didChange = false;
+    const newPanes = workspace.panes.map((pane) => {
+      if (pane.id !== paneId) return pane;
+      const tabs = pane.tabs.map((tab) => {
+        if (tab.id !== tabId) return tab;
+        if (tab.label === normalizedLabel) return tab;
+        didChange = true;
+        return {
+          ...tab,
+          label: normalizedLabel,
+        };
+      });
+      return {
+        ...pane,
+        tabs,
+      };
+    });
+
+    if (!didChange) return;
     useWorkspaceListStore.getState()._updateWorkspacePanes(workspaceId, newPanes);
   },
 
