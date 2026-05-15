@@ -199,21 +199,17 @@ export const useThemeStore = create<ThemeState>((set) => ({
   setTheme: (id) => {
     const nextThemeId = resolveThemeId(id);
     set((state) => {
-      const themeTweaks =
-        nextThemeId === DEFAULT_THEME_ID
-          ? state.themeTweaks
-          : normalizeThemeTweaks({
-              ...state.themeTweaks,
-              enabled: true,
-              colors: {
-                ...themeToTweakColors(getTheme(nextThemeId)),
-                ...state.themeTweaks.colors,
-              },
-              background: state.themeTweaks.background,
-            });
+      // Picking a theme is a clean switch: the chosen theme becomes the base
+      // and the previous theme's per-key color tweaks are dropped. Background
+      // tweaks (image / opacity) are preserved.
+      const themeTweaks = normalizeThemeTweaks({
+        ...state.themeTweaks,
+        colors: {},
+        background: state.themeTweaks.background,
+      });
       return {
-        themeId: DEFAULT_THEME_ID,
-        theme: resolveTheme(DEFAULT_THEME_ID, themeTweaks),
+        themeId: nextThemeId,
+        theme: resolveTheme(nextThemeId, themeTweaks),
         themeTweaks,
       };
     });
@@ -235,7 +231,7 @@ export const useThemeStore = create<ThemeState>((set) => ({
       });
       return {
         themeTweaks,
-        theme: resolveTheme(DEFAULT_THEME_ID, themeTweaks),
+        theme: resolveTheme(state.themeId, themeTweaks),
       };
     });
   },
@@ -257,7 +253,7 @@ export const useThemeStore = create<ThemeState>((set) => ({
       });
       return {
         themeTweaks,
-        theme: resolveTheme(DEFAULT_THEME_ID, themeTweaks),
+        theme: resolveTheme(state.themeId, themeTweaks),
       };
     });
   },
@@ -278,7 +274,7 @@ export const useThemeStore = create<ThemeState>((set) => ({
       });
       return {
         themeTweaks,
-        theme: resolveTheme(DEFAULT_THEME_ID, themeTweaks),
+        theme: resolveTheme(state.themeId, themeTweaks),
       };
     });
   },
@@ -294,7 +290,7 @@ export const useThemeStore = create<ThemeState>((set) => ({
       });
       return {
         themeTweaks,
-        theme: resolveTheme(DEFAULT_THEME_ID, themeTweaks),
+        theme: resolveTheme(state.themeId, themeTweaks),
       };
     });
   },
@@ -309,27 +305,28 @@ export const useThemeStore = create<ThemeState>((set) => ({
       });
       return {
         themeTweaks,
-        theme: resolveTheme(DEFAULT_THEME_ID, themeTweaks),
+        theme: resolveTheme(state.themeId, themeTweaks),
       };
     });
   },
 
   resetThemeTweaks: () => {
-    set(() => ({
+    set((state) => ({
       themeTweaks: DEFAULT_THEME_TWEAKS,
-      theme: resolveTheme(DEFAULT_THEME_ID, DEFAULT_THEME_TWEAKS),
+      theme: resolveTheme(state.themeId, DEFAULT_THEME_TWEAKS),
     }));
   },
 
   hydrateSettings: (settings) => {
+    const nextThemeId = resolveThemeId(settings.themeId ?? DEFAULT_THEME_ID);
     const themeTweaks = migrateLegacyThemeSettings(settings.themeId, settings.themeTweaks);
     const nextFont = typeof settings.fontSize === "number"
       ? Math.max(10, Math.min(24, settings.fontSize))
       : 14;
     const nextFontFamily = normalizeFontFamily(settings.fontFamily);
     set({
-      themeId: DEFAULT_THEME_ID,
-      theme: resolveTheme(DEFAULT_THEME_ID, themeTweaks),
+      themeId: nextThemeId,
+      theme: resolveTheme(nextThemeId, themeTweaks),
       fontSize: nextFont,
       fontFamily: nextFontFamily,
       themeTweaks,
