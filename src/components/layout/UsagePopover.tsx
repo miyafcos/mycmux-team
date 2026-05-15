@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import type { UsageSummary, WindowStat } from "../../stores/usageStore";
 
 type UsagePopoverProps = {
@@ -5,7 +6,6 @@ type UsagePopoverProps = {
   lastError: string | null;
 };
 
-const countFormatter = new Intl.NumberFormat();
 const resetFormatter = new Intl.DateTimeFormat(undefined, {
   dateStyle: "short",
   timeStyle: "short",
@@ -43,15 +43,25 @@ export function UsagePopover({ summary, lastError }: UsagePopoverProps) {
       >
         <span style={{ fontSize: 11, fontWeight: 650 }}>Usage</span>
         <span style={{ color: "var(--cmux-text-tertiary)", fontSize: 11 }}>
-          {summary.tier}
+          Live API
         </span>
       </div>
 
       <div style={{ padding: "8px 10px", display: "grid", gap: 7 }}>
-        <UsageRow label="Claude Code 5h" stat={summary.claude_5h} unit="tokens" />
-        <UsageRow label="Claude Code 7d" stat={summary.claude_7d} unit="tokens" />
-        <UsageRow label="Codex CLI 5h" stat={summary.codex_5h} unit="messages" />
-        <UsageRow label="Codex CLI 7d" stat={summary.codex_7d} unit="messages" />
+        {summary.claude_available && (
+          <UsageSection title="Claude Code">
+            <UsageRow label="5h" stat={summary.claude_5h} />
+            <UsageRow label="7d" stat={summary.claude_7d} />
+            <UsageRow label="7d Sonnet" stat={summary.claude_7d_sonnet} />
+            <UsageRow label="7d Opus" stat={summary.claude_7d_opus} />
+          </UsageSection>
+        )}
+        {summary.codex_available && (
+          <UsageSection title="Codex">
+            <UsageRow label="5h" stat={summary.codex_5h} />
+            <UsageRow label="7d" stat={summary.codex_7d} />
+          </UsageSection>
+        )}
       </div>
 
       <div
@@ -65,24 +75,11 @@ export function UsagePopover({ summary, lastError }: UsagePopoverProps) {
         }}
       >
         <span style={{ color: "var(--cmux-text-tertiary)", fontSize: 11 }}>
-          Updated {resetFormatter.format(new Date(summary.generated_at))}
+          Updated {formatDate(summary.generated_at)}
         </span>
-        {/* TODO(v0.7.1): wire up settings UI */}
-        <a
-          href="#"
-          onClick={(event) => event.preventDefault()}
-          style={{
-            color: "var(--cmux-text-secondary)",
-            fontSize: 11,
-            textDecoration: "none",
-            whiteSpace: "nowrap",
-          }}
-        >
-          設定で limit を編集
-        </a>
       </div>
 
-      {lastError && (
+      {(summary.claude_error || summary.codex_error || lastError) && (
         <div
           style={{
             padding: "7px 10px",
@@ -91,15 +88,30 @@ export function UsagePopover({ summary, lastError }: UsagePopoverProps) {
             fontSize: 11,
           }}
         >
-          {lastError}
+          {summary.claude_error && <div>Claude: {summary.claude_error}</div>}
+          {summary.codex_error && <div>Codex: {summary.codex_error}</div>}
+          {lastError && <div>{lastError}</div>}
         </div>
       )}
     </div>
   );
 }
 
-function UsageRow({ label, stat, unit }: { label: string; stat: WindowStat; unit: "tokens" | "messages" }) {
-  const value = unit === "tokens" ? stat.tokens : stat.messages;
+function UsageSection({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <div style={{ display: "grid", gap: 5 }}>
+      <div style={{ color: "var(--cmux-text-secondary)", fontSize: 11, fontWeight: 700 }}>
+        {title}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function UsageRow({ label, stat }: { label: string; stat: WindowStat | null }) {
+  if (!stat) {
+    return null;
+  }
 
   return (
     <div style={{ display: "grid", gridTemplateColumns: "96px 1fr", gap: 10 }}>
@@ -114,20 +126,23 @@ function UsageRow({ label, stat, unit }: { label: string; stat: WindowStat; unit
             fontVariantNumeric: "tabular-nums",
           }}
         >
-          <span>
-            {countFormatter.format(value)} / {countFormatter.format(stat.limit)} {unit}
-          </span>
-          <span>{formatPct(stat.pct)}</span>
+          <span>{stat.pct.toFixed(1)}%</span>
         </div>
         <div style={{ color: "var(--cmux-text-tertiary)", fontSize: 11, marginTop: 2 }}>
-          resets {resetFormatter.format(new Date(stat.reset_at))}
+          Resets at {formatDate(stat.resets_at)}
         </div>
       </div>
     </div>
   );
 }
 
-function formatPct(pct: number): string {
-  const clamped = Math.max(0, Math.min(999.9, pct));
-  return `${clamped >= 10 ? clamped.toFixed(0) : clamped.toFixed(1)}%`;
+function formatDate(value: string): string {
+  if (!value) {
+    return "unknown";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return resetFormatter.format(date);
 }

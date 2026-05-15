@@ -2,19 +2,21 @@ import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
 
 export type WindowStat = {
-  tokens: number;
-  messages: number;
-  limit: number;
   pct: number;
-  reset_at: string;
+  resets_at: string;
 };
 
 export type UsageSummary = {
-  claude_5h: WindowStat;
-  claude_7d: WindowStat;
-  codex_5h: WindowStat;
-  codex_7d: WindowStat;
-  tier: string;
+  claude_5h: WindowStat | null;
+  claude_7d: WindowStat | null;
+  claude_7d_sonnet: WindowStat | null;
+  claude_7d_opus: WindowStat | null;
+  codex_5h: WindowStat | null;
+  codex_7d: WindowStat | null;
+  claude_available: boolean;
+  codex_available: boolean;
+  claude_error: string | null;
+  codex_error: string | null;
   generated_at: string;
 };
 

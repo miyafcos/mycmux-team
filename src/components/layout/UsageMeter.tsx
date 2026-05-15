@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { useUsageStore, type UsageSummary, type WindowStat } from "../../stores/usageStore";
+import { useUsageStore, type WindowStat } from "../../stores/usageStore";
 import { UsagePopover } from "./UsagePopover";
 
 type MeterMode = "full" | "compact" | "hidden";
@@ -39,9 +39,18 @@ export function UsageMeter() {
     };
   }, []);
 
-  if (mode === "hidden") {
+  if (mode === "hidden" || !summary) {
     return null;
   }
+
+  const showClaude = summary.claude_available && summary.claude_5h;
+  const showCodex = summary.codex_available && summary.codex_5h;
+
+  if (!showClaude && !showCodex) {
+    return null;
+  }
+
+  const title = [summary.claude_error, summary.codex_error, lastError].filter(Boolean).join("\n") || "Usage";
 
   const open = () => {
     if (closeTimerRef.current !== null) {
@@ -62,7 +71,7 @@ export function UsageMeter() {
     <div
       onMouseEnter={open}
       onMouseLeave={close}
-      title={lastError ?? "Usage"}
+      title={title}
       style={{
         position: "relative",
         display: "flex",
@@ -77,19 +86,27 @@ export function UsageMeter() {
         fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
       }}
     >
-      {summary ? (
-        mode === "compact" ? (
-          <CompactMeter summary={summary} />
-        ) : (
-          <FullMeter summary={summary} />
-        )
+      {mode === "compact" ? (
+        <CompactMeter
+          claude5h={summary.claude_5h}
+          claude7d={summary.claude_7d}
+          codex5h={summary.codex_5h}
+          codex7d={summary.codex_7d}
+          showClaude={Boolean(showClaude)}
+          showCodex={Boolean(showCodex)}
+        />
       ) : (
-        <span style={{ color: "var(--cmux-text-secondary)", fontVariantNumeric: "tabular-nums" }}>
-          CC -- CX --
-        </span>
+        <FullMeter
+          claude5h={summary.claude_5h}
+          claude7d={summary.claude_7d}
+          codex5h={summary.codex_5h}
+          codex7d={summary.codex_7d}
+          showClaude={Boolean(showClaude)}
+          showCodex={Boolean(showCodex)}
+        />
       )}
 
-      {lastError && (
+      {(lastError || summary.claude_error || summary.codex_error) && (
         <span
           style={{
             position: "absolute",
@@ -103,37 +120,56 @@ export function UsageMeter() {
         />
       )}
 
-      {isOpen && summary && <UsagePopover summary={summary} lastError={lastError} />}
+      {isOpen && <UsagePopover summary={summary} lastError={lastError} />}
     </div>
   );
 }
 
-function FullMeter({ summary }: { summary: UsageSummary }) {
+type MeterStatsProps = {
+  claude5h: WindowStat | null;
+  claude7d: WindowStat | null;
+  codex5h: WindowStat | null;
+  codex7d: WindowStat | null;
+  showClaude: boolean;
+  showCodex: boolean;
+};
+
+function FullMeter({ claude5h, claude7d, codex5h, codex7d, showClaude, showCodex }: MeterStatsProps) {
   return (
     <>
-      <span style={groupStyle}>
+      {showClaude && claude5h && (
+        <span style={groupStyle}>
         <span>CC</span>
-        <MiniStat label="5h" stat={summary.claude_5h} />
-        <MiniStat label="7d" stat={summary.claude_7d} />
-      </span>
-      <span style={groupStyle}>
+          <MiniStat label="5h" stat={claude5h} />
+          {claude7d && <MiniStat label="7d" stat={claude7d} />}
+        </span>
+      )}
+      {showCodex && codex5h && (
+        <span style={groupStyle}>
         <span>CX</span>
-        <MiniStat label="5h" stat={summary.codex_5h} />
-        <MiniStat label="7d" stat={summary.codex_7d} />
-      </span>
+          <MiniStat label="5h" stat={codex5h} />
+          {codex7d && <MiniStat label="7d" stat={codex7d} />}
+        </span>
+      )}
     </>
   );
 }
 
-function CompactMeter({ summary }: { summary: UsageSummary }) {
+function CompactMeter({ claude5h, claude7d, codex5h, codex7d, showClaude, showCodex }: MeterStatsProps) {
   return (
     <>
-      <span style={compactGroupStyle}>
-        CC {formatPct(summary.claude_5h.pct)}/{formatPct(summary.claude_7d.pct)}
-      </span>
-      <span style={compactGroupStyle}>
-        CX {formatPct(summary.codex_5h.pct)}/{formatPct(summary.codex_7d.pct)}
-      </span>
+      {showClaude && claude5h && (
+        <span style={{ ...compactGroupStyle, color: compactColor(claude5h, claude7d) }}>
+          CC {formatPct(claude5h.pct)}
+          {claude7d ? `/${formatPct(claude7d.pct)}` : ""}
+        </span>
+      )}
+      {showCodex && codex5h && (
+        <span style={{ ...compactGroupStyle, color: compactColor(codex5h, codex7d) }}>
+          CX {formatPct(codex5h.pct)}
+          {codex7d ? `/${formatPct(codex7d.pct)}` : ""}
+        </span>
+      )}
     </>
   );
 }
@@ -200,6 +236,17 @@ function getSeverity(pct: number): { bar: string; text: string; pulse: boolean }
     text: "var(--cmux-text-secondary)",
     pulse: false,
   };
+}
+
+function compactColor(...stats: Array<WindowStat | null>): string {
+  const pct = Math.max(...stats.map((stat) => stat?.pct ?? 0));
+  if (pct >= 95) {
+    return "var(--cmux-usage-danger)";
+  }
+  if (pct >= 80) {
+    return "var(--cmux-usage-warn)";
+  }
+  return "var(--cmux-text-secondary)";
 }
 
 function getMeterMode(): MeterMode {
