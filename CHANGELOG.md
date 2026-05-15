@@ -1,6 +1,6 @@
 # Changelog (mycmux-lite)
 
-## [Unreleased]
+## [0.7.2-lite.1] - 2026-05-15
 
 - Added: Pane tab rename via double-click / context menu. Label is persisted per tab in data.json; empty value restores auto-naming.
 - Added: Resume palette can hide sessions without user messages (toggle in Settings, default ON).
