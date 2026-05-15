@@ -4,6 +4,8 @@
 
 - Added: Pane tab rename via double-click / context menu. Label is persisted per tab in data.json; empty value restores auto-naming.
 - Added: Resume palette can hide sessions without user messages (toggle in Settings, default ON).
+- Changed: Usage Meter now reads live values from Anthropic OAuth /usage endpoint, replacing the local JSONL token-counting heuristic. Fixes the 100% artifact caused by tier mismatch / hardcoded limits.
+- Changed: Codex usage section auto-hides when the ChatGPT rate-limit endpoint is not reachable.
 
 ## [0.7.1-lite.1] - 2026-05-14
 
