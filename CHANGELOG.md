@@ -1,5 +1,9 @@
 # Changelog (mycmux-lite)
 
+## [0.7.4-lite.1] - 2026-05-16
+
+- Changed: Title bar text/icon shadows are theme-aware and key off the effective chrome background lightness — light chrome (including dark themes recolored light) drops the dark drop-shadow; a subtle white halo is kept only over image backgrounds.
+
 ## [0.7.2-lite.1] - 2026-05-15
 
 - Added: Pane tab rename via double-click / context menu. Label is persisted per tab in data.json; empty value restores auto-naming.

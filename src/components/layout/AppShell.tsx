@@ -44,6 +44,23 @@ function colorWithOpacity(color: string, opacity: number): string {
   return `rgba(${red}, ${green}, ${blue}, ${opacity})`;
 }
 
+// Whether a hex color reads as "light". Used to pick chrome shadows from the
+// effective chrome background — which includes user color overrides — rather
+// than the theme's declared colorScheme. Non-hex input falls back to dark.
+function isLightColor(color: string): boolean {
+  const shortHex = /^#([0-9a-f]{3})$/i.exec(color);
+  const fullHex = /^#([0-9a-f]{6})$/i.exec(color);
+  const hex = fullHex?.[1] ?? shortHex?.[1].split("").map((char) => `${char}${char}`).join("");
+  if (!hex) {
+    return false;
+  }
+  const red = parseInt(hex.slice(0, 2), 16);
+  const green = parseInt(hex.slice(2, 4), 16);
+  const blue = parseInt(hex.slice(4, 6), 16);
+  // Perceived luminance (ITU-R BT.601).
+  return (red * 299 + green * 587 + blue * 114) / 1000 > 140;
+}
+
 function AppBackgroundLayer({ background }: { background: ThemeBackgroundSettings }) {
   const preset = THEME_BACKGROUND_PRESETS.find((item) => item.id === background.presetId) ?? THEME_BACKGROUND_PRESETS[0];
   const userImageUrl = background.mode === "image" && background.imagePath
@@ -240,6 +257,9 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
     themeBackground.mode === "image" && themeBackground.imagePath.length > 0
   );
   const panelOpacity = mediaBackgroundActive ? themeBackground.panelOpacity : 1;
+  // Chrome shadows key off the effective chrome background (color overrides
+  // included), not colorScheme — a dark theme recolored light needs this too.
+  const isLightChrome = isLightColor(currentTheme.chrome.background);
 
   const themeVars = {
     "--cmux-bg-solid": currentTheme.chrome.background,
@@ -266,6 +286,16 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
     "--status-done": currentTheme.status.done,
     "--status-error": currentTheme.status.error,
     "--notification-color": currentTheme.notification,
+    "--cmux-chrome-text-shadow": isLightChrome
+      ? (mediaBackgroundActive
+          ? "0 0 3px rgba(255, 255, 255, 0.85), 0 0 6px rgba(255, 255, 255, 0.5)"
+          : "none")
+      : "0 0 2px rgba(255, 255, 255, 0.3), 0 0 3px rgba(0, 0, 0, 0.6), 0 1px 2px rgba(0, 0, 0, 0.45)",
+    "--cmux-chrome-icon-shadow": isLightChrome
+      ? (mediaBackgroundActive
+          ? "drop-shadow(0 0 1px rgba(255, 255, 255, 0.9)) drop-shadow(0 0 2px rgba(255, 255, 255, 0.6))"
+          : "none")
+      : "drop-shadow(0 0 1px rgba(255, 255, 255, 0.45)) drop-shadow(0 0 2px rgba(0, 0, 0, 0.6)) drop-shadow(0 1px 2px rgba(0, 0, 0, 0.4))",
     colorScheme: currentTheme.colorScheme,
   } as React.CSSProperties;
 

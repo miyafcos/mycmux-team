@@ -23,6 +23,18 @@
   --status-done:    #10b981;
   --status-error:   #ef4444;
   --notification-color: #f59e0b;
+
+  /* Chrome (titlebar / tab bar) text + icon shadows. AppShell overrides these
+     per theme. The values below are the dark-theme default — a fallback for
+     elements rendered outside the AppShell root. */
+  --cmux-chrome-icon-shadow:
+    drop-shadow(0 0 1px rgba(255, 255, 255, 0.45))
+    drop-shadow(0 0 2px rgba(0, 0, 0, 0.6))
+    drop-shadow(0 1px 2px rgba(0, 0, 0, 0.4));
+  --cmux-chrome-text-shadow:
+    0 0 2px rgba(255, 255, 255, 0.3),
+    0 0 3px rgba(0, 0, 0, 0.6),
+    0 1px 2px rgba(0, 0, 0, 0.45);
 }
 
 .ui-cmux {
@@ -85,27 +97,20 @@ div:hover>.tab-close-btn {
   opacity: 1 !important;
 }
 
-/* Icons in chrome (title bar / pane tab bar / sidebars) — bidirectional
-   shadow keeps them readable on both dark and light image backgrounds.
-   White outer glow lifts them off dark areas, dark drop-shadow lifts them
-   off light/saturated areas. */
+/* Icons in chrome (title bar / pane tab bar / sidebars). The shadow is
+   theme-aware via --cmux-chrome-icon-shadow (set in AppShell): a bidirectional
+   shadow for dark themes, and none / a soft white halo for light themes. */
 button svg,
 .pane-action-btn svg,
 .cmux-title-btn svg {
-  filter:
-    drop-shadow(0 0 1px rgba(255, 255, 255, 0.45))
-    drop-shadow(0 0 2px rgba(0, 0, 0, 0.6))
-    drop-shadow(0 1px 2px rgba(0, 0, 0, 0.4));
+  filter: var(--cmux-chrome-icon-shadow);
 }
 
-/* Brand text + workspace name in TitleBar — same reason */
+/* Brand text + workspace name in TitleBar — same theme-aware treatment. */
 [data-tauri-drag-region] > span,
 [data-cmux-brand="true"],
 .pane-tab-label {
-  text-shadow:
-    0 0 2px rgba(255, 255, 255, 0.3),
-    0 0 3px rgba(0, 0, 0, 0.6),
-    0 1px 2px rgba(0, 0, 0, 0.45);
+  text-shadow: var(--cmux-chrome-text-shadow);
 }
 
 /* xterm.js overrides for crisp rendering */
