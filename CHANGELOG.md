@@ -1,5 +1,12 @@
 # Changelog (mycmux-lite)
 
+## [0.7.8-lite.1] - 2026-05-18
+
+- Fixed: The theme picker now actually switches themes (setTheme was pinned to the default theme id), so light themes apply correctly including the ANSI palette.
+- Changed: UI colors are fully theme-tokenized — hardcoded dark-assumption colors across modals, palettes, status badges, drag-and-drop, and chrome now use theme-aware tokens, so light themes render correctly.
+- Fixed: Terminal text no longer washes out over a background image (minimumContrastRatio is disabled while a media background is active).
+- Fixed: Terminal display stability under heavy agent output — PTY output applies backpressure instead of being dropped, session re-attach swaps the data channel cleanly, resize triggers a staggered full refresh, and WebGL context-loss recovery is hardened.
+
 ## [0.7.4-lite.1] - 2026-05-16
 
 - Changed: Title bar text/icon shadows are theme-aware and key off the effective chrome background lightness — light chrome (including dark themes recolored light) drops the dark drop-shadow; a subtle white halo is kept only over image backgrounds.
