@@ -4,9 +4,9 @@ import type { AgentSessionKind } from "../types";
 
 // v0.7.1 diag: per-session attach epoch.
 // Each createSession() call bumps the epoch. Channel.onmessage closures
-// captured by older epochs still receive PTY data from the Rust side until
-// the Channel is GC'd; we log when those stale callbacks fire so we can tell
-// whether duplicate terminal output is a result of leaked listeners.
+// captured by older epochs may receive a final in-flight PTY batch while Rust
+// swaps Channels. We log and ignore stale callbacks so old attachments cannot
+// write into the terminal.
 const sessionAttachEpoch = new Map<string, number>();
 
 export function getCurrentSessionEpoch(sessionId: string): number {
@@ -38,6 +38,7 @@ export async function createSession(
         );
       }
       staleNoticeCount += 1;
+      return;
     }
     onData(data);
   };

@@ -15,7 +15,7 @@ interface SettingsMenuProps {
 
 const itemStyle: React.CSSProperties = {
   width: "100%",
-  padding: "8px 12px",
+  padding: "var(--cmux-space-4) var(--cmux-space-6)",
   background: "transparent",
   border: "none",
   color: "var(--cmux-text)",
@@ -108,13 +108,13 @@ export default function SettingsMenu({
         position: "absolute",
         top: "100%",
         right: 0,
-        marginTop: 4,
+        marginTop: "var(--cmux-space-2)",
         width: 260,
         background: "var(--cmux-popover)",
         border: "1px solid var(--cmux-border)",
-        borderRadius: 6,
+        borderRadius: "var(--cmux-radius-md)",
         zIndex: 100,
-        boxShadow: "0 4px 16px rgba(0,0,0,0.4)",
+        boxShadow: "var(--cmux-shadow-popover)",
         fontSize: 12,
         fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
         color: "var(--cmux-text)",
@@ -130,9 +130,8 @@ export default function SettingsMenu({
           onOpenThemes();
           onClose();
         }}
+        className="cmux-menu-item"
         style={itemStyle}
-        onMouseEnter={(e) => { e.currentTarget.style.background = "var(--cmux-hover)"; }}
-        onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
       >
         <span>Themes</span>
       </button>
@@ -142,9 +141,8 @@ export default function SettingsMenu({
           onOpenKeybindings();
           onClose();
         }}
+        className="cmux-menu-item"
         style={itemStyle}
-        onMouseEnter={(e) => { e.currentTarget.style.background = "var(--cmux-hover)"; }}
-        onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
       >
         <span>Keybindings</span>
       </button>
@@ -185,9 +183,8 @@ export default function SettingsMenu({
               onOpenCrsmPalette();
               onClose();
             }}
+            className="cmux-menu-item"
             style={itemStyle}
-            onMouseEnter={(e) => { e.currentTarget.style.background = "var(--cmux-hover)"; }}
-            onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
           >
             <span>Resume</span>
             <span style={{ color: "var(--cmux-text-dim, rgba(255,255,255,0.55))", fontSize: 11 }}>Ctrl+P</span>
@@ -246,17 +243,12 @@ export default function SettingsMenu({
       <button
         onClick={handleCheckUpdate}
         disabled={updateStatus === "checking" || updateStatus === "downloading"}
+        className="cmux-menu-item"
         style={{
           ...itemStyle,
           opacity: (updateStatus === "checking" || updateStatus === "downloading") ? 0.5 : 1,
           cursor: (updateStatus === "checking" || updateStatus === "downloading") ? "wait" : "pointer",
         }}
-        onMouseEnter={(e) => {
-          if (updateStatus !== "checking" && updateStatus !== "downloading") {
-            e.currentTarget.style.background = "var(--cmux-hover)";
-          }
-        }}
-        onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
       >
         <span>更新を確認</span>
       </button>

@@ -25,7 +25,7 @@ export function UsagePopover({ summary, lastError }: UsagePopoverProps) {
         border: "1px solid var(--cmux-border)",
         borderRadius: 6,
         zIndex: 100,
-        boxShadow: "0 8px 24px rgba(0,0,0,0.42)",
+        boxShadow: "var(--cmux-shadow-popover)",
         color: "var(--cmux-text)",
         fontSize: 12,
         fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",

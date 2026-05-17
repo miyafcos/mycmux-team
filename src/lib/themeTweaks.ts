@@ -528,6 +528,8 @@ export const THEME_TWEAK_PRESETS: ThemeTweakPreset[] = [
   },
 ];
 
+// Tweak keys use dot notation because they map onto ThemeDefinition fields.
+// CSS variables stay kebab-case at the AppShell/global.css boundary.
 export const THEME_TWEAK_PRESET_SCOPE: ThemeTweakColorKey[] = [
   "chrome.background",
   "chrome.surface",
@@ -535,6 +537,8 @@ export const THEME_TWEAK_PRESET_SCOPE: ThemeTweakColorKey[] = [
   "chrome.text",
   "chrome.textMuted",
   "chrome.accent",
+  "chrome.hover",
+  "chrome.selected",
   "terminal.background",
   "terminal.foreground",
   "terminal.cursor",
@@ -613,7 +617,10 @@ export const THEME_TWEAK_GROUPS: ThemeTweakGroup[] = [
 ];
 
 const TWEAK_KEYS = new Set<ThemeTweakColorKey>(
-  THEME_TWEAK_GROUPS.flatMap((group) => group.fields.map((field) => field.key)),
+  [
+    ...THEME_TWEAK_GROUPS.flatMap((group) => group.fields.map((field) => field.key)),
+    ...THEME_TWEAK_PRESET_SCOPE,
+  ],
 );
 
 export function normalizeThemeColor(value: unknown): string | null {
@@ -632,6 +639,10 @@ export function normalizeThemeColor(value: unknown): string | null {
 
   if (/^#[0-9a-f]{6}$/i.test(trimmed)) {
     return trimmed.toLowerCase();
+  }
+
+  if (/^rgba?\(\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}(?:\s*,\s*(?:0|1|0?\.\d+))?\s*\)$/i.test(trimmed)) {
+    return trimmed;
   }
 
   return null;

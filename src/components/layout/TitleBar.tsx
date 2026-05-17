@@ -124,7 +124,7 @@ export default function TitleBar({ uiVariant = "default", onNewWorkspace, onOpen
         <button
           onClick={toggleSidebar}
           title="Toggle Sidebar (Ctrl+B)"
-          className={uiVariant === "cmux" ? "cmux-title-btn" : undefined}
+          className="cmux-title-btn"
           style={{
             background: "none",
             border: "none",
@@ -135,14 +135,6 @@ export default function TitleBar({ uiVariant = "default", onNewWorkspace, onOpen
             alignItems: "center",
             borderRadius: 3,
           }}
-          onMouseEnter={(e) => {
-            e.currentTarget.style.background = "rgba(255,255,255,0.08)";
-            e.currentTarget.style.color = "var(--cmux-text-secondary)";
-          }}
-          onMouseLeave={(e) => {
-            e.currentTarget.style.background = "none";
-            e.currentTarget.style.color = "var(--cmux-text-secondary)";
-          }}
         >
           <SidebarIcon />
         </button>
@@ -151,7 +143,7 @@ export default function TitleBar({ uiVariant = "default", onNewWorkspace, onOpen
           <button
             onClick={() => setNotificationPanelOpen((o) => !o)}
             title="Notifications"
-            className={uiVariant === "cmux" ? "cmux-title-btn" : undefined}
+            className="cmux-title-btn"
             style={{
               background: "none",
               border: "none",
@@ -162,8 +154,6 @@ export default function TitleBar({ uiVariant = "default", onNewWorkspace, onOpen
               alignItems: "center",
               borderRadius: 3,
             }}
-            onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(255,255,255,0.08)")}
-            onMouseLeave={(e) => (e.currentTarget.style.background = "none")}
           >
             <BellIcon count={totalNotifications} />
           </button>
@@ -175,7 +165,7 @@ export default function TitleBar({ uiVariant = "default", onNewWorkspace, onOpen
         <button
           onClick={onNewWorkspace}
           title="New Workspace (Ctrl+Shift+N)"
-          className={uiVariant === "cmux" ? "cmux-title-btn" : undefined}
+          className="cmux-title-btn"
           style={{
             background: "none",
             border: "none",
@@ -185,14 +175,6 @@ export default function TitleBar({ uiVariant = "default", onNewWorkspace, onOpen
             display: "flex",
             alignItems: "center",
             borderRadius: 3,
-          }}
-          onMouseEnter={(e) => {
-            e.currentTarget.style.background = "rgba(255,255,255,0.08)";
-            e.currentTarget.style.color = "var(--cmux-text-secondary)";
-          }}
-          onMouseLeave={(e) => {
-            e.currentTarget.style.background = "none";
-            e.currentTarget.style.color = "var(--cmux-text-secondary)";
           }}
         >
           <PlusIcon />
@@ -218,7 +200,7 @@ export default function TitleBar({ uiVariant = "default", onNewWorkspace, onOpen
             fontSize: 11,
             fontWeight: 700,
             letterSpacing: "0.12em",
-            color: uiVariant === "cmux" ? "#d8d8d8" : "var(--cmux-text-secondary)",
+            color: "var(--cmux-text-secondary)",
             fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
             textTransform: "uppercase",
           }}
@@ -250,7 +232,7 @@ export default function TitleBar({ uiVariant = "default", onNewWorkspace, onOpen
           <button
             onClick={() => setIsSettingsOpen((v) => !v)}
             title="Settings"
-            className={uiVariant === "cmux" ? "cmux-title-btn" : undefined}
+            className="cmux-title-btn"
             style={{
               background: "none",
               border: "none",
@@ -261,8 +243,6 @@ export default function TitleBar({ uiVariant = "default", onNewWorkspace, onOpen
               display: "flex",
               alignItems: "center",
             }}
-            onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(255,255,255,0.08)")}
-            onMouseLeave={(e) => (e.currentTarget.style.background = "none")}
           >
             <SettingsIcon />
           </button>
@@ -278,7 +258,7 @@ export default function TitleBar({ uiVariant = "default", onNewWorkspace, onOpen
         <button
           onClick={handleMinimize}
           title="Minimize"
-          className={uiVariant === "cmux" ? "cmux-title-btn" : undefined}
+          className="cmux-title-btn"
           style={{
             background: "none",
             border: "none",
@@ -289,8 +269,6 @@ export default function TitleBar({ uiVariant = "default", onNewWorkspace, onOpen
             display: "flex",
             alignItems: "center",
           }}
-          onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(255,255,255,0.08)")}
-          onMouseLeave={(e) => (e.currentTarget.style.background = "none")}
         >
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
             <line x1="5" y1="12" x2="19" y2="12"></line>
@@ -299,7 +277,7 @@ export default function TitleBar({ uiVariant = "default", onNewWorkspace, onOpen
         <button
           onClick={handleMaximize}
           title={isMaximized ? "Restore" : "Maximize"}
-          className={uiVariant === "cmux" ? "cmux-title-btn" : undefined}
+          className="cmux-title-btn"
           style={{
             background: "none",
             border: "none",
@@ -310,8 +288,6 @@ export default function TitleBar({ uiVariant = "default", onNewWorkspace, onOpen
             display: "flex",
             alignItems: "center",
           }}
-          onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(255,255,255,0.08)")}
-          onMouseLeave={(e) => (e.currentTarget.style.background = "none")}
         >
           {isMaximized ? (
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -337,14 +313,7 @@ export default function TitleBar({ uiVariant = "default", onNewWorkspace, onOpen
             display: "flex",
             alignItems: "center",
           }}
-          onMouseEnter={(e) => {
-            e.currentTarget.style.background = "rgba(255,59,48,0.3)";
-            e.currentTarget.style.color = "#ff3b30";
-          }}
-          onMouseLeave={(e) => {
-            e.currentTarget.style.background = "none";
-            e.currentTarget.style.color = "var(--cmux-text-secondary)";
-          }}
+          className="cmux-title-btn cmux-title-btn--close"
         >
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
             <line x1="18" y1="6" x2="6" y2="18"></line>

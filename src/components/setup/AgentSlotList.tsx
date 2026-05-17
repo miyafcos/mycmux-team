@@ -14,7 +14,7 @@ export default function AgentSlotList({ paneCount, assignments, onChange }: Agen
       <div
         style={{
           fontSize: 12,
-          color: "#a3a3a3",
+          color: "var(--cmux-text-tertiary)",
           marginBottom: 8,
           fontFamily: "'JetBrains Mono', monospace",
         }}

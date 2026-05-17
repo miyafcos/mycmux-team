@@ -16,10 +16,9 @@ use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
 
 const SCROLLBACK_CAP: usize = 32 * 1024; // 32 KB
-const FRONTEND_QUEUE_CAP: usize = 64;
-const FRONTEND_FLUSH_INTERVAL_MS: u64 = 8;
+const FRONTEND_QUEUE_CAP: usize = 4096;
+const FRONTEND_FLUSH_INTERVAL_MS: u64 = 4;
 const FRONTEND_BATCH_MAX_BYTES: usize = 64 * 1024;
-const FRONTEND_FULL_RETRY_DELAY_MS: u64 = 1;
 // v0.7.1 diag: report aggregated PTY metrics every 5 s on stderr.
 const METRICS_FLUSH_INTERVAL_MS: u64 = 5_000;
 
@@ -44,6 +43,7 @@ pub struct PtySession {
     writer: Mutex<Box<dyn Write + Send>>,
     pub broadcast: broadcast::Sender<Vec<u8>>,
     scrollback: Arc<Mutex<VecDeque<u8>>>,
+    data_channel: Arc<Mutex<Channel<Vec<u8>>>>,
     pub created_at: Instant,
     #[allow(dead_code)]
     pub(crate) metrics: Arc<PtyMetrics>,
@@ -131,6 +131,7 @@ impl PtySession {
         let broadcast_tx_clone = broadcast_tx.clone();
         let sb_clone = scrollback.clone();
         let (frontend_tx, mut frontend_rx) = mpsc::channel::<Vec<u8>>(FRONTEND_QUEUE_CAP);
+        let frontend_channel = Arc::new(Mutex::new(data_channel));
 
         // v0.7.1 diag: per-session counters shared by reader/forwarder.
         let metrics = Arc::new(PtyMetrics::default());
@@ -175,6 +176,7 @@ impl PtySession {
         });
 
         let metrics_forwarder = metrics.clone();
+        let forwarder_channel = frontend_channel.clone();
         tauri::async_runtime::spawn(async move {
             use std::sync::atomic::Ordering;
             while let Some(first_chunk) = frontend_rx.recv().await {
@@ -188,10 +190,14 @@ impl PtySession {
                     }
                 }
 
-                // Tauri Channel is unbounded, so this forwarder rate-limits
-                // frontend IPC instead of draining the bounded queue instantly.
+                // Tauri Channel is unbounded, so this forwarder batches frontend
+                // IPC but lets sustained output drain without data loss.
                 let batch_len = batch.len();
-                match data_channel.send(batch) {
+                let send_result = forwarder_channel
+                    .lock()
+                    .map_err(|_| ())
+                    .and_then(|channel| channel.send(batch).map_err(|_| ()));
+                match send_result {
                     Ok(()) => {
                         metrics_forwarder.flushes.fetch_add(1, Ordering::Relaxed);
                         metrics_forwarder
@@ -204,7 +210,11 @@ impl PtySession {
                             .fetch_add(1, Ordering::Relaxed);
                     }
                 }
-                tokio::time::sleep(Duration::from_millis(FRONTEND_FLUSH_INTERVAL_MS)).await;
+                if batch_len < FRONTEND_BATCH_MAX_BYTES {
+                    tokio::time::sleep(Duration::from_millis(FRONTEND_FLUSH_INTERVAL_MS)).await;
+                } else {
+                    tokio::task::yield_now().await;
+                }
             }
         });
 
@@ -277,33 +287,13 @@ impl PtySession {
                                     metrics_reader
                                         .frontend_queue_full_retry
                                         .fetch_add(1, Ordering::Relaxed);
-                                    thread::sleep(Duration::from_millis(
-                                        FRONTEND_FULL_RETRY_DELAY_MS,
-                                    ));
-                                    match frontend_tx.try_send(rejected) {
-                                        Ok(()) => {}
-                                        Err(mpsc::error::TrySendError::Full(dropped)) => {
-                                            // Prefer dropping display-only frontend data over
-                                            // blocking the PTY reader and stalling the shell.
-                                            metrics_reader
-                                                .dropped_chunks
-                                                .fetch_add(1, Ordering::Relaxed);
-                                            metrics_reader
-                                                .dropped_bytes
-                                                .fetch_add(dropped.len() as u64, Ordering::Relaxed);
-                                        }
-                                        Err(mpsc::error::TrySendError::Closed(_)) => {
-                                            metrics_reader
-                                                .closed_count
-                                                .fetch_add(1, Ordering::Relaxed);
-                                            frontend_open = false;
-                                        }
+                                    if frontend_tx.blocking_send(rejected).is_err() {
+                                        metrics_reader.closed_count.fetch_add(1, Ordering::Relaxed);
+                                        frontend_open = false;
                                     }
                                 }
                                 Err(mpsc::error::TrySendError::Closed(_)) => {
-                                    metrics_reader
-                                        .closed_count
-                                        .fetch_add(1, Ordering::Relaxed);
+                                    metrics_reader.closed_count.fetch_add(1, Ordering::Relaxed);
                                     frontend_open = false;
                                 }
                             }
@@ -342,9 +332,24 @@ impl PtySession {
             writer: Mutex::new(writer),
             broadcast: broadcast_tx,
             scrollback,
+            data_channel: frontend_channel,
             created_at,
             metrics,
         })
+    }
+
+    pub fn replace_data_channel(
+        &self,
+        data_channel: Channel<Vec<u8>>,
+    ) -> Result<(String, String), String> {
+        let mut current = self
+            .data_channel
+            .lock()
+            .map_err(|e| format!("Lock failed: {e}"))?;
+        let old_channel_id = current.id().to_string();
+        let new_channel_id = data_channel.id().to_string();
+        *current = data_channel;
+        Ok((old_channel_id, new_channel_id))
     }
 
     pub fn write(&self, data: &[u8]) -> Result<(), String> {

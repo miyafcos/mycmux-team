@@ -31,19 +31,13 @@ impl SessionManager {
         env: Option<std::collections::HashMap<String, String>>,
         metadata_store: MetadataStore,
     ) -> Result<(), String> {
-        let new_channel_id = data_channel.id();
-        if self.sessions.contains_key(&session_id) {
-            // v0.7.1 diag: idempotent path. The new Channel handle is dropped on
-            // the floor; the existing session's forwarder keeps writing to its
-            // original channel. v0.7.2 will swap channels instead.
-            let age_ms = self
-                .sessions
-                .get(&session_id)
-                .map(|s| s.created_at.elapsed().as_millis())
-                .unwrap_or(0);
+        let new_channel_id = data_channel.id().to_string();
+        if let Some(session) = self.sessions.get(&session_id) {
+            let age_ms = session.created_at.elapsed().as_millis();
+            let (old_channel_id, active_channel_id) = session.replace_data_channel(data_channel)?;
             eprintln!(
-                "[mycmux-diag manager] create_session id={} kind=idempotent age_ms={} new_channel_id={} (dropped)",
-                session_id, age_ms, new_channel_id
+                "[mycmux-diag manager] create_session id={} kind=reattach age_ms={} old_channel_id={} new_channel_id={} active_channel_id={}",
+                session_id, age_ms, old_channel_id, new_channel_id, active_channel_id
             );
             return Ok(());
         }

@@ -120,7 +120,7 @@ export default function WorkspaceSetup({ onLaunch, onCancel }: WorkspaceSetupPro
               background: "var(--cmux-accent)",
               border: "none",
               borderRadius: 4,
-              color: "#0a0a0a",
+              color: "var(--cmux-on-accent)",
               padding: "6px 16px",
               fontSize: 12,
               fontFamily: "'JetBrains Mono', monospace",

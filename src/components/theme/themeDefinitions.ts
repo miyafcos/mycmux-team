@@ -25,7 +25,7 @@ const DEFAULT_DARK_STATUS: ThemeStatusColors = {
 
 const DEFAULT_LIGHT_STATUS: ThemeStatusColors = {
   working: "#2f6fed",
-  waiting: "#b9781f",
+  waiting: "#c7832a",
   done: "#2f9a68",
   error: "#c85757",
 };
@@ -41,8 +41,8 @@ function completeTheme(theme: ThemeDraft): ThemeDefinition {
     chrome: {
       ...theme.chrome,
       textDim: theme.chrome.textDim ?? (isLight ? "#9b938d" : "#475569"),
-      hover: theme.chrome.hover ?? (isLight ? "rgba(0, 0, 0, 0.055)" : "rgba(255, 255, 255, 0.065)"),
-      selected: theme.chrome.selected ?? (isLight ? "rgba(0, 0, 0, 0.082)" : "rgba(255, 255, 255, 0.085)"),
+      hover: theme.chrome.hover ?? (isLight ? "rgba(0, 0, 0, 0.075)" : "rgba(255, 255, 255, 0.065)"),
+      selected: theme.chrome.selected ?? (isLight ? "rgba(0, 0, 0, 0.095)" : "rgba(255, 255, 255, 0.085)"),
       danger: theme.chrome.danger ?? (isLight ? "#c85757" : "#fb7185"),
     },
     status: {
@@ -157,7 +157,7 @@ const THEME_DRAFTS: ThemeDraft[] = [
       background: "#00212b",
       surface: "#002b36",
       border: "#073642",
-      text: "#93a1a1",
+      text: "#a6b6b6",
       textMuted: "#586e75",
       accent: "#2aa198",
     },

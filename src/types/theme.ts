@@ -39,6 +39,8 @@ export type ThemeTweakColorKey =
   | "chrome.textMuted"
   | "chrome.textDim"
   | "chrome.accent"
+  | "chrome.hover"
+  | "chrome.selected"
   | "chrome.danger"
   | "terminal.background"
   | "terminal.foreground"

@@ -28,7 +28,7 @@ export default function ThemeSwitcher({ onClose, onOpenKeybindings }: ThemeSwitc
       style={{
         position: "fixed",
         inset: 0,
-        background: "rgba(0,0,0,0.6)",
+        background: "var(--cmux-backdrop)",
         display: "flex",
         justifyContent: "center",
         alignItems: "center",

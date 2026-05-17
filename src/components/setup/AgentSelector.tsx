@@ -19,7 +19,7 @@ export default function AgentSelector({ value, onChange, slotIndex }: AgentSelec
       <span
         style={{
           fontSize: 11,
-          color: "#585b70",
+          color: "var(--cmux-text-tertiary)",
           fontFamily: "'JetBrains Mono', monospace",
           width: 20,
           textAlign: "right",
@@ -34,7 +34,7 @@ export default function AgentSelector({ value, onChange, slotIndex }: AgentSelec
           flex: 1,
           backgroundColor: "transparent",
           color: "var(--cmux-text)",
-          colorScheme: "dark",
+          colorScheme: "inherit",
           border: "1px solid var(--cmux-border)",
           borderRadius: 4,
           padding: "4px 8px",

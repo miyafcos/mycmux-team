@@ -111,7 +111,7 @@ const paneTabContextMenuStyle: CSSProperties = {
   border: "1px solid var(--cmux-border)",
   borderRadius: 6,
   padding: "4px 0",
-  boxShadow: "0 4px 12px rgba(0,0,0,0.2)",
+  boxShadow: "var(--cmux-shadow-pane-menu)",
   minWidth: 160,
   fontSize: 13,
 };

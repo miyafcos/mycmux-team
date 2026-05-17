@@ -50,7 +50,7 @@ export default class ErrorBoundary extends Component<Props, State> {
             padding: 24,
           }}
         >
-          <span style={{ fontSize: 20, color: "#f38ba8" }}>⚠</span>
+          <span style={{ fontSize: 20, color: "var(--cmux-red)" }}>⚠</span>
           <span style={{ color: "var(--cmux-text, #ededed)" }}>Pane crashed</span>
           <span
             style={{

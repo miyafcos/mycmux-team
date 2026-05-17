@@ -44,6 +44,8 @@ function colorWithOpacity(color: string, opacity: number): string {
   return `rgba(${red}, ${green}, ${blue}, ${opacity})`;
 }
 
+const LIGHT_COLOR_LUMINANCE_THRESHOLD = 140;
+
 // Whether a hex color reads as "light". Used to pick chrome shadows from the
 // effective chrome background — which includes user color overrides — rather
 // than the theme's declared colorScheme. Non-hex input falls back to dark.
@@ -58,7 +60,11 @@ function isLightColor(color: string): boolean {
   const green = parseInt(hex.slice(2, 4), 16);
   const blue = parseInt(hex.slice(4, 6), 16);
   // Perceived luminance (ITU-R BT.601).
-  return (red * 299 + green * 587 + blue * 114) / 1000 > 140;
+  return (red * 299 + green * 587 + blue * 114) / 1000 > LIGHT_COLOR_LUMINANCE_THRESHOLD;
+}
+
+function textOnColor(color: string): string {
+  return isLightColor(color) ? "#0a0a0a" : "#ffffff";
 }
 
 function AppBackgroundLayer({ background }: { background: ThemeBackgroundSettings }) {
@@ -281,6 +287,31 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
     "--cmux-hover": currentTheme.chrome.hover,
     "--cmux-selected": currentTheme.chrome.selected,
     "--cmux-red": currentTheme.chrome.danger,
+    "--cmux-on-accent": textOnColor(currentTheme.chrome.accent),
+    "--cmux-on-working": textOnColor(currentTheme.status.working),
+    "--cmux-on-waiting": textOnColor(currentTheme.status.waiting),
+    "--cmux-on-done": textOnColor(currentTheme.status.done),
+    "--cmux-on-error": textOnColor(currentTheme.status.error),
+    "--cmux-backdrop": isLightChrome ? "rgba(15, 23, 42, 0.22)" : "rgba(0, 0, 0, 0.55)",
+    "--cmux-focus-ring": "color-mix(in srgb, var(--cmux-accent) 45%, transparent)",
+    "--cmux-dnd-tab": isLightChrome ? currentTheme.status.working : "#38bdf8",
+    "--cmux-dnd-pane": isLightChrome ? currentTheme.status.waiting : "#f59e0b",
+    "--cmux-usage-ok": isLightChrome ? currentTheme.status.done : "#3eb86b",
+    "--cmux-usage-warn": isLightChrome ? currentTheme.status.waiting : "#f5a623",
+    "--cmux-usage-danger": isLightChrome ? currentTheme.status.error : "#ff3b30",
+    "--cmux-shadow-menu": isLightChrome ? "0 8px 20px rgba(15, 23, 42, 0.16)" : "0 4px 12px rgba(0, 0, 0, 0.5)",
+    "--cmux-shadow-popover": isLightChrome ? "0 8px 26px rgba(15, 23, 42, 0.16)" : "0 4px 16px rgba(0,0,0,0.4)",
+    "--cmux-shadow-dropdown": isLightChrome ? "0 12px 28px rgba(15, 23, 42, 0.16)" : "0 10px 24px rgba(0, 0, 0, 0.32)",
+    "--cmux-shadow-dialog": isLightChrome ? "0 20px 60px rgba(15, 23, 42, 0.18)" : "0 18px 60px rgba(0,0,0,0.45)",
+    "--cmux-shadow-palette": isLightChrome ? "0 24px 70px rgba(15, 23, 42, 0.18)" : "0 24px 70px rgba(0,0,0,0.45)",
+    "--cmux-shadow-pane-menu": isLightChrome ? "0 8px 18px rgba(15, 23, 42, 0.14)" : "0 4px 12px rgba(0,0,0,0.2)",
+    "--cmux-shadow-dnd": isLightChrome
+      ? "0 14px 34px rgba(15, 23, 42, 0.18), inset 0 0 0 1px color-mix(in srgb, var(--cmux-text) 8%, transparent)"
+      : "0 14px 34px rgba(0, 0, 0, 0.36), inset 0 0 0 1px rgba(255, 255, 255, 0.05)",
+    "--cmux-shadow-dnd-strong": isLightChrome
+      ? "0 16px 38px rgba(15, 23, 42, 0.22), 0 0 24px color-mix(in srgb, var(--pane-dnd-color) 18%, transparent)"
+      : "0 16px 38px rgba(0, 0, 0, 0.42), 0 0 24px color-mix(in srgb, var(--pane-dnd-color) 22%, transparent)",
+    "--cmux-shadow-dnd-label": isLightChrome ? "0 8px 20px rgba(15, 23, 42, 0.16)" : "0 6px 18px rgba(0, 0, 0, 0.34)",
     "--status-working": currentTheme.status.working,
     "--status-waiting": currentTheme.status.waiting,
     "--status-done": currentTheme.status.done,

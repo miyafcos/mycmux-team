@@ -114,7 +114,7 @@ export default memo(function TabItem({ uiVariant = "default", name, paneCount, c
           {notificationCount ? (
             <span title="Waiting for approval" style={{
               background: "var(--status-waiting)",
-              color: "#1a1a1a",
+              color: "var(--cmux-on-waiting)",
               fontSize: "9px",
               fontWeight: "bold",
               borderRadius: "50%",
@@ -130,7 +130,7 @@ export default memo(function TabItem({ uiVariant = "default", name, paneCount, c
           ) : workDoneCount ? (
             <span title="Work done" style={{
               background: "var(--status-done)",
-              color: "#1a1a1a",
+              color: "var(--cmux-on-done)",
               fontSize: "9px",
               fontWeight: "bold",
               borderRadius: "50%",

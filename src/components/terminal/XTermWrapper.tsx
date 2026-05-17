@@ -139,6 +139,15 @@ function withTerminalOpacity(theme: ITheme, opacity: number, mediaActive: boolea
   };
 }
 
+// xterm's minimumContrastRatio only works against an opaque, known background.
+// With a media background the terminal background is transparent (the wallpaper
+// is composited in CSS), so it must be disabled to avoid phantom contrast fixes.
+const TERMINAL_MIN_CONTRAST = 7;
+
+function minContrastFor(mediaActive: boolean): number {
+  return mediaActive ? 1 : TERMINAL_MIN_CONTRAST;
+}
+
 // Chunk large pastes to avoid PTY buffer overflow
 const PASTE_CHUNK = 1024;
 
@@ -284,6 +293,42 @@ function normalizeMarkdownTableRow(cells: string[], width: number): string[] {
   return Array.from({ length: width }, (_, index) => cells[index]?.trim() ?? "");
 }
 
+const DISPLAY_WIDTH_CACHE_LIMIT = 8192;
+const DISPLAY_NORMALIZE_CACHE_LIMIT = 4096;
+const DISPLAY_CACHE_MAX_TEXT_LENGTH = 512;
+const NON_ASCII_RE = /[^\x00-\x7f]/;
+const displayWidthCache = new Map<string, number>();
+const displayNormalizeCache = new Map<string, string>();
+const charWidthCache = new Map<string, number>();
+
+function rememberLimited<T>(
+  cache: Map<string, T>,
+  key: string,
+  value: T,
+  limit: number,
+): T {
+  if (cache.size >= limit) {
+    cache.clear();
+  }
+  cache.set(key, value);
+  return value;
+}
+
+function normalizeDisplayWidthValue(value: string): string {
+  if (!NON_ASCII_RE.test(value)) return value;
+  if (value.length > DISPLAY_CACHE_MAX_TEXT_LENGTH) return value.normalize("NFC");
+
+  const cached = displayNormalizeCache.get(value);
+  if (cached !== undefined) return cached;
+
+  return rememberLimited(
+    displayNormalizeCache,
+    value,
+    value.normalize("NFC"),
+    DISPLAY_NORMALIZE_CACHE_LIMIT,
+  );
+}
+
 function isZeroWidthCodePoint(codePoint: number): boolean {
   return (
     (codePoint >= 0x0300 && codePoint <= 0x036f) ||
@@ -313,14 +358,38 @@ function isWideCodePoint(codePoint: number): boolean {
   );
 }
 
-function displayWidth(value: string): number {
+function displayWidthOfChar(char: string): number {
+  const cached = charWidthCache.get(char);
+  if (cached !== undefined) return cached;
+
+  const codePoint = char.codePointAt(0);
   let width = 0;
-  for (const char of value.normalize("NFC")) {
-    const codePoint = char.codePointAt(0);
-    if (codePoint === undefined || codePoint === 0) continue;
-    if (codePoint < 0x20 || (codePoint >= 0x7f && codePoint < 0xa0)) continue;
-    if (isZeroWidthCodePoint(codePoint)) continue;
-    width += isWideCodePoint(codePoint) ? 2 : 1;
+  if (
+    codePoint !== undefined &&
+    codePoint !== 0 &&
+    codePoint >= 0x20 &&
+    (codePoint < 0x7f || codePoint >= 0xa0) &&
+    !isZeroWidthCodePoint(codePoint)
+  ) {
+    width = isWideCodePoint(codePoint) ? 2 : 1;
+  }
+
+  return rememberLimited(charWidthCache, char, width, DISPLAY_WIDTH_CACHE_LIMIT);
+}
+
+function displayWidth(value: string): number {
+  if (value.length <= DISPLAY_CACHE_MAX_TEXT_LENGTH) {
+    const cached = displayWidthCache.get(value);
+    if (cached !== undefined) return cached;
+  }
+
+  let width = 0;
+  for (const char of normalizeDisplayWidthValue(value)) {
+    width += displayWidthOfChar(char);
+  }
+
+  if (value.length <= DISPLAY_CACHE_MAX_TEXT_LENGTH) {
+    return rememberLimited(displayWidthCache, value, width, DISPLAY_WIDTH_CACHE_LIMIT);
   }
   return width;
 }
@@ -617,6 +686,7 @@ export default memo(function XTermWrapper({
   useEffect(() => {
     if (termRef.current) {
       termRef.current.options.theme = withTerminalOpacity(storeTheme.terminal, terminalOpacity, mediaBackgroundActive);
+      termRef.current.options.minimumContrastRatio = minContrastFor(mediaBackgroundActive);
       termRef.current.options.fontSize = storeFontSize;
       termRef.current.options.fontFamily = storeFontFamily;
       setTimeout(() => syncResizeRef.current(true), 10);
@@ -648,6 +718,7 @@ export default memo(function XTermWrapper({
     let scrollDisposable: { dispose: () => void } | null = null;
     let term: Terminal | null = null;
     let fitAddon: FitAddon | null = null;
+    let webglAddon: WebglAddon | null = null;
     let removeCompositionGuard: (() => void) | null = null;
     let logThrottle: ReturnType<typeof setTimeout> | null = null;
     let idleFlush: ReturnType<typeof setTimeout> | null = null;
@@ -728,6 +799,33 @@ export default memo(function XTermWrapper({
       return true;
     };
 
+    const refreshVisibleRows = (currentTerm: Terminal): void => {
+      if (disposed || termDisposed || currentTerm.rows <= 0) return;
+      try {
+        currentTerm.clearTextureAtlas();
+      } catch {
+        // DOM renderer does not need the atlas.
+      }
+      try {
+        currentTerm.refresh(0, Math.max(0, currentTerm.rows - 1));
+      } catch {
+        // Terminal was disposed between scheduling and refresh.
+      }
+    };
+
+    const scheduleFullRefresh = (
+      currentTerm: Terminal,
+      delays: readonly number[] = [0, 48, 160],
+    ): void => {
+      for (const delay of delays) {
+        const timer = setTimeout(() => {
+          resizeTimers = resizeTimers.filter((entry) => entry !== timer);
+          refreshVisibleRows(currentTerm);
+        }, delay);
+        resizeTimers.push(timer);
+      }
+    };
+
     const fitAndSyncResize = (currentTerm: Terminal, currentFitAddon: FitAddon, force = false): void => {
       if (disposed || termDisposed) return;
       if (isImeComposing) {
@@ -748,13 +846,29 @@ export default memo(function XTermWrapper({
       }
 
       if (currentTerm.cols <= 0 || currentTerm.rows <= 0) return;
-      if (currentTerm.cols === lastSentCols && currentTerm.rows === lastSentRows) return;
+      const terminalSizeChanged = currentTerm.cols !== lastSentCols || currentTerm.rows !== lastSentRows;
 
-      lastSentCols = currentTerm.cols;
-      lastSentRows = currentTerm.rows;
-      terminalSizeCache.set(sessionId, { cols: currentTerm.cols, rows: currentTerm.rows });
+      if (!terminalSizeChanged) {
+        if (force || containerSizeChanged) {
+          scheduleFullRefresh(currentTerm);
+        }
+        return;
+      }
+
+      const nextCols = currentTerm.cols;
+      const nextRows = currentTerm.rows;
+      lastSentCols = nextCols;
+      lastSentRows = nextRows;
+      terminalSizeCache.set(sessionId, { cols: nextCols, rows: nextRows });
       if (sessionStarted) {
-        resizeSession(sessionId, currentTerm.cols, currentTerm.rows).catch(console.error);
+        resizeSession(sessionId, nextCols, nextRows)
+          .then(() => scheduleFullRefresh(currentTerm, [16, 80, 200]))
+          .catch((error) => {
+            console.error(error);
+            scheduleFullRefresh(currentTerm, [16, 120]);
+          });
+      } else {
+        scheduleFullRefresh(currentTerm);
       }
     };
 
@@ -777,9 +891,9 @@ export default memo(function XTermWrapper({
 
     const scheduleResizeBurst = (currentTerm: Terminal, currentFitAddon: FitAddon): void => {
       clearResizeTimer();
-      scheduleResize(currentTerm, currentFitAddon, 30);
-      scheduleResize(currentTerm, currentFitAddon, 90);
-      scheduleResize(currentTerm, currentFitAddon, 180);
+      scheduleResize(currentTerm, currentFitAddon, 24, true);
+      scheduleResize(currentTerm, currentFitAddon, 100, true);
+      scheduleResize(currentTerm, currentFitAddon, 240, true);
     };
 
     const registerResizeObserver = (currentTerm: Terminal, currentFitAddon: FitAddon): void => {
@@ -1029,7 +1143,8 @@ export default memo(function XTermWrapper({
       termRef.current = cached.term;
       fitAddonRef.current = cached.fitAddon;
       searchAddonRef.current = cached.searchAddon;
-      cached.term.options.theme = storeTheme.terminal;
+      cached.term.options.theme = withTerminalOpacity(storeTheme.terminal, terminalOpacity, mediaBackgroundActive);
+      cached.term.options.minimumContrastRatio = minContrastFor(mediaBackgroundActive);
       cached.term.options.fontSize = storeFontSize;
       cached.term.options.fontFamily = storeFontFamily;
       registerScrollListener(cached.term);
@@ -1079,7 +1194,7 @@ export default memo(function XTermWrapper({
         scrollback: 5000,
         smoothScrollDuration: 0,
         rightClickSelectsWord: true,
-        minimumContrastRatio: 7,
+        minimumContrastRatio: minContrastFor(mediaBackgroundActive),
       });
       termRef.current = term;
 
@@ -1104,8 +1219,8 @@ export default memo(function XTermWrapper({
       const diagStats = diagStatsFor(sessionId);
       if (useSettingsStore.getState().useWebglRenderer) {
         try {
-          const webgl = new WebglAddon();
-          webgl.onContextLoss(() => {
+          const currentWebgl = new WebglAddon();
+          currentWebgl.onContextLoss(() => {
             const ts = Date.now();
             diagStats.webgl = "fallback";
             diagStats.webglLostAt = ts;
@@ -1113,11 +1228,23 @@ export default memo(function XTermWrapper({
             console.log(
               `[mycmux-diag xterm:${sessionId}] WEBGL_LOST at=${ts} writes_in_window=${writesSoFar}`,
             );
-            webgl.dispose();
+            try {
+              currentWebgl.dispose();
+            } catch {
+              // Already disposed by xterm.
+            }
+            if (webglAddon === currentWebgl) {
+              webglAddon = null;
+            }
+            if (term) {
+              scheduleFullRefresh(term, [0, 64, 240, 600]);
+            }
           });
-          term.loadAddon(webgl);
+          webglAddon = currentWebgl;
+          term.loadAddon(currentWebgl);
           diagStats.webgl = "on";
         } catch (err) {
+          webglAddon = null;
           diagStats.webgl = "fallback";
           console.warn("[xterm] WebGL renderer unavailable, using DOM fallback:", err);
         }
@@ -1188,7 +1315,7 @@ export default memo(function XTermWrapper({
           diagStats.bytes += typeof output === "string" ? new Blob([output]).size : output.byteLength;
           try {
             term.write(output, () => {
-              if (disposed) {
+              if (!disposed && !termDisposed) {
                 scheduleBackgroundScan();
               }
             });

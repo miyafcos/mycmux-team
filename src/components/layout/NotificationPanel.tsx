@@ -117,7 +117,7 @@ export default function NotificationPanel({ onClose }: NotificationPanelProps) {
         border: "1px solid var(--cmux-border)",
         borderRadius: 6,
         zIndex: 100,
-        boxShadow: "0 4px 16px rgba(0,0,0,0.4)",
+        boxShadow: "var(--cmux-shadow-popover)",
         fontSize: 12,
         fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
         color: "var(--cmux-text)",
@@ -156,7 +156,7 @@ export default function NotificationPanel({ onClose }: NotificationPanelProps) {
                 cursor: "pointer",
                 borderBottom: "1px solid var(--cmux-border)",
               }}
-              onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(255,255,255,0.05)"; }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = "var(--cmux-hover)"; }}
               onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
             >
               <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px" }}>
@@ -167,7 +167,7 @@ export default function NotificationPanel({ onClose }: NotificationPanelProps) {
                 {/* Count badge — amber for approval waiting, emerald for work done */}
                 <span style={{
                   background: n.kind === "waiting" ? "var(--status-waiting)" : "var(--status-done)",
-                  color: "#1a1a1a",
+                  color: n.kind === "waiting" ? "var(--cmux-on-waiting)" : "var(--cmux-on-done)",
                   fontSize: 9,
                   fontWeight: "bold",
                   borderRadius: "50%",

@@ -76,7 +76,7 @@ export default function KeybindingsModal({ onClose }: KeybindingsModalProps) {
         position: "fixed",
         inset: 0,
         zIndex: 9999,
-        background: "rgba(0,0,0,0.55)",
+        background: "var(--cmux-backdrop)",
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
@@ -121,7 +121,7 @@ export default function KeybindingsModal({ onClose }: KeybindingsModalProps) {
               style={{
                 background: "var(--cmux-accent)",
                 border: "1px solid var(--cmux-accent)",
-                color: "#0a0a0a",
+                color: "var(--cmux-on-accent)",
                 borderRadius: 4,
                 padding: "6px 10px",
                 fontSize: 11,
@@ -154,7 +154,7 @@ export default function KeybindingsModal({ onClose }: KeybindingsModalProps) {
                   gap: 10,
                   alignItems: "center",
                   padding: "8px 16px",
-                  borderBottom: "1px solid rgba(255,255,255,0.04)",
+                  borderBottom: "1px solid color-mix(in srgb, var(--cmux-border) 45%, transparent)",
                 }}
               >
                 <div style={{ fontSize: 11, color: "var(--cmux-text-tertiary)", fontFamily: "'JetBrains Mono', monospace" }}>
@@ -166,7 +166,7 @@ export default function KeybindingsModal({ onClose }: KeybindingsModalProps) {
                 <div
                   style={{
                     fontSize: 12,
-                    color: hasConflict ? "#ff6b6b" : "var(--cmux-text-secondary)",
+                    color: hasConflict ? "var(--cmux-red)" : "var(--cmux-text-secondary)",
                     fontFamily: "'JetBrains Mono', monospace",
                   }}
                 >
