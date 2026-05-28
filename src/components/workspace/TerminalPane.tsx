@@ -1,8 +1,9 @@
-import { memo, type FocusEvent, useCallback } from "react";
+import { memo, type FocusEvent, useCallback, useEffect } from "react";
 import ErrorBoundary from "../common/ErrorBoundary";
 import type { AgentSessionKind, Pane, PaneTab } from "../../types";
 import PaneTabBar from "./PaneTabBar";
 import XTermWrapper from "../terminal/XTermWrapper";
+import BrowserPane from "./BrowserPane";
 import {
   useWorkspaceLayoutStore,
   useUiStore,
@@ -82,6 +83,52 @@ function buildLaunchArgs(
   return args;
 }
 
+/**
+ * OSC 9988 payload normalization: convert "file:///C:/..." or "/C:/..." into a
+ * raw absolute path that convertFileSrc() expects (e.g. "C:/Users/...").
+ * Handles Windows drive letters and POSIX paths uniformly, and collapses
+ * backslashes to "/" so the same file yields one canonical string (stable dedup).
+ */
+function normalizeHtmlPath(payload: string): string {
+  let p = payload.trim();
+  if (p.startsWith("file://")) {
+    p = p.slice(7);
+    // Windows: leading "/C:/..." → strip the slash; POSIX: keep "/Users/...".
+    if (/^\/[A-Za-z]:/.test(p)) {
+      p = p.slice(1);
+    }
+  }
+  try {
+    p = decodeURIComponent(p);
+  } catch {
+    // payload was not URL-encoded; leave as-is
+  }
+  return p.replace(/\\/g, "/");
+}
+
+/**
+ * Security gate for OSC 9988. The terminal emits arbitrary bytes, so the payload
+ * path is fully untrusted — any program writing to the pane could forge the
+ * escape with a path to credentials or any other local file, and assetProtocol
+ * scope is "**". The Rust backend injects exactly one canonical sidetab path per
+ * session (~/.mycmux/sessions/<sessionId>/out.html) and strips inbound overrides,
+ * so the only legitimate target is that file. Bind the rendered path to the
+ * pane's own (app-assigned) sessionId and the fixed leaf, rejecting everything
+ * else regardless of where $HOME lives. paneSessionId is trusted; the path is not.
+ */
+function isCanonicalSidetabPath(normalizedPath: string, paneSessionId: string): boolean {
+  if (!paneSessionId || /[\\/]/.test(paneSessionId) || paneSessionId.includes("..")) {
+    return false;
+  }
+  if (normalizedPath.includes("..")) {
+    return false;
+  }
+  const expectedSuffix = `/.mycmux/sessions/${paneSessionId}/out.html`;
+  // Path segments are backend-fixed lowercase + a lowercase-hex uuid; compare
+  // case-insensitively so Windows drive/home casing never yields a false reject.
+  return normalizedPath.toLowerCase().endsWith(expectedSuffix.toLowerCase());
+}
+
 function getDropPreviewLabel(item: PaneDragItem, target: PaneDropTarget): string {
   if (target.kind === "new-workspace") {
     return item.kind === "tab" ? "Move tab to new workspace" : "Move pane to new workspace";
@@ -138,6 +185,31 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
   const addTabToPane = useWorkspaceLayoutStore((s) => s.addTabToPane);
   const removeTabFromPane = useWorkspaceLayoutStore((s) => s.removeTabFromPane);
   const setActivePaneTab = useWorkspaceLayoutStore((s) => s.setActivePaneTab);
+  const openOrReloadHtmlTab = useWorkspaceLayoutStore((s) => s.openOrReloadHtmlTab);
+
+  // OSC 9988 from XTermWrapper. Match by pane.tabs membership (not activeTab)
+  // so reloads still fire after the browser tab is activated and the terminal
+  // sessionId is no longer activeTab.sessionId.
+  useEffect(() => {
+    const handler = (ev: Event) => {
+      const detail = (ev as CustomEvent).detail as
+        | { paneSessionId?: string; payload?: string }
+        | undefined;
+      if (!detail?.paneSessionId || !detail.payload) return;
+      if (!pane.tabs.some((t) => t.sessionId === detail.paneSessionId)) return;
+      const htmlPath = normalizeHtmlPath(detail.payload);
+      if (!htmlPath) return;
+      // Reject forged OSC payloads that point anywhere but this session's
+      // canonical sidetab file. Without this, terminal output could render
+      // arbitrary local files in the iframe (assetProtocol scope is "**").
+      if (!isCanonicalSidetabPath(htmlPath, detail.paneSessionId)) {
+        return;
+      }
+      openOrReloadHtmlTab(workspaceId, pane.id, htmlPath);
+    };
+    window.addEventListener("mycmux:html-out", handler);
+    return () => window.removeEventListener("mycmux:html-out", handler);
+  }, [pane.tabs, pane.id, workspaceId, openOrReloadHtmlTab]);
 
   const hasNotification = notificationCount > 0;
 
@@ -271,7 +343,14 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
       />
 
       <div style={{ flex: 1, minHeight: 0, overflow: "hidden", position: "relative", background: "transparent" }}>
-        {activeTab && agent ? (
+        {activeTab?.type === "browser" && activeTab.htmlPath ? (
+          <ErrorBoundary>
+            <BrowserPane
+              htmlPath={activeTab.htmlPath}
+              reloadKey={activeTab.reloadCounter ?? 0}
+            />
+          </ErrorBoundary>
+        ) : activeTab && agent ? (
           <div
             style={{
               position: "absolute",

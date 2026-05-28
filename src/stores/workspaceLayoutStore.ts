@@ -17,7 +17,7 @@ function makeTab(
   paneId: string,
   agentId: string,
   type: PaneTab["type"] = "terminal",
-  options?: Partial<Pick<PaneTab, "id" | "label" | "cwd" | "lastProcess" | "claudeSessionId" | "agentKind" | "agentSessionId" | "launchEnv" | "terminalSnapshot">>,
+  options?: Partial<Pick<PaneTab, "id" | "label" | "cwd" | "lastProcess" | "claudeSessionId" | "agentKind" | "agentSessionId" | "launchEnv" | "terminalSnapshot" | "htmlPath" | "reloadCounter">>,
 ): PaneTab {
   const tabId = options?.id ?? uuid();
   return {
@@ -33,6 +33,8 @@ function makeTab(
     agentSessionId: options?.agentSessionId,
     launchEnv: options?.launchEnv,
     terminalSnapshot: options?.terminalSnapshot,
+    htmlPath: options?.htmlPath,
+    reloadCounter: options?.reloadCounter,
   };
 }
 
@@ -195,6 +197,12 @@ interface WorkspaceLayoutState {
   
   // Tab operations
   addTabToPane: (workspaceId: string, paneId: string, agentId?: string, type?: PaneTab["type"]) => void;
+  /**
+   * Open a browser tab rendering the given local HTML file. If the same (paneId, htmlPath)
+   * already has a browser tab, bump its reloadCounter to force <iframe> remount instead of
+   * creating a duplicate tab. Triggered by xterm OSC 9988 from Claude/Codex.
+   */
+  openOrReloadHtmlTab: (workspaceId: string, paneId: string, htmlPath: string) => void;
   removeTabFromPane: (workspaceId: string, paneId: string, tabId: string) => void;
   setActivePaneTab: (workspaceId: string, paneId: string, tabId: string) => void;
   setTabLabel: (workspaceId: string, paneId: string, tabId: string, label: string | undefined) => void;
@@ -471,6 +479,54 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
     });
 
     useWorkspaceListStore.getState()._updateWorkspacePanes(workspaceId, newPanes);
+  },
+
+  openOrReloadHtmlTab: (workspaceId, paneId, htmlPath) => {
+    const workspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
+    if (!workspace) return;
+
+    let changed = false;
+    const newPanes = workspace.panes.map((p) => {
+      if (p.id !== paneId) return p;
+
+      const existingIdx = p.tabs.findIndex(
+        (t) => t.type === "browser" && t.htmlPath === htmlPath,
+      );
+      if (existingIdx !== -1) {
+        const existing = p.tabs[existingIdx];
+        const updatedTab: PaneTab = {
+          ...existing,
+          reloadCounter: (existing.reloadCounter ?? 0) + 1,
+        };
+        const nextTabs = [...p.tabs];
+        nextTabs[existingIdx] = updatedTab;
+        changed = true;
+        return {
+          ...p,
+          tabs: nextTabs,
+          activeTabId: existing.id,
+          sessionId: existing.sessionId,
+        };
+      }
+
+      const fileLeaf = htmlPath.split(/[\\/]/).pop() || "out.html";
+      const tab = makeTab(workspaceId, paneId, p.agentId, "browser", {
+        htmlPath,
+        reloadCounter: 0,
+        label: `📄 ${fileLeaf}`,
+      });
+      changed = true;
+      return {
+        ...p,
+        tabs: [...p.tabs, tab],
+        activeTabId: tab.id,
+        sessionId: tab.sessionId,
+      };
+    });
+
+    if (changed) {
+      useWorkspaceListStore.getState()._updateWorkspacePanes(workspaceId, newPanes);
+    }
   },
 
   removeTabFromPane: (workspaceId, paneId, tabId) => {

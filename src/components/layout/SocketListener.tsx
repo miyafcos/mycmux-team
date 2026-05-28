@@ -356,6 +356,7 @@ const EPHEMERAL_LAUNCH_ENV_KEYS = new Set([
   "MYCMUX_HANDOFF_FROM_SESSION",
   "MYCMUX_PANE_SESSION_ID",
   "MYCMUX_TAB_ID",
+  "MYCMUX_HTML_OUT",
   "__CMUX_LAUNCHER_DONE",
 ]);
 
@@ -414,6 +415,14 @@ function toConfig(ws: Workspace, _agentMappings: Record<string, AgentSessionMapp
         ?? paneMeta?.agentSessionId
         ?? activeTabMeta?.agentSessionId
         ?? null;
+      // Browser sidetabs (PaneTab.type === "browser") are ephemeral: they hold a
+      // local HTML path that is regenerated per response and is cleaned up out
+      // of band. Persisting them would re-open stale HTML on next launch and
+      // also requires extending PaneTabConfig.type, which Phase 1 avoids.
+      const persistedTabs = p.tabs.filter((tab) => tab.type !== "browser");
+      const persistedActiveTabId = persistedTabs.some((t) => t.id === p.activeTabId)
+        ? p.activeTabId
+        : (persistedTabs[0]?.id ?? p.activeTabId);
       return {
         pane_id: p.id,
         agent_id: activeTab?.agentId ?? p.agentId,
@@ -424,14 +433,14 @@ function toConfig(ws: Workspace, _agentMappings: Record<string, AgentSessionMapp
         agent_kind: liveKind,
         agent_session_id: liveAgentId,
         launch_env: stripEphemeralLaunchEnv(p.launchEnv ?? activeTab?.launchEnv),
-        active_tab_id: p.activeTabId,
-        tabs: p.tabs.map((tab) => {
+        active_tab_id: persistedActiveTabId,
+        tabs: persistedTabs.map((tab) => {
           const tabMeta = metaState[tab.sessionId];
           return {
             tab_id: tab.id,
             agent_id: tab.agentId,
             label: tab.label ?? null,
-            type: tab.type ?? "terminal",
+            type: "terminal" as const,
             cwd: tabMeta?.cwd ?? tab.cwd ?? paneCwd,
             last_process: null,
             claude_session_id: tab.claudeSessionId ?? tabMeta?.claudeSessionId ?? null,

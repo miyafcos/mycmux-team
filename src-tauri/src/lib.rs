@@ -51,6 +51,7 @@ pub fn run() {
         "MYCMUX_HANDOFF_FROM_SESSION",
         "MYCMUX_PANE_SESSION_ID",
         "MYCMUX_TAB_ID",
+        "MYCMUX_HTML_OUT",
         "__CMUX_LAUNCHER_DONE",
     ] {
         std::env::remove_var(key);

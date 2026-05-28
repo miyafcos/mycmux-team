@@ -55,6 +55,38 @@ pub fn create_session(
     validate_agent_restore_request(cwd.as_deref(), &env_map)?;
     let launch_cwd = resolve_launch_cwd(cwd.as_deref());
     sanitize_launch_env(&mut env_map);
+    // Canonical MYCMUX_HTML_OUT (HTML sidetab path) for this pane. sanitize_launch_env
+    // just stripped any incoming value, so untrusted env cannot redirect the output.
+    // session_id is used as a single directory segment, so reject anything that
+    // could escape the sessions/ root (path separators or "."/".." components)
+    // before joining — a forged restore id must not be able to redirect the dir.
+    let session_id_is_safe = !session_id.is_empty()
+        && !session_id.contains('/')
+        && !session_id.contains('\\')
+        && session_id != "."
+        && session_id != "..";
+    if session_id_is_safe {
+        if let Some(home) = dirs::home_dir() {
+            let html_dir = home.join(".mycmux").join("sessions").join(&session_id);
+            match std::fs::create_dir_all(&html_dir) {
+                Ok(()) => {
+                    let html_path = html_dir.join("out.html");
+                    env_map.insert(
+                        "MYCMUX_HTML_OUT".to_string(),
+                        html_path.to_string_lossy().to_string(),
+                    );
+                }
+                Err(err) => {
+                    eprintln!(
+                        "[mycmux] failed to create sidetab dir {}: {err}",
+                        html_dir.display()
+                    );
+                }
+            }
+        }
+    } else {
+        eprintln!("[mycmux] skipping sidetab for unsafe session_id: {session_id:?}");
+    }
     let command = prepare_spawn_command(&requested_command, &mut args);
     inject_osc7_hook(&command, &mut args, &mut env_map);
     if should_trust_claude_workspace(&requested_command, &env_map) {
@@ -338,6 +370,9 @@ fn sanitize_launch_env(env: &mut HashMap<String, String>) {
         "MYCMUX_PANE_SESSION_ID",
         "MYCMUX_TAB_ID",
         "__CMUX_LAUNCHER_DONE",
+        // Always stripped so frontend/parent-shell cannot forge a path. The
+        // canonical absolute value is re-injected by create_session below.
+        "MYCMUX_HTML_OUT",
     ];
     const RESUME_TRIO: &[&str] = &[
         "MYCMUX_RESUME",

@@ -1266,6 +1266,22 @@ export default memo(function XTermWrapper({
       registerCompositionGuard(term, fitAddon);
       attachTerminalKeyHandler(term);
 
+      // OSC 9988: mycmux HTML sidetab. Payload = file URL or absolute path.
+      // The TerminalPane listener consumes "mycmux:html-out" and opens/reloads
+      // a browser tab in the same pane. Returning true suppresses xterm display.
+      term.parser.registerOscHandler(9988, (payload) => {
+        try {
+          window.dispatchEvent(
+            new CustomEvent("mycmux:html-out", {
+              detail: { paneSessionId: sessionId, payload },
+            }),
+          );
+        } catch {
+          // non-critical
+        }
+        return true;
+      });
+
       term.onSelectionChange(() => {
         if (termDisposed || !term) return;
         const selection = term.getSelection();

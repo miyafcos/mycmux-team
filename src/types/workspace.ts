@@ -24,7 +24,7 @@ export interface PaneTab {
   sessionId: string;
   agentId: string;
   label?: string;
-  type?: "terminal";
+  type?: "terminal" | "browser";
   cwd?: string;
   lastProcess?: string;
   claudeSessionId?: string;
@@ -32,6 +32,10 @@ export interface PaneTab {
   agentSessionId?: string;
   launchEnv?: Record<string, string>;
   terminalSnapshot?: string[];
+  /** Browser tabs: local file path (already normalized, no file:// prefix). */
+  htmlPath?: string;
+  /** Browser tabs: bump to force <iframe> remount when the same htmlPath is re-emitted. */
+  reloadCounter?: number;
 }
 
 export interface Pane {
