@@ -1,5 +1,9 @@
 # Changelog (mycmux-lite)
 
+## [0.7.14-lite.1] - 2026-06-05
+
+- Fixed: Wrapped local artifact links now remain clickable when a narrow pane splits a raw Windows path or `file:///...` preview link across terminal rows.
+
 ## [0.7.13-lite.1] - 2026-06-05
 
 - Fixed: Raw Windows artifact paths are now linkified by a dedicated terminal link provider, including paths with spaces or Japanese folder names, so output such as `HTML: C:\Users\miyaz\report.html` can open in the in-app preview tab even though it is not a URL.
