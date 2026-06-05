@@ -1,5 +1,9 @@
 # Changelog (mycmux-lite)
 
+## [0.7.17-lite.1] - 2026-06-06
+
+- Fixed: Narrow-pane local artifact links now resolve paths even when terminal wrapping removes a space at the boundary, so long Dropbox/Japanese HTML paths still open in an in-app preview tab.
+
 ## [0.7.16-lite.1] - 2026-06-06
 
 - Fixed: Wrapped local artifact links now normalize terminal padding spaces before previewing, so narrow panes can open long Japanese/space-containing HTML paths in an in-app tab.
