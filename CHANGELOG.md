@@ -1,5 +1,9 @@
 # Changelog (mycmux-lite)
 
+## [0.7.10-lite.1] - 2026-06-05
+
+- Fixed: Pane zoom no longer leaves the workspace blank when the zoomed pane is closed or when switching to a workspace that does not contain the zoomed pane. The workspace stores now clear stale `zoomedPaneId` at the source, and `AppShell` keeps a self-healing guard as a safety net.
+
 ## [0.7.8-lite.1] - 2026-05-18
 
 - Fixed: The theme picker now actually switches themes (setTheme was pinned to the default theme id), so light themes apply correctly including the ANSI palette.
