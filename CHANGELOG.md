@@ -1,5 +1,9 @@
 # Changelog (mycmux-lite)
 
+## [0.7.12-lite.1] - 2026-06-05
+
+- Fixed: Terminal output containing raw Windows artifact paths such as `HTML: C:\Users\miyaz\report.html` now opens local `.html`, `.htm`, `.md`, and `.markdown` files in the in-app preview tab instead of requiring a `file:///...` URL. Markdown previews for external local files are rendered into the session preview cache.
+
 ## [0.7.11-lite.1] - 2026-06-05
 
 - Added: AI artifact preview for lite panes. Each PTY now receives `MYCMUX_MARKDOWN_OUT` and `MYCMUX_ARTIFACTS_DIR`; `out.html` opens directly, `out.md` is rendered to safe static HTML, and terminal `file:///...` artifact links open inside a mycmux browser tab when they belong to the active session.
