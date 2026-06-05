@@ -545,8 +545,8 @@ export function getTerminalBufferLines(sessionId: string, maxLines: number): str
   }
 }
 const CODING_AGENT_HINT_PATTERN = /\b(?:ctrl|cmd|alt|shift)\+[\w?]+/gi;
-const PREVIEW_LINK_REGEX = /(?:https?:\/\/[^\s"'<>+\uFF0B]+[^\s"'<>+\uFF0B.,!?;:)}\]]|file:\/\/\/[^\r\n"'<>+\uFF0B]*?\.(?:html?|markdown|md)(?=$|[\s"'<>+\uFF0B.,!?;:)}\]。、，、]))/i;
-const RAW_LOCAL_ARTIFACT_PATH_REGEX = /[A-Za-z]:[\\/][^\r\n"'<>+\uFF0B]*?\.(?:html?|markdown|md)(?=$|[\s"'<>+\uFF0B.,!?;:)}\]。、，、])/gi;
+const HTTP_LINK_REGEX = /https?:\/\/[^\s"'<>+\uFF0B]+[^\s"'<>+\uFF0B.,!?;:)}\]]/i;
+const ARTIFACT_LINK_REGEX = /(?:file:\/\/\/[^\r\n"'<>+\uFF0B]*?\.(?:html?|markdown|md)|[A-Za-z]:[\\/][^\r\n"'<>+\uFF0B]*?\.(?:html?|markdown|md))(?=$|[\s"'<>+\uFF0B.,!?;:)}\]。、，、])/gi;
 
 function cellXForStringOffset(line: ReturnType<Terminal["buffer"]["active"]["getLine"]>, offset: number): number {
   if (!line || offset <= 0) return 0;
@@ -583,7 +583,7 @@ function mapWrappedStringOffset(
   return { lineIndex: firstLineIndex, cellX: 0 };
 }
 
-function registerRawLocalArtifactLinkProvider(term: Terminal, onActivate: (uri: string) => void) {
+function registerArtifactLinkProvider(term: Terminal, onActivate: (uri: string) => void) {
   return term.registerLinkProvider({
     provideLinks(bufferLineNumber, callback) {
       const buffer = term.buffer.active;
@@ -604,10 +604,10 @@ function registerRawLocalArtifactLinkProvider(term: Terminal, onActivate: (uri: 
 
       const lineTexts: string[] = [];
       for (let lineIndex = firstLineIndex; lineIndex <= lastLineIndex; lineIndex++) {
-        lineTexts.push(buffer.getLine(lineIndex)?.translateToString(true) ?? "");
+        lineTexts.push(buffer.getLine(lineIndex)?.translateToString(false) ?? "");
       }
       const text = lineTexts.join("");
-      const regex = new RegExp(RAW_LOCAL_ARTIFACT_PATH_REGEX.source, RAW_LOCAL_ARTIFACT_PATH_REGEX.flags);
+      const regex = new RegExp(ARTIFACT_LINK_REGEX.source, ARTIFACT_LINK_REGEX.flags);
       const links: ILink[] = [];
       let match: RegExpExecArray | null;
       while ((match = regex.exec(text))) {
@@ -1296,8 +1296,8 @@ export default memo(function XTermWrapper({
         } else {
           open(uri).catch(err => console.error("Failed to open URL:", err));
         }
-      }, { urlRegex: PREVIEW_LINK_REGEX }));
-      registerRawLocalArtifactLinkProvider(term, (uri) => {
+      }, { urlRegex: HTTP_LINK_REGEX }));
+      registerArtifactLinkProvider(term, (uri) => {
         if (onUrlClick) {
           onUrlClick(uri);
         } else {
