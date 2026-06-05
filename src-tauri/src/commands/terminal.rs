@@ -1,4 +1,5 @@
-use std::collections::HashMap;
+use std::collections::{hash_map::DefaultHasher, HashMap};
+use std::hash::{Hash, Hasher};
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use sysinfo::System;
@@ -641,6 +642,10 @@ fn is_allowed_artifact_path(session_dir: &Path, path: &Path) -> bool {
         || target.starts_with(root.join("artifacts"))
 }
 
+fn is_allowed_external_artifact_path(path: &Path) -> bool {
+    path.is_absolute() && path.is_file()
+}
+
 fn is_previewable_artifact(path: &Path) -> bool {
     matches!(
         path.extension()
@@ -673,7 +678,7 @@ fn decode_file_uri(value: &str) -> String {
 fn artifact_path_from_uri(uri: &str) -> Result<PathBuf, String> {
     let mut value = uri
         .trim()
-        .trim_end_matches(['.', ',', ';', ':', ')', ']', '}']);
+        .trim_end_matches(['.', ',', ';', ':', ')', ']', '}', '+', '＋']);
     if value.starts_with("file://") {
         value = &value[7..];
         if cfg!(windows) && value.starts_with('/') && value.len() > 2 && value.as_bytes()[2] == b':'
@@ -692,10 +697,51 @@ fn artifact_path_from_uri(uri: &str) -> Result<PathBuf, String> {
     }
 }
 
-fn preview_path_for_artifact(session_id: &str, path: &Path) -> Result<String, String> {
+fn external_markdown_preview_path(session_dir: &Path, path: &Path) -> Result<PathBuf, String> {
+    let previews_dir = session_dir.join("artifacts").join("previews");
+    std::fs::create_dir_all(&previews_dir)
+        .map_err(|error| format!("Failed to create preview directory: {error}"))?;
+    let raw_stem = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("artifact");
+    let mut safe_stem: String = raw_stem
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if safe_stem.is_empty() {
+        safe_stem = "artifact".to_string();
+    }
+    let mut hasher = DefaultHasher::new();
+    path.to_string_lossy()
+        .to_ascii_lowercase()
+        .hash(&mut hasher);
+    Ok(previews_dir.join(format!(
+        "{}-{:016x}.preview.html",
+        safe_stem,
+        hasher.finish()
+    )))
+}
+
+fn preview_path_for_artifact(
+    session_id: &str,
+    path: &Path,
+    allow_external: bool,
+) -> Result<String, String> {
     let session_dir = sidetab_session_dir(session_id)?;
-    if !is_allowed_artifact_path(&session_dir, path) || !is_previewable_artifact(path) {
+    let is_session_artifact = is_allowed_artifact_path(&session_dir, path);
+    let is_external_artifact = allow_external && is_allowed_external_artifact_path(path);
+    if (!is_session_artifact && !is_external_artifact) || !is_previewable_artifact(path) {
         return Err("Artifact path is outside this session preview area".to_string());
+    }
+    if !path.is_file() {
+        return Err("Artifact file not found".to_string());
     }
     let extension = path
         .extension()
@@ -707,7 +753,11 @@ fn preview_path_for_artifact(session_id: &str, path: &Path) -> Result<String, St
     }
     let markdown = std::fs::read_to_string(path)
         .map_err(|error| format!("Failed to read markdown artifact: {error}"))?;
-    let preview_path = path.with_extension("preview.html");
+    let preview_path = if is_session_artifact {
+        path.with_extension("preview.html")
+    } else {
+        external_markdown_preview_path(&session_dir, path)?
+    };
     std::fs::write(&preview_path, markdown_to_static_html(&markdown))
         .map_err(|error| format!("Failed to write markdown preview: {error}"))?;
     Ok(preview_path.to_string_lossy().to_string())
@@ -894,13 +944,13 @@ pub fn preview_artifact_for_session(session_id: String) -> Result<String, String
     if !markdown_path.is_file() {
         return Err("No preview artifact found for this session".to_string());
     }
-    preview_path_for_artifact(&session_id, &markdown_path)
+    preview_path_for_artifact(&session_id, &markdown_path, false)
 }
 
 #[tauri::command]
 pub fn preview_artifact_uri_for_session(session_id: String, uri: String) -> Result<String, String> {
     let path = artifact_path_from_uri(&uri)?;
-    preview_path_for_artifact(&session_id, &path)
+    preview_path_for_artifact(&session_id, &path, true)
 }
 
 #[tauri::command]
@@ -1167,6 +1217,39 @@ mod tests {
     }
 
     #[test]
+    fn external_preview_allows_absolute_html_and_md_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let html_path = dir.path().join("report.html");
+        let markdown_path = dir.path().join("report.md");
+        let text_path = dir.path().join("secret.txt");
+        std::fs::write(&html_path, "<h1>ok</h1>").unwrap();
+        std::fs::write(&markdown_path, "# ok").unwrap();
+        std::fs::write(&text_path, "secret").unwrap();
+
+        assert!(is_allowed_external_artifact_path(&html_path));
+        assert!(is_allowed_external_artifact_path(&markdown_path));
+        assert!(is_previewable_artifact(&html_path));
+        assert!(is_previewable_artifact(&markdown_path));
+        assert!(!is_previewable_artifact(&text_path));
+        assert!(!is_allowed_external_artifact_path(Path::new("relative.html")));
+    }
+
+    #[test]
+    fn external_markdown_preview_writes_under_session_previews() {
+        let dir = tempfile::tempdir().unwrap();
+        let session_dir = dir.path().join("session-1");
+        let outside_markdown = dir.path().join("outside report.md");
+        std::fs::write(&outside_markdown, "# ok").unwrap();
+
+        let preview_path = external_markdown_preview_path(&session_dir, &outside_markdown).unwrap();
+        assert!(preview_path.starts_with(session_dir.join("artifacts").join("previews")));
+        assert_eq!(
+            preview_path.extension().and_then(|extension| extension.to_str()),
+            Some("html")
+        );
+    }
+
+    #[test]
     fn markdown_preview_escapes_raw_html_and_unsafe_links() {
         let html = markdown_to_static_html(
             "# レポート\n\n<script>alert(1)</script>\n\n- [safe](https://example.com)\n- [bad](file:///C:/Users/miyaz/.ssh/id_rsa)\n\n```\n<div>code</div>\n```",
@@ -1199,6 +1282,15 @@ mod tests {
         assert_eq!(
             decode_file_uri("C:/Users/miyaz/レポート.md"),
             "C:/Users/miyaz/レポート.md"
+        );
+    }
+
+    #[test]
+    fn artifact_path_from_raw_windows_path_trims_cli_decoration() {
+        let path = artifact_path_from_uri(r"C:\Users\miyaz\report.html＋＋＋").unwrap();
+        assert_eq!(
+            path.file_name().and_then(|file_name| file_name.to_str()),
+            Some("report.html")
         );
     }
 

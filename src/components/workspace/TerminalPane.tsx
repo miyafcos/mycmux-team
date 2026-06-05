@@ -134,6 +134,11 @@ function isCanonicalSidetabPath(normalizedPath: string, paneSessionId: string): 
   return normalizedPath.toLowerCase().endsWith(expectedSuffix.toLowerCase());
 }
 
+function isLocalArtifactLink(uri: string): boolean {
+  const trimmed = uri.trim();
+  return /^file:\/\//i.test(trimmed) || /^[A-Za-z]:[\\/]/.test(trimmed);
+}
+
 function getDropPreviewLabel(item: PaneDragItem, target: PaneDropTarget): string {
   if (target.kind === "new-workspace") {
     return item.kind === "tab" ? "Move tab to new workspace" : "Move pane to new workspace";
@@ -307,7 +312,11 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
       .then((htmlPath) => {
         openOrReloadHtmlTab(workspaceId, pane.id, htmlPath.replace(/\\/g, "/"));
       })
-      .catch(() => {
+      .catch((error) => {
+        if (isLocalArtifactLink(uri)) {
+          console.warn("[mycmux-lite] local artifact preview rejected", error);
+          return;
+        }
         open(uri).catch((error) => console.error("[mycmux-lite] open URL failed", error));
       });
   }, [openOrReloadHtmlTab, pane.id, workspaceId]);

@@ -545,7 +545,7 @@ export function getTerminalBufferLines(sessionId: string, maxLines: number): str
   }
 }
 const CODING_AGENT_HINT_PATTERN = /\b(?:ctrl|cmd|alt|shift)\+[\w?]+/gi;
-const PREVIEW_LINK_REGEX = /(?:https?:\/\/|file:\/\/\/)[^\s"'<>]+[^\s"'<>.,!?;:)}\]]/i;
+const PREVIEW_LINK_REGEX = /(?:https?:\/\/|file:\/\/\/)[^\s"'<>＋]+[^\s"'<>＋.,!?;:)}\]]|[A-Za-z]:[\\/][^\s"'<>＋]*?\.(?:html?|markdown|md)(?=$|[\s"'<>＋.,!?;:)}\]])/i;
 
 function isShortcutHintLine(line: string): boolean {
   const shortcutCount = (line.match(CODING_AGENT_HINT_PATTERN) ?? []).length;
