@@ -621,6 +621,17 @@ function artifactContinuationJoiner(previousText: string, nextText: string): str
   return " ";
 }
 
+function normalizeSoftWrappedArtifactLine(text: string, nextText: string): string {
+  if (!/\s$/.test(text)) return text;
+  const trimmed = text.trimEnd();
+  const next = nextText.trimStart();
+  if (!trimmed || !next) return trimmed;
+  if (next.startsWith("/") || next.startsWith("\\") || trimmed.endsWith("/") || trimmed.endsWith("\\")) {
+    return trimmed;
+  }
+  return `${trimmed} `;
+}
+
 function registerArtifactLinkProvider(term: Terminal, onActivate: (uri: string) => void) {
   return term.registerLinkProvider({
     provideLinks(bufferLineNumber, callback) {
@@ -648,7 +659,12 @@ function registerArtifactLinkProvider(term: Terminal, onActivate: (uri: string) 
       for (let lineIndex = firstLineIndex; lineIndex <= lastLineIndex; lineIndex++) {
         const line = buffer.getLine(lineIndex);
         const nextIsWrapped = Boolean(buffer.getLine(lineIndex + 1)?.isWrapped);
-        const lineText = line?.translateToString(!nextIsWrapped) ?? "";
+        const rawLineText = line?.translateToString(false) ?? "";
+        const trimmedLineText = line?.translateToString(true) ?? "";
+        const nextLineText = buffer.getLine(lineIndex + 1)?.translateToString(true) ?? "";
+        const lineText = nextIsWrapped
+          ? normalizeSoftWrappedArtifactLine(rawLineText, nextLineText)
+          : trimmedLineText;
         if (lineIndex > firstLineIndex) {
           const isSoftContinuation = Boolean(line?.isWrapped);
           const isHardArtifactContinuation = hasOpenArtifactPath(segmentText) && looksLikeArtifactContinuation(lineText);

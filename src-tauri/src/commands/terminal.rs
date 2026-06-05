@@ -675,6 +675,63 @@ fn decode_file_uri(value: &str) -> String {
     String::from_utf8_lossy(&decoded).into_owned()
 }
 
+fn strip_ascii_spaces_around_path_separators(value: &str) -> String {
+    let chars: Vec<char> = value.chars().collect();
+    let mut stripped = String::with_capacity(value.len());
+    for index in 0..chars.len() {
+        let ch = chars[index];
+        if ch == ' ' || ch == '\t' {
+            let mut next_is_separator = false;
+            for next in &chars[index + 1..] {
+                if *next == ' ' || *next == '\t' {
+                    continue;
+                }
+                next_is_separator = *next == '/' || *next == '\\';
+                break;
+            }
+            let prev_is_separator = stripped
+                .chars()
+                .rev()
+                .find(|prev| *prev != ' ' && *prev != '\t')
+                .map(|prev| prev == '/' || prev == '\\')
+                .unwrap_or(false);
+            if next_is_separator || prev_is_separator {
+                continue;
+            }
+        }
+        stripped.push(ch);
+    }
+    stripped
+}
+
+fn collapse_ascii_space_runs(value: &str) -> String {
+    let mut collapsed = String::with_capacity(value.len());
+    let mut in_ascii_space = false;
+    for ch in value.chars() {
+        if ch == ' ' || ch == '\t' {
+            if !in_ascii_space {
+                collapsed.push(' ');
+            }
+            in_ascii_space = true;
+        } else {
+            collapsed.push(ch);
+            in_ascii_space = false;
+        }
+    }
+    collapsed
+}
+
+fn artifact_path_from_decoded_uri(value: &str) -> PathBuf {
+    #[cfg(windows)]
+    {
+        PathBuf::from(value.replace('/', "\\"))
+    }
+    #[cfg(not(windows))]
+    {
+        PathBuf::from(value)
+    }
+}
+
 fn artifact_path_from_uri(uri: &str) -> Result<PathBuf, String> {
     let mut value = uri
         .trim()
@@ -687,14 +744,30 @@ fn artifact_path_from_uri(uri: &str) -> Result<PathBuf, String> {
         }
     }
     let decoded = decode_file_uri(value);
-    #[cfg(windows)]
-    {
-        Ok(PathBuf::from(decoded.replace('/', "\\")))
+    let primary = artifact_path_from_decoded_uri(&decoded);
+    if primary.is_file() {
+        return Ok(primary);
     }
-    #[cfg(not(windows))]
-    {
-        Ok(PathBuf::from(decoded))
+
+    let without_separator_padding = strip_ascii_spaces_around_path_separators(&decoded);
+    let collapsed_spaces = collapse_ascii_space_runs(&decoded);
+    let collapsed_without_separator_padding =
+        strip_ascii_spaces_around_path_separators(&collapsed_spaces);
+    for candidate in [
+        without_separator_padding,
+        collapsed_spaces,
+        collapsed_without_separator_padding,
+    ] {
+        if candidate == decoded {
+            continue;
+        }
+        let path = artifact_path_from_decoded_uri(&candidate);
+        if path.is_file() {
+            return Ok(path);
+        }
     }
+
+    Ok(primary)
 }
 
 fn external_markdown_preview_path(session_dir: &Path, path: &Path) -> Result<PathBuf, String> {
@@ -1292,6 +1365,40 @@ mod tests {
             path.file_name().and_then(|file_name| file_name.to_str()),
             Some("report.html")
         );
+    }
+
+    #[test]
+    fn artifact_path_from_uri_repairs_soft_wrap_padding_before_separator() {
+        let dir = tempfile::tempdir().unwrap();
+        let nested_dir = dir.path().join("folder");
+        std::fs::create_dir_all(&nested_dir).unwrap();
+        let html_path = nested_dir.join("report.html");
+        std::fs::write(&html_path, "<h1>ok</h1>").unwrap();
+
+        let uri = html_path
+            .to_string_lossy()
+            .replace('\\', "/")
+            .replace("/report.html", "   /report.html");
+        let path = artifact_path_from_uri(&uri).unwrap();
+
+        assert_eq!(normalize_preview_path(&path), normalize_preview_path(&html_path));
+    }
+
+    #[test]
+    fn artifact_path_from_uri_collapses_soft_wrap_padding_between_words() {
+        let dir = tempfile::tempdir().unwrap();
+        let spaced_dir = dir.path().join("company Dropbox");
+        std::fs::create_dir_all(&spaced_dir).unwrap();
+        let html_path = spaced_dir.join("report.html");
+        std::fs::write(&html_path, "<h1>ok</h1>").unwrap();
+
+        let uri = html_path
+            .to_string_lossy()
+            .replace('\\', "/")
+            .replace("company Dropbox", "company   Dropbox");
+        let path = artifact_path_from_uri(&uri).unwrap();
+
+        assert_eq!(normalize_preview_path(&path), normalize_preview_path(&html_path));
     }
 
     #[test]
