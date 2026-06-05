@@ -547,6 +547,13 @@ export function getTerminalBufferLines(sessionId: string, maxLines: number): str
 const CODING_AGENT_HINT_PATTERN = /\b(?:ctrl|cmd|alt|shift)\+[\w?]+/gi;
 const HTTP_LINK_REGEX = /https?:\/\/[^\s"'<>+\uFF0B]+[^\s"'<>+\uFF0B.,!?;:)}\]]/i;
 const ARTIFACT_LINK_REGEX = /(?:file:\/\/\/[^\r\n"'<>+\uFF0B]*?\.(?:html?|markdown|md)|[A-Za-z]:[\\/][^\r\n"'<>+\uFF0B]*?\.(?:html?|markdown|md))(?=$|[\s"'<>+\uFF0B.,!?;:)}\]。、，、])/gi;
+const ARTIFACT_LINK_CONTEXT_LINES = 16;
+
+type ArtifactLinkPart = {
+  text: string;
+  lineIndex?: number;
+  nextLineIndex?: number;
+};
 
 function cellXForStringOffset(line: ReturnType<Terminal["buffer"]["active"]["getLine"]>, offset: number): number {
   if (!line || offset <= 0) return 0;
@@ -563,24 +570,55 @@ function cellXForStringOffset(line: ReturnType<Terminal["buffer"]["active"]["get
 
 function mapWrappedStringOffset(
   term: Terminal,
-  firstLineIndex: number,
-  lineTexts: string[],
+  parts: ArtifactLinkPart[],
   offset: number,
   preferPreviousBoundary: boolean,
 ): { lineIndex: number; cellX: number } {
   let accumulated = 0;
-  for (let i = 0; i < lineTexts.length; i++) {
-    const textLength = lineTexts[i].length;
+  let previousLineIndex = 0;
+  for (const part of parts) {
+    const textLength = part.text.length;
     const boundaryAtEnd = offset === accumulated + textLength;
-    if (offset < accumulated + textLength || (preferPreviousBoundary && boundaryAtEnd) || i === lineTexts.length - 1) {
-      const lineIndex = firstLineIndex + i;
+    if (offset < accumulated + textLength || (preferPreviousBoundary && boundaryAtEnd)) {
+      if (part.lineIndex === undefined) {
+        const lineIndex = preferPreviousBoundary ? previousLineIndex : (part.nextLineIndex ?? previousLineIndex);
+        const line = term.buffer.active.getLine(lineIndex);
+        return { lineIndex, cellX: preferPreviousBoundary ? line?.translateToString(true).length ?? 0 : 0 };
+      }
+      const lineIndex = part.lineIndex;
       const line = term.buffer.active.getLine(lineIndex);
       const localOffset = Math.max(0, Math.min(offset - accumulated, textLength));
+      previousLineIndex = lineIndex;
       return { lineIndex, cellX: cellXForStringOffset(line, localOffset) };
+    }
+    if (part.lineIndex !== undefined) {
+      previousLineIndex = part.lineIndex;
     }
     accumulated += textLength;
   }
-  return { lineIndex: firstLineIndex, cellX: 0 };
+  return { lineIndex: previousLineIndex, cellX: 0 };
+}
+
+function hasOpenArtifactPath(text: string): boolean {
+  const startMatches = [...text.matchAll(/(?:file:\/\/\/|[A-Za-z]:[\\/])/gi)];
+  const lastStart = startMatches[startMatches.length - 1];
+  if (!lastStart || lastStart.index === undefined) return false;
+  const tail = text.slice(lastStart.index);
+  return !/\.(?:html?|markdown|md)(?=$|[\s"'<>+\uFF0B.,!?;:)}\]。、，、])/i.test(tail);
+}
+
+function looksLikeArtifactContinuation(text: string): boolean {
+  const trimmed = text.trimStart();
+  return trimmed.length > 0 && !/^[|>*#●・-]\s/.test(trimmed);
+}
+
+function artifactContinuationJoiner(previousText: string, nextText: string): string {
+  const previous = previousText.trimEnd();
+  const next = nextText.trimStart();
+  if (!previous || !next) return "";
+  if (next.startsWith("/") || next.startsWith("\\") || previous.endsWith("/") || previous.endsWith("\\")) return "";
+  if (/\s$/.test(previousText) || /^\s/.test(nextText)) return "";
+  return " ";
 }
 
 function registerArtifactLinkProvider(term: Terminal, onActivate: (uri: string) => void) {
@@ -597,23 +635,47 @@ function registerArtifactLinkProvider(term: Terminal, onActivate: (uri: string) 
       while (firstLineIndex > 0 && buffer.getLine(firstLineIndex)?.isWrapped) {
         firstLineIndex--;
       }
+      firstLineIndex = Math.max(0, firstLineIndex - ARTIFACT_LINK_CONTEXT_LINES);
       let lastLineIndex = targetLineIndex;
       while (lastLineIndex + 1 < buffer.length && buffer.getLine(lastLineIndex + 1)?.isWrapped) {
         lastLineIndex++;
       }
+      lastLineIndex = Math.min(buffer.length - 1, lastLineIndex + ARTIFACT_LINK_CONTEXT_LINES);
 
-      const lineTexts: string[] = [];
+      const parts: ArtifactLinkPart[] = [];
+      let segmentText = "";
+      let previousText = "";
       for (let lineIndex = firstLineIndex; lineIndex <= lastLineIndex; lineIndex++) {
-        lineTexts.push(buffer.getLine(lineIndex)?.translateToString(false) ?? "");
+        const line = buffer.getLine(lineIndex);
+        const nextIsWrapped = Boolean(buffer.getLine(lineIndex + 1)?.isWrapped);
+        const lineText = line?.translateToString(!nextIsWrapped) ?? "";
+        if (lineIndex > firstLineIndex) {
+          const isSoftContinuation = Boolean(line?.isWrapped);
+          const isHardArtifactContinuation = hasOpenArtifactPath(segmentText) && looksLikeArtifactContinuation(lineText);
+          const joiner = isSoftContinuation
+            ? ""
+            : isHardArtifactContinuation
+              ? artifactContinuationJoiner(previousText, lineText)
+              : "\n";
+          parts.push({ text: joiner, nextLineIndex: lineIndex });
+          if (joiner === "\n") {
+            segmentText = "";
+          } else {
+            segmentText += joiner;
+          }
+        }
+        parts.push({ text: lineText, lineIndex });
+        segmentText += lineText;
+        previousText = lineText;
       }
-      const text = lineTexts.join("");
+      const text = parts.map((part) => part.text).join("");
       const regex = new RegExp(ARTIFACT_LINK_REGEX.source, ARTIFACT_LINK_REGEX.flags);
       const links: ILink[] = [];
       let match: RegExpExecArray | null;
       while ((match = regex.exec(text))) {
         const uri = match[0];
-        const start = mapWrappedStringOffset(term, firstLineIndex, lineTexts, match.index, false);
-        const end = mapWrappedStringOffset(term, firstLineIndex, lineTexts, match.index + uri.length, true);
+        const start = mapWrappedStringOffset(term, parts, match.index, false);
+        const end = mapWrappedStringOffset(term, parts, match.index + uri.length, true);
         const link: ILink = {
           range: {
             start: { x: start.cellX + 1, y: start.lineIndex + 1 },
