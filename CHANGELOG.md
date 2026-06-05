@@ -1,5 +1,10 @@
 # Changelog (mycmux-lite)
 
+## [0.7.13-lite.1] - 2026-06-05
+
+- Fixed: Raw Windows artifact paths are now linkified by a dedicated terminal link provider, including paths with spaces or Japanese folder names, so output such as `HTML: C:\Users\miyaz\report.html` can open in the in-app preview tab even though it is not a URL.
+- Changed: Removed the manual Preview artifact eye button from pane tab bars; artifact previews now open from terminal links only.
+
 ## [0.7.12-lite.1] - 2026-06-05
 
 - Fixed: Terminal output containing raw Windows artifact paths such as `HTML: C:\Users\miyaz\report.html` now opens local `.html`, `.htm`, `.md`, and `.markdown` files in the in-app preview tab instead of requiring a `file:///...` URL. Markdown previews for external local files are rendered into the session preview cache.
