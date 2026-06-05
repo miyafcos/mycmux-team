@@ -721,6 +721,61 @@ fn collapse_ascii_space_runs(value: &str) -> String {
     collapsed
 }
 
+fn strip_ascii_spaces_for_lookup(value: &str) -> String {
+    value
+        .chars()
+        .filter(|ch| *ch != ' ' && *ch != '\t')
+        .collect()
+}
+
+fn resolve_ascii_space_insensitive_existing_path(path: &Path) -> Option<PathBuf> {
+    if path.is_file() {
+        return Some(path.to_path_buf());
+    }
+
+    let mut resolved = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::Prefix(prefix) => {
+                resolved.push(prefix.as_os_str());
+            }
+            std::path::Component::RootDir => {
+                resolved.push(component.as_os_str());
+            }
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => return None,
+            std::path::Component::Normal(segment) => {
+                let direct = resolved.join(segment);
+                if direct.exists() {
+                    resolved = direct;
+                    continue;
+                }
+
+                let needle = strip_ascii_spaces_for_lookup(&segment.to_string_lossy());
+                if needle.is_empty() || !resolved.is_dir() {
+                    return None;
+                }
+
+                let mut matches = Vec::new();
+                for entry in std::fs::read_dir(&resolved).ok()? {
+                    let entry = entry.ok()?;
+                    let candidate = entry.file_name();
+                    if strip_ascii_spaces_for_lookup(&candidate.to_string_lossy()) == needle {
+                        matches.push(entry.path());
+                        if matches.len() > 1 {
+                            return None;
+                        }
+                    }
+                }
+
+                resolved = matches.pop()?;
+            }
+        }
+    }
+
+    resolved.is_file().then_some(resolved)
+}
+
 fn artifact_path_from_decoded_uri(value: &str) -> PathBuf {
     #[cfg(windows)]
     {
@@ -765,6 +820,13 @@ fn artifact_path_from_uri(uri: &str) -> Result<PathBuf, String> {
         if path.is_file() {
             return Ok(path);
         }
+        if let Some(path) = resolve_ascii_space_insensitive_existing_path(&path) {
+            return Ok(path);
+        }
+    }
+
+    if let Some(path) = resolve_ascii_space_insensitive_existing_path(&primary) {
+        return Ok(path);
     }
 
     Ok(primary)
@@ -1399,6 +1461,26 @@ mod tests {
         let path = artifact_path_from_uri(&uri).unwrap();
 
         assert_eq!(normalize_preview_path(&path), normalize_preview_path(&html_path));
+    }
+
+    #[test]
+    fn artifact_path_from_uri_repairs_missing_space_at_wrap_boundary() {
+        let dir = tempfile::tempdir().unwrap();
+        let spaced_dir = dir.path().join("company Dropbox");
+        std::fs::create_dir_all(&spaced_dir).unwrap();
+        let html_path = spaced_dir.join("report.html");
+        std::fs::write(&html_path, "<h1>ok</h1>").unwrap();
+
+        let uri = html_path
+            .to_string_lossy()
+            .replace('\\', "/")
+            .replace("company Dropbox", "companyDropbox");
+        let path = artifact_path_from_uri(&uri).unwrap();
+
+        assert_eq!(
+            normalize_preview_path(&path),
+            normalize_preview_path(&html_path)
+        );
     }
 
     #[test]
