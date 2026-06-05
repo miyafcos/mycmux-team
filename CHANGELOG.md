@@ -1,5 +1,9 @@
 # Changelog (mycmux-lite)
 
+## [0.7.15-lite.1] - 2026-06-05
+
+- Fixed: Local artifact paths remain clickable even when a narrow pane or agent output inserts hard line breaks inside a raw Windows path with spaces or Japanese folder names.
+
 ## [0.7.14-lite.1] - 2026-06-05
 
 - Fixed: Wrapped local artifact links now remain clickable when a narrow pane splits a raw Windows path or `file:///...` preview link across terminal rows.
