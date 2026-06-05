@@ -1,5 +1,9 @@
 # Changelog (mycmux-lite)
 
+## [0.7.16-lite.1] - 2026-06-06
+
+- Fixed: Wrapped local artifact links now normalize terminal padding spaces before previewing, so narrow panes can open long Japanese/space-containing HTML paths in an in-app tab.
+
 ## [0.7.15-lite.1] - 2026-06-05
 
 - Fixed: Local artifact paths remain clickable even when a narrow pane or agent output inserts hard line breaks inside a raw Windows path with spaces or Japanese folder names.
