@@ -71,9 +71,20 @@ pub fn create_session(
             match std::fs::create_dir_all(&html_dir) {
                 Ok(()) => {
                     let html_path = html_dir.join("out.html");
+                    let markdown_path = html_dir.join("out.md");
+                    let artifacts_dir = html_dir.join("artifacts");
+                    let _ = std::fs::create_dir_all(&artifacts_dir);
                     env_map.insert(
                         "MYCMUX_HTML_OUT".to_string(),
                         html_path.to_string_lossy().to_string(),
+                    );
+                    env_map.insert(
+                        "MYCMUX_MARKDOWN_OUT".to_string(),
+                        markdown_path.to_string_lossy().to_string(),
+                    );
+                    env_map.insert(
+                        "MYCMUX_ARTIFACTS_DIR".to_string(),
+                        artifacts_dir.to_string_lossy().to_string(),
                     );
                 }
                 Err(err) => {
@@ -373,12 +384,10 @@ fn sanitize_launch_env(env: &mut HashMap<String, String>) {
         // Always stripped so frontend/parent-shell cannot forge a path. The
         // canonical absolute value is re-injected by create_session below.
         "MYCMUX_HTML_OUT",
+        "MYCMUX_MARKDOWN_OUT",
+        "MYCMUX_ARTIFACTS_DIR",
     ];
-    const RESUME_TRIO: &[&str] = &[
-        "MYCMUX_RESUME",
-        "MYCMUX_SESSION_ID",
-        "MYCMUX_AGENT_KIND",
-    ];
+    const RESUME_TRIO: &[&str] = &["MYCMUX_RESUME", "MYCMUX_SESSION_ID", "MYCMUX_AGENT_KIND"];
     const HANDOFF_QUARTET: &[&str] = &[
         "MYCMUX_HANDOFF",
         "MYCMUX_HANDOFF_FROM",
@@ -602,6 +611,296 @@ pub fn resize_session(
 #[tauri::command]
 pub fn kill_session(state: State<'_, AppState>, session_id: String) -> Result<(), String> {
     state.session_manager.kill(&session_id)
+}
+
+fn is_safe_session_id(session_id: &str) -> bool {
+    !session_id.is_empty()
+        && !session_id.contains('/')
+        && !session_id.contains('\\')
+        && session_id != "."
+        && session_id != ".."
+}
+
+fn sidetab_session_dir(session_id: &str) -> Result<PathBuf, String> {
+    if !is_safe_session_id(session_id) {
+        return Err("Invalid session id".to_string());
+    }
+    let home = dirs::home_dir().ok_or_else(|| "Failed to resolve home directory".to_string())?;
+    Ok(home.join(".mycmux").join("sessions").join(session_id))
+}
+
+fn normalize_preview_path(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+}
+
+fn is_allowed_artifact_path(session_dir: &Path, path: &Path) -> bool {
+    let root = normalize_preview_path(session_dir);
+    let target = normalize_preview_path(path);
+    target == root.join("out.html")
+        || target == root.join("out.md")
+        || target.starts_with(root.join("artifacts"))
+}
+
+fn is_previewable_artifact(path: &Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|extension| extension.to_str())
+            .map(|extension| extension.to_ascii_lowercase())
+            .as_deref(),
+        Some("html") | Some("htm") | Some("md") | Some("markdown")
+    )
+}
+
+fn decode_file_uri(value: &str) -> String {
+    let mut decoded = Vec::with_capacity(value.len());
+    let bytes = value.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' && index + 2 < bytes.len() {
+            let hex = &value[index + 1..index + 3];
+            if let Ok(byte) = u8::from_str_radix(hex, 16) {
+                decoded.push(byte);
+                index += 3;
+                continue;
+            }
+        }
+        decoded.push(bytes[index]);
+        index += 1;
+    }
+    String::from_utf8_lossy(&decoded).into_owned()
+}
+
+fn artifact_path_from_uri(uri: &str) -> Result<PathBuf, String> {
+    let mut value = uri
+        .trim()
+        .trim_end_matches(['.', ',', ';', ':', ')', ']', '}']);
+    if value.starts_with("file://") {
+        value = &value[7..];
+        if cfg!(windows) && value.starts_with('/') && value.len() > 2 && value.as_bytes()[2] == b':'
+        {
+            value = &value[1..];
+        }
+    }
+    let decoded = decode_file_uri(value);
+    #[cfg(windows)]
+    {
+        Ok(PathBuf::from(decoded.replace('/', "\\")))
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(PathBuf::from(decoded))
+    }
+}
+
+fn preview_path_for_artifact(session_id: &str, path: &Path) -> Result<String, String> {
+    let session_dir = sidetab_session_dir(session_id)?;
+    if !is_allowed_artifact_path(&session_dir, path) || !is_previewable_artifact(path) {
+        return Err("Artifact path is outside this session preview area".to_string());
+    }
+    let extension = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if extension == "html" || extension == "htm" {
+        return Ok(path.to_string_lossy().to_string());
+    }
+    let markdown = std::fs::read_to_string(path)
+        .map_err(|error| format!("Failed to read markdown artifact: {error}"))?;
+    let preview_path = path.with_extension("preview.html");
+    std::fs::write(&preview_path, markdown_to_static_html(&markdown))
+        .map_err(|error| format!("Failed to write markdown preview: {error}"))?;
+    Ok(preview_path.to_string_lossy().to_string())
+}
+
+fn escape_html(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '&' => escaped.push_str("&amp;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            '"' => escaped.push_str("&quot;"),
+            '\'' => escaped.push_str("&#39;"),
+            _ => escaped.push(ch),
+        }
+    }
+    escaped
+}
+
+fn is_safe_link_target(target: &str) -> bool {
+    let trimmed = target.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    lower.starts_with("http://")
+        || lower.starts_with("https://")
+        || lower.starts_with("mailto:")
+        || lower.starts_with('#')
+}
+
+fn render_inline_markdown(value: &str) -> String {
+    let mut rendered = String::new();
+    let mut rest = value;
+    while let Some(open) = rest.find('[') {
+        rendered.push_str(&escape_html(&rest[..open]));
+        let Some(close_rel) = rest[open + 1..].find(']') else {
+            rendered.push_str(&escape_html(&rest[open..]));
+            return rendered;
+        };
+        let close = open + 1 + close_rel;
+        let after_label = &rest[close + 1..];
+        if !after_label.starts_with('(') {
+            rendered.push_str(&escape_html(&rest[open..=close]));
+            rest = after_label;
+            continue;
+        }
+        let Some(end_rel) = after_label[1..].find(')') else {
+            rendered.push_str(&escape_html(&rest[open..]));
+            return rendered;
+        };
+        let target = &after_label[1..1 + end_rel];
+        let label = &rest[open + 1..close];
+        if is_safe_link_target(target) {
+            rendered.push_str("<a href=\"");
+            rendered.push_str(&escape_html(target.trim()));
+            rendered.push_str("\" rel=\"noreferrer\" target=\"_blank\">");
+            rendered.push_str(&escape_html(label));
+            rendered.push_str("</a>");
+        } else {
+            rendered.push_str(&escape_html(&rest[open..close + 3 + end_rel]));
+        }
+        rest = &after_label[2 + end_rel..];
+    }
+    rendered.push_str(&escape_html(rest));
+    rendered
+}
+
+fn flush_paragraph(html: &mut String, paragraph: &mut Vec<String>) {
+    if paragraph.is_empty() {
+        return;
+    }
+    html.push_str("<p>");
+    html.push_str(&render_inline_markdown(&paragraph.join(" ")));
+    html.push_str("</p>\n");
+    paragraph.clear();
+}
+
+fn parse_heading(line: &str) -> Option<(usize, &str)> {
+    let marker_len = line.chars().take_while(|ch| *ch == '#').count();
+    if marker_len == 0 || marker_len > 6 {
+        return None;
+    }
+    let rest = &line[marker_len..];
+    rest.strip_prefix(' ')
+        .map(|text| (marker_len, text.trim()))
+        .filter(|(_, text)| !text.is_empty())
+}
+
+fn markdown_to_static_html(markdown: &str) -> String {
+    let mut body = String::new();
+    let mut paragraph: Vec<String> = Vec::new();
+    let mut in_code = false;
+    let mut code = String::new();
+    let mut in_ul = false;
+
+    for line in markdown.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("```") {
+            if in_code {
+                body.push_str("<pre><code>");
+                body.push_str(&escape_html(&code));
+                body.push_str("</code></pre>\n");
+                code.clear();
+                in_code = false;
+            } else {
+                flush_paragraph(&mut body, &mut paragraph);
+                if in_ul {
+                    body.push_str("</ul>\n");
+                    in_ul = false;
+                }
+                in_code = true;
+            }
+            continue;
+        }
+        if in_code {
+            code.push_str(line);
+            code.push('\n');
+            continue;
+        }
+        if trimmed.is_empty() {
+            flush_paragraph(&mut body, &mut paragraph);
+            if in_ul {
+                body.push_str("</ul>\n");
+                in_ul = false;
+            }
+            continue;
+        }
+        if let Some((level, text)) = parse_heading(trimmed) {
+            flush_paragraph(&mut body, &mut paragraph);
+            if in_ul {
+                body.push_str("</ul>\n");
+                in_ul = false;
+            }
+            body.push_str(&format!("<h{level}>"));
+            body.push_str(&render_inline_markdown(text));
+            body.push_str(&format!("</h{level}>\n"));
+            continue;
+        }
+        if let Some(item) = trimmed
+            .strip_prefix("- ")
+            .or_else(|| trimmed.strip_prefix("* "))
+        {
+            flush_paragraph(&mut body, &mut paragraph);
+            if !in_ul {
+                body.push_str("<ul>\n");
+                in_ul = true;
+            }
+            body.push_str("<li>");
+            body.push_str(&render_inline_markdown(item));
+            body.push_str("</li>\n");
+            continue;
+        }
+        paragraph.push(trimmed.to_string());
+    }
+
+    if in_code {
+        body.push_str("<pre><code>");
+        body.push_str(&escape_html(&code));
+        body.push_str("</code></pre>\n");
+    }
+    flush_paragraph(&mut body, &mut paragraph);
+    if in_ul {
+        body.push_str("</ul>\n");
+    }
+
+    format!(
+        "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><style>{}</style></head><body>{}</body></html>",
+        "body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;line-height:1.65;margin:32px;color:#1f2937;background:#fff}h1,h2,h3,h4,h5,h6{line-height:1.25;margin:1.5em 0 .5em;color:#111827}p,ul,pre{margin:0 0 1em}ul{padding-left:1.5em}pre{background:#f3f4f6;border:1px solid #e5e7eb;border-radius:8px;padding:12px;overflow:auto}code{font-family:'JetBrains Mono','Consolas',monospace}a{color:#2563eb}",
+        body
+    )
+}
+
+#[tauri::command]
+pub fn preview_artifact_for_session(session_id: String) -> Result<String, String> {
+    let session_dir = sidetab_session_dir(&session_id)?;
+    let html_path = session_dir.join("out.html");
+    if html_path.is_file() {
+        return Ok(html_path.to_string_lossy().to_string());
+    }
+
+    let markdown_path = session_dir.join("out.md");
+    if !markdown_path.is_file() {
+        return Err("No preview artifact found for this session".to_string());
+    }
+    preview_path_for_artifact(&session_id, &markdown_path)
+}
+
+#[tauri::command]
+pub fn preview_artifact_uri_for_session(session_id: String, uri: String) -> Result<String, String> {
+    let path = artifact_path_from_uri(&uri)?;
+    preview_path_for_artifact(&session_id, &path)
 }
 
 #[tauri::command]
@@ -848,6 +1147,62 @@ mod tests {
     use super::*;
 
     #[test]
+    fn artifact_preview_allows_only_session_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let session_dir = dir.path().join("session-1");
+        let artifacts_dir = session_dir.join("artifacts");
+        std::fs::create_dir_all(&artifacts_dir).unwrap();
+        let html_path = session_dir.join("out.html");
+        let markdown_path = artifacts_dir.join("report.md");
+        let outside_path = dir.path().join("outside.html");
+        std::fs::write(&html_path, "<h1>ok</h1>").unwrap();
+        std::fs::write(&markdown_path, "# ok").unwrap();
+        std::fs::write(&outside_path, "<h1>bad</h1>").unwrap();
+
+        assert!(is_allowed_artifact_path(&session_dir, &html_path));
+        assert!(is_allowed_artifact_path(&session_dir, &markdown_path));
+        assert!(!is_allowed_artifact_path(&session_dir, &outside_path));
+        assert!(is_previewable_artifact(&markdown_path));
+        assert!(!is_previewable_artifact(&artifacts_dir.join("secret.txt")));
+    }
+
+    #[test]
+    fn markdown_preview_escapes_raw_html_and_unsafe_links() {
+        let html = markdown_to_static_html(
+            "# レポート\n\n<script>alert(1)</script>\n\n- [safe](https://example.com)\n- [bad](file:///C:/Users/miyaz/.ssh/id_rsa)\n\n```\n<div>code</div>\n```",
+        );
+        assert!(html.contains("<h1>レポート</h1>"));
+        assert!(html.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
+        assert!(html.contains("<a href=\"https://example.com\""));
+        assert!(html.contains("[bad](file:///C:/Users/miyaz/.ssh/id_rsa)"));
+        assert!(html.contains("&lt;div&gt;code&lt;/div&gt;"));
+        assert!(!html.contains("<script>"));
+        assert!(!html.contains("href=\"file://"));
+    }
+
+    #[test]
+    fn safe_session_id_rejects_path_segments() {
+        assert!(is_safe_session_id("pane-123"));
+        assert!(!is_safe_session_id("../secret"));
+        assert!(!is_safe_session_id("pane/secret"));
+        assert!(!is_safe_session_id("pane\\secret"));
+        assert!(!is_safe_session_id("."));
+        assert!(!is_safe_session_id(""));
+    }
+
+    #[test]
+    fn file_uri_decode_preserves_utf8_names() {
+        assert_eq!(
+            decode_file_uri("C:/Users/miyaz/%E3%83%AC%E3%83%9D%E3%83%BC%E3%83%88.md"),
+            "C:/Users/miyaz/レポート.md"
+        );
+        assert_eq!(
+            decode_file_uri("C:/Users/miyaz/レポート.md"),
+            "C:/Users/miyaz/レポート.md"
+        );
+    }
+
+    #[test]
     fn parse_agent_session_mapping_with_kind() {
         let mapping = parse_agent_session_mapping("claude:abc-123\n").unwrap();
         assert_eq!(mapping.agent_kind.as_deref(), Some("claude"));
@@ -905,12 +1260,16 @@ mod tests {
         let mut e = env(&[
             ("MYCMUX_PANE_SESSION_ID", "pane-1"),
             ("MYCMUX_TAB_ID", "tab-1"),
+            ("MYCMUX_MARKDOWN_OUT", "C:/tmp/out.md"),
+            ("MYCMUX_ARTIFACTS_DIR", "C:/tmp/artifacts"),
             ("__CMUX_LAUNCHER_DONE", "1"),
             ("FOO", "bar"),
         ]);
         sanitize_launch_env(&mut e);
         assert!(!e.contains_key("MYCMUX_PANE_SESSION_ID"));
         assert!(!e.contains_key("MYCMUX_TAB_ID"));
+        assert!(!e.contains_key("MYCMUX_MARKDOWN_OUT"));
+        assert!(!e.contains_key("MYCMUX_ARTIFACTS_DIR"));
         assert!(!e.contains_key("__CMUX_LAUNCHER_DONE"));
         assert_eq!(e.get("FOO"), Some(&"bar".to_string()));
     }
@@ -991,10 +1350,7 @@ mod tests {
     fn sanitize_rejects_unknown_agent_kind() {
         // Spoofing attempt: MYCMUX_RESUME=evil with a SESSION_ID. is_agent_session_kind
         // should reject "evil" and the whole resume trio must be stripped.
-        let mut e = env(&[
-            ("MYCMUX_RESUME", "evil"),
-            ("MYCMUX_SESSION_ID", "abc-123"),
-        ]);
+        let mut e = env(&[("MYCMUX_RESUME", "evil"), ("MYCMUX_SESSION_ID", "abc-123")]);
         sanitize_launch_env(&mut e);
         assert!(!e.contains_key("MYCMUX_RESUME"));
         assert!(!e.contains_key("MYCMUX_SESSION_ID"));

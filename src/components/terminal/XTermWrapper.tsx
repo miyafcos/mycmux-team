@@ -545,6 +545,7 @@ export function getTerminalBufferLines(sessionId: string, maxLines: number): str
   }
 }
 const CODING_AGENT_HINT_PATTERN = /\b(?:ctrl|cmd|alt|shift)\+[\w?]+/gi;
+const PREVIEW_LINK_REGEX = /(?:https?:\/\/|file:\/\/\/)[^\s"'<>]+[^\s"'<>.,!?;:)}\]]/i;
 
 function isShortcutHintLine(line: string): boolean {
   const shortcutCount = (line.match(CODING_AGENT_HINT_PATTERN) ?? []).length;
@@ -1211,7 +1212,7 @@ export default memo(function XTermWrapper({
         } else {
           open(uri).catch(err => console.error("Failed to open URL:", err));
         }
-      }));
+      }, { urlRegex: PREVIEW_LINK_REGEX }));
 
       term.open(container!);
       // GPU renderer (WebGL). Must load AFTER open() since it needs the canvas.

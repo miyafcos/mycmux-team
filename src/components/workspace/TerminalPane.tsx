@@ -1,4 +1,5 @@
 import { memo, type FocusEvent, useCallback, useEffect } from "react";
+import { open } from "@tauri-apps/plugin-shell";
 import ErrorBoundary from "../common/ErrorBoundary";
 import type { AgentSessionKind, Pane, PaneTab } from "../../types";
 import PaneTabBar from "./PaneTabBar";
@@ -11,7 +12,11 @@ import {
 } from "../../stores/workspaceStore";
 import { useWorkspaceListStore } from "../../stores/workspaceListStore";
 import { getAgent, getDefaultAgent } from "../../lib/agents";
-import { killSession } from "../../lib/ipc";
+import {
+  killSession,
+  previewArtifactForSession,
+  previewArtifactUriForSession,
+} from "../../lib/ipc";
 import { evictTerminalCache } from "../terminal/XTermWrapper";
 import { usePaneDragStore, type PaneDragItem, type PaneDropTarget } from "../../stores/paneDragStore";
 
@@ -274,6 +279,39 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
     setZoomedPaneId(currentZoomed === pane.id ? null : pane.id);
   }, [pane.id, setZoomedPaneId]);
 
+  const handlePreviewArtifact = useCallback(() => {
+    const workspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
+    const currentPane = workspace?.panes.find((candidate) => candidate.id === pane.id);
+    const currentTab = currentPane?.tabs.find((tab) => tab.id === currentPane.activeTabId);
+    if (!currentTab || currentTab.type === "browser") return;
+
+    previewArtifactForSession(currentTab.sessionId)
+      .then((htmlPath) => {
+        openOrReloadHtmlTab(workspaceId, pane.id, htmlPath.replace(/\\/g, "/"));
+      })
+      .catch((error) => {
+        console.error("[mycmux-lite] preview artifact failed", error);
+      });
+  }, [openOrReloadHtmlTab, pane.id, workspaceId]);
+
+  const handleUrlClick = useCallback((uri: string) => {
+    const workspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
+    const currentPane = workspace?.panes.find((candidate) => candidate.id === pane.id);
+    const currentTab = currentPane?.tabs.find((tab) => tab.id === currentPane.activeTabId);
+    if (!currentTab || currentTab.type === "browser") {
+      open(uri).catch((error) => console.error("[mycmux-lite] open URL failed", error));
+      return;
+    }
+
+    previewArtifactUriForSession(currentTab.sessionId, uri)
+      .then((htmlPath) => {
+        openOrReloadHtmlTab(workspaceId, pane.id, htmlPath.replace(/\\/g, "/"));
+      })
+      .catch(() => {
+        open(uri).catch((error) => console.error("[mycmux-lite] open URL failed", error));
+      });
+  }, [openOrReloadHtmlTab, pane.id, workspaceId]);
+
   // Resolve CWD from pane/tab static data (metadata CWD handled by PTY monitor internally)
   const paneCwd = activeTab?.cwd ?? pane.cwd;
   const resolvedAgentId = activeTab?.agentId;
@@ -340,6 +378,7 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
         onAddTab={handleAddTab}
         onRemoveTab={handleRemoveTab}
         onSelectTab={handleSelectTab}
+        onPreviewArtifact={handlePreviewArtifact}
       />
 
       <div style={{ flex: 1, minHeight: 0, overflow: "hidden", position: "relative", background: "transparent" }}>
@@ -367,6 +406,7 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
                 agentId={resolvedAgentId}
                 agentKind={savedAgentSession?.kind ?? activeTab.agentKind ?? activeTabMetadataAgentKind}
                 onZoomToggle={handleZoomToggle}
+                onUrlClick={handleUrlClick}
                 cwd={activeTab.cwd ?? paneCwd}
                 initialReplay={savedAgentSession ? undefined : activeTab.terminalSnapshot}
                 launchEnv={(() => {

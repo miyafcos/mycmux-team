@@ -52,6 +52,8 @@ pub fn run() {
         "MYCMUX_PANE_SESSION_ID",
         "MYCMUX_TAB_ID",
         "MYCMUX_HTML_OUT",
+        "MYCMUX_MARKDOWN_OUT",
+        "MYCMUX_ARTIFACTS_DIR",
         "__CMUX_LAUNCHER_DONE",
     ] {
         std::env::remove_var(key);
@@ -82,6 +84,8 @@ pub fn run() {
             commands::terminal::write_to_session,
             commands::terminal::resize_session,
             commands::terminal::kill_session,
+            commands::terminal::preview_artifact_for_session,
+            commands::terminal::preview_artifact_uri_for_session,
             commands::terminal::get_terminal_config,
             commands::terminal::get_all_cwds,
             commands::terminal::is_directory,

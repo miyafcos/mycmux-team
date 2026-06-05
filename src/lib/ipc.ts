@@ -76,6 +76,19 @@ export async function killSession(sessionId: string): Promise<void> {
   return invoke("kill_session", { sessionId });
 }
 
+export async function previewArtifactForSession(
+  sessionId: string,
+): Promise<string> {
+  return invoke("preview_artifact_for_session", { sessionId });
+}
+
+export async function previewArtifactUriForSession(
+  sessionId: string,
+  uri: string,
+): Promise<string> {
+  return invoke("preview_artifact_uri_for_session", { sessionId, uri });
+}
+
 export function onPtyExit(
   sessionId: string,
   callback: () => void,
