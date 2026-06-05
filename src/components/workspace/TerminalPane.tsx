@@ -14,7 +14,6 @@ import { useWorkspaceListStore } from "../../stores/workspaceListStore";
 import { getAgent, getDefaultAgent } from "../../lib/agents";
 import {
   killSession,
-  previewArtifactForSession,
   previewArtifactUriForSession,
 } from "../../lib/ipc";
 import { evictTerminalCache } from "../terminal/XTermWrapper";
@@ -284,21 +283,6 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
     setZoomedPaneId(currentZoomed === pane.id ? null : pane.id);
   }, [pane.id, setZoomedPaneId]);
 
-  const handlePreviewArtifact = useCallback(() => {
-    const workspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
-    const currentPane = workspace?.panes.find((candidate) => candidate.id === pane.id);
-    const currentTab = currentPane?.tabs.find((tab) => tab.id === currentPane.activeTabId);
-    if (!currentTab || currentTab.type === "browser") return;
-
-    previewArtifactForSession(currentTab.sessionId)
-      .then((htmlPath) => {
-        openOrReloadHtmlTab(workspaceId, pane.id, htmlPath.replace(/\\/g, "/"));
-      })
-      .catch((error) => {
-        console.error("[mycmux-lite] preview artifact failed", error);
-      });
-  }, [openOrReloadHtmlTab, pane.id, workspaceId]);
-
   const handleUrlClick = useCallback((uri: string) => {
     const workspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
     const currentPane = workspace?.panes.find((candidate) => candidate.id === pane.id);
@@ -387,7 +371,6 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
         onAddTab={handleAddTab}
         onRemoveTab={handleRemoveTab}
         onSelectTab={handleSelectTab}
-        onPreviewArtifact={handlePreviewArtifact}
       />
 
       <div style={{ flex: 1, minHeight: 0, overflow: "hidden", position: "relative", background: "transparent" }}>

@@ -17,7 +17,7 @@ import { usePaneMetadataStore, useUiStore } from "../../stores/workspaceStore";
 import { useKeybindingStore } from "../../stores/keybindingStore";
 import { useSettingsStore } from "../../stores/settingsStore";
 import { DEFAULT_TERMINAL_FONT_FAMILY, useThemeStore } from "../../stores/themeStore";
-import type { ITheme } from "@xterm/xterm";
+import type { ILink, ITheme } from "@xterm/xterm";
 import { markStartupSessionSettled } from "../../lib/startupSessionGate";
 
 // Notification sound via Web Audio API — short gentle chime
@@ -545,7 +545,91 @@ export function getTerminalBufferLines(sessionId: string, maxLines: number): str
   }
 }
 const CODING_AGENT_HINT_PATTERN = /\b(?:ctrl|cmd|alt|shift)\+[\w?]+/gi;
-const PREVIEW_LINK_REGEX = /(?:https?:\/\/|file:\/\/\/)[^\s"'<>＋]+[^\s"'<>＋.,!?;:)}\]]|[A-Za-z]:[\\/][^\s"'<>＋]*?\.(?:html?|markdown|md)(?=$|[\s"'<>＋.,!?;:)}\]])/i;
+const PREVIEW_LINK_REGEX = /(?:https?:\/\/[^\s"'<>+\uFF0B]+[^\s"'<>+\uFF0B.,!?;:)}\]]|file:\/\/\/[^\r\n"'<>+\uFF0B]*?\.(?:html?|markdown|md)(?=$|[\s"'<>+\uFF0B.,!?;:)}\]。、，、]))/i;
+const RAW_LOCAL_ARTIFACT_PATH_REGEX = /[A-Za-z]:[\\/][^\r\n"'<>+\uFF0B]*?\.(?:html?|markdown|md)(?=$|[\s"'<>+\uFF0B.,!?;:)}\]。、，、])/gi;
+
+function cellXForStringOffset(line: ReturnType<Terminal["buffer"]["active"]["getLine"]>, offset: number): number {
+  if (!line || offset <= 0) return 0;
+  let stringOffset = 0;
+  for (let x = 0; x < line.length; x++) {
+    const cell = line.getCell(x);
+    if (!cell || cell.getWidth() === 0) continue;
+    if (stringOffset >= offset) return x;
+    stringOffset += cell.getChars().length || 1;
+    if (stringOffset > offset) return x;
+  }
+  return line.length;
+}
+
+function mapWrappedStringOffset(
+  term: Terminal,
+  firstLineIndex: number,
+  lineTexts: string[],
+  offset: number,
+  preferPreviousBoundary: boolean,
+): { lineIndex: number; cellX: number } {
+  let accumulated = 0;
+  for (let i = 0; i < lineTexts.length; i++) {
+    const textLength = lineTexts[i].length;
+    const boundaryAtEnd = offset === accumulated + textLength;
+    if (offset < accumulated + textLength || (preferPreviousBoundary && boundaryAtEnd) || i === lineTexts.length - 1) {
+      const lineIndex = firstLineIndex + i;
+      const line = term.buffer.active.getLine(lineIndex);
+      const localOffset = Math.max(0, Math.min(offset - accumulated, textLength));
+      return { lineIndex, cellX: cellXForStringOffset(line, localOffset) };
+    }
+    accumulated += textLength;
+  }
+  return { lineIndex: firstLineIndex, cellX: 0 };
+}
+
+function registerRawLocalArtifactLinkProvider(term: Terminal, onActivate: (uri: string) => void) {
+  return term.registerLinkProvider({
+    provideLinks(bufferLineNumber, callback) {
+      const buffer = term.buffer.active;
+      const targetLineIndex = bufferLineNumber - 1;
+      if (targetLineIndex < 0 || targetLineIndex >= buffer.length) {
+        callback(undefined);
+        return;
+      }
+
+      let firstLineIndex = targetLineIndex;
+      while (firstLineIndex > 0 && buffer.getLine(firstLineIndex)?.isWrapped) {
+        firstLineIndex--;
+      }
+      let lastLineIndex = targetLineIndex;
+      while (lastLineIndex + 1 < buffer.length && buffer.getLine(lastLineIndex + 1)?.isWrapped) {
+        lastLineIndex++;
+      }
+
+      const lineTexts: string[] = [];
+      for (let lineIndex = firstLineIndex; lineIndex <= lastLineIndex; lineIndex++) {
+        lineTexts.push(buffer.getLine(lineIndex)?.translateToString(true) ?? "");
+      }
+      const text = lineTexts.join("");
+      const regex = new RegExp(RAW_LOCAL_ARTIFACT_PATH_REGEX.source, RAW_LOCAL_ARTIFACT_PATH_REGEX.flags);
+      const links: ILink[] = [];
+      let match: RegExpExecArray | null;
+      while ((match = regex.exec(text))) {
+        const uri = match[0];
+        const start = mapWrappedStringOffset(term, firstLineIndex, lineTexts, match.index, false);
+        const end = mapWrappedStringOffset(term, firstLineIndex, lineTexts, match.index + uri.length, true);
+        const link: ILink = {
+          range: {
+            start: { x: start.cellX + 1, y: start.lineIndex + 1 },
+            end: { x: Math.max(1, end.cellX), y: end.lineIndex + 1 },
+          },
+          text: uri,
+          activate: () => onActivate(uri),
+        };
+        if (link.range.start.y <= bufferLineNumber && link.range.end.y >= bufferLineNumber) {
+          links.push(link);
+        }
+      }
+      callback(links.length > 0 ? links : undefined);
+    },
+  });
+}
 
 function isShortcutHintLine(line: string): boolean {
   const shortcutCount = (line.match(CODING_AGENT_HINT_PATTERN) ?? []).length;
@@ -1213,6 +1297,13 @@ export default memo(function XTermWrapper({
           open(uri).catch(err => console.error("Failed to open URL:", err));
         }
       }, { urlRegex: PREVIEW_LINK_REGEX }));
+      registerRawLocalArtifactLinkProvider(term, (uri) => {
+        if (onUrlClick) {
+          onUrlClick(uri);
+        } else {
+          open(uri).catch(err => console.error("Failed to open local artifact:", err));
+        }
+      });
 
       term.open(container!);
       // GPU renderer (WebGL). Must load AFTER open() since it needs the canvas.
