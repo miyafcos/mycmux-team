@@ -3,6 +3,17 @@ import { v4 as uuid } from "uuid";
 import type { Workspace, GridTemplateId, AgentSessionKind } from "../types";
 import { useUiStore } from "./uiStore";
 
+function workspaceContainsPane(workspace: Workspace | undefined, paneId: string | null): boolean {
+  return Boolean(paneId && workspace?.panes.some((pane) => pane.id === paneId));
+}
+
+function clearZoomIfMissingFromWorkspace(workspace: Workspace | undefined): void {
+  const uiState = useUiStore.getState();
+  if (uiState.zoomedPaneId && !workspaceContainsPane(workspace, uiState.zoomedPaneId)) {
+    uiState.setZoomedPaneId(null);
+  }
+}
+
 export interface PaneAgentSessionPayload {
   claudeSessionId?: string;
   agentKind?: AgentSessionKind;
@@ -103,6 +114,10 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
       activeWorkspaceId: options?.activate === false ? state.activeWorkspaceId : id,
     }));
 
+    if (options?.activate !== false) {
+      clearZoomIfMissingFromWorkspace(workspace);
+    }
+
     return workspace;
   },
 
@@ -115,16 +130,20 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
           : state.activeWorkspaceId;
       return { workspaces: remaining, activeWorkspaceId: newActiveId };
     });
+    const { workspaces, activeWorkspaceId } = get();
+    clearZoomIfMissingFromWorkspace(workspaces.find((w) => w.id === activeWorkspaceId));
   },
 
   setActiveWorkspace: (id) => {
     const workspace = get().workspaces.find((w) => w.id === id);
-    const currentActivePaneId = useUiStore.getState().activePaneId;
+    const uiState = useUiStore.getState();
+    const currentActivePaneId = uiState.activePaneId;
     const nextActivePaneId = workspace?.panes.find((pane) => pane.sessionId === currentActivePaneId)?.sessionId
       ?? workspace?.panes[0]?.sessionId
       ?? null;
     set({ activeWorkspaceId: id });
-    useUiStore.getState().setActivePaneId(nextActivePaneId);
+    uiState.setActivePaneId(nextActivePaneId);
+    clearZoomIfMissingFromWorkspace(workspace);
   },
 
   renameWorkspace: (id, name) => {

@@ -6,6 +6,7 @@ import { getGridTemplate } from "../lib/gridTemplates";
 import { getDefaultAgent } from "../lib/agents";
 import { makeSessionId } from "../lib/constants";
 import { useWorkspaceListStore } from "./workspaceListStore";
+import { useUiStore } from "./uiStore";
 
 /**
  * Workspace Layout Store - Manages panes within workspaces
@@ -354,6 +355,11 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
     const workspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
     if (!workspace) return;
     if (workspace.panes.length <= 1) return; // never remove last pane
+
+    const uiState = useUiStore.getState();
+    if (uiState.zoomedPaneId === paneId) {
+      uiState.setZoomedPaneId(null);
+    }
 
     const newPanes = workspace.panes.filter((p) => p.id !== paneId);
 

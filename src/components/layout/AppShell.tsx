@@ -247,6 +247,7 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
   const setActivePaneId = useUiStore((s) => s.setActivePaneId);
   const activePaneId = useUiStore((s) => s.activePaneId);
   const zoomedPaneId = useUiStore((s) => s.zoomedPaneId);
+  const setZoomedPaneId = useUiStore((s) => s.setZoomedPaneId);
   const addPaneToWorkspace = useWorkspaceLayoutStore((s) => s.addPaneToWorkspace);
   const removePaneFromWorkspace = useWorkspaceLayoutStore((s) => s.removePaneFromWorkspace);
   const addTabToPane = useWorkspaceLayoutStore((s) => s.addTabToPane);
@@ -259,6 +260,18 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
   useEffect(() => {
     preloadCrsmSessions();
   }, []);
+
+  // Self-heal stale zoom: if the zoomed pane was closed (or we switched to a
+  // workspace that doesn't contain it), clear zoomedPaneId so the
+  // hide-during-pane-zoom CSS doesn't blank the whole workspace.
+  useEffect(() => {
+    if (!zoomedPaneId) return;
+    const activeWs = workspaces.find((w) => w.id === activeId);
+    const stillExists = activeWs?.panes.some((p) => p.id === zoomedPaneId) ?? false;
+    if (!stillExists) {
+      setZoomedPaneId(null);
+    }
+  }, [zoomedPaneId, activeId, workspaces, setZoomedPaneId]);
   const mediaBackgroundActive = themeBackground.mode === "preset" || (
     themeBackground.mode === "image" && themeBackground.imagePath.length > 0
   );
