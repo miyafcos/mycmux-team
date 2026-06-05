@@ -1,5 +1,9 @@
 # Changelog (mycmux-lite)
 
+## [0.7.11-lite.1] - 2026-06-05
+
+- Added: AI artifact preview for lite panes. Each PTY now receives `MYCMUX_MARKDOWN_OUT` and `MYCMUX_ARTIFACTS_DIR`; `out.html` opens directly, `out.md` is rendered to safe static HTML, and terminal `file:///...` artifact links open inside a mycmux browser tab when they belong to the active session.
+
 ## [0.7.10-lite.1] - 2026-06-05
 
 - Fixed: Pane zoom no longer leaves the workspace blank when the zoomed pane is closed or when switching to a workspace that does not contain the zoomed pane. The workspace stores now clear stale `zoomedPaneId` at the source, and `AppShell` keeps a self-healing guard as a safety net.
