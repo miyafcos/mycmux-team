@@ -21,6 +21,7 @@ interface BrowserPaneProps {
   isDirty: boolean;
   onDirtyChange: (isDirty: boolean) => void;
   onSaved: (result: SaveEditableArtifactResult) => void;
+  onZoomToggle?: () => void;
 }
 
 const EDITOR_STYLE_ID = "mycmux-artifact-editor-style";
@@ -79,6 +80,21 @@ function buildEditableSrcDoc(content: string, sourcePath: string | undefined): s
   doc.head.appendChild(style);
   doc.body.setAttribute("contenteditable", "true");
   doc.body.setAttribute("spellcheck", "true");
+  return `<!doctype html>\n${doc.documentElement.outerHTML}`;
+}
+
+function buildReadOnlySrcDoc(content: string, sourcePath: string | undefined): string {
+  const doc = new DOMParser().parseFromString(content, "text/html");
+  removeScripts(doc);
+
+  const href = parentHrefFor(sourcePath);
+  if (href && !doc.head.querySelector("base[data-mycmux-editor-base]")) {
+    const base = doc.createElement("base");
+    base.href = href;
+    base.setAttribute("data-mycmux-editor-base", "true");
+    doc.head.prepend(base);
+  }
+
   return `<!doctype html>\n${doc.documentElement.outerHTML}`;
 }
 
@@ -190,6 +206,7 @@ function BrowserPaneImpl({
   isDirty,
   onDirtyChange,
   onSaved,
+  onZoomToggle,
 }: BrowserPaneProps) {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const inputCleanupRef = useRef<(() => void) | null>(null);
@@ -200,6 +217,7 @@ function BrowserPaneImpl({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [editableSrcDoc, setEditableSrcDoc] = useState<string>("");
+  const [readOnlySrcDoc, setReadOnlySrcDoc] = useState<string>("");
   const [localReloadKey, setLocalReloadKey] = useState(0);
   const resolvedPreviewPath = previewPath ?? htmlPath;
   const src = useMemo(() => convertFileSrc(resolvedPreviewPath), [resolvedPreviewPath]);
@@ -228,6 +246,7 @@ function BrowserPaneImpl({
     inputCleanupRef.current = null;
     setIsEditing(false);
     setEditableSrcDoc("");
+    setReadOnlySrcDoc("");
     setError(null);
     updateDirty(false);
   }, [htmlPath, resolvedPreviewPath, reloadKey, sourcePath, updateDirty]);
@@ -261,6 +280,28 @@ function BrowserPaneImpl({
       setBusy(false);
     }
   }, [sourceKind, sourcePath, updateDirty]);
+
+  useEffect(() => {
+    if (isEditing || !sourcePath) {
+      return;
+    }
+
+    let cancelled = false;
+    readEditableArtifact(sourcePath)
+      .then((source) => {
+        if (cancelled) return;
+        setReadOnlySrcDoc(buildReadOnlySrcDoc(source.content, source.sourcePath));
+      })
+      .catch((caught) => {
+        if (cancelled) return;
+        setReadOnlySrcDoc("");
+        console.warn("[artifactEditor] read-only srcdoc load failed", caught);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isEditing, localReloadKey, reloadKey, sourcePath]);
 
   const handleFrameLoad = useCallback(() => {
     inputCleanupRef.current?.();
@@ -303,6 +344,13 @@ function BrowserPaneImpl({
       const actions = getActionsForEvent(event);
       if (actions.length === 0) return;
 
+      if (actions.includes("pane.zoom.toggle")) {
+        event.preventDefault();
+        event.stopPropagation();
+        onZoomToggle?.();
+        return;
+      }
+
       const forwarded = new KeyboardEvent("keydown", {
         key: event.key,
         code: event.code,
@@ -342,7 +390,7 @@ function BrowserPaneImpl({
       doc.removeEventListener("paste", markDirty);
     };
     doc.body.focus();
-  }, [getActionsForEvent, isEditing, updateDirty]);
+  }, [getActionsForEvent, isEditing, onZoomToggle, updateDirty]);
 
   const getEditableDocument = useCallback((): Document | null => {
     return iframeRef.current?.contentDocument ?? null;
@@ -482,8 +530,8 @@ function BrowserPaneImpl({
             ? `${sourcePath ?? htmlPath}#edit#${reloadKey}`
             : `${resolvedPreviewPath}#${reloadKey}#${localReloadKey}`
         }
-        src={isEditing ? undefined : src}
-        srcDoc={isEditing ? editableSrcDoc : undefined}
+        src={isEditing || readOnlySrcDoc ? undefined : src}
+        srcDoc={isEditing ? editableSrcDoc : readOnlySrcDoc || undefined}
         sandbox={isEditing ? "allow-popups allow-same-origin" : "allow-popups allow-same-origin"}
         title={sourcePath ?? htmlPath}
         onLoad={handleFrameLoad}

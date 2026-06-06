@@ -394,6 +394,7 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
               reloadKey={activeTab.reloadCounter ?? 0}
               isDirty={activeTab.isDirty ?? false}
               onDirtyChange={(isDirty) => setBrowserTabDirty(workspaceId, pane.id, activeTab.id, isDirty)}
+              onZoomToggle={handleZoomToggle}
               onSaved={(result) => {
                 refreshBrowserTabPreview(workspaceId, pane.id, activeTab.id, {
                   previewPath: result.previewPath,
