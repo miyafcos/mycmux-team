@@ -318,6 +318,10 @@ export async function quitApp(): Promise<void> {
   return invoke("quit_app");
 }
 
+export async function revealInExplorer(path: string): Promise<void> {
+  return invoke("reveal_in_explorer", { path });
+}
+
 // ─── Persistence commands ────────────────────────────────────────────────────
 
 export interface PaneTabConfig {

@@ -99,6 +99,7 @@ pub fn run() {
             commands::terminal::read_agent_session_mappings,
             commands::crsm::crsm_list_sessions,
             commands::crsm::crsm_create_handoff,
+            commands::fs::reveal_in_explorer,
             commands::usage::get_usage_summary,
             commands::workspace::load_persistent_data,
             commands::workspace::save_persistent_data,
