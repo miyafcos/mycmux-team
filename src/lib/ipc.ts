@@ -1,6 +1,6 @@
 import { invoke, Channel } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AgentSessionKind } from "../types";
+import type { AgentSessionKind, ArtifactSourceKind } from "../types";
 
 // v0.7.1 diag: per-session attach epoch.
 // Each createSession() call bumps the epoch. Channel.onmessage closures
@@ -87,6 +87,43 @@ export async function previewArtifactUriForSession(
   uri: string,
 ): Promise<string> {
   return invoke("preview_artifact_uri_for_session", { sessionId, uri });
+}
+
+export interface PreviewArtifactInfo {
+  previewPath: string;
+  sourcePath: string;
+  sourceKind: ArtifactSourceKind;
+}
+
+export interface EditableArtifactSource {
+  sourcePath: string;
+  sourceKind: ArtifactSourceKind;
+  content: string;
+}
+
+export interface SaveEditableArtifactResult {
+  sourcePath: string;
+  backupPath: string;
+  previewPath: string;
+}
+
+export async function previewArtifactUriForSessionV2(
+  sessionId: string,
+  uri: string,
+): Promise<PreviewArtifactInfo> {
+  return invoke("preview_artifact_uri_for_session_v2", { sessionId, uri });
+}
+
+export async function readEditableArtifact(sourcePath: string): Promise<EditableArtifactSource> {
+  return invoke("read_editable_artifact", { sourcePath });
+}
+
+export async function saveEditableArtifact(
+  sourcePath: string,
+  sourceKind: ArtifactSourceKind,
+  content: string,
+): Promise<SaveEditableArtifactResult> {
+  return invoke("save_editable_artifact", { sourcePath, sourceKind, content });
 }
 
 export function onPtyExit(

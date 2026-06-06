@@ -2,6 +2,7 @@ export type {
   GridTemplateId,
   GridTemplate,
   AgentSessionKind,
+  ArtifactSourceKind,
   PaneTab,
   Pane,
   WorkspaceStatus,

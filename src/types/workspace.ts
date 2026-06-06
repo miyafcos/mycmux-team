@@ -34,6 +34,14 @@ export interface PaneTab {
   terminalSnapshot?: string[];
   /** Browser tabs: local file path (already normalized, no file:// prefix). */
   htmlPath?: string;
+  /** Browser tabs: original editable artifact path. */
+  sourcePath?: string;
+  /** Browser tabs: original editable artifact format. */
+  sourceKind?: ArtifactSourceKind;
+  /** Browser tabs: rendered preview path used by the iframe. */
+  previewPath?: string;
+  /** Browser tabs: true while edit mode has unsaved DOM changes. */
+  isDirty?: boolean;
   /** Browser tabs: bump to force <iframe> remount when the same htmlPath is re-emitted. */
   reloadCounter?: number;
 }
@@ -58,6 +66,8 @@ export interface Pane {
 }
 
 export type AgentSessionKind = "claude" | "codex" | "claude-codex";
+
+export type ArtifactSourceKind = "html" | "markdown";
 
 export type WorkspaceStatus = "setup" | "running" | "stopped";
 

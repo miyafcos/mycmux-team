@@ -19,6 +19,7 @@ tauri = { version = "2", features = ["protocol-asset", "unstable"] }
 tauri-plugin-shell = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+kuchikiki = "=0.8.8-speedreader"
 portable-pty = "0.8"
 dashmap = "6"
 tokio = { version = "1", features = ["full"] }
@@ -27,6 +28,7 @@ sysinfo = "0.38.4"
 dirs = "6.0.0"
 glob = "0.3"
 chrono = { version = "0.4", features = ["serde"] }
+tempfile = "3"
 
 # Remote terminal (WebSocket server for iPhone access)
 axum = { version = "0.8", features = ["ws"] }
@@ -57,9 +59,6 @@ objc = "0.2"
 [target.'cfg(target_os = "windows")'.dependencies]
 wry = { version = "0.54", features = [] }
 windows = { version = "0.58", features = ["Win32_Foundation", "Win32_UI_Accessibility", "Win32_UI_WindowsAndMessaging"] }
-
-[dev-dependencies]
-tempfile = "3"
 
 [patch.crates-io]
 portable-pty = { path = "vendor/portable-pty-0.8.1" }

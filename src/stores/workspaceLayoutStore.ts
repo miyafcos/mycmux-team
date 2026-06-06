@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { v4 as uuid } from "uuid";
-import type { Pane, PaneTab, GridTemplateId, Workspace } from "../types";
+import type { ArtifactSourceKind, Pane, PaneTab, GridTemplateId, Workspace } from "../types";
 import type { PaneConfig } from "../lib/ipc";
 import { getGridTemplate } from "../lib/gridTemplates";
 import { getDefaultAgent } from "../lib/agents";
@@ -18,7 +18,7 @@ function makeTab(
   paneId: string,
   agentId: string,
   type: PaneTab["type"] = "terminal",
-  options?: Partial<Pick<PaneTab, "id" | "label" | "cwd" | "lastProcess" | "claudeSessionId" | "agentKind" | "agentSessionId" | "launchEnv" | "terminalSnapshot" | "htmlPath" | "reloadCounter">>,
+  options?: Partial<Pick<PaneTab, "id" | "label" | "cwd" | "lastProcess" | "claudeSessionId" | "agentKind" | "agentSessionId" | "launchEnv" | "terminalSnapshot" | "htmlPath" | "sourcePath" | "sourceKind" | "previewPath" | "isDirty" | "reloadCounter">>,
 ): PaneTab {
   const tabId = options?.id ?? uuid();
   return {
@@ -35,6 +35,10 @@ function makeTab(
     launchEnv: options?.launchEnv,
     terminalSnapshot: options?.terminalSnapshot,
     htmlPath: options?.htmlPath,
+    sourcePath: options?.sourcePath,
+    sourceKind: options?.sourceKind,
+    previewPath: options?.previewPath,
+    isDirty: options?.isDirty,
     reloadCounter: options?.reloadCounter,
   };
 }
@@ -177,23 +181,75 @@ function isBrowserOnlyPane(pane: Pane): boolean {
   return pane.tabs.length > 0 && pane.tabs.every((tab) => tab.type === "browser");
 }
 
+interface BrowserPreviewInfo {
+  previewPath: string;
+  sourcePath?: string;
+  sourceKind?: ArtifactSourceKind;
+}
+
+function normalizeBrowserPath(path: string): string {
+  return path.replace(/\\/g, "/");
+}
+
+function sourceKindFromPath(path: string): ArtifactSourceKind {
+  return /\.(?:md|markdown)$/i.test(path) ? "markdown" : "html";
+}
+
+function normalizeBrowserPreviewInfo(info: string | BrowserPreviewInfo): Required<BrowserPreviewInfo> {
+  if (typeof info === "string") {
+    const path = normalizeBrowserPath(info);
+    return {
+      previewPath: path,
+      sourcePath: path,
+      sourceKind: sourceKindFromPath(path),
+    };
+  }
+  const previewPath = normalizeBrowserPath(info.previewPath);
+  const sourcePath = normalizeBrowserPath(info.sourcePath ?? info.previewPath);
+  return {
+    previewPath,
+    sourcePath,
+    sourceKind: info.sourceKind ?? sourceKindFromPath(sourcePath),
+  };
+}
+
+function browserTabKey(tab: PaneTab): string | undefined {
+  return tab.sourcePath ?? tab.previewPath ?? tab.htmlPath;
+}
+
+function confirmDiscardBrowserChanges(tab: PaneTab): boolean {
+  if (!tab.isDirty) return true;
+  const label = tab.label ?? tab.sourcePath ?? tab.htmlPath ?? "artifact";
+  return window.confirm(`${label} has unsaved edits. Discard them and reload?`);
+}
+
 function makeBrowserTab(
   workspaceId: string,
   paneId: string,
   agentId: string,
-  htmlPath: string,
+  info: Required<BrowserPreviewInfo>,
 ): PaneTab {
-  const fileLeaf = htmlPath.split(/[\\/]/).pop() || "out.html";
+  const fileLeaf = info.sourcePath.split(/[\\/]/).pop() || "artifact";
+  const labelPrefix = info.sourceKind === "markdown" ? "MD" : "HTML";
   return makeTab(workspaceId, paneId, agentId, "browser", {
-    htmlPath,
+    htmlPath: info.previewPath,
+    sourcePath: info.sourcePath,
+    sourceKind: info.sourceKind,
+    previewPath: info.previewPath,
+    isDirty: false,
     reloadCounter: 0,
-    label: `HTML ${fileLeaf}`,
+    label: `${labelPrefix} ${fileLeaf}`,
   });
 }
 
-function bumpBrowserTabReloadCounter(tab: PaneTab): PaneTab {
+function bumpBrowserTabReloadCounter(tab: PaneTab, info?: Required<BrowserPreviewInfo>): PaneTab {
   return {
     ...tab,
+    htmlPath: info?.previewPath ?? tab.htmlPath,
+    sourcePath: info?.sourcePath ?? tab.sourcePath,
+    sourceKind: info?.sourceKind ?? tab.sourceKind,
+    previewPath: info?.previewPath ?? tab.previewPath,
+    isDirty: false,
     reloadCounter: (tab.reloadCounter ?? 0) + 1,
   };
 }
@@ -227,7 +283,9 @@ interface WorkspaceLayoutState {
    * Open a browser tab rendering the given local HTML file in a right-side
    * preview pane. Reuse the workspace preview pane and reload existing tabs.
    */
-  openOrReloadHtmlPreviewPane: (workspaceId: string, sourcePaneId: string, htmlPath: string) => void;
+  openOrReloadHtmlPreviewPane: (workspaceId: string, sourcePaneId: string, info: string | BrowserPreviewInfo) => void;
+  setBrowserTabDirty: (workspaceId: string, paneId: string, tabId: string, isDirty: boolean) => void;
+  refreshBrowserTabPreview: (workspaceId: string, paneId: string, tabId: string, info: BrowserPreviewInfo) => void;
   removeTabFromPane: (workspaceId: string, paneId: string, tabId: string) => void;
   setActivePaneTab: (workspaceId: string, paneId: string, tabId: string) => void;
   setTabLabel: (workspaceId: string, paneId: string, tabId: string, label: string | undefined) => void;
@@ -511,20 +569,23 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
     useWorkspaceListStore.getState()._updateWorkspacePanes(workspaceId, newPanes);
   },
 
-  openOrReloadHtmlPreviewPane: (workspaceId, sourcePaneId, htmlPath) => {
+  openOrReloadHtmlPreviewPane: (workspaceId, sourcePaneId, previewInfo) => {
     const workspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
     if (!workspace) return;
 
+    const info = normalizeBrowserPreviewInfo(previewInfo);
+    const key = info.sourcePath;
     const sourcePane = workspace.panes.find((p) => p.id === sourcePaneId) ?? workspace.panes[0];
     if (!sourcePane) return;
 
     const previewPane = workspace.panes.find(isBrowserOnlyPane);
     const existingPreviewTab = previewPane?.tabs.find(
-      (tab) => tab.type === "browser" && tab.htmlPath === htmlPath,
+      (tab) => tab.type === "browser" && browserTabKey(tab) === key,
     );
 
     if (previewPane && existingPreviewTab) {
-      const updatedTab = bumpBrowserTabReloadCounter(existingPreviewTab);
+      if (!confirmDiscardBrowserChanges(existingPreviewTab)) return;
+      const updatedTab = bumpBrowserTabReloadCounter(existingPreviewTab, info);
       const newPanes = workspace.panes.map((pane) => {
         if (pane.id !== previewPane.id) return pane;
         return applyActiveTabFields({
@@ -539,16 +600,17 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
 
     const existingMixedPane = workspace.panes.find(
       (pane) => !isBrowserOnlyPane(pane)
-        && pane.tabs.some((tab) => tab.type === "browser" && tab.htmlPath === htmlPath),
+        && pane.tabs.some((tab) => tab.type === "browser" && browserTabKey(tab) === key),
     );
     const existingMixedTab = existingMixedPane?.tabs.find(
-      (tab) => tab.type === "browser" && tab.htmlPath === htmlPath,
+      (tab) => tab.type === "browser" && browserTabKey(tab) === key,
     );
-    const tabToOpen = existingMixedTab ? bumpBrowserTabReloadCounter(existingMixedTab) : null;
+    if (existingMixedTab && !confirmDiscardBrowserChanges(existingMixedTab)) return;
+    const tabToOpen = existingMixedTab ? bumpBrowserTabReloadCounter(existingMixedTab, info) : null;
 
     if (previewPane) {
       const openedTab = tabToOpen
-        ?? makeBrowserTab(workspaceId, previewPane.id, previewPane.agentId, htmlPath);
+        ?? makeBrowserTab(workspaceId, previewPane.id, previewPane.agentId, info);
       const newPanes = workspace.panes.flatMap((pane) => {
         if (existingMixedPane && existingMixedTab && pane.id === existingMixedPane.id) {
           const nextPane = removeTabFromPane(pane, existingMixedTab.id);
@@ -564,7 +626,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
 
     const paneId = uuid();
     const openedTab = tabToOpen
-      ?? makeBrowserTab(workspaceId, paneId, sourcePane.agentId, htmlPath);
+      ?? makeBrowserTab(workspaceId, paneId, sourcePane.agentId, info);
     const newPreviewPane: Pane = {
       id: paneId,
       agentId: openedTab.agentId,
@@ -591,6 +653,42 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
       true,
     );
     useUiStore.getState().setZoomedPaneId(null);
+  },
+  setBrowserTabDirty: (workspaceId, paneId, tabId, isDirty) => {
+    const workspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
+    if (!workspace) return;
+    const currentTab = workspace.panes
+      .find((pane) => pane.id === paneId)
+      ?.tabs.find((tab) => tab.id === tabId);
+    if (currentTab?.isDirty === isDirty) return;
+
+    const newPanes = workspace.panes.map((pane) => {
+      if (pane.id !== paneId) return pane;
+      return {
+        ...pane,
+        tabs: pane.tabs.map((tab) =>
+          tab.id === tabId && tab.type === "browser" ? { ...tab, isDirty } : tab
+        ),
+      };
+    });
+    useWorkspaceListStore.getState()._updateWorkspacePanes(workspaceId, newPanes);
+  },
+  refreshBrowserTabPreview: (workspaceId, paneId, tabId, previewInfo) => {
+    const workspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
+    if (!workspace) return;
+
+    const info = normalizeBrowserPreviewInfo(previewInfo);
+    const newPanes = workspace.panes.map((pane) => {
+      if (pane.id !== paneId) return pane;
+      const nextTabs = pane.tabs.map((tab) =>
+        tab.id === tabId && tab.type === "browser"
+          ? bumpBrowserTabReloadCounter(tab, info)
+          : tab
+      );
+      const activeTab = nextTabs.find((tab) => tab.id === pane.activeTabId) ?? nextTabs[0];
+      return activeTab ? applyActiveTabFields({ ...pane, tabs: nextTabs }, activeTab) : pane;
+    });
+    useWorkspaceListStore.getState()._updateWorkspacePanes(workspaceId, newPanes);
   },
   removeTabFromPane: (workspaceId, paneId, tabId) => {
     const workspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);

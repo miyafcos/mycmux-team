@@ -2189,6 +2189,7 @@ dependencies = [
  "glob",
  "gtk",
  "hex",
+ "kuchikiki",
  "objc",
  "portable-pty",
  "qrcode",

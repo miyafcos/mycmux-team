@@ -1,7 +1,10 @@
 use std::collections::{hash_map::DefaultHasher, HashMap};
 use std::hash::{Hash, Hasher};
-use std::io::BufRead;
+use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
+use chrono::Local;
+use kuchikiki::traits::TendrilSink;
+use kuchikiki::{NodeData, NodeRef};
 use sysinfo::System;
 use tauri::ipc::Channel;
 use tauri::{AppHandle, State};
@@ -16,6 +19,30 @@ pub struct TerminalConfigPayload {
     pub background: String,
     pub foreground: String,
     pub ansi: Vec<String>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewArtifactInfo {
+    pub preview_path: String,
+    pub source_path: String,
+    pub source_kind: String,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EditableArtifactSource {
+    pub source_path: String,
+    pub source_kind: String,
+    pub content: String,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveEditableArtifactResult {
+    pub source_path: String,
+    pub backup_path: String,
+    pub preview_path: String,
 }
 
 fn rgb_hex(c: [u8; 3]) -> String {
@@ -656,6 +683,39 @@ fn is_previewable_artifact(path: &Path) -> bool {
     )
 }
 
+fn artifact_source_kind(path: &Path) -> Option<&'static str> {
+    match path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| extension.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("html") | Some("htm") => Some("html"),
+        Some("md") | Some("markdown") => Some("markdown"),
+        _ => None,
+    }
+}
+
+fn validate_editable_artifact_path(source_path: &str) -> Result<(PathBuf, String), String> {
+    let path = PathBuf::from(source_path);
+    if !path.is_absolute() {
+        return Err("Editable artifact path must be absolute".to_string());
+    }
+    if !path.exists() {
+        return Err("Editable artifact file not found".to_string());
+    }
+    if !path.is_file() {
+        return Err("Editable artifact path must be a file".to_string());
+    }
+    let Some(kind) = artifact_source_kind(&path) else {
+        return Err("Editable artifact must be .html, .htm, .md, or .markdown".to_string());
+    };
+    let canonical = path
+        .canonicalize()
+        .map_err(|error| format!("Failed to canonicalize editable artifact: {error}"))?;
+    Ok((canonical, kind.to_string()))
+}
+
 fn decode_file_uri(value: &str) -> String {
     let mut decoded = Vec::with_capacity(value.len());
     let bytes = value.as_bytes();
@@ -898,6 +958,27 @@ fn preview_path_for_artifact(
     Ok(preview_path.to_string_lossy().to_string())
 }
 
+fn preview_info_for_artifact(
+    session_id: &str,
+    path: &Path,
+    allow_external: bool,
+) -> Result<PreviewArtifactInfo, String> {
+    let preview_path = preview_path_for_artifact(session_id, path, allow_external)?;
+    let source_kind = artifact_source_kind(path)
+        .ok_or_else(|| "Unsupported artifact source kind".to_string())?
+        .to_string();
+    let source_path = path
+        .canonicalize()
+        .unwrap_or_else(|_| path.to_path_buf())
+        .to_string_lossy()
+        .to_string();
+    Ok(PreviewArtifactInfo {
+        preview_path,
+        source_path,
+        source_kind,
+    })
+}
+
 fn escape_html(value: &str) -> String {
     let mut escaped = String::with_capacity(value.len());
     for ch in value.chars() {
@@ -983,6 +1064,24 @@ fn parse_heading(line: &str) -> Option<(usize, &str)> {
         .filter(|(_, text)| !text.is_empty())
 }
 
+fn render_safe_table_html(value: &str) -> Option<String> {
+    let document = kuchikiki::parse_html()
+        .one(format!(
+            "<!doctype html><html><body>{value}</body></html>"
+        ))
+        .document_node;
+    if document.select_first("script").is_ok() {
+        return None;
+    }
+    let table = document.select_first("table").ok()?;
+    let html = serialize_node_html(table.as_node());
+    if html.trim().is_empty() {
+        None
+    } else {
+        Some(html)
+    }
+}
+
 fn markdown_to_static_html(markdown: &str) -> String {
     let mut body = String::new();
     let mut paragraph: Vec<String> = Vec::new();
@@ -1021,6 +1120,18 @@ fn markdown_to_static_html(markdown: &str) -> String {
                 in_ul = false;
             }
             continue;
+        }
+        if trimmed.starts_with("<table") && trimmed.contains("</table>") {
+            flush_paragraph(&mut body, &mut paragraph);
+            if in_ul {
+                body.push_str("</ul>\n");
+                in_ul = false;
+            }
+            if let Some(table_html) = render_safe_table_html(trimmed) {
+                body.push_str(&table_html);
+                body.push('\n');
+                continue;
+            }
         }
         if let Some((level, text)) = parse_heading(trimmed) {
             flush_paragraph(&mut body, &mut paragraph);
@@ -1062,9 +1173,298 @@ fn markdown_to_static_html(markdown: &str) -> String {
 
     format!(
         "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><style>{}</style></head><body>{}</body></html>",
-        "body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;line-height:1.65;margin:32px;color:#1f2937;background:#fff}h1,h2,h3,h4,h5,h6{line-height:1.25;margin:1.5em 0 .5em;color:#111827}p,ul,pre{margin:0 0 1em}ul{padding-left:1.5em}pre{background:#f3f4f6;border:1px solid #e5e7eb;border-radius:8px;padding:12px;overflow:auto}code{font-family:'JetBrains Mono','Consolas',monospace}a{color:#2563eb}",
+        "body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;line-height:1.65;margin:32px;color:#1f2937;background:#fff}h1,h2,h3,h4,h5,h6{line-height:1.25;margin:1.5em 0 .5em;color:#111827}p,ul,pre,table{margin:0 0 1em}ul{padding-left:1.5em}pre{background:#f3f4f6;border:1px solid #e5e7eb;border-radius:8px;padding:12px;overflow:auto}code{font-family:'JetBrains Mono','Consolas',monospace}a{color:#2563eb}table{border-collapse:collapse}th,td{border:1px solid #d1d5db;padding:6px 8px}th{background:#f9fafb}",
         body
     )
+}
+
+fn element_name(node: &NodeRef) -> Option<String> {
+    match node.data() {
+        NodeData::Element(element) => Some(element.name.local.to_string()),
+        _ => None,
+    }
+}
+
+fn normalize_markdown_text(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn normalize_inline_markdown(value: &str) -> String {
+    normalize_markdown_text(value)
+}
+
+fn text_content(node: &NodeRef) -> String {
+    match node.data() {
+        NodeData::Text(text) => text.borrow().to_string(),
+        _ => node
+            .children()
+            .map(|child| text_content(&child))
+            .collect::<Vec<_>>()
+            .join(""),
+    }
+}
+
+fn serialize_node_html(node: &NodeRef) -> String {
+    let mut bytes = Vec::new();
+    if node.serialize(&mut bytes).is_err() {
+        return String::new();
+    }
+    String::from_utf8(bytes).unwrap_or_default()
+}
+
+fn is_block_element(name: &str) -> bool {
+    matches!(
+        name,
+        "address"
+            | "article"
+            | "aside"
+            | "blockquote"
+            | "div"
+            | "dl"
+            | "fieldset"
+            | "figcaption"
+            | "figure"
+            | "footer"
+            | "form"
+            | "h1"
+            | "h2"
+            | "h3"
+            | "h4"
+            | "h5"
+            | "h6"
+            | "header"
+            | "hr"
+            | "li"
+            | "main"
+            | "nav"
+            | "ol"
+            | "p"
+            | "pre"
+            | "section"
+            | "table"
+            | "ul"
+    )
+}
+
+fn inline_children_to_markdown(node: &NodeRef) -> String {
+    node.children()
+        .map(|child| inline_node_to_markdown(&child))
+        .collect::<Vec<_>>()
+        .join("")
+}
+
+fn inline_node_to_markdown(node: &NodeRef) -> String {
+    match node.data() {
+        NodeData::Text(text) => text.borrow().to_string(),
+        NodeData::Element(element) => {
+            let name = element.name.local.to_string();
+            match name.as_str() {
+                "strong" | "b" => {
+                    let inner = inline_children_to_markdown(node);
+                    if inner.is_empty() {
+                        String::new()
+                    } else {
+                        format!("**{}**", inner.trim())
+                    }
+                }
+                "em" | "i" => {
+                    let inner = inline_children_to_markdown(node);
+                    if inner.is_empty() {
+                        String::new()
+                    } else {
+                        format!("*{}*", inner.trim())
+                    }
+                }
+                "code" => {
+                    let inner = text_content(node);
+                    if inner.contains('`') {
+                        format!("``{inner}``")
+                    } else {
+                        format!("`{inner}`")
+                    }
+                }
+                "a" => {
+                    let inner = inline_children_to_markdown(node);
+                    let attrs = element.attributes.borrow();
+                    if let Some(href) = attrs.get("href") {
+                        if inner.is_empty() {
+                            href.to_string()
+                        } else {
+                            format!("[{inner}]({href})")
+                        }
+                    } else {
+                        inner
+                    }
+                }
+                "br" => "  \n".to_string(),
+                "img" => {
+                    let attrs = element.attributes.borrow();
+                    let alt = attrs.get("alt").unwrap_or("");
+                    let src = attrs.get("src").unwrap_or("");
+                    if src.is_empty() {
+                        String::new()
+                    } else {
+                        format!("![{alt}]({src})")
+                    }
+                }
+                "span" | "small" | "sub" | "sup" | "mark" => inline_children_to_markdown(node),
+                _ if is_block_element(&name) => serialize_node_html(node),
+                _ => inline_children_to_markdown(node),
+            }
+        }
+        _ => String::new(),
+    }
+}
+
+fn list_to_markdown(node: &NodeRef, ordered: bool) -> String {
+    let mut lines = Vec::new();
+    let mut index = 1;
+    for child in node.children() {
+        if element_name(&child).as_deref() != Some("li") {
+            continue;
+        }
+        let item = normalize_inline_markdown(&inline_children_to_markdown(&child));
+        let item = if item.trim().is_empty() {
+            text_content(&child)
+        } else {
+            item
+        };
+        let marker = if ordered {
+            let marker = format!("{index}.");
+            index += 1;
+            marker
+        } else {
+            "-".to_string()
+        };
+        lines.push(format!("{marker} {}", item.trim()));
+    }
+    lines.join("\n")
+}
+
+fn block_node_to_markdown(node: &NodeRef) -> Option<String> {
+    match node.data() {
+        NodeData::Text(text) => {
+            let value = normalize_markdown_text(&text.borrow());
+            if value.is_empty() {
+                None
+            } else {
+                Some(value)
+            }
+        }
+        NodeData::Element(element) => {
+            let name = element.name.local.to_string();
+            match name.as_str() {
+                "script" | "style" => None,
+                "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
+                    let level = name[1..].parse::<usize>().unwrap_or(1).clamp(1, 6);
+                    let text = normalize_inline_markdown(&inline_children_to_markdown(node));
+                    if text.trim().is_empty() {
+                        None
+                    } else {
+                        Some(format!("{} {}", "#".repeat(level), text.trim()))
+                    }
+                }
+                "p" => {
+                    let text = normalize_inline_markdown(&inline_children_to_markdown(node));
+                    if text.trim().is_empty() {
+                        None
+                    } else {
+                        Some(text.trim().to_string())
+                    }
+                }
+                "ul" => Some(list_to_markdown(node, false)).filter(|text| !text.trim().is_empty()),
+                "ol" => Some(list_to_markdown(node, true)).filter(|text| !text.trim().is_empty()),
+                "pre" => {
+                    let code = text_content(node);
+                    Some(format!("```\n{}\n```", code.trim_matches('\n')))
+                }
+                "blockquote" => {
+                    let inner = node
+                        .children()
+                        .filter_map(|child| block_node_to_markdown(&child))
+                        .collect::<Vec<_>>()
+                        .join("\n\n");
+                    if inner.trim().is_empty() {
+                        None
+                    } else {
+                        Some(
+                            inner
+                                .lines()
+                                .map(|line| format!("> {line}"))
+                                .collect::<Vec<_>>()
+                                .join("\n"),
+                        )
+                    }
+                }
+                "table" => {
+                    let html = serialize_node_html(node);
+                    if html.trim().is_empty() {
+                        None
+                    } else {
+                        Some(html)
+                    }
+                }
+                "div" | "section" | "article" | "main" | "body" => {
+                    let blocks = node
+                        .children()
+                        .filter_map(|child| block_node_to_markdown(&child))
+                        .collect::<Vec<_>>();
+                    if blocks.is_empty() {
+                        let text = normalize_inline_markdown(&inline_children_to_markdown(node));
+                        if text.trim().is_empty() {
+                            None
+                        } else {
+                            Some(text.trim().to_string())
+                        }
+                    } else {
+                        Some(blocks.join("\n\n"))
+                    }
+                }
+                "br" => Some(String::new()),
+                _ if is_block_element(&name) => {
+                    let html = serialize_node_html(node);
+                    if html.trim().is_empty() {
+                        None
+                    } else {
+                        Some(html)
+                    }
+                }
+                _ => {
+                    let text = normalize_inline_markdown(&inline_children_to_markdown(node));
+                    if text.trim().is_empty() {
+                        None
+                    } else {
+                        Some(text.trim().to_string())
+                    }
+                }
+            }
+        }
+        _ => None,
+    }
+}
+
+fn html_fragment_to_markdown(fragment: &str) -> String {
+    let document = kuchikiki::parse_html()
+        .one(format!(
+            "<!doctype html><html><body>{fragment}</body></html>"
+        ))
+        .document_node;
+    let body = document
+        .select_first("body")
+        .ok()
+        .map(|node| node.as_node().clone())
+        .unwrap_or(document);
+    let markdown = body
+        .children()
+        .filter_map(|child| block_node_to_markdown(&child))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let trimmed = markdown.trim();
+    if trimmed.is_empty() {
+        String::new()
+    } else {
+        format!("{trimmed}\n")
+    }
 }
 
 #[tauri::command]
@@ -1086,6 +1486,127 @@ pub fn preview_artifact_for_session(session_id: String) -> Result<String, String
 pub fn preview_artifact_uri_for_session(session_id: String, uri: String) -> Result<String, String> {
     let path = artifact_path_from_uri(&uri)?;
     preview_path_for_artifact(&session_id, &path, true)
+}
+
+#[tauri::command]
+pub fn preview_artifact_uri_for_session_v2(
+    session_id: String,
+    uri: String,
+) -> Result<PreviewArtifactInfo, String> {
+    let path = artifact_path_from_uri(&uri)?;
+    preview_info_for_artifact(&session_id, &path, true)
+}
+
+#[tauri::command]
+pub fn read_editable_artifact(source_path: String) -> Result<EditableArtifactSource, String> {
+    let (path, source_kind) = validate_editable_artifact_path(&source_path)?;
+    let raw = std::fs::read_to_string(&path)
+        .map_err(|error| format!("Failed to read editable artifact: {error}"))?;
+    let content = if source_kind == "markdown" {
+        markdown_to_static_html(&raw)
+    } else {
+        raw
+    };
+    Ok(EditableArtifactSource {
+        source_path: path.to_string_lossy().to_string(),
+        source_kind,
+        content,
+    })
+}
+
+fn backup_path_for(path: &Path) -> Result<PathBuf, String> {
+    let file_name = path
+        .file_name()
+        .and_then(|file_name| file_name.to_str())
+        .ok_or_else(|| "Editable artifact file name is invalid".to_string())?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| "Editable artifact parent directory not found".to_string())?;
+    let timestamp = Local::now().format("%Y%m%d-%H%M%S");
+    let candidate = parent.join(format!("{file_name}.bak-{timestamp}"));
+    if !candidate.exists() {
+        return Ok(candidate);
+    }
+    for index in 2..100 {
+        let candidate = parent.join(format!("{file_name}.bak-{timestamp}-{index}"));
+        if !candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+    Err("Failed to allocate backup path".to_string())
+}
+
+fn write_atomic(path: &Path, contents: &[u8]) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| "Editable artifact parent directory not found".to_string())?;
+    let mut temp = tempfile::NamedTempFile::new_in(parent)
+        .map_err(|error| format!("Failed to create temporary save file: {error}"))?;
+    temp.write_all(contents)
+        .map_err(|error| format!("Failed to write temporary save file: {error}"))?;
+    temp.flush()
+        .map_err(|error| format!("Failed to flush temporary save file: {error}"))?;
+    temp.as_file()
+        .sync_all()
+        .map_err(|error| format!("Failed to sync temporary save file: {error}"))?;
+    temp.persist(path)
+        .map(|_| ())
+        .map_err(|error| format!("Failed to replace editable artifact: {}", error.error))
+}
+
+fn preview_path_after_save(
+    path: &Path,
+    source_kind: &str,
+    markdown: Option<&str>,
+) -> Result<String, String> {
+    if source_kind == "html" {
+        return Ok(path.to_string_lossy().to_string());
+    }
+    let markdown = markdown.ok_or_else(|| "Markdown preview content missing".to_string())?;
+    let preview_path = path.with_extension("preview.html");
+    std::fs::write(&preview_path, markdown_to_static_html(markdown))
+        .map_err(|error| format!("Failed to refresh markdown preview: {error}"))?;
+    Ok(preview_path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+pub fn save_editable_artifact(
+    source_path: String,
+    source_kind: String,
+    content: String,
+) -> Result<SaveEditableArtifactResult, String> {
+    let (path, actual_kind) = validate_editable_artifact_path(&source_path)?;
+    if source_kind != actual_kind {
+        return Err("Editable artifact source kind does not match file extension".to_string());
+    }
+
+    let original = std::fs::read(&path)
+        .map_err(|error| format!("Failed to read original artifact before save: {error}"))?;
+    let backup_path = backup_path_for(&path)?;
+    std::fs::write(&backup_path, original)
+        .map_err(|error| format!("Failed to create artifact backup: {error}"))?;
+
+    let next_content = if actual_kind == "markdown" {
+        html_fragment_to_markdown(&content)
+    } else {
+        content
+    };
+    write_atomic(&path, next_content.as_bytes())?;
+    let preview_path = preview_path_after_save(
+        &path,
+        &actual_kind,
+        if actual_kind == "markdown" {
+            Some(next_content.as_str())
+        } else {
+            None
+        },
+    )?;
+
+    Ok(SaveEditableArtifactResult {
+        source_path: path.to_string_lossy().to_string(),
+        backup_path: backup_path.to_string_lossy().to_string(),
+        preview_path,
+    })
 }
 
 #[tauri::command]
@@ -1396,6 +1917,130 @@ mod tests {
         assert!(html.contains("&lt;div&gt;code&lt;/div&gt;"));
         assert!(!html.contains("<script>"));
         assert!(!html.contains("href=\"file://"));
+    }
+
+    #[test]
+    fn preview_info_for_html_artifact_returns_source_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let html_path = dir.path().join("report.html");
+        std::fs::write(&html_path, "<h1>ok</h1>").unwrap();
+
+        let info = preview_info_for_artifact("session-1", &html_path, true).unwrap();
+
+        assert_eq!(info.source_kind, "html");
+        assert_eq!(
+            normalize_preview_path(Path::new(&info.source_path)),
+            normalize_preview_path(&html_path)
+        );
+        assert_eq!(
+            normalize_preview_path(Path::new(&info.preview_path)),
+            normalize_preview_path(&html_path)
+        );
+    }
+
+    #[test]
+    fn save_editable_artifact_creates_backup_before_overwrite() {
+        let dir = tempfile::tempdir().unwrap();
+        let html_path = dir.path().join("report.html");
+        std::fs::write(&html_path, "<h1>old</h1>").unwrap();
+
+        let result = save_editable_artifact(
+            html_path.to_string_lossy().to_string(),
+            "html".to_string(),
+            "<!doctype html><html><body><h1>new</h1></body></html>".to_string(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(&html_path).unwrap(),
+            "<!doctype html><html><body><h1>new</h1></body></html>"
+        );
+        assert!(Path::new(&result.backup_path).is_file());
+        assert_eq!(std::fs::read_to_string(&result.backup_path).unwrap(), "<h1>old</h1>");
+        assert!(result.backup_path.contains("report.html.bak-"));
+    }
+
+    #[test]
+    fn save_editable_artifact_rejects_invalid_targets() {
+        let dir = tempfile::tempdir().unwrap();
+        let text_path = dir.path().join("secret.txt");
+        let markdown_path = dir.path().join("report.md");
+        std::fs::write(&text_path, "secret").unwrap();
+        std::fs::write(&markdown_path, "# ok").unwrap();
+
+        assert!(save_editable_artifact(
+            "relative.html".to_string(),
+            "html".to_string(),
+            "x".to_string()
+        )
+        .is_err());
+        assert!(save_editable_artifact(
+            dir.path().join("missing.html").to_string_lossy().to_string(),
+            "html".to_string(),
+            "x".to_string()
+        )
+        .is_err());
+        assert!(save_editable_artifact(
+            text_path.to_string_lossy().to_string(),
+            "html".to_string(),
+            "x".to_string()
+        )
+        .is_err());
+        assert!(save_editable_artifact(
+            dir.path().to_string_lossy().to_string(),
+            "html".to_string(),
+            "x".to_string()
+        )
+        .is_err());
+        assert!(save_editable_artifact(
+            markdown_path.to_string_lossy().to_string(),
+            "html".to_string(),
+            "x".to_string()
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn markdown_dom_serializer_preserves_common_blocks_and_table_html() {
+        let markdown = html_fragment_to_markdown(
+            r#"
+            <h2>Summary</h2>
+            <p>Hello <strong>bold</strong> <em>italic</em> <a href="https://example.com">link</a></p>
+            <ul><li>First</li><li>Second</li></ul>
+            <ol><li>One</li><li>Two</li></ol>
+            <pre><code>let x = 1;</code></pre>
+            <table><tbody><tr><td>A</td><td>B</td></tr></tbody></table>
+            "#,
+        );
+
+        assert!(markdown.contains("## Summary"));
+        assert!(markdown.contains("Hello **bold** *italic* [link](https://example.com)"));
+        assert!(markdown.contains("- First\n- Second"));
+        assert!(markdown.contains("1. One\n2. Two"));
+        assert!(markdown.contains("```\nlet x = 1;\n```"));
+        assert!(markdown.contains("<table>"));
+        assert!(markdown.contains("<td>A</td>"));
+    }
+
+    #[test]
+    fn save_markdown_serializes_dom_and_keeps_table_as_html() {
+        let dir = tempfile::tempdir().unwrap();
+        let markdown_path = dir.path().join("report.md");
+        std::fs::write(&markdown_path, "# old").unwrap();
+
+        let result = save_editable_artifact(
+            markdown_path.to_string_lossy().to_string(),
+            "markdown".to_string(),
+            "<h1>New</h1><p>See <a href=\"https://example.com\">link</a></p><table><tbody><tr><td>A</td></tr></tbody></table>".to_string(),
+        )
+        .unwrap();
+        let saved = std::fs::read_to_string(&markdown_path).unwrap();
+
+        assert!(saved.contains("# New"));
+        assert!(saved.contains("[link](https://example.com)"));
+        assert!(saved.contains("<table>"));
+        assert!(Path::new(&result.backup_path).is_file());
+        assert!(Path::new(&result.preview_path).is_file());
     }
 
     #[test]

@@ -14,7 +14,7 @@ import { useWorkspaceListStore } from "../../stores/workspaceListStore";
 import { getAgent, getDefaultAgent } from "../../lib/agents";
 import {
   killSession,
-  previewArtifactUriForSession,
+  previewArtifactUriForSessionV2,
 } from "../../lib/ipc";
 import { evictTerminalCache } from "../terminal/XTermWrapper";
 import { usePaneDragStore, type PaneDragItem, type PaneDropTarget } from "../../stores/paneDragStore";
@@ -195,6 +195,8 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
   const removeTabFromPane = useWorkspaceLayoutStore((s) => s.removeTabFromPane);
   const setActivePaneTab = useWorkspaceLayoutStore((s) => s.setActivePaneTab);
   const openOrReloadHtmlPreviewPane = useWorkspaceLayoutStore((s) => s.openOrReloadHtmlPreviewPane);
+  const setBrowserTabDirty = useWorkspaceLayoutStore((s) => s.setBrowserTabDirty);
+  const refreshBrowserTabPreview = useWorkspaceLayoutStore((s) => s.refreshBrowserTabPreview);
 
   // OSC 9988 from XTermWrapper. Match by pane.tabs membership (not activeTab)
   // so reloads still fire after the browser tab is activated and the terminal
@@ -214,7 +216,11 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
       if (!isCanonicalSidetabPath(htmlPath, detail.paneSessionId)) {
         return;
       }
-      openOrReloadHtmlPreviewPane(workspaceId, pane.id, htmlPath);
+      openOrReloadHtmlPreviewPane(workspaceId, pane.id, {
+        previewPath: htmlPath,
+        sourcePath: htmlPath,
+        sourceKind: "html",
+      });
     };
     window.addEventListener("mycmux:html-out", handler);
     return () => window.removeEventListener("mycmux:html-out", handler);
@@ -262,6 +268,12 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
     const ws = useWorkspaceListStore.getState().getWorkspace(workspaceId);
     const p = ws?.panes.find((x) => x.id === pane.id);
     const tab = p?.tabs.find((t) => t.id === tabId);
+    if (tab?.type === "browser" && tab.isDirty) {
+      const label = tab.label ?? tab.sourcePath ?? tab.htmlPath ?? "artifact";
+      if (!window.confirm(`${label} has unsaved edits. Close it anyway?`)) {
+        return;
+      }
+    }
     if (tab) {
       evictTerminalCache(tab.sessionId);
       killSession(tab.sessionId).catch(() => {});
@@ -292,10 +304,8 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
       return;
     }
 
-    previewArtifactUriForSession(currentTab.sessionId, uri)
-      .then((htmlPath) => {
-        openOrReloadHtmlPreviewPane(workspaceId, pane.id, htmlPath.replace(/\\/g, "/"));
-      })
+    previewArtifactUriForSessionV2(currentTab.sessionId, uri)
+      .then((info) => openOrReloadHtmlPreviewPane(workspaceId, pane.id, info))
       .catch((error) => {
         if (isLocalArtifactLink(uri)) {
           console.warn("[mycmux-lite] local artifact preview rejected", error);
@@ -378,7 +388,19 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
           <ErrorBoundary>
             <BrowserPane
               htmlPath={activeTab.htmlPath}
+              sourcePath={activeTab.sourcePath}
+              sourceKind={activeTab.sourceKind}
+              previewPath={activeTab.previewPath ?? activeTab.htmlPath}
               reloadKey={activeTab.reloadCounter ?? 0}
+              isDirty={activeTab.isDirty ?? false}
+              onDirtyChange={(isDirty) => setBrowserTabDirty(workspaceId, pane.id, activeTab.id, isDirty)}
+              onSaved={(result) => {
+                refreshBrowserTabPreview(workspaceId, pane.id, activeTab.id, {
+                  previewPath: result.previewPath,
+                  sourcePath: result.sourcePath,
+                  sourceKind: activeTab.sourceKind ?? "html",
+                });
+              }}
             />
           </ErrorBoundary>
         ) : activeTab && agent ? (
