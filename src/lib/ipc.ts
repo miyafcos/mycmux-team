@@ -322,6 +322,10 @@ export async function revealInExplorer(path: string): Promise<void> {
   return invoke("reveal_in_explorer", { path });
 }
 
+export async function openWithDefault(path: string): Promise<void> {
+  return invoke("open_with_default", { path });
+}
+
 // ─── Persistence commands ────────────────────────────────────────────────────
 
 export interface PaneTabConfig {

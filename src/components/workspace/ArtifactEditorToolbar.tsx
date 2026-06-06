@@ -1,6 +1,7 @@
 import { memo, type CSSProperties, type ReactNode } from "react";
 import {
   Bold,
+  ExternalLink,
   FolderOpen,
   Heading2,
   Italic,
@@ -16,6 +17,7 @@ import {
   Table,
   X,
 } from "lucide-react";
+import type { ArtifactSourceKind } from "../../types";
 
 export type ArtifactEditorCommand =
   | "bold"
@@ -35,12 +37,13 @@ interface ArtifactEditorToolbarProps {
   isDirty: boolean;
   isBusy: boolean;
   sourcePath?: string;
-  sourceKind?: "html" | "markdown";
+  sourceKind?: ArtifactSourceKind;
   onStartEdit: () => void;
   onSave: () => void;
   onCancel: () => void;
   onReload: () => void;
   onRevealSource: () => void;
+  onOpenSource: () => void;
   onCommand: (command: ArtifactEditorCommand) => void;
 }
 
@@ -132,9 +135,9 @@ const actionsStyle: CSSProperties = {
   flex: "0 0 auto",
   display: "inline-flex",
   alignItems: "center",
-  gap: 4,
+  gap: 3,
   overflowX: "auto",
-  maxWidth: "44%",
+  maxWidth: "38%",
 };
 
 const groupStyle: CSSProperties = {
@@ -174,6 +177,7 @@ function parentPath(path: string | undefined): string {
 function sourceKindLabel(kind: ArtifactEditorToolbarProps["sourceKind"]): string {
   if (kind === "markdown") return "MD";
   if (kind === "html") return "HTML";
+  if (kind === "office") return "OFFICE";
   return "FILE";
 }
 
@@ -181,19 +185,19 @@ function buttonStyle(variant: ButtonVariant, disabled?: boolean, withLabel?: boo
   const isPrimary = variant === "primary";
   const isDanger = variant === "danger";
   return {
-    minWidth: withLabel ? 64 : 26,
-    height: 26,
+    minWidth: withLabel ? 62 : 24,
+    height: 24,
     display: "inline-flex",
     alignItems: "center",
     justifyContent: "center",
-    gap: 5,
-    padding: withLabel ? "0 8px" : 0,
+    gap: 4,
+    padding: withLabel ? "0 7px" : 0,
     border: isPrimary
       ? "1px solid color-mix(in srgb, var(--cmux-accent, #0a84ff) 62%, var(--cmux-border, #3a3a3a) 38%)"
       : isDanger
         ? "1px solid color-mix(in srgb, #ef4444 58%, var(--cmux-border, #3a3a3a) 42%)"
         : "1px solid color-mix(in srgb, var(--cmux-border, #3a3a3a) 80%, transparent)",
-    borderRadius: 6,
+    borderRadius: 5,
     color: isPrimary
       ? "color-mix(in srgb, var(--cmux-accent, #0a84ff) 74%, #ffffff 26%)"
       : isDanger
@@ -202,7 +206,7 @@ function buttonStyle(variant: ButtonVariant, disabled?: boolean, withLabel?: boo
     background: disabled
       ? "color-mix(in srgb, var(--cmux-popover, #1e1e1e) 88%, #ffffff 5%)"
       : isPrimary
-        ? "color-mix(in srgb, var(--cmux-accent, #0a84ff) 18%, var(--cmux-popover, #1e1e1e) 82%)"
+        ? "color-mix(in srgb, var(--cmux-accent, #0a84ff) 13%, var(--cmux-popover, #1e1e1e) 87%)"
         : isDanger
           ? "color-mix(in srgb, #7f1d1d 48%, var(--cmux-popover, #1e1e1e) 52%)"
           : "color-mix(in srgb, var(--cmux-popover, #1e1e1e) 78%, #ffffff 9%)",
@@ -314,12 +318,14 @@ function ArtifactEditorToolbarImpl({
   onCancel,
   onReload,
   onRevealSource,
+  onOpenSource,
   onCommand,
 }: ArtifactEditorToolbarProps) {
   const commandDisabled = !isEditing || isBusy;
-  const iconSize = 14;
+  const iconSize = 13;
   const name = fileLeaf(sourcePath);
   const parent = parentPath(sourcePath);
+  const opensExternally = sourceKind === "office";
 
   return (
     <div style={shellStyle}>
@@ -332,13 +338,23 @@ function ArtifactEditorToolbarImpl({
         <StatusPill isDirty={isDirty} isEditing={isEditing} isBusy={isBusy} />
         <div style={actionsStyle}>
           <ToolbarButton
-            title="Show HTML location in Explorer"
+            title="Show document location in Explorer"
             disabled={!sourcePath || isBusy}
             onClick={onRevealSource}
           >
             <FolderOpen size={iconSize} />
           </ToolbarButton>
-          {!isEditing ? (
+          {!isEditing && opensExternally ? (
+            <ToolbarButton
+              title="Open in the default desktop app"
+              disabled={!sourcePath || isBusy}
+              variant="primary"
+              label="Open"
+              onClick={onOpenSource}
+            >
+              <ExternalLink size={iconSize} />
+            </ToolbarButton>
+          ) : !isEditing ? (
             <ToolbarButton
               title="Start editing this artifact"
               disabled={!canEdit || isBusy}
@@ -360,17 +376,20 @@ function ArtifactEditorToolbarImpl({
           <ToolbarButton title="Reload preview from disk" disabled={isBusy} onClick={onReload}>
             <RefreshCw size={iconSize} />
           </ToolbarButton>
-          <ToolbarButton
-            title="Discard edits and leave edit mode"
-            disabled={!isEditing || isBusy}
-            variant={isDirty ? "danger" : "default"}
-            onClick={onCancel}
-          >
-            <X size={iconSize} />
-          </ToolbarButton>
+          {isEditing && (
+            <ToolbarButton
+              title="Discard edits and leave edit mode"
+              disabled={isBusy}
+              variant={isDirty ? "danger" : "default"}
+              onClick={onCancel}
+            >
+              <X size={iconSize} />
+            </ToolbarButton>
+          )}
         </div>
       </div>
 
+      {isEditing && (
       <div style={commandRowStyle}>
         <div style={groupStyle} role="group" aria-label="Text formatting">
           <span style={groupLabelStyle}>Text</span>
@@ -414,6 +433,7 @@ function ArtifactEditorToolbarImpl({
           </ToolbarButton>
         </div>
       </div>
+      )}
     </div>
   );
 }

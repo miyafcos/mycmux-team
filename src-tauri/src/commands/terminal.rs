@@ -1,10 +1,10 @@
+use chrono::Local;
+use kuchikiki::traits::TendrilSink;
+use kuchikiki::{NodeData, NodeRef};
 use std::collections::{hash_map::DefaultHasher, HashMap};
 use std::hash::{Hash, Hasher};
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
-use chrono::Local;
-use kuchikiki::traits::TendrilSink;
-use kuchikiki::{NodeData, NodeRef};
 use sysinfo::System;
 use tauri::ipc::Channel;
 use tauri::{AppHandle, State};
@@ -679,7 +679,32 @@ fn is_previewable_artifact(path: &Path) -> bool {
             .and_then(|extension| extension.to_str())
             .map(|extension| extension.to_ascii_lowercase())
             .as_deref(),
-        Some("html") | Some("htm") | Some("md") | Some("markdown")
+        Some("html")
+            | Some("htm")
+            | Some("md")
+            | Some("markdown")
+            | Some("doc")
+            | Some("docx")
+            | Some("docm")
+            | Some("dot")
+            | Some("dotx")
+            | Some("dotm")
+            | Some("xls")
+            | Some("xlsx")
+            | Some("xlsm")
+            | Some("xlsb")
+            | Some("xlt")
+            | Some("xltx")
+            | Some("xltm")
+            | Some("ppt")
+            | Some("pptx")
+            | Some("pptm")
+            | Some("pot")
+            | Some("potx")
+            | Some("potm")
+            | Some("pps")
+            | Some("ppsx")
+            | Some("ppsm")
     )
 }
 
@@ -692,6 +717,10 @@ fn artifact_source_kind(path: &Path) -> Option<&'static str> {
     {
         Some("html") | Some("htm") => Some("html"),
         Some("md") | Some("markdown") => Some("markdown"),
+        Some("doc") | Some("docx") | Some("docm") | Some("dot") | Some("dotx") | Some("dotm")
+        | Some("xls") | Some("xlsx") | Some("xlsm") | Some("xlsb") | Some("xlt") | Some("xltx")
+        | Some("xltm") | Some("ppt") | Some("pptx") | Some("pptm") | Some("pot") | Some("potx")
+        | Some("potm") | Some("pps") | Some("ppsx") | Some("ppsm") => Some("office"),
         _ => None,
     }
 }
@@ -710,6 +739,9 @@ fn validate_editable_artifact_path(source_path: &str) -> Result<(PathBuf, String
     let Some(kind) = artifact_source_kind(&path) else {
         return Err("Editable artifact must be .html, .htm, .md, or .markdown".to_string());
     };
+    if !matches!(kind, "html" | "markdown") {
+        return Err("Editable artifact must be .html, .htm, .md, or .markdown".to_string());
+    }
     let canonical = path
         .canonicalize()
         .map_err(|error| format!("Failed to canonicalize editable artifact: {error}"))?;
@@ -893,6 +925,18 @@ fn artifact_path_from_uri(uri: &str) -> Result<PathBuf, String> {
 }
 
 fn external_markdown_preview_path(session_dir: &Path, path: &Path) -> Result<PathBuf, String> {
+    external_artifact_preview_path(session_dir, path, "")
+}
+
+fn external_office_preview_path(session_dir: &Path, path: &Path) -> Result<PathBuf, String> {
+    external_artifact_preview_path(session_dir, path, "office")
+}
+
+fn external_artifact_preview_path(
+    session_dir: &Path,
+    path: &Path,
+    preview_kind: &str,
+) -> Result<PathBuf, String> {
     let previews_dir = session_dir.join("artifacts").join("previews");
     std::fs::create_dir_all(&previews_dir)
         .map_err(|error| format!("Failed to create preview directory: {error}"))?;
@@ -917,10 +961,16 @@ fn external_markdown_preview_path(session_dir: &Path, path: &Path) -> Result<Pat
     path.to_string_lossy()
         .to_ascii_lowercase()
         .hash(&mut hasher);
+    let preview_suffix = if preview_kind.is_empty() {
+        "preview.html".to_string()
+    } else {
+        format!("{preview_kind}.preview.html")
+    };
     Ok(previews_dir.join(format!(
-        "{}-{:016x}.preview.html",
+        "{}-{:016x}.{}",
         safe_stem,
-        hasher.finish()
+        hasher.finish(),
+        preview_suffix
     )))
 }
 
@@ -938,24 +988,34 @@ fn preview_path_for_artifact(
     if !path.is_file() {
         return Err("Artifact file not found".to_string());
     }
-    let extension = path
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    if extension == "html" || extension == "htm" {
-        return Ok(path.to_string_lossy().to_string());
+    let source_kind =
+        artifact_source_kind(path).ok_or_else(|| "Unsupported artifact source kind".to_string())?;
+    match source_kind {
+        "html" => Ok(path.to_string_lossy().to_string()),
+        "markdown" => {
+            let markdown = std::fs::read_to_string(path)
+                .map_err(|error| format!("Failed to read markdown artifact: {error}"))?;
+            let preview_path = if is_session_artifact {
+                path.with_extension("preview.html")
+            } else {
+                external_markdown_preview_path(&session_dir, path)?
+            };
+            std::fs::write(&preview_path, markdown_to_static_html(&markdown))
+                .map_err(|error| format!("Failed to write markdown preview: {error}"))?;
+            Ok(preview_path.to_string_lossy().to_string())
+        }
+        "office" => {
+            let preview_path = if is_session_artifact {
+                path.with_extension("office.preview.html")
+            } else {
+                external_office_preview_path(&session_dir, path)?
+            };
+            std::fs::write(&preview_path, office_to_static_html(path))
+                .map_err(|error| format!("Failed to write Office preview: {error}"))?;
+            Ok(preview_path.to_string_lossy().to_string())
+        }
+        _ => Err("Unsupported artifact source kind".to_string()),
     }
-    let markdown = std::fs::read_to_string(path)
-        .map_err(|error| format!("Failed to read markdown artifact: {error}"))?;
-    let preview_path = if is_session_artifact {
-        path.with_extension("preview.html")
-    } else {
-        external_markdown_preview_path(&session_dir, path)?
-    };
-    std::fs::write(&preview_path, markdown_to_static_html(&markdown))
-        .map_err(|error| format!("Failed to write markdown preview: {error}"))?;
-    Ok(preview_path.to_string_lossy().to_string())
 }
 
 fn preview_info_for_artifact(
@@ -992,6 +1052,44 @@ fn escape_html(value: &str) -> String {
         }
     }
     escaped
+}
+
+fn office_kind_label(path: &Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| extension.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("doc") | Some("docx") | Some("docm") | Some("dot") | Some("dotx") | Some("dotm") => {
+            "Word"
+        }
+        Some("xls") | Some("xlsx") | Some("xlsm") | Some("xlsb") | Some("xlt") | Some("xltx")
+        | Some("xltm") => "Excel",
+        Some("ppt") | Some("pptx") | Some("pptm") | Some("pot") | Some("potx") | Some("potm")
+        | Some("pps") | Some("ppsx") | Some("ppsm") => "PowerPoint",
+        _ => "Office",
+    }
+}
+
+fn office_to_static_html(path: &Path) -> String {
+    let file_name = path
+        .file_name()
+        .and_then(|file_name| file_name.to_str())
+        .unwrap_or("Office document");
+    let parent = path
+        .parent()
+        .map(|parent| parent.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let source_path = path.to_string_lossy();
+    format!(
+        "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><style>{}</style></head><body><section class=\"office-shell\"><div class=\"office-type\">{}</div><h1>{}</h1><dl><dt>Folder</dt><dd>{}</dd><dt>Path</dt><dd>{}</dd></dl><p class=\"office-note\">Open this document with the toolbar button to edit it in the default desktop app.</p></section></body></html>",
+        r#"html{background:#edf1f5;color:#1f2937}body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:32px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;box-sizing:border-box}.office-shell{width:min(760px,100%);box-sizing:border-box;border:1px solid #d6dbe3;background:#fff;padding:30px 34px;box-shadow:0 18px 50px rgba(15,23,42,.10)}.office-type{display:inline-flex;align-items:center;height:24px;padding:0 9px;border:1px solid #c8d0da;background:#f5f7fa;color:#475569;font-size:11px;font-weight:700;letter-spacing:0;text-transform:uppercase}h1{margin:18px 0 22px;font-size:28px;line-height:1.2;font-weight:720;letter-spacing:0;color:#111827;overflow-wrap:anywhere}dl{display:grid;grid-template-columns:72px minmax(0,1fr);gap:8px 14px;margin:0;padding:18px 0;border-top:1px solid #e5e7eb;border-bottom:1px solid #e5e7eb}dt{color:#64748b;font-size:12px;font-weight:700}dd{margin:0;color:#1f2937;font-size:13px;line-height:1.5;overflow-wrap:anywhere}.office-note{margin:18px 0 0;color:#475569;font-size:13px;line-height:1.55}@media(max-width:640px){body{padding:18px}.office-shell{padding:22px}h1{font-size:22px}dl{grid-template-columns:1fr;gap:4px}}"#,
+        escape_html(office_kind_label(path)),
+        escape_html(file_name),
+        escape_html(&parent),
+        escape_html(&source_path)
+    )
 }
 
 fn is_safe_link_target(target: &str) -> bool {
@@ -1066,9 +1164,7 @@ fn parse_heading(line: &str) -> Option<(usize, &str)> {
 
 fn render_safe_table_html(value: &str) -> Option<String> {
     let document = kuchikiki::parse_html()
-        .one(format!(
-            "<!doctype html><html><body>{value}</body></html>"
-        ))
+        .one(format!("<!doctype html><html><body>{value}</body></html>"))
         .document_node;
     if document.select_first("script").is_ok() {
         return None;
@@ -1173,7 +1269,7 @@ fn markdown_to_static_html(markdown: &str) -> String {
 
     format!(
         "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><style>{}</style></head><body>{}</body></html>",
-        "body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;line-height:1.65;margin:32px;color:#1f2937;background:#fff}h1,h2,h3,h4,h5,h6{line-height:1.25;margin:1.5em 0 .5em;color:#111827}p,ul,pre,table{margin:0 0 1em}ul{padding-left:1.5em}pre{background:#f3f4f6;border:1px solid #e5e7eb;border-radius:8px;padding:12px;overflow:auto}code{font-family:'JetBrains Mono','Consolas',monospace}a{color:#2563eb}table{border-collapse:collapse}th,td{border:1px solid #d1d5db;padding:6px 8px}th{background:#f9fafb}",
+        r#"html{background:#eef1f5;color:#1f2937}body{box-sizing:border-box;min-height:100vh;max-width:940px;margin:0 auto;padding:40px 46px 72px;background:#fff;color:#1f2937;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:15px;line-height:1.72}h1,h2,h3,h4,h5,h6{line-height:1.25;margin:1.45em 0 .55em;color:#111827;font-weight:720;letter-spacing:0}h1{font-size:2rem;margin-top:.25em;padding-bottom:.35em;border-bottom:1px solid #e5e7eb}h2{font-size:1.45rem;padding-bottom:.25em;border-bottom:1px solid #eef2f7}h3{font-size:1.18rem}p,ul,ol,pre,blockquote,table{margin:0 0 1.05em}ul,ol{padding-left:1.6em}li+li{margin-top:.25em}blockquote{padding:10px 16px;border-left:4px solid #c7d2fe;background:#f8fafc;color:#475569}pre{background:#0f172a;color:#e2e8f0;border:1px solid #1e293b;border-radius:6px;padding:14px 16px;overflow:auto}code{font-family:'JetBrains Mono','Consolas','SFMono-Regular',monospace;font-size:.92em}p code,li code{background:#f1f5f9;border:1px solid #e2e8f0;border-radius:4px;color:#0f172a;padding:1px 4px}a{color:#0f66d0;text-decoration-thickness:1px;text-underline-offset:2px}table{width:100%;border-collapse:collapse;display:block;overflow-x:auto}th,td{border:1px solid #d8dee8;padding:8px 10px;vertical-align:top}th{background:#f6f8fb;color:#111827;font-weight:700}tr:nth-child(even) td{background:#fbfcfe}img{max-width:100%;height:auto}@media(max-width:720px){body{padding:26px 22px 56px;font-size:14px}h1{font-size:1.65rem}h2{font-size:1.28rem}}"#,
         body
     )
 }
@@ -1860,34 +1956,50 @@ mod tests {
         std::fs::create_dir_all(&artifacts_dir).unwrap();
         let html_path = session_dir.join("out.html");
         let markdown_path = artifacts_dir.join("report.md");
+        let office_path = artifacts_dir.join("report.docx");
         let outside_path = dir.path().join("outside.html");
         std::fs::write(&html_path, "<h1>ok</h1>").unwrap();
         std::fs::write(&markdown_path, "# ok").unwrap();
+        std::fs::write(&office_path, "office").unwrap();
         std::fs::write(&outside_path, "<h1>bad</h1>").unwrap();
 
         assert!(is_allowed_artifact_path(&session_dir, &html_path));
         assert!(is_allowed_artifact_path(&session_dir, &markdown_path));
+        assert!(is_allowed_artifact_path(&session_dir, &office_path));
         assert!(!is_allowed_artifact_path(&session_dir, &outside_path));
         assert!(is_previewable_artifact(&markdown_path));
+        assert!(is_previewable_artifact(&office_path));
         assert!(!is_previewable_artifact(&artifacts_dir.join("secret.txt")));
     }
 
     #[test]
-    fn external_preview_allows_absolute_html_and_md_only() {
+    fn external_preview_allows_absolute_html_md_and_office_only() {
         let dir = tempfile::tempdir().unwrap();
         let html_path = dir.path().join("report.html");
         let markdown_path = dir.path().join("report.md");
+        let word_path = dir.path().join("report.docx");
+        let excel_path = dir.path().join("budget.xlsx");
+        let powerpoint_path = dir.path().join("deck.pptx");
         let text_path = dir.path().join("secret.txt");
         std::fs::write(&html_path, "<h1>ok</h1>").unwrap();
         std::fs::write(&markdown_path, "# ok").unwrap();
+        std::fs::write(&word_path, "word").unwrap();
+        std::fs::write(&excel_path, "excel").unwrap();
+        std::fs::write(&powerpoint_path, "powerpoint").unwrap();
         std::fs::write(&text_path, "secret").unwrap();
 
         assert!(is_allowed_external_artifact_path(&html_path));
         assert!(is_allowed_external_artifact_path(&markdown_path));
+        assert!(is_allowed_external_artifact_path(&word_path));
         assert!(is_previewable_artifact(&html_path));
         assert!(is_previewable_artifact(&markdown_path));
+        assert!(is_previewable_artifact(&word_path));
+        assert!(is_previewable_artifact(&excel_path));
+        assert!(is_previewable_artifact(&powerpoint_path));
         assert!(!is_previewable_artifact(&text_path));
-        assert!(!is_allowed_external_artifact_path(Path::new("relative.html")));
+        assert!(!is_allowed_external_artifact_path(Path::new(
+            "relative.html"
+        )));
     }
 
     #[test]
@@ -1900,9 +2012,44 @@ mod tests {
         let preview_path = external_markdown_preview_path(&session_dir, &outside_markdown).unwrap();
         assert!(preview_path.starts_with(session_dir.join("artifacts").join("previews")));
         assert_eq!(
-            preview_path.extension().and_then(|extension| extension.to_str()),
+            preview_path
+                .extension()
+                .and_then(|extension| extension.to_str()),
             Some("html")
         );
+    }
+
+    #[test]
+    fn external_office_preview_writes_under_session_previews() {
+        let dir = tempfile::tempdir().unwrap();
+        let session_dir = dir.path().join("session-1");
+        let outside_doc = dir.path().join("outside report.docx");
+        std::fs::write(&outside_doc, "office").unwrap();
+
+        let preview_path = external_office_preview_path(&session_dir, &outside_doc).unwrap();
+        assert!(preview_path.starts_with(session_dir.join("artifacts").join("previews")));
+        assert_eq!(
+            preview_path
+                .extension()
+                .and_then(|extension| extension.to_str()),
+            Some("html")
+        );
+        assert!(preview_path
+            .file_name()
+            .and_then(|file_name| file_name.to_str())
+            .unwrap()
+            .contains(".office.preview.html"));
+    }
+
+    #[test]
+    fn office_preview_html_escapes_path_and_labels_kind() {
+        let path = Path::new(r"C:\Users\miyaz\budget & plan.xlsx");
+        let html = office_to_static_html(path);
+
+        assert!(html.contains(">Excel<"));
+        assert!(html.contains("budget &amp; plan.xlsx"));
+        assert!(html.contains("C:\\Users\\miyaz\\budget &amp; plan.xlsx"));
+        assert!(!html.contains("<script"));
     }
 
     #[test]
@@ -1956,7 +2103,10 @@ mod tests {
             "<!doctype html><html><body><h1>new</h1></body></html>"
         );
         assert!(Path::new(&result.backup_path).is_file());
-        assert_eq!(std::fs::read_to_string(&result.backup_path).unwrap(), "<h1>old</h1>");
+        assert_eq!(
+            std::fs::read_to_string(&result.backup_path).unwrap(),
+            "<h1>old</h1>"
+        );
         assert!(result.backup_path.contains("report.html.bak-"));
     }
 
@@ -1965,8 +2115,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let text_path = dir.path().join("secret.txt");
         let markdown_path = dir.path().join("report.md");
+        let office_path = dir.path().join("report.docx");
         std::fs::write(&text_path, "secret").unwrap();
         std::fs::write(&markdown_path, "# ok").unwrap();
+        std::fs::write(&office_path, "office").unwrap();
 
         assert!(save_editable_artifact(
             "relative.html".to_string(),
@@ -1975,7 +2127,10 @@ mod tests {
         )
         .is_err());
         assert!(save_editable_artifact(
-            dir.path().join("missing.html").to_string_lossy().to_string(),
+            dir.path()
+                .join("missing.html")
+                .to_string_lossy()
+                .to_string(),
             "html".to_string(),
             "x".to_string()
         )
@@ -1995,6 +2150,12 @@ mod tests {
         assert!(save_editable_artifact(
             markdown_path.to_string_lossy().to_string(),
             "html".to_string(),
+            "x".to_string()
+        )
+        .is_err());
+        assert!(save_editable_artifact(
+            office_path.to_string_lossy().to_string(),
+            "office".to_string(),
             "x".to_string()
         )
         .is_err());
@@ -2088,7 +2249,10 @@ mod tests {
             .replace("/report.html", "   /report.html");
         let path = artifact_path_from_uri(&uri).unwrap();
 
-        assert_eq!(normalize_preview_path(&path), normalize_preview_path(&html_path));
+        assert_eq!(
+            normalize_preview_path(&path),
+            normalize_preview_path(&html_path)
+        );
     }
 
     #[test]
@@ -2105,7 +2269,10 @@ mod tests {
             .replace("company Dropbox", "company   Dropbox");
         let path = artifact_path_from_uri(&uri).unwrap();
 
-        assert_eq!(normalize_preview_path(&path), normalize_preview_path(&html_path));
+        assert_eq!(
+            normalize_preview_path(&path),
+            normalize_preview_path(&html_path)
+        );
     }
 
     #[test]

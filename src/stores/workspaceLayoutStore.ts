@@ -192,7 +192,17 @@ function normalizeBrowserPath(path: string): string {
 }
 
 function sourceKindFromPath(path: string): ArtifactSourceKind {
-  return /\.(?:md|markdown)$/i.test(path) ? "markdown" : "html";
+  if (/\.(?:md|markdown)$/i.test(path)) return "markdown";
+  if (/\.(?:docx?|docm|dotx?|dotm|xlsx?|xlsm|xlsb|xltx?|xltm|pptx?|pptm|potx?|potm|ppsx?|ppsm)$/i.test(path)) {
+    return "office";
+  }
+  return "html";
+}
+
+function sourceKindLabel(kind: ArtifactSourceKind): string {
+  if (kind === "markdown") return "MD";
+  if (kind === "office") return "OFFICE";
+  return "HTML";
 }
 
 function normalizeBrowserPreviewInfo(info: string | BrowserPreviewInfo): Required<BrowserPreviewInfo> {
@@ -230,7 +240,7 @@ function makeBrowserTab(
   info: Required<BrowserPreviewInfo>,
 ): PaneTab {
   const fileLeaf = info.sourcePath.split(/[\\/]/).pop() || "artifact";
-  const labelPrefix = info.sourceKind === "markdown" ? "MD" : "HTML";
+  const labelPrefix = sourceKindLabel(info.sourceKind);
   return makeTab(workspaceId, paneId, agentId, "browser", {
     htmlPath: info.previewPath,
     sourcePath: info.sourcePath,

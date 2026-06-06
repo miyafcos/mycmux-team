@@ -67,7 +67,7 @@ export interface Pane {
 
 export type AgentSessionKind = "claude" | "codex" | "claude-codex";
 
-export type ArtifactSourceKind = "html" | "markdown";
+export type ArtifactSourceKind = "html" | "markdown" | "office";
 
 export type WorkspaceStatus = "setup" | "running" | "stopped";
 

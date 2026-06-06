@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import type { ArtifactSourceKind } from "../../types";
 import {
+  openWithDefault,
   readEditableArtifact,
   revealInExplorer,
   saveEditableArtifact,
@@ -221,7 +222,8 @@ function BrowserPaneImpl({
   const [localReloadKey, setLocalReloadKey] = useState(0);
   const resolvedPreviewPath = previewPath ?? htmlPath;
   const src = useMemo(() => convertFileSrc(resolvedPreviewPath), [resolvedPreviewPath]);
-  const canEdit = Boolean(sourcePath && sourceKind);
+  const canUseInAppEditor = sourceKind === "html" || sourceKind === "markdown";
+  const canEdit = Boolean(sourcePath && canUseInAppEditor);
   const getActionsForEvent = useKeybindingStore((s) => s.getActionsForEvent);
 
   useEffect(() => {
@@ -249,7 +251,7 @@ function BrowserPaneImpl({
     setReadOnlySrcDoc("");
     setError(null);
     updateDirty(false);
-  }, [htmlPath, resolvedPreviewPath, reloadKey, sourcePath, updateDirty]);
+  }, [htmlPath, resolvedPreviewPath, reloadKey, sourceKind, sourcePath, updateDirty]);
 
   useEffect(() => {
     return () => inputCleanupRef.current?.();
@@ -266,7 +268,7 @@ function BrowserPaneImpl({
   }, [dirty]);
 
   const startEdit = useCallback(async () => {
-    if (!sourcePath || !sourceKind) return;
+    if (!sourcePath || !canUseInAppEditor) return;
     setBusy(true);
     setError(null);
     try {
@@ -279,10 +281,10 @@ function BrowserPaneImpl({
     } finally {
       setBusy(false);
     }
-  }, [sourceKind, sourcePath, updateDirty]);
+  }, [canUseInAppEditor, sourcePath, updateDirty]);
 
   useEffect(() => {
-    if (isEditing || !sourcePath) {
+    if (isEditing || !sourcePath || !canUseInAppEditor) {
       return;
     }
 
@@ -301,7 +303,7 @@ function BrowserPaneImpl({
     return () => {
       cancelled = true;
     };
-  }, [isEditing, localReloadKey, reloadKey, sourcePath]);
+  }, [canUseInAppEditor, isEditing, localReloadKey, reloadKey, sourcePath]);
 
   const handleFrameLoad = useCallback(() => {
     inputCleanupRef.current?.();
@@ -435,7 +437,7 @@ function BrowserPaneImpl({
   }, [getEditableDocument, updateDirty]);
 
   const handleSave = useCallback(async () => {
-    if (!sourcePath || !sourceKind) return;
+    if (!sourcePath || !sourceKind || !canUseInAppEditor) return;
     const doc = getEditableDocument();
     if (!doc) return;
     setBusy(true);
@@ -454,7 +456,7 @@ function BrowserPaneImpl({
     } finally {
       setBusy(false);
     }
-  }, [getEditableDocument, sourceKind, sourcePath, updateDirty]);
+  }, [canUseInAppEditor, getEditableDocument, sourceKind, sourcePath, updateDirty]);
 
   const handleCancel = useCallback(() => {
     if (dirty && !window.confirm("Discard unsaved edits?")) return;
@@ -476,12 +478,22 @@ function BrowserPaneImpl({
   }, [dirty, isEditing, startEdit]);
 
   const handleRevealSource = useCallback(() => {
-    if (!resolvedPreviewPath) return;
-    revealInExplorer(resolvedPreviewPath).catch((caught: unknown) => {
-      console.warn("[artifactEditor] open HTML location failed", caught);
+    const targetPath = sourcePath ?? resolvedPreviewPath;
+    if (!targetPath) return;
+    revealInExplorer(targetPath).catch((caught: unknown) => {
+      console.warn("[artifactEditor] reveal source location failed", caught);
       setError(caught instanceof Error ? caught.message : String(caught));
     });
-  }, [resolvedPreviewPath]);
+  }, [resolvedPreviewPath, sourcePath]);
+
+  const handleOpenSource = useCallback(() => {
+    const targetPath = sourcePath ?? resolvedPreviewPath;
+    if (!targetPath) return;
+    openWithDefault(targetPath).catch((caught: unknown) => {
+      console.warn("[artifactEditor] open source failed", caught);
+      setError(caught instanceof Error ? caught.message : String(caught));
+    });
+  }, [resolvedPreviewPath, sourcePath]);
 
   return (
     <div
@@ -506,6 +518,7 @@ function BrowserPaneImpl({
         onCancel={handleCancel}
         onReload={handleReload}
         onRevealSource={handleRevealSource}
+        onOpenSource={handleOpenSource}
         onCommand={handleCommand}
       />
       {error && (

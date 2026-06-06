@@ -100,6 +100,7 @@ pub fn run() {
             commands::crsm::crsm_list_sessions,
             commands::crsm::crsm_create_handoff,
             commands::fs::reveal_in_explorer,
+            commands::fs::open_with_default,
             commands::usage::get_usage_summary,
             commands::workspace::load_persistent_data,
             commands::workspace::save_persistent_data,

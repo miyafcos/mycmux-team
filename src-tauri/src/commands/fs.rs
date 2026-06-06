@@ -55,3 +55,46 @@ pub fn reveal_in_explorer(path: String) -> Result<(), String> {
     #[allow(unreachable_code)]
     Err("unsupported platform".into())
 }
+
+/// Open a file or directory with the OS default application.
+#[tauri::command]
+pub fn open_with_default(path: String) -> Result<(), String> {
+    let pb = PathBuf::from(&path);
+    if !pb.exists() {
+        return Err(format!("path does not exist: {path}"));
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        std::process::Command::new("rundll32.exe")
+            .args(["url.dll,FileProtocolHandler", &path])
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+            .map_err(|e| format!("failed to launch default app: {e}"))?;
+        return Ok(());
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| format!("failed to launch open: {e}"))?;
+        return Ok(());
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| format!("failed to launch xdg-open: {e}"))?;
+        return Ok(());
+    }
+
+    #[allow(unreachable_code)]
+    Err("unsupported platform".into())
+}
