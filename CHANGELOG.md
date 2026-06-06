@@ -1,5 +1,10 @@
 # Changelog (mycmux-lite)
 
+## [0.7.22-lite.1] - 2026-06-06
+
+- Fixed: The artifact preview/editor pane zoom shortcut is now handled inside the iframe, so Ctrl+Shift+Enter works even when focus is inside an HTML or Markdown preview.
+- Changed: Read-only local HTML/Markdown previews are rendered through a no-script `srcdoc` document, preserving relative assets while allowing mycmux shortcut capture.
+
 ## [0.7.21-lite.1] - 2026-06-06
 
 - Fixed: HTML and Markdown artifact preview/editor iframes now forward registered mycmux shortcuts to the workspace, so pane zoom and pane navigation shortcuts work while the preview has focus.
