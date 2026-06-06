@@ -2178,7 +2178,7 @@ dependencies = [
 
 [[package]]
 name = "mycmux-lite"
-version = "0.7.22-lite.1"
+version = "0.7.23-lite.1"
 dependencies = [
  "axum",
  "chrono",

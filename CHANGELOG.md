@@ -1,5 +1,12 @@
 # Changelog (mycmux-lite)
 
+## [0.7.23-lite.1] - 2026-06-06
+
+- Fixed: The artifact toolbar's Explorer button now reveals the original source document location instead of the generated preview HTML path.
+- Changed: The artifact toolbar is quieter in preview mode, shows editing controls only while editing, and uses an `Open` action for Office documents.
+- Changed: Markdown previews now use a cleaner document-style layout with better heading, table, code, and mobile spacing.
+- Added: Word, Excel, and PowerPoint artifact links now open in the preview pane with source metadata and can be launched in the default desktop app for editing/checking.
+
 ## [0.7.22-lite.1] - 2026-06-06
 
 - Fixed: The artifact preview/editor pane zoom shortcut is now handled inside the iframe, so Ctrl+Shift+Enter works even when focus is inside an HTML or Markdown preview.
