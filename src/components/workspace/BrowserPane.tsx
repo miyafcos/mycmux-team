@@ -362,12 +362,12 @@ function BrowserPaneImpl({
   }, [dirty, isEditing, startEdit]);
 
   const handleRevealSource = useCallback(() => {
-    if (!sourcePath) return;
-    revealInExplorer(sourcePath).catch((caught: unknown) => {
-      console.warn("[artifactEditor] open source folder failed", caught);
+    if (!resolvedPreviewPath) return;
+    revealInExplorer(resolvedPreviewPath).catch((caught: unknown) => {
+      console.warn("[artifactEditor] open HTML location failed", caught);
       setError(caught instanceof Error ? caught.message : String(caught));
     });
-  }, [sourcePath]);
+  }, [resolvedPreviewPath]);
 
   return (
     <div

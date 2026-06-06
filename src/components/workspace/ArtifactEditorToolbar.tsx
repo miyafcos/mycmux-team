@@ -332,7 +332,7 @@ function ArtifactEditorToolbarImpl({
         <StatusPill isDirty={isDirty} isEditing={isEditing} isBusy={isBusy} />
         <div style={actionsStyle}>
           <ToolbarButton
-            title="Show source file in Explorer"
+            title="Show HTML location in Explorer"
             disabled={!sourcePath || isBusy}
             onClick={onRevealSource}
           >
