@@ -530,6 +530,16 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
           break;
         }
 
+        case "pane.zoom.toggle": {
+          const activeWs = ws.find((w) => w.id === aid);
+          const activePane = activeWs?.panes.find((p) => p.sessionId === apid);
+          if (activePane) {
+            const currentZoomed = useUiStore.getState().zoomedPaneId;
+            setZoomedPaneId(currentZoomed === activePane.id ? null : activePane.id);
+          }
+          break;
+        }
+
         case "pane.close": {
           const activeWs = ws.find((w) => w.id === aid);
           const activePane = activeWs?.panes.find((p) => p.sessionId === apid);
@@ -614,6 +624,7 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
     removePaneFromWorkspace,
     addTabToPane,
     setActivePaneId,
+    setZoomedPaneId,
   ]);
 
   return (

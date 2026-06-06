@@ -7,6 +7,7 @@ import {
   saveEditableArtifact,
   type SaveEditableArtifactResult,
 } from "../../lib/ipc";
+import { useKeybindingStore } from "../../stores/keybindingStore";
 import ArtifactEditorToolbar, { type ArtifactEditorCommand } from "./ArtifactEditorToolbar";
 
 interface BrowserPaneProps {
@@ -203,6 +204,7 @@ function BrowserPaneImpl({
   const resolvedPreviewPath = previewPath ?? htmlPath;
   const src = useMemo(() => convertFileSrc(resolvedPreviewPath), [resolvedPreviewPath]);
   const canEdit = Boolean(sourcePath && sourceKind);
+  const getActionsForEvent = useKeybindingStore((s) => s.getActionsForEvent);
 
   useEffect(() => {
     onDirtyChangeRef.current = onDirtyChange;
@@ -263,20 +265,84 @@ function BrowserPaneImpl({
   const handleFrameLoad = useCallback(() => {
     inputCleanupRef.current?.();
     inputCleanupRef.current = null;
-    if (!isEditing) return;
-    const doc = iframeRef.current?.contentDocument;
+    let doc: Document | null = null;
+    try {
+      doc = iframeRef.current?.contentDocument ?? null;
+    } catch {
+      doc = null;
+    }
     if (!doc) return;
+
+    const forwardShortcut = (event: KeyboardEvent) => {
+      if (event.defaultPrevented) return;
+
+      if (
+        isEditing &&
+        (event.ctrlKey || event.metaKey) &&
+        !event.altKey &&
+        event.key.toLowerCase() === "b"
+      ) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (doc.execCommand("bold")) updateDirty(true);
+        return;
+      }
+
+      if (
+        isEditing &&
+        (event.ctrlKey || event.metaKey) &&
+        !event.altKey &&
+        event.key.toLowerCase() === "i"
+      ) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (doc.execCommand("italic")) updateDirty(true);
+        return;
+      }
+
+      const actions = getActionsForEvent(event);
+      if (actions.length === 0) return;
+
+      const forwarded = new KeyboardEvent("keydown", {
+        key: event.key,
+        code: event.code,
+        location: event.location,
+        ctrlKey: event.ctrlKey,
+        shiftKey: event.shiftKey,
+        altKey: event.altKey,
+        metaKey: event.metaKey,
+        repeat: event.repeat,
+        bubbles: true,
+        cancelable: true,
+      });
+
+      const handled = !window.dispatchEvent(forwarded) || forwarded.defaultPrevented;
+      if (handled) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    };
+    doc.addEventListener("keydown", forwardShortcut, true);
+
+    if (!isEditing) {
+      inputCleanupRef.current = () => {
+        doc.removeEventListener("keydown", forwardShortcut, true);
+      };
+      return;
+    }
+
     const markDirty = () => updateDirty(true);
     doc.addEventListener("input", markDirty);
     doc.addEventListener("cut", markDirty);
     doc.addEventListener("paste", markDirty);
     inputCleanupRef.current = () => {
+      doc.removeEventListener("keydown", forwardShortcut, true);
       doc.removeEventListener("input", markDirty);
       doc.removeEventListener("cut", markDirty);
       doc.removeEventListener("paste", markDirty);
     };
     doc.body.focus();
-  }, [isEditing, updateDirty]);
+  }, [getActionsForEvent, isEditing, updateDirty]);
 
   const getEditableDocument = useCallback((): Document | null => {
     return iframeRef.current?.contentDocument ?? null;
@@ -408,7 +474,7 @@ function BrowserPaneImpl({
           {error}
         </div>
       )}
-      {/* Read-only preview keeps the original no-script sandbox posture. */}
+      {/* Read-only preview stays no-script; same-origin lets the parent capture shortcuts. */}
       <iframe
         ref={iframeRef}
         key={
@@ -418,7 +484,7 @@ function BrowserPaneImpl({
         }
         src={isEditing ? undefined : src}
         srcDoc={isEditing ? editableSrcDoc : undefined}
-        sandbox={isEditing ? "allow-popups allow-same-origin" : "allow-popups"}
+        sandbox={isEditing ? "allow-popups allow-same-origin" : "allow-popups allow-same-origin"}
         title={sourcePath ?? htmlPath}
         onLoad={handleFrameLoad}
         style={{
