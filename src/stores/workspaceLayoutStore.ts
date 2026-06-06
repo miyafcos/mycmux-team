@@ -173,6 +173,31 @@ function appendTabsToPane(pane: Pane, tabs: PaneTab[], activeTabId: string): Pan
   return applyActiveTabFields({ ...pane, tabs: nextTabs }, activeTab);
 }
 
+function isBrowserOnlyPane(pane: Pane): boolean {
+  return pane.tabs.length > 0 && pane.tabs.every((tab) => tab.type === "browser");
+}
+
+function makeBrowserTab(
+  workspaceId: string,
+  paneId: string,
+  agentId: string,
+  htmlPath: string,
+): PaneTab {
+  const fileLeaf = htmlPath.split(/[\\/]/).pop() || "out.html";
+  return makeTab(workspaceId, paneId, agentId, "browser", {
+    htmlPath,
+    reloadCounter: 0,
+    label: `HTML ${fileLeaf}`,
+  });
+}
+
+function bumpBrowserTabReloadCounter(tab: PaneTab): PaneTab {
+  return {
+    ...tab,
+    reloadCounter: (tab.reloadCounter ?? 0) + 1,
+  };
+}
+
 interface WorkspaceLayoutState {
   // Pane operations
   removePaneFromWorkspace: (workspaceId: string, paneId: string) => void;
@@ -199,11 +224,10 @@ interface WorkspaceLayoutState {
   // Tab operations
   addTabToPane: (workspaceId: string, paneId: string, agentId?: string, type?: PaneTab["type"]) => void;
   /**
-   * Open a browser tab rendering the given local HTML file. If the same (paneId, htmlPath)
-   * already has a browser tab, bump its reloadCounter to force <iframe> remount instead of
-   * creating a duplicate tab. Triggered by xterm OSC 9988 from Claude/Codex.
+   * Open a browser tab rendering the given local HTML file in a right-side
+   * preview pane. Reuse the workspace preview pane and reload existing tabs.
    */
-  openOrReloadHtmlTab: (workspaceId: string, paneId: string, htmlPath: string) => void;
+  openOrReloadHtmlPreviewPane: (workspaceId: string, sourcePaneId: string, htmlPath: string) => void;
   removeTabFromPane: (workspaceId: string, paneId: string, tabId: string) => void;
   setActivePaneTab: (workspaceId: string, paneId: string, tabId: string) => void;
   setTabLabel: (workspaceId: string, paneId: string, tabId: string, label: string | undefined) => void;
@@ -487,54 +511,87 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
     useWorkspaceListStore.getState()._updateWorkspacePanes(workspaceId, newPanes);
   },
 
-  openOrReloadHtmlTab: (workspaceId, paneId, htmlPath) => {
+  openOrReloadHtmlPreviewPane: (workspaceId, sourcePaneId, htmlPath) => {
     const workspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
     if (!workspace) return;
 
-    let changed = false;
-    const newPanes = workspace.panes.map((p) => {
-      if (p.id !== paneId) return p;
+    const sourcePane = workspace.panes.find((p) => p.id === sourcePaneId) ?? workspace.panes[0];
+    if (!sourcePane) return;
 
-      const existingIdx = p.tabs.findIndex(
-        (t) => t.type === "browser" && t.htmlPath === htmlPath,
-      );
-      if (existingIdx !== -1) {
-        const existing = p.tabs[existingIdx];
-        const updatedTab: PaneTab = {
-          ...existing,
-          reloadCounter: (existing.reloadCounter ?? 0) + 1,
-        };
-        const nextTabs = [...p.tabs];
-        nextTabs[existingIdx] = updatedTab;
-        changed = true;
-        return {
-          ...p,
-          tabs: nextTabs,
-          activeTabId: existing.id,
-          sessionId: existing.sessionId,
-        };
-      }
+    const previewPane = workspace.panes.find(isBrowserOnlyPane);
+    const existingPreviewTab = previewPane?.tabs.find(
+      (tab) => tab.type === "browser" && tab.htmlPath === htmlPath,
+    );
 
-      const fileLeaf = htmlPath.split(/[\\/]/).pop() || "out.html";
-      const tab = makeTab(workspaceId, paneId, p.agentId, "browser", {
-        htmlPath,
-        reloadCounter: 0,
-        label: `📄 ${fileLeaf}`,
+    if (previewPane && existingPreviewTab) {
+      const updatedTab = bumpBrowserTabReloadCounter(existingPreviewTab);
+      const newPanes = workspace.panes.map((pane) => {
+        if (pane.id !== previewPane.id) return pane;
+        return applyActiveTabFields({
+          ...pane,
+          tabs: pane.tabs.map((tab) => tab.id === updatedTab.id ? updatedTab : tab),
+        }, updatedTab);
       });
-      changed = true;
-      return {
-        ...p,
-        tabs: [...p.tabs, tab],
-        activeTabId: tab.id,
-        sessionId: tab.sessionId,
-      };
-    });
-
-    if (changed) {
       useWorkspaceListStore.getState()._updateWorkspacePanes(workspaceId, newPanes);
+      useUiStore.getState().setZoomedPaneId(null);
+      return;
     }
-  },
 
+    const existingMixedPane = workspace.panes.find(
+      (pane) => !isBrowserOnlyPane(pane)
+        && pane.tabs.some((tab) => tab.type === "browser" && tab.htmlPath === htmlPath),
+    );
+    const existingMixedTab = existingMixedPane?.tabs.find(
+      (tab) => tab.type === "browser" && tab.htmlPath === htmlPath,
+    );
+    const tabToOpen = existingMixedTab ? bumpBrowserTabReloadCounter(existingMixedTab) : null;
+
+    if (previewPane) {
+      const openedTab = tabToOpen
+        ?? makeBrowserTab(workspaceId, previewPane.id, previewPane.agentId, htmlPath);
+      const newPanes = workspace.panes.flatMap((pane) => {
+        if (existingMixedPane && existingMixedTab && pane.id === existingMixedPane.id) {
+          const nextPane = removeTabFromPane(pane, existingMixedTab.id);
+          return nextPane ? [nextPane] : [];
+        }
+        if (pane.id !== previewPane.id) return [pane];
+        return [appendTabsToPane(pane, [openedTab], openedTab.id)];
+      });
+      useWorkspaceListStore.getState()._updateWorkspacePanes(workspaceId, newPanes);
+      useUiStore.getState().setZoomedPaneId(null);
+      return;
+    }
+
+    const paneId = uuid();
+    const openedTab = tabToOpen
+      ?? makeBrowserTab(workspaceId, paneId, sourcePane.agentId, htmlPath);
+    const newPreviewPane: Pane = {
+      id: paneId,
+      agentId: openedTab.agentId,
+      sessionId: openedTab.sessionId,
+      tabs: [openedTab],
+      activeTabId: openedTab.id,
+    };
+    const newPanes = workspace.panes.flatMap((pane) => {
+      if (existingMixedPane && existingMixedTab && pane.id === existingMixedPane.id) {
+        const nextPane = removeTabFromPane(pane, existingMixedTab.id);
+        return nextPane ? [nextPane] : [];
+      }
+      return [pane];
+    }).concat(newPreviewPane);
+    const baseColumns = cloneSplitColumns(workspace);
+    const nextSplitColumns =
+      insertPaneIdIntoColumns(baseColumns, sourcePane.id, newPreviewPane.id, "right")
+      ?? [...baseColumns, [newPreviewPane.id]];
+
+    useWorkspaceListStore.getState()._updateWorkspacePanes(
+      workspaceId,
+      newPanes,
+      nextSplitColumns,
+      true,
+    );
+    useUiStore.getState().setZoomedPaneId(null);
+  },
   removeTabFromPane: (workspaceId, paneId, tabId) => {
     const workspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
     if (!workspace) return;

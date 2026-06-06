@@ -194,7 +194,7 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
   const addTabToPane = useWorkspaceLayoutStore((s) => s.addTabToPane);
   const removeTabFromPane = useWorkspaceLayoutStore((s) => s.removeTabFromPane);
   const setActivePaneTab = useWorkspaceLayoutStore((s) => s.setActivePaneTab);
-  const openOrReloadHtmlTab = useWorkspaceLayoutStore((s) => s.openOrReloadHtmlTab);
+  const openOrReloadHtmlPreviewPane = useWorkspaceLayoutStore((s) => s.openOrReloadHtmlPreviewPane);
 
   // OSC 9988 from XTermWrapper. Match by pane.tabs membership (not activeTab)
   // so reloads still fire after the browser tab is activated and the terminal
@@ -214,11 +214,11 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
       if (!isCanonicalSidetabPath(htmlPath, detail.paneSessionId)) {
         return;
       }
-      openOrReloadHtmlTab(workspaceId, pane.id, htmlPath);
+      openOrReloadHtmlPreviewPane(workspaceId, pane.id, htmlPath);
     };
     window.addEventListener("mycmux:html-out", handler);
     return () => window.removeEventListener("mycmux:html-out", handler);
-  }, [pane.tabs, pane.id, workspaceId, openOrReloadHtmlTab]);
+  }, [pane.tabs, pane.id, workspaceId, openOrReloadHtmlPreviewPane]);
 
   const hasNotification = notificationCount > 0;
 
@@ -294,7 +294,7 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
 
     previewArtifactUriForSession(currentTab.sessionId, uri)
       .then((htmlPath) => {
-        openOrReloadHtmlTab(workspaceId, pane.id, htmlPath.replace(/\\/g, "/"));
+        openOrReloadHtmlPreviewPane(workspaceId, pane.id, htmlPath.replace(/\\/g, "/"));
       })
       .catch((error) => {
         if (isLocalArtifactLink(uri)) {
@@ -303,7 +303,7 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
         }
         open(uri).catch((error) => console.error("[mycmux-lite] open URL failed", error));
       });
-  }, [openOrReloadHtmlTab, pane.id, workspaceId]);
+  }, [openOrReloadHtmlPreviewPane, pane.id, workspaceId]);
 
   // Resolve CWD from pane/tab static data (metadata CWD handled by PTY monitor internally)
   const paneCwd = activeTab?.cwd ?? pane.cwd;
