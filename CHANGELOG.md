@@ -1,5 +1,10 @@
 # Changelog (mycmux-lite)
 
+## [0.7.20-lite.1] - 2026-06-06
+
+- Fixed: The artifact editor toolbar's Explorer button now reveals the displayed preview HTML file via the native Tauri IPC path instead of `plugin-shell.open`, avoiding URL-scope rejection for local Windows paths.
+- Changed: The artifact editor toolbar uses quieter icon sizing and lighter status/file-kind badges so the top-right action cluster is less visually heavy.
+
 ## [0.7.19-lite.1] - 2026-06-06
 
 - Added: HTML and Markdown artifacts opened from the terminal preview pane can now be edited in a Word-style WYSIWYG editor and saved back to the original file.
