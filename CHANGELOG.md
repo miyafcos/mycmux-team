@@ -1,5 +1,10 @@
 # Changelog (mycmux-lite)
 
+## [0.7.21-lite.1] - 2026-06-06
+
+- Fixed: HTML and Markdown artifact preview/editor iframes now forward registered mycmux shortcuts to the workspace, so pane zoom and pane navigation shortcuts work while the preview has focus.
+- Changed: In artifact edit mode, Ctrl+B and Ctrl+I apply bold/italic to the document body instead of being captured by global app shortcuts.
+
 ## [0.7.20-lite.1] - 2026-06-06
 
 - Fixed: The artifact editor toolbar's Explorer button now reveals the displayed preview HTML file via the native Tauri IPC path instead of `plugin-shell.open`, avoiding URL-scope rejection for local Windows paths.
