@@ -1,5 +1,10 @@
 # Changelog (mycmux-lite)
 
+## [0.7.18-lite.1] - 2026-06-06
+
+- Changed: Local HTML/Markdown artifact links now open in a dedicated right-side preview pane instead of replacing the active terminal tab, keeping the terminal visible while previewing.
+- Changed: Re-clicking the same artifact reloads its preview tab; clicking a different artifact opens another tab inside the preview pane.
+
 ## [0.7.17-lite.1] - 2026-06-06
 
 - Fixed: Narrow-pane local artifact links now resolve paths even when terminal wrapping removes a space at the boundary, so long Dropbox/Japanese HTML paths still open in an in-app preview tab.
