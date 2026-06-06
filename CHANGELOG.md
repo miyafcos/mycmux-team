@@ -1,5 +1,11 @@
 # Changelog (mycmux-lite)
 
+## [0.7.19-lite.1] - 2026-06-06
+
+- Added: HTML and Markdown artifacts opened from the terminal preview pane can now be edited in a Word-style WYSIWYG editor and saved back to the original file.
+- Added: Saves create a same-folder timestamped backup before overwriting the source artifact.
+- Added: Editor toolbar supports text formatting plus table cell editing, row/column insertion, and row/column deletion. Markdown saves preserve common Markdown structures and keep complex tables as embedded HTML.
+
 ## [0.7.18-lite.1] - 2026-06-06
 
 - Changed: Local HTML/Markdown artifact links now open in a dedicated right-side preview pane instead of replacing the active terminal tab, keeping the terminal visible while previewing.
