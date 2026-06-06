@@ -376,6 +376,8 @@ function BrowserPaneImpl({
         isEditing={isEditing}
         isDirty={dirty}
         isBusy={busy}
+        sourcePath={sourcePath}
+        sourceKind={sourceKind}
         onStartEdit={startEdit}
         onSave={handleSave}
         onCancel={handleCancel}
