@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-shell";
 import type { ArtifactSourceKind } from "../../types";
 import {
   readEditableArtifact,
@@ -33,6 +34,13 @@ function parentHrefFor(sourcePath: string | undefined): string | null {
   const index = normalized.lastIndexOf("/");
   if (index < 0) return null;
   return convertFileSrc(normalized.slice(0, index + 1));
+}
+
+function parentPathFor(sourcePath: string | undefined): string | null {
+  if (!sourcePath) return null;
+  const index = Math.max(sourcePath.lastIndexOf("\\"), sourcePath.lastIndexOf("/"));
+  if (index < 0) return null;
+  return sourcePath.slice(0, index);
 }
 
 function buildEditableSrcDoc(content: string, sourcePath: string | undefined): string {
@@ -360,6 +368,15 @@ function BrowserPaneImpl({
     setLocalReloadKey((value) => value + 1);
   }, [dirty, isEditing, startEdit]);
 
+  const handleRevealSource = useCallback(() => {
+    const folderPath = parentPathFor(sourcePath);
+    if (!folderPath) return;
+    open(folderPath).catch((caught: unknown) => {
+      console.warn("[artifactEditor] open source folder failed", caught);
+      setError(caught instanceof Error ? caught.message : String(caught));
+    });
+  }, [sourcePath]);
+
   return (
     <div
       style={{
@@ -382,6 +399,7 @@ function BrowserPaneImpl({
         onSave={handleSave}
         onCancel={handleCancel}
         onReload={handleReload}
+        onRevealSource={handleRevealSource}
         onCommand={handleCommand}
       />
       {error && (

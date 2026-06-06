@@ -1,10 +1,7 @@
 import { memo, type CSSProperties, type ReactNode } from "react";
 import {
   Bold,
-  CheckCircle2,
-  CircleAlert,
-  FileCode,
-  FileText,
+  FolderOpen,
   Heading2,
   Italic,
   Link,
@@ -43,6 +40,7 @@ interface ArtifactEditorToolbarProps {
   onSave: () => void;
   onCancel: () => void;
   onReload: () => void;
+  onRevealSource: () => void;
   onCommand: (command: ArtifactEditorCommand) => void;
 }
 
@@ -54,7 +52,7 @@ const shellStyle: CSSProperties = {
   flexDirection: "column",
   gap: 0,
   borderBottom: "1px solid var(--cmux-border, #333)",
-  background: "linear-gradient(180deg, color-mix(in srgb, var(--cmux-popover, #1e1e1e) 94%, #ffffff 7%), color-mix(in srgb, var(--cmux-popover, #1e1e1e) 98%, #000000 6%))",
+  background: "color-mix(in srgb, var(--cmux-popover, #1e1e1e) 96%, #ffffff 4%)",
   boxSizing: "border-box",
   color: "var(--cmux-text, #f3f4f6)",
 };
@@ -63,8 +61,8 @@ const topRowStyle: CSSProperties = {
   minHeight: 38,
   display: "flex",
   alignItems: "center",
-  gap: 10,
-  padding: "6px 10px 4px",
+  gap: 8,
+  padding: "5px 9px 3px",
   boxSizing: "border-box",
   overflowX: "auto",
   overflowY: "hidden",
@@ -74,8 +72,8 @@ const commandRowStyle: CSSProperties = {
   minHeight: 36,
   display: "flex",
   alignItems: "center",
-  gap: 8,
-  padding: "3px 10px 7px",
+  gap: 6,
+  padding: "2px 9px 6px",
   boxSizing: "border-box",
   overflowX: "auto",
   overflowY: "hidden",
@@ -94,18 +92,17 @@ const fileBlockStyle: CSSProperties = {
 
 const kindBadgeStyle: CSSProperties = {
   gridRow: "1 / span 2",
-  minWidth: 38,
-  height: 24,
+  minWidth: 34,
+  height: 22,
   display: "inline-flex",
   alignItems: "center",
   justifyContent: "center",
-  gap: 4,
-  padding: "0 7px",
+  padding: "0 6px",
   borderRadius: 6,
   border: "1px solid color-mix(in srgb, var(--cmux-border, #3a3a3a) 76%, transparent)",
-  background: "color-mix(in srgb, var(--cmux-popover, #1e1e1e) 78%, #ffffff 10%)",
-  color: "color-mix(in srgb, var(--cmux-text, #f3f4f6) 90%, #8ab4ff)",
-  fontSize: 11,
+  background: "color-mix(in srgb, var(--cmux-popover, #1e1e1e) 84%, #ffffff 7%)",
+  color: "color-mix(in srgb, var(--cmux-text-muted, #a1a1aa) 92%, var(--cmux-text, #f3f4f6))",
+  fontSize: 10,
   fontWeight: 700,
   letterSpacing: 0,
   boxSizing: "border-box",
@@ -117,7 +114,7 @@ const fileNameStyle: CSSProperties = {
   textOverflow: "ellipsis",
   whiteSpace: "nowrap",
   fontSize: 12,
-  fontWeight: 700,
+  fontWeight: 650,
   lineHeight: "16px",
 };
 
@@ -135,25 +132,25 @@ const actionsStyle: CSSProperties = {
   flex: "0 0 auto",
   display: "inline-flex",
   alignItems: "center",
-  gap: 6,
+  gap: 4,
   overflowX: "auto",
-  maxWidth: "52%",
+  maxWidth: "44%",
 };
 
 const groupStyle: CSSProperties = {
   flex: "0 0 auto",
   display: "inline-flex",
   alignItems: "center",
-  gap: 3,
-  padding: 3,
+  gap: 2,
+  padding: 2,
   border: "1px solid color-mix(in srgb, var(--cmux-border, #3a3a3a) 70%, transparent)",
   borderRadius: 8,
-  background: "color-mix(in srgb, var(--cmux-popover, #1e1e1e) 82%, #ffffff 6%)",
+  background: "color-mix(in srgb, var(--cmux-popover, #1e1e1e) 86%, #ffffff 5%)",
 };
 
 const groupLabelStyle: CSSProperties = {
   flex: "0 0 auto",
-  padding: "0 5px",
+  padding: "0 4px",
   color: "color-mix(in srgb, var(--cmux-text-muted, #a1a1aa) 90%, transparent)",
   fontSize: 10,
   fontWeight: 700,
@@ -184,28 +181,28 @@ function buttonStyle(variant: ButtonVariant, disabled?: boolean, withLabel?: boo
   const isPrimary = variant === "primary";
   const isDanger = variant === "danger";
   return {
-    minWidth: withLabel ? 74 : 28,
-    height: 28,
+    minWidth: withLabel ? 64 : 26,
+    height: 26,
     display: "inline-flex",
     alignItems: "center",
     justifyContent: "center",
-    gap: 6,
-    padding: withLabel ? "0 10px" : 0,
+    gap: 5,
+    padding: withLabel ? "0 8px" : 0,
     border: isPrimary
-      ? "1px solid color-mix(in srgb, var(--cmux-accent, #0a84ff) 82%, #ffffff 18%)"
+      ? "1px solid color-mix(in srgb, var(--cmux-accent, #0a84ff) 62%, var(--cmux-border, #3a3a3a) 38%)"
       : isDanger
         ? "1px solid color-mix(in srgb, #ef4444 58%, var(--cmux-border, #3a3a3a) 42%)"
         : "1px solid color-mix(in srgb, var(--cmux-border, #3a3a3a) 80%, transparent)",
     borderRadius: 6,
     color: isPrimary
-      ? "#ffffff"
+      ? "color-mix(in srgb, var(--cmux-accent, #0a84ff) 74%, #ffffff 26%)"
       : isDanger
         ? "color-mix(in srgb, #fecaca 86%, var(--cmux-text, #f3f4f6))"
         : "var(--cmux-text, #f3f4f6)",
     background: disabled
       ? "color-mix(in srgb, var(--cmux-popover, #1e1e1e) 88%, #ffffff 5%)"
       : isPrimary
-        ? "linear-gradient(180deg, color-mix(in srgb, var(--cmux-accent, #0a84ff) 92%, #ffffff 12%), color-mix(in srgb, var(--cmux-accent, #0a84ff) 82%, #000000 18%))"
+        ? "color-mix(in srgb, var(--cmux-accent, #0a84ff) 18%, var(--cmux-popover, #1e1e1e) 82%)"
         : isDanger
           ? "color-mix(in srgb, #7f1d1d 48%, var(--cmux-popover, #1e1e1e) 52%)"
           : "color-mix(in srgb, var(--cmux-popover, #1e1e1e) 78%, #ffffff 9%)",
@@ -220,17 +217,17 @@ function statusStyle(isDirty: boolean, isEditing: boolean, isBusy: boolean): CSS
   const color = isBusy ? "#f59e0b" : isDirty ? "#ef4444" : isEditing ? "#0a84ff" : "#22c55e";
   return {
     flex: "0 0 auto",
-    height: 24,
+    height: 22,
     display: "inline-flex",
     alignItems: "center",
-    gap: 6,
-    padding: "0 8px",
+    gap: 5,
+    padding: "0 7px",
     borderRadius: 999,
-    border: `1px solid color-mix(in srgb, ${color} 48%, var(--cmux-border, #3a3a3a) 52%)`,
-    color: "var(--cmux-text, #f3f4f6)",
-    background: `color-mix(in srgb, ${color} 16%, var(--cmux-popover, #1e1e1e) 84%)`,
-    fontSize: 11,
-    fontWeight: 700,
+    border: "1px solid color-mix(in srgb, var(--cmux-border, #3a3a3a) 74%, transparent)",
+    color: "color-mix(in srgb, var(--cmux-text-muted, #a1a1aa) 82%, var(--cmux-text, #f3f4f6))",
+    background: `color-mix(in srgb, ${color} 8%, var(--cmux-popover, #1e1e1e) 92%)`,
+    fontSize: 10,
+    fontWeight: 650,
     letterSpacing: 0,
     whiteSpace: "nowrap",
   };
@@ -284,7 +281,7 @@ function StatusPill({
   if (isDirty) {
     return (
       <span style={statusStyle(isDirty, isEditing, isBusy)} title="Unsaved edits">
-        <CircleAlert size={iconSize} />
+        <span aria-hidden="true" style={{ width: 6, height: 6, borderRadius: "50%", background: "#ef4444" }} />
         Unsaved
       </span>
     );
@@ -292,14 +289,14 @@ function StatusPill({
   if (isEditing) {
     return (
       <span style={statusStyle(isDirty, isEditing, isBusy)} title="Editing">
-        <Pencil size={iconSize} />
+        <span aria-hidden="true" style={{ width: 6, height: 6, borderRadius: "50%", background: "#0a84ff" }} />
         Editing
       </span>
     );
   }
   return (
     <span style={statusStyle(isDirty, isEditing, isBusy)} title="Preview mode">
-      <CheckCircle2 size={iconSize} />
+      <span aria-hidden="true" style={{ width: 6, height: 6, borderRadius: "50%", background: "#22c55e" }} />
       Preview
     </span>
   );
@@ -316,11 +313,11 @@ function ArtifactEditorToolbarImpl({
   onSave,
   onCancel,
   onReload,
+  onRevealSource,
   onCommand,
 }: ArtifactEditorToolbarProps) {
   const commandDisabled = !isEditing || isBusy;
-  const iconSize = 15;
-  const SourceIcon = sourceKind === "markdown" ? FileText : FileCode;
+  const iconSize = 14;
   const name = fileLeaf(sourcePath);
   const parent = parentPath(sourcePath);
 
@@ -328,21 +325,24 @@ function ArtifactEditorToolbarImpl({
     <div style={shellStyle}>
       <div style={topRowStyle}>
         <div style={fileBlockStyle} title={sourcePath}>
-          <span style={kindBadgeStyle}>
-            <SourceIcon size={13} />
-            {sourceKindLabel(sourceKind)}
-          </span>
+          <span style={kindBadgeStyle}>{sourceKindLabel(sourceKind)}</span>
           <span style={fileNameStyle}>{name}</span>
           <span style={parentPathStyle}>{parent || "No source file"}</span>
         </div>
         <StatusPill isDirty={isDirty} isEditing={isEditing} isBusy={isBusy} />
         <div style={actionsStyle}>
+          <ToolbarButton
+            title="Show source file in Explorer"
+            disabled={!sourcePath || isBusy}
+            onClick={onRevealSource}
+          >
+            <FolderOpen size={iconSize} />
+          </ToolbarButton>
           {!isEditing ? (
             <ToolbarButton
               title="Start editing this artifact"
               disabled={!canEdit || isBusy}
               variant="primary"
-              label="Edit"
               onClick={onStartEdit}
             >
               <Pencil size={iconSize} />
@@ -352,7 +352,6 @@ function ArtifactEditorToolbarImpl({
               title={isDirty ? "Save changes to the source file" : "No changes to save"}
               disabled={!isDirty || isBusy}
               variant="primary"
-              label="Save"
               onClick={onSave}
             >
               <Save size={iconSize} />
