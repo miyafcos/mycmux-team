@@ -52,6 +52,7 @@ interface ArtifactEditorToolbarProps {
   isEditing: boolean;
   isDirty: boolean;
   isBusy: boolean;
+  isSourceMode?: boolean;
   sourcePath?: string;
   sourceKind?: ArtifactSourceKind;
   onStartEdit: () => void;
@@ -394,6 +395,7 @@ function ArtifactEditorToolbarImpl({
   isEditing,
   isDirty,
   isBusy,
+  isSourceMode,
   sourcePath,
   sourceKind,
   onStartEdit,
@@ -404,7 +406,7 @@ function ArtifactEditorToolbarImpl({
   onOpenSource,
   onCommand,
 }: ArtifactEditorToolbarProps) {
-  const commandDisabled = !isEditing || isBusy;
+  const commandDisabled = !isEditing || isBusy || Boolean(isSourceMode);
   const iconSize = 13;
   const name = fileLeaf(sourcePath);
   const parent = parentPath(sourcePath);
@@ -470,6 +472,7 @@ function ArtifactEditorToolbarImpl({
           </ToolbarButton>
         </div>
 
+        {!isSourceMode && <>
         <div style={groupStyle} role="group" aria-label="Text formatting">
           <span style={groupLabelStyle}>Text</span>
           <ToolbarButton title="Bold" disabled={commandDisabled} onClick={() => onCommand("bold")}>
@@ -551,6 +554,7 @@ function ArtifactEditorToolbarImpl({
             <X size={iconSize} />
           </ToolbarButton>
         </div>
+        </>}
       </div>
       )}
     </div>

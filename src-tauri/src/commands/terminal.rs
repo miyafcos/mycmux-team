@@ -39,6 +39,7 @@ pub struct EditableArtifactSource {
     pub source_path: String,
     pub source_kind: String,
     pub content: String,
+    pub raw_content: Option<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -1120,8 +1121,13 @@ fn xml_attr_value(element: &quick_xml::events::BytesStart<'_>, key: &[u8]) -> Op
 struct DocxRunFormat {
     bold: bool,
     italic: bool,
+    underline: bool,
+    strike: bool,
     font_family: Option<String>,
     font_size_half_points: Option<u32>,
+    color: Option<String>,
+    highlight: Option<String>,
+    vertical_align: Option<String>,
     equation: bool,
 }
 
@@ -1129,8 +1135,13 @@ impl DocxRunFormat {
     fn has_properties(&self) -> bool {
         self.bold
             || self.italic
+            || self.underline
+            || self.strike
             || self.font_family.is_some()
             || self.font_size_half_points.is_some()
+            || self.color.is_some()
+            || self.highlight.is_some()
+            || self.vertical_align.is_some()
             || self.equation
     }
 }
@@ -1170,6 +1181,68 @@ fn normalize_alignment(value: &str) -> Option<String> {
         "left" | "start" => Some("left".to_string()),
         "center" | "centre" => Some("center".to_string()),
         "right" | "end" => Some("right".to_string()),
+        _ => None,
+    }
+}
+
+fn normalize_word_hex_color(value: &str) -> Option<String> {
+    let trimmed = value.trim().trim_start_matches('#');
+    if trimmed.eq_ignore_ascii_case("auto") {
+        return None;
+    }
+    if trimmed.len() == 6 && trimmed.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        Some(trimmed.to_ascii_uppercase())
+    } else {
+        None
+    }
+}
+
+fn word_highlight_to_css(value: &str) -> Option<String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "yellow" => Some("#fff2cc".to_string()),
+        "green" => Some("#d9ead3".to_string()),
+        "cyan" => Some("#d9eaf7".to_string()),
+        "magenta" => Some("#eadcf8".to_string()),
+        "blue" => Some("#cfe2f3".to_string()),
+        "red" => Some("#f4cccc".to_string()),
+        "darkyellow" => Some("#f1c232".to_string()),
+        "darkgreen" => Some("#6aa84f".to_string()),
+        "darkcyan" => Some("#45818e".to_string()),
+        "darkmagenta" => Some("#674ea7".to_string()),
+        "darkblue" => Some("#3d85c6".to_string()),
+        "darkred" => Some("#cc0000".to_string()),
+        "black" => Some("#000000".to_string()),
+        "darkgray" => Some("#666666".to_string()),
+        "lightgray" => Some("#d9d9d9".to_string()),
+        _ => None,
+    }
+}
+
+fn css_color_to_word_hex(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if let Some(hex) = normalize_word_hex_color(trimmed) {
+        return Some(hex);
+    }
+    match trimmed.to_ascii_lowercase().as_str() {
+        "black" => Some("000000".to_string()),
+        "white" => Some("FFFFFF".to_string()),
+        "red" => Some("FF0000".to_string()),
+        "green" => Some("008000".to_string()),
+        "blue" => Some("0000FF".to_string()),
+        "yellow" => Some("FFFF00".to_string()),
+        _ => None,
+    }
+}
+
+fn css_background_to_word_highlight(value: &str) -> Option<String> {
+    let normalized = value.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "yellow" | "#ffff00" | "#fff2cc" => Some("yellow".to_string()),
+        "green" | "#00ff00" | "#d9ead3" => Some("green".to_string()),
+        "cyan" | "#00ffff" | "#d9eaf7" => Some("cyan".to_string()),
+        "magenta" | "#ff00ff" | "#eadcf8" => Some("magenta".to_string()),
+        "red" | "#ff0000" | "#f4cccc" => Some("red".to_string()),
+        "blue" | "#0000ff" | "#cfe2f3" => Some("blue".to_string()),
         _ => None,
     }
 }
@@ -1229,6 +1302,33 @@ fn docx_run_format_html_open_close(format: &DocxRunFormat) -> (String, String) {
             "font-size",
             &format!("{}pt", docx_half_points_to_pt(size)),
         );
+    }
+    if let Some(color) = format.color.as_deref() {
+        push_style_declaration(&mut span_style, "color", &format!("#{color}"));
+    }
+    if let Some(highlight) = format.highlight.as_deref().and_then(word_highlight_to_css) {
+        push_style_declaration(&mut span_style, "background-color", &highlight);
+    }
+    if let Some(vertical_align) = format.vertical_align.as_deref() {
+        let css_value = match vertical_align {
+            "superscript" => Some("super"),
+            "subscript" => Some("sub"),
+            _ => None,
+        };
+        if let Some(css_value) = css_value {
+            push_style_declaration(&mut span_style, "vertical-align", css_value);
+            push_style_declaration(&mut span_style, "font-size", "0.75em");
+        }
+    }
+    if format.underline || format.strike {
+        let mut values = Vec::new();
+        if format.underline {
+            values.push("underline");
+        }
+        if format.strike {
+            values.push("line-through");
+        }
+        push_style_declaration(&mut span_style, "text-decoration", &values.join(" "));
     }
     if format.equation {
         open.push_str("<span class=\"mycmux-equation\" data-mycmux-equation=\"true\"");
@@ -1349,6 +1449,16 @@ fn apply_docx_run_property(
     match xml_local_name(element.name().as_ref()) {
         b"b" => format.bold = xml_enabled(element),
         b"i" => format.italic = xml_enabled(element),
+        b"u" => {
+            format.underline = !matches!(
+                xml_attr_value(element, b"val")
+                    .unwrap_or_else(|| "single".to_string())
+                    .to_ascii_lowercase()
+                    .as_str(),
+                "none" | "0" | "false" | "off"
+            );
+        }
+        b"strike" | b"dstrike" => format.strike = xml_enabled(element),
         b"rFonts" => {
             if let Some(font_family) = run_font_family_from_xml(element) {
                 format.font_family = Some(font_family);
@@ -1360,6 +1470,25 @@ fn apply_docx_run_property(
                 .filter(|value| *value > 0)
             {
                 format.font_size_half_points = Some(size);
+            }
+        }
+        b"color" => {
+            if let Some(color) =
+                xml_attr_value(element, b"val").and_then(|value| normalize_word_hex_color(&value))
+            {
+                format.color = Some(color);
+            }
+        }
+        b"highlight" => {
+            if let Some(highlight) = xml_attr_value(element, b"val") {
+                format.highlight = Some(highlight);
+            }
+        }
+        b"vertAlign" => {
+            if let Some(value) = xml_attr_value(element, b"val") {
+                if matches!(value.as_str(), "superscript" | "subscript") {
+                    format.vertical_align = Some(value);
+                }
             }
         }
         b"rStyle" => {
@@ -1383,15 +1512,24 @@ fn push_html_text(target: &mut String, text: &str, format: &DocxRunFormat) {
     }
 }
 
-fn flush_docx_paragraph(body: &mut String, paragraph: &mut String, format: &DocxParagraphFormat) {
+fn flush_docx_paragraph(
+    body: &mut String,
+    paragraph: &mut String,
+    format: &DocxParagraphFormat,
+    preserve_empty: bool,
+) {
     let trimmed = paragraph.trim();
-    if !trimmed.is_empty() {
+    if !trimmed.is_empty() || preserve_empty {
         let tag = docx_paragraph_tag(format);
         body.push('<');
         body.push_str(tag);
         body.push_str(&docx_paragraph_style_attr(format));
         body.push('>');
-        body.push_str(trimmed);
+        if trimmed.is_empty() {
+            body.push_str("<br>");
+        } else {
+            body.push_str(trimmed);
+        }
         body.push_str("</");
         body.push_str(tag);
         body.push_str(">\n");
@@ -1419,7 +1557,7 @@ fn docx_xml_to_html(xml: &str) -> String {
         match reader.read_event() {
             Ok(Event::Start(element)) => match xml_local_name(element.name().as_ref()) {
                 b"tbl" => {
-                    flush_docx_paragraph(&mut body, &mut paragraph, &paragraph_format);
+                    flush_docx_paragraph(&mut body, &mut paragraph, &paragraph_format, false);
                     paragraph_format = DocxParagraphFormat::default();
                     body.push_str("<table><tbody>\n");
                     in_table = true;
@@ -1489,7 +1627,7 @@ fn docx_xml_to_html(xml: &str) -> String {
             Ok(Event::End(element)) => match xml_local_name(element.name().as_ref()) {
                 b"t" => in_text = false,
                 b"p" if !in_table => {
-                    flush_docx_paragraph(&mut body, &mut paragraph, &paragraph_format);
+                    flush_docx_paragraph(&mut body, &mut paragraph, &paragraph_format, true);
                     paragraph_format = DocxParagraphFormat::default();
                 }
                 b"pPr" => in_paragraph_properties = false,
@@ -1522,7 +1660,7 @@ fn docx_xml_to_html(xml: &str) -> String {
             _ => {}
         }
     }
-    flush_docx_paragraph(&mut body, &mut paragraph, &paragraph_format);
+    flush_docx_paragraph(&mut body, &mut paragraph, &paragraph_format, false);
     if body.trim().is_empty() {
         "<p class=\"office-empty\">No readable text was found in this Word document.</p>"
             .to_string()
@@ -1686,6 +1824,10 @@ fn docx_inline_format_for_node(node: &NodeRef, current: &DocxRunFormat) -> DocxR
     match name.as_str() {
         "strong" | "b" => next.bold = true,
         "em" | "i" => next.italic = true,
+        "u" => next.underline = true,
+        "s" | "strike" | "del" => next.strike = true,
+        "sup" => next.vertical_align = Some("superscript".to_string()),
+        "sub" => next.vertical_align = Some("subscript".to_string()),
         "font" => {
             if let Some(face) = html_attr(node, "face").and_then(|value| first_font_family(&value))
             {
@@ -1720,6 +1862,33 @@ fn docx_inline_format_for_node(node: &NodeRef, current: &DocxRunFormat) -> DocxR
             .and_then(|value| css_font_size_to_half_points(&value))
         {
             next.font_size_half_points = Some(size);
+        }
+        if let Some(color) =
+            html_style_property(&style, "color").and_then(|value| css_color_to_word_hex(&value))
+        {
+            next.color = Some(color);
+        }
+        if let Some(highlight) = html_style_property(&style, "background-color")
+            .or_else(|| html_style_property(&style, "background"))
+            .and_then(|value| css_background_to_word_highlight(&value))
+        {
+            next.highlight = Some(highlight);
+        }
+        if let Some(decoration) = html_style_property(&style, "text-decoration") {
+            let lower = decoration.to_ascii_lowercase();
+            if lower.contains("underline") {
+                next.underline = true;
+            }
+            if lower.contains("line-through") {
+                next.strike = true;
+            }
+        }
+        if let Some(vertical_align) = html_style_property(&style, "vertical-align") {
+            match vertical_align.to_ascii_lowercase().as_str() {
+                "super" | "superscript" => next.vertical_align = Some("superscript".to_string()),
+                "sub" | "subscript" => next.vertical_align = Some("subscript".to_string()),
+                _ => {}
+            }
         }
     }
     next
@@ -1791,6 +1960,12 @@ fn push_docx_run(target: &mut String, text: &str, format: &DocxRunFormat) {
         if format.italic || format.equation {
             target.push_str("<w:i/>");
         }
+        if format.underline {
+            target.push_str("<w:u w:val=\"single\"/>");
+        }
+        if format.strike {
+            target.push_str("<w:strike/>");
+        }
         if let Some(font_family) = format.font_family.as_deref().or(if format.equation {
             Some("Cambria Math")
         } else {
@@ -1808,6 +1983,21 @@ fn push_docx_run(target: &mut String, text: &str, format: &DocxRunFormat) {
         if let Some(size) = format.font_size_half_points {
             target.push_str("<w:sz w:val=\"");
             target.push_str(&size.to_string());
+            target.push_str("\"/>");
+        }
+        if let Some(color) = format.color.as_deref() {
+            target.push_str("<w:color w:val=\"");
+            target.push_str(&escape_html(color));
+            target.push_str("\"/>");
+        }
+        if let Some(highlight) = format.highlight.as_deref() {
+            target.push_str("<w:highlight w:val=\"");
+            target.push_str(&escape_html(highlight));
+            target.push_str("\"/>");
+        }
+        if let Some(vertical_align) = format.vertical_align.as_deref() {
+            target.push_str("<w:vertAlign w:val=\"");
+            target.push_str(&escape_html(vertical_align));
             target.push_str("\"/>");
         }
         if format.equation {
@@ -2007,6 +2197,26 @@ fn html_fragment_to_docx_document_xml(fragment: &str, original_xml: &str) -> Str
         blocks.join(""),
         docx_section_properties(original_xml)
     )
+}
+
+fn unsupported_docx_editing_feature(document_xml: &str) -> Option<&'static str> {
+    const UNSUPPORTED_MARKERS: &[(&str, &str)] = &[
+        ("<w:drawing", "images or drawings"),
+        ("<w:pict", "legacy images or drawings"),
+        ("<w:object", "embedded objects"),
+        ("<w:altChunk", "embedded external document chunks"),
+        ("<w:footnoteReference", "footnotes"),
+        ("<w:endnoteReference", "endnotes"),
+        ("<w:commentReference", "comments"),
+        ("<w:ins", "tracked insertions"),
+        ("<w:del", "tracked deletions"),
+        ("<w:numPr", "Word-managed numbering"),
+        ("<w:gridSpan", "merged table cells"),
+        ("<w:vMerge", "merged table cells"),
+    ];
+    UNSUPPORTED_MARKERS
+        .iter()
+        .find_map(|(marker, label)| document_xml.contains(marker).then_some(*label))
 }
 
 fn xlsx_shared_strings_xml_to_vec(xml: &str) -> Vec<String> {
@@ -2723,6 +2933,11 @@ fn html_fragment_to_markdown(fragment: &str) -> String {
     }
 }
 
+fn looks_like_html_fragment(value: &str) -> bool {
+    let trimmed = value.trim_start();
+    trimmed.starts_with('<') && trimmed.contains('>')
+}
+
 #[tauri::command]
 pub fn preview_artifact_for_session(session_id: String) -> Result<String, String> {
     let session_dir = sidetab_session_dir(&session_id)?;
@@ -2756,10 +2971,12 @@ pub fn preview_artifact_uri_for_session_v2(
 #[tauri::command]
 pub fn read_editable_artifact(source_path: String) -> Result<EditableArtifactSource, String> {
     let (path, source_kind) = validate_editable_artifact_path(&source_path)?;
+    let mut raw_content = None;
     let content = match source_kind.as_str() {
         "markdown" => {
             let raw = std::fs::read_to_string(&path)
                 .map_err(|error| format!("Failed to read editable artifact: {error}"))?;
+            raw_content = Some(raw.clone());
             markdown_to_static_html(&raw)
         }
         "html" => std::fs::read_to_string(&path)
@@ -2771,6 +2988,7 @@ pub fn read_editable_artifact(source_path: String) -> Result<EditableArtifactSou
         source_path: path.to_string_lossy().to_string(),
         source_kind,
         content,
+        raw_content,
     })
 }
 
@@ -2870,6 +3088,44 @@ fn write_docx_document_xml_atomic(path: &Path, document_xml: &str) -> Result<(),
         .map_err(|error| format!("Failed to replace Word document: {}", error.error))
 }
 
+fn preview_fallback_path(path: &Path, suffix: &str) -> PathBuf {
+    let mut hasher = DefaultHasher::new();
+    path.to_string_lossy().hash(&mut hasher);
+    let stem = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("artifact")
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    std::env::temp_dir().join(format!("mycmux-{stem}-{:016x}.{suffix}", hasher.finish()))
+}
+
+fn write_preview_html_with_fallback(
+    preferred_path: &Path,
+    fallback_path: &Path,
+    html: String,
+    label: &str,
+) -> Result<PathBuf, String> {
+    match std::fs::write(preferred_path, html.as_bytes()) {
+        Ok(()) => Ok(preferred_path.to_path_buf()),
+        Err(primary_error) => {
+            std::fs::write(fallback_path, html.as_bytes()).map_err(|fallback_error| {
+                format!(
+                    "Failed to refresh {label} preview: {primary_error}; fallback also failed: {fallback_error}"
+                )
+            })?;
+            Ok(fallback_path.to_path_buf())
+        }
+    }
+}
+
 fn preview_path_after_save(
     path: &Path,
     source_kind: &str,
@@ -2880,15 +3136,25 @@ fn preview_path_after_save(
     }
     if source_kind == "office" {
         let preview_path = path.with_extension("office.preview.html");
-        std::fs::write(&preview_path, office_to_static_html(path))
-            .map_err(|error| format!("Failed to refresh Word preview: {error}"))?;
-        return Ok(preview_path.to_string_lossy().to_string());
+        let fallback_path = preview_fallback_path(path, "office.preview.html");
+        let written_path = write_preview_html_with_fallback(
+            &preview_path,
+            &fallback_path,
+            office_to_static_html(path),
+            "Word",
+        )?;
+        return Ok(written_path.to_string_lossy().to_string());
     }
     let markdown = markdown.ok_or_else(|| "Markdown preview content missing".to_string())?;
     let preview_path = path.with_extension("preview.html");
-    std::fs::write(&preview_path, markdown_to_static_html(markdown))
-        .map_err(|error| format!("Failed to refresh markdown preview: {error}"))?;
-    Ok(preview_path.to_string_lossy().to_string())
+    let fallback_path = preview_fallback_path(path, "preview.html");
+    let written_path = write_preview_html_with_fallback(
+        &preview_path,
+        &fallback_path,
+        markdown_to_static_html(markdown),
+        "markdown",
+    )?;
+    Ok(written_path.to_string_lossy().to_string())
 }
 
 #[tauri::command]
@@ -2911,11 +3177,20 @@ pub fn save_editable_artifact(
     let mut markdown_preview: Option<String> = None;
     if actual_kind == "office" {
         let original_xml = read_zip_text_entry(&path, "word/document.xml")?;
+        if let Some(feature) = unsupported_docx_editing_feature(&original_xml) {
+            return Err(format!(
+                "This Word document contains {feature}. Open it in Word for editing to avoid losing formatting."
+            ));
+        }
         let next_xml = html_fragment_to_docx_document_xml(&content, &original_xml);
         write_docx_document_xml_atomic(&path, &next_xml)?;
     } else {
         let next_content = if actual_kind == "markdown" {
-            let markdown = html_fragment_to_markdown(&content);
+            let markdown = if looks_like_html_fragment(&content) {
+                html_fragment_to_markdown(&content)
+            } else {
+                content
+            };
             markdown_preview = Some(markdown.clone());
             markdown
         } else {
@@ -3343,6 +3618,22 @@ mod tests {
     }
 
     #[test]
+    fn docx_xml_preview_renders_extended_run_formatting_and_empty_lines() {
+        let html = docx_xml_to_html(
+            r##"<w:document xmlns:w="w"><w:body>
+                <w:p><w:r><w:rPr><w:u w:val="single"/><w:strike/><w:color w:val="FF0000"/><w:highlight w:val="yellow"/><w:vertAlign w:val="superscript"/></w:rPr><w:t>Marked</w:t></w:r></w:p>
+                <w:p><w:r><w:t></w:t></w:r></w:p>
+            </w:body></w:document>"##,
+        );
+
+        assert!(html.contains("text-decoration:underline line-through"));
+        assert!(html.contains("color:#FF0000"));
+        assert!(html.contains("background-color:#fff2cc"));
+        assert!(html.contains("vertical-align:super"));
+        assert!(html.contains("<p><br></p>"));
+    }
+
+    #[test]
     fn xlsx_xml_preview_resolves_shared_strings() {
         let shared = xlsx_shared_strings_xml_to_vec(
             r#"<sst><si><t>Name</t></si><si><t>Value</t></si></sst>"#,
@@ -3540,6 +3831,53 @@ mod tests {
     }
 
     #[test]
+    fn save_docx_serializes_extended_run_formatting() {
+        let dir = tempfile::tempdir().unwrap();
+        let docx_path = dir.path().join("extended.docx");
+        write_test_docx(
+            &docx_path,
+            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Old</w:t></w:r></w:p><w:sectPr/></w:body></w:document>"#,
+        );
+
+        save_editable_artifact(
+            docx_path.to_string_lossy().to_string(),
+            "office".to_string(),
+            r##"<p><span style="text-decoration: underline line-through; color: #00AAFF; background-color: #fff2cc; vertical-align: super">Marked</span></p>"##.to_string(),
+        )
+        .unwrap();
+
+        let saved_xml = read_zip_text_entry(&docx_path, "word/document.xml").unwrap();
+        assert!(saved_xml.contains(r#"<w:u w:val="single"/>"#));
+        assert!(saved_xml.contains("<w:strike/>"));
+        assert!(saved_xml.contains(r#"<w:color w:val="00AAFF"/>"#));
+        assert!(saved_xml.contains(r#"<w:highlight w:val="yellow"/>"#));
+        assert!(saved_xml.contains(r#"<w:vertAlign w:val="superscript"/>"#));
+    }
+
+    #[test]
+    fn save_docx_rejects_unsupported_complex_word_features() {
+        let dir = tempfile::tempdir().unwrap();
+        let docx_path = dir.path().join("image.docx");
+        write_test_docx(
+            &docx_path,
+            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:drawing/></w:r></w:p><w:sectPr/></w:body></w:document>"#,
+        );
+
+        let error = match save_editable_artifact(
+            docx_path.to_string_lossy().to_string(),
+            "office".to_string(),
+            "<p>Edited</p>".to_string(),
+        ) {
+            Ok(_) => panic!("complex Word document should be rejected"),
+            Err(error) => error,
+        };
+        assert!(error.contains("images or drawings"));
+        let saved_xml = read_zip_text_entry(&docx_path, "word/document.xml").unwrap();
+        assert!(saved_xml.contains("<w:drawing/>"));
+        assert!(!saved_xml.contains("Edited"));
+    }
+
+    #[test]
     fn markdown_dom_serializer_preserves_common_blocks_and_table_html() {
         let markdown = html_fragment_to_markdown(
             r#"
@@ -3580,6 +3918,26 @@ mod tests {
         assert!(saved.contains("<table>"));
         assert!(Path::new(&result.backup_path).is_file());
         assert!(Path::new(&result.preview_path).is_file());
+    }
+
+    #[test]
+    fn markdown_editor_reads_and_saves_raw_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let markdown_path = dir.path().join("raw.md");
+        let raw = "# Title\n\n- keep\n- markdown\n\n```rust\nlet x = 1;\n```\n";
+        std::fs::write(&markdown_path, raw).unwrap();
+
+        let source = read_editable_artifact(markdown_path.to_string_lossy().to_string()).unwrap();
+        assert_eq!(source.raw_content.as_deref(), Some(raw));
+
+        let next = "# Next\n\nText with **markdown** syntax.\n";
+        save_editable_artifact(
+            markdown_path.to_string_lossy().to_string(),
+            "markdown".to_string(),
+            next.to_string(),
+        )
+        .unwrap();
+        assert_eq!(std::fs::read_to_string(&markdown_path).unwrap(), next);
     }
 
     #[test]

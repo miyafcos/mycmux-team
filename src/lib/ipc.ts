@@ -99,6 +99,7 @@ export interface EditableArtifactSource {
   sourcePath: string;
   sourceKind: ArtifactSourceKind;
   content: string;
+  rawContent?: string;
 }
 
 export interface SaveEditableArtifactResult {

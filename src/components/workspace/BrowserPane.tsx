@@ -435,12 +435,17 @@ function BrowserPaneImpl({
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const inputCleanupRef = useRef<(() => void) | null>(null);
   const selectionRangeRef = useRef<Range | null>(null);
+  const preserveEditAfterSaveRef = useRef(false);
+  const lastSavedSourcePathRef = useRef<string | null>(null);
+  const saveCurrentArtifactRef = useRef<() => void>(() => {});
+  const editLoadRequestRef = useRef(0);
   const onDirtyChangeRef = useRef(onDirtyChange);
   const onSavedRef = useRef(onSaved);
   const [isEditing, setIsEditing] = useState(false);
   const [dirty, setDirty] = useState(isDirty);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [markdownDraft, setMarkdownDraft] = useState("");
   const [editableSrcDoc, setEditableSrcDoc] = useState<string>("");
   const [readOnlySrcDoc, setReadOnlySrcDoc] = useState<string>("");
   const [localReloadKey, setLocalReloadKey] = useState(0);
@@ -469,9 +474,22 @@ function BrowserPaneImpl({
   }, [isDirty]);
 
   useEffect(() => {
+    if (
+      preserveEditAfterSaveRef.current
+      && lastSavedSourcePathRef.current
+      && sourcePath === lastSavedSourcePathRef.current
+    ) {
+      preserveEditAfterSaveRef.current = false;
+      lastSavedSourcePathRef.current = null;
+      setError(null);
+      updateDirty(false);
+      return;
+    }
     inputCleanupRef.current?.();
     inputCleanupRef.current = null;
+    editLoadRequestRef.current += 1;
     setIsEditing(false);
+    setMarkdownDraft("");
     setEditableSrcDoc("");
     setReadOnlySrcDoc("");
     selectionRangeRef.current = null;
@@ -495,18 +513,30 @@ function BrowserPaneImpl({
 
   const startEdit = useCallback(async () => {
     if (!sourcePath || !canUseInAppEditor) return;
+    const requestId = editLoadRequestRef.current + 1;
+    editLoadRequestRef.current = requestId;
     setBusy(true);
     setError(null);
     try {
       const source = await readEditableArtifact(sourcePath);
-      setEditableSrcDoc(buildEditableSrcDoc(source.content, source.sourcePath, source.sourceKind));
+      if (editLoadRequestRef.current !== requestId) return;
+      if (source.sourceKind === "markdown") {
+        setMarkdownDraft(source.rawContent ?? "");
+        setEditableSrcDoc("");
+      } else {
+        setMarkdownDraft("");
+        setEditableSrcDoc(buildEditableSrcDoc(source.content, source.sourcePath, source.sourceKind));
+      }
       setIsEditing(true);
       selectionRangeRef.current = null;
       updateDirty(false);
     } catch (caught) {
+      if (editLoadRequestRef.current !== requestId) return;
       setError(caught instanceof Error ? caught.message : String(caught));
     } finally {
-      setBusy(false);
+      if (editLoadRequestRef.current === requestId) {
+        setBusy(false);
+      }
     }
   }, [canUseInAppEditor, sourcePath, updateDirty]);
 
@@ -545,6 +575,18 @@ function BrowserPaneImpl({
 
     const forwardShortcut = (event: KeyboardEvent) => {
       if (event.defaultPrevented) return;
+
+      if (
+        isEditing &&
+        (event.ctrlKey || event.metaKey) &&
+        !event.altKey &&
+        event.key.toLowerCase() === "s"
+      ) {
+        event.preventDefault();
+        event.stopPropagation();
+        saveCurrentArtifactRef.current();
+        return;
+      }
 
       if (
         isEditing &&
@@ -716,32 +758,44 @@ function BrowserPaneImpl({
   }, [getEditableDocument, updateDirty]);
 
   const handleSave = useCallback(async () => {
-    if (!sourcePath || !sourceKind || !canUseInAppEditor) return;
-    const doc = getEditableDocument();
-    if (!doc) return;
+    if (!sourcePath || !sourceKind || !canUseInAppEditor || busy || !dirty) return;
     setBusy(true);
     setError(null);
     try {
-      const content = sourceKind === "markdown" || sourceKind === "office"
-        ? serializeEditableBodyHtml(doc, sourceKind)
-        : serializeEditableHtml(doc);
+      let content: string;
+      if (sourceKind === "markdown") {
+        content = markdownDraft;
+      } else {
+        const doc = getEditableDocument();
+        if (!doc) return;
+        content = sourceKind === "office"
+          ? serializeEditableBodyHtml(doc, sourceKind)
+          : serializeEditableHtml(doc);
+      }
       const result = await saveEditableArtifact(sourcePath, sourceKind, content);
+      preserveEditAfterSaveRef.current = true;
+      lastSavedSourcePathRef.current = result.sourcePath;
       updateDirty(false);
-      setIsEditing(false);
-      setEditableSrcDoc("");
       onSavedRef.current(result);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
     } finally {
       setBusy(false);
     }
-  }, [canUseInAppEditor, getEditableDocument, sourceKind, sourcePath, updateDirty]);
+  }, [busy, canUseInAppEditor, dirty, getEditableDocument, markdownDraft, sourceKind, sourcePath, updateDirty]);
+
+  useEffect(() => {
+    saveCurrentArtifactRef.current = () => {
+      void handleSave();
+    };
+  }, [handleSave]);
 
   const handleCancel = useCallback(() => {
     if (dirty && !window.confirm("Discard unsaved edits?")) return;
     inputCleanupRef.current?.();
     inputCleanupRef.current = null;
     setIsEditing(false);
+    setMarkdownDraft("");
     setEditableSrcDoc("");
     selectionRangeRef.current = null;
     setError(null);
@@ -791,6 +845,7 @@ function BrowserPaneImpl({
         isEditing={isEditing}
         isDirty={dirty}
         isBusy={busy}
+        isSourceMode={isEditing && sourceKind === "markdown"}
         sourcePath={sourcePath}
         sourceKind={sourceKind}
         onStartEdit={startEdit}
@@ -816,6 +871,42 @@ function BrowserPaneImpl({
         </div>
       )}
       {/* Read-only preview stays no-script; same-origin lets the parent capture shortcuts. */}
+      {isEditing && sourceKind === "markdown" ? (
+        <textarea
+          value={markdownDraft}
+          spellCheck
+          title={sourcePath ?? htmlPath}
+          onChange={(event) => {
+            setMarkdownDraft(event.currentTarget.value);
+            updateDirty(true);
+          }}
+          onKeyDown={(event) => {
+            if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "s") {
+              event.preventDefault();
+              event.stopPropagation();
+              saveCurrentArtifactRef.current();
+            }
+          }}
+          style={{
+            flex: 1,
+            minHeight: 0,
+            width: "100%",
+            boxSizing: "border-box",
+            border: "none",
+            outline: "none",
+            resize: "none",
+            padding: "18px 22px",
+            background: "#0f172a",
+            color: "#e5edf7",
+            caretColor: "#60a5fa",
+            fontFamily: "Consolas, 'Cascadia Mono', 'Yu Gothic UI', monospace",
+            fontSize: 14,
+            lineHeight: 1.65,
+            tabSize: 2,
+            whiteSpace: "pre-wrap",
+          }}
+        />
+      ) : (
       <iframe
         ref={iframeRef}
         key={
@@ -837,6 +928,7 @@ function BrowserPaneImpl({
           background: "white",
         }}
       />
+      )}
     </div>
   );
 }

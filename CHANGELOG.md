@@ -1,5 +1,14 @@
 # Changelog (mycmux-lite)
 
+## [0.7.27-lite.1] - 2026-06-07
+
+- 追加: Markdown artifact をHTML変換経由ではなく、Markdown本文を直接編集・保存できるソース編集にしました。
+- 追加: 編集中の `Ctrl+S` / `Cmd+S` で即保存できるようにしました。保存後も編集画面を閉じず、続けて作業できます。
+- 変更: Markdown編集中は保存できない装飾ツールを隠し、保持できないフォント・数式などを誤って入れないようにしました。
+- 改善: DOCXプレビュー・保存で、下線、打消し線、文字色、ハイライト、上付き/下付き、空段落を保持するようにしました。
+- 修正: 画像、脚注、コメント、変更履歴、Word管理の番号、結合セルを含むDOCXは、簡易保存で壊さないよう保存前に止めるようにしました。
+- 修正: Markdown/Word preview HTML の更新先に書けない場合、一時フォルダへフォールバックして保存動作を安定化しました。
+
 ## [0.7.26-lite.1] - 2026-06-07
 
 - Added: Word artifact edit mode now has visible formatting controls for alignment, indent/outdent, font family, font size, and equation insertion.
