@@ -1,13 +1,17 @@
 use chrono::Local;
 use kuchikiki::traits::TendrilSink;
 use kuchikiki::{NodeData, NodeRef};
+use quick_xml::events::Event;
+use quick_xml::Reader;
 use std::collections::{hash_map::DefaultHasher, HashMap};
+use std::fs::File;
 use std::hash::{Hash, Hasher};
-use std::io::{BufRead, Write};
+use std::io::{BufRead, Read, Write};
 use std::path::{Path, PathBuf};
 use sysinfo::System;
 use tauri::ipc::Channel;
 use tauri::{AppHandle, State};
+use zip::ZipArchive;
 
 use crate::AppState;
 
@@ -1072,6 +1076,385 @@ fn office_kind_label(path: &Path) -> &'static str {
     }
 }
 
+fn xml_local_name(name: &[u8]) -> &[u8] {
+    name.iter()
+        .position(|byte| *byte == b':')
+        .map(|index| &name[index + 1..])
+        .unwrap_or(name)
+}
+
+fn decode_xml_text(value: &quick_xml::events::BytesText<'_>) -> String {
+    value
+        .decode()
+        .map(|text| text.into_owned())
+        .unwrap_or_default()
+}
+
+fn xml_attr_value(element: &quick_xml::events::BytesStart<'_>, key: &[u8]) -> Option<String> {
+    element.attributes().flatten().find_map(|attribute| {
+        if xml_local_name(attribute.key.as_ref()) == key {
+            Some(String::from_utf8_lossy(attribute.value.as_ref()).to_string())
+        } else {
+            None
+        }
+    })
+}
+
+fn read_zip_text_entry(path: &Path, entry_name: &str) -> Result<String, String> {
+    let file = File::open(path).map_err(|error| format!("Failed to open Office file: {error}"))?;
+    let mut archive =
+        ZipArchive::new(file).map_err(|error| format!("Failed to read Office archive: {error}"))?;
+    let mut entry = archive
+        .by_name(entry_name)
+        .map_err(|error| format!("Office entry not found ({entry_name}): {error}"))?;
+    let mut contents = String::new();
+    entry
+        .read_to_string(&mut contents)
+        .map_err(|error| format!("Failed to read Office XML ({entry_name}): {error}"))?;
+    Ok(contents)
+}
+
+fn zip_entry_names(path: &Path, prefix: &str, suffix: &str) -> Result<Vec<String>, String> {
+    let file = File::open(path).map_err(|error| format!("Failed to open Office file: {error}"))?;
+    let mut archive =
+        ZipArchive::new(file).map_err(|error| format!("Failed to read Office archive: {error}"))?;
+    let mut names = Vec::new();
+    for index in 0..archive.len() {
+        let entry = archive
+            .by_index(index)
+            .map_err(|error| format!("Failed to inspect Office archive: {error}"))?;
+        let name = entry.name();
+        if name.starts_with(prefix) && name.ends_with(suffix) {
+            names.push(name.to_string());
+        }
+    }
+    names.sort();
+    Ok(names)
+}
+
+fn push_html_text(target: &mut String, text: &str) {
+    if !text.is_empty() {
+        target.push_str(&escape_html(text));
+    }
+}
+
+fn flush_docx_paragraph(body: &mut String, paragraph: &mut String) {
+    let trimmed = paragraph.trim();
+    if !trimmed.is_empty() {
+        body.push_str("<p>");
+        body.push_str(trimmed);
+        body.push_str("</p>\n");
+    }
+    paragraph.clear();
+}
+
+fn docx_xml_to_html(xml: &str) -> String {
+    let mut reader = Reader::from_str(xml);
+    reader.config_mut().trim_text(false);
+
+    let mut body = String::new();
+    let mut paragraph = String::new();
+    let mut cell = String::new();
+    let mut in_text = false;
+    let mut in_table = false;
+    let mut in_cell = false;
+
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(element)) => match xml_local_name(element.name().as_ref()) {
+                b"tbl" => {
+                    flush_docx_paragraph(&mut body, &mut paragraph);
+                    body.push_str("<table><tbody>\n");
+                    in_table = true;
+                }
+                b"tr" if in_table => body.push_str("<tr>"),
+                b"tc" if in_table => {
+                    in_cell = true;
+                    cell.clear();
+                }
+                b"t" => in_text = true,
+                _ => {}
+            },
+            Ok(Event::Empty(element)) => match xml_local_name(element.name().as_ref()) {
+                b"tab" => {
+                    if in_cell {
+                        cell.push(' ');
+                    } else {
+                        paragraph.push(' ');
+                    }
+                }
+                b"br" => {
+                    if in_cell {
+                        cell.push_str("<br>");
+                    } else {
+                        paragraph.push_str("<br>");
+                    }
+                }
+                _ => {}
+            },
+            Ok(Event::Text(text)) if in_text => {
+                let decoded = decode_xml_text(&text);
+                if in_cell {
+                    push_html_text(&mut cell, &decoded);
+                } else {
+                    push_html_text(&mut paragraph, &decoded);
+                }
+            }
+            Ok(Event::End(element)) => match xml_local_name(element.name().as_ref()) {
+                b"t" => in_text = false,
+                b"p" if !in_table => flush_docx_paragraph(&mut body, &mut paragraph),
+                b"tc" if in_table => {
+                    let trimmed = cell.trim();
+                    body.push_str("<td>");
+                    if trimmed.is_empty() {
+                        body.push_str("&nbsp;");
+                    } else {
+                        body.push_str(trimmed);
+                    }
+                    body.push_str("</td>");
+                    cell.clear();
+                    in_cell = false;
+                }
+                b"tr" if in_table => body.push_str("</tr>\n"),
+                b"tbl" => {
+                    body.push_str("</tbody></table>\n");
+                    in_table = false;
+                }
+                _ => {}
+            },
+            Ok(Event::Eof) => break,
+            Err(_) => break,
+            _ => {}
+        }
+    }
+    flush_docx_paragraph(&mut body, &mut paragraph);
+    if body.trim().is_empty() {
+        "<p class=\"office-empty\">No readable text was found in this Word document.</p>"
+            .to_string()
+    } else {
+        body
+    }
+}
+
+fn docx_to_html(path: &Path) -> Result<String, String> {
+    let xml = read_zip_text_entry(path, "word/document.xml")?;
+    Ok(docx_xml_to_html(&xml))
+}
+
+fn xlsx_shared_strings_xml_to_vec(xml: &str) -> Vec<String> {
+    let mut reader = Reader::from_str(xml);
+    reader.config_mut().trim_text(false);
+
+    let mut values = Vec::new();
+    let mut current = String::new();
+    let mut in_item = false;
+    let mut in_text = false;
+
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(element)) => match xml_local_name(element.name().as_ref()) {
+                b"si" => {
+                    current.clear();
+                    in_item = true;
+                }
+                b"t" if in_item => in_text = true,
+                _ => {}
+            },
+            Ok(Event::Text(text)) if in_item && in_text => {
+                current.push_str(&decode_xml_text(&text));
+            }
+            Ok(Event::End(element)) => match xml_local_name(element.name().as_ref()) {
+                b"t" => in_text = false,
+                b"si" => {
+                    values.push(current.clone());
+                    current.clear();
+                    in_item = false;
+                }
+                _ => {}
+            },
+            Ok(Event::Eof) => break,
+            Err(_) => break,
+            _ => {}
+        }
+    }
+
+    values
+}
+
+fn xlsx_sheet_xml_to_html(xml: &str, shared_strings: &[String]) -> String {
+    let mut reader = Reader::from_str(xml);
+    reader.config_mut().trim_text(false);
+
+    let mut body = String::new();
+    let mut cell_type = String::new();
+    let mut cell_value = String::new();
+    let mut in_value = false;
+    let mut in_row = false;
+
+    body.push_str("<table><tbody>\n");
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(element)) => match xml_local_name(element.name().as_ref()) {
+                b"row" => {
+                    in_row = true;
+                    body.push_str("<tr>");
+                }
+                b"c" => {
+                    cell_type = xml_attr_value(&element, b"t").unwrap_or_default();
+                    cell_value.clear();
+                }
+                b"v" | b"t" => in_value = true,
+                _ => {}
+            },
+            Ok(Event::Text(text)) if in_value => {
+                cell_value.push_str(&decode_xml_text(&text));
+            }
+            Ok(Event::End(element)) => match xml_local_name(element.name().as_ref()) {
+                b"v" | b"t" => in_value = false,
+                b"c" if in_row => {
+                    let value = if cell_type == "s" {
+                        cell_value
+                            .trim()
+                            .parse::<usize>()
+                            .ok()
+                            .and_then(|index| shared_strings.get(index))
+                            .cloned()
+                            .unwrap_or_default()
+                    } else {
+                        cell_value.clone()
+                    };
+                    body.push_str("<td>");
+                    let trimmed = value.trim();
+                    if trimmed.is_empty() {
+                        body.push_str("&nbsp;");
+                    } else {
+                        body.push_str(&escape_html(trimmed));
+                    }
+                    body.push_str("</td>");
+                    cell_value.clear();
+                    cell_type.clear();
+                }
+                b"row" => {
+                    in_row = false;
+                    body.push_str("</tr>\n");
+                }
+                _ => {}
+            },
+            Ok(Event::Eof) => break,
+            Err(_) => break,
+            _ => {}
+        }
+    }
+    body.push_str("</tbody></table>\n");
+    body
+}
+
+fn xlsx_to_html(path: &Path) -> Result<String, String> {
+    let shared_strings = read_zip_text_entry(path, "xl/sharedStrings.xml")
+        .map(|xml| xlsx_shared_strings_xml_to_vec(&xml))
+        .unwrap_or_default();
+    let sheets = zip_entry_names(path, "xl/worksheets/sheet", ".xml")?;
+    if sheets.is_empty() {
+        return Ok("<p class=\"office-empty\">No readable worksheets were found.</p>".to_string());
+    }
+
+    let mut body = String::new();
+    for (index, sheet_name) in sheets.iter().take(6).enumerate() {
+        let xml = read_zip_text_entry(path, sheet_name)?;
+        body.push_str(&format!(
+            "<section class=\"sheet\"><h2>Sheet {}</h2>",
+            index + 1
+        ));
+        body.push_str(&xlsx_sheet_xml_to_html(&xml, &shared_strings));
+        body.push_str("</section>\n");
+    }
+    Ok(body)
+}
+
+fn pptx_slide_xml_to_paragraphs(xml: &str) -> Vec<String> {
+    let mut reader = Reader::from_str(xml);
+    reader.config_mut().trim_text(false);
+
+    let mut paragraphs = Vec::new();
+    let mut current = String::new();
+    let mut in_paragraph = false;
+    let mut in_text = false;
+
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(element)) => match xml_local_name(element.name().as_ref()) {
+                b"p" => {
+                    current.clear();
+                    in_paragraph = true;
+                }
+                b"t" if in_paragraph => in_text = true,
+                _ => {}
+            },
+            Ok(Event::Text(text)) if in_text => current.push_str(&decode_xml_text(&text)),
+            Ok(Event::End(element)) => match xml_local_name(element.name().as_ref()) {
+                b"t" => in_text = false,
+                b"p" if in_paragraph => {
+                    let trimmed = current.trim();
+                    if !trimmed.is_empty() {
+                        paragraphs.push(trimmed.to_string());
+                    }
+                    current.clear();
+                    in_paragraph = false;
+                }
+                _ => {}
+            },
+            Ok(Event::Eof) => break,
+            Err(_) => break,
+            _ => {}
+        }
+    }
+    paragraphs
+}
+
+fn pptx_to_html(path: &Path) -> Result<String, String> {
+    let slides = zip_entry_names(path, "ppt/slides/slide", ".xml")?;
+    if slides.is_empty() {
+        return Ok("<p class=\"office-empty\">No readable slides were found.</p>".to_string());
+    }
+
+    let mut body = String::new();
+    for (index, slide_name) in slides.iter().take(24).enumerate() {
+        let xml = read_zip_text_entry(path, slide_name)?;
+        let paragraphs = pptx_slide_xml_to_paragraphs(&xml);
+        body.push_str(&format!(
+            "<section class=\"slide\"><h2>Slide {}</h2>",
+            index + 1
+        ));
+        if paragraphs.is_empty() {
+            body.push_str("<p class=\"office-empty\">No text on this slide.</p>");
+        } else {
+            for paragraph in paragraphs {
+                body.push_str("<p>");
+                body.push_str(&escape_html(&paragraph));
+                body.push_str("</p>");
+            }
+        }
+        body.push_str("</section>\n");
+    }
+    Ok(body)
+}
+
+fn office_document_body_html(path: &Path) -> Result<String, String> {
+    match path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| extension.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("docx") | Some("docm") | Some("dotx") | Some("dotm") => docx_to_html(path),
+        Some("xlsx") | Some("xlsm") | Some("xltx") | Some("xltm") => xlsx_to_html(path),
+        Some("pptx") | Some("pptm") | Some("potx") | Some("potm") | Some("ppsx") | Some("ppsm") => {
+            pptx_to_html(path)
+        }
+        _ => Err("This Office format cannot be previewed in-app yet.".to_string()),
+    }
+}
+
 fn office_to_static_html(path: &Path) -> String {
     let file_name = path
         .file_name()
@@ -1082,13 +1465,22 @@ fn office_to_static_html(path: &Path) -> String {
         .map(|parent| parent.to_string_lossy().to_string())
         .unwrap_or_default();
     let source_path = path.to_string_lossy();
+    let preview = office_document_body_html(path).unwrap_or_else(|error| {
+        format!(
+            "<p class=\"office-empty\">{}</p>",
+            escape_html(&format!(
+                "{error} Use the Open button in the toolbar to edit/check this document in the desktop app."
+            ))
+        )
+    });
     format!(
-        "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><style>{}</style></head><body><section class=\"office-shell\"><div class=\"office-type\">{}</div><h1>{}</h1><dl><dt>Folder</dt><dd>{}</dd><dt>Path</dt><dd>{}</dd></dl><p class=\"office-note\">Open this document with the toolbar button to edit it in the default desktop app.</p></section></body></html>",
-        r#"html{background:#edf1f5;color:#1f2937}body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:32px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;box-sizing:border-box}.office-shell{width:min(760px,100%);box-sizing:border-box;border:1px solid #d6dbe3;background:#fff;padding:30px 34px;box-shadow:0 18px 50px rgba(15,23,42,.10)}.office-type{display:inline-flex;align-items:center;height:24px;padding:0 9px;border:1px solid #c8d0da;background:#f5f7fa;color:#475569;font-size:11px;font-weight:700;letter-spacing:0;text-transform:uppercase}h1{margin:18px 0 22px;font-size:28px;line-height:1.2;font-weight:720;letter-spacing:0;color:#111827;overflow-wrap:anywhere}dl{display:grid;grid-template-columns:72px minmax(0,1fr);gap:8px 14px;margin:0;padding:18px 0;border-top:1px solid #e5e7eb;border-bottom:1px solid #e5e7eb}dt{color:#64748b;font-size:12px;font-weight:700}dd{margin:0;color:#1f2937;font-size:13px;line-height:1.5;overflow-wrap:anywhere}.office-note{margin:18px 0 0;color:#475569;font-size:13px;line-height:1.55}@media(max-width:640px){body{padding:18px}.office-shell{padding:22px}h1{font-size:22px}dl{grid-template-columns:1fr;gap:4px}}"#,
+        "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><style>{}</style></head><body><section class=\"office-shell\"><header class=\"office-header\"><div class=\"office-type\">{}</div><h1>{}</h1><dl><dt>Folder</dt><dd>{}</dd><dt>Path</dt><dd>{}</dd></dl><p class=\"office-note\">Use Open in the toolbar to edit this document in the default desktop app.</p></header><main class=\"office-preview\">{}</main></section></body></html>",
+        r#"html{background:#edf1f5;color:#1f2937}body{margin:0;min-height:100vh;padding:28px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;box-sizing:border-box}.office-shell{width:min(1040px,100%);margin:0 auto;box-sizing:border-box;border:1px solid #d6dbe3;background:#fff;box-shadow:0 18px 50px rgba(15,23,42,.10)}.office-header{padding:24px 28px 18px;border-bottom:1px solid #e5e7eb}.office-type{display:inline-flex;align-items:center;height:24px;padding:0 9px;border:1px solid #c8d0da;background:#f5f7fa;color:#475569;font-size:11px;font-weight:700;letter-spacing:0;text-transform:uppercase}h1{margin:14px 0 16px;font-size:25px;line-height:1.2;font-weight:720;letter-spacing:0;color:#111827;overflow-wrap:anywhere}dl{display:grid;grid-template-columns:72px minmax(0,1fr);gap:6px 14px;margin:0;padding:14px 0;border-top:1px solid #eef2f7}dt{color:#64748b;font-size:12px;font-weight:700}dd{margin:0;color:#1f2937;font-size:13px;line-height:1.45;overflow-wrap:anywhere}.office-note{margin:12px 0 0;color:#475569;font-size:13px;line-height:1.55}.office-preview{padding:28px;font-size:14px;line-height:1.65}.office-preview p{margin:0 0 .85em}.office-preview h2{margin:0 0 12px;font-size:16px;line-height:1.3;color:#111827}.office-preview table{width:100%;border-collapse:collapse;margin:0 0 18px;display:block;overflow-x:auto}.office-preview th,.office-preview td{border:1px solid #d8dee8;padding:7px 9px;vertical-align:top;min-width:56px}.office-preview tr:nth-child(even) td{background:#fbfcfe}.sheet,.slide{margin:0 0 22px;padding-bottom:18px;border-bottom:1px solid #eef2f7}.office-empty{color:#64748b;font-style:italic}@media(max-width:640px){body{padding:14px}.office-header,.office-preview{padding:18px}h1{font-size:21px}dl{grid-template-columns:1fr;gap:4px}}"#,
         escape_html(office_kind_label(path)),
         escape_html(file_name),
         escape_html(&parent),
-        escape_html(&source_path)
+        escape_html(&source_path),
+        preview
     )
 }
 
@@ -2050,6 +2442,48 @@ mod tests {
         assert!(html.contains("budget &amp; plan.xlsx"));
         assert!(html.contains("C:\\Users\\miyaz\\budget &amp; plan.xlsx"));
         assert!(!html.contains("<script"));
+    }
+
+    #[test]
+    fn docx_xml_preview_renders_paragraphs_and_tables() {
+        let html = docx_xml_to_html(
+            r#"<w:document xmlns:w="w"><w:body>
+                <w:p><w:r><w:t>Hello</w:t></w:r><w:r><w:t> world</w:t></w:r></w:p>
+                <w:tbl><w:tr><w:tc><w:p><w:r><w:t>A1</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>B1</w:t></w:r></w:p></w:tc></w:tr></w:tbl>
+            </w:body></w:document>"#,
+        );
+
+        assert!(html.contains("<p>Hello world</p>"));
+        assert!(html.contains("<table><tbody>"));
+        assert!(html.contains("<td>A1</td>"));
+        assert!(html.contains("<td>B1</td>"));
+    }
+
+    #[test]
+    fn xlsx_xml_preview_resolves_shared_strings() {
+        let shared = xlsx_shared_strings_xml_to_vec(
+            r#"<sst><si><t>Name</t></si><si><t>Value</t></si></sst>"#,
+        );
+        let html = xlsx_sheet_xml_to_html(
+            r#"<worksheet><sheetData><row><c t="s"><v>0</v></c><c t="s"><v>1</v></c><c><v>42</v></c></row></sheetData></worksheet>"#,
+            &shared,
+        );
+
+        assert!(html.contains("<td>Name</td>"));
+        assert!(html.contains("<td>Value</td>"));
+        assert!(html.contains("<td>42</td>"));
+    }
+
+    #[test]
+    fn pptx_xml_preview_collects_slide_text() {
+        let paragraphs = pptx_slide_xml_to_paragraphs(
+            r#"<p:sld xmlns:a="a" xmlns:p="p"><p:cSld><p:spTree>
+                <a:p><a:r><a:t>Title</a:t></a:r></a:p>
+                <a:p><a:r><a:t>Body</a:t></a:r></a:p>
+            </p:spTree></p:cSld></p:sld>"#,
+        );
+
+        assert_eq!(paragraphs, vec!["Title".to_string(), "Body".to_string()]);
     }
 
     #[test]

@@ -20,6 +20,8 @@ tauri-plugin-shell = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 kuchikiki = "=0.8.8-speedreader"
+quick-xml = "0.38.4"
+zip = "4.6.1"
 portable-pty = "0.8"
 dashmap = "6"
 tokio = { version = "1", features = ["full"] }

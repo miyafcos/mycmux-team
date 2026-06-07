@@ -8,14 +8,16 @@ pub fn reveal_in_explorer(path: String) -> Result<(), String> {
     if !pb.exists() {
         return Err(format!("path does not exist: {path}"));
     }
-    let is_dir = pb.is_dir();
+    let canonical = pb.canonicalize().unwrap_or(pb);
+    let is_dir = canonical.is_dir();
 
     #[cfg(target_os = "windows")]
     {
+        let target = windows_display_path(&canonical);
         let arg = if is_dir {
-            path.clone()
+            target
         } else {
-            format!("/select,{}", path)
+            format!("/select,{}", target)
         };
         std::process::Command::new("explorer.exe")
             .arg(arg)
@@ -30,7 +32,7 @@ pub fn reveal_in_explorer(path: String) -> Result<(), String> {
         if !is_dir {
             cmd.arg("-R");
         }
-        cmd.arg(&path)
+        cmd.arg(&canonical)
             .spawn()
             .map_err(|e| format!("failed to launch open: {e}"))?;
         return Ok(());
@@ -39,11 +41,12 @@ pub fn reveal_in_explorer(path: String) -> Result<(), String> {
     #[cfg(all(unix, not(target_os = "macos")))]
     {
         let target = if is_dir {
-            path.clone()
+            canonical.to_string_lossy().to_string()
         } else {
-            pb.parent()
+            canonical
+                .parent()
                 .map(|x| x.to_string_lossy().to_string())
-                .unwrap_or_else(|| path.clone())
+                .unwrap_or_else(|| canonical.to_string_lossy().to_string())
         };
         std::process::Command::new("xdg-open")
             .arg(target)
@@ -63,14 +66,16 @@ pub fn open_with_default(path: String) -> Result<(), String> {
     if !pb.exists() {
         return Err(format!("path does not exist: {path}"));
     }
+    let canonical = pb.canonicalize().unwrap_or(pb);
 
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
 
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        std::process::Command::new("rundll32.exe")
-            .args(["url.dll,FileProtocolHandler", &path])
+        let target = windows_display_path(&canonical);
+        std::process::Command::new("cmd.exe")
+            .args(["/C", "start", "", &target])
             .creation_flags(CREATE_NO_WINDOW)
             .spawn()
             .map_err(|e| format!("failed to launch default app: {e}"))?;
@@ -80,7 +85,7 @@ pub fn open_with_default(path: String) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
         std::process::Command::new("open")
-            .arg(&path)
+            .arg(&canonical)
             .spawn()
             .map_err(|e| format!("failed to launch open: {e}"))?;
         return Ok(());
@@ -89,7 +94,7 @@ pub fn open_with_default(path: String) -> Result<(), String> {
     #[cfg(all(unix, not(target_os = "macos")))]
     {
         std::process::Command::new("xdg-open")
-            .arg(&path)
+            .arg(&canonical)
             .spawn()
             .map_err(|e| format!("failed to launch xdg-open: {e}"))?;
         return Ok(());
@@ -97,4 +102,10 @@ pub fn open_with_default(path: String) -> Result<(), String> {
 
     #[allow(unreachable_code)]
     Err("unsupported platform".into())
+}
+
+#[cfg(target_os = "windows")]
+fn windows_display_path(path: &std::path::Path) -> String {
+    let value = path.to_string_lossy();
+    value.strip_prefix(r"\\?\").unwrap_or(&value).to_string()
 }
