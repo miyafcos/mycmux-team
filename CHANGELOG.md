@@ -1,5 +1,11 @@
 # Changelog (mycmux-lite)
 
+## [0.7.24-lite.1] - 2026-06-07
+
+- Fixed: The artifact toolbar Open action now launches local files through the Windows default app reliably instead of failing on scoped URL validation or showing only the path.
+- Fixed: The Explorer action now canonicalizes the original document path and reveals/selects that file's real folder instead of falling back to Documents or Desktop.
+- Changed: Word, Excel, and PowerPoint OOXML documents now render readable in-pane previews by extracting document text, worksheets, tables, and slide text; desktop Open remains the editing path for Office files.
+
 ## [0.7.23-lite.1] - 2026-06-06
 
 - Fixed: The artifact toolbar's Explorer button now reveals the original source document location instead of the generated preview HTML path.
