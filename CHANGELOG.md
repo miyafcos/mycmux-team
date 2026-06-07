@@ -1,5 +1,11 @@
 # Changelog (mycmux-lite)
 
+## [0.7.26-lite.1] - 2026-06-07
+
+- Added: Word artifact edit mode now has visible formatting controls for alignment, indent/outdent, font family, font size, and equation insertion.
+- Changed: Word `.docx/.docm/.dotx/.dotm` editing now uses a page-like document surface with clearer typography, table borders, and equation styling.
+- Fixed: DOCX preview/save now preserves practical paragraph and run formatting such as alignment, indentation, bold, italic, font family, font size, and equation fallback text.
+
 ## [0.7.25-lite.1] - 2026-06-07
 
 - Changed: HTML, Markdown, and editable Word artifact tabs now share the same top-right toolbar actions: Edit, Open in the default app, and reveal in Explorer.

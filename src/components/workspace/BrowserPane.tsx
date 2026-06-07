@@ -9,7 +9,10 @@ import {
   type SaveEditableArtifactResult,
 } from "../../lib/ipc";
 import { useKeybindingStore } from "../../stores/keybindingStore";
-import ArtifactEditorToolbar, { type ArtifactEditorCommand } from "./ArtifactEditorToolbar";
+import ArtifactEditorToolbar, {
+  type ArtifactEditorCommand,
+  type ArtifactEditorCommandValue,
+} from "./ArtifactEditorToolbar";
 
 interface BrowserPaneProps {
   /** Local absolute path (no file:// prefix). Already normalized by the caller. */
@@ -26,6 +29,7 @@ interface BrowserPaneProps {
 }
 
 const EDITOR_STYLE_ID = "mycmux-artifact-editor-style";
+const OFFICE_PAGE_CLASS = "mycmux-doc-page";
 
 function removeScripts(doc: Document): void {
   doc.querySelectorAll("script").forEach((script) => script.remove());
@@ -39,21 +43,127 @@ function parentHrefFor(sourcePath: string | undefined): string | null {
   return convertFileSrc(normalized.slice(0, index + 1));
 }
 
-function buildEditableSrcDoc(content: string, sourcePath: string | undefined): string {
-  const doc = new DOMParser().parseFromString(content, "text/html");
-  removeScripts(doc);
+function isOfficeEditorSource(sourceKind: ArtifactSourceKind | undefined): boolean {
+  return sourceKind === "office";
+}
 
-  const href = parentHrefFor(sourcePath);
-  if (href && !doc.head.querySelector("base[data-mycmux-editor-base]")) {
-    const base = doc.createElement("base");
-    base.href = href;
-    base.setAttribute("data-mycmux-editor-base", "true");
-    doc.head.prepend(base);
+function getOfficePage(body: HTMLElement): HTMLElement | null {
+  return Array.from(body.children).find((child): child is HTMLElement => {
+    return child instanceof HTMLElement && child.classList.contains(OFFICE_PAGE_CLASS);
+  }) ?? null;
+}
+
+function wrapOfficeBody(doc: Document, isEditing: boolean): void {
+  doc.body.classList.add("mycmux-office-surface");
+  doc.body.classList.toggle("mycmux-office-editing", isEditing);
+  doc.body.classList.toggle("mycmux-office-previewing", !isEditing);
+  if (getOfficePage(doc.body)) return;
+  const page = doc.createElement("main");
+  page.className = OFFICE_PAGE_CLASS;
+  while (doc.body.firstChild) {
+    page.appendChild(doc.body.firstChild);
   }
+  doc.body.appendChild(page);
+}
 
-  const style = doc.createElement("style");
-  style.id = EDITOR_STYLE_ID;
-  style.textContent = `
+function editorCss(sourceKind: ArtifactSourceKind | undefined): string {
+  const officeCss = isOfficeEditorSource(sourceKind)
+    ? `
+    html {
+      background: #dfe4eb;
+    }
+    body.mycmux-office-surface {
+      min-height: 100vh;
+      margin: 0;
+      padding: 28px;
+      box-sizing: border-box;
+      background: #dfe4eb;
+      color: #1f2937;
+      font-family: Aptos, "Yu Gothic", Meiryo, "Segoe UI", sans-serif;
+      font-size: 12pt;
+      line-height: 1.55;
+    }
+    body.mycmux-office-surface .${OFFICE_PAGE_CLASS} {
+      width: min(820px, calc(100vw - 56px));
+      min-height: calc(100vh - 56px);
+      margin: 0 auto;
+      padding: 72px 76px;
+      box-sizing: border-box;
+      background: #ffffff;
+      box-shadow: 0 18px 48px rgba(15, 23, 42, 0.16);
+      border: 1px solid #d7dde6;
+    }
+    body.mycmux-office-surface p,
+    body.mycmux-office-surface h1,
+    body.mycmux-office-surface h2,
+    body.mycmux-office-surface h3,
+    body.mycmux-office-surface blockquote {
+      margin-top: 0;
+      margin-bottom: 0.72em;
+      overflow-wrap: anywhere;
+    }
+    body.mycmux-office-surface h1 {
+      font-size: 22pt;
+      line-height: 1.22;
+      margin-bottom: 0.58em;
+    }
+    body.mycmux-office-surface h2 {
+      font-size: 18pt;
+      line-height: 1.26;
+      margin-bottom: 0.62em;
+    }
+    body.mycmux-office-surface h3 {
+      font-size: 15pt;
+      line-height: 1.3;
+    }
+    body.mycmux-office-surface blockquote {
+      margin-left: 0.5in;
+      padding-left: 0.16in;
+      border-left: 3px solid #cbd5e1;
+      color: #334155;
+    }
+    body.mycmux-office-surface table {
+      width: 100%;
+      margin: 0 0 1em;
+      border-collapse: collapse;
+    }
+    body.mycmux-office-surface th,
+    body.mycmux-office-surface td {
+      border: 1px solid #c9d2df;
+      min-width: 54px;
+      min-height: 24px;
+      padding: 7px 9px;
+      vertical-align: top;
+    }
+    body.mycmux-office-surface th {
+      background: #f8fafc;
+    }
+    body.mycmux-office-surface .mycmux-equation,
+    body.mycmux-office-surface [data-mycmux-equation] {
+      display: inline-block;
+      margin: 0 0.12em;
+      padding: 0.06em 0.34em;
+      border: 1px solid #bfdbfe;
+      border-radius: 4px;
+      background: #eff6ff;
+      color: #1d4ed8;
+      font-family: "Cambria Math", "Times New Roman", serif;
+      font-style: italic;
+      white-space: pre-wrap;
+    }
+    @media (max-width: 700px) {
+      body.mycmux-office-surface {
+        padding: 14px;
+      }
+      body.mycmux-office-surface .${OFFICE_PAGE_CLASS} {
+        width: calc(100vw - 28px);
+        min-height: calc(100vh - 28px);
+        padding: 38px 28px;
+      }
+    }
+  `
+    : "";
+  return `
     body[contenteditable="true"] {
       outline: none;
       min-height: calc(100vh - 64px);
@@ -77,14 +187,15 @@ function buildEditableSrcDoc(content: string, sourcePath: string | undefined): s
       outline: 2px solid rgba(10, 132, 255, 0.28);
       outline-offset: 2px;
     }
+    ${officeCss}
   `;
-  doc.head.appendChild(style);
-  doc.body.setAttribute("contenteditable", "true");
-  doc.body.setAttribute("spellcheck", "true");
-  return `<!doctype html>\n${doc.documentElement.outerHTML}`;
 }
 
-function buildReadOnlySrcDoc(content: string, sourcePath: string | undefined): string {
+function buildEditableSrcDoc(
+  content: string,
+  sourcePath: string | undefined,
+  sourceKind: ArtifactSourceKind | undefined,
+): string {
   const doc = new DOMParser().parseFromString(content, "text/html");
   removeScripts(doc);
 
@@ -94,6 +205,42 @@ function buildReadOnlySrcDoc(content: string, sourcePath: string | undefined): s
     base.href = href;
     base.setAttribute("data-mycmux-editor-base", "true");
     doc.head.prepend(base);
+  }
+
+  const style = doc.createElement("style");
+  style.id = EDITOR_STYLE_ID;
+  style.textContent = editorCss(sourceKind);
+  doc.head.appendChild(style);
+  if (isOfficeEditorSource(sourceKind)) {
+    wrapOfficeBody(doc, true);
+  }
+  doc.body.setAttribute("contenteditable", "true");
+  doc.body.setAttribute("spellcheck", "true");
+  return `<!doctype html>\n${doc.documentElement.outerHTML}`;
+}
+
+function buildReadOnlySrcDoc(
+  content: string,
+  sourcePath: string | undefined,
+  sourceKind: ArtifactSourceKind | undefined,
+): string {
+  const doc = new DOMParser().parseFromString(content, "text/html");
+  removeScripts(doc);
+
+  const href = parentHrefFor(sourcePath);
+  if (href && !doc.head.querySelector("base[data-mycmux-editor-base]")) {
+    const base = doc.createElement("base");
+    base.href = href;
+    base.setAttribute("data-mycmux-editor-base", "true");
+    doc.head.prepend(base);
+  }
+
+  if (isOfficeEditorSource(sourceKind)) {
+    wrapOfficeBody(doc, false);
+    const style = doc.createElement("style");
+    style.id = EDITOR_STYLE_ID;
+    style.textContent = editorCss(sourceKind);
+    doc.head.appendChild(style);
   }
 
   return `<!doctype html>\n${doc.documentElement.outerHTML}`;
@@ -110,15 +257,64 @@ function serializeEditableHtml(doc: Document): string {
   return `<!doctype html>\n${clone.outerHTML}\n`;
 }
 
-function serializeEditableBodyHtml(doc: Document): string {
+function htmlFontSizeForPointSize(value: string): string {
+  const size = Number(value);
+  if (!Number.isFinite(size)) return "3";
+  if (size <= 10) return "2";
+  if (size <= 13) return "3";
+  if (size <= 16) return "4";
+  if (size <= 20) return "5";
+  if (size <= 28) return "6";
+  return "7";
+}
+
+function fontTagSizeToPointSize(value: string): string | null {
+  switch (value.trim()) {
+    case "1":
+      return "8";
+    case "2":
+      return "10";
+    case "3":
+      return "12";
+    case "4":
+      return "14";
+    case "5":
+      return "18";
+    case "6":
+      return "24";
+    case "7":
+      return "32";
+    default:
+      return null;
+  }
+}
+
+function normalizeGeneratedFontTags(root: ParentNode, forcedFontSizePt?: string): void {
+  root.querySelectorAll("font").forEach((font) => {
+    const span = font.ownerDocument.createElement("span");
+    const face = font.getAttribute("face");
+    const size = forcedFontSizePt ?? fontTagSizeToPointSize(font.getAttribute("size") ?? "");
+    if (face) span.style.fontFamily = face;
+    if (size) span.style.fontSize = `${size}pt`;
+    while (font.firstChild) {
+      span.appendChild(font.firstChild);
+    }
+    font.replaceWith(span);
+  });
+}
+
+function serializeEditableBodyHtml(doc: Document, sourceKind: ArtifactSourceKind | undefined): string {
   const clone = doc.body.cloneNode(true) as HTMLElement;
   clone.querySelectorAll("script").forEach((script) => script.remove());
+  normalizeGeneratedFontTags(clone);
+  if (isOfficeEditorSource(sourceKind)) {
+    return getOfficePage(clone)?.innerHTML ?? clone.innerHTML;
+  }
   return clone.innerHTML;
 }
 
-function isEditableWordSource(kind: ArtifactSourceKind | undefined, sourcePath: string | undefined): boolean {
-  if (kind !== "office" || !sourcePath) return false;
-  return /\.(docx|docm|dotx|dotm)$/i.test(sourcePath);
+function isEditableWordSource(sourceKind: ArtifactSourceKind | undefined, sourcePath: string | undefined): boolean {
+  return sourceKind === "office" && /\.(?:docx|docm|dotx|dotm)$/i.test(sourcePath ?? "");
 }
 
 function closestElement(node: Node | null, selector: string): HTMLElement | null {
@@ -136,6 +332,28 @@ function insertStarterTable(doc: Document): void {
     false,
     "<table><tbody><tr><td><br></td><td><br></td></tr><tr><td><br></td><td><br></td></tr></tbody></table><p><br></p>",
   );
+}
+
+function isRangeInsideBody(doc: Document, range: Range): boolean {
+  const ancestor = range.commonAncestorContainer;
+  return ancestor === doc.body || doc.body.contains(ancestor);
+}
+
+function restoreEditorSelection(doc: Document, range: Range | null): void {
+  doc.body.focus();
+  if (!range || !isRangeInsideBody(doc, range)) return;
+  const selection = doc.getSelection();
+  if (!selection) return;
+  selection.removeAllRanges();
+  selection.addRange(range);
+}
+
+function insertEquation(doc: Document, expression: string): boolean {
+  const span = doc.createElement("span");
+  span.className = "mycmux-equation";
+  span.dataset.mycmuxEquation = expression;
+  span.textContent = expression;
+  return doc.execCommand("insertHTML", false, `${span.outerHTML}&nbsp;`);
 }
 
 function runTableCommand(doc: Document, command: ArtifactEditorCommand): boolean {
@@ -216,6 +434,7 @@ function BrowserPaneImpl({
 }: BrowserPaneProps) {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const inputCleanupRef = useRef<(() => void) | null>(null);
+  const selectionRangeRef = useRef<Range | null>(null);
   const onDirtyChangeRef = useRef(onDirtyChange);
   const onSavedRef = useRef(onSaved);
   const [isEditing, setIsEditing] = useState(false);
@@ -255,6 +474,7 @@ function BrowserPaneImpl({
     setIsEditing(false);
     setEditableSrcDoc("");
     setReadOnlySrcDoc("");
+    selectionRangeRef.current = null;
     setError(null);
     updateDirty(false);
   }, [htmlPath, resolvedPreviewPath, reloadKey, sourceKind, sourcePath, updateDirty]);
@@ -279,8 +499,9 @@ function BrowserPaneImpl({
     setError(null);
     try {
       const source = await readEditableArtifact(sourcePath);
-      setEditableSrcDoc(buildEditableSrcDoc(source.content, source.sourcePath));
+      setEditableSrcDoc(buildEditableSrcDoc(source.content, source.sourcePath, source.sourceKind));
       setIsEditing(true);
+      selectionRangeRef.current = null;
       updateDirty(false);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
@@ -298,7 +519,7 @@ function BrowserPaneImpl({
     readEditableArtifact(sourcePath)
       .then((source) => {
         if (cancelled) return;
-        setReadOnlySrcDoc(buildReadOnlySrcDoc(source.content, source.sourcePath));
+        setReadOnlySrcDoc(buildReadOnlySrcDoc(source.content, source.sourcePath, source.sourceKind));
       })
       .catch((caught) => {
         if (cancelled) return;
@@ -388,11 +609,25 @@ function BrowserPaneImpl({
     }
 
     const markDirty = () => updateDirty(true);
+    const rememberSelection = () => {
+      const selection = doc?.getSelection();
+      if (!selection || selection.rangeCount === 0) return;
+      const range = selection.getRangeAt(0);
+      if (isRangeInsideBody(doc, range)) {
+        selectionRangeRef.current = range.cloneRange();
+      }
+    };
+    doc.addEventListener("selectionchange", rememberSelection);
+    doc.addEventListener("keyup", rememberSelection);
+    doc.addEventListener("mouseup", rememberSelection);
     doc.addEventListener("input", markDirty);
     doc.addEventListener("cut", markDirty);
     doc.addEventListener("paste", markDirty);
     inputCleanupRef.current = () => {
       doc.removeEventListener("keydown", forwardShortcut, true);
+      doc.removeEventListener("selectionchange", rememberSelection);
+      doc.removeEventListener("keyup", rememberSelection);
+      doc.removeEventListener("mouseup", rememberSelection);
       doc.removeEventListener("input", markDirty);
       doc.removeEventListener("cut", markDirty);
       doc.removeEventListener("paste", markDirty);
@@ -404,10 +639,10 @@ function BrowserPaneImpl({
     return iframeRef.current?.contentDocument ?? null;
   }, []);
 
-  const handleCommand = useCallback((command: ArtifactEditorCommand) => {
+  const handleCommand = useCallback((command: ArtifactEditorCommand, value?: ArtifactEditorCommandValue) => {
     const doc = getEditableDocument();
     if (!doc) return;
-    doc.body.focus();
+    restoreEditorSelection(doc, selectionRangeRef.current);
     let changed = false;
 
     switch (command) {
@@ -416,6 +651,33 @@ function BrowserPaneImpl({
         break;
       case "italic":
         changed = doc.execCommand("italic");
+        break;
+      case "alignLeft":
+        changed = doc.execCommand("justifyLeft");
+        break;
+      case "alignCenter":
+        changed = doc.execCommand("justifyCenter");
+        break;
+      case "alignRight":
+        changed = doc.execCommand("justifyRight");
+        break;
+      case "indent":
+        changed = doc.execCommand("indent");
+        break;
+      case "outdent":
+        changed = doc.execCommand("outdent");
+        break;
+      case "fontFamily":
+        if (value) {
+          changed = doc.execCommand("fontName", false, value);
+          normalizeGeneratedFontTags(doc);
+        }
+        break;
+      case "fontSize":
+        if (value) {
+          changed = doc.execCommand("fontSize", false, htmlFontSizeForPointSize(value));
+          normalizeGeneratedFontTags(doc, value);
+        }
         break;
       case "heading":
         changed = doc.execCommand("formatBlock", false, "h2");
@@ -428,7 +690,18 @@ function BrowserPaneImpl({
         break;
       case "link": {
         const href = window.prompt("URL");
-        if (href) changed = doc.execCommand("createLink", false, href);
+        if (href) {
+          restoreEditorSelection(doc, selectionRangeRef.current);
+          changed = doc.execCommand("createLink", false, href);
+        }
+        break;
+      }
+      case "equation": {
+        const expression = window.prompt("Equation");
+        if (expression?.trim()) {
+          restoreEditorSelection(doc, selectionRangeRef.current);
+          changed = insertEquation(doc, expression.trim());
+        }
         break;
       }
       case "addRow":
@@ -450,7 +723,7 @@ function BrowserPaneImpl({
     setError(null);
     try {
       const content = sourceKind === "markdown" || sourceKind === "office"
-        ? serializeEditableBodyHtml(doc)
+        ? serializeEditableBodyHtml(doc, sourceKind)
         : serializeEditableHtml(doc);
       const result = await saveEditableArtifact(sourcePath, sourceKind, content);
       updateDirty(false);
@@ -470,6 +743,7 @@ function BrowserPaneImpl({
     inputCleanupRef.current = null;
     setIsEditing(false);
     setEditableSrcDoc("");
+    selectionRangeRef.current = null;
     setError(null);
     updateDirty(false);
   }, [dirty, updateDirty]);

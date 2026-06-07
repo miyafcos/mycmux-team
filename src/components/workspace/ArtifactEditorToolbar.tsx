@@ -1,5 +1,8 @@
 import { memo, type CSSProperties, type ReactNode } from "react";
 import {
+  AlignCenter,
+  AlignLeft,
+  AlignRight,
   Bold,
   ExternalLink,
   FolderOpen,
@@ -7,6 +10,8 @@ import {
   Italic,
   Link,
   List,
+  ListIndentDecrease,
+  ListIndentIncrease,
   ListOrdered,
   Loader2,
   Minus,
@@ -14,6 +19,7 @@ import {
   Plus,
   RefreshCw,
   Save,
+  Sigma,
   Table,
   X,
 } from "lucide-react";
@@ -22,14 +28,24 @@ import type { ArtifactSourceKind } from "../../types";
 export type ArtifactEditorCommand =
   | "bold"
   | "italic"
+  | "alignLeft"
+  | "alignCenter"
+  | "alignRight"
+  | "indent"
+  | "outdent"
+  | "fontFamily"
+  | "fontSize"
   | "heading"
   | "bulletList"
   | "numberedList"
   | "link"
+  | "equation"
   | "addRow"
   | "addColumn"
   | "deleteRow"
   | "deleteColumn";
+
+export type ArtifactEditorCommandValue = string;
 
 interface ArtifactEditorToolbarProps {
   canEdit: boolean;
@@ -44,7 +60,7 @@ interface ArtifactEditorToolbarProps {
   onReload: () => void;
   onRevealSource: () => void;
   onOpenSource: () => void;
-  onCommand: (command: ArtifactEditorCommand) => void;
+  onCommand: (command: ArtifactEditorCommand, value?: ArtifactEditorCommandValue) => void;
 }
 
 type ButtonVariant = "primary" | "default" | "danger";
@@ -161,6 +177,31 @@ const groupLabelStyle: CSSProperties = {
   letterSpacing: 0,
 };
 
+const selectStyle: CSSProperties = {
+  height: 24,
+  maxWidth: 142,
+  border: "1px solid color-mix(in srgb, var(--cmux-border, #3a3a3a) 80%, transparent)",
+  borderRadius: 5,
+  background: "color-mix(in srgb, var(--cmux-popover, #1e1e1e) 78%, #ffffff 9%)",
+  color: "var(--cmux-text, #f3f4f6)",
+  fontSize: 11,
+  fontWeight: 650,
+  letterSpacing: 0,
+  padding: "0 6px",
+  boxSizing: "border-box",
+};
+
+const FONT_FAMILY_OPTIONS = [
+  { label: "Aptos", value: "Aptos" },
+  { label: "Yu Gothic", value: "Yu Gothic" },
+  { label: "Meiryo", value: "Meiryo" },
+  { label: "BIZ UD Gothic", value: "BIZ UDGothic" },
+  { label: "Times New Roman", value: "Times New Roman" },
+  { label: "Cambria Math", value: "Cambria Math" },
+];
+
+const FONT_SIZE_OPTIONS = ["10", "11", "12", "14", "16", "18", "24", "32"];
+
 function fileLeaf(path: string | undefined): string {
   if (!path) return "Artifact";
   return path.split(/[\\/]/).filter(Boolean).pop() || path;
@@ -269,6 +310,44 @@ function ToolbarButton({
       {children}
       {label && <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: 0 }}>{label}</span>}
     </button>
+  );
+}
+
+function ToolbarSelect({
+  title,
+  disabled,
+  placeholder,
+  options,
+  onChange,
+}: {
+  title: string;
+  disabled?: boolean;
+  placeholder: string;
+  options: Array<{ label: string; value: string }>;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <select
+      title={title}
+      aria-label={title}
+      disabled={disabled}
+      defaultValue=""
+      onChange={(event) => {
+        const value = event.currentTarget.value;
+        if (value) onChange(value);
+        event.currentTarget.value = "";
+      }}
+      style={{ ...selectStyle, opacity: disabled ? 0.45 : 1, cursor: disabled ? "not-allowed" : "pointer" }}
+    >
+      <option value="" disabled>
+        {placeholder}
+      </option>
+      {options.map((option) => (
+        <option key={option.value} value={option.value}>
+          {option.label}
+        </option>
+      ))}
+    </select>
   );
 }
 
@@ -399,21 +478,61 @@ function ArtifactEditorToolbarImpl({
           <ToolbarButton title="Italic" disabled={commandDisabled} onClick={() => onCommand("italic")}>
             <Italic size={iconSize} />
           </ToolbarButton>
-          <ToolbarButton title="Heading" disabled={commandDisabled} onClick={() => onCommand("heading")}>
-            <Heading2 size={iconSize} />
+          <ToolbarSelect
+            title="Font family"
+            disabled={commandDisabled}
+            placeholder="Font"
+            options={FONT_FAMILY_OPTIONS}
+            onChange={(value) => onCommand("fontFamily", value)}
+          />
+          <ToolbarSelect
+            title="Font size"
+            disabled={commandDisabled}
+            placeholder="Size"
+            options={FONT_SIZE_OPTIONS.map((value) => ({ label: `${value} pt`, value }))}
+            onChange={(value) => onCommand("fontSize", value)}
+          />
+        </div>
+
+        <div style={groupStyle} role="group" aria-label="Paragraph formatting">
+          <span style={groupLabelStyle}>Para</span>
+          <ToolbarButton title="Align left" disabled={commandDisabled} onClick={() => onCommand("alignLeft")}>
+            <AlignLeft size={iconSize} />
           </ToolbarButton>
-          <ToolbarButton title="Link" disabled={commandDisabled} onClick={() => onCommand("link")}>
-            <Link size={iconSize} />
+          <ToolbarButton title="Align center" disabled={commandDisabled} onClick={() => onCommand("alignCenter")}>
+            <AlignCenter size={iconSize} />
+          </ToolbarButton>
+          <ToolbarButton title="Align right" disabled={commandDisabled} onClick={() => onCommand("alignRight")}>
+            <AlignRight size={iconSize} />
+          </ToolbarButton>
+          <ToolbarButton title="Outdent" disabled={commandDisabled} onClick={() => onCommand("outdent")}>
+            <ListIndentDecrease size={iconSize} />
+          </ToolbarButton>
+          <ToolbarButton title="Indent" disabled={commandDisabled} onClick={() => onCommand("indent")}>
+            <ListIndentIncrease size={iconSize} />
           </ToolbarButton>
         </div>
 
-        <div style={groupStyle} role="group" aria-label="Lists">
-          <span style={groupLabelStyle}>List</span>
+        <div style={groupStyle} role="group" aria-label="Document structure">
+          <span style={groupLabelStyle}>Struct</span>
+          <ToolbarButton title="Heading" disabled={commandDisabled} onClick={() => onCommand("heading")}>
+            <Heading2 size={iconSize} />
+          </ToolbarButton>
           <ToolbarButton title="Bullet list" disabled={commandDisabled} onClick={() => onCommand("bulletList")}>
             <List size={iconSize} />
           </ToolbarButton>
           <ToolbarButton title="Numbered list" disabled={commandDisabled} onClick={() => onCommand("numberedList")}>
             <ListOrdered size={iconSize} />
+          </ToolbarButton>
+        </div>
+
+        <div style={groupStyle} role="group" aria-label="Insert">
+          <span style={groupLabelStyle}>Insert</span>
+          <ToolbarButton title="Link" disabled={commandDisabled} onClick={() => onCommand("link")}>
+            <Link size={iconSize} />
+          </ToolbarButton>
+          <ToolbarButton title="Equation" disabled={commandDisabled} onClick={() => onCommand("equation")}>
+            <Sigma size={iconSize} />
           </ToolbarButton>
         </div>
 
