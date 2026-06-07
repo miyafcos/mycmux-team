@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use sysinfo::System;
 use tauri::ipc::Channel;
 use tauri::{AppHandle, State};
-use zip::ZipArchive;
+use zip::{ZipArchive, ZipWriter};
 
 use crate::AppState;
 
@@ -741,15 +741,31 @@ fn validate_editable_artifact_path(source_path: &str) -> Result<(PathBuf, String
         return Err("Editable artifact path must be a file".to_string());
     }
     let Some(kind) = artifact_source_kind(&path) else {
-        return Err("Editable artifact must be .html, .htm, .md, or .markdown".to_string());
+        return Err(
+            "Editable artifact must be .html, .htm, .md, .markdown, or editable Word file"
+                .to_string(),
+        );
     };
-    if !matches!(kind, "html" | "markdown") {
-        return Err("Editable artifact must be .html, .htm, .md, or .markdown".to_string());
+    if !matches!(kind, "html" | "markdown") && !is_editable_word_artifact(&path) {
+        return Err(
+            "Editable artifact must be .html, .htm, .md, .markdown, or .docx/.docm/.dotx/.dotm"
+                .to_string(),
+        );
     }
     let canonical = path
         .canonicalize()
         .map_err(|error| format!("Failed to canonicalize editable artifact: {error}"))?;
     Ok((canonical, kind.to_string()))
+}
+
+fn is_editable_word_artifact(path: &Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|extension| extension.to_str())
+            .map(|extension| extension.to_ascii_lowercase())
+            .as_deref(),
+        Some("docx") | Some("docm") | Some("dotx") | Some("dotm")
+    )
 }
 
 fn decode_file_uri(value: &str) -> String {
@@ -1239,6 +1255,245 @@ fn docx_xml_to_html(xml: &str) -> String {
 fn docx_to_html(path: &Path) -> Result<String, String> {
     let xml = read_zip_text_entry(path, "word/document.xml")?;
     Ok(docx_xml_to_html(&xml))
+}
+
+fn docx_default_section_properties() -> String {
+    r#"<w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/></w:sectPr>"#.to_string()
+}
+
+fn docx_section_properties(original_xml: &str) -> String {
+    let Some(start) = original_xml.rfind("<w:sectPr") else {
+        return docx_default_section_properties();
+    };
+    let tail = &original_xml[start..];
+    if let Some(end) = tail.find("</w:sectPr>") {
+        return tail[..end + "</w:sectPr>".len()].to_string();
+    }
+    if let Some(end) = tail.find("/>") {
+        return tail[..end + 2].to_string();
+    }
+    docx_default_section_properties()
+}
+
+fn push_docx_run(target: &mut String, text: &str, bold: bool, italic: bool) {
+    if text.is_empty() {
+        return;
+    }
+    target.push_str("<w:r>");
+    if bold || italic {
+        target.push_str("<w:rPr>");
+        if bold {
+            target.push_str("<w:b/>");
+        }
+        if italic {
+            target.push_str("<w:i/>");
+        }
+        target.push_str("</w:rPr>");
+    }
+    target.push_str("<w:t xml:space=\"preserve\">");
+    target.push_str(&escape_html(text));
+    target.push_str("</w:t></w:r>");
+}
+
+fn docx_inline_runs(node: &NodeRef, target: &mut String, bold: bool, italic: bool) {
+    match node.data() {
+        NodeData::Text(text) => push_docx_run(target, &text.borrow(), bold, italic),
+        NodeData::Element(element) => {
+            let name = element.name.local.to_string();
+            match name.as_str() {
+                "script" | "style" => {}
+                "br" => target.push_str("<w:r><w:br/></w:r>"),
+                "strong" | "b" => {
+                    for child in node.children() {
+                        docx_inline_runs(&child, target, true, italic);
+                    }
+                }
+                "em" | "i" => {
+                    for child in node.children() {
+                        docx_inline_runs(&child, target, bold, true);
+                    }
+                }
+                _ => {
+                    for child in node.children() {
+                        docx_inline_runs(&child, target, bold, italic);
+                    }
+                }
+            }
+        }
+        _ => {
+            for child in node.children() {
+                docx_inline_runs(&child, target, bold, italic);
+            }
+        }
+    }
+}
+
+fn docx_paragraph_xml(node: &NodeRef, style: Option<&str>, prefix: Option<&str>) -> Option<String> {
+    let text = text_content(node);
+    if text.trim().is_empty() && prefix.is_none() {
+        return None;
+    }
+    let mut paragraph = String::from("<w:p>");
+    if let Some(style) = style {
+        paragraph.push_str("<w:pPr><w:pStyle w:val=\"");
+        paragraph.push_str(style);
+        paragraph.push_str("\"/></w:pPr>");
+    }
+    if let Some(prefix) = prefix {
+        push_docx_run(&mut paragraph, prefix, false, false);
+    }
+    for child in node.children() {
+        docx_inline_runs(&child, &mut paragraph, false, false);
+    }
+    paragraph.push_str("</w:p>");
+    Some(paragraph)
+}
+
+fn docx_table_xml(node: &NodeRef) -> Option<String> {
+    let rows = node
+        .select("tr")
+        .ok()?
+        .filter_map(|row| {
+            let row_node = row.as_node().clone();
+            let cells = row_node
+                .select("th,td")
+                .ok()?
+                .map(|cell| {
+                    let cell_node = cell.as_node().clone();
+                    let mut cell_xml = String::from("<w:tc><w:p>");
+                    for child in cell_node.children() {
+                        docx_inline_runs(&child, &mut cell_xml, false, false);
+                    }
+                    if text_content(&cell_node).trim().is_empty() {
+                        cell_xml.push_str("<w:r><w:t></w:t></w:r>");
+                    }
+                    cell_xml.push_str("</w:p></w:tc>");
+                    Some(cell_xml)
+                })
+                .collect::<Option<Vec<_>>>()?;
+            if cells.is_empty() {
+                None
+            } else {
+                Some(format!("<w:tr>{}</w:tr>", cells.join("")))
+            }
+        })
+        .collect::<Vec<_>>();
+    if rows.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "<w:tbl><w:tblPr><w:tblW w:w=\"0\" w:type=\"auto\"/></w:tblPr>{}</w:tbl>",
+        rows.join("")
+    ))
+}
+
+fn docx_block_xml(node: &NodeRef, target: &mut Vec<String>) {
+    match node.data() {
+        NodeData::Text(text) => {
+            let value = text.borrow();
+            if !value.trim().is_empty() {
+                target.push(format!(
+                    "<w:p><w:r><w:t xml:space=\"preserve\">{}</w:t></w:r></w:p>",
+                    escape_html(value.trim())
+                ));
+            }
+        }
+        NodeData::Element(element) => {
+            let name = element.name.local.to_string();
+            match name.as_str() {
+                "script" | "style" => {}
+                "h1" => {
+                    if let Some(paragraph) = docx_paragraph_xml(node, Some("Heading1"), None) {
+                        target.push(paragraph);
+                    }
+                }
+                "h2" => {
+                    if let Some(paragraph) = docx_paragraph_xml(node, Some("Heading2"), None) {
+                        target.push(paragraph);
+                    }
+                }
+                "h3" | "h4" | "h5" | "h6" => {
+                    if let Some(paragraph) = docx_paragraph_xml(node, Some("Heading3"), None) {
+                        target.push(paragraph);
+                    }
+                }
+                "p" | "div" | "blockquote" => {
+                    if let Some(paragraph) = docx_paragraph_xml(node, None, None) {
+                        target.push(paragraph);
+                    }
+                }
+                "ul" => {
+                    if let Ok(items) = node.select("li") {
+                        for item in items {
+                            if let Some(paragraph) =
+                                docx_paragraph_xml(item.as_node(), None, Some("- "))
+                            {
+                                target.push(paragraph);
+                            }
+                        }
+                    }
+                }
+                "ol" => {
+                    if let Ok(items) = node.select("li") {
+                        for (index, item) in items.enumerate() {
+                            if let Some(paragraph) = docx_paragraph_xml(
+                                item.as_node(),
+                                None,
+                                Some(&format!("{}. ", index + 1)),
+                            ) {
+                                target.push(paragraph);
+                            }
+                        }
+                    }
+                }
+                "table" => {
+                    if let Some(table) = docx_table_xml(node) {
+                        target.push(table);
+                    }
+                }
+                "section" | "article" | "main" | "body" => {
+                    for child in node.children() {
+                        docx_block_xml(&child, target);
+                    }
+                }
+                _ => {
+                    if let Some(paragraph) = docx_paragraph_xml(node, None, None) {
+                        target.push(paragraph);
+                    }
+                }
+            }
+        }
+        _ => {
+            for child in node.children() {
+                docx_block_xml(&child, target);
+            }
+        }
+    }
+}
+
+fn html_fragment_to_docx_document_xml(fragment: &str, original_xml: &str) -> String {
+    let document = kuchikiki::parse_html()
+        .one(format!(
+            "<!doctype html><html><body>{fragment}</body></html>"
+        ))
+        .document_node;
+    let body = document
+        .select_first("body")
+        .ok()
+        .map(|node| node.as_node().clone())
+        .unwrap_or(document);
+    let mut blocks = Vec::new();
+    for child in body.children() {
+        docx_block_xml(&child, &mut blocks);
+    }
+    if blocks.is_empty() {
+        blocks.push("<w:p/>".to_string());
+    }
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>{}{}</w:body></w:document>"#,
+        blocks.join(""),
+        docx_section_properties(original_xml)
+    )
 }
 
 fn xlsx_shared_strings_xml_to_vec(xml: &str) -> Vec<String> {
@@ -1988,12 +2243,16 @@ pub fn preview_artifact_uri_for_session_v2(
 #[tauri::command]
 pub fn read_editable_artifact(source_path: String) -> Result<EditableArtifactSource, String> {
     let (path, source_kind) = validate_editable_artifact_path(&source_path)?;
-    let raw = std::fs::read_to_string(&path)
-        .map_err(|error| format!("Failed to read editable artifact: {error}"))?;
-    let content = if source_kind == "markdown" {
-        markdown_to_static_html(&raw)
-    } else {
-        raw
+    let content = match source_kind.as_str() {
+        "markdown" => {
+            let raw = std::fs::read_to_string(&path)
+                .map_err(|error| format!("Failed to read editable artifact: {error}"))?;
+            markdown_to_static_html(&raw)
+        }
+        "html" => std::fs::read_to_string(&path)
+            .map_err(|error| format!("Failed to read editable artifact: {error}"))?,
+        "office" => docx_to_html(&path)?,
+        _ => return Err("Unsupported editable artifact source kind".to_string()),
     };
     Ok(EditableArtifactSource {
         source_path: path.to_string_lossy().to_string(),
@@ -2042,6 +2301,62 @@ fn write_atomic(path: &Path, contents: &[u8]) -> Result<(), String> {
         .map_err(|error| format!("Failed to replace editable artifact: {}", error.error))
 }
 
+fn write_docx_document_xml_atomic(path: &Path, document_xml: &str) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| "Editable artifact parent directory not found".to_string())?;
+    let mut temp = tempfile::NamedTempFile::new_in(parent)
+        .map_err(|error| format!("Failed to create temporary Word file: {error}"))?;
+    let replaced = {
+        let source =
+            File::open(path).map_err(|error| format!("Failed to open Word document: {error}"))?;
+        let mut archive = ZipArchive::new(source)
+            .map_err(|error| format!("Failed to read Word document: {error}"))?;
+        let mut replaced = false;
+        let mut writer = ZipWriter::new(temp.as_file_mut());
+        for index in 0..archive.len() {
+            let mut entry = archive
+                .by_index(index)
+                .map_err(|error| format!("Failed to inspect Word archive: {error}"))?;
+            let name = entry.name().to_string();
+            let options = entry.options();
+            if entry.is_dir() {
+                writer
+                    .add_directory(name, options)
+                    .map_err(|error| format!("Failed to write Word directory entry: {error}"))?;
+                continue;
+            }
+            writer
+                .start_file(&name, options)
+                .map_err(|error| format!("Failed to write Word file entry: {error}"))?;
+            if name == "word/document.xml" {
+                writer
+                    .write_all(document_xml.as_bytes())
+                    .map_err(|error| format!("Failed to write Word document body: {error}"))?;
+                replaced = true;
+            } else {
+                std::io::copy(&mut entry, &mut writer)
+                    .map_err(|error| format!("Failed to copy Word archive entry: {error}"))?;
+            }
+        }
+        writer
+            .finish()
+            .map_err(|error| format!("Failed to finish Word archive: {error}"))?;
+        replaced
+    };
+    if !replaced {
+        return Err("Word document body entry not found".to_string());
+    }
+    temp.flush()
+        .map_err(|error| format!("Failed to flush temporary Word file: {error}"))?;
+    temp.as_file()
+        .sync_all()
+        .map_err(|error| format!("Failed to sync temporary Word file: {error}"))?;
+    temp.persist(path)
+        .map(|_| ())
+        .map_err(|error| format!("Failed to replace Word document: {}", error.error))
+}
+
 fn preview_path_after_save(
     path: &Path,
     source_kind: &str,
@@ -2049,6 +2364,12 @@ fn preview_path_after_save(
 ) -> Result<String, String> {
     if source_kind == "html" {
         return Ok(path.to_string_lossy().to_string());
+    }
+    if source_kind == "office" {
+        let preview_path = path.with_extension("office.preview.html");
+        std::fs::write(&preview_path, office_to_static_html(path))
+            .map_err(|error| format!("Failed to refresh Word preview: {error}"))?;
+        return Ok(preview_path.to_string_lossy().to_string());
     }
     let markdown = markdown.ok_or_else(|| "Markdown preview content missing".to_string())?;
     let preview_path = path.with_extension("preview.html");
@@ -2074,21 +2395,22 @@ pub fn save_editable_artifact(
     std::fs::write(&backup_path, original)
         .map_err(|error| format!("Failed to create artifact backup: {error}"))?;
 
-    let next_content = if actual_kind == "markdown" {
-        html_fragment_to_markdown(&content)
+    let mut markdown_preview: Option<String> = None;
+    if actual_kind == "office" {
+        let original_xml = read_zip_text_entry(&path, "word/document.xml")?;
+        let next_xml = html_fragment_to_docx_document_xml(&content, &original_xml);
+        write_docx_document_xml_atomic(&path, &next_xml)?;
     } else {
-        content
-    };
-    write_atomic(&path, next_content.as_bytes())?;
-    let preview_path = preview_path_after_save(
-        &path,
-        &actual_kind,
-        if actual_kind == "markdown" {
-            Some(next_content.as_str())
+        let next_content = if actual_kind == "markdown" {
+            let markdown = html_fragment_to_markdown(&content);
+            markdown_preview = Some(markdown.clone());
+            markdown
         } else {
-            None
-        },
-    )?;
+            content
+        };
+        write_atomic(&path, next_content.as_bytes())?;
+    }
+    let preview_path = preview_path_after_save(&path, &actual_kind, markdown_preview.as_deref())?;
 
     Ok(SaveEditableArtifactResult {
         source_path: path.to_string_lossy().to_string(),
@@ -2339,6 +2661,23 @@ pub fn get_launch_cwd() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zip::write::SimpleFileOptions;
+    use zip::CompressionMethod;
+
+    fn write_test_docx(path: &Path, document_xml: &str) {
+        let file = File::create(path).unwrap();
+        let options = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+        let mut writer = ZipWriter::new(file);
+        writer.start_file("[Content_Types].xml", options).unwrap();
+        writer
+            .write_all(
+                br#"<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>"#,
+            )
+            .unwrap();
+        writer.start_file("word/document.xml", options).unwrap();
+        writer.write_all(document_xml.as_bytes()).unwrap();
+        writer.finish().unwrap();
+    }
 
     #[test]
     fn artifact_preview_allows_only_session_files() {
@@ -2549,7 +2888,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let text_path = dir.path().join("secret.txt");
         let markdown_path = dir.path().join("report.md");
-        let office_path = dir.path().join("report.docx");
+        let office_path = dir.path().join("report.xlsx");
         std::fs::write(&text_path, "secret").unwrap();
         std::fs::write(&markdown_path, "# ok").unwrap();
         std::fs::write(&office_path, "office").unwrap();
@@ -2593,6 +2932,36 @@ mod tests {
             "x".to_string()
         )
         .is_err());
+    }
+
+    #[test]
+    fn save_docx_serializes_body_and_creates_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let docx_path = dir.path().join("report.docx");
+        write_test_docx(
+            &docx_path,
+            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Old</w:t></w:r></w:p><w:sectPr/></w:body></w:document>"#,
+        );
+
+        let result = save_editable_artifact(
+            docx_path.to_string_lossy().to_string(),
+            "office".to_string(),
+            r#"<h1>Title</h1><p>Hello <strong>bold</strong> <em>italic</em></p><table><tbody><tr><td>A</td><td>B</td></tr></tbody></table>"#.to_string(),
+        )
+        .unwrap();
+
+        assert!(Path::new(&result.backup_path).is_file());
+        assert!(Path::new(&result.preview_path).is_file());
+        let saved_xml = read_zip_text_entry(&docx_path, "word/document.xml").unwrap();
+        assert!(saved_xml.contains("Heading1"));
+        assert!(saved_xml.contains("Hello "));
+        assert!(saved_xml.contains("<w:b/>"));
+        assert!(saved_xml.contains("<w:i/>"));
+        assert!(saved_xml.contains("<w:tbl>"));
+        assert!(saved_xml.contains(">A<"));
+        let preview_html = docx_to_html(&docx_path).unwrap();
+        assert!(preview_html.contains("<td>A</td>"));
+        assert!(preview_html.contains("<td>B</td>"));
     }
 
     #[test]

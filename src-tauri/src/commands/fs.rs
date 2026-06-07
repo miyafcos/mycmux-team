@@ -13,14 +13,9 @@ pub fn reveal_in_explorer(path: String) -> Result<(), String> {
 
     #[cfg(target_os = "windows")]
     {
-        let target = windows_display_path(&canonical);
-        let arg = if is_dir {
-            target
-        } else {
-            format!("/select,{}", target)
-        };
+        let args = windows_explorer_reveal_args(&canonical, is_dir);
         std::process::Command::new("explorer.exe")
-            .arg(arg)
+            .args(args)
             .spawn()
             .map_err(|e| format!("failed to launch explorer.exe: {e}"))?;
         return Ok(());
@@ -70,13 +65,9 @@ pub fn open_with_default(path: String) -> Result<(), String> {
 
     #[cfg(target_os = "windows")]
     {
-        use std::os::windows::process::CommandExt;
-
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         let target = windows_display_path(&canonical);
-        std::process::Command::new("cmd.exe")
-            .args(["/C", "start", "", &target])
-            .creation_flags(CREATE_NO_WINDOW)
+        std::process::Command::new("explorer.exe")
+            .arg(target)
             .spawn()
             .map_err(|e| format!("failed to launch default app: {e}"))?;
         return Ok(());
@@ -108,4 +99,41 @@ pub fn open_with_default(path: String) -> Result<(), String> {
 fn windows_display_path(path: &std::path::Path) -> String {
     let value = path.to_string_lossy();
     value.strip_prefix(r"\\?\").unwrap_or(&value).to_string()
+}
+
+#[cfg(target_os = "windows")]
+fn windows_explorer_reveal_args(path: &std::path::Path, is_dir: bool) -> Vec<String> {
+    let target = windows_display_path(path);
+    if is_dir {
+        vec![target]
+    } else {
+        vec!["/select,".to_string(), target]
+    }
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn explorer_reveal_file_keeps_select_switch_separate_from_path() {
+        let args = windows_explorer_reveal_args(
+            std::path::Path::new(r"C:\Users\miyaz\Desktop\sample doc.html"),
+            false,
+        );
+        assert_eq!(
+            args,
+            vec![
+                "/select,".to_string(),
+                r"C:\Users\miyaz\Desktop\sample doc.html".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn explorer_reveal_directory_opens_directory_directly() {
+        let args =
+            windows_explorer_reveal_args(std::path::Path::new(r"C:\Users\miyaz\Desktop"), true);
+        assert_eq!(args, vec![r"C:\Users\miyaz\Desktop".to_string()]);
+    }
 }

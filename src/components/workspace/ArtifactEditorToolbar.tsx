@@ -174,10 +174,14 @@ function parentPath(path: string | undefined): string {
   return normalized.slice(0, index);
 }
 
-function sourceKindLabel(kind: ArtifactEditorToolbarProps["sourceKind"]): string {
+function sourceKindLabel(kind: ArtifactEditorToolbarProps["sourceKind"], sourcePath: string | undefined): string {
+  if (kind === "office") {
+    const extension = sourcePath?.split(".").pop()?.toUpperCase();
+    if (extension && extension.length <= 5) return extension;
+    return "OFFICE";
+  }
   if (kind === "markdown") return "MD";
   if (kind === "html") return "HTML";
-  if (kind === "office") return "OFFICE";
   return "FILE";
 }
 
@@ -325,18 +329,32 @@ function ArtifactEditorToolbarImpl({
   const iconSize = 13;
   const name = fileLeaf(sourcePath);
   const parent = parentPath(sourcePath);
-  const opensExternally = sourceKind === "office";
 
   return (
     <div style={shellStyle}>
       <div style={topRowStyle}>
         <div style={fileBlockStyle} title={sourcePath}>
-          <span style={kindBadgeStyle}>{sourceKindLabel(sourceKind)}</span>
+          <span style={kindBadgeStyle}>{sourceKindLabel(sourceKind, sourcePath)}</span>
           <span style={fileNameStyle}>{name}</span>
           <span style={parentPathStyle}>{parent || "No source file"}</span>
         </div>
         <StatusPill isDirty={isDirty} isEditing={isEditing} isBusy={isBusy} />
         <div style={actionsStyle}>
+          <ToolbarButton
+            title={isEditing ? "Editing" : "Edit this artifact"}
+            disabled={!canEdit || isBusy || isEditing}
+            variant={isEditing ? "primary" : "default"}
+            onClick={onStartEdit}
+          >
+            <Pencil size={iconSize} />
+          </ToolbarButton>
+          <ToolbarButton
+            title="Open in the default desktop app"
+            disabled={!sourcePath || isBusy}
+            onClick={onOpenSource}
+          >
+            <ExternalLink size={iconSize} />
+          </ToolbarButton>
           <ToolbarButton
             title="Show document location in Explorer"
             disabled={!sourcePath || isBusy}
@@ -344,53 +362,35 @@ function ArtifactEditorToolbarImpl({
           >
             <FolderOpen size={iconSize} />
           </ToolbarButton>
-          {!isEditing && opensExternally ? (
-            <ToolbarButton
-              title="Open in the default desktop app"
-              disabled={!sourcePath || isBusy}
-              variant="primary"
-              label="Open"
-              onClick={onOpenSource}
-            >
-              <ExternalLink size={iconSize} />
-            </ToolbarButton>
-          ) : !isEditing ? (
-            <ToolbarButton
-              title="Start editing this artifact"
-              disabled={!canEdit || isBusy}
-              variant="primary"
-              onClick={onStartEdit}
-            >
-              <Pencil size={iconSize} />
-            </ToolbarButton>
-          ) : (
-            <ToolbarButton
-              title={isDirty ? "Save changes to the source file" : "No changes to save"}
-              disabled={!isDirty || isBusy}
-              variant="primary"
-              onClick={onSave}
-            >
-              <Save size={iconSize} />
-            </ToolbarButton>
-          )}
-          <ToolbarButton title="Reload preview from disk" disabled={isBusy} onClick={onReload}>
-            <RefreshCw size={iconSize} />
-          </ToolbarButton>
-          {isEditing && (
-            <ToolbarButton
-              title="Discard edits and leave edit mode"
-              disabled={isBusy}
-              variant={isDirty ? "danger" : "default"}
-              onClick={onCancel}
-            >
-              <X size={iconSize} />
-            </ToolbarButton>
-          )}
         </div>
       </div>
 
       {isEditing && (
       <div style={commandRowStyle}>
+        <div style={groupStyle} role="group" aria-label="File actions">
+          <span style={groupLabelStyle}>File</span>
+          <ToolbarButton
+            title={isDirty ? "Save changes to the source file" : "No changes to save"}
+            disabled={!isDirty || isBusy}
+            variant="primary"
+            label="Save"
+            onClick={onSave}
+          >
+            <Save size={iconSize} />
+          </ToolbarButton>
+          <ToolbarButton title="Reload from disk" disabled={isBusy} onClick={onReload}>
+            <RefreshCw size={iconSize} />
+          </ToolbarButton>
+          <ToolbarButton
+            title="Discard edits and leave edit mode"
+            disabled={isBusy}
+            variant={isDirty ? "danger" : "default"}
+            onClick={onCancel}
+          >
+            <X size={iconSize} />
+          </ToolbarButton>
+        </div>
+
         <div style={groupStyle} role="group" aria-label="Text formatting">
           <span style={groupLabelStyle}>Text</span>
           <ToolbarButton title="Bold" disabled={commandDisabled} onClick={() => onCommand("bold")}>

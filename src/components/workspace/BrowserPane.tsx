@@ -116,6 +116,11 @@ function serializeEditableBodyHtml(doc: Document): string {
   return clone.innerHTML;
 }
 
+function isEditableWordSource(kind: ArtifactSourceKind | undefined, sourcePath: string | undefined): boolean {
+  if (kind !== "office" || !sourcePath) return false;
+  return /\.(docx|docm|dotx|dotm)$/i.test(sourcePath);
+}
+
 function closestElement(node: Node | null, selector: string): HTMLElement | null {
   let current: Node | null = node;
   while (current) {
@@ -222,7 +227,8 @@ function BrowserPaneImpl({
   const [localReloadKey, setLocalReloadKey] = useState(0);
   const resolvedPreviewPath = previewPath ?? htmlPath;
   const src = useMemo(() => convertFileSrc(resolvedPreviewPath), [resolvedPreviewPath]);
-  const canUseInAppEditor = sourceKind === "html" || sourceKind === "markdown";
+  const canUseInAppEditor =
+    sourceKind === "html" || sourceKind === "markdown" || isEditableWordSource(sourceKind, sourcePath);
   const canEdit = Boolean(sourcePath && canUseInAppEditor);
   const getActionsForEvent = useKeybindingStore((s) => s.getActionsForEvent);
 
@@ -443,7 +449,7 @@ function BrowserPaneImpl({
     setBusy(true);
     setError(null);
     try {
-      const content = sourceKind === "markdown"
+      const content = sourceKind === "markdown" || sourceKind === "office"
         ? serializeEditableBodyHtml(doc)
         : serializeEditableHtml(doc);
       const result = await saveEditableArtifact(sourcePath, sourceKind, content);
