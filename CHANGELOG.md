@@ -1,5 +1,11 @@
 # Changelog (mycmux-lite)
 
+## [0.7.25-lite.1] - 2026-06-07
+
+- Changed: HTML, Markdown, and editable Word artifact tabs now share the same top-right toolbar actions: Edit, Open in the default app, and reveal in Explorer.
+- Added: Word `.docx/.docm/.dotx/.dotm` artifacts can now be edited lightly in-pane and saved back to the original file with a timestamped backup.
+- Fixed: The Explorer action now passes `/select,` separately from the target path on Windows, so it opens the actual document folder instead of falling back to Documents or Desktop.
+
 ## [0.7.24-lite.1] - 2026-06-07
 
 - Fixed: The artifact toolbar Open action now launches local files through the Windows default app reliably instead of failing on scoped URL validation or showing only the path.
