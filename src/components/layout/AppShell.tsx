@@ -616,6 +616,12 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
           if (!targetSessionId) return; // No pane in that direction
           
           setActivePaneId(targetSessionId);
+          if (useUiStore.getState().zoomedPaneId) {
+            const targetPane = activeWs.panes.find((p) => p.sessionId === targetSessionId);
+            if (targetPane) {
+              setZoomedPaneId(targetPane.id);
+            }
+          }
           
           // Focus the xterm textarea inside the pane for immediate typing
           setTimeout(() => {

@@ -2,6 +2,7 @@ import { useMemo, useState, useEffect } from "react";
 import {
   KEYBINDING_DEFINITIONS,
   formatShortcutLabel,
+  getActionDefinition,
   shortcutFromKeyboardEvent,
   type KeybindingActionId,
 } from "../../lib/keybindings";
@@ -11,37 +12,21 @@ interface KeybindingsModalProps {
   onClose: () => void;
 }
 
-function buildConflicts(entries: [KeybindingActionId, string][]) {
-  const byShortcut = new Map<string, KeybindingActionId[]>();
-  for (const [action, shortcut] of entries) {
-    if (!shortcut) continue;
-    const list = byShortcut.get(shortcut) ?? [];
-    list.push(action);
-    byShortcut.set(shortcut, list);
-  }
-  const conflicts = new Set<KeybindingActionId>();
-  for (const actions of byShortcut.values()) {
-    if (actions.length > 1) {
-      for (const action of actions) conflicts.add(action);
-    }
-  }
-  return conflicts;
-}
-
 export default function KeybindingsModal({ onClose }: KeybindingsModalProps) {
   const keybindings = useKeybindingStore((s) => s.keybindings);
   const overrides = useKeybindingStore((s) => s.overrides);
   const setOverride = useKeybindingStore((s) => s.setOverride);
   const clearOverride = useKeybindingStore((s) => s.clearOverride);
   const resetAll = useKeybindingStore((s) => s.resetAll);
+  const getConflicts = useKeybindingStore((s) => s.getConflicts);
 
   const [capturing, setCapturing] = useState<KeybindingActionId | null>(null);
 
-  const entries = useMemo(
-    () => KEYBINDING_DEFINITIONS.map((def) => [def.action, keybindings[def.action]] as [KeybindingActionId, string]),
-    [keybindings],
+  const conflictGroups = useMemo(() => getConflicts(), [keybindings, getConflicts]);
+  const conflictActions = useMemo(
+    () => new Set(conflictGroups.flatMap((group) => group.actions)),
+    [conflictGroups],
   );
-  const conflicts = useMemo(() => buildConflicts(entries), [entries]);
 
   useEffect(() => {
     if (!capturing) return;
@@ -138,11 +123,31 @@ export default function KeybindingsModal({ onClose }: KeybindingsModalProps) {
           Click Rebind, then press a shortcut. Press Backspace/Delete to clear.
         </div>
 
+        {conflictGroups.length > 0 && (
+          <div
+            aria-live="polite"
+            style={{
+              padding: "10px 16px",
+              borderBottom: "1px solid var(--cmux-border)",
+              background: "color-mix(in srgb, var(--cmux-red) 10%, transparent)",
+              color: "var(--cmux-red)",
+              fontSize: 11,
+              fontFamily: "'JetBrains Mono', monospace",
+              lineHeight: 1.5,
+            }}
+          >
+            Duplicate shortcut warning:{" "}
+            {conflictGroups.map((group) => (
+              `${formatShortcutLabel(group.shortcut)} (${group.actions.map((action) => getActionDefinition(action).title).join(", ")})`
+            )).join("; ")}
+          </div>
+        )}
+
         <div style={{ overflow: "auto", padding: "4px 0" }}>
           {KEYBINDING_DEFINITIONS.map((def) => {
             const current = keybindings[def.action];
             const overridden = overrides[def.action] !== undefined;
-            const hasConflict = conflicts.has(def.action);
+            const hasConflict = conflictActions.has(def.action);
             const isCapturing = capturing === def.action;
 
             return (

@@ -232,15 +232,6 @@ function getTabAgentSessionKey(tab: PaneTabConfig): string | null {
   return getConfigAgentSessionKey(kind, sessionId);
 }
 
-function clearTabAgentSession(tab: PaneTabConfig): PaneTabConfig {
-  return {
-    ...tab,
-    claude_session_id: null,
-    agent_kind: null,
-    agent_session_id: null,
-  };
-}
-
 function clearAgentTerminalSnapshot(tab: PaneTabConfig): PaneTabConfig {
   return {
     ...tab,
@@ -333,9 +324,7 @@ function dedupeAgentSessionsInConfigs(
         const key = getTabAgentSessionKey(tab);
         if (!key) return tab;
         const candidateId = `${workspaceIndex}:${paneIndex}:${tabIndex}`;
-        return winningCandidateIds.has(candidateId)
-          ? normalizeAgentSessionTab(tab)
-          : clearTabAgentSession(tab);
+        return winningCandidateIds.has(candidateId) ? normalizeAgentSessionTab(tab) : tab;
       });
       return syncPaneAgentSessionFromActiveTab(pane, tabs);
     }),

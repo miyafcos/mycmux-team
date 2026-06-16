@@ -8,6 +8,10 @@ import {
 } from "../lib/keybindings";
 
 export type KeybindingsMap = Record<KeybindingActionId, string>;
+export interface KeybindingConflict {
+  shortcut: string;
+  actions: KeybindingActionId[];
+}
 
 function buildEffective(overrides: Partial<KeybindingsMap>): KeybindingsMap {
   return {
@@ -27,6 +31,12 @@ function toLookup(map: KeybindingsMap): Record<string, KeybindingActionId[]> {
   return lookup;
 }
 
+function getConflictsFromLookup(lookup: Record<string, KeybindingActionId[]>): KeybindingConflict[] {
+  return Object.entries(lookup)
+    .filter(([, actions]) => actions.length > 1)
+    .map(([shortcut, actions]) => ({ shortcut, actions }));
+}
+
 interface KeybindingState {
   overrides: Partial<KeybindingsMap>;
   keybindings: KeybindingsMap;
@@ -38,6 +48,7 @@ interface KeybindingState {
   getActionsForShortcut: (shortcut: string) => KeybindingActionId[];
   getActionsForEvent: (event: KeyboardEvent) => KeybindingActionId[];
   getShortcutForAction: (action: KeybindingActionId) => string;
+  getConflicts: () => KeybindingConflict[];
 }
 
 export const useKeybindingStore = create<KeybindingState>((set, get) => ({
@@ -100,4 +111,5 @@ export const useKeybindingStore = create<KeybindingState>((set, get) => ({
     return get().lookup[shortcut] ?? [];
   },
   getShortcutForAction: (action) => get().keybindings[action],
+  getConflicts: () => getConflictsFromLookup(get().lookup),
 }));
