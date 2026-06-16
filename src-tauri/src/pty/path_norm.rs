@@ -14,6 +14,32 @@ pub fn posix_drive_to_windows(path: &str) -> String {
     }
 }
 
+/// Mangle a working directory into the `~/.claude/projects/<key>` directory name.
+///
+/// This must match Claude Code's raw cwd-derived project key and must not
+/// canonicalize, because junctions, symlinks, and Windows path normalization can
+/// produce a different on-disk project directory.
+pub fn claude_project_key(path: &str) -> String {
+    let normalized = if path.starts_with('/')
+        && path.len() > 2
+        && path.as_bytes()[1].is_ascii_alphabetic()
+        && path.as_bytes()[2] == b'/'
+    {
+        format!(
+            "{}:{}",
+            path[1..2].to_uppercase(),
+            path[2..].replace('/', "\\")
+        )
+    } else {
+        path.to_string()
+    };
+    normalized
+        .trim_end_matches(['/', '\\'])
+        .replace([':', '\\', '/'], "-")
+        .trim_start_matches('-')
+        .to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -47,5 +73,25 @@ mod tests {
     #[test]
     fn ignores_non_letter_first_segment() {
         assert_eq!(posix_drive_to_windows("/1/foo"), "/1/foo");
+    }
+
+    #[test]
+    fn claude_project_key_strips_leading_separator_dash() {
+        assert_eq!(claude_project_key("/Users/foo/bar"), "Users-foo-bar");
+    }
+
+    #[test]
+    fn claude_project_key_mangles_windows_drive_path() {
+        assert_eq!(claude_project_key(r"C:\Users\miyaz"), "C--Users-miyaz");
+    }
+
+    #[test]
+    fn claude_project_key_mangles_posix_drive_path() {
+        assert_eq!(claude_project_key("/c/Users/miyaz"), "C--Users-miyaz");
+    }
+
+    #[test]
+    fn claude_project_key_trims_trailing_separators() {
+        assert_eq!(claude_project_key(r"C:\Users\miyaz\"), "C--Users-miyaz");
     }
 }

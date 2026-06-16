@@ -85,7 +85,15 @@ pub fn create_session(
     let requested_command = command;
     let mut args = args;
     let mut env_map = env.unwrap_or_default();
-    validate_agent_restore_request(cwd.as_deref(), &env_map)?;
+    let fallback_resume = match validate_agent_restore_request(cwd.as_deref(), &env_map) {
+        Ok(()) => None,
+        Err(err) => {
+            eprintln!("[mycmux] agent restore validation failed, falling back to --continue: {err}");
+            let resume = env_map.get("MYCMUX_RESUME").cloned();
+            env_map.remove("MYCMUX_SESSION_ID");
+            resume
+        }
+    };
     let launch_cwd = resolve_launch_cwd(cwd.as_deref());
     sanitize_launch_env(&mut env_map);
     // Canonical MYCMUX_HTML_OUT (HTML sidetab path) for this pane. sanitize_launch_env
@@ -130,6 +138,15 @@ pub fn create_session(
         }
     } else {
         eprintln!("[mycmux] skipping sidetab for unsafe session_id: {session_id:?}");
+    }
+    // P0-C1 fail-soft: if restore validation failed above, MYCMUX_SESSION_ID was
+    // dropped and the resume kind stashed in fallback_resume. Re-inject MYCMUX_RESUME
+    // so launcher.sh falls back to `--continue` for this cwd (the terminal still
+    // launches). The MYCMUX_PANE_SESSION_ID re-injection block from master 824e6da is
+    // intentionally omitted here: lite lacks the v0.8.x restore-series bindings
+    // (incoming_tab_id / incoming_launcher_done), and lite never re-injected it before.
+    if let Some(resume) = fallback_resume.filter(|value| is_agent_session_kind(value)) {
+        env_map.insert("MYCMUX_RESUME".to_string(), resume);
     }
     let command = prepare_spawn_command(&requested_command, &mut args);
     inject_osc7_hook(&command, &mut args, &mut env_map);
@@ -259,16 +276,12 @@ fn normalize_agent_cwd(cwd: &str) -> String {
         .to_string()
 }
 
-fn claude_project_key(cwd: &str) -> String {
-    normalize_agent_cwd(cwd).replace([':', '\\', '/'], "-")
-}
-
 fn claude_session_path(cwd: &str, session_id: &str) -> Option<PathBuf> {
     let home = dirs::home_dir()?;
     Some(
         home.join(".claude")
             .join("projects")
-            .join(claude_project_key(cwd))
+            .join(crate::pty::path_norm::claude_project_key(cwd))
             .join(format!("{session_id}.jsonl")),
     )
 }
@@ -3405,7 +3418,7 @@ pub fn get_claude_session_id(cwd: String) -> Option<String> {
     let project_dir = home
         .join(".claude")
         .join("projects")
-        .join(claude_project_key(&cwd));
+        .join(crate::pty::path_norm::claude_project_key(&cwd));
     if !project_dir.exists() {
         return None;
     }

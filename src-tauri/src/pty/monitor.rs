@@ -54,17 +54,7 @@ pub fn new_metadata_store() -> MetadataStore {
 /// modified `.jsonl` file in `~/.claude/projects/<mangled-cwd>/`.
 fn detect_claude_session_id(cwd: &str) -> Option<String> {
     let home = dirs::home_dir()?;
-    // Normalize Git Bash paths (/c/Users/...) to Windows paths (C:\Users\...)
-    let normalized = if cwd.starts_with('/') && cwd.len() > 2 && cwd.as_bytes()[2] == b'/' {
-        format!(
-            "{}:{}",
-            cwd[1..2].to_uppercase(),
-            cwd[2..].replace('/', "\\")
-        )
-    } else {
-        cwd.to_string()
-    };
-    let mangled = normalized.replace([':', '\\', '/'], "-");
+    let mangled = super::path_norm::claude_project_key(cwd);
     let project_dir = home.join(".claude").join("projects").join(&mangled);
     if !project_dir.exists() {
         return None;
