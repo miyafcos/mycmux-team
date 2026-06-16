@@ -547,7 +547,7 @@ export function getTerminalBufferLines(sessionId: string, maxLines: number): str
 const CODING_AGENT_HINT_PATTERN = /\b(?:ctrl|cmd|alt|shift)\+[\w?]+/gi;
 const HTTP_LINK_REGEX = /https?:\/\/[^\s"'<>+\uFF0B]+[^\s"'<>+\uFF0B.,!?;:)}\]]/i;
 const ARTIFACT_EXTENSION_PATTERN = String.raw`html?|markdown|md|docx?|docm|dotx?|dotm|xlsx?|xlsm|xlsb|xltx?|xltm|pptx?|pptm|potx?|potm|ppsx?|ppsm`;
-const ARTIFACT_LINK_TERMINATOR_PATTERN = String.raw`(?=$|[\s"'<>+\uFF0B.,!?;:)}\]。、，、])`;
+const ARTIFACT_LINK_TERMINATOR_PATTERN = String.raw`(?=$|[\s"'<>+\uFF0B.,!?;:)}\]（）・。、，、])`;
 const EXTENDED_ARTIFACT_LINK_REGEX = new RegExp(
   String.raw`(?:file:\/\/\/[^\r\n"'<>+\uFF0B]*?\.(?:${ARTIFACT_EXTENSION_PATTERN})|[A-Za-z]:[\\/][^\r\n"'<>+\uFF0B]*?\.(?:${ARTIFACT_EXTENSION_PATTERN}))${ARTIFACT_LINK_TERMINATOR_PATTERN}`,
   "gi",

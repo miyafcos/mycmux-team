@@ -308,7 +308,10 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
       .then((info) => openOrReloadHtmlPreviewPane(workspaceId, pane.id, info))
       .catch((error) => {
         if (isLocalArtifactLink(uri)) {
-          console.warn("[mycmux-lite] local artifact preview rejected", error);
+          console.warn("[mycmux-lite] local artifact preview rejected, opening externally", error);
+          open(uri).catch((openError) =>
+            console.error("[mycmux-lite] fallback open of local artifact failed", openError),
+          );
           return;
         }
         open(uri).catch((error) => console.error("[mycmux-lite] open URL failed", error));
