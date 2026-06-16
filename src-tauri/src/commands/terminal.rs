@@ -13,6 +13,7 @@ use tauri::ipc::Channel;
 use tauri::{AppHandle, State};
 use zip::{ZipArchive, ZipWriter};
 
+use crate::pty::session::FrontendDataBatch;
 use crate::AppState;
 
 #[derive(serde::Serialize)]
@@ -78,7 +79,8 @@ pub fn create_session(
     args: Vec<String>,
     cols: u16,
     rows: u16,
-    on_data: Channel<Vec<u8>>,
+    on_data: Channel<FrontendDataBatch>,
+    consumer_id: String,
     cwd: Option<String>,
     env: Option<HashMap<String, String>>,
 ) -> Result<(), String> {
@@ -88,7 +90,9 @@ pub fn create_session(
     let fallback_resume = match validate_agent_restore_request(cwd.as_deref(), &env_map) {
         Ok(()) => None,
         Err(err) => {
-            eprintln!("[mycmux] agent restore validation failed, falling back to --continue: {err}");
+            eprintln!(
+                "[mycmux] agent restore validation failed, falling back to --continue: {err}"
+            );
             let resume = env_map.get("MYCMUX_RESUME").cloned();
             env_map.remove("MYCMUX_SESSION_ID");
             resume
@@ -152,7 +156,7 @@ pub fn create_session(
     inject_osc7_hook(&command, &mut args, &mut env_map);
     if should_trust_claude_workspace(&requested_command, &env_map) {
         if let Some(trusted_cwd) = launch_cwd.as_deref() {
-            if let Err(error) = ensure_claude_project_trusted(&trusted_cwd) {
+            if let Err(error) = ensure_claude_project_trusted(trusted_cwd) {
                 eprintln!("[claude] failed to mark workspace trusted: {error}");
             }
         }
@@ -165,6 +169,7 @@ pub fn create_session(
         cols,
         rows,
         on_data,
+        consumer_id,
         app_handle,
         launch_cwd,
         Some(env_map),
@@ -652,6 +657,32 @@ pub fn resize_session(
     rows: u16,
 ) -> Result<(), String> {
     state.session_manager.resize(&session_id, cols, rows)
+}
+
+#[tauri::command]
+pub fn ack_frontend_data(
+    state: State<'_, AppState>,
+    session_id: String,
+    generation: u64,
+    seq: u64,
+    bytes: usize,
+) -> Result<(), String> {
+    state
+        .session_manager
+        .ack_frontend_data(&session_id, generation, seq, bytes);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_frontend_visible(
+    state: State<'_, AppState>,
+    session_id: String,
+    visible: bool,
+) -> Result<(), String> {
+    state
+        .session_manager
+        .set_frontend_visible(&session_id, visible);
+    Ok(())
 }
 
 #[tauri::command]
@@ -1291,7 +1322,7 @@ fn push_style_declaration(style: &mut String, name: &str, value: &str) {
 }
 
 fn docx_half_points_to_pt(value: u32) -> String {
-    if value % 2 == 0 {
+    if value.is_multiple_of(2) {
         (value / 2).to_string()
     } else {
         format!("{:.1}", value as f32 / 2.0)

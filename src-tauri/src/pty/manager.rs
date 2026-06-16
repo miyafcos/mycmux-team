@@ -4,7 +4,7 @@ use tauri::ipc::Channel;
 use tauri::AppHandle;
 
 use super::monitor::MetadataStore;
-use super::session::PtySession;
+use super::session::{FrontendDataBatch, PtySession};
 
 pub struct SessionManager {
     sessions: DashMap<String, PtySession>,
@@ -25,7 +25,8 @@ impl SessionManager {
         args: &[String],
         cols: u16,
         rows: u16,
-        data_channel: Channel<Vec<u8>>,
+        data_channel: Channel<FrontendDataBatch>,
+        consumer_id: String,
         app_handle: AppHandle,
         cwd: Option<String>,
         env: Option<std::collections::HashMap<String, String>>,
@@ -34,7 +35,8 @@ impl SessionManager {
         let new_channel_id = data_channel.id().to_string();
         if let Some(session) = self.sessions.get(&session_id) {
             let age_ms = session.created_at.elapsed().as_millis();
-            let (old_channel_id, active_channel_id) = session.replace_data_channel(data_channel)?;
+            let (old_channel_id, active_channel_id) =
+                session.replace_data_channel(data_channel, consumer_id)?;
             eprintln!(
                 "[mycmux-diag manager] create_session id={} kind=reattach age_ms={} old_channel_id={} new_channel_id={} active_channel_id={}",
                 session_id, age_ms, old_channel_id, new_channel_id, active_channel_id
@@ -53,6 +55,7 @@ impl SessionManager {
             cols,
             rows,
             data_channel,
+            consumer_id,
             app_handle,
             cwd,
             env,
@@ -77,6 +80,18 @@ impl SessionManager {
             .get(session_id)
             .ok_or_else(|| format!("Session not found: {session_id}"))?;
         session.resize(cols, rows)
+    }
+
+    pub fn ack_frontend_data(&self, session_id: &str, generation: u64, seq: u64, bytes: usize) {
+        if let Some(session) = self.sessions.get(session_id) {
+            session.ack_frontend_data(generation, seq, bytes);
+        }
+    }
+
+    pub fn set_frontend_visible(&self, session_id: &str, visible: bool) {
+        if let Some(session) = self.sessions.get(session_id) {
+            session.set_frontend_visible(visible);
+        }
     }
 
     pub fn kill(&self, session_id: &str) -> Result<(), String> {

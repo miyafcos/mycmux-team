@@ -9,6 +9,13 @@ import type { AgentSessionKind, ArtifactSourceKind } from "../types";
 // write into the terminal.
 const sessionAttachEpoch = new Map<string, number>();
 
+export type FrontendDataBatch = {
+  generation: number;
+  seq: number;
+  bytes: number;
+  data: number[] | ArrayBuffer | Uint8Array;
+};
+
 export function getCurrentSessionEpoch(sessionId: string): number {
   return sessionAttachEpoch.get(sessionId) ?? 0;
 }
@@ -19,28 +26,36 @@ export async function createSession(
   args: string[],
   cols: number,
   rows: number,
-  onData: (data: ArrayBuffer) => void,
+  onData: (batch: FrontendDataBatch) => void,
   cwd?: string,
   env?: Record<string, string>,
 ): Promise<void> {
   const epoch = (sessionAttachEpoch.get(sessionId) ?? 0) + 1;
   sessionAttachEpoch.set(sessionId, epoch);
-  const channel = new Channel<ArrayBuffer>();
+  const consumerId = `${epoch}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const channel = new Channel<FrontendDataBatch>();
   let messageCount = 0;
   let staleNoticeCount = 0;
-  channel.onmessage = (data) => {
+  channel.onmessage = (batch) => {
     messageCount += 1;
     const current = sessionAttachEpoch.get(sessionId);
     if (current !== epoch) {
-      if (staleNoticeCount % 25 === 0) {
+      ackFrontendData(sessionId, batch.generation, batch.seq, batch.bytes).catch((err) => {
+        if (import.meta.env.DEV) {
+          console.warn("[mycmux-diag ipc] failed to ack stale PTY batch:", err);
+        }
+      });
+      // Throttle stale notices: log every 25 stale messages to avoid console flood.
+      // Debug builds only (Vite drops this in production).
+      if (import.meta.env.DEV && staleNoticeCount % 25 === 0) {
         console.log(
-          `[mycmux-diag ipc] stale_message session=${sessionId} attached_epoch=${epoch} current=${current ?? "none"} stale_count=${staleNoticeCount + 1} bytes_this_msg=${data.byteLength}`,
+          `[mycmux-diag ipc] stale_message session=${sessionId} attached_epoch=${epoch} current=${current ?? "none"} stale_count=${staleNoticeCount + 1} bytes_this_msg=${batch.bytes}`,
         );
       }
       staleNoticeCount += 1;
       return;
     }
-    onData(data);
+    onData(batch);
   };
   console.log(
     `[mycmux-diag ipc] create_session session=${sessionId} epoch=${epoch} prev_messages=${messageCount}`,
@@ -52,9 +67,23 @@ export async function createSession(
     cols,
     rows,
     onData: channel,
+    consumerId,
     cwd: cwd ?? null,
     env: env ?? null,
   });
+}
+
+export async function ackFrontendData(
+  sessionId: string,
+  generation: number,
+  seq: number,
+  bytes: number,
+): Promise<void> {
+  return invoke("ack_frontend_data", { sessionId, generation, seq, bytes });
+}
+
+export async function setFrontendVisible(sessionId: string, visible: boolean): Promise<void> {
+  return invoke("set_frontend_visible", { sessionId, visible });
 }
 
 export async function writeToSession(

@@ -83,6 +83,8 @@ pub fn run() {
             commands::terminal::create_session,
             commands::terminal::write_to_session,
             commands::terminal::resize_session,
+            commands::terminal::ack_frontend_data,
+            commands::terminal::set_frontend_visible,
             commands::terminal::kill_session,
             commands::terminal::preview_artifact_for_session,
             commands::terminal::preview_artifact_uri_for_session,

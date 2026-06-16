@@ -8,11 +8,14 @@ import "@xterm/xterm/css/xterm.css";
 import { open } from "@tauri-apps/plugin-shell";
 import {
   createSession,
+  ackFrontendData,
+  setFrontendVisible,
   writeToSession,
   resizeSession,
   onPtyExit,
   getTerminalConfig,
 } from "../../lib/ipc";
+import type { FrontendDataBatch } from "../../lib/ipc";
 import { usePaneMetadataStore, useUiStore } from "../../stores/workspaceStore";
 import { useKeybindingStore } from "../../stores/keybindingStore";
 import { useSettingsStore } from "../../stores/settingsStore";
@@ -905,6 +908,11 @@ export default memo(function XTermWrapper({
     let formatsCodexOutput = startsAsCodex(command, args, agentId, agentKind, launchEnv);
     let codexDetectionBuffer = "";
     const outputDecoder = new TextDecoder();
+    const diagStats = diagStatsFor(sessionId);
+    const pendingBatches: FrontendDataBatch[] = [];
+    let writingBatch = false;
+    let frontendVisible: boolean | null = null;
+    let visibilityObserver: MutationObserver | null = null;
     let lastObservedWidth = -1;
     let lastObservedHeight = -1;
     const cachedSize = terminalSizeCache.get(sessionId);
@@ -1225,6 +1233,161 @@ export default memo(function XTermWrapper({
       }, 150);
     };
 
+    const batchDataToBytes = (data: FrontendDataBatch["data"]): Uint8Array => {
+      if (data instanceof Uint8Array) return data;
+      if (data instanceof ArrayBuffer) return new Uint8Array(data);
+      return new Uint8Array(data);
+    };
+
+    const ackBatch = async (batch: FrontendDataBatch): Promise<void> => {
+      try {
+        await ackFrontendData(sessionId, batch.generation, batch.seq, batch.bytes);
+      } catch (err) {
+        if (import.meta.env.DEV) {
+          console.warn("[mycmux-diag ipc] failed to ack frontend data:", err);
+        }
+      }
+    };
+
+    const isContainerVisible = (): boolean => {
+      if (!container.isConnected) return false;
+      let current: HTMLElement | null = container;
+      while (current) {
+        const style = window.getComputedStyle(current);
+        if (
+          style.display === "none"
+          || style.visibility === "hidden"
+          || style.visibility === "collapse"
+        ) {
+          return false;
+        }
+        current = current.parentElement;
+      }
+      const rect = container.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    };
+
+    const setFrontendVisibleIfChanged = (visible: boolean): void => {
+      if (frontendVisible === visible) return;
+      frontendVisible = visible;
+      void setFrontendVisible(sessionId, visible);
+    };
+
+    const refreshFrontendVisible = (): void => {
+      setFrontendVisibleIfChanged(Boolean(term && !termDisposed && isContainerVisible()));
+    };
+
+    const startVisibilityObserver = (): void => {
+      visibilityObserver?.disconnect();
+      visibilityObserver = new MutationObserver(() => {
+        refreshFrontendVisible();
+        if (pendingBatches.length > 0) {
+          void pumpTerminalWrites();
+        }
+      });
+      let current: HTMLElement | null = container;
+      while (current) {
+        visibilityObserver.observe(current, {
+          attributes: true,
+          attributeFilter: ["class", "style", "hidden", "aria-hidden"],
+        });
+        current = current.parentElement;
+      }
+      window.addEventListener("focus", refreshFrontendVisible);
+      window.addEventListener("blur", refreshFrontendVisible);
+      document.addEventListener("visibilitychange", refreshFrontendVisible);
+      refreshFrontendVisible();
+    };
+
+    const stopVisibilityObserver = (): void => {
+      visibilityObserver?.disconnect();
+      visibilityObserver = null;
+      window.removeEventListener("focus", refreshFrontendVisible);
+      window.removeEventListener("blur", refreshFrontendVisible);
+      document.removeEventListener("visibilitychange", refreshFrontendVisible);
+    };
+
+    const writeTerminalOutput = (output: string | Uint8Array): Promise<void> => {
+      return new Promise((resolve) => {
+        if (!term || termDisposed) {
+          resolve();
+          return;
+        }
+        let settled = false;
+        const watchdog = window.setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          resolve();
+        }, 30000);
+        const finish = (): void => {
+          if (settled) return;
+          settled = true;
+          window.clearTimeout(watchdog);
+          resolve();
+        };
+        try {
+          term.write(output, finish);
+        } catch {
+          finish();
+        }
+      });
+    };
+
+    async function pumpTerminalWrites(): Promise<void> {
+      if (writingBatch) return;
+      writingBatch = true;
+      try {
+        while (pendingBatches.length > 0) {
+          const batch = pendingBatches.shift()!;
+          if (!term || termDisposed || !isContainerVisible()) {
+            await ackBatch(batch);
+            continue;
+          }
+          try {
+            settleStartupSession();
+            const chunk = batchDataToBytes(batch.data);
+            const decodedText = outputDecoder.decode(chunk, { stream: true });
+            const shouldFormatTables = updateCodexOutputDetection(decodedText);
+            const output = shouldFormatTables ? formatMarkdownTablesForTerminal(decodedText) : chunk;
+            if (import.meta.env.DEV) {
+              diagStats.writes += 1;
+              diagStats.bytes += typeof output === "string" ? new Blob([output]).size : output.byteLength;
+            }
+            await writeTerminalOutput(output);
+            if (!disposed && !termDisposed) {
+              scheduleBackgroundScan();
+            }
+          } finally {
+            await ackBatch(batch);
+          }
+        }
+      } finally {
+        writingBatch = false;
+        if (pendingBatches.length > 0) {
+          void pumpTerminalWrites();
+        }
+      }
+    }
+
+    const enqueueFrontendBatch = (batch: FrontendDataBatch): void => {
+      pendingBatches.push(batch);
+      void pumpTerminalWrites();
+    };
+
+    const attachFrontendChannel = async (cols: number, rows: number): Promise<void> => {
+      await createSession(
+        sessionId,
+        command,
+        args,
+        cols,
+        rows,
+        enqueueFrontendBatch,
+        cwd,
+        launchEnv || undefined,
+      );
+      refreshFrontendVisible();
+    };
+
     const registerScanListener = (currentTerm: Terminal): void => {
       writeParsedDisposable?.dispose();
       writeParsedDisposable = currentTerm.onWriteParsed(() => {
@@ -1283,6 +1446,8 @@ export default memo(function XTermWrapper({
     const cleanup = (): void => {
       clearResizeTimer();
       clearScanTimers();
+      stopVisibilityObserver();
+      setFrontendVisibleIfChanged(false);
       resizeObserver?.disconnect();
       resizeObserver = null;
       disposed = true;
@@ -1297,6 +1462,12 @@ export default memo(function XTermWrapper({
       cacheCurrentTerminal();
       if (term && liveTerms.get(sessionId) === term) {
         liveTerms.delete(sessionId);
+      }
+      if (termDisposed) {
+        while (pendingBatches.length > 0) {
+          const batch = pendingBatches.shift()!;
+          void ackBatch(batch);
+        }
       }
       searchAddonRef.current = null;
       termRef.current = null;
@@ -1331,12 +1502,16 @@ export default memo(function XTermWrapper({
         fitAndSyncResize(cached.term, cached.fitAddon, true);
       }, 30);
       registerResizeObserver(cached.term, cached.fitAddon);
+      startVisibilityObserver();
     };
 
     const cached = termCache.get(sessionId);
     if (cached) {
       console.log(`[mycmux-diag xterm:${sessionId}] cache_hit`);
       attachCachedTerminal(cached);
+      void attachFrontendChannel(cached.term.cols, cached.term.rows).catch((err) => {
+        console.error("[XTermWrapper] Failed to reattach session:", err);
+      });
       return cleanup;
     }
     console.log(`[mycmux-diag xterm:${sessionId}] cache_miss`);
@@ -1395,7 +1570,6 @@ export default memo(function XTermWrapper({
       term.open(container!);
       // GPU renderer (WebGL). Must load AFTER open() since it needs the canvas.
       // Falls back silently to the default DOM renderer on context loss / failure.
-      const diagStats = diagStatsFor(sessionId);
       if (useSettingsStore.getState().useWebglRenderer) {
         try {
           const currentWebgl = new WebglAddon();
@@ -1495,29 +1669,10 @@ export default memo(function XTermWrapper({
       lastSentCols = cols;
       lastSentRows = rows;
       terminalSizeCache.set(sessionId, { cols, rows });
-      const sessionEnv = launchEnv || undefined;
 
       try {
-        await createSession(sessionId, command, args, cols, rows, (rawData: ArrayBuffer) => {
-          if (termDisposed || !term) return;
-          settleStartupSession();
-          const chunk = new Uint8Array(rawData);
-          const decodedText = outputDecoder.decode(chunk, { stream: true });
-          const shouldFormatTables = updateCodexOutputDetection(decodedText);
-          const output = shouldFormatTables ? formatMarkdownTablesForTerminal(decodedText) : chunk;
-          // v0.7.1 diag: count live writes (per-second flush via diagWriteStats interval).
-          diagStats.writes += 1;
-          diagStats.bytes += typeof output === "string" ? new Blob([output]).size : output.byteLength;
-          try {
-            term.write(output, () => {
-              if (!disposed && !termDisposed) {
-                scheduleBackgroundScan();
-              }
-            });
-          } catch {
-            // term disposed between check and write
-          }
-        }, cwd, sessionEnv);
+        startVisibilityObserver();
+        await attachFrontendChannel(cols, rows);
         sessionStarted = true;
         startupSettleTimeout = setTimeout(() => {
           settleStartupSession();
