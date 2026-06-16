@@ -9,6 +9,7 @@ interface UiState {
   rightSidebarCollapsed: boolean;
   isKeybindingsOpen: boolean;
   activePaneId: string | null;
+  lastActivePaneId: string | null;
   zoomedPaneId: string | null;
 
   toggleSidebar: () => void;
@@ -24,6 +25,7 @@ export const useUiStore = create<UiState>((set) => ({
   rightSidebarCollapsed: true,
   isKeybindingsOpen: false,
   activePaneId: null,
+  lastActivePaneId: null,
   zoomedPaneId: null,
 
   toggleSidebar: () => set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed })),
@@ -31,6 +33,10 @@ export const useUiStore = create<UiState>((set) => ({
     set((state) => ({ rightSidebarCollapsed: !state.rightSidebarCollapsed })),
   setRightSidebarCollapsed: (collapsed) => set({ rightSidebarCollapsed: collapsed }),
   setIsKeybindingsOpen: (open) => set({ isKeybindingsOpen: open }),
-  setActivePaneId: (id) => set({ activePaneId: id }),
+  setActivePaneId: (id) =>
+    set((state) => ({
+      activePaneId: id,
+      lastActivePaneId: id ?? state.lastActivePaneId,
+    })),
   setZoomedPaneId: (id) => set({ zoomedPaneId: id }),
 }));

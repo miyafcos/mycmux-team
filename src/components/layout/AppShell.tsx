@@ -246,6 +246,7 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
   const toggleSidebar = useUiStore((s) => s.toggleSidebar);
   const setActivePaneId = useUiStore((s) => s.setActivePaneId);
   const activePaneId = useUiStore((s) => s.activePaneId);
+  const lastActivePaneId = useUiStore((s) => s.lastActivePaneId);
   const zoomedPaneId = useUiStore((s) => s.zoomedPaneId);
   const setZoomedPaneId = useUiStore((s) => s.setZoomedPaneId);
   const addPaneToWorkspace = useWorkspaceLayoutStore((s) => s.addPaneToWorkspace);
@@ -438,8 +439,8 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
   }, []);
 
   // Keyboard shortcuts — use refs so the listener doesn't re-attach on every state change
-  const stateRef = useRef({ workspaces, activeId, activePaneId });
-  stateRef.current = { workspaces, activeId, activePaneId };
+  const stateRef = useRef({ workspaces, activeId, activePaneId, lastActivePaneId });
+  stateRef.current = { workspaces, activeId, activePaneId, lastActivePaneId };
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -457,7 +458,12 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
       e.stopImmediatePropagation();
 
       const action = actions[0]; // Execute first matching action
-      const { workspaces: ws, activeId: aid, activePaneId: apid } = stateRef.current;
+      const {
+        workspaces: ws,
+        activeId: aid,
+        activePaneId: apid,
+        lastActivePaneId: lpid,
+      } = stateRef.current;
 
       // Execute the action based on action ID
       switch (action) {
@@ -577,7 +583,24 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
         case "pane.focus.up":
         case "pane.focus.down": {
           const activeWs = ws.find((w) => w.id === aid);
-          if (!activeWs || activeWs.panes.length <= 1 || !apid) return;
+          if (!activeWs || activeWs.panes.length <= 1) return;
+
+          // activePaneId is cleared on terminal blur. Use the last non-null pane
+          // as fallback, and normalize tab sessionIds back to pane sessionIds
+          // because findPaneInDirection uses pane DOM nodes.
+          const resolvePaneSessionId = (sid: string | null | undefined) => {
+            if (!sid) return null;
+            const pane = activeWs.panes.find(
+              (p) => p.sessionId === sid || p.tabs.some((t) => t.sessionId === sid),
+            );
+            return pane?.sessionId ?? null;
+          };
+          const originId =
+            resolvePaneSessionId(apid) ??
+            resolvePaneSessionId(lpid) ??
+            activeWs.panes[0]?.sessionId ??
+            null;
+          if (!originId) return;
 
           // Map action to direction
           const directionMap: Record<string, Direction> = {
@@ -589,7 +612,7 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
           const direction = directionMap[action];
           
           // Find the best pane in the requested direction using DOM positions
-          const targetSessionId = findPaneInDirection(apid, direction, activeWs.panes);
+          const targetSessionId = findPaneInDirection(originId, direction, activeWs.panes);
           if (!targetSessionId) return; // No pane in that direction
           
           setActivePaneId(targetSessionId);
