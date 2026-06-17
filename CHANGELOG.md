@@ -1,5 +1,9 @@
 # Changelog (mycmux-lite)
 
+## [0.7.29-lite.1] - 2026-06-18
+
+- Fixed: Multi-pane workspaces no longer collapse into unreadably narrow columns after restore or pane operations. Pane layout metrics are reconciled across split changes instead of being discarded, and the terminal grid now enforces readable minimum column and row sizes with horizontal scrolling when needed.
+
 ## [0.7.28-lite.1] - 2026-06-17
 
 - Fixed: Startup restore no longer preserves duplicate agent session IDs across panes. The active tab wins, duplicate losers lose their resume metadata, and stale `Session ID ... already in use` snapshots are cleared before persistence.

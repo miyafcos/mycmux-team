@@ -13,6 +13,8 @@ import { ErrorBoundary } from "../layout/ErrorBoundary";
 const MAX_MOUNTED_WORKSPACES = 3;
 const RESTORE_MOUNT_DELAY_MS = 650;
 const FIRST_RESTORE_MOUNT_DELAY_MS = 1200;
+const MIN_TERMINAL_COLUMN_WIDTH = 420;
+const MIN_TERMINAL_ROW_HEIGHT = 180;
 
 function getRestoreMountDelayMs(): number {
   try {
@@ -92,6 +94,7 @@ export const TerminalGrid = memo(function TerminalGrid({
     const cols: string[][] = splitColumns ?? [panes.map((p) => p.id)];
     const columnWidths = workspace?.columnWidths?.length === cols.length ? workspace.columnWidths : undefined;
     const rowHeightsPerCol = workspace?.rowHeightsPerCol;
+    const minGridWidth = cols.length > 1 ? cols.length * MIN_TERMINAL_COLUMN_WIDTH : undefined;
     const nextEntries: Array<{ key: string; paneIds: string[] }> = [];
     const availableEntries = [...colKeyStateRef.current.entries];
 
@@ -118,54 +121,67 @@ export const TerminalGrid = memo(function TerminalGrid({
     colKeyStateRef.current.entries = nextEntries;
 
     return (
-      <Allotment
-        separator={false}
-        defaultSizes={columnWidths}
-        onDragEnd={(sizes) => {
-          const currentWorkspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
-          setWorkspaceLayoutMetrics(workspaceId, sizes, currentWorkspace?.rowHeightsPerCol);
+      <div
+        style={{
+          width: "100%",
+          height: "100%",
+          overflowX: minGridWidth ? "auto" : "hidden",
+          overflowY: "hidden",
         }}
       >
-        {keyedCols.map(({ col, key }, colIdx) => (
-          <Allotment.Pane key={key}>
-            <Allotment
-              vertical
-              key={`rows-${key}`}
-              separator={false}
-              defaultSizes={rowHeightsPerCol?.[colIdx]?.length === col.length ? rowHeightsPerCol[colIdx] : undefined}
-              onDragEnd={(sizes) => {
-                const currentWorkspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
-                const currentRowHeights = currentWorkspace?.rowHeightsPerCol;
-                const nextRowHeights = cols.map((currentCol, currentColIdx) => {
-                  if (currentColIdx === colIdx) return sizes;
-                  return currentRowHeights?.[currentColIdx]?.length === currentCol.length
-                    ? currentRowHeights[currentColIdx]
-                    : [];
-                });
-                setWorkspaceLayoutMetrics(workspaceId, currentWorkspace?.columnWidths, nextRowHeights);
-              }}
-            >
-              {col.map((paneId) => {
-                const pane = paneMap[paneId];
-                if (!pane) return null;
-                return (
-                  <Allotment.Pane key={pane.id}>
-                    <ErrorBoundary>
-                    <TerminalPane
-                      pane={pane}
-                      workspaceId={workspaceId}
-                      onClose={() => handleClose(pane.id)}
-                      onSplitRight={() => handleSplitRight(pane.id)}
-                      onSplitDown={() => handleSplitDown(pane.id)}
-                    />
-                    </ErrorBoundary>
-                  </Allotment.Pane>
-                );
-              })}
-            </Allotment>
-          </Allotment.Pane>
-        ))}
-      </Allotment>
+        <div style={{ width: "100%", minWidth: minGridWidth, height: "100%" }}>
+          <Allotment
+            separator={false}
+            defaultSizes={columnWidths}
+            minSize={MIN_TERMINAL_COLUMN_WIDTH}
+            onDragEnd={(sizes) => {
+              const currentWorkspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
+              setWorkspaceLayoutMetrics(workspaceId, sizes, currentWorkspace?.rowHeightsPerCol);
+            }}
+          >
+            {keyedCols.map(({ col, key }, colIdx) => (
+              <Allotment.Pane key={key} minSize={MIN_TERMINAL_COLUMN_WIDTH}>
+                <Allotment
+                  vertical
+                  key={`rows-${key}`}
+                  separator={false}
+                  defaultSizes={rowHeightsPerCol?.[colIdx]?.length === col.length ? rowHeightsPerCol[colIdx] : undefined}
+                  minSize={MIN_TERMINAL_ROW_HEIGHT}
+                  onDragEnd={(sizes) => {
+                    const currentWorkspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
+                    const currentRowHeights = currentWorkspace?.rowHeightsPerCol;
+                    const nextRowHeights = cols.map((currentCol, currentColIdx) => {
+                      if (currentColIdx === colIdx) return sizes;
+                      return currentRowHeights?.[currentColIdx]?.length === currentCol.length
+                        ? currentRowHeights[currentColIdx]
+                        : [];
+                    });
+                    setWorkspaceLayoutMetrics(workspaceId, currentWorkspace?.columnWidths, nextRowHeights);
+                  }}
+                >
+                  {col.map((paneId) => {
+                    const pane = paneMap[paneId];
+                    if (!pane) return null;
+                    return (
+                      <Allotment.Pane key={pane.id} minSize={MIN_TERMINAL_ROW_HEIGHT}>
+                        <ErrorBoundary>
+                        <TerminalPane
+                          pane={pane}
+                          workspaceId={workspaceId}
+                          onClose={() => handleClose(pane.id)}
+                          onSplitRight={() => handleSplitRight(pane.id)}
+                          onSplitDown={() => handleSplitDown(pane.id)}
+                        />
+                        </ErrorBoundary>
+                      </Allotment.Pane>
+                    );
+                  })}
+                </Allotment>
+              </Allotment.Pane>
+            ))}
+          </Allotment>
+        </div>
+      </div>
     );
   }
 

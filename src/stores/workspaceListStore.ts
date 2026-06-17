@@ -14,6 +14,91 @@ function clearZoomIfMissingFromWorkspace(workspace: Workspace | undefined): void
   }
 }
 
+const DEFAULT_LAYOUT_SIZE = 1;
+
+function fallbackColumns(workspace: Workspace): string[][] {
+  return workspace.splitColumns && workspace.splitColumns.length > 0
+    ? workspace.splitColumns
+    : [workspace.panes.map((pane) => pane.id)];
+}
+
+function bestPreviousColumnIndex(
+  nextColumn: string[],
+  previousColumns: string[][],
+  usedIndices: Set<number>,
+): number {
+  let bestIndex = -1;
+  let bestOverlap = 0;
+  for (let index = 0; index < previousColumns.length; index += 1) {
+    if (usedIndices.has(index)) continue;
+    const overlap = nextColumn.filter((paneId) => previousColumns[index].includes(paneId)).length;
+    if (overlap > bestOverlap) {
+      bestOverlap = overlap;
+      bestIndex = index;
+    }
+  }
+  return bestIndex;
+}
+
+function positiveSize(value: number | undefined): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
+}
+
+function reconcileColumnWidths(workspace: Workspace, nextColumns: string[][]): number[] | undefined {
+  if (nextColumns.length === 0) return undefined;
+  const previousColumns = fallbackColumns(workspace);
+  const previousWidths = workspace.columnWidths;
+  const usedIndices = new Set<number>();
+
+  return nextColumns.map((nextColumn) => {
+    const previousIndex = bestPreviousColumnIndex(nextColumn, previousColumns, usedIndices);
+    if (previousIndex >= 0) {
+      usedIndices.add(previousIndex);
+      const previousWidth = positiveSize(previousWidths?.[previousIndex]);
+      if (previousWidth !== null) return previousWidth;
+    }
+    return DEFAULT_LAYOUT_SIZE;
+  });
+}
+
+function reconcileRowHeightsPerCol(workspace: Workspace, nextColumns: string[][]): number[][] | undefined {
+  if (nextColumns.length === 0) return undefined;
+  const previousColumns = fallbackColumns(workspace);
+  const previousRows = workspace.rowHeightsPerCol;
+  const usedIndices = new Set<number>();
+
+  return nextColumns.map((nextColumn) => {
+    const previousIndex = bestPreviousColumnIndex(nextColumn, previousColumns, usedIndices);
+    if (previousIndex >= 0) {
+      usedIndices.add(previousIndex);
+      const previousHeights = previousRows?.[previousIndex];
+      if (
+        previousHeights
+        && previousHeights.length === nextColumn.length
+        && previousHeights.every((size) => positiveSize(size) !== null)
+      ) {
+        return previousHeights;
+      }
+    }
+    return nextColumn.map(() => DEFAULT_LAYOUT_SIZE);
+  });
+}
+
+function reconcileLayoutMetrics(
+  workspace: Workspace,
+  nextSplitColumns: string[][] | undefined,
+  resetLayoutMetrics: boolean,
+): Pick<Workspace, "columnWidths" | "rowHeightsPerCol"> | undefined {
+  if (!resetLayoutMetrics) return undefined;
+  if (!nextSplitColumns || nextSplitColumns.length === 0) {
+    return { columnWidths: undefined, rowHeightsPerCol: undefined };
+  }
+  return {
+    columnWidths: reconcileColumnWidths(workspace, nextSplitColumns),
+    rowHeightsPerCol: reconcileRowHeightsPerCol(workspace, nextSplitColumns),
+  };
+}
+
 export interface PaneAgentSessionPayload {
   claudeSessionId?: string;
   agentKind?: AgentSessionKind;
@@ -184,16 +269,16 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
 
   _updateWorkspacePanes: (id, panes, splitColumns, resetLayoutMetrics = false) => {
     set((state) => ({
-      workspaces: state.workspaces.map((w) =>
-        w.id === id
-          ? {
-              ...w,
-              panes,
-              ...(splitColumns !== undefined && { splitColumns }),
-              ...(resetLayoutMetrics ? { columnWidths: undefined, rowHeightsPerCol: undefined } : {}),
-            }
-          : w
-      ),
+      workspaces: state.workspaces.map((w) => {
+        if (w.id !== id) return w;
+        const layoutMetrics = reconcileLayoutMetrics(w, splitColumns, resetLayoutMetrics);
+        return {
+          ...w,
+          panes,
+          ...(splitColumns !== undefined && { splitColumns }),
+          ...(layoutMetrics ?? {}),
+        };
+      }),
     }));
   },
 
