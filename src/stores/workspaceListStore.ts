@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { v4 as uuid } from "uuid";
 import type { Workspace, GridTemplateId, AgentSessionKind } from "../types";
-import { normalizeReadableSplitColumns } from "../lib/layoutColumns";
+import { normalizeReadableSplitColumns, reconcileSplitColumnsForPanes } from "../lib/layoutColumns";
 import { useUiStore } from "./uiStore";
 
 function workspaceContainsPane(workspace: Workspace | undefined, paneId: string | null): boolean {
@@ -23,8 +23,8 @@ function fallbackColumns(workspace: Workspace): string[][] {
     : [workspace.panes.map((pane) => pane.id)];
 }
 
-function normalizeSplitColumns(splitColumns: string[][]): string[][] {
-  return normalizeReadableSplitColumns(splitColumns);
+function normalizeSplitColumns(splitColumns: string[][], paneIds: string[]): string[][] {
+  return reconcileSplitColumnsForPanes(normalizeReadableSplitColumns(splitColumns), paneIds);
 }
 
 function columnWidthsMatch(columns: string[][], columnWidths: number[] | undefined): boolean {
@@ -204,7 +204,7 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
 
   createWorkspace: (name, gridTemplateId, panes, splitColumns, options) => {
     const id = options?.id ?? uuid();
-    const normalizedSplitColumns = normalizeSplitColumns(splitColumns);
+    const normalizedSplitColumns = normalizeSplitColumns(splitColumns, panes.map((pane) => pane.id));
 
     const workspace: Workspace = {
       id,
@@ -301,7 +301,7 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
       workspaces: state.workspaces.map((w) => {
         if (w.id !== id) return w;
         const normalizedSplitColumns = splitColumns !== undefined
-          ? normalizeSplitColumns(splitColumns)
+          ? normalizeSplitColumns(splitColumns, panes.map((pane) => pane.id))
           : undefined;
         const layoutMetrics = reconcileLayoutMetrics(w, normalizedSplitColumns, resetLayoutMetrics);
         return {

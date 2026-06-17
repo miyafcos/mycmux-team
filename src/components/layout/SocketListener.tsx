@@ -23,7 +23,7 @@ import { useThemeStore } from "../../stores/themeStore";
 import { useKeybindingStore } from "../../stores/keybindingStore";
 import { deriveEffectiveStatus } from "../../lib/notificationStatus";
 import { makeSessionId } from "../../lib/constants";
-import { normalizeReadableSplitColumns } from "../../lib/layoutColumns";
+import { normalizeReadableSplitColumns, reconcileSplitColumnsForPanes } from "../../lib/layoutColumns";
 import { getTerminalBufferLines } from "../terminal/XTermWrapper";
 
 /** Transpose row-major split indices to column-major for legacy data migration */
@@ -42,11 +42,15 @@ function transposeSplitRowsToCols(splitRows: number[][]): number[][] {
 }
 
 function normalizeSplitColumns(ws: Workspace): string[][] | null {
-  const columns = ws.splitColumns
+  const sourceColumns = ws.splitColumns ?? [ws.panes.map((pane) => pane.id)];
+  const columns = sourceColumns
     ?.map((col) => col.filter((id) => ws.panes.some((pane) => pane.id === id)))
     .filter((col) => col.length > 0);
   if (!columns || columns.length === 0) return null;
-  return normalizeReadableSplitColumns(columns);
+  return reconcileSplitColumnsForPanes(
+    normalizeReadableSplitColumns(columns),
+    ws.panes.map((pane) => pane.id),
+  );
 }
 
 function normalizeColumnWidths(ws: Workspace, splitColumns: string[][] | null): number[] | null {

@@ -5,7 +5,7 @@ import type { PaneConfig } from "../lib/ipc";
 import { getGridTemplate } from "../lib/gridTemplates";
 import { getDefaultAgent } from "../lib/agents";
 import { makeSessionId } from "../lib/constants";
-import { normalizeReadableSplitColumns } from "../lib/layoutColumns";
+import { normalizeReadableSplitColumns, reconcileSplitColumnsForPanes } from "../lib/layoutColumns";
 import { useWorkspaceListStore } from "./workspaceListStore";
 import { useUiStore } from "./uiStore";
 
@@ -99,9 +99,10 @@ function cloneSplitColumns(workspace: Workspace): string[][] {
   const columns = workspace.splitColumns && workspace.splitColumns.length > 0
     ? workspace.splitColumns
     : [workspace.panes.map((pane) => pane.id)];
-  return normalizeWorkspaceSplitColumns(columns
-    .map((col) => [...col])
-    .filter((col) => col.length > 0));
+  return reconcileSplitColumnsForPanes(
+    normalizeWorkspaceSplitColumns(columns.map((col) => [...col])),
+    workspace.panes.map((pane) => pane.id),
+  );
 }
 
 function normalizeWorkspaceSplitColumns(columns: string[][]): string[][] {
@@ -497,7 +498,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
     const newPanes = [...workspace.panes, newPane];
 
     // Initialize splitColumns if not present (single column with all panes)
-    const existingColumns: string[][] = workspace.splitColumns ?? [workspace.panes.map((p) => p.id)];
+    const existingColumns = cloneSplitColumns(workspace);
 
     let newSplitColumns: string[][];
     if (direction === "down") {
@@ -526,6 +527,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
       normalizeWorkspaceSplitColumns(newSplitColumns),
       true,
     );
+    useUiStore.getState().setActivePaneId(newPane.sessionId);
   },
 
   addPaneToWorkspaceWithOptions: (workspaceId, afterPaneId, direction, options) => {
@@ -554,7 +556,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
       activeTabId: tab.id,
     };
     const newPanes = [...workspace.panes, newPane];
-    const existingColumns: string[][] = workspace.splitColumns ?? [workspace.panes.map((p) => p.id)];
+    const existingColumns = cloneSplitColumns(workspace);
 
     let newSplitColumns: string[][];
     if (direction === "down") {
@@ -581,6 +583,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
       normalizeWorkspaceSplitColumns(newSplitColumns),
       true,
     );
+    useUiStore.getState().setActivePaneId(newPane.sessionId);
   },
 
   addTabToPane: (workspaceId, paneId, agentId, type = "terminal") => {

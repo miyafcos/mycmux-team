@@ -36,17 +36,54 @@ def test_terminal_grid_keeps_multi_column_layout_readable() -> None:
     workspace_view = read_repo_text("src/components/workspace/WorkspaceView.tsx")
 
     for snippet in [
-        "const MIN_TERMINAL_COLUMN_WIDTH = 420;",
-        "const MIN_TERMINAL_ROW_HEIGHT = 180;",
-        "const minGridWidth = cols.length > 1 ? cols.length * MIN_TERMINAL_COLUMN_WIDTH : undefined;",
-        "const minGridHeight = maxRows > 1 ? maxRows * MIN_TERMINAL_ROW_HEIGHT : undefined;",
-        'overflowX: minGridWidth ? "auto" : "hidden"',
-        'overflowY: minGridHeight ? "auto" : "hidden"',
+        "const COMFORT_TERMINAL_COLUMN_WIDTH = 360;",
+        "const MIN_TERMINAL_COLUMN_WIDTH = 96;",
+        "const COMFORT_TERMINAL_ROW_HEIGHT = 180;",
+        "const MIN_TERMINAL_ROW_HEIGHT = 72;",
+        "const columnMinSize = fitMinSize(",
+        "const rowMinSize = fitMinSize(",
+        'overflow: "hidden"',
         "activePaneEl?.scrollIntoView({ block: \"nearest\", inline: \"nearest\" });",
-        "minSize={MIN_TERMINAL_COLUMN_WIDTH}",
-        "minSize={MIN_TERMINAL_ROW_HEIGHT}",
+        "minSize={columnMinSize}",
+        "minSize={rowMinSize}",
     ]:
         assert_contains(workspace_view, snippet, "src/components/workspace/WorkspaceView.tsx")
+
+
+def test_split_columns_are_reconciled_to_render_every_pane() -> None:
+    layout_columns = read_repo_text("src/lib/layoutColumns.ts")
+    workspace_view = read_repo_text("src/components/workspace/WorkspaceView.tsx")
+    workspace_layout_store = read_repo_text("src/stores/workspaceLayoutStore.ts")
+    workspace_list_store = read_repo_text("src/stores/workspaceListStore.ts")
+    socket_listener = read_repo_text("src/components/layout/SocketListener.tsx")
+
+    for snippet in [
+        "export function reconcileSplitColumnsForPanes(",
+        "const missingPaneIds = paneIds.filter((paneId) => !usedPaneIds.has(paneId));",
+        "cleaned[cleaned.length - 1] = [...cleaned[cleaned.length - 1], ...missingPaneIds];",
+    ]:
+        assert_contains(layout_columns, snippet, "src/lib/layoutColumns.ts")
+
+    for text, source in [
+        (workspace_view, "src/components/workspace/WorkspaceView.tsx"),
+        (workspace_layout_store, "src/stores/workspaceLayoutStore.ts"),
+        (workspace_list_store, "src/stores/workspaceListStore.ts"),
+        (socket_listener, "src/components/layout/SocketListener.tsx"),
+    ]:
+        assert_contains(text, "reconcileSplitColumnsForPanes", source)
+
+
+def test_new_split_pane_receives_focus_and_shortcuts_match_tabs() -> None:
+    workspace_layout_store = read_repo_text("src/stores/workspaceLayoutStore.ts")
+    app_shell = read_repo_text("src/components/layout/AppShell.tsx")
+
+    assert workspace_layout_store.count("useUiStore.getState().setActivePaneId(newPane.sessionId);") >= 2
+    for snippet in [
+        "function paneMatchesSession(",
+        "pane.sessionId === sessionId || pane.tabs?.some((tab) => tab.sessionId === sessionId)",
+        "const activePane = activeWs?.panes.find((p) => paneMatchesSession(p, apid));",
+    ]:
+        assert_contains(app_shell, snippet, "src/components/layout/AppShell.tsx")
 
 
 def test_horizontal_only_columns_are_cleaned_without_vertical_wrapping() -> None:
@@ -65,18 +102,18 @@ def test_horizontal_only_columns_are_cleaned_without_vertical_wrapping() -> None
     assert "MAX_READABLE_SPLIT_COLUMNS" not in layout_columns
 
     for snippet in [
-        'import { normalizeReadableSplitColumns } from "../lib/layoutColumns";',
-        "function normalizeSplitColumns(splitColumns: string[][]): string[][] {",
+        'import { normalizeReadableSplitColumns, reconcileSplitColumnsForPanes } from "../lib/layoutColumns";',
+        "function normalizeSplitColumns(splitColumns: string[][], paneIds: string[]): string[][] {",
         "columnWidths.every((size) => positiveSize(size) !== null)",
         "row.every((size) => positiveSize(size) !== null)",
-        "const normalizedSplitColumns = normalizeSplitColumns(splitColumns);",
+        "const normalizedSplitColumns = normalizeSplitColumns(splitColumns, panes.map((pane) => pane.id));",
         "const normalizedSplitColumns = splitColumns !== undefined",
-        "normalizeSplitColumns(splitColumns)",
+        "normalizeSplitColumns(splitColumns, panes.map((pane) => pane.id))",
     ]:
         assert_contains(workspace_list_store, snippet, "src/stores/workspaceListStore.ts")
 
     for snippet in [
-        'import { normalizeReadableSplitColumns } from "../lib/layoutColumns";',
+        'import { normalizeReadableSplitColumns, reconcileSplitColumnsForPanes } from "../lib/layoutColumns";',
         "function normalizeWorkspaceSplitColumns(columns: string[][]): string[][] {",
         "splitColumns: normalizeReadableSplitColumns(splitColumns),",
         "normalizeWorkspaceSplitColumns(newSplitColumns)",
@@ -85,8 +122,8 @@ def test_horizontal_only_columns_are_cleaned_without_vertical_wrapping() -> None
         assert_contains(workspace_layout_store, snippet, "src/stores/workspaceLayoutStore.ts")
 
     for snippet in [
-        'import { normalizeReadableSplitColumns } from "../../lib/layoutColumns";',
-        "return normalizeReadableSplitColumns(columns);",
+        'import { normalizeReadableSplitColumns, reconcileSplitColumnsForPanes } from "../../lib/layoutColumns";',
+        "return reconcileSplitColumnsForPanes(",
     ]:
         assert_contains(socket_listener, snippet, "src/components/layout/SocketListener.tsx")
 

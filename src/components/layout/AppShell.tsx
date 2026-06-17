@@ -231,6 +231,16 @@ function findPaneInDirection(
   return bestCandidate;
 }
 
+function paneMatchesSession(
+  pane: { sessionId: string; tabs?: Array<{ sessionId: string }> },
+  sessionId: string | null | undefined,
+): boolean {
+  return Boolean(
+    sessionId
+    && (pane.sessionId === sessionId || pane.tabs?.some((tab) => tab.sessionId === sessionId)),
+  );
+}
+
 interface AppShellProps {
   uiVariant?: "default" | "cmux";
 }
@@ -520,7 +530,7 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
 
         case "pane.split.right": {
           const activeWs = ws.find((w) => w.id === aid);
-          const activePane = activeWs?.panes.find((p) => p.sessionId === apid);
+          const activePane = activeWs?.panes.find((p) => paneMatchesSession(p, apid));
           if (activeWs && activePane) {
             addPaneToWorkspace(activeWs.id, activePane.id, "right");
           }
@@ -529,7 +539,7 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
 
         case "pane.split.down": {
           const activeWs = ws.find((w) => w.id === aid);
-          const activePane = activeWs?.panes.find((p) => p.sessionId === apid);
+          const activePane = activeWs?.panes.find((p) => paneMatchesSession(p, apid));
           if (activeWs && activePane) {
             addPaneToWorkspace(activeWs.id, activePane.id, "down");
           }
@@ -538,7 +548,7 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
 
         case "pane.zoom.toggle": {
           const activeWs = ws.find((w) => w.id === aid);
-          const activePane = activeWs?.panes.find((p) => p.sessionId === apid);
+          const activePane = activeWs?.panes.find((p) => paneMatchesSession(p, apid));
           if (activePane) {
             const currentZoomed = useUiStore.getState().zoomedPaneId;
             setZoomedPaneId(currentZoomed === activePane.id ? null : activePane.id);
