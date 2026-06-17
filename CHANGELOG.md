@@ -1,491 +1,288 @@
-# Changelog (mycmux-lite)
+# 変更履歴 (mycmux-lite)
+
+このファイルはチーム配布版 `mycmux-lite` の変更履歴です。personal 版は master worktree 側の `CHANGELOG.md` で管理します。
+
+---
 
 ## [0.7.30-lite.1] - 2026-06-18
 
-- Fixed: Workspace restore now preserves the user's split direction instead of rewriting horizontal splits into vertical stacks. Restore, pane operations, workspace-store updates, and persistence all pass through the same shape-preserving layout cleanup, and stale size metrics are ignored when their shape no longer matches.
-- Fixed: Terminal panes now use the stable DOM renderer instead of WebGL to prevent intermittent missing or mottled text in transparent multi-pane Windows layouts.
-- Fixed: Terminal output batches are now kept while a pane is briefly zero-sized during split/resize transitions instead of being acknowledged and dropped.
-- Fixed: A second mycmux-lite process now exits before opening a stale default window, preventing two processes from racing to save the same workspace data.
+- 修正: ワークスペース復元時に、横分割を勝手に縦積みへ変換してしまう問題を修正しました。
+- 修正: pane 操作、復元、保存のすべてで、保存済みの分割方向を保ったままレイアウトを整理するようにしました。
+- 修正: stale な `column_widths` / `row_heights_per_col` は、現在の `split_columns` と形が合わない場合に使わないようにしました。
+- 修正: 端末描画を WebGL から安定優先の DOM 描画へ戻し、透明背景・複数 pane 環境で文字が斑に欠ける症状を抑えました。
+- 修正: 分割・リサイズ中に一時的に 0 サイズ扱いになった pane の出力を破棄せず、表示復帰後に描画するようにしました。
+- 修正: mycmux-lite の二重起動を防ぎ、複数プロセスが同じ `data.json` を競合保存してレイアウトを壊す経路を止めました。
+- 修正: `data.json` の読み書きにもプロセス間ロックを追加し、万一の同時保存でも直列化されるようにしました。
 
 ## [0.7.29-lite.1] - 2026-06-18
 
-- Fixed: Multi-pane workspaces no longer collapse into unreadably narrow columns after restore or pane operations. Pane layout metrics are reconciled across split changes instead of being discarded, and the terminal grid now enforces readable minimum column and row sizes with horizontal scrolling when needed.
+- 修正: 複数 pane のワークスペースが復元後に読めないほど細い列へ潰れる問題を修正しました。
+- 修正: pane 分割構造が変わったとき、幅・高さの保存値を捨てっぱなしにせず、使える範囲で整合させるようにしました。
+- 変更: 端末グリッドに最小列幅・最小行高を設定し、必要な場合は横スクロールで読める状態を保つようにしました。
 
 ## [0.7.28-lite.1] - 2026-06-17
 
-- Fixed: Startup restore no longer preserves duplicate agent session IDs across panes. The active tab wins, duplicate losers lose their resume metadata, and stale `Session ID ... already in use` snapshots are cleared before persistence.
-- Fixed: PTY session creation is now serialized per `session_id`, preventing a double-spawn race when restore/re-attach paths request the same session concurrently.
-- Fixed: Save-time agent session mapping is applied to the serialized workspace snapshot, so agents launched after startup are not missed by the next restore.
+- 修正: 起動時復元で、同じ agent session ID が複数 pane に残る問題を修正しました。active tab を優先し、重複側の resume 情報を落とします。
+- 修正: `session_id` ごとの PTY 作成を直列化し、復元・再接続経路が同じ session を二重 spawn しないようにしました。
+- 修正: 保存時の agent session mapping を serialized workspace snapshot に反映し、起動後に launch した agent が次回復元から漏れないようにしました。
 
 ## [0.7.27-lite.1] - 2026-06-07
 
-- 追加: Markdown artifact をHTML変換経由ではなく、Markdown本文を直接編集・保存できるソース編集にしました。
+- 追加: Markdown artifact を HTML 変換経由ではなく、Markdown 本文を直接編集・保存できる source edit にしました。
 - 追加: 編集中の `Ctrl+S` / `Cmd+S` で即保存できるようにしました。保存後も編集画面を閉じず、続けて作業できます。
-- 変更: Markdown編集中は保存できない装飾ツールを隠し、保持できないフォント・数式などを誤って入れないようにしました。
-- 改善: DOCXプレビュー・保存で、下線、打消し線、文字色、ハイライト、上付き/下付き、空段落を保持するようにしました。
-- 修正: 画像、脚注、コメント、変更履歴、Word管理の番号、結合セルを含むDOCXは、簡易保存で壊さないよう保存前に止めるようにしました。
-- 修正: Markdown/Word preview HTML の更新先に書けない場合、一時フォルダへフォールバックして保存動作を安定化しました。
+- 変更: Markdown 編集中は保存できない装飾 tool を隠し、保持できない font・数式などを誤って入れないようにしました。
+- 改善: DOCX preview / save で、下線、打消し線、文字色、highlight、上付き / 下付き、空段落を保持するようにしました。
+- 修正: 画像、脚注、comment、変更履歴、Word 管理の番号、結合 cell を含む DOCX は、簡易保存で壊さないよう保存前に止めるようにしました。
+- 修正: Markdown / Word preview HTML の更新先へ書けない場合、一時 folder へ fallback して保存動作を安定化しました。
 
 ## [0.7.26-lite.1] - 2026-06-07
 
-- Added: Word artifact edit mode now has visible formatting controls for alignment, indent/outdent, font family, font size, and equation insertion.
-- Changed: Word `.docx/.docm/.dotx/.dotm` editing now uses a page-like document surface with clearer typography, table borders, and equation styling.
-- Fixed: DOCX preview/save now preserves practical paragraph and run formatting such as alignment, indentation, bold, italic, font family, font size, and equation fallback text.
+- 追加: Word artifact edit mode に、配置、indent / outdent、font family、font size、数式挿入の control を追加しました。
+- 変更: Word document 編集は page 風の document surface で表示し、typography、table border、数式表示を読みやすくしました。
+- 修正: DOCX preview / save で、配置、indent、bold、italic、font family、font size、数式 fallback text などの実用的な書式を保持するようにしました。
 
 ## [0.7.25-lite.1] - 2026-06-07
 
-- Changed: HTML, Markdown, and editable Word artifact tabs now share the same top-right toolbar actions: Edit, Open in the default app, and reveal in Explorer.
-- Added: Word `.docx/.docm/.dotx/.dotm` artifacts can now be edited lightly in-pane and saved back to the original file with a timestamped backup.
-- Fixed: The Explorer action now passes `/select,` separately from the target path on Windows, so it opens the actual document folder instead of falling back to Documents or Desktop.
+- 変更: HTML、Markdown、編集可能 Word artifact tab の右上 toolbar action を Edit、Open、Explorer 表示へ統一しました。
+- 追加: Word `.docx` / `.docm` / `.dotx` / `.dotm` artifact を pane 内で軽く編集し、timestamp backup を作って元 file へ保存できるようにしました。
+- 修正: Explorer action は `/select,` と path を分けて渡し、Documents / Desktop へ fallback せず対象 document の folder を開くようにしました。
 
 ## [0.7.24-lite.1] - 2026-06-07
 
-- Fixed: The artifact toolbar Open action now launches local files through the Windows default app reliably instead of failing on scoped URL validation or showing only the path.
-- Fixed: The Explorer action now canonicalizes the original document path and reveals/selects that file's real folder instead of falling back to Documents or Desktop.
-- Changed: Word, Excel, and PowerPoint OOXML documents now render readable in-pane previews by extracting document text, worksheets, tables, and slide text; desktop Open remains the editing path for Office files.
+- 修正: artifact toolbar の Open action が local file を Windows 既定 app で安定して開けるようにしました。
+- 修正: Explorer action は元 document path を canonicalize し、preview 生成先ではなく実 file の folder を reveal / select するようにしました。
+- 変更: Word、Excel、PowerPoint の OOXML document を pane 内 preview で読めるようにし、編集は desktop Open を基本にしました。
 
 ## [0.7.23-lite.1] - 2026-06-06
 
-- Fixed: The artifact toolbar's Explorer button now reveals the original source document location instead of the generated preview HTML path.
-- Changed: The artifact toolbar is quieter in preview mode, shows editing controls only while editing, and uses an `Open` action for Office documents.
-- Changed: Markdown previews now use a cleaner document-style layout with better heading, table, code, and mobile spacing.
-- Added: Word, Excel, and PowerPoint artifact links now open in the preview pane with source metadata and can be launched in the default desktop app for editing/checking.
+- 修正: artifact toolbar の Explorer button が生成 preview HTML ではなく、元 document の場所を開くようにしました。
+- 変更: preview mode の toolbar を静かにし、編集 control は編集中だけ表示するようにしました。
+- 変更: Markdown preview を document 風 layout にし、heading、table、code、mobile spacing を改善しました。
+- 追加: Word、Excel、PowerPoint artifact link を preview pane で開き、source metadata と desktop app 起動を使えるようにしました。
 
 ## [0.7.22-lite.1] - 2026-06-06
 
-- Fixed: The artifact preview/editor pane zoom shortcut is now handled inside the iframe, so Ctrl+Shift+Enter works even when focus is inside an HTML or Markdown preview.
-- Changed: Read-only local HTML/Markdown previews are rendered through a no-script `srcdoc` document, preserving relative assets while allowing mycmux shortcut capture.
+- 修正: artifact preview / editor pane の zoom shortcut を iframe 内で処理し、HTML / Markdown preview に focus があっても `Ctrl+Shift+Enter` が効くようにしました。
+- 変更: read-only local HTML / Markdown preview は no-script `srcdoc` document で表示し、relative assets を保ちながら shortcut capture できるようにしました。
 
 ## [0.7.21-lite.1] - 2026-06-06
 
-- Fixed: HTML and Markdown artifact preview/editor iframes now forward registered mycmux shortcuts to the workspace, so pane zoom and pane navigation shortcuts work while the preview has focus.
-- Changed: In artifact edit mode, Ctrl+B and Ctrl+I apply bold/italic to the document body instead of being captured by global app shortcuts.
+- 修正: HTML / Markdown artifact preview / editor iframe が mycmux shortcut を workspace へ forward し、preview focus 中でも pane zoom / pane navigation shortcut が効くようにしました。
+- 変更: artifact edit mode では `Ctrl+B` / `Ctrl+I` が global shortcut ではなく document body の bold / italic として動くようにしました。
 
 ## [0.7.20-lite.1] - 2026-06-06
 
-- Fixed: The artifact editor toolbar's Explorer button now reveals the displayed preview HTML file via the native Tauri IPC path instead of `plugin-shell.open`, avoiding URL-scope rejection for local Windows paths.
-- Changed: The artifact editor toolbar uses quieter icon sizing and lighter status/file-kind badges so the top-right action cluster is less visually heavy.
+- 修正: artifact editor toolbar の Explorer button は `plugin-shell.open` ではなく native Tauri IPC path で preview HTML を reveal するようにしました。
+- 変更: toolbar の icon size と status / file-kind badge を軽くし、右上 action cluster の視覚的な重さを下げました。
 
 ## [0.7.19-lite.1] - 2026-06-06
 
-- Added: HTML and Markdown artifacts opened from the terminal preview pane can now be edited in a Word-style WYSIWYG editor and saved back to the original file.
-- Added: Saves create a same-folder timestamped backup before overwriting the source artifact.
-- Added: Editor toolbar supports text formatting plus table cell editing, row/column insertion, and row/column deletion. Markdown saves preserve common Markdown structures and keep complex tables as embedded HTML.
+- 追加: terminal preview pane から開いた HTML / Markdown artifact を Word 風 WYSIWYG editor で編集し、元 file へ保存できるようにしました。
+- 追加: 保存前に同じ folder へ timestamp backup を作るようにしました。
+- 追加: editor toolbar に text formatting、table cell 編集、row / column 挿入・削除を追加しました。
+- 変更: Markdown 保存では一般的な Markdown 構造を保ち、複雑な table は embedded HTML として残します。
 
 ## [0.7.18-lite.1] - 2026-06-06
 
-- Changed: Local HTML/Markdown artifact links now open in a dedicated right-side preview pane instead of replacing the active terminal tab, keeping the terminal visible while previewing.
-- Changed: Re-clicking the same artifact reloads its preview tab; clicking a different artifact opens another tab inside the preview pane.
+- 変更: local HTML / Markdown artifact link は active terminal tab を置き換えず、右側 preview pane で開くようにしました。
+- 変更: 同じ artifact を再クリックすると preview を reload し、別 artifact は preview pane 内に別 tab として開きます。
 
 ## [0.7.17-lite.1] - 2026-06-06
 
-- Fixed: Narrow-pane local artifact links now resolve paths even when terminal wrapping removes a space at the boundary, so long Dropbox/Japanese HTML paths still open in an in-app preview tab.
+- 修正: narrow pane で terminal wrap により space が消えた場合でも、長い Dropbox / 日本語 HTML path を in-app preview tab で開けるようにしました。
 
 ## [0.7.16-lite.1] - 2026-06-06
 
-- Fixed: Wrapped local artifact links now normalize terminal padding spaces before previewing, so narrow panes can open long Japanese/space-containing HTML paths in an in-app tab.
+- 修正: narrow pane で長い日本語・space 含み HTML path が terminal row をまたいでも、padding space を正規化して preview できるようにしました。
 
 ## [0.7.15-lite.1] - 2026-06-05
 
-- Fixed: Local artifact paths remain clickable even when a narrow pane or agent output inserts hard line breaks inside a raw Windows path with spaces or Japanese folder names.
+- 修正: narrow pane や agent output により raw Windows path が hard line break されても、space / 日本語 folder を含む local artifact path を clickable に保つようにしました。
 
 ## [0.7.14-lite.1] - 2026-06-05
 
-- Fixed: Wrapped local artifact links now remain clickable when a narrow pane splits a raw Windows path or `file:///...` preview link across terminal rows.
+- 修正: narrow pane で raw Windows path や `file:///...` preview link が terminal row をまたいでも、local artifact link が clickable のまま残るようにしました。
 
 ## [0.7.13-lite.1] - 2026-06-05
 
-- Fixed: Raw Windows artifact paths are now linkified by a dedicated terminal link provider, including paths with spaces or Japanese folder names, so output such as `HTML: C:\Users\miyaz\report.html` can open in the in-app preview tab even though it is not a URL.
-- Changed: Removed the manual Preview artifact eye button from pane tab bars; artifact previews now open from terminal links only.
+- 修正: raw Windows artifact path 専用の terminal link provider を追加し、space / 日本語 folder を含む `HTML: C:\Users\miyaz\report.html` 形式も in-app preview tab で開けるようにしました。
+- 変更: pane tab bar の手動 Preview artifact eye button を削除し、artifact preview は terminal link から開く方式にしました。
 
 ## [0.7.12-lite.1] - 2026-06-05
 
-- Fixed: Terminal output containing raw Windows artifact paths such as `HTML: C:\Users\miyaz\report.html` now opens local `.html`, `.htm`, `.md`, and `.markdown` files in the in-app preview tab instead of requiring a `file:///...` URL. Markdown previews for external local files are rendered into the session preview cache.
+- 修正: raw Windows artifact path を local `.html` / `.htm` / `.md` / `.markdown` として in-app preview tab で開けるようにしました。
+- 変更: 外部 local Markdown file は session preview cache に safe static HTML として render します。
 
 ## [0.7.11-lite.1] - 2026-06-05
 
-- Added: AI artifact preview for lite panes. Each PTY now receives `MYCMUX_MARKDOWN_OUT` and `MYCMUX_ARTIFACTS_DIR`; `out.html` opens directly, `out.md` is rendered to safe static HTML, and terminal `file:///...` artifact links open inside a mycmux browser tab when they belong to the active session.
+- 追加: AI artifact preview を lite pane に追加しました。
+- 追加: 各 PTY へ `MYCMUX_MARKDOWN_OUT` と `MYCMUX_ARTIFACTS_DIR` を渡し、`out.html` は直接、`out.md` は safe static HTML として開きます。
+- 追加: active session に属する `file:///...` artifact link を mycmux browser tab 内で開けるようにしました。
 
 ## [0.7.10-lite.1] - 2026-06-05
 
-- Fixed: Pane zoom no longer leaves the workspace blank when the zoomed pane is closed or when switching to a workspace that does not contain the zoomed pane. The workspace stores now clear stale `zoomedPaneId` at the source, and `AppShell` keeps a self-healing guard as a safety net.
+- 修正: zoom 中の pane を閉じたとき、または zoom 対象を含まない workspace に切り替えたときに画面が空になる問題を修正しました。
+- 修正: stale な `zoomedPaneId` を store 側で消し、`AppShell` にも自己回復 guard を残しました。
 
 ## [0.7.8-lite.1] - 2026-05-18
 
-- Fixed: The theme picker now actually switches themes (setTheme was pinned to the default theme id), so light themes apply correctly including the ANSI palette.
-- Changed: UI colors are fully theme-tokenized — hardcoded dark-assumption colors across modals, palettes, status badges, drag-and-drop, and chrome now use theme-aware tokens, so light themes render correctly.
-- Fixed: Terminal text no longer washes out over a background image (minimumContrastRatio is disabled while a media background is active).
-- Fixed: Terminal display stability under heavy agent output — PTY output applies backpressure instead of being dropped, session re-attach swaps the data channel cleanly, resize triggers a staggered full refresh, and WebGL context-loss recovery is hardened.
+- 修正: theme picker で選んだ theme が実際に反映されるようにしました。
+- 変更: UI 色を theme token ベースへ整理し、light theme でも正しく表示できるようにしました。
+- 修正: 背景画像の上で terminal 文字色が薄くなりすぎる問題を修正しました。
+- 修正: 大量 agent output 時の terminal 表示安定性を改善し、PTY 出力を捨てず backpressure をかけるようにしました。
 
 ## [0.7.4-lite.1] - 2026-05-16
 
-- Changed: Title bar text/icon shadows are theme-aware and key off the effective chrome background lightness — light chrome (including dark themes recolored light) drops the dark drop-shadow; a subtle white halo is kept only over image backgrounds.
+- 変更: title bar の文字・icon shadow を theme-aware にし、実際の chrome 背景明度で shadow を切り替えるようにしました。
 
 ## [0.7.2-lite.1] - 2026-05-15
 
-- Added: Pane tab rename via double-click / context menu. Label is persisted per tab in data.json; empty value restores auto-naming.
-- Added: Resume palette can hide sessions without user messages (toggle in Settings, default ON).
-- Changed: Usage Meter now reads live values from Anthropic OAuth /usage endpoint, replacing the local JSONL token-counting heuristic. Fixes the 100% artifact caused by tier mismatch / hardcoded limits.
-- Changed: Codex usage section auto-hides when the ChatGPT rate-limit endpoint is not reachable.
+- 追加: pane tab の double-click / context menu rename に対応しました。
+- 追加: Resume palette で user message のない session を非表示にできる設定を追加しました。
+- 変更: Usage Meter は Anthropic OAuth `/usage` endpoint の live 値を読むようにしました。
+- 変更: ChatGPT rate-limit endpoint に到達できない場合は Codex usage section を自動で隠します。
 
 ## [0.7.1-lite.1] - 2026-05-14
 
-### Diagnostic
-
-v0.7.1-lite.1 は v0.7.2 で予定している display stability fix の根因特定用
-instrumentation リリース。terminal レンダリング層の挙動を可視化する log/counter
-のみ追加し、描画ロジック自体は無変更。TitleBar の文字色 tweak (下記 Changed) のみが
-ユーザー視認可能な変更。
-
-### Added — diagnostics
-
-- **PTY metrics (Rust → stderr, 5 秒ごと)**: 各 session の `reads`, `avg_read_us`,
-  `flushes`, `avg_batch`, `send_err`, `queue_full`, `dropped_chunks`,
-  `dropped_bytes`, `closed` を `[mycmux-diag pty {id}]` で出力。
-- **SessionManager::create handoff log**: `[mycmux-diag manager]` で `new` vs
-  `idempotent` を区別し、idempotent path では古い session の age と新規 channel ID
-  (破棄される側) を log。
-- **Frontend attach epoch + stale message counter** (`[mycmux-diag ipc]`):
-  `createSession()` が `sessionId` 別 epoch を bump し、古い epoch から届く
-  `Channel.onmessage` を `stale_message` として 25 回ごとに log。
-- **xterm 1 秒統計** (`[mycmux-diag xterm:{sid}]`): `writes/s`, `bytes/s`,
-  `webgl=on|fallback|never`, `replays`, `replay_lines` を console に出力。
-- **`WEBGL_LOST` event**: `WebglAddon.onContextLoss` 発火時刻と直近 writes 数を log。
-- **termCache lifecycle log**: `cache_hit`, `cache_miss`, `cache_evict` を console
-  に出力。
-- **initial_replay log**: 起動時の terminal_snapshot 再生量 (`lines`, `bytes`,
-  `source`) を log。
-
-### Changed
-
-- **TitleBar 文字色**: `--cmux-text-tertiary` (white 30%) → `--cmux-text-secondary`
-  (white 60%) に変更。
-
-### Fixed — Usage Meter calibration
-
-v0.7.0-lite.1 の Usage Meter は Anthropic /usage の実値と乖離していた:
-
-- **`cache_read_input_tokens` を加算対象から除外** (`src-tauri/src/usage/claude.rs`):
-  cache_read は Anthropic の rate-limit 計算に含まれない。
-- **`max_20x` 上限校正** (`src-tauri/src/usage/tier_presets.rs`):
-  5h: 220M → **150M tokens**、7d: 1.5B → **500M tokens**。
-- **Codex limit 校正**: 5h: 150 → **20000 messages**、7d: 1500 → **12000 messages**。
-- 上書きは `~/.claude/mycmux-usage-config.json` で可能。
-
-### Out of scope (v0.7.2 で対応予定)
-
-- WebGL renderer の Codex 表示プツプツ問題
-- SessionManager::create の channel 差し替えロジック化
-- scrollback / replay の重複表示 fix
-
----
+- 追加: PTY metrics、SessionManager create log、frontend attach epoch、xterm 1 秒統計、WebGL loss、termCache lifecycle、initial replay log を入れ、表示欠け・復元不具合の調査をしやすくしました。
+- 修正: TitleBar の文字色 token を調整し、視認性を上げました。
+- 修正: Claude usage 集計から `cache_read_input_tokens` を除外しました。
+- 修正: usage tier の `max_20x` と Codex limit の初期値を実測寄りに校正しました。
+- 備考: WebGL 表示、SessionManager channel 差し替え、scrollback / replay 重複表示は次段の調査対象として残しました。
 
 ## [0.7.0-lite.1] - 2026-05-13
 
-### Added
-
-- **Usage Meter**: TitleBar right group に Claude Code / Codex のサブスクリプション使用量メーターを追加。5 時間ローリング + 7 日ウィンドウを `CC 5h ▓▓▓░░ 45% 7d ▓▓▓▓░ 62%  CX 5h ▓▓░░░ 23%` の形式で常時表示。80% 閾値で橙、95% で赤 + pulse animation。ホバーで Popover を開き、絶対値・reset 時刻・tier 名を表示。900px / 700px の媒体クエリでコンパクト化 / 非表示。
-- Rust-native の Usage 集計モジュール `src-tauri/src/usage/` と Tauri command `get_usage_summary` を新設。Node 経由の ccusage を起動せずに `~/.claude/projects/**/*.jsonl` および `~/.codex/sessions/**/*.jsonl` を直接集計。差分スキャン用のファイルキャッシュ付き。
-- 上限値は `~/.claude/.credentials.json::rateLimitTier` を基に `tier_presets.rs` の推定値 (max_20x / max_5x / pro) を選択、`~/.claude/mycmux-usage-config.json` で上書き可能。
-
-### Fixed
-
-- **セッション復活 (Symptom A の真因)**: 同一 `session_id` の二重 `create_session` で既存 PTY が破壊されていた問題を `SessionManager::create` を idempotent 化することで解消。
-- **セッション復活 (Symptom B の真因)**: `create_session` の cwd 検証経路と spawn 経路で異なるパスを参照していた問題を統一 (`resolve_launch_cwd` 結果を両者で共有) して解消。
-- **セッション復活 (Symptom C の真因)**: 並列復元時の race を以下で解消 — startup autosave hold を `1400ms + 700ms × workspaces + 500ms × panes` (上限 30s) の動的式に変更、mapping refresh を 10s poll から `startup-restore-complete` window イベント駆動 + 15s フォールバックに切り替え、初回 mount delay を 1200ms に延長 (2 回目以降 650ms)。
-
-### Changed
-
-- `scripts/backfill-sessions.ps1` を DEPRECATED 化 (本リリースで pane config に agent_kind / cwd が完全に保存されるため、起動後の back-fill は不要)。
-- 使用量メーターの推定上限値は ccusage コミュニティデータ由来。Anthropic 公式値ではない旨を `tier_presets.rs` および UI のホバー表示で明示。
-
----
+- 追加: TitleBar に Claude Code / Codex の Usage Meter を追加しました。
+- 追加: Rust native の usage 集計モジュールと `get_usage_summary` Tauri command を追加しました。
+- 修正: 同一 `session_id` の二重 `create_session` が既存 PTY を壊す問題を修正しました。
+- 修正: cwd 検証経路と spawn 経路で参照 path がずれる問題を修正しました。
+- 修正: 並列復元 race を抑えるため、startup autosave hold、mapping refresh、初回 mount delay を調整しました。
+- 変更: `scripts/backfill-sessions.ps1` を deprecated にしました。
 
 ## [0.6.2-lite.1] - 2026-05-07
 
-### Fixed
-
-- Synced startup restore behavior from personal v0.6.2. Every workspace with a saved Claude / Codex / claude-codex session, or a matching `~/.mycmux-lite/pane-sessions/*.txt` mapping, is now a restore target instead of only the active workspace.
-- Inactive restore targets mount through a short queue after the active workspace, keeping normal startup responsive while previous sessions resume.
-- `shell-starter` / session-less panes can recover `agent_kind` and `agent_session_id` from pane-session mappings. Existing distinct session IDs are not overwritten by stale mapping files.
-- The workspace LRU mount cap now applies only to shell-only workspaces; restore-target workspaces are not evicted by the cap.
-- Startup autosave is held briefly during restore so `data.json` is less likely to be rewritten with an intermediate session-less state.
-
----
+- 修正: personal v0.6.2 の startup restore behavior を lite へ同期しました。
+- 修正: 保存済み Claude / Codex / claude-codex session または pane-session mapping を持つ全 workspace を復元対象にしました。
+- 変更: inactive workspace は active workspace の後に短い queue で mount し、通常起動の応答性を保ちながら復元します。
+- 修正: `shell-starter` / session-less pane は pane-session mapping から `agent_kind` と `agent_session_id` を復元できます。
+- 修正: 起動復元中は autosave を短時間止め、中間状態の `data.json` で上書きされにくくしました。
 
 ## [0.6.1-lite.1] - 2026-05-07
 
-### Fixed
-
-- **Session-history persistence (real fix)**: synced from upstream personal v0.6.1. The v0.5.6 release advertised that every pane re-attaches to its previous Claude / Codex session on restart, but the wiring was incomplete — `onPtyMetadata` only fed `paneMetadataStore`, while `SocketListener.tsx::toConfig` was reading the un-mirrored `Pane.claudeSessionId` / `agentKind` / `agentSessionId`. Saved `data.json` always wrote `null` for those fields, so restart fell back to the launcher menu.
-
-  Fix:
-  - `workspaceListStore.ts`: new `setPaneAgentSessionFromMetadata(sessionId, payload | null)` action that finds the matching tab and mirrors onto the pane when the tab is active. `null` clears.
-  - `App.tsx::onPtyMetadata`: also calls the new action so live agent session metadata is mirrored into `workspaceListStore`. Mirror only fires on truthy `claude_session_id` / `agent_session_id` so the launcher (`crsm` / `shell-starter`) doesn't accidentally clear an in-flight session. Shell return clears.
-  - `App.tsx::applyAgentSessionMappings`: also pushes startup mapping cache (`~/.mycmux-lite/pane-sessions/*.txt` → `paneMetadataStore`) into `workspaceListStore`, so the very first save after restart already captures resumable session ids.
-  - `SocketListener.tsx::toConfig`: 4-level fallback chain (`Pane → activeTab → paneMetadataStore[pane.sessionId] → paneMetadataStore[activeTab.sessionId] → null`).
-
-### Notes
-
-- Existing v0.6.0 `data.json` is not silently rewritten: panes that were saved with `null` agent session ids will appear at the launcher menu after the v0.6.1-lite.1 update. Re-launch the agent on each pane once and the next save captures the live session ids; from then on restart re-attaches automatically.
-- Env-leak defenses (`stripEphemeralLaunchEnv`, `EPHEMERAL_LAUNCH_ENV_KEYS`, `lib.rs::run` `remove_var`) and `dedupeAgentSessionsInConfigs` are intentionally untouched.
-
----
+- 修正: personal v0.6.1 の session history persistence 修正を lite へ同期しました。
+- 修正: `onPtyMetadata` が `paneMetadataStore` へだけ流れ、保存時に `agentKind` / `agentSessionId` が `null` になる問題を修正しました。
+- 注意: 既存 v0.6.0 の `data.json` は勝手に書き換えません。一度 agent を起動し直すと、次回保存から自動再接続できるようになります。
+- 備考: env leak 防止の仕組みは維持しました。
 
 ## [0.6.0] - 2026-05-05
 
-Stability checkpoint after the v0.5.4 - v0.5.6 series. No code changes from v0.5.6.
-
-### Highlights since v0.5.3
-
-- **Session-history persistence restored (v0.5.6)**: every pane re-attaches to its previous Claude / Codex session on restart.
-- **Terminal renderer toggle (v0.5.5)**: Settings → Terminal renderer (WebGL). Per-OS default — macOS=ON, Windows=OFF, Linux=OFF.
-- **Launcher menu canonicalized (v0.5.4)**: confirmed the 10-item layout (normal → dangerous → resume).
-
----
+- 追加: v0.5.x 系の修正をまとめて正式反映しました。
+- 修正: session history persistence を戻し、再起動時に各 pane が以前の Claude / Codex session へ再接続できるようにしました。
+- 追加: Settings に Terminal renderer (WebGL) toggle を追加しました。
+- 確認: launcher menu の 10 item 構成を normal → dangerous → resume の順に揃えました。
 
 ## [0.5.6] - 2026-05-05
 
-### Fixed
-
-- **Restore session-history persistence**: `SocketListener.tsx::toConfig` now writes the live `claudeSessionId` / `agentKind` / `agentSessionId` (with tab → pane fallback) into `data.json` instead of forcing them to `null`. Combined with the existing `applyMappingsToConfig` load path that prefers `data.json` over `~/.mycmux-lite/pane-sessions/*.txt` mapping cache, a restart re-attaches every pane to its previous Claude / Codex session — matching the v0.3.x experience that was lost in v0.4.
-
-### Notes
-
-- The historical reason this code path was disabled in v0.4 was a `MYCMUX_*` env-var leak that caused new panes to silently auto-resume into the previously selected agent session, skipping the launcher menu. v0.4.x already rebuilt the env-leak defenses (`std::env::remove_var()` at app startup in `lib.rs`, `sanitize_launch_env()` in `commands/terminal.rs`, and `EPHEMERAL_LAUNCH_ENV_KEYS` filtering in `SocketListener.tsx`), so re-enabling persistence here does not bring the leak back. Synced from upstream personal master v0.5.6.
-
----
+- 修正: `SocketListener.tsx::toConfig` が live の `claudeSessionId` / `agentKind` / `agentSessionId` を `data.json` に保存するように戻しました。
+- 修正: `data.json` と `~/.mycmux-lite/pane-sessions/*.txt` mapping cache を使い、再起動後に各 pane が以前の Claude / Codex session へ戻れるようにしました。
+- 注意: v0.4 で無効化していた理由は `MYCMUX_*` env leak でしたが、v0.4.x で防御済みのため再有効化しました。
 
 ## [0.5.5] - 2026-05-05
 
-### Added
-
-- Added Settings toggle **Terminal renderer (WebGL)**.
-- Defaults: macOS=ON, Windows=OFF, Linux=OFF.
-- Windows now defaults back to the v0.5.1-style DOM renderer to avoid the darker/heavier Windows WebView2 rendering introduced by always-on WebGL in v0.5.2.
-- Renderer selection takes effect on next pane creation, not on existing live panes.
-
----
+- 追加: Settings に Terminal renderer (WebGL) toggle を追加しました。
+- 変更: 既定は macOS=ON、Windows=OFF、Linux=OFF です。
+- 修正: Windows は DOM renderer を既定に戻し、WebView2 + WebGL の濃く重い描画を避けました。
+- 注意: renderer の切り替えは次に作る pane から反映されます。
 
 ## [0.5.4] - 2026-05-05
 
-### Changed
-
-- **Launcher menu (`src-tauri/src/launcher.sh`)**: Confirm the canonical 10-item layout grouped as **normal → dangerous → resume**. The repo file already used this order since v0.4; this release ships a refreshed installer so `~/.mycmux-lite/bin/launcher.sh` matches.
-
-  ```
-  1. Claude Code        4. Claude Code (dangerous)   7. Claude Code (resume)
-  2. Codex              5. Codex (dangerous)         8. Codex (resume)
-  3. claude-codex       6. claude-codex (dangerous)  9. claude-codex (resume)
-                                                     0. Custom...
-  ```
-
-### Notes
-
-- No TypeScript / Rust source changes. Synced from upstream personal `master` v0.5.4.
-
----
+- 確認: `src-tauri/src/launcher.sh` の launcher menu を canonical な 10 item 構成へ揃えました。
+- 変更: normal → dangerous → resume の順で表示します。
+- 備考: source file は既にこの順でしたが、installer を更新して `~/.mycmux-lite/bin/launcher.sh` も一致させました。
 
 ## [0.5.3] - 2026-05-05
 
-### Fixed (Windows)
-
-- **`terminal_config.rs`**: Suppress unused-variable lint for the alacritty loader's `home` parameter on non-Linux/non-macOS targets (was already fixed in v0.5.2 binaries; this release republishes the same fix under a clean version number).
-
-### Notes
-
-- v0.5.2 tag now points to the Mac release commit (`f4bb193`). The Windows clippy fix that previously shipped under the v0.5.2 tag is republished here as v0.5.3 with no functional change. Auto-update users on v0.5.2 will be moved to v0.5.3.
-
----
+- 修正: `terminal_config.rs` の unused variable lint を抑制しました。
+- 備考: v0.5.2 tag に混ざっていた Windows clippy 修正を、きれいな version として再配布した release です。
 
 ## [0.5.2] - 2026-05-05
 
-### Performance
-
-- **macOS idle CPU pathology**: Force native window decorations on macOS to bypass tao 0.34.x's `setStyleMask:` thrash on `decorations: false`. Idle CPU drops 99.3%, RSS drops 85% (411MB → 75MB) on Apple Silicon (`sample` profile root cause).
-- **Terminal rendering**: Connect xterm's WebGL addon (already in deps but never loaded) with DOM fallback on context loss. Helps both platforms; dramatic on macOS WKWebView.
-- **Bundle**: Drop unused `ghostty-web` dependency.
-
-### Added
-
-- **macOS support**: First-class macOS build path. See README "macOS (ソースビルド)" section. Resume palette finds `crsm` automatically when built at `~/crsm/target/release/crsm`.
-- **Cross-platform shortcuts**: On macOS, `Cmd+…` is treated as equivalent to `Ctrl+…`, so all Windows-authored bindings (Resume, New Workspace, etc.) fire on the native Mac modifier without remapping.
-- `scripts/measure-mac.sh` — bash + osascript baseline harness for launch time, RSS, idle CPU.
-
-### Fixed
-
-- **`terminal_config.rs`**: macOS / Linux build failure where the alacritty loader declared `_home: &Path` (intentionally-unused arg) but referenced `home` inside a `cfg(target_os = "macos")` block.
-- **`crsm` CLI lookup**: Use `std::env::consts::EXE_SUFFIX` instead of hard-coded `.exe`, so Resume finds the binary on Unix.
-- **macOS window visibility**: Force `show()` from the Tauri setup hook on macOS as a temporary bridge; the frontend `reveal_main_window` flow not firing on macOS is tracked separately.
-
-### Notes
-
-- Synced from upstream personal `master` v0.5.2 plus the lite identity/UI variant carry-over.
-
----
+- 修正: macOS で native window decoration を使い、idle CPU 異常を回避しました。
+- 追加: xterm WebGL addon を接続し、context loss 時は DOM fallback へ戻るようにしました。
+- 変更: unused な `ghostty-web` dependency を削除しました。
+- 追加: macOS build path を正式サポートしました。
+- 変更: macOS の `Cmd+...` を Windows 由来の `Ctrl+...` shortcut と同等に扱います。
+- 修正: macOS / Linux build failure と `crsm` CLI lookup の `.exe` 決め打ちを修正しました。
+- 備考: personal v0.5.2 と lite identity / UI variant の差分を同期しました。
 
 ## [0.5.1] - 2026-05-05
 
-### Changed
-
-- **Resume / CRSM Palette**: Ctrl+P opens quickly from the cached session list, then refreshes CRSM in the background so Claude Code / Codex sessions started outside mycmux are picked up automatically.
-- **Resume / CRSM Palette**: Kept the large-history path bounded with request de-duplication, a 10 second auto-refresh cooldown, initial 1000-session loading, and the existing explicit deep load path.
-
-### Notes
-
-- Synced from upstream personal `master` v0.5.1. Buddy-only changes (new `src/buddy/version.ts`) are intentionally excluded — Buddy is removed in lite and BUDDY_VERSION is tracked only in master per the policy noted in v0.5.0.
-
----
+- 改善: Resume / CRSM Palette は cached session list から即表示し、背後で CRSM を更新するようにしました。
+- 改善: 大量履歴でも重くならないよう、request dedupe、10 秒 auto-refresh cooldown、初回 1000 session load、明示 deep load を入れました。
+- 備考: Buddy-only 変更は lite から除外しています。
 
 ## [0.5.0] - 2026-05-04
 
-### Notes
-
-- mycmux personal `master` v0.5.0 (Buddy / Codex Pet bridge 追加) と本体 version を同期するための minor release。**lite には機能差分なし** — Buddy / Codex Pet 関連機能は元から lite に含まれない (lite は Buddy 削除版)。
-- これ以降、mycmux 本体機能の bump は master/lite で揃え、Buddy 関連の単独更新は master 内 `src/buddy/version.ts` の `BUDDY_VERSION` で別管理する運用に変更。
-
----
+- 変更: personal `master` v0.5.0 と本体 version を同期するための minor release です。
+- 備考: lite には機能差分はありません。Buddy / Codex Pet 関連機能は lite には含めません。
+- 変更: 以後、mycmux 本体機能の bump は master / lite で揃え、Buddy 関連は master 側で別管理します。
 
 ## [0.4.4] - 2026-05-04
 
-### Fixed
+- 修正: GitHub Actions の release workflow で、`workflow_dispatch` の tag input を渡しても release upload が skip される問題を修正しました。
+- 変更: release workflow を repo 別の専用 job へ整理しました。lite worktree は `build-lite` のみです。
 
-- **GitHub Actions の release workflow**: `workflow_dispatch` で `tag` input を渡しても `tauri-action` が `github.ref_name` (= branch 名) を見て release upload を skip していた問題を修正。`tagName` / `releaseName` / `releaseBody` を `${{ github.event.inputs.tag || github.ref_name }}` で参照するように変更。
-
-### Changed
-
-- **release.yml の構成**: 旧来の tag 名 suffix (`v0.x.y-lite.n`) で `build-personal` / `build-lite` を振り分けていた `if:` 条件付き 2 job 構成を、repo 別の専用 job 1 つに整理。lite worktree は `build-lite` のみ。lite-suffix tag 運用廃止に伴うシンプル化。
-
----
 ## [0.4.3] - 2026-05-04
 
-### Fixed
-
-- **壁紙時の Settings / 通知パネル透過**: 壁紙 (media background) を有効にしているとき、Settings メニューと通知ベルのドロップダウンまで `panelOpacity` が乗って文字が読みづらかった問題を解消。新 CSS variable `--cmux-popover` (常に opacity 1) を導入し、popover 系 (Settings 本体 / NotificationPanel) のみ不透明化。TabBar / TitleBar は従来どおり壁紙と調和させる。
-
-### Changed
-
-- **CRSM Palette → Resume にリブランド**: Settings ボタン / 設定セクション見出し / Keybindings 一覧の表示文言を `CRSM Palette` から `Resume` に変更。内部 symbol (`CrsmPalette` コンポーネント、`crsm.palette` action ID、`crsmShow*` 設定キー、Tauri `crsm.rs`、localStorage `mycmux-lite-settings`) は不変のため既存ユーザー設定は保持。
-- **Settings 内の Resume 関連設定を統合**: 「Resume」ボタンと「Resume で表示する種類」(Claude / Codex / Hybrid チェックボックス) を 1 ブロックに集約し、関連設定として認識しやすくした。
-
----
+- 修正: 背景画像有効時、Settings menu や通知 dropdown に `panelOpacity` が乗って読みにくくなる問題を修正しました。
+- 追加: popover 系だけを不透明にする `--cmux-popover` を導入しました。
+- 変更: CRSM Palette を Resume にリブランドしました。内部 symbol と localStorage key は互換性維持のため変更していません。
+- 変更: Settings 内の Resume 関連設定を1ブロックにまとめました。
 
 ## [0.4.2] - 2026-05-04
 
-### Added
-
-- **Settings → CRSM Palette ボタン**: 右上 ⚙ メニューに `Themes` / `Keybindings` と並んで `CRSM Palette` ボタンを追加。`Ctrl+P` を覚えていなくても歯車から palette を開ける。
-
-### Changed
-
-- **CRSM Palette 引き継ぎ先連動**: Settings の「CRSM Palette で表示する種類」で OFF にした kind は、palette 内の引き継ぎ先 (handoff target) ボタン行と Tab キー循環からも消える。引き継ぎ先として選べないようになった。
-
----
+- 追加: 右上 Settings menu に `Themes` / `Keybindings` と並んで `CRSM Palette` button を追加しました。
+- 変更: CRSM Palette で非表示にした kind は、handoff target button と Tab key cycle からも消えるようにしました。
 
 ## [0.4.1] - 2026-05-04
 
-### Added
-
-- **Settings → CRSM Palette (Ctrl+P) で表示する種類**: 右上 ⚙ メニューに `Claude Code` / `Codex` / `Hybrid (Claude+Codex)` の表示 ON/OFF チェックボックスを追加。OFF にした kind は CRSM Palette のリストとフィルタチップから完全に消える。設定は localStorage 永続化 (デフォルト全 ON)。
-
-### Notes
-
-- master 側で行った Remote Terminal の URL 形式変更 (`#token=` → `?token=`) と embedded client refresh、Settings の Remote セクション追加は **lite には今回反映していない**。lite の Remote パスは現状の v0.4.0 構成のまま動作する (Phase 3-D の RemoteControl 互換化のみ済み)。
-
----
+- 追加: Settings に `Claude Code` / `Codex` / `Hybrid` の表示 ON/OFF checkbox を追加しました。
+- 備考: personal 側の Remote Terminal URL 形式変更と embedded client refresh は、この時点では lite へ反映していません。
 
 ## [0.4.0] - 2026-05-04
 
-Synced from upstream personal `master` v0.4.0 plus lite-specific remote terminal hardening.
-
-### Fixed
-
-- **CRSM Palette**: Ctrl+P で開いたセッションの env が親プロセス経由で他の PTY に伝播し、新規ペイン作成時に意図せず resume される問題を修正 (`MYCMUX_*` / `__CMUX_LAUNCHER_DONE` を起動時に `std::env::remove_var()` で除去)。**配布物で再発するとチーム全員のシェルで agent モード暴発事故になる重大バグ。**
-- **CRSM Palette**: CRSM CLI 呼び出し時に Windows コンソール窓が一瞬表示される問題を抑制 (`CREATE_NO_WINDOW = 0x08000000`)。
-- **Remote terminal (lite-only)**: WebSocket 接続失敗時に Terminal 読み込みを待ってからステータスバナーで通知。
-
-### Added
-
-- **CRSM Palette**: 詳細サブパネル (右ペイン) で USER / ASSISTANT ブロック分け表示。
-- **CRSM Palette**: cwd フィルタ chip (頻度上位 8 件 + 「他 N 件」展開)。
-- **CRSM Palette**: kind バッジを色分け (Claude オレンジ / Codex 青 / Hybrid 緑)。
-- **CRSM Palette**: 相対時刻表示、開始時刻 (`started_at`) 表示。
-- **CRSM Palette**: 「さらに過去のセッションを読み込む」ボタン (1000 件 → 全件)。
-
-### Changed
-
-- **CRSM Palette**: パネル幅 940px → 1200px、左 480px リスト + 右詳細の 2 カラム構造。
-- **CRSM Palette**: リスト各行を 2 行構造化 (1 行目: kind + label + 時刻 / 2 行目: cwd・source・✏ N ☐ N)。
-- **Persistence**: `agent_session_id` / `agent_kind` / `claude_session_id` を `data.json` に保存しなくなった (再起動後の自動 resume は廃止、Ctrl+P から手動 resume する仕様)。
-- **Remote terminal (lite-only)**: `<script async>` → `<script defer>` で読み込み順を決定的に。
-
----
+- 修正: CRSM Palette 経由の env が親プロセスから他の PTY へ漏れ、新規 pane が意図せず resume される問題を修正しました。
+- 修正: CRSM CLI 呼び出し時に Windows console window が一瞬出る問題を抑制しました。
+- 修正: Remote terminal で WebSocket 接続失敗時に terminal 読み込みを待ってから status banner を出すようにしました。
+- 追加: 詳細 subpanel、cwd filter chip、kind badge、相対時刻、さらに過去の session 読み込みを追加しました。
+- 変更: CRSM Palette を 1200px 幅の 2 column 構造へ拡張しました。
+- 変更: `agent_session_id` / `agent_kind` / `claude_session_id` を `data.json` に保存しない仕様へ変更しました。再起動後は Ctrl+P から手動 resume します。
 
 ## [0.3.3-lite.1] - 2026-04-24
 
-### Fixed
-
-- Detected Codex approval prompts in cached/background panes without reintroducing the high-frequency `runScan()` loop.
-- Completed the Settings updater UI with current-version display, explicit update-available status, and console logging for update failures.
-- Kept the app/package version numeric as `0.3.3` for Windows MSI compatibility; the public release tag is `v0.3.3-lite.1`.
-
----
+- 追加: cache / background pane の Codex approval prompt を検出し、高頻度 `runScan()` loop を戻さずに通知できるようにしました。
+- 追加: Settings updater UI を完成させ、現在 version、update available 状態、update failure log を出せるようにしました。
+- 備考: Windows MSI 互換のため app/package version は `0.3.3` のまま、公開 tag は `v0.3.3-lite.1` です。
 
 ## [0.3.2-lite.1] - 2026-04-24
 
-### Fixed
+- 修正: PTY から frontend への IPC path を制御し、WebView stall 時に Tauri Channel queue が無制限に増えないようにしました。
+- 修正: local MSVC linker path の決め打ちを外し、GitHub-hosted Windows runner の `link.exe` を使えるようにしました。
+- 追加: GitHub Actions で updater artifact generation を有効化し、public lite release に `latest.json` と signed installer metadata を含めました。
+- 備考: Windows MSI 互換のため app/package version は `0.3.2` のまま、公開 tag は `v0.3.2-lite.1` です。
 
-- Bounded the PTY-to-frontend IPC path so stalled WebView rendering cannot grow the Tauri Channel queue without limit.
-- Removed the hardcoded local MSVC linker path so GitHub-hosted Windows runners use the runner-provided `link.exe`.
-- Enabled updater artifact generation in GitHub Actions so public lite releases include `latest.json` and signed installer metadata.
-- Kept the app/package version numeric as `0.3.2` for Windows MSI compatibility; the public release tag remains `v0.3.2-lite.1`.
+## [0.3.0-lite.1] - 2026-04-23
 
----
+- 修正: hidden workspace / hidden tab が裏で動き続ける問題を personal v0.3.0 から取り込みました。
+- 改善: workspace mount set を LRU 3件に制限し、pane は active tab だけ render します。
+- 追加: `tauri-plugin-updater` v2 による in-app auto-update を追加しました。Settings → 更新を確認 から確認、署名検証、download、自動再起動まで行います。
+- 変更: lite 用署名鍵を personal と分離しました。
+- 追加: `build-lite.ps1` を personal 用 build script から分離し、branch 確認、clean 確認、MSVC 読込、build、backup、配置、配布 asset 集約を1コマンド化しました。
+- 変更: tag 命名は `vX.Y.Z-lite.N` です。
 
-All notable changes to the **team-distribution** (`release/public-lite` → `mycmux-team`) build of mycmux-lite. The upstream personal `master` build of mycmux has its own changelog at `miyafcos/mycmux:CHANGELOG.md`.
+## [0.2.0] - 2026-04-22
 
----
-
-## [0.3.0-lite.1] — 2026-04-23
-
-### Performance
-
-- **Stop hidden workspaces/tabs from running in background.** Cherry-picked from upstream personal v0.3.0. Previously every workspace and tab kept its xterm instance alive with `runScan()` firing every 150 ms; renderer + GPU process were burning ~3 hours of CPU per ~9 hours of use. Now the workspace mount set is an LRU capped at 3, panes render only the active tab, `XTermWrapper` disposes its `onWriteParsed` / `onPtyExit` listeners on cache and re-registers them on reattach, and `runScan` is gated by `isActivePane`.
-
-### Features
-
-- **In-app auto-update** via `tauri-plugin-updater` v2. Settings → 更新を確認 で `latest.json` を確認 → 署名検証 → ダウンロード → 自動再起動。lite 用署名鍵は個人版と分離。endpoint = `https://github.com/miyafcos/mycmux-team/releases/latest/download/latest.json`。
-
-### Build / release
-
-- **`build-lite.ps1`** が個人版用 `build-personal.ps1` と分離。ブランチ確認 + working tree clean 確認 + MSVC 環境読込 + ビルド + タイムスタンプ付きバックアップ + 配置 + 配布アセット集約を1コマンドで。
-- **GitHub Actions `release.yml`** が tag 名で `build-lite` ジョブを起動 (`v*-lite.*`)。`TAURI_KEY_LITE` secret で署名。
-- **タグ命名**: lite は `vX.Y.Z-lite.N` (例 `v0.3.0-lite.1`, `v0.3.0-lite.2`)。
-
-### Notes
-
-- 安全タグ `pre-cpu-fix-lite-2026-04-23` を用意。問題発生時は `git reset --hard pre-cpu-fix-lite-2026-04-23` で戻れる。
-- 詳細プラン: `.claude/plans/1e57cfe-initial-witty-marble.md`、観測ベースライン: `.claude/plans/mycmux-cpu-investigation-baseline.md`。
-
----
-
-## [0.2.0] — 2026-04-22
-
-Initial team-distribution build, derived from mycmux personal v0.2.0.
-
-### Removed (vs. mycmux personal)
-
-- File Explorer Sidebar (`FileExplorerSidebar.tsx`, `PathJumper.tsx`, `fileExplorerStore.ts`) — 1449+728+447 行
-- Buddy / Persona / Codex bridge / sensor tails / session_log
-- fs watcher (Rust `notify`, `ignore`, `tempfile` クレート)
-- `tauri-plugin-dialog` (file dialog 不要)
-- 古い build/package スクリプト (`build-and-update.ps1`, `deploy-update.ps1`, `package-source.ps1`)
-- `docs/` ディレクトリ (個人版の設計メモ)
-
-### Brand split
-
-- 製品名: `mycmux-lite`
-- Bundle ID: `com.miyazaki.mycmux-lite`
-- config dir: `~/.mycmux-lite/`
-- localStorage key: `mycmux-lite-settings`
-- 個人版 (`mycmux`) と同一マシンで並行起動可能。
+- 変更: personal 版から lite 版へ配布するため、個人機能と重い開発用要素を整理しました。
+- 除外: File Explorer Sidebar、Buddy / Persona / Codex bridge、fs watcher、`tauri-plugin-dialog`、古い build/package script、個人版 docs を lite から外しました。
+- 変更: 製品名を `mycmux-lite`、bundle ID を `com.miyazaki.mycmux-lite`、config dir を `~/.mycmux-lite/`、localStorage key を `mycmux-lite-settings` にしました。
+- 備考: personal 版 `mycmux` と同じ PC で並行起動できます。
