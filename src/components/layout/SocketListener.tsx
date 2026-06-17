@@ -23,6 +23,7 @@ import { useThemeStore } from "../../stores/themeStore";
 import { useKeybindingStore } from "../../stores/keybindingStore";
 import { deriveEffectiveStatus } from "../../lib/notificationStatus";
 import { makeSessionId } from "../../lib/constants";
+import { normalizeReadableSplitColumns } from "../../lib/layoutColumns";
 import { getTerminalBufferLines } from "../terminal/XTermWrapper";
 
 /** Transpose row-major split indices to column-major for legacy data migration */
@@ -44,7 +45,8 @@ function normalizeSplitColumns(ws: Workspace): string[][] | null {
   const columns = ws.splitColumns
     ?.map((col) => col.filter((id) => ws.panes.some((pane) => pane.id === id)))
     .filter((col) => col.length > 0);
-  return columns && columns.length > 0 ? columns : null;
+  if (!columns || columns.length === 0) return null;
+  return normalizeReadableSplitColumns(columns);
 }
 
 function normalizeColumnWidths(ws: Workspace, splitColumns: string[][] | null): number[] | null {

@@ -6,6 +6,59 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(target_os = "windows")]
+mod interprocess_data_lock {
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::{
+        CloseHandle, HANDLE, WAIT_ABANDONED, WAIT_OBJECT_0, WAIT_TIMEOUT,
+    };
+    use windows::Win32::System::Threading::{CreateMutexW, ReleaseMutex, WaitForSingleObject};
+
+    const LOCK_TIMEOUT_MS: u32 = 30_000;
+
+    pub struct DataLockGuard(HANDLE);
+
+    impl Drop for DataLockGuard {
+        fn drop(&mut self) {
+            unsafe {
+                let _ = ReleaseMutex(self.0);
+                let _ = CloseHandle(self.0);
+            }
+        }
+    }
+
+    pub fn acquire() -> Result<DataLockGuard, String> {
+        let name = format!("Local\\miyazaki-{}-data-json", env!("CARGO_PKG_NAME"));
+        let wide_name: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
+        let handle = unsafe { CreateMutexW(None, false, PCWSTR(wide_name.as_ptr())) }
+            .map_err(|error| format!("Failed to create data-file mutex: {error}"))?;
+        let wait_result = unsafe { WaitForSingleObject(handle, LOCK_TIMEOUT_MS) };
+
+        if wait_result == WAIT_OBJECT_0 || wait_result == WAIT_ABANDONED {
+            return Ok(DataLockGuard(handle));
+        }
+
+        unsafe {
+            let _ = CloseHandle(handle);
+        }
+
+        if wait_result == WAIT_TIMEOUT {
+            Err("Timed out waiting for data-file mutex".to_string())
+        } else {
+            Err(format!("Unexpected data-file mutex wait result: {wait_result:?}"))
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+mod interprocess_data_lock {
+    pub struct DataLockGuard;
+
+    pub fn acquire() -> Result<DataLockGuard, String> {
+        Ok(DataLockGuard)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PaneTabConfig {
     #[serde(default)]
@@ -290,6 +343,7 @@ fn save_to_path(path: &Path, data: &PersistentData) -> Result<(), String> {
 }
 
 pub fn load(app_handle: &tauri::AppHandle) -> Result<PersistentData, String> {
+    let _process_guard = interprocess_data_lock::acquire()?;
     let path = data_path(app_handle)?;
     load_from_path(&path)
 }
@@ -298,6 +352,7 @@ pub fn save(app_handle: &tauri::AppHandle, data: &PersistentData) -> Result<(), 
     let _guard = save_lock()
         .lock()
         .map_err(|e| format!("Failed to lock data file: {e}"))?;
+    let _process_guard = interprocess_data_lock::acquire()?;
     save_unlocked(app_handle, data)
 }
 
@@ -308,9 +363,11 @@ where
     let _guard = save_lock()
         .lock()
         .map_err(|e| format!("Failed to lock data file: {e}"))?;
-    let mut data = load(app_handle)?;
+    let _process_guard = interprocess_data_lock::acquire()?;
+    let path = data_path(app_handle)?;
+    let mut data = load_from_path(&path)?;
     updater(&mut data);
-    save_unlocked(app_handle, &data)
+    save_to_path(&path, &data)
 }
 
 fn save_unlocked(app_handle: &tauri::AppHandle, data: &PersistentData) -> Result<(), String> {

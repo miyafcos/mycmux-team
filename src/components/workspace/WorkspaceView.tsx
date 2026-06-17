@@ -4,6 +4,7 @@ import "allotment/dist/style.css";
 import type { Pane, GridTemplateId, Workspace } from "../../types";
 import { useWorkspaceLayoutStore, usePaneMetadataStore } from "../../stores/workspaceStore";
 import { useWorkspaceListStore } from "../../stores/workspaceListStore";
+import { useUiStore } from "../../stores/uiStore";
 import { killSession } from "../../lib/ipc";
 import { FIRST_LAUNCH_STORAGE_KEY } from "../../lib/startupSessionGate";
 import { evictTerminalCache } from "../terminal/XTermWrapper";
@@ -55,7 +56,9 @@ export const TerminalGrid = memo(function TerminalGrid({
   const removePaneFromWorkspace = useWorkspaceLayoutStore((s) => s.removePaneFromWorkspace);
   const addPaneToWorkspace = useWorkspaceLayoutStore((s) => s.addPaneToWorkspace);
   const setWorkspaceLayoutMetrics = useWorkspaceListStore((s) => s.setWorkspaceLayoutMetrics);
+  const activePaneSessionId = useUiStore((s) => s.activePaneId);
   const workspace = useWorkspaceListStore((s) => s.getWorkspace(workspaceId));
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null);
 
   const handleClose = useCallback((paneId: string) => {
     // Kill all PTY sessions — read fresh state to avoid stale closure
@@ -81,6 +84,16 @@ export const TerminalGrid = memo(function TerminalGrid({
   }, [workspaceId, addPaneToWorkspace]);
 
   const paneMap = useMemo(() => Object.fromEntries(panes.map((p) => [p.id, p])), [panes]);
+  const activePaneId = useMemo(() => {
+    if (!activePaneSessionId) return null;
+    const activePane = panes.find((pane) =>
+      pane.sessionId === activePaneSessionId
+      || pane.tabs.some((tab) => tab.sessionId === activePaneSessionId),
+    );
+    return activePane?.id ?? null;
+  }, [activePaneSessionId, panes]);
+  const layoutColumns = useMemo(() => splitColumns ?? [panes.map((p) => p.id)], [splitColumns, panes]);
+  const maxRows = useMemo(() => Math.max(1, ...layoutColumns.map((col) => col.length)), [layoutColumns]);
   const colKeyStateRef = useRef<{
     nextId: number;
     entries: Array<{ key: string; paneIds: string[] }>;
@@ -89,12 +102,20 @@ export const TerminalGrid = memo(function TerminalGrid({
     entries: [],
   });
 
+  useEffect(() => {
+    if (!activePaneId) return;
+    const container = scrollContainerRef.current;
+    const activePaneEl = container?.querySelector<HTMLElement>(`[data-dnd-pane-id="${activePaneId}"]`);
+    activePaneEl?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [activePaneId, layoutColumns.length, maxRows]);
+
   // Column-first layout: outer = horizontal columns, inner = vertical rows within each column
   if (splitColumns) {
-    const cols: string[][] = splitColumns ?? [panes.map((p) => p.id)];
+    const cols: string[][] = layoutColumns;
     const columnWidths = workspace?.columnWidths?.length === cols.length ? workspace.columnWidths : undefined;
     const rowHeightsPerCol = workspace?.rowHeightsPerCol;
     const minGridWidth = cols.length > 1 ? cols.length * MIN_TERMINAL_COLUMN_WIDTH : undefined;
+    const minGridHeight = maxRows > 1 ? maxRows * MIN_TERMINAL_ROW_HEIGHT : undefined;
     const nextEntries: Array<{ key: string; paneIds: string[] }> = [];
     const availableEntries = [...colKeyStateRef.current.entries];
 
@@ -122,14 +143,15 @@ export const TerminalGrid = memo(function TerminalGrid({
 
     return (
       <div
+        ref={scrollContainerRef}
         style={{
           width: "100%",
           height: "100%",
           overflowX: minGridWidth ? "auto" : "hidden",
-          overflowY: "hidden",
+          overflowY: minGridHeight ? "auto" : "hidden",
         }}
       >
-        <div style={{ width: "100%", minWidth: minGridWidth, height: "100%" }}>
+        <div style={{ width: "100%", minWidth: minGridWidth, height: "100%", minHeight: minGridHeight }}>
           <Allotment
             separator={false}
             defaultSizes={columnWidths}

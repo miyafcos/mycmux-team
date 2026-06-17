@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { v4 as uuid } from "uuid";
 import type { Workspace, GridTemplateId, AgentSessionKind } from "../types";
+import { normalizeReadableSplitColumns } from "../lib/layoutColumns";
 import { useUiStore } from "./uiStore";
 
 function workspaceContainsPane(workspace: Workspace | undefined, paneId: string | null): boolean {
@@ -20,6 +21,29 @@ function fallbackColumns(workspace: Workspace): string[][] {
   return workspace.splitColumns && workspace.splitColumns.length > 0
     ? workspace.splitColumns
     : [workspace.panes.map((pane) => pane.id)];
+}
+
+function normalizeSplitColumns(splitColumns: string[][]): string[][] {
+  return normalizeReadableSplitColumns(splitColumns);
+}
+
+function columnWidthsMatch(columns: string[][], columnWidths: number[] | undefined): boolean {
+  return Boolean(
+    columnWidths
+      && columnWidths.length === columns.length
+      && columnWidths.every((size) => positiveSize(size) !== null),
+  );
+}
+
+function rowHeightsMatch(columns: string[][], rowHeightsPerCol: number[][] | undefined): boolean {
+  return Boolean(
+    rowHeightsPerCol
+      && rowHeightsPerCol.length === columns.length
+      && rowHeightsPerCol.every((row, index) =>
+        row.length === columns[index].length
+        && row.every((size) => positiveSize(size) !== null),
+      ),
+  );
 }
 
 function bestPreviousColumnIndex(
@@ -180,18 +204,23 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
 
   createWorkspace: (name, gridTemplateId, panes, splitColumns, options) => {
     const id = options?.id ?? uuid();
+    const normalizedSplitColumns = normalizeSplitColumns(splitColumns);
 
     const workspace: Workspace = {
       id,
       name,
       gridTemplateId,
       panes,
-      splitColumns,
+      splitColumns: normalizedSplitColumns,
       status: "running",
       createdAt: options?.createdAt ?? Date.now(),
       color: options?.color,
-      columnWidths: options?.columnWidths,
-      rowHeightsPerCol: options?.rowHeightsPerCol,
+      columnWidths: columnWidthsMatch(normalizedSplitColumns, options?.columnWidths)
+        ? options?.columnWidths
+        : undefined,
+      rowHeightsPerCol: rowHeightsMatch(normalizedSplitColumns, options?.rowHeightsPerCol)
+        ? options?.rowHeightsPerCol
+        : undefined,
     };
 
     set((state) => ({
@@ -271,11 +300,14 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
     set((state) => ({
       workspaces: state.workspaces.map((w) => {
         if (w.id !== id) return w;
-        const layoutMetrics = reconcileLayoutMetrics(w, splitColumns, resetLayoutMetrics);
+        const normalizedSplitColumns = splitColumns !== undefined
+          ? normalizeSplitColumns(splitColumns)
+          : undefined;
+        const layoutMetrics = reconcileLayoutMetrics(w, normalizedSplitColumns, resetLayoutMetrics);
         return {
           ...w,
           panes,
-          ...(splitColumns !== undefined && { splitColumns }),
+          ...(normalizedSplitColumns !== undefined && { splitColumns: normalizedSplitColumns }),
           ...(layoutMetrics ?? {}),
         };
       }),

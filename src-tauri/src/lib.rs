@@ -11,6 +11,46 @@ use pty::manager::SessionManager;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
+#[cfg(target_os = "windows")]
+mod single_instance {
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE};
+    use windows::Win32::System::Threading::CreateMutexW;
+
+    pub struct InstanceGuard(HANDLE);
+
+    impl Drop for InstanceGuard {
+        fn drop(&mut self) {
+            unsafe {
+                let _ = CloseHandle(self.0);
+            }
+        }
+    }
+
+    pub fn acquire() -> Result<Option<InstanceGuard>, String> {
+        let name = format!("Local\\miyazaki-{}-single-instance", env!("CARGO_PKG_NAME"));
+        let wide_name: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
+        let handle = unsafe { CreateMutexW(None, true, PCWSTR(wide_name.as_ptr())) }
+            .map_err(|error| format!("Failed to create single-instance mutex: {error}"))?;
+        if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
+            unsafe {
+                let _ = CloseHandle(handle);
+            }
+            return Ok(None);
+        }
+        Ok(Some(InstanceGuard(handle)))
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+mod single_instance {
+    pub struct InstanceGuard;
+
+    pub fn acquire() -> Result<Option<InstanceGuard>, String> {
+        Ok(Some(InstanceGuard))
+    }
+}
+
 pub struct AppState {
     pub session_manager: Arc<SessionManager>,
     pub bootstrapped: AtomicBool,
@@ -39,6 +79,15 @@ fn install_launcher_script() -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let _single_instance_guard = match single_instance::acquire() {
+        Ok(Some(guard)) => Some(guard),
+        Ok(None) => return,
+        Err(error) => {
+            eprintln!("[mycmux-lite] {error}");
+            return;
+        }
+    };
+
     // Strip ephemeral env vars inherited from the parent shell so they do not
     // leak into spawned PTY child processes (would auto-resume sessions).
     for key in [

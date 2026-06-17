@@ -1,5 +1,12 @@
 # Changelog (mycmux-lite)
 
+## [0.7.30-lite.1] - 2026-06-18
+
+- Fixed: Workspace restore now preserves the user's split direction instead of rewriting horizontal splits into vertical stacks. Restore, pane operations, workspace-store updates, and persistence all pass through the same shape-preserving layout cleanup, and stale size metrics are ignored when their shape no longer matches.
+- Fixed: Terminal panes now use the stable DOM renderer instead of WebGL to prevent intermittent missing or mottled text in transparent multi-pane Windows layouts.
+- Fixed: Terminal output batches are now kept while a pane is briefly zero-sized during split/resize transitions instead of being acknowledged and dropped.
+- Fixed: A second mycmux-lite process now exits before opening a stale default window, preventing two processes from racing to save the same workspace data.
+
 ## [0.7.29-lite.1] - 2026-06-18
 
 - Fixed: Multi-pane workspaces no longer collapse into unreadably narrow columns after restore or pane operations. Pane layout metrics are reconciled across split changes instead of being discarded, and the terminal grid now enforces readable minimum column and row sizes with horizontal scrolling when needed.

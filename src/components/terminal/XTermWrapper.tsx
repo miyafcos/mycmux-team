@@ -3,7 +3,6 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { SearchAddon } from "@xterm/addon-search";
-import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 import { open } from "@tauri-apps/plugin-shell";
 import {
@@ -186,7 +185,7 @@ interface CachedTerm {
 const termCache = new Map<string, CachedTerm>();
 const liveTerms = new Map<string, Terminal>();
 const terminalSizeCache = new Map<string, { cols: number; rows: number }>();
-const DEFAULT_TERMINAL_LINE_HEIGHT = 1.0;
+const DEFAULT_TERMINAL_LINE_HEIGHT = 1.1;
 
 // v0.7.1 diag: per-session aggregated write stats flushed every 1 s on console.
 type DiagWriteStats = {
@@ -893,7 +892,6 @@ export default memo(function XTermWrapper({
     let scrollDisposable: { dispose: () => void } | null = null;
     let term: Terminal | null = null;
     let fitAddon: FitAddon | null = null;
-    let webglAddon: WebglAddon | null = null;
     let removeCompositionGuard: (() => void) | null = null;
     let logThrottle: ReturnType<typeof setTimeout> | null = null;
     let idleFlush: ReturnType<typeof setTimeout> | null = null;
@@ -1079,7 +1077,11 @@ export default memo(function XTermWrapper({
     const registerResizeObserver = (currentTerm: Terminal, currentFitAddon: FitAddon): void => {
       resizeObserver?.disconnect();
       resizeObserver = new ResizeObserver(() => {
+        refreshFrontendVisible();
         scheduleResizeBurst(currentTerm, currentFitAddon);
+        if (pendingBatches.length > 0 && canWritePendingBatches()) {
+          void pumpTerminalWrites();
+        }
       });
       resizeObserver.observe(container);
     };
@@ -1249,7 +1251,7 @@ export default memo(function XTermWrapper({
       }
     };
 
-    const isContainerVisible = (): boolean => {
+    const isContainerDisplayed = (): boolean => {
       if (!container.isConnected) return false;
       let current: HTMLElement | null = container;
       while (current) {
@@ -1263,8 +1265,16 @@ export default memo(function XTermWrapper({
         }
         current = current.parentElement;
       }
+      return true;
+    };
+
+    const hasWritableTerminalSize = (): boolean => {
       const rect = container.getBoundingClientRect();
       return rect.width > 0 && rect.height > 0;
+    };
+
+    const canWritePendingBatches = (): boolean => {
+      return Boolean(term && !termDisposed && isContainerDisplayed() && hasWritableTerminalSize());
     };
 
     const setFrontendVisibleIfChanged = (visible: boolean): void => {
@@ -1274,7 +1284,7 @@ export default memo(function XTermWrapper({
     };
 
     const refreshFrontendVisible = (): void => {
-      setFrontendVisibleIfChanged(Boolean(term && !termDisposed && isContainerVisible()));
+      setFrontendVisibleIfChanged(Boolean(term && !termDisposed && isContainerDisplayed()));
     };
 
     const startVisibilityObserver = (): void => {
@@ -1339,9 +1349,13 @@ export default memo(function XTermWrapper({
       try {
         while (pendingBatches.length > 0) {
           const batch = pendingBatches.shift()!;
-          if (!term || termDisposed || !isContainerVisible()) {
+          if (!term || termDisposed) {
             await ackBatch(batch);
             continue;
+          }
+          if (!canWritePendingBatches()) {
+            pendingBatches.unshift(batch);
+            break;
           }
           try {
             settleStartupSession();
@@ -1363,7 +1377,7 @@ export default memo(function XTermWrapper({
         }
       } finally {
         writingBatch = false;
-        if (pendingBatches.length > 0) {
+        if (pendingBatches.length > 0 && canWritePendingBatches()) {
           void pumpTerminalWrites();
         }
       }
@@ -1371,7 +1385,9 @@ export default memo(function XTermWrapper({
 
     const enqueueFrontendBatch = (batch: FrontendDataBatch): void => {
       pendingBatches.push(batch);
-      void pumpTerminalWrites();
+      if (canWritePendingBatches()) {
+        void pumpTerminalWrites();
+      }
     };
 
     const attachFrontendChannel = async (cols: number, rows: number): Promise<void> => {
@@ -1568,40 +1584,9 @@ export default memo(function XTermWrapper({
       });
 
       term.open(container!);
-      // GPU renderer (WebGL). Must load AFTER open() since it needs the canvas.
-      // Falls back silently to the default DOM renderer on context loss / failure.
-      if (useSettingsStore.getState().useWebglRenderer) {
-        try {
-          const currentWebgl = new WebglAddon();
-          currentWebgl.onContextLoss(() => {
-            const ts = Date.now();
-            diagStats.webgl = "fallback";
-            diagStats.webglLostAt = ts;
-            const writesSoFar = diagStats.writes;
-            console.log(
-              `[mycmux-diag xterm:${sessionId}] WEBGL_LOST at=${ts} writes_in_window=${writesSoFar}`,
-            );
-            try {
-              currentWebgl.dispose();
-            } catch {
-              // Already disposed by xterm.
-            }
-            if (webglAddon === currentWebgl) {
-              webglAddon = null;
-            }
-            if (term) {
-              scheduleFullRefresh(term, [0, 64, 240, 600]);
-            }
-          });
-          webglAddon = currentWebgl;
-          term.loadAddon(currentWebgl);
-          diagStats.webgl = "on";
-        } catch (err) {
-          webglAddon = null;
-          diagStats.webgl = "fallback";
-          console.warn("[xterm] WebGL renderer unavailable, using DOM fallback:", err);
-        }
-      }
+      // Keep the DOM renderer for stability; WebGL texture atlases can corrupt
+      // text in transparent multi-pane layouts on some Windows/WebView2 setups.
+      diagStats.webgl = "never";
       liveTerms.set(sessionId, term);
       if (initialReplay && initialReplay.length > 0) {
         const replayText = initialReplay.join("\r\n");

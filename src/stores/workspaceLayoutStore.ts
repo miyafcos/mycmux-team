@@ -5,6 +5,7 @@ import type { PaneConfig } from "../lib/ipc";
 import { getGridTemplate } from "../lib/gridTemplates";
 import { getDefaultAgent } from "../lib/agents";
 import { makeSessionId } from "../lib/constants";
+import { normalizeReadableSplitColumns } from "../lib/layoutColumns";
 import { useWorkspaceListStore } from "./workspaceListStore";
 import { useUiStore } from "./uiStore";
 
@@ -98,9 +99,13 @@ function cloneSplitColumns(workspace: Workspace): string[][] {
   const columns = workspace.splitColumns && workspace.splitColumns.length > 0
     ? workspace.splitColumns
     : [workspace.panes.map((pane) => pane.id)];
-  return columns
+  return normalizeWorkspaceSplitColumns(columns
     .map((col) => [...col])
-    .filter((col) => col.length > 0);
+    .filter((col) => col.length > 0));
+}
+
+function normalizeWorkspaceSplitColumns(columns: string[][]): string[][] {
+  return normalizeReadableSplitColumns(columns);
 }
 
 function removePaneIdFromColumns(columns: string[][], paneId: string): string[][] {
@@ -440,7 +445,10 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
       }
     }
 
-    return { panes, splitColumns };
+    return {
+      panes,
+      splitColumns: normalizeReadableSplitColumns(splitColumns),
+    };
   },
 
   removePaneFromWorkspace: (workspaceId, paneId) => {
@@ -463,7 +471,12 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
         .filter((col) => col.length > 0);
     }
 
-    useWorkspaceListStore.getState()._updateWorkspacePanes(workspaceId, newPanes, newSplitColumns, true);
+    useWorkspaceListStore.getState()._updateWorkspacePanes(
+      workspaceId,
+      newPanes,
+      newSplitColumns ? normalizeWorkspaceSplitColumns(newSplitColumns) : newSplitColumns,
+      true,
+    );
   },
 
   addPaneToWorkspace: (workspaceId, afterPaneId, direction, agentId) => {
@@ -507,7 +520,12 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
       }
     }
 
-    useWorkspaceListStore.getState()._updateWorkspacePanes(workspaceId, newPanes, newSplitColumns, true);
+    useWorkspaceListStore.getState()._updateWorkspacePanes(
+      workspaceId,
+      newPanes,
+      normalizeWorkspaceSplitColumns(newSplitColumns),
+      true,
+    );
   },
 
   addPaneToWorkspaceWithOptions: (workspaceId, afterPaneId, direction, options) => {
@@ -557,7 +575,12 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
       }
     }
 
-    useWorkspaceListStore.getState()._updateWorkspacePanes(workspaceId, newPanes, newSplitColumns, true);
+    useWorkspaceListStore.getState()._updateWorkspacePanes(
+      workspaceId,
+      newPanes,
+      normalizeWorkspaceSplitColumns(newSplitColumns),
+      true,
+    );
   },
 
   addTabToPane: (workspaceId, paneId, agentId, type = "terminal") => {
@@ -659,7 +682,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
     useWorkspaceListStore.getState()._updateWorkspacePanes(
       workspaceId,
       newPanes,
-      nextSplitColumns,
+      normalizeWorkspaceSplitColumns(nextSplitColumns),
       true,
     );
     useUiStore.getState().setZoomedPaneId(null);
@@ -739,7 +762,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
     useWorkspaceListStore.getState()._updateWorkspacePanes(
       workspaceId,
       newPanes,
-      nextSplitColumns,
+      nextSplitColumns ? normalizeWorkspaceSplitColumns(nextSplitColumns) : nextSplitColumns,
       removedPane,
     );
   },
@@ -785,7 +808,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
       listStore._updateWorkspacePanes(
         sourceWorkspaceId,
         newPanes,
-        nextSplitColumns,
+        nextSplitColumns ? normalizeWorkspaceSplitColumns(nextSplitColumns) : nextSplitColumns,
         removedSourcePane,
       );
       return;
@@ -811,7 +834,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
     listStore._updateWorkspacePanes(
       sourceWorkspaceId,
       sourcePanes,
-      sourceSplitColumns,
+      sourceSplitColumns ? normalizeWorkspaceSplitColumns(sourceSplitColumns) : sourceSplitColumns,
       removedSourcePane,
     );
     listStore._updateWorkspacePanes(targetWorkspaceId, targetPanes);
@@ -854,7 +877,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
       listStore._updateWorkspacePanes(
         sourceWorkspaceId,
         [...panesAfterSource, newPane],
-        nextSplitColumns,
+        normalizeWorkspaceSplitColumns(nextSplitColumns),
         true,
       );
       return;
@@ -884,13 +907,13 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
     listStore._updateWorkspacePanes(
       sourceWorkspaceId,
       sourcePanes,
-      sourceSplitColumns,
+      sourceSplitColumns ? normalizeWorkspaceSplitColumns(sourceSplitColumns) : sourceSplitColumns,
       removedSourcePane,
     );
     listStore._updateWorkspacePanes(
       targetWorkspaceId,
       [...targetWorkspace.panes, newPane],
-      targetColumns,
+      normalizeWorkspaceSplitColumns(targetColumns),
       true,
     );
     if (sourcePanes.length === 0) {
@@ -918,7 +941,12 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
         return [pane];
       });
       const nextSplitColumns = removePaneIdFromColumns(cloneSplitColumns(sourceWorkspace), sourcePaneId);
-      listStore._updateWorkspacePanes(sourceWorkspaceId, newPanes, nextSplitColumns, true);
+      listStore._updateWorkspacePanes(
+        sourceWorkspaceId,
+        newPanes,
+        normalizeWorkspaceSplitColumns(nextSplitColumns),
+        true,
+      );
       return;
     }
 
@@ -929,7 +957,12 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
         ? appendTabsToPane(pane, sourcePane.tabs, sourcePane.activeTabId)
         : pane,
     );
-    listStore._updateWorkspacePanes(sourceWorkspaceId, sourcePanes, sourceSplitColumns, true);
+    listStore._updateWorkspacePanes(
+      sourceWorkspaceId,
+      sourcePanes,
+      normalizeWorkspaceSplitColumns(sourceSplitColumns),
+      true,
+    );
     listStore._updateWorkspacePanes(targetWorkspaceId, targetPanes);
     if (sourcePanes.length === 0) {
       listStore.removeWorkspace(sourceWorkspaceId);
@@ -951,7 +984,12 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
       const baseColumns = removePaneIdFromColumns(cloneSplitColumns(sourceWorkspace), sourcePaneId);
       const nextSplitColumns = insertPaneIdIntoColumns(baseColumns, targetPaneId, sourcePaneId, direction);
       if (!nextSplitColumns) return;
-      listStore._updateWorkspacePanes(sourceWorkspaceId, sourceWorkspace.panes, nextSplitColumns, true);
+      listStore._updateWorkspacePanes(
+        sourceWorkspaceId,
+        sourceWorkspace.panes,
+        normalizeWorkspaceSplitColumns(nextSplitColumns),
+        true,
+      );
       return;
     }
 
@@ -965,11 +1003,16 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
     );
     if (!targetColumns) return;
 
-    listStore._updateWorkspacePanes(sourceWorkspaceId, sourcePanes, sourceSplitColumns, true);
+    listStore._updateWorkspacePanes(
+      sourceWorkspaceId,
+      sourcePanes,
+      normalizeWorkspaceSplitColumns(sourceSplitColumns),
+      true,
+    );
     listStore._updateWorkspacePanes(
       targetWorkspaceId,
       [...targetWorkspace.panes, sourcePane],
-      targetColumns,
+      normalizeWorkspaceSplitColumns(targetColumns),
       true,
     );
     if (sourcePanes.length === 0) {
@@ -1004,7 +1047,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
     listStore._updateWorkspacePanes(
       sourceWorkspaceId,
       sourcePanes,
-      sourceSplitColumns,
+      sourceSplitColumns ? normalizeWorkspaceSplitColumns(sourceSplitColumns) : sourceSplitColumns,
       removedSourcePane,
     );
     listStore.createWorkspace(
@@ -1031,7 +1074,12 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
     const sourcePanes = sourceWorkspace.panes.filter((pane) => pane.id !== sourcePaneId);
     const sourceSplitColumns = removePaneIdFromColumns(cloneSplitColumns(sourceWorkspace), sourcePaneId);
 
-    listStore._updateWorkspacePanes(sourceWorkspaceId, sourcePanes, sourceSplitColumns, true);
+    listStore._updateWorkspacePanes(
+      sourceWorkspaceId,
+      sourcePanes,
+      normalizeWorkspaceSplitColumns(sourceSplitColumns),
+      true,
+    );
     listStore.createWorkspace(
       workspaceName,
       "1x1",

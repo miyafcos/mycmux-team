@@ -202,7 +202,6 @@ div:hover>.tab-close-btn {
 }
 
 .xterm-screen {
-  image-rendering: pixelated;
   background: transparent;
 }
 
@@ -218,10 +217,6 @@ div:hover>.tab-close-btn {
   font-feature-settings: "liga" 0, "calt" 0;
 }
 
-/* Force subpixel rendering for sharper glyphs on Linux/WebKitGTK */
-canvas {
-  image-rendering: -webkit-optimize-contrast;
-}
 
 /* Collapse allotment sash to 1px — eliminates the 8px black stripe between split panes.
    !important needed because allotment/dist/style.css loads after global.css and would override. */
