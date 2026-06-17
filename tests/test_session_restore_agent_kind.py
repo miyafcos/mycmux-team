@@ -26,6 +26,10 @@ def test_agent_kind_round_trip_contract_remains_wired() -> None:
         "agent_session_id: tab.agentSessionId ?? tabMeta?.agentSessionId ?? null",
         "agent_kind: paneConfig.agent_kind ?? mappingKind",
         "agent_kind: tabConfig.agent_kind ?? mappingKind",
+        "clearDuplicateTabAgentSession(cleanedTab)",
+        "clearStaleAgentErrorSnapshot(tab)",
+        "terminal_snapshot: null",
+        "applyMappingsToConfig(toConfig(ws), agentMappings)",
     ]:
         assert_contains(snippet=snippet, text=socket_listener, source="src/components/layout/SocketListener.tsx")
 
@@ -44,5 +48,8 @@ def test_agent_kind_round_trip_contract_remains_wired() -> None:
 def test_duplicate_session_create_is_idempotent() -> None:
     manager = read_repo_text("src-tauri/src/pty/manager.rs")
 
-    assert_contains(manager, "if self.sessions.contains_key(&session_id) {", "src-tauri/src/pty/manager.rs")
+    assert_contains(manager, "create_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>", "src-tauri/src/pty/manager.rs")
+    assert_contains(manager, "fn create_lock_for(&self, session_id: &str)", "src-tauri/src/pty/manager.rs")
+    assert_contains(manager, "let _create_guard = create_lock", "src-tauri/src/pty/manager.rs")
+    assert_contains(manager, "session.replace_data_channel(data_channel, consumer_id)?", "src-tauri/src/pty/manager.rs")
     assert_contains(manager, "return Ok(());", "src-tauri/src/pty/manager.rs")

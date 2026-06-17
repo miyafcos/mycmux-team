@@ -1,4 +1,6 @@
 use dashmap::DashMap;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tauri::ipc::Channel;
 use tauri::AppHandle;
@@ -8,13 +10,26 @@ use super::session::{FrontendDataBatch, PtySession};
 
 pub struct SessionManager {
     sessions: DashMap<String, PtySession>,
+    create_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
 }
 
 impl SessionManager {
     pub fn new() -> Self {
         Self {
             sessions: DashMap::new(),
+            create_locks: Mutex::new(HashMap::new()),
         }
+    }
+
+    fn create_lock_for(&self, session_id: &str) -> Result<Arc<Mutex<()>>, String> {
+        let mut locks = self
+            .create_locks
+            .lock()
+            .map_err(|error| format!("Failed to lock create session map: {error}"))?;
+        Ok(locks
+            .entry(session_id.to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -33,6 +48,10 @@ impl SessionManager {
         metadata_store: MetadataStore,
     ) -> Result<(), String> {
         let new_channel_id = data_channel.id().to_string();
+        let create_lock = self.create_lock_for(&session_id)?;
+        let _create_guard = create_lock
+            .lock()
+            .map_err(|error| format!("Failed to lock create session {session_id}: {error}"))?;
         if let Some(session) = self.sessions.get(&session_id) {
             let age_ms = session.created_at.elapsed().as_millis();
             let (old_channel_id, active_channel_id) =

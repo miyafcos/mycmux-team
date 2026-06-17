@@ -232,11 +232,28 @@ function getTabAgentSessionKey(tab: PaneTabConfig): string | null {
   return getConfigAgentSessionKey(kind, sessionId);
 }
 
+function clearDuplicateTabAgentSession(tab: PaneTabConfig): PaneTabConfig {
+  return {
+    ...tab,
+    claude_session_id: null,
+    agent_kind: null,
+    agent_session_id: null,
+    terminal_snapshot: null,
+  };
+}
+
 function clearAgentTerminalSnapshot(tab: PaneTabConfig): PaneTabConfig {
   return {
     ...tab,
     terminal_snapshot: null,
   };
+}
+
+function clearStaleAgentErrorSnapshot(tab: PaneTabConfig): PaneTabConfig {
+  const hasStaleAgentError = (tab.terminal_snapshot ?? []).some((line) =>
+    /Session ID .*already in use/i.test(line),
+  );
+  return hasStaleAgentError ? clearAgentTerminalSnapshot(tab) : tab;
 }
 
 function agentIdForSessionKind(kind: AgentSessionKind | null | undefined): string | null {
@@ -321,10 +338,13 @@ function dedupeAgentSessionsInConfigs(
     panes: cfg.panes.map((pane, paneIndex) => {
       if (!pane.tabs || pane.tabs.length === 0) return pane;
       const tabs = pane.tabs.map((tab, tabIndex) => {
-        const key = getTabAgentSessionKey(tab);
-        if (!key) return tab;
+        const cleanedTab = clearStaleAgentErrorSnapshot(tab);
+        const key = getTabAgentSessionKey(cleanedTab);
+        if (!key) return cleanedTab;
         const candidateId = `${workspaceIndex}:${paneIndex}:${tabIndex}`;
-        return winningCandidateIds.has(candidateId) ? normalizeAgentSessionTab(tab) : tab;
+        return winningCandidateIds.has(candidateId)
+          ? normalizeAgentSessionTab(cleanedTab)
+          : clearDuplicateTabAgentSession(cleanedTab);
       });
       return syncPaneAgentSessionFromActiveTab(pane, tabs);
     }),
@@ -607,7 +627,7 @@ export function useWorkspacePersist() {
       const keybindingState = useKeybindingStore.getState();
 
       const workspaces = dedupeAgentSessionsInConfigs(
-        state.workspaces.map((ws) => toConfig(ws, agentMappings)),
+        state.workspaces.map((ws) => applyMappingsToConfig(toConfig(ws), agentMappings)),
         activeWorkspaceId,
         activePane?.id ?? null,
         activeTab?.id ?? null,

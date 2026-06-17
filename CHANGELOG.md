@@ -1,5 +1,11 @@
 # Changelog (mycmux-lite)
 
+## [0.7.28-lite.1] - 2026-06-17
+
+- Fixed: Startup restore no longer preserves duplicate agent session IDs across panes. The active tab wins, duplicate losers lose their resume metadata, and stale `Session ID ... already in use` snapshots are cleared before persistence.
+- Fixed: PTY session creation is now serialized per `session_id`, preventing a double-spawn race when restore/re-attach paths request the same session concurrently.
+- Fixed: Save-time agent session mapping is applied to the serialized workspace snapshot, so agents launched after startup are not missed by the next restore.
+
 ## [0.7.27-lite.1] - 2026-06-07
 
 - 追加: Markdown artifact をHTML変換経由ではなく、Markdown本文を直接編集・保存できるソース編集にしました。
