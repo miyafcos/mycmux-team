@@ -4,7 +4,6 @@ import "allotment/dist/style.css";
 import type { Pane, GridTemplateId, Workspace } from "../../types";
 import { useWorkspaceLayoutStore, usePaneMetadataStore } from "../../stores/workspaceStore";
 import { useWorkspaceListStore } from "../../stores/workspaceListStore";
-import { useUiStore } from "../../stores/uiStore";
 import { killSession } from "../../lib/ipc";
 import { FIRST_LAUNCH_STORAGE_KEY } from "../../lib/startupSessionGate";
 import { reconcileSplitColumnsForPanes } from "../../lib/layoutColumns";
@@ -15,10 +14,7 @@ import { ErrorBoundary } from "../layout/ErrorBoundary";
 const MAX_MOUNTED_WORKSPACES = 3;
 const RESTORE_MOUNT_DELAY_MS = 650;
 const FIRST_RESTORE_MOUNT_DELAY_MS = 1200;
-const COMFORT_TERMINAL_COLUMN_WIDTH = 360;
-const MIN_TERMINAL_COLUMN_WIDTH = 96;
-const COMFORT_TERMINAL_ROW_HEIGHT = 180;
-const MIN_TERMINAL_ROW_HEIGHT = 72;
+const FIT_LAYOUT_MIN_SIZE = 0;
 
 function getRestoreMountDelayMs(): number {
   try {
@@ -51,9 +47,39 @@ function workspaceHasRestorableAgentSession(workspace: Workspace): boolean {
   return workspace.panes.some(paneHasRestorableAgentSession);
 }
 
-function fitMinSize(availableSize: number, itemCount: number, comfortSize: number, floorSize: number): number {
-  if (itemCount <= 1 || availableSize <= 0) return floorSize;
-  return Math.max(floorSize, Math.min(comfortSize, Math.floor(availableSize / itemCount)));
+function positiveLayoutSizes(sizes: number[] | undefined, itemCount: number): number[] | null {
+  if (!sizes || sizes.length !== itemCount) return null;
+  const cleaned = sizes.map((size) =>
+    typeof size === "number" && Number.isFinite(size) && size > 0 ? size : null,
+  );
+  return cleaned.every((size): size is number => size !== null) ? cleaned : null;
+}
+
+function fitLayoutSizes(
+  sizes: number[] | undefined,
+  availableSize: number,
+  itemCount: number,
+): number[] | undefined {
+  const fitSize = Math.floor(availableSize);
+  if (itemCount <= 0 || fitSize <= 0) return undefined;
+
+  const source = positiveLayoutSizes(sizes, itemCount) ?? Array.from({ length: itemCount }, () => 1);
+  const total = source.reduce((sum, size) => sum + size, 0);
+  if (total <= 0) return undefined;
+
+  const rawSizes = source.map((size) => (size / total) * fitSize);
+  const fitted = rawSizes.map((size) => Math.floor(size));
+  let remaining = fitSize - fitted.reduce((sum, size) => sum + size, 0);
+  const order = rawSizes
+    .map((size, index) => ({ index, fraction: size - Math.floor(size) }))
+    .sort((a, b) => b.fraction - a.fraction);
+
+  for (let idx = 0; remaining > 0 && order.length > 0; idx = (idx + 1) % order.length) {
+    fitted[order[idx].index] += 1;
+    remaining -= 1;
+  }
+
+  return fitted;
 }
 
 function sameViewportSize(
@@ -71,7 +97,6 @@ export const TerminalGrid = memo(function TerminalGrid({
   const removePaneFromWorkspace = useWorkspaceLayoutStore((s) => s.removePaneFromWorkspace);
   const addPaneToWorkspace = useWorkspaceLayoutStore((s) => s.addPaneToWorkspace);
   const setWorkspaceLayoutMetrics = useWorkspaceListStore((s) => s.setWorkspaceLayoutMetrics);
-  const activePaneSessionId = useUiStore((s) => s.activePaneId);
   const workspace = useWorkspaceListStore((s) => s.getWorkspace(workspaceId));
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
 
@@ -100,19 +125,10 @@ export const TerminalGrid = memo(function TerminalGrid({
 
   const paneMap = useMemo(() => Object.fromEntries(panes.map((p) => [p.id, p])), [panes]);
   const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
-  const activePaneId = useMemo(() => {
-    if (!activePaneSessionId) return null;
-    const activePane = panes.find((pane) =>
-      pane.sessionId === activePaneSessionId
-      || pane.tabs.some((tab) => tab.sessionId === activePaneSessionId),
-    );
-    return activePane?.id ?? null;
-  }, [activePaneSessionId, panes]);
   const layoutColumns = useMemo(
     () => reconcileSplitColumnsForPanes(splitColumns, panes.map((pane) => pane.id)),
     [splitColumns, panes],
   );
-  const maxRows = useMemo(() => Math.max(1, ...layoutColumns.map((col) => col.length)), [layoutColumns]);
   const colKeyStateRef = useRef<{
     nextId: number;
     entries: Array<{ key: string; paneIds: string[] }>;
@@ -137,30 +153,12 @@ export const TerminalGrid = memo(function TerminalGrid({
     return () => observer.disconnect();
   }, []);
 
-  useEffect(() => {
-    if (!activePaneId) return;
-    const container = scrollContainerRef.current;
-    const activePaneEl = container?.querySelector<HTMLElement>(`[data-dnd-pane-id="${activePaneId}"]`);
-    activePaneEl?.scrollIntoView({ block: "nearest", inline: "nearest" });
-  }, [activePaneId, layoutColumns.length, maxRows]);
-
   // Column-first layout: outer = horizontal columns, inner = vertical rows within each column
   if (splitColumns) {
     const cols: string[][] = layoutColumns;
-    const columnWidths = workspace?.columnWidths?.length === cols.length ? workspace.columnWidths : undefined;
+    const columnWidths = fitLayoutSizes(workspace?.columnWidths, viewportSize.width, cols.length);
     const rowHeightsPerCol = workspace?.rowHeightsPerCol;
-    const columnMinSize = fitMinSize(
-      viewportSize.width,
-      cols.length,
-      COMFORT_TERMINAL_COLUMN_WIDTH,
-      MIN_TERMINAL_COLUMN_WIDTH,
-    );
-    const rowMinSize = fitMinSize(
-      viewportSize.height,
-      maxRows,
-      COMFORT_TERMINAL_ROW_HEIGHT,
-      MIN_TERMINAL_ROW_HEIGHT,
-    );
+    const hasMeasuredViewport = viewportSize.width > 0 && viewportSize.height > 0;
     const nextEntries: Array<{ key: string; paneIds: string[] }> = [];
     const availableEntries = [...colKeyStateRef.current.entries];
 
@@ -188,6 +186,7 @@ export const TerminalGrid = memo(function TerminalGrid({
 
     return (
       <div
+        className="cmux-terminal-grid-fit"
         ref={scrollContainerRef}
         style={{
           width: "100%",
@@ -195,24 +194,26 @@ export const TerminalGrid = memo(function TerminalGrid({
           overflow: "hidden",
         }}
       >
-        <div style={{ width: "100%", height: "100%" }}>
+        {hasMeasuredViewport && <div style={{ width: "100%", height: "100%", minWidth: 0, minHeight: 0 }}>
           <Allotment
             separator={false}
+            proportionalLayout
             defaultSizes={columnWidths}
-            minSize={columnMinSize}
+            minSize={FIT_LAYOUT_MIN_SIZE}
             onDragEnd={(sizes) => {
               const currentWorkspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
               setWorkspaceLayoutMetrics(workspaceId, sizes, currentWorkspace?.rowHeightsPerCol);
             }}
           >
             {keyedCols.map(({ col, key }, colIdx) => (
-              <Allotment.Pane key={key} minSize={columnMinSize}>
+              <Allotment.Pane key={key} minSize={FIT_LAYOUT_MIN_SIZE} preferredSize={columnWidths?.[colIdx]}>
                 <Allotment
                   vertical
                   key={`rows-${key}`}
                   separator={false}
-                  defaultSizes={rowHeightsPerCol?.[colIdx]?.length === col.length ? rowHeightsPerCol[colIdx] : undefined}
-                  minSize={rowMinSize}
+                  proportionalLayout
+                  defaultSizes={fitLayoutSizes(rowHeightsPerCol?.[colIdx], viewportSize.height, col.length)}
+                  minSize={FIT_LAYOUT_MIN_SIZE}
                   onDragEnd={(sizes) => {
                     const currentWorkspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
                     const currentRowHeights = currentWorkspace?.rowHeightsPerCol;
@@ -225,11 +226,12 @@ export const TerminalGrid = memo(function TerminalGrid({
                     setWorkspaceLayoutMetrics(workspaceId, currentWorkspace?.columnWidths, nextRowHeights);
                   }}
                 >
-                  {col.map((paneId) => {
+                  {col.map((paneId, rowIdx) => {
                     const pane = paneMap[paneId];
+                    const rowHeights = fitLayoutSizes(rowHeightsPerCol?.[colIdx], viewportSize.height, col.length);
                     if (!pane) return null;
                     return (
-                      <Allotment.Pane key={pane.id} minSize={rowMinSize}>
+                      <Allotment.Pane key={pane.id} minSize={FIT_LAYOUT_MIN_SIZE} preferredSize={rowHeights?.[rowIdx]}>
                         <ErrorBoundary>
                         <TerminalPane
                           pane={pane}
@@ -246,7 +248,7 @@ export const TerminalGrid = memo(function TerminalGrid({
               </Allotment.Pane>
             ))}
           </Allotment>
-        </div>
+        </div>}
       </div>
     );
   }

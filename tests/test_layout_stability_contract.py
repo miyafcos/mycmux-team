@@ -34,20 +34,33 @@ def test_pane_layout_metrics_survive_split_structure_changes() -> None:
 
 def test_terminal_grid_keeps_multi_column_layout_readable() -> None:
     workspace_view = read_repo_text("src/components/workspace/WorkspaceView.tsx")
+    global_css = read_repo_text("src/global.css")
 
     for snippet in [
-        "const COMFORT_TERMINAL_COLUMN_WIDTH = 360;",
-        "const MIN_TERMINAL_COLUMN_WIDTH = 96;",
-        "const COMFORT_TERMINAL_ROW_HEIGHT = 180;",
-        "const MIN_TERMINAL_ROW_HEIGHT = 72;",
-        "const columnMinSize = fitMinSize(",
-        "const rowMinSize = fitMinSize(",
+        "const FIT_LAYOUT_MIN_SIZE = 0;",
+        "function fitLayoutSizes(",
+        "const columnWidths = fitLayoutSizes(workspace?.columnWidths, viewportSize.width, cols.length);",
+        "const hasMeasuredViewport = viewportSize.width > 0 && viewportSize.height > 0;",
+        "defaultSizes={columnWidths}",
+        "defaultSizes={fitLayoutSizes(rowHeightsPerCol?.[colIdx], viewportSize.height, col.length)}",
+        "preferredSize={columnWidths?.[colIdx]}",
+        "preferredSize={rowHeights?.[rowIdx]}",
+        "proportionalLayout",
+        "minSize={FIT_LAYOUT_MIN_SIZE}",
+        'className="cmux-terminal-grid-fit"',
         'overflow: "hidden"',
-        "activePaneEl?.scrollIntoView({ block: \"nearest\", inline: \"nearest\" });",
-        "minSize={columnMinSize}",
-        "minSize={rowMinSize}",
     ]:
         assert_contains(workspace_view, snippet, "src/components/workspace/WorkspaceView.tsx")
+
+    for snippet in [
+        ".cmux-terminal-grid-fit [class*=\"splitView\"]",
+        "min-width: 0 !important;",
+        "overflow: hidden !important;",
+    ]:
+        assert_contains(global_css, snippet, "src/global.css")
+
+    assert "scrollIntoView" not in workspace_view
+    assert "MIN_TERMINAL_COLUMN_WIDTH" not in workspace_view
 
 
 def test_split_columns_are_reconciled_to_render_every_pane() -> None:

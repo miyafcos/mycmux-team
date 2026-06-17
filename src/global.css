@@ -282,6 +282,22 @@ div:hover>.tab-close-btn {
     0 0 0 1px color-mix(in srgb, var(--cmux-accent) 18%, transparent);
 }
 
+.cmux-terminal-grid-fit,
+.cmux-terminal-grid-fit [class*="splitView"],
+.cmux-terminal-grid-fit [class*="splitViewContainer"],
+.cmux-terminal-grid-fit [class*="splitViewView"] {
+  max-width: 100%;
+  max-height: 100%;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+}
+
+.cmux-terminal-grid-fit [class*="splitViewContainer"] {
+  width: 100% !important;
+  height: 100% !important;
+}
+
 /* A zoomed pane must escape Allotment's pane-level clipping so the app-wide
    AppShell background remains continuous behind the enlarged terminal. */
 [class*="splitView"]:has(.terminal-pane-border[data-pane-zoomed="true"]) {
