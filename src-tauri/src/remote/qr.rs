@@ -52,10 +52,11 @@ fn tailscale_ip() -> Option<String> {
 
 /// Build the connection URL.
 pub fn connection_url(ip: &str, port: u16, token: &str) -> String {
-    format!("http://{}:{}/#token={}", ip, port, token)
+    format!("http://{}:{}/?token={}", ip, port, token)
 }
 
 /// Render a QR code as ASCII art for terminal display.
+#[allow(dead_code)]
 pub fn ascii_qr(url: &str) -> String {
     let code = match QrCode::new(url.as_bytes()) {
         Ok(c) => c,

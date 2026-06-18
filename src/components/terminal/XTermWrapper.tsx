@@ -19,7 +19,7 @@ import { usePaneMetadataStore, useUiStore } from "../../stores/workspaceStore";
 import { useKeybindingStore } from "../../stores/keybindingStore";
 import { useSettingsStore } from "../../stores/settingsStore";
 import { DEFAULT_TERMINAL_FONT_FAMILY, useThemeStore } from "../../stores/themeStore";
-import type { ILink, ITheme } from "@xterm/xterm";
+import type { ILink, IMarker, ITheme } from "@xterm/xterm";
 import { markStartupSessionSettled } from "../../lib/startupSessionGate";
 
 // Notification sound via Web Audio API — short gentle chime
@@ -143,7 +143,8 @@ function withTerminalOpacity(theme: ITheme, opacity: number, mediaActive: boolea
 
 // xterm's minimumContrastRatio only works against an opaque, known background.
 // With a media background the terminal background is transparent (the wallpaper
-// is composited in CSS), so it must be disabled to avoid phantom contrast fixes.
+// is composited in CSS), so it must be disabled — otherwise xterm corrects the
+// foreground against a phantom black background and washes out dark text.
 const TERMINAL_MIN_CONTRAST = 7;
 
 function minContrastFor(mediaActive: boolean): number {
@@ -185,7 +186,14 @@ interface CachedTerm {
 const termCache = new Map<string, CachedTerm>();
 const liveTerms = new Map<string, Terminal>();
 const terminalSizeCache = new Map<string, { cols: number; rows: number }>();
-const DEFAULT_TERMINAL_LINE_HEIGHT = 1.1;
+const terminalWriteCounters = new Map<string, number>();
+
+const TERMINAL_SNAPSHOT_SCAN_MULTIPLIER = 4;
+const TERMINAL_SNAPSHOT_MAX_WRAPPED_LINES = 256;
+const TERMINAL_SNAPSHOT_MAX_LINE_CHARS = 8192;
+
+const terminalHasLiveOutput = new Set<string>();
+const terminalInitialReplayMarkers = new Map<string, IMarker>();
 
 // v0.7.1 diag: per-session aggregated write stats flushed every 1 s on console.
 type DiagWriteStats = {
@@ -208,7 +216,9 @@ function diagStatsFor(sessionId: string): DiagWriteStats {
 }
 
 // Flush per-session write stats once per second. Idle sessions are skipped.
-if (typeof window !== "undefined") {
+// Debug builds only — `import.meta.env.DEV` is statically false in production,
+// so Vite drops this interval (and its per-second console spam) entirely.
+if (typeof window !== "undefined" && import.meta.env.DEV) {
   window.setInterval(() => {
     for (const [sid, s] of diagWriteStats) {
       if (s.writes === 0 && s.replays === 0 && s.webglLostAt === null) continue;
@@ -222,6 +232,7 @@ if (typeof window !== "undefined") {
     }
   }, 1000);
 }
+const DEFAULT_TERMINAL_LINE_HEIGHT = 1.1;
 
 type MarkdownTableAlignment = "left" | "center" | "right" | "default";
 
@@ -514,51 +525,124 @@ export function evictTerminalCache(sessionId: string): void {
     console.log(`[mycmux-diag xterm:${sessionId}] cache_evict`);
   }
   terminalSizeCache.delete(sessionId);
+  terminalWriteCounters.delete(sessionId);
   diagWriteStats.delete(sessionId);
+  terminalHasLiveOutput.delete(sessionId);
+  terminalInitialReplayMarkers.get(sessionId)?.dispose();
+  terminalInitialReplayMarkers.delete(sessionId);
 }
 
-/** Read the last N non-empty lines of a pane's xterm buffer, ANSI/control-char stripped. */
-export function getTerminalBufferLines(sessionId: string, maxLines: number): string[] {
+export function getTerminalWriteCounter(sessionId: string): number {
+  return terminalWriteCounters.get(sessionId) ?? 0;
+}
+
+function bumpTerminalWriteCounter(sessionId: string): void {
+  terminalWriteCounters.set(sessionId, (terminalWriteCounters.get(sessionId) ?? 0) + 1);
+}
+
+function cleanTerminalSnapshotLine(text: string): string {
+  return text
+    .replace(/\x1b\[[0-9;]*[A-Za-z]/g, "")
+    .replace(/\x1b\].*?\x07/g, "")
+    .replace(/[\x00-\x08\x0b-\x0c\x0e-\x1f\x7f]/g, "")
+    .trim();
+}
+
+function hasHighReplacementCharRatio(text: string): boolean {
+  if (text.length === 0) return false;
+  const replacements = [...text].filter((char) => char === "\uFFFD").length;
+  return replacements / [...text].length > 0.3;
+}
+
+type TerminalBufferLineOptions = {
+  excludeInitialReplay?: boolean;
+};
+
+export function hasTerminalBuffer(sessionId: string): boolean {
+  return liveTerms.has(sessionId) || termCache.has(sessionId);
+}
+
+/** Read the last N non-empty logical lines of a pane's xterm buffer, ANSI/control-char stripped. */
+export function getTerminalBufferLines(
+  sessionId: string,
+  maxLines: number,
+  options: TerminalBufferLineOptions = {},
+): string[] {
   const term = liveTerms.get(sessionId) ?? termCache.get(sessionId)?.term;
   if (!term || maxLines <= 0) return [];
+  const hasLiveOutput = terminalHasLiveOutput.has(sessionId);
+  if (options.excludeInitialReplay && !hasLiveOutput) return [];
   try {
     const buf = term.buffer.active;
     const bottom = buf.length - 1;
     if (bottom < 0) return [];
-    const top = Math.max(0, bottom - maxLines * 2);
     const result: string[] = [];
-    for (let i = bottom; i >= top; i--) {
-      const lineObj = buf.getLine(i);
-      if (!lineObj) continue;
-      const text = lineObj
-        .translateToString(true)
-        .replace(/\x1b\[[0-9;]*[A-Za-z]/g, "")
-        .replace(/\x1b\].*?\x07/g, "")
-        .replace(/[\x00-\x08\x0b-\x0c\x0e-\x1f\x7f]/g, "")
-        .trim();
-      if (text.length > 0) {
-        result.push(text);
-        if (result.length >= maxLines) break;
+    const replayMarker = options.excludeInitialReplay ? terminalInitialReplayMarkers.get(sessionId) : undefined;
+    const replayBoundary = replayMarker && replayMarker.line >= 0 ? replayMarker.line : 0;
+    const minLineIndex = Math.max(
+      replayBoundary,
+      bottom - maxLines * TERMINAL_SNAPSHOT_SCAN_MULTIPLIER,
+    );
+
+    let lineIndex = bottom;
+    while (lineIndex >= minLineIndex && result.length < maxLines) {
+      let firstLineIndex = lineIndex;
+      let wrappedRows = 0;
+      while (
+        firstLineIndex > minLineIndex &&
+        wrappedRows < TERMINAL_SNAPSHOT_MAX_WRAPPED_LINES &&
+        buf.getLine(firstLineIndex)?.isWrapped
+      ) {
+        firstLineIndex--;
+        wrappedRows++;
       }
+
+      let logicalLine = "";
+      for (let i = firstLineIndex; i <= lineIndex; i++) {
+        const lineObj = buf.getLine(i);
+        if (!lineObj) continue;
+        const nextIsWrapped = i < lineIndex && Boolean(buf.getLine(i + 1)?.isWrapped);
+        const part = lineObj.translateToString(!nextIsWrapped);
+        const remaining = TERMINAL_SNAPSHOT_MAX_LINE_CHARS - logicalLine.length;
+        if (remaining > 0) {
+          logicalLine += part.slice(0, remaining);
+        }
+      }
+
+      const text = cleanTerminalSnapshotLine(logicalLine);
+      if (text.length > 0 && !hasHighReplacementCharRatio(text)) {
+        result.push(text);
+      }
+
+      lineIndex = firstLineIndex - 1;
     }
     return result.reverse();
   } catch {
     return [];
   }
 }
-const CODING_AGENT_HINT_PATTERN = /\b(?:ctrl|cmd|alt|shift)\+[\w?]+/gi;
 const HTTP_LINK_REGEX = /https?:\/\/[^\s"'<>+\uFF0B]+[^\s"'<>+\uFF0B.,!?;:)}\]]/i;
 const ARTIFACT_EXTENSION_PATTERN = String.raw`html?|markdown|md|docx?|docm|dotx?|dotm|xlsx?|xlsm|xlsb|xltx?|xltm|pptx?|pptm|potx?|potm|ppsx?|ppsm`;
-const ARTIFACT_LINK_TERMINATOR_PATTERN = String.raw`(?=$|[\s"'<>+\uFF0B.,!?;:)}\]（）・。、，、])`;
-const EXTENDED_ARTIFACT_LINK_REGEX = new RegExp(
-  String.raw`(?:file:\/\/\/[^\r\n"'<>+\uFF0B]*?\.(?:${ARTIFACT_EXTENSION_PATTERN})|[A-Za-z]:[\\/][^\r\n"'<>+\uFF0B]*?\.(?:${ARTIFACT_EXTENSION_PATTERN}))${ARTIFACT_LINK_TERMINATOR_PATTERN}`,
+const ARTIFACT_LINK_TERMINATOR_PATTERN = String.raw`(?=$|[\s"'<>+\uFF0B.,!?;:)(}\]（）・。、，、])`;
+// MSYS / Git-Bash absolute path form: `/c/Users/...`. The drive is a SINGLE
+// letter between slashes, and the leading slash must start a fresh segment
+// (lookbehind rejects `.../x/y.md` inside URLs or longer paths) so ordinary
+// unix paths like `/home/...` or URL path segments never produce false links.
+const MSYS_DRIVE_PREFIX_PATTERN = String.raw`(?<![A-Za-z0-9._\\/:])\/[A-Za-z]\/`;
+const ARTIFACT_LINK_REGEX = new RegExp(
+  String.raw`(?:file:\/\/\/[^\r\n"'<>+\uFF0B]*?\.(?:${ARTIFACT_EXTENSION_PATTERN})|[A-Za-z]:[\\/](?![\\/])[^\r\n"'<>+\uFF0B]*?\.(?:${ARTIFACT_EXTENSION_PATTERN})|${MSYS_DRIVE_PREFIX_PATTERN}[^\r\n"'<>+\uFF0B]*?\.(?:${ARTIFACT_EXTENSION_PATTERN}))${ARTIFACT_LINK_TERMINATOR_PATTERN}`,
   "gi",
 );
 const COMPLETE_ARTIFACT_EXTENSION_REGEX = new RegExp(
   String.raw`\.(?:${ARTIFACT_EXTENSION_PATTERN})${ARTIFACT_LINK_TERMINATOR_PATTERN}`,
   "i",
 );
+const CODING_AGENT_HINT_PATTERN = /\b(?:ctrl|cmd|alt|shift)\+[\w?]+/gi;
 const ARTIFACT_LINK_CONTEXT_LINES = 16;
+const ARTIFACT_LINK_MAX_WRAPPED_LINES = 64;
+const ARTIFACT_LINK_MAX_SEGMENT_CHARS = 8192;
+const ARTIFACT_LINK_CANDIDATE_PREFIX_REGEX =
+  /(?:file:\/\/\/|[A-Za-z]:[\\/]|(?<![A-Za-z0-9._\\/:])\/[A-Za-z]\/)/i;
 
 type ArtifactLinkPart = {
   text: string;
@@ -611,11 +695,15 @@ function mapWrappedStringOffset(
 }
 
 function hasOpenArtifactPath(text: string): boolean {
-  const startMatches = [...text.matchAll(/(?:file:\/\/\/|[A-Za-z]:[\\/])/gi)];
+  const startMatches = [...text.matchAll(/(?:file:\/\/\/|[A-Za-z]:[\\/]|(?<![A-Za-z0-9._\\/:])\/[A-Za-z]\/)/gi)];
   const lastStart = startMatches[startMatches.length - 1];
   if (!lastStart || lastStart.index === undefined) return false;
   const tail = text.slice(lastStart.index);
   return !COMPLETE_ARTIFACT_EXTENSION_REGEX.test(tail);
+}
+
+function hasArtifactLinkCandidate(text: string): boolean {
+  return text.includes("file:///") || ARTIFACT_LINK_CANDIDATE_PREFIX_REGEX.test(text);
 }
 
 function looksLikeArtifactContinuation(text: string): boolean {
@@ -654,21 +742,53 @@ function registerArtifactLinkProvider(term: Terminal, onActivate: (uri: string) 
       }
 
       let firstLineIndex = targetLineIndex;
-      while (firstLineIndex > 0 && buffer.getLine(firstLineIndex)?.isWrapped) {
+      let wrappedBefore = 0;
+      while (
+        firstLineIndex > 0 &&
+        wrappedBefore < ARTIFACT_LINK_MAX_WRAPPED_LINES &&
+        buffer.getLine(firstLineIndex)?.isWrapped
+      ) {
         firstLineIndex--;
+        wrappedBefore++;
       }
       firstLineIndex = Math.max(0, firstLineIndex - ARTIFACT_LINK_CONTEXT_LINES);
       let lastLineIndex = targetLineIndex;
-      while (lastLineIndex + 1 < buffer.length && buffer.getLine(lastLineIndex + 1)?.isWrapped) {
+      let wrappedAfter = 0;
+      while (
+        lastLineIndex + 1 < buffer.length &&
+        wrappedAfter < ARTIFACT_LINK_MAX_WRAPPED_LINES &&
+        buffer.getLine(lastLineIndex + 1)?.isWrapped
+      ) {
         lastLineIndex++;
+        wrappedAfter++;
       }
       lastLineIndex = Math.min(buffer.length - 1, lastLineIndex + ARTIFACT_LINK_CONTEXT_LINES);
+
+      let candidateScanTail = "";
+      let hasCandidate = false;
+      for (let lineIndex = firstLineIndex; lineIndex <= lastLineIndex; lineIndex++) {
+        const scanText = `${candidateScanTail}${buffer.getLine(lineIndex)?.translateToString(true) ?? ""}`;
+        if (hasArtifactLinkCandidate(scanText)) {
+          hasCandidate = true;
+          break;
+        }
+        candidateScanTail = scanText.slice(-16);
+      }
+      if (!hasCandidate) {
+        callback(undefined);
+        return;
+      }
 
       const parts: ArtifactLinkPart[] = [];
       let segmentText = "";
       let previousText = "";
+      let segmentJoinBlocked = false;
       for (let lineIndex = firstLineIndex; lineIndex <= lastLineIndex; lineIndex++) {
         const line = buffer.getLine(lineIndex);
+        const isCurrentLineWrapped = Boolean(line?.isWrapped);
+        if (!isCurrentLineWrapped) {
+          segmentJoinBlocked = false;
+        }
         const nextIsWrapped = Boolean(buffer.getLine(lineIndex + 1)?.isWrapped);
         const rawLineText = line?.translateToString(false) ?? "";
         const trimmedLineText = line?.translateToString(true) ?? "";
@@ -677,8 +797,10 @@ function registerArtifactLinkProvider(term: Terminal, onActivate: (uri: string) 
           ? normalizeSoftWrappedArtifactLine(rawLineText, nextLineText)
           : trimmedLineText;
         if (lineIndex > firstLineIndex) {
-          const isSoftContinuation = Boolean(line?.isWrapped);
-          const isHardArtifactContinuation = hasOpenArtifactPath(segmentText) && looksLikeArtifactContinuation(lineText);
+          const canJoinSegment = !segmentJoinBlocked;
+          const isSoftContinuation = canJoinSegment && isCurrentLineWrapped;
+          const isHardArtifactContinuation =
+            canJoinSegment && hasOpenArtifactPath(segmentText) && looksLikeArtifactContinuation(lineText);
           const joiner = isSoftContinuation
             ? ""
             : isHardArtifactContinuation
@@ -689,14 +811,24 @@ function registerArtifactLinkProvider(term: Terminal, onActivate: (uri: string) 
             segmentText = "";
           } else {
             segmentText += joiner;
+            if (segmentText.length > ARTIFACT_LINK_MAX_SEGMENT_CHARS) {
+              segmentText = "";
+              segmentJoinBlocked = true;
+            }
           }
         }
         parts.push({ text: lineText, lineIndex });
-        segmentText += lineText;
-        previousText = lineText;
+        if (segmentJoinBlocked || segmentText.length + lineText.length > ARTIFACT_LINK_MAX_SEGMENT_CHARS) {
+          segmentText = "";
+          previousText = "";
+          segmentJoinBlocked = true;
+        } else {
+          segmentText += lineText;
+          previousText = lineText;
+        }
       }
       const text = parts.map((part) => part.text).join("");
-      const regex = new RegExp(EXTENDED_ARTIFACT_LINK_REGEX.source, EXTENDED_ARTIFACT_LINK_REGEX.flags);
+      const regex = new RegExp(ARTIFACT_LINK_REGEX.source, ARTIFACT_LINK_REGEX.flags);
       const links: ILink[] = [];
       let match: RegExpExecArray | null;
       while ((match = regex.exec(text))) {
@@ -1136,13 +1268,25 @@ export default memo(function XTermWrapper({
         const actions = keybindingStore.getActionsForEvent(e);
 
         if (actions.length > 0) {
+          // Actions handled inline here must NOT also reach AppShell's
+          // window-level keydown dispatcher, or they fire twice. For toggle
+          // actions (pane.zoom.toggle) the second fire cancels the first,
+          // leaving the shortcut dead in terminal panes. Returning false only
+          // tells xterm to skip PTY forwarding — it does NOT stop DOM
+          // propagation — so we stop it explicitly here. Other matched actions
+          // fall through to `return false` below and intentionally keep
+          // bubbling to AppShell, which is their sole handler.
           if (actions.includes("terminal.search")) {
+            e.preventDefault();
+            e.stopPropagation();
             setIsSearchOpen(true);
             setTimeout(() => searchInputRef.current?.focus(), 50);
             return false;
           }
 
           if (actions.includes("pane.zoom.toggle")) {
+            e.preventDefault();
+            e.stopPropagation();
             onZoomToggle?.();
             return false;
           }
@@ -1360,6 +1504,9 @@ export default memo(function XTermWrapper({
           try {
             settleStartupSession();
             const chunk = batchDataToBytes(batch.data);
+            if (chunk.byteLength > 0 && !terminalHasLiveOutput.has(sessionId)) {
+              terminalHasLiveOutput.add(sessionId);
+            }
             const decodedText = outputDecoder.decode(chunk, { stream: true });
             const shouldFormatTables = updateCodexOutputDetection(decodedText);
             const output = shouldFormatTables ? formatMarkdownTablesForTerminal(decodedText) : chunk;
@@ -1367,6 +1514,7 @@ export default memo(function XTermWrapper({
               diagStats.writes += 1;
               diagStats.bytes += typeof output === "string" ? new Blob([output]).size : output.byteLength;
             }
+            bumpTerminalWriteCounter(sessionId);
             await writeTerminalOutput(output);
             if (!disposed && !termDisposed) {
               scheduleBackgroundScan();
@@ -1598,7 +1746,16 @@ export default memo(function XTermWrapper({
         console.log(
           `[mycmux-diag xterm:${sessionId}] initial_replay lines=${initialReplay.length} bytes=${replayBytes} source=initialReplay`,
         );
-        term.write(`${displayReplay}\r\n`);
+        const replayTerm = term;
+        await new Promise<void>((resolve) => {
+          replayTerm.write(`${displayReplay}\r\n`, () => resolve());
+        });
+        if (disposed || termDisposed || !term) return;
+        terminalInitialReplayMarkers.get(sessionId)?.dispose();
+        const replayMarker = replayTerm.registerMarker(0);
+        if (replayMarker) {
+          terminalInitialReplayMarkers.set(sessionId, replayMarker);
+        }
       }
       registerScrollListener(term);
       registerCompositionGuard(term, fitAddon);
@@ -1630,6 +1787,13 @@ export default memo(function XTermWrapper({
 
       term.onData((data) => {
         chunkedWrite(sessionId, data);
+        try {
+          window.dispatchEvent(
+            new CustomEvent("mycmux:keystroke", { detail: { sessionId, data } }),
+          );
+        } catch {
+          // ignore dispatch failures; buddy is non-critical
+        }
       });
 
       term.onBinary((data) => {

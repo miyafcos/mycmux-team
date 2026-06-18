@@ -4,7 +4,7 @@ import { getDefaultShell } from "./ipc";
 // Resolved at runtime via IPC — falls back to /bin/bash until loaded
 let _detectedShell = { command: "/bin/bash", args: [] as string[] };
 
-const LAUNCHER_SCRIPT = "$HOME/.mycmux-lite/bin/launcher.sh";
+const LAUNCHER_SCRIPT = "$HOME/.mycmux/bin/launcher.sh";
 
 export async function initDefaultShell(): Promise<void> {
   try {

@@ -8,11 +8,14 @@ use std::fs::File;
 use std::hash::{Hash, Hasher};
 use std::io::{BufRead, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 use sysinfo::System;
 use tauri::ipc::Channel;
 use tauri::{AppHandle, State};
 use zip::{ZipArchive, ZipWriter};
 
+use crate::pty::monitor::PtyMetadata;
 use crate::pty::session::FrontendDataBatch;
 use crate::AppState;
 
@@ -51,6 +54,32 @@ pub struct SaveEditableArtifactResult {
     pub preview_path: String,
 }
 
+const MAX_ARTIFACT_FILE_BYTES: u64 = 20 * 1024 * 1024;
+const MAX_ARTIFACT_FILE_MB: u64 = MAX_ARTIFACT_FILE_BYTES / (1024 * 1024);
+
+fn ensure_artifact_file_within_read_limit(path: &Path, action: &str) -> Result<(), String> {
+    let size = std::fs::metadata(path)
+        .map_err(|error| format!("Failed to inspect artifact file before {action}: {error}"))?
+        .len();
+    if size > MAX_ARTIFACT_FILE_BYTES {
+        let size_mb = size as f64 / (1024.0 * 1024.0);
+        return Err(format!(
+            "file too large to {action} ({size_mb:.1} MB > {MAX_ARTIFACT_FILE_MB} MB)"
+        ));
+    }
+    Ok(())
+}
+
+async fn run_artifact_command_blocking<T, F>(label: &'static str, task: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(task)
+        .await
+        .map_err(|error| format!("join {label}: {error}"))?
+}
+
 fn rgb_hex(c: [u8; 3]) -> String {
     format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2])
 }
@@ -70,6 +99,19 @@ pub fn get_terminal_config() -> TerminalConfigPayload {
 }
 
 #[tauri::command]
+pub fn get_pty_metadata_snapshot(state: State<'_, AppState>) -> HashMap<String, PtyMetadata> {
+    state
+        .metadata_store
+        .iter()
+        .map(|entry| (entry.key().clone(), entry.value().clone()))
+        .collect()
+}
+
+// `(async)` runs this on a worker thread instead of the Tauri main (UI) thread.
+// The body does heavy synchronous filesystem work (recursive ~/.codex scan,
+// .claude.json rewrite, dir creation) that would otherwise freeze the UI every
+// time a session is added.
+#[tauri::command(async)]
 #[allow(clippy::too_many_arguments)]
 pub fn create_session(
     app_handle: AppHandle,
@@ -99,6 +141,15 @@ pub fn create_session(
         }
     };
     let launch_cwd = resolve_launch_cwd(cwd.as_deref());
+    // Stash frontend-provided pane bookkeeping before sanitize_launch_env strips
+    // it; canonical values are re-injected below so launcher.sh session tracking
+    // (__write_session_mapping / __stable_new_session_id) keeps working while
+    // forged values from persistence or parent shells still cannot pass through.
+    let incoming_tab_id = env_map.get("MYCMUX_TAB_ID").cloned();
+    let incoming_launcher_done = env_map
+        .get("__CMUX_LAUNCHER_DONE")
+        .map(|value| value == "1")
+        .unwrap_or(false);
     sanitize_launch_env(&mut env_map);
     // Canonical MYCMUX_HTML_OUT (HTML sidetab path) for this pane. sanitize_launch_env
     // just stripped any incoming value, so untrusted env cannot redirect the output.
@@ -143,12 +194,21 @@ pub fn create_session(
     } else {
         eprintln!("[mycmux] skipping sidetab for unsafe session_id: {session_id:?}");
     }
-    // P0-C1 fail-soft: if restore validation failed above, MYCMUX_SESSION_ID was
-    // dropped and the resume kind stashed in fallback_resume. Re-inject MYCMUX_RESUME
-    // so launcher.sh falls back to `--continue` for this cwd (the terminal still
-    // launches). The MYCMUX_PANE_SESSION_ID re-injection block from master 824e6da is
-    // intentionally omitted here: lite lacks the v0.8.x restore-series bindings
-    // (incoming_tab_id / incoming_launcher_done), and lite never re-injected it before.
+    // Canonical pane/tab identity for launcher.sh session tracking. The pane
+    // session id is the create_session argument itself (the mapping filename
+    // launcher.sh writes under ~/.mycmux/pane-sessions/), so re-injecting it
+    // here cannot be forged — same pattern as MYCMUX_HTML_OUT above.
+    if session_id_is_safe {
+        env_map.insert("MYCMUX_PANE_SESSION_ID".to_string(), session_id.clone());
+    }
+    if let Some(tab_id) = incoming_tab_id {
+        if is_uuid_like(&tab_id) {
+            env_map.insert("MYCMUX_TAB_ID".to_string(), tab_id);
+        }
+    }
+    if incoming_launcher_done {
+        env_map.insert("__CMUX_LAUNCHER_DONE".to_string(), "1".to_string());
+    }
     if let Some(resume) = fallback_resume.filter(|value| is_agent_session_kind(value)) {
         env_map.insert("MYCMUX_RESUME".to_string(), resume);
     }
@@ -195,7 +255,9 @@ fn prepare_spawn_command(command: &str, args: &mut Vec<String>) -> String {
         return std::env::var("COMSPEC")
             .unwrap_or_else(|_| "C:\\Windows\\System32\\cmd.exe".to_string());
     }
-    resolved.to_string_lossy().to_string()
+    let resolved_command = resolved.to_string_lossy().to_string();
+    force_utf8_codepage_for_interactive_shell(&resolved_command, args);
+    resolved_command
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -233,6 +295,48 @@ fn resolve_windows_command_candidate(path: &Path) -> Option<std::path::PathBuf> 
         }
     }
     None
+}
+
+#[cfg(target_os = "windows")]
+fn force_utf8_codepage_for_interactive_shell(command: &str, args: &mut Vec<String>) {
+    let leaf = Path::new(command)
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or(command)
+        .to_ascii_lowercase();
+    match leaf.as_str() {
+        "bash" | "sh" if args.is_empty() || args.as_slice() == ["-i"] => {
+            let executable = leaf;
+            *args = vec![
+                "-c".to_string(),
+                format!("chcp.com 65001 >/dev/null 2>&1; exec {executable} -i"),
+            ];
+        }
+        "bash" | "sh" => {
+            if let Some(command_index) = args.iter().position(|arg| arg == "-c") {
+                if let Some(script) = args.get_mut(command_index + 1) {
+                    if !script.contains("chcp.com 65001") {
+                        *script = format!("chcp.com 65001 >/dev/null 2>&1; {script}");
+                    }
+                }
+            }
+        }
+        "powershell" | "pwsh" if args.is_empty() => {
+            *args = vec![
+                "-NoExit".to_string(),
+                "-Command".to_string(),
+                "chcp.com 65001 > $null; [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding; [Console]::InputEncoding = New-Object System.Text.UTF8Encoding".to_string(),
+            ];
+        }
+        "cmd" if args.is_empty() => {
+            *args = vec![
+                "/d".to_string(),
+                "/k".to_string(),
+                "chcp.com 65001 >nul".to_string(),
+            ];
+        }
+        _ => {}
+    }
 }
 
 fn command_leaf(command: &str) -> &str {
@@ -408,6 +512,15 @@ fn agent_restore_error(kind: &str, session_id: &str, cwd: Option<&str>) -> Optio
     ))
 }
 
+/// Accept only canonical UUID shapes (8-4-4-4-12 hex) for re-injected tab ids.
+fn is_uuid_like(value: &str) -> bool {
+    value.len() == 36
+        && value.bytes().enumerate().all(|(i, b)| match i {
+            8 | 13 | 18 | 23 => b == b'-',
+            _ => b.is_ascii_hexdigit(),
+        })
+}
+
 /// Last-line defense against MYCMUX_* env pollution leaking into a freshly
 /// spawned PTY child.
 ///
@@ -424,6 +537,12 @@ fn agent_restore_error(kind: &str, session_id: &str, cwd: Option<&str>) -> Optio
 ///     keep the resume / handoff trio and only strip pane-internal bookkeeping
 ///     (`MYCMUX_PANE_SESSION_ID`, `MYCMUX_TAB_ID`, `__CMUX_LAUNCHER_DONE`).
 ///   - Otherwise strip *every* MYCMUX_* and `__CMUX_LAUNCHER_DONE`.
+///
+/// Pane bookkeeping is stripped here but `create_session` re-injects canonical
+/// values afterwards (`MYCMUX_PANE_SESSION_ID` = the session_id argument,
+/// `MYCMUX_TAB_ID` = the frontend value when UUID-shaped, `__CMUX_LAUNCHER_DONE`
+/// when the frontend explicitly sent "1") — launcher.sh session tracking
+/// depends on them.
 ///
 /// Keep this list in sync with `lib.rs::run()` startup `remove_var` and the
 /// frontend `EPHEMERAL_LAUNCH_ENV_KEYS` set in `SocketListener.tsx`.
@@ -571,7 +690,7 @@ fn ensure_claude_project_trusted(cwd: &str) -> Result<(), String> {
         serde_json::Value::Bool(true),
     );
 
-    let tmp_path = path.with_extension("json.mycmux-lite.tmp");
+    let tmp_path = path.with_extension("json.mycmux.tmp");
     let json = serde_json::to_string_pretty(&root)
         .map_err(|error| format!("serialize .claude.json: {error}"))?;
     std::fs::write(&tmp_path, json).map_err(|error| format!("write .claude.json tmp: {error}"))?;
@@ -596,7 +715,7 @@ fn write_launch_session_mapping(session_id: &str, env: &HashMap<String, String>)
     let Some(home) = dirs::home_dir() else {
         return;
     };
-    let map_dir = home.join(".mycmux-lite").join("pane-sessions");
+    let map_dir = home.join(".mycmux").join("pane-sessions");
     if std::fs::create_dir_all(&map_dir).is_err() {
         return;
     }
@@ -786,16 +905,12 @@ fn validate_editable_artifact_path(source_path: &str) -> Result<(PathBuf, String
         return Err("Editable artifact path must be a file".to_string());
     }
     let Some(kind) = artifact_source_kind(&path) else {
-        return Err(
-            "Editable artifact must be .html, .htm, .md, .markdown, or editable Word file"
-                .to_string(),
-        );
+        return Err("Editable artifact must be .html, .htm, .md, .markdown, or .docx".to_string());
     };
-    if !matches!(kind, "html" | "markdown") && !is_editable_word_artifact(&path) {
-        return Err(
-            "Editable artifact must be .html, .htm, .md, .markdown, or .docx/.docm/.dotx/.dotm"
-                .to_string(),
-        );
+    if !(matches!(kind, "html" | "markdown")
+        || kind == "office" && is_editable_word_artifact(&path))
+    {
+        return Err("Editable artifact must be .html, .htm, .md, .markdown, or .docx".to_string());
     }
     let canonical = path
         .canonicalize()
@@ -936,6 +1051,19 @@ fn resolve_ascii_space_insensitive_existing_path(path: &Path) -> Option<PathBuf>
 fn artifact_path_from_decoded_uri(value: &str) -> PathBuf {
     #[cfg(windows)]
     {
+        // MSYS / Git-Bash absolute path form: `/c/Users/...` -> `C:\Users\...`.
+        // The drive must be a single ASCII letter framed by slashes so genuine
+        // POSIX roots (`/home/...`, `/tmp/...`) are never mistaken for a drive.
+        let bytes = value.as_bytes();
+        if bytes.len() >= 3
+            && bytes[0] == b'/'
+            && bytes[1].is_ascii_alphabetic()
+            && bytes[2] == b'/'
+        {
+            let drive = value[1..2].to_ascii_uppercase();
+            let rest = &value[2..]; // keeps the leading '/', e.g. "/Users/..."
+            return PathBuf::from(format!("{drive}:{rest}").replace('/', "\\"));
+        }
         PathBuf::from(value.replace('/', "\\"))
     }
     #[cfg(not(windows))]
@@ -1058,6 +1186,7 @@ fn preview_path_for_artifact(
     match source_kind {
         "html" => Ok(path.to_string_lossy().to_string()),
         "markdown" => {
+            ensure_artifact_file_within_read_limit(path, "preview")?;
             let markdown = std::fs::read_to_string(path)
                 .map_err(|error| format!("Failed to read markdown artifact: {error}"))?;
             let preview_path = if is_session_artifact {
@@ -1070,6 +1199,7 @@ fn preview_path_for_artifact(
             Ok(preview_path.to_string_lossy().to_string())
         }
         "office" => {
+            ensure_artifact_file_within_read_limit(path, "preview")?;
             let preview_path = if is_session_artifact {
                 path.with_extension("office.preview.html")
             } else {
@@ -1426,6 +1556,7 @@ fn docx_paragraph_style_attr(format: &DocxParagraphFormat) -> String {
 }
 
 fn read_zip_text_entry(path: &Path, entry_name: &str) -> Result<String, String> {
+    ensure_artifact_file_within_read_limit(path, "preview")?;
     let file = File::open(path).map_err(|error| format!("Failed to open Office file: {error}"))?;
     let mut archive =
         ZipArchive::new(file).map_err(|error| format!("Failed to read Office archive: {error}"))?;
@@ -1440,6 +1571,7 @@ fn read_zip_text_entry(path: &Path, entry_name: &str) -> Result<String, String> 
 }
 
 fn zip_entry_names(path: &Path, prefix: &str, suffix: &str) -> Result<Vec<String>, String> {
+    ensure_artifact_file_within_read_limit(path, "preview")?;
     let file = File::open(path).map_err(|error| format!("Failed to open Office file: {error}"))?;
     let mut archive =
         ZipArchive::new(file).map_err(|error| format!("Failed to read Office archive: {error}"))?;
@@ -1714,6 +1846,7 @@ fn docx_xml_to_html(xml: &str) -> String {
 }
 
 fn docx_to_html(path: &Path) -> Result<String, String> {
+    ensure_artifact_file_within_read_limit(path, "preview")?;
     let xml = read_zip_text_entry(path, "word/document.xml")?;
     Ok(docx_xml_to_html(&xml))
 }
@@ -2487,14 +2620,16 @@ fn office_to_static_html(path: &Path) -> String {
         .map(|parent| parent.to_string_lossy().to_string())
         .unwrap_or_default();
     let source_path = path.to_string_lossy();
-    let preview = office_document_body_html(path).unwrap_or_else(|error| {
-        format!(
-            "<p class=\"office-empty\">{}</p>",
-            escape_html(&format!(
-                "{error} Use the Open button in the toolbar to edit/check this document in the desktop app."
-            ))
-        )
-    });
+    let preview = ensure_artifact_file_within_read_limit(path, "preview")
+        .and_then(|_| office_document_body_html(path))
+        .unwrap_or_else(|error| {
+            format!(
+                "<p class=\"office-empty\">{}</p>",
+                escape_html(&format!(
+                    "{error} Use the Open button in the toolbar to edit/check this document in the desktop app."
+                ))
+            )
+        });
     format!(
         "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><style>{}</style></head><body><section class=\"office-shell\"><header class=\"office-header\"><div class=\"office-type\">{}</div><h1>{}</h1><dl><dt>Folder</dt><dd>{}</dd><dt>Path</dt><dd>{}</dd></dl><p class=\"office-note\">Use Open in the toolbar to edit this document in the default desktop app.</p></header><main class=\"office-preview\">{}</main></section></body></html>",
         r#"html{background:#edf1f5;color:#1f2937}body{margin:0;min-height:100vh;padding:28px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;box-sizing:border-box}.office-shell{width:min(1040px,100%);margin:0 auto;box-sizing:border-box;border:1px solid #d6dbe3;background:#fff;box-shadow:0 18px 50px rgba(15,23,42,.10)}.office-header{padding:24px 28px 18px;border-bottom:1px solid #e5e7eb}.office-type{display:inline-flex;align-items:center;height:24px;padding:0 9px;border:1px solid #c8d0da;background:#f5f7fa;color:#475569;font-size:11px;font-weight:700;letter-spacing:0;text-transform:uppercase}h1{margin:14px 0 16px;font-size:25px;line-height:1.2;font-weight:720;letter-spacing:0;color:#111827;overflow-wrap:anywhere}dl{display:grid;grid-template-columns:72px minmax(0,1fr);gap:6px 14px;margin:0;padding:14px 0;border-top:1px solid #eef2f7}dt{color:#64748b;font-size:12px;font-weight:700}dd{margin:0;color:#1f2937;font-size:13px;line-height:1.45;overflow-wrap:anywhere}.office-note{margin:12px 0 0;color:#475569;font-size:13px;line-height:1.55}.office-preview{padding:28px;font-size:14px;line-height:1.65}.office-preview p{margin:0 0 .85em}.office-preview h2{margin:0 0 12px;font-size:16px;line-height:1.3;color:#111827}.office-preview table{width:100%;border-collapse:collapse;margin:0 0 18px;display:block;overflow-x:auto}.office-preview th,.office-preview td{border:1px solid #d8dee8;padding:7px 9px;vertical-align:top;min-width:56px}.office-preview tr:nth-child(even) td{background:#fbfcfe}.office-preview .mycmux-equation,.office-preview [data-mycmux-equation]{display:inline-block;margin:0 .12em;padding:.06em .34em;border:1px solid #bfdbfe;border-radius:4px;background:#eff6ff;color:#1d4ed8;font-family:'Cambria Math','Times New Roman',serif;font-style:italic;white-space:pre-wrap}.sheet,.slide{margin:0 0 22px;padding-bottom:18px;border-bottom:1px solid #eef2f7}.office-empty{color:#64748b;font-style:italic}@media(max-width:640px){body{padding:14px}.office-header,.office-preview{padding:18px}h1{font-size:21px}dl{grid-template-columns:1fr;gap:4px}}"#,
@@ -2982,8 +3117,7 @@ fn looks_like_html_fragment(value: &str) -> bool {
     trimmed.starts_with('<') && trimmed.contains('>')
 }
 
-#[tauri::command]
-pub fn preview_artifact_for_session(session_id: String) -> Result<String, String> {
+fn preview_artifact_for_session_inner(session_id: String) -> Result<String, String> {
     let session_dir = sidetab_session_dir(&session_id)?;
     let html_path = session_dir.join("out.html");
     if html_path.is_file() {
@@ -2998,13 +3132,33 @@ pub fn preview_artifact_for_session(session_id: String) -> Result<String, String
 }
 
 #[tauri::command]
-pub fn preview_artifact_uri_for_session(session_id: String, uri: String) -> Result<String, String> {
+pub async fn preview_artifact_for_session(session_id: String) -> Result<String, String> {
+    run_artifact_command_blocking("preview_artifact_for_session", move || {
+        preview_artifact_for_session_inner(session_id)
+    })
+    .await
+}
+
+fn preview_artifact_uri_for_session_inner(
+    session_id: String,
+    uri: String,
+) -> Result<String, String> {
     let path = artifact_path_from_uri(&uri)?;
     preview_path_for_artifact(&session_id, &path, true)
 }
 
 #[tauri::command]
-pub fn preview_artifact_uri_for_session_v2(
+pub async fn preview_artifact_uri_for_session(
+    session_id: String,
+    uri: String,
+) -> Result<String, String> {
+    run_artifact_command_blocking("preview_artifact_uri_for_session", move || {
+        preview_artifact_uri_for_session_inner(session_id, uri)
+    })
+    .await
+}
+
+fn preview_artifact_uri_for_session_v2_inner(
     session_id: String,
     uri: String,
 ) -> Result<PreviewArtifactInfo, String> {
@@ -3013,19 +3167,36 @@ pub fn preview_artifact_uri_for_session_v2(
 }
 
 #[tauri::command]
-pub fn read_editable_artifact(source_path: String) -> Result<EditableArtifactSource, String> {
+pub async fn preview_artifact_uri_for_session_v2(
+    session_id: String,
+    uri: String,
+) -> Result<PreviewArtifactInfo, String> {
+    run_artifact_command_blocking("preview_artifact_uri_for_session_v2", move || {
+        preview_artifact_uri_for_session_v2_inner(session_id, uri)
+    })
+    .await
+}
+
+fn read_editable_artifact_inner(source_path: String) -> Result<EditableArtifactSource, String> {
     let (path, source_kind) = validate_editable_artifact_path(&source_path)?;
     let mut raw_content = None;
     let content = match source_kind.as_str() {
         "markdown" => {
+            ensure_artifact_file_within_read_limit(&path, "read")?;
             let raw = std::fs::read_to_string(&path)
                 .map_err(|error| format!("Failed to read editable artifact: {error}"))?;
             raw_content = Some(raw.clone());
             markdown_to_static_html(&raw)
         }
-        "html" => std::fs::read_to_string(&path)
-            .map_err(|error| format!("Failed to read editable artifact: {error}"))?,
-        "office" => docx_to_html(&path)?,
+        "html" => {
+            ensure_artifact_file_within_read_limit(&path, "read")?;
+            std::fs::read_to_string(&path)
+                .map_err(|error| format!("Failed to read editable artifact: {error}"))?
+        }
+        "office" => {
+            ensure_artifact_file_within_read_limit(&path, "read")?;
+            docx_to_html(&path)?
+        }
         _ => return Err("Unsupported editable artifact source kind".to_string()),
     };
     Ok(EditableArtifactSource {
@@ -3034,6 +3205,14 @@ pub fn read_editable_artifact(source_path: String) -> Result<EditableArtifactSou
         content,
         raw_content,
     })
+}
+
+#[tauri::command]
+pub async fn read_editable_artifact(source_path: String) -> Result<EditableArtifactSource, String> {
+    run_artifact_command_blocking("read_editable_artifact", move || {
+        read_editable_artifact_inner(source_path)
+    })
+    .await
 }
 
 fn backup_path_for(path: &Path) -> Result<PathBuf, String> {
@@ -3201,8 +3380,7 @@ fn preview_path_after_save(
     Ok(written_path.to_string_lossy().to_string())
 }
 
-#[tauri::command]
-pub fn save_editable_artifact(
+fn save_editable_artifact_inner(
     source_path: String,
     source_kind: String,
     content: String,
@@ -3212,6 +3390,7 @@ pub fn save_editable_artifact(
         return Err("Editable artifact source kind does not match file extension".to_string());
     }
 
+    ensure_artifact_file_within_read_limit(&path, "save")?;
     let original = std::fs::read(&path)
         .map_err(|error| format!("Failed to read original artifact before save: {error}"))?;
     let backup_path = backup_path_for(&path)?;
@@ -3249,6 +3428,18 @@ pub fn save_editable_artifact(
         backup_path: backup_path.to_string_lossy().to_string(),
         preview_path,
     })
+}
+
+#[tauri::command]
+pub async fn save_editable_artifact(
+    source_path: String,
+    source_kind: String,
+    content: String,
+) -> Result<SaveEditableArtifactResult, String> {
+    run_artifact_command_blocking("save_editable_artifact", move || {
+        save_editable_artifact_inner(source_path, source_kind, content)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -3363,34 +3554,31 @@ pub fn get_default_shell() -> DefaultShellInfo {
 /// Returns a map of pane_session_id → claude_session_id
 #[tauri::command]
 pub fn read_pane_session_mappings() -> HashMap<String, String> {
-    let mut result = HashMap::new();
-    if let Some(home) = dirs::home_dir() {
-        let map_dir = home.join(".mycmux-lite").join("pane-sessions");
-        if let Ok(entries) = std::fs::read_dir(&map_dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().and_then(|e| e.to_str()) == Some("txt") {
-                    if let Some(pane_id) = path.file_stem().and_then(|s| s.to_str()) {
-                        if let Ok(session_id) = std::fs::read_to_string(&path) {
-                            let sid = parse_agent_session_mapping(&session_id)
-                                .map(|mapping| mapping.session_id)
-                                .unwrap_or_else(|| session_id.trim().to_string());
-                            if !sid.is_empty() {
-                                result.insert(pane_id.to_string(), sid);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    result
+    load_session_mapping_cache().pane_mappings
 }
 
 #[derive(Clone, serde::Serialize)]
 pub struct AgentSessionMapping {
     pub agent_kind: Option<String>,
     pub session_id: String,
+}
+
+#[derive(Clone)]
+struct SessionMappingCache {
+    pane_mappings: HashMap<String, String>,
+    agent_mappings: HashMap<String, AgentSessionMapping>,
+}
+
+struct SessionMappingCacheEntry {
+    refreshed_at: Instant,
+    value: SessionMappingCache,
+}
+
+const SESSION_MAPPING_CACHE_TTL: Duration = Duration::from_secs(2);
+
+fn session_mapping_cache() -> &'static Mutex<Option<SessionMappingCacheEntry>> {
+    static CACHE: OnceLock<Mutex<Option<SessionMappingCacheEntry>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(None))
 }
 
 fn is_agent_session_kind(value: &str) -> bool {
@@ -3420,27 +3608,57 @@ fn parse_agent_session_mapping(contents: &str) -> Option<AgentSessionMapping> {
     })
 }
 
-#[tauri::command]
-pub fn read_agent_session_mappings() -> HashMap<String, AgentSessionMapping> {
-    let mut result = HashMap::new();
-    if let Some(home) = dirs::home_dir() {
-        let map_dir = home.join(".mycmux-lite").join("pane-sessions");
-        if let Ok(entries) = std::fs::read_dir(&map_dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().and_then(|e| e.to_str()) == Some("txt") {
-                    if let Some(pane_id) = path.file_stem().and_then(|s| s.to_str()) {
-                        if let Ok(contents) = std::fs::read_to_string(&path) {
-                            if let Some(mapping) = parse_agent_session_mapping(&contents) {
-                                result.insert(pane_id.to_string(), mapping);
-                            }
-                        }
-                    }
-                }
+fn load_session_mapping_cache() -> SessionMappingCache {
+    let now = Instant::now();
+    if let Ok(guard) = session_mapping_cache().lock() {
+        if let Some(entry) = guard.as_ref() {
+            if now.duration_since(entry.refreshed_at) < SESSION_MAPPING_CACHE_TTL {
+                return entry.value.clone();
             }
         }
     }
-    result
+
+    let mut pane_mappings = HashMap::new();
+    let mut agent_mappings = HashMap::new();
+    if let Some(home) = dirs::home_dir() {
+        let map_dir = home.join(".mycmux").join("pane-sessions");
+        if let Ok(entries) = std::fs::read_dir(&map_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) != Some("txt") {
+                    continue;
+                }
+                let Some(pane_id) = path.file_stem().and_then(|s| s.to_str()) else {
+                    continue;
+                };
+                let Ok(contents) = std::fs::read_to_string(&path) else {
+                    continue;
+                };
+                let Some(mapping) = parse_agent_session_mapping(&contents) else {
+                    continue;
+                };
+                pane_mappings.insert(pane_id.to_string(), mapping.session_id.clone());
+                agent_mappings.insert(pane_id.to_string(), mapping);
+            }
+        }
+    }
+
+    let value = SessionMappingCache {
+        pane_mappings,
+        agent_mappings,
+    };
+    if let Ok(mut guard) = session_mapping_cache().lock() {
+        *guard = Some(SessionMappingCacheEntry {
+            refreshed_at: now,
+            value: value.clone(),
+        });
+    }
+    value
+}
+
+#[tauri::command]
+pub fn read_agent_session_mappings() -> HashMap<String, AgentSessionMapping> {
+    load_session_mapping_cache().agent_mappings
 }
 
 #[tauri::command]
@@ -3517,6 +3735,59 @@ mod tests {
         writer.start_file("word/document.xml", options).unwrap();
         writer.write_all(document_xml.as_bytes()).unwrap();
         writer.finish().unwrap();
+    }
+
+    #[test]
+    fn parse_agent_session_mapping_with_kind() {
+        let mapping = parse_agent_session_mapping("claude:abc-123\n").unwrap();
+        assert_eq!(mapping.agent_kind.as_deref(), Some("claude"));
+        assert_eq!(mapping.session_id, "abc-123");
+    }
+
+    #[test]
+    fn parse_agent_session_mapping_without_kind() {
+        let mapping = parse_agent_session_mapping("abc-123\n").unwrap();
+        assert_eq!(mapping.agent_kind, None);
+        assert_eq!(mapping.session_id, "abc-123");
+    }
+
+    #[test]
+    fn codex_session_file_requires_matching_id_and_cwd() {
+        let dir = tempfile::tempdir().unwrap();
+        let session_id = "019bc371-82cf-7d82-ad0b-96d026aaca73";
+        let path = dir
+            .path()
+            .join(format!("rollout-2026-01-15T15-55-54-{session_id}.jsonl"));
+        std::fs::write(
+            &path,
+            format!(
+                "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{session_id}\",\"cwd\":\"C:\\\\Users\\\\miyaz\"}}}}\n"
+            ),
+        )
+        .unwrap();
+
+        assert!(codex_session_file_matches(
+            &path,
+            session_id,
+            &normalize_cwd_key(r"C:\Users\miyaz")
+        ));
+        assert!(!codex_session_file_matches(
+            &path,
+            "019bc371-82cf-7d82-ad0b-96d026aaca74",
+            &normalize_cwd_key(r"C:\Users\miyaz")
+        ));
+        assert!(!codex_session_file_matches(
+            &path,
+            session_id,
+            &normalize_cwd_key(r"C:\Users\other")
+        ));
+    }
+
+    fn env(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect()
     }
 
     #[test]
@@ -3743,7 +4014,7 @@ mod tests {
         let html_path = dir.path().join("report.html");
         std::fs::write(&html_path, "<h1>old</h1>").unwrap();
 
-        let result = save_editable_artifact(
+        let result = save_editable_artifact_inner(
             html_path.to_string_lossy().to_string(),
             "html".to_string(),
             "<!doctype html><html><body><h1>new</h1></body></html>".to_string(),
@@ -3772,13 +4043,13 @@ mod tests {
         std::fs::write(&markdown_path, "# ok").unwrap();
         std::fs::write(&office_path, "office").unwrap();
 
-        assert!(save_editable_artifact(
+        assert!(save_editable_artifact_inner(
             "relative.html".to_string(),
             "html".to_string(),
             "x".to_string()
         )
         .is_err());
-        assert!(save_editable_artifact(
+        assert!(save_editable_artifact_inner(
             dir.path()
                 .join("missing.html")
                 .to_string_lossy()
@@ -3787,25 +4058,25 @@ mod tests {
             "x".to_string()
         )
         .is_err());
-        assert!(save_editable_artifact(
+        assert!(save_editable_artifact_inner(
             text_path.to_string_lossy().to_string(),
             "html".to_string(),
             "x".to_string()
         )
         .is_err());
-        assert!(save_editable_artifact(
+        assert!(save_editable_artifact_inner(
             dir.path().to_string_lossy().to_string(),
             "html".to_string(),
             "x".to_string()
         )
         .is_err());
-        assert!(save_editable_artifact(
+        assert!(save_editable_artifact_inner(
             markdown_path.to_string_lossy().to_string(),
             "html".to_string(),
             "x".to_string()
         )
         .is_err());
-        assert!(save_editable_artifact(
+        assert!(save_editable_artifact_inner(
             office_path.to_string_lossy().to_string(),
             "office".to_string(),
             "x".to_string()
@@ -3822,7 +4093,7 @@ mod tests {
             r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Old</w:t></w:r></w:p><w:sectPr/></w:body></w:document>"#,
         );
 
-        let result = save_editable_artifact(
+        let result = save_editable_artifact_inner(
             docx_path.to_string_lossy().to_string(),
             "office".to_string(),
             r#"<h1>Title</h1><p>Hello <strong>bold</strong> <em>italic</em></p><table><tbody><tr><td>A</td><td>B</td></tr></tbody></table>"#.to_string(),
@@ -3852,7 +4123,7 @@ mod tests {
             r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Old</w:t></w:r></w:p><w:sectPr/></w:body></w:document>"#,
         );
 
-        let result = save_editable_artifact(
+        let result = save_editable_artifact_inner(
             docx_path.to_string_lossy().to_string(),
             "office".to_string(),
             r#"<p style="text-align:right;margin-left:0.5in">Hello <span style="font-family: Aptos; font-size: 14pt"><strong>bold</strong></span> <span class="mycmux-equation" data-mycmux-equation="x^2">x^2</span></p>"#.to_string(),
@@ -3883,7 +4154,7 @@ mod tests {
             r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Old</w:t></w:r></w:p><w:sectPr/></w:body></w:document>"#,
         );
 
-        save_editable_artifact(
+        save_editable_artifact_inner(
             docx_path.to_string_lossy().to_string(),
             "office".to_string(),
             r##"<p><span style="text-decoration: underline line-through; color: #00AAFF; background-color: #fff2cc; vertical-align: super">Marked</span></p>"##.to_string(),
@@ -3907,7 +4178,7 @@ mod tests {
             r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:drawing/></w:r></w:p><w:sectPr/></w:body></w:document>"#,
         );
 
-        let error = match save_editable_artifact(
+        let error = match save_editable_artifact_inner(
             docx_path.to_string_lossy().to_string(),
             "office".to_string(),
             "<p>Edited</p>".to_string(),
@@ -3949,7 +4220,7 @@ mod tests {
         let markdown_path = dir.path().join("report.md");
         std::fs::write(&markdown_path, "# old").unwrap();
 
-        let result = save_editable_artifact(
+        let result = save_editable_artifact_inner(
             markdown_path.to_string_lossy().to_string(),
             "markdown".to_string(),
             "<h1>New</h1><p>See <a href=\"https://example.com\">link</a></p><table><tbody><tr><td>A</td></tr></tbody></table>".to_string(),
@@ -3971,11 +4242,12 @@ mod tests {
         let raw = "# Title\n\n- keep\n- markdown\n\n```rust\nlet x = 1;\n```\n";
         std::fs::write(&markdown_path, raw).unwrap();
 
-        let source = read_editable_artifact(markdown_path.to_string_lossy().to_string()).unwrap();
+        let source =
+            read_editable_artifact_inner(markdown_path.to_string_lossy().to_string()).unwrap();
         assert_eq!(source.raw_content.as_deref(), Some(raw));
 
         let next = "# Next\n\nText with **markdown** syntax.\n";
-        save_editable_artifact(
+        save_editable_artifact_inner(
             markdown_path.to_string_lossy().to_string(),
             "markdown".to_string(),
             next.to_string(),
@@ -4087,65 +4359,11 @@ mod tests {
     }
 
     #[test]
-    fn parse_agent_session_mapping_with_kind() {
-        let mapping = parse_agent_session_mapping("claude:abc-123\n").unwrap();
-        assert_eq!(mapping.agent_kind.as_deref(), Some("claude"));
-        assert_eq!(mapping.session_id, "abc-123");
-    }
-
-    #[test]
-    fn parse_agent_session_mapping_without_kind() {
-        let mapping = parse_agent_session_mapping("abc-123\n").unwrap();
-        assert_eq!(mapping.agent_kind, None);
-        assert_eq!(mapping.session_id, "abc-123");
-    }
-
-    #[test]
-    fn codex_session_file_requires_matching_id_and_cwd() {
-        let dir = tempfile::tempdir().unwrap();
-        let session_id = "019bc371-82cf-7d82-ad0b-96d026aaca73";
-        let path = dir
-            .path()
-            .join(format!("rollout-2026-01-15T15-55-54-{session_id}.jsonl"));
-        std::fs::write(
-            &path,
-            format!(
-                "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{session_id}\",\"cwd\":\"C:\\\\Users\\\\miyaz\"}}}}\n"
-            ),
-        )
-        .unwrap();
-
-        assert!(codex_session_file_matches(
-            &path,
-            session_id,
-            &normalize_cwd_key(r"C:\Users\miyaz")
-        ));
-        assert!(!codex_session_file_matches(
-            &path,
-            "019bc371-82cf-7d82-ad0b-96d026aaca74",
-            &normalize_cwd_key(r"C:\Users\miyaz")
-        ));
-        assert!(!codex_session_file_matches(
-            &path,
-            session_id,
-            &normalize_cwd_key(r"C:\Users\other")
-        ));
-    }
-
-    fn env(pairs: &[(&str, &str)]) -> HashMap<String, String> {
-        pairs
-            .iter()
-            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
-            .collect()
-    }
-
-    #[test]
     fn sanitize_drops_pane_internal_keys_when_no_resume_context() {
         let mut e = env(&[
             ("MYCMUX_PANE_SESSION_ID", "pane-1"),
             ("MYCMUX_TAB_ID", "tab-1"),
             ("MYCMUX_MARKDOWN_OUT", "C:/tmp/out.md"),
-            ("MYCMUX_ARTIFACTS_DIR", "C:/tmp/artifacts"),
             ("__CMUX_LAUNCHER_DONE", "1"),
             ("FOO", "bar"),
         ]);
@@ -4153,7 +4371,6 @@ mod tests {
         assert!(!e.contains_key("MYCMUX_PANE_SESSION_ID"));
         assert!(!e.contains_key("MYCMUX_TAB_ID"));
         assert!(!e.contains_key("MYCMUX_MARKDOWN_OUT"));
-        assert!(!e.contains_key("MYCMUX_ARTIFACTS_DIR"));
         assert!(!e.contains_key("__CMUX_LAUNCHER_DONE"));
         assert_eq!(e.get("FOO"), Some(&"bar".to_string()));
     }

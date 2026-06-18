@@ -1,75 +1,91 @@
-use crate::usage::{cache, codex, config::UsageConfig};
 use chrono::{DateTime, Utc};
-use std::{fs::OpenOptions, io::Write, path::Path};
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::path::Path;
 
-const SAMPLE: &str = include_str!("fixtures/codex_sample.jsonl");
-const OLD_EVENT: &str =
-    r#"{"timestamp":"2026-05-01T12:00:00Z","type":"message","role":"assistant"}"#;
-const APPENDED_EVENT: &str =
-    r#"{"timestamp":"2026-05-13T11:59:00Z","type":"message","role":"assistant"}"#;
+use crate::usage::config::UsageConfig;
+use crate::usage::{cache, codex};
+
+const FIXTURE: &str = include_str!("fixtures/codex_sample.jsonl");
 
 #[test]
-fn codex_aggregate_inside_5h_counts_only_recent_messages() {
-    cache::reset_cache();
-    let cfg = UsageConfig::for_test(empty_glob(), fixture_glob("codex_sample.jsonl"));
-    let (five_hour, seven_day) = codex::aggregate(now(), &cfg).expect("codex aggregate");
+fn counts_only_entries_inside_5h_window() {
+    cache::clear();
+    let dir = tempfile::tempdir().unwrap();
+    write_fixture(dir.path(), FIXTURE);
+    let cfg = UsageConfig::for_tests(String::new(), glob_for(dir.path()));
 
-    assert_eq!(five_hour.messages, 2);
-    assert_eq!(five_hour.tokens, 2_300);
-    assert_eq!(seven_day.messages, 4);
+    let (five_hours, _) = codex::aggregate(fixed_now(), &cfg).unwrap();
+
+    assert_eq!(five_hours.messages, 3);
+    assert_eq!(five_hours.tokens, 300);
+    assert_eq!(five_hours.reset_at, parse_time("2026-05-13T13:30:00Z"));
 }
 
 #[test]
-fn codex_aggregate_outside_7d_excludes_old_messages() {
-    cache::reset_cache();
-    let temp = tempfile::NamedTempFile::new().expect("temp file");
-    std::fs::write(temp.path(), format!("{SAMPLE}{OLD_EVENT}\n")).expect("write fixture");
-    let cfg = UsageConfig::for_test(empty_glob(), path_glob(temp.path()));
-    let (_, seven_day) = codex::aggregate(now(), &cfg).expect("codex aggregate");
+fn excludes_entries_outside_7d_window() {
+    cache::clear();
+    let dir = tempfile::tempdir().unwrap();
+    let path = write_fixture(dir.path(), FIXTURE);
+    append_line(
+        &path,
+        r#"{"timestamp":"2026-05-05T12:00:00Z","type":"message","usage":{"total_tokens":999}}"#,
+    );
+    let cfg = UsageConfig::for_tests(String::new(), glob_for(dir.path()));
 
-    assert_eq!(seven_day.messages, 4);
+    let (_, seven_days) = codex::aggregate(fixed_now(), &cfg).unwrap();
+
+    assert_eq!(seven_days.messages, 5);
+    assert_eq!(seven_days.tokens, 500);
+    assert_eq!(seven_days.reset_at, parse_time("2026-05-17T12:00:00Z"));
 }
 
 #[test]
-fn codex_aggregate_cache_reuse_reads_appended_delta() {
-    cache::reset_cache();
-    let temp = tempfile::NamedTempFile::new().expect("temp file");
-    std::fs::write(temp.path(), SAMPLE).expect("write fixture");
-    let cfg = UsageConfig::for_test(empty_glob(), path_glob(temp.path()));
-    let (before, _) = codex::aggregate(now(), &cfg).expect("first aggregate");
+fn reuses_cache_and_reads_appended_delta() {
+    cache::clear();
+    let dir = tempfile::tempdir().unwrap();
+    let path = write_fixture(dir.path(), FIXTURE);
+    let cfg = UsageConfig::for_tests(String::new(), glob_for(dir.path()));
+    let now = fixed_now();
 
-    let mut file = OpenOptions::new()
-        .append(true)
-        .open(temp.path())
-        .expect("open temp file");
-    writeln!(file, "{APPENDED_EVENT}").expect("append event");
+    let (before, _) = codex::aggregate(now, &cfg).unwrap();
+    append_line(
+        &path,
+        r#"{"timestamp":"2026-05-13T11:55:00Z","type":"message","usage":{"total_tokens":50}}"#,
+    );
+    let (after, _) = codex::aggregate(now, &cfg).unwrap();
 
-    let (after, _) = codex::aggregate(now(), &cfg).expect("second aggregate");
-
-    assert_eq!(before.messages, 2);
-    assert_eq!(after.messages, 3);
+    assert_eq!(before.messages, 3);
+    assert_eq!(after.messages, 4);
+    assert_eq!(after.tokens, 350);
 }
 
-fn now() -> DateTime<Utc> {
-    DateTime::parse_from_rfc3339("2026-05-13T12:00:00Z")
-        .expect("fixed now")
+fn fixed_now() -> DateTime<Utc> {
+    parse_time("2026-05-13T12:00:00Z")
+}
+
+fn parse_time(value: &str) -> DateTime<Utc> {
+    DateTime::parse_from_rfc3339(value)
+        .unwrap()
         .with_timezone(&Utc)
 }
 
-fn fixture_glob(name: &str) -> String {
-    path_glob(
-        &Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("src/usage/tests/fixtures")
-            .join(name),
-    )
+fn write_fixture(dir: &Path, content: &str) -> std::path::PathBuf {
+    let nested = dir.join("2026").join("05").join("13");
+    std::fs::create_dir_all(&nested).unwrap();
+    let path = nested.join("rollout-2026-05-13T08-30-00-test.jsonl");
+    std::fs::write(&path, content).unwrap();
+    path
 }
 
-fn path_glob(path: &Path) -> String {
-    path.to_string_lossy().replace('\\', "/")
+fn append_line(path: &Path, line: &str) {
+    let mut file = OpenOptions::new().append(true).open(path).unwrap();
+    writeln!(file, "{line}").unwrap();
 }
 
-fn empty_glob() -> String {
-    path_glob(
-        &Path::new(env!("CARGO_MANIFEST_DIR")).join("src/usage/tests/fixtures/no_claude_*.jsonl"),
-    )
+fn glob_for(dir: &Path) -> String {
+    dir.join("**")
+        .join("*.jsonl")
+        .to_string_lossy()
+        .replace('\\', "/")
 }

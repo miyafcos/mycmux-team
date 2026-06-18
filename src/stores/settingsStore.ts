@@ -49,6 +49,6 @@ export const useSettingsStore = create<SettingsState>()(
       setCrsmShowClaudeCodex: (v) => set({ crsmShowClaudeCodex: v }),
       setHideSessionsWithoutUserMessages: (v) => set({ hideSessionsWithoutUserMessages: v }),
     }),
-    { name: "mycmux-lite-settings" },
+    { name: "mycmux-settings" },
   ),
 );

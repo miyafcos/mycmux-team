@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::BufRead;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
@@ -9,8 +9,9 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
+use chrono::{DateTime, Datelike, Local};
 use dashmap::DashMap;
-use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
+use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 use tauri::{AppHandle, Emitter};
 
 use super::manager::SessionManager;
@@ -21,6 +22,7 @@ pub struct PtyMetadata {
     pub cwd: String,
     pub git_branch: Option<String>,
     pub process_name: Option<String>,
+    pub agent_active: bool,
     pub claude_session_id: Option<String>,
     pub agent_kind: Option<String>,
     pub agent_session_id: Option<String>,
@@ -50,9 +52,38 @@ pub fn new_metadata_store() -> MetadataStore {
     Arc::new(DashMap::new())
 }
 
+/// Returns true when the session file was created at/after `min_created`.
+/// Used to keep the mtime-newest fallback from adopting sessions that already
+/// existed before the agent process started (e.g. a long-running claude in
+/// another window sharing the same CWD keeps touching its old jsonl, which
+/// would otherwise win every scan and resume a stale conversation).
+fn created_at_or_after(
+    metadata: &std::fs::Metadata,
+    min_created: Option<std::time::SystemTime>,
+) -> bool {
+    let Some(min) = min_created else { return true };
+    match metadata.created() {
+        Ok(created) => created >= min,
+        // Creation time unavailable on this filesystem — don't exclude.
+        Err(_) => true,
+    }
+}
+
+fn min_created_local_date(
+    min_created: Option<std::time::SystemTime>,
+) -> Option<(i32, u32, u32)> {
+    let min_created = min_created?;
+    let date: DateTime<Local> = min_created.into();
+    Some((date.year(), date.month(), date.day()))
+}
+
 /// Detect the active Claude Code session ID by finding the most recently
-/// modified `.jsonl` file in `~/.claude/projects/<mangled-cwd>/`.
-fn detect_claude_session_id(cwd: &str) -> Option<String> {
+/// modified `.jsonl` file in `~/.claude/projects/<mangled-cwd>/`,
+/// restricted to files created after the agent process started.
+fn detect_claude_session_id(
+    cwd: &str,
+    min_created: Option<std::time::SystemTime>,
+) -> Option<String> {
     let home = dirs::home_dir()?;
     let mangled = super::path_norm::claude_project_key(cwd);
     let project_dir = home.join(".claude").join("projects").join(&mangled);
@@ -65,6 +96,9 @@ fn detect_claude_session_id(cwd: &str) -> Option<String> {
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
             if let Ok(meta) = entry.metadata() {
+                if !created_at_or_after(&meta, min_created) {
+                    continue;
+                }
                 if let Ok(mtime) = meta.modified() {
                     if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
                         if best.is_none() || mtime > best.as_ref().unwrap().1 {
@@ -78,7 +112,10 @@ fn detect_claude_session_id(cwd: &str) -> Option<String> {
     best.map(|(id, _)| id)
 }
 
-fn detect_claude_codex_session_id(cwd: &str) -> Option<String> {
+fn detect_claude_codex_session_id(
+    cwd: &str,
+    min_created: Option<std::time::SystemTime>,
+) -> Option<String> {
     let home = dirs::home_dir()?;
     let normalized = if cwd.starts_with('/') && cwd.len() > 2 && cwd.as_bytes()[2] == b'/' {
         format!(
@@ -104,6 +141,9 @@ fn detect_claude_codex_session_id(cwd: &str) -> Option<String> {
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
             if let Ok(meta) = entry.metadata() {
+                if !created_at_or_after(&meta, min_created) {
+                    continue;
+                }
                 if let Ok(mtime) = meta.modified() {
                     if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
                         if best.is_none() || mtime > best.as_ref().unwrap().1 {
@@ -165,6 +205,7 @@ fn codex_session_id_for_cwd(path: &std::path::Path, cwd_key: &str) -> Option<Str
 fn visit_codex_sessions_dir(
     dir: &std::path::Path,
     cwd_key: &str,
+    min_created: Option<std::time::SystemTime>,
     best: &mut Option<(String, std::time::SystemTime)>,
 ) {
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -174,16 +215,22 @@ fn visit_codex_sessions_dir(
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
-            visit_codex_sessions_dir(&path, cwd_key, best);
+            if is_codex_date_dir_before_min(&path, min_created) {
+                continue;
+            }
+            visit_codex_sessions_dir(&path, cwd_key, min_created, best);
             continue;
         }
         if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
             continue;
         }
-        let Some(session_id) = codex_session_id_for_cwd(&path, cwd_key) else {
+        let Ok(metadata) = entry.metadata() else {
             continue;
         };
-        let Ok(metadata) = entry.metadata() else {
+        if !created_at_or_after(&metadata, min_created) {
+            continue;
+        }
+        let Some(session_id) = codex_session_id_for_cwd(&path, cwd_key) else {
             continue;
         };
         let Ok(modified) = metadata.modified() else {
@@ -195,7 +242,66 @@ fn visit_codex_sessions_dir(
     }
 }
 
-fn detect_codex_session_id(cwd: &str) -> Option<String> {
+fn parse_date_component(value: &str, min: u32, max: u32) -> Option<u32> {
+    if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let parsed = value.parse::<u32>().ok()?;
+    if (min..=max).contains(&parsed) {
+        Some(parsed)
+    } else {
+        None
+    }
+}
+
+fn path_component_string(path: &std::path::Path) -> Option<String> {
+    path.file_name().and_then(|name| name.to_str()).map(str::to_string)
+}
+
+fn is_codex_date_dir_before_min(
+    dir: &std::path::Path,
+    min_created: Option<std::time::SystemTime>,
+) -> bool {
+    let Some((min_year, min_month, min_day)) = min_created_local_date(min_created) else {
+        return false;
+    };
+    let Some(name) = path_component_string(dir) else {
+        return false;
+    };
+
+    if let Some(month_dir) = dir.parent() {
+        if let (Some(day), Some(month_name)) =
+            (parse_date_component(&name, 1, 31), path_component_string(month_dir))
+        {
+            if let Some(year_dir) = month_dir.parent() {
+                if let (Some(month), Some(year_name)) =
+                    (parse_date_component(&month_name, 1, 12), path_component_string(year_dir))
+                {
+                    if let Some(year) = parse_date_component(&year_name, 1970, 9999) {
+                        return (year as i32, month, day) < (min_year, min_month, min_day);
+                    }
+                }
+            }
+        }
+
+        if let Some(year_name) = path_component_string(month_dir) {
+            if let (Some(month), Some(year)) = (
+                parse_date_component(&name, 1, 12),
+                parse_date_component(&year_name, 1970, 9999),
+            ) {
+                return (year as i32, month) < (min_year, min_month);
+            }
+        }
+    }
+
+    if let Some(year) = parse_date_component(&name, 1970, 9999) {
+        return (year as i32) < min_year;
+    }
+
+    false
+}
+
+fn detect_codex_session_id(cwd: &str, min_created: Option<std::time::SystemTime>) -> Option<String> {
     let home = dirs::home_dir()?;
     let sessions_dir = home.join(".codex").join("sessions");
     if !sessions_dir.exists() {
@@ -203,7 +309,7 @@ fn detect_codex_session_id(cwd: &str) -> Option<String> {
     }
     let cwd_key = normalize_cwd_key(cwd);
     let mut best: Option<(String, std::time::SystemTime)> = None;
-    visit_codex_sessions_dir(&sessions_dir, &cwd_key, &mut best);
+    visit_codex_sessions_dir(&sessions_dir, &cwd_key, min_created, &mut best);
     best.map(|(id, _)| id)
 }
 
@@ -219,27 +325,212 @@ fn is_system_process(name: &str) -> bool {
 
 /// Follow the newest child chain to find the foreground process PID,
 /// skipping system processes like conhost.
-fn deepest_child_pid(sys: &System, pid: Pid) -> Pid {
-    let next_child = sys
-        .processes()
-        .iter()
-        .filter(|(_, process)| {
-            process.parent() == Some(pid) && !is_system_process(&process.name().to_string_lossy())
+fn build_child_index(sys: &System) -> HashMap<Pid, Vec<Pid>> {
+    let mut child_index: HashMap<Pid, Vec<Pid>> = HashMap::new();
+    for (pid, process) in sys.processes() {
+        if let Some(parent) = process.parent() {
+            child_index.entry(parent).or_default().push(*pid);
+        }
+    }
+    child_index
+}
+
+fn deepest_child_pid(sys: &System, child_index: &HashMap<Pid, Vec<Pid>>, pid: Pid) -> Pid {
+    let next_child = child_index
+        .get(&pid)
+        .into_iter()
+        .flatten()
+        .filter(|child_pid| {
+            sys.process(**child_pid)
+                .map(|process| !is_system_process(&process.name().to_string_lossy()))
+                .unwrap_or(false)
         })
-        .max_by_key(|(child_pid, _)| child_pid.as_u32())
-        .map(|(child_pid, _)| *child_pid);
+        .max_by_key(|child_pid| child_pid.as_u32())
+        .copied();
 
     match next_child {
-        Some(child_pid) => deepest_child_pid(sys, child_pid),
+        Some(child_pid) => deepest_child_pid(sys, child_index, child_pid),
         None => pid,
     }
 }
 
-/// Get the CWD of the foreground process (deepest child), falling back to shell CWD.
-fn get_process_cwd(sys: &System, pid: u32) -> Option<String> {
-    let shell_pid = Pid::from_u32(pid);
-    let fg_pid = deepest_child_pid(sys, shell_pid);
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum DetectedAgentKind {
+    Codex = 1,
+    Claude = 2,
+    ClaudeCodex = 3,
+}
 
+struct DetectedAgentCacheEntry {
+    agent_pid: Pid,
+    agent_kind: DetectedAgentKind,
+    session_id: String,
+}
+
+fn cached_detected_agent_session_id(
+    cache: &HashMap<String, DetectedAgentCacheEntry>,
+    session_id: &str,
+    agent_pid: Pid,
+    agent_kind: DetectedAgentKind,
+) -> Option<String> {
+    cache.get(session_id).and_then(|entry| {
+        if entry.agent_pid == agent_pid && entry.agent_kind == agent_kind {
+            Some(entry.session_id.clone())
+        } else {
+            None
+        }
+    })
+}
+
+fn remember_detected_agent_session_id(
+    cache: &mut HashMap<String, DetectedAgentCacheEntry>,
+    session_id: &str,
+    agent_pid: Pid,
+    agent_kind: DetectedAgentKind,
+    detected_session_id: &Option<String>,
+) {
+    if let Some(detected_session_id) = detected_session_id {
+        cache.insert(
+            session_id.to_string(),
+            DetectedAgentCacheEntry {
+                agent_pid,
+                agent_kind,
+                session_id: detected_session_id.clone(),
+            },
+        );
+    }
+}
+
+fn agent_kind_from_process(sys: &System, pid: Pid) -> Option<DetectedAgentKind> {
+    let process = sys.process(pid)?;
+    let name = process.name().to_string_lossy();
+    if is_system_process(&name) || is_shell_process(&name) {
+        return None;
+    }
+    let lower_name = name.to_ascii_lowercase();
+    if lower_name.contains("claude-codex") {
+        return Some(DetectedAgentKind::ClaudeCodex);
+    }
+    if lower_name.contains("claude") {
+        return Some(DetectedAgentKind::Claude);
+    }
+    if lower_name.contains("codex") {
+        return Some(DetectedAgentKind::Codex);
+    }
+
+    let leaf = lower_name.strip_suffix(".exe").unwrap_or(&lower_name);
+    if leaf != "node" && leaf != "bun" {
+        return None;
+    }
+
+    let lower_cmd = process
+        .cmd()
+        .iter()
+        .map(|arg| arg.to_string_lossy().to_string())
+        .collect::<Vec<String>>()
+        .join(" ")
+        .to_ascii_lowercase();
+    if lower_cmd.contains("claude-codex") {
+        return Some(DetectedAgentKind::ClaudeCodex);
+    }
+    if lower_cmd.contains("claude") {
+        return Some(DetectedAgentKind::Claude);
+    }
+    if lower_cmd.contains("@openai/codex")
+        || lower_cmd.contains("codex.js")
+        || lower_cmd.contains(" codex")
+        || lower_cmd.contains("\\codex")
+        || lower_cmd.contains("/codex")
+    {
+        return Some(DetectedAgentKind::Codex);
+    }
+    None
+}
+
+/// Canonical UUID shape (8-4-4-4-12 hex) — mirrors terminal.rs::is_uuid_like.
+fn is_uuid_like(value: &str) -> bool {
+    value.len() == 36
+        && value.bytes().enumerate().all(|(i, b)| match i {
+            8 | 13 | 18 | 23 => b == b'-',
+            _ => b.is_ascii_hexdigit(),
+        })
+}
+
+/// Extract the exact session id from the agent process's own command line
+/// (`--session-id <uuid>` / `--resume <uuid>` / a bare uuid positional for
+/// `codex resume <uuid>`). This is pane-exact, unlike the mtime-newest
+/// `detect_*_session_id(cwd)` scan which cross-contaminates panes that share
+/// a CWD (multiple agents in ~ all get whichever session wrote last).
+fn session_id_from_agent_args(
+    sys: &System,
+    agent_pid: Pid,
+    allow_bare_uuid: bool,
+) -> Option<String> {
+    let process = sys.process(agent_pid)?;
+    let args: Vec<String> = process
+        .cmd()
+        .iter()
+        .map(|arg| arg.to_string_lossy().to_string())
+        .collect();
+    for (i, arg) in args.iter().enumerate() {
+        let lower = arg.to_ascii_lowercase();
+        if lower == "--session-id" || lower == "--resume" || lower == "-r" {
+            if let Some(next) = args.get(i + 1) {
+                let candidate = next.strip_prefix("sid:").unwrap_or(next);
+                if is_uuid_like(candidate) {
+                    return Some(candidate.to_string());
+                }
+            }
+        }
+    }
+    if !allow_bare_uuid {
+        return None;
+    }
+    // codex passes the session id as a bare positional (`codex resume <uuid>`);
+    // restricted to codex because claude prompts could contain incidental uuids.
+    args.iter()
+        .skip(1)
+        .map(|arg| arg.strip_prefix("sid:").unwrap_or(arg))
+        .find(|arg| is_uuid_like(arg))
+        .map(|arg| arg.to_string())
+}
+
+fn find_agent_descendant(
+    sys: &System,
+    child_index: &HashMap<Pid, Vec<Pid>>,
+    shell_pid: Pid,
+) -> Option<(DetectedAgentKind, Pid)> {
+    let mut best: Option<(DetectedAgentKind, Pid)> = None;
+    let mut visited: HashSet<Pid> = HashSet::new();
+    let mut stack = child_index.get(&shell_pid).cloned().unwrap_or_default();
+
+    while let Some(pid) = stack.pop() {
+        if !visited.insert(pid) {
+            continue;
+        }
+        if let Some(kind) = agent_kind_from_process(sys, pid) {
+            best = Some(match best {
+                Some((current_kind, current_pid)) if current_kind >= kind => {
+                    (current_kind, current_pid)
+                }
+                _ => (kind, pid),
+            });
+            if best.map(|(best_kind, _)| best_kind) == Some(DetectedAgentKind::ClaudeCodex) {
+                break;
+            }
+        }
+        if let Some(children) = child_index.get(&pid) {
+            stack.extend(children.iter().copied());
+        }
+    }
+
+    best
+}
+
+/// Get the CWD of the foreground process (deepest child), falling back to shell CWD.
+/// `fg_pid` is resolved once by the caller and shared with the name lookup below
+/// so the full process table is walked once per session per tick, not twice.
+fn get_process_cwd(sys: &System, shell_pid: Pid, fg_pid: Pid) -> Option<String> {
     // Try foreground process CWD first, fall back to shell CWD
     sys.process(fg_pid)
         .and_then(|p| p.cwd().map(|c| c.to_string_lossy().to_string()))
@@ -249,9 +540,8 @@ fn get_process_cwd(sys: &System, pid: u32) -> Option<String> {
         })
 }
 
-/// Get the foreground process name by following the newest child chain.
-fn get_foreground_process_name(sys: &System, shell_pid: u32) -> Option<String> {
-    let foreground_pid = deepest_child_pid(sys, Pid::from_u32(shell_pid));
+/// Get the foreground process name for an already-resolved foreground PID.
+fn get_foreground_process_name(sys: &System, foreground_pid: Pid) -> Option<String> {
     sys.process(foreground_pid)
         .map(|p| p.name().to_string_lossy().to_string())
 }
@@ -264,6 +554,7 @@ pub fn start_monitor(
     thread::spawn(move || {
         let mut sys = System::new();
         let mut last_metadata: HashMap<String, PtyMetadata> = HashMap::new();
+        let mut detected_agent_sessions: HashMap<String, DetectedAgentCacheEntry> = HashMap::new();
 
         loop {
             // 5s cadence: OSC 7 handles CWD instantly for bash/zsh/fish;
@@ -275,14 +566,30 @@ pub fn start_monitor(
             sys.refresh_processes_specifics(
                 ProcessesToUpdate::All,
                 true,
-                ProcessRefreshKind::everything(),
+                ProcessRefreshKind::nothing()
+                    .with_cmd(UpdateKind::OnlyIfNotSet)
+                    .with_cwd(UpdateKind::OnlyIfNotSet),
             );
+            let child_index = build_child_index(&sys);
 
             let pids = manager.iter_pids();
 
             for (session_id, pid_opt) in pids {
                 if let Some(pid) = pid_opt {
-                    let cwd = match get_process_cwd(&sys, pid) {
+                    // Resolve the foreground (deepest child) PID once per tick and
+                    // reuse it for both CWD and process-name lookups — each helper
+                    // previously re-walked the entire process table on its own.
+                    let shell_pid = Pid::from_u32(pid);
+                    let fg_pid = deepest_child_pid(&sys, &child_index, shell_pid);
+                    let process_name = get_foreground_process_name(&sys, fg_pid);
+                    let foreground_agent = agent_kind_from_process(&sys, fg_pid)
+                        .map(|kind| (kind, fg_pid))
+                        .or_else(|| find_agent_descendant(&sys, &child_index, shell_pid));
+                    let agent_active = foreground_agent.is_some();
+                    let cwd_pid = foreground_agent
+                        .map(|(_, agent_pid)| agent_pid)
+                        .unwrap_or(fg_pid);
+                    let cwd = match get_process_cwd(&sys, shell_pid, cwd_pid) {
                         Some(c) if !c.is_empty() => c,
                         _ => continue,
                     };
@@ -328,53 +635,148 @@ pub fn start_monitor(
                             .and_then(|m| m.git_branch.clone())
                     };
 
-                    let process_name = get_foreground_process_name(&sys, pid);
-
                     // Detect coding-agent session IDs only while that agent is foreground.
                     // When an agent exits, preserve the last ID in backend metadata; the
                     // frontend clears it when the foreground process returns to a shell.
-                    let lower_process = process_name
-                        .as_deref()
-                        .map(|name| name.to_ascii_lowercase());
+                    match foreground_agent {
+                        Some((kind, agent_pid)) => {
+                            if cached_detected_agent_session_id(
+                                &detected_agent_sessions,
+                                &session_id,
+                                agent_pid,
+                                kind,
+                            )
+                            .is_none()
+                            {
+                                detected_agent_sessions.remove(&session_id);
+                            }
+                        }
+                        None => {
+                            detected_agent_sessions.remove(&session_id);
+                        }
+                    }
                     let previous_metadata = last_metadata.get(&session_id);
-                    let (agent_kind, agent_session_id, claude_session_id) =
-                        match (process_name.as_deref(), lower_process.as_deref()) {
-                            (Some(name), Some(lower))
-                                if lower.contains("claude-codex") && !is_shell_process(name) =>
-                            {
-                                let detected = detect_claude_codex_session_id(&cwd);
+                    let previous_agent_kind = previous_metadata.and_then(|m| m.agent_kind.clone());
+                    let previous_agent_session_id =
+                        previous_metadata.and_then(|m| m.agent_session_id.clone());
+                    let previous_claude_session_id =
+                        previous_metadata.and_then(|m| m.claude_session_id.clone());
+                    // Floor for the mtime-newest fallback: only session files
+                    // created after this agent process started may be adopted.
+                    // 30s slack absorbs clock/accounting skew.
+                    let agent_min_created = foreground_agent.and_then(|(_, agent_pid)| {
+                        sys.process(agent_pid).map(|process| {
+                            std::time::UNIX_EPOCH
+                                + Duration::from_secs(process.start_time().saturating_sub(30))
+                        })
+                    });
+                    let (agent_kind, agent_session_id, claude_session_id) = match foreground_agent {
+                        Some((kind, agent_pid)) => match kind {
+                            DetectedAgentKind::ClaudeCodex => {
+                                let detected = session_id_from_agent_args(&sys, agent_pid, false)
+                                    .or_else(|| {
+                                        cached_detected_agent_session_id(
+                                            &detected_agent_sessions,
+                                            &session_id,
+                                            agent_pid,
+                                            kind,
+                                        )
+                                    })
+                                    .or_else(|| {
+                                        detect_claude_codex_session_id(&cwd, agent_min_created)
+                                    });
+                                remember_detected_agent_session_id(
+                                    &mut detected_agent_sessions,
+                                    &session_id,
+                                    agent_pid,
+                                    kind,
+                                    &detected,
+                                );
+                                let previous_same_kind_session =
+                                    if previous_agent_kind.as_deref() == Some("claude-codex") {
+                                        previous_agent_session_id.clone()
+                                    } else {
+                                        None
+                                    };
+                                let agent_session_id = detected.or(previous_same_kind_session);
                                 (
-                                    detected.as_ref().map(|_| "claude-codex".to_string()),
-                                    detected,
-                                    previous_metadata.and_then(|m| m.claude_session_id.clone()),
+                                    agent_session_id
+                                        .as_ref()
+                                        .map(|_| "claude-codex".to_string()),
+                                    agent_session_id,
+                                    previous_claude_session_id.clone(),
                                 )
                             }
-                            (Some(name), Some(lower))
-                                if lower.contains("claude") && !is_shell_process(name) =>
-                            {
-                                let detected = detect_claude_session_id(&cwd);
+                            DetectedAgentKind::Claude => {
+                                let detected = session_id_from_agent_args(&sys, agent_pid, false)
+                                    .or_else(|| {
+                                        cached_detected_agent_session_id(
+                                            &detected_agent_sessions,
+                                            &session_id,
+                                            agent_pid,
+                                            kind,
+                                        )
+                                    })
+                                    .or_else(|| detect_claude_session_id(&cwd, agent_min_created));
+                                remember_detected_agent_session_id(
+                                    &mut detected_agent_sessions,
+                                    &session_id,
+                                    agent_pid,
+                                    kind,
+                                    &detected,
+                                );
+                                let claude_session_id =
+                                    detected.or_else(|| previous_claude_session_id.clone());
+                                let previous_same_kind_session =
+                                    if previous_agent_kind.as_deref() == Some("claude") {
+                                        previous_agent_session_id.clone()
+                                    } else {
+                                        None
+                                    };
                                 (
-                                    detected.as_ref().map(|_| "claude".to_string()),
-                                    detected.clone(),
-                                    detected,
+                                    claude_session_id.as_ref().map(|_| "claude".to_string()),
+                                    claude_session_id.clone().or(previous_same_kind_session),
+                                    claude_session_id,
                                 )
                             }
-                            (Some(name), Some(lower))
-                                if lower.contains("codex") && !is_shell_process(name) =>
-                            {
-                                let detected = detect_codex_session_id(&cwd);
+                            DetectedAgentKind::Codex => {
+                                let detected = session_id_from_agent_args(&sys, agent_pid, true)
+                                    .or_else(|| {
+                                        cached_detected_agent_session_id(
+                                            &detected_agent_sessions,
+                                            &session_id,
+                                            agent_pid,
+                                            kind,
+                                        )
+                                    })
+                                    .or_else(|| detect_codex_session_id(&cwd, agent_min_created));
+                                remember_detected_agent_session_id(
+                                    &mut detected_agent_sessions,
+                                    &session_id,
+                                    agent_pid,
+                                    kind,
+                                    &detected,
+                                );
+                                let previous_same_kind_session =
+                                    if previous_agent_kind.as_deref() == Some("codex") {
+                                        previous_agent_session_id.clone()
+                                    } else {
+                                        None
+                                    };
+                                let agent_session_id = detected.or(previous_same_kind_session);
                                 (
-                                    detected.as_ref().map(|_| "codex".to_string()),
-                                    detected,
-                                    previous_metadata.and_then(|m| m.claude_session_id.clone()),
+                                    agent_session_id.as_ref().map(|_| "codex".to_string()),
+                                    agent_session_id,
+                                    previous_claude_session_id.clone(),
                                 )
                             }
-                            _ => (
-                                previous_metadata.and_then(|m| m.agent_kind.clone()),
-                                previous_metadata.and_then(|m| m.agent_session_id.clone()),
-                                previous_metadata.and_then(|m| m.claude_session_id.clone()),
-                            ),
-                        };
+                        },
+                        None => (
+                            previous_agent_kind.clone(),
+                            previous_agent_session_id.clone(),
+                            previous_claude_session_id.clone(),
+                        ),
+                    };
 
                     // Detect work→idle transition: previous foreground was a non-shell
                     // process (claude/node/python/…) and current is a shell.
@@ -402,6 +804,7 @@ pub fn start_monitor(
                         cwd: cwd.clone(),
                         git_branch: git_branch.clone(),
                         process_name: process_name.clone(),
+                        agent_active,
                         claude_session_id: claude_session_id.clone(),
                         agent_kind: agent_kind.clone(),
                         agent_session_id: agent_session_id.clone(),
@@ -412,6 +815,7 @@ pub fn start_monitor(
                             old.cwd != cwd
                                 || old.git_branch != git_branch
                                 || old.process_name != process_name
+                                || old.agent_active != agent_active
                                 || old.claude_session_id != claude_session_id
                                 || old.agent_kind != agent_kind
                                 || old.agent_session_id != agent_session_id
@@ -434,6 +838,7 @@ pub fn start_monitor(
             let active_keys: std::collections::HashSet<String> =
                 manager.iter_pids().into_iter().map(|(k, _)| k).collect();
             last_metadata.retain(|k, _| active_keys.contains(k));
+            detected_agent_sessions.retain(|k, _| active_keys.contains(k));
             metadata_store.retain(|k, _| active_keys.contains(k));
         }
     });

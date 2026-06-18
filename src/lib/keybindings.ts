@@ -13,7 +13,6 @@ export type KeybindingActionId =
   | "workspace.jump.7"
   | "workspace.jump.8"
   | "workspace.jump.9"
-  | "pane.flash"
   | "pane.focus.left"
   | "pane.focus.right"
   | "pane.focus.up"
@@ -52,7 +51,6 @@ export const KEYBINDING_DEFINITIONS: KeybindingDefinition[] = [
   { action: "workspace.jump.8", title: "Jump to workspace 8", category: "Workspace", defaultShortcut: "ctrl+8" },
   { action: "workspace.jump.9", title: "Jump to last workspace", category: "Workspace", defaultShortcut: "ctrl+9" },
 
-  { action: "pane.flash", title: "Flash focused pane", category: "Pane", defaultShortcut: "ctrl+shift+h" },
   { action: "pane.focus.left", title: "Focus pane left", category: "Pane", defaultShortcut: "ctrl+alt+arrowleft" },
   { action: "pane.focus.right", title: "Focus pane right", category: "Pane", defaultShortcut: "ctrl+alt+arrowright" },
   { action: "pane.focus.up", title: "Focus pane up", category: "Pane", defaultShortcut: "ctrl+alt+arrowup" },

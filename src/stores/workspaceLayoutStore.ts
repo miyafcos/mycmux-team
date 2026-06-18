@@ -696,7 +696,9 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
     const currentTab = workspace.panes
       .find((pane) => pane.id === paneId)
       ?.tabs.find((tab) => tab.id === tabId);
-    if (currentTab?.isDirty === isDirty) return;
+    if (!currentTab || currentTab.type !== "browser" || (currentTab.isDirty ?? false) === isDirty) {
+      return;
+    }
 
     const newPanes = workspace.panes.map((pane) => {
       if (pane.id !== paneId) return pane;

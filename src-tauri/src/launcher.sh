@@ -7,7 +7,7 @@ __write_session_mapping() {
   local kind="$2"
   local session_id="$3"
   [ -z "$pane_id" ] || [ -z "$session_id" ] && return
-  local map_dir="$HOME/.mycmux-lite/pane-sessions"
+  local map_dir="$HOME/.mycmux/pane-sessions"
   mkdir -p "$map_dir" 2>/dev/null
   if [ -n "$kind" ]; then
     echo "$kind:$session_id" > "$map_dir/$pane_id.txt"
@@ -156,7 +156,7 @@ if project.get("hasTrustDialogAccepted") is True:
     raise SystemExit(0)
 
 project["hasTrustDialogAccepted"] = True
-tmp_path = path.with_suffix(".json.mycmux-lite.tmp")
+tmp_path = path.with_suffix(".json.mycmux.tmp")
 with tmp_path.open("w", encoding="utf-8") as f:
     json.dump(data, f, ensure_ascii=False, indent=2)
     f.write("\n")
@@ -178,7 +178,7 @@ __open_menu_fd() {
 __prompt_custom_command() {
   __open_menu_fd
   printf "\033[H\033[2J" >&$__CMUX_MENU_FD
-  echo "  Command: (e.g. claude --resume sid:xxx, codex resume --no-alt-screen --last)" >&$__CMUX_MENU_FD
+  echo "  Command: (e.g. claude --resume sid:xxx, codex resume --last)" >&$__CMUX_MENU_FD
   echo "" >&$__CMUX_MENU_FD
   printf "  > " >&$__CMUX_MENU_FD
   IFS= read -ru "$__CMUX_MENU_FD" cmd
@@ -225,14 +225,14 @@ if [ -n "$MYCMUX_RESUME" ]; then
         __project_dir=
         __project_dir=$(__get_claude_project_dir)
         if [ -f "$__project_dir/$MYCMUX_SESSION_ID.jsonl" ]; then
-          eval "claude --allow-dangerously-skip-permissions --permission-mode auto --resume $MYCMUX_SESSION_ID"
+          eval "claude --dangerously-skip-permissions --permission-mode bypassPermissions --resume $MYCMUX_SESSION_ID"
         else
           __track_claude_session "$MYCMUX_PANE_SESSION_ID" &
-          eval "claude --allow-dangerously-skip-permissions --permission-mode auto --continue"
+          eval "claude --dangerously-skip-permissions --permission-mode bypassPermissions --continue"
         fi
       else
         __track_claude_session "$MYCMUX_PANE_SESSION_ID" &
-        eval "claude --allow-dangerously-skip-permissions --permission-mode auto --continue"
+        eval "claude --dangerously-skip-permissions --permission-mode bypassPermissions --continue"
       fi
       ;;
     codex*)
@@ -292,7 +292,7 @@ if [ -n "$MYCMUX_LAUNCH_TARGET" ]; then
   esac
 fi
 
-__RESTORE_FILE="$HOME/.mycmux-lite/restore.json"
+__RESTORE_FILE="$HOME/.mycmux/restore.json"
 if [ -z "$cmd" ] && [ -f "$__RESTORE_FILE" ]; then
   __CWD="$(pwd)"
   __RESTORE_CMD=$(python -c "
@@ -310,7 +310,7 @@ try:
             if 'claude-codex' in proc:
                 print('claude-codex --continue')
             elif 'claude' in proc:
-                print('claude --allow-dangerously-skip-permissions --permission-mode auto --continue')
+                print('claude --dangerously-skip-permissions --permission-mode bypassPermissions --continue')
             elif 'codex' in proc:
                 print('codex resume --no-alt-screen --last')
             sys.exit(0)

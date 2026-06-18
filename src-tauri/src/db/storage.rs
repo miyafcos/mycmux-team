@@ -139,6 +139,13 @@ fn default_schema_version() -> u32 {
     1
 }
 
+fn default_theme_tweaks() -> serde_json::Value {
+    serde_json::json!({
+        "enabled": false,
+        "colors": {}
+    })
+}
+
 fn default_font_family() -> String {
     "'JetBrainsMono Nerd Font Mono', 'JetBrains Mono', 'Geist Mono', 'SF Mono', 'BIZ UDGothic', 'MS Gothic', monospace".to_string()
 }
@@ -149,6 +156,8 @@ pub struct AppSettings {
     #[serde(default = "default_font_family")]
     pub font_family: String,
     pub theme_id: String,
+    #[serde(default = "default_theme_tweaks")]
+    pub theme_tweaks: serde_json::Value,
     #[serde(default)]
     pub keybindings: HashMap<String, String>,
     /// When true, persistence is triggered by Zustand subscribers + debounce
@@ -168,11 +177,19 @@ impl Default for AppSettings {
             font_size: 14,
             font_family: default_font_family(),
             theme_id: "yoru-cafe".to_string(),
+            theme_tweaks: default_theme_tweaks(),
             keybindings: HashMap::new(),
             dirty_save_mode: true,
             osc7_tracking_enabled: true,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PinnedRoot {
+    pub id: String,
+    pub path: String,
+    pub name: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -187,6 +204,8 @@ pub struct PersistentData {
     pub active_pane_id: Option<String>,
     #[serde(default)]
     pub active_tab_id: Option<String>,
+    #[serde(default)]
+    pub pinned_roots: Vec<PinnedRoot>,
 }
 
 impl Default for PersistentData {
@@ -198,6 +217,7 @@ impl Default for PersistentData {
             active_workspace_id: None,
             active_pane_id: None,
             active_tab_id: None,
+            pinned_roots: Vec::new(),
         }
     }
 }
@@ -337,7 +357,7 @@ fn save_to_path(path: &Path, data: &PersistentData) -> Result<(), String> {
         .map_err(|error| format!("Failed to serialize data: {error}"))?;
 
     write_json_file(&tmp_path, &json)?;
-    replace_data_file(path, &tmp_path).inspect_err(|_| {
+    replace_data_file(path, &tmp_path).inspect_err(|_error| {
         let _ = fs::remove_file(&tmp_path);
     })
 }

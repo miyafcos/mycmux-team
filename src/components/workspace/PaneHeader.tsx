@@ -25,11 +25,11 @@ export default memo(function PaneHeader({ onClose, hasNotification }: PaneHeader
         flexShrink: 0,
         gap: 8,
         userSelect: "none",
-        borderTop: hasNotification ? "1px solid rgba(255, 59, 48, 0.5)" : "1px solid transparent",
+        borderTop: hasNotification ? "1px solid color-mix(in srgb, var(--notification-color) 58%, transparent)" : "1px solid transparent",
         transition: "border 0.2s",
       }}
     >
-      <span style={{ color: hasNotification ? "#ff3b30" : "var(--cmux-text-tertiary)", fontSize: "10px" }}>•</span>
+      <span style={{ color: hasNotification ? "var(--notification-color)" : "var(--cmux-text-tertiary)", fontSize: "10px" }}>•</span>
       <span style={{ flex: 1 }} />
       <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
         <button className="pane-action-btn" title="Split pane">

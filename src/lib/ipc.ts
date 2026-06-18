@@ -1,6 +1,6 @@
 import { invoke, Channel } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AgentSessionKind, ArtifactSourceKind } from "../types";
+import type { AgentSessionKind, ArtifactSourceKind, ThemeTweaks } from "../types";
 
 // v0.7.1 diag: per-session attach epoch.
 // Each createSession() call bumps the epoch. Channel.onmessage closures
@@ -57,9 +57,11 @@ export async function createSession(
     }
     onData(batch);
   };
-  console.log(
-    `[mycmux-diag ipc] create_session session=${sessionId} epoch=${epoch} prev_messages=${messageCount}`,
-  );
+  if (import.meta.env.DEV) {
+    console.log(
+      `[mycmux-diag ipc] create_session session=${sessionId} epoch=${epoch} prev_messages=${messageCount}`,
+    );
+  }
   return invoke("create_session", {
     sessionId,
     command,
@@ -105,16 +107,11 @@ export async function killSession(sessionId: string): Promise<void> {
   return invoke("kill_session", { sessionId });
 }
 
-export async function previewArtifactForSession(
-  sessionId: string,
-): Promise<string> {
+export async function previewArtifactForSession(sessionId: string): Promise<string> {
   return invoke("preview_artifact_for_session", { sessionId });
 }
 
-export async function previewArtifactUriForSession(
-  sessionId: string,
-  uri: string,
-): Promise<string> {
+export async function previewArtifactUriForSession(sessionId: string, uri: string): Promise<string> {
   return invoke("preview_artifact_uri_for_session", { sessionId, uri });
 }
 
@@ -170,9 +167,16 @@ export interface PtyMetadata {
   cwd: string;
   git_branch?: string;
   process_name?: string;
+  agent_active: boolean;
   claude_session_id?: string;
   agent_kind?: AgentSessionKind;
   agent_session_id?: string;
+}
+
+export type PtyMetadataSnapshot = Record<string, PtyMetadata>;
+
+export async function getPtyMetadataSnapshot(): Promise<PtyMetadataSnapshot> {
+  return invoke("get_pty_metadata_snapshot");
 }
 
 export function onPtyMetadata(
@@ -234,7 +238,7 @@ export async function getLaunchCwd(): Promise<string | null> {
   return invoke("get_launch_cwd");
 }
 
-// ─── CRSM commands ──────────────────────────────────────────────────────────
+// ─── CRSM commands ─────────────────────────────────────────────────────────
 
 export interface CrsmSessionEntry {
   kind: "claude" | "codex" | "claude-codex";
@@ -348,14 +352,6 @@ export async function quitApp(): Promise<void> {
   return invoke("quit_app");
 }
 
-export async function revealInExplorer(path: string): Promise<void> {
-  return invoke("reveal_in_explorer", { path });
-}
-
-export async function openWithDefault(path: string): Promise<void> {
-  return invoke("open_with_default", { path });
-}
-
 // ─── Persistence commands ────────────────────────────────────────────────────
 
 export interface PaneTabConfig {
@@ -407,6 +403,7 @@ export interface AppSettings {
   font_size: number;
   font_family: string;
   theme_id: string;
+  theme_tweaks?: ThemeTweaks;
   keybindings?: Record<string, string>;
 }
 
@@ -417,6 +414,7 @@ export interface PersistentData {
   active_workspace_id?: string | null;
   active_pane_id?: string | null;
   active_tab_id?: string | null;
+  pinned_roots?: PinnedRoot[];
 }
 
 export async function loadPersistentData(): Promise<PersistentData> {
@@ -446,4 +444,83 @@ export async function saveSettings(settings: AppSettings): Promise<void> {
 
 export async function sendSocketResponse(id: number, result: any, error: string | null): Promise<void> {
   return invoke("socket_response", { id, result, error });
+}
+
+// ─── File explorer commands ──────────────────────────────────────────────────
+
+export interface FileEntry {
+  name: string;
+  path: string;
+  is_dir: boolean;
+  modified?: number;
+}
+
+export interface PinnedRoot {
+  id: string;
+  path: string;
+  name: string;
+}
+
+export async function listDirectory(path: string): Promise<FileEntry[]> {
+  return invoke("list_directory", { path });
+}
+
+export async function walkTree(
+  root: string,
+  excludes: string[] = [],
+  maxDepth?: number,
+  limit?: number,
+  includeHidden = false,
+): Promise<FileEntry[]> {
+  return invoke("walk_tree", {
+    root,
+    excludes,
+    maxDepth: maxDepth ?? null,
+    limit: limit ?? null,
+    includeHidden,
+  });
+}
+
+export async function normalizePath(path: string): Promise<string> {
+  return invoke("normalize_path", { path });
+}
+
+export async function savePinnedRoots(pinnedRoots: PinnedRoot[]): Promise<void> {
+  return invoke("save_pinned_roots", { pinnedRoots });
+}
+
+export async function watchRoot(path: string): Promise<void> {
+  return invoke("watch_root", { path });
+}
+
+export async function unwatchRoot(path: string): Promise<void> {
+  return invoke("unwatch_root", { path });
+}
+
+export async function revealInExplorer(path: string): Promise<void> {
+  return invoke("reveal_in_explorer", { path });
+}
+
+export async function openWithDefault(path: string): Promise<void> {
+  return invoke("open_with_default", { path });
+}
+
+export async function createFile(parent: string, name: string): Promise<string> {
+  return invoke("create_file", { parent, name });
+}
+
+export async function createFolder(parent: string, name: string): Promise<string> {
+  return invoke("create_folder", { parent, name });
+}
+
+export interface FsChangedPayload {
+  path: string;
+}
+
+export function onFsChanged(
+  callback: (payload: FsChangedPayload) => void,
+): Promise<UnlistenFn> {
+  return listen<FsChangedPayload>("fs_changed", (event) => {
+    callback(event.payload);
+  });
 }

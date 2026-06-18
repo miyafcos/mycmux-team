@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { useUsageStore, type WindowStat } from "../../stores/usageStore";
 import { UsagePopover } from "./UsagePopover";
+import { useUsageStore, type WindowStat } from "../../stores/usageStore";
 
 type MeterMode = "full" | "compact" | "hidden";
 
@@ -8,7 +8,7 @@ export function UsageMeter() {
   const summary = useUsageStore((state) => state.summary);
   const lastError = useUsageStore((state) => state.lastError);
   const fetchUsage = useUsageStore((state) => state.fetch);
-  const [mode, setMode] = useState<MeterMode>(getMeterMode);
+  const mode = useMeterMode();
   const [isOpen, setIsOpen] = useState(false);
   const closeTimerRef = useRef<number | null>(null);
 
@@ -22,20 +22,10 @@ export function UsageMeter() {
   }, [fetchUsage]);
 
   useEffect(() => {
-    if (typeof window === "undefined") {
-      return;
-    }
-
-    const compactQuery = window.matchMedia("(max-width: 900px)");
-    const hiddenQuery = window.matchMedia("(max-width: 700px)");
-    const update = () => setMode(getMeterMode());
-    update();
-    compactQuery.addEventListener("change", update);
-    hiddenQuery.addEventListener("change", update);
-
     return () => {
-      compactQuery.removeEventListener("change", update);
-      hiddenQuery.removeEventListener("change", update);
+      if (closeTimerRef.current !== null) {
+        window.clearTimeout(closeTimerRef.current);
+      }
     };
   }, []);
 
@@ -52,7 +42,7 @@ export function UsageMeter() {
 
   const title = [summary.claude_error, summary.codex_error, lastError].filter(Boolean).join("\n") || "Usage";
 
-  const open = () => {
+  const handleOpen = () => {
     if (closeTimerRef.current !== null) {
       window.clearTimeout(closeTimerRef.current);
       closeTimerRef.current = null;
@@ -60,7 +50,7 @@ export function UsageMeter() {
     setIsOpen(true);
   };
 
-  const close = () => {
+  const handleClose = () => {
     closeTimerRef.current = window.setTimeout(() => {
       setIsOpen(false);
       closeTimerRef.current = null;
@@ -69,22 +59,21 @@ export function UsageMeter() {
 
   return (
     <div
-      onMouseEnter={open}
-      onMouseLeave={close}
-      title={title}
+      onMouseEnter={handleOpen}
+      onMouseLeave={handleClose}
       style={{
         position: "relative",
+        height: 24,
         display: "flex",
         alignItems: "center",
-        gap: 7,
-        height: 24,
+        gap: 8,
         padding: "0 5px",
         color: "var(--cmux-text-secondary)",
         fontSize: 11,
-        letterSpacing: 0,
-        whiteSpace: "nowrap",
         fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+        whiteSpace: "nowrap",
       }}
+      title={title}
     >
       {mode === "compact" ? (
         <CompactMeter
@@ -111,7 +100,7 @@ export function UsageMeter() {
           style={{
             position: "absolute",
             top: 2,
-            right: 1,
+            right: 0,
             width: 5,
             height: 5,
             borderRadius: "50%",
@@ -137,78 +126,65 @@ type MeterStatsProps = {
 function FullMeter({ claude5h, claude7d, codex5h, codex7d, showClaude, showCodex }: MeterStatsProps) {
   return (
     <>
-      {showClaude && claude5h && (
-        <span style={groupStyle}>
-        <span>CC</span>
-          <MiniStat label="5h" stat={claude5h} />
-          {claude7d && <MiniStat label="7d" stat={claude7d} />}
-        </span>
-      )}
-      {showCodex && codex5h && (
-        <span style={groupStyle}>
-        <span>CX</span>
-          <MiniStat label="5h" stat={codex5h} />
-          {codex7d && <MiniStat label="7d" stat={codex7d} />}
-        </span>
-      )}
+      {showClaude && claude5h && <Metric label="CC 5h" stat={claude5h} />}
+      {showClaude && claude7d && <Metric label="7d" stat={claude7d} />}
+      {showCodex && codex5h && <Metric label="CX 5h" stat={codex5h} />}
+      {showCodex && codex7d && <Metric label="7d" stat={codex7d} />}
     </>
   );
 }
 
 function CompactMeter({ claude5h, claude7d, codex5h, codex7d, showClaude, showCodex }: MeterStatsProps) {
   return (
-    <>
+    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
       {showClaude && claude5h && (
-        <span style={{ ...compactGroupStyle, color: compactColor(claude5h, claude7d) }}>
+        <span style={{ color: compactColor(claude5h, claude7d) }}>
           CC {formatPct(claude5h.pct)}
           {claude7d ? `/${formatPct(claude7d.pct)}` : ""}
         </span>
       )}
       {showCodex && codex5h && (
-        <span style={{ ...compactGroupStyle, color: compactColor(codex5h, codex7d) }}>
+        <span style={{ color: compactColor(codex5h, codex7d) }}>
           CX {formatPct(codex5h.pct)}
           {codex7d ? `/${formatPct(codex7d.pct)}` : ""}
         </span>
       )}
-    </>
+    </div>
   );
 }
 
-function MiniStat({ label, stat }: { label: string; stat: WindowStat }) {
-  const severity = getSeverity(stat.pct);
+type MetricProps = {
+  label: string;
+  stat: WindowStat;
+};
 
+function Metric({ label, stat }: MetricProps) {
   return (
-    <span
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 3,
-        color: severity.text,
-        fontVariantNumeric: "tabular-nums",
-      }}
-    >
+    <span style={{ display: "flex", alignItems: "center", gap: 3 }}>
       <span>{label}</span>
-      <FiveCellBar stat={stat} color={severity.bar} pulse={severity.pulse} />
+      <CellBar pct={stat.pct} />
       <span>{formatPct(stat.pct)}</span>
     </span>
   );
 }
 
-function FiveCellBar({ stat, color, pulse }: { stat: WindowStat; color: string; pulse: boolean }) {
-  const filled = Math.ceil(Math.min(Math.max(stat.pct, 0), 100) / 20);
+function CellBar({ pct }: { pct: number }) {
+  const clamped = Math.min(100, Math.max(0, pct));
+  const activeCells = clamped === 0 ? 0 : Math.max(1, Math.ceil(clamped / 20));
+  const color = usageColor(pct);
+  const danger = pct >= 95;
 
   return (
-    <span style={{ display: "inline-flex", alignItems: "center" }}>
-      {Array.from({ length: 5 }, (_, index) => (
+    <span style={{ display: "flex", alignItems: "center" }}>
+      {[0, 1, 2, 3, 4].map((cell) => (
         <span
-          key={index}
+          key={cell}
           style={{
             width: 6,
             height: 6,
-            marginRight: index === 4 ? 0 : 1,
-            borderRadius: 1,
-            background: index < filled ? color : "rgba(255,255,255,0.12)",
-            animation: index < filled && pulse ? "cmux-usage-pulse 1s infinite" : undefined,
+            marginRight: 1,
+            background: cell < activeCells ? color : "var(--cmux-border)",
+            animation: danger && cell < activeCells ? "cmux-usage-pulse 1s infinite" : undefined,
           }}
         />
       ))}
@@ -216,26 +192,48 @@ function FiveCellBar({ stat, color, pulse }: { stat: WindowStat; color: string; 
   );
 }
 
-function getSeverity(pct: number): { bar: string; text: string; pulse: boolean } {
-  if (pct >= 95) {
-    return {
-      bar: "var(--cmux-usage-danger)",
-      text: "var(--cmux-usage-danger)",
-      pulse: true,
+function useMeterMode(): MeterMode {
+  const [mode, setMode] = useState<MeterMode>(() => readMeterMode());
+
+  useEffect(() => {
+    const update = () => setMode(readMeterMode());
+    const compactQuery = window.matchMedia("(max-width: 900px)");
+    const hiddenQuery = window.matchMedia("(max-width: 700px)");
+
+    compactQuery.addEventListener("change", update);
+    hiddenQuery.addEventListener("change", update);
+    update();
+
+    return () => {
+      compactQuery.removeEventListener("change", update);
+      hiddenQuery.removeEventListener("change", update);
     };
+  }, []);
+
+  return mode;
+}
+
+function readMeterMode(): MeterMode {
+  if (typeof window === "undefined") {
+    return "full";
+  }
+  if (window.matchMedia("(max-width: 700px)").matches) {
+    return "hidden";
+  }
+  if (window.matchMedia("(max-width: 900px)").matches) {
+    return "compact";
+  }
+  return "full";
+}
+
+function usageColor(pct: number): string {
+  if (pct >= 95) {
+    return "var(--cmux-usage-danger)";
   }
   if (pct >= 80) {
-    return {
-      bar: "var(--cmux-usage-warn)",
-      text: "var(--cmux-usage-warn)",
-      pulse: false,
-    };
+    return "var(--cmux-usage-warn)";
   }
-  return {
-    bar: "var(--cmux-usage-ok)",
-    text: "var(--cmux-text-secondary)",
-    pulse: false,
-  };
+  return "var(--cmux-usage-ok)";
 }
 
 function compactColor(...stats: Array<WindowStat | null>): string {
@@ -249,33 +247,6 @@ function compactColor(...stats: Array<WindowStat | null>): string {
   return "var(--cmux-text-secondary)";
 }
 
-function getMeterMode(): MeterMode {
-  if (typeof window === "undefined") {
-    return "full";
-  }
-  if (window.matchMedia("(max-width: 700px)").matches) {
-    return "hidden";
-  }
-  if (window.matchMedia("(max-width: 900px)").matches) {
-    return "compact";
-  }
-  return "full";
+function formatPct(value: number): string {
+  return `${Math.min(100, Math.max(0, value)).toFixed(value >= 10 ? 0 : 1)}%`;
 }
-
-function formatPct(pct: number): string {
-  const clamped = Math.max(0, Math.min(100, pct));
-  return `${Math.round(clamped)}%`;
-}
-
-const groupStyle = {
-  display: "inline-flex",
-  alignItems: "center",
-  gap: 5,
-} as const;
-
-const compactGroupStyle = {
-  display: "inline-flex",
-  alignItems: "center",
-  color: "var(--cmux-text-secondary)",
-  fontVariantNumeric: "tabular-nums",
-} as const;

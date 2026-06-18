@@ -18,6 +18,7 @@ use tokio::sync::{broadcast, mpsc, Notify};
 const SCROLLBACK_CAP: usize = 32 * 1024; // 32 KB
 const FRONTEND_QUEUE_CAP: usize = 4096;
 const FRONTEND_FLUSH_INTERVAL_MS: u64 = 4;
+const FRONTEND_SATURATED_FLUSH_INTERVAL_MS: u64 = 1;
 const FRONTEND_BATCH_MAX_BYTES: usize = 64 * 1024;
 const FRONTEND_MAX_INFLIGHT_BYTES: usize = 512 * 1024;
 const FRONTEND_LOW_WATER_BYTES: usize = 256 * 1024;
@@ -25,11 +26,16 @@ const FRONTEND_MAX_INFLIGHT_BATCHES: usize = 16;
 const FRONTEND_ACK_TIMEOUT: Duration = Duration::from_millis(2500);
 const FRONTEND_STALE_TIMEOUTS: u32 = 2;
 // v0.7.1 diag: report aggregated PTY metrics every 5 s on stderr.
+// Diagnostic-only; the consumer task is debug-build-gated, so this is unread in
+// release. Allow it explicitly to keep release warning-free.
+#[allow(dead_code)]
 const METRICS_FLUSH_INTERVAL_MS: u64 = 5_000;
 
 // v0.7.1 diag: per-session counters shared by reader/forwarder threads.
-// Used only for stderr reports; no behavior change.
+// Used only for stderr reports; no behavior change. The reader task is
+// debug-gated, so some counters are write-only in release — allow dead_code.
 #[derive(Default)]
+#[allow(dead_code)]
 pub(crate) struct PtyMetrics {
     pub reads: std::sync::atomic::AtomicU64,
     pub read_micros_total: std::sync::atomic::AtomicU64,
@@ -273,7 +279,10 @@ impl FrontendFlow {
 pub struct PtySession {
     child: Mutex<Box<dyn Child + Send + Sync>>,
     master: Mutex<Box<dyn MasterPty + Send>>,
-    writer: Mutex<Box<dyn Write + Send>>,
+    // Input is enqueued here and drained in FIFO order by a dedicated writer
+    // thread. The Tauri command thread only does a non-blocking enqueue, so a
+    // full conpty buffer can never stall the UI thread anymore.
+    write_tx: mpsc::UnboundedSender<Vec<u8>>,
     pub broadcast: broadcast::Sender<Vec<u8>>,
     scrollback: Arc<Mutex<VecDeque<u8>>>,
     frontend_flow: Arc<FrontendFlow>,
@@ -282,7 +291,8 @@ pub struct PtySession {
     pub(crate) metrics: Arc<PtyMetrics>,
 }
 
-// Safety: All fields are behind Mutex, access is serialized.
+// Safety: child/master/scrollback/data_channel are behind Mutex and write_tx is
+// itself Send + Sync, so concurrent &PtySession access is serialized.
 unsafe impl Sync for PtySession {}
 
 impl PtySession {
@@ -358,6 +368,29 @@ impl PtySession {
             .master
             .try_clone_reader()
             .map_err(|e| format!("Failed to get PTY reader: {e}"))?;
+
+        // Dedicated writer thread: owns the PTY writer and drains an unbounded
+        // queue in FIFO order. `write()` only enqueues, so a blocked conpty
+        // buffer applies backpressure to this thread alone — never to the Tauri
+        // command (UI) thread. The thread exits when the session is dropped
+        // (sender gone) or the PTY write fails (child gone).
+        let (write_tx, mut write_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+        thread::spawn(move || {
+            let mut writer = writer;
+            while let Some(data) = write_rx.blocking_recv() {
+                let mut broken = false;
+                // Chunk writes to avoid PTY buffer overflow (conpty ~4KB limit).
+                for chunk in data.chunks(1024) {
+                    if writer.write_all(chunk).is_err() || writer.flush().is_err() {
+                        broken = true;
+                        break;
+                    }
+                }
+                if broken {
+                    break;
+                }
+            }
+        });
 
         // Create broadcast channel and scrollback for remote clients
         let (broadcast_tx, _) = broadcast::channel::<Vec<u8>>(256);
@@ -468,7 +501,8 @@ impl PtySession {
                 if batch_len < FRONTEND_BATCH_MAX_BYTES {
                     tokio::time::sleep(Duration::from_millis(FRONTEND_FLUSH_INTERVAL_MS)).await;
                 } else {
-                    tokio::task::yield_now().await;
+                    tokio::time::sleep(Duration::from_millis(FRONTEND_SATURATED_FLUSH_INTERVAL_MS))
+                        .await;
                 }
             }
         });
@@ -513,6 +547,7 @@ impl PtySession {
                                             cwd: cwd.clone(),
                                             git_branch: old.git_branch.clone(),
                                             process_name: old.process_name.clone(),
+                                            agent_active: old.agent_active,
                                             claude_session_id: old.claude_session_id.clone(),
                                             agent_kind: old.agent_kind.clone(),
                                             agent_session_id: old.agent_session_id.clone(),
@@ -522,6 +557,7 @@ impl PtySession {
                                             cwd: cwd.clone(),
                                             git_branch: None,
                                             process_name: None,
+                                            agent_active: false,
                                             claude_session_id: None,
                                             agent_kind: None,
                                             agent_session_id: None,
@@ -584,7 +620,7 @@ impl PtySession {
         Ok(Self {
             child: Mutex::new(child),
             master: Mutex::new(pair.master),
-            writer: Mutex::new(writer),
+            write_tx,
             broadcast: broadcast_tx,
             scrollback,
             frontend_flow,
@@ -610,38 +646,14 @@ impl PtySession {
     }
 
     pub fn write(&self, data: &[u8]) -> Result<(), String> {
-        let start = Instant::now();
-        let mut writer = self
-            .writer
-            .lock()
-            .map_err(|e| format!("Lock failed: {e}"))?;
-
-        let lock_micros = start.elapsed().as_micros();
-        let write_start = Instant::now();
-
-        // Chunk writes to avoid PTY buffer overflow (conpty ~4KB limit)
-        for chunk in data.chunks(1024) {
-            writer
-                .write_all(chunk)
-                .map_err(|e| format!("Write failed: {e}"))?;
-            writer.flush().map_err(|e| format!("Flush failed: {e}"))?;
-        }
-
-        let write_micros = write_start.elapsed().as_micros();
-        let total_micros = start.elapsed().as_micros();
-
-        // Log slow writes in debug builds only
-        if cfg!(debug_assertions) && total_micros > 1000 {
-            eprintln!(
-                "[PERF] PTY write: lock={}μs, write+flush={}μs, total={}μs, bytes={}",
-                lock_micros,
-                write_micros,
-                total_micros,
-                data.len()
-            );
-        }
-
-        Ok(())
+        // Non-blocking enqueue. The dedicated writer thread does the actual
+        // (potentially blocking) write_all/flush in FIFO order, so this returns
+        // immediately and never stalls the caller — even if the child stops
+        // draining its input. Order is preserved because there is a single
+        // consumer and callers enqueue in invocation order.
+        self.write_tx
+            .send(data.to_vec())
+            .map_err(|_| "PTY writer thread has exited".to_string())
     }
 
     pub fn resize(&self, cols: u16, rows: u16) -> Result<(), String> {

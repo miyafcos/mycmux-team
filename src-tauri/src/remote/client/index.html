@@ -9,8 +9,8 @@
   <title>mycmux Remote</title>
   <link rel="manifest" href="/manifest.json">
   <link rel="apple-touch-icon" href="data:,">
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
-  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/vendor/xterm.css">
+  <link rel="stylesheet" href="/style.css?v=20260503-1907">
 </head>
 <body>
   <div id="app">
@@ -49,8 +49,8 @@
 
       <!-- Prompt input bar (shown when idle) -->
       <div id="prompt-bar" class="hidden">
-        <input id="prompt-input" type="text" placeholder="Ask Claude..." autocomplete="off" autocorrect="off" spellcheck="false">
-        <button id="prompt-send">↑</button>
+        <input id="prompt-input" type="text" placeholder="Type text..." autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" inputmode="text" enterkeyhint="send">
+        <button id="prompt-send">Send</button>
       </div>
 
       <div id="toolbar">
@@ -88,9 +88,8 @@
     </div>
   </div>
 
-  <script defer src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
-  <script defer src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
-  <script defer src="https://cdn.jsdelivr.net/npm/@xterm/addon-canvas@0.7.0/lib/addon-canvas.min.js"></script>
-  <script defer src="/app.js"></script>
+  <script src="/vendor/xterm.js"></script>
+  <script src="/vendor/addon-fit.js"></script>
+  <script src="/app.js?v=20260503-1907"></script>
 </body>
 </html>

@@ -43,6 +43,7 @@
   var reconnectAttempts = 0;
   var pendingWrites = 0;
   var flowPaused = false;
+  var promptComposing = false;
 
   // --- DOM refs ---
   var dashboardView = document.getElementById("dashboard-view");
@@ -65,6 +66,15 @@
   var agentStatusEl = document.getElementById("agent-status");
   var toolbar = document.getElementById("toolbar");
   var agentState = "idle"; // "idle" | "working" | "waiting"
+
+  function isTouchDevice() {
+    return window.matchMedia && window.matchMedia("(pointer: coarse)").matches;
+  }
+
+  function updateAppHeight() {
+    var height = window.visualViewport ? window.visualViewport.height : window.innerHeight;
+    document.documentElement.style.setProperty("--app-height", Math.max(320, height) + "px");
+  }
 
   // --- Agent status detection (from terminal output) ---
   function detectAgentStatus(text) {
@@ -105,12 +115,12 @@
     agentStatusEl.className = "status-" + state;
     agentStatusEl.textContent = state === "working" ? "Working..." : state === "waiting" ? "Waiting" : "Idle";
 
-    // Show/hide prompt bar based on state
+    // Keep the staged input available on mobile. It is the reliable path for IME text.
     if (promptBar) {
-      if (state === "idle" && currentView === "terminal") {
-        promptBar.classList.remove("hidden");
-      } else {
+      if (state === "waiting" || currentView !== "terminal") {
         promptBar.classList.add("hidden");
+      } else {
+        promptBar.classList.remove("hidden");
       }
     }
 
@@ -177,6 +187,7 @@
       var rest = hash.slice("#/terminal/".length);
       var qIdx = rest.indexOf("?");
       var sid = qIdx >= 0 ? rest.slice(0, qIdx) : rest;
+      try { sid = decodeURIComponent(sid); } catch(e) {}
       var label = "";
       if (qIdx >= 0) {
         try { label = new URLSearchParams(rest.slice(qIdx)).get("label") || ""; } catch(e) {}
@@ -254,7 +265,7 @@
     var html = "";
     for (var i = 0; i < workspaces.length; i++) {
       var ws = workspaces[i];
-      html += '<div class="workspace-card">';
+      html += '<div class="workspace-card" data-grid="' + escAttr(ws.grid_template || "free") + '">';
       html += '<div class="workspace-card-header">';
       html += '<span class="workspace-name">' + escHtml(ws.name) + "</span>";
       var paneCount = (ws.panes || []).length;
@@ -269,14 +280,24 @@
         var pane = panes[j];
         var meta = pane.metadata || {};
         var isActive = pane.active;
+        var agentKind = normalizeAgentKind(meta.agent_kind || meta.process_name || "");
 
         html += '<div class="pane-row">';
         html += '<div class="pane-indicator ' + (isActive ? "active" : "inactive") + '"></div>';
         html += '<div class="pane-info">';
 
+        html += '<div class="pane-title-row">';
         if (pane.label) {
           html += '<span class="pane-label">' + escHtml(pane.label) + "</span>";
         }
+        html += '<span class="pane-status ' + (isActive ? "active" : "inactive") + '">' + (isActive ? "active" : "inactive") + "</span>";
+        if (agentKind) {
+          html += '<span class="agent-badge ' + escAttr(agentKind) + '">' + escHtml(agentKind) + "</span>";
+        }
+        if (meta.updated_at) {
+          html += '<span class="pane-time">' + escHtml(relativeTime(meta.updated_at)) + "</span>";
+        }
+        html += "</div>";
 
         html += '<div class="pane-meta-row">';
         if (meta.cwd) {
@@ -288,7 +309,7 @@
         html += "</div>";
 
         if (meta.process_name) {
-          html += '<span class="pane-process">' + escHtml(meta.process_name) + "</span>";
+          html += '<span class="pane-detail">' + escHtml(meta.process_name) + "</span>";
         }
 
         html += "</div>"; // .pane-info
@@ -306,7 +327,7 @@
     for (var k = 0; k < connectBtns.length; k++) {
       connectBtns[k].addEventListener("click", function () {
         var label = this.dataset.label || "";
-        navigate("#/terminal/" + this.dataset.session + (label ? "?label=" + encodeURIComponent(label) : ""));
+        navigate("#/terminal/" + encodeURIComponent(this.dataset.session) + (label ? "?label=" + encodeURIComponent(label) : ""));
       });
     }
   }
@@ -328,6 +349,27 @@
     return ".../" + parts.slice(-2).join("/");
   }
 
+  function normalizeAgentKind(value) {
+    var lower = String(value || "").toLowerCase();
+    if (lower.includes("claude-codex")) return "claude-codex";
+    if (lower.includes("claude")) return "claude";
+    if (lower.includes("codex")) return "codex";
+    return "";
+  }
+
+  function relativeTime(value) {
+    var time = typeof value === "number" ? value : Date.parse(value);
+    if (!time || Number.isNaN(time)) return "";
+    var diff = Math.max(0, Date.now() - time);
+    var sec = Math.floor(diff / 1000);
+    if (sec < 45) return "now";
+    var min = Math.floor(sec / 60);
+    if (min < 60) return min + "m ago";
+    var hour = Math.floor(min / 60);
+    if (hour < 24) return hour + "h ago";
+    return Math.floor(hour / 24) + "d ago";
+  }
+
   // --- Terminal ---
   function initTerminal() {
     if (term) return true;
@@ -339,8 +381,9 @@
 
     term = new Terminal({
       cursorBlink: true,
-      fontSize: 16,
+      fontSize: isTouchDevice() ? 13 : 16,
       fontFamily: "'Menlo', 'Consolas', 'Courier New', monospace",
+      scrollback: 1200,
       theme: {
         background: "#1a1b26",
         foreground: "#c0caf5",
@@ -368,13 +411,6 @@
 
     fitAddon = new FitAddon.FitAddon();
     term.loadAddon(fitAddon);
-
-    try {
-      var canvasAddon = new CanvasAddon.CanvasAddon();
-      term.loadAddon(canvasAddon);
-    } catch (e) {
-      console.warn("Canvas addon failed, using DOM renderer:", e);
-    }
 
     var container = document.getElementById("terminal-container");
     term.open(container);
@@ -406,11 +442,12 @@
       return;
     }
 
-    showStatus("Connecting...");
+    showStatus("Connecting to " + location.host + "...");
 
     var proto = location.protocol === "https:" ? "wss:" : "ws:";
     var url = proto + "//" + location.host + "/ws?token=" + encodeURIComponent(token) + "&session=" + encodeURIComponent(sessionId);
     var opened = false;
+    var connectTimer = null;
 
     try {
       ws = new WebSocket(url);
@@ -422,8 +459,21 @@
     }
     ws.binaryType = "arraybuffer";
 
+    connectTimer = setTimeout(function () {
+      if (!opened && ws && ws.readyState === WebSocket.CONNECTING) {
+        reconnectEnabled = false;
+        setConnState("disconnected");
+        showStatus("WebSocket timeout to " + location.host + ". HTTP loaded, but the session socket did not open.", true);
+        try { ws.close(); } catch(e) {}
+      }
+    }, 8000);
+
     ws.onopen = function () {
       opened = true;
+      if (connectTimer) {
+        clearTimeout(connectTimer);
+        connectTimer = null;
+      }
       hideStatus();
       hideToast();
       setConnState("connected");
@@ -445,7 +495,7 @@
       setTimeout(fitAndResize, 800);
 
       // Focus terminal after scrollback replay
-      setTimeout(function () { if (term) term.focus(); }, 200);
+      setTimeout(function () { if (term && !isTouchDevice()) term.focus(); }, 200);
 
       // Start keepalive ping
       startPing();
@@ -485,6 +535,11 @@
             sessionInfo.textContent = shortenSessionId(msg.session_id || sessionId);
           } else if (msg.type === "pong") {
             lastPongTime = Date.now();
+          } else if (msg.type === "token_rotated") {
+            reconnectEnabled = false;
+            localStorage.removeItem("mycmux-token");
+            showStatus("Token rotated on PC. Scan the new QR code.", true);
+            setConnState("disconnected");
           } else if (msg.type === "error") {
             reconnectEnabled = false;
             showToast(msg.msg || "Error");
@@ -501,12 +556,17 @@
       }
     };
 
-    ws.onclose = function () {
+    ws.onclose = function (event) {
+      if (connectTimer) {
+        clearTimeout(connectTimer);
+        connectTimer = null;
+      }
       stopPing();
       setConnState("disconnected");
       if (!opened) {
         reconnectEnabled = false;
-        showStatus("WebSocket did not connect. Check Tailscale and reload.", true);
+        var code = event && event.code ? " code " + event.code : "";
+        showStatus("WebSocket did not connect" + code + ". Check Tailscale and reload.", true);
         return;
       }
       if (reconnectEnabled && currentView === "terminal" && currentSessionId === sessionId) {
@@ -525,8 +585,12 @@
     };
 
     ws.onerror = function () {
+      if (connectTimer) {
+        clearTimeout(connectTimer);
+        connectTimer = null;
+      }
       if (!opened) {
-        showStatus("WebSocket error. Check Tailscale and reload.", true);
+        showStatus("WebSocket error to " + location.host + ". Check Tailscale and reload.", true);
       }
       if (ws) ws.close();
     };
@@ -596,12 +660,13 @@
     dashboardView.classList.add("hidden");
     terminalView.classList.remove("hidden");
 
+    var switchingSession = currentSessionId !== sessionId;
     currentSessionId = sessionId;
     if (!initTerminal()) return;
     sessionInfo.textContent = label || shortenSessionId(sessionId);
 
     // Only clear when switching to a DIFFERENT session
-    if (currentSessionId !== sessionId && term) {
+    if (switchingSession && term) {
       term.clear();
     }
 
@@ -617,7 +682,7 @@
         }
       }
     }
-    setTimeout(function () { doFit(); if (term) term.focus(); }, 100);
+    setTimeout(function () { doFit(); if (term && !isTouchDevice()) term.focus(); }, 100);
     setTimeout(doFit, 500);
     setTimeout(doFit, 1000);
   }
@@ -640,6 +705,7 @@
   // --- Viewport resize (iOS keyboard) ---
   var resizeDebounceTimer = null;
   function handleResize() {
+    updateAppHeight();
     if (currentView === "terminal" && fitAddon) {
       if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
       resizeDebounceTimer = setTimeout(function () {
@@ -648,8 +714,10 @@
     }
   }
 
+  updateAppHeight();
   if (window.visualViewport) {
     window.visualViewport.addEventListener("resize", handleResize);
+    window.visualViewport.addEventListener("scroll", handleResize);
   }
   window.addEventListener("resize", handleResize);
 
@@ -775,21 +843,30 @@
   }
 
   // --- Prompt input ---
+  function sendPromptInput() {
+    if (!promptInput || !ws || ws.readyState !== WebSocket.OPEN) return;
+    var text = promptInput.value;
+    if (!text || !text.trim()) return;
+    ws.send(new TextEncoder().encode(text + "\n"));
+    promptInput.value = "";
+    setAgentState("working");
+  }
+
   if (promptSend) {
-    promptSend.addEventListener("click", function () {
-      var text = promptInput.value.trim();
-      if (text && ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(new TextEncoder().encode(text + "\n"));
-        promptInput.value = "";
-        setAgentState("working");
-      }
-    });
+    promptSend.addEventListener("click", sendPromptInput);
   }
   if (promptInput) {
+    promptInput.addEventListener("compositionstart", function () {
+      promptComposing = true;
+    });
+    promptInput.addEventListener("compositionend", function () {
+      promptComposing = false;
+    });
     promptInput.addEventListener("keydown", function (e) {
+      if (promptComposing || e.isComposing || e.keyCode === 229) return;
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
-        promptSend.click();
+        sendPromptInput();
       }
     });
   }

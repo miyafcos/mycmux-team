@@ -5,6 +5,7 @@ export const MAX_FONT_SIZE = 24;
 export const PANE_HEADER_HEIGHT = 36;
 export const TAB_BAR_HEIGHT = 36;
 export const SIDEBAR_WIDTH = 240;
+export const RIGHT_SIDEBAR_WIDTH = 280;
 export const SESSION_ID_PREFIX = "pty";
 export const RESIZE_DEBOUNCE_MS = 100;
 export const INIT_DELAY_MS = 300;

@@ -1,8 +1,9 @@
 use axum::extract::ws::{Message, WebSocket};
-use axum::extract::{Query, State, WebSocketUpgrade};
+use axum::extract::{ConnectInfo, Query, State, WebSocketUpgrade};
 use axum::response::IntoResponse;
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, Notify};
 
@@ -20,28 +21,37 @@ pub struct WsQuery {
 /// HTTP handler — upgrades to WebSocket after token validation.
 pub async fn ws_upgrade(
     State(state): State<Arc<RemoteState>>,
+    ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
     Query(query): Query<WsQuery>,
     ws: WebSocketUpgrade,
 ) -> impl IntoResponse {
     if !state.control.validate_token(&query.token).await {
         return (axum::http::StatusCode::UNAUTHORIZED, "Invalid token").into_response();
     }
-    ws.on_upgrade(move |socket| handle_ws(socket, state, query))
+    ws.on_upgrade(move |socket| handle_ws(socket, state, query, peer_addr.to_string()))
         .into_response()
 }
 
-async fn handle_ws(socket: WebSocket, state: Arc<RemoteState>, query: WsQuery) {
+async fn handle_ws(socket: WebSocket, state: Arc<RemoteState>, query: WsQuery, peer_addr: String) {
     let session_param = query.session.as_deref().unwrap_or("");
+    let initial_session_id = if session_param.is_empty() || session_param == "new" {
+        None
+    } else {
+        Some(session_param.to_string())
+    };
+    let client_id = state.control.register_client(peer_addr, initial_session_id);
 
     // Explicit "new" → create a fresh remote shell
     if session_param == "new" {
-        handle_new_remote_session(socket, state).await;
+        handle_new_remote_session(socket, state.clone(), client_id).await;
+        state.control.unregister_client(client_id);
         return;
     }
 
     // No session specified → also create new
     if session_param.is_empty() {
-        handle_new_remote_session(socket, state).await;
+        handle_new_remote_session(socket, state.clone(), client_id).await;
+        state.control.unregister_client(client_id);
         return;
     }
 
@@ -57,7 +67,7 @@ async fn handle_ws(socket: WebSocket, state: Arc<RemoteState>, query: WsQuery) {
     };
 
     if let Some((rx, sb)) = bridge_data {
-        handle_app_session_bridge(socket, state, session_param.to_string(), rx, sb).await;
+        handle_app_session_bridge(socket, state.clone(), session_param.to_string(), rx, sb).await;
     } else {
         // Session not found — send error instead of silently creating a new shell
         let (mut sink, _) = socket.split();
@@ -68,6 +78,7 @@ async fn handle_ws(socket: WebSocket, state: Arc<RemoteState>, query: WsQuery) {
         let _ = sink.send(Message::Text(msg.into())).await;
         let _ = sink.close().await;
     }
+    state.control.unregister_client(client_id);
 }
 
 /// Send scrollback in 16KB chunks to avoid freezing mobile clients.
@@ -99,6 +110,7 @@ async fn handle_app_session_bridge(
     scrollback: Vec<u8>,
 ) {
     let (mut sink, mut stream) = socket.split();
+    let mut disconnect_rx = state.control.subscribe_disconnect();
 
     let connected =
         format!(r#"{{"type":"connected","session_id":"{session_id}","mode":"attach"}}"#);
@@ -146,6 +158,11 @@ async fn handle_app_session_bridge(
                     if sink.send(Message::Text(ctrl_msg.into())).await.is_err() {
                         break;
                     }
+                }
+                _ = disconnect_rx.recv() => {
+                    let _ = sink.send(Message::Text(r#"{"type":"token_rotated"}"#.into())).await;
+                    let _ = sink.close().await;
+                    break;
                 }
             }
         }
@@ -229,8 +246,9 @@ fn handle_app_control(
     }
 }
 
-async fn handle_new_remote_session(socket: WebSocket, state: Arc<RemoteState>) {
+async fn handle_new_remote_session(socket: WebSocket, state: Arc<RemoteState>, client_id: u64) {
     let (mut sink, mut stream) = socket.split();
+    let mut disconnect_rx = state.control.subscribe_disconnect();
 
     let (cmd, args) = get_default_shell();
 
@@ -247,6 +265,9 @@ async fn handle_new_remote_session(socket: WebSocket, state: Arc<RemoteState>) {
     if sink.send(Message::Text(connected.into())).await.is_err() {
         return;
     }
+    state
+        .control
+        .update_client_session(client_id, Some(session_id.clone()));
 
     // Send scrollback in chunks
     if let Some(session) = state.sessions.get(&session_id) {
@@ -265,16 +286,25 @@ async fn handle_new_remote_session(socket: WebSocket, state: Arc<RemoteState>) {
 
     let mut send_task = tokio::spawn(async move {
         loop {
-            match rx.recv().await {
-                Ok(data) => {
-                    if sink.send(Message::Binary(data.into())).await.is_err() {
-                        break;
+            tokio::select! {
+                result = rx.recv() => {
+                    match result {
+                        Ok(data) => {
+                            if sink.send(Message::Binary(data.into())).await.is_err() {
+                                break;
+                            }
+                        }
+                        Err(broadcast::error::RecvError::Lagged(n)) => {
+                            eprintln!("[remote] WebSocket lagged, skipped {n} messages");
+                        }
+                        Err(broadcast::error::RecvError::Closed) => break,
                     }
                 }
-                Err(broadcast::error::RecvError::Lagged(n)) => {
-                    eprintln!("[remote] WebSocket lagged, skipped {n} messages");
+                _ = disconnect_rx.recv() => {
+                    let _ = sink.send(Message::Text(r#"{"type":"token_rotated"}"#.into())).await;
+                    let _ = sink.close().await;
+                    break;
                 }
-                Err(broadcast::error::RecvError::Closed) => break,
             }
         }
     });

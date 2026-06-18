@@ -3,6 +3,7 @@ import { getVersion } from "@tauri-apps/api/app";
 import { useSettingsStore } from "../../stores/settingsStore";
 import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
+import { getRemoteInfo, rotateRemoteToken, type RemoteInfo } from "../../lib/ipc";
 
 type UpdateStatus = "idle" | "checking" | "latest" | "downloading" | "ready" | "error";
 
@@ -42,6 +43,58 @@ export default function SettingsMenu({
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>("idle");
   const [updateMsg, setUpdateMsg] = useState<string>("");
   const [currentVersion, setCurrentVersion] = useState<string>("読み込み中…");
+  const [remoteOpen, setRemoteOpen] = useState(false);
+  const [remoteInfo, setRemoteInfo] = useState<RemoteInfo | null>(null);
+  const [remoteLoading, setRemoteLoading] = useState(false);
+  const [remoteMsg, setRemoteMsg] = useState<string>("");
+
+  const loadRemoteInfo = async () => {
+    setRemoteLoading(true);
+    setRemoteMsg("");
+    try {
+      setRemoteInfo(await getRemoteInfo());
+    } catch (e) {
+      console.error("Failed to load remote info", e);
+      setRemoteMsg("Remote 情報を取得できませんでした");
+    } finally {
+      setRemoteLoading(false);
+    }
+  };
+
+  const handleOpenRemote = async () => {
+    setRemoteOpen(true);
+    await loadRemoteInfo();
+  };
+
+  const handleRotateRemoteToken = async () => {
+    if (!window.confirm("Remote token を再生成します。接続中の iPhone は切断されます。")) {
+      return;
+    }
+    setRemoteLoading(true);
+    setRemoteMsg("");
+    try {
+      const nextInfo = await rotateRemoteToken();
+      setRemoteInfo(nextInfo);
+      setRemoteOpen(true);
+      setRemoteMsg(`token を再生成しました。末尾: ${nextInfo.token_suffix}`);
+    } catch (e) {
+      console.error("Failed to rotate remote token", e);
+      setRemoteMsg("token 再生成に失敗しました");
+    } finally {
+      setRemoteLoading(false);
+    }
+  };
+
+  const copyRemoteUrl = async () => {
+    if (!remoteInfo?.url) return;
+    try {
+      await navigator.clipboard.writeText(remoteInfo.url);
+      setRemoteMsg("URL をコピーしました");
+    } catch (e) {
+      console.error("Failed to copy remote URL", e);
+      setRemoteMsg("URL コピーに失敗しました");
+    }
+  };
 
   const handleCheckUpdate = async () => {
     setUpdateStatus("checking");
@@ -193,6 +246,30 @@ export default function SettingsMenu({
 
       <div style={{ height: 1, background: "var(--cmux-border)" }} />
 
+      <button
+        onClick={handleOpenRemote}
+        className="cmux-menu-item"
+        style={itemStyle}
+      >
+        <span>Remote: QR を表示</span>
+        <span style={{ color: "var(--cmux-text-dim)" }}>{remoteInfo ? remoteInfo.token_suffix : ""}</span>
+      </button>
+
+      <button
+        onClick={handleRotateRemoteToken}
+        disabled={remoteLoading}
+        className="cmux-menu-item"
+        style={{
+          ...itemStyle,
+          opacity: remoteLoading ? 0.5 : 1,
+          cursor: remoteLoading ? "wait" : "pointer",
+        }}
+      >
+        <span>Remote: トークン再生成</span>
+      </button>
+
+      <div style={{ height: 1, background: "var(--cmux-border)" }} />
+
       <label
         style={{
           padding: "10px 12px 4px",
@@ -261,12 +338,140 @@ export default function SettingsMenu({
           {updateMsg}
         </div>
       )}
+      {remoteOpen && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) {
+              setRemoteOpen(false);
+            }
+          }}
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 1000,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 20,
+            background: "var(--cmux-backdrop)",
+          }}
+        >
+          <div
+            style={{
+              width: "min(520px, calc(100vw - 32px))",
+              maxHeight: "calc(100vh - 48px)",
+              overflow: "auto",
+              background: "var(--cmux-popover)",
+              border: "1px solid var(--cmux-border)",
+              borderRadius: 8,
+              boxShadow: "var(--cmux-shadow-dialog)",
+              padding: 16,
+              color: "var(--cmux-text)",
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", marginBottom: 12 }}>
+              <div>
+                <div style={{ fontSize: 15, fontWeight: 700 }}>Remote Access</div>
+                <div style={{ fontSize: 11, color: "var(--cmux-text-dim)", marginTop: 2 }}>
+                  token末尾: {remoteInfo?.token_suffix ?? "----"}
+                </div>
+              </div>
+              <button
+                onClick={() => setRemoteOpen(false)}
+                style={{ ...itemStyle, width: "auto", padding: "6px 8px", border: "1px solid var(--cmux-border)", borderRadius: 6 }}
+              >
+                閉じる
+              </button>
+            </div>
+
+            {remoteLoading && <div style={{ fontSize: 12, color: "var(--cmux-text-dim)", marginBottom: 10 }}>読み込み中…</div>}
+            {remoteMsg && (
+              <div style={{ fontSize: 12, color: "var(--cmux-text-dim)", marginBottom: 10 }}>
+                {remoteMsg}
+              </div>
+            )}
+
+            {remoteInfo && (
+              <>
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "center",
+                    background: "#fff",
+                    borderRadius: 6,
+                    padding: 12,
+                    marginBottom: 12,
+                  }}
+                  dangerouslySetInnerHTML={{ __html: remoteInfo.qr_svg }}
+                />
+                <div
+                  style={{
+                    fontFamily: "Menlo, Consolas, monospace",
+                    fontSize: 11,
+                    lineHeight: 1.45,
+                    wordBreak: "break-all",
+                    color: "var(--cmux-text)",
+                    background: "color-mix(in srgb, var(--cmux-text) 10%, transparent)",
+                    border: "1px solid var(--cmux-border)",
+                    borderRadius: 6,
+                    padding: 10,
+                    marginBottom: 10,
+                  }}
+                >
+                  {remoteInfo.url}
+                </div>
+                <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+                  <button onClick={copyRemoteUrl} style={{ ...itemStyle, width: "auto", border: "1px solid var(--cmux-border)", borderRadius: 6 }}>
+                    URLをコピー
+                  </button>
+                  <button onClick={loadRemoteInfo} style={{ ...itemStyle, width: "auto", border: "1px solid var(--cmux-border)", borderRadius: 6 }}>
+                    更新
+                  </button>
+                </div>
+                <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>接続中クライアント</div>
+                {remoteInfo.connected_clients.length === 0 ? (
+                  <div style={{ fontSize: 12, color: "var(--cmux-text-dim)" }}>接続中の iPhone はありません</div>
+                ) : (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    {remoteInfo.connected_clients.map((client) => (
+                      <div
+                        key={client.id}
+                        style={{
+                          display: "grid",
+                          gridTemplateColumns: "1fr auto",
+                          gap: 6,
+                          padding: 8,
+                          border: "1px solid var(--cmux-border)",
+                          borderRadius: 6,
+                          fontSize: 12,
+                        }}
+                      >
+                        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {client.peer_addr}
+                        </span>
+                        <span style={{ color: "var(--cmux-text-dim)" }}>
+                          {new Date(client.connected_at).toLocaleTimeString()}
+                        </span>
+                        <span style={{ gridColumn: "1 / -1", color: "var(--cmux-text-dim)", fontFamily: "Menlo, Consolas, monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {client.attached_session_id ?? "dashboard"}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
 // Resume (CRSM Palette) per-kind visibility checkboxes. Mirrors the
-// existing notification checkbox styling for visual consistency.
+// notification checkbox styling for visual consistency.
 function CrsmPaletteSection() {
   const showClaude = useSettingsStore((s) => s.crsmShowClaude);
   const showCodex = useSettingsStore((s) => s.crsmShowCodex);

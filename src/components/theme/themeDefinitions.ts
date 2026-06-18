@@ -8,11 +8,12 @@ export const THEME_GROUPS: Array<{ id: ThemeGroup; label: string; hint: string }
   { id: "light", label: "明るい配色", hint: "昼間や資料作業向け" },
 ];
 
-type ThemeDraft = Omit<ThemeDefinition, "colorScheme" | "chrome" | "status" | "notification"> & {
+type ThemeDraft = Omit<ThemeDefinition, "colorScheme" | "chrome" | "status" | "notification" | "buddy"> & {
   colorScheme?: ThemeColorScheme;
   chrome: Pick<ThemeDefinition["chrome"], "background" | "surface" | "border" | "text" | "textMuted" | "accent"> &
     Partial<Pick<ThemeDefinition["chrome"], "textDim" | "hover" | "selected" | "danger">>;
   status?: Partial<ThemeStatusColors>;
+  buddy?: Partial<ThemeDefinition["buddy"]>;
   notification?: string;
 };
 
@@ -34,22 +35,32 @@ function completeTheme(theme: ThemeDraft): ThemeDefinition {
   const colorScheme: ThemeColorScheme = theme.colorScheme ?? (theme.group === "light" ? "light" : "dark");
   const isLight = colorScheme === "light";
   const statusBase = isLight ? DEFAULT_LIGHT_STATUS : DEFAULT_DARK_STATUS;
+  const chrome: ThemeDefinition["chrome"] = {
+    ...theme.chrome,
+    textDim: theme.chrome.textDim ?? (isLight ? "#9b938d" : "#475569"),
+    hover: theme.chrome.hover ?? (isLight ? "rgba(0, 0, 0, 0.075)" : "rgba(255, 255, 255, 0.065)"),
+    selected: theme.chrome.selected ?? (isLight ? "rgba(0, 0, 0, 0.095)" : "rgba(255, 255, 255, 0.085)"),
+    danger: theme.chrome.danger ?? (isLight ? "#c85757" : "#fb7185"),
+  };
+  const status: ThemeStatusColors = {
+    ...statusBase,
+    ...theme.status,
+  };
+  const notification = theme.notification ?? theme.status?.waiting ?? statusBase.waiting;
+  const buddy: ThemeDefinition["buddy"] = {
+    ink: theme.buddy?.ink ?? (isLight ? "#2c2218" : chrome.text),
+    blush: theme.buddy?.blush ?? (isLight ? "#ff9aa8" : "#ffb4c0"),
+    spark: theme.buddy?.spark ?? (isLight ? "#ffd45e" : chrome.accent),
+    sweat: theme.buddy?.sweat ?? (isLight ? "#7bc1ff" : status.working),
+  };
 
   return {
     ...theme,
     colorScheme,
-    chrome: {
-      ...theme.chrome,
-      textDim: theme.chrome.textDim ?? (isLight ? "#9b938d" : "#475569"),
-      hover: theme.chrome.hover ?? (isLight ? "rgba(0, 0, 0, 0.075)" : "rgba(255, 255, 255, 0.065)"),
-      selected: theme.chrome.selected ?? (isLight ? "rgba(0, 0, 0, 0.095)" : "rgba(255, 255, 255, 0.085)"),
-      danger: theme.chrome.danger ?? (isLight ? "#c85757" : "#fb7185"),
-    },
-    status: {
-      ...statusBase,
-      ...theme.status,
-    },
-    notification: theme.notification ?? theme.status?.waiting ?? statusBase.waiting,
+    chrome,
+    status,
+    buddy,
+    notification,
   };
 }
 

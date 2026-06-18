@@ -8,6 +8,7 @@ use axum::routing::get;
 use axum::Router;
 use serde::Serialize;
 use session::RemoteSessionManager;
+use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -37,17 +38,6 @@ pub struct RemoteInfo {
     connected_clients: Vec<RemoteClientSnapshot>,
 }
 
-/// Runtime control surface shared between the Tauri command layer and the
-/// embedded axum server. Keeps the public structure of the master worktree so
-/// that lib.rs can be cherry-picked without manual adapt fixes.
-///
-/// Note: `clients` / `next_client_id` / `disconnect_tx` are unused in the lite
-/// build today because lite's `ws_handler` does not yet track per-connection
-/// state. They are kept here so the public API matches master verbatim. The
-/// lite ws_handler can adopt them later (register/unregister around handle_ws,
-/// listen on subscribe_disconnect for token-rotation kicks) without touching
-/// any other module.
-#[allow(dead_code)]
 pub struct RemoteControl {
     token: RwLock<String>,
     port: u16,
@@ -56,7 +46,6 @@ pub struct RemoteControl {
     disconnect_tx: broadcast::Sender<()>,
 }
 
-#[allow(dead_code)]
 impl RemoteControl {
     pub fn new() -> Self {
         let (disconnect_tx, _) = broadcast::channel(32);
@@ -150,10 +139,9 @@ fn configured_port() -> u16 {
     std::env::var("MYCMUX_REMOTE_PORT")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(7681)
+        .unwrap_or(7682)
 }
 
-#[allow(dead_code)]
 fn current_time_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -214,7 +202,7 @@ pub fn start_remote_server(
         // Write port file for discovery
         let port_file = match dirs::home_dir() {
             Some(mut p) => {
-                p.push(".mycmux-lite");
+                p.push(".mycmux");
                 std::fs::create_dir_all(&p).ok();
                 p.push("remote.port");
                 let _ = std::fs::write(&p, port.to_string());
@@ -226,22 +214,18 @@ pub fn start_remote_server(
             }
         };
 
-        // Print connection info + QR (prefer Tailscale IP for anywhere access).
-        // Lite-only: emit ASCII QR to the launching terminal so chime team users
-        // can scan it without opening Settings → Remote.
+        // Print connection info + QR (prefer Tailscale IP for anywhere access)
         if let Some(ip) = qr::local_ip() {
             let token = state.control.current_token().await;
-            let url = qr::connection_url(&ip, port, &token);
+            let suffix = token_suffix(&token);
             let via = if ip.starts_with("100.") {
                 "Tailscale"
             } else {
                 "LAN"
             };
             println!("\n=== mycmux Remote Terminal ({via}) ===");
-            println!("URL: {url}");
-            println!();
-            println!("{}", qr::ascii_qr(&url));
-            println!("Scan this QR code with your iPhone camera.");
+            println!("URL: http://{ip}:{port}/#token=<hidden>; token suffix={suffix}");
+            println!("Open Settings > Remote: QR to show the live QR code.");
             println!("==============================\n");
         } else {
             println!("[remote] Could not detect local IP. Access via http://localhost:{port}");
@@ -265,7 +249,12 @@ pub fn start_remote_server(
             }
         };
 
-        if let Err(e) = axum::serve(listener, app).await {
+        if let Err(e) = axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        {
             eprintln!("[remote] Server error: {e}");
         }
     });
@@ -458,15 +447,17 @@ async fn api_state(
             let mut pane_data: Vec<(String, Option<u32>, Option<serde_json::Value>)> = Vec::new();
 
             for (session_id, pid) in &sessions {
-                let (cwd, git_branch, process_name) =
+                let (cwd, git_branch, process_name, agent_kind, agent_session_id) =
                     if let Some(meta) = state.metadata_store.get(session_id) {
                         (
                             Some(meta.cwd.clone()),
                             meta.git_branch.clone(),
                             normalize_process_name(meta.process_name.as_deref()),
+                            meta.agent_kind.clone(),
+                            meta.agent_session_id.clone(),
                         )
                     } else {
-                        (None, None, None)
+                        (None, None, None, None, None)
                     };
 
                 let label = build_pane_label(
@@ -482,6 +473,9 @@ async fn api_state(
                         "cwd": cwd,
                         "git_branch": git_branch,
                         "process_name": process_name,
+                        "agent_kind": agent_kind,
+                        "agent_session_id": agent_session_id,
+                        "updated_at": current_time_ms(),
                     }))
                 } else {
                     None

@@ -4,6 +4,12 @@
 
 ---
 
+## [0.7.33-lite.1] - 2026-06-18
+
+- 変更: lite を master と同等の機能構成に戻し、Buddy だけを非表示・無効化しました。
+- 追加: File Explorer Sidebar、Path Jumper、Remote QR、filesystem watcher など、master 側の通常機能を lite に反映しました。
+- 修正: Buddy の UI、設定、ショートカット、Tauri コマンド登録を外し、Buddy 本体がない lite でも起動できるようにしました。
+
 ## [0.7.32-lite.1] - 2026-06-18
 
 - 修正: pane 分割時に横スクロールで逃げず、画面幅いっぱいの範囲内で各 pane が細くなるようにしました。

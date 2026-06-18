@@ -1,6 +1,7 @@
 mod commands;
 mod db;
 mod events;
+mod fs;
 mod pty;
 mod remote;
 mod socket;
@@ -9,7 +10,7 @@ mod usage;
 
 use pty::manager::SessionManager;
 use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 #[cfg(target_os = "windows")]
 mod single_instance {
@@ -55,11 +56,12 @@ pub struct AppState {
     pub session_manager: Arc<SessionManager>,
     pub bootstrapped: AtomicBool,
     pub metadata_store: pty::monitor::MetadataStore,
+    pub fs_watcher: OnceLock<Arc<fs::FsWatcher>>,
 }
 
 fn install_launcher_script() -> Result<(), String> {
     let home = dirs::home_dir().ok_or_else(|| "Failed to resolve home directory".to_string())?;
-    let bin_dir = home.join(".mycmux-lite").join("bin");
+    let bin_dir = home.join(".mycmux").join("bin");
     std::fs::create_dir_all(&bin_dir)
         .map_err(|e| format!("Failed to create launcher directory: {e}"))?;
 
@@ -79,11 +81,15 @@ fn install_launcher_script() -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    std::panic::set_hook(Box::new(|info| {
+        eprintln!("[mycmux][panic] {info}");
+    }));
+
     let _single_instance_guard = match single_instance::acquire() {
         Ok(Some(guard)) => Some(guard),
         Ok(None) => return,
         Err(error) => {
-            eprintln!("[mycmux-lite] {error}");
+            eprintln!("[mycmux] {error}");
             return;
         }
     };
@@ -115,13 +121,14 @@ pub fn run() {
         session_manager: Arc::new(SessionManager::new()),
         bootstrapped: AtomicBool::new(false),
         metadata_store: metadata_store.clone(),
+        fs_watcher: OnceLock::new(),
     };
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
-        .plugin(tauri_plugin_dialog::init())
         .manage(state)
         .manage(socket::SocketState {
             pending_requests: Arc::new(dashmap::DashMap::new()),
@@ -141,6 +148,7 @@ pub fn run() {
             commands::terminal::read_editable_artifact,
             commands::terminal::save_editable_artifact,
             commands::terminal::get_terminal_config,
+            commands::terminal::get_pty_metadata_snapshot,
             commands::terminal::get_all_cwds,
             commands::terminal::is_directory,
             commands::terminal::get_launch_cwd,
@@ -150,17 +158,25 @@ pub fn run() {
             commands::terminal::read_agent_session_mappings,
             commands::crsm::crsm_list_sessions,
             commands::crsm::crsm_create_handoff,
-            commands::fs::reveal_in_explorer,
-            commands::fs::open_with_default,
-            commands::usage::get_usage_summary,
             commands::workspace::load_persistent_data,
             commands::workspace::save_persistent_data,
             commands::workspace::save_workspaces,
             commands::workspace::save_settings,
+            commands::fs::list_directory,
+            commands::fs::walk_tree,
+            commands::fs::normalize_path,
+            commands::fs::save_pinned_roots,
+            commands::fs::watch_root,
+            commands::fs::unwatch_root,
+            commands::fs::reveal_in_explorer,
+            commands::fs::open_with_default,
+            commands::fs::create_file,
+            commands::fs::create_folder,
             commands::window::claim_leader,
             commands::window::get_window_count,
             commands::window::reveal_main_window,
             commands::window::quit_app,
+            commands::usage::get_usage_summary,
             remote::get_remote_info,
             remote::rotate_remote_token,
             socket::socket_response,
@@ -182,13 +198,27 @@ pub fn run() {
                 ms.clone(),
             );
 
+            // FsWatcher: singleton per app, lives for app lifetime.
+            let watcher = Arc::new(fs::FsWatcher::new(app_handle.clone()));
+            let _ = state.fs_watcher.set(watcher.clone());
+
+            // Re-watch any pinned roots restored from disk so the explorer
+            // reflects external changes as soon as the user opens it.
+            if let Ok(data) = db::storage::load(&app_handle) {
+                for root in &data.pinned_roots {
+                    if let Err(err) = watcher.watch(std::path::PathBuf::from(&root.path)) {
+                        eprintln!("[fs_watcher] failed to watch {}: {}", root.path, err);
+                    }
+                }
+            }
+
             socket::start_socket_listener(app_handle.clone());
-            let control = app.state::<Arc<remote::RemoteControl>>().inner().clone();
+            let remote_control = app.state::<Arc<remote::RemoteControl>>().inner().clone();
             remote::start_remote_server(
                 app_handle.clone(),
                 state.session_manager.clone(),
                 ms,
-                control,
+                remote_control,
             );
 
             // Kill all PTY sessions when the main window closes

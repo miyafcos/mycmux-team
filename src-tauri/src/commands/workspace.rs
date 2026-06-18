@@ -12,13 +12,13 @@ pub fn load_persistent_data(app_handle: AppHandle) -> Result<PersistentData, Str
     Ok(data)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn save_persistent_data(app_handle: AppHandle, mut data: PersistentData) -> Result<(), String> {
     data.schema_version = 1;
     storage::save(&app_handle, &data)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn save_workspaces(
     app_handle: AppHandle,
     workspaces: Vec<WorkspaceConfig>,
@@ -34,7 +34,7 @@ pub fn save_workspaces(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn save_settings(app_handle: AppHandle, settings: AppSettings) -> Result<(), String> {
     storage::update(&app_handle, |data| {
         data.schema_version = 1;

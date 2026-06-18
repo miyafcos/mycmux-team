@@ -27,6 +27,13 @@ type UsageState = {
   fetch: () => Promise<void>;
 };
 
+function errorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  return String(error);
+}
+
 export const useUsageStore = create<UsageState>((set) => ({
   summary: null,
   lastError: null,
@@ -41,7 +48,7 @@ export const useUsageStore = create<UsageState>((set) => ({
       });
     } catch (error) {
       set({
-        lastError: error instanceof Error ? error.message : String(error),
+        lastError: errorMessage(error),
         lastFetchedAt: Date.now(),
       });
     }

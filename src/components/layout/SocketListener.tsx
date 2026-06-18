@@ -12,8 +12,11 @@ import {
   claimLeader,
   savePersistentData,
   readAgentSessionMappings,
+  getPtyMetadataSnapshot,
+  onFsChanged,
   quitApp,
   type AgentSessionMapping,
+  type PtyMetadata,
   type PaneConfig,
   type PaneTabConfig,
   type WorkspaceConfig,
@@ -21,10 +24,11 @@ import {
 import type { AgentSessionKind, Workspace } from "../../types";
 import { useThemeStore } from "../../stores/themeStore";
 import { useKeybindingStore } from "../../stores/keybindingStore";
-import { deriveEffectiveStatus } from "../../lib/notificationStatus";
+import { useFileExplorerStore } from "../../stores/fileExplorerStore";
+import { deriveEffectiveStatus, isShellProcess } from "../../lib/notificationStatus";
 import { makeSessionId } from "../../lib/constants";
 import { normalizeReadableSplitColumns, reconcileSplitColumnsForPanes } from "../../lib/layoutColumns";
-import { getTerminalBufferLines } from "../terminal/XTermWrapper";
+import { getTerminalBufferLines, getTerminalWriteCounter, hasTerminalBuffer } from "../terminal/XTermWrapper";
 
 /** Transpose row-major split indices to column-major for legacy data migration */
 function transposeSplitRowsToCols(splitRows: number[][]): number[][] {
@@ -78,9 +82,26 @@ function inferAgentKindFromAgentId(agentId?: string | null): AgentSessionKind | 
   return null;
 }
 
-function getTerminalSnapshot(sessionId: string): string[] | null {
-  const lines = getTerminalBufferLines(sessionId, 160);
-  return lines.length > 0 ? lines : null;
+type TerminalSnapshotCacheEntry = {
+  writeCounter: number;
+  lines: string[];
+};
+
+const terminalSnapshotCache = new Map<string, TerminalSnapshotCacheEntry>();
+
+function getTerminalSnapshot(sessionId: string): string[] | undefined {
+  if (!hasTerminalBuffer(sessionId)) {
+    terminalSnapshotCache.delete(sessionId);
+    return undefined;
+  }
+  const writeCounter = getTerminalWriteCounter(sessionId);
+  const cached = terminalSnapshotCache.get(sessionId);
+  if (cached && cached.writeCounter === writeCounter) {
+    return cached.lines;
+  }
+  const lines = getTerminalBufferLines(sessionId, 160, { excludeInitialReplay: true });
+  terminalSnapshotCache.set(sessionId, { writeCounter, lines });
+  return lines;
 }
 
 const STARTUP_RESTORE_AUTOSAVE_BASE_HOLD_MS = 1400;
@@ -390,6 +411,39 @@ function stripEphemeralLaunchEnv(
   return Object.keys(filtered).length > 0 ? filtered : null;
 }
 
+function mirrorPtyMetadataForPersistence(meta: PtyMetadata): void {
+  const processIsShell = isShellProcess(meta.process_name ?? undefined);
+  const agentActive = meta.agent_active === true;
+  if (processIsShell && !agentActive) {
+    usePaneMetadataStore.getState().clearAgentSessionId(meta.session_id);
+    usePaneMetadataStore.getState().clearClaudeSessionId(meta.session_id);
+    useWorkspaceListStore.getState().setPaneAgentSessionFromMetadata(meta.session_id, null);
+  }
+  usePaneMetadataStore.getState().setMetadata(meta.session_id, {
+    cwd: meta.cwd,
+    gitBranch: meta.git_branch,
+    processTitle: meta.process_name ?? undefined,
+    processIsShell,
+    claudeSessionId: agentActive ? meta.claude_session_id ?? undefined : undefined,
+    agentKind: agentActive ? meta.agent_kind ?? undefined : undefined,
+    agentSessionId: agentActive ? meta.agent_session_id ?? undefined : undefined,
+  });
+  if (agentActive && (meta.claude_session_id || meta.agent_session_id)) {
+    useWorkspaceListStore.getState().setPaneAgentSessionFromMetadata(meta.session_id, {
+      claudeSessionId: meta.claude_session_id ?? undefined,
+      agentKind: meta.agent_kind ?? undefined,
+      agentSessionId: meta.agent_session_id ?? undefined,
+    });
+  }
+}
+
+async function flushPtyMetadataSnapshotForPersistence(): Promise<void> {
+  const snapshot = await getPtyMetadataSnapshot();
+  for (const meta of Object.values(snapshot)) {
+    mirrorPtyMetadataForPersistence(meta);
+  }
+}
+
 function toConfig(ws: Workspace, _agentMappings: Record<string, AgentSessionMapping> = {}): WorkspaceConfig {
   const paneIdToIndex = new Map(ws.panes.map((p, i) => [p.id, i]));
   const splitColumns = normalizeSplitColumns(ws);
@@ -511,8 +565,12 @@ export function useWorkspacePersist() {
             themeId: data.settings.theme_id,
             fontSize: data.settings.font_size,
             fontFamily: data.settings.font_family,
+            themeTweaks: data.settings.theme_tweaks,
           });
           useKeybindingStore.getState().hydrateOverrides(data.settings.keybindings ?? {});
+          if (data.pinned_roots && data.pinned_roots.length > 0) {
+            useFileExplorerStore.getState().setRoots(data.pinned_roots);
+          }
 
           if (data.workspaces.length > 0) {
             const listStore = useWorkspaceListStore.getState();
@@ -631,7 +689,13 @@ export function useWorkspacePersist() {
         ?? null;
       const themeState = useThemeStore.getState();
       const keybindingState = useKeybindingStore.getState();
+      const fileExplorerState = useFileExplorerStore.getState();
 
+      // Mappings written by launcher.sh during this session (pane-sessions/*.txt)
+      // are applied at save time too — App.tsx only refreshes them at startup /
+      // restore-complete / a one-shot 15s fallback, so agents launched later
+      // would otherwise miss the persisted snapshot. applyMappingToTabConfig
+      // never overwrites live values; it only fills gaps.
       const workspaces = dedupeAgentSessionsInConfigs(
         state.workspaces.map((ws) => applyMappingsToConfig(toConfig(ws), agentMappings)),
         activeWorkspaceId,
@@ -646,11 +710,13 @@ export function useWorkspacePersist() {
           theme_id: themeState.themeId,
           font_size: themeState.fontSize,
           font_family: themeState.fontFamily,
+          theme_tweaks: themeState.themeTweaks,
           keybindings: keybindingState.overrides,
         },
         active_workspace_id: activeWorkspaceId,
         active_pane_id: activePane?.id ?? null,
         active_tab_id: activeTab?.id ?? null,
+        pinned_roots: fileExplorerState.roots,
       };
     };
 
@@ -759,8 +825,13 @@ export function useWorkspacePersist() {
         event.preventDefault();
         return;
       }
-      const busyCount = countBusySessions();
       event.preventDefault();
+      try {
+        await flushPtyMetadataSnapshotForPersistence();
+      } catch (err) {
+        console.warn("[persist] Failed to refresh pty metadata before close prompt:", err);
+      }
+      const busyCount = countBusySessions();
 
       if (busyCount > 0) {
         closePromptOpen = true;
@@ -790,6 +861,11 @@ export function useWorkspacePersist() {
         debounceTimer = null;
       }
       try {
+        try {
+          await flushPtyMetadataSnapshotForPersistence();
+        } catch (err) {
+          console.warn("[persist] Failed to flush pty metadata snapshot:", err);
+        }
         await sync(true);
       } finally {
         await quitApp();
@@ -809,6 +885,17 @@ export function useWorkspacePersist() {
     };
   }, []);
 
+  // Subscribe to fs_changed events from notify watcher — invalidate the
+  // affected directory so the explorer re-fetches on next expand (or
+  // immediately if already open).
+  useEffect(() => {
+    const unlisten = onFsChanged((payload) => {
+      useFileExplorerStore.getState().invalidate(payload.path);
+    });
+    return () => {
+      unlisten.then((f) => f()).catch(() => {});
+    };
+  }, []);
 }
 
 export default function SocketListener() {

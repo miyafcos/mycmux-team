@@ -9,7 +9,7 @@ import {
 } from "../../stores/workspaceStore";
 import { killSession } from "../../lib/ipc";
 import { evictTerminalCache } from "../terminal/XTermWrapper";
-import { SIDEBAR_WIDTH } from "../../lib/constants";
+import { SIDEBAR_WIDTH, RIGHT_SIDEBAR_WIDTH } from "../../lib/constants";
 import TabBar from "./TabBar";
 import TitleBar from "./TitleBar";
 import WorkspaceView from "../workspace/WorkspaceView";
@@ -17,6 +17,7 @@ import PaneDragOverlay from "../workspace/PaneDragOverlay";
 import WorkspaceSetup from "../setup/WorkspaceSetup";
 import SocketListener from "./SocketListener";
 import KeybindingsModal from "./KeybindingsModal";
+import FileExplorerSidebar from "./FileExplorerSidebar";
 import CrsmPalette, { preloadCrsmSessions } from "../CommandPalette/CrsmPalette";
 import { useKeybindingStore } from "../../stores/keybindingStore";
 import { useThemeStore } from "../../stores/themeStore";
@@ -48,7 +49,9 @@ const LIGHT_COLOR_LUMINANCE_THRESHOLD = 140;
 
 // Whether a hex color reads as "light". Used to pick chrome shadows from the
 // effective chrome background — which includes user color overrides — rather
-// than the theme's declared colorScheme. Non-hex input falls back to dark.
+// than the theme's declared colorScheme. The threshold is BT.601 luma on a
+// 0-255 scale; 140 keeps mid amber/blue accents on the safer contrast side.
+// Non-hex input falls back to dark.
 function isLightColor(color: string): boolean {
   const shortHex = /^#([0-9a-f]{3})$/i.exec(color);
   const fullHex = /^#([0-9a-f]{6})$/i.exec(color);
@@ -251,6 +254,7 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
   const workspaces = useWorkspaceListStore((s) => s.workspaces);
   const activeId = useWorkspaceListStore((s) => s.activeWorkspaceId);
   const sidebarCollapsed = useUiStore((s) => s.sidebarCollapsed);
+  const rightSidebarCollapsed = useUiStore((s) => s.rightSidebarCollapsed);
   const setActiveWorkspace = useWorkspaceListStore((s) => s.setActiveWorkspace);
   const removeWorkspace = useWorkspaceListStore((s) => s.removeWorkspace);
   const toggleSidebar = useUiStore((s) => s.toggleSidebar);
@@ -283,13 +287,14 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
       setZoomedPaneId(null);
     }
   }, [zoomedPaneId, activeId, workspaces, setZoomedPaneId]);
+  const isLightTheme = currentTheme.colorScheme === "light";
+  // Chrome shadows key off the effective chrome background (color overrides
+  // included), not colorScheme — a dark theme recolored light needs this too.
+  const isLightChrome = isLightColor(currentTheme.chrome.background);
   const mediaBackgroundActive = themeBackground.mode === "preset" || (
     themeBackground.mode === "image" && themeBackground.imagePath.length > 0
   );
   const panelOpacity = mediaBackgroundActive ? themeBackground.panelOpacity : 1;
-  // Chrome shadows key off the effective chrome background (color overrides
-  // included), not colorScheme — a dark theme recolored light needs this too.
-  const isLightChrome = isLightColor(currentTheme.chrome.background);
 
   const themeVars = {
     "--cmux-bg-solid": currentTheme.chrome.background,
@@ -341,6 +346,18 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
     "--status-done": currentTheme.status.done,
     "--status-error": currentTheme.status.error,
     "--notification-color": currentTheme.notification,
+    "--buddy-ink": currentTheme.buddy.ink,
+    "--buddy-blush": currentTheme.buddy.blush,
+    "--buddy-spark": currentTheme.buddy.spark,
+    "--buddy-sweat": currentTheme.buddy.sweat,
+    "--buddy-bubble-bg": isLightTheme
+      ? "rgba(255, 248, 239, 0.96)"
+      : "color-mix(in srgb, var(--cmux-surface) 92%, var(--cmux-text) 8%)",
+    "--buddy-bubble-text": currentTheme.buddy.ink,
+    "--buddy-bubble-muted": "color-mix(in srgb, var(--buddy-bubble-text) 60%, transparent)",
+    "--buddy-bubble-subtle": "color-mix(in srgb, var(--buddy-bubble-text) 8%, transparent)",
+    "--buddy-bubble-hover": "color-mix(in srgb, var(--buddy-bubble-text) 18%, transparent)",
+    "--buddy-bubble-scroll": "color-mix(in srgb, var(--buddy-bubble-text) 32%, transparent)",
     "--cmux-chrome-text-shadow": isLightChrome
       ? (mediaBackgroundActive
           ? "0 0 3px rgba(255, 255, 255, 0.85), 0 0 6px rgba(255, 255, 255, 0.5)"
@@ -361,8 +378,8 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
   }, [workspaces.length]);
 
   // Surface backend remote-server failures (port bind, token validation, etc.)
-  // The Rust side already emits "remote-error"; without a listener the QR panel
-  // would just sit blank and the user would have no way to know it failed.
+  // The Rust side already emits "remote-error"; without a listener the Settings →
+  // Remote panel would just sit blank with no way to know it failed.
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     listen<string>("remote-error", (event) => {
@@ -735,6 +752,20 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
               <WorkspaceSetup onLaunch={handleLaunch} onCancel={handleCancelSetup} />
             </div>
           )}
+        </div>
+
+        {/* Right sidebar — file explorer. Kept mounted so state survives collapse. */}
+        <div
+          data-cmux-hide-during-pane-zoom={zoomedPaneId ? "true" : undefined}
+          style={{
+            width: rightSidebarCollapsed ? 0 : RIGHT_SIDEBAR_WIDTH,
+            overflow: "hidden",
+            flexShrink: 0,
+            transition: "width 0.2s ease",
+            borderLeft: rightSidebarCollapsed ? "none" : "1px solid var(--cmux-border)",
+          }}
+        >
+          <FileExplorerSidebar />
         </div>
         </div>
       </div>

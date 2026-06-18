@@ -6,9 +6,11 @@ type UsagePopoverProps = {
   lastError: string | null;
 };
 
-const resetFormatter = new Intl.DateTimeFormat(undefined, {
-  dateStyle: "short",
-  timeStyle: "short",
+const dateFormatter = new Intl.DateTimeFormat(undefined, {
+  month: "short",
+  day: "numeric",
+  hour: "2-digit",
+  minute: "2-digit",
 });
 
 export function UsagePopover({ summary, lastError }: UsagePopoverProps) {
@@ -18,17 +20,17 @@ export function UsagePopover({ summary, lastError }: UsagePopoverProps) {
         position: "absolute",
         top: "100%",
         right: 0,
-        marginTop: 5,
-        width: 340,
-        maxWidth: "min(340px, calc(100vw - 16px))",
+        marginTop: 4,
+        width: 300,
+        maxWidth: "min(300px, calc(100vw - 16px))",
         background: "var(--cmux-popover)",
         border: "1px solid var(--cmux-border)",
         borderRadius: 6,
         zIndex: 100,
         boxShadow: "var(--cmux-shadow-popover)",
-        color: "var(--cmux-text)",
         fontSize: 12,
         fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+        color: "var(--cmux-text)",
         overflow: "hidden",
       }}
     >
@@ -37,11 +39,12 @@ export function UsagePopover({ summary, lastError }: UsagePopoverProps) {
           padding: "8px 10px",
           borderBottom: "1px solid var(--cmux-border)",
           display: "flex",
+          alignItems: "center",
           justifyContent: "space-between",
-          gap: 10,
+          gap: 8,
         }}
       >
-        <span style={{ fontSize: 11, fontWeight: 650 }}>Usage</span>
+        <span style={{ fontSize: 11, fontWeight: 700 }}>Usage</span>
         <span style={{ color: "var(--cmux-text-tertiary)", fontSize: 11 }}>
           Live API
         </span>
@@ -64,6 +67,25 @@ export function UsagePopover({ summary, lastError }: UsagePopoverProps) {
         )}
       </div>
 
+      {(summary.claude_error || summary.codex_error || lastError) && (
+        <div
+          style={{
+            padding: "6px 10px",
+            borderTop: "1px solid var(--cmux-border)",
+            color: "var(--cmux-usage-danger)",
+            fontSize: 11,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+          title={[summary.claude_error, summary.codex_error, lastError].filter(Boolean).join("\n")}
+        >
+          {summary.claude_error && <div>Claude: {summary.claude_error}</div>}
+          {summary.codex_error && <div>Codex: {summary.codex_error}</div>}
+          {lastError && <div>{lastError}</div>}
+        </div>
+      )}
+
       <div
         style={{
           padding: "7px 10px",
@@ -71,28 +93,13 @@ export function UsagePopover({ summary, lastError }: UsagePopoverProps) {
           display: "flex",
           alignItems: "center",
           justifyContent: "space-between",
-          gap: 10,
+          gap: 8,
+          color: "var(--cmux-text-tertiary)",
+          fontSize: 11,
         }}
       >
-        <span style={{ color: "var(--cmux-text-tertiary)", fontSize: 11 }}>
-          Updated {formatDate(summary.generated_at)}
-        </span>
+        <span>Updated {formatDate(summary.generated_at)}</span>
       </div>
-
-      {(summary.claude_error || summary.codex_error || lastError) && (
-        <div
-          style={{
-            padding: "7px 10px",
-            borderTop: "1px solid var(--cmux-border)",
-            color: "var(--cmux-usage-danger)",
-            fontSize: 11,
-          }}
-        >
-          {summary.claude_error && <div>Claude: {summary.claude_error}</div>}
-          {summary.codex_error && <div>Codex: {summary.codex_error}</div>}
-          {lastError && <div>{lastError}</div>}
-        </div>
-      )}
     </div>
   );
 }
@@ -108,32 +115,37 @@ function UsageSection({ title, children }: { title: string; children: ReactNode 
   );
 }
 
-function UsageRow({ label, stat }: { label: string; stat: WindowStat | null }) {
+type UsageRowProps = {
+  label: string;
+  stat: WindowStat | null;
+};
+
+function UsageRow({ label, stat }: UsageRowProps) {
   if (!stat) {
     return null;
   }
 
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "96px 1fr", gap: 10 }}>
-      <span style={{ color: "var(--cmux-text-secondary)", fontSize: 11 }}>{label}</span>
-      <div style={{ minWidth: 0 }}>
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            gap: 8,
-            color: "var(--cmux-text)",
-            fontVariantNumeric: "tabular-nums",
-          }}
-        >
-          <span>{stat.pct.toFixed(1)}%</span>
-        </div>
-        <div style={{ color: "var(--cmux-text-tertiary)", fontSize: 11, marginTop: 2 }}>
-          Resets at {formatDate(stat.resets_at)}
-        </div>
+    <div style={{ display: "grid", gap: 3 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+        <span style={{ fontWeight: 600 }}>{label}</span>
+        <span style={{ color: thresholdColor(stat.pct) }}>{stat.pct.toFixed(1)}%</span>
+      </div>
+      <div style={{ color: "var(--cmux-text-tertiary)", fontSize: 11 }}>
+        Resets at {formatDate(stat.resets_at)}
       </div>
     </div>
   );
+}
+
+function thresholdColor(pct: number): string {
+  if (pct >= 95) {
+    return "var(--cmux-usage-danger)";
+  }
+  if (pct >= 80) {
+    return "var(--cmux-usage-warn)";
+  }
+  return "var(--cmux-text-tertiary)";
 }
 
 function formatDate(value: string): string {
@@ -144,5 +156,5 @@ function formatDate(value: string): string {
   if (Number.isNaN(date.getTime())) {
     return value;
   }
-  return resetFormatter.format(date);
+  return dateFormatter.format(date);
 }

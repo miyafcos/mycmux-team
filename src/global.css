@@ -52,6 +52,16 @@
   --cmux-radius-sm: 4px;
   --cmux-radius-md: 6px;
   --cmux-radius-lg: 8px;
+  --buddy-ink: #2c2218;
+  --buddy-blush: #ff9aa8;
+  --buddy-spark: #ffd45e;
+  --buddy-sweat: #7bc1ff;
+  --buddy-bubble-bg: rgba(255, 248, 239, 0.96);
+  --buddy-bubble-text: #2c2218;
+  --buddy-bubble-muted: rgba(44, 34, 24, 0.6);
+  --buddy-bubble-subtle: rgba(44, 34, 24, 0.08);
+  --buddy-bubble-hover: rgba(44, 34, 24, 0.18);
+  --buddy-bubble-scroll: rgba(44, 34, 24, 0.3);
   --sash-size: 4px !important;
 
   --status-working: #3b82f6;
@@ -218,8 +228,6 @@ div:hover>.tab-close-btn {
 }
 
 
-/* Collapse allotment sash to 1px — eliminates the 8px black stripe between split panes.
-   !important needed because allotment/dist/style.css loads after global.css and would override. */
 /* Keep a thin visible divider and accent it on hover */
 [class*="sash"] {
   background: transparent !important;
@@ -244,11 +252,6 @@ div:hover>.tab-close-btn {
 @keyframes notificationPulse {
   0%, 100% { border-color: var(--notification-color); }
   50%      { border-color: color-mix(in srgb, var(--notification-color) 55%, transparent); }
-}
-
-@keyframes cmux-usage-pulse {
-  0%, 100% { opacity: 1; }
-  50%      { opacity: 0.45; }
 }
 
 /* Japanese IME composition styling */
@@ -521,4 +524,9 @@ div:hover>.tab-close-btn {
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
+}
+
+@keyframes cmux-usage-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
 }

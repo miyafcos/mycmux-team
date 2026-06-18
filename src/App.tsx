@@ -173,7 +173,8 @@ function App() {
     // why session restore was broken before v0.6.1.
     const unlistenMeta = onPtyMetadata((meta) => {
       const processIsShell = isShellProcess(meta.process_name ?? undefined);
-      if (processIsShell) {
+      const agentActive = meta.agent_active === true;
+      if (processIsShell && !agentActive) {
         usePaneMetadataStore.getState().clearAgentSessionId(meta.session_id);
         usePaneMetadataStore.getState().clearClaudeSessionId(meta.session_id);
         // Also clear the persisted Pane/Tab fields so the next save doesn't
@@ -185,15 +186,15 @@ function App() {
         gitBranch: meta.git_branch,
         processTitle: meta.process_name ?? undefined,
         processIsShell,
-        claudeSessionId: processIsShell ? undefined : meta.claude_session_id ?? undefined,
-        agentKind: processIsShell ? undefined : meta.agent_kind ?? undefined,
-        agentSessionId: processIsShell ? undefined : meta.agent_session_id ?? undefined,
+        claudeSessionId: agentActive ? meta.claude_session_id ?? undefined : undefined,
+        agentKind: agentActive ? meta.agent_kind ?? undefined : undefined,
+        agentSessionId: agentActive ? meta.agent_session_id ?? undefined : undefined,
       });
       // Mirror live session metadata into workspaceListStore only on truthy
       // values. Launcher (crsm/shell-starter) reports no claude/agent session,
       // so this `if` naturally skips and we don't accidentally clear a session
       // that the user is still mid-using on a tab swap.
-      if (!processIsShell && (meta.claude_session_id || meta.agent_session_id)) {
+      if (agentActive && (meta.claude_session_id || meta.agent_session_id)) {
         useWorkspaceListStore.getState().setPaneAgentSessionFromMetadata(meta.session_id, {
           claudeSessionId: meta.claude_session_id ?? undefined,
           agentKind: (meta.agent_kind as AgentSessionKind | undefined) ?? undefined,

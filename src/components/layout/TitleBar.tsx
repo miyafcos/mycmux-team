@@ -3,8 +3,8 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useWorkspaceListStore, useUiStore, usePaneMetadataStore } from "../../stores/workspaceStore";
 import NotificationPanel from "./NotificationPanel";
 import SettingsMenu from "./SettingsMenu";
-import ThemeSwitcher from "../theme/ThemeSwitcher";
 import { UsageMeter } from "./UsageMeter";
+import ThemeSwitcher from "../theme/ThemeSwitcher";
 
 interface TitleBarProps {
   uiVariant?: "default" | "cmux";
@@ -25,7 +25,7 @@ const BellIcon = ({ count }: { count?: number }) => (
       <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
       <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
     </svg>
-    {count ? <div style={{ position: "absolute", top: -3, right: -4, width: 6, height: 6, background: "#007aff", borderRadius: "50%" }} /> : null}
+    {count ? <div style={{ position: "absolute", top: -3, right: -4, width: 6, height: 6, background: "var(--notification-color)", borderRadius: "50%" }} /> : null}
   </div>
 );
 
@@ -104,7 +104,7 @@ export default function TitleBar({ uiVariant = "default", onNewWorkspace, onOpen
         height: 36,
         display: "flex",
         alignItems: "center",
-        background: uiVariant === "cmux" ? "#0f0f10" : "#111111",
+        background: "var(--cmux-title-bg)",
         borderBottom: "1px solid var(--cmux-border)",
         flexShrink: 0,
         userSelect: "none",

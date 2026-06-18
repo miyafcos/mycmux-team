@@ -29,7 +29,6 @@ def test_agent_kind_round_trip_contract_remains_wired() -> None:
         "clearDuplicateTabAgentSession(cleanedTab)",
         "clearStaleAgentErrorSnapshot(tab)",
         "terminal_snapshot: null",
-        "applyMappingsToConfig(toConfig(ws), agentMappings)",
     ]:
         assert_contains(snippet=snippet, text=socket_listener, source="src/components/layout/SocketListener.tsx")
 

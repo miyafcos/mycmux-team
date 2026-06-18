@@ -12,10 +12,7 @@ import {
 } from "../../stores/workspaceStore";
 import { useWorkspaceListStore } from "../../stores/workspaceListStore";
 import { getAgent, getDefaultAgent } from "../../lib/agents";
-import {
-  killSession,
-  previewArtifactUriForSessionV2,
-} from "../../lib/ipc";
+import { killSession, previewArtifactUriForSessionV2 } from "../../lib/ipc";
 import { evictTerminalCache } from "../terminal/XTermWrapper";
 import { usePaneDragStore, type PaneDragItem, type PaneDropTarget } from "../../stores/paneDragStore";
 
@@ -135,7 +132,12 @@ function isCanonicalSidetabPath(normalizedPath: string, paneSessionId: string): 
 
 function isLocalArtifactLink(uri: string): boolean {
   const trimmed = uri.trim();
-  return /^file:\/\//i.test(trimmed) || /^[A-Za-z]:[\\/]/.test(trimmed);
+  return (
+    /^file:\/\//i.test(trimmed)
+    || /^[A-Za-z]:[\\/]/.test(trimmed)
+    // MSYS / Git-Bash absolute form: `/c/Users/...` (single-letter drive).
+    || /^\/[A-Za-z]\//.test(trimmed)
+  );
 }
 
 function getDropPreviewLabel(item: PaneDragItem, target: PaneDropTarget): string {
@@ -293,6 +295,16 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
   const handleZoomToggle = useCallback(() => {
     const currentZoomed = useUiStore.getState().zoomedPaneId;
     setZoomedPaneId(currentZoomed === pane.id ? null : pane.id);
+    // Restore keyboard focus to this pane's terminal after the layout change.
+    // The keyboard path keeps focus on the xterm textarea, but the toolbar
+    // zoom button moves focus to the <button>; without this the user must
+    // click back into the terminal before typing.
+    setTimeout(() => {
+      const el = document.querySelector<HTMLElement>(`[data-dnd-pane-id="${pane.id}"]`);
+      const textarea = el?.querySelector<HTMLTextAreaElement>("textarea");
+      if (textarea) textarea.focus();
+      else el?.focus();
+    }, 0);
   }, [pane.id, setZoomedPaneId]);
 
   const handleUrlClick = useCallback((uri: string) => {
@@ -300,21 +312,23 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
     const currentPane = workspace?.panes.find((candidate) => candidate.id === pane.id);
     const currentTab = currentPane?.tabs.find((tab) => tab.id === currentPane.activeTabId);
     if (!currentTab || currentTab.type === "browser") {
-      open(uri).catch((error) => console.error("[mycmux-lite] open URL failed", error));
+      open(uri).catch((error) => console.error("[mycmux] open URL failed", error));
       return;
     }
-
     previewArtifactUriForSessionV2(currentTab.sessionId, uri)
       .then((info) => openOrReloadHtmlPreviewPane(workspaceId, pane.id, info))
       .catch((error) => {
         if (isLocalArtifactLink(uri)) {
-          console.warn("[mycmux-lite] local artifact preview rejected, opening externally", error);
+          // In-app preview failed (e.g. unreadable file / backend error). Don't
+          // swallow it into a dead click — fall back to the OS default app so
+          // the user still sees the file open somewhere.
+          console.warn("[mycmux] local artifact preview rejected, opening externally", error);
           open(uri).catch((openError) =>
-            console.error("[mycmux-lite] fallback open of local artifact failed", openError),
+            console.error("[mycmux] fallback open of local artifact failed", openError),
           );
           return;
         }
-        open(uri).catch((error) => console.error("[mycmux-lite] open URL failed", error));
+        open(uri).catch((error) => console.error("[mycmux] open URL failed", error));
       });
   }, [openOrReloadHtmlPreviewPane, pane.id, workspaceId]);
 
