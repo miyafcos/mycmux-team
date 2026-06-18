@@ -196,8 +196,50 @@ const TERMINAL_SNAPSHOT_MAX_LINE_CHARS = 8192;
 const terminalHasLiveOutput = new Set<string>();
 const terminalInitialReplayMarkers = new Map<string, IMarker>();
 
-function fallbackCopyTextToClipboard(text: string): void {
-  if (typeof document === "undefined") return;
+const TERMINAL_PLAIN_INPUT_KEYS = new Set([
+  "Backspace",
+  "Delete",
+  "Enter",
+  "Escape",
+  "Tab",
+  "ArrowLeft",
+  "ArrowRight",
+  "ArrowUp",
+  "ArrowDown",
+  "Home",
+  "End",
+  "PageUp",
+  "PageDown",
+  "Insert",
+]);
+
+function isPlainTerminalInputEvent(e: KeyboardEvent): boolean {
+  if (e.ctrlKey || e.altKey || e.metaKey) return false;
+  return e.key.length === 1 || TERMINAL_PLAIN_INPUT_KEYS.has(e.key);
+}
+
+function focusTerminalSoon(currentTerm: Terminal): void {
+  const focusTerminal = () => {
+    try {
+      currentTerm.focus();
+    } catch {
+      // Terminal may have been disposed between copy completion and focus restore.
+    }
+  };
+
+  if (typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
+    window.requestAnimationFrame(focusTerminal);
+    return;
+  }
+
+  setTimeout(focusTerminal, 0);
+}
+
+function fallbackCopyTextToClipboard(text: string, restoreFocus?: () => void): void {
+  if (typeof document === "undefined") {
+    restoreFocus?.();
+    return;
+  }
   const textarea = document.createElement("textarea");
   textarea.value = text;
   textarea.setAttribute("readonly", "true");
@@ -212,17 +254,24 @@ function fallbackCopyTextToClipboard(text: string): void {
     // Clipboard access is best effort; terminal selection must never break input.
   } finally {
     document.body.removeChild(textarea);
+    restoreFocus?.();
   }
 }
 
-function copyTextToClipboard(text: string): void {
-  if (!text) return;
-  const clipboard = typeof navigator !== "undefined" ? navigator.clipboard : undefined;
-  if (clipboard?.writeText) {
-    clipboard.writeText(text).catch(() => fallbackCopyTextToClipboard(text));
+function copyTextToClipboard(text: string, restoreFocus?: () => void): void {
+  if (!text) {
+    restoreFocus?.();
     return;
   }
-  fallbackCopyTextToClipboard(text);
+  const clipboard = typeof navigator !== "undefined" ? navigator.clipboard : undefined;
+  if (clipboard?.writeText) {
+    clipboard
+      .writeText(text)
+      .then(() => restoreFocus?.())
+      .catch(() => fallbackCopyTextToClipboard(text, restoreFocus));
+    return;
+  }
+  fallbackCopyTextToClipboard(text, restoreFocus);
 }
 
 function disposeSelectionCopyListener(currentTerm: Terminal | null | undefined): void {
@@ -258,7 +307,7 @@ function registerSelectionCopyListener(currentTerm: Terminal): void {
     }
     copyTimer = window.setTimeout(() => {
       copyTimer = null;
-      copyTextToClipboard(currentTerm.getSelection());
+      copyTextToClipboard(currentTerm.getSelection(), () => focusTerminalSoon(currentTerm));
     }, 0);
   };
 
@@ -1349,6 +1398,17 @@ export default memo(function XTermWrapper({
           return false;
         }
 
+        if (e.key === "Enter" && e.shiftKey && !e.ctrlKey && !e.altKey) {
+          const processTitle = usePaneMetadataStore.getState().metadata[sessionId]?.processTitle;
+          writeToSession(sessionId, getShiftEnterSequence(command, processTitle)).catch(console.error);
+          return false;
+        }
+
+        if (isPlainTerminalInputEvent(e)) {
+          e.stopPropagation();
+          return true;
+        }
+
         const keybindingStore = useKeybindingStore.getState();
         const actions = keybindingStore.getActionsForEvent(e);
 
@@ -1376,12 +1436,6 @@ export default memo(function XTermWrapper({
             return false;
           }
 
-          return false;
-        }
-
-        if (e.key === "Enter" && e.shiftKey && !e.ctrlKey && !e.altKey) {
-          const processTitle = usePaneMetadataStore.getState().metadata[sessionId]?.processTitle;
-          writeToSession(sessionId, getShiftEnterSequence(command, processTitle)).catch(console.error);
           return false;
         }
 

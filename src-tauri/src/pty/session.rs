@@ -578,10 +578,15 @@ impl PtySession {
                                     metrics_reader
                                         .frontend_queue_full_retry
                                         .fetch_add(1, Ordering::Relaxed);
-                                    if frontend_tx.blocking_send(rejected).is_err() {
-                                        metrics_reader.closed_count.fetch_add(1, Ordering::Relaxed);
-                                        frontend_open = false;
-                                    }
+                                    metrics_reader
+                                        .dropped_chunks
+                                        .fetch_add(1, Ordering::Relaxed);
+                                    metrics_reader
+                                        .dropped_bytes
+                                        .fetch_add(rejected.len() as u64, Ordering::Relaxed);
+                                    // Keep draining the PTY even when the renderer is behind.
+                                    // Blocking here lets child stdout/stderr fill up and can make
+                                    // stdin appear frozen, so display catch-up is best-effort.
                                 }
                                 Err(mpsc::error::TrySendError::Closed(_)) => {
                                     metrics_reader.closed_count.fetch_add(1, Ordering::Relaxed);

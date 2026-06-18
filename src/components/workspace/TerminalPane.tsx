@@ -140,6 +140,46 @@ function isLocalArtifactLink(uri: string): boolean {
   );
 }
 
+function focusTerminalElement(paneEl: HTMLElement | null | undefined): void {
+  const textarea = paneEl?.querySelector<HTMLTextAreaElement>(".xterm-helper-textarea, textarea");
+  if (textarea) {
+    textarea.focus();
+    return;
+  }
+  paneEl?.focus();
+}
+
+function scheduleTerminalFocus(resolvePane: () => HTMLElement | null | undefined): void {
+  const restoreFocus = () => {
+    focusTerminalElement(resolvePane());
+  };
+
+  window.setTimeout(() => {
+    if (typeof window.requestAnimationFrame === "function") {
+      window.requestAnimationFrame(restoreFocus);
+      return;
+    }
+    restoreFocus();
+  }, 0);
+}
+
+function focusTerminalInPaneSoon(paneId: string): void {
+  scheduleTerminalFocus(() => document.querySelector<HTMLElement>(`[data-dnd-pane-id="${paneId}"]`));
+}
+
+function focusActiveTerminalSoon(fallbackPaneId: string): void {
+  scheduleTerminalFocus(() => {
+    const activePaneId = useUiStore.getState().activePaneId;
+    const activePaneEl = activePaneId
+      ? document.querySelector<HTMLElement>(`[data-session-id="${activePaneId}"]`)
+      : null;
+    if (activePaneEl) {
+      return activePaneEl;
+    }
+    return document.querySelector<HTMLElement>(`[data-dnd-pane-id="${fallbackPaneId}"]`);
+  });
+}
+
 function getDropPreviewLabel(item: PaneDragItem, target: PaneDropTarget): string {
   if (target.kind === "new-workspace") {
     return item.kind === "tab" ? "Move tab to new workspace" : "Move pane to new workspace";
@@ -264,6 +304,7 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
 
   const handleAddTab = useCallback((agentId?: string, type?: PaneTab["type"]) => {
     addTabToPane(workspaceId, pane.id, agentId, type);
+    focusTerminalInPaneSoon(pane.id);
   }, [workspaceId, pane.id, addTabToPane]);
 
   const handleRemoveTab = useCallback((tabId: string) => {
@@ -282,6 +323,7 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
       usePaneMetadataStore.getState().removeMetadata(tab.sessionId);
     }
     removeTabFromPane(workspaceId, pane.id, tabId);
+    focusTerminalInPaneSoon(pane.id);
   }, [workspaceId, pane.id, removeTabFromPane]);
 
   const handleSelectTab = useCallback((tabId: string) => {
@@ -290,6 +332,7 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
     const p = ws?.panes.find((x) => x.id === pane.id);
     const tab = p?.tabs.find((t) => t.id === tabId);
     if (tab) setActivePaneId(tab.sessionId);
+    focusTerminalInPaneSoon(pane.id);
   }, [workspaceId, pane.id, setActivePaneTab, setActivePaneId]);
 
   const handleZoomToggle = useCallback(() => {
@@ -299,12 +342,7 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
     // The keyboard path keeps focus on the xterm textarea, but the toolbar
     // zoom button moves focus to the <button>; without this the user must
     // click back into the terminal before typing.
-    setTimeout(() => {
-      const el = document.querySelector<HTMLElement>(`[data-dnd-pane-id="${pane.id}"]`);
-      const textarea = el?.querySelector<HTMLTextAreaElement>("textarea");
-      if (textarea) textarea.focus();
-      else el?.focus();
-    }, 0);
+    focusTerminalInPaneSoon(pane.id);
   }, [pane.id, setZoomedPaneId]);
 
   const handleUrlClick = useCallback((uri: string) => {
@@ -391,9 +429,18 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
         workspaceId={workspaceId}
         hasNotification={hasNotification}
         isZoomed={isZoomed}
-        onClose={onClose}
-        onSplitRight={onSplitRight}
-        onSplitDown={onSplitDown}
+        onClose={onClose ? () => {
+          onClose();
+          focusActiveTerminalSoon(pane.id);
+        } : undefined}
+        onSplitRight={onSplitRight ? () => {
+          onSplitRight();
+          focusActiveTerminalSoon(pane.id);
+        } : undefined}
+        onSplitDown={onSplitDown ? () => {
+          onSplitDown();
+          focusActiveTerminalSoon(pane.id);
+        } : undefined}
         onZoomToggle={handleZoomToggle}
         onAddTab={handleAddTab}
         onRemoveTab={handleRemoveTab}

@@ -168,9 +168,12 @@ def test_selection_copy_listener_survives_cached_terminal_remounts() -> None:
 
     for snippet in [
         "const terminalSelectionCopyListeners = new WeakMap<Terminal, { dispose: () => void }>();",
+        "function focusTerminalSoon(currentTerm: Terminal): void",
         "function registerSelectionCopyListener(currentTerm: Terminal): void",
         "disposeSelectionCopyListener(currentTerm);",
-        "copyTextToClipboard(currentTerm.getSelection());",
+        "copyTextToClipboard(currentTerm.getSelection(), () => focusTerminalSoon(currentTerm));",
+        ".then(() => restoreFocus?.())",
+        ".catch(() => fallbackCopyTextToClipboard(text, restoreFocus))",
         "registerSelectionCopyListener(cached.term);",
         "registerSelectionCopyListener(term);",
         "disposeSelectionCopyListener(term);",
@@ -178,6 +181,51 @@ def test_selection_copy_listener_survives_cached_terminal_remounts() -> None:
         assert_contains(xterm_wrapper, snippet, "src/components/terminal/XTermWrapper.tsx")
 
     assert "navigator.clipboard.writeText(selection).catch(() => {});" not in xterm_wrapper
+    assert "clipboard.writeText(text).catch(() => fallbackCopyTextToClipboard(text));" not in xterm_wrapper
+
+
+def test_terminal_toolbar_actions_restore_xterm_focus() -> None:
+    terminal_pane = read_repo_text("src/components/workspace/TerminalPane.tsx")
+
+    for snippet in [
+        "function focusTerminalElement(paneEl: HTMLElement | null | undefined): void",
+        "function focusTerminalInPaneSoon(paneId: string): void",
+        "function focusActiveTerminalSoon(fallbackPaneId: string): void",
+        'paneEl?.querySelector<HTMLTextAreaElement>(".xterm-helper-textarea, textarea")',
+        "focusTerminalInPaneSoon(pane.id);",
+        "focusActiveTerminalSoon(pane.id);",
+    ]:
+        assert_contains(terminal_pane, snippet, "src/components/workspace/TerminalPane.tsx")
+
+
+def test_terminal_plain_input_bypasses_keybinding_overrides() -> None:
+    xterm_wrapper = read_repo_text("src/components/terminal/XTermWrapper.tsx")
+
+    for snippet in [
+        "const TERMINAL_PLAIN_INPUT_KEYS = new Set([",
+        '"Backspace"',
+        "function isPlainTerminalInputEvent(e: KeyboardEvent): boolean",
+        "if (isPlainTerminalInputEvent(e)) {",
+        "e.stopPropagation();",
+        "return true;",
+    ]:
+        assert_contains(xterm_wrapper, snippet, "src/components/terminal/XTermWrapper.tsx")
+
+
+def test_pty_reader_does_not_block_when_frontend_queue_is_full() -> None:
+    pty_session = read_repo_text("src-tauri/src/pty/session.rs")
+
+    for snippet in [
+        "Err(mpsc::error::TrySendError::Full(rejected)) => {",
+        ".frontend_queue_full_retry",
+        ".dropped_chunks",
+        ".fetch_add(1, Ordering::Relaxed);",
+        ".dropped_bytes",
+        "Keep draining the PTY even when the renderer is behind.",
+    ]:
+        assert_contains(pty_session, snippet, "src-tauri/src/pty/session.rs")
+
+    assert "frontend_tx.blocking_send" not in pty_session
 
 
 def test_terminal_batches_are_not_acked_while_layout_is_unwritable() -> None:
