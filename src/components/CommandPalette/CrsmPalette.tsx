@@ -73,6 +73,8 @@ const KIND_COLORS: Record<TargetKind, { fg: string; bg: string }> = {
 const LIST_OVERSCAN = 6;
 const LIST_VIEWPORT_FALLBACK = 420;
 const HANDOFF_TIMEOUT_MS = 9000;
+const SESSION_VALIDATE_LIMIT = 50;
+const SESSION_VALIDATE_TIMEOUT_MS = 6000;
 const SESSION_FILTER_LABELS: Record<SessionFilterKind, string> = {
   "all": "すべて",
   "claude": "Claude Code",
@@ -218,6 +220,33 @@ function storeCrsmSessions(nextSessions: CrsmSessionEntry[], deep: boolean, refr
   if (refresh) {
     cachedCrsmSessionsRefreshedAt = Date.now();
   }
+}
+
+function upsertCrsmSession(
+  sessions: CrsmSessionEntry[],
+  nextSession: CrsmSessionEntry,
+): CrsmSessionEntry[] {
+  const index = sessions.findIndex((session) =>
+    session.kind === nextSession.kind && session.id === nextSession.id,
+  );
+  if (index === -1) return [nextSession, ...sessions];
+  const nextSessions = [...sessions];
+  nextSessions[index] = nextSession;
+  return nextSessions;
+}
+
+function exactCrsmSessionMatch(
+  sessions: CrsmSessionEntry[],
+  target: CrsmSessionEntry,
+): CrsmSessionEntry | undefined {
+  return sessions.find((session) => session.kind === target.kind && session.id === target.id);
+}
+
+function directResumeUnavailableMessage(session: CrsmSessionEntry): string | null {
+  if (session.kind === "claude" && !session.transcript_path) {
+    return "この Claude 履歴は要約だけで、直接 Resume できる実体ファイルがありません。別の履歴を選ぶか、別エージェントへの引き継ぎを使ってください。";
+  }
+  return null;
 }
 
 function fetchCrsmSessions(deep = false, refresh = false): Promise<CrsmSessionEntry[]> {
@@ -542,10 +571,34 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
         MYCMUX_AGENT_KIND: targetKind,
       };
       let agentSessionId: string | undefined = selected.id;
+      let launchSession = selected;
 
       if (selected.kind === targetKind) {
+        const refreshed = await withTimeout(
+          crsmListSessions(selected.id, SESSION_VALIDATE_LIMIT, true),
+          SESSION_VALIDATE_TIMEOUT_MS,
+          "CRSM session validation",
+        );
+        const exact = exactCrsmSessionMatch(refreshed, selected);
+        if (!exact) {
+          cachedCrsmSessions = cachedCrsmSessions?.filter((session) =>
+            !(session.kind === selected.kind && session.id === selected.id),
+          ) ?? null;
+          setSessions((prev) => prev.filter((session) =>
+            !(session.kind === selected.kind && session.id === selected.id),
+          ));
+          throw new Error("このセッションは最新の履歴で見つかりませんでした。履歴を更新して、別のセッションを選んでください。");
+        }
+        const unavailable = directResumeUnavailableMessage(exact);
+        if (unavailable) {
+          throw new Error(unavailable);
+        }
+        launchSession = exact;
+        cachedCrsmSessions = cachedCrsmSessions ? upsertCrsmSession(cachedCrsmSessions, exact) : cachedCrsmSessions;
+        setSessions((prev) => upsertCrsmSession(prev, exact));
         launchEnv.MYCMUX_RESUME = targetKind;
-        launchEnv.MYCMUX_SESSION_ID = selected.id;
+        launchEnv.MYCMUX_SESSION_ID = exact.id;
+        agentSessionId = exact.id;
       } else {
         const result = await withTimeout(
           crsmCreateHandoff(selected.id, selected.kind, targetKind, 20),
@@ -561,15 +614,15 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
 
       addPaneToWorkspaceWithOptions(activeWorkspace.id, anchorPane.id, "right", {
         agentId: "shell-starter",
-        label: selected.label,
-        cwd: selected.cwd,
-        agentKind: selected.kind === targetKind ? targetKind : undefined,
+        label: launchSession.label,
+        cwd: launchSession.cwd,
+        agentKind: launchSession.kind === targetKind ? targetKind : undefined,
         agentSessionId,
         launchEnv,
       });
       onClose();
     } catch (err) {
-      setError(String(err));
+      setError(err instanceof Error ? err.message : String(err));
     }
   }
 

@@ -288,11 +288,15 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
 
   setWorkspaceLayoutMetrics: (id, columnWidths, rowHeightsPerCol) => {
     set((state) => ({
-      workspaces: state.workspaces.map((w) =>
-        w.id === id
-          ? { ...w, columnWidths, rowHeightsPerCol }
-          : w
-      ),
+      workspaces: state.workspaces.map((w) => {
+        if (w.id !== id) return w;
+        const columns = fallbackColumns(w);
+        return {
+          ...w,
+          columnWidths: columnWidthsMatch(columns, columnWidths) ? columnWidths : undefined,
+          rowHeightsPerCol: rowHeightsMatch(columns, rowHeightsPerCol) ? rowHeightsPerCol : undefined,
+        };
+      }),
     }));
   },
 

@@ -37,12 +37,16 @@ def test_terminal_grid_keeps_multi_column_layout_readable() -> None:
     global_css = read_repo_text("src/global.css")
 
     for snippet in [
-        "const FIT_LAYOUT_MIN_SIZE = 0;",
+        "const FIT_LAYOUT_MIN_SIZE = 1;",
         "function fitLayoutSizes(",
         "const columnWidths = fitLayoutSizes(workspace?.columnWidths, viewportSize.width, cols.length);",
         "const hasMeasuredViewport = viewportSize.width > 0 && viewportSize.height > 0;",
+        "const layoutSignature = cols.map((col) => col.join(\",\")).join(\"|\");",
+        "key={`cols-${layoutSignature}`}",
+        "const colSignature = col.join(\",\");",
+        "const rowHeights = fitLayoutSizes(rowHeightsPerCol?.[colIdx], viewportSize.height, col.length);",
         "defaultSizes={columnWidths}",
-        "defaultSizes={fitLayoutSizes(rowHeightsPerCol?.[colIdx], viewportSize.height, col.length)}",
+        "defaultSizes={rowHeights}",
         "preferredSize={columnWidths?.[colIdx]}",
         "preferredSize={rowHeights?.[rowIdx]}",
         "proportionalLayout",
@@ -61,6 +65,7 @@ def test_terminal_grid_keeps_multi_column_layout_readable() -> None:
 
     assert "scrollIntoView" not in workspace_view
     assert "MIN_TERMINAL_COLUMN_WIDTH" not in workspace_view
+    assert "colKeyStateRef" not in workspace_view
 
 
 def test_split_columns_are_reconciled_to_render_every_pane() -> None:
@@ -156,6 +161,23 @@ def test_terminal_renderer_uses_dom_renderer_for_stability() -> None:
     assert "term.loadAddon(currentWebgl)" not in xterm_wrapper
     assert "image-rendering: pixelated;" not in global_css
     assert "image-rendering: -webkit-optimize-contrast;" not in global_css
+
+
+def test_selection_copy_listener_survives_cached_terminal_remounts() -> None:
+    xterm_wrapper = read_repo_text("src/components/terminal/XTermWrapper.tsx")
+
+    for snippet in [
+        "const terminalSelectionCopyListeners = new WeakMap<Terminal, { dispose: () => void }>();",
+        "function registerSelectionCopyListener(currentTerm: Terminal): void",
+        "disposeSelectionCopyListener(currentTerm);",
+        "copyTextToClipboard(currentTerm.getSelection());",
+        "registerSelectionCopyListener(cached.term);",
+        "registerSelectionCopyListener(term);",
+        "disposeSelectionCopyListener(term);",
+    ]:
+        assert_contains(xterm_wrapper, snippet, "src/components/terminal/XTermWrapper.tsx")
+
+    assert "navigator.clipboard.writeText(selection).catch(() => {});" not in xterm_wrapper
 
 
 def test_terminal_batches_are_not_acked_while_layout_is_unwritable() -> None:

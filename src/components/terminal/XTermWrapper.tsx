@@ -187,6 +187,7 @@ const termCache = new Map<string, CachedTerm>();
 const liveTerms = new Map<string, Terminal>();
 const terminalSizeCache = new Map<string, { cols: number; rows: number }>();
 const terminalWriteCounters = new Map<string, number>();
+const terminalSelectionCopyListeners = new WeakMap<Terminal, { dispose: () => void }>();
 
 const TERMINAL_SNAPSHOT_SCAN_MULTIPLIER = 4;
 const TERMINAL_SNAPSHOT_MAX_WRAPPED_LINES = 256;
@@ -194,6 +195,90 @@ const TERMINAL_SNAPSHOT_MAX_LINE_CHARS = 8192;
 
 const terminalHasLiveOutput = new Set<string>();
 const terminalInitialReplayMarkers = new Map<string, IMarker>();
+
+function fallbackCopyTextToClipboard(text: string): void {
+  if (typeof document === "undefined") return;
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "true");
+  textarea.style.position = "fixed";
+  textarea.style.left = "-9999px";
+  textarea.style.top = "0";
+  document.body.appendChild(textarea);
+  textarea.select();
+  try {
+    document.execCommand("copy");
+  } catch {
+    // Clipboard access is best effort; terminal selection must never break input.
+  } finally {
+    document.body.removeChild(textarea);
+  }
+}
+
+function copyTextToClipboard(text: string): void {
+  if (!text) return;
+  const clipboard = typeof navigator !== "undefined" ? navigator.clipboard : undefined;
+  if (clipboard?.writeText) {
+    clipboard.writeText(text).catch(() => fallbackCopyTextToClipboard(text));
+    return;
+  }
+  fallbackCopyTextToClipboard(text);
+}
+
+function disposeSelectionCopyListener(currentTerm: Terminal | null | undefined): void {
+  if (!currentTerm) return;
+  const existing = terminalSelectionCopyListeners.get(currentTerm);
+  if (!existing) return;
+  existing.dispose();
+  terminalSelectionCopyListeners.delete(currentTerm);
+}
+
+function registerSelectionCopyListener(currentTerm: Terminal): void {
+  disposeSelectionCopyListener(currentTerm);
+
+  let selectionDirty = false;
+  let copyTimer: number | null = null;
+  const selectionDisposable = currentTerm.onSelectionChange(() => {
+    selectionDirty = true;
+  });
+
+  const flushSelectionCopy = (event?: Event) => {
+    if (event instanceof MouseEvent && event.button !== 0) {
+      selectionDirty = false;
+      return;
+    }
+    if (typeof PointerEvent !== "undefined" && event instanceof PointerEvent && event.button !== 0) {
+      selectionDirty = false;
+      return;
+    }
+    if (!selectionDirty) return;
+    selectionDirty = false;
+    if (copyTimer !== null) {
+      window.clearTimeout(copyTimer);
+    }
+    copyTimer = window.setTimeout(() => {
+      copyTimer = null;
+      copyTextToClipboard(currentTerm.getSelection());
+    }, 0);
+  };
+
+  const win = currentTerm.element?.ownerDocument.defaultView ?? window;
+  win.addEventListener("pointerup", flushSelectionCopy, true);
+  win.addEventListener("mouseup", flushSelectionCopy, true);
+  win.addEventListener("touchend", flushSelectionCopy, true);
+  terminalSelectionCopyListeners.set(currentTerm, {
+    dispose: () => {
+      selectionDisposable.dispose();
+      if (copyTimer !== null) {
+        window.clearTimeout(copyTimer);
+        copyTimer = null;
+      }
+      win.removeEventListener("pointerup", flushSelectionCopy, true);
+      win.removeEventListener("mouseup", flushSelectionCopy, true);
+      win.removeEventListener("touchend", flushSelectionCopy, true);
+    },
+  });
+}
 
 // v0.7.1 diag: per-session aggregated write stats flushed every 1 s on console.
 type DiagWriteStats = {
@@ -1621,6 +1706,7 @@ export default memo(function XTermWrapper({
       scrollDisposable = null;
       removeCompositionGuard?.();
       removeCompositionGuard = null;
+      disposeSelectionCopyListener(term);
       unlistenExit?.();
       unlistenExit = null;
       cacheCurrentTerminal();
@@ -1656,6 +1742,7 @@ export default memo(function XTermWrapper({
       cached.term.options.fontFamily = storeFontFamily;
       registerScrollListener(cached.term);
       registerCompositionGuard(cached.term, cached.fitAddon);
+      registerSelectionCopyListener(cached.term);
       const cachedBufferText = getTerminalBufferLines(sessionId, 80).join("\n");
       updateCodexOutputDetection(cachedBufferText);
       attachTerminalKeyHandler(cached.term);
@@ -1759,6 +1846,7 @@ export default memo(function XTermWrapper({
       }
       registerScrollListener(term);
       registerCompositionGuard(term, fitAddon);
+      registerSelectionCopyListener(term);
       attachTerminalKeyHandler(term);
 
       // OSC 9988: mycmux HTML sidetab. Payload = file URL or absolute path.
@@ -1775,14 +1863,6 @@ export default memo(function XTermWrapper({
           // non-critical
         }
         return true;
-      });
-
-      term.onSelectionChange(() => {
-        if (termDisposed || !term) return;
-        const selection = term.getSelection();
-        if (selection) {
-          navigator.clipboard.writeText(selection).catch(() => {});
-        }
       });
 
       term.onData((data) => {

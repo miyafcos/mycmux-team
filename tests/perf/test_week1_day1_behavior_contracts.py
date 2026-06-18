@@ -124,6 +124,11 @@ def test_resume_and_handoff_environment_contract_remains_wired() -> None:
 
     for snippet in [
         "crsmCreateHandoff",
+        "SESSION_VALIDATE_LIMIT",
+        "SESSION_VALIDATE_TIMEOUT_MS",
+        "crsmListSessions(selected.id, SESSION_VALIDATE_LIMIT, true)",
+        "const exact = exactCrsmSessionMatch(refreshed, selected);",
+        "directResumeUnavailableMessage(exact)",
         "launchEnv.MYCMUX_RESUME = targetKind",
         "launchEnv.MYCMUX_HANDOFF = targetKind",
         "launchEnv.MYCMUX_HANDOFF_PROMPT_FILE = result.path",

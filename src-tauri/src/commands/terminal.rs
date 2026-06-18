@@ -136,6 +136,9 @@ pub fn create_session(
                 "[mycmux] agent restore validation failed, falling back to --continue: {err}"
             );
             let resume = env_map.get("MYCMUX_RESUME").cloned();
+            if let Some(kind) = resume.as_deref().filter(|value| is_agent_session_kind(value)) {
+                apply_agent_restore_fallback_args(&requested_command, &mut args, kind);
+            }
             env_map.remove("MYCMUX_SESSION_ID");
             resume
         }
@@ -346,6 +349,31 @@ fn command_leaf(command: &str) -> &str {
         .or_else(|| leaf.strip_suffix(".bat"))
         .or_else(|| leaf.strip_suffix(".com"))
         .unwrap_or(leaf)
+}
+
+fn apply_agent_restore_fallback_args(command: &str, args: &mut Vec<String>, kind: &str) {
+    let leaf = command_leaf(command).to_ascii_lowercase();
+    match (leaf.as_str(), kind) {
+        ("claude", "claude") => {
+            *args = vec![
+                "--dangerously-skip-permissions".to_string(),
+                "--permission-mode".to_string(),
+                "bypassPermissions".to_string(),
+                "--continue".to_string(),
+            ];
+        }
+        ("codex", "codex") => {
+            *args = vec![
+                "resume".to_string(),
+                "--no-alt-screen".to_string(),
+                "--last".to_string(),
+            ];
+        }
+        ("claude-codex", "claude-codex") => {
+            *args = vec!["--continue".to_string()];
+        }
+        _ => {}
+    }
 }
 
 fn should_trust_claude_workspace(command: &str, env: &HashMap<String, String>) -> bool {
@@ -4455,5 +4483,38 @@ mod tests {
         sanitize_launch_env(&mut e);
         assert!(!e.contains_key("MYCMUX_RESUME"));
         assert!(!e.contains_key("MYCMUX_SESSION_ID"));
+    }
+
+    #[test]
+    fn restore_fallback_args_remove_stale_codex_session_id() {
+        let mut args = vec![
+            "resume".to_string(),
+            "--no-alt-screen".to_string(),
+            "-C".to_string(),
+            "C:\\work".to_string(),
+            "missing-session".to_string(),
+        ];
+        apply_agent_restore_fallback_args("codex", &mut args, "codex");
+        assert_eq!(
+            args,
+            vec![
+                "resume".to_string(),
+                "--no-alt-screen".to_string(),
+                "--last".to_string(),
+            ]
+        );
+        assert!(!args.iter().any(|arg| arg == "missing-session"));
+    }
+
+    #[test]
+    fn restore_fallback_args_leave_launcher_shell_args_alone() {
+        let mut args = vec![
+            "-i".to_string(),
+            "-c".to_string(),
+            "source \"$HOME/.mycmux/bin/launcher.sh\"".to_string(),
+        ];
+        let original = args.clone();
+        apply_agent_restore_fallback_args("bash", &mut args, "codex");
+        assert_eq!(args, original);
     }
 }
