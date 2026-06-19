@@ -213,8 +213,8 @@ function getDropPreviewLabel(item: PaneDragItem, target: PaneDropTarget): string
 
 export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitRight, onSplitDown }: TerminalPaneProps) {
   // Derived boolean selectors only re-render when THIS pane's state actually changes.
-  // isActive now checks against any of this pane's tab sessionIds so that it
-  // works both when focus fires on pane.sessionId and when a specific tab is selected.
+  // isActive checks against any of this pane's tab sessionIds so the border
+  // follows the clicked/input-ready pane instead of incidental DOM focus moves.
   const activePaneId = useUiStore((s) => s.activePaneId);
   const isActive = activePaneId !== null && (
     activePaneId === pane.sessionId ||
@@ -292,7 +292,7 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
       : "transparent";
   const borderWidth = isActive && !isZoomed ? 2 : 1;
 
-  const handleFocus = useCallback(() => {
+  const activatePane = useCallback(() => {
     // Read current tabs from store at call time (avoids stale pane.tabs dependency)
     const ws = useWorkspaceListStore.getState().getWorkspace(workspaceId);
     const p = ws?.panes.find((x) => x.id === pane.id);
@@ -312,8 +312,15 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
     if (nextTarget && event.currentTarget.contains(nextTarget)) {
       return;
     }
-    setActivePaneId(null);
-  }, [setActivePaneId]);
+    const currentActivePaneId = useUiStore.getState().activePaneId;
+    const stillThisPane = currentActivePaneId !== null && (
+      currentActivePaneId === pane.sessionId ||
+      pane.tabs.some((t) => t.sessionId === currentActivePaneId)
+    );
+    if (stillThisPane) {
+      setActivePaneId(null);
+    }
+  }, [pane.sessionId, pane.tabs, setActivePaneId]);
 
   const handleAddTab = useCallback((agentId?: string, type?: PaneTab["type"]) => {
     addTabToPane(workspaceId, pane.id, agentId, type);
@@ -413,7 +420,7 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
       data-active-pane={isActive && !isZoomed ? "true" : undefined}
       data-pane-zoomed={isZoomed ? "true" : undefined}
       tabIndex={-1}
-      onFocus={handleFocus}
+      onPointerDownCapture={activatePane}
       onBlur={handleBlur}
       className={`terminal-pane-border${hasNotification ? " has-notification" : ""}`}
       style={{

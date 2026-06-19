@@ -217,10 +217,14 @@ def test_terminal_toolbar_actions_restore_xterm_focus() -> None:
         "function focusActiveTerminalSoon(fallbackPaneId: string): void",
         'paneEl?.querySelector<HTMLTextAreaElement>(".xterm-helper-textarea")',
         "attempts >= 8",
+        "const activatePane = useCallback(() => {",
+        "onPointerDownCapture={activatePane}",
+        "const stillThisPane = currentActivePaneId !== null && (",
         "focusTerminalInPaneSoon(pane.id);",
         "focusActiveTerminalSoon(pane.id);",
     ]:
         assert_contains(terminal_pane, snippet, "src/components/workspace/TerminalPane.tsx")
+    assert "onFocus={handleFocus}" not in terminal_pane
 
     for text, source in [
         (terminal_pane, "src/components/workspace/TerminalPane.tsx"),

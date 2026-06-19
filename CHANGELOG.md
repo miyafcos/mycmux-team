@@ -4,6 +4,13 @@
 
 ---
 
+## [0.8.28-lite.1] - 2026-06-19
+
+- 修正: pane の発光表示が DOM focus に反応して、マウス移動や意図しない focus 移動で光る pane が変わる問題を直しました。
+- 修正: active pane の発光は pointer down、つまりクリック・タップで入力先を選んだタイミングに合わせて更新します。
+- 修正: 別 pane をクリックした直後に、前の pane の blur が新しい active pane を消してしまう経路を防ぎました。
+- 備考: 共通機能の修正なので、master `0.8.28` と同じ内容を lite に反映しました。Buddy 機能は引き続き lite では非表示です。
+
 ## [0.8.27-lite.1] - 2026-06-19
 
 - 修正: Resume 実行前の CRSM session 検証で毎回 `--refresh` を要求していたため、CRSM の再走査が 6 秒を超えると `CRSM session validation timed out after 6000 ms` で pane が開かない問題を直しました。
