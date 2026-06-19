@@ -1,11 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import { useSettingsStore } from "../../stores/settingsStore";
-import { check } from "@tauri-apps/plugin-updater";
-import { relaunch } from "@tauri-apps/plugin-process";
+import { runUpdateCheck, type UpdatePhase } from "../../lib/forcedAutoUpdater";
 import { getRemoteInfo, rotateRemoteToken, type RemoteInfo } from "../../lib/ipc";
 
 type UpdateStatus = "idle" | "checking" | "latest" | "downloading" | "ready" | "error";
+
+function toSettingsUpdateStatus(phase: UpdatePhase): UpdateStatus {
+  return phase === "skipped" ? "latest" : phase;
+}
 
 interface SettingsMenuProps {
   onClose: () => void;
@@ -97,28 +100,14 @@ export default function SettingsMenu({
   };
 
   const handleCheckUpdate = async () => {
-    setUpdateStatus("checking");
-    setUpdateMsg("確認中…");
-    try {
-      const update = await check();
-      if (update) {
-        setUpdateMsg(`更新があります: v${update.version}`);
-        await new Promise((resolve) => window.setTimeout(resolve, 150));
-        setUpdateStatus("downloading");
-        setUpdateMsg(`v${update.version} を取得中…`);
-        await update.downloadAndInstall();
-        setUpdateStatus("ready");
-        setUpdateMsg("インストール完了。再起動します…");
-        await relaunch();
-      } else {
-        setUpdateStatus("latest");
-        setUpdateMsg("最新版です");
-      }
-    } catch (e) {
-      console.error("Failed to check or install update", e);
-      setUpdateStatus("error");
-      setUpdateMsg("更新に失敗しました");
-    }
+    await runUpdateCheck({
+      source: "manual",
+      force: true,
+      onStatus: (status) => {
+        setUpdateStatus(toSettingsUpdateStatus(status.phase));
+        setUpdateMsg(status.message);
+      },
+    });
   };
 
   useEffect(() => {

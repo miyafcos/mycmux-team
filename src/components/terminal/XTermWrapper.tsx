@@ -293,52 +293,47 @@ function disposeSelectionCopyListener(currentTerm: Terminal | null | undefined):
   terminalSelectionCopyListeners.delete(currentTerm);
 }
 
-type FilteredTerminalInput = {
-  data: string;
-  shouldActivatePane: boolean;
-};
-
-function isTerminalWheelMouseButton(button: number): boolean {
-  return Number.isFinite(button) && (button & 64) === 64;
-}
-
-function stripNonWheelTerminalMouseInputSequences(data: string): string {
+function stripTerminalMouseInputSequences(data: string): string {
   return data
     // SGR mouse reporting: ESC [ < button ; col ; row M/m
-    .replace(/\x1b\[<(\d+)(;\d+){2}[mM]/g, (sequence, button: string) =>
-      isTerminalWheelMouseButton(Number(button)) ? sequence : "",
-    )
+    .replace(/\x1b\[<\d+(?:;\d+){2}[mM]/g, "")
     // urxvt-style mouse reporting: ESC [ button ; col ; row M/m
-    .replace(/\x1b\[(\d+)(;\d+){2}[mM]/g, (sequence, button: string) =>
-      isTerminalWheelMouseButton(Number(button)) ? sequence : "",
-    )
+    .replace(/\x1b\[\d+(?:;\d+){2}[mM]/g, "")
     // X10 / normal tracking: ESC [ M followed by three encoded bytes
-    .replace(/\x1b\[M([\s\S])([\s\S])([\s\S])/g, (sequence, button: string) => {
-      const buttonCode = button.charCodeAt(0) - 32;
-      return isTerminalWheelMouseButton(buttonCode) ? sequence : "";
-    });
+    .replace(/\x1b\[M[\s\S]{3}/g, "");
 }
 
-function stripTerminalWheelInputSequences(data: string): string {
-  return data
-    .replace(/\x1b\[<(\d+)(;\d+){2}[mM]/g, (sequence, button: string) =>
-      isTerminalWheelMouseButton(Number(button)) ? "" : sequence,
-    )
-    .replace(/\x1b\[(\d+)(;\d+){2}[mM]/g, (sequence, button: string) =>
-      isTerminalWheelMouseButton(Number(button)) ? "" : sequence,
-    )
-    .replace(/\x1b\[M([\s\S])([\s\S])([\s\S])/g, (sequence, button: string) => {
-      const buttonCode = button.charCodeAt(0) - 32;
-      return isTerminalWheelMouseButton(buttonCode) ? "" : sequence;
-    });
+const WHEEL_DELTA_LINE = 1;
+const WHEEL_DELTA_PAGE = 2;
+
+function wheelDeltaToTerminalLines(event: WheelEvent, rows: number): number {
+  const rawDelta = event.deltaY;
+  if (rawDelta === 0) return 0;
+
+  const lines = event.deltaMode === WHEEL_DELTA_PAGE
+    ? rawDelta * Math.max(1, rows)
+    : event.deltaMode === WHEEL_DELTA_LINE
+      ? rawDelta
+      : rawDelta / 40;
+  if (!Number.isFinite(lines) || lines === 0) return 0;
+
+  const direction = Math.sign(lines);
+  return direction * Math.max(1, Math.round(Math.abs(lines)));
 }
 
-function filterTerminalMouseInputSequences(data: string): FilteredTerminalInput {
-  const inputData = stripNonWheelTerminalMouseInputSequences(data);
-  return {
-    data: inputData,
-    shouldActivatePane: stripTerminalWheelInputSequences(inputData).length > 0,
+function attachTerminalWheelScroll(container: HTMLElement, currentTerm: Terminal): () => void {
+  const handleWheel = (event: WheelEvent): void => {
+    if (event.defaultPrevented || event.ctrlKey || event.metaKey) return;
+    const lines = wheelDeltaToTerminalLines(event, currentTerm.rows);
+    if (lines === 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.stopImmediatePropagation();
+    currentTerm.scrollLines(lines);
   };
+
+  container.addEventListener("wheel", handleWheel, { capture: true, passive: false });
+  return () => container.removeEventListener("wheel", handleWheel, { capture: true });
 }
 
 function registerSelectionCopyListener(currentTerm: Terminal): void {
@@ -1224,6 +1219,7 @@ export default memo(function XTermWrapper({
     let term: Terminal | null = null;
     let fitAddon: FitAddon | null = null;
     let removeCompositionGuard: (() => void) | null = null;
+    let removeWheelScrollGuard: (() => void) | null = null;
     let logThrottle: ReturnType<typeof setTimeout> | null = null;
     let idleFlush: ReturnType<typeof setTimeout> | null = null;
     let backgroundScanThrottle: ReturnType<typeof setTimeout> | null = null;
@@ -1799,35 +1795,29 @@ export default memo(function XTermWrapper({
       titleDisposable?.dispose();
 
       dataDisposable = currentTerm.onData((data) => {
-        const { data: inputData, shouldActivatePane } = filterTerminalMouseInputSequences(data);
+        const inputData = stripTerminalMouseInputSequences(data);
         if (!inputData) return;
-        if (shouldActivatePane) {
-          if (useUiStore.getState().activePaneId !== sessionId) {
-            useUiStore.getState().setActivePaneId(sessionId);
-          }
-          usePaneMetadataStore.getState().clearNotification(sessionId);
+        if (useUiStore.getState().activePaneId !== sessionId) {
+          useUiStore.getState().setActivePaneId(sessionId);
         }
+        usePaneMetadataStore.getState().clearNotification(sessionId);
         chunkedWrite(sessionId, inputData);
-        if (shouldActivatePane) {
-          try {
-            window.dispatchEvent(
-              new CustomEvent("mycmux:keystroke", { detail: { sessionId, data: inputData } }),
-            );
-          } catch {
-            // ignore dispatch failures; buddy is non-critical
-          }
+        try {
+          window.dispatchEvent(
+            new CustomEvent("mycmux:keystroke", { detail: { sessionId, data: inputData } }),
+          );
+        } catch {
+          // ignore dispatch failures; buddy is non-critical
         }
       });
 
       binaryDisposable = currentTerm.onBinary((data) => {
-        const { data: inputData, shouldActivatePane } = filterTerminalMouseInputSequences(data);
+        const inputData = stripTerminalMouseInputSequences(data);
         if (!inputData) return;
-        if (shouldActivatePane) {
-          if (useUiStore.getState().activePaneId !== sessionId) {
-            useUiStore.getState().setActivePaneId(sessionId);
-          }
-          usePaneMetadataStore.getState().clearNotification(sessionId);
+        if (useUiStore.getState().activePaneId !== sessionId) {
+          useUiStore.getState().setActivePaneId(sessionId);
         }
+        usePaneMetadataStore.getState().clearNotification(sessionId);
         enqueueSessionWrite(sessionId, inputData);
       });
 
@@ -1879,6 +1869,8 @@ export default memo(function XTermWrapper({
       titleDisposable = null;
       removeCompositionGuard?.();
       removeCompositionGuard = null;
+      removeWheelScrollGuard?.();
+      removeWheelScrollGuard = null;
       disposeSelectionCopyListener(term);
       unlistenExit?.();
       unlistenExit = null;
@@ -1917,6 +1909,7 @@ export default memo(function XTermWrapper({
       registerScrollListener(cached.term);
       registerCompositionGuard(cached.term, cached.fitAddon);
       registerSelectionCopyListener(cached.term);
+      removeWheelScrollGuard = attachTerminalWheelScroll(container, cached.term);
       const cachedBufferText = getTerminalBufferLines(sessionId, 80).join("\n");
       updateCodexOutputDetection(cachedBufferText);
       attachTerminalKeyHandler(cached.term);
@@ -2024,6 +2017,7 @@ export default memo(function XTermWrapper({
       registerScrollListener(term);
       registerCompositionGuard(term, fitAddon);
       registerSelectionCopyListener(term);
+      removeWheelScrollGuard = attachTerminalWheelScroll(container!, term);
       attachTerminalKeyHandler(term);
 
       // OSC 9988: mycmux HTML sidetab. Payload = file URL or absolute path.

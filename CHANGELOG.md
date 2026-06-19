@@ -4,6 +4,13 @@
 
 ---
 
+## [0.8.33-lite.1] - 2026-06-19
+
+- Added forced automatic updates after startup, plus periodic, online, and visibility-resume checks. When a signed update is available, mycmux-lite downloads it and relaunches without relying on the Settings button.
+- Fixed terminal wheel scrolling by handling wheel events as local terminal scrollback and stripping mouse-report escape sequences before they reach the PTY.
+- Note: Mirrors the shared master 0.8.33 update path and terminal wheel fix in the lite build.
+- Verification: npm.cmd run build passed.
+
 ## [0.8.30-lite.1] - 2026-06-19
 
 - Fix: Restore normal terminal drag selection by removing the DOM-level terminal mouse guard. Mouse report escape sequences are filtered before they reach the PTY instead.

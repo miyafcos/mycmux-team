@@ -28,6 +28,7 @@ import {
 import AppShell from "./components/layout/AppShell";
 import ErrorBoundary from "./components/common/ErrorBoundary";
 import { initDefaultShell } from "./lib/agents";
+import { startForcedAutoUpdateLoop } from "./lib/forcedAutoUpdater";
 
 // Kick off config fetch immediately — will be cached by the time terminals mount
 preloadTerminalConfig();
@@ -274,6 +275,14 @@ function App() {
       window.clearTimeout(mappingFallbackTimer);
     };
   }, []);
+
+  useEffect(() => {
+    if (!ready) return;
+
+    if (startupMaskVisible) return;
+
+    return startForcedAutoUpdateLoop();
+  }, [ready, startupMaskVisible]);
 
   useEffect(() => {
     if (!ready) return;
