@@ -198,7 +198,6 @@ const liveTerms = new Map<string, Terminal>();
 const terminalSizeCache = new Map<string, { cols: number; rows: number }>();
 const terminalWriteCounters = new Map<string, number>();
 const terminalSelectionCopyListeners = new WeakMap<Terminal, { dispose: () => void }>();
-const terminalMouseInputGuards = new WeakMap<Terminal, { dispose: () => void }>();
 const terminalInputQueues = new Map<string, Promise<void>>();
 
 const TERMINAL_SNAPSHOT_SCAN_MULTIPLIER = 4;
@@ -294,68 +293,14 @@ function disposeSelectionCopyListener(currentTerm: Terminal | null | undefined):
   terminalSelectionCopyListeners.delete(currentTerm);
 }
 
-function disposeTerminalMouseInputGuard(currentTerm: Terminal | null | undefined): void {
-  if (!currentTerm) return;
-  const existing = terminalMouseInputGuards.get(currentTerm);
-  if (!existing) return;
-  existing.dispose();
-  terminalMouseInputGuards.delete(currentTerm);
-}
-
-function focusTerminalNow(currentTerm: Terminal): void {
-  try {
-    currentTerm.focus();
-  } catch {
-    // Terminal may have been disposed between the pointer event and focus.
-  }
-}
-
-function shouldBypassTerminalMouseInputGuard(event: Event): boolean {
-  if (event.type === "contextmenu") return true;
-
-  if (typeof PointerEvent !== "undefined" && event instanceof PointerEvent) {
-    return event.button !== 0 || event.shiftKey;
-  }
-
-  if (event instanceof MouseEvent) {
-    return event.button !== 0 || event.shiftKey;
-  }
-
-  if (typeof TouchEvent !== "undefined" && event instanceof TouchEvent) {
-    return event.touches.length > 1 || event.shiftKey;
-  }
-
-  return true;
-}
-
-function registerTerminalMouseInputGuard(currentTerm: Terminal): void {
-  disposeTerminalMouseInputGuard(currentTerm);
-  const element = currentTerm.element;
-  if (!element) return;
-
-  const blockMouseInput = (event: Event): void => {
-    if (shouldBypassTerminalMouseInputGuard(event)) return;
-    focusTerminalNow(currentTerm);
-    event.preventDefault();
-    event.stopImmediatePropagation();
-  };
-
-  const mouseEvents = ["pointerdown", "pointerup", "mousedown", "mouseup", "click", "dblclick", "auxclick"] as const;
-  for (const eventName of mouseEvents) {
-    element.addEventListener(eventName, blockMouseInput, true);
-  }
-  element.addEventListener("touchstart", blockMouseInput, { capture: true, passive: false });
-  element.addEventListener("touchend", blockMouseInput, { capture: true, passive: false });
-
-  terminalMouseInputGuards.set(currentTerm, {
-    dispose: () => {
-      for (const eventName of mouseEvents) {
-        element.removeEventListener(eventName, blockMouseInput, true);
-      }
-      element.removeEventListener("touchstart", blockMouseInput, true);
-      element.removeEventListener("touchend", blockMouseInput, true);
-    },
-  });
+function stripTerminalMouseInputSequences(data: string): string {
+  return data
+    // SGR mouse reporting: ESC [ < button ; col ; row M/m
+    .replace(/\x1b\[<\d+(?:;\d+){2}[mM]/g, "")
+    // urxvt-style mouse reporting: ESC [ button ; col ; row M/m
+    .replace(/\x1b\[\d+(?:;\d+){2}[mM]/g, "")
+    // X10 / normal tracking: ESC [ M followed by three encoded bytes
+    .replace(/\x1b\[M[\s\S]{3}/g, "");
 }
 
 function registerSelectionCopyListener(currentTerm: Terminal): void {
@@ -1816,13 +1761,16 @@ export default memo(function XTermWrapper({
       titleDisposable?.dispose();
 
       dataDisposable = currentTerm.onData((data) => {
+        const inputData = stripTerminalMouseInputSequences(data);
+        if (!inputData) return;
         if (useUiStore.getState().activePaneId !== sessionId) {
           useUiStore.getState().setActivePaneId(sessionId);
         }
-        chunkedWrite(sessionId, data);
+        usePaneMetadataStore.getState().clearNotification(sessionId);
+        chunkedWrite(sessionId, inputData);
         try {
           window.dispatchEvent(
-            new CustomEvent("mycmux:keystroke", { detail: { sessionId, data } }),
+            new CustomEvent("mycmux:keystroke", { detail: { sessionId, data: inputData } }),
           );
         } catch {
           // ignore dispatch failures; buddy is non-critical
@@ -1830,10 +1778,13 @@ export default memo(function XTermWrapper({
       });
 
       binaryDisposable = currentTerm.onBinary((data) => {
+        const inputData = stripTerminalMouseInputSequences(data);
+        if (!inputData) return;
         if (useUiStore.getState().activePaneId !== sessionId) {
           useUiStore.getState().setActivePaneId(sessionId);
         }
-        enqueueSessionWrite(sessionId, data);
+        usePaneMetadataStore.getState().clearNotification(sessionId);
+        enqueueSessionWrite(sessionId, inputData);
       });
 
       titleDisposable = currentTerm.onTitleChange((title) => {
@@ -1885,7 +1836,6 @@ export default memo(function XTermWrapper({
       removeCompositionGuard?.();
       removeCompositionGuard = null;
       disposeSelectionCopyListener(term);
-      disposeTerminalMouseInputGuard(term);
       unlistenExit?.();
       unlistenExit = null;
       cacheCurrentTerminal();
@@ -1923,7 +1873,6 @@ export default memo(function XTermWrapper({
       registerScrollListener(cached.term);
       registerCompositionGuard(cached.term, cached.fitAddon);
       registerSelectionCopyListener(cached.term);
-      registerTerminalMouseInputGuard(cached.term);
       const cachedBufferText = getTerminalBufferLines(sessionId, 80).join("\n");
       updateCodexOutputDetection(cachedBufferText);
       attachTerminalKeyHandler(cached.term);
@@ -2031,7 +1980,6 @@ export default memo(function XTermWrapper({
       registerScrollListener(term);
       registerCompositionGuard(term, fitAddon);
       registerSelectionCopyListener(term);
-      registerTerminalMouseInputGuard(term);
       attachTerminalKeyHandler(term);
 
       // OSC 9988: mycmux HTML sidetab. Payload = file URL or absolute path.

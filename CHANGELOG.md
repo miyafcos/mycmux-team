@@ -4,6 +4,12 @@
 
 ---
 
+## [0.8.30-lite.1] - 2026-06-19
+
+- Fix: Restore normal terminal drag selection by removing the DOM-level terminal mouse guard. Mouse report escape sequences are filtered before they reach the PTY instead.
+- Fix: Keep the blue pane border tied to the session that actually receives input or the selected tab. Selecting text in another pane no longer moves the input indicator.
+- Note: Mirrors the shared master 0.8.30 fix in the lite build.
+- Verification: npm.cmd run build and git diff --check passed.
 ## [0.8.29-lite.1] - 2026-06-19
 
 - 修正: terminal 上の通常クリック・タップを CLI へ座標入力として送らず、focus 復帰だけに限定しました。カーソル移動は左右キーなどのキーボード操作に寄せています。

@@ -1,4 +1,4 @@
-import { memo, type FocusEvent, useCallback, useEffect } from "react";
+import { memo, useCallback, useEffect } from "react";
 import { open } from "@tauri-apps/plugin-shell";
 import ErrorBoundary from "../common/ErrorBoundary";
 import type { AgentSessionKind, Pane, PaneTab } from "../../types";
@@ -213,7 +213,7 @@ function getDropPreviewLabel(item: PaneDragItem, target: PaneDropTarget): string
 export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitRight, onSplitDown }: TerminalPaneProps) {
   // Derived boolean selectors only re-render when THIS pane's state actually changes.
   // isActive checks against any of this pane's tab sessionIds so the border
-  // follows the clicked/input-ready pane instead of incidental DOM focus moves.
+  // follows the session that is actually receiving input, not mouse selection.
   const activePaneId = useUiStore((s) => s.activePaneId);
   const isActive = activePaneId !== null && (
     activePaneId === pane.sessionId ||
@@ -243,7 +243,6 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
       0,
     ),
   );
-  const clearNotification = usePaneMetadataStore((s) => s.clearNotification);
 
   const addTabToPane = useWorkspaceLayoutStore((s) => s.addTabToPane);
   const removeTabFromPane = useWorkspaceLayoutStore((s) => s.removeTabFromPane);
@@ -291,35 +290,6 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
       : "transparent";
   const borderWidth = isActive && !isZoomed ? 2 : 1;
 
-  const activatePane = useCallback(() => {
-    // Read current tabs from store at call time (avoids stale pane.tabs dependency)
-    const ws = useWorkspaceListStore.getState().getWorkspace(workspaceId);
-    const p = ws?.panes.find((x) => x.id === pane.id);
-    // Set activePaneId to the currently visible tab's sessionId so that
-    // XTermWrapper notification suppression can use a single store check.
-    const activeTab = p?.tabs.find((t) => t.id === p.activeTabId);
-    setActivePaneId(activeTab?.sessionId ?? pane.sessionId);
-    if (p) {
-      for (const tab of p.tabs) {
-        clearNotification(tab.sessionId);
-      }
-    }
-  }, [pane.sessionId, pane.id, workspaceId, setActivePaneId, clearNotification]);
-
-  const handleBlur = useCallback((event: FocusEvent<HTMLDivElement>) => {
-    const nextTarget = event.relatedTarget as Node | null;
-    if (nextTarget && event.currentTarget.contains(nextTarget)) {
-      return;
-    }
-    const currentActivePaneId = useUiStore.getState().activePaneId;
-    const stillThisPane = currentActivePaneId !== null && (
-      currentActivePaneId === pane.sessionId ||
-      pane.tabs.some((t) => t.sessionId === currentActivePaneId)
-    );
-    if (stillThisPane) {
-      setActivePaneId(null);
-    }
-  }, [pane.sessionId, pane.tabs, setActivePaneId]);
 
   const handleAddTab = useCallback((agentId?: string, type?: PaneTab["type"]) => {
     addTabToPane(workspaceId, pane.id, agentId, type);
@@ -419,8 +389,6 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
       data-active-pane={isActive && !isZoomed ? "true" : undefined}
       data-pane-zoomed={isZoomed ? "true" : undefined}
       tabIndex={-1}
-      onPointerDownCapture={activatePane}
-      onBlur={handleBlur}
       className={`terminal-pane-border${hasNotification ? " has-notification" : ""}`}
       style={{
         ...(isZoomed ? {
