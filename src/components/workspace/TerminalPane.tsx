@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect } from "react";
+import { memo, useCallback, useEffect, useRef, type PointerEvent as ReactPointerEvent } from "react";
 import { open } from "@tauri-apps/plugin-shell";
 import ErrorBoundary from "../common/ErrorBoundary";
 import type { AgentSessionKind, Pane, PaneTab } from "../../types";
@@ -192,6 +192,39 @@ function focusActiveTerminalSoon(fallbackPaneId: string): void {
   });
 }
 
+const PANE_CLICK_ACTIVATE_MAX_DISTANCE_PX = 5;
+
+type PendingPaneClickActivation = {
+  pointerId: number;
+  x: number;
+  y: number;
+};
+
+const PANE_CLICK_IGNORED_TARGET_SELECTOR = [
+  "button",
+  "a",
+  "input",
+  "textarea",
+  "select",
+  "iframe",
+  "[contenteditable='true']",
+  ".pane-tabbar",
+  ".pane-tab-pill",
+  ".pane-action-btn",
+  "[data-pane-drag-handle]",
+].join(",");
+
+function shouldIgnorePaneClickActivationTarget(target: EventTarget | null): boolean {
+  return target instanceof Element
+    ? Boolean(target.closest(PANE_CLICK_IGNORED_TARGET_SELECTOR))
+    : true;
+}
+
+function hasDocumentTextSelection(): boolean {
+  const selection = window.getSelection?.();
+  return Boolean(selection && selection.toString().trim().length > 0);
+}
+
 function getDropPreviewLabel(item: PaneDragItem, target: PaneDropTarget): string {
   if (target.kind === "new-workspace") {
     return item.kind === "tab" ? "Move tab to new workspace" : "Move pane to new workspace";
@@ -232,6 +265,7 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
   const activeTabMetadataAgentKind = usePaneMetadataStore((s) =>
     activeTab ? s.metadata[activeTab.sessionId]?.agentKind : undefined,
   );
+  const pendingPaneClickActivationRef = useRef<PendingPaneClickActivation | null>(null);
 
   // Granular metadata selectors only re-render when notification/done count changes.
   const notificationCount = usePaneMetadataStore((s) =>
@@ -243,6 +277,8 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
       0,
     ),
   );
+
+  const clearNotification = usePaneMetadataStore((s) => s.clearNotification);
 
   const addTabToPane = useWorkspaceLayoutStore((s) => s.addTabToPane);
   const removeTabFromPane = useWorkspaceLayoutStore((s) => s.removeTabFromPane);
@@ -290,6 +326,54 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
       : "transparent";
   const borderWidth = isActive && !isZoomed ? 2 : 1;
 
+
+  const activatePaneFromClick = useCallback(() => {
+    const ws = useWorkspaceListStore.getState().getWorkspace(workspaceId);
+    const p = ws?.panes.find((candidate) => candidate.id === pane.id);
+    const tab = p?.tabs.find((candidate) => candidate.id === p.activeTabId) ?? p?.tabs[0];
+    if (!p || !tab || tab.type === "browser") return;
+    if (useUiStore.getState().activePaneId !== tab.sessionId) {
+      setActivePaneId(tab.sessionId);
+    }
+    for (const candidate of p.tabs) {
+      clearNotification(candidate.sessionId);
+    }
+    focusTerminalInPaneSoon(pane.id);
+  }, [workspaceId, pane.id, setActivePaneId, clearNotification]);
+
+  const handlePanePointerDownCapture = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (
+      event.button !== 0 ||
+      event.shiftKey ||
+      event.altKey ||
+      event.ctrlKey ||
+      event.metaKey ||
+      shouldIgnorePaneClickActivationTarget(event.target)
+    ) {
+      pendingPaneClickActivationRef.current = null;
+      return;
+    }
+    pendingPaneClickActivationRef.current = {
+      pointerId: event.pointerId,
+      x: event.clientX,
+      y: event.clientY,
+    };
+  }, []);
+
+  const handlePanePointerUpCapture = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const pending = pendingPaneClickActivationRef.current;
+    pendingPaneClickActivationRef.current = null;
+    if (!pending || pending.pointerId !== event.pointerId || event.button !== 0) return;
+    if (event.shiftKey || event.altKey || event.ctrlKey || event.metaKey) return;
+    if (shouldIgnorePaneClickActivationTarget(event.target)) return;
+    if (Math.hypot(event.clientX - pending.x, event.clientY - pending.y) > PANE_CLICK_ACTIVATE_MAX_DISTANCE_PX) return;
+    if (hasDocumentTextSelection()) return;
+    activatePaneFromClick();
+  }, [activatePaneFromClick]);
+
+  const handlePanePointerCancelCapture = useCallback(() => {
+    pendingPaneClickActivationRef.current = null;
+  }, []);
 
   const handleAddTab = useCallback((agentId?: string, type?: PaneTab["type"]) => {
     addTabToPane(workspaceId, pane.id, agentId, type);
@@ -389,6 +473,9 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
       data-active-pane={isActive && !isZoomed ? "true" : undefined}
       data-pane-zoomed={isZoomed ? "true" : undefined}
       tabIndex={-1}
+      onPointerDownCapture={handlePanePointerDownCapture}
+      onPointerUpCapture={handlePanePointerUpCapture}
+      onPointerCancelCapture={handlePanePointerCancelCapture}
       className={`terminal-pane-border${hasNotification ? " has-notification" : ""}`}
       style={{
         ...(isZoomed ? {
