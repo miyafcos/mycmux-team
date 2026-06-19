@@ -21,6 +21,9 @@ def test_pane_layout_metrics_survive_split_structure_changes() -> None:
         "function reconcileColumnWidths(",
         "function reconcileRowHeightsPerCol(",
         "function reconcileLayoutMetrics(",
+        "function columnsRequireBalancedWidths(",
+        "if (columnsRequireBalancedWidths(previousColumns, nextColumns)) {",
+        "return nextColumns.map(() => DEFAULT_LAYOUT_SIZE);",
         "const layoutMetrics = reconcileLayoutMetrics(w, normalizedSplitColumns, resetLayoutMetrics);",
         "...(layoutMetrics ?? {})",
     ]:
@@ -91,11 +94,29 @@ def test_split_columns_are_reconciled_to_render_every_pane() -> None:
         assert_contains(text, "reconcileSplitColumnsForPanes", source)
 
 
+def test_browser_preview_panes_are_not_persisted_as_empty_terminal_panes() -> None:
+    socket_listener = read_repo_text("src/components/layout/SocketListener.tsx")
+
+    for snippet in [
+        "function dropEmptyTabPanesFromConfig(cfg: WorkspaceConfig): WorkspaceConfig",
+        "const keepPane = !pane.tabs || pane.tabs.length > 0;",
+        ".map(dropEmptyTabPanesFromConfig)",
+        ".filter((cfg) => cfg.panes.length > 0)",
+        'const persistedTabs = pane.tabs.filter((tab) => tab.type !== "browser");',
+        "if (persistedTabs.length === 0) return null;",
+        "const droppedEphemeralPane = paneEntries.length !== ws.panes.length;",
+        "column_widths: droppedEphemeralPane ? null : normalizeColumnWidths(ws, splitColumns),",
+        "row_heights_per_col: droppedEphemeralPane ? null : normalizeRowHeightsPerCol(ws, splitColumns),",
+    ]:
+        assert_contains(socket_listener, snippet, "src/components/layout/SocketListener.tsx")
+
+
 def test_new_split_pane_receives_focus_and_shortcuts_match_tabs() -> None:
     workspace_layout_store = read_repo_text("src/stores/workspaceLayoutStore.ts")
     app_shell = read_repo_text("src/components/layout/AppShell.tsx")
 
     assert workspace_layout_store.count("useUiStore.getState().setActivePaneId(newPane.sessionId);") >= 2
+    assert "useUiStore.getState().setActivePaneId(tab.sessionId);" in workspace_layout_store
     for snippet in [
         "function paneMatchesSession(",
         "pane.sessionId === sessionId || pane.tabs?.some((tab) => tab.sessionId === sessionId)",
@@ -186,30 +207,93 @@ def test_selection_copy_listener_survives_cached_terminal_remounts() -> None:
 
 def test_terminal_toolbar_actions_restore_xterm_focus() -> None:
     terminal_pane = read_repo_text("src/components/workspace/TerminalPane.tsx")
+    app_shell = read_repo_text("src/components/layout/AppShell.tsx")
+    notification_panel = read_repo_text("src/components/layout/NotificationPanel.tsx")
+    pane_drag_source = read_repo_text("src/hooks/usePaneDragSource.ts")
 
     for snippet in [
-        "function focusTerminalElement(paneEl: HTMLElement | null | undefined): void",
+        "function focusTerminalElement(paneEl: HTMLElement | null | undefined): boolean",
         "function focusTerminalInPaneSoon(paneId: string): void",
         "function focusActiveTerminalSoon(fallbackPaneId: string): void",
-        'paneEl?.querySelector<HTMLTextAreaElement>(".xterm-helper-textarea, textarea")',
+        'paneEl?.querySelector<HTMLTextAreaElement>(".xterm-helper-textarea")',
+        "attempts >= 8",
         "focusTerminalInPaneSoon(pane.id);",
         "focusActiveTerminalSoon(pane.id);",
     ]:
         assert_contains(terminal_pane, snippet, "src/components/workspace/TerminalPane.tsx")
 
+    for text, source in [
+        (terminal_pane, "src/components/workspace/TerminalPane.tsx"),
+        (app_shell, "src/components/layout/AppShell.tsx"),
+        (notification_panel, "src/components/layout/NotificationPanel.tsx"),
+        (pane_drag_source, "src/hooks/usePaneDragSource.ts"),
+    ]:
+        assert 'querySelector<HTMLTextAreaElement>("textarea")' not in text, source
+        assert ".xterm-helper-textarea, textarea" not in text, source
+
+    for snippet in [
+        "function focusXtermInElement(el: HTMLElement | null | undefined): void",
+        'querySelector<HTMLTextAreaElement>(".xterm-helper-textarea")',
+    ]:
+        assert_contains(app_shell, snippet, "src/components/layout/AppShell.tsx")
+
+    for snippet in [
+        "function focusSessionSoon(sessionId: string | null): void",
+        "attempts >= 8",
+        'querySelector<HTMLTextAreaElement>(".xterm-helper-textarea")',
+    ]:
+        assert_contains(pane_drag_source, snippet, "src/hooks/usePaneDragSource.ts")
+
+
+def test_cached_terminal_remount_disposes_input_subscriptions() -> None:
+    xterm_wrapper = read_repo_text("src/components/terminal/XTermWrapper.tsx")
+
+    for snippet in [
+        "let dataDisposable: { dispose: () => void } | null = null;",
+        "let binaryDisposable: { dispose: () => void } | null = null;",
+        "let titleDisposable: { dispose: () => void } | null = null;",
+        "dataDisposable?.dispose();",
+        "binaryDisposable?.dispose();",
+        "titleDisposable?.dispose();",
+        "const registerInputListeners = (currentTerm: Terminal): void => {",
+        "dataDisposable = currentTerm.onData((data) => {",
+        "binaryDisposable = currentTerm.onBinary((data) => {",
+        "titleDisposable = currentTerm.onTitleChange((title) => {",
+        "registerInputListeners(cached.term);",
+        "registerInputListeners(term);",
+        "if (!isContainerDisplayed()) {",
+        "useUiStore.getState().setActivePaneId(sessionId);",
+    ]:
+        assert_contains(xterm_wrapper, snippet, "src/components/terminal/XTermWrapper.tsx")
+
+    assert "currentTerm.onData((data) => {" not in xterm_wrapper.replace(
+        "dataDisposable = currentTerm.onData((data) => {",
+        "",
+    )
+
 
 def test_terminal_plain_input_bypasses_keybinding_overrides() -> None:
     xterm_wrapper = read_repo_text("src/components/terminal/XTermWrapper.tsx")
+    app_shell = read_repo_text("src/components/layout/AppShell.tsx")
 
     for snippet in [
         "const TERMINAL_PLAIN_INPUT_KEYS = new Set([",
         '"Backspace"',
+        '"Delete"',
         "function isPlainTerminalInputEvent(e: KeyboardEvent): boolean",
         "if (isPlainTerminalInputEvent(e)) {",
         "e.stopPropagation();",
         "return true;",
     ]:
         assert_contains(xterm_wrapper, snippet, "src/components/terminal/XTermWrapper.tsx")
+
+    for snippet in [
+        "function isPlainXtermInputEvent(event: KeyboardEvent): boolean",
+        "if (event.ctrlKey || event.altKey || event.metaKey) return false;",
+        "if (!target?.closest(\".xterm\")) return false;",
+        "if (isPlainXtermInputEvent(e)) return;",
+    ]:
+        assert_contains(app_shell, snippet, "src/components/layout/AppShell.tsx")
 
 
 def test_pty_reader_does_not_block_when_frontend_queue_is_full() -> None:

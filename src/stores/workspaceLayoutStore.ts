@@ -594,6 +594,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
       if (p.id !== paneId) return p;
       const agId = agentId ?? p.agentId;
       const tab = makeTab(workspaceId, paneId, agId, type);
+      useUiStore.getState().setActivePaneId(tab.sessionId);
       return {
         ...p,
         tabs: [...p.tabs, tab],

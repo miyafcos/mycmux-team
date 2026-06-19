@@ -93,7 +93,7 @@ export default function NotificationPanel({ onClose }: NotificationPanelProps) {
     window.requestAnimationFrame(() => {
       window.requestAnimationFrame(() => {
         const el = document.querySelector<HTMLElement>(`[data-session-id="${sessionId}"]`);
-        const textarea = el?.querySelector<HTMLTextAreaElement>("textarea");
+        const textarea = el?.querySelector<HTMLTextAreaElement>(".xterm-helper-textarea");
         if (textarea) {
           textarea.focus();
         } else {

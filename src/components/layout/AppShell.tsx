@@ -27,6 +27,23 @@ import { listen } from "@tauri-apps/api/event";
 
 type Direction = "up" | "down" | "left" | "right";
 
+const TERMINAL_PLAIN_INPUT_KEYS = new Set([
+  "Backspace",
+  "Delete",
+  "Enter",
+  "Escape",
+  "Tab",
+  "ArrowLeft",
+  "ArrowRight",
+  "ArrowUp",
+  "ArrowDown",
+  "Home",
+  "End",
+  "PageUp",
+  "PageDown",
+  "Insert",
+]);
+
 function colorWithOpacity(color: string, opacity: number): string {
   if (opacity >= 0.995) {
     return color;
@@ -242,6 +259,22 @@ function paneMatchesSession(
     sessionId
     && (pane.sessionId === sessionId || pane.tabs?.some((tab) => tab.sessionId === sessionId)),
   );
+}
+
+function focusXtermInElement(el: HTMLElement | null | undefined): void {
+  const textarea = el?.querySelector<HTMLTextAreaElement>(".xterm-helper-textarea");
+  if (textarea) {
+    textarea.focus();
+    return;
+  }
+  el?.focus();
+}
+
+function isPlainXtermInputEvent(event: KeyboardEvent): boolean {
+  if (event.ctrlKey || event.altKey || event.metaKey) return false;
+  const target = event.target as HTMLElement | null;
+  if (!target?.closest(".xterm")) return false;
+  return event.key.length === 1 || TERMINAL_PLAIN_INPUT_KEYS.has(event.key);
 }
 
 interface AppShellProps {
@@ -473,6 +506,7 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
     const onKeyDown = (e: KeyboardEvent) => {
       // Skip if modals are open
       if (isKeybindingsOpen || isCrsmPaletteOpen) return;
+      if (isPlainXtermInputEvent(e)) return;
 
       // Get all actions that match this keyboard event (BridgeSpace pattern)
       const actions = getActionsForEvent(e);
@@ -575,7 +609,7 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
 
         case "pane.close": {
           const activeWs = ws.find((w) => w.id === aid);
-          const activePane = activeWs?.panes.find((p) => p.sessionId === apid);
+          const activePane = activeWs?.panes.find((p) => paneMatchesSession(p, apid));
           if (activeWs && activePane && activeWs.panes.length > 1) {
             for (const tab of activePane.tabs) {
               evictTerminalCache(tab.sessionId);
@@ -595,8 +629,7 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
               setActivePaneId(neighbor);
               setTimeout(() => {
                 const el = document.querySelector<HTMLElement>(`[data-session-id="${neighbor}"]`);
-                const textarea = el?.querySelector<HTMLTextAreaElement>("textarea");
-                if (textarea) textarea.focus(); else el?.focus();
+                focusXtermInElement(el);
               }, 0);
             } else {
               setActivePaneId(null);
@@ -653,12 +686,7 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
           // Focus the xterm textarea inside the pane for immediate typing
           setTimeout(() => {
             const el = document.querySelector<HTMLElement>(`[data-session-id="${targetSessionId}"]`);
-            const textarea = el?.querySelector<HTMLTextAreaElement>("textarea");
-            if (textarea) {
-              textarea.focus();
-            } else {
-              el?.focus();
-            }
+            focusXtermInElement(el);
           }, 0);
           break;
         }

@@ -91,14 +91,34 @@ function resolveDropTargetAtPoint(x: number, y: number, item: PaneDragItem): Pan
 
 function focusSessionSoon(sessionId: string | null): void {
   if (!sessionId) return;
-  window.setTimeout(() => {
+  let attempts = 0;
+  const restoreFocus = (): void => {
+    attempts += 1;
     const paneElement = document.querySelector<HTMLElement>(`[data-session-id="${sessionId}"]`);
-    const textarea = paneElement?.querySelector<HTMLTextAreaElement>("textarea");
+    const textarea = paneElement?.querySelector<HTMLTextAreaElement>(".xterm-helper-textarea");
     if (textarea) {
       textarea.focus();
-    } else {
-      paneElement?.focus();
+      return;
     }
+    if (paneElement) {
+      paneElement?.focus();
+      return;
+    }
+    if (attempts >= 8) return;
+    window.setTimeout(() => {
+      if (typeof window.requestAnimationFrame === "function") {
+        window.requestAnimationFrame(restoreFocus);
+        return;
+      }
+      restoreFocus();
+    }, attempts < 3 ? 16 : 50);
+  };
+  window.setTimeout(() => {
+    if (typeof window.requestAnimationFrame === "function") {
+      window.requestAnimationFrame(restoreFocus);
+      return;
+    }
+    restoreFocus();
   }, 0);
 }
 

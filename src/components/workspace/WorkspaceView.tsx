@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, memo, useRef, useState } from "react";
 import { Allotment } from "allotment";
 import "allotment/dist/style.css";
 import type { Pane, GridTemplateId, Workspace } from "../../types";
-import { useWorkspaceLayoutStore, usePaneMetadataStore } from "../../stores/workspaceStore";
+import { useWorkspaceLayoutStore, usePaneMetadataStore, useUiStore } from "../../stores/workspaceStore";
 import { useWorkspaceListStore } from "../../stores/workspaceListStore";
 import { killSession } from "../../lib/ipc";
 import { FIRST_LAUNCH_STORAGE_KEY } from "../../lib/startupSessionGate";
@@ -97,6 +97,7 @@ export const TerminalGrid = memo(function TerminalGrid({
   const removePaneFromWorkspace = useWorkspaceLayoutStore((s) => s.removePaneFromWorkspace);
   const addPaneToWorkspace = useWorkspaceLayoutStore((s) => s.addPaneToWorkspace);
   const setWorkspaceLayoutMetrics = useWorkspaceListStore((s) => s.setWorkspaceLayoutMetrics);
+  const setActivePaneId = useUiStore((s) => s.setActivePaneId);
   const workspace = useWorkspaceListStore((s) => s.getWorkspace(workspaceId));
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
 
@@ -112,8 +113,13 @@ export const TerminalGrid = memo(function TerminalGrid({
         usePaneMetadataStore.getState().removeMetadata(tab.sessionId);
       }
     }
+    const paneIndex = ws.panes.findIndex((p) => p.id === paneId);
+    const remainingPanes = ws.panes.filter((p) => p.id !== paneId);
+    const nextPane = remainingPanes[Math.min(Math.max(paneIndex, 0), remainingPanes.length - 1)] ?? remainingPanes[0];
+    const nextActiveTab = nextPane?.tabs.find((tab) => tab.id === nextPane.activeTabId) ?? nextPane?.tabs[0];
+    setActivePaneId(nextActiveTab?.sessionId ?? nextPane?.sessionId ?? null);
     removePaneFromWorkspace(workspaceId, paneId);
-  }, [workspaceId, removePaneFromWorkspace]);
+  }, [workspaceId, removePaneFromWorkspace, setActivePaneId]);
 
   const handleSplitRight = useCallback((paneId: string) => {
     addPaneToWorkspace(workspaceId, paneId, "right");

@@ -140,18 +140,31 @@ function isLocalArtifactLink(uri: string): boolean {
   );
 }
 
-function focusTerminalElement(paneEl: HTMLElement | null | undefined): void {
-  const textarea = paneEl?.querySelector<HTMLTextAreaElement>(".xterm-helper-textarea, textarea");
+function focusTerminalElement(paneEl: HTMLElement | null | undefined): boolean {
+  const textarea = paneEl?.querySelector<HTMLTextAreaElement>(".xterm-helper-textarea");
   if (textarea) {
     textarea.focus();
-    return;
+    return true;
   }
   paneEl?.focus();
+  return Boolean(paneEl);
 }
 
 function scheduleTerminalFocus(resolvePane: () => HTMLElement | null | undefined): void {
-  const restoreFocus = () => {
-    focusTerminalElement(resolvePane());
+  let attempts = 0;
+  const restoreFocus = (): void => {
+    attempts += 1;
+    const didFocusTerminal = focusTerminalElement(resolvePane());
+    if (didFocusTerminal || attempts >= 8) {
+      return;
+    }
+    window.setTimeout(() => {
+      if (typeof window.requestAnimationFrame === "function") {
+        window.requestAnimationFrame(restoreFocus);
+        return;
+      }
+      restoreFocus();
+    }, attempts < 3 ? 16 : 50);
   };
 
   window.setTimeout(() => {
@@ -216,7 +229,7 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
       ? s.target
       : null,
   );
-  const activeTab = pane.tabs.find((t) => t.id === pane.activeTabId);
+  const activeTab = pane.tabs.find((t) => t.id === pane.activeTabId) ?? pane.tabs[0];
   const activeTabMetadataAgentKind = usePaneMetadataStore((s) =>
     activeTab ? s.metadata[activeTab.sessionId]?.agentKind : undefined,
   );

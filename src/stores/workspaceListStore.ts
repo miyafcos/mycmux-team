@@ -64,6 +64,17 @@ function bestPreviousColumnIndex(
   return bestIndex;
 }
 
+function columnsRequireBalancedWidths(previousColumns: string[][], nextColumns: string[][]): boolean {
+  if (previousColumns.length !== nextColumns.length) return true;
+  const usedIndices = new Set<number>();
+  return nextColumns.some((nextColumn) => {
+    const previousIndex = bestPreviousColumnIndex(nextColumn, previousColumns, usedIndices);
+    if (previousIndex < 0) return true;
+    usedIndices.add(previousIndex);
+    return false;
+  });
+}
+
 function positiveSize(value: number | undefined): number | null {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
 }
@@ -71,6 +82,9 @@ function positiveSize(value: number | undefined): number | null {
 function reconcileColumnWidths(workspace: Workspace, nextColumns: string[][]): number[] | undefined {
   if (nextColumns.length === 0) return undefined;
   const previousColumns = fallbackColumns(workspace);
+  if (columnsRequireBalancedWidths(previousColumns, nextColumns)) {
+    return nextColumns.map(() => DEFAULT_LAYOUT_SIZE);
+  }
   const previousWidths = workspace.columnWidths;
   const usedIndices = new Set<number>();
 

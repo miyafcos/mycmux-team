@@ -1156,6 +1156,9 @@ export default memo(function XTermWrapper({
     let unlistenExit: (() => void) | null = null;
     let writeParsedDisposable: { dispose: () => void } | null = null;
     let scrollDisposable: { dispose: () => void } | null = null;
+    let dataDisposable: { dispose: () => void } | null = null;
+    let binaryDisposable: { dispose: () => void } | null = null;
+    let titleDisposable: { dispose: () => void } | null = null;
     let term: Terminal | null = null;
     let fitAddon: FitAddon | null = null;
     let removeCompositionGuard: (() => void) | null = null;
@@ -1724,6 +1727,44 @@ export default memo(function XTermWrapper({
       unlistenExit = nextUnlisten;
     };
 
+    const registerInputListeners = (currentTerm: Terminal): void => {
+      dataDisposable?.dispose();
+      binaryDisposable?.dispose();
+      titleDisposable?.dispose();
+
+      dataDisposable = currentTerm.onData((data) => {
+        if (!isContainerDisplayed()) {
+          return;
+        }
+        if (useUiStore.getState().activePaneId !== sessionId) {
+          useUiStore.getState().setActivePaneId(sessionId);
+        }
+        chunkedWrite(sessionId, data);
+        try {
+          window.dispatchEvent(
+            new CustomEvent("mycmux:keystroke", { detail: { sessionId, data } }),
+          );
+        } catch {
+          // ignore dispatch failures; buddy is non-critical
+        }
+      });
+
+      binaryDisposable = currentTerm.onBinary((data) => {
+        if (!isContainerDisplayed()) {
+          return;
+        }
+        if (useUiStore.getState().activePaneId !== sessionId) {
+          useUiStore.getState().setActivePaneId(sessionId);
+        }
+        writeToSession(sessionId, data).catch(console.error);
+      });
+
+      titleDisposable = currentTerm.onTitleChange((title) => {
+        if (termDisposed || !title) return;
+        usePaneMetadataStore.getState().setMetadata(sessionId, { processTitle: title });
+      });
+    };
+
     const cacheCurrentTerminal = (): void => {
       const currentSearchAddon = searchAddonRef.current;
       if (term && term.element && fitAddon && currentSearchAddon) {
@@ -1758,6 +1799,12 @@ export default memo(function XTermWrapper({
       writeParsedDisposable = null;
       scrollDisposable?.dispose();
       scrollDisposable = null;
+      dataDisposable?.dispose();
+      dataDisposable = null;
+      binaryDisposable?.dispose();
+      binaryDisposable = null;
+      titleDisposable?.dispose();
+      titleDisposable = null;
       removeCompositionGuard?.();
       removeCompositionGuard = null;
       disposeSelectionCopyListener(term);
@@ -1800,6 +1847,7 @@ export default memo(function XTermWrapper({
       const cachedBufferText = getTerminalBufferLines(sessionId, 80).join("\n");
       updateCodexOutputDetection(cachedBufferText);
       attachTerminalKeyHandler(cached.term);
+      registerInputListeners(cached.term);
       registerScanListener(cached.term);
       void registerExitListener();
       setTimeout(() => {
@@ -1919,25 +1967,7 @@ export default memo(function XTermWrapper({
         return true;
       });
 
-      term.onData((data) => {
-        chunkedWrite(sessionId, data);
-        try {
-          window.dispatchEvent(
-            new CustomEvent("mycmux:keystroke", { detail: { sessionId, data } }),
-          );
-        } catch {
-          // ignore dispatch failures; buddy is non-critical
-        }
-      });
-
-      term.onBinary((data) => {
-        writeToSession(sessionId, data).catch(console.error);
-      });
-
-      term.onTitleChange((title) => {
-        if (termDisposed || !title) return;
-        usePaneMetadataStore.getState().setMetadata(sessionId, { processTitle: title });
-      });
+      registerInputListeners(term);
 
       registerScanListener(term);
       await registerExitListener();
@@ -2008,7 +2038,7 @@ export default memo(function XTermWrapper({
       setIsSearchOpen(false);
       setSearchQuery("");
       searchAddonRef.current?.clearDecorations();
-      containerRef.current?.querySelector("textarea")?.focus();
+      containerRef.current?.querySelector<HTMLTextAreaElement>(".xterm-helper-textarea")?.focus();
     }
   }, [searchQuery]);
 
@@ -2016,7 +2046,7 @@ export default memo(function XTermWrapper({
     setIsSearchOpen(false);
     setSearchQuery("");
     searchAddonRef.current?.clearDecorations();
-    containerRef.current?.querySelector("textarea")?.focus();
+    containerRef.current?.querySelector<HTMLTextAreaElement>(".xterm-helper-textarea")?.focus();
   }, []);
 
   return (

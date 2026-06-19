@@ -4,6 +4,16 @@
 
 ---
 
+## [0.7.36-lite.1] - 2026-06-19
+
+- 修正: cached terminal を再利用したあとも `onData` / `onBinary` / `onTitleChange` を必ず登録し直し、pane 移動・tab 切替・復元後に CLI へ入力が届かなくなる経路を塞ぎました。
+- 修正: 非表示 pane への入力送信を止め、実際に入力した terminal の session を active pane に戻すようにしました。閉じた pane の session ID が active に残って Backspace や文字入力が効かなくなる状態を防ぎます。
+- 修正: xterm 上の通常文字、Backspace、Delete、矢印などは global shortcut より CLI 入力を優先します。壊れたショートカット設定が `h` などの通常入力を奪う事故を防ぎます。
+- 修正: pane close、split、tab 追加、通知パネル、drag-and-drop 後の focus 復帰先を xterm の実入力 textarea に限定し、描画直後でまだ要素がない場合は短く再試行します。
+- 修正: browser preview pane を保存時に空 terminal pane として残さないようにし、復元後に「消したはずの pane が出る」「別 pane が出る」状態を抑えました。
+- 修正: 横分割で新しい列だけ幅 `1` になり、pane が極端に細くなる・横スクロールが出る問題を修正しました。列構成が変わった場合は一度等分幅へ戻します。
+- 検証: TypeScript 型チェックと layout/input 安定化契約テスト 13 件を通過しました。
+
 ## [0.7.35-lite.1] - 2026-06-18
 
 - 修正: 端末で文字を選択して自動コピーしたあと、入力フォーカスが一時的なコピー用 textarea に残って CLI へ文字入力や Backspace が届かなくなる問題を直しました。コピー成功時・失敗時・fallback コピー時のすべてで xterm へフォーカスを戻します。

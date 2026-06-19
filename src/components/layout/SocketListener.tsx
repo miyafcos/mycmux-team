@@ -378,6 +378,33 @@ function dedupeAgentSessionsInConfigs(
   }));
 }
 
+function dropEmptyTabPanesFromConfig(cfg: WorkspaceConfig): WorkspaceConfig {
+  const indexMap = new Map<number, number>();
+  const panes = cfg.panes.filter((pane, oldIndex) => {
+    const keepPane = !pane.tabs || pane.tabs.length > 0;
+    if (keepPane) {
+      indexMap.set(oldIndex, indexMap.size);
+    }
+    return keepPane;
+  });
+
+  if (panes.length === cfg.panes.length) {
+    return cfg;
+  }
+
+  const split_columns = cfg.split_columns
+    ?.map((col) => col.map((index) => indexMap.get(index)).filter((index): index is number => index !== undefined))
+    .filter((col) => col.length > 0) ?? null;
+
+  return {
+    ...cfg,
+    panes,
+    split_columns,
+    column_widths: null,
+    row_heights_per_col: null,
+  };
+}
+
 // Must stay in sync with the remove_var() list in src-tauri/src/lib.rs::run().
 // Anything that lib.rs strips at startup must also be stripped before persistence,
 // otherwise saved launch_env can re-inject MYCMUX_* into a freshly spawned pane on
@@ -445,20 +472,38 @@ async function flushPtyMetadataSnapshotForPersistence(): Promise<void> {
 }
 
 function toConfig(ws: Workspace, _agentMappings: Record<string, AgentSessionMapping> = {}): WorkspaceConfig {
-  const paneIdToIndex = new Map(ws.panes.map((p, i) => [p.id, i]));
-  const splitColumns = normalizeSplitColumns(ws);
+  const metaState = usePaneMetadataStore.getState().metadata;
+  const paneEntries = ws.panes
+    .map((pane) => {
+      const persistedTabs = pane.tabs.filter((tab) => tab.type !== "browser");
+      if (persistedTabs.length === 0) return null;
+      const activeTab = persistedTabs.find((tab) => tab.id === pane.activeTabId) ?? persistedTabs[0];
+      return { pane, activeTab, persistedTabs };
+    })
+    .filter((entry): entry is {
+      pane: Workspace["panes"][number];
+      activeTab: Workspace["panes"][number]["tabs"][number];
+      persistedTabs: Workspace["panes"][number]["tabs"];
+    } => entry !== null);
+
+  const paneIdToIndex = new Map(paneEntries.map((entry, i) => [entry.pane.id, i]));
+  const persistedPaneIds = new Set(paneEntries.map((entry) => entry.pane.id));
+  const splitColumns = reconcileSplitColumnsForPanes(
+    (normalizeSplitColumns(ws) ?? [])
+      .map((col) => col.filter((id) => persistedPaneIds.has(id)))
+      .filter((col) => col.length > 0),
+    paneEntries.map((entry) => entry.pane.id),
+  );
   const split_columns = splitColumns
     ?.map((col) => col.map((id) => paneIdToIndex.get(id)).filter((i): i is number => i !== undefined))
     .filter((col) => col.length > 0) ?? null;
-
-  const metaState = usePaneMetadataStore.getState().metadata;
+  const droppedEphemeralPane = paneEntries.length !== ws.panes.length;
 
   return {
     id: ws.id,
     name: ws.name,
     grid_template_id: ws.gridTemplateId,
-    panes: ws.panes.map((p) => {
-      const activeTab = p.tabs.find((tab) => tab.id === p.activeTabId) ?? p.tabs[0];
+    panes: paneEntries.map(({ pane: p, activeTab, persistedTabs }) => {
       const paneMeta = metaState[p.sessionId];
       const activeTabMeta = activeTab ? metaState[activeTab.sessionId] : undefined;
       const paneCwd = paneMeta?.cwd ?? activeTab?.cwd ?? p.cwd ?? null;
@@ -486,14 +531,6 @@ function toConfig(ws: Workspace, _agentMappings: Record<string, AgentSessionMapp
         ?? paneMeta?.agentSessionId
         ?? activeTabMeta?.agentSessionId
         ?? null;
-      // Browser sidetabs (PaneTab.type === "browser") are ephemeral: they hold a
-      // local HTML path that is regenerated per response and is cleaned up out
-      // of band. Persisting them would re-open stale HTML on next launch and
-      // also requires extending PaneTabConfig.type, which Phase 1 avoids.
-      const persistedTabs = p.tabs.filter((tab) => tab.type !== "browser");
-      const persistedActiveTabId = persistedTabs.some((t) => t.id === p.activeTabId)
-        ? p.activeTabId
-        : (persistedTabs[0]?.id ?? p.activeTabId);
       return {
         pane_id: p.id,
         agent_id: activeTab?.agentId ?? p.agentId,
@@ -504,7 +541,7 @@ function toConfig(ws: Workspace, _agentMappings: Record<string, AgentSessionMapp
         agent_kind: liveKind,
         agent_session_id: liveAgentId,
         launch_env: stripEphemeralLaunchEnv(p.launchEnv ?? activeTab?.launchEnv),
-        active_tab_id: persistedActiveTabId,
+        active_tab_id: activeTab.id,
         tabs: persistedTabs.map((tab) => {
           const tabMeta = metaState[tab.sessionId];
           return {
@@ -525,8 +562,8 @@ function toConfig(ws: Workspace, _agentMappings: Record<string, AgentSessionMapp
     }),
     created_at: ws.createdAt,
     split_columns,
-    column_widths: normalizeColumnWidths(ws, splitColumns),
-    row_heights_per_col: normalizeRowHeightsPerCol(ws, splitColumns),
+    column_widths: droppedEphemeralPane ? null : normalizeColumnWidths(ws, splitColumns),
+    row_heights_per_col: droppedEphemeralPane ? null : normalizeRowHeightsPerCol(ws, splitColumns),
   };
 }
 
@@ -578,7 +615,10 @@ export function useWorkspacePersist() {
             let restoredActivePaneSessionId: string | null = null;
             const bootstrapWorkspaceIds = new Set(listStore.workspaces.map((ws) => ws.id));
             const restoredConfigs = dedupeAgentSessionsInConfigs(
-              data.workspaces.map((cfg) => applyMappingsToConfig(cfg, startupAgentMappings)),
+              data.workspaces
+                .map(dropEmptyTabPanesFromConfig)
+                .filter((cfg) => cfg.panes.length > 0)
+                .map((cfg) => applyMappingsToConfig(cfg, startupAgentMappings)),
               data.active_workspace_id,
               data.active_pane_id,
               data.active_tab_id,
