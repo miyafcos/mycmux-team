@@ -154,18 +154,28 @@ function minContrastFor(mediaActive: boolean): number {
 // Chunk large pastes to avoid PTY buffer overflow
 const PASTE_CHUNK = 1024;
 
+function enqueueSessionWrite(sessionId: string, data: string): void {
+  const previous = terminalInputQueues.get(sessionId) ?? Promise.resolve();
+  const next = previous
+    .catch(() => {})
+    .then(() => writeToSession(sessionId, data));
+  terminalInputQueues.set(sessionId, next);
+  next
+    .catch(console.error)
+    .finally(() => {
+      if (terminalInputQueues.get(sessionId) === next) {
+        terminalInputQueues.delete(sessionId);
+      }
+    });
+}
+
 function chunkedWrite(sessionId: string, data: string): void {
   if (data.length <= PASTE_CHUNK) {
-    writeToSession(sessionId, data).catch(console.error);
+    enqueueSessionWrite(sessionId, data);
   } else {
-    let offset = 0;
-    const sendNext = () => {
-      if (offset >= data.length) return;
-      const chunk = data.slice(offset, offset + PASTE_CHUNK);
-      offset += PASTE_CHUNK;
-      writeToSession(sessionId, chunk).then(sendNext).catch(console.error);
-    };
-    sendNext();
+    for (let offset = 0; offset < data.length; offset += PASTE_CHUNK) {
+      enqueueSessionWrite(sessionId, data.slice(offset, offset + PASTE_CHUNK));
+    }
   }
 }
 
@@ -188,6 +198,8 @@ const liveTerms = new Map<string, Terminal>();
 const terminalSizeCache = new Map<string, { cols: number; rows: number }>();
 const terminalWriteCounters = new Map<string, number>();
 const terminalSelectionCopyListeners = new WeakMap<Terminal, { dispose: () => void }>();
+const terminalMouseInputGuards = new WeakMap<Terminal, { dispose: () => void }>();
+const terminalInputQueues = new Map<string, Promise<void>>();
 
 const TERMINAL_SNAPSHOT_SCAN_MULTIPLIER = 4;
 const TERMINAL_SNAPSHOT_MAX_WRAPPED_LINES = 256;
@@ -282,6 +294,70 @@ function disposeSelectionCopyListener(currentTerm: Terminal | null | undefined):
   terminalSelectionCopyListeners.delete(currentTerm);
 }
 
+function disposeTerminalMouseInputGuard(currentTerm: Terminal | null | undefined): void {
+  if (!currentTerm) return;
+  const existing = terminalMouseInputGuards.get(currentTerm);
+  if (!existing) return;
+  existing.dispose();
+  terminalMouseInputGuards.delete(currentTerm);
+}
+
+function focusTerminalNow(currentTerm: Terminal): void {
+  try {
+    currentTerm.focus();
+  } catch {
+    // Terminal may have been disposed between the pointer event and focus.
+  }
+}
+
+function shouldBypassTerminalMouseInputGuard(event: Event): boolean {
+  if (event.type === "contextmenu") return true;
+
+  if (typeof PointerEvent !== "undefined" && event instanceof PointerEvent) {
+    return event.button !== 0 || event.shiftKey;
+  }
+
+  if (event instanceof MouseEvent) {
+    return event.button !== 0 || event.shiftKey;
+  }
+
+  if (typeof TouchEvent !== "undefined" && event instanceof TouchEvent) {
+    return event.touches.length > 1 || event.shiftKey;
+  }
+
+  return true;
+}
+
+function registerTerminalMouseInputGuard(currentTerm: Terminal): void {
+  disposeTerminalMouseInputGuard(currentTerm);
+  const element = currentTerm.element;
+  if (!element) return;
+
+  const blockMouseInput = (event: Event): void => {
+    if (shouldBypassTerminalMouseInputGuard(event)) return;
+    focusTerminalNow(currentTerm);
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  };
+
+  const mouseEvents = ["pointerdown", "pointerup", "mousedown", "mouseup", "click", "dblclick", "auxclick"] as const;
+  for (const eventName of mouseEvents) {
+    element.addEventListener(eventName, blockMouseInput, true);
+  }
+  element.addEventListener("touchstart", blockMouseInput, { capture: true, passive: false });
+  element.addEventListener("touchend", blockMouseInput, { capture: true, passive: false });
+
+  terminalMouseInputGuards.set(currentTerm, {
+    dispose: () => {
+      for (const eventName of mouseEvents) {
+        element.removeEventListener(eventName, blockMouseInput, true);
+      }
+      element.removeEventListener("touchstart", blockMouseInput, true);
+      element.removeEventListener("touchend", blockMouseInput, true);
+    },
+  });
+}
+
 function registerSelectionCopyListener(currentTerm: Terminal): void {
   disposeSelectionCopyListener(currentTerm);
 
@@ -307,7 +383,9 @@ function registerSelectionCopyListener(currentTerm: Terminal): void {
     }
     copyTimer = window.setTimeout(() => {
       copyTimer = null;
-      copyTextToClipboard(currentTerm.getSelection(), () => focusTerminalSoon(currentTerm));
+      const selectedText = currentTerm.getSelection();
+      if (!selectedText) return;
+      copyTextToClipboard(selectedText, () => focusTerminalSoon(currentTerm));
     }, 0);
   };
 
@@ -660,6 +738,7 @@ export function evictTerminalCache(sessionId: string): void {
   }
   terminalSizeCache.delete(sessionId);
   terminalWriteCounters.delete(sessionId);
+  terminalInputQueues.delete(sessionId);
   diagWriteStats.delete(sessionId);
   terminalHasLiveOutput.delete(sessionId);
   terminalInitialReplayMarkers.get(sessionId)?.dispose();
@@ -1401,9 +1480,13 @@ export default memo(function XTermWrapper({
           return false;
         }
 
+        if (e.isComposing || e.key === "Process" || e.keyCode === 229) {
+          return true;
+        }
+
         if (e.key === "Enter" && e.shiftKey && !e.ctrlKey && !e.altKey) {
           const processTitle = usePaneMetadataStore.getState().metadata[sessionId]?.processTitle;
-          writeToSession(sessionId, getShiftEnterSequence(command, processTitle)).catch(console.error);
+          enqueueSessionWrite(sessionId, getShiftEnterSequence(command, processTitle));
           return false;
         }
 
@@ -1733,9 +1816,6 @@ export default memo(function XTermWrapper({
       titleDisposable?.dispose();
 
       dataDisposable = currentTerm.onData((data) => {
-        if (!isContainerDisplayed()) {
-          return;
-        }
         if (useUiStore.getState().activePaneId !== sessionId) {
           useUiStore.getState().setActivePaneId(sessionId);
         }
@@ -1750,13 +1830,10 @@ export default memo(function XTermWrapper({
       });
 
       binaryDisposable = currentTerm.onBinary((data) => {
-        if (!isContainerDisplayed()) {
-          return;
-        }
         if (useUiStore.getState().activePaneId !== sessionId) {
           useUiStore.getState().setActivePaneId(sessionId);
         }
-        writeToSession(sessionId, data).catch(console.error);
+        enqueueSessionWrite(sessionId, data);
       });
 
       titleDisposable = currentTerm.onTitleChange((title) => {
@@ -1808,6 +1885,7 @@ export default memo(function XTermWrapper({
       removeCompositionGuard?.();
       removeCompositionGuard = null;
       disposeSelectionCopyListener(term);
+      disposeTerminalMouseInputGuard(term);
       unlistenExit?.();
       unlistenExit = null;
       cacheCurrentTerminal();
@@ -1841,9 +1919,11 @@ export default memo(function XTermWrapper({
       cached.term.options.minimumContrastRatio = minContrastFor(mediaBackgroundActive);
       cached.term.options.fontSize = storeFontSize;
       cached.term.options.fontFamily = storeFontFamily;
+      cached.term.options.altClickMovesCursor = false;
       registerScrollListener(cached.term);
       registerCompositionGuard(cached.term, cached.fitAddon);
       registerSelectionCopyListener(cached.term);
+      registerTerminalMouseInputGuard(cached.term);
       const cachedBufferText = getTerminalBufferLines(sessionId, 80).join("\n");
       updateCodexOutputDetection(cachedBufferText);
       attachTerminalKeyHandler(cached.term);
@@ -1891,6 +1971,8 @@ export default memo(function XTermWrapper({
         customGlyphs: true,
         theme: initTheme,
         allowTransparency: true,
+        altClickMovesCursor: false,
+        macOptionClickForcesSelection: true,
         scrollback: 5000,
         smoothScrollDuration: 0,
         rightClickSelectsWord: true,
@@ -1949,6 +2031,7 @@ export default memo(function XTermWrapper({
       registerScrollListener(term);
       registerCompositionGuard(term, fitAddon);
       registerSelectionCopyListener(term);
+      registerTerminalMouseInputGuard(term);
       attachTerminalKeyHandler(term);
 
       // OSC 9988: mycmux HTML sidetab. Payload = file URL or absolute path.

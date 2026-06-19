@@ -4,6 +4,17 @@
 
 ---
 
+## [0.8.29-lite.1] - 2026-06-19
+
+- 修正: terminal 上の通常クリック・タップを CLI へ座標入力として送らず、focus 復帰だけに限定しました。カーソル移動は左右キーなどのキーボード操作に寄せています。
+- 修正: xterm の Alt-click カーソル移動を無効化し、cached terminal の再利用後も同じ設定を維持します。
+- 修正: 入力文字・Backspace・Delete・左右キーなどの PTY 書き込みを session ごとに直列化し、短い連続操作で順序が前後する余地を減らしました。
+- 修正: 表示切替中の一瞬の非表示判定で入力を捨てないようにし、tab 切替・pane 操作・zoom 後の入力停止を防ぎます。
+- 修正: terminal textarea がまだ生成されていない時に pane 本体へ focus して終了せず、実入力 textarea が取れるまで短く再試行します。
+- 修正: IME composition 中は terminal shortcut 処理を介入させず、IME 入力を xterm にそのまま渡します。
+- 備考: 共通機能の修正なので、master `0.8.29` と同じ内容を lite に反映しました。Buddy 機能は引き続き lite では非表示です。
+- 検証: `cmd /c npm run build` を通過しました。
+
 ## [0.8.28-lite.1] - 2026-06-19
 
 - 修正: pane の発光表示が DOM focus に反応して、マウス移動や意図しない focus 移動で光る pane が変わる問題を直しました。

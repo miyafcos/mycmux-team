@@ -146,8 +146,7 @@ function focusTerminalElement(paneEl: HTMLElement | null | undefined): boolean {
     textarea.focus();
     return true;
   }
-  paneEl?.focus();
-  return Boolean(paneEl);
+  return false;
 }
 
 function scheduleTerminalFocus(resolvePane: () => HTMLElement | null | undefined): void {
