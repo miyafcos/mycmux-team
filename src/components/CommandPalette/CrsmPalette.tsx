@@ -249,6 +249,38 @@ function directResumeUnavailableMessage(session: CrsmSessionEntry): string | nul
   return null;
 }
 
+async function resolveDirectResumeSession(selected: CrsmSessionEntry): Promise<CrsmSessionEntry> {
+  const selectedUnavailable = directResumeUnavailableMessage(selected);
+  if (selectedUnavailable) {
+    throw new Error(selectedUnavailable);
+  }
+
+  let exact: CrsmSessionEntry | undefined;
+  try {
+    const refreshed = await withTimeout(
+      crsmListSessions(selected.id, SESSION_VALIDATE_LIMIT, false),
+      SESSION_VALIDATE_TIMEOUT_MS,
+      "CRSM session lookup",
+    );
+    exact = exactCrsmSessionMatch(refreshed, selected);
+    if (!exact) {
+      cachedCrsmSessionsError = "CRSM session lookup did not return the selected session";
+      return selected;
+    }
+  } catch (error) {
+    cachedCrsmSessionsError = error instanceof Error ? error.message : String(error);
+    return selected;
+  }
+
+  const exactUnavailable = directResumeUnavailableMessage(exact);
+  if (exactUnavailable) {
+    throw new Error(exactUnavailable);
+  }
+
+  cachedCrsmSessions = cachedCrsmSessions ? upsertCrsmSession(cachedCrsmSessions, exact) : cachedCrsmSessions;
+  return exact;
+}
+
 function fetchCrsmSessions(deep = false, refresh = false): Promise<CrsmSessionEntry[]> {
   if (!refresh && !deep && cachedCrsmSessionsIsDeep && cachedCrsmSessions) {
     return Promise.resolve(cachedCrsmSessions);
@@ -574,27 +606,8 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
       let launchSession = selected;
 
       if (selected.kind === targetKind) {
-        const refreshed = await withTimeout(
-          crsmListSessions(selected.id, SESSION_VALIDATE_LIMIT, true),
-          SESSION_VALIDATE_TIMEOUT_MS,
-          "CRSM session validation",
-        );
-        const exact = exactCrsmSessionMatch(refreshed, selected);
-        if (!exact) {
-          cachedCrsmSessions = cachedCrsmSessions?.filter((session) =>
-            !(session.kind === selected.kind && session.id === selected.id),
-          ) ?? null;
-          setSessions((prev) => prev.filter((session) =>
-            !(session.kind === selected.kind && session.id === selected.id),
-          ));
-          throw new Error("このセッションは最新の履歴で見つかりませんでした。履歴を更新して、別のセッションを選んでください。");
-        }
-        const unavailable = directResumeUnavailableMessage(exact);
-        if (unavailable) {
-          throw new Error(unavailable);
-        }
+        const exact = await resolveDirectResumeSession(selected);
         launchSession = exact;
-        cachedCrsmSessions = cachedCrsmSessions ? upsertCrsmSession(cachedCrsmSessions, exact) : cachedCrsmSessions;
         setSessions((prev) => upsertCrsmSession(prev, exact));
         launchEnv.MYCMUX_RESUME = targetKind;
         launchEnv.MYCMUX_SESSION_ID = exact.id;

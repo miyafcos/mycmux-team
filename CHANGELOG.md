@@ -4,6 +4,13 @@
 
 ---
 
+## [0.8.27-lite.1] - 2026-06-19
+
+- 修正: Resume 実行前の CRSM session 検証で毎回 `--refresh` を要求していたため、CRSM の再走査が 6 秒を超えると `CRSM session validation timed out after 6000 ms` で pane が開かない問題を直しました。
+- 修正: Resume 直前の CRSM 照合は軽い ID 検索に変更し、照合が遅い・失敗する・選択済み session が再検索結果に出ない場合でも、一覧で選んだ session ID を使って起動します。
+- 維持: 実体ファイルがない Claude 要約履歴は、これまで通り直接 Resume せず、別履歴または引き継ぎを案内します。
+- 備考: 共通機能の修正なので、master `0.8.27` と同じ内容を lite に反映しました。Buddy 機能は引き続き lite では非表示です。
+
 ## [0.8.26-lite.1] - 2026-06-19
 
 - 変更: lite の版番号を master `0.8.26` に合わせ、今後は共通機能の更新では `master版番号-lite.1` を使う運用にそろえました。
