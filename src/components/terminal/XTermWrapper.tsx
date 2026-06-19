@@ -293,14 +293,52 @@ function disposeSelectionCopyListener(currentTerm: Terminal | null | undefined):
   terminalSelectionCopyListeners.delete(currentTerm);
 }
 
-function stripTerminalMouseInputSequences(data: string): string {
+type FilteredTerminalInput = {
+  data: string;
+  shouldActivatePane: boolean;
+};
+
+function isTerminalWheelMouseButton(button: number): boolean {
+  return Number.isFinite(button) && (button & 64) === 64;
+}
+
+function stripNonWheelTerminalMouseInputSequences(data: string): string {
   return data
     // SGR mouse reporting: ESC [ < button ; col ; row M/m
-    .replace(/\x1b\[<\d+(?:;\d+){2}[mM]/g, "")
+    .replace(/\x1b\[<(\d+)(;\d+){2}[mM]/g, (sequence, button: string) =>
+      isTerminalWheelMouseButton(Number(button)) ? sequence : "",
+    )
     // urxvt-style mouse reporting: ESC [ button ; col ; row M/m
-    .replace(/\x1b\[\d+(?:;\d+){2}[mM]/g, "")
+    .replace(/\x1b\[(\d+)(;\d+){2}[mM]/g, (sequence, button: string) =>
+      isTerminalWheelMouseButton(Number(button)) ? sequence : "",
+    )
     // X10 / normal tracking: ESC [ M followed by three encoded bytes
-    .replace(/\x1b\[M[\s\S]{3}/g, "");
+    .replace(/\x1b\[M([\s\S])([\s\S])([\s\S])/g, (sequence, button: string) => {
+      const buttonCode = button.charCodeAt(0) - 32;
+      return isTerminalWheelMouseButton(buttonCode) ? sequence : "";
+    });
+}
+
+function stripTerminalWheelInputSequences(data: string): string {
+  return data
+    .replace(/\x1b\[<(\d+)(;\d+){2}[mM]/g, (sequence, button: string) =>
+      isTerminalWheelMouseButton(Number(button)) ? "" : sequence,
+    )
+    .replace(/\x1b\[(\d+)(;\d+){2}[mM]/g, (sequence, button: string) =>
+      isTerminalWheelMouseButton(Number(button)) ? "" : sequence,
+    )
+    .replace(/\x1b\[M([\s\S])([\s\S])([\s\S])/g, (sequence, button: string) => {
+      const buttonCode = button.charCodeAt(0) - 32;
+      return isTerminalWheelMouseButton(buttonCode) ? "" : sequence;
+    });
+}
+
+function filterTerminalMouseInputSequences(data: string): FilteredTerminalInput {
+  const inputData = stripNonWheelTerminalMouseInputSequences(data);
+  return {
+    data: inputData,
+    shouldActivatePane: stripTerminalWheelInputSequences(inputData).length > 0,
+  };
 }
 
 function registerSelectionCopyListener(currentTerm: Terminal): void {
@@ -1761,29 +1799,35 @@ export default memo(function XTermWrapper({
       titleDisposable?.dispose();
 
       dataDisposable = currentTerm.onData((data) => {
-        const inputData = stripTerminalMouseInputSequences(data);
+        const { data: inputData, shouldActivatePane } = filterTerminalMouseInputSequences(data);
         if (!inputData) return;
-        if (useUiStore.getState().activePaneId !== sessionId) {
-          useUiStore.getState().setActivePaneId(sessionId);
+        if (shouldActivatePane) {
+          if (useUiStore.getState().activePaneId !== sessionId) {
+            useUiStore.getState().setActivePaneId(sessionId);
+          }
+          usePaneMetadataStore.getState().clearNotification(sessionId);
         }
-        usePaneMetadataStore.getState().clearNotification(sessionId);
         chunkedWrite(sessionId, inputData);
-        try {
-          window.dispatchEvent(
-            new CustomEvent("mycmux:keystroke", { detail: { sessionId, data: inputData } }),
-          );
-        } catch {
-          // ignore dispatch failures; buddy is non-critical
+        if (shouldActivatePane) {
+          try {
+            window.dispatchEvent(
+              new CustomEvent("mycmux:keystroke", { detail: { sessionId, data: inputData } }),
+            );
+          } catch {
+            // ignore dispatch failures; buddy is non-critical
+          }
         }
       });
 
       binaryDisposable = currentTerm.onBinary((data) => {
-        const inputData = stripTerminalMouseInputSequences(data);
+        const { data: inputData, shouldActivatePane } = filterTerminalMouseInputSequences(data);
         if (!inputData) return;
-        if (useUiStore.getState().activePaneId !== sessionId) {
-          useUiStore.getState().setActivePaneId(sessionId);
+        if (shouldActivatePane) {
+          if (useUiStore.getState().activePaneId !== sessionId) {
+            useUiStore.getState().setActivePaneId(sessionId);
+          }
+          usePaneMetadataStore.getState().clearNotification(sessionId);
         }
-        usePaneMetadataStore.getState().clearNotification(sessionId);
         enqueueSessionWrite(sessionId, inputData);
       });
 
