@@ -4,7 +4,9 @@ import { getDefaultShell } from "./ipc";
 // Resolved at runtime via IPC — falls back to /bin/bash until loaded
 let _detectedShell = { command: "/bin/bash", args: [] as string[] };
 
-const LAUNCHER_SCRIPT = "$HOME/.mycmux/bin/launcher.sh";
+const BASH_LAUNCHER_SCRIPT = "$HOME/.mycmux/bin/launcher.sh";
+const POWERSHELL_LAUNCHER_COMMAND = "$launcher = Join-Path $HOME '.mycmux\\bin\\launcher.ps1'; if (Test-Path -LiteralPath $launcher) { & $launcher } else { Write-Host 'mycmux launcher is not installed. Restart mycmux or reinstall the latest version.' }";
+const CMD_LAUNCHER_COMMAND = "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File \"%USERPROFILE%\\.mycmux\\bin\\launcher.ps1\"";
 
 export async function initDefaultShell(): Promise<void> {
   try {
@@ -23,8 +25,21 @@ export const BUILT_IN_AGENTS: AgentDefinition[] = [
         return [
           "-i",
           "-c",
-          `if [ -f "${LAUNCHER_SCRIPT}" ]; then source "${LAUNCHER_SCRIPT}"; fi; exec "\${SHELL:-/bin/bash}" -i`,
+          `if [ -f "${BASH_LAUNCHER_SCRIPT}" ]; then source "${BASH_LAUNCHER_SCRIPT}"; fi; exec "\${SHELL:-/bin/bash}" -i`,
         ];
+      }
+      if (isPowerShellLikeShell(_detectedShell.command)) {
+        return [
+          "-NoLogo",
+          "-NoExit",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-Command",
+          POWERSHELL_LAUNCHER_COMMAND,
+        ];
+      }
+      if (isCmdLikeShell(_detectedShell.command)) {
+        return ["/d", "/k", CMD_LAUNCHER_COMMAND];
       }
       return _detectedShell.args;
     },
@@ -86,7 +101,20 @@ export function getDefaultAgent(): AgentDefinition {
   return BUILT_IN_AGENTS[0];
 }
 
+function shellLeaf(command: string): string {
+  return command.toLowerCase().split(/[\\/]/).pop()?.replace(/\.(exe|cmd|bat|com)$/, "") ?? command.toLowerCase();
+}
+
 function isBashLikeShell(command: string): boolean {
-  const leaf = command.toLowerCase().split(/[\\/]/).pop()?.replace(/\.(exe|cmd|bat|com)$/, "");
+  const leaf = shellLeaf(command);
   return leaf === "bash" || leaf === "sh";
+}
+
+function isPowerShellLikeShell(command: string): boolean {
+  const leaf = shellLeaf(command);
+  return leaf === "powershell" || leaf === "pwsh";
+}
+
+function isCmdLikeShell(command: string): boolean {
+  return shellLeaf(command) === "cmd";
 }
