@@ -4,6 +4,12 @@
 
 ---
 
+## [0.8.34-lite.1] - 2026-06-20
+
+- Fix: Launch Menu now works on Windows PCs that do not have Git Bash by installing and running a PowerShell launcher.
+- Fix: The launcher scripts are installed per user under `.mycmux/bin`, so GitHub-installed builds no longer rely on Miyazaki-specific shell setup.
+- Fix: Missing commands now show a message instead of leaving a blank launcher pane.
+
 ## [0.8.33-lite.1] - 2026-06-19
 
 - Added forced automatic updates after startup, plus periodic, online, and visibility-resume checks. When a signed update is available, mycmux-lite downloads it and relaunches without relying on the Settings button.
