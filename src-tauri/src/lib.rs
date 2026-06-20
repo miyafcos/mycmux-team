@@ -76,6 +76,17 @@ fn install_launcher_script() -> Result<(), String> {
             .map_err(|e| format!("Failed to write launcher script: {e}"))?;
     }
 
+    let target = bin_dir.join("launcher.ps1");
+    let contents = include_str!("launcher.ps1").replace("\r\n", "\n");
+    let needs_write = std::fs::read_to_string(&target)
+        .map(|current| current.replace("\r\n", "\n") != contents)
+        .unwrap_or(true);
+
+    if needs_write {
+        std::fs::write(&target, contents)
+            .map_err(|e| format!("Failed to write PowerShell launcher script: {e}"))?;
+    }
+
     Ok(())
 }
 
@@ -189,7 +200,7 @@ pub fn run() {
             #[cfg(target_os = "windows")]
             crate::pty::windows_console::start_startup_flash_suppression(std::process::id());
             if let Err(err) = install_launcher_script() {
-                eprintln!("[launcher] failed to install launcher.sh: {err}");
+                eprintln!("[launcher] failed to install launcher scripts: {err}");
             }
             let ms = state.metadata_store.clone();
             pty::monitor::start_monitor(
