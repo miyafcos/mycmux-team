@@ -114,47 +114,38 @@ $selected = 0
 while ($true) {
   Draw-MycmuxMenu $selected
   $key = [Console]::ReadKey($true)
-  switch ($key.Key) {
-    "UpArrow" {
-      $selected--
-      if ($selected -lt 0) { $selected = $Options.Count - 1 }
-      continue
-    }
-    "DownArrow" {
-      $selected++
-      if ($selected -ge $Options.Count) { $selected = 0 }
-      continue
-    }
-    "Enter" {
+
+  if ($key.Key -eq [ConsoleKey]::UpArrow -or $key.KeyChar -eq "k") {
+    $selected--
+    if ($selected -lt 0) { $selected = $Options.Count - 1 }
+    continue
+  }
+
+  if ($key.Key -eq [ConsoleKey]::DownArrow -or $key.KeyChar -eq "j") {
+    $selected++
+    if ($selected -ge $Options.Count) { $selected = 0 }
+    continue
+  }
+
+  if ($key.Key -eq [ConsoleKey]::Enter) {
+    break
+  }
+
+  if ($key.Key -eq [ConsoleKey]::Q -or $key.KeyChar -eq "q") {
+    Clear-Host
+    return
+  }
+
+  if ($key.KeyChar -eq "/" -or $key.KeyChar -eq "0") {
+    $selected = $Options.Count - 1
+    break
+  }
+
+  if ($key.KeyChar -match "^[1-9]$") {
+    $index = [int]::Parse([string]$key.KeyChar) - 1
+    if ($index -lt $Options.Count) {
+      $selected = $index
       break
-    }
-    "Q" {
-      Clear-Host
-      return
-    }
-    default {
-      if ($key.KeyChar -eq "j") {
-        $selected++
-        if ($selected -ge $Options.Count) { $selected = 0 }
-        continue
-      }
-      if ($key.KeyChar -eq "k") {
-        $selected--
-        if ($selected -lt 0) { $selected = $Options.Count - 1 }
-        continue
-      }
-      if ($key.KeyChar -eq "/") {
-        $selected = 9
-        break
-      }
-      if ($key.KeyChar -match "^[1-9]$") {
-        $selected = [int]::Parse([string]$key.KeyChar) - 1
-        break
-      }
-      if ($key.KeyChar -eq "0") {
-        $selected = 9
-        break
-      }
     }
   }
 }
