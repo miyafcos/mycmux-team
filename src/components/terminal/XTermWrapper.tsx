@@ -321,19 +321,38 @@ function wheelDeltaToTerminalLines(event: WheelEvent, rows: number): number {
   return direction * Math.max(1, Math.round(Math.abs(lines)));
 }
 
-function attachTerminalWheelScroll(container: HTMLElement, currentTerm: Terminal): () => void {
-  const handleWheel = (event: WheelEvent): void => {
-    if (event.defaultPrevented || event.ctrlKey || event.metaKey) return;
+function attachTerminalWheelScroll(currentTerm: Terminal): () => void {
+  const handleWheel = (event: WheelEvent): boolean => {
+    if (event.defaultPrevented || event.ctrlKey || event.metaKey) return true;
     const lines = wheelDeltaToTerminalLines(event, currentTerm.rows);
-    if (lines === 0) return;
+    if (lines === 0) return true;
+
     event.preventDefault();
     event.stopPropagation();
     event.stopImmediatePropagation();
     currentTerm.scrollLines(lines);
+    return false;
   };
 
-  container.addEventListener("wheel", handleWheel, { capture: true, passive: false });
-  return () => container.removeEventListener("wheel", handleWheel, { capture: true });
+  currentTerm.attachCustomWheelEventHandler(handleWheel);
+  return () => {
+    currentTerm.attachCustomWheelEventHandler(() => true);
+  };
+}
+
+function registerTerminalFocusSync(currentTerm: Terminal, sessionId: string): () => void {
+  const element = currentTerm.element;
+  if (!element) return () => {};
+
+  const syncFocusedTerminal = (): void => {
+    const ui = useUiStore.getState();
+    if (ui.activePaneId !== sessionId) {
+      ui.setActivePaneId(sessionId);
+    }
+  };
+
+  element.addEventListener("focusin", syncFocusedTerminal);
+  return () => element.removeEventListener("focusin", syncFocusedTerminal);
 }
 
 function registerSelectionCopyListener(currentTerm: Terminal): void {
@@ -363,6 +382,7 @@ function registerSelectionCopyListener(currentTerm: Terminal): void {
       copyTimer = null;
       const selectedText = currentTerm.getSelection();
       if (!selectedText) return;
+      focusTerminalSoon(currentTerm);
       copyTextToClipboard(selectedText, () => focusTerminalSoon(currentTerm));
     }, 0);
   };
@@ -1220,6 +1240,7 @@ export default memo(function XTermWrapper({
     let fitAddon: FitAddon | null = null;
     let removeCompositionGuard: (() => void) | null = null;
     let removeWheelScrollGuard: (() => void) | null = null;
+    let removeFocusSync: (() => void) | null = null;
     let logThrottle: ReturnType<typeof setTimeout> | null = null;
     let idleFlush: ReturnType<typeof setTimeout> | null = null;
     let backgroundScanThrottle: ReturnType<typeof setTimeout> | null = null;
@@ -1871,6 +1892,8 @@ export default memo(function XTermWrapper({
       removeCompositionGuard = null;
       removeWheelScrollGuard?.();
       removeWheelScrollGuard = null;
+      removeFocusSync?.();
+      removeFocusSync = null;
       disposeSelectionCopyListener(term);
       unlistenExit?.();
       unlistenExit = null;
@@ -1909,7 +1932,8 @@ export default memo(function XTermWrapper({
       registerScrollListener(cached.term);
       registerCompositionGuard(cached.term, cached.fitAddon);
       registerSelectionCopyListener(cached.term);
-      removeWheelScrollGuard = attachTerminalWheelScroll(container, cached.term);
+      removeWheelScrollGuard = attachTerminalWheelScroll(cached.term);
+      removeFocusSync = registerTerminalFocusSync(cached.term, sessionId);
       const cachedBufferText = getTerminalBufferLines(sessionId, 80).join("\n");
       updateCodexOutputDetection(cachedBufferText);
       attachTerminalKeyHandler(cached.term);
@@ -2017,7 +2041,8 @@ export default memo(function XTermWrapper({
       registerScrollListener(term);
       registerCompositionGuard(term, fitAddon);
       registerSelectionCopyListener(term);
-      removeWheelScrollGuard = attachTerminalWheelScroll(container!, term);
+      removeWheelScrollGuard = attachTerminalWheelScroll(term);
+      removeFocusSync = registerTerminalFocusSync(term, sessionId);
       attachTerminalKeyHandler(term);
 
       // OSC 9988: mycmux HTML sidetab. Payload = file URL or absolute path.

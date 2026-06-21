@@ -4,6 +4,13 @@
 
 ---
 
+## [0.8.35-lite.1] - 2026-06-20
+
+- Fix: Route terminal wheel events through xterm's custom wheel handler so wheel scrolling cannot be converted into CLI up/down input when the terminal buffer is not scrollable.
+- Fix: Keep terminal focus synced to the session that owns the xterm element so typing, Backspace, Delete, and arrow keys keep going to the intended pane after mouse selection or pane switching.
+- Fix: Restore terminal focus immediately after drag selection before clipboard writes finish, preventing temporary dead input after selecting text.
+- Verification: npm.cmd run build and git diff --check passed.
+
 ## [0.8.34-lite.1] - 2026-06-20
 
 - Fix: Launch Menu now works on Windows PCs that do not have Git Bash by installing and running a PowerShell launcher.
