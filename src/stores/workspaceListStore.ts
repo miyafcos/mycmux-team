@@ -27,6 +27,21 @@ function normalizeSplitColumns(splitColumns: string[][], paneIds: string[]): str
   return reconcileSplitColumnsForPanes(normalizeReadableSplitColumns(splitColumns), paneIds);
 }
 
+function paneIdsChanged(previousPanes: Workspace["panes"], nextPanes: Workspace["panes"]): boolean {
+  if (previousPanes.length !== nextPanes.length) return true;
+  const previousPaneIds = new Set(previousPanes.map((pane) => pane.id));
+  return nextPanes.some((pane) => !previousPaneIds.has(pane.id));
+}
+
+function splitColumnsChanged(previousColumns: string[][], nextColumns: string[][]): boolean {
+  if (previousColumns.length !== nextColumns.length) return true;
+  return previousColumns.some((previousColumn, columnIndex) => {
+    const nextColumn = nextColumns[columnIndex];
+    return previousColumn.length !== nextColumn.length
+      || previousColumn.some((paneId, rowIndex) => paneId !== nextColumn[rowIndex]);
+  });
+}
+
 function columnWidthsMatch(columns: string[][], columnWidths: number[] | undefined): boolean {
   return Boolean(
     columnWidths
@@ -320,14 +335,23 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
     set((state) => ({
       workspaces: state.workspaces.map((w) => {
         if (w.id !== id) return w;
-        const normalizedSplitColumns = splitColumns !== undefined
-          ? normalizeSplitColumns(splitColumns, panes.map((pane) => pane.id))
-          : undefined;
-        const layoutMetrics = reconcileLayoutMetrics(w, normalizedSplitColumns, resetLayoutMetrics);
+        const paneIds = panes.map((pane) => pane.id);
+        const panesChanged = paneIdsChanged(w.panes, panes);
+        const previousSplitColumns = fallbackColumns(w);
+        const normalizedSplitColumns = normalizeSplitColumns(
+          splitColumns ?? previousSplitColumns,
+          paneIds,
+        );
+        const splitLayoutChanged = splitColumnsChanged(previousSplitColumns, normalizedSplitColumns);
+        const layoutMetrics = reconcileLayoutMetrics(
+          w,
+          normalizedSplitColumns,
+          resetLayoutMetrics || panesChanged || splitLayoutChanged,
+        );
         return {
           ...w,
           panes,
-          ...(normalizedSplitColumns !== undefined && { splitColumns: normalizedSplitColumns }),
+          splitColumns: normalizedSplitColumns,
           ...(layoutMetrics ?? {}),
         };
       }),

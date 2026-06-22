@@ -24,7 +24,7 @@ def test_pane_layout_metrics_survive_split_structure_changes() -> None:
         "function columnsRequireBalancedWidths(",
         "if (columnsRequireBalancedWidths(previousColumns, nextColumns)) {",
         "return nextColumns.map(() => DEFAULT_LAYOUT_SIZE);",
-        "const layoutMetrics = reconcileLayoutMetrics(w, normalizedSplitColumns, resetLayoutMetrics);",
+        "resetLayoutMetrics || panesChanged || splitLayoutChanged,",
         "...(layoutMetrics ?? {})",
     ]:
         assert_contains(store, snippet, "src/stores/workspaceListStore.ts")
@@ -143,11 +143,17 @@ def test_horizontal_only_columns_are_cleaned_without_vertical_wrapping() -> None
     for snippet in [
         'import { normalizeReadableSplitColumns, reconcileSplitColumnsForPanes } from "../lib/layoutColumns";',
         "function normalizeSplitColumns(splitColumns: string[][], paneIds: string[]): string[][] {",
+        "function paneIdsChanged(previousPanes: Workspace[\"panes\"], nextPanes: Workspace[\"panes\"]): boolean {",
+        "function splitColumnsChanged(previousColumns: string[][], nextColumns: string[][]): boolean {",
         "columnWidths.every((size) => positiveSize(size) !== null)",
         "row.every((size) => positiveSize(size) !== null)",
         "const normalizedSplitColumns = normalizeSplitColumns(splitColumns, panes.map((pane) => pane.id));",
-        "const normalizedSplitColumns = splitColumns !== undefined",
-        "normalizeSplitColumns(splitColumns, panes.map((pane) => pane.id))",
+        "const paneIds = panes.map((pane) => pane.id);",
+        "const panesChanged = paneIdsChanged(w.panes, panes);",
+        "const previousSplitColumns = fallbackColumns(w);",
+        "splitColumns ?? previousSplitColumns",
+        "const splitLayoutChanged = splitColumnsChanged(previousSplitColumns, normalizedSplitColumns);",
+        "splitColumns: normalizedSplitColumns",
     ]:
         assert_contains(workspace_list_store, snippet, "src/stores/workspaceListStore.ts")
 
@@ -222,16 +228,17 @@ def test_terminal_toolbar_actions_restore_xterm_focus() -> None:
         "const activatePane = useCallback((options: PaneActivationOptions = {}) => {",
         "const handlePanePointerDownCapture = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {",
         "const handlePanePointerUpCapture = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {",
-        "const handlePaneWheelCapture = useCallback((event: ReactWheelEvent<HTMLDivElement>) => {",
         "if (hasDocumentTextSelection()) return;",
         "activatePane({ focusTerminal: false });",
         "onPointerDownCapture={handlePanePointerDownCapture}",
-        "onWheelCapture={handlePaneWheelCapture}",
         "focusTerminalInPaneSoon(pane.id);",
         "focusActiveTerminalSoon(pane.id);",
     ]:
         assert_contains(terminal_pane, snippet, "src/components/workspace/TerminalPane.tsx")
     assert "onFocus={handleFocus}" not in terminal_pane
+    assert "onWheelCapture=" not in terminal_pane
+    assert "handlePaneWheelCapture" not in terminal_pane
+    assert "ReactWheelEvent" not in terminal_pane
 
     for text, source in [
         (terminal_pane, "src/components/workspace/TerminalPane.tsx"),
@@ -244,7 +251,10 @@ def test_terminal_toolbar_actions_restore_xterm_focus() -> None:
 
     for snippet in [
         "function focusXtermInElement(el: HTMLElement | null | undefined): void",
+        "function queryPaneElementBySessionId(sessionId: string | null | undefined): HTMLElement | null",
+        "function focusActiveSessionSoon(sessionId: string | null | undefined): void",
         'querySelector<HTMLTextAreaElement>(".xterm-helper-textarea")',
+        "focusActiveSessionSoon(useUiStore.getState().activePaneId);",
     ]:
         assert_contains(app_shell, snippet, "src/components/layout/AppShell.tsx")
 
@@ -281,6 +291,41 @@ def test_cached_terminal_remount_disposes_input_subscriptions() -> None:
         "dataDisposable = currentTerm.onData((data) => {",
         "",
     )
+
+
+def test_active_pane_id_follows_surviving_tab_after_close() -> None:
+    workspace_layout_store = read_repo_text("src/stores/workspaceLayoutStore.ts")
+
+    for snippet in [
+        "function activeSessionIdForPane(pane: Pane | undefined): string | null",
+        "let nextActivePaneId: string | null | undefined;",
+        "const currentActivePaneId = useUiStore.getState().activePaneId;",
+        "const removedActiveTarget = Boolean(",
+        "nextActivePaneId = activeTab.sessionId;",
+        "const fallbackPane = newPanes[Math.min(Math.max(sourcePaneIndex, 0), newPanes.length - 1)] ?? newPanes[0];",
+        "nextActivePaneId = activeSessionIdForPane(fallbackPane);",
+        "useUiStore.getState().setActivePaneId(nextActivePaneId);",
+    ]:
+        assert_contains(workspace_layout_store, snippet, "src/stores/workspaceLayoutStore.ts")
+
+
+def test_terminal_wheel_input_does_not_steal_keyboard_focus() -> None:
+    xterm_wrapper = read_repo_text("src/components/terminal/XTermWrapper.tsx")
+    terminal_pane = read_repo_text("src/components/workspace/TerminalPane.tsx")
+
+    for snippet in [
+        "const { data: inputData, hasNonWheelInput } = filterTerminalMouseInputSequences(data);",
+        "if (hasNonWheelInput) {\n          activateTerminalPane(sessionId);\n          focusTerminalIfNeeded(currentTerm);\n        }",
+        "chunkedWrite(sessionId, inputData);",
+        "enqueueSessionWrite(sessionId, inputData);",
+    ]:
+        assert_contains(xterm_wrapper, snippet, "src/components/terminal/XTermWrapper.tsx")
+
+    assert "function registerTerminalWheelFocusSync" not in xterm_wrapper
+    assert "removeWheelFocusSync" not in xterm_wrapper
+    assert "focusTerminalNowIfNeeded" not in xterm_wrapper
+    assert "ownerDocument.addEventListener(\"wheel\"" not in xterm_wrapper
+    assert "onWheelCapture=" not in terminal_pane
 
 
 def test_terminal_plain_input_bypasses_keybinding_overrides() -> None:
@@ -329,9 +374,13 @@ def test_terminal_batches_keep_backend_flowing_while_layout_is_unwritable() -> N
     for snippet in [
         "interface PendingFrontendBatch {",
         "const isContainerDisplayed = (): boolean => {",
+        "const isContainerPainted = (): boolean => {",
         "const hasWritableTerminalSize = (): boolean => {",
         "const canWritePendingBatches = (): boolean => {",
         "setFrontendVisibleIfChanged(Boolean(term && !termDisposed && isContainerDisplayed()));",
+        "const visible = Boolean(term && !termDisposed && isContainerPainted());",
+        "const paintChanged = refreshTerminalPaintedVisible();",
+        "|| (terminalPaintedVisible && paintChanged);",
         "const ackPendingBatch = async (pending: PendingFrontendBatch): Promise<void> => {",
         "void ackPendingBatch(pending);",
         "pendingBatches.unshift(pending);",
@@ -343,9 +392,16 @@ def test_terminal_batches_keep_backend_flowing_while_layout_is_unwritable() -> N
         assert_contains(xterm_wrapper, snippet, "src/components/terminal/XTermWrapper.tsx")
 
     displayed_fn = xterm_wrapper.split("const isContainerDisplayed = (): boolean => {", 1)[1].split(
-        "const hasWritableTerminalSize = (): boolean => {",
+        "const isContainerPainted = (): boolean => {",
         1,
     )[0]
     assert 'style.display === "none"' in displayed_fn
     assert "style.visibility" not in displayed_fn
+
+    painted_fn = xterm_wrapper.split("const isContainerPainted = (): boolean => {", 1)[1].split(
+        "const hasWritableTerminalSize = (): boolean => {",
+        1,
+    )[0]
+    assert 'style.visibility === "hidden" || style.visibility === "collapse"' in painted_fn
+    assert "isContainerDisplayed()" in painted_fn
     assert "if (!term || termDisposed || !isContainerVisible())" not in xterm_wrapper

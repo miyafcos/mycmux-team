@@ -270,6 +270,38 @@ function focusXtermInElement(el: HTMLElement | null | undefined): void {
   el?.focus();
 }
 
+function getPaneSessionIds(paneEl: HTMLElement | null | undefined): string[] {
+  const ids = paneEl?.getAttribute("data-pane-session-ids");
+  return ids ? ids.split(/\s+/).filter(Boolean) : [];
+}
+
+function queryPaneElementBySessionId(sessionId: string | null | undefined): HTMLElement | null {
+  if (!sessionId) return null;
+  const direct = document.querySelector<HTMLElement>(`[data-session-id="${sessionId}"]`);
+  if (direct) return direct;
+  for (const candidate of document.querySelectorAll<HTMLElement>("[data-pane-session-ids]")) {
+    if (getPaneSessionIds(candidate).includes(sessionId)) return candidate;
+  }
+  return null;
+}
+
+function focusActiveSessionSoon(sessionId: string | null | undefined): void {
+  if (!sessionId) return;
+  let attempts = 0;
+  const attemptFocus = (): void => {
+    attempts += 1;
+    if (useUiStore.getState().activePaneId !== sessionId) return;
+    const el = queryPaneElementBySessionId(sessionId);
+    if (el) {
+      focusXtermInElement(el);
+      return;
+    }
+    if (attempts >= 8) return;
+    window.setTimeout(attemptFocus, attempts < 3 ? 16 : 50);
+  };
+  window.setTimeout(attemptFocus, 0);
+}
+
 function isPlainXtermInputEvent(event: KeyboardEvent): boolean {
   if (event.ctrlKey || event.altKey || event.metaKey) return false;
   const target = event.target as HTMLElement | null;
@@ -584,6 +616,7 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
           const activePane = activeWs?.panes.find((p) => paneMatchesSession(p, apid));
           if (activeWs && activePane) {
             addPaneToWorkspace(activeWs.id, activePane.id, "right");
+            focusActiveSessionSoon(useUiStore.getState().activePaneId);
           }
           break;
         }
@@ -593,6 +626,7 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
           const activePane = activeWs?.panes.find((p) => paneMatchesSession(p, apid));
           if (activeWs && activePane) {
             addPaneToWorkspace(activeWs.id, activePane.id, "down");
+            focusActiveSessionSoon(useUiStore.getState().activePaneId);
           }
           break;
         }
@@ -627,11 +661,7 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
                 findPaneInDirection(apid!, "up", remaining) ||
                 remaining[0].sessionId;
               setActivePaneId(neighbor);
-              setTimeout(() => {
-                if (useUiStore.getState().activePaneId !== neighbor) return;
-                const el = document.querySelector<HTMLElement>(`[data-session-id="${neighbor}"]`);
-                focusXtermInElement(el);
-              }, 0);
+              focusActiveSessionSoon(neighbor);
             } else {
               setActivePaneId(null);
             }
@@ -685,11 +715,7 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
           }
           
           // Focus the xterm textarea inside the pane for immediate typing
-          setTimeout(() => {
-            if (useUiStore.getState().activePaneId !== targetSessionId) return;
-            const el = document.querySelector<HTMLElement>(`[data-session-id="${targetSessionId}"]`);
-            focusXtermInElement(el);
-          }, 0);
+          focusActiveSessionSoon(targetSessionId);
           break;
         }
       }

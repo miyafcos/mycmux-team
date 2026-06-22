@@ -251,14 +251,6 @@ function focusTerminalSoon(currentTerm: Terminal): void {
   setTimeout(focusTerminal, 0);
 }
 
-function focusTerminalNow(currentTerm: Terminal): void {
-  try {
-    currentTerm.focus();
-  } catch {
-    // Terminal may have been disposed between the DOM event and focus.
-  }
-}
-
 function terminalContainsActiveElement(currentTerm: Terminal): boolean {
   const element = currentTerm.element;
   const activeElement = element?.ownerDocument.activeElement;
@@ -268,12 +260,6 @@ function terminalContainsActiveElement(currentTerm: Terminal): boolean {
 function focusTerminalIfNeeded(currentTerm: Terminal): void {
   if (!terminalContainsActiveElement(currentTerm)) {
     focusTerminalSoon(currentTerm);
-  }
-}
-
-function focusTerminalNowIfNeeded(currentTerm: Terminal): void {
-  if (!terminalContainsActiveElement(currentTerm)) {
-    focusTerminalNow(currentTerm);
   }
 }
 
@@ -389,23 +375,6 @@ function registerTerminalFocusSync(currentTerm: Terminal, sessionId: string): ()
 
   element.addEventListener("focusin", syncFocusedTerminal);
   return () => element.removeEventListener("focusin", syncFocusedTerminal);
-}
-
-function registerTerminalWheelFocusSync(currentTerm: Terminal, sessionId: string): () => void {
-  const element = currentTerm.element;
-  if (!element) return () => {};
-  const ownerDocument = element.ownerDocument;
-
-  const syncWheelTarget = (event: WheelEvent): void => {
-    const target = event.target;
-    if (!element.isConnected || !(target instanceof Node) || !element.contains(target)) return;
-    activateTerminalPane(sessionId);
-    focusTerminalNowIfNeeded(currentTerm);
-  };
-
-  // Document capture runs before xterm's own wheel listeners on terminal nodes.
-  ownerDocument.addEventListener("wheel", syncWheelTarget, { capture: true, passive: true });
-  return () => ownerDocument.removeEventListener("wheel", syncWheelTarget, { capture: true });
 }
 
 function registerSelectionCopyListener(currentTerm: Terminal): void {
@@ -1293,7 +1262,6 @@ export default memo(function XTermWrapper({
     let fitAddon: FitAddon | null = null;
     let removeCompositionGuard: (() => void) | null = null;
     let removeFocusSync: (() => void) | null = null;
-    let removeWheelFocusSync: (() => void) | null = null;
     let logThrottle: ReturnType<typeof setTimeout> | null = null;
     let idleFlush: ReturnType<typeof setTimeout> | null = null;
     let backgroundScanThrottle: ReturnType<typeof setTimeout> | null = null;
@@ -1312,6 +1280,7 @@ export default memo(function XTermWrapper({
     let writingBatch = false;
     let pendingDrainTimer: ReturnType<typeof setTimeout> | null = null;
     let frontendVisible: boolean | null = null;
+    let terminalPaintedVisible: boolean | null = null;
     let visibilityObserver: MutationObserver | null = null;
     let lastObservedWidth = -1;
     let lastObservedHeight = -1;
@@ -1699,6 +1668,19 @@ export default memo(function XTermWrapper({
       return true;
     };
 
+    const isContainerPainted = (): boolean => {
+      if (!isContainerDisplayed()) return false;
+      let current: HTMLElement | null = container;
+      while (current) {
+        const style = window.getComputedStyle(current);
+        if (style.visibility === "hidden" || style.visibility === "collapse") {
+          return false;
+        }
+        current = current.parentElement;
+      }
+      return true;
+    };
+
     const hasWritableTerminalSize = (): boolean => {
       const rect = container.getBoundingClientRect();
       return rect.width > 0 && rect.height > 0;
@@ -1728,6 +1710,7 @@ export default memo(function XTermWrapper({
     const scheduleFrontendResync = (): void => {
       if (disposed || termDisposed || !term || !fitAddon) return;
       refreshFrontendVisible();
+      refreshTerminalPaintedVisible();
       scheduleResizeBurst(term, fitAddon);
       scheduleFullRefresh(term, [0, 48, 160]);
       if (pendingBatches.length > 0) {
@@ -1750,9 +1733,20 @@ export default memo(function XTermWrapper({
       return setFrontendVisibleIfChanged(Boolean(term && !termDisposed && isContainerDisplayed()));
     };
 
+    const refreshTerminalPaintedVisible = (): boolean => {
+      const visible = Boolean(term && !termDisposed && isContainerPainted());
+      if (terminalPaintedVisible === visible) return false;
+      terminalPaintedVisible = visible;
+      return true;
+    };
+
     const handleFrontendVisibilitySignal = (): void => {
-      const changed = refreshFrontendVisible();
-      if (frontendVisible && (changed || pendingBatches.length > 0)) {
+      const frontendChanged = refreshFrontendVisible();
+      const paintChanged = refreshTerminalPaintedVisible();
+      const shouldResync =
+        (frontendVisible && (frontendChanged || pendingBatches.length > 0))
+        || (terminalPaintedVisible && paintChanged);
+      if (shouldResync) {
         scheduleFrontendResync();
       }
     };
@@ -1934,8 +1928,10 @@ export default memo(function XTermWrapper({
       dataDisposable = currentTerm.onData((data) => {
         const { data: inputData, hasNonWheelInput } = filterTerminalMouseInputSequences(data);
         if (!inputData) return;
-        activateTerminalPane(sessionId);
-        focusTerminalIfNeeded(currentTerm);
+        if (hasNonWheelInput) {
+          activateTerminalPane(sessionId);
+          focusTerminalIfNeeded(currentTerm);
+        }
         chunkedWrite(sessionId, inputData);
         if (hasNonWheelInput) {
           try {
@@ -1949,10 +1945,12 @@ export default memo(function XTermWrapper({
       });
 
       binaryDisposable = currentTerm.onBinary((data) => {
-        const { data: inputData } = filterTerminalMouseInputSequences(data);
+        const { data: inputData, hasNonWheelInput } = filterTerminalMouseInputSequences(data);
         if (!inputData) return;
-        activateTerminalPane(sessionId);
-        focusTerminalIfNeeded(currentTerm);
+        if (hasNonWheelInput) {
+          activateTerminalPane(sessionId);
+          focusTerminalIfNeeded(currentTerm);
+        }
         enqueueSessionWrite(sessionId, inputData);
       });
 
@@ -2007,8 +2005,6 @@ export default memo(function XTermWrapper({
       removeCompositionGuard = null;
       removeFocusSync?.();
       removeFocusSync = null;
-      removeWheelFocusSync?.();
-      removeWheelFocusSync = null;
       disposeSelectionCopyListener(term);
       unlistenExit?.();
       unlistenExit = null;
@@ -2048,7 +2044,6 @@ export default memo(function XTermWrapper({
       registerCompositionGuard(cached.term, cached.fitAddon);
       registerSelectionCopyListener(cached.term);
       removeFocusSync = registerTerminalFocusSync(cached.term, sessionId);
-      removeWheelFocusSync = registerTerminalWheelFocusSync(cached.term, sessionId);
       const cachedBufferText = getTerminalBufferLines(sessionId, 80).join("\n");
       updateCodexOutputDetection(cachedBufferText);
       attachTerminalKeyHandler(cached.term);
@@ -2159,7 +2154,6 @@ export default memo(function XTermWrapper({
       registerCompositionGuard(term, fitAddon);
       registerSelectionCopyListener(term);
       removeFocusSync = registerTerminalFocusSync(term, sessionId);
-      removeWheelFocusSync = registerTerminalWheelFocusSync(term, sessionId);
       attachTerminalKeyHandler(term);
 
       // OSC 9988: mycmux HTML sidetab. Payload = file URL or absolute path.

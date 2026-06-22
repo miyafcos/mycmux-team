@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useRef, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from "react";
+import { memo, useCallback, useEffect, useRef, type PointerEvent as ReactPointerEvent } from "react";
 import { open } from "@tauri-apps/plugin-shell";
 import ErrorBoundary from "../common/ErrorBoundary";
 import type { AgentSessionKind, Pane, PaneTab } from "../../types";
@@ -421,11 +421,6 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
     activatePane();
   }, [activatePane]);
 
-  const handlePaneWheelCapture = useCallback((event: ReactWheelEvent<HTMLDivElement>) => {
-    if (shouldIgnorePaneClickActivationTarget(event.target)) return;
-    activatePane({ focusTerminal: false });
-  }, [activatePane]);
-
   const handlePanePointerCancelCapture = useCallback(() => {
     pendingPaneClickActivationRef.current = null;
   }, []);
@@ -532,7 +527,6 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
       onPointerDownCapture={handlePanePointerDownCapture}
       onPointerUpCapture={handlePanePointerUpCapture}
       onPointerCancelCapture={handlePanePointerCancelCapture}
-      onWheelCapture={handlePaneWheelCapture}
       className={`terminal-pane-border${hasNotification ? " has-notification" : ""}`}
       style={{
         ...(isZoomed ? {

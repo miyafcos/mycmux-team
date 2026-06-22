@@ -152,6 +152,12 @@ function makePaneFromTab(paneId: string, tab: PaneTab): Pane {
   };
 }
 
+function activeSessionIdForPane(pane: Pane | undefined): string | null {
+  if (!pane) return null;
+  const activeTab = pane.tabs.find((tab) => tab.id === pane.activeTabId) ?? pane.tabs[0];
+  return activeTab?.sessionId ?? pane.sessionId ?? null;
+}
+
 function applyActiveTabFields(pane: Pane, activeTab: PaneTab): Pane {
   return {
     ...pane,
@@ -734,8 +740,17 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
     if (!workspace) return;
 
     let removedPane = false;
+    let nextActivePaneId: string | null | undefined;
+    const currentActivePaneId = useUiStore.getState().activePaneId;
+    const sourcePaneIndex = workspace.panes.findIndex((pane) => pane.id === paneId);
     const newPanes = workspace.panes.flatMap((p) => {
       if (p.id !== paneId) return [p];
+      const removedTab = p.tabs.find((t) => t.id === tabId);
+      const removedActiveTarget = Boolean(
+        currentActivePaneId
+        && removedTab
+        && (removedTab.sessionId === currentActivePaneId || p.sessionId === currentActivePaneId),
+      );
       const remaining = p.tabs.filter((t) => t.id !== tabId);
       if (remaining.length === 0) {
         if (workspace.panes.length <= 1) {
@@ -746,6 +761,9 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
       }
       const newActiveId = p.activeTabId === tabId ? remaining[remaining.length - 1].id : p.activeTabId;
       const activeTab = remaining.find((t) => t.id === newActiveId) ?? remaining[0];
+      if (removedActiveTarget) {
+        nextActivePaneId = activeTab.sessionId;
+      }
       return [{
         ...p,
         tabs: remaining,
@@ -771,6 +789,23 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
       nextSplitColumns ? normalizeWorkspaceSplitColumns(nextSplitColumns) : nextSplitColumns,
       removedPane,
     );
+    if (nextActivePaneId === undefined && removedPane) {
+      const removedSourcePaneWasActive = Boolean(
+        currentActivePaneId
+        && workspace.panes[sourcePaneIndex]
+        && (
+          workspace.panes[sourcePaneIndex].sessionId === currentActivePaneId
+          || workspace.panes[sourcePaneIndex].tabs.some((tab) => tab.sessionId === currentActivePaneId)
+        ),
+      );
+      if (removedSourcePaneWasActive) {
+        const fallbackPane = newPanes[Math.min(Math.max(sourcePaneIndex, 0), newPanes.length - 1)] ?? newPanes[0];
+        nextActivePaneId = activeSessionIdForPane(fallbackPane);
+      }
+    }
+    if (nextActivePaneId !== undefined) {
+      useUiStore.getState().setActivePaneId(nextActivePaneId);
+    }
   },
 
   moveTabToPane: (sourceWorkspaceId, sourcePaneId, tabId, targetWorkspaceId, targetPaneId) => {
