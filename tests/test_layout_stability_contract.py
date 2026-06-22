@@ -56,6 +56,9 @@ def test_terminal_grid_keeps_multi_column_layout_readable() -> None:
         "minSize={FIT_LAYOUT_MIN_SIZE}",
         'className="cmux-terminal-grid-fit"',
         'overflow: "hidden"',
+        "const visibleWorkspaceSignature = useMemo(",
+        'new CustomEvent("mycmux:workspace-visibility-change"',
+        "window.requestAnimationFrame(() => {",
     ]:
         assert_contains(workspace_view, snippet, "src/components/workspace/WorkspaceView.tsx")
 
@@ -196,20 +199,24 @@ def test_selection_copy_listener_survives_cached_terminal_remounts() -> None:
     for snippet in [
         "const terminalSelectionCopyListeners = new WeakMap<Terminal, { dispose: () => void }>();",
         "function focusTerminalSoon(currentTerm: Terminal): void",
-        "function registerSelectionCopyListener(currentTerm: Terminal): void",
+        "function registerSelectionCopyListener(currentTerm: Terminal, sessionId: string): void",
         "disposeSelectionCopyListener(currentTerm);",
         "const selectedText = currentTerm.getSelection();",
-        "copyTextToClipboard(selectedText, () => focusTerminalSoon(currentTerm));",
+        "const restoreSelectionFocus = (): void => {",
+        "if (isActiveTerminalInputTarget(sessionId)) {",
+        "refocusActiveTerminalIfNeeded();",
+        "copyTextToClipboard(selectedText, restoreSelectionFocus);",
         ".then(() => restoreFocus?.())",
         ".catch(() => fallbackCopyTextToClipboard(text, restoreFocus))",
-        "registerSelectionCopyListener(cached.term);",
-        "registerSelectionCopyListener(term);",
+        "registerSelectionCopyListener(cached.term, sessionId);",
+        "registerSelectionCopyListener(term, sessionId);",
         "disposeSelectionCopyListener(term);",
     ]:
         assert_contains(xterm_wrapper, snippet, "src/components/terminal/XTermWrapper.tsx")
 
     assert "navigator.clipboard.writeText(selection).catch(() => {});" not in xterm_wrapper
     assert "clipboard.writeText(text).catch(() => fallbackCopyTextToClipboard(text));" not in xterm_wrapper
+    assert "copyTextToClipboard(selectedText, () => focusTerminalSoon(currentTerm));" not in xterm_wrapper
 
 
 def test_terminal_toolbar_actions_restore_xterm_focus() -> None:
@@ -229,7 +236,8 @@ def test_terminal_toolbar_actions_restore_xterm_focus() -> None:
         "const handlePanePointerDownCapture = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {",
         "const handlePanePointerUpCapture = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {",
         "if (hasDocumentTextSelection()) return;",
-        "activatePane({ focusTerminal: false });",
+        "pendingPaneClickActivationRef.current = {\n      pointerId: event.pointerId,\n      x: event.clientX,\n      y: event.clientY,\n    };",
+        "activatePane();",
         "onPointerDownCapture={handlePanePointerDownCapture}",
         "focusTerminalInPaneSoon(pane.id);",
         "focusActiveTerminalSoon(pane.id);",
@@ -239,6 +247,7 @@ def test_terminal_toolbar_actions_restore_xterm_focus() -> None:
     assert "onWheelCapture=" not in terminal_pane
     assert "handlePaneWheelCapture" not in terminal_pane
     assert "ReactWheelEvent" not in terminal_pane
+    assert "activatePane({ focusTerminal: false });" not in terminal_pane
 
     for text, source in [
         (terminal_pane, "src/components/workspace/TerminalPane.tsx"),
@@ -283,7 +292,7 @@ def test_cached_terminal_remount_disposes_input_subscriptions() -> None:
         "registerInputListeners(cached.term);",
         "registerInputListeners(term);",
         "if (!isContainerDisplayed()) {",
-        "useUiStore.getState().setActivePaneId(sessionId);",
+        "if (!shouldAcceptTerminalInput(sessionId)) return;",
     ]:
         assert_contains(xterm_wrapper, snippet, "src/components/terminal/XTermWrapper.tsx")
 
@@ -315,6 +324,10 @@ def test_terminal_wheel_input_does_not_steal_keyboard_focus() -> None:
 
     for snippet in [
         "function filterWheelFocusInputSequences(",
+        "function isActiveTerminalInputTarget(sessionId: string): boolean",
+        "function clearActiveTerminalNotification(sessionId: string): void",
+        "function refocusActiveTerminalIfNeeded(): void",
+        "function shouldAcceptTerminalInput(sessionId: string): boolean",
         'return data.replace(/\\x1b\\[[IO]/g, "");',
         "function hasTerminalUserInput(data: string): boolean",
         "return stripTerminalFocusInputSequences(stripTerminalWheelInputSequences(data)).length > 0;",
@@ -322,7 +335,8 @@ def test_terminal_wheel_input_does_not_steal_keyboard_focus() -> None:
         "return wheelFocusRestore.sessionId === sessionId || wheelFocusRestore.previousSessionId === sessionId;",
         "const { data: inputData, hasNonWheelInput } = filterWheelFocusInputSequences(",
         "filterTerminalMouseInputSequences(data),",
-        "if (hasNonWheelInput) {\n          activateTerminalPane(sessionId);\n          focusTerminalIfNeeded(currentTerm);\n        }",
+        "if (!shouldAcceptTerminalInput(sessionId)) return;",
+        "if (hasNonWheelInput) {\n          clearActiveTerminalNotification(sessionId);\n          focusTerminalIfNeeded(currentTerm);\n        }",
         "chunkedWrite(sessionId, inputData);",
         "enqueueSessionWrite(sessionId, inputData);",
         "function registerTerminalWheelFocusGuard(currentTerm: Terminal, sessionId: string): () => void",
@@ -331,11 +345,14 @@ def test_terminal_wheel_input_does_not_steal_keyboard_focus() -> None:
         "markWheelFocusRestore(sessionId, activePaneId);",
         "const previousSessionId = consumeWheelFocusRestore(sessionId);",
         "restoreTerminalFocusAfterWheel(previousSessionId);",
+        "if (isActiveTerminalInputTarget(sessionId)) {\n      clearActiveTerminalNotification(sessionId);\n      return;\n    }\n    refocusActiveTerminalIfNeeded();",
         "element.addEventListener(\"wheel\", guardWheelFocus, { capture: true, passive: true });",
         "removeWheelFocusGuard = registerTerminalWheelFocusGuard(term, sessionId);",
     ]:
         assert_contains(xterm_wrapper, snippet, "src/components/terminal/XTermWrapper.tsx")
 
+    assert "function activateTerminalPane" not in xterm_wrapper
+    assert "activateTerminalPane(sessionId)" not in xterm_wrapper
     assert "function registerTerminalWheelFocusSync" not in xterm_wrapper
     assert "removeWheelFocusSync" not in xterm_wrapper
     assert "focusTerminalNowIfNeeded" not in xterm_wrapper
@@ -404,6 +421,9 @@ def test_terminal_batches_keep_backend_flowing_while_layout_is_unwritable() -> N
         "scheduleFrontendResync();",
         "if (pendingBatches.length > 0 && canWritePendingBatches())",
         "refreshFrontendVisible();",
+        'window.addEventListener("mycmux:workspace-visibility-change", handleFrontendVisibilitySignal);',
+        'window.removeEventListener("mycmux:workspace-visibility-change", handleFrontendVisibilitySignal);',
+        "scheduleFullRefresh(replayTerm, [0, 48, 160]);",
     ]:
         assert_contains(xterm_wrapper, snippet, "src/components/terminal/XTermWrapper.tsx")
 

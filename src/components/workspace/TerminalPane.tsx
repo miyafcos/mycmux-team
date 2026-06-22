@@ -407,8 +407,7 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
       x: event.clientX,
       y: event.clientY,
     };
-    activatePane({ focusTerminal: false });
-  }, [activatePane]);
+  }, []);
 
   const handlePanePointerUpCapture = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     const pending = pendingPaneClickActivationRef.current;

@@ -282,6 +282,31 @@ export default memo(function WorkspaceView() {
     }
     return ids;
   }, [activeId, mountedWorkspaceIds, startupRestoreMountedIds]);
+  const visibleWorkspaceSignature = useMemo(
+    () => Array.from(visibleWorkspaceIds).sort().join("|"),
+    [visibleWorkspaceIds],
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    const notifyTerminals = () => {
+      if (cancelled) return;
+      window.dispatchEvent(
+        new CustomEvent("mycmux:workspace-visibility-change", {
+          detail: { activeWorkspaceId: activeId, visibleWorkspaceIds: Array.from(visibleWorkspaceIds) },
+        }),
+      );
+    };
+
+    notifyTerminals();
+    const rafId = window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(notifyTerminals);
+    });
+    return () => {
+      cancelled = true;
+      window.cancelAnimationFrame(rafId);
+    };
+  }, [activeId, visibleWorkspaceSignature, visibleWorkspaceIds]);
 
   useEffect(() => {
     if (!activeId) return;

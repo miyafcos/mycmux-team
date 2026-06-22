@@ -277,11 +277,27 @@ function focusTerminalIfNeeded(currentTerm: Terminal): void {
   }
 }
 
-function activateTerminalPane(sessionId: string): void {
-  if (useUiStore.getState().activePaneId !== sessionId) {
-    useUiStore.getState().setActivePaneId(sessionId);
-  }
+function isActiveTerminalInputTarget(sessionId: string): boolean {
+  return useUiStore.getState().activePaneId === sessionId;
+}
+
+function clearActiveTerminalNotification(sessionId: string): void {
   usePaneMetadataStore.getState().clearNotification(sessionId);
+}
+
+function refocusActiveTerminalIfNeeded(): void {
+  const activeSessionId = useUiStore.getState().activePaneId;
+  if (!activeSessionId) return;
+  const activeTerm = liveTerms.get(activeSessionId) ?? termCache.get(activeSessionId)?.term;
+  if (activeTerm) {
+    focusTerminalIfNeeded(activeTerm);
+  }
+}
+
+function shouldAcceptTerminalInput(sessionId: string): boolean {
+  if (isActiveTerminalInputTarget(sessionId)) return true;
+  refocusActiveTerminalIfNeeded();
+  return false;
 }
 
 function terminalFocusClockMs(): number {
@@ -466,7 +482,11 @@ function registerTerminalFocusSync(currentTerm: Terminal, sessionId: string): ()
       restoreTerminalFocusAfterWheel(previousSessionId);
       return;
     }
-    activateTerminalPane(sessionId);
+    if (isActiveTerminalInputTarget(sessionId)) {
+      clearActiveTerminalNotification(sessionId);
+      return;
+    }
+    refocusActiveTerminalIfNeeded();
   };
 
   element.addEventListener("focusin", syncFocusedTerminal);
@@ -499,7 +519,7 @@ function registerTerminalWheelFocusGuard(currentTerm: Terminal, sessionId: strin
   };
 }
 
-function registerSelectionCopyListener(currentTerm: Terminal): void {
+function registerSelectionCopyListener(currentTerm: Terminal, sessionId: string): void {
   disposeSelectionCopyListener(currentTerm);
 
   let selectionDirty = false;
@@ -526,8 +546,15 @@ function registerSelectionCopyListener(currentTerm: Terminal): void {
       copyTimer = null;
       const selectedText = currentTerm.getSelection();
       if (!selectedText) return;
-      focusTerminalSoon(currentTerm);
-      copyTextToClipboard(selectedText, () => focusTerminalSoon(currentTerm));
+      const restoreSelectionFocus = (): void => {
+        if (isActiveTerminalInputTarget(sessionId)) {
+          focusTerminalSoon(currentTerm);
+          return;
+        }
+        refocusActiveTerminalIfNeeded();
+      };
+      restoreSelectionFocus();
+      copyTextToClipboard(selectedText, restoreSelectionFocus);
     }, 0);
   };
 
@@ -1888,6 +1915,7 @@ export default memo(function XTermWrapper({
       }
       window.addEventListener("focus", handleFrontendVisibilitySignal);
       window.addEventListener("blur", handleFrontendVisibilitySignal);
+      window.addEventListener("mycmux:workspace-visibility-change", handleFrontendVisibilitySignal);
       document.addEventListener("visibilitychange", handleFrontendVisibilitySignal);
       handleFrontendVisibilitySignal();
     };
@@ -1897,6 +1925,7 @@ export default memo(function XTermWrapper({
       visibilityObserver = null;
       window.removeEventListener("focus", handleFrontendVisibilitySignal);
       window.removeEventListener("blur", handleFrontendVisibilitySignal);
+      window.removeEventListener("mycmux:workspace-visibility-change", handleFrontendVisibilitySignal);
       document.removeEventListener("visibilitychange", handleFrontendVisibilitySignal);
     };
 
@@ -2059,8 +2088,9 @@ export default memo(function XTermWrapper({
           filterTerminalMouseInputSequences(data),
         );
         if (!inputData) return;
+        if (!shouldAcceptTerminalInput(sessionId)) return;
         if (hasNonWheelInput) {
-          activateTerminalPane(sessionId);
+          clearActiveTerminalNotification(sessionId);
           focusTerminalIfNeeded(currentTerm);
         }
         chunkedWrite(sessionId, inputData);
@@ -2081,8 +2111,9 @@ export default memo(function XTermWrapper({
           filterTerminalMouseInputSequences(data),
         );
         if (!inputData) return;
+        if (!shouldAcceptTerminalInput(sessionId)) return;
         if (hasNonWheelInput) {
-          activateTerminalPane(sessionId);
+          clearActiveTerminalNotification(sessionId);
           focusTerminalIfNeeded(currentTerm);
         }
         enqueueSessionWrite(sessionId, inputData);
@@ -2178,7 +2209,7 @@ export default memo(function XTermWrapper({
       cached.term.options.altClickMovesCursor = false;
       registerScrollListener(cached.term);
       registerCompositionGuard(cached.term, cached.fitAddon);
-      registerSelectionCopyListener(cached.term);
+      registerSelectionCopyListener(cached.term, sessionId);
       removeWheelFocusGuard = registerTerminalWheelFocusGuard(cached.term, sessionId);
       removeFocusSync = registerTerminalFocusSync(cached.term, sessionId);
       const cachedBufferText = getTerminalBufferLines(sessionId, 80).join("\n");
@@ -2280,6 +2311,7 @@ export default memo(function XTermWrapper({
         await new Promise<void>((resolve) => {
           replayTerm.write(`${displayReplay}\r\n`, () => resolve());
         });
+        scheduleFullRefresh(replayTerm, [0, 48, 160]);
         if (disposed || termDisposed || !term) return;
         terminalInitialReplayMarkers.get(sessionId)?.dispose();
         const replayMarker = replayTerm.registerMarker(0);
@@ -2289,7 +2321,7 @@ export default memo(function XTermWrapper({
       }
       registerScrollListener(term);
       registerCompositionGuard(term, fitAddon);
-      registerSelectionCopyListener(term);
+      registerSelectionCopyListener(term, sessionId);
       removeWheelFocusGuard = registerTerminalWheelFocusGuard(term, sessionId);
       removeFocusSync = registerTerminalFocusSync(term, sessionId);
       attachTerminalKeyHandler(term);
