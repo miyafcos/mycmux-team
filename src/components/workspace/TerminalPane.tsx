@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useRef, type PointerEvent as ReactPointerEvent } from "react";
+import { memo, useCallback, useEffect, useRef, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from "react";
 import { open } from "@tauri-apps/plugin-shell";
 import ErrorBoundary from "../common/ErrorBoundary";
 import type { AgentSessionKind, Pane, PaneTab } from "../../types";
@@ -194,6 +194,10 @@ function focusActiveTerminalSoon(fallbackPaneId: string): void {
 
 const PANE_CLICK_ACTIVATE_MAX_DISTANCE_PX = 5;
 
+type PaneActivationOptions = {
+  focusTerminal?: boolean;
+};
+
 type PendingPaneClickActivation = {
   pointerId: number;
   x: number;
@@ -327,7 +331,7 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
   const borderWidth = isActive && !isZoomed ? 2 : 1;
 
 
-  const activatePaneFromClick = useCallback(() => {
+  const activatePane = useCallback((options: PaneActivationOptions = {}) => {
     const ws = useWorkspaceListStore.getState().getWorkspace(workspaceId);
     const p = ws?.panes.find((candidate) => candidate.id === pane.id);
     const tab = p?.tabs.find((candidate) => candidate.id === p.activeTabId) ?? p?.tabs[0];
@@ -338,7 +342,9 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
     for (const candidate of p.tabs) {
       clearNotification(candidate.sessionId);
     }
-    focusTerminalInPaneSoon(pane.id);
+    if (options.focusTerminal ?? true) {
+      focusTerminalInPaneSoon(pane.id);
+    }
   }, [workspaceId, pane.id, setActivePaneId, clearNotification]);
 
   const handlePanePointerDownCapture = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
@@ -358,7 +364,8 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
       x: event.clientX,
       y: event.clientY,
     };
-  }, []);
+    activatePane({ focusTerminal: false });
+  }, [activatePane]);
 
   const handlePanePointerUpCapture = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     const pending = pendingPaneClickActivationRef.current;
@@ -368,8 +375,13 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
     if (shouldIgnorePaneClickActivationTarget(event.target)) return;
     if (Math.hypot(event.clientX - pending.x, event.clientY - pending.y) > PANE_CLICK_ACTIVATE_MAX_DISTANCE_PX) return;
     if (hasDocumentTextSelection()) return;
-    activatePaneFromClick();
-  }, [activatePaneFromClick]);
+    activatePane();
+  }, [activatePane]);
+
+  const handlePaneWheelCapture = useCallback((event: ReactWheelEvent<HTMLDivElement>) => {
+    if (shouldIgnorePaneClickActivationTarget(event.target)) return;
+    activatePane({ focusTerminal: false });
+  }, [activatePane]);
 
   const handlePanePointerCancelCapture = useCallback(() => {
     pendingPaneClickActivationRef.current = null;
@@ -476,6 +488,7 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
       onPointerDownCapture={handlePanePointerDownCapture}
       onPointerUpCapture={handlePanePointerUpCapture}
       onPointerCancelCapture={handlePanePointerCancelCapture}
+      onWheelCapture={handlePaneWheelCapture}
       className={`terminal-pane-border${hasNotification ? " has-notification" : ""}`}
       style={{
         ...(isZoomed ? {

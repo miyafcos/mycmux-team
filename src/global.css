@@ -315,11 +315,15 @@ div:hover>.tab-close-btn {
   visibility: hidden !important;
 }
 
-/* Persistent notification border — overrides normal pane border */
-.terminal-pane-border.has-notification::after {
+/* Persistent notification border. Active panes keep the active accent border. */
+.terminal-pane-border.has-notification:not([data-active-pane="true"])::after {
   border-width: 2px;
   border-color: var(--notification-color);
   animation: notificationPulse 2.5s ease-in-out infinite;
+}
+
+.terminal-pane-border.has-notification[data-active-pane="true"]::after {
+  animation: none;
 }
 
 /* Pane/tab drag-and-drop affordances */
