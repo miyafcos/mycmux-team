@@ -198,7 +198,10 @@ def test_selection_copy_listener_survives_cached_terminal_remounts() -> None:
 
     for snippet in [
         "const terminalSelectionCopyListeners = new WeakMap<Terminal, { dispose: () => void }>();",
-        "function focusTerminalSoon(currentTerm: Terminal): void",
+        "const TERMINAL_FOCUS_RETRY_LIMIT = 8;",
+        "function focusTerminalSoon(currentTerm: Terminal, sessionId?: string): void",
+        "if (sessionId && useUiStore.getState().activePaneId !== sessionId) return;",
+        "if (terminalContainsActiveElement(currentTerm) || attempts >= TERMINAL_FOCUS_RETRY_LIMIT) return;",
         "function registerSelectionCopyListener(currentTerm: Terminal, sessionId: string): void",
         "disposeSelectionCopyListener(currentTerm);",
         "const selectedText = currentTerm.getSelection();",
@@ -235,8 +238,11 @@ def test_terminal_toolbar_actions_restore_xterm_focus() -> None:
         "const activatePane = useCallback((options: PaneActivationOptions = {}) => {",
         "const handlePanePointerDownCapture = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {",
         "const handlePanePointerUpCapture = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {",
-        "if (hasDocumentTextSelection()) return;",
-        "pendingPaneClickActivationRef.current = {\n      pointerId: event.pointerId,\n      x: event.clientX,\n      y: event.clientY,\n    };",
+        "function getDocumentSelectionText(): string",
+        'target.closest(".xterm-helper-textarea")',
+        "pendingPaneClickActivationRef.current = {\n      pointerId: event.pointerId,\n      x: event.clientX,\n      y: event.clientY,\n      selectionText: getDocumentSelectionText(),\n    };",
+        "const nextSelectionText = getDocumentSelectionText();",
+        "if (nextSelectionText && nextSelectionText !== pending.selectionText) return;",
         "activatePane();",
         "onPointerDownCapture={handlePanePointerDownCapture}",
         "focusTerminalInPaneSoon(pane.id);",
@@ -248,6 +254,7 @@ def test_terminal_toolbar_actions_restore_xterm_focus() -> None:
     assert "handlePaneWheelCapture" not in terminal_pane
     assert "ReactWheelEvent" not in terminal_pane
     assert "activatePane({ focusTerminal: false });" not in terminal_pane
+    assert "if (hasDocumentTextSelection()) return;" not in terminal_pane
 
     for text, source in [
         (terminal_pane, "src/components/workspace/TerminalPane.tsx"),
@@ -336,7 +343,7 @@ def test_terminal_wheel_input_does_not_steal_keyboard_focus() -> None:
         "const { data: inputData, hasNonWheelInput } = filterWheelFocusInputSequences(",
         "filterTerminalMouseInputSequences(data),",
         "if (!shouldAcceptTerminalInput(sessionId)) return;",
-        "if (hasNonWheelInput) {\n          clearActiveTerminalNotification(sessionId);\n          focusTerminalIfNeeded(currentTerm);\n        }",
+        "if (hasNonWheelInput) {\n          clearActiveTerminalNotification(sessionId);\n          focusTerminalIfNeeded(currentTerm, sessionId);\n        }",
         "chunkedWrite(sessionId, inputData);",
         "enqueueSessionWrite(sessionId, inputData);",
         "function registerTerminalWheelFocusGuard(currentTerm: Terminal, sessionId: string): () => void",

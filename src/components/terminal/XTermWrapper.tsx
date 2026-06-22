@@ -206,6 +206,7 @@ const terminalSelectionCopyListeners = new WeakMap<Terminal, { dispose: () => vo
 const terminalInputQueues = new Map<string, Promise<void>>();
 
 const TERMINAL_WHEEL_FOCUS_SUPPRESS_MS = 350;
+const TERMINAL_FOCUS_RETRY_LIMIT = 8;
 
 interface WheelFocusRestore {
   id: number;
@@ -248,13 +249,26 @@ function isPlainTerminalInputEvent(e: KeyboardEvent): boolean {
   return e.key.length === 1 || TERMINAL_PLAIN_INPUT_KEYS.has(e.key);
 }
 
-function focusTerminalSoon(currentTerm: Terminal): void {
+function focusTerminalSoon(currentTerm: Terminal, sessionId?: string): void {
+  let attempts = 0;
   const focusTerminal = () => {
+    attempts += 1;
+    if (sessionId && useUiStore.getState().activePaneId !== sessionId) return;
     try {
       currentTerm.focus();
     } catch {
       // Terminal may have been disposed between copy completion and focus restore.
+      return;
     }
+    if (terminalContainsActiveElement(currentTerm) || attempts >= TERMINAL_FOCUS_RETRY_LIMIT) return;
+    const retryMs = attempts < 3 ? 16 : 50;
+    window.setTimeout(() => {
+      if (typeof window.requestAnimationFrame === "function") {
+        window.requestAnimationFrame(focusTerminal);
+        return;
+      }
+      focusTerminal();
+    }, retryMs);
   };
 
   if (typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
@@ -271,9 +285,9 @@ function terminalContainsActiveElement(currentTerm: Terminal): boolean {
   return Boolean(element && activeElement && element.contains(activeElement));
 }
 
-function focusTerminalIfNeeded(currentTerm: Terminal): void {
+function focusTerminalIfNeeded(currentTerm: Terminal, sessionId?: string): void {
   if (!terminalContainsActiveElement(currentTerm)) {
-    focusTerminalSoon(currentTerm);
+    focusTerminalSoon(currentTerm, sessionId);
   }
 }
 
@@ -290,7 +304,7 @@ function refocusActiveTerminalIfNeeded(): void {
   if (!activeSessionId) return;
   const activeTerm = liveTerms.get(activeSessionId) ?? termCache.get(activeSessionId)?.term;
   if (activeTerm) {
-    focusTerminalIfNeeded(activeTerm);
+    focusTerminalIfNeeded(activeTerm, activeSessionId);
   }
 }
 
@@ -352,7 +366,7 @@ function restoreTerminalFocusAfterWheel(previousSessionId: string): void {
   }
   const previousTerm = liveTerms.get(previousSessionId) ?? termCache.get(previousSessionId)?.term;
   if (previousTerm) {
-    focusTerminalIfNeeded(previousTerm);
+    focusTerminalIfNeeded(previousTerm, previousSessionId);
   }
 }
 
@@ -548,7 +562,7 @@ function registerSelectionCopyListener(currentTerm: Terminal, sessionId: string)
       if (!selectedText) return;
       const restoreSelectionFocus = (): void => {
         if (isActiveTerminalInputTarget(sessionId)) {
-          focusTerminalSoon(currentTerm);
+          focusTerminalSoon(currentTerm, sessionId);
           return;
         }
         refocusActiveTerminalIfNeeded();
@@ -2091,7 +2105,7 @@ export default memo(function XTermWrapper({
         if (!shouldAcceptTerminalInput(sessionId)) return;
         if (hasNonWheelInput) {
           clearActiveTerminalNotification(sessionId);
-          focusTerminalIfNeeded(currentTerm);
+          focusTerminalIfNeeded(currentTerm, sessionId);
         }
         chunkedWrite(sessionId, inputData);
         if (hasNonWheelInput) {
@@ -2114,7 +2128,7 @@ export default memo(function XTermWrapper({
         if (!shouldAcceptTerminalInput(sessionId)) return;
         if (hasNonWheelInput) {
           clearActiveTerminalNotification(sessionId);
-          focusTerminalIfNeeded(currentTerm);
+          focusTerminalIfNeeded(currentTerm, sessionId);
         }
         enqueueSessionWrite(sessionId, inputData);
       });

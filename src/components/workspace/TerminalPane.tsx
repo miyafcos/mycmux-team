@@ -245,6 +245,7 @@ type PendingPaneClickActivation = {
   pointerId: number;
   x: number;
   y: number;
+  selectionText: string;
 };
 
 const PANE_CLICK_IGNORED_TARGET_SELECTOR = [
@@ -262,14 +263,17 @@ const PANE_CLICK_IGNORED_TARGET_SELECTOR = [
 ].join(",");
 
 function shouldIgnorePaneClickActivationTarget(target: EventTarget | null): boolean {
+  if (target instanceof Element && target.closest(".xterm-helper-textarea")) {
+    return false;
+  }
   return target instanceof Element
     ? Boolean(target.closest(PANE_CLICK_IGNORED_TARGET_SELECTOR))
     : true;
 }
 
-function hasDocumentTextSelection(): boolean {
+function getDocumentSelectionText(): string {
   const selection = window.getSelection?.();
-  return Boolean(selection && selection.toString().trim().length > 0);
+  return selection?.toString().trim() ?? "";
 }
 
 function getDropPreviewLabel(item: PaneDragItem, target: PaneDropTarget): string {
@@ -406,6 +410,7 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
       pointerId: event.pointerId,
       x: event.clientX,
       y: event.clientY,
+      selectionText: getDocumentSelectionText(),
     };
   }, []);
 
@@ -416,7 +421,8 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
     if (event.shiftKey || event.altKey || event.ctrlKey || event.metaKey) return;
     if (shouldIgnorePaneClickActivationTarget(event.target)) return;
     if (Math.hypot(event.clientX - pending.x, event.clientY - pending.y) > PANE_CLICK_ACTIVATE_MAX_DISTANCE_PX) return;
-    if (hasDocumentTextSelection()) return;
+    const nextSelectionText = getDocumentSelectionText();
+    if (nextSelectionText && nextSelectionText !== pending.selectionText) return;
     activatePane();
   }, [activatePane]);
 
