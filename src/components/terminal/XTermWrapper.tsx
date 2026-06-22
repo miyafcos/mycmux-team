@@ -60,6 +60,11 @@ interface XTermWrapperProps {
   initialReplay?: string[];
 }
 
+interface PendingFrontendBatch {
+  batch: FrontendDataBatch;
+  acked: boolean;
+}
+
 // Approval-prompt detection patterns. Pattern index is used as the
 // notification key so the same approval fires only once per occurrence.
 const APPROVAL_PATTERNS: readonly RegExp[] = [
@@ -1303,8 +1308,9 @@ export default memo(function XTermWrapper({
     let codexDetectionBuffer = "";
     const outputDecoder = new TextDecoder();
     const diagStats = diagStatsFor(sessionId);
-    const pendingBatches: FrontendDataBatch[] = [];
+    const pendingBatches: PendingFrontendBatch[] = [];
     let writingBatch = false;
+    let pendingDrainTimer: ReturnType<typeof setTimeout> | null = null;
     let frontendVisible: boolean | null = null;
     let visibilityObserver: MutationObserver | null = null;
     let lastObservedWidth = -1;
@@ -1318,6 +1324,12 @@ export default memo(function XTermWrapper({
         clearTimeout(timer);
       }
       resizeTimers = [];
+    };
+
+    const clearPendingDrainTimer = (): void => {
+      if (!pendingDrainTimer) return;
+      clearTimeout(pendingDrainTimer);
+      pendingDrainTimer = null;
     };
 
     const clearScanTimers = (): void => {
@@ -1668,16 +1680,18 @@ export default memo(function XTermWrapper({
       }
     };
 
+    const ackPendingBatch = async (pending: PendingFrontendBatch): Promise<void> => {
+      if (pending.acked) return;
+      pending.acked = true;
+      await ackBatch(pending.batch);
+    };
+
     const isContainerDisplayed = (): boolean => {
       if (!container.isConnected) return false;
       let current: HTMLElement | null = container;
       while (current) {
         const style = window.getComputedStyle(current);
-        if (
-          style.display === "none"
-          || style.visibility === "hidden"
-          || style.visibility === "collapse"
-        ) {
+        if (style.display === "none") {
           return false;
         }
         current = current.parentElement;
@@ -1694,24 +1708,58 @@ export default memo(function XTermWrapper({
       return Boolean(term && !termDisposed && isContainerDisplayed() && hasWritableTerminalSize());
     };
 
-    const setFrontendVisibleIfChanged = (visible: boolean): void => {
-      if (frontendVisible === visible) return;
-      frontendVisible = visible;
-      void setFrontendVisible(sessionId, visible);
+    const schedulePendingWriteDrain = (delay = 80): void => {
+      if (disposed || termDisposed || pendingDrainTimer) return;
+      pendingDrainTimer = setTimeout(() => {
+        pendingDrainTimer = null;
+        refreshFrontendVisible();
+        if (term && fitAddon && isContainerDisplayed()) {
+          fitAndSyncResize(term, fitAddon, true);
+        }
+        if (pendingBatches.length === 0) return;
+        if (canWritePendingBatches()) {
+          void pumpTerminalWrites();
+        } else if (isContainerDisplayed()) {
+          schedulePendingWriteDrain(120);
+        }
+      }, delay);
     };
 
-    const refreshFrontendVisible = (): void => {
-      setFrontendVisibleIfChanged(Boolean(term && !termDisposed && isContainerDisplayed()));
+    const scheduleFrontendResync = (): void => {
+      if (disposed || termDisposed || !term || !fitAddon) return;
+      refreshFrontendVisible();
+      scheduleResizeBurst(term, fitAddon);
+      scheduleFullRefresh(term, [0, 48, 160]);
+      if (pendingBatches.length > 0) {
+        if (canWritePendingBatches()) {
+          void pumpTerminalWrites();
+        } else if (isContainerDisplayed()) {
+          schedulePendingWriteDrain();
+        }
+      }
+    };
+
+    const setFrontendVisibleIfChanged = (visible: boolean): boolean => {
+      if (frontendVisible === visible) return false;
+      frontendVisible = visible;
+      void setFrontendVisible(sessionId, visible);
+      return true;
+    };
+
+    const refreshFrontendVisible = (): boolean => {
+      return setFrontendVisibleIfChanged(Boolean(term && !termDisposed && isContainerDisplayed()));
+    };
+
+    const handleFrontendVisibilitySignal = (): void => {
+      const changed = refreshFrontendVisible();
+      if (frontendVisible && (changed || pendingBatches.length > 0)) {
+        scheduleFrontendResync();
+      }
     };
 
     const startVisibilityObserver = (): void => {
       visibilityObserver?.disconnect();
-      visibilityObserver = new MutationObserver(() => {
-        refreshFrontendVisible();
-        if (pendingBatches.length > 0) {
-          void pumpTerminalWrites();
-        }
-      });
+      visibilityObserver = new MutationObserver(handleFrontendVisibilitySignal);
       let current: HTMLElement | null = container;
       while (current) {
         visibilityObserver.observe(current, {
@@ -1720,18 +1768,18 @@ export default memo(function XTermWrapper({
         });
         current = current.parentElement;
       }
-      window.addEventListener("focus", refreshFrontendVisible);
-      window.addEventListener("blur", refreshFrontendVisible);
-      document.addEventListener("visibilitychange", refreshFrontendVisible);
-      refreshFrontendVisible();
+      window.addEventListener("focus", handleFrontendVisibilitySignal);
+      window.addEventListener("blur", handleFrontendVisibilitySignal);
+      document.addEventListener("visibilitychange", handleFrontendVisibilitySignal);
+      handleFrontendVisibilitySignal();
     };
 
     const stopVisibilityObserver = (): void => {
       visibilityObserver?.disconnect();
       visibilityObserver = null;
-      window.removeEventListener("focus", refreshFrontendVisible);
-      window.removeEventListener("blur", refreshFrontendVisible);
-      document.removeEventListener("visibilitychange", refreshFrontendVisible);
+      window.removeEventListener("focus", handleFrontendVisibilitySignal);
+      window.removeEventListener("blur", handleFrontendVisibilitySignal);
+      document.removeEventListener("visibilitychange", handleFrontendVisibilitySignal);
     };
 
     const writeTerminalOutput = (output: string | Uint8Array): Promise<void> => {
@@ -1765,16 +1813,24 @@ export default memo(function XTermWrapper({
       writingBatch = true;
       try {
         while (pendingBatches.length > 0) {
-          const batch = pendingBatches.shift()!;
+          const pending = pendingBatches.shift()!;
+          const { batch } = pending;
           if (!term || termDisposed) {
-            await ackBatch(batch);
+            await ackPendingBatch(pending);
             continue;
           }
           if (!canWritePendingBatches()) {
-            pendingBatches.unshift(batch);
+            if (!isContainerDisplayed()) {
+              await ackPendingBatch(pending);
+              continue;
+            }
+            void ackPendingBatch(pending);
+            pendingBatches.unshift(pending);
+            schedulePendingWriteDrain();
             break;
           }
           try {
+            clearPendingDrainTimer();
             settleStartupSession();
             const chunk = batchDataToBytes(batch.data);
             if (chunk.byteLength > 0 && !terminalHasLiveOutput.has(sessionId)) {
@@ -1790,24 +1846,35 @@ export default memo(function XTermWrapper({
             bumpTerminalWriteCounter(sessionId);
             await writeTerminalOutput(output);
             if (!disposed && !termDisposed) {
+              scheduleFullRefresh(term, [0, 48]);
               scheduleBackgroundScan();
             }
           } finally {
-            await ackBatch(batch);
+            await ackPendingBatch(pending);
           }
         }
       } finally {
         writingBatch = false;
         if (pendingBatches.length > 0 && canWritePendingBatches()) {
           void pumpTerminalWrites();
+        } else if (pendingBatches.length > 0 && isContainerDisplayed()) {
+          schedulePendingWriteDrain();
         }
       }
     }
 
     const enqueueFrontendBatch = (batch: FrontendDataBatch): void => {
-      pendingBatches.push(batch);
+      if (!isContainerDisplayed()) {
+        void ackBatch(batch);
+        return;
+      }
+      const pending: PendingFrontendBatch = { batch, acked: false };
+      pendingBatches.push(pending);
       if (canWritePendingBatches()) {
         void pumpTerminalWrites();
+      } else {
+        void ackPendingBatch(pending);
+        schedulePendingWriteDrain();
       }
     };
 
@@ -1823,6 +1890,7 @@ export default memo(function XTermWrapper({
         launchEnv || undefined,
       );
       refreshFrontendVisible();
+      scheduleFrontendResync();
     };
 
     const registerScanListener = (currentTerm: Terminal): void => {
@@ -1918,6 +1986,7 @@ export default memo(function XTermWrapper({
 
     const cleanup = (): void => {
       clearResizeTimer();
+      clearPendingDrainTimer();
       clearScanTimers();
       stopVisibilityObserver();
       setFrontendVisibleIfChanged(false);
@@ -1949,8 +2018,8 @@ export default memo(function XTermWrapper({
       }
       if (termDisposed) {
         while (pendingBatches.length > 0) {
-          const batch = pendingBatches.shift()!;
-          void ackBatch(batch);
+          const pending = pendingBatches.shift()!;
+          void ackPendingBatch(pending);
         }
       }
       searchAddonRef.current = null;
@@ -1989,9 +2058,11 @@ export default memo(function XTermWrapper({
       setTimeout(() => {
         if (disposed || termDisposed) return;
         fitAndSyncResize(cached.term, cached.fitAddon, true);
+        scheduleFrontendResync();
       }, 30);
       registerResizeObserver(cached.term, cached.fitAddon);
       startVisibilityObserver();
+      scheduleFrontendResync();
     };
 
     const cached = termCache.get(sessionId);
@@ -2124,6 +2195,7 @@ export default memo(function XTermWrapper({
       terminalSizeCache.set(sessionId, { cols, rows });
 
       try {
+        registerResizeObserver(term, fitAddon);
         startVisibilityObserver();
         await attachFrontendChannel(cols, rows);
         sessionStarted = true;
@@ -2135,8 +2207,6 @@ export default memo(function XTermWrapper({
         console.error("[XTermWrapper] Failed to create session:", err);
         term.writeln(`\r\n\x1b[31mFailed to start: ${err}\x1b[0m`);
       }
-
-      registerResizeObserver(term, fitAddon);
 
       if (!cfg && !fontSize && !fontFamily) {
         ensureConfigLoaded().then(() => {

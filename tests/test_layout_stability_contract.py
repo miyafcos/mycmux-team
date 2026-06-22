@@ -192,7 +192,8 @@ def test_selection_copy_listener_survives_cached_terminal_remounts() -> None:
         "function focusTerminalSoon(currentTerm: Terminal): void",
         "function registerSelectionCopyListener(currentTerm: Terminal): void",
         "disposeSelectionCopyListener(currentTerm);",
-        "copyTextToClipboard(currentTerm.getSelection(), () => focusTerminalSoon(currentTerm));",
+        "const selectedText = currentTerm.getSelection();",
+        "copyTextToClipboard(selectedText, () => focusTerminalSoon(currentTerm));",
         ".then(() => restoreFocus?.())",
         ".catch(() => fallbackCopyTextToClipboard(text, restoreFocus))",
         "registerSelectionCopyListener(cached.term);",
@@ -217,9 +218,15 @@ def test_terminal_toolbar_actions_restore_xterm_focus() -> None:
         "function focusActiveTerminalSoon(fallbackPaneId: string): void",
         'paneEl?.querySelector<HTMLTextAreaElement>(".xterm-helper-textarea")',
         "attempts >= 8",
-        "const activatePane = useCallback(() => {",
-        "onPointerDownCapture={activatePane}",
-        "const stillThisPane = currentActivePaneId !== null && (",
+        "type PaneActivationOptions = {",
+        "const activatePane = useCallback((options: PaneActivationOptions = {}) => {",
+        "const handlePanePointerDownCapture = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {",
+        "const handlePanePointerUpCapture = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {",
+        "const handlePaneWheelCapture = useCallback((event: ReactWheelEvent<HTMLDivElement>) => {",
+        "if (hasDocumentTextSelection()) return;",
+        "activatePane({ focusTerminal: false });",
+        "onPointerDownCapture={handlePanePointerDownCapture}",
+        "onWheelCapture={handlePaneWheelCapture}",
         "focusTerminalInPaneSoon(pane.id);",
         "focusActiveTerminalSoon(pane.id);",
     ]:
@@ -316,18 +323,29 @@ def test_pty_reader_does_not_block_when_frontend_queue_is_full() -> None:
     assert "frontend_tx.blocking_send" not in pty_session
 
 
-def test_terminal_batches_are_not_acked_while_layout_is_unwritable() -> None:
+def test_terminal_batches_keep_backend_flowing_while_layout_is_unwritable() -> None:
     xterm_wrapper = read_repo_text("src/components/terminal/XTermWrapper.tsx")
 
     for snippet in [
+        "interface PendingFrontendBatch {",
         "const isContainerDisplayed = (): boolean => {",
         "const hasWritableTerminalSize = (): boolean => {",
         "const canWritePendingBatches = (): boolean => {",
         "setFrontendVisibleIfChanged(Boolean(term && !termDisposed && isContainerDisplayed()));",
-        "pendingBatches.unshift(batch);",
+        "const ackPendingBatch = async (pending: PendingFrontendBatch): Promise<void> => {",
+        "void ackPendingBatch(pending);",
+        "pendingBatches.unshift(pending);",
+        "schedulePendingWriteDrain();",
+        "scheduleFrontendResync();",
         "if (pendingBatches.length > 0 && canWritePendingBatches())",
         "refreshFrontendVisible();",
     ]:
         assert_contains(xterm_wrapper, snippet, "src/components/terminal/XTermWrapper.tsx")
 
+    displayed_fn = xterm_wrapper.split("const isContainerDisplayed = (): boolean => {", 1)[1].split(
+        "const hasWritableTerminalSize = (): boolean => {",
+        1,
+    )[0]
+    assert 'style.display === "none"' in displayed_fn
+    assert "style.visibility" not in displayed_fn
     assert "if (!term || termDisposed || !isContainerVisible())" not in xterm_wrapper
