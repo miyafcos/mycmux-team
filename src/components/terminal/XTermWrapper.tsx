@@ -205,6 +205,20 @@ const terminalWriteCounters = new Map<string, number>();
 const terminalSelectionCopyListeners = new WeakMap<Terminal, { dispose: () => void }>();
 const terminalInputQueues = new Map<string, Promise<void>>();
 
+const TERMINAL_WHEEL_FOCUS_SUPPRESS_MS = 350;
+
+interface WheelFocusRestore {
+  id: number;
+  sessionId: string;
+  previousSessionId: string;
+  expiresAt: number;
+  timerId: number | null;
+  restored: boolean;
+}
+
+let wheelFocusRestore: WheelFocusRestore | null = null;
+let wheelFocusRestoreSeq = 0;
+
 const TERMINAL_SNAPSHOT_SCAN_MULTIPLIER = 4;
 const TERMINAL_SNAPSHOT_MAX_WRAPPED_LINES = 256;
 const TERMINAL_SNAPSHOT_MAX_LINE_CHARS = 8192;
@@ -268,6 +282,62 @@ function activateTerminalPane(sessionId: string): void {
     useUiStore.getState().setActivePaneId(sessionId);
   }
   usePaneMetadataStore.getState().clearNotification(sessionId);
+}
+
+function terminalFocusClockMs(): number {
+  return typeof performance !== "undefined" ? performance.now() : Date.now();
+}
+
+function clearWheelFocusRestore(id?: number): void {
+  if (!wheelFocusRestore) return;
+  if (id !== undefined && wheelFocusRestore.id !== id) return;
+  if (wheelFocusRestore.timerId !== null && typeof window !== "undefined") {
+    window.clearTimeout(wheelFocusRestore.timerId);
+  }
+  wheelFocusRestore = null;
+}
+
+function markWheelFocusRestore(sessionId: string, previousSessionId: string): void {
+  clearWheelFocusRestore();
+  const id = ++wheelFocusRestoreSeq;
+  const expiresAt = terminalFocusClockMs() + TERMINAL_WHEEL_FOCUS_SUPPRESS_MS;
+  const timerId =
+    typeof window !== "undefined"
+      ? window.setTimeout(() => clearWheelFocusRestore(id), TERMINAL_WHEEL_FOCUS_SUPPRESS_MS)
+      : null;
+  wheelFocusRestore = { id, sessionId, previousSessionId, expiresAt, timerId, restored: false };
+}
+
+function consumeWheelFocusRestore(sessionId: string): string | null {
+  if (!wheelFocusRestore || wheelFocusRestore.sessionId !== sessionId) return null;
+  if (terminalFocusClockMs() > wheelFocusRestore.expiresAt) {
+    clearWheelFocusRestore();
+    return null;
+  }
+  if (wheelFocusRestore.restored) return null;
+  wheelFocusRestore.restored = true;
+  const { previousSessionId } = wheelFocusRestore;
+  return previousSessionId;
+}
+
+function shouldSuppressWheelFocusInput(sessionId: string): boolean {
+  if (!wheelFocusRestore) return false;
+  if (terminalFocusClockMs() > wheelFocusRestore.expiresAt) {
+    clearWheelFocusRestore();
+    return false;
+  }
+  return wheelFocusRestore.sessionId === sessionId || wheelFocusRestore.previousSessionId === sessionId;
+}
+
+function restoreTerminalFocusAfterWheel(previousSessionId: string): void {
+  const uiState = useUiStore.getState();
+  if (uiState.activePaneId !== previousSessionId) {
+    uiState.setActivePaneId(previousSessionId);
+  }
+  const previousTerm = liveTerms.get(previousSessionId) ?? termCache.get(previousSessionId)?.term;
+  if (previousTerm) {
+    focusTerminalIfNeeded(previousTerm);
+  }
 }
 
 function fallbackCopyTextToClipboard(text: string, restoreFocus?: () => void): void {
@@ -357,11 +427,32 @@ function stripTerminalWheelInputSequences(data: string): string {
     });
 }
 
+function stripTerminalFocusInputSequences(data: string): string {
+  return data.replace(/\x1b\[[IO]/g, "");
+}
+
+function hasTerminalUserInput(data: string): boolean {
+  return stripTerminalFocusInputSequences(stripTerminalWheelInputSequences(data)).length > 0;
+}
+
 function filterTerminalMouseInputSequences(data: string): FilteredTerminalInput {
   const inputData = stripNonWheelTerminalMouseInputSequences(data);
   return {
     data: inputData,
-    hasNonWheelInput: stripTerminalWheelInputSequences(inputData).length > 0,
+    hasNonWheelInput: hasTerminalUserInput(inputData),
+  };
+}
+
+function filterWheelFocusInputSequences(
+  sessionId: string,
+  input: FilteredTerminalInput,
+): FilteredTerminalInput {
+  if (!input.data || !shouldSuppressWheelFocusInput(sessionId)) return input;
+  const data = stripTerminalFocusInputSequences(input.data);
+  if (data === input.data) return input;
+  return {
+    data,
+    hasNonWheelInput: hasTerminalUserInput(data),
   };
 }
 
@@ -370,11 +461,42 @@ function registerTerminalFocusSync(currentTerm: Terminal, sessionId: string): ()
   if (!element) return () => {};
 
   const syncFocusedTerminal = (): void => {
+    const previousSessionId = consumeWheelFocusRestore(sessionId);
+    if (previousSessionId) {
+      restoreTerminalFocusAfterWheel(previousSessionId);
+      return;
+    }
     activateTerminalPane(sessionId);
   };
 
   element.addEventListener("focusin", syncFocusedTerminal);
   return () => element.removeEventListener("focusin", syncFocusedTerminal);
+}
+
+function registerTerminalWheelFocusGuard(currentTerm: Terminal, sessionId: string): () => void {
+  const element = currentTerm.element;
+  if (!element) return () => {};
+
+  const guardWheelFocus = (): void => {
+    const activePaneId = useUiStore.getState().activePaneId;
+    if (!activePaneId || activePaneId === sessionId) {
+      clearWheelFocusRestore();
+      return;
+    }
+    markWheelFocusRestore(sessionId, activePaneId);
+  };
+
+  const cancelWheelFocusGuard = (): void => clearWheelFocusRestore();
+
+  element.addEventListener("wheel", guardWheelFocus, { capture: true, passive: true });
+  element.addEventListener("pointerdown", cancelWheelFocusGuard, { capture: true });
+  element.addEventListener("mousedown", cancelWheelFocusGuard, { capture: true });
+
+  return () => {
+    element.removeEventListener("wheel", guardWheelFocus, true);
+    element.removeEventListener("pointerdown", cancelWheelFocusGuard, true);
+    element.removeEventListener("mousedown", cancelWheelFocusGuard, true);
+  };
 }
 
 function registerSelectionCopyListener(currentTerm: Terminal): void {
@@ -1262,6 +1384,7 @@ export default memo(function XTermWrapper({
     let fitAddon: FitAddon | null = null;
     let removeCompositionGuard: (() => void) | null = null;
     let removeFocusSync: (() => void) | null = null;
+    let removeWheelFocusGuard: (() => void) | null = null;
     let logThrottle: ReturnType<typeof setTimeout> | null = null;
     let idleFlush: ReturnType<typeof setTimeout> | null = null;
     let backgroundScanThrottle: ReturnType<typeof setTimeout> | null = null;
@@ -1687,7 +1810,7 @@ export default memo(function XTermWrapper({
     };
 
     const canWritePendingBatches = (): boolean => {
-      return Boolean(term && !termDisposed && isContainerDisplayed() && hasWritableTerminalSize());
+      return Boolean(term && !termDisposed && isContainerPainted() && hasWritableTerminalSize());
     };
 
     const schedulePendingWriteDrain = (delay = 80): void => {
@@ -1695,13 +1818,14 @@ export default memo(function XTermWrapper({
       pendingDrainTimer = setTimeout(() => {
         pendingDrainTimer = null;
         refreshFrontendVisible();
-        if (term && fitAddon && isContainerDisplayed()) {
+        refreshTerminalPaintedVisible();
+        if (term && fitAddon && isContainerPainted()) {
           fitAndSyncResize(term, fitAddon, true);
         }
         if (pendingBatches.length === 0) return;
         if (canWritePendingBatches()) {
           void pumpTerminalWrites();
-        } else if (isContainerDisplayed()) {
+        } else if (isContainerPainted()) {
           schedulePendingWriteDrain(120);
         }
       }, delay);
@@ -1716,7 +1840,7 @@ export default memo(function XTermWrapper({
       if (pendingBatches.length > 0) {
         if (canWritePendingBatches()) {
           void pumpTerminalWrites();
-        } else if (isContainerDisplayed()) {
+        } else if (isContainerPainted()) {
           schedulePendingWriteDrain();
         }
       }
@@ -1820,7 +1944,9 @@ export default memo(function XTermWrapper({
             }
             void ackPendingBatch(pending);
             pendingBatches.unshift(pending);
-            schedulePendingWriteDrain();
+            if (isContainerPainted()) {
+              schedulePendingWriteDrain();
+            }
             break;
           }
           try {
@@ -1851,7 +1977,7 @@ export default memo(function XTermWrapper({
         writingBatch = false;
         if (pendingBatches.length > 0 && canWritePendingBatches()) {
           void pumpTerminalWrites();
-        } else if (pendingBatches.length > 0 && isContainerDisplayed()) {
+        } else if (pendingBatches.length > 0 && isContainerPainted()) {
           schedulePendingWriteDrain();
         }
       }
@@ -1868,7 +1994,9 @@ export default memo(function XTermWrapper({
         void pumpTerminalWrites();
       } else {
         void ackPendingBatch(pending);
-        schedulePendingWriteDrain();
+        if (isContainerPainted()) {
+          schedulePendingWriteDrain();
+        }
       }
     };
 
@@ -1926,7 +2054,10 @@ export default memo(function XTermWrapper({
       titleDisposable?.dispose();
 
       dataDisposable = currentTerm.onData((data) => {
-        const { data: inputData, hasNonWheelInput } = filterTerminalMouseInputSequences(data);
+        const { data: inputData, hasNonWheelInput } = filterWheelFocusInputSequences(
+          sessionId,
+          filterTerminalMouseInputSequences(data),
+        );
         if (!inputData) return;
         if (hasNonWheelInput) {
           activateTerminalPane(sessionId);
@@ -1945,7 +2076,10 @@ export default memo(function XTermWrapper({
       });
 
       binaryDisposable = currentTerm.onBinary((data) => {
-        const { data: inputData, hasNonWheelInput } = filterTerminalMouseInputSequences(data);
+        const { data: inputData, hasNonWheelInput } = filterWheelFocusInputSequences(
+          sessionId,
+          filterTerminalMouseInputSequences(data),
+        );
         if (!inputData) return;
         if (hasNonWheelInput) {
           activateTerminalPane(sessionId);
@@ -2005,6 +2139,8 @@ export default memo(function XTermWrapper({
       removeCompositionGuard = null;
       removeFocusSync?.();
       removeFocusSync = null;
+      removeWheelFocusGuard?.();
+      removeWheelFocusGuard = null;
       disposeSelectionCopyListener(term);
       unlistenExit?.();
       unlistenExit = null;
@@ -2043,6 +2179,7 @@ export default memo(function XTermWrapper({
       registerScrollListener(cached.term);
       registerCompositionGuard(cached.term, cached.fitAddon);
       registerSelectionCopyListener(cached.term);
+      removeWheelFocusGuard = registerTerminalWheelFocusGuard(cached.term, sessionId);
       removeFocusSync = registerTerminalFocusSync(cached.term, sessionId);
       const cachedBufferText = getTerminalBufferLines(sessionId, 80).join("\n");
       updateCodexOutputDetection(cachedBufferText);
@@ -2153,6 +2290,7 @@ export default memo(function XTermWrapper({
       registerScrollListener(term);
       registerCompositionGuard(term, fitAddon);
       registerSelectionCopyListener(term);
+      removeWheelFocusGuard = registerTerminalWheelFocusGuard(term, sessionId);
       removeFocusSync = registerTerminalFocusSync(term, sessionId);
       attachTerminalKeyHandler(term);
 

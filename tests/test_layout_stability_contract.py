@@ -314,10 +314,25 @@ def test_terminal_wheel_input_does_not_steal_keyboard_focus() -> None:
     terminal_pane = read_repo_text("src/components/workspace/TerminalPane.tsx")
 
     for snippet in [
-        "const { data: inputData, hasNonWheelInput } = filterTerminalMouseInputSequences(data);",
+        "function filterWheelFocusInputSequences(",
+        'return data.replace(/\\x1b\\[[IO]/g, "");',
+        "function hasTerminalUserInput(data: string): boolean",
+        "return stripTerminalFocusInputSequences(stripTerminalWheelInputSequences(data)).length > 0;",
+        "hasNonWheelInput: hasTerminalUserInput(inputData),",
+        "return wheelFocusRestore.sessionId === sessionId || wheelFocusRestore.previousSessionId === sessionId;",
+        "const { data: inputData, hasNonWheelInput } = filterWheelFocusInputSequences(",
+        "filterTerminalMouseInputSequences(data),",
         "if (hasNonWheelInput) {\n          activateTerminalPane(sessionId);\n          focusTerminalIfNeeded(currentTerm);\n        }",
         "chunkedWrite(sessionId, inputData);",
         "enqueueSessionWrite(sessionId, inputData);",
+        "function registerTerminalWheelFocusGuard(currentTerm: Terminal, sessionId: string): () => void",
+        "const activePaneId = useUiStore.getState().activePaneId;",
+        "if (!activePaneId || activePaneId === sessionId) {",
+        "markWheelFocusRestore(sessionId, activePaneId);",
+        "const previousSessionId = consumeWheelFocusRestore(sessionId);",
+        "restoreTerminalFocusAfterWheel(previousSessionId);",
+        "element.addEventListener(\"wheel\", guardWheelFocus, { capture: true, passive: true });",
+        "removeWheelFocusGuard = registerTerminalWheelFocusGuard(term, sessionId);",
     ]:
         assert_contains(xterm_wrapper, snippet, "src/components/terminal/XTermWrapper.tsx")
 
@@ -377,6 +392,7 @@ def test_terminal_batches_keep_backend_flowing_while_layout_is_unwritable() -> N
         "const isContainerPainted = (): boolean => {",
         "const hasWritableTerminalSize = (): boolean => {",
         "const canWritePendingBatches = (): boolean => {",
+        "return Boolean(term && !termDisposed && isContainerPainted() && hasWritableTerminalSize());",
         "setFrontendVisibleIfChanged(Boolean(term && !termDisposed && isContainerDisplayed()));",
         "const visible = Boolean(term && !termDisposed && isContainerPainted());",
         "const paintChanged = refreshTerminalPaintedVisible();",
@@ -397,6 +413,13 @@ def test_terminal_batches_keep_backend_flowing_while_layout_is_unwritable() -> N
     )[0]
     assert 'style.display === "none"' in displayed_fn
     assert "style.visibility" not in displayed_fn
+
+    can_write_fn = xterm_wrapper.split("const canWritePendingBatches = (): boolean => {", 1)[1].split(
+        "const schedulePendingWriteDrain =",
+        1,
+    )[0]
+    assert "isContainerPainted()" in can_write_fn
+    assert "isContainerDisplayed() && hasWritableTerminalSize()" not in can_write_fn
 
     painted_fn = xterm_wrapper.split("const isContainerPainted = (): boolean => {", 1)[1].split(
         "const hasWritableTerminalSize = (): boolean => {",

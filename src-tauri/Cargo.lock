@@ -2397,7 +2397,7 @@ dependencies = [
 
 [[package]]
 name = "mycmux-lite"
-version = "0.8.40-lite.1"
+version = "0.8.41-lite.1"
 dependencies = [
  "axum",
  "base64 0.22.1",
