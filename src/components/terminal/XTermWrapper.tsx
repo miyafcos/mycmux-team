@@ -258,6 +258,13 @@ function focusTerminalIfNeeded(currentTerm: Terminal): void {
   }
 }
 
+function activateTerminalPane(sessionId: string): void {
+  if (useUiStore.getState().activePaneId !== sessionId) {
+    useUiStore.getState().setActivePaneId(sessionId);
+  }
+  usePaneMetadataStore.getState().clearNotification(sessionId);
+}
+
 function fallbackCopyTextToClipboard(text: string, restoreFocus?: () => void): void {
   if (typeof document === "undefined") {
     restoreFocus?.();
@@ -358,14 +365,24 @@ function registerTerminalFocusSync(currentTerm: Terminal, sessionId: string): ()
   if (!element) return () => {};
 
   const syncFocusedTerminal = (): void => {
-    const ui = useUiStore.getState();
-    if (ui.activePaneId !== sessionId) {
-      ui.setActivePaneId(sessionId);
-    }
+    activateTerminalPane(sessionId);
   };
 
   element.addEventListener("focusin", syncFocusedTerminal);
   return () => element.removeEventListener("focusin", syncFocusedTerminal);
+}
+
+function registerTerminalWheelFocusSync(currentTerm: Terminal, sessionId: string): () => void {
+  const element = currentTerm.element;
+  if (!element) return () => {};
+
+  const syncWheelTarget = (): void => {
+    activateTerminalPane(sessionId);
+    focusTerminalIfNeeded(currentTerm);
+  };
+
+  element.addEventListener("wheel", syncWheelTarget, { capture: true, passive: true });
+  return () => element.removeEventListener("wheel", syncWheelTarget, { capture: true });
 }
 
 function registerSelectionCopyListener(currentTerm: Terminal): void {
@@ -1253,6 +1270,7 @@ export default memo(function XTermWrapper({
     let fitAddon: FitAddon | null = null;
     let removeCompositionGuard: (() => void) | null = null;
     let removeFocusSync: (() => void) | null = null;
+    let removeWheelFocusSync: (() => void) | null = null;
     let logThrottle: ReturnType<typeof setTimeout> | null = null;
     let idleFlush: ReturnType<typeof setTimeout> | null = null;
     let backgroundScanThrottle: ReturnType<typeof setTimeout> | null = null;
@@ -1830,10 +1848,7 @@ export default memo(function XTermWrapper({
       dataDisposable = currentTerm.onData((data) => {
         const { data: inputData, hasNonWheelInput } = filterTerminalMouseInputSequences(data);
         if (!inputData) return;
-        if (useUiStore.getState().activePaneId !== sessionId) {
-          useUiStore.getState().setActivePaneId(sessionId);
-        }
-        usePaneMetadataStore.getState().clearNotification(sessionId);
+        activateTerminalPane(sessionId);
         focusTerminalIfNeeded(currentTerm);
         chunkedWrite(sessionId, inputData);
         if (hasNonWheelInput) {
@@ -1850,10 +1865,7 @@ export default memo(function XTermWrapper({
       binaryDisposable = currentTerm.onBinary((data) => {
         const { data: inputData } = filterTerminalMouseInputSequences(data);
         if (!inputData) return;
-        if (useUiStore.getState().activePaneId !== sessionId) {
-          useUiStore.getState().setActivePaneId(sessionId);
-        }
-        usePaneMetadataStore.getState().clearNotification(sessionId);
+        activateTerminalPane(sessionId);
         focusTerminalIfNeeded(currentTerm);
         enqueueSessionWrite(sessionId, inputData);
       });
@@ -1908,6 +1920,8 @@ export default memo(function XTermWrapper({
       removeCompositionGuard = null;
       removeFocusSync?.();
       removeFocusSync = null;
+      removeWheelFocusSync?.();
+      removeWheelFocusSync = null;
       disposeSelectionCopyListener(term);
       unlistenExit?.();
       unlistenExit = null;
@@ -1947,6 +1961,7 @@ export default memo(function XTermWrapper({
       registerCompositionGuard(cached.term, cached.fitAddon);
       registerSelectionCopyListener(cached.term);
       removeFocusSync = registerTerminalFocusSync(cached.term, sessionId);
+      removeWheelFocusSync = registerTerminalWheelFocusSync(cached.term, sessionId);
       const cachedBufferText = getTerminalBufferLines(sessionId, 80).join("\n");
       updateCodexOutputDetection(cachedBufferText);
       attachTerminalKeyHandler(cached.term);
@@ -2055,6 +2070,7 @@ export default memo(function XTermWrapper({
       registerCompositionGuard(term, fitAddon);
       registerSelectionCopyListener(term);
       removeFocusSync = registerTerminalFocusSync(term, sessionId);
+      removeWheelFocusSync = registerTerminalWheelFocusSync(term, sessionId);
       attachTerminalKeyHandler(term);
 
       // OSC 9988: mycmux HTML sidetab. Payload = file URL or absolute path.
