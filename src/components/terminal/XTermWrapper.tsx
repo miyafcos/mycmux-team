@@ -246,6 +246,18 @@ function focusTerminalSoon(currentTerm: Terminal): void {
   setTimeout(focusTerminal, 0);
 }
 
+function terminalContainsActiveElement(currentTerm: Terminal): boolean {
+  const element = currentTerm.element;
+  const activeElement = element?.ownerDocument.activeElement;
+  return Boolean(element && activeElement && element.contains(activeElement));
+}
+
+function focusTerminalIfNeeded(currentTerm: Terminal): void {
+  if (!terminalContainsActiveElement(currentTerm)) {
+    focusTerminalSoon(currentTerm);
+  }
+}
+
 function fallbackCopyTextToClipboard(text: string, restoreFocus?: () => void): void {
   if (typeof document === "undefined") {
     restoreFocus?.();
@@ -293,50 +305,51 @@ function disposeSelectionCopyListener(currentTerm: Terminal | null | undefined):
   terminalSelectionCopyListeners.delete(currentTerm);
 }
 
-function stripTerminalMouseInputSequences(data: string): string {
+type FilteredTerminalInput = {
+  data: string;
+  hasNonWheelInput: boolean;
+};
+
+function isTerminalWheelMouseButton(button: number): boolean {
+  return Number.isFinite(button) && (button & 64) === 64;
+}
+
+function stripNonWheelTerminalMouseInputSequences(data: string): string {
   return data
     // SGR mouse reporting: ESC [ < button ; col ; row M/m
-    .replace(/\x1b\[<\d+(?:;\d+){2}[mM]/g, "")
+    .replace(/\x1b\[<(\d+)(;\d+){2}[mM]/g, (sequence, button: string) =>
+      isTerminalWheelMouseButton(Number(button)) ? sequence : "",
+    )
     // urxvt-style mouse reporting: ESC [ button ; col ; row M/m
-    .replace(/\x1b\[\d+(?:;\d+){2}[mM]/g, "")
+    .replace(/\x1b\[(\d+)(;\d+){2}[mM]/g, (sequence, button: string) =>
+      isTerminalWheelMouseButton(Number(button)) ? sequence : "",
+    )
     // X10 / normal tracking: ESC [ M followed by three encoded bytes
-    .replace(/\x1b\[M[\s\S]{3}/g, "");
+    .replace(/\x1b\[M([\s\S])([\s\S])([\s\S])/g, (sequence, button: string) => {
+      const buttonCode = button.charCodeAt(0) - 32;
+      return isTerminalWheelMouseButton(buttonCode) ? sequence : "";
+    });
 }
 
-const WHEEL_DELTA_LINE = 1;
-const WHEEL_DELTA_PAGE = 2;
-
-function wheelDeltaToTerminalLines(event: WheelEvent, rows: number): number {
-  const rawDelta = event.deltaY;
-  if (rawDelta === 0) return 0;
-
-  const lines = event.deltaMode === WHEEL_DELTA_PAGE
-    ? rawDelta * Math.max(1, rows)
-    : event.deltaMode === WHEEL_DELTA_LINE
-      ? rawDelta
-      : rawDelta / 40;
-  if (!Number.isFinite(lines) || lines === 0) return 0;
-
-  const direction = Math.sign(lines);
-  return direction * Math.max(1, Math.round(Math.abs(lines)));
+function stripTerminalWheelInputSequences(data: string): string {
+  return data
+    .replace(/\x1b\[<(\d+)(;\d+){2}[mM]/g, (sequence, button: string) =>
+      isTerminalWheelMouseButton(Number(button)) ? "" : sequence,
+    )
+    .replace(/\x1b\[(\d+)(;\d+){2}[mM]/g, (sequence, button: string) =>
+      isTerminalWheelMouseButton(Number(button)) ? "" : sequence,
+    )
+    .replace(/\x1b\[M([\s\S])([\s\S])([\s\S])/g, (sequence, button: string) => {
+      const buttonCode = button.charCodeAt(0) - 32;
+      return isTerminalWheelMouseButton(buttonCode) ? "" : sequence;
+    });
 }
 
-function attachTerminalWheelScroll(currentTerm: Terminal): () => void {
-  const handleWheel = (event: WheelEvent): boolean => {
-    if (event.defaultPrevented || event.ctrlKey || event.metaKey) return true;
-    const lines = wheelDeltaToTerminalLines(event, currentTerm.rows);
-    if (lines === 0) return true;
-
-    event.preventDefault();
-    event.stopPropagation();
-    event.stopImmediatePropagation();
-    currentTerm.scrollLines(lines);
-    return false;
-  };
-
-  currentTerm.attachCustomWheelEventHandler(handleWheel);
-  return () => {
-    currentTerm.attachCustomWheelEventHandler(() => true);
+function filterTerminalMouseInputSequences(data: string): FilteredTerminalInput {
+  const inputData = stripNonWheelTerminalMouseInputSequences(data);
+  return {
+    data: inputData,
+    hasNonWheelInput: stripTerminalWheelInputSequences(inputData).length > 0,
   };
 }
 
@@ -1239,7 +1252,6 @@ export default memo(function XTermWrapper({
     let term: Terminal | null = null;
     let fitAddon: FitAddon | null = null;
     let removeCompositionGuard: (() => void) | null = null;
-    let removeWheelScrollGuard: (() => void) | null = null;
     let removeFocusSync: (() => void) | null = null;
     let logThrottle: ReturnType<typeof setTimeout> | null = null;
     let idleFlush: ReturnType<typeof setTimeout> | null = null;
@@ -1816,29 +1828,33 @@ export default memo(function XTermWrapper({
       titleDisposable?.dispose();
 
       dataDisposable = currentTerm.onData((data) => {
-        const inputData = stripTerminalMouseInputSequences(data);
+        const { data: inputData, hasNonWheelInput } = filterTerminalMouseInputSequences(data);
         if (!inputData) return;
         if (useUiStore.getState().activePaneId !== sessionId) {
           useUiStore.getState().setActivePaneId(sessionId);
         }
         usePaneMetadataStore.getState().clearNotification(sessionId);
+        focusTerminalIfNeeded(currentTerm);
         chunkedWrite(sessionId, inputData);
-        try {
-          window.dispatchEvent(
-            new CustomEvent("mycmux:keystroke", { detail: { sessionId, data: inputData } }),
-          );
-        } catch {
-          // ignore dispatch failures; buddy is non-critical
+        if (hasNonWheelInput) {
+          try {
+            window.dispatchEvent(
+              new CustomEvent("mycmux:keystroke", { detail: { sessionId, data: inputData } }),
+            );
+          } catch {
+            // ignore dispatch failures; buddy is non-critical
+          }
         }
       });
 
       binaryDisposable = currentTerm.onBinary((data) => {
-        const inputData = stripTerminalMouseInputSequences(data);
+        const { data: inputData } = filterTerminalMouseInputSequences(data);
         if (!inputData) return;
         if (useUiStore.getState().activePaneId !== sessionId) {
           useUiStore.getState().setActivePaneId(sessionId);
         }
         usePaneMetadataStore.getState().clearNotification(sessionId);
+        focusTerminalIfNeeded(currentTerm);
         enqueueSessionWrite(sessionId, inputData);
       });
 
@@ -1890,8 +1906,6 @@ export default memo(function XTermWrapper({
       titleDisposable = null;
       removeCompositionGuard?.();
       removeCompositionGuard = null;
-      removeWheelScrollGuard?.();
-      removeWheelScrollGuard = null;
       removeFocusSync?.();
       removeFocusSync = null;
       disposeSelectionCopyListener(term);
@@ -1932,7 +1946,6 @@ export default memo(function XTermWrapper({
       registerScrollListener(cached.term);
       registerCompositionGuard(cached.term, cached.fitAddon);
       registerSelectionCopyListener(cached.term);
-      removeWheelScrollGuard = attachTerminalWheelScroll(cached.term);
       removeFocusSync = registerTerminalFocusSync(cached.term, sessionId);
       const cachedBufferText = getTerminalBufferLines(sessionId, 80).join("\n");
       updateCodexOutputDetection(cachedBufferText);
@@ -2041,7 +2054,6 @@ export default memo(function XTermWrapper({
       registerScrollListener(term);
       registerCompositionGuard(term, fitAddon);
       registerSelectionCopyListener(term);
-      removeWheelScrollGuard = attachTerminalWheelScroll(term);
       removeFocusSync = registerTerminalFocusSync(term, sessionId);
       attachTerminalKeyHandler(term);
 
