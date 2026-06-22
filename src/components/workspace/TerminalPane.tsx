@@ -149,21 +149,63 @@ function focusTerminalElement(paneEl: HTMLElement | null | undefined): boolean {
   return false;
 }
 
-function scheduleTerminalFocus(resolvePane: () => HTMLElement | null | undefined): void {
+type TerminalFocusOptions = {
+  requireActivePane?: boolean;
+};
+
+function getPaneSessionIds(paneEl: HTMLElement | null | undefined): string[] {
+  const root = paneEl?.closest<HTMLElement>("[data-dnd-pane-id]") ?? paneEl;
+  const ids = root?.getAttribute("data-pane-session-ids");
+  return ids ? ids.split(/\s+/).filter(Boolean) : [];
+}
+
+function paneElementOwnsSession(paneEl: HTMLElement | null | undefined, sessionId: string | null | undefined): boolean {
+  if (!paneEl || !sessionId) return false;
+  const root = paneEl.closest<HTMLElement>("[data-dnd-pane-id]") ?? paneEl;
+  return root.getAttribute("data-session-id") === sessionId || getPaneSessionIds(root).includes(sessionId);
+}
+
+function paneElementIsCurrentActiveTarget(paneEl: HTMLElement | null | undefined): boolean {
+  return paneElementOwnsSession(paneEl, useUiStore.getState().activePaneId);
+}
+
+function queryPaneElementBySessionId(sessionId: string | null | undefined): HTMLElement | null {
+  if (!sessionId) return null;
+  const direct = document.querySelector<HTMLElement>(`[data-session-id="${sessionId}"]`);
+  if (direct) return direct;
+  for (const candidate of document.querySelectorAll<HTMLElement>("[data-pane-session-ids]")) {
+    if (getPaneSessionIds(candidate).includes(sessionId)) return candidate;
+  }
+  return null;
+}
+
+function scheduleTerminalFocus(
+  resolvePane: () => HTMLElement | null | undefined,
+  options: TerminalFocusOptions = {},
+): void {
   let attempts = 0;
   const restoreFocus = (): void => {
     attempts += 1;
-    const didFocusTerminal = focusTerminalElement(resolvePane());
+    const retry = (): void => {
+      if (attempts >= 8) return;
+      window.setTimeout(() => {
+        if (typeof window.requestAnimationFrame === "function") {
+          window.requestAnimationFrame(restoreFocus);
+          return;
+        }
+        restoreFocus();
+      }, attempts < 3 ? 16 : 50);
+    };
+    const paneEl = resolvePane();
+    if (options.requireActivePane && !paneElementIsCurrentActiveTarget(paneEl)) {
+      retry();
+      return;
+    }
+    const didFocusTerminal = focusTerminalElement(paneEl);
     if (didFocusTerminal || attempts >= 8) {
       return;
     }
-    window.setTimeout(() => {
-      if (typeof window.requestAnimationFrame === "function") {
-        window.requestAnimationFrame(restoreFocus);
-        return;
-      }
-      restoreFocus();
-    }, attempts < 3 ? 16 : 50);
+    retry();
   };
 
   window.setTimeout(() => {
@@ -176,20 +218,21 @@ function scheduleTerminalFocus(resolvePane: () => HTMLElement | null | undefined
 }
 
 function focusTerminalInPaneSoon(paneId: string): void {
-  scheduleTerminalFocus(() => document.querySelector<HTMLElement>(`[data-dnd-pane-id="${paneId}"]`));
+  scheduleTerminalFocus(
+    () => document.querySelector<HTMLElement>(`[data-dnd-pane-id="${paneId}"]`),
+    { requireActivePane: true },
+  );
 }
 
 function focusActiveTerminalSoon(fallbackPaneId: string): void {
   scheduleTerminalFocus(() => {
     const activePaneId = useUiStore.getState().activePaneId;
-    const activePaneEl = activePaneId
-      ? document.querySelector<HTMLElement>(`[data-session-id="${activePaneId}"]`)
-      : null;
+    const activePaneEl = queryPaneElementBySessionId(activePaneId);
     if (activePaneEl) {
       return activePaneEl;
     }
     return document.querySelector<HTMLElement>(`[data-dnd-pane-id="${fallbackPaneId}"]`);
-  });
+  }, { requireActivePane: true });
 }
 
 const PANE_CLICK_ACTIVATE_MAX_DISTANCE_PX = 5;
@@ -480,6 +523,7 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
   return (
     <div
       data-session-id={pane.sessionId}
+      data-pane-session-ids={pane.tabs.map((tab) => tab.sessionId).join(" ")}
       data-dnd-workspace-id={workspaceId}
       data-dnd-pane-id={pane.id}
       data-active-pane={isActive && !isZoomed ? "true" : undefined}

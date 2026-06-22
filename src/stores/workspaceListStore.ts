@@ -266,7 +266,9 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
     const workspace = get().workspaces.find((w) => w.id === id);
     const uiState = useUiStore.getState();
     const currentActivePaneId = uiState.activePaneId;
-    const nextActivePaneId = workspace?.panes.find((pane) => pane.sessionId === currentActivePaneId)?.sessionId
+    const nextActivePaneId = workspace?.panes.find((pane) =>
+      pane.sessionId === currentActivePaneId || pane.tabs.some((tab) => tab.sessionId === currentActivePaneId),
+    )?.sessionId
       ?? workspace?.panes[0]?.sessionId
       ?? null;
     set({ activeWorkspaceId: id });

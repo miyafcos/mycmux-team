@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "mycmux-lite",
-  "version": "0.8.37-lite.1",
+  "version": "0.8.38-lite.1",
   "identifier": "com.miyazaki.mycmux-lite",
   "build": {
     "frontendDist": "../dist",
@@ -73,7 +73,7 @@
         "silent": true
       },
       "wix": {
-        "version": "0.8.37.1"
+        "version": "0.8.38.1"
       }
     }
   }

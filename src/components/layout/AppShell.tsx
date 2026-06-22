@@ -628,6 +628,7 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
                 remaining[0].sessionId;
               setActivePaneId(neighbor);
               setTimeout(() => {
+                if (useUiStore.getState().activePaneId !== neighbor) return;
                 const el = document.querySelector<HTMLElement>(`[data-session-id="${neighbor}"]`);
                 focusXtermInElement(el);
               }, 0);
@@ -685,6 +686,7 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
           
           // Focus the xterm textarea inside the pane for immediate typing
           setTimeout(() => {
+            if (useUiStore.getState().activePaneId !== targetSessionId) return;
             const el = document.querySelector<HTMLElement>(`[data-session-id="${targetSessionId}"]`);
             focusXtermInElement(el);
           }, 0);

@@ -94,6 +94,7 @@ function focusSessionSoon(sessionId: string | null): void {
   let attempts = 0;
   const restoreFocus = (): void => {
     attempts += 1;
+    if (useUiStore.getState().activePaneId !== sessionId) return;
     const paneElement = document.querySelector<HTMLElement>(`[data-session-id="${sessionId}"]`);
     const textarea = paneElement?.querySelector<HTMLTextAreaElement>(".xterm-helper-textarea");
     if (textarea) {

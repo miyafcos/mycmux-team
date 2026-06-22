@@ -246,6 +246,14 @@ function focusTerminalSoon(currentTerm: Terminal): void {
   setTimeout(focusTerminal, 0);
 }
 
+function focusTerminalNow(currentTerm: Terminal): void {
+  try {
+    currentTerm.focus();
+  } catch {
+    // Terminal may have been disposed between the DOM event and focus.
+  }
+}
+
 function terminalContainsActiveElement(currentTerm: Terminal): boolean {
   const element = currentTerm.element;
   const activeElement = element?.ownerDocument.activeElement;
@@ -255,6 +263,12 @@ function terminalContainsActiveElement(currentTerm: Terminal): boolean {
 function focusTerminalIfNeeded(currentTerm: Terminal): void {
   if (!terminalContainsActiveElement(currentTerm)) {
     focusTerminalSoon(currentTerm);
+  }
+}
+
+function focusTerminalNowIfNeeded(currentTerm: Terminal): void {
+  if (!terminalContainsActiveElement(currentTerm)) {
+    focusTerminalNow(currentTerm);
   }
 }
 
@@ -375,14 +389,18 @@ function registerTerminalFocusSync(currentTerm: Terminal, sessionId: string): ()
 function registerTerminalWheelFocusSync(currentTerm: Terminal, sessionId: string): () => void {
   const element = currentTerm.element;
   if (!element) return () => {};
+  const ownerDocument = element.ownerDocument;
 
-  const syncWheelTarget = (): void => {
+  const syncWheelTarget = (event: WheelEvent): void => {
+    const target = event.target;
+    if (!element.isConnected || !(target instanceof Node) || !element.contains(target)) return;
     activateTerminalPane(sessionId);
-    focusTerminalIfNeeded(currentTerm);
+    focusTerminalNowIfNeeded(currentTerm);
   };
 
-  element.addEventListener("wheel", syncWheelTarget, { capture: true, passive: true });
-  return () => element.removeEventListener("wheel", syncWheelTarget, { capture: true });
+  // Document capture runs before xterm's own wheel listeners on terminal nodes.
+  ownerDocument.addEventListener("wheel", syncWheelTarget, { capture: true, passive: true });
+  return () => ownerDocument.removeEventListener("wheel", syncWheelTarget, { capture: true });
 }
 
 function registerSelectionCopyListener(currentTerm: Terminal): void {

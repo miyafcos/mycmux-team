@@ -34,9 +34,15 @@ export const useUiStore = create<UiState>((set) => ({
   setRightSidebarCollapsed: (collapsed) => set({ rightSidebarCollapsed: collapsed }),
   setIsKeybindingsOpen: (open) => set({ isKeybindingsOpen: open }),
   setActivePaneId: (id) =>
-    set((state) => ({
-      activePaneId: id,
-      lastActivePaneId: id ?? state.lastActivePaneId,
-    })),
+    set((state) => {
+      const nextLastActivePaneId = id ?? state.lastActivePaneId;
+      if (state.activePaneId === id && state.lastActivePaneId === nextLastActivePaneId) {
+        return state;
+      }
+      return {
+        activePaneId: id,
+        lastActivePaneId: nextLastActivePaneId,
+      };
+    }),
   setZoomedPaneId: (id) => set({ zoomedPaneId: id }),
 }));
