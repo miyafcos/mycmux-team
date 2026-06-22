@@ -1,7 +1,7 @@
 {
   "name": "mycmux-lite",
   "private": false,
-  "version": "0.8.41-lite.1",
+  "version": "0.8.42-lite.1",
   "description": "Team-shared terminal workspace (lite edition of mycmux)",
   "repository": {
     "type": "git",
