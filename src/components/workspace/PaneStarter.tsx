@@ -8,7 +8,9 @@ const START_OPTIONS = [
   { id: "claude-resume", label: "7. Claude Code (resume)" },
   { id: "codex-resume", label: "8. Codex (resume)" },
   { id: "claude-codex-resume", label: "9. claude-codex (resume)" },
-  { id: "custom", label: "10. Custom..." },
+  { id: "codex-fugu-ultra", label: "10. Codex (Fugu Ultra)" },
+  { id: "claude-codex-fugu", label: "11. claude-codex (Fugu)" },
+  { id: "custom", label: "12. Custom..." },
 ] as const;
 
 type StartOptionId = typeof START_OPTIONS[number]["id"] | "shell";

@@ -5,6 +5,17 @@ function Test-MycmuxCommand {
   return [bool](Get-Command $Name -ErrorAction SilentlyContinue)
 }
 
+function Import-MycmuxUserEnvIfMissing {
+  param([Parameter(Mandatory = $true)][string]$Name)
+  if ([Environment]::GetEnvironmentVariable($Name, "Process")) {
+    return
+  }
+  $value = [Environment]::GetEnvironmentVariable($Name, "User")
+  if ($value) {
+    [Environment]::SetEnvironmentVariable($Name, $value, "Process")
+  }
+}
+
 function New-MycmuxOption {
   param(
     [Parameter(Mandatory = $true)][string]$Label,
@@ -28,6 +39,8 @@ $Options = @(
   New-MycmuxOption "Claude Code (resume)" @("claude", "--allow-dangerously-skip-permissions", "--permission-mode", "auto", "--resume") "claude"
   New-MycmuxOption "Codex (resume)" @("codex", "resume", "--no-alt-screen") "codex"
   New-MycmuxOption "claude-codex (resume)" @("claude-codex", "--resume") "claude-codex"
+  New-MycmuxOption "Codex (Fugu Ultra)" @("codex", "--no-alt-screen", "--profile", "fugu-ultra") "codex"
+  New-MycmuxOption "claude-codex (Fugu)" @("claude-codex", "--backend", "fugu") "claude-codex"
   New-MycmuxOption "Custom..." @("__custom__") $null
 )
 
@@ -41,7 +54,9 @@ $LaunchTargets = @{
   "claude-resume" = $Options[6]
   "codex-resume" = $Options[7]
   "claude-codex-resume" = $Options[8]
-  "custom" = $Options[9]
+  "codex-fugu-ultra" = $Options[9]
+  "claude-codex-fugu" = $Options[10]
+  "custom" = $Options[11]
 }
 
 function Invoke-MycmuxCustomCommand {
@@ -79,6 +94,9 @@ function Invoke-MycmuxOption {
 
   Write-Host "  Starting $($Option.Label)..."
   Write-Host ""
+  if (($Option.Command -join " ") -like "*fugu*") {
+    Import-MycmuxUserEnvIfMissing "FUGU_API_KEY"
+  }
   $exe = $Option.Command[0]
   $args = @()
   if ($Option.Command.Count -gt 1) {
@@ -136,9 +154,16 @@ while ($true) {
     return
   }
 
-  if ($key.KeyChar -eq "/" -or $key.KeyChar -eq "0") {
+  if ($key.KeyChar -eq "/") {
     $selected = $Options.Count - 1
     break
+  }
+
+  if ($key.KeyChar -eq "0") {
+    if ($Options.Count -ge 10) {
+      $selected = 9
+      break
+    }
   }
 
   if ($key.KeyChar -match "^[1-9]$") {

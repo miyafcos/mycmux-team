@@ -17,6 +17,8 @@ EXPECTED_START_IDS = [
     "claude-resume",
     "codex-resume",
     "claude-codex-resume",
+    "codex-fugu-ultra",
+    "claude-codex-fugu",
     "custom",
 ]
 
@@ -30,6 +32,8 @@ EXPECTED_LAUNCHER_OPTIONS = [
     "Claude Code (resume)",
     "Codex (resume)",
     "claude-codex (resume)",
+    "Codex (Fugu Ultra)",
+    "claude-codex (Fugu)",
     "Custom...",
 ]
 
@@ -43,6 +47,8 @@ EXPECTED_LAUNCHER_COMMANDS = [
     "claude --allow-dangerously-skip-permissions --permission-mode auto --resume",
     "codex resume --no-alt-screen",
     "claude-codex --resume",
+    "codex --no-alt-screen --profile fugu-ultra",
+    "claude-codex --backend fugu",
     "__custom__",
 ]
 
@@ -70,10 +76,15 @@ def assert_contains(text: str, snippet: str, source: str) -> None:
 def test_launcher_order_matches_current_contract() -> None:
     pane_starter = read_repo_text("src/components/workspace/PaneStarter.tsx")
     launcher = read_repo_text("src-tauri/src/launcher.sh")
+    launcher_ps1 = read_repo_text("src-tauri/src/launcher.ps1")
 
     assert extract_ts_string_array(pane_starter, "const START_OPTIONS") == EXPECTED_START_IDS
     assert extract_shell_array(launcher, "options") == EXPECTED_LAUNCHER_OPTIONS
     assert extract_shell_array(launcher, "commands") == EXPECTED_LAUNCHER_COMMANDS
+    assert_contains(launcher, "__ensure_fugu_env", "src-tauri/src/launcher.sh")
+    assert_contains(launcher, "FUGU_API_KEY", "src-tauri/src/launcher.sh")
+    assert_contains(launcher_ps1, "Import-MycmuxUserEnvIfMissing", "src-tauri/src/launcher.ps1")
+    assert_contains(launcher_ps1, "FUGU_API_KEY", "src-tauri/src/launcher.ps1")
 
 
 def test_ctrl_p_history_palette_route_remains_wired() -> None:

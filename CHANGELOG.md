@@ -4,6 +4,10 @@
 
 ---
 
+## [0.8.50-lite.1] - 2026-06-24
+- Fix: Sync the lite launcher menu with personal mycmux so lite no longer overwrites C:\Users\miyaz\.mycmux\bin\launcher.ps1 / launcher.sh with the older menu.
+- Added: Codex (Fugu Ultra) and claude-codex (Fugu) entries to the lite pane starter and terminal launcher contract.
+
 ## [0.8.49-lite.1] - 2026-06-24
 - Fix: Keep pane tab rename edit mode stable after double-click by treating the following click as rename instead of tab selection.
 - Sync: Matches personal 0.8.49 pane rename behavior while retaining the lite terminal wheel scrollback fixes.

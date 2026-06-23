@@ -184,6 +184,17 @@ __prompt_custom_command() {
   IFS= read -ru "$__CMUX_MENU_FD" cmd
 }
 
+__ensure_fugu_env() {
+  [ -n "${FUGU_API_KEY:-}" ] && return
+  if command -v powershell.exe >/dev/null 2>&1; then
+    local value
+    value=$(powershell.exe -NoLogo -NoProfile -Command "[Environment]::GetEnvironmentVariable('FUGU_API_KEY', 'User')" 2>/dev/null | tr -d '\r')
+    if [ -n "$value" ]; then
+      export FUGU_API_KEY="$value"
+    fi
+  fi
+}
+
 cmd=""
 
 if [ -n "$MYCMUX_HANDOFF" ]; then
@@ -277,6 +288,12 @@ if [ -n "$MYCMUX_LAUNCH_TARGET" ]; then
     claude-codex-dangerous)
       cmd="claude-codex --dangerously-skip-permissions --permission-mode bypassPermissions"
       ;;
+    codex-fugu-ultra)
+      cmd="codex --no-alt-screen --profile fugu-ultra"
+      ;;
+    claude-codex-fugu)
+      cmd="claude-codex --backend fugu"
+      ;;
     custom)
       cmd="__custom__"
       ;;
@@ -341,6 +358,8 @@ if [ -z "$cmd" ]; then
     "Claude Code (resume)"
     "Codex (resume)"
     "claude-codex (resume)"
+    "Codex (Fugu Ultra)"
+    "claude-codex (Fugu)"
     "Custom..."
   )
 
@@ -354,6 +373,8 @@ if [ -z "$cmd" ]; then
     "claude --allow-dangerously-skip-permissions --permission-mode auto --resume"
     "codex resume --no-alt-screen"
     "claude-codex --resume"
+    "codex --no-alt-screen --profile fugu-ultra"
+    "claude-codex --backend fugu"
     "__custom__"
   )
 
@@ -398,8 +419,13 @@ if [ -z "$cmd" ]; then
       k|K) ((selected--)); [ $selected -lt 0 ] && selected=$((count - 1)) ;;
       j|J) ((selected++)); [ $selected -ge $count ] && selected=0 ;;
       1)
-        if IFS= read -rsn1 -t 0.15 -u "$__CMUX_MENU_FD" k2 && [ "$k2" = "0" ]; then
-          selected=9
+        if IFS= read -rsn1 -t 0.15 -u "$__CMUX_MENU_FD" k2; then
+          case "$k2" in
+            0) selected=9 ;;
+            1) selected=10 ;;
+            2) selected=11 ;;
+            *) selected=0 ;;
+          esac
         else
           selected=0
         fi
@@ -413,7 +439,8 @@ if [ -z "$cmd" ]; then
       7) selected=6; break ;;
       8) selected=7; break ;;
       9) selected=8; break ;;
-      0|/) selected=9; break ;;
+      0) selected=9; break ;;
+      /) selected=11; break ;;
       '') break ;;
       q|Q) tput cnorm >&$__CMUX_MENU_FD 2>/dev/null; return 0 2>/dev/null || exit 0 ;;
     esac
@@ -433,6 +460,9 @@ if [ "$cmd" = "__custom__" ]; then
 fi
 
 if [ -n "$cmd" ]; then
+  if [[ "$cmd" == *"fugu"* ]]; then
+    __ensure_fugu_env
+  fi
   if [[ "$cmd" == claude\ * ]]; then
     __trust_claude_cwd
   fi
