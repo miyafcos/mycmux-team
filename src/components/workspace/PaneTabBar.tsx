@@ -102,6 +102,8 @@ const tabRenameInputStyle: CSSProperties = {
   flex: 1,
   width: "100%",
   minWidth: 0,
+  userSelect: "text",
+  WebkitUserSelect: "text",
 };
 
 const paneTabContextMenuStyle: CSSProperties = {
@@ -200,6 +202,7 @@ export default memo(function PaneTabBar({
   const [editValue, setEditValue] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
   const skipNextBlurCommitRef = useRef(false);
+  const suppressNextTabClickRef = useRef(false);
   const [contextMenu, setContextMenu] = useState<{ tabId: string; x: number; y: number } | null>(null);
   const contextMenuRef = useRef<HTMLDivElement>(null);
 
@@ -258,6 +261,13 @@ export default memo(function PaneTabBar({
     skipNextBlurCommitRef.current = false;
     setEditingTabId(tabId);
     setEditValue(label);
+  }, []);
+
+  const suppressNextTabClick = useCallback(() => {
+    suppressNextTabClickRef.current = true;
+    window.setTimeout(() => {
+      suppressNextTabClickRef.current = false;
+    }, 0);
   }, []);
 
   const commitTabLabel = useCallback((tab: PaneTab) => {
@@ -337,6 +347,13 @@ export default memo(function PaneTabBar({
               key={tab.id}
               onPointerDown={(event) => {
                 if (isEditingTab || event.button !== 0) return;
+                if (event.detail >= 2) {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  suppressNextTabClick();
+                  startEditingTab(tab.id, label);
+                  return;
+                }
                 beginPointerDrag(event, {
                   kind: "tab",
                   workspaceId,
@@ -346,7 +363,9 @@ export default memo(function PaneTabBar({
                 });
               }}
               onDoubleClick={(e) => {
+                e.preventDefault();
                 e.stopPropagation();
+                suppressNextTabClick();
                 startEditingTab(tab.id, label);
               }}
               onContextMenu={(e) => {
@@ -355,7 +374,7 @@ export default memo(function PaneTabBar({
                 setContextMenu({ tabId: tab.id, x: e.clientX, y: e.clientY });
               }}
               onClick={(event) => {
-                if (shouldSuppressClick()) {
+                if (isEditingTab || suppressNextTabClickRef.current || shouldSuppressClick()) {
                   event.preventDefault();
                   event.stopPropagation();
                   return;
@@ -397,6 +416,8 @@ export default memo(function PaneTabBar({
                   ref={inputRef}
                   value={editValue}
                   onChange={(e) => setEditValue(e.target.value)}
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onMouseDown={(e) => e.stopPropagation()}
                   onBlur={() => {
                     if (skipNextBlurCommitRef.current) {
                       skipNextBlurCommitRef.current = false;
@@ -418,6 +439,7 @@ export default memo(function PaneTabBar({
                     }
                   }}
                   onClick={(e) => e.stopPropagation()}
+                  onDoubleClick={(e) => e.stopPropagation()}
                   style={tabRenameInputStyle}
                 />
               ) : (

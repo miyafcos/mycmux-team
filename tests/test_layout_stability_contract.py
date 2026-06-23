@@ -214,6 +214,13 @@ def test_selection_copy_listener_survives_cached_terminal_remounts() -> None:
         "registerSelectionCopyListener(cached.term, sessionId);",
         "registerSelectionCopyListener(term, sessionId);",
         "disposeSelectionCopyListener(term);",
+        'const TERMINAL_MOUSE_MODE_PARAMS = new Set(["9", "1000", "1002", "1003", "1005", "1006", "1007", "1015", "1016"]);',
+        "function stripTerminalMouseModeControlSequences(data: string, sessionId?: string): string",
+        "const TERMINAL_MOUSE_MODE_CONTROL_PARTIAL_RE = /\\x1b(?:\\[\\??[0-9;]*)?$/;",
+        "function stripTerminalMouseModeControlSequencesForSession(sessionId: string, data: string): string",
+        "const pendingTail = terminalMouseModeOutputTailBySession.get(sessionId) ?? \"\";",
+        "const displayText = stripTerminalMouseModeControlSequencesForSession(sessionId, decodedText);",
+        "replayTerm.write(`${stripTerminalMouseModeControlSequences(displayReplay)}\\r\\n`, () => resolve());",
     ]:
         assert_contains(xterm_wrapper, snippet, "src/components/terminal/XTermWrapper.tsx")
 
@@ -325,6 +332,29 @@ def test_active_pane_id_follows_surviving_tab_after_close() -> None:
         assert_contains(workspace_layout_store, snippet, "src/stores/workspaceLayoutStore.ts")
 
 
+def test_pane_tab_rename_double_click_does_not_steal_focus() -> None:
+    pane_tab_bar = read_repo_text("src/components/workspace/PaneTabBar.tsx")
+
+    for snippet in [
+        "const suppressNextTabClickRef = useRef(false);",
+        "const suppressNextTabClick = useCallback(() => {",
+        "suppressNextTabClickRef.current = true;",
+        "if (event.detail >= 2) {",
+        "event.preventDefault();",
+        "event.stopPropagation();",
+        "suppressNextTabClick();",
+        "startEditingTab(tab.id, label);",
+        "if (isEditingTab || suppressNextTabClickRef.current || shouldSuppressClick()) {",
+        "onPointerDown={(e) => e.stopPropagation()}",
+        "onMouseDown={(e) => e.stopPropagation()}",
+        "onDoubleClick={(e) => e.stopPropagation()}",
+        'WebkitUserSelect: "text",',
+    ]:
+        assert_contains(pane_tab_bar, snippet, "src/components/workspace/PaneTabBar.tsx")
+
+    assert "if (shouldSuppressClick()) {" not in pane_tab_bar
+
+
 def test_terminal_wheel_input_does_not_steal_keyboard_focus() -> None:
     xterm_wrapper = read_repo_text("src/components/terminal/XTermWrapper.tsx")
     terminal_pane = read_repo_text("src/components/workspace/TerminalPane.tsx")
@@ -338,6 +368,22 @@ def test_terminal_wheel_input_does_not_steal_keyboard_focus() -> None:
         'return data.replace(/\\x1b\\[[IO]/g, "");',
         "function hasTerminalUserInput(data: string): boolean",
         "return stripTerminalFocusInputSequences(stripTerminalWheelInputSequences(data)).length > 0;",
+        "const terminalMouseReportModeBySession = new Set<string>();",
+        "const terminalSgrMouseReportBySession = new Set<string>();",
+        "function updateTerminalMouseReportMode(sessionId: string | undefined, parts: string[], final: string): void",
+        "function stripTerminalMouseInputSequences(data: string): string",
+        "const inputData = stripTerminalMouseInputSequences(data);",
+        "function wheelEventToSgrMouseReport(currentTerm: Terminal, event: WheelEvent, lines: number): string | null",
+        "function attachTerminalWheelScroll(container: HTMLElement, currentTerm: Terminal, sessionId: string, forceMouseReport: boolean): () => void",
+        "const wheelScrollContainer: HTMLElement = container;",
+        "event.preventDefault();\n    event.stopPropagation();\n    event.stopImmediatePropagation();",
+        "const forceWheelMouseReport = startsAsAgentTui(command, args, agentId, agentKind, launchEnv);",
+        "if (forceMouseReport || (terminalMouseReportModeBySession.has(sessionId) && terminalSgrMouseReportBySession.has(sessionId)))",
+        "chunkedWrite(sessionId, report);",
+        "currentTerm.scrollLines(lines);",
+        "removeWheelScrollGuard = attachTerminalWheelScroll(wheelScrollContainer, cached.term, sessionId, forceWheelMouseReport);",
+        "removeWheelScrollGuard = attachTerminalWheelScroll(wheelScrollContainer, term, sessionId, forceWheelMouseReport);",
+        "removeWheelScrollGuard?.();",
         "hasNonWheelInput: hasTerminalUserInput(inputData),",
         "return wheelFocusRestore.sessionId === sessionId || wheelFocusRestore.previousSessionId === sessionId;",
         "const { data: inputData, hasNonWheelInput } = filterWheelFocusInputSequences(",
@@ -358,6 +404,7 @@ def test_terminal_wheel_input_does_not_steal_keyboard_focus() -> None:
     ]:
         assert_contains(xterm_wrapper, snippet, "src/components/terminal/XTermWrapper.tsx")
 
+    assert "stripNonWheelTerminalMouseInputSequences" not in xterm_wrapper
     assert "function activateTerminalPane" not in xterm_wrapper
     assert "activateTerminalPane(sessionId)" not in xterm_wrapper
     assert "function registerTerminalWheelFocusSync" not in xterm_wrapper

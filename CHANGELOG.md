@@ -4,6 +4,13 @@
 
 ---
 
+## [0.8.48-lite.1] - 2026-06-24
+
+- Fix: Restore Claude Code / Codex wheel scrollback while preserving text selection. Terminal mouse-mode output is stripped from xterm, non-wheel terminal mouse input is blocked from the PTY, and wheel events are converted back to SGR mouse reports for agent TUIs so their in-app conversation history can scroll normally. DECSET alternate scroll mode (?1007) is also stripped from terminal output.
+- Fix: Keep pane tab rename editable on double-click by suppressing tab select and drag handoff before terminal focus can steal the rename input.
+- Sync: Bring the lite terminal mouse/selection behavior up to the same level as personal `0.8.48`.
+- Verification: npm.cmd run build, uv run pytest tests\test_layout_stability_contract.py tests\test_session_restore_race.py -q, and npm.cmd run tauri build passed.
+
 ## [0.8.35-lite.1] - 2026-06-20
 
 - Fix: Route terminal wheel events through xterm's custom wheel handler so wheel scrolling cannot be converted into CLI up/down input when the terminal buffer is not scrollable.
