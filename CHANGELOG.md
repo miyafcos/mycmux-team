@@ -4,6 +4,11 @@
 
 ---
 
+## [0.8.49-lite.1] - 2026-06-24
+- Fix: Keep pane tab rename edit mode stable after double-click by treating the following click as rename instead of tab selection.
+- Sync: Matches personal 0.8.49 pane rename behavior while retaining the lite terminal wheel scrollback fixes.
+- Verification: uv run pytest tests\test_layout_stability_contract.py tests\test_session_restore_race.py -q / npm.cmd run build
+
 ## [0.8.48-lite.1] - 2026-06-24
 
 - Fix: Restore Claude Code / Codex wheel scrollback while preserving text selection. Terminal mouse-mode output is stripped from xterm, non-wheel terminal mouse input is blocked from the PTY, and wheel events are converted back to SGR mouse reports for agent TUIs so their in-app conversation history can scroll normally. DECSET alternate scroll mode (?1007) is also stripped from terminal output.

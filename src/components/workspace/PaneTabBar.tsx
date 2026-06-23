@@ -267,7 +267,7 @@ export default memo(function PaneTabBar({
     suppressNextTabClickRef.current = true;
     window.setTimeout(() => {
       suppressNextTabClickRef.current = false;
-    }, 0);
+    }, 250);
   }, []);
 
   const commitTabLabel = useCallback((tab: PaneTab) => {
@@ -374,6 +374,13 @@ export default memo(function PaneTabBar({
                 setContextMenu({ tabId: tab.id, x: e.clientX, y: e.clientY });
               }}
               onClick={(event) => {
+                if (event.detail >= 2) {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  suppressNextTabClick();
+                  startEditingTab(tab.id, label);
+                  return;
+                }
                 if (isEditingTab || suppressNextTabClickRef.current || shouldSuppressClick()) {
                   event.preventDefault();
                   event.stopPropagation();
