@@ -4,6 +4,11 @@
 
 ---
 
+## [0.8.51-lite.1] - 2026-06-25
+- Fix: Add the frontend Socket API bridge so external automation requests receive JSON responses instead of timing out.
+- Added: Source contract coverage for the `socket-request` listener and `socket_response` path.
+- Verification: python -m pytest tests -q / cmd /c npx --no-install tsc --noEmit / cargo test --manifest-path src-tauri\Cargo.toml --lib
+
 ## [0.8.50-lite.1] - 2026-06-24
 - Fix: Sync the lite launcher menu with personal mycmux so lite no longer overwrites C:\Users\miyaz\.mycmux\bin\launcher.ps1 / launcher.sh with the older menu.
 - Added: Codex (Fugu Ultra) and claude-codex (Fugu) entries to the lite pane starter and terminal launcher contract.

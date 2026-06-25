@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { listen } from "@tauri-apps/api/event";
 import {
   useWorkspaceListStore,
   useWorkspaceLayoutStore,
@@ -15,6 +16,7 @@ import {
   getPtyMetadataSnapshot,
   onFsChanged,
   quitApp,
+  sendSocketResponse,
   type AgentSessionMapping,
   type PtyMetadata,
   type PaneConfig,
@@ -218,6 +220,106 @@ function applyMappingsToConfig(
 
 function tabConfigHasRestorableAgentSession(tab: PaneTabConfig): boolean {
   return Boolean((tab.agent_kind && tab.agent_session_id) || tab.claude_session_id);
+}
+
+type SocketRequestPayload = {
+  id: number;
+  cmd: string;
+  args?: Record<string, unknown> | null;
+};
+
+function socketArgString(args: Record<string, unknown> | null | undefined, ...keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = args?.[key];
+    if (typeof value === "string" && value.trim()) return value;
+  }
+  return undefined;
+}
+
+function serializeWorkspaceForSocket(
+  workspace: ReturnType<typeof useWorkspaceListStore.getState>["workspaces"][number],
+  activeWorkspaceId: string | null,
+) {
+  return {
+    id: workspace.id,
+    name: workspace.name,
+    active: workspace.id === activeWorkspaceId,
+    status: workspace.status,
+    gridTemplateId: workspace.gridTemplateId,
+    paneCount: workspace.panes.length,
+    tabCount: workspace.panes.reduce((count, pane) => count + pane.tabs.length, 0),
+  };
+}
+
+function handleSocketCommand(cmd: string, args: Record<string, unknown> | null | undefined): unknown {
+  const workspaceState = useWorkspaceListStore.getState();
+
+  switch (cmd) {
+    case "workspace.list":
+    case "list_workspaces":
+      return {
+        activeWorkspaceId: workspaceState.activeWorkspaceId,
+        workspaces: workspaceState.workspaces.map((workspace) =>
+          serializeWorkspaceForSocket(workspace, workspaceState.activeWorkspaceId),
+        ),
+      };
+
+    case "workspace.select":
+    case "select_workspace": {
+      const workspaceId = socketArgString(args, "workspaceId", "workspace_id", "id");
+      if (!workspaceId) throw new Error("workspace.select requires workspaceId");
+      const workspace = workspaceState.getWorkspace(workspaceId);
+      if (!workspace) throw new Error(`workspace not found: ${workspaceId}`);
+      workspaceState.setActiveWorkspace(workspaceId);
+      return { activeWorkspaceId: workspaceId };
+    }
+
+    case "workspace.rename":
+    case "rename_workspace": {
+      const workspaceId = socketArgString(args, "workspaceId", "workspace_id", "id");
+      const name = socketArgString(args, "name");
+      if (!workspaceId) throw new Error("workspace.rename requires workspaceId");
+      if (!name) throw new Error("workspace.rename requires name");
+      const workspace = workspaceState.getWorkspace(workspaceId);
+      if (!workspace) throw new Error(`workspace not found: ${workspaceId}`);
+      workspaceState.renameWorkspace(workspaceId, name);
+      return { id: workspaceId, name };
+    }
+
+    case "pane.list":
+    case "list_panes": {
+      const workspaceId = socketArgString(args, "workspaceId", "workspace_id", "id") ?? workspaceState.activeWorkspaceId ?? undefined;
+      if (!workspaceId) throw new Error("pane.list requires an active workspace or workspaceId");
+      const workspace = workspaceState.getWorkspace(workspaceId);
+      if (!workspace) throw new Error(`workspace not found: ${workspaceId}`);
+      const activePaneId = useUiStore.getState().activePaneId;
+      return {
+        workspaceId,
+        activePaneId,
+        panes: workspace.panes.map((pane) => ({
+          id: pane.id,
+          active: pane.id === activePaneId,
+          label: pane.label,
+          cwd: pane.cwd,
+          agentId: pane.agentId,
+          agentKind: pane.agentKind,
+          tabCount: pane.tabs.length,
+          activeTabId: pane.activeTabId,
+          tabs: pane.tabs.map((tab) => ({
+            id: tab.id,
+            label: tab.label,
+            type: tab.type,
+            cwd: tab.cwd,
+            agentId: tab.agentId,
+            agentKind: tab.agentKind,
+          })),
+        })),
+      };
+    }
+
+    default:
+      throw new Error(`Unknown socket command: ${cmd}`);
+  }
 }
 
 function paneConfigHasRestorableAgentSession(pane: PaneConfig): boolean {
@@ -928,6 +1030,23 @@ export function useWorkspacePersist() {
   // Subscribe to fs_changed events from notify watcher — invalidate the
   // affected directory so the explorer re-fetches on next expand (or
   // immediately if already open).
+  useEffect(() => {
+    const unlisten = listen<SocketRequestPayload>("socket-request", async (event) => {
+      const { id, cmd, args } = event.payload;
+      try {
+        const result = handleSocketCommand(cmd, args);
+        await sendSocketResponse(id, result, null);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        await sendSocketResponse(id, null, message);
+      }
+    });
+
+    return () => {
+      unlisten.then((f) => f()).catch(() => {});
+    };
+  }, []);
+
   useEffect(() => {
     const unlisten = onFsChanged((payload) => {
       useFileExplorerStore.getState().invalidate(payload.path);
