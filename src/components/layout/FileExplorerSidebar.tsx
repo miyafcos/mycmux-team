@@ -365,6 +365,8 @@ const ContextMenu = memo(function ContextMenu() {
   const setExpanded = useFileExplorerStore((s) => s.setExpanded);
   const menuRef = useRef<HTMLDivElement>(null);
   const [menuPos, setMenuPos] = useState({ left: 0, top: 0 });
+  const [pendingAction, setPendingAction] = useState<"open" | "external" | "reveal" | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!ctx) return;
@@ -395,28 +397,41 @@ const ContextMenu = memo(function ContextMenu() {
     );
   }, [ctx]);
 
+  useEffect(() => {
+    setPendingAction(null);
+    setActionError(null);
+  }, [ctx?.path]);
+
   if (!ctx) return null;
 
   const handleOpen = async () => {
+    if (pendingAction) return;
+    setPendingAction("open");
+    setActionError(null);
     try {
       const openedInApp = !ctx.isDir && await openFileInAppPreview(ctx.path);
       if (!openedInApp) {
         await openWithDefault(ctx.path);
       }
+      closeContextMenu();
     } catch (err) {
       console.warn("[fileExplorer] openWithDefault failed:", err);
-    } finally {
-      closeContextMenu();
+      setActionError(`Open failed: ${String(err)}`);
+      setPendingAction(null);
     }
   };
 
   const handleOpenExternal = async () => {
+    if (pendingAction) return;
+    setPendingAction("external");
+    setActionError(null);
     try {
       await openWithDefault(ctx.path);
+      closeContextMenu();
     } catch (err) {
       console.warn("[fileExplorer] openWithDefault failed:", err);
-    } finally {
-      closeContextMenu();
+      setActionError(`External open failed: ${String(err)}`);
+      setPendingAction(null);
     }
   };
 
@@ -433,18 +448,23 @@ const ContextMenu = memo(function ContextMenu() {
   };
 
   const handleReveal = async () => {
+    if (pendingAction) return;
+    setPendingAction("reveal");
+    setActionError(null);
     try {
       await revealInExplorer(ctx.path);
+      closeContextMenu();
     } catch (err) {
       console.warn("[fileExplorer] reveal failed:", err);
-    } finally {
-      closeContextMenu();
+      setActionError(`Reveal failed: ${String(err)}`);
+      setPendingAction(null);
     }
   };
 
   return (
     <div
       ref={menuRef}
+      aria-busy={pendingAction !== null}
       style={{
         position: "fixed",
         left: menuPos.left,
@@ -459,6 +479,11 @@ const ContextMenu = memo(function ContextMenu() {
         minWidth: 200,
       }}
     >
+      {pendingAction && (
+        <div style={contextMenuStatusStyle}>
+          Working...
+        </div>
+      )}
       {!ctx.isDir && (
         <MenuItem icon={<FileIcon size={12} />} label="開く" onClick={handleOpen} />
       )}
@@ -484,6 +509,11 @@ const ContextMenu = memo(function ContextMenu() {
         label="エクスプローラーで開く"
         onClick={handleReveal}
       />
+      {actionError && (
+        <div style={contextMenuErrorStyle} title={actionError}>
+          {truncateErrorForUi(actionError)}
+        </div>
+      )}
     </div>
   );
 });
@@ -1533,6 +1563,22 @@ const emptyRowStyle: React.CSSProperties = {
   color: "var(--cmux-text-secondary, #777)",
   fontSize: 10,
   fontStyle: "italic",
+};
+
+const contextMenuStatusStyle: React.CSSProperties = {
+  padding: "3px 10px",
+  color: "var(--cmux-text-secondary, #888)",
+  fontSize: 10,
+};
+
+const contextMenuErrorStyle: React.CSSProperties = {
+  padding: "3px 10px",
+  color: "var(--cmux-red)",
+  fontSize: 10,
+  maxWidth: 240,
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
 };
 
 const contextMenuItemStyle: React.CSSProperties = {

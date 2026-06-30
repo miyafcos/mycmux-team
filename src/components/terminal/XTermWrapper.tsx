@@ -210,6 +210,23 @@ const terminalSgrMouseReportBySession = new Set<string>();
 
 const TERMINAL_WHEEL_FOCUS_SUPPRESS_MS = 350;
 const TERMINAL_FOCUS_RETRY_LIMIT = 8;
+const TERMINAL_POINTER_FOCUS_ALLOW_MS = 1500;
+const terminalPointerFocusAllowUntil = new Map<string, number>();
+
+export function allowInactiveTerminalPointerFocus(sessionId: string): void {
+  if (!sessionId) return;
+  terminalPointerFocusAllowUntil.set(sessionId, Date.now() + TERMINAL_POINTER_FOCUS_ALLOW_MS);
+}
+
+function shouldAllowInactiveTerminalPointerFocus(sessionId: string): boolean {
+  const allowUntil = terminalPointerFocusAllowUntil.get(sessionId);
+  if (!allowUntil) return false;
+  if (allowUntil < Date.now()) {
+    terminalPointerFocusAllowUntil.delete(sessionId);
+    return false;
+  }
+  return true;
+}
 
 interface WheelFocusRestore {
   id: number;
@@ -592,6 +609,9 @@ function registerTerminalFocusSync(currentTerm: Terminal, sessionId: string): ()
       clearActiveTerminalNotification(sessionId);
       return;
     }
+    if (shouldAllowInactiveTerminalPointerFocus(sessionId)) {
+      return;
+    }
     refocusActiveTerminalIfNeeded();
   };
 
@@ -634,6 +654,23 @@ function registerSelectionCopyListener(currentTerm: Terminal, sessionId: string)
     selectionDirty = true;
   });
 
+  const copySelectedText = (): void => {
+    const restoreSelectionFocus = (): void => {
+      if (isActiveTerminalInputTarget(sessionId)) {
+        focusTerminalSoon(currentTerm, sessionId);
+        return;
+      }
+      refocusActiveTerminalIfNeeded();
+    };
+    const selectedText = currentTerm.getSelection();
+    if (!selectedText) {
+      restoreSelectionFocus();
+      return;
+    }
+    restoreSelectionFocus();
+    copyTextToClipboard(selectedText, restoreSelectionFocus);
+  };
+
   const flushSelectionCopy = (event?: Event) => {
     if (event instanceof MouseEvent && event.button !== 0) {
       selectionDirty = false;
@@ -650,24 +687,26 @@ function registerSelectionCopyListener(currentTerm: Terminal, sessionId: string)
     }
     copyTimer = window.setTimeout(() => {
       copyTimer = null;
-      const selectedText = currentTerm.getSelection();
-      if (!selectedText) return;
-      const restoreSelectionFocus = (): void => {
-        if (isActiveTerminalInputTarget(sessionId)) {
-          focusTerminalSoon(currentTerm, sessionId);
-          return;
-        }
-        refocusActiveTerminalIfNeeded();
-      };
-      restoreSelectionFocus();
-      copyTextToClipboard(selectedText, restoreSelectionFocus);
+      copySelectedText();
     }, 0);
   };
 
   const win = currentTerm.element?.ownerDocument.defaultView ?? window;
+  const termElement = currentTerm.element;
+  const flushContextMenuSelectionCopy = () => {
+    if (copyTimer !== null) {
+      window.clearTimeout(copyTimer);
+    }
+    copyTimer = window.setTimeout(() => {
+      copyTimer = null;
+      selectionDirty = false;
+      copySelectedText();
+    }, 0);
+  };
   win.addEventListener("pointerup", flushSelectionCopy, true);
   win.addEventListener("mouseup", flushSelectionCopy, true);
   win.addEventListener("touchend", flushSelectionCopy, true);
+  termElement?.addEventListener("contextmenu", flushContextMenuSelectionCopy);
   terminalSelectionCopyListeners.set(currentTerm, {
     dispose: () => {
       selectionDisposable.dispose();
@@ -678,6 +717,7 @@ function registerSelectionCopyListener(currentTerm: Terminal, sessionId: string)
       win.removeEventListener("pointerup", flushSelectionCopy, true);
       win.removeEventListener("mouseup", flushSelectionCopy, true);
       win.removeEventListener("touchend", flushSelectionCopy, true);
+      termElement?.removeEventListener("contextmenu", flushContextMenuSelectionCopy);
     },
   });
 }
@@ -1017,6 +1057,7 @@ export function evictTerminalCache(sessionId: string): void {
   terminalMouseModeOutputTailBySession.delete(sessionId);
   terminalMouseReportModeBySession.delete(sessionId);
   terminalSgrMouseReportBySession.delete(sessionId);
+  terminalPointerFocusAllowUntil.delete(sessionId);
   diagWriteStats.delete(sessionId);
   terminalHasLiveOutput.delete(sessionId);
   terminalInitialReplayMarkers.get(sessionId)?.dispose();

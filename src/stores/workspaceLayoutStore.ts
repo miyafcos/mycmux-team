@@ -650,6 +650,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
         }, updatedTab);
       });
       useWorkspaceListStore.getState()._updateWorkspacePanes(workspaceId, newPanes);
+      useUiStore.getState().setActivePaneId(updatedTab.sessionId);
       useUiStore.getState().setZoomedPaneId(null);
       return;
     }
@@ -676,6 +677,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
         return [appendTabsToPane(pane, [openedTab], openedTab.id)];
       });
       useWorkspaceListStore.getState()._updateWorkspacePanes(workspaceId, newPanes);
+      useUiStore.getState().setActivePaneId(openedTab.sessionId);
       useUiStore.getState().setZoomedPaneId(null);
       return;
     }
@@ -708,6 +710,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
       normalizeWorkspaceSplitColumns(nextSplitColumns),
       true,
     );
+    useUiStore.getState().setActivePaneId(openedTab.sessionId);
     useUiStore.getState().setZoomedPaneId(null);
   },
   setBrowserTabDirty: (workspaceId, paneId, tabId, isDirty) => {

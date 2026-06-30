@@ -207,16 +207,22 @@ def test_selection_copy_listener_survives_cached_terminal_remounts() -> None:
         "if (terminalContainsActiveElement(currentTerm) || attempts >= TERMINAL_FOCUS_RETRY_LIMIT) return;",
         "function registerSelectionCopyListener(currentTerm: Terminal, sessionId: string): void",
         "disposeSelectionCopyListener(currentTerm);",
+        "const copySelectedText = (): void => {",
         "const selectedText = currentTerm.getSelection();",
         "const restoreSelectionFocus = (): void => {",
         "if (isActiveTerminalInputTarget(sessionId)) {",
         "refocusActiveTerminalIfNeeded();",
+        "if (!selectedText) {\n      restoreSelectionFocus();\n      return;\n    }",
         "copyTextToClipboard(selectedText, restoreSelectionFocus);",
         ".then(() => restoreFocus?.())",
         ".catch(() => fallbackCopyTextToClipboard(text, restoreFocus))",
+        "const flushContextMenuSelectionCopy = () => {",
+        'termElement?.addEventListener("contextmenu", flushContextMenuSelectionCopy);',
+        'termElement?.removeEventListener("contextmenu", flushContextMenuSelectionCopy);',
         "registerSelectionCopyListener(cached.term, sessionId);",
         "registerSelectionCopyListener(term, sessionId);",
         "disposeSelectionCopyListener(term);",
+        "rightClickSelectsWord: true,",
         'const TERMINAL_MOUSE_MODE_PARAMS = new Set(["9", "1000", "1002", "1003", "1005", "1006", "1007", "1015", "1016"]);',
         "function stripTerminalMouseModeControlSequences(data: string, sessionId?: string): string",
         "const TERMINAL_MOUSE_MODE_CONTROL_PARTIAL_RE = /\\x1b(?:\\[\\??[0-9;]*)?$/;",
@@ -247,6 +253,10 @@ def test_terminal_toolbar_actions_restore_xterm_focus() -> None:
         "type PaneActivationOptions = {",
         "const activatePane = useCallback((options: PaneActivationOptions = {}) => {",
         "const handlePanePointerDownCapture = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {",
+        "const isSelectionButton = event.button === 0 || event.button === 2;",
+        "allowInactiveTerminalPointerFocus(tab.sessionId);",
+        "focusTerminalElement(event.currentTarget);",
+        "if (event.button === 2) {\n      pendingPaneClickActivationRef.current = null;\n      return;\n    }",
         "const handlePanePointerUpCapture = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {",
         "function getDocumentSelectionText(): string",
         'target.closest(".xterm-helper-textarea")',
@@ -265,6 +275,15 @@ def test_terminal_toolbar_actions_restore_xterm_focus() -> None:
     assert "ReactWheelEvent" not in terminal_pane
     assert "activatePane({ focusTerminal: false });" not in terminal_pane
     assert "if (hasDocumentTextSelection()) return;" not in terminal_pane
+
+    xterm_wrapper = read_repo_text("src/components/terminal/XTermWrapper.tsx")
+    for snippet in [
+        "export function allowInactiveTerminalPointerFocus(sessionId: string): void",
+        "function shouldAllowInactiveTerminalPointerFocus(sessionId: string): boolean",
+        "if (shouldAllowInactiveTerminalPointerFocus(sessionId)) {",
+        "terminalPointerFocusAllowUntil.delete(sessionId);",
+    ]:
+        assert_contains(xterm_wrapper, snippet, "src/components/terminal/XTermWrapper.tsx")
 
     for text, source in [
         (terminal_pane, "src/components/workspace/TerminalPane.tsx"),
@@ -403,7 +422,7 @@ def test_terminal_wheel_input_does_not_steal_keyboard_focus() -> None:
         "markWheelFocusRestore(sessionId, activePaneId);",
         "const previousSessionId = consumeWheelFocusRestore(sessionId);",
         "restoreTerminalFocusAfterWheel(previousSessionId);",
-        "if (isActiveTerminalInputTarget(sessionId)) {\n      clearActiveTerminalNotification(sessionId);\n      return;\n    }\n    refocusActiveTerminalIfNeeded();",
+        "if (isActiveTerminalInputTarget(sessionId)) {\n      clearActiveTerminalNotification(sessionId);\n      return;\n    }\n    if (shouldAllowInactiveTerminalPointerFocus(sessionId)) {\n      return;\n    }\n    refocusActiveTerminalIfNeeded();",
         "element.addEventListener(\"wheel\", guardWheelFocus, { capture: true, passive: true });",
         "removeWheelFocusGuard = registerTerminalWheelFocusGuard(term, sessionId);",
     ]:

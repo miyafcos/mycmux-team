@@ -4,6 +4,13 @@
 
 ---
 
+## [0.8.53-lite.1] - 2026-06-30
+
+- Fix: Restore copy-on-select after terminal selection end, including context-menu word selection, cached terminal remounts, empty-selection focus restore, and clipboard fallback focus recovery.
+- Fix: Make artifact preview opens visible and deterministic by activating reloaded preview tabs, suppressing duplicate opens while pending, showing short UI errors, and falling back to the OS opener when in-app preview fails.
+- Sync: Matches personal 0.8.53 selection-copy and preview-open behavior while retaining the lite updater endpoint and app identifier.
+- Verification: python -m pytest tests/test_layout_stability_contract.py tests/test_no_restart_ui_surface_contract.py -q / npm run build / cargo test --manifest-path src-tauri\Cargo.toml --lib -- --nocapture
+
 ## [0.8.51-lite.1] - 2026-06-25
 - Fix: Add the frontend Socket API bridge so external automation requests receive JSON responses instead of timing out.
 - Added: Source contract coverage for the `socket-request` listener and `socket_response` path.

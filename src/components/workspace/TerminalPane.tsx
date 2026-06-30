@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useRef, type PointerEvent as ReactPointerEvent } from "react";
+import { memo, useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { open } from "@tauri-apps/plugin-shell";
 import ErrorBoundary from "../common/ErrorBoundary";
 import type { AgentSessionKind, Pane, PaneTab } from "../../types";
@@ -13,7 +13,7 @@ import {
 import { useWorkspaceListStore } from "../../stores/workspaceListStore";
 import { getAgent, getDefaultAgent } from "../../lib/agents";
 import { killSession, previewArtifactUriForSessionV2 } from "../../lib/ipc";
-import { evictTerminalCache } from "../terminal/XTermWrapper";
+import { allowInactiveTerminalPointerFocus, evictTerminalCache } from "../terminal/XTermWrapper";
 import { usePaneDragStore, type PaneDragItem, type PaneDropTarget } from "../../stores/paneDragStore";
 
 interface TerminalPaneProps {
@@ -138,6 +138,11 @@ function isLocalArtifactLink(uri: string): boolean {
     // MSYS / Git-Bash absolute form: `/c/Users/...` (single-letter drive).
     || /^\/[A-Za-z]\//.test(trimmed)
   );
+}
+
+function truncatePaneActionError(message: string, max = 96): string {
+  if (message.length <= max) return message;
+  return `${message.slice(0, max - 3)}...`;
 }
 
 function focusTerminalElement(paneEl: HTMLElement | null | undefined): boolean {
@@ -317,6 +322,8 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
     activeTab ? s.metadata[activeTab.sessionId]?.agentKind : undefined,
   );
   const pendingPaneClickActivationRef = useRef<PendingPaneClickActivation | null>(null);
+  const pendingPreviewUriRef = useRef<string | null>(null);
+  const [previewActionError, setPreviewActionError] = useState<string | null>(null);
 
   // Granular metadata selectors only re-render when notification/done count changes.
   const notificationCount = usePaneMetadataStore((s) =>
@@ -395,8 +402,9 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
   }, [workspaceId, pane.id, setActivePaneId, clearNotification]);
 
   const handlePanePointerDownCapture = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const isSelectionButton = event.button === 0 || event.button === 2;
     if (
-      event.button !== 0 ||
+      !isSelectionButton ||
       event.shiftKey ||
       event.altKey ||
       event.ctrlKey ||
@@ -406,13 +414,26 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
       pendingPaneClickActivationRef.current = null;
       return;
     }
+    const ws = useWorkspaceListStore.getState().getWorkspace(workspaceId);
+    const p = ws?.panes.find((candidate) => candidate.id === pane.id);
+    const tab = p?.tabs.find((candidate) => candidate.id === p.activeTabId) ?? p?.tabs[0];
+    if (!p || !tab || tab.type === "browser") {
+      pendingPaneClickActivationRef.current = null;
+      return;
+    }
+    allowInactiveTerminalPointerFocus(tab.sessionId);
+    focusTerminalElement(event.currentTarget);
+    if (event.button === 2) {
+      pendingPaneClickActivationRef.current = null;
+      return;
+    }
     pendingPaneClickActivationRef.current = {
       pointerId: event.pointerId,
       x: event.clientX,
       y: event.clientY,
       selectionText: getDocumentSelectionText(),
     };
-  }, []);
+  }, [workspaceId, pane.id]);
 
   const handlePanePointerUpCapture = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     const pending = pendingPaneClickActivationRef.current;
@@ -474,27 +495,48 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
   }, [pane.id, setZoomedPaneId]);
 
   const handleUrlClick = useCallback((uri: string) => {
+    if (pendingPreviewUriRef.current) return;
+    pendingPreviewUriRef.current = uri;
+    setPreviewActionError(null);
+
+    const reportOpenFailure = (message: string, error: unknown): void => {
+      const detail = `${message}: ${String(error)}`;
+      console.error("[mycmux] artifact open failed", detail);
+      setPreviewActionError(detail);
+    };
+
     const workspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
     const currentPane = workspace?.panes.find((candidate) => candidate.id === pane.id);
     const currentTab = currentPane?.tabs.find((tab) => tab.id === currentPane.activeTabId);
     if (!currentTab || currentTab.type === "browser") {
-      open(uri).catch((error) => console.error("[mycmux] open URL failed", error));
+      open(uri)
+        .catch((error) => reportOpenFailure("Open failed", error))
+        .finally(() => {
+          if (pendingPreviewUriRef.current === uri) pendingPreviewUriRef.current = null;
+        });
       return;
     }
     previewArtifactUriForSessionV2(currentTab.sessionId, uri)
-      .then((info) => openOrReloadHtmlPreviewPane(workspaceId, pane.id, info))
+      .then((info) => {
+        openOrReloadHtmlPreviewPane(workspaceId, pane.id, info);
+        setPreviewActionError(null);
+      })
       .catch((error) => {
         if (isLocalArtifactLink(uri)) {
           // In-app preview failed (e.g. unreadable file / backend error). Don't
           // swallow it into a dead click — fall back to the OS default app so
           // the user still sees the file open somewhere.
           console.warn("[mycmux] local artifact preview rejected, opening externally", error);
-          open(uri).catch((openError) =>
-            console.error("[mycmux] fallback open of local artifact failed", openError),
+          return open(uri).catch((openError) =>
+            reportOpenFailure("Preview failed and fallback open failed", openError),
           );
-          return;
         }
-        open(uri).catch((error) => console.error("[mycmux] open URL failed", error));
+        return open(uri).catch((openError) => reportOpenFailure("Open failed", openError));
+      })
+      .finally(() => {
+        if (pendingPreviewUriRef.current === uri) {
+          pendingPreviewUriRef.current = null;
+        }
       });
   }, [openOrReloadHtmlPreviewPane, pane.id, workspaceId]);
 
@@ -576,6 +618,23 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
         onRemoveTab={handleRemoveTab}
         onSelectTab={handleSelectTab}
       />
+      {previewActionError && (
+        <div
+          style={{
+            color: "var(--cmux-red)",
+            fontSize: 11,
+            padding: "2px 8px",
+            borderBottom: "1px solid var(--cmux-border)",
+            background: "color-mix(in srgb, var(--cmux-red) 10%, transparent)",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+          title={previewActionError}
+        >
+          {truncatePaneActionError(previewActionError)}
+        </div>
+      )}
 
       <div style={{ flex: 1, minHeight: 0, overflow: "hidden", position: "relative", background: "transparent" }}>
         {activeTab?.type === "browser" && activeTab.htmlPath ? (
