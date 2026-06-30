@@ -1538,6 +1538,7 @@ export default memo(function XTermWrapper({
     let termDisposed = false;
     let resizeObserver: ResizeObserver | null = null;
     let resizeTimers: ReturnType<typeof setTimeout>[] = [];
+    let refreshTimers: ReturnType<typeof setTimeout>[] = [];
     let unlistenExit: (() => void) | null = null;
     let writeParsedDisposable: { dispose: () => void } | null = null;
     let scrollDisposable: { dispose: () => void } | null = null;
@@ -1582,6 +1583,13 @@ export default memo(function XTermWrapper({
         clearTimeout(timer);
       }
       resizeTimers = [];
+    };
+
+    const clearRefreshTimers = (): void => {
+      for (const timer of refreshTimers) {
+        clearTimeout(timer);
+      }
+      refreshTimers = [];
     };
 
     const clearPendingDrainTimer = (): void => {
@@ -1663,10 +1671,10 @@ export default memo(function XTermWrapper({
     ): void => {
       for (const delay of delays) {
         const timer = setTimeout(() => {
-          resizeTimers = resizeTimers.filter((entry) => entry !== timer);
+          refreshTimers = refreshTimers.filter((entry) => entry !== timer);
           refreshVisibleRows(currentTerm);
         }, delay);
-        resizeTimers.push(timer);
+        refreshTimers.push(timer);
       }
     };
 
@@ -2041,6 +2049,12 @@ export default memo(function XTermWrapper({
       }
     };
 
+    const handleTerminalLayoutSignal = (): void => {
+      refreshFrontendVisible();
+      refreshTerminalPaintedVisible();
+      scheduleFrontendResync();
+    };
+
     const startVisibilityObserver = (): void => {
       visibilityObserver?.disconnect();
       visibilityObserver = new MutationObserver(handleFrontendVisibilitySignal);
@@ -2055,6 +2069,7 @@ export default memo(function XTermWrapper({
       window.addEventListener("focus", handleFrontendVisibilitySignal);
       window.addEventListener("blur", handleFrontendVisibilitySignal);
       window.addEventListener("mycmux:workspace-visibility-change", handleFrontendVisibilitySignal);
+      window.addEventListener("mycmux:terminal-layout-change", handleTerminalLayoutSignal);
       document.addEventListener("visibilitychange", handleFrontendVisibilitySignal);
       handleFrontendVisibilitySignal();
     };
@@ -2065,6 +2080,7 @@ export default memo(function XTermWrapper({
       window.removeEventListener("focus", handleFrontendVisibilitySignal);
       window.removeEventListener("blur", handleFrontendVisibilitySignal);
       window.removeEventListener("mycmux:workspace-visibility-change", handleFrontendVisibilitySignal);
+      window.removeEventListener("mycmux:terminal-layout-change", handleTerminalLayoutSignal);
       document.removeEventListener("visibilitychange", handleFrontendVisibilitySignal);
     };
 
@@ -2180,6 +2196,14 @@ export default memo(function XTermWrapper({
         cwd,
         launchEnv || undefined,
       );
+      if (cols > 0 && rows > 0) {
+        lastSentCols = cols;
+        lastSentRows = rows;
+        terminalSizeCache.set(sessionId, { cols, rows });
+        void resizeSession(sessionId, cols, rows).catch((error) => {
+          console.error("[XTermWrapper] Failed to sync backend size after attach:", error);
+        });
+      }
       refreshFrontendVisible();
       scheduleFrontendResync();
     };
@@ -2289,6 +2313,7 @@ export default memo(function XTermWrapper({
 
     const cleanup = (): void => {
       clearResizeTimer();
+      clearRefreshTimers();
       clearPendingDrainTimer();
       clearScanTimers();
       stopVisibilityObserver();

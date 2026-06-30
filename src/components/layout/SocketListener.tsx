@@ -418,6 +418,21 @@ function syncPaneAgentSessionFromActiveTab(pane: PaneConfig, tabs: PaneTabConfig
   };
 }
 
+function tabConfigWithPaneAgentSessionFallback(tab: PaneTabConfig, pane: PaneConfig): PaneTabConfig {
+  if (getTabAgentSessionKey(tab)) return tab;
+  const paneKind = getPaneConfigKind(pane);
+  const paneSessionId = getPaneConfigSessionId(pane);
+  if (!paneKind || !paneSessionId) return tab;
+  return {
+    ...tab,
+    agent_kind: tab.agent_kind ?? paneKind,
+    agent_session_id: tab.agent_session_id ?? paneSessionId,
+    claude_session_id: paneKind === "claude"
+      ? tab.claude_session_id ?? paneSessionId
+      : tab.claude_session_id,
+  };
+}
+
 function dedupeAgentSessionsInConfigs(
   configs: WorkspaceConfig[],
   activeWorkspaceId: string | null | undefined,
@@ -438,7 +453,11 @@ function dedupeAgentSessionsInConfigs(
     const isActiveWorkspace = cfg.id === activeWorkspaceId;
     cfg.panes.forEach((pane, paneIndex) => {
       const tabs = pane.tabs ?? [];
-      tabs.forEach((tab, tabIndex) => {
+      const activeTabConfigId = pane.active_tab_id ?? tabs[0]?.tab_id ?? null;
+      const tabsWithPaneFallback = tabs.map((tab) =>
+        tab.tab_id === activeTabConfigId ? tabConfigWithPaneAgentSessionFallback(tab, pane) : tab,
+      );
+      tabsWithPaneFallback.forEach((tab, tabIndex) => {
         const key = getTabAgentSessionKey(tab);
         if (!key) return;
         const isActivePane = isActiveWorkspace && pane.pane_id === activePaneId;
@@ -466,7 +485,11 @@ function dedupeAgentSessionsInConfigs(
     ...cfg,
     panes: cfg.panes.map((pane, paneIndex) => {
       if (!pane.tabs || pane.tabs.length === 0) return pane;
-      const tabs = pane.tabs.map((tab, tabIndex) => {
+      const activeTabConfigId = pane.active_tab_id ?? pane.tabs[0]?.tab_id ?? null;
+      const sourceTabs = pane.tabs.map((tab) =>
+        tab.tab_id === activeTabConfigId ? tabConfigWithPaneAgentSessionFallback(tab, pane) : tab,
+      );
+      const tabs = sourceTabs.map((tab, tabIndex) => {
         const cleanedTab = clearStaleAgentErrorSnapshot(tab);
         const key = getTabAgentSessionKey(cleanedTab);
         if (!key) return cleanedTab;
@@ -646,6 +669,14 @@ function toConfig(ws: Workspace, _agentMappings: Record<string, AgentSessionMapp
         active_tab_id: activeTab.id,
         tabs: persistedTabs.map((tab) => {
           const tabMeta = metaState[tab.sessionId];
+          const isActivePersistedTab = tab.id === activeTab.id;
+          const tabKind = tab.agentKind ?? tabMeta?.agentKind ?? (isActivePersistedTab ? liveKind : null);
+          const tabAgentId = tab.agentSessionId
+            ?? tabMeta?.agentSessionId
+            ?? (isActivePersistedTab ? liveAgentId ?? liveClaudeId : null);
+          const tabClaudeId = tab.claudeSessionId
+            ?? tabMeta?.claudeSessionId
+            ?? (isActivePersistedTab && tabKind === "claude" ? tabAgentId ?? liveClaudeId : null);
           return {
             tab_id: tab.id,
             agent_id: tab.agentId,
@@ -653,9 +684,9 @@ function toConfig(ws: Workspace, _agentMappings: Record<string, AgentSessionMapp
             type: "terminal" as const,
             cwd: tabMeta?.cwd ?? tab.cwd ?? paneCwd,
             last_process: null,
-            claude_session_id: tab.claudeSessionId ?? tabMeta?.claudeSessionId ?? null,
-            agent_kind: tab.agentKind ?? tabMeta?.agentKind ?? null,
-            agent_session_id: tab.agentSessionId ?? tabMeta?.agentSessionId ?? null,
+            claude_session_id: tabClaudeId,
+            agent_kind: tabKind,
+            agent_session_id: tabAgentId,
             launch_env: stripEphemeralLaunchEnv(tab.launchEnv),
             terminal_snapshot: getTerminalSnapshot(tab.sessionId) ?? tab.terminalSnapshot ?? null,
           };

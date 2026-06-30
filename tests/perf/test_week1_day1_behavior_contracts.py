@@ -109,6 +109,7 @@ def test_ctrl_p_history_palette_route_remains_wired() -> None:
 
 def test_resume_and_handoff_environment_contract_remains_wired() -> None:
     launcher = read_repo_text("src-tauri/src/launcher.sh")
+    launcher_ps1 = read_repo_text("src-tauri/src/launcher.ps1")
     terminal_pane = read_repo_text("src/components/workspace/TerminalPane.tsx")
     palette = read_repo_text("src/components/CommandPalette/CrsmPalette.tsx")
 
@@ -122,6 +123,17 @@ def test_resume_and_handoff_environment_contract_remains_wired() -> None:
         "codex resume --no-alt-screen --last",
     ]:
         assert_contains(launcher, snippet, "src-tauri/src/launcher.sh")
+
+    for snippet in [
+        "MYCMUX_HANDOFF",
+        "MYCMUX_HANDOFF_PROMPT_FILE",
+        "MYCMUX_HANDOFF_FROM_SESSION",
+        "MYCMUX_RESUME",
+        "MYCMUX_SESSION_ID",
+        "Write-MycmuxSessionMapping",
+        '@("codex", "resume", "--no-alt-screen", "--last")',
+    ]:
+        assert_contains(launcher_ps1, snippet, "src-tauri/src/launcher.ps1")
 
     for snippet in [
         "resolveSavedAgentSession",

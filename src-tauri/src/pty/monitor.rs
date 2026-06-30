@@ -52,6 +52,28 @@ pub fn new_metadata_store() -> MetadataStore {
     Arc::new(DashMap::new())
 }
 
+fn write_detected_agent_session_mapping(
+    session_id: &str,
+    agent_kind: &str,
+    agent_session_id: &str,
+) {
+    if session_id.trim().is_empty()
+        || agent_kind.trim().is_empty()
+        || agent_session_id.trim().is_empty()
+    {
+        return;
+    }
+    let Some(home) = dirs::home_dir() else {
+        return;
+    };
+    let map_dir = home.join(".mycmux").join("pane-sessions");
+    if std::fs::create_dir_all(&map_dir).is_err() {
+        return;
+    }
+    let path = map_dir.join(format!("{session_id}.txt"));
+    let _ = std::fs::write(path, format!("{agent_kind}:{agent_session_id}\n"));
+}
+
 /// Returns true when the session file was created at/after `min_created`.
 /// Used to keep the mtime-newest fallback from adopting sessions that already
 /// existed before the agent process started (e.g. a long-running claude in
@@ -796,6 +818,21 @@ pub fn start_monitor(
                                 };
                                 let _ = app_handle.emit("pty_work_done", evt);
                             }
+                        }
+                    }
+
+                    if let (Some(kind), Some(current_agent_session_id)) =
+                        (agent_kind.as_deref(), agent_session_id.as_deref())
+                    {
+                        if previous_agent_kind.as_deref() != Some(kind)
+                            || previous_agent_session_id.as_deref()
+                                != Some(current_agent_session_id)
+                        {
+                            write_detected_agent_session_mapping(
+                                &session_id,
+                                kind,
+                                current_agent_session_id,
+                            );
                         }
                     }
 

@@ -45,6 +45,7 @@ def test_terminal_grid_keeps_multi_column_layout_readable() -> None:
         "const columnWidths = fitLayoutSizes(workspace?.columnWidths, viewportSize.width, cols.length);",
         "const hasMeasuredViewport = viewportSize.width > 0 && viewportSize.height > 0;",
         "const layoutSignature = cols.map((col) => col.join(\",\")).join(\"|\");",
+        "const terminalLayoutSignature = useMemo(",
         "key={`cols-${layoutSignature}`}",
         "const colSignature = col.join(\",\");",
         "const rowHeights = fitLayoutSizes(rowHeightsPerCol?.[colIdx], viewportSize.height, col.length);",
@@ -58,6 +59,8 @@ def test_terminal_grid_keeps_multi_column_layout_readable() -> None:
         'overflow: "hidden"',
         "const visibleWorkspaceSignature = useMemo(",
         'new CustomEvent("mycmux:workspace-visibility-change"',
+        'new CustomEvent("mycmux:terminal-layout-change"',
+        "layoutSignature: terminalLayoutSignature",
         "window.requestAnimationFrame(() => {",
     ]:
         assert_contains(workspace_view, snippet, "src/components/workspace/WorkspaceView.tsx")
@@ -461,6 +464,8 @@ def test_terminal_batches_keep_backend_flowing_while_layout_is_unwritable() -> N
 
     for snippet in [
         "interface PendingFrontendBatch {",
+        "let refreshTimers: ReturnType<typeof setTimeout>[] = [];",
+        "const clearRefreshTimers = (): void => {",
         "const isContainerDisplayed = (): boolean => {",
         "const isContainerPainted = (): boolean => {",
         "const hasWritableTerminalSize = (): boolean => {",
@@ -477,8 +482,13 @@ def test_terminal_batches_keep_backend_flowing_while_layout_is_unwritable() -> N
         "scheduleFrontendResync();",
         "if (pendingBatches.length > 0 && canWritePendingBatches())",
         "refreshFrontendVisible();",
+        "void resizeSession(sessionId, cols, rows).catch((error) => {",
+        "const handleTerminalLayoutSignal = (): void => {",
         'window.addEventListener("mycmux:workspace-visibility-change", handleFrontendVisibilitySignal);',
+        'window.addEventListener("mycmux:terminal-layout-change", handleTerminalLayoutSignal);',
         'window.removeEventListener("mycmux:workspace-visibility-change", handleFrontendVisibilitySignal);',
+        'window.removeEventListener("mycmux:terminal-layout-change", handleTerminalLayoutSignal);',
+        "clearRefreshTimers();",
         "scheduleFullRefresh(replayTerm, [0, 48, 160]);",
     ]:
         assert_contains(xterm_wrapper, snippet, "src/components/terminal/XTermWrapper.tsx")

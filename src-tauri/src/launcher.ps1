@@ -29,6 +29,103 @@ function New-MycmuxOption {
   }
 }
 
+function Write-MycmuxSessionMapping {
+  param(
+    [string]$PaneId,
+    [string]$Kind,
+    [string]$SessionId
+  )
+  if ([string]::IsNullOrWhiteSpace($PaneId) -or [string]::IsNullOrWhiteSpace($SessionId)) {
+    return
+  }
+  $mapDir = Join-Path $HOME ".mycmux\pane-sessions"
+  New-Item -ItemType Directory -Force -Path $mapDir | Out-Null
+  $mapPath = Join-Path $mapDir "$PaneId.txt"
+  if ([string]::IsNullOrWhiteSpace($Kind)) {
+    Set-Content -LiteralPath $mapPath -Value $SessionId -Encoding UTF8
+  } else {
+    Set-Content -LiteralPath $mapPath -Value ("{0}:{1}" -f $Kind, $SessionId) -Encoding UTF8
+  }
+}
+
+function Invoke-MycmuxCommandArray {
+  param([Parameter(Mandatory = $true)][string[]]$Command)
+  if ($Command.Count -eq 0) {
+    return
+  }
+  if (($Command -join " ") -like "*fugu*") {
+    Import-MycmuxUserEnvIfMissing "FUGU_API_KEY"
+  }
+  $exe = $Command[0]
+  $args = @()
+  if ($Command.Count -gt 1) {
+    $args = $Command[1..($Command.Count - 1)]
+  }
+  & $exe @args
+}
+
+function Invoke-MycmuxHandoffFromEnv {
+  if (-not $env:MYCMUX_HANDOFF) {
+    return $false
+  }
+  $handoffFile = $env:MYCMUX_HANDOFF_PROMPT_FILE
+  $bootstrap = "Handoff from previous session. Read `"$handoffFile`" and continue from where it left off."
+  switch -Wildcard ($env:MYCMUX_HANDOFF) {
+    "claude" {
+      Write-MycmuxSessionMapping $env:MYCMUX_PANE_SESSION_ID "claude-handoff" $env:MYCMUX_HANDOFF_FROM_SESSION
+      Invoke-MycmuxCommandArray -Command @("claude", "--allow-dangerously-skip-permissions", "--permission-mode", "auto", $bootstrap)
+      return $true
+    }
+    "codex" {
+      Write-MycmuxSessionMapping $env:MYCMUX_PANE_SESSION_ID "codex-handoff" $env:MYCMUX_HANDOFF_FROM_SESSION
+      Invoke-MycmuxCommandArray -Command @("codex", "--no-alt-screen", $bootstrap)
+      return $true
+    }
+    "claude-codex" {
+      Write-MycmuxSessionMapping $env:MYCMUX_PANE_SESSION_ID "claude-codex-handoff" $env:MYCMUX_HANDOFF_FROM_SESSION
+      Invoke-MycmuxCommandArray -Command @("claude-codex", $bootstrap)
+      return $true
+    }
+  }
+  return $true
+}
+
+function Invoke-MycmuxResumeFromEnv {
+  if (-not $env:MYCMUX_RESUME) {
+    return $false
+  }
+  switch -Wildcard ($env:MYCMUX_RESUME) {
+    "claude-codex*" {
+      if ($env:MYCMUX_SESSION_ID) {
+        Write-MycmuxSessionMapping $env:MYCMUX_PANE_SESSION_ID "claude-codex" $env:MYCMUX_SESSION_ID
+        Invoke-MycmuxCommandArray -Command @("claude-codex", "--resume", $env:MYCMUX_SESSION_ID)
+      } else {
+        Invoke-MycmuxCommandArray -Command @("claude-codex", "--continue")
+      }
+      return $true
+    }
+    "claude*" {
+      if ($env:MYCMUX_SESSION_ID) {
+        Write-MycmuxSessionMapping $env:MYCMUX_PANE_SESSION_ID "claude" $env:MYCMUX_SESSION_ID
+        Invoke-MycmuxCommandArray -Command @("claude", "--dangerously-skip-permissions", "--permission-mode", "bypassPermissions", "--resume", $env:MYCMUX_SESSION_ID)
+      } else {
+        Invoke-MycmuxCommandArray -Command @("claude", "--dangerously-skip-permissions", "--permission-mode", "bypassPermissions", "--continue")
+      }
+      return $true
+    }
+    "codex*" {
+      if ($env:MYCMUX_SESSION_ID) {
+        Write-MycmuxSessionMapping $env:MYCMUX_PANE_SESSION_ID "codex" $env:MYCMUX_SESSION_ID
+        Invoke-MycmuxCommandArray -Command @("codex", "resume", "--no-alt-screen", $env:MYCMUX_SESSION_ID)
+      } else {
+        Invoke-MycmuxCommandArray -Command @("codex", "resume", "--no-alt-screen", "--last")
+      }
+      return $true
+    }
+  }
+  return $true
+}
+
 $Options = @(
   New-MycmuxOption "Claude Code" @("claude", "--allow-dangerously-skip-permissions", "--permission-mode", "auto") "claude"
   New-MycmuxOption "Codex" @("codex", "--no-alt-screen") "codex"
@@ -121,6 +218,14 @@ function Draw-MycmuxMenu {
   }
   Write-Host ""
   Write-Host "  Up/Down or j/k move  Enter/number select  / custom  q shell"
+}
+
+if (Invoke-MycmuxHandoffFromEnv) {
+  return
+}
+
+if (Invoke-MycmuxResumeFromEnv) {
+  return
 }
 
 if ($env:MYCMUX_LAUNCH_TARGET -and $LaunchTargets.ContainsKey($env:MYCMUX_LAUNCH_TARGET)) {

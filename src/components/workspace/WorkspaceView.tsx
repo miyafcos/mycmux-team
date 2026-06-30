@@ -135,6 +135,13 @@ export const TerminalGrid = memo(function TerminalGrid({
     () => reconcileSplitColumnsForPanes(splitColumns, panes.map((pane) => pane.id)),
     [splitColumns, panes],
   );
+  const terminalLayoutSignature = useMemo(() => {
+    const columnSignature = layoutColumns.map((col) => col.join(",")).join("|");
+    const paneSignature = panes
+      .map((pane) => `${pane.id}:${pane.activeTabId}:${pane.tabs.length}`)
+      .join("|");
+    return `${workspaceId}:${Math.round(viewportSize.width)}x${Math.round(viewportSize.height)}:${columnSignature}:${paneSignature}`;
+  }, [layoutColumns, panes, viewportSize.height, viewportSize.width, workspaceId]);
 
   useEffect(() => {
     const container = scrollContainerRef.current;
@@ -151,6 +158,33 @@ export const TerminalGrid = memo(function TerminalGrid({
     observer.observe(container);
     return () => observer.disconnect();
   }, []);
+
+  useEffect(() => {
+    if (viewportSize.width <= 0 || viewportSize.height <= 0) return;
+    let cancelled = false;
+    let secondRafId: number | null = null;
+    const notifyTerminals = () => {
+      if (cancelled) return;
+      window.dispatchEvent(
+        new CustomEvent("mycmux:terminal-layout-change", {
+          detail: { workspaceId, layoutSignature: terminalLayoutSignature },
+        }),
+      );
+    };
+
+    notifyTerminals();
+    const firstRafId = window.requestAnimationFrame(() => {
+      secondRafId = window.requestAnimationFrame(notifyTerminals);
+    });
+
+    return () => {
+      cancelled = true;
+      window.cancelAnimationFrame(firstRafId);
+      if (secondRafId !== null) {
+        window.cancelAnimationFrame(secondRafId);
+      }
+    };
+  }, [terminalLayoutSignature, viewportSize.height, viewportSize.width, workspaceId]);
 
   // Column-first layout: outer = horizontal columns, inner = vertical rows within each column
   if (splitColumns) {

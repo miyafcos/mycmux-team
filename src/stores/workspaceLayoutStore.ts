@@ -378,8 +378,21 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
     const defaultAgentId = getDefaultAgent().id;
     const panes: Pane[] = configs.map((pc) => {
       const paneId = pc.pane_id ?? uuid();
+      const activeTabConfigId = pc.active_tab_id ?? pc.tabs?.[0]?.tab_id ?? null;
       const tabs = pc.tabs && pc.tabs.length > 0
         ? pc.tabs.map((tabConfig) => {
+            const isActiveRestoredTab = tabConfig.tab_id === activeTabConfigId;
+            const tabClaudeSessionId =
+              tabConfig.claude_session_id
+              ?? (isActiveRestoredTab ? pc.claude_session_id ?? undefined : undefined);
+            const tabAgentKind =
+              tabConfig.agent_kind
+              ?? (tabClaudeSessionId ? "claude" : undefined)
+              ?? (isActiveRestoredTab ? pc.agent_kind ?? undefined : undefined);
+            const tabAgentSessionId =
+              tabConfig.agent_session_id
+              ?? tabClaudeSessionId
+              ?? (isActiveRestoredTab ? pc.agent_session_id ?? pc.claude_session_id ?? undefined : undefined);
             const tabAgentId = normalizeRestoredAgentId(
               tabConfig.agent_id || pc.agent_id,
             ) || defaultAgentId;
@@ -392,9 +405,9 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
                 id: tabConfig.tab_id ?? undefined,
                 label: tabConfig.label ?? undefined,
                 cwd: tabConfig.cwd ?? pc.cwd ?? undefined,
-                claudeSessionId: tabConfig.claude_session_id ?? undefined,
-                agentKind: tabConfig.agent_kind ?? (tabConfig.claude_session_id ? "claude" : undefined),
-                agentSessionId: tabConfig.agent_session_id ?? tabConfig.claude_session_id ?? undefined,
+                claudeSessionId: tabClaudeSessionId,
+                agentKind: tabAgentKind,
+                agentSessionId: tabAgentSessionId,
                 launchEnv: tabConfig.launch_env ?? pc.launch_env ?? undefined,
                 terminalSnapshot: tabConfig.terminal_snapshot ?? undefined,
               },

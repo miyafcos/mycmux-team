@@ -18,14 +18,21 @@ def test_agent_kind_round_trip_contract_remains_wired() -> None:
     socket_listener = read_repo_text("src/components/layout/SocketListener.tsx")
     storage = read_repo_text("src-tauri/src/db/storage.rs")
     layout_store = read_repo_text("src/stores/workspaceLayoutStore.ts")
+    launcher_ps1 = read_repo_text("src-tauri/src/launcher.ps1")
+    monitor = read_repo_text("src-tauri/src/pty/monitor.rs")
 
     for snippet in [
         "agent_kind: liveKind",
         "agent_session_id: liveAgentId",
-        "agent_kind: tab.agentKind ?? tabMeta?.agentKind ?? null",
-        "agent_session_id: tab.agentSessionId ?? tabMeta?.agentSessionId ?? null",
+        "const isActivePersistedTab = tab.id === activeTab.id;",
+        "const tabKind = tab.agentKind ?? tabMeta?.agentKind ?? (isActivePersistedTab ? liveKind : null);",
+        "const tabAgentId = tab.agentSessionId",
+        "agent_kind: tabKind",
+        "agent_session_id: tabAgentId",
         "agent_kind: paneConfig.agent_kind ?? mappingKind",
         "agent_kind: tabConfig.agent_kind ?? mappingKind",
+        "function tabConfigWithPaneAgentSessionFallback(",
+        "tabConfigWithPaneAgentSessionFallback(tab, pane)",
         "clearDuplicateTabAgentSession(cleanedTab)",
         "clearStaleAgentErrorSnapshot(tab)",
         "terminal_snapshot: null",
@@ -36,12 +43,32 @@ def test_agent_kind_round_trip_contract_remains_wired() -> None:
     assert_contains(storage, "#[serde(default)]\n    pub agent_kind", "src-tauri/src/db/storage.rs")
 
     for snippet in [
-        "agentKind: tabConfig.agent_kind ?? (tabConfig.claude_session_id ? \"claude\" : undefined)",
-        "agentSessionId: tabConfig.agent_session_id ?? tabConfig.claude_session_id ?? undefined",
+        "const activeTabConfigId = pc.active_tab_id ?? pc.tabs?.[0]?.tab_id ?? null;",
+        "const isActiveRestoredTab = tabConfig.tab_id === activeTabConfigId;",
+        "const tabAgentKind =",
+        "const tabAgentSessionId =",
+        "agentKind: tabAgentKind",
+        "agentSessionId: tabAgentSessionId",
         "agentKind: activeTab.agentKind ?? pc.agent_kind ?? undefined",
         "agentSessionId: activeTab.agentSessionId ?? pc.agent_session_id ?? undefined",
     ]:
         assert_contains(layout_store, snippet, "src/stores/workspaceLayoutStore.ts")
+
+    for snippet in [
+        "function Write-MycmuxSessionMapping",
+        "function Invoke-MycmuxResumeFromEnv",
+        "MYCMUX_RESUME",
+        '@("codex", "resume", "--no-alt-screen", $env:MYCMUX_SESSION_ID)',
+    ]:
+        assert_contains(launcher_ps1, snippet, "src-tauri/src/launcher.ps1")
+
+    for snippet in [
+        "fn write_detected_agent_session_mapping(",
+        'home.join(".mycmux").join("pane-sessions")',
+        "write_detected_agent_session_mapping(",
+        "agent_session_id.as_deref()",
+    ]:
+        assert_contains(monitor, snippet, "src-tauri/src/pty/monitor.rs")
 
 
 def test_duplicate_session_create_is_idempotent() -> None:
