@@ -4,7 +4,7 @@ import react from "@vitejs/plugin-react";
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, ".", "");
   const host = env.TAURI_DEV_HOST;
-  const isCmuxVariant = env.VITE_UI_VARIANT === "cmux";
+  const isCmuxVariant = env.VITE_UI_VARIANT === "mycmux" || env.VITE_UI_VARIANT === "cmux";
 
   return {
     plugins: [react()],

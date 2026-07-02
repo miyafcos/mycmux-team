@@ -113,7 +113,8 @@ async function applyAgentSessionMappings(): Promise<void> {
 function App() {
   const [ready, setReady] = useState(false);
   const [startupMaskVisible, setStartupMaskVisible] = useState(true);
-  const uiVariant = import.meta.env.VITE_UI_VARIANT === "cmux" ? "cmux" : "default";
+  const uiVariantEnv = import.meta.env.VITE_UI_VARIANT;
+  const uiVariant = uiVariantEnv === "mycmux" || uiVariantEnv === "cmux" ? "cmux" : "default";
 
   useWorkspacePersist();
 

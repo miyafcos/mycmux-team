@@ -1049,7 +1049,9 @@ export function evictTerminalCache(sessionId: string): void {
     cached.unlistenExit?.();
     cached.term.dispose();
     termCache.delete(sessionId);
-    console.log(`[mycmux-diag xterm:${sessionId}] cache_evict`);
+    if (import.meta.env.DEV) {
+      console.log(`[mycmux-diag xterm:${sessionId}] cache_evict`);
+    }
   }
   terminalSizeCache.delete(sessionId);
   terminalWriteCounters.delete(sessionId);
@@ -2439,14 +2441,18 @@ export default memo(function XTermWrapper({
 
     const cached = termCache.get(sessionId);
     if (cached) {
-      console.log(`[mycmux-diag xterm:${sessionId}] cache_hit`);
+      if (import.meta.env.DEV) {
+        console.log(`[mycmux-diag xterm:${sessionId}] cache_hit`);
+      }
       attachCachedTerminal(cached);
       void attachFrontendChannel(cached.term.cols, cached.term.rows).catch((err) => {
         console.error("[XTermWrapper] Failed to reattach session:", err);
       });
       return cleanup;
     }
-    console.log(`[mycmux-diag xterm:${sessionId}] cache_miss`);
+    if (import.meta.env.DEV) {
+      console.log(`[mycmux-diag xterm:${sessionId}] cache_miss`);
+    }
 
     async function init(): Promise<void> {
       if (disposed) return;
@@ -2513,9 +2519,11 @@ export default memo(function XTermWrapper({
         const replayBytes = new Blob([displayReplay]).size;
         diagStats.replays += 1;
         diagStats.replayLines += initialReplay.length;
-        console.log(
-          `[mycmux-diag xterm:${sessionId}] initial_replay lines=${initialReplay.length} bytes=${replayBytes} source=initialReplay`,
-        );
+        if (import.meta.env.DEV) {
+          console.log(
+            `[mycmux-diag xterm:${sessionId}] initial_replay lines=${initialReplay.length} bytes=${replayBytes} source=initialReplay`,
+          );
+        }
         const replayTerm = term;
         await new Promise<void>((resolve) => {
           replayTerm.write(`${stripTerminalMouseModeControlSequences(displayReplay)}\r\n`, () => resolve());
