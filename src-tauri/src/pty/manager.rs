@@ -47,22 +47,31 @@ impl SessionManager {
         env: Option<std::collections::HashMap<String, String>>,
         metadata_store: MetadataStore,
     ) -> Result<(), String> {
+        #[cfg(debug_assertions)]
         let new_channel_id = data_channel.id().to_string();
         let create_lock = self.create_lock_for(&session_id)?;
         let _create_guard = create_lock
             .lock()
             .map_err(|error| format!("Failed to lock create session {session_id}: {error}"))?;
         if let Some(session) = self.sessions.get(&session_id) {
-            let age_ms = session.created_at.elapsed().as_millis();
-            let (old_channel_id, active_channel_id) =
-                session.replace_data_channel(data_channel, consumer_id)?;
-            eprintln!(
-                "[mycmux-diag manager] create_session id={} kind=reattach age_ms={} old_channel_id={} new_channel_id={} active_channel_id={}",
-                session_id, age_ms, old_channel_id, new_channel_id, active_channel_id
-            );
+            let replaced_channel_ids = session.replace_data_channel(data_channel, consumer_id)?;
+            #[cfg(debug_assertions)]
+            {
+                let age_ms = session.created_at.elapsed().as_millis();
+                let (old_channel_id, active_channel_id) = replaced_channel_ids;
+                eprintln!(
+                    "[mycmux-diag manager] create_session id={} kind=reattach age_ms={} old_channel_id={} new_channel_id={} active_channel_id={}",
+                    session_id, age_ms, old_channel_id, new_channel_id, active_channel_id
+                );
+            }
+            #[cfg(not(debug_assertions))]
+            {
+                let _ = replaced_channel_ids;
+            }
             return Ok(());
         }
 
+        #[cfg(debug_assertions)]
         eprintln!(
             "[mycmux-diag manager] create_session id={} kind=new channel_id={}",
             session_id, new_channel_id

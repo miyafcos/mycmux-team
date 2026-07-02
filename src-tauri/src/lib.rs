@@ -160,7 +160,6 @@ pub fn run() {
             commands::terminal::save_editable_artifact,
             commands::terminal::get_terminal_config,
             commands::terminal::get_pty_metadata_snapshot,
-            commands::terminal::get_all_cwds,
             commands::terminal::is_directory,
             commands::terminal::get_launch_cwd,
             commands::terminal::get_default_shell,

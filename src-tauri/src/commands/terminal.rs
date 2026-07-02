@@ -10,7 +10,6 @@ use std::io::{BufRead, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
-use sysinfo::System;
 use tauri::ipc::Channel;
 use tauri::{AppHandle, State};
 use zip::{ZipArchive, ZipWriter};
@@ -3468,41 +3467,6 @@ pub async fn save_editable_artifact(
         save_editable_artifact_inner(source_path, source_kind, content)
     })
     .await
-}
-
-#[tauri::command]
-pub fn get_all_cwds(state: State<'_, AppState>) -> Result<HashMap<String, String>, String> {
-    let mut cwds = HashMap::new();
-    let mut sys = System::new();
-    sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
-
-    for (session_id, pid_opt) in state.session_manager.iter_pids() {
-        if let Some(pid) = pid_opt {
-            let sys_pid = sysinfo::Pid::from_u32(pid);
-            // We want the foreground process CWD. If bash is the child, we find its children.
-            // For simplicity, we just take the deepest child process's CWD or the shell's CWD.
-            // Let's find any child of this PID, or use the PID itself.
-            let mut target_pid = sys_pid;
-
-            // Find a child process (like nvim, node, etc)
-            for (p, proc) in sys.processes() {
-                if let Some(parent) = proc.parent() {
-                    if parent == sys_pid {
-                        target_pid = *p;
-                        break;
-                    }
-                }
-            }
-
-            if let Some(proc) = sys.process(target_pid) {
-                if let Some(cwd) = proc.cwd() {
-                    cwds.insert(session_id, cwd.to_string_lossy().to_string());
-                }
-            }
-        }
-    }
-
-    Ok(cwds)
 }
 
 #[derive(serde::Serialize)]

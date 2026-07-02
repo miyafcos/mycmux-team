@@ -216,10 +216,6 @@ export async function getTerminalConfig(): Promise<TerminalConfig> {
   return invoke("get_terminal_config");
 }
 
-export async function getAllCwds(): Promise<Record<string, string>> {
-  return invoke("get_all_cwds");
-}
-
 // Preload config so it's cached before first terminal mounts
 let _configCache: Promise<TerminalConfig> | null = null;
 export function preloadTerminalConfig(): void {
