@@ -1,0 +1,661 @@
+{
+  "frontend_invokes": {
+    "src\\buddy\\sprite-skin.ts": [
+      "append_buddy_log",
+      "list_codex_pets",
+      "read_codex_pet_layout",
+      "read_codex_pet_spritesheet"
+    ],
+    "src\\lib\\ipc.ts": [
+      "ack_frontend_data",
+      "claim_leader",
+      "create_file",
+      "create_folder",
+      "create_session",
+      "crsm_create_handoff",
+      "crsm_list_sessions",
+      "get_all_cwds",
+      "get_default_shell",
+      "get_launch_cwd",
+      "get_pty_metadata_snapshot",
+      "get_remote_info",
+      "get_session_scrollback",
+      "get_terminal_config",
+      "get_window_count",
+      "is_directory",
+      "kill_session",
+      "list_directory",
+      "load_persistent_data",
+      "normalize_path",
+      "open_with_default",
+      "preview_artifact_for_session",
+      "preview_artifact_uri_for_session",
+      "preview_artifact_uri_for_session_v2",
+      "quit_app",
+      "read_agent_session_mappings",
+      "read_editable_artifact",
+      "resize_session",
+      "reveal_in_explorer",
+      "reveal_main_window",
+      "rotate_remote_token",
+      "save_editable_artifact",
+      "save_persistent_data",
+      "save_pinned_roots",
+      "save_settings",
+      "save_workspaces",
+      "set_frontend_visible",
+      "socket_response",
+      "unwatch_root",
+      "walk_tree",
+      "watch_root",
+      "write_to_session"
+    ],
+    "src\\stores\\usageStore.ts": [
+      "get_usage_summary"
+    ],
+    "src\\buddy\\core\\config.ts": [
+      "load_buddy_settings"
+    ],
+    "src\\buddy\\core\\PersonaAgent.ts": [
+      "append_buddy_chat",
+      "load_buddy_environment",
+      "load_recent_chat"
+    ],
+    "src\\buddy\\core\\judgment\\judgment.ts": [
+      "append_buddy_log",
+      "codex_judge"
+    ],
+    "src\\buddy\\core\\memory\\observation.ts": [
+      "codex_judge",
+      "load_chat_since",
+      "load_observation_state",
+      "load_work_context",
+      "save_observation_state"
+    ],
+    "src\\buddy\\core\\memory\\profile.ts": [
+      "codex_summarize",
+      "load_buddy_profile_facets",
+      "load_chat_since",
+      "load_observation_state",
+      "load_work_context",
+      "save_buddy_profile_facet",
+      "save_observation_state"
+    ],
+    "src\\buddy\\core\\memory\\workContext.ts": [
+      "load_work_context"
+    ],
+    "src\\buddy\\core\\memory\\workspace.ts": [
+      "load_session_tail"
+    ],
+    "src\\components\\layout\\SettingsMenu.tsx": [
+      "load_buddy_settings",
+      "save_buddy_settings"
+    ]
+  },
+  "rust_commands": {
+    "src-tauri\\src\\socket.rs": [
+      "socket_response"
+    ],
+    "src-tauri\\src\\buddy\\commands.rs": [
+      "codex_judge",
+      "codex_summarize",
+      "save_buddy_settings",
+      "list_codex_pets",
+      "read_codex_pet_spritesheet",
+      "read_codex_pet_layout",
+      "append_buddy_log",
+      "append_buddy_chat",
+      "save_buddy_profile",
+      "save_buddy_profile_facet",
+      "save_observation_state",
+      "set_buddy_enabled",
+      "is_buddy_enabled"
+    ],
+    "src-tauri\\src\\commands\\browser.rs": [
+      "browser_create",
+      "browser_destroy",
+      "browser_set_bounds",
+      "browser_navigate",
+      "browser_eval",
+      "browser_status",
+      "browser_snapshot"
+    ],
+    "src-tauri\\src\\commands\\crsm.rs": [
+      "crsm_list_sessions",
+      "crsm_create_handoff"
+    ],
+    "src-tauri\\src\\commands\\fs.rs": [
+      "normalize_path",
+      "save_pinned_roots",
+      "watch_root",
+      "unwatch_root",
+      "reveal_in_explorer",
+      "open_with_default",
+      "create_file",
+      "create_folder"
+    ],
+    "src-tauri\\src\\commands\\terminal.rs": [
+      "get_terminal_config",
+      "get_pty_metadata_snapshot",
+      "write_to_session",
+      "resize_session",
+      "ack_frontend_data",
+      "set_frontend_visible",
+      "get_session_scrollback",
+      "kill_session",
+      "preview_artifact_for_session",
+      "preview_artifact_uri_for_session",
+      "preview_artifact_uri_for_session_v2",
+      "read_editable_artifact",
+      "save_editable_artifact",
+      "get_all_cwds",
+      "get_default_shell",
+      "read_pane_session_mappings",
+      "read_agent_session_mappings",
+      "get_claude_session_id",
+      "is_directory",
+      "get_launch_cwd"
+    ],
+    "src-tauri\\src\\commands\\usage.rs": [
+      "get_usage_summary"
+    ],
+    "src-tauri\\src\\commands\\window.rs": [
+      "claim_leader",
+      "get_window_count",
+      "reveal_main_window",
+      "quit_app"
+    ],
+    "src-tauri\\src\\commands\\workspace.rs": [
+      "load_persistent_data"
+    ],
+    "src-tauri\\src\\remote\\mod.rs": [
+      "get_remote_info",
+      "rotate_remote_token"
+    ]
+  },
+  "components": {
+    "src\\components\\CommandPalette\\CrsmPalette.tsx": {
+      "components": [
+        "CrsmPalette",
+        "HANDOFF_TIMEOUT_MS",
+        "ITEM_HEIGHT",
+        "KIND_COLORS",
+        "LIST_OVERSCAN",
+        "LIST_VIEWPORT_FALLBACK",
+        "LOAD_MORE_HEIGHT",
+        "MAX_LISTED_SESSIONS_DEEP",
+        "MAX_LISTED_SESSIONS_INITIAL",
+        "OPEN_TARGETS",
+        "SESSION_AUTO_REFRESH_COOLDOWN_MS",
+        "SESSION_FETCH_LIMIT_DEEP",
+        "SESSION_FETCH_LIMIT_INITIAL",
+        "SESSION_FILTER_LABELS",
+        "SESSION_VALIDATE_LIMIT",
+        "SESSION_VALIDATE_TIMEOUT_MS",
+        "SOURCE_LABELS",
+        "TOP_CWD_CHIPS"
+      ],
+      "labels": [
+        "(promise: Promise",
+        "(プレビューなし)",
+        ", timeoutMs: number, label: string): Promise",
+        "CWD",
+        "セッションを選択してください",
+        "履歴を検索"
+      ]
+    },
+    "src\\components\\common\\ErrorBoundary.tsx": {
+      "components": [],
+      "labels": [
+        "Pane crashed"
+      ]
+    },
+    "src\\components\\layout\\AppShell.tsx": {
+      "components": [
+        "AppBackgroundLayer",
+        "AppShell",
+        "LIGHT_COLOR_LUMINANCE_THRESHOLD",
+        "TERMINAL_PLAIN_INPUT_KEYS"
+      ],
+      "labels": []
+    },
+    "src\\components\\layout\\ErrorBoundary.tsx": {
+      "components": [],
+      "labels": [
+        "Something went wrong."
+      ]
+    },
+    "src\\components\\layout\\FileExplorerSidebar.tsx": {
+      "components": [
+        "ChildList",
+        "ContextMenu",
+        "CreateRow",
+        "DirIcon",
+        "DragPreview",
+        "FileExplorerSidebar",
+        "INDENT_PX",
+        "IconButton",
+        "MenuItem",
+        "NAME_COLLATOR",
+        "PREVIEWABLE_ARTIFACT_EXTENSIONS",
+        "ROW_HEIGHT",
+        "RootNode",
+        "RootSwitcher",
+        "SORT_CYCLE",
+        "SORT_LABEL_BASE",
+        "SortToggleButton",
+        "TreeNode",
+        "TreeRow"
+      ],
+      "labels": [
+        "(空)",
+        "1 ?",
+        ":",
+        "Open item actions",
+        "このルートを外す",
+        "ルート追加",
+        "更新",
+        "読み込み中..."
+      ]
+    },
+    "src\\components\\layout\\KeybindingsModal.tsx": {
+      "components": [
+        "KeybindingsModal"
+      ],
+      "labels": []
+    },
+    "src\\components\\layout\\NotificationPanel.tsx": {
+      "components": [
+        "NotificationPanel"
+      ],
+      "labels": [
+        "Notifications"
+      ]
+    },
+    "src\\components\\layout\\PathJumper.tsx": {
+      "components": [
+        "BLUR_CLOSE_DELAY_MS",
+        "PathJumper"
+      ],
+      "labels": [
+        ":",
+        "Indexing...",
+        "Path jumper... Ctrl+P",
+        "Pinned",
+        "Pinned と recent はここに表示されます。",
+        "Promise",
+        "Recent",
+        "一致するパスがありません。"
+      ]
+    },
+    "src\\components\\layout\\SettingsMenu.tsx": {
+      "components": [
+        "CrsmPaletteSection",
+        "SettingsMenu"
+      ],
+      "labels": [
+        "Claude Buddy",
+        "Ctrl+P",
+        "Default (SVG)",
+        "Keybindings",
+        "Remote Access",
+        "Remote: QR を表示",
+        "Remote: トークン再生成",
+        "Resume",
+        "Terminal renderer (stable DOM)",
+        "Themes",
+        "接続中の iPhone はありません",
+        "接続中クライアント",
+        "更新を確認",
+        "読み込み中…",
+        "通知",
+        "通知サウンド"
+      ]
+    },
+    "src\\components\\layout\\SocketListener.tsx": {
+      "components": [
+        "EPHEMERAL_LAUNCH_ENV_KEYS",
+        "STARTUP_RESTORE_AUTOSAVE_BASE_HOLD_MS",
+        "STARTUP_RESTORE_AUTOSAVE_MAX_HOLD_MS",
+        "STARTUP_RESTORE_AUTOSAVE_PER_PANE_MS",
+        "STARTUP_RESTORE_AUTOSAVE_PER_WORKSPACE_MS",
+        "SocketListener"
+      ],
+      "labels": []
+    },
+    "src\\components\\layout\\TabBar.tsx": {
+      "components": [
+        "PlusIcon",
+        "TabBar"
+      ],
+      "labels": [
+        "New workspace",
+        "New workspace (Ctrl+Shift+N)",
+        "Workspaces"
+      ]
+    },
+    "src\\components\\layout\\TabItem.tsx": {
+      "components": [
+        "StatusPip",
+        "TabItem"
+      ],
+      "labels": [
+        "0 &&",
+        "Close workspace",
+        "Waiting for approval",
+        "Work done"
+      ]
+    },
+    "src\\components\\layout\\TitleBar.tsx": {
+      "components": [
+        "BellIcon",
+        "PlusIcon",
+        "SettingsIcon",
+        "SidebarIcon",
+        "TitleBar"
+      ],
+      "labels": [
+        "Close",
+        "Minimize",
+        "New Workspace (Ctrl+Shift+N)",
+        "Notifications",
+        "Settings",
+        "Toggle Sidebar (Ctrl+B)"
+      ]
+    },
+    "src\\components\\layout\\UsageMeter.tsx": {
+      "components": [
+        "CellBar",
+        "CompactMeter",
+        "FullMeter",
+        "Metric",
+        "UsageMeter"
+      ],
+      "labels": []
+    },
+    "src\\components\\layout\\UsagePopover.tsx": {
+      "components": [
+        "UsagePopover",
+        "UsageRow",
+        "UsageSection"
+      ],
+      "labels": [
+        "Claude Code",
+        "Codex",
+        "Usage"
+      ]
+    },
+    "src\\components\\setup\\AgentSelector.tsx": {
+      "components": [
+        "AgentSelector"
+      ],
+      "labels": []
+    },
+    "src\\components\\setup\\AgentSlotList.tsx": {
+      "components": [
+        "AgentSlotList"
+      ],
+      "labels": []
+    },
+    "src\\components\\setup\\GridPicker.tsx": {
+      "components": [
+        "DISPLAY_ORDER",
+        "GridPicker"
+      ],
+      "labels": []
+    },
+    "src\\components\\setup\\GridPreview.tsx": {
+      "components": [
+        "GridPreview"
+      ],
+      "labels": []
+    },
+    "src\\components\\setup\\WorkspaceSetup.tsx": {
+      "components": [
+        "WorkspaceSetup"
+      ],
+      "labels": [
+        "My Workspace"
+      ]
+    },
+    "src\\components\\terminal\\XTermWrapper.tsx": {
+      "components": [
+        "ANSI_KEYS",
+        "APPROVAL_PATTERNS",
+        "ARTIFACT_EXTENSION_PATTERN",
+        "ARTIFACT_LINK_CANDIDATE_PREFIX_REGEX",
+        "ARTIFACT_LINK_CONTEXT_LINES",
+        "ARTIFACT_LINK_MAX_SEGMENT_CHARS",
+        "ARTIFACT_LINK_MAX_WRAPPED_LINES",
+        "ARTIFACT_LINK_REGEX",
+        "ARTIFACT_LINK_TERMINATOR_PATTERN",
+        "CODING_AGENT_HINT_PATTERN",
+        "COMPLETE_ARTIFACT_EXTENSION_REGEX",
+        "DEFAULT_TERMINAL_LINE_HEIGHT",
+        "DISPLAY_CACHE_MAX_TEXT_LENGTH",
+        "DISPLAY_NORMALIZE_CACHE_LIMIT",
+        "DISPLAY_WIDTH_CACHE_LIMIT",
+        "HTTP_LINK_REGEX",
+        "MSYS_DRIVE_PREFIX_PATTERN",
+        "NON_ASCII_RE",
+        "PASTE_CHUNK",
+        "TERMINAL_FOCUS_RETRY_LIMIT",
+        "TERMINAL_MIN_CONTRAST",
+        "TERMINAL_MOUSE_MODE_CONTROL_PARTIAL_RE",
+        "TERMINAL_MOUSE_MODE_CONTROL_SEQUENCE_RE",
+        "TERMINAL_MOUSE_MODE_PARAMS",
+        "TERMINAL_MOUSE_REPORT_PARAMS",
+        "TERMINAL_PLAIN_INPUT_KEYS",
+        "TERMINAL_POINTER_FOCUS_ALLOW_MS",
+        "TERMINAL_RAW_TAIL_MAX_BYTES",
+        "TERMINAL_SNAPSHOT_MAX_LINE_CHARS",
+        "TERMINAL_SNAPSHOT_MAX_WRAPPED_LINES",
+        "TERMINAL_SNAPSHOT_SCAN_MULTIPLIER",
+        "TERMINAL_WHEEL_FOCUS_SUPPRESS_MS",
+        "WHEEL_DELTA_LINE",
+        "WHEEL_DELTA_PAGE",
+        "XTermWrapper"
+      ],
+      "labels": [
+        "+\\uFF0B]+[^\\s\"'",
+        "= 0x0300 && codePoint",
+        "= 0x1ab0 && codePoint",
+        "= 0x1dc0 && codePoint",
+        "= 0x1f300 && codePoint",
+        "= 0x20000 && codePoint",
+        "= 0x20d0 && codePoint",
+        "= 0x2e80 && codePoint",
+        "= 0xac00 && codePoint",
+        "= 0xf900 && codePoint",
+        "= 0xfe00 && codePoint",
+        "= 0xfe10 && codePoint",
+        "= 0xfe30 && codePoint",
+        "= 0xff00 && codePoint",
+        "= 0xffe0 && codePoint",
+        "= minLineIndex && result.length",
+        "Find..."
+      ]
+    },
+    "src\\components\\theme\\ThemeBackgroundPanel.tsx": {
+      "components": [
+        "CATEGORY_FILTERS",
+        "RangeControl",
+        "TONE_FILTERS",
+        "ThemeBackgroundPanel",
+        "VISUAL_BACKGROUND_DEFAULTS"
+      ],
+      "labels": [
+        "Background",
+        "Paste image path",
+        "Search presets"
+      ]
+    },
+    "src\\components\\theme\\ThemeFontSettings.tsx": {
+      "components": [
+        "FONT_PRESET_GROUPS",
+        "FontPresetOption",
+        "ThemeFontSettings"
+      ],
+      "labels": [
+        "| Codex入力 | 12,300 | 待機 |",
+        "| 項目     | 金額   | 状態 |",
+        "端末フォント"
+      ]
+    },
+    "src\\components\\theme\\ThemeSwitcher.tsx": {
+      "components": [
+        "ThemeSwitcher"
+      ],
+      "labels": [
+        "外観調整"
+      ]
+    },
+    "src\\components\\theme\\ThemeTweakPanel.tsx": {
+      "components": [
+        "AdvancedColorRow",
+        "ColorTweakRow",
+        "PRESET_SWATCH_KEYS",
+        "PresetButton",
+        "QUICK_TWEAK_FIELDS",
+        "QUICK_TWEAK_KEYS",
+        "ThemeTweakPanel"
+      ],
+      "labels": [
+        "この色だけ戻す",
+        "よく触る項目",
+        "主要色",
+        "外観プリセット",
+        "詳細色"
+      ]
+    },
+    "src\\components\\workspace\\ArtifactEditorToolbar.tsx": {
+      "components": [
+        "ArtifactEditorToolbarImpl",
+        "FONT_FAMILY_OPTIONS",
+        "FONT_SIZE_OPTIONS",
+        "StatusPill",
+        "ToolbarButton",
+        "ToolbarSelect"
+      ],
+      "labels": [
+        "Add column",
+        "Add row",
+        "Align center",
+        "Align left",
+        "Align right",
+        "Bold",
+        "Bullet list",
+        "Delete column",
+        "Delete row",
+        "Discard edits and leave edit mode",
+        "Document structure",
+        "Editing",
+        "Equation",
+        "File",
+        "File actions",
+        "Font",
+        "Font family",
+        "Font size",
+        "Heading",
+        "Indent",
+        "Insert",
+        "Italic",
+        "Link",
+        "Numbered list",
+        "Open in the default desktop app",
+        "Outdent",
+        "Para",
+        "Paragraph formatting",
+        "Preview mode",
+        "Reload from disk",
+        "Show document location in Explorer",
+        "Size",
+        "Struct",
+        "Table",
+        "Table editing",
+        "Text",
+        "Text formatting",
+        "Unsaved edits",
+        "Working"
+      ]
+    },
+    "src\\components\\workspace\\BrowserPane.tsx": {
+      "components": [
+        "BrowserPaneImpl",
+        "EDITOR_STYLE_ID",
+        "OFFICE_PAGE_CLASS"
+      ],
+      "labels": []
+    },
+    "src\\components\\workspace\\PaneDragOverlay.tsx": {
+      "components": [
+        "PaneDragOverlay"
+      ],
+      "labels": []
+    },
+    "src\\components\\workspace\\PaneHeader.tsx": {
+      "components": [
+        "PaneHeader",
+        "SplitIcon"
+      ],
+      "labels": [
+        "Close pane",
+        "Split pane"
+      ]
+    },
+    "src\\components\\workspace\\PaneStarter.tsx": {
+      "components": [
+        "PaneStarter",
+        "START_OPTIONS"
+      ],
+      "labels": []
+    },
+    "src\\components\\workspace\\PaneTabBar.tsx": {
+      "components": [
+        "AGENT_LABELS",
+        "AgentStatusDot",
+        "CloseIcon",
+        "FolderIcon",
+        "MaximizeIcon",
+        "MinimizeIcon",
+        "PaneTabBar",
+        "PaneTabContextMenuItem",
+        "PlusIcon",
+        "STATUS_CONFIG",
+        "SplitDownIcon",
+        "SplitRightIcon"
+      ],
+      "labels": [
+        ":",
+        "Close pane",
+        "Close tab",
+        "New terminal tab",
+        "Split down",
+        "Split right",
+        "Waiting for approval",
+        "Work done"
+      ]
+    },
+    "src\\components\\workspace\\TerminalPane.tsx": {
+      "components": [
+        "PANE_CLICK_ACTIVATE_MAX_DISTANCE_PX",
+        "PANE_CLICK_IGNORED_TARGET_SELECTOR",
+        "TerminalPane"
+      ],
+      "labels": [
+        "document.querySelector"
+      ]
+    },
+    "src\\components\\workspace\\WorkspaceView.tsx": {
+      "components": [
+        "FIRST_RESTORE_MOUNT_DELAY_MS",
+        "FIT_LAYOUT_MIN_SIZE",
+        "MAX_MOUNTED_WORKSPACES",
+        "RESTORE_MOUNT_DELAY_MS",
+        "TerminalGrid",
+        "WorkspaceView"
+      ],
+      "labels": []
+    }
+  }
+}

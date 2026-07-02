@@ -14,8 +14,10 @@ def assert_contains(text: str, snippet: str, source: str) -> None:
     assert snippet in text, f"Missing snippet in {source}: {snippet}"
 
 
-def test_socket_api_frontend_bridge_returns_responses() -> None:
+def test_socket_api_has_frontend_response_bridge() -> None:
     socket_listener = read_repo_text("src/components/layout/SocketListener.tsx")
+    ipc = read_repo_text("src/lib/ipc.ts")
+    socket_rs = read_repo_text("src-tauri/src/socket.rs")
 
     for snippet in [
         'listen<SocketRequestPayload>("socket-request"',
@@ -24,13 +26,10 @@ def test_socket_api_frontend_bridge_returns_responses() -> None:
         "await sendSocketResponse(id, null, message);",
         'case "workspace.list":',
         'case "pane.list":',
+        "Unknown socket command",
     ]:
         assert_contains(socket_listener, snippet, "src/components/layout/SocketListener.tsx")
 
-
-def test_socket_api_rust_bridge_emits_frontend_requests() -> None:
-    socket_rs = read_repo_text("src-tauri/src/socket.rs")
-    ipc_ts = read_repo_text("src/lib/ipc.ts")
-
+    assert_contains(ipc, 'return invoke("socket_response", { id, result, error });', "src/lib/ipc.ts")
     assert_contains(socket_rs, 'app.emit("socket-request", &req)', "src-tauri/src/socket.rs")
-    assert_contains(ipc_ts, 'invoke("socket_response"', "src/lib/ipc.ts")
+    assert_contains(socket_rs, 'state.pending_requests.remove(&id);', "src-tauri/src/socket.rs")

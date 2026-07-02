@@ -1,0 +1,2127 @@
+{
+  "feature_docs": {
+    "docs\\features\\implemented\\agents.md": {
+      "headings": [
+        "# Agent System",
+        "## Overview",
+        "## Built-in Agents",
+        "## AgentDefinition Type",
+        "## How Agents Are Used",
+        "## Agent Resolution",
+        "## Adding New Agents",
+        "## Future",
+        "## Session Resume (v0.4.0+)",
+        "### Env Hygiene"
+      ],
+      "bullets": []
+    },
+    "docs\\features\\implemented\\browser-pane.md": {
+      "headings": [
+        "# Browser Pane",
+        "## Overview",
+        "## Architecture",
+        "### GTK Overlay Setup (`src-tauri/src/lib.rs`)",
+        "### Why `gtk::Fixed` + `gtk::Overlay`",
+        "### BrowserManager (`src-tauri/src/commands/browser.rs`)",
+        "## Tauri Commands",
+        "## Component: `BrowserPane.tsx`",
+        "## Socket API — Browser Commands",
+        "## Coordinate System",
+        "## How to Open",
+        "## Capabilities vs. Iframe"
+      ],
+      "bullets": [
+        "- wry's `build_gtk(container)` only supports absolute positioning when the container is a `gtk::Fixed`. With a `GtkBox`, it calls `pack_start()` and ignores position/size entirely.",
+        "- Wrapping with `gtk::Overlay` lets the Fixed float above the React UI without pushing it down, so both layers coexist.",
+        "- `set_overlay_pass_through` tells GTK to route input events through the Fixed to the React UI in areas where no child webview is active.",
+        "- **Mount**: Calls `browser_create` with the container div's bounding rect. Starts a `ResizeObserver` to call `browser_set_bounds` whenever the pane is resized or the layout changes.",
+        "- **Unmount**: Calls `browser_destroy` to free the webview.",
+        "- **URL bar**: Normalizes input (prepends `https://` if no protocol), calls `browser_navigate`.",
+        "- **Loading state**: Visual spinner while navigation is in progress."
+      ]
+    },
+    "docs\\features\\implemented\\config-detection.md": {
+      "headings": [
+        "# Terminal Config Detection",
+        "## Overview",
+        "## Detection Order",
+        "## Config File Paths",
+        "## Ghostty Parser",
+        "## Alacritty Parser",
+        "## Kitty Parser",
+        "## Fallback Defaults",
+        "## Font Size Scaling",
+        "## Caching"
+      ],
+      "bullets": [
+        "- **Font**: First terminal with a configured font",
+        "- **Colors**: First terminal with explicit palette entries",
+        "- `font-family` → font family name",
+        "- `font-size` → float",
+        "- `config-file` → loads included theme file (supports `?` optional prefix)",
+        "- `background`, `foreground` → hex colors",
+        "- `palette = N=#rrggbb` → ANSI color N (0-15)",
+        "- `[font.normal]` → `family` key",
+        "- Root → `size` key",
+        "- `[colors.primary]` → `background`, `foreground`",
+        "- `[colors.normal]` → 8 color names (black, red, green, ...)",
+        "- `[colors.bright]` → 8 bright color names",
+        "- `font_family` → font family",
+        "- `font_size` → float",
+        "- `background`, `foreground` → hex colors",
+        "- `color0` through `color15` → ANSI colors"
+      ]
+    },
+    "docs\\features\\implemented\\keyboard-shortcuts.md": {
+      "headings": [
+        "# Keyboard Shortcuts",
+        "## Architecture",
+        "## Default Shortcuts",
+        "## User Remapping"
+      ],
+      "bullets": [
+        "- Definitions and defaults: `src/lib/keybindings.ts`",
+        "- Runtime store and overrides: `src/stores/keybindingStore.ts`",
+        "- Global dispatcher: `src/components/layout/AppShell.tsx`",
+        "- Terminal-level overrides: `src/components/terminal/XTermWrapper.tsx`",
+        "- Remapping UI: `src/components/layout/KeybindingsModal.tsx`",
+        "- Open **Keyboard Shortcuts** with `Ctrl+,` or via Command Palette (`Settings: Keyboard Shortcuts`).",
+        "- Click **Rebind**, then press your new shortcut.",
+        "- Press `Backspace` or `Delete` while rebinding to clear an override.",
+        "- Use **Restore defaults** to clear all overrides.",
+        "- Conflicts are highlighted in the modal."
+      ]
+    },
+    "docs\\features\\implemented\\notifications.md": {
+      "headings": [
+        "# Notifications",
+        "## How Notifications Are Generated",
+        "## Notification Store",
+        "## Badge Display",
+        "## Notification Clearing",
+        "## Flash / Attention",
+        "## Suppression"
+      ],
+      "bullets": [
+        "- `incrementNotification(sessionId)` — bump count by 1",
+        "- `clearNotification(sessionId)` — reset to 0",
+        "- `setMetadata(sessionId, data)` — update last log line",
+        "- `Ctrl+Shift+H` — flash the currently focused pane",
+        "- Programmatic via `usePaneMetadataStore.getState().triggerFlash()`"
+      ]
+    },
+    "docs\\features\\implemented\\persistence.md": {
+      "headings": [
+        "# Persistence",
+        "## Storage Location",
+        "## Data Shape",
+        "## What Persists",
+        "### Migration Note",
+        "## Save Flow",
+        "## Load Flow",
+        "## Error Handling"
+      ],
+      "bullets": [
+        "- Load failure: logged to console, app starts with empty workspace",
+        "- Save failure: logged to console, no retry",
+        "- Missing file: returns `PersistentData::default()` (empty workspaces, default settings)",
+        "- Parse error: returns error string, caught by JS"
+      ]
+    },
+    "docs\\features\\implemented\\rich-browser.md": {
+      "headings": [
+        "# Rich Browser Pane",
+        "## Overview",
+        "## Current State",
+        "## cmux Reference",
+        "## ptrterminal Requirements",
+        "## Key Decisions",
+        "## Priority: **Medium**"
+      ],
+      "bullets": [
+        "- No navigation history (back/forward)",
+        "- No DevTools",
+        "- iframe sandbox restrictions block many sites",
+        "- No persistent cookies/profiles",
+        "- Uses `WKWebView` with custom `CmuxWebView` wrapper",
+        "- Full address bar with back/forward/refresh controls",
+        "- Developer tools panel (WebKit Inspector)",
+        "- Popup window support for OAuth flows",
+        "- Search engine integration (address bar doubles as search)",
+        "- Per-workspace browser profiles with isolated storage",
+        "- **Tauri webview vs iframe**: Tauri webview gives full browser capabilities but requires native window management",
+        "- **DevTools**: Tauri webview supports `open_devtools()` — expose via keyboard shortcut",
+        "- **Isolation**: Each browser pane gets unique partition for cookie isolation"
+      ]
+    },
+    "docs\\features\\implemented\\search-and-command-palette.md": {
+      "headings": [
+        "# Search & CRSM Palette",
+        "## Terminal Find Bar",
+        "### Behavior",
+        "### Implementation",
+        "## CRSM Palette (`Ctrl+P`)",
+        "### Why Ctrl+P (and not auto-resume)",
+        "### UI",
+        "### Implementation",
+        "### 過去の Command Palette 構想との関係"
+      ],
+      "bullets": [
+        "- Integrated find bar overlay within each terminal pane",
+        "- Supports regex and case-sensitive toggles",
+        "- Keyboard: `Ctrl+Shift+F` to open, `Enter`/`Shift+Enter` to navigate matches",
+        "- Matches highlighted in scrollback buffer via xterm.js search addon",
+        "- Width: 1200px / 2 カラムレイアウト (左: セッション一覧 / 右: 詳細サブパネル)",
+        "- 左カラムの行: agent kind (色分けバッジ) + タイトル要約 + cwd chip + 相対時刻 (started_at)",
+        "- 右カラム: 選択中セッションの詳細 (会話プレビュー / フルパス / kind / 開始時刻)",
+        "- Enter で選択 → 新規ペインを spawn し対象セッションを resume"
+      ]
+    },
+    "docs\\features\\implemented\\socket-api-and-automation.md": {
+      "headings": [
+        "# Socket API & Automation",
+        "## Overview",
+        "## cmux Reference",
+        "## ptrterminal Implementation",
+        "## Suggested Command Set (Phase 1)",
+        "## Key Decisions",
+        "## Priority: **Medium**"
+      ],
+      "bullets": [
+        "- Unix socket at `~/.cmux/cmux.sock`",
+        "- **60+ commands** across categories:",
+        "- CLI wrapper: `cmux <command> [args]` translates to socket messages",
+        "- JSON request/response protocol with streaming for output",
+        "- **Transport**: TCP on localhost (`127.0.0.1`) for cross-platform support",
+        "- **Port discovery**: Random port, written to `~/.ptrterminal/ptr.port`",
+        "- **Protocol**: Simple JSON-RPC over TCP, newline-delimited messages",
+        "- **Security**: Only accepts connections from loopback addresses",
+        "- **Streaming**: Optional for `pane.output` command (subscribe to PTY output)"
+      ]
+    },
+    "docs\\features\\implemented\\terminal-core.md": {
+      "headings": [
+        "# Terminal Core",
+        "## xterm.js Setup",
+        "## Addons Loaded",
+        "## PTY Connection",
+        "## Resize Handling",
+        "## Process Exit",
+        "## Config Detection",
+        "## Scrollback",
+        "## Performance"
+      ],
+      "bullets": [
+        "- **Binary streaming**: Tauri `Channel<Vec<u8>>` delivers `ArrayBuffer` directly to JS",
+        "- **Reader thread**: OS thread (not tokio), 4KB blocking reads",
+        "- **Writer**: `term.onData()` and `term.onBinary()` → `writeToSession()` invoke",
+        "- **Environment**: `TERM=xterm-256color`, `COLORTERM=truecolor`, `TERM_PROGRAM=ptrterminal`",
+        "- Buffer: 5000 lines",
+        "- Smooth scroll: disabled (duration = 0)",
+        "- Viewport overflow: hidden (CSS override)",
+        "- `memo()` wrapping prevents unnecessary re-renders",
+        "- Effect only re-runs when `sessionId` changes",
+        "- Config loaded once, cached globally",
+        "- Log line extraction throttled to 500ms",
+        "- All inactive tabs kept mounted but hidden (`display: none`) to preserve PTY state"
+      ]
+    },
+    "docs\\features\\implemented\\theming.md": {
+      "headings": [
+        "# Theming",
+        "## 9 Bundled Themes",
+        "## Runtime Switching",
+        "## What Gets Themed",
+        "## Config-Detected Colors",
+        "## Persistence"
+      ],
+      "bullets": [
+        "- Midnight (default) — deepest black",
+        "- Catppuccin Mocha — warm purple-blue",
+        "- Dracula — purple accent",
+        "- Nord — cool blue-grey",
+        "- One Dark — Atom-inspired",
+        "- Tokyo Night — Japanese night palette",
+        "- Gruvbox Dark — warm retro",
+        "- Solarized Dark — classic dual-mode",
+        "- GitHub Dark — GitHub's dark mode",
+        "- Stored in `data.json` as `settings.theme_id`",
+        "- Default: `\"catppuccin-mocha\"` in Rust, `\"midnight\"` in `themeStore`",
+        "- Font size also persists: `settings.font_size`"
+      ]
+    },
+    "docs\\features\\implemented\\workspaces-and-layout.md": {
+      "headings": [
+        "# Workspaces & Layout",
+        "## Workspace Model",
+        "## Grid Templates",
+        "## Split Layout (Allotment)",
+        "## Dynamic Splitting",
+        "## Tab-per-Pane Model",
+        "## Workspace Lifecycle",
+        "## Workspace Colors"
+      ],
+      "bullets": [
+        "- **Split right**: Inserts new pane ID after target in its row",
+        "- **Split down**: Inserts new row after the row containing target",
+        "- **Add tab**: `onAddTab(agentId, type)` — creates new PTY or browser",
+        "- **Close tab**: removes tab; if last tab, removes entire pane",
+        "- **Switch tab**: sets `activeTabId`, all tabs stay mounted (hidden via `display: none`)"
+      ]
+    },
+    "docs\\features\\pending\\accessibility-and-motion.md": {
+      "headings": [
+        "# Accessibility & Motion",
+        "## ARIA Roles & Screen Reader Support",
+        "## High Contrast Mode",
+        "## Reduced Motion",
+        "### Implementation",
+        "## Internationalization (i18n)",
+        "## Keyboard Navigation"
+      ],
+      "bullets": []
+    },
+    "docs\\features\\pending\\input-and-interaction.md": {
+      "headings": [
+        "# Input & Interaction Enhancements",
+        "## Copy Mode",
+        "## Broadcast Input",
+        "## Drag-and-Drop",
+        "## Context Menus",
+        "## Zoom Pane",
+        "## Vim Mode Badge",
+        "## Custom Keybindings",
+        "## Clipboard Images",
+        "## URL Detection & Routing",
+        "## Focus-Follows-Mouse"
+      ],
+      "bullets": []
+    },
+    "docs\\features\\pending\\ssh-remote-sessions.md": {
+      "headings": [
+        "# SSH Remote Sessions",
+        "## Overview",
+        "## cmux Reference",
+        "## ptrterminal Requirements",
+        "## Key Decisions",
+        "## Priority: **Low**"
+      ],
+      "bullets": [
+        "- SSH sessions managed as first-class Surface type alongside local terminals",
+        "- Connection profiles stored in config with host, port, key, user",
+        "- Automatic reconnection on network recovery",
+        "- Port forwarding UI for managing tunnels",
+        "- Session multiplexing over single connection (SSH ControlMaster equivalent)",
+        "- **PTY routing**: SSH PTY channel feeds into same xterm.js pipeline as local PTY",
+        "- **Auth**: Support key-based (default) and password auth; agent forwarding optional",
+        "- **Reconnect**: Exponential backoff with user-visible status indicator"
+      ]
+    },
+    "docs\\features\\pending\\ui-polish.md": {
+      "headings": [
+        "# UI Polish & Visual Enhancements",
+        "## Glassmorphism Effects",
+        "## Error & Loading States",
+        "## Notification Sounds & Panel",
+        "## Light Theme",
+        "## Sidebar Metadata",
+        "## Port Scanner",
+        "## Markdown Viewer Pane",
+        "## Session Restore"
+      ],
+      "bullets": []
+    }
+  },
+  "entry_files": {
+    "src/App.tsx": {
+      "functions": [
+        [
+          112,
+          "function App() {"
+        ]
+      ],
+      "ui_lines": [
+        [
+          234,
+          "// Find the terminal pane under the drop position"
+        ]
+      ]
+    },
+    "src/components/layout/AppShell.tsx": {
+      "functions": [
+        [
+          30,
+          "const TERMINAL_PLAIN_INPUT_KEYS = new Set(["
+        ],
+        [
+          65,
+          "const LIGHT_COLOR_LUMINANCE_THRESHOLD = 140;"
+        ],
+        [
+          90,
+          "function AppBackgroundLayer({ background }: { background: ThemeBackgroundSettings }) {"
+        ],
+        [
+          316,
+          "export default function AppShell({ uiVariant = \"default\" }: AppShellProps) {"
+        ]
+      ],
+      "ui_lines": [
+        [
+          179,
+          "* Find the best pane to focus when navigating in a direction."
+        ],
+        [
+          318,
+          "const [isCrsmPaletteOpen, setIsCrsmPaletteOpen] = useState(false);"
+        ],
+        [
+          334,
+          "const isKeybindingsOpen = useUiStore((s) => s.isKeybindingsOpen);"
+        ],
+        [
+          335,
+          "const setIsKeybindingsOpen = useUiStore((s) => s.setIsKeybindingsOpen);"
+        ],
+        [
+          447,
+          "// Remote panel would just sit blank with no way to know it failed."
+        ],
+        [
+          453,
+          ": \"Remote terminal encountered an unknown error.\";"
+        ],
+        [
+          455,
+          "void message(text, { title: \"mycmux Remote Terminal\", kind: \"error\" });"
+        ],
+        [
+          502,
+          "const handleCloseWorkspace = useCallback("
+        ],
+        [
+          505,
+          "const shouldClose = await confirm(`ワークスペース「${wsName}」を閉じますか？`, {"
+        ],
+        [
+          512,
+          "if (!shouldClose) return;"
+        ],
+        [
+          540,
+          "if (isKeybindingsOpen || isCrsmPaletteOpen) return;"
+        ],
+        [
+          564,
+          "setIsKeybindingsOpen(true);"
+        ],
+        [
+          568,
+          "setIsCrsmPaletteOpen(true);"
+        ],
+        [
+          572,
+          "if (aid) handleCloseWorkspace(aid);"
+        ],
+        [
+          705,
+          "// Find the best pane in the requested direction using DOM positions"
+        ],
+        [
+          728,
+          "isKeybindingsOpen,"
+        ],
+        [
+          729,
+          "isCrsmPaletteOpen,"
+        ],
+        [
+          730,
+          "setIsKeybindingsOpen,"
+        ],
+        [
+          731,
+          "handleCloseWorkspace,"
+        ],
+        [
+          764,
+          "onOpenCrsmPalette={() => setIsCrsmPaletteOpen(true)}"
+        ],
+        [
+          789,
+          "onCloseWorkspace={handleCloseWorkspace}"
+        ],
+        [
+          804,
+          "{isKeybindingsOpen && <KeybindingsModal onClose={() => setIsKeybindingsOpen(false)} />}"
+        ],
+        [
+          805,
+          "<CrsmPalette open={isCrsmPaletteOpen} onClose={() => setIsCrsmPaletteOpen(false)} />"
+        ]
+      ]
+    },
+    "src/components/setup/WorkspaceSetup.tsx": {
+      "functions": [
+        [
+          16,
+          "export default function WorkspaceSetup({ onLaunch, onCancel }: WorkspaceSetupProps) {"
+        ]
+      ],
+      "ui_lines": [
+        [
+          76,
+          "placeholder=\"My Workspace\""
+        ],
+        [
+          102,
+          "<button"
+        ],
+        [
+          117,
+          "<button"
+        ]
+      ]
+    },
+    "src/components/workspace/WorkspaceView.tsx": {
+      "functions": [
+        [
+          14,
+          "const MAX_MOUNTED_WORKSPACES = 3;"
+        ],
+        [
+          15,
+          "const RESTORE_MOUNT_DELAY_MS = 650;"
+        ],
+        [
+          16,
+          "const FIRST_RESTORE_MOUNT_DELAY_MS = 1200;"
+        ],
+        [
+          17,
+          "const FIT_LAYOUT_MIN_SIZE = 1;"
+        ],
+        [
+          92,
+          "export const TerminalGrid = memo(function TerminalGrid({"
+        ],
+        [
+          262,
+          "export default memo(function WorkspaceView() {"
+        ]
+      ],
+      "ui_lines": [
+        [
+          9,
+          "import { reconcileSplitColumnsForPanes } from \"../../lib/layoutColumns\";"
+        ],
+        [
+          104,
+          "const handleClose = useCallback((paneId: string) => {"
+        ],
+        [
+          124,
+          "const handleSplitRight = useCallback((paneId: string) => {"
+        ],
+        [
+          128,
+          "const handleSplitDown = useCallback((paneId: string) => {"
+        ],
+        [
+          135,
+          "() => reconcileSplitColumnsForPanes(splitColumns, panes.map((pane) => pane.id)),"
+        ],
+        [
+          218,
+          "onClose={() => handleClose(pane.id)}"
+        ],
+        [
+          219,
+          "onSplitRight={() => handleSplitRight(pane.id)}"
+        ],
+        [
+          220,
+          "onSplitDown={() => handleSplitDown(pane.id)}"
+        ],
+        [
+          248,
+          "onClose={() => handleClose(pane.id)}"
+        ],
+        [
+          249,
+          "onSplitRight={() => handleSplitRight(pane.id)}"
+        ],
+        [
+          250,
+          "onSplitDown={() => handleSplitDown(pane.id)}"
+        ]
+      ]
+    },
+    "src/components/workspace/PaneHeader.tsx": {
+      "functions": [
+        [
+          9,
+          "const SplitIcon = () => ("
+        ],
+        [
+          13,
+          "export default memo(function PaneHeader({ onClose, hasNotification }: PaneHeaderProps) {"
+        ]
+      ],
+      "ui_lines": [
+        [
+          5,
+          "onClose?: () => void;"
+        ],
+        [
+          9,
+          "const SplitIcon = () => ("
+        ],
+        [
+          13,
+          "export default memo(function PaneHeader({ onClose, hasNotification }: PaneHeaderProps) {"
+        ],
+        [
+          35,
+          "<button className=\"pane-action-btn\" title=\"Split pane\">"
+        ],
+        [
+          36,
+          "<SplitIcon />"
+        ],
+        [
+          38,
+          "{onClose && ("
+        ],
+        [
+          39,
+          "<button className=\"pane-action-btn\" onClick={onClose} title=\"Close pane\">"
+        ]
+      ]
+    },
+    "src/components/workspace/PaneTabBar.tsx": {
+      "functions": [
+        [
+          24,
+          "const FolderIcon = () => ("
+        ],
+        [
+          30,
+          "const SplitRightIcon = () => ("
+        ],
+        [
+          38,
+          "const SplitDownIcon = () => ("
+        ],
+        [
+          46,
+          "const MaximizeIcon = () => ("
+        ],
+        [
+          55,
+          "const MinimizeIcon = () => ("
+        ],
+        [
+          64,
+          "const CloseIcon = ({ size = 10 }: { size?: number }) => ("
+        ],
+        [
+          71,
+          "const PlusIcon = () => ("
+        ],
+        [
+          78,
+          "const STATUS_CONFIG: Record<EffectiveStatus, { color: string; title: string; shape: \"circle\" | \"diamond\" }> = {"
+        ],
+        [
+          84,
+          "const AGENT_LABELS: Record<string, string> = {"
+        ],
+        [
+          134,
+          "function PaneTabContextMenuItem({"
+        ],
+        [
+          166,
+          "function AgentStatusDot({ status }: { status: EffectiveStatus }) {"
+        ],
+        [
+          185,
+          "export default memo(function PaneTabBar({"
+        ]
+      ],
+      "ui_lines": [
+        [
+          15,
+          "onClose?: () => void;"
+        ],
+        [
+          16,
+          "onSplitRight?: () => void;"
+        ],
+        [
+          17,
+          "onSplitDown?: () => void;"
+        ],
+        [
+          19,
+          "onAddTab?: (agentId?: string, type?: PaneTab[\"type\"]) => void;"
+        ],
+        [
+          30,
+          "const SplitRightIcon = () => ("
+        ],
+        [
+          38,
+          "const SplitDownIcon = () => ("
+        ],
+        [
+          64,
+          "const CloseIcon = ({ size = 10 }: { size?: number }) => ("
+        ],
+        [
+          171,
+          "title={cfg.title}"
+        ],
+        [
+          190,
+          "onClose,"
+        ],
+        [
+          191,
+          "onSplitRight,"
+        ],
+        [
+          192,
+          "onSplitDown,"
+        ],
+        [
+          194,
+          "onAddTab,"
+        ],
+        [
+          391,
+          "title={label}"
+        ],
+        [
+          410,
+          "<span title=\"Waiting for approval\" style={{ width: 5, height: 5, borderRadius: \"50%\", background: \"var(--status-waiting)\", flexShrink: 0 }} />"
+        ],
+        [
+          413,
+          "<span title=\"Work done\" style={{ width: 5, height: 5, borderRadius: \"50%\", background: \"var(--status-done)\", flexShrink: 0 }} />"
+        ],
+        [
+          471,
+          "<button"
+        ],
+        [
+          474,
+          "title=\"Close tab\""
+        ],
+        [
+          477,
+          "<CloseIcon size={9} />"
+        ],
+        [
+          532,
+          "{/* Add terminal tab — direct, no dropdown */}"
+        ],
+        [
+          533,
+          "<button"
+        ],
+        [
+          535,
+          "onClick={() => onAddTab?.(getDefaultAgent().id, \"terminal\")}"
+        ],
+        [
+          536,
+          "title=\"New terminal tab\""
+        ],
+        [
+          543,
+          "{onSplitRight && ("
+        ],
+        [
+          544,
+          "<button className=\"pane-action-btn\" onClick={onSplitRight} title=\"Split right\">"
+        ],
+        [
+          545,
+          "<SplitRightIcon />"
+        ],
+        [
+          548,
+          "{onSplitDown && ("
+        ],
+        [
+          549,
+          "<button className=\"pane-action-btn\" onClick={onSplitDown} title=\"Split down\">"
+        ],
+        [
+          550,
+          "<SplitDownIcon />"
+        ],
+        [
+          554,
+          "<button"
+        ],
+        [
+          557,
+          "title={isZoomed ? \"Restore pane (Ctrl+Shift+Enter)\" : \"Zoom pane (Ctrl+Shift+Enter)\"}"
+        ],
+        [
+          562,
+          "{onClose && ("
+        ],
+        [
+          563,
+          "<button className=\"pane-action-btn\" onClick={onClose} title=\"Close pane\">"
+        ],
+        [
+          564,
+          "<CloseIcon size={11} />"
+        ]
+      ]
+    },
+    "src/components/workspace/PaneStarter.tsx": {
+      "functions": [
+        [
+          1,
+          "const START_OPTIONS = ["
+        ],
+        [
+          22,
+          "export default function PaneStarter({ onSelect }: PaneStarterProps) {"
+        ]
+      ],
+      "ui_lines": [
+        [
+          84,
+          "<button"
+        ],
+        [
+          92,
+          "<button"
+        ]
+      ]
+    },
+    "src/components/workspace/TerminalPane.tsx": {
+      "functions": [
+        [
+          238,
+          "const PANE_CLICK_ACTIVATE_MAX_DISTANCE_PX = 5;"
+        ],
+        [
+          251,
+          "const PANE_CLICK_IGNORED_TARGET_SELECTOR = ["
+        ],
+        [
+          297,
+          "export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitRight, onSplitDown }: TerminalPaneProps) {"
+        ]
+      ],
+      "ui_lines": [
+        [
+          22,
+          "onClose?: () => void;"
+        ],
+        [
+          23,
+          "onSplitRight?: () => void;"
+        ],
+        [
+          24,
+          "onSplitDown?: () => void;"
+        ],
+        [
+          33,
+          "function resolveSavedAgentSession(tab: PaneTab): { kind: AgentSessionKind; sessionId: string } | null {"
+        ],
+        [
+          293,
+          "? `Split tab ${direction}`"
+        ],
+        [
+          294,
+          ": `Split pane ${direction}`;"
+        ],
+        [
+          297,
+          "export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitRight, onSplitDown }: TerminalPaneProps) {"
+        ],
+        [
+          447,
+          "const handleAddTab = useCallback((agentId?: string, type?: PaneTab[\"type\"]) => {"
+        ],
+        [
+          458,
+          "if (!window.confirm(`${label} has unsaved edits. Close it anyway?`)) {"
+        ],
+        [
+          485,
+          "// zoom button moves focus to the <button>; without this the user must"
+        ],
+        [
+          519,
+          "const savedAgentSession = activeTab ? resolveSavedAgentSession(activeTab) : null;"
+        ],
+        [
+          576,
+          "onClose={onClose ? () => {"
+        ],
+        [
+          577,
+          "onClose();"
+        ],
+        [
+          580,
+          "onSplitRight={onSplitRight ? () => {"
+        ],
+        [
+          581,
+          "onSplitRight();"
+        ],
+        [
+          584,
+          "onSplitDown={onSplitDown ? () => {"
+        ],
+        [
+          585,
+          "onSplitDown();"
+        ],
+        [
+          589,
+          "onAddTab={handleAddTab}"
+        ],
+        [
+          606,
+          "onSaved={(result) => {"
+        ]
+      ]
+    },
+    "src/components/workspace/BrowserPane.tsx": {
+      "functions": [
+        [
+          31,
+          "const EDITOR_STYLE_ID = \"mycmux-artifact-editor-style\";"
+        ],
+        [
+          32,
+          "const OFFICE_PAGE_CLASS = \"mycmux-doc-page\";"
+        ],
+        [
+          424,
+          "function BrowserPaneImpl({"
+        ]
+      ],
+      "ui_lines": [
+        [
+          9,
+          "type SaveEditableArtifactResult,"
+        ],
+        [
+          27,
+          "onSaved: (result: SaveEditableArtifactResult) => void;"
+        ],
+        [
+          432,
+          "onSaved,"
+        ],
+        [
+          438,
+          "const preserveEditAfterSaveRef = useRef(false);"
+        ],
+        [
+          439,
+          "const lastSavedSourcePathRef = useRef<string | null>(null);"
+        ],
+        [
+          443,
+          "const onSavedRef = useRef(onSaved);"
+        ],
+        [
+          464,
+          "onSavedRef.current = onSaved;"
+        ],
+        [
+          465,
+          "}, [onSaved]);"
+        ],
+        [
+          478,
+          "preserveEditAfterSaveRef.current"
+        ],
+        [
+          479,
+          "&& lastSavedSourcePathRef.current"
+        ],
+        [
+          480,
+          "&& sourcePath === lastSavedSourcePathRef.current"
+        ],
+        [
+          482,
+          "preserveEditAfterSaveRef.current = false;"
+        ],
+        [
+          483,
+          "lastSavedSourcePathRef.current = null;"
+        ],
+        [
+          760,
+          "const handleSave = useCallback(async () => {"
+        ],
+        [
+          776,
+          "preserveEditAfterSaveRef.current = true;"
+        ],
+        [
+          777,
+          "lastSavedSourcePathRef.current = result.sourcePath;"
+        ],
+        [
+          779,
+          "onSavedRef.current(result);"
+        ],
+        [
+          789,
+          "void handleSave();"
+        ],
+        [
+          791,
+          "}, [handleSave]);"
+        ],
+        [
+          823,
+          "const handleOpenSource = useCallback(() => {"
+        ],
+        [
+          852,
+          "onSave={handleSave}"
+        ],
+        [
+          856,
+          "onOpenSource={handleOpenSource}"
+        ],
+        [
+          878,
+          "title={sourcePath ?? htmlPath}"
+        ],
+        [
+          920,
+          "title={sourcePath ?? htmlPath}"
+        ]
+      ]
+    },
+    "src/components/layout/FileExplorerSidebar.tsx": {
+      "functions": [
+        [
+          48,
+          "const SORT_CYCLE: SortMode[] = [\"name-asc\", \"name-desc\", \"mtime-desc\", \"mtime-asc\"];"
+        ],
+        [
+          49,
+          "const PREVIEWABLE_ARTIFACT_EXTENSIONS = new Set(["
+        ],
+        [
+          70,
+          "const SORT_LABEL_BASE: Record<SortMode, string> = {"
+        ],
+        [
+          77,
+          "const NAME_COLLATOR = new Intl.Collator(undefined, {"
+        ],
+        [
+          240,
+          "const ROW_HEIGHT = 24;"
+        ],
+        [
+          241,
+          "const INDENT_PX = 14;"
+        ],
+        [
+          243,
+          "export default memo(function FileExplorerSidebar() {"
+        ],
+        [
+          361,
+          "const ContextMenu = memo(function ContextMenu() {"
+        ],
+        [
+          491,
+          "function MenuItem({"
+        ],
+        [
+          518,
+          "const DragPreview = memo(function DragPreview() {"
+        ],
+        [
+          551,
+          "const RootSwitcher = memo(function RootSwitcher({"
+        ],
+        [
+          735,
+          "const SortToggleButton = memo(function SortToggleButton() {"
+        ],
+        [
+          746,
+          "const DirIcon = isAsc ? ArrowUp : ArrowDown;"
+        ],
+        [
+          774,
+          "const RootNode = memo(function RootNode({ root }: { root: PinnedRoot }) {"
+        ],
+        [
+          780,
+          "const ChildList = memo(function ChildList({"
+        ],
+        [
+          829,
+          "const TreeNode = memo(function TreeNode({"
+        ],
+        [
+          866,
+          "const CreateRow = memo(function CreateRow({"
+        ],
+        [
+          1004,
+          "function TreeRow({"
+        ],
+        [
+          1282,
+          "function IconButton({"
+        ]
+      ],
+      "ui_lines": [
+        [
+          11,
+          "FolderOpen,"
+        ],
+        [
+          264,
+          "const handleAddRoot = useCallback(async () => {"
+        ],
+        [
+          326,
+          "onAdd={handleAddRoot}"
+        ],
+        [
+          349,
+          "<button type=\"button\" style={emptyStateButtonStyle} onClick={handleAddRoot}>"
+        ],
+        [
+          400,
+          "const handleOpen = async () => {"
+        ],
+        [
+          413,
+          "const handleOpenExternal = async () => {"
+        ],
+        [
+          463,
+          "<MenuItem icon={<FileIcon size={12} />} label=\"開く\" onClick={handleOpen} />"
+        ],
+        [
+          466,
+          "<MenuItem icon={<ExternalLink size={12} />} label=\"外部で開く\" onClick={handleOpenExternal} />"
+        ],
+        [
+          501,
+          "<button"
+        ],
+        [
+          555,
+          "onAdd,"
+        ],
+        [
+          563,
+          "onAdd: () => void;"
+        ],
+        [
+          568,
+          "const [menuOpen, setMenuOpen] = useState(false);"
+        ],
+        [
+          579,
+          "if (!menuOpen && !rootActionMenu) return;"
+        ],
+        [
+          585,
+          "setMenuOpen(false);"
+        ],
+        [
+          592,
+          "setMenuOpen(false);"
+        ],
+        [
+          601,
+          "}, [menuOpen, rootActionMenu]);"
+        ],
+        [
+          604,
+          "if (!menuOpen) {"
+        ],
+        [
+          607,
+          "}, [menuOpen]);"
+        ],
+        [
+          611,
+          "setMenuOpen(false);"
+        ],
+        [
+          638,
+          "<button"
+        ],
+        [
+          641,
+          "onClick={() => setMenuOpen((open) => !open)}"
+        ],
+        [
+          643,
+          "title={activeRoot?.path ?? \"ルート未設定\"}"
+        ],
+        [
+          652,
+          "<IconButton title=\"ルート追加\" onClick={onAdd}>"
+        ],
+        [
+          655,
+          "<IconButton title=\"更新\" onClick={onRefresh} disabled={!activeRoot}>"
+        ],
+        [
+          658,
+          "<IconButton title=\"このルートを外す\" onClick={onRemove} disabled={!activeRoot}>"
+        ],
+        [
+          661,
+          "{menuOpen && roots.length > 0 && ("
+        ],
+        [
+          665,
+          "<button"
+        ],
+        [
+          673,
+          "setMenuOpen(false);"
+        ],
+        [
+          680,
+          "<span style={rootMenuPathStyle} title={root.path}>"
+        ],
+        [
+          684,
+          "<button"
+        ],
+        [
+          706,
+          "aria-label={`${root.name} actions`}"
+        ],
+        [
+          750,
+          "<button"
+        ],
+        [
+          753,
+          "title={`並び替え: ${label} ${isAsc ? \"昇順\" : \"降順\"} (クリックで切替)`}"
+        ],
+        [
+          966,
+          "placeholder={kind === \"folder\" ? \"フォルダ名\" : \"ファイル名\"}"
+        ],
+        [
+          995,
+          "title={error}"
+        ],
+        [
+          1235,
+          "title={path}"
+        ],
+        [
+          1237,
+          "<button"
+        ],
+        [
+          1247,
+          "aria-label={expanded ? \"Collapse folder\" : \"Expand folder\"}"
+        ],
+        [
+          1257,
+          "expanded ? <FolderOpen size={14} strokeWidth={1.5} /> : <Folder size={14} strokeWidth={1.5} />"
+        ],
+        [
+          1263,
+          "<button"
+        ],
+        [
+          1274,
+          "aria-label=\"Open item actions\""
+        ],
+        [
+          1294,
+          "<button"
+        ],
+        [
+          1298,
+          "title={title}"
+        ]
+      ]
+    },
+    "src/components/layout/PathJumper.tsx": {
+      "functions": [
+        [
+          35,
+          "const BLUR_CLOSE_DELAY_MS = 200;"
+        ],
+        [
+          109,
+          "export default memo(function PathJumper({"
+        ]
+      ],
+      "ui_lines": [
+        [
+          15,
+          "FolderOpen,"
+        ],
+        [
+          131,
+          "const [isOpen, setIsOpen] = useState(false);"
+        ],
+        [
+          150,
+          "setIsOpen(false);"
+        ],
+        [
+          156,
+          "setIsOpen(true);"
+        ],
+        [
+          280,
+          "if (!isOpen || selectableIndexes.length === 0) {"
+        ],
+        [
+          290,
+          "}, [isOpen, selectableIndexes, selectedIndex]);"
+        ],
+        [
+          293,
+          "if (!isOpen || selectedIndex < 0) {"
+        ],
+        [
+          298,
+          "}, [isOpen, selectedIndex, visibleItems]);"
+        ],
+        [
+          381,
+          "<button"
+        ],
+        [
+          390,
+          "title={item.path}"
+        ],
+        [
+          417,
+          "selected ? <FolderOpen size={14} /> : <Folder size={14} />"
+        ],
+        [
+          467,
+          "if (!isOpen) {"
+        ],
+        [
+          536,
+          "placeholder=\"Path jumper... Ctrl+P\""
+        ],
+        [
+          545,
+          "{isOpen ? ("
+        ]
+      ]
+    },
+    "src/components/layout/SettingsMenu.tsx": {
+      "functions": [
+        [
+          75,
+          "export default function SettingsMenu({"
+        ],
+        [
+          628,
+          "function CrsmPaletteSection() {"
+        ]
+      ],
+      "ui_lines": [
+        [
+          6,
+          "import { getRemoteInfo, rotateRemoteToken, type RemoteInfo } from \"../../lib/ipc\";"
+        ],
+        [
+          23,
+          "onClose: () => void;"
+        ],
+        [
+          24,
+          "onOpenThemes: () => void;"
+        ],
+        [
+          25,
+          "onOpenKeybindings: () => void;"
+        ],
+        [
+          26,
+          "onOpenCrsmPalette?: () => void;"
+        ],
+        [
+          76,
+          "onClose,"
+        ],
+        [
+          77,
+          "onOpenThemes,"
+        ],
+        [
+          78,
+          "onOpenKeybindings,"
+        ],
+        [
+          79,
+          "onOpenCrsmPalette,"
+        ],
+        [
+          92,
+          "const [remoteOpen, setRemoteOpen] = useState(false);"
+        ],
+        [
+          93,
+          "const [remoteInfo, setRemoteInfo] = useState<RemoteInfo | null>(null);"
+        ],
+        [
+          94,
+          "const [remoteLoading, setRemoteLoading] = useState(false);"
+        ],
+        [
+          95,
+          "const [remoteMsg, setRemoteMsg] = useState<string>(\"\");"
+        ],
+        [
+          101,
+          "const loadRemoteInfo = async () => {"
+        ],
+        [
+          102,
+          "setRemoteLoading(true);"
+        ],
+        [
+          103,
+          "setRemoteMsg(\"\");"
+        ],
+        [
+          105,
+          "setRemoteInfo(await getRemoteInfo());"
+        ],
+        [
+          108,
+          "setRemoteMsg(\"Remote 情報を取得できませんでした\");"
+        ],
+        [
+          110,
+          "setRemoteLoading(false);"
+        ],
+        [
+          114,
+          "const handleOpenRemote = async () => {"
+        ],
+        [
+          115,
+          "setRemoteOpen(true);"
+        ],
+        [
+          116,
+          "await loadRemoteInfo();"
+        ],
+        [
+          119,
+          "const handleRotateRemoteToken = async () => {"
+        ],
+        [
+          120,
+          "if (!window.confirm(\"Remote token を再生成します。接続中の iPhone は切断されます。\")) {"
+        ],
+        [
+          123,
+          "setRemoteLoading(true);"
+        ],
+        [
+          124,
+          "setRemoteMsg(\"\");"
+        ],
+        [
+          126,
+          "const nextInfo = await rotateRemoteToken();"
+        ],
+        [
+          127,
+          "setRemoteInfo(nextInfo);"
+        ],
+        [
+          128,
+          "setRemoteOpen(true);"
+        ],
+        [
+          129,
+          "setRemoteMsg(`token を再生成しました。末尾: ${nextInfo.token_suffix}`);"
+        ],
+        [
+          132,
+          "setRemoteMsg(\"token 再生成に失敗しました\");"
+        ],
+        [
+          134,
+          "setRemoteLoading(false);"
+        ],
+        [
+          138,
+          "const copyRemoteUrl = async () => {"
+        ],
+        [
+          142,
+          "setRemoteMsg(\"URL をコピーしました\");"
+        ],
+        [
+          145,
+          "setRemoteMsg(\"URL コピーに失敗しました\");"
+        ],
+        [
+          184,
+          "onClose();"
+        ],
+        [
+          189,
+          "}, [onClose]);"
+        ],
+        [
+          270,
+          "<button"
+        ],
+        [
+          272,
+          "onOpenThemes();"
+        ],
+        [
+          273,
+          "onClose();"
+        ],
+        [
+          278,
+          "<span>Themes</span>"
+        ],
+        [
+          281,
+          "<button"
+        ],
+        [
+          283,
+          "onOpenKeybindings();"
+        ],
+        [
+          284,
+          "onClose();"
+        ],
+        [
+          321,
+          "{onOpenCrsmPalette && ("
+        ],
+        [
+          323,
+          "<button"
+        ],
+        [
+          325,
+          "onOpenCrsmPalette();"
+        ],
+        [
+          326,
+          "onClose();"
+        ],
+        [
+          331,
+          "<span>Resume</span>"
+        ],
+        [
+          340,
+          "<button"
+        ],
+        [
+          341,
+          "onClick={handleOpenRemote}"
+        ],
+        [
+          345,
+          "<span>Remote: QR を表示</span>"
+        ],
+        [
+          349,
+          "<button"
+        ],
+        [
+          350,
+          "onClick={handleRotateRemoteToken}"
+        ],
+        [
+          359,
+          "<span>Remote: トークン再生成</span>"
+        ],
+        [
+          471,
+          "<button"
+        ],
+        [
+          494,
+          "{remoteOpen && ("
+        ],
+        [
+          500,
+          "setRemoteOpen(false);"
+        ],
+        [
+          529,
+          "<div style={{ fontSize: 15, fontWeight: 700 }}>Remote Access</div>"
+        ],
+        [
+          534,
+          "<button"
+        ],
+        [
+          535,
+          "onClick={() => setRemoteOpen(false)}"
+        ],
+        [
+          579,
+          "<button onClick={copyRemoteUrl} style={{ ...itemStyle, width: \"auto\", border: \"1px solid var(--cmux-border)\", borderRadius: 6 }}>"
+        ],
+        [
+          582,
+          "<button onClick={loadRemoteInfo} style={{ ...itemStyle, width: \"auto\", border: \"1px solid var(--cmux-border)\", borderRadius: 6 }}>"
+        ],
+        [
+          626,
+          "// Resume (CRSM Palette) per-kind visibility checkboxes. Mirrors the"
+        ],
+        [
+          661,
+          "Resume で表示する種類"
+        ]
+      ]
+    },
+    "src/components/layout/TitleBar.tsx": {
+      "functions": [
+        [
+          15,
+          "const SidebarIcon = () => ("
+        ],
+        [
+          22,
+          "const BellIcon = ({ count }: { count?: number }) => ("
+        ],
+        [
+          32,
+          "const PlusIcon = () => ("
+        ],
+        [
+          39,
+          "const SettingsIcon = () => ("
+        ],
+        [
+          46,
+          "export default function TitleBar({ uiVariant = \"default\", onNewWorkspace, onOpenCrsmPalette }: TitleBarProps) {"
+        ]
+      ],
+      "ui_lines": [
+        [
+          6,
+          "import { UsageMeter } from \"./UsageMeter\";"
+        ],
+        [
+          12,
+          "onOpenCrsmPalette?: () => void;"
+        ],
+        [
+          46,
+          "export default function TitleBar({ uiVariant = \"default\", onNewWorkspace, onOpenCrsmPalette }: TitleBarProps) {"
+        ],
+        [
+          50,
+          "const [notificationPanelOpen, setNotificationPanelOpen] = useState(false);"
+        ],
+        [
+          51,
+          "const [isSettingsOpen, setIsSettingsOpen] = useState(false);"
+        ],
+        [
+          52,
+          "const [isThemeSwitcherOpen, setIsThemeSwitcherOpen] = useState(false);"
+        ],
+        [
+          90,
+          "const handleClose = () => getCurrentWindow().close().catch(console.error);"
+        ],
+        [
+          91,
+          "const handleOpenThemes = () => setIsThemeSwitcherOpen(true);"
+        ],
+        [
+          92,
+          "const handleOpenKeybindings = () => useUiStore.getState().setIsKeybindingsOpen(true);"
+        ],
+        [
+          94,
+          "setIsThemeSwitcherOpen(false);"
+        ],
+        [
+          95,
+          "useUiStore.getState().setIsKeybindingsOpen(true);"
+        ],
+        [
+          124,
+          "<button"
+        ],
+        [
+          126,
+          "title=\"Toggle Sidebar (Ctrl+B)\""
+        ],
+        [
+          143,
+          "<button"
+        ],
+        [
+          144,
+          "onClick={() => setNotificationPanelOpen((o) => !o)}"
+        ],
+        [
+          145,
+          "title=\"Notifications\""
+        ],
+        [
+          160,
+          "{notificationPanelOpen && ("
+        ],
+        [
+          161,
+          "<NotificationPanel onClose={() => setNotificationPanelOpen(false)} />"
+        ],
+        [
+          165,
+          "<button"
+        ],
+        [
+          167,
+          "title=\"New Workspace (Ctrl+Shift+N)\""
+        ],
+        [
+          228,
+          "{/* Right group: Minimize, Close */}"
+        ],
+        [
+          230,
+          "<UsageMeter />"
+        ],
+        [
+          232,
+          "<button"
+        ],
+        [
+          233,
+          "onClick={() => setIsSettingsOpen((v) => !v)}"
+        ],
+        [
+          234,
+          "title=\"Settings\""
+        ],
+        [
+          249,
+          "{isSettingsOpen && ("
+        ],
+        [
+          251,
+          "onClose={() => setIsSettingsOpen(false)}"
+        ],
+        [
+          252,
+          "onOpenThemes={handleOpenThemes}"
+        ],
+        [
+          253,
+          "onOpenKeybindings={handleOpenKeybindings}"
+        ],
+        [
+          254,
+          "onOpenCrsmPalette={onOpenCrsmPalette}"
+        ],
+        [
+          258,
+          "<button"
+        ],
+        [
+          260,
+          "title=\"Minimize\""
+        ],
+        [
+          277,
+          "<button"
+        ],
+        [
+          279,
+          "title={isMaximized ? \"Restore\" : \"Maximize\"}"
+        ],
+        [
+          303,
+          "<button"
+        ],
+        [
+          304,
+          "onClick={handleClose}"
+        ],
+        [
+          305,
+          "title=\"Close\""
+        ],
+        [
+          324,
+          "{isThemeSwitcherOpen && ("
+        ],
+        [
+          326,
+          "onClose={() => setIsThemeSwitcherOpen(false)}"
+        ],
+        [
+          327,
+          "onOpenKeybindings={handleThemeSwitcherKeybindings}"
+        ]
+      ]
+    },
+    "src/components/layout/UsageMeter.tsx": {
+      "functions": [
+        [
+          7,
+          "export function UsageMeter() {"
+        ],
+        [
+          126,
+          "function FullMeter({ claude5h, claude7d, codex5h, codex7d, showClaude, showCodex }: MeterStatsProps) {"
+        ],
+        [
+          137,
+          "function CompactMeter({ claude5h, claude7d, codex5h, codex7d, showClaude, showCodex }: MeterStatsProps) {"
+        ],
+        [
+          161,
+          "function Metric({ label, stat }: MetricProps) {"
+        ],
+        [
+          171,
+          "function CellBar({ pct }: { pct: number }) {"
+        ]
+      ],
+      "ui_lines": [
+        [
+          2,
+          "import { UsagePopover } from \"./UsagePopover\";"
+        ],
+        [
+          3,
+          "import { useUsageStore, type WindowStat } from \"../../stores/usageStore\";"
+        ],
+        [
+          7,
+          "export function UsageMeter() {"
+        ],
+        [
+          8,
+          "const summary = useUsageStore((state) => state.summary);"
+        ],
+        [
+          9,
+          "const lastError = useUsageStore((state) => state.lastError);"
+        ],
+        [
+          10,
+          "const fetchUsage = useUsageStore((state) => state.fetch);"
+        ],
+        [
+          12,
+          "const [isOpen, setIsOpen] = useState(false);"
+        ],
+        [
+          16,
+          "void fetchUsage();"
+        ],
+        [
+          18,
+          "void fetchUsage();"
+        ],
+        [
+          22,
+          "}, [fetchUsage]);"
+        ],
+        [
+          43,
+          "const title = [summary.claude_error, summary.codex_error, lastError].filter(Boolean).join(\"\\n\") || \"Usage\";"
+        ],
+        [
+          45,
+          "const handleOpen = () => {"
+        ],
+        [
+          50,
+          "setIsOpen(true);"
+        ],
+        [
+          53,
+          "const handleClose = () => {"
+        ],
+        [
+          55,
+          "setIsOpen(false);"
+        ],
+        [
+          62,
+          "onMouseEnter={handleOpen}"
+        ],
+        [
+          63,
+          "onMouseLeave={handleClose}"
+        ],
+        [
+          76,
+          "title={title}"
+        ],
+        [
+          112,
+          "{isOpen && <UsagePopover summary={summary} lastError={lastError} />}"
+        ]
+      ]
+    },
+    "src/components/CommandPalette/CrsmPalette.tsx": {
+      "functions": [
+        [
+          25,
+          "const OPEN_TARGETS: OpenTargetKind[] = [\"claude\", \"codex\", \"claude-codex\"];"
+        ],
+        [
+          26,
+          "const SESSION_FETCH_LIMIT_INITIAL = 1000;"
+        ],
+        [
+          27,
+          "const SESSION_FETCH_LIMIT_DEEP = 10000;"
+        ],
+        [
+          28,
+          "const MAX_LISTED_SESSIONS_INITIAL = 1000;"
+        ],
+        [
+          29,
+          "const MAX_LISTED_SESSIONS_DEEP = 10000;"
+        ],
+        [
+          30,
+          "const ITEM_HEIGHT = 48;"
+        ],
+        [
+          31,
+          "const LOAD_MORE_HEIGHT = 38;"
+        ],
+        [
+          32,
+          "const TOP_CWD_CHIPS = 8;"
+        ],
+        [
+          33,
+          "const SESSION_AUTO_REFRESH_COOLDOWN_MS = 10_000;"
+        ],
+        [
+          35,
+          "const SOURCE_LABELS: Record<string, string> = {"
+        ],
+        [
+          68,
+          "const KIND_COLORS: Record<TargetKind, { fg: string; bg: string }> = {"
+        ],
+        [
+          73,
+          "const LIST_OVERSCAN = 6;"
+        ],
+        [
+          74,
+          "const LIST_VIEWPORT_FALLBACK = 420;"
+        ],
+        [
+          75,
+          "const HANDOFF_TIMEOUT_MS = 9000;"
+        ],
+        [
+          76,
+          "const SESSION_VALIDATE_LIMIT = 50;"
+        ],
+        [
+          77,
+          "const SESSION_VALIDATE_TIMEOUT_MS = 6000;"
+        ],
+        [
+          78,
+          "const SESSION_FILTER_LABELS: Record<SessionFilterKind, string> = {"
+        ],
+        [
+          334,
+          "export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {"
+        ]
+      ],
+      "ui_lines": [
+        [
+          18,
+          "onClose: () => void;"
+        ],
+        [
+          22,
+          "type OpenTargetKind = TargetKind;"
+        ],
+        [
+          25,
+          "const OPEN_TARGETS: OpenTargetKind[] = [\"claude\", \"codex\", \"claude-codex\"];"
+        ],
+        [
+          85,
+          "function defaultTargetFor(kind: TargetKind | undefined): OpenTargetKind {"
+        ],
+        [
+          89,
+          "function agentTitle(kind: OpenTargetKind): string {"
+        ],
+        [
+          101,
+          "function agentSubtitle(session: CrsmSessionEntry | undefined, target: OpenTargetKind): string {"
+        ],
+        [
+          107,
+          "function targetSummary(session: CrsmSessionEntry | undefined, target: OpenTargetKind): string {"
+        ],
+        [
+          245,
+          "function directResumeUnavailableMessage(session: CrsmSessionEntry): string | null {"
+        ],
+        [
+          247,
+          "return \"この Claude 履歴は要約だけで、直接 Resume できる実体ファイルがありません。別の履歴を選ぶか、別エージェントへの引き継ぎを使ってください。\";"
+        ],
+        [
+          252,
+          "async function resolveDirectResumeSession(selected: CrsmSessionEntry): Promise<CrsmSessionEntry> {"
+        ],
+        [
+          253,
+          "const selectedUnavailable = directResumeUnavailableMessage(selected);"
+        ],
+        [
+          275,
+          "const exactUnavailable = directResumeUnavailableMessage(exact);"
+        ],
+        [
+          334,
+          "export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {"
+        ],
+        [
+          338,
+          "const [targetKind, setTargetKind] = useState<OpenTargetKind>(\"claude\");"
+        ],
+        [
+          382,
+          "const enabledTargets = useMemo<OpenTargetKind[]>("
+        ],
+        [
+          561,
+          "onClose();"
+        ],
+        [
+          592,
+          "}, [listed.length, open, onClose, selected, targetKind]);"
+        ],
+        [
+          609,
+          "const exact = await resolveDirectResumeSession(selected);"
+        ],
+        [
+          636,
+          "onClose();"
+        ],
+        [
+          645,
+          "<div style={styles.backdrop} onMouseDown={onClose}>"
+        ],
+        [
+          659,
+          "placeholder=\"履歴を検索\""
+        ],
+        [
+          664,
+          "<button"
+        ],
+        [
+          681,
+          "<button"
+        ],
+        [
+          706,
+          "<button"
+        ],
+        [
+          709,
+          "title={cwd}"
+        ],
+        [
+          719,
+          "<button"
+        ],
+        [
+          728,
+          "<button type=\"button\" style={styles.cwdClear} onClick={() => setCwdFilters([])}>"
+        ],
+        [
+          749,
+          "<button"
+        ],
+        [
+          774,
+          "<span style={styles.label} title={session.label}>{session.label}</span>"
+        ],
+        [
+          775,
+          "<span style={styles.itemTimeSingle} title={formatStamp(session.last_activity)}>"
+        ],
+        [
+          780,
+          "<span style={styles.itemRow2Cwd} title={session.cwd}>{shortenCwd(session.cwd)}</span>"
+        ],
+        [
+          796,
+          "<button"
+        ],
+        [
+          839,
+          "<span style={styles.detailCwd} title={selected.cwd}>"
+        ],
+        [
+          887,
+          "<div key={f} style={styles.detailListItem} title={f}>"
+        ],
+        [
+          901,
+          "<div key={t} style={styles.detailListItem} title={t}>"
+        ],
+        [
+          916,
+          "<div style={styles.detailSourcePath} title={selected.source_path}>"
+        ]
+      ]
+    }
+  }
+}

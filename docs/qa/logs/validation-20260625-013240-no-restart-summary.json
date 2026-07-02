@@ -1,0 +1,34 @@
+﻿[
+    {
+        "Name":  "pytest",
+        "Command":  "python -m pytest tests -q",
+        "ExitCode":  0,
+        "Log":  "C:\\Users\\miyaz\\cmux-for-linux-dev-master\\docs\\qa\\logs\\validation-20260625-013240-no-restart-pytest.log",
+        "Started":  "2026-06-25T01:32:40",
+        "Ended":  "2026-06-25T01:32:41"
+    },
+    {
+        "Name":  "tsc",
+        "Command":  "cmd /c npx --no-install tsc --noEmit",
+        "ExitCode":  0,
+        "Log":  "C:\\Users\\miyaz\\cmux-for-linux-dev-master\\docs\\qa\\logs\\validation-20260625-013240-no-restart-tsc.log",
+        "Started":  "2026-06-25T01:32:41",
+        "Ended":  "2026-06-25T01:32:44"
+    },
+    {
+        "Name":  "cargo",
+        "Command":  "cargo test --manifest-path src-tauri\\Cargo.toml -p mycmux",
+        "ExitCode":  0,
+        "Log":  "C:\\Users\\miyaz\\cmux-for-linux-dev-master\\docs\\qa\\logs\\validation-20260625-013240-no-restart-cargo.log",
+        "Started":  "2026-06-25T01:32:44",
+        "Ended":  "2026-06-25T01:33:06"
+    },
+    {
+        "Name":  "npm-build",
+        "Command":  "cmd /c npm run build",
+        "ExitCode":  0,
+        "Log":  "C:\\Users\\miyaz\\cmux-for-linux-dev-master\\docs\\qa\\logs\\validation-20260625-013240-no-restart-npm-build.log",
+        "Started":  "2026-06-25T01:33:06",
+        "Ended":  "2026-06-25T01:33:12"
+    }
+]
