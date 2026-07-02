@@ -2,12 +2,13 @@ import { invoke, Channel } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { AgentSessionKind, ArtifactSourceKind, ThemeTweaks } from "../types";
 
-// v0.7.1 diag: per-session attach epoch.
-// Each createSession() call bumps the epoch. Channel.onmessage closures
-// captured by older epochs may receive a final in-flight PTY batch while Rust
-// swaps Channels. We log and ignore stale callbacks so old attachments cannot
+// v0.7.1 diag: per-session committed attach epoch.
+// createSession() reserves a unique next epoch, but only publishes it after the
+// backend attach succeeds. Older onmessage closures keep rendering until that
+// commit; after commit they ACK/drop stale batches so old attachments cannot
 // write into the terminal.
 const sessionAttachEpoch = new Map<string, number>();
+const sessionAttachNextEpoch = new Map<string, number>();
 
 export type FrontendDataBatch = {
   generation: number;
@@ -20,6 +21,13 @@ export function getCurrentSessionEpoch(sessionId: string): number {
   return sessionAttachEpoch.get(sessionId) ?? 0;
 }
 
+function reserveSessionAttachEpoch(sessionId: string): number {
+  const current = sessionAttachEpoch.get(sessionId) ?? 0;
+  const next = (sessionAttachNextEpoch.get(sessionId) ?? current) + 1;
+  sessionAttachNextEpoch.set(sessionId, next);
+  return next;
+}
+
 export async function createSession(
   sessionId: string,
   command: string,
@@ -30,29 +38,53 @@ export async function createSession(
   cwd?: string,
   env?: Record<string, string>,
 ): Promise<void> {
-  const epoch = (sessionAttachEpoch.get(sessionId) ?? 0) + 1;
-  sessionAttachEpoch.set(sessionId, epoch);
+  const previousEpoch = sessionAttachEpoch.get(sessionId) ?? 0;
+  const epoch = reserveSessionAttachEpoch(sessionId);
   const consumerId = `${epoch}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const channel = new Channel<FrontendDataBatch>();
+  const pendingBatches: FrontendDataBatch[] = [];
   let messageCount = 0;
   let staleNoticeCount = 0;
+  let attachResolved = false;
+  let attachFailed = false;
+
+  const ackStaleBatch = (batch: FrontendDataBatch, current: number | undefined): void => {
+    ackFrontendData(sessionId, batch.generation, batch.seq, batch.bytes).catch((err) => {
+      if (import.meta.env.DEV) {
+        console.warn("[mycmux-diag ipc] failed to ack stale PTY batch:", err);
+      }
+    });
+    // Throttle stale notices: log every 25 stale messages to avoid console flood.
+    // Debug builds only (Vite drops this in production).
+    if (import.meta.env.DEV && staleNoticeCount % 25 === 0) {
+      console.log(
+        `[mycmux-diag ipc] stale_message session=${sessionId} attached_epoch=${epoch} current=${current ?? "none"} stale_count=${staleNoticeCount + 1} bytes_this_msg=${batch.bytes}`,
+      );
+    }
+    staleNoticeCount += 1;
+  };
+
+  const flushPendingBatches = (): void => {
+    const pending = pendingBatches.splice(0);
+    for (const batch of pending) {
+      const current = sessionAttachEpoch.get(sessionId);
+      if (current === epoch) {
+        onData(batch);
+      } else {
+        ackStaleBatch(batch, current);
+      }
+    }
+  };
+
   channel.onmessage = (batch) => {
     messageCount += 1;
     const current = sessionAttachEpoch.get(sessionId);
     if (current !== epoch) {
-      ackFrontendData(sessionId, batch.generation, batch.seq, batch.bytes).catch((err) => {
-        if (import.meta.env.DEV) {
-          console.warn("[mycmux-diag ipc] failed to ack stale PTY batch:", err);
-        }
-      });
-      // Throttle stale notices: log every 25 stale messages to avoid console flood.
-      // Debug builds only (Vite drops this in production).
-      if (import.meta.env.DEV && staleNoticeCount % 25 === 0) {
-        console.log(
-          `[mycmux-diag ipc] stale_message session=${sessionId} attached_epoch=${epoch} current=${current ?? "none"} stale_count=${staleNoticeCount + 1} bytes_this_msg=${batch.bytes}`,
-        );
+      if (!attachResolved && !attachFailed && (current ?? 0) === previousEpoch) {
+        pendingBatches.push(batch);
+      } else {
+        ackStaleBatch(batch, current);
       }
-      staleNoticeCount += 1;
       return;
     }
     onData(batch);
@@ -62,17 +94,28 @@ export async function createSession(
       `[mycmux-diag ipc] create_session session=${sessionId} epoch=${epoch} prev_messages=${messageCount}`,
     );
   }
-  return invoke("create_session", {
-    sessionId,
-    command,
-    args,
-    cols,
-    rows,
-    onData: channel,
-    consumerId,
-    cwd: cwd ?? null,
-    env: env ?? null,
-  });
+  try {
+    await invoke("create_session", {
+      sessionId,
+      command,
+      args,
+      cols,
+      rows,
+      onData: channel,
+      consumerId,
+      cwd: cwd ?? null,
+      env: env ?? null,
+    });
+    attachResolved = true;
+    sessionAttachEpoch.set(sessionId, epoch);
+    flushPendingBatches();
+  } catch (err) {
+    attachFailed = true;
+    for (const batch of pendingBatches.splice(0)) {
+      ackStaleBatch(batch, sessionAttachEpoch.get(sessionId));
+    }
+    throw err;
+  }
 }
 
 export async function ackFrontendData(
