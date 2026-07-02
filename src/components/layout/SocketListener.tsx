@@ -841,7 +841,7 @@ export function useWorkspacePersist() {
   useEffect(() => {
     let dirty = false;
     let debounceTimer: ReturnType<typeof setTimeout> | null = null;
-    let syncInFlight: Promise<void> | null = null;
+    let syncInFlight: Promise<boolean> | null = null;
     let closing = false;
     let closePromptOpen = false;
 
@@ -893,17 +893,17 @@ export function useWorkspacePersist() {
       };
     };
 
-    const sync = async (force = false) => {
-      if (!isLeader.current) return;
+    const sync = async (force = false): Promise<boolean> => {
+      if (!isLeader.current) return true;
       if (syncInFlight) {
         await syncInFlight.catch(() => {});
       }
-      if (!dirty && !force) return;
+      if (!dirty && !force) return true;
       const startupHoldRemainingMs = startupAutosaveHoldUntil.current - Date.now();
       if (!force && startupHoldRemainingMs > 0) {
         dirty = true;
         scheduleSync(startupHoldRemainingMs + 100);
-        return;
+        return true;
       }
       let agentMappings: Record<string, AgentSessionMapping> = {};
       try {
@@ -912,13 +912,16 @@ export function useWorkspacePersist() {
         console.warn("[persist] Failed to read agent session mappings:", err);
       }
       dirty = false;
-      const run = savePersistentData(buildSnapshot(agentMappings));
+      const run = savePersistentData(buildSnapshot(agentMappings))
+        .then(() => true)
+        .catch((err) => {
+          dirty = true; // allow next trigger to retry
+          console.warn("[persist] Failed to save:", err);
+          return false;
+        });
       syncInFlight = run;
       try {
-        await run;
-      } catch (err) {
-        dirty = true; // allow next trigger to retry
-        console.warn("[persist] Failed to save:", err);
+        return await run;
       } finally {
         if (syncInFlight === run) {
           syncInFlight = null;
@@ -967,6 +970,19 @@ export function useWorkspacePersist() {
         }
       }
       return busyCount;
+    };
+
+    const promptAfterFinalSaveFailure = async (): Promise<"retry" | "quit-anyway"> => {
+      const retry = await confirm(
+        "The final workspace save failed. Retry saving before quitting?",
+        {
+          title: "mycmux workspace save failed",
+          kind: "warning",
+          okLabel: "Retry",
+          cancelLabel: "Quit anyway",
+        },
+      );
+      return retry ? "retry" : "quit-anyway";
     };
 
     const unsubList = useWorkspaceListStore.subscribe(markDirty);
@@ -1033,15 +1049,41 @@ export function useWorkspacePersist() {
         clearTimeout(debounceTimer);
         debounceTimer = null;
       }
+      let shouldQuitAfterSave = false;
       try {
-        try {
-          await flushPtyMetadataSnapshotForPersistence();
-        } catch (err) {
-          console.warn("[persist] Failed to flush pty metadata snapshot:", err);
+        while (true) {
+          try {
+            await flushPtyMetadataSnapshotForPersistence();
+          } catch (err) {
+            console.warn("[persist] Failed to flush pty metadata snapshot:", err);
+          }
+          const saved = await sync(true);
+          if (saved) {
+            shouldQuitAfterSave = true;
+            break;
+          }
+
+          closePromptOpen = true;
+          let choice: "retry" | "quit-anyway";
+          try {
+            choice = await promptAfterFinalSaveFailure();
+          } catch (err) {
+            console.warn("[persist] Failed to show final save failure prompt:", err);
+            return;
+          } finally {
+            closePromptOpen = false;
+          }
+          if (choice === "quit-anyway") {
+            shouldQuitAfterSave = true;
+            break;
+          }
         }
-        await sync(true);
       } finally {
-        await quitApp();
+        if (shouldQuitAfterSave) {
+          await quitApp();
+        } else {
+          closing = false;
+        }
       }
     });
 

@@ -76,3 +76,28 @@ def test_window_leader_commands_have_safe_single_instance_semantics() -> None:
     ]:
         assert_contains(socket_listener, snippet, "src/components/layout/SocketListener.tsx")
 
+
+def test_close_requested_blocks_quit_when_forced_workspace_save_fails() -> None:
+    socket_listener = read_repo_text("src/components/layout/SocketListener.tsx")
+    close_handler = socket_listener.split(
+        "const unlistenCloseRequested = getCurrentWindow().onCloseRequested",
+        1,
+    )[1].split("    });", 1)[0]
+
+    for snippet in [
+        "const sync = async (force = false): Promise<boolean> => {",
+        "return false;",
+        "const promptAfterFinalSaveFailure = async (): Promise<\"retry\" | \"quit-anyway\"> => {",
+        "okLabel: \"Retry\",",
+        "cancelLabel: \"Quit anyway\",",
+        "let shouldQuitAfterSave = false;",
+        "const saved = await sync(true);",
+        "if (saved) {",
+        "choice = await promptAfterFinalSaveFailure();",
+        "if (choice === \"quit-anyway\") {",
+        "if (shouldQuitAfterSave) {\n          await quitApp();\n        } else {\n          closing = false;\n        }",
+    ]:
+        assert_contains(socket_listener, snippet, "src/components/layout/SocketListener.tsx")
+
+    assert close_handler.index("const saved = await sync(true);") < close_handler.index("await quitApp();")
+    assert "finally {\n        await quitApp();\n      }" not in close_handler
