@@ -19,6 +19,7 @@ def test_agent_kind_round_trip_contract_remains_wired() -> None:
     storage = read_repo_text("src-tauri/src/db/storage.rs")
     layout_store = read_repo_text("src/stores/workspaceLayoutStore.ts")
     launcher_ps1 = read_repo_text("src-tauri/src/launcher.ps1")
+    terminal = read_repo_text("src-tauri/src/commands/terminal.rs")
     monitor = read_repo_text("src-tauri/src/pty/monitor.rs")
 
     for snippet in [
@@ -64,11 +65,19 @@ def test_agent_kind_round_trip_contract_remains_wired() -> None:
 
     for snippet in [
         "fn write_detected_agent_session_mapping(",
-        'home.join(".mycmux").join("pane-sessions")',
+        "crate::commands::terminal::write_session_mapping_file(",
         "write_detected_agent_session_mapping(",
         "agent_session_id.as_deref()",
     ]:
         assert_contains(monitor, snippet, "src-tauri/src/pty/monitor.rs")
+
+    for snippet in [
+        "fn write_session_mapping_file_to_dir(",
+        'home.join(".mycmux").join("pane-sessions")',
+        "write_text_file_atomic(",
+        "invalidate_session_mapping_cache();",
+    ]:
+        assert_contains(terminal, snippet, "src-tauri/src/commands/terminal.rs")
 
 
 def test_duplicate_session_create_is_idempotent() -> None:

@@ -57,21 +57,11 @@ fn write_detected_agent_session_mapping(
     agent_kind: &str,
     agent_session_id: &str,
 ) {
-    if session_id.trim().is_empty()
-        || agent_kind.trim().is_empty()
-        || agent_session_id.trim().is_empty()
-    {
-        return;
-    }
-    let Some(home) = dirs::home_dir() else {
-        return;
-    };
-    let map_dir = home.join(".mycmux").join("pane-sessions");
-    if std::fs::create_dir_all(&map_dir).is_err() {
-        return;
-    }
-    let path = map_dir.join(format!("{session_id}.txt"));
-    let _ = std::fs::write(path, format!("{agent_kind}:{agent_session_id}\n"));
+    let _ = crate::commands::terminal::write_session_mapping_file(
+        session_id,
+        agent_kind,
+        agent_session_id,
+    );
 }
 
 /// Returns true when the session file was created at/after `min_created`.
