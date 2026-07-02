@@ -5,7 +5,7 @@ use crate::db::storage::{
     self, AppSettings, PaneConfig, PaneTabConfig, PersistentData, WorkspaceConfig,
 };
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn load_persistent_data(app_handle: AppHandle) -> Result<PersistentData, String> {
     let mut data = storage::load(&app_handle)?;
     sanitize_agent_sessions(&mut data);

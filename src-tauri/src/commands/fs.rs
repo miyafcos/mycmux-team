@@ -106,7 +106,7 @@ fn validate_leaf_name(name: &str) -> Result<&str, String> {
 /// the normalized (but possibly non-canonical) string if the path does not
 /// exist yet — that lets the frontend still show a helpful "not found"
 /// message without stripping off what the user typed.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn normalize_path(path: String) -> Result<String, String> {
     let trimmed = path.trim();
     if trimmed.is_empty() {
@@ -242,7 +242,7 @@ pub fn walk_tree(
     Ok(entries)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn save_pinned_roots(
     app_handle: tauri::AppHandle,
     pinned_roots: Vec<PinnedRoot>,
@@ -275,7 +275,7 @@ pub fn unwatch_root(state: State<'_, AppState>, path: String) -> Result<(), Stri
 /// opened with the file selected); directories are opened directly.
 /// Cross-platform; mycmux ships on Windows so that path is the one
 /// exercised in production.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn reveal_in_explorer(path: String) -> Result<(), String> {
     let pb = PathBuf::from(&path);
     if !pb.exists() {
@@ -326,7 +326,7 @@ pub fn reveal_in_explorer(path: String) -> Result<(), String> {
 /// Open a file with the OS default application. For directories this is a
 /// no-op in spirit (the UI hides this menu item for dirs). Cross-platform;
 /// Windows delegates to Explorer so local files use the registered default app.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn open_with_default(path: String) -> Result<(), String> {
     let pb = PathBuf::from(&path);
     if !pb.exists() {
@@ -407,7 +407,7 @@ mod tests {
 
 /// Create an empty file atomically via O_CREAT|O_EXCL (create_new). Returns
 /// the absolute path so the frontend can select it after refresh.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn create_file(parent: String, name: String) -> Result<String, String> {
     let parent_pb = PathBuf::from(&parent);
     if !parent_pb.is_dir() {
@@ -425,7 +425,7 @@ pub fn create_file(parent: String, name: String) -> Result<String, String> {
 
 /// Create a single directory (non-recursive). `name` must not contain
 /// separators or be a reserved name.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn create_folder(parent: String, name: String) -> Result<String, String> {
     let parent_pb = PathBuf::from(&parent);
     if !parent_pb.is_dir() {

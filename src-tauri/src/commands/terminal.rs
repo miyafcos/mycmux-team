@@ -83,7 +83,7 @@ fn rgb_hex(c: [u8; 3]) -> String {
     format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2])
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_terminal_config() -> TerminalConfigPayload {
     let cfg = crate::terminal_config::load();
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
@@ -795,7 +795,7 @@ pub fn write_to_session(
     state.session_manager.write(&session_id, data.as_bytes())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn resize_session(
     state: State<'_, AppState>,
     session_id: String,
@@ -831,7 +831,7 @@ pub fn set_frontend_visible(
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn kill_session(state: State<'_, AppState>, session_id: String) -> Result<(), String> {
     state.session_manager.kill(&session_id)
 }
@@ -3484,7 +3484,7 @@ fn is_bash_like_shell_path(path: &str) -> bool {
     matches!(leaf.as_str(), "bash" | "bash.exe" | "sh" | "sh.exe")
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_default_shell() -> DefaultShellInfo {
     #[cfg(target_os = "windows")]
     {
@@ -3544,7 +3544,7 @@ pub fn get_default_shell() -> DefaultShellInfo {
 
 /// Read pane-session mapping files written by launcher.sh
 /// Returns a map of pane_session_id → claude_session_id
-#[tauri::command]
+#[tauri::command(async)]
 pub fn read_pane_session_mappings() -> HashMap<String, String> {
     load_session_mapping_cache().pane_mappings
 }
@@ -3648,12 +3648,12 @@ fn load_session_mapping_cache() -> SessionMappingCache {
     value
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn read_agent_session_mappings() -> HashMap<String, AgentSessionMapping> {
     load_session_mapping_cache().agent_mappings
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_claude_session_id(cwd: String) -> Option<String> {
     let home = dirs::home_dir()?;
     let project_dir = home
@@ -3684,12 +3684,12 @@ pub fn get_claude_session_id(cwd: String) -> Option<String> {
     best.map(|(id, _)| id)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn is_directory(path: String) -> bool {
     std::path::Path::new(&path).is_dir()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_launch_cwd() -> Option<String> {
     for arg in std::env::args().skip(1) {
         if arg.starts_with('-') {
