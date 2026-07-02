@@ -253,6 +253,49 @@ fn backup_path_for(path: &Path, reason: &str) -> PathBuf {
     ))
 }
 
+fn is_pre_replace_backup(path: &Path, candidate: &Path) -> bool {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("data.json");
+    let Some(candidate_name) = candidate.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    candidate_name.starts_with(&format!("{file_name}.pre-replace-"))
+        && candidate_name.ends_with(".bak")
+}
+
+fn pre_replace_backups(path: &Path) -> Vec<PathBuf> {
+    let Some(parent) = path.parent() else {
+        return Vec::new();
+    };
+    let Ok(entries) = fs::read_dir(parent) else {
+        return Vec::new();
+    };
+    let mut backups = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|candidate| is_pre_replace_backup(path, candidate))
+        .collect::<Vec<_>>();
+    backups.sort_by(|left, right| {
+        let left_modified = left.metadata().and_then(|metadata| metadata.modified()).ok();
+        let right_modified = right.metadata().and_then(|metadata| metadata.modified()).ok();
+        right_modified
+            .cmp(&left_modified)
+            .then_with(|| right.file_name().cmp(&left.file_name()))
+    });
+    backups
+}
+
+fn cleanup_old_pre_replace_backups(path: &Path, keep: Option<&Path>) {
+    for backup in pre_replace_backups(path) {
+        if keep.is_some_and(|keep_path| backup == keep_path) {
+            continue;
+        }
+        let _ = fs::remove_file(backup);
+    }
+}
+
 fn quarantine_data_file(path: &Path, reason: &str) -> Result<PathBuf, String> {
     let backup_path = backup_path_for(path, reason);
     fs::rename(path, &backup_path).map_err(|error| {
@@ -265,18 +308,82 @@ fn quarantine_data_file(path: &Path, reason: &str) -> Result<PathBuf, String> {
     Ok(backup_path)
 }
 
-fn load_from_path(path: &Path) -> Result<PersistentData, String> {
-    if !path.exists() {
-        return Ok(PersistentData::default());
-    }
-
+fn read_data_file(path: &Path) -> Result<String, String> {
     let mut contents = String::new();
     File::open(path)
         .map_err(|error| format!("Failed to open {}: {error}", path.display()))?
         .read_to_string(&mut contents)
         .map_err(|error| format!("Failed to read {}: {error}", path.display()))?;
+    Ok(contents)
+}
+
+fn parse_persistent_data(path: &Path) -> Result<PersistentData, String> {
+    let contents = read_data_file(path)?;
+    if contents.trim().is_empty() {
+        return Err(format!("{} is empty", path.display()));
+    }
+    serde_json::from_str::<PersistentData>(&contents)
+        .map_err(|error| format!("Failed to parse {}: {error}", path.display()))
+}
+
+fn sync_file(path: &Path) -> Result<(), String> {
+    fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .map_err(|error| format!("Failed to open {} for sync: {error}", path.display()))?
+        .sync_all()
+        .map_err(|error| format!("Failed to flush {}: {error}", path.display()))
+}
+
+fn copy_file_and_sync(source: &Path, target: &Path) -> Result<(), String> {
+    fs::copy(source, target).map_err(|error| {
+        format!(
+            "Failed to copy {} to {}: {error}",
+            source.display(),
+            target.display()
+        )
+    })?;
+    sync_file(target)
+}
+
+fn recover_from_pre_replace_backup(
+    path: &Path,
+    reason: &str,
+) -> Result<Option<PersistentData>, String> {
+    for backup_path in pre_replace_backups(path) {
+        let Ok(data) = parse_persistent_data(&backup_path) else {
+            continue;
+        };
+        if path.exists() {
+            let _backup_path = quarantine_data_file(path, reason)?;
+        }
+        copy_file_and_sync(&backup_path, path)?;
+        eprintln!(
+            "[mycmux][storage] recovered {} from {} after {}",
+            path.display(),
+            backup_path.display(),
+            reason
+        );
+        return Ok(Some(data));
+    }
+    Ok(None)
+}
+
+fn load_from_path(path: &Path) -> Result<PersistentData, String> {
+    if !path.exists() {
+        if let Some(data) = recover_from_pre_replace_backup(path, "missing")? {
+            return Ok(data);
+        }
+        return Ok(PersistentData::default());
+    }
+
+    let contents = read_data_file(path)?;
 
     if contents.trim().is_empty() {
+        if let Some(data) = recover_from_pre_replace_backup(path, "empty")? {
+            return Ok(data);
+        }
         let _backup_path = quarantine_data_file(path, "empty")?;
         return Ok(PersistentData::default());
     }
@@ -284,6 +391,9 @@ fn load_from_path(path: &Path) -> Result<PersistentData, String> {
     match serde_json::from_str::<PersistentData>(&contents) {
         Ok(data) => Ok(data),
         Err(_error) => {
+            if let Some(data) = recover_from_pre_replace_backup(path, "corrupt")? {
+                return Ok(data);
+            }
             let _backup_path = quarantine_data_file(path, "corrupt")?;
             Ok(PersistentData::default())
         }
@@ -300,39 +410,27 @@ fn write_json_file(path: &Path, json: &str) -> Result<(), String> {
 }
 
 fn replace_data_file(path: &Path, tmp_path: &Path) -> Result<(), String> {
-    if !path.exists() {
-        return fs::rename(tmp_path, path).map_err(|error| {
-            format!(
-                "Failed to move {} to {}: {error}",
-                tmp_path.display(),
-                path.display()
-            )
-        });
-    }
+    let backup_path = if path.exists() {
+        let backup_path = backup_path_for(path, "pre-replace");
+        copy_file_and_sync(path, &backup_path)?;
+        Some(backup_path)
+    } else {
+        None
+    };
 
-    let backup_path = backup_path_for(path, "pre-replace");
-    fs::rename(path, &backup_path).map_err(|error| {
+    fs::rename(tmp_path, path).map_err(|error| {
         format!(
-            "Failed to backup {} to {}: {error}",
+            "Failed to replace {} with {}: {error}",
             path.display(),
-            backup_path.display()
+            tmp_path.display()
         )
     })?;
 
-    match fs::rename(tmp_path, path) {
-        Ok(()) => {
-            let _ = fs::remove_file(&backup_path);
-            Ok(())
-        }
-        Err(error) => {
-            let _ = fs::rename(&backup_path, path);
-            Err(format!(
-                "Failed to replace {} with {}: {error}",
-                path.display(),
-                tmp_path.display()
-            ))
-        }
+    if let Some(backup_path) = backup_path.as_deref() {
+        cleanup_old_pre_replace_backups(path, Some(backup_path));
     }
+
+    Ok(())
 }
 
 fn save_to_path(path: &Path, data: &PersistentData) -> Result<(), String> {
@@ -451,6 +549,89 @@ mod tests {
         let loaded = load_from_path(&path).unwrap();
 
         assert_eq!(loaded.active_workspace_id.as_deref(), Some("next"));
+    }
+
+    #[test]
+    fn save_to_path_removes_tmp_file_when_replace_fails() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("data.json");
+        fs::create_dir(&path).unwrap();
+        let data = PersistentData::default();
+
+        let result = save_to_path(&path, &data);
+
+        assert!(result.is_err());
+        assert!(!fs::read_dir(temp_dir.path()).unwrap().any(|entry| {
+            entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .contains(".tmp-")
+        }));
+    }
+
+    #[test]
+    fn replace_data_file_copies_backup_and_keeps_data_json_path() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("data.json");
+        let tmp_path = temp_dir.path().join("data.json.tmp-test");
+        let old = PersistentData {
+            active_workspace_id: Some("old".to_string()),
+            ..Default::default()
+        };
+        let next = PersistentData {
+            active_workspace_id: Some("next".to_string()),
+            ..Default::default()
+        };
+        let old_json = serde_json::to_string_pretty(&old).unwrap();
+        let next_json = serde_json::to_string_pretty(&next).unwrap();
+        write_json_file(&path, &old_json).unwrap();
+        write_json_file(&tmp_path, &next_json).unwrap();
+
+        replace_data_file(&path, &tmp_path).unwrap();
+
+        assert!(path.exists());
+        assert!(!tmp_path.exists());
+        assert_eq!(
+            load_from_path(&path).unwrap().active_workspace_id.as_deref(),
+            Some("next")
+        );
+        let backups = pre_replace_backups(&path);
+        assert_eq!(backups.len(), 1);
+        assert_eq!(
+            parse_persistent_data(&backups[0])
+                .unwrap()
+                .active_workspace_id
+                .as_deref(),
+            Some("old")
+        );
+    }
+
+    #[test]
+    fn load_from_path_recovers_from_backup_when_data_json_is_missing() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("data.json");
+        let old = PersistentData {
+            active_workspace_id: Some("old".to_string()),
+            ..Default::default()
+        };
+        let next = PersistentData {
+            active_workspace_id: Some("next".to_string()),
+            ..Default::default()
+        };
+
+        save_to_path(&path, &old).unwrap();
+        save_to_path(&path, &next).unwrap();
+        fs::remove_file(&path).unwrap();
+
+        let loaded = load_from_path(&path).unwrap();
+
+        assert_eq!(loaded.active_workspace_id.as_deref(), Some("old"));
+        assert!(path.exists());
+        assert_eq!(
+            load_from_path(&path).unwrap().active_workspace_id.as_deref(),
+            Some("old")
+        );
     }
 
     #[test]
