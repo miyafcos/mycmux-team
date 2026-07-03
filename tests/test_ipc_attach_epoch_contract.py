@@ -16,14 +16,25 @@ def assert_contains(text: str, snippet: str, source: str) -> None:
 
 def test_create_session_commits_attach_epoch_only_after_backend_success() -> None:
     ipc = read_repo_text("src/lib/ipc.ts")
+    attach_epoch = read_repo_text("src/lib/attachEpoch.ts")
 
-    reserve_pos = ipc.index("const epoch = reserveSessionAttachEpoch(sessionId);")
+    reserve_pos = ipc.index("const attach = beginSessionAttach(sessionId, {")
     invoke_pos = ipc.index('await invoke("create_session",')
-    commit_pos = ipc.index("sessionAttachEpoch.set(sessionId, epoch);")
-    failure_pos = ipc.index("attachFailed = true;")
+    commit_pos = ipc.index("attach.commit();")
+    failure_pos = ipc.index("attach.fail();")
 
     assert reserve_pos < invoke_pos < commit_pos < failure_pos
-    assert "sessionAttachEpoch.set(sessionId, epoch);" not in ipc[reserve_pos:invoke_pos]
+    assert "attach.commit();" not in ipc[reserve_pos:invoke_pos]
+
+    for snippet in [
+        "beginSessionAttach",
+        "const epoch = attach.epoch;",
+        "channel.onmessage = (batch) => {",
+        "attach.ingest(batch);",
+        "attach.commit();",
+        "attach.fail();",
+    ]:
+        assert_contains(ipc, snippet, "src/lib/ipc.ts")
 
     for snippet in [
         "const sessionAttachNextEpoch = new Map<string, number>();",
@@ -34,6 +45,6 @@ def test_create_session_commits_attach_epoch_only_after_backend_success() -> Non
         "pendingBatches.push(batch);",
         "sessionAttachEpoch.set(sessionId, epoch);",
         "flushPendingBatches();",
-        "ackStaleBatch(batch, sessionAttachEpoch.get(sessionId));",
+        "handlers.ackStale(batch, sessionAttachEpoch.get(sessionId));",
     ]:
-        assert_contains(ipc, snippet, "src/lib/ipc.ts")
+        assert_contains(attach_epoch, snippet, "src/lib/attachEpoch.ts")

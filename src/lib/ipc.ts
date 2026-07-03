@@ -1,32 +1,13 @@
 import { invoke, Channel } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import {
+  beginSessionAttach,
+  getCurrentSessionEpoch,
+  type FrontendDataBatch,
+} from "./attachEpoch";
 import type { AgentSessionKind, ArtifactSourceKind, ThemeTweaks } from "../types";
 
-// v0.7.1 diag: per-session committed attach epoch.
-// createSession() reserves a unique next epoch, but only publishes it after the
-// backend attach succeeds. Older onmessage closures keep rendering until that
-// commit; after commit they ACK/drop stale batches so old attachments cannot
-// write into the terminal.
-const sessionAttachEpoch = new Map<string, number>();
-const sessionAttachNextEpoch = new Map<string, number>();
-
-export type FrontendDataBatch = {
-  generation: number;
-  seq: number;
-  bytes: number;
-  data: number[] | ArrayBuffer | Uint8Array;
-};
-
-export function getCurrentSessionEpoch(sessionId: string): number {
-  return sessionAttachEpoch.get(sessionId) ?? 0;
-}
-
-function reserveSessionAttachEpoch(sessionId: string): number {
-  const current = sessionAttachEpoch.get(sessionId) ?? 0;
-  const next = (sessionAttachNextEpoch.get(sessionId) ?? current) + 1;
-  sessionAttachNextEpoch.set(sessionId, next);
-  return next;
-}
+export { getCurrentSessionEpoch, type FrontendDataBatch };
 
 export async function createSession(
   sessionId: string,
@@ -38,60 +19,35 @@ export async function createSession(
   cwd?: string,
   env?: Record<string, string>,
 ): Promise<void> {
-  const previousEpoch = sessionAttachEpoch.get(sessionId) ?? 0;
-  const epoch = reserveSessionAttachEpoch(sessionId);
+  let staleNoticeCount = 0;
+  const attach = beginSessionAttach(sessionId, {
+    deliver: onData,
+    ackStale: (batch, current) => {
+      ackFrontendData(sessionId, batch.generation, batch.seq, batch.bytes).catch((err) => {
+        if (import.meta.env.DEV) {
+          console.warn("[mycmux-diag ipc] failed to ack stale PTY batch:", err);
+        }
+      });
+      // Throttle stale notices: log every 25 stale messages to avoid console flood.
+      // Debug builds only (Vite drops this in production).
+      if (import.meta.env.DEV && staleNoticeCount % 25 === 0) {
+        console.log(
+          `[mycmux-diag ipc] stale_message session=${sessionId} attached_epoch=${attach.epoch} current=${current ?? "none"} stale_count=${staleNoticeCount + 1} bytes_this_msg=${batch.bytes}`,
+        );
+      }
+      staleNoticeCount += 1;
+    },
+  });
+  const epoch = attach.epoch;
   const consumerId = `${epoch}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const channel = new Channel<FrontendDataBatch>();
-  const pendingBatches: FrontendDataBatch[] = [];
-  let messageCount = 0;
-  let staleNoticeCount = 0;
-  let attachResolved = false;
-  let attachFailed = false;
-
-  const ackStaleBatch = (batch: FrontendDataBatch, current: number | undefined): void => {
-    ackFrontendData(sessionId, batch.generation, batch.seq, batch.bytes).catch((err) => {
-      if (import.meta.env.DEV) {
-        console.warn("[mycmux-diag ipc] failed to ack stale PTY batch:", err);
-      }
-    });
-    // Throttle stale notices: log every 25 stale messages to avoid console flood.
-    // Debug builds only (Vite drops this in production).
-    if (import.meta.env.DEV && staleNoticeCount % 25 === 0) {
-      console.log(
-        `[mycmux-diag ipc] stale_message session=${sessionId} attached_epoch=${epoch} current=${current ?? "none"} stale_count=${staleNoticeCount + 1} bytes_this_msg=${batch.bytes}`,
-      );
-    }
-    staleNoticeCount += 1;
-  };
-
-  const flushPendingBatches = (): void => {
-    const pending = pendingBatches.splice(0);
-    for (const batch of pending) {
-      const current = sessionAttachEpoch.get(sessionId);
-      if (current === epoch) {
-        onData(batch);
-      } else {
-        ackStaleBatch(batch, current);
-      }
-    }
-  };
 
   channel.onmessage = (batch) => {
-    messageCount += 1;
-    const current = sessionAttachEpoch.get(sessionId);
-    if (current !== epoch) {
-      if (!attachResolved && !attachFailed && (current ?? 0) === previousEpoch) {
-        pendingBatches.push(batch);
-      } else {
-        ackStaleBatch(batch, current);
-      }
-      return;
-    }
-    onData(batch);
+    attach.ingest(batch);
   };
   if (import.meta.env.DEV) {
     console.log(
-      `[mycmux-diag ipc] create_session session=${sessionId} epoch=${epoch} prev_messages=${messageCount}`,
+      `[mycmux-diag ipc] create_session session=${sessionId} epoch=${epoch} prev_messages=${attach.messageCount}`,
     );
   }
   try {
@@ -106,14 +62,9 @@ export async function createSession(
       cwd: cwd ?? null,
       env: env ?? null,
     });
-    attachResolved = true;
-    sessionAttachEpoch.set(sessionId, epoch);
-    flushPendingBatches();
+    attach.commit();
   } catch (err) {
-    attachFailed = true;
-    for (const batch of pendingBatches.splice(0)) {
-      ackStaleBatch(batch, sessionAttachEpoch.get(sessionId));
-    }
+    attach.fail();
     throw err;
   }
 }

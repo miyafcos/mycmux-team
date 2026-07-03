@@ -237,10 +237,7 @@ impl FrontendFlow {
         &self,
         data_channel: Channel<FrontendDataBatch>,
     ) -> Result<(String, String), String> {
-        let mut st = self
-            .inner
-            .lock()
-            .map_err(|e| format!("Lock failed: {e}"))?;
+        let mut st = self.inner.lock().map_err(|e| format!("Lock failed: {e}"))?;
         let old_channel_id = st.data_channel.id().to_string();
         let new_channel_id = data_channel.id().to_string();
         st.data_channel = data_channel;
@@ -702,5 +699,161 @@ impl Drop for PtySession {
     fn drop(&mut self) {
         self.frontend_flow.close();
         let _ = self.kill();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_channel() -> Channel<FrontendDataBatch> {
+        Channel::new(|_| Ok(()))
+    }
+
+    fn expect_send(permit: FlowPermit) -> (u64, u64) {
+        match permit {
+            FlowPermit::Send { generation, seq } => (generation, seq),
+            FlowPermit::AutoConsume => panic!("expected Send permit, got AutoConsume"),
+            FlowPermit::Closed => panic!("expected Send permit, got Closed"),
+        }
+    }
+
+    fn assert_auto_consume(permit: FlowPermit) {
+        match permit {
+            FlowPermit::AutoConsume => {}
+            FlowPermit::Send { .. } => panic!("expected AutoConsume permit, got Send"),
+            FlowPermit::Closed => panic!("expected AutoConsume permit, got Closed"),
+        }
+    }
+
+    fn force_expire_inflight(flow: &FrontendFlow) {
+        let mut st = flow.inner.lock().expect("flow lock poisoned");
+        for item in st.inflight.iter_mut() {
+            item.sent_at = Instant::now() - FRONTEND_ACK_TIMEOUT - Duration::from_millis(1);
+        }
+    }
+
+    fn flow_snapshot(flow: &FrontendFlow) -> (u64, u64, usize, usize, bool, u32) {
+        let st = flow.inner.lock().expect("flow lock poisoned");
+        (
+            st.generation,
+            st.next_seq,
+            st.inflight_bytes,
+            st.inflight.len(),
+            st.attached,
+            st.stale_timeouts,
+        )
+    }
+
+    #[tokio::test]
+    async fn reserve_sends_under_low_backlog_and_blocks_when_limits_are_exceeded() {
+        let flow = FrontendFlow::new(test_channel());
+
+        let (generation, seq) = expect_send(flow.reserve(128).await);
+        assert_eq!((generation, seq), (1, 1));
+        assert_eq!(flow_snapshot(&flow), (1, 2, 128, 1, true, 0));
+
+        let oversized = tokio::time::timeout(
+            Duration::from_millis(50),
+            flow.reserve(FRONTEND_MAX_INFLIGHT_BYTES + 1),
+        )
+        .await;
+        assert!(oversized.is_err(), "oversized reserve should block");
+
+        flow.ack(generation, seq, 128);
+        for _ in 0..FRONTEND_MAX_INFLIGHT_BATCHES {
+            expect_send(flow.reserve(1).await);
+        }
+        let too_many_batches =
+            tokio::time::timeout(Duration::from_millis(50), flow.reserve(1)).await;
+        assert!(
+            too_many_batches.is_err(),
+            "reserve over the in-flight batch cap should block"
+        );
+    }
+
+    #[tokio::test]
+    async fn ack_from_stale_generation_is_ignored() {
+        let flow = FrontendFlow::new(test_channel());
+        let (old_generation, old_seq) = expect_send(flow.reserve(256).await);
+        flow.replace_channel(test_channel())
+            .expect("replace channel");
+
+        flow.ack(old_generation, old_seq, 256);
+
+        assert_eq!(flow_snapshot(&flow), (2, 1, 0, 0, true, 0));
+    }
+
+    #[tokio::test]
+    async fn ack_from_current_generation_releases_inflight_and_resets_stale_bookkeeping() {
+        let flow = FrontendFlow::new(test_channel());
+        let (generation, seq1) = expect_send(flow.reserve(100).await);
+        let (_, seq2) = expect_send(flow.reserve(200).await);
+        {
+            let mut st = flow.inner.lock().expect("flow lock poisoned");
+            st.stale_timeouts = 1;
+        }
+
+        flow.ack(generation, seq2, 200);
+
+        assert_eq!(seq1, 1);
+        assert_eq!(flow_snapshot(&flow), (1, 3, 0, 0, true, 0));
+    }
+
+    #[tokio::test]
+    async fn cancel_and_replace_clear_inflight_and_make_late_acks_noops() {
+        let flow = FrontendFlow::new(test_channel());
+        let (generation, seq) = expect_send(flow.reserve(64).await);
+
+        flow.cancel(generation, seq);
+        assert_eq!(
+            flow_snapshot(&flow),
+            (1, 2, 0, 0, false, FRONTEND_STALE_TIMEOUTS)
+        );
+        flow.ack(generation, seq, 64);
+        assert_eq!(
+            flow_snapshot(&flow),
+            (1, 2, 0, 0, false, FRONTEND_STALE_TIMEOUTS)
+        );
+
+        let (old_channel_id, new_channel_id) = flow
+            .replace_channel(test_channel())
+            .expect("replace channel after cancel");
+        assert_ne!(old_channel_id, new_channel_id);
+        assert_eq!(flow_snapshot(&flow), (2, 1, 0, 0, true, 0));
+
+        flow.ack(generation, seq, 64);
+        assert_eq!(flow_snapshot(&flow), (2, 1, 0, 0, true, 0));
+    }
+
+    #[tokio::test]
+    async fn stale_timeout_degrades_to_autoconsume_until_replace_channel_recovers() {
+        let flow = FrontendFlow::new(test_channel());
+        let (generation, seq1) = expect_send(flow.reserve(32).await);
+
+        force_expire_inflight(&flow);
+        let (_, seq2) = expect_send(flow.reserve(32).await);
+        assert_eq!(flow_snapshot(&flow), (1, 3, 32, 1, true, 1));
+
+        force_expire_inflight(&flow);
+        assert_auto_consume(flow.reserve(32).await);
+        assert_eq!(
+            flow_snapshot(&flow),
+            (1, 3, 0, 0, true, FRONTEND_STALE_TIMEOUTS)
+        );
+
+        flow.ack(generation, seq1, 32);
+        flow.ack(generation, seq2, 32);
+        assert_eq!(
+            flow_snapshot(&flow),
+            (1, 3, 0, 0, true, FRONTEND_STALE_TIMEOUTS)
+        );
+        assert_auto_consume(flow.reserve(32).await);
+
+        flow.replace_channel(test_channel())
+            .expect("replace channel");
+        let recovered = expect_send(flow.reserve(32).await);
+        assert_eq!(recovered, (2, 1));
+        assert_eq!(flow_snapshot(&flow), (2, 2, 32, 1, true, 0));
     }
 }
