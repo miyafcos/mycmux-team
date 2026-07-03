@@ -121,7 +121,6 @@ pub fn create_session(
     cols: u16,
     rows: u16,
     on_data: Channel<FrontendDataBatch>,
-    consumer_id: String,
     cwd: Option<String>,
     env: Option<HashMap<String, String>>,
 ) -> Result<(), String> {
@@ -135,7 +134,10 @@ pub fn create_session(
                 "[mycmux] agent restore validation failed, falling back to --continue: {err}"
             );
             let resume = env_map.get("MYCMUX_RESUME").cloned();
-            if let Some(kind) = resume.as_deref().filter(|value| is_agent_session_kind(value)) {
+            if let Some(kind) = resume
+                .as_deref()
+                .filter(|value| is_agent_session_kind(value))
+            {
                 apply_agent_restore_fallback_args(&requested_command, &mut args, kind);
             }
             env_map.remove("MYCMUX_SESSION_ID");
@@ -231,7 +233,6 @@ pub fn create_session(
         cols,
         rows,
         on_data,
-        consumer_id,
         app_handle,
         launch_cwd,
         Some(env_map),
@@ -821,6 +822,14 @@ pub fn set_frontend_visible(
         .session_manager
         .set_frontend_visible(&session_id, visible);
     Ok(())
+}
+
+#[tauri::command(async)]
+pub fn get_session_scrollback(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<Vec<u8>, String> {
+    state.session_manager.get_scrollback(&session_id)
 }
 
 #[tauri::command(async)]

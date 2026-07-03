@@ -483,8 +483,34 @@ def test_terminal_batches_keep_backend_flowing_while_layout_is_unwritable() -> N
 
     for snippet in [
         "interface PendingFrontendBatch {",
+        "TERMINAL_BATCH_RETAINED_MAX_BYTES",
+        "trimOldestBatchesToByteCap",
+        "const terminalDeferredBatches = new Map<string, PendingFrontendBatch[]>();",
+        "const terminalRawTailBySession = new Map<string, Uint8Array>();",
+        "const terminalScrollbackResyncNeeded = new Set<string>();",
         "let refreshTimers: ReturnType<typeof setTimeout>[] = [];",
         "const clearRefreshTimers = (): void => {",
+        "function takeDeferredTerminalBatches(sessionId: string): PendingFrontendBatch[]",
+        "function stashDeferredTerminalBatches(",
+        "ackDropped?: (pending: PendingFrontendBatch) => void",
+        "const enforcePendingBatchCap = (): void => {",
+        "trimmed.needsScrollbackResync",
+        "terminalScrollbackResyncNeeded.add(sessionId);",
+        "const syncDroppedBatchScrollbackIfNeeded = async (): Promise<void> => {",
+        "await syncDroppedBatchScrollbackIfNeeded();",
+        "function rememberTerminalRawTail(sessionId: string, chunk: Uint8Array): void",
+        "function replaceTerminalRawTail(sessionId: string, scrollback: Uint8Array): void",
+        "function findLastSubarray(haystack: Uint8Array, needle: Uint8Array): number",
+        "const syncBackendScrollbackToTerminal = async (): Promise<void> => {",
+        "scrollbackData = await getSessionScrollback(sessionId);",
+        "const tailStart = findLastSubarray(scrollback, knownTail);",
+        "replaceTerminalRawTail(sessionId, scrollback);",
+        "rememberTerminalRawTail(sessionId, chunk);",
+        "const pendingBatches: PendingFrontendBatch[] = takeDeferredTerminalBatches(sessionId);",
+        "stashDeferredTerminalBatches(sessionId, carry, (pending) => {",
+        "terminalDeferredBatches.delete(sessionId);",
+        "terminalRawTailBySession.delete(sessionId);",
+        "terminalScrollbackResyncNeeded.delete(sessionId);",
         "const isContainerDisplayed = (): boolean => {",
         "const isContainerPainted = (): boolean => {",
         "const hasWritableTerminalSize = (): boolean => {",
@@ -533,3 +559,9 @@ def test_terminal_batches_keep_backend_flowing_while_layout_is_unwritable() -> N
     assert 'style.visibility === "hidden" || style.visibility === "collapse"' in painted_fn
     assert "isContainerDisplayed()" in painted_fn
     assert "if (!term || termDisposed || !isContainerVisible())" not in xterm_wrapper
+    assert "TERMINAL_BATCH_RETAINED_MAX_BYTES" in xterm_wrapper
+
+    assert_contains(ipc, "export async function getSessionScrollback(sessionId: string): Promise<number[]>", "src/lib/ipc.ts")
+    assert_contains(terminal_commands, "pub fn get_session_scrollback(", "src-tauri/src/commands/terminal.rs")
+    assert_contains(manager, "pub fn get_scrollback(&self, session_id: &str) -> Result<Vec<u8>, String>", "src-tauri/src/pty/manager.rs")
+    assert_contains(lib_rs, "commands::terminal::get_session_scrollback", "src-tauri/src/lib.rs")

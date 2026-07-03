@@ -13,6 +13,7 @@ import {
   resizeSession,
   onPtyExit,
   getTerminalConfig,
+  getSessionScrollback,
 } from "../../lib/ipc";
 import type { FrontendDataBatch } from "../../lib/ipc";
 import { usePaneMetadataStore, useUiStore } from "../../stores/workspaceStore";
@@ -21,6 +22,10 @@ import { useSettingsStore } from "../../stores/settingsStore";
 import { DEFAULT_TERMINAL_FONT_FAMILY, useThemeStore } from "../../stores/themeStore";
 import type { ILink, IMarker, ITheme } from "@xterm/xterm";
 import { markStartupSessionSettled } from "../../lib/startupSessionGate";
+import {
+  TERMINAL_BATCH_RETAINED_MAX_BYTES,
+  trimOldestBatchesToByteCap,
+} from "../../lib/terminalBatchQueue";
 
 // Notification sound via Web Audio API — short gentle chime
 let _audioCtx: AudioContext | null = null;
@@ -204,9 +209,78 @@ const terminalSizeCache = new Map<string, { cols: number; rows: number }>();
 const terminalWriteCounters = new Map<string, number>();
 const terminalSelectionCopyListeners = new WeakMap<Terminal, { dispose: () => void }>();
 const terminalInputQueues = new Map<string, Promise<void>>();
+const terminalDeferredBatches = new Map<string, PendingFrontendBatch[]>();
+const terminalRawTailBySession = new Map<string, Uint8Array>();
+const terminalScrollbackResyncNeeded = new Set<string>();
+const TERMINAL_RAW_TAIL_MAX_BYTES = 32 * 1024;
 const terminalMouseModeOutputTailBySession = new Map<string, string>();
 const terminalMouseReportModeBySession = new Set<string>();
 const terminalSgrMouseReportBySession = new Set<string>();
+
+function takeDeferredTerminalBatches(sessionId: string): PendingFrontendBatch[] {
+  const batches = terminalDeferredBatches.get(sessionId);
+  terminalDeferredBatches.delete(sessionId);
+  return batches ?? [];
+}
+
+function stashDeferredTerminalBatches(
+  sessionId: string,
+  batches: PendingFrontendBatch[],
+  ackDropped?: (pending: PendingFrontendBatch) => void,
+): void {
+  if (batches.length === 0) return;
+  const next = [...(terminalDeferredBatches.get(sessionId) ?? []), ...batches];
+  const trimmed = trimOldestBatchesToByteCap(next, TERMINAL_BATCH_RETAINED_MAX_BYTES);
+  if (trimmed.needsScrollbackResync) {
+    terminalScrollbackResyncNeeded.add(sessionId);
+    for (const pending of trimmed.dropped) {
+      ackDropped?.(pending);
+    }
+  }
+  if (trimmed.retained.length > 0) {
+    terminalDeferredBatches.set(sessionId, trimmed.retained);
+  } else {
+    terminalDeferredBatches.delete(sessionId);
+  }
+}
+
+function rememberTerminalRawTail(sessionId: string, chunk: Uint8Array): void {
+  if (chunk.byteLength === 0) return;
+  const previous = terminalRawTailBySession.get(sessionId);
+  const totalLength = (previous?.byteLength ?? 0) + chunk.byteLength;
+  const combined = new Uint8Array(Math.min(totalLength, TERMINAL_RAW_TAIL_MAX_BYTES));
+  let writeOffset = combined.length;
+  const chunkStart = Math.max(0, chunk.byteLength - writeOffset);
+  const chunkSlice = chunk.slice(chunkStart);
+  writeOffset -= chunkSlice.byteLength;
+  combined.set(chunkSlice, writeOffset);
+  if (previous && writeOffset > 0) {
+    const previousStart = Math.max(0, previous.byteLength - writeOffset);
+    combined.set(previous.slice(previousStart), 0);
+  }
+  terminalRawTailBySession.set(sessionId, combined);
+}
+
+function replaceTerminalRawTail(sessionId: string, scrollback: Uint8Array): void {
+  const start = Math.max(0, scrollback.byteLength - TERMINAL_RAW_TAIL_MAX_BYTES);
+  terminalRawTailBySession.set(sessionId, scrollback.slice(start));
+}
+
+function findLastSubarray(haystack: Uint8Array, needle: Uint8Array): number {
+  if (needle.byteLength === 0) return haystack.byteLength;
+  if (needle.byteLength > haystack.byteLength) return -1;
+  for (let start = haystack.byteLength - needle.byteLength; start >= 0; start -= 1) {
+    let matched = true;
+    for (let offset = 0; offset < needle.byteLength; offset += 1) {
+      if (haystack[start + offset] !== needle[offset]) {
+        matched = false;
+        break;
+      }
+    }
+    if (matched) return start;
+  }
+  return -1;
+}
 
 const TERMINAL_WHEEL_FOCUS_SUPPRESS_MS = 350;
 const TERMINAL_FOCUS_RETRY_LIMIT = 8;
@@ -1056,6 +1130,9 @@ export function evictTerminalCache(sessionId: string): void {
   terminalSizeCache.delete(sessionId);
   terminalWriteCounters.delete(sessionId);
   terminalInputQueues.delete(sessionId);
+  terminalDeferredBatches.delete(sessionId);
+  terminalRawTailBySession.delete(sessionId);
+  terminalScrollbackResyncNeeded.delete(sessionId);
   terminalMouseModeOutputTailBySession.delete(sessionId);
   terminalMouseReportModeBySession.delete(sessionId);
   terminalSgrMouseReportBySession.delete(sessionId);
@@ -1995,6 +2072,19 @@ export default memo(function XTermWrapper({
       await ackBatch(pending.batch);
     };
 
+    const enforcePendingBatchCap = (): void => {
+      const trimmed = trimOldestBatchesToByteCap(
+        pendingBatches,
+        TERMINAL_BATCH_RETAINED_MAX_BYTES,
+      );
+      if (!trimmed.needsScrollbackResync) return;
+      pendingBatches.splice(0, pendingBatches.length, ...trimmed.retained);
+      terminalScrollbackResyncNeeded.add(sessionId);
+      for (const pending of trimmed.dropped) {
+        void ackPendingBatch(pending);
+      }
+    };
+
     const isContainerDisplayed = (): boolean => {
       if (!container.isConnected) return false;
       let current: HTMLElement | null = container;
@@ -2153,10 +2243,54 @@ export default memo(function XTermWrapper({
       });
     };
 
+    const syncBackendScrollbackToTerminal = async (): Promise<void> => {
+      const knownTail = terminalRawTailBySession.get(sessionId);
+      let scrollbackData: number[];
+      try {
+        scrollbackData = await getSessionScrollback(sessionId);
+      } catch {
+        return;
+      }
+      if (disposed || termDisposed || !term || scrollbackData.length === 0) return;
+      const scrollback = new Uint8Array(scrollbackData);
+      let replay = scrollback;
+      let resetBeforeReplay = knownTail === undefined;
+      if (knownTail && knownTail.byteLength > 0) {
+        const tailStart = findLastSubarray(scrollback, knownTail);
+        if (tailStart >= 0) {
+          replay = scrollback.slice(tailStart + knownTail.byteLength);
+        } else {
+          resetBeforeReplay = true;
+        }
+      }
+      if (replay.byteLength === 0) {
+        replaceTerminalRawTail(sessionId, scrollback);
+        return;
+      }
+      if (resetBeforeReplay) {
+        term.reset();
+      }
+      await writeTerminalOutput(stripTerminalMouseModeControlSequences(new TextDecoder().decode(replay)));
+      if (disposed || termDisposed || !term) return;
+      replaceTerminalRawTail(sessionId, scrollback);
+      terminalHasLiveOutput.add(sessionId);
+      bumpTerminalWriteCounter(sessionId);
+      scheduleFullRefresh(term, [0, 48, 160]);
+      scheduleBackgroundScan();
+    };
+
+    const syncDroppedBatchScrollbackIfNeeded = async (): Promise<void> => {
+      if (!terminalScrollbackResyncNeeded.has(sessionId)) return;
+      if (!canWritePendingBatches()) return;
+      await syncBackendScrollbackToTerminal();
+      terminalScrollbackResyncNeeded.delete(sessionId);
+    };
+
     async function pumpTerminalWrites(): Promise<void> {
       if (writingBatch) return;
       writingBatch = true;
       try {
+        await syncDroppedBatchScrollbackIfNeeded();
         while (pendingBatches.length > 0) {
           const pending = pendingBatches.shift()!;
           const { batch } = pending;
@@ -2218,6 +2352,7 @@ export default memo(function XTermWrapper({
       }
       const pending: PendingFrontendBatch = { batch, acked: false };
       pendingBatches.push(pending);
+      enforcePendingBatchCap();
       if (canWritePendingBatches()) {
         void pumpTerminalWrites();
       } else {
@@ -2389,10 +2524,16 @@ export default memo(function XTermWrapper({
       if (term && liveTerms.get(sessionId) === term) {
         liveTerms.delete(sessionId);
       }
-      if (termDisposed) {
-        while (pendingBatches.length > 0) {
-          const pending = pendingBatches.shift()!;
-          void ackPendingBatch(pending);
+      if (pendingBatches.length > 0) {
+        const carry = pendingBatches.splice(0, pendingBatches.length);
+        if (termDisposed) {
+          for (const pending of carry) {
+            void ackPendingBatch(pending);
+          }
+        } else {
+          stashDeferredTerminalBatches(sessionId, carry, (pending) => {
+            void ackPendingBatch(pending);
+          });
         }
       }
       searchAddonRef.current = null;

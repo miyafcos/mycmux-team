@@ -38,8 +38,6 @@ export async function createSession(
       staleNoticeCount += 1;
     },
   });
-  const epoch = attach.epoch;
-  const consumerId = `${epoch}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const channel = new Channel<FrontendDataBatch>();
 
   channel.onmessage = (batch) => {
@@ -47,7 +45,7 @@ export async function createSession(
   };
   if (import.meta.env.DEV) {
     console.log(
-      `[mycmux-diag ipc] create_session session=${sessionId} epoch=${epoch} prev_messages=${attach.messageCount}`,
+      `[mycmux-diag ipc] create_session session=${sessionId} epoch=${attach.epoch} prev_messages=${attach.messageCount}`,
     );
   }
   try {
@@ -58,7 +56,6 @@ export async function createSession(
       cols,
       rows,
       onData: channel,
-      consumerId,
       cwd: cwd ?? null,
       env: env ?? null,
     });
@@ -80,6 +77,10 @@ export async function ackFrontendData(
 
 export async function setFrontendVisible(sessionId: string, visible: boolean): Promise<void> {
   return invoke("set_frontend_visible", { sessionId, visible });
+}
+
+export async function getSessionScrollback(sessionId: string): Promise<number[]> {
+  return invoke("get_session_scrollback", { sessionId });
 }
 
 export async function writeToSession(

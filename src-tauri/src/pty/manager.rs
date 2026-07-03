@@ -54,7 +54,6 @@ impl SessionManager {
         cols: u16,
         rows: u16,
         data_channel: Channel<FrontendDataBatch>,
-        consumer_id: String,
         app_handle: AppHandle,
         cwd: Option<String>,
         env: Option<std::collections::HashMap<String, String>>,
@@ -67,7 +66,7 @@ impl SessionManager {
             .lock()
             .map_err(|error| format!("Failed to lock create session {session_id}: {error}"))?;
         if let Some(session) = self.sessions.get(&session_id) {
-            let replaced_channel_ids = session.replace_data_channel(data_channel, consumer_id)?;
+            let replaced_channel_ids = session.replace_data_channel(data_channel)?;
             #[cfg(debug_assertions)]
             {
                 let age_ms = session.created_at.elapsed().as_millis();
@@ -96,7 +95,6 @@ impl SessionManager {
             cols,
             rows,
             data_channel,
-            consumer_id,
             app_handle,
             cwd,
             env,
@@ -133,6 +131,14 @@ impl SessionManager {
         if let Some(session) = self.sessions.get(session_id) {
             session.set_frontend_visible(visible);
         }
+    }
+
+    pub fn get_scrollback(&self, session_id: &str) -> Result<Vec<u8>, String> {
+        let session = self
+            .sessions
+            .get(session_id)
+            .ok_or_else(|| format!("Session not found: {session_id}"))?;
+        Ok(session.get_scrollback())
     }
 
     pub fn kill(&self, session_id: &str) -> Result<(), String> {

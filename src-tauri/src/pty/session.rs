@@ -23,6 +23,9 @@ const FRONTEND_BATCH_MAX_BYTES: usize = 64 * 1024;
 const FRONTEND_MAX_INFLIGHT_BYTES: usize = 512 * 1024;
 const FRONTEND_LOW_WATER_BYTES: usize = 256 * 1024;
 const FRONTEND_MAX_INFLIGHT_BATCHES: usize = 16;
+// Two missed 2500 ms ACK windows enter AutoConsume well before the frontend
+// writeTerminalOutput watchdog (30000 ms in XTermWrapper.tsx) resolves a stuck
+// write. A later matching-generation ACK resets stale state and resumes sends.
 const FRONTEND_ACK_TIMEOUT: Duration = Duration::from_millis(2500);
 const FRONTEND_STALE_TIMEOUTS: u32 = 2;
 // v0.7.1 diag: report aggregated PTY metrics every 5 s on stderr.
@@ -45,6 +48,7 @@ pub(crate) struct PtyMetrics {
     pub frontend_queue_full_retry: std::sync::atomic::AtomicU64,
     pub dropped_chunks: std::sync::atomic::AtomicU64,
     pub dropped_bytes: std::sync::atomic::AtomicU64,
+    pub autoconsume_events: std::sync::atomic::AtomicU64,
     pub closed_count: std::sync::atomic::AtomicU64,
 }
 
@@ -191,10 +195,10 @@ impl FrontendFlow {
         let Ok(mut st) = self.inner.lock() else {
             return;
         };
-        if generation != st.generation || st.closing || st.stale_timeouts >= FRONTEND_STALE_TIMEOUTS
-        {
+        if generation != st.generation || st.closing {
             return;
         }
+        st.stale_timeouts = 0;
         let mut acked = false;
         while let Some(front) = st.inflight.front() {
             if front.generation != generation || front.seq > seq {
@@ -204,10 +208,7 @@ impl FrontendFlow {
             st.inflight_bytes = st.inflight_bytes.saturating_sub(item.bytes);
             acked = true;
         }
-        if acked {
-            st.stale_timeouts = 0;
-        }
-        if st.inflight_bytes <= FRONTEND_LOW_WATER_BYTES {
+        if acked || st.inflight_bytes <= FRONTEND_LOW_WATER_BYTES {
             self.notify.notify_waiters();
         }
     }
@@ -257,6 +258,9 @@ impl FrontendFlow {
             return;
         };
         st.visible = visible;
+        if visible {
+            st.stale_timeouts = 0;
+        }
         if !visible {
             st.inflight.clear();
             st.inflight_bytes = 0;
@@ -301,7 +305,6 @@ impl PtySession {
         cols: u16,
         rows: u16,
         data_channel: Channel<FrontendDataBatch>,
-        _consumer_id: String,
         app_handle: AppHandle,
         cwd: Option<String>,
         env: Option<std::collections::HashMap<String, String>>,
@@ -427,6 +430,7 @@ impl PtySession {
                         .load(Ordering::Relaxed);
                     let dropped_c = metrics_for_log.dropped_chunks.load(Ordering::Relaxed);
                     let dropped_b = metrics_for_log.dropped_bytes.load(Ordering::Relaxed);
+                    let autoconsume = metrics_for_log.autoconsume_events.load(Ordering::Relaxed);
                     let closed = metrics_for_log.closed_count.load(Ordering::Relaxed);
                     let avg_read_us = if reads > 0 { micros / reads } else { 0 };
                     let avg_batch = if flushes > 0 {
@@ -435,7 +439,7 @@ impl PtySession {
                         0
                     };
                     eprintln!(
-                    "[mycmux-diag pty {}] reads={} avg_read_us={} flushes={} avg_batch={} send_err={} queue_full={} dropped_chunks={} dropped_bytes={} closed={}",
+                    "[mycmux-diag pty {}] reads={} avg_read_us={} flushes={} avg_batch={} send_err={} queue_full={} dropped_chunks={} dropped_bytes={} autoconsume={} closed={}",
                     sid_for_log,
                     reads,
                     avg_read_us,
@@ -445,6 +449,7 @@ impl PtySession {
                     queue_full,
                     dropped_c,
                     dropped_b,
+                    autoconsume,
                     closed,
                 );
                     prev_reads = reads;
@@ -470,7 +475,12 @@ impl PtySession {
                 let batch_len = batch.len();
                 match forwarder_flow.reserve(batch_len).await {
                     FlowPermit::Closed => break,
-                    FlowPermit::AutoConsume => continue,
+                    FlowPermit::AutoConsume => {
+                        metrics_forwarder
+                            .autoconsume_events
+                            .fetch_add(1, Ordering::Relaxed);
+                        continue;
+                    }
                     FlowPermit::Send { generation, seq } => {
                         let msg = FrontendDataBatch {
                             generation,
@@ -634,7 +644,6 @@ impl PtySession {
     pub fn replace_data_channel(
         &self,
         data_channel: Channel<FrontendDataBatch>,
-        _consumer_id: String,
     ) -> Result<(String, String), String> {
         self.frontend_flow.replace_channel(data_channel)
     }
@@ -801,7 +810,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cancel_and_replace_clear_inflight_and_make_late_acks_noops() {
+    async fn cancel_keeps_channel_detached_after_late_matching_ack() {
         let flow = FrontendFlow::new(test_channel());
         let (generation, seq) = expect_send(flow.reserve(64).await);
 
@@ -811,10 +820,10 @@ mod tests {
             (1, 2, 0, 0, false, FRONTEND_STALE_TIMEOUTS)
         );
         flow.ack(generation, seq, 64);
-        assert_eq!(
-            flow_snapshot(&flow),
-            (1, 2, 0, 0, false, FRONTEND_STALE_TIMEOUTS)
-        );
+        assert_eq!(flow_snapshot(&flow), (1, 2, 0, 0, false, 0));
+        assert_auto_consume(flow.reserve(64).await);
+        flow.ack(generation, seq, 64);
+        assert_eq!(flow_snapshot(&flow), (1, 2, 0, 0, false, 0));
 
         let (old_channel_id, new_channel_id) = flow
             .replace_channel(test_channel())
@@ -827,7 +836,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stale_timeout_degrades_to_autoconsume_until_replace_channel_recovers() {
+    async fn stale_timeout_recovers_after_late_current_generation_ack() {
         let flow = FrontendFlow::new(test_channel());
         let (generation, seq1) = expect_send(flow.reserve(32).await);
 
@@ -844,16 +853,29 @@ mod tests {
 
         flow.ack(generation, seq1, 32);
         flow.ack(generation, seq2, 32);
+        let recovered = expect_send(flow.reserve(32).await);
+        assert_eq!(recovered, (1, 3));
+        assert_eq!(flow_snapshot(&flow), (1, 4, 32, 1, true, 0));
+    }
+
+    #[tokio::test]
+    async fn set_visible_true_recovers_stale_autoconsume_state() {
+        let flow = FrontendFlow::new(test_channel());
+        expect_send(flow.reserve(32).await);
+
+        force_expire_inflight(&flow);
+        expect_send(flow.reserve(32).await);
+        force_expire_inflight(&flow);
+        assert_auto_consume(flow.reserve(32).await);
         assert_eq!(
             flow_snapshot(&flow),
             (1, 3, 0, 0, true, FRONTEND_STALE_TIMEOUTS)
         );
-        assert_auto_consume(flow.reserve(32).await);
 
-        flow.replace_channel(test_channel())
-            .expect("replace channel");
+        flow.set_visible(true);
+
         let recovered = expect_send(flow.reserve(32).await);
-        assert_eq!(recovered, (2, 1));
-        assert_eq!(flow_snapshot(&flow), (2, 2, 32, 1, true, 0));
+        assert_eq!(recovered, (1, 3));
+        assert_eq!(flow_snapshot(&flow), (1, 4, 32, 1, true, 0));
     }
 }

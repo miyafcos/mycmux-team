@@ -152,6 +152,7 @@ pub fn run() {
             commands::terminal::resize_session,
             commands::terminal::ack_frontend_data,
             commands::terminal::set_frontend_visible,
+            commands::terminal::get_session_scrollback,
             commands::terminal::kill_session,
             commands::terminal::preview_artifact_for_session,
             commands::terminal::preview_artifact_uri_for_session,

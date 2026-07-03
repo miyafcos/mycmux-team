@@ -86,5 +86,5 @@ def test_duplicate_session_create_is_idempotent() -> None:
     assert_contains(manager, "create_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>", "src-tauri/src/pty/manager.rs")
     assert_contains(manager, "fn create_lock_for(&self, session_id: &str)", "src-tauri/src/pty/manager.rs")
     assert_contains(manager, "let _create_guard = create_lock", "src-tauri/src/pty/manager.rs")
-    assert_contains(manager, "session.replace_data_channel(data_channel, consumer_id)?", "src-tauri/src/pty/manager.rs")
+    assert_contains(manager, "session.replace_data_channel(data_channel)?", "src-tauri/src/pty/manager.rs")
     assert_contains(manager, "return Ok(());", "src-tauri/src/pty/manager.rs")
