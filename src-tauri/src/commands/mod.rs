@@ -1,5 +1,8 @@
+pub mod artifact;
 pub mod crsm;
 pub mod fs;
+pub mod session_mapping;
+pub mod shell;
 pub mod terminal;
 pub mod usage;
 pub mod window;

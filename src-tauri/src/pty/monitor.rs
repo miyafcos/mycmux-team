@@ -57,7 +57,7 @@ fn write_detected_agent_session_mapping(
     agent_kind: &str,
     agent_session_id: &str,
 ) {
-    let _ = crate::commands::terminal::write_session_mapping_file(
+    let _ = crate::commands::session_mapping::write_session_mapping_file(
         session_id,
         agent_kind,
         agent_session_id,
@@ -681,7 +681,10 @@ pub fn start_monitor(
                         match rx.recv_timeout(Duration::from_secs(2)) {
                             Ok(result) => result,
                             Err(_) => {
-                                eprintln!("[monitor] git rev-parse timed out for {}", cwd);
+                                #[cfg(debug_assertions)]
+                                {
+                                    eprintln!("[monitor] git rev-parse timed out for {}", cwd);
+                                }
                                 None
                             }
                         }
@@ -745,7 +748,12 @@ pub fn start_monitor(
                                             &session_id,
                                             agent_pid,
                                             kind,
-                                            || detect_claude_codex_session_id(&cwd, agent_min_created),
+                                            || {
+                                                detect_claude_codex_session_id(
+                                                    &cwd,
+                                                    agent_min_created,
+                                                )
+                                            },
                                         )
                                     });
                                 remember_detected_agent_session_id(

@@ -137,8 +137,11 @@ pub fn start_socket_listener(app: AppHandle) {
                     return;
                 }
 
-                println!("Socket listening on 127.0.0.1:{}", port);
-                println!("Port file: {:?}", port_file);
+                #[cfg(debug_assertions)]
+                {
+                    println!("Socket listening on 127.0.0.1:{}", port);
+                    println!("Port file: {:?}", port_file);
+                }
 
                 loop {
                     if let Ok((stream, peer_addr)) = listener.accept().await {

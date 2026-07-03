@@ -137,24 +137,28 @@
     "src-tauri\\src\\commands\\terminal.rs": [
       "get_terminal_config",
       "get_pty_metadata_snapshot",
+      "create_session",
       "write_to_session",
       "resize_session",
       "ack_frontend_data",
       "set_frontend_visible",
       "get_session_scrollback",
       "kill_session",
+      "is_directory",
+      "get_launch_cwd"
+    ],
+    "src-tauri\\src\\commands\\artifact\\mod.rs": [
       "preview_artifact_for_session",
       "preview_artifact_uri_for_session",
       "preview_artifact_uri_for_session_v2",
       "read_editable_artifact",
-      "save_editable_artifact",
-      "get_all_cwds",
-      "get_default_shell",
-      "read_pane_session_mappings",
-      "read_agent_session_mappings",
-      "get_claude_session_id",
-      "is_directory",
-      "get_launch_cwd"
+      "save_editable_artifact"
+    ],
+    "src-tauri\\src\\commands\\shell.rs": [
+      "get_default_shell"
+    ],
+    "src-tauri\\src\\commands\\session_mapping.rs": [
+      "read_agent_session_mappings"
     ],
     "src-tauri\\src\\commands\\usage.rs": [
       "get_usage_summary"

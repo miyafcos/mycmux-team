@@ -214,25 +214,31 @@ pub fn start_remote_server(
             }
         };
 
-        // Print connection info + QR (prefer Tailscale IP for anywhere access)
-        if let Some(ip) = qr::local_ip() {
-            let token = state.control.current_token().await;
-            let suffix = token_suffix(&token);
-            let via = if ip.starts_with("100.") {
-                "Tailscale"
+        #[cfg(debug_assertions)]
+        {
+            // Print connection info + QR (prefer Tailscale IP for anywhere access)
+            if let Some(ip) = qr::local_ip() {
+                let token = state.control.current_token().await;
+                let suffix = token_suffix(&token);
+                let via = if ip.starts_with("100.") {
+                    "Tailscale"
+                } else {
+                    "LAN"
+                };
+                println!("\n=== mycmux Remote Terminal ({via}) ===");
+                println!("URL: http://{ip}:{port}/#token=<hidden>; token suffix={suffix}");
+                println!("Open Settings > Remote: QR to show the live QR code.");
+                println!("==============================\n");
             } else {
-                "LAN"
-            };
-            println!("\n=== mycmux Remote Terminal ({via}) ===");
-            println!("URL: http://{ip}:{port}/#token=<hidden>; token suffix={suffix}");
-            println!("Open Settings > Remote: QR to show the live QR code.");
-            println!("==============================\n");
-        } else {
-            println!("[remote] Could not detect local IP. Access via http://localhost:{port}");
+                println!("[remote] Could not detect local IP. Access via http://localhost:{port}");
+            }
         }
 
         let addr = format!("0.0.0.0:{port}");
-        println!("[remote] Listening on {addr}");
+        #[cfg(debug_assertions)]
+        {
+            println!("[remote] Listening on {addr}");
+        }
 
         let listener = match tokio::net::TcpListener::bind(&addr).await {
             Ok(l) => l,

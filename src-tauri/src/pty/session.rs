@@ -576,6 +576,7 @@ impl PtySession {
                             }
                         }
 
+                        #[cfg(debug_assertions)]
                         let send_start = Instant::now();
                         let chunk = buf[..n].to_vec();
                         if frontend_open {
@@ -601,6 +602,7 @@ impl PtySession {
                                 }
                             }
                         }
+                        #[cfg(debug_assertions)]
                         let send_micros = send_start.elapsed().as_micros();
 
                         // Also send to broadcast for remote clients.
@@ -616,12 +618,15 @@ impl PtySession {
                             }
                         }
 
-                        // Log slow reads in debug builds only
-                        if cfg!(debug_assertions) && (read_micros > 1000 || send_micros > 1000) {
-                            eprintln!(
-                                "[PERF] PTY read: {}μs, channel send: {}μs, bytes: {}",
-                                read_micros, send_micros, n
-                            );
+                        #[cfg(debug_assertions)]
+                        {
+                            // Log slow reads in debug builds only
+                            if read_micros > 1000 || send_micros > 1000 {
+                                eprintln!(
+                                    "[PERF] PTY read: {}μs, channel send: {}μs, bytes: {}",
+                                    read_micros, send_micros, n
+                                );
+                            }
                         }
                     }
                     Err(_) => break,
