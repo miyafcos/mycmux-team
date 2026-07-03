@@ -46,7 +46,12 @@ const SettingsIcon = () => (
 export default function TitleBar({ uiVariant = "default", onNewWorkspace, onOpenCrsmPalette }: TitleBarProps) {
   const activeWorkspace = useWorkspaceListStore((s) => s.getActiveWorkspace());
   const toggleSidebar = useUiStore((s) => s.toggleSidebar);
-  const paneMetadata = usePaneMetadataStore((s) => s.metadata);
+  const totalNotifications = usePaneMetadataStore((s) =>
+    Object.values(s.metadata).reduce(
+      (sum, m) => sum + (m.notificationCount ?? 0) + (m.workDoneCount ?? 0),
+      0,
+    ),
+  );
   const [notificationPanelOpen, setNotificationPanelOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isThemeSwitcherOpen, setIsThemeSwitcherOpen] = useState(false);
@@ -67,11 +72,6 @@ export default function TitleBar({ uiVariant = "default", onNewWorkspace, onOpen
       unlistenMove.then((f) => f());
     };
   }, []);
-
-  const totalNotifications = Object.values(paneMetadata).reduce(
-    (sum, m) => sum + (m.notificationCount ?? 0) + (m.workDoneCount ?? 0),
-    0,
-  );
 
   // Manual double-click detection for drag region compatibility
   const lastClickRef = useRef(0);

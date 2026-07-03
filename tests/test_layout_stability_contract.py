@@ -538,11 +538,24 @@ def test_terminal_batches_keep_backend_flowing_while_layout_is_unwritable() -> N
     ]:
         assert_contains(xterm_wrapper, snippet, "src/components/terminal/XTermWrapper.tsx")
 
+    snapshot_fn = xterm_wrapper.split("const readContainerVisibilitySnapshot = ", 1)[1].split(
+        "const isContainerDisplayed = (): boolean => {",
+        1,
+    )[0]
+    # display:none anywhere up the chain kills both displayed and painted
+    assert 'style.display === "none"' in snapshot_fn
+    # visibility hidden/collapse only demotes painted, never displayed
+    visibility_branch = snapshot_fn.split(
+        'style.visibility === "hidden" || style.visibility === "collapse"', 1
+    )[1].split("}", 1)[0]
+    assert "painted = false" in visibility_branch
+    assert "displayed" not in visibility_branch
+
     displayed_fn = xterm_wrapper.split("const isContainerDisplayed = (): boolean => {", 1)[1].split(
         "const isContainerPainted = (): boolean => {",
         1,
     )[0]
-    assert 'style.display === "none"' in displayed_fn
+    assert "readContainerVisibilitySnapshot().displayed" in displayed_fn
     assert "style.visibility" not in displayed_fn
 
     can_write_fn = xterm_wrapper.split("const canWritePendingBatches = (): boolean => {", 1)[1].split(
@@ -556,8 +569,7 @@ def test_terminal_batches_keep_backend_flowing_while_layout_is_unwritable() -> N
         "const hasWritableTerminalSize = (): boolean => {",
         1,
     )[0]
-    assert 'style.visibility === "hidden" || style.visibility === "collapse"' in painted_fn
-    assert "isContainerDisplayed()" in painted_fn
+    assert "readContainerVisibilitySnapshot().painted" in painted_fn
     assert "if (!term || termDisposed || !isContainerVisible())" not in xterm_wrapper
     assert "TERMINAL_BATCH_RETAINED_MAX_BYTES" in xterm_wrapper
 

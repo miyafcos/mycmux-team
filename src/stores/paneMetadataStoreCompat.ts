@@ -20,6 +20,7 @@ export interface PaneMetadata {
 
 export interface PaneMetadataState {
   metadata: Record<string, PaneMetadata>;
+  lastLog: Record<string, string>;
   setMetadata: (sessionId: string, data: Partial<PaneMetadata>) => void;
   clearAgentStatus: (sessionId: string) => void;
   clearClaudeSessionId: (sessionId: string) => void;
@@ -44,26 +45,55 @@ function dropUndefined<T extends object>(data: T): Partial<T> {
 
 export const usePaneMetadataStore = create<PaneMetadataState>((set) => ({
   metadata: {},
+  lastLog: {},
 
   setMetadata: (sessionId, data) => set((state) => {
     const filtered = dropUndefined(data);
     if (Object.keys(filtered).length === 0) return state;
-    const prev = state.metadata[sessionId];
+    const { lastLogLine, ...metadataFields } = filtered;
+    const hasLastLogLine = Object.prototype.hasOwnProperty.call(filtered, "lastLogLine");
+    const hasMetadataFields = Object.keys(metadataFields).length > 0;
+    let nextLastLog = state.lastLog;
+    let nextMetadata = state.metadata;
+    let changed = false;
+    if (hasLastLogLine && lastLogLine !== undefined && state.lastLog[sessionId] !== lastLogLine) {
+      nextLastLog = {
+        ...state.lastLog,
+        [sessionId]: lastLogLine,
+      };
+      const prevMetadata = state.metadata[sessionId];
+      if (prevMetadata) {
+        // Preserve legacy getState().metadata reads without changing the low-frequency map reference.
+        prevMetadata.lastLogLine = lastLogLine;
+      } else {
+        nextMetadata = {
+          ...state.metadata,
+          [sessionId]: { lastLogLine },
+        };
+      }
+      changed = true;
+    }
+    if (!hasMetadataFields) {
+      return changed ? { metadata: nextMetadata, lastLog: nextLastLog } : state;
+    }
+    const prev = nextMetadata[sessionId];
     // Reset the approval-notification dedupe key when the agent leaves waiting.
     const nextData: Partial<PaneMetadata> =
-      filtered.agentStatus && filtered.agentStatus !== "waiting"
-        ? { ...filtered, lastNotificationKey: undefined }
-        : filtered;
+      metadataFields.agentStatus && metadataFields.agentStatus !== "waiting"
+        ? { ...metadataFields, lastNotificationKey: undefined }
+        : metadataFields;
     if (prev) {
       const keys = Object.keys(nextData) as (keyof PaneMetadata)[];
-      const changed = keys.some((k) => prev[k] !== nextData[k]);
-      if (!changed) return state;
+      const metadataChanged = keys.some((k) => prev[k] !== nextData[k]);
+      if (!metadataChanged) return changed ? { lastLog: nextLastLog } : state;
     }
+    nextMetadata = {
+      ...nextMetadata,
+      [sessionId]: { ...prev, ...nextData },
+    };
     return {
-      metadata: {
-        ...state.metadata,
-        [sessionId]: { ...prev, ...nextData },
-      },
+      metadata: nextMetadata,
+      lastLog: nextLastLog,
     };
   }),
 
@@ -177,6 +207,7 @@ export const usePaneMetadataStore = create<PaneMetadataState>((set) => ({
 
   removeMetadata: (sessionId) => set((state) => {
     const { [sessionId]: _, ...rest } = state.metadata;
-    return { metadata: rest };
+    const { [sessionId]: _lastLog, ...lastLogRest } = state.lastLog;
+    return { metadata: rest, lastLog: lastLogRest };
   }),
 }));

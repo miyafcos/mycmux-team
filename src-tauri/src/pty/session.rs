@@ -603,8 +603,10 @@ impl PtySession {
                         }
                         let send_micros = send_start.elapsed().as_micros();
 
-                        // Also send to broadcast for remote clients
-                        let _ = broadcast_tx_clone.send(chunk.clone());
+                        // Also send to broadcast for remote clients.
+                        if broadcast_tx_clone.receiver_count() > 0 {
+                            let _ = broadcast_tx_clone.send(chunk.clone());
+                        }
                         // Append to scrollback ring buffer
                         if let Ok(mut sb) = sb_clone.lock() {
                             sb.extend(chunk.iter().copied());

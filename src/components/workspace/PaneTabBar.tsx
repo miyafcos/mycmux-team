@@ -1,5 +1,6 @@
-import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
+import { useShallow } from "zustand/react/shallow";
 import type { Pane, PaneTab } from "../../types";
 import { getAgent, getDefaultAgent } from "../../lib/agents";
 import { usePaneMetadataStore } from "../../stores/workspaceStore";
@@ -195,7 +196,26 @@ export default memo(function PaneTabBar({
   onRemoveTab,
   onSelectTab,
 }: PaneTabBarProps) {
-  const allMetadata = usePaneMetadataStore((s) => s.metadata);
+  const tabMetadata = usePaneMetadataStore(useShallow((s) =>
+    pane.tabs.map((tab) => s.metadata[tab.sessionId]),
+  ));
+  const tabLastLog = usePaneMetadataStore(useShallow((s) =>
+    pane.tabs.map((tab) => s.lastLog[tab.sessionId]),
+  ));
+  const metadataBySession = useMemo(() => {
+    const next: Record<string, typeof tabMetadata[number]> = {};
+    pane.tabs.forEach((tab, index) => {
+      next[tab.sessionId] = tabMetadata[index];
+    });
+    return next;
+  }, [pane.tabs, tabMetadata]);
+  const lastLogBySession = useMemo(() => {
+    const next: Record<string, string | undefined> = {};
+    pane.tabs.forEach((tab, index) => {
+      next[tab.sessionId] = tabLastLog[index];
+    });
+    return next;
+  }, [pane.tabs, tabLastLog]);
   const { beginPointerDrag, shouldSuppressClick } = usePaneDragSource();
   const setTabLabel = useWorkspaceLayoutStore((s) => s.setTabLabel);
   const [editingTabId, setEditingTabId] = useState<string | null>(null);
@@ -208,9 +228,9 @@ export default memo(function PaneTabBar({
 
   // Derive active tab's agent status for the status bar
   const activeTab = pane.tabs.find((t) => t.id === pane.activeTabId);
-  const activeMeta = activeTab ? allMetadata[activeTab.sessionId] : undefined;
+  const activeMeta = activeTab ? metadataBySession[activeTab.sessionId] : undefined;
   const activeStatus: EffectiveStatus = deriveEffectiveStatus(activeMeta);
-  const activeLastLog = activeMeta?.lastLogLine;
+  const activeLastLog = activeTab ? lastLogBySession[activeTab.sessionId] : undefined;
   const activeAgentLabel = activeTab
     ? (AGENT_LABELS[activeTab.agentId ?? ""] ?? getAgent(activeTab.agentId)?.name ?? "Shell")
     : "Shell";
@@ -220,14 +240,14 @@ export default memo(function PaneTabBar({
 
   const getTabDisplayLabel = useCallback((tab: PaneTab, isTabActive: boolean) => {
     const agent = getAgent(tab.agentId) ?? getDefaultAgent();
-    const tabMeta = allMetadata[tab.sessionId];
+    const tabMeta = metadataBySession[tab.sessionId];
     const tabProcessTitle = tabMeta?.processTitle;
     const tabCwd = tabMeta?.cwd;
     return tab.label
       ?? (tabProcessTitle
           ? tabProcessTitle
           : (isTabActive && tabCwd ? tabCwd.split("/").pop() || agent.name : agent.name));
-  }, [allMetadata]);
+  }, [metadataBySession]);
 
   useEffect(() => {
     if (!editingTabId) return;
@@ -335,7 +355,7 @@ export default memo(function PaneTabBar({
       <div style={{ display: "flex", alignItems: "center", flex: 1, overflow: "hidden", minWidth: 0 }}>
         {pane.tabs.map((tab) => {
           const isTabActive = tab.id === pane.activeTabId;
-          const tabMeta = allMetadata[tab.sessionId];
+          const tabMeta = metadataBySession[tab.sessionId];
           const tabNotificationCount = tabMeta?.notificationCount ?? 0;
           const tabWorkDoneCount = tabMeta?.workDoneCount ?? 0;
           const tabEffectiveStatus = deriveEffectiveStatus(tabMeta);

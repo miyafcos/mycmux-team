@@ -1,9 +1,12 @@
-import { useRef, useState, useCallback, useEffect } from "react";
+import { memo, useRef, useState, useCallback, useEffect, useMemo } from "react";
+import type { MutableRefObject } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { useWorkspaceListStore, usePaneMetadataStore } from "../../stores/workspaceStore";
 import { usePaneDragStore } from "../../stores/paneDragStore";
 import { SIDEBAR_WIDTH } from "../../lib/constants";
 import { deriveEffectiveStatus } from "../../lib/notificationStatus";
 import TabItem from "./TabItem";
+import type { Workspace } from "../../types";
 
 const PlusIcon = () => (
   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -18,13 +21,120 @@ interface TabBarProps {
   onCloseWorkspace: (id: string) => void;
 }
 
+interface WorkspaceTabEntryProps {
+  uiVariant: "default" | "cmux";
+  ws: Workspace;
+  wsIndex: number;
+  active: boolean;
+  dragIndex: number | null;
+  dropIndex: number | null;
+  paneDragActive: boolean;
+  hoverWorkspaceId: string | null;
+  draggingRef: MutableRefObject<boolean>;
+  itemRefs: MutableRefObject<(HTMLDivElement | null)[]>;
+  onPointerDown: (e: React.PointerEvent, index: number) => void;
+  onPointerMove: (e: React.PointerEvent) => void;
+  onPointerUp: () => void;
+  onClick: (workspaceId: string) => void;
+  onClose: (workspaceId: string) => void;
+  onRename: (workspaceId: string, newName: string) => void;
+}
+
+const WorkspaceTabEntry = memo(function WorkspaceTabEntry({
+  uiVariant,
+  ws,
+  wsIndex,
+  active,
+  dragIndex,
+  dropIndex,
+  paneDragActive,
+  hoverWorkspaceId,
+  draggingRef,
+  itemRefs,
+  onPointerDown,
+  onPointerMove,
+  onPointerUp,
+  onClick,
+  onClose,
+  onRename,
+}: WorkspaceTabEntryProps) {
+  const sessionIds = useMemo(
+    () => ws.panes.flatMap((pane) => pane.tabs.map((tab) => tab.sessionId)),
+    [ws.panes],
+  );
+  const tabMetadata = usePaneMetadataStore(useShallow((s) =>
+    sessionIds.map((sessionId) => s.metadata[sessionId]),
+  ));
+  const tabLastLog = usePaneMetadataStore(useShallow((s) =>
+    sessionIds.map((sessionId) => s.lastLog[sessionId]),
+  ));
+
+  let totalWsNotifications = 0;
+  let totalWsWorkDone = 0;
+  let lastLog: string | undefined;
+  const statusCounts = { working: 0, waiting: 0 };
+  const metadataBySession: Record<string, typeof tabMetadata[number]> = {};
+  sessionIds.forEach((sessionId, index) => {
+    const m = tabMetadata[index];
+    metadataBySession[sessionId] = m;
+    if (m) {
+      totalWsNotifications += m.notificationCount ?? 0;
+      totalWsWorkDone += m.workDoneCount ?? 0;
+      const eff = deriveEffectiveStatus(m);
+      if (eff === "working" || eff === "waiting") {
+        statusCounts[eff]++;
+      }
+    }
+    if (tabLastLog[index]) lastLog = tabLastLog[index];
+  });
+
+  const firstActiveTabSessionId = ws.panes[0]?.tabs.find((t) => t.id === ws.panes[0]?.activeTabId)?.sessionId;
+  const firstPaneMeta = firstActiveTabSessionId ? metadataBySession[firstActiveTabSessionId] : undefined;
+  const isDragged = draggingRef.current && dragIndex === wsIndex;
+  const showLine = draggingRef.current && dropIndex === wsIndex && dragIndex !== wsIndex;
+  const isPaneDropHover = paneDragActive && hoverWorkspaceId === ws.id;
+
+  return (
+    <div
+      data-dnd-workspace-target-id={ws.id}
+      ref={(el) => { itemRefs.current[wsIndex] = el; }}
+      onPointerDown={(e) => onPointerDown(e, wsIndex)}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      style={{
+        touchAction: "none",
+        opacity: isDragged ? 0.35 : 1,
+        borderTop: showLine ? "2px solid var(--cmux-accent, #007aff)" : "2px solid transparent",
+        outline: isPaneDropHover ? "1px solid var(--cmux-accent, #007aff)" : "1px solid transparent",
+        outlineOffset: -2,
+        background: isPaneDropHover ? "color-mix(in srgb, var(--cmux-accent) 16%, transparent)" : undefined,
+      }}
+    >
+      <TabItem
+        uiVariant={uiVariant}
+        name={ws.name}
+        paneCount={ws.panes.length}
+        cwd={firstPaneMeta?.cwd}
+        gitBranch={firstPaneMeta?.gitBranch}
+        notificationCount={totalWsNotifications || undefined}
+        workDoneCount={totalWsWorkDone || undefined}
+        lastLogLine={lastLog}
+        statusCounts={statusCounts}
+        active={active}
+        onClick={() => { if (!draggingRef.current) onClick(ws.id); }}
+        onClose={() => onClose(ws.id)}
+        onRename={(newName) => onRename(ws.id, newName)}
+      />
+    </div>
+  );
+});
+
 export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseWorkspace }: TabBarProps) {
   const workspaces = useWorkspaceListStore((s) => s.workspaces);
   const activeId = useWorkspaceListStore((s) => s.activeWorkspaceId);
   const setActive = useWorkspaceListStore((s) => s.setActiveWorkspace);
   const reorder = useWorkspaceListStore((s) => s.reorderWorkspaces);
   const rename = useWorkspaceListStore((s) => s.renameWorkspace);
-  const paneMetadata = usePaneMetadataStore((s) => s.metadata);
   const paneDragActive = usePaneDragStore((s) => s.item !== null);
   const hoverWorkspaceId = usePaneDragStore((s) => s.hoverWorkspaceId);
   const newWorkspaceDropActive = usePaneDragStore((s) => s.target?.kind === "new-workspace");
@@ -136,62 +246,26 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
       </div>
       <div style={{ flex: 1, minHeight: 0, overflowY: "auto", overflowX: "hidden", paddingTop: 4 }}>
         {workspaces.map((ws, wsIndex) => {
-          let totalWsNotifications = 0;
-          let totalWsWorkDone = 0;
-          let lastLog: string | undefined;
-          const statusCounts = { working: 0, waiting: 0 };
-          for (const pane of ws.panes) {
-            for (const tab of pane.tabs) {
-              const m = paneMetadata[tab.sessionId];
-              if (m) {
-                totalWsNotifications += m.notificationCount ?? 0;
-                totalWsWorkDone += m.workDoneCount ?? 0;
-                if (m.lastLogLine) lastLog = m.lastLogLine;
-                const eff = deriveEffectiveStatus(m);
-                if (eff === "working" || eff === "waiting") {
-                  statusCounts[eff]++;
-                }
-              }
-            }
-          }
-          const firstActiveTabSessionId = ws.panes[0]?.tabs.find((t) => t.id === ws.panes[0]?.activeTabId)?.sessionId;
-          const firstPaneMeta = firstActiveTabSessionId ? paneMetadata[firstActiveTabSessionId] : undefined;
-          const isDragged = dragging.current && dragIndex === wsIndex;
-          const showLine = dragging.current && dropIndex === wsIndex && dragIndex !== wsIndex;
-          const isPaneDropHover = paneDragActive && hoverWorkspaceId === ws.id;
           return (
-            <div
+            <WorkspaceTabEntry
               key={ws.id}
-              data-dnd-workspace-target-id={ws.id}
-              ref={(el) => { itemRefs.current[wsIndex] = el; }}
-              onPointerDown={(e) => handlePointerDown(e, wsIndex)}
+              uiVariant={uiVariant}
+              ws={ws}
+              wsIndex={wsIndex}
+              active={ws.id === activeId}
+              dragIndex={dragIndex}
+              dropIndex={dropIndex}
+              paneDragActive={paneDragActive}
+              hoverWorkspaceId={hoverWorkspaceId}
+              draggingRef={dragging}
+              itemRefs={itemRefs}
+              onPointerDown={handlePointerDown}
               onPointerMove={handlePointerMove}
               onPointerUp={handlePointerUp}
-              style={{
-                touchAction: "none",
-                opacity: isDragged ? 0.35 : 1,
-                borderTop: showLine ? "2px solid var(--cmux-accent, #007aff)" : "2px solid transparent",
-                outline: isPaneDropHover ? "1px solid var(--cmux-accent, #007aff)" : "1px solid transparent",
-                outlineOffset: -2,
-                background: isPaneDropHover ? "color-mix(in srgb, var(--cmux-accent) 16%, transparent)" : undefined,
-              }}
-            >
-              <TabItem
-                uiVariant={uiVariant}
-                name={ws.name}
-                paneCount={ws.panes.length}
-                cwd={firstPaneMeta?.cwd}
-                gitBranch={firstPaneMeta?.gitBranch}
-                notificationCount={totalWsNotifications || undefined}
-                workDoneCount={totalWsWorkDone || undefined}
-                lastLogLine={lastLog}
-                statusCounts={statusCounts}
-                active={ws.id === activeId}
-                onClick={() => { if (!dragging.current) setActive(ws.id); }}
-                onClose={() => onCloseWorkspace(ws.id)}
-                onRename={(newName) => rename(ws.id, newName)}
-              />
-            </div>
+              onClick={setActive}
+              onClose={onCloseWorkspace}
+              onRename={rename}
+            />
           );
         })}
       </div>

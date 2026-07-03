@@ -7,7 +7,7 @@ use std::process::Command;
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Datelike, Local};
 use dashmap::DashMap;
@@ -379,6 +379,14 @@ struct DetectedAgentCacheEntry {
     session_id: String,
 }
 
+const DETECTED_AGENT_NEGATIVE_TTL: Duration = Duration::from_secs(10);
+
+struct FailedDetectedAgentCacheEntry {
+    agent_pid: Pid,
+    agent_kind: DetectedAgentKind,
+    checked_at: Instant,
+}
+
 fn cached_detected_agent_session_id(
     cache: &HashMap<String, DetectedAgentCacheEntry>,
     session_id: &str,
@@ -411,6 +419,40 @@ fn remember_detected_agent_session_id(
             },
         );
     }
+}
+
+fn detect_agent_session_id_with_negative_ttl<F>(
+    cache: &mut HashMap<String, FailedDetectedAgentCacheEntry>,
+    session_id: &str,
+    agent_pid: Pid,
+    agent_kind: DetectedAgentKind,
+    detect: F,
+) -> Option<String>
+where
+    F: FnOnce() -> Option<String>,
+{
+    if cache.get(session_id).is_some_and(|entry| {
+        entry.agent_pid == agent_pid
+            && entry.agent_kind == agent_kind
+            && entry.checked_at.elapsed() < DETECTED_AGENT_NEGATIVE_TTL
+    }) {
+        return None;
+    }
+
+    let detected = detect();
+    if detected.is_some() {
+        cache.remove(session_id);
+    } else {
+        cache.insert(
+            session_id.to_string(),
+            FailedDetectedAgentCacheEntry {
+                agent_pid,
+                agent_kind,
+                checked_at: Instant::now(),
+            },
+        );
+    }
+    detected
 }
 
 fn agent_kind_from_process(sys: &System, pid: Pid) -> Option<DetectedAgentKind> {
@@ -567,6 +609,8 @@ pub fn start_monitor(
         let mut sys = System::new();
         let mut last_metadata: HashMap<String, PtyMetadata> = HashMap::new();
         let mut detected_agent_sessions: HashMap<String, DetectedAgentCacheEntry> = HashMap::new();
+        let mut failed_detected_agent_sessions: HashMap<String, FailedDetectedAgentCacheEntry> =
+            HashMap::new();
 
         loop {
             // 5s cadence: OSC 7 handles CWD instantly for bash/zsh/fish;
@@ -586,7 +630,7 @@ pub fn start_monitor(
 
             let pids = manager.iter_pids();
 
-            for (session_id, pid_opt) in pids {
+            for (session_id, pid_opt) in pids.iter().cloned() {
                 if let Some(pid) = pid_opt {
                     // Resolve the foreground (deepest child) PID once per tick and
                     // reuse it for both CWD and process-name lookups — each helper
@@ -665,6 +709,7 @@ pub fn start_monitor(
                         }
                         None => {
                             detected_agent_sessions.remove(&session_id);
+                            failed_detected_agent_sessions.remove(&session_id);
                         }
                     }
                     let previous_metadata = last_metadata.get(&session_id);
@@ -695,7 +740,13 @@ pub fn start_monitor(
                                         )
                                     })
                                     .or_else(|| {
-                                        detect_claude_codex_session_id(&cwd, agent_min_created)
+                                        detect_agent_session_id_with_negative_ttl(
+                                            &mut failed_detected_agent_sessions,
+                                            &session_id,
+                                            agent_pid,
+                                            kind,
+                                            || detect_claude_codex_session_id(&cwd, agent_min_created),
+                                        )
                                     });
                                 remember_detected_agent_session_id(
                                     &mut detected_agent_sessions,
@@ -729,7 +780,15 @@ pub fn start_monitor(
                                             kind,
                                         )
                                     })
-                                    .or_else(|| detect_claude_session_id(&cwd, agent_min_created));
+                                    .or_else(|| {
+                                        detect_agent_session_id_with_negative_ttl(
+                                            &mut failed_detected_agent_sessions,
+                                            &session_id,
+                                            agent_pid,
+                                            kind,
+                                            || detect_claude_session_id(&cwd, agent_min_created),
+                                        )
+                                    });
                                 remember_detected_agent_session_id(
                                     &mut detected_agent_sessions,
                                     &session_id,
@@ -761,7 +820,15 @@ pub fn start_monitor(
                                             kind,
                                         )
                                     })
-                                    .or_else(|| detect_codex_session_id(&cwd, agent_min_created));
+                                    .or_else(|| {
+                                        detect_agent_session_id_with_negative_ttl(
+                                            &mut failed_detected_agent_sessions,
+                                            &session_id,
+                                            agent_pid,
+                                            kind,
+                                            || detect_codex_session_id(&cwd, agent_min_created),
+                                        )
+                                    });
                                 remember_detected_agent_session_id(
                                     &mut detected_agent_sessions,
                                     &session_id,
@@ -863,9 +930,10 @@ pub fn start_monitor(
 
             // Cleanup dead sessions
             let active_keys: std::collections::HashSet<String> =
-                manager.iter_pids().into_iter().map(|(k, _)| k).collect();
+                pids.into_iter().map(|(k, _)| k).collect();
             last_metadata.retain(|k, _| active_keys.contains(k));
             detected_agent_sessions.retain(|k, _| active_keys.contains(k));
+            failed_detected_agent_sessions.retain(|k, _| active_keys.contains(k));
             metadata_store.retain(|k, _| active_keys.contains(k));
         }
     });

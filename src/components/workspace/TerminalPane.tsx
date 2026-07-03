@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { open } from "@tauri-apps/plugin-shell";
 import ErrorBoundary from "../common/ErrorBoundary";
 import type { AgentSessionKind, Pane, PaneTab } from "../../types";
@@ -544,10 +544,35 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
   const paneCwd = activeTab?.cwd ?? pane.cwd;
   const resolvedAgentId = activeTab?.agentId;
   const agent = resolvedAgentId ? (getAgent(resolvedAgentId) ?? getDefaultAgent()) : null;
-  const savedAgentSession = activeTab ? resolveSavedAgentSession(activeTab) : null;
-  const launchArgs = agent
-    ? buildLaunchArgs(agent.command, agent.args, resolvedAgentId, savedAgentSession, activeTab?.id, activeTab?.cwd ?? paneCwd)
-    : [];
+  const savedAgentSession = useMemo(
+    () => activeTab ? resolveSavedAgentSession(activeTab) : null,
+    [activeTab],
+  );
+  const launchArgs = useMemo(
+    () => agent
+      ? buildLaunchArgs(agent.command, agent.args, resolvedAgentId, savedAgentSession, activeTab?.id, activeTab?.cwd ?? paneCwd)
+      : [],
+    [agent, resolvedAgentId, savedAgentSession, activeTab, paneCwd],
+  );
+  const launchEnv = useMemo(() => {
+    if (!activeTab) return undefined;
+    const env: Record<string, string> = {
+      ...(activeTab.launchEnv ?? pane.launchEnv ?? {}),
+      MYCMUX_PANE_SESSION_ID: activeTab.sessionId,
+      MYCMUX_TAB_ID: activeTab.id,
+    };
+    if (resolvedAgentId === "shell-starter") {
+      env.__CMUX_LAUNCHER_DONE = "1";
+    }
+    if (savedAgentSession && !env.MYCMUX_HANDOFF) {
+      env.MYCMUX_AGENT_KIND = savedAgentSession.kind;
+      env.MYCMUX_SESSION_ID = savedAgentSession.sessionId;
+      env.MYCMUX_RESUME = savedAgentSession.kind;
+    } else if (resolvedAgentId === "claude-code") {
+      env.MYCMUX_AGENT_KIND = "claude";
+    }
+    return env;
+  }, [activeTab, pane.launchEnv, resolvedAgentId, savedAgentSession]);
   const dropPreviewClass = dropTarget && dragItem
     ? [
         "pane-drop-preview",
@@ -677,24 +702,7 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
                 onUrlClick={handleUrlClick}
                 cwd={activeTab.cwd ?? paneCwd}
                 initialReplay={savedAgentSession ? undefined : activeTab.terminalSnapshot}
-                launchEnv={(() => {
-                  const env: Record<string, string> = {
-                    ...(activeTab.launchEnv ?? pane.launchEnv ?? {}),
-                    MYCMUX_PANE_SESSION_ID: activeTab.sessionId,
-                    MYCMUX_TAB_ID: activeTab.id,
-                  };
-                  if (resolvedAgentId === "shell-starter") {
-                    env.__CMUX_LAUNCHER_DONE = "1";
-                  }
-                  if (savedAgentSession && !env.MYCMUX_HANDOFF) {
-                    env.MYCMUX_AGENT_KIND = savedAgentSession.kind;
-                    env.MYCMUX_SESSION_ID = savedAgentSession.sessionId;
-                    env.MYCMUX_RESUME = savedAgentSession.kind;
-                  } else if (resolvedAgentId === "claude-code") {
-                    env.MYCMUX_AGENT_KIND = "claude";
-                  }
-                  return env;
-                })()}
+                launchEnv={launchEnv}
               />
             </ErrorBoundary>
           </div>

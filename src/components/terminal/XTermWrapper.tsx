@@ -1137,6 +1137,7 @@ export function evictTerminalCache(sessionId: string): void {
   terminalMouseReportModeBySession.delete(sessionId);
   terminalSgrMouseReportBySession.delete(sessionId);
   terminalPointerFocusAllowUntil.delete(sessionId);
+  forgetArtifactLinkCacheForSession(sessionId);
   diagWriteStats.delete(sessionId);
   terminalHasLiveOutput.delete(sessionId);
   terminalInitialReplayMarkers.get(sessionId)?.dispose();
@@ -1252,6 +1253,7 @@ const CODING_AGENT_HINT_PATTERN = /\b(?:ctrl|cmd|alt|shift)\+[\w?]+/gi;
 const ARTIFACT_LINK_CONTEXT_LINES = 16;
 const ARTIFACT_LINK_MAX_WRAPPED_LINES = 64;
 const ARTIFACT_LINK_MAX_SEGMENT_CHARS = 8192;
+const ARTIFACT_LINK_CACHE_MAX_ENTRIES = 64;
 const ARTIFACT_LINK_CANDIDATE_PREFIX_REGEX =
   /(?:file:\/\/\/|[A-Za-z]:[\\/]|(?<![A-Za-z0-9._\\/:])\/[A-Za-z]\/)/i;
 
@@ -1260,6 +1262,29 @@ type ArtifactLinkPart = {
   lineIndex?: number;
   nextLineIndex?: number;
 };
+
+const artifactLinkCache = new Map<string, ILink[] | undefined>();
+
+function rememberArtifactLinkCache(key: string, value: ILink[] | undefined): void {
+  if (artifactLinkCache.has(key)) {
+    artifactLinkCache.delete(key);
+  }
+  artifactLinkCache.set(key, value);
+  if (artifactLinkCache.size <= ARTIFACT_LINK_CACHE_MAX_ENTRIES) return;
+  const oldest = artifactLinkCache.keys().next().value;
+  if (oldest !== undefined) {
+    artifactLinkCache.delete(oldest);
+  }
+}
+
+function forgetArtifactLinkCacheForSession(sessionId: string): void {
+  const prefix = `${sessionId}:`;
+  for (const key of artifactLinkCache.keys()) {
+    if (key.startsWith(prefix)) {
+      artifactLinkCache.delete(key);
+    }
+  }
+}
 
 function cellXForStringOffset(line: ReturnType<Terminal["buffer"]["active"]["getLine"]>, offset: number): number {
   if (!line || offset <= 0) return 0;
@@ -1342,7 +1367,7 @@ function normalizeSoftWrappedArtifactLine(text: string, nextText: string): strin
   return `${trimmed} `;
 }
 
-function registerArtifactLinkProvider(term: Terminal, onActivate: (uri: string) => void) {
+function registerArtifactLinkProvider(term: Terminal, sessionId: string, onActivate: (uri: string) => void) {
   return term.registerLinkProvider({
     provideLinks(bufferLineNumber, callback) {
       const buffer = term.buffer.active;
@@ -1375,6 +1400,21 @@ function registerArtifactLinkProvider(term: Terminal, onActivate: (uri: string) 
       }
       lastLineIndex = Math.min(buffer.length - 1, lastLineIndex + ARTIFACT_LINK_CONTEXT_LINES);
 
+      const cacheKey = [
+        sessionId,
+        getTerminalWriteCounter(sessionId),
+        bufferLineNumber,
+        firstLineIndex,
+        lastLineIndex,
+        buffer.length,
+        buffer.viewportY,
+        buffer.baseY,
+      ].join(":");
+      if (artifactLinkCache.has(cacheKey)) {
+        callback(artifactLinkCache.get(cacheKey));
+        return;
+      }
+
       let candidateScanTail = "";
       let hasCandidate = false;
       for (let lineIndex = firstLineIndex; lineIndex <= lastLineIndex; lineIndex++) {
@@ -1386,6 +1426,7 @@ function registerArtifactLinkProvider(term: Terminal, onActivate: (uri: string) 
         candidateScanTail = scanText.slice(-16);
       }
       if (!hasCandidate) {
+        rememberArtifactLinkCache(cacheKey, undefined);
         callback(undefined);
         return;
       }
@@ -1458,7 +1499,9 @@ function registerArtifactLinkProvider(term: Terminal, onActivate: (uri: string) 
           links.push(link);
         }
       }
-      callback(links.length > 0 ? links : undefined);
+      const result = links.length > 0 ? links : undefined;
+      rememberArtifactLinkCache(cacheKey, result);
+      callback(result);
     },
   });
 }
@@ -1692,6 +1735,9 @@ export default memo(function XTermWrapper({
     let frontendVisible: boolean | null = null;
     let terminalPaintedVisible: boolean | null = null;
     let visibilityObserver: MutationObserver | null = null;
+    let containerVisibilityMemo:
+      | { sampledAt: number; displayed: boolean; painted: boolean; writableSize: boolean }
+      | null = null;
     let lastObservedWidth = -1;
     let lastObservedHeight = -1;
     const cachedSize = terminalSizeCache.get(sessionId);
@@ -1871,6 +1917,7 @@ export default memo(function XTermWrapper({
     const registerResizeObserver = (currentTerm: Terminal, currentFitAddon: FitAddon): void => {
       resizeObserver?.disconnect();
       resizeObserver = new ResizeObserver(() => {
+        invalidateContainerVisibilityMemo();
         refreshFrontendVisible();
         scheduleResizeBurst(currentTerm, currentFitAddon);
         if (pendingBatches.length > 0 && canWritePendingBatches()) {
@@ -2085,35 +2132,50 @@ export default memo(function XTermWrapper({
       }
     };
 
-    const isContainerDisplayed = (): boolean => {
-      if (!container.isConnected) return false;
+    const invalidateContainerVisibilityMemo = (): void => {
+      containerVisibilityMemo = null;
+    };
+
+    const readContainerVisibilitySnapshot = (): { displayed: boolean; painted: boolean; writableSize: boolean } => {
+      const now = typeof performance !== "undefined" ? performance.now() : Date.now();
+      if (containerVisibilityMemo && now - containerVisibilityMemo.sampledAt < 16) {
+        return containerVisibilityMemo;
+      }
+      let displayed = container.isConnected;
+      let painted = displayed;
       let current: HTMLElement | null = container;
-      while (current) {
+      while (current && (displayed || painted)) {
         const style = window.getComputedStyle(current);
         if (style.display === "none") {
-          return false;
+          displayed = false;
+          painted = false;
+          break;
+        }
+        if (style.visibility === "hidden" || style.visibility === "collapse") {
+          painted = false;
         }
         current = current.parentElement;
       }
-      return true;
+      const rect = container.getBoundingClientRect();
+      const snapshot = {
+        displayed,
+        painted,
+        writableSize: rect.width > 0 && rect.height > 0,
+      };
+      containerVisibilityMemo = { sampledAt: now, ...snapshot };
+      return snapshot;
+    };
+
+    const isContainerDisplayed = (): boolean => {
+      return readContainerVisibilitySnapshot().displayed;
     };
 
     const isContainerPainted = (): boolean => {
-      if (!isContainerDisplayed()) return false;
-      let current: HTMLElement | null = container;
-      while (current) {
-        const style = window.getComputedStyle(current);
-        if (style.visibility === "hidden" || style.visibility === "collapse") {
-          return false;
-        }
-        current = current.parentElement;
-      }
-      return true;
+      return readContainerVisibilitySnapshot().painted;
     };
 
     const hasWritableTerminalSize = (): boolean => {
-      const rect = container.getBoundingClientRect();
-      return rect.width > 0 && rect.height > 0;
+      return readContainerVisibilitySnapshot().writableSize;
     };
 
     const canWritePendingBatches = (): boolean => {
@@ -2172,6 +2234,7 @@ export default memo(function XTermWrapper({
     };
 
     const handleFrontendVisibilitySignal = (): void => {
+      invalidateContainerVisibilityMemo();
       const frontendChanged = refreshFrontendVisible();
       const paintChanged = refreshTerminalPaintedVisible();
       const shouldResync =
@@ -2183,6 +2246,7 @@ export default memo(function XTermWrapper({
     };
 
     const handleTerminalLayoutSignal = (): void => {
+      invalidateContainerVisibilityMemo();
       refreshFrontendVisible();
       refreshTerminalPaintedVisible();
       scheduleFrontendResync();
@@ -2490,6 +2554,7 @@ export default memo(function XTermWrapper({
     };
 
     const cleanup = (): void => {
+      invalidateContainerVisibilityMemo();
       clearResizeTimer();
       clearRefreshTimers();
       clearPendingDrainTimer();
@@ -2546,6 +2611,7 @@ export default memo(function XTermWrapper({
       cached.unlistenExit?.();
       termCache.delete(sessionId);
       container.appendChild(cached.xtermElement);
+      invalidateContainerVisibilityMemo();
       term = cached.term;
       fitAddon = cached.fitAddon;
       sessionStarted = true;
@@ -2640,7 +2706,7 @@ export default memo(function XTermWrapper({
           open(uri).catch(err => console.error("Failed to open URL:", err));
         }
       }, { urlRegex: HTTP_LINK_REGEX }));
-      registerArtifactLinkProvider(term, (uri) => {
+      registerArtifactLinkProvider(term, sessionId, (uri) => {
         if (onUrlClick) {
           onUrlClick(uri);
         } else {
@@ -2649,6 +2715,7 @@ export default memo(function XTermWrapper({
       });
 
       term.open(container!);
+      invalidateContainerVisibilityMemo();
       // Keep the DOM renderer for stability; WebGL texture atlases can corrupt
       // text in transparent multi-pane layouts on some Windows/WebView2 setups.
       diagStats.webgl = "never";
@@ -2669,6 +2736,7 @@ export default memo(function XTermWrapper({
         await new Promise<void>((resolve) => {
           replayTerm.write(`${stripTerminalMouseModeControlSequences(displayReplay)}\r\n`, () => resolve());
         });
+        bumpTerminalWriteCounter(sessionId);
         scheduleFullRefresh(replayTerm, [0, 48, 160]);
         if (disposed || termDisposed || !term) return;
         terminalInitialReplayMarkers.get(sessionId)?.dispose();
