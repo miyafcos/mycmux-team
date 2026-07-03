@@ -4,6 +4,10 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+TERMINAL_LOG_SOURCE_PATHS = [
+    "src/components/terminal/XTermWrapper.tsx",
+    "src/components/terminal/terminalCache.ts",
+]
 
 
 def read_repo_text(relative_path: str) -> str:
@@ -36,7 +40,7 @@ def test_mycmux_ui_variant_accepts_product_name_and_legacy_alias() -> None:
 
 
 def test_hot_path_xterm_diagnostic_logs_are_dev_guarded() -> None:
-    xterm_wrapper = read_repo_text("src/components/terminal/XTermWrapper.tsx")
+    terminal_sources = "\n".join(read_repo_text(path) for path in TERMINAL_LOG_SOURCE_PATHS)
 
     for marker in [
         "cache_evict",
@@ -44,6 +48,6 @@ def test_hot_path_xterm_diagnostic_logs_are_dev_guarded() -> None:
         "cache_miss",
         "initial_replay",
     ]:
-        marker_pos = xterm_wrapper.index(marker)
-        guard_window = xterm_wrapper[max(0, marker_pos - 180):marker_pos]
+        marker_pos = terminal_sources.index(marker)
+        guard_window = terminal_sources[max(0, marker_pos - 180):marker_pos]
         assert 'if (import.meta.env.DEV)' in guard_window, marker

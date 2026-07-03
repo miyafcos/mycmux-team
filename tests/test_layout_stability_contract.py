@@ -4,10 +4,22 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+TERMINAL_SOURCE_PATHS = [
+    "src/components/terminal/XTermWrapper.tsx",
+    "src/components/terminal/terminalCache.ts",
+    "src/components/terminal/terminalFocusHelpers.ts",
+    "src/components/terminal/terminalSelectionCopy.ts",
+    "src/components/terminal/terminalMouseInputFilter.ts",
+    "src/components/terminal/terminalLinkProvider.ts",
+]
 
 
 def read_repo_text(relative_path: str) -> str:
     return (REPO_ROOT / relative_path).read_text(encoding="utf-8")
+
+
+def read_terminal_sources() -> str:
+    return "\n".join(read_repo_text(path) for path in TERMINAL_SOURCE_PATHS)
 
 
 def assert_contains(text: str, snippet: str, source: str) -> None:
@@ -198,6 +210,7 @@ def test_terminal_renderer_uses_dom_renderer_for_stability() -> None:
 
 def test_selection_copy_listener_survives_cached_terminal_remounts() -> None:
     xterm_wrapper = read_repo_text("src/components/terminal/XTermWrapper.tsx")
+    terminal_sources = read_terminal_sources()
 
     for snippet in [
         "const terminalSelectionCopyListeners = new WeakMap<Terminal, { dispose: () => void }>();",
@@ -231,15 +244,31 @@ def test_selection_copy_listener_survives_cached_terminal_remounts() -> None:
         "const displayText = stripTerminalMouseModeControlSequencesForSession(sessionId, decodedText);",
         "replayTerm.write(`${stripTerminalMouseModeControlSequences(displayReplay)}\\r\\n`, () => resolve());",
     ]:
-        assert_contains(xterm_wrapper, snippet, "src/components/terminal/XTermWrapper.tsx")
+        assert_contains(terminal_sources, snippet, "src/components/terminal/*")
 
-    assert "navigator.clipboard.writeText(selection).catch(() => {});" not in xterm_wrapper
-    assert "clipboard.writeText(text).catch(() => fallbackCopyTextToClipboard(text));" not in xterm_wrapper
-    assert "copyTextToClipboard(selectedText, () => focusTerminalSoon(currentTerm));" not in xterm_wrapper
+    assert "navigator.clipboard.writeText(selection).catch(() => {});" not in terminal_sources
+    assert "clipboard.writeText(text).catch(() => fallbackCopyTextToClipboard(text));" not in terminal_sources
+    assert "copyTextToClipboard(selectedText, () => focusTerminalSoon(currentTerm));" not in terminal_sources
+    assert "registerTerminalMouseSelectionGuard" not in terminal_sources
+    assert "removeMouseSelectionGuard" not in terminal_sources
+
+
+def test_focus_stability_cdp_accepts_xterm_selection_layer() -> None:
+    focus_script = read_repo_text("scripts/verify-focus-stability-cdp.mjs")
+
+    for snippet in [
+        'const helper = targetPane?.querySelector(".xterm-helper-textarea");',
+        'helperValue: helper?.value ?? "",',
+        'xtermSelectionRects: targetPane?.querySelectorAll(".xterm-selection div").length ?? 0',
+        "|| result.helperValue.trim().length > 0",
+        "|| result.xtermSelectionRects > 0",
+    ]:
+        assert_contains(focus_script, snippet, "scripts/verify-focus-stability-cdp.mjs")
 
 
 def test_terminal_toolbar_actions_restore_xterm_focus() -> None:
     terminal_pane = read_repo_text("src/components/workspace/TerminalPane.tsx")
+    terminal_sources = read_terminal_sources()
     app_shell = read_repo_text("src/components/layout/AppShell.tsx")
     notification_panel = read_repo_text("src/components/layout/NotificationPanel.tsx")
     pane_drag_source = read_repo_text("src/hooks/usePaneDragSource.ts")
@@ -283,7 +312,7 @@ def test_terminal_toolbar_actions_restore_xterm_focus() -> None:
         "if (shouldAllowInactiveTerminalPointerFocus(sessionId)) {",
         "terminalPointerFocusAllowUntil.delete(sessionId);",
     ]:
-        assert_contains(xterm_wrapper, snippet, "src/components/terminal/XTermWrapper.tsx")
+        assert_contains(terminal_sources, snippet, "src/components/terminal/*")
 
     for text, source in [
         (terminal_pane, "src/components/workspace/TerminalPane.tsx"),
@@ -381,6 +410,7 @@ def test_pane_tab_rename_double_click_does_not_steal_focus() -> None:
 
 def test_terminal_wheel_input_does_not_steal_keyboard_focus() -> None:
     xterm_wrapper = read_repo_text("src/components/terminal/XTermWrapper.tsx")
+    terminal_sources = read_terminal_sources()
     terminal_pane = read_repo_text("src/components/workspace/TerminalPane.tsx")
 
     for snippet in [
@@ -426,20 +456,20 @@ def test_terminal_wheel_input_does_not_steal_keyboard_focus() -> None:
         "element.addEventListener(\"wheel\", guardWheelFocus, { capture: true, passive: true });",
         "removeWheelFocusGuard = registerTerminalWheelFocusGuard(term, sessionId);",
     ]:
-        assert_contains(xterm_wrapper, snippet, "src/components/terminal/XTermWrapper.tsx")
+        assert_contains(terminal_sources, snippet, "src/components/terminal/*")
 
-    assert "stripNonWheelTerminalMouseInputSequences" not in xterm_wrapper
-    assert "function activateTerminalPane" not in xterm_wrapper
-    assert "activateTerminalPane(sessionId)" not in xterm_wrapper
-    assert "function registerTerminalWheelFocusSync" not in xterm_wrapper
-    assert "removeWheelFocusSync" not in xterm_wrapper
-    assert "focusTerminalNowIfNeeded" not in xterm_wrapper
-    assert "ownerDocument.addEventListener(\"wheel\"" not in xterm_wrapper
+    assert "stripNonWheelTerminalMouseInputSequences" not in terminal_sources
+    assert "function activateTerminalPane" not in terminal_sources
+    assert "activateTerminalPane(sessionId)" not in terminal_sources
+    assert "function registerTerminalWheelFocusSync" not in terminal_sources
+    assert "removeWheelFocusSync" not in terminal_sources
+    assert "focusTerminalNowIfNeeded" not in terminal_sources
+    assert "ownerDocument.addEventListener(\"wheel\"" not in terminal_sources
     assert "onWheelCapture=" not in terminal_pane
 
 
 def test_terminal_plain_input_bypasses_keybinding_overrides() -> None:
-    xterm_wrapper = read_repo_text("src/components/terminal/XTermWrapper.tsx")
+    terminal_sources = read_terminal_sources()
     app_shell = read_repo_text("src/components/layout/AppShell.tsx")
 
     for snippet in [
@@ -451,7 +481,7 @@ def test_terminal_plain_input_bypasses_keybinding_overrides() -> None:
         "e.stopPropagation();",
         "return true;",
     ]:
-        assert_contains(xterm_wrapper, snippet, "src/components/terminal/XTermWrapper.tsx")
+        assert_contains(terminal_sources, snippet, "src/components/terminal/*")
 
     for snippet in [
         "function isPlainXtermInputEvent(event: KeyboardEvent): boolean",
@@ -480,6 +510,11 @@ def test_pty_reader_does_not_block_when_frontend_queue_is_full() -> None:
 
 def test_terminal_batches_keep_backend_flowing_while_layout_is_unwritable() -> None:
     xterm_wrapper = read_repo_text("src/components/terminal/XTermWrapper.tsx")
+    terminal_sources = read_terminal_sources()
+    ipc = read_repo_text("src/lib/ipc.ts")
+    terminal_commands = read_repo_text("src-tauri/src/commands/terminal.rs")
+    manager = read_repo_text("src-tauri/src/pty/manager.rs")
+    lib_rs = read_repo_text("src-tauri/src/lib.rs")
 
     for snippet in [
         "interface PendingFrontendBatch {",
@@ -536,7 +571,7 @@ def test_terminal_batches_keep_backend_flowing_while_layout_is_unwritable() -> N
         "clearRefreshTimers();",
         "scheduleFullRefresh(replayTerm, [0, 48, 160]);",
     ]:
-        assert_contains(xterm_wrapper, snippet, "src/components/terminal/XTermWrapper.tsx")
+        assert_contains(terminal_sources, snippet, "src/components/terminal/*")
 
     snapshot_fn = xterm_wrapper.split("const readContainerVisibilitySnapshot = ", 1)[1].split(
         "const isContainerDisplayed = (): boolean => {",

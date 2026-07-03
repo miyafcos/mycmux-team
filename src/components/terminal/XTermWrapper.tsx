@@ -1,4 +1,4 @@
-import { memo, useEffect, useRef, useState, useCallback } from "react";
+﻿import { memo, useEffect, useRef, useState, useCallback } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
@@ -9,7 +9,6 @@ import {
   createSession,
   ackFrontendData,
   setFrontendVisible,
-  writeToSession,
   resizeSession,
   onPtyExit,
   getTerminalConfig,
@@ -20,14 +19,55 @@ import { usePaneMetadataStore, useUiStore } from "../../stores/workspaceStore";
 import { useKeybindingStore } from "../../stores/keybindingStore";
 import { useSettingsStore } from "../../stores/settingsStore";
 import { DEFAULT_TERMINAL_FONT_FAMILY, useThemeStore } from "../../stores/themeStore";
-import type { ILink, IMarker, ITheme } from "@xterm/xterm";
+import type { ITheme } from "@xterm/xterm";
 import { markStartupSessionSettled } from "../../lib/startupSessionGate";
 import {
   TERMINAL_BATCH_RETAINED_MAX_BYTES,
   trimOldestBatchesToByteCap,
 } from "../../lib/terminalBatchQueue";
+import {
+  type CachedTerm,
+  type PendingFrontendBatch,
+  bumpTerminalWriteCounter,
+  chunkedWrite,
+  enqueueSessionWrite,
+  findLastSubarray,
+  liveTerms,
+  registerTerminalCacheEvictionCleanup,
+  rememberTerminalRawTail,
+  replaceTerminalRawTail,
+  stashDeferredTerminalBatches,
+  takeDeferredTerminalBatches,
+  termCache,
+  terminalInitialReplayMarkers,
+  terminalRawTailBySession,
+  terminalScrollbackResyncNeeded,
+  terminalSizeCache,
+} from "./terminalCache";
+import {
+  clearActiveTerminalNotification,
+  focusTerminalIfNeeded,
+  hasTerminalLiveOutput,
+  isPlainTerminalInputEvent,
+  markTerminalHasLiveOutput,
+  registerTerminalFocusSync,
+  registerTerminalWheelFocusGuard,
+  shouldAcceptTerminalInput,
+} from "./terminalFocusHelpers";
+import { disposeSelectionCopyListener, registerSelectionCopyListener } from "./terminalSelectionCopy";
+import {
+  attachTerminalWheelScroll,
+  filterTerminalMouseInputSequences,
+  filterWheelFocusInputSequences,
+  stripTerminalMouseModeControlSequences,
+  stripTerminalMouseModeControlSequencesForSession,
+} from "./terminalMouseInputFilter";
+import { HTTP_LINK_REGEX, registerArtifactLinkProvider } from "./terminalLinkProvider";
 
-// Notification sound via Web Audio API — short gentle chime
+export { evictTerminalCache, getTerminalWriteCounter } from "./terminalCache";
+export { allowInactiveTerminalPointerFocus } from "./terminalFocusHelpers";
+
+// Notification sound via Web Audio API 窶・short gentle chime
 let _audioCtx: AudioContext | null = null;
 function playNotificationSound() {
   try {
@@ -44,7 +84,7 @@ function playNotificationSound() {
     osc.start(ctx.currentTime);
     osc.stop(ctx.currentTime + 0.3);
   } catch {
-    // Audio not available — silent fallback
+    // Audio not available 窶・silent fallback
   }
 }
 
@@ -65,11 +105,6 @@ interface XTermWrapperProps {
   initialReplay?: string[];
 }
 
-interface PendingFrontendBatch {
-  batch: FrontendDataBatch;
-  acked: boolean;
-}
-
 // Approval-prompt detection patterns. Pattern index is used as the
 // notification key so the same approval fires only once per occurrence.
 const APPROVAL_PATTERNS: readonly RegExp[] = [
@@ -82,18 +117,18 @@ const APPROVAL_PATTERNS: readonly RegExp[] = [
   /hit enter to /i,                          // 7
   /\bapprove\b.*\?/i,                        // 8: generic approve?
   /do you want to (proceed|continue)/i,      // 9: Claude Code "Do you want to proceed?"
-  /❯\s+\d+\.\s+/,                            // 10: Ink-style ❯ 1. Yes selection cursor
-  /[❯▶▸»●◉]\s+(?:\d+\.|yes\b|no\b)/i,        // 11: cursor-glyph variants (incl. dot)
+  /笶ｯ\s+\d+\.\s+/,                            // 10: Ink-style 笶ｯ 1. Yes selection cursor
+  /[笶ｯ笆ｶ笆ｸﾂｻ笳鞘莱]\s+(?:\d+\.|yes\b|no\b)/i,        // 11: cursor-glyph variants (incl. dot)
   /enter\s+to\s+(?:select|confirm|send|submit|continue)/i, // 12: "Enter to select" hint
   /esc\s+to\s+(?:cancel|exit|quit)/i,        // 13: "Esc to cancel" hint
-  /↑\/↓/,                                    // 14: arrow-nav hint (very specific to selection menus)
+  /(?:\u2190|\u2192)/,                         // 14: arrow-nav hint (very specific to selection menus)
   /ask user question/i,                      // 15: Claude Code AskUserQuestion box title
   /would you like to (proceed|continue)/i,   // 16: plan-mode "Would you like to proceed?"
   /shift\s*\+\s*tab to approve/i,            // 17: plan approval footer hint
   /ctrl-g to edit/i,                         // 18: plan approval edit hint
   /hook [A-Za-z]+ requires confirmation/i,   // 19: Claude Code Bash hook confirmation
   /would you like to run the following command\?/i, // 20: Codex command approval
-  /^\s*(?:[›>]\s*)?\d+\.\s+(?:yes|no)\b/i,   // 21: Codex numbered choices
+  /^\s*(?:[窶ｺ>]\s*)?\d+\.\s+(?:yes|no)\b/i,   // 21: Codex numbered choices
 ] as const;
 
 // Scan the last N lines of the terminal buffer for an approval pattern.
@@ -153,7 +188,7 @@ function withTerminalOpacity(theme: ITheme, opacity: number, mediaActive: boolea
 
 // xterm's minimumContrastRatio only works against an opaque, known background.
 // With a media background the terminal background is transparent (the wallpaper
-// is composited in CSS), so it must be disabled — otherwise xterm corrects the
+// is composited in CSS), so it must be disabled 窶・otherwise xterm corrects the
 // foreground against a phantom black background and washes out dark text.
 const TERMINAL_MIN_CONTRAST = 7;
 
@@ -161,640 +196,14 @@ function minContrastFor(mediaActive: boolean): number {
   return mediaActive ? 1 : TERMINAL_MIN_CONTRAST;
 }
 
-// Chunk large pastes to avoid PTY buffer overflow
-const PASTE_CHUNK = 1024;
-
-function enqueueSessionWrite(sessionId: string, data: string): void {
-  const previous = terminalInputQueues.get(sessionId) ?? Promise.resolve();
-  const next = previous
-    .catch(() => {})
-    .then(() => writeToSession(sessionId, data));
-  terminalInputQueues.set(sessionId, next);
-  next
-    .catch(console.error)
-    .finally(() => {
-      if (terminalInputQueues.get(sessionId) === next) {
-        terminalInputQueues.delete(sessionId);
-      }
-    });
-}
-
-function chunkedWrite(sessionId: string, data: string): void {
-  if (data.length <= PASTE_CHUNK) {
-    enqueueSessionWrite(sessionId, data);
-  } else {
-    for (let offset = 0; offset < data.length; offset += PASTE_CHUNK) {
-      enqueueSessionWrite(sessionId, data.slice(offset, offset + PASTE_CHUNK));
-    }
-  }
-}
-
-// Cache terminal config globally — fetched once, reused across all panes
+// Cache terminal config globally - fetched once, reused across all panes
 let cachedConfig: { theme: ITheme; fontSize: number; fontFamily: string } | null = null;
 let configPromise: Promise<void> | null = null;
-
-// --- Terminal instance cache ---
-// Prevents xterm destruction when Allotment restructuring causes React to
-// unmount/remount XTermWrapper. Keyed by sessionId.
-interface CachedTerm {
-  term: Terminal;
-  fitAddon: FitAddon;
-  searchAddon: SearchAddon;
-  xtermElement: HTMLElement;
-  unlistenExit: (() => void) | null;
-}
-const termCache = new Map<string, CachedTerm>();
-const liveTerms = new Map<string, Terminal>();
-const terminalSizeCache = new Map<string, { cols: number; rows: number }>();
-const terminalWriteCounters = new Map<string, number>();
-const terminalSelectionCopyListeners = new WeakMap<Terminal, { dispose: () => void }>();
-const terminalInputQueues = new Map<string, Promise<void>>();
-const terminalDeferredBatches = new Map<string, PendingFrontendBatch[]>();
-const terminalRawTailBySession = new Map<string, Uint8Array>();
-const terminalScrollbackResyncNeeded = new Set<string>();
-const TERMINAL_RAW_TAIL_MAX_BYTES = 32 * 1024;
-const terminalMouseModeOutputTailBySession = new Map<string, string>();
-const terminalMouseReportModeBySession = new Set<string>();
-const terminalSgrMouseReportBySession = new Set<string>();
-
-function takeDeferredTerminalBatches(sessionId: string): PendingFrontendBatch[] {
-  const batches = terminalDeferredBatches.get(sessionId);
-  terminalDeferredBatches.delete(sessionId);
-  return batches ?? [];
-}
-
-function stashDeferredTerminalBatches(
-  sessionId: string,
-  batches: PendingFrontendBatch[],
-  ackDropped?: (pending: PendingFrontendBatch) => void,
-): void {
-  if (batches.length === 0) return;
-  const next = [...(terminalDeferredBatches.get(sessionId) ?? []), ...batches];
-  const trimmed = trimOldestBatchesToByteCap(next, TERMINAL_BATCH_RETAINED_MAX_BYTES);
-  if (trimmed.needsScrollbackResync) {
-    terminalScrollbackResyncNeeded.add(sessionId);
-    for (const pending of trimmed.dropped) {
-      ackDropped?.(pending);
-    }
-  }
-  if (trimmed.retained.length > 0) {
-    terminalDeferredBatches.set(sessionId, trimmed.retained);
-  } else {
-    terminalDeferredBatches.delete(sessionId);
-  }
-}
-
-function rememberTerminalRawTail(sessionId: string, chunk: Uint8Array): void {
-  if (chunk.byteLength === 0) return;
-  const previous = terminalRawTailBySession.get(sessionId);
-  const totalLength = (previous?.byteLength ?? 0) + chunk.byteLength;
-  const combined = new Uint8Array(Math.min(totalLength, TERMINAL_RAW_TAIL_MAX_BYTES));
-  let writeOffset = combined.length;
-  const chunkStart = Math.max(0, chunk.byteLength - writeOffset);
-  const chunkSlice = chunk.slice(chunkStart);
-  writeOffset -= chunkSlice.byteLength;
-  combined.set(chunkSlice, writeOffset);
-  if (previous && writeOffset > 0) {
-    const previousStart = Math.max(0, previous.byteLength - writeOffset);
-    combined.set(previous.slice(previousStart), 0);
-  }
-  terminalRawTailBySession.set(sessionId, combined);
-}
-
-function replaceTerminalRawTail(sessionId: string, scrollback: Uint8Array): void {
-  const start = Math.max(0, scrollback.byteLength - TERMINAL_RAW_TAIL_MAX_BYTES);
-  terminalRawTailBySession.set(sessionId, scrollback.slice(start));
-}
-
-function findLastSubarray(haystack: Uint8Array, needle: Uint8Array): number {
-  if (needle.byteLength === 0) return haystack.byteLength;
-  if (needle.byteLength > haystack.byteLength) return -1;
-  for (let start = haystack.byteLength - needle.byteLength; start >= 0; start -= 1) {
-    let matched = true;
-    for (let offset = 0; offset < needle.byteLength; offset += 1) {
-      if (haystack[start + offset] !== needle[offset]) {
-        matched = false;
-        break;
-      }
-    }
-    if (matched) return start;
-  }
-  return -1;
-}
-
-const TERMINAL_WHEEL_FOCUS_SUPPRESS_MS = 350;
-const TERMINAL_FOCUS_RETRY_LIMIT = 8;
-const TERMINAL_POINTER_FOCUS_ALLOW_MS = 1500;
-const terminalPointerFocusAllowUntil = new Map<string, number>();
-
-export function allowInactiveTerminalPointerFocus(sessionId: string): void {
-  if (!sessionId) return;
-  terminalPointerFocusAllowUntil.set(sessionId, Date.now() + TERMINAL_POINTER_FOCUS_ALLOW_MS);
-}
-
-function shouldAllowInactiveTerminalPointerFocus(sessionId: string): boolean {
-  const allowUntil = terminalPointerFocusAllowUntil.get(sessionId);
-  if (!allowUntil) return false;
-  if (allowUntil < Date.now()) {
-    terminalPointerFocusAllowUntil.delete(sessionId);
-    return false;
-  }
-  return true;
-}
-
-interface WheelFocusRestore {
-  id: number;
-  sessionId: string;
-  previousSessionId: string;
-  expiresAt: number;
-  timerId: number | null;
-  restored: boolean;
-}
-
-let wheelFocusRestore: WheelFocusRestore | null = null;
-let wheelFocusRestoreSeq = 0;
 
 const TERMINAL_SNAPSHOT_SCAN_MULTIPLIER = 4;
 const TERMINAL_SNAPSHOT_MAX_WRAPPED_LINES = 256;
 const TERMINAL_SNAPSHOT_MAX_LINE_CHARS = 8192;
-
-const terminalHasLiveOutput = new Set<string>();
-const terminalInitialReplayMarkers = new Map<string, IMarker>();
-
-const TERMINAL_PLAIN_INPUT_KEYS = new Set([
-  "Backspace",
-  "Delete",
-  "Enter",
-  "Escape",
-  "Tab",
-  "ArrowLeft",
-  "ArrowRight",
-  "ArrowUp",
-  "ArrowDown",
-  "Home",
-  "End",
-  "PageUp",
-  "PageDown",
-  "Insert",
-]);
-
-function isPlainTerminalInputEvent(e: KeyboardEvent): boolean {
-  if (e.ctrlKey || e.altKey || e.metaKey) return false;
-  return e.key.length === 1 || TERMINAL_PLAIN_INPUT_KEYS.has(e.key);
-}
-
-function focusTerminalSoon(currentTerm: Terminal, sessionId?: string): void {
-  let attempts = 0;
-  const focusTerminal = () => {
-    attempts += 1;
-    if (sessionId && useUiStore.getState().activePaneId !== sessionId) return;
-    try {
-      currentTerm.focus();
-    } catch {
-      // Terminal may have been disposed between copy completion and focus restore.
-      return;
-    }
-    if (terminalContainsActiveElement(currentTerm) || attempts >= TERMINAL_FOCUS_RETRY_LIMIT) return;
-    const retryMs = attempts < 3 ? 16 : 50;
-    window.setTimeout(() => {
-      if (typeof window.requestAnimationFrame === "function") {
-        window.requestAnimationFrame(focusTerminal);
-        return;
-      }
-      focusTerminal();
-    }, retryMs);
-  };
-
-  if (typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
-    window.requestAnimationFrame(focusTerminal);
-    return;
-  }
-
-  setTimeout(focusTerminal, 0);
-}
-
-function terminalContainsActiveElement(currentTerm: Terminal): boolean {
-  const element = currentTerm.element;
-  const activeElement = element?.ownerDocument.activeElement;
-  return Boolean(element && activeElement && element.contains(activeElement));
-}
-
-function focusTerminalIfNeeded(currentTerm: Terminal, sessionId?: string): void {
-  if (!terminalContainsActiveElement(currentTerm)) {
-    focusTerminalSoon(currentTerm, sessionId);
-  }
-}
-
-function isActiveTerminalInputTarget(sessionId: string): boolean {
-  return useUiStore.getState().activePaneId === sessionId;
-}
-
-function clearActiveTerminalNotification(sessionId: string): void {
-  usePaneMetadataStore.getState().clearNotification(sessionId);
-}
-
-function refocusActiveTerminalIfNeeded(): void {
-  const activeSessionId = useUiStore.getState().activePaneId;
-  if (!activeSessionId) return;
-  const activeTerm = liveTerms.get(activeSessionId) ?? termCache.get(activeSessionId)?.term;
-  if (activeTerm) {
-    focusTerminalIfNeeded(activeTerm, activeSessionId);
-  }
-}
-
-function shouldAcceptTerminalInput(sessionId: string): boolean {
-  if (isActiveTerminalInputTarget(sessionId)) return true;
-  refocusActiveTerminalIfNeeded();
-  return false;
-}
-
-function terminalFocusClockMs(): number {
-  return typeof performance !== "undefined" ? performance.now() : Date.now();
-}
-
-function clearWheelFocusRestore(id?: number): void {
-  if (!wheelFocusRestore) return;
-  if (id !== undefined && wheelFocusRestore.id !== id) return;
-  if (wheelFocusRestore.timerId !== null && typeof window !== "undefined") {
-    window.clearTimeout(wheelFocusRestore.timerId);
-  }
-  wheelFocusRestore = null;
-}
-
-function markWheelFocusRestore(sessionId: string, previousSessionId: string): void {
-  clearWheelFocusRestore();
-  const id = ++wheelFocusRestoreSeq;
-  const expiresAt = terminalFocusClockMs() + TERMINAL_WHEEL_FOCUS_SUPPRESS_MS;
-  const timerId =
-    typeof window !== "undefined"
-      ? window.setTimeout(() => clearWheelFocusRestore(id), TERMINAL_WHEEL_FOCUS_SUPPRESS_MS)
-      : null;
-  wheelFocusRestore = { id, sessionId, previousSessionId, expiresAt, timerId, restored: false };
-}
-
-function consumeWheelFocusRestore(sessionId: string): string | null {
-  if (!wheelFocusRestore || wheelFocusRestore.sessionId !== sessionId) return null;
-  if (terminalFocusClockMs() > wheelFocusRestore.expiresAt) {
-    clearWheelFocusRestore();
-    return null;
-  }
-  if (wheelFocusRestore.restored) return null;
-  wheelFocusRestore.restored = true;
-  const { previousSessionId } = wheelFocusRestore;
-  return previousSessionId;
-}
-
-function shouldSuppressWheelFocusInput(sessionId: string): boolean {
-  if (!wheelFocusRestore) return false;
-  if (terminalFocusClockMs() > wheelFocusRestore.expiresAt) {
-    clearWheelFocusRestore();
-    return false;
-  }
-  return wheelFocusRestore.sessionId === sessionId || wheelFocusRestore.previousSessionId === sessionId;
-}
-
-function restoreTerminalFocusAfterWheel(previousSessionId: string): void {
-  const uiState = useUiStore.getState();
-  if (uiState.activePaneId !== previousSessionId) {
-    uiState.setActivePaneId(previousSessionId);
-  }
-  const previousTerm = liveTerms.get(previousSessionId) ?? termCache.get(previousSessionId)?.term;
-  if (previousTerm) {
-    focusTerminalIfNeeded(previousTerm, previousSessionId);
-  }
-}
-
-function fallbackCopyTextToClipboard(text: string, restoreFocus?: () => void): void {
-  if (typeof document === "undefined") {
-    restoreFocus?.();
-    return;
-  }
-  const textarea = document.createElement("textarea");
-  textarea.value = text;
-  textarea.setAttribute("readonly", "true");
-  textarea.style.position = "fixed";
-  textarea.style.left = "-9999px";
-  textarea.style.top = "0";
-  document.body.appendChild(textarea);
-  textarea.select();
-  try {
-    document.execCommand("copy");
-  } catch {
-    // Clipboard access is best effort; terminal selection must never break input.
-  } finally {
-    document.body.removeChild(textarea);
-    restoreFocus?.();
-  }
-}
-
-function copyTextToClipboard(text: string, restoreFocus?: () => void): void {
-  if (!text) {
-    restoreFocus?.();
-    return;
-  }
-  const clipboard = typeof navigator !== "undefined" ? navigator.clipboard : undefined;
-  if (clipboard?.writeText) {
-    clipboard
-      .writeText(text)
-      .then(() => restoreFocus?.())
-      .catch(() => fallbackCopyTextToClipboard(text, restoreFocus));
-    return;
-  }
-  fallbackCopyTextToClipboard(text, restoreFocus);
-}
-
-function disposeSelectionCopyListener(currentTerm: Terminal | null | undefined): void {
-  if (!currentTerm) return;
-  const existing = terminalSelectionCopyListeners.get(currentTerm);
-  if (!existing) return;
-  existing.dispose();
-  terminalSelectionCopyListeners.delete(currentTerm);
-}
-
-type FilteredTerminalInput = {
-  data: string;
-  hasNonWheelInput: boolean;
-};
-
-function isTerminalWheelMouseButton(button: number): boolean {
-  return Number.isFinite(button) && (button & 64) === 64;
-}
-
-function stripTerminalMouseInputSequences(data: string): string {
-  return data
-    // SGR mouse reporting: ESC [ < button ; col ; row M/m
-    .replace(/\x1b\[<\d+(?:;\d+){2}[mM]/g, "")
-    // urxvt-style mouse reporting: ESC [ button ; col ; row M/m
-    .replace(/\x1b\[\d+(?:;\d+){2}[mM]/g, "")
-    // X10 / normal tracking: ESC [ M followed by three encoded bytes
-    .replace(/\x1b\[M[\s\S]{3}/g, "");
-}
-
-function stripTerminalWheelInputSequences(data: string): string {
-  return data
-    .replace(/\x1b\[<(\d+)(;\d+){2}[mM]/g, (sequence, button: string) =>
-      isTerminalWheelMouseButton(Number(button)) ? "" : sequence,
-    )
-    .replace(/\x1b\[(\d+)(;\d+){2}[mM]/g, (sequence, button: string) =>
-      isTerminalWheelMouseButton(Number(button)) ? "" : sequence,
-    )
-    .replace(/\x1b\[M([\s\S])([\s\S])([\s\S])/g, (sequence, button: string) => {
-      const buttonCode = button.charCodeAt(0) - 32;
-      return isTerminalWheelMouseButton(buttonCode) ? "" : sequence;
-    });
-}
-
-function stripTerminalFocusInputSequences(data: string): string {
-  return data.replace(/\x1b\[[IO]/g, "");
-}
-
-const TERMINAL_MOUSE_MODE_PARAMS = new Set(["9", "1000", "1002", "1003", "1005", "1006", "1007", "1015", "1016"]);
-const TERMINAL_MOUSE_MODE_CONTROL_SEQUENCE_RE = /\x1b\[\?([0-9;]+)([hl])/g;
-const TERMINAL_MOUSE_MODE_CONTROL_PARTIAL_RE = /\x1b(?:\[\??[0-9;]*)?$/;
-
-const TERMINAL_MOUSE_REPORT_PARAMS = new Set(["9", "1000", "1002", "1003", "1005", "1006", "1015", "1016"]);
-
-function updateTerminalMouseReportMode(sessionId: string | undefined, parts: string[], final: string): void {
-  if (!sessionId || !parts.some((part) => TERMINAL_MOUSE_REPORT_PARAMS.has(part))) return;
-  if (final === "h") {
-    terminalMouseReportModeBySession.add(sessionId);
-    if (parts.includes("1006")) {
-      terminalSgrMouseReportBySession.add(sessionId);
-    }
-    return;
-  }
-  terminalMouseReportModeBySession.delete(sessionId);
-  terminalSgrMouseReportBySession.delete(sessionId);
-}
-
-function stripTerminalMouseModeControlSequences(data: string, sessionId?: string): string {
-  return data.replace(TERMINAL_MOUSE_MODE_CONTROL_SEQUENCE_RE, (sequence, params: string, final: string) => {
-    const parts = params.split(";").filter(Boolean);
-    updateTerminalMouseReportMode(sessionId, parts, final);
-    const remaining = parts.filter((part) => !TERMINAL_MOUSE_MODE_PARAMS.has(part));
-    if (remaining.length === parts.length) return sequence;
-    return remaining.length === 0 ? "" : "\x1b[?" + remaining.join(";") + final;
-  });
-}
-
-function stripTerminalMouseModeControlSequencesForSession(sessionId: string, data: string): string {
-  const pendingTail = terminalMouseModeOutputTailBySession.get(sessionId) ?? "";
-  const combined = pendingTail + data;
-  const partialMatch = TERMINAL_MOUSE_MODE_CONTROL_PARTIAL_RE.exec(combined);
-  const partialTail = partialMatch?.[0] ?? "";
-  const ready = partialTail ? combined.slice(0, -partialTail.length) : combined;
-  if (partialTail) {
-    terminalMouseModeOutputTailBySession.set(sessionId, partialTail);
-  } else {
-    terminalMouseModeOutputTailBySession.delete(sessionId);
-  }
-  return stripTerminalMouseModeControlSequences(ready, sessionId);
-}
-
-function hasTerminalUserInput(data: string): boolean {
-  return stripTerminalFocusInputSequences(stripTerminalWheelInputSequences(data)).length > 0;
-}
-
-function filterTerminalMouseInputSequences(data: string): FilteredTerminalInput {
-  const inputData = stripTerminalMouseInputSequences(data);
-  return {
-    data: inputData,
-    hasNonWheelInput: hasTerminalUserInput(inputData),
-  };
-}
-
-function filterWheelFocusInputSequences(
-  sessionId: string,
-  input: FilteredTerminalInput,
-): FilteredTerminalInput {
-  if (!input.data || !shouldSuppressWheelFocusInput(sessionId)) return input;
-  const data = stripTerminalFocusInputSequences(input.data);
-  if (data === input.data) return input;
-  return {
-    data,
-    hasNonWheelInput: hasTerminalUserInput(data),
-  };
-}
-
-const WHEEL_DELTA_LINE = 1;
-const WHEEL_DELTA_PAGE = 2;
-
-function wheelDeltaToTerminalLines(event: WheelEvent, rows: number): number {
-  const rawDelta = event.deltaY;
-  if (rawDelta === 0) return 0;
-
-  const lines = event.deltaMode === WHEEL_DELTA_PAGE
-    ? rawDelta * Math.max(1, rows)
-    : event.deltaMode === WHEEL_DELTA_LINE
-      ? rawDelta
-      : rawDelta / 40;
-  if (!Number.isFinite(lines) || lines === 0) return 0;
-
-  const direction = Math.sign(lines);
-  return direction * Math.max(1, Math.round(Math.abs(lines)));
-}
-
-function wheelEventToSgrMouseReport(currentTerm: Terminal, event: WheelEvent, lines: number): string | null {
-  const element = currentTerm.element;
-  if (!element || currentTerm.cols <= 0 || currentTerm.rows <= 0) return null;
-  const rect = element.getBoundingClientRect();
-  if (rect.width <= 0 || rect.height <= 0) return null;
-  const col = Math.min(currentTerm.cols, Math.max(1, Math.floor(((event.clientX - rect.left) / rect.width) * currentTerm.cols) + 1));
-  const row = Math.min(currentTerm.rows, Math.max(1, Math.floor(((event.clientY - rect.top) / rect.height) * currentTerm.rows) + 1));
-  const baseButton = event.deltaY < 0 ? 64 : 65;
-  const button = baseButton + (event.shiftKey ? 4 : 0) + (event.altKey ? 8 : 0) + (event.ctrlKey ? 16 : 0);
-  const repeats = Math.min(12, Math.max(1, Math.abs(lines)));
-  return ("\x1b[<" + button + ";" + col + ";" + row + "M").repeat(repeats);
-}
-
-function attachTerminalWheelScroll(container: HTMLElement, currentTerm: Terminal, sessionId: string, forceMouseReport: boolean): () => void {
-  const handleWheel = (event: WheelEvent): void => {
-    if (event.defaultPrevented || event.metaKey) return;
-    const lines = wheelDeltaToTerminalLines(event, currentTerm.rows);
-    if (lines === 0) return;
-    event.preventDefault();
-    event.stopPropagation();
-    event.stopImmediatePropagation();
-    if (forceMouseReport || (terminalMouseReportModeBySession.has(sessionId) && terminalSgrMouseReportBySession.has(sessionId))) {
-      const report = wheelEventToSgrMouseReport(currentTerm, event, lines);
-      if (report) {
-        chunkedWrite(sessionId, report);
-        return;
-      }
-    }
-    currentTerm.scrollLines(lines);
-  };
-
-  container.addEventListener("wheel", handleWheel, { capture: true, passive: false });
-  return () => container.removeEventListener("wheel", handleWheel, { capture: true });
-}
-
-function registerTerminalFocusSync(currentTerm: Terminal, sessionId: string): () => void {
-  const element = currentTerm.element;
-  if (!element) return () => {};
-
-  const syncFocusedTerminal = (): void => {
-    const previousSessionId = consumeWheelFocusRestore(sessionId);
-    if (previousSessionId) {
-      restoreTerminalFocusAfterWheel(previousSessionId);
-      return;
-    }
-    if (isActiveTerminalInputTarget(sessionId)) {
-      clearActiveTerminalNotification(sessionId);
-      return;
-    }
-    if (shouldAllowInactiveTerminalPointerFocus(sessionId)) {
-      return;
-    }
-    refocusActiveTerminalIfNeeded();
-  };
-
-  element.addEventListener("focusin", syncFocusedTerminal);
-  return () => element.removeEventListener("focusin", syncFocusedTerminal);
-}
-
-function registerTerminalWheelFocusGuard(currentTerm: Terminal, sessionId: string): () => void {
-  const element = currentTerm.element;
-  if (!element) return () => {};
-
-  const guardWheelFocus = (): void => {
-    const activePaneId = useUiStore.getState().activePaneId;
-    if (!activePaneId || activePaneId === sessionId) {
-      clearWheelFocusRestore();
-      return;
-    }
-    markWheelFocusRestore(sessionId, activePaneId);
-  };
-
-  const cancelWheelFocusGuard = (): void => clearWheelFocusRestore();
-
-  element.addEventListener("wheel", guardWheelFocus, { capture: true, passive: true });
-  element.addEventListener("pointerdown", cancelWheelFocusGuard, { capture: true });
-  element.addEventListener("mousedown", cancelWheelFocusGuard, { capture: true });
-
-  return () => {
-    element.removeEventListener("wheel", guardWheelFocus, true);
-    element.removeEventListener("pointerdown", cancelWheelFocusGuard, true);
-    element.removeEventListener("mousedown", cancelWheelFocusGuard, true);
-  };
-}
-
-function registerSelectionCopyListener(currentTerm: Terminal, sessionId: string): void {
-  disposeSelectionCopyListener(currentTerm);
-
-  let selectionDirty = false;
-  let copyTimer: number | null = null;
-  const selectionDisposable = currentTerm.onSelectionChange(() => {
-    selectionDirty = true;
-  });
-
-  const copySelectedText = (): void => {
-    const restoreSelectionFocus = (): void => {
-      if (isActiveTerminalInputTarget(sessionId)) {
-        focusTerminalSoon(currentTerm, sessionId);
-        return;
-      }
-      refocusActiveTerminalIfNeeded();
-    };
-    const selectedText = currentTerm.getSelection();
-    if (!selectedText) {
-      restoreSelectionFocus();
-      return;
-    }
-    restoreSelectionFocus();
-    copyTextToClipboard(selectedText, restoreSelectionFocus);
-  };
-
-  const flushSelectionCopy = (event?: Event) => {
-    if (event instanceof MouseEvent && event.button !== 0) {
-      selectionDirty = false;
-      return;
-    }
-    if (typeof PointerEvent !== "undefined" && event instanceof PointerEvent && event.button !== 0) {
-      selectionDirty = false;
-      return;
-    }
-    if (!selectionDirty) return;
-    selectionDirty = false;
-    if (copyTimer !== null) {
-      window.clearTimeout(copyTimer);
-    }
-    copyTimer = window.setTimeout(() => {
-      copyTimer = null;
-      copySelectedText();
-    }, 0);
-  };
-
-  const win = currentTerm.element?.ownerDocument.defaultView ?? window;
-  const termElement = currentTerm.element;
-  const flushContextMenuSelectionCopy = () => {
-    if (copyTimer !== null) {
-      window.clearTimeout(copyTimer);
-    }
-    copyTimer = window.setTimeout(() => {
-      copyTimer = null;
-      selectionDirty = false;
-      copySelectedText();
-    }, 0);
-  };
-  win.addEventListener("pointerup", flushSelectionCopy, true);
-  win.addEventListener("mouseup", flushSelectionCopy, true);
-  win.addEventListener("touchend", flushSelectionCopy, true);
-  termElement?.addEventListener("contextmenu", flushContextMenuSelectionCopy);
-  terminalSelectionCopyListeners.set(currentTerm, {
-    dispose: () => {
-      selectionDisposable.dispose();
-      if (copyTimer !== null) {
-        window.clearTimeout(copyTimer);
-        copyTimer = null;
-      }
-      win.removeEventListener("pointerup", flushSelectionCopy, true);
-      win.removeEventListener("mouseup", flushSelectionCopy, true);
-      win.removeEventListener("touchend", flushSelectionCopy, true);
-      termElement?.removeEventListener("contextmenu", flushContextMenuSelectionCopy);
-    },
-  });
-}
+const CODING_AGENT_HINT_PATTERN = /\b(?:ctrl|cmd|alt|shift)\+[\w?]+/gi;
 
 // v0.7.1 diag: per-session aggregated write stats flushed every 1 s on console.
 type DiagWriteStats = {
@@ -806,6 +215,9 @@ type DiagWriteStats = {
   replayLines: number;
 };
 const diagWriteStats = new Map<string, DiagWriteStats>();
+registerTerminalCacheEvictionCleanup((sessionId) => {
+  diagWriteStats.delete(sessionId);
+});
 
 function diagStatsFor(sessionId: string): DiagWriteStats {
   let stats = diagWriteStats.get(sessionId);
@@ -817,7 +229,7 @@ function diagStatsFor(sessionId: string): DiagWriteStats {
 }
 
 // Flush per-session write stats once per second. Idle sessions are skipped.
-// Debug builds only — `import.meta.env.DEV` is statically false in production,
+// Debug builds only 窶・`import.meta.env.DEV` is statically false in production,
 // so Vite drops this interval (and its per-second console spam) entirely.
 if (typeof window !== "undefined" && import.meta.env.DEV) {
   window.setInterval(() => {
@@ -1116,42 +528,6 @@ function formatMarkdownTablesForTerminal(text: string): string {
   return `${output.join(newline)}${hasTrailingNewline ? newline : ""}`;
 }
 
-/** Call before killSession to dispose the cached terminal */
-export function evictTerminalCache(sessionId: string): void {
-  const cached = termCache.get(sessionId);
-  if (cached) {
-    cached.unlistenExit?.();
-    cached.term.dispose();
-    termCache.delete(sessionId);
-    if (import.meta.env.DEV) {
-      console.log(`[mycmux-diag xterm:${sessionId}] cache_evict`);
-    }
-  }
-  terminalSizeCache.delete(sessionId);
-  terminalWriteCounters.delete(sessionId);
-  terminalInputQueues.delete(sessionId);
-  terminalDeferredBatches.delete(sessionId);
-  terminalRawTailBySession.delete(sessionId);
-  terminalScrollbackResyncNeeded.delete(sessionId);
-  terminalMouseModeOutputTailBySession.delete(sessionId);
-  terminalMouseReportModeBySession.delete(sessionId);
-  terminalSgrMouseReportBySession.delete(sessionId);
-  terminalPointerFocusAllowUntil.delete(sessionId);
-  forgetArtifactLinkCacheForSession(sessionId);
-  diagWriteStats.delete(sessionId);
-  terminalHasLiveOutput.delete(sessionId);
-  terminalInitialReplayMarkers.get(sessionId)?.dispose();
-  terminalInitialReplayMarkers.delete(sessionId);
-}
-
-export function getTerminalWriteCounter(sessionId: string): number {
-  return terminalWriteCounters.get(sessionId) ?? 0;
-}
-
-function bumpTerminalWriteCounter(sessionId: string): void {
-  terminalWriteCounters.set(sessionId, (terminalWriteCounters.get(sessionId) ?? 0) + 1);
-}
-
 function cleanTerminalSnapshotLine(text: string): string {
   return text
     .replace(/\x1b\[[0-9;]*[A-Za-z]/g, "")
@@ -1182,7 +558,7 @@ export function getTerminalBufferLines(
 ): string[] {
   const term = liveTerms.get(sessionId) ?? termCache.get(sessionId)?.term;
   if (!term || maxLines <= 0) return [];
-  const hasLiveOutput = terminalHasLiveOutput.has(sessionId);
+  const hasLiveOutput = hasTerminalLiveOutput(sessionId);
   if (options.excludeInitialReplay && !hasLiveOutput) return [];
   try {
     const buf = term.buffer.active;
@@ -1233,279 +609,6 @@ export function getTerminalBufferLines(
     return [];
   }
 }
-const HTTP_LINK_REGEX = /https?:\/\/[^\s"'<>+\uFF0B]+[^\s"'<>+\uFF0B.,!?;:)}\]]/i;
-const ARTIFACT_EXTENSION_PATTERN = String.raw`html?|markdown|md|docx?|docm|dotx?|dotm|xlsx?|xlsm|xlsb|xltx?|xltm|pptx?|pptm|potx?|potm|ppsx?|ppsm`;
-const ARTIFACT_LINK_TERMINATOR_PATTERN = String.raw`(?=$|[\s"'<>+\uFF0B.,!?;:)(}\]（）・。、，、])`;
-// MSYS / Git-Bash absolute path form: `/c/Users/...`. The drive is a SINGLE
-// letter between slashes, and the leading slash must start a fresh segment
-// (lookbehind rejects `.../x/y.md` inside URLs or longer paths) so ordinary
-// unix paths like `/home/...` or URL path segments never produce false links.
-const MSYS_DRIVE_PREFIX_PATTERN = String.raw`(?<![A-Za-z0-9._\\/:])\/[A-Za-z]\/`;
-const ARTIFACT_LINK_REGEX = new RegExp(
-  String.raw`(?:file:\/\/\/[^\r\n"'<>+\uFF0B]*?\.(?:${ARTIFACT_EXTENSION_PATTERN})|[A-Za-z]:[\\/](?![\\/])[^\r\n"'<>+\uFF0B]*?\.(?:${ARTIFACT_EXTENSION_PATTERN})|${MSYS_DRIVE_PREFIX_PATTERN}[^\r\n"'<>+\uFF0B]*?\.(?:${ARTIFACT_EXTENSION_PATTERN}))${ARTIFACT_LINK_TERMINATOR_PATTERN}`,
-  "gi",
-);
-const COMPLETE_ARTIFACT_EXTENSION_REGEX = new RegExp(
-  String.raw`\.(?:${ARTIFACT_EXTENSION_PATTERN})${ARTIFACT_LINK_TERMINATOR_PATTERN}`,
-  "i",
-);
-const CODING_AGENT_HINT_PATTERN = /\b(?:ctrl|cmd|alt|shift)\+[\w?]+/gi;
-const ARTIFACT_LINK_CONTEXT_LINES = 16;
-const ARTIFACT_LINK_MAX_WRAPPED_LINES = 64;
-const ARTIFACT_LINK_MAX_SEGMENT_CHARS = 8192;
-const ARTIFACT_LINK_CACHE_MAX_ENTRIES = 64;
-const ARTIFACT_LINK_CANDIDATE_PREFIX_REGEX =
-  /(?:file:\/\/\/|[A-Za-z]:[\\/]|(?<![A-Za-z0-9._\\/:])\/[A-Za-z]\/)/i;
-
-type ArtifactLinkPart = {
-  text: string;
-  lineIndex?: number;
-  nextLineIndex?: number;
-};
-
-const artifactLinkCache = new Map<string, ILink[] | undefined>();
-
-function rememberArtifactLinkCache(key: string, value: ILink[] | undefined): void {
-  if (artifactLinkCache.has(key)) {
-    artifactLinkCache.delete(key);
-  }
-  artifactLinkCache.set(key, value);
-  if (artifactLinkCache.size <= ARTIFACT_LINK_CACHE_MAX_ENTRIES) return;
-  const oldest = artifactLinkCache.keys().next().value;
-  if (oldest !== undefined) {
-    artifactLinkCache.delete(oldest);
-  }
-}
-
-function forgetArtifactLinkCacheForSession(sessionId: string): void {
-  const prefix = `${sessionId}:`;
-  for (const key of artifactLinkCache.keys()) {
-    if (key.startsWith(prefix)) {
-      artifactLinkCache.delete(key);
-    }
-  }
-}
-
-function cellXForStringOffset(line: ReturnType<Terminal["buffer"]["active"]["getLine"]>, offset: number): number {
-  if (!line || offset <= 0) return 0;
-  let stringOffset = 0;
-  for (let x = 0; x < line.length; x++) {
-    const cell = line.getCell(x);
-    if (!cell || cell.getWidth() === 0) continue;
-    if (stringOffset >= offset) return x;
-    stringOffset += cell.getChars().length || 1;
-    if (stringOffset > offset) return x;
-  }
-  return line.length;
-}
-
-function mapWrappedStringOffset(
-  term: Terminal,
-  parts: ArtifactLinkPart[],
-  offset: number,
-  preferPreviousBoundary: boolean,
-): { lineIndex: number; cellX: number } {
-  let accumulated = 0;
-  let previousLineIndex = 0;
-  for (const part of parts) {
-    const textLength = part.text.length;
-    const boundaryAtEnd = offset === accumulated + textLength;
-    if (offset < accumulated + textLength || (preferPreviousBoundary && boundaryAtEnd)) {
-      if (part.lineIndex === undefined) {
-        const lineIndex = preferPreviousBoundary ? previousLineIndex : (part.nextLineIndex ?? previousLineIndex);
-        const line = term.buffer.active.getLine(lineIndex);
-        return { lineIndex, cellX: preferPreviousBoundary ? line?.translateToString(true).length ?? 0 : 0 };
-      }
-      const lineIndex = part.lineIndex;
-      const line = term.buffer.active.getLine(lineIndex);
-      const localOffset = Math.max(0, Math.min(offset - accumulated, textLength));
-      previousLineIndex = lineIndex;
-      return { lineIndex, cellX: cellXForStringOffset(line, localOffset) };
-    }
-    if (part.lineIndex !== undefined) {
-      previousLineIndex = part.lineIndex;
-    }
-    accumulated += textLength;
-  }
-  return { lineIndex: previousLineIndex, cellX: 0 };
-}
-
-function hasOpenArtifactPath(text: string): boolean {
-  const startMatches = [...text.matchAll(/(?:file:\/\/\/|[A-Za-z]:[\\/]|(?<![A-Za-z0-9._\\/:])\/[A-Za-z]\/)/gi)];
-  const lastStart = startMatches[startMatches.length - 1];
-  if (!lastStart || lastStart.index === undefined) return false;
-  const tail = text.slice(lastStart.index);
-  return !COMPLETE_ARTIFACT_EXTENSION_REGEX.test(tail);
-}
-
-function hasArtifactLinkCandidate(text: string): boolean {
-  return text.includes("file:///") || ARTIFACT_LINK_CANDIDATE_PREFIX_REGEX.test(text);
-}
-
-function looksLikeArtifactContinuation(text: string): boolean {
-  const trimmed = text.trimStart();
-  return trimmed.length > 0 && !/^[|>*#●・-]\s/.test(trimmed);
-}
-
-function artifactContinuationJoiner(previousText: string, nextText: string): string {
-  const previous = previousText.trimEnd();
-  const next = nextText.trimStart();
-  if (!previous || !next) return "";
-  if (next.startsWith("/") || next.startsWith("\\") || previous.endsWith("/") || previous.endsWith("\\")) return "";
-  if (/\s$/.test(previousText) || /^\s/.test(nextText)) return "";
-  return " ";
-}
-
-function normalizeSoftWrappedArtifactLine(text: string, nextText: string): string {
-  if (!/\s$/.test(text)) return text;
-  const trimmed = text.trimEnd();
-  const next = nextText.trimStart();
-  if (!trimmed || !next) return trimmed;
-  if (next.startsWith("/") || next.startsWith("\\") || trimmed.endsWith("/") || trimmed.endsWith("\\")) {
-    return trimmed;
-  }
-  return `${trimmed} `;
-}
-
-function registerArtifactLinkProvider(term: Terminal, sessionId: string, onActivate: (uri: string) => void) {
-  return term.registerLinkProvider({
-    provideLinks(bufferLineNumber, callback) {
-      const buffer = term.buffer.active;
-      const targetLineIndex = bufferLineNumber - 1;
-      if (targetLineIndex < 0 || targetLineIndex >= buffer.length) {
-        callback(undefined);
-        return;
-      }
-
-      let firstLineIndex = targetLineIndex;
-      let wrappedBefore = 0;
-      while (
-        firstLineIndex > 0 &&
-        wrappedBefore < ARTIFACT_LINK_MAX_WRAPPED_LINES &&
-        buffer.getLine(firstLineIndex)?.isWrapped
-      ) {
-        firstLineIndex--;
-        wrappedBefore++;
-      }
-      firstLineIndex = Math.max(0, firstLineIndex - ARTIFACT_LINK_CONTEXT_LINES);
-      let lastLineIndex = targetLineIndex;
-      let wrappedAfter = 0;
-      while (
-        lastLineIndex + 1 < buffer.length &&
-        wrappedAfter < ARTIFACT_LINK_MAX_WRAPPED_LINES &&
-        buffer.getLine(lastLineIndex + 1)?.isWrapped
-      ) {
-        lastLineIndex++;
-        wrappedAfter++;
-      }
-      lastLineIndex = Math.min(buffer.length - 1, lastLineIndex + ARTIFACT_LINK_CONTEXT_LINES);
-
-      const cacheKey = [
-        sessionId,
-        getTerminalWriteCounter(sessionId),
-        bufferLineNumber,
-        firstLineIndex,
-        lastLineIndex,
-        buffer.length,
-        buffer.viewportY,
-        buffer.baseY,
-      ].join(":");
-      if (artifactLinkCache.has(cacheKey)) {
-        callback(artifactLinkCache.get(cacheKey));
-        return;
-      }
-
-      let candidateScanTail = "";
-      let hasCandidate = false;
-      for (let lineIndex = firstLineIndex; lineIndex <= lastLineIndex; lineIndex++) {
-        const scanText = `${candidateScanTail}${buffer.getLine(lineIndex)?.translateToString(true) ?? ""}`;
-        if (hasArtifactLinkCandidate(scanText)) {
-          hasCandidate = true;
-          break;
-        }
-        candidateScanTail = scanText.slice(-16);
-      }
-      if (!hasCandidate) {
-        rememberArtifactLinkCache(cacheKey, undefined);
-        callback(undefined);
-        return;
-      }
-
-      const parts: ArtifactLinkPart[] = [];
-      let segmentText = "";
-      let previousText = "";
-      let segmentJoinBlocked = false;
-      for (let lineIndex = firstLineIndex; lineIndex <= lastLineIndex; lineIndex++) {
-        const line = buffer.getLine(lineIndex);
-        const isCurrentLineWrapped = Boolean(line?.isWrapped);
-        if (!isCurrentLineWrapped) {
-          segmentJoinBlocked = false;
-        }
-        const nextIsWrapped = Boolean(buffer.getLine(lineIndex + 1)?.isWrapped);
-        const rawLineText = line?.translateToString(false) ?? "";
-        const trimmedLineText = line?.translateToString(true) ?? "";
-        const nextLineText = buffer.getLine(lineIndex + 1)?.translateToString(true) ?? "";
-        const lineText = nextIsWrapped
-          ? normalizeSoftWrappedArtifactLine(rawLineText, nextLineText)
-          : trimmedLineText;
-        if (lineIndex > firstLineIndex) {
-          const canJoinSegment = !segmentJoinBlocked;
-          const isSoftContinuation = canJoinSegment && isCurrentLineWrapped;
-          const isHardArtifactContinuation =
-            canJoinSegment && hasOpenArtifactPath(segmentText) && looksLikeArtifactContinuation(lineText);
-          const joiner = isSoftContinuation
-            ? ""
-            : isHardArtifactContinuation
-              ? artifactContinuationJoiner(previousText, lineText)
-              : "\n";
-          parts.push({ text: joiner, nextLineIndex: lineIndex });
-          if (joiner === "\n") {
-            segmentText = "";
-          } else {
-            segmentText += joiner;
-            if (segmentText.length > ARTIFACT_LINK_MAX_SEGMENT_CHARS) {
-              segmentText = "";
-              segmentJoinBlocked = true;
-            }
-          }
-        }
-        parts.push({ text: lineText, lineIndex });
-        if (segmentJoinBlocked || segmentText.length + lineText.length > ARTIFACT_LINK_MAX_SEGMENT_CHARS) {
-          segmentText = "";
-          previousText = "";
-          segmentJoinBlocked = true;
-        } else {
-          segmentText += lineText;
-          previousText = lineText;
-        }
-      }
-      const text = parts.map((part) => part.text).join("");
-      const regex = new RegExp(ARTIFACT_LINK_REGEX.source, ARTIFACT_LINK_REGEX.flags);
-      const links: ILink[] = [];
-      let match: RegExpExecArray | null;
-      while ((match = regex.exec(text))) {
-        const uri = match[0];
-        const start = mapWrappedStringOffset(term, parts, match.index, false);
-        const end = mapWrappedStringOffset(term, parts, match.index + uri.length, true);
-        const link: ILink = {
-          range: {
-            start: { x: start.cellX + 1, y: start.lineIndex + 1 },
-            end: { x: Math.max(1, end.cellX), y: end.lineIndex + 1 },
-          },
-          text: uri,
-          activate: () => onActivate(uri),
-        };
-        if (link.range.start.y <= bufferLineNumber && link.range.end.y >= bufferLineNumber) {
-          links.push(link);
-        }
-      }
-      const result = links.length > 0 ? links : undefined;
-      rememberArtifactLinkCache(cacheKey, result);
-      callback(result);
-    },
-  });
-}
-
 function isShortcutHintLine(line: string): boolean {
   const shortcutCount = (line.match(CODING_AGENT_HINT_PATTERN) ?? []).length;
   return (
@@ -1592,7 +695,7 @@ function looksLikeCodexModelStatusLine(line: string): boolean {
 
 function looksLikeCodexPromptLine(line: string): boolean {
   return (
-    /^\s*[›❯>»▶▸]\s+/.test(line)
+    /^\s*[窶ｺ笶ｯ>ﾂｻ笆ｶ笆ｸ]\s+/.test(line)
     && !/\b(?:working|thinking|running|executing|searching|analyzing)\b/i.test(line)
   ) || looksLikeCodexModelStatusLine(line);
 }
@@ -1996,8 +1099,8 @@ export default memo(function XTermWrapper({
           // window-level keydown dispatcher, or they fire twice. For toggle
           // actions (pane.zoom.toggle) the second fire cancels the first,
           // leaving the shortcut dead in terminal panes. Returning false only
-          // tells xterm to skip PTY forwarding — it does NOT stop DOM
-          // propagation — so we stop it explicitly here. Other matched actions
+          // tells xterm to skip PTY forwarding 窶・it does NOT stop DOM
+          // propagation 窶・so we stop it explicitly here. Other matched actions
           // fall through to `return false` below and intentionally keep
           // bubbling to AppShell, which is their sole handler.
           if (actions.includes("terminal.search")) {
@@ -2337,7 +1440,7 @@ export default memo(function XTermWrapper({
       await writeTerminalOutput(stripTerminalMouseModeControlSequences(new TextDecoder().decode(replay)));
       if (disposed || termDisposed || !term) return;
       replaceTerminalRawTail(sessionId, scrollback);
-      terminalHasLiveOutput.add(sessionId);
+      markTerminalHasLiveOutput(sessionId);
       bumpTerminalWriteCounter(sessionId);
       scheduleFullRefresh(term, [0, 48, 160]);
       scheduleBackgroundScan();
@@ -2378,8 +1481,8 @@ export default memo(function XTermWrapper({
             clearPendingDrainTimer();
             settleStartupSession();
             const chunk = batchDataToBytes(batch.data);
-            if (chunk.byteLength > 0 && !terminalHasLiveOutput.has(sessionId)) {
-              terminalHasLiveOutput.add(sessionId);
+            if (chunk.byteLength > 0 && !hasTerminalLiveOutput(sessionId)) {
+              markTerminalHasLiveOutput(sessionId);
             }
             const decodedText = outputDecoder.decode(chunk, { stream: true });
             const displayText = stripTerminalMouseModeControlSequencesForSession(sessionId, decodedText);
@@ -2887,9 +1990,9 @@ export default memo(function XTermWrapper({
               width: 150
             }}
           />
-          <button onClick={() => searchAddonRef.current?.findPrevious(searchQuery)} style={searchBtnStyle}>↑</button>
-          <button onClick={() => searchAddonRef.current?.findNext(searchQuery)} style={searchBtnStyle}>↓</button>
-          <button onClick={closeSearch} style={searchBtnStyle}>✕</button>
+          <button onClick={() => searchAddonRef.current?.findPrevious(searchQuery)} style={searchBtnStyle}>^</button>
+          <button onClick={() => searchAddonRef.current?.findNext(searchQuery)} style={searchBtnStyle}>v</button>
+          <button onClick={closeSearch} style={searchBtnStyle}>x</button>
         </div>
       )}
       <div
