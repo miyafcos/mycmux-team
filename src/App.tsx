@@ -17,6 +17,7 @@ import {
   readAgentSessionMappings,
 } from "./lib/ipc";
 import { useUiStore } from "./stores/uiStore";
+import { syncBuddyEnabledToBackend, useSettingsStore } from "./stores/settingsStore";
 import { isShellProcess } from "./lib/notificationStatus";
 import type { AgentSessionKind, Pane, PaneTab } from "./types";
 import {
@@ -38,6 +39,24 @@ window.addEventListener("unhandledrejection", (e) => {
   console.warn("[mycmux] unhandled rejection:", e.reason);
   e.preventDefault();
 });
+
+function waitForSettingsHydration(): Promise<void> {
+  if (useSettingsStore.persist.hasHydrated()) {
+    return Promise.resolve();
+  }
+
+  return new Promise((resolve) => {
+    let unsubscribe = () => {};
+    unsubscribe = useSettingsStore.persist.onFinishHydration(() => {
+      unsubscribe();
+      resolve();
+    });
+    if (useSettingsStore.persist.hasHydrated()) {
+      unsubscribe();
+      resolve();
+    }
+  });
+}
 
 function inferAgentKindFromProcessTitle(processTitle?: string): AgentSessionKind | null {
   const lowerTitle = processTitle?.toLowerCase() ?? "";
@@ -121,6 +140,8 @@ function App() {
   useEffect(() => {
     async function bootstrap() {
       await Promise.all([persistLoaded, initDefaultShell()]);
+      await waitForSettingsHydration();
+      syncBuddyEnabledToBackend(useSettingsStore.getState().buddyEnabled);
       const listStore = useWorkspaceListStore.getState();
       let launchCwd: string | null = null;
       try {

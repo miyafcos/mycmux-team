@@ -32,6 +32,19 @@ impl SessionManager {
             .clone())
     }
 
+    fn prune_create_lock_if_idle(&self, session_id: &str) {
+        let Ok(mut locks) = self.create_locks.lock() else {
+            return;
+        };
+        let should_remove = locks
+            .get(session_id)
+            .map(|lock| Arc::strong_count(lock) == 1)
+            .unwrap_or(false);
+        if should_remove {
+            locks.remove(session_id);
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn create(
         &self,
@@ -125,6 +138,7 @@ impl SessionManager {
     pub fn kill(&self, session_id: &str) -> Result<(), String> {
         if let Some((_, session)) = self.sessions.remove(session_id) {
             session.kill()?;
+            self.prune_create_lock_if_idle(session_id);
         }
         Ok(())
     }
@@ -141,6 +155,7 @@ impl SessionManager {
         for key in keys {
             if let Some((_, session)) = self.sessions.remove(&key) {
                 let _ = session.kill();
+                self.prune_create_lock_if_idle(&key);
             }
         }
     }
@@ -154,6 +169,7 @@ impl SessionManager {
         for key in keys {
             if let Some((_, session)) = self.sessions.remove(&key) {
                 let _ = session.kill();
+                self.prune_create_lock_if_idle(&key);
             }
         }
     }

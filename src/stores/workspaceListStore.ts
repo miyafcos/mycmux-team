@@ -8,6 +8,15 @@ function workspaceContainsPane(workspace: Workspace | undefined, paneId: string 
   return Boolean(paneId && workspace?.panes.some((pane) => pane.id === paneId));
 }
 
+function workspaceContainsSession(workspace: Workspace | undefined, sessionId: string | null): boolean {
+  return Boolean(
+    sessionId
+      && workspace?.panes.some((pane) =>
+        pane.sessionId === sessionId || pane.tabs.some((tab) => tab.sessionId === sessionId),
+      ),
+  );
+}
+
 function clearZoomIfMissingFromWorkspace(workspace: Workspace | undefined): void {
   const uiState = useUiStore.getState();
   if (uiState.zoomedPaneId && !workspaceContainsPane(workspace, uiState.zoomedPaneId)) {
@@ -174,6 +183,7 @@ interface CreateWorkspaceOptions {
 interface WorkspaceListState {
   workspaces: Workspace[];
   activeWorkspaceId: string | null;
+  lastActivePaneByWorkspace: Record<string, string>;
 
   // Getters
   getActiveWorkspace: () => Workspace | undefined;
@@ -221,6 +231,7 @@ interface WorkspaceListState {
 export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
   workspaces: [],
   activeWorkspaceId: null,
+  lastActivePaneByWorkspace: {},
 
   getActiveWorkspace: () => {
     const { workspaces, activeWorkspaceId } = get();
@@ -271,22 +282,38 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
         state.activeWorkspaceId === id
           ? remaining[remaining.length - 1]?.id ?? null
           : state.activeWorkspaceId;
-      return { workspaces: remaining, activeWorkspaceId: newActiveId };
+      const { [id]: _removed, ...lastActivePaneByWorkspace } = state.lastActivePaneByWorkspace;
+      return { workspaces: remaining, activeWorkspaceId: newActiveId, lastActivePaneByWorkspace };
     });
     const { workspaces, activeWorkspaceId } = get();
     clearZoomIfMissingFromWorkspace(workspaces.find((w) => w.id === activeWorkspaceId));
   },
 
   setActiveWorkspace: (id) => {
-    const workspace = get().workspaces.find((w) => w.id === id);
+    const state = get();
+    const workspace = state.workspaces.find((w) => w.id === id);
     const uiState = useUiStore.getState();
     const currentActivePaneId = uiState.activePaneId;
-    const nextActivePaneId = workspace?.panes.find((pane) =>
-      pane.sessionId === currentActivePaneId || pane.tabs.some((tab) => tab.sessionId === currentActivePaneId),
-    )?.sessionId
-      ?? workspace?.panes[0]?.sessionId
-      ?? null;
-    set({ activeWorkspaceId: id });
+    let lastActivePaneByWorkspace = state.lastActivePaneByWorkspace;
+    if (state.activeWorkspaceId && currentActivePaneId) {
+      lastActivePaneByWorkspace = {
+        ...lastActivePaneByWorkspace,
+        [state.activeWorkspaceId]: currentActivePaneId,
+      };
+    }
+
+    const recordedPaneId = lastActivePaneByWorkspace[id] ?? null;
+    const recordedPaneIsValid = workspaceContainsSession(workspace, recordedPaneId);
+    const nextActivePaneId = recordedPaneIsValid
+      ? recordedPaneId
+      : workspace?.panes[0]?.sessionId ?? null;
+
+    if (recordedPaneId && !recordedPaneIsValid) {
+      const { [id]: _stale, ...rest } = lastActivePaneByWorkspace;
+      lastActivePaneByWorkspace = rest;
+    }
+
+    set({ activeWorkspaceId: id, lastActivePaneByWorkspace });
     uiState.setActivePaneId(nextActivePaneId);
     clearZoomIfMissingFromWorkspace(workspace);
   },

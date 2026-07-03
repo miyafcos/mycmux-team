@@ -15,7 +15,14 @@ pub fn load_persistent_data(app_handle: AppHandle) -> Result<PersistentData, Str
 #[tauri::command(async)]
 pub fn save_persistent_data(app_handle: AppHandle, mut data: PersistentData) -> Result<(), String> {
     data.schema_version = 1;
-    storage::save(&app_handle, &data)
+    storage::update(&app_handle, move |disk| {
+        disk.schema_version = data.schema_version;
+        disk.workspaces = data.workspaces;
+        disk.settings = data.settings;
+        disk.active_workspace_id = data.active_workspace_id;
+        disk.active_pane_id = data.active_pane_id;
+        disk.active_tab_id = data.active_tab_id;
+    })
 }
 
 #[tauri::command(async)]

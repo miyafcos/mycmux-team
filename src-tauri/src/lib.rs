@@ -163,8 +163,6 @@ pub fn run() {
             commands::terminal::is_directory,
             commands::terminal::get_launch_cwd,
             commands::terminal::get_default_shell,
-            commands::terminal::get_claude_session_id,
-            commands::terminal::read_pane_session_mappings,
             commands::terminal::read_agent_session_mappings,
             commands::crsm::crsm_list_sessions,
             commands::crsm::crsm_create_handoff,

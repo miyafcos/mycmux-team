@@ -862,7 +862,6 @@ export function useWorkspacePersist() {
         ?? null;
       const themeState = useThemeStore.getState();
       const keybindingState = useKeybindingStore.getState();
-      const fileExplorerState = useFileExplorerStore.getState();
 
       // Mappings written by launcher.sh during this session (pane-sessions/*.txt)
       // are applied at save time too — App.tsx only refreshes them at startup /
@@ -889,7 +888,6 @@ export function useWorkspacePersist() {
         active_workspace_id: activeWorkspaceId,
         active_pane_id: activePane?.id ?? null,
         active_tab_id: activeTab?.id ?? null,
-        pinned_roots: fileExplorerState.roots,
       };
     };
 
