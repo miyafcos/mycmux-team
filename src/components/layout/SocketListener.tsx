@@ -30,6 +30,7 @@ import { useFileExplorerStore } from "../../stores/fileExplorerStore";
 import { deriveEffectiveStatus, isShellProcess } from "../../lib/notificationStatus";
 import { makeSessionId } from "../../lib/constants";
 import { normalizeReadableSplitColumns, reconcileSplitColumnsForPanes } from "../../lib/layoutColumns";
+import { focusController } from "../../lib/focusController";
 import { getTerminalBufferLines, getTerminalWriteCounter, hasTerminalBuffer } from "../terminal/XTermWrapper";
 
 /** Transpose row-major split indices to column-major for legacy data migration */
@@ -825,7 +826,10 @@ export function useWorkspacePersist() {
                   useWorkspaceListStore.getState().getWorkspace(nextActiveWorkspaceId)?.panes[0]?.sessionId ?? null;
               }
               lastActivePaneSessionId.current = restoredActivePaneSessionId;
-              useUiStore.getState().setActivePaneId(restoredActivePaneSessionId);
+              focusController.request("programmatic", {
+                sessionId: restoredActivePaneSessionId,
+                focus: false,
+              });
             }
           }
           _resolveLoaded();

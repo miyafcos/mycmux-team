@@ -11,6 +11,8 @@ TERMINAL_SOURCE_PATHS = [
     "src/components/terminal/terminalSelectionCopy.ts",
     "src/components/terminal/terminalMouseInputFilter.ts",
     "src/components/terminal/terminalLinkProvider.ts",
+    "src/lib/focusController.ts",
+    "src/lib/focusController.ts",
 ]
 
 
@@ -133,8 +135,8 @@ def test_new_split_pane_receives_focus_and_shortcuts_match_tabs() -> None:
     workspace_layout_store = read_repo_text("src/stores/workspaceLayoutStore.ts")
     app_shell = read_repo_text("src/components/layout/AppShell.tsx")
 
-    assert workspace_layout_store.count("useUiStore.getState().setActivePaneId(newPane.sessionId);") >= 2
-    assert "useUiStore.getState().setActivePaneId(tab.sessionId);" in workspace_layout_store
+    assert workspace_layout_store.count("applyStructuralActivation(newPane.sessionId);") >= 2
+    assert "applyStructuralActivation(tab.sessionId);" in workspace_layout_store
     for snippet in [
         "function paneMatchesSession(",
         "pane.sessionId === sessionId || pane.tabs?.some((tab) => tab.sessionId === sessionId)",
@@ -216,8 +218,8 @@ def test_selection_copy_listener_survives_cached_terminal_remounts() -> None:
         "const terminalSelectionCopyListeners = new WeakMap<Terminal, { dispose: () => void }>();",
         "const TERMINAL_FOCUS_RETRY_LIMIT = 8;",
         "function focusTerminalSoon(currentTerm: Terminal, sessionId?: string): void",
-        "if (sessionId && useUiStore.getState().activePaneId !== sessionId) return;",
-        "if (terminalContainsActiveElement(currentTerm) || attempts >= TERMINAL_FOCUS_RETRY_LIMIT) return;",
+        "focusController.focusSessionSoon(sessionId);",
+        "if (target.containsActiveElement() || attempts >= TERMINAL_FOCUS_RETRY_LIMIT) return;",
         "function registerSelectionCopyListener(currentTerm: Terminal, sessionId: string): void",
         "disposeSelectionCopyListener(currentTerm);",
         "const copySelectedText = (): void => {",
@@ -273,29 +275,35 @@ def test_terminal_toolbar_actions_restore_xterm_focus() -> None:
     notification_panel = read_repo_text("src/components/layout/NotificationPanel.tsx")
     pane_drag_source = read_repo_text("src/hooks/usePaneDragSource.ts")
 
+    focus_controller = read_repo_text("src/lib/focusController.ts")
     for snippet in [
-        "function focusTerminalElement(paneEl: HTMLElement | null | undefined): boolean",
-        "function focusTerminalInPaneSoon(paneId: string): void",
-        "function focusActiveTerminalSoon(fallbackPaneId: string): void",
-        'paneEl?.querySelector<HTMLTextAreaElement>(".xterm-helper-textarea")',
-        "attempts >= 8",
+        # xterm focus restore machinery now lives in the focusController
+        'el?.querySelector<HTMLTextAreaElement>(".xterm-helper-textarea")',
+        "const TERMINAL_FOCUS_RETRY_LIMIT = 8;",
+        "function focusSessionSoon(",
+        "function focusPaneSoon(paneId: string | null | undefined): void",
+    ]:
+        assert_contains(focus_controller, snippet, "src/lib/focusController.ts")
+
+    for snippet in [
         "type PaneActivationOptions = {",
         "const activatePane = useCallback((options: PaneActivationOptions = {}) => {",
         "const handlePanePointerDownCapture = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {",
         "const isSelectionButton = event.button === 0 || event.button === 2;",
-        "allowInactiveTerminalPointerFocus(tab.sessionId);",
-        "focusTerminalElement(event.currentTarget);",
+        'focusController.request("pointer", {',
+        'action: "pending",',
         "if (event.button === 2) {\n      pendingPaneClickActivationRef.current = null;\n      return;\n    }",
         "const handlePanePointerUpCapture = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {",
         "function getDocumentSelectionText(): string",
         'target.closest(".xterm-helper-textarea")',
-        "pendingPaneClickActivationRef.current = {\n      pointerId: event.pointerId,\n      x: event.clientX,\n      y: event.clientY,\n      selectionText: getDocumentSelectionText(),\n    };",
+        "pendingPaneClickActivationRef.current = {\n      sessionId: tab.sessionId,\n      pointerId: event.pointerId,\n      x: event.clientX,\n      y: event.clientY,\n      selectionText: getDocumentSelectionText(),\n    };",
         "const nextSelectionText = getDocumentSelectionText();",
-        "if (nextSelectionText && nextSelectionText !== pending.selectionText) return;",
+        "if (nextSelectionText && nextSelectionText !== pending.selectionText) {\n      abortPendingActivation();\n      return;\n    }",
+        'focusController.request("pointer", { sessionId: pending.sessionId, action: "abort" });',
         "activatePane();",
         "onPointerDownCapture={handlePanePointerDownCapture}",
-        "focusTerminalInPaneSoon(pane.id);",
-        "focusActiveTerminalSoon(pane.id);",
+        "focusController.focusPaneSoon(pane.id);",
+        'focusController.request("tab-click", { sessionId: tab.sessionId, focus: true });',
     ]:
         assert_contains(terminal_pane, snippet, "src/components/workspace/TerminalPane.tsx")
     assert "onFocus={handleFocus}" not in terminal_pane
@@ -308,9 +316,9 @@ def test_terminal_toolbar_actions_restore_xterm_focus() -> None:
     xterm_wrapper = read_repo_text("src/components/terminal/XTermWrapper.tsx")
     for snippet in [
         "export function allowInactiveTerminalPointerFocus(sessionId: string): void",
-        "function shouldAllowInactiveTerminalPointerFocus(sessionId: string): boolean",
-        "if (shouldAllowInactiveTerminalPointerFocus(sessionId)) {",
-        "terminalPointerFocusAllowUntil.delete(sessionId);",
+        'focusController.request("pointer", { sessionId, action: "pending", focus: false });',
+        "focusController.observeTerminalFocusIn(sessionId);",
+        "focusController.clearSession(sessionId);",
     ]:
         assert_contains(terminal_sources, snippet, "src/components/terminal/*")
 
@@ -323,21 +331,29 @@ def test_terminal_toolbar_actions_restore_xterm_focus() -> None:
         assert 'querySelector<HTMLTextAreaElement>("textarea")' not in text, source
         assert ".xterm-helper-textarea, textarea" not in text, source
 
+    # AppShell and usePaneDragSource must delegate to the focusController —
+    # no file-local xterm focus machinery is allowed to reappear.
     for snippet in [
-        "function focusXtermInElement(el: HTMLElement | null | undefined): void",
-        "function queryPaneElementBySessionId(sessionId: string | null | undefined): HTMLElement | null",
-        "function focusActiveSessionSoon(sessionId: string | null | undefined): void",
-        'querySelector<HTMLTextAreaElement>(".xterm-helper-textarea")',
-        "focusActiveSessionSoon(useUiStore.getState().activePaneId);",
+        'import { focusController } from "../../lib/focusController";',
+        "focusController.focusSessionSoon(useUiStore.getState().activePaneId);",
+        'focusController.request("keyboard", { sessionId: targetSessionId, focus: true });',
     ]:
         assert_contains(app_shell, snippet, "src/components/layout/AppShell.tsx")
 
     for snippet in [
-        "function focusSessionSoon(sessionId: string | null): void",
-        "attempts >= 8",
-        'querySelector<HTMLTextAreaElement>(".xterm-helper-textarea")',
+        'import { focusController } from "../lib/focusController";',
+        'focusController.request("drag", { sessionId: focusSessionId, focus: true });',
     ]:
         assert_contains(pane_drag_source, snippet, "src/hooks/usePaneDragSource.ts")
+
+    for text, source in [
+        (app_shell, "src/components/layout/AppShell.tsx"),
+        (pane_drag_source, "src/hooks/usePaneDragSource.ts"),
+    ]:
+        assert "function focusXtermInElement" not in text, source
+        assert "function focusSessionSoon" not in text, source
+        assert "function focusActiveSessionSoon" not in text, source
+        assert ".xterm-helper-textarea" not in text, source
 
 
 def test_cached_terminal_remount_disposes_input_subscriptions() -> None:
@@ -378,7 +394,7 @@ def test_active_pane_id_follows_surviving_tab_after_close() -> None:
         "nextActivePaneId = activeTab.sessionId;",
         "const fallbackPane = newPanes[Math.min(Math.max(sourcePaneIndex, 0), newPanes.length - 1)] ?? newPanes[0];",
         "nextActivePaneId = activeSessionIdForPane(fallbackPane);",
-        "useUiStore.getState().setActivePaneId(nextActivePaneId);",
+        "applyStructuralActivation(nextActivePaneId);",
     ]:
         assert_contains(workspace_layout_store, snippet, "src/stores/workspaceLayoutStore.ts")
 
@@ -387,17 +403,16 @@ def test_pane_tab_rename_double_click_does_not_steal_focus() -> None:
     pane_tab_bar = read_repo_text("src/components/workspace/PaneTabBar.tsx")
 
     for snippet in [
-        "const suppressNextTabClickRef = useRef(false);",
         "const suppressNextTabClick = useCallback(() => {",
-        "suppressNextTabClickRef.current = true;",
-        "}, 250);",
+        'focusController.request("tab-rename", { action: "suppress-tab-click", suppressMs: 250 });',
+        "focusController.shouldSuppressTabClick()",
         "if (event.detail >= 2) {",
         "event.preventDefault();",
         "event.stopPropagation();",
         "suppressNextTabClick();",
         "startEditingTab(tab.id, label);",
         "onClick={(event) => {\n                if (event.detail >= 2) {",
-        "if (isEditingTab || suppressNextTabClickRef.current || shouldSuppressClick()) {",
+        "if (isEditingTab || focusController.shouldSuppressTabClick() || shouldSuppressClick()) {",
         "onPointerDown={(e) => e.stopPropagation()}",
         "onMouseDown={(e) => e.stopPropagation()}",
         "onDoubleClick={(e) => e.stopPropagation()}",
@@ -439,7 +454,7 @@ def test_terminal_wheel_input_does_not_steal_keyboard_focus() -> None:
         "removeWheelScrollGuard = attachTerminalWheelScroll(wheelScrollContainer, term, sessionId, forceWheelMouseReport);",
         "removeWheelScrollGuard?.();",
         "hasNonWheelInput: hasTerminalUserInput(inputData),",
-        "return wheelFocusRestore.sessionId === sessionId || wheelFocusRestore.previousSessionId === sessionId;",
+        "return focusController.shouldSuppressWheelFocusInput(sessionId);",
         "const { data: inputData, hasNonWheelInput } = filterWheelFocusInputSequences(",
         "filterTerminalMouseInputSequences(data),",
         "if (!shouldAcceptTerminalInput(sessionId)) return;",
@@ -448,11 +463,8 @@ def test_terminal_wheel_input_does_not_steal_keyboard_focus() -> None:
         "enqueueSessionWrite(sessionId, inputData);",
         "function registerTerminalWheelFocusGuard(currentTerm: Terminal, sessionId: string): () => void",
         "const activePaneId = useUiStore.getState().activePaneId;",
-        "if (!activePaneId || activePaneId === sessionId) {",
-        "markWheelFocusRestore(sessionId, activePaneId);",
-        "const previousSessionId = consumeWheelFocusRestore(sessionId);",
-        "restoreTerminalFocusAfterWheel(previousSessionId);",
-        "if (isActiveTerminalInputTarget(sessionId)) {\n      clearActiveTerminalNotification(sessionId);\n      return;\n    }\n    if (shouldAllowInactiveTerminalPointerFocus(sessionId)) {\n      return;\n    }\n    refocusActiveTerminalIfNeeded();",
+        'focusController.request("wheel", { sessionId, previousSessionId: activePaneId, action: "observe" });',
+        "focusController.observeTerminalFocusIn(sessionId);",
         "element.addEventListener(\"wheel\", guardWheelFocus, { capture: true, passive: true });",
         "removeWheelFocusGuard = registerTerminalWheelFocusGuard(term, sessionId);",
     ]:

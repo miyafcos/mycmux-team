@@ -3,6 +3,7 @@ import { v4 as uuid } from "uuid";
 import type { Workspace, GridTemplateId, AgentSessionKind } from "../types";
 import { normalizeReadableSplitColumns, reconcileSplitColumnsForPanes } from "../lib/layoutColumns";
 import { useUiStore } from "./uiStore";
+import { applyStructuralActivation } from "../lib/focusController";
 
 function workspaceContainsPane(workspace: Workspace | undefined, paneId: string | null): boolean {
   return Boolean(paneId && workspace?.panes.some((pane) => pane.id === paneId));
@@ -314,7 +315,7 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
     }
 
     set({ activeWorkspaceId: id, lastActivePaneByWorkspace });
-    uiState.setActivePaneId(nextActivePaneId);
+    applyStructuralActivation(nextActivePaneId);
     clearZoomIfMissingFromWorkspace(workspace);
   },
 

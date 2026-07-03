@@ -13,7 +13,8 @@ import {
 import { useWorkspaceListStore } from "../../stores/workspaceListStore";
 import { getAgent, getDefaultAgent } from "../../lib/agents";
 import { killSession, previewArtifactUriForSessionV2 } from "../../lib/ipc";
-import { allowInactiveTerminalPointerFocus, evictTerminalCache } from "../terminal/XTermWrapper";
+import { evictTerminalCache } from "../terminal/XTermWrapper";
+import { focusController } from "../../lib/focusController";
 import { usePaneDragStore, type PaneDragItem, type PaneDropTarget } from "../../stores/paneDragStore";
 
 interface TerminalPaneProps {
@@ -145,101 +146,6 @@ function truncatePaneActionError(message: string, max = 96): string {
   return `${message.slice(0, max - 3)}...`;
 }
 
-function focusTerminalElement(paneEl: HTMLElement | null | undefined): boolean {
-  const textarea = paneEl?.querySelector<HTMLTextAreaElement>(".xterm-helper-textarea");
-  if (textarea) {
-    textarea.focus();
-    return true;
-  }
-  return false;
-}
-
-type TerminalFocusOptions = {
-  requireActivePane?: boolean;
-};
-
-function getPaneSessionIds(paneEl: HTMLElement | null | undefined): string[] {
-  const root = paneEl?.closest<HTMLElement>("[data-dnd-pane-id]") ?? paneEl;
-  const ids = root?.getAttribute("data-pane-session-ids");
-  return ids ? ids.split(/\s+/).filter(Boolean) : [];
-}
-
-function paneElementOwnsSession(paneEl: HTMLElement | null | undefined, sessionId: string | null | undefined): boolean {
-  if (!paneEl || !sessionId) return false;
-  const root = paneEl.closest<HTMLElement>("[data-dnd-pane-id]") ?? paneEl;
-  return root.getAttribute("data-session-id") === sessionId || getPaneSessionIds(root).includes(sessionId);
-}
-
-function paneElementIsCurrentActiveTarget(paneEl: HTMLElement | null | undefined): boolean {
-  return paneElementOwnsSession(paneEl, useUiStore.getState().activePaneId);
-}
-
-function queryPaneElementBySessionId(sessionId: string | null | undefined): HTMLElement | null {
-  if (!sessionId) return null;
-  const direct = document.querySelector<HTMLElement>(`[data-session-id="${sessionId}"]`);
-  if (direct) return direct;
-  for (const candidate of document.querySelectorAll<HTMLElement>("[data-pane-session-ids]")) {
-    if (getPaneSessionIds(candidate).includes(sessionId)) return candidate;
-  }
-  return null;
-}
-
-function scheduleTerminalFocus(
-  resolvePane: () => HTMLElement | null | undefined,
-  options: TerminalFocusOptions = {},
-): void {
-  let attempts = 0;
-  const restoreFocus = (): void => {
-    attempts += 1;
-    const retry = (): void => {
-      if (attempts >= 8) return;
-      window.setTimeout(() => {
-        if (typeof window.requestAnimationFrame === "function") {
-          window.requestAnimationFrame(restoreFocus);
-          return;
-        }
-        restoreFocus();
-      }, attempts < 3 ? 16 : 50);
-    };
-    const paneEl = resolvePane();
-    if (options.requireActivePane && !paneElementIsCurrentActiveTarget(paneEl)) {
-      retry();
-      return;
-    }
-    const didFocusTerminal = focusTerminalElement(paneEl);
-    if (didFocusTerminal || attempts >= 8) {
-      return;
-    }
-    retry();
-  };
-
-  window.setTimeout(() => {
-    if (typeof window.requestAnimationFrame === "function") {
-      window.requestAnimationFrame(restoreFocus);
-      return;
-    }
-    restoreFocus();
-  }, 0);
-}
-
-function focusTerminalInPaneSoon(paneId: string): void {
-  scheduleTerminalFocus(
-    () => document.querySelector<HTMLElement>(`[data-dnd-pane-id="${paneId}"]`),
-    { requireActivePane: true },
-  );
-}
-
-function focusActiveTerminalSoon(fallbackPaneId: string): void {
-  scheduleTerminalFocus(() => {
-    const activePaneId = useUiStore.getState().activePaneId;
-    const activePaneEl = queryPaneElementBySessionId(activePaneId);
-    if (activePaneEl) {
-      return activePaneEl;
-    }
-    return document.querySelector<HTMLElement>(`[data-dnd-pane-id="${fallbackPaneId}"]`);
-  }, { requireActivePane: true });
-}
-
 const PANE_CLICK_ACTIVATE_MAX_DISTANCE_PX = 5;
 
 type PaneActivationOptions = {
@@ -247,6 +153,7 @@ type PaneActivationOptions = {
 };
 
 type PendingPaneClickActivation = {
+  sessionId: string;
   pointerId: number;
   x: number;
   y: number;
@@ -309,7 +216,6 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
     pane.tabs.some((t) => t.sessionId === activePaneId)
   );
   const isZoomed = useUiStore((s) => s.zoomedPaneId === pane.id);
-  const setActivePaneId = useUiStore((s) => s.setActivePaneId);
   const setZoomedPaneId = useUiStore((s) => s.setZoomedPaneId);
   const dragItem = usePaneDragStore((s) => s.item);
   const dropTarget = usePaneDragStore((s) =>
@@ -390,16 +296,15 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
     const p = ws?.panes.find((candidate) => candidate.id === pane.id);
     const tab = p?.tabs.find((candidate) => candidate.id === p.activeTabId) ?? p?.tabs[0];
     if (!p || !tab || tab.type === "browser") return;
-    if (useUiStore.getState().activePaneId !== tab.sessionId) {
-      setActivePaneId(tab.sessionId);
-    }
+    focusController.request("pointer", {
+      sessionId: tab.sessionId,
+      action: "commit",
+      focus: options.focusTerminal ?? true,
+    });
     for (const candidate of p.tabs) {
       clearNotification(candidate.sessionId);
     }
-    if (options.focusTerminal ?? true) {
-      focusTerminalInPaneSoon(pane.id);
-    }
-  }, [workspaceId, pane.id, setActivePaneId, clearNotification]);
+  }, [workspaceId, pane.id, clearNotification]);
 
   const handlePanePointerDownCapture = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     const isSelectionButton = event.button === 0 || event.button === 2;
@@ -421,13 +326,19 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
       pendingPaneClickActivationRef.current = null;
       return;
     }
-    allowInactiveTerminalPointerFocus(tab.sessionId);
-    focusTerminalElement(event.currentTarget);
+    focusController.request("pointer", {
+      sessionId: tab.sessionId,
+      paneId: pane.id,
+      action: "pending",
+      pointerId: event.pointerId,
+      focus: true,
+    });
     if (event.button === 2) {
       pendingPaneClickActivationRef.current = null;
       return;
     }
     pendingPaneClickActivationRef.current = {
+      sessionId: tab.sessionId,
       pointerId: event.pointerId,
       x: event.clientX,
       y: event.clientY,
@@ -439,21 +350,40 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
     const pending = pendingPaneClickActivationRef.current;
     pendingPaneClickActivationRef.current = null;
     if (!pending || pending.pointerId !== event.pointerId || event.button !== 0) return;
-    if (event.shiftKey || event.altKey || event.ctrlKey || event.metaKey) return;
-    if (shouldIgnorePaneClickActivationTarget(event.target)) return;
-    if (Math.hypot(event.clientX - pending.x, event.clientY - pending.y) > PANE_CLICK_ACTIVATE_MAX_DISTANCE_PX) return;
+    const abortPendingActivation = (): void => {
+      focusController.request("pointer", { sessionId: pending.sessionId, action: "abort" });
+    };
+    if (event.shiftKey || event.altKey || event.ctrlKey || event.metaKey) {
+      abortPendingActivation();
+      return;
+    }
+    if (shouldIgnorePaneClickActivationTarget(event.target)) {
+      abortPendingActivation();
+      return;
+    }
+    if (Math.hypot(event.clientX - pending.x, event.clientY - pending.y) > PANE_CLICK_ACTIVATE_MAX_DISTANCE_PX) {
+      abortPendingActivation();
+      return;
+    }
     const nextSelectionText = getDocumentSelectionText();
-    if (nextSelectionText && nextSelectionText !== pending.selectionText) return;
+    if (nextSelectionText && nextSelectionText !== pending.selectionText) {
+      abortPendingActivation();
+      return;
+    }
     activatePane();
   }, [activatePane]);
 
   const handlePanePointerCancelCapture = useCallback(() => {
+    const pending = pendingPaneClickActivationRef.current;
     pendingPaneClickActivationRef.current = null;
+    if (pending) {
+      focusController.request("pointer", { sessionId: pending.sessionId, action: "abort" });
+    }
   }, []);
 
   const handleAddTab = useCallback((agentId?: string, type?: PaneTab["type"]) => {
     addTabToPane(workspaceId, pane.id, agentId, type);
-    focusTerminalInPaneSoon(pane.id);
+    focusController.focusPaneSoon(pane.id);
   }, [workspaceId, pane.id, addTabToPane]);
 
   const handleRemoveTab = useCallback((tabId: string) => {
@@ -472,7 +402,7 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
       usePaneMetadataStore.getState().removeMetadata(tab.sessionId);
     }
     removeTabFromPane(workspaceId, pane.id, tabId);
-    focusTerminalInPaneSoon(pane.id);
+    focusController.focusPaneSoon(pane.id);
   }, [workspaceId, pane.id, removeTabFromPane]);
 
   const handleSelectTab = useCallback((tabId: string) => {
@@ -480,9 +410,10 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
     const ws = useWorkspaceListStore.getState().getWorkspace(workspaceId);
     const p = ws?.panes.find((x) => x.id === pane.id);
     const tab = p?.tabs.find((t) => t.id === tabId);
-    if (tab) setActivePaneId(tab.sessionId);
-    focusTerminalInPaneSoon(pane.id);
-  }, [workspaceId, pane.id, setActivePaneTab, setActivePaneId]);
+    if (tab) {
+      focusController.request("tab-click", { sessionId: tab.sessionId, focus: true });
+    }
+  }, [workspaceId, pane.id, setActivePaneTab]);
 
   const handleZoomToggle = useCallback(() => {
     const currentZoomed = useUiStore.getState().zoomedPaneId;
@@ -491,7 +422,7 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
     // The keyboard path keeps focus on the xterm textarea, but the toolbar
     // zoom button moves focus to the <button>; without this the user must
     // click back into the terminal before typing.
-    focusTerminalInPaneSoon(pane.id);
+    focusController.focusPaneSoon(pane.id);
   }, [pane.id, setZoomedPaneId]);
 
   const handleUrlClick = useCallback((uri: string) => {
@@ -628,15 +559,15 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
         isZoomed={isZoomed}
         onClose={onClose ? () => {
           onClose();
-          focusActiveTerminalSoon(pane.id);
+          focusController.focusSessionSoon(useUiStore.getState().activePaneId);
         } : undefined}
         onSplitRight={onSplitRight ? () => {
           onSplitRight();
-          focusActiveTerminalSoon(pane.id);
+          focusController.focusSessionSoon(useUiStore.getState().activePaneId);
         } : undefined}
         onSplitDown={onSplitDown ? () => {
           onSplitDown();
-          focusActiveTerminalSoon(pane.id);
+          focusController.focusSessionSoon(useUiStore.getState().activePaneId);
         } : undefined}
         onZoomToggle={handleZoomToggle}
         onAddTab={handleAddTab}

@@ -5,9 +5,9 @@ import {
   type PaneDropTarget,
   type PaneDropZone,
 } from "../stores/paneDragStore";
-import { useUiStore } from "../stores/uiStore";
 import { useWorkspaceLayoutStore } from "../stores/workspaceLayoutStore";
 import { useWorkspaceListStore } from "../stores/workspaceListStore";
+import { focusController } from "../lib/focusController";
 
 const DRAG_THRESHOLD_PX = 9;
 const WORKSPACE_HOVER_DELAY_MS = 350;
@@ -89,40 +89,6 @@ function resolveDropTargetAtPoint(x: number, y: number, item: PaneDragItem): Pan
   return canDropTarget(item, target) ? target : null;
 }
 
-function focusSessionSoon(sessionId: string | null): void {
-  if (!sessionId) return;
-  let attempts = 0;
-  const restoreFocus = (): void => {
-    attempts += 1;
-    if (useUiStore.getState().activePaneId !== sessionId) return;
-    const paneElement = document.querySelector<HTMLElement>(`[data-session-id="${sessionId}"]`);
-    const textarea = paneElement?.querySelector<HTMLTextAreaElement>(".xterm-helper-textarea");
-    if (textarea) {
-      textarea.focus();
-      return;
-    }
-    if (paneElement) {
-      paneElement?.focus();
-      return;
-    }
-    if (attempts >= 8) return;
-    window.setTimeout(() => {
-      if (typeof window.requestAnimationFrame === "function") {
-        window.requestAnimationFrame(restoreFocus);
-        return;
-      }
-      restoreFocus();
-    }, attempts < 3 ? 16 : 50);
-  };
-  window.setTimeout(() => {
-    if (typeof window.requestAnimationFrame === "function") {
-      window.requestAnimationFrame(restoreFocus);
-      return;
-    }
-    restoreFocus();
-  }, 0);
-}
-
 function commitPaneDragDrop(item: PaneDragItem, target: PaneDropTarget | null): void {
   if (!target || !canDropTarget(item, target)) return;
 
@@ -149,8 +115,7 @@ function commitPaneDragDrop(item: PaneDragItem, target: PaneDropTarget | null): 
         );
     if (!moved) return;
     useWorkspaceListStore.getState().setActiveWorkspace(workspaceId);
-    useUiStore.getState().setActivePaneId(focusSessionId);
-    focusSessionSoon(focusSessionId);
+    focusController.request("drag", { sessionId: focusSessionId, focus: true });
     return;
   }
 
@@ -191,8 +156,7 @@ function commitPaneDragDrop(item: PaneDragItem, target: PaneDropTarget | null): 
   }
 
   useWorkspaceListStore.getState().setActiveWorkspace(target.workspaceId);
-  useUiStore.getState().setActivePaneId(focusSessionId);
-  focusSessionSoon(focusSessionId);
+  focusController.request("drag", { sessionId: focusSessionId, focus: true });
 }
 
 export function usePaneDragSource() {

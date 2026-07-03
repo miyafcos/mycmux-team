@@ -1,7 +1,7 @@
 import { memo, useEffect, useMemo, useRef } from "react";
 import { useWorkspaceListStore, usePaneMetadataStore, useWorkspaceLayoutStore } from "../../stores/workspaceStore";
-import { useUiStore } from "../../stores/uiStore";
 import { getAgent } from "../../lib/agents";
+import { focusController } from "../../lib/focusController";
 
 interface NotificationPanelProps {
   onClose: () => void;
@@ -81,7 +81,6 @@ export default function NotificationPanel({ onClose }: NotificationPanelProps) {
   const setActivePaneTab = useWorkspaceLayoutStore((s) => s.setActivePaneTab);
   const paneMetadata = usePaneMetadataStore((s) => s.metadata);
   const clearNotification = usePaneMetadataStore((s) => s.clearNotification);
-  const setActivePaneId = useUiStore((s) => s.setActivePaneId);
   const panelRef = useRef<HTMLDivElement>(null);
 
   const notifications = useMemo(() => {
@@ -142,21 +141,6 @@ export default function NotificationPanel({ onClose }: NotificationPanelProps) {
     onClose();
   }
 
-  function focusPane(sessionId: string) {
-    window.requestAnimationFrame(() => {
-      window.requestAnimationFrame(() => {
-        if (useUiStore.getState().activePaneId !== sessionId) return;
-        const el = document.querySelector<HTMLElement>(`[data-session-id="${sessionId}"]`);
-        const textarea = el?.querySelector<HTMLTextAreaElement>(".xterm-helper-textarea");
-        if (textarea) {
-          textarea.focus();
-        } else {
-          el?.focus();
-        }
-      });
-    });
-  }
-
   return (
     <div
       ref={panelRef}
@@ -202,10 +186,9 @@ export default function NotificationPanel({ onClose }: NotificationPanelProps) {
               onActivate={(notification) => {
                 setActive(notification.workspaceId);
                 setActivePaneTab(notification.workspaceId, notification.paneId, notification.tabId);
-                setActivePaneId(notification.sessionId);
+                focusController.request("programmatic", { sessionId: notification.sessionId, focus: true });
                 clearNotification(notification.sessionId);
                 onClose();
-                focusPane(notification.sessionId);
               }}
             />
           ))}

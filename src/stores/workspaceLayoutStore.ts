@@ -8,6 +8,7 @@ import { makeSessionId } from "../lib/constants";
 import { normalizeReadableSplitColumns, reconcileSplitColumnsForPanes } from "../lib/layoutColumns";
 import { useWorkspaceListStore } from "./workspaceListStore";
 import { useUiStore } from "./uiStore";
+import { applyStructuralActivation } from "../lib/focusController";
 
 /**
  * Workspace Layout Store - Manages panes within workspaces
@@ -546,7 +547,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
       normalizeWorkspaceSplitColumns(newSplitColumns),
       true,
     );
-    useUiStore.getState().setActivePaneId(newPane.sessionId);
+    applyStructuralActivation(newPane.sessionId);
   },
 
   addPaneToWorkspaceWithOptions: (workspaceId, afterPaneId, direction, options) => {
@@ -602,7 +603,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
       normalizeWorkspaceSplitColumns(newSplitColumns),
       true,
     );
-    useUiStore.getState().setActivePaneId(newPane.sessionId);
+    applyStructuralActivation(newPane.sessionId);
   },
 
   addTabToPane: (workspaceId, paneId, agentId, type = "terminal") => {
@@ -613,7 +614,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
       if (p.id !== paneId) return p;
       const agId = agentId ?? p.agentId;
       const tab = makeTab(workspaceId, paneId, agId, type);
-      useUiStore.getState().setActivePaneId(tab.sessionId);
+      applyStructuralActivation(tab.sessionId);
       return {
         ...p,
         tabs: [...p.tabs, tab],
@@ -650,7 +651,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
         }, updatedTab);
       });
       useWorkspaceListStore.getState()._updateWorkspacePanes(workspaceId, newPanes);
-      useUiStore.getState().setActivePaneId(updatedTab.sessionId);
+      applyStructuralActivation(updatedTab.sessionId);
       useUiStore.getState().setZoomedPaneId(null);
       return;
     }
@@ -677,7 +678,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
         return [appendTabsToPane(pane, [openedTab], openedTab.id)];
       });
       useWorkspaceListStore.getState()._updateWorkspacePanes(workspaceId, newPanes);
-      useUiStore.getState().setActivePaneId(openedTab.sessionId);
+      applyStructuralActivation(openedTab.sessionId);
       useUiStore.getState().setZoomedPaneId(null);
       return;
     }
@@ -710,7 +711,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
       normalizeWorkspaceSplitColumns(nextSplitColumns),
       true,
     );
-    useUiStore.getState().setActivePaneId(openedTab.sessionId);
+    applyStructuralActivation(openedTab.sessionId);
     useUiStore.getState().setZoomedPaneId(null);
   },
   setBrowserTabDirty: (workspaceId, paneId, tabId, isDirty) => {
@@ -820,7 +821,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
       }
     }
     if (nextActivePaneId !== undefined) {
-      useUiStore.getState().setActivePaneId(nextActivePaneId);
+      applyStructuralActivation(nextActivePaneId);
     }
   },
 

@@ -131,8 +131,8 @@ def test_file_preview_agent_usage_and_fault_surfaces_remain_wired() -> None:
         [
             "openOrReloadHtmlPreviewPane: (workspaceId: string, sourcePaneId: string, info: string | BrowserPreviewInfo) => void;",
             "function bumpBrowserTabReloadCounter(tab: PaneTab, info?: Required<BrowserPreviewInfo>): PaneTab {",
-            "useUiStore.getState().setActivePaneId(updatedTab.sessionId);",
-            "useUiStore.getState().setActivePaneId(openedTab.sessionId);",
+            "applyStructuralActivation(updatedTab.sessionId);",
+            "applyStructuralActivation(openedTab.sessionId);",
         ],
     )
     assert_snippets(

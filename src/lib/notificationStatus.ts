@@ -1,4 +1,4 @@
-import type { PaneMetadata } from "../stores/paneMetadataStoreCompat";
+import type { PaneMetadata } from "../stores/paneMetadataStore";
 
 export type EffectiveStatus = "waiting" | "working" | "idle";
 

@@ -2,11 +2,12 @@ import { useCallback, useEffect, useMemo, memo, useRef, useState } from "react";
 import { Allotment } from "allotment";
 import "allotment/dist/style.css";
 import type { Pane, GridTemplateId, Workspace } from "../../types";
-import { useWorkspaceLayoutStore, usePaneMetadataStore, useUiStore } from "../../stores/workspaceStore";
+import { useWorkspaceLayoutStore, usePaneMetadataStore } from "../../stores/workspaceStore";
 import { useWorkspaceListStore } from "../../stores/workspaceListStore";
 import { killSession } from "../../lib/ipc";
 import { FIRST_LAUNCH_STORAGE_KEY } from "../../lib/startupSessionGate";
 import { reconcileSplitColumnsForPanes } from "../../lib/layoutColumns";
+import { focusController } from "../../lib/focusController";
 import { evictTerminalCache } from "../terminal/XTermWrapper";
 import TerminalPane from "./TerminalPane";
 import { ErrorBoundary } from "../layout/ErrorBoundary";
@@ -97,7 +98,6 @@ export const TerminalGrid = memo(function TerminalGrid({
   const removePaneFromWorkspace = useWorkspaceLayoutStore((s) => s.removePaneFromWorkspace);
   const addPaneToWorkspace = useWorkspaceLayoutStore((s) => s.addPaneToWorkspace);
   const setWorkspaceLayoutMetrics = useWorkspaceListStore((s) => s.setWorkspaceLayoutMetrics);
-  const setActivePaneId = useUiStore((s) => s.setActivePaneId);
   const workspace = useWorkspaceListStore((s) => s.getWorkspace(workspaceId));
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
 
@@ -117,9 +117,12 @@ export const TerminalGrid = memo(function TerminalGrid({
     const remainingPanes = ws.panes.filter((p) => p.id !== paneId);
     const nextPane = remainingPanes[Math.min(Math.max(paneIndex, 0), remainingPanes.length - 1)] ?? remainingPanes[0];
     const nextActiveTab = nextPane?.tabs.find((tab) => tab.id === nextPane.activeTabId) ?? nextPane?.tabs[0];
-    setActivePaneId(nextActiveTab?.sessionId ?? nextPane?.sessionId ?? null);
+    focusController.request("programmatic", {
+      sessionId: nextActiveTab?.sessionId ?? nextPane?.sessionId ?? null,
+      focus: false,
+    });
     removePaneFromWorkspace(workspaceId, paneId);
-  }, [workspaceId, removePaneFromWorkspace, setActivePaneId]);
+  }, [workspaceId, removePaneFromWorkspace]);
 
   const handleSplitRight = useCallback((paneId: string) => {
     addPaneToWorkspace(workspaceId, paneId, "right");

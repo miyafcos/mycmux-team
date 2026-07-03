@@ -6,6 +6,7 @@ import { getAgent, getDefaultAgent } from "../../lib/agents";
 import { usePaneMetadataStore } from "../../stores/workspaceStore";
 import { deriveEffectiveStatus, type EffectiveStatus } from "../../lib/notificationStatus";
 import { usePaneDragSource } from "../../hooks/usePaneDragSource";
+import { focusController } from "../../lib/focusController";
 import { useWorkspaceLayoutStore } from "../../stores/workspaceLayoutStore";
 
 interface PaneTabBarProps {
@@ -222,7 +223,6 @@ export default memo(function PaneTabBar({
   const [editValue, setEditValue] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
   const skipNextBlurCommitRef = useRef(false);
-  const suppressNextTabClickRef = useRef(false);
   const [contextMenu, setContextMenu] = useState<{ tabId: string; x: number; y: number } | null>(null);
   const contextMenuRef = useRef<HTMLDivElement>(null);
 
@@ -284,10 +284,7 @@ export default memo(function PaneTabBar({
   }, []);
 
   const suppressNextTabClick = useCallback(() => {
-    suppressNextTabClickRef.current = true;
-    window.setTimeout(() => {
-      suppressNextTabClickRef.current = false;
-    }, 250);
+    focusController.request("tab-rename", { action: "suppress-tab-click", suppressMs: 250 });
   }, []);
 
   const commitTabLabel = useCallback((tab: PaneTab) => {
@@ -401,7 +398,7 @@ export default memo(function PaneTabBar({
                   startEditingTab(tab.id, label);
                   return;
                 }
-                if (isEditingTab || suppressNextTabClickRef.current || shouldSuppressClick()) {
+                if (isEditingTab || focusController.shouldSuppressTabClick() || shouldSuppressClick()) {
                   event.preventDefault();
                   event.stopPropagation();
                   return;

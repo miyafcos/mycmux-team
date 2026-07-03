@@ -14,7 +14,7 @@
 export { useWorkspaceListStore } from "./workspaceListStore";
 export { useWorkspaceLayoutStore } from "./workspaceLayoutStore";
 export { useUiStore } from "./uiStore";
-export { usePaneMetadataStore } from "./paneMetadataStoreCompat";
+export { usePaneMetadataStore } from "./paneMetadataStore";
 
 // Re-export types
-export type { PaneMetadata, PaneMetadataState } from "./paneMetadataStoreCompat";
+export type { PaneMetadata, PaneMetadataState } from "./paneMetadataStore";
