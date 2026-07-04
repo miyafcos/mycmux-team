@@ -1,6 +1,5 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import { invoke } from "@tauri-apps/api/core";
 
 interface SettingsState {
   notificationsEnabled: boolean;
@@ -30,12 +29,6 @@ function getDefaultUseWebglRenderer(): boolean {
     navigator.platform ||
     "";
   return /Mac/i.test(platform);
-}
-
-export function syncBuddyEnabledToBackend(enabled: boolean): void {
-  void invoke("set_buddy_enabled", { enabled }).catch((error) => {
-    console.warn("[settings] Failed to sync buddy enabled state:", error);
-  });
 }
 
 export const useSettingsStore = create<SettingsState>()(

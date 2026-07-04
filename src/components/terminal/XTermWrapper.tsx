@@ -832,7 +832,7 @@ export default memo(function XTermWrapper({
     let codexDetectionBuffer = "";
     const outputDecoder = new TextDecoder();
     const diagStats = diagStatsFor(sessionId);
-    const pendingBatches: PendingFrontendBatch[] = [];
+    const pendingBatches: PendingFrontendBatch[] = takeDeferredTerminalBatches(sessionId);
     let writingBatch = false;
     let pendingDrainTimer: ReturnType<typeof setTimeout> | null = null;
     let frontendVisible: boolean | null = null;
@@ -1494,6 +1494,7 @@ export default memo(function XTermWrapper({
             }
             bumpTerminalWriteCounter(sessionId);
             await writeTerminalOutput(output);
+            rememberTerminalRawTail(sessionId, chunk);
             if (!disposed && !termDisposed) {
               scheduleFullRefresh(term, [0, 48]);
               scheduleBackgroundScan();

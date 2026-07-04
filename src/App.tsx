@@ -17,7 +17,7 @@ import {
   readAgentSessionMappings,
 } from "./lib/ipc";
 import { useUiStore } from "./stores/uiStore";
-import { syncBuddyEnabledToBackend, useSettingsStore } from "./stores/settingsStore";
+import { useSettingsStore } from "./stores/settingsStore";
 import { isShellProcess } from "./lib/notificationStatus";
 import type { AgentSessionKind, Pane, PaneTab } from "./types";
 import {
@@ -141,7 +141,6 @@ function App() {
     async function bootstrap() {
       await Promise.all([persistLoaded, initDefaultShell()]);
       await waitForSettingsHydration();
-      syncBuddyEnabledToBackend(useSettingsStore.getState().buddyEnabled);
       const listStore = useWorkspaceListStore.getState();
       let launchCwd: string | null = null;
       try {
