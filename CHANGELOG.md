@@ -4,6 +4,17 @@
 
 ---
 
+## [0.9.0-lite.1] - 2026-07-04
+
+- Sync: personal 0.9.0 の安定化パック(v0.8.54 Phase 0+1 + 安定化計画v2 Phase A/D/B/C/E)を全量ポート。
+- Fix: sync tauri command のワーカースレッド化 (UIスレッド保護) / data.json crash-safe化 (backupリカバリ付き) / attach epoch を backend attach 成功後に確定 / 終了時 save 失敗で quit ブロック / セッションmappingの原子的書き込み。
+- Fix: Phase A quick-win — workspace focus memory, pinned_roots merge, create_locks prune, tao 0.34.8, dead commands 削除。
+- Fix: 自己修復ACKリカバリ — bounded pending batches + scrollback resync (`get_session_scrollback` を lite に復活)。
+- Perf: metadata購読のスコープ化、launch propsメモ化、visibilityフレームキャッシュ、link cache、monitor negative TTL、broadcast clone gate。
+- Refactor: terminal.rs を artifact/shell/session_mapping に分割 / XTermWrapper ヘルパを terminalCache・terminalFocusHelpers・terminalMouseInputFilter 等へ純移動 / focusController 単一権威化。
+- Test: vitest 基盤 (attachEpoch 14 tests) + FrontendFlow tokio tests + contract tests 群を導入。buddy 系は lite 非搭載のため除外。
+- Verification: npx tsc --noEmit / npm run test:unit (14 passed) / python -m pytest tests -q (51 passed) / cargo test --release / npm run tauri build
+
 ## [0.8.53-lite.1] - 2026-06-30
 
 - Fix: Restore copy-on-select after terminal selection end, including context-menu word selection, cached terminal remounts, empty-selection focus restore, and clipboard fallback focus recovery.
