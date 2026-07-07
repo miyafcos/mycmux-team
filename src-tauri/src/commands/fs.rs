@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 
 use tauri::State;
 
+use crate::commands::artifact::artifact_path_from_uri;
 use crate::db::storage::{self, PinnedRoot};
 use crate::pty::path_norm::posix_drive_to_windows;
 use crate::AppState;
@@ -362,6 +363,61 @@ pub fn open_with_default(path: String) -> Result<(), String> {
     Err("unsupported platform".into())
 }
 
+#[tauri::command(async)]
+pub async fn reveal_path_in_explorer(uri: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = artifact_path_from_uri(&uri)?;
+        reveal_path_in_explorer_path(&path)
+    })
+    .await
+    .map_err(|error| format!("join reveal_path_in_explorer: {error}"))?
+}
+
+fn reveal_path_in_explorer_path(path: &Path) -> Result<(), String> {
+    if !path.exists() {
+        return Err(format!("path does not exist: {}", path.to_string_lossy()));
+    }
+    let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer.exe")
+            .arg(windows_explorer_select_arg(&canonical))
+            .spawn()
+            .map_err(|e| format!("failed to launch explorer.exe: {e}"))?;
+        return Ok(());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let mut cmd = std::process::Command::new("open");
+        if canonical.is_file() {
+            cmd.arg("-R").arg(&canonical);
+        } else {
+            cmd.arg(&canonical);
+        }
+        cmd.spawn()
+            .map_err(|e| format!("failed to launch open: {e}"))?;
+        return Ok(());
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let target = if canonical.is_dir() {
+            canonical.to_path_buf()
+        } else {
+            canonical
+                .parent()
+                .map(|x| x.to_path_buf())
+                .unwrap_or_else(|| canonical.to_path_buf())
+        };
+        std::process::Command::new("xdg-open")
+            .arg(target)
+            .spawn()
+            .map_err(|e| format!("failed to launch xdg-open: {e}"))?;
+        return Ok(());
+    }
+    #[allow(unreachable_code)]
+    Err("unsupported platform".into())
+}
+
 #[cfg(target_os = "windows")]
 fn windows_display_path(path: &std::path::Path) -> String {
     let value = path.to_string_lossy();
@@ -376,6 +432,11 @@ fn windows_explorer_reveal_args(path: &std::path::Path, is_dir: bool) -> Vec<Str
     } else {
         vec!["/select,".to_string(), target]
     }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_explorer_select_arg(path: &std::path::Path) -> String {
+    format!("/select,{}", windows_display_path(path))
 }
 
 #[cfg(all(test, target_os = "windows"))]
@@ -402,6 +463,14 @@ mod tests {
         let args =
             windows_explorer_reveal_args(std::path::Path::new(r"C:\Users\miyaz\Desktop"), true);
         assert_eq!(args, vec![r"C:\Users\miyaz\Desktop".to_string()]);
+    }
+
+    #[test]
+    fn explorer_select_arg_keeps_switch_and_path_in_one_argument() {
+        let arg = windows_explorer_select_arg(std::path::Path::new(
+            r"C:\Users\miyaz\Desktop\sample doc.pdf",
+        ));
+        assert_eq!(arg, r"/select,C:\Users\miyaz\Desktop\sample doc.pdf");
     }
 }
 

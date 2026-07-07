@@ -178,6 +178,7 @@ pub fn run() {
             commands::fs::watch_root,
             commands::fs::unwatch_root,
             commands::fs::reveal_in_explorer,
+            commands::fs::reveal_path_in_explorer,
             commands::fs::open_with_default,
             commands::fs::create_file,
             commands::fs::create_folder,

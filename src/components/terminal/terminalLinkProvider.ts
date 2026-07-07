@@ -6,13 +6,19 @@ import {
 
 export const HTTP_LINK_REGEX = /https?:\/\/[^\s"'<>+\uFF0B]+[^\s"'<>+\uFF0B.,!?;:)}\]]/i;
 const ARTIFACT_EXTENSION_PATTERN = String.raw`html?|markdown|md|docx?|docm|dotx?|dotm|xlsx?|xlsm|xlsb|xltx?|xltm|pptx?|pptm|potx?|potm|ppsx?|ppsm`;
+const GENERIC_FILE_EXTENSION_PATTERN = String.raw`[A-Za-z0-9][A-Za-z0-9_~-]{0,9}`;
+const GENERIC_FILE_EXTENSION_SUFFIX_PATTERN = String.raw`${GENERIC_FILE_EXTENSION_PATTERN}(?:\.${GENERIC_FILE_EXTENSION_PATTERN})*`;
 const ARTIFACT_LINK_TERMINATOR_PATTERN = String.raw`(?=$|[\s"'<>+\uFF0B.,!?;:)}\]\uFF08\uFF09\u30FB\u3002\u3001\uFF0C])`;
 const MSYS_DRIVE_PREFIX_PATTERN = String.raw`(?<![A-Za-z0-9._\\/:])\/[A-Za-z]\/`;
 const ARTIFACT_LINK_REGEX = new RegExp(
-  String.raw`(?:file:\/\/\/[^\r\n"'<>+\uFF0B]*?\.(?:${ARTIFACT_EXTENSION_PATTERN})|[A-Za-z]:[\\/](?![\\/])[^\r\n"'<>+\uFF0B]*?\.(?:${ARTIFACT_EXTENSION_PATTERN})|${MSYS_DRIVE_PREFIX_PATTERN}[^\r\n"'<>+\uFF0B]*?\.(?:${ARTIFACT_EXTENSION_PATTERN}))${ARTIFACT_LINK_TERMINATOR_PATTERN}`,
+  String.raw`(?:file:\/\/\/[^\r\n"'<>+\uFF0B]*?\.(?:${GENERIC_FILE_EXTENSION_SUFFIX_PATTERN})|[A-Za-z]:[\\/](?![\\/])[^\r\n"'<>+\uFF0B]*?\.(?:${GENERIC_FILE_EXTENSION_SUFFIX_PATTERN})|${MSYS_DRIVE_PREFIX_PATTERN}[^\r\n"'<>+\uFF0B]*?\.(?:${GENERIC_FILE_EXTENSION_SUFFIX_PATTERN}))${ARTIFACT_LINK_TERMINATOR_PATTERN}`,
   "gi",
 );
 const COMPLETE_ARTIFACT_EXTENSION_REGEX = new RegExp(
+  String.raw`\.(?:${GENERIC_FILE_EXTENSION_SUFFIX_PATTERN})${ARTIFACT_LINK_TERMINATOR_PATTERN}`,
+  "i",
+);
+const PREVIEW_ARTIFACT_EXTENSION_REGEX = new RegExp(
   String.raw`\.(?:${ARTIFACT_EXTENSION_PATTERN})${ARTIFACT_LINK_TERMINATOR_PATTERN}`,
   "i",
 );
@@ -27,6 +33,12 @@ type ArtifactLinkPart = {
   text: string;
   lineIndex?: number;
   nextLineIndex?: number;
+};
+
+export type LocalFilePathLinkMatch = {
+  text: string;
+  index: number;
+  endIndex: number;
 };
 
 const artifactLinkCache = new Map<string, ILink[] | undefined>();
@@ -106,6 +118,24 @@ function hasOpenArtifactPath(text: string): boolean {
   return !COMPLETE_ARTIFACT_EXTENSION_REGEX.test(tail);
 }
 
+export function findLocalFilePathLinks(text: string): LocalFilePathLinkMatch[] {
+  const regex = new RegExp(ARTIFACT_LINK_REGEX.source, ARTIFACT_LINK_REGEX.flags);
+  const matches: LocalFilePathLinkMatch[] = [];
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(text))) {
+    matches.push({
+      text: match[0],
+      index: match.index,
+      endIndex: match.index + match[0].length,
+    });
+  }
+  return matches;
+}
+
+export function isArtifactPreviewUri(uri: string): boolean {
+  return PREVIEW_ARTIFACT_EXTENSION_REGEX.test(uri.trim());
+}
+
 function hasArtifactLinkCandidate(text: string): boolean {
   return text.includes("file:///") || ARTIFACT_LINK_CANDIDATE_PREFIX_REGEX.test(text);
 }
@@ -135,7 +165,11 @@ function normalizeSoftWrappedArtifactLine(text: string, nextText: string): strin
   return `${trimmed} `;
 }
 
-export function registerArtifactLinkProvider(term: Terminal, sessionId: string, onActivate: (uri: string) => void) {
+export function registerArtifactLinkProvider(
+  term: Terminal,
+  sessionId: string,
+  onActivate: (uri: string, event: MouseEvent) => void,
+) {
   return term.registerLinkProvider({
     provideLinks(bufferLineNumber, callback) {
       const buffer = term.buffer.active;
@@ -261,7 +295,7 @@ export function registerArtifactLinkProvider(term: Terminal, sessionId: string, 
             end: { x: Math.max(1, end.cellX), y: end.lineIndex + 1 },
           },
           text: uri,
-          activate: () => onActivate(uri),
+          activate: (event) => onActivate(uri, event),
         };
         if (link.range.start.y <= bufferLineNumber && link.range.end.y >= bufferLineNumber) {
           links.push(link);

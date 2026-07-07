@@ -1,4 +1,13 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import { open } from "@tauri-apps/plugin-shell";
 import ErrorBoundary from "../common/ErrorBoundary";
 import type { AgentSessionKind, Pane, PaneTab } from "../../types";
@@ -13,7 +22,9 @@ import {
 import { useWorkspaceListStore } from "../../stores/workspaceListStore";
 import { getAgent, getDefaultAgent } from "../../lib/agents";
 import { killSession, previewArtifactUriForSessionV2 } from "../../lib/ipc";
+import { revealPathInExplorer } from "../../lib/ipc";
 import { evictTerminalCache } from "../terminal/XTermWrapper";
+import { isArtifactPreviewUri } from "../terminal/terminalLinkProvider";
 import { focusController } from "../../lib/focusController";
 import { usePaneDragStore, type PaneDragItem, type PaneDropTarget } from "../../stores/paneDragStore";
 
@@ -160,6 +171,12 @@ type PendingPaneClickActivation = {
   selectionText: string;
 };
 
+type ArtifactLinkPopoverState = {
+  uri: string;
+  x: number;
+  y: number;
+};
+
 const PANE_CLICK_IGNORED_TARGET_SELECTOR = [
   "button",
   "a",
@@ -186,6 +203,14 @@ function shouldIgnorePaneClickActivationTarget(target: EventTarget | null): bool
 function getDocumentSelectionText(): string {
   const selection = window.getSelection?.();
   return selection?.toString().trim() ?? "";
+}
+
+function defaultOpenUriForLocalPath(uri: string): string {
+  const trimmed = uri.trim();
+  if (/^\/[A-Za-z]\//.test(trimmed)) {
+    return `${trimmed[1].toUpperCase()}:${trimmed.slice(2).replace(/\//g, "\\")}`;
+  }
+  return uri;
 }
 
 function getDropPreviewLabel(item: PaneDragItem, target: PaneDropTarget): string {
@@ -227,9 +252,12 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
   const activeTabMetadataAgentKind = usePaneMetadataStore((s) =>
     activeTab ? s.metadata[activeTab.sessionId]?.agentKind : undefined,
   );
+  const paneRootRef = useRef<HTMLDivElement>(null);
   const pendingPaneClickActivationRef = useRef<PendingPaneClickActivation | null>(null);
   const pendingPreviewUriRef = useRef<string | null>(null);
+  const artifactLinkPopoverRef = useRef<HTMLDivElement>(null);
   const [previewActionError, setPreviewActionError] = useState<string | null>(null);
+  const [artifactLinkPopover, setArtifactLinkPopover] = useState<ArtifactLinkPopoverState | null>(null);
 
   // Granular metadata selectors only re-render when notification/done count changes.
   const notificationCount = usePaneMetadataStore((s) =>
@@ -280,6 +308,23 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
   }, [pane.tabs, pane.id, workspaceId, openOrReloadHtmlPreviewPane]);
 
   const hasNotification = notificationCount > 0;
+
+  useEffect(() => {
+    if (!artifactLinkPopover) return;
+    const onMouseDown = (event: MouseEvent) => {
+      if (artifactLinkPopoverRef.current?.contains(event.target as Node)) return;
+      setArtifactLinkPopover(null);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setArtifactLinkPopover(null);
+    };
+    window.addEventListener("mousedown", onMouseDown, true);
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => {
+      window.removeEventListener("mousedown", onMouseDown, true);
+      window.removeEventListener("keydown", onKeyDown, true);
+    };
+  }, [artifactLinkPopover]);
 
   // Two-state border: active (accent) or inactive (transparent).
   // Notification border is handled by the CSS .has-notification class.
@@ -427,6 +472,7 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
 
   const handleUrlClick = useCallback((uri: string) => {
     if (pendingPreviewUriRef.current) return;
+    setArtifactLinkPopover(null);
     pendingPreviewUriRef.current = uri;
     setPreviewActionError(null);
 
@@ -470,6 +516,49 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
         }
       });
   }, [openOrReloadHtmlPreviewPane, pane.id, workspaceId]);
+
+  const handleArtifactLinkClick = useCallback((uri: string, screenPos: { x: number; y: number }) => {
+    if (isArtifactPreviewUri(uri)) {
+      handleUrlClick(uri);
+      return;
+    }
+    const root = paneRootRef.current;
+    if (!root) {
+      handleUrlClick(uri);
+      return;
+    }
+    const rect = root.getBoundingClientRect();
+    const popoverWidth = 56;
+    const popoverHeight = 34;
+    const x = Math.max(4, Math.min(screenPos.x - rect.left, Math.max(4, rect.width - popoverWidth - 4)));
+    const y = Math.max(4, Math.min(screenPos.y - rect.top, Math.max(4, rect.height - popoverHeight - 4)));
+    setPreviewActionError(null);
+    setArtifactLinkPopover({ uri, x, y });
+  }, [handleUrlClick]);
+
+  const reportArtifactActionFailure = useCallback((message: string, error: unknown): void => {
+    const detail = `${message}: ${String(error)}`;
+    console.error("[mycmux] artifact action failed", detail);
+    setPreviewActionError(detail);
+  }, []);
+
+  const handleOpenArtifactExternally = useCallback(() => {
+    if (!artifactLinkPopover) return;
+    const { uri } = artifactLinkPopover;
+    setArtifactLinkPopover(null);
+    open(defaultOpenUriForLocalPath(uri)).catch((error) => {
+      reportArtifactActionFailure("Open failed", error);
+    });
+  }, [artifactLinkPopover, reportArtifactActionFailure]);
+
+  const handleRevealArtifactInExplorer = useCallback(() => {
+    if (!artifactLinkPopover) return;
+    const { uri } = artifactLinkPopover;
+    setArtifactLinkPopover(null);
+    revealPathInExplorer(uri).catch((error) => {
+      reportArtifactActionFailure("Reveal failed", error);
+    });
+  }, [artifactLinkPopover, reportArtifactActionFailure]);
 
   // Resolve CWD from pane/tab static data (metadata CWD handled by PTY monitor internally)
   const paneCwd = activeTab?.cwd ?? pane.cwd;
@@ -520,6 +609,7 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
 
   return (
     <div
+      ref={paneRootRef}
       data-session-id={pane.sessionId}
       data-pane-session-ids={pane.tabs.map((tab) => tab.sessionId).join(" ")}
       data-dnd-workspace-id={workspaceId}
@@ -631,6 +721,7 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
                 agentKind={savedAgentSession?.kind ?? activeTab.agentKind ?? activeTabMetadataAgentKind}
                 onZoomToggle={handleZoomToggle}
                 onUrlClick={handleUrlClick}
+                onArtifactLinkClick={handleArtifactLinkClick}
                 cwd={activeTab.cwd ?? paneCwd}
                 initialReplay={savedAgentSession ? undefined : activeTab.terminalSnapshot}
                 launchEnv={launchEnv}
@@ -646,6 +737,80 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
           )}
         </div>
       )}
+      {artifactLinkPopover && (
+        <div
+          ref={artifactLinkPopoverRef}
+          style={artifactLinkPopoverStyle(artifactLinkPopover)}
+          onMouseDown={(event) => event.stopPropagation()}
+        >
+          <button
+            type="button"
+            className="pane-action-btn"
+            title="既定のアプリで開く"
+            aria-label="既定のアプリで開く"
+            onClick={handleOpenArtifactExternally}
+            style={artifactLinkPopoverButtonStyle}
+          >
+            <ExternalLinkIcon />
+          </button>
+          <button
+            type="button"
+            className="pane-action-btn"
+            title="エクスプローラーで表示"
+            aria-label="エクスプローラーで表示"
+            onClick={handleRevealArtifactInExplorer}
+            style={artifactLinkPopoverButtonStyle}
+          >
+            <FolderRevealIcon />
+          </button>
+        </div>
+      )}
     </div>
   );
 });
+
+function ExternalLinkIcon() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M15 3h6v6"></path>
+      <path d="M10 14 21 3"></path>
+      <path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5"></path>
+    </svg>
+  );
+}
+
+function FolderRevealIcon() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+      <path d="M12 11v6"></path>
+      <path d="m9 14 3 3 3-3"></path>
+    </svg>
+  );
+}
+
+function artifactLinkPopoverStyle(popover: ArtifactLinkPopoverState): CSSProperties {
+  return {
+    position: "absolute",
+    left: popover.x,
+    top: popover.y,
+    zIndex: 120,
+    background: "var(--cmux-popover)",
+    border: "1px solid var(--cmux-border)",
+    borderRadius: 6,
+    padding: 4,
+    display: "flex",
+    gap: 4,
+    boxShadow: "var(--cmux-shadow-popover)",
+    color: "var(--cmux-text)",
+  };
+}
+
+const artifactLinkPopoverButtonStyle: CSSProperties = {
+  width: 22,
+  height: 22,
+  padding: 0,
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+};

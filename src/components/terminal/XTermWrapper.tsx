@@ -100,6 +100,7 @@ interface XTermWrapperProps {
   fontFamily?: string;
   onZoomToggle?: () => void;
   onUrlClick?: (url: string) => void;
+  onArtifactLinkClick?: (uri: string, screenPos: { x: number; y: number }) => void;
   cwd?: string;
   launchEnv?: Record<string, string>;
   initialReplay?: string[];
@@ -744,6 +745,7 @@ export default memo(function XTermWrapper({
   fontFamily,
   onZoomToggle,
   onUrlClick,
+  onArtifactLinkClick,
   cwd,
   launchEnv,
   initialReplay,
@@ -1810,8 +1812,10 @@ export default memo(function XTermWrapper({
           open(uri).catch(err => console.error("Failed to open URL:", err));
         }
       }, { urlRegex: HTTP_LINK_REGEX }));
-      registerArtifactLinkProvider(term, sessionId, (uri) => {
-        if (onUrlClick) {
+      registerArtifactLinkProvider(term, sessionId, (uri, event) => {
+        if (onArtifactLinkClick) {
+          onArtifactLinkClick(uri, { x: event.clientX, y: event.clientY });
+        } else if (onUrlClick) {
           onUrlClick(uri);
         } else {
           open(uri).catch(err => console.error("Failed to open local artifact:", err));

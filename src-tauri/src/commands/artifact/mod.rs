@@ -324,7 +324,7 @@ fn artifact_path_from_decoded_uri(value: &str) -> PathBuf {
     }
 }
 
-fn artifact_path_from_uri(uri: &str) -> Result<PathBuf, String> {
+pub(crate) fn artifact_path_from_uri(uri: &str) -> Result<PathBuf, String> {
     let mut value = uri
         .trim()
         .trim_end_matches(['.', ',', ';', ':', ')', ']', '}', '+', '＋']);
