@@ -12,12 +12,17 @@ interface SettingsState {
   crsmShowCodex: boolean;
   crsmShowClaudeCodex: boolean;
   hideSessionsWithoutUserMessages: boolean;
+  // Pane tab bar "Split down" (add a row) button. Defaults false —
+  // column splits are the common flow and the row-split button was
+  // mostly a misclick target.
+  showSplitDownButton: boolean;
   setNotificationsEnabled: (v: boolean) => void;
   setNotificationSoundEnabled: (v: boolean) => void;
   setCrsmShowClaude: (v: boolean) => void;
   setCrsmShowCodex: (v: boolean) => void;
   setCrsmShowClaudeCodex: (v: boolean) => void;
   setHideSessionsWithoutUserMessages: (v: boolean) => void;
+  setShowSplitDownButton: (v: boolean) => void;
 }
 
 export const useSettingsStore = create<SettingsState>()(
@@ -29,12 +34,14 @@ export const useSettingsStore = create<SettingsState>()(
       crsmShowCodex: true,
       crsmShowClaudeCodex: true,
       hideSessionsWithoutUserMessages: true,
+      showSplitDownButton: false,
       setNotificationsEnabled: (v) => set({ notificationsEnabled: v }),
       setNotificationSoundEnabled: (v) => set({ notificationSoundEnabled: v }),
       setCrsmShowClaude: (v) => set({ crsmShowClaude: v }),
       setCrsmShowCodex: (v) => set({ crsmShowCodex: v }),
       setCrsmShowClaudeCodex: (v) => set({ crsmShowClaudeCodex: v }),
       setHideSessionsWithoutUserMessages: (v) => set({ hideSessionsWithoutUserMessages: v }),
+      setShowSplitDownButton: (v) => set({ showSplitDownButton: v }),
     }),
     { name: "mycmux-settings" },
   ),

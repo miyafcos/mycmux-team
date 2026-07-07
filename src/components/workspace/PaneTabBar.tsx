@@ -8,6 +8,7 @@ import { deriveEffectiveStatus, type EffectiveStatus } from "../../lib/notificat
 import { usePaneDragSource } from "../../hooks/usePaneDragSource";
 import { focusController } from "../../lib/focusController";
 import { useWorkspaceLayoutStore } from "../../stores/workspaceLayoutStore";
+import { useSettingsStore } from "../../stores/settingsStore";
 
 interface PaneTabBarProps {
   pane: Pane;
@@ -197,6 +198,7 @@ export default memo(function PaneTabBar({
   onRemoveTab,
   onSelectTab,
 }: PaneTabBarProps) {
+  const showSplitDownButton = useSettingsStore((s) => s.showSplitDownButton);
   const tabMetadata = usePaneMetadataStore(useShallow((s) =>
     pane.tabs.map((tab) => s.metadata[tab.sessionId]),
   ));
@@ -562,7 +564,7 @@ export default memo(function PaneTabBar({
             <SplitRightIcon />
           </button>
         )}
-        {onSplitDown && (
+        {onSplitDown && showSplitDownButton && (
           <button className="pane-action-btn" onClick={onSplitDown} title="Split down">
             <SplitDownIcon />
           </button>

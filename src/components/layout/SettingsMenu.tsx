@@ -42,6 +42,8 @@ export default function SettingsMenu({
   const setNotificationsEnabled = useSettingsStore((s) => s.setNotificationsEnabled);
   const notificationSoundEnabled = useSettingsStore((s) => s.notificationSoundEnabled);
   const setNotificationSoundEnabled = useSettingsStore((s) => s.setNotificationSoundEnabled);
+  const showSplitDownButton = useSettingsStore((s) => s.showSplitDownButton);
+  const setShowSplitDownButton = useSettingsStore((s) => s.setShowSplitDownButton);
 
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>("idle");
   const [updateMsg, setUpdateMsg] = useState<string>("");
@@ -272,6 +274,28 @@ export default function SettingsMenu({
       </label>
 
       <div style={{ height: 1, background: "var(--cmux-border)" }} />
+
+      <label
+        style={{
+          padding: "10px 12px",
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          fontSize: 12,
+          color: "var(--cmux-text)",
+          cursor: "pointer",
+        }}
+      >
+        <input
+          type="checkbox"
+          checked={showSplitDownButton}
+          onChange={(e) => setShowSplitDownButton(e.target.checked)}
+        />
+        <span>Split down ボタン（下に分割）を表示</span>
+      </label>
+
+      <div style={{ height: 1, background: "var(--cmux-border)" }} />
+
 
       <div style={{ padding: "8px 12px 0", fontSize: 11, color: "var(--cmux-text-dim, rgba(255,255,255,0.55))" }}>
         現在のバージョン: {currentVersion}
