@@ -600,6 +600,55 @@ fn get_foreground_process_name(sys: &System, foreground_pid: Pid) -> Option<Stri
         .map(|p| p.name().to_string_lossy().to_string())
 }
 
+/// Run `git rev-parse --abbrev-ref HEAD` in `cwd` with a hard timeout.
+/// The child is killed on timeout so a hung git (e.g. on a slow network
+/// filesystem) does not leak a process + thread per CWD change.
+fn git_branch_with_timeout(cwd: &str, timeout: Duration) -> Option<String> {
+    let mut git_cmd = Command::new("git");
+    git_cmd
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .current_dir(cwd)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+    #[cfg(target_os = "windows")]
+    git_cmd.creation_flags(CREATE_NO_WINDOW);
+    let mut child = git_cmd.spawn().ok()?;
+    let started_at = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let mut stdout = String::new();
+                if let Some(mut pipe) = child.stdout.take() {
+                    use std::io::Read;
+                    let _ = pipe.read_to_string(&mut stdout);
+                }
+                return if status.success() {
+                    Some(stdout.trim().to_string())
+                } else {
+                    None
+                };
+            }
+            Ok(None) => {
+                if started_at.elapsed() >= timeout {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    #[cfg(debug_assertions)]
+                    {
+                        eprintln!("[monitor] git rev-parse timed out for {}", cwd);
+                    }
+                    return None;
+                }
+                thread::sleep(Duration::from_millis(25));
+            }
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+}
+
 pub fn start_monitor(
     app_handle: AppHandle,
     manager: Arc<SessionManager>,
@@ -657,37 +706,7 @@ pub fn start_monitor(
                     };
 
                     let git_branch = if needs_git_check {
-                        // Run git with a 2-second timeout to avoid blocking on slow filesystems
-                        let cwd_clone = cwd.clone();
-                        let (tx, rx) = std::sync::mpsc::channel();
-                        thread::spawn(move || {
-                            let mut git_cmd = Command::new("git");
-                            git_cmd
-                                .args(["rev-parse", "--abbrev-ref", "HEAD"])
-                                .current_dir(&cwd_clone)
-                                .stdout(std::process::Stdio::piped())
-                                .stderr(std::process::Stdio::null());
-                            #[cfg(target_os = "windows")]
-                            git_cmd.creation_flags(CREATE_NO_WINDOW);
-                            let result = git_cmd.output().ok().and_then(|output| {
-                                if output.status.success() {
-                                    Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
-                                } else {
-                                    None
-                                }
-                            });
-                            let _ = tx.send(result);
-                        });
-                        match rx.recv_timeout(Duration::from_secs(2)) {
-                            Ok(result) => result,
-                            Err(_) => {
-                                #[cfg(debug_assertions)]
-                                {
-                                    eprintln!("[monitor] git rev-parse timed out for {}", cwd);
-                                }
-                                None
-                            }
-                        }
+                        git_branch_with_timeout(&cwd, Duration::from_secs(2))
                     } else {
                         last_metadata
                             .get(&session_id)

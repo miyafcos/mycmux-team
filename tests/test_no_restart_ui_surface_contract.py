@@ -98,7 +98,6 @@ def test_terminal_search_notifications_and_settings_surfaces_remain_wired() -> N
             "remoteInfo.connected_clients.length === 0",
             "const notificationsEnabled = useSettingsStore((s) => s.notificationsEnabled);",
             "const setNotificationSoundEnabled = useSettingsStore((s) => s.setNotificationSoundEnabled);",
-            "Terminal renderer (stable DOM)",
             "setNotificationSoundEnabled(e.target.checked)",
         ],
     )

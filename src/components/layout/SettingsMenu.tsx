@@ -189,33 +189,6 @@ export default function SettingsMenu({
 
       <div style={{ height: 1, background: "var(--cmux-border)" }} />
 
-      <label
-        style={{
-          padding: "10px 12px",
-          display: "flex",
-          alignItems: "flex-start",
-          gap: 8,
-          fontSize: 12,
-          color: "var(--cmux-text)",
-          cursor: "default",
-        }}
-      >
-        <input
-          type="checkbox"
-          checked={false}
-          disabled
-          style={{ marginTop: 2 }}
-        />
-        <span style={{ display: "flex", flexDirection: "column", gap: 3, minWidth: 0 }}>
-          <span>Terminal renderer (stable DOM)</span>
-          <span style={{ fontSize: 11, lineHeight: 1.35, color: "var(--cmux-text-dim, rgba(255,255,255,0.55))" }}>
-            WebGL is disabled to prevent missing text in multi-pane Windows sessions.
-          </span>
-        </span>
-      </label>
-
-      <div style={{ height: 1, background: "var(--cmux-border)" }} />
-
       {onOpenCrsmPalette && (
         <>
           <button

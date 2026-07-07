@@ -466,14 +466,6 @@ pub fn load(app_handle: &tauri::AppHandle) -> Result<PersistentData, String> {
     load_from_path(&path)
 }
 
-pub fn save(app_handle: &tauri::AppHandle, data: &PersistentData) -> Result<(), String> {
-    let _guard = save_lock()
-        .lock()
-        .map_err(|e| format!("Failed to lock data file: {e}"))?;
-    let _process_guard = interprocess_data_lock::acquire()?;
-    save_unlocked(app_handle, data)
-}
-
 pub fn update<F>(app_handle: &tauri::AppHandle, updater: F) -> Result<(), String>
 where
     F: FnOnce(&mut PersistentData),
@@ -486,11 +478,6 @@ where
     let mut data = load_from_path(&path)?;
     updater(&mut data);
     save_to_path(&path, &data)
-}
-
-fn save_unlocked(app_handle: &tauri::AppHandle, data: &PersistentData) -> Result<(), String> {
-    let path = data_path(app_handle)?;
-    save_to_path(&path, data)
 }
 
 #[cfg(test)]
