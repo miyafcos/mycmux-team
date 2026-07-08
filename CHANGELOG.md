@@ -4,6 +4,18 @@
 
 ---
 
+## [Unreleased]
+
+personal v0.9.4〜v0.10.0 の共通修正を cherry-pick 運用で反映。
+
+- Feat: Split right ボタン（右に分割）を設定でオンオフ可能に (既定 ON)。split/zoom ボタンの閾値緩和自体は lite に対応する container-query ベースの狭幅ペイン折りたたみ機能が無いため未適用 (対象外)。
+- Fix: アクティブタブを閉じた際に termCache へリークしていた不具合を修正 (evicted-while-mounted マークで unmount 時に確実に dispose)。killSession 失敗も console.warn で可視化。回帰テスト5件追加。
+- Perf: pty monitor の git ブランチ検出を4スレッドのワーカープールへ退避し、監視 tick が git 子プロセスの遅延でブロックされないように。`resolve_local_path_link` はルート要素を先にチェックして実在しないパスを1回の stat で棄却。
+- Fix(security): リモートサーバーの既定 bind を `127.0.0.1` に変更 (LAN公開は設定でオプトイン、Settings → Remote Access)。`RemoteSessionManager::kill_all` を quit_app / メインウィンドウ破棄時に配線。IP/Tailscale 検出は 2 秒タイムアウト付き非同期化。socket ブリッジの待受は 30 秒でタイムアウトし `pending_requests` を確実に解放。
+- Fix(security): remote `/qr` エンドポイントに `?token=` 必須化 (`/api/state` と同様)。未認証での QR トークン漏洩を防止。
+- CI: release workflow に test job (`tsc` / `vitest` / `cargo test --release` / `pytest`) を追加し `build-lite` の前提条件に。`scripts/normalize-updater-feed.ps1` を導入し、tauri-action 公開後に latest.json の `windows-x86_64` フォールバックキーを `windows-x86_64-nsis` と一致させて再アップロード (MSI/NSIS の混在インストール事故防止)。契約テスト2本 (`test_updater_feed_contract.py` / `test_version_consistency.py`) + fixture を追加。
+- Fix: `package-lock.json` のバージョンフィールドが `0.9.0-lite.1` のまま stale していたのを `0.9.4-lite.1` に同期 (新設のバージョン一貫性テストが検出)。
+
 ## [0.9.4-lite.1] - 2026-07-08
 
 personal v0.9.2〜v0.9.4 の機能を同期 (buddy / Remote など personal 専用要素は除外)。
