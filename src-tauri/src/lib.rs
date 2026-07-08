@@ -90,6 +90,62 @@ fn install_launcher_script() -> Result<(), String> {
     Ok(())
 }
 
+/// R-2: runtime safety net for the v0.9.1 dual-install incident, where an
+/// NSIS build got absorbed into an MSI install and landed per-machine in
+/// `%ProgramFiles%`, silently orphaning the running per-user
+/// (`%LOCALAPPDATA%`) copy from auto-updates. The feed/build side was fixed
+/// separately; this only detects the symptom at startup and warns without
+/// blocking launch. Uses only `std::env::var` and the already-vendored
+/// `dirs` crate (no new dependency).
+fn warn_if_dual_install(app_handle: &tauri::AppHandle) {
+    #[cfg(target_os = "windows")]
+    {
+        use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+
+        let Ok(program_files) = std::env::var("ProgramFiles") else {
+            return;
+        };
+        let Some(local_app_data) = dirs::data_local_dir() else {
+            return;
+        };
+
+        let per_machine = std::path::PathBuf::from(program_files)
+            .join("mycmux")
+            .join("mycmux.exe");
+        let per_user = local_app_data.join("mycmux").join("mycmux.exe");
+
+        if !per_machine.is_file() || !per_user.is_file() {
+            return;
+        }
+
+        eprintln!(
+            "[dual-install] detected per-machine ({}) and per-user ({}) installs",
+            per_machine.display(),
+            per_user.display()
+        );
+
+        // Non-blocking: `show` returns immediately and invokes the callback
+        // asynchronously once the user dismisses the dialog, so startup is
+        // never held up waiting for it.
+        app_handle
+            .dialog()
+            .message(
+                "Two installations of mycmux were detected: one per-machine \
+                 (in Program Files) and one per-user (in AppData). The \
+                 per-machine copy can prevent auto-updates from reaching the \
+                 running app. Uninstall the Program Files copy via Windows \
+                 Settings > Apps.",
+            )
+            .title("mycmux: duplicate installation detected")
+            .kind(MessageDialogKind::Warning)
+            .show(|_| {});
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = app_handle;
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     std::panic::set_hook(Box::new(|info| {
@@ -206,6 +262,7 @@ pub fn run() {
             if let Err(err) = install_launcher_script() {
                 eprintln!("[launcher] failed to install launcher scripts: {err}");
             }
+            warn_if_dual_install(&app_handle);
             let ms = state.metadata_store.clone();
             pty::monitor::start_monitor(
                 app_handle.clone(),
