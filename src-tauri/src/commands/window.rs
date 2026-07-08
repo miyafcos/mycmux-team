@@ -1,4 +1,5 @@
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 use tauri::{AppHandle, Manager, State};
 
 #[cfg(target_os = "windows")]
@@ -60,8 +61,13 @@ pub fn reveal_main_window(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn quit_app(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+pub fn quit_app(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    remote_sessions: State<'_, Arc<crate::remote::session::RemoteSessionManager>>,
+) -> Result<(), String> {
     state.session_manager.kill_all();
+    remote_sessions.kill_all();
     app.exit(0);
     Ok(())
 }

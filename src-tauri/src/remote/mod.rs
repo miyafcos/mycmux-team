@@ -100,7 +100,7 @@ impl RemoteControl {
 
     pub async fn info(&self) -> RemoteInfo {
         let token = self.current_token().await;
-        let ip = qr::local_ip().unwrap_or_else(|| "localhost".to_string());
+        let ip = qr::local_ip().await.unwrap_or_else(|| "localhost".to_string());
         let url = qr::connection_url(&ip, self.port, &token);
         let mut connected_clients: Vec<RemoteClientSnapshot> = self
             .clients
@@ -163,7 +163,7 @@ fn token_suffix(token: &str) -> String {
 /// Shared state for the remote server.
 pub struct RemoteState {
     pub control: Arc<RemoteControl>,
-    pub sessions: RemoteSessionManager,
+    pub sessions: Arc<RemoteSessionManager>,
     pub app_session_manager: Arc<crate::pty::manager::SessionManager>,
     pub metadata_store: crate::pty::monitor::MetadataStore,
     pub app_handle: tauri::AppHandle,
@@ -175,18 +175,26 @@ pub struct RemoteState {
 struct ClientAssets;
 
 /// Start the remote WebSocket server on a background tokio task.
+///
+/// `bind_all` selects the listen address: `true` binds `0.0.0.0` (reachable
+/// from the LAN/Tailscale, matching pre-S-2 behavior), `false` (the default)
+/// binds `127.0.0.1` only. This is read once at startup from persisted
+/// settings (`AppSettings::remote_bind_all`) — changes take effect on the
+/// next app restart.
 pub fn start_remote_server(
     app: tauri::AppHandle,
     session_manager: Arc<crate::pty::manager::SessionManager>,
     metadata_store: crate::pty::monitor::MetadataStore,
     control: Arc<RemoteControl>,
+    sessions: Arc<RemoteSessionManager>,
+    bind_all: bool,
 ) {
     tauri::async_runtime::spawn(async move {
         let port = control.port();
 
         let state = Arc::new(RemoteState {
             control: control.clone(),
-            sessions: RemoteSessionManager::new(),
+            sessions,
             app_session_manager: session_manager,
             metadata_store,
             app_handle: app,
@@ -217,7 +225,7 @@ pub fn start_remote_server(
         #[cfg(debug_assertions)]
         {
             // Print connection info + QR (prefer Tailscale IP for anywhere access)
-            if let Some(ip) = qr::local_ip() {
+            if let Some(ip) = qr::local_ip().await {
                 let token = state.control.current_token().await;
                 let suffix = token_suffix(&token);
                 let via = if ip.starts_with("100.") {
@@ -234,7 +242,10 @@ pub fn start_remote_server(
             }
         }
 
-        let addr = format!("0.0.0.0:{port}");
+        // S-2: default to loopback-only; only bind 0.0.0.0 (LAN/Tailscale
+        // reachable) when the user has opted in via persisted settings.
+        let bind_host = if bind_all { "0.0.0.0" } else { "127.0.0.1" };
+        let addr = format!("{bind_host}:{port}");
         #[cfg(debug_assertions)]
         {
             println!("[remote] Listening on {addr}");
@@ -271,6 +282,26 @@ pub async fn get_remote_info(
     control: tauri::State<'_, Arc<RemoteControl>>,
 ) -> Result<RemoteInfo, String> {
     Ok(control.info().await)
+}
+
+/// Read the persisted "bind remote to LAN" preference
+/// (`AppSettings::remote_bind_all`). Defaults to `false` (loopback-only).
+/// The running server's actual bind address is fixed at startup — this only
+/// reports the setting that will take effect on next launch.
+#[tauri::command(async)]
+pub fn get_remote_bind_all(app_handle: tauri::AppHandle) -> Result<bool, String> {
+    Ok(crate::db::storage::load(&app_handle)?.settings.remote_bind_all)
+}
+
+/// Persist the "bind remote to LAN" preference. Mirrors the
+/// `set_buddy_enabled`/`db::storage` wiring pattern used elsewhere in the
+/// app. Takes effect on the next app restart (the server is already bound).
+#[tauri::command(async)]
+pub fn set_remote_bind_all(app_handle: tauri::AppHandle, enabled: bool) -> Result<bool, String> {
+    crate::db::storage::update(&app_handle, |data| {
+        data.settings.remote_bind_all = enabled;
+    })?;
+    Ok(enabled)
 }
 
 #[tauri::command]
@@ -528,7 +559,7 @@ async fn serve_qr(
 ) -> impl axum::response::IntoResponse {
     let port = state.control.port();
     let token = state.control.current_token().await;
-    let ip = qr::local_ip().unwrap_or_else(|| "localhost".to_string());
+    let ip = qr::local_ip().await.unwrap_or_else(|| "localhost".to_string());
     let url = qr::connection_url(&ip, port, &token);
     let svg = qr::svg_qr(&url);
 

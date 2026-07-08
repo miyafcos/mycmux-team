@@ -127,6 +127,7 @@ pub fn run() {
 
     let metadata_store = pty::monitor::new_metadata_store();
     let remote_control = Arc::new(remote::RemoteControl::new());
+    let remote_sessions = Arc::new(remote::session::RemoteSessionManager::new());
 
     let state = AppState {
         session_manager: Arc::new(SessionManager::new()),
@@ -146,6 +147,7 @@ pub fn run() {
             next_id: std::sync::atomic::AtomicUsize::new(1),
         })
         .manage(remote_control)
+        .manage(remote_sessions)
         .invoke_handler(tauri::generate_handler![
             commands::terminal::create_session,
             commands::terminal::write_to_session,
@@ -190,6 +192,8 @@ pub fn run() {
             commands::usage::get_usage_summary,
             remote::get_remote_info,
             remote::rotate_remote_token,
+            remote::get_remote_bind_all,
+            remote::set_remote_bind_all,
             socket::socket_response,
         ])
         .setup(|#[allow(unused)] app| {
@@ -225,11 +229,23 @@ pub fn run() {
 
             socket::start_socket_listener(app_handle.clone());
             let remote_control = app.state::<Arc<remote::RemoteControl>>().inner().clone();
+            let remote_sessions = app
+                .state::<Arc<remote::session::RemoteSessionManager>>()
+                .inner()
+                .clone();
+            // S-2: read the persisted LAN-bind preference once at startup;
+            // changes to this setting take effect on next launch (see
+            // remote::set_remote_bind_all).
+            let remote_bind_all = db::storage::load(&app_handle)
+                .map(|data| data.settings.remote_bind_all)
+                .unwrap_or(false);
             remote::start_remote_server(
                 app_handle.clone(),
                 state.session_manager.clone(),
                 ms,
                 remote_control,
+                remote_sessions.clone(),
+                remote_bind_all,
             );
 
             // Kill all PTY sessions when the main window closes
@@ -252,9 +268,11 @@ pub fn run() {
                     let _ = main_window.show();
                 }
 
+                let remote_sessions_for_close = remote_sessions.clone();
                 main_window.on_window_event(move |event| {
                     if let tauri::WindowEvent::Destroyed = event {
                         mgr.kill_all();
+                        remote_sessions_for_close.kill_all();
                     }
                 });
             }

@@ -307,6 +307,19 @@ export async function rotateRemoteToken(): Promise<RemoteInfo> {
   return invoke("rotate_remote_token");
 }
 
+/**
+ * Whether the remote terminal server should bind 0.0.0.0 (LAN/Tailscale
+ * reachable) instead of 127.0.0.1-only. Persisted; a change takes effect on
+ * the next app restart.
+ */
+export async function getRemoteBindAll(): Promise<boolean> {
+  return invoke("get_remote_bind_all");
+}
+
+export async function setRemoteBindAll(enabled: boolean): Promise<boolean> {
+  return invoke("set_remote_bind_all", { enabled });
+}
+
 export interface AgentSessionMapping {
   agent_kind?: AgentSessionKind | null;
   session_id: string;

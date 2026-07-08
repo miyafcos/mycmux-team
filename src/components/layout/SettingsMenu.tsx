@@ -3,6 +3,7 @@ import { getVersion } from "@tauri-apps/api/app";
 import { useSettingsStore } from "../../stores/settingsStore";
 import { runUpdateCheck, type UpdatePhase } from "../../lib/forcedAutoUpdater";
 import { getRemoteInfo, rotateRemoteToken, type RemoteInfo } from "../../lib/ipc";
+import { getRemoteBindAll, setRemoteBindAll } from "../../lib/ipc";
 
 type UpdateStatus = "idle" | "checking" | "latest" | "downloading" | "ready" | "error";
 
@@ -54,6 +55,8 @@ export default function SettingsMenu({
   const [remoteInfo, setRemoteInfo] = useState<RemoteInfo | null>(null);
   const [remoteLoading, setRemoteLoading] = useState(false);
   const [remoteMsg, setRemoteMsg] = useState<string>("");
+  const [remoteBindAll, setRemoteBindAllValue] = useState(false);
+  const [remoteBindAllLoading, setRemoteBindAllLoading] = useState(false);
 
   const loadRemoteInfo = async () => {
     setRemoteLoading(true);
@@ -71,6 +74,29 @@ export default function SettingsMenu({
   const handleOpenRemote = async () => {
     setRemoteOpen(true);
     await loadRemoteInfo();
+    try {
+      setRemoteBindAllValue(await getRemoteBindAll());
+    } catch (e) {
+      console.error("Failed to load remote bind-all setting", e);
+    }
+  };
+
+  const handleToggleRemoteBindAll = async (checked: boolean) => {
+    setRemoteBindAllLoading(true);
+    try {
+      const applied = await setRemoteBindAll(checked);
+      setRemoteBindAllValue(applied);
+      setRemoteMsg(
+        applied
+          ? "LAN公開をONにしました。次回アプリ再起動後に反映されます。"
+          : "LAN公開をOFFにしました。次回アプリ再起動後に反映されます。"
+      );
+    } catch (e) {
+      console.error("Failed to save remote bind-all setting", e);
+      setRemoteMsg("設定の保存に失敗しました");
+    } finally {
+      setRemoteBindAllLoading(false);
+    }
   };
 
   const handleRotateRemoteToken = async () => {
@@ -391,6 +417,30 @@ export default function SettingsMenu({
               >
                 閉じる
               </button>
+            </div>
+
+            <label
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                fontSize: 12,
+                color: "var(--cmux-text)",
+                cursor: remoteBindAllLoading ? "wait" : "pointer",
+                marginBottom: 4,
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={remoteBindAll}
+                disabled={remoteBindAllLoading}
+                onChange={(e) => handleToggleRemoteBindAll(e.target.checked)}
+              />
+              <span>リモートを LAN に公開する（0.0.0.0 で待受）</span>
+            </label>
+            <div style={{ fontSize: 11, color: "var(--cmux-text-dim)", marginBottom: 10 }}>
+              OFF（既定）では 127.0.0.1 のみで待受し、同一PCからしか接続できません。ON にすると同じ
+              LAN / Tailscale 上の iPhone から接続できます。変更は次回アプリ再起動後に反映されます。
             </div>
 
             {remoteLoading && <div style={{ fontSize: 12, color: "var(--cmux-text-dim)", marginBottom: 10 }}>読み込み中…</div>}

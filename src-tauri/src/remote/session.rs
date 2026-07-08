@@ -180,7 +180,9 @@ impl RemoteSessionManager {
         self.sessions.get(id)
     }
 
-    #[allow(dead_code)] // Reserved for graceful shutdown
+    /// Kill every active remote PTY session. Called on app shutdown (quit /
+    /// main window destroyed) so remote-spawned child processes do not
+    /// outlive the app.
     pub fn kill_all(&self) {
         let keys: Vec<String> = self.sessions.iter().map(|e| e.key().clone()).collect();
         for k in keys {

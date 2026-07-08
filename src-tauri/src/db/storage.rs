@@ -169,6 +169,11 @@ pub struct AppSettings {
     /// switch for Phase B.
     #[serde(default = "default_true")]
     pub osc7_tracking_enabled: bool,
+    /// When true, the remote terminal server binds `0.0.0.0` (reachable from
+    /// the LAN/Tailscale). When false (the default), it binds `127.0.0.1`
+    /// only. Read once at startup; a change takes effect on next app launch.
+    #[serde(default)]
+    pub remote_bind_all: bool,
 }
 
 impl Default for AppSettings {
@@ -181,6 +186,7 @@ impl Default for AppSettings {
             keybindings: HashMap::new(),
             dirty_save_mode: true,
             osc7_tracking_enabled: true,
+            remote_bind_all: false,
         }
     }
 }

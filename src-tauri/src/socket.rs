@@ -5,10 +5,17 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
     Arc,
 };
+use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
+
+/// How long to wait for the frontend to answer a bridged socket request
+/// before treating it as unresponsive. Without this bound, a frontend that
+/// never calls `socket_response` (e.g. reloaded mid-request) leaks both the
+/// spawned tokio task and its `pending_requests` entry forever.
+const FRONTEND_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub struct SocketState {
     pub pending_requests: Arc<DashMap<usize, oneshot::Sender<SocketResponse>>>,
@@ -74,8 +81,36 @@ async fn handle_connection(stream: TcpStream, app: AppHandle) {
 
                         let req = SocketRequest { id, cmd, args };
                         if app.emit("socket-request", &req).is_ok() {
-                            // Wait for frontend response
-                            if let Ok(resp) = rx.await {
+                            // Wait for frontend response, bounded so an
+                            // unresponsive frontend cannot leak this task or
+                            // its pending_requests entry forever.
+                            let resp = match tokio::time::timeout(
+                                FRONTEND_RESPONSE_TIMEOUT,
+                                rx,
+                            )
+                            .await
+                            {
+                                Ok(Ok(resp)) => Some(resp),
+                                Ok(Err(_)) => {
+                                    // Sender dropped without a response.
+                                    state.pending_requests.remove(&id);
+                                    Some(SocketResponse {
+                                        id,
+                                        result: None,
+                                        error: Some("Frontend dropped the request".to_string()),
+                                    })
+                                }
+                                Err(_) => {
+                                    // Timed out waiting for the frontend.
+                                    state.pending_requests.remove(&id);
+                                    Some(SocketResponse {
+                                        id,
+                                        result: None,
+                                        error: Some("Frontend response timed out".to_string()),
+                                    })
+                                }
+                            };
+                            if let Some(resp) = resp {
                                 let resp_json = serde_json::to_string(&resp).unwrap_or_default();
                                 let _ = writer.write_all(resp_json.as_bytes()).await;
                                 let _ = writer.write_all(b"\n").await;
