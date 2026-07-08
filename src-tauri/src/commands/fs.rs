@@ -381,7 +381,7 @@ fn reveal_path_in_explorer_path(path: &Path) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
         std::process::Command::new("explorer.exe")
-            .arg(windows_explorer_select_arg(&canonical))
+            .args(windows_explorer_artifact_args(&canonical, canonical.is_dir()))
             .spawn()
             .map_err(|e| format!("failed to launch explorer.exe: {e}"))?;
         return Ok(());
@@ -439,6 +439,15 @@ fn windows_explorer_select_arg(path: &std::path::Path) -> String {
     format!("/select,{}", windows_display_path(path))
 }
 
+#[cfg(target_os = "windows")]
+fn windows_explorer_artifact_args(path: &std::path::Path, is_dir: bool) -> Vec<String> {
+    if is_dir {
+        vec![windows_display_path(path)]
+    } else {
+        vec![windows_explorer_select_arg(path)]
+    }
+}
+
 #[cfg(all(test, target_os = "windows"))]
 mod tests {
     use super::*;
@@ -471,6 +480,30 @@ mod tests {
             r"C:\Users\miyaz\Desktop\sample doc.pdf",
         ));
         assert_eq!(arg, r"/select,C:\Users\miyaz\Desktop\sample doc.pdf");
+    }
+
+    #[test]
+    fn artifact_explorer_args_open_directory_without_select() {
+        let args = windows_explorer_artifact_args(
+            std::path::Path::new(r"C:\Users\miyaz\Desktop\sample folder"),
+            true,
+        );
+        assert_eq!(
+            args,
+            vec![r"C:\Users\miyaz\Desktop\sample folder".to_string()]
+        );
+    }
+
+    #[test]
+    fn artifact_explorer_args_select_file_with_existing_select_form() {
+        let args = windows_explorer_artifact_args(
+            std::path::Path::new(r"C:\Users\miyaz\Desktop\sample doc.pdf"),
+            false,
+        );
+        assert_eq!(
+            args,
+            vec![r"/select,C:\Users\miyaz\Desktop\sample doc.pdf".to_string()]
+        );
     }
 }
 

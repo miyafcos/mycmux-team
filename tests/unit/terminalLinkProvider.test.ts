@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   findLocalFilePathLinks,
   isArtifactPreviewUri,
+  isDirectoryLikeUri,
 } from "../../src/components/terminal/terminalLinkProvider";
 
 describe("terminal local file path links", () => {
@@ -37,6 +38,41 @@ describe("terminal local file path links", () => {
     ]);
   });
 
+  it("matches drive-letter directories with Japanese characters, spaces, and trailing backslash", () => {
+    const directory = "C:\\Users\\miyaz\\エデュ・プラニング合同会社 Dropbox\\エデュ・プラニング間屋口　亨\\事務関係\\日本教材出版\\数学\\2026年\\11月号\\3_一次原稿\\";
+    const links = findLocalFilePathLinks(`folder: ${directory}`);
+
+    expect(links.map((link) => link.text)).toEqual([directory]);
+  });
+
+  it("matches MSYS, file URI, and drive-root directories", () => {
+    const links = findLocalFilePathLinks(
+      "dirs: /c/Users/miyaz/work/ file:///C:/Users/miyaz/work/ C:\\",
+    );
+
+    expect(links.map((link) => link.text)).toEqual([
+      "/c/Users/miyaz/work/",
+      "file:///C:/Users/miyaz/work/",
+      "C:\\",
+    ]);
+  });
+
+  it("stops directory matches at the trailing separator before prose", () => {
+    const links = findLocalFilePathLinks("納品物: C:\\Users\\x\\3_一次原稿\\ です");
+
+    expect(links.map((link) => link.text)).toEqual([
+      "C:\\Users\\x\\3_一次原稿\\",
+    ]);
+  });
+
+  it("keeps file paths preferential over the directory alternative", () => {
+    const links = findLocalFilePathLinks("open C:\\Users\\x\\folder.name\\report.final.txt ");
+
+    expect(links.map((link) => link.text)).toEqual([
+      "C:\\Users\\x\\folder.name\\report.final.txt",
+    ]);
+  });
+
   it("excludes trailing punctuation from matches", () => {
     expect(findLocalFilePathLinks(String.raw`open C:\tmp\report.pdf.`)[0].text).toBe(
       String.raw`C:\tmp\report.pdf`,
@@ -61,5 +97,14 @@ describe("terminal local file path links", () => {
     expect(isArtifactPreviewUri("/c/Users/miyaz/data.csv")).toBe(false);
     expect(isArtifactPreviewUri(String.raw`C:\tmp\note.txt`)).toBe(false);
     expect(isArtifactPreviewUri(String.raw`C:\tmp\image.png`)).toBe(false);
+  });
+
+  it("classifies directory-like URIs by trailing separator", () => {
+    expect(isDirectoryLikeUri("C:\\Users\\miyaz\\work\\")).toBe(true);
+    expect(isDirectoryLikeUri("/c/Users/miyaz/work/")).toBe(true);
+    expect(isDirectoryLikeUri("file:///C:/Users/miyaz/work/")).toBe(true);
+    expect(isDirectoryLikeUri(" C:\\ ")).toBe(true);
+    expect(isDirectoryLikeUri("C:\\Users\\miyaz\\report.pdf")).toBe(false);
+    expect(isDirectoryLikeUri("file:///C:/Users/miyaz/report.pdf")).toBe(false);
   });
 });

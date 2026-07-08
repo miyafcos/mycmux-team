@@ -11,7 +11,7 @@ const GENERIC_FILE_EXTENSION_SUFFIX_PATTERN = String.raw`${GENERIC_FILE_EXTENSIO
 const ARTIFACT_LINK_TERMINATOR_PATTERN = String.raw`(?=$|[\s"'<>+\uFF0B.,!?;:)}\]\uFF08\uFF09\u30FB\u3002\u3001\uFF0C])`;
 const MSYS_DRIVE_PREFIX_PATTERN = String.raw`(?<![A-Za-z0-9._\\/:])\/[A-Za-z]\/`;
 const ARTIFACT_LINK_REGEX = new RegExp(
-  String.raw`(?:file:\/\/\/[^\r\n"'<>+\uFF0B]*?\.(?:${GENERIC_FILE_EXTENSION_SUFFIX_PATTERN})|[A-Za-z]:[\\/](?![\\/])[^\r\n"'<>+\uFF0B]*?\.(?:${GENERIC_FILE_EXTENSION_SUFFIX_PATTERN})|${MSYS_DRIVE_PREFIX_PATTERN}[^\r\n"'<>+\uFF0B]*?\.(?:${GENERIC_FILE_EXTENSION_SUFFIX_PATTERN}))${ARTIFACT_LINK_TERMINATOR_PATTERN}`,
+  String.raw`(?:file:\/\/\/[^\r\n"'<>+\uFF0B]*?\.(?:${GENERIC_FILE_EXTENSION_SUFFIX_PATTERN})|[A-Za-z]:[\\/](?![\\/])[^\r\n"'<>+\uFF0B]*?\.(?:${GENERIC_FILE_EXTENSION_SUFFIX_PATTERN})|${MSYS_DRIVE_PREFIX_PATTERN}[^\r\n"'<>+\uFF0B]*?\.(?:${GENERIC_FILE_EXTENSION_SUFFIX_PATTERN})|file:\/\/\/[^\r\n"'<>+\uFF0B]*?[\\/]|[A-Za-z]:[\\/](?![\\/])(?:[^\r\n"'<>+\uFF0B]*?[\\/])?|${MSYS_DRIVE_PREFIX_PATTERN}[^\r\n"'<>+\uFF0B]*?[\\/])${ARTIFACT_LINK_TERMINATOR_PATTERN}`,
   "gi",
 );
 const COMPLETE_ARTIFACT_EXTENSION_REGEX = new RegExp(
@@ -134,6 +134,11 @@ export function findLocalFilePathLinks(text: string): LocalFilePathLinkMatch[] {
 
 export function isArtifactPreviewUri(uri: string): boolean {
   return PREVIEW_ARTIFACT_EXTENSION_REGEX.test(uri.trim());
+}
+
+export function isDirectoryLikeUri(uri: string): boolean {
+  const trimmed = uri.trim();
+  return /[\\/]$/.test(trimmed) || /^file:\/\/\/.*\/$/i.test(trimmed);
 }
 
 function hasArtifactLinkCandidate(text: string): boolean {

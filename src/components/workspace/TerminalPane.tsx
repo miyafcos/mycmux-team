@@ -24,7 +24,7 @@ import { getAgent, getDefaultAgent } from "../../lib/agents";
 import { killSession, previewArtifactUriForSessionV2 } from "../../lib/ipc";
 import { revealPathInExplorer } from "../../lib/ipc";
 import { evictTerminalCache } from "../terminal/XTermWrapper";
-import { isArtifactPreviewUri } from "../terminal/terminalLinkProvider";
+import { isArtifactPreviewUri, isDirectoryLikeUri } from "../terminal/terminalLinkProvider";
 import { focusController } from "../../lib/focusController";
 import { usePaneDragStore, type PaneDragItem, type PaneDropTarget } from "../../stores/paneDragStore";
 
@@ -517,9 +517,23 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
       });
   }, [openOrReloadHtmlPreviewPane, pane.id, workspaceId]);
 
+  const reportArtifactActionFailure = useCallback((message: string, error: unknown): void => {
+    const detail = `${message}: ${String(error)}`;
+    console.error("[mycmux] artifact action failed", detail);
+    setPreviewActionError(detail);
+  }, []);
+
   const handleArtifactLinkClick = useCallback((uri: string, screenPos: { x: number; y: number }) => {
     if (isArtifactPreviewUri(uri)) {
       handleUrlClick(uri);
+      return;
+    }
+    if (isDirectoryLikeUri(uri)) {
+      setArtifactLinkPopover(null);
+      setPreviewActionError(null);
+      revealPathInExplorer(uri).catch((error) => {
+        reportArtifactActionFailure("Reveal failed", error);
+      });
       return;
     }
     const root = paneRootRef.current;
@@ -534,13 +548,7 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
     const y = Math.max(4, Math.min(screenPos.y - rect.top, Math.max(4, rect.height - popoverHeight - 4)));
     setPreviewActionError(null);
     setArtifactLinkPopover({ uri, x, y });
-  }, [handleUrlClick]);
-
-  const reportArtifactActionFailure = useCallback((message: string, error: unknown): void => {
-    const detail = `${message}: ${String(error)}`;
-    console.error("[mycmux] artifact action failed", detail);
-    setPreviewActionError(detail);
-  }, []);
+  }, [handleUrlClick, reportArtifactActionFailure]);
 
   const handleOpenArtifactExternally = useCallback(() => {
     if (!artifactLinkPopover) return;
