@@ -199,6 +199,7 @@ export default memo(function PaneTabBar({
   onSelectTab,
 }: PaneTabBarProps) {
   const showSplitDownButton = useSettingsStore((s) => s.showSplitDownButton);
+  const showSplitRightButton = useSettingsStore((s) => s.showSplitRightButton);
   const tabMetadata = usePaneMetadataStore(useShallow((s) =>
     pane.tabs.map((tab) => s.metadata[tab.sessionId]),
   ));
@@ -559,7 +560,7 @@ export default memo(function PaneTabBar({
       </button>
       {/* Right: split + zoom + close pane buttons */}
       <div style={{ display: "flex", alignItems: "center", gap: 2, paddingRight: 6, flexShrink: 0 }}>
-        {onSplitRight && (
+        {onSplitRight && showSplitRightButton && (
           <button className="pane-action-btn" onClick={onSplitRight} title="Split right">
             <SplitRightIcon />
           </button>

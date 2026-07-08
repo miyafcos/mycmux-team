@@ -16,6 +16,10 @@ interface SettingsState {
   // column splits are the common flow and the row-split button was
   // mostly a misclick target.
   showSplitDownButton: boolean;
+  // Pane tab bar "Split right" (add a column) button. Defaults true —
+  // column splits are the primary flow, but the button is toggleable
+  // for symmetry with the split-down button.
+  showSplitRightButton: boolean;
   setNotificationsEnabled: (v: boolean) => void;
   setNotificationSoundEnabled: (v: boolean) => void;
   setCrsmShowClaude: (v: boolean) => void;
@@ -23,6 +27,7 @@ interface SettingsState {
   setCrsmShowClaudeCodex: (v: boolean) => void;
   setHideSessionsWithoutUserMessages: (v: boolean) => void;
   setShowSplitDownButton: (v: boolean) => void;
+  setShowSplitRightButton: (v: boolean) => void;
 }
 
 export const useSettingsStore = create<SettingsState>()(
@@ -35,6 +40,7 @@ export const useSettingsStore = create<SettingsState>()(
       crsmShowClaudeCodex: true,
       hideSessionsWithoutUserMessages: true,
       showSplitDownButton: false,
+      showSplitRightButton: true,
       setNotificationsEnabled: (v) => set({ notificationsEnabled: v }),
       setNotificationSoundEnabled: (v) => set({ notificationSoundEnabled: v }),
       setCrsmShowClaude: (v) => set({ crsmShowClaude: v }),
@@ -42,6 +48,7 @@ export const useSettingsStore = create<SettingsState>()(
       setCrsmShowClaudeCodex: (v) => set({ crsmShowClaudeCodex: v }),
       setHideSessionsWithoutUserMessages: (v) => set({ hideSessionsWithoutUserMessages: v }),
       setShowSplitDownButton: (v) => set({ showSplitDownButton: v }),
+      setShowSplitRightButton: (v) => set({ showSplitRightButton: v }),
     }),
     { name: "mycmux-settings" },
   ),

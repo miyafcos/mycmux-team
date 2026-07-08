@@ -44,6 +44,8 @@ export default function SettingsMenu({
   const setNotificationSoundEnabled = useSettingsStore((s) => s.setNotificationSoundEnabled);
   const showSplitDownButton = useSettingsStore((s) => s.showSplitDownButton);
   const setShowSplitDownButton = useSettingsStore((s) => s.setShowSplitDownButton);
+  const showSplitRightButton = useSettingsStore((s) => s.showSplitRightButton);
+  const setShowSplitRightButton = useSettingsStore((s) => s.setShowSplitRightButton);
 
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>("idle");
   const [updateMsg, setUpdateMsg] = useState<string>("");
@@ -278,6 +280,25 @@ export default function SettingsMenu({
       <label
         style={{
           padding: "10px 12px",
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          fontSize: 12,
+          color: "var(--cmux-text)",
+          cursor: "pointer",
+        }}
+      >
+        <input
+          type="checkbox"
+          checked={showSplitRightButton}
+          onChange={(e) => setShowSplitRightButton(e.target.checked)}
+        />
+        <span>Split right ボタン（右に分割）を表示</span>
+      </label>
+
+      <label
+        style={{
+          padding: "0 12px 10px",
           display: "flex",
           alignItems: "center",
           gap: 8,
