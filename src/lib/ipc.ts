@@ -476,6 +476,17 @@ export async function normalizePath(path: string): Promise<string> {
   return invoke("normalize_path", { path });
 }
 
+export interface ResolvedLocalPathLink {
+  existingPrefix: string;
+  isDir: boolean;
+}
+
+export async function resolveLocalPathLinks(
+  candidates: string[],
+): Promise<Array<ResolvedLocalPathLink | null>> {
+  return invoke("resolve_local_path_links", { candidates });
+}
+
 export async function savePinnedRoots(pinnedRoots: PinnedRoot[]): Promise<void> {
   return invoke("save_pinned_roots", { pinnedRoots });
 }

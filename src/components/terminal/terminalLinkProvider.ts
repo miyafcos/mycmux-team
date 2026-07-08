@@ -3,6 +3,7 @@ import {
   getTerminalWriteCounter,
   registerTerminalCacheEvictionCleanup,
 } from "./terminalCache";
+import { resolveLocalPathLinks, type ResolvedLocalPathLink } from "../../lib/ipc";
 
 export const HTTP_LINK_REGEX = /https?:\/\/[^\s"'<>+\uFF0B]+[^\s"'<>+\uFF0B.,!?;:)}\]]/i;
 const ARTIFACT_EXTENSION_PATTERN = String.raw`html?|markdown|md|docx?|docm|dotx?|dotm|xlsx?|xlsm|xlsb|xltx?|xltm|pptx?|pptm|potx?|potm|ppsx?|ppsm`;
@@ -28,6 +29,9 @@ const ARTIFACT_LINK_MAX_SEGMENT_CHARS = 8192;
 const ARTIFACT_LINK_CACHE_MAX_ENTRIES = 64;
 const ARTIFACT_LINK_CANDIDATE_PREFIX_REGEX =
   /(?:file:\/\/\/|[A-Za-z]:[\\/]|(?<![A-Za-z0-9._\\/:])\/[A-Za-z]\/)/i;
+const BARE_LOCAL_PATH_PREFIX_REGEX =
+  /file:\/\/\/|(?<![A-Za-z0-9._\\/:])[A-Za-z]:[\\/]|(?<![A-Za-z0-9._\\/:])\/[A-Za-z]\//gi;
+const BARE_LOCAL_PATH_HARD_STOP_REGEX = /[\r\n"'<>+\uFF0B\uFF08\uFF09\u300C\u300D]/;
 
 type ArtifactLinkPart = {
   text: string;
@@ -41,11 +45,13 @@ export type LocalFilePathLinkMatch = {
   endIndex: number;
 };
 
-const artifactLinkCache = new Map<string, ILink[] | undefined>();
+type ArtifactLinkCacheValue = ILink[] | undefined | Promise<ILink[] | undefined>;
+
+const artifactLinkCache = new Map<string, ArtifactLinkCacheValue>();
 
 registerTerminalCacheEvictionCleanup(forgetArtifactLinkCacheForSession);
 
-function rememberArtifactLinkCache(key: string, value: ILink[] | undefined): void {
+function rememberArtifactLinkCache(key: string, value: ArtifactLinkCacheValue): void {
   if (artifactLinkCache.has(key)) {
     artifactLinkCache.delete(key);
   }
@@ -132,6 +138,46 @@ export function findLocalFilePathLinks(text: string): LocalFilePathLinkMatch[] {
   return matches;
 }
 
+function rangesOverlap(left: LocalFilePathLinkMatch, right: LocalFilePathLinkMatch): boolean {
+  return left.index < right.endIndex && right.index < left.endIndex;
+}
+
+function bareLocalPathCandidateEnd(text: string, start: number, nextStart: number | undefined): number {
+  const limit = nextStart === undefined ? text.length : nextStart;
+  const tail = text.slice(start, limit);
+  const hardStop = tail.search(BARE_LOCAL_PATH_HARD_STOP_REGEX);
+  return hardStop === -1 ? limit : start + hardStop;
+}
+
+export function findBareLocalPathCandidates(
+  text: string,
+  occupiedMatches: LocalFilePathLinkMatch[] = findLocalFilePathLinks(text),
+): LocalFilePathLinkMatch[] {
+  const prefixRegex = new RegExp(BARE_LOCAL_PATH_PREFIX_REGEX.source, BARE_LOCAL_PATH_PREFIX_REGEX.flags);
+  const starts: number[] = [];
+  let match: RegExpExecArray | null;
+  while ((match = prefixRegex.exec(text))) {
+    starts.push(match.index);
+  }
+
+  const candidates: LocalFilePathLinkMatch[] = [];
+  for (let startIndex = 0; startIndex < starts.length; startIndex++) {
+    const index = starts[startIndex];
+    const endIndex = bareLocalPathCandidateEnd(text, index, starts[startIndex + 1]);
+    const textCandidate = text.slice(index, endIndex).trimEnd();
+    const candidate: LocalFilePathLinkMatch = {
+      text: textCandidate,
+      index,
+      endIndex: index + textCandidate.length,
+    };
+    if (candidate.text.length === 0) continue;
+    if (occupiedMatches.some((occupied) => rangesOverlap(candidate, occupied))) continue;
+    if (candidates.some((existing) => rangesOverlap(candidate, existing))) continue;
+    candidates.push(candidate);
+  }
+  return candidates;
+}
+
 export function isArtifactPreviewUri(uri: string): boolean {
   return PREVIEW_ARTIFACT_EXTENSION_REGEX.test(uri.trim());
 }
@@ -170,17 +216,56 @@ function normalizeSoftWrappedArtifactLine(text: string, nextText: string): strin
   return `${trimmed} `;
 }
 
+function activationUriForResolvedLocalPath(
+  existingPrefix: string,
+  resolved: ResolvedLocalPathLink,
+): string {
+  if (!resolved.isDir || /[\\/]$/.test(existingPrefix)) {
+    return existingPrefix;
+  }
+  if (/^[A-Za-z]:[\\/]/.test(existingPrefix)) {
+    return `${existingPrefix}\\`;
+  }
+  return `${existingPrefix}/`;
+}
+
+function createLocalPathLink(
+  term: Terminal,
+  parts: ArtifactLinkPart[],
+  bufferLineNumber: number,
+  match: LocalFilePathLinkMatch,
+  onActivate: (uri: string, event: MouseEvent) => void,
+  activationUri = match.text,
+): ILink | null {
+  const start = mapWrappedStringOffset(term, parts, match.index, false);
+  const end = mapWrappedStringOffset(term, parts, match.endIndex, true);
+  const link: ILink = {
+    range: {
+      start: { x: start.cellX + 1, y: start.lineIndex + 1 },
+      end: { x: Math.max(1, end.cellX), y: end.lineIndex + 1 },
+    },
+    text: match.text,
+    activate: (event) => onActivate(activationUri, event),
+  };
+  return link.range.start.y <= bufferLineNumber && link.range.end.y >= bufferLineNumber ? link : null;
+}
+
+function sortLinksByRange(left: ILink, right: ILink): number {
+  return left.range.start.y - right.range.start.y || left.range.start.x - right.range.start.x;
+}
+
 export function registerArtifactLinkProvider(
   term: Terminal,
   sessionId: string,
   onActivate: (uri: string, event: MouseEvent) => void,
 ) {
-  return term.registerLinkProvider({
+  let disposed = false;
+  const provider = term.registerLinkProvider({
     provideLinks(bufferLineNumber, callback) {
       const buffer = term.buffer.active;
       const targetLineIndex = bufferLineNumber - 1;
       if (targetLineIndex < 0 || targetLineIndex >= buffer.length) {
-        callback(undefined);
+        if (!disposed) callback(undefined);
         return;
       }
 
@@ -207,9 +292,10 @@ export function registerArtifactLinkProvider(
       }
       lastLineIndex = Math.min(buffer.length - 1, lastLineIndex + ARTIFACT_LINK_CONTEXT_LINES);
 
+      const writeCounter = getTerminalWriteCounter(sessionId);
       const cacheKey = [
         sessionId,
-        getTerminalWriteCounter(sessionId),
+        writeCounter,
         bufferLineNumber,
         firstLineIndex,
         lastLineIndex,
@@ -218,7 +304,14 @@ export function registerArtifactLinkProvider(
         buffer.baseY,
       ].join(":");
       if (artifactLinkCache.has(cacheKey)) {
-        callback(artifactLinkCache.get(cacheKey));
+        const cached = artifactLinkCache.get(cacheKey);
+        if (cached instanceof Promise) {
+          cached.then((result) => {
+            if (!disposed) callback(result);
+          });
+        } else if (!disposed) {
+          callback(cached);
+        }
         return;
       }
 
@@ -234,7 +327,7 @@ export function registerArtifactLinkProvider(
       }
       if (!hasCandidate) {
         rememberArtifactLinkCache(cacheKey, undefined);
-        callback(undefined);
+        if (!disposed) callback(undefined);
         return;
       }
 
@@ -287,28 +380,68 @@ export function registerArtifactLinkProvider(
         }
       }
       const text = parts.map((part) => part.text).join("");
-      const regex = new RegExp(ARTIFACT_LINK_REGEX.source, ARTIFACT_LINK_REGEX.flags);
+      const filePathMatches = findLocalFilePathLinks(text);
       const links: ILink[] = [];
-      let match: RegExpExecArray | null;
-      while ((match = regex.exec(text))) {
-        const uri = match[0];
-        const start = mapWrappedStringOffset(term, parts, match.index, false);
-        const end = mapWrappedStringOffset(term, parts, match.index + uri.length, true);
-        const link: ILink = {
-          range: {
-            start: { x: start.cellX + 1, y: start.lineIndex + 1 },
-            end: { x: Math.max(1, end.cellX), y: end.lineIndex + 1 },
-          },
-          text: uri,
-          activate: (event) => onActivate(uri, event),
-        };
-        if (link.range.start.y <= bufferLineNumber && link.range.end.y >= bufferLineNumber) {
+      for (const match of filePathMatches) {
+        const link = createLocalPathLink(term, parts, bufferLineNumber, match, onActivate);
+        if (link) {
           links.push(link);
         }
       }
+      const bareCandidates = findBareLocalPathCandidates(text, filePathMatches);
+      if (bareCandidates.length > 0) {
+        const resultPromise = resolveLocalPathLinks(bareCandidates.map((candidate) => candidate.text))
+          .then((resolvedLinks) => {
+            const merged = [...links];
+            for (let index = 0; index < bareCandidates.length; index++) {
+              const resolved = resolvedLinks[index];
+              if (!resolved || !bareCandidates[index].text.startsWith(resolved.existingPrefix)) continue;
+              const match: LocalFilePathLinkMatch = {
+                text: resolved.existingPrefix,
+                index: bareCandidates[index].index,
+                endIndex: bareCandidates[index].index + resolved.existingPrefix.length,
+              };
+              const link = createLocalPathLink(
+                term,
+                parts,
+                bufferLineNumber,
+                match,
+                onActivate,
+                activationUriForResolvedLocalPath(resolved.existingPrefix, resolved),
+              );
+              if (link) {
+                merged.push(link);
+              }
+            }
+            merged.sort(sortLinksByRange);
+            const result = merged.length > 0 ? merged : undefined;
+            rememberArtifactLinkCache(cacheKey, result);
+            return result;
+          })
+          .catch((error) => {
+            if (import.meta.env.DEV) {
+              console.warn("[mycmux] failed to resolve local path links", error);
+            }
+            const result = links.length > 0 ? links : undefined;
+            rememberArtifactLinkCache(cacheKey, result);
+            return result;
+          });
+        rememberArtifactLinkCache(cacheKey, resultPromise);
+        resultPromise.then((result) => {
+          if (disposed) return;
+          callback(getTerminalWriteCounter(sessionId) === writeCounter ? result : undefined);
+        });
+        return;
+      }
       const result = links.length > 0 ? links : undefined;
       rememberArtifactLinkCache(cacheKey, result);
-      callback(result);
+      if (!disposed) callback(result);
     },
   });
+  return {
+    dispose() {
+      disposed = true;
+      provider.dispose();
+    },
+  };
 }

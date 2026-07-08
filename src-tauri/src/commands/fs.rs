@@ -21,6 +21,13 @@ pub struct FileEntry {
     pub modified: Option<u64>,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolvedLocalPathLink {
+    pub existing_prefix: String,
+    pub is_dir: bool,
+}
+
 const DEFAULT_WALK_EXCLUDES: &[&str] = &[
     ".git",
     "node_modules",
@@ -364,6 +371,111 @@ pub fn open_with_default(path: String) -> Result<(), String> {
 }
 
 #[tauri::command(async)]
+pub async fn resolve_local_path_links(
+    candidates: Vec<String>,
+) -> Vec<Option<ResolvedLocalPathLink>> {
+    let candidate_count = candidates.len();
+    tauri::async_runtime::spawn_blocking(move || {
+        candidates
+            .iter()
+            .map(|candidate| resolve_local_path_link(candidate))
+            .collect()
+    })
+    .await
+    .unwrap_or_else(|_| vec![None; candidate_count])
+}
+
+fn resolve_local_path_link(candidate: &str) -> Option<ResolvedLocalPathLink> {
+    for existing_prefix in local_path_candidate_cut_prefixes(candidate) {
+        if is_bare_local_path_prefix(existing_prefix) {
+            continue;
+        }
+        let Some(metadata) = artifact_path_from_uri(existing_prefix)
+            .ok()
+            .and_then(|path| fs::metadata(path).ok())
+            .or_else(|| local_path_candidate_to_path(existing_prefix).and_then(|path| fs::metadata(path).ok()))
+        else {
+            continue;
+        };
+        if metadata.is_dir() || metadata.is_file() {
+            return Some(ResolvedLocalPathLink {
+                existing_prefix: existing_prefix.to_string(),
+                is_dir: metadata.is_dir(),
+            });
+        }
+    }
+    None
+}
+
+fn local_path_candidate_cut_prefixes(candidate: &str) -> Vec<&str> {
+    let mut prefixes = Vec::new();
+    push_candidate_cut_prefix(&mut prefixes, candidate);
+    for (index, ch) in candidate.char_indices().rev() {
+        if prefixes.len() >= 64 {
+            break;
+        }
+        if is_local_path_boundary_char(ch) {
+            push_candidate_cut_prefix(&mut prefixes, &candidate[..index]);
+        }
+    }
+    prefixes
+}
+
+fn push_candidate_cut_prefix<'a>(prefixes: &mut Vec<&'a str>, candidate: &'a str) {
+    let trimmed = candidate.trim_end_matches(is_local_path_cut_trim_char);
+    if trimmed.is_empty() || prefixes.last().copied() == Some(trimmed) {
+        return;
+    }
+    prefixes.push(trimmed);
+}
+
+fn is_local_path_boundary_char(ch: char) -> bool {
+    matches!(ch, ' ' | '\u{3000}' | '\t' | '、' | '。' | '・')
+}
+
+fn is_local_path_cut_trim_char(ch: char) -> bool {
+    is_local_path_boundary_char(ch)
+        || matches!(ch, '.' | ',' | ';' | ':' | ')' | ']' | '}' | '+' | '＋')
+}
+
+fn is_bare_local_path_prefix(value: &str) -> bool {
+    if let Some(rest) = value.strip_prefix("file:///") {
+        return is_bare_drive_path_prefix(rest);
+    }
+    is_bare_drive_path_prefix(value) || is_bare_msys_drive_prefix(value)
+}
+
+fn is_bare_drive_path_prefix(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() == 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && (bytes[2] == b'/' || bytes[2] == b'\\')
+}
+
+fn is_bare_msys_drive_prefix(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() == 3
+        && bytes[0] == b'/'
+        && bytes[1].is_ascii_alphabetic()
+        && bytes[2] == b'/'
+}
+
+fn local_path_candidate_to_path(value: &str) -> Option<PathBuf> {
+    let mut path = value.trim();
+    if path.is_empty() {
+        return None;
+    }
+    if path.len() >= 7 && path[..7].eq_ignore_ascii_case("file://") {
+        path = &path[7..];
+        if cfg!(windows) && path.starts_with('/') && path.len() > 2 && path.as_bytes()[2] == b':' {
+            path = &path[1..];
+        }
+    }
+    Some(PathBuf::from(posix_drive_to_windows(path)))
+}
+
+#[tauri::command(async)]
 pub async fn reveal_path_in_explorer(uri: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         let path = artifact_path_from_uri(&uri)?;
@@ -451,6 +563,46 @@ fn windows_explorer_artifact_args(path: &std::path::Path, is_dir: bool) -> Vec<S
 #[cfg(all(test, target_os = "windows"))]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    struct TestTempDir {
+        path: PathBuf,
+    }
+
+    impl TestTempDir {
+        fn new() -> Self {
+            let unique = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "mycmux-resolve-local-path-links-{unique}-{}",
+                std::process::id()
+            ));
+            std::fs::create_dir_all(&path).unwrap();
+            Self { path }
+        }
+    }
+
+    impl Drop for TestTempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+
+    fn display_path(path: &Path) -> String {
+        path.to_string_lossy().to_string()
+    }
+
+    fn msys_path(path: &Path) -> String {
+        let value = display_path(path).replace('\\', "/");
+        let bytes = value.as_bytes();
+        if bytes.len() >= 3 && bytes[1] == b':' && bytes[2] == b'/' {
+            format!("/{}{}", value[0..1].to_ascii_lowercase(), &value[2..])
+        } else {
+            value
+        }
+    }
 
     #[test]
     fn explorer_reveal_file_keeps_select_switch_separate_from_path() {
@@ -504,6 +656,75 @@ mod tests {
             args,
             vec![r"/select,C:\Users\miyaz\Desktop\sample doc.pdf".to_string()]
         );
+    }
+
+    #[test]
+    fn resolve_local_path_link_handles_extensionless_dirs_files_and_prose() {
+        let temp = TestTempDir::new();
+        let dir = temp.path.join("3_一次原稿");
+        let spaced_dir = temp.path.join("my folder");
+        let extensionless_file = temp.path.join("artifact without extension");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(&spaced_dir).unwrap();
+        std::fs::write(&extensionless_file, "ok").unwrap();
+
+        let dir_text = display_path(&dir);
+        let spaced_dir_text = display_path(&spaced_dir);
+        let file_text = display_path(&extensionless_file);
+
+        assert_eq!(
+            resolve_local_path_link(&dir_text),
+            Some(ResolvedLocalPathLink {
+                existing_prefix: dir_text.clone(),
+                is_dir: true,
+            })
+        );
+        assert_eq!(
+            resolve_local_path_link(&format!("{spaced_dir_text} を参照")),
+            Some(ResolvedLocalPathLink {
+                existing_prefix: spaced_dir_text.clone(),
+                is_dir: true,
+            })
+        );
+        assert_eq!(
+            resolve_local_path_link(&format!("{dir_text}。")),
+            Some(ResolvedLocalPathLink {
+                existing_prefix: dir_text.clone(),
+                is_dir: true,
+            })
+        );
+        assert_eq!(
+            resolve_local_path_link(&file_text),
+            Some(ResolvedLocalPathLink {
+                existing_prefix: file_text,
+                is_dir: false,
+            })
+        );
+    }
+
+    #[test]
+    fn resolve_local_path_link_rejects_missing_and_bare_prefix_candidates() {
+        let temp = TestTempDir::new();
+        let missing = display_path(&temp.path.join("does not exist"));
+
+        assert_eq!(resolve_local_path_link(&missing), None);
+        assert_eq!(resolve_local_path_link(r"C:\"), None);
+        assert_eq!(resolve_local_path_link("/c/"), None);
+        assert_eq!(resolve_local_path_link("file:///C:/"), None);
+    }
+
+    #[test]
+    fn resolve_local_path_link_accepts_msys_form_and_returns_input_substring() {
+        let temp = TestTempDir::new();
+        let dir = temp.path.join("my folder").join("3_一次原稿");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let candidate = format!("{} を参照", msys_path(&dir));
+        let resolved = resolve_local_path_link(&candidate).unwrap();
+
+        assert!(resolved.is_dir);
+        assert!(candidate.contains(&resolved.existing_prefix));
+        assert_eq!(resolved.existing_prefix, msys_path(&dir));
     }
 }
 

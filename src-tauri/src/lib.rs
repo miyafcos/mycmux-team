@@ -174,6 +174,7 @@ pub fn run() {
             commands::fs::list_directory,
             commands::fs::walk_tree,
             commands::fs::normalize_path,
+            commands::fs::resolve_local_path_links,
             commands::fs::save_pinned_roots,
             commands::fs::watch_root,
             commands::fs::unwatch_root,

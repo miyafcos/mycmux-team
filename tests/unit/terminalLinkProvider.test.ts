@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  findBareLocalPathCandidates,
   findLocalFilePathLinks,
   isArtifactPreviewUri,
   isDirectoryLikeUri,
@@ -39,7 +40,8 @@ describe("terminal local file path links", () => {
   });
 
   it("matches drive-letter directories with Japanese characters, spaces, and trailing backslash", () => {
-    const directory = "C:\\Users\\miyaz\\エデュ・プラニング合同会社 Dropbox\\エデュ・プラニング間屋口　亨\\事務関係\\日本教材出版\\数学\\2026年\\11月号\\3_一次原稿\\";
+    const directory =
+      "C:\\Users\\miyaz\\エデュ・プラニング合同会社 Dropbox\\日本教材出版\\数学\\2026年\\11月号\\3_一次原稿\\";
     const links = findLocalFilePathLinks(`folder: ${directory}`);
 
     expect(links.map((link) => link.text)).toEqual([directory]);
@@ -80,7 +82,7 @@ describe("terminal local file path links", () => {
     expect(findLocalFilePathLinks(String.raw`(C:\tmp\data.csv)`)[0].text).toBe(
       String.raw`C:\tmp\data.csv`,
     );
-    expect(findLocalFilePathLinks(String.raw`path=C:\tmp\note.txt、`)[0].text).toBe(
+    expect(findLocalFilePathLinks(String.raw`path=C:\tmp\note.txt。`)[0].text).toBe(
       String.raw`C:\tmp\note.txt`,
     );
   });
@@ -106,5 +108,38 @@ describe("terminal local file path links", () => {
     expect(isDirectoryLikeUri(" C:\\ ")).toBe(true);
     expect(isDirectoryLikeUri("C:\\Users\\miyaz\\report.pdf")).toBe(false);
     expect(isDirectoryLikeUri("file:///C:/Users/miyaz/report.pdf")).toBe(false);
+  });
+
+  it("extracts bare extension-less candidates with original spans", () => {
+    const text = String.raw`open C:\Users\miyaz\3_一次原稿 を参照`;
+    const candidates = findBareLocalPathCandidates(text);
+
+    expect(candidates).toEqual([
+      {
+        text: String.raw`C:\Users\miyaz\3_一次原稿 を参照`,
+        index: text.indexOf(String.raw`C:\Users`),
+        endIndex: text.length,
+      },
+    ]);
+  });
+
+  it("dedupes bare candidates that overlap existing file and directory matches", () => {
+    const text = String.raw`open C:\tmp\report.final.txt and C:\tmp\folder\ and C:\tmp\extensionless`;
+    const candidates = findBareLocalPathCandidates(text);
+
+    expect(candidates.map((candidate) => candidate.text)).toEqual([
+      String.raw`C:\tmp\extensionless`,
+    ]);
+  });
+
+  it("stops bare candidates at hard terminal delimiters", () => {
+    const text = String.raw`open "C:\tmp\my folder" and <file:///C:/tmp/3_一次原稿> and /c/tmp/noext+suffix`;
+    const candidates = findBareLocalPathCandidates(text);
+
+    expect(candidates.map((candidate) => candidate.text)).toEqual([
+      String.raw`C:\tmp\my folder`,
+      "file:///C:/tmp/3_一次原稿",
+      "/c/tmp/noext",
+    ]);
   });
 });
