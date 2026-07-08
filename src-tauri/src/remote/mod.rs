@@ -554,16 +554,30 @@ async fn api_state(
 }
 
 /// Serve the QR code as SVG.
+///
+/// Requires the same `?token=` query param as `/api/state` — without it this
+/// endpoint would hand a plain-text connection token (embedded in the QR's
+/// URL) to any unauthenticated caller on the LAN/Tailscale network.
 async fn serve_qr(
     axum::extract::State(state): axum::extract::State<Arc<RemoteState>>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> impl axum::response::IntoResponse {
+    let provided = params.get("token").map(|s| s.as_str()).unwrap_or("");
+    if !state.control.validate_token(provided).await {
+        return (axum::http::StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    }
+
     let port = state.control.port();
     let token = state.control.current_token().await;
     let ip = qr::local_ip().await.unwrap_or_else(|| "localhost".to_string());
     let url = qr::connection_url(&ip, port, &token);
     let svg = qr::svg_qr(&url);
 
-    ([(axum::http::header::CONTENT_TYPE, "image/svg+xml")], svg)
+    (
+        [(axum::http::header::CONTENT_TYPE, "image/svg+xml")],
+        svg,
+    )
+        .into_response()
 }
 
 /// Serve embedded static client files (index.html, app.js, style.css, manifest.json).
