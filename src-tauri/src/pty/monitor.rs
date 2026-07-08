@@ -5,7 +5,8 @@ use std::os::windows::process::CommandExt;
 use std::process::Command;
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
-use std::sync::Arc;
+use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -600,6 +601,78 @@ fn get_foreground_process_name(sys: &System, foreground_pid: Pid) -> Option<Stri
         .map(|p| p.name().to_string_lossy().to_string())
 }
 
+/// Number of dedicated worker threads that run `git rev-parse` off the
+/// monitor thread. A small fixed pool bounds concurrent `git` child
+/// processes while still letting several slow CWDs resolve in parallel
+/// instead of serially blocking every session behind them (RS-5).
+const GIT_BRANCH_WORKER_COUNT: usize = 4;
+
+/// A CWD that needs its git branch (re-)resolved.
+struct GitBranchRequest {
+    session_id: String,
+    cwd: String,
+}
+
+/// Result of resolving `GitBranchRequest` on a worker thread. `cwd` is
+/// echoed back so the monitor loop can tell whether the CWD moved on
+/// again while the request was in flight.
+struct GitBranchResult {
+    session_id: String,
+    cwd: String,
+    git_branch: Option<String>,
+}
+
+/// Spawn the fixed-size git-detection worker pool and return the sender used
+/// to submit CWD lookups. All workers pull from the same request queue (a
+/// `Mutex`-guarded `Receiver`, the standard way to fan a single mpsc channel
+/// out to multiple consumers) so bursts of simultaneous CWD changes are
+/// resolved concurrently rather than one-at-a-time on the monitor thread.
+///
+/// Each worker calls `git_branch_with_timeout`, which still owns the
+/// kill+wait guarantee on timeout (R-1, CHANGELOG 0.9.2) — moving the call
+/// off the monitor thread does not change that guarantee, it only changes
+/// which thread blocks for up to `timeout` while enforcing it.
+fn spawn_git_branch_workers(
+    result_tx: mpsc::Sender<GitBranchResult>,
+) -> mpsc::Sender<GitBranchRequest> {
+    let (request_tx, request_rx) = mpsc::channel::<GitBranchRequest>();
+    let request_rx = Arc::new(Mutex::new(request_rx));
+
+    for _ in 0..GIT_BRANCH_WORKER_COUNT {
+        let request_rx = Arc::clone(&request_rx);
+        let result_tx = result_tx.clone();
+        thread::spawn(move || {
+            loop {
+                let request = {
+                    // Only the `recv()` call itself needs the lock; it is
+                    // released again as soon as a request is dequeued (or the
+                    // channel closes), so other idle workers can immediately
+                    // claim the next queued request instead of queueing
+                    // behind this one's git invocation.
+                    let rx = request_rx.lock().unwrap_or_else(|e| e.into_inner());
+                    rx.recv()
+                };
+                let Ok(request) = request else {
+                    // Sender dropped (monitor thread exiting) — stop the worker.
+                    break;
+                };
+                let git_branch = git_branch_with_timeout(&request.cwd, Duration::from_secs(2));
+                let sent = result_tx.send(GitBranchResult {
+                    session_id: request.session_id,
+                    cwd: request.cwd,
+                    git_branch,
+                });
+                if sent.is_err() {
+                    // Receiver dropped — monitor thread is gone, no point continuing.
+                    break;
+                }
+            }
+        });
+    }
+
+    request_tx
+}
+
 /// Run `git rev-parse --abbrev-ref HEAD` in `cwd` with a hard timeout.
 /// The child is killed on timeout so a hung git (e.g. on a slow network
 /// filesystem) does not leak a process + thread per CWD change.
@@ -661,11 +734,41 @@ pub fn start_monitor(
         let mut failed_detected_agent_sessions: HashMap<String, FailedDetectedAgentCacheEntry> =
             HashMap::new();
 
+        // RS-5: git branch detection runs on a dedicated worker pool instead
+        // of inline in this loop. `git_branch_cwd` records the CWD that the
+        // *last applied* git_branch in `last_metadata` corresponds to, kept
+        // separate from `last_metadata`'s own `cwd` field (which is updated
+        // every tick regardless of git status) so a CWD change is never lost
+        // just because a request for it is still in flight — see the
+        // `needs_git_check` comment below. `git_in_flight` prevents queueing
+        // a second request for a session while one is already outstanding.
+        let (git_result_tx, git_result_rx) = mpsc::channel::<GitBranchResult>();
+        let git_request_tx = spawn_git_branch_workers(git_result_tx);
+        let mut git_branch_cwd: HashMap<String, String> = HashMap::new();
+        let mut git_in_flight: HashSet<String> = HashSet::new();
+
         loop {
             // 5s cadence: OSC 7 handles CWD instantly for bash/zsh/fish;
             // sysinfo is now the fallback for cmd.exe / PowerShell and the
             // safety net that fills in git_branch / process_name.
             thread::sleep(Duration::from_secs(5));
+
+            // Drain any git branch lookups that finished since the last tick.
+            // Applying results here (before the per-session pass) means a
+            // session whose lookup just completed uses the fresh branch for
+            // this tick's `changed` comparison instead of the previous 5s
+            // finding out via a second, redundant emit.
+            while let Ok(result) = git_result_rx.try_recv() {
+                git_in_flight.remove(&result.session_id);
+                git_branch_cwd.insert(result.session_id.clone(), result.cwd.clone());
+                if let Some(meta) = last_metadata.get_mut(&result.session_id) {
+                    if meta.git_branch != result.git_branch {
+                        meta.git_branch = result.git_branch;
+                        metadata_store.insert(result.session_id.clone(), meta.clone());
+                        let _ = app_handle.emit("pty_metadata", meta.clone());
+                    }
+                }
+            }
 
             // Refresh process info
             sys.refresh_processes_specifics(
@@ -699,19 +802,32 @@ pub fn start_monitor(
                         _ => continue,
                     };
 
-                    // Check if CWD changed to avoid spamming git commands
-                    let needs_git_check = match last_metadata.get(&session_id) {
-                        Some(meta) => meta.cwd != cwd,
-                        None => true,
-                    };
-
-                    let git_branch = if needs_git_check {
-                        git_branch_with_timeout(&cwd, Duration::from_secs(2))
-                    } else {
-                        last_metadata
-                            .get(&session_id)
-                            .and_then(|m| m.git_branch.clone())
-                    };
+                    // Check if CWD changed (relative to the CWD the *current*
+                    // git_branch was actually resolved for, not just the last
+                    // stored metadata.cwd) to avoid spamming git commands.
+                    // Using `git_branch_cwd` here — rather than
+                    // `last_metadata`'s `cwd` field, which is overwritten every
+                    // tick regardless of git status — means a CWD change that
+                    // arrives while a request for the previous CWD is still
+                    // in flight is not lost: it keeps looking "needed" every
+                    // tick until a request actually gets queued for it.
+                    let needs_git_check = git_branch_cwd.get(&session_id) != Some(&cwd);
+                    if needs_git_check && git_in_flight.insert(session_id.clone()) {
+                        // RS-5: hand the (possibly slow) git invocation to the
+                        // worker pool instead of blocking this loop — other
+                        // sessions' metadata keeps updating every tick even
+                        // while this lookup is still running.
+                        let _ = git_request_tx.send(GitBranchRequest {
+                            session_id: session_id.clone(),
+                            cwd: cwd.clone(),
+                        });
+                    }
+                    // Use the last known branch (possibly stale while a
+                    // lookup for a new CWD is in flight) until the worker
+                    // pool reports a fresh result via `git_result_rx`.
+                    let git_branch = last_metadata
+                        .get(&session_id)
+                        .and_then(|m| m.git_branch.clone());
 
                     // Detect coding-agent session IDs only while that agent is foreground.
                     // When an agent exits, preserve the last ID in backend metadata; the
@@ -962,6 +1078,12 @@ pub fn start_monitor(
             detected_agent_sessions.retain(|k, _| active_keys.contains(k));
             failed_detected_agent_sessions.retain(|k, _| active_keys.contains(k));
             metadata_store.retain(|k, _| active_keys.contains(k));
+            // git_in_flight is *not* pruned for dead sessions here: a request
+            // may still be running on a worker thread, and the drain step at
+            // the top of the next tick removes the entry once that request's
+            // result (or the worker dropping it) comes back, regardless of
+            // whether the session is still active.
+            git_branch_cwd.retain(|k, _| active_keys.contains(k));
         }
     });
 }

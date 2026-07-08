@@ -386,6 +386,18 @@ pub async fn resolve_local_path_links(
 }
 
 fn resolve_local_path_link(candidate: &str) -> Option<ResolvedLocalPathLink> {
+    // FE-N2 fast path: most candidates fished out of terminal output are not
+    // real paths at all (paths from another machine/container, typos, plain
+    // prose that happens to contain a drive-letter-shaped substring, ...).
+    // Before trying up to 64 word-boundary-cut substrings (each up to two
+    // stats), check whether the drive root + first real directory component
+    // exists at all. Every cut prefix is a textual prefix of `candidate`
+    // (see `local_path_candidate_cut_prefixes`), so if that minimal root is
+    // missing, no cut prefix can resolve to an existing path either and the
+    // whole scan can be skipped in one stat.
+    if !candidate_root_component_exists(candidate) {
+        return None;
+    }
     for existing_prefix in local_path_candidate_cut_prefixes(candidate) {
         if is_bare_local_path_prefix(existing_prefix) {
             continue;
@@ -419,6 +431,40 @@ fn local_path_candidate_cut_prefixes(candidate: &str) -> Vec<&str> {
         }
     }
     prefixes
+}
+
+/// Cheap existence pre-filter for `resolve_local_path_link`.
+///
+/// Deliberately does *not* reuse the word-boundary-cut prefixes from
+/// `local_path_candidate_cut_prefixes` as the "shortest candidate" to probe:
+/// those cuts land on prose word boundaries (spaces, `、`, `。`, ...), which
+/// can fall *inside* a single real path component (e.g. a directory literally
+/// named "my folder"). Checking existence of such a cut could reject a
+/// candidate whose real, longer prefix does exist.
+///
+/// Instead this walks `candidate`'s actual path components (real separators:
+/// `\` / `/` only) and checks just the drive root plus first directory. That
+/// is a genuine filesystem ancestor of anything `local_path_candidate_cut_prefixes`
+/// could ever produce from `candidate` (every cut is a textual prefix of the
+/// original string, so it shares this same leading root), so rejecting when
+/// it is missing cannot produce a false negative. It mainly catches paths
+/// that reference a different machine/container/OS root (e.g. `/home/...`,
+/// `/app/...` copy-pasted from other terminal output) in a single stat,
+/// rather than a fully accurate "does the full path exist" answer — a
+/// missing leaf several components deep still falls through to the normal
+/// scan below, which is unavoidable without duplicating real path-component
+/// awareness into the word-boundary cutter itself.
+fn candidate_root_component_exists(candidate: &str) -> bool {
+    let Some(path) = local_path_candidate_to_path(candidate) else {
+        // Nothing to convert (e.g. blank after trim) — let the normal scan
+        // decide; it will find nothing to iterate either.
+        return true;
+    };
+    let root: PathBuf = path.components().take(3).collect();
+    if root.as_os_str().is_empty() {
+        return true;
+    }
+    root.exists()
 }
 
 fn push_candidate_cut_prefix<'a>(prefixes: &mut Vec<&'a str>, candidate: &'a str) {
@@ -725,6 +771,57 @@ mod tests {
         assert!(resolved.is_dir);
         assert!(candidate.contains(&resolved.existing_prefix));
         assert_eq!(resolved.existing_prefix, msys_path(&dir));
+    }
+
+    // FE-N2 regression coverage: the early root-component rejection must
+    // reject genuinely fictional path-looking strings without breaking any
+    // of the resolution behavior above.
+
+    #[test]
+    fn candidate_root_component_exists_matches_real_and_fake_drive_roots() {
+        // A real, always-present directory: the check should not reject it.
+        assert!(candidate_root_component_exists(r"C:\Users\someone\file.txt"));
+        // A first-level directory that (almost certainly) does not exist at
+        // the drive root should be rejected in the cheap pre-check.
+        assert!(!candidate_root_component_exists(
+            r"C:\mycmux-fe-n2-definitely-not-a-real-directory-8f3c1\deep\file.txt"
+        ));
+        // Bare drive root alone — nothing to probe below it, must not reject.
+        assert!(candidate_root_component_exists(r"C:\"));
+    }
+
+    #[test]
+    fn resolve_local_path_link_rejects_fictional_root_without_scanning_full_prefix_list() {
+        // No real filesystem I/O needed beyond the drive-root probe: this
+        // directory name is unique enough that it cannot exist for real, so
+        // `resolve_local_path_link` must return None via the fast path.
+        let candidate = concat!(
+            r"C:\mycmux-fe-n2-definitely-not-a-real-directory-8f3c1",
+            r"\deeply\nested\path\that\does\not\exist\report.txt for details"
+        );
+        assert_eq!(resolve_local_path_link(candidate), None);
+    }
+
+    #[test]
+    fn resolve_local_path_link_still_resolves_real_paths_with_spaces_after_root_prefilter() {
+        // Guards against a naive "reject if the shortest word-boundary-cut
+        // prefix doesn't exist" implementation: that shortest cut can land
+        // inside a real directory name containing a space (e.g. "my folder"
+        // cut down to just "my"), which must not be used as the rejection
+        // signal. The FE-N2 pre-filter instead only probes the drive root +
+        // first real path component, so this must still resolve correctly.
+        let temp = TestTempDir::new();
+        let dir = temp.path.join("my folder").join("nested nested-two");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let dir_text = display_path(&dir);
+        assert_eq!(
+            resolve_local_path_link(&format!("{dir_text} を参照")),
+            Some(ResolvedLocalPathLink {
+                existing_prefix: dir_text,
+                is_dir: true,
+            })
+        );
     }
 }
 
