@@ -4,7 +4,7 @@
 
 ---
 
-## [Unreleased]
+## [0.10.0-lite.1] - 2026-07-08
 
 personal v0.9.4〜v0.10.0 の共通修正を cherry-pick 運用で反映。
 
