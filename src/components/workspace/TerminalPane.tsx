@@ -443,7 +443,9 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
     }
     if (tab) {
       evictTerminalCache(tab.sessionId);
-      killSession(tab.sessionId).catch(() => {});
+      killSession(tab.sessionId).catch((err) =>
+        console.warn("[mycmux] killSession failed", tab.sessionId, err),
+      );
       usePaneMetadataStore.getState().removeMetadata(tab.sessionId);
     }
     removeTabFromPane(workspaceId, pane.id, tabId);

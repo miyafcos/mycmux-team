@@ -475,7 +475,9 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
         for (const pane of ws.panes) {
           for (const tab of pane.tabs) {
             evictTerminalCache(tab.sessionId);
-            killSession(tab.sessionId).catch(() => {});
+            killSession(tab.sessionId).catch((err) =>
+              console.warn("[mycmux] killSession failed", tab.sessionId, err),
+            );
             usePaneMetadataStore.getState().removeMetadata(tab.sessionId);
           }
         }
@@ -606,7 +608,9 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
           if (activeWs && activePane && activeWs.panes.length > 1) {
             for (const tab of activePane.tabs) {
               evictTerminalCache(tab.sessionId);
-              killSession(tab.sessionId).catch(() => {});
+              killSession(tab.sessionId).catch((err) =>
+                console.warn("[mycmux] killSession failed", tab.sessionId, err),
+              );
               usePaneMetadataStore.getState().removeMetadata(tab.sessionId);
             }
             removePaneFromWorkspace(activeWs.id, activePane.id);

@@ -29,6 +29,7 @@ import {
   type CachedTerm,
   type PendingFrontendBatch,
   bumpTerminalWriteCounter,
+  cacheOrDisposeOnUnmount,
   chunkedWrite,
   enqueueSessionWrite,
   findLastSubarray,
@@ -1644,13 +1645,19 @@ export default memo(function XTermWrapper({
         if (element.parentNode === container) {
           container.removeChild(element);
         }
-        termCache.set(sessionId, {
+        // Route through cacheOrDisposeOnUnmount so an active-tab close (which
+        // evicted the cache slot while this Terminal was still mounted) disposes
+        // the Terminal instead of leaking it into termCache forever (FE-N1).
+        const outcome = cacheOrDisposeOnUnmount(sessionId, {
           term,
           fitAddon,
           searchAddon: currentSearchAddon,
           xtermElement: element,
           unlistenExit: null,
         });
+        if (outcome === "disposed") {
+          termDisposed = true;
+        }
         return;
       }
       if (term) {

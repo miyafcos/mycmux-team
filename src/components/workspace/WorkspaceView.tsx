@@ -109,7 +109,9 @@ export const TerminalGrid = memo(function TerminalGrid({
     if (pane) {
       for (const tab of pane.tabs) {
         evictTerminalCache(tab.sessionId);
-        killSession(tab.sessionId).catch(() => {});
+        killSession(tab.sessionId).catch((err) =>
+          console.warn("[mycmux] killSession failed", tab.sessionId, err),
+        );
         usePaneMetadataStore.getState().removeMetadata(tab.sessionId);
       }
     }

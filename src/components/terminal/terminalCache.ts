@@ -34,6 +34,21 @@ const TERMINAL_RAW_TAIL_MAX_BYTES = 32 * 1024;
 const terminalInputQueues = new Map<string, Promise<void>>();
 const terminalEvictionCleanups = new Set<(sessionId: string) => void>();
 
+// Sessions whose cache slot was evicted while their Terminal was still mounted
+// (i.e. an *active* tab was closed, so cacheCurrentTerminal had not yet run and
+// the cache lookup in evictTerminalCache missed). The eventual unmount must
+// dispose the Terminal instead of re-caching it, otherwise the Terminal leaks
+// in termCache forever with no remaining reference (FE-N1).
+const sessionsEvictedWhileMounted = new Set<string>();
+
+// True only for the window between an active-tab evict and its unmount. Used by
+// the write-side helpers to avoid re-creating per-session bookkeeping entries
+// (write counters / raw tails) that evictTerminalCache just deleted, in case an
+// in-flight write pump resumes before the component unmounts.
+function isSessionEvictedWhileMounted(sessionId: string): boolean {
+  return sessionsEvictedWhileMounted.has(sessionId);
+}
+
 export function registerTerminalCacheEvictionCleanup(callback: (sessionId: string) => void): () => void {
   terminalEvictionCleanups.add(callback);
   return () => terminalEvictionCleanups.delete(callback);
@@ -93,6 +108,9 @@ export function stashDeferredTerminalBatches(
 
 export function rememberTerminalRawTail(sessionId: string, chunk: Uint8Array): void {
   if (chunk.byteLength === 0) return;
+  // Do not resurrect the raw tail for a session that was evicted while mounted;
+  // its Terminal is about to be disposed and this entry would leak (FE-N1).
+  if (isSessionEvictedWhileMounted(sessionId)) return;
   const previous = terminalRawTailBySession.get(sessionId);
   const totalLength = (previous?.byteLength ?? 0) + chunk.byteLength;
   const combined = new Uint8Array(Math.min(totalLength, TERMINAL_RAW_TAIL_MAX_BYTES));
@@ -109,6 +127,7 @@ export function rememberTerminalRawTail(sessionId: string, chunk: Uint8Array): v
 }
 
 export function replaceTerminalRawTail(sessionId: string, scrollback: Uint8Array): void {
+  if (isSessionEvictedWhileMounted(sessionId)) return;
   const start = Math.max(0, scrollback.byteLength - TERMINAL_RAW_TAIL_MAX_BYTES);
   terminalRawTailBySession.set(sessionId, scrollback.slice(start));
 }
@@ -135,8 +154,19 @@ export function evictTerminalCache(sessionId: string): void {
     cached.unlistenExit?.();
     cached.term.dispose();
     termCache.delete(sessionId);
+    // Cache hit: the Terminal was already disposed here, so there is nothing for
+    // a later unmount to leak. Clear any stale mark defensively.
+    sessionsEvictedWhileMounted.delete(sessionId);
     if (import.meta.env.DEV) {
       console.log(`[mycmux-diag xterm:${sessionId}] cache_evict`);
+    }
+  } else {
+    // Cache miss: the Terminal is still mounted (the *active* tab is being
+    // closed) and has not been cached yet. Mark it so that the eventual unmount
+    // disposes the Terminal instead of re-caching it into termCache (FE-N1).
+    sessionsEvictedWhileMounted.add(sessionId);
+    if (import.meta.env.DEV) {
+      console.log(`[mycmux-diag xterm:${sessionId}] cache_evict_mounted`);
     }
   }
   terminalSizeCache.delete(sessionId);
@@ -157,5 +187,33 @@ export function getTerminalWriteCounter(sessionId: string): number {
 }
 
 export function bumpTerminalWriteCounter(sessionId: string): void {
+  // Don't resurrect a counter for a session that was evicted while mounted; its
+  // Terminal is about to be disposed and this entry would leak (FE-N1).
+  if (isSessionEvictedWhileMounted(sessionId)) return;
   terminalWriteCounters.set(sessionId, (terminalWriteCounters.get(sessionId) ?? 0) + 1);
+}
+
+/**
+ * Decide, on Terminal unmount, whether to re-cache the Terminal (normal path,
+ * e.g. tab switch or pane hidden) or dispose it (active-tab close, where
+ * evictTerminalCache already ran and missed the cache). Returns which action
+ * was taken. Consumes the "evicted while mounted" mark so it never lingers.
+ *
+ * This is the single source of truth for the cache-or-dispose decision so it can
+ * be unit-tested without mounting XTermWrapper (FE-N1 regression coverage).
+ */
+export function cacheOrDisposeOnUnmount(
+  sessionId: string,
+  entry: CachedTerm,
+): "cached" | "disposed" {
+  if (sessionsEvictedWhileMounted.delete(sessionId)) {
+    entry.unlistenExit?.();
+    entry.term.dispose();
+    if (import.meta.env.DEV) {
+      console.log(`[mycmux-diag xterm:${sessionId}] unmount_dispose_evicted`);
+    }
+    return "disposed";
+  }
+  termCache.set(sessionId, entry);
+  return "cached";
 }
