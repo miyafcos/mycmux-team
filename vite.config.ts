@@ -12,6 +12,16 @@ export default defineConfig(({ mode }) => {
     build: {
       outDir: env.VITE_OUT_DIR || (mode === "production" && isCmuxVariant ? "dist-cmux-ui" : "dist"),
     },
+    // @xterm/xterm@6.0.0 ships pre-minified ESM; esbuild's re-minification drops
+    // a `let` declaration in InputHandler.requestMode (minifySyntax) and upstream
+    // also reports broken closure renames (minifyIdentifiers), crashing on the
+    // first DECRQM query from TUI apps in production builds only
+    // (xtermjs/xterm.js#5800). Verified: with these off, DECRQM 2026 replies
+    // correctly; with defaults it throws ReferenceError. Whitespace minify stays on.
+    esbuild: {
+      minifyIdentifiers: false,
+      minifySyntax: false,
+    },
     server: {
       port: 1420,
       strictPort: true,
