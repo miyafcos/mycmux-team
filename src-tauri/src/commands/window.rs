@@ -30,6 +30,33 @@ fn ensure_window_bounds(window: &tauri::WebviewWindow) {
                     let _ = SetForegroundWindow(native_hwnd);
                 }
             }
+
+            if let Ok(monitors) = window.available_monitors() {
+                let overlaps_monitor = monitors.iter().any(|monitor| {
+                    let position = monitor.position();
+                    let size = monitor.size();
+                    let monitor_left = position.x;
+                    let monitor_top = position.y;
+                    let monitor_right =
+                        monitor_left.saturating_add(i32::try_from(size.width).unwrap_or(i32::MAX));
+                    let monitor_bottom =
+                        monitor_top.saturating_add(i32::try_from(size.height).unwrap_or(i32::MAX));
+
+                    rect.left < monitor_right
+                        && rect.right > monitor_left
+                        && rect.top < monitor_bottom
+                        && rect.bottom > monitor_top
+                });
+
+                if !monitors.is_empty() && !overlaps_monitor {
+                    unsafe {
+                        let _ = ShowWindow(native_hwnd, SW_SHOWNORMAL);
+                        let _ =
+                            SetWindowPos(native_hwnd, HWND_TOP, 120, 80, 1400, 900, SWP_SHOWWINDOW);
+                        let _ = SetForegroundWindow(native_hwnd);
+                    }
+                }
+            }
         }
     }
 }

@@ -39,6 +39,21 @@ def test_window_leader_commands_are_exposed_to_frontend() -> None:
         assert_contains(lib_rs, command, "src-tauri/src/lib.rs")
 
 
+def test_window_state_plugin_preserves_hidden_startup_contract() -> None:
+    lib_rs = read_repo_text("src-tauri/src/lib.rs")
+
+    for snippet in [
+        "tauri_plugin_window_state::Builder::default()",
+        "tauri_plugin_window_state::StateFlags::all()",
+        "& !tauri_plugin_window_state::StateFlags::VISIBLE",
+    ]:
+        assert_contains(lib_rs, snippet, "src-tauri/src/lib.rs")
+
+    assert lib_rs.index("tauri_plugin_window_state::Builder::default()") < lib_rs.index(
+        ".manage(state)"
+    )
+
+
 def test_window_leader_commands_have_safe_single_instance_semantics() -> None:
     window_rs = read_repo_text("src-tauri/src/commands/window.rs")
     app = read_repo_text("src/App.tsx")
