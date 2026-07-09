@@ -340,7 +340,7 @@ function fetchCrsmSessions(deep = false, refresh = false): Promise<CrsmSessionEn
   return request;
 }
 
-function autoRefreshCrsmSessions(deep = false): Promise<CrsmSessionEntry[]> {
+export function autoRefreshCrsmSessions(deep = false): Promise<CrsmSessionEntry[]> {
   const elapsed = Date.now() - cachedCrsmSessionsRefreshedAt;
   if (cachedCrsmSessions && elapsed < SESSION_AUTO_REFRESH_COOLDOWN_MS) {
     return Promise.resolve(cachedCrsmSessions);

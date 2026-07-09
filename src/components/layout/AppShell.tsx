@@ -25,6 +25,8 @@ import { THEME_BACKGROUND_PRESETS } from "../../lib/themeTweaks";
 import { focusController } from "../../lib/focusController";
 import { confirm, message } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
+import { beforePaneClose } from "../../lib/paneCloseLifecycle";
+import { popClosedPane } from "../../stores/closedPaneStore";
 
 type Direction = "up" | "down" | "left" | "right";
 
@@ -288,6 +290,7 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
   const zoomedPaneId = useUiStore((s) => s.zoomedPaneId);
   const setZoomedPaneId = useUiStore((s) => s.setZoomedPaneId);
   const addPaneToWorkspace = useWorkspaceLayoutStore((s) => s.addPaneToWorkspace);
+  const addPaneToWorkspaceWithOptions = useWorkspaceLayoutStore((s) => s.addPaneToWorkspaceWithOptions);
   const removePaneFromWorkspace = useWorkspaceLayoutStore((s) => s.removePaneFromWorkspace);
   const addTabToPane = useWorkspaceLayoutStore((s) => s.addTabToPane);
   const isKeybindingsOpen = useUiStore((s) => s.isKeybindingsOpen);
@@ -606,6 +609,7 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
           const activeWs = ws.find((w) => w.id === aid);
           const activePane = activeWs?.panes.find((p) => paneMatchesSession(p, apid));
           if (activeWs && activePane && activeWs.panes.length > 1) {
+            beforePaneClose(activePane);
             for (const tab of activePane.tabs) {
               evictTerminalCache(tab.sessionId);
               killSession(tab.sessionId).catch((err) =>
@@ -628,6 +632,34 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
               focusController.request("keyboard", { sessionId: null, focus: false });
             }
           }
+          break;
+        }
+
+        case "pane.reopen": {
+          const activeWs = ws.find((w) => w.id === aid);
+          if (!activeWs) return;
+          const anchorPane = activeWs.panes.find((p) => paneMatchesSession(p, apid))
+            ?? activeWs.panes.find((p) => paneMatchesSession(p, lpid))
+            ?? activeWs.panes[0];
+          if (!anchorPane) return;
+          const closedPane = popClosedPane();
+          if (!closedPane) return;
+          const launchEnv: Record<string, string> | undefined =
+            closedPane.agentKind && closedPane.agentSessionId
+              ? {
+                  MYCMUX_RESUME: closedPane.agentKind,
+                  MYCMUX_SESSION_ID: closedPane.agentSessionId,
+                  MYCMUX_AGENT_KIND: closedPane.agentKind,
+                }
+              : undefined;
+          addPaneToWorkspaceWithOptions(activeWs.id, anchorPane.id, "right", {
+            agentId: "shell-starter",
+            label: closedPane.label ?? undefined,
+            cwd: closedPane.cwd ?? undefined,
+            agentKind: closedPane.agentKind ?? undefined,
+            agentSessionId: closedPane.agentSessionId ?? undefined,
+            launchEnv,
+          });
           break;
         }
 
@@ -693,6 +725,7 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
     setShowSetup,
     setActiveWorkspace,
     addPaneToWorkspace,
+    addPaneToWorkspaceWithOptions,
     removePaneFromWorkspace,
     addTabToPane,
     setZoomedPaneId,

@@ -9,6 +9,7 @@ import { FIRST_LAUNCH_STORAGE_KEY } from "../../lib/startupSessionGate";
 import { reconcileSplitColumnsForPanes } from "../../lib/layoutColumns";
 import { focusController } from "../../lib/focusController";
 import { evictTerminalCache } from "../terminal/XTermWrapper";
+import { beforePaneClose } from "../../lib/paneCloseLifecycle";
 import TerminalPane from "./TerminalPane";
 import ErrorBoundary from "../common/ErrorBoundary";
 
@@ -107,6 +108,7 @@ export const TerminalGrid = memo(function TerminalGrid({
     if (!ws || ws.panes.length <= 1) return;
     const pane = ws.panes.find((p) => p.id === paneId);
     if (pane) {
+      beforePaneClose(pane);
       for (const tab of pane.tabs) {
         evictTerminalCache(tab.sessionId);
         killSession(tab.sessionId).catch((err) =>
