@@ -144,3 +144,17 @@ def test_file_preview_agent_usage_and_fault_surfaces_remain_wired() -> None:
             "{previewActionError && (",
         ],
     )
+    assert_snippets(
+        "src/components/common/ErrorBoundary.tsx",
+        [
+            "export default class ErrorBoundary extends Component<Props, State>",
+            "Pane crashed",
+        ],
+    )
+    assert_snippets(
+        "src/components/workspace/WorkspaceView.tsx",
+        [
+            "import ErrorBoundary from \"../common/ErrorBoundary\";",
+            "<ErrorBoundary>",
+        ],
+    )
