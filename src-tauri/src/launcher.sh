@@ -212,6 +212,203 @@ __prompt_custom_command() {
   IFS= read -ru "$__CMUX_MENU_FD" cmd
 }
 
+__pick_resume_session() {
+  __open_menu_fd
+  if ! command -v crsm >/dev/null 2>&1; then
+    printf "\033[H\033[2J" >&$__CMUX_MENU_FD
+    echo "  crsm command not found." >&$__CMUX_MENU_FD
+    echo "" >&$__CMUX_MENU_FD
+    echo "  Press any key to return to menu." >&$__CMUX_MENU_FD
+    IFS= read -rsn1 -u "$__CMUX_MENU_FD" _ || true
+    return 1
+  fi
+
+  local __py
+  if command -v python3 >/dev/null 2>&1; then
+    __py=python3
+  elif command -v python >/dev/null 2>&1; then
+    __py=python
+  else
+    printf "\033[H\033[2J" >&$__CMUX_MENU_FD
+    echo "  python not found." >&$__CMUX_MENU_FD
+    echo "" >&$__CMUX_MENU_FD
+    echo "  Press any key to return to menu." >&$__CMUX_MENU_FD
+    IFS= read -rsn1 -u "$__CMUX_MENU_FD" _ || true
+    return 1
+  fi
+
+  printf "\033[H\033[2J" >&$__CMUX_MENU_FD
+  echo "  Loading sessions..." >&$__CMUX_MENU_FD
+  local __json
+  if ! __json="$(crsm list --json --limit 20 2>/dev/null)"; then
+    printf "\033[H\033[2J" >&$__CMUX_MENU_FD
+    echo "  crsm list failed." >&$__CMUX_MENU_FD
+    echo "" >&$__CMUX_MENU_FD
+    echo "  Press any key to return to menu." >&$__CMUX_MENU_FD
+    IFS= read -rsn1 -u "$__CMUX_MENU_FD" _ || true
+    return 1
+  fi
+
+  local __pwd __tsv
+  __pwd="$(pwd -W 2>/dev/null || pwd)"
+  __tsv="$(MYCMUX_CRSM_JSON="$__json" MYCMUX_PICKER_CWD="$__pwd" "$__py" - <<'PY' 2>/dev/null
+import json
+import os
+from datetime import datetime, timezone
+
+def norm(path):
+    path = (path or "").strip().replace("\\", "/")
+    if len(path) >= 3 and path[0] == "/" and path[2] == "/":
+        path = path[1].upper() + ":" + path[2:]
+    while "//" in path:
+        path = path.replace("//", "/")
+    return path.rstrip("/").lower()
+
+def rel_time(value):
+    if not value:
+        return "-"
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return "-"
+    now = datetime.now(timezone.utc)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    sec = max(0, int((now - dt.astimezone(timezone.utc)).total_seconds()))
+    if sec < 60:
+        return f"{sec}s ago"
+    minutes = sec // 60
+    if minutes < 60:
+        return f"{minutes}m ago"
+    hours = minutes // 60
+    if hours < 24:
+        return f"{hours}h ago"
+    return f"{hours // 24}d ago"
+
+current = norm(os.environ.get("MYCMUX_PICKER_CWD", ""))
+try:
+    rows = json.loads(os.environ.get("MYCMUX_CRSM_JSON", "[]"))
+except json.JSONDecodeError:
+    rows = []
+if not isinstance(rows, list):
+    rows = []
+
+prepared = []
+for index, row in enumerate(rows):
+    if not isinstance(row, dict):
+        continue
+    kind = str(row.get("kind") or "")
+    sid = str(row.get("id") or "")
+    cwd = str(row.get("cwd") or "")
+    if kind not in {"claude", "codex", "claude-codex"} or not sid:
+        continue
+    label = str(row.get("label") or row.get("preview") or sid).replace("\t", " ").replace("\r", " ").replace("\n", " ")
+    label = " ".join(label.split())
+    prepared.append((0 if norm(cwd) == current else 1, index, kind, sid, cwd, rel_time(row.get("last_activity")), label[:90]))
+
+for _, _, kind, sid, cwd, rel, label in sorted(prepared):
+    print("\t".join([kind, sid, cwd, rel, label]))
+PY
+)"
+
+  if [ -z "$__tsv" ]; then
+    printf "\033[H\033[2J" >&$__CMUX_MENU_FD
+    echo "  No resume sessions found." >&$__CMUX_MENU_FD
+    echo "" >&$__CMUX_MENU_FD
+    echo "  Press any key to return to menu." >&$__CMUX_MENU_FD
+    IFS= read -rsn1 -u "$__CMUX_MENU_FD" _ || true
+    return 1
+  fi
+
+  local r_kinds=() r_ids=() r_cwds=() r_rels=() r_labels=()
+  local r_kind r_id r_cwd r_rel r_label
+  while IFS=$'\t' read -r r_kind r_id r_cwd r_rel r_label; do
+    [ -z "$r_kind" ] && continue
+    r_kinds+=("$r_kind")
+    r_ids+=("$r_id")
+    r_cwds+=("$r_cwd")
+    r_rels+=("$r_rel")
+    r_labels+=("$r_label")
+  done <<< "$__tsv"
+
+  local r_selected=0 r_count=${#r_ids[@]}
+  if [ "$r_count" -eq 0 ]; then
+    return 1
+  fi
+
+  __draw_resume_menu() {
+    printf "\033[H\033[2J" >&$__CMUX_MENU_FD
+    echo "" >&$__CMUX_MENU_FD
+    echo "  Resume session:  [dir: $(pwd -W 2>/dev/null || pwd)]" >&$__CMUX_MENU_FD
+    echo "" >&$__CMUX_MENU_FD
+    local i num mark disp
+    for i in "${!r_ids[@]}"; do
+      num=$((i + 1))
+      mark="  "
+      [ $i -eq $r_selected ] && mark="> "
+      disp="${r_cwds[$i]}"
+      case "$disp" in "$HOME"*) disp="~${disp#$HOME}" ;; esac
+      echo "${mark}${num}. ${r_kinds[$i]}  ${r_rels[$i]}  ${r_labels[$i]}" >&$__CMUX_MENU_FD
+      echo "     ${disp}" >&$__CMUX_MENU_FD
+    done
+    echo "" >&$__CMUX_MENU_FD
+    echo "  ^v: move   Enter/number: resume   Esc/q: back" >&$__CMUX_MENU_FD
+  }
+
+  __draw_resume_menu
+  while true; do
+    __read_menu_event
+    case "$__MENU_EVENT" in
+      eof|quit|esc) return 1 ;;
+      up) ((r_selected--)); [ $r_selected -lt 0 ] && r_selected=$((r_count - 1)) ;;
+      down) ((r_selected++)); [ $r_selected -ge $r_count ] && r_selected=0 ;;
+      enter) break ;;
+      digit)
+        local n second
+        n=$((__MENU_DIGIT - 1))
+        if [ "$__MENU_DIGIT" = "1" ] || [ "$__MENU_DIGIT" = "2" ]; then
+          if IFS= read -rsn1 -t 0.15 -u "$__CMUX_MENU_FD" second; then
+            case "$second" in
+              [0-9]) n=$((__MENU_DIGIT * 10 + second - 1)) ;;
+            esac
+          fi
+        fi
+        if [ $n -ge 0 ] && [ $n -lt $r_count ]; then
+          r_selected=$n
+          break
+        fi
+        ;;
+    esac
+    __draw_resume_menu
+  done
+
+  local kind="${r_kinds[$r_selected]}"
+  local sid="${r_ids[$r_selected]}"
+  local cwd="${r_cwds[$r_selected]}"
+  __write_session_mapping "$MYCMUX_PANE_SESSION_ID" "$kind" "$sid"
+  [ -d "$cwd" ] && cd "$cwd" 2>/dev/null || true
+
+  case "$kind" in
+    claude)
+      __trust_claude_cwd
+      local __project_dir
+      __project_dir=$(__get_claude_project_dir)
+      if [ -f "$__project_dir/$sid.jsonl" ]; then
+        eval "claude --dangerously-skip-permissions --permission-mode bypassPermissions --resume $sid"
+      else
+        __track_claude_session "$MYCMUX_PANE_SESSION_ID" &
+        eval "claude --dangerously-skip-permissions --permission-mode bypassPermissions --continue"
+      fi
+      ;;
+    codex)
+      eval "codex resume --no-alt-screen $sid"
+      ;;
+    claude-codex)
+      eval "claude-codex --resume $sid"
+      ;;
+  esac
+}
+
 __ensure_fugu_env() {
   [ -n "${FUGU_API_KEY:-}" ] && return
   if command -v powershell.exe >/dev/null 2>&1; then
@@ -350,6 +547,7 @@ if [ -z "$cmd" ]; then
     "Claude Code (resume)"
     "Codex (resume)"
     "claude-codex (resume)"
+    "Resume (pick session)"
     "Codex (Fugu Ultra)"
     "claude-codex (Fugu)"
     "Custom..."
@@ -365,6 +563,7 @@ if [ -z "$cmd" ]; then
     "claude --allow-dangerously-skip-permissions --permission-mode auto --resume"
     "codex resume --no-alt-screen"
     "claude-codex --resume"
+    "__resume_pick__"
     "codex --no-alt-screen --profile fugu-ultra"
     "claude-codex --backend fugu"
     "__custom__"
@@ -392,6 +591,19 @@ if [ -z "$cmd" ]; then
     echo "  Up/Down or j/k move  Enter/number select  / custom  q shell" >&$__CMUX_MENU_FD
   }
 
+  __try_selected_menu_command() {
+    if [ "${commands[$selected]}" = "__resume_pick__" ]; then
+      tput cnorm >&$__CMUX_MENU_FD 2>/dev/null
+      if __pick_resume_session; then
+        return 2
+      fi
+      tput civis >&$__CMUX_MENU_FD 2>/dev/null
+      draw_menu
+      return 0
+    fi
+    return 1
+  }
+
   draw_menu
 
   while true; do
@@ -416,11 +628,16 @@ if [ -z "$cmd" ]; then
             0) selected=9 ;;
             1) selected=10 ;;
             2) selected=11 ;;
+            3) selected=12 ;;
             *) selected=0 ;;
           esac
         else
           selected=0
         fi
+        __try_selected_menu_command
+        __try_status=$?
+        [ $__try_status -eq 0 ] && continue
+        [ $__try_status -eq 2 ] && { return 0 2>/dev/null || exit 0; }
         break
         ;;
       2) selected=1; break ;;
@@ -431,9 +648,22 @@ if [ -z "$cmd" ]; then
       7) selected=6; break ;;
       8) selected=7; break ;;
       9) selected=8; break ;;
-      0) selected=9; break ;;
-      /) selected=11; break ;;
-      '') break ;;
+      0)
+        selected=9
+        __try_selected_menu_command
+        __try_status=$?
+        [ $__try_status -eq 0 ] && continue
+        [ $__try_status -eq 2 ] && { return 0 2>/dev/null || exit 0; }
+        break
+        ;;
+      /) selected=12; break ;;
+      '')
+        __try_selected_menu_command
+        __try_status=$?
+        [ $__try_status -eq 0 ] && continue
+        [ $__try_status -eq 2 ] && { return 0 2>/dev/null || exit 0; }
+        break
+        ;;
       q|Q) tput cnorm >&$__CMUX_MENU_FD 2>/dev/null; return 0 2>/dev/null || exit 0 ;;
     esac
     draw_menu
@@ -442,6 +672,8 @@ if [ -z "$cmd" ]; then
   tput cnorm >&$__CMUX_MENU_FD 2>/dev/null
   printf "\033[H\033[2J" >&$__CMUX_MENU_FD
   cmd="${commands[$selected]}"
+  # "__dir__" 系はメニュー内で処理済みのはずだが、万一漏れても eval しない
+  case "$cmd" in __dir__|__dir_anken__|__resume_pick__) cmd="" ;; esac
 fi
 
 if [ "$cmd" = "__custom__" ]; then

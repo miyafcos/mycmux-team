@@ -7,6 +7,7 @@ import {
   type CrsmSessionEntry,
 } from "../../lib/ipc";
 import {
+  usePaneMetadataStore,
   useUiStore,
   useWorkspaceLayoutStore,
 } from "../../stores/workspaceStore";
@@ -31,6 +32,7 @@ const ITEM_HEIGHT = 48;
 const LOAD_MORE_HEIGHT = 38;
 const TOP_CWD_CHIPS = 8;
 const SESSION_AUTO_REFRESH_COOLDOWN_MS = 10_000;
+const DIRECT_RESUME_FAST_CACHE_MS = 60_000;
 
 const SOURCE_LABELS: Record<string, string> = {
   "claude-live": "live",
@@ -129,6 +131,17 @@ function shortenCwd(cwd: string): string {
   return ".../" + parts.slice(-2).join("/");
 }
 
+function normalizeCwdKey(cwd: string | null | undefined): string {
+  if (!cwd) return "";
+  let path = cwd.trim().replace(/\\/g, "/");
+  const gitBashDrive = path.match(/^\/([a-zA-Z])\/(.*)$/);
+  if (gitBashDrive) {
+    path = `${gitBashDrive[1]}:/${gitBashDrive[2]}`;
+  }
+  path = path.replace(/\/+/g, "/").replace(/\/$/, "");
+  return path.toLowerCase();
+}
+
 function formatDuration(startIso: string | null | undefined, endIso: string): string {
   if (!startIso) return "";
   const s = Date.parse(startIso);
@@ -188,6 +201,7 @@ function formatRelative(iso: string | null | undefined): string {
 let cachedCrsmSessions: CrsmSessionEntry[] | null = null;
 let cachedCrsmSessionsError: string | null = null;
 let cachedCrsmSessionsIsDeep = false;
+let cachedCrsmSessionsFetchedAt = 0;
 let cachedCrsmSessionsRefreshedAt = 0;
 const crsmSessionsRequests = new Map<string, Promise<CrsmSessionEntry[]>>();
 
@@ -217,8 +231,9 @@ function storeCrsmSessions(nextSessions: CrsmSessionEntry[], deep: boolean, refr
   cachedCrsmSessions = nextSessions;
   cachedCrsmSessionsError = null;
   cachedCrsmSessionsIsDeep = deep;
+  cachedCrsmSessionsFetchedAt = Date.now();
   if (refresh) {
-    cachedCrsmSessionsRefreshedAt = Date.now();
+    cachedCrsmSessionsRefreshedAt = cachedCrsmSessionsFetchedAt;
   }
 }
 
@@ -247,6 +262,22 @@ function directResumeUnavailableMessage(session: CrsmSessionEntry): string | nul
     return "この Claude 履歴は要約だけで、直接 Resume できる実体ファイルがありません。別の履歴を選ぶか、別エージェントへの引き継ぎを使ってください。";
   }
   return null;
+}
+
+function isSummaryOnlyClaudeSession(session: CrsmSessionEntry): boolean {
+  return session.kind === "claude" && !session.transcript_path && Boolean(session.summary_file);
+}
+
+function sessionKey(session: CrsmSessionEntry | undefined): string | null {
+  return session ? `${session.kind}:${session.id}` : null;
+}
+
+function canFastDirectResume(session: CrsmSessionEntry): boolean {
+  return Boolean(
+    session.transcript_path
+      && cachedCrsmSessionsFetchedAt > 0
+      && Date.now() - cachedCrsmSessionsFetchedAt <= DIRECT_RESUME_FAST_CACHE_MS,
+  );
 }
 
 async function resolveDirectResumeSession(selected: CrsmSessionEntry): Promise<CrsmSessionEntry> {
@@ -345,10 +376,18 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
   const [loadingMore, setLoadingMore] = useState(false);
   const [cwdFilters, setCwdFilters] = useState<string[]>([]);
   const [showAllCwds, setShowAllCwds] = useState(false);
+  const [summaryOnlyConfirmKey, setSummaryOnlyConfirmKey] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
   const requestIdRef = useRef(0);
+  const selectedKeyRef = useRef<string | null>(null);
+  const pendingSelectionKeyRef = useRef<string | null>(null);
+  const cwdFilterTouchedRef = useRef(false);
+  const cwdFilterAutoAppliedRef = useRef(false);
   const activeWorkspace = useWorkspaceListStore((s) => s.getActiveWorkspace());
   const activePaneId = useUiStore((s) => s.activePaneId);
+  const activePaneMetadataCwd = usePaneMetadataStore((s) =>
+    activePaneId ? s.metadata[activePaneId]?.cwd : undefined,
+  );
   const addPaneToWorkspaceWithOptions = useWorkspaceLayoutStore((s) => s.addPaneToWorkspaceWithOptions);
 
   // Per-kind visibility from Settings (right-side gear menu). When the
@@ -393,6 +432,11 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
     setSessionFilter("all");
     setCwdFilters([]);
     setShowAllCwds(false);
+    setSummaryOnlyConfirmKey(null);
+    selectedKeyRef.current = null;
+    pendingSelectionKeyRef.current = null;
+    cwdFilterTouchedRef.current = false;
+    cwdFilterAutoAppliedRef.current = false;
     if (listRef.current) {
       listRef.current.scrollTop = 0;
     }
@@ -403,6 +447,7 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
     const requestId = requestIdRef.current + 1;
     requestIdRef.current = requestId;
     const applySessions = (nextSessions: CrsmSessionEntry[]) => {
+      pendingSelectionKeyRef.current = selectedKeyRef.current;
       setSessions(nextSessions);
       setDeepLoaded(cachedCrsmSessionsIsDeep);
       setError(cachedCrsmSessionsError ? `CRSM cache fallback: ${cachedCrsmSessionsError}` : null);
@@ -446,6 +491,17 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
     }
   }, [enabledTargets, targetKind]);
 
+  const activePaneCwd = useMemo(() => {
+    if (!activeWorkspace) return activePaneMetadataCwd;
+    const pane = activeWorkspace.panes.find((candidate) =>
+      candidate.sessionId === activePaneId || candidate.tabs.some((tab) => tab.sessionId === activePaneId),
+    );
+    const activeTab = pane?.tabs.find((tab) => tab.id === pane.activeTabId)
+      ?? pane?.tabs.find((tab) => tab.sessionId === activePaneId)
+      ?? pane?.tabs[0];
+    return activePaneMetadataCwd ?? activeTab?.cwd ?? pane?.cwd;
+  }, [activePaneId, activePaneMetadataCwd, activeWorkspace]);
+
   const filteredByAgent = useMemo(() => {
     const visible = sessions.filter((session) => enabledKinds.has(session.kind));
     if (sessionFilter === "all") return visible;
@@ -465,6 +521,30 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
     return Array.from(map.entries()).sort((a, b) => b[1] - a[1]);
   }, [filteredByUserMsg]);
 
+  const cwdCountsForDisplay = useMemo(() => {
+    const activeKey = normalizeCwdKey(activePaneCwd);
+    if (!activeKey) return cwdCounts;
+    const activeIndex = cwdCounts.findIndex(([cwd]) => normalizeCwdKey(cwd) === activeKey);
+    if (activeIndex <= 0) return cwdCounts;
+    const next = [...cwdCounts];
+    const [active] = next.splice(activeIndex, 1);
+    return [active, ...next];
+  }, [activePaneCwd, cwdCounts]);
+
+  useEffect(() => {
+    if (!open || cwdFilterTouchedRef.current || cwdFilterAutoAppliedRef.current) return;
+    if (cwdFilters.length > 0) return;
+    const activeKey = normalizeCwdKey(activePaneCwd);
+    if (!activeKey) return;
+    const match = cwdCounts.find(([cwd]) => normalizeCwdKey(cwd) === activeKey);
+    if (!match) return;
+    cwdFilterAutoAppliedRef.current = true;
+    setCwdFilters([match[0]]);
+    setSelectedIndex(0);
+    setScrollTop(0);
+    if (listRef.current) listRef.current.scrollTop = 0;
+  }, [activePaneCwd, cwdCounts, cwdFilters.length, open]);
+
   const filteredByCwd = useMemo(() => {
     if (cwdFilters.length === 0) return filteredByUserMsg;
     const set = new Set(cwdFilters);
@@ -482,6 +562,7 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
   }, [filteredByCwd, query]);
 
   function toggleCwd(cwd: string) {
+    cwdFilterTouchedRef.current = true;
     setCwdFilters((prev) => (prev.includes(cwd) ? prev.filter((c) => c !== cwd) : [...prev, cwd]));
     setSelectedIndex(0);
     setScrollTop(0);
@@ -521,8 +602,20 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
   const virtualSessions = listed.slice(virtualStart, virtualEnd);
 
   useEffect(() => {
+    const pendingKey = pendingSelectionKeyRef.current;
+    if (pendingKey) {
+      pendingSelectionKeyRef.current = null;
+      const index = listed.findIndex((session) => sessionKey(session) === pendingKey);
+      setSelectedIndex(index >= 0 ? index : 0);
+      return;
+    }
     setSelectedIndex((value) => Math.min(value, Math.max(listed.length - 1, 0)));
-  }, [listed.length]);
+  }, [listed]);
+
+  useEffect(() => {
+    if (pendingSelectionKeyRef.current) return;
+    selectedKeyRef.current = sessionKey(selected);
+  }, [selected]);
 
   useEffect(() => {
     if (!open) return;
@@ -552,6 +645,12 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
       setTargetKind(defaultTargetFor(selected?.kind));
     }
   }, [selected?.kind, targetPinned]);
+
+  useEffect(() => {
+    if (summaryOnlyConfirmKey && sessionKey(selected) !== summaryOnlyConfirmKey) {
+      setSummaryOnlyConfirmKey(null);
+    }
+  }, [selected, summaryOnlyConfirmKey]);
 
   useEffect(() => {
     if (!open) return;
@@ -604,14 +703,37 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
       };
       let agentSessionId: string | undefined = selected.id;
       let launchSession = selected;
+      const selectedKey = sessionKey(selected);
 
       if (selected.kind === targetKind) {
-        const exact = await resolveDirectResumeSession(selected);
-        launchSession = exact;
-        setSessions((prev) => upsertCrsmSession(prev, exact));
-        launchEnv.MYCMUX_RESUME = targetKind;
-        launchEnv.MYCMUX_SESSION_ID = exact.id;
-        agentSessionId = exact.id;
+        if (isSummaryOnlyClaudeSession(selected)) {
+          if (summaryOnlyConfirmKey !== selectedKey) {
+            setSummaryOnlyConfirmKey(selectedKey);
+            setError("要約から新セッションとして再開します — もう一度 Enter で実行");
+            return;
+          }
+          const result = await withTimeout(
+            crsmCreateHandoff(selected.id, selected.kind, targetKind, 20),
+            HANDOFF_TIMEOUT_MS,
+            "CRSM handoff",
+          );
+          launchEnv.MYCMUX_HANDOFF = targetKind;
+          launchEnv.MYCMUX_HANDOFF_FROM = selected.kind;
+          launchEnv.MYCMUX_HANDOFF_PROMPT_FILE = result.path;
+          launchEnv.MYCMUX_HANDOFF_FROM_SESSION = selected.id;
+          agentSessionId = undefined;
+        } else {
+          const exact = canFastDirectResume(selected)
+            ? selected
+            : await resolveDirectResumeSession(selected);
+          launchSession = exact;
+          if (exact !== selected) {
+            setSessions((prev) => upsertCrsmSession(prev, exact));
+          }
+          launchEnv.MYCMUX_RESUME = targetKind;
+          launchEnv.MYCMUX_SESSION_ID = exact.id;
+          agentSessionId = exact.id;
+        }
       } else {
         const result = await withTimeout(
           crsmCreateHandoff(selected.id, selected.kind, targetKind, 20),
@@ -690,6 +812,7 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
                   listRef.current.scrollTop = 0;
                 }
                 setTargetPinned(false);
+                cwdFilterTouchedRef.current = true;
                 setCwdFilters([]);
               }}
             >
@@ -697,10 +820,10 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
             </button>
           ))}
         </div>
-        {cwdCounts.length > 0 ? (
+        {cwdCountsForDisplay.length > 0 ? (
           <div style={styles.cwdRow}>
             <span style={styles.cwdLabel}>CWD</span>
-            {(showAllCwds ? cwdCounts : cwdCounts.slice(0, TOP_CWD_CHIPS)).map(([cwd, count]) => {
+            {(showAllCwds ? cwdCountsForDisplay : cwdCountsForDisplay.slice(0, TOP_CWD_CHIPS)).map(([cwd, count]) => {
               const active = cwdFilters.includes(cwd);
               return (
                 <button
@@ -715,17 +838,24 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
                 </button>
               );
             })}
-            {cwdCounts.length > TOP_CWD_CHIPS ? (
+            {cwdCountsForDisplay.length > TOP_CWD_CHIPS ? (
               <button
                 type="button"
                 style={styles.cwdMoreToggle}
                 onClick={() => setShowAllCwds((v) => !v)}
               >
-                {showAllCwds ? "閉じる ▴" : `他 ${cwdCounts.length - TOP_CWD_CHIPS} 件 ▾`}
+                {showAllCwds ? "閉じる ▴" : `他 ${cwdCountsForDisplay.length - TOP_CWD_CHIPS} 件 ▾`}
               </button>
             ) : null}
             {cwdFilters.length > 0 ? (
-              <button type="button" style={styles.cwdClear} onClick={() => setCwdFilters([])}>
+              <button
+                type="button"
+                style={styles.cwdClear}
+                onClick={() => {
+                  cwdFilterTouchedRef.current = true;
+                  setCwdFilters([]);
+                }}
+              >
                 クリア
               </button>
             ) : null}
@@ -785,6 +915,9 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
                   ) : null}
                   {(session.incomplete_tasks?.length ?? 0) > 0 ? (
                     <span style={styles.itemRow2Tag}>☐ {session.incomplete_tasks.length}</span>
+                  ) : null}
+                  {isSummaryOnlyClaudeSession(session) ? (
+                    <span style={styles.itemRow2Tag}>要約のみ</span>
                   ) : null}
                   {session.summary_file ? <span style={styles.itemRow2Tag}>📄</span> : null}
                 </span>
