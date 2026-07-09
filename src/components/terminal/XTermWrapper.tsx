@@ -3,6 +3,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { SearchAddon } from "@xterm/addon-search";
+import { Unicode11Addon } from "@xterm/addon-unicode11";
 import "@xterm/xterm/css/xterm.css";
 import { open } from "@tauri-apps/plugin-shell";
 import {
@@ -199,7 +200,7 @@ function minContrastFor(mediaActive: boolean): number {
 }
 
 // Cache terminal config globally - fetched once, reused across all panes
-let cachedConfig: { theme: ITheme; fontSize: number; fontFamily: string } | null = null;
+let cachedConfig: { theme: ITheme; fontSize: number; fontFamily: string; windowsBuildNumber: number | null } | null = null;
 let configPromise: Promise<void> | null = null;
 
 const TERMINAL_SNAPSHOT_SCAN_MULTIPLIER = 4;
@@ -725,6 +726,7 @@ function ensureConfigLoaded(): Promise<void> {
         theme: buildThemeFromConfig(cfg),
         fontSize,
         fontFamily: `'${cfg.font_family}', monospace`,
+        windowsBuildNumber: cfg.windows_build_number,
       };
     })
     .catch(() => {
@@ -1783,6 +1785,8 @@ export default memo(function XTermWrapper({
       const initFontSize = resolveTerminalFontSize(baseFontSize, formatsCodexOutput, fontSize !== undefined);
       const initFontFamily = resolveTerminalFontFamily(baseFontFamily, formatsCodexOutput, fontFamily !== undefined);
 
+      const windowsBuildNumber = cfg?.windowsBuildNumber ?? undefined;
+
       term = new Terminal({
         cursorBlink: true,
         cursorStyle: "block",
@@ -1796,12 +1800,16 @@ export default memo(function XTermWrapper({
         customGlyphs: true,
         theme: initTheme,
         allowTransparency: true,
+        allowProposedApi: true,
         altClickMovesCursor: false,
         macOptionClickForcesSelection: true,
         scrollback: 5000,
         smoothScrollDuration: 0,
         rightClickSelectsWord: true,
         minimumContrastRatio: minContrastFor(mediaBackgroundActive),
+        ...(windowsBuildNumber !== undefined
+          ? { windowsPty: { backend: "conpty", buildNumber: windowsBuildNumber } }
+          : {}),
       });
       termRef.current = term;
 
@@ -1809,9 +1817,12 @@ export default memo(function XTermWrapper({
       fitAddonRef.current = fitAddon;
       const searchAddon = new SearchAddon();
       searchAddonRef.current = searchAddon;
+      const unicode11Addon = new Unicode11Addon();
 
       term.loadAddon(fitAddon);
       term.loadAddon(searchAddon);
+      term.loadAddon(unicode11Addon);
+      term.unicode.activeVersion = "11";
       term.loadAddon(new WebLinksAddon((_e, uri) => {
         if (onUrlClick) {
           onUrlClick(uri);

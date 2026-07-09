@@ -205,6 +205,7 @@ export interface TerminalConfig {
   background: string;
   foreground: string;
   ansi: string[];
+  windows_build_number: number | null;
 }
 
 export async function getTerminalConfig(): Promise<TerminalConfig> {

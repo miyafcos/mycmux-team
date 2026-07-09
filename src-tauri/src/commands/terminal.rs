@@ -17,10 +17,21 @@ pub struct TerminalConfigPayload {
     pub background: String,
     pub foreground: String,
     pub ansi: Vec<String>,
+    pub windows_build_number: Option<u32>,
 }
 
 fn rgb_hex(c: [u8; 3]) -> String {
     format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2])
+}
+
+#[cfg(windows)]
+fn windows_build_number() -> Option<u32> {
+    sysinfo::System::kernel_version().and_then(|v| v.parse::<u32>().ok())
+}
+
+#[cfg(not(windows))]
+fn windows_build_number() -> Option<u32> {
+    None
 }
 
 #[tauri::command(async)]
@@ -34,6 +45,7 @@ pub fn get_terminal_config() -> TerminalConfigPayload {
         background: rgb_hex(cfg.colors.background),
         foreground: rgb_hex(cfg.colors.foreground),
         ansi: cfg.colors.ansi.iter().map(|c| rgb_hex(*c)).collect(),
+        windows_build_number: windows_build_number(),
     }
 }
 
