@@ -10,7 +10,7 @@ import { reconcileSplitColumnsForPanes } from "../../lib/layoutColumns";
 import { focusController } from "../../lib/focusController";
 import { evictTerminalCache } from "../terminal/XTermWrapper";
 import TerminalPane from "./TerminalPane";
-import { ErrorBoundary } from "../layout/ErrorBoundary";
+import ErrorBoundary from "../common/ErrorBoundary";
 
 const MAX_MOUNTED_WORKSPACES = 3;
 const RESTORE_MOUNT_DELAY_MS = 650;
