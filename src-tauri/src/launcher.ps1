@@ -41,11 +41,147 @@ function Write-MycmuxSessionMapping {
   $mapDir = Join-Path $HOME ".mycmux\pane-sessions"
   New-Item -ItemType Directory -Force -Path $mapDir | Out-Null
   $mapPath = Join-Path $mapDir "$PaneId.txt"
+  $encoding = New-Object System.Text.UTF8Encoding($false)
   if ([string]::IsNullOrWhiteSpace($Kind)) {
-    Set-Content -LiteralPath $mapPath -Value $SessionId -Encoding UTF8
+    $content = $SessionId
   } else {
-    Set-Content -LiteralPath $mapPath -Value ("{0}:{1}" -f $Kind, $SessionId) -Encoding UTF8
+    $content = "{0}:{1}" -f $Kind, $SessionId
   }
+  [System.IO.File]::WriteAllText($mapPath, $content + [Environment]::NewLine, $encoding)
+}
+
+function ConvertTo-MycmuxProjectPath {
+  param([Parameter(Mandatory = $true)][string]$Path)
+  if ($Path -match "^/([a-zA-Z])/(.*)$") {
+    return ("{0}:\{1}" -f $Matches[1].ToUpperInvariant(), $Matches[2].Replace("/", "\"))
+  }
+  return $Path
+}
+
+function Get-MycmuxClaudeProjectDir {
+  $cwd = ConvertTo-MycmuxProjectPath (Get-Location).Path
+  $mangled = $cwd -replace "[:\\/]", "-"
+  return Join-Path (Join-Path $HOME ".claude\projects") $mangled
+}
+
+function Get-MycmuxClaudeCodexProjectDir {
+  $cwd = ConvertTo-MycmuxProjectPath (Get-Location).Path
+  $mangled = $cwd -replace "[:\\/]", "-"
+  return Join-Path (Join-Path $HOME ".claude-codex\config\projects") $mangled
+}
+
+function Get-MycmuxStableSessionId {
+  param([string]$ProjectDir)
+  if ($env:MYCMUX_TAB_ID) {
+    $candidate = $env:MYCMUX_TAB_ID
+    if ([string]::IsNullOrWhiteSpace($ProjectDir) -or -not (Test-Path -LiteralPath (Join-Path $ProjectDir "$candidate.jsonl"))) {
+      return $candidate
+    }
+  }
+  while ($true) {
+    $candidate = ([guid]::NewGuid()).ToString().ToLowerInvariant()
+    if ([string]::IsNullOrWhiteSpace($ProjectDir) -or -not (Test-Path -LiteralPath (Join-Path $ProjectDir "$candidate.jsonl"))) {
+      return $candidate
+    }
+  }
+}
+
+function Start-MycmuxSessionTracking {
+  param(
+    [string]$PaneId,
+    [Parameter(Mandatory = $true)][string]$Kind,
+    [string]$ProjectDir
+  )
+  if ([string]::IsNullOrWhiteSpace($PaneId)) {
+    return
+  }
+  $homeDir = $HOME
+  Start-Job -ArgumentList $PaneId, $Kind, $ProjectDir, $homeDir -ScriptBlock {
+    param($PaneId, $Kind, $ProjectDir, $HomeDir)
+    Start-Sleep -Seconds 4
+    if ($Kind -eq "codex") {
+      $searchDir = Join-Path $HomeDir ".codex\sessions"
+      if (-not (Test-Path -LiteralPath $searchDir)) { return }
+      $latest = Get-ChildItem -LiteralPath $searchDir -Recurse -Filter "rollout-*.jsonl" -File -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTimeUtc -Descending |
+        Select-Object -First 1
+      if ($null -eq $latest) { return }
+      $match = [regex]::Match([System.IO.Path]::GetFileNameWithoutExtension($latest.Name), "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+      if (-not $match.Success) { return }
+      $sessionId = $match.Value
+    } else {
+      if ([string]::IsNullOrWhiteSpace($ProjectDir) -or -not (Test-Path -LiteralPath $ProjectDir)) { return }
+      $latest = Get-ChildItem -LiteralPath $ProjectDir -Filter "*.jsonl" -File -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTimeUtc -Descending |
+        Select-Object -First 1
+      if ($null -eq $latest) { return }
+      $sessionId = [System.IO.Path]::GetFileNameWithoutExtension($latest.Name)
+    }
+    if ([string]::IsNullOrWhiteSpace($sessionId)) { return }
+    $mapDir = Join-Path $HomeDir ".mycmux\pane-sessions"
+    New-Item -ItemType Directory -Force -Path $mapDir | Out-Null
+    $mapPath = Join-Path $mapDir "$PaneId.txt"
+    $encoding = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($mapPath, ("{0}:{1}" -f $Kind, $sessionId) + [Environment]::NewLine, $encoding)
+  } | Out-Null
+}
+
+function Start-MycmuxCommandSessionTracking {
+  param(
+    [Parameter(Mandatory = $true)][string]$CommandText,
+    [string]$PaneId
+  )
+  if ([string]::IsNullOrWhiteSpace($PaneId)) {
+    return
+  }
+  if ($CommandText -like "*claude-codex*") {
+    Start-MycmuxSessionTracking $PaneId "claude-codex" (Get-MycmuxClaudeCodexProjectDir)
+  } elseif (($CommandText -eq "claude" -or $CommandText.StartsWith("claude ")) -and $CommandText -notmatch "(^|\s)--session-id(=|\s)") {
+    Start-MycmuxSessionTracking $PaneId "claude" (Get-MycmuxClaudeProjectDir)
+  } elseif ($CommandText -like "*codex*") {
+    Start-MycmuxSessionTracking $PaneId "codex" $null
+  }
+}
+
+function Test-MycmuxClaudeNeedsNewSessionId {
+  param([Parameter(Mandatory = $true)][string]$CommandText)
+  $trimmed = $CommandText.Trim()
+  if (-not ($trimmed -eq "claude" -or $trimmed.StartsWith("claude "))) {
+    return $false
+  }
+  return $trimmed -notmatch "(^|\s)(--resume(=|\s)|--continue(=|\s)|--session-id(=|\s)|-r(=|\s|$))"
+}
+
+function Add-MycmuxClaudeSessionIdToCommandText {
+  param([Parameter(Mandatory = $true)][string]$CommandText)
+  if (-not (Test-MycmuxClaudeNeedsNewSessionId $CommandText)) {
+    return $CommandText
+  }
+  $projectDir = Get-MycmuxClaudeProjectDir
+  $sid = Get-MycmuxStableSessionId $projectDir
+  if ([string]::IsNullOrWhiteSpace($sid)) {
+    return $CommandText
+  }
+  Write-MycmuxSessionMapping $env:MYCMUX_PANE_SESSION_ID "claude" $sid
+  return "claude --session-id $sid$($CommandText.Substring(6))"
+}
+
+function Add-MycmuxClaudeSessionIdToCommandArray {
+  param([Parameter(Mandatory = $true)][string[]]$Command)
+  $commandText = $Command -join " "
+  if (-not (Test-MycmuxClaudeNeedsNewSessionId $commandText)) {
+    return $Command
+  }
+  $projectDir = Get-MycmuxClaudeProjectDir
+  $sid = Get-MycmuxStableSessionId $projectDir
+  if ([string]::IsNullOrWhiteSpace($sid)) {
+    return $Command
+  }
+  Write-MycmuxSessionMapping $env:MYCMUX_PANE_SESSION_ID "claude" $sid
+  if ($Command.Count -gt 1) {
+    return @("claude", "--session-id", $sid) + $Command[1..($Command.Count - 1)]
+  }
+  return @("claude", "--session-id", $sid)
 }
 
 function Invoke-MycmuxCommandArray {
@@ -100,6 +236,7 @@ function Invoke-MycmuxResumeFromEnv {
         Write-MycmuxSessionMapping $env:MYCMUX_PANE_SESSION_ID "claude-codex" $env:MYCMUX_SESSION_ID
         Invoke-MycmuxCommandArray -Command @("claude-codex", "--resume", $env:MYCMUX_SESSION_ID)
       } else {
+        Start-MycmuxSessionTracking $env:MYCMUX_PANE_SESSION_ID "claude-codex" (Get-MycmuxClaudeCodexProjectDir)
         Invoke-MycmuxCommandArray -Command @("claude-codex", "--continue")
       }
       return $true
@@ -107,8 +244,15 @@ function Invoke-MycmuxResumeFromEnv {
     "claude*" {
       if ($env:MYCMUX_SESSION_ID) {
         Write-MycmuxSessionMapping $env:MYCMUX_PANE_SESSION_ID "claude" $env:MYCMUX_SESSION_ID
-        Invoke-MycmuxCommandArray -Command @("claude", "--dangerously-skip-permissions", "--permission-mode", "bypassPermissions", "--resume", $env:MYCMUX_SESSION_ID)
+        $projectDir = Get-MycmuxClaudeProjectDir
+        if (Test-Path -LiteralPath (Join-Path $projectDir "$($env:MYCMUX_SESSION_ID).jsonl")) {
+          Invoke-MycmuxCommandArray -Command @("claude", "--dangerously-skip-permissions", "--permission-mode", "bypassPermissions", "--resume", $env:MYCMUX_SESSION_ID)
+        } else {
+          Start-MycmuxSessionTracking $env:MYCMUX_PANE_SESSION_ID "claude" $projectDir
+          Invoke-MycmuxCommandArray -Command @("claude", "--dangerously-skip-permissions", "--permission-mode", "bypassPermissions", "--continue")
+        }
       } else {
+        Start-MycmuxSessionTracking $env:MYCMUX_PANE_SESSION_ID "claude" (Get-MycmuxClaudeProjectDir)
         Invoke-MycmuxCommandArray -Command @("claude", "--dangerously-skip-permissions", "--permission-mode", "bypassPermissions", "--continue")
       }
       return $true
@@ -118,6 +262,7 @@ function Invoke-MycmuxResumeFromEnv {
         Write-MycmuxSessionMapping $env:MYCMUX_PANE_SESSION_ID "codex" $env:MYCMUX_SESSION_ID
         Invoke-MycmuxCommandArray -Command @("codex", "resume", "--no-alt-screen", $env:MYCMUX_SESSION_ID)
       } else {
+        Start-MycmuxSessionTracking $env:MYCMUX_PANE_SESSION_ID "codex" $null
         Invoke-MycmuxCommandArray -Command @("codex", "resume", "--no-alt-screen", "--last")
       }
       return $true
@@ -164,6 +309,8 @@ function Invoke-MycmuxCustomCommand {
   if ([string]::IsNullOrWhiteSpace($cmd)) {
     return
   }
+  $cmd = Add-MycmuxClaudeSessionIdToCommandText $cmd
+  Start-MycmuxCommandSessionTracking $cmd $env:MYCMUX_PANE_SESSION_ID
   Invoke-Expression $cmd
 }
 
@@ -194,11 +341,13 @@ function Invoke-MycmuxOption {
   if (($Option.Command -join " ") -like "*fugu*") {
     Import-MycmuxUserEnvIfMissing "FUGU_API_KEY"
   }
-  $exe = $Option.Command[0]
+  $command = Add-MycmuxClaudeSessionIdToCommandArray $Option.Command
+  $exe = $command[0]
   $args = @()
-  if ($Option.Command.Count -gt 1) {
-    $args = $Option.Command[1..($Option.Command.Count - 1)]
+  if ($command.Count -gt 1) {
+    $args = $command[1..($command.Count - 1)]
   }
+  Start-MycmuxCommandSessionTracking ($command -join " ") $env:MYCMUX_PANE_SESSION_ID
   & $exe @args
 }
 

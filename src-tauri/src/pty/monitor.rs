@@ -90,6 +90,78 @@ fn min_created_local_date(
     Some((date.year(), date.month(), date.day()))
 }
 
+fn jsonl_head_cwd(path: &std::path::Path) -> Option<String> {
+    let file = std::fs::File::open(path).ok()?;
+    let lines = std::io::BufReader::new(file).lines().take(32);
+    for line in lines.map_while(Result::ok) {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {
+            continue;
+        };
+        if let Some(cwd) = value.get("cwd").and_then(|cwd| cwd.as_str()) {
+            if !cwd.trim().is_empty() {
+                return Some(cwd.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn newest_jsonl_candidates_in_dir(
+    project_dir: &std::path::Path,
+    min_created: Option<std::time::SystemTime>,
+) -> Vec<(String, std::path::PathBuf, std::time::SystemTime)> {
+    let Ok(entries) = std::fs::read_dir(project_dir) else {
+        return Vec::new();
+    };
+    let mut candidates = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        if !created_at_or_after(&meta, min_created) {
+            continue;
+        }
+        let Ok(mtime) = meta.modified() else {
+            continue;
+        };
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        candidates.push((stem.to_string(), path, mtime));
+    }
+    candidates.sort_by(|left, right| right.2.cmp(&left.2));
+    candidates
+}
+
+fn newest_jsonl_session_id_for_cwd_in_dir(
+    project_dir: &std::path::Path,
+    cwd: &str,
+    min_created: Option<std::time::SystemTime>,
+) -> Option<String> {
+    let candidates = newest_jsonl_candidates_in_dir(project_dir, min_created);
+    let newest = candidates.first().map(|(id, _, _)| id.clone());
+    let cwd_key = normalize_cwd_key(cwd);
+    let mut readable_cwd_count = 0;
+    for (session_id, path, _) in candidates {
+        let Some(candidate_cwd) = jsonl_head_cwd(&path) else {
+            continue;
+        };
+        readable_cwd_count += 1;
+        if normalize_cwd_key(&candidate_cwd) == cwd_key {
+            return Some(session_id);
+        }
+    }
+    if readable_cwd_count == 0 {
+        newest
+    } else {
+        None
+    }
+}
+
 /// Detect the active Claude Code session ID by finding the most recently
 /// modified `.jsonl` file in `~/.claude/projects/<mangled-cwd>/`,
 /// restricted to files created after the agent process started.
@@ -104,25 +176,15 @@ fn detect_claude_session_id(
         return None;
     }
 
-    let mut best: Option<(String, std::time::SystemTime)> = None;
-    for entry in std::fs::read_dir(&project_dir).ok()?.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
-            if let Ok(meta) = entry.metadata() {
-                if !created_at_or_after(&meta, min_created) {
-                    continue;
-                }
-                if let Ok(mtime) = meta.modified() {
-                    if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                        if best.is_none() || mtime > best.as_ref().unwrap().1 {
-                            best = Some((stem.to_string(), mtime));
-                        }
-                    }
-                }
-            }
-        }
-    }
-    best.map(|(id, _)| id)
+    detect_claude_session_id_in_dir(&project_dir, cwd, min_created)
+}
+
+fn detect_claude_session_id_in_dir(
+    project_dir: &std::path::Path,
+    cwd: &str,
+    min_created: Option<std::time::SystemTime>,
+) -> Option<String> {
+    newest_jsonl_session_id_for_cwd_in_dir(project_dir, cwd, min_created)
 }
 
 fn detect_claude_codex_session_id(
@@ -149,25 +211,15 @@ fn detect_claude_codex_session_id(
         return None;
     }
 
-    let mut best: Option<(String, std::time::SystemTime)> = None;
-    for entry in std::fs::read_dir(&project_dir).ok()?.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
-            if let Ok(meta) = entry.metadata() {
-                if !created_at_or_after(&meta, min_created) {
-                    continue;
-                }
-                if let Ok(mtime) = meta.modified() {
-                    if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                        if best.is_none() || mtime > best.as_ref().unwrap().1 {
-                            best = Some((stem.to_string(), mtime));
-                        }
-                    }
-                }
-            }
-        }
-    }
-    best.map(|(id, _)| id)
+    detect_claude_codex_session_id_in_dir(&project_dir, cwd, min_created)
+}
+
+fn detect_claude_codex_session_id_in_dir(
+    project_dir: &std::path::Path,
+    cwd: &str,
+    min_created: Option<std::time::SystemTime>,
+) -> Option<String> {
+    newest_jsonl_session_id_for_cwd_in_dir(project_dir, cwd, min_created)
 }
 
 fn normalize_cwd_key(cwd: &str) -> String {
@@ -1086,4 +1138,92 @@ pub fn start_monitor(
             git_branch_cwd.retain(|k, _| active_keys.contains(k));
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    fn write_jsonl(path: &std::path::Path, lines: &[serde_json::Value]) {
+        let contents = lines
+            .iter()
+            .map(serde_json::Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        std::fs::write(path, contents).unwrap();
+    }
+
+    fn write_no_cwd_jsonl(path: &std::path::Path) {
+        write_jsonl(path, &[serde_json::json!({"type": "last-prompt"})]);
+    }
+
+    fn write_claude_jsonl(path: &std::path::Path, cwd: &str) {
+        write_jsonl(
+            path,
+            &[
+                serde_json::json!({"type": "last-prompt"}),
+                serde_json::json!({"type": "mode", "mode": "default"}),
+                serde_json::json!({"type": "permission-mode", "permissionMode": "default"}),
+                serde_json::json!({"type": "user", "cwd": cwd, "sessionId": "sid"}),
+            ],
+        );
+    }
+
+    fn wait_for_distinct_mtime() {
+        std::thread::sleep(Duration::from_millis(25));
+    }
+
+    #[test]
+    fn detect_claude_session_id_in_dir_uses_matching_cwd_not_newest() {
+        let dir = tempfile::tempdir().unwrap();
+        write_claude_jsonl(
+            &dir.path().join("matching-session.jsonl"),
+            r"C:\Users\miyaz\work",
+        );
+        wait_for_distinct_mtime();
+        write_claude_jsonl(
+            &dir.path().join("newer-other-cwd.jsonl"),
+            r"C:\Users\miyaz\other",
+        );
+
+        assert_eq!(
+            detect_claude_session_id_in_dir(dir.path(), r"C:/Users/miyaz/work", None).as_deref(),
+            Some("matching-session")
+        );
+    }
+
+    #[test]
+    fn detect_claude_codex_session_id_in_dir_falls_back_to_newest_when_no_cwd_is_readable() {
+        let dir = tempfile::tempdir().unwrap();
+        write_no_cwd_jsonl(&dir.path().join("older-session.jsonl"));
+        wait_for_distinct_mtime();
+        write_no_cwd_jsonl(&dir.path().join("newer-session.jsonl"));
+
+        assert_eq!(
+            detect_claude_codex_session_id_in_dir(dir.path(), r"C:\Users\miyaz\work", None)
+                .as_deref(),
+            Some("newer-session")
+        );
+    }
+
+    #[test]
+    fn detect_claude_session_id_in_dir_returns_none_when_readable_cwds_do_not_match() {
+        let dir = tempfile::tempdir().unwrap();
+        write_claude_jsonl(
+            &dir.path().join("first-session.jsonl"),
+            r"C:\Users\miyaz\one",
+        );
+        wait_for_distinct_mtime();
+        write_claude_jsonl(
+            &dir.path().join("second-session.jsonl"),
+            r"C:\Users\miyaz\two",
+        );
+
+        assert_eq!(
+            detect_claude_session_id_in_dir(dir.path(), r"C:\Users\miyaz\three", None),
+            None
+        );
+    }
 }

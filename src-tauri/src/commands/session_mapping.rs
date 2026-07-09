@@ -42,7 +42,7 @@ pub(crate) fn is_agent_session_kind(value: &str) -> bool {
 }
 
 fn parse_agent_session_mapping(contents: &str) -> Option<AgentSessionMapping> {
-    let trimmed = contents.trim();
+    let trimmed = contents.trim_start_matches('\u{feff}').trim();
     if trimmed.is_empty() {
         return None;
     }
@@ -226,6 +226,13 @@ mod tests {
     #[test]
     fn parse_agent_session_mapping_with_kind() {
         let mapping = parse_agent_session_mapping("claude:abc-123\n").unwrap();
+        assert_eq!(mapping.agent_kind.as_deref(), Some("claude"));
+        assert_eq!(mapping.session_id, "abc-123");
+    }
+
+    #[test]
+    fn parse_agent_session_mapping_with_bom_prefixed_kind() {
+        let mapping = parse_agent_session_mapping("\u{feff}claude:abc-123\n").unwrap();
         assert_eq!(mapping.agent_kind.as_deref(), Some("claude"));
         assert_eq!(mapping.session_id, "abc-123");
     }

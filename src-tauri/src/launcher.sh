@@ -111,11 +111,39 @@ PY
 }
 
 __stable_new_session_id() {
+  local project_dir="${1:-}"
+  local candidate
   if [ -n "$MYCMUX_TAB_ID" ]; then
-    echo "$MYCMUX_TAB_ID"
-  else
-    __make_uuid
+    candidate="$MYCMUX_TAB_ID"
+    if [ -z "$project_dir" ] || [ ! -e "$project_dir/$candidate.jsonl" ]; then
+      echo "$candidate"
+      return
+    fi
   fi
+
+  while true; do
+    candidate="$(__make_uuid)" || return
+    [ -z "$candidate" ] && return
+    [ -n "$project_dir" ] && [ -e "$project_dir/$candidate.jsonl" ] && continue
+    echo "$candidate"
+    return
+  done
+}
+
+__claude_needs_new_session_id() {
+  local cmd="$1"
+  case "$cmd" in
+    claude|claude\ *) ;;
+    *) return 1 ;;
+  esac
+
+  case " $cmd " in
+    *" --resume "*|*" --resume="*|*" --continue "*|*" --continue="*|*" --session-id "*|*" --session-id="*|*" -r "*|*" -r="*)
+      return 1
+      ;;
+  esac
+
+  return 0
 }
 
 __trust_claude_cwd() {
@@ -427,14 +455,15 @@ if [ -n "$cmd" ]; then
   if [[ "$cmd" == *"fugu"* ]]; then
     __ensure_fugu_env
   fi
-  if [[ "$cmd" == claude\ * ]]; then
+  if [[ "$cmd" == claude || "$cmd" == claude\ * ]]; then
     __trust_claude_cwd
   fi
-  if [[ "$cmd" == claude\ --dangerously-skip-permissions* || "$cmd" == claude\ --allow-dangerously-skip-permissions* ]] && [[ "$cmd" != *"--resume"* ]] && [[ "$cmd" != *"--continue"* ]] && [[ "$cmd" != *"--session-id"* ]]; then
-    __sid="$(__stable_new_session_id)"
+  if __claude_needs_new_session_id "$cmd"; then
+    __project_dir="$(__get_claude_project_dir)"
+    __sid="$(__stable_new_session_id "$__project_dir")"
     if [ -n "$__sid" ]; then
       __write_session_mapping "$MYCMUX_PANE_SESSION_ID" "claude" "$__sid"
-      cmd="$cmd --session-id $__sid"
+      cmd="claude --session-id $__sid${cmd#claude}"
     fi
   fi
   __track_command_session "$cmd" "$MYCMUX_PANE_SESSION_ID"

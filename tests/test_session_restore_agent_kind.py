@@ -57,8 +57,17 @@ def test_agent_kind_round_trip_contract_remains_wired() -> None:
 
     for snippet in [
         "function Write-MycmuxSessionMapping",
+        "[System.IO.File]::WriteAllText",
+        "function Get-MycmuxClaudeProjectDir",
+        "function Get-MycmuxClaudeCodexProjectDir",
+        "function Get-MycmuxStableSessionId",
+        "function Start-MycmuxSessionTracking",
+        "function Start-MycmuxCommandSessionTracking",
         "function Invoke-MycmuxResumeFromEnv",
         "MYCMUX_RESUME",
+        'Start-MycmuxSessionTracking $env:MYCMUX_PANE_SESSION_ID "claude-codex"',
+        'Start-MycmuxSessionTracking $env:MYCMUX_PANE_SESSION_ID "claude"',
+        'Start-MycmuxSessionTracking $env:MYCMUX_PANE_SESSION_ID "codex"',
         '@("codex", "resume", "--no-alt-screen", $env:MYCMUX_SESSION_ID)',
     ]:
         assert_contains(launcher_ps1, snippet, "src-tauri/src/launcher.ps1")
