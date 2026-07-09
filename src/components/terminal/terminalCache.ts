@@ -2,6 +2,7 @@ import type { FitAddon } from "@xterm/addon-fit";
 import type { SearchAddon } from "@xterm/addon-search";
 import type { IMarker, Terminal } from "@xterm/xterm";
 import { writeToSession, type FrontendDataBatch } from "../../lib/ipc";
+import { useToastStore } from "../../stores/toastStore";
 import {
   TERMINAL_BATCH_RETAINED_MAX_BYTES,
   trimOldestBatchesToByteCap,
@@ -31,7 +32,9 @@ export const terminalInitialReplayMarkers = new Map<string, IMarker>();
 
 const PASTE_CHUNK = 1024;
 const TERMINAL_RAW_TAIL_MAX_BYTES = 32 * 1024;
+const INPUT_FAILURE_TOAST_DEBOUNCE_MS = 3000;
 const terminalInputQueues = new Map<string, Promise<void>>();
+const terminalInputFailureToastAt = new Map<string, number>();
 const terminalEvictionCleanups = new Set<(sessionId: string) => void>();
 
 // Sessions whose cache slot was evicted while their Terminal was still mounted
@@ -61,7 +64,15 @@ export function enqueueSessionWrite(sessionId: string, data: string): void {
     .then(() => writeToSession(sessionId, data));
   terminalInputQueues.set(sessionId, next);
   next
-    .catch(console.error)
+    .catch((error) => {
+      console.error(error);
+      const now = Date.now();
+      const lastToastAt = terminalInputFailureToastAt.get(sessionId) ?? 0;
+      if (now - lastToastAt >= INPUT_FAILURE_TOAST_DEBOUNCE_MS) {
+        terminalInputFailureToastAt.set(sessionId, now);
+        useToastStore.getState().pushToast("Terminal input failed to send", "error");
+      }
+    })
     .finally(() => {
       if (terminalInputQueues.get(sessionId) === next) {
         terminalInputQueues.delete(sessionId);
@@ -173,6 +184,7 @@ export function evictTerminalCache(sessionId: string): void {
   terminalWriteCounters.delete(sessionId);
   terminalInputQueues.delete(sessionId);
   terminalDeferredBatches.delete(sessionId);
+  terminalInputFailureToastAt.delete(sessionId);
   terminalRawTailBySession.delete(sessionId);
   terminalScrollbackResyncNeeded.delete(sessionId);
   terminalInitialReplayMarkers.get(sessionId)?.dispose();

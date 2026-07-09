@@ -32,6 +32,10 @@ import { makeSessionId } from "../../lib/constants";
 import { normalizeReadableSplitColumns, reconcileSplitColumnsForPanes } from "../../lib/layoutColumns";
 import { focusController } from "../../lib/focusController";
 import { getTerminalBufferLines, getTerminalWriteCounter, hasTerminalBuffer } from "../terminal/XTermWrapper";
+import { useToastStore } from "../../stores/toastStore";
+
+const SAVE_FAILURE_TOAST_DEBOUNCE_MS = 10000;
+let lastSaveFailureToastAt = 0;
 
 /** Transpose row-major split indices to column-major for legacy data migration */
 function transposeSplitRowsToCols(splitRows: number[][]): number[][] {
@@ -919,6 +923,11 @@ export function useWorkspacePersist() {
         .catch((err) => {
           dirty = true; // allow next trigger to retry
           console.warn("[persist] Failed to save:", err);
+          const now = Date.now();
+          if (now - lastSaveFailureToastAt >= SAVE_FAILURE_TOAST_DEBOUNCE_MS) {
+            lastSaveFailureToastAt = now;
+            useToastStore.getState().pushToast("Workspace save failed — check before restarting", "error");
+          }
           return false;
         });
       syncInFlight = run;

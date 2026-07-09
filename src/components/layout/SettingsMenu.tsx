@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import { useSettingsStore } from "../../stores/settingsStore";
+import { useToastStore } from "../../stores/toastStore";
 import { runUpdateCheck, type UpdatePhase } from "../../lib/forcedAutoUpdater";
 import { getRemoteInfo, rotateRemoteToken, type RemoteInfo } from "../../lib/ipc";
 import { getRemoteBindAll, setRemoteBindAll } from "../../lib/ipc";
@@ -136,6 +137,9 @@ export default function SettingsMenu({
       onStatus: (status) => {
         setUpdateStatus(toSettingsUpdateStatus(status.phase));
         setUpdateMsg(status.message);
+        if (status.phase === "error") {
+          useToastStore.getState().pushToast("Update check failed", "error");
+        }
       },
     });
   };

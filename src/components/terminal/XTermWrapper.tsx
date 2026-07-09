@@ -20,6 +20,7 @@ import { usePaneMetadataStore, useUiStore } from "../../stores/workspaceStore";
 import { useKeybindingStore } from "../../stores/keybindingStore";
 import { useSettingsStore } from "../../stores/settingsStore";
 import { DEFAULT_TERMINAL_FONT_FAMILY, useThemeStore } from "../../stores/themeStore";
+import { useToastStore } from "../../stores/toastStore";
 import type { ITheme } from "@xterm/xterm";
 import { markStartupSessionSettled } from "../../lib/startupSessionGate";
 import {
@@ -1772,6 +1773,7 @@ export default memo(function XTermWrapper({
       attachCachedTerminal(cached);
       void attachFrontendChannel(cached.term.cols, cached.term.rows).catch((err) => {
         console.error("[XTermWrapper] Failed to reattach session:", err);
+        useToastStore.getState().pushToast("Terminal reattach failed", "error");
       });
       return cleanup;
     }

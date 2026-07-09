@@ -28,6 +28,7 @@ import {
 } from "./lib/startupSessionGate";
 import AppShell from "./components/layout/AppShell";
 import ErrorBoundary from "./components/common/ErrorBoundary";
+import ToastHost from "./components/common/ToastHost";
 import { initDefaultShell } from "./lib/agents";
 import { startForcedAutoUpdateLoop } from "./lib/forcedAutoUpdater";
 
@@ -361,6 +362,7 @@ function App() {
     <div style={{ position: "relative", width: "100vw", height: "100vh", background: "#0a0a0a" }}>
       <ErrorBoundary>
         <AppShell uiVariant={uiVariant} />
+        <ToastHost />
       </ErrorBoundary>
       {startupMaskVisible && (
         <div
