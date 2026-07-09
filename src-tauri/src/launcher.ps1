@@ -281,3 +281,6 @@ while ($true) {
 }
 
 Invoke-MycmuxOption $Options[$selected]
+
+$localHook = Join-Path $HOME ".mycmux\bin\launcher.local.ps1"
+if (Test-Path $localHook) { . $localHook }

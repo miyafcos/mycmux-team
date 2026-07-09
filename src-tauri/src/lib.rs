@@ -72,6 +72,11 @@ fn install_launcher_script() -> Result<(), String> {
         .unwrap_or(true);
 
     if needs_write {
+        if !bin_dir.join("launcher.local.sh").exists() {
+            eprintln!(
+                "mycmux launcher.sh is managed by the app and manual edits will be overwritten. Put customizations in ~/.mycmux/bin/launcher.local.sh instead."
+            );
+        }
         std::fs::write(&target, contents)
             .map_err(|e| format!("Failed to write launcher script: {e}"))?;
     }

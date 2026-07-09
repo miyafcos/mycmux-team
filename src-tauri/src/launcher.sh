@@ -444,3 +444,5 @@ if [ -n "$cmd" ]; then
   fi
   eval "$cmd"
 fi
+
+[ -f "$HOME/.mycmux/bin/launcher.local.sh" ] && . "$HOME/.mycmux/bin/launcher.local.sh" || true
