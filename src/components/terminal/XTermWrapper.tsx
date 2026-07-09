@@ -1519,6 +1519,9 @@ export default memo(function XTermWrapper({
     }
 
     const enqueueFrontendBatch = (batch: FrontendDataBatch): void => {
+      if (batch.resync) {
+        terminalScrollbackResyncNeeded.add(sessionId);
+      }
       if (!isContainerDisplayed()) {
         void ackBatch(batch);
         return;

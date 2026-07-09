@@ -57,6 +57,7 @@ pub struct FrontendDataBatch {
     pub generation: u64,
     pub seq: u64,
     pub bytes: usize,
+    pub resync: bool,
     pub data: Vec<u8>,
 }
 
@@ -76,6 +77,7 @@ struct FrontendFlowState {
     attached: bool,
     visible: bool,
     stale_timeouts: u32,
+    dropped_since_send: bool,
     closing: bool,
 }
 
@@ -85,7 +87,11 @@ struct FrontendFlow {
 }
 
 enum FlowPermit {
-    Send { generation: u64, seq: u64 },
+    Send {
+        generation: u64,
+        seq: u64,
+        resync: bool,
+    },
     AutoConsume,
     Closed,
 }
@@ -108,6 +114,7 @@ impl FrontendFlow {
                 attached: true,
                 visible: true,
                 stale_timeouts: 0,
+                dropped_since_send: false,
                 closing: false,
             }),
             notify: Notify::new(),
@@ -126,10 +133,12 @@ impl FrontendFlow {
                     return FlowPermit::Closed;
                 }
                 if !st.attached || !st.visible || st.stale_timeouts >= FRONTEND_STALE_TIMEOUTS {
+                    st.dropped_since_send = true;
                     return FlowPermit::AutoConsume;
                 }
                 Self::forgive_expired_locked(&mut st);
                 if st.stale_timeouts >= FRONTEND_STALE_TIMEOUTS {
+                    st.dropped_since_send = true;
                     return FlowPermit::AutoConsume;
                 }
                 let under_bytes =
@@ -139,6 +148,8 @@ impl FrontendFlow {
                     let seq = st.next_seq;
                     st.next_seq = st.next_seq.saturating_add(1);
                     let generation = st.generation;
+                    let resync = st.dropped_since_send;
+                    st.dropped_since_send = false;
                     st.inflight_bytes = st.inflight_bytes.saturating_add(bytes);
                     st.inflight.push_back(InFlight {
                         generation,
@@ -146,7 +157,11 @@ impl FrontendFlow {
                         bytes,
                         sent_at: Instant::now(),
                     });
-                    return FlowPermit::Send { generation, seq };
+                    return FlowPermit::Send {
+                        generation,
+                        seq,
+                        resync,
+                    };
                 }
             }
 
@@ -249,6 +264,7 @@ impl FrontendFlow {
         st.attached = true;
         st.visible = true;
         st.stale_timeouts = 0;
+        st.dropped_since_send = false;
         self.notify.notify_waiters();
         Ok((old_channel_id, new_channel_id))
     }
@@ -481,11 +497,16 @@ impl PtySession {
                             .fetch_add(1, Ordering::Relaxed);
                         continue;
                     }
-                    FlowPermit::Send { generation, seq } => {
+                    FlowPermit::Send {
+                        generation,
+                        seq,
+                        resync,
+                    } => {
                         let msg = FrontendDataBatch {
                             generation,
                             seq,
                             bytes: batch_len,
+                            resync,
                             data: batch,
                         };
                         match forwarder_flow.send_batch(msg) {
@@ -727,8 +748,17 @@ mod tests {
     }
 
     fn expect_send(permit: FlowPermit) -> (u64, u64) {
+        let (generation, seq, _) = expect_send_with_resync(permit);
+        (generation, seq)
+    }
+
+    fn expect_send_with_resync(permit: FlowPermit) -> (u64, u64, bool) {
         match permit {
-            FlowPermit::Send { generation, seq } => (generation, seq),
+            FlowPermit::Send {
+                generation,
+                seq,
+                resync,
+            } => (generation, seq, resync),
             FlowPermit::AutoConsume => panic!("expected Send permit, got AutoConsume"),
             FlowPermit::Closed => panic!("expected Send permit, got Closed"),
         }
@@ -863,6 +893,29 @@ mod tests {
         let recovered = expect_send(flow.reserve(32).await);
         assert_eq!(recovered, (1, 3));
         assert_eq!(flow_snapshot(&flow), (1, 4, 32, 1, true, 0));
+    }
+
+    #[tokio::test]
+    async fn autoconsume_marks_next_send_for_single_resync() {
+        let flow = FrontendFlow::new(test_channel());
+        let (generation, seq1, first_resync) = expect_send_with_resync(flow.reserve(32).await);
+        assert_eq!((generation, seq1, first_resync), (1, 1, false));
+
+        force_expire_inflight(&flow);
+        let (_, seq2, second_resync) = expect_send_with_resync(flow.reserve(32).await);
+        assert_eq!((seq2, second_resync), (2, false));
+
+        force_expire_inflight(&flow);
+        assert_auto_consume(flow.reserve(32).await);
+
+        flow.ack(generation, seq1, 32);
+        flow.ack(generation, seq2, 32);
+        let (recovered_generation, seq3, resync) = expect_send_with_resync(flow.reserve(32).await);
+        assert_eq!((recovered_generation, seq3, resync), (1, 3, true));
+
+        flow.ack(recovered_generation, seq3, 32);
+        let (_, seq4, resync) = expect_send_with_resync(flow.reserve(32).await);
+        assert_eq!((seq4, resync), (4, false));
     }
 
     #[tokio::test]

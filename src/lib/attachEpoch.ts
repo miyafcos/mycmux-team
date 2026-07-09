@@ -10,6 +10,7 @@ export type FrontendDataBatch = {
   generation: number;
   seq: number;
   bytes: number;
+  resync: boolean;
   data: number[] | ArrayBuffer | Uint8Array;
 };
 
