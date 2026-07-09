@@ -4,6 +4,7 @@ mod events;
 mod fs;
 mod pty;
 mod remote;
+mod session_retention;
 mod socket;
 pub mod terminal_config;
 mod usage;
@@ -276,6 +277,13 @@ pub fn run() {
                 eprintln!("[launcher] failed to install launcher scripts: {err}");
             }
             warn_if_dual_install(&app_handle);
+            let app_data_parent = app_handle
+                .path()
+                .app_data_dir()
+                .ok()
+                .and_then(|path| path.parent().map(std::path::Path::to_path_buf));
+            let mycmux_dir = dirs::home_dir().map(|home| home.join(".mycmux"));
+            session_retention::run_startup_retention(app_data_parent, mycmux_dir);
             let ms = state.metadata_store.clone();
             pty::monitor::start_monitor(
                 app_handle.clone(),
