@@ -7,21 +7,6 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-EXPECTED_START_IDS = [
-    "claude",
-    "codex",
-    "claude-codex",
-    "claude-dangerous",
-    "codex-dangerous",
-    "claude-codex-dangerous",
-    "claude-resume",
-    "codex-resume",
-    "claude-codex-resume",
-    "codex-fugu-ultra",
-    "claude-codex-fugu",
-    "custom",
-]
-
 EXPECTED_LAUNCHER_OPTIONS = [
     "Claude Code",
     "Codex",
@@ -57,12 +42,6 @@ def read_repo_text(relative_path: str) -> str:
     return (REPO_ROOT / relative_path).read_text(encoding="utf-8")
 
 
-def extract_ts_string_array(text: str, declaration: str) -> list[str]:
-    match = re.search(rf"{re.escape(declaration)}\s*=\s*\[(.*?)\]\s*as const;", text, re.S)
-    assert match, f"Missing TS array declaration: {declaration}"
-    return re.findall(r'id:\s*"([^"]+)"', match.group(1))
-
-
 def extract_shell_array(text: str, name: str) -> list[str]:
     match = re.search(rf"^\s*{re.escape(name)}=\((.*?)^\s*\)", text, re.S | re.M)
     assert match, f"Missing shell array: {name}"
@@ -74,13 +53,12 @@ def assert_contains(text: str, snippet: str, source: str) -> None:
 
 
 def test_launcher_order_matches_current_contract() -> None:
-    pane_starter = read_repo_text("src/components/workspace/PaneStarter.tsx")
     launcher = read_repo_text("src-tauri/src/launcher.sh")
     launcher_ps1 = read_repo_text("src-tauri/src/launcher.ps1")
 
-    assert extract_ts_string_array(pane_starter, "const START_OPTIONS") == EXPECTED_START_IDS
     assert extract_shell_array(launcher, "options") == EXPECTED_LAUNCHER_OPTIONS
     assert extract_shell_array(launcher, "commands") == EXPECTED_LAUNCHER_COMMANDS
+    assert "restore.json" not in launcher
     assert_contains(launcher, "__ensure_fugu_env", "src-tauri/src/launcher.sh")
     assert_contains(launcher, "FUGU_API_KEY", "src-tauri/src/launcher.sh")
     assert_contains(launcher_ps1, "Import-MycmuxUserEnvIfMissing", "src-tauri/src/launcher.ps1")

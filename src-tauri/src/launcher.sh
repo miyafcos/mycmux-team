@@ -309,42 +309,6 @@ if [ -n "$MYCMUX_LAUNCH_TARGET" ]; then
   esac
 fi
 
-__RESTORE_FILE="$HOME/.mycmux/restore.json"
-if [ -z "$cmd" ] && [ -f "$__RESTORE_FILE" ]; then
-  __CWD="$(pwd)"
-  __RESTORE_CMD=$(python -c "
-import json, sys
-try:
-    with open(r'${__RESTORE_FILE}') as f:
-        data = json.load(f)
-    cwd = '${__CWD}'.replace('\\\\', '/').rstrip('/').lower()
-    if cwd.startswith('/') and len(cwd) > 2 and cwd[2] == '/':
-        cwd = cwd[1] + ':' + cwd[2:]
-    for key in data:
-        k = key.replace('\\\\', '/').rstrip('/').lower()
-        if k == cwd:
-            proc = (data[key] or '').lower()
-            if 'claude-codex' in proc:
-                print('claude-codex --continue')
-            elif 'claude' in proc:
-                print('claude --dangerously-skip-permissions --permission-mode bypassPermissions --continue')
-            elif 'codex' in proc:
-                print('codex resume --no-alt-screen --last')
-            sys.exit(0)
-except FileNotFoundError:
-    pass
-except Exception as e:
-    print(f'restore error: {e}', file=sys.stderr)
-" 2>/dev/null)
-
-  if [ -n "$__RESTORE_CMD" ]; then
-    if [[ "$__RESTORE_CMD" == claude\ * ]]; then
-      __trust_claude_cwd
-    fi
-    eval "$__RESTORE_CMD"
-    return 0 2>/dev/null || exit 0
-  fi
-fi
 
 if [ -z "$cmd" ]; then
   __open_menu_fd
