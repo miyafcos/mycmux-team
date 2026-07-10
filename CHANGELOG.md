@@ -4,6 +4,23 @@
 
 ---
 
+## [0.11.0-lite.1] - 2026-07-10
+
+personal v0.10.1〜v0.11.0 (品質集中パック + resume 改善) を cherry-pick 運用で反映。
+
+- Feat: **TUI 描画の安定化**。ConPTY を windowsPty 設定 + Unicode 11 幅計算で構成し、全角・絵文字を含む TUI (Claude Code 等) の描画崩れを低減。
+- Feat: **xterm.js を 6.0.0 に更新** (DECSET 2026 synchronized output 対応)。エージェントの高速出力時のちらつきを抑制。
+- Feat: **ウィンドウ位置・サイズ・最大化状態を再起動をまたいで復元**。
+- Feat: **閉じたペインをセッションごと再オープン** (Ctrl+Shift+T)。誤ってペインを閉じても直前のエージェントセッションに戻れる。
+- Feat: **パレット resume の高速化 + launcher にセッションピッカー追加**。crsm 連携で過去セッションを一覧から選んで resume (lite の launcher は従来メニュー形式のまま「Resume (pick session)」項目として統合)。
+- Feat: **セッション検出と launcher トラッキングの堅牢化**。session id 衝突時の再採番・resume 系フラグの検出を厳密化。launcher.ps1 の BOM バグも修正。
+- Feat: launcher に `launcher.local.sh` / `launcher.local.ps1` ユーザー拡張フックを追加。アプリ更新で上書きされないカスタマイズ層。
+- Feat: 孤児セッションレコードを起動時に trash へアーカイブする retention 機構を新設 (削除はせず退避のみ)。
+- Feat: クリティカルな IPC 失敗・terminal cache 書き込み失敗をトーストで可視化。
+- Feat: 起動時に per-machine / per-user の二重インストールを検出して警告 (personal v0.10.1 の R-2 同期)。
+- Fix: AutoConsume がスクロールバックを破棄した際にフロントへ resync を通知し、表示と実体のずれを解消。
+- Refactor: 重複していた ErrorBoundary を `common/ErrorBoundary` に統合。
+
 ## [0.10.0-lite.1] - 2026-07-08
 
 personal v0.9.4〜v0.10.0 の共通修正を cherry-pick 運用で反映。
