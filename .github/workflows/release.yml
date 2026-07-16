@@ -241,13 +241,20 @@ jobs:
             throw "Unexpected Windows artifact set: NSIS=$($nsisInstallers.Count), MSI=$($msiInstallers.Count), signatures=$($signatures.Count)."
           }
 
-          gh release view $tag --repo $targetRepo *> $null
-          if ($LASTEXITCODE -eq 0) {
+          # PS 5.1 + ErrorActionPreference=Stop turns native stderr ("release not
+          # found") into a terminating NativeCommandError, so probe existence via
+          # cmd where stderr never becomes an error record (run 29498599872).
+          $ErrorActionPreference = "Continue"
+          cmd /c "gh release view $tag --repo $targetRepo >NUL 2>&1"
+          $releaseExists = ($LASTEXITCODE -eq 0)
+          if ($releaseExists) {
             gh release edit $tag --repo $targetRepo --draft=false --prerelease=false --latest
           } else {
             gh release create $tag --repo $targetRepo --verify-tag --title "mycmux-lite $tag" --notes "mycmux-lite team build ($tag). See CHANGELOG.md for details." --latest
           }
           if ($LASTEXITCODE -ne 0) { throw "Failed to create or update target release $targetRepo $tag." }
+          # Stay on Continue: every remaining gh call is guarded by an explicit
+          # $LASTEXITCODE throw, and gh may write benign progress to stderr.
 
           $uploadPaths = @($bundleFiles | ForEach-Object { $_.FullName }) + @($latestPath)
           $uploadArgs = @("release", "upload", $tag) + $uploadPaths + @("--clobber", "--repo", $targetRepo)
