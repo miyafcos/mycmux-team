@@ -17,8 +17,10 @@ import {
   readAgentSessionMappings,
 } from "./lib/ipc";
 import { useUiStore } from "./stores/uiStore";
-import { useSettingsStore } from "./stores/settingsStore";
+import { agentSessionIdentityKey } from "./stores/workspaceListStore";
+import { syncBuddyEnabledToBackend, useSettingsStore } from "./stores/settingsStore";
 import { isShellProcess } from "./lib/notificationStatus";
+import { confirmAgentSessionClear } from "./lib/agentSessionClearGuard";
 import type { AgentSessionKind, Pane, PaneTab } from "./types";
 import {
   STARTUP_RESTORE_COMPLETE_EVENT,
@@ -30,7 +32,9 @@ import AppShell from "./components/layout/AppShell";
 import ErrorBoundary from "./components/common/ErrorBoundary";
 import ToastHost from "./components/common/ToastHost";
 import { initDefaultShell } from "./lib/agents";
-import { startForcedAutoUpdateLoop } from "./lib/forcedAutoUpdater";
+import { isSavepointTransferPath, receiveSavepointTransfer } from "./lib/savepointTransfer";
+import { useToastStore } from "./stores/toastStore";
+import { onlineStrings } from "./components/online/onlineStrings";
 
 // Kick off config fetch immediately — will be cached by the time terminals mount
 preloadTerminalConfig();
@@ -96,7 +100,10 @@ function paneHasRestorableAgentSession(pane: Pane): boolean {
 }
 
 async function applyAgentSessionMappings(): Promise<void> {
-  const mappings = await readAgentSessionMappings();
+  const sessionIds = useWorkspaceListStore.getState().workspaces.flatMap((workspace) =>
+    workspace.panes.flatMap((pane) => [pane.sessionId, ...pane.tabs.map((tab) => tab.sessionId)]),
+  );
+  const mappings = await readAgentSessionMappings(sessionIds);
   for (const [sessionId, mapping] of Object.entries(mappings)) {
     const current = usePaneMetadataStore.getState().metadata[sessionId];
     if (current?.processIsShell) {
@@ -111,21 +118,30 @@ async function applyAgentSessionMappings(): Promise<void> {
     if (!processKind && tabKind && tabKind !== kind) {
       continue;
     }
-    usePaneMetadataStore.getState().setMetadata(sessionId, {
-      agentKind: kind,
-      agentSessionId: mapping.session_id,
-      claudeSessionId: kind === "claude" ? mapping.session_id : current?.claudeSessionId,
-    });
-    // Also push into workspaceListStore so the next persistence snapshot
-    // captures the live mapping (paneMetadataStore alone is not read by
-    // toConfig fallback chain at the lowest priority — covered, but mirroring
-    // here lets restore-on-restart hit the highest-precedence Pane.* fields).
-    useWorkspaceListStore.getState().setPaneAgentSessionFromMetadata(sessionId, {
+    const payload = {
       claudeSessionId: kind === "claude"
         ? mapping.session_id
         : (current?.claudeSessionId ?? undefined),
       agentKind: kind,
       agentSessionId: mapping.session_id,
+    };
+    const claim = useWorkspaceListStore.getState().setPaneAgentSessionFromMetadata(sessionId, payload);
+    if (claim.conflict) {
+      const currentKey = agentSessionIdentityKey(
+        current?.agentKind,
+        current?.agentSessionId,
+        current?.claudeSessionId,
+      );
+      if (currentKey === claim.conflict.key) {
+        usePaneMetadataStore.getState().clearAgentSessionId(sessionId);
+        usePaneMetadataStore.getState().clearClaudeSessionId(sessionId);
+      }
+      continue;
+    }
+    usePaneMetadataStore.getState().setMetadata(sessionId, {
+      agentKind: kind,
+      agentSessionId: mapping.session_id,
+      claudeSessionId: kind === "claude" ? mapping.session_id : current?.claudeSessionId,
     });
   }
 }
@@ -142,6 +158,7 @@ function App() {
     async function bootstrap() {
       await Promise.all([persistLoaded, initDefaultShell()]);
       await waitForSettingsHydration();
+      syncBuddyEnabledToBackend(useSettingsStore.getState().buddyEnabled);
       const listStore = useWorkspaceListStore.getState();
       let launchCwd: string | null = null;
       try {
@@ -187,8 +204,10 @@ function App() {
     bootstrap();
 
     // PTY metadata listener — also computes processIsShell which drives the
-    // authoritative "working" indicator (blue dot). Rust sysinfo polls every
-    // 3 seconds so this is a deterministic, non-flickering signal.
+    // "working" indicator (blue dot). Rust sysinfo polls every 5 seconds, and
+    // the deepest-child heuristic can transiently report a shell while an
+    // agent runs tool subprocesses, so a single observation is NOT a reliable
+    // exit signal — marker clearing goes through confirmShellObservation.
     //
     // Mirrors agent session metadata into BOTH paneMetadataStore (live UI) AND
     // workspaceListStore (persisted via toConfig). Without the latter mirror,
@@ -197,47 +216,61 @@ function App() {
     const unlistenMeta = onPtyMetadata((meta) => {
       const processIsShell = isShellProcess(meta.process_name ?? undefined);
       const agentActive = meta.agent_active === true;
-      if (processIsShell && !agentActive) {
-        usePaneMetadataStore.getState().clearAgentSessionId(meta.session_id);
-        usePaneMetadataStore.getState().clearClaudeSessionId(meta.session_id);
+      const paneMetadataStore = usePaneMetadataStore.getState();
+      const workspaceListStore = useWorkspaceListStore.getState();
+      const clearSuppressed = paneMetadataStore.metadata[meta.session_id]?.agentStatus === "waiting";
+      if (confirmAgentSessionClear(meta.session_id, processIsShell, agentActive, clearSuppressed)) {
+        paneMetadataStore.clearAgentSessionId(meta.session_id);
+        paneMetadataStore.clearClaudeSessionId(meta.session_id);
         // Also clear the persisted Pane/Tab fields so the next save doesn't
         // ressurect a stale agent session for a pane that's now back in shell.
-        useWorkspaceListStore.getState().setPaneAgentSessionFromMetadata(meta.session_id, null);
+        workspaceListStore.setPaneAgentSessionFromMetadata(meta.session_id, null);
       }
-      usePaneMetadataStore.getState().setMetadata(meta.session_id, {
+      const sessionPayload = agentActive && (meta.claude_session_id || meta.agent_session_id)
+        ? {
+            claudeSessionId: meta.claude_session_id ?? undefined,
+            agentKind: (meta.agent_kind as AgentSessionKind | undefined) ?? undefined,
+            agentSessionId: meta.agent_session_id ?? undefined,
+          }
+        : null;
+      const sessionClaim = sessionPayload
+        ? workspaceListStore.setPaneAgentSessionFromMetadata(meta.session_id, sessionPayload)
+        : null;
+      const sessionClaimAccepted = sessionClaim?.accepted ?? true;
+      if (sessionClaim?.conflict) {
+        const currentMeta = paneMetadataStore.metadata[meta.session_id];
+        const currentMetaKey = agentSessionIdentityKey(
+          currentMeta?.agentKind,
+          currentMeta?.agentSessionId,
+          currentMeta?.claudeSessionId,
+        );
+        if (currentMetaKey === sessionClaim.conflict.key) {
+          paneMetadataStore.clearAgentSessionId(meta.session_id);
+          paneMetadataStore.clearClaudeSessionId(meta.session_id);
+        }
+      }
+      paneMetadataStore.setMetadata(meta.session_id, {
         cwd: meta.cwd,
         gitBranch: meta.git_branch,
         processTitle: meta.process_name ?? undefined,
         processIsShell,
-        claudeSessionId: agentActive ? meta.claude_session_id ?? undefined : undefined,
-        agentKind: agentActive ? meta.agent_kind ?? undefined : undefined,
-        agentSessionId: agentActive ? meta.agent_session_id ?? undefined : undefined,
+        claudeSessionId: sessionClaimAccepted && agentActive ? meta.claude_session_id ?? undefined : undefined,
+        agentKind: sessionClaimAccepted && agentActive ? meta.agent_kind ?? undefined : undefined,
+        agentSessionId: sessionClaimAccepted && agentActive ? meta.agent_session_id ?? undefined : undefined,
       });
-      // Mirror live session metadata into workspaceListStore only on truthy
-      // values. Launcher (crsm/shell-starter) reports no claude/agent session,
-      // so this `if` naturally skips and we don't accidentally clear a session
-      // that the user is still mid-using on a tab swap.
-      if (agentActive && (meta.claude_session_id || meta.agent_session_id)) {
-        useWorkspaceListStore.getState().setPaneAgentSessionFromMetadata(meta.session_id, {
-          claudeSessionId: meta.claude_session_id ?? undefined,
-          agentKind: (meta.agent_kind as AgentSessionKind | undefined) ?? undefined,
-          agentSessionId: meta.agent_session_id ?? undefined,
-        });
-      }
+      // The workspace claim is intentionally applied before pane metadata.
+      // Otherwise a rejected duplicate can re-enter persistence via toConfig's
+      // paneMetadataStore fallback.
     });
 
     // Work-done listener: backend detects a foreground process transition
     // from a working process (claude/node/python/…) back to a shell and
     // emits this event. Badge the pane unless it's currently focused.
+    // Deliberately does NOT clear agent session markers here: the transition
+    // signal fires for agent tool subprocesses too, and a single misfire used
+    // to permanently delete the persisted session id. The metadata listener's
+    // confirmShellObservation guard above owns marker clearing.
     const unlistenWorkDone = onPtyWorkDone((evt) => {
-      const prevProcess = evt.prev_process.toLowerCase();
-      // Agent -> shell transition = intentional exit, not a restart restore target.
-      if (prevProcess.includes("claude") || prevProcess.includes("codex")) {
-        usePaneMetadataStore.getState().clearAgentSessionId(evt.session_id);
-      }
-      if (prevProcess.includes("claude")) {
-        usePaneMetadataStore.getState().clearClaudeSessionId(evt.session_id);
-      }
       const activePaneId = useUiStore.getState().activePaneId;
       if (activePaneId === evt.session_id) return;
       usePaneMetadataStore.getState().notifyWorkDone(evt.session_id);
@@ -248,6 +281,25 @@ function App() {
       if (event.payload.type !== "drop") return;
       const { paths, position } = event.payload;
       if (!paths || paths.length === 0) return;
+
+      if (paths.length === 1 && isSavepointTransferPath(paths[0])) {
+        try {
+          const result = await receiveSavepointTransfer(paths[0]);
+          useToastStore.getState().pushToast(
+            result.imported
+              ? onlineStrings.transferReceived
+              : onlineStrings.transferAlreadyReceived,
+            "info",
+          );
+        } catch (error) {
+          console.error("[mycmux] failed to receive dropped savepoint transfer", error);
+          useToastStore.getState().pushToast(
+            onlineStrings.transferReceiveErrorPrefix + String(error),
+            "error",
+          );
+        }
+        return;
+      }
 
       // Convert physical pixels to CSS pixels
       const scale = window.devicePixelRatio || 1;
@@ -297,14 +349,6 @@ function App() {
       window.clearTimeout(mappingFallbackTimer);
     };
   }, []);
-
-  useEffect(() => {
-    if (!ready) return;
-
-    if (startupMaskVisible) return;
-
-    return startForcedAutoUpdateLoop();
-  }, [ready, startupMaskVisible]);
 
   useEffect(() => {
     if (!ready) return;

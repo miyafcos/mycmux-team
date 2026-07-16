@@ -27,8 +27,6 @@ interface RunUpdateCheckOptions {
   onStatus?: (status: UpdateStatusSnapshot) => void;
 }
 
-const AUTO_UPDATE_INITIAL_DELAY_MS = 4_000;
-const AUTO_UPDATE_INTERVAL_MS = 10 * 60 * 1_000;
 const MIN_AUTO_CHECK_INTERVAL_MS = 5 * 60 * 1_000;
 const AUTO_UPDATE_FAILURE_BACKOFF_MS = 2 * 60 * 1_000;
 
@@ -43,11 +41,7 @@ let lastAutoFailureAt = 0;
 
 const statusListeners = new Set<(status: UpdateStatusSnapshot) => void>();
 
-export function getUpdateStatusSnapshot(): UpdateStatusSnapshot {
-  return currentStatus;
-}
-
-export function subscribeUpdateStatus(listener: (status: UpdateStatusSnapshot) => void): () => void {
+function subscribeUpdateStatus(listener: (status: UpdateStatusSnapshot) => void): () => void {
   statusListeners.add(listener);
   listener(currentStatus);
   return () => statusListeners.delete(listener);
@@ -132,35 +126,4 @@ export async function runUpdateCheck(options: RunUpdateCheckOptions = {}): Promi
   } finally {
     unsubscribe?.();
   }
-}
-
-export function startForcedAutoUpdateLoop(): () => void {
-  let stopped = false;
-
-  const run = (source: UpdateSource, force = false): void => {
-    if (stopped) return;
-    void runUpdateCheck({ source, force }).catch((error) => {
-      console.warn("[updater] Forced update loop failed:", error);
-    });
-  };
-
-  const initialTimer = window.setTimeout(() => run("startup", true), AUTO_UPDATE_INITIAL_DELAY_MS);
-  const intervalTimer = window.setInterval(() => run("interval"), AUTO_UPDATE_INTERVAL_MS);
-  const onOnline = (): void => run("online", true);
-  const onVisibilityChange = (): void => {
-    if (document.visibilityState === "visible") {
-      run("resume");
-    }
-  };
-
-  window.addEventListener("online", onOnline);
-  document.addEventListener("visibilitychange", onVisibilityChange);
-
-  return () => {
-    stopped = true;
-    window.clearTimeout(initialTimer);
-    window.clearInterval(intervalTimer);
-    window.removeEventListener("online", onOnline);
-    document.removeEventListener("visibilitychange", onVisibilityChange);
-  };
 }

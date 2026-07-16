@@ -1,9 +1,13 @@
 import type { ReactNode } from "react";
 import type { UsageSummary, WindowStat } from "../../stores/usageStore";
+import { useUsageStore } from "../../stores/usageStore";
+import type { AccountUsage } from "../../lib/ipc";
 
 type UsagePopoverProps = {
   summary: UsageSummary;
   lastError: string | null;
+  accounts: AccountUsage[];
+  accountsError: string | null;
 };
 
 const dateFormatter = new Intl.DateTimeFormat(undefined, {
@@ -13,7 +17,7 @@ const dateFormatter = new Intl.DateTimeFormat(undefined, {
   minute: "2-digit",
 });
 
-export function UsagePopover({ summary, lastError }: UsagePopoverProps) {
+export function UsagePopover({ summary, lastError, accounts, accountsError }: UsagePopoverProps) {
   return (
     <div
       style={{
@@ -50,7 +54,15 @@ export function UsagePopover({ summary, lastError }: UsagePopoverProps) {
         </span>
       </div>
 
-      <div style={{ padding: "8px 10px", display: "grid", gap: 7 }}>
+      <div
+        style={{
+          padding: "8px 10px",
+          display: "grid",
+          gap: 7,
+          maxHeight: "min(400px, calc(100vh - 120px))",
+          overflowY: "auto",
+        }}
+      >
         {summary.claude_available && (
           <UsageSection title="Claude Code">
             <UsageRow label="5h" stat={summary.claude_5h} />
@@ -65,9 +77,12 @@ export function UsagePopover({ summary, lastError }: UsagePopoverProps) {
             <UsageRow label="7d" stat={summary.codex_7d} />
           </UsageSection>
         )}
+        {accounts.map((account) => (
+          <AccountSection key={account.account_id} account={account} />
+        ))}
       </div>
 
-      {(summary.claude_error || summary.codex_error || lastError) && (
+      {(summary.claude_error || summary.codex_error || lastError || accountsError) && (
         <div
           style={{
             padding: "6px 10px",
@@ -78,11 +93,14 @@ export function UsagePopover({ summary, lastError }: UsagePopoverProps) {
             textOverflow: "ellipsis",
             whiteSpace: "nowrap",
           }}
-          title={[summary.claude_error, summary.codex_error, lastError].filter(Boolean).join("\n")}
+          title={[summary.claude_error, summary.codex_error, lastError, accountsError]
+            .filter(Boolean)
+            .join("\n")}
         >
           {summary.claude_error && <div>Claude: {summary.claude_error}</div>}
           {summary.codex_error && <div>Codex: {summary.codex_error}</div>}
           {lastError && <div>{lastError}</div>}
+          {accountsError && <div>Accounts: {accountsError}</div>}
         </div>
       )}
 
@@ -104,14 +122,83 @@ export function UsagePopover({ summary, lastError }: UsagePopoverProps) {
   );
 }
 
-function UsageSection({ title, children }: { title: string; children: ReactNode }) {
+type SectionBadge = {
+  text: string;
+  color: string;
+};
+
+function UsageSection({
+  title,
+  badge,
+  children,
+}: {
+  title: string;
+  badge?: SectionBadge | null;
+  children: ReactNode;
+}) {
   return (
     <div style={{ display: "grid", gap: 5 }}>
-      <div style={{ color: "var(--cmux-text-secondary)", fontSize: 11, fontWeight: 700 }}>
-        {title}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+        <span
+          style={{
+            color: "var(--cmux-text-secondary)",
+            fontSize: 11,
+            fontWeight: 700,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+          title={title}
+        >
+          {title}
+        </span>
+        {badge && (
+          <span style={{ color: badge.color, fontSize: 10, fontWeight: 700, flexShrink: 0 }}>
+            {badge.text}
+          </span>
+        )}
       </div>
       {children}
     </div>
+  );
+}
+
+function AccountSection({ account }: { account: AccountUsage }) {
+  const badge: SectionBadge | null = account.needs_reauth
+    ? { text: "要再認証", color: "var(--cmux-usage-warn)" }
+    : !account.enabled
+      ? { text: "無効", color: "var(--cmux-text-tertiary)" }
+      : null;
+
+  return (
+    <UsageSection title={account.label} badge={badge}>
+      {account.needs_reauth ? (
+        <button
+          onClick={() => useUsageStore.getState().openAccountsDialog(account.account_id)}
+          style={{
+            justifySelf: "start",
+            padding: "3px 8px",
+            fontSize: 11,
+            borderRadius: 4,
+            border: "1px solid var(--cmux-border)",
+            background: "transparent",
+            color: "var(--cmux-text)",
+            cursor: "pointer",
+          }}
+        >
+          再認証
+        </button>
+      ) : account.error ? (
+        <div style={{ color: "var(--cmux-usage-danger)", fontSize: 11 }}>{account.error}</div>
+      ) : (
+        <>
+          <UsageRow label="5h" stat={account.five_hour} />
+          <UsageRow label="7d" stat={account.seven_day} />
+          <UsageRow label="7d Sonnet" stat={account.seven_day_sonnet} />
+          <UsageRow label="7d Opus" stat={account.seven_day_opus} />
+        </>
+      )}
+    </UsageSection>
   );
 }
 

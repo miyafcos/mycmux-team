@@ -93,19 +93,6 @@ function getParentPath(path: string, rootPath: string): string | null {
   return pathSegmentsUnder(parent, rootPath) !== null ? parent : rootPath;
 }
 
-function isEditableElement(target: EventTarget | null): boolean {
-  if (!(target instanceof HTMLElement)) {
-    return false;
-  }
-
-  return (
-    target instanceof HTMLInputElement ||
-    target instanceof HTMLTextAreaElement ||
-    target instanceof HTMLSelectElement ||
-    target.isContentEditable
-  );
-}
-
 export default memo(function PathJumper({
   onJump,
 }: {
@@ -158,34 +145,13 @@ export default memo(function PathJumper({
 
   useEffect(() => () => clearBlurTimer(), [clearBlurTimer]);
 
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "p") {
-        return;
-      }
-
-      const target = event.target as HTMLElement | null;
-      const activeElement = document.activeElement as HTMLElement | null;
-      if (isEditableElement(target) && !containerRef.current?.contains(target)) {
-        return;
-      }
-      if (
-        activeElement &&
-        activeElement !== document.body &&
-        isEditableElement(activeElement) &&
-        !containerRef.current?.contains(activeElement)
-      ) {
-        return;
-      }
-
-      event.preventDefault();
-      openDropdown();
-      window.requestAnimationFrame(() => inputRef.current?.focus());
-    };
-
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [openDropdown]);
+  // NOTE: PathJumper used to register its own Ctrl+P listener here, but that
+  // duplicated the global "crsm.palette" shortcut (also Ctrl+P, see
+  // src/lib/keybindings.ts) and raced it for focus — pressing Ctrl+P would
+  // open CrsmPalette while PathJumper's rAF-deferred focus() silently pulled
+  // keyboard focus back onto this (now hidden) input a frame later. Ctrl+P is
+  // owned by the global shortcut now; PathJumper is still reachable by
+  // clicking/focusing its input directly.
 
   const pinnedItems = useMemo<JumpItem[]>(
     () =>
@@ -533,7 +499,7 @@ export default memo(function PathJumper({
               inputRef.current?.blur();
             }
           }}
-          placeholder="Path jumper... Ctrl+P"
+          placeholder="Path jumper..."
           spellCheck={false}
           style={inputStyle}
         />

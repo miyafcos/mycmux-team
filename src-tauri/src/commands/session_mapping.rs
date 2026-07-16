@@ -1,8 +1,7 @@
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Read pane-session mapping files written by launcher.sh
 /// Returns a map of pane_session_id → claude_session_id
@@ -10,31 +9,6 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 pub struct AgentSessionMapping {
     pub agent_kind: Option<String>,
     pub session_id: String,
-}
-
-#[derive(Clone)]
-struct SessionMappingCache {
-    #[allow(dead_code)]
-    pane_mappings: HashMap<String, String>,
-    agent_mappings: HashMap<String, AgentSessionMapping>,
-}
-
-struct SessionMappingCacheEntry {
-    refreshed_at: Instant,
-    value: SessionMappingCache,
-}
-
-const SESSION_MAPPING_CACHE_TTL: Duration = Duration::from_secs(2);
-
-fn session_mapping_cache() -> &'static Mutex<Option<SessionMappingCacheEntry>> {
-    static CACHE: OnceLock<Mutex<Option<SessionMappingCacheEntry>>> = OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(None))
-}
-
-pub(crate) fn invalidate_session_mapping_cache() {
-    if let Ok(mut guard) = session_mapping_cache().lock() {
-        *guard = None;
-    }
 }
 
 pub(crate) fn is_agent_session_kind(value: &str) -> bool {
@@ -68,71 +42,63 @@ fn session_mapping_dir() -> Option<PathBuf> {
     dirs::home_dir().map(|home| home.join(".mycmux").join("pane-sessions"))
 }
 
-fn empty_session_mapping_cache() -> SessionMappingCache {
-    SessionMappingCache {
-        pane_mappings: HashMap::new(),
-        agent_mappings: HashMap::new(),
+fn is_safe_mapping_id(session_id: &str) -> bool {
+    if session_id.is_empty()
+        || session_id.len() > 240
+        || session_id != session_id.trim()
+        || matches!(session_id, "." | "..")
+        || !session_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+    {
+        return false;
     }
+    let stem = session_id
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_uppercase();
+    !matches!(stem.as_str(), "." | ".." | "CON" | "PRN" | "AUX" | "NUL")
+        && !(stem.len() == 4
+            && (stem.starts_with("COM") || stem.starts_with("LPT"))
+            && stem.as_bytes()[3].is_ascii_digit()
+            && stem.as_bytes()[3] != b'0')
 }
 
-fn read_session_mapping_files(map_dir: &Path) -> SessionMappingCache {
-    let mut pane_mappings = HashMap::new();
-    let mut agent_mappings = HashMap::new();
-    if let Ok(entries) = std::fs::read_dir(map_dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("txt") {
-                continue;
-            }
-            let Some(pane_id) = path.file_stem().and_then(|s| s.to_str()) else {
-                continue;
-            };
-            let Ok(contents) = std::fs::read_to_string(&path) else {
-                continue;
-            };
-            let Some(mapping) = parse_agent_session_mapping(&contents) else {
-                continue;
-            };
-            pane_mappings.insert(pane_id.to_string(), mapping.session_id.clone());
-            agent_mappings.insert(pane_id.to_string(), mapping);
+fn read_session_mapping_files_for_ids<I, S>(
+    map_dir: &Path,
+    session_ids: I,
+) -> HashMap<String, AgentSessionMapping>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut mappings = HashMap::new();
+    for session_id in session_ids {
+        let session_id = session_id.as_ref();
+        if !is_safe_mapping_id(session_id) || mappings.contains_key(session_id) {
+            continue;
+        }
+        let path = map_dir.join(format!("{session_id}.txt"));
+        let Ok(contents) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        if let Some(mapping) = parse_agent_session_mapping(&contents) {
+            mappings.insert(session_id.to_string(), mapping);
         }
     }
-    SessionMappingCache {
-        pane_mappings,
-        agent_mappings,
-    }
+    mappings
 }
 
-fn load_session_mapping_cache_from_dir(
-    map_dir: Option<&Path>,
-    force_refresh: bool,
-) -> SessionMappingCache {
-    let now = Instant::now();
-    if !force_refresh {
-        if let Ok(guard) = session_mapping_cache().lock() {
-            if let Some(entry) = guard.as_ref() {
-                if now.duration_since(entry.refreshed_at) < SESSION_MAPPING_CACHE_TTL {
-                    return entry.value.clone();
-                }
-            }
-        }
-    }
-
-    let value = map_dir
-        .map(read_session_mapping_files)
-        .unwrap_or_else(empty_session_mapping_cache);
-    if let Ok(mut guard) = session_mapping_cache().lock() {
-        *guard = Some(SessionMappingCacheEntry {
-            refreshed_at: now,
-            value: value.clone(),
-        });
-    }
-    value
-}
-
-fn load_session_mapping_cache(force_refresh: bool) -> SessionMappingCache {
-    let map_dir = session_mapping_dir();
-    load_session_mapping_cache_from_dir(map_dir.as_deref(), force_refresh)
+pub(crate) fn agent_mappings_for_ids<I, S>(session_ids: I) -> HashMap<String, AgentSessionMapping>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let Some(map_dir) = session_mapping_dir() else {
+        return HashMap::new();
+    };
+    read_session_mapping_files_for_ids(&map_dir, session_ids)
 }
 
 fn unique_mapping_tmp_path(path: &Path) -> PathBuf {
@@ -185,7 +151,7 @@ fn write_session_mapping_file_to_dir(
     agent_kind: &str,
     agent_session_id: &str,
 ) -> Result<(), String> {
-    if session_id.trim().is_empty()
+    if !is_safe_mapping_id(session_id)
         || agent_kind.trim().is_empty()
         || agent_session_id.trim().is_empty()
         || !is_agent_session_kind(agent_kind)
@@ -194,7 +160,6 @@ fn write_session_mapping_file_to_dir(
     }
     let path = map_dir.join(format!("{session_id}.txt"));
     write_text_file_atomic(&path, &format!("{agent_kind}:{agent_session_id}\n"))?;
-    invalidate_session_mapping_cache();
     Ok(())
 }
 
@@ -209,19 +174,36 @@ pub(crate) fn write_session_mapping_file(
     write_session_mapping_file_to_dir(&map_dir, session_id, agent_kind, agent_session_id)
 }
 
+fn remove_session_mapping_file_from_dir(map_dir: &Path, session_id: &str) -> Result<(), String> {
+    if !is_safe_mapping_id(session_id) {
+        return Ok(());
+    }
+    let path = map_dir.join(format!("{session_id}.txt"));
+    match std::fs::remove_file(&path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("remove mapping {}: {error}", path.display())),
+    }
+    Ok(())
+}
+
+pub(crate) fn remove_session_mapping_file(session_id: &str) -> Result<(), String> {
+    let Some(map_dir) = session_mapping_dir() else {
+        return Ok(());
+    };
+    remove_session_mapping_file_from_dir(&map_dir, session_id)
+}
+
 #[tauri::command(async)]
-pub fn read_agent_session_mappings() -> HashMap<String, AgentSessionMapping> {
-    load_session_mapping_cache(true).agent_mappings
+pub fn read_agent_session_mappings(
+    session_ids: Vec<String>,
+) -> HashMap<String, AgentSessionMapping> {
+    agent_mappings_for_ids(session_ids)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn mapping_cache_test_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
 
     #[test]
     fn parse_agent_session_mapping_with_kind() {
@@ -245,56 +227,44 @@ mod tests {
     }
 
     #[test]
-    fn load_session_mapping_cache_force_refresh_bypasses_ttl() {
-        let _guard = mapping_cache_test_lock().lock().unwrap();
-        invalidate_session_mapping_cache();
+    fn targeted_mapping_read_ignores_stale_and_unsafe_ids() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("pane-1.txt");
-        std::fs::write(&path, "codex:old-session\n").unwrap();
+        std::fs::write(dir.path().join("pane-1.txt"), "codex:session-1\n").unwrap();
+        std::fs::write(dir.path().join("pane-2.txt"), "claude:session-2\n").unwrap();
+        for index in 0..100 {
+            std::fs::write(
+                dir.path().join(format!("stale-{index}.txt")),
+                format!("codex:stale-{index}\n"),
+            )
+            .unwrap();
+        }
 
-        let cached = load_session_mapping_cache_from_dir(Some(dir.path()), false);
-        assert_eq!(
-            cached
-                .agent_mappings
-                .get("pane-1")
-                .map(|mapping| mapping.session_id.as_str()),
-            Some("old-session")
+        let mappings = read_session_mapping_files_for_ids(
+            dir.path(),
+            [
+                "pane-1",
+                "pane-2",
+                "pane-1",
+                "",
+                ".",
+                "..",
+                "../pane-1",
+                "C:outside",
+                "name:stream",
+                "unsafe id",
+                "CON",
+                "COM1",
+            ],
         );
 
-        std::fs::write(&path, "codex:new-session\n").unwrap();
-        let stale = load_session_mapping_cache_from_dir(Some(dir.path()), false);
-        assert_eq!(
-            stale
-                .agent_mappings
-                .get("pane-1")
-                .map(|mapping| mapping.session_id.as_str()),
-            Some("old-session")
-        );
-
-        let fresh = load_session_mapping_cache_from_dir(Some(dir.path()), true);
-        assert_eq!(
-            fresh
-                .agent_mappings
-                .get("pane-1")
-                .map(|mapping| mapping.session_id.as_str()),
-            Some("new-session")
-        );
-        invalidate_session_mapping_cache();
+        assert_eq!(mappings.len(), 2);
+        assert_eq!(mappings["pane-1"].session_id, "session-1");
+        assert_eq!(mappings["pane-2"].session_id, "session-2");
     }
 
     #[test]
-    fn write_session_mapping_file_to_dir_is_atomic_and_invalidates_cache() {
-        let _guard = mapping_cache_test_lock().lock().unwrap();
+    fn write_session_mapping_file_to_dir_is_atomic() {
         let dir = tempfile::tempdir().unwrap();
-        if let Ok(mut guard) = session_mapping_cache().lock() {
-            *guard = Some(SessionMappingCacheEntry {
-                refreshed_at: Instant::now(),
-                value: SessionMappingCache {
-                    pane_mappings: HashMap::new(),
-                    agent_mappings: HashMap::new(),
-                },
-            });
-        }
 
         write_session_mapping_file_to_dir(dir.path(), "pane-1", "codex", "old-session").unwrap();
         write_session_mapping_file_to_dir(dir.path(), "pane-1", "codex", "new-session").unwrap();
@@ -310,6 +280,18 @@ mod tests {
                 .to_string_lossy()
                 .contains(".tmp-")
         }));
-        assert!(session_mapping_cache().lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn remove_session_mapping_file_from_dir_removes_only_the_target() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("pane-1.txt"), "claude:session-1\n").unwrap();
+        std::fs::write(dir.path().join("pane-2.txt"), "claude:session-2\n").unwrap();
+
+        remove_session_mapping_file_from_dir(dir.path(), "pane-1").unwrap();
+
+        assert!(!dir.path().join("pane-1.txt").exists());
+        assert!(dir.path().join("pane-2.txt").exists());
+        remove_session_mapping_file_from_dir(dir.path(), "pane-1").unwrap();
     }
 }

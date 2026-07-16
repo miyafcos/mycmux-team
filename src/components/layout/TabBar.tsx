@@ -2,9 +2,12 @@ import { memo, useRef, useState, useCallback, useEffect, useMemo } from "react";
 import type { MutableRefObject } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useWorkspaceListStore, usePaneMetadataStore } from "../../stores/workspaceStore";
+import { useSettingsStore } from "../../stores/settingsStore";
 import { usePaneDragStore } from "../../stores/paneDragStore";
+import { useSavepointDragStore } from "../../stores/savepointDragStore";
 import { SIDEBAR_WIDTH } from "../../lib/constants";
 import { deriveEffectiveStatus } from "../../lib/notificationStatus";
+import { BuddyWidget } from "../../buddy/BuddyWidget";
 import TabItem from "./TabItem";
 import type { Workspace } from "../../types";
 
@@ -135,8 +138,13 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
   const setActive = useWorkspaceListStore((s) => s.setActiveWorkspace);
   const reorder = useWorkspaceListStore((s) => s.reorderWorkspaces);
   const rename = useWorkspaceListStore((s) => s.renameWorkspace);
-  const paneDragActive = usePaneDragStore((s) => s.item !== null);
-  const hoverWorkspaceId = usePaneDragStore((s) => s.hoverWorkspaceId);
+  const buddyEnabled = useSettingsStore((s) => s.buddyEnabled);
+  const paneMoveDragActive = usePaneDragStore((s) => s.item !== null);
+  const paneMoveHoverWorkspaceId = usePaneDragStore((s) => s.hoverWorkspaceId);
+  const savepointDragActive = useSavepointDragStore((s) => s.item !== null);
+  const savepointHoverWorkspaceId = useSavepointDragStore((s) => s.hoverWorkspaceId);
+  const paneDragActive = paneMoveDragActive || savepointDragActive;
+  const hoverWorkspaceId = paneMoveHoverWorkspaceId ?? savepointHoverWorkspaceId;
   const newWorkspaceDropActive = usePaneDragStore((s) => s.target?.kind === "new-workspace");
 
   const [dragIndex, setDragIndex] = useState<number | null>(null);
@@ -269,6 +277,8 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
           );
         })}
       </div>
+
+      {buddyEnabled && <BuddyWidget />}
 
       {/* New workspace button at bottom */}
       <button

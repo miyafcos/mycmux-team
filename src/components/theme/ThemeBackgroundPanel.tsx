@@ -19,7 +19,7 @@ type CategoryFilter = "all" | ThemeBackgroundCategory;
 type ToneFilter = "all" | ThemeBackgroundTone;
 
 const CATEGORY_FILTERS: { value: CategoryFilter; label: string }[] = [
-  { value: "all", label: "All" },
+  { value: "all", label: "すべて" },
   { value: "macos", label: "macOS" },
   { value: "warp", label: "Warp" },
   { value: "win11", label: "Windows" },
@@ -27,10 +27,10 @@ const CATEGORY_FILTERS: { value: CategoryFilter; label: string }[] = [
 ];
 
 const TONE_FILTERS: { value: ToneFilter; label: string }[] = [
-  { value: "all", label: "All tones" },
-  { value: "dark", label: "Dark" },
-  { value: "mid", label: "Mid" },
-  { value: "bright", label: "Bright" },
+  { value: "all", label: "すべて" },
+  { value: "dark", label: "暗め" },
+  { value: "mid", label: "中間" },
+  { value: "bright", label: "明るめ" },
 ];
 
 const VISUAL_BACKGROUND_DEFAULTS = {
@@ -108,10 +108,10 @@ export function ThemeBackgroundPanel({
   const showVisualControls = background.mode !== "solid";
   const modeLabel =
     background.mode === "image" && background.imagePath
-      ? "Image"
+      ? "画像"
       : background.mode === "solid"
-        ? "Solid"
-        : "Preset";
+        ? "単色"
+        : "プリセット";
 
   useEffect(() => {
     const timeoutId = window.setTimeout(() => {
@@ -207,16 +207,16 @@ export function ThemeBackgroundPanel({
           gap: 10,
         }}
       >
-        <div style={{ fontSize: 12, fontWeight: 700 }}>Background</div>
+        <div style={{ fontSize: 12, fontWeight: 700 }}>背景</div>
         <div style={{ fontSize: 10, color: "var(--cmux-text-tertiary)" }}>
-          {modeLabel}{backgroundChanged ? " / changed" : ""}
+          {modeLabel}{backgroundChanged ? " / 変更あり" : ""}
         </div>
       </div>
 
       <div style={{ padding: 12, display: "flex", flexDirection: "column", gap: 10 }}>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
           <button type="button" onClick={applySolid} style={chipStyle(background.mode === "solid")}>
-            Solid
+            単色
           </button>
           <button
             type="button"
@@ -227,7 +227,7 @@ export function ThemeBackgroundPanel({
               cursor: isPickingImage ? "default" : "pointer",
             }}
           >
-            {isPickingImage ? "Picking..." : "Choose image"}
+            {isPickingImage ? "選択中..." : "画像を選ぶ"}
           </button>
           <button
             type="button"
@@ -245,7 +245,7 @@ export function ThemeBackgroundPanel({
               whiteSpace: "nowrap",
             }}
           >
-            Reset
+            リセット
           </button>
         </div>
 
@@ -292,7 +292,7 @@ export function ThemeBackgroundPanel({
             <input
               type="search"
               value={searchInput}
-              placeholder="Search presets"
+              placeholder="プリセットを検索"
               onChange={(event) => setSearchInput(event.target.value)}
               style={{
                 width: "100%",
@@ -310,7 +310,7 @@ export function ThemeBackgroundPanel({
         </div>
 
         <div style={{ fontSize: 10, color: "var(--cmux-text-tertiary)" }}>
-          {filteredPresets.length} / {THEME_BACKGROUND_PRESETS.length} presets
+          {filteredPresets.length} / {THEME_BACKGROUND_PRESETS.length} 件のプリセット
         </div>
 
         <div
@@ -401,7 +401,7 @@ export function ThemeBackgroundPanel({
               textAlign: "center",
             }}
           >
-            No presets match the current filters.
+            条件に一致するプリセットがありません。
           </div>
         )}
 
@@ -409,7 +409,7 @@ export function ThemeBackgroundPanel({
           <input
             type="text"
             value={background.imagePath}
-            placeholder="Paste image path"
+            placeholder="画像パスを貼り付け"
             onChange={(event) => applyImagePath(event.target.value)}
             style={{
               minWidth: 0,
@@ -437,7 +437,7 @@ export function ThemeBackgroundPanel({
               fontSize: 11,
             }}
           >
-            Clear
+            クリア
           </button>
         </div>
 
@@ -450,7 +450,7 @@ export function ThemeBackgroundPanel({
             }}
           >
             <RangeControl
-              label="Image opacity"
+              label="画像の不透明度"
               value={background.imageOpacity}
               min={0.1}
               max={1}
@@ -459,7 +459,7 @@ export function ThemeBackgroundPanel({
               onChange={(value) => setThemeBackground({ imageOpacity: value })}
             />
             <RangeControl
-              label="Blur"
+              label="ぼかし"
               value={background.imageBlur}
               min={0}
               max={32}
@@ -468,7 +468,7 @@ export function ThemeBackgroundPanel({
               onChange={(value) => setThemeBackground({ imageBlur: value })}
             />
             <RangeControl
-              label="Dim"
+              label="暗さ"
               value={background.imageDim}
               min={0}
               max={0.85}
@@ -477,7 +477,7 @@ export function ThemeBackgroundPanel({
               onChange={(value) => setThemeBackground({ imageDim: value })}
             />
             <RangeControl
-              label="Panels"
+              label="パネル"
               value={background.panelOpacity}
               min={0.2}
               max={1}
@@ -486,7 +486,7 @@ export function ThemeBackgroundPanel({
               onChange={(value) => setThemeBackground({ panelOpacity: value })}
             />
             <RangeControl
-              label="Terminal"
+              label="ターミナル"
               value={background.terminalOpacity}
               min={0.2}
               max={1}

@@ -1,15 +1,13 @@
-"""Contract test asserting that mycmux-lite's version is the same everywhere
-it is declared.
+"""Contract test asserting that mycmux's version is the same everywhere it is
+declared.
 
-Adapted from master's test_version_consistency.py (which guards against the
-0.8.54 incident where package-lock.json was frozen at an old version for
-three releases while package.json moved on -- `npm ci` doesn't fail on a
-stale lockfile version field, so the drift went unnoticed until it was
-caught by hand). Five sources of truth are checked: package.json,
-package-lock.json (both the root `.version` and `packages[""].version`),
-src-tauri/tauri.conf.json, src-tauri/Cargo.toml, and the `mycmux-lite` entry
-in src-tauri/Cargo.lock (lite's crate/package name, unlike master's
-`mycmux`).
+This guards against the 0.8.54 incident where package-lock.json was frozen at
+an old version for three releases (0.8.54, 0.9.0, 0.9.1) while package.json
+moved on -- `npm ci` doesn't fail on a stale lockfile version field, so the
+drift went unnoticed until it was caught by hand. Five sources of truth are
+checked: package.json, package-lock.json (both the root `.version` and
+`packages[""].version`), src-tauri/tauri.conf.json, src-tauri/Cargo.toml, and
+the `mycmux` entry in src-tauri/Cargo.lock.
 """
 
 from __future__ import annotations
@@ -51,8 +49,8 @@ def read_cargo_toml_version() -> str:
 
 def read_cargo_lock_mycmux_version() -> str:
     text = (REPO_ROOT / "src-tauri" / "Cargo.lock").read_text(encoding="utf-8")
-    match = re.search(r'name = "mycmux-lite"\nversion = "([^"]+)"', text)
-    assert match is not None, "Cargo.lock has no 'mycmux-lite' package entry"
+    match = re.search(r'name = "mycmux"\nversion = "([^"]+)"', text)
+    assert match is not None, "Cargo.lock has no 'mycmux' package entry"
     return match.group(1)
 
 
@@ -69,7 +67,7 @@ def test_version_is_consistent_across_all_manifests() -> None:
         'package-lock.json packages[""].version': lock_package_version,
         "src-tauri/tauri.conf.json .version": tauri_conf_version,
         "src-tauri/Cargo.toml [package].version": cargo_toml_version,
-        "src-tauri/Cargo.lock mycmux-lite version": cargo_lock_version,
+        "src-tauri/Cargo.lock mycmux version": cargo_lock_version,
     }
 
     distinct = set(versions.values())

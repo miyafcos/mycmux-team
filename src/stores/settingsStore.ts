@@ -1,9 +1,18 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import { invoke } from "@tauri-apps/api/core";
+import {
+  migratePersistedSettings,
+  resolveDefaultTerminalRenderer,
+  SETTINGS_STORE_VERSION,
+} from "./settingsMigration";
 
 interface SettingsState {
   notificationsEnabled: boolean;
   notificationSoundEnabled: boolean;
+  terminalRenderer: "webgl" | "dom";
+  buddyEnabled: boolean;
+  buddyCollapsed: boolean;
   // CRSM Palette per-kind visibility (Ctrl+P session list).
   // When false the corresponding kind disappears from both the palette
   // list and the filter chips. Defaults true so existing users see no
@@ -22,6 +31,11 @@ interface SettingsState {
   showSplitRightButton: boolean;
   setNotificationsEnabled: (v: boolean) => void;
   setNotificationSoundEnabled: (v: boolean) => void;
+  setTerminalRenderer: (v: "webgl" | "dom") => void;
+  setBuddyEnabled: (v: boolean) => void;
+  setBuddyCollapsed: (v: boolean) => void;
+  toggleBuddy: () => void;
+  toggleBuddyCollapsed: () => void;
   setCrsmShowClaude: (v: boolean) => void;
   setCrsmShowCodex: (v: boolean) => void;
   setCrsmShowClaudeCodex: (v: boolean) => void;
@@ -30,11 +44,20 @@ interface SettingsState {
   setShowSplitRightButton: (v: boolean) => void;
 }
 
+export function syncBuddyEnabledToBackend(enabled: boolean): void {
+  void invoke("set_buddy_enabled", { enabled }).catch((error) => {
+    console.warn("[settings] Failed to sync buddy enabled state:", error);
+  });
+}
+
 export const useSettingsStore = create<SettingsState>()(
   persist(
     (set) => ({
       notificationsEnabled: true,
       notificationSoundEnabled: true,
+      terminalRenderer: resolveDefaultTerminalRenderer(),
+      buddyEnabled: true,
+      buddyCollapsed: false,
       crsmShowClaude: true,
       crsmShowCodex: true,
       crsmShowClaudeCodex: true,
@@ -43,6 +66,18 @@ export const useSettingsStore = create<SettingsState>()(
       showSplitRightButton: true,
       setNotificationsEnabled: (v) => set({ notificationsEnabled: v }),
       setNotificationSoundEnabled: (v) => set({ notificationSoundEnabled: v }),
+      setTerminalRenderer: (v) => set({ terminalRenderer: v }),
+      setBuddyEnabled: (v) => {
+        set({ buddyEnabled: v });
+        syncBuddyEnabledToBackend(v);
+      },
+      setBuddyCollapsed: (v) => set({ buddyCollapsed: v }),
+      toggleBuddy: () => set((s) => {
+        const buddyEnabled = !s.buddyEnabled;
+        syncBuddyEnabledToBackend(buddyEnabled);
+        return { buddyEnabled };
+      }),
+      toggleBuddyCollapsed: () => set((s) => ({ buddyCollapsed: !s.buddyCollapsed })),
       setCrsmShowClaude: (v) => set({ crsmShowClaude: v }),
       setCrsmShowCodex: (v) => set({ crsmShowCodex: v }),
       setCrsmShowClaudeCodex: (v) => set({ crsmShowClaudeCodex: v }),
@@ -50,6 +85,12 @@ export const useSettingsStore = create<SettingsState>()(
       setShowSplitDownButton: (v) => set({ showSplitDownButton: v }),
       setShowSplitRightButton: (v) => set({ showSplitRightButton: v }),
     }),
-    { name: "mycmux-settings" },
+    {
+      name: "mycmux-settings",
+      version: SETTINGS_STORE_VERSION,
+      migrate: (persistedState, persistedVersion) => (
+        migratePersistedSettings(persistedState, persistedVersion) as SettingsState
+      ),
+    },
   ),
 );

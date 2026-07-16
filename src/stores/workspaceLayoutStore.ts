@@ -1,14 +1,17 @@
 import { create } from "zustand";
 import { v4 as uuid } from "uuid";
-import type { ArtifactSourceKind, Pane, PaneTab, GridTemplateId, Workspace } from "../types";
+import type { ArtifactSourceKind, Pane, PaneTab, GridTemplateId, SuppressedAgentSession, Workspace } from "../types";
 import type { PaneConfig } from "../lib/ipc";
 import { getGridTemplate } from "../lib/gridTemplates";
 import { getDefaultAgent } from "../lib/agents";
 import { makeSessionId } from "../lib/constants";
 import { normalizeReadableSplitColumns, reconcileSplitColumnsForPanes } from "../lib/layoutColumns";
 import { useWorkspaceListStore } from "./workspaceListStore";
+import { usePaneMetadataStore } from "./paneMetadataStore";
 import { useUiStore } from "./uiStore";
+import { rewriteTabAgentSession, type TabAgentSessionRewrite } from "../lib/tabAgentSessionRewrite";
 import { applyStructuralActivation } from "../lib/focusController";
+import { onlineStrings } from "../components/online/onlineStrings";
 
 /**
  * Workspace Layout Store - Manages panes within workspaces
@@ -20,7 +23,7 @@ function makeTab(
   paneId: string,
   agentId: string,
   type: PaneTab["type"] = "terminal",
-  options?: Partial<Pick<PaneTab, "id" | "label" | "cwd" | "lastProcess" | "claudeSessionId" | "agentKind" | "agentSessionId" | "launchEnv" | "terminalSnapshot" | "htmlPath" | "sourcePath" | "sourceKind" | "previewPath" | "isDirty" | "reloadCounter">>,
+  options?: Partial<Pick<PaneTab, "id" | "label" | "cwd" | "lastProcess" | "claudeSessionId" | "agentKind" | "agentSessionId" | "suppressedAgentSessions" | "launchEnv" | "initialPrompt" | "commandArgv" | "terminalSnapshot" | "htmlPath" | "sourcePath" | "sourceKind" | "previewPath" | "isDirty" | "reloadCounter">>,
 ): PaneTab {
   const tabId = options?.id ?? uuid();
   return {
@@ -34,7 +37,10 @@ function makeTab(
     claudeSessionId: options?.claudeSessionId,
     agentKind: options?.agentKind,
     agentSessionId: options?.agentSessionId,
+    suppressedAgentSessions: options?.suppressedAgentSessions,
     launchEnv: options?.launchEnv,
+    initialPrompt: options?.initialPrompt,
+    commandArgv: options?.commandArgv,
     terminalSnapshot: options?.terminalSnapshot,
     htmlPath: options?.htmlPath,
     sourcePath: options?.sourcePath,
@@ -49,6 +55,17 @@ function normalizeRestoredAgentId(
   agentId: string | null | undefined,
 ): string {
   return agentId || getDefaultAgent().id;
+}
+
+function restoreSuppressedAgentSessions(
+  values: PaneConfig["suppressed_agent_sessions"],
+): SuppressedAgentSession[] | undefined {
+  if (!values || values.length === 0) return undefined;
+  return values.map((value) => ({
+    agentKind: value.agent_kind,
+    agentSessionId: value.agent_session_id,
+    claudeSessionId: value.claude_session_id ?? undefined,
+  }));
 }
 
 interface BuildPanesResult {
@@ -149,6 +166,7 @@ function makePaneFromTab(paneId: string, tab: PaneTab): Pane {
     claudeSessionId: tab.claudeSessionId,
     agentKind: tab.agentKind,
     agentSessionId: tab.agentSessionId,
+    suppressedAgentSessions: tab.suppressedAgentSessions,
     launchEnv: tab.launchEnv,
   };
 }
@@ -167,9 +185,10 @@ function applyActiveTabFields(pane: Pane, activeTab: PaneTab): Pane {
     sessionId: activeTab.sessionId,
     cwd: activeTab.cwd ?? pane.cwd,
     lastProcess: activeTab.lastProcess ?? pane.lastProcess,
-    claudeSessionId: activeTab.claudeSessionId ?? pane.claudeSessionId,
-    agentKind: activeTab.agentKind ?? pane.agentKind,
-    agentSessionId: activeTab.agentSessionId ?? pane.agentSessionId,
+    claudeSessionId: activeTab.claudeSessionId,
+    agentKind: activeTab.agentKind,
+    agentSessionId: activeTab.agentSessionId,
+    suppressedAgentSessions: activeTab.suppressedAgentSessions,
     launchEnv: activeTab.launchEnv ?? pane.launchEnv,
   };
 }
@@ -277,6 +296,18 @@ function bumpBrowserTabReloadCounter(tab: PaneTab, info?: Required<BrowserPrevie
   };
 }
 
+interface TerminalLaunchOptions {
+  agentId?: string;
+  label?: string;
+  cwd?: string;
+  agentKind?: PaneTab["agentKind"];
+  agentSessionId?: string;
+  launchEnv?: Record<string, string>;
+  initialPrompt?: string;
+  commandArgv?: string[];
+  activate?: boolean;
+}
+
 interface WorkspaceLayoutState {
   // Pane operations
   removePaneFromWorkspace: (workspaceId: string, paneId: string) => void;
@@ -290,29 +321,49 @@ interface WorkspaceLayoutState {
     workspaceId: string,
     afterPaneId: string,
     direction: "right" | "down",
-    options: {
-      agentId?: string;
-      label?: string;
-      cwd?: string;
-      agentKind?: PaneTab["agentKind"];
-      agentSessionId?: string;
-      launchEnv?: Record<string, string>;
-    },
+    options: TerminalLaunchOptions,
   ) => void;
   
   // Tab operations
   addTabToPane: (workspaceId: string, paneId: string, agentId?: string, type?: PaneTab["type"]) => void;
+  addTabToPaneWithOptions: (
+    workspaceId: string,
+    paneId: string,
+    options: TerminalLaunchOptions,
+  ) => void;
   /**
    * Open a browser tab rendering the given local HTML file in a right-side
    * preview pane. Reuse the workspace preview pane and reload existing tabs.
    */
   openOrReloadHtmlPreviewPane: (workspaceId: string, sourcePaneId: string, info: string | BrowserPreviewInfo) => void;
+  openOnlinePanel: (workspaceId: string, sourcePaneId: string) => void;
   setBrowserTabDirty: (workspaceId: string, paneId: string, tabId: string, isDirty: boolean) => void;
   refreshBrowserTabPreview: (workspaceId: string, paneId: string, tabId: string, info: BrowserPreviewInfo) => void;
   removeTabFromPane: (workspaceId: string, paneId: string, tabId: string) => void;
   setActivePaneTab: (workspaceId: string, paneId: string, tabId: string) => void;
   setTabLabel: (workspaceId: string, paneId: string, tabId: string, label: string | undefined) => void;
   setTabAgentId: (workspaceId: string, paneId: string, tabId: string, agentId: string) => void;
+  /**
+   * Self-healing clear for a downgraded restore: find the tab whose
+   * `sessionId` matches the terminal session that just downgraded (across
+   * all workspaces/panes, since the caller only has the PTY session_id) and
+   * drop its stale claudeSessionId / agentKind / agentSessionId so the same
+   * "agent-restore-downgraded" warning cannot recur on the next launch.
+   * No-ops while the pane reports agentStatus === "waiting" (live-session
+   * safety valve — see the v0.13.4 しおり消失 postmortem). Returns false only
+   * when that guard skipped the clear.
+   */
+  clearTabAgentSessionBySessionId: (terminalSessionId: string) => boolean;
+  /**
+   * Fallback-downgrade companion to the clear above: the restore resumed a
+   * different (recovered) conversation id, so rewrite the tab's persisted
+   * markers to that id instead of leaving them on the dead original.
+   */
+  repointTabAgentSessionBySessionId: (
+    terminalSessionId: string,
+    kind: string,
+    fallbackSessionId: string,
+  ) => void;
   moveTabToPane: (
     sourceWorkspaceId: string,
     sourcePaneId: string,
@@ -381,7 +432,8 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
       const paneId = pc.pane_id ?? uuid();
       const activeTabConfigId = pc.active_tab_id ?? pc.tabs?.[0]?.tab_id ?? null;
       const tabs = pc.tabs && pc.tabs.length > 0
-        ? pc.tabs.map((tabConfig) => {
+          ? pc.tabs.map((tabConfig) => {
+            const restoredTabType = tabConfig.type as PaneTab["type"] | null | undefined;
             const isActiveRestoredTab = tabConfig.tab_id === activeTabConfigId;
             const tabClaudeSessionId =
               tabConfig.claude_session_id
@@ -401,14 +453,20 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
               workspaceId,
               paneId,
               tabAgentId,
-              tabConfig.type ?? "terminal",
+              restoredTabType ?? "terminal",
               {
                 id: tabConfig.tab_id ?? undefined,
-                label: tabConfig.label ?? undefined,
+                label: restoredTabType === "online"
+                  ? onlineStrings.panelTitle
+                  : tabConfig.label ?? undefined,
                 cwd: tabConfig.cwd ?? pc.cwd ?? undefined,
                 claudeSessionId: tabClaudeSessionId,
                 agentKind: tabAgentKind,
                 agentSessionId: tabAgentSessionId,
+                suppressedAgentSessions: restoreSuppressedAgentSessions(tabConfig.suppressed_agent_sessions)
+                  ?? (isActiveRestoredTab
+                    ? restoreSuppressedAgentSessions(pc.suppressed_agent_sessions)
+                    : undefined),
                 launchEnv: tabConfig.launch_env ?? pc.launch_env ?? undefined,
                 terminalSnapshot: tabConfig.terminal_snapshot ?? undefined,
               },
@@ -420,6 +478,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
             claudeSessionId: pc.claude_session_id ?? undefined,
             agentKind: pc.agent_kind ?? (pc.claude_session_id ? "claude" : undefined),
             agentSessionId: pc.agent_session_id ?? pc.claude_session_id ?? undefined,
+            suppressedAgentSessions: restoreSuppressedAgentSessions(pc.suppressed_agent_sessions),
             launchEnv: pc.launch_env ?? undefined,
           })];
       const activeTab = tabs.find((tab) => tab.id === pc.active_tab_id) ?? tabs[0];
@@ -435,6 +494,8 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
         claudeSessionId: activeTab.claudeSessionId ?? pc.claude_session_id ?? undefined,
         agentKind: activeTab.agentKind ?? pc.agent_kind ?? undefined,
         agentSessionId: activeTab.agentSessionId ?? pc.agent_session_id ?? undefined,
+        suppressedAgentSessions: activeTab.suppressedAgentSessions
+          ?? restoreSuppressedAgentSessions(pc.suppressed_agent_sessions),
         launchEnv: activeTab.launchEnv ?? pc.launch_env ?? undefined,
       };
     });
@@ -562,6 +623,8 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
       agentKind: options.agentKind,
       agentSessionId: options.agentSessionId,
       launchEnv: options.launchEnv,
+      initialPrompt: options.initialPrompt,
+      commandArgv: options.commandArgv,
     });
     const newPane: Pane = {
       id: paneId,
@@ -606,6 +669,57 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
     applyStructuralActivation(newPane.sessionId);
   },
 
+  openOnlinePanel: (workspaceId, sourcePaneId) => {
+    const workspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
+    if (!workspace) return;
+    const sourcePane = workspace.panes.find((pane) => pane.id === sourcePaneId) ?? workspace.panes[0];
+    if (!sourcePane) return;
+
+    const existingPane = workspace.panes.find((pane) =>
+      pane.tabs.some((tab) => tab.type === "online"),
+    );
+    const existingTab = existingPane?.tabs.find((tab) => tab.type === "online");
+    if (existingPane && existingTab) {
+      const normalizedTab = { ...existingTab, label: onlineStrings.panelTitle };
+      const newPanes = workspace.panes.map((pane) =>
+        pane.id === existingPane.id
+          ? applyActiveTabFields(
+              { ...pane, tabs: pane.tabs.map((tab) => tab.id === existingTab.id ? normalizedTab : tab) },
+              normalizedTab,
+            )
+          : pane,
+      );
+      useWorkspaceListStore.getState()._updateWorkspacePanes(workspaceId, newPanes);
+      applyStructuralActivation(existingTab.sessionId);
+      useUiStore.getState().setZoomedPaneId(null);
+      return;
+    }
+
+    const paneId = uuid();
+    const onlineTab = makeTab(workspaceId, paneId, sourcePane.agentId, "online", {
+      label: onlineStrings.panelTitle,
+    });
+    const onlinePane: Pane = {
+      id: paneId,
+      agentId: onlineTab.agentId,
+      sessionId: onlineTab.sessionId,
+      tabs: [onlineTab],
+      activeTabId: onlineTab.id,
+    };
+    const baseColumns = cloneSplitColumns(workspace);
+    const nextSplitColumns =
+      insertPaneIdIntoColumns(baseColumns, sourcePane.id, onlinePane.id, "right")
+      ?? [...baseColumns, [onlinePane.id]];
+    useWorkspaceListStore.getState()._updateWorkspacePanes(
+      workspaceId,
+      [...workspace.panes, onlinePane],
+      normalizeWorkspaceSplitColumns(nextSplitColumns),
+      true,
+    );
+    applyStructuralActivation(onlineTab.sessionId);
+    useUiStore.getState().setZoomedPaneId(null);
+  },
+
   addTabToPane: (workspaceId, paneId, agentId, type = "terminal") => {
     const workspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
     if (!workspace) return;
@@ -624,6 +738,47 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
     });
 
     useWorkspaceListStore.getState()._updateWorkspacePanes(workspaceId, newPanes);
+  },
+
+  addTabToPaneWithOptions: (workspaceId, paneId, options) => {
+    const workspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
+    if (!workspace) return;
+
+    const targetPane = workspace.panes.find((pane) => pane.id === paneId);
+    if (!targetPane) return;
+
+    const agentId = options.agentId ?? targetPane.agentId;
+    const tab = makeTab(workspaceId, paneId, agentId, "terminal", {
+      label: options.label,
+      cwd: options.cwd,
+      agentKind: options.agentKind,
+      agentSessionId: options.agentSessionId,
+      launchEnv: options.launchEnv,
+      initialPrompt: options.initialPrompt,
+      commandArgv: options.commandArgv,
+    });
+    const newPanes = workspace.panes.map((pane) => {
+      if (pane.id !== paneId) return pane;
+      const nextPane = appendTabsToPane(
+        pane,
+        [tab],
+        options.activate === false ? pane.activeTabId : tab.id,
+      );
+      // The handoff environment and cwd belong to the new tab only. Keeping
+      // the pane fallback unchanged prevents an older sibling tab from
+      // inheriting one-shot handoff variables when the user switches back.
+      return {
+        ...nextPane,
+        cwd: pane.cwd,
+        lastProcess: pane.lastProcess,
+        launchEnv: pane.launchEnv,
+      };
+    });
+
+    useWorkspaceListStore.getState()._updateWorkspacePanes(workspaceId, newPanes);
+    if (options.activate !== false) {
+      applyStructuralActivation(tab.sessionId);
+    }
   },
 
   openOrReloadHtmlPreviewPane: (workspaceId, sourcePaneId, previewInfo) => {
@@ -781,17 +936,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
       if (removedActiveTarget) {
         nextActivePaneId = activeTab.sessionId;
       }
-      return [{
-        ...p,
-        tabs: remaining,
-        activeTabId: newActiveId,
-        sessionId: activeTab.sessionId,
-        cwd: activeTab.cwd ?? p.cwd,
-        lastProcess: activeTab.lastProcess ?? p.lastProcess,
-        claudeSessionId: activeTab.claudeSessionId ?? p.claudeSessionId,
-        agentKind: activeTab.agentKind ?? p.agentKind,
-        agentSessionId: activeTab.agentSessionId ?? p.agentSessionId,
-      }];
+      return [applyActiveTabFields({ ...p, tabs: remaining }, activeTab)];
     });
 
     const nextSplitColumns = removedPane && workspace.splitColumns
@@ -1159,16 +1304,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
       if (p.id !== paneId) return p;
       const tab = p.tabs.find((t) => t.id === tabId);
       if (!tab) return p;
-      return {
-        ...p,
-        activeTabId: tabId,
-        sessionId: tab.sessionId,
-        cwd: tab.cwd ?? p.cwd,
-        lastProcess: tab.lastProcess ?? p.lastProcess,
-        claudeSessionId: tab.claudeSessionId ?? p.claudeSessionId,
-        agentKind: tab.agentKind ?? p.agentKind,
-        agentSessionId: tab.agentSessionId ?? p.agentSessionId,
-      };
+      return applyActiveTabFields(p, tab);
     });
 
     useWorkspaceListStore.getState()._updateWorkspacePanes(workspaceId, newPanes);
@@ -1228,4 +1364,41 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
 
     useWorkspaceListStore.getState()._updateWorkspacePanes(workspaceId, newPanes);
   },
+
+  clearTabAgentSessionBySessionId: (terminalSessionId) => {
+    // Safety valve (v0.13.4 しおり消失 lesson): "waiting" is proof the agent
+    // is alive, so never destroy markers while the pane reports it — a stale
+    // validation failure must not outrank a live-session signal. Worst case
+    // of skipping is one more downgrade warning on the next launch.
+    const agentStatus =
+      usePaneMetadataStore.getState().metadata[terminalSessionId]?.agentStatus;
+    if (agentStatus === "waiting") return false;
+    applyTabAgentSessionRewrite(terminalSessionId, { type: "clear" });
+    return true;
+  },
+
+  repointTabAgentSessionBySessionId: (terminalSessionId, kind, fallbackSessionId) => {
+    applyTabAgentSessionRewrite(terminalSessionId, {
+      type: "repoint",
+      kind,
+      fallbackSessionId,
+    });
+  },
 }));
+
+function applyTabAgentSessionRewrite(
+  terminalSessionId: string,
+  rewrite: TabAgentSessionRewrite,
+): void {
+  const listStore = useWorkspaceListStore.getState();
+  for (const workspace of listStore.workspaces) {
+    const { panes, didChange } = rewriteTabAgentSession(
+      workspace.panes,
+      terminalSessionId,
+      rewrite,
+    );
+    if (didChange) {
+      listStore._updateWorkspacePanes(workspace.id, panes);
+    }
+  }
+}

@@ -29,8 +29,8 @@ def test_create_session_commits_attach_epoch_only_after_backend_success() -> Non
     for snippet in [
         "beginSessionAttach",
         "epoch=${attach.epoch}",
-        "channel.onmessage = (batch) => {",
-        "attach.ingest(batch);",
+        "channel.onmessage = (frame) => {",
+        "attach.ingest(decodeFrontendDataBatch(frame));",
         "attach.commit();",
         "attach.fail();",
     ]:

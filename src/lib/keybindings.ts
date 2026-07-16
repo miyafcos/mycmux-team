@@ -21,10 +21,13 @@ export type KeybindingActionId =
   | "pane.split.down"
   | "pane.close"
   | "pane.reopen"
+  | "pane.tab.next"
+  | "pane.tab.prev"
   | "settings.keybindings"
   | "pane.zoom.toggle"
   | "terminal.search"
-  | "crsm.palette";
+  | "crsm.palette"
+  | "buddy.toggle";
 
 export interface KeybindingDefinition {
   action: KeybindingActionId;
@@ -61,8 +64,12 @@ export const KEYBINDING_DEFINITIONS: KeybindingDefinition[] = [
   { action: "pane.close", title: "Close active pane", category: "Pane", defaultShortcut: "ctrl+alt+w" },
   { action: "pane.reopen", title: "Reopen closed pane", category: "Pane", defaultShortcut: "ctrl+shift+t" },
   { action: "pane.zoom.toggle", title: "Toggle pane zoom", category: "Pane", defaultShortcut: "ctrl+shift+enter" },
+  { action: "pane.tab.next", title: "Next tab in pane", category: "Pane", defaultShortcut: "ctrl+alt+pagedown" },
+  { action: "pane.tab.prev", title: "Previous tab in pane", category: "Pane", defaultShortcut: "ctrl+alt+pageup" },
 
   { action: "terminal.search", title: "Find in terminal", category: "Terminal", defaultShortcut: "ctrl+shift+f" },
+
+  { action: "buddy.toggle", title: "Toggle Claude Buddy", category: "Global", defaultShortcut: "" },
 ];
 
 const MOD_ORDER = ["ctrl", "alt", "shift", "meta"];
@@ -123,14 +130,14 @@ export function shortcutFromKeyboardEvent(e: KeyboardEvent): string {
   return normalizeShortcut(mods.join("+"));
 }
 
-function isMacPlatform(): boolean {
+export function isMacPlatform(): boolean {
   if (typeof navigator === "undefined") return false;
   const uaPlatform = (navigator as { userAgentData?: { platform?: string } }).userAgentData?.platform;
   if (uaPlatform) return uaPlatform === "macOS";
   return /Mac/i.test(navigator.platform || "");
 }
 
-const IS_MAC = isMacPlatform();
+export const IS_MAC = isMacPlatform();
 
 export function eventMatchesShortcut(e: KeyboardEvent, shortcut?: string): boolean {
   if (!shortcut) return false;
@@ -172,6 +179,8 @@ export function formatShortcutLabel(shortcut: string): string {
       if (p === "shift") return "Shift";
       if (p === "meta") return "Meta";
       if (p.startsWith("arrow")) return `Arrow${p.slice(5)}`;
+      if (p === "pageup") return "PageUp";
+      if (p === "pagedown") return "PageDown";
       if (p === " ") return "Space";
       return p.length === 1 ? p.toUpperCase() : p.charAt(0).toUpperCase() + p.slice(1);
     })

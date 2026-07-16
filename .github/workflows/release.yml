@@ -10,13 +10,23 @@ on:
         description: "Tag to build (e.g. v0.4.4)"
         required: true
         type: string
+      runner:
+        description: "Runner label to use for manual releases"
+        required: false
+        default: "windows-latest"
+        type: choice
+        options:
+          - "windows-latest"
+          - "self-hosted"
 
 permissions:
   contents: write
 
 jobs:
   test:
-    runs-on: windows-latest
+    # Manual dispatch can route the whole pipeline to the self-hosted runner
+    # (e.g. when GitHub-hosted minutes are exhausted); tag pushes stay hosted.
+    runs-on: ${{ github.event.inputs.runner || 'windows-latest' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -43,19 +53,23 @@ jobs:
         working-directory: src-tauri
         run: cargo test --release
 
+      # Self-hosted runner uses the machine's Python (setup-python needs
+      # admin registry access there); hosted runners install 3.10 as before.
       - uses: actions/setup-python@v5
+        if: ${{ (github.event.inputs.runner || 'windows-latest') == 'windows-latest' }}
         with:
           python-version: "3.10"
 
       - name: Install Python test dependencies
+        if: ${{ (github.event.inputs.runner || 'windows-latest') == 'windows-latest' }}
         run: python -m pip install --upgrade pip pytest openpyxl
 
       - name: Pytest
         run: python -m pytest tests/ -q
 
-  build-lite:
+  build-personal:
     needs: test
-    runs-on: windows-latest
+    runs-on: ${{ github.event.inputs.runner || 'windows-latest' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -69,13 +83,34 @@ jobs:
       # spawns its own shell, so env from `ilammy/msvc-dev-cmd@v1` alone is
       # not always inherited reliably).
       - name: Persist MSVC env to GITHUB_ENV
-        shell: pwsh
+        shell: powershell
         run: |
           $vswhere = "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe"
-          $vsInstall = & $vswhere -latest -property installationPath
-          if (-not $vsInstall) { throw "Visual Studio install not found via vswhere" }
+          $vsInstall = $null
+          if (Test-Path $vswhere) {
+            $vsInstall = & $vswhere -latest -property installationPath
+          }
+          if (-not $vsInstall) {
+            $candidates = @(
+              "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools",
+              "C:\Program Files\Microsoft Visual Studio\2022\BuildTools",
+              "C:\Program Files\Microsoft Visual Studio\2022\Community",
+              "C:\Program Files\Microsoft Visual Studio\2022\Professional",
+              "C:\Program Files\Microsoft Visual Studio\2022\Enterprise"
+            )
+            foreach ($candidate in $candidates) {
+              if (Test-Path (Join-Path $candidate "VC\Auxiliary\Build\vcvarsall.bat")) {
+                $vsInstall = $candidate
+                break
+              }
+            }
+          }
+          if (-not $vsInstall) { throw "Visual Studio install not found via vswhere or known BuildTools paths" }
           $vcvars = Join-Path $vsInstall "VC\Auxiliary\Build\vcvarsall.bat"
           if (-not (Test-Path $vcvars)) { throw "vcvarsall.bat not found at $vcvars" }
+          # vcvarsall.bat shells out to vswhere.exe; on self-hosted runners the
+          # VS Installer dir is not on PATH, so add it (mirrors build-personal.ps1).
+          $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH;C:\Program Files (x86)\Microsoft Visual Studio\Installer"
           $output = cmd /c "`"$vcvars`" x64 && set" 2>$null
           foreach ($line in $output) {
             if ($line -match "^([^=]+)=(.*)$") {
@@ -93,42 +128,46 @@ jobs:
       - run: npm ci
 
       - name: Enable updater artifacts
-        shell: pwsh
+        shell: powershell
         run: |
           $configPath = "src-tauri/tauri.conf.json"
           $config = Get-Content -Path $configPath -Raw | ConvertFrom-Json
           $config.bundle | Add-Member -MemberType NoteProperty -Name createUpdaterArtifacts -Value $true -Force
-          $config | ConvertTo-Json -Depth 100 | Set-Content -Path $configPath -Encoding utf8
+          $json = $config | ConvertTo-Json -Depth 100
+          $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+          [System.IO.File]::WriteAllText((Resolve-Path $configPath), $json, $utf8NoBom)
 
-      - name: Build & sign (mycmux-lite)
+      - name: Build & sign (mycmux personal)
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_KEY_LITE }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_KEY_LITE_PASSWORD }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_KEY_PERSONAL }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PERSONAL_PASSWORD }}
         with:
           tagName: ${{ github.event.inputs.tag || github.ref_name }}
-          releaseName: "mycmux-lite ${{ github.event.inputs.tag || github.ref_name }}"
+          releaseName: "mycmux ${{ github.event.inputs.tag || github.ref_name }}"
           releaseBody: |
-            mycmux-lite team build (${{ github.event.inputs.tag || github.ref_name }}).
+            mycmux personal build (${{ github.event.inputs.tag || github.ref_name }}).
 
             See `CHANGELOG.md` for details.
 
-            **Auto-update**: existing installations will detect this release via the in-app updater (Settings → 更新を確認).
+            **Auto-update**: existing installations will detect this release via the in-app updater (設定 → アプリ情報 → 更新を確認).
           releaseDraft: false
           prerelease: false
 
-      - name: Normalize updater feed (windows-x86_64 fallback key)
-        shell: pwsh
+      - name: Mirror personal updater feed
+        shell: powershell
+        continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.MYCMUX_TEAM_RELEASE_TOKEN }}
+          SOURCE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
-          $tag = "${{ github.event.inputs.tag || github.ref_name }}"
-          $latestJson = Get-ChildItem -Path . -Recurse -Filter "latest.json" | Select-Object -First 1
-          if (-not $latestJson) { throw "latest.json not found after tauri build" }
-          .\scripts\normalize-updater-feed.ps1 -InputPath $latestJson.FullName
-          # tauri-action already published latest.json as a release asset above (releaseDraft: false);
-          # re-upload the normalized copy to overwrite it so the plain windows-x86_64 fallback key
-          # (used by raw .exe / non-installer copies) never points at the MSI (see
-          # scripts/normalize-updater-feed.ps1 and docs/DEPLOY.md).
-          gh release upload $tag $latestJson.FullName --clobber
+          if (-not $env:GH_TOKEN) {
+            $message = "MYCMUX_TEAM_RELEASE_TOKEN is not configured; skipping the public personal updater feed mirror. Existing installations will NOT see this release via the in-app updater until this is fixed."
+            Write-Host "::error::$message"
+            if ($env:GITHUB_STEP_SUMMARY) {
+              Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "## :x: Updater feed mirror skipped`n`n$message"
+            }
+            exit 1
+          }
+          .\scripts\mirror-personal-updater-feed.ps1 -SourceTag $env:SOURCE_TAG

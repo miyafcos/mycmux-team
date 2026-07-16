@@ -1,12 +1,11 @@
 use std::collections::HashMap;
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
-use tauri::ipc::Channel;
-use tauri::{AppHandle, State};
+use tauri::ipc::{Channel, InvokeResponseBody, Response};
+use tauri::{AppHandle, Emitter, State};
 
 use crate::commands::session_mapping::{is_agent_session_kind, write_session_mapping_file};
 use crate::pty::monitor::PtyMetadata;
-use crate::pty::session::FrontendDataBatch;
 use crate::AppState;
 
 #[derive(serde::Serialize)]
@@ -72,28 +71,85 @@ pub fn create_session(
     args: Vec<String>,
     cols: u16,
     rows: u16,
-    on_data: Channel<FrontendDataBatch>,
+    on_data: Channel<InvokeResponseBody>,
     cwd: Option<String>,
     env: Option<HashMap<String, String>>,
+    restore_fallback_session_ids: Option<Vec<String>>,
 ) -> Result<(), String> {
     let requested_command = command;
     let mut args = args;
     let mut env_map = env.unwrap_or_default();
-    let fallback_resume = match validate_agent_restore_request(cwd.as_deref(), &env_map) {
-        Ok(()) => None,
-        Err(err) => {
-            eprintln!(
-                "[mycmux] agent restore validation failed, falling back to --continue: {err}"
-            );
-            let resume = env_map.get("MYCMUX_RESUME").cloned();
-            if let Some(kind) = resume
-                .as_deref()
-                .filter(|value| is_agent_session_kind(value))
-            {
-                apply_agent_restore_fallback_args(&requested_command, &mut args, kind);
+    // A PTY that is still tracked for this session_id means create() below
+    // will take the reattach branch (channel swap only, no spawn / resume).
+    // Restore validation only matters for an actual spawn, so skip it here —
+    // otherwise reattaches (e.g. every pane on an Allotment remount) would
+    // re-run stale-id validation and re-emit "agent-restore-downgraded" for
+    // sessions that were never being restored in the first place.
+    let fallback_resume = if state.session_manager.is_alive(&session_id) {
+        None
+    } else {
+        match validate_agent_restore_request(cwd.as_deref(), &env_map) {
+            Ok(()) => None,
+            Err(err) => {
+                let resume = env_map.get("MYCMUX_RESUME").cloned();
+                let kind = resume
+                    .as_deref()
+                    .filter(|value| is_agent_session_kind(value))
+                    .map(str::to_string);
+                if let Some(kind) = kind.as_deref() {
+                    let requested_session_id = env_map
+                        .get("MYCMUX_SESSION_ID")
+                        .cloned()
+                        .unwrap_or_default();
+                    let fallback_ids = restore_fallback_session_ids.as_deref().unwrap_or_default();
+                    match apply_agent_restore_recovery_args(
+                        &requested_command,
+                        &mut args,
+                        kind,
+                        &requested_session_id,
+                        fallback_ids,
+                        cwd.as_deref(),
+                    ) {
+                        AgentRestoreRecovery::RequestedValid => None,
+                        AgentRestoreRecovery::Fallback(fallback_id) => {
+                            eprintln!(
+                                "[mycmux] agent restore validation failed, resuming fallback session {fallback_id}: {err}"
+                            );
+                            env_map.insert("MYCMUX_SESSION_ID".to_string(), fallback_id.clone());
+                            let _ = app_handle.emit(
+                                "agent-restore-downgraded",
+                                serde_json::json!({
+                                    "session_id": &session_id,
+                                    "kind": kind,
+                                    "reason": &err,
+                                    "fallback_session_id": fallback_id,
+                                }),
+                            );
+                            None
+                        }
+                        AgentRestoreRecovery::Downgrade => {
+                            eprintln!(
+                                "[mycmux] agent restore validation failed, falling back to --continue: {err}"
+                            );
+                            // Release builds have no stderr, so surface the silent
+                            // downgrade to the frontend (warning toast).
+                            let _ = app_handle.emit(
+                                "agent-restore-downgraded",
+                                serde_json::json!({
+                                    "session_id": &session_id,
+                                    "kind": kind,
+                                    "reason": &err,
+                                }),
+                            );
+                            env_map.remove("MYCMUX_SESSION_ID");
+                            resume
+                        }
+                    }
+                } else {
+                    env_map.remove("MYCMUX_SESSION_ID");
+                    resume
+                }
             }
-            env_map.remove("MYCMUX_SESSION_ID");
-            resume
         }
     };
     let launch_cwd = resolve_launch_cwd(cwd.as_deref());
@@ -326,6 +382,95 @@ fn apply_agent_restore_fallback_args(command: &str, args: &mut Vec<String>, kind
         }
         _ => {}
     }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum AgentRestoreRecovery {
+    RequestedValid,
+    Fallback(String),
+    Downgrade,
+}
+
+fn apply_agent_restore_resume_args(
+    command: &str,
+    args: &mut [String],
+    kind: &str,
+    requested_session_id: &str,
+    fallback_session_id: &str,
+) {
+    let leaf = command_leaf(command).to_ascii_lowercase();
+    match (leaf.as_str(), kind) {
+        ("claude", "claude") | ("claude-codex", "claude-codex") => {
+            if let Some(resume_index) = args.iter().position(|arg| arg == "--resume") {
+                if args.get(resume_index + 1).map(String::as_str) == Some(requested_session_id) {
+                    args[resume_index + 1] = fallback_session_id.to_string();
+                }
+            }
+        }
+        ("codex", "codex") => {
+            if let Some(session_id) = args
+                .iter_mut()
+                .rev()
+                .find(|arg| arg.as_str() == requested_session_id)
+            {
+                *session_id = fallback_session_id.to_string();
+            }
+        }
+        _ => {}
+    }
+}
+
+fn apply_agent_restore_recovery_args(
+    command: &str,
+    args: &mut Vec<String>,
+    kind: &str,
+    requested_session_id: &str,
+    fallback_session_ids: &[String],
+    cwd: Option<&str>,
+) -> AgentRestoreRecovery {
+    apply_agent_restore_recovery_args_with(
+        command,
+        args,
+        kind,
+        requested_session_id,
+        fallback_session_ids,
+        cwd,
+        can_restore_agent_session,
+    )
+}
+
+fn apply_agent_restore_recovery_args_with<F>(
+    command: &str,
+    args: &mut Vec<String>,
+    kind: &str,
+    requested_session_id: &str,
+    fallback_session_ids: &[String],
+    cwd: Option<&str>,
+    mut can_restore: F,
+) -> AgentRestoreRecovery
+where
+    F: FnMut(&str, &str, Option<&str>) -> bool,
+{
+    if can_restore(kind, requested_session_id, cwd) {
+        return AgentRestoreRecovery::RequestedValid;
+    }
+    if matches!(kind, "claude" | "codex") {
+        if let Some(fallback_session_id) = fallback_session_ids
+            .iter()
+            .find(|session_id| !session_id.trim().is_empty() && can_restore(kind, session_id, cwd))
+        {
+            apply_agent_restore_resume_args(
+                command,
+                args,
+                kind,
+                requested_session_id,
+                fallback_session_id,
+            );
+            return AgentRestoreRecovery::Fallback(fallback_session_id.clone());
+        }
+    }
+    apply_agent_restore_fallback_args(command, args, kind);
+    AgentRestoreRecovery::Downgrade
 }
 
 fn should_trust_claude_workspace(command: &str, env: &HashMap<String, String>) -> bool {
@@ -741,6 +886,11 @@ pub fn write_to_session(
 }
 
 #[tauri::command(async)]
+pub fn is_session_alive(state: State<'_, AppState>, session_id: String) -> bool {
+    state.session_manager.is_alive(&session_id)
+}
+
+#[tauri::command(async)]
 pub fn resize_session(
     state: State<'_, AppState>,
     session_id: String,
@@ -780,8 +930,11 @@ pub fn set_frontend_visible(
 pub fn get_session_scrollback(
     state: State<'_, AppState>,
     session_id: String,
-) -> Result<Vec<u8>, String> {
-    state.session_manager.get_scrollback(&session_id)
+) -> Result<Response, String> {
+    state
+        .session_manager
+        .get_scrollback_snapshot(&session_id)
+        .map(|snapshot| Response::new(snapshot.into_wire()))
 }
 
 #[tauri::command(async)]
@@ -974,6 +1127,94 @@ mod tests {
             ]
         );
         assert!(!args.iter().any(|arg| arg == "missing-session"));
+    }
+
+    #[test]
+    fn restore_missing_requested_id_uses_first_fallback_with_existing_transcript() {
+        let mut args = vec![
+            "--dangerously-skip-permissions".to_string(),
+            "--permission-mode".to_string(),
+            "bypassPermissions".to_string(),
+            "--resume".to_string(),
+            "missing-session".to_string(),
+        ];
+        let fallback_ids = vec![
+            "also-missing".to_string(),
+            "existing-transcript".to_string(),
+            "later-existing-transcript".to_string(),
+        ];
+
+        let recovery = apply_agent_restore_recovery_args_with(
+            "claude",
+            &mut args,
+            "claude",
+            "missing-session",
+            &fallback_ids,
+            Some("C:\\work"),
+            |_, session_id, _| {
+                matches!(
+                    session_id,
+                    "existing-transcript" | "later-existing-transcript"
+                )
+            },
+        );
+
+        assert_eq!(
+            recovery,
+            AgentRestoreRecovery::Fallback("existing-transcript".to_string())
+        );
+        assert_eq!(args.last().map(String::as_str), Some("existing-transcript"));
+        assert!(!args.iter().any(|arg| arg == "missing-session"));
+    }
+
+    #[test]
+    fn restore_missing_requested_id_without_valid_fallback_still_continues() {
+        let mut args = vec!["--resume".to_string(), "missing-session".to_string()];
+        let fallback_ids = vec!["also-missing".to_string()];
+
+        let recovery = apply_agent_restore_recovery_args_with(
+            "claude",
+            &mut args,
+            "claude",
+            "missing-session",
+            &fallback_ids,
+            Some("C:\\work"),
+            |_, _, _| false,
+        );
+
+        assert_eq!(recovery, AgentRestoreRecovery::Downgrade);
+        assert_eq!(
+            args,
+            vec![
+                "--dangerously-skip-permissions".to_string(),
+                "--permission-mode".to_string(),
+                "bypassPermissions".to_string(),
+                "--continue".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn restore_valid_requested_id_ignores_fallbacks() {
+        let mut args = vec!["--resume".to_string(), "requested-session".to_string()];
+        let original = args.clone();
+        let fallback_ids = vec!["existing-transcript".to_string()];
+
+        let recovery = apply_agent_restore_recovery_args_with(
+            "claude",
+            &mut args,
+            "claude",
+            "requested-session",
+            &fallback_ids,
+            Some("C:\\work"),
+            |_, session_id, _| {
+                assert_eq!(session_id, "requested-session");
+                true
+            },
+        );
+
+        assert_eq!(recovery, AgentRestoreRecovery::RequestedValid);
+        assert_eq!(args, original);
     }
 
     #[test]

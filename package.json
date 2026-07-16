@@ -1,13 +1,7 @@
 {
-  "name": "mycmux-lite",
-  "private": false,
-  "version": "0.11.0-lite.1",
-  "description": "Team-shared terminal workspace (lite edition of mycmux)",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/miyafcos/mycmux-team.git"
-  },
-  "license": "GPL-3.0",
+  "name": "mycmux",
+  "private": true,
+  "version": "0.19.2",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -17,7 +11,8 @@
     "test:unit": "vitest run",
     "tauri": "tauri",
     "tauri:dev:default": "npm run tauri dev",
-    "tauri:dev:mycmux-ui": "VITE_UI_VARIANT=mycmux npm run tauri dev"
+    "tauri:dev:mycmux-ui": "VITE_UI_VARIANT=mycmux npm run tauri dev",
+    "buddy:export-png": "node scripts/buddy-export-png.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
@@ -30,18 +25,22 @@
     "@xterm/addon-search": "^0.16.0",
     "@xterm/addon-unicode11": "0.9.0",
     "@xterm/addon-web-links": "0.12.0",
+    "@xterm/addon-webgl": "0.19.0",
     "@xterm/xterm": "6.0.0",
     "allotment": "^1.0.9",
     "framer-motion": "^12.38.0",
     "fuse.js": "^7.1.0",
     "immer": "^11.1.4",
     "lucide-react": "^1.8.0",
+    "pixi-live2d-display": "0.4.0",
+    "pixi.js": "6.5.10",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "uuid": "^11.1.0",
     "zustand": "^5.0.0"
   },
   "devDependencies": {
+    "@resvg/resvg-js": "^2.6.2",
     "@tauri-apps/cli": "^2",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",

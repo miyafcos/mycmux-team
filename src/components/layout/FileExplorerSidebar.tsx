@@ -43,6 +43,7 @@ import {
   quoteShellPath,
   splitExtension,
 } from "../../lib/paths";
+import { clampMenuPosition } from "../../lib/menuPosition";
 import type { Pane, PaneTab } from "../../types";
 
 const SORT_CYCLE: SortMode[] = ["name-asc", "name-desc", "mtime-desc", "mtime-asc"];
@@ -121,14 +122,17 @@ function isPreviewableArtifactPath(path: string): boolean {
 
 function terminalTabForPane(pane: Pane, preferredSessionId: string | null): PaneTab | null {
   const preferredTab = preferredSessionId
-    ? pane.tabs.find((tab) => tab.sessionId === preferredSessionId && tab.type !== "browser")
+    ? pane.tabs.find((tab) =>
+        tab.sessionId === preferredSessionId
+        && (tab.type === undefined || tab.type === "terminal"),
+      )
     : null;
   if (preferredTab) return preferredTab;
 
   const activeTab = pane.tabs.find((tab) => tab.id === pane.activeTabId);
-  if (activeTab && activeTab.type !== "browser") return activeTab;
+  if (activeTab && (activeTab.type === undefined || activeTab.type === "terminal")) return activeTab;
 
-  return pane.tabs.find((tab) => tab.type !== "browser") ?? null;
+  return pane.tabs.find((tab) => tab.type === undefined || tab.type === "terminal") ?? null;
 }
 
 function getFilePreviewTarget(): { workspaceId: string; paneId: string; sessionId: string } | null {
@@ -212,29 +216,6 @@ function getOrderedDragPaths(
     state.selectedPaths.has(path),
   );
   return ordered.length > 0 ? ordered : [originPath];
-}
-
-function clampMenuPosition(
-  preferredLeft: number,
-  preferredTop: number,
-  width: number,
-  height: number,
-): { left: number; top: number } {
-  const pad = 8;
-  let left = preferredLeft;
-  let top = preferredTop;
-
-  if (left + width + pad > window.innerWidth) {
-    left = Math.max(pad, preferredLeft - width);
-  }
-  if (top + height + pad > window.innerHeight) {
-    top = Math.max(pad, window.innerHeight - height - pad);
-  }
-
-  left = Math.max(pad, Math.min(left, window.innerWidth - width - pad));
-  top = Math.max(pad, Math.min(top, window.innerHeight - height - pad));
-
-  return { left, top };
 }
 
 const ROW_HEIGHT = 24;

@@ -10,6 +10,7 @@ EXPECTED_EPHEMERAL_ENV_KEYS = {
     "MYCMUX_RESUME",
     "MYCMUX_SESSION_ID",
     "MYCMUX_AGENT_KIND",
+    "MYCMUX_LAUNCH_TARGET",
     "MYCMUX_HANDOFF",
     "MYCMUX_HANDOFF_FROM",
     "MYCMUX_HANDOFF_PROMPT_FILE",
@@ -41,9 +42,11 @@ def assert_nonempty(keys: set[str], source: str) -> None:
     assert keys, f"{source} extraction returned no keys"
 
 
-def assert_matches_expected(keys: set[str], source: str) -> None:
-    unexpected = keys - EXPECTED_EPHEMERAL_ENV_KEYS
-    stale = EXPECTED_EPHEMERAL_ENV_KEYS - keys
+def assert_matches_expected(
+    keys: set[str], source: str, expected: set[str] = EXPECTED_EPHEMERAL_ENV_KEYS
+) -> None:
+    unexpected = keys - expected
+    stale = expected - keys
     assert not unexpected, (
         f"{source} contains ephemeral env keys that are not in "
         f"EXPECTED_EPHEMERAL_ENV_KEYS. Add them consciously: {sorted(unexpected)}"
@@ -101,18 +104,25 @@ def extract_socket_listener_keys() -> set[str]:
 
 def test_ephemeral_env_keys_stay_in_sync_across_all_guards() -> None:
     sources = {
-        "src-tauri/src/lib.rs startup remove_var": extract_lib_remove_var_keys(),
-        "src-tauri/src/commands/terminal.rs sanitize_launch_env arrays": set().union(
-            *extract_terminal_grouped_keys().values()
+        "src-tauri/src/lib.rs startup remove_var": (
+            extract_lib_remove_var_keys(),
+            EXPECTED_EPHEMERAL_ENV_KEYS,
+        ),
+        "src-tauri/src/commands/terminal.rs sanitize_launch_env arrays": (
+            set().union(*extract_terminal_grouped_keys().values()),
+            # This key is intentional launch input and must reach launcher.sh.
+            # Unlike canonical internal paths, terminal.rs must not strip it.
+            EXPECTED_EPHEMERAL_ENV_KEYS - {"MYCMUX_LAUNCH_TARGET"},
         ),
         "src/components/layout/SocketListener.tsx persistence filter": (
-            extract_socket_listener_keys()
+            extract_socket_listener_keys(),
+            EXPECTED_EPHEMERAL_ENV_KEYS,
         ),
     }
 
-    for source, keys in sources.items():
+    for source, (keys, expected) in sources.items():
         assert_nonempty(keys, source)
-        assert_matches_expected(keys, source)
+        assert_matches_expected(keys, source, expected)
 
 
 def test_terminal_ephemeral_env_groups_are_disjoint() -> None:

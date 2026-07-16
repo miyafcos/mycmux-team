@@ -1,114 +1,473 @@
-# 変更履歴 (mycmux-lite)
+﻿# 変更履歴 (mycmux personal)
 
-このファイルはチーム配布版 `mycmux-lite` の変更履歴です。personal 版は master worktree 側の `CHANGELOG.md` で管理します。
+このファイルは personal 版 (`master`) の変更履歴です。チーム配布版 `mycmux-lite` は lite worktree 側の `CHANGELOG.md` で管理します。
 
 ---
 
-## [0.11.0-lite.1] - 2026-07-10
+## [0.19.2] - 2026-07-16
 
-personal v0.10.1〜v0.11.0 (品質集中パック + resume 改善) を cherry-pick 運用で反映。
+セーブポイントの左右ドロップを「完全再開」既定に変更 (v0.19.1 実機フィードバック)。
+
+- Change: セーブポイントカードを左右端へドロップしたとき、**過去セッションがそのまま復活する完全再開** (`--fork-session`・元セッションに影響なし) でその側に新規ペインを開くように変更。カードを開いたときの「完全再開」と同一機構を再利用。
+- Safety: 完全再開できないカード (トランスクリプト欠損等) は従来の引き継ぎ書スタートに自動フォールバックし、警告トーストで明示。
+- UI: ラベルを「左に完全再開」「右に完全再開」に更新。下部 (この会話へ引き継ぎ) と「人に渡す」は変更なし。
+
+## [0.19.1] - 2026-07-16
+
+Mac パリティ検証ラウンドの成果を全プラットフォームへ反映。
+
+- Change: **ターミナルレンダラーの既定を全プラットフォームで「標準描画 (DOM)」に変更** (Mac 実機で WebGL 由来の「ペインが濃く沈む」を確定診断)。GPU 描画は設定 → 外観からの opt-in として残存。
+- Change: 設定移行 (version 3) — 旧既定で webgl を引き継いでいる環境は一度だけ dom にリセット (過去に明示的に GPU を選んだ記録がある場合は温存)。
+- Note (Windows): v0.14.2 で計測した WebView2 renderer の CPU 消費が気になる場合は、設定から GPU 描画を再度 opt-in してください (1トグルで戻せます)。
+- UI: 設定画面の「Windows推奨」表記を既知問題の説明に差し替え。
+
+## [0.19.0] - 2026-07-16
+
+v0.18.0 実機フィードバックの反映リリース。DnD の細部と、ボタンの畳まれ方を作り込み。
+
+- Fix: 自分のペインへのドラッグで「このペインのタブに追加/ペインを統合」チップが出る誤表示を廃止 (自ペインへの中央ドロップは no-op のため)。ペインごとのドラッグは自ペインの左右分割も非表示。タブのドラッグは2タブ以上のときだけ自ペイン分割を提示。
+- UI: 「◯◯ へ引き継ぎ文書を渡す」チップをペイン**下部** (入力欄の上) に移動。ホバーで色が変わる操作感は従来どおり。
+- Feat: **セーブポイントカードのドラッグをペイン移動と同じゾーン設計に統合** — 左右端=その側に新しいセッションを作成して引き継ぎ / 下部=この会話のエージェントへ引き継ぎ (従来のペースト・Enterで送信)。承認待ちブロック・生存確認などのガードは共通のまま。
+- Feat: タブバーの優先ボタンを**1個ずつ**畳む段階設計に変更。畳まれる順=しおり (Publish) → Split → 拡大 (Zoom) → **× (Close) が最後まで生存**。新境界 250/290・210/238・170/198・130/158px (各ヒステリシス28px以上)。
+- Fix (macOS): ネイティブタイトルバーをアプリ内バーに統合 (titleBarStyle Overlay) — Mac パリティ検証ループの初回修正。
+- Test: vitest 385 / pytest 141 / cargo 193。
+
+## [0.18.0] - 2026-07-16
+
+「入力待ちが消えない・全部入力待ちになる」通知の根治+エージェントのタブ spawn を裏起動化。おまけで launcher の Gemini 枠を Antigravity (agy) に置換。
+
+- Fix: **「入力待ち」ステータスの誤検知を根治**。矢印文字・番号付きリスト・「Enter to send / Esc to cancel」等のアイドルフッターに常時マッチしていた緩い検出パターンを廃止し、実際の承認UI (Do you want to proceed? / ❯ 1. Yes / 行末 (y/n) など12種) だけの高精度パターンに全面書き換え。過去の文字化けで死んでいたパターンも復活 (検出モジュールを純ASCIIソース化しテストで固定 — 同事故の再発を構造的に防止)。
+- Fix: 「入力待ち」の解除を「承認プロンプトが2スキャン連続で画面から消えたら解除」に変更。完了後の静止画面で入力待ちが永久に残る問題を解消 (再描画中のチラつき・再通知もなし)。
+- Feat: **エージェントによる同ペインへのタブ spawn (`pane.spawn_tab`) は既定で裏起動に変更**。タブは増えるがアクティブタブとフォーカスは今見ている場所から動かない。前面に出したい場合は CLI `--activate`。裏タブは PTY だけ起動 (レンダラは作らずCPU節約を維持) し、タブを開いた時にそれまでの出力をスクロールバックとして表示。UI の「New tab」ボタンは従来どおり前面。
+- Change: launcher メニューの Gemini 枠を Antigravity (agy) に置換 (Gemini CLI 個人向け終了のため)。
+- Test: 承認スキャナ24 / spawn裏起動・mount契約 (vitest 369 / pytest 140 / cargo 193)。
+
+## [0.17.0] - 2026-07-16
+
+ペイン移動ドラッグから「引き継ぎ」ができる新機能+Codex ドロップ先の不具合根治+DnD 表示の日本語化。
+
+- Feat: **ペイン移動時の引き継ぎ** — ペインやタブをドラッグすると、他のライブなエージェントペイン (Claude Code / Codex 両対応) に「◯◯ へ引き継ぎ文書を渡す」チップが出る。ドロップすると移動はせず、元セッションのセーブポイントを自動保存 → 引き継ぎ文を相手の入力欄に書き込む (Enter で送信)。承認待ちブロック・生存確認などの安全ガードはセーブポイントドラッグと共通化 (`savepointHandoffRuntime`)。
+- Fix: **Codex ペインがセーブポイントのドロップ先に出ない** — monitor.rs が Claude はプロセス検出で即通知するのに Codex だけセッションID 解決成功時のみ通知する非対称だった。Claude と同じ即時通知に修正 (Rust テストで固定)。
+- Fix: **Claude Code でもたまにドロップ先が消える** — 「最前面プロセスがシェルでない」判定が、Bash ツール実行中を 5 秒間隔監視が「シェル」と観測する瞬間にターゲットを消していた。agent 在籍情報ベース (多層安全弁経由でしかクリアされない) に変更。
+- UI: 書き込みプレビューを「ここに◯◯へ引き継ぎ文書を渡します（Enterで送信）」に変更し折り返し表示に。ドラッグゴーストの「右に会話…」切れも解消。ペイン移動ラベルを日本語化 (「右にペイン」「このペインのタブに追加」「ペインを統合」「新しいワークスペースへ移動」等、「3 tabs」→「タブ3個」)。
+- Test: vitest 336 / cargo 193 (+1) / pytest 135。
+
+## [0.16.1] - 2026-07-16
+
+ターミナル内パスリンクの誤検知根治リリース。「リンクを押したら path does not exist」「本物のパスが押せない」を解消。
+
+- Fix: 正規表現で拾ったパスリンクも含め、**全リンク候補をディスク実在チェックに通してからリンク化**するよう変更。スペース・日本語を巻き込んだ「散文ごとリンク」は実在する最長プレフィックス (本物のパス部分) に自動で縮む。存在しないパスはそもそもリンクにしない。
+- Fix: 誤検知リンクが実在チェック済みリンクを覆い隠していた overlap 除外の構造を反転。重なった候補は「実在プレフィックスが長い方が勝ち」で1本だけ生成。
+- Safety: 実在チェック IPC が失敗した時だけ従来の未検証リンクにフォールバック (リンクが全消えする事態を防ぐ)。既定の一括バッチ1回・キャッシュ・stale ガードは従来どおり。
+- Test: 散文巻き込みの縮小・覆い隠し解消・非実在ノーリンク・IPC フォールバック・overlap 優先順のユニットテストを追加 (vitest 328)。
+
+## [0.16.0] - 2026-07-16
+
+v0.15.0 のコンパクトタブバーへのフィードバック反映。「狭くなると全ボタンが一気に ⋮ へ消える」をやめ、段階的に畳む設計へ。
+
+- Feat: タブバーの縮退を full → slim → compact → micro の4段階に再設計。よく使う4ボタン (Publish セーブポイント / Split right / Zoom / Close pane) は slim・compact でも直接ボタンのまま残り、micro (250px 未満の物理限界) まで消えない。先に ⋮ へ畳まれるのは New tab / Split down のみ。
+- Feat: 各境界に独立したヒステリシス帯 (560/600・360/400・250/290) を持たせ、広げれば同じ段を対称に復帰。1回の幅計測で複数段をまたいでも正しく解決する (スプリッタの高速ドラッグ対応)。
+- Fix: ⋮ メニューは「いま隠れているボタンだけ」を表示 (直接ボタンとの重複なし・隠れゼロなら ⋮ 自体を非表示)。直接ボタン列と ⋮ の中身を同一の純関数 (`resolvePaneTabBarActions`) から描画。
+- Test: 全境界の双方向ヒステリシス・複数段またぎ・単調性 (幅が広がるのに縮退しない)・モード×Publish有無のボタン振り分けのユニットテストを追加 (vitest 323)。
+
+## [0.15.0] - 2026-07-15
+
+狭いペインでタブが触れなくなる問題を解消するタブバー再設計リリース。
+
+- Feat: ペインのタブバーにアダプティブ・コンパクトモードを追加。ペイン幅 360px 未満で「アクティブタブ名 + n/m ▾ + ⋮」表示に自動切替し、400px 以上で従来表示へ復帰 (ヒステリシスでチラつき防止)。▾ で全タブ一覧 (選択/閉じる)、⋮ に New tab / Publish / Split / Zoom / Close pane を格納し、どんなに狭くても全操作が2クリック以内。
+- Feat: ペイン内タブ巡回ショートカット `Ctrl+Alt+PageDown` / `Ctrl+Alt+PageUp` を新設 (設定のキーボードショートカットから変更可)。
+- UI: アクティブタブの強調 (アクセント混色背景+太字) と状態/通知ドットの拡大+コントラストリングで視認性を底上げ。従来の「狭いと Split/Zoom ボタンが消えるだけ」の CSS ルールは撤去。
+- Test: コンパクト切替の純関数ユニットテストと、タブ巡回ショートカットの契約テストを追加。
+
+## [0.14.19] - 2026-07-15
+
+claude-codex ペインが再起動でほぼ復元されない問題の根治リリース。
+
+- Fix: PTY monitor が claude-codex セッションを一度も帰属できていなかった問題を修正。claude-codex の実体は素の claude.exe (env で `~/.claude-codex/config` を指すだけ) のため、プロセス形状検出では常に「claude」と判定され、session id の探索先も `~/.claude/projects` 固定で、claude-codex の復元識別子が data.json に保存されなかった (実測: 保存済み agent_kind 12件すべて claude)。
+- Fix: launcher が書く pane mapping (`claude-codex:<sid>`) を、検出結果が claude でも整合として受理し最優先で採用。mapping が無い場合は `~/.claude/projects` → `~/.claude-codex/config/projects` の順に探索し、後者で見つかれば kind を claude-codex として帰属。既存の claude-codex 帰属は新しい identity が見つからない限り保持。
+- Test: 帰属5ケース (mapping優先/ディレクトリfallback/既存identity保持/素のclaude優先回帰/exact id > stale mapping) のユニットテストを追加 (cargo test 192)。
+- CLI (0.14.18 以降の運用変更・exe 変更なし): `spawn` の既定配置を「呼び出し元ペインの同タブ」に変更 (`--split` で従来の分割)。cp932 コンソールでの UnicodeEncodeError を修正。
+
+## [0.14.18] - 2026-07-15
+
+Codex 委譲を「見える化」する後半リリース。エージェントが自分のペインに作業タブを開き、済んだら畳めるようになった。
+
+- Feat: `pane.spawn_tab` を追加。ペイン内のエージェントが**自分と同じペインの新タブ**を開ける。one-shot コマンド実行 (codex exec 等・終了で自然に止まる) と、対話エージェント起動 (引き継ぎ書つき Claude Code/Codex) の2形態。
+- Feat: `pane.close_tab` を追加。呼び出し側ラッパーが成功を確認してからタブを畳む用途。最後の1タブは拒否し、閉じたタブは Ctrl+Shift+T の履歴に入る (作業フォルダのシェルとして復元)。
+- Safety: one-shot タブのコマンドは保存データに残らず (契約テストで固定)、閉じタブ履歴にもコマンドを記録しない。再起動や再オープンで有償の codex 呼び出しが勝手に再実行されることはない。
+- CLI: `mycmux_agent_cli.py` に `spawn-tab` / `close-tab` を追加。
+
+## [0.14.17] - 2026-07-15
+
+ペイン内のエージェントが「目に見える新ペイン」を自分で立ち上げられるようにするリリース。「この続きを Codex にやらせて」を、裏実行ではなく画面上のペインとして実現する土台。
+
+- Feat: ローカルソケットに `pane.spawn` を追加。ペイン内の Claude Code／Codex が引き継ぎ書・セッション引き継ぎ (CRSM handoff)・resume・新規起動の4モードで、可視の新ペインを右分割で立ち上げられる (戻り値で paneId/sessionId を受け取り追跡可能)。
+- Feat: `pane.send_text`／`pane.read` を追加。既存ペインへの入力送信と画面末尾の読み取りができ、エージェントが立ち上げたペインの進捗確認・追加指示に使える。
+- Feat: エージェント用クライアント `scripts/mycmux_agent_cli.py` を同梱 (標準ライブラリのみ。workspaces/panes/spawn/send/read)。
+- Safety: `MYCMUX_LAUNCH_TARGET` を ephemeral env ガード (起動時 remove_var・保存フィルタ・契約テスト) に追加し、新規起動 env が data.json に残って復元時に勝手にエージェントが立つ事故を予防。
+- Refactor: ソケットコマンド処理を `socketCommands.ts` に分離し、spawn 計画の組み立てを純関数化して単体テストを追加。
+
+## [0.14.16] - 2026-07-14
+
+セーブポイントを共有フォルダから切り離し、必要な1件だけを手渡せるローカル中心の受け渡しリリース。
+
+- Feat: セーブポイントはこのPCのローカル領域へ保存。カードの「人に渡す」またはドラッグ中だけ現れる受け渡し先から、単一の `.mycmux-transfer` ファイルを書き出せるようにした。
+- Feat: セーブポイント画面の「受け取る」とアプリへのファイルドロップから受信。Claude Code／Codexの会話、引き継ぎ書、復元情報を1件のカードとして取り込み、同じファイルの二重取り込みを防止する。
+- UX: 有効期限・受信コード・共有フォルダ設定は追加せず、狭いペインでは受信・更新操作をアイコン化。ドラッグを一覧内で離した場合は従来どおり何もせずキャンセルする。
+- Stability: 書き出し・受信・整合性検査をUIスレッド外で処理。再取り込み時も保存済み本文を再検証し、受信した終了時記録を通常どおりゴミ箱・期限整理できるようにした。
+- Restore: 相手のPCに元の作業フォルダがなくても、ホームフォルダを代替先としてClaude Code／Codexの会話を復元。作業ファイル自体は含まれないことを警告表示する。
+- Compatibility: 既存の `C:\Users\miyaz\.mycmux` 内の保存先は継続利用し、外部の旧共有フォルダは変更・削除せず参照情報だけ残す。
+- Release: v0.14.15はGitHub runner固有の8.3短縮パス表記でテストが停止し、配布物を公開せず終了。パス表記に依存しない検証へ直してv0.14.16として公開する。
+
+## [0.14.14] - 2026-07-14
+
+セーブポイント共有の最終調整と、多数のClaude Code/Codexペインを開いた際の表示消失・入力遅延を抑える安定化リリース。
+
+- Fix: セーブポイントを持ち上げた後、セーブポイント画面内で離した場合は何も起動・入力せずキャンセル。別workspaceへドラッグ中も元カードを保持し、復元先または書き込み先が確定した時だけ処理する。
+- UX: 狭いペインでも一覧性を保てるよう、セーブポイントカードのタイトル・メタ情報・操作領域を圧縮。完全復元とClaude/Codexへの引き継ぎ文入力は、ドロップ表示とアニメーションを分離した。
+- Fix: ペイン増減でレイアウト全体のkeyを変えていた処理を撤廃し、列をペイン重複から安定同定。分割操作のたびに既存xtermが再生成され、内容が一時消失する経路を解消した。
+- Stability: 非表示・0×0ペインではバックエンド出力を停止し、復帰時は必要な末尾だけを一度再生。Claude/Codex双方へリサイズ再描画を送り、切断復旧の連続再同期ループを防止した。
+- Perf: ターミナル出力をバイナリ転送し、ACKを32ms単位の累積送信へ集約。タイムアウト・再試行・世代交代・未解決invoke上限を追加し、多ペイン出力時の入力経路詰まりを抑制した。
+- Test: TypeScript、Vitest 279件、pytest 121件、Rust release 180件、production build、差分検査を通過。ローカル導入版のversion・SHA256一致と、再起動後6ペインの復元を確認した。
+
+## [0.14.11] - 2026-07-14
+
+セーブポイントD&Dの書き込み先表示を分割復元と明確に分け、削除を復元可能なゴミ箱方式へ変更するUX・安全性リリース。
+
+- UX: Claude Code/Codexへの貼り付け時は、対象入力欄の位置に「ここへ書き込む」プレビューとカーソル点滅を表示。右端・下端への完全復元は従来の分割プレビューを維持し、同じアニメーションに見えないよう分離。
+- Feat: セーブポイント画面へ「保存済み／ゴミ箱」を追加。初回削除はゴミ箱へ移動し、「元に戻す」または4秒以内の二段階確認による「完全に削除」を選べるようにした。
+- Safety: ゴミ箱は共有保存先の `_trash/<UUID>` に退避し、復元時の上書き、外部パス・reparse path、ID・session・checkpoint不一致、現役の最終記録が再生成済みの場合の完全削除を拒否。
+- Stability: 最終記録をゴミ箱へ移した直後の再保存は新しいcheckpointへ派生。途中停止してもheadへ先行保存した同一IDを再利用し、重複・孤児化を防止。一覧再読込も世代管理と片側エラー分離で古い応答の上書きを防止。
+- Cleanup: アプリ内の期限切れ整理もゴミ箱へ移動。一時残骸だけを完全削除し、旧Python cleanup CLIは確認専用に変更。
+- Test: Vitest 245件、pytest 111件、Rust release 169件、TypeScript・production build・差分/format検査を通過。
+
+## [0.14.10] - 2026-07-14
+
+0.14.9 の実機フィードバックを反映し、セーブポイントD&Dと多分割表示の挙動を修正する緊急リリース。
+
+- Fix: 稼働中のClaude Code/Codex中央またはタブへドロップした場合は、既存セッションの入力欄へ引き継ぎ文だけを貼り付けるよう変更。改行・Enterを送らず、新しいhandoffタブも作らない。
+- Fix: ペイン右端・下端、または非AIタブへドロップした場合は、既存の「会話ごと続ける」と同じ完全復元を使い、指定方向の新しいペインで元の会話を再開するよう変更。
+- Safety: 非AIタブから別のアクティブAIタブへ誤投入するフォールスルーを防止。確認・選択肢への回答待ち、ドロップ先消失、PTY未起動を再検証してから貼り付ける。
+- UX: 420x220pxの最小寸法と外周スクロールを廃止。全ペインを常に表示領域内へ分割し、ターミナル内部の履歴スクロールだけを維持。
+- Test: D&Dモード分岐、改行除去、ライブ対象判定、Tauri生存確認API、表示領域内フィットを単体・契約テストで固定。
+
+## [0.14.9] - 2026-07-14
+
+セーブポイントのドラッグ共有と、Claude Code/Codexを多重起動した際の描画・負荷を改善する安定化リリース。
+
+- Feat: セーブポイントカードをClaude/Codexのペイン・タブへドラッグし、元のセッションへ入力を混ぜず、安全な新規handoffタブとして再開できるようにした。
+- Fix: 非表示・最小化ターミナルの描画・同期を抑え、復帰時はカーソル位置と連番を使って不足分だけ再同期。UTF-8の分割出力や取りこぼしも復旧するようにした。
+- Perf: ターミナルキャッシュを12件、scrollback再同期を256KiBに制限。autosave範囲を絞り、起動復元後の固定キャッシュを解放し、レイアウト通知を対象workspace内に限定した。
+- UX: ペインの最小寸法を420x220pxに固定し、多分割でそれ以下になる場合は縦横スクロールへ切り替え、アクティブペインを自動表示するようにした。
+- Safety: D&D先をdrop時に再検証し、cwd不明時はタブ・PTYを作らず停止。通常のペインD&Dとの競合と、期限切れセーブポイントの誤操作を防いだ。
+- Test: TypeScript、Vitest 240件、pytest 102件、Rust release 163件に加え、D&D・非表示復帰・キャッシュ上限・レイアウト最小寸法の回帰契約を追加した。
+
+## [0.14.8] - 2026-07-14
+
+Windowsの端末描画を安定側へ戻し、ストリーミング中の重さと履歴スクロール不能を修正する緊急リリース。
+
+- Fix: 設定名変更で失われていたWindowsの標準描画（DOM）選択を復元。GPU描画は任意選択として残し、設定名と説明を日本語で明確化。
+- Perf: PTYの小分け出力ごとに可視行全体を2回再描画していた処理を削除。再接続・リサイズ・履歴再生時の再描画だけを重複排除して維持。
+- Fix: Claude/Codexとして起動した通常バッファのホイールを端末履歴へ戻し、alternate bufferだけTUIへ転送。Shift+ホイールは常に履歴スクロールとして利用可能。
+- UI: ペイン上部の状態表示から色付き背景と枠を外し、状態ドット・日本語ラベル・エージェント名だけのフラット表示へ変更。
+- Release: 実機確認で問題が残った0.14.7の公開処理を停止し、GitHub Releaseは作成していない。
+- Test: Windows描画設定の移行、ホイール経路、出力ホットパスの全画面再描画禁止、状態表示の単層化を回帰テストで固定。
+
+## [0.14.7] - 2026-07-13
+
+0.14.6 の背景不透明度変更を撤回し、保存済みの外観設定を全ペインで統一して使う緊急修正リリース。
+
+- Revert: Codexだけ端末背景を90%以上の不透明度へ強制していた処理を削除。Codex・Claude・ランチャーを含む全ペインを、利用者が保存した端末背景と透明度へ戻した。
+- Fix: 多重シャドウの除去、境界線によるアクティブ表示、日本語の「作業中」「入力待ち」は維持。色パレットとANSI配色は変更していない。
+- Release: 問題を含む0.14.6の公開処理を停止し、GitHub Releaseは作成していない。
+- Test: エージェント種別ごとの背景上書きを禁止し、全ターミナルが共通背景を使う回帰テストへ修正。
+
+## [0.14.6] - 2026-07-13
+
+ステータス表示の影と、Codex起動時の背景色混合を整理する視認性修正リリース。
+
+- Fix: タイトル・ペインタブ・状態ドット・アクティブペインに重なっていた多重シャドウを除去。アクティブ状態は2pxのアクセント枠で明確に維持。
+- Fix: 壁紙使用時にCodexの端末面だけ不透明度を90%以上へ引き上げ、既定62%の背景透過でTUI配色が壁紙と混ざる問題を軽減。
+- UX: ステータスを「作業中」「入力待ち」に日本語化。起動メニュー内からCodexへ移った後も、実行中の種類を優先して「Codex」と表示。
+- Test: フラットな状態表示、Codex面の視認性下限、起動後のエージェント名解決を固定する回帰テストを追加。
+
+## [0.14.5] - 2026-07-13
+
+呼称を「セーブポイント」に統一し、設定に専用タブを追加したUX整理リリース。
+
+- Fix: 0.14.2 の描画設定リネームで、旧設定の DOM 選択が WebGL に黙ってリセットされていた問題を修正。保存済み設定の移行処理 (persist migration) を導入。
+- Feat: 設定に「セーブポイント」タブを新設 (保存方法・再開方法の説明とパネルへの導線)。「スマホ・リモート操作」と機能の違いを明記して分離。
+- UX: 画面・ボタン・README の呼称を「セーブポイント」に統一。設定ナビを「表示 / 作業 / 接続 / アカウント / その他」に再編し、ナビ幅を画面幅に追従 (clamp)、ラベルの折り返しを許可。
+- UX: タイトルバーのしおりボタンに aria-label を付与。外観タブの描画方式の説明文を実挙動に合わせて修正。
+- Test: 設定移行の unit テストと、セーブポイント/リモート操作の導線分離を固定する契約テストを追加。
+
+## [0.14.4] - 2026-07-13
+
+複数ペインでClaude Codeなどを同時表示した際の文字欠け・矩形化を修正する緊急リリース。
+
+- Fix: 通常出力やリサイズのたびにWebGLの共有文字アトラスを消去していた処理を削除し、他ペインの既存文字が欠ける問題を解消。
+- Perf: WebGL既定とコンテキスト消失時のDOMフォールバックは維持し、描画性能を落とさず安定性を回復。
+- Test: 通常描画経路への `clearTextureAtlas()` 再混入を禁止する契約テストを追加。
+
+## [0.14.3] - 2026-07-13
+
+Online セーブポイントを「引き継ぎ記録」として再設計し、作業途中の更新と終了時の確定記録を分けたリリース。
+
+- Feat: 「ここまでを保存」で更新できる作業途中の記録と、「終了時の記録を残す」で内容を上書きしない確定記録を追加。終了後に作業を続ける場合は、親の記録を保ったまま新しい世代を開始。
+- UX: 画面名と操作名を「引き継ぎ記録」「作業途中」「終了時」「終了済み」「要点から続ける」「会話ごと続ける」に統一。確定操作の補足・ボタンを別段にし、折り返しと行間を調整。
+- Fix: 確定処理の再実行、途中停止からの記録ID復旧、ピン・削除・期限整理の同期、旧 `Online` タブラベルの移行に対応。
+- Fix: Dropbox Smart Sync の通常フォルダをリンクとして誤拒否せず、symlink / junction による保存先のすり替えだけを拒否。
+- Test: TypeScript、画面、Rust、Pythonの回帰テストを拡充し、作業途中から終了時、再開後の新世代までを検証。
+
+## [0.14.2] - 2026-07-13
+
+ターミナル描画を WebGL 化する性能リリース。ストリーミング出力中に WebView2 renderer が1コアの40〜70%を常時消費していた問題への根治。
+
+- Feat: xterm の描画を WebGL レンダラに変更 (既定ON)。context lost や初期化失敗時は、そのペインだけ自動で DOM レンダラに切り替わる (クラッシュ・自動再試行ループなし)。
+- Feat: 外観設定に「ターミナルの描画方式」(WebGL/DOM) を追加。切替は開いているペインにも即時反映。過去に一部環境で発生した WebGL のテキスト破損が再発した場合の逃げ道。
+- Test: レイアウト安定性の契約テストを新設計 (WebGL既定+フォールバック配線) に更新。
+
+## [0.14.1] - 2026-07-13
+
+設定ダイアログの体裁修正。タブ切替のたびにダイアログが伸縮して跳ねる問題を解消。
+
+- Fix: 設定ダイアログの外形を固定 (920 × min(640px, 画面高−80px))。タブごとの中身の高さでダイアログが伸縮・再センタリングされる挙動を廃止し、中身側をスクロールに変更。
+- Feat: 設定ナビをセクション化 (表示 / セッション / その他)。ナビ幅 208px 固定・ラベル1行固定 (省略記号)・hover 状態を追加。閉じるボタンを ✕ に変更し hover 反応を追加。
+
+## [0.14.0] - 2026-07-13
+
+設定画面を全面再編し、Online パネルとセッション復元まわりの改善をまとめた機能リリース。
+
+- Feat: 設定をタブ付きダイアログに全面再編 (2026-07-12 UI監査の承認案)。外観 / 通知とレイアウト / Resume / リモート・共有 / アカウント・使用量 / Buddy / キーボードショートカット / アプリ情報 の8タブ。旧フラットメニューと ThemeSwitcher は廃止し吸収。トークン再生成は「危険な操作」として視覚的に分離。ラベルを日本語に統一 (背景パネル含む)。
+- Feat: Online — セーブポイントを設定から独立させ、タイトルバーのアイコンに昇格。
+- Feat: Online パネルの「このPCのセッション」を折りたたみフッター化。実行中/入力待ちの件数バッジ、idle 表示、行クリック (Enter/Space 可) で該当ペインへジャンプ。
+- Feat: セーブポイントの手動削除と、transcript 不在時のわかりやすい公開エラー。
+- Fix: セッション復元の自己修復 — ペイン再マウント時の偽ダウングレード警告を根絶 (PTY 生存中は検証スキップ)。完全ダウングレード時は無効化した保存IDを自動クリア (入力待ち中は絶対にクリアしない)、退避IDで復元できた場合は保存IDをそちらへ付け替え。
+- Fix: 復元時に退避IDがあれば --continue へ落とす前にそれを resume。公開時は古いセッションIDでも cwd の最新 transcript へフォールバック。
+- Fix: OAuth token リクエストに mycmux UA を送信 (429 の真因対応)。usage バーはメインアカウントのみ表示。
+- Fix: MSYS で孤児化した agent プロセスの検出を維持。SHELL の usr\bin\bash.exe を Git bin ラッパーに書き換え。
+
+## [0.13.5] - 2026-07-12
+
+v0.13.4 配信後の実機再確認で残った、入力待ち中のしおり消失と会話復元の不透明さ・重複ID消去を修正。
+
+- Fix: Claude が承認・入力待ちの間は agent session marker のクリアを抑止し、8秒確認 streak もリセット。Rust monitor がアイドル中の Claude を一時的に見失っても、しおりボタンと次回復元IDを保持する。
+- Feat: 非アクティブかつ未マウントの保存済み会話タブに「再開待ち」サインを表示。通常タブと All tabs メニューの両方から、マウス・Enter・Space で再開できる。
+- Fix: 同一会話IDが複数タブへ付いた場合、既存 dedupe 安全弁を維持したまま winner/loser を警告トーストで可視化し、敗者IDを最大5件の退避履歴として保存。退避IDは自動復元対象にはしない。
+- Fix: live metadata の重複 claim は既存 owner を優先して拒否し、metadata fallback からの再混入も防止。タブ切替時の pane mirror を active tab と厳密同期し、旧タブIDの再注入を防ぐ。
+- Note: OAuth アカウント追加の HTTP 429 は Anthropic/Cloudflare 側の制限でコード回避不可。v0.13.4 の診断ログを維持し、別回線1回または24時間以上停止後1回の切り分け結果待ち。
+
+## [0.13.4] - 2026-07-12
+
+v0.13.3 実機フィードバックの3症状 (OAuth 429 案内 / セーブポイントUI出没 / セッション復元不安定) を根本修正。UI 総点検の修正17件も同梱。
+
+- Fix: しおり(公開)ボタンがエージェントのコマンド実行中に消えたり出たりする問題を修正 (processIsShell 単独の非表示ゲートを撤廃。公開は jsonl を読むだけなのでシェル前面でも実行可能)。
+- Fix: Online パネルの「このPCで開いているセッション」で、再起動直後の復元候補 (未起動行) が約5秒で消える問題を修正 (dormant 判定を「metadata 不在」から「persisted マーカー基準」に変更)。
+- Fix: プロセス検知の1回の誤観測で保存済みセッションID (復元情報) が恒久消失する問題を修正 — マーカーのクリアは「素のシェル状態が2ポーリング周期 (約10秒) 継続」で確定した場合のみ (App/SocketListener 共有ガード。pty_work_done 経由の即時クリアも廃止)。
+- Fix: 同一フォルダで複数 Claude ペインを開いた際にセッションIDがペイン間で入れ替わる既知の cross-contamination を修正 (前 tick のヒューリスティック検出結果を tick 開始時に予約。explicit --session-id は従来どおり優先)。
+- Feat: セッション復元がファイル不在で「直近の会話 (--continue)」へ無通知降格していたのを警告トーストで可視化。
+- Fix: OAuth 429 の案内文言を実測に合わせて更新 (解除まで数時間〜1日以上の場合あり・再試行の繰り返しで制限延長の可能性)。カウントダウンは「最短目安」表記に変更。
+- Feat: OAuth 失敗を `%APPDATA%/com.miyazaki.mycmux/logs/oauth.log` に永続記録 (HTTP status / cf-ray / retry-after / レスポンス先頭付き・token は記録しない)。エラー表示にも同診断情報を含める。
+- Chore: usage API の User-Agent を claude-code/2.1.207 に更新。
+- Fix: UI 総点検 (multi-agent audit) による可視性・レイアウト堅牢性・安定性の修正17件 — テーマ全色のコントラスト 4.5:1 をテストで固定、メニュー位置計算の共通化ほか。
+
+## [0.13.3] - 2026-07-12
+
+Online パネルのローカルセッション欄を強化し、Usage アカウント追加のレート制限画面を先に進める形に改善。
+
+- Feat: 「このPCで開いているClaude Codeセッション」に未起動ペイン(復元候補)も「未起動」バッジ付きで列挙。会話履歴があれば未起動のままセーブポイントを保存できる。
+- Feat: 各セッション行に稼働状態ドット(実行中/入力待ち)・ワークスペース名・gitブランチ・最終公開からの経過(未公開表示あり)を追加。
+- Fix: セッション行のタイトルに「node.exe」等のプロセス名が出る問題を修正(フォルダ名ベースの命名に変更)。
+- Style: 既存のダークトーンを維持したままパネルを高級化 — セクションのグラデーション枠・セッション数チップ・公開済み行の左アクセントレール・行/カードのホバー浮遊(reduced-motion対応)・「このPCで開いているセッション」バッジの発光。
+- Fix: Usageアカウント追加の429エラーで先に進めなくなる問題を解消。「+ アカウントを追加」をエラー中も常時表示し、429/期限切れ時は「認証をやり直す」で新しい認証フローを開始。解除目安の30分カウントダウンをダイアログ再オープン後も継続表示。
+
+## [0.13.2] - 2026-07-11
+
+オンラインセーブポイントの保存導線とペインタブの溢れ挙動を、実機フィードバックに基づき全面改善。
+
+- Fix: しおり(公開)ボタンがランチャー経由で起動した Claude Code タブに表示されない問題を修正。プロセス検出の時点でボタンを出し、セッションID確定までは理由つきの無効表示にする(agentId 依存を廃止・素のシェルには出さない)。
+- Feat: ペイン内タブの溢れ設計を追加。タブは64pxまで縮小(アクティブは120pxを維持)し、溢れたら横スクロール(縦ホイール変換・アクティブタブ自動追従)+「All tabs」メニューで全タブへ到達可能。右側の操作ボタン群は縮小の影響を受けない。
+- Feat: Online パネル上部に「このPCで開いている Claude Code セッション」一覧と保存/上書き更新ボタンを追加。しおりボタンと同じ公開動作をパネルからも実行できる。
+- Feat: 公開中の進捗を4ステップ(履歴要約→引き継ぎ書生成→バンドル作成→登録)のチェックリストで表示し、完了時に新規/更新の別・保存先・パス警告件数を明示。
+
+## [0.13.1] - 2026-07-11
+
+オンラインセーブポイントのGUI導線を配信版へ収録し、複数ペイン運用で崩れていたセッション復元を修復。
+
+- Fix: 保存済みセッションの実ファイルを全Claudeプロジェクトから検索し、重複時は最新の正本を選んで本来のcwdへ移動してから正確なIDをresumeする。空白・ドット・日本語を含むcwdも現行Claudeの保存先キーで照合し、別会話の`--continue`へ落ちる問題を解消。
+- Fix: 同一cwdの複数ペインが同じ最新JSONLを取得しないよう、プロセス引数で確定したIDと保存済み所有者を優先。エージェント終了後の一時mappingも除去する。
+- Fix: Online完全再開の`--fork-session`で、fork元IDではなく新しく生成されたセッションIDを追跡する。
+- Fix: Online／ブラウザペインを表示したまま終了しても、次回起動時は最後に選択していた保存対象の端末へ戻る。
+- Feat: 各Claude Codeペインのタブバーからオンラインセーブポイントを公開・更新できるGUIを追加。Onlineパネルにはローカルで開いているセッションを表示。
+- Fix: Usageアカウント追加時のOAuth token exchange 429を、原因と再試行方法が分かる案内へ改善。
+
+## [0.12.0] - 2026-07-10
+
+複数の Claude Pro/Max アカウントの使用量を、タイトルバーで一元監視する機能を追加。
+
+- Feat: **マルチアカウント usage 監視**。既存の単一アカウント版 UsageMeter を拡張し、追加した各アカウントの 5 時間・週次・Opus/Sonnet 消費率とリセット時刻をタイトルバーに worst 順のチップで表示。詳細はホバーのポップオーバーとアカウントごとのセクションで確認できる。
+- Feat: **mycmux 自前 OAuth (PKCE) ログイン**。設定 → 「Usage アカウント管理」からブラウザ認証でアカウントを追加。refresh token は Windows Credential Manager に暗号化保存し、access token の期限が近づくと自動でリフレッシュする。取得スコープは `user:profile` のみ (read-only・推論 API には一切触れない)。
+- Feat: **要再認証バッジと再認証フロー**。refresh token が失効したアカウントは警告表示になり、再認証ボタンから同じフローで復帰できる (アカウントの重複は作らない)。
+- Feat: アカウントの有効/無効トグルと削除。usage 取得はアカウントあたり 180 秒間隔・低並列・429 時は静かにバックオフする。
+- Note: 使用量取得は Anthropic の非公式エンドポイントを利用します。複数アカウントの追加・自動取得により、規約上のリスク (アカウント制限・停止) がゼロではない旨を設定画面に明記しています。
+
+## [0.11.0] - 2026-07-10
+
+品質集中パック (feat/terminal-display-stability) と resume 改善 (resume-phase-bc) の並列開発2ブランチを統合。
 
 - Feat: **TUI 描画の安定化**。ConPTY を windowsPty 設定 + Unicode 11 幅計算で構成し、全角・絵文字を含む TUI (Claude Code 等) の描画崩れを低減。
 - Feat: **xterm.js を 6.0.0 に更新** (DECSET 2026 synchronized output 対応)。エージェントの高速出力時のちらつきを抑制。
 - Feat: **ウィンドウ位置・サイズ・最大化状態を再起動をまたいで復元**。
-- Feat: **閉じたペインをセッションごと再オープン** (Ctrl+Shift+T)。誤ってペインを閉じても直前のエージェントセッションに戻れる。
-- Feat: **パレット resume の高速化 + launcher にセッションピッカー追加**。crsm 連携で過去セッションを一覧から選んで resume (lite の launcher は従来メニュー形式のまま「Resume (pick session)」項目として統合)。
-- Feat: **セッション検出と launcher トラッキングの堅牢化**。session id 衝突時の再採番・resume 系フラグの検出を厳密化。launcher.ps1 の BOM バグも修正。
-- Feat: launcher に `launcher.local.sh` / `launcher.local.ps1` ユーザー拡張フックを追加。アプリ更新で上書きされないカスタマイズ層。
-- Feat: 孤児セッションレコードを起動時に trash へアーカイブする retention 機構を新設 (削除はせず退避のみ)。
-- Feat: クリティカルな IPC 失敗・terminal cache 書き込み失敗をトーストで可視化。
-- Feat: 起動時に per-machine / per-user の二重インストールを検出して警告 (personal v0.10.1 の R-2 同期)。
+- Feat: **閉じたペインをセッションごと再オープン** (resume Phase C)。誤ってペインを閉じても直前のエージェントセッションに戻れる。
+- Feat: **パレット resume の高速化 + launcher にセッションピッカー追加** (resume Phase C)。crsm 連携で過去セッションを一覧から選んで resume。
+- Feat: **セッション検出とlauncher トラッキングの堅牢化** (resume Phase B)。session id 衝突時の再採番・resume 系フラグの検出を厳密化。
+- Feat: launcher に `launcher.local.sh` / `launcher.local.ps1` ユーザー拡張フックを追加 (v3 R-3)。アプリ更新で上書きされないカスタマイズ層。
+- Feat: 孤児セッションレコードを起動時に trash へアーカイブする retention 機構を新設。
+- Feat: クリティカルな IPC 失敗・terminal cache 書き込み失敗をトーストで可視化 (v3 M-3)。
 - Fix: AutoConsume がスクロールバックを破棄した際にフロントへ resync を通知し、表示と実体のずれを解消。
-- Refactor: 重複していた ErrorBoundary を `common/ErrorBoundary` に統合。
+- Refactor: 重複していた ErrorBoundary を `common/ErrorBoundary` に統合 (v3 Q-1)。
 
-## [0.10.0-lite.1] - 2026-07-08
+## [0.10.1] - 2026-07-08
 
-personal v0.9.4〜v0.10.0 の共通修正を cherry-pick 運用で反映。
+- Feat: **二重インストール検出** (v3 R-2)。起動時に `%ProgramFiles%\mycmux\` と `%LOCALAPPDATA%\mycmux\` の両方に exe が存在する場合、非ブロッキングの警告ダイアログを表示。0.9.1 で起きた「per-machine MSI が per-user 側の自動更新を止める」事故の実行時安全網。
 
-- Feat: Split right ボタン（右に分割）を設定でオンオフ可能に (既定 ON)。split/zoom ボタンの閾値緩和自体は lite に対応する container-query ベースの狭幅ペイン折りたたみ機能が無いため未適用 (対象外)。
-- Fix: アクティブタブを閉じた際に termCache へリークしていた不具合を修正 (evicted-while-mounted マークで unmount 時に確実に dispose)。killSession 失敗も console.warn で可視化。回帰テスト5件追加。
-- Perf: pty monitor の git ブランチ検出を4スレッドのワーカープールへ退避し、監視 tick が git 子プロセスの遅延でブロックされないように。`resolve_local_path_link` はルート要素を先にチェックして実在しないパスを1回の stat で棄却。
-- Fix(security): リモートサーバーの既定 bind を `127.0.0.1` に変更 (LAN公開は設定でオプトイン、Settings → Remote Access)。`RemoteSessionManager::kill_all` を quit_app / メインウィンドウ破棄時に配線。IP/Tailscale 検出は 2 秒タイムアウト付き非同期化。socket ブリッジの待受は 30 秒でタイムアウトし `pending_requests` を確実に解放。
-- Fix(security): remote `/qr` エンドポイントに `?token=` 必須化 (`/api/state` と同様)。未認証での QR トークン漏洩を防止。
-- CI: release workflow に test job (`tsc` / `vitest` / `cargo test --release` / `pytest`) を追加し `build-lite` の前提条件に。`scripts/normalize-updater-feed.ps1` を導入し、tauri-action 公開後に latest.json の `windows-x86_64` フォールバックキーを `windows-x86_64-nsis` と一致させて再アップロード (MSI/NSIS の混在インストール事故防止)。契約テスト2本 (`test_updater_feed_contract.py` / `test_version_consistency.py`) + fixture を追加。
-- Fix: `package-lock.json` のバージョンフィールドが `0.9.0-lite.1` のまま stale していたのを `0.9.4-lite.1` に同期 (新設のバージョン一貫性テストが検出)。
+## [0.10.0] - 2026-07-08
 
-## [0.9.4-lite.1] - 2026-07-08
+改善プラン v3 の P1〜P3 一括対応 (メモリリーク根治 / リモートのセキュリティ既定強化 / リリース安全網 / 体感性能)。
 
-personal v0.9.2〜v0.9.4 の機能を同期 (buddy / Remote など personal 専用要素は除外)。
+- Fix: **アクティブタブを閉じたとき xterm Terminal が dispose されず永久にメモリ滞留するリークを根治** (FE-N1)。タブを開いては閉じる agent 運用でメモリが線形増加していた「長く使うと重くなる」の主因。evicted マーク方式で close 時に確実に dispose し、リグレッションテスト5件を新設。v3 R-4 (dispose 順序の理論窓) も同時解消。
+- Fix: socket ブリッジのコマンド待ちに 30 秒タイムアウトを追加 (RS-1)。フロント無応答時に tokio タスクと pending エントリが永久リークする穴を閉鎖。
+- Security: **リモートサーバーの既定 bind を `127.0.0.1` (ローカルのみ) に変更** (v3 S-2)。従来どおり LAN/Tailscale から接続する (iPhone リモート等) には、設定 → Remote Access の「リモートを LAN に公開する (0.0.0.0 で待受)」を ON にして再起動してください (設定は data.json に永続化)。併せて終了時に全リモートシェルを kill する `kill_all` を quit_app / ウィンドウ破棄の両経路に配線し、`ip`/`tailscale` 呼び出しに 2 秒タイムアウトを追加。
+- Perf: git ブランチ検出を monitor スレッドから 4 本のワーカースレッドに分離 (RS-5)。低速ドライブ×複数セッションで全セッションのメタデータ更新が「セッション数×最大2秒」直列ブロックしていた問題を解消 (ハング時の child.kill 保証は不変)。
+- Perf: パスリンク解決にルート実在の事前チェックを追加 (FE-N2)。架空のパス風文字列 (最頻ケース) の stat 回数を最大 128 回 → 1 回に削減。
+- Fix: `killSession` 失敗の黙殺 4 箇所を `console.warn` 化 (FE-N4)。
+- CI: リリース workflow に test job を新設 (tsc / vitest / cargo test / pytest) し、build は test 通過後のみ実行 (v3 S-6)。updater feed 正規化を `scripts/normalize-updater-feed.ps1` に共通化 (v3 S-3、lite への配線手順は docs/DEPLOY.md 参照)。mirror の secret 未設定スキップを赤色表示化。
+- Test: updater feed 契約テスト (plain キー == nsis エントリ) とバージョン一貫性テスト (5 ファイル一致) を新設 (v3 S-4/S-5)。7 リリース凍結していた package-lock.json の version を是正。
 
-- Feat: ターミナル出力中の**任意の拡張子のファイルパス** (`C:\...`・`/c/...`・`file:///...`) をリンク化。md/html/Office 以外はクリック位置に2アイコンポップアップ (「既定のアプリで開く」「エクスプローラーで表示」)。md/html/Office は従来どおりワンクリックでアプリ内プレビュー。
-- Feat: **フォルダパスもクリックで開けるように**。末尾が `\`/`/` のフォルダパスはクリック1回で Explorer が開きます (日本語・スペース入り対応)。
-- Feat: **実在チェックベースのパス解決**。拡張子も末尾セパレータもないパスは、リンク検出時にディスクを確認して「実在する最長プレフィックス」だけをリンク化。実在フォルダはワンクリックで開き、実在しない文字列はリンク化しない。新設 `resolve_local_path_links` command はホバー計算ごとに1回のバッチ IPC + キャッシュで軽量。
-- Feat: ペインタブバーの「Split down」ボタン (行を増やす分割) を設定でオンオフ可能にし、既定を非表示に変更。設定メニューの「Split down ボタン（下に分割）を表示」で再表示できます。
-- Fix: pty monitor 内でハングした git 子プロセスを kill するように (ペイン状態表示の固まり対策)。死にコード削除・clippy 警告解消 (personal v0.9.2 同期分)。
+## [0.9.5] - 2026-07-08
 
-## [0.9.0-lite.1] - 2026-07-04
+- Feat: **分割・ズームボタンを狭いペインでも物理限界まで表示**。非表示になる閾値をペイン幅 300px→170px (分割)、240px→140px (ズーム) に緩和。列を増やしたときに Split ボタンが早々に消えて「それ以上分割できない」状態になる問題の解消 (右側ボタン群の実幅 ≈120px が収まる限り表示)。
+- Feat: **Split right ボタン (右に分割) も設定でオンオフ可能に**。既定はオン (従来どおり)。設定メニューの「Split right ボタン（右に分割）を表示」で切替。Split down トグルと対称の設計。
+- Security: リモート `/qr` エンドポイントに `/api/state` と同じ `?token=` 検証を追加 (未検証は 401)。同一 LAN / Tailscale 上の任意ホストが QR SVG 経由で平文トークンを取得できた穴を閉鎖 (改善プラン v3 S-1)。アプリ内の QR 表示は Tauri IPC (`get_remote_info`) 経由のため影響なし。
 
-- Sync: personal 0.9.0 の安定化パック(v0.8.54 Phase 0+1 + 安定化計画v2 Phase A/D/B/C/E)を全量ポート。
-- Fix: sync tauri command のワーカースレッド化 (UIスレッド保護) / data.json crash-safe化 (backupリカバリ付き) / attach epoch を backend attach 成功後に確定 / 終了時 save 失敗で quit ブロック / セッションmappingの原子的書き込み。
-- Fix: Phase A quick-win — workspace focus memory, pinned_roots merge, create_locks prune, tao 0.34.8, dead commands 削除。
-- Fix: 自己修復ACKリカバリ — bounded pending batches + scrollback resync (`get_session_scrollback` を lite に復活)。
-- Perf: metadata購読のスコープ化、launch propsメモ化、visibilityフレームキャッシュ、link cache、monitor negative TTL、broadcast clone gate。
-- Refactor: terminal.rs を artifact/shell/session_mapping に分割 / XTermWrapper ヘルパを terminalCache・terminalFocusHelpers・terminalMouseInputFilter 等へ純移動 / focusController 単一権威化。
-- Test: vitest 基盤 (attachEpoch 14 tests) + FrontendFlow tokio tests + contract tests 群を導入。buddy 系は lite 非搭載のため除外。
-- Verification: npx tsc --noEmit / npm run test:unit (14 passed) / python -m pytest tests -q (51 passed) / cargo test --release / npm run tauri build
+## [0.9.4] - 2026-07-08
 
-## [0.8.53-lite.1] - 2026-06-30
+- Feat: **フォルダパスもクリックで開けるように**。末尾が `\`/`/` のフォルダパスはクリック1回で Explorer がそのフォルダを開きます (日本語・スペース入り対応)。
+- Feat: **実在チェックベースのパス解決**。拡張子も末尾セパレータもないパス (LLM 出力にありがちな「`C:\...\3_一次原稿` に置きました」形式) は、リンク検出時にディスクを確認して「実在する最長プレフィックス」だけをリンク化。実在フォルダはワンクリックで開き、実在しない文字列はリンク化しない (誤爆を構造的に排除)。新設 `resolve_local_path_links` command はホバー計算ごとに1回のバッチ IPC + キャッシュで軽量。
+
+## [0.9.3] - 2026-07-08
+
+- Feat: ターミナル出力中の**任意の拡張子のファイルパス** (`C:\...`・`/c/...`・`file:///...`) をリンク化。md/html/Office 以外のパスをクリックすると、クリック位置に2アイコンのポップアップ (「既定のアプリで開く」「エクスプローラーで表示」) を表示し、2タップで開けます。エクスプローラー表示は新設の `reveal_path_in_explorer` command (`explorer /select`・既存の URI 正規化を再利用)。md/html/Office は従来どおりワンクリックでアプリ内プレビュー。ポップアップは外側クリック / Esc / 実行で閉じます。
+
+## [0.9.2] - 2026-07-08
+
+- Feat: ペインタブバー右上の「Split down」ボタン (行を増やす方向の分割) を設定でオンオフ可能にし、既定を非表示に変更。列分割が主用途で行分割ボタンは押し間違えの原因になっていたため。設定メニューの「Split down ボタン（下に分割）を表示」で再表示できます (キーバインド等の分割機能自体は従来どおり)。
+- Feat: launcher の「Change directory」を dev / anken の2メニューに分離し、Esc で前のメニューへ戻れるように。anken メニューを開いた際に起動ルート一覧をバックグラウンド更新。
+- Change: launcher をキーボード専用に変更 (ホイール・クリック操作を廃止)。
+- Fix: pty monitor 内でハングした git 子プロセスを kill するように (ペイン状態表示の固まり対策)。
+- Chore: 死にコード削除 (forced updater loop / WebGL setting / storage::save)、clippy 警告解消。
+
+## [0.9.1] - 2026-07-06
+
+- Fix: 狭いペインでタブバー右端の × (Close pane) が最初に見切れる問題を修正。ステータス表示 (≤420px) → 分割ボタン (≤300px) → ズーム (≤240px) の順に畳み、+ と × は最後まで残します (container query)。
+- Feat: バンドル launcher.sh に d キー / 「13. Change directory...」(`~/.mycmux/launch-roots.txt` からの起動ルート選択) とホイールナビゲーション (`__read_menu_event`) を焼き込み。起動時の launcher 再配布でユーザー編集が素の版に巻き戻る問題への恒久対応。
+- Fix: personal updater feed の既定キー `windows-x86_64` を NSIS installer に向けるよう mirror script を修正。bundle marker なし (UNK) の生コピー exe が MSI を掴んで Program Files に per-machine インストールされ、稼働側が更新されない「二重インストール分裂」の根治。
+
+## [0.9.0] - 2026-07-03
+
+安定化リファクタ v2 全フェーズ実施 (`docs/plans/2026-07-03-stability-refactor-plan-v2.md`、6次元並列レビュー 24件確定に基づく Phase A/D/B/C/E)。
+
+- Fix: ワークスペース切替時に常に先頭ペインへフォーカスが飛ぶ問題を修正。ワークスペースごとに最後のアクティブペインを記憶し復元します。
+- Fix: WebView が 5 秒以上停止した後、ペインの生出力が remount まで黙って破棄され続ける「ACK 黒穴」を自己修復化 (matching-generation ACK / set_visible(true) で stale 状態を解除、backend 32KB scrollback replay で欠落分を復元)。
+- Fix: Buddy 無効化トグルを backend に配線。ウィジェット非表示だけでなくセンサーパイプラインも実際に停止します。
+- Fix: pinned roots の lost-update 競合を解消 (full snapshot 保存を所有権スコープの merge に変更し、pinned_roots はディスク値を保持)。
+- Fix: 0 サイズに潰れたペインの pendingBatches 無制限成長に 2MB byte cap (oldest-drop + backend ring からの dup-guard 付き resync)。
+- Fix: ドラッグ選択でペイン活性化を中断した際、DOM フォーカスを能動ペインへ復帰 (次のキー入力が非活性ペインへ吸われる問題)。
+- Refactor: focus/activation を focusController に単一権威化。activePaneId の直接書き込み 20 サイトを 0 に集約し、focusin ゲート・リトライループ・wheel 抑止窓・タブクリック抑止タイマの競合 4 機構を明示的状態機械に吸収 (whack-a-mole 終結)。
+- Refactor: commands/terminal.rs (4,661 行) を terminal / artifact / shell / session_mapping に純移動分割。XTermWrapper.tsx のモジュールヘルパ 5 本 (cache/focus/selection/mouse-filter/link-provider) を抽出。
+- Perf: メタデータ購読のスコープ化 (ストリーミング中 ~150ms 毎の全アプリ再レンダ嵐を解消)、launch props のメモ化、可視性判定のフレーム内キャッシュ (毎バッチ強制 reflow 排除)、link provider LRU、monitor の negative TTL、broadcast clone の receiver ガード。
+- Perf: AutoConsume メトリクス追加 (「ペインが固まった」報告の現地診断用)。
+- Test: 挙動テスト基盤新設 — attachEpoch pure module + vitest (14 tests)、FrontendFlow の #[tokio::test] (backpressure コア初のユニットテスト)、focusController 状態機械テスト。
+- Chore: 死に Tauri command 7 本削除、consumer_id 配管削除、debug 級ログ 20 箇所を dev ガード化 (error 級 31 箇所は常時出力を維持)、tao 0.34.6 → 0.34.8、paneMetadataStoreCompat → paneMetadataStore rename。
+- Verification: npx tsc --noEmit / vitest 14 passed / cargo test 86 passed / python -m pytest tests -q 52 passed。
+
+## [0.8.54] - 2026-07-02
+
+Phase 1 安定化パック (2026-07-02 アーキレビュー計画 `docs/plans/2026-07-02-code-review-stability-perf-plan.md` に基づく)。
+
+- Fix: data.json の置換を crash-safe 化。backup を copy 方式に変更して「data.json 不在の瞬間」を排除し、欠落・空・破損時は最新 pre-replace backup から自動復旧するようにしました。
+- Fix: attach epoch を backend attach 成功後に確定するよう二相化。再アタッチ中・失敗時に旧 channel の生きた出力が stale 破棄されて表示が欠ける問題を修正しました。
+- Fix: 終了時の最終保存が失敗した場合は quit せず、Retry / Quit anyway のダイアログを表示するようにしました。
+- Fix: agent session mapping の保存前読み取りを TTL cache バイパス化し、mapping ファイルを atomic write + cache invalidation に変更 (セッション復元の session id 取り逃がし対策)。
+- Fix: ブロッキング処理を含む同期 Tauri command 26 本を `#[tauri::command(async)]` 化し、UI スレッドハング (AppHangB1) の残存リスクを解消しました。
+- Test: 同期 command の allowlist 契約テストを新設。新規 command が同期のままブロッキング処理を持つと CI で FAIL します (再発防止の本命)。
+- Chore: 死にコード削除 (`get_all_cwds`、未登録の native browser backend 一式)、hot-path ログの DEV ガード、`VITE_UI_VARIANT=mycmux` 正式対応 (`cmux` は legacy alias)。
+- Verification: cargo test --release 80 passed / python -m pytest tests -q 52 passed / npx tsc --noEmit / cargo check --release すべて成功。
+
+## [0.8.53] - 2026-06-30
 
 - Fix: Restore copy-on-select after terminal selection end, including context-menu word selection, cached terminal remounts, empty-selection focus restore, and clipboard fallback focus recovery.
 - Fix: Make artifact preview opens visible and deterministic by activating reloaded preview tabs, suppressing duplicate opens while pending, showing short UI errors, and falling back to the OS opener when in-app preview fails.
-- Sync: Matches personal 0.8.53 selection-copy and preview-open behavior while retaining the lite updater endpoint and app identifier.
 - Verification: python -m pytest tests/test_layout_stability_contract.py tests/test_no_restart_ui_surface_contract.py -q / npm run build / cargo test --manifest-path src-tauri\Cargo.toml --lib -- --nocapture
 
-## [0.8.51-lite.1] - 2026-06-25
-- Fix: Add the frontend Socket API bridge so external automation requests receive JSON responses instead of timing out.
-- Added: Source contract coverage for the `socket-request` listener and `socket_response` path.
-- Verification: python -m pytest tests -q / cmd /c npx --no-install tsc --noEmit / cargo test --manifest-path src-tauri\Cargo.toml --lib
+## [0.8.52] - 2026-06-30
 
-## [0.8.50-lite.1] - 2026-06-24
-- Fix: Sync the lite launcher menu with personal mycmux so lite no longer overwrites C:\Users\miyaz\.mycmux\bin\launcher.ps1 / launcher.sh with the older menu.
-- Added: Codex (Fugu Ultra) and claude-codex (Fugu) entries to the lite pane starter and terminal launcher contract.
+- Fix: Preserve Codex session identity on active restored tabs so startup restore resumes the saved Codex conversation instead of reopening the launcher.
+- Fix: Store detected agent session mappings from the PTY monitor and PowerShell launcher, including Codex resume/handoff paths.
+- Fix: Refresh terminal layout after pane resize, split, and visibility changes without coupling input startup to backend resize completion.
+- Verification: python pytest restore/layout contracts, TypeScript check, frontend build, and Rust unit tests passed.
 
-## [0.8.49-lite.1] - 2026-06-24
-- Fix: Keep pane tab rename edit mode stable after double-click by treating the following click as rename instead of tab selection.
-- Sync: Matches personal 0.8.49 pane rename behavior while retaining the lite terminal wheel scrollback fixes.
-- Verification: uv run pytest tests\test_layout_stability_contract.py tests\test_session_restore_race.py -q / npm.cmd run build
+## [0.8.49] - 2026-06-24
+- 修正: ペインタブ名のダブルクリック編集で、後続 click が通常のタブ選択に戻って入力欄を閉じる問題を防止しました。
+- 検証: uv run pytest tests\test_layout_stability_contract.py tests\test_session_restore_race.py -q / npm.cmd run build
 
-## [0.8.48-lite.1] - 2026-06-24
+## [0.8.48] - 2026-06-24
 
-- Fix: Restore Claude Code / Codex wheel scrollback while preserving text selection. Terminal mouse-mode output is stripped from xterm, non-wheel terminal mouse input is blocked from the PTY, and wheel events are converted back to SGR mouse reports for agent TUIs so their in-app conversation history can scroll normally. DECSET alternate scroll mode (?1007) is also stripped from terminal output.
 - Fix: Keep pane tab rename editable on double-click by suppressing tab select and drag handoff before terminal focus can steal the rename input.
-- Sync: Bring the lite terminal mouse/selection behavior up to the same level as personal `0.8.48`.
 - Verification: npm.cmd run build, uv run pytest tests\test_layout_stability_contract.py tests\test_session_restore_race.py -q, and npm.cmd run tauri build passed.
 
-## [0.8.35-lite.1] - 2026-06-20
+## [0.8.47] - 2026-06-24
+
+- Fix: Restore Claude Code / Codex wheel scrollback while preserving text selection. Terminal mouse-mode output is stripped from xterm, non-wheel terminal mouse input is blocked from the PTY, and wheel events are converted back to SGR mouse reports for agent TUIs so their in-app conversation history can scroll normally. DECSET alternate scroll mode (?1007) is also stripped from terminal output.
+- Verification: cmd /c npx.cmd tsc --noEmit, py -3.12 -m pytest tests\test_layout_stability_contract.py tests\test_session_restore_race.py -q, cmd /c npm.cmd run tauri build passed. CDP probe could not connect to port 9223 on the restarted local app.
+
+## [0.8.46] - 2026-06-23
+
+- Fix: Restore normal text selection in Claude Code / Codex panes by stripping terminal mouse-mode control sequences before xterm processes output, including chunk-split sequences.
+- Fix: Keep inactive-pane right-click word selection working without switching the active input pane; the CDP probe now accepts xterm's selection layer instead of only browser window selection.
+- Verification: cmd /c npx.cmd tsc --noEmit, py -3.12 -m pytest tests\test_layout_stability_contract.py tests\test_session_restore_race.py -q, cmd /c npm.cmd run tauri build, and CDP focus/selection probe passed.
+## [0.8.45] - 2026-06-23
+
+- Fix: Preserve right-click terminal selection in Claude Code / Codex panes by stopping pane-level mousedown propagation while xterm mouse tracking is active.
+- Change: Stop starting the forced auto-update loop from App.tsx; updates stay explicit instead of auto-relaunching after startup.
+- Verification: python -m pytest tests\test_layout_stability_contract.py tests\test_session_restore_race.py -q, cmd /c npx.cmd tsc --noEmit, and npm.cmd run build passed.
+
+## [0.8.35] - 2026-06-20
 
 - Fix: Route terminal wheel events through xterm's custom wheel handler so wheel scrolling cannot be converted into CLI up/down input when the terminal buffer is not scrollable.
 - Fix: Keep terminal focus synced to the session that owns the xterm element so typing, Backspace, Delete, and arrow keys keep going to the intended pane after mouse selection or pane switching.
 - Fix: Restore terminal focus immediately after drag selection before clipboard writes finish, preventing temporary dead input after selecting text.
 - Verification: npm.cmd run build and git diff --check passed.
 
-## [0.8.34-lite.1] - 2026-06-20
+## [0.8.34] - 2026-06-20
 
 - Fix: Launch Menu now works on Windows PCs that do not have Git Bash by installing and running a PowerShell launcher.
 - Fix: The launcher scripts are installed per user under `.mycmux/bin`, so GitHub-installed builds no longer rely on Miyazaki-specific shell setup.
 - Fix: Missing commands now show a message instead of leaving a blank launcher pane.
 
-## [0.8.33-lite.1] - 2026-06-19
+## [0.8.33] - 2026-06-19
 
-- Added forced automatic updates after startup, plus periodic, online, and visibility-resume checks. When a signed update is available, mycmux-lite downloads it and relaunches without relying on the Settings button.
+- Added forced automatic updates after startup, plus periodic, online, and visibility-resume checks. When a signed update is available, mycmux downloads it and relaunches without relying on the Settings button.
 - Fixed terminal wheel scrolling by handling wheel events as local terminal scrollback and stripping mouse-report escape sequences before they reach the PTY.
-- Note: Mirrors the shared master 0.8.33 update path and terminal wheel fix in the lite build.
+- Added a release mirror script and workflow step for the personal updater feed so `mycmux-personal-updater/latest.json` can be kept on the current signed personal build.
 - Verification: npm.cmd run build passed.
 
-## [0.8.30-lite.1] - 2026-06-19
+## [0.8.30] - 2026-06-19
 
 - Fix: Restore normal terminal drag selection by removing the DOM-level terminal mouse guard. Mouse report escape sequences are filtered before they reach the PTY instead.
 - Fix: Keep the blue pane border tied to the session that actually receives input or the selected tab. Selecting text in another pane no longer moves the input indicator.
-- Note: Mirrors the shared master 0.8.30 fix in the lite build.
 - Verification: npm.cmd run build and git diff --check passed.
-## [0.8.29-lite.1] - 2026-06-19
+## [0.8.29] - 2026-06-19
 
 - 修正: terminal 上の通常クリック・タップを CLI へ座標入力として送らず、focus 復帰だけに限定しました。カーソル移動は左右キーなどのキーボード操作に寄せています。
 - 修正: xterm の Alt-click カーソル移動を無効化し、cached terminal の再利用後も同じ設定を維持します。
@@ -116,30 +475,23 @@ personal v0.9.2〜v0.9.4 の機能を同期 (buddy / Remote など personal 専�
 - 修正: 表示切替中の一瞬の非表示判定で入力を捨てないようにし、tab 切替・pane 操作・zoom 後の入力停止を防ぎます。
 - 修正: terminal textarea がまだ生成されていない時に pane 本体へ focus して終了せず、実入力 textarea が取れるまで短く再試行します。
 - 修正: IME composition 中は terminal shortcut 処理を介入させず、IME 入力を xterm にそのまま渡します。
-- 備考: 共通機能の修正なので、master `0.8.29` と同じ内容を lite に反映しました。Buddy 機能は引き続き lite では非表示です。
 - 検証: `cmd /c npm run build` を通過しました。
 
-## [0.8.28-lite.1] - 2026-06-19
+## [0.8.28] - 2026-06-19
 
 - 修正: pane の発光表示が DOM focus に反応して、マウス移動や意図しない focus 移動で光る pane が変わる問題を直しました。
 - 修正: active pane の発光は pointer down、つまりクリック・タップで入力先を選んだタイミングに合わせて更新します。
 - 修正: 別 pane をクリックした直後に、前の pane の blur が新しい active pane を消してしまう経路を防ぎました。
-- 備考: 共通機能の修正なので、master `0.8.28` と同じ内容を lite に反映しました。Buddy 機能は引き続き lite では非表示です。
+- 検証: TypeScript 型チェックと layout 安定化契約テスト 13 件を通過しました。
 
-## [0.8.27-lite.1] - 2026-06-19
+## [0.8.27] - 2026-06-19
 
 - 修正: Resume 実行前の CRSM session 検証で毎回 `--refresh` を要求していたため、CRSM の再走査が 6 秒を超えると `CRSM session validation timed out after 6000 ms` で pane が開かない問題を直しました。
 - 修正: Resume 直前の CRSM 照合は軽い ID 検索に変更し、照合が遅い・失敗する・選択済み session が再検索結果に出ない場合でも、一覧で選んだ session ID を使って起動します。
 - 維持: 実体ファイルがない Claude 要約履歴は、これまで通り直接 Resume せず、別履歴または引き継ぎを案内します。
-- 備考: 共通機能の修正なので、master `0.8.27` と同じ内容を lite に反映しました。Buddy 機能は引き続き lite では非表示です。
+- 検証: 手元の CRSM 実測で `--refresh --query <session-id>` が約 6.9 秒、`--query <session-id>` が約 0.16 秒になることを確認し、Resume 前の重い再走査を外しました。
 
-## [0.8.26-lite.1] - 2026-06-19
-
-- 変更: lite の版番号を master `0.8.26` に合わせ、今後は共通機能の更新では `master版番号-lite.1` を使う運用にそろえました。
-- 備考: Buddy だけの変更は master 側だけで更新し、lite は必要な共通機能が入るタイミングで同じ master 基準番号へ合わせます。
-- 備考: 中身は `0.7.36-lite.1` と同じ pane/input 安定化版です。更新ボタンや表示上の混乱を避けるための版番号整理です。
-
-## [0.7.36-lite.1] - 2026-06-19
+## [0.8.26] - 2026-06-19
 
 - 修正: cached terminal を再利用したあとも `onData` / `onBinary` / `onTitleChange` を必ず登録し直し、pane 移動・tab 切替・復元後に CLI へ入力が届かなくなる経路を塞ぎました。
 - 修正: 非表示 pane への入力送信を止め、実際に入力した terminal の session を active pane に戻すようにしました。閉じた pane の session ID が active に残って Backspace や文字入力が効かなくなる状態を防ぎます。
@@ -149,7 +501,7 @@ personal v0.9.2〜v0.9.4 の機能を同期 (buddy / Remote など personal 専�
 - 修正: 横分割で新しい列だけ幅 `1` になり、pane が極端に細くなる・横スクロールが出る問題を修正しました。列構成が変わった場合は一度等分幅へ戻します。
 - 検証: TypeScript 型チェックと layout/input 安定化契約テスト 13 件を通過しました。
 
-## [0.7.35-lite.1] - 2026-06-18
+## [0.8.25] - 2026-06-18
 
 - 修正: 端末で文字を選択して自動コピーしたあと、入力フォーカスが一時的なコピー用 textarea に残って CLI へ文字入力や Backspace が届かなくなる問題を直しました。コピー成功時・失敗時・fallback コピー時のすべてで xterm へフォーカスを戻します。
 - 修正: タブ追加、タブ切替、タブ削除、pane 分割、pane close、zoom 操作のあと、ボタン側へフォーカスが残って CLI 入力できなくなる経路を直しました。操作後は対象 pane、または分割後に active になった pane の端末入力欄へ戻します。
@@ -157,28 +509,28 @@ personal v0.9.2〜v0.9.4 の機能を同期 (buddy / Remote など personal 専�
 - 修正: 端末出力が大量に出て frontend queue が満杯になったとき、PTY reader が待ち続けて stdout/stderr が詰まり、結果として stdin まで固まったように見える経路を直しました。満杯時は表示用チャンクを捨ててでも PTY の読み取りを継続します。
 - 検証: TypeScript 型チェック、layout 契約テスト、Rust unit test 75 件で、入力フォーカス復帰・通常入力保護・PTY reader 非ブロック化を確認しました。
 
-## [0.7.34-lite.1] - 2026-06-18
+## [0.8.24] - 2026-06-18
 
 - 修正: 端末を pane 分割や復元で再利用したあとも、選択した文字列だけがコピーされるようにしました。選択中の中間状態を何度も clipboard に書き込む処理をやめ、選択完了時に一度だけコピーします。
-- 修正: pane の列・行構造が変わったときに、古い分割 UI の内部状態が残って上下左右の関係が崩れる問題を抑えました。
+- 修正: pane の列・行構造が変わったときに、古い分割 UI の内部状態が残って上下左右の関係が崩れる問題を抑えました。実際の `splitColumns` から layout key を作り直し、古い列 key の使い回しをやめています。
 - 修正: 保存済みの幅・高さ情報が現在の pane 構造と合わない場合は破棄するようにしました。古い比率が別の pane に流用されて表示が欠ける状態を防ぎます。
 - 修正: Resume パレットで選んだ履歴を起動する前に、最新の CRSM 履歴で同じ session が存在するか確認します。見つからない履歴や直接 Resume できない Claude 要約履歴は、新しい pane を作る前に案内するようにしました。
 - 修正: 保存済み pane の復元で session 検証に失敗したとき、古い session ID が CLI 引数に残って `specified session not found` になる問題を直しました。
 - 検証: 選択コピー、pane layout、Resume 起動前検証、古い Resume 引数の除去について回帰テストを追加しました。
 
-## [0.7.33-lite.1] - 2026-06-18
+## [0.8.23] - 2026-06-18
 
-- 変更: lite を master と同等の機能構成に戻し、Buddy だけを非表示・無効化しました。
-- 追加: File Explorer Sidebar、Path Jumper、Remote QR、filesystem watcher など、master 側の通常機能を lite に反映しました。
-- 修正: Buddy の UI、設定、ショートカット、Tauri コマンド登録を外し、Buddy 本体がない lite でも起動できるようにしました。
+- 修正: pane を削除・移動・preview へ差し替えた時に、実際の pane 一覧と `splitColumns` がズレたまま残る問題を直しました。古い配置情報に残っていた pane が、次の削除や分割操作で突然出てくる状態を防ぎます。
+- 修正: 呼び出し元が `splitColumns` を渡さない pane 更新でも、現在の pane 一覧に合わせて配置情報を必ず補正し、列構造が変わった場合は幅・高さの保存値も作り直すようにしました。
+- 検証: レイアウト安定性テストを更新し、pane 一覧と配置情報が同期されることを確認しました。
 
-## [0.7.32-lite.1] - 2026-06-18
+## [0.8.22] - 2026-06-18
 
 - 修正: pane 分割時に横スクロールで逃げず、画面幅いっぱいの範囲内で各 pane が細くなるようにしました。
 - 修正: 保存済みの古い `columnWidths` / `rowHeightsPerCol` が画面幅を超えていても、現在の表示領域へ縮尺してから Allotment に渡すようにしました。
 - 修正: active pane 追従用の `scrollIntoView` を廃止し、pane 追加時に下部や左右のスクロールバーが出る原因を取り除きました。
 
-## [0.7.31-lite.1] - 2026-06-18
+## [0.8.21] - 2026-06-18
 
 - 修正: pane 数が増えたときに、列ごとの最小幅 `420px` が画面幅を超えて横スクロール前提になり、pane が画面内に収まらない問題を修正しました。列幅は表示領域に合わせて縮むようにし、狭い状態でも全 pane が画面内に残ります。
 - 修正: 横分割後に新しい pane が active にならず、作った pane が見えない位置に残って「pane が開かない」ように見える問題を修正しました。分割直後は新 pane にフォーカスします。
@@ -186,233 +538,213 @@ personal v0.9.2〜v0.9.4 の機能を同期 (buddy / Remote など personal 専�
 - 修正: active 状態が tab session ID を指しているとき、ショートカットの横分割・縦分割・zoom が対象 pane を見つけられない問題を修正しました。
 - 改善: レイアウト安定性テストを更新し、固定幅スクロール前提ではなく、画面幅追従・pane 欠損補正・分割後フォーカスを契約として検証するようにしました。
 
-## [0.7.30-lite.1] - 2026-06-18
+## [0.8.20] - 2026-06-18
 
 - 修正: ワークスペース復元時に、横分割を勝手に縦積みへ変換してしまう問題を修正しました。
 - 修正: pane 操作、復元、保存のすべてで、保存済みの分割方向を保ったままレイアウトを整理するようにしました。
 - 修正: stale な `column_widths` / `row_heights_per_col` は、現在の `split_columns` と形が合わない場合に使わないようにしました。
 - 修正: 端末描画を WebGL から安定優先の DOM 描画へ戻し、透明背景・複数 pane 環境で文字が斑に欠ける症状を抑えました。
 - 修正: 分割・リサイズ中に一時的に 0 サイズ扱いになった pane の出力を破棄せず、表示復帰後に描画するようにしました。
-- 修正: mycmux-lite の二重起動を防ぎ、複数プロセスが同じ `data.json` を競合保存してレイアウトを壊す経路を止めました。
+- 修正: mycmux の二重起動を防ぎ、複数プロセスが同じ `data.json` を競合保存してレイアウトを壊す経路を止めました。
 - 修正: `data.json` の読み書きにもプロセス間ロックを追加し、万一の同時保存でも直列化されるようにしました。
 
-## [0.7.29-lite.1] - 2026-06-18
+## [0.8.19] - 2026-06-18
 
 - 修正: 複数 pane のワークスペースが復元後に読めないほど細い列へ潰れる問題を修正しました。
 - 修正: pane 分割構造が変わったとき、幅・高さの保存値を捨てっぱなしにせず、使える範囲で整合させるようにしました。
 - 変更: 端末グリッドに最小列幅・最小行高を設定し、必要な場合は横スクロールで読める状態を保つようにしました。
 
-## [0.7.28-lite.1] - 2026-06-17
+## [0.8.18] - 2026-06-17
+
+- 修正: personal 版の更新フィードを lite 版の `/releases/latest` から分離しました。
+- 修正: personal 版は `mycmux-personal-updater` の安定した公開アセットを読むようにし、private release 由来の 404 と署名鍵の不一致を避けました。
+
+## [0.8.17] - 2026-06-17
 
 - 修正: 起動時復元で、同じ agent session ID が複数 pane に残る問題を修正しました。active tab を優先し、重複側の resume 情報を落とします。
 - 修正: `session_id` ごとの PTY 作成を直列化し、復元・再接続経路が同じ session を二重 spawn しないようにしました。
-- 修正: 保存時の agent session mapping を serialized workspace snapshot に反映し、起動後に launch した agent が次回復元から漏れないようにしました。
+- 修正: personal 版が team/lite の release feed を見に行かないようにし、設定画面の更新確認が正しい署名鍵とパッケージを使うようにしました。
 
-## [0.7.27-lite.1] - 2026-06-07
-
-- 追加: Markdown artifact を HTML 変換経由ではなく、Markdown 本文を直接編集・保存できる source edit にしました。
-- 追加: 編集中の `Ctrl+S` / `Cmd+S` で即保存できるようにしました。保存後も編集画面を閉じず、続けて作業できます。
-- 変更: Markdown 編集中は保存できない装飾 tool を隠し、保持できない font・数式などを誤って入れないようにしました。
-- 改善: DOCX preview / save で、下線、打消し線、文字色、highlight、上付き / 下付き、空段落を保持するようにしました。
-- 修正: 画像、脚注、comment、変更履歴、Word 管理の番号、結合 cell を含む DOCX は、簡易保存で壊さないよう保存前に止めるようにしました。
-- 修正: Markdown / Word preview HTML の更新先へ書けない場合、一時 folder へ fallback して保存動作を安定化しました。
-
-## [0.7.26-lite.1] - 2026-06-07
-
-- 追加: Word artifact edit mode に、配置、indent / outdent、font family、font size、数式挿入の control を追加しました。
-- 変更: Word document 編集は page 風の document surface で表示し、typography、table border、数式表示を読みやすくしました。
-- 修正: DOCX preview / save で、配置、indent、bold、italic、font family、font size、数式 fallback text などの実用的な書式を保持するようにしました。
-
-## [0.7.25-lite.1] - 2026-06-07
-
-- 変更: HTML、Markdown、編集可能 Word artifact tab の右上 toolbar action を Edit、Open、Explorer 表示へ統一しました。
-- 追加: Word `.docx` / `.docm` / `.dotx` / `.dotm` artifact を pane 内で軽く編集し、timestamp backup を作って元 file へ保存できるようにしました。
-- 修正: Explorer action は `/select,` と path を分けて渡し、Documents / Desktop へ fallback せず対象 document の folder を開くようにしました。
-
-## [0.7.24-lite.1] - 2026-06-07
-
-- 修正: artifact toolbar の Open action が local file を Windows 既定 app で安定して開けるようにしました。
-- 修正: Explorer action は元 document path を canonicalize し、preview 生成先ではなく実 file の folder を reveal / select するようにしました。
-- 変更: Word、Excel、PowerPoint の OOXML document を pane 内 preview で読めるようにし、編集は desktop Open を基本にしました。
-
-## [0.7.23-lite.1] - 2026-06-06
-
-- 修正: artifact toolbar の Explorer button が生成 preview HTML ではなく、元 document の場所を開くようにしました。
-- 変更: preview mode の toolbar を静かにし、編集 control は編集中だけ表示するようにしました。
-- 変更: Markdown preview を document 風 layout にし、heading、table、code、mobile spacing を改善しました。
-- 追加: Word、Excel、PowerPoint artifact link を preview pane で開き、source metadata と desktop app 起動を使えるようにしました。
-
-## [0.7.22-lite.1] - 2026-06-06
-
-- 修正: artifact preview / editor pane の zoom shortcut を iframe 内で処理し、HTML / Markdown preview に focus があっても `Ctrl+Shift+Enter` が効くようにしました。
-- 変更: read-only local HTML / Markdown preview は no-script `srcdoc` document で表示し、relative assets を保ちながら shortcut capture できるようにしました。
-
-## [0.7.21-lite.1] - 2026-06-06
-
-- 修正: HTML / Markdown artifact preview / editor iframe が mycmux shortcut を workspace へ forward し、preview focus 中でも pane zoom / pane navigation shortcut が効くようにしました。
-- 変更: artifact edit mode では `Ctrl+B` / `Ctrl+I` が global shortcut ではなく document body の bold / italic として動くようにしました。
-
-## [0.7.20-lite.1] - 2026-06-06
-
-- 修正: artifact editor toolbar の Explorer button は `plugin-shell.open` ではなく native Tauri IPC path で preview HTML を reveal するようにしました。
-- 変更: toolbar の icon size と status / file-kind badge を軽くし、右上 action cluster の視覚的な重さを下げました。
-
-## [0.7.19-lite.1] - 2026-06-06
-
-- 追加: terminal preview pane から開いた HTML / Markdown artifact を Word 風 WYSIWYG editor で編集し、元 file へ保存できるようにしました。
-- 追加: 保存前に同じ folder へ timestamp backup を作るようにしました。
-- 追加: editor toolbar に text formatting、table cell 編集、row / column 挿入・削除を追加しました。
-- 変更: Markdown 保存では一般的な Markdown 構造を保ち、複雑な table は embedded HTML として残します。
-
-## [0.7.18-lite.1] - 2026-06-06
-
-- 変更: local HTML / Markdown artifact link は active terminal tab を置き換えず、右側 preview pane で開くようにしました。
-- 変更: 同じ artifact を再クリックすると preview を reload し、別 artifact は preview pane 内に別 tab として開きます。
-
-## [0.7.17-lite.1] - 2026-06-06
-
-- 修正: narrow pane で terminal wrap により space が消えた場合でも、長い Dropbox / 日本語 HTML path を in-app preview tab で開けるようにしました。
-
-## [0.7.16-lite.1] - 2026-06-06
-
-- 修正: narrow pane で長い日本語・space 含み HTML path が terminal row をまたいでも、padding space を正規化して preview できるようにしました。
-
-## [0.7.15-lite.1] - 2026-06-05
-
-- 修正: narrow pane や agent output により raw Windows path が hard line break されても、space / 日本語 folder を含む local artifact path を clickable に保つようにしました。
-
-## [0.7.14-lite.1] - 2026-06-05
-
-- 修正: narrow pane で raw Windows path や `file:///...` preview link が terminal row をまたいでも、local artifact link が clickable のまま残るようにしました。
-
-## [0.7.13-lite.1] - 2026-06-05
-
-- 修正: raw Windows artifact path 専用の terminal link provider を追加し、space / 日本語 folder を含む `HTML: C:\Users\miyaz\report.html` 形式も in-app preview tab で開けるようにしました。
-- 変更: pane tab bar の手動 Preview artifact eye button を削除し、artifact preview は terminal link から開く方式にしました。
-
-## [0.7.12-lite.1] - 2026-06-05
-
-- 修正: raw Windows artifact path を local `.html` / `.htm` / `.md` / `.markdown` として in-app preview tab で開けるようにしました。
-- 変更: 外部 local Markdown file は session preview cache に safe static HTML として render します。
-
-## [0.7.11-lite.1] - 2026-06-05
-
-- 追加: AI artifact preview を lite pane に追加しました。
-- 追加: 各 PTY へ `MYCMUX_MARKDOWN_OUT` と `MYCMUX_ARTIFACTS_DIR` を渡し、`out.html` は直接、`out.md` は safe static HTML として開きます。
-- 追加: active session に属する `file:///...` artifact link を mycmux browser tab 内で開けるようにしました。
-
-## [0.7.10-lite.1] - 2026-06-05
+## [0.8.16] - 2026-06-05
 
 - 修正: zoom 中の pane を閉じたとき、または zoom 対象を含まない workspace に切り替えたときに画面が空になる問題を修正しました。
-- 修正: stale な `zoomedPaneId` を store 側で消し、`AppShell` にも自己回復 guard を残しました。
+- 修正: stale な `zoomedPaneId` を store 側で消し、`AppShell` にも自己回復ガードを残しました。
+- 修正: セッション数や出力量が増えたとき、PTY command 処理が UI thread を固める問題を改善しました。
 
-## [0.7.8-lite.1] - 2026-05-18
+## [0.8.6] - 2026-05-20
+
+- 変更: buddy avatar の monitor/screen 枠を外し、以前のように buddy 領域へ直接描画するように戻しました。
+- 修正: 表情 sprite が切り替え時に分裂したり揺れたりする問題を修正しました。表情ごとに要素を作り直さず、1つの永続要素の background-position だけを更新します。
+
+## [0.8.5] - 2026-05-20
+
+- 修正: 表情 avatar が数秒ごとに揺れたり、表情変更時に位置・サイズが跳ねたりする問題を修正しました。
+- 修正: sprite atlas の各セルを個別に crop / scale していた処理をやめ、全セルへ同じ変換を使うことで表情間の位置合わせを保ちました。
+- 修正: renderer 側の crossfade から layout projection 由来の揺れを取り除きました。
+
+## [0.8.4] - 2026-05-20
+
+- 追加: buddy avatar で face-expression skin を使えるようにしました。
+- 追加: `layout.json` で定義された表情セル、mood group、blink、idle ambient、talking lip-sync を読み、buddy の気分と発話に応じて表情を選ぶ expression director を追加しました。
+- 追加: skin 画像と layout は repo 外のローカル assets として扱い、標準ビルドは従来の SVG face を使います。
+
+## [0.8.3] - 2026-05-19
+
+- 追加: buddy が状況に合うときだけ、Steins;Gate の定番台詞をまれに発話へ織り込めるようにしました。
+- 追加: 台詞は外部ライブラリから読み、同じ台詞の連続使用を避けます。
+- 追加: `persona.steinsQuotes` の `enabled` / `chance` / `minGapMinutes` で調整できます。
+
+## [0.8.2] - 2026-05-19
+
+- 修正: buddy 初期化を起動直後の重い処理から外し、最初の Claude/Codex 活動または起動後 90 秒で遅延実行するようにしました。
+- 修正: 入力中の idle 判定だけで buddy が話し出さないようにしました。Claude/Codex 活動と interval check のみで反応します。
+- 修正: buddy の cross-session scan、session tail、environment scan を main thread から分離し、通常利用中の短い引っかかりを減らしました。
+- 修正: daily summary と weekly report の observation-state 書き込みを直列化し、JSON 書き込みを atomic にしました。
+- 修正: renderer の unhandled rejection と Rust panic をログへ出すようにしました。
+
+## [0.8.0] - 2026-05-18
+
+- 追加: embedded buddy を Amadeus persona として再構成しました。
+- 追加: v8 Kurisu persona、長期記憶、週次自己観測、発話 cooldown、interval-driven initiative を導入しました。
+- 追加: buddy core を adapter 層の後ろへ分離し、persona は casual register で話すようにしました。
+- 追加: Codex-pet spritesheet を base64 data URL で読み込めるようにしました。
+
+## [0.7.8] - 2026-05-17
+
+- 修正: Codex など大量出力時の端末表示安定性を改善しました。
+- 修正: frontend queue が詰まっているときに PTY 出力を捨てず、backpressure をかけるようにしました。
+- 修正: session 再接続時に data channel を正しく差し替え、古い callback が表示へ書き込まないようにしました。
+- 修正: resize 時に段階的な full refresh を行い、端末を再描画しやすくしました。
+- 修正: WebGL context loss への復旧処理を強化しました。
+
+## [0.7.7] - 2026-05-16
 
 - 修正: theme picker で選んだ theme が実際に反映されるようにしました。
-- 変更: UI 色を theme token ベースへ整理し、light theme でも正しく表示できるようにしました。
+- 修正: light theme 選択時に ANSI palette が dark 前提のまま残る問題を修正しました。
+
+## [0.7.6] - 2026-05-16
+
 - 修正: 背景画像の上で terminal 文字色が薄くなりすぎる問題を修正しました。
-- 修正: 大量 agent output 時の terminal 表示安定性を改善し、PTY 出力を捨てず backpressure をかけるようにしました。
+- 変更: media background 有効時は xterm の `minimumContrastRatio` を無効化し、透明 terminal 背景に合う色を保ちます。
 
-## [0.7.4-lite.1] - 2026-05-16
+## [0.7.5] - 2026-05-16
 
-- 変更: title bar の文字・icon shadow を theme-aware にし、実際の chrome 背景明度で shadow を切り替えるようにしました。
+- 変更: UI 色を theme token ベースへ整理しました。
+- 変更: modal、command palette、status badge、drag-and-drop、chrome の hardcoded dark 前提色を theme-aware token へ置き換えました。
+- 追加: backdrop、shadow、on-accent、on-status、spacing token を追加しました。
+- 修正: yoi-ai theme の文字コントラストを WCAG AA 水準へ引き上げました。
 
-## [0.7.2-lite.1] - 2026-05-15
+## [0.7.4] - 2026-05-16
 
-- 追加: pane tab の double-click / context menu rename に対応しました。
+- 修正: title bar の文字・icon shadow を、theme の宣言ではなく実際の chrome 背景明度で決めるようにしました。
+
+## [0.7.3] - 2026-05-16
+
+- 変更: title bar の文字・icon shadow を theme-aware にしました。light theme では暗い drop-shadow を落とし、画像背景時だけ薄い white halo を残します。
+
+## [0.7.2] - 2026-05-16
+
+- 追加: pane tab の double-click / context menu rename に対応しました。label は `data.json` に保存され、空にすると自動命名へ戻ります。
 - 追加: Resume palette で user message のない session を非表示にできる設定を追加しました。
-- 変更: Usage Meter は Anthropic OAuth `/usage` endpoint の live 値を読むようにしました。
+- 変更: Usage Meter はローカル JSONL 推定ではなく Anthropic OAuth `/usage` endpoint の live 値を読むようにしました。
 - 変更: ChatGPT rate-limit endpoint に到達できない場合は Codex usage section を自動で隠します。
 
-## [0.7.1-lite.1] - 2026-05-14
+## [0.7.1] - 2026-05-14
 
 - 追加: PTY metrics、SessionManager create log、frontend attach epoch、xterm 1 秒統計、WebGL loss、termCache lifecycle、initial replay log を入れ、表示欠け・復元不具合の調査をしやすくしました。
 - 修正: TitleBar の文字色 token を調整し、視認性を上げました。
 - 修正: Claude usage 集計から `cache_read_input_tokens` を除外しました。
 - 修正: usage tier の `max_20x` と Codex limit の初期値を実測寄りに校正しました。
-- 備考: WebGL 表示、SessionManager channel 差し替え、scrollback / replay 重複表示は次段の調査対象として残しました。
+- 備考: WebGL 表示のプツプツ、SessionManager channel 差し替え、scrollback/replay 重複表示は次段の調査対象として残しました。
 
-## [0.7.0-lite.1] - 2026-05-13
+## [0.7.0] - 2026-05-13
 
-- 追加: TitleBar に Claude Code / Codex の Usage Meter を追加しました。
+- 追加: TitleBar に Claude Code / Codex の Usage Meter を追加しました。5 時間ローリングと 7 日 window を常時表示します。
 - 追加: Rust native の usage 集計モジュールと `get_usage_summary` Tauri command を追加しました。
-- 修正: 同一 `session_id` の二重 `create_session` が既存 PTY を壊す問題を修正しました。
-- 修正: cwd 検証経路と spawn 経路で参照 path がずれる問題を修正しました。
+- 追加: `~/.claude/projects/**/*.jsonl` と `~/.codex/sessions/**/*.jsonl` を直接集計し、差分スキャン用 file cache を使います。
+- 修正: 同一 `session_id` の二重 `create_session` が既存 PTY を壊す問題を、`SessionManager::create` の idempotent 化で修正しました。
+- 修正: cwd 検証経路と spawn 経路で参照パスがずれる問題を、`resolve_launch_cwd` の共有で修正しました。
 - 修正: 並列復元 race を抑えるため、startup autosave hold、mapping refresh、初回 mount delay を調整しました。
-- 変更: `scripts/backfill-sessions.ps1` を deprecated にしました。
+- 変更: `scripts/backfill-sessions.ps1` を deprecated にしました。pane config に agent kind / cwd が保存されるため、起動後 backfill は不要です。
 
-## [0.6.2-lite.1] - 2026-05-07
+## [0.6.2] - 2026-05-07
 
-- 修正: personal v0.6.2 の startup restore behavior を lite へ同期しました。
-- 修正: 保存済み Claude / Codex / claude-codex session または pane-session mapping を持つ全 workspace を復元対象にしました。
+- 修正: active workspace だけでなく、保存済み Claude / Codex / claude-codex session を持つ全 workspace を復元対象にしました。
 - 変更: inactive workspace は active workspace の後に短い queue で mount し、通常起動の応答性を保ちながら復元します。
 - 修正: `shell-starter` / session-less pane は pane-session mapping から `agent_kind` と `agent_session_id` を復元できます。
+- 修正: workspace LRU mount cap は shell-only workspace のみに適用し、復元対象 workspace は evict しないようにしました。
 - 修正: 起動復元中は autosave を短時間止め、中間状態の `data.json` で上書きされにくくしました。
 
-## [0.6.1-lite.1] - 2026-05-07
+## [0.6.1] - 2026-05-07
 
-- 修正: personal v0.6.1 の session history persistence 修正を lite へ同期しました。
-- 修正: `onPtyMetadata` が `paneMetadataStore` へだけ流れ、保存時に `agentKind` / `agentSessionId` が `null` になる問題を修正しました。
-- 注意: 既存 v0.6.0 の `data.json` は勝手に書き換えません。一度 agent を起動し直すと、次回保存から自動再接続できるようになります。
-- 備考: env leak 防止の仕組みは維持しました。
+- 修正: session history persistence の実修正を入れました。
+- 修正: `onPtyMetadata` が `paneMetadataStore` へだけ流れ、`SocketListener.tsx::toConfig` が参照する `Pane.claudeSessionId` / `agentKind` / `agentSessionId` に反映されない問題を修正しました。
+- 注意: 既存 v0.6.0 の `data.json` は勝手に書き換えません。session id が `null` で保存されていた pane は一度 launcher menu に戻り、再起動後の次回保存から自動再接続できるようになります。
+- 備考: env leak 防止の `stripEphemeralLaunchEnv`、`EPHEMERAL_LAUNCH_ENV_KEYS`、`remove_var`、`dedupeAgentSessionsInConfigs` は維持しました。
 
 ## [0.6.0] - 2026-05-05
 
 - 追加: v0.5.x 系の修正をまとめて正式反映しました。
 - 修正: session history persistence を戻し、再起動時に各 pane が以前の Claude / Codex session へ再接続できるようにしました。
-- 追加: Settings に Terminal renderer (WebGL) toggle を追加しました。
+- 追加: Settings に Terminal renderer (WebGL) toggle を追加しました。既定は macOS=ON、Windows=OFF、Linux=OFF です。
 - 確認: launcher menu の 10 item 構成を normal → dangerous → resume の順に揃えました。
 
 ## [0.5.6] - 2026-05-05
 
 - 修正: `SocketListener.tsx::toConfig` が live の `claudeSessionId` / `agentKind` / `agentSessionId` を `data.json` に保存するように戻しました。
-- 修正: `data.json` と `~/.mycmux-lite/pane-sessions/*.txt` mapping cache を使い、再起動後に各 pane が以前の Claude / Codex session へ戻れるようにしました。
+- 修正: `data.json` と `~/.mycmux/pane-sessions/*.txt` mapping cache を使い、再起動後に各 pane が以前の Claude / Codex session へ戻れるようにしました。
 - 注意: v0.4 で無効化していた理由は `MYCMUX_*` env leak でしたが、v0.4.x で防御済みのため再有効化しました。
 
 ## [0.5.5] - 2026-05-05
 
 - 追加: Settings に Terminal renderer (WebGL) toggle を追加しました。
 - 変更: 既定は macOS=ON、Windows=OFF、Linux=OFF です。
-- 修正: Windows は DOM renderer を既定に戻し、WebView2 + WebGL の濃く重い描画を避けました。
-- 注意: renderer の切り替えは次に作る pane から反映されます。
+- 修正: Windows は v0.5.1 相当の DOM renderer を既定に戻し、WebView2 + WebGL の濃く重い描画を避けました。
+- 注意: renderer の切り替えは既存 live pane ではなく、次に作る pane から反映されます。
 
 ## [0.5.4] - 2026-05-05
 
 - 確認: `src-tauri/src/launcher.sh` の launcher menu を canonical な 10 item 構成へ揃えました。
 - 変更: normal → dangerous → resume の順で表示します。
-- 備考: source file は既にこの順でしたが、installer を更新して `~/.mycmux-lite/bin/launcher.sh` も一致させました。
+- 備考: source file は v0.4 以降この順でしたが、installer を更新して `~/.mycmux/bin/launcher.sh` も一致させました。
 
 ## [0.5.3] - 2026-05-05
 
-- 修正: `terminal_config.rs` の unused variable lint を抑制しました。
-- 備考: v0.5.2 tag に混ざっていた Windows clippy 修正を、きれいな version として再配布した release です。
+- 修正: `terminal_config.rs` の alacritty loader で、非 Linux / 非 macOS target の unused variable lint を抑制しました。
+- 修正: `commands/workspace.rs` の不要な trailing `return;` を削除しました。
+- 修正: `db/storage.rs` の cleanup を `inspect_err` に置き換えました。
+- 備考: v0.5.2 tag の Windows clippy 修正を、きれいな version として再配布した release です。
 
 ## [0.5.2] - 2026-05-05
 
-- 修正: macOS で native window decoration を使い、idle CPU 異常を回避しました。
+- 修正: macOS で native window decoration を使い、`decorations: false` 由来の idle CPU 異常を回避しました。
 - 追加: xterm WebGL addon を接続し、context loss 時は DOM fallback へ戻るようにしました。
 - 変更: unused な `ghostty-web` dependency を削除しました。
 - 追加: macOS build path を正式サポートしました。
 - 変更: macOS の `Cmd+...` を Windows 由来の `Ctrl+...` shortcut と同等に扱います。
-- 修正: macOS / Linux build failure と `crsm` CLI lookup の `.exe` 決め打ちを修正しました。
-- 備考: personal v0.5.2 と lite identity / UI variant の差分を同期しました。
+- 修正: `terminal_config.rs` の macOS / Linux build failure を修正しました。
+- 修正: `crsm` CLI lookup は `.exe` 決め打ちをやめ、platform suffix を使うようにしました。
+- 修正: macOS で window が出ない場合に `show()` を setup hook から呼ぶ bridge を追加しました。
 
 ## [0.5.1] - 2026-05-05
 
 - 改善: Resume / CRSM Palette は cached session list から即表示し、背後で CRSM を更新するようにしました。
 - 改善: 大量履歴でも重くならないよう、request dedupe、10 秒 auto-refresh cooldown、初回 1000 session load、明示 deep load を入れました。
-- 備考: Buddy-only 変更は lite から除外しています。
 
 ## [0.5.0] - 2026-05-04
 
-- 変更: personal `master` v0.5.0 と本体 version を同期するための minor release です。
-- 備考: lite には機能差分はありません。Buddy / Codex Pet 関連機能は lite には含めません。
-- 変更: 以後、mycmux 本体機能の bump は master / lite で揃え、Buddy 関連は master 側で別管理します。
+- 追加: Claude Buddy が Codex Pet skin を使えるようにしました。
+- 追加: `~/.codex/pets/<name>/{pet.json,spritesheet.webp}` を selectable skin source として扱います。
+- 追加: installed Codex Pets を取得する `list_codex_pets` Tauri command を追加しました。
+- 追加: `~/.claude-buddy/config.json` を保存する `save_buddy_settings` Tauri command を追加しました。
+- 追加: Settings menu に Buddy skin section を追加しました。
+- 追加: buddy mood を idle / listening / thinking / tsukkomi / applaud / curious / amused / alert / sleepy へ対応付けました。
 
 ## [0.4.4] - 2026-05-04
 
 - 修正: GitHub Actions の release workflow で、`workflow_dispatch` の tag input を渡しても release upload が skip される問題を修正しました。
-- 変更: release workflow を repo 別の専用 job へ整理しました。lite worktree は `build-lite` のみです。
+- 変更: `tagName` / `releaseName` / `releaseBody` は `${{ github.event.inputs.tag || github.ref_name }}` を参照します。
+- 変更: release workflow を repo 別の専用 job へ整理しました。master worktree は `build-personal` のみです。
 
 ## [0.4.3] - 2026-05-04
 
@@ -429,42 +761,94 @@ personal v0.9.2〜v0.9.4 の機能を同期 (buddy / Remote など personal 専�
 ## [0.4.1] - 2026-05-04
 
 - 追加: Settings に `Claude Code` / `Codex` / `Hybrid` の表示 ON/OFF checkbox を追加しました。
-- 備考: personal 側の Remote Terminal URL 形式変更と embedded client refresh は、この時点では lite へ反映していません。
+- 追加: Remote QR button で現在 URL、SVG QR、token suffix、接続中 client 一覧を表示できるようにしました。
+- 追加: token 再生成を Settings から実行できるようにしました。
+- 変更: Remote URL は `#token=` から `?token=` へ移行し、WebSocket upgrade 時に server が直接 token を確認できるようにしました。
+- 修正: `acda1ff` 由来の半完成 remote control 差分を完成形にし、HEAD 単独で `cargo check` が通るようにしました。
 
-## [0.4.0] - 2026-05-04
+## [0.4.0] - 2026-05-03
 
 - 修正: CRSM Palette 経由の env が親プロセスから他の PTY へ漏れ、新規 pane が意図せず resume される問題を修正しました。
 - 修正: CRSM CLI 呼び出し時に Windows console window が一瞬出る問題を抑制しました。
-- 修正: Remote terminal で WebSocket 接続失敗時に terminal 読み込みを待ってから status banner を出すようにしました。
-- 追加: 詳細 subpanel、cwd filter chip、kind badge、相対時刻、さらに過去の session 読み込みを追加しました。
+- 追加: 詳細 subpanel、cwd filter chip、kind badge、相対時刻、さらに過去の session 読み込み、開始時刻表示を追加しました。
 - 変更: CRSM Palette を 1200px 幅の 2 column 構造へ拡張しました。
 - 変更: `agent_session_id` / `agent_kind` / `claude_session_id` を `data.json` に保存しない仕様へ変更しました。再起動後は Ctrl+P から手動 resume します。
 
-## [0.3.3-lite.1] - 2026-04-24
+## [0.3.8] - 2026-04-28
 
-- 追加: cache / background pane の Codex approval prompt を検出し、高頻度 `runScan()` loop を戻さずに通知できるようにしました。
-- 追加: Settings updater UI を完成させ、現在 version、update available 状態、update failure log を出せるようにしました。
-- 備考: Windows MSI 互換のため app/package version は `0.3.3` のまま、公開 tag は `v0.3.3-lite.1` です。
+- 追加: team distribution を `miyafcos/mycmux-team` から公開し、in-app updater を public release feed へ向けました。
+- 変更: README の install command を team repository 用に更新しました。
+- 追加: UI または shortcut から workspace を閉じる前に確認を出すようにしました。
+- 変更: launcher option を整理し、Claude auto-mode を外し、Claude / Codex / claude-codex の dangerous / resume entries を追加しました。
 
-## [0.3.2-lite.1] - 2026-04-24
+## [0.3.6] - 2026-04-26
 
-- 修正: PTY から frontend への IPC path を制御し、WebView stall 時に Tauri Channel queue が無制限に増えないようにしました。
-- 修正: local MSVC linker path の決め打ちを外し、GitHub-hosted Windows runner の `link.exe` を使えるようにしました。
-- 追加: GitHub Actions で updater artifact generation を有効化し、public lite release に `latest.json` と signed installer metadata を含めました。
-- 備考: Windows MSI 互換のため app/package version は `0.3.2` のまま、公開 tag は `v0.3.2-lite.1` です。
+- 修正: 復元された Claude / Codex tab が shell launcher へ戻らず、実際の agent id で再起動するようにしました。
+- 修正: 復元 agent session では stale terminal snapshot replay を skip し、古い `Launch:` 画面が resume を隠さないようにしました。
+- 修正: Windows `.cmd` / `.bat` shim を `cmd.exe /d /c` 経由で解決し、`claude.cmd` などの CLI shim を起動できるようにしました。
 
-## [0.3.0-lite.1] - 2026-04-23
+## [0.3.5] - 2026-04-26
 
-- 修正: hidden workspace / hidden tab が裏で動き続ける問題を personal v0.3.0 から取り込みました。
+- 修正: stale pane-session mapping が同じ Claude / Codex session を複数 pane に復元する問題を防ぎました。
+- 修正: duplicate mapping を捨てる場合でも、shell launcher pane は shell pane として残すようにしました。
+
+## [0.3.3] - 2026-04-24
+
+- 追加: 背景・cache pane の Codex approval prompt と番号選択肢を検出し、Codex が許可待ちのときに通知できるようにしました。
+
+## [0.3.2] - 2026-04-24
+
+- 修正: Tauri updater artifact generation を有効化し、GitHub Releases に in-app updater が期待する signed metadata を含めるようにしました。
+
+## [0.3.1] - 2026-04-24
+
+- 修正: PTY から frontend への IPC path を session ごとの queue と rate-limited forwarder で制御し、WebView stall 時に Tauri Channel queue が無制限に増えないようにしました。
+- 改善: PTY scrollback append path を batch extend / drain で効率化しました。
+- 修正: local MSVC linker path の決め打ちを外し、GitHub Actions runner の Visual Studio toolchain を使えるようにしました。
+
+## [0.3.0] - 2026-04-23
+
+- 修正: hidden workspace / hidden tab が裏で動き続ける問題を止めました。
 - 改善: workspace mount set を LRU 3件に制限し、pane は active tab だけ render します。
+- 改善: `XTermWrapper` は cache / reattach 時に listener を正しく dispose / re-register します。
 - 追加: `tauri-plugin-updater` v2 による in-app auto-update を追加しました。Settings → 更新を確認 から確認、署名検証、download、自動再起動まで行います。
-- 変更: lite 用署名鍵を personal と分離しました。
-- 追加: `build-lite.ps1` を personal 用 build script から分離し、branch 確認、clean 確認、MSVC 読込、build、backup、配置、配布 asset 集約を1コマンド化しました。
-- 変更: tag 命名は `vX.Y.Z-lite.N` です。
+- 変更: 個人版と lite で updater 署名鍵を分離しました。
+- 追加: `build-personal.ps1` / `build-lite.ps1` を分離し、branch 確認、clean 確認、MSVC 読込、build、backup、配置を1コマンド化しました。
+- 変更: GitHub Actions release workflow を Windows 専用に整理しました。
+- 変更: tag 命名は personal が `vX.Y.Z`、lite が `vX.Y.Z-lite.N` です。
 
-## [0.2.0] - 2026-04-22
+## [0.2.0] - 2026-04-07
 
-- 変更: personal 版から lite 版へ配布するため、個人機能と重い開発用要素を整理しました。
-- 除外: File Explorer Sidebar、Buddy / Persona / Codex bridge、fs watcher、`tauri-plugin-dialog`、古い build/package script、個人版 docs を lite から外しました。
-- 変更: 製品名を `mycmux-lite`、bundle ID を `com.miyazaki.mycmux-lite`、config dir を `~/.mycmux-lite/`、localStorage key を `mycmux-lite-settings` にしました。
-- 備考: personal 版 `mycmux` と同じ PC で並行起動できます。
+- 追加: WebSocket ベースの browser access を持つ Remote Terminal dashboard を追加しました。
+- 追加: iPhone / remote viewer 用の既存 session monitoring flow を追加しました。
+- 追加: Berry Cream、Ocean Mist、Matcha Latte の3つの theme を同梱しました。
+- 修正: Kitty style terminal input の `Shift+Enter` を扱えるようにしました。
+- 改善: Windows deployment と local update script の metadata を揃えました。
+- 備考: この release は当時利用中の local `mycmux` build と一致します。
+- 備考: 一部の内部 document と legacy artifact には `ptrterminal` / `ptrcode` 表記が残っています。
+
+## [0.1.3] - 2026-03-20
+
+- 追加: browser pane の初期実装を入れました。
+- 制約: 多くの実サイトは `X-Frame-Options` や `Content-Security-Policy` により iframe 表示できません。
+- 制約: host からの JavaScript 実行は same-origin policy により制限されます。
+- 制約: cross-origin navigation では back / forward が期待通り動かない場合があります。
+- 追加: `browser_create`、`browser_destroy`、`browser_set_bounds`、`browser_navigate`、`browser_eval`、`browser_status`、`browser_snapshot` を追加しました。
+- 追加: mount 時に container 座標で browser webview を作り、ResizeObserver で bounds を同期し、unmount で破棄します。
+- 追加: URL bar は入力を正規化し、必要に応じて `https://` を補います。
+
+## [0.1.2] - 2026-03-18
+
+- 修正: browser pane 内で keydown を parent window へ relay し、browser focus 中でも global shortcut が動くようにしました。
+- 修正: pane close 後、focus が失われず次の pane へ移るようにしました。
+- 追加: browser agent API の初期 socket command を追加しました。
+
+## [0.1.1] - 2026-03-17
+
+- 修正: terminal pane を split しても shell session ID を reset しないようにし、duplicate session creation を防ぎました。
+
+## [0.1.0] - 2026-03-15
+
+- 追加: Tauri + xterm.js ベースの multi-workspace terminal multiplexer を作成しました。
+- 追加: pane の horizontal / vertical split と drag resize を実装しました。
+- 追加: workspace persistence、theme system、notification system、Unix socket API、custom title bar を追加しました。

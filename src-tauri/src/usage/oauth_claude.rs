@@ -6,6 +6,10 @@ use std::{fs, path::PathBuf};
 
 const USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
 const BETA_HEADER: &str = "oauth-2025-04-20";
+// Keep roughly in sync with the locally installed Claude Code CLI
+// (`claude --version`) — the endpoint only requires the claude-code/<v>
+// shape, but a wildly stale version is a needless fingerprint mismatch.
+pub const CLAUDE_CODE_UA: &str = "claude-code/2.1.207";
 
 #[derive(Clone, Debug)]
 pub struct ClaudeUsage {
@@ -26,29 +30,48 @@ impl ClaudeUsage {
 
 pub async fn fetch() -> Result<ClaudeUsage, String> {
     let access_token = load_access_token()?;
-    let response = reqwest::Client::new()
+    fetch_with_token(&reqwest::Client::new(), &access_token).await
+}
+
+pub async fn fetch_with_token(
+    client: &reqwest::Client,
+    access_token: &str,
+) -> Result<ClaudeUsage, String> {
+    fetch_with_token_status(client, access_token)
+        .await
+        .map_err(|(_, message)| message)
+}
+
+pub async fn fetch_with_token_status(
+    client: &reqwest::Client,
+    access_token: &str,
+) -> Result<ClaudeUsage, (Option<u16>, String)> {
+    let response = client
         .get(USAGE_URL)
         .bearer_auth(access_token)
         .header("anthropic-beta", BETA_HEADER)
         .header(ACCEPT, "application/json")
         .header(CONTENT_TYPE, "application/json")
-        .header(USER_AGENT, "claude-code/2.1.0")
+        .header(USER_AGENT, CLAUDE_CODE_UA)
         .send()
         .await
-        .map_err(|error| format!("Claude OAuth network error: {error}"))?;
+        .map_err(|error| (None, format!("Claude OAuth network error: {error}")))?;
 
     let status = response.status();
     let body = response
         .text()
         .await
-        .map_err(|error| format!("Claude OAuth response read failed: {error}"))?;
+        .map_err(|error| (None, format!("Claude OAuth response read failed: {error}")))?;
 
     if !status.is_success() {
-        return Err(http_error("Claude OAuth", status.as_u16(), &body));
+        return Err((
+            Some(status.as_u16()),
+            http_error("Claude OAuth", status.as_u16(), &body),
+        ));
     }
 
-    let value: Value =
-        serde_json::from_str(&body).map_err(|error| format!("Claude OAuth JSON parse failed: {error}"))?;
+    let value: Value = serde_json::from_str(&body)
+        .map_err(|error| (None, format!("Claude OAuth JSON parse failed: {error}")))?;
 
     Ok(ClaudeUsage {
         five_hour: parse_window(&value, &["five_hour"]),

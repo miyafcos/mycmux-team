@@ -1,10 +1,11 @@
-import { AlertTriangle, XCircle } from "lucide-react";
+import { AlertTriangle, Info, XCircle } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { useToastStore, type ToastKind } from "../../stores/toastStore";
 
 const kindStyles: Record<ToastKind, { color: string; Icon: LucideIcon }> = {
   error: { color: "var(--cmux-red, #ff6b6b)", Icon: XCircle },
   warning: { color: "var(--cmux-yellow, #f5c542)", Icon: AlertTriangle },
+  info: { color: "var(--cmux-accent, #7aa2f7)", Icon: Info },
 };
 
 export default function ToastHost() {

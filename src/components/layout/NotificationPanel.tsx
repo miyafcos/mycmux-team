@@ -178,7 +178,7 @@ export default function NotificationPanel({ onClose }: NotificationPanelProps) {
           No notifications
         </div>
       ) : (
-        <div>
+        <div style={{ maxHeight: "min(400px, calc(100vh - 120px))", overflowY: "auto" }}>
           {notifications.map((n) => (
             <NotificationItem
               key={n.sessionId}

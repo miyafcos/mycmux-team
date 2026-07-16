@@ -19,18 +19,30 @@ export interface GridTemplate {
   paneCount: number;
 }
 
+export interface SuppressedAgentSession {
+  agentKind: AgentSessionKind;
+  agentSessionId: string;
+  claudeSessionId?: string;
+}
+
 export interface PaneTab {
   id: string;
   sessionId: string;
   agentId: string;
   label?: string;
-  type?: "terminal" | "browser";
+  type?: "terminal" | "browser" | "online";
   cwd?: string;
   lastProcess?: string;
   claudeSessionId?: string;
   agentKind?: AgentSessionKind;
   agentSessionId?: string;
+  /** Duplicate restore identity retained for manual recovery; never auto-resumed. */
+  suppressedAgentSessions?: SuppressedAgentSession[];
   launchEnv?: Record<string, string>;
+  /** Ephemeral prompt appended to the first agent launch; not persisted. */
+  initialPrompt?: string;
+  /** Ephemeral command override for the first agent launch; not persisted. */
+  commandArgv?: string[];
   terminalSnapshot?: string[];
   /** Browser tabs: local file path (already normalized, no file:// prefix). */
   htmlPath?: string;
@@ -62,6 +74,8 @@ export interface Pane {
   claudeSessionId?: string;
   agentKind?: AgentSessionKind;
   agentSessionId?: string;
+  /** Active tab's duplicate restore identity retained for manual recovery. */
+  suppressedAgentSessions?: SuppressedAgentSession[];
   launchEnv?: Record<string, string>;
 }
 

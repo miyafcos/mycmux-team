@@ -11,6 +11,8 @@ export type FrontendDataBatch = {
   seq: number;
   bytes: number;
   resync: boolean;
+  scrollbackStart: number;
+  scrollbackEnd: number;
   data: number[] | ArrayBuffer | Uint8Array;
 };
 
@@ -83,7 +85,14 @@ export function beginSessionAttach(
     },
     commit() {
       attachResolved = true;
-      sessionAttachEpoch.set(sessionId, epoch);
+      const current = sessionAttachEpoch.get(sessionId) ?? 0;
+      // A slower, older create_session completion must never move the
+      // committed epoch backwards. createSession serializes normal attaches,
+      // but keep this state machine monotonic as a final guard for callers
+      // that overlap lifecycles directly.
+      if (current <= epoch) {
+        sessionAttachEpoch.set(sessionId, epoch);
+      }
       flushPendingBatches();
     },
     fail() {

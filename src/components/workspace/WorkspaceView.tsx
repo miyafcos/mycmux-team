@@ -5,18 +5,26 @@ import type { Pane, GridTemplateId, Workspace } from "../../types";
 import { useWorkspaceLayoutStore, usePaneMetadataStore } from "../../stores/workspaceStore";
 import { useWorkspaceListStore } from "../../stores/workspaceListStore";
 import { killSession } from "../../lib/ipc";
-import { FIRST_LAUNCH_STORAGE_KEY } from "../../lib/startupSessionGate";
-import { reconcileSplitColumnsForPanes } from "../../lib/layoutColumns";
+import {
+  FIRST_LAUNCH_STORAGE_KEY,
+  STARTUP_RESTORE_COMPLETE_EVENT,
+  getStartupSessionGateSnapshot,
+} from "../../lib/startupSessionGate";
+import {
+  reconcileSplitColumnsForPanes,
+  reconcileStableLayoutColumnIdentities,
+  type StableLayoutColumnIdentity,
+} from "../../lib/layoutColumns";
 import { focusController } from "../../lib/focusController";
 import { evictTerminalCache } from "../terminal/XTermWrapper";
 import { beforePaneClose } from "../../lib/paneCloseLifecycle";
+import { useSavepointDragStore } from "../../stores/savepointDragStore";
 import TerminalPane from "./TerminalPane";
 import ErrorBoundary from "../common/ErrorBoundary";
 
-const MAX_MOUNTED_WORKSPACES = 3;
+const MAX_MOUNTED_WORKSPACES = 1;
 const RESTORE_MOUNT_DELAY_MS = 650;
 const FIRST_RESTORE_MOUNT_DELAY_MS = 1200;
-const FIT_LAYOUT_MIN_SIZE = 1;
 
 function getRestoreMountDelayMs(): number {
   try {
@@ -100,7 +108,7 @@ export const TerminalGrid = memo(function TerminalGrid({
   const addPaneToWorkspace = useWorkspaceLayoutStore((s) => s.addPaneToWorkspace);
   const setWorkspaceLayoutMetrics = useWorkspaceListStore((s) => s.setWorkspaceLayoutMetrics);
   const workspace = useWorkspaceListStore((s) => s.getWorkspace(workspaceId));
-  const scrollContainerRef = useRef<HTMLDivElement | null>(null);
+  const gridContainerRef = useRef<HTMLDivElement | null>(null);
 
   const handleClose = useCallback((paneId: string) => {
     // Kill all PTY sessions — read fresh state to avoid stale closure
@@ -142,6 +150,12 @@ export const TerminalGrid = memo(function TerminalGrid({
     () => reconcileSplitColumnsForPanes(splitColumns, panes.map((pane) => pane.id)),
     [splitColumns, panes],
   );
+  const columnIdentitiesRef = useRef<StableLayoutColumnIdentity[]>([]);
+  const columnIdentities = reconcileStableLayoutColumnIdentities(
+    columnIdentitiesRef.current,
+    layoutColumns,
+  );
+  columnIdentitiesRef.current = columnIdentities;
   const terminalLayoutSignature = useMemo(() => {
     const columnSignature = layoutColumns.map((col) => col.join(",")).join("|");
     const paneSignature = panes
@@ -151,7 +165,7 @@ export const TerminalGrid = memo(function TerminalGrid({
   }, [layoutColumns, panes, viewportSize.height, viewportSize.width, workspaceId]);
 
   useEffect(() => {
-    const container = scrollContainerRef.current;
+    const container = gridContainerRef.current;
     if (!container || typeof ResizeObserver === "undefined") return;
 
     const updateSize = () => {
@@ -169,7 +183,6 @@ export const TerminalGrid = memo(function TerminalGrid({
   useEffect(() => {
     if (viewportSize.width <= 0 || viewportSize.height <= 0) return;
     let cancelled = false;
-    let secondRafId: number | null = null;
     const notifyTerminals = () => {
       if (cancelled) return;
       window.dispatchEvent(
@@ -179,32 +192,30 @@ export const TerminalGrid = memo(function TerminalGrid({
       );
     };
 
-    notifyTerminals();
-    const firstRafId = window.requestAnimationFrame(() => {
-      secondRafId = window.requestAnimationFrame(notifyTerminals);
-    });
+    // ResizeObserver handles intermediate Allotment geometry. Notify once on
+    // the next frame after React commits instead of repainting every terminal
+    // both immediately and again two frames later.
+    const rafId = window.requestAnimationFrame(notifyTerminals);
 
     return () => {
       cancelled = true;
-      window.cancelAnimationFrame(firstRafId);
-      if (secondRafId !== null) {
-        window.cancelAnimationFrame(secondRafId);
-      }
+      window.cancelAnimationFrame(rafId);
     };
   }, [terminalLayoutSignature, viewportSize.height, viewportSize.width, workspaceId]);
 
   // Column-first layout: outer = horizontal columns, inner = vertical rows within each column
   if (splitColumns) {
     const cols: string[][] = layoutColumns;
-    const columnWidths = fitLayoutSizes(workspace?.columnWidths, viewportSize.width, cols.length);
+    const layoutWidth = viewportSize.width;
+    const layoutHeight = viewportSize.height;
+    const columnWidths = fitLayoutSizes(workspace?.columnWidths, layoutWidth, cols.length);
     const rowHeightsPerCol = workspace?.rowHeightsPerCol;
     const hasMeasuredViewport = viewportSize.width > 0 && viewportSize.height > 0;
-    const layoutSignature = cols.map((col) => col.join(",")).join("|");
 
     return (
       <div
         className="cmux-terminal-grid-fit"
-        ref={scrollContainerRef}
+        ref={gridContainerRef}
         style={{
           width: "100%",
           height: "100%",
@@ -213,28 +224,26 @@ export const TerminalGrid = memo(function TerminalGrid({
       >
         {hasMeasuredViewport && <div style={{ width: "100%", height: "100%", minWidth: 0, minHeight: 0 }}>
           <Allotment
-            key={`cols-${layoutSignature}`}
             separator={false}
             proportionalLayout
             defaultSizes={columnWidths}
-            minSize={FIT_LAYOUT_MIN_SIZE}
+            minSize={0}
             onDragEnd={(sizes) => {
               const currentWorkspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
               setWorkspaceLayoutMetrics(workspaceId, sizes, currentWorkspace?.rowHeightsPerCol);
             }}
           >
             {cols.map((col, colIdx) => {
-              const colSignature = col.join(",");
-              const rowHeights = fitLayoutSizes(rowHeightsPerCol?.[colIdx], viewportSize.height, col.length);
+              const columnId = columnIdentities[colIdx]?.id ?? `column-${colIdx}`;
+              const rowHeights = fitLayoutSizes(rowHeightsPerCol?.[colIdx], layoutHeight, col.length);
               return (
-              <Allotment.Pane key={`col-${colSignature}`} minSize={FIT_LAYOUT_MIN_SIZE} preferredSize={columnWidths?.[colIdx]}>
+              <Allotment.Pane key={`col-${columnId}`} minSize={0} preferredSize={columnWidths?.[colIdx]}>
                 <Allotment
                   vertical
-                  key={`rows-${colSignature}`}
                   separator={false}
                   proportionalLayout
                   defaultSizes={rowHeights}
-                  minSize={FIT_LAYOUT_MIN_SIZE}
+                  minSize={0}
                   onDragEnd={(sizes) => {
                     const currentWorkspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
                     const currentRowHeights = currentWorkspace?.rowHeightsPerCol;
@@ -251,7 +260,7 @@ export const TerminalGrid = memo(function TerminalGrid({
                     const pane = paneMap[paneId];
                     if (!pane) return null;
                     return (
-                      <Allotment.Pane key={pane.id} minSize={FIT_LAYOUT_MIN_SIZE} preferredSize={rowHeights?.[rowIdx]}>
+                      <Allotment.Pane key={pane.id} minSize={0} preferredSize={rowHeights?.[rowIdx]}>
                         <ErrorBoundary>
                         <TerminalPane
                           pane={pane}
@@ -277,11 +286,11 @@ export const TerminalGrid = memo(function TerminalGrid({
   // Fallback: no splitColumns (should not happen with current store logic)
   // Render a single-column vertical layout
   return (
-    <Allotment separator={false}>
-      <Allotment.Pane>
-        <Allotment vertical separator={false}>
+    <Allotment separator={false} minSize={0}>
+      <Allotment.Pane minSize={0}>
+        <Allotment vertical separator={false} minSize={0}>
           {panes.map((pane) => (
-            <Allotment.Pane key={pane.id}>
+            <Allotment.Pane key={pane.id} minSize={0}>
               <ErrorBoundary>
                 <TerminalPane
                   pane={pane}
@@ -303,8 +312,12 @@ export const TerminalGrid = memo(function TerminalGrid({
 export default memo(function WorkspaceView() {
   const activeId = useWorkspaceListStore((s) => s.activeWorkspaceId);
   const workspaces = useWorkspaceListStore((s) => s.workspaces);
+  const dragSourceWorkspaceId = useSavepointDragStore((s) => s.item?.sourceWorkspaceId ?? null);
   const [mountedWorkspaceIds, setMountedWorkspaceIds] = useState<string[]>([]);
   const [startupRestoreMountedIds, setStartupRestoreMountedIds] = useState<string[]>([]);
+  const [startupRestoreComplete, setStartupRestoreComplete] = useState(
+    () => getStartupSessionGateSnapshot().pending === 0,
+  );
   const [restoreMountDelayMs] = useState(getRestoreMountDelayMs);
   const restoreWorkspaceIds = useMemo(
     () => workspaces
@@ -321,8 +334,11 @@ export default memo(function WorkspaceView() {
     if (activeId) {
       ids.add(activeId);
     }
+    if (dragSourceWorkspaceId) {
+      ids.add(dragSourceWorkspaceId);
+    }
     return ids;
-  }, [activeId, mountedWorkspaceIds, startupRestoreMountedIds]);
+  }, [activeId, dragSourceWorkspaceId, mountedWorkspaceIds, startupRestoreMountedIds]);
   const visibleWorkspaceSignature = useMemo(
     () => Array.from(visibleWorkspaceIds).sort().join("|"),
     [visibleWorkspaceIds],
@@ -354,9 +370,12 @@ export default memo(function WorkspaceView() {
     setMountedWorkspaceIds((prev) => {
       const next = prev.filter((id) => id !== activeId);
       next.push(activeId);
-      const restoreIds = next.filter((id) => restoreWorkspaceIdSet.has(id));
-      const shellOnlyIds = next.filter((id) => !restoreWorkspaceIdSet.has(id));
-      const trimmed = [...shellOnlyIds.slice(-MAX_MOUNTED_WORKSPACES), ...restoreIds];
+      const trimmed = startupRestoreComplete
+        ? next.slice(-MAX_MOUNTED_WORKSPACES)
+        : [
+            ...next.filter((id) => !restoreWorkspaceIdSet.has(id)).slice(-MAX_MOUNTED_WORKSPACES),
+            ...next.filter((id) => restoreWorkspaceIdSet.has(id)),
+          ];
       if (
         trimmed.length === prev.length
         && trimmed.every((id, index) => id === prev[index])
@@ -365,9 +384,30 @@ export default memo(function WorkspaceView() {
       }
       return trimmed;
     });
-  }, [activeId, restoreWorkspaceIdSet]);
+  }, [activeId, restoreWorkspaceIdSet, startupRestoreComplete]);
 
   useEffect(() => {
+    const releaseStartupRestorePins = () => {
+      setStartupRestoreComplete(true);
+      setStartupRestoreMountedIds([]);
+    };
+    window.addEventListener(STARTUP_RESTORE_COMPLETE_EVENT, releaseStartupRestorePins);
+    if (getStartupSessionGateSnapshot().pending === 0) {
+      releaseStartupRestorePins();
+    }
+    const fallbackDelay = Math.max(
+      15_000,
+      restoreWorkspaceIds.length * restoreMountDelayMs + 5_000,
+    );
+    const fallbackTimer = window.setTimeout(releaseStartupRestorePins, fallbackDelay);
+    return () => {
+      window.removeEventListener(STARTUP_RESTORE_COMPLETE_EVENT, releaseStartupRestorePins);
+      window.clearTimeout(fallbackTimer);
+    };
+  }, [restoreMountDelayMs, restoreWorkspaceIds.length]);
+
+  useEffect(() => {
+    if (startupRestoreComplete) return;
     const nextRestoreId = restoreWorkspaceIds.find((id) =>
       id !== activeId && !startupRestoreMountedIds.includes(id),
     );
@@ -381,7 +421,13 @@ export default memo(function WorkspaceView() {
     }, restoreMountDelayMs);
 
     return () => window.clearTimeout(timer);
-  }, [activeId, restoreMountDelayMs, restoreWorkspaceIds, startupRestoreMountedIds]);
+  }, [
+    activeId,
+    restoreMountDelayMs,
+    restoreWorkspaceIds,
+    startupRestoreComplete,
+    startupRestoreMountedIds,
+  ]);
 
   // Prune mounted IDs for deleted workspaces
   useEffect(() => {

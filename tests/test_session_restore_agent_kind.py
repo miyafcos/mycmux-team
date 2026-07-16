@@ -19,6 +19,7 @@ def test_agent_kind_round_trip_contract_remains_wired() -> None:
     storage = read_repo_text("src-tauri/src/db/storage.rs")
     layout_store = read_repo_text("src/stores/workspaceLayoutStore.ts")
     launcher_ps1 = read_repo_text("src-tauri/src/launcher.ps1")
+    launcher_sh = read_repo_text("src-tauri/src/launcher.sh")
     session_mapping = read_repo_text("src-tauri/src/commands/session_mapping.rs")
     monitor = read_repo_text("src-tauri/src/pty/monitor.rs")
 
@@ -30,11 +31,17 @@ def test_agent_kind_round_trip_contract_remains_wired() -> None:
         "const tabAgentId = tab.agentSessionId",
         "agent_kind: tabKind",
         "agent_session_id: tabAgentId",
+        "suppressed_agent_sessions: toSuppressedAgentSessionConfigs",
         "agent_kind: paneConfig.agent_kind ?? mappingKind",
         "agent_kind: tabConfig.agent_kind ?? mappingKind",
         "function tabConfigWithPaneAgentSessionFallback(",
         "tabConfigWithPaneAgentSessionFallback(tab, pane)",
         "clearDuplicateTabAgentSession(cleanedTab)",
+        "function getPaneAgentSessionKey(pane: PaneConfig): string | null",
+        "function clearDuplicatePaneAgentSession(pane: PaneConfig): PaneConfig",
+        "function normalizeAgentSessionPane(pane: PaneConfig): PaneConfig",
+        "candidateId: `${workspaceIndex}:${paneIndex}:pane`",
+        "clearDuplicatePaneAgentSession(pane)",
         "clearStaleAgentErrorSnapshot(tab)",
         "terminal_snapshot: null",
     ]:
@@ -42,6 +49,7 @@ def test_agent_kind_round_trip_contract_remains_wired() -> None:
 
     assert_contains(storage, "pub agent_kind: Option<String>", "src-tauri/src/db/storage.rs")
     assert_contains(storage, "#[serde(default)]\n    pub agent_kind", "src-tauri/src/db/storage.rs")
+    assert_contains(storage, "pub suppressed_agent_sessions: Option<Vec<SuppressedAgentSessionConfig>>", "src-tauri/src/db/storage.rs")
 
     for snippet in [
         "const activeTabConfigId = pc.active_tab_id ?? pc.tabs?.[0]?.tab_id ?? null;",
@@ -50,6 +58,7 @@ def test_agent_kind_round_trip_contract_remains_wired() -> None:
         "const tabAgentSessionId =",
         "agentKind: tabAgentKind",
         "agentSessionId: tabAgentSessionId",
+        "suppressedAgentSessions: restoreSuppressedAgentSessions",
         "agentKind: activeTab.agentKind ?? pc.agent_kind ?? undefined",
         "agentSessionId: activeTab.agentSessionId ?? pc.agent_session_id ?? undefined",
     ]:
@@ -59,8 +68,14 @@ def test_agent_kind_round_trip_contract_remains_wired() -> None:
         "function Write-MycmuxSessionMapping",
         "[System.IO.File]::WriteAllText",
         "function Get-MycmuxClaudeProjectDir",
+        "function Get-MycmuxClaudeProjectKey",
         "function Get-MycmuxClaudeCodexProjectDir",
         "function Get-MycmuxStableSessionId",
+        "function Find-MycmuxClaudeSessionFile",
+        "function Get-MycmuxClaudeSessionCwd",
+        "function Set-MycmuxClaudeResumeLocation",
+        'Sort-Object -Property @{ Expression = "LastWriteTimeUtc"; Descending = $true }',
+        '"[^A-Za-z0-9-]"',
         "function Start-MycmuxSessionTracking",
         "function Start-MycmuxCommandSessionTracking",
         "function Invoke-MycmuxResumeFromEnv",
@@ -73,10 +88,30 @@ def test_agent_kind_round_trip_contract_remains_wired() -> None:
         assert_contains(launcher_ps1, snippet, "src-tauri/src/launcher.ps1")
 
     for snippet in [
+        "__claude_project_key()",
+        "__find_claude_session_file()",
+        "__claude_session_cwd()",
+        "__prepare_claude_resume()",
+        "print(max(candidates)[2])",
+        're.sub(r"[^A-Za-z0-9-]", "-", cwd)',
+        'if __prepare_claude_resume "$MYCMUX_SESSION_ID"; then',
+    ]:
+        assert_contains(launcher_sh, snippet, "src-tauri/src/launcher.sh")
+
+    for snippet in [
         "fn write_detected_agent_session_mapping(",
+        "fn collect_explicit_agent_session_ids(",
+        # Tick-start reservation of cached heuristic detections: without it,
+        # same-cwd panes steal each other's session ids across ticks.
+        "let explicit_agent_session_ids = collect_explicit_agent_session_ids(&sys);",
+        "let cached_agent_session_owners = reserve_cached_agent_session_ids(",
+        "fn reserve_cached_agent_session_ids(",
+        "fn agent_session_id_exclusions_for_pane(",
+        "&claimed_agent_session_ids",
+        'arg.eq_ignore_ascii_case("--fork-session")',
         "crate::commands::session_mapping::write_session_mapping_file(",
         "write_detected_agent_session_mapping(",
-        "agent_session_id.as_deref()",
+        'agent_session_id.as_deref()',
     ]:
         assert_contains(monitor, snippet, "src-tauri/src/pty/monitor.rs")
 
@@ -84,9 +119,14 @@ def test_agent_kind_round_trip_contract_remains_wired() -> None:
         "fn write_session_mapping_file_to_dir(",
         'home.join(".mycmux").join("pane-sessions")',
         "write_text_file_atomic(",
-        "invalidate_session_mapping_cache();",
+        "fn read_session_mapping_files_for_ids",
+        "fn is_safe_mapping_id(",
+        "pub fn read_agent_session_mappings(",
+        "pub(crate) fn remove_session_mapping_file(",
     ]:
         assert_contains(session_mapping, snippet, "src-tauri/src/commands/session_mapping.rs")
+    assert "std::fs::read_dir(map_dir)" not in session_mapping
+    assert "agent_mappings_snapshot()" not in monitor
 
 
 def test_duplicate_session_create_is_idempotent() -> None:

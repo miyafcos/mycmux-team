@@ -19,6 +19,7 @@ export interface CachedTerm {
   searchAddon: SearchAddon;
   xtermElement: HTMLElement;
   unlistenExit: (() => void) | null;
+  scrollbackEnd?: number;
 }
 
 export const termCache = new Map<string, CachedTerm>();
@@ -29,11 +30,21 @@ export const terminalDeferredBatches = new Map<string, PendingFrontendBatch[]>()
 export const terminalRawTailBySession = new Map<string, Uint8Array>();
 export const terminalScrollbackResyncNeeded = new Set<string>();
 export const terminalInitialReplayMarkers = new Map<string, IMarker>();
+export const MAX_CACHED_TERMINALS = 12;
+const terminalOutputDecoders = new Map<string, TextDecoder>();
 
 const PASTE_CHUNK = 1024;
+const INPUT_IPC_BATCH_CHARS = 4 * 1024;
+const INPUT_BACKPRESSURE_RETRY_DELAYS_MS = [8, 16, 32, 64, 128, 256, 512] as const;
+const INPUT_BACKPRESSURE_RETRY_PAUSE_MS = 512;
 const TERMINAL_RAW_TAIL_MAX_BYTES = 32 * 1024;
 const INPUT_FAILURE_TOAST_DEBOUNCE_MS = 3000;
-const terminalInputQueues = new Map<string, Promise<void>>();
+interface TerminalInputQueue {
+  pending: string[];
+  draining: boolean;
+  cancelled: boolean;
+}
+const terminalInputQueues = new Map<string, TerminalInputQueue>();
 const terminalInputFailureToastAt = new Map<string, number>();
 const terminalEvictionCleanups = new Set<(sessionId: string) => void>();
 
@@ -43,6 +54,20 @@ const terminalEvictionCleanups = new Set<(sessionId: string) => void>();
 // dispose the Terminal instead of re-caching it, otherwise the Terminal leaks
 // in termCache forever with no remaining reference (FE-N1).
 const sessionsEvictedWhileMounted = new Set<string>();
+
+export function getTerminalOutputDecoder(sessionId: string): TextDecoder {
+  const existing = terminalOutputDecoders.get(sessionId);
+  if (existing) return existing;
+  const decoder = new TextDecoder();
+  terminalOutputDecoders.set(sessionId, decoder);
+  return decoder;
+}
+
+export function resetTerminalOutputDecoder(sessionId: string): TextDecoder {
+  const decoder = new TextDecoder();
+  terminalOutputDecoders.set(sessionId, decoder);
+  return decoder;
+}
 
 // True only for the window between an active-tab evict and its unmount. Used by
 // the write-side helpers to avoid re-creating per-session bookkeeping entries
@@ -58,26 +83,137 @@ export function registerTerminalCacheEvictionCleanup(callback: (sessionId: strin
 }
 
 export function enqueueSessionWrite(sessionId: string, data: string): void {
-  const previous = terminalInputQueues.get(sessionId) ?? Promise.resolve();
-  const next = previous
-    .catch(() => {})
-    .then(() => writeToSession(sessionId, data));
-  terminalInputQueues.set(sessionId, next);
-  next
-    .catch((error) => {
-      console.error(error);
-      const now = Date.now();
-      const lastToastAt = terminalInputFailureToastAt.get(sessionId) ?? 0;
-      if (now - lastToastAt >= INPUT_FAILURE_TOAST_DEBOUNCE_MS) {
-        terminalInputFailureToastAt.set(sessionId, now);
-        useToastStore.getState().pushToast("Terminal input failed to send", "error");
+  if (!data) return;
+  const queue = terminalInputQueues.get(sessionId) ?? {
+    pending: [],
+    draining: false,
+    cancelled: false,
+  };
+  queue.pending.push(data);
+  terminalInputQueues.set(sessionId, queue);
+  if (!queue.draining) {
+    queue.draining = true;
+    void drainTerminalInputQueue(sessionId, queue);
+  }
+}
+
+function isInputBackpressure(error: unknown): boolean {
+  return String(error).includes("PTY_INPUT_BACKPRESSURE");
+}
+
+function waitForInputRetry(delayMs: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, delayMs));
+}
+
+async function writeTerminalInputWithRetry(sessionId: string, data: string): Promise<void> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await writeToSession(sessionId, data);
+      return;
+    } catch (error) {
+      if (!isInputBackpressure(error) || attempt >= INPUT_BACKPRESSURE_RETRY_DELAYS_MS.length) {
+        throw error;
       }
-    })
-    .finally(() => {
-      if (terminalInputQueues.get(sessionId) === next) {
-        terminalInputQueues.delete(sessionId);
+      await waitForInputRetry(INPUT_BACKPRESSURE_RETRY_DELAYS_MS[attempt]);
+    }
+  }
+}
+
+function takeTerminalInputBatch(queue: TerminalInputQueue): string {
+  let batch = "";
+  while (queue.pending.length > 0 && batch.length < INPUT_IPC_BATCH_CHARS) {
+    const next = queue.pending[0];
+    const available = INPUT_IPC_BATCH_CHARS - batch.length;
+    if (next.length <= available) {
+      batch += next;
+      queue.pending.shift();
+      continue;
+    }
+    if (
+      available === 1
+      && batch.length > 0
+      && next.length > 1
+      && next.charCodeAt(0) >= 0xd800
+      && next.charCodeAt(0) <= 0xdbff
+      && next.charCodeAt(1) >= 0xdc00
+      && next.charCodeAt(1) <= 0xdfff
+    ) {
+      break;
+    }
+    const end = computeSafeChunkEnd(next, 0, available);
+    batch += next.slice(0, end);
+    queue.pending[0] = next.slice(end);
+  }
+  return batch;
+}
+
+async function drainTerminalInputQueue(
+  sessionId: string,
+  queue: TerminalInputQueue,
+): Promise<void> {
+  try {
+    while (!queue.cancelled && queue.pending.length > 0) {
+      const batch = takeTerminalInputBatch(queue);
+      try {
+        await writeTerminalInputWithRetry(sessionId, batch);
+      } catch (error) {
+        const backedUp = isInputBackpressure(error);
+        // The backend rejects backpressured writes before enqueueing them.
+        // Put the exact batch back at the front so typed/pasted input remains
+        // ordered and is never lost merely because ConPTY stayed busy longer
+        // than one bounded retry window.
+        if (backedUp && !queue.cancelled) {
+          queue.pending.unshift(batch);
+        }
+        console.error(error);
+        const now = Date.now();
+        const lastToastAt = terminalInputFailureToastAt.get(sessionId) ?? 0;
+        if (now - lastToastAt >= INPUT_FAILURE_TOAST_DEBOUNCE_MS) {
+          terminalInputFailureToastAt.set(sessionId, now);
+          const message = backedUp
+            ? "Terminal input is backed up; retrying"
+            : "Terminal input failed to send";
+          useToastStore.getState().pushToast(message, "error");
+        }
+        if (backedUp && !queue.cancelled) {
+          await waitForInputRetry(INPUT_BACKPRESSURE_RETRY_PAUSE_MS);
+        }
       }
-    });
+    }
+  } finally {
+    queue.draining = false;
+    if (queue.pending.length === 0 && terminalInputQueues.get(sessionId) === queue) {
+      terminalInputQueues.delete(sessionId);
+    } else if (
+      !queue.cancelled
+      && queue.pending.length > 0
+      && terminalInputQueues.get(sessionId) === queue
+      && !queue.draining
+    ) {
+      queue.draining = true;
+      void drainTerminalInputQueue(sessionId, queue);
+    }
+  }
+}
+
+// Given a proposed chunk-end offset (exclusive), pull it back by one UTF-16
+// code unit if it would split a surrogate pair (high surrogate at end-1 with
+// its low surrogate immediately after at end). This keeps astral-plane
+// characters (emoji, some CJK extension characters) intact across chunks
+// instead of letting Rust's String (which cannot hold an unpaired surrogate)
+// corrupt them at the IPC boundary. `start` bounds how far back we can pull
+// so a chunk never becomes empty (degenerate case: two low surrogates in a
+// row would otherwise never find a safe boundary going backwards).
+export function computeSafeChunkEnd(data: string, start: number, end: number): number {
+  if (end >= data.length || end <= start) return end;
+  const before = data.charCodeAt(end - 1);
+  const after = data.charCodeAt(end);
+  const isHighSurrogate = before >= 0xd800 && before <= 0xdbff;
+  const isLowSurrogate = after >= 0xdc00 && after <= 0xdfff;
+  if (isHighSurrogate && isLowSurrogate && end - 1 > start) {
+    return end - 1;
+  }
+  return end;
 }
 
 export function chunkedWrite(sessionId: string, data: string): void {
@@ -85,8 +221,11 @@ export function chunkedWrite(sessionId: string, data: string): void {
     enqueueSessionWrite(sessionId, data);
     return;
   }
-  for (let offset = 0; offset < data.length; offset += PASTE_CHUNK) {
-    enqueueSessionWrite(sessionId, data.slice(offset, offset + PASTE_CHUNK));
+  let offset = 0;
+  while (offset < data.length) {
+    const end = computeSafeChunkEnd(data, offset, Math.min(offset + PASTE_CHUNK, data.length));
+    enqueueSessionWrite(sessionId, data.slice(offset, end));
+    offset = end;
   }
 }
 
@@ -146,20 +285,106 @@ export function replaceTerminalRawTail(sessionId: string, scrollback: Uint8Array
 export function findLastSubarray(haystack: Uint8Array, needle: Uint8Array): number {
   if (needle.byteLength === 0) return haystack.byteLength;
   if (needle.byteLength > haystack.byteLength) return -1;
-  for (let start = haystack.byteLength - needle.byteLength; start >= 0; start -= 1) {
-    let matched = true;
-    for (let offset = 0; offset < needle.byteLength; offset += 1) {
-      if (haystack[start + offset] !== needle[offset]) {
-        matched = false;
-        break;
-      }
+
+  // Knuth-Morris-Pratt keeps recovery linear even when terminal output and the
+  // remembered tail contain long repeated runs (for example progress bars).
+  const prefix = new Uint32Array(needle.byteLength);
+  for (let index = 1, matched = 0; index < needle.byteLength; index += 1) {
+    while (matched > 0 && needle[index] !== needle[matched]) {
+      matched = prefix[matched - 1];
     }
-    if (matched) return start;
+    if (needle[index] === needle[matched]) {
+      matched += 1;
+    }
+    prefix[index] = matched;
   }
-  return -1;
+
+  let lastMatch = -1;
+  for (let index = 0, matched = 0; index < haystack.byteLength; index += 1) {
+    while (matched > 0 && haystack[index] !== needle[matched]) {
+      matched = prefix[matched - 1];
+    }
+    if (haystack[index] === needle[matched]) {
+      matched += 1;
+    }
+    if (matched === needle.byteLength) {
+      lastMatch = index - needle.byteLength + 1;
+      matched = prefix[matched - 1];
+    }
+  }
+  return lastMatch;
 }
 
-export function evictTerminalCache(sessionId: string): void {
+export type TerminalScrollbackRecoveryPlan =
+  | { action: "append"; data: Uint8Array }
+  | { action: "initial-replay"; data: Uint8Array }
+  | { action: "replace"; data: Uint8Array }
+  | { action: "skip-truncated"; data: Uint8Array };
+
+/**
+ * Raw PTY scrollback is a byte ring, not a VT terminal-state snapshot. A ring
+ * whose startOffset is greater than zero can begin inside UTF-8 or a control
+ * sequence, so it must never be replayed into a reset terminal. Prefer the
+ * exact absolute cursor, then a remembered suffix, and only rebuild when the
+ * snapshot still starts at process byte zero.
+ */
+export function planTerminalScrollbackRecovery(
+  scrollback: Uint8Array,
+  startOffset: number,
+  endOffset: number,
+  synchronizedEnd: number,
+  knownTail?: Uint8Array,
+): TerminalScrollbackRecoveryPlan {
+  const cursorIsInsideSnapshot = synchronizedEnd >= startOffset
+    && synchronizedEnd <= endOffset
+    && synchronizedEnd > 0;
+  if (cursorIsInsideSnapshot) {
+    const relativeOffset = Math.max(
+      0,
+      Math.min(scrollback.byteLength, Math.trunc(synchronizedEnd - startOffset)),
+    );
+    return { action: "append", data: scrollback.slice(relativeOffset) };
+  }
+
+  if (knownTail && knownTail.byteLength > 0) {
+    const tailStart = findLastSubarray(scrollback, knownTail);
+    if (tailStart >= 0) {
+      return {
+        action: "append",
+        data: scrollback.slice(tailStart + knownTail.byteLength),
+      };
+    }
+  }
+
+  if (startOffset === 0) {
+    return {
+      action: synchronizedEnd === 0 ? "initial-replay" : "replace",
+      data: scrollback,
+    };
+  }
+  return { action: "skip-truncated", data: new Uint8Array() };
+}
+
+export function sliceBatchAfterScrollbackOffset(
+  batch: FrontendDataBatch,
+  data: Uint8Array,
+  synchronizedEnd: number,
+): Uint8Array {
+  const skipped = Math.max(
+    0,
+    Math.min(data.byteLength, Math.trunc(synchronizedEnd - batch.scrollbackStart)),
+  );
+  return skipped === 0 ? data : data.slice(skipped);
+}
+
+export interface TerminalCacheEvictionOptions {
+  preserveInputQueue?: boolean;
+}
+
+export function evictTerminalCache(
+  sessionId: string,
+  options: TerminalCacheEvictionOptions = {},
+): void {
   const cached = termCache.get(sessionId);
   if (cached) {
     cached.unlistenExit?.();
@@ -171,7 +396,7 @@ export function evictTerminalCache(sessionId: string): void {
     if (import.meta.env.DEV) {
       console.log(`[mycmux-diag xterm:${sessionId}] cache_evict`);
     }
-  } else {
+  } else if (liveTerms.has(sessionId)) {
     // Cache miss: the Terminal is still mounted (the *active* tab is being
     // closed) and has not been cached yet. Mark it so that the eventual unmount
     // disposes the Terminal instead of re-caching it into termCache (FE-N1).
@@ -179,16 +404,26 @@ export function evictTerminalCache(sessionId: string): void {
     if (import.meta.env.DEV) {
       console.log(`[mycmux-diag xterm:${sessionId}] cache_evict_mounted`);
     }
+  } else if (import.meta.env.DEV) {
+    console.log(`[mycmux-diag xterm:${sessionId}] cache_evict_absent`);
   }
   terminalSizeCache.delete(sessionId);
   terminalWriteCounters.delete(sessionId);
-  terminalInputQueues.delete(sessionId);
+  if (!options.preserveInputQueue) {
+    const inputQueue = terminalInputQueues.get(sessionId);
+    if (inputQueue) {
+      inputQueue.cancelled = true;
+      inputQueue.pending.length = 0;
+    }
+    terminalInputQueues.delete(sessionId);
+  }
   terminalDeferredBatches.delete(sessionId);
   terminalInputFailureToastAt.delete(sessionId);
   terminalRawTailBySession.delete(sessionId);
   terminalScrollbackResyncNeeded.delete(sessionId);
   terminalInitialReplayMarkers.get(sessionId)?.dispose();
   terminalInitialReplayMarkers.delete(sessionId);
+  terminalOutputDecoders.delete(sessionId);
   for (const cleanup of terminalEvictionCleanups) {
     cleanup(sessionId);
   }
@@ -227,5 +462,12 @@ export function cacheOrDisposeOnUnmount(
     return "disposed";
   }
   termCache.set(sessionId, entry);
+  while (termCache.size > MAX_CACHED_TERMINALS) {
+    const oldestSessionId = termCache.keys().next().value as string | undefined;
+    if (!oldestSessionId) break;
+    // The PTY stays alive when only its rendered Terminal leaves the LRU.
+    // Preserve an in-flight paste/key queue so a later remount cannot overtake it.
+    evictTerminalCache(oldestSessionId, { preserveInputQueue: true });
+  }
   return "cached";
 }

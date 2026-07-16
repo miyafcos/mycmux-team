@@ -12,8 +12,10 @@ import { open } from "@tauri-apps/plugin-shell";
 import ErrorBoundary from "../common/ErrorBoundary";
 import type { AgentSessionKind, Pane, PaneTab } from "../../types";
 import PaneTabBar from "./PaneTabBar";
-import XTermWrapper from "../terminal/XTermWrapper";
+import { paneDndStrings } from "./paneDndStrings";
+import XTermWrapper, { evictTerminalCache, hasTerminalBuffer } from "../terminal/XTermWrapper";
 import BrowserPane from "./BrowserPane";
+import OnlinePanel from "../online/OnlinePanel";
 import {
   useWorkspaceLayoutStore,
   useUiStore,
@@ -23,10 +25,13 @@ import { useWorkspaceListStore } from "../../stores/workspaceListStore";
 import { getAgent, getDefaultAgent } from "../../lib/agents";
 import { killSession, previewArtifactUriForSessionV2 } from "../../lib/ipc";
 import { revealPathInExplorer } from "../../lib/ipc";
-import { evictTerminalCache } from "../terminal/XTermWrapper";
 import { isArtifactPreviewUri, isDirectoryLikeUri } from "../terminal/terminalLinkProvider";
 import { focusController } from "../../lib/focusController";
 import { usePaneDragStore, type PaneDragItem, type PaneDropTarget } from "../../stores/paneDragStore";
+import { useSavepointDragStore } from "../../stores/savepointDragStore";
+import { resolveLiveSavepointTargetKind, savepointTargetLabel } from "../../lib/savepointHandoff";
+import { resolvePaneHandoffEligibility } from "../../lib/paneHandoff";
+import { onlineStrings } from "../online/onlineStrings";
 
 interface TerminalPaneProps {
   pane: Pane;
@@ -52,6 +57,22 @@ function resolveSavedAgentSession(tab: PaneTab): { kind: AgentSessionKind; sessi
   return null;
 }
 
+function resolveRestoreFallbackSessionIds(
+  tab: PaneTab,
+  savedSession: { kind: AgentSessionKind; sessionId: string } | null,
+): string[] {
+  if (!savedSession) return [];
+  return (tab.suppressedAgentSessions ?? [])
+    .filter((session) => session.agentKind === savedSession.kind)
+    .map((session) => session.agentKind === "claude"
+      ? (session.claudeSessionId ?? session.agentSessionId)
+      : session.agentSessionId);
+}
+
+function isTerminalTab(tab: PaneTab | undefined): tab is PaneTab {
+  return Boolean(tab && (tab.type === undefined || tab.type === "terminal"));
+}
+
 function buildLaunchArgs(
   command: string,
   args: string[],
@@ -59,10 +80,11 @@ function buildLaunchArgs(
   savedSession: { kind: AgentSessionKind; sessionId: string } | null,
   newSessionId: string | undefined,
   cwd: string | undefined,
+  initialPrompt: string | undefined,
 ): string[] {
   if (!savedSession) {
     if (agentId === "claude-code" && newSessionId) {
-      return [
+      const launchArgs = [
         ...args,
         "--dangerously-skip-permissions",
         "--permission-mode",
@@ -70,6 +92,7 @@ function buildLaunchArgs(
         "--session-id",
         newSessionId,
       ];
+      return initialPrompt ? [...launchArgs, initialPrompt] : launchArgs;
     }
     return args;
   }
@@ -213,22 +236,17 @@ function defaultOpenUriForLocalPath(uri: string): string {
   return uri;
 }
 
-function getDropPreviewLabel(item: PaneDragItem, target: PaneDropTarget): string {
+function getDropPreviewLabel(
+  item: PaneDragItem,
+  target: Exclude<PaneDropTarget, { kind: "handoff" }>,
+): string {
   if (target.kind === "new-workspace") {
-    return item.kind === "tab" ? "Move tab to new workspace" : "Move pane to new workspace";
+    return paneDndStrings.moveToNewWorkspace;
   }
   if (target.zone === "center") {
-    return item.kind === "tab" ? "Attach tab here" : "Merge panes";
+    return item.kind === "tab" ? paneDndStrings.attachTab : paneDndStrings.mergePane;
   }
-  const direction = {
-    left: "left",
-    right: "right",
-    up: "above",
-    down: "below",
-  }[target.zone];
-  return item.kind === "tab"
-    ? `Split tab ${direction}`
-    : `Split pane ${direction}`;
+  return paneDndStrings.split[target.zone];
 }
 
 export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitRight, onSplitDown }: TerminalPaneProps) {
@@ -248,10 +266,57 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
       ? s.target
       : null,
   );
-  const activeTab = pane.tabs.find((t) => t.id === pane.activeTabId) ?? pane.tabs[0];
-  const activeTabMetadataAgentKind = usePaneMetadataStore((s) =>
-    activeTab ? s.metadata[activeTab.sessionId]?.agentKind : undefined,
+  const handoffDropTarget = usePaneDragStore((s) =>
+    s.target?.kind === "handoff"
+      && s.target.workspaceId === workspaceId
+      && s.target.paneId === pane.id
+      ? s.target
+      : null,
   );
+  const savepointDropTarget = useSavepointDragStore((state) =>
+    state.target?.mode !== "export"
+      && state.target?.workspaceId === workspaceId
+      && state.target.paneId === pane.id
+      ? state.target
+      : null,
+  );
+  const savepointDragItem = useSavepointDragStore((state) => state.item);
+  const activeTab = pane.tabs.find((t) => t.id === pane.activeTabId) ?? pane.tabs[0];
+  const activeTabMetadata = usePaneMetadataStore((s) =>
+    activeTab ? s.metadata[activeTab.sessionId] : undefined,
+  );
+  const activeTabMetadataAgentKind = activeTabMetadata?.agentKind;
+  const savepointPaneTargetKind = savepointDragItem
+    ? resolveLiveSavepointTargetKind(activeTab, activeTabMetadataAgentKind)
+    : null;
+  const dragSourceTab = useWorkspaceListStore((state) => {
+    if (!dragItem) return undefined;
+    const sourceWorkspace = state.workspaces.find((workspace) => workspace.id === dragItem.workspaceId);
+    const sourcePane = sourceWorkspace?.panes.find((candidate) => candidate.id === dragItem.paneId);
+    if (!sourcePane) return undefined;
+    return dragItem.kind === "tab"
+      ? sourcePane.tabs.find((tab) => tab.id === dragItem.tabId)
+      : (sourcePane.tabs.find((tab) => tab.id === sourcePane.activeTabId) ?? sourcePane.tabs[0]);
+  });
+  const dragSourceMetadata = usePaneMetadataStore((state) =>
+    dragSourceTab ? state.metadata[dragSourceTab.sessionId] : undefined,
+  );
+  const paneHandoffEligibility = dragItem
+    ? resolvePaneHandoffEligibility(
+        {
+          workspaceId: dragItem.workspaceId,
+          paneId: dragItem.paneId,
+          tab: dragSourceTab,
+          metadata: dragSourceMetadata,
+        },
+        {
+          workspaceId,
+          paneId: pane.id,
+          tab: activeTab,
+          metadata: activeTabMetadata,
+        },
+      )
+    : null;
   const paneRootRef = useRef<HTMLDivElement>(null);
   const pendingPaneClickActivationRef = useRef<PendingPaneClickActivation | null>(null);
   const pendingPreviewUriRef = useRef<string | null>(null);
@@ -340,7 +405,7 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
     const ws = useWorkspaceListStore.getState().getWorkspace(workspaceId);
     const p = ws?.panes.find((candidate) => candidate.id === pane.id);
     const tab = p?.tabs.find((candidate) => candidate.id === p.activeTabId) ?? p?.tabs[0];
-    if (!p || !tab || tab.type === "browser") return;
+    if (!p || !isTerminalTab(tab)) return;
     focusController.request("pointer", {
       sessionId: tab.sessionId,
       action: "commit",
@@ -367,7 +432,7 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
     const ws = useWorkspaceListStore.getState().getWorkspace(workspaceId);
     const p = ws?.panes.find((candidate) => candidate.id === pane.id);
     const tab = p?.tabs.find((candidate) => candidate.id === p.activeTabId) ?? p?.tabs[0];
-    if (!p || !tab || tab.type === "browser") {
+    if (!p || !isTerminalTab(tab)) {
       pendingPaneClickActivationRef.current = null;
       return;
     }
@@ -380,6 +445,7 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
     });
     if (event.button === 2) {
       pendingPaneClickActivationRef.current = null;
+      activatePane();
       return;
     }
     pendingPaneClickActivationRef.current = {
@@ -389,7 +455,7 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
       y: event.clientY,
       selectionText: getDocumentSelectionText(),
     };
-  }, [workspaceId, pane.id]);
+  }, [activatePane, workspaceId, pane.id]);
 
   const handlePanePointerUpCapture = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     const pending = pendingPaneClickActivationRef.current;
@@ -441,7 +507,7 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
         return;
       }
     }
-    if (tab) {
+    if (isTerminalTab(tab)) {
       evictTerminalCache(tab.sessionId);
       killSession(tab.sessionId).catch((err) =>
         console.warn("[mycmux] killSession failed", tab.sessionId, err),
@@ -457,7 +523,7 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
     const ws = useWorkspaceListStore.getState().getWorkspace(workspaceId);
     const p = ws?.panes.find((x) => x.id === pane.id);
     const tab = p?.tabs.find((t) => t.id === tabId);
-    if (tab) {
+    if (isTerminalTab(tab)) {
       focusController.request("tab-click", { sessionId: tab.sessionId, focus: true });
     }
   }, [workspaceId, pane.id, setActivePaneTab]);
@@ -487,7 +553,7 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
     const workspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
     const currentPane = workspace?.panes.find((candidate) => candidate.id === pane.id);
     const currentTab = currentPane?.tabs.find((tab) => tab.id === currentPane.activeTabId);
-    if (!currentTab || currentTab.type === "browser") {
+    if (!isTerminalTab(currentTab)) {
       open(uri)
         .catch((error) => reportOpenFailure("Open failed", error))
         .finally(() => {
@@ -578,9 +644,24 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
     () => activeTab ? resolveSavedAgentSession(activeTab) : null,
     [activeTab],
   );
+  const restoreFallbackSessionIds = useMemo(
+    () => activeTab ? resolveRestoreFallbackSessionIds(activeTab, savedAgentSession) : [],
+    [activeTab, savedAgentSession],
+  );
+  const launchCommand = activeTab?.commandArgv?.[0] ?? agent?.command ?? "";
   const launchArgs = useMemo(
-    () => agent
-      ? buildLaunchArgs(agent.command, agent.args, resolvedAgentId, savedAgentSession, activeTab?.id, activeTab?.cwd ?? paneCwd)
+    () => activeTab?.commandArgv?.length
+      ? activeTab.commandArgv.slice(1)
+      : agent
+      ? buildLaunchArgs(
+          agent.command,
+          agent.args,
+          resolvedAgentId,
+          savedAgentSession,
+          activeTab?.id,
+          activeTab?.cwd ?? paneCwd,
+          activeTab?.initialPrompt,
+        )
       : [],
     [agent, resolvedAgentId, savedAgentSession, activeTab, paneCwd],
   );
@@ -624,6 +705,7 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
       data-pane-session-ids={pane.tabs.map((tab) => tab.sessionId).join(" ")}
       data-dnd-workspace-id={workspaceId}
       data-dnd-pane-id={pane.id}
+      data-savepoint-drop-pane="true"
       data-active-pane={isActive && !isZoomed ? "true" : undefined}
       data-pane-zoomed={isZoomed ? "true" : undefined}
       tabIndex={-1}
@@ -673,6 +755,7 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
         onAddTab={handleAddTab}
         onRemoveTab={handleRemoveTab}
         onSelectTab={handleSelectTab}
+        hasTerminalBuffer={hasTerminalBuffer}
       />
       {previewActionError && (
         <div
@@ -693,7 +776,11 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
       )}
 
       <div style={{ flex: 1, minHeight: 0, overflow: "hidden", position: "relative", background: "transparent" }}>
-        {activeTab?.type === "browser" && activeTab.htmlPath ? (
+        {activeTab?.type === "online" ? (
+          <ErrorBoundary>
+            <OnlinePanel workspaceId={workspaceId} paneId={pane.id} />
+          </ErrorBoundary>
+        ) : activeTab?.type === "browser" && activeTab.htmlPath ? (
           <ErrorBoundary>
             <BrowserPane
               htmlPath={activeTab.htmlPath}
@@ -724,8 +811,9 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
           >
             <ErrorBoundary>
               <XTermWrapper
+                workspaceId={workspaceId}
                 sessionId={activeTab.sessionId}
-                command={agent.command}
+                command={launchCommand}
                 args={launchArgs}
                 agentId={resolvedAgentId}
                 agentKind={savedAgentSession?.kind ?? activeTab.agentKind ?? activeTabMetadataAgentKind}
@@ -735,16 +823,55 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
                 cwd={activeTab.cwd ?? paneCwd}
                 initialReplay={savedAgentSession ? undefined : activeTab.terminalSnapshot}
                 launchEnv={launchEnv}
+                restoreFallbackSessionIds={restoreFallbackSessionIds}
               />
             </ErrorBoundary>
           </div>
         ) : null}
+        {paneHandoffEligibility && (
+          <div
+            className={`pane-handoff-drop-chip${handoffDropTarget ? " is-active" : ""}`}
+            data-dnd-handoff-target="true"
+          >
+            {paneDndStrings.handoffDropChip(
+              savepointTargetLabel(paneHandoffEligibility.targetAgentKind),
+            )}
+          </div>
+        )}
+        {savepointPaneTargetKind && (
+          <div
+            className={`pane-handoff-drop-chip pane-handoff-drop-chip--savepoint${savepointDropTarget?.mode === "paste" ? " is-active" : ""}`}
+            data-savepoint-paste-target="true"
+          >
+            {onlineStrings.dragGhostPasteTarget(
+              savepointTargetLabel(savepointPaneTargetKind),
+            )}
+          </div>
+        )}
       </div>
       {dropPreviewClass && (
         <div className={dropPreviewClass}>
           {dropPreviewLabel && (
             <span className="pane-drop-preview__label">{dropPreviewLabel}</span>
           )}
+        </div>
+      )}
+      {savepointDropTarget?.mode === "paste" && savepointDropTarget.tabId === activeTab?.id && (
+        <div className="savepoint-write-preview">
+          <span className="savepoint-write-preview__prompt" aria-hidden="true">›</span>
+          <span className="savepoint-write-preview__label">
+            {onlineStrings.dragDropPastePreview(
+              savepointTargetLabel(savepointDropTarget.targetKind),
+            )}
+          </span>
+          <span className="savepoint-write-preview__caret" aria-hidden="true" />
+        </div>
+      )}
+      {savepointDropTarget?.mode === "spawn" && (
+        <div className={`pane-drop-preview pane-drop-preview--${savepointDropTarget.direction} pane-drop-preview--split pane-drop-preview--source-pane`}>
+          <span className="pane-drop-preview__label">
+            {onlineStrings.dragDropFullResumeSplit(savepointDropTarget.direction)}
+          </span>
         </div>
       )}
       {artifactLinkPopover && (

@@ -4,6 +4,7 @@ import type { Workspace, GridTemplateId, AgentSessionKind } from "../types";
 import { normalizeReadableSplitColumns, reconcileSplitColumnsForPanes } from "../lib/layoutColumns";
 import { useUiStore } from "./uiStore";
 import { applyStructuralActivation } from "../lib/focusController";
+import { useToastStore } from "./toastStore";
 
 function workspaceContainsPane(workspace: Workspace | undefined, paneId: string | null): boolean {
   return Boolean(paneId && workspace?.panes.some((pane) => pane.id === paneId));
@@ -168,6 +169,99 @@ export interface PaneAgentSessionPayload {
   agentSessionId?: string;
 }
 
+export interface PaneAgentSessionConflict {
+  key: string;
+  ownerSessionId: string;
+  incomingSessionId: string;
+}
+
+export interface PaneAgentSessionUpdateResult {
+  accepted: boolean;
+  applied: boolean;
+  conflict?: PaneAgentSessionConflict;
+}
+
+const reportedLiveAgentSessionConflicts = new Set<string>();
+
+export function agentSessionIdentityKey(
+  agentKind: AgentSessionKind | undefined,
+  agentSessionId: string | undefined,
+  claudeSessionId: string | undefined,
+): string | null {
+  const kind = agentKind ?? (claudeSessionId ? "claude" : undefined);
+  const sessionId = agentSessionId ?? claudeSessionId;
+  return kind && sessionId ? `${kind}:${sessionId}` : null;
+}
+
+function paneAgentSessionKey(pane: Workspace["panes"][number]): string | null {
+  return agentSessionIdentityKey(pane.agentKind, pane.agentSessionId, pane.claudeSessionId);
+}
+
+function tabAgentSessionKey(tab: Workspace["panes"][number]["tabs"][number]): string | null {
+  return agentSessionIdentityKey(tab.agentKind, tab.agentSessionId, tab.claudeSessionId);
+}
+
+function findAgentSessionTarget(
+  workspaces: Workspace[],
+  terminalSessionId: string,
+): Workspace["panes"][number] | Workspace["panes"][number]["tabs"][number] | null {
+  for (const workspace of workspaces) {
+    for (const pane of workspace.panes) {
+      const tab = pane.tabs.find((candidate) => candidate.sessionId === terminalSessionId);
+      if (tab) return tab;
+      if (pane.sessionId === terminalSessionId) return pane;
+    }
+  }
+  return null;
+}
+
+function findOtherAgentSessionOwner(
+  workspaces: Workspace[],
+  key: string,
+  incomingSessionId: string,
+): string | null {
+  for (const workspace of workspaces) {
+    for (const pane of workspace.panes) {
+      if (pane.tabs.length === 0) {
+        if (pane.sessionId !== incomingSessionId && paneAgentSessionKey(pane) === key) {
+          return pane.sessionId;
+        }
+        continue;
+      }
+      for (const tab of pane.tabs) {
+        if (tab.sessionId !== incomingSessionId && tabAgentSessionKey(tab) === key) {
+          return tab.sessionId;
+        }
+      }
+    }
+  }
+  return null;
+}
+
+function reportLiveAgentSessionConflict(conflict: PaneAgentSessionConflict): void {
+  const signature = `${conflict.key}|${conflict.ownerSessionId}|${conflict.incomingSessionId}`;
+  if (reportedLiveAgentSessionConflicts.has(signature)) return;
+  reportedLiveAgentSessionConflicts.add(signature);
+  console.warn("[persist] rejected duplicate live agent session claim:", conflict);
+  useToastStore
+    .getState()
+    .pushToast("同じ会話IDが別のタブにあるため、重複した復元割り当てを止めました", "warning");
+}
+
+function clearReportedLiveAgentSessionConflicts(sessionId: string, key?: string | null): void {
+  for (const signature of reportedLiveAgentSessionConflicts) {
+    const [reportedKey, ownerSessionId, incomingSessionId] = signature.split("|");
+    if ((key === undefined || key === null || reportedKey === key)
+      && (ownerSessionId === sessionId || incomingSessionId === sessionId)) {
+      reportedLiveAgentSessionConflicts.delete(signature);
+    }
+  }
+}
+
+export function __resetLiveAgentSessionConflictReporterForTests(): void {
+  reportedLiveAgentSessionConflicts.clear();
+}
+
 interface CreateWorkspaceOptions {
   id?: string;
   createdAt?: number;
@@ -226,7 +320,7 @@ interface WorkspaceListState {
   setPaneAgentSessionFromMetadata: (
     sessionId: string,
     payload: PaneAgentSessionPayload | null,
-  ) => void;
+  ) => PaneAgentSessionUpdateResult;
 }
 
 export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
@@ -387,7 +481,35 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
   },
 
   setPaneAgentSessionFromMetadata: (sessionId, payload) => {
+    let result: PaneAgentSessionUpdateResult = { accepted: true, applied: false };
     set((state) => {
+      if (payload !== null) {
+        const target = findAgentSessionTarget(state.workspaces, sessionId);
+        const mergedKind = payload.agentKind ?? target?.agentKind;
+        const mergedClaudeId = payload.claudeSessionId ?? target?.claudeSessionId;
+        const mergedAgentId = payload.agentSessionId ?? target?.agentSessionId;
+        const incomingKey = agentSessionIdentityKey(mergedKind, mergedAgentId, mergedClaudeId);
+        if (incomingKey) {
+          // Keep the established owner. Monitor metadata is heuristic and can
+          // transiently point a live pane at a dormant pane's saved identity;
+          // transferring ownership here would destroy the known-good marker.
+          const ownerSessionId = findOtherAgentSessionOwner(state.workspaces, incomingKey, sessionId);
+          if (ownerSessionId) {
+            result = {
+              accepted: false,
+              applied: false,
+              conflict: {
+                key: incomingKey,
+                ownerSessionId,
+                incomingSessionId: sessionId,
+              },
+            };
+            return state;
+          }
+        }
+        if (!target) return state;
+      }
+
       let mutated = false;
       const workspaces = state.workspaces.map((ws) => {
         let workspaceMutated = false;
@@ -444,7 +566,17 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
         mutated = true;
         return { ...ws, panes };
       });
+      result = { accepted: true, applied: mutated };
       return mutated ? { workspaces } : state;
     });
+    if (result.conflict) {
+      reportLiveAgentSessionConflict(result.conflict);
+    } else {
+      const key = payload === null
+        ? null
+        : agentSessionIdentityKey(payload.agentKind, payload.agentSessionId, payload.claudeSessionId);
+      clearReportedLiveAgentSessionConflicts(sessionId, key);
+    }
+    return result;
   },
 }));

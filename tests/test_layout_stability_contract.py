@@ -49,33 +49,50 @@ def test_pane_layout_metrics_survive_split_structure_changes() -> None:
     )
 
 
-def test_terminal_grid_keeps_multi_column_layout_readable() -> None:
+def test_terminal_grid_fits_every_split_inside_the_viewport_without_outer_scrollbars() -> None:
     workspace_view = read_repo_text("src/components/workspace/WorkspaceView.tsx")
     global_css = read_repo_text("src/global.css")
 
     for snippet in [
-        "const FIT_LAYOUT_MIN_SIZE = 1;",
         "function fitLayoutSizes(",
-        "const columnWidths = fitLayoutSizes(workspace?.columnWidths, viewportSize.width, cols.length);",
+        "const layoutWidth = viewportSize.width;",
+        "const layoutHeight = viewportSize.height;",
+        "const columnWidths = fitLayoutSizes(workspace?.columnWidths, layoutWidth, cols.length);",
         "const hasMeasuredViewport = viewportSize.width > 0 && viewportSize.height > 0;",
-        "const layoutSignature = cols.map((col) => col.join(\",\")).join(\"|\");",
         "const terminalLayoutSignature = useMemo(",
-        "key={`cols-${layoutSignature}`}",
-        "const colSignature = col.join(\",\");",
-        "const rowHeights = fitLayoutSizes(rowHeightsPerCol?.[colIdx], viewportSize.height, col.length);",
+        "const columnIdentities = reconcileStableLayoutColumnIdentities(",
+        "const columnId = columnIdentities[colIdx]?.id ?? `column-${colIdx}`;",
+        "const rowHeights = fitLayoutSizes(rowHeightsPerCol?.[colIdx], layoutHeight, col.length);",
         "defaultSizes={columnWidths}",
         "defaultSizes={rowHeights}",
         "preferredSize={columnWidths?.[colIdx]}",
         "preferredSize={rowHeights?.[rowIdx]}",
         "proportionalLayout",
-        "minSize={FIT_LAYOUT_MIN_SIZE}",
+        "minSize={0}",
         'className="cmux-terminal-grid-fit"',
+        "ref={gridContainerRef}",
         'overflow: "hidden"',
+        'width: "100%"',
+        "minWidth: 0",
         "const visibleWorkspaceSignature = useMemo(",
         'new CustomEvent("mycmux:workspace-visibility-change"',
         'new CustomEvent("mycmux:terminal-layout-change"',
         "layoutSignature: terminalLayoutSignature",
-        "window.requestAnimationFrame(() => {",
+        "const rafId = window.requestAnimationFrame(notifyTerminals);",
+    ]:
+        assert_contains(workspace_view, snippet, "src/components/workspace/WorkspaceView.tsx")
+
+    assert "key={`cols-${layoutSignature}`}" not in workspace_view
+    assert "key={`rows-${colSignature}`}" not in workspace_view
+    assert "key={`col-${colSignature}`}" not in workspace_view
+    assert "const columnId = col[0]" not in workspace_view
+    assert "secondRafId" not in workspace_view
+
+    for snippet in [
+        "const dragSourceWorkspaceId = useSavepointDragStore((s) => s.item?.sourceWorkspaceId ?? null);",
+        "if (dragSourceWorkspaceId) {",
+        "ids.add(dragSourceWorkspaceId);",
+        "next.slice(-MAX_MOUNTED_WORKSPACES)",
     ]:
         assert_contains(workspace_view, snippet, "src/components/workspace/WorkspaceView.tsx")
 
@@ -86,8 +103,21 @@ def test_terminal_grid_keeps_multi_column_layout_readable() -> None:
     ]:
         assert_contains(global_css, snippet, "src/global.css")
 
-    assert "scrollIntoView" not in workspace_view
-    assert "MIN_TERMINAL_COLUMN_WIDTH" not in workspace_view
+    for forbidden in [
+        "MIN_TERMINAL_COLUMN_WIDTH",
+        "MIN_TERMINAL_ROW_HEIGHT",
+        'overflowX: "auto"',
+        'overflowY: "auto"',
+        "scrollIntoView(",
+    ]:
+        assert forbidden not in workspace_view
+
+    assert workspace_view.count("minSize={0}") >= 4
+
+    grid_css = global_css.split(".cmux-terminal-grid-fit {", 1)[1].split("}", 1)[0]
+    assert "overflow: hidden !important;" in grid_css
+    assert "overflow-x: auto" not in grid_css
+    assert "overflow-y: auto" not in grid_css
     assert "colKeyStateRef" not in workspace_view
 
 
@@ -141,6 +171,9 @@ def test_new_split_pane_receives_focus_and_shortcuts_match_tabs() -> None:
         "function paneMatchesSession(",
         "pane.sessionId === sessionId || pane.tabs?.some((tab) => tab.sessionId === sessionId)",
         "const activePane = activeWs?.panes.find((p) => paneMatchesSession(p, apid));",
+        'case "pane.tab.next":',
+        'case "pane.tab.prev":',
+        "setActivePaneTab(activeWs.id, activePane.id, nextTab.id);",
     ]:
         assert_contains(app_shell, snippet, "src/components/layout/AppShell.tsx")
 
@@ -193,19 +226,66 @@ def test_horizontal_only_columns_are_cleaned_without_vertical_wrapping() -> None
         assert_contains(socket_listener, snippet, "src/components/layout/SocketListener.tsx")
 
 
-def test_terminal_renderer_uses_dom_renderer_for_stability() -> None:
+def test_terminal_renderer_restores_windows_dom_safety_default() -> None:
+    # Transparent multi-pane WebGL has repeatedly rendered darker or corrupted
+    # text on Windows. Keep guarded WebGL as an opt-in while restoring the
+    # platform-safe DOM default and the user's lost legacy preference.
     xterm_wrapper = read_repo_text("src/components/terminal/XTermWrapper.tsx")
+    settings_store = read_repo_text("src/stores/settingsStore.ts")
+    settings_migration = read_repo_text("src/stores/settingsMigration.ts")
+    appearance_tab = read_repo_text("src/components/settings/tabs/AppearanceTab.tsx")
     global_css = read_repo_text("src/global.css")
 
     for snippet in [
         "const DEFAULT_TERMINAL_LINE_HEIGHT = 1.1;",
-        "diagStats.webgl = \"never\";",
-        "WebGL texture atlases can corrupt",
+        'import { WebglAddon } from "@xterm/addon-webgl";',
+        "const webglRendererStates = new WeakMap<Terminal, WebglRendererState>();",
+        "const webglRendererFailures = new WeakSet<Terminal>();",
+        "contextLossDisposable = addon.onContextLoss(() => {",
+        "disposeWebglRenderer(sessionId, term, true, true);",
+        "webglRendererFailures.add(term);",
+        'stats.webgl = fallback ? "fallback" : "never";',
     ]:
         assert_contains(xterm_wrapper, snippet, "src/components/terminal/XTermWrapper.tsx")
 
-    assert "@xterm/addon-webgl" not in xterm_wrapper
-    assert "term.loadAddon(currentWebgl)" not in xterm_wrapper
+    # The renderer must be (re)applied on every terminal attach path:
+    # definition + settings-change effect + cached reattach + fresh open.
+    assert xterm_wrapper.count("applyTerminalRenderer(") >= 4
+
+    # loadAddon must stay inside the guarded enable path - a bare unguarded
+    # load would crash terminals on GPU-less WebView2 setups.
+    assert "term.loadAddon(addon);" in xterm_wrapper
+    assert "term.loadAddon(new WebglAddon())" not in xterm_wrapper
+    assert "clearTextureAtlas()" not in xterm_wrapper
+
+    for snippet in [
+        'terminalRenderer: "webgl" | "dom";',
+        "terminalRenderer: resolveDefaultTerminalRenderer(),",
+        "version: SETTINGS_STORE_VERSION,",
+        "migratePersistedSettings(persistedState, persistedVersion)",
+    ]:
+        assert_contains(settings_store, snippet, "src/stores/settingsStore.ts")
+
+    # DOM is the default on every platform: the opaque-pane WebGL artifact
+    # seen on Windows/WebView2 reproduced on macOS/WKWebView (2026-07-16).
+    for snippet in [
+        "export const SETTINGS_STORE_VERSION = 3;",
+        "export function resolveDefaultTerminalRenderer(",
+        'return "dom";',
+        'delete migrated.useWebglRenderer;',
+        'legacyWebglPreference === false ? "dom" : "webgl"',
+        'migrated.terminalRenderer = "dom";',
+        "&& !isWindowsUserAgent(userAgent)",
+    ]:
+        assert_contains(settings_migration, snippet, "src/stores/settingsMigration.ts")
+
+    for snippet in [
+        "標準描画（推奨）",
+        "GPU描画（高速・環境依存）",
+        "表示の安定性を優先し、標準描画が既定です",
+    ]:
+        assert_contains(appearance_tab, snippet, "src/components/settings/tabs/AppearanceTab.tsx")
+
     assert "image-rendering: pixelated;" not in global_css
     assert "image-rendering: -webkit-optimize-contrast;" not in global_css
 
@@ -243,8 +323,12 @@ def test_selection_copy_listener_survives_cached_terminal_remounts() -> None:
         "const TERMINAL_MOUSE_MODE_CONTROL_PARTIAL_RE = /\\x1b(?:\\[\\??[0-9;]*)?$/;",
         "function stripTerminalMouseModeControlSequencesForSession(sessionId: string, data: string): string",
         "const pendingTail = terminalMouseModeOutputTailBySession.get(sessionId) ?? \"\";",
+        "terminalMouseModeOutputTailBySession.delete(sessionId);",
         "const displayText = stripTerminalMouseModeControlSequencesForSession(sessionId, decodedText);",
-        "replayTerm.write(`${stripTerminalMouseModeControlSequences(displayReplay)}\\r\\n`, () => resolve());",
+        "updateCodexOutputDetection(displayText);",
+        "const output = displayText;",
+        "stripTerminalMouseModeControlSequences(replayText)",
+        "stripTerminalMouseModeControlSequences(displayReplay)",
     ]:
         assert_contains(terminal_sources, snippet, "src/components/terminal/*")
 
@@ -253,6 +337,7 @@ def test_selection_copy_listener_survives_cached_terminal_remounts() -> None:
     assert "copyTextToClipboard(selectedText, () => focusTerminalSoon(currentTerm));" not in terminal_sources
     assert "registerTerminalMouseSelectionGuard" not in terminal_sources
     assert "removeMouseSelectionGuard" not in terminal_sources
+    assert "formatMarkdownTablesForTerminal" not in terminal_sources
 
 
 def test_focus_stability_cdp_accepts_xterm_selection_layer() -> None:
@@ -292,7 +377,7 @@ def test_terminal_toolbar_actions_restore_xterm_focus() -> None:
         "const isSelectionButton = event.button === 0 || event.button === 2;",
         'focusController.request("pointer", {',
         'action: "pending",',
-        "if (event.button === 2) {\n      pendingPaneClickActivationRef.current = null;\n      return;\n    }",
+        "if (event.button === 2) {\n      pendingPaneClickActivationRef.current = null;\n      activatePane();\n      return;\n    }",
         "const handlePanePointerUpCapture = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {",
         "function getDocumentSelectionText(): string",
         'target.closest(".xterm-helper-textarea")',
@@ -313,7 +398,6 @@ def test_terminal_toolbar_actions_restore_xterm_focus() -> None:
     assert "activatePane({ focusTerminal: false });" not in terminal_pane
     assert "if (hasDocumentTextSelection()) return;" not in terminal_pane
 
-    xterm_wrapper = read_repo_text("src/components/terminal/XTermWrapper.tsx")
     for snippet in [
         "export function allowInactiveTerminalPointerFocus(sessionId: string): void",
         'focusController.request("pointer", { sessionId, action: "pending", focus: false });',
@@ -372,7 +456,7 @@ def test_cached_terminal_remount_disposes_input_subscriptions() -> None:
         "titleDisposable = currentTerm.onTitleChange((title) => {",
         "registerInputListeners(cached.term);",
         "registerInputListeners(term);",
-        "if (!isContainerDisplayed()) {",
+        "if (!isContainerWritable()) {",
         "if (!shouldAcceptTerminalInput(sessionId)) return;",
     ]:
         assert_contains(xterm_wrapper, snippet, "src/components/terminal/XTermWrapper.tsx")
@@ -443,11 +527,14 @@ def test_terminal_wheel_input_does_not_steal_keyboard_focus() -> None:
         "function stripTerminalMouseInputSequences(data: string): string",
         "const inputData = stripTerminalMouseInputSequences(data);",
         "function wheelEventToSgrMouseReport(currentTerm: Terminal, event: WheelEvent, lines: number): string | null",
+        "export function shouldForwardWheelToApplication(",
         "function attachTerminalWheelScroll(container: HTMLElement, currentTerm: Terminal, sessionId: string, forceMouseReport: boolean): () => void",
         "const wheelScrollContainer: HTMLElement = container;",
         "event.preventDefault();\n    event.stopPropagation();\n    event.stopImmediatePropagation();",
         "const forceWheelMouseReport = startsAsAgentTui(command, args, agentId, agentKind, launchEnv);",
-        "if (forceMouseReport || (terminalMouseReportModeBySession.has(sessionId) && terminalSgrMouseReportBySession.has(sessionId)))",
+        "const mouseReportingEnabled = terminalMouseReportModeBySession.has(sessionId)",
+        "currentTerm.buffer.active.type,",
+        "event.shiftKey,",
         "chunkedWrite(sessionId, report);",
         "currentTerm.scrollLines(lines);",
         "removeWheelScrollGuard = attachTerminalWheelScroll(wheelScrollContainer, cached.term, sessionId, forceWheelMouseReport);",
@@ -469,6 +556,9 @@ def test_terminal_wheel_input_does_not_steal_keyboard_focus() -> None:
         "removeWheelFocusGuard = registerTerminalWheelFocusGuard(term, sessionId);",
     ]:
         assert_contains(terminal_sources, snippet, "src/components/terminal/*")
+
+    assert 'activeBufferType === "alternate"' in terminal_sources
+    assert "if (shiftKey) return false;" in terminal_sources
 
     assert "stripNonWheelTerminalMouseInputSequences" not in terminal_sources
     assert "function activateTerminalPane" not in terminal_sources
@@ -548,9 +638,19 @@ def test_terminal_batches_keep_backend_flowing_while_layout_is_unwritable() -> N
         "function rememberTerminalRawTail(sessionId: string, chunk: Uint8Array): void",
         "function replaceTerminalRawTail(sessionId: string, scrollback: Uint8Array): void",
         "function findLastSubarray(haystack: Uint8Array, needle: Uint8Array): number",
-        "const syncBackendScrollbackToTerminal = async (): Promise<void> => {",
-        "scrollbackData = await getSessionScrollback(sessionId);",
+        "const performBackendScrollbackSync = async (): Promise<boolean> => {",
+        "const syncBackendScrollbackToTerminal = (): Promise<boolean> => {",
+        "let scrollbackSyncInFlight: Promise<boolean> | null = null;",
+        "let frontendChannelReady = false;",
+        "scrollbackSnapshot = await getSessionScrollback(sessionId);",
+        "if (disposed || termDisposed || !term || !canWritePendingBatches()) return false;",
         "const tailStart = findLastSubarray(scrollback, knownTail);",
+        "sliceBatchAfterScrollbackOffset(",
+        "lastSynchronizedScrollbackEnd = scrollbackSnapshot.endOffset;",
+        "batch.scrollbackEnd,",
+        "batch.scrollbackStart > lastSynchronizedScrollbackEnd",
+        "getTerminalOutputDecoder(sessionId)",
+        "resetTerminalOutputDecoder(sessionId)",
         "replaceTerminalRawTail(sessionId, scrollback);",
         "rememberTerminalRawTail(sessionId, chunk);",
         "const pendingBatches: PendingFrontendBatch[] = takeDeferredTerminalBatches(sessionId);",
@@ -558,24 +658,37 @@ def test_terminal_batches_keep_backend_flowing_while_layout_is_unwritable() -> N
         "terminalDeferredBatches.delete(sessionId);",
         "terminalRawTailBySession.delete(sessionId);",
         "terminalScrollbackResyncNeeded.delete(sessionId);",
-        "const isContainerDisplayed = (): boolean => {",
         "const isContainerPainted = (): boolean => {",
         "const hasWritableTerminalSize = (): boolean => {",
+        "const isContainerWritable = (): boolean => {",
         "const canWritePendingBatches = (): boolean => {",
-        "return Boolean(term && !termDisposed && isContainerPainted() && hasWritableTerminalSize());",
-        "setFrontendVisibleIfChanged(Boolean(term && !termDisposed && isContainerDisplayed()));",
-        "const visible = Boolean(term && !termDisposed && isContainerPainted());",
+        "currentTerm.options.cursorBlink = isActivePane;",
+        "cached.term.options.cursorBlink = useUiStore.getState().activePaneId === sessionId;",
+        "cursorBlink: useUiStore.getState().activePaneId === sessionId,",
+        "frontendChannelReady",
+        "setFrontendVisibleIfChanged(Boolean(term && !termDisposed && isContainerWritable()));",
+        "const visible = Boolean(term && !termDisposed && isContainerWritable());",
         "const paintChanged = refreshTerminalPaintedVisible();",
         "|| (terminalPaintedVisible && paintChanged);",
-        "const ackPendingBatch = async (pending: PendingFrontendBatch): Promise<void> => {",
-        "void ackPendingBatch(pending);",
+        "const ackCoalescer = new TerminalAckCoalescer(",
+        "const ackPendingBatch = (pending: PendingFrontendBatch): void => {",
+        "ackPendingBatch(pending);",
         "pendingBatches.unshift(pending);",
         "schedulePendingWriteDrain();",
         "scheduleFrontendResync();",
-        "if (pendingBatches.length > 0 && canWritePendingBatches())",
+        "pendingBatches.length > 0 || terminalScrollbackResyncNeeded.has(sessionId)",
+        "const synchronized = await syncBackendScrollbackToTerminal();",
+        "planTerminalScrollbackRecovery(",
+        "scrollbackSnapshot.startOffset,",
+            'recoveryPlan.action === "skip-truncated"',
+            "const redrawn = await scheduleTuiRecoveryRedraw();",
+            "await replayTruncatedTailIntoEmptyTerminal(scrollback);",
+            'recoveryPlan.action === "initial-replay"',
+            "const replacesVisibleBuffer = recoveryPlan.action",
+        "if (!synchronized) {",
         "refreshFrontendVisible();",
         "void resizeSession(sessionId, cols, rows).catch((error) => {",
-        "const handleTerminalLayoutSignal = (): void => {",
+        "const handleTerminalLayoutSignal = (event: Event): void => {",
         'window.addEventListener("mycmux:workspace-visibility-change", handleFrontendVisibilitySignal);',
         'window.addEventListener("mycmux:terminal-layout-change", handleTerminalLayoutSignal);',
         'window.removeEventListener("mycmux:workspace-visibility-change", handleFrontendVisibilitySignal);',
@@ -585,32 +698,55 @@ def test_terminal_batches_keep_backend_flowing_while_layout_is_unwritable() -> N
     ]:
         assert_contains(terminal_sources, snippet, "src/components/terminal/*")
 
+    # xterm.write already renders parsed output. A second pair of full visible
+    # row refreshes per PTY batch starves wheel input during streaming.
+    assert "scheduleFullRefresh(term, [0, 48]);" not in xterm_wrapper
+    schedule_refresh_fn = xterm_wrapper.split("const scheduleFullRefresh = ", 1)[1].split(
+        "const fitAndSyncResize = ",
+        1,
+    )[0]
+    assert "clearRefreshTimers();" in schedule_refresh_fn
+
+    assert "await ackPendingBatch(pending)" not in xterm_wrapper
+    truncated_recovery = xterm_wrapper.split(
+        'if (recoveryPlan.action === "skip-truncated") {', 1
+    )[1].split("replaceTerminalRawTail(sessionId, scrollback);", 1)[0]
+    assert "terminalScrollbackResyncNeeded.add(sessionId);" not in truncated_recovery
+    assert "return false;" not in truncated_recovery
+    recovery_redraw = xterm_wrapper.split(
+        "const scheduleTuiRecoveryRedraw = (): Promise<boolean> => {", 1
+    )[1].split("const performBackendScrollbackSync", 1)[0]
+    assert "!forceWheelMouseReport" in recovery_redraw
+    assert "const hasMeaningfulTerminalScreen = (): boolean => {" in xterm_wrapper
+    assert "if (!term || termDisposed || hasMeaningfulTerminalScreen()) return;" in xterm_wrapper
+
     snapshot_fn = xterm_wrapper.split("const readContainerVisibilitySnapshot = ", 1)[1].split(
-        "const isContainerDisplayed = (): boolean => {",
+        "const isContainerPainted = (): boolean => {",
         1,
     )[0]
     # display:none anywhere up the chain kills both displayed and painted
     assert 'style.display === "none"' in snapshot_fn
-    # visibility hidden/collapse only demotes painted, never displayed
+    assert 'document.visibilityState !== "hidden"' in snapshot_fn
+    # visibility hidden/collapse demotes painted. Hidden terminals stay mounted
+    # but must not parse/render PTY output until they are visible again.
     visibility_branch = snapshot_fn.split(
         'style.visibility === "hidden" || style.visibility === "collapse"', 1
     )[1].split("}", 1)[0]
     assert "painted = false" in visibility_branch
     assert "displayed" not in visibility_branch
 
-    displayed_fn = xterm_wrapper.split("const isContainerDisplayed = (): boolean => {", 1)[1].split(
-        "const isContainerPainted = (): boolean => {",
-        1,
-    )[0]
-    assert "readContainerVisibilitySnapshot().displayed" in displayed_fn
-    assert "style.visibility" not in displayed_fn
-
     can_write_fn = xterm_wrapper.split("const canWritePendingBatches = (): boolean => {", 1)[1].split(
         "const schedulePendingWriteDrain =",
         1,
     )[0]
-    assert "isContainerPainted()" in can_write_fn
-    assert "isContainerDisplayed() && hasWritableTerminalSize()" not in can_write_fn
+    assert "frontendChannelReady" in can_write_fn
+    assert "isContainerWritable()" in can_write_fn
+    assert "isContainerDisplayed()" not in can_write_fn
+
+    writable_fn = xterm_wrapper.split("const isContainerWritable = (): boolean => {", 1)[1].split(
+        "const canWritePendingBatches =", 1,
+    )[0]
+    assert "isContainerPainted() && hasWritableTerminalSize()" in writable_fn
 
     painted_fn = xterm_wrapper.split("const isContainerPainted = (): boolean => {", 1)[1].split(
         "const hasWritableTerminalSize = (): boolean => {",
@@ -619,8 +755,39 @@ def test_terminal_batches_keep_backend_flowing_while_layout_is_unwritable() -> N
     assert "readContainerVisibilitySnapshot().painted" in painted_fn
     assert "if (!term || termDisposed || !isContainerVisible())" not in xterm_wrapper
     assert "TERMINAL_BATCH_RETAINED_MAX_BYTES" in xterm_wrapper
+    assert "terminalScrollbackResyncNeeded.add(sessionId);" in xterm_wrapper
+    assert "pendingBatches.length > 0 || terminalScrollbackResyncNeeded.has(sessionId)" in xterm_wrapper
+    assert "frontendVisible = null;" in xterm_wrapper
+    assert "queueTerminalVisibilityUpdate(sessionId, visible);" in xterm_wrapper
 
-    assert_contains(ipc, "export async function getSessionScrollback(sessionId: string): Promise<number[]>", "src/lib/ipc.ts")
+    replay_write = xterm_wrapper.index("await writeTerminalOutput(")
+    replay_tail = xterm_wrapper.index("replaceTerminalRawTail(sessionId, scrollback);", replay_write)
+    replay_disposed = xterm_wrapper.index("if (disposed || termDisposed || !term) return false;", replay_write)
+    assert replay_write < replay_tail < replay_disposed
+
+    assert_contains(ipc, "export async function getSessionScrollback(sessionId: string): Promise<ScrollbackSnapshot>", "src/lib/ipc.ts")
+    assert_contains(ipc, "startOffset: number;", "src/lib/ipc.ts")
+    assert_contains(ipc, "endOffset: number;", "src/lib/ipc.ts")
     assert_contains(terminal_commands, "pub fn get_session_scrollback(", "src-tauri/src/commands/terminal.rs")
     assert_contains(manager, "pub fn get_scrollback(&self, session_id: &str) -> Result<Vec<u8>, String>", "src-tauri/src/pty/manager.rs")
     assert_contains(lib_rs, "commands::terminal::get_session_scrollback", "src-tauri/src/lib.rs")
+
+
+def test_streaming_last_log_updates_do_not_rearm_workspace_autosave() -> None:
+    socket_listener = read_repo_text("src/components/layout/SocketListener.tsx")
+    metadata_store = read_repo_text("src/stores/paneMetadataStore.ts")
+
+    assert "const unsubMeta = usePaneMetadataStore.subscribe((state, previousState) => {" in socket_listener
+    assert "if (state.metadata !== previousState.metadata) markDirty();" in socket_listener
+    assert "const { lastLogLine, ...metadataFields } = filtered;" in metadata_store
+    assert "return changed ? { metadata: nextMetadata, lastLog: nextLastLog } : state;" in metadata_store
+
+
+def test_terminal_layout_resync_is_scoped_to_its_workspace() -> None:
+    xterm_wrapper = read_repo_text("src/components/terminal/XTermWrapper.tsx")
+    terminal_pane = read_repo_text("src/components/workspace/TerminalPane.tsx")
+
+    assert "workspaceId: string;" in xterm_wrapper
+    assert "workspaceId={workspaceId}" in terminal_pane
+    assert "const detail = (event as CustomEvent<{ workspaceId?: string }>).detail;" in xterm_wrapper
+    assert "if (detail?.workspaceId && detail.workspaceId !== workspaceId) return;" in xterm_wrapper

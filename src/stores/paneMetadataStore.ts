@@ -194,16 +194,25 @@ export const usePaneMetadataStore = create<PaneMetadataState>((set) => ({
     return didNotify;
   },
 
-  clearNotification: (sessionId) => set((state) => ({
-    metadata: {
-      ...state.metadata,
-      [sessionId]: {
-        ...state.metadata[sessionId],
-        notificationCount: 0,
-        workDoneCount: 0,
-      }
+  clearNotification: (sessionId) => set((state) => {
+    const previous = state.metadata[sessionId];
+    if (
+      (previous?.notificationCount ?? 0) === 0
+      && (previous?.workDoneCount ?? 0) === 0
+    ) {
+      return state;
     }
-  })),
+    return {
+      metadata: {
+        ...state.metadata,
+        [sessionId]: {
+          ...previous,
+          notificationCount: 0,
+          workDoneCount: 0,
+        },
+      },
+    };
+  }),
 
   removeMetadata: (sessionId) => set((state) => {
     const { [sessionId]: _, ...rest } = state.metadata;

@@ -147,7 +147,13 @@ export function createFocusControllerCore(options: FocusControllerCoreOptions) {
       return "reconcile";
     },
     shouldAcceptInput(sessionId: string): boolean {
+      clearExpired();
       if ((options.getActiveSessionId?.() ?? null) === sessionId) return true;
+      if (state.pendingPointer?.sessionId === sessionId) {
+        state.pendingPointer = null;
+        commit(sessionId, true);
+        return true;
+      }
       options.focusSession?.(options.getActiveSessionId?.() ?? null);
       return false;
     },

@@ -147,6 +147,16 @@ function wheelEventToSgrMouseReport(currentTerm: Terminal, event: WheelEvent, li
   return `\x1b[<${button};${col};${row}M`.repeat(repeats);
 }
 
+export function shouldForwardWheelToApplication(
+  activeBufferType: "normal" | "alternate",
+  mouseReportingEnabled: boolean,
+  forceMouseReport: boolean,
+  shiftKey: boolean,
+): boolean {
+  if (shiftKey) return false;
+  return activeBufferType === "alternate" && (mouseReportingEnabled || forceMouseReport);
+}
+
 export function attachTerminalWheelScroll(container: HTMLElement, currentTerm: Terminal, sessionId: string, forceMouseReport: boolean): () => void {
   const handleWheel = (event: WheelEvent): void => {
     if (event.defaultPrevented || event.metaKey) return;
@@ -155,7 +165,14 @@ export function attachTerminalWheelScroll(container: HTMLElement, currentTerm: T
     event.preventDefault();
     event.stopPropagation();
     event.stopImmediatePropagation();
-    if (forceMouseReport || (terminalMouseReportModeBySession.has(sessionId) && terminalSgrMouseReportBySession.has(sessionId))) {
+    const mouseReportingEnabled = terminalMouseReportModeBySession.has(sessionId)
+      && terminalSgrMouseReportBySession.has(sessionId);
+    if (shouldForwardWheelToApplication(
+      currentTerm.buffer.active.type,
+      mouseReportingEnabled,
+      forceMouseReport,
+      event.shiftKey,
+    )) {
       const report = wheelEventToSgrMouseReport(currentTerm, event, lines);
       if (report) {
         chunkedWrite(sessionId, report);

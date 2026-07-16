@@ -35,7 +35,15 @@ pub fn claude_project_key(path: &str) -> String {
     };
     normalized
         .trim_end_matches(['/', '\\'])
-        .replace([':', '\\', '/'], "-")
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
         .trim_start_matches('-')
         .to_string()
 }
@@ -93,5 +101,21 @@ mod tests {
     #[test]
     fn claude_project_key_trims_trailing_separators() {
         assert_eq!(claude_project_key(r"C:\Users\miyaz\"), "C--Users-miyaz");
+    }
+
+    #[test]
+    fn claude_project_key_sanitizes_dot_space_and_non_ascii() {
+        assert_eq!(
+            claude_project_key(r"C:\Users\miyaz\.ai-dashboard\master"),
+            "C--Users-miyaz--ai-dashboard-master"
+        );
+        assert_eq!(
+            claude_project_key(r"C:\Users\miyaz\Documents\New project"),
+            "C--Users-miyaz-Documents-New-project"
+        );
+        assert_eq!(
+            claude_project_key(r"C:\Users\miyaz\日本語"),
+            "C--Users-miyaz----"
+        );
     }
 }

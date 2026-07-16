@@ -4,9 +4,15 @@ import {
   bumpTerminalWriteCounter,
   cacheOrDisposeOnUnmount,
   evictTerminalCache,
+  findLastSubarray,
+  getTerminalOutputDecoder,
   getTerminalWriteCounter,
+  liveTerms,
+  MAX_CACHED_TERMINALS,
+  planTerminalScrollbackRecovery,
   rememberTerminalRawTail,
   replaceTerminalRawTail,
+  sliceBatchAfterScrollbackOffset,
   termCache,
   terminalRawTailBySession,
   terminalWriteCounters,
@@ -34,6 +40,7 @@ function makeCachedTerm(): { entry: CachedTerm; dispose: ReturnType<typeof vi.fn
 
 afterEach(() => {
   termCache.clear();
+  liveTerms.clear();
   terminalWriteCounters.clear();
   terminalRawTailBySession.clear();
 });
@@ -45,6 +52,7 @@ describe("terminal cache eviction (FE-N1)", () => {
 
     // Active tab close: cache miss because the Terminal is still mounted.
     expect(termCache.has(sessionId)).toBe(false);
+    liveTerms.set(sessionId, entry.term);
     evictTerminalCache(sessionId);
 
     // Later unmount tries to cache the still-mounted Terminal.
@@ -71,6 +79,8 @@ describe("terminal cache eviction (FE-N1)", () => {
     const sessionId = "sess-mark-consumed";
 
     // First lifecycle: active-tab close disposes.
+    const live = makeCachedTerm();
+    liveTerms.set(sessionId, live.entry.term);
     evictTerminalCache(sessionId);
     const first = makeCachedTerm();
     expect(cacheOrDisposeOnUnmount(sessionId, first.entry)).toBe("disposed");
@@ -103,6 +113,7 @@ describe("terminal cache eviction (FE-N1)", () => {
     const sessionId = "sess-inflight";
     const { entry } = makeCachedTerm();
 
+    liveTerms.set(sessionId, entry.term);
     evictTerminalCache(sessionId);
 
     // In-flight write pump resumes after the evict wiped the maps but before the
@@ -119,5 +130,129 @@ describe("terminal cache eviction (FE-N1)", () => {
     expect(cacheOrDisposeOnUnmount(sessionId, entry)).toBe("disposed");
     bumpTerminalWriteCounter(sessionId);
     expect(getTerminalWriteCounter(sessionId)).toBe(1);
+  });
+
+  it("evicts the oldest cached terminal when the cache reaches its cap", () => {
+    const entries = Array.from({ length: MAX_CACHED_TERMINALS + 1 }, (_, index) => ({
+      sessionId: `sess-${index}`,
+      ...makeCachedTerm(),
+    }));
+
+    for (const { sessionId, entry } of entries) {
+      expect(cacheOrDisposeOnUnmount(sessionId, entry)).toBe("cached");
+    }
+
+    expect(termCache.size).toBe(MAX_CACHED_TERMINALS);
+    expect(termCache.has(entries[0].sessionId)).toBe(false);
+    expect(entries[0].dispose).toHaveBeenCalledTimes(1);
+    expect(entries[0].unlistenExit).toHaveBeenCalledTimes(1);
+    expect(termCache.get(entries.at(-1)!.sessionId)).toBe(entries.at(-1)!.entry);
+  });
+
+  it("does not leave an active-close marker for an already absent terminal", () => {
+    const sessionId = "sess-already-absent";
+    evictTerminalCache(sessionId);
+
+    const next = makeCachedTerm();
+    expect(cacheOrDisposeOnUnmount(sessionId, next.entry)).toBe("cached");
+    expect(next.dispose).not.toHaveBeenCalled();
+  });
+});
+
+describe("terminal scrollback tail search", () => {
+  it("returns the last overlapping match", () => {
+    expect(findLastSubarray(
+      new Uint8Array([1, 2, 1, 2, 1]),
+      new Uint8Array([1, 2, 1]),
+    )).toBe(2);
+  });
+
+  it("handles long repetitive non-matches without quadratic scanning", () => {
+    const haystack = new Uint8Array(32 * 1024).fill(65);
+    const needle = new Uint8Array(4 * 1024).fill(65);
+    needle[needle.length - 1] = 66;
+    expect(findLastSubarray(haystack, needle)).toBe(-1);
+  });
+});
+
+describe("terminal scrollback cursor recovery", () => {
+  it("drops bytes already included in the synchronized snapshot", () => {
+    const batch = {
+      generation: 1,
+      seq: 1,
+      bytes: 6,
+      resync: false,
+      scrollbackStart: 10,
+      scrollbackEnd: 16,
+      data: [1, 2, 3, 4, 5, 6],
+    };
+    const data = new Uint8Array(batch.data);
+
+    expect([...sliceBatchAfterScrollbackOffset(batch, data, 16)]).toEqual([]);
+    expect([...sliceBatchAfterScrollbackOffset(batch, data, 13)]).toEqual([4, 5, 6]);
+    expect([...sliceBatchAfterScrollbackOffset(batch, data, 10)]).toEqual(batch.data);
+  });
+
+  it("appends from an exact absolute scrollback cursor", () => {
+    const plan = planTerminalScrollbackRecovery(
+      new Uint8Array([10, 11, 12, 13]),
+      100,
+      104,
+      102,
+    );
+    expect(plan.action).toBe("append");
+    expect([...plan.data]).toEqual([12, 13]);
+  });
+
+  it("uses a remembered raw suffix when the absolute cursor is unavailable", () => {
+    const plan = planTerminalScrollbackRecovery(
+      new Uint8Array([1, 2, 3, 4, 5]),
+      50,
+      55,
+      0,
+      new Uint8Array([2, 3]),
+    );
+    expect(plan.action).toBe("append");
+    expect([...plan.data]).toEqual([4, 5]);
+  });
+
+  it("never treats a truncated raw VT ring as a complete terminal snapshot", () => {
+    const plan = planTerminalScrollbackRecovery(
+      new Uint8Array([0x5b, 0x32, 0x4a, 0x41]),
+      200,
+      204,
+      0,
+    );
+    expect(plan.action).toBe("skip-truncated");
+    expect(plan.data.byteLength).toBe(0);
+  });
+
+  it("allows a full rebuild only when scrollback starts at process byte zero", () => {
+    const scrollback = new Uint8Array([0x1b, 0x5b, 0x32, 0x4a]);
+    const plan = planTerminalScrollbackRecovery(scrollback, 0, 4, 99);
+    expect(plan.action).toBe("replace");
+    expect(plan.data).toEqual(scrollback);
+  });
+
+  it("marks a byte-zero initial snapshot for a hidden full replay", () => {
+    const scrollback = new Uint8Array([0x1b, 0x5b, 0x32, 0x4a, 0x41]);
+    const plan = planTerminalScrollbackRecovery(scrollback, 0, 5, 0);
+
+    expect(plan.action).toBe("initial-replay");
+    expect(plan.data).toEqual(scrollback);
+  });
+});
+
+describe("terminal decoder continuity", () => {
+  it("keeps a split UTF-8 code point across cached remounts", () => {
+    const sessionId = "sess-decoder-remount";
+    const firstMount = getTerminalOutputDecoder(sessionId);
+    expect(firstMount.decode(new Uint8Array([0xe3, 0x81]), { stream: true })).toBe("");
+
+    const remount = getTerminalOutputDecoder(sessionId);
+    expect(remount).toBe(firstMount);
+    expect(remount.decode(new Uint8Array([0x82]), { stream: true })).toBe("あ");
+
+    evictTerminalCache(sessionId);
   });
 });

@@ -47,6 +47,25 @@ describe("focusController state machine", () => {
     expect(core.state.pendingPointer).toBeNull();
   });
 
+  it("accepts and commits the first input that reaches a pending pointer target", () => {
+    const { core, commits, focusRequests } = controllerHarness();
+
+    core.request("pointer", { sessionId: "pending", action: "pending", focus: false });
+
+    expect(core.shouldAcceptInput("pending")).toBe(true);
+    expect(commits).toEqual(["pending"]);
+    expect(focusRequests).toEqual(["pending"]);
+    expect(core.state.pendingPointer).toBeNull();
+  });
+
+  it("still rejects input from a genuinely inactive target", () => {
+    const { core, commits, focusRequests } = controllerHarness();
+
+    expect(core.shouldAcceptInput("inactive")).toBe(false);
+    expect(commits).toEqual([]);
+    expect(focusRequests).toEqual(["active"]);
+  });
+
   it("aborts a pending pointer intent and restores the active focus target", () => {
     const { core, commits, focusRequests } = controllerHarness();
 

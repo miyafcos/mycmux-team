@@ -70,17 +70,10 @@
   --status-error:   #ef4444;
   --notification-color: #f59e0b;
 
-  /* Chrome (titlebar / tab bar) text + icon shadows. AppShell overrides these
-     per theme. The values below are the dark-theme default — a fallback for
-     elements rendered outside the AppShell root. */
-  --cmux-chrome-icon-shadow:
-    drop-shadow(0 0 1px rgba(255, 255, 255, 0.45))
-    drop-shadow(0 0 2px rgba(0, 0, 0, 0.6))
-    drop-shadow(0 1px 2px rgba(0, 0, 0, 0.4));
-  --cmux-chrome-text-shadow:
-    0 0 2px rgba(255, 255, 255, 0.3),
-    0 0 3px rgba(0, 0, 0, 0.6),
-    0 1px 2px rgba(0, 0, 0, 0.45);
+  /* Keep chrome text and icons crisp. Readability comes from the panel surface
+     and explicit borders instead of multi-layer glow effects. */
+  --cmux-chrome-icon-shadow: none;
+  --cmux-chrome-text-shadow: none;
 }
 
 *,
@@ -124,16 +117,14 @@ div:hover>.tab-close-btn {
   opacity: 1 !important;
 }
 
-/* Icons in chrome (title bar / pane tab bar / sidebars). The shadow is
-   theme-aware via --cmux-chrome-icon-shadow (set in AppShell): a bidirectional
-   shadow for dark themes, and none / a soft white halo for light themes. */
+/* Icons in chrome stay flat so thin strokes remain crisp over translucent UI. */
 .cmux-title-btn svg,
 .pane-action-btn svg,
 .pane-tab-pill svg {
   filter: var(--cmux-chrome-icon-shadow);
 }
 
-/* Brand text + workspace name in TitleBar — same theme-aware treatment. */
+/* Brand text + workspace name use the same flat treatment. */
 [data-tauri-drag-region] > span,
 [data-cmux-brand="true"],
 .pane-tab-label {
@@ -193,6 +184,14 @@ div:hover>.tab-close-btn {
 
 .pane-tabbar {
   background: var(--pane-tabbar-bg, var(--cmux-surface)) !important;
+  container-type: inline-size;
+}
+
+/* PaneTabBar manages progressive slim, compact, and micro React layouts by
+   measured width. The status readout is additionally hidden at 420px.
+   (!important because the status bar sets display via inline style.) */
+@container (max-width: 420px) {
+  .pane-tabbar-status { display: none !important; }
 }
 
 .pane-tab-pill {
@@ -204,7 +203,38 @@ div:hover>.tab-close-btn {
 }
 
 .pane-tab-pill.is-active {
-  background: var(--cmux-selected) !important;
+  background: color-mix(in srgb, var(--cmux-accent) 10%, var(--cmux-selected)) !important;
+}
+
+/* Compact/micro-mode active label: transparent so the accent underline and bold
+   label carry the active signal without a full-width colored bar. */
+.pane-tab-compact,
+.pane-tab-compact:hover,
+.pane-tab-compact.is-active {
+  background: transparent !important;
+  border-right: none !important;
+}
+
+.pane-tab-restore-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  box-sizing: border-box;
+  flex-shrink: 0;
+  border: 1px solid color-mix(in srgb, var(--cmux-accent) 58%, var(--cmux-border));
+  border-radius: 999px;
+  color: var(--cmux-accent);
+  font-size: 7px;
+  line-height: 1;
+}
+
+.pane-tab-restore-badge.is-label {
+  width: auto;
+  padding: 0 5px;
+  font-size: 9px;
+  font-weight: 600;
 }
 
 .ui-cmux .pane-tab-label {
@@ -276,16 +306,9 @@ div:hover>.tab-close-btn {
   pointer-events: none;
   z-index: 10;
   border: var(--pane-border-width, 1px) solid var(--pane-border-color, transparent);
-  transition: border-color 0.15s, border-width 0.15s, box-shadow 0.15s;
+  transition: border-color 0.15s, border-width 0.15s;
 }
 
-.terminal-pane-border[data-active-pane="true"]::after {
-  box-shadow:
-    inset 0 0 0 1px color-mix(in srgb, var(--cmux-accent) 22%, transparent),
-    0 0 0 1px color-mix(in srgb, var(--cmux-accent) 18%, transparent);
-}
-
-.cmux-terminal-grid-fit,
 .cmux-terminal-grid-fit [class*="splitView"],
 .cmux-terminal-grid-fit [class*="splitViewContainer"],
 .cmux-terminal-grid-fit [class*="splitViewView"] {
@@ -293,6 +316,14 @@ div:hover>.tab-close-btn {
   max-height: 100%;
   min-width: 0 !important;
   min-height: 0 !important;
+  overflow: hidden !important;
+}
+
+.cmux-terminal-grid-fit {
+  max-width: 100%;
+  max-height: 100%;
+  min-width: 0;
+  min-height: 0;
   overflow: hidden !important;
 }
 
@@ -375,6 +406,25 @@ div:hover>.tab-close-btn {
   padding: 10px 12px;
 }
 
+.pane-drag-ghost--savepoint {
+  --pane-dnd-color: var(--cmux-accent);
+  align-items: flex-start;
+  max-width: min(420px, calc(100vw - 32px));
+}
+
+.pane-drag-ghost--savepoint .pane-drag-ghost-label {
+  flex: 0 1 112px;
+  max-width: 112px;
+}
+
+.pane-drag-ghost--savepoint .pane-drag-ghost-meta {
+  min-width: 0;
+  flex: 1 1 240px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.35;
+}
+
 .pane-drag-ghost.is-droppable {
   border-color: color-mix(in srgb, var(--pane-dnd-color) 82%, white);
   background: color-mix(in srgb, var(--pane-dnd-color) 14%, var(--cmux-surface));
@@ -406,6 +456,15 @@ div:hover>.tab-close-btn {
 .pane-drag-ghost-pane-mark span {
   border-radius: 2px;
   background: color-mix(in srgb, var(--cmux-dnd-pane) 72%, transparent);
+}
+
+.pane-drag-ghost-savepoint-mark {
+  width: 16px;
+  height: 20px;
+  flex-shrink: 0;
+  clip-path: polygon(0 0, 100% 0, 100% 100%, 50% 72%, 0 100%);
+  background: color-mix(in srgb, var(--cmux-accent) 74%, var(--cmux-surface));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--cmux-accent) 78%, white);
 }
 
 .pane-drag-ghost-label {
@@ -516,6 +575,187 @@ div:hover>.tab-close-btn {
 
 .pane-drop-preview--split {
   border-style: dashed;
+}
+
+.pane-tab-pill.is-savepoint-write-target {
+  box-shadow: inset 0 -3px 0 var(--cmux-accent);
+  animation: savepointTabWriteTarget 0.85s ease-in-out infinite;
+}
+
+.savepoint-write-preview {
+  position: absolute;
+  z-index: 31;
+  left: 18px;
+  right: 18px;
+  bottom: 16px;
+  min-height: 42px;
+  box-sizing: border-box;
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  padding: 0 13px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--cmux-accent) 74%, var(--cmux-border));
+  border-radius: 8px;
+  color: var(--cmux-text);
+  background: color-mix(in srgb, var(--cmux-surface) 91%, var(--cmux-accent));
+  box-shadow:
+    0 8px 24px color-mix(in srgb, black 24%, transparent),
+    inset 0 0 0 1px color-mix(in srgb, var(--cmux-accent) 10%, transparent);
+  animation:
+    savepointWriteTargetIn 150ms ease-out both,
+    savepointWriteTargetGlow 1.35s ease-in-out 150ms infinite;
+}
+
+.savepoint-write-preview__prompt {
+  color: var(--cmux-accent);
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.savepoint-write-preview__label {
+  min-width: 0;
+  overflow: visible;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.35;
+  font-size: 12px;
+  font-weight: 620;
+}
+
+.savepoint-write-preview__caret {
+  width: 2px;
+  height: 17px;
+  flex: 0 0 2px;
+  border-radius: 1px;
+  background: var(--cmux-accent);
+  animation: savepointWriteCaretBlink 0.72s steps(1, end) infinite;
+}
+
+.pane-handoff-drop-chip {
+  position: absolute;
+  z-index: 32;
+  bottom: clamp(44px, 14%, 92px);
+  left: 50%;
+  max-width: calc(100% - 24px);
+  box-sizing: border-box;
+  transform: translateX(-50%);
+  pointer-events: auto;
+  padding: 8px 14px;
+  border: 1px solid color-mix(in srgb, var(--cmux-accent) 70%, var(--cmux-border));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--cmux-accent) 12%, var(--cmux-surface));
+  color: var(--cmux-text);
+  box-shadow:
+    0 8px 24px color-mix(in srgb, black 22%, transparent),
+    inset 0 0 0 1px color-mix(in srgb, var(--cmux-accent) 10%, transparent);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.35;
+  text-align: center;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.pane-handoff-drop-chip.is-active {
+  border-color: color-mix(in srgb, var(--cmux-accent) 88%, white);
+  background: color-mix(in srgb, var(--cmux-accent) 22%, var(--cmux-surface));
+  box-shadow: var(--cmux-shadow-dnd-strong);
+}
+
+@keyframes savepointWriteTargetIn {
+  from { opacity: 0; transform: translateY(6px) scale(0.99); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes savepointWriteTargetGlow {
+  0%, 100% { border-color: color-mix(in srgb, var(--cmux-accent) 58%, var(--cmux-border)); }
+  50% { border-color: color-mix(in srgb, var(--cmux-accent) 92%, white); }
+}
+
+@keyframes savepointWriteCaretBlink {
+  0%, 48% { opacity: 1; }
+  49%, 100% { opacity: 0; }
+}
+
+@keyframes savepointTabWriteTarget {
+  0%, 100% { box-shadow: inset 0 -3px 0 var(--cmux-accent); }
+  50% {
+    box-shadow:
+      inset 0 -3px 0 var(--cmux-accent),
+      inset 0 0 0 1px color-mix(in srgb, var(--cmux-accent) 46%, transparent);
+  }
+}
+
+.savepoint-drop-preview {
+  --pane-dnd-color: var(--cmux-accent);
+  position: absolute;
+  z-index: 31;
+  top: 44px;
+  left: 9px;
+  right: 9px;
+  height: 34px;
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid color-mix(in srgb, var(--cmux-accent) 82%, white);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--cmux-accent) 16%, transparent);
+  animation: paneDropPreviewPulse 0.9s ease-in-out infinite;
+}
+
+.savepoint-drop-preview--right {
+  top: 44px;
+  bottom: 9px;
+  left: auto;
+  right: 9px;
+  width: min(28%, 180px);
+  height: auto;
+}
+
+.savepoint-drop-preview--down {
+  top: auto;
+  bottom: 9px;
+  height: min(24%, 120px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pane-drop-preview,
+  .savepoint-drop-preview,
+  .savepoint-write-preview,
+  .savepoint-write-preview__caret,
+  .pane-tab-pill.is-savepoint-write-target {
+    animation: none;
+  }
+}
+
+/* Accessibility: keyboard focus indicator.
+   Several components set outline:"none" as an inline style (AgentSelector's
+   <select>, OnlinePanel's search input, PathJumper's input, the
+   FileExplorerSidebar rename input, etc.) with no compensating focus style,
+   so keyboard-only/screen-magnifier users can't tell which control has
+   focus. :focus-visible only fires for keyboard focus (not mouse clicks),
+   so this adds no ring on click; !important is required to beat those
+   inline overrides. */
+button:focus-visible,
+[role="button"]:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--cmux-accent) !important;
+  outline-offset: 1px !important;
+}
+
+/* xterm.js keeps a hidden/off-screen textarea to capture keyboard input —
+   it must never show a focus ring. */
+.xterm textarea:focus-visible,
+.xterm-helper-textarea:focus-visible {
+  outline: none !important;
 }
 
 /* Accessibility: Reduced Motion */

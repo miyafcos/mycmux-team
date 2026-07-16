@@ -45,6 +45,10 @@ export type LocalFilePathLinkMatch = {
   endIndex: number;
 };
 
+export type ResolvedLocalPathLinkMatch = LocalFilePathLinkMatch & {
+  activationUri: string;
+};
+
 type ArtifactLinkCacheValue = ILink[] | undefined | Promise<ILink[] | undefined>;
 
 const artifactLinkCache = new Map<string, ArtifactLinkCacheValue>();
@@ -229,6 +233,38 @@ function activationUriForResolvedLocalPath(
   return `${existingPrefix}/`;
 }
 
+export function mergeResolvedPathLinkMatches(
+  candidates: LocalFilePathLinkMatch[],
+  resolvedLinks: Array<ResolvedLocalPathLink | null>,
+): ResolvedLocalPathLinkMatch[] {
+  const matches: ResolvedLocalPathLinkMatch[] = [];
+  for (let index = 0; index < candidates.length; index++) {
+    const candidate = candidates[index];
+    const resolved = resolvedLinks[index];
+    if (
+      !resolved ||
+      resolved.existingPrefix.length === 0 ||
+      !candidate.text.startsWith(resolved.existingPrefix)
+    ) {
+      continue;
+    }
+    matches.push({
+      text: resolved.existingPrefix,
+      index: candidate.index,
+      endIndex: candidate.index + resolved.existingPrefix.length,
+      activationUri: activationUriForResolvedLocalPath(resolved.existingPrefix, resolved),
+    });
+  }
+
+  matches.sort((left, right) => right.text.length - left.text.length || left.index - right.index);
+  const merged: ResolvedLocalPathLinkMatch[] = [];
+  for (const match of matches) {
+    if (merged.some((existing) => rangesOverlap(match, existing))) continue;
+    merged.push(match);
+  }
+  return merged.sort((left, right) => left.index - right.index || left.endIndex - right.endIndex);
+}
+
 function createLocalPathLink(
   term: Terminal,
   parts: ArtifactLinkPart[],
@@ -381,40 +417,34 @@ export function registerArtifactLinkProvider(
       }
       const text = parts.map((part) => part.text).join("");
       const filePathMatches = findLocalFilePathLinks(text);
-      const links: ILink[] = [];
+      const fallbackLinks: ILink[] = [];
       for (const match of filePathMatches) {
         const link = createLocalPathLink(term, parts, bufferLineNumber, match, onActivate);
         if (link) {
-          links.push(link);
+          fallbackLinks.push(link);
         }
       }
-      const bareCandidates = findBareLocalPathCandidates(text, filePathMatches);
-      if (bareCandidates.length > 0) {
-        const resultPromise = resolveLocalPathLinks(bareCandidates.map((candidate) => candidate.text))
+      const bareCandidates = findBareLocalPathCandidates(text, []);
+      const candidates = [...filePathMatches, ...bareCandidates];
+      if (candidates.length > 0) {
+        const resultPromise = resolveLocalPathLinks(candidates.map((candidate) => candidate.text))
           .then((resolvedLinks) => {
-            const merged = [...links];
-            for (let index = 0; index < bareCandidates.length; index++) {
-              const resolved = resolvedLinks[index];
-              if (!resolved || !bareCandidates[index].text.startsWith(resolved.existingPrefix)) continue;
-              const match: LocalFilePathLinkMatch = {
-                text: resolved.existingPrefix,
-                index: bareCandidates[index].index,
-                endIndex: bareCandidates[index].index + resolved.existingPrefix.length,
-              };
+            const links: ILink[] = [];
+            for (const match of mergeResolvedPathLinkMatches(candidates, resolvedLinks)) {
               const link = createLocalPathLink(
                 term,
                 parts,
                 bufferLineNumber,
                 match,
                 onActivate,
-                activationUriForResolvedLocalPath(resolved.existingPrefix, resolved),
+                match.activationUri,
               );
               if (link) {
-                merged.push(link);
+                links.push(link);
               }
             }
-            merged.sort(sortLinksByRange);
-            const result = merged.length > 0 ? merged : undefined;
+            links.sort(sortLinksByRange);
+            const result = links.length > 0 ? links : undefined;
             rememberArtifactLinkCache(cacheKey, result);
             return result;
           })
@@ -422,7 +452,7 @@ export function registerArtifactLinkProvider(
             if (import.meta.env.DEV) {
               console.warn("[mycmux] failed to resolve local path links", error);
             }
-            const result = links.length > 0 ? links : undefined;
+            const result = fallbackLinks.length > 0 ? fallbackLinks : undefined;
             rememberArtifactLinkCache(cacheKey, result);
             return result;
           });
@@ -433,7 +463,7 @@ export function registerArtifactLinkProvider(
         });
         return;
       }
-      const result = links.length > 0 ? links : undefined;
+      const result = fallbackLinks.length > 0 ? fallbackLinks : undefined;
       rememberArtifactLinkCache(cacheKey, result);
       if (!disposed) callback(result);
     },

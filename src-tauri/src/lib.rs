@@ -1,3 +1,4 @@
+mod buddy;
 mod commands;
 mod db;
 mod events;
@@ -7,7 +8,7 @@ mod remote;
 mod session_retention;
 mod socket;
 pub mod terminal_config;
-mod usage;
+pub mod usage;
 
 use pty::manager::SessionManager;
 use std::sync::atomic::AtomicBool;
@@ -173,6 +174,7 @@ pub fn run() {
         "MYCMUX_RESUME",
         "MYCMUX_SESSION_ID",
         "MYCMUX_AGENT_KIND",
+        "MYCMUX_LAUNCH_TARGET",
         "MYCMUX_HANDOFF",
         "MYCMUX_HANDOFF_FROM",
         "MYCMUX_HANDOFF_PROMPT_FILE",
@@ -218,9 +220,11 @@ pub fn run() {
         })
         .manage(remote_control)
         .manage(remote_sessions)
+        .manage(usage::UsageOauthState::new())
         .invoke_handler(tauri::generate_handler![
             commands::terminal::create_session,
             commands::terminal::write_to_session,
+            commands::terminal::is_session_alive,
             commands::terminal::resize_session,
             commands::terminal::ack_frontend_data,
             commands::terminal::set_frontend_visible,
@@ -235,6 +239,20 @@ pub fn run() {
             commands::terminal::get_pty_metadata_snapshot,
             commands::terminal::is_directory,
             commands::terminal::get_launch_cwd,
+            commands::online::list_online_savepoints,
+            commands::online::list_trashed_online_savepoints,
+            commands::online::get_savepoint_storage_settings,
+            commands::online::join_savepoint_summary,
+            commands::online::join_savepoint_full,
+            commands::online::toggle_savepoint_pin,
+            commands::online::delete_online_savepoint,
+            commands::online::restore_online_savepoint,
+            commands::online::purge_online_savepoint,
+            commands::online::cleanup_online_savepoints,
+            commands::online::transfer::export_savepoint_transfer,
+            commands::online::transfer::import_savepoint_transfer,
+            commands::online_publish::publish_savepoint,
+            commands::online_publish::finalize_savepoint,
             commands::shell::get_default_shell,
             commands::session_mapping::read_agent_session_mappings,
             commands::crsm::crsm_list_sessions,
@@ -260,11 +278,37 @@ pub fn run() {
             commands::window::reveal_main_window,
             commands::window::quit_app,
             commands::usage::get_usage_summary,
+            commands::usage::start_oauth_login,
+            commands::usage::complete_oauth_login,
+            commands::usage::list_usage_accounts,
+            commands::usage::remove_usage_account,
+            commands::usage::set_usage_account_enabled,
+            commands::usage::get_multi_usage,
             remote::get_remote_info,
             remote::rotate_remote_token,
             remote::get_remote_bind_all,
             remote::set_remote_bind_all,
             socket::socket_response,
+            buddy::commands::codex_judge,
+            buddy::commands::codex_summarize,
+            buddy::commands::load_buddy_settings,
+            buddy::commands::save_buddy_settings,
+            buddy::commands::list_codex_pets,
+            buddy::commands::read_codex_pet_spritesheet,
+            buddy::commands::read_codex_pet_layout,
+            buddy::commands::load_buddy_environment,
+            buddy::commands::load_session_tail,
+            buddy::work_context::load_work_context,
+            buddy::commands::append_buddy_log,
+            buddy::commands::append_buddy_chat,
+            buddy::commands::load_recent_chat,
+            buddy::commands::load_chat_since,
+            buddy::commands::load_buddy_profile_facets,
+            buddy::commands::save_buddy_profile_facet,
+            buddy::commands::load_observation_state,
+            buddy::commands::save_observation_state,
+            buddy::commands::set_buddy_enabled,
+            buddy::commands::is_buddy_enabled,
         ])
         .setup(|#[allow(unused)] app| {
             use tauri::Manager;
@@ -326,6 +370,8 @@ pub fn run() {
                 remote_bind_all,
             );
 
+            buddy::init(&app_handle);
+
             // Kill all PTY sessions when the main window closes
             let mgr = state.session_manager.clone();
             if let Some(main_window) = app.get_webview_window("main") {
@@ -333,16 +379,18 @@ pub fn run() {
                     let _ = main_window.set_icon(icon);
                 }
 
-                // macOS: tao 0.34.x has an idle-CPU pathology with `decorations: false`
-                // where every is_zoomed() call triggers NSWindow setStyleMask: → full
-                // NSThemeFrame relayout (sample profiling shows 100% main-thread CPU).
-                // Force native decorations on macOS to bypass it; the visual cost is a
-                // standard title bar but the perf win is decisive.
-                // Also force-show the window because the frontend reveal flow does not
+                // macOS: the window is created decorated with `titleBarStyle: Overlay`
+                // + `hiddenTitle` (tauri.macos.conf.json), so the native traffic lights
+                // float over the in-app title bar instead of adding a second bar.
+                // Keeping decorations on also avoids the tao 0.34.x idle-CPU pathology
+                // where is_zoomed() on an undecorated window triggers NSWindow
+                // setStyleMask: → full NSThemeFrame relayout (100% main-thread CPU).
+                // Do NOT call set_decorations here — re-applying the style mask would
+                // clobber the overlay/full-size-content flags set at creation.
+                // Force-show the window because the frontend reveal flow does not
                 // currently fire on macOS (under investigation separately).
                 #[cfg(target_os = "macos")]
                 {
-                    let _ = main_window.set_decorations(true);
                     let _ = main_window.show();
                 }
 

@@ -1,10 +1,8 @@
 [package]
-name = "mycmux-lite"
-version = "0.11.0-lite.1"
-description = "Team-shared terminal workspace (lite edition of mycmux)"
+name = "mycmux"
+version = "0.19.2"
+description = "mycmux - AI agent terminal workspace"
 authors = ["miyafcos"]
-license = "GPL-3.0"
-repository = "https://github.com/miyafcos/mycmux-team"
 edition = "2021"
 
 [lib]
@@ -44,6 +42,8 @@ uuid = { version = "1", features = ["v4"] }
 rand = "0.8.5"
 hex = "0.4"
 base64 = "0.22"
+keyring = { version = "3", features = ["windows-native", "apple-native", "sync-secret-service"] }
+sha2 = "0.10"
 futures-util = "0.3"
 tauri-plugin-dialog = "2.7.0"
 tauri-plugin-updater = "2"

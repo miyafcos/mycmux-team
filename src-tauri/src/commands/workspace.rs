@@ -176,6 +176,7 @@ mod tests {
             claude_session_id: None,
             agent_kind: Some("codex".to_string()),
             agent_session_id: Some("missing-session".to_string()),
+            suppressed_agent_sessions: None,
             launch_env: Some(HashMap::from([(
                 "MYCMUX_RESUME".to_string(),
                 "missing-session".to_string(),
@@ -217,6 +218,7 @@ mod tests {
             claude_session_id: None,
             agent_kind: Some("codex".to_string()),
             agent_session_id: Some("tab-session".to_string()),
+            suppressed_agent_sessions: None,
             launch_env: Some(HashMap::from([(
                 "MYCMUX_RESUME".to_string(),
                 "tab-session".to_string(),

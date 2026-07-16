@@ -1,14 +1,21 @@
 import { useEffect, useRef, useState } from "react";
 import { UsagePopover } from "./UsagePopover";
 import { useUsageStore, type WindowStat } from "../../stores/usageStore";
-
-type MeterMode = "full" | "compact" | "hidden";
+import { USAGE_POLL_INTERVAL_MS } from "../../lib/constants";
+import {
+  orderAccounts,
+  resolveMeterMode,
+  type MeterMode,
+} from "../../lib/usageAccounts";
 
 export function UsageMeter() {
   const summary = useUsageStore((state) => state.summary);
   const lastError = useUsageStore((state) => state.lastError);
+  const accounts = useUsageStore((state) => state.accounts);
+  const accountsError = useUsageStore((state) => state.accountsError);
   const fetchUsage = useUsageStore((state) => state.fetch);
-  const mode = useMeterMode();
+  const hasAccountChips = orderAccounts(accounts).length > 0;
+  const mode = useMeterMode(hasAccountChips);
   const [isOpen, setIsOpen] = useState(false);
   const closeTimerRef = useRef<number | null>(null);
 
@@ -16,7 +23,7 @@ export function UsageMeter() {
     void fetchUsage();
     const interval = window.setInterval(() => {
       void fetchUsage();
-    }, 60_000);
+    }, USAGE_POLL_INTERVAL_MS);
 
     return () => window.clearInterval(interval);
   }, [fetchUsage]);
@@ -40,7 +47,18 @@ export function UsageMeter() {
     return null;
   }
 
-  const title = [summary.claude_error, summary.codex_error, lastError].filter(Boolean).join("\n") || "Usage";
+  const reauthAccounts = accounts.filter((account) => account.enabled && account.needs_reauth);
+  const hasNeedsReauth = reauthAccounts.length > 0;
+  const perAccountError = accounts.some((account) => account.error !== null);
+  const hasAnyError = Boolean(
+    lastError || summary.claude_error || summary.codex_error || accountsError || perAccountError,
+  );
+
+  const titleParts = [summary.claude_error, summary.codex_error, lastError, accountsError];
+  if (hasNeedsReauth) {
+    titleParts.push(`Needs re-auth: ${reauthAccounts.map((account) => account.label).join(", ")}`);
+  }
+  const title = titleParts.filter(Boolean).join("\n") || "Usage";
 
   const handleOpen = () => {
     if (closeTimerRef.current !== null) {
@@ -95,7 +113,11 @@ export function UsageMeter() {
         />
       )}
 
-      {(lastError || summary.claude_error || summary.codex_error) && (
+      {/* Per-account chips intentionally omitted from the always-visible bar:
+          the main summary meter is enough at a glance, and every account's
+          detail stays available in the hover popover. */}
+
+      {(hasAnyError || hasNeedsReauth) && (
         <span
           style={{
             position: "absolute",
@@ -104,12 +126,19 @@ export function UsageMeter() {
             width: 5,
             height: 5,
             borderRadius: "50%",
-            background: "var(--cmux-usage-danger)",
+            background: hasAnyError ? "var(--cmux-usage-danger)" : "var(--cmux-usage-warn)",
           }}
         />
       )}
 
-      {isOpen && <UsagePopover summary={summary} lastError={lastError} />}
+      {isOpen && (
+        <UsagePopover
+          summary={summary}
+          lastError={lastError}
+          accounts={accounts}
+          accountsError={accountsError}
+        />
+      )}
     </div>
   );
 }
@@ -192,38 +221,42 @@ function CellBar({ pct }: { pct: number }) {
   );
 }
 
-function useMeterMode(): MeterMode {
-  const [mode, setMode] = useState<MeterMode>(() => readMeterMode());
+function useMeterMode(hasAccountChips: boolean): MeterMode {
+  const [mode, setMode] = useState<MeterMode>(() => readMeterMode(hasAccountChips));
 
   useEffect(() => {
-    const update = () => setMode(readMeterMode());
+    const update = () => setMode(readMeterMode(hasAccountChips));
     const compactQuery = window.matchMedia("(max-width: 900px)");
     const hiddenQuery = window.matchMedia("(max-width: 700px)");
+    const wideCompactQuery = window.matchMedia("(max-width: 1100px)");
 
     compactQuery.addEventListener("change", update);
     hiddenQuery.addEventListener("change", update);
+    wideCompactQuery.addEventListener("change", update);
     update();
 
     return () => {
       compactQuery.removeEventListener("change", update);
       hiddenQuery.removeEventListener("change", update);
+      wideCompactQuery.removeEventListener("change", update);
     };
-  }, []);
+  }, [hasAccountChips]);
 
   return mode;
 }
 
-function readMeterMode(): MeterMode {
+function readMeterMode(hasAccountChips: boolean): MeterMode {
   if (typeof window === "undefined") {
     return "full";
   }
-  if (window.matchMedia("(max-width: 700px)").matches) {
-    return "hidden";
-  }
-  if (window.matchMedia("(max-width: 900px)").matches) {
-    return "compact";
-  }
-  return "full";
+  return resolveMeterMode(
+    {
+      max700: window.matchMedia("(max-width: 700px)").matches,
+      max900: window.matchMedia("(max-width: 900px)").matches,
+      max1100: window.matchMedia("(max-width: 1100px)").matches,
+    },
+    hasAccountChips,
+  );
 }
 
 function usageColor(pct: number): string {

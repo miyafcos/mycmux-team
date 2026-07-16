@@ -87,15 +87,21 @@ def test_terminal_search_notifications_and_settings_surfaces_remain_wired() -> N
             "useSettingsStore.getState().notificationsEnabled",
         ],
     )
+    # The flat SettingsMenu popover was replaced by the tabbed SettingsDialog
+    # (2026-07-13); the Remote and notification surfaces now live in tab files.
     assert_snippets(
-        "src/components/layout/SettingsMenu.tsx",
+        "src/components/settings/tabs/RemoteTab.tsx",
         [
-            "import { getRemoteInfo, rotateRemoteToken, type RemoteInfo } from \"../../lib/ipc\";",
             "const [remoteInfo, setRemoteInfo] = useState<RemoteInfo | null>(null);",
             "const nextInfo = await rotateRemoteToken();",
             "setRemoteMsg(`token を再生成しました。末尾: ${nextInfo.token_suffix}`);",
             "setRemoteInfo(nextInfo);",
             "remoteInfo.connected_clients.length === 0",
+        ],
+    )
+    assert_snippets(
+        "src/components/settings/tabs/NotificationsLayoutTab.tsx",
+        [
             "const notificationsEnabled = useSettingsStore((s) => s.notificationsEnabled);",
             "const setNotificationSoundEnabled = useSettingsStore((s) => s.setNotificationSoundEnabled);",
             "setNotificationSoundEnabled(e.target.checked)",
@@ -111,12 +117,129 @@ def test_terminal_search_notifications_and_settings_surfaces_remain_wired() -> N
     )
 
 
+def test_savepoints_and_remote_control_have_separate_settings_destinations() -> None:
+    assert_snippets(
+        "src/components/settings/SettingsDialog.tsx",
+        [
+            'import { SavepointsTab } from "./tabs/SavepointsTab";',
+            '| "savepoints"',
+            '{ id: "savepoints", label: onlineStrings.settingsTabLabel }',
+            'label: "接続"',
+            '{ id: "remote", label: settingsStrings.remoteTabLabel }',
+            "onOpenOnlinePanel: () => void;",
+            'activeTab === "savepoints"',
+            "onOpenOnlinePanel();",
+            'width: "clamp(148px, 23vw, 208px)"',
+        ],
+    )
+    assert_snippets(
+        "src/components/settings/tabs/SavepointsTab.tsx",
+        [
+            "getSavepointStorageSettings",
+            "onlineStrings.settingsStorageCurrentLabel",
+            "storageSettings?.legacy_directory",
+            "onlineStrings.settingsLegacyStorageLabel",
+            "onlineStrings.settingsLegacyStorageNote",
+            "onlineStrings.settingsStepCurrent",
+            "onlineStrings.settingsStepFinal",
+            "onlineStrings.settingsStepResume",
+            "onlineStrings.settingsSaveMethodsAriaLabel",
+            "onlineStrings.settingsSeparationNote",
+            "onlineStrings.openPanelLabel",
+            "<ul",
+            "<li",
+        ],
+    )
+    assert_snippets(
+        "src/components/online/onlineStrings.ts",
+        [
+            'settingsStorageHeading: "このPCの保存先"',
+            'settingsStorageCurrentLabel: "ローカル保存先"',
+            'settingsStorageReadyOnFirstSave: "最初の保存時に作成します"',
+            'settingsLegacyStorageLabel: "以前の保存先"',
+            "作業フォルダ全体のバックアップではありません",
+            "以前の共有先は変更・削除していません",
+        ],
+    )
+    assert_snippets(
+        "src/lib/ipc.ts",
+        [
+            "export interface SavepointStorageSettings",
+            "legacy_directory: string | null;",
+            'invoke("get_savepoint_storage_settings")',
+        ],
+    )
+    assert_snippets(
+        "src-tauri/src/lib.rs",
+        [
+            "commands::online::get_savepoint_storage_settings",
+            "commands::online::transfer::export_savepoint_transfer",
+            "commands::online::transfer::import_savepoint_transfer",
+        ],
+    )
+    assert_snippets(
+        "src-tauri/src/commands/online.rs",
+        [
+            "fn existing_directory_inside_mycmux_home",
+            'home.join(".mycmux").join("savepoints")',
+            "legacy_directory",
+        ],
+    )
+    assert "setSavepointStorageDirectory" not in read_repo_text(
+        "src/components/settings/tabs/SavepointsTab.tsx"
+    )
+    assert 'invoke("set_savepoint_storage_directory"' not in read_repo_text("src/lib/ipc.ts")
+    assert "commands::online::set_savepoint_storage_directory" not in read_repo_text(
+        "src-tauri/src/lib.rs"
+    )
+    assert_snippets(
+        "src-tauri/src/commands/online_publish.rs",
+        ["pub(crate) static PUBLISH_LOCK"],
+    )
+    assert_snippets(
+        "src/components/layout/TitleBar.tsx",
+        [
+            "title={onlineStrings.openPanelLabel}",
+            "aria-label={onlineStrings.openPanelLabel}",
+            "onOpenOnlinePanel={onOpenOnlinePanel}",
+        ],
+    )
+    assert_snippets(
+        "src/components/online/OnlinePanel.tsx",
+        [
+            "{onlineStrings.panelTitle}",
+            'view === "active" ? onlineStrings.panelDescription : onlineStrings.trashDescription',
+        ],
+    )
+    assert_snippets(
+        "src/components/settings/tabs/RemoteTab.tsx",
+        [
+            "{settingsStrings.remoteTabLabel}",
+            "{settingsStrings.remoteDescription}",
+        ],
+    )
+
+
 def test_file_preview_agent_usage_and_fault_surfaces_remain_wired() -> None:
+    assert_snippets(
+        "src/components/layout/PathJumper.tsx",
+        [
+            "const searchIndex = useFileExplorerStore((state) => state.searchIndex);",
+            "const searchIndexStatus = useFileExplorerStore((state) => state.searchIndexStatus);",
+            "collectLoadedEntries(activeRoot.path, entries)",
+        ],
+    )
+    assert_snippets(
+        "src/stores/fileExplorerStore.ts",
+        [
+            "const result = await walkTree(rootPath, [], 10, 50_000, false);",
+            "const result = await listDirectory(path);",
+            "searchIndexStatus: { ...state.searchIndexStatus, [rootPath]: \"ready\" },",
+        ],
+    )
     assert_snippets(
         "src/components/layout/FileExplorerSidebar.tsx",
         [
-            "previewArtifactUriForSessionV2(target.sessionId, path)",
-            "useWorkspaceLayoutStore\n      .getState()\n      .openOrReloadHtmlPreviewPane",
             "await openWithDefault(ctx.path);",
             "await revealInExplorer(ctx.path);",
             "if (pendingAction) return;",
@@ -137,11 +260,43 @@ def test_file_preview_agent_usage_and_fault_surfaces_remain_wired() -> None:
     assert_snippets(
         "src/components/workspace/TerminalPane.tsx",
         [
-            "previewArtifactUriForSessionV2(currentTab.sessionId, uri)",
             "const pendingPreviewUriRef = useRef<string | null>(null);",
             "if (pendingPreviewUriRef.current) return;",
             "reportOpenFailure(\"Preview failed and fallback open failed\", openError)",
             "{previewActionError && (",
+        ],
+    )
+    assert_snippets(
+        "src/lib/agents.ts",
+        [
+            "export const BUILT_IN_AGENTS: AgentDefinition[] = [",
+            'name: "Claude Code"',
+            'name: "Codex CLI"',
+            "export function getDefaultAgent(): AgentDefinition {",
+        ],
+    )
+    assert_snippets(
+        "src/components/layout/UsageMeter.tsx",
+        [
+            "import { UsagePopover } from \"./UsagePopover\";",
+            "export function UsageMeter() {",
+            "showCodex={Boolean(showCodex)}",
+        ],
+    )
+    assert_snippets(
+        "src/components/layout/UsagePopover.tsx",
+        [
+            '<UsageSection title="Claude Code">',
+            '<UsageSection title="Codex">',
+            "summary.codex_error",
+        ],
+    )
+    assert_snippets(
+        "src-tauri/src/commands/usage.rs",
+        [
+            "pub async fn get_usage_summary() -> Result<UsageSummary, String>",
+            "let (claude_result, codex_result) = tokio::join!(oauth_claude::fetch(), oauth_codex::fetch());",
+            "generated_at: chrono::Utc::now().to_rfc3339(),",
         ],
     )
     assert_snippets(

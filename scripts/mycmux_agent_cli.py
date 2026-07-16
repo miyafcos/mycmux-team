@@ -1,0 +1,298 @@
+#!/usr/bin/env python3
+"""Send one agent-oriented command to a running mycmux instance."""
+
+from __future__ import annotations
+
+import argparse
+from datetime import datetime, timezone
+import json
+import os
+from pathlib import Path
+import secrets
+import socket
+import sys
+from typing import Any, Sequence
+
+
+TIMEOUT_SECONDS = 35.0
+PORT_FILE = Path.home() / ".mycmux" / "mycmux.port"
+PROMPT_DIR = Path.home() / ".mycmux" / "agent-prompts"
+AGENT_TARGETS = ("claude", "codex", "claude-codex", "shell")
+AGENT_KINDS = ("claude", "codex", "claude-codex")
+
+
+def read_port(path: Path = PORT_FILE) -> int:
+    """Read and validate the loopback socket port."""
+    try:
+        value = path.read_text(encoding="utf-8").strip()
+        port = int(value)
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(f"cannot read mycmux port from {path}: {exc}") from exc
+    if not 1 <= port <= 65535:
+        raise RuntimeError(f"invalid mycmux port in {path}")
+    return port
+
+
+def send_request(cmd: str, args: dict[str, Any]) -> Any:
+    """Send one newline-delimited request and return its result."""
+    request = json.dumps({"cmd": cmd, "args": args}, ensure_ascii=False) + "\n"
+    port = read_port()
+    try:
+        with socket.create_connection(
+            ("127.0.0.1", port), timeout=TIMEOUT_SECONDS
+        ) as connection:
+            connection.settimeout(TIMEOUT_SECONDS)
+            connection.sendall(request.encode("utf-8"))
+            with connection.makefile("rb") as reader:
+                response_line = reader.readline()
+    except OSError as exc:
+        raise RuntimeError(f"mycmux socket request failed: {exc}") from exc
+
+    if not response_line:
+        raise RuntimeError("mycmux closed the socket without a response")
+    try:
+        response = json.loads(response_line.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("mycmux returned an invalid response") from exc
+    if not isinstance(response, dict):
+        raise RuntimeError("mycmux returned an invalid response object")
+    error = response.get("error")
+    if error is not None:
+        raise RuntimeError(str(error))
+    return response.get("result")
+
+
+def write_prompt(text: str) -> Path:
+    """Persist an inline prompt and return its absolute path."""
+    PROMPT_DIR.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    path = PROMPT_DIR / f"{timestamp}-{secrets.token_hex(3)}.md"
+    path.write_text(text, encoding="utf-8")
+    return path.resolve()
+
+
+def add_interactive_launch_arguments(
+    parser: argparse.ArgumentParser, *, target_required: bool
+) -> None:
+    parser.add_argument("--target", choices=AGENT_TARGETS, required=target_required)
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--prompt")
+    mode.add_argument("--prompt-file", type=Path)
+    mode.add_argument("--handoff-from-session")
+    mode.add_argument("--resume-session")
+    parser.add_argument("--handoff-from-kind", choices=AGENT_KINDS)
+
+
+def add_spawn_arguments(parser: argparse.ArgumentParser) -> None:
+    add_interactive_launch_arguments(parser, target_required=True)
+    parser.add_argument("--cwd")
+    parser.add_argument("--label")
+    parser.add_argument(
+        "--split",
+        action="store_true",
+        help="Force a new split pane instead of the default same-pane tab",
+    )
+    parser.add_argument("--workspace")
+    parser.add_argument("--anchor-pane")
+    parser.add_argument("--direction")
+    activation = parser.add_mutually_exclusive_group()
+    activation.add_argument("--activate", action="store_true")
+    activation.add_argument("--no-activate", action="store_true")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Control visible mycmux panes through the local socket.",
+        epilog="Safety: send types text into a live terminal; verify the session first.",
+    )
+    subparsers = parser.add_subparsers(dest="subcommand", required=True)
+
+    subparsers.add_parser("workspaces", help="List workspaces")
+
+    panes = subparsers.add_parser("panes", help="List panes")
+    panes.add_argument("--workspace")
+
+    spawn = subparsers.add_parser(
+        "spawn",
+        help=(
+            "Spawn an agent. Defaults to a background tab in the calling pane "
+            "(MYCMUX_PANE_SESSION_ID); use --activate to switch to it or --split "
+            "for a new split pane"
+        ),
+    )
+    add_spawn_arguments(spawn)
+
+    spawn_tab = subparsers.add_parser("spawn-tab", help="Spawn a tab in the owning pane")
+    spawn_tab.add_argument(
+        "--anchor-session", default=os.environ.get("MYCMUX_PANE_SESSION_ID")
+    )
+    spawn_tab.add_argument("--cwd", default=os.getcwd())
+    spawn_tab.add_argument("--label")
+    spawn_tab_activation = spawn_tab.add_mutually_exclusive_group()
+    spawn_tab_activation.add_argument("--activate", action="store_true")
+    spawn_tab_activation.add_argument("--no-activate", action="store_true")
+    add_interactive_launch_arguments(spawn_tab, target_required=False)
+    spawn_tab.add_argument("command_argv", nargs=argparse.REMAINDER)
+
+    close_tab = subparsers.add_parser("close-tab", help="Close a terminal tab")
+    close_tab.add_argument("--session", required=True)
+
+    send = subparsers.add_parser("send", help="Type text into a live terminal")
+    send.add_argument("--session", required=True)
+    send.add_argument("--text", required=True)
+    send.add_argument("--enter", action="store_true")
+
+    read = subparsers.add_parser("read", help="Read terminal buffer lines")
+    read.add_argument("--session", required=True)
+    read.add_argument("--lines", type=int)
+    return parser
+
+
+def optional_arg(args: dict[str, Any], name: str, value: Any) -> None:
+    if value is not None:
+        args[name] = value
+
+
+def add_launch_mode_request_args(
+    args: dict[str, Any], namespace: argparse.Namespace
+) -> None:
+    if namespace.handoff_from_kind and not namespace.handoff_from_session:
+        raise RuntimeError("--handoff-from-kind requires --handoff-from-session")
+
+    if namespace.prompt is not None:
+        args["promptFile"] = str(write_prompt(namespace.prompt))
+    elif namespace.prompt_file is not None:
+        args["promptFile"] = str(namespace.prompt_file.expanduser().resolve())
+    elif namespace.handoff_from_session is not None:
+        args["handoffFromSessionId"] = namespace.handoff_from_session
+        optional_arg(args, "handoffFromKind", namespace.handoff_from_kind)
+    elif namespace.resume_session is not None:
+        args["resumeSessionId"] = namespace.resume_session
+
+    if "promptFile" in args:
+        optional_arg(args, "fromSessionId", os.environ.get("MYCMUX_PANE_SESSION_ID"))
+
+
+def spawn_wants_split(namespace: argparse.Namespace) -> bool:
+    """Decide between a split pane and the default same-pane tab."""
+    if namespace.split:
+        return True
+    if namespace.workspace or namespace.anchor_pane or namespace.direction:
+        return True
+    return not os.environ.get("MYCMUX_PANE_SESSION_ID")
+
+
+def build_spawn_as_tab_request(namespace: argparse.Namespace) -> dict[str, Any]:
+    args: dict[str, Any] = {
+        "anchorSessionId": os.environ["MYCMUX_PANE_SESSION_ID"],
+        "cwd": namespace.cwd if namespace.cwd is not None else os.getcwd(),
+        "target": namespace.target,
+        "activate": namespace.activate,
+    }
+    optional_arg(args, "label", namespace.label)
+    add_launch_mode_request_args(args, namespace)
+    return args
+
+
+def build_spawn_request(namespace: argparse.Namespace) -> dict[str, Any]:
+    args: dict[str, Any] = {
+        "target": namespace.target,
+        "cwd": namespace.cwd if namespace.cwd is not None else os.getcwd(),
+        "activate": not namespace.no_activate,
+    }
+    optional_arg(args, "label", namespace.label)
+    optional_arg(args, "workspaceId", namespace.workspace)
+    optional_arg(args, "anchorPaneId", namespace.anchor_pane)
+    optional_arg(args, "direction", namespace.direction)
+    add_launch_mode_request_args(args, namespace)
+    return args
+
+
+def build_spawn_tab_request(namespace: argparse.Namespace) -> dict[str, Any]:
+    if not namespace.anchor_session:
+        raise RuntimeError(
+            "spawn-tab requires --anchor-session or MYCMUX_PANE_SESSION_ID"
+        )
+
+    command_argv = list(namespace.command_argv)
+    if command_argv and command_argv[0] == "--":
+        command_argv = command_argv[1:]
+    has_command = bool(command_argv)
+    has_target = namespace.target is not None
+    if has_command == has_target:
+        raise RuntimeError("spawn-tab requires exactly one of command argv or --target")
+
+    args: dict[str, Any] = {
+        "anchorSessionId": namespace.anchor_session,
+        "cwd": namespace.cwd,
+        "activate": namespace.activate,
+    }
+    optional_arg(args, "label", namespace.label)
+    if has_command:
+        if any(
+            value is not None
+            for value in (
+                namespace.prompt,
+                namespace.prompt_file,
+                namespace.handoff_from_session,
+                namespace.handoff_from_kind,
+                namespace.resume_session,
+            )
+        ):
+            raise RuntimeError("spawn-tab command argv cannot use interactive launch options")
+        args["commandArgv"] = command_argv
+    else:
+        args["target"] = namespace.target
+        add_launch_mode_request_args(args, namespace)
+    return args
+
+
+def request_for(namespace: argparse.Namespace) -> tuple[str, dict[str, Any]]:
+    if namespace.subcommand == "workspaces":
+        return "workspace.list", {}
+    if namespace.subcommand == "panes":
+        args: dict[str, Any] = {}
+        optional_arg(args, "workspaceId", namespace.workspace)
+        return "pane.list", args
+    if namespace.subcommand == "spawn":
+        if spawn_wants_split(namespace):
+            return "pane.spawn", build_spawn_request(namespace)
+        return "pane.spawn_tab", build_spawn_as_tab_request(namespace)
+    if namespace.subcommand == "spawn-tab":
+        return "pane.spawn_tab", build_spawn_tab_request(namespace)
+    if namespace.subcommand == "close-tab":
+        return "pane.close_tab", {"sessionId": namespace.session}
+    if namespace.subcommand == "send":
+        return "pane.send_text", {
+            "sessionId": namespace.session,
+            "text": namespace.text,
+            "enter": namespace.enter,
+        }
+    if namespace.subcommand == "read":
+        args = {"sessionId": namespace.session}
+        optional_arg(args, "lines", namespace.lines)
+        return "pane.read", args
+    raise RuntimeError(f"unsupported subcommand: {namespace.subcommand}")
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    # Windows consoles often default to cp932; pane content can contain any
+    # Unicode, so force UTF-8 output instead of crashing on print.
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8", errors="replace")
+    parser = build_parser()
+    namespace = parser.parse_args(argv)
+    try:
+        cmd, args = request_for(namespace)
+        result = send_request(cmd, args)
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    print(json.dumps(result, ensure_ascii=False))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

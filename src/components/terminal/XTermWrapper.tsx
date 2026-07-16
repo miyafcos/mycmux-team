@@ -4,16 +4,17 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { SearchAddon } from "@xterm/addon-search";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
+import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 import { open } from "@tauri-apps/plugin-shell";
 import {
   createSession,
   ackFrontendData,
+  getSessionScrollback,
   setFrontendVisible,
   resizeSession,
   onPtyExit,
   getTerminalConfig,
-  getSessionScrollback,
 } from "../../lib/ipc";
 import type { FrontendDataBatch } from "../../lib/ipc";
 import { usePaneMetadataStore, useUiStore } from "../../stores/workspaceStore";
@@ -21,7 +22,7 @@ import { useKeybindingStore } from "../../stores/keybindingStore";
 import { useSettingsStore } from "../../stores/settingsStore";
 import { DEFAULT_TERMINAL_FONT_FAMILY, useThemeStore } from "../../stores/themeStore";
 import { useToastStore } from "../../stores/toastStore";
-import type { ITheme } from "@xterm/xterm";
+import type { IDisposable, ITheme } from "@xterm/xterm";
 import { markStartupSessionSettled } from "../../lib/startupSessionGate";
 import {
   TERMINAL_BATCH_RETAINED_MAX_BYTES,
@@ -34,11 +35,14 @@ import {
   cacheOrDisposeOnUnmount,
   chunkedWrite,
   enqueueSessionWrite,
-  findLastSubarray,
+  getTerminalOutputDecoder,
   liveTerms,
+  planTerminalScrollbackRecovery,
   registerTerminalCacheEvictionCleanup,
   rememberTerminalRawTail,
   replaceTerminalRawTail,
+  resetTerminalOutputDecoder,
+  sliceBatchAfterScrollbackOffset,
   stashDeferredTerminalBatches,
   takeDeferredTerminalBatches,
   termCache,
@@ -66,6 +70,8 @@ import {
   stripTerminalMouseModeControlSequencesForSession,
 } from "./terminalMouseInputFilter";
 import { HTTP_LINK_REGEX, registerArtifactLinkProvider } from "./terminalLinkProvider";
+import { TerminalAckCoalescer } from "../../lib/terminalAckCoalescer";
+import { resolveWaitingTransition, scanForApproval } from "../../lib/approvalScan";
 
 export { evictTerminalCache, getTerminalWriteCounter } from "./terminalCache";
 export { allowInactiveTerminalPointerFocus } from "./terminalFocusHelpers";
@@ -92,6 +98,7 @@ function playNotificationSound() {
 }
 
 interface XTermWrapperProps {
+  workspaceId: string;
   sessionId: string;
   command: string;
   args?: string[];
@@ -106,44 +113,27 @@ interface XTermWrapperProps {
   onArtifactLinkClick?: (uri: string, screenPos: { x: number; y: number }) => void;
   cwd?: string;
   launchEnv?: Record<string, string>;
+  restoreFallbackSessionIds?: string[];
   initialReplay?: string[];
 }
 
-// Approval-prompt detection patterns. Pattern index is used as the
-// notification key so the same approval fires only once per occurrence.
-const APPROVAL_PATTERNS: readonly RegExp[] = [
-  /allow\s+.*\?\s*\(y\/n\)/i,                // 1: Claude Code tool approval
-  /^\s*\d+\.\s+.+\(.*\)/,                    // 2: AskUserQuestion numbered choice
-  /\(y\/n\)\s*$/i,                           // 3: generic (y/n)
-  /\[y\/N\]/i,                               // 4: shell-style [y/N]
-  /type your (answer|response)/i,            // 5: Claude AskUser open prompt
-  /press enter to (continue|confirm|submit|send|select)/i, // 6
-  /hit enter to /i,                          // 7
-  /\bapprove\b.*\?/i,                        // 8: generic approve?
-  /do you want to (proceed|continue)/i,      // 9: Claude Code "Do you want to proceed?"
-  /笶ｯ\s+\d+\.\s+/,                            // 10: Ink-style 笶ｯ 1. Yes selection cursor
-  /[笶ｯ笆ｶ笆ｸﾂｻ笳鞘莱]\s+(?:\d+\.|yes\b|no\b)/i,        // 11: cursor-glyph variants (incl. dot)
-  /enter\s+to\s+(?:select|confirm|send|submit|continue)/i, // 12: "Enter to select" hint
-  /esc\s+to\s+(?:cancel|exit|quit)/i,        // 13: "Esc to cancel" hint
-  /(?:\u2190|\u2192)/,                         // 14: arrow-nav hint (very specific to selection menus)
-  /ask user question/i,                      // 15: Claude Code AskUserQuestion box title
-  /would you like to (proceed|continue)/i,   // 16: plan-mode "Would you like to proceed?"
-  /shift\s*\+\s*tab to approve/i,            // 17: plan approval footer hint
-  /ctrl-g to edit/i,                         // 18: plan approval edit hint
-  /hook [A-Za-z]+ requires confirmation/i,   // 19: Claude Code Bash hook confirmation
-  /would you like to run the following command\?/i, // 20: Codex command approval
-  /^\s*(?:[窶ｺ>]\s*)?\d+\.\s+(?:yes|no)\b/i,   // 21: Codex numbered choices
-] as const;
+const terminalVisibilityUpdates = new Map<string, Promise<void>>();
 
-// Scan the last N lines of the terminal buffer for an approval pattern.
-// Returns the matched pattern index (1-based) or 0 if nothing matched.
-function scanForApproval(lines: string[]): number {
-  for (const line of lines) {
-    for (let i = 0; i < APPROVAL_PATTERNS.length; i++) {
-      if (APPROVAL_PATTERNS[i].test(line)) return i + 1;
-    }
-  }
-  return 0;
+function queueTerminalVisibilityUpdate(sessionId: string, visible: boolean): void {
+  const previous = terminalVisibilityUpdates.get(sessionId) ?? Promise.resolve();
+  const next = previous
+    .catch(() => {})
+    .then(() => setFrontendVisible(sessionId, visible));
+  terminalVisibilityUpdates.set(sessionId, next);
+  void next
+    .catch((error) => {
+      console.warn(`[XTermWrapper] Failed to update frontend visibility for ${sessionId}:`, error);
+    })
+    .finally(() => {
+      if (terminalVisibilityUpdates.get(sessionId) === next) {
+        terminalVisibilityUpdates.delete(sessionId);
+      }
+    });
 }
 
 const ANSI_KEYS: (keyof ITheme)[] = [
@@ -232,6 +222,99 @@ function diagStatsFor(sessionId: string): DiagWriteStats {
   return stats;
 }
 
+type WebglRendererState = {
+  addon: WebglAddon;
+  contextLossDisposable: IDisposable;
+};
+
+const webglRendererStates = new WeakMap<Terminal, WebglRendererState>();
+const webglRendererFailures = new WeakSet<Terminal>();
+
+function disposeWebglRenderer(
+  sessionId: string,
+  term: Terminal,
+  fallback: boolean,
+  contextLost = false,
+): void {
+  const rendererState = webglRendererStates.get(term);
+  if (rendererState) {
+    webglRendererStates.delete(term);
+    try {
+      rendererState.contextLossDisposable.dispose();
+    } catch {
+      // Continue disposing the addon so the DOM fallback still takes effect.
+    }
+    try {
+      rendererState.addon.dispose();
+    } catch (error) {
+      console.warn(`[XTermWrapper] Failed to dispose WebGL renderer for ${sessionId}:`, error);
+    }
+  }
+
+  const stats = diagStatsFor(sessionId);
+  stats.webgl = fallback ? "fallback" : "never";
+  if (contextLost) {
+    webglRendererFailures.add(term);
+    stats.webglLostAt = Date.now();
+  }
+}
+
+function enableWebglRenderer(sessionId: string, term: Terminal): void {
+  if (webglRendererFailures.has(term)) {
+    diagStatsFor(sessionId).webgl = "fallback";
+    return;
+  }
+  if (webglRendererStates.has(term)) {
+    diagStatsFor(sessionId).webgl = "on";
+    return;
+  }
+
+  let addon: WebglAddon | null = null;
+  let contextLossDisposable: IDisposable | null = null;
+  try {
+    addon = new WebglAddon();
+    contextLossDisposable = addon.onContextLoss(() => {
+      if (webglRendererStates.get(term)?.addon !== addon) return;
+      disposeWebglRenderer(sessionId, term, true, true);
+    });
+    webglRendererStates.set(term, { addon, contextLossDisposable });
+    term.loadAddon(addon);
+    if (webglRendererStates.get(term)?.addon === addon) {
+      diagStatsFor(sessionId).webgl = "on";
+    }
+  } catch (error) {
+    if (webglRendererStates.get(term)?.addon === addon) {
+      webglRendererStates.delete(term);
+    }
+    try {
+      contextLossDisposable?.dispose();
+    } catch {
+      // Continue with addon disposal and the DOM fallback.
+    }
+    try {
+      addon?.dispose();
+    } catch {
+      // The DOM fallback below remains usable even if partial addon cleanup fails.
+    }
+    webglRendererFailures.add(term);
+    diagStatsFor(sessionId).webgl = "fallback";
+    console.warn(`[XTermWrapper] WebGL unavailable for ${sessionId}; using DOM renderer:`, error);
+  }
+}
+
+function applyTerminalRenderer(
+  sessionId: string,
+  term: Terminal,
+  renderer: "webgl" | "dom",
+): void {
+  if (renderer === "webgl") {
+    enableWebglRenderer(sessionId, term);
+  } else {
+    webglRendererFailures.delete(term);
+    disposeWebglRenderer(sessionId, term, false);
+  }
+}
+
 // Flush per-session write stats once per second. Idle sessions are skipped.
 // Debug builds only 窶・`import.meta.env.DEV` is statically false in production,
 // so Vite drops this interval (and its per-second console spam) entirely.
@@ -251,8 +334,6 @@ if (typeof window !== "undefined" && import.meta.env.DEV) {
 }
 const DEFAULT_TERMINAL_LINE_HEIGHT = 1.1;
 
-type MarkdownTableAlignment = "left" | "center" | "right" | "default";
-
 function resolveTerminalFontFamily(base: string, isCodex: boolean, explicitFontFamily: boolean): string {
   void isCodex;
   void explicitFontFamily;
@@ -268,268 +349,6 @@ function resolveTerminalFontSize(base: number, isCodex: boolean, explicitFontSiz
 function resolveTerminalLineHeight(isCodex: boolean): number {
   void isCodex;
   return DEFAULT_TERMINAL_LINE_HEIGHT;
-}
-
-function splitMarkdownTableRow(line: string): string[] | null {
-  const trimmed = line.trim();
-  if (!trimmed.includes("|")) return null;
-  let body = trimmed;
-  if (body.startsWith("|")) body = body.slice(1);
-  if (body.endsWith("|")) body = body.slice(0, -1);
-
-  const cells: string[] = [];
-  let cell = "";
-  let escaped = false;
-  for (const char of body) {
-    if (escaped) {
-      cell += char;
-      escaped = false;
-      continue;
-    }
-    if (char === "\\") {
-      escaped = true;
-      continue;
-    }
-    if (char === "|") {
-      cells.push(cell.trim());
-      cell = "";
-      continue;
-    }
-    cell += char;
-  }
-  cells.push(cell.trim());
-  return cells.length >= 2 ? cells : null;
-}
-
-function parseMarkdownTableDivider(cells: string[]): MarkdownTableAlignment[] | null {
-  const alignments: MarkdownTableAlignment[] = [];
-  for (const cell of cells) {
-    const value = cell.trim();
-    if (!/^:?-{3,}:?$/.test(value)) return null;
-    if (value.startsWith(":") && value.endsWith(":")) {
-      alignments.push("center");
-    } else if (value.endsWith(":")) {
-      alignments.push("right");
-    } else if (value.startsWith(":")) {
-      alignments.push("left");
-    } else {
-      alignments.push("default");
-    }
-  }
-  return alignments;
-}
-
-function normalizeMarkdownTableRow(cells: string[], width: number): string[] {
-  return Array.from({ length: width }, (_, index) => cells[index]?.trim() ?? "");
-}
-
-const DISPLAY_WIDTH_CACHE_LIMIT = 8192;
-const DISPLAY_NORMALIZE_CACHE_LIMIT = 4096;
-const DISPLAY_CACHE_MAX_TEXT_LENGTH = 512;
-const NON_ASCII_RE = /[^\x00-\x7f]/;
-const displayWidthCache = new Map<string, number>();
-const displayNormalizeCache = new Map<string, string>();
-const charWidthCache = new Map<string, number>();
-
-function rememberLimited<T>(
-  cache: Map<string, T>,
-  key: string,
-  value: T,
-  limit: number,
-): T {
-  if (cache.size >= limit) {
-    cache.clear();
-  }
-  cache.set(key, value);
-  return value;
-}
-
-function normalizeDisplayWidthValue(value: string): string {
-  if (!NON_ASCII_RE.test(value)) return value;
-  if (value.length > DISPLAY_CACHE_MAX_TEXT_LENGTH) return value.normalize("NFC");
-
-  const cached = displayNormalizeCache.get(value);
-  if (cached !== undefined) return cached;
-
-  return rememberLimited(
-    displayNormalizeCache,
-    value,
-    value.normalize("NFC"),
-    DISPLAY_NORMALIZE_CACHE_LIMIT,
-  );
-}
-
-function isZeroWidthCodePoint(codePoint: number): boolean {
-  return (
-    (codePoint >= 0x0300 && codePoint <= 0x036f) ||
-    (codePoint >= 0x1ab0 && codePoint <= 0x1aff) ||
-    (codePoint >= 0x1dc0 && codePoint <= 0x1dff) ||
-    (codePoint >= 0x20d0 && codePoint <= 0x20ff) ||
-    (codePoint >= 0xfe00 && codePoint <= 0xfe0f)
-  );
-}
-
-function isWideCodePoint(codePoint: number): boolean {
-  return (
-    codePoint >= 0x1100 && (
-      codePoint <= 0x115f ||
-      codePoint === 0x2329 ||
-      codePoint === 0x232a ||
-      (codePoint >= 0x2e80 && codePoint <= 0xa4cf && codePoint !== 0x303f) ||
-      (codePoint >= 0xac00 && codePoint <= 0xd7a3) ||
-      (codePoint >= 0xf900 && codePoint <= 0xfaff) ||
-      (codePoint >= 0xfe10 && codePoint <= 0xfe19) ||
-      (codePoint >= 0xfe30 && codePoint <= 0xfe6f) ||
-      (codePoint >= 0xff00 && codePoint <= 0xff60) ||
-      (codePoint >= 0xffe0 && codePoint <= 0xffe6) ||
-      (codePoint >= 0x1f300 && codePoint <= 0x1faff) ||
-      (codePoint >= 0x20000 && codePoint <= 0x3fffd)
-    )
-  );
-}
-
-function displayWidthOfChar(char: string): number {
-  const cached = charWidthCache.get(char);
-  if (cached !== undefined) return cached;
-
-  const codePoint = char.codePointAt(0);
-  let width = 0;
-  if (
-    codePoint !== undefined &&
-    codePoint !== 0 &&
-    codePoint >= 0x20 &&
-    (codePoint < 0x7f || codePoint >= 0xa0) &&
-    !isZeroWidthCodePoint(codePoint)
-  ) {
-    width = isWideCodePoint(codePoint) ? 2 : 1;
-  }
-
-  return rememberLimited(charWidthCache, char, width, DISPLAY_WIDTH_CACHE_LIMIT);
-}
-
-function displayWidth(value: string): number {
-  if (value.length <= DISPLAY_CACHE_MAX_TEXT_LENGTH) {
-    const cached = displayWidthCache.get(value);
-    if (cached !== undefined) return cached;
-  }
-
-  let width = 0;
-  for (const char of normalizeDisplayWidthValue(value)) {
-    width += displayWidthOfChar(char);
-  }
-
-  if (value.length <= DISPLAY_CACHE_MAX_TEXT_LENGTH) {
-    return rememberLimited(displayWidthCache, value, width, DISPLAY_WIDTH_CACHE_LIMIT);
-  }
-  return width;
-}
-
-function clipMarkdownCell(value: string, maxWidth: number): string {
-  const normalized = value.replace(/\s+/g, " ").trim();
-  if (displayWidth(normalized) <= maxWidth) return normalized;
-
-  const suffix = "...";
-  const limit = Math.max(1, maxWidth - displayWidth(suffix));
-  let clipped = "";
-  let width = 0;
-  for (const char of normalized) {
-    const charWidth = displayWidth(char);
-    if (width + charWidth > limit) break;
-    clipped += char;
-    width += charWidth;
-  }
-  return `${clipped}${suffix}`;
-}
-
-function padMarkdownCell(value: string, width: number, alignment: MarkdownTableAlignment): string {
-  const valueWidth = displayWidth(value);
-  const left = alignment === "right"
-    ? Math.max(0, width - valueWidth)
-    : alignment === "center"
-      ? Math.floor(Math.max(0, width - valueWidth) / 2)
-      : 0;
-  const right = Math.max(0, width - valueWidth - left);
-  return `${" ".repeat(left)}${value}${" ".repeat(right)}`;
-}
-
-function renderMarkdownTableForTerminal(
-  header: string[],
-  alignments: MarkdownTableAlignment[],
-  rows: string[][],
-): string[] {
-  const width = header.length;
-  const clippedHeader = normalizeMarkdownTableRow(header, width).map((cell) => clipMarkdownCell(cell, 36));
-  const clippedRows = rows.map((row) => normalizeMarkdownTableRow(row, width).map((cell) => clipMarkdownCell(cell, 44)));
-  const columnWidths = clippedHeader.map((cell, index) => {
-    const rowWidth = clippedRows.reduce((max, row) => Math.max(max, displayWidth(row[index] ?? "")), 0);
-    return Math.max(3, Math.min(44, Math.max(displayWidth(cell), rowWidth)));
-  });
-
-  const renderRow = (cells: string[]): string => {
-    return `| ${cells.map((cell, index) => padMarkdownCell(cell, columnWidths[index], alignments[index] ?? "left")).join(" | ")} |`;
-  };
-
-  const divider = `| ${columnWidths
-    .map((cellWidth, index) => {
-      const dashes = "-".repeat(cellWidth);
-      const alignment = alignments[index] ?? "default";
-      if (alignment === "center") return `:${dashes.slice(1, -1) || "-"}:`;
-      if (alignment === "right") return `${dashes.slice(0, -1) || "-"}:`;
-      if (alignment === "left") return `:${dashes.slice(1) || "-"}`;
-      return dashes;
-    })
-    .join(" | ")} |`;
-
-  return [renderRow(clippedHeader), divider, ...clippedRows.map(renderRow)];
-}
-
-function formatMarkdownTablesForTerminal(text: string): string {
-  if (!text.includes("|") || /[\x1b\x9b]/.test(text)) return text;
-
-  const newline = text.includes("\r\n") ? "\r\n" : "\n";
-  const hasTrailingNewline = /(?:\r\n|\n|\r)$/.test(text);
-  const lines = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
-  if (hasTrailingNewline) {
-    lines.pop();
-  }
-
-  let changed = false;
-  const output: string[] = [];
-
-  for (let i = 0; i < lines.length; i++) {
-    const header = splitMarkdownTableRow(lines[i]);
-    const divider = i + 1 < lines.length ? splitMarkdownTableRow(lines[i + 1]) : null;
-    if (!header || !divider || header.length !== divider.length) {
-      output.push(lines[i]);
-      continue;
-    }
-
-    const alignments = parseMarkdownTableDivider(divider);
-    if (!alignments) {
-      output.push(lines[i]);
-      continue;
-    }
-
-    const rows: string[][] = [];
-    let nextIndex = i + 2;
-    for (; nextIndex < lines.length; nextIndex++) {
-      const row = splitMarkdownTableRow(lines[nextIndex]);
-      if (!row || row.length < 2) break;
-      rows.push(normalizeMarkdownTableRow(row, header.length));
-    }
-
-    if (rows.length === 0) {
-      output.push(lines[i]);
-      continue;
-    }
-
-    output.push(...renderMarkdownTableForTerminal(header, alignments, rows));
-    i = nextIndex - 1;
-    changed = true;
-  }
-
-  if (!changed) return text;
-  return `${output.join(newline)}${hasTrailingNewline ? newline : ""}`;
 }
 
 function cleanTerminalSnapshotLine(text: string): string {
@@ -738,6 +557,7 @@ function ensureConfigLoaded(): Promise<void> {
 }
 
 export default memo(function XTermWrapper({
+  workspaceId,
   sessionId,
   command,
   args = [],
@@ -752,6 +572,7 @@ export default memo(function XTermWrapper({
   onArtifactLinkClick,
   cwd,
   launchEnv,
+  restoreFallbackSessionIds,
   initialReplay,
 }: XTermWrapperProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -769,11 +590,11 @@ export default memo(function XTermWrapper({
   const storeFontSize = useThemeStore((s) => s.fontSize);
   const storeFontFamily = useThemeStore((s) => s.fontFamily);
   const storeBackground = useThemeStore((s) => s.themeTweaks.background);
+  const terminalRenderer = useSettingsStore((s) => s.terminalRenderer);
   const mediaBackgroundActive = storeBackground.mode === "preset" || (
     storeBackground.mode === "image" && storeBackground.imagePath.length > 0
   );
   const terminalOpacity = mediaBackgroundActive ? storeBackground.terminalOpacity : 1;
-
   // Single source of truth: is this tab the currently-focused terminal?
   // Used for scroll-to-bottom-on-activate.
   const isActivePane = useUiStore((s) => s.activePaneId === sessionId);
@@ -791,7 +612,12 @@ export default memo(function XTermWrapper({
 
   // Scroll to bottom when this tab becomes active only if the user was already at bottom.
   useEffect(() => {
-    if (isActivePane && termRef.current) {
+    const currentTerm = termRef.current;
+    if (currentTerm) {
+      // Keep inactive panes from continuously dirtying their renderer layer.
+      currentTerm.options.cursorBlink = isActivePane;
+    }
+    if (isActivePane && currentTerm) {
       setTimeout(() => {
         syncResizeRef.current(true);
         if (isAtBottomRef.current) {
@@ -800,6 +626,12 @@ export default memo(function XTermWrapper({
       }, 50);
     }
   }, [isActivePane]);
+
+  useEffect(() => {
+    if (termRef.current) {
+      applyTerminalRenderer(sessionId, termRef.current, terminalRenderer);
+    }
+  }, [sessionId, terminalRenderer]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -830,19 +662,29 @@ export default memo(function XTermWrapper({
     let startupSettled = false;
     let sessionStarted = false;
     let lastLogLine = "";
-    let lastScanSignature = "";
+    let approvalAbsentStreak = 0;
     let isImeComposing = false;
     let resizePendingDuringComposition = false;
     let formatsCodexOutput = startsAsCodex(command, args, agentId, agentKind, launchEnv);
     const forceWheelMouseReport = startsAsAgentTui(command, args, agentId, agentKind, launchEnv);
     let codexDetectionBuffer = "";
-    const outputDecoder = new TextDecoder();
+    let outputDecoder = getTerminalOutputDecoder(sessionId);
     const diagStats = diagStatsFor(sessionId);
     const pendingBatches: PendingFrontendBatch[] = takeDeferredTerminalBatches(sessionId);
     let writingBatch = false;
+    let currentPendingBatch: PendingFrontendBatch | null = null;
+    let frontendChannelReady = false;
+    let scrollbackSyncInFlight: Promise<boolean> | null = null;
+    let lastSynchronizedScrollbackEnd = 0;
+    let recoveryRedrawTimer: ReturnType<typeof setTimeout> | null = null;
+    let recoveryRedrawDelayResolve: (() => void) | null = null;
+    let recoveryRedrawInFlight: Promise<boolean> | null = null;
     let pendingDrainTimer: ReturnType<typeof setTimeout> | null = null;
     let frontendVisible: boolean | null = null;
     let terminalPaintedVisible: boolean | null = null;
+    const ackCoalescer = new TerminalAckCoalescer(({ generation, seq, bytes }) => (
+      ackFrontendData(sessionId, generation, seq, bytes)
+    ));
     let visibilityObserver: MutationObserver | null = null;
     let containerVisibilityMemo:
       | { sampledAt: number; displayed: boolean; painted: boolean; writableSize: boolean }
@@ -927,12 +769,7 @@ export default memo(function XTermWrapper({
     };
 
     const refreshVisibleRows = (currentTerm: Terminal): void => {
-      if (disposed || termDisposed || currentTerm.rows <= 0) return;
-      try {
-        currentTerm.clearTextureAtlas();
-      } catch {
-        // DOM renderer does not need the atlas.
-      }
+      if (disposed || termDisposed || currentTerm.rows <= 0 || !isContainerWritable()) return;
       try {
         currentTerm.refresh(0, Math.max(0, currentTerm.rows - 1));
       } catch {
@@ -944,6 +781,7 @@ export default memo(function XTermWrapper({
       currentTerm: Terminal,
       delays: readonly number[] = [0, 48, 160],
     ): void => {
+      clearRefreshTimers();
       for (const delay of delays) {
         const timer = setTimeout(() => {
           refreshTimers = refreshTimers.filter((entry) => entry !== timer);
@@ -954,7 +792,7 @@ export default memo(function XTermWrapper({
     };
 
     const fitAndSyncResize = (currentTerm: Terminal, currentFitAddon: FitAddon, force = false): void => {
-      if (disposed || termDisposed) return;
+      if (disposed || termDisposed || !isContainerWritable()) return;
       if (isImeComposing) {
         resizePendingDuringComposition = true;
         return;
@@ -1028,9 +866,18 @@ export default memo(function XTermWrapper({
       resizeObserver = new ResizeObserver(() => {
         invalidateContainerVisibilityMemo();
         refreshFrontendVisible();
-        scheduleResizeBurst(currentTerm, currentFitAddon);
-        if (pendingBatches.length > 0 && canWritePendingBatches()) {
-          void pumpTerminalWrites();
+        refreshTerminalPaintedVisible();
+        if (isContainerWritable()) {
+          scheduleResizeBurst(currentTerm, currentFitAddon);
+          if (
+            (pendingBatches.length > 0 || terminalScrollbackResyncNeeded.has(sessionId))
+            && canWritePendingBatches()
+          ) {
+            void pumpTerminalWrites();
+          }
+        } else {
+          clearResizeTimer();
+          clearRefreshTimers();
         }
       });
       resizeObserver.observe(container);
@@ -1087,6 +934,7 @@ export default memo(function XTermWrapper({
         }
 
         if (e.key === "Enter" && e.shiftKey && !e.ctrlKey && !e.altKey) {
+          if (!shouldAcceptTerminalInput(sessionId)) return false;
           const processTitle = usePaneMetadataStore.getState().metadata[sessionId]?.processTitle;
           enqueueSessionWrite(sessionId, getShiftEnterSequence(command, processTitle));
           return false;
@@ -1156,12 +1004,6 @@ export default memo(function XTermWrapper({
           lastNonEmpty = text;
         }
       }
-      if (scanLines.length === 0) return;
-
-      const signature = scanLines.slice(-3).join("\n");
-      const scanChanged = signature !== lastScanSignature;
-      lastScanSignature = signature;
-
       const isNoiseLine =
         /\d+k?\s+tokens/i.test(lastNonEmpty) ||
         /access \d+/i.test(lastNonEmpty) ||
@@ -1179,6 +1021,12 @@ export default memo(function XTermWrapper({
       }
 
       const approvalPatternId = scanForApproval(scanLines);
+      const prevStatus = usePaneMetadataStore.getState().metadata[sessionId]?.agentStatus;
+      const transition = resolveWaitingTransition(
+        { waiting: prevStatus === "waiting", absentStreak: approvalAbsentStreak },
+        approvalPatternId,
+      );
+      approvalAbsentStreak = transition.absentStreak;
       if (approvalPatternId > 0) {
         usePaneMetadataStore.getState().setMetadata(sessionId, {
           agentStatus: "waiting",
@@ -1190,8 +1038,7 @@ export default memo(function XTermWrapper({
             playNotificationSound();
           }
         }
-      } else if (scanChanged) {
-        const prevStatus = usePaneMetadataStore.getState().metadata[sessionId]?.agentStatus;
+      } else if (transition.clear) {
         if (prevStatus === "waiting") {
           usePaneMetadataStore.getState().clearAgentStatus(sessionId);
         }
@@ -1212,20 +1059,18 @@ export default memo(function XTermWrapper({
       return new Uint8Array(data);
     };
 
-    const ackBatch = async (batch: FrontendDataBatch): Promise<void> => {
-      try {
-        await ackFrontendData(sessionId, batch.generation, batch.seq, batch.bytes);
-      } catch (err) {
-        if (import.meta.env.DEV) {
-          console.warn("[mycmux-diag ipc] failed to ack frontend data:", err);
-        }
-      }
+    const ackBatch = (batch: FrontendDataBatch): void => {
+      ackCoalescer.enqueue({
+        generation: batch.generation,
+        seq: batch.seq,
+        bytes: batch.bytes,
+      });
     };
 
-    const ackPendingBatch = async (pending: PendingFrontendBatch): Promise<void> => {
+    const ackPendingBatch = (pending: PendingFrontendBatch): void => {
       if (pending.acked) return;
       pending.acked = true;
-      await ackBatch(pending.batch);
+      ackBatch(pending.batch);
     };
 
     const enforcePendingBatchCap = (): void => {
@@ -1237,7 +1082,7 @@ export default memo(function XTermWrapper({
       pendingBatches.splice(0, pendingBatches.length, ...trimmed.retained);
       terminalScrollbackResyncNeeded.add(sessionId);
       for (const pending of trimmed.dropped) {
-        void ackPendingBatch(pending);
+        ackPendingBatch(pending);
       }
     };
 
@@ -1251,7 +1096,7 @@ export default memo(function XTermWrapper({
         return containerVisibilityMemo;
       }
       let displayed = container.isConnected;
-      let painted = displayed;
+      let painted = displayed && document.visibilityState !== "hidden";
       let current: HTMLElement | null = container;
       while (current && (displayed || painted)) {
         const style = window.getComputedStyle(current);
@@ -1275,10 +1120,6 @@ export default memo(function XTermWrapper({
       return snapshot;
     };
 
-    const isContainerDisplayed = (): boolean => {
-      return readContainerVisibilitySnapshot().displayed;
-    };
-
     const isContainerPainted = (): boolean => {
       return readContainerVisibilitySnapshot().painted;
     };
@@ -1287,8 +1128,17 @@ export default memo(function XTermWrapper({
       return readContainerVisibilitySnapshot().writableSize;
     };
 
+    const isContainerWritable = (): boolean => {
+      return isContainerPainted() && hasWritableTerminalSize();
+    };
+
     const canWritePendingBatches = (): boolean => {
-      return Boolean(term && !termDisposed && isContainerPainted() && hasWritableTerminalSize());
+      return Boolean(
+        frontendChannelReady
+        && term
+        && !termDisposed
+        && isContainerWritable()
+      );
     };
 
     const schedulePendingWriteDrain = (delay = 80): void => {
@@ -1297,13 +1147,13 @@ export default memo(function XTermWrapper({
         pendingDrainTimer = null;
         refreshFrontendVisible();
         refreshTerminalPaintedVisible();
-        if (term && fitAddon && isContainerPainted()) {
+        if (term && fitAddon && isContainerWritable()) {
           fitAndSyncResize(term, fitAddon, true);
         }
-        if (pendingBatches.length === 0) return;
+        if (pendingBatches.length === 0 && !terminalScrollbackResyncNeeded.has(sessionId)) return;
         if (canWritePendingBatches()) {
           void pumpTerminalWrites();
-        } else if (isContainerPainted()) {
+        } else if (isContainerWritable()) {
           schedulePendingWriteDrain(120);
         }
       }, delay);
@@ -1313,12 +1163,17 @@ export default memo(function XTermWrapper({
       if (disposed || termDisposed || !term || !fitAddon) return;
       refreshFrontendVisible();
       refreshTerminalPaintedVisible();
+      if (!isContainerWritable()) {
+        clearResizeTimer();
+        clearRefreshTimers();
+        return;
+      }
       scheduleResizeBurst(term, fitAddon);
       scheduleFullRefresh(term, [0, 48, 160]);
-      if (pendingBatches.length > 0) {
+      if (pendingBatches.length > 0 || terminalScrollbackResyncNeeded.has(sessionId)) {
         if (canWritePendingBatches()) {
           void pumpTerminalWrites();
-        } else if (isContainerPainted()) {
+        } else if (isContainerWritable()) {
           schedulePendingWriteDrain();
         }
       }
@@ -1327,16 +1182,16 @@ export default memo(function XTermWrapper({
     const setFrontendVisibleIfChanged = (visible: boolean): boolean => {
       if (frontendVisible === visible) return false;
       frontendVisible = visible;
-      void setFrontendVisible(sessionId, visible);
+      queueTerminalVisibilityUpdate(sessionId, visible);
       return true;
     };
 
     const refreshFrontendVisible = (): boolean => {
-      return setFrontendVisibleIfChanged(Boolean(term && !termDisposed && isContainerDisplayed()));
+      return setFrontendVisibleIfChanged(Boolean(term && !termDisposed && isContainerWritable()));
     };
 
     const refreshTerminalPaintedVisible = (): boolean => {
-      const visible = Boolean(term && !termDisposed && isContainerPainted());
+      const visible = Boolean(term && !termDisposed && isContainerWritable());
       if (terminalPaintedVisible === visible) return false;
       terminalPaintedVisible = visible;
       return true;
@@ -1346,6 +1201,11 @@ export default memo(function XTermWrapper({
       invalidateContainerVisibilityMemo();
       const frontendChanged = refreshFrontendVisible();
       const paintChanged = refreshTerminalPaintedVisible();
+      if (frontendChanged && !frontendVisible) {
+        terminalScrollbackResyncNeeded.add(sessionId);
+        clearResizeTimer();
+        clearRefreshTimers();
+      }
       const shouldResync =
         (frontendVisible && (frontendChanged || pendingBatches.length > 0))
         || (terminalPaintedVisible && paintChanged);
@@ -1354,7 +1214,9 @@ export default memo(function XTermWrapper({
       }
     };
 
-    const handleTerminalLayoutSignal = (): void => {
+    const handleTerminalLayoutSignal = (event: Event): void => {
+      const detail = (event as CustomEvent<{ workspaceId?: string }>).detail;
+      if (detail?.workspaceId && detail.workspaceId !== workspaceId) return;
       invalidateContainerVisibilityMemo();
       refreshFrontendVisible();
       refreshTerminalPaintedVisible();
@@ -1390,7 +1252,10 @@ export default memo(function XTermWrapper({
       document.removeEventListener("visibilitychange", handleFrontendVisibilitySignal);
     };
 
-    const writeTerminalOutput = (output: string | Uint8Array): Promise<void> => {
+    const writeTerminalOutput = (
+      output: string | Uint8Array,
+      watchdogMs = 2000,
+    ): Promise<void> => {
       return new Promise((resolve) => {
         if (!term || termDisposed) {
           resolve();
@@ -1401,7 +1266,10 @@ export default memo(function XTermWrapper({
           if (settled) return;
           settled = true;
           resolve();
-        }, 30000);
+          // xterm has already accepted the bytes when write() returns. Resolve
+          // before the backend's 5s ACK timeout so a busy renderer cannot force
+          // an otherwise lossless stream into AutoConsume/resync mode.
+        }, watchdogMs);
         const finish = (): void => {
           if (settled) return;
           settled = true;
@@ -1416,47 +1284,171 @@ export default memo(function XTermWrapper({
       });
     };
 
-    const syncBackendScrollbackToTerminal = async (): Promise<void> => {
-      const knownTail = terminalRawTailBySession.get(sessionId);
-      let scrollbackData: number[];
+    const scheduleTuiRecoveryRedraw = (): Promise<boolean> => {
+      if (recoveryRedrawInFlight) return recoveryRedrawInFlight;
+      const request = (async (): Promise<boolean> => {
+        if (!forceWheelMouseReport || !term || termDisposed) return false;
+        await new Promise<void>((resolve) => {
+          recoveryRedrawDelayResolve = resolve;
+          recoveryRedrawTimer = setTimeout(() => {
+            recoveryRedrawTimer = null;
+            recoveryRedrawDelayResolve = null;
+            resolve();
+          }, 16);
+        });
+        if (disposed || termDisposed || !term) return false;
+        const cols = term.cols;
+        const rows = term.rows;
+        if (cols <= 0 || rows <= 0) return false;
+        const temporaryRows = rows > 2 ? rows - 1 : rows + 1;
+        try {
+          await resizeSession(sessionId, cols, temporaryRows);
+          await resizeSession(sessionId, cols, rows);
+          return true;
+        } catch (error) {
+          if (import.meta.env.DEV) {
+            console.warn("[mycmux-diag xterm] failed to request TUI redraw", error);
+          }
+          return false;
+        }
+      })().finally(() => {
+        if (recoveryRedrawInFlight === request) {
+          recoveryRedrawInFlight = null;
+        }
+      });
+      recoveryRedrawInFlight = request;
+      return request;
+    };
+
+    const hasMeaningfulTerminalScreen = (): boolean => {
+      if (!term || termDisposed) return false;
       try {
-        scrollbackData = await getSessionScrollback(sessionId);
+        const buffer = term.buffer.active;
+        const bottom = buffer.length - 1;
+        const top = Math.max(0, bottom - Math.max(1, term.rows));
+        for (let index = bottom; index >= top; index -= 1) {
+          if (buffer.getLine(index)?.translateToString(true).trim()) return true;
+        }
       } catch {
-        return;
+        return false;
       }
-      if (disposed || termDisposed || !term || scrollbackData.length === 0) return;
-      const scrollback = new Uint8Array(scrollbackData);
-      let replay = scrollback;
-      let resetBeforeReplay = knownTail === undefined;
-      if (knownTail && knownTail.byteLength > 0) {
-        const tailStart = findLastSubarray(scrollback, knownTail);
-        if (tailStart >= 0) {
-          replay = scrollback.slice(tailStart + knownTail.byteLength);
-        } else {
-          resetBeforeReplay = true;
+      return false;
+    };
+
+    const replayTruncatedTailIntoEmptyTerminal = async (scrollback: Uint8Array): Promise<void> => {
+      if (!term || termDisposed || hasMeaningfulTerminalScreen()) return;
+      const terminalElement = term.element;
+      const previousOpacity = terminalElement?.style.opacity ?? "";
+      if (terminalElement) terminalElement.style.opacity = "0";
+      try {
+        term.reset();
+        outputDecoder = resetTerminalOutputDecoder(sessionId);
+        const replayText = outputDecoder.decode(scrollback, { stream: true });
+        await writeTerminalOutput(stripTerminalMouseModeControlSequences(replayText), 8000);
+      } finally {
+        if (terminalElement) terminalElement.style.opacity = previousOpacity;
+      }
+    };
+
+    const performBackendScrollbackSync = async (): Promise<boolean> => {
+      if (!canWritePendingBatches()) return false;
+      const knownTail = terminalRawTailBySession.get(sessionId);
+      let scrollbackSnapshot: Awaited<ReturnType<typeof getSessionScrollback>>;
+      try {
+        scrollbackSnapshot = await getSessionScrollback(sessionId);
+      } catch {
+        return false;
+      }
+      // Visibility can change while the IPC request is in flight. Never reset
+      // or write into a terminal that became hidden in that interval.
+      invalidateContainerVisibilityMemo();
+      if (disposed || termDisposed || !term || !canWritePendingBatches()) return false;
+      const scrollback = new Uint8Array(scrollbackSnapshot.data);
+      if (scrollback.byteLength === 0) {
+        replaceTerminalRawTail(sessionId, scrollback);
+        lastSynchronizedScrollbackEnd = scrollbackSnapshot.endOffset;
+        return true;
+      }
+      const recoveryPlan = planTerminalScrollbackRecovery(
+        scrollback,
+        scrollbackSnapshot.startOffset,
+        scrollbackSnapshot.endOffset,
+        lastSynchronizedScrollbackEnd,
+        knownTail,
+      );
+      const replay = recoveryPlan.data;
+      if (replay.byteLength === 0) {
+        if (recoveryPlan.action === "skip-truncated") {
+          // This ring no longer contains the VT state that produced the
+          // current xterm buffer. Preserve the last coherent screen and ask
+          // Codex to repaint instead of replaying an arbitrary byte suffix.
+          outputDecoder = resetTerminalOutputDecoder(sessionId);
+          const redrawn = await scheduleTuiRecoveryRedraw();
+          await replayTruncatedTailIntoEmptyTerminal(scrollback);
+          if (!redrawn) {
+            // A truncated raw VT ring cannot reconstruct the old screen. Do
+            // not wedge the live stream by retrying the same 256 KB snapshot
+            // every 160 ms; advance to its end and resume new output.
+            if (import.meta.env.DEV) {
+              console.warn(`[mycmux-diag xterm:${sessionId}] truncated recovery redraw unavailable; resuming live output`);
+            }
+          }
+        }
+        replaceTerminalRawTail(sessionId, scrollback);
+        lastSynchronizedScrollbackEnd = scrollbackSnapshot.endOffset;
+        return true;
+      }
+      if (!canWritePendingBatches()) return false;
+      const terminalElement = term.element;
+      const previousOpacity = terminalElement?.style.opacity ?? "";
+      const replacesVisibleBuffer = recoveryPlan.action === "replace"
+        || recoveryPlan.action === "initial-replay";
+      if (replacesVisibleBuffer) {
+        if (terminalElement) terminalElement.style.opacity = "0";
+        term.reset();
+        outputDecoder = resetTerminalOutputDecoder(sessionId);
+      }
+      const replayText = outputDecoder.decode(replay, { stream: true });
+      try {
+        await writeTerminalOutput(
+          stripTerminalMouseModeControlSequences(replayText),
+          replacesVisibleBuffer ? 8000 : 2000,
+        );
+      } finally {
+        if (terminalElement && replacesVisibleBuffer) {
+          terminalElement.style.opacity = previousOpacity;
         }
       }
-      if (replay.byteLength === 0) {
-        replaceTerminalRawTail(sessionId, scrollback);
-        return;
-      }
-      if (resetBeforeReplay) {
-        term.reset();
-      }
-      await writeTerminalOutput(stripTerminalMouseModeControlSequences(new TextDecoder().decode(replay)));
-      if (disposed || termDisposed || !term) return;
       replaceTerminalRawTail(sessionId, scrollback);
+      lastSynchronizedScrollbackEnd = scrollbackSnapshot.endOffset;
+      if (disposed || termDisposed || !term) return false;
+      if (!canWritePendingBatches()) return false;
       markTerminalHasLiveOutput(sessionId);
       bumpTerminalWriteCounter(sessionId);
       scheduleFullRefresh(term, [0, 48, 160]);
       scheduleBackgroundScan();
+      return true;
+    };
+
+    const syncBackendScrollbackToTerminal = (): Promise<boolean> => {
+      if (scrollbackSyncInFlight) return scrollbackSyncInFlight;
+      const request = performBackendScrollbackSync().finally(() => {
+        if (scrollbackSyncInFlight === request) {
+          scrollbackSyncInFlight = null;
+        }
+      });
+      scrollbackSyncInFlight = request;
+      return request;
     };
 
     const syncDroppedBatchScrollbackIfNeeded = async (): Promise<void> => {
       if (!terminalScrollbackResyncNeeded.has(sessionId)) return;
       if (!canWritePendingBatches()) return;
-      await syncBackendScrollbackToTerminal();
       terminalScrollbackResyncNeeded.delete(sessionId);
+      const synchronized = await syncBackendScrollbackToTerminal();
+      if (!synchronized) {
+        terminalScrollbackResyncNeeded.add(sessionId);
+      }
     };
 
     async function pumpTerminalWrites(): Promise<void> {
@@ -1464,36 +1456,61 @@ export default memo(function XTermWrapper({
       writingBatch = true;
       try {
         await syncDroppedBatchScrollbackIfNeeded();
+        if (terminalScrollbackResyncNeeded.has(sessionId)) {
+          schedulePendingWriteDrain(160);
+          return;
+        }
         while (pendingBatches.length > 0) {
           const pending = pendingBatches.shift()!;
           const { batch } = pending;
           if (!term || termDisposed) {
-            await ackPendingBatch(pending);
+            ackPendingBatch(pending);
+            continue;
+          }
+          if (terminalScrollbackResyncNeeded.has(sessionId)) {
+            ackPendingBatch(pending);
             continue;
           }
           if (!canWritePendingBatches()) {
-            if (!isContainerDisplayed()) {
-              await ackPendingBatch(pending);
+            if (!isContainerWritable()) {
+              terminalScrollbackResyncNeeded.add(sessionId);
+              ackPendingBatch(pending);
               continue;
             }
-            void ackPendingBatch(pending);
+            ackPendingBatch(pending);
             pendingBatches.unshift(pending);
-            if (isContainerPainted()) {
+            if (isContainerWritable()) {
               schedulePendingWriteDrain();
             }
             break;
           }
           try {
+            currentPendingBatch = pending;
             clearPendingDrainTimer();
             settleStartupSession();
-            const chunk = batchDataToBytes(batch.data);
+            if (batch.scrollbackStart > lastSynchronizedScrollbackEnd) {
+              terminalScrollbackResyncNeeded.add(sessionId);
+              continue;
+            }
+            const fullChunk = batchDataToBytes(batch.data);
+            const chunk = sliceBatchAfterScrollbackOffset(
+              batch,
+              fullChunk,
+              lastSynchronizedScrollbackEnd,
+            );
+            if (chunk.byteLength === 0) {
+              continue;
+            }
             if (chunk.byteLength > 0 && !hasTerminalLiveOutput(sessionId)) {
               markTerminalHasLiveOutput(sessionId);
             }
             const decodedText = outputDecoder.decode(chunk, { stream: true });
             const displayText = stripTerminalMouseModeControlSequencesForSession(sessionId, decodedText);
-            const shouldFormatTables = updateCodexOutputDetection(displayText);
-            const output = shouldFormatTables ? formatMarkdownTablesForTerminal(displayText) : displayText;
+            // PTY output is a stateful byte stream. Never rewrite chunks for
+            // presentation: cursor movement and erase sequences were emitted
+            // against the original character widths.
+            updateCodexOutputDetection(displayText);
+            const output = displayText;
             if (import.meta.env.DEV) {
               diagStats.writes += 1;
               diagStats.bytes += new Blob([output]).size;
@@ -1501,20 +1518,31 @@ export default memo(function XTermWrapper({
             bumpTerminalWriteCounter(sessionId);
             await writeTerminalOutput(output);
             rememberTerminalRawTail(sessionId, chunk);
+            lastSynchronizedScrollbackEnd = Math.max(
+              lastSynchronizedScrollbackEnd,
+              batch.scrollbackEnd,
+            );
             if (!disposed && !termDisposed) {
-              scheduleFullRefresh(term, [0, 48]);
               scheduleBackgroundScan();
             }
           } finally {
-            await ackPendingBatch(pending);
+            ackPendingBatch(pending);
+            if (currentPendingBatch === pending) currentPendingBatch = null;
           }
         }
       } finally {
         writingBatch = false;
-        if (pendingBatches.length > 0 && canWritePendingBatches()) {
+        if (
+          pendingBatches.length > 0
+          && !terminalScrollbackResyncNeeded.has(sessionId)
+          && canWritePendingBatches()
+        ) {
           void pumpTerminalWrites();
-        } else if (pendingBatches.length > 0 && isContainerPainted()) {
-          schedulePendingWriteDrain();
+        } else if (
+          (pendingBatches.length > 0 || terminalScrollbackResyncNeeded.has(sessionId))
+          && isContainerWritable()
+        ) {
+          schedulePendingWriteDrain(160);
         }
       }
     }
@@ -1523,18 +1551,23 @@ export default memo(function XTermWrapper({
       if (batch.resync) {
         terminalScrollbackResyncNeeded.add(sessionId);
       }
-      if (!isContainerDisplayed()) {
-        void ackBatch(batch);
+      if (!isContainerWritable()) {
+        terminalScrollbackResyncNeeded.add(sessionId);
+        ackBatch(batch);
         return;
       }
       const pending: PendingFrontendBatch = { batch, acked: false };
       pendingBatches.push(pending);
       enforcePendingBatchCap();
+      if (scrollbackSyncInFlight) {
+        ackPendingBatch(pending);
+        return;
+      }
       if (canWritePendingBatches()) {
         void pumpTerminalWrites();
       } else {
-        void ackPendingBatch(pending);
-        if (isContainerPainted()) {
+        ackPendingBatch(pending);
+        if (isContainerWritable()) {
           schedulePendingWriteDrain();
         }
       }
@@ -1550,7 +1583,9 @@ export default memo(function XTermWrapper({
         enqueueFrontendBatch,
         cwd,
         launchEnv || undefined,
+        restoreFallbackSessionIds,
       );
+      frontendChannelReady = true;
       if (cols > 0 && rows > 0) {
         lastSentCols = cols;
         lastSentRows = rows;
@@ -1559,7 +1594,13 @@ export default memo(function XTermWrapper({
           console.error("[XTermWrapper] Failed to sync backend size after attach:", error);
         });
       }
+      // createSession replaces the backend channel and resets visibility to
+      // true. Force the actual CSS visibility back into the backend after the
+      // attach, even when the local boolean was already false before it.
+      frontendVisible = null;
       refreshFrontendVisible();
+      terminalScrollbackResyncNeeded.add(sessionId);
+      await syncDroppedBatchScrollbackIfNeeded();
       scheduleFrontendResync();
     };
 
@@ -1647,6 +1688,9 @@ export default memo(function XTermWrapper({
     const cacheCurrentTerminal = (): void => {
       const currentSearchAddon = searchAddonRef.current;
       if (term && term.element && fitAddon && currentSearchAddon) {
+        // A detached terminal keeps its parsed buffer, but a live WebGL addon
+        // would also retain a GPU context. Recreate the renderer on reattach.
+        disposeWebglRenderer(sessionId, term, false);
         const element = term.element;
         if (element.parentNode === container) {
           container.removeChild(element);
@@ -1660,6 +1704,7 @@ export default memo(function XTermWrapper({
           searchAddon: currentSearchAddon,
           xtermElement: element,
           unlistenExit: null,
+          scrollbackEnd: lastSynchronizedScrollbackEnd,
         });
         if (outcome === "disposed") {
           termDisposed = true;
@@ -1677,8 +1722,15 @@ export default memo(function XTermWrapper({
       clearResizeTimer();
       clearRefreshTimers();
       clearPendingDrainTimer();
+      if (recoveryRedrawTimer) {
+        clearTimeout(recoveryRedrawTimer);
+        recoveryRedrawTimer = null;
+      }
+      recoveryRedrawDelayResolve?.();
+      recoveryRedrawDelayResolve = null;
       clearScanTimers();
       stopVisibilityObserver();
+      frontendChannelReady = false;
       setFrontendVisibleIfChanged(false);
       resizeObserver?.disconnect();
       resizeObserver = null;
@@ -1712,13 +1764,18 @@ export default memo(function XTermWrapper({
         const carry = pendingBatches.splice(0, pendingBatches.length);
         if (termDisposed) {
           for (const pending of carry) {
-            void ackPendingBatch(pending);
+            ackPendingBatch(pending);
           }
         } else {
           stashDeferredTerminalBatches(sessionId, carry, (pending) => {
-            void ackPendingBatch(pending);
+            ackPendingBatch(pending);
           });
         }
+      }
+      if (currentPendingBatch) ackPendingBatch(currentPendingBatch);
+      ackCoalescer.flushAndDispose();
+      if (sessionStarted && !termDisposed && !terminalRawTailBySession.has(sessionId)) {
+        terminalRawTailBySession.set(sessionId, new Uint8Array());
       }
       searchAddonRef.current = null;
       termRef.current = null;
@@ -1735,13 +1792,16 @@ export default memo(function XTermWrapper({
       fitAddon = cached.fitAddon;
       sessionStarted = true;
       liveTerms.set(sessionId, cached.term);
+      applyTerminalRenderer(sessionId, cached.term, useSettingsStore.getState().terminalRenderer);
       termRef.current = cached.term;
       fitAddonRef.current = cached.fitAddon;
       searchAddonRef.current = cached.searchAddon;
+      lastSynchronizedScrollbackEnd = cached.scrollbackEnd ?? 0;
       cached.term.options.theme = withTerminalOpacity(storeTheme.terminal, terminalOpacity, mediaBackgroundActive);
       cached.term.options.minimumContrastRatio = minContrastFor(mediaBackgroundActive);
       cached.term.options.fontSize = storeFontSize;
       cached.term.options.fontFamily = storeFontFamily;
+      cached.term.options.cursorBlink = useUiStore.getState().activePaneId === sessionId;
       cached.term.options.altClickMovesCursor = false;
       registerScrollListener(cached.term);
       registerCompositionGuard(cached.term, cached.fitAddon);
@@ -1793,7 +1853,7 @@ export default memo(function XTermWrapper({
       const windowsBuildNumber = cfg?.windowsBuildNumber ?? undefined;
 
       term = new Terminal({
-        cursorBlink: true,
+        cursorBlink: useUiStore.getState().activePaneId === sessionId,
         cursorStyle: "block",
         fontSize: initFontSize,
         fontFamily: initFontFamily,
@@ -1847,14 +1907,12 @@ export default memo(function XTermWrapper({
 
       term.open(container!);
       invalidateContainerVisibilityMemo();
-      // Keep the DOM renderer for stability; WebGL texture atlases can corrupt
-      // text in transparent multi-pane layouts on some Windows/WebView2 setups.
-      diagStats.webgl = "never";
       liveTerms.set(sessionId, term);
+      applyTerminalRenderer(sessionId, term, useSettingsStore.getState().terminalRenderer);
       if (initialReplay && initialReplay.length > 0) {
         const replayText = initialReplay.join("\r\n");
-        const shouldFormatReplay = updateCodexOutputDetection(replayText);
-        const displayReplay = shouldFormatReplay ? formatMarkdownTablesForTerminal(replayText) : replayText;
+        updateCodexOutputDetection(replayText);
+        const displayReplay = replayText;
         const replayBytes = new Blob([displayReplay]).size;
         diagStats.replays += 1;
         diagStats.replayLines += initialReplay.length;

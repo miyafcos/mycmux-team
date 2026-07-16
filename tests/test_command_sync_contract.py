@@ -20,6 +20,8 @@ SYNC_ALLOWLIST = {
     "quit_app",
     "watch_root",
     "unwatch_root",
+    "set_buddy_enabled",
+    "is_buddy_enabled",
 }
 
 BLOCKING_BODY_TOKENS = [

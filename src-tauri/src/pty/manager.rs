@@ -2,11 +2,11 @@ use dashmap::DashMap;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
-use tauri::ipc::Channel;
+use tauri::ipc::{Channel, InvokeResponseBody};
 use tauri::AppHandle;
 
 use super::monitor::MetadataStore;
-use super::session::{FrontendDataBatch, PtySession};
+use super::session::{PtySession, ScrollbackSnapshot};
 
 pub struct SessionManager {
     sessions: DashMap<String, PtySession>,
@@ -53,7 +53,7 @@ impl SessionManager {
         args: &[String],
         cols: u16,
         rows: u16,
-        data_channel: Channel<FrontendDataBatch>,
+        data_channel: Channel<InvokeResponseBody>,
         app_handle: AppHandle,
         cwd: Option<String>,
         env: Option<std::collections::HashMap<String, String>>,
@@ -141,6 +141,14 @@ impl SessionManager {
         Ok(session.get_scrollback())
     }
 
+    pub fn get_scrollback_snapshot(&self, session_id: &str) -> Result<ScrollbackSnapshot, String> {
+        let session = self
+            .sessions
+            .get(session_id)
+            .ok_or_else(|| format!("Session not found: {session_id}"))?;
+        Ok(session.get_scrollback_snapshot())
+    }
+
     pub fn kill(&self, session_id: &str) -> Result<(), String> {
         if let Some((_, session)) = self.sessions.remove(session_id) {
             session.kill()?;
@@ -193,5 +201,24 @@ impl SessionManager {
         session_id: &str,
     ) -> Option<dashmap::mapref::one::Ref<'_, String, PtySession>> {
         self.sessions.get(session_id)
+    }
+
+    /// True if a PTY for this session_id is still tracked (i.e. `create()`
+    /// would take the reattach branch above instead of spawning a new
+    /// process). Uses the same lookup as the reattach check at the top of
+    /// `create()` so the two stay in lockstep.
+    pub fn is_alive(&self, session_id: &str) -> bool {
+        self.sessions.contains_key(session_id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_alive_is_false_for_unknown_session() {
+        let manager = SessionManager::new();
+        assert!(!manager.is_alive("nonexistent-session"));
     }
 }

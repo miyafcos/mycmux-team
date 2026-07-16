@@ -59,14 +59,76 @@ function ConvertTo-MycmuxProjectPath {
 }
 
 function Get-MycmuxClaudeProjectDir {
-  $cwd = ConvertTo-MycmuxProjectPath (Get-Location).Path
-  $mangled = $cwd -replace "[:\\/]", "-"
+  $mangled = Get-MycmuxClaudeProjectKey (Get-Location).Path
   return Join-Path (Join-Path $HOME ".claude\projects") $mangled
 }
 
+function Get-MycmuxClaudeProjectKey {
+  param([Parameter(Mandatory = $true)][string]$Path)
+  $normalized = (ConvertTo-MycmuxProjectPath $Path).TrimEnd([char[]]@('\', '/'))
+  return ([regex]::Replace($normalized, "[^A-Za-z0-9-]", "-")).TrimStart([char]'-')
+}
+
+function Find-MycmuxClaudeSessionFile {
+  param([Parameter(Mandatory = $true)][string]$SessionId)
+  if ($SessionId -notmatch "^[0-9a-fA-F-]{36}$") {
+    return $null
+  }
+  $root = Join-Path $HOME ".claude\projects"
+  if (-not (Test-Path -LiteralPath $root)) {
+    return $null
+  }
+  $candidates = @()
+  foreach ($projectDir in Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue) {
+    $candidate = Join-Path $projectDir.FullName "$SessionId.jsonl"
+    if (Test-Path -LiteralPath $candidate) {
+      $item = Get-Item -LiteralPath $candidate -ErrorAction SilentlyContinue
+      if ($null -ne $item) {
+        $candidates += $item
+      }
+    }
+  }
+  return $candidates |
+    Sort-Object -Property @{ Expression = "LastWriteTimeUtc"; Descending = $true }, @{ Expression = "Length"; Descending = $true } |
+    Select-Object -First 1 -ExpandProperty FullName
+}
+
+function Get-MycmuxClaudeSessionCwd {
+  param([Parameter(Mandatory = $true)][string]$SessionFile)
+  $projectKey = Split-Path -Leaf (Split-Path -Parent $SessionFile)
+  foreach ($line in [System.IO.File]::ReadLines($SessionFile, [System.Text.Encoding]::UTF8)) {
+    try {
+      $value = $line | ConvertFrom-Json -ErrorAction Stop
+      if ($value.cwd -and -not [string]::IsNullOrWhiteSpace([string]$value.cwd)) {
+        $candidate = [string]$value.cwd
+        if ((Get-MycmuxClaudeProjectKey $candidate) -eq $projectKey) {
+          return $candidate
+        }
+      }
+    } catch {
+      continue
+    }
+  }
+  return $null
+}
+
+function Set-MycmuxClaudeResumeLocation {
+  param([Parameter(Mandatory = $true)][string]$SessionId)
+  $sessionFile = Find-MycmuxClaudeSessionFile $SessionId
+  if ([string]::IsNullOrWhiteSpace($sessionFile)) {
+    return $false
+  }
+  $sessionCwd = Get-MycmuxClaudeSessionCwd $sessionFile
+  if ([string]::IsNullOrWhiteSpace($sessionCwd) -or -not (Test-Path -LiteralPath $sessionCwd -PathType Container)) {
+    return $false
+  }
+  Set-Location -LiteralPath $sessionCwd
+  $currentProjectDir = Get-MycmuxClaudeProjectDir
+  return Test-Path -LiteralPath (Join-Path $currentProjectDir "$SessionId.jsonl")
+}
+
 function Get-MycmuxClaudeCodexProjectDir {
-  $cwd = ConvertTo-MycmuxProjectPath (Get-Location).Path
-  $mangled = $cwd -replace "[:\\/]", "-"
+  $mangled = Get-MycmuxClaudeProjectKey (Get-Location).Path
   return Join-Path (Join-Path $HOME ".claude-codex\config\projects") $mangled
 }
 
@@ -243,12 +305,11 @@ function Invoke-MycmuxResumeFromEnv {
     }
     "claude*" {
       if ($env:MYCMUX_SESSION_ID) {
-        Write-MycmuxSessionMapping $env:MYCMUX_PANE_SESSION_ID "claude" $env:MYCMUX_SESSION_ID
-        $projectDir = Get-MycmuxClaudeProjectDir
-        if (Test-Path -LiteralPath (Join-Path $projectDir "$($env:MYCMUX_SESSION_ID).jsonl")) {
+        if (Set-MycmuxClaudeResumeLocation $env:MYCMUX_SESSION_ID) {
+          Write-MycmuxSessionMapping $env:MYCMUX_PANE_SESSION_ID "claude" $env:MYCMUX_SESSION_ID
           Invoke-MycmuxCommandArray -Command @("claude", "--dangerously-skip-permissions", "--permission-mode", "bypassPermissions", "--resume", $env:MYCMUX_SESSION_ID)
         } else {
-          Start-MycmuxSessionTracking $env:MYCMUX_PANE_SESSION_ID "claude" $projectDir
+          Start-MycmuxSessionTracking $env:MYCMUX_PANE_SESSION_ID "claude" (Get-MycmuxClaudeProjectDir)
           Invoke-MycmuxCommandArray -Command @("claude", "--dangerously-skip-permissions", "--permission-mode", "bypassPermissions", "--continue")
         }
       } else {
@@ -283,6 +344,8 @@ $Options = @(
   New-MycmuxOption "claude-codex (resume)" @("claude-codex", "--resume") "claude-codex"
   New-MycmuxOption "Codex (Fugu Ultra)" @("codex", "--no-alt-screen", "--profile", "fugu-ultra") "codex"
   New-MycmuxOption "claude-codex (Fugu)" @("claude-codex", "--backend", "fugu") "claude-codex"
+  # Gemini CLI was sunset for individual accounts on 2026-06-18; agy (Antigravity CLI) replaces it
+  New-MycmuxOption "Antigravity (agy)" @("agy") $null
   New-MycmuxOption "Custom..." @("__custom__") $null
 )
 
@@ -298,7 +361,10 @@ $LaunchTargets = @{
   "claude-codex-resume" = $Options[8]
   "codex-fugu-ultra" = $Options[9]
   "claude-codex-fugu" = $Options[10]
-  "custom" = $Options[11]
+  "agy" = $Options[11]
+  "gemini" = $Options[11]
+  "antigravity" = $Options[11]
+  "custom" = $Options[12]
 }
 
 function Invoke-MycmuxCustomCommand {

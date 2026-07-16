@@ -14,19 +14,23 @@ import TabBar from "./TabBar";
 import TitleBar from "./TitleBar";
 import WorkspaceView from "../workspace/WorkspaceView";
 import PaneDragOverlay from "../workspace/PaneDragOverlay";
+import SavepointDragOverlay from "../online/SavepointDragOverlay";
 import WorkspaceSetup from "../setup/WorkspaceSetup";
 import SocketListener from "./SocketListener";
 import KeybindingsModal from "./KeybindingsModal";
 import FileExplorerSidebar from "./FileExplorerSidebar";
 import CrsmPalette, { preloadCrsmSessions } from "../CommandPalette/CrsmPalette";
 import { useKeybindingStore } from "../../stores/keybindingStore";
+import { isEditableTarget } from "../../lib/keybindings";
 import { useThemeStore } from "../../stores/themeStore";
+import ErrorBoundary from "../common/ErrorBoundary";
 import { THEME_BACKGROUND_PRESETS } from "../../lib/themeTweaks";
 import { focusController } from "../../lib/focusController";
 import { confirm, message } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 import { beforePaneClose } from "../../lib/paneCloseLifecycle";
 import { popClosedPane } from "../../stores/closedPaneStore";
+import { useOnlineSavepointStore } from "../../stores/onlineSavepointStore";
 
 type Direction = "up" | "down" | "left" | "right";
 
@@ -271,6 +275,60 @@ function isPlainXtermInputEvent(event: KeyboardEvent): boolean {
   return event.key.length === 1 || TERMINAL_PLAIN_INPUT_KEYS.has(event.key);
 }
 
+// xterm's hidden helper textarea lives inside the ".xterm" container —
+// global shortcuts must keep firing while it's focused
+// (that's how terminal-focused Ctrl+P/Ctrl+B/etc. work today), but every
+// other native editable control (dialog inputs, selects, contentEditable)
+// should NOT let global shortcuts fire while the user is typing into it.
+function isXtermTarget(target: EventTarget | null): boolean {
+  return Boolean((target as HTMLElement | null)?.closest(".xterm"));
+}
+
+// Compact fallback for chrome-region ErrorBoundaries: a crash in a chrome
+// widget (title bar, sidebar, palette, etc.) should not unmount the whole
+// AppShell — and with it every live terminal pane, which already has its own
+// per-pane ErrorBoundary further down the tree. This renders a small inline
+// bar in the crashed region's place instead of taking down the app.
+function chromeCrashFallback(label: string) {
+  return (error: Error, reset: () => void) => (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        padding: "6px 10px",
+        fontSize: 11,
+        color: "var(--cmux-text-secondary, rgba(255,255,255,0.6))",
+        background: "var(--cmux-surface, #161616)",
+        border: "1px solid var(--cmux-border, rgba(255,255,255,0.1))",
+      }}
+    >
+      <span style={{ color: "var(--cmux-red)" }}>⚠</span>
+      <span style={{ color: "var(--cmux-text, #ededed)" }}>
+        {label}が予期せず停止しました
+      </span>
+      <span style={{ color: "var(--cmux-text-tertiary, rgba(255,255,255,0.3))" }}>
+        ({error.message})
+      </span>
+      <button
+        onClick={reset}
+        style={{
+          marginLeft: "auto",
+          padding: "3px 10px",
+          fontSize: 11,
+          background: "var(--cmux-bg, #0a0a0a)",
+          border: "1px solid var(--cmux-border, rgba(255,255,255,0.1))",
+          borderRadius: 4,
+          color: "var(--cmux-text, #ededed)",
+          cursor: "pointer",
+        }}
+      >
+        再試行
+      </button>
+    </div>
+  );
+}
+
 interface AppShellProps {
   uiVariant?: "default" | "cmux";
 }
@@ -291,8 +349,10 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
   const setZoomedPaneId = useUiStore((s) => s.setZoomedPaneId);
   const addPaneToWorkspace = useWorkspaceLayoutStore((s) => s.addPaneToWorkspace);
   const addPaneToWorkspaceWithOptions = useWorkspaceLayoutStore((s) => s.addPaneToWorkspaceWithOptions);
+  const openOnlinePanel = useWorkspaceLayoutStore((s) => s.openOnlinePanel);
   const removePaneFromWorkspace = useWorkspaceLayoutStore((s) => s.removePaneFromWorkspace);
   const addTabToPane = useWorkspaceLayoutStore((s) => s.addTabToPane);
+  const setActivePaneTab = useWorkspaceLayoutStore((s) => s.setActivePaneTab);
   const isKeybindingsOpen = useUiStore((s) => s.isKeybindingsOpen);
   const setIsKeybindingsOpen = useUiStore((s) => s.setIsKeybindingsOpen);
   const getActionsForEvent = useKeybindingStore((s) => s.getActionsForEvent);
@@ -301,6 +361,10 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
 
   useEffect(() => {
     preloadCrsmSessions();
+  }, []);
+
+  useEffect(() => {
+    void useOnlineSavepointStore.getState().refresh();
   }, []);
 
   // Self-heal stale zoom: if the zoomed pane was closed (or we switched to a
@@ -385,16 +449,8 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
     "--buddy-bubble-subtle": "color-mix(in srgb, var(--buddy-bubble-text) 8%, transparent)",
     "--buddy-bubble-hover": "color-mix(in srgb, var(--buddy-bubble-text) 18%, transparent)",
     "--buddy-bubble-scroll": "color-mix(in srgb, var(--buddy-bubble-text) 32%, transparent)",
-    "--cmux-chrome-text-shadow": isLightChrome
-      ? (mediaBackgroundActive
-          ? "0 0 3px rgba(255, 255, 255, 0.85), 0 0 6px rgba(255, 255, 255, 0.5)"
-          : "none")
-      : "0 0 2px rgba(255, 255, 255, 0.3), 0 0 3px rgba(0, 0, 0, 0.6), 0 1px 2px rgba(0, 0, 0, 0.45)",
-    "--cmux-chrome-icon-shadow": isLightChrome
-      ? (mediaBackgroundActive
-          ? "drop-shadow(0 0 1px rgba(255, 255, 255, 0.9)) drop-shadow(0 0 2px rgba(255, 255, 255, 0.6))"
-          : "none")
-      : "drop-shadow(0 0 1px rgba(255, 255, 255, 0.45)) drop-shadow(0 0 2px rgba(0, 0, 0, 0.6)) drop-shadow(0 1px 2px rgba(0, 0, 0, 0.4))",
+    "--cmux-chrome-text-shadow": "none",
+    "--cmux-chrome-icon-shadow": "none",
     colorScheme: currentTheme.colorScheme,
   } as React.CSSProperties;
 
@@ -408,22 +464,24 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
   // The Rust side already emits "remote-error"; without a listener the Settings →
   // Remote panel would just sit blank with no way to know it failed.
   useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    listen<string>("remote-error", (event) => {
+    // Capture the listen() promise itself (not its resolved value) so cleanup
+    // can chain onto it regardless of whether it resolves before or after
+    // unmount — assigning `unlisten` inside a separate .then() left a window
+    // where an unmount racing the IPC round-trip would never call it,
+    // leaking the backend listener. Mirrors App.tsx's unlistenMeta/
+    // unlistenWorkDone/unlistenDragDrop pattern.
+    const unlistenPromise = listen<string>("remote-error", (event) => {
       const text = typeof event.payload === "string" && event.payload.length > 0
         ? event.payload
         : "Remote terminal encountered an unknown error.";
       console.error("[remote-error]", text);
       void message(text, { title: "mycmux Remote Terminal", kind: "error" });
-    })
-      .then((fn) => {
-        unlisten = fn;
-      })
-      .catch((err) => {
-        console.error("Failed to subscribe to remote-error events", err);
-      });
+    });
+    unlistenPromise.catch((err) => {
+      console.error("Failed to subscribe to remote-error events", err);
+    });
     return () => {
-      unlisten?.();
+      unlistenPromise.then((fn) => fn()).catch(() => {});
     };
   }, []);
 
@@ -473,7 +531,11 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
 
       if (!shouldClose) return;
 
-      const ws = workspaces.find((w) => w.id === id);
+      // Re-read fresh from the store (not the `workspaces` closure) — panes
+      // can be added to this workspace while confirm() was awaited (drag-and-
+      // drop, pane.reopen, etc.), and the stale closure would skip their
+      // session kill / cache eviction while still removing the workspace.
+      const ws = useWorkspaceListStore.getState().workspaces.find((w) => w.id === id);
       if (ws) {
         for (const pane of ws.panes) {
           for (const tab of pane.tabs) {
@@ -503,6 +565,12 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
       // Skip if modals are open
       if (isKeybindingsOpen || isCrsmPaletteOpen) return;
       if (isPlainXtermInputEvent(e)) return;
+      // Skip if focus is on a native editable control (dialog inputs, selects,
+      // contentEditable) outside the terminal — e.g. typing into
+      // UsageAccountsDialog's OAuth-code field shouldn't pop CrsmPalette on
+      // Ctrl+P. xterm's own hidden helper textarea is exempted so terminal
+      // typing keeps triggering global shortcuts exactly as before.
+      if (isEditableTarget(e.target) && !isXtermTarget(e.target)) return;
 
       // Get all actions that match this keyboard event (BridgeSpace pattern)
       const actions = getActionsForEvent(e);
@@ -663,6 +731,24 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
           break;
         }
 
+        case "pane.tab.next":
+        case "pane.tab.prev": {
+          const activeWs = ws.find((w) => w.id === aid);
+          if (!activeWs) return;
+          const activePane = activeWs.panes.find((p) => paneMatchesSession(p, apid))
+            ?? activeWs.panes.find((p) => paneMatchesSession(p, lpid))
+            ?? activeWs.panes[0];
+          if (!activePane || activePane.tabs.length < 2) return;
+          const idx = activePane.tabs.findIndex((t) => t.id === activePane.activeTabId);
+          const delta = action === "pane.tab.next" ? 1 : -1;
+          const nextTab = activePane.tabs[(idx + delta + activePane.tabs.length) % activePane.tabs.length];
+          setActivePaneTab(activeWs.id, activePane.id, nextTab.id);
+          if (nextTab.type === undefined || nextTab.type === "terminal") {
+            focusController.request("keyboard", { sessionId: nextTab.sessionId, focus: true });
+          }
+          break;
+        }
+
         case "pane.focus.right":
         case "pane.focus.left":
         case "pane.focus.up":
@@ -728,6 +814,7 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
     addPaneToWorkspaceWithOptions,
     removePaneFromWorkspace,
     addTabToPane,
+    setActivePaneTab,
     setZoomedPaneId,
   ]);
 
@@ -750,11 +837,21 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
       <div style={{ position: "relative", zIndex: 1, width: "100%", height: "100%", display: "flex", flexDirection: "column" }}>
         <SocketListener />
         <div data-cmux-hide-during-pane-zoom={zoomedPaneId ? "true" : undefined}>
-          <TitleBar
-            uiVariant={uiVariant}
-            onNewWorkspace={handleNewWorkspace}
-            onOpenCrsmPalette={() => setIsCrsmPaletteOpen(true)}
-          />
+          <ErrorBoundary fallback={chromeCrashFallback("タイトルバー")}>
+            <TitleBar
+              uiVariant={uiVariant}
+              onNewWorkspace={handleNewWorkspace}
+              onOpenOnlinePanel={() => {
+                const workspace = workspaces.find((candidate) => candidate.id === activeId);
+                const sourcePane = workspace?.panes.find((pane) =>
+                  pane.sessionId === activePaneId
+                  || pane.tabs.some((tab) => tab.sessionId === activePaneId),
+                ) ?? workspace?.panes[0];
+                if (workspace && sourcePane) openOnlinePanel(workspace.id, sourcePane.id);
+              }}
+              onOpenCrsmPalette={() => setIsCrsmPaletteOpen(true)}
+            />
+          </ErrorBoundary>
         </div>
         <div
           style={{
@@ -775,11 +872,13 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
             transition: "width 0.2s ease",
           }}
         >
-          <TabBar
-            uiVariant={uiVariant}
-            onNewWorkspace={handleNewWorkspace}
-            onCloseWorkspace={handleCloseWorkspace}
-          />
+          <ErrorBoundary fallback={chromeCrashFallback("ワークスペース一覧")}>
+            <TabBar
+              uiVariant={uiVariant}
+              onNewWorkspace={handleNewWorkspace}
+              onCloseWorkspace={handleCloseWorkspace}
+            />
+          </ErrorBoundary>
         </div>
 
         {/* Main content — WorkspaceView always mounted to keep terminals alive */}
@@ -793,11 +892,20 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
         >
           <WorkspaceView />
           <PaneDragOverlay />
-          {isKeybindingsOpen && <KeybindingsModal onClose={() => setIsKeybindingsOpen(false)} />}
-          <CrsmPalette open={isCrsmPaletteOpen} onClose={() => setIsCrsmPaletteOpen(false)} />
+          <SavepointDragOverlay />
+          {isKeybindingsOpen && (
+            <ErrorBoundary fallback={chromeCrashFallback("キーボードショートカット設定")}>
+              <KeybindingsModal onClose={() => setIsKeybindingsOpen(false)} />
+            </ErrorBoundary>
+          )}
+          <ErrorBoundary fallback={chromeCrashFallback("コマンドパレット")}>
+            <CrsmPalette open={isCrsmPaletteOpen} onClose={() => setIsCrsmPaletteOpen(false)} />
+          </ErrorBoundary>
           {showSetup && (
             <div style={{ position: "absolute", inset: 0, zIndex: 50, background: "var(--cmux-bg)" }}>
-              <WorkspaceSetup onLaunch={handleLaunch} onCancel={handleCancelSetup} />
+              <ErrorBoundary fallback={chromeCrashFallback("ワークスペース作成画面")}>
+                <WorkspaceSetup onLaunch={handleLaunch} onCancel={handleCancelSetup} />
+              </ErrorBoundary>
             </div>
           )}
         </div>
@@ -813,7 +921,9 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
             borderLeft: rightSidebarCollapsed ? "none" : "1px solid var(--cmux-border)",
           }}
         >
-          <FileExplorerSidebar />
+          <ErrorBoundary fallback={chromeCrashFallback("ファイルエクスプローラー")}>
+            <FileExplorerSidebar />
+          </ErrorBoundary>
         </div>
         </div>
       </div>

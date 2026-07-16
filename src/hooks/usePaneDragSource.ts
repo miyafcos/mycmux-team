@@ -3,28 +3,28 @@ import {
   usePaneDragStore,
   type PaneDragItem,
   type PaneDropTarget,
-  type PaneDropZone,
 } from "../stores/paneDragStore";
 import { useWorkspaceLayoutStore } from "../stores/workspaceLayoutStore";
 import { useWorkspaceListStore } from "../stores/workspaceListStore";
+import { useSavepointDragStore } from "../stores/savepointDragStore";
 import { focusController } from "../lib/focusController";
+import { publishSavepoint } from "../lib/ipc";
+import {
+  isPaneDropTargetEligible,
+  prioritizePaneHandoffDropTarget,
+  resolvePaneDropZone,
+  resolvePaneHandoffEligibility,
+} from "../lib/paneHandoff";
+import {
+  commitSavepointPaste,
+  resolveLiveAgentTarget,
+} from "../lib/savepointHandoffRuntime";
+import { onlineStrings } from "../components/online/onlineStrings";
+import { usePaneMetadataStore } from "../stores/paneMetadataStore";
+import { useToastStore } from "../stores/toastStore";
 
 const DRAG_THRESHOLD_PX = 9;
 const WORKSPACE_HOVER_DELAY_MS = 350;
-
-function getDropZone(rect: DOMRect, x: number, y: number): PaneDropZone {
-  const horizontalBand = Math.min(72, Math.max(24, rect.width * 0.16));
-  const verticalBand = Math.min(60, Math.max(22, rect.height * 0.16));
-  const distances = [
-    { zone: "left" as const, value: x - rect.left, limit: horizontalBand },
-    { zone: "right" as const, value: rect.right - x, limit: horizontalBand },
-    { zone: "up" as const, value: y - rect.top, limit: verticalBand },
-    { zone: "down" as const, value: rect.bottom - y, limit: verticalBand },
-  ].sort((a, b) => a.value - b.value);
-
-  const nearest = distances[0];
-  return nearest.value <= nearest.limit ? nearest.zone : "center";
-}
 
 function getFocusSessionId(item: PaneDragItem): string | null {
   const workspace = useWorkspaceListStore.getState().getWorkspace(item.workspaceId);
@@ -35,6 +35,44 @@ function getFocusSessionId(item: PaneDragItem): string | null {
   }
   const activeTab = pane.tabs.find((tab) => tab.id === pane.activeTabId) ?? pane.tabs[0];
   return activeTab?.sessionId ?? pane.sessionId;
+}
+
+function resolvePaneHandoffContext(
+  item: PaneDragItem,
+  targetWorkspaceId: string,
+  targetPaneId: string,
+) {
+  const listState = useWorkspaceListStore.getState();
+  const sourceWorkspace = listState.getWorkspace(item.workspaceId);
+  const sourcePane = sourceWorkspace?.panes.find((pane) => pane.id === item.paneId);
+  const targetWorkspace = listState.getWorkspace(targetWorkspaceId);
+  const targetPane = targetWorkspace?.panes.find((pane) => pane.id === targetPaneId);
+  if (!sourcePane || !targetPane) return null;
+
+  const sourceTab = item.kind === "tab"
+    ? sourcePane.tabs.find((tab) => tab.id === item.tabId)
+    : (sourcePane.tabs.find((tab) => tab.id === sourcePane.activeTabId) ?? sourcePane.tabs[0]);
+  const targetTab = targetPane.tabs.find((tab) => tab.id === targetPane.activeTabId)
+    ?? targetPane.tabs[0];
+  const metadata = usePaneMetadataStore.getState().metadata;
+  const eligibility = resolvePaneHandoffEligibility(
+    {
+      workspaceId: item.workspaceId,
+      paneId: item.paneId,
+      tab: sourceTab,
+      metadata: sourceTab ? metadata[sourceTab.sessionId] : undefined,
+    },
+    {
+      workspaceId: targetWorkspaceId,
+      paneId: targetPaneId,
+      tab: targetTab,
+      metadata: targetTab ? metadata[targetTab.sessionId] : undefined,
+    },
+  );
+  if (!eligibility || !targetTab) return null;
+  const pasteTarget = resolveLiveAgentTarget(targetWorkspaceId, targetPaneId, targetTab.id);
+  if (!pasteTarget || pasteTarget.targetKind !== eligibility.targetAgentKind) return null;
+  return { eligibility, pasteTarget };
 }
 
 function canDropTarget(item: PaneDragItem, target: PaneDropTarget): boolean {
@@ -49,48 +87,101 @@ function canDropTarget(item: PaneDragItem, target: PaneDropTarget): boolean {
     return item.kind === "pane" || sourcePane.tabs.some((tab) => tab.id === item.tabId);
   }
 
+  if (target.kind === "handoff") {
+    return resolvePaneHandoffContext(item, target.workspaceId, target.paneId) !== null;
+  }
+
   const targetWorkspace = listState.getWorkspace(target.workspaceId);
   if (!targetWorkspace) return false;
 
   const targetPane = targetWorkspace.panes.find((pane) => pane.id === target.paneId);
   if (!sourcePane || !targetPane) return false;
 
-  if (item.kind === "pane") {
-    if (item.workspaceId === target.workspaceId && item.paneId === target.paneId) return false;
-    return true;
+  if (item.kind === "tab" && !sourcePane.tabs.some((tab) => tab.id === item.tabId)) {
+    return false;
   }
-
-  const sourceTab = sourcePane.tabs.find((tab) => tab.id === item.tabId);
-  if (!sourceTab) return false;
-
-  if (item.workspaceId === target.workspaceId && item.paneId === target.paneId) {
-    return target.zone === "center" || sourcePane.tabs.length > 1;
-  }
-
-  return true;
+  return isPaneDropTargetEligible(item, target, sourcePane.tabs.length);
 }
 
 function resolveDropTargetAtPoint(x: number, y: number, item: PaneDragItem): PaneDropTarget | null {
   const element = document.elementFromPoint(x, y);
+  const handoffElement = element?.closest<HTMLElement>("[data-dnd-handoff-target='true']");
+  const handoffPaneElement = handoffElement?.closest<HTMLElement>(
+    "[data-dnd-workspace-id][data-dnd-pane-id]",
+  );
+  const handoffWorkspaceId = handoffPaneElement?.getAttribute("data-dnd-workspace-id");
+  const handoffPaneId = handoffPaneElement?.getAttribute("data-dnd-pane-id");
+  const handoffTarget = handoffWorkspaceId && handoffPaneId
+    && resolvePaneHandoffContext(item, handoffWorkspaceId, handoffPaneId)
+    ? {
+        kind: "handoff" as const,
+        workspaceId: handoffWorkspaceId,
+        paneId: handoffPaneId,
+      }
+    : null;
+
+  let fallbackTarget: PaneDropTarget | null = null;
   if (element?.closest("[data-dnd-new-workspace-target='true']")) {
     const target = { kind: "new-workspace" as const };
-    return canDropTarget(item, target) ? target : null;
+    fallbackTarget = canDropTarget(item, target) ? target : null;
+    return prioritizePaneHandoffDropTarget(Boolean(handoffElement), handoffTarget, fallbackTarget);
   }
 
   const paneElement = element?.closest<HTMLElement>("[data-dnd-workspace-id][data-dnd-pane-id]");
-  if (!paneElement) return null;
+  if (!paneElement) {
+    return prioritizePaneHandoffDropTarget(Boolean(handoffElement), handoffTarget, null);
+  }
 
   const workspaceId = paneElement.getAttribute("data-dnd-workspace-id");
   const paneId = paneElement.getAttribute("data-dnd-pane-id");
-  if (!workspaceId || !paneId) return null;
+  if (!workspaceId || !paneId) {
+    return prioritizePaneHandoffDropTarget(Boolean(handoffElement), handoffTarget, null);
+  }
 
-  const zone = getDropZone(paneElement.getBoundingClientRect(), x, y);
+  const zone = resolvePaneDropZone(paneElement.getBoundingClientRect(), x, y);
   const target = { kind: "pane" as const, workspaceId, paneId, zone };
-  return canDropTarget(item, target) ? target : null;
+  fallbackTarget = canDropTarget(item, target) ? target : null;
+  return prioritizePaneHandoffDropTarget(Boolean(handoffElement), handoffTarget, fallbackTarget);
+}
+
+async function commitPaneHandoff(
+  item: PaneDragItem,
+  target: Extract<PaneDropTarget, { kind: "handoff" }>,
+): Promise<void> {
+  const context = resolvePaneHandoffContext(item, target.workspaceId, target.paneId);
+  if (!context) {
+    useToastStore.getState().pushToast(onlineStrings.dragDropTargetGone, "warning");
+    return;
+  }
+
+  const openingToastId = useToastStore
+    .getState()
+    .pushToast(onlineStrings.dragDropPreparingDraft, "info");
+  try {
+    const published = await publishSavepoint({
+      cwd: context.eligibility.sourceCwd,
+      agentKind: context.eligibility.publishAgentKind,
+      agentSessionId: context.eligibility.sourceAgentSessionId,
+    });
+    await commitSavepointPaste(published.bundle_dir, context.pasteTarget, openingToastId);
+  } catch (error) {
+    console.error("[mycmux] failed to publish pane handoff", error);
+    useToastStore.getState().pushToast(
+      onlineStrings.dragDropErrorPrefix + String(error),
+      "error",
+    );
+  } finally {
+    useToastStore.getState().dismissToast(openingToastId);
+  }
 }
 
 function commitPaneDragDrop(item: PaneDragItem, target: PaneDropTarget | null): void {
   if (!target || !canDropTarget(item, target)) return;
+
+  if (target.kind === "handoff") {
+    void commitPaneHandoff(item, target);
+    return;
+  }
 
   const focusSessionId = getFocusSessionId(item);
   const layoutStore = useWorkspaceLayoutStore.getState();
@@ -210,6 +301,7 @@ export function usePaneDragSource() {
 
   const beginPointerDrag = useCallback((event: ReactPointerEvent<HTMLElement>, item: PaneDragItem) => {
     if (event.button !== 0) return;
+    if (useSavepointDragStore.getState().item) return;
     const targetElement = event.target as HTMLElement;
     if (targetElement.closest("button, input, textarea, select, [data-dnd-ignore='true']")) return;
 
@@ -255,6 +347,10 @@ export function usePaneDragSource() {
       const dy = nativeEvent.clientY - startY;
       if (!dragging) {
         if (Math.hypot(dx, dy) < DRAG_THRESHOLD_PX) return;
+        if (useSavepointDragStore.getState().item) {
+          cleanup();
+          return;
+        }
         dragging = true;
         suppressClickRef.current = true;
         try {

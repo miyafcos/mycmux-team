@@ -1,14 +1,17 @@
 import { useState, useEffect, useRef } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useWorkspaceListStore, useUiStore, usePaneMetadataStore } from "../../stores/workspaceStore";
+import { IS_MAC } from "../../lib/keybindings";
 import NotificationPanel from "./NotificationPanel";
-import SettingsMenu from "./SettingsMenu";
+import SettingsDialog from "../settings/SettingsDialog";
 import { UsageMeter } from "./UsageMeter";
-import ThemeSwitcher from "../theme/ThemeSwitcher";
+import UsageAccountsDialog from "./UsageAccountsDialog";
+import { onlineStrings } from "../online/onlineStrings";
 
 interface TitleBarProps {
   uiVariant?: "default" | "cmux";
   onNewWorkspace?: () => void;
+  onOpenOnlinePanel: () => void;
   onOpenCrsmPalette?: () => void;
 }
 
@@ -29,6 +32,12 @@ const BellIcon = ({ count }: { count?: number }) => (
   </div>
 );
 
+const SavepointIcon = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M6 3h12a1 1 0 0 1 1 1v17l-7-4-7 4V4a1 1 0 0 1 1-1z"></path>
+  </svg>
+);
+
 const PlusIcon = () => (
   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <line x1="12" y1="5" x2="12" y2="19"></line>
@@ -43,7 +52,12 @@ const SettingsIcon = () => (
   </svg>
 );
 
-export default function TitleBar({ uiVariant = "default", onNewWorkspace, onOpenCrsmPalette }: TitleBarProps) {
+export default function TitleBar({
+  uiVariant = "default",
+  onNewWorkspace,
+  onOpenOnlinePanel,
+  onOpenCrsmPalette,
+}: TitleBarProps) {
   const activeWorkspace = useWorkspaceListStore((s) => s.getActiveWorkspace());
   const toggleSidebar = useUiStore((s) => s.toggleSidebar);
   const totalNotifications = usePaneMetadataStore((s) =>
@@ -54,7 +68,6 @@ export default function TitleBar({ uiVariant = "default", onNewWorkspace, onOpen
   );
   const [notificationPanelOpen, setNotificationPanelOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [isThemeSwitcherOpen, setIsThemeSwitcherOpen] = useState(false);
   const [isMaximized, setIsMaximized] = useState(false);
 
   useEffect(() => {
@@ -88,12 +101,6 @@ export default function TitleBar({ uiVariant = "default", onNewWorkspace, onOpen
   const handleMinimize = () => getCurrentWindow().minimize().catch(console.error);
   const handleMaximize = () => getCurrentWindow().toggleMaximize().catch(console.error);
   const handleClose = () => getCurrentWindow().close().catch(console.error);
-  const handleOpenThemes = () => setIsThemeSwitcherOpen(true);
-  const handleOpenKeybindings = () => useUiStore.getState().setIsKeybindingsOpen(true);
-  const handleThemeSwitcherKeybindings = () => {
-    setIsThemeSwitcherOpen(false);
-    useUiStore.getState().setIsKeybindingsOpen(true);
-  };
 
   const groupMinWidth = 100;
 
@@ -112,9 +119,11 @@ export default function TitleBar({ uiVariant = "default", onNewWorkspace, onOpen
       }}
     >
       {/* Left group: Sidebar, Bell, Plus */}
+      {/* macOS (titleBarStyle: Overlay): native traffic lights float over the
+          top-left corner, so inset the button group past them */}
       <div
         style={{
-          paddingLeft: 10,
+          paddingLeft: IS_MAC ? 78 : 10,
           display: "flex",
           alignItems: "center",
           gap: 2,
@@ -162,6 +171,27 @@ export default function TitleBar({ uiVariant = "default", onNewWorkspace, onOpen
           )}
         </div>
 
+        {onOpenOnlinePanel && (
+          <button
+            onClick={onOpenOnlinePanel}
+            title={onlineStrings.openPanelLabel}
+            aria-label={onlineStrings.openPanelLabel}
+            className="cmux-title-btn"
+            style={{
+              background: "none",
+              border: "none",
+              color: "var(--cmux-text-secondary)",
+              cursor: "pointer",
+              padding: "3px 6px",
+              display: "flex",
+              alignItems: "center",
+              borderRadius: 3,
+            }}
+          >
+            <SavepointIcon />
+          </button>
+        )}
+
         <button
           onClick={onNewWorkspace}
           title="New Workspace (Ctrl+Shift+N)"
@@ -187,16 +217,19 @@ export default function TitleBar({ uiVariant = "default", onNewWorkspace, onOpen
         onClick={handleTitleBarClick}
         style={{
           flex: 1,
+          minWidth: 0,
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
           gap: 8,
+          overflow: "hidden",
         }}
       >
         <span
           data-cmux-brand={uiVariant === "cmux" ? "true" : undefined}
           data-tauri-drag-region
           style={{
+            flexShrink: 0,
             fontSize: 11,
             fontWeight: 700,
             letterSpacing: "0.12em",
@@ -210,10 +243,14 @@ export default function TitleBar({ uiVariant = "default", onNewWorkspace, onOpen
 
         {activeWorkspace && (
           <>
-            <span data-tauri-drag-region style={{ color: "var(--cmux-text-secondary)", fontSize: 12 }}>·</span>
+            <span data-tauri-drag-region style={{ flexShrink: 0, color: "var(--cmux-text-secondary)", fontSize: 12 }}>·</span>
             <span
               data-tauri-drag-region
               style={{
+                minWidth: 0,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
                 fontSize: 12,
                 color: "var(--cmux-text-secondary)",
                 fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
@@ -247,86 +284,86 @@ export default function TitleBar({ uiVariant = "default", onNewWorkspace, onOpen
             <SettingsIcon />
           </button>
           {isSettingsOpen && (
-            <SettingsMenu
+            <SettingsDialog
               onClose={() => setIsSettingsOpen(false)}
-              onOpenThemes={handleOpenThemes}
-              onOpenKeybindings={handleOpenKeybindings}
               onOpenCrsmPalette={onOpenCrsmPalette}
+              onOpenOnlinePanel={onOpenOnlinePanel}
             />
           )}
         </div>
-        <button
-          onClick={handleMinimize}
-          title="Minimize"
-          className="cmux-title-btn"
-          style={{
-            background: "none",
-            border: "none",
-            color: "var(--cmux-text-secondary)",
-            cursor: "pointer",
-            padding: "3px 6px",
-            borderRadius: 3,
-            display: "flex",
-            alignItems: "center",
-          }}
-        >
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-            <line x1="5" y1="12" x2="19" y2="12"></line>
-          </svg>
-        </button>
-        <button
-          onClick={handleMaximize}
-          title={isMaximized ? "Restore" : "Maximize"}
-          className="cmux-title-btn"
-          style={{
-            background: "none",
-            border: "none",
-            color: "var(--cmux-text-secondary)",
-            cursor: "pointer",
-            padding: "3px 6px",
-            borderRadius: 3,
-            display: "flex",
-            alignItems: "center",
-          }}
-        >
-          {isMaximized ? (
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <rect x="5" y="7" width="12" height="12" rx="1"></rect>
-              <path d="M7 7V6a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1h-1"></path>
-            </svg>
-          ) : (
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <rect x="4" y="4" width="16" height="16" rx="1"></rect>
-            </svg>
-          )}
-        </button>
-        <button
-          onClick={handleClose}
-          title="Close"
-          style={{
-            background: "none",
-            border: "none",
-            color: "var(--cmux-text-secondary)",
-            cursor: "pointer",
-            padding: "3px 6px",
-            borderRadius: 3,
-            display: "flex",
-            alignItems: "center",
-          }}
-          className="cmux-title-btn cmux-title-btn--close"
-        >
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-            <line x1="18" y1="6" x2="6" y2="18"></line>
-            <line x1="6" y1="6" x2="18" y2="18"></line>
-          </svg>
-        </button>
+        {/* macOS provides native window controls (traffic lights) via the
+            Overlay title bar, so the custom ones are Windows/Linux only */}
+        {!IS_MAC && (
+          <>
+            <button
+              onClick={handleMinimize}
+              title="Minimize"
+              className="cmux-title-btn"
+              style={{
+                background: "none",
+                border: "none",
+                color: "var(--cmux-text-secondary)",
+                cursor: "pointer",
+                padding: "3px 6px",
+                borderRadius: 3,
+                display: "flex",
+                alignItems: "center",
+              }}
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                <line x1="5" y1="12" x2="19" y2="12"></line>
+              </svg>
+            </button>
+            <button
+              onClick={handleMaximize}
+              title={isMaximized ? "Restore" : "Maximize"}
+              className="cmux-title-btn"
+              style={{
+                background: "none",
+                border: "none",
+                color: "var(--cmux-text-secondary)",
+                cursor: "pointer",
+                padding: "3px 6px",
+                borderRadius: 3,
+                display: "flex",
+                alignItems: "center",
+              }}
+            >
+              {isMaximized ? (
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="5" y="7" width="12" height="12" rx="1"></rect>
+                  <path d="M7 7V6a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1h-1"></path>
+                </svg>
+              ) : (
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="4" y="4" width="16" height="16" rx="1"></rect>
+                </svg>
+              )}
+            </button>
+            <button
+              onClick={handleClose}
+              title="Close"
+              style={{
+                background: "none",
+                border: "none",
+                color: "var(--cmux-text-secondary)",
+                cursor: "pointer",
+                padding: "3px 6px",
+                borderRadius: 3,
+                display: "flex",
+                alignItems: "center",
+              }}
+              className="cmux-title-btn cmux-title-btn--close"
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                <line x1="18" y1="6" x2="6" y2="18"></line>
+                <line x1="6" y1="6" x2="18" y2="18"></line>
+              </svg>
+            </button>
+          </>
+        )}
       </div>
-      {isThemeSwitcherOpen && (
-        <ThemeSwitcher
-          onClose={() => setIsThemeSwitcherOpen(false)}
-          onOpenKeybindings={handleThemeSwitcherKeybindings}
-        />
-      )}
+      <UsageAccountsDialog />
     </div>
   );
 }

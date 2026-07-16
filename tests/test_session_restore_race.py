@@ -52,3 +52,10 @@ def test_first_launch_restore_mount_delay_is_two_tier() -> None:
     assert_contains(workspace_view, "const FIRST_RESTORE_MOUNT_DELAY_MS = 1200;", "src/components/workspace/WorkspaceView.tsx")
     assert_contains(workspace_view, "const [restoreMountDelayMs] = useState(getRestoreMountDelayMs);", "src/components/workspace/WorkspaceView.tsx")
     assert_contains(workspace_view, "}, restoreMountDelayMs);", "src/components/workspace/WorkspaceView.tsx")
+
+
+def test_app_does_not_start_forced_auto_update_loop() -> None:
+    app = read_repo_text("src/App.tsx")
+
+    assert "startForcedAutoUpdateLoop" not in app
+    assert "forcedAutoUpdater" not in app

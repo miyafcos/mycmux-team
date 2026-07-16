@@ -41,3 +41,4 @@ def test_create_session_uses_same_launch_cwd_for_validation_and_spawn() -> None:
     assert_contains(terminal, "let launch_cwd = resolve_launch_cwd(cwd.as_deref());", "src-tauri/src/commands/terminal.rs")
     assert_contains(terminal, "if let Some(trusted_cwd) = launch_cwd.as_deref() {", "src-tauri/src/commands/terminal.rs")
     assert_contains(terminal, "launch_cwd,\n        Some(env_map),", "src-tauri/src/commands/terminal.rs")
+

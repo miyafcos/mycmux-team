@@ -20,7 +20,10 @@ EXPECTED_LAUNCHER_OPTIONS = [
     "Resume (pick session)",
     "Codex (Fugu Ultra)",
     "claude-codex (Fugu)",
+    "Antigravity (agy)",
     "Custom...",
+    "Change directory (開発)...",
+    "Change directory (案件)...",
 ]
 
 EXPECTED_LAUNCHER_COMMANDS = [
@@ -36,7 +39,10 @@ EXPECTED_LAUNCHER_COMMANDS = [
     "__resume_pick__",
     "codex --no-alt-screen --profile fugu-ultra",
     "claude-codex --backend fugu",
+    "agy",
     "__custom__",
+    "__dir__",
+    "__dir_anken__",
 ]
 
 
@@ -155,13 +161,15 @@ def test_startup_restore_mounts_inactive_saved_session_workspaces() -> None:
         assert_contains(workspace_view, snippet, "src/components/workspace/WorkspaceView.tsx")
 
 
-def test_restore_targets_are_not_trimmed_by_lru_mount_cap() -> None:
+def test_restore_targets_are_pinned_only_until_startup_restore_completes() -> None:
     workspace_view = read_repo_text("src/components/workspace/WorkspaceView.tsx")
 
     for snippet in [
-        "const restoreIds = next.filter((id) => restoreWorkspaceIdSet.has(id));",
-        "const shellOnlyIds = next.filter((id) => !restoreWorkspaceIdSet.has(id));",
-        "const trimmed = [...shellOnlyIds.slice(-MAX_MOUNTED_WORKSPACES), ...restoreIds];",
+        "const [startupRestoreComplete, setStartupRestoreComplete] = useState(",
+        "? next.slice(-MAX_MOUNTED_WORKSPACES)",
+        "window.addEventListener(STARTUP_RESTORE_COMPLETE_EVENT, releaseStartupRestorePins);",
+        "setStartupRestoreMountedIds([]);",
+        "if (startupRestoreComplete) return;",
     ]:
         assert_contains(workspace_view, snippet, "src/components/workspace/WorkspaceView.tsx")
 

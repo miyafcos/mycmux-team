@@ -60,6 +60,14 @@ mod interprocess_data_lock {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SuppressedAgentSessionConfig {
+    pub agent_kind: String,
+    pub agent_session_id: String,
+    #[serde(default)]
+    pub claude_session_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PaneTabConfig {
     #[serde(default)]
     pub tab_id: Option<String>,
@@ -77,6 +85,8 @@ pub struct PaneTabConfig {
     pub agent_kind: Option<String>,
     #[serde(default)]
     pub agent_session_id: Option<String>,
+    #[serde(default)]
+    pub suppressed_agent_sessions: Option<Vec<SuppressedAgentSessionConfig>>,
     #[serde(default)]
     pub launch_env: Option<HashMap<String, String>>,
     #[serde(default)]
@@ -98,6 +108,8 @@ pub struct PaneConfig {
     pub agent_kind: Option<String>,
     #[serde(default)]
     pub agent_session_id: Option<String>,
+    #[serde(default)]
+    pub suppressed_agent_sessions: Option<Vec<SuppressedAgentSessionConfig>>,
     #[serde(default)]
     pub launch_env: Option<HashMap<String, String>>,
     #[serde(default)]
@@ -640,6 +652,46 @@ mod tests {
                 .and_then(|launch_env| launch_env.get("MYCMUX_RESUME"))
                 .map(String::as_str),
             Some("codex")
+        );
+        assert!(pane.suppressed_agent_sessions.is_none());
+    }
+
+    #[test]
+    fn suppressed_agent_sessions_round_trip() {
+        let pane: PaneConfig = serde_json::from_str(
+            r#"{"agent_id":"shell-starter","label":null,"cwd":null,"suppressed_agent_sessions":[{"agent_kind":"claude","agent_session_id":"parked-session","claude_session_id":"parked-session"}]}"#,
+        )
+        .unwrap();
+
+        let parked = &pane.suppressed_agent_sessions.as_ref().unwrap()[0];
+        assert_eq!(parked.agent_kind, "claude");
+        assert_eq!(parked.agent_session_id, "parked-session");
+        assert_eq!(parked.claude_session_id.as_deref(), Some("parked-session"));
+
+        let serialized = serde_json::to_string(&pane).unwrap();
+        let restored: PaneConfig = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(
+            restored
+                .suppressed_agent_sessions
+                .as_ref()
+                .and_then(|values| values.first())
+                .map(|value| value.agent_session_id.as_str()),
+            Some("parked-session")
+        );
+
+        let tab: PaneTabConfig = serde_json::from_str(
+            r#"{"agent_id":"shell-starter","suppressed_agent_sessions":[{"agent_kind":"codex","agent_session_id":"parked-tab"}]}"#,
+        )
+        .unwrap();
+        let serialized_tab = serde_json::to_string(&tab).unwrap();
+        let restored_tab: PaneTabConfig = serde_json::from_str(&serialized_tab).unwrap();
+        assert_eq!(
+            restored_tab
+                .suppressed_agent_sessions
+                .as_ref()
+                .and_then(|values| values.first())
+                .map(|value| value.agent_session_id.as_str()),
+            Some("parked-tab")
         );
     }
 }

@@ -5,9 +5,16 @@ import {
   getCurrentSessionEpoch,
   type FrontendDataBatch,
 } from "./attachEpoch";
+import {
+  decodeFrontendDataBatch,
+  decodeScrollbackSnapshot,
+} from "./terminalWire";
 import type { AgentSessionKind, ArtifactSourceKind, ThemeTweaks } from "../types";
+import type { OnlineSavepointEntry } from "../components/online/onlineSavepoints";
 
 export { getCurrentSessionEpoch, type FrontendDataBatch };
+
+const sessionCreateTails = new Map<string, Promise<void>>();
 
 export async function createSession(
   sessionId: string,
@@ -18,51 +25,68 @@ export async function createSession(
   onData: (batch: FrontendDataBatch) => void,
   cwd?: string,
   env?: Record<string, string>,
+  restoreFallbackSessionIds?: string[],
 ): Promise<void> {
-  let staleNoticeCount = 0;
-  const attach = beginSessionAttach(sessionId, {
-    deliver: onData,
-    ackStale: (batch, current) => {
-      ackFrontendData(sessionId, batch.generation, batch.seq, batch.bytes).catch((err) => {
-        if (import.meta.env.DEV) {
-          console.warn("[mycmux-diag ipc] failed to ack stale PTY batch:", err);
+  const previous = sessionCreateTails.get(sessionId) ?? Promise.resolve();
+  const operation = previous.catch(() => {}).then(async () => {
+    let staleNoticeCount = 0;
+    const attach = beginSessionAttach(sessionId, {
+      deliver: onData,
+      ackStale: (batch, current) => {
+        ackFrontendData(sessionId, batch.generation, batch.seq, batch.bytes).catch((err) => {
+          if (import.meta.env.DEV) {
+            console.warn("[mycmux-diag ipc] failed to ack stale PTY batch:", err);
+          }
+        });
+        // Throttle stale notices: log every 25 stale messages to avoid console flood.
+        // Debug builds only (Vite drops this in production).
+        if (import.meta.env.DEV && staleNoticeCount % 25 === 0) {
+          console.log(
+            `[mycmux-diag ipc] stale_message session=${sessionId} attached_epoch=${attach.epoch} current=${current ?? "none"} stale_count=${staleNoticeCount + 1} bytes_this_msg=${batch.bytes}`,
+          );
         }
-      });
-      // Throttle stale notices: log every 25 stale messages to avoid console flood.
-      // Debug builds only (Vite drops this in production).
-      if (import.meta.env.DEV && staleNoticeCount % 25 === 0) {
-        console.log(
-          `[mycmux-diag ipc] stale_message session=${sessionId} attached_epoch=${attach.epoch} current=${current ?? "none"} stale_count=${staleNoticeCount + 1} bytes_this_msg=${batch.bytes}`,
-        );
-      }
-      staleNoticeCount += 1;
-    },
-  });
-  const channel = new Channel<FrontendDataBatch>();
-
-  channel.onmessage = (batch) => {
-    attach.ingest(batch);
-  };
-  if (import.meta.env.DEV) {
-    console.log(
-      `[mycmux-diag ipc] create_session session=${sessionId} epoch=${attach.epoch} prev_messages=${attach.messageCount}`,
-    );
-  }
-  try {
-    await invoke("create_session", {
-      sessionId,
-      command,
-      args,
-      cols,
-      rows,
-      onData: channel,
-      cwd: cwd ?? null,
-      env: env ?? null,
+        staleNoticeCount += 1;
+      },
     });
-    attach.commit();
-  } catch (err) {
-    attach.fail();
-    throw err;
+    const channel = new Channel<ArrayBuffer>();
+
+    channel.onmessage = (frame) => {
+      try {
+        attach.ingest(decodeFrontendDataBatch(frame));
+      } catch (error) {
+        console.error("[mycmux] Invalid PTY data frame:", error);
+      }
+    };
+    if (import.meta.env.DEV) {
+      console.log(
+        `[mycmux-diag ipc] create_session session=${sessionId} epoch=${attach.epoch} prev_messages=${attach.messageCount}`,
+      );
+    }
+    try {
+      await invoke("create_session", {
+        sessionId,
+        command,
+        args,
+        cols,
+        rows,
+        onData: channel,
+        cwd: cwd ?? null,
+        env: env ?? null,
+        restoreFallbackSessionIds: restoreFallbackSessionIds ?? [],
+      });
+      attach.commit();
+    } catch (err) {
+      attach.fail();
+      throw err;
+    }
+  });
+  sessionCreateTails.set(sessionId, operation);
+  try {
+    await operation;
+  } finally {
+    if (sessionCreateTails.get(sessionId) === operation) {
+      sessionCreateTails.delete(sessionId);
+    }
   }
 }
 
@@ -79,8 +103,15 @@ export async function setFrontendVisible(sessionId: string, visible: boolean): P
   return invoke("set_frontend_visible", { sessionId, visible });
 }
 
-export async function getSessionScrollback(sessionId: string): Promise<number[]> {
-  return invoke("get_session_scrollback", { sessionId });
+export interface ScrollbackSnapshot {
+  data: Uint8Array;
+  startOffset: number;
+  endOffset: number;
+}
+
+export async function getSessionScrollback(sessionId: string): Promise<ScrollbackSnapshot> {
+  const frame = await invoke<ArrayBuffer>("get_session_scrollback", { sessionId });
+  return decodeScrollbackSnapshot(frame);
 }
 
 export async function writeToSession(
@@ -88,6 +119,10 @@ export async function writeToSession(
   data: string,
 ): Promise<void> {
   return invoke("write_to_session", { sessionId, data });
+}
+
+export async function isSessionAlive(sessionId: string): Promise<boolean> {
+  return invoke("is_session_alive", { sessionId });
 }
 
 export async function resizeSession(
@@ -230,6 +265,167 @@ export async function getLaunchCwd(): Promise<string | null> {
   return invoke("get_launch_cwd");
 }
 
+export interface JoinSavepointSummaryResult {
+  resolved_cwd: string;
+  handoff_path: string;
+  cwd_missing: boolean;
+  source_checkpoint_id?: string | null;
+}
+
+export interface JoinSavepointFullResult {
+  resolved_cwd: string;
+  cwd_missing: boolean;
+  resume_session_id: string | null;
+  command_argv: string[];
+  agent_kind: "claude" | "codex";
+  source_checkpoint_id?: string | null;
+}
+
+export interface ToggleSavepointPinResult {
+  pinned: boolean;
+}
+
+export interface CleanupOnlineSavepointsResult {
+  online_dir: string;
+  machine: string;
+  deleted_count: number;
+  expired_count: number;
+  stale_count: number;
+  kept_count: number;
+}
+
+export interface SavepointStorageSettings {
+  directory: string | null;
+  directory_exists: boolean;
+  legacy_directory: string | null;
+}
+
+export interface ExportSavepointTransferResult {
+  path: string;
+  transfer_id: string;
+}
+
+export interface ImportSavepointTransferResult {
+  bundle_dir: string;
+  transfer_id: string;
+  summary_line: string;
+  imported: boolean;
+}
+
+export async function listOnlineSavepoints(): Promise<OnlineSavepointEntry[]> {
+  return invoke("list_online_savepoints");
+}
+
+export async function listTrashedOnlineSavepoints(): Promise<OnlineSavepointEntry[]> {
+  return invoke("list_trashed_online_savepoints");
+}
+
+export async function getSavepointStorageSettings(): Promise<SavepointStorageSettings> {
+  return invoke("get_savepoint_storage_settings");
+}
+
+export async function exportSavepointTransfer(
+  bundleDir: string,
+  destinationPath: string,
+): Promise<ExportSavepointTransferResult> {
+  return invoke("export_savepoint_transfer", { bundleDir, destinationPath });
+}
+
+export async function importSavepointTransfer(
+  sourcePath: string,
+): Promise<ImportSavepointTransferResult> {
+  return invoke("import_savepoint_transfer", { sourcePath });
+}
+
+export async function joinSavepointSummary(bundleDir: string): Promise<JoinSavepointSummaryResult> {
+  return invoke("join_savepoint_summary", { bundleDir });
+}
+
+export async function joinSavepointFull(bundleDir: string): Promise<JoinSavepointFullResult> {
+  return invoke("join_savepoint_full", { bundleDir });
+}
+
+export async function toggleSavepointPin(bundleDir: string): Promise<ToggleSavepointPinResult> {
+  return invoke("toggle_savepoint_pin", { bundleDir });
+}
+
+export async function cleanupOnlineSavepoints(): Promise<CleanupOnlineSavepointsResult> {
+  return invoke("cleanup_online_savepoints");
+}
+
+export interface PublishSavepointResult {
+  bundle_dir: string;
+  session_id: string;
+  summary_line: string;
+  files_written: number;
+  files_read: number;
+  warnings: string[];
+  updated: boolean;
+  record_kind: "current" | "final";
+  checkpoint_id: string;
+  parent_checkpoint_id?: string | null;
+}
+
+export type SavepointCloseReason =
+  | "manual"
+  | "tab_closed"
+  | "pane_closed"
+  | "workspace_closed"
+  | "app_closed";
+
+export type SavepointPublishStage = "digest" | "handoff" | "bundle" | "register" | "done";
+
+export interface SavepointPublishProgress {
+  stage: SavepointPublishStage;
+  agent_kind: "claude" | "codex";
+  agent_session_id: string;
+  claude_session_id?: string | null;
+}
+
+export function onSavepointPublishProgress(
+  callback: (progress: SavepointPublishProgress) => void,
+): Promise<UnlistenFn> {
+  return listen<SavepointPublishProgress>("mycmux:savepoint-publish-progress", (event) => {
+    callback(event.payload);
+  });
+}
+
+export async function publishSavepoint(options: {
+  cwd: string;
+  agentKind: "claude" | "codex";
+  agentSessionId: string;
+  summary?: string;
+  nextStep?: string;
+}): Promise<PublishSavepointResult> {
+  return invoke("publish_savepoint", {
+    cwd: options.cwd,
+    agentKind: options.agentKind,
+    agentSessionId: options.agentSessionId,
+    claudeSessionId: options.agentKind === "claude" ? options.agentSessionId : null,
+    summary: options.summary ?? null,
+    nextStep: options.nextStep ?? null,
+  });
+}
+
+export async function finalizeSavepoint(options: {
+  cwd: string;
+  agentKind: "claude" | "codex";
+  agentSessionId: string;
+  summary?: string;
+  nextStep?: string;
+  closedReason?: SavepointCloseReason;
+}): Promise<PublishSavepointResult> {
+  return invoke("finalize_savepoint", {
+    cwd: options.cwd,
+    agentKind: options.agentKind,
+    agentSessionId: options.agentSessionId,
+    claudeSessionId: options.agentKind === "claude" ? options.agentSessionId : null,
+    summary: options.summary ?? null,
+    nextStep: options.nextStep ?? null,
+    closedReason: options.closedReason ?? "manual",
+  });
+}
+
 // ─── CRSM commands ─────────────────────────────────────────────────────────
 
 export interface CrsmSessionEntry {
@@ -326,8 +522,10 @@ export interface AgentSessionMapping {
   session_id: string;
 }
 
-export async function readAgentSessionMappings(): Promise<Record<string, AgentSessionMapping>> {
-  return invoke("read_agent_session_mappings");
+export async function readAgentSessionMappings(
+  sessionIds: string[],
+): Promise<Record<string, AgentSessionMapping>> {
+  return invoke("read_agent_session_mappings", { sessionIds: Array.from(new Set(sessionIds)) });
 }
 
 export interface DefaultShellInfo {
@@ -359,6 +557,12 @@ export async function quitApp(): Promise<void> {
 
 // ─── Persistence commands ────────────────────────────────────────────────────
 
+export interface SuppressedAgentSessionConfig {
+  agent_kind: AgentSessionKind;
+  agent_session_id: string;
+  claude_session_id?: string | null;
+}
+
 export interface PaneTabConfig {
   tab_id?: string | null;
   agent_id: string;
@@ -369,6 +573,7 @@ export interface PaneTabConfig {
   claude_session_id?: string | null;
   agent_kind?: AgentSessionKind | null;
   agent_session_id?: string | null;
+  suppressed_agent_sessions?: SuppressedAgentSessionConfig[] | null;
   launch_env?: Record<string, string> | null;
   terminal_snapshot?: string[] | null;
 }
@@ -382,6 +587,7 @@ export interface PaneConfig {
   claude_session_id?: string | null;
   agent_kind?: AgentSessionKind | null;
   agent_session_id?: string | null;
+  suppressed_agent_sessions?: SuppressedAgentSessionConfig[] | null;
   launch_env?: Record<string, string> | null;
   active_tab_id?: string | null;
   tabs?: PaneTabConfig[] | null;
@@ -543,4 +749,86 @@ export function onFsChanged(
   return listen<FsChangedPayload>("fs_changed", (event) => {
     callback(event.payload);
   });
+}
+
+// ─── Usage / usage accounts ─────────────────────────────────────────────────
+
+export interface WindowStat {
+  pct: number;
+  resets_at: string;
+}
+
+export interface UsageSummary {
+  claude_5h: WindowStat | null;
+  claude_7d: WindowStat | null;
+  claude_7d_sonnet: WindowStat | null;
+  claude_7d_opus: WindowStat | null;
+  codex_5h: WindowStat | null;
+  codex_7d: WindowStat | null;
+  claude_available: boolean;
+  codex_available: boolean;
+  claude_error: string | null;
+  codex_error: string | null;
+  generated_at: string;
+}
+
+export interface UsageAccountMeta {
+  account_id: string;
+  label: string;
+  email?: string | null;
+  enabled: boolean;
+  needs_reauth: boolean;
+  created_at?: string;
+}
+
+export interface AccountUsage {
+  account_id: string;
+  label: string;
+  enabled: boolean;
+  needs_reauth: boolean;
+  five_hour: WindowStat | null;
+  seven_day: WindowStat | null;
+  seven_day_sonnet: WindowStat | null;
+  seven_day_opus: WindowStat | null;
+  error: string | null;
+  fetched_at: string;
+}
+
+export interface OauthLoginStart {
+  authorize_url: string;
+  login_id: string;
+}
+
+export async function getUsageSummary(): Promise<UsageSummary> {
+  return invoke("get_usage_summary");
+}
+
+export async function getMultiUsage(): Promise<AccountUsage[]> {
+  return invoke("get_multi_usage");
+}
+
+export async function startOauthLogin(): Promise<OauthLoginStart> {
+  return invoke("start_oauth_login");
+}
+
+export async function completeOauthLogin(
+  loginId: string,
+  pastedCode: string,
+): Promise<UsageAccountMeta> {
+  return invoke("complete_oauth_login", { loginId, pastedCode });
+}
+
+export async function listUsageAccounts(): Promise<UsageAccountMeta[]> {
+  return invoke("list_usage_accounts");
+}
+
+export async function removeUsageAccount(accountId: string): Promise<void> {
+  return invoke("remove_usage_account", { accountId });
+}
+
+export async function setUsageAccountEnabled(
+  accountId: string,
+  enabled: boolean,
+): Promise<void> {
+  return invoke("set_usage_account_enabled", { accountId, enabled });
 }

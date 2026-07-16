@@ -1,12 +1,70 @@
-import { describe, expect, it } from "vitest";
+import type { ILink, Terminal } from "@xterm/xterm";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { resolveLocalPathLinks } from "../../src/lib/ipc";
+
+vi.mock("../../src/lib/ipc", () => ({
+  resolveLocalPathLinks: vi.fn(),
+}));
+
+vi.mock("../../src/components/terminal/terminalCache", () => ({
+  getTerminalWriteCounter: vi.fn(() => 0),
+  registerTerminalCacheEvictionCleanup: vi.fn(),
+}));
+
 import {
   findBareLocalPathCandidates,
   findLocalFilePathLinks,
   isArtifactPreviewUri,
   isDirectoryLikeUri,
+  mergeResolvedPathLinkMatches,
+  registerArtifactLinkProvider,
 } from "../../src/components/terminal/terminalLinkProvider";
 
+const mockedResolveLocalPathLinks = vi.mocked(resolveLocalPathLinks);
+let nextSessionId = 0;
+
+function createLinkProviderHarness(text: string) {
+  let provider: Parameters<Terminal["registerLinkProvider"]>[0] | undefined;
+  const line = {
+    isWrapped: false,
+    length: text.length,
+    translateToString: (trimRight?: boolean) => (trimRight ? text.trimEnd() : text),
+    getCell: (index: number) => ({
+      getWidth: () => 1,
+      getChars: () => text[index] ?? "",
+    }),
+  };
+  const term = {
+    buffer: {
+      active: {
+        length: 1,
+        viewportY: 0,
+        baseY: 0,
+        getLine: (index: number) => (index === 0 ? line : undefined),
+      },
+    },
+    registerLinkProvider: (registered: Parameters<Terminal["registerLinkProvider"]>[0]) => {
+      provider = registered;
+      return { dispose: vi.fn() };
+    },
+  } as unknown as Terminal;
+  const onActivate = vi.fn();
+  registerArtifactLinkProvider(term, `terminal-link-test-${nextSessionId++}`, onActivate);
+
+  return {
+    onActivate,
+    provideLinks: () =>
+      new Promise<ILink[] | undefined>((resolve) => {
+        provider!.provideLinks(1, resolve);
+      }),
+  };
+}
+
 describe("terminal local file path links", () => {
+  beforeEach(() => {
+    mockedResolveLocalPathLinks.mockReset();
+  });
+
   it("matches drive-letter paths with arbitrary extensions", () => {
     const links = findLocalFilePathLinks(
       String.raw`files: C:\Users\miyaz\AppData\Local\report.pdf C:/Users/miyaz/data.csv C:\tmp\note.txt C:\tmp\image.png`,
@@ -141,5 +199,92 @@ describe("terminal local file path links", () => {
       "file:///C:/tmp/3_一次原稿",
       "/c/tmp/noext",
     ]);
+  });
+
+  it("shrinks a prose-swallowing regex match to the resolver's existing prefix", async () => {
+    const existingPrefix = String.raw`C:\Users\miyaz`;
+    const text = `${existingPrefix} \u306e\u30d5\u30a1\u30a4\u30eb abc.md \u3092\u78ba\u8a8d`;
+    mockedResolveLocalPathLinks.mockImplementation(async (candidates) =>
+      candidates.map((candidate) =>
+        candidate.startsWith(existingPrefix) ? { existingPrefix, isDir: true } : null,
+      ),
+    );
+
+    const harness = createLinkProviderHarness(text);
+    const links = await harness.provideLinks();
+
+    expect(mockedResolveLocalPathLinks).toHaveBeenCalledTimes(1);
+    expect(mockedResolveLocalPathLinks.mock.calls[0][0]).toHaveLength(2);
+    expect(links?.map((link) => link.text)).toEqual([existingPrefix]);
+  });
+
+  it("emits an overlapping regex and bare candidate exactly once after resolution", () => {
+    const existingPrefix = String.raw`C:\Users\miyaz`;
+    const text = `${existingPrefix} \u306e\u30d5\u30a1\u30a4\u30eb abc.md \u3092\u78ba\u8a8d`;
+    const regexMatches = findLocalFilePathLinks(text);
+    const bareCandidates = findBareLocalPathCandidates(text, []);
+    const candidates = [...regexMatches, ...bareCandidates];
+
+    expect(regexMatches).toHaveLength(1);
+    expect(bareCandidates).toHaveLength(1);
+    expect(
+      mergeResolvedPathLinkMatches(
+        candidates,
+        candidates.map(() => ({ existingPrefix, isDir: true })),
+      ),
+    ).toEqual([
+      {
+        text: existingPrefix,
+        index: 0,
+        endIndex: existingPrefix.length,
+        activationUri: `${existingPrefix}\\`,
+      },
+    ]);
+  });
+
+  it("does not emit a link when no candidate exists on disk", async () => {
+    const text = String.raw`C:\mycmux-missing\report.md`;
+    mockedResolveLocalPathLinks.mockImplementation(async (candidates) => candidates.map(() => null));
+
+    const links = await createLinkProviderHarness(text).provideLinks();
+
+    expect(mockedResolveLocalPathLinks).toHaveBeenCalledTimes(1);
+    expect(links).toBeUndefined();
+  });
+
+  it("falls back to unverified regex links when path resolution fails", async () => {
+    const text = String.raw`C:\mycmux-missing\report.md`;
+    mockedResolveLocalPathLinks.mockRejectedValueOnce(new Error("resolver unavailable"));
+
+    const links = await createLinkProviderHarness(text).provideLinks();
+
+    expect(links?.map((link) => link.text)).toEqual([text]);
+  });
+
+  it("keeps the longer resolved overlap and uses earlier start as the tie-breaker", () => {
+    const longer = mergeResolvedPathLinkMatches(
+      [
+        { text: String.raw`C:\Users suffix`, index: 0, endIndex: 15 },
+        { text: String.raw`C:\Users\miyaz suffix`, index: 0, endIndex: 21 },
+      ],
+      [
+        { existingPrefix: String.raw`C:\Users`, isDir: true },
+        { existingPrefix: String.raw`C:\Users\miyaz`, isDir: true },
+      ],
+    );
+    expect(longer.map((match) => match.text)).toEqual([String.raw`C:\Users\miyaz`]);
+
+    const earlier = mergeResolvedPathLinkMatches(
+      [
+        { text: String.raw`C:\same suffix`, index: 5, endIndex: 19 },
+        { text: String.raw`C:\same suffix`, index: 3, endIndex: 17 },
+      ],
+      [
+        { existingPrefix: String.raw`C:\same`, isDir: false },
+        { existingPrefix: String.raw`C:\same`, isDir: false },
+      ],
+    );
+    expect(earlier).toHaveLength(1);
+    expect(earlier[0].index).toBe(3);
   });
 });

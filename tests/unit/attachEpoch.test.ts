@@ -11,6 +11,9 @@ function batch(generation: number, seq: number): FrontendDataBatch {
     generation,
     seq,
     bytes: seq,
+    resync: false,
+    scrollbackStart: seq - 1,
+    scrollbackEnd: seq,
     data: [seq],
   };
 }
@@ -121,5 +124,23 @@ describe("attach epoch state machine", () => {
 
     expect(nextAttach.delivered).toEqual([queuedA, queuedB, currentAfterCommit]);
     expect(oldAttach.acked.map((entry) => entry.batch)).toEqual([staleOld]);
+  });
+
+  it("never rolls the committed epoch backwards when an older attach resolves last", () => {
+    const older = harness();
+    const newer = harness();
+    const olderPending = batch(older.attach.epoch, 1);
+    const newerPending = batch(newer.attach.epoch, 1);
+
+    older.attach.ingest(olderPending);
+    newer.attach.ingest(newerPending);
+    newer.attach.commit();
+    older.attach.commit();
+
+    expect(getCurrentSessionEpoch("s1")).toBe(newer.attach.epoch);
+    expect(newer.delivered).toEqual([newerPending]);
+    expect(older.delivered).toEqual([]);
+    expect(older.acked.map((entry) => entry.batch)).toEqual([olderPending]);
+    expect(older.acked[0].current).toBe(newer.attach.epoch);
   });
 });

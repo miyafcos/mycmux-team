@@ -15,6 +15,8 @@ use dashmap::DashMap;
 use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 use tauri::{AppHandle, Emitter};
 
+use crate::commands::session_mapping::AgentSessionMapping;
+
 use super::manager::SessionManager;
 
 #[derive(Clone, serde::Serialize)]
@@ -53,6 +55,17 @@ pub fn new_metadata_store() -> MetadataStore {
     Arc::new(DashMap::new())
 }
 
+fn codex_agent_metadata_fields(
+    agent_session_id: Option<String>,
+    claude_session_id: Option<String>,
+) -> (Option<String>, Option<String>, Option<String>) {
+    (
+        Some("codex".to_string()),
+        agent_session_id,
+        claude_session_id,
+    )
+}
+
 fn write_detected_agent_session_mapping(
     session_id: &str,
     agent_kind: &str,
@@ -82,9 +95,7 @@ fn created_at_or_after(
     }
 }
 
-fn min_created_local_date(
-    min_created: Option<std::time::SystemTime>,
-) -> Option<(i32, u32, u32)> {
+fn min_created_local_date(min_created: Option<std::time::SystemTime>) -> Option<(i32, u32, u32)> {
     let min_created = min_created?;
     let date: DateTime<Local> = min_created.into();
     Some((date.year(), date.month(), date.day()))
@@ -133,7 +144,7 @@ fn newest_jsonl_candidates_in_dir(
         };
         candidates.push((stem.to_string(), path, mtime));
     }
-    candidates.sort_by(|left, right| right.2.cmp(&left.2));
+    candidates.sort_by_key(|candidate| std::cmp::Reverse(candidate.2));
     candidates
 }
 
@@ -141,12 +152,19 @@ fn newest_jsonl_session_id_for_cwd_in_dir(
     project_dir: &std::path::Path,
     cwd: &str,
     min_created: Option<std::time::SystemTime>,
+    excluded_session_ids: &HashSet<String>,
 ) -> Option<String> {
     let candidates = newest_jsonl_candidates_in_dir(project_dir, min_created);
-    let newest = candidates.first().map(|(id, _, _)| id.clone());
+    let newest = candidates
+        .iter()
+        .find(|(id, _, _)| !excluded_session_ids.contains(id))
+        .map(|(id, _, _)| id.clone());
     let cwd_key = normalize_cwd_key(cwd);
     let mut readable_cwd_count = 0;
     for (session_id, path, _) in candidates {
+        if excluded_session_ids.contains(&session_id) {
+            continue;
+        }
         let Some(candidate_cwd) = jsonl_head_cwd(&path) else {
             continue;
         };
@@ -168,6 +186,7 @@ fn newest_jsonl_session_id_for_cwd_in_dir(
 fn detect_claude_session_id(
     cwd: &str,
     min_created: Option<std::time::SystemTime>,
+    excluded_session_ids: &HashSet<String>,
 ) -> Option<String> {
     let home = dirs::home_dir()?;
     let mangled = super::path_norm::claude_project_key(cwd);
@@ -176,32 +195,25 @@ fn detect_claude_session_id(
         return None;
     }
 
-    detect_claude_session_id_in_dir(&project_dir, cwd, min_created)
+    detect_claude_session_id_in_dir(&project_dir, cwd, min_created, excluded_session_ids)
 }
 
 fn detect_claude_session_id_in_dir(
     project_dir: &std::path::Path,
     cwd: &str,
     min_created: Option<std::time::SystemTime>,
+    excluded_session_ids: &HashSet<String>,
 ) -> Option<String> {
-    newest_jsonl_session_id_for_cwd_in_dir(project_dir, cwd, min_created)
+    newest_jsonl_session_id_for_cwd_in_dir(project_dir, cwd, min_created, excluded_session_ids)
 }
 
 fn detect_claude_codex_session_id(
     cwd: &str,
     min_created: Option<std::time::SystemTime>,
+    excluded_session_ids: &HashSet<String>,
 ) -> Option<String> {
     let home = dirs::home_dir()?;
-    let normalized = if cwd.starts_with('/') && cwd.len() > 2 && cwd.as_bytes()[2] == b'/' {
-        format!(
-            "{}:{}",
-            cwd[1..2].to_uppercase(),
-            cwd[2..].replace('/', "\\")
-        )
-    } else {
-        cwd.to_string()
-    };
-    let mangled = normalized.replace([':', '\\', '/'], "-");
+    let mangled = super::path_norm::claude_project_key(cwd);
     let project_dir = home
         .join(".claude-codex")
         .join("config")
@@ -211,15 +223,71 @@ fn detect_claude_codex_session_id(
         return None;
     }
 
-    detect_claude_codex_session_id_in_dir(&project_dir, cwd, min_created)
+    detect_claude_codex_session_id_in_dir(&project_dir, cwd, min_created, excluded_session_ids)
 }
 
 fn detect_claude_codex_session_id_in_dir(
     project_dir: &std::path::Path,
     cwd: &str,
     min_created: Option<std::time::SystemTime>,
+    excluded_session_ids: &HashSet<String>,
 ) -> Option<String> {
-    newest_jsonl_session_id_for_cwd_in_dir(project_dir, cwd, min_created)
+    newest_jsonl_session_id_for_cwd_in_dir(project_dir, cwd, min_created, excluded_session_ids)
+}
+
+fn detect_claude_family_session_id(
+    cwd: &str,
+    min_created: Option<std::time::SystemTime>,
+    excluded_session_ids: &HashSet<String>,
+) -> Option<AgentSessionAttribution> {
+    detect_claude_family_session_id_with(
+        || detect_claude_session_id(cwd, min_created, excluded_session_ids),
+        || detect_claude_codex_session_id(cwd, min_created, excluded_session_ids),
+    )
+}
+
+fn detect_claude_family_session_id_with<F, G>(
+    detect_claude: F,
+    detect_claude_codex: G,
+) -> Option<AgentSessionAttribution>
+where
+    F: FnOnce() -> Option<String>,
+    G: FnOnce() -> Option<String>,
+{
+    detect_claude()
+        .map(|session_id| AgentSessionAttribution::new("claude", session_id))
+        .or_else(|| {
+            detect_claude_codex()
+                .map(|session_id| AgentSessionAttribution::new("claude-codex", session_id))
+        })
+}
+
+#[cfg(test)]
+fn detect_claude_family_session_id_in_dirs(
+    claude_project_dir: &std::path::Path,
+    claude_codex_project_dir: &std::path::Path,
+    cwd: &str,
+    min_created: Option<std::time::SystemTime>,
+    excluded_session_ids: &HashSet<String>,
+) -> Option<AgentSessionAttribution> {
+    detect_claude_family_session_id_with(
+        || {
+            detect_claude_session_id_in_dir(
+                claude_project_dir,
+                cwd,
+                min_created,
+                excluded_session_ids,
+            )
+        },
+        || {
+            detect_claude_codex_session_id_in_dir(
+                claude_codex_project_dir,
+                cwd,
+                min_created,
+                excluded_session_ids,
+            )
+        },
+    )
 }
 
 fn normalize_cwd_key(cwd: &str) -> String {
@@ -271,6 +339,7 @@ fn visit_codex_sessions_dir(
     dir: &std::path::Path,
     cwd_key: &str,
     min_created: Option<std::time::SystemTime>,
+    excluded_session_ids: &HashSet<String>,
     best: &mut Option<(String, std::time::SystemTime)>,
 ) {
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -283,7 +352,7 @@ fn visit_codex_sessions_dir(
             if is_codex_date_dir_before_min(&path, min_created) {
                 continue;
             }
-            visit_codex_sessions_dir(&path, cwd_key, min_created, best);
+            visit_codex_sessions_dir(&path, cwd_key, min_created, excluded_session_ids, best);
             continue;
         }
         if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
@@ -298,6 +367,9 @@ fn visit_codex_sessions_dir(
         let Some(session_id) = codex_session_id_for_cwd(&path, cwd_key) else {
             continue;
         };
+        if excluded_session_ids.contains(&session_id) {
+            continue;
+        }
         let Ok(modified) = metadata.modified() else {
             continue;
         };
@@ -320,7 +392,9 @@ fn parse_date_component(value: &str, min: u32, max: u32) -> Option<u32> {
 }
 
 fn path_component_string(path: &std::path::Path) -> Option<String> {
-    path.file_name().and_then(|name| name.to_str()).map(str::to_string)
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .map(str::to_string)
 }
 
 fn is_codex_date_dir_before_min(
@@ -335,13 +409,15 @@ fn is_codex_date_dir_before_min(
     };
 
     if let Some(month_dir) = dir.parent() {
-        if let (Some(day), Some(month_name)) =
-            (parse_date_component(&name, 1, 31), path_component_string(month_dir))
-        {
+        if let (Some(day), Some(month_name)) = (
+            parse_date_component(&name, 1, 31),
+            path_component_string(month_dir),
+        ) {
             if let Some(year_dir) = month_dir.parent() {
-                if let (Some(month), Some(year_name)) =
-                    (parse_date_component(&month_name, 1, 12), path_component_string(year_dir))
-                {
+                if let (Some(month), Some(year_name)) = (
+                    parse_date_component(&month_name, 1, 12),
+                    path_component_string(year_dir),
+                ) {
                     if let Some(year) = parse_date_component(&year_name, 1970, 9999) {
                         return (year as i32, month, day) < (min_year, min_month, min_day);
                     }
@@ -366,7 +442,11 @@ fn is_codex_date_dir_before_min(
     false
 }
 
-fn detect_codex_session_id(cwd: &str, min_created: Option<std::time::SystemTime>) -> Option<String> {
+fn detect_codex_session_id(
+    cwd: &str,
+    min_created: Option<std::time::SystemTime>,
+    excluded_session_ids: &HashSet<String>,
+) -> Option<String> {
     let home = dirs::home_dir()?;
     let sessions_dir = home.join(".codex").join("sessions");
     if !sessions_dir.exists() {
@@ -374,7 +454,13 @@ fn detect_codex_session_id(cwd: &str, min_created: Option<std::time::SystemTime>
     }
     let cwd_key = normalize_cwd_key(cwd);
     let mut best: Option<(String, std::time::SystemTime)> = None;
-    visit_codex_sessions_dir(&sessions_dir, &cwd_key, min_created, &mut best);
+    visit_codex_sessions_dir(
+        &sessions_dir,
+        &cwd_key,
+        min_created,
+        excluded_session_ids,
+        &mut best,
+    );
     best.map(|(id, _)| id)
 }
 
@@ -426,6 +512,214 @@ enum DetectedAgentKind {
     ClaudeCodex = 3,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AgentSessionAttribution {
+    agent_kind: &'static str,
+    session_id: String,
+}
+
+impl AgentSessionAttribution {
+    fn new(agent_kind: &'static str, session_id: String) -> Self {
+        Self {
+            agent_kind,
+            session_id,
+        }
+    }
+}
+
+fn mapping_matches_detected_agent_kind(
+    mapping: &AgentSessionMapping,
+    agent_kind: DetectedAgentKind,
+) -> bool {
+    matches!(
+        (mapping.agent_kind.as_deref(), agent_kind),
+        (Some("codex"), DetectedAgentKind::Codex)
+            | (Some("claude"), DetectedAgentKind::Claude)
+            | (Some("claude-codex"), DetectedAgentKind::Claude)
+            | (Some("claude-codex"), DetectedAgentKind::ClaudeCodex)
+            // Prefix-less mapping files predate agent_kind and were Claude-only.
+            | (None, DetectedAgentKind::Claude)
+    )
+}
+
+fn mapped_agent_session_owners(
+    mappings: &HashMap<String, AgentSessionMapping>,
+) -> HashMap<String, HashSet<String>> {
+    let mut owners = HashMap::<String, HashSet<String>>::new();
+    for (pty_session_key, mapping) in mappings {
+        owners
+            .entry(mapping.session_id.clone())
+            .or_default()
+            .insert(pty_session_key.clone());
+    }
+    owners
+}
+
+fn mapped_agent_session_id_for_pane(
+    mappings: &HashMap<String, AgentSessionMapping>,
+    pty_session_key: &str,
+    agent_kind: DetectedAgentKind,
+    excluded_session_ids: &HashSet<String>,
+) -> Option<String> {
+    mappings
+        .get(pty_session_key)
+        .filter(|mapping| mapping_matches_detected_agent_kind(mapping, agent_kind))
+        .map(|mapping| mapping.session_id.clone())
+        .filter(|session_id| !excluded_session_ids.contains(session_id))
+}
+
+fn mapped_agent_session_attribution_for_pane(
+    mappings: &HashMap<String, AgentSessionMapping>,
+    pty_session_key: &str,
+    agent_kind: DetectedAgentKind,
+    excluded_session_ids: &HashSet<String>,
+    exact_session_id: Option<&str>,
+) -> Option<AgentSessionAttribution> {
+    mappings
+        .get(pty_session_key)
+        .filter(|mapping| mapping_matches_detected_agent_kind(mapping, agent_kind))
+        .filter(|mapping| {
+            !excluded_session_ids.contains(&mapping.session_id)
+                || exact_session_id == Some(mapping.session_id.as_str())
+        })
+        .map(|mapping| {
+            let agent_kind = match mapping.agent_kind.as_deref() {
+                Some("claude-codex") => "claude-codex",
+                Some("codex") => "codex",
+                Some("claude") | None => "claude",
+                Some(_) => unreachable!("incompatible mapping kind was already filtered"),
+            };
+            AgentSessionAttribution::new(agent_kind, mapping.session_id.clone())
+        })
+}
+
+fn detection_exclusions_for_exact_session(
+    excluded_session_ids: &HashSet<String>,
+    exact_session_id: Option<&str>,
+) -> HashSet<String> {
+    let mut detection_exclusions = excluded_session_ids.clone();
+    if let Some(exact_session_id) = exact_session_id {
+        detection_exclusions.remove(exact_session_id);
+    }
+    detection_exclusions
+}
+
+fn select_claude_process_attribution<F>(
+    mapped: Option<AgentSessionAttribution>,
+    exact_session_id: Option<String>,
+    cached_session_id: Option<String>,
+    previous_agent_kind: Option<&str>,
+    previous_session_id: Option<String>,
+    excluded_session_ids: &HashSet<String>,
+    detect: F,
+) -> Option<AgentSessionAttribution>
+where
+    F: FnOnce() -> Option<AgentSessionAttribution>,
+{
+    if mapped.as_ref().is_some_and(|value| {
+        value.agent_kind == "claude-codex"
+            || exact_session_id.as_deref() == Some(value.session_id.as_str())
+    }) {
+        return mapped;
+    }
+
+    let previous_is_claude_codex = previous_agent_kind == Some("claude-codex");
+    let previous_session_id = previous_session_id
+        .filter(|candidate| !excluded_session_ids.contains(candidate));
+    let cached_session_id =
+        cached_session_id.filter(|candidate| !excluded_session_ids.contains(candidate));
+
+    if exact_session_id.is_none() {
+        if let Some(mapped) = mapped {
+            return Some(mapped);
+        }
+        if let Some(cached_session_id) = cached_session_id {
+            let cached_kind = if previous_is_claude_codex
+                && previous_session_id.as_deref() == Some(cached_session_id.as_str())
+            {
+                "claude-codex"
+            } else {
+                "claude"
+            };
+            return Some(AgentSessionAttribution::new(cached_kind, cached_session_id));
+        }
+    }
+
+    let detected = detect();
+    if let Some(exact_session_id) = exact_session_id {
+        if detected
+            .as_ref()
+            .is_some_and(|value| value.session_id == exact_session_id)
+        {
+            return detected;
+        }
+        let exact_kind = if previous_is_claude_codex
+            && previous_session_id.as_deref() == Some(exact_session_id.as_str())
+        {
+            "claude-codex"
+        } else {
+            "claude"
+        };
+        return Some(AgentSessionAttribution::new(exact_kind, exact_session_id));
+    }
+    if let Some(detected) = detected {
+        return Some(detected);
+    }
+
+    let previous_kind = match previous_agent_kind {
+        Some("claude-codex") => "claude-codex",
+        Some("claude") => "claude",
+        _ => return None,
+    };
+    previous_session_id
+        .map(|session_id| AgentSessionAttribution::new(previous_kind, session_id))
+}
+
+fn mapping_matches_agent_session(
+    mappings: &HashMap<String, AgentSessionMapping>,
+    pty_session_key: &str,
+    agent_kind: &str,
+    agent_session_id: &str,
+) -> bool {
+    mappings.get(pty_session_key).is_some_and(|mapping| {
+        mapping.agent_kind.as_deref().unwrap_or("claude") == agent_kind
+            && mapping.session_id == agent_session_id
+    })
+}
+
+fn should_write_agent_session_mapping(
+    mappings: &HashMap<String, AgentSessionMapping>,
+    pty_session_key: &str,
+    agent_kind: &str,
+    agent_session_id: &str,
+) -> bool {
+    !mapping_matches_agent_session(mappings, pty_session_key, agent_kind, agent_session_id)
+}
+
+fn preferred_known_agent_session_id(
+    exact_session_id: Option<String>,
+    mappings: &HashMap<String, AgentSessionMapping>,
+    cache: &HashMap<String, DetectedAgentCacheEntry>,
+    pty_session_key: &str,
+    agent_pid: Pid,
+    agent_kind: DetectedAgentKind,
+    excluded_session_ids: &HashSet<String>,
+) -> Option<String> {
+    exact_session_id
+        .or_else(|| {
+            mapped_agent_session_id_for_pane(
+                mappings,
+                pty_session_key,
+                agent_kind,
+                excluded_session_ids,
+            )
+        })
+        .or_else(|| {
+            cached_detected_agent_session_id(cache, pty_session_key, agent_pid, agent_kind)
+                .filter(|candidate| !excluded_session_ids.contains(candidate))
+        })
+}
+
 struct DetectedAgentCacheEntry {
     agent_pid: Pid,
     agent_kind: DetectedAgentKind,
@@ -474,15 +768,50 @@ fn remember_detected_agent_session_id(
     }
 }
 
-fn detect_agent_session_id_with_negative_ttl<F>(
+fn reserve_cached_agent_session_ids(
+    cache: &mut HashMap<String, DetectedAgentCacheEntry>,
+    explicit_claims: &HashSet<String>,
+) -> HashMap<String, String> {
+    // Exact live-process claims supersede heuristic cache entries. Removing
+    // those entries also prevents a stale owner from reclaiming the ID later.
+    cache.retain(|_, entry| !explicit_claims.contains(&entry.session_id));
+    cache
+        .iter()
+        .map(|(pty_session_key, entry)| (entry.session_id.clone(), pty_session_key.clone()))
+        .collect()
+}
+
+fn agent_session_id_exclusions_for_pane(
+    claimed_session_ids: &HashSet<String>,
+    cached_session_owners: &HashMap<String, String>,
+    mapped_session_owners: &HashMap<String, HashSet<String>>,
+    pty_session_key: &str,
+) -> HashSet<String> {
+    let mut excluded = claimed_session_ids.clone();
+    excluded.extend(
+        cached_session_owners
+            .iter()
+            .filter(|(_, owner)| owner.as_str() != pty_session_key)
+            .map(|(session_id, _)| session_id.clone()),
+    );
+    excluded.extend(
+        mapped_session_owners
+            .iter()
+            .filter(|(_, owners)| owners.iter().any(|owner| owner.as_str() != pty_session_key))
+            .map(|(session_id, _)| session_id.clone()),
+    );
+    excluded
+}
+
+fn detect_agent_session_id_with_negative_ttl<T, F>(
     cache: &mut HashMap<String, FailedDetectedAgentCacheEntry>,
     session_id: &str,
     agent_pid: Pid,
     agent_kind: DetectedAgentKind,
     detect: F,
-) -> Option<String>
+) -> Option<T>
 where
-    F: FnOnce() -> Option<String>,
+    F: FnOnce() -> Option<T>,
 {
     if cache.get(session_id).is_some_and(|entry| {
         entry.agent_pid == agent_pid
@@ -568,6 +897,45 @@ fn is_uuid_like(value: &str) -> bool {
 /// `codex resume <uuid>`). This is pane-exact, unlike the mtime-newest
 /// `detect_*_session_id(cwd)` scan which cross-contaminates panes that share
 /// a CWD (multiple agents in ~ all get whichever session wrote last).
+fn session_id_from_args(args: &[String], allow_bare_uuid: bool) -> Option<String> {
+    let forks_session = args
+        .iter()
+        .any(|arg| arg.eq_ignore_ascii_case("--fork-session"));
+    for (i, arg) in args.iter().enumerate() {
+        let lower = arg.to_ascii_lowercase();
+        let is_resume_flag = lower == "--resume" || lower == "-r";
+        if lower == "--session-id" || (is_resume_flag && !forks_session) {
+            if let Some(next) = args.get(i + 1) {
+                let candidate = next.strip_prefix("sid:").unwrap_or(next);
+                if is_uuid_like(candidate) {
+                    return Some(candidate.to_string());
+                }
+            }
+        }
+        for prefix in ["--session-id=", "--resume=", "-r="] {
+            if let Some(candidate) = lower.strip_prefix(prefix) {
+                if prefix != "--session-id=" && forks_session {
+                    continue;
+                }
+                let candidate = candidate.strip_prefix("sid:").unwrap_or(candidate);
+                if is_uuid_like(candidate) {
+                    return Some(candidate.to_string());
+                }
+            }
+        }
+    }
+    if !allow_bare_uuid || forks_session {
+        return None;
+    }
+    // codex passes the session id as a bare positional (`codex resume <uuid>`);
+    // restricted to codex because claude prompts could contain incidental uuids.
+    args.iter()
+        .skip(1)
+        .map(|arg| arg.strip_prefix("sid:").unwrap_or(arg))
+        .find(|arg| is_uuid_like(arg))
+        .map(|arg| arg.to_string())
+}
+
 fn session_id_from_agent_args(
     sys: &System,
     agent_pid: Pid,
@@ -579,27 +947,17 @@ fn session_id_from_agent_args(
         .iter()
         .map(|arg| arg.to_string_lossy().to_string())
         .collect();
-    for (i, arg) in args.iter().enumerate() {
-        let lower = arg.to_ascii_lowercase();
-        if lower == "--session-id" || lower == "--resume" || lower == "-r" {
-            if let Some(next) = args.get(i + 1) {
-                let candidate = next.strip_prefix("sid:").unwrap_or(next);
-                if is_uuid_like(candidate) {
-                    return Some(candidate.to_string());
-                }
-            }
-        }
-    }
-    if !allow_bare_uuid {
-        return None;
-    }
-    // codex passes the session id as a bare positional (`codex resume <uuid>`);
-    // restricted to codex because claude prompts could contain incidental uuids.
-    args.iter()
-        .skip(1)
-        .map(|arg| arg.strip_prefix("sid:").unwrap_or(arg))
-        .find(|arg| is_uuid_like(arg))
-        .map(|arg| arg.to_string())
+    session_id_from_args(&args, allow_bare_uuid)
+}
+
+fn collect_explicit_agent_session_ids(sys: &System) -> HashSet<String> {
+    sys.processes()
+        .keys()
+        .filter_map(|pid| {
+            let kind = agent_kind_from_process(sys, *pid)?;
+            session_id_from_agent_args(sys, *pid, kind == DetectedAgentKind::Codex)
+        })
+        .collect()
 }
 
 fn find_agent_descendant(
@@ -831,8 +1189,21 @@ pub fn start_monitor(
                     .with_cwd(UpdateKind::OnlyIfNotSet),
             );
             let child_index = build_child_index(&sys);
+            // Reserve every process-exact ID before per-pane fallback detection.
+            // This prevents several --continue agents sharing a CWD from all
+            // adopting the session that an exact --session-id process owns.
+            let explicit_agent_session_ids = collect_explicit_agent_session_ids(&sys);
+            let cached_agent_session_owners = reserve_cached_agent_session_ids(
+                &mut detected_agent_sessions,
+                &explicit_agent_session_ids,
+            );
+            let mut claimed_agent_session_ids = explicit_agent_session_ids;
 
             let pids = manager.iter_pids();
+            let agent_mappings = crate::commands::session_mapping::agent_mappings_for_ids(
+                pids.iter().map(|(session_id, _)| session_id.as_str()),
+            );
+            let mapped_session_owners = mapped_agent_session_owners(&agent_mappings);
 
             for (session_id, pid_opt) in pids.iter().cloned() {
                 if let Some(pid) = pid_opt {
@@ -917,32 +1288,40 @@ pub fn start_monitor(
                                 + Duration::from_secs(process.start_time().saturating_sub(30))
                         })
                     });
+                    let excluded_agent_session_ids = agent_session_id_exclusions_for_pane(
+                        &claimed_agent_session_ids,
+                        &cached_agent_session_owners,
+                        &mapped_session_owners,
+                        &session_id,
+                    );
                     let (agent_kind, agent_session_id, claude_session_id) = match foreground_agent {
                         Some((kind, agent_pid)) => match kind {
                             DetectedAgentKind::ClaudeCodex => {
-                                let detected = session_id_from_agent_args(&sys, agent_pid, false)
-                                    .or_else(|| {
-                                        cached_detected_agent_session_id(
-                                            &detected_agent_sessions,
-                                            &session_id,
-                                            agent_pid,
-                                            kind,
-                                        )
-                                    })
-                                    .or_else(|| {
-                                        detect_agent_session_id_with_negative_ttl(
-                                            &mut failed_detected_agent_sessions,
-                                            &session_id,
-                                            agent_pid,
-                                            kind,
-                                            || {
-                                                detect_claude_codex_session_id(
-                                                    &cwd,
-                                                    agent_min_created,
-                                                )
-                                            },
-                                        )
-                                    });
+                                let exact = session_id_from_agent_args(&sys, agent_pid, false);
+                                let detected = preferred_known_agent_session_id(
+                                    exact,
+                                    &agent_mappings,
+                                    &detected_agent_sessions,
+                                    &session_id,
+                                    agent_pid,
+                                    kind,
+                                    &excluded_agent_session_ids,
+                                )
+                                .or_else(|| {
+                                    detect_agent_session_id_with_negative_ttl(
+                                        &mut failed_detected_agent_sessions,
+                                        &session_id,
+                                        agent_pid,
+                                        kind,
+                                        || {
+                                            detect_claude_codex_session_id(
+                                                &cwd,
+                                                agent_min_created,
+                                                &excluded_agent_session_ids,
+                                            )
+                                        },
+                                    )
+                                });
                                 remember_detected_agent_session_id(
                                     &mut detected_agent_sessions,
                                     &session_id,
@@ -955,8 +1334,14 @@ pub fn start_monitor(
                                         previous_agent_session_id.clone()
                                     } else {
                                         None
-                                    };
+                                    }
+                                    .filter(|candidate| {
+                                        !excluded_agent_session_ids.contains(candidate)
+                                    });
                                 let agent_session_id = detected.or(previous_same_kind_session);
+                                if let Some(candidate) = agent_session_id.as_ref() {
+                                    claimed_agent_session_ids.insert(candidate.clone());
+                                }
                                 (
                                     agent_session_id
                                         .as_ref()
@@ -966,64 +1351,111 @@ pub fn start_monitor(
                                 )
                             }
                             DetectedAgentKind::Claude => {
-                                let detected = session_id_from_agent_args(&sys, agent_pid, false)
-                                    .or_else(|| {
-                                        cached_detected_agent_session_id(
-                                            &detected_agent_sessions,
-                                            &session_id,
-                                            agent_pid,
-                                            kind,
-                                        )
-                                    })
-                                    .or_else(|| {
+                                let exact = session_id_from_agent_args(&sys, agent_pid, false);
+                                let mapped = mapped_agent_session_attribution_for_pane(
+                                    &agent_mappings,
+                                    &session_id,
+                                    kind,
+                                    &excluded_agent_session_ids,
+                                    exact.as_deref(),
+                                );
+                                let cached = cached_detected_agent_session_id(
+                                    &detected_agent_sessions,
+                                    &session_id,
+                                    agent_pid,
+                                    kind,
+                                );
+                                let previous_session_id = match previous_agent_kind.as_deref() {
+                                    Some("claude-codex") => previous_agent_session_id.clone(),
+                                    Some("claude") => previous_agent_session_id
+                                        .clone()
+                                        .or_else(|| previous_claude_session_id.clone()),
+                                    _ => None,
+                                };
+                                let detection_exclusions = detection_exclusions_for_exact_session(
+                                    &excluded_agent_session_ids,
+                                    exact.as_deref(),
+                                );
+                                let attribution = select_claude_process_attribution(
+                                    mapped,
+                                    exact,
+                                    cached,
+                                    previous_agent_kind.as_deref(),
+                                    previous_session_id,
+                                    &excluded_agent_session_ids,
+                                    || {
                                         detect_agent_session_id_with_negative_ttl(
                                             &mut failed_detected_agent_sessions,
                                             &session_id,
                                             agent_pid,
                                             kind,
-                                            || detect_claude_session_id(&cwd, agent_min_created),
+                                            || {
+                                                detect_claude_family_session_id(
+                                                    &cwd,
+                                                    agent_min_created,
+                                                    &detection_exclusions,
+                                                )
+                                            },
                                         )
-                                    });
+                                    },
+                                );
+                                let agent_session_id =
+                                    attribution.as_ref().map(|value| value.session_id.clone());
                                 remember_detected_agent_session_id(
                                     &mut detected_agent_sessions,
                                     &session_id,
                                     agent_pid,
                                     kind,
-                                    &detected,
+                                    &agent_session_id,
                                 );
-                                let claude_session_id =
-                                    detected.or_else(|| previous_claude_session_id.clone());
-                                let previous_same_kind_session =
-                                    if previous_agent_kind.as_deref() == Some("claude") {
-                                        previous_agent_session_id.clone()
+                                if let Some(candidate) = agent_session_id.as_ref() {
+                                    claimed_agent_session_ids.insert(candidate.clone());
+                                }
+                                let claude_session_id = attribution.as_ref().and_then(|value| {
+                                    if value.agent_kind == "claude" {
+                                        Some(value.session_id.clone())
                                     } else {
-                                        None
-                                    };
-                                (
-                                    claude_session_id.as_ref().map(|_| "claude".to_string()),
-                                    claude_session_id.clone().or(previous_same_kind_session),
-                                    claude_session_id,
-                                )
+                                        previous_claude_session_id.clone()
+                                    }
+                                });
+                                // Process detection and session-id discovery are independent.
+                                // Emit the Claude kind immediately so the UI can expose actions
+                                // in a disabled state while the transcript id is still resolving.
+                                let agent_kind = Some(
+                                    attribution
+                                        .as_ref()
+                                        .map(|value| value.agent_kind)
+                                        .unwrap_or("claude")
+                                        .to_string(),
+                                );
+                                (agent_kind, agent_session_id, claude_session_id)
                             }
                             DetectedAgentKind::Codex => {
-                                let detected = session_id_from_agent_args(&sys, agent_pid, true)
-                                    .or_else(|| {
-                                        cached_detected_agent_session_id(
-                                            &detected_agent_sessions,
-                                            &session_id,
-                                            agent_pid,
-                                            kind,
-                                        )
-                                    })
-                                    .or_else(|| {
-                                        detect_agent_session_id_with_negative_ttl(
-                                            &mut failed_detected_agent_sessions,
-                                            &session_id,
-                                            agent_pid,
-                                            kind,
-                                            || detect_codex_session_id(&cwd, agent_min_created),
-                                        )
-                                    });
+                                let exact = session_id_from_agent_args(&sys, agent_pid, true);
+                                let detected = preferred_known_agent_session_id(
+                                    exact,
+                                    &agent_mappings,
+                                    &detected_agent_sessions,
+                                    &session_id,
+                                    agent_pid,
+                                    kind,
+                                    &excluded_agent_session_ids,
+                                )
+                                .or_else(|| {
+                                    detect_agent_session_id_with_negative_ttl(
+                                        &mut failed_detected_agent_sessions,
+                                        &session_id,
+                                        agent_pid,
+                                        kind,
+                                        || {
+                                            detect_codex_session_id(
+                                                &cwd,
+                                                agent_min_created,
+                                                &excluded_agent_session_ids,
+                                            )
+                                        },
+                                    )
+                                });
                                 remember_detected_agent_session_id(
                                     &mut detected_agent_sessions,
                                     &session_id,
@@ -1036,10 +1468,15 @@ pub fn start_monitor(
                                         previous_agent_session_id.clone()
                                     } else {
                                         None
-                                    };
+                                    }
+                                    .filter(|candidate| {
+                                        !excluded_agent_session_ids.contains(candidate)
+                                    });
                                 let agent_session_id = detected.or(previous_same_kind_session);
-                                (
-                                    agent_session_id.as_ref().map(|_| "codex".to_string()),
+                                if let Some(candidate) = agent_session_id.as_ref() {
+                                    claimed_agent_session_ids.insert(candidate.clone());
+                                }
+                                codex_agent_metadata_fields(
                                     agent_session_id,
                                     previous_claude_session_id.clone(),
                                 )
@@ -1051,6 +1488,25 @@ pub fn start_monitor(
                             previous_claude_session_id.clone(),
                         ),
                     };
+
+                    if foreground_agent.is_none()
+                        && process_name.as_deref().is_some_and(is_shell_process)
+                    {
+                        // Failed descendant detection is not proof the agent is
+                        // gone: MSYS bash orphans shebang-script children, so a
+                        // live claude can be invisible here. Only drop the
+                        // launcher-written mapping when no process anywhere owns
+                        // the mapped session id (argv scan from this same tick).
+                        let mapping_owned_by_live_process =
+                            agent_mappings.get(&session_id).is_some_and(|mapping| {
+                                claimed_agent_session_ids.contains(&mapping.session_id)
+                            });
+                        if !mapping_owned_by_live_process {
+                            let _ = crate::commands::session_mapping::remove_session_mapping_file(
+                                &session_id,
+                            );
+                        }
+                    }
 
                     // Detect work→idle transition: previous foreground was a non-shell
                     // process (claude/node/python/…) and current is a shell.
@@ -1076,10 +1532,12 @@ pub fn start_monitor(
                     if let (Some(kind), Some(current_agent_session_id)) =
                         (agent_kind.as_deref(), agent_session_id.as_deref())
                     {
-                        if previous_agent_kind.as_deref() != Some(kind)
-                            || previous_agent_session_id.as_deref()
-                                != Some(current_agent_session_id)
-                        {
+                        if should_write_agent_session_mapping(
+                            &agent_mappings,
+                            &session_id,
+                            kind,
+                            current_agent_session_id,
+                        ) {
                             write_detected_agent_session_mapping(
                                 &session_id,
                                 kind,
@@ -1159,6 +1617,25 @@ mod tests {
         write_jsonl(path, &[serde_json::json!({"type": "last-prompt"})]);
     }
 
+    #[test]
+    fn codex_process_emits_kind_before_session_id_is_detected() {
+        let (agent_kind, agent_session_id, claude_session_id) =
+            codex_agent_metadata_fields(None, None);
+        let metadata = PtyMetadata {
+            session_id: "pane-session".to_string(),
+            cwd: r"C:\work".to_string(),
+            git_branch: None,
+            process_name: Some("codex".to_string()),
+            agent_active: true,
+            claude_session_id,
+            agent_kind,
+            agent_session_id,
+        };
+
+        assert_eq!(metadata.agent_kind.as_deref(), Some("codex"));
+        assert!(metadata.agent_session_id.is_none());
+    }
+
     fn write_claude_jsonl(path: &std::path::Path, cwd: &str) {
         write_jsonl(
             path,
@@ -1189,7 +1666,13 @@ mod tests {
         );
 
         assert_eq!(
-            detect_claude_session_id_in_dir(dir.path(), r"C:/Users/miyaz/work", None).as_deref(),
+            detect_claude_session_id_in_dir(
+                dir.path(),
+                r"C:/Users/miyaz/work",
+                None,
+                &HashSet::new(),
+            )
+            .as_deref(),
             Some("matching-session")
         );
     }
@@ -1202,8 +1685,13 @@ mod tests {
         write_no_cwd_jsonl(&dir.path().join("newer-session.jsonl"));
 
         assert_eq!(
-            detect_claude_codex_session_id_in_dir(dir.path(), r"C:\Users\miyaz\work", None)
-                .as_deref(),
+            detect_claude_codex_session_id_in_dir(
+                dir.path(),
+                r"C:\Users\miyaz\work",
+                None,
+                &HashSet::new(),
+            )
+            .as_deref(),
             Some("newer-session")
         );
     }
@@ -1222,8 +1710,498 @@ mod tests {
         );
 
         assert_eq!(
-            detect_claude_session_id_in_dir(dir.path(), r"C:\Users\miyaz\three", None),
+            detect_claude_session_id_in_dir(
+                dir.path(),
+                r"C:\Users\miyaz\three",
+                None,
+                &HashSet::new(),
+            ),
             None
         );
+    }
+
+    #[test]
+    fn detect_claude_session_id_in_dir_skips_claimed_newest_candidate() {
+        let dir = tempfile::tempdir().unwrap();
+        write_claude_jsonl(
+            &dir.path().join("older-unclaimed.jsonl"),
+            r"C:\Users\miyaz\work",
+        );
+        wait_for_distinct_mtime();
+        write_claude_jsonl(
+            &dir.path().join("newer-claimed.jsonl"),
+            r"C:\Users\miyaz\work",
+        );
+        let excluded = HashSet::from(["newer-claimed".to_string()]);
+
+        assert_eq!(
+            detect_claude_session_id_in_dir(dir.path(), r"C:\Users\miyaz\work", None, &excluded,)
+                .as_deref(),
+            Some("older-unclaimed")
+        );
+    }
+
+    #[test]
+    fn claude_process_uses_claude_codex_mapping_authoritatively() {
+        let root = tempfile::tempdir().unwrap();
+        let claude_dir = root.path().join("claude");
+        let claude_codex_dir = root.path().join("claude-codex");
+        std::fs::create_dir_all(&claude_dir).unwrap();
+        std::fs::create_dir_all(&claude_codex_dir).unwrap();
+        write_claude_jsonl(
+            &claude_dir.join("plain-dir-session.jsonl"),
+            r"C:\Users\miyaz\work",
+        );
+        write_claude_jsonl(
+            &claude_codex_dir.join("codex-dir-session.jsonl"),
+            r"C:\Users\miyaz\work",
+        );
+        let mappings = HashMap::from([(
+            "pane-a".to_string(),
+            AgentSessionMapping {
+                agent_kind: Some("claude-codex".to_string()),
+                session_id: "mapped-session".to_string(),
+            },
+        )]);
+        let excluded = HashSet::new();
+        let exact = Some("exact-session".to_string());
+        let mapped = mapped_agent_session_attribution_for_pane(
+            &mappings,
+            "pane-a",
+            DetectedAgentKind::Claude,
+            &excluded,
+            exact.as_deref(),
+        );
+
+        let attribution = select_claude_process_attribution(
+            mapped,
+            exact,
+            None,
+            None,
+            None,
+            &excluded,
+            || {
+                detect_claude_family_session_id_in_dirs(
+                    &claude_dir,
+                    &claude_codex_dir,
+                    r"C:\Users\miyaz\work",
+                    None,
+                    &excluded,
+                )
+            },
+        );
+
+        assert_eq!(
+            attribution,
+            Some(AgentSessionAttribution::new(
+                "claude-codex",
+                "mapped-session".to_string(),
+            ))
+        );
+    }
+
+    #[test]
+    fn claude_process_falls_back_to_claude_codex_project_dir() {
+        let root = tempfile::tempdir().unwrap();
+        let claude_dir = root.path().join("claude");
+        let claude_codex_dir = root.path().join("claude-codex");
+        std::fs::create_dir_all(&claude_dir).unwrap();
+        std::fs::create_dir_all(&claude_codex_dir).unwrap();
+        write_claude_jsonl(
+            &claude_codex_dir.join("codex-dir-session.jsonl"),
+            r"C:\Users\miyaz\work",
+        );
+        let excluded = HashSet::from(["codex-dir-session".to_string()]);
+        let detection_exclusions =
+            detection_exclusions_for_exact_session(&excluded, Some("codex-dir-session"));
+
+        let attribution = select_claude_process_attribution(
+            None,
+            Some("codex-dir-session".to_string()),
+            None,
+            None,
+            None,
+            &excluded,
+            || {
+                detect_claude_family_session_id_in_dirs(
+                    &claude_dir,
+                    &claude_codex_dir,
+                    r"C:\Users\miyaz\work",
+                    None,
+                    &detection_exclusions,
+                )
+            },
+        );
+
+        assert_eq!(
+            attribution,
+            Some(AgentSessionAttribution::new(
+                "claude-codex",
+                "codex-dir-session".to_string(),
+            ))
+        );
+    }
+
+    #[test]
+    fn claude_process_preserves_previous_claude_codex_identity() {
+        let root = tempfile::tempdir().unwrap();
+        let claude_dir = root.path().join("claude");
+        let claude_codex_dir = root.path().join("claude-codex");
+        std::fs::create_dir_all(&claude_dir).unwrap();
+        std::fs::create_dir_all(&claude_codex_dir).unwrap();
+        let excluded = HashSet::new();
+
+        let attribution = select_claude_process_attribution(
+            None,
+            None,
+            None,
+            Some("claude-codex"),
+            Some("previous-codex-session".to_string()),
+            &excluded,
+            || {
+                detect_claude_family_session_id_in_dirs(
+                    &claude_dir,
+                    &claude_codex_dir,
+                    r"C:\Users\miyaz\work",
+                    None,
+                    &excluded,
+                )
+            },
+        );
+
+        assert_eq!(
+            attribution,
+            Some(AgentSessionAttribution::new(
+                "claude-codex",
+                "previous-codex-session".to_string(),
+            ))
+        );
+    }
+
+    #[test]
+    fn plain_claude_session_wins_when_both_project_dirs_match() {
+        let root = tempfile::tempdir().unwrap();
+        let claude_dir = root.path().join("claude");
+        let claude_codex_dir = root.path().join("claude-codex");
+        std::fs::create_dir_all(&claude_dir).unwrap();
+        std::fs::create_dir_all(&claude_codex_dir).unwrap();
+        write_claude_jsonl(
+            &claude_dir.join("plain-dir-session.jsonl"),
+            r"C:\Users\miyaz\work",
+        );
+        wait_for_distinct_mtime();
+        write_claude_jsonl(
+            &claude_codex_dir.join("newer-codex-dir-session.jsonl"),
+            r"C:\Users\miyaz\work",
+        );
+        let excluded = HashSet::new();
+
+        let attribution = select_claude_process_attribution(
+            None,
+            None,
+            None,
+            None,
+            None,
+            &excluded,
+            || {
+                detect_claude_family_session_id_in_dirs(
+                    &claude_dir,
+                    &claude_codex_dir,
+                    r"C:\Users\miyaz\work",
+                    None,
+                    &excluded,
+                )
+            },
+        );
+
+        assert_eq!(
+            attribution,
+            Some(AgentSessionAttribution::new(
+                "claude",
+                "plain-dir-session".to_string(),
+            ))
+        );
+    }
+
+    #[test]
+    fn plain_claude_exact_session_wins_over_stale_plain_mapping() {
+        let root = tempfile::tempdir().unwrap();
+        let claude_dir = root.path().join("claude");
+        let claude_codex_dir = root.path().join("claude-codex");
+        std::fs::create_dir_all(&claude_dir).unwrap();
+        std::fs::create_dir_all(&claude_codex_dir).unwrap();
+        write_claude_jsonl(
+            &claude_dir.join("exact-session.jsonl"),
+            r"C:\Users\miyaz\work",
+        );
+        let mappings = HashMap::from([(
+            "pane-a".to_string(),
+            AgentSessionMapping {
+                agent_kind: Some("claude".to_string()),
+                session_id: "stale-mapped-session".to_string(),
+            },
+        )]);
+        let excluded = HashSet::from(["exact-session".to_string()]);
+        let exact = Some("exact-session".to_string());
+        let detection_exclusions =
+            detection_exclusions_for_exact_session(&excluded, exact.as_deref());
+        let mapped = mapped_agent_session_attribution_for_pane(
+            &mappings,
+            "pane-a",
+            DetectedAgentKind::Claude,
+            &excluded,
+            exact.as_deref(),
+        );
+
+        let attribution = select_claude_process_attribution(
+            mapped,
+            exact,
+            None,
+            None,
+            None,
+            &excluded,
+            || {
+                detect_claude_family_session_id_in_dirs(
+                    &claude_dir,
+                    &claude_codex_dir,
+                    r"C:\Users\miyaz\work",
+                    None,
+                    &detection_exclusions,
+                )
+            },
+        );
+
+        assert_eq!(
+            attribution,
+            Some(AgentSessionAttribution::new(
+                "claude",
+                "exact-session".to_string(),
+            ))
+        );
+    }
+
+    #[test]
+    fn cached_agent_session_id_is_reserved_from_another_same_cwd_pane() {
+        let dir = tempfile::tempdir().unwrap();
+        write_claude_jsonl(
+            &dir.path().join("older-pane-session.jsonl"),
+            r"C:\Users\miyaz\work",
+        );
+        wait_for_distinct_mtime();
+        write_claude_jsonl(
+            &dir.path().join("newer-owner-session.jsonl"),
+            r"C:\Users\miyaz\work",
+        );
+        let mut cache = HashMap::from([(
+            "owner-pane".to_string(),
+            DetectedAgentCacheEntry {
+                agent_pid: Pid::from_u32(101),
+                agent_kind: DetectedAgentKind::Claude,
+                session_id: "newer-owner-session".to_string(),
+            },
+        )]);
+        let owners = reserve_cached_agent_session_ids(&mut cache, &HashSet::new());
+        let excluded = agent_session_id_exclusions_for_pane(
+            &HashSet::new(),
+            &owners,
+            &HashMap::new(),
+            "second-pane",
+        );
+
+        assert_eq!(
+            detect_claude_session_id_in_dir(dir.path(), r"C:\Users\miyaz\work", None, &excluded,)
+                .as_deref(),
+            Some("older-pane-session")
+        );
+    }
+
+    #[test]
+    fn cached_agent_session_id_remains_adoptable_by_its_owner() {
+        let agent_pid = Pid::from_u32(101);
+        let mut cache = HashMap::from([(
+            "owner-pane".to_string(),
+            DetectedAgentCacheEntry {
+                agent_pid,
+                agent_kind: DetectedAgentKind::Claude,
+                session_id: "owner-session".to_string(),
+            },
+        )]);
+        let owners = reserve_cached_agent_session_ids(&mut cache, &HashSet::new());
+        let excluded = agent_session_id_exclusions_for_pane(
+            &HashSet::new(),
+            &owners,
+            &HashMap::new(),
+            "owner-pane",
+        );
+        let adopted = cached_detected_agent_session_id(
+            &cache,
+            "owner-pane",
+            agent_pid,
+            DetectedAgentKind::Claude,
+        )
+        .filter(|candidate| !excluded.contains(candidate));
+
+        assert_eq!(adopted.as_deref(), Some("owner-session"));
+    }
+
+    #[test]
+    fn pane_mapping_prevents_cross_pane_marker_overwrite_with_empty_cache() {
+        let pane_a_session = "db723e1e-618b-4566-802c-c9486f7701b7";
+        let pane_b_session = "b15c0d1c-e7ae-4d8a-beeb-39dbc5437dac";
+        let mappings = HashMap::from([
+            (
+                "pane-a".to_string(),
+                AgentSessionMapping {
+                    agent_kind: Some("claude".to_string()),
+                    session_id: pane_a_session.to_string(),
+                },
+            ),
+            (
+                "pane-b".to_string(),
+                AgentSessionMapping {
+                    agent_kind: Some("claude".to_string()),
+                    session_id: pane_b_session.to_string(),
+                },
+            ),
+        ]);
+        let mapped_owners = mapped_agent_session_owners(&mappings);
+        let excluded = agent_session_id_exclusions_for_pane(
+            &HashSet::new(),
+            &HashMap::new(),
+            &mapped_owners,
+            "pane-a",
+        );
+
+        let detected = preferred_known_agent_session_id(
+            None,
+            &mappings,
+            &HashMap::new(),
+            "pane-a",
+            Pid::from_u32(101),
+            DetectedAgentKind::Claude,
+            &excluded,
+        )
+        // This is the same-CWD newest-file result that caused the live overwrite.
+        .or_else(|| (!excluded.contains(pane_b_session)).then(|| pane_b_session.to_string()));
+
+        assert!(excluded.contains(pane_b_session));
+        assert!(!excluded.contains(pane_a_session));
+        assert_eq!(detected.as_deref(), Some(pane_a_session));
+        assert!(mapping_matches_agent_session(
+            &mappings,
+            "pane-a",
+            "claude",
+            pane_a_session,
+        ));
+        assert!(!mapping_matches_agent_session(
+            &mappings,
+            "pane-a",
+            "claude",
+            pane_b_session,
+        ));
+        assert!(!should_write_agent_session_mapping(
+            &mappings,
+            "pane-a",
+            "claude",
+            pane_a_session,
+        ));
+        assert!(should_write_agent_session_mapping(
+            &mappings,
+            "pane-a",
+            "claude",
+            pane_b_session,
+        ));
+    }
+
+    #[test]
+    fn duplicate_mapping_is_contested_until_one_owner_is_repaired() {
+        let duplicate = "b15c0d1c-e7ae-4d8a-beeb-39dbc5437dac";
+        let mappings = HashMap::from([
+            (
+                "pane-a".to_string(),
+                AgentSessionMapping {
+                    agent_kind: Some("claude".to_string()),
+                    session_id: duplicate.to_string(),
+                },
+            ),
+            (
+                "pane-b".to_string(),
+                AgentSessionMapping {
+                    agent_kind: Some("claude".to_string()),
+                    session_id: duplicate.to_string(),
+                },
+            ),
+        ]);
+        let mapped_owners = mapped_agent_session_owners(&mappings);
+
+        for pane in ["pane-a", "pane-b"] {
+            let excluded = agent_session_id_exclusions_for_pane(
+                &HashSet::new(),
+                &HashMap::new(),
+                &mapped_owners,
+                pane,
+            );
+            assert!(excluded.contains(duplicate));
+            assert_eq!(
+                mapped_agent_session_id_for_pane(
+                    &mappings,
+                    pane,
+                    DetectedAgentKind::Claude,
+                    &excluded,
+                ),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_claim_supersedes_another_panes_cached_reservation() {
+        let explicit_session = "explicit-session".to_string();
+        let explicit_claims = HashSet::from([explicit_session.clone()]);
+        let mut cache = HashMap::from([(
+            "cached-pane".to_string(),
+            DetectedAgentCacheEntry {
+                agent_pid: Pid::from_u32(101),
+                agent_kind: DetectedAgentKind::Claude,
+                session_id: explicit_session.clone(),
+            },
+        )]);
+
+        let owners = reserve_cached_agent_session_ids(&mut cache, &explicit_claims);
+        let excluded = agent_session_id_exclusions_for_pane(
+            &explicit_claims,
+            &owners,
+            &HashMap::new(),
+            "cached-pane",
+        );
+
+        assert!(!cache.contains_key("cached-pane"));
+        assert!(!owners.contains_key(&explicit_session));
+        assert!(excluded.contains(&explicit_session));
+    }
+
+    #[test]
+    fn session_id_from_args_ignores_resume_source_when_forking() {
+        let source = "85d1dd8d-0f32-410e-91da-008f1cfb82a3";
+        let args = vec![
+            "claude".to_string(),
+            "--resume".to_string(),
+            source.to_string(),
+            "--fork-session".to_string(),
+        ];
+
+        assert_eq!(session_id_from_args(&args, false), None);
+    }
+
+    #[test]
+    fn session_id_from_args_keeps_exact_non_fork_ids() {
+        let session = "401caf0d-c8d1-4c12-b0d4-ed291d41d356";
+        let args = vec![
+            "claude".to_string(),
+            "--session-id".to_string(),
+            session.to_string(),
+        ];
+
+        assert_eq!(session_id_from_args(&args, false).as_deref(), Some(session));
     }
 }

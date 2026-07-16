@@ -27,6 +27,11 @@ export type PaneDropTarget =
     }
   | {
       kind: "new-workspace";
+    }
+  | {
+      kind: "handoff";
+      workspaceId: string;
+      paneId: string;
     };
 
 interface PointerPosition {

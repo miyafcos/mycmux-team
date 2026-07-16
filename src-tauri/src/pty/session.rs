@@ -3,7 +3,7 @@ use std::io::{Read, Write};
 use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
-use tauri::ipc::Channel;
+use tauri::ipc::{Channel, InvokeResponseBody};
 use tauri::{AppHandle, Emitter};
 
 use crate::events;
@@ -12,13 +12,14 @@ use super::monitor::{MetadataStore, PtyMetadata};
 use super::osc7::Osc7Parser;
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, Notify};
 
-const SCROLLBACK_CAP: usize = 32 * 1024; // 32 KB
-const FRONTEND_QUEUE_CAP: usize = 4096;
-const FRONTEND_FLUSH_INTERVAL_MS: u64 = 4;
-const FRONTEND_SATURATED_FLUSH_INTERVAL_MS: u64 = 1;
+const SCROLLBACK_CAP: usize = 256 * 1024; // 256 KB
+const FRONTEND_QUEUE_CAP: usize = 256;
+const FRONTEND_FLUSH_INTERVAL_MS: u64 = 16;
+const FRONTEND_SATURATED_FLUSH_INTERVAL_MS: u64 = 4;
 const FRONTEND_BATCH_MAX_BYTES: usize = 64 * 1024;
 const FRONTEND_MAX_INFLIGHT_BYTES: usize = 512 * 1024;
 const FRONTEND_LOW_WATER_BYTES: usize = 256 * 1024;
@@ -28,6 +29,11 @@ const FRONTEND_MAX_INFLIGHT_BATCHES: usize = 16;
 // write. A later matching-generation ACK resets stale state and resumes sends.
 const FRONTEND_ACK_TIMEOUT: Duration = Duration::from_millis(2500);
 const FRONTEND_STALE_TIMEOUTS: u32 = 2;
+const INPUT_QUEUE_MESSAGE_CAP: usize = 256;
+const INPUT_QUEUE_BYTE_CAP: usize = 512 * 1024;
+const INPUT_WRITE_CHUNK_BYTES: usize = 1024;
+const FRONTEND_DATA_FRAME_HEADER_BYTES: usize = 40;
+const SCROLLBACK_FRAME_HEADER_BYTES: usize = 24;
 // v0.7.1 diag: report aggregated PTY metrics every 5 s on stderr.
 // Diagnostic-only; the consumer task is debug-build-gated, so this is unread in
 // release. Allow it explicitly to keep release warning-free.
@@ -52,13 +58,63 @@ pub(crate) struct PtyMetrics {
     pub closed_count: std::sync::atomic::AtomicU64,
 }
 
-#[derive(Clone, serde::Serialize)]
-pub struct FrontendDataBatch {
-    pub generation: u64,
-    pub seq: u64,
-    pub bytes: usize,
-    pub resync: bool,
+struct FrontendDataBatch {
+    generation: u64,
+    seq: u64,
+    resync: bool,
+    scrollback_start: u64,
+    scrollback_end: u64,
+    data: Vec<u8>,
+}
+
+impl FrontendDataBatch {
+    fn into_wire(self) -> Vec<u8> {
+        let mut frame = Vec::with_capacity(FRONTEND_DATA_FRAME_HEADER_BYTES + self.data.len());
+        frame.extend_from_slice(b"MCX1");
+        frame.extend_from_slice(&(u32::from(self.resync)).to_le_bytes());
+        frame.extend_from_slice(&self.generation.to_le_bytes());
+        frame.extend_from_slice(&self.seq.to_le_bytes());
+        frame.extend_from_slice(&self.scrollback_start.to_le_bytes());
+        frame.extend_from_slice(&self.scrollback_end.to_le_bytes());
+        frame.extend_from_slice(&self.data);
+        frame
+    }
+}
+
+struct FrontendChunk {
+    data: Vec<u8>,
+    scrollback_start: u64,
+    scrollback_end: u64,
+}
+
+pub struct ScrollbackSnapshot {
     pub data: Vec<u8>,
+    pub start_offset: u64,
+    pub end_offset: u64,
+}
+
+impl ScrollbackSnapshot {
+    pub(crate) fn into_wire(self) -> Vec<u8> {
+        let mut frame = Vec::with_capacity(SCROLLBACK_FRAME_HEADER_BYTES + self.data.len());
+        frame.extend_from_slice(b"MCS1");
+        frame.extend_from_slice(&0u32.to_le_bytes());
+        frame.extend_from_slice(&self.start_offset.to_le_bytes());
+        frame.extend_from_slice(&self.end_offset.to_le_bytes());
+        frame.extend_from_slice(&self.data);
+        frame
+    }
+}
+
+struct QueuedInput {
+    data: Vec<u8>,
+    pending_bytes: Arc<AtomicUsize>,
+}
+
+impl Drop for QueuedInput {
+    fn drop(&mut self) {
+        self.pending_bytes
+            .fetch_sub(self.data.len(), Ordering::Release);
+    }
 }
 
 struct InFlight {
@@ -69,7 +125,7 @@ struct InFlight {
 }
 
 struct FrontendFlowState {
-    data_channel: Channel<FrontendDataBatch>,
+    data_channel: Channel<InvokeResponseBody>,
     generation: u64,
     next_seq: u64,
     inflight_bytes: usize,
@@ -103,7 +159,7 @@ enum FlowSendError {
 }
 
 impl FrontendFlow {
-    fn new(data_channel: Channel<FrontendDataBatch>) -> Self {
+    fn new(data_channel: Channel<InvokeResponseBody>) -> Self {
         Self {
             inner: Mutex::new(FrontendFlowState {
                 data_channel,
@@ -178,16 +234,29 @@ impl FrontendFlow {
     }
 
     fn send_batch(&self, batch: FrontendDataBatch) -> Result<(), FlowSendError> {
-        let st = self.inner.lock().map_err(|_| FlowSendError::Closed)?;
-        if st.closing {
-            return Err(FlowSendError::Closed);
-        }
-        if batch.generation != st.generation {
-            return Err(FlowSendError::Replaced);
-        }
-        st.data_channel
-            .send(batch)
+        let data_channel = {
+            let st = self.inner.lock().map_err(|_| FlowSendError::Closed)?;
+            if st.closing {
+                return Err(FlowSendError::Closed);
+            }
+            if batch.generation != st.generation {
+                return Err(FlowSendError::Replaced);
+            }
+            st.data_channel.clone()
+        };
+        data_channel
+            .send(InvokeResponseBody::Raw(batch.into_wire()))
             .map_err(|_| FlowSendError::Disconnected)
+    }
+
+    fn mark_dropped(&self) {
+        let Ok(mut st) = self.inner.lock() else {
+            return;
+        };
+        if !st.closing {
+            st.dropped_since_send = true;
+            self.notify.notify_waiters();
+        }
     }
 
     fn forgive_expired_locked(st: &mut FrontendFlowState) {
@@ -251,7 +320,7 @@ impl FrontendFlow {
 
     fn replace_channel(
         &self,
-        data_channel: Channel<FrontendDataBatch>,
+        data_channel: Channel<InvokeResponseBody>,
     ) -> Result<(String, String), String> {
         let mut st = self.inner.lock().map_err(|e| format!("Lock failed: {e}"))?;
         let old_channel_id = st.data_channel.id().to_string();
@@ -299,9 +368,12 @@ pub struct PtySession {
     // Input is enqueued here and drained in FIFO order by a dedicated writer
     // thread. The Tauri command thread only does a non-blocking enqueue, so a
     // full conpty buffer can never stall the UI thread anymore.
-    write_tx: mpsc::UnboundedSender<Vec<u8>>,
+    write_tx: mpsc::Sender<QueuedInput>,
+    write_pending_bytes: Arc<AtomicUsize>,
+    writer_failed: Arc<AtomicBool>,
     pub broadcast: broadcast::Sender<Vec<u8>>,
     scrollback: Arc<Mutex<VecDeque<u8>>>,
+    scrollback_end: Arc<AtomicU64>,
     frontend_flow: Arc<FrontendFlow>,
     pub created_at: Instant,
     #[allow(dead_code)]
@@ -320,7 +392,7 @@ impl PtySession {
         args: &[String],
         cols: u16,
         rows: u16,
-        data_channel: Channel<FrontendDataBatch>,
+        data_channel: Channel<InvokeResponseBody>,
         app_handle: AppHandle,
         cwd: Option<String>,
         env: Option<std::collections::HashMap<String, String>>,
@@ -385,24 +457,26 @@ impl PtySession {
             .try_clone_reader()
             .map_err(|e| format!("Failed to get PTY reader: {e}"))?;
 
-        // Dedicated writer thread: owns the PTY writer and drains an unbounded
-        // queue in FIFO order. `write()` only enqueues, so a blocked conpty
-        // buffer applies backpressure to this thread alone — never to the Tauri
-        // command (UI) thread. The thread exits when the session is dropped
-        // (sender gone) or the PTY write fails (child gone).
-        let (write_tx, mut write_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+        // Dedicated writer thread: owns the PTY writer and drains a bounded
+        // FIFO queue. A blocked ConPTY never blocks the Tauri command thread;
+        // producers receive retryable backpressure instead.
+        let (write_tx, mut write_rx) = mpsc::channel::<QueuedInput>(INPUT_QUEUE_MESSAGE_CAP);
+        let write_pending_bytes = Arc::new(AtomicUsize::new(0));
+        let writer_failed = Arc::new(AtomicBool::new(false));
+        let writer_failed_thread = writer_failed.clone();
         thread::spawn(move || {
             let mut writer = writer;
-            while let Some(data) = write_rx.blocking_recv() {
+            while let Some(input) = write_rx.blocking_recv() {
                 let mut broken = false;
                 // Chunk writes to avoid PTY buffer overflow (conpty ~4KB limit).
-                for chunk in data.chunks(1024) {
+                for chunk in input.data.chunks(INPUT_WRITE_CHUNK_BYTES) {
                     if writer.write_all(chunk).is_err() || writer.flush().is_err() {
                         broken = true;
                         break;
                     }
                 }
                 if broken {
+                    writer_failed_thread.store(true, Ordering::Release);
                     break;
                 }
             }
@@ -411,9 +485,11 @@ impl PtySession {
         // Create broadcast channel and scrollback for remote clients
         let (broadcast_tx, _) = broadcast::channel::<Vec<u8>>(256);
         let scrollback = Arc::new(Mutex::new(VecDeque::with_capacity(SCROLLBACK_CAP)));
+        let scrollback_end = Arc::new(AtomicU64::new(0));
         let broadcast_tx_clone = broadcast_tx.clone();
         let sb_clone = scrollback.clone();
-        let (frontend_tx, mut frontend_rx) = mpsc::channel::<Vec<u8>>(FRONTEND_QUEUE_CAP);
+        let sb_end_clone = scrollback_end.clone();
+        let (frontend_tx, mut frontend_rx) = mpsc::channel::<FrontendChunk>(FRONTEND_QUEUE_CAP);
         let frontend_flow = Arc::new(FrontendFlow::new(data_channel));
 
         // v0.7.1 diag: per-session counters shared by reader/forwarder.
@@ -448,12 +524,8 @@ impl PtySession {
                     let dropped_b = metrics_for_log.dropped_bytes.load(Ordering::Relaxed);
                     let autoconsume = metrics_for_log.autoconsume_events.load(Ordering::Relaxed);
                     let closed = metrics_for_log.closed_count.load(Ordering::Relaxed);
-                    let avg_read_us = if reads > 0 { micros / reads } else { 0 };
-                    let avg_batch = if flushes > 0 {
-                        flushed_bytes / flushes
-                    } else {
-                        0
-                    };
+                    let avg_read_us = micros.checked_div(reads).unwrap_or(0);
+                    let avg_batch = flushed_bytes.checked_div(flushes).unwrap_or(0);
                     eprintln!(
                     "[mycmux-diag pty {}] reads={} avg_read_us={} flushes={} avg_batch={} send_err={} queue_full={} dropped_chunks={} dropped_bytes={} autoconsume={} closed={}",
                     sid_for_log,
@@ -477,12 +549,29 @@ impl PtySession {
         let forwarder_flow = frontend_flow.clone();
         tauri::async_runtime::spawn(async move {
             use std::sync::atomic::Ordering;
-            while let Some(first_chunk) = frontend_rx.recv().await {
-                let mut batch = first_chunk;
+            let mut carry: Option<FrontendChunk> = None;
+            loop {
+                let first_chunk = match carry.take() {
+                    Some(chunk) => chunk,
+                    None => match frontend_rx.recv().await {
+                        Some(chunk) => chunk,
+                        None => break,
+                    },
+                };
+                let mut batch = first_chunk.data;
+                let scrollback_start = first_chunk.scrollback_start;
+                let mut scrollback_end = first_chunk.scrollback_end;
 
                 while batch.len() < FRONTEND_BATCH_MAX_BYTES {
                     match frontend_rx.try_recv() {
-                        Ok(chunk) => batch.extend_from_slice(&chunk),
+                        Ok(chunk) => {
+                            if chunk.scrollback_start != scrollback_end {
+                                carry = Some(chunk);
+                                break;
+                            }
+                            batch.extend_from_slice(&chunk.data);
+                            scrollback_end = chunk.scrollback_end;
+                        }
                         Err(mpsc::error::TryRecvError::Empty) => break,
                         Err(mpsc::error::TryRecvError::Disconnected) => break,
                     }
@@ -505,8 +594,9 @@ impl PtySession {
                         let msg = FrontendDataBatch {
                             generation,
                             seq,
-                            bytes: batch_len,
                             resync,
+                            scrollback_start,
+                            scrollback_end,
                             data: batch,
                         };
                         match forwarder_flow.send_batch(msg) {
@@ -539,6 +629,7 @@ impl PtySession {
         let sid = session_id.clone();
         let handle = app_handle.clone();
         let metrics_reader = metrics.clone();
+        let reader_flow = frontend_flow.clone();
         thread::spawn(move || {
             use std::sync::atomic::Ordering;
             let mut buf = [0u8; 4096]; // 4KB — matches OS page size
@@ -600,10 +691,29 @@ impl PtySession {
                         #[cfg(debug_assertions)]
                         let send_start = Instant::now();
                         let chunk = buf[..n].to_vec();
+
+                        // Append before publishing the frontend batch. The
+                        // absolute offsets let a recovering renderer discard
+                        // exactly the bytes already present in its snapshot.
+                        let scrollback_start = sb_end_clone.load(Ordering::Relaxed);
+                        let scrollback_end = scrollback_start.saturating_add(chunk.len() as u64);
+                        if let Ok(mut sb) = sb_clone.lock() {
+                            sb.extend(chunk.iter().copied());
+                            let overflow = sb.len().saturating_sub(SCROLLBACK_CAP);
+                            if overflow > 0 {
+                                drop(sb.drain(..overflow));
+                            }
+                            sb_end_clone.store(scrollback_end, Ordering::Relaxed);
+                        }
                         if frontend_open {
-                            match frontend_tx.try_send(chunk.clone()) {
+                            match frontend_tx.try_send(FrontendChunk {
+                                data: chunk.clone(),
+                                scrollback_start,
+                                scrollback_end,
+                            }) {
                                 Ok(()) => {}
                                 Err(mpsc::error::TrySendError::Full(rejected)) => {
+                                    reader_flow.mark_dropped();
                                     metrics_reader
                                         .frontend_queue_full_retry
                                         .fetch_add(1, Ordering::Relaxed);
@@ -612,7 +722,7 @@ impl PtySession {
                                         .fetch_add(1, Ordering::Relaxed);
                                     metrics_reader
                                         .dropped_bytes
-                                        .fetch_add(rejected.len() as u64, Ordering::Relaxed);
+                                        .fetch_add(rejected.data.len() as u64, Ordering::Relaxed);
                                     // Keep draining the PTY even when the renderer is behind.
                                     // Blocking here lets child stdout/stderr fill up and can make
                                     // stdin appear frozen, so display catch-up is best-effort.
@@ -630,15 +740,6 @@ impl PtySession {
                         if broadcast_tx_clone.receiver_count() > 0 {
                             let _ = broadcast_tx_clone.send(chunk.clone());
                         }
-                        // Append to scrollback ring buffer
-                        if let Ok(mut sb) = sb_clone.lock() {
-                            sb.extend(chunk.iter().copied());
-                            let overflow = sb.len().saturating_sub(SCROLLBACK_CAP);
-                            if overflow > 0 {
-                                drop(sb.drain(..overflow));
-                            }
-                        }
-
                         #[cfg(debug_assertions)]
                         {
                             // Log slow reads in debug builds only
@@ -661,8 +762,11 @@ impl PtySession {
             child: Mutex::new(child),
             master: Mutex::new(pair.master),
             write_tx,
+            write_pending_bytes,
+            writer_failed,
             broadcast: broadcast_tx,
             scrollback,
+            scrollback_end,
             frontend_flow,
             created_at,
             metrics,
@@ -671,7 +775,7 @@ impl PtySession {
 
     pub fn replace_data_channel(
         &self,
-        data_channel: Channel<FrontendDataBatch>,
+        data_channel: Channel<InvokeResponseBody>,
     ) -> Result<(String, String), String> {
         self.frontend_flow.replace_channel(data_channel)
     }
@@ -685,14 +789,40 @@ impl PtySession {
     }
 
     pub fn write(&self, data: &[u8]) -> Result<(), String> {
-        // Non-blocking enqueue. The dedicated writer thread does the actual
-        // (potentially blocking) write_all/flush in FIFO order, so this returns
-        // immediately and never stalls the caller — even if the child stops
-        // draining its input. Order is preserved because there is a single
-        // consumer and callers enqueue in invocation order.
-        self.write_tx
-            .send(data.to_vec())
-            .map_err(|_| "PTY writer thread has exited".to_string())
+        // Reserve bytes before the non-blocking enqueue. QueuedInput::drop
+        // releases the reservation after either consumption or rejection.
+        if data.is_empty() {
+            return Ok(());
+        }
+        if self.writer_failed.load(Ordering::Acquire) {
+            return Err("PTY_INPUT_WRITER_FAILED: PTY writer thread has exited".to_string());
+        }
+
+        let bytes = data.len();
+        self.write_pending_bytes
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |pending| {
+                pending
+                    .checked_add(bytes)
+                    .filter(|next| *next <= INPUT_QUEUE_BYTE_CAP)
+            })
+            .map_err(|_| {
+                "PTY_INPUT_BACKPRESSURE: terminal input queue byte limit reached".to_string()
+            })?;
+
+        let input = QueuedInput {
+            data: data.to_vec(),
+            pending_bytes: self.write_pending_bytes.clone(),
+        };
+        match self.write_tx.try_send(input) {
+            Ok(()) => Ok(()),
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                Err("PTY_INPUT_BACKPRESSURE: terminal input queue is full".to_string())
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                self.writer_failed.store(true, Ordering::Release);
+                Err("PTY_INPUT_WRITER_FAILED: PTY writer thread has exited".to_string())
+            }
+        }
     }
 
     pub fn resize(&self, cols: u16, rows: u16) -> Result<(), String> {
@@ -730,6 +860,26 @@ impl PtySession {
             .map(|sb| sb.iter().copied().collect())
             .unwrap_or_default()
     }
+
+    pub fn get_scrollback_snapshot(&self) -> ScrollbackSnapshot {
+        match self.scrollback.lock() {
+            Ok(scrollback) => {
+                let data: Vec<u8> = scrollback.iter().copied().collect();
+                let end_offset = self.scrollback_end.load(Ordering::Relaxed);
+                let start_offset = end_offset.saturating_sub(data.len() as u64);
+                ScrollbackSnapshot {
+                    data,
+                    start_offset,
+                    end_offset,
+                }
+            }
+            Err(_) => ScrollbackSnapshot {
+                data: Vec::new(),
+                start_offset: 0,
+                end_offset: 0,
+            },
+        }
+    }
 }
 
 impl Drop for PtySession {
@@ -743,7 +893,7 @@ impl Drop for PtySession {
 mod tests {
     use super::*;
 
-    fn test_channel() -> Channel<FrontendDataBatch> {
+    fn test_channel() -> Channel<InvokeResponseBody> {
         Channel::new(|_| Ok(()))
     }
 
@@ -916,6 +1066,61 @@ mod tests {
         flow.ack(recovered_generation, seq3, 32);
         let (_, seq4, resync) = expect_send_with_resync(flow.reserve(32).await);
         assert_eq!((seq4, resync), (4, false));
+    }
+
+    #[tokio::test]
+    async fn dropped_frontend_chunk_marks_exactly_one_following_batch_for_resync() {
+        let flow = FrontendFlow::new(test_channel());
+        let (generation, seq1, resync1) = expect_send_with_resync(flow.reserve(16).await);
+        assert!(!resync1);
+        flow.ack(generation, seq1, 16);
+
+        flow.mark_dropped();
+        let (_, seq2, resync2) = expect_send_with_resync(flow.reserve(16).await);
+        assert!(resync2);
+        flow.ack(generation, seq2, 16);
+
+        let (_, _, resync3) = expect_send_with_resync(flow.reserve(16).await);
+        assert!(!resync3);
+    }
+
+    #[test]
+    fn binary_frames_keep_terminal_payload_bytes_raw() {
+        let data_frame = FrontendDataBatch {
+            generation: 2,
+            seq: 7,
+            resync: true,
+            scrollback_start: 100,
+            scrollback_end: 103,
+            data: vec![65, 66, 67],
+        }
+        .into_wire();
+        assert_eq!(&data_frame[..4], b"MCX1");
+        assert_eq!(data_frame.len(), FRONTEND_DATA_FRAME_HEADER_BYTES + 3);
+        assert_eq!(&data_frame[40..], &[65, 66, 67]);
+
+        let snapshot_frame = ScrollbackSnapshot {
+            data: vec![10, 11],
+            start_offset: 40,
+            end_offset: 42,
+        }
+        .into_wire();
+        assert_eq!(&snapshot_frame[..4], b"MCS1");
+        assert_eq!(snapshot_frame.len(), SCROLLBACK_FRAME_HEADER_BYTES + 2);
+        assert_eq!(&snapshot_frame[24..], &[10, 11]);
+    }
+
+    #[test]
+    fn queued_input_releases_reserved_bytes_when_consumed_or_rejected() {
+        let pending = Arc::new(AtomicUsize::new(3));
+        {
+            let _input = QueuedInput {
+                data: vec![1, 2, 3],
+                pending_bytes: pending.clone(),
+            };
+            assert_eq!(pending.load(Ordering::Acquire), 3);
+        }
+        assert_eq!(pending.load(Ordering::Acquire), 0);
     }
 
     #[tokio::test]

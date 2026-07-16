@@ -78,13 +78,18 @@ powershell -ExecutionPolicy Bypass -File build-lite.ps1
 7. リリースを確認:
    - 個人版: https://github.com/miyafcos/mycmux/releases
    - lite: https://github.com/miyafcos/mycmux-team/releases
+8. 個人版は private repo の Release asset を Tauri updater が直接読めないため、署名済みアセットを public repo の固定 feed にミラーする:
+   - feed tag: `mycmux-personal-updater`
+   - endpoint: `https://github.com/miyafcos/mycmux-team/releases/download/mycmux-personal-updater/latest.json`
+   - `latest.json` 内の download URL は `miyafcos/mycmux-team/releases/download/mycmux-personal-updater/...` に書き換える
+   - release は `--prerelease --latest=false` にして、lite の `/releases/latest` を壊さない
 
 ### Updater 用 `latest.json` の URL
 
-- 個人版: `https://github.com/miyafcos/mycmux/releases/latest/download/latest.json`
+- 個人版: `https://github.com/miyafcos/mycmux-team/releases/download/mycmux-personal-updater/latest.json`
 - lite: `https://github.com/miyafcos/mycmux-team/releases/latest/download/latest.json`
 
-private リポジトリでも Releases assets は公開ダウンロード可能なので、認証なしで取得できる。
+private GitHub Release は標準 Tauri updater から認証なしで取得できない。個人版の source は private のまま、updater に必要な署名済み配布物だけを public fixed feed に置く。
 
 ## Tauri Updater 鍵管理
 
@@ -124,6 +129,36 @@ private リポジトリでも Releases assets は公開ダウンロード可能�
 - ネットワーク失敗 → endpoint URL を再確認
 - 署名検証失敗 → `tauri.conf.json` の `pubkey` と CI で使った秘密鍵が対応しているか確認
 - ダウンロード途中で中断 → 再度「更新を確認」を押す
+- lite が個人版を見てしまう → `mycmux-team/releases/latest` を個人版に使っていないか確認。個人版は必ず `mycmux-personal-updater` 固定 tag を使う
+
+## lite リリース前に必要な cherry-pick と workflow 追記 (改善プラン v3 S-3)
+
+master (`cmux-for-linux-dev-master`) では以下を実施済み:
+- `scripts/normalize-updater-feed.ps1` を新設し、latest.json の plain `windows-x86_64` キーを `windows-x86_64-nsis` エントリの signature/url で上書きする正規化ロジックを括り出した (入力パス→出力パスの純関数的スクリプト)
+- `scripts/mirror-personal-updater-feed.ps1` は上記スクリプトを呼ぶ形にリファクタ済み
+- `.github/workflows/release.yml` (master) の `test` job (tsc/vitest/cargo test/pytest) と、Mirror ステップの secret 未設定時エラー可視化 (`::error::` + Step Summary + `continue-on-error: true`)
+
+lite (`cmux-for-linux-dev` / `release/public-lite` worktree) は **別リポジトリ (`miyafcos/mycmux-team`) 向けの独自 workflow** を持つため、上記は自動反映されない。lite の次回リリース前に以下を実施すること:
+
+1. master の該当コミットを lite worktree に cherry-pick する:
+   ```powershell
+   cd C:\Users\miyaz\cmux-for-linux-dev
+   git cherry-pick <scripts/normalize-updater-feed.ps1 追加コミットのハッシュ>
+   git cherry-pick <scripts/mirror-personal-updater-feed.ps1 リファクタコミットのハッシュ>
+   ```
+   master 専用シンボル (RemoteControl 等) を含むコミットとは競合しやすいので、`scripts/` 配下だけの変更であることを `git show --stat` で確認してから cherry-pick する。
+2. lite の release workflow (`build-lite` job相当) に、tauri-action のビルド後・アップロード前の位置へ正規化ステップを追加する。lite は latest.json を直接 `miyafcos/mycmux-team` の `releases/latest` に出すため、mirror script 経由ではなく **ビルド直後に正規化してから upload** する形になる:
+   ```yaml
+   - name: Normalize updater feed (windows-x86_64 fallback key)
+     shell: powershell
+     run: |
+       $latestJson = Get-ChildItem -Path . -Recurse -Filter "latest.json" | Select-Object -First 1
+       if (-not $latestJson) { throw "latest.json not found after tauri build" }
+       .\scripts\normalize-updater-feed.ps1 -InputPath $latestJson.FullName
+   ```
+   (実際の latest.json の出力パスは tauri-action のバンドル設定・ランナー環境に依存するため、導入時に `Get-ChildItem` の起点を実パスに合わせて調整すること。)
+3. lite 側にも `test` job を追加し `build-lite` の `needs:` に含める (master の `test` job 定義をそのまま流用可能。Python セットアップ含め master と同一の pytest スイートを走らせる)。
+4. 反映後、`tests/test_updater_feed_contract.py` と同等の契約テストが lite 側 CI でも `pytest tests/` 経由で走ることを確認する (このリポジトリの `tests/` は両 worktree で共有されるファイル群ではないため、lite worktree 側の `tests/` にも同じテストファイルが cherry-pick で反映されているか要確認)。
 
 ## ロールバック
 

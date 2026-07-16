@@ -6,7 +6,10 @@ use std::process::{Command, ExitStatus, Stdio};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-const CRSM_LIST_TIMEOUT: Duration = Duration::from_secs(4);
+// crsm list serves a fresh cache in ~0.1s, but a TTL-expired call rescans
+// incrementally first (measured 1.5-2.5s, longer under disk pressure); 4s
+// killed those rescans mid-flight and surfaced spawn errors in the palette.
+const CRSM_LIST_TIMEOUT: Duration = Duration::from_secs(15);
 const CRSM_HANDOFF_TIMEOUT: Duration = Duration::from_secs(10);
 
 struct CrsmOutput {

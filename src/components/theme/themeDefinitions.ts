@@ -1,4 +1,5 @@
 import type { ThemeColorScheme, ThemeDefinition, ThemeGroup, ThemeStatusColors } from "../../types";
+import { applyContrastFloor, resolveDimColor } from "./colorContrast";
 
 export const DEFAULT_THEME_ID = "mayonaka";
 
@@ -35,9 +36,22 @@ function completeTheme(theme: ThemeDraft): ThemeDefinition {
   const colorScheme: ThemeColorScheme = theme.colorScheme ?? (theme.group === "light" ? "light" : "dark");
   const isLight = colorScheme === "light";
   const statusBase = isLight ? DEFAULT_LIGHT_STATUS : DEFAULT_DARK_STATUS;
+  // textDim/textMuted must stay >=4.5:1 against chrome.background (WCAG AA
+  // body-text floor) — both are used for real readable content (e.g. crash
+  // messages in ErrorBoundary, notification/log lines) at small font sizes,
+  // not just decorative dimming. This only clamps the built-in draft
+  // defaults computed here; user theme tweaks are applied later via
+  // applyThemeTweaks() on top of the already-completed theme and are never
+  // re-clamped (see src/lib/themeTweaks.ts).
+  const textMuted = applyContrastFloor(theme.chrome.textMuted, theme.chrome.text, theme.chrome.background);
+  const textDim =
+    theme.chrome.textDim ??
+    resolveDimColor(theme.chrome.text, theme.chrome.background, theme.chrome.background);
+
   const chrome: ThemeDefinition["chrome"] = {
     ...theme.chrome,
-    textDim: theme.chrome.textDim ?? (isLight ? "#9b938d" : "#475569"),
+    textMuted,
+    textDim,
     hover: theme.chrome.hover ?? (isLight ? "rgba(0, 0, 0, 0.075)" : "rgba(255, 255, 255, 0.065)"),
     selected: theme.chrome.selected ?? (isLight ? "rgba(0, 0, 0, 0.095)" : "rgba(255, 255, 255, 0.085)"),
     danger: theme.chrome.danger ?? (isLight ? "#c85757" : "#fb7185"),
