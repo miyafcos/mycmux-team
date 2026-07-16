@@ -1,8 +1,9 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "mycmux",
-  "version": "0.19.2",
-  "identifier": "com.miyazaki.mycmux",
+  "productName": "mycmux-lite",
+  "mainBinaryName": "mycmux-lite",
+  "version": "0.19.2-lite.1",
+  "identifier": "com.miyazaki.mycmux-lite",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
@@ -12,7 +13,7 @@
   "app": {
     "windows": [
       {
-        "title": "mycmux",
+        "title": "mycmux-lite",
         "width": 1200,
         "height": 800,
         "visible": false,
@@ -33,18 +34,18 @@
     "updater": {
       "active": true,
       "endpoints": [
-        "https://github.com/miyafcos/mycmux-team/releases/download/mycmux-personal-updater/latest.json"
+        "https://github.com/miyafcos/mycmux-team/releases/latest/download/latest.json"
       ],
       "dialog": false,
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDc3MjRBRDg0REY0OEZERUQKUldUdC9VamZoSzBrZDlULzZ3UlR2NFdtS2pqU1g0UFRTUklGM2FQSE1zT2piQkRyUGxHSWVCUVoK"
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDFBMjNFMzc2QjQ2QzcwMjUKUldRbGNHeTBkdU1qR29DdlBhRzlVWDU3U2txa2NuU2dvRHJaN0FyOTRzU2psMU1DSHFvWW8xRGUK"
     }
   },
   "bundle": {
     "active": true,
     "targets": "all",
     "category": "Utility",
-    "shortDescription": "Cross-platform terminal workspace manager",
-    "longDescription": "mycmux is an AI agent terminal workspace built with Tauri and React. Features include workspaces, split panes, remote terminal access, and a socket API for automation.",
+    "shortDescription": "Team-shared terminal workspace (lite edition)",
+    "longDescription": "mycmux-lite is a team-shared build of mycmux with all features except the Buddy companion.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -71,6 +72,9 @@
       "webviewInstallMode": {
         "type": "downloadBootstrapper",
         "silent": true
+      },
+      "wix": {
+        "version": "0.19.2.1"
       }
     }
   }

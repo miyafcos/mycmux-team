@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag to build (e.g. v0.4.4)"
+        description: "Tag to build (e.g. v0.19.2-lite.1)"
         required: true
         type: string
       runner:
@@ -29,6 +29,8 @@ jobs:
     runs-on: ${{ github.event.inputs.runner || 'windows-latest' }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
 
       - uses: actions/setup-node@v4
         with:
@@ -67,11 +69,13 @@ jobs:
       - name: Pytest
         run: python -m pytest tests/ -q
 
-  build-personal:
+  build-lite:
     needs: test
     runs-on: ${{ github.event.inputs.runner || 'windows-latest' }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
 
       - uses: actions/setup-node@v4
         with:
@@ -109,7 +113,7 @@ jobs:
           $vcvars = Join-Path $vsInstall "VC\Auxiliary\Build\vcvarsall.bat"
           if (-not (Test-Path $vcvars)) { throw "vcvarsall.bat not found at $vcvars" }
           # vcvarsall.bat shells out to vswhere.exe; on self-hosted runners the
-          # VS Installer dir is not on PATH, so add it (mirrors build-personal.ps1).
+          # VS Installer dir is not on PATH, so add it (mirrors build-lite.ps1).
           $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH;C:\Program Files (x86)\Microsoft Visual Studio\Installer"
           $output = cmd /c "`"$vcvars`" x64 && set" 2>$null
           foreach ($line in $output) {
@@ -127,6 +131,23 @@ jobs:
 
       - run: npm ci
 
+      - name: Verify mycmux-team release authentication
+        shell: powershell
+        env:
+          TARGET_TOKEN: ${{ secrets.MYCMUX_TEAM_RELEASE_TOKEN }}
+          SELECTED_RUNNER: ${{ github.event.inputs.runner || 'windows-latest' }}
+        run: |
+          if ($env:TARGET_TOKEN) {
+            $env:GH_TOKEN = $env:TARGET_TOKEN
+          } elseif ($env:SELECTED_RUNNER -eq "self-hosted") {
+            Remove-Item Env:GH_TOKEN -ErrorAction SilentlyContinue
+            Remove-Item Env:GITHUB_TOKEN -ErrorAction SilentlyContinue
+            gh auth status --hostname github.com
+          } else {
+            throw "MYCMUX_TEAM_RELEASE_TOKEN is required on GitHub-hosted runners to publish miyafcos/mycmux-team. Dispatch this workflow with runner=self-hosted to use ambient gh authentication."
+          }
+          gh repo view miyafcos/mycmux-team --json nameWithOwner --jq .nameWithOwner
+
       - name: Enable updater artifacts
         shell: powershell
         run: |
@@ -137,17 +158,17 @@ jobs:
           $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
           [System.IO.File]::WriteAllText((Resolve-Path $configPath), $json, $utf8NoBom)
 
-      - name: Build & sign (mycmux personal)
+      - name: Build & sign (mycmux-lite)
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_KEY_PERSONAL }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PERSONAL_PASSWORD }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_KEY_LITE }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_KEY_LITE_PASSWORD }}
         with:
           tagName: ${{ github.event.inputs.tag || github.ref_name }}
-          releaseName: "mycmux ${{ github.event.inputs.tag || github.ref_name }}"
+          releaseName: "mycmux-lite ${{ github.event.inputs.tag || github.ref_name }}"
           releaseBody: |
-            mycmux personal build (${{ github.event.inputs.tag || github.ref_name }}).
+            mycmux-lite team build (${{ github.event.inputs.tag || github.ref_name }}).
 
             See `CHANGELOG.md` for details.
 
@@ -155,19 +176,88 @@ jobs:
           releaseDraft: false
           prerelease: false
 
-      - name: Mirror personal updater feed
+      - name: Publish lite release to mycmux-team
         shell: powershell
-        continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.MYCMUX_TEAM_RELEASE_TOKEN }}
-          SOURCE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          TARGET_TOKEN: ${{ secrets.MYCMUX_TEAM_RELEASE_TOKEN }}
+          SELECTED_RUNNER: ${{ github.event.inputs.runner || 'windows-latest' }}
+          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          SOURCE_REPO: ${{ github.repository }}
         run: |
-          if (-not $env:GH_TOKEN) {
-            $message = "MYCMUX_TEAM_RELEASE_TOKEN is not configured; skipping the public personal updater feed mirror. Existing installations will NOT see this release via the in-app updater until this is fixed."
-            Write-Host "::error::$message"
-            if ($env:GITHUB_STEP_SUMMARY) {
-              Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "## :x: Updater feed mirror skipped`n`n$message"
-            }
-            exit 1
+          $ErrorActionPreference = "Stop"
+          if ($env:TARGET_TOKEN) {
+            $env:GH_TOKEN = $env:TARGET_TOKEN
+          } elseif ($env:SELECTED_RUNNER -eq "self-hosted") {
+            Remove-Item Env:GH_TOKEN -ErrorAction SilentlyContinue
+            Remove-Item Env:GITHUB_TOKEN -ErrorAction SilentlyContinue
+            gh auth status --hostname github.com
+          } else {
+            throw "MYCMUX_TEAM_RELEASE_TOKEN is required on GitHub-hosted runners."
           }
-          .\scripts\mirror-personal-updater-feed.ps1 -SourceTag $env:SOURCE_TAG
+
+          $tag = $env:RELEASE_TAG
+          $expectedVersion = $tag -replace '^v', ''
+          $targetRepo = "miyafcos/mycmux-team"
+          $bundleRoot = Resolve-Path "src-tauri/target/release/bundle"
+          $latestFiles = @(Get-ChildItem -LiteralPath $bundleRoot -Recurse -File -Filter "latest.json")
+          if ($latestFiles.Count -ne 1) {
+            throw "Expected exactly one latest.json under $bundleRoot, found $($latestFiles.Count)."
+          }
+          $latestPath = $latestFiles[0].FullName
+          $latestText = Get-Content -LiteralPath $latestPath -Raw -Encoding UTF8
+          $sourcePrefix = "https://github.com/$($env:SOURCE_REPO)/releases/download/$tag/"
+          $targetPrefix = "https://github.com/$targetRepo/releases/download/$tag/"
+          $latestText = $latestText.Replace($sourcePrefix, $targetPrefix)
+          $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+          [System.IO.File]::WriteAllText($latestPath, $latestText, $utf8NoBom)
+          .\scripts\normalize-updater-feed.ps1 -InputPath $latestPath
+
+          $latest = Get-Content -LiteralPath $latestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+          if ($latest.version -ne $expectedVersion) {
+            throw "latest.json version '$($latest.version)' does not match tag version '$expectedVersion'."
+          }
+          $platformJson = $latest.platforms | ConvertTo-Json -Depth 20 -Compress
+          if ($env:SOURCE_REPO -ne $targetRepo -and $platformJson.Contains($sourcePrefix)) {
+            throw "latest.json still references source release URLs: $sourcePrefix"
+          }
+          if (-not $platformJson.Contains($targetPrefix)) {
+            throw "latest.json does not reference target release URLs: $targetPrefix"
+          }
+          $plain = $latest.platforms.'windows-x86_64'
+          $nsis = $latest.platforms.'windows-x86_64-nsis'
+          if ($null -eq $plain -or $null -eq $nsis -or $plain.signature -ne $nsis.signature -or $plain.url -ne $nsis.url) {
+            throw "windows-x86_64 fallback does not match windows-x86_64-nsis after normalization."
+          }
+
+          $bundleFiles = @(Get-ChildItem -LiteralPath $bundleRoot -Recurse -File | Where-Object {
+            $_.Extension -in @(".exe", ".msi", ".sig")
+          })
+          $nsisInstallers = @($bundleFiles | Where-Object { $_.Extension -eq ".exe" })
+          $msiInstallers = @($bundleFiles | Where-Object { $_.Extension -eq ".msi" })
+          $signatures = @($bundleFiles | Where-Object { $_.Extension -eq ".sig" })
+          if ($nsisInstallers.Count -ne 1 -or $msiInstallers.Count -ne 1 -or $signatures.Count -lt 2) {
+            throw "Unexpected Windows artifact set: NSIS=$($nsisInstallers.Count), MSI=$($msiInstallers.Count), signatures=$($signatures.Count)."
+          }
+
+          gh release view $tag --repo $targetRepo *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release edit $tag --repo $targetRepo --draft=false --prerelease=false --latest
+          } else {
+            gh release create $tag --repo $targetRepo --verify-tag --title "mycmux-lite $tag" --notes "mycmux-lite team build ($tag). See CHANGELOG.md for details." --latest
+          }
+          if ($LASTEXITCODE -ne 0) { throw "Failed to create or update target release $targetRepo $tag." }
+
+          $uploadPaths = @($bundleFiles | ForEach-Object { $_.FullName }) + @($latestPath)
+          $uploadArgs = @("release", "upload", $tag) + $uploadPaths + @("--clobber", "--repo", $targetRepo)
+          gh @uploadArgs
+          if ($LASTEXITCODE -ne 0) { throw "Failed to upload lite release assets to $targetRepo $tag." }
+
+          $verifyDir = Join-Path $env:RUNNER_TEMP "mycmux-lite-release-verify"
+          New-Item -ItemType Directory -Path $verifyDir -Force | Out-Null
+          gh release download $tag --repo $targetRepo --pattern "latest.json" --dir $verifyDir --clobber
+          if ($LASTEXITCODE -ne 0) { throw "Failed to download published latest.json for verification." }
+          $published = Get-Content -LiteralPath (Join-Path $verifyDir "latest.json") -Raw -Encoding UTF8 | ConvertFrom-Json
+          if ($published.version -ne $expectedVersion) {
+            throw "Published latest.json version '$($published.version)' does not match '$expectedVersion'."
+          }
+          Write-Host "Published mycmux-lite $tag to $targetRepo and verified latest.json."
