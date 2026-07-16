@@ -31,13 +31,6 @@ export interface ThemeStatusColors {
   error: string;
 }
 
-export interface ThemeBuddyColors {
-  ink: string;
-  blush: string;
-  spark: string;
-  sweat: string;
-}
-
 export type ThemeTweakColorKey =
   | "chrome.background"
   | "chrome.surface"
@@ -49,10 +42,6 @@ export type ThemeTweakColorKey =
   | "chrome.hover"
   | "chrome.selected"
   | "chrome.danger"
-  | "buddy.ink"
-  | "buddy.blush"
-  | "buddy.spark"
-  | "buddy.sweat"
   | "terminal.background"
   | "terminal.foreground"
   | "terminal.cursor"
@@ -118,6 +107,5 @@ export interface ThemeDefinition {
     danger: string;
   };
   status: ThemeStatusColors;
-  buddy: ThemeBuddyColors;
   notification: string;
 }

@@ -378,7 +378,6 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
       setZoomedPaneId(null);
     }
   }, [zoomedPaneId, activeId, workspaces, setZoomedPaneId]);
-  const isLightTheme = currentTheme.colorScheme === "light";
   // Chrome shadows key off the effective chrome background (color overrides
   // included), not colorScheme — a dark theme recolored light needs this too.
   const isLightChrome = isLightColor(currentTheme.chrome.background);
@@ -437,18 +436,6 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
     "--status-done": currentTheme.status.done,
     "--status-error": currentTheme.status.error,
     "--notification-color": currentTheme.notification,
-    "--buddy-ink": currentTheme.buddy.ink,
-    "--buddy-blush": currentTheme.buddy.blush,
-    "--buddy-spark": currentTheme.buddy.spark,
-    "--buddy-sweat": currentTheme.buddy.sweat,
-    "--buddy-bubble-bg": isLightTheme
-      ? "rgba(255, 248, 239, 0.96)"
-      : "color-mix(in srgb, var(--cmux-surface) 92%, var(--cmux-text) 8%)",
-    "--buddy-bubble-text": currentTheme.buddy.ink,
-    "--buddy-bubble-muted": "color-mix(in srgb, var(--buddy-bubble-text) 60%, transparent)",
-    "--buddy-bubble-subtle": "color-mix(in srgb, var(--buddy-bubble-text) 8%, transparent)",
-    "--buddy-bubble-hover": "color-mix(in srgb, var(--buddy-bubble-text) 18%, transparent)",
-    "--buddy-bubble-scroll": "color-mix(in srgb, var(--buddy-bubble-text) 32%, transparent)",
     "--cmux-chrome-text-shadow": "none",
     "--cmux-chrome-icon-shadow": "none",
     colorScheme: currentTheme.colorScheme,

@@ -53,39 +53,39 @@ describe("settings persistence migration", () => {
 
   it("restores the Windows DOM safety default from a version 1 WebGL state", () => {
     expect(migratePersistedSettings(
-      { terminalRenderer: "webgl", buddyEnabled: true },
+      { terminalRenderer: "webgl", notificationsEnabled: true },
       1,
       "Windows NT 10.0",
     )).toEqual({
       terminalRenderer: "dom",
-      buddyEnabled: true,
+      notificationsEnabled: true,
     });
   });
 
   it("resets the old non-Windows WebGL default carried through version 2", () => {
     expect(migratePersistedSettings(
-      { terminalRenderer: "webgl", buddyEnabled: true },
+      { terminalRenderer: "webgl", notificationsEnabled: true },
       2,
       "Macintosh; Intel Mac OS X",
     )).toEqual({
       terminalRenderer: "dom",
-      buddyEnabled: true,
+      notificationsEnabled: true,
     });
   });
 
   it("keeps a post-version-2 WebGL choice on Windows", () => {
     expect(migratePersistedSettings(
-      { terminalRenderer: "webgl", buddyEnabled: true },
+      { terminalRenderer: "webgl", notificationsEnabled: true },
       2,
       "Windows NT 10.0",
     )).toEqual({
       terminalRenderer: "webgl",
-      buddyEnabled: true,
+      notificationsEnabled: true,
     });
   });
 
   it("preserves an explicit renderer choice at the current version", () => {
-    const persisted = { terminalRenderer: "webgl", buddyEnabled: true };
+    const persisted = { terminalRenderer: "webgl", notificationsEnabled: true };
     expect(migratePersistedSettings(
       persisted,
       SETTINGS_STORE_VERSION,

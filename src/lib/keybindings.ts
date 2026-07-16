@@ -26,8 +26,7 @@ export type KeybindingActionId =
   | "settings.keybindings"
   | "pane.zoom.toggle"
   | "terminal.search"
-  | "crsm.palette"
-  | "buddy.toggle";
+  | "crsm.palette";
 
 export interface KeybindingDefinition {
   action: KeybindingActionId;
@@ -69,7 +68,6 @@ export const KEYBINDING_DEFINITIONS: KeybindingDefinition[] = [
 
   { action: "terminal.search", title: "Find in terminal", category: "Terminal", defaultShortcut: "ctrl+shift+f" },
 
-  { action: "buddy.toggle", title: "Toggle Claude Buddy", category: "Global", defaultShortcut: "" },
 ];
 
 const MOD_ORDER = ["ctrl", "alt", "shift", "meta"];

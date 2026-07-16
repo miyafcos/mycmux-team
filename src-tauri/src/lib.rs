@@ -1,4 +1,3 @@
-mod buddy;
 mod commands;
 mod db;
 mod events;
@@ -289,26 +288,6 @@ pub fn run() {
             remote::get_remote_bind_all,
             remote::set_remote_bind_all,
             socket::socket_response,
-            buddy::commands::codex_judge,
-            buddy::commands::codex_summarize,
-            buddy::commands::load_buddy_settings,
-            buddy::commands::save_buddy_settings,
-            buddy::commands::list_codex_pets,
-            buddy::commands::read_codex_pet_spritesheet,
-            buddy::commands::read_codex_pet_layout,
-            buddy::commands::load_buddy_environment,
-            buddy::commands::load_session_tail,
-            buddy::work_context::load_work_context,
-            buddy::commands::append_buddy_log,
-            buddy::commands::append_buddy_chat,
-            buddy::commands::load_recent_chat,
-            buddy::commands::load_chat_since,
-            buddy::commands::load_buddy_profile_facets,
-            buddy::commands::save_buddy_profile_facet,
-            buddy::commands::load_observation_state,
-            buddy::commands::save_observation_state,
-            buddy::commands::set_buddy_enabled,
-            buddy::commands::is_buddy_enabled,
         ])
         .setup(|#[allow(unused)] app| {
             use tauri::Manager;
@@ -369,9 +348,6 @@ pub fn run() {
                 remote_sessions.clone(),
                 remote_bind_all,
             );
-
-            buddy::init(&app_handle);
-
             // Kill all PTY sessions when the main window closes
             let mgr = state.session_manager.clone();
             if let Some(main_window) = app.get_webview_window("main") {

@@ -293,9 +293,8 @@ pub fn get_remote_bind_all(app_handle: tauri::AppHandle) -> Result<bool, String>
     Ok(crate::db::storage::load(&app_handle)?.settings.remote_bind_all)
 }
 
-/// Persist the "bind remote to LAN" preference. Mirrors the
-/// `set_buddy_enabled`/`db::storage` wiring pattern used elsewhere in the
-/// app. Takes effect on the next app restart (the server is already bound).
+/// Persist the "bind remote to LAN" preference through `db::storage`.
+/// Takes effect on the next app restart (the server is already bound).
 #[tauri::command(async)]
 pub fn set_remote_bind_all(app_handle: tauri::AppHandle, enabled: bool) -> Result<bool, String> {
     crate::db::storage::update(&app_handle, |data| {

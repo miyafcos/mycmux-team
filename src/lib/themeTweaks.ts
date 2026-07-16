@@ -546,10 +546,6 @@ export const THEME_TWEAK_PRESET_SCOPE: ThemeTweakColorKey[] = [
   "status.working",
   "status.waiting",
   "notification",
-  "buddy.ink",
-  "buddy.blush",
-  "buddy.spark",
-  "buddy.sweat",
   "terminal.yellow",
   "terminal.brightYellow",
 ];
@@ -616,16 +612,6 @@ export const THEME_TWEAK_GROUPS: ThemeTweakGroup[] = [
       { key: "status.done", label: "完了ランプ" },
       { key: "status.error", label: "エラーランプ" },
       { key: "notification", label: "通知バッジ" },
-    ],
-  },
-  {
-    id: "buddy",
-    label: "Buddy",
-    fields: [
-      { key: "buddy.ink", label: "線/文字" },
-      { key: "buddy.blush", label: "ほほ" },
-      { key: "buddy.spark", label: "きらめき" },
-      { key: "buddy.sweat", label: "汗/作業色" },
     ],
   },
 ];
@@ -707,7 +693,7 @@ export function readThemeColor(theme: ThemeDefinition, key: ThemeTweakColorKey):
   }
 
   const [section, name] = key.split(".") as [
-    "chrome" | "terminal" | "status" | "buddy",
+    "chrome" | "terminal" | "status",
     string,
   ];
   if (section === "chrome") {
@@ -715,9 +701,6 @@ export function readThemeColor(theme: ThemeDefinition, key: ThemeTweakColorKey):
   }
   if (section === "terminal") {
     return theme.terminal[name as keyof TerminalColors];
-  }
-  if (section === "buddy") {
-    return theme.buddy[name as keyof ThemeDefinition["buddy"]];
   }
   return theme.status[name as keyof ThemeStatusColors];
 }
@@ -743,7 +726,7 @@ function withThemeColor(
   }
 
   const [section, name] = key.split(".") as [
-    "chrome" | "terminal" | "status" | "buddy",
+    "chrome" | "terminal" | "status",
     string,
   ];
 
@@ -762,16 +745,6 @@ function withThemeColor(
       ...theme,
       terminal: {
         ...theme.terminal,
-        [name]: color,
-      },
-    };
-  }
-
-  if (section === "buddy") {
-    return {
-      ...theme,
-      buddy: {
-        ...theme.buddy,
         [name]: color,
       },
     };

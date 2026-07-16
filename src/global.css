@@ -52,16 +52,6 @@
   --cmux-radius-sm: 4px;
   --cmux-radius-md: 6px;
   --cmux-radius-lg: 8px;
-  --buddy-ink: #2c2218;
-  --buddy-blush: #ff9aa8;
-  --buddy-spark: #ffd45e;
-  --buddy-sweat: #7bc1ff;
-  --buddy-bubble-bg: rgba(255, 248, 239, 0.96);
-  --buddy-bubble-text: #2c2218;
-  --buddy-bubble-muted: rgba(44, 34, 24, 0.6);
-  --buddy-bubble-subtle: rgba(44, 34, 24, 0.08);
-  --buddy-bubble-hover: rgba(44, 34, 24, 0.18);
-  --buddy-bubble-scroll: rgba(44, 34, 24, 0.3);
   --sash-size: 4px !important;
 
   --status-working: #3b82f6;

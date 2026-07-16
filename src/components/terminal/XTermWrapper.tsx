@@ -1660,7 +1660,7 @@ export default memo(function XTermWrapper({
               new CustomEvent("mycmux:keystroke", { detail: { sessionId, data: inputData } }),
             );
           } catch {
-            // ignore dispatch failures; buddy is non-critical
+            // Ignore dispatch failures; the input-probe event is non-critical.
           }
         }
       });

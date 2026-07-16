@@ -6,7 +6,6 @@ import { ResumeTab } from "./tabs/ResumeTab";
 import { SavepointsTab } from "./tabs/SavepointsTab";
 import { RemoteTab } from "./tabs/RemoteTab";
 import { UsageTab } from "./tabs/UsageTab";
-import { BuddyTab } from "./tabs/BuddyTab";
 import { KeybindingsTab } from "./tabs/KeybindingsTab";
 import { AppInfoTab } from "./tabs/AppInfoTab";
 import { tabBodyStyle } from "./tabStyles";
@@ -20,7 +19,6 @@ type SettingsTabId =
   | "savepoints"
   | "remote"
   | "usage"
-  | "buddy"
   | "keybindings"
   | "appInfo";
 
@@ -62,7 +60,6 @@ const SETTINGS_SECTIONS: SettingsSectionDef[] = [
   {
     label: "その他",
     tabs: [
-      { id: "buddy", label: "Buddy" },
       { id: "keybindings", label: "キーボードショートカット" },
       { id: "appInfo", label: "アプリ情報" },
     ],
@@ -298,7 +295,6 @@ export default function SettingsDialog({ onClose, onOpenCrsmPalette, onOpenOnlin
             )}
             {activeTab === "remote" && <RemoteTab />}
             {activeTab === "usage" && <UsageTab />}
-            {activeTab === "buddy" && <BuddyTab />}
             {activeTab === "keybindings" && <KeybindingsTab />}
             {activeTab === "appInfo" && <AppInfoTab />}
           </div>

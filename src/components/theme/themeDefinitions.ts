@@ -9,12 +9,11 @@ export const THEME_GROUPS: Array<{ id: ThemeGroup; label: string; hint: string }
   { id: "light", label: "明るい配色", hint: "昼間や資料作業向け" },
 ];
 
-type ThemeDraft = Omit<ThemeDefinition, "colorScheme" | "chrome" | "status" | "notification" | "buddy"> & {
+type ThemeDraft = Omit<ThemeDefinition, "colorScheme" | "chrome" | "status" | "notification"> & {
   colorScheme?: ThemeColorScheme;
   chrome: Pick<ThemeDefinition["chrome"], "background" | "surface" | "border" | "text" | "textMuted" | "accent"> &
     Partial<Pick<ThemeDefinition["chrome"], "textDim" | "hover" | "selected" | "danger">>;
   status?: Partial<ThemeStatusColors>;
-  buddy?: Partial<ThemeDefinition["buddy"]>;
   notification?: string;
 };
 
@@ -61,19 +60,12 @@ function completeTheme(theme: ThemeDraft): ThemeDefinition {
     ...theme.status,
   };
   const notification = theme.notification ?? theme.status?.waiting ?? statusBase.waiting;
-  const buddy: ThemeDefinition["buddy"] = {
-    ink: theme.buddy?.ink ?? (isLight ? "#2c2218" : chrome.text),
-    blush: theme.buddy?.blush ?? (isLight ? "#ff9aa8" : "#ffb4c0"),
-    spark: theme.buddy?.spark ?? (isLight ? "#ffd45e" : chrome.accent),
-    sweat: theme.buddy?.sweat ?? (isLight ? "#7bc1ff" : status.working),
-  };
 
   return {
     ...theme,
     colorScheme,
     chrome,
     status,
-    buddy,
     notification,
   };
 }
