@@ -199,11 +199,13 @@ jobs:
           $expectedVersion = $tag -replace '^v', ''
           $targetRepo = "miyafcos/mycmux-team"
           $bundleRoot = Resolve-Path "src-tauri/target/release/bundle"
-          $latestFiles = @(Get-ChildItem -LiteralPath $bundleRoot -Recurse -File -Filter "latest.json")
-          if ($latestFiles.Count -ne 1) {
-            throw "Expected exactly one latest.json under $bundleRoot, found $($latestFiles.Count)."
-          }
-          $latestPath = $latestFiles[0].FullName
+          # tauri-action uploads latest.json to the SOURCE repo release, not the local
+          # bundle dir (verified 2026-07-16: run 29496169718 found 0 local copies).
+          $latestDir = Join-Path $env:RUNNER_TEMP "mycmux-lite-latest"
+          New-Item -ItemType Directory -Path $latestDir -Force | Out-Null
+          gh release download $tag --repo $env:SOURCE_REPO --pattern "latest.json" --dir $latestDir --clobber
+          if ($LASTEXITCODE -ne 0) { throw "Failed to download latest.json from source release $($env:SOURCE_REPO) $tag." }
+          $latestPath = Join-Path $latestDir "latest.json"
           $latestText = Get-Content -LiteralPath $latestPath -Raw -Encoding UTF8
           $sourcePrefix = "https://github.com/$($env:SOURCE_REPO)/releases/download/$tag/"
           $targetPrefix = "https://github.com/$targetRepo/releases/download/$tag/"
