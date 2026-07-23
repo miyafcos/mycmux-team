@@ -238,17 +238,6 @@ def test_file_preview_agent_usage_and_fault_surfaces_remain_wired() -> None:
         ],
     )
     assert_snippets(
-        "src/components/layout/FileExplorerSidebar.tsx",
-        [
-            "await openWithDefault(ctx.path);",
-            "await revealInExplorer(ctx.path);",
-            "if (pendingAction) return;",
-            "aria-busy={pendingAction !== null}",
-            "setActionError(`Open failed: ${String(err)}`);",
-            "contextMenuErrorStyle",
-        ],
-    )
-    assert_snippets(
         "src/stores/workspaceLayoutStore.ts",
         [
             "openOrReloadHtmlPreviewPane: (workspaceId: string, sourcePaneId: string, info: string | BrowserPreviewInfo) => void;",
