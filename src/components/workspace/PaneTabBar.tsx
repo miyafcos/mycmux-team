@@ -434,16 +434,32 @@ function PaneTabListMenu({
   onRemoveTab?: (tabId: string) => void;
   onCloseMenu: () => void;
 }) {
+  // Fixed positioning + viewport clamping, matching the tab context menu.
+  // An absolute menu anchored inside the tab bar gets clipped by pane
+  // overflow once the pane is narrower than the menu (compact/micro modes).
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const menuWidth = Math.min(280, Math.max(180, window.innerWidth - 16));
+  const menuMaxHeight = Math.min(320, Math.max(120, window.innerHeight - 24));
+  const [menuPos, setMenuPos] = useState<{ left: number; top: number } | null>(null);
+  useLayoutEffect(() => {
+    const anchor = menuRef.current?.parentElement;
+    if (!anchor) return;
+    const rect = anchor.getBoundingClientRect();
+    const height = Math.min(menuMaxHeight, menuRef.current?.offsetHeight ?? menuMaxHeight);
+    setMenuPos(clampMenuPosition(rect.right - menuWidth, rect.bottom + 2, menuWidth, height));
+  }, [menuMaxHeight, menuWidth]);
   return (
     <div
+      ref={menuRef}
       role="menu"
       style={{
-        position: "absolute",
-        top: "calc(100% + 2px)",
-        right: 0,
+        position: "fixed",
+        left: menuPos?.left ?? -9999,
+        top: menuPos?.top ?? -9999,
+        visibility: menuPos ? "visible" : "hidden",
         zIndex: 130,
-        width: 280,
-        maxHeight: 320,
+        width: menuWidth,
+        maxHeight: menuMaxHeight,
         overflowY: "auto",
         boxSizing: "border-box",
         padding: 6,
