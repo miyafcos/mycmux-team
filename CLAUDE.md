@@ -2,7 +2,8 @@
 
 Tauri v2 (Rust) + React 19 + xterm.js のターミナルワークスペースアプリ (ptrcode fork, GPL-3.0)。
 このディレクトリ (`~/cmux-for-linux-dev-master`, branch=master) が**本番ソース**。
-lite 版は別 worktree `~/cmux-for-linux-dev` (branch=release/public-lite) — こちらは本番ではない。
+公開ミラー = `miyafcos/mycmux-team` の `master` (履歴を持ち込まない sync コミット方式)。
+旧 lite 版 (worktree `~/cmux-for-linux-dev`, branch=release/public-lite) は 2026-07-23 に配布終了 — 追従不要。
 
 ## 構成
 
@@ -35,7 +36,7 @@ python -m pytest tests/   # sync-command allowlist 契約テスト含む
 - **push は既定 ON — ブランチもタグも** (2026-07-12 宮崎さん指示): master へのコミット後はそのまま `git push origin master` まで実施。リリースすべき変更がまとまったらタグも Claude 判断で打って push してよい (検証コマンド全通過が前提)。すべて事後報告。GitHub が常に最新になる設計が基本
 - 複数タグは1個ずつ push (multi-tag push は workflow trigger 漏れあり)
 - タグ push 後の updater feed: CI の mirror ステップは secret 未設定で**成功表示のままスキップされる**。`scripts/mirror-personal-updater-feed.ps1 -SourceTag vX.Y.Z` をローカル実行し latest.json の version を確認
-- lite への反映は cherry-pick 運用。master 専用シンボル (RemoteControl 等) の競合に注意
+- **リリース後は公開ミラーも更新**: `git commit-tree "master^{tree}" -p <team masterのHEAD> -m "sync: ..."` で履歴を持ち込まない sync コミットを作り `git push public <sha>:refs/heads/master`。ブランチをそのまま public へ push するのは禁止 (private 履歴が漏れる)
 
 ## Codex 委譲時の注意
 
