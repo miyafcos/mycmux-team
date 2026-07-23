@@ -99,7 +99,7 @@ describe("terminal local file path links", () => {
 
   it("matches drive-letter directories with Japanese characters, spaces, and trailing backslash", () => {
     const directory =
-      "C:\\Users\\miyaz\\エデュ・プラニング合同会社 Dropbox\\日本教材出版\\数学\\2026年\\11月号\\3_一次原稿\\";
+      "C:\\Users\\miyaz\\サンプル株式会社 Dropbox\\サンプル出版\\数学\\2026年\\11月号\\3_一次原稿\\";
     const links = findLocalFilePathLinks(`folder: ${directory}`);
 
     expect(links.map((link) => link.text)).toEqual([directory]);

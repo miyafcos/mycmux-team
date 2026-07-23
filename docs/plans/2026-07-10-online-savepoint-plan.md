@@ -66,10 +66,10 @@ Mosaic 型の「リアルタイム同席」ではなく、**「作業のセー�
   "updated_at": "2026-07-10T23:05:00+09:00",
   "expires_at": "2026-07-12T23:05:00+09:00",
   "pinned": false,
-  "summary_line": "モモスタ数学B3 組版まで完了、B4の図版差し替えから再開",
-  "cwd": "{DROPBOX}/事務関係/駿台/モモスタ数学",
+  "summary_line": "教材A 組版まで完了、次章の図版差し替えから再開",
+  "cwd": "{DROPBOX}/事務関係/クライアントA/教材A",
   "claude_session_id": "<uuid>",
-  "files_touched": ["{DROPBOX}/事務関係/駿台/モモスタ数学/...", "..."],
+  "files_touched": ["{DROPBOX}/事務関係/クライアントA/教材A/...", "..."],
   "warnings": ["C:/Users/miyaz/work/tmp.py は Dropbox 外 (相手側に存在しない可能性)"]
 }
 ```

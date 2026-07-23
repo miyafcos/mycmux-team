@@ -1,12 +1,10 @@
 # mycmux
 
-> Source note: this is the full `mycmux.exe` source tree. Edit `C:\Users\miyaz\cmux-for-linux-dev-master` when changing `C:\Users\miyaz\mycmux-app\mycmux.exe`. Do not use `C:\Users\miyaz\cmux-for-linux-dev` for full app changes; that worktree is for `mycmux-lite`.
-
 AI エージェント用のターミナルワークスペースです。Claude Code / Codex / claude-codex を、ワークスペース、ペイン、タブ単位で並べて扱えます。
 
-mycmux-lite は通常版から Claude Buddy だけを除いた構成で、その他の機能はすべて共通です。
+ファイルサイドバー、パスジャンプ、セーブポイント、マルチアカウント usage 監視、エージェントからのペイン立ち上げ (`pane.spawn`) などを含みます。
 
-公開配布先: <https://github.com/miyafcos/mycmux-team>
+配布物はこのリポジトリの Releases から取得できます。
 
 ![mycmux 実機スクリーンショット](docs/images/mycmux-screenshot.png)
 
@@ -35,7 +33,6 @@ mycmux-lite は通常版から Claude Buddy だけを除いた構成で、その
 - Codex の Markdown 表を崩れにくく表示し、ログや回答を読みやすくする
 - フォント、テーマ、背景画像を切り替えて、長時間作業しやすい見た目にする
 - 右サイドバーで作業フォルダを見ながら、必要なファイルへ移動する
-- Claude Buddy を画面端に置き、作業中の状態を軽く把握する
 
 ## 使い方の流れ
 
@@ -74,7 +71,7 @@ Codex は `--no-alt-screen` 付きで起動します。ターミナルのスク�
 
 起動ルート一覧は `~/.mycmux/launch-roots.txt` で管理します。メニューを自分用に拡張したい場合は `~/.mycmux/bin/launcher.local.sh` / `launcher.local.ps1` に書くと、アプリ更新で上書きされずに残ります。
 
-## セーブポイント
+## セーブポイント (通常版のみ)
 
 Claude Code / Codex の作業途中や終了時の状態を、このPCのローカル領域へ「セーブポイント」として保存します。普段は個人利用の履歴として扱い、人へ渡したいときだけ選んだ1件を `.mycmux-transfer` ファイルにします。共有フォルダ、期限付きリンク、受信コードは使いません。
 
@@ -97,7 +94,7 @@ Claude Code / Codex の作業途中や終了時の状態を、このPCのロー�
 
 エントリは最終更新から48時間でローカルのゴミ箱へ移動します (ピン留めで延長)。受け渡しファイルには会話履歴と引き継ぎ書だけを含み、作業フォルダ全体は含みません。受信側に元の作業パスがなければ警告を表示し、勝手に別の共有フォルダへ接続しません。
 
-## エージェントからペインを立ち上げる
+## エージェントからペインを立ち上げる (通常版のみ)
 
 v0.14.17 から、ペインの中で動いている Claude Code / Codex が、mycmux に「新しいペインを開いて」と命令できるようになりました。
 
@@ -148,7 +145,7 @@ python scripts/mycmux_agent_cli.py send --session <sessionId> --text "テスト�
 - `send` は生の端末入力です。送り先を間違えると他の作業を壊すので、`panes` で対象の sessionId を確認してから使ってください
 - 立ち上げに使う環境変数 (`MYCMUX_LAUNCH_TARGET` や `MYCMUX_HANDOFF_*`) は保存データに残らないようフィルタされます。アプリを再起動しても、過去の spawn が原因でエージェントが勝手に立ち上がることはありません
 
-## Usage 監視
+## Usage 監視 (通常版のみ)
 
 複数の Claude Pro/Max アカウントの使用量をタイトルバーで一元監視できます。
 
@@ -159,22 +156,11 @@ python scripts/mycmux_agent_cli.py send --session <sessionId> --text "テスト�
 
 > 使用量取得は Anthropic の非公式エンドポイントを利用します。複数アカウントの追加・自動取得により、規約上のリスク (アカウント制限・停止) がゼロではない旨を設定画面に明記しています。
 
-## 通常版と lite 版
+## 旧 lite 版 (mycmux-lite) について
 
-| 項目 | mycmux | mycmux-lite |
-| --- | --- | --- |
-| ワークスペース / ペイン / タブ | あり | あり |
-| Claude Code / Codex / claude-codex 起動 | あり | あり |
-| セッション復元 | あり | あり |
-| テーマ / フォント / 背景設定 | あり | あり |
-| ファイルサイドバー | あり | あり |
-| パスジャンプ | あり | あり |
-| Claude Buddy | あり | なし |
-| セーブポイント | あり | あり |
-| マルチアカウント usage 監視 | あり | あり |
-| エージェントからのペイン立ち上げ (`pane.spawn`) | あり | あり |
+lite 版の配布は終了しました。以降の更新はこの通常版のみに配信されます。
 
-lite 版は Claude Buddy のみを含まないチーム配布向け構成です。
+lite 版をインストール済みの場合、自動更新では乗り換えられません (署名鍵とアプリ識別子が別のため)。Releases から `mycmux_*_x64-setup.exe` をダウンロードして通常版をインストールし、旧 `mycmux-lite` はアンインストールしてください。ワークスペース設定は引き継がれないため、新規セットアップになります。
 
 ## インストール
 
