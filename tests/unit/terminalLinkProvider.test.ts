@@ -1,6 +1,11 @@
 import type { ILink, Terminal } from "@xterm/xterm";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { homeDir } from "@tauri-apps/api/path";
 import { resolveLocalPathLinks } from "../../src/lib/ipc";
+
+vi.mock("@tauri-apps/api/path", () => ({
+  homeDir: vi.fn(),
+}));
 
 vi.mock("../../src/lib/ipc", () => ({
   resolveLocalPathLinks: vi.fn(),
@@ -21,26 +26,41 @@ import {
 } from "../../src/components/terminal/terminalLinkProvider";
 
 const mockedResolveLocalPathLinks = vi.mocked(resolveLocalPathLinks);
+const mockedHomeDir = vi.mocked(homeDir);
 let nextSessionId = 0;
 
-function createLinkProviderHarness(text: string) {
+type HarnessLine = {
+  text: string;
+  isWrapped?: boolean;
+  columns?: number;
+};
+
+function createLinkProviderHarness(
+  input: string | HarnessLine[],
+  getCwd?: () => string | undefined,
+  sessionId = `terminal-link-test-${nextSessionId++}`,
+) {
   let provider: Parameters<Terminal["registerLinkProvider"]>[0] | undefined;
-  const line = {
-    isWrapped: false,
-    length: text.length,
-    translateToString: (trimRight?: boolean) => (trimRight ? text.trimEnd() : text),
-    getCell: (index: number) => ({
-      getWidth: () => 1,
-      getChars: () => text[index] ?? "",
-    }),
-  };
+  const sourceLines = typeof input === "string" ? [{ text: input }] : input;
+  const lines = sourceLines.map(({ text, isWrapped = false, columns = text.length }) => {
+    const rawText = text.padEnd(columns);
+    return {
+      isWrapped,
+      length: columns,
+      translateToString: (trimRight?: boolean) => (trimRight ? rawText.trimEnd() : rawText),
+      getCell: (index: number) => ({
+        getWidth: () => 1,
+        getChars: () => rawText[index] ?? "",
+      }),
+    };
+  });
   const term = {
     buffer: {
       active: {
-        length: 1,
+        length: lines.length,
         viewportY: 0,
         baseY: 0,
-        getLine: (index: number) => (index === 0 ? line : undefined),
+        getLine: (index: number) => lines[index],
       },
     },
     registerLinkProvider: (registered: Parameters<Terminal["registerLinkProvider"]>[0]) => {
@@ -49,13 +69,14 @@ function createLinkProviderHarness(text: string) {
     },
   } as unknown as Terminal;
   const onActivate = vi.fn();
-  registerArtifactLinkProvider(term, `terminal-link-test-${nextSessionId++}`, onActivate);
+  const registration = registerArtifactLinkProvider(term, sessionId, onActivate, getCwd);
 
   return {
+    dispose: registration.dispose,
     onActivate,
-    provideLinks: () =>
+    provideLinks: (bufferLineNumber = 1) =>
       new Promise<ILink[] | undefined>((resolve) => {
-        provider!.provideLinks(1, resolve);
+        provider!.provideLinks(bufferLineNumber, resolve);
       }),
   };
 }
@@ -63,6 +84,7 @@ function createLinkProviderHarness(text: string) {
 describe("terminal local file path links", () => {
   beforeEach(() => {
     mockedResolveLocalPathLinks.mockReset();
+    mockedHomeDir.mockReset();
   });
 
   it("matches drive-letter paths with arbitrary extensions", () => {
@@ -87,6 +109,21 @@ describe("terminal local file path links", () => {
       "file:///C:/Users/miyaz/report.pdf",
       "/c/Users/miyaz/data.csv",
     ]);
+  });
+
+  it("matches a backtick-wrapped drive file", () => {
+    const driveFile = "C:\\tmp\\report.md";
+    expect(findLocalFilePathLinks(`open \`${driveFile}\``)[0].text).toBe(driveFile);
+  });
+
+  it("matches a backtick-wrapped drive directory", () => {
+    const driveDirectory = "C:\\tmp\\reports\\";
+    expect(findLocalFilePathLinks(`open \`${driveDirectory}\``)[0].text).toBe(driveDirectory);
+  });
+
+  it("matches a backtick-wrapped extension-less MSYS path", () => {
+    const msysDirectory = "/c/tmp/reports";
+    expect(findBareLocalPathCandidates(`open \`${msysDirectory}\``)[0].text).toBe(msysDirectory);
   });
 
   it("keeps intermediate dots in directory and file names", () => {
@@ -226,7 +263,7 @@ describe("terminal local file path links", () => {
     const candidates = [...regexMatches, ...bareCandidates];
 
     expect(regexMatches).toHaveLength(1);
-    expect(bareCandidates).toHaveLength(1);
+    expect(bareCandidates.some((candidate) => candidate.index === 0)).toBe(true);
     expect(
       mergeResolvedPathLinkMatches(
         candidates,
@@ -259,6 +296,256 @@ describe("terminal local file path links", () => {
     const links = await createLinkProviderHarness(text).provideLinks();
 
     expect(links?.map((link) => link.text)).toEqual([text]);
+  });
+
+  it("joins a path across two hard-wrapped lines with a multi-line range", async () => {
+    const first = String.raw`open C:\work\very-`;
+    const second = String.raw`long\report.md`;
+    const existingPrefix = String.raw`C:\work\very-long\report.md`;
+    mockedResolveLocalPathLinks.mockImplementation(async (candidates) =>
+      candidates.map((candidate) => candidate.startsWith(existingPrefix)
+        ? { existingPrefix, isDir: false }
+        : null),
+    );
+
+    const harness = createLinkProviderHarness([{ text: first }, { text: second }]);
+    const links = await harness.provideLinks(2);
+
+    expect(links?.map((link) => link.text)).toEqual([existingPrefix]);
+    expect(links?.[0].range).toEqual({
+      start: { x: first.indexOf("C:") + 1, y: 1 },
+      end: { x: second.length, y: 2 },
+    });
+  });
+
+  it("joins three hard lines and strips common TUI continuation prefixes", async () => {
+    const first = String.raw`C:\work\very-`;
+    const second = "  \u23BFlong\\nested\\";
+    const third = "  \u2502report.md";
+    const existingPrefix = String.raw`C:\work\very-long\nested\report.md`;
+    mockedResolveLocalPathLinks.mockImplementation(async (candidates) =>
+      candidates.map((candidate) => candidate.startsWith(existingPrefix)
+        ? { existingPrefix, isDir: false }
+        : null),
+    );
+
+    const harness = createLinkProviderHarness([
+      { text: first },
+      { text: second },
+      { text: third },
+    ]);
+    const links = await harness.provideLinks(3);
+
+    expect(mockedResolveLocalPathLinks.mock.calls[0][0]).toContain(existingPrefix);
+    expect(links?.[0].range).toEqual({
+      start: { x: 1, y: 1 },
+      end: { x: third.length, y: 3 },
+    });
+  });
+
+  it("keeps existing soft-wrap joining behavior", async () => {
+    const first = String.raw`C:\work\very-`;
+    const second = String.raw`long\report.md`;
+    const existingPrefix = String.raw`C:\work\very-long\report.md`;
+    mockedResolveLocalPathLinks.mockImplementation(async (candidates) =>
+      candidates.map((candidate) => candidate.startsWith(existingPrefix)
+        ? { existingPrefix, isDir: false }
+        : null),
+    );
+
+    const links = await createLinkProviderHarness([
+      { text: first },
+      { text: second, isWrapped: true },
+    ]).provideLinks(2);
+
+    expect(links?.map((link) => link.text)).toEqual([existingPrefix]);
+  });
+
+  it("does not link a hard-line continuation when disk resolution rejects it", async () => {
+    mockedResolveLocalPathLinks.mockImplementation(async (candidates) => candidates.map(() => null));
+
+    const links = await createLinkProviderHarness([
+      { text: String.raw`C:\missing\partial-` },
+      { text: "  unrelated output" },
+    ]).provideLinks(2);
+
+    expect(links).toBeUndefined();
+  });
+
+  it("does not fall back to an unverified multi-line link when resolution fails", async () => {
+    mockedResolveLocalPathLinks.mockRejectedValueOnce(new Error("resolver unavailable"));
+
+    const links = await createLinkProviderHarness([
+      { text: String.raw`C:\work\very-` },
+      { text: String.raw`long\report.md` },
+    ]).provideLinks(2);
+
+    expect(links).toBeUndefined();
+  });
+
+  it("limits hard continuation joins to four following lines", async () => {
+    mockedResolveLocalPathLinks.mockImplementation(async (candidates) =>
+      candidates.map((existingPrefix) => ({ existingPrefix, isDir: false })),
+    );
+    const lines = [
+      { text: String.raw`C:\work\part-` },
+      { text: "one-" },
+      { text: "two-" },
+      { text: "three-" },
+      { text: "four-" },
+      { text: "five.md" },
+    ];
+
+    await createLinkProviderHarness(lines).provideLinks(6);
+
+    expect(mockedResolveLocalPathLinks.mock.calls[0][0]).not.toContain(
+      String.raw`C:\work\part-one-two-three-four-five.md`,
+    );
+  });
+
+  it("does not join a hard line when the previous text stops before the visual edge", async () => {
+    const joinedPath = String.raw`C:\tmp\repo-notes.md`;
+    mockedResolveLocalPathLinks.mockImplementation(async (candidates) =>
+      candidates.map((candidate) => candidate === joinedPath
+        ? { existingPrefix: joinedPath, isDir: false }
+        : null),
+    );
+
+    const links = await createLinkProviderHarness([
+      { text: String.raw`C:\tmp\repo-`, columns: 80 },
+      { text: "notes.md", columns: 80 },
+    ]).provideLinks(2);
+
+    expect(mockedResolveLocalPathLinks.mock.calls[0][0]).not.toContain(joinedPath);
+    expect(links).toBeUndefined();
+  });
+
+  it("evicts callback-bearing links when a provider is disposed", async () => {
+    const sessionId = "terminal-link-provider-rebind";
+    const text = String.raw`C:\tmp\report.md`;
+    mockedResolveLocalPathLinks.mockImplementation(async (candidates) =>
+      candidates.map((existingPrefix) => ({ existingPrefix, isDir: false })),
+    );
+    const first = createLinkProviderHarness(text, undefined, sessionId);
+    await first.provideLinks();
+    first.dispose();
+
+    const second = createLinkProviderHarness(text, undefined, sessionId);
+    const links = await second.provideLinks();
+    links?.[0].activate({} as MouseEvent, text);
+
+    expect(mockedResolveLocalPathLinks).toHaveBeenCalledTimes(2);
+    expect(first.onActivate).not.toHaveBeenCalled();
+    expect(second.onActivate).toHaveBeenCalledWith(text, expect.anything());
+  });
+
+  it("does not let an in-flight disposed provider repopulate the link cache", async () => {
+    const sessionId = "terminal-link-provider-in-flight";
+    const text = String.raw`C:\tmp\report.md`;
+    let resolveFirst: ((value: Array<{ existingPrefix: string; isDir: boolean } | null>) => void) | undefined;
+    mockedResolveLocalPathLinks
+      .mockImplementationOnce(() => new Promise((resolve) => {
+        resolveFirst = resolve;
+      }))
+      .mockImplementation(async (candidates) =>
+        candidates.map((existingPrefix) => ({ existingPrefix, isDir: false })),
+      );
+    const first = createLinkProviderHarness(text, undefined, sessionId);
+    void first.provideLinks();
+    await Promise.resolve();
+    await Promise.resolve();
+    first.dispose();
+
+    const second = createLinkProviderHarness(text, undefined, sessionId);
+    await second.provideLinks();
+    resolveFirst?.([{ existingPrefix: text, isDir: false }]);
+    await Promise.resolve();
+    await Promise.resolve();
+    const cachedLinks = await second.provideLinks();
+    cachedLinks?.[0].activate({} as MouseEvent, text);
+
+    expect(mockedResolveLocalPathLinks).toHaveBeenCalledTimes(2);
+    expect(first.onActivate).not.toHaveBeenCalled();
+    expect(second.onActivate).toHaveBeenCalledWith(text, expect.anything());
+  });
+
+  it("resolves dot, parent, and bare relative paths against the pane cwd", async () => {
+    const cwd = "C:\\repo";
+    mockedResolveLocalPathLinks.mockImplementation(async (candidates) =>
+      candidates.map((existingPrefix) => ({ existingPrefix, isDir: false })),
+    );
+
+    const harness = createLinkProviderHarness(
+      "open ./file.md ../other.md src/index.ts",
+      () => cwd,
+    );
+    const links = await harness.provideLinks();
+
+    expect(mockedResolveLocalPathLinks).toHaveBeenCalledWith([
+      "C:\\repo\\./file.md",
+      "C:\\repo\\../other.md",
+      "C:\\repo\\src/index.ts",
+    ]);
+    expect(links?.map((link) => link.text)).toEqual(["./file.md", "../other.md", "src/index.ts"]);
+    links?.[0].activate({} as MouseEvent, "./file.md");
+    expect(harness.onActivate).toHaveBeenCalledWith("C:\\repo\\./file.md", expect.anything());
+  });
+
+  it("detects Unicode, underscore, and dot-prefixed bare relative paths", async () => {
+    const cwd = "C:\\repo";
+    const unicodePath = "\u6559\u6750/\u539f\u7a3f.docx";
+    mockedResolveLocalPathLinks.mockImplementation(async (candidates) =>
+      candidates.map((existingPrefix) => ({ existingPrefix, isDir: false })),
+    );
+
+    const links = await createLinkProviderHarness(
+      `open ${unicodePath} _config.yml .eslintrc.json`,
+      () => cwd,
+    ).provideLinks();
+
+    expect(links?.map((link) => link.text)).toEqual([
+      unicodePath,
+      "_config.yml",
+      ".eslintrc.json",
+    ]);
+  });
+
+  it("resolves tilde paths against the user home directory", async () => {
+    mockedHomeDir.mockResolvedValue("C:\\Users\\miyaz");
+    mockedResolveLocalPathLinks.mockImplementation(async (candidates) =>
+      candidates.map((existingPrefix) => ({ existingPrefix, isDir: false })),
+    );
+
+    const harness = createLinkProviderHarness("open ~/notes.md", () => "C:\\repo");
+    const links = await harness.provideLinks();
+
+    expect(mockedResolveLocalPathLinks).toHaveBeenCalledWith(["C:\\Users\\miyaz\\notes.md"]);
+    expect(links?.map((link) => link.text)).toEqual(["~/notes.md"]);
+    links?.[0].activate({} as MouseEvent, "~/notes.md");
+    expect(harness.onActivate).toHaveBeenCalledWith("C:\\Users\\miyaz\\notes.md", expect.anything());
+  });
+
+  it("does not emit unverified relative links", async () => {
+    mockedResolveLocalPathLinks.mockImplementation(async (candidates) => candidates.map(() => null));
+
+    const links = await createLinkProviderHarness("open ./missing.md", () => "C:\\repo").provideLinks();
+
+    expect(links).toBeUndefined();
+  });
+
+  it("includes cwd in the provider cache key", async () => {
+    let cwd = "C:\\repo-one";
+    mockedResolveLocalPathLinks.mockImplementation(async (candidates) =>
+      candidates.map((existingPrefix) => ({ existingPrefix, isDir: false })),
+    );
+    const harness = createLinkProviderHarness("./file.md", () => cwd);
+
+    await harness.provideLinks();
+    cwd = "C:\\repo-two";
+    await harness.provideLinks();
+
+    expect(mockedResolveLocalPathLinks).toHaveBeenCalledTimes(2);
+    expect(mockedResolveLocalPathLinks.mock.calls[1][0]).toEqual(["C:\\repo-two\\./file.md"]);
   });
 
   it("keeps the longer resolved overlap and uses earlier start as the tie-breaker", () => {

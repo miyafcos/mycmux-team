@@ -33,6 +33,20 @@ describe("terminal tab mount contract", () => {
     expect(xtermWrapperSource).toContain("await syncDroppedBatchScrollbackIfNeeded()");
   });
 
+  it("rebinds artifact links when a cached terminal is attached", () => {
+    const attachStart = xtermWrapperSource.indexOf("const attachCachedTerminal");
+    const attachEnd = xtermWrapperSource.indexOf("const cached = termCache.get", attachStart);
+    const attachBlock = xtermWrapperSource.slice(attachStart, attachEnd);
+    const cleanupStart = xtermWrapperSource.indexOf("const cleanup =");
+    const cleanupEnd = xtermWrapperSource.indexOf("const attachCachedTerminal", cleanupStart);
+    const cleanupBlock = xtermWrapperSource.slice(cleanupStart, cleanupEnd);
+
+    expect(xtermWrapperSource).toContain("const registerArtifactLinks =");
+    expect(attachBlock).toContain("registerArtifactLinks(cached.term)");
+    expect(xtermWrapperSource).toContain("registerArtifactLinks(term)");
+    expect(cleanupBlock).toContain("artifactLinkProviderDisposable?.dispose()");
+  });
+
   it("starts background PTYs without importing an xterm renderer into the launch path", () => {
     const headlessStart = socketCommandsSource.indexOf("async function startBackgroundTabSession");
     const headlessEnd = socketCommandsSource.indexOf("function isKnownPaneSession", headlessStart);

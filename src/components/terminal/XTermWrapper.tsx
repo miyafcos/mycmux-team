@@ -649,6 +649,7 @@ export default memo(function XTermWrapper({
     let dataDisposable: { dispose: () => void } | null = null;
     let binaryDisposable: { dispose: () => void } | null = null;
     let titleDisposable: { dispose: () => void } | null = null;
+    let artifactLinkProviderDisposable: { dispose: () => void } | null = null;
     let term: Terminal | null = null;
     let fitAddon: FitAddon | null = null;
     let removeCompositionGuard: (() => void) | null = null;
@@ -1717,6 +1718,19 @@ export default memo(function XTermWrapper({
       }
     };
 
+    const registerArtifactLinks = (currentTerm: Terminal): void => {
+      artifactLinkProviderDisposable?.dispose();
+      artifactLinkProviderDisposable = registerArtifactLinkProvider(currentTerm, sessionId, (uri, event) => {
+        if (onArtifactLinkClick) {
+          onArtifactLinkClick(uri, { x: event.clientX, y: event.clientY });
+        } else if (onUrlClick) {
+          onUrlClick(uri);
+        } else {
+          open(uri).catch(err => console.error("Failed to open local artifact:", err));
+        }
+      }, () => usePaneMetadataStore.getState().metadata[sessionId]?.cwd ?? cwd);
+    };
+
     const cleanup = (): void => {
       invalidateContainerVisibilityMemo();
       clearResizeTimer();
@@ -1745,6 +1759,8 @@ export default memo(function XTermWrapper({
       binaryDisposable = null;
       titleDisposable?.dispose();
       titleDisposable = null;
+      artifactLinkProviderDisposable?.dispose();
+      artifactLinkProviderDisposable = null;
       removeCompositionGuard?.();
       removeCompositionGuard = null;
       removeFocusSync?.();
@@ -1814,6 +1830,7 @@ export default memo(function XTermWrapper({
       attachTerminalKeyHandler(cached.term);
       registerInputListeners(cached.term);
       registerScanListener(cached.term);
+      registerArtifactLinks(cached.term);
       void registerExitListener();
       setTimeout(() => {
         if (disposed || termDisposed) return;
@@ -1895,15 +1912,7 @@ export default memo(function XTermWrapper({
           open(uri).catch(err => console.error("Failed to open URL:", err));
         }
       }, { urlRegex: HTTP_LINK_REGEX }));
-      registerArtifactLinkProvider(term, sessionId, (uri, event) => {
-        if (onArtifactLinkClick) {
-          onArtifactLinkClick(uri, { x: event.clientX, y: event.clientY });
-        } else if (onUrlClick) {
-          onUrlClick(uri);
-        } else {
-          open(uri).catch(err => console.error("Failed to open local artifact:", err));
-        }
-      });
+      registerArtifactLinks(term);
 
       term.open(container!);
       invalidateContainerVisibilityMemo();

@@ -3,21 +3,18 @@ import {
   getTerminalWriteCounter,
   registerTerminalCacheEvictionCleanup,
 } from "./terminalCache";
+import { homeDir } from "@tauri-apps/api/path";
 import { resolveLocalPathLinks, type ResolvedLocalPathLink } from "../../lib/ipc";
 
 export const HTTP_LINK_REGEX = /https?:\/\/[^\s"'<>+\uFF0B]+[^\s"'<>+\uFF0B.,!?;:)}\]]/i;
 const ARTIFACT_EXTENSION_PATTERN = String.raw`html?|markdown|md|docx?|docm|dotx?|dotm|xlsx?|xlsm|xlsb|xltx?|xltm|pptx?|pptm|potx?|potm|ppsx?|ppsm`;
 const GENERIC_FILE_EXTENSION_PATTERN = String.raw`[A-Za-z0-9][A-Za-z0-9_~-]{0,9}`;
 const GENERIC_FILE_EXTENSION_SUFFIX_PATTERN = String.raw`${GENERIC_FILE_EXTENSION_PATTERN}(?:\.${GENERIC_FILE_EXTENSION_PATTERN})*`;
-const ARTIFACT_LINK_TERMINATOR_PATTERN = String.raw`(?=$|[\s"'<>+\uFF0B.,!?;:)}\]\uFF08\uFF09\u30FB\u3002\u3001\uFF0C])`;
+const ARTIFACT_LINK_TERMINATOR_PATTERN = String.raw`(?=$|[\s\x60"'<>+\uFF0B.,!?;:)}\]\uFF08\uFF09\u30FB\u3002\u3001\uFF0C])`;
 const MSYS_DRIVE_PREFIX_PATTERN = String.raw`(?<![A-Za-z0-9._\\/:])\/[A-Za-z]\/`;
 const ARTIFACT_LINK_REGEX = new RegExp(
   String.raw`(?:file:\/\/\/[^\r\n"'<>+\uFF0B]*?\.(?:${GENERIC_FILE_EXTENSION_SUFFIX_PATTERN})|[A-Za-z]:[\\/](?![\\/])[^\r\n"'<>+\uFF0B]*?\.(?:${GENERIC_FILE_EXTENSION_SUFFIX_PATTERN})|${MSYS_DRIVE_PREFIX_PATTERN}[^\r\n"'<>+\uFF0B]*?\.(?:${GENERIC_FILE_EXTENSION_SUFFIX_PATTERN})|file:\/\/\/[^\r\n"'<>+\uFF0B]*?[\\/]|[A-Za-z]:[\\/](?![\\/])(?:[^\r\n"'<>+\uFF0B]*?[\\/])?|${MSYS_DRIVE_PREFIX_PATTERN}[^\r\n"'<>+\uFF0B]*?[\\/])${ARTIFACT_LINK_TERMINATOR_PATTERN}`,
   "gi",
-);
-const COMPLETE_ARTIFACT_EXTENSION_REGEX = new RegExp(
-  String.raw`\.(?:${GENERIC_FILE_EXTENSION_SUFFIX_PATTERN})${ARTIFACT_LINK_TERMINATOR_PATTERN}`,
-  "i",
 );
 const PREVIEW_ARTIFACT_EXTENSION_REGEX = new RegExp(
   String.raw`\.(?:${ARTIFACT_EXTENSION_PATTERN})${ARTIFACT_LINK_TERMINATOR_PATTERN}`,
@@ -25,18 +22,24 @@ const PREVIEW_ARTIFACT_EXTENSION_REGEX = new RegExp(
 );
 const ARTIFACT_LINK_CONTEXT_LINES = 16;
 const ARTIFACT_LINK_MAX_WRAPPED_LINES = 64;
+const ARTIFACT_LINK_MAX_HARD_CONTINUATION_LINES = 4;
 const ARTIFACT_LINK_MAX_SEGMENT_CHARS = 8192;
 const ARTIFACT_LINK_CACHE_MAX_ENTRIES = 64;
 const ARTIFACT_LINK_CANDIDATE_PREFIX_REGEX =
   /(?:file:\/\/\/|[A-Za-z]:[\\/]|(?<![A-Za-z0-9._\\/:])\/[A-Za-z]\/)/i;
 const BARE_LOCAL_PATH_PREFIX_REGEX =
   /file:\/\/\/|(?<![A-Za-z0-9._\\/:])[A-Za-z]:[\\/]|(?<![A-Za-z0-9._\\/:])\/[A-Za-z]\//gi;
-const BARE_LOCAL_PATH_HARD_STOP_REGEX = /[\r\n"'<>+\uFF0B\uFF08\uFF09\u300C\u300D]/;
+const RELATIVE_LOCAL_PATH_PREFIX_REGEX =
+  /(?<![\p{L}\p{N}._\\/:])(?:~[\\/]|\.{1,2}[\\/]|[\p{L}\p{N}._~-]+[\\/])/giu;
+const BARE_LOCAL_FILE_PREFIX_REGEX =
+  /(?<![\p{L}\p{N}._\\/:])[\p{L}\p{N}._~-]+\.[A-Za-z0-9][A-Za-z0-9_~-]{0,9}(?=$|[\s\x60"'<>+.,!?;:)}\]])/giu;
+const BARE_LOCAL_PATH_HARD_STOP_REGEX = /[\r\n\x60"'<>+\uFF0B\uFF08\uFF09\u300C\u300D]/;
 
 type ArtifactLinkPart = {
   text: string;
   lineIndex?: number;
   nextLineIndex?: number;
+  sourceOffset?: number;
 };
 
 export type LocalFilePathLinkMatch = {
@@ -110,7 +113,7 @@ function mapWrappedStringOffset(
       const line = term.buffer.active.getLine(lineIndex);
       const localOffset = Math.max(0, Math.min(offset - accumulated, textLength));
       previousLineIndex = lineIndex;
-      return { lineIndex, cellX: cellXForStringOffset(line, localOffset) };
+      return { lineIndex, cellX: cellXForStringOffset(line, (part.sourceOffset ?? 0) + localOffset) };
     }
     if (part.lineIndex !== undefined) {
       previousLineIndex = part.lineIndex;
@@ -125,7 +128,7 @@ function hasOpenArtifactPath(text: string): boolean {
   const lastStart = startMatches[startMatches.length - 1];
   if (!lastStart || lastStart.index === undefined) return false;
   const tail = text.slice(lastStart.index);
-  return !COMPLETE_ARTIFACT_EXTENSION_REGEX.test(tail);
+  return !BARE_LOCAL_PATH_HARD_STOP_REGEX.test(tail);
 }
 
 export function findLocalFilePathLinks(text: string): LocalFilePathLinkMatch[] {
@@ -153,16 +156,20 @@ function bareLocalPathCandidateEnd(text: string, start: number, nextStart: numbe
   return hardStop === -1 ? limit : start + hardStop;
 }
 
+function pathCandidateStarts(text: string): number[] {
+  const starts = [
+    ...text.matchAll(new RegExp(BARE_LOCAL_PATH_PREFIX_REGEX.source, BARE_LOCAL_PATH_PREFIX_REGEX.flags)),
+    ...text.matchAll(new RegExp(RELATIVE_LOCAL_PATH_PREFIX_REGEX.source, RELATIVE_LOCAL_PATH_PREFIX_REGEX.flags)),
+    ...text.matchAll(new RegExp(BARE_LOCAL_FILE_PREFIX_REGEX.source, BARE_LOCAL_FILE_PREFIX_REGEX.flags)),
+  ].flatMap((match) => match.index === undefined ? [] : [match.index]);
+  return [...new Set(starts)].sort((left, right) => left - right);
+}
+
 export function findBareLocalPathCandidates(
   text: string,
   occupiedMatches: LocalFilePathLinkMatch[] = findLocalFilePathLinks(text),
 ): LocalFilePathLinkMatch[] {
-  const prefixRegex = new RegExp(BARE_LOCAL_PATH_PREFIX_REGEX.source, BARE_LOCAL_PATH_PREFIX_REGEX.flags);
-  const starts: number[] = [];
-  let match: RegExpExecArray | null;
-  while ((match = prefixRegex.exec(text))) {
-    starts.push(match.index);
-  }
+  const starts = pathCandidateStarts(text);
 
   const candidates: LocalFilePathLinkMatch[] = [];
   for (let startIndex = 0; startIndex < starts.length; startIndex++) {
@@ -192,21 +199,15 @@ export function isDirectoryLikeUri(uri: string): boolean {
 }
 
 function hasArtifactLinkCandidate(text: string): boolean {
-  return text.includes("file:///") || ARTIFACT_LINK_CANDIDATE_PREFIX_REGEX.test(text);
+  return text.includes("file:///")
+    || ARTIFACT_LINK_CANDIDATE_PREFIX_REGEX.test(text)
+    || new RegExp(RELATIVE_LOCAL_PATH_PREFIX_REGEX.source, "iu").test(text)
+    || new RegExp(BARE_LOCAL_FILE_PREFIX_REGEX.source, "iu").test(text);
 }
 
-function looksLikeArtifactContinuation(text: string): boolean {
-  const trimmed = text.trimStart();
-  return trimmed.length > 0 && !/^[|>*#-]\s/.test(trimmed);
-}
-
-function artifactContinuationJoiner(previousText: string, nextText: string): string {
-  const previous = previousText.trimEnd();
-  const next = nextText.trimStart();
-  if (!previous || !next) return "";
-  if (next.startsWith("/") || next.startsWith("\\") || previous.endsWith("/") || previous.endsWith("\\")) return "";
-  if (/\s$/.test(previousText) || /^\s/.test(nextText)) return "";
-  return " ";
+function stripHardContinuationPrefix(text: string): { text: string; sourceOffset: number } {
+  const prefix = /^[ \t]*(?:(?:\u23BF|[\u2500-\u257F])[ \t]*)*/.exec(text)?.[0] ?? "";
+  return { text: text.slice(prefix.length), sourceOffset: prefix.length };
 }
 
 function normalizeSoftWrappedArtifactLine(text: string, nextText: string): string {
@@ -233,9 +234,76 @@ function activationUriForResolvedLocalPath(
   return `${existingPrefix}/`;
 }
 
+type PreparedPathCandidate = {
+  candidate: LocalFilePathLinkMatch;
+  lookupText: string;
+  lookupBase?: string;
+  displayBase: string;
+};
+
+function isAbsoluteLocalPath(text: string): boolean {
+  return /^file:\/\/\//i.test(text) || /^[A-Za-z]:[\\/]/.test(text) || /^\/[A-Za-z]\//.test(text);
+}
+
+function withTrailingPathSeparator(base: string): string {
+  if (/[\\/]$/.test(base)) return base;
+  return `${base}${/^[A-Za-z]:/.test(base) || base.includes("\\") ? "\\" : "/"}`;
+}
+
+function preparePathCandidate(
+  candidate: LocalFilePathLinkMatch,
+  cwd: string | undefined,
+  home: string | undefined,
+): PreparedPathCandidate | null {
+  if (isAbsoluteLocalPath(candidate.text)) {
+    return { candidate, lookupText: candidate.text, displayBase: "" };
+  }
+  if (/^~[\\/]/.test(candidate.text)) {
+    if (!home) return null;
+    const lookupBase = withTrailingPathSeparator(home);
+    return {
+      candidate,
+      lookupText: `${lookupBase}${candidate.text.slice(2)}`,
+      lookupBase,
+      displayBase: candidate.text.slice(0, 2),
+    };
+  }
+  if (!cwd) return null;
+  const lookupBase = withTrailingPathSeparator(cwd);
+  return {
+    candidate,
+    lookupText: `${lookupBase}${candidate.text}`,
+    lookupBase,
+    displayBase: "",
+  };
+}
+
+function remapResolvedPathLink(
+  prepared: PreparedPathCandidate,
+  resolved: ResolvedLocalPathLink | null,
+): { display: ResolvedLocalPathLink | null; activationPrefix?: string } {
+  if (!resolved || !prepared.lookupBase) {
+    return { display: resolved, activationPrefix: resolved?.existingPrefix };
+  }
+  const prefixMatches = resolved.existingPrefix.toLowerCase().startsWith(
+    prepared.lookupBase.toLowerCase(),
+  );
+  if (!prefixMatches) return { display: null };
+  const suffix = resolved.existingPrefix.slice(prepared.lookupBase.length);
+  const existingPrefix = `${prepared.displayBase}${suffix}`;
+  if (!existingPrefix || !prepared.candidate.text.startsWith(existingPrefix)) {
+    return { display: null };
+  }
+  return {
+    display: { existingPrefix, isDir: resolved.isDir },
+    activationPrefix: resolved.existingPrefix,
+  };
+}
+
 export function mergeResolvedPathLinkMatches(
   candidates: LocalFilePathLinkMatch[],
   resolvedLinks: Array<ResolvedLocalPathLink | null>,
+  activationPrefixes: Array<string | undefined> = [],
 ): ResolvedLocalPathLinkMatch[] {
   const matches: ResolvedLocalPathLinkMatch[] = [];
   for (let index = 0; index < candidates.length; index++) {
@@ -252,7 +320,10 @@ export function mergeResolvedPathLinkMatches(
       text: resolved.existingPrefix,
       index: candidate.index,
       endIndex: candidate.index + resolved.existingPrefix.length,
-      activationUri: activationUriForResolvedLocalPath(resolved.existingPrefix, resolved),
+      activationUri: activationUriForResolvedLocalPath(
+        activationPrefixes[index] ?? resolved.existingPrefix,
+        resolved,
+      ),
     });
   }
 
@@ -294,6 +365,7 @@ export function registerArtifactLinkProvider(
   term: Terminal,
   sessionId: string,
   onActivate: (uri: string, event: MouseEvent) => void,
+  getCwd?: () => string | undefined,
 ) {
   let disposed = false;
   const provider = term.registerLinkProvider({
@@ -329,9 +401,11 @@ export function registerArtifactLinkProvider(
       lastLineIndex = Math.min(buffer.length - 1, lastLineIndex + ARTIFACT_LINK_CONTEXT_LINES);
 
       const writeCounter = getTerminalWriteCounter(sessionId);
+      const cwd = getCwd?.()?.trim() || undefined;
       const cacheKey = [
         sessionId,
         writeCounter,
+        cwd ?? "",
         bufferLineNumber,
         firstLineIndex,
         lastLineIndex,
@@ -369,34 +443,41 @@ export function registerArtifactLinkProvider(
 
       const parts: ArtifactLinkPart[] = [];
       let segmentText = "";
-      let previousText = "";
       let segmentJoinBlocked = false;
+      let hardContinuationLines = 0;
+      let previousLineReachedVisualEnd = false;
       for (let lineIndex = firstLineIndex; lineIndex <= lastLineIndex; lineIndex++) {
         const line = buffer.getLine(lineIndex);
         const isCurrentLineWrapped = Boolean(line?.isWrapped);
-        if (!isCurrentLineWrapped) {
-          segmentJoinBlocked = false;
-        }
         const nextIsWrapped = Boolean(buffer.getLine(lineIndex + 1)?.isWrapped);
         const rawLineText = line?.translateToString(false) ?? "";
         const trimmedLineText = line?.translateToString(true) ?? "";
         const nextLineText = buffer.getLine(lineIndex + 1)?.translateToString(true) ?? "";
-        const lineText = nextIsWrapped
+        let lineText = nextIsWrapped
           ? normalizeSoftWrappedArtifactLine(rawLineText, nextLineText)
           : trimmedLineText;
+        let sourceOffset = 0;
         if (lineIndex > firstLineIndex) {
           const canJoinSegment = !segmentJoinBlocked;
           const isSoftContinuation = canJoinSegment && isCurrentLineWrapped;
-          const isHardArtifactContinuation =
-            canJoinSegment && hasOpenArtifactPath(segmentText) && looksLikeArtifactContinuation(lineText);
-          const joiner = isSoftContinuation
-            ? ""
-            : isHardArtifactContinuation
-              ? artifactContinuationJoiner(previousText, lineText)
-              : "\n";
+          const hardContinuation = stripHardContinuationPrefix(lineText);
+          const isHardArtifactContinuation = canJoinSegment
+            && !isCurrentLineWrapped
+            && hardContinuationLines < ARTIFACT_LINK_MAX_HARD_CONTINUATION_LINES
+            && previousLineReachedVisualEnd
+            && hasOpenArtifactPath(segmentText)
+            && hardContinuation.text.length > 0;
+          const joiner = isSoftContinuation || isHardArtifactContinuation ? "" : "\n";
+          if (isHardArtifactContinuation) {
+            lineText = hardContinuation.text;
+            sourceOffset = hardContinuation.sourceOffset;
+            hardContinuationLines++;
+          }
           parts.push({ text: joiner, nextLineIndex: lineIndex });
           if (joiner === "\n") {
             segmentText = "";
+            segmentJoinBlocked = false;
+            hardContinuationLines = 0;
           } else {
             segmentText += joiner;
             if (segmentText.length > ARTIFACT_LINK_MAX_SEGMENT_CHARS) {
@@ -405,15 +486,14 @@ export function registerArtifactLinkProvider(
             }
           }
         }
-        parts.push({ text: lineText, lineIndex });
+        parts.push({ text: lineText, lineIndex, sourceOffset });
         if (segmentJoinBlocked || segmentText.length + lineText.length > ARTIFACT_LINK_MAX_SEGMENT_CHARS) {
           segmentText = "";
-          previousText = "";
           segmentJoinBlocked = true;
         } else {
           segmentText += lineText;
-          previousText = lineText;
         }
+        previousLineReachedVisualEnd = rawLineText.length > 0 && !/\s$/.test(rawLineText);
       }
       const text = parts.map((part) => part.text).join("");
       const filePathMatches = findLocalFilePathLinks(text);
@@ -427,10 +507,28 @@ export function registerArtifactLinkProvider(
       const bareCandidates = findBareLocalPathCandidates(text, []);
       const candidates = [...filePathMatches, ...bareCandidates];
       if (candidates.length > 0) {
-        const resultPromise = resolveLocalPathLinks(candidates.map((candidate) => candidate.text))
-          .then((resolvedLinks) => {
+        const needsHome = candidates.some((candidate) => /^~[\\/]/.test(candidate.text));
+        const homePromise = needsHome ? homeDir().catch(() => undefined) : Promise.resolve(undefined);
+        const resultPromise = homePromise
+          .then((home) => {
+            const prepared = candidates
+              .map((candidate) => preparePathCandidate(candidate, cwd, home))
+              .filter((candidate): candidate is PreparedPathCandidate => candidate !== null);
+            if (prepared.length === 0) {
+              return { prepared, resolvedLinks: [] as Array<ResolvedLocalPathLink | null> };
+            }
+            return resolveLocalPathLinks(prepared.map((candidate) => candidate.lookupText))
+              .then((resolvedLinks) => ({ prepared, resolvedLinks }));
+          })
+          .then(({ prepared, resolvedLinks }) => {
+            const remapped = prepared.map((candidate, index) =>
+              remapResolvedPathLink(candidate, resolvedLinks[index] ?? null));
             const links: ILink[] = [];
-            for (const match of mergeResolvedPathLinkMatches(candidates, resolvedLinks)) {
+            for (const match of mergeResolvedPathLinkMatches(
+              prepared.map((candidate) => candidate.candidate),
+              remapped.map((result) => result.display),
+              remapped.map((result) => result.activationPrefix),
+            )) {
               const link = createLocalPathLink(
                 term,
                 parts,
@@ -445,15 +543,18 @@ export function registerArtifactLinkProvider(
             }
             links.sort(sortLinksByRange);
             const result = links.length > 0 ? links : undefined;
-            rememberArtifactLinkCache(cacheKey, result);
+            if (!disposed) rememberArtifactLinkCache(cacheKey, result);
             return result;
           })
           .catch((error) => {
             if (import.meta.env.DEV) {
               console.warn("[mycmux] failed to resolve local path links", error);
             }
-            const result = fallbackLinks.length > 0 ? fallbackLinks : undefined;
-            rememberArtifactLinkCache(cacheKey, result);
+            const singleLineFallbackLinks = fallbackLinks.filter(
+              (link) => link.range.start.y === link.range.end.y,
+            );
+            const result = singleLineFallbackLinks.length > 0 ? singleLineFallbackLinks : undefined;
+            if (!disposed) rememberArtifactLinkCache(cacheKey, result);
             return result;
           });
         rememberArtifactLinkCache(cacheKey, resultPromise);
@@ -472,6 +573,7 @@ export function registerArtifactLinkProvider(
     dispose() {
       disposed = true;
       provider.dispose();
+      forgetArtifactLinkCacheForSession(sessionId);
     },
   };
 }
