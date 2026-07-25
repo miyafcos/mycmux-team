@@ -19,7 +19,7 @@ def test_create_session_commits_attach_epoch_only_after_backend_success() -> Non
     attach_epoch = read_repo_text("src/lib/attachEpoch.ts")
 
     reserve_pos = ipc.index("const attach = beginSessionAttach(sessionId, {")
-    invoke_pos = ipc.index('await invoke("create_session",')
+    invoke_pos = ipc.index('await invoke<void>("create_session",')
     commit_pos = ipc.index("attach.commit();")
     failure_pos = ipc.index("attach.fail();")
 

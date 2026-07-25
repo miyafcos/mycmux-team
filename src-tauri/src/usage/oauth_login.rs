@@ -3,6 +3,7 @@ use rand::{rngs::OsRng, RngCore};
 use reqwest::{Client, StatusCode, Url};
 use sha2::{Digest, Sha256};
 
+use super::util::truncate;
 use crate::usage::token_store::{self, StoredTokens};
 
 pub const CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
@@ -302,13 +303,6 @@ fn http_error(label: &str, status: u16, body: &str, diag: &str) -> String {
         "{label} error: HTTP {status}{diag}: {}",
         truncate(&cleaned, 300)
     )
-}
-
-fn truncate(value: &str, max_chars: usize) -> String {
-    if value.chars().count() <= max_chars {
-        return value.to_string();
-    }
-    value.chars().take(max_chars).collect::<String>() + "..."
 }
 
 #[cfg(test)]

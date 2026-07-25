@@ -9,7 +9,6 @@ import {
 } from "react";
 import Fuse from "fuse.js";
 import {
-  Clock3,
   File as FileIcon,
   Folder,
   FolderOpen,
@@ -22,7 +21,7 @@ import { basename, pathSegmentsUnder } from "../../lib/paths";
 import { useFileExplorerStore } from "../../stores/fileExplorerStore";
 
 type JumpResult = { ok: boolean; message: string };
-type JumpItemKind = "pinned" | "recent" | "entry";
+type JumpItemKind = "pinned" | "entry";
 
 interface JumpItem {
   id: string;
@@ -101,10 +100,8 @@ export default memo(function PathJumper({
   const roots = useFileExplorerStore((state) => state.roots);
   const activeRootId = useFileExplorerStore((state) => state.activeRootId);
   const entries = useFileExplorerStore((state) => state.entries);
-  const recentJumps = useFileExplorerStore((state) => state.recentJumps);
   const searchIndex = useFileExplorerStore((state) => state.searchIndex);
   const searchIndexStatus = useFileExplorerStore((state) => state.searchIndexStatus);
-  const selectedPath = useFileExplorerStore((state) => state.selectedPath);
   const setExpanded = useFileExplorerStore((state) => state.setExpanded);
   const buildSearchIndex = useFileExplorerStore((state) => state.buildSearchIndex);
 
@@ -165,20 +162,6 @@ export default memo(function PathJumper({
     [roots],
   );
 
-  const recentItems = useMemo<JumpItem[]>(
-    () =>
-      recentJumps
-        .filter((path) => !roots.some((root) => pathKey(root.path) === pathKey(path)))
-        .map((path) => ({
-          id: `recent:${path}`,
-          path,
-          name: basename(path) || path,
-          kind: "recent",
-          isDir: true,
-        })),
-    [recentJumps, roots],
-  );
-
   const sourceEntries = useMemo<FileEntry[]>(
     () =>
       activeRoot
@@ -205,14 +188,14 @@ export default memo(function PathJumper({
 
   const searchItems = useMemo(() => {
     const deduped = new Map<string, JumpItem>();
-    for (const item of [...pinnedItems, ...recentItems, ...sourceEntryItems]) {
+    for (const item of [...pinnedItems, ...sourceEntryItems]) {
       const key = pathKey(item.path);
       if (!deduped.has(key)) {
         deduped.set(key, item);
       }
     }
     return [...deduped.values()];
-  }, [pinnedItems, recentItems, sourceEntryItems]);
+  }, [pinnedItems, sourceEntryItems]);
 
   const fuse = useMemo(
     () => new Fuse(searchItems, { keys: ["name", "path"], threshold: 0.35 }),
@@ -221,10 +204,10 @@ export default memo(function PathJumper({
 
   const visibleItems = useMemo(() => {
     if (trimmedQuery.length === 0) {
-      return [...pinnedItems, ...recentItems];
+      return pinnedItems;
     }
     return fuse.search(trimmedQuery).map((result) => result.item);
-  }, [fuse, pinnedItems, recentItems, trimmedQuery]);
+  }, [fuse, pinnedItems, trimmedQuery]);
 
   const selectableIndexes = useMemo(
     () =>
@@ -329,14 +312,14 @@ export default memo(function PathJumper({
       return;
     }
 
-    const currentPath = selectedPath ?? activeRoot.path;
+    const currentPath = activeRoot.path;
     const parentPath = getParentPath(currentPath, activeRoot.path);
     if (!parentPath) {
       return;
     }
 
     void handleJump(parentPath, false);
-  }, [activeRoot, handleJump, selectedPath]);
+  }, [activeRoot, handleJump]);
 
   const renderItem = useCallback(
     (item: JumpItem, index: number) => {
@@ -392,11 +375,9 @@ export default memo(function PathJumper({
           <span style={badgeStyle}>
             {item.kind === "pinned"
               ? "Pinned"
-              : item.kind === "recent"
-                ? "Recent"
-                : item.isDir
-                  ? "Dir"
-                  : "File"}
+              : item.isDir
+                ? "Dir"
+                : "File"}
           </span>
         </button>
       );
@@ -529,20 +510,8 @@ export default memo(function PathJumper({
                 </div>
               ) : null}
 
-              {recentItems.length > 0 ? (
-                <div style={sectionStyle}>
-                  <div style={sectionHeaderStyle}>
-                    <Clock3 size={12} />
-                    <span>Recent</span>
-                  </div>
-                  {recentItems.map((item, index) =>
-                    renderItem(item, pinnedItems.length + index),
-                  )}
-                </div>
-              ) : null}
-
-              {pinnedItems.length === 0 && recentItems.length === 0 ? (
-                <div style={emptyStyle}>Pinned と recent はここに表示されます。</div>
+              {pinnedItems.length === 0 ? (
+                <div style={emptyStyle}>Pinned はここに表示されます。</div>
               ) : null}
             </>
           ) : visibleItems.length > 0 ? (

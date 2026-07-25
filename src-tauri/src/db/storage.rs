@@ -310,7 +310,12 @@ fn cleanup_old_pre_replace_backups(path: &Path, keep: Option<&Path>) {
         if keep.is_some_and(|keep_path| backup == keep_path) {
             continue;
         }
-        let _ = fs::remove_file(backup);
+        if let Err(error) = fs::remove_file(&backup) {
+            eprintln!(
+                "[mycmux] failed to remove old data backup {}: {error}",
+                backup.display()
+            );
+        }
     }
 }
 
@@ -474,7 +479,12 @@ fn save_to_path(path: &Path, data: &PersistentData) -> Result<(), String> {
 
     write_json_file(&tmp_path, &json)?;
     replace_data_file(path, &tmp_path).inspect_err(|_error| {
-        let _ = fs::remove_file(&tmp_path);
+        if let Err(error) = fs::remove_file(&tmp_path) {
+            eprintln!(
+                "[mycmux] failed to remove temporary data file {}: {error}",
+                tmp_path.display()
+            );
+        }
     })
 }
 

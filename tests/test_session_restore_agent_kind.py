@@ -21,7 +21,15 @@ def test_agent_kind_round_trip_contract_remains_wired() -> None:
     launcher_ps1 = read_repo_text("src-tauri/src/launcher.ps1")
     launcher_sh = read_repo_text("src-tauri/src/launcher.sh")
     session_mapping = read_repo_text("src-tauri/src/commands/session_mapping.rs")
-    monitor = read_repo_text("src-tauri/src/pty/monitor.rs")
+    monitor_paths = [
+        "src-tauri/src/pty/monitor.rs",
+        "src-tauri/src/pty/monitor/detection.rs",
+        "src-tauri/src/pty/monitor/git_branch.rs",
+        "src-tauri/src/pty/monitor/runner.rs",
+        "src-tauri/src/pty/monitor/transcripts.rs",
+    ]
+    monitor = "\n".join(read_repo_text(path) for path in monitor_paths)
+    monitor_source = ", ".join(monitor_paths)
 
     for snippet in [
         "agent_kind: liveKind",
@@ -113,7 +121,7 @@ def test_agent_kind_round_trip_contract_remains_wired() -> None:
         "write_detected_agent_session_mapping(",
         'agent_session_id.as_deref()',
     ]:
-        assert_contains(monitor, snippet, "src-tauri/src/pty/monitor.rs")
+        assert_contains(monitor, snippet, monitor_source)
 
     for snippet in [
         "fn write_session_mapping_file_to_dir(",

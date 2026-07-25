@@ -294,8 +294,6 @@ pub fn run() {
 
             let app_handle = app.handle().clone();
             let state = app.state::<AppState>();
-            #[cfg(target_os = "windows")]
-            crate::pty::windows_console::start_startup_flash_suppression(std::process::id());
             if let Err(err) = install_launcher_script() {
                 eprintln!("[launcher] failed to install launcher scripts: {err}");
             }

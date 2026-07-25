@@ -2,7 +2,7 @@
 # into a versioned zip on the user's Desktop for easy team handoff.
 #
 # Usage: powershell -ExecutionPolicy Bypass -File package-dist.ps1
-# Prerequisite: build-full.ps1 must have been run so the NSIS installer
+# Prerequisite: build-personal.ps1 must have been run so the NSIS installer
 # exists under src-tauri/target/release/bundle/nsis/.
 #
 # The README template is kept in a separate UTF-8 file (package-dist-readme.txt)
@@ -31,7 +31,7 @@ $installerSrc = Join-Path $PSScriptRoot "src-tauri\target\release\bundle\nsis\my
 if (-not (Test-Path $installerSrc)) {
     Write-Host "`nNSIS installer not found:" -ForegroundColor Red
     Write-Host "  $installerSrc" -ForegroundColor Yellow
-    Write-Host "`nRun build-full.ps1 first." -ForegroundColor Yellow
+    Write-Host "`nRun build-personal.ps1 first." -ForegroundColor Yellow
     exit 1
 }
 

@@ -7,11 +7,7 @@ import {
   joinSavepointSummary,
   listOnlineSavepoints,
   listTrashedOnlineSavepoints,
-  onSavepointPublishProgress,
-  publishSavepoint,
   toggleSavepointPin,
-  type PublishSavepointResult,
-  type SavepointPublishStage,
 } from "../../lib/ipc";
 import { useWorkspaceLayoutStore } from "../../stores/workspaceLayoutStore";
 import { useWorkspaceListStore } from "../../stores/workspaceListStore";
@@ -51,16 +47,11 @@ import {
   shareSavepointTransfer,
 } from "../../lib/savepointTransfer";
 import { useSavepointDragStore } from "../../stores/savepointDragStore";
+import { useSavepointPublish } from "../../hooks/useSavepointPublish";
 
 interface OnlinePanelProps {
   workspaceId: string;
   paneId: string;
-}
-
-interface LocalPublishState {
-  publishing: boolean;
-  stage: SavepointPublishStage | null;
-  result: PublishSavepointResult | null;
 }
 
 const LOCAL_SESSIONS_COLLAPSED_STORAGE_KEY = "mycmux:onlinePanel:localSessionsCollapsed";
@@ -108,7 +99,10 @@ export default function OnlinePanel({ workspaceId, paneId }: OnlinePanelProps) {
   const [cleanupNotice, setCleanupNotice] = useState<string | null>(null);
   const [receivingTransfer, setReceivingTransfer] = useState(false);
   const [sharingBundle, setSharingBundle] = useState<string | null>(null);
-  const [localPublishBySession, setLocalPublishBySession] = useState<Record<string, LocalPublishState>>({});
+  const {
+    stateByIdentity: localPublishBySession,
+    run: runSavepointPublish,
+  } = useSavepointPublish({ mode: "keyed" });
   const [localSessionsCollapsed, setLocalSessionsCollapsed] = useState<boolean>(readLocalSessionsCollapsed);
   const loadGenerationRef = useRef(0);
   const { beginPointerDrag, shouldSuppressClick } = useSavepointDragSource();
@@ -258,23 +252,6 @@ export default function OnlinePanel({ workspaceId, paneId }: OnlinePanelProps) {
     };
   }, [load, workspaceId]);
 
-  useEffect(() => {
-    const unlisten = onSavepointPublishProgress((progress) => {
-      setLocalPublishBySession((current) => {
-        const identity = savepointIdentityKey(progress.agent_kind, progress.agent_session_id);
-        const publishState = current[identity];
-        if (!publishState?.publishing) return current;
-        return {
-          ...current,
-          [identity]: { ...publishState, stage: progress.stage },
-        };
-      });
-    });
-    return () => {
-      void unlisten.then((dispose) => dispose()).catch(() => undefined);
-    };
-  }, []);
-
   const activeCount = useMemo(
     () => entries.filter((entry) => !isTrashedSavepoint(entry)).length,
     [entries],
@@ -288,31 +265,18 @@ export default function OnlinePanel({ workspaceId, paneId }: OnlinePanelProps) {
   const publishLocalSession = useCallback(async (session: OpenAgentSession) => {
     const agentSessionId = session.agentSessionId;
     if (!agentSessionId) return;
-    const identity = savepointIdentityKey(session.agentKind, agentSessionId);
     setError(null);
-    setLocalPublishBySession((current) => ({
-      ...current,
-      [identity]: { publishing: true, stage: null, result: null },
-    }));
-    try {
-      const result = await publishSavepoint({
-        cwd: session.cwd,
-        agentKind: session.agentKind,
-        agentSessionId,
-      });
-      setLocalPublishBySession((current) => ({
-        ...current,
-        [identity]: { publishing: false, stage: "done", result },
-      }));
+    const outcome = await runSavepointPublish({
+      cwd: session.cwd,
+      agentKind: session.agentKind,
+      agentSessionId,
+    });
+    if (outcome.ok) {
       await load();
-    } catch (publishError) {
-      setLocalPublishBySession((current) => ({
-        ...current,
-        [identity]: { publishing: false, stage: null, result: null },
-      }));
-      setError(onlineStrings.publishErrorPrefix + String(publishError));
+    } else {
+      setError(onlineStrings.publishErrorPrefix + String(outcome.error));
     }
-  }, [load]);
+  }, [load, runSavepointPublish]);
 
   const handoffSummary = useCallback(async (
     entry: OnlineSavepointEntry,

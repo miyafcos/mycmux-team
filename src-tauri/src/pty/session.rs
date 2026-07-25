@@ -441,9 +441,6 @@ impl PtySession {
             .spawn_command(cmd)
             .map_err(|e| format!("Failed to spawn command: {e}"))?;
 
-        #[cfg(target_os = "windows")]
-        crate::pty::windows_console::suppress_spawn_flash(std::process::id());
-
         // Drop slave — we only need master
         drop(pair.slave);
 

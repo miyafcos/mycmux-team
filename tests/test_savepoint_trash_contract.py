@@ -19,7 +19,7 @@ def test_trash_commands_are_wired_through_tauri_and_frontend():
         "purge_online_savepoint",
     ):
         assert f"commands::online::{command}" in lib_rs
-    assert 'invoke("list_trashed_online_savepoints")' in ipc
+    assert 'invoke<OnlineSavepointEntry[]>("list_trashed_online_savepoints")' in ipc
     assert 'invoke("delete_online_savepoint", { bundleDir })' in savepoints
     assert 'invoke("restore_online_savepoint", { bundleDir, trashId })' in savepoints
     assert 'invoke("purge_online_savepoint", { bundleDir, trashId })' in savepoints
@@ -45,7 +45,12 @@ def test_trash_view_disables_handoff_and_keeps_permanent_delete_confirmed():
 
 
 def test_backend_uses_a_separate_trash_container_and_id_validation():
-    online_rs = read("src-tauri/src/commands/online.rs")
+    online_rs = "\n".join(
+        [
+            read("src-tauri/src/commands/online.rs"),
+            read("src-tauri/src/commands/online/lifecycle.rs"),
+        ]
+    )
 
     assert 'pub(crate) const TRASH_DIR: &str = "_trash";' in online_rs
     assert "fs::rename(&bundle_dir, &target)" in online_rs

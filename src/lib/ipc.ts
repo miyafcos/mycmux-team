@@ -14,6 +14,69 @@ import type { OnlineSavepointEntry } from "../components/online/onlineSavepoints
 
 export { getCurrentSessionEpoch, type FrontendDataBatch };
 
+interface SessionIdArgs { sessionId: string }
+interface PathArgs { path: string }
+interface SourcePathArgs { sourcePath: string }
+interface BundleDirArgs { bundleDir: string }
+interface EnabledArgs { enabled: boolean }
+interface AccountIdArgs { accountId: string }
+interface CreateSessionArgs {
+  sessionId: string;
+  command: string;
+  args: string[];
+  cols: number;
+  rows: number;
+  onData: Channel<ArrayBuffer>;
+  cwd: string | null;
+  env: Record<string, string> | null;
+  restoreFallbackSessionIds: string[];
+}
+interface AckFrontendDataArgs extends SessionIdArgs { generation: number; seq: number; bytes: number }
+interface SetFrontendVisibleArgs extends SessionIdArgs { visible: boolean }
+interface WriteToSessionArgs extends SessionIdArgs { data: string }
+interface ResizeSessionArgs extends SessionIdArgs { cols: number; rows: number }
+interface ArtifactUriArgs extends SessionIdArgs { uri: string }
+interface SaveEditableArtifactArgs extends SourcePathArgs { sourceKind: ArtifactSourceKind; content: string }
+interface ExportSavepointTransferArgs extends BundleDirArgs { destinationPath: string }
+interface PublishSavepointArgs {
+  cwd: string;
+  agentKind: "claude" | "codex";
+  agentSessionId: string;
+  claudeSessionId: string | null;
+  summary: string | null;
+  nextStep: string | null;
+}
+interface FinalizeSavepointArgs extends PublishSavepointArgs { closedReason: SavepointCloseReason }
+interface CrsmListSessionsArgs { query: string | null; limit: number; refresh: boolean }
+interface CrsmCreateHandoffArgs {
+  sessionId: string;
+  fromKind: CrsmSessionEntry["kind"];
+  targetKind: CrsmSessionEntry["kind"];
+  recentTurns: number;
+}
+interface SessionIdsArgs { sessionIds: string[] }
+interface SavePersistentDataArgs { data: PersistentData }
+interface SaveWorkspacesArgs {
+  workspaces: WorkspaceConfig[];
+  activeWorkspaceId: string | null;
+  activePaneId: string | null;
+}
+interface SaveSettingsArgs { settings: AppSettings }
+interface SocketResponseArgs { id: number; result: any; error: string | null }
+interface WalkTreeArgs {
+  root: string;
+  excludes: string[];
+  maxDepth: number | null;
+  limit: number | null;
+  includeHidden: boolean;
+}
+interface CandidatesArgs { candidates: string[] }
+interface PinnedRootsArgs { pinnedRoots: PinnedRoot[] }
+interface UriArgs { uri: string }
+interface CreateEntryArgs { parent: string; name: string }
+interface CompleteOauthLoginArgs { loginId: string; pastedCode: string }
+interface SetUsageAccountEnabledArgs extends AccountIdArgs { enabled: boolean }
+
 const sessionCreateTails = new Map<string, Promise<void>>();
 
 export async function createSession(
@@ -63,7 +126,7 @@ export async function createSession(
       );
     }
     try {
-      await invoke("create_session", {
+      await invoke<void>("create_session", {
         sessionId,
         command,
         args,
@@ -73,7 +136,7 @@ export async function createSession(
         cwd: cwd ?? null,
         env: env ?? null,
         restoreFallbackSessionIds: restoreFallbackSessionIds ?? [],
-      });
+      } satisfies CreateSessionArgs);
       attach.commit();
     } catch (err) {
       attach.fail();
@@ -96,11 +159,11 @@ export async function ackFrontendData(
   seq: number,
   bytes: number,
 ): Promise<void> {
-  return invoke("ack_frontend_data", { sessionId, generation, seq, bytes });
+  return invoke<void>("ack_frontend_data", { sessionId, generation, seq, bytes } satisfies AckFrontendDataArgs);
 }
 
 export async function setFrontendVisible(sessionId: string, visible: boolean): Promise<void> {
-  return invoke("set_frontend_visible", { sessionId, visible });
+  return invoke<void>("set_frontend_visible", { sessionId, visible } satisfies SetFrontendVisibleArgs);
 }
 
 export interface ScrollbackSnapshot {
@@ -110,7 +173,7 @@ export interface ScrollbackSnapshot {
 }
 
 export async function getSessionScrollback(sessionId: string): Promise<ScrollbackSnapshot> {
-  const frame = await invoke<ArrayBuffer>("get_session_scrollback", { sessionId });
+  const frame = await invoke<ArrayBuffer>("get_session_scrollback", { sessionId } satisfies SessionIdArgs);
   return decodeScrollbackSnapshot(frame);
 }
 
@@ -118,11 +181,11 @@ export async function writeToSession(
   sessionId: string,
   data: string,
 ): Promise<void> {
-  return invoke("write_to_session", { sessionId, data });
+  return invoke<void>("write_to_session", { sessionId, data } satisfies WriteToSessionArgs);
 }
 
 export async function isSessionAlive(sessionId: string): Promise<boolean> {
-  return invoke("is_session_alive", { sessionId });
+  return invoke<boolean>("is_session_alive", { sessionId } satisfies SessionIdArgs);
 }
 
 export async function resizeSession(
@@ -130,19 +193,19 @@ export async function resizeSession(
   cols: number,
   rows: number,
 ): Promise<void> {
-  return invoke("resize_session", { sessionId, cols, rows });
+  return invoke<void>("resize_session", { sessionId, cols, rows } satisfies ResizeSessionArgs);
 }
 
 export async function killSession(sessionId: string): Promise<void> {
-  return invoke("kill_session", { sessionId });
+  return invoke<void>("kill_session", { sessionId } satisfies SessionIdArgs);
 }
 
 export async function previewArtifactForSession(sessionId: string): Promise<string> {
-  return invoke("preview_artifact_for_session", { sessionId });
+  return invoke<string>("preview_artifact_for_session", { sessionId } satisfies SessionIdArgs);
 }
 
 export async function previewArtifactUriForSession(sessionId: string, uri: string): Promise<string> {
-  return invoke("preview_artifact_uri_for_session", { sessionId, uri });
+  return invoke<string>("preview_artifact_uri_for_session", { sessionId, uri } satisfies ArtifactUriArgs);
 }
 
 export interface PreviewArtifactInfo {
@@ -168,11 +231,11 @@ export async function previewArtifactUriForSessionV2(
   sessionId: string,
   uri: string,
 ): Promise<PreviewArtifactInfo> {
-  return invoke("preview_artifact_uri_for_session_v2", { sessionId, uri });
+  return invoke<PreviewArtifactInfo>("preview_artifact_uri_for_session_v2", { sessionId, uri } satisfies ArtifactUriArgs);
 }
 
 export async function readEditableArtifact(sourcePath: string): Promise<EditableArtifactSource> {
-  return invoke("read_editable_artifact", { sourcePath });
+  return invoke<EditableArtifactSource>("read_editable_artifact", { sourcePath } satisfies SourcePathArgs);
 }
 
 export async function saveEditableArtifact(
@@ -180,7 +243,7 @@ export async function saveEditableArtifact(
   sourceKind: ArtifactSourceKind,
   content: string,
 ): Promise<SaveEditableArtifactResult> {
-  return invoke("save_editable_artifact", { sourcePath, sourceKind, content });
+  return invoke<SaveEditableArtifactResult>("save_editable_artifact", { sourcePath, sourceKind, content } satisfies SaveEditableArtifactArgs);
 }
 
 export function onPtyExit(
@@ -206,7 +269,7 @@ export interface PtyMetadata {
 export type PtyMetadataSnapshot = Record<string, PtyMetadata>;
 
 export async function getPtyMetadataSnapshot(): Promise<PtyMetadataSnapshot> {
-  return invoke("get_pty_metadata_snapshot");
+  return invoke<PtyMetadataSnapshot>("get_pty_metadata_snapshot");
 }
 
 export function onPtyMetadata(
@@ -244,7 +307,7 @@ export interface TerminalConfig {
 }
 
 export async function getTerminalConfig(): Promise<TerminalConfig> {
-  return invoke("get_terminal_config");
+  return invoke<TerminalConfig>("get_terminal_config");
 }
 
 // Preload config so it's cached before first terminal mounts
@@ -258,11 +321,11 @@ export function preloadTerminalConfig(): void {
 // ─── Path utilities ─────────────────────────────────────────────────────────
 
 export async function isDirectory(path: string): Promise<boolean> {
-  return invoke("is_directory", { path });
+  return invoke<boolean>("is_directory", { path } satisfies PathArgs);
 }
 
 export async function getLaunchCwd(): Promise<string | null> {
-  return invoke("get_launch_cwd");
+  return invoke<string | null>("get_launch_cwd");
 }
 
 export interface JoinSavepointSummaryResult {
@@ -313,44 +376,44 @@ export interface ImportSavepointTransferResult {
 }
 
 export async function listOnlineSavepoints(): Promise<OnlineSavepointEntry[]> {
-  return invoke("list_online_savepoints");
+  return invoke<OnlineSavepointEntry[]>("list_online_savepoints");
 }
 
 export async function listTrashedOnlineSavepoints(): Promise<OnlineSavepointEntry[]> {
-  return invoke("list_trashed_online_savepoints");
+  return invoke<OnlineSavepointEntry[]>("list_trashed_online_savepoints");
 }
 
 export async function getSavepointStorageSettings(): Promise<SavepointStorageSettings> {
-  return invoke("get_savepoint_storage_settings");
+  return invoke<SavepointStorageSettings>("get_savepoint_storage_settings");
 }
 
 export async function exportSavepointTransfer(
   bundleDir: string,
   destinationPath: string,
 ): Promise<ExportSavepointTransferResult> {
-  return invoke("export_savepoint_transfer", { bundleDir, destinationPath });
+  return invoke<ExportSavepointTransferResult>("export_savepoint_transfer", { bundleDir, destinationPath } satisfies ExportSavepointTransferArgs);
 }
 
 export async function importSavepointTransfer(
   sourcePath: string,
 ): Promise<ImportSavepointTransferResult> {
-  return invoke("import_savepoint_transfer", { sourcePath });
+  return invoke<ImportSavepointTransferResult>("import_savepoint_transfer", { sourcePath } satisfies SourcePathArgs);
 }
 
 export async function joinSavepointSummary(bundleDir: string): Promise<JoinSavepointSummaryResult> {
-  return invoke("join_savepoint_summary", { bundleDir });
+  return invoke<JoinSavepointSummaryResult>("join_savepoint_summary", { bundleDir } satisfies BundleDirArgs);
 }
 
 export async function joinSavepointFull(bundleDir: string): Promise<JoinSavepointFullResult> {
-  return invoke("join_savepoint_full", { bundleDir });
+  return invoke<JoinSavepointFullResult>("join_savepoint_full", { bundleDir } satisfies BundleDirArgs);
 }
 
 export async function toggleSavepointPin(bundleDir: string): Promise<ToggleSavepointPinResult> {
-  return invoke("toggle_savepoint_pin", { bundleDir });
+  return invoke<ToggleSavepointPinResult>("toggle_savepoint_pin", { bundleDir } satisfies BundleDirArgs);
 }
 
 export async function cleanupOnlineSavepoints(): Promise<CleanupOnlineSavepointsResult> {
-  return invoke("cleanup_online_savepoints");
+  return invoke<CleanupOnlineSavepointsResult>("cleanup_online_savepoints");
 }
 
 export interface PublishSavepointResult {
@@ -397,14 +460,14 @@ export async function publishSavepoint(options: {
   summary?: string;
   nextStep?: string;
 }): Promise<PublishSavepointResult> {
-  return invoke("publish_savepoint", {
+  return invoke<PublishSavepointResult>("publish_savepoint", {
     cwd: options.cwd,
     agentKind: options.agentKind,
     agentSessionId: options.agentSessionId,
     claudeSessionId: options.agentKind === "claude" ? options.agentSessionId : null,
     summary: options.summary ?? null,
     nextStep: options.nextStep ?? null,
-  });
+  } satisfies PublishSavepointArgs);
 }
 
 export async function finalizeSavepoint(options: {
@@ -415,7 +478,7 @@ export async function finalizeSavepoint(options: {
   nextStep?: string;
   closedReason?: SavepointCloseReason;
 }): Promise<PublishSavepointResult> {
-  return invoke("finalize_savepoint", {
+  return invoke<PublishSavepointResult>("finalize_savepoint", {
     cwd: options.cwd,
     agentKind: options.agentKind,
     agentSessionId: options.agentSessionId,
@@ -423,7 +486,7 @@ export async function finalizeSavepoint(options: {
     summary: options.summary ?? null,
     nextStep: options.nextStep ?? null,
     closedReason: options.closedReason ?? "manual",
-  });
+  } satisfies FinalizeSavepointArgs);
 }
 
 // ─── CRSM commands ─────────────────────────────────────────────────────────
@@ -459,11 +522,11 @@ export async function crsmListSessions(
   limit = 200,
   refresh = false,
 ): Promise<CrsmSessionEntry[]> {
-  return invoke("crsm_list_sessions", {
+  return invoke<CrsmSessionEntry[]>("crsm_list_sessions", {
     query: query?.trim() ? query : null,
     limit,
     refresh,
-  });
+  } satisfies CrsmListSessionsArgs);
 }
 
 export async function crsmCreateHandoff(
@@ -472,12 +535,12 @@ export async function crsmCreateHandoff(
   targetKind: CrsmSessionEntry["kind"],
   recentTurns = 20,
 ): Promise<CrsmHandoffResult> {
-  return invoke("crsm_create_handoff", {
+  return invoke<CrsmHandoffResult>("crsm_create_handoff", {
     sessionId,
     fromKind,
     targetKind,
     recentTurns,
-  });
+  } satisfies CrsmCreateHandoffArgs);
 }
 
 // ─── Remote access commands ─────────────────────────────────────────────────
@@ -497,11 +560,11 @@ export interface RemoteInfo {
 }
 
 export async function getRemoteInfo(): Promise<RemoteInfo> {
-  return invoke("get_remote_info");
+  return invoke<RemoteInfo>("get_remote_info");
 }
 
 export async function rotateRemoteToken(): Promise<RemoteInfo> {
-  return invoke("rotate_remote_token");
+  return invoke<RemoteInfo>("rotate_remote_token");
 }
 
 /**
@@ -510,11 +573,11 @@ export async function rotateRemoteToken(): Promise<RemoteInfo> {
  * the next app restart.
  */
 export async function getRemoteBindAll(): Promise<boolean> {
-  return invoke("get_remote_bind_all");
+  return invoke<boolean>("get_remote_bind_all");
 }
 
 export async function setRemoteBindAll(enabled: boolean): Promise<boolean> {
-  return invoke("set_remote_bind_all", { enabled });
+  return invoke<boolean>("set_remote_bind_all", { enabled } satisfies EnabledArgs);
 }
 
 export interface AgentSessionMapping {
@@ -525,7 +588,7 @@ export interface AgentSessionMapping {
 export async function readAgentSessionMappings(
   sessionIds: string[],
 ): Promise<Record<string, AgentSessionMapping>> {
-  return invoke("read_agent_session_mappings", { sessionIds: Array.from(new Set(sessionIds)) });
+  return invoke<Record<string, AgentSessionMapping>>("read_agent_session_mappings", { sessionIds: Array.from(new Set(sessionIds)) } satisfies SessionIdsArgs);
 }
 
 export interface DefaultShellInfo {
@@ -534,25 +597,25 @@ export interface DefaultShellInfo {
 }
 
 export async function getDefaultShell(): Promise<DefaultShellInfo> {
-  return invoke("get_default_shell");
+  return invoke<DefaultShellInfo>("get_default_shell");
 }
 
 // ─── Window / leader election ────────────────────────────────────────────────
 
 export async function claimLeader(): Promise<boolean> {
-  return invoke("claim_leader");
+  return invoke<boolean>("claim_leader");
 }
 
 export async function getWindowCount(): Promise<number> {
-  return invoke("get_window_count");
+  return invoke<number>("get_window_count");
 }
 
 export async function revealMainWindow(): Promise<void> {
-  return invoke("reveal_main_window");
+  return invoke<void>("reveal_main_window");
 }
 
 export async function quitApp(): Promise<void> {
-  return invoke("quit_app");
+  return invoke<void>("quit_app");
 }
 
 // ─── Persistence commands ────────────────────────────────────────────────────
@@ -629,11 +692,11 @@ export interface PersistentData {
 }
 
 export async function loadPersistentData(): Promise<PersistentData> {
-  return invoke("load_persistent_data");
+  return invoke<PersistentData>("load_persistent_data");
 }
 
 export async function savePersistentData(data: PersistentData): Promise<void> {
-  return invoke("save_persistent_data", { data });
+  return invoke<void>("save_persistent_data", { data } satisfies SavePersistentDataArgs);
 }
 
 export async function saveWorkspaces(
@@ -641,20 +704,20 @@ export async function saveWorkspaces(
   activeWorkspaceId?: string | null,
   activePaneId?: string | null,
 ): Promise<void> {
-  return invoke("save_workspaces", {
+  return invoke<void>("save_workspaces", {
     workspaces,
     activeWorkspaceId: activeWorkspaceId ?? null,
     activePaneId: activePaneId ?? null,
-  });
+  } satisfies SaveWorkspacesArgs);
 }
 
 export async function saveSettings(settings: AppSettings): Promise<void> {
-  return invoke("save_settings", { settings });
+  return invoke<void>("save_settings", { settings } satisfies SaveSettingsArgs);
 }
 
 
 export async function sendSocketResponse(id: number, result: any, error: string | null): Promise<void> {
-  return invoke("socket_response", { id, result, error });
+  return invoke<void>("socket_response", { id, result, error } satisfies SocketResponseArgs);
 }
 
 // ─── File explorer commands ──────────────────────────────────────────────────
@@ -673,7 +736,7 @@ export interface PinnedRoot {
 }
 
 export async function listDirectory(path: string): Promise<FileEntry[]> {
-  return invoke("list_directory", { path });
+  return invoke<FileEntry[]>("list_directory", { path } satisfies PathArgs);
 }
 
 export async function walkTree(
@@ -683,17 +746,17 @@ export async function walkTree(
   limit?: number,
   includeHidden = false,
 ): Promise<FileEntry[]> {
-  return invoke("walk_tree", {
+  return invoke<FileEntry[]>("walk_tree", {
     root,
     excludes,
     maxDepth: maxDepth ?? null,
     limit: limit ?? null,
     includeHidden,
-  });
+  } satisfies WalkTreeArgs);
 }
 
 export async function normalizePath(path: string): Promise<string> {
-  return invoke("normalize_path", { path });
+  return invoke<string>("normalize_path", { path } satisfies PathArgs);
 }
 
 export interface ResolvedLocalPathLink {
@@ -704,39 +767,39 @@ export interface ResolvedLocalPathLink {
 export async function resolveLocalPathLinks(
   candidates: string[],
 ): Promise<Array<ResolvedLocalPathLink | null>> {
-  return invoke("resolve_local_path_links", { candidates });
+  return invoke<Array<ResolvedLocalPathLink | null>>("resolve_local_path_links", { candidates } satisfies CandidatesArgs);
 }
 
 export async function savePinnedRoots(pinnedRoots: PinnedRoot[]): Promise<void> {
-  return invoke("save_pinned_roots", { pinnedRoots });
+  return invoke<void>("save_pinned_roots", { pinnedRoots } satisfies PinnedRootsArgs);
 }
 
 export async function watchRoot(path: string): Promise<void> {
-  return invoke("watch_root", { path });
+  return invoke<void>("watch_root", { path } satisfies PathArgs);
 }
 
 export async function unwatchRoot(path: string): Promise<void> {
-  return invoke("unwatch_root", { path });
+  return invoke<void>("unwatch_root", { path } satisfies PathArgs);
 }
 
 export async function revealInExplorer(path: string): Promise<void> {
-  return invoke("reveal_in_explorer", { path });
+  return invoke<void>("reveal_in_explorer", { path } satisfies PathArgs);
 }
 
 export async function revealPathInExplorer(uri: string): Promise<void> {
-  return invoke("reveal_path_in_explorer", { uri });
+  return invoke<void>("reveal_path_in_explorer", { uri } satisfies UriArgs);
 }
 
 export async function openWithDefault(path: string): Promise<void> {
-  return invoke("open_with_default", { path });
+  return invoke<void>("open_with_default", { path } satisfies PathArgs);
 }
 
 export async function createFile(parent: string, name: string): Promise<string> {
-  return invoke("create_file", { parent, name });
+  return invoke<string>("create_file", { parent, name } satisfies CreateEntryArgs);
 }
 
 export async function createFolder(parent: string, name: string): Promise<string> {
-  return invoke("create_folder", { parent, name });
+  return invoke<string>("create_folder", { parent, name } satisfies CreateEntryArgs);
 }
 
 export interface FsChangedPayload {
@@ -800,35 +863,35 @@ export interface OauthLoginStart {
 }
 
 export async function getUsageSummary(): Promise<UsageSummary> {
-  return invoke("get_usage_summary");
+  return invoke<UsageSummary>("get_usage_summary");
 }
 
 export async function getMultiUsage(): Promise<AccountUsage[]> {
-  return invoke("get_multi_usage");
+  return invoke<AccountUsage[]>("get_multi_usage");
 }
 
 export async function startOauthLogin(): Promise<OauthLoginStart> {
-  return invoke("start_oauth_login");
+  return invoke<OauthLoginStart>("start_oauth_login");
 }
 
 export async function completeOauthLogin(
   loginId: string,
   pastedCode: string,
 ): Promise<UsageAccountMeta> {
-  return invoke("complete_oauth_login", { loginId, pastedCode });
+  return invoke<UsageAccountMeta>("complete_oauth_login", { loginId, pastedCode } satisfies CompleteOauthLoginArgs);
 }
 
 export async function listUsageAccounts(): Promise<UsageAccountMeta[]> {
-  return invoke("list_usage_accounts");
+  return invoke<UsageAccountMeta[]>("list_usage_accounts");
 }
 
 export async function removeUsageAccount(accountId: string): Promise<void> {
-  return invoke("remove_usage_account", { accountId });
+  return invoke<void>("remove_usage_account", { accountId } satisfies AccountIdArgs);
 }
 
 export async function setUsageAccountEnabled(
   accountId: string,
   enabled: boolean,
 ): Promise<void> {
-  return invoke("set_usage_account_enabled", { accountId, enabled });
+  return invoke<void>("set_usage_account_enabled", { accountId, enabled } satisfies SetUsageAccountEnabledArgs);
 }

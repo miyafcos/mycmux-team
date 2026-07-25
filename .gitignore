@@ -53,3 +53,5 @@ src-tauri/WixTools/
 src-tauri/target/
 *.dmg
 *.exe
+*.msi
+*.sig

@@ -2,6 +2,7 @@ pub mod oauth_claude;
 pub mod oauth_login;
 pub mod oauth_codex;
 pub mod token_store;
+mod util;
 
 use serde::Serialize;
 use std::collections::HashMap;

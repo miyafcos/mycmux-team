@@ -8,6 +8,29 @@ use tauri::AppHandle;
 use super::monitor::MetadataStore;
 use super::session::{PtySession, ScrollbackSnapshot};
 
+#[derive(Debug, PartialEq, Eq)]
+enum CreateDisposition {
+    Reattached,
+    Spawned,
+}
+
+fn create_or_reattach<S, T>(
+    sessions: &DashMap<String, S>,
+    session_id: String,
+    resource: T,
+    reattach: impl FnOnce(&S, T) -> Result<(), String>,
+    spawn: impl FnOnce(T) -> Result<S, String>,
+) -> Result<CreateDisposition, String> {
+    if let Some(session) = sessions.get(&session_id) {
+        reattach(session.value(), resource)?;
+        return Ok(CreateDisposition::Reattached);
+    }
+
+    let session = spawn(resource)?;
+    sessions.insert(session_id, session);
+    Ok(CreateDisposition::Spawned)
+}
+
 pub struct SessionManager {
     sessions: DashMap<String, PtySession>,
     create_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
@@ -65,43 +88,49 @@ impl SessionManager {
         let _create_guard = create_lock
             .lock()
             .map_err(|error| format!("Failed to lock create session {session_id}: {error}"))?;
-        if let Some(session) = self.sessions.get(&session_id) {
-            let replaced_channel_ids = session.replace_data_channel(data_channel)?;
-            #[cfg(debug_assertions)]
-            {
-                let age_ms = session.created_at.elapsed().as_millis();
-                let (old_channel_id, active_channel_id) = replaced_channel_ids;
-                eprintln!(
-                    "[mycmux-diag manager] create_session id={} kind=reattach age_ms={} old_channel_id={} new_channel_id={} active_channel_id={}",
-                    session_id, age_ms, old_channel_id, new_channel_id, active_channel_id
-                );
-            }
-            #[cfg(not(debug_assertions))]
-            {
-                let _ = replaced_channel_ids;
-            }
-            return Ok(());
-        }
-
-        #[cfg(debug_assertions)]
-        eprintln!(
-            "[mycmux-diag manager] create_session id={} kind=new channel_id={}",
-            session_id, new_channel_id
-        );
-        let session = PtySession::spawn(
+        create_or_reattach(
+            &self.sessions,
             session_id.clone(),
-            command,
-            args,
-            cols,
-            rows,
             data_channel,
-            app_handle,
-            cwd,
-            env,
-            metadata_store,
-            Instant::now(),
+            |session, data_channel| {
+                let replaced_channel_ids = session.replace_data_channel(data_channel)?;
+                #[cfg(debug_assertions)]
+                {
+                    let age_ms = session.created_at.elapsed().as_millis();
+                    let (old_channel_id, active_channel_id) = replaced_channel_ids;
+                    eprintln!(
+                        "[mycmux-diag manager] create_session id={} kind=reattach age_ms={} old_channel_id={} new_channel_id={} active_channel_id={}",
+                        session_id, age_ms, old_channel_id, new_channel_id, active_channel_id
+                    );
+                }
+                #[cfg(not(debug_assertions))]
+                {
+                    let _ = replaced_channel_ids;
+                }
+                // contract-test pin: test_session_restore_agent_kind.py expects this literal early return
+                return Ok(());
+            },
+            |data_channel| {
+                #[cfg(debug_assertions)]
+                eprintln!(
+                    "[mycmux-diag manager] create_session id={} kind=new channel_id={}",
+                    session_id, new_channel_id
+                );
+                PtySession::spawn(
+                    session_id.clone(),
+                    command,
+                    args,
+                    cols,
+                    rows,
+                    data_channel,
+                    app_handle,
+                    cwd,
+                    env,
+                    metadata_store,
+                    Instant::now(),
+                )
+            },
         )?;
-        self.sessions.insert(session_id, session);
         Ok(())
     }
 
@@ -215,10 +244,84 @@ impl SessionManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct FakeSession {
+        reattach_count: AtomicUsize,
+    }
+
+    impl FakeSession {
+        fn new() -> Self {
+            Self {
+                reattach_count: AtomicUsize::new(0),
+            }
+        }
+    }
 
     #[test]
     fn is_alive_is_false_for_unknown_session() {
         let manager = SessionManager::new();
         assert!(!manager.is_alive("nonexistent-session"));
+    }
+
+    #[test]
+    fn existing_session_reattaches_without_spawning() {
+        let sessions = DashMap::new();
+        sessions.insert("session".to_string(), FakeSession::new());
+        let spawn_count = AtomicUsize::new(0);
+
+        let disposition = create_or_reattach(
+            &sessions,
+            "session".to_string(),
+            (),
+            |session, ()| {
+                session.reattach_count.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+            |()| {
+                spawn_count.fetch_add(1, Ordering::SeqCst);
+                Ok(FakeSession::new())
+            },
+        )
+        .expect("reattach should succeed");
+
+        assert_eq!(disposition, CreateDisposition::Reattached);
+        assert_eq!(spawn_count.load(Ordering::SeqCst), 0);
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(
+            sessions
+                .get("session")
+                .expect("existing session should remain")
+                .reattach_count
+                .load(Ordering::SeqCst),
+            1
+        );
+    }
+
+    #[test]
+    fn missing_session_spawns_once_and_is_inserted() {
+        let sessions = DashMap::new();
+        let reattach_count = AtomicUsize::new(0);
+        let spawn_count = AtomicUsize::new(0);
+
+        let disposition = create_or_reattach(
+            &sessions,
+            "session".to_string(),
+            (),
+            |_, ()| {
+                reattach_count.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+            |()| {
+                spawn_count.fetch_add(1, Ordering::SeqCst);
+                Ok(FakeSession::new())
+            },
+        )
+        .expect("spawn should succeed");
+
+        assert_eq!(disposition, CreateDisposition::Spawned);
+        assert_eq!(reattach_count.load(Ordering::SeqCst), 0);
+        assert_eq!(spawn_count.load(Ordering::SeqCst), 1);
+        assert!(sessions.contains_key("session"));
     }
 }

@@ -8,17 +8,11 @@ import { usePaneMetadataStore } from "../../stores/workspaceStore";
 import type { PaneMetadata } from "../../stores/paneMetadataStore";
 import { deriveEffectiveStatus, type EffectiveStatus } from "../../lib/notificationStatus";
 import { usePaneDragSource } from "../../hooks/usePaneDragSource";
+import { useSavepointPublish } from "../../hooks/useSavepointPublish";
 import { useSavepointDragStore } from "../../stores/savepointDragStore";
 import { focusController } from "../../lib/focusController";
 import { useWorkspaceLayoutStore } from "../../stores/workspaceLayoutStore";
 import { useSettingsStore } from "../../stores/settingsStore";
-import {
-  finalizeSavepoint,
-  onSavepointPublishProgress,
-  publishSavepoint,
-  type PublishSavepointResult,
-  type SavepointPublishStage,
-} from "../../lib/ipc";
 import { useToastStore } from "../../stores/toastStore";
 import { useOnlineSavepointStore } from "../../stores/onlineSavepointStore";
 import { onlineStrings } from "../online/onlineStrings";
@@ -609,9 +603,6 @@ export default memo(function PaneTabBar({
   const [contextMenuPos, setContextMenuPos] = useState({ left: 0, top: 0 });
   const [publishPopoverOpen, setPublishPopoverOpen] = useState(false);
   const [publishSummary, setPublishSummary] = useState("");
-  const [publishing, setPublishing] = useState(false);
-  const [publishStage, setPublishStage] = useState<SavepointPublishStage | null>(null);
-  const [publishResult, setPublishResult] = useState<PublishSavepointResult | null>(null);
   const publishPopoverRef = useRef<HTMLDivElement>(null);
   const tabStripRef = useRef<HTMLDivElement>(null);
   const tabPillRefs = useRef(new Map<string, HTMLDivElement>());
@@ -640,6 +631,10 @@ export default memo(function PaneTabBar({
   const publishIdentityKey = publishIdentity
     ? savepointIdentityKey(publishIdentity.kind, publishIdentity.sessionId)
     : null;
+  const {
+    state: { publishing, stage: publishStage, result: publishResult },
+    run: runSavepointPublish,
+  } = useSavepointPublish({ mode: "single", identity: publishIdentityKey });
   const published = useOnlineSavepointStore((state) =>
     publishIdentityKey ? state.publishedSessionIds[publishIdentityKey] === true : false,
   );
@@ -819,20 +814,6 @@ export default memo(function PaneTabBar({
     });
   }, [pane.activeTabId, tabsOverflowing, barMode]);
 
-  useEffect(() => {
-    setPublishStage(null);
-    setPublishResult(null);
-    if (!publishIdentityKey) return;
-    const unlisten = onSavepointPublishProgress((progress) => {
-      if (savepointIdentityKey(progress.agent_kind, progress.agent_session_id) === publishIdentityKey) {
-        setPublishStage(progress.stage);
-      }
-    });
-    return () => {
-      void unlisten.then((dispose) => dispose()).catch(() => undefined);
-    };
-  }, [publishIdentityKey]);
-
   const handlePublishSavepoint = useCallback(async (recordKind: "current" | "final" = "current") => {
     if (!activeTab || !agentKind || !agentSessionId || publishing) return;
     const cwd = metadataBySession[activeTab.sessionId]?.cwd ?? activeTab.cwd ?? pane.cwd;
@@ -843,19 +824,17 @@ export default memo(function PaneTabBar({
       );
       return;
     }
-    setPublishStage(null);
-    setPublishResult(null);
-    setPublishing(true);
     try {
-      const request = {
+      const outcome = await runSavepointPublish({
         cwd,
         agentKind,
         agentSessionId,
         summary: publishSummary.trim() || undefined,
-      };
-      const result = recordKind === "final"
-        ? await finalizeSavepoint({ ...request, closedReason: "manual" })
-        : await publishSavepoint(request);
+        recordKind,
+        closedReason: recordKind === "final" ? "manual" : undefined,
+      });
+      if (!outcome.ok) throw outcome.error;
+      const result = outcome.result;
       useToastStore.getState().pushToast(
         (recordKind === "final"
           ? onlineStrings.finalizeSuccess
@@ -865,12 +844,10 @@ export default memo(function PaneTabBar({
             : ""),
         "warning",
       );
-      setPublishResult(result);
       void useOnlineSavepointStore.getState().refresh();
       window.dispatchEvent(new CustomEvent("mycmux:savepoint-published"));
       setPublishSummary("");
     } catch (error) {
-      setPublishStage(null);
       const message = String(error);
       useToastStore.getState().pushToast(
         message.includes("Session transcript") && message.includes("not found")
@@ -878,10 +855,8 @@ export default memo(function PaneTabBar({
           : onlineStrings.publishErrorPrefix + message,
         "error",
       );
-    } finally {
-      setPublishing(false);
     }
-  }, [activeTab, agentKind, agentSessionId, metadataBySession, pane.cwd, publishSummary, publishing]);
+  }, [activeTab, agentKind, agentSessionId, metadataBySession, pane.cwd, publishSummary, publishing, runSavepointPublish]);
 
   const startEditingTab = useCallback((tabId: string, label: string) => {
     setContextMenu(null);

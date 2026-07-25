@@ -167,7 +167,7 @@ def test_session_liveness_query_is_wired_through_all_tauri_layers():
     lib_rs = read("src-tauri/src/lib.rs")
 
     assert "export async function isSessionAlive(sessionId: string): Promise<boolean>" in ipc
-    assert 'return invoke("is_session_alive", { sessionId });' in ipc
+    assert 'return invoke<boolean>("is_session_alive", { sessionId } satisfies SessionIdArgs);' in ipc
     assert "#[tauri::command(async)]\npub fn is_session_alive" in terminal_commands
     assert "state.session_manager.is_alive(&session_id)" in terminal_commands
     assert "commands::terminal::is_session_alive" in lib_rs

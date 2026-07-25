@@ -432,7 +432,14 @@ async fn api_state(
     }
 
     // Read workspace configs from persistent data (for name lookup)
-    let workspaces_data = crate::db::storage::load(&state.app_handle).unwrap_or_default();
+    let app_handle = state.app_handle.clone();
+    let workspaces_data = tokio::task::spawn_blocking(move || {
+        crate::db::storage::load(&app_handle)
+    })
+    .await
+    .ok()
+    .and_then(|result| result.ok())
+    .unwrap_or_default();
 
     // Get live session PIDs and group by workspace ID extracted from session IDs
     let live_pids: Vec<(String, Option<u32>)> = state.app_session_manager.iter_pids();

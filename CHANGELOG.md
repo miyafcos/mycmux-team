@@ -4,6 +4,24 @@
 
 ---
 
+## [0.20.2] - 2026-07-25
+
+内部リファクタ集中パック (機能・見た目の変更なし)。`refactor-instructions.md` に基づく負債返済21コミット。
+
+- Refactor: 巨大ファイル分割 (pure move) — `pty/monitor.rs` (2,207行) を detection / git_branch / runner / transcripts / tests の5モジュールへ、savepoint 系 `commands/online.rs` + `online_publish.rs` (計約5,000行) を join / lifecycle / digest / transcript / publish / tests の9モジュールへ
+- Refactor: フロント⇔Rust IPC の invoke 64箇所を型付け (payload/戻り値の型検査で「静かに壊れる」を予防)
+- Refactor: savepoint publish のオーケストレーションを共有 hook `useSavepointPublish` に一元化 (OnlinePanel / PaneTabBar の重複実装を解消)
+- Refactor: usage 監視の OAuth 補助関数を `usage/util.rs` に統合 (二重実装解消)
+- Fix: `data.json` の backup/一時ファイル掃除失敗が黙殺されていたのを stderr に記録するように
+- Fix: リモート API の状態読み込みを async ランタイム外 (`spawn_blocking`) へ退避
+- Remove: ファイルエクスプローラー廃止で死んでいた store の残骸443行 / 無効化済み `windows_console.rs` / 廃止ビルドスクリプト3本 / 誤コミットされていた v0.19.2 インストーラ (27MB) を削除、`.gitignore` に `*.msi`/`*.sig` を追加
+- Tests: 安全網テスト19本追加 (workspaceLayoutStore の move/split 8本・PTY reattach 分岐・socket timeout 掃除ほか)。合計 tsc 0 / vitest 419 / cargo 200 / pytest 141 全グリーン
+- Docs: `docs/current-state.md` を v0.20.x 現状 (lite 廃止・公開ミラー sync 方式) に刷新。設計提案4本を `docs/plans/2026-07-25-*.md` に追加 (transcript 統合不可の確定分析・store 境界・terminal 分割・typed error — いずれも実装は未着手)
+
+## [0.20.1] - 2026-07-25
+
+- Fix: 日本語を含むパスがターミナルの折り返しで分断されたときにリンク化されない問題を修正 (セル幅忠実のテストハーネスで再発防止)
+
 ## [0.20.0] - 2026-07-23
 
 ターミナルパスリンクの信頼性を大幅修正。公開リポジトリ一本化 (lite 配布終了) に伴う整理も同梱。

@@ -20,13 +20,13 @@ def test_window_leader_commands_are_exposed_to_frontend() -> None:
 
     for snippet in [
         "export async function claimLeader(): Promise<boolean>",
-        'return invoke("claim_leader");',
+        'return invoke<boolean>("claim_leader");',
         "export async function getWindowCount(): Promise<number>",
-        'return invoke("get_window_count");',
+        'return invoke<number>("get_window_count");',
         "export async function revealMainWindow(): Promise<void>",
-        'return invoke("reveal_main_window");',
+        'return invoke<void>("reveal_main_window");',
         "export async function quitApp(): Promise<void>",
-        'return invoke("quit_app");',
+        'return invoke<void>("quit_app");',
     ]:
         assert_contains(ipc, snippet, "src/lib/ipc.ts")
 

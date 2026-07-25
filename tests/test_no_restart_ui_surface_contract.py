@@ -166,7 +166,7 @@ def test_savepoints_and_remote_control_have_separate_settings_destinations() -> 
         [
             "export interface SavepointStorageSettings",
             "legacy_directory: string | null;",
-            'invoke("get_savepoint_storage_settings")',
+            'invoke<SavepointStorageSettings>("get_savepoint_storage_settings")',
         ],
     )
     assert_snippets(

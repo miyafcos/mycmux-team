@@ -1,5 +1,5 @@
+use super::util::{epoch_to_rfc3339, normalize_pct, number_field, number_to_i64, truncate};
 use crate::usage::WindowStat;
-use chrono::{TimeZone, Utc};
 use reqwest::header::{ACCEPT, USER_AGENT};
 use serde_json::Value;
 use std::{env, fs, path::PathBuf};
@@ -276,14 +276,6 @@ fn string_field(value: &Value, keys: &[&str]) -> Option<String> {
     })
 }
 
-fn number_field(value: &Value, keys: &[&str]) -> Option<f64> {
-    keys.iter().find_map(|key| {
-        let raw = value.get(*key)?;
-        raw.as_f64()
-            .or_else(|| raw.as_str().and_then(|text| text.parse::<f64>().ok()))
-    })
-}
-
 fn reset_field(value: &Value) -> Option<String> {
     for key in ["reset_at", "resetAt", "resets_at", "resetsAt"] {
         if let Some(raw) = value.get(key) {
@@ -298,41 +290,10 @@ fn reset_field(value: &Value) -> Option<String> {
     None
 }
 
-fn normalize_pct(value: f64) -> f64 {
-    let pct = if value <= 1.0 { value * 100.0 } else { value };
-    pct.clamp(0.0, 999.9)
-}
-
-fn epoch_to_rfc3339(value: i64) -> String {
-    let seconds = if value > 10_000_000_000 {
-        value / 1000
-    } else {
-        value
-    };
-    Utc.timestamp_opt(seconds, 0)
-        .single()
-        .map(|date| date.to_rfc3339())
-        .unwrap_or_default()
-}
-
-fn number_to_i64(value: &Value) -> Option<i64> {
-    value
-        .as_i64()
-        .or_else(|| value.as_u64().and_then(|number| i64::try_from(number).ok()))
-        .or_else(|| value.as_str().and_then(|text| text.parse::<i64>().ok()))
-}
-
 fn http_error(status: u16, body: &str) -> String {
     let cleaned = body.split_whitespace().collect::<Vec<_>>().join(" ");
     if cleaned.is_empty() {
         return format!("HTTP {status}");
     }
     format!("HTTP {status}: {}", truncate(&cleaned, 300))
-}
-
-fn truncate(value: &str, max_chars: usize) -> String {
-    if value.chars().count() <= max_chars {
-        return value.to_string();
-    }
-    value.chars().take(max_chars).collect::<String>() + "..."
 }

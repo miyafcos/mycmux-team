@@ -49,6 +49,35 @@ pub fn socket_response(
     Ok(())
 }
 
+async fn await_frontend_response(
+    pending_requests: &DashMap<usize, oneshot::Sender<SocketResponse>>,
+    id: usize,
+    rx: oneshot::Receiver<SocketResponse>,
+    timeout: Duration,
+) -> SocketResponse {
+    match tokio::time::timeout(timeout, rx).await {
+        Ok(Ok(resp)) => resp,
+        Ok(Err(_)) => {
+            // Sender dropped without a response.
+            pending_requests.remove(&id);
+            SocketResponse {
+                id,
+                result: None,
+                error: Some("Frontend dropped the request".to_string()),
+            }
+        }
+        Err(_) => {
+            // Timed out waiting for the frontend.
+            pending_requests.remove(&id);
+            SocketResponse {
+                id,
+                result: None,
+                error: Some("Frontend response timed out".to_string()),
+            }
+        }
+    }
+}
+
 async fn handle_connection(stream: TcpStream, app: AppHandle) {
     let state = app.state::<SocketState>();
     let (reader, mut writer) = stream.into_split();
@@ -84,38 +113,17 @@ async fn handle_connection(stream: TcpStream, app: AppHandle) {
                             // Wait for frontend response, bounded so an
                             // unresponsive frontend cannot leak this task or
                             // its pending_requests entry forever.
-                            let resp = match tokio::time::timeout(
-                                FRONTEND_RESPONSE_TIMEOUT,
+                            let resp = await_frontend_response(
+                                state.pending_requests.as_ref(),
+                                id,
                                 rx,
+                                FRONTEND_RESPONSE_TIMEOUT,
                             )
-                            .await
-                            {
-                                Ok(Ok(resp)) => Some(resp),
-                                Ok(Err(_)) => {
-                                    // Sender dropped without a response.
-                                    state.pending_requests.remove(&id);
-                                    Some(SocketResponse {
-                                        id,
-                                        result: None,
-                                        error: Some("Frontend dropped the request".to_string()),
-                                    })
-                                }
-                                Err(_) => {
-                                    // Timed out waiting for the frontend.
-                                    state.pending_requests.remove(&id);
-                                    Some(SocketResponse {
-                                        id,
-                                        result: None,
-                                        error: Some("Frontend response timed out".to_string()),
-                                    })
-                                }
-                            };
-                            if let Some(resp) = resp {
-                                let resp_json = serde_json::to_string(&resp).unwrap_or_default();
-                                let _ = writer.write_all(resp_json.as_bytes()).await;
-                                let _ = writer.write_all(b"\n").await;
-                                let _ = writer.flush().await;
-                            }
+                            .await;
+                            let resp_json = serde_json::to_string(&resp).unwrap_or_default();
+                            let _ = writer.write_all(resp_json.as_bytes()).await;
+                            let _ = writer.write_all(b"\n").await;
+                            let _ = writer.flush().await;
                         } else {
                             state.pending_requests.remove(&id);
                             let err_resp = SocketResponse {
@@ -207,4 +215,78 @@ pub fn read_socket_port() -> Option<u16> {
     std::fs::read_to_string(&port_file)
         .ok()
         .and_then(|s| s.trim().parse().ok())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn frontend_response_is_forwarded_without_timeout() {
+        let pending_requests = DashMap::new();
+        let (tx, rx) = oneshot::channel();
+        pending_requests.insert(7, tx);
+        let (_, sender) = pending_requests
+            .remove(&7)
+            .expect("pending response sender should exist");
+        sender
+            .send(SocketResponse {
+                id: 7,
+                result: Some(serde_json::json!({ "ok": true })),
+                error: None,
+            })
+            .expect("response receiver should remain open");
+
+        let response = await_frontend_response(
+            &pending_requests,
+            7,
+            rx,
+            Duration::from_secs(1),
+        )
+        .await;
+
+        assert_eq!(response.id, 7);
+        assert_eq!(response.result, Some(serde_json::json!({ "ok": true })));
+        assert_eq!(response.error, None);
+        assert!(pending_requests.is_empty());
+    }
+
+    #[tokio::test]
+    async fn dropped_frontend_sender_returns_error_and_cleans_pending_request() {
+        let pending_requests = DashMap::new();
+        let (tx, rx) = oneshot::channel();
+        pending_requests.insert(8, tx);
+        let (_, sender) = pending_requests
+            .remove(&8)
+            .expect("pending response sender should exist");
+        drop(sender);
+
+        let response = await_frontend_response(
+            &pending_requests,
+            8,
+            rx,
+            Duration::from_secs(1),
+        )
+        .await;
+
+        assert_eq!(response.id, 8);
+        assert_eq!(response.result, None);
+        assert_eq!(response.error.as_deref(), Some("Frontend dropped the request"));
+        assert!(pending_requests.is_empty());
+    }
+
+    #[tokio::test]
+    async fn frontend_timeout_removes_pending_request() {
+        let pending_requests = DashMap::new();
+        let (tx, rx) = oneshot::channel();
+        pending_requests.insert(9, tx);
+
+        let response =
+            await_frontend_response(&pending_requests, 9, rx, Duration::ZERO).await;
+
+        assert_eq!(response.id, 9);
+        assert_eq!(response.result, None);
+        assert_eq!(response.error.as_deref(), Some("Frontend response timed out"));
+        assert!(pending_requests.is_empty());
+    }
 }

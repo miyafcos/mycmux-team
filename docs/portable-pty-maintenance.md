@@ -4,7 +4,7 @@ mycmux ships its own copy of `portable-pty 0.8.1` under `src-tauri/vendor/portab
 
 ## Why we vendor it
 
-- Upstream `portable-pty 0.8.x` does not expose `creation_flags()` on `CommandBuilder`, so on Windows the spawned child briefly shows a console window before mycmux suppresses it via `windows_console::suppress_spawn_flash()`. We may want to patch the vendor copy to set `CREATE_NO_WINDOW` directly at spawn time.
+- Upstream `portable-pty 0.8.x` does not expose `creation_flags()` on `CommandBuilder`. The former process-wide flash-suppression hooks were disabled because they caused sustained CPU use, so any future fix must set `CREATE_NO_WINDOW` at spawn time and remain scoped to the child process.
 - Locally vendoring also lets us cherry-pick upstream fixes faster than waiting for a crates.io release.
 
 ## Sync workflow (when upstream releases a new version)
@@ -38,7 +38,7 @@ mycmux ships its own copy of `portable-pty 0.8.1` under `src-tauri/vendor/portab
 
 | File | Patch | Reason |
 |------|-------|--------|
-| `src/win/conpty.rs` | (TODO) Set `CREATE_NO_WINDOW` in the lpStartupInfoEx flags before `CreateProcessW` | Eliminate the spawn-flash that `suppress_spawn_flash()` mops up after the fact |
+| `src/win/conpty.rs` | (TODO) Set `CREATE_NO_WINDOW` in the lpStartupInfoEx flags before `CreateProcessW` | Eliminate the spawn flash without reviving the removed process-wide suppression hooks |
 
 (Currently the table is mostly TODO — add patches here as we land them.)
 
