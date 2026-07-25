@@ -79,7 +79,60 @@ function forgetArtifactLinkCacheForSession(sessionId: string): void {
   }
 }
 
-function cellXForStringOffset(line: ReturnType<Terminal["buffer"]["active"]["getLine"]>, offset: number): number {
+type BufferLine = ReturnType<Terminal["buffer"]["active"]["getLine"]>;
+
+/// How far a line was actually written, ignoring the blank cells xterm reports
+/// past the last written cell.
+///
+/// `translateToString(false)` pads the row out to the terminal width, so a line
+/// the TUI ended early (hard newline) and a line that filled every column look
+/// identical as strings. That padding is not real whitespace: an unwritten cell
+/// carries `NULL_CELL_CHAR` ("") while a typed space carries " ". Reading the
+/// cells is the only way to tell them apart, and both wrap heuristics below
+/// depend on the difference.
+type WrittenLineExtent = {
+  /// String length up to (and including) the last written cell.
+  textLength: number;
+  /// Cell column just past the last written cell.
+  cellEnd: number;
+};
+
+function measureWrittenLineExtent(line: BufferLine, rawText: string): WrittenLineExtent {
+  if (!line) {
+    return { textLength: rawText.length, cellEnd: 0 };
+  }
+  // Fast path: a row whose last cell holds a real glyph has no padding at all.
+  if (rawText.length > 0 && !/\s$/.test(rawText)) {
+    return { textLength: rawText.length, cellEnd: line.length };
+  }
+  let offset = 0;
+  let textLength = 0;
+  let cellEnd = 0;
+  for (let x = 0; x < line.length; x++) {
+    const cell = line.getCell(x);
+    if (!cell) continue;
+    const width = cell.getWidth();
+    if (width === 0) continue; // trailing spacer cell of a wide glyph
+    const chars = cell.getChars();
+    offset += chars.length || 1;
+    if (chars !== "") {
+      textLength = offset;
+      cellEnd = x + width;
+    }
+  }
+  return { textLength: Math.min(textLength, rawText.length), cellEnd };
+}
+
+/// Display width of the glyph a continuation line starts with, so the caller can
+/// ask whether it would have fit in the previous line's leftover cells.
+function cellWidthAtStringOffset(line: BufferLine, offset: number): number {
+  if (!line) return 1;
+  const cellX = cellXForStringOffset(line, offset);
+  const width = line.getCell(cellX)?.getWidth() ?? 1;
+  return width === 0 ? 1 : width;
+}
+
+function cellXForStringOffset(line: BufferLine, offset: number): number {
   if (!line || offset <= 0) return 0;
   let stringOffset = 0;
   for (let x = 0; x < line.length; x++) {
@@ -149,20 +202,38 @@ function rangesOverlap(left: LocalFilePathLinkMatch, right: LocalFilePathLinkMat
   return left.index < right.endIndex && right.index < left.endIndex;
 }
 
-function bareLocalPathCandidateEnd(text: string, start: number, nextStart: number | undefined): number {
-  const limit = nextStart === undefined ? text.length : nextStart;
-  const tail = text.slice(start, limit);
+type PathCandidateStart = { index: number; isAbsolute: boolean };
+
+function bareLocalPathCandidateEnd(
+  text: string,
+  start: PathCandidateStart,
+  nextStart: PathCandidateStart | undefined,
+): number {
+  // An absolute path owns everything up to a hard delimiter, even when a later
+  // component looks like a fresh candidate. Directory names routinely contain
+  // spaces ("... 合同会社 Dropbox\..."), and cutting at the next candidate start
+  // would truncate the path at the space. Over-reaching is safe: the resolver
+  // trims the candidate back to its longest prefix that exists on disk.
+  const limit = start.isAbsolute || nextStart === undefined ? text.length : nextStart.index;
+  const tail = text.slice(start.index, limit);
   const hardStop = tail.search(BARE_LOCAL_PATH_HARD_STOP_REGEX);
-  return hardStop === -1 ? limit : start + hardStop;
+  return hardStop === -1 ? limit : start.index + hardStop;
 }
 
-function pathCandidateStarts(text: string): number[] {
-  const starts = [
-    ...text.matchAll(new RegExp(BARE_LOCAL_PATH_PREFIX_REGEX.source, BARE_LOCAL_PATH_PREFIX_REGEX.flags)),
-    ...text.matchAll(new RegExp(RELATIVE_LOCAL_PATH_PREFIX_REGEX.source, RELATIVE_LOCAL_PATH_PREFIX_REGEX.flags)),
-    ...text.matchAll(new RegExp(BARE_LOCAL_FILE_PREFIX_REGEX.source, BARE_LOCAL_FILE_PREFIX_REGEX.flags)),
-  ].flatMap((match) => match.index === undefined ? [] : [match.index]);
-  return [...new Set(starts)].sort((left, right) => left - right);
+function pathCandidateStarts(text: string): PathCandidateStart[] {
+  const starts = new Map<number, boolean>();
+  const collect = (regex: RegExp, isAbsolute: boolean): void => {
+    for (const match of text.matchAll(new RegExp(regex.source, regex.flags))) {
+      if (match.index === undefined) continue;
+      starts.set(match.index, (starts.get(match.index) ?? false) || isAbsolute);
+    }
+  };
+  collect(BARE_LOCAL_PATH_PREFIX_REGEX, true);
+  collect(RELATIVE_LOCAL_PATH_PREFIX_REGEX, false);
+  collect(BARE_LOCAL_FILE_PREFIX_REGEX, false);
+  return [...starts.entries()]
+    .map(([index, isAbsolute]) => ({ index, isAbsolute }))
+    .sort((left, right) => left.index - right.index);
 }
 
 export function findBareLocalPathCandidates(
@@ -173,8 +244,9 @@ export function findBareLocalPathCandidates(
 
   const candidates: LocalFilePathLinkMatch[] = [];
   for (let startIndex = 0; startIndex < starts.length; startIndex++) {
-    const index = starts[startIndex];
-    const endIndex = bareLocalPathCandidateEnd(text, index, starts[startIndex + 1]);
+    const start = starts[startIndex];
+    const index = start.index;
+    const endIndex = bareLocalPathCandidateEnd(text, start, starts[startIndex + 1]);
     const textCandidate = text.slice(index, endIndex).trimEnd();
     const candidate: LocalFilePathLinkMatch = {
       text: textCandidate,
@@ -445,7 +517,7 @@ export function registerArtifactLinkProvider(
       let segmentText = "";
       let segmentJoinBlocked = false;
       let hardContinuationLines = 0;
-      let previousLineReachedVisualEnd = false;
+      let previousLineTrailingBlankCells = Number.POSITIVE_INFINITY;
       for (let lineIndex = firstLineIndex; lineIndex <= lastLineIndex; lineIndex++) {
         const line = buffer.getLine(lineIndex);
         const isCurrentLineWrapped = Boolean(line?.isWrapped);
@@ -453,18 +525,30 @@ export function registerArtifactLinkProvider(
         const rawLineText = line?.translateToString(false) ?? "";
         const trimmedLineText = line?.translateToString(true) ?? "";
         const nextLineText = buffer.getLine(lineIndex + 1)?.translateToString(true) ?? "";
+        const writtenExtent = measureWrittenLineExtent(line, rawLineText);
         let lineText = nextIsWrapped
-          ? normalizeSoftWrappedArtifactLine(rawLineText, nextLineText)
+          ? normalizeSoftWrappedArtifactLine(
+              // Pass the written prefix, not the padded row: a wide glyph that
+              // did not fit in the last column leaves a blank cell behind, and
+              // treating that as a word gap injects a space into the path.
+              rawLineText.slice(0, writtenExtent.textLength),
+              nextLineText,
+            )
           : trimmedLineText;
         let sourceOffset = 0;
         if (lineIndex > firstLineIndex) {
           const canJoinSegment = !segmentJoinBlocked;
           const isSoftContinuation = canJoinSegment && isCurrentLineWrapped;
           const hardContinuation = stripHardContinuationPrefix(lineText);
+          // A TUI that hard-wraps a path breaks it exactly where the next glyph
+          // stopped fitting, so the previous row's leftover cells are narrower
+          // than that glyph. A row that ended early on purpose leaves more room
+          // than the glyph needs, and must not be glued to the line above.
+          const continuationHeadWidth = cellWidthAtStringOffset(line, hardContinuation.sourceOffset);
           const isHardArtifactContinuation = canJoinSegment
             && !isCurrentLineWrapped
             && hardContinuationLines < ARTIFACT_LINK_MAX_HARD_CONTINUATION_LINES
-            && previousLineReachedVisualEnd
+            && previousLineTrailingBlankCells < continuationHeadWidth
             && hasOpenArtifactPath(segmentText)
             && hardContinuation.text.length > 0;
           const joiner = isSoftContinuation || isHardArtifactContinuation ? "" : "\n";
@@ -493,7 +577,9 @@ export function registerArtifactLinkProvider(
         } else {
           segmentText += lineText;
         }
-        previousLineReachedVisualEnd = rawLineText.length > 0 && !/\s$/.test(rawLineText);
+        previousLineTrailingBlankCells = writtenExtent.cellEnd > 0
+          ? Math.max(0, (line?.length ?? writtenExtent.cellEnd) - writtenExtent.cellEnd)
+          : Number.POSITIVE_INFINITY;
       }
       const text = parts.map((part) => part.text).join("");
       const filePathMatches = findLocalFilePathLinks(text);

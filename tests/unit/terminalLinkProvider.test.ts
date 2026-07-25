@@ -35,6 +35,43 @@ type HarnessLine = {
   columns?: number;
 };
 
+type HarnessCell = { chars: string; width: number };
+
+/// Display width, matching how xterm lays wide glyphs across two cells.
+function harnessCharWidth(char: string): number {
+  const code = char.codePointAt(0) ?? 0;
+  const isWide = (code >= 0x1100 && code <= 0x115f)
+    || code === 0x2329
+    || code === 0x232a
+    || (code >= 0x2e80 && code <= 0xa4cf && code !== 0x303f)
+    || (code >= 0xac00 && code <= 0xd7a3)
+    || (code >= 0xf900 && code <= 0xfaff)
+    || (code >= 0xfe30 && code <= 0xfe6f)
+    || (code >= 0xff00 && code <= 0xff60)
+    || (code >= 0xffe0 && code <= 0xffe6);
+  return isWide ? 2 : 1;
+}
+
+/// Build the cell row xterm would hold for `text`: wide glyphs occupy a cell
+/// plus a zero-width spacer, and every column past the written text stays
+/// unwritten (`NULL_CELL_CHAR`), which is what distinguishes a row the TUI
+/// ended early from one that filled the terminal.
+function buildHarnessCells(text: string, columns?: number): { cells: HarnessCell[]; columns: number } {
+  const cells: HarnessCell[] = [];
+  for (const char of text) {
+    const width = harnessCharWidth(char);
+    cells.push({ chars: char, width });
+    if (width === 2) {
+      cells.push({ chars: "", width: 0 });
+    }
+  }
+  const totalColumns = Math.max(columns ?? cells.length, cells.length);
+  while (cells.length < totalColumns) {
+    cells.push({ chars: "", width: 1 });
+  }
+  return { cells, columns: totalColumns };
+}
+
 function createLinkProviderHarness(
   input: string | HarnessLine[],
   getCwd?: () => string | undefined,
@@ -42,16 +79,19 @@ function createLinkProviderHarness(
 ) {
   let provider: Parameters<Terminal["registerLinkProvider"]>[0] | undefined;
   const sourceLines = typeof input === "string" ? [{ text: input }] : input;
-  const lines = sourceLines.map(({ text, isWrapped = false, columns = text.length }) => {
-    const rawText = text.padEnd(columns);
+  const lines = sourceLines.map(({ text, isWrapped = false, columns }) => {
+    const { cells, columns: totalColumns } = buildHarnessCells(text, columns);
+    // xterm renders unwritten cells as spaces when asked for the untrimmed row.
+    const rawText = cells.map((cell) => (cell.width === 0 ? "" : cell.chars || " ")).join("");
     return {
       isWrapped,
-      length: columns,
+      length: totalColumns,
       translateToString: (trimRight?: boolean) => (trimRight ? rawText.trimEnd() : rawText),
-      getCell: (index: number) => ({
-        getWidth: () => 1,
-        getChars: () => rawText[index] ?? "",
-      }),
+      getCell: (index: number) => {
+        const cell = cells[index];
+        if (!cell) return undefined;
+        return { getWidth: () => cell.width, getChars: () => cell.chars };
+      },
     };
   });
   const term = {
@@ -225,6 +265,16 @@ describe("terminal local file path links", () => {
     expect(candidates.map((candidate) => candidate.text)).toEqual([
       String.raw`C:\tmp\extensionless`,
     ]);
+  });
+
+  it("keeps a spaced absolute folder path intact instead of cutting at the space", () => {
+    // "…合同会社 Dropbox\…" — the component after the space looks like a fresh
+    // relative candidate, but it belongs to the absolute path that precedes it.
+    const folder =
+      "C:\\Users\\miyaz\\サンプル株式会社 Dropbox\\サンプル出版　編集部\\事務関係\\03_接続ドリル";
+    const candidates = findBareLocalPathCandidates(`  ${folder}`);
+
+    expect(candidates.map((candidate) => candidate.text)).toEqual([folder]);
   });
 
   it("stops bare candidates at hard terminal delimiters", () => {
@@ -417,6 +467,63 @@ describe("terminal local file path links", () => {
     ]).provideLinks(2);
 
     expect(mockedResolveLocalPathLinks.mock.calls[0][0]).not.toContain(joinedPath);
+    expect(links).toBeUndefined();
+  });
+
+  // A long Japanese deliverable path is the case that broke in the field: the
+  // TUI wraps it mid-component, and the row it leaves behind ends one cell
+  // short because the next glyph is full-width.
+  const JAPANESE_PATH =
+    "C:\\Users\\miyaz\\サンプル株式会社 Dropbox\\サンプル出版　編集部\\事務関係\\03_接続ドリル\\11_修正依頼整理_小6_0725\\指示書_20260725.html";
+  const JAPANESE_SPLIT = JAPANESE_PATH.indexOf("務関係");
+  const JAPANESE_HEAD = `  ${JAPANESE_PATH.slice(0, JAPANESE_SPLIT)}`;
+  const JAPANESE_TAIL = JAPANESE_PATH.slice(JAPANESE_SPLIT);
+
+  function displayColumns(text: string): number {
+    return buildHarnessCells(text).columns;
+  }
+
+  function mockJapanesePathOnDisk(): void {
+    mockedResolveLocalPathLinks.mockImplementation(async (candidates) =>
+      candidates.map((candidate) => candidate === JAPANESE_PATH
+        ? { existingPrefix: JAPANESE_PATH, isDir: false }
+        : null),
+    );
+  }
+
+  it("joins a hard-wrapped path when a wide glyph did not fit in the last cell", async () => {
+    mockJapanesePathOnDisk();
+
+    const links = await createLinkProviderHarness([
+      // One spare cell: too narrow for the full-width glyph that follows.
+      { text: JAPANESE_HEAD, columns: displayColumns(JAPANESE_HEAD) + 1 },
+      { text: `  ${JAPANESE_TAIL}`, columns: displayColumns(`  ${JAPANESE_TAIL}`) + 40 },
+    ]).provideLinks(1);
+
+    expect(links?.map((link) => link.text)).toEqual([JAPANESE_PATH]);
+  });
+
+  it("does not inject a space when a soft wrap leaves a wide glyph behind", async () => {
+    mockJapanesePathOnDisk();
+
+    const links = await createLinkProviderHarness([
+      { text: JAPANESE_HEAD, columns: displayColumns(JAPANESE_HEAD) + 1 },
+      { text: JAPANESE_TAIL, isWrapped: true, columns: displayColumns(JAPANESE_TAIL) + 40 },
+    ]).provideLinks(1);
+
+    expect(mockedResolveLocalPathLinks.mock.calls[0][0]).toContain(JAPANESE_PATH);
+    expect(links?.map((link) => link.text)).toEqual([JAPANESE_PATH]);
+  });
+
+  it("does not join when the leftover cells could have held the next glyph", async () => {
+    mockJapanesePathOnDisk();
+
+    const links = await createLinkProviderHarness([
+      { text: JAPANESE_HEAD, columns: displayColumns(JAPANESE_HEAD) + 10 },
+      { text: `  ${JAPANESE_TAIL}`, columns: displayColumns(`  ${JAPANESE_TAIL}`) + 40 },
+    ]).provideLinks(1);
+
+    expect(mockedResolveLocalPathLinks.mock.calls[0][0]).not.toContain(JAPANESE_PATH);
     expect(links).toBeUndefined();
   });
 
