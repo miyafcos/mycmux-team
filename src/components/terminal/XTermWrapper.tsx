@@ -17,6 +17,10 @@ import {
   getTerminalConfig,
 } from "../../lib/ipc";
 import type { FrontendDataBatch } from "../../lib/ipc";
+import {
+  TERMINAL_SNAPSHOT_MAX_WRAPPED_LINES,
+  TERMINAL_SNAPSHOT_SCAN_MULTIPLIER,
+} from "./terminalBufferConstants";
 import { usePaneMetadataStore, useUiStore } from "../../stores/workspaceStore";
 import { useKeybindingStore } from "../../stores/keybindingStore";
 import { useSettingsStore } from "../../stores/settingsStore";
@@ -194,8 +198,6 @@ function minContrastFor(mediaActive: boolean): number {
 let cachedConfig: { theme: ITheme; fontSize: number; fontFamily: string; windowsBuildNumber: number | null } | null = null;
 let configPromise: Promise<void> | null = null;
 
-const TERMINAL_SNAPSHOT_SCAN_MULTIPLIER = 4;
-const TERMINAL_SNAPSHOT_MAX_WRAPPED_LINES = 256;
 const TERMINAL_SNAPSHOT_MAX_LINE_CHARS = 8192;
 const CODING_AGENT_HINT_PATTERN = /\b(?:ctrl|cmd|alt|shift)\+[\w?]+/gi;
 

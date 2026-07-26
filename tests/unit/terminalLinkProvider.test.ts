@@ -411,6 +411,49 @@ describe("terminal local file path links", () => {
     expect(links?.map((link) => link.text)).toEqual([existingPrefix]);
   });
 
+  it("joins a path an agent TUI wrapped inside its right margin", async () => {
+    // Verbatim from Claude Code at 80 columns: the row stops at 74 cells because
+    // the TUI reserves a right margin, then indents the continuation by two.
+    // The old edge-wrap test required the leftover (6) to be narrower than the
+    // continuation's leading glyph (2), so this path never linked.
+    const first = String.raw`● FB整理が完了しました。レポート: C:\Users\miyaz\reports\_quick\2026-07\こ`;
+    const second = "  れヤバ接続ドリル_先方FB整理_726_0726-1326.html";
+    const existingPrefix =
+      String.raw`C:\Users\miyaz\reports\_quick\2026-07\これヤバ接続ドリル_先方FB整理_726_0726-1326.html`;
+    mockedResolveLocalPathLinks.mockImplementation(async (candidates) =>
+      candidates.map((candidate) => candidate.startsWith(existingPrefix)
+        ? { existingPrefix, isDir: false }
+        : null),
+    );
+
+    const links = await createLinkProviderHarness([
+      { text: first, columns: 80 },
+      { text: second, columns: 80 },
+    ]).provideLinks(2);
+
+    expect(links?.map((link) => link.text)).toEqual([existingPrefix]);
+  });
+
+  it("does not join a short line that ended on purpose", async () => {
+    // Same 80-column row, but the path line used only a quarter of it. Nothing
+    // wrapped here, so the following sentence must stay a separate line.
+    const workDir = "C:\\work\\";
+    mockedResolveLocalPathLinks.mockImplementation(async (candidates) =>
+      candidates.map((candidate) => candidate === workDir
+        ? { existingPrefix: workDir, isDir: true }
+        : null),
+    );
+
+    const links = await createLinkProviderHarness([
+      { text: `保存先: ${workDir}`, columns: 80 },
+      { text: "  次の作業に進みます", columns: 80 },
+    ]).provideLinks(2);
+
+    expect(links?.map((link) => link.text) ?? []).not.toContain(
+      `${workDir}次の作業に進みます`,
+    );
+  });
+
   it("does not link a hard-line continuation when disk resolution rejects it", async () => {
     mockedResolveLocalPathLinks.mockImplementation(async (candidates) => candidates.map(() => null));
 
@@ -515,7 +558,12 @@ describe("terminal local file path links", () => {
     expect(links?.map((link) => link.text)).toEqual([JAPANESE_PATH]);
   });
 
-  it("does not join when the leftover cells could have held the next glyph", async () => {
+  it("joins regardless of how many leftover cells the previous row had", async () => {
+    // Superseded contract. This used to assert the opposite: a row with room to
+    // spare was treated as "ended on purpose" and never joined. Agent TUIs wrap
+    // inside a reserved right margin, so their rows always have room to spare and
+    // no threshold separates the two cases. Disk resolution decides instead --
+    // see "does not link a hard-line continuation when disk resolution rejects it".
     mockJapanesePathOnDisk();
 
     const links = await createLinkProviderHarness([
@@ -523,8 +571,8 @@ describe("terminal local file path links", () => {
       { text: `  ${JAPANESE_TAIL}`, columns: displayColumns(`  ${JAPANESE_TAIL}`) + 40 },
     ]).provideLinks(1);
 
-    expect(mockedResolveLocalPathLinks.mock.calls[0][0]).not.toContain(JAPANESE_PATH);
-    expect(links).toBeUndefined();
+    expect(mockedResolveLocalPathLinks.mock.calls[0][0]).toContain(JAPANESE_PATH);
+    expect(links?.map((link) => link.text)).toEqual([JAPANESE_PATH]);
   });
 
   it("evicts callback-bearing links when a provider is disposed", async () => {

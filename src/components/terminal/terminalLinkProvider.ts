@@ -23,6 +23,11 @@ const PREVIEW_ARTIFACT_EXTENSION_REGEX = new RegExp(
 const ARTIFACT_LINK_CONTEXT_LINES = 16;
 const ARTIFACT_LINK_MAX_WRAPPED_LINES = 64;
 const ARTIFACT_LINK_MAX_HARD_CONTINUATION_LINES = 4;
+/// A row that hard-wrapped filled nearly all of its width, whether it wrapped at
+/// the terminal edge or inside an agent TUI's reserved right margin. A row that
+/// ended on purpose stops far short of that. Measured cases: Claude Code wraps at
+/// 74 of 80 cells (93%), while a deliberately short line runs 12 of 80 (15%).
+const ARTIFACT_LINK_MIN_WRAPPED_ROW_FILL = 0.5;
 const ARTIFACT_LINK_MAX_SEGMENT_CHARS = 8192;
 const ARTIFACT_LINK_CACHE_MAX_ENTRIES = 64;
 const ARTIFACT_LINK_CANDIDATE_PREFIX_REGEX =
@@ -121,15 +126,6 @@ function measureWrittenLineExtent(line: BufferLine, rawText: string): WrittenLin
     }
   }
   return { textLength: Math.min(textLength, rawText.length), cellEnd };
-}
-
-/// Display width of the glyph a continuation line starts with, so the caller can
-/// ask whether it would have fit in the previous line's leftover cells.
-function cellWidthAtStringOffset(line: BufferLine, offset: number): number {
-  if (!line) return 1;
-  const cellX = cellXForStringOffset(line, offset);
-  const width = line.getCell(cellX)?.getWidth() ?? 1;
-  return width === 0 ? 1 : width;
 }
 
 function cellXForStringOffset(line: BufferLine, offset: number): number {
@@ -517,7 +513,8 @@ export function registerArtifactLinkProvider(
       let segmentText = "";
       let segmentJoinBlocked = false;
       let hardContinuationLines = 0;
-      let previousLineTrailingBlankCells = Number.POSITIVE_INFINITY;
+      let previousLineWrittenCells = 0;
+      let previousLineTotalCells = 0;
       for (let lineIndex = firstLineIndex; lineIndex <= lastLineIndex; lineIndex++) {
         const line = buffer.getLine(lineIndex);
         const isCurrentLineWrapped = Boolean(line?.isWrapped);
@@ -540,15 +537,24 @@ export function registerArtifactLinkProvider(
           const canJoinSegment = !segmentJoinBlocked;
           const isSoftContinuation = canJoinSegment && isCurrentLineWrapped;
           const hardContinuation = stripHardContinuationPrefix(lineText);
-          // A TUI that hard-wraps a path breaks it exactly where the next glyph
-          // stopped fitting, so the previous row's leftover cells are narrower
-          // than that glyph. A row that ended early on purpose leaves more room
-          // than the glyph needs, and must not be glued to the line above.
-          const continuationHeadWidth = cellWidthAtStringOffset(line, hardContinuation.sourceOffset);
+          // An earlier rule required the previous row's leftover cells to be
+          // narrower than the continuation's leading glyph -- i.e. the TUI wrapped
+          // exactly at the terminal edge. Agent TUIs do not: Claude Code reserves
+          // a right margin and indents the continuation, so its rows stop ~6 cells
+          // short of 80 and every wrapped path it printed was silently unlinkable.
+          // Six leftover cells cannot be told from ten, so compare fill instead of
+          // leftovers: a wrapped row used nearly all its width either way, while a
+          // line that ended on purpose used a fraction of it.
+          //
+          // resolve_local_path_links backstops the rest -- it trims each candidate
+          // to its longest existing prefix, so a sentence glued onto a path falls
+          // off again and only joins that exist on disk ever become links.
+          const wrappedFullRow = previousLineTotalCells > 0
+            && previousLineWrittenCells >= previousLineTotalCells * ARTIFACT_LINK_MIN_WRAPPED_ROW_FILL;
           const isHardArtifactContinuation = canJoinSegment
             && !isCurrentLineWrapped
             && hardContinuationLines < ARTIFACT_LINK_MAX_HARD_CONTINUATION_LINES
-            && previousLineTrailingBlankCells < continuationHeadWidth
+            && wrappedFullRow
             && hasOpenArtifactPath(segmentText)
             && hardContinuation.text.length > 0;
           const joiner = isSoftContinuation || isHardArtifactContinuation ? "" : "\n";
@@ -577,9 +583,8 @@ export function registerArtifactLinkProvider(
         } else {
           segmentText += lineText;
         }
-        previousLineTrailingBlankCells = writtenExtent.cellEnd > 0
-          ? Math.max(0, (line?.length ?? writtenExtent.cellEnd) - writtenExtent.cellEnd)
-          : Number.POSITIVE_INFINITY;
+        previousLineWrittenCells = writtenExtent.cellEnd;
+        previousLineTotalCells = line?.length ?? 0;
       }
       const text = parts.map((part) => part.text).join("");
       const filePathMatches = findLocalFilePathLinks(text);

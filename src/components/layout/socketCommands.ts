@@ -445,9 +445,24 @@ async function readPane(args: SocketArgs) {
   if (!isKnownPaneSession(useWorkspaceListStore.getState().workspaces, sessionId)) {
     throw new Error("pane.read session is not a known pane");
   }
-  if (!hasTerminalBuffer(sessionId)) throw new Error("no terminal buffer for session");
+  if (hasTerminalBuffer(sessionId)) {
+    const count = clampPaneReadLines(args?.lines);
+    return { sessionId, lines: getTerminalBufferLines(sessionId, count) };
+  }
+
+  const [{ getSessionScrollback }, { getHeadlessBufferLines }] = await Promise.all([
+    import("../../lib/ipc"),
+    import("../terminal/headlessBuffer"),
+  ]);
+  let snapshot;
+  try {
+    snapshot = await getSessionScrollback(sessionId);
+  } catch {
+    throw new Error("no terminal buffer for session");
+  }
+  if (snapshot.data.byteLength === 0) throw new Error("no terminal buffer for session");
   const count = clampPaneReadLines(args?.lines);
-  return { sessionId, lines: getTerminalBufferLines(sessionId, count) };
+  return { sessionId, lines: await getHeadlessBufferLines(sessionId, snapshot, count) };
 }
 
 export async function handleSocketCommand(cmd: string, args: SocketArgs): Promise<unknown> {
