@@ -2,6 +2,12 @@ import { create } from "zustand";
 import { v4 as uuid } from "uuid";
 import type { Workspace, GridTemplateId, AgentSessionKind } from "../types";
 import { normalizeReadableSplitColumns, reconcileSplitColumnsForPanes } from "../lib/layoutColumns";
+import {
+  columnWidthsMatch,
+  fallbackColumns,
+  reconcileLayoutMetrics,
+  rowHeightsMatch,
+} from "../lib/layoutMetrics";
 import { useUiStore } from "./uiStore";
 import { applyStructuralActivation } from "../lib/focusController";
 import { useToastStore } from "./toastStore";
@@ -26,14 +32,6 @@ function clearZoomIfMissingFromWorkspace(workspace: Workspace | undefined): void
   }
 }
 
-const DEFAULT_LAYOUT_SIZE = 1;
-
-function fallbackColumns(workspace: Workspace): string[][] {
-  return workspace.splitColumns && workspace.splitColumns.length > 0
-    ? workspace.splitColumns
-    : [workspace.panes.map((pane) => pane.id)];
-}
-
 function normalizeSplitColumns(splitColumns: string[][], paneIds: string[]): string[][] {
   return reconcileSplitColumnsForPanes(normalizeReadableSplitColumns(splitColumns), paneIds);
 }
@@ -51,116 +49,6 @@ function splitColumnsChanged(previousColumns: string[][], nextColumns: string[][
     return previousColumn.length !== nextColumn.length
       || previousColumn.some((paneId, rowIndex) => paneId !== nextColumn[rowIndex]);
   });
-}
-
-function columnWidthsMatch(columns: string[][], columnWidths: number[] | undefined): boolean {
-  return Boolean(
-    columnWidths
-      && columnWidths.length === columns.length
-      && columnWidths.every((size) => positiveSize(size) !== null),
-  );
-}
-
-function rowHeightsMatch(columns: string[][], rowHeightsPerCol: number[][] | undefined): boolean {
-  return Boolean(
-    rowHeightsPerCol
-      && rowHeightsPerCol.length === columns.length
-      && rowHeightsPerCol.every((row, index) =>
-        row.length === columns[index].length
-        && row.every((size) => positiveSize(size) !== null),
-      ),
-  );
-}
-
-function bestPreviousColumnIndex(
-  nextColumn: string[],
-  previousColumns: string[][],
-  usedIndices: Set<number>,
-): number {
-  let bestIndex = -1;
-  let bestOverlap = 0;
-  for (let index = 0; index < previousColumns.length; index += 1) {
-    if (usedIndices.has(index)) continue;
-    const overlap = nextColumn.filter((paneId) => previousColumns[index].includes(paneId)).length;
-    if (overlap > bestOverlap) {
-      bestOverlap = overlap;
-      bestIndex = index;
-    }
-  }
-  return bestIndex;
-}
-
-function columnsRequireBalancedWidths(previousColumns: string[][], nextColumns: string[][]): boolean {
-  if (previousColumns.length !== nextColumns.length) return true;
-  const usedIndices = new Set<number>();
-  return nextColumns.some((nextColumn) => {
-    const previousIndex = bestPreviousColumnIndex(nextColumn, previousColumns, usedIndices);
-    if (previousIndex < 0) return true;
-    usedIndices.add(previousIndex);
-    return false;
-  });
-}
-
-function positiveSize(value: number | undefined): number | null {
-  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
-}
-
-function reconcileColumnWidths(workspace: Workspace, nextColumns: string[][]): number[] | undefined {
-  if (nextColumns.length === 0) return undefined;
-  const previousColumns = fallbackColumns(workspace);
-  if (columnsRequireBalancedWidths(previousColumns, nextColumns)) {
-    return nextColumns.map(() => DEFAULT_LAYOUT_SIZE);
-  }
-  const previousWidths = workspace.columnWidths;
-  const usedIndices = new Set<number>();
-
-  return nextColumns.map((nextColumn) => {
-    const previousIndex = bestPreviousColumnIndex(nextColumn, previousColumns, usedIndices);
-    if (previousIndex >= 0) {
-      usedIndices.add(previousIndex);
-      const previousWidth = positiveSize(previousWidths?.[previousIndex]);
-      if (previousWidth !== null) return previousWidth;
-    }
-    return DEFAULT_LAYOUT_SIZE;
-  });
-}
-
-function reconcileRowHeightsPerCol(workspace: Workspace, nextColumns: string[][]): number[][] | undefined {
-  if (nextColumns.length === 0) return undefined;
-  const previousColumns = fallbackColumns(workspace);
-  const previousRows = workspace.rowHeightsPerCol;
-  const usedIndices = new Set<number>();
-
-  return nextColumns.map((nextColumn) => {
-    const previousIndex = bestPreviousColumnIndex(nextColumn, previousColumns, usedIndices);
-    if (previousIndex >= 0) {
-      usedIndices.add(previousIndex);
-      const previousHeights = previousRows?.[previousIndex];
-      if (
-        previousHeights
-        && previousHeights.length === nextColumn.length
-        && previousHeights.every((size) => positiveSize(size) !== null)
-      ) {
-        return previousHeights;
-      }
-    }
-    return nextColumn.map(() => DEFAULT_LAYOUT_SIZE);
-  });
-}
-
-function reconcileLayoutMetrics(
-  workspace: Workspace,
-  nextSplitColumns: string[][] | undefined,
-  resetLayoutMetrics: boolean,
-): Pick<Workspace, "columnWidths" | "rowHeightsPerCol"> | undefined {
-  if (!resetLayoutMetrics) return undefined;
-  if (!nextSplitColumns || nextSplitColumns.length === 0) {
-    return { columnWidths: undefined, rowHeightsPerCol: undefined };
-  }
-  return {
-    columnWidths: reconcileColumnWidths(workspace, nextSplitColumns),
-    rowHeightsPerCol: reconcileRowHeightsPerCol(workspace, nextSplitColumns),
-  };
 }
 
 export interface PaneAgentSessionPayload {
@@ -443,7 +331,7 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
     set((state) => ({
       workspaces: state.workspaces.map((w) => {
         if (w.id !== id) return w;
-        const columns = fallbackColumns(w);
+        const columns = fallbackColumns(w.splitColumns, w.panes.map((pane) => pane.id));
         return {
           ...w,
           columnWidths: columnWidthsMatch(columns, columnWidths) ? columnWidths : undefined,
@@ -459,14 +347,16 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
         if (w.id !== id) return w;
         const paneIds = panes.map((pane) => pane.id);
         const panesChanged = paneIdsChanged(w.panes, panes);
-        const previousSplitColumns = fallbackColumns(w);
+        const previousSplitColumns = fallbackColumns(w.splitColumns, w.panes.map((pane) => pane.id));
         const normalizedSplitColumns = normalizeSplitColumns(
           splitColumns ?? previousSplitColumns,
           paneIds,
         );
         const splitLayoutChanged = splitColumnsChanged(previousSplitColumns, normalizedSplitColumns);
         const layoutMetrics = reconcileLayoutMetrics(
-          w,
+          previousSplitColumns,
+          w.columnWidths,
+          w.rowHeightsPerCol,
           normalizedSplitColumns,
           resetLayoutMetrics || panesChanged || splitLayoutChanged,
         );

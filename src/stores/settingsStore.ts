@@ -4,12 +4,13 @@ import {
   migratePersistedSettings,
   resolveDefaultTerminalRenderer,
   SETTINGS_STORE_VERSION,
+  type TerminalRenderer,
 } from "./settingsMigration";
 
 interface SettingsState {
   notificationsEnabled: boolean;
   notificationSoundEnabled: boolean;
-  terminalRenderer: "webgl" | "dom";
+  terminalRenderer: TerminalRenderer;
   // CRSM Palette per-kind visibility (Ctrl+P session list).
   // When false the corresponding kind disappears from both the palette
   // list and the filter chips. Defaults true so existing users see no
@@ -28,7 +29,7 @@ interface SettingsState {
   showSplitRightButton: boolean;
   setNotificationsEnabled: (v: boolean) => void;
   setNotificationSoundEnabled: (v: boolean) => void;
-  setTerminalRenderer: (v: "webgl" | "dom") => void;
+  setTerminalRenderer: (v: TerminalRenderer) => void;
   setCrsmShowClaude: (v: boolean) => void;
   setCrsmShowCodex: (v: boolean) => void;
   setCrsmShowClaudeCodex: (v: boolean) => void;

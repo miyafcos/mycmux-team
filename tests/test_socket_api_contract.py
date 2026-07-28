@@ -35,7 +35,12 @@ def test_socket_api_has_frontend_response_bridge() -> None:
     assert_contains(socket_rs, 'app.emit("socket-request", &req)', "src-tauri/src/socket.rs")
     assert_contains(socket_rs, 'state.pending_requests.remove(&id);', "src-tauri/src/socket.rs")
 
-    for snippet in ['case "pane.spawn_tab":', 'case "pane.close_tab":']:
+    for snippet in [
+        'case "pane.spawn_tab":',
+        'case "pane.close_tab":',
+        'case "pane.rename_tab":',
+        'case "pane.move":',
+    ]:
         assert_contains(socket_commands, snippet, "src/components/layout/socketCommands.ts")
 
 

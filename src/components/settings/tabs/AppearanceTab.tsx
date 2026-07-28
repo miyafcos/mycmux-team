@@ -33,10 +33,19 @@ export function AppearanceTab() {
           <input
             type="radio"
             name="terminal-renderer"
+            checked={terminalRenderer === "auto"}
+            onChange={() => setTerminalRenderer("auto")}
+          />
+          <span>自動（推奨）— 背景を透過させない構成では GPU 描画</span>
+        </label>
+        <label style={checkboxLabelStyle}>
+          <input
+            type="radio"
+            name="terminal-renderer"
             checked={terminalRenderer === "dom"}
             onChange={() => setTerminalRenderer("dom")}
           />
-          <span>標準描画（推奨）</span>
+          <span>標準描画（安定性優先）</span>
         </label>
         <label style={checkboxLabelStyle}>
           <input
@@ -48,7 +57,7 @@ export function AppearanceTab() {
           <span>GPU描画（高速・環境依存）</span>
         </label>
         <div style={{ marginTop: 4, fontSize: 11, lineHeight: 1.6, color: "var(--cmux-text-dim)" }}>
-          表示の安定性を優先し、標準描画が既定です（透明背景とGPU描画の組み合わせはWindows/Macともにペインが濃く沈む既知問題があります）。GPU描画で文字が暗い・崩れる・重い場合は標準描画へ戻してください。
+          自動では、背景メディアがなく不透明度100%のときGPU描画を使い、それ以外は標準描画へ切り替えます。GPU描画で文字が暗い・崩れる・重い場合は標準描画へ戻してください。
         </div>
       </div>
       <div style={{ flex: 1, minHeight: 0 }}>

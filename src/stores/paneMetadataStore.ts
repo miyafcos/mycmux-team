@@ -12,6 +12,10 @@ export interface PaneMetadata {
   processTitle?: string;
   processIsShell?: boolean;
   agentStatus?: AgentStatus;
+  /** Epoch milliseconds when the effective agent status last changed. */
+  agentStatusAt?: number;
+  /** Epoch milliseconds when the xterm-derived status last changed. */
+  screenStatusAt?: number;
   lastNotificationKey?: string;
   claudeSessionId?: string;
   agentKind?: AgentSessionKind;
@@ -41,6 +45,11 @@ function dropUndefined<T extends object>(data: T): Partial<T> {
     if (value !== undefined) out[key] = value;
   }
   return out;
+}
+
+function effectiveAgentStatus(metadata?: PaneMetadata): AgentStatus {
+  if (metadata?.agentStatus) return metadata.agentStatus;
+  return metadata?.processIsShell === false ? "working" : "idle";
 }
 
 export const usePaneMetadataStore = create<PaneMetadataState>((set) => ({
@@ -78,10 +87,27 @@ export const usePaneMetadataStore = create<PaneMetadataState>((set) => ({
     }
     const prev = nextMetadata[sessionId];
     // Reset the approval-notification dedupe key when the agent leaves waiting.
-    const nextData: Partial<PaneMetadata> =
+    let nextData: Partial<PaneMetadata> =
       metadataFields.agentStatus && metadataFields.agentStatus !== "waiting"
         ? { ...metadataFields, lastNotificationKey: undefined }
         : metadataFields;
+    const observesStatus = Object.prototype.hasOwnProperty.call(metadataFields, "agentStatus")
+      || Object.prototype.hasOwnProperty.call(metadataFields, "processIsShell");
+    if (observesStatus) {
+      const nextStatus = effectiveAgentStatus({ ...prev, ...nextData });
+      if (prev?.agentStatusAt === undefined || nextStatus !== effectiveAgentStatus(prev)) {
+        nextData = { ...nextData, agentStatusAt: Date.now() };
+      }
+    }
+    if (Object.prototype.hasOwnProperty.call(metadataFields, "agentStatus")) {
+      const nextScreenStatus = metadataFields.agentStatus;
+      if (prev?.screenStatusAt === undefined || nextScreenStatus !== prev.agentStatus) {
+        nextData = {
+          ...nextData,
+          screenStatusAt: nextData.agentStatusAt ?? Date.now(),
+        };
+      }
+    }
     if (prev) {
       const keys = Object.keys(nextData) as (keyof PaneMetadata)[];
       const metadataChanged = keys.some((k) => prev[k] !== nextData[k]);
@@ -100,10 +126,17 @@ export const usePaneMetadataStore = create<PaneMetadataState>((set) => ({
   clearAgentStatus: (sessionId) => set((state) => {
     const prev = state.metadata[sessionId];
     if (!prev || prev.agentStatus === undefined) return state;
+    const clearedAt = Date.now();
     return {
       metadata: {
         ...state.metadata,
-        [sessionId]: { ...prev, agentStatus: undefined, lastNotificationKey: undefined },
+        [sessionId]: {
+          ...prev,
+          agentStatus: undefined,
+          agentStatusAt: clearedAt,
+          screenStatusAt: clearedAt,
+          lastNotificationKey: undefined,
+        },
       },
     };
   }),
@@ -168,6 +201,12 @@ export const usePaneMetadataStore = create<PaneMetadataState>((set) => ({
           [sessionId]: {
             ...prev,
             agentStatus: "waiting",
+            agentStatusAt: prev?.agentStatus === "waiting" && prev.agentStatusAt !== undefined
+              ? prev.agentStatusAt
+              : Date.now(),
+            screenStatusAt: prev?.agentStatus === "waiting" && prev.screenStatusAt !== undefined
+              ? prev.screenStatusAt
+              : Date.now(),
             notificationCount: oldCount + 1,
             lastNotificationKey: normalizedKey,
           },

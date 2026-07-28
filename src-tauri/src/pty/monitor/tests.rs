@@ -24,6 +24,8 @@
             cwd: r"C:\work".to_string(),
             git_branch: None,
             process_name: Some("codex".to_string()),
+            process_status: Some("working".to_string()),
+            process_status_at: None,
             agent_active: true,
             claude_session_id,
             agent_kind,
@@ -32,6 +34,52 @@
 
         assert_eq!(metadata.agent_kind.as_deref(), Some("codex"));
         assert!(metadata.agent_session_id.is_none());
+    }
+
+    #[test]
+    fn process_status_timestamp_uses_the_stable_os_process_start_time() {
+        let (status, status_at) =
+            process_status_from_observation(Some("codex.exe"), Some(100));
+        assert_eq!(status.as_deref(), Some("working"));
+        assert_eq!(status_at, Some(100));
+
+        let (idle_status, idle_at) =
+            process_status_from_observation(Some("pwsh.exe"), Some(300));
+        assert_eq!(idle_status.as_deref(), Some("idle"));
+        assert_eq!(idle_at, Some(300));
+
+        assert_eq!(process_status_from_observation(None, None), (None, None));
+    }
+
+    #[test]
+    fn live_codex_and_shell_observations_both_produce_process_status() {
+        for (process_name, expected_status) in
+            [("codex.exe", "working"), ("pwsh.exe", "idle")]
+        {
+            let (status, status_at) =
+                process_status_from_observation(Some(process_name), Some(500));
+            assert_eq!(status.as_deref(), Some(expected_status));
+            assert_eq!(status_at, Some(500));
+        }
+    }
+
+    #[test]
+    fn fresh_monitors_do_not_replace_process_start_times_with_poll_times() {
+        for index in 0..33 {
+            let process_started_at = 1_000 + index;
+            let first = process_status_from_observation(
+                Some("codex.exe"),
+                Some(process_started_at),
+            );
+            let after_restart = process_status_from_observation(
+                Some("codex.exe"),
+                Some(process_started_at),
+            );
+            let (status, status_at) = first;
+            assert_eq!(status.as_deref(), Some("working"));
+            assert_eq!(status_at, Some(process_started_at));
+            assert_eq!(after_restart.1, status_at);
+        }
     }
 
     fn write_claude_jsonl(path: &std::path::Path, cwd: &str) {

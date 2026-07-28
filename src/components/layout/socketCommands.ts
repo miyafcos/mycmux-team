@@ -1,4 +1,16 @@
+import type { PtyMetadataSnapshot } from "../../lib/ipc";
 import type { AgentSessionKind, Pane, PaneTab, Workspace } from "../../types";
+import type { PaneMetadata } from "../../stores/paneMetadataStore";
+import { deriveEffectiveStatus } from "../../lib/notificationStatus";
+import {
+  DEFAULT_LAYOUT_SIZE,
+  columnWidthsMatch,
+  rowHeightsMatch,
+} from "../../lib/layoutMetrics";
+import {
+  normalizeReadableSplitColumns,
+  reconcileSplitColumnsForPanes,
+} from "../../lib/layoutColumns";
 
 type SocketArgs = Record<string, unknown> | null | undefined;
 type SpawnTarget = AgentSessionKind | "shell";
@@ -133,6 +145,16 @@ export function resolveSpawnPlan(args: SocketArgs, handoffPromptPath?: string): 
   return { target, mode: "launch", launchEnv, paneOptions: { ...paneOptions, launchEnv } };
 }
 
+function socketArgInteger(args: SocketArgs, ...keys: string[]): number | undefined {
+  for (const key of keys) {
+    const value = args?.[key];
+    if (typeof value === "number" && Number.isFinite(value) && Number.isInteger(value)) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
 function hasSocketArg(args: SocketArgs, ...keys: string[]): boolean {
   return keys.some((key) => args != null && Object.prototype.hasOwnProperty.call(args, key));
 }
@@ -206,6 +228,113 @@ export function findPaneBySessionId(
     if (pane) return { workspace, pane };
   }
   return null;
+}
+
+export function serializeWorkspaceLayoutForSocket(workspace: Workspace) {
+  const splitColumns = reconcileSplitColumnsForPanes(
+    normalizeReadableSplitColumns(workspace.splitColumns ?? []),
+    workspace.panes.map((pane) => pane.id),
+  );
+  const columnWidths = columnWidthsMatch(splitColumns, workspace.columnWidths)
+    ? [...workspace.columnWidths!]
+    : splitColumns.map(() => DEFAULT_LAYOUT_SIZE);
+  const rowHeightsPerCol = rowHeightsMatch(splitColumns, workspace.rowHeightsPerCol)
+    ? workspace.rowHeightsPerCol!.map((row) => [...row])
+    : splitColumns.map((column) => column.map(() => DEFAULT_LAYOUT_SIZE));
+  return {
+    splitColumns,
+    columnWidths,
+    rowHeightsPerCol,
+    gridTemplateId: workspace.gridTemplateId,
+  };
+}
+
+interface PaneSocketSerializationContext {
+  activeSessionId: string | null;
+  metadata: Record<string, PaneMetadata>;
+  processMetadata: PtyMetadataSnapshot;
+  processMetadataAvailable: boolean;
+  isTerminalMounted: (sessionId: string) => boolean;
+}
+
+interface ProcessMetadataSnapshotResult {
+  metadata: PtyMetadataSnapshot;
+  available: boolean;
+}
+
+async function loadProcessMetadataSnapshot(): Promise<ProcessMetadataSnapshotResult> {
+  try {
+    const { getPtyMetadataSnapshot } = await import("../../lib/ipc");
+    return { metadata: await getPtyMetadataSnapshot(), available: true };
+  } catch {
+    return { metadata: {}, available: false };
+  }
+}
+
+function processStatusReasonForTab(
+  type: PaneTab["type"],
+  process: PtyMetadataSnapshot[string] | undefined,
+  snapshotAvailable: boolean,
+): string | null {
+  if (type === "browser" || type === "online" || process?.process_status) return null;
+  if (process) return "no_foreground_process";
+  return snapshotAvailable ? "no_live_pty_session" : "snapshot_unavailable";
+}
+
+export function serializePaneForSocket(
+  pane: Pane,
+  context: PaneSocketSerializationContext,
+  workspace?: Pick<Workspace, "id" | "name">,
+) {
+  const {
+    activeSessionId,
+    metadata,
+    processMetadata,
+    processMetadataAvailable,
+    isTerminalMounted,
+  } = context;
+  return {
+    ...(workspace ? { workspaceId: workspace.id, workspaceName: workspace.name } : {}),
+    id: pane.id,
+    active: pane.sessionId === activeSessionId
+      || pane.tabs.some((tab) => tab.sessionId === activeSessionId),
+    label: pane.label,
+    cwd: pane.cwd,
+    agentId: pane.agentId,
+    agentKind: pane.agentKind,
+    tabCount: pane.tabs.length,
+    activeTabId: pane.activeTabId,
+    tabs: pane.tabs.map((tab) => {
+      const tabMetadata = metadata[tab.sessionId];
+      const process = processMetadata[tab.sessionId];
+      const screenObserved = isTerminalMounted(tab.sessionId);
+      return {
+        id: tab.id,
+        sessionId: tab.sessionId,
+        label: tab.label,
+        type: tab.type,
+        cwd: tab.cwd,
+        agentId: tab.agentId,
+        agentKind: tab.agentKind,
+        claudeSessionId: tab.claudeSessionId,
+        agentSessionId: tab.agentSessionId,
+        lastProcess: tab.lastProcess,
+        agentStatus: tabMetadata?.agentStatus ?? deriveEffectiveStatus(tabMetadata),
+        agentStatusAt: tabMetadata?.agentStatusAt ?? null,
+        agentStatusStale: !screenObserved,
+        processStatus: process?.process_status ?? null,
+        processStatusAt: process?.process_status_at ?? null,
+        processStatusReason: processStatusReasonForTab(
+          tab.type,
+          process,
+          processMetadataAvailable,
+        ),
+        screenStatus: screenObserved ? tabMetadata?.agentStatus ?? null : null,
+        screenStatusAt: screenObserved ? tabMetadata?.screenStatusAt ?? null : null,
+        screenObserved,
+      };
+    }),
+  };
 }
 
 async function startBackgroundTabSession(tab: PaneTab, pane: Pane): Promise<void> {
@@ -415,6 +544,37 @@ async function closeTab(args: SocketArgs) {
   return { workspaceId: workspace.id, paneId: pane.id, tabId: tab.id };
 }
 
+async function renameTab(args: SocketArgs) {
+  const sessionId = socketArgString(args, "sessionId", "session_id");
+  if (!sessionId) throw new Error("pane.rename_tab requires sessionId");
+  const label = args?.label;
+  if (typeof label !== "string") throw new Error("pane.rename_tab requires label");
+
+  const { useWorkspaceLayoutStore, useWorkspaceListStore } = await import(
+    "../../stores/workspaceStore"
+  );
+  for (const workspace of useWorkspaceListStore.getState().workspaces) {
+    for (const pane of workspace.panes) {
+      const tab = pane.tabs.find((candidate) => candidate.sessionId === sessionId);
+      if (!tab) continue;
+      useWorkspaceLayoutStore.getState().setTabLabel(
+        workspace.id,
+        pane.id,
+        tab.id,
+        label,
+      );
+      return {
+        workspaceId: workspace.id,
+        paneId: pane.id,
+        tabId: tab.id,
+        sessionId,
+        label: label.trim() || null,
+      };
+    }
+  }
+  throw new Error("pane.rename_tab session not found");
+}
+
 async function sendPaneText(args: SocketArgs) {
   const [{ writeToSession }, { useWorkspaceListStore }] = await Promise.all([
     import("../../lib/ipc"),
@@ -465,8 +625,59 @@ async function readPane(args: SocketArgs) {
   return { sessionId, lines: await getHeadlessBufferLines(sessionId, snapshot, count) };
 }
 
+async function movePane(args: SocketArgs) {
+  const sessionId = socketArgString(args, "sessionId", "session_id");
+  const paneId = socketArgString(args, "paneId", "pane_id");
+  if (Boolean(sessionId) === Boolean(paneId)) {
+    throw new Error("pane.move requires exactly one of sessionId or paneId");
+  }
+  const toColumn = socketArgInteger(args, "toColumn", "to_column");
+  const toRow = socketArgInteger(args, "toRow", "to_row");
+  if (toColumn === undefined) throw new Error("pane.move requires integer toColumn");
+  if (toRow === undefined) throw new Error("pane.move requires integer toRow");
+
+  const { useWorkspaceLayoutStore, useWorkspaceListStore } = await import(
+    "../../stores/workspaceStore"
+  );
+  const workspaceState = useWorkspaceListStore.getState();
+  const requestedWorkspaceId = socketArgString(args, "workspaceId", "workspace_id");
+  const workspaces = requestedWorkspaceId
+    ? workspaceState.workspaces.filter((workspace) => workspace.id === requestedWorkspaceId)
+    : workspaceState.workspaces;
+  if (requestedWorkspaceId && workspaces.length === 0) {
+    throw new Error(`workspace not found: ${requestedWorkspaceId}`);
+  }
+
+  const match = paneId
+    ? workspaces
+      .map((workspace) => ({
+        workspace,
+        pane: workspace.panes.find((candidate) => candidate.id === paneId),
+      }))
+      .find((candidate) => candidate.pane)
+    : findPaneBySessionId(workspaces, sessionId!);
+  if (!match?.pane) {
+    throw new Error(`pane not found: ${paneId ?? sessionId}`);
+  }
+
+  const splitColumns = useWorkspaceLayoutStore.getState().movePaneToPosition(
+    match.workspace.id,
+    match.pane.id,
+    toColumn,
+    toRow,
+  );
+  if (!splitColumns) throw new Error(`pane not found: ${match.pane.id}`);
+  return {
+    workspaceId: match.workspace.id,
+    paneId: match.pane.id,
+    splitColumns,
+  };
+}
+
 export async function handleSocketCommand(cmd: string, args: SocketArgs): Promise<unknown> {
-  const { useUiStore, useWorkspaceListStore } = await import("../../stores/workspaceStore");
+  const { usePaneMetadataStore, useUiStore, useWorkspaceListStore } = await import(
+    "../../stores/workspaceStore"
+  );
   const workspaceState = useWorkspaceListStore.getState();
 
   switch (cmd) {
@@ -510,27 +721,54 @@ export async function handleSocketCommand(cmd: string, args: SocketArgs): Promis
       const workspace = workspaceState.getWorkspace(workspaceId);
       if (!workspace) throw new Error(`workspace not found: ${workspaceId}`);
       const activePaneId = useUiStore.getState().activePaneId;
+      const paneMetadata = usePaneMetadataStore.getState().metadata;
+      const { liveTerms } = await import("../terminal/terminalCache");
+      const processSnapshot = await loadProcessMetadataSnapshot();
+      const serializationContext: PaneSocketSerializationContext = {
+        activeSessionId: activePaneId,
+        metadata: paneMetadata,
+        processMetadata: processSnapshot.metadata,
+        processMetadataAvailable: processSnapshot.available,
+        isTerminalMounted: (sessionId) => liveTerms.has(sessionId),
+      };
       return {
         workspaceId,
         activePaneId,
-        panes: workspace.panes.map((pane) => ({
-          id: pane.id,
-          active: pane.id === activePaneId,
-          label: pane.label,
-          cwd: pane.cwd,
-          agentId: pane.agentId,
-          agentKind: pane.agentKind,
-          tabCount: pane.tabs.length,
-          activeTabId: pane.activeTabId,
-          tabs: pane.tabs.map((tab) => ({
-            id: tab.id,
-            label: tab.label,
-            type: tab.type,
-            cwd: tab.cwd,
-            agentId: tab.agentId,
-            agentKind: tab.agentKind,
-          })),
+        activeSessionId: activePaneId,
+        ...serializeWorkspaceLayoutForSocket(workspace),
+        panes: workspace.panes.map((pane) =>
+          serializePaneForSocket(pane, serializationContext)
+        ),
+      };
+    }
+
+    case "pane.list_all":
+    case "list_all_panes": {
+      const activePaneId = useUiStore.getState().activePaneId;
+      const paneMetadata = usePaneMetadataStore.getState().metadata;
+      const { liveTerms } = await import("../terminal/terminalCache");
+      const processSnapshot = await loadProcessMetadataSnapshot();
+      const serializationContext: PaneSocketSerializationContext = {
+        activeSessionId: activePaneId,
+        metadata: paneMetadata,
+        processMetadata: processSnapshot.metadata,
+        processMetadataAvailable: processSnapshot.available,
+        isTerminalMounted: (sessionId) => liveTerms.has(sessionId),
+      };
+      return {
+        activeWorkspaceId: workspaceState.activeWorkspaceId,
+        activePaneId,
+        activeSessionId: activePaneId,
+        workspaces: workspaceState.workspaces.map((workspace) => ({
+          workspaceId: workspace.id,
+          workspaceName: workspace.name,
+          ...serializeWorkspaceLayoutForSocket(workspace),
         })),
+        panes: workspaceState.workspaces.flatMap((workspace) =>
+          workspace.panes.map((pane) =>
+            serializePaneForSocket(pane, serializationContext, workspace)
+          )
+        ),
       };
     }
 
@@ -540,10 +778,14 @@ export async function handleSocketCommand(cmd: string, args: SocketArgs): Promis
       return spawnTab(args);
     case "pane.close_tab":
       return closeTab(args);
+    case "pane.rename_tab":
+      return renameTab(args);
     case "pane.send_text":
       return sendPaneText(args);
     case "pane.read":
       return readPane(args);
+    case "pane.move":
+      return movePane(args);
     default:
       throw new Error(`Unknown socket command: ${cmd}`);
   }

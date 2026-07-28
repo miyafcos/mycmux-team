@@ -392,6 +392,12 @@ interface WorkspaceLayoutState {
     targetPaneId: string,
     direction: SplitInsertDirection,
   ) => void;
+  movePaneToPosition: (
+    workspaceId: string,
+    paneId: string,
+    toColumn: number,
+    toRow: number,
+  ) => string[][] | null;
   moveTabToNewWorkspace: (
     sourceWorkspaceId: string,
     sourcePaneId: string,
@@ -1122,6 +1128,40 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
     if (sourcePanes.length === 0) {
       listStore.removeWorkspace(sourceWorkspaceId);
     }
+  },
+
+  movePaneToPosition: (workspaceId, paneId, toColumn, toRow) => {
+    const listStore = useWorkspaceListStore.getState();
+    const workspace = listStore.getWorkspace(workspaceId);
+    if (!workspace || !workspace.panes.some((pane) => pane.id === paneId)) return null;
+
+    const nextSplitColumns = removePaneIdFromColumns(cloneSplitColumns(workspace), paneId);
+    const columnIndex = Number.isInteger(toColumn)
+      && toColumn >= 0
+      && toColumn < nextSplitColumns.length
+      ? toColumn
+      : nextSplitColumns.length;
+
+    if (columnIndex === nextSplitColumns.length) {
+      nextSplitColumns.push([paneId]);
+    } else {
+      const targetColumn = nextSplitColumns[columnIndex];
+      const rowIndex = Number.isInteger(toRow) && toRow >= 0 && toRow <= targetColumn.length
+        ? toRow
+        : targetColumn.length;
+      targetColumn.splice(rowIndex, 0, paneId);
+    }
+
+    const normalizedSplitColumns = reconcileSplitColumnsForPanes(
+      normalizeWorkspaceSplitColumns(nextSplitColumns),
+      workspace.panes.map((pane) => pane.id),
+    );
+    listStore._updateWorkspacePanes(
+      workspaceId,
+      workspace.panes,
+      normalizedSplitColumns,
+    );
+    return normalizedSplitColumns;
   },
 
   movePaneToPane: (sourceWorkspaceId, sourcePaneId, targetWorkspaceId, targetPaneId) => {

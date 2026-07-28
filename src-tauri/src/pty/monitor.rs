@@ -25,10 +25,29 @@ pub struct PtyMetadata {
     pub cwd: String,
     pub git_branch: Option<String>,
     pub process_name: Option<String>,
+    pub process_status: Option<String>,
+    pub process_status_at: Option<i64>,
     pub agent_active: bool,
     pub claude_session_id: Option<String>,
     pub agent_kind: Option<String>,
     pub agent_session_id: Option<String>,
+}
+
+fn process_status_from_observation(
+    process_name: Option<&str>,
+    process_started_at: Option<i64>,
+) -> (Option<String>, Option<i64>) {
+    let status = process_name.map(|name| {
+        if is_shell_process(name) {
+            "idle".to_string()
+        } else {
+            "working".to_string()
+        }
+    });
+    // The OS process start time is stable across mycmux restarts. Using the
+    // monitor poll time here would make every tab look newly active at once.
+    let status_at = status.as_ref().and(process_started_at.filter(|value| *value > 0));
+    (status, status_at)
 }
 
 #[derive(Clone, serde::Serialize)]

@@ -21,9 +21,10 @@ import { agentSessionIdentityKey } from "./stores/workspaceListStore";
 import { useSettingsStore } from "./stores/settingsStore";
 import { isShellProcess } from "./lib/notificationStatus";
 import { confirmAgentSessionClear } from "./lib/agentSessionClearGuard";
-import type { AgentSessionKind, Pane, PaneTab } from "./types";
+import type { AgentSessionKind } from "./types";
 import {
   STARTUP_RESTORE_COMPLETE_EVENT,
+  collectStartupSessionIds,
   getStartupSessionGateSnapshot,
   prepareStartupSessionGate,
   waitForStartupSessionGate,
@@ -35,6 +36,7 @@ import { initDefaultShell } from "./lib/agents";
 import { isSavepointTransferPath, receiveSavepointTransfer } from "./lib/savepointTransfer";
 import { useToastStore } from "./stores/toastStore";
 import { onlineStrings } from "./components/online/onlineStrings";
+import { useAgentDormancy } from "./hooks/useAgentDormancy";
 
 // Kick off config fetch immediately — will be cached by the time terminals mount
 preloadTerminalConfig();
@@ -85,18 +87,6 @@ function inferAgentKindFromTab(sessionId: string): AgentSessionKind | null {
     }
   }
   return null;
-}
-
-function tabHasRestorableAgentSession(tab: PaneTab): boolean {
-  return Boolean((tab.agentKind && tab.agentSessionId) || tab.claudeSessionId);
-}
-
-function paneHasRestorableAgentSession(pane: Pane): boolean {
-  return Boolean(
-    (pane.agentKind && pane.agentSessionId)
-    || pane.claudeSessionId
-    || pane.tabs.some(tabHasRestorableAgentSession),
-  );
 }
 
 async function applyAgentSessionMappings(): Promise<void> {
@@ -153,6 +143,7 @@ function App() {
   const uiVariant = uiVariantEnv === "mycmux" || uiVariantEnv === "cmux" ? "cmux" : "default";
 
   useWorkspacePersist();
+  useAgentDormancy(ready);
 
   useEffect(() => {
     async function bootstrap() {
@@ -186,15 +177,10 @@ function App() {
       const activeWorkspaceId = currentListState.activeWorkspaceId
         ?? currentListState.workspaces[0]?.id
         ?? null;
-      const startupSessionIds = currentListState.workspaces.flatMap((workspace) => {
-        const shouldGateWorkspace = workspace.id === activeWorkspaceId
-          || workspace.panes.some(paneHasRestorableAgentSession);
-        if (!shouldGateWorkspace) return [];
-        return workspace.panes.flatMap((pane) => {
-            const activeTab = pane.tabs.find((tab) => tab.id === pane.activeTabId) ?? pane.tabs[0];
-            return [activeTab.sessionId];
-          });
-      });
+      const startupSessionIds = collectStartupSessionIds(
+        currentListState.workspaces,
+        activeWorkspaceId,
+      );
       prepareStartupSessionGate(startupSessionIds);
       setStartupMaskVisible(true);
 

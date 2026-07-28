@@ -35,23 +35,27 @@ def test_mapping_refresh_is_event_driven_with_single_fallback() -> None:
 
     assert_contains(gate, 'export const STARTUP_RESTORE_COMPLETE_EVENT = "startup-restore-complete";', "src/lib/startupSessionGate.ts")
     assert_contains(gate, "window.dispatchEvent(new CustomEvent(STARTUP_RESTORE_COMPLETE_EVENT));", "src/lib/startupSessionGate.ts")
-    assert_contains(app, "workspace.panes.some(paneHasRestorableAgentSession)", "src/App.tsx")
+    assert_contains(app, "collectStartupSessionIds(", "src/App.tsx")
     assert_contains(app, "prepareStartupSessionGate(startupSessionIds);", "src/App.tsx")
     assert_contains(app, "window.addEventListener(STARTUP_RESTORE_COMPLETE_EVENT, refreshAgentSessionMappings);", "src/App.tsx")
     assert_contains(app, "const mappingFallbackTimer = window.setTimeout(refreshAgentSessionMappings, 15000);", "src/App.tsx")
     assert "setInterval" not in app
 
 
-def test_first_launch_restore_mount_delay_is_two_tier() -> None:
+def test_startup_gate_targets_only_the_active_workspace() -> None:
+    # Lazy resume (2026-07-28): startup must NOT create PTY sessions for
+    # non-active workspaces. Their tabs resume on first activation instead.
+    # Memory-pressure root cause: eager all-workspace restore spawned 15
+    # concurrent claude processes (~610MB commit each) on every app start.
     workspace_view = read_repo_text("src/components/workspace/WorkspaceView.tsx")
     gate = read_repo_text("src/lib/startupSessionGate.ts")
 
-    assert_contains(gate, 'export const FIRST_LAUNCH_STORAGE_KEY = "mycmux:first-launch-done";', "src/lib/startupSessionGate.ts")
-    assert_contains(gate, "window.localStorage.setItem(FIRST_LAUNCH_STORAGE_KEY, \"1\");", "src/lib/startupSessionGate.ts")
-    assert_contains(workspace_view, "const RESTORE_MOUNT_DELAY_MS = 650;", "src/components/workspace/WorkspaceView.tsx")
-    assert_contains(workspace_view, "const FIRST_RESTORE_MOUNT_DELAY_MS = 1200;", "src/components/workspace/WorkspaceView.tsx")
-    assert_contains(workspace_view, "const [restoreMountDelayMs] = useState(getRestoreMountDelayMs);", "src/components/workspace/WorkspaceView.tsx")
-    assert_contains(workspace_view, "}, restoreMountDelayMs);", "src/components/workspace/WorkspaceView.tsx")
+    assert_contains(gate, "export function collectStartupSessionIds(", "src/lib/startupSessionGate.ts")
+    assert_contains(gate, "?? workspaces[0]", "src/lib/startupSessionGate.ts")
+    assert "FIRST_LAUNCH_STORAGE_KEY" not in gate
+    assert "startupRestoreMountedIds" not in workspace_view
+    assert "RESTORE_MOUNT_DELAY_MS" not in workspace_view
+    assert "workspaceHasRestorableAgentSession" not in workspace_view
 
 
 def test_app_does_not_start_forced_auto_update_loop() -> None:

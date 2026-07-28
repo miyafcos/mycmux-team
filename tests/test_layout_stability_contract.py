@@ -30,23 +30,51 @@ def assert_contains(text: str, snippet: str, source: str) -> None:
 
 def test_pane_layout_metrics_survive_split_structure_changes() -> None:
     store = read_repo_text("src/stores/workspaceListStore.ts")
+    layout_metrics = read_repo_text("src/lib/layoutMetrics.ts")
+    workspace_view = read_repo_text("src/components/workspace/WorkspaceView.tsx")
+
+    # Pure metric reconciliation lives in src/lib/layoutMetrics.ts so it stays
+    # unit-testable; the store only adapts Workspace state onto it.
+    for snippet in [
+        "export function reconcileColumnWidths(",
+        "export function reconcileRowHeightsPerCol(",
+        "export function reconcileLayoutMetrics(",
+        "export function columnsRequireBalancedWidths(",
+        "function previousColumnIndicesForSurvivors(",
+        "return nextColumns.map(() => DEFAULT_LAYOUT_SIZE);",
+        # Pane removal keeps the survivors' stored sizes (proportional spread)
+        # instead of resetting every column to the balanced default.
+        "const survivorWidths = previousIndices.map((previousIndex) =>",
+        "const survivorHeights = nextColumn.map((paneId) =>",
+        "columnWidths.every((size) => positiveSize(size) !== null)",
+        "row.every((size) => positiveSize(size) !== null)",
+    ]:
+        assert_contains(layout_metrics, snippet, "src/lib/layoutMetrics.ts")
 
     for snippet in [
-        "function reconcileColumnWidths(",
-        "function reconcileRowHeightsPerCol(",
-        "function reconcileLayoutMetrics(",
-        "function columnsRequireBalancedWidths(",
-        "if (columnsRequireBalancedWidths(previousColumns, nextColumns)) {",
-        "return nextColumns.map(() => DEFAULT_LAYOUT_SIZE);",
+        '} from "../lib/layoutMetrics";',
+        "const layoutMetrics = reconcileLayoutMetrics(",
         "resetLayoutMetrics || panesChanged || splitLayoutChanged,",
         "...(layoutMetrics ?? {})",
     ]:
         assert_contains(store, snippet, "src/stores/workspaceListStore.ts")
 
-    assert "columnWidths: undefined, rowHeightsPerCol: undefined" not in store.replace(
+    assert "columnWidths: undefined, rowHeightsPerCol: undefined" not in layout_metrics.replace(
         "return { columnWidths: undefined, rowHeightsPerCol: undefined };",
         "",
     )
+
+    # allotment ignores preferredSize updates on surviving panes and lets the
+    # edge pane absorb a removed sibling's space, so the grid must push the
+    # reconciled metrics through the imperative resize() handles whenever the
+    # split structure changes.
+    for snippet in [
+        "const outerAllotmentRef = useRef<AllotmentHandle | null>(null);",
+        "const innerAllotmentRefs = useRef(new Map<string, AllotmentHandle>());",
+        "outerAllotmentRef.current?.resize(columnWidths);",
+        "innerAllotmentRefs.current.get(columnId)?.resize(rowHeights);",
+    ]:
+        assert_contains(workspace_view, snippet, "src/components/workspace/WorkspaceView.tsx")
 
 
 def test_terminal_grid_fits_every_split_inside_the_viewport_without_outer_scrollbars() -> None:
@@ -198,12 +226,10 @@ def test_horizontal_only_columns_are_cleaned_without_vertical_wrapping() -> None
         "function normalizeSplitColumns(splitColumns: string[][], paneIds: string[]): string[][] {",
         "function paneIdsChanged(previousPanes: Workspace[\"panes\"], nextPanes: Workspace[\"panes\"]): boolean {",
         "function splitColumnsChanged(previousColumns: string[][], nextColumns: string[][]): boolean {",
-        "columnWidths.every((size) => positiveSize(size) !== null)",
-        "row.every((size) => positiveSize(size) !== null)",
         "const normalizedSplitColumns = normalizeSplitColumns(splitColumns, panes.map((pane) => pane.id));",
         "const paneIds = panes.map((pane) => pane.id);",
         "const panesChanged = paneIdsChanged(w.panes, panes);",
-        "const previousSplitColumns = fallbackColumns(w);",
+        "const previousSplitColumns = fallbackColumns(w.splitColumns, w.panes.map((pane) => pane.id));",
         "splitColumns ?? previousSplitColumns",
         "const splitLayoutChanged = splitColumnsChanged(previousSplitColumns, normalizedSplitColumns);",
         "splitColumns: normalizedSplitColumns",
@@ -226,10 +252,12 @@ def test_horizontal_only_columns_are_cleaned_without_vertical_wrapping() -> None
         assert_contains(socket_listener, snippet, "src/components/layout/SocketListener.tsx")
 
 
-def test_terminal_renderer_restores_windows_dom_safety_default() -> None:
+def test_terminal_renderer_auto_default_keeps_transparency_safety() -> None:
     # Transparent multi-pane WebGL has repeatedly rendered darker or corrupted
-    # text on Windows. Keep guarded WebGL as an opt-in while restoring the
-    # platform-safe DOM default and the user's lost legacy preference.
+    # text on Windows/WebView2 and macOS/WKWebView, while the forced-DOM v3
+    # default made streaming output CPU-heavy. "auto" picks WebGL only for
+    # opaque terminal backgrounds and falls back to DOM whenever a media
+    # background or reduced opacity is active.
     xterm_wrapper = read_repo_text("src/components/terminal/XTermWrapper.tsx")
     settings_store = read_repo_text("src/stores/settingsStore.ts")
     settings_migration = read_repo_text("src/stores/settingsMigration.ts")
@@ -252,6 +280,20 @@ def test_terminal_renderer_restores_windows_dom_safety_default() -> None:
     # definition + settings-change effect + cached reattach + fresh open.
     assert xterm_wrapper.count("applyTerminalRenderer(") >= 4
 
+    # Every attach path resolves the *effective* renderer (auto -> webgl/dom
+    # from the background state) instead of using the raw setting, and the
+    # settings-change effect re-runs when the background state flips.
+    for snippet in [
+        'import { resolveEffectiveTerminalRenderer } from "../../stores/settingsMigration";',
+        "function resolveTerminalBackgroundState(background: ThemeBackgroundSettings): {",
+        "function resolveEffectiveTerminalRendererFromStores(): \"webgl\" | \"dom\" {",
+        "}, [sessionId, terminalRenderer, mediaBackgroundActive, terminalOpacity]);",
+    ]:
+        assert_contains(xterm_wrapper, snippet, "src/components/terminal/XTermWrapper.tsx")
+    assert xterm_wrapper.count("resolveEffectiveTerminalRendererFromStores()") >= 2
+    assert "applyTerminalRenderer(sessionId, cached.term, useSettingsStore.getState().terminalRenderer)" not in xterm_wrapper
+    assert "applyTerminalRenderer(sessionId, term, useSettingsStore.getState().terminalRenderer)" not in xterm_wrapper
+
     # loadAddon must stay inside the guarded enable path - a bare unguarded
     # load would crash terminals on GPU-less WebView2 setups.
     assert "term.loadAddon(addon);" in xterm_wrapper
@@ -259,30 +301,38 @@ def test_terminal_renderer_restores_windows_dom_safety_default() -> None:
     assert "clearTextureAtlas()" not in xterm_wrapper
 
     for snippet in [
-        'terminalRenderer: "webgl" | "dom";',
+        "terminalRenderer: TerminalRenderer;",
         "terminalRenderer: resolveDefaultTerminalRenderer(),",
         "version: SETTINGS_STORE_VERSION,",
         "migratePersistedSettings(persistedState, persistedVersion)",
     ]:
         assert_contains(settings_store, snippet, "src/stores/settingsStore.ts")
 
-    # DOM is the default on every platform: the opaque-pane WebGL artifact
-    # seen on Windows/WebView2 reproduced on macOS/WKWebView (2026-07-16).
+    # "auto" is the default; the v2/v3 forced-DOM safety is preserved through
+    # the effective-renderer resolution (transparent configs stay on DOM) and
+    # the v4 migration lifts only the forced "dom" values to "auto", keeping
+    # explicit legacy WebGL opt-ins untouched.
     for snippet in [
-        "export const SETTINGS_STORE_VERSION = 3;",
+        "export const SETTINGS_STORE_VERSION = 4;",
+        'export type TerminalRenderer = "auto" | "webgl" | "dom";',
         "export function resolveDefaultTerminalRenderer(",
-        'return "dom";',
+        'return "auto";',
+        "export function resolveEffectiveTerminalRenderer(",
+        'return !mediaBackgroundActive && terminalOpacity >= 1 ? "webgl" : "dom";',
         'delete migrated.useWebglRenderer;',
         'legacyWebglPreference === false ? "dom" : "webgl"',
         'migrated.terminalRenderer = "dom";',
         "&& !isWindowsUserAgent(userAgent)",
+        'if (persistedVersion < 4 && migrated.terminalRenderer === "dom") {',
+        'migrated.terminalRenderer = "auto";',
     ]:
         assert_contains(settings_migration, snippet, "src/stores/settingsMigration.ts")
 
     for snippet in [
-        "標準描画（推奨）",
+        "自動（推奨）",
+        "標準描画（安定性優先）",
         "GPU描画（高速・環境依存）",
-        "表示の安定性を優先し、標準描画が既定です",
+        "自動では、背景メディアがなく不透明度100%のときGPU描画を使い",
     ]:
         assert_contains(appearance_tab, snippet, "src/components/settings/tabs/AppearanceTab.tsx")
 

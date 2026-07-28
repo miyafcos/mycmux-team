@@ -35,6 +35,67 @@ def request_for_spawn_tab(argv: list[str]) -> tuple[str, dict[str, Any]]:
     return cli.request_for(namespace)
 
 
+def request_for_panes(argv: list[str]) -> tuple[str, dict[str, Any]]:
+    namespace = cli.build_parser().parse_args(["panes", *argv])
+    return cli.request_for(namespace)
+
+
+def request_for_move(argv: list[str]) -> tuple[str, dict[str, Any]]:
+    namespace = cli.build_parser().parse_args(["move", *argv])
+    return cli.request_for(namespace)
+
+
+def request_for_rename(argv: list[str]) -> tuple[str, dict[str, Any]]:
+    namespace = cli.build_parser().parse_args(["rename", *argv])
+    return cli.request_for(namespace)
+
+
+def test_panes_keeps_existing_default_route() -> None:
+    assert request_for_panes([]) == ("pane.list", {})
+
+
+def test_panes_keeps_existing_workspace_route() -> None:
+    assert request_for_panes(["--workspace", "workspace-1"]) == (
+        "pane.list",
+        {"workspaceId": "workspace-1"},
+    )
+
+
+def test_panes_all_routes_to_cross_workspace_command() -> None:
+    assert request_for_panes(["--all"]) == ("pane.list_all", {})
+
+
+def test_panes_rejects_workspace_with_all() -> None:
+    with pytest.raises(SystemExit):
+        cli.build_parser().parse_args(
+            ["panes", "--workspace", "workspace-1", "--all"]
+        )
+
+
+def test_move_routes_session_and_zero_based_position() -> None:
+    assert request_for_move(
+        ["--session", PANE_SESSION_ID, "--column", "2", "--row", "3"]
+    ) == (
+        "pane.move",
+        {"sessionId": PANE_SESSION_ID, "toColumn": 2, "toRow": 3},
+    )
+
+
+def test_rename_routes_label_and_preserves_empty_reset() -> None:
+    assert request_for_rename(
+        ["--session", PANE_SESSION_ID, "--label", "人が読める名前"]
+    ) == (
+        "pane.rename_tab",
+        {"sessionId": PANE_SESSION_ID, "label": "人が読める名前"},
+    )
+    assert request_for_rename(
+        ["--session", PANE_SESSION_ID, "--label", ""]
+    ) == (
+        "pane.rename_tab",
+        {"sessionId": PANE_SESSION_ID, "label": ""},
+    )
+
+
 def test_env_and_no_placement_options_routes_to_same_pane_tab(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -1,13 +1,20 @@
-export const SETTINGS_STORE_VERSION = 3;
+export const SETTINGS_STORE_VERSION = 4;
 
-export type TerminalRenderer = "webgl" | "dom";
+export type TerminalRenderer = "auto" | "webgl" | "dom";
 
-// Transparent multi-pane WebGL produced darker/opaque pane backgrounds on
-// Windows/WebView2 and reproduced identically on macOS/WKWebView (2026-07-16
-// M1 verification), so DOM is the safe default on every platform. GPU
-// rendering stays available as an explicit opt-in.
 export function resolveDefaultTerminalRenderer(): TerminalRenderer {
-  return "dom";
+  return "auto";
+}
+
+export function resolveEffectiveTerminalRenderer(
+  setting: TerminalRenderer,
+  mediaBackgroundActive: boolean,
+  terminalOpacity: number,
+): "webgl" | "dom" {
+  if (setting === "webgl" || setting === "dom") {
+    return setting;
+  }
+  return !mediaBackgroundActive && terminalOpacity >= 1 ? "webgl" : "dom";
 }
 
 function isWindowsUserAgent(userAgent: string): boolean {
@@ -35,12 +42,20 @@ export function migratePersistedSettings(
   if (persistedVersion < 1) {
     // v0.14.2 renamed the renderer setting without migrating the old boolean.
     // Carry an explicit legacy choice forward before applying platform safety.
-    if (migrated.terminalRenderer !== "webgl" && migrated.terminalRenderer !== "dom") {
+    if (
+      migrated.terminalRenderer !== "auto"
+      && migrated.terminalRenderer !== "webgl"
+      && migrated.terminalRenderer !== "dom"
+    ) {
       migrated.terminalRenderer = legacyWebglPreference === false ? "dom" : "webgl";
     }
   }
 
-  if (migrated.terminalRenderer !== "webgl" && migrated.terminalRenderer !== "dom") {
+  if (
+    migrated.terminalRenderer !== "auto"
+    && migrated.terminalRenderer !== "webgl"
+    && migrated.terminalRenderer !== "dom"
+  ) {
     migrated.terminalRenderer = resolveDefaultTerminalRenderer();
   }
 
@@ -68,6 +83,13 @@ export function migratePersistedSettings(
     && legacyWebglPreference !== true
   ) {
     migrated.terminalRenderer = "dom";
+  }
+
+  // Versions 2 and 3 forced DOM to avoid transparent-background artifacts.
+  // Auto keeps DOM for transparent configurations while restoring WebGL for
+  // opaque terminal backgrounds.
+  if (persistedVersion < 4 && migrated.terminalRenderer === "dom") {
+    migrated.terminalRenderer = "auto";
   }
   return migrated;
 }

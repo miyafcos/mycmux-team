@@ -110,7 +110,11 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("workspaces", help="List workspaces")
 
     panes = subparsers.add_parser("panes", help="List panes")
-    panes.add_argument("--workspace")
+    panes_scope = panes.add_mutually_exclusive_group()
+    panes_scope.add_argument("--workspace")
+    panes_scope.add_argument(
+        "--all", action="store_true", help="List panes across all workspaces"
+    )
 
     spawn = subparsers.add_parser(
         "spawn",
@@ -136,6 +140,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     close_tab = subparsers.add_parser("close-tab", help="Close a terminal tab")
     close_tab.add_argument("--session", required=True)
+
+    rename = subparsers.add_parser("rename", help="Rename a terminal tab")
+    rename.add_argument("--session", required=True)
+    rename.add_argument("--label", required=True)
+
+    move = subparsers.add_parser("move", help="Move a pane within its workspace")
+    move.add_argument("--session", required=True)
+    move.add_argument("--column", required=True, type=int)
+    move.add_argument("--row", required=True, type=int)
 
     send = subparsers.add_parser("send", help="Type text into a live terminal")
     send.add_argument("--session", required=True)
@@ -251,6 +264,8 @@ def request_for(namespace: argparse.Namespace) -> tuple[str, dict[str, Any]]:
     if namespace.subcommand == "workspaces":
         return "workspace.list", {}
     if namespace.subcommand == "panes":
+        if namespace.all:
+            return "pane.list_all", {}
         args: dict[str, Any] = {}
         optional_arg(args, "workspaceId", namespace.workspace)
         return "pane.list", args
@@ -262,6 +277,17 @@ def request_for(namespace: argparse.Namespace) -> tuple[str, dict[str, Any]]:
         return "pane.spawn_tab", build_spawn_tab_request(namespace)
     if namespace.subcommand == "close-tab":
         return "pane.close_tab", {"sessionId": namespace.session}
+    if namespace.subcommand == "rename":
+        return "pane.rename_tab", {
+            "sessionId": namespace.session,
+            "label": namespace.label,
+        }
+    if namespace.subcommand == "move":
+        return "pane.move", {
+            "sessionId": namespace.session,
+            "toColumn": namespace.column,
+            "toRow": namespace.row,
+        }
     if namespace.subcommand == "send":
         return "pane.send_text", {
             "sessionId": namespace.session,

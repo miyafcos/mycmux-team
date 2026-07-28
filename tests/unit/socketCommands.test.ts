@@ -1,11 +1,17 @@
-import { describe, expect, it } from "vitest";
-import type { Pane, Workspace } from "../../src/types";
+import { beforeEach, describe, expect, it } from "vitest";
+import type { Pane, PaneTab, Workspace } from "../../src/types";
 import {
   clampPaneReadLines,
   findPaneBySessionId,
+  handleSocketCommand,
   resolveSpawnPlan,
   resolveSpawnTabPlan,
+  serializePaneForSocket,
 } from "../../src/components/layout/socketCommands";
+import { liveTerms } from "../../src/components/terminal/terminalCache";
+import { usePaneMetadataStore } from "../../src/stores/paneMetadataStore";
+import { useUiStore } from "../../src/stores/uiStore";
+import { useWorkspaceListStore } from "../../src/stores/workspaceListStore";
 
 describe("resolveSpawnPlan", () => {
   it("builds a generated handoff launch environment", () => {
@@ -225,5 +231,518 @@ describe("clampPaneReadLines", () => {
     expect(clampPaneReadLines(0)).toBe(1);
     expect(clampPaneReadLines(25.9)).toBe(25);
     expect(clampPaneReadLines(401)).toBe(400);
+  });
+});
+
+function socketWorkspace(
+  id: string,
+  name: string,
+  paneId: string,
+  tabs: PaneTab[],
+): Workspace {
+  return {
+    id,
+    name,
+    gridTemplateId: "1x1",
+    status: "running",
+    createdAt: 1,
+    panes: [{
+      id: paneId,
+      agentId: tabs[0].agentId,
+      sessionId: tabs[0].sessionId,
+      tabs,
+      activeTabId: tabs[0].id,
+    }],
+  };
+}
+
+function socketPane(paneId: string): Pane {
+  const tab: PaneTab = {
+    id: `tab-${paneId}`,
+    sessionId: `session-${paneId}`,
+    agentId: "shell-starter",
+    type: "terminal",
+  };
+  return {
+    id: paneId,
+    agentId: tab.agentId,
+    sessionId: tab.sessionId,
+    tabs: [tab],
+    activeTabId: tab.id,
+  };
+}
+
+function socketLayoutWorkspace(splitColumns: string[][]): Workspace {
+  return {
+    id: "workspace-layout",
+    name: "Workspace Layout",
+    gridTemplateId: "1x1",
+    status: "running",
+    createdAt: 1,
+    panes: ["pane-a", "pane-b", "pane-c"].map(socketPane),
+    splitColumns,
+  };
+}
+
+describe("pane socket responses", () => {
+  beforeEach(() => {
+    useWorkspaceListStore.setState({
+      workspaces: [],
+      activeWorkspaceId: null,
+      lastActivePaneByWorkspace: {},
+    });
+    useUiStore.setState({ activePaneId: null });
+    usePaneMetadataStore.setState({ metadata: {}, lastLog: {} });
+    liveTerms.clear();
+  });
+
+  it("exposes tab identities, status freshness, and the active session", async () => {
+    const liveTab: PaneTab = {
+      id: "tab-live",
+      sessionId: "session-live",
+      agentId: "shell-starter",
+      type: "terminal",
+      claudeSessionId: "claude-session",
+      agentKind: "claude",
+      agentSessionId: "agent-session",
+      lastProcess: "claude.exe",
+    };
+    const staleTab: PaneTab = {
+      id: "tab-stale",
+      sessionId: "session-stale",
+      agentId: "shell-starter",
+      type: "terminal",
+    };
+    const workspace = socketWorkspace(
+      "workspace-a",
+      "Workspace A",
+      "pane-a",
+      [liveTab, staleTab],
+    );
+    useWorkspaceListStore.setState({
+      workspaces: [workspace],
+      activeWorkspaceId: workspace.id,
+    });
+    useUiStore.setState({ activePaneId: staleTab.sessionId });
+    usePaneMetadataStore.setState({
+      metadata: {
+        [liveTab.sessionId]: { agentStatus: "waiting", agentStatusAt: 123 },
+        [staleTab.sessionId]: { processIsShell: false, agentStatusAt: 456 },
+      },
+    });
+    liveTerms.set(liveTab.sessionId, {} as never);
+
+    const result = await handleSocketCommand("pane.list", {}) as {
+      activePaneId: string | null;
+      activeSessionId: string | null;
+      splitColumns: string[][];
+      columnWidths: number[];
+      rowHeightsPerCol: number[][];
+      gridTemplateId: string;
+      panes: Array<{
+        active: boolean;
+        tabs: Array<Record<string, unknown>>;
+      }>;
+    };
+
+    expect(result.activePaneId).toBe(staleTab.sessionId);
+    expect(result.activeSessionId).toBe(staleTab.sessionId);
+    expect(result.splitColumns).toEqual([["pane-a"]]);
+    expect(result.columnWidths).toEqual([1]);
+    expect(result.rowHeightsPerCol).toEqual([[1]]);
+    expect(result.gridTemplateId).toBe("1x1");
+    expect(result.panes[0].active).toBe(true);
+    expect(result.panes[0].tabs[0]).toMatchObject({
+      sessionId: liveTab.sessionId,
+      claudeSessionId: "claude-session",
+      agentSessionId: "agent-session",
+      lastProcess: "claude.exe",
+      agentStatus: "waiting",
+      agentStatusAt: 123,
+      agentStatusStale: false,
+    });
+    expect(result.panes[0].tabs[1]).toMatchObject({
+      sessionId: staleTab.sessionId,
+      agentStatus: "working",
+      agentStatusAt: 456,
+      agentStatusStale: true,
+    });
+  });
+
+  it("serializes process evidence independently from xterm visibility", () => {
+    const tab: PaneTab = {
+      id: "tab-background",
+      sessionId: "session-background",
+      agentId: "shell-starter",
+      type: "terminal",
+    };
+    const workspace = socketWorkspace(
+      "workspace-a",
+      "Workspace A",
+      "pane-a",
+      [tab],
+    );
+
+    const serialized = serializePaneForSocket(workspace.panes[0], {
+      activeSessionId: null,
+      metadata: {},
+      processMetadata: {
+        [tab.sessionId]: {
+          session_id: tab.sessionId,
+          cwd: "C:\\repo",
+          process_name: "codex.exe",
+          process_status: "working",
+          process_status_at: 1234,
+          agent_active: true,
+        },
+      },
+      processMetadataAvailable: true,
+      isTerminalMounted: () => false,
+    });
+
+    expect(serialized.tabs[0]).toMatchObject({
+      processStatus: "working",
+      processStatusAt: 1234,
+      processStatusReason: null,
+      screenStatus: null,
+      screenStatusAt: null,
+      screenObserved: false,
+    });
+  });
+
+  it("does not synthesize a process timestamp for a fresh monitor baseline", () => {
+    const tab: PaneTab = {
+      id: "tab-background",
+      sessionId: "session-background",
+      agentId: "shell-starter",
+      type: "terminal",
+    };
+    const workspace = socketWorkspace(
+      "workspace-a",
+      "Workspace A",
+      "pane-a",
+      [tab],
+    );
+
+    const serialized = serializePaneForSocket(workspace.panes[0], {
+      activeSessionId: null,
+      metadata: {},
+      processMetadata: {
+        [tab.sessionId]: {
+          session_id: tab.sessionId,
+          cwd: "C:\\repo",
+          process_name: "codex.exe",
+          process_status: "working",
+          agent_active: true,
+        },
+      },
+      processMetadataAvailable: true,
+      isTerminalMounted: () => false,
+    });
+
+    expect(serialized.tabs[0]).toMatchObject({
+      processStatus: "working",
+      processStatusAt: null,
+      processStatusReason: null,
+      screenObserved: false,
+    });
+  });
+
+  it("reports an idle process status for a live shell tab", () => {
+    const tab: PaneTab = {
+      id: "tab-shell",
+      sessionId: "session-shell",
+      agentId: "shell-starter",
+      type: "terminal",
+    };
+    const workspace = socketWorkspace("workspace-a", "Workspace A", "pane-a", [tab]);
+
+    const serialized = serializePaneForSocket(workspace.panes[0], {
+      activeSessionId: null,
+      metadata: {},
+      processMetadata: {
+        [tab.sessionId]: {
+          session_id: tab.sessionId,
+          cwd: "C:\\repo",
+          process_name: "pwsh.exe",
+          process_status: "idle",
+          process_status_at: 4321,
+          agent_active: false,
+        },
+      },
+      processMetadataAvailable: true,
+      isTerminalMounted: () => false,
+    });
+
+    expect(serialized.tabs[0]).toMatchObject({
+      processStatus: "idle",
+      processStatusAt: 4321,
+      processStatusReason: null,
+    });
+  });
+
+  it("explains a saved terminal tab that has no live PTY session", () => {
+    const tab: PaneTab = {
+      id: "tab-cold",
+      sessionId: "session-cold",
+      agentId: "codex",
+      agentKind: "codex",
+      type: "terminal",
+    };
+    const workspace = socketWorkspace("workspace-a", "Workspace A", "pane-a", [tab]);
+
+    const serialized = serializePaneForSocket(workspace.panes[0], {
+      activeSessionId: null,
+      metadata: {},
+      processMetadata: {},
+      processMetadataAvailable: true,
+      isTerminalMounted: () => false,
+    });
+
+    expect(serialized.tabs[0]).toMatchObject({
+      processStatus: null,
+      processStatusAt: null,
+      processStatusReason: "no_live_pty_session",
+    });
+  });
+
+  it("distinguishes an unavailable process snapshot from a cold tab", () => {
+    const tab: PaneTab = {
+      id: "tab-unknown",
+      sessionId: "session-unknown",
+      agentId: "shell-starter",
+      type: "terminal",
+    };
+    const workspace = socketWorkspace("workspace-a", "Workspace A", "pane-a", [tab]);
+
+    const serialized = serializePaneForSocket(workspace.panes[0], {
+      activeSessionId: null,
+      metadata: {},
+      processMetadata: {},
+      processMetadataAvailable: false,
+      isTerminalMounted: () => false,
+    });
+
+    expect(serialized.tabs[0]).toMatchObject({
+      processStatus: null,
+      processStatusAt: null,
+      processStatusReason: "snapshot_unavailable",
+    });
+  });
+
+  it("returns stored layout metrics when they match the normalized layout", async () => {
+    const workspace = socketWorkspace("workspace-a", "Workspace A", "pane-a", [{
+      id: "tab-a",
+      sessionId: "session-a",
+      agentId: "shell-starter",
+      type: "terminal",
+    }]);
+    workspace.splitColumns = [["pane-a"]];
+    workspace.columnWidths = [2.5];
+    workspace.rowHeightsPerCol = [[3.5]];
+    useWorkspaceListStore.setState({
+      workspaces: [workspace],
+      activeWorkspaceId: workspace.id,
+    });
+
+    const result = await handleSocketCommand("pane.list", {}) as {
+      splitColumns: string[][];
+      columnWidths: number[];
+      rowHeightsPerCol: number[][];
+      gridTemplateId: string;
+    };
+
+    expect(result).toMatchObject({
+      splitColumns: [["pane-a"]],
+      columnWidths: [2.5],
+      rowHeightsPerCol: [[3.5]],
+      gridTemplateId: "1x1",
+    });
+  });
+
+  it("lists panes across every workspace with their owning workspace", async () => {
+    const workspaceA = socketWorkspace("workspace-a", "Workspace A", "pane-a", [{
+      id: "tab-a",
+      sessionId: "session-a",
+      agentId: "shell-starter",
+      type: "terminal",
+    }]);
+    const workspaceB = socketWorkspace("workspace-b", "Workspace B", "pane-b", [{
+      id: "tab-b",
+      sessionId: "session-b",
+      agentId: "shell-starter",
+      type: "terminal",
+    }]);
+    workspaceA.splitColumns = [["pane-a"]];
+    workspaceA.columnWidths = [2];
+    workspaceA.rowHeightsPerCol = [[3]];
+    useWorkspaceListStore.setState({
+      workspaces: [workspaceA, workspaceB],
+      activeWorkspaceId: workspaceB.id,
+    });
+    useUiStore.setState({ activePaneId: "session-b" });
+
+    const result = await handleSocketCommand("pane.list_all", {}) as {
+      activeWorkspaceId: string | null;
+      workspaces: Array<{
+        workspaceId: string;
+        workspaceName: string;
+        splitColumns: string[][];
+        columnWidths: number[];
+        rowHeightsPerCol: number[][];
+        gridTemplateId: string;
+      }>;
+      panes: Array<{
+        workspaceId: string;
+        workspaceName: string;
+        active: boolean;
+        tabs: Array<{ sessionId: string }>;
+      }>;
+    };
+
+    expect(result.activeWorkspaceId).toBe(workspaceB.id);
+    expect(result.workspaces).toEqual([
+      {
+        workspaceId: "workspace-a",
+        workspaceName: "Workspace A",
+        splitColumns: [["pane-a"]],
+        columnWidths: [2],
+        rowHeightsPerCol: [[3]],
+        gridTemplateId: "1x1",
+      },
+      {
+        workspaceId: "workspace-b",
+        workspaceName: "Workspace B",
+        splitColumns: [["pane-b"]],
+        columnWidths: [1],
+        rowHeightsPerCol: [[1]],
+        gridTemplateId: "1x1",
+      },
+    ]);
+    expect(result.panes.map((pane) => [pane.workspaceId, pane.workspaceName])).toEqual([
+      ["workspace-a", "Workspace A"],
+      ["workspace-b", "Workspace B"],
+    ]);
+    expect(result.panes.map((pane) => pane.tabs[0].sessionId)).toEqual([
+      "session-a",
+      "session-b",
+    ]);
+    expect(result.panes.map((pane) => pane.active)).toEqual([false, true]);
+  });
+
+  it("renames a tab by session without changing the active session", async () => {
+    const firstTab: PaneTab = {
+      id: "tab-a",
+      sessionId: "session-a",
+      agentId: "shell-starter",
+      type: "terminal",
+    };
+    const secondTab: PaneTab = {
+      id: "tab-b",
+      sessionId: "session-b",
+      agentId: "shell-starter",
+      type: "terminal",
+    };
+    const workspace = socketWorkspace("workspace-a", "Workspace A", "pane-a", [firstTab, secondTab]);
+    useWorkspaceListStore.setState({ workspaces: [workspace], activeWorkspaceId: workspace.id });
+
+    const result = await handleSocketCommand("pane.rename_tab", {
+      sessionId: secondTab.sessionId,
+      label: "  Review notes  ",
+    });
+
+    expect(result).toEqual({
+      workspaceId: workspace.id,
+      paneId: workspace.panes[0].id,
+      tabId: secondTab.id,
+      sessionId: secondTab.sessionId,
+      label: "Review notes",
+    });
+    const storedPane = useWorkspaceListStore.getState().getWorkspace(workspace.id)!.panes[0];
+    expect(storedPane.activeTabId).toBe(firstTab.id);
+    expect(storedPane.sessionId).toBe(firstTab.sessionId);
+    expect(storedPane.tabs.map((tab) => tab.label)).toEqual([undefined, "Review notes"]);
+  });
+
+  it("clears an explicit tab label when rename receives an empty string", async () => {
+    const tab: PaneTab = {
+      id: "tab-a",
+      sessionId: "session-a",
+      agentId: "shell-starter",
+      type: "terminal",
+      label: "Explicit",
+    };
+    const workspace = socketWorkspace("workspace-a", "Workspace A", "pane-a", [tab]);
+    useWorkspaceListStore.setState({ workspaces: [workspace], activeWorkspaceId: workspace.id });
+
+    await expect(handleSocketCommand("pane.rename_tab", { sessionId: tab.sessionId, label: "" })).resolves.toMatchObject({ label: null });
+    expect(useWorkspaceListStore.getState().getWorkspace(workspace.id)!.panes[0].tabs[0].label).toBeUndefined();
+  });
+
+  it("rejects rename requests that do not identify a known session", async () => {
+    await expect(handleSocketCommand("pane.rename_tab", { label: "Name" })).rejects.toThrow("pane.rename_tab requires sessionId");
+    await expect(handleSocketCommand("pane.rename_tab", { sessionId: "missing", label: "Name" })).rejects.toThrow("pane.rename_tab session not found");
+  });
+
+  it("moves a pane by session through normalized columns without replacing the pane", async () => {
+    const workspace = socketLayoutWorkspace([
+      ["pane-a", "ghost"],
+      [],
+      ["pane-b", "pane-a"],
+      ["pane-c"],
+    ]);
+    const originalPane = workspace.panes[1];
+    useWorkspaceListStore.setState({
+      workspaces: [workspace],
+      activeWorkspaceId: workspace.id,
+    });
+
+    const result = await handleSocketCommand("pane.move", {
+      sessionId: "session-pane-b",
+      toColumn: 0,
+      toRow: 0,
+    }) as { workspaceId: string; paneId: string; splitColumns: string[][] };
+
+    expect(result).toEqual({
+      workspaceId: workspace.id,
+      paneId: "pane-b",
+      splitColumns: [["pane-b", "pane-a"], ["pane-c"]],
+    });
+    const stored = useWorkspaceListStore.getState().getWorkspace(workspace.id)!;
+    expect(stored.panes.find((pane) => pane.id === "pane-b")).toBe(originalPane);
+    expect(stored.panes.find((pane) => pane.id === "pane-b")?.sessionId)
+      .toBe("session-pane-b");
+  });
+
+  it("appends an out-of-range row to the selected column", async () => {
+    const workspace = socketLayoutWorkspace([["pane-a", "pane-b"], ["pane-c"]]);
+    useWorkspaceListStore.setState({
+      workspaces: [workspace],
+      activeWorkspaceId: workspace.id,
+    });
+
+    const result = await handleSocketCommand("pane.move", {
+      paneId: "pane-a",
+      toColumn: 1,
+      toRow: 99,
+    }) as { splitColumns: string[][] };
+
+    expect(result.splitColumns).toEqual([["pane-b"], ["pane-c", "pane-a"]]);
+  });
+
+  it("appends a column that is out of range after collapsing the empty source column", async () => {
+    const workspace = socketLayoutWorkspace([["pane-a"], ["pane-b", "pane-c"]]);
+    useWorkspaceListStore.setState({
+      workspaces: [workspace],
+      activeWorkspaceId: workspace.id,
+    });
+
+    const result = await handleSocketCommand("pane.move", {
+      sessionId: "session-pane-a",
+      toColumn: 1,
+      toRow: 99,
+    }) as { splitColumns: string[][] };
+
+    expect(result.splitColumns).toEqual([["pane-b", "pane-c"], ["pane-a"]]);
   });
 });

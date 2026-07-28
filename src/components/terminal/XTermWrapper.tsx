@@ -24,9 +24,11 @@ import {
 import { usePaneMetadataStore, useUiStore } from "../../stores/workspaceStore";
 import { useKeybindingStore } from "../../stores/keybindingStore";
 import { useSettingsStore } from "../../stores/settingsStore";
+import { resolveEffectiveTerminalRenderer } from "../../stores/settingsMigration";
 import { DEFAULT_TERMINAL_FONT_FAMILY, useThemeStore } from "../../stores/themeStore";
 import { useToastStore } from "../../stores/toastStore";
 import type { IDisposable, ITheme } from "@xterm/xterm";
+import type { ThemeBackgroundSettings } from "../../types";
 import { markStartupSessionSettled } from "../../lib/startupSessionGate";
 import {
   TERMINAL_BATCH_RETAINED_MAX_BYTES,
@@ -192,6 +194,26 @@ const TERMINAL_MIN_CONTRAST = 7;
 
 function minContrastFor(mediaActive: boolean): number {
   return mediaActive ? 1 : TERMINAL_MIN_CONTRAST;
+}
+
+function resolveTerminalBackgroundState(background: ThemeBackgroundSettings): {
+  mediaBackgroundActive: boolean;
+  terminalOpacity: number;
+} {
+  const mediaBackgroundActive = background.mode === "preset" || (
+    background.mode === "image" && background.imagePath.length > 0
+  );
+  return {
+    mediaBackgroundActive,
+    terminalOpacity: mediaBackgroundActive ? background.terminalOpacity : 1,
+  };
+}
+
+function resolveEffectiveTerminalRendererFromStores(): "webgl" | "dom" {
+  const setting = useSettingsStore.getState().terminalRenderer;
+  const background = useThemeStore.getState().themeTweaks.background;
+  const { mediaBackgroundActive, terminalOpacity } = resolveTerminalBackgroundState(background);
+  return resolveEffectiveTerminalRenderer(setting, mediaBackgroundActive, terminalOpacity);
 }
 
 // Cache terminal config globally - fetched once, reused across all panes
@@ -593,10 +615,7 @@ export default memo(function XTermWrapper({
   const storeFontFamily = useThemeStore((s) => s.fontFamily);
   const storeBackground = useThemeStore((s) => s.themeTweaks.background);
   const terminalRenderer = useSettingsStore((s) => s.terminalRenderer);
-  const mediaBackgroundActive = storeBackground.mode === "preset" || (
-    storeBackground.mode === "image" && storeBackground.imagePath.length > 0
-  );
-  const terminalOpacity = mediaBackgroundActive ? storeBackground.terminalOpacity : 1;
+  const { mediaBackgroundActive, terminalOpacity } = resolveTerminalBackgroundState(storeBackground);
   // Single source of truth: is this tab the currently-focused terminal?
   // Used for scroll-to-bottom-on-activate.
   const isActivePane = useUiStore((s) => s.activePaneId === sessionId);
@@ -631,9 +650,17 @@ export default memo(function XTermWrapper({
 
   useEffect(() => {
     if (termRef.current) {
-      applyTerminalRenderer(sessionId, termRef.current, terminalRenderer);
+      applyTerminalRenderer(
+        sessionId,
+        termRef.current,
+        resolveEffectiveTerminalRenderer(
+          terminalRenderer,
+          mediaBackgroundActive,
+          terminalOpacity,
+        ),
+      );
     }
-  }, [sessionId, terminalRenderer]);
+  }, [sessionId, terminalRenderer, mediaBackgroundActive, terminalOpacity]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -1810,7 +1837,7 @@ export default memo(function XTermWrapper({
       fitAddon = cached.fitAddon;
       sessionStarted = true;
       liveTerms.set(sessionId, cached.term);
-      applyTerminalRenderer(sessionId, cached.term, useSettingsStore.getState().terminalRenderer);
+      applyTerminalRenderer(sessionId, cached.term, resolveEffectiveTerminalRendererFromStores());
       termRef.current = cached.term;
       fitAddonRef.current = cached.fitAddon;
       searchAddonRef.current = cached.searchAddon;
@@ -1919,7 +1946,7 @@ export default memo(function XTermWrapper({
       term.open(container!);
       invalidateContainerVisibilityMemo();
       liveTerms.set(sessionId, term);
-      applyTerminalRenderer(sessionId, term, useSettingsStore.getState().terminalRenderer);
+      applyTerminalRenderer(sessionId, term, resolveEffectiveTerminalRendererFromStores());
       if (initialReplay && initialReplay.length > 0) {
         const replayText = initialReplay.join("\r\n");
         updateCodexOutputDetection(replayText);

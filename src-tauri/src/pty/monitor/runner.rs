@@ -81,6 +81,12 @@ pub fn start_monitor(
                     let shell_pid = Pid::from_u32(pid);
                     let fg_pid = deepest_child_pid(&sys, &child_index, shell_pid);
                     let process_name = get_foreground_process_name(&sys, fg_pid);
+                    let process_started_at = sys.process(fg_pid).and_then(|process| {
+                        process
+                            .start_time()
+                            .checked_mul(1_000)
+                            .and_then(|value| i64::try_from(value).ok())
+                    });
                     let foreground_agent = agent_kind_from_process(&sys, fg_pid)
                         .map(|kind| (kind, fg_pid))
                         .or_else(|| find_agent_descendant(&sys, &child_index, shell_pid));
@@ -414,11 +420,17 @@ pub fn start_monitor(
                         }
                     }
 
+                    let (process_status, process_status_at) = process_status_from_observation(
+                        process_name.as_deref(),
+                        process_started_at,
+                    );
                     let metadata = PtyMetadata {
                         session_id: session_id.clone(),
                         cwd: cwd.clone(),
                         git_branch: git_branch.clone(),
                         process_name: process_name.clone(),
+                        process_status,
+                        process_status_at,
                         agent_active,
                         claude_session_id: claude_session_id.clone(),
                         agent_kind: agent_kind.clone(),
@@ -430,6 +442,8 @@ pub fn start_monitor(
                             old.cwd != cwd
                                 || old.git_branch != git_branch
                                 || old.process_name != process_name
+                                || old.process_status != metadata.process_status
+                                || old.process_status_at != metadata.process_status_at
                                 || old.agent_active != agent_active
                                 || old.claude_session_id != claude_session_id
                                 || old.agent_kind != agent_kind
@@ -442,7 +456,6 @@ pub fn start_monitor(
                     // not "changed" enough to re-emit pty_metadata.
                     last_metadata.insert(session_id.clone(), metadata.clone());
                     if changed {
-                        // Also update the shared metadata store for remote access
                         metadata_store.insert(session_id.clone(), metadata.clone());
                         let _ = app_handle.emit("pty_metadata", metadata);
                     }

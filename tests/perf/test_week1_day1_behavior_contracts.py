@@ -148,30 +148,34 @@ def test_resume_and_handoff_environment_contract_remains_wired() -> None:
         assert_contains(palette, snippet, "src/components/CommandPalette/CrsmPalette.tsx")
 
 
-def test_startup_restore_mounts_inactive_saved_session_workspaces() -> None:
+def test_startup_does_not_mount_inactive_workspaces() -> None:
+    # Lazy resume (2026-07-28): the old eager startup restore mounted every
+    # workspace with a saved agent session, spawning all agents at once
+    # (memory-pressure root cause). Startup must mount the active workspace
+    # only; other workspaces mount — and their agents resume — on activation.
     workspace_view = read_repo_text("src/components/workspace/WorkspaceView.tsx")
 
     for snippet in [
-        "workspaceHasRestorableAgentSession",
-        "startupRestoreMountedIds",
-        "RESTORE_MOUNT_DELAY_MS",
         "const visibleWorkspaceIds",
         "visibleWorkspaceIds.has(ws.id)",
     ]:
         assert_contains(workspace_view, snippet, "src/components/workspace/WorkspaceView.tsx")
+    for removed in [
+        "workspaceHasRestorableAgentSession",
+        "startupRestoreMountedIds",
+        "RESTORE_MOUNT_DELAY_MS",
+        "startupRestoreComplete",
+    ]:
+        assert removed not in workspace_view, (
+            f"eager startup restore machinery is back in WorkspaceView.tsx: {removed}"
+        )
 
 
-def test_restore_targets_are_pinned_only_until_startup_restore_completes() -> None:
+def test_workspace_mount_lru_trim_is_unconditional() -> None:
     workspace_view = read_repo_text("src/components/workspace/WorkspaceView.tsx")
 
-    for snippet in [
-        "const [startupRestoreComplete, setStartupRestoreComplete] = useState(",
-        "? next.slice(-MAX_MOUNTED_WORKSPACES)",
-        "window.addEventListener(STARTUP_RESTORE_COMPLETE_EVENT, releaseStartupRestorePins);",
-        "setStartupRestoreMountedIds([]);",
-        "if (startupRestoreComplete) return;",
-    ]:
-        assert_contains(workspace_view, snippet, "src/components/workspace/WorkspaceView.tsx")
+    assert_contains(workspace_view, "const trimmed = next.slice(-MAX_MOUNTED_WORKSPACES);", "src/components/workspace/WorkspaceView.tsx")
+    assert "releaseStartupRestorePins" not in workspace_view
 
 
 def test_shell_starter_mapping_can_recover_session_identity() -> None:

@@ -1,3 +1,5 @@
+import type { Workspace } from "../types";
+
 interface StartupSessionGateState {
   expected: Set<string>;
   pending: Set<string>;
@@ -7,18 +9,26 @@ interface StartupSessionGateState {
 }
 
 export const STARTUP_RESTORE_COMPLETE_EVENT = "startup-restore-complete";
-export const FIRST_LAUNCH_STORAGE_KEY = "mycmux:first-launch-done";
+
+export function collectStartupSessionIds(
+  workspaces: Workspace[],
+  activeWorkspaceId: string | null,
+): string[] {
+  const startupWorkspace = (
+    activeWorkspaceId
+      ? workspaces.find((workspace) => workspace.id === activeWorkspaceId)
+      : undefined
+  ) ?? workspaces[0];
+  if (!startupWorkspace) return [];
+
+  return startupWorkspace.panes.flatMap((pane) => {
+    const activeTab = pane.tabs.find((tab) => tab.id === pane.activeTabId) ?? pane.tabs[0];
+    return activeTab ? [activeTab.sessionId] : [];
+  });
+}
 
 function createResolvedPromise(): Promise<void> {
   return Promise.resolve();
-}
-
-function markFirstLaunchDone(): void {
-  try {
-    window.localStorage.setItem(FIRST_LAUNCH_STORAGE_KEY, "1");
-  } catch {
-    // Ignore storage failures; restore timing still works without persistence.
-  }
 }
 
 function maybeEmitStartupRestoreComplete(): void {
@@ -26,7 +36,6 @@ function maybeEmitStartupRestoreComplete(): void {
     return;
   }
   gate.completionEmitted = true;
-  markFirstLaunchDone();
   window.dispatchEvent(new CustomEvent(STARTUP_RESTORE_COMPLETE_EVENT));
 }
 

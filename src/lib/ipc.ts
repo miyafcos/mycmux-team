@@ -11,6 +11,7 @@ import {
 } from "./terminalWire";
 import type { AgentSessionKind, ArtifactSourceKind, ThemeTweaks } from "../types";
 import type { OnlineSavepointEntry } from "../components/online/onlineSavepoints";
+import { markSessionFrontendActivity } from "./agentDormancy";
 
 export { getCurrentSessionEpoch, type FrontendDataBatch };
 
@@ -181,6 +182,7 @@ export async function writeToSession(
   sessionId: string,
   data: string,
 ): Promise<void> {
+  markSessionFrontendActivity(sessionId);
   return invoke<void>("write_to_session", { sessionId, data } satisfies WriteToSessionArgs);
 }
 
@@ -260,6 +262,8 @@ export interface PtyMetadata {
   cwd: string;
   git_branch?: string;
   process_name?: string;
+  process_status?: "working" | "idle";
+  process_status_at?: number;
   agent_active: boolean;
   claude_session_id?: string;
   agent_kind?: AgentSessionKind;
