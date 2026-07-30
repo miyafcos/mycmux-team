@@ -17,6 +17,7 @@ export interface DormantSessionCandidate {
   visible: boolean;
   mounted: boolean;
   processStatus: "working" | "idle" | null;
+  processName: string | null;
   lastActivityAt: number;
   thresholdMs: number;
 }
@@ -66,6 +67,23 @@ export function readDormantThresholdMs(): number {
   }
 }
 
+export function isAgentRestProcess(name: string | null | undefined): boolean {
+  const lower = name?.trim().toLowerCase();
+  if (!lower) return false;
+  const leaf = lower.endsWith(".exe") ? lower.slice(0, -4) : lower;
+  return leaf === "claude"
+    || leaf === "codex"
+    || leaf === "node"
+    || leaf === "node_repl";
+}
+
+export function isEffectivelyWorking(
+  candidate: Pick<DormantSessionCandidate, "processStatus" | "processName">,
+): boolean {
+  return candidate.processStatus === "working"
+    && !isAgentRestProcess(candidate.processName);
+}
+
 export function resolveDormantAction(
   candidate: DormantSessionCandidate,
   now: number,
@@ -74,7 +92,7 @@ export function resolveDormantAction(
     && (candidate.agentKind === "claude" || candidate.agentKind === "codex")
     && Boolean(candidate.resumeSessionId)
     && !candidate.visible
-    && candidate.processStatus !== "working"
+    && !isEffectivelyWorking(candidate)
     && now - candidate.lastActivityAt >= candidate.thresholdMs;
   if (!eligible) return "none";
   return candidate.mounted ? "evictCache" : "kill";

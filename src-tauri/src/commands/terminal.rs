@@ -57,6 +57,13 @@ pub fn get_pty_metadata_snapshot(state: State<'_, AppState>) -> HashMap<String, 
         .collect()
 }
 
+#[tauri::command(async)]
+pub fn get_session_output_snapshot(
+    state: State<'_, AppState>,
+) -> HashMap<String, Option<u64>> {
+    state.session_manager.last_output_snapshot()
+}
+
 // `(async)` runs this on a worker thread instead of the Tauri main (UI) thread.
 // The body does heavy synchronous filesystem work (recursive ~/.codex scan,
 // .claude.json rewrite, dir creation) that would otherwise freeze the UI every
@@ -235,7 +242,7 @@ pub fn create_session(
     }
     write_launch_session_mapping(&session_id, &env_map);
     state.session_manager.create(
-        session_id,
+        session_id.clone(),
         &command,
         &args,
         cols,
@@ -245,7 +252,18 @@ pub fn create_session(
         launch_cwd,
         Some(env_map),
         state.metadata_store.clone(),
-    )
+    )?;
+    if let Some((session_epoch, _)) = state.session_manager.session_observation(&session_id) {
+        state.session_state_store.ingest(
+            session_id,
+            crate::session_state::Evidence::socket_lifecycle(
+                crate::session_state::unix_epoch_millis(),
+                session_epoch,
+                crate::session_state::Lifecycle::Alive,
+            ),
+        );
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "windows")]
@@ -659,7 +677,7 @@ fn is_uuid_like(value: &str) -> bool {
 ///   - If the payload looks like a *legitimate* resume (`MYCMUX_SESSION_ID` +
 ///     a recognized kind in `MYCMUX_RESUME` / `MYCMUX_AGENT_KIND`) or a
 ///     legitimate handoff (`MYCMUX_HANDOFF` + `MYCMUX_HANDOFF_FROM_SESSION`),
-///     keep the resume / handoff trio and only strip pane-internal bookkeeping
+///     keep the resume / handoff payload and only strip pane-internal bookkeeping
 ///     (`MYCMUX_PANE_SESSION_ID`, `MYCMUX_TAB_ID`, `__CMUX_LAUNCHER_DONE`).
 ///   - Otherwise strip *every* MYCMUX_* and `__CMUX_LAUNCHER_DONE`.
 ///
@@ -682,7 +700,12 @@ fn sanitize_launch_env(env: &mut HashMap<String, String>) {
         "MYCMUX_MARKDOWN_OUT",
         "MYCMUX_ARTIFACTS_DIR",
     ];
-    const RESUME_TRIO: &[&str] = &["MYCMUX_RESUME", "MYCMUX_SESSION_ID", "MYCMUX_AGENT_KIND"];
+    const RESUME_QUARTET: &[&str] = &[
+        "MYCMUX_RESUME",
+        "MYCMUX_SESSION_ID",
+        "MYCMUX_AGENT_KIND",
+        "MYCMUX_RESUME_FORK",
+    ];
     const HANDOFF_QUARTET: &[&str] = &[
         "MYCMUX_HANDOFF",
         "MYCMUX_HANDOFF_FROM",
@@ -694,12 +717,12 @@ fn sanitize_launch_env(env: &mut HashMap<String, String>) {
         .get("MYCMUX_SESSION_ID")
         .map(|v| !v.trim().is_empty())
         .unwrap_or(false);
-    let has_kind = env
+    let resume_kind = env
         .get("MYCMUX_RESUME")
         .or_else(|| env.get("MYCMUX_AGENT_KIND"))
-        .map(|v| v.as_str())
-        .map(is_agent_session_kind)
-        .unwrap_or(false);
+        .map(|v| v.as_str());
+    let has_kind = resume_kind.map(is_agent_session_kind).unwrap_or(false);
+    let supports_resume_fork = matches!(resume_kind, Some("claude" | "claude-codex"));
     let legitimate_resume = has_session && has_kind;
 
     let has_handoff = env
@@ -716,9 +739,11 @@ fn sanitize_launch_env(env: &mut HashMap<String, String>) {
         env.remove(*key);
     }
     if !legitimate_resume {
-        for key in RESUME_TRIO {
+        for key in RESUME_QUARTET {
             env.remove(*key);
         }
+    } else if !supports_resume_fork {
+        env.remove("MYCMUX_RESUME_FORK");
     }
     if !legitimate_handoff {
         for key in HANDOFF_QUARTET {
@@ -837,6 +862,14 @@ fn write_launch_session_mapping(session_id: &str, env: &HashMap<String, String>)
     else {
         return;
     };
+    if matches!(agent_kind, "claude" | "claude-codex")
+        && env
+            .get("MYCMUX_RESUME_FORK")
+            .map(|value| value == "1")
+            .unwrap_or(false)
+    {
+        return;
+    }
     let _ = write_session_mapping_file(session_id, agent_kind, agent_session_id);
 }
 
@@ -939,7 +972,22 @@ pub fn get_session_scrollback(
 
 #[tauri::command(async)]
 pub fn kill_session(state: State<'_, AppState>, session_id: String) -> Result<(), String> {
-    state.session_manager.kill(&session_id)
+    let session_epoch = state
+        .session_manager
+        .session_observation(&session_id)
+        .map(|(session_epoch, _)| session_epoch);
+    state.session_manager.kill(&session_id)?;
+    if let Some(session_epoch) = session_epoch {
+        state.session_state_store.ingest(
+            session_id,
+            crate::session_state::Evidence::socket_lifecycle(
+                crate::session_state::unix_epoch_millis(),
+                session_epoch,
+                crate::session_state::Lifecycle::Exited,
+            ),
+        );
+    }
+    Ok(())
 }
 
 #[tauri::command(async)]
@@ -1030,9 +1078,14 @@ mod tests {
     fn sanitize_strips_stray_resume_marker_without_session_id() {
         // Bug class: MYCMUX_RESUME=1 leaks from a parent shell with no SESSION_ID.
         // Must not reach the child or the agent will auto-resume.
-        let mut e = env(&[("MYCMUX_RESUME", "claude"), ("FOO", "bar")]);
+        let mut e = env(&[
+            ("MYCMUX_RESUME", "claude"),
+            ("MYCMUX_RESUME_FORK", "1"),
+            ("FOO", "bar"),
+        ]);
         sanitize_launch_env(&mut e);
         assert!(!e.contains_key("MYCMUX_RESUME"));
+        assert!(!e.contains_key("MYCMUX_RESUME_FORK"));
         assert_eq!(e.get("FOO"), Some(&"bar".to_string()));
     }
 
@@ -1049,6 +1102,7 @@ mod tests {
             ("MYCMUX_RESUME", "claude"),
             ("MYCMUX_SESSION_ID", "abc-123"),
             ("MYCMUX_AGENT_KIND", "claude"),
+            ("MYCMUX_RESUME_FORK", "1"),
             ("MYCMUX_PANE_SESSION_ID", "should-be-stripped"),
             ("__CMUX_LAUNCHER_DONE", "1"),
             ("HOME", "/home/u"),
@@ -1063,9 +1117,30 @@ mod tests {
             e.get("MYCMUX_AGENT_KIND").map(String::as_str),
             Some("claude")
         );
+        assert_eq!(
+            e.get("MYCMUX_RESUME_FORK").map(String::as_str),
+            Some("1")
+        );
         assert!(!e.contains_key("MYCMUX_PANE_SESSION_ID"));
         assert!(!e.contains_key("__CMUX_LAUNCHER_DONE"));
         assert_eq!(e.get("HOME").map(String::as_str), Some("/home/u"));
+    }
+
+    #[test]
+    fn sanitize_strips_fork_marker_from_codex_resume_payload() {
+        let mut e = env(&[
+            ("MYCMUX_RESUME", "codex"),
+            ("MYCMUX_SESSION_ID", "abc-123"),
+            ("MYCMUX_AGENT_KIND", "codex"),
+            ("MYCMUX_RESUME_FORK", "1"),
+        ]);
+        sanitize_launch_env(&mut e);
+        assert_eq!(e.get("MYCMUX_RESUME").map(String::as_str), Some("codex"));
+        assert_eq!(
+            e.get("MYCMUX_SESSION_ID").map(String::as_str),
+            Some("abc-123")
+        );
+        assert!(!e.contains_key("MYCMUX_RESUME_FORK"));
     }
 
     #[test]

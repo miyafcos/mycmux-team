@@ -576,8 +576,13 @@ if [ -n "$MYCMUX_RESUME" ]; then
   case "$MYCMUX_RESUME" in
     claude-codex*)
       if [ -n "$MYCMUX_SESSION_ID" ]; then
-        __write_session_mapping "$MYCMUX_PANE_SESSION_ID" "claude-codex" "$MYCMUX_SESSION_ID"
-        eval "claude-codex --resume $MYCMUX_SESSION_ID"
+        if [ "${MYCMUX_RESUME_FORK:-}" = "1" ]; then
+          __track_claude_codex_session "$MYCMUX_PANE_SESSION_ID" &
+          eval "claude-codex --resume $MYCMUX_SESSION_ID --fork-session"
+        else
+          __write_session_mapping "$MYCMUX_PANE_SESSION_ID" "claude-codex" "$MYCMUX_SESSION_ID"
+          eval "claude-codex --resume $MYCMUX_SESSION_ID"
+        fi
       else
         __track_claude_codex_session "$MYCMUX_PANE_SESSION_ID" &
         eval "claude-codex --continue"
@@ -587,8 +592,13 @@ if [ -n "$MYCMUX_RESUME" ]; then
       if [ -n "$MYCMUX_SESSION_ID" ]; then
         if __prepare_claude_resume "$MYCMUX_SESSION_ID"; then
           __trust_claude_cwd
-          __write_session_mapping "$MYCMUX_PANE_SESSION_ID" "claude" "$MYCMUX_SESSION_ID"
-          eval "claude --dangerously-skip-permissions --permission-mode bypassPermissions --resume $MYCMUX_SESSION_ID"
+          if [ "${MYCMUX_RESUME_FORK:-}" = "1" ]; then
+            __track_claude_session "$MYCMUX_PANE_SESSION_ID" &
+            eval "claude --dangerously-skip-permissions --permission-mode bypassPermissions --resume $MYCMUX_SESSION_ID --fork-session"
+          else
+            __write_session_mapping "$MYCMUX_PANE_SESSION_ID" "claude" "$MYCMUX_SESSION_ID"
+            eval "claude --dangerously-skip-permissions --permission-mode bypassPermissions --resume $MYCMUX_SESSION_ID"
+          fi
         else
           __trust_claude_cwd
           __track_claude_session "$MYCMUX_PANE_SESSION_ID" &

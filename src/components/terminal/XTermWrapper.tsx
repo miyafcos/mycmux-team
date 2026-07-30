@@ -7,6 +7,7 @@ import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 import { open } from "@tauri-apps/plugin-shell";
+import { emit } from "@tauri-apps/api/event";
 import {
   createSession,
   ackFrontendData,
@@ -70,6 +71,7 @@ import {
 import { disposeSelectionCopyListener, registerSelectionCopyListener } from "./terminalSelectionCopy";
 import {
   attachTerminalWheelScroll,
+  createTerminalMouseModeControlFilter,
   filterTerminalMouseInputSequences,
   filterWheelFocusInputSequences,
   stripTerminalMouseModeControlSequences,
@@ -77,7 +79,32 @@ import {
 } from "./terminalMouseInputFilter";
 import { HTTP_LINK_REGEX, registerArtifactLinkProvider } from "./terminalLinkProvider";
 import { TerminalAckCoalescer } from "../../lib/terminalAckCoalescer";
-import { resolveWaitingTransition, scanForApproval } from "../../lib/approvalScan";
+import {
+  findApprovalPromptDetail,
+  resolveWaitingTransition,
+  scanForApproval,
+} from "../../lib/approvalScan";
+import {
+  bump as bumpPaintStat,
+  recordApprovalScan,
+  recordCursorBlink,
+  recordPtyBatch,
+  recordRender,
+  recordRenderer,
+  recordResync,
+  recordTerminalWriteCallback,
+  recordTerminalWriteStart,
+  recordWebglContextLoss,
+  recordWriteParsed,
+  recordXtermFocus,
+  recordXtermMounted,
+  recordXtermUnmounted,
+  terminalWriteByteLength,
+} from "../../lib/paintStats";
+import {
+  recordPtyBatchForRecording,
+  registerPtyReplayTarget,
+} from "../../lib/ptyReplay";
 
 export { evictTerminalCache, getTerminalWriteCounter } from "./terminalCache";
 export { allowInactiveTerminalPointerFocus } from "./terminalFocusHelpers";
@@ -277,15 +304,18 @@ function disposeWebglRenderer(
 
   const stats = diagStatsFor(sessionId);
   stats.webgl = fallback ? "fallback" : "never";
+  recordRenderer(sessionId, "dom");
   if (contextLost) {
     webglRendererFailures.add(term);
     stats.webglLostAt = Date.now();
+    recordWebglContextLoss(sessionId);
   }
 }
 
 function enableWebglRenderer(sessionId: string, term: Terminal): void {
   if (webglRendererFailures.has(term)) {
     diagStatsFor(sessionId).webgl = "fallback";
+    recordRenderer(sessionId, "dom");
     return;
   }
   if (webglRendererStates.has(term)) {
@@ -305,6 +335,7 @@ function enableWebglRenderer(sessionId: string, term: Terminal): void {
     term.loadAddon(addon);
     if (webglRendererStates.get(term)?.addon === addon) {
       diagStatsFor(sessionId).webgl = "on";
+      recordRenderer(sessionId, "webgl");
     }
   } catch (error) {
     if (webglRendererStates.get(term)?.addon === addon) {
@@ -322,6 +353,7 @@ function enableWebglRenderer(sessionId: string, term: Terminal): void {
     }
     webglRendererFailures.add(term);
     diagStatsFor(sessionId).webgl = "fallback";
+    recordRenderer(sessionId, "dom");
     console.warn(`[XTermWrapper] WebGL unavailable for ${sessionId}; using DOM renderer:`, error);
   }
 }
@@ -615,14 +647,17 @@ export default memo(function XTermWrapper({
   const storeFontFamily = useThemeStore((s) => s.fontFamily);
   const storeBackground = useThemeStore((s) => s.themeTweaks.background);
   const terminalRenderer = useSettingsStore((s) => s.terminalRenderer);
+  const previousTerminalRendererRef = useRef(terminalRenderer);
   const { mediaBackgroundActive, terminalOpacity } = resolveTerminalBackgroundState(storeBackground);
   // Single source of truth: is this tab the currently-focused terminal?
   // Used for scroll-to-bottom-on-activate.
   const isActivePane = useUiStore((s) => s.activePaneId === sessionId);
+  const previousIsActivePaneRef = useRef(isActivePane);
 
   // Dynamically update terminal theme and font size
   useEffect(() => {
     if (termRef.current) {
+      bumpPaintStat("settings", sessionId);
       termRef.current.options.theme = withTerminalOpacity(storeTheme.terminal, terminalOpacity, mediaBackgroundActive);
       termRef.current.options.minimumContrastRatio = minContrastFor(mediaBackgroundActive);
       termRef.current.options.fontSize = storeFontSize;
@@ -633,10 +668,15 @@ export default memo(function XTermWrapper({
 
   // Scroll to bottom when this tab becomes active only if the user was already at bottom.
   useEffect(() => {
+    if (previousIsActivePaneRef.current !== isActivePane) {
+      bumpPaintStat("focus-change", sessionId);
+      previousIsActivePaneRef.current = isActivePane;
+    }
     const currentTerm = termRef.current;
     if (currentTerm) {
       // Keep inactive panes from continuously dirtying their renderer layer.
       currentTerm.options.cursorBlink = isActivePane;
+      recordCursorBlink(sessionId, isActivePane);
     }
     if (isActivePane && currentTerm) {
       setTimeout(() => {
@@ -649,7 +689,12 @@ export default memo(function XTermWrapper({
   }, [isActivePane]);
 
   useEffect(() => {
+    const rendererSettingChanged = previousTerminalRendererRef.current !== terminalRenderer;
+    previousTerminalRendererRef.current = terminalRenderer;
     if (termRef.current) {
+      if (rendererSettingChanged) {
+        bumpPaintStat("settings", sessionId);
+      }
       applyTerminalRenderer(
         sessionId,
         termRef.current,
@@ -674,6 +719,7 @@ export default memo(function XTermWrapper({
     let refreshTimers: ReturnType<typeof setTimeout>[] = [];
     let unlistenExit: (() => void) | null = null;
     let writeParsedDisposable: { dispose: () => void } | null = null;
+    let renderDisposable: { dispose: () => void } | null = null;
     let scrollDisposable: { dispose: () => void } | null = null;
     let dataDisposable: { dispose: () => void } | null = null;
     let binaryDisposable: { dispose: () => void } | null = null;
@@ -682,12 +728,15 @@ export default memo(function XTermWrapper({
     let term: Terminal | null = null;
     let fitAddon: FitAddon | null = null;
     let removeCompositionGuard: (() => void) | null = null;
+    let removePaintFocusListeners: (() => void) | null = null;
     let removeFocusSync: (() => void) | null = null;
     let removeWheelFocusGuard: (() => void) | null = null;
     let removeWheelScrollGuard: (() => void) | null = null;
+    let removePtyReplayTarget: (() => void) | null = null;
     let logThrottle: ReturnType<typeof setTimeout> | null = null;
     let idleFlush: ReturnType<typeof setTimeout> | null = null;
     let backgroundScanThrottle: ReturnType<typeof setTimeout> | null = null;
+    let backgroundScanResync = false;
     let startupSettleTimeout: ReturnType<typeof setTimeout> | null = null;
     let startupSettled = false;
     let sessionStarted = false;
@@ -699,11 +748,14 @@ export default memo(function XTermWrapper({
     const forceWheelMouseReport = startsAsAgentTui(command, args, agentId, agentKind, launchEnv);
     let codexDetectionBuffer = "";
     let outputDecoder = getTerminalOutputDecoder(sessionId);
+    let replayOutputDecoder = new TextDecoder();
+    let replayMouseModeFilter = createTerminalMouseModeControlFilter();
     const diagStats = diagStatsFor(sessionId);
     const pendingBatches: PendingFrontendBatch[] = takeDeferredTerminalBatches(sessionId);
     let writingBatch = false;
     let currentPendingBatch: PendingFrontendBatch | null = null;
     let frontendChannelReady = false;
+    let replayActive = false;
     let scrollbackSyncInFlight: Promise<boolean> | null = null;
     let lastSynchronizedScrollbackEnd = 0;
     let recoveryRedrawTimer: ReturnType<typeof setTimeout> | null = null;
@@ -836,6 +888,7 @@ export default memo(function XTermWrapper({
 
       try {
         currentFitAddon.fit();
+        bumpPaintStat("resize", sessionId);
       } catch {
         return;
       }
@@ -919,6 +972,37 @@ export default memo(function XTermWrapper({
         if (termDisposed) return;
         const buf = currentTerm.buffer.active;
         isAtBottomRef.current = buf.viewportY >= buf.baseY;
+      });
+    };
+
+    const registerPaintFocusListeners = (currentTerm: Terminal): void => {
+      removePaintFocusListeners?.();
+      const textarea = currentTerm.textarea;
+      if (!textarea) {
+        removePaintFocusListeners = null;
+        return;
+      }
+      const handleFocusChange = (): void => {
+        bumpPaintStat("focus-change", sessionId);
+        recordXtermFocus(sessionId, textarea === document.activeElement);
+      };
+      textarea.addEventListener("focus", handleFocusChange);
+      textarea.addEventListener("blur", handleFocusChange);
+      recordXtermFocus(sessionId, textarea === document.activeElement);
+      removePaintFocusListeners = () => {
+        textarea.removeEventListener("focus", handleFocusChange);
+        textarea.removeEventListener("blur", handleFocusChange);
+      };
+    };
+
+    const registerRenderListener = (currentTerm: Terminal): void => {
+      renderDisposable?.dispose();
+      if (!import.meta.env.DEV) {
+        renderDisposable = null;
+        return;
+      }
+      renderDisposable = currentTerm.onRender(({ start, end }) => {
+        recordRender(start, end, currentTerm.rows, sessionId);
       });
     };
 
@@ -1009,8 +1093,32 @@ export default memo(function XTermWrapper({
       });
     };
 
-    const runScan = (allowDetached = false): void => {
+    const publishScreenScanEvidence = (
+      attention: "approval" | "none",
+      detail: string | null,
+      attentionId: string | null,
+      resync: boolean,
+    ): void => {
+      void emit("mycmux:session-state-evidence", {
+        session_id: sessionId,
+        attention,
+        attention_id: attentionId,
+        detail,
+        observed_at: Date.now(),
+        confidence: 0.7,
+        stale_after: 30_000,
+        complete: true,
+        resync,
+      }).catch((error) => {
+        if (import.meta.env.DEV) {
+          console.warn("[mycmux-diag] failed to publish screen scan evidence", error);
+        }
+      });
+    };
+
+    const runScan = (allowDetached = false, resync = false): void => {
       if (!term || termDisposed || (!allowDetached && disposed)) return;
+      const scanStartedAt = import.meta.env.DEV ? performance.now() : null;
       let buf;
       try {
         buf = term.buffer.active;
@@ -1050,6 +1158,7 @@ export default memo(function XTermWrapper({
         });
       }
 
+      bumpPaintStat("scan", sessionId);
       const approvalPatternId = scanForApproval(scanLines);
       const prevStatus = usePaneMetadataStore.getState().metadata[sessionId]?.agentStatus;
       const transition = resolveWaitingTransition(
@@ -1058,6 +1167,15 @@ export default memo(function XTermWrapper({
       );
       approvalAbsentStreak = transition.absentStreak;
       if (approvalPatternId > 0) {
+        if (prevStatus !== "waiting") {
+          const observedAt = Date.now();
+          publishScreenScanEvidence(
+            "approval",
+            findApprovalPromptDetail(scanLines, approvalPatternId),
+            `screen:${sessionId}:${approvalPatternId}:${observedAt}`,
+            resync,
+          );
+        }
         usePaneMetadataStore.getState().setMetadata(sessionId, {
           agentStatus: "waiting",
         });
@@ -1070,16 +1188,22 @@ export default memo(function XTermWrapper({
         }
       } else if (transition.clear) {
         if (prevStatus === "waiting") {
+          publishScreenScanEvidence("none", null, null, resync);
           usePaneMetadataStore.getState().clearAgentStatus(sessionId);
         }
       }
+      if (scanStartedAt !== null) recordApprovalScan(performance.now() - scanStartedAt, sessionId);
     };
 
-    const scheduleBackgroundScan = (): void => {
-      if (!term || backgroundScanThrottle) return;
+    const scheduleBackgroundScan = (resync = false): void => {
+      if (!term) return;
+      backgroundScanResync ||= resync;
+      if (backgroundScanThrottle) return;
       backgroundScanThrottle = setTimeout(() => {
         backgroundScanThrottle = null;
-        runScan(true);
+        const scanWasResync = backgroundScanResync;
+        backgroundScanResync = false;
+        runScan(true, scanWasResync);
       }, 150);
     };
 
@@ -1291,6 +1415,9 @@ export default memo(function XTermWrapper({
           resolve();
           return;
         }
+        const measuredBytes = terminalWriteByteLength(output);
+        const writeMeasurement = recordTerminalWriteStart(sessionId, measuredBytes);
+        let callbackObserved = false;
         let settled = false;
         const watchdog = window.setTimeout(() => {
           if (settled) return;
@@ -1301,6 +1428,10 @@ export default memo(function XTermWrapper({
           // an otherwise lossless stream into AutoConsume/resync mode.
         }, watchdogMs);
         const finish = (): void => {
+          if (!callbackObserved) {
+            callbackObserved = true;
+            recordTerminalWriteCallback(writeMeasurement);
+          }
           if (settled) return;
           settled = true;
           window.clearTimeout(watchdog);
@@ -1374,7 +1505,12 @@ export default memo(function XTermWrapper({
         term.reset();
         outputDecoder = resetTerminalOutputDecoder(sessionId);
         const replayText = outputDecoder.decode(scrollback, { stream: true });
+        bumpPaintStat("resync", sessionId);
+        const resyncStartedAt = import.meta.env.DEV ? performance.now() : null;
         await writeTerminalOutput(stripTerminalMouseModeControlSequences(replayText), 8000);
+        if (resyncStartedAt !== null) {
+          recordResync(scrollback.byteLength, performance.now() - resyncStartedAt, sessionId);
+        }
       } finally {
         if (terminalElement) terminalElement.style.opacity = previousOpacity;
       }
@@ -1440,10 +1576,15 @@ export default memo(function XTermWrapper({
       }
       const replayText = outputDecoder.decode(replay, { stream: true });
       try {
+        bumpPaintStat("resync", sessionId);
+        const resyncStartedAt = import.meta.env.DEV ? performance.now() : null;
         await writeTerminalOutput(
           stripTerminalMouseModeControlSequences(replayText),
           replacesVisibleBuffer ? 8000 : 2000,
         );
+        if (resyncStartedAt !== null) {
+          recordResync(replay.byteLength, performance.now() - resyncStartedAt, sessionId);
+        }
       } finally {
         if (terminalElement && replacesVisibleBuffer) {
           terminalElement.style.opacity = previousOpacity;
@@ -1456,7 +1597,7 @@ export default memo(function XTermWrapper({
       markTerminalHasLiveOutput(sessionId);
       bumpTerminalWriteCounter(sessionId);
       scheduleFullRefresh(term, [0, 48, 160]);
-      scheduleBackgroundScan();
+      scheduleBackgroundScan(true);
       return true;
     };
 
@@ -1546,6 +1687,7 @@ export default memo(function XTermWrapper({
               diagStats.bytes += new Blob([output]).size;
             }
             bumpTerminalWriteCounter(sessionId);
+            bumpPaintStat("pty-batch", sessionId);
             await writeTerminalOutput(output);
             rememberTerminalRawTail(sessionId, chunk);
             lastSynchronizedScrollbackEnd = Math.max(
@@ -1577,7 +1719,57 @@ export default memo(function XTermWrapper({
       }
     }
 
+    removePtyReplayTarget = registerPtyReplayTarget(sessionId, {
+      begin: () => {
+        if (!term || termDisposed || disposed) {
+          throw new Error(`PTY replay target ${sessionId} is not ready`);
+        }
+        if (
+          replayActive
+          || writingBatch
+          || currentPendingBatch
+          || pendingBatches.length > 0
+          || scrollbackSyncInFlight
+          || terminalScrollbackResyncNeeded.has(sessionId)
+        ) {
+          throw new Error(`PTY replay target ${sessionId} is not quiescent`);
+        }
+        replayOutputDecoder = new TextDecoder();
+        replayMouseModeFilter = createTerminalMouseModeControlFilter();
+        term.reset();
+        replayActive = true;
+      },
+      write: async (data) => {
+        if (!replayActive) throw new Error(`PTY replay target ${sessionId} stopped`);
+        recordPtyBatch(data.byteLength, sessionId);
+        bumpPaintStat("pty-batch", sessionId);
+        const decodedText = replayOutputDecoder.decode(data, { stream: true });
+        await writeTerminalOutput(replayMouseModeFilter(decodedText));
+      },
+      end: async () => {
+        replayActive = false;
+        terminalScrollbackResyncNeeded.add(sessionId);
+        if (canWritePendingBatches()) {
+          await pumpTerminalWrites();
+        }
+      },
+    });
+
     const enqueueFrontendBatch = (batch: FrontendDataBatch): void => {
+      if (replayActive) {
+        terminalScrollbackResyncNeeded.add(sessionId);
+        ackBatch(batch);
+        return;
+      }
+      recordPtyBatch(batch.bytes, sessionId);
+      recordPtyBatchForRecording(sessionId, {
+        generation: batch.generation,
+        seq: batch.seq,
+        resync: batch.resync,
+        scrollbackStart: batch.scrollbackStart,
+        scrollbackEnd: batch.scrollbackEnd,
+        data: batchDataToBytes(batch.data),
+      });
       if (batch.resync) {
         terminalScrollbackResyncNeeded.add(sessionId);
       }
@@ -1638,6 +1830,7 @@ export default memo(function XTermWrapper({
       writeParsedDisposable?.dispose();
       writeParsedDisposable = currentTerm.onWriteParsed(() => {
         if (disposed) return;
+        recordWriteParsed(sessionId);
         if (idleFlush) {
           clearTimeout(idleFlush);
           idleFlush = null;
@@ -1780,6 +1973,8 @@ export default memo(function XTermWrapper({
       disposed = true;
       writeParsedDisposable?.dispose();
       writeParsedDisposable = null;
+      renderDisposable?.dispose();
+      renderDisposable = null;
       scrollDisposable?.dispose();
       scrollDisposable = null;
       dataDisposable?.dispose();
@@ -1792,12 +1987,16 @@ export default memo(function XTermWrapper({
       artifactLinkProviderDisposable = null;
       removeCompositionGuard?.();
       removeCompositionGuard = null;
+      removePaintFocusListeners?.();
+      removePaintFocusListeners = null;
       removeFocusSync?.();
       removeFocusSync = null;
       removeWheelFocusGuard?.();
       removeWheelFocusGuard = null;
       removeWheelScrollGuard?.();
       removeWheelScrollGuard = null;
+      removePtyReplayTarget?.();
+      removePtyReplayTarget = null;
       disposeSelectionCopyListener(term);
       unlistenExit?.();
       unlistenExit = null;
@@ -1805,6 +2004,7 @@ export default memo(function XTermWrapper({
       if (term && liveTerms.get(sessionId) === term) {
         liveTerms.delete(sessionId);
       }
+      recordXtermUnmounted(sessionId);
       if (pendingBatches.length > 0) {
         const carry = pendingBatches.splice(0, pendingBatches.length);
         if (termDisposed) {
@@ -1832,11 +2032,13 @@ export default memo(function XTermWrapper({
       cached.unlistenExit?.();
       termCache.delete(sessionId);
       container.appendChild(cached.xtermElement);
+      registerRenderListener(cached.term);
       invalidateContainerVisibilityMemo();
       term = cached.term;
       fitAddon = cached.fitAddon;
       sessionStarted = true;
       liveTerms.set(sessionId, cached.term);
+      recordXtermMounted(sessionId);
       applyTerminalRenderer(sessionId, cached.term, resolveEffectiveTerminalRendererFromStores());
       termRef.current = cached.term;
       fitAddonRef.current = cached.fitAddon;
@@ -1847,9 +2049,11 @@ export default memo(function XTermWrapper({
       cached.term.options.fontSize = storeFontSize;
       cached.term.options.fontFamily = storeFontFamily;
       cached.term.options.cursorBlink = useUiStore.getState().activePaneId === sessionId;
+      recordCursorBlink(sessionId, cached.term.options.cursorBlink === true);
       cached.term.options.altClickMovesCursor = false;
       registerScrollListener(cached.term);
       registerCompositionGuard(cached.term, cached.fitAddon);
+      registerPaintFocusListeners(cached.term);
       registerSelectionCopyListener(cached.term, sessionId);
       removeWheelScrollGuard = attachTerminalWheelScroll(wheelScrollContainer, cached.term, sessionId, forceWheelMouseReport);
       removeWheelFocusGuard = registerTerminalWheelFocusGuard(cached.term, sessionId);
@@ -1943,9 +2147,12 @@ export default memo(function XTermWrapper({
       }, { urlRegex: HTTP_LINK_REGEX }));
       registerArtifactLinks(term);
 
+      registerRenderListener(term);
       term.open(container!);
       invalidateContainerVisibilityMemo();
       liveTerms.set(sessionId, term);
+      recordXtermMounted(sessionId);
+      recordCursorBlink(sessionId, term.options.cursorBlink === true);
       applyTerminalRenderer(sessionId, term, resolveEffectiveTerminalRendererFromStores());
       if (initialReplay && initialReplay.length > 0) {
         const replayText = initialReplay.join("\r\n");
@@ -1961,7 +2168,13 @@ export default memo(function XTermWrapper({
         }
         const replayTerm = term;
         await new Promise<void>((resolve) => {
-          replayTerm.write(`${stripTerminalMouseModeControlSequences(displayReplay)}\r\n`, () => resolve());
+          const output = `${stripTerminalMouseModeControlSequences(displayReplay)}\r\n`;
+          const measuredBytes = terminalWriteByteLength(output);
+          const writeMeasurement = recordTerminalWriteStart(sessionId, measuredBytes);
+          replayTerm.write(output, () => {
+            recordTerminalWriteCallback(writeMeasurement);
+            resolve();
+          });
         });
         bumpTerminalWriteCounter(sessionId);
         scheduleFullRefresh(replayTerm, [0, 48, 160]);
@@ -1974,6 +2187,7 @@ export default memo(function XTermWrapper({
       }
       registerScrollListener(term);
       registerCompositionGuard(term, fitAddon);
+      registerPaintFocusListeners(term);
       registerSelectionCopyListener(term, sessionId);
       removeWheelScrollGuard = attachTerminalWheelScroll(wheelScrollContainer, term, sessionId, forceWheelMouseReport);
       removeWheelFocusGuard = registerTerminalWheelFocusGuard(term, sessionId);

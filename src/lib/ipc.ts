@@ -271,9 +271,61 @@ export interface PtyMetadata {
 }
 
 export type PtyMetadataSnapshot = Record<string, PtyMetadata>;
+export type SessionOutputSnapshot = Record<string, number | null>;
+
+export type SessionAttentionKind = "none" | "input" | "approval" | "error" | "done";
+export type SessionUiState = "working" | "idle" | "waiting" | "done" | "unknown";
+
+export interface SessionAttentionPayload {
+  attention_id: string | null;
+  kind: SessionAttentionKind;
+  detail: string | null;
+  state_since: number;
+}
+
+export interface SessionStatusPayload {
+  attention: SessionAttentionPayload;
+  ui_state: SessionUiState;
+}
+
+export interface FeedSessionPayload {
+  session_id: string;
+  session_revision: number;
+  status: SessionStatusPayload;
+}
+
+export interface SessionStatusSnapshotPayload {
+  server_epoch: string;
+  seq: number;
+  sessions: FeedSessionPayload[];
+}
+
+export interface SessionStatusChangedPayload extends FeedSessionPayload {
+  v: number;
+  kind: "event";
+  event: "status.changed";
+  server_epoch: string;
+  seq: number;
+}
 
 export async function getPtyMetadataSnapshot(): Promise<PtyMetadataSnapshot> {
   return invoke<PtyMetadataSnapshot>("get_pty_metadata_snapshot");
+}
+
+export async function getSessionOutputSnapshot(): Promise<SessionOutputSnapshot> {
+  return invoke<SessionOutputSnapshot>("get_session_output_snapshot");
+}
+
+export async function getSessionStatusSnapshot(): Promise<SessionStatusSnapshotPayload> {
+  return invoke<SessionStatusSnapshotPayload>("get_session_status_snapshot");
+}
+
+export function onSessionStatusChanged(
+  callback: (payload: SessionStatusChangedPayload) => void,
+): Promise<UnlistenFn> {
+  return listen<SessionStatusChangedPayload>("mycmux://session-status-changed", (event) => {
+    callback(event.payload);
+  });
 }
 
 export function onPtyMetadata(

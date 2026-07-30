@@ -360,12 +360,14 @@ describe("pane socket responses", () => {
       agentStatus: "waiting",
       agentStatusAt: 123,
       agentStatusStale: false,
+      lastOutputAt: null,
     });
     expect(result.panes[0].tabs[1]).toMatchObject({
       sessionId: staleTab.sessionId,
       agentStatus: "working",
       agentStatusAt: 456,
       agentStatusStale: true,
+      lastOutputAt: null,
     });
   });
 
@@ -397,12 +399,14 @@ describe("pane socket responses", () => {
         },
       },
       processMetadataAvailable: true,
+      lastOutputBySession: { [tab.sessionId]: 5678 },
       isTerminalMounted: () => false,
     });
 
     expect(serialized.tabs[0]).toMatchObject({
       processStatus: "working",
       processStatusAt: 1234,
+      lastOutputAt: 5678,
       processStatusReason: null,
       screenStatus: null,
       screenStatusAt: null,
@@ -437,12 +441,14 @@ describe("pane socket responses", () => {
         },
       },
       processMetadataAvailable: true,
+      lastOutputBySession: {},
       isTerminalMounted: () => false,
     });
 
     expect(serialized.tabs[0]).toMatchObject({
       processStatus: "working",
       processStatusAt: null,
+      lastOutputAt: null,
       processStatusReason: null,
       screenObserved: false,
     });
@@ -471,12 +477,14 @@ describe("pane socket responses", () => {
         },
       },
       processMetadataAvailable: true,
+      lastOutputBySession: {},
       isTerminalMounted: () => false,
     });
 
     expect(serialized.tabs[0]).toMatchObject({
       processStatus: "idle",
       processStatusAt: 4321,
+      lastOutputAt: null,
       processStatusReason: null,
     });
   });
@@ -496,12 +504,14 @@ describe("pane socket responses", () => {
       metadata: {},
       processMetadata: {},
       processMetadataAvailable: true,
+      lastOutputBySession: {},
       isTerminalMounted: () => false,
     });
 
     expect(serialized.tabs[0]).toMatchObject({
       processStatus: null,
       processStatusAt: null,
+      lastOutputAt: null,
       processStatusReason: "no_live_pty_session",
     });
   });
@@ -520,12 +530,14 @@ describe("pane socket responses", () => {
       metadata: {},
       processMetadata: {},
       processMetadataAvailable: false,
+      lastOutputBySession: {},
       isTerminalMounted: () => false,
     });
 
     expect(serialized.tabs[0]).toMatchObject({
       processStatus: null,
       processStatusAt: null,
+      lastOutputAt: null,
       processStatusReason: "snapshot_unavailable",
     });
   });
@@ -596,7 +608,7 @@ describe("pane socket responses", () => {
         workspaceId: string;
         workspaceName: string;
         active: boolean;
-        tabs: Array<{ sessionId: string }>;
+        tabs: Array<{ sessionId: string; lastOutputAt: number | null }>;
       }>;
     };
 
@@ -627,6 +639,7 @@ describe("pane socket responses", () => {
       "session-a",
       "session-b",
     ]);
+    expect(result.panes.map((pane) => pane.tabs[0].lastOutputAt)).toEqual([null, null]);
     expect(result.panes.map((pane) => pane.active)).toEqual([false, true]);
   });
 

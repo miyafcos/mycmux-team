@@ -23,12 +23,20 @@ cd src-tauri && cargo test --release
 python -m pytest tests/   # sync-command allowlist 契約テスト含む
 ```
 
+- **既知問題 (2026-07-30 v0.21.1 で発生・未解決)**: `cargo test --release` の lib テストハーネス
+  (`mycmux_lib-*.exe`) が起動時に `STATUS_ENTRYPOINT_NOT_FOUND (0xc0000139)` で落ちる。
+  静的 import は正常な旧バイナリと完全一致 (dumpbin 316関数 diff ゼロ)・最小 Rust プロジェクトは
+  正常・`npm run tauri build` のアプリ本体 exe も正常 — テストハーネスのリンクだけ壊れる。
+  rustc 1.97.1 (7/16導入) は不変。このため CI release.yml の test ジョブも同エラーで落ちて
+  build-personal に到達しない (v0.21.1 は tag のみ・GH Release 無し・deploy はローカルビルド直配で実施)。
+  次に触る人はまず旧良品 `mycmux_lib-5c5542fada2b1207.exe` (動く) と新ビルドの差分から。
+
 ## ビルド・デプロイの絶対ルール
 
 - **`cargo build` 単体は壊れた exe を作る** (frontend 未バンドル・19MB)。必ず `npm run tauri build` (正常時 32〜42MB)
 - **build-personal.ps1 は clean tree 必須** (`git status --porcelain` 非空で abort・branch=master 必須)。CLAUDE.md 含め untracked を放置しない
 - ビルドは必ずこの worktree 内で実行 (別ディレクトリだと Smart App Control がブロック)
-- deploy は外部 PowerShell から `~/deploy-mycmux-v2.ps1` (mycmux 内から実行すると自プロセス kill で途中死。内からなら schtasks 一回限りタスク経由)
+- deploy の正 = `~/mycmux-app/deploy-update.ps1` (-RunningPid/-ExpectedSha/-ExpectedVersion/-LogPath/-ResultPath 必須。SHA照合+自動ロールバック+再起動確認内蔵)。旧名 `~/deploy-mycmux-v2.ps1` は実体なし (2026-07-30 確認)。mycmux 内から実行すると自プロセス kill で途中死 → **WMI デタッチで起動する**: 引数焼き込みランナー ps1 を書いて `Invoke-CimMethod Win32_Process Create` (schtasks は Claude auto mode でブロックされる・2026-07-30 v0.21.1 で実証済みの手順)。結果検証は deploy-vX-*.json の status/sha/new_pid
 - `pytest-cache-files-*/` の Permission denied 警告は既知・無害。`pty/session.rs` 等の autocrlf ノイズ (` M` で実差分0) は `git checkout --` で解消
 
 ## Git 運用

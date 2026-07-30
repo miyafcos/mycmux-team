@@ -2,7 +2,7 @@ use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize}
 use std::io::{Read, Write};
 use std::sync::Mutex;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::ipc::{Channel, InvokeResponseBody};
 use tauri::{AppHandle, Emitter};
 
@@ -39,6 +39,41 @@ const SCROLLBACK_FRAME_HEADER_BYTES: usize = 24;
 // release. Allow it explicitly to keep release warning-free.
 #[allow(dead_code)]
 const METRICS_FLUSH_INTERVAL_MS: u64 = 5_000;
+
+fn epoch_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX)
+}
+
+static LAST_SESSION_EPOCH: AtomicU64 = AtomicU64::new(0);
+
+fn next_session_epoch() -> u64 {
+    loop {
+        let previous = LAST_SESSION_EPOCH.load(Ordering::Relaxed);
+        let next = epoch_millis().max(previous.saturating_add(1));
+        if LAST_SESSION_EPOCH
+            .compare_exchange_weak(previous, next, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+        {
+            return next;
+        }
+    }
+}
+
+fn record_last_output_at(last_output_at: &AtomicU64, at: u64) {
+    last_output_at.store(at, Ordering::Relaxed);
+}
+
+fn read_last_output_at(last_output_at: &AtomicU64) -> Option<u64> {
+    match last_output_at.load(Ordering::Relaxed) {
+        0 => None,
+        at => Some(at),
+    }
+}
 
 // v0.7.1 diag: per-session counters shared by reader/forwarder threads.
 // Used only for stderr reports; no behavior change. The reader task is
@@ -374,6 +409,8 @@ pub struct PtySession {
     pub broadcast: broadcast::Sender<Vec<u8>>,
     scrollback: Arc<Mutex<VecDeque<u8>>>,
     scrollback_end: Arc<AtomicU64>,
+    last_output_at: Arc<AtomicU64>,
+    session_epoch: u64,
     frontend_flow: Arc<FrontendFlow>,
     pub created_at: Instant,
     #[allow(dead_code)]
@@ -483,9 +520,12 @@ impl PtySession {
         let (broadcast_tx, _) = broadcast::channel::<Vec<u8>>(256);
         let scrollback = Arc::new(Mutex::new(VecDeque::with_capacity(SCROLLBACK_CAP)));
         let scrollback_end = Arc::new(AtomicU64::new(0));
+        let last_output_at = Arc::new(AtomicU64::new(0));
+        let session_epoch = next_session_epoch();
         let broadcast_tx_clone = broadcast_tx.clone();
         let sb_clone = scrollback.clone();
         let sb_end_clone = scrollback_end.clone();
+        let last_output_at_reader = last_output_at.clone();
         let (frontend_tx, mut frontend_rx) = mpsc::channel::<FrontendChunk>(FRONTEND_QUEUE_CAP);
         let frontend_flow = Arc::new(FrontendFlow::new(data_channel));
 
@@ -637,6 +677,7 @@ impl PtySession {
                 match reader.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
+                        record_last_output_at(&last_output_at_reader, epoch_millis());
                         let read_micros = read_start.elapsed().as_micros();
                         metrics_reader.reads.fetch_add(1, Ordering::Relaxed);
                         metrics_reader
@@ -768,6 +809,8 @@ impl PtySession {
             broadcast: broadcast_tx,
             scrollback,
             scrollback_end,
+            last_output_at,
+            session_epoch,
             frontend_flow,
             created_at,
             metrics,
@@ -881,6 +924,14 @@ impl PtySession {
             },
         }
     }
+
+    pub fn last_output_at(&self) -> Option<u64> {
+        read_last_output_at(&self.last_output_at)
+    }
+
+    pub fn session_epoch(&self) -> u64 {
+        self.session_epoch
+    }
 }
 
 impl Drop for PtySession {
@@ -893,6 +944,83 @@ impl Drop for PtySession {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn last_output_at_starts_empty_and_tracks_latest_output() {
+        let last_output_at = AtomicU64::new(0);
+        assert_eq!(read_last_output_at(&last_output_at), None);
+
+        record_last_output_at(&last_output_at, 1_725_000_000_123);
+        assert_eq!(read_last_output_at(&last_output_at), Some(1_725_000_000_123));
+
+        record_last_output_at(&last_output_at, 1_725_000_000_456);
+        assert_eq!(read_last_output_at(&last_output_at), Some(1_725_000_000_456));
+    }
+
+    #[test]
+    #[ignore = "manual release-mode throughput gate"]
+    fn bench_last_output_at_update_overhead() {
+        const ITERATIONS: usize = 25_000;
+        const CHUNK_BYTES: usize = 4096;
+        const ROUNDS: usize = 7;
+
+        fn run(track_output: bool) -> Duration {
+            let input = [b'x'; CHUNK_BYTES];
+            let reads = AtomicU64::new(0);
+            let scrollback_end = AtomicU64::new(0);
+            let last_output_at = AtomicU64::new(0);
+            let scrollback = Mutex::new(VecDeque::with_capacity(SCROLLBACK_CAP));
+            let started = Instant::now();
+            for _ in 0..ITERATIONS {
+                reads.fetch_add(1, Ordering::Relaxed);
+                if track_output {
+                    record_last_output_at(&last_output_at, epoch_millis());
+                }
+                let chunk = std::hint::black_box(&input).to_vec();
+                let start = scrollback_end.load(Ordering::Relaxed);
+                if let Ok(mut buffer) = scrollback.lock() {
+                    buffer.extend(chunk.iter().copied());
+                    let overflow = buffer.len().saturating_sub(SCROLLBACK_CAP);
+                    if overflow > 0 {
+                        drop(buffer.drain(..overflow));
+                    }
+                    scrollback_end.store(
+                        start.saturating_add(chunk.len() as u64),
+                        Ordering::Relaxed,
+                    );
+                }
+                std::hint::black_box(scrollback_end.load(Ordering::Relaxed));
+            }
+            std::hint::black_box(reads.load(Ordering::Relaxed));
+            std::hint::black_box(last_output_at.load(Ordering::Relaxed));
+            started.elapsed()
+        }
+
+        let _ = run(false);
+        let _ = run(true);
+        let mut baseline = Vec::with_capacity(ROUNDS);
+        let mut tracked = Vec::with_capacity(ROUNDS);
+        for round in 0..ROUNDS {
+            if round % 2 == 0 {
+                baseline.push(run(false));
+                tracked.push(run(true));
+            } else {
+                tracked.push(run(true));
+                baseline.push(run(false));
+            }
+        }
+        baseline.sort_unstable();
+        tracked.sort_unstable();
+        let baseline_seconds = baseline[ROUNDS / 2].as_secs_f64();
+        let tracked_seconds = tracked[ROUNDS / 2].as_secs_f64();
+        let mib = (ITERATIONS * CHUNK_BYTES) as f64 / (1024.0 * 1024.0);
+        let baseline_mib_s = mib / baseline_seconds;
+        let tracked_mib_s = mib / tracked_seconds;
+        let delta_percent = (tracked_mib_s / baseline_mib_s - 1.0) * 100.0;
+        println!(
+            "lastOutputAt throughput: baseline={baseline_mib_s:.1} MiB/s tracked={tracked_mib_s:.1} MiB/s delta={delta_percent:+.2}%"
+        );
+    }
 
     fn test_channel() -> Channel<InvokeResponseBody> {
         Channel::new(|_| Ok(()))

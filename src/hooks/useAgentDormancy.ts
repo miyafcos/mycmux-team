@@ -3,6 +3,7 @@ import {
   AGENT_DORMANT_SWEEP_INTERVAL_MS,
   clearSessionFrontendActivity,
   getSessionFrontendActivity,
+  isEffectivelyWorking,
   observeDormancyActivity,
   readDormantThresholdMs,
   resolveDormantAction,
@@ -56,6 +57,7 @@ function collectRuntimeTargets(
             ) && tab.id === renderedTabId,
             mounted: liveTerms.has(tab.sessionId),
             processStatus: metadata.process_status ?? null,
+            processName: metadata.process_name ?? null,
             lastActivityAt: 0,
             thresholdMs,
           },
@@ -110,7 +112,7 @@ export function useAgentDormancy(enabled: boolean): void {
           if (cancelled) return;
           if (
             target.candidate.visible
-            || target.candidate.processStatus === "working"
+            || isEffectivelyWorking(target.candidate)
           ) {
             observations.delete(target.sessionId);
             continue;
@@ -177,7 +179,7 @@ export function useAgentDormancy(enabled: boolean): void {
           };
           const action = resolveDormantAction(finalCandidate, finalAt);
           if (action === "none") {
-            if (finalCandidate.visible || finalCandidate.processStatus === "working") {
+            if (finalCandidate.visible || isEffectivelyWorking(finalCandidate)) {
               observations.delete(target.sessionId);
             }
             continue;
@@ -190,7 +192,7 @@ export function useAgentDormancy(enabled: boolean): void {
             cancelled
             || finalCandidate.visible
             || finalCandidate.mounted
-            || finalCandidate.processStatus === "working"
+            || isEffectivelyWorking(finalCandidate)
             || liveTerms.has(target.sessionId)
           ) continue;
 

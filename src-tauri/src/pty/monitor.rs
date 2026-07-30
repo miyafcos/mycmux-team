@@ -103,11 +103,13 @@ fn write_detected_agent_session_mapping(
 /// another window sharing the same CWD keeps touching its old jsonl, which
 /// would otherwise win every scan and resume a stale conversation).
 mod detection;
+mod codex_rollout;
 mod git_branch;
 mod runner;
 mod transcripts;
 
 use detection::*;
+use codex_rollout::*;
 use git_branch::*;
 pub use runner::start_monitor;
 use transcripts::*;

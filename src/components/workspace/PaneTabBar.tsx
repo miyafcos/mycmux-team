@@ -4,7 +4,13 @@ import { clampMenuPosition } from "../../lib/menuPosition";
 import { useShallow } from "zustand/react/shallow";
 import type { Pane, PaneTab } from "../../types";
 import { getAgent, getDefaultAgent } from "../../lib/agents";
-import { usePaneMetadataStore } from "../../stores/workspaceStore";
+import { crsmCreateHandoff } from "../../lib/ipc";
+import {
+  buildDuplicateSessionPaneOptions,
+  buildForkDuplicateSessionPaneOptions,
+  resolveDuplicateSessionSource,
+} from "../../lib/duplicateSession";
+import { usePaneMetadataStore, useWorkspaceListStore } from "../../stores/workspaceStore";
 import type { PaneMetadata } from "../../stores/paneMetadataStore";
 import { deriveEffectiveStatus, type EffectiveStatus } from "../../lib/notificationStatus";
 import { usePaneDragSource } from "../../hooks/usePaneDragSource";
@@ -18,6 +24,15 @@ import { useOnlineSavepointStore } from "../../stores/onlineSavepointStore";
 import { onlineStrings } from "../online/onlineStrings";
 import { PublishProgress } from "../online/PublishProgress";
 import {
+  attentionCategory,
+  attentionDetail,
+  isAttentionUnseen,
+  resolveAttentionTabs,
+  useSessionAttentionStore,
+  type AttentionCategory,
+  type SessionAttention,
+} from "../../stores/sessionAttentionStore";
+import {
   isSavepointAgentKind,
   savepointIdentityKey,
   type SavepointAgentKind,
@@ -28,6 +43,7 @@ interface PaneTabBarProps {
   workspaceId: string;
   hasNotification?: boolean;
   isZoomed?: boolean;
+  isVisible?: boolean;
   onClose?: () => void;
   onSplitRight?: () => void;
   onSplitDown?: () => void;
@@ -85,6 +101,24 @@ const CloseIcon = ({ size = 10 }: { size?: number }) => (
   </svg>
 );
 
+const DuplicateIcon = () => (
+  <svg
+    width="12"
+    height="12"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+    focusable="false"
+  >
+    <rect x="8" y="8" width="12" height="12" rx="2"></rect>
+    <path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"></path>
+  </svg>
+);
+
 const PlusIcon = () => (
   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <line x1="12" y1="5" x2="12" y2="19"></line>
@@ -99,6 +133,25 @@ const BookmarkIcon = () => (
 );
 
 const PUBLISH_CWD_UNAVAILABLE = "Working directory is unavailable.";
+const HANDOFF_TIMEOUT_MS = 9000;
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timeoutId = window.setTimeout(() => {
+      reject(new Error(`${label} timed out after ${timeoutMs} ms`));
+    }, timeoutMs);
+    promise.then(
+      (value) => {
+        window.clearTimeout(timeoutId);
+        resolve(value);
+      },
+      (error) => {
+        window.clearTimeout(timeoutId);
+        reject(error);
+      },
+    );
+  });
+}
 
 export function shouldShowPublishButton(
   activeTab: PaneTab | undefined,
@@ -408,12 +461,63 @@ function AgentStatusDot({ status }: { status: EffectiveStatus }) {
   );
 }
 
+function AttentionUnreadDot({ category }: { category: AttentionCategory | null }) {
+  if (!category) return null;
+  const color = category === "waiting"
+    ? "var(--status-waiting)"
+    : category === "error"
+      ? "var(--status-error)"
+      : "var(--status-done)";
+  const label = category === "waiting"
+    ? "未確認の入力待ち"
+    : category === "error"
+      ? "未確認のエラー"
+      : "未確認の完了";
+  return (
+    <span
+      title={label}
+      aria-label={label}
+      role="img"
+      style={{
+        width: 8,
+        height: 8,
+        borderRadius: "50%",
+        border: `2px solid ${color}`,
+        background: "transparent",
+        boxSizing: "border-box",
+        flexShrink: 0,
+      }}
+    />
+  );
+}
+
+export function resolvePaneTabMenuSections(
+  tabs: PaneTab[],
+  attentionBySession: Record<string, SessionAttention | undefined>,
+  seenAttentionByTab: Map<string, string>,
+) {
+  return {
+    attention: resolveAttentionTabs(tabs, attentionBySession, seenAttentionByTab),
+    all: tabs,
+  };
+}
+
+export function shouldMarkAttentionSeen(
+  isVisible: boolean,
+  tabId: string | undefined,
+  attentionId: string | null | undefined,
+): boolean {
+  return Boolean(isVisible && tabId && attentionId);
+}
+
 // Shared dropdown listing every tab of a pane. Rendered from the "⋯" button
 // when the full tab strip overflows, and from the "n/m ▾" button in compact
 // mode, so both entry points behave identically.
 function PaneTabListMenu({
   pane,
   metadataBySession,
+  attentionBySession,
+  seenAttentionByTab,
   getTabDisplayLabel,
   hasTerminalBuffer,
   onSelectTab,
@@ -422,6 +526,8 @@ function PaneTabListMenu({
 }: {
   pane: Pane;
   metadataBySession: Record<string, PaneMetadata | undefined>;
+  attentionBySession: Record<string, SessionAttention | undefined>;
+  seenAttentionByTab: Map<string, string>;
   getTabDisplayLabel: (tab: PaneTab, isTabActive: boolean) => string;
   hasTerminalBuffer: (sessionId: string) => boolean;
   onSelectTab?: (tabId: string) => void;
@@ -442,6 +548,112 @@ function PaneTabListMenu({
     const height = Math.min(menuMaxHeight, menuRef.current?.offsetHeight ?? menuMaxHeight);
     setMenuPos(clampMenuPosition(rect.right - menuWidth, rect.bottom + 2, menuWidth, height));
   }, [menuMaxHeight, menuWidth]);
+  const menuSections = resolvePaneTabMenuSections(
+    pane.tabs,
+    attentionBySession,
+    seenAttentionByTab,
+  );
+  const renderTabRow = (tab: PaneTab, keyPrefix: string, showDetail: boolean) => {
+    const isTabActive = tab.id === pane.activeTabId;
+    const tabMeta = metadataBySession[tab.sessionId];
+    const status = deriveEffectiveStatus(tabMeta);
+    const label = getTabDisplayLabel(tab, isTabActive);
+    const attention = attentionBySession[tab.sessionId];
+    const unreadCategory = isAttentionUnseen(tab.id, attention, seenAttentionByTab)
+      ? attentionCategory(tab.id, attention, seenAttentionByTab)
+      : null;
+    const unreadLabel = unreadCategory === "waiting"
+      ? "未確認の入力待ち"
+      : unreadCategory === "error"
+        ? "未確認のエラー"
+        : unreadCategory === "done"
+          ? "未確認の完了"
+          : null;
+    const detail = attentionDetail(attention);
+    const showDeferredRestore = shouldShowDeferredRestoreBadge(
+      tab,
+      isTabActive,
+      hasTerminalBuffer(tab.sessionId),
+    );
+    return (
+      <div
+        key={`${keyPrefix}-${tab.id}`}
+        role="menuitem"
+        tabIndex={0}
+        title={detail ?? label}
+        aria-label={[label, unreadLabel, detail].filter(Boolean).join(": ")}
+        onClick={() => {
+          onSelectTab?.(tab.id);
+          onCloseMenu();
+        }}
+        onKeyDown={(event) => {
+          if (event.currentTarget !== event.target || !isTabActivationKey(event.key)) return;
+          event.preventDefault();
+          onSelectTab?.(tab.id);
+          onCloseMenu();
+        }}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          minHeight: showDetail && detail ? 42 : 30,
+          padding: "2px 5px 2px 8px",
+          borderRadius: 5,
+          background: isTabActive ? "var(--cmux-selected)" : "transparent",
+          color: "var(--cmux-text)",
+          cursor: "pointer",
+        }}
+      >
+        <AttentionUnreadDot category={unreadCategory} />
+        <span
+          style={{
+            width: 8,
+            height: 8,
+            borderRadius: "50%",
+            background: status === "idle" ? "var(--cmux-text-tertiary)" : STATUS_CONFIG[status].color,
+            flexShrink: 0,
+          }}
+        />
+        <span style={{ flex: 1, minWidth: 0 }}>
+          <span style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12 }}>
+            {label}
+          </span>
+          {showDetail && detail && (
+            <span style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 11, color: "var(--cmux-text-secondary)" }}>
+              {detail}
+            </span>
+          )}
+        </span>
+        {showDeferredRestore && (
+          <span
+            className="pane-tab-restore-badge is-label"
+            title="未復元 — クリックで再開"
+            aria-label="未復元 — クリックで再開"
+            style={{
+              color: "var(--cmux-usage-warn)",
+              borderColor: "color-mix(in srgb, var(--cmux-usage-warn) 58%, var(--cmux-border))",
+            }}
+          >
+            未復元
+          </span>
+        )}
+        {keyPrefix === "all" && pane.tabs.length > 1 && (
+          <button
+            className="pane-action-btn"
+            type="button"
+            title="Close tab"
+            onClick={(event) => {
+              event.stopPropagation();
+              onRemoveTab?.(tab.id);
+            }}
+            style={{ padding: 3, flexShrink: 0 }}
+          >
+            <CloseIcon size={9} />
+          </button>
+        )}
+      </div>
+    );
+  };
   return (
     <div
       ref={menuRef}
@@ -463,88 +675,18 @@ function PaneTabListMenu({
         boxShadow: "var(--cmux-shadow-pane-menu)",
       }}
     >
-      <div style={{ padding: "4px 7px 7px", fontSize: 11, fontWeight: 650, color: "var(--cmux-text-secondary)" }}>
-        All tabs
-      </div>
-      {pane.tabs.map((tab) => {
-        const isTabActive = tab.id === pane.activeTabId;
-        const tabMeta = metadataBySession[tab.sessionId];
-        const status = deriveEffectiveStatus(tabMeta);
-        const label = getTabDisplayLabel(tab, isTabActive);
-        const showDeferredRestore = shouldShowDeferredRestoreBadge(
-          tab,
-          isTabActive,
-          hasTerminalBuffer(tab.sessionId),
-        );
-        return (
-          <div
-            key={tab.id}
-            role="menuitem"
-            tabIndex={0}
-            onClick={() => {
-              onSelectTab?.(tab.id);
-              onCloseMenu();
-            }}
-            onKeyDown={(event) => {
-              if (event.currentTarget !== event.target || !isTabActivationKey(event.key)) return;
-              event.preventDefault();
-              onSelectTab?.(tab.id);
-              onCloseMenu();
-            }}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-              minHeight: 30,
-              padding: "2px 5px 2px 8px",
-              borderRadius: 5,
-              background: isTabActive ? "var(--cmux-selected)" : "transparent",
-              color: "var(--cmux-text)",
-              cursor: "pointer",
-            }}
-          >
-            <span
-              style={{
-                width: 8,
-                height: 8,
-                borderRadius: "50%",
-                background: status === "idle" ? "var(--cmux-text-tertiary)" : STATUS_CONFIG[status].color,
-                flexShrink: 0,
-              }}
-            />
-            <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12 }}>
-              {label}
-            </span>
-            {showDeferredRestore && (
-              <span
-                className="pane-tab-restore-badge is-label"
-                title="未復元 — クリックで再開"
-                aria-label="未復元 — クリックで再開"
-                style={{
-                  color: "var(--cmux-usage-warn)",
-                  borderColor: "color-mix(in srgb, var(--cmux-usage-warn) 58%, var(--cmux-border))",
-                }}
-              >
-                未復元
-              </span>
-            )}
-            {pane.tabs.length > 1 && (
-              <button
-                className="pane-action-btn"
-                type="button"
-                title="Close tab"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  onRemoveTab?.(tab.id);
-                }}
-                style={{ padding: 3, flexShrink: 0 }}
-              >
-                <CloseIcon size={9} />
-              </button>
-            )}
+      {menuSections.attention.length > 0 && (
+        <div style={{ paddingBottom: 5, marginBottom: 5, borderBottom: "1px solid var(--cmux-border)" }}>
+          <div style={{ padding: "4px 7px 7px", fontSize: 11, fontWeight: 650, color: "var(--cmux-text-secondary)" }}>
+            要対応
           </div>
-        );
-      })}
+          {menuSections.attention.map(({ tab }) => renderTabRow(tab, "attention", true))}
+        </div>
+      )}
+      <div style={{ padding: "4px 7px 7px", fontSize: 11, fontWeight: 650, color: "var(--cmux-text-secondary)" }}>
+        全タブ
+      </div>
+      {menuSections.all.map((tab) => renderTabRow(tab, "all", false))}
     </div>
   );
 }
@@ -554,6 +696,7 @@ export default memo(function PaneTabBar({
   workspaceId,
   hasNotification,
   isZoomed,
+  isVisible = true,
   onClose,
   onSplitRight,
   onSplitDown,
@@ -571,6 +714,10 @@ export default memo(function PaneTabBar({
   const tabLastLog = usePaneMetadataStore(useShallow((s) =>
     pane.tabs.map((tab) => s.lastLog[tab.sessionId]),
   ));
+  const tabAttention = useSessionAttentionStore(useShallow((s) =>
+    pane.tabs.map((tab) => s.attentionBySession[tab.sessionId]),
+  ));
+  const seenAttentionByTab = useSessionAttentionStore((s) => s.seenAttentionByTab);
   const metadataBySession = useMemo(() => {
     const next: Record<string, typeof tabMetadata[number]> = {};
     pane.tabs.forEach((tab, index) => {
@@ -585,6 +732,13 @@ export default memo(function PaneTabBar({
     });
     return next;
   }, [pane.tabs, tabLastLog]);
+  const attentionBySession = useMemo(() => {
+    const next: Record<string, typeof tabAttention[number]> = {};
+    pane.tabs.forEach((tab, index) => {
+      next[tab.sessionId] = tabAttention[index];
+    });
+    return next;
+  }, [pane.tabs, tabAttention]);
   const { beginPointerDrag, shouldSuppressClick } = usePaneDragSource();
   const savepointDropTabId = useSavepointDragStore((state) =>
     state.target?.mode === "paste"
@@ -594,6 +748,9 @@ export default memo(function PaneTabBar({
       : null,
   );
   const setTabLabel = useWorkspaceLayoutStore((s) => s.setTabLabel);
+  const addPaneToWorkspaceWithOptions = useWorkspaceLayoutStore(
+    (s) => s.addPaneToWorkspaceWithOptions,
+  );
   const [editingTabId, setEditingTabId] = useState<string | null>(null);
   const [editValue, setEditValue] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
@@ -613,10 +770,13 @@ export default memo(function PaneTabBar({
   const [barMode, setBarMode] = useState<PaneTabBarMode>("full");
   const [kebabOpen, setKebabOpen] = useState(false);
   const kebabRef = useRef<HTMLDivElement>(null);
+  const duplicateSessionLocksRef = useRef(new Set<string>());
+  const [duplicatingTabIds, setDuplicatingTabIds] = useState<Set<string>>(() => new Set());
 
   // Derive active tab's agent status for the status bar
   const activeTab = pane.tabs.find((t) => t.id === pane.activeTabId);
   const activeMeta = activeTab ? metadataBySession[activeTab.sessionId] : undefined;
+  const activeAttention = activeTab ? attentionBySession[activeTab.sessionId] : undefined;
   const showPublishButton = shouldShowPublishButton(activeTab, activeMeta);
   const renderMode: PaneTabBarMode = !activeTab && barMode !== "full" && barMode !== "slim"
     ? "full"
@@ -651,6 +811,12 @@ export default memo(function PaneTabBar({
   const statusCfg = STATUS_CONFIG[activeStatus];
   const paneDragLabel = activeMeta?.processTitle ?? activeTab?.label ?? activeAgentLabel;
 
+  useEffect(() => {
+    if (!activeTab || !activeAttention?.attentionId) return;
+    if (!shouldMarkAttentionSeen(isVisible, activeTab.id, activeAttention.attentionId)) return;
+    useSessionAttentionStore.getState().markSeen(activeTab.id, activeAttention.attentionId);
+  }, [activeAttention?.attentionId, activeTab?.id, isVisible]);
+
   const getTabDisplayLabel = useCallback((tab: PaneTab, isTabActive: boolean) => {
     const agent = getAgent(tab.agentId) ?? getDefaultAgent();
     const tabMeta = metadataBySession[tab.sessionId];
@@ -661,6 +827,74 @@ export default memo(function PaneTabBar({
           ? tabProcessTitle
           : (isTabActive && tabCwd ? tabCwd.split("/").pop() || agent.name : agent.name));
   }, [metadataBySession]);
+
+  const handleDuplicateSession = useCallback(async (
+    tab: PaneTab,
+    label: string,
+  ): Promise<void> => {
+    if (duplicateSessionLocksRef.current.has(tab.id)) return;
+
+    const source = resolveDuplicateSessionSource({
+      metadata: usePaneMetadataStore.getState().metadata[tab.sessionId],
+      tabCwd: tab.cwd,
+      paneCwd: pane.cwd,
+      label,
+    });
+    if (!source) {
+      useToastStore.getState().pushToast(
+        "Failed to duplicate session: live session metadata is unavailable.",
+        "error",
+      );
+      return;
+    }
+
+    duplicateSessionLocksRef.current.add(tab.id);
+    setDuplicatingTabIds((current) => new Set(current).add(tab.id));
+
+    try {
+      const paneOptions = source.agentKind === "codex"
+        ? buildDuplicateSessionPaneOptions(
+            source,
+            (await withTimeout(
+              crsmCreateHandoff(
+                source.agentSessionId,
+                source.agentKind,
+                source.agentKind,
+                20,
+              ),
+              HANDOFF_TIMEOUT_MS,
+              "CRSM handoff",
+            )).path,
+          )
+        : buildForkDuplicateSessionPaneOptions(source);
+      const sourcePane = useWorkspaceListStore.getState()
+        .getWorkspace(workspaceId)
+        ?.panes.find((candidate) => candidate.id === pane.id);
+      if (!sourcePane?.tabs.some((candidate) => candidate.id === tab.id)) {
+        throw new Error("Source tab is no longer available.");
+      }
+      addPaneToWorkspaceWithOptions(
+        workspaceId,
+        pane.id,
+        "right",
+        paneOptions,
+      );
+      useToastStore.getState().pushToast("Session duplicated.", "info");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      useToastStore.getState().pushToast(
+        `Failed to duplicate session: ${message}`,
+        "error",
+      );
+    } finally {
+      duplicateSessionLocksRef.current.delete(tab.id);
+      setDuplicatingTabIds((current) => {
+        const next = new Set(current);
+        next.delete(tab.id);
+        return next;
+      });
+    }
+  }, [addPaneToWorkspaceWithOptions, pane.cwd, pane.id, workspaceId]);
 
   useEffect(() => {
     if (!editingTabId) return;
@@ -904,6 +1138,17 @@ export default memo(function PaneTabBar({
   const isEditingActiveTab = activeTab ? editingTabId === activeTab.id : false;
   const activeNotificationCount = activeMeta?.notificationCount ?? 0;
   const activeWorkDoneCount = activeMeta?.workDoneCount ?? 0;
+  const activeUnreadCategory = activeTab
+    && isAttentionUnseen(activeTab.id, activeAttention, seenAttentionByTab)
+    ? attentionCategory(activeTab.id, activeAttention, seenAttentionByTab)
+    : null;
+  const activeUnreadLabel = activeUnreadCategory === "waiting"
+    ? "未確認の入力待ち"
+    : activeUnreadCategory === "error"
+      ? "未確認のエラー"
+      : activeUnreadCategory === "done"
+        ? "未確認の完了"
+        : null;
   const usesTabStrip = renderMode === "full" || renderMode === "slim";
   const usesCompactTabs = !usesTabStrip && activeTab !== undefined;
   const paneActions = (
@@ -1129,15 +1374,38 @@ export default memo(function PaneTabBar({
           const tabNotificationCount = tabMeta?.notificationCount ?? 0;
           const tabWorkDoneCount = tabMeta?.workDoneCount ?? 0;
           const tabEffectiveStatus = deriveEffectiveStatus(tabMeta);
+          const canonicalAttention = attentionBySession[tab.sessionId];
+          const canonicalUnreadCategory = isAttentionUnseen(
+            tab.id,
+            canonicalAttention,
+            seenAttentionByTab,
+          )
+            ? attentionCategory(tab.id, canonicalAttention, seenAttentionByTab)
+            : null;
+          const canonicalDetail = attentionDetail(canonicalAttention);
+          const canonicalUnreadLabel = canonicalUnreadCategory === "waiting"
+            ? "未確認の入力待ち"
+            : canonicalUnreadCategory === "error"
+              ? "未確認のエラー"
+              : canonicalUnreadCategory === "done"
+                ? "未確認の完了"
+                : null;
           const label = getTabDisplayLabel(tab, isTabActive);
           const isEditingTab = editingTabId === tab.id;
           const isSavepointDropTarget = savepointDropTabId === tab.id;
+          const canDuplicateSession = Boolean(tabMeta?.agentKind && tabMeta.agentSessionId);
+          const isDuplicatingSession = duplicatingTabIds.has(tab.id);
+          const duplicateSessionTitle = tabMeta?.agentKind === "codex"
+            ? "Duplicate session (handoff)"
+            : "Duplicate session";
           const showDeferredRestore = shouldShowDeferredRestoreBadge(
             tab,
             isTabActive,
             hasTerminalBuffer(tab.sessionId),
           );
-          const tabTitle = showDeferredRestore
+          const tabTitle = canonicalDetail
+            ? `${label} — ${canonicalDetail}`
+            : showDeferredRestore
             ? `${label} — 未復元、クリックで再開`
             : label;
 
@@ -1203,7 +1471,7 @@ export default memo(function PaneTabBar({
               aria-selected={isTabActive}
               tabIndex={0}
               title={tabTitle}
-              aria-label={tabTitle}
+              aria-label={[tabTitle, canonicalUnreadLabel].filter(Boolean).join(": ")}
               className={`pane-tab-pill ${isTabActive ? "is-active" : ""}${isSavepointDropTarget ? " is-savepoint-write-target" : ""}`}
               style={{
                 display: "flex",
@@ -1212,7 +1480,7 @@ export default memo(function PaneTabBar({
                 padding: "0 8px 0 7px",
                 height: 36,
                 maxWidth: 160,
-                minWidth: isTabActive ? 120 : 64,
+                minWidth: isTabActive || canDuplicateSession ? 120 : 64,
                 cursor: isEditingTab ? "text" : "pointer",
                 background: isTabActive ? "var(--cmux-selected)" : "transparent",
                 borderRight: "1px solid var(--cmux-border)",
@@ -1222,6 +1490,7 @@ export default memo(function PaneTabBar({
               }}
             >
               {/* notification dot: amber = approval waiting, emerald = work done */}
+              <AttentionUnreadDot category={canonicalUnreadCategory} />
               {tabNotificationCount > 0 && (
                 <span title="Waiting for approval" style={{ width: 7, height: 7, borderRadius: "50%", background: "var(--status-waiting)", boxShadow: "0 0 0 1px var(--cmux-bg-solid)", flexShrink: 0 }} />
               )}
@@ -1296,6 +1565,25 @@ export default memo(function PaneTabBar({
                   {label}
                 </span>
               )}
+              {canDuplicateSession && (
+                <button
+                  type="button"
+                  className="pane-action-btn"
+                  disabled={isDuplicatingSession}
+                  aria-busy={isDuplicatingSession || undefined}
+                  aria-label={duplicateSessionTitle}
+                  title={duplicateSessionTitle}
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onDoubleClick={(event) => event.stopPropagation()}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    void handleDuplicateSession(tab, label);
+                  }}
+                  style={{ padding: 4, flexShrink: 0 }}
+                >
+                  <DuplicateIcon />
+                </button>
+              )}
               {/* close tab button */}
               {pane.tabs.length > 1 && (
                 <button
@@ -1332,6 +1620,8 @@ export default memo(function PaneTabBar({
             <PaneTabListMenu
               pane={pane}
               metadataBySession={metadataBySession}
+              attentionBySession={attentionBySession}
+              seenAttentionByTab={seenAttentionByTab}
               getTabDisplayLabel={getTabDisplayLabel}
               hasTerminalBuffer={hasTerminalBuffer}
               onSelectTab={onSelectTab}
@@ -1423,7 +1713,8 @@ export default memo(function PaneTabBar({
               e.stopPropagation();
               setContextMenu({ tabId: activeTab.id, x: e.clientX, y: e.clientY });
             }}
-            title={activeTabLabel}
+            title={attentionDetail(activeAttention) ?? activeTabLabel}
+            aria-label={[activeTabLabel, activeUnreadLabel].filter(Boolean).join(": ")}
             style={{
               display: "flex",
               alignItems: "center",
@@ -1436,6 +1727,7 @@ export default memo(function PaneTabBar({
               borderBottom: "2px solid var(--cmux-accent)",
             }}
           >
+            <AttentionUnreadDot category={activeUnreadCategory} />
             {activeNotificationCount > 0 && (
               <span title="Waiting for approval" style={{ width: 7, height: 7, borderRadius: "50%", background: "var(--status-waiting)", boxShadow: "0 0 0 1px var(--cmux-bg-solid)", flexShrink: 0 }} />
             )}
@@ -1492,6 +1784,29 @@ export default memo(function PaneTabBar({
                 {activeTabLabel}
               </span>
             )}
+            {activeMeta?.agentKind && activeMeta.agentSessionId && (
+              <button
+                type="button"
+                className="pane-action-btn"
+                disabled={duplicatingTabIds.has(activeTab.id)}
+                aria-busy={duplicatingTabIds.has(activeTab.id) || undefined}
+                aria-label={activeMeta.agentKind === "codex"
+                  ? "Duplicate session (handoff)"
+                  : "Duplicate session"}
+                title={activeMeta.agentKind === "codex"
+                  ? "Duplicate session (handoff)"
+                  : "Duplicate session"}
+                onPointerDown={(event) => event.stopPropagation()}
+                onDoubleClick={(event) => event.stopPropagation()}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  void handleDuplicateSession(activeTab, activeTabLabel);
+                }}
+                style={{ padding: 4, flexShrink: 0 }}
+              >
+                <DuplicateIcon />
+              </button>
+            )}
           </div>
           <div ref={allTabsMenuRef} style={{ position: "relative", flexShrink: 0 }}>
             <button
@@ -1512,6 +1827,8 @@ export default memo(function PaneTabBar({
               <PaneTabListMenu
                 pane={pane}
                 metadataBySession={metadataBySession}
+                attentionBySession={attentionBySession}
+                seenAttentionByTab={seenAttentionByTab}
                 getTabDisplayLabel={getTabDisplayLabel}
                 hasTerminalBuffer={hasTerminalBuffer}
                 onSelectTab={onSelectTab}

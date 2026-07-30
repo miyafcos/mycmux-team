@@ -12,6 +12,7 @@ import { useUiStore } from "./uiStore";
 import { rewriteTabAgentSession, type TabAgentSessionRewrite } from "../lib/tabAgentSessionRewrite";
 import { applyStructuralActivation } from "../lib/focusController";
 import { onlineStrings } from "../components/online/onlineStrings";
+import { bump as bumpPaintStat } from "../lib/paintStats";
 
 /**
  * Workspace Layout Store - Manages panes within workspaces
@@ -1339,6 +1340,10 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
   setActivePaneTab: (workspaceId, paneId, tabId) => {
     const workspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
     if (!workspace) return;
+    const pane = workspace.panes.find((candidate) => candidate.id === paneId);
+    if (pane && pane.activeTabId !== tabId && pane.tabs.some((tab) => tab.id === tabId)) {
+      bumpPaintStat("tab-switch");
+    }
 
     const newPanes = workspace.panes.map((p) => {
       if (p.id !== paneId) return p;

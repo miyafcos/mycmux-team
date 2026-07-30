@@ -30,6 +30,10 @@ import { listen } from "@tauri-apps/api/event";
 import { beforePaneClose } from "../../lib/paneCloseLifecycle";
 import { popClosedPane } from "../../stores/closedPaneStore";
 import { useOnlineSavepointStore } from "../../stores/onlineSavepointStore";
+import {
+  resolveNextAttentionTarget,
+  useSessionAttentionStore,
+} from "../../stores/sessionAttentionStore";
 
 type Direction = "up" | "down" | "left" | "right";
 
@@ -730,6 +734,32 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
           setActivePaneTab(activeWs.id, activePane.id, nextTab.id);
           if (nextTab.type === undefined || nextTab.type === "terminal") {
             focusController.request("keyboard", { sessionId: nextTab.sessionId, focus: true });
+          }
+          break;
+        }
+
+        case "pane.attention.next": {
+          const currentWorkspace = ws.find((workspace) => workspace.id === aid);
+          const currentPane = currentWorkspace?.panes.find((pane) => paneMatchesSession(pane, apid))
+            ?? currentWorkspace?.panes.find((pane) => paneMatchesSession(pane, lpid))
+            ?? currentWorkspace?.panes[0];
+          const currentTabId = currentPane?.activeTabId ?? null;
+          const attentionState = useSessionAttentionStore.getState();
+          const target = resolveNextAttentionTarget(
+            ws,
+            attentionState.attentionBySession,
+            attentionState.seenAttentionByTab,
+            currentTabId,
+          );
+          if (!target) return;
+          const keepZoom = useUiStore.getState().zoomedPaneId !== null;
+          setActiveWorkspace(target.workspaceId);
+          setActivePaneTab(target.workspaceId, target.paneId, target.tab.id);
+          if (keepZoom) setZoomedPaneId(target.paneId);
+          if (target.tab.type === undefined || target.tab.type === "terminal") {
+            focusController.request("keyboard", { sessionId: target.tab.sessionId, focus: true });
+          } else {
+            focusController.request("keyboard", { sessionId: null, focus: false });
           }
           break;
         }

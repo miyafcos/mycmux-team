@@ -1,6 +1,7 @@
 pub mod auth;
 pub mod qr;
 pub mod session;
+pub mod status_ws;
 pub mod ws_handler;
 
 use axum::response::{Html, IntoResponse};
@@ -202,6 +203,7 @@ pub fn start_remote_server(
 
         let app = Router::new()
             .route("/ws", get(ws_handler::ws_upgrade))
+            .route("/ws/status", get(status_ws::ws_upgrade))
             .route("/qr", get(serve_qr))
             .route("/api/state", get(api_state))
             .fallback(get(serve_static))

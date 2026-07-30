@@ -11,6 +11,7 @@ import {
 import { useUiStore } from "./uiStore";
 import { applyStructuralActivation } from "../lib/focusController";
 import { useToastStore } from "./toastStore";
+import { bump as bumpPaintStat } from "../lib/paintStats";
 
 function workspaceContainsPane(workspace: Workspace | undefined, paneId: string | null): boolean {
   return Boolean(paneId && workspace?.panes.some((pane) => pane.id === paneId));
@@ -275,6 +276,9 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
   setActiveWorkspace: (id) => {
     const state = get();
     const workspace = state.workspaces.find((w) => w.id === id);
+    if (workspace && state.activeWorkspaceId !== id) {
+      bumpPaintStat("tab-switch");
+    }
     const uiState = useUiStore.getState();
     const currentActivePaneId = uiState.activePaneId;
     let lastActivePaneByWorkspace = state.lastActivePaneByWorkspace;

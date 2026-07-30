@@ -34,6 +34,9 @@ def test_socket_api_has_frontend_response_bridge() -> None:
     assert_contains(ipc, 'return invoke<void>("socket_response", { id, result, error } satisfies SocketResponseArgs);', "src/lib/ipc.ts")
     assert_contains(socket_rs, 'app.emit("socket-request", &req)', "src-tauri/src/socket.rs")
     assert_contains(socket_rs, 'state.pending_requests.remove(&id);', "src-tauri/src/socket.rs")
+    assert_contains(socket_rs, 'if cmd == "session.state_view"', "src-tauri/src/socket.rs")
+    assert_contains(socket_rs, ".session_state_store", "src-tauri/src/socket.rs")
+    assert_contains(socket_rs, ".snapshot(session_id.as_deref())", "src-tauri/src/socket.rs")
 
     for snippet in [
         'case "pane.spawn_tab":',

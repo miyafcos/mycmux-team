@@ -258,8 +258,12 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
     activePaneId === pane.sessionId ||
     pane.tabs.some((t) => t.sessionId === activePaneId)
   );
-  const isZoomed = useUiStore((s) => s.zoomedPaneId === pane.id);
+  const zoomedPaneId = useUiStore((s) => s.zoomedPaneId);
+  const isZoomed = zoomedPaneId === pane.id;
   const setZoomedPaneId = useUiStore((s) => s.setZoomedPaneId);
+  const activeWorkspaceId = useWorkspaceListStore((s) => s.activeWorkspaceId);
+  const isPaneVisible = activeWorkspaceId === workspaceId
+    && (zoomedPaneId === null || isZoomed);
   const dragItem = usePaneDragStore((s) => s.item);
   const dropTarget = usePaneDragStore((s) =>
     s.target?.kind === "pane" && s.target.workspaceId === workspaceId && s.target.paneId === pane.id
@@ -739,6 +743,7 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
         workspaceId={workspaceId}
         hasNotification={hasNotification}
         isZoomed={isZoomed}
+        isVisible={isPaneVisible}
         onClose={onClose ? () => {
           onClose();
           focusController.focusSessionSoon(useUiStore.getState().activePaneId);

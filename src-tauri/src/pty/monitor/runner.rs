@@ -4,6 +4,7 @@ pub fn start_monitor(
     app_handle: AppHandle,
     manager: Arc<SessionManager>,
     metadata_store: MetadataStore,
+    session_state_store: crate::session_state::SessionStateStore,
 ) {
     thread::spawn(move || {
         let mut sys = System::new();
@@ -11,6 +12,9 @@ pub fn start_monitor(
         let mut detected_agent_sessions: HashMap<String, DetectedAgentCacheEntry> = HashMap::new();
         let mut failed_detected_agent_sessions: HashMap<String, FailedDetectedAgentCacheEntry> =
             HashMap::new();
+        let mut last_output_evidence_at: HashMap<String, u64> = HashMap::new();
+        let mut session_epochs: HashMap<String, u64> = HashMap::new();
+        let mut codex_rollout_detector = CodexRolloutDetector::new();
 
         // RS-5: git branch detection runs on a dedicated worker pool instead
         // of inline in this loop. `git_branch_cwd` records the CWD that the
@@ -75,6 +79,30 @@ pub fn start_monitor(
 
             for (session_id, pid_opt) in pids.iter().cloned() {
                 if let Some(pid) = pid_opt {
+                    let Some((session_epoch, last_output_at)) =
+                        manager.session_observation(&session_id)
+                    else {
+                        continue;
+                    };
+                    session_epochs.insert(session_id.clone(), session_epoch);
+                    if let Some(output_at) = last_output_at {
+                        let previous = last_output_evidence_at
+                            .get(&session_id)
+                            .copied()
+                            .unwrap_or_default();
+                        if output_at > previous {
+                            session_state_store.ingest(
+                                session_id.clone(),
+                                crate::session_state::Evidence::last_output(
+                                    output_at,
+                                    session_epoch,
+                                    crate::session_state::OutputOrigin::Pty,
+                                ),
+                            );
+                            last_output_evidence_at.insert(session_id.clone(), output_at);
+                        }
+                    }
+                    let observed_at = crate::session_state::unix_epoch_millis();
                     // Resolve the foreground (deepest child) PID once per tick and
                     // reuse it for both CWD and process-name lookups — each helper
                     // previously re-walked the entire process table on its own.
@@ -91,6 +119,28 @@ pub fn start_monitor(
                         .map(|kind| (kind, fg_pid))
                         .or_else(|| find_agent_descendant(&sys, &child_index, shell_pid));
                     let agent_active = foreground_agent.is_some();
+                    if let Some((DetectedAgentKind::Codex, agent_pid)) = foreground_agent {
+                        if let Some(agent_started_at) = sys.process(agent_pid).and_then(|process| {
+                            process.start_time().checked_mul(1_000)
+                        }) {
+                            let identity = CodexProcessIdentity {
+                                pid: agent_pid.as_u32(),
+                                started_at: agent_started_at,
+                                session_epoch,
+                            };
+                            let exact_rollout_id =
+                                session_id_from_agent_args(&sys, agent_pid, true);
+                            for evidence in codex_rollout_detector.poll(
+                                &session_id,
+                                identity,
+                                exact_rollout_id.as_deref(),
+                            ) {
+                                session_state_store.ingest(session_id.clone(), evidence);
+                            }
+                        }
+                    } else {
+                        codex_rollout_detector.remove(&session_id);
+                    }
                     let cwd_pid = foreground_agent
                         .map(|(_, agent_pid)| agent_pid)
                         .unwrap_or(fg_pid);
@@ -398,6 +448,15 @@ pub fn start_monitor(
                                     prev_process: prev.clone(),
                                     current_process: current.to_string(),
                                 };
+                                session_state_store.ingest(
+                                    session_id.clone(),
+                                    crate::session_state::Evidence::work_done(
+                                        observed_at,
+                                        session_epoch,
+                                        prev.clone(),
+                                        current.to_string(),
+                                    ),
+                                );
                                 let _ = app_handle.emit("pty_work_done", evt);
                             }
                         }
@@ -424,6 +483,33 @@ pub fn start_monitor(
                         process_name.as_deref(),
                         process_started_at,
                     );
+                    let status_changed = last_metadata
+                        .get(&session_id)
+                        .is_none_or(|old| old.process_status != process_status);
+                    if status_changed {
+                        let status = match process_status.as_deref() {
+                            Some("working") => crate::session_state::MonitorStatus::Working,
+                            Some("idle") => crate::session_state::MonitorStatus::Idle,
+                            _ => crate::session_state::MonitorStatus::Unknown,
+                        };
+                        let process = process_started_at.and_then(|started_at| {
+                            u64::try_from(started_at).ok().map(|started_at| {
+                                crate::session_state::ProcessIdentity {
+                                    pid: fg_pid.as_u32(),
+                                    started_at,
+                                }
+                            })
+                        });
+                        session_state_store.ingest(
+                            session_id.clone(),
+                            crate::session_state::Evidence::monitor_status(
+                                observed_at,
+                                session_epoch,
+                                status,
+                                process,
+                            ),
+                        );
+                    }
                     let metadata = PtyMetadata {
                         session_id: session_id.clone(),
                         cwd: cwd.clone(),
@@ -465,9 +551,29 @@ pub fn start_monitor(
             // Cleanup dead sessions
             let active_keys: std::collections::HashSet<String> =
                 pids.into_iter().map(|(k, _)| k).collect();
+            let removed_sessions: Vec<String> = last_metadata
+                .keys()
+                .filter(|session_id| !active_keys.contains(*session_id))
+                .cloned()
+                .collect();
+            for session_id in removed_sessions {
+                if let Some(session_epoch) = session_epochs.get(&session_id).copied() {
+                    session_state_store.ingest(
+                        session_id,
+                        crate::session_state::Evidence::socket_lifecycle(
+                            crate::session_state::unix_epoch_millis(),
+                            session_epoch,
+                            crate::session_state::Lifecycle::Exited,
+                        ),
+                    );
+                }
+            }
             last_metadata.retain(|k, _| active_keys.contains(k));
             detected_agent_sessions.retain(|k, _| active_keys.contains(k));
             failed_detected_agent_sessions.retain(|k, _| active_keys.contains(k));
+            last_output_evidence_at.retain(|k, _| active_keys.contains(k));
+            session_epochs.retain(|k, _| active_keys.contains(k));
+            codex_rollout_detector.retain_active(&active_keys);
             metadata_store.retain(|k, _| active_keys.contains(k));
             // git_in_flight is *not* pruned for dead sessions here: a request
             // may still be running on a worker thread, and the drain step at

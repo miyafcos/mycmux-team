@@ -1,6 +1,8 @@
 import ReactDOM from "react-dom/client";
+import { Profiler } from "react";
 import App from "./App";
 import { initializePerfDiagnostics } from "./lib/perfDiagnostics";
+import { recordReactCommit } from "./lib/paintStats";
 import "./global.css";
 
 window.addEventListener("unhandledrejection", (e) => {
@@ -14,5 +16,11 @@ window.addEventListener("error", (e) => {
 initializePerfDiagnostics();
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
-  <App />,
+  import.meta.env.DEV ? (
+    <Profiler id="mycmux-root" onRender={recordReactCommit}>
+      <App />
+    </Profiler>
+  ) : (
+    <App />
+  ),
 );

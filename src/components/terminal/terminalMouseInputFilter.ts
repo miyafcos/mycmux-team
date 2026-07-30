@@ -1,6 +1,7 @@
 import type { Terminal } from "@xterm/xterm";
 import { chunkedWrite, registerTerminalCacheEvictionCleanup } from "./terminalCache";
 import { shouldSuppressWheelFocusInput } from "./terminalFocusHelpers";
+import { bump as bumpPaintStat } from "../../lib/paintStats";
 
 export type FilteredTerminalInput = {
   data: string;
@@ -75,6 +76,17 @@ export function stripTerminalMouseModeControlSequences(data: string, sessionId?:
     if (remaining.length === parts.length) return sequence;
     return remaining.length === 0 ? "" : `\x1b[?${remaining.join(";")}${final}`;
   });
+}
+
+export function createTerminalMouseModeControlFilter(): (data: string) => string {
+  let pendingTail = "";
+  return (data: string): string => {
+    const combined = `${pendingTail}${data}`;
+    const partialMatch = TERMINAL_MOUSE_MODE_CONTROL_PARTIAL_RE.exec(combined);
+    pendingTail = partialMatch?.[0] ?? "";
+    const ready = pendingTail ? combined.slice(0, -pendingTail.length) : combined;
+    return stripTerminalMouseModeControlSequences(ready);
+  };
 }
 
 export function stripTerminalMouseModeControlSequencesForSession(sessionId: string, data: string): string {
@@ -179,6 +191,7 @@ export function attachTerminalWheelScroll(container: HTMLElement, currentTerm: T
         return;
       }
     }
+    bumpPaintStat("scroll");
     currentTerm.scrollLines(lines);
   };
 

@@ -5,7 +5,9 @@ mod fs;
 mod pty;
 mod remote;
 mod session_retention;
+mod session_state;
 mod socket;
+mod status_feed;
 pub mod terminal_config;
 pub mod usage;
 
@@ -55,6 +57,8 @@ mod single_instance {
 
 pub struct AppState {
     pub session_manager: Arc<SessionManager>,
+    pub session_state_store: session_state::SessionStateStore,
+    pub status_feed: status_feed::StatusFeed,
     pub bootstrapped: AtomicBool,
     pub metadata_store: pty::monitor::MetadataStore,
     pub fs_watcher: OnceLock<Arc<fs::FsWatcher>>,
@@ -173,6 +177,7 @@ pub fn run() {
         "MYCMUX_RESUME",
         "MYCMUX_SESSION_ID",
         "MYCMUX_AGENT_KIND",
+        "MYCMUX_RESUME_FORK",
         "MYCMUX_LAUNCH_TARGET",
         "MYCMUX_HANDOFF",
         "MYCMUX_HANDOFF_FROM",
@@ -192,8 +197,13 @@ pub fn run() {
     let remote_control = Arc::new(remote::RemoteControl::new());
     let remote_sessions = Arc::new(remote::session::RemoteSessionManager::new());
 
+    let session_state_store = session_state::SessionStateStore::new();
+    let status_feed = status_feed::StatusFeed::new(session_state_store.clone());
+    session_state_store.set_change_listener(status_feed.change_listener());
     let state = AppState {
         session_manager: Arc::new(SessionManager::new()),
+        session_state_store,
+        status_feed,
         bootstrapped: AtomicBool::new(false),
         metadata_store: metadata_store.clone(),
         fs_watcher: OnceLock::new(),
@@ -236,6 +246,7 @@ pub fn run() {
             commands::artifact::save_editable_artifact,
             commands::terminal::get_terminal_config,
             commands::terminal::get_pty_metadata_snapshot,
+            commands::terminal::get_session_output_snapshot,
             commands::terminal::is_directory,
             commands::terminal::get_launch_cwd,
             commands::online::list_online_savepoints,
@@ -287,6 +298,7 @@ pub fn run() {
             remote::rotate_remote_token,
             remote::get_remote_bind_all,
             remote::set_remote_bind_all,
+            status_feed::get_session_status_snapshot,
             socket::socket_response,
         ])
         .setup(|#[allow(unused)] app| {
@@ -294,6 +306,7 @@ pub fn run() {
 
             let app_handle = app.handle().clone();
             let state = app.state::<AppState>();
+            state.status_feed.set_app_handle(app_handle.clone());
             if let Err(err) = install_launcher_script() {
                 eprintln!("[launcher] failed to install launcher scripts: {err}");
             }
@@ -310,6 +323,11 @@ pub fn run() {
                 app_handle.clone(),
                 state.session_manager.clone(),
                 ms.clone(),
+                state.session_state_store.clone(),
+            );
+            session_state::register_frontend_listener(
+                &app_handle,
+                state.session_state_store.clone(),
             );
 
             // FsWatcher: singleton per app, lives for app lifetime.

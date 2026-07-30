@@ -17,10 +17,13 @@ import {
   PANE_TABBAR_SLIM_EXIT,
   resolveActiveAgentLabel,
   resolvePaneTabBarActions,
+  resolvePaneTabMenuSections,
   resolvePaneTabBarMode,
+  shouldMarkAttentionSeen,
   shouldShowDeferredRestoreBadge,
   shouldShowPublishButton,
 } from "../../src/components/workspace/PaneTabBar";
+import type { SessionAttention } from "../../src/stores/sessionAttentionStore";
 import type {
   PaneTabBarActionId,
   PaneTabBarMode,
@@ -334,5 +337,43 @@ describe("resolveActiveAgentLabel", () => {
   it("uses intuitive Japanese labels for launcher and shell surfaces", () => {
     expect(resolveActiveAgentLabel("shell-starter", undefined)).toBe("起動メニュー");
     expect(resolveActiveAgentLabel("shell", undefined)).toBe("シェル");
+  });
+});
+
+describe("resolvePaneTabMenuSections", () => {
+  it("adds an occurrence-ordered attention section without changing all-tab order", () => {
+    const tabs = [
+      tab({ id: "tab-a", sessionId: "session-a" }),
+      tab({ id: "tab-b", sessionId: "session-b" }),
+      tab({ id: "tab-c", sessionId: "session-c" }),
+    ];
+    const attention = (sessionId: string, attentionId: string, kind: SessionAttention["kind"], occurrenceOrder: number): SessionAttention => ({
+      sessionId,
+      attentionId,
+      kind,
+      detail: null,
+      sessionRevision: 1,
+      uiState: kind === "done" ? "done" : "waiting",
+      stateSince: occurrenceOrder,
+      occurrenceOrder,
+    });
+    const sections = resolvePaneTabMenuSections(tabs, {
+      "session-a": attention("session-a", "attention-a", "done", 3),
+      "session-b": attention("session-b", "attention-b", "approval", 1),
+      "session-c": attention("session-c", "attention-c", "error", 2),
+    }, new Map());
+
+    expect(sections.attention.map(({ tab: item }) => item.id)).toEqual(["tab-b", "tab-c", "tab-a"]);
+    expect(sections.all.map((item) => item.id)).toEqual(["tab-a", "tab-b", "tab-c"]);
+    expect(sections.all).toBe(tabs);
+  });
+});
+
+describe("shouldMarkAttentionSeen", () => {
+  it("marks only a displayed active tab with canonical attention", () => {
+    expect(shouldMarkAttentionSeen(true, "tab-a", "attention-a")).toBe(true);
+    expect(shouldMarkAttentionSeen(false, "tab-a", "attention-a")).toBe(false);
+    expect(shouldMarkAttentionSeen(true, undefined, "attention-a")).toBe(false);
+    expect(shouldMarkAttentionSeen(true, "tab-a", null)).toBe(false);
   });
 });

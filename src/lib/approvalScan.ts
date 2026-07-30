@@ -25,6 +25,19 @@ export function scanForApproval(lines: string[]): number {
   return 0;
 }
 
+export function findApprovalPromptDetail(
+  lines: string[],
+  matchedPatternId: number,
+): string | null {
+  if (matchedPatternId <= 0) return null;
+  for (const line of lines) {
+    if (scanForApproval([line]) !== matchedPatternId) continue;
+    const detail = line.replace(/[\r\n]+/g, " ").trim();
+    return detail || null;
+  }
+  return null;
+}
+
 export function resolveWaitingTransition(
   prev: { waiting: boolean; absentStreak: number },
   matchedPatternId: number,

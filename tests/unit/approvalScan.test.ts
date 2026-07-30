@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
+  findApprovalPromptDetail,
   resolveWaitingTransition,
   scanForApproval,
 } from "../../src/lib/approvalScan";
@@ -66,6 +67,19 @@ describe("resolveWaitingTransition", () => {
   });
 });
 
+describe("findApprovalPromptDetail", () => {
+  it("returns the first matched prompt as one line", () => {
+    const lines = ["noise", "Allow this command? (y/n)\r\n", "more noise"];
+    const patternId = scanForApproval(lines);
+
+    expect(findApprovalPromptDetail(lines, patternId)).toBe("Allow this command? (y/n)");
+  });
+
+  it("returns null when there is no matched pattern", () => {
+    expect(findApprovalPromptDetail(["plain output"], 0)).toBeNull();
+  });
+});
+
 describe("approvalScan source", () => {
   it("contains only ASCII source characters", () => {
     const source = readFileSync(
@@ -75,5 +89,16 @@ describe("approvalScan source", () => {
     const nonAscii = Array.from(source).filter((char) => char.charCodeAt(0) >= 128);
 
     expect(nonAscii).toEqual([]);
+  });
+
+  it("publishes only waiting entry and clear transitions to the Rust reducer", () => {
+    const source = readFileSync(
+      new URL("../../src/components/terminal/XTermWrapper.tsx", import.meta.url),
+      "utf8",
+    );
+
+    expect(source).toContain('emit("mycmux:session-state-evidence"');
+    expect(source).toContain('if (prevStatus !== "waiting")');
+    expect(source).toContain('publishScreenScanEvidence("none", null, null, resync)');
   });
 });

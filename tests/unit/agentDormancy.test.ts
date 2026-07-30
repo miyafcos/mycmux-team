@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   AGENT_DORMANT_MINUTES_STORAGE_KEY,
   DEFAULT_AGENT_DORMANT_MINUTES,
+  isAgentRestProcess,
+  isEffectivelyWorking,
   observeDormancyActivity,
   readDormantThresholdMs,
   resolveDormantAction,
@@ -27,6 +29,7 @@ function candidate(overrides: Partial<DormantSessionCandidate> = {}): DormantSes
     visible: false,
     mounted: false,
     processStatus: "idle",
+    processName: null,
     lastActivityAt: NOW - THRESHOLD_MS,
     thresholdMs: THRESHOLD_MS,
     ...overrides,
@@ -79,13 +82,50 @@ describe("resolveDormantAction", () => {
     expect(resolveDormantAction(candidate({ mounted: true }), NOW)).toBe("evictCache");
   });
 
-  it("does nothing before the threshold or while visible or working", () => {
+  it("does nothing before the threshold or while visible", () => {
     expect(resolveDormantAction(
       candidate({ lastActivityAt: NOW - THRESHOLD_MS + 1 }),
       NOW,
     )).toBe("none");
     expect(resolveDormantAction(candidate({ visible: true, mounted: true }), NOW)).toBe("none");
-    expect(resolveDormantAction(candidate({ processStatus: "working" }), NOW)).toBe("none");
+  });
+
+  it("dormants a resting claude process even when the backend reports working", () => {
+    expect(resolveDormantAction(candidate({
+      processStatus: "working",
+      processName: "claude.exe",
+    }), NOW)).toBe("kill");
+  });
+
+  it("protects an active tool and an unknown working process", () => {
+    expect(resolveDormantAction(candidate({
+      processStatus: "working",
+      processName: "git.exe",
+    }), NOW)).toBe("none");
+    expect(resolveDormantAction(candidate({
+      processStatus: "working",
+      processName: null,
+    }), NOW)).toBe("none");
+  });
+
+  it("dormants a resting codex MCP process and still respects visibility", () => {
+    expect(resolveDormantAction(candidate({
+      processStatus: "working",
+      processName: "node_repl.exe",
+    }), NOW)).toBe("kill");
+    expect(resolveDormantAction(candidate({
+      processStatus: "working",
+      processName: "node_repl.exe",
+      visible: true,
+    }), NOW)).toBe("none");
+  });
+
+  it("evicts a mounted resting agent before killing it", () => {
+    expect(resolveDormantAction(candidate({
+      processStatus: "working",
+      processName: "claude.exe",
+      mounted: true,
+    }), NOW)).toBe("evictCache");
   });
 
   it("does nothing for disabled, shell, or non-resumable candidates", () => {
@@ -104,8 +144,11 @@ describe("shouldDormantSession", () => {
     expect(shouldDormantSession(candidate({ lastActivityAt: NOW - THRESHOLD_MS + 1 }), NOW)).toBe(false);
   });
 
-  it("does not dormant a working session", () => {
-    expect(shouldDormantSession(candidate({ processStatus: "working" }), NOW)).toBe(false);
+  it("does not dormant an unknown working session", () => {
+    expect(shouldDormantSession(candidate({
+      processStatus: "working",
+      processName: null,
+    }), NOW)).toBe(false);
   });
 
   it("does not dormant a visible or mounted session", () => {
@@ -125,6 +168,40 @@ describe("shouldDormantSession", () => {
 
   it("does not dormant when the threshold is disabled", () => {
     expect(shouldDormantSession(candidate({ thresholdMs: 0 }), NOW)).toBe(false);
+  });
+});
+
+describe("effective agent work", () => {
+  it.each([
+    "claude",
+    "CLAUDE.EXE",
+    "codex.exe",
+    "node",
+    "node_repl.exe",
+  ])("recognizes the resident agent process %s", (name) => {
+    expect(isAgentRestProcess(name)).toBe(true);
+  });
+
+  it.each([null, undefined, "", "git.exe", "python.exe"])(
+    "does not classify %s as a resident agent process",
+    (name) => {
+      expect(isAgentRestProcess(name)).toBe(false);
+    },
+  );
+
+  it("treats only non-agent working processes as effectively working", () => {
+    expect(isEffectivelyWorking(candidate({
+      processStatus: "working",
+      processName: "cargo.exe",
+    }))).toBe(true);
+    expect(isEffectivelyWorking(candidate({
+      processStatus: "working",
+      processName: "codex.exe",
+    }))).toBe(false);
+    expect(isEffectivelyWorking(candidate({
+      processStatus: "working",
+      processName: null,
+    }))).toBe(true);
   });
 });
 

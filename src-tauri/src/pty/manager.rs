@@ -224,6 +224,19 @@ impl SessionManager {
             .collect()
     }
 
+    pub fn last_output_snapshot(&self) -> HashMap<String, Option<u64>> {
+        self.sessions
+            .iter()
+            .map(|entry| (entry.key().clone(), entry.value().last_output_at()))
+            .collect()
+    }
+
+    pub fn session_observation(&self, session_id: &str) -> Option<(u64, Option<u64>)> {
+        self.sessions
+            .get(session_id)
+            .map(|session| (session.session_epoch(), session.last_output_at()))
+    }
+
     /// Get a reference to a session by ID.
     pub fn get(
         &self,

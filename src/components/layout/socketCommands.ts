@@ -1,4 +1,4 @@
-import type { PtyMetadataSnapshot } from "../../lib/ipc";
+import type { PtyMetadataSnapshot, SessionOutputSnapshot } from "../../lib/ipc";
 import type { AgentSessionKind, Pane, PaneTab, Workspace } from "../../types";
 import type { PaneMetadata } from "../../stores/paneMetadataStore";
 import { deriveEffectiveStatus } from "../../lib/notificationStatus";
@@ -254,6 +254,7 @@ interface PaneSocketSerializationContext {
   metadata: Record<string, PaneMetadata>;
   processMetadata: PtyMetadataSnapshot;
   processMetadataAvailable: boolean;
+  lastOutputBySession: SessionOutputSnapshot;
   isTerminalMounted: (sessionId: string) => boolean;
 }
 
@@ -268,6 +269,15 @@ async function loadProcessMetadataSnapshot(): Promise<ProcessMetadataSnapshotRes
     return { metadata: await getPtyMetadataSnapshot(), available: true };
   } catch {
     return { metadata: {}, available: false };
+  }
+}
+
+async function loadSessionOutputSnapshot(): Promise<SessionOutputSnapshot> {
+  try {
+    const { getSessionOutputSnapshot } = await import("../../lib/ipc");
+    return await getSessionOutputSnapshot();
+  } catch {
+    return {};
   }
 }
 
@@ -291,6 +301,7 @@ export function serializePaneForSocket(
     metadata,
     processMetadata,
     processMetadataAvailable,
+    lastOutputBySession,
     isTerminalMounted,
   } = context;
   return {
@@ -323,7 +334,9 @@ export function serializePaneForSocket(
         agentStatusAt: tabMetadata?.agentStatusAt ?? null,
         agentStatusStale: !screenObserved,
         processStatus: process?.process_status ?? null,
+        // This is the foreground process start time, not an activity observation.
         processStatusAt: process?.process_status_at ?? null,
+        lastOutputAt: lastOutputBySession[tab.sessionId] ?? null,
         processStatusReason: processStatusReasonForTab(
           tab.type,
           process,
@@ -723,12 +736,16 @@ export async function handleSocketCommand(cmd: string, args: SocketArgs): Promis
       const activePaneId = useUiStore.getState().activePaneId;
       const paneMetadata = usePaneMetadataStore.getState().metadata;
       const { liveTerms } = await import("../terminal/terminalCache");
-      const processSnapshot = await loadProcessMetadataSnapshot();
+      const [processSnapshot, lastOutputBySession] = await Promise.all([
+        loadProcessMetadataSnapshot(),
+        loadSessionOutputSnapshot(),
+      ]);
       const serializationContext: PaneSocketSerializationContext = {
         activeSessionId: activePaneId,
         metadata: paneMetadata,
         processMetadata: processSnapshot.metadata,
         processMetadataAvailable: processSnapshot.available,
+        lastOutputBySession,
         isTerminalMounted: (sessionId) => liveTerms.has(sessionId),
       };
       return {
@@ -747,12 +764,16 @@ export async function handleSocketCommand(cmd: string, args: SocketArgs): Promis
       const activePaneId = useUiStore.getState().activePaneId;
       const paneMetadata = usePaneMetadataStore.getState().metadata;
       const { liveTerms } = await import("../terminal/terminalCache");
-      const processSnapshot = await loadProcessMetadataSnapshot();
+      const [processSnapshot, lastOutputBySession] = await Promise.all([
+        loadProcessMetadataSnapshot(),
+        loadSessionOutputSnapshot(),
+      ]);
       const serializationContext: PaneSocketSerializationContext = {
         activeSessionId: activePaneId,
         metadata: paneMetadata,
         processMetadata: processSnapshot.metadata,
         processMetadataAvailable: processSnapshot.available,
+        lastOutputBySession,
         isTerminalMounted: (sessionId) => liveTerms.has(sessionId),
       };
       return {
