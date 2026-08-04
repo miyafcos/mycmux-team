@@ -25,3 +25,11 @@ export function deriveEffectiveStatus(meta?: PaneMetadata): EffectiveStatus {
   if (meta?.processIsShell === false) return "working";
   return "idle";
 }
+
+export function deriveDisplayStatus(meta?: PaneMetadata): EffectiveStatus {
+  if (meta?.agentStatus === "waiting") return "waiting";
+  if (meta?.processIsShell === false && (meta.outputActive || meta.workingPatternVisible)) {
+    return "working";
+  }
+  return "idle";
+}

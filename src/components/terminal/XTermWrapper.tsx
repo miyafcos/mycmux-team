@@ -109,6 +109,13 @@ import {
 export { evictTerminalCache, getTerminalWriteCounter } from "./terminalCache";
 export { allowInactiveTerminalPointerFocus } from "./terminalFocusHelpers";
 
+export const WORKING_INDICATOR_PATTERNS: readonly RegExp[] = [
+  /esc to interrupt/i,
+];
+
+// TUI input echo counts as output, so typing may keep the indicator active briefly.
+const ACTIVITY_WINDOW_MS = 7000;
+
 // Notification sound via Web Audio API 窶・short gentle chime
 let _audioCtx: AudioContext | null = null;
 function playNotificationSound() {
@@ -737,6 +744,7 @@ export default memo(function XTermWrapper({
     let logThrottle: ReturnType<typeof setTimeout> | null = null;
     let idleFlush: ReturnType<typeof setTimeout> | null = null;
     let backgroundScanThrottle: ReturnType<typeof setTimeout> | null = null;
+    let outputActivityTimer: ReturnType<typeof setTimeout> | null = null;
     let backgroundScanResync = false;
     let startupSettleTimeout: ReturnType<typeof setTimeout> | null = null;
     let startupSettled = false;
@@ -815,6 +823,21 @@ export default memo(function XTermWrapper({
         clearTimeout(backgroundScanThrottle);
         backgroundScanThrottle = null;
       }
+    };
+
+    const setOutputActive = (active: boolean): void => {
+      const current = usePaneMetadataStore.getState().metadata[sessionId]?.outputActive === true;
+      if (current === active) return;
+      usePaneMetadataStore.getState().setMetadata(sessionId, { outputActive: active });
+    };
+
+    const noteOutputActivity = (): void => {
+      setOutputActive(true);
+      if (outputActivityTimer) clearTimeout(outputActivityTimer);
+      outputActivityTimer = setTimeout(() => {
+        outputActivityTimer = null;
+        setOutputActive(false);
+      }, ACTIVITY_WINDOW_MS);
     };
 
     const updateCodexOutputDetection = (text: string): boolean => {
@@ -1142,6 +1165,14 @@ export default memo(function XTermWrapper({
           scanLines.push(text);
           lastNonEmpty = text;
         }
+      }
+      const workingPatternVisible = scanLines.some((line) => (
+        WORKING_INDICATOR_PATTERNS.some((pattern) => pattern.test(line))
+      ));
+      const previousWorkingPatternVisible =
+        usePaneMetadataStore.getState().metadata[sessionId]?.workingPatternVisible === true;
+      if (workingPatternVisible !== previousWorkingPatternVisible) {
+        usePaneMetadataStore.getState().setMetadata(sessionId, { workingPatternVisible });
       }
       const isNoiseLine =
         /\d+k?\s+tokens/i.test(lastNonEmpty) ||
@@ -1762,6 +1793,9 @@ export default memo(function XTermWrapper({
         ackBatch(batch);
         return;
       }
+      // Replayed scrollback is historical output — only live batches count as
+      // agent activity for the working indicator.
+      noteOutputActivity();
       recordPtyBatch(batch.bytes, sessionId);
       recordPtyBatchForRecording(sessionId, {
         generation: batch.generation,
@@ -1966,6 +2000,11 @@ export default memo(function XTermWrapper({
       recoveryRedrawDelayResolve?.();
       recoveryRedrawDelayResolve = null;
       clearScanTimers();
+      if (outputActivityTimer) {
+        clearTimeout(outputActivityTimer);
+        outputActivityTimer = null;
+      }
+      setOutputActive(false);
       stopVisibilityObserver();
       frontendChannelReady = false;
       setFrontendVisibleIfChanged(false);

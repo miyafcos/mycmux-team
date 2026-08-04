@@ -12,7 +12,7 @@ import {
 } from "../../lib/duplicateSession";
 import { usePaneMetadataStore, useWorkspaceListStore } from "../../stores/workspaceStore";
 import type { PaneMetadata } from "../../stores/paneMetadataStore";
-import { deriveEffectiveStatus, type EffectiveStatus } from "../../lib/notificationStatus";
+import { deriveDisplayStatus, type EffectiveStatus } from "../../lib/notificationStatus";
 import { usePaneDragSource } from "../../hooks/usePaneDragSource";
 import { useSavepointPublish } from "../../hooks/useSavepointPublish";
 import { useSavepointDragStore } from "../../stores/savepointDragStore";
@@ -559,7 +559,7 @@ function PaneTabListMenu({
   const renderTabRow = (tab: PaneTab, keyPrefix: string, showDetail: boolean) => {
     const isTabActive = tab.id === pane.activeTabId;
     const tabMeta = metadataBySession[tab.sessionId];
-    const status = deriveEffectiveStatus(tabMeta);
+    const status = deriveDisplayStatus(tabMeta);
     const label = getTabDisplayLabel(tab, isTabActive);
     const attention = attentionBySession[tab.sessionId];
     const unreadCategory = isAttentionUnseen(tab.id, attention, seenAttentionByTab)
@@ -801,7 +801,7 @@ export default memo(function PaneTabBar({
   const published = useOnlineSavepointStore((state) =>
     publishIdentityKey ? state.publishedSessionIds[publishIdentityKey] === true : false,
   );
-  const activeStatus: EffectiveStatus = deriveEffectiveStatus(activeMeta);
+  const activeStatus: EffectiveStatus = deriveDisplayStatus(activeMeta);
   const activeLastLog = activeTab ? lastLogBySession[activeTab.sessionId] : undefined;
   const activeAgentLabel = activeTab
     ? resolveActiveAgentLabel(
@@ -1376,7 +1376,7 @@ export default memo(function PaneTabBar({
           const tabMeta = metadataBySession[tab.sessionId];
           const tabNotificationCount = tabMeta?.notificationCount ?? 0;
           const tabWorkDoneCount = tabMeta?.workDoneCount ?? 0;
-          const tabEffectiveStatus = deriveEffectiveStatus(tabMeta);
+          const tabEffectiveStatus = deriveDisplayStatus(tabMeta);
           const canonicalAttention = attentionBySession[tab.sessionId];
           const canonicalUnreadCategory = isAttentionUnseen(
             tab.id,

@@ -5,7 +5,7 @@ import { useWorkspaceListStore, usePaneMetadataStore } from "../../stores/worksp
 import { usePaneDragStore } from "../../stores/paneDragStore";
 import { useSavepointDragStore } from "../../stores/savepointDragStore";
 import { SIDEBAR_WIDTH } from "../../lib/constants";
-import { deriveEffectiveStatus } from "../../lib/notificationStatus";
+import { deriveDisplayStatus } from "../../lib/notificationStatus";
 import TabItem from "./TabItem";
 import type { Workspace } from "../../types";
 
@@ -81,7 +81,7 @@ const WorkspaceTabEntry = memo(function WorkspaceTabEntry({
     if (m) {
       totalWsNotifications += m.notificationCount ?? 0;
       totalWsWorkDone += m.workDoneCount ?? 0;
-      const eff = deriveEffectiveStatus(m);
+      const eff = deriveDisplayStatus(m);
       if (eff === "working" || eff === "waiting") {
         statusCounts[eff]++;
       }

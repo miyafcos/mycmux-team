@@ -11,6 +11,8 @@ export interface PaneMetadata {
   gitBranch?: string;
   processTitle?: string;
   processIsShell?: boolean;
+  outputActive?: boolean;
+  workingPatternVisible?: boolean;
   agentStatus?: AgentStatus;
   /** Epoch milliseconds when the effective agent status last changed. */
   agentStatusAt?: number;
