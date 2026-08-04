@@ -1045,6 +1045,13 @@ const onlinePanelHoverCss = `
   background: color-mix(in srgb, var(--cmux-red) 12%, transparent) !important;
   border-color: var(--cmux-red) !important;
 }
+.online-view-button:active:not(:disabled),
+.online-icon-button:active:not(:disabled),
+.online-action-button:active:not(:disabled),
+.online-toolbar-button:active:not(:disabled),
+.online-local-publish-button:active:not(:disabled) {
+  transform: scale(0.97);
+}
 @container (max-width: 340px) {
   .online-panel-heading {
     min-width: 0;

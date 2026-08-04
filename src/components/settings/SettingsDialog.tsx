@@ -136,12 +136,13 @@ function CloseButton({ onClose }: { onClose: () => void }) {
 }
 
 interface SettingsDialogProps {
+  closing?: boolean;
   onClose: () => void;
   onOpenCrsmPalette?: () => void;
   onOpenOnlinePanel: () => void;
 }
 
-export default function SettingsDialog({ onClose, onOpenCrsmPalette, onOpenOnlinePanel }: SettingsDialogProps) {
+export default function SettingsDialog({ closing = false, onClose, onOpenCrsmPalette, onOpenOnlinePanel }: SettingsDialogProps) {
   const [activeTab, setActiveTab] = useState<SettingsTabId>("appearance");
   const previouslyFocusedRef = useRef<HTMLElement | null>(null);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -168,6 +169,11 @@ export default function SettingsDialog({ onClose, onOpenCrsmPalette, onOpenOnlin
   // A rebind capture in the keybindings tab intercepts Escape in the capture
   // phase (stopPropagation) before it reaches this bubble-phase handler.
   useEffect(() => {
+    if (!closing) panelRef.current?.focus();
+  }, [closing]);
+
+  useEffect(() => {
+    if (closing) return;
     const handler = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
       e.preventDefault();
@@ -175,11 +181,13 @@ export default function SettingsDialog({ onClose, onOpenCrsmPalette, onOpenOnlin
     };
     document.addEventListener("keydown", handler);
     return () => document.removeEventListener("keydown", handler);
-  }, [onClose]);
+  }, [closing, onClose]);
 
   return (
     <div
-      className="cmux-overlay-backdrop"
+      className={`cmux-overlay-backdrop${closing ? " is-closing" : ""}`}
+      inert={closing ? true : undefined}
+      aria-hidden={closing ? true : undefined}
       style={{
         position: "fixed",
         inset: 0,
@@ -197,7 +205,7 @@ export default function SettingsDialog({ onClose, onOpenCrsmPalette, onOpenOnlin
       }}
     >
       <div
-        className="cmux-overlay-panel"
+        className={`cmux-overlay-panel${closing ? " is-closing" : ""}`}
         ref={panelRef}
         tabIndex={-1}
         role="dialog"

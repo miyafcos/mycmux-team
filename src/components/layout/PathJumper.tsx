@@ -19,6 +19,7 @@ import {
 import type { FileEntry } from "../../lib/ipc";
 import { basename, pathSegmentsUnder } from "../../lib/paths";
 import { useFileExplorerStore } from "../../stores/fileExplorerStore";
+import { OVERLAY_EXIT_MS, useDeferredUnmount } from "../../hooks/useDeferredUnmount";
 
 type JumpResult = { ok: boolean; message: string };
 type JumpItemKind = "pinned" | "entry";
@@ -113,6 +114,7 @@ export default memo(function PathJumper({
   const [query, setQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [isOpen, setIsOpen] = useState(false);
+  const { mounted: dropdownMounted, closing: dropdownClosing } = useDeferredUnmount(isOpen, OVERLAY_EXIT_MS);
   const [selectedIndex, setSelectedIndex] = useState(-1);
 
   const containerRef = useRef<HTMLDivElement>(null);
@@ -489,10 +491,12 @@ export default memo(function PathJumper({
       {error ? <div style={errorStyle}>{error}</div> : null}
       {showIndexingHint ? <div style={hintStyle}>Indexing...</div> : null}
 
-      {isOpen ? (
+      {dropdownMounted ? (
         <div
-          className="cmux-popover-panel"
+          className={`cmux-popover-panel${dropdownClosing ? " is-closing" : ""}`}
           role="listbox"
+          inert={dropdownClosing ? true : undefined}
+          aria-hidden={dropdownClosing ? true : undefined}
           style={dropdownStyle}
           onMouseDown={(event) => {
             event.preventDefault();

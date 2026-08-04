@@ -2,7 +2,7 @@
   border-left: 2px solid transparent !important;
   color: var(--cmux-text-secondary);
   background: transparent;
-  transition: background var(--cmux-motion-fast) var(--cmux-ease), color var(--cmux-motion-fast) var(--cmux-ease), border-color var(--cmux-motion-fast) var(--cmux-ease);
+  transition: background var(--cmux-motion-fast) var(--cmux-ease), color var(--cmux-motion-fast) var(--cmux-ease), border-color var(--cmux-motion-fast) var(--cmux-ease), transform var(--cmux-motion-fast) var(--cmux-ease);
 }
 
 .cmux-settings-nav-item:hover:not([data-active-settings-tab="true"]) {
@@ -16,13 +16,21 @@
   background: color-mix(in srgb, var(--cmux-accent) 16%, transparent);
 }
 
+.cmux-settings-nav-item:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
 .cmux-settings-close-button {
   border: 1px solid var(--cmux-border);
   color: var(--cmux-text-secondary);
-  transition: border-color var(--cmux-motion-fast) var(--cmux-ease), color var(--cmux-motion-fast) var(--cmux-ease);
+  transition: border-color var(--cmux-motion-fast) var(--cmux-ease), color var(--cmux-motion-fast) var(--cmux-ease), transform var(--cmux-motion-fast) var(--cmux-ease);
 }
 
 .cmux-settings-close-button:hover {
   border-color: var(--cmux-text-secondary);
   color: var(--cmux-text);
+}
+
+.cmux-settings-close-button:active:not(:disabled) {
+  transform: scale(0.97);
 }

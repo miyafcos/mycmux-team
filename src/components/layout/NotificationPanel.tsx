@@ -4,6 +4,7 @@ import { getAgent } from "../../lib/agents";
 import { focusController } from "../../lib/focusController";
 
 interface NotificationPanelProps {
+  closing?: boolean;
   onClose: () => void;
 }
 
@@ -41,7 +42,7 @@ const NotificationItem = memo(function NotificationItem({
         <span style={{ color: "var(--cmux-text-tertiary)", fontSize: 11, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
           {notification.label}
         </span>
-        <span style={{
+        <span key={`${notification.kind}-${notification.count}`} className="cmux-badge-pop" style={{
           background: notification.kind === "waiting" ? "var(--status-waiting)" : "var(--status-done)",
           color: notification.kind === "waiting" ? "var(--cmux-on-waiting)" : "var(--cmux-on-done)",
           fontSize: 9,
@@ -74,7 +75,7 @@ const NotificationItem = memo(function NotificationItem({
   );
 });
 
-export default function NotificationPanel({ onClose }: NotificationPanelProps) {
+export default function NotificationPanel({ closing = false, onClose }: NotificationPanelProps) {
   const workspaces = useWorkspaceListStore((s) => s.workspaces);
   const setActive = useWorkspaceListStore((s) => s.setActiveWorkspace);
   const setActivePaneTab = useWorkspaceLayoutStore((s) => s.setActivePaneTab);
@@ -124,6 +125,7 @@ export default function NotificationPanel({ onClose }: NotificationPanelProps) {
   }, [workspaces, paneMetadata]);
 
   useEffect(() => {
+    if (closing) return;
     const handler = (e: MouseEvent) => {
       if (panelRef.current && !panelRef.current.contains(e.target as Node)) {
         onClose();
@@ -131,7 +133,7 @@ export default function NotificationPanel({ onClose }: NotificationPanelProps) {
     };
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
-  }, [onClose]);
+  }, [closing, onClose]);
 
   function handleClearAll() {
     for (const n of notifications) {
@@ -143,7 +145,9 @@ export default function NotificationPanel({ onClose }: NotificationPanelProps) {
   return (
     <div
       ref={panelRef}
-      className="cmux-popover-panel"
+      className={`cmux-popover-panel${closing ? " is-closing" : ""}`}
+      inert={closing ? true : undefined}
+      aria-hidden={closing ? true : undefined}
       style={{
         position: "absolute",
         top: "100%",

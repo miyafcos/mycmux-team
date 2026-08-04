@@ -4,6 +4,7 @@ import { useUsageStore } from "../../stores/usageStore";
 import type { AccountUsage } from "../../lib/ipc";
 
 type UsagePopoverProps = {
+  closing?: boolean;
   summary: UsageSummary;
   lastError: string | null;
   accounts: AccountUsage[];
@@ -17,10 +18,12 @@ const dateFormatter = new Intl.DateTimeFormat(undefined, {
   minute: "2-digit",
 });
 
-export function UsagePopover({ summary, lastError, accounts, accountsError }: UsagePopoverProps) {
+export function UsagePopover({ closing = false, summary, lastError, accounts, accountsError }: UsagePopoverProps) {
   return (
     <div
-      className="cmux-popover-panel"
+      className={`cmux-popover-panel${closing ? " is-closing" : ""}`}
+      inert={closing ? true : undefined}
+      aria-hidden={closing ? true : undefined}
       style={{
         position: "absolute",
         top: "100%",

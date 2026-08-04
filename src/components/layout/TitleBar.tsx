@@ -7,6 +7,7 @@ import SettingsDialog from "../settings/SettingsDialog";
 import { UsageMeter } from "./UsageMeter";
 import UsageAccountsDialog from "./UsageAccountsDialog";
 import { onlineStrings } from "../online/onlineStrings";
+import { OVERLAY_EXIT_MS, useDeferredUnmount } from "../../hooks/useDeferredUnmount";
 
 interface TitleBarProps {
   uiVariant?: "default" | "cmux";
@@ -68,6 +69,14 @@ export default function TitleBar({
   );
   const [notificationPanelOpen, setNotificationPanelOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const { mounted: notificationPanelMounted, closing: notificationPanelClosing } = useDeferredUnmount(
+    notificationPanelOpen,
+    OVERLAY_EXIT_MS,
+  );
+  const { mounted: settingsMounted, closing: settingsClosing } = useDeferredUnmount(
+    isSettingsOpen,
+    OVERLAY_EXIT_MS,
+  );
   const [isMaximized, setIsMaximized] = useState(false);
 
   useEffect(() => {
@@ -150,6 +159,7 @@ export default function TitleBar({
 
         <div style={{ position: "relative" }}>
           <button
+            onMouseDown={(event) => event.stopPropagation()}
             onClick={() => setNotificationPanelOpen((o) => !o)}
             title="Notifications"
             className="cmux-title-btn"
@@ -166,8 +176,8 @@ export default function TitleBar({
           >
             <BellIcon count={totalNotifications} />
           </button>
-          {notificationPanelOpen && (
-            <NotificationPanel onClose={() => setNotificationPanelOpen(false)} />
+          {notificationPanelMounted && (
+            <NotificationPanel closing={notificationPanelClosing} onClose={() => setNotificationPanelOpen(false)} />
           )}
         </div>
 
@@ -283,8 +293,9 @@ export default function TitleBar({
           >
             <SettingsIcon />
           </button>
-          {isSettingsOpen && (
+          {settingsMounted && (
             <SettingsDialog
+              closing={settingsClosing}
               onClose={() => setIsSettingsOpen(false)}
               onOpenCrsmPalette={onOpenCrsmPalette}
               onOpenOnlinePanel={onOpenOnlinePanel}

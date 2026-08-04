@@ -10,11 +10,13 @@ import {
 import { useKeybindingStore } from "../../stores/keybindingStore";
 
 interface KeybindingsModalProps {
+  closing?: boolean;
   onClose: () => void;
 }
 
 interface KeybindingsPanelProps {
   embedded?: boolean;
+  closing?: boolean;
   onClose?: () => void;
 }
 
@@ -23,7 +25,7 @@ interface KeybindingsPanelProps {
 // own. Rebind capture (and its capture-phase Escape cancel) always lives
 // here regardless of embedding, since that capture-phase stopPropagation is
 // what keeps a host's own Escape-close from firing mid-capture.
-export function KeybindingsPanel({ embedded = false, onClose }: KeybindingsPanelProps): JSX.Element {
+export function KeybindingsPanel({ embedded = false, closing = false, onClose }: KeybindingsPanelProps): JSX.Element {
   const keybindings = useKeybindingStore((s) => s.keybindings);
   const overrides = useKeybindingStore((s) => s.overrides);
   const setOverride = useKeybindingStore((s) => s.setOverride);
@@ -40,6 +42,10 @@ export function KeybindingsPanel({ embedded = false, onClose }: KeybindingsPanel
   );
 
   useEffect(() => {
+    if (closing) {
+      setCapturing(null);
+      return;
+    }
     if (!capturing) return;
 
     const onKeyDown = (e: KeyboardEvent) => {
@@ -64,11 +70,11 @@ export function KeybindingsPanel({ embedded = false, onClose }: KeybindingsPanel
 
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [capturing, clearOverride, setOverride]);
+  }, [capturing, clearOverride, closing, setOverride]);
 
   return (
     <div
-      className={embedded ? undefined : "cmux-overlay-panel"}
+      className={embedded ? undefined : `cmux-overlay-panel${closing ? " is-closing" : ""}`}
       onClick={(e) => e.stopPropagation()}
       style={{
         // Embedded (settings tab): fill the host's content column and let the
@@ -223,7 +229,7 @@ export function KeybindingsPanel({ embedded = false, onClose }: KeybindingsPanel
   );
 }
 
-export default function KeybindingsModal({ onClose }: KeybindingsModalProps) {
+export default function KeybindingsModal({ closing = false, onClose }: KeybindingsModalProps) {
   const previouslyFocusedRef = useRef<HTMLElement | null>(null);
 
   // Restore focus to whatever had it before the modal opened once it closes.
@@ -242,6 +248,7 @@ export default function KeybindingsModal({ onClose }: KeybindingsModalProps) {
   // which keeps that key from ever reaching this bubble-phase listener --
   // so no explicit "capturing" check is needed here.
   useEffect(() => {
+    if (closing) return;
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
       e.preventDefault();
@@ -249,11 +256,13 @@ export default function KeybindingsModal({ onClose }: KeybindingsModalProps) {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [onClose]);
+  }, [closing, onClose]);
 
   return (
     <div
-      className="cmux-overlay-backdrop"
+      className={`cmux-overlay-backdrop${closing ? " is-closing" : ""}`}
+      inert={closing ? true : undefined}
+      aria-hidden={closing ? true : undefined}
       style={{
         position: "fixed",
         inset: 0,
@@ -263,9 +272,9 @@ export default function KeybindingsModal({ onClose }: KeybindingsModalProps) {
         alignItems: "center",
         justifyContent: "center",
       }}
-      onClick={onClose}
+      onClick={closing ? undefined : onClose}
     >
-      <KeybindingsPanel onClose={onClose} />
+      <KeybindingsPanel closing={closing} onClose={onClose} />
     </div>
   );
 }

@@ -21,10 +21,10 @@ interface TabItemProps {
   onRename?: (newName: string) => void;
 }
 
-function StatusPip({ count, color }: { count: number; color: string }) {
+function StatusPip({ count, color, pulse = false }: { count: number; color: string; pulse?: boolean }) {
   return (
     <span style={{ display: "flex", alignItems: "center", gap: 3 }}>
-      <span style={{
+      <span className={`cmux-status-dot${pulse ? " cmux-status-dot--working" : ""}`} style={{
         width: 6,
         height: 6,
         borderRadius: "50%",
@@ -99,7 +99,7 @@ export default memo(function TabItem({ uiVariant = "default", name, paneCount, c
       <div style={{ display: "flex", flexDirection: "column", gap: 5, minWidth: 0, overflow: "hidden", flex: 1 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
           {notificationCount ? (
-            <span title="Waiting for approval" style={{
+            <span key={`waiting-${notificationCount}`} className="cmux-badge-pop" title="Waiting for approval" style={{
               background: "var(--status-waiting)",
               color: "var(--cmux-on-waiting)",
               fontSize: "9px",
@@ -115,7 +115,7 @@ export default memo(function TabItem({ uiVariant = "default", name, paneCount, c
               {notificationCount}
             </span>
           ) : workDoneCount ? (
-            <span title="Work done" style={{
+            <span key={`done-${workDoneCount}`} className="cmux-badge-pop" title="Work done" style={{
               background: "var(--status-done)",
               color: "var(--cmux-on-done)",
               fontSize: "9px",
@@ -182,7 +182,7 @@ export default memo(function TabItem({ uiVariant = "default", name, paneCount, c
         </div>
         {hasAgents && (
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            {statusCounts!.working > 0 && <StatusPip count={statusCounts!.working} color="var(--status-working)" />}
+            {statusCounts!.working > 0 && <StatusPip count={statusCounts!.working} color="var(--status-working)" pulse />}
             {statusCounts!.waiting > 0 && <StatusPip count={statusCounts!.waiting} color="var(--status-waiting)" />}
           </div>
         )}

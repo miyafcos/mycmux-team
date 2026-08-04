@@ -25,6 +25,7 @@ import { useThemeStore } from "../../stores/themeStore";
 import ErrorBoundary from "../common/ErrorBoundary";
 import { THEME_BACKGROUND_PRESETS } from "../../lib/themeTweaks";
 import { focusController } from "../../lib/focusController";
+import { OVERLAY_EXIT_MS, useDeferredUnmount } from "../../hooks/useDeferredUnmount";
 import { confirm, message } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 import { beforePaneClose } from "../../lib/paneCloseLifecycle";
@@ -357,6 +358,10 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
   const setActivePaneTab = useWorkspaceLayoutStore((s) => s.setActivePaneTab);
   const isKeybindingsOpen = useUiStore((s) => s.isKeybindingsOpen);
   const setIsKeybindingsOpen = useUiStore((s) => s.setIsKeybindingsOpen);
+  const { mounted: keybindingsMounted, closing: keybindingsClosing } = useDeferredUnmount(
+    isKeybindingsOpen,
+    OVERLAY_EXIT_MS,
+  );
   const getActionsForEvent = useKeybindingStore((s) => s.getActionsForEvent);
   const currentTheme = useThemeStore((s) => s.theme);
   const themeBackground = useThemeStore((s) => s.themeTweaks.background);
@@ -908,9 +913,9 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
           <WorkspaceView />
           <PaneDragOverlay />
           <SavepointDragOverlay />
-          {isKeybindingsOpen && (
+          {keybindingsMounted && (
             <ErrorBoundary fallback={chromeCrashFallback("キーボードショートカット設定")}>
-              <KeybindingsModal onClose={() => setIsKeybindingsOpen(false)} />
+              <KeybindingsModal closing={keybindingsClosing} onClose={() => setIsKeybindingsOpen(false)} />
             </ErrorBoundary>
           )}
           <ErrorBoundary fallback={chromeCrashFallback("コマンドパレット")}>

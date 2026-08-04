@@ -87,6 +87,17 @@
   }
 }
 
+@keyframes cmux-overlay-backdrop-out {
+  to { opacity: 0; }
+}
+
+@keyframes cmux-overlay-panel-out {
+  to {
+    opacity: 0;
+    transform: scale(0.985);
+  }
+}
+
 .cmux-overlay-backdrop {
   background: var(--cmux-backdrop);
   backdrop-filter: var(--cmux-blur-overlay);
@@ -101,6 +112,19 @@
 .cmux-popover-panel {
   transform-origin: top center;
   animation: cmux-overlay-panel-in var(--cmux-motion-fast) var(--cmux-ease);
+}
+
+.cmux-overlay-backdrop.is-closing {
+  animation: cmux-overlay-backdrop-out var(--cmux-motion-fast) var(--cmux-ease);
+  animation-fill-mode: forwards;
+  pointer-events: none;
+}
+
+.cmux-overlay-panel.is-closing,
+.cmux-popover-panel.is-closing {
+  animation: cmux-overlay-panel-out var(--cmux-motion-fast) var(--cmux-ease);
+  animation-fill-mode: forwards;
+  pointer-events: none;
 }
 
 *,
@@ -187,7 +211,7 @@ div:hover>.tab-close-btn {
   display: flex;
   align-items: center;
   border-radius: var(--cmux-radius-sm);
-  transition: color var(--cmux-motion-fast) var(--cmux-ease), background var(--cmux-motion-fast) var(--cmux-ease);
+  transition: color var(--cmux-motion-fast) var(--cmux-ease), background var(--cmux-motion-fast) var(--cmux-ease), transform var(--cmux-motion-fast) var(--cmux-ease);
 }
 .pane-action-btn:hover {
   color: var(--cmux-text);
@@ -195,7 +219,7 @@ div:hover>.tab-close-btn {
 }
 
 .cmux-title-btn {
-  transition: background var(--cmux-motion-fast) var(--cmux-ease), color var(--cmux-motion-fast) var(--cmux-ease);
+  transition: background var(--cmux-motion-fast) var(--cmux-ease), color var(--cmux-motion-fast) var(--cmux-ease), transform var(--cmux-motion-fast) var(--cmux-ease);
 }
 
 .cmux-title-btn:hover {
@@ -237,12 +261,18 @@ div:hover>.tab-close-btn {
 }
 
 .tab-new-workspace-btn {
-  transition: background var(--cmux-motion-fast) var(--cmux-ease), color var(--cmux-motion-fast) var(--cmux-ease);
+  transition: background var(--cmux-motion-fast) var(--cmux-ease), color var(--cmux-motion-fast) var(--cmux-ease), transform var(--cmux-motion-fast) var(--cmux-ease);
 }
 
 .tab-new-workspace-btn:hover:not([data-pane-drag-active="true"]) {
   background: var(--cmux-hover) !important;
   color: var(--cmux-text-secondary) !important;
+}
+
+.cmux-title-btn:active:not(:disabled),
+.pane-action-btn:active:not(:disabled),
+.tab-new-workspace-btn:active:not(:disabled) {
+  transform: scale(0.97);
 }
 
 .cmux-notification-item {
@@ -349,6 +379,38 @@ div:hover>.tab-close-btn {
 @keyframes agentPulse {
   0%, 100% { opacity: 1; }
   50%       { opacity: 0.35; }
+}
+
+.cmux-status-dot {
+  transition: background var(--cmux-motion-base) var(--cmux-ease);
+}
+
+.cmux-status-dot--working {
+  animation: agentPulse 1.6s ease-in-out infinite;
+}
+
+@keyframes cmux-badge-pop {
+  from { transform: scale(0.5); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
+}
+
+.cmux-badge-pop {
+  animation: cmux-badge-pop var(--cmux-motion-base) var(--cmux-ease);
+}
+
+@keyframes cmux-spin {
+  to { transform: rotate(360deg); }
+}
+
+.cmux-spinner {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid color-mix(in srgb, currentColor 25%, transparent);
+  border-top-color: currentColor;
+  animation: cmux-spin 0.8s linear infinite;
+  flex-shrink: 0;
+  display: inline-block;
 }
 
 /* Notification pulse — gentle breathing for panes needing attention */

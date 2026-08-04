@@ -9,7 +9,7 @@
   background: transparent;
   color: inherit;
   text-align: left;
-  transition: background var(--cmux-motion-fast) var(--cmux-ease);
+  transition: background var(--cmux-motion-fast) var(--cmux-ease), transform var(--cmux-motion-fast) var(--cmux-ease);
 }
 
 .cmux-crsm-target-button:hover:not(.is-active),
@@ -33,7 +33,12 @@
   background: transparent;
   color: inherit;
   font-size: 12px;
-  transition: background var(--cmux-motion-fast) var(--cmux-ease);
+  transition: background var(--cmux-motion-fast) var(--cmux-ease), transform var(--cmux-motion-fast) var(--cmux-ease);
+}
+
+.cmux-crsm-target-button:active:not(:disabled),
+.cmux-crsm-filter-button:active:not(:disabled) {
+  transform: scale(0.97);
 }
 
 .cmux-crsm-filter-button.is-active {
@@ -103,6 +108,11 @@
   background: var(--cmux-selected);
 }
 
+.cmux-crsm-item:active:not(:disabled),
+.cmux-crsm-load-more:active:not(:disabled) {
+  background: color-mix(in srgb, var(--cmux-text) 10%, transparent);
+}
+
 .cmux-crsm-load-more {
   position: absolute;
   left: 0;
@@ -112,6 +122,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
+  gap: 6px;
   border: 1px dashed color-mix(in srgb, var(--cmux-text) 22%, transparent);
   border-radius: 6px;
   background: color-mix(in srgb, var(--cmux-text) 4%, transparent);
@@ -131,6 +142,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
+  gap: 6px;
   color: var(--cmux-text-secondary);
   font-size: 12px;
 }

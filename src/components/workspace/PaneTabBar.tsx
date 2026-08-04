@@ -447,6 +447,7 @@ function AgentStatusDot({ status }: { status: EffectiveStatus }) {
   if (status === "idle" || !cfg) return null;
   return (
     <span
+      className={`cmux-status-dot${status === "working" ? " cmux-status-dot--working" : ""}`}
       title={cfg.title}
       style={{
         width: cfg.shape === "diamond" ? 9 : 8,
@@ -475,6 +476,8 @@ function AttentionUnreadDot({ category }: { category: AttentionCategory | null }
       : "未確認の完了";
   return (
     <span
+      key={category}
+      className="cmux-badge-pop"
       title={label}
       aria-label={label}
       role="img"
@@ -1653,6 +1656,7 @@ export default memo(function PaneTabBar({
           }}
         >
           <span
+            className={`cmux-status-dot${activeStatus === "working" ? " cmux-status-dot--working" : ""}`}
             style={{
               width: 6,
               height: 6,

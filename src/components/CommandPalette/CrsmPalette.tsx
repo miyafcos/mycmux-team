@@ -13,6 +13,7 @@ import {
 } from "../../stores/workspaceStore";
 import { useWorkspaceListStore } from "../../stores/workspaceListStore";
 import { useSettingsStore } from "../../stores/settingsStore";
+import { OVERLAY_EXIT_MS, useDeferredUnmount } from "../../hooks/useDeferredUnmount";
 import "./CrsmPalette.css";
 
 interface CrsmPaletteProps {
@@ -423,6 +424,7 @@ export function preloadCrsmSessions(): void {
 }
 
 export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
+  const { mounted, closing } = useDeferredUnmount(open, OVERLAY_EXIT_MS);
   const [sessions, setSessions] = useState<CrsmSessionEntry[]>([]);
   const [query, setQuery] = useState("");
   const [selectedIndex, setSelectedIndex] = useState(0);
@@ -438,6 +440,7 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
   const [showAllCwds, setShowAllCwds] = useState(false);
   const [summaryOnlyConfirmKey, setSummaryOnlyConfirmKey] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
   const requestIdRef = useRef(0);
   const selectedKeyRef = useRef<string | null>(null);
   const pendingSelectionKeyRef = useRef<string | null>(null);
@@ -785,6 +788,10 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
     return () => window.removeEventListener("keydown", onKeyDown, true);
   }, [enabledTargets, listViewportHeight, listed.length, open, onClose, query, selected, targetKind]);
 
+  useEffect(() => {
+    if (open && !closing) inputRef.current?.focus();
+  }, [closing, open]);
+
   async function openSelected(): Promise<void> {
     if (!selected || !activeWorkspace) return;
     const anchorPane = activeWorkspace.panes.find((pane) => pane.sessionId === activePaneId)
@@ -856,12 +863,19 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
     }
   }
 
-  if (!open) return null;
+  if (!mounted) return null;
 
   return (
-    <div className="cmux-overlay-backdrop" style={styles.backdrop} onMouseDown={onClose}>
-      <div className="cmux-overlay-panel" style={styles.panel} onMouseDown={(event) => event.stopPropagation()}>
+    <div
+      className={`cmux-overlay-backdrop${closing ? " is-closing" : ""}`}
+      style={styles.backdrop}
+      onMouseDown={onClose}
+      inert={closing ? true : undefined}
+      aria-hidden={closing ? true : undefined}
+    >
+      <div className={`cmux-overlay-panel${closing ? " is-closing" : ""}`} style={styles.panel} onMouseDown={(event) => event.stopPropagation()}>
         <input
+          ref={inputRef}
           autoFocus
           value={query}
           onChange={(event) => {
@@ -967,7 +981,10 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
           }}
         >
           {sessions.length === 0 && !error ? (
-            <div className="cmux-crsm-loading">{STR_LOADING_SESSIONS}</div>
+            <div className="cmux-crsm-loading">
+              <span className="cmux-spinner" aria-hidden="true" />
+              {STR_LOADING_SESSIONS}
+            </div>
           ) : (
           <div style={{ ...styles.virtualTrack, height: listed.length * ITEM_HEIGHT + (loadMoreVisible ? LOAD_MORE_HEIGHT : 0) }}>
           {virtualSessions.map((session, offset) => {
@@ -1032,7 +1049,7 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
               disabled={loadingMore}
             >
               {loadingMore
-                ? "読み込み中..."
+                ? <><span className="cmux-spinner" aria-hidden="true" />読み込み中...</>
                 : query.trim()
                   ? `${STR_DEEP_SEARCH_CTA} (現在 ${listed.length} 件)`
                   : `さらに過去のセッションを読み込む (現在 ${listed.length} 件 → 全件)`}

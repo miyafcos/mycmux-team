@@ -10,6 +10,7 @@ import {
   type UsageAccountMeta,
 } from "../../lib/ipc";
 import { useUsageStore } from "../../stores/usageStore";
+import { OVERLAY_EXIT_MS, useDeferredUnmount } from "../../hooks/useDeferredUnmount";
 import { useToastStore } from "../../stores/toastStore";
 import { friendlyOauthError, isOauthRateLimited, needsFreshOauthLogin } from "../../lib/oauthErrors";
 
@@ -428,6 +429,7 @@ export function UsageAccountsPanel(): JSX.Element {
 
 export default function UsageAccountsDialog() {
   const accountsDialogOpen = useUsageStore((s) => s.accountsDialogOpen);
+  const { mounted, closing } = useDeferredUnmount(accountsDialogOpen, OVERLAY_EXIT_MS);
   const previouslyFocusedRef = useRef<HTMLElement | null>(null);
 
   // The component stays mounted for the app's lifetime (visibility is
@@ -457,7 +459,7 @@ export default function UsageAccountsDialog() {
     return () => document.removeEventListener("keydown", handler);
   }, [accountsDialogOpen]);
 
-  if (!accountsDialogOpen) {
+  if (!mounted) {
     return null;
   }
 
@@ -467,9 +469,11 @@ export default function UsageAccountsDialog() {
 
   return (
     <div
-      className="cmux-overlay-backdrop"
+      className={`cmux-overlay-backdrop${closing ? " is-closing" : ""}`}
       role="dialog"
       aria-modal="true"
+      aria-hidden={closing ? true : undefined}
+      inert={closing ? true : undefined}
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) {
           handleClose();
@@ -487,7 +491,7 @@ export default function UsageAccountsDialog() {
       }}
     >
       <div
-        className="cmux-overlay-panel"
+        className={`cmux-overlay-panel${closing ? " is-closing" : ""}`}
         style={{
           width: "min(520px, calc(100vw - 32px))",
           maxHeight: "calc(100vh - 48px)",
