@@ -594,18 +594,20 @@ export function registerArtifactLinkProvider(
       const isCurrentLineWrapped = Boolean(line?.isWrapped);
       const nextIsWrapped = Boolean(buffer.getLine(lineIndex + 1)?.isWrapped);
       const rawLineText = line?.translateToString(false) ?? "";
-      const trimmedLineText = line?.translateToString(true) ?? "";
       const nextLineText = buffer.getLine(lineIndex + 1)?.translateToString(true) ?? "";
       const writtenExtent = measureWrittenLineExtent(line, rawLineText);
+      const writtenLineText = rawLineText.slice(0, writtenExtent.textLength);
       let lineText = nextIsWrapped
         ? normalizeSoftWrappedArtifactLine(
             // Pass the written prefix, not the padded row: a wide glyph that
             // did not fit in the last column leaves a blank cell behind, and
             // treating that as a word gap injects a space into the path.
-            rawLineText.slice(0, writtenExtent.textLength),
+            writtenLineText,
             nextLineText,
           )
-        : trimmedLineText;
+        // A hard-wrapped path can split at a real space. Preserve written
+        // trailing spaces while still excluding xterm's unwritten row padding.
+        : writtenLineText;
       let sourceOffset = 0;
       if (lineIndex > firstLineIndex) {
         const canJoinSegment = !segmentJoinBlocked;

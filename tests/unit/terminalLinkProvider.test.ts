@@ -454,6 +454,52 @@ describe("terminal local file path links", () => {
     expect(links?.map((link) => link.text)).toEqual([existingPrefix]);
   });
 
+  it("preserves a path space at a hard-wrap boundary", async () => {
+    const existingPrefix = String.raw`C:\Users\miyaz\Sample Company Dropbox\reports\wrapped.md`;
+    const first = "\u25CF `C:\\Users\\miyaz\\Sample Company ";
+    const second = "  \u23BF Dropbox\\reports\\wrapped.md`";
+    const columns = Math.max(displayColumns(first), displayColumns(second));
+    mockedResolveLocalPathLinks.mockImplementation(async (candidates) =>
+      candidates.map((candidate) => candidate === existingPrefix
+        ? { existingPrefix, isDir: false }
+        : null),
+    );
+
+    const links = await createLinkProviderHarness([
+      { text: first, columns },
+      { text: second, columns },
+    ]).provideLinks(2);
+
+    expect(mockedResolveLocalPathLinks.mock.calls[0][0]).toContain(existingPrefix);
+    expect(links?.map((link) => link.text)).toEqual([existingPrefix]);
+  });
+
+  it("keeps a backticked Unicode path clickable from either wrapped row", async () => {
+    const head = "C:\\Users\\miyaz\\reports\\_quick\\2026-08\\mycmux_0.21.6\u21920.21.10_";
+    const tail = "\u66F4\u65B0\u307E\u3068\u3081_0804-1836.html";
+    const existingPrefix = `${head}${tail}`;
+    const first = `\u25CF \`${head}`;
+    const second = `  ${tail}\``;
+    mockedResolveLocalPathLinks.mockImplementation(async (candidates) =>
+      candidates.map((candidate) => candidate === existingPrefix
+        ? { existingPrefix, isDir: false }
+        : null),
+    );
+
+    const harness = createLinkProviderHarness([
+      { text: first, columns: 80 },
+      { text: second, columns: 80 },
+    ]);
+    const firstRowLinks = await harness.provideLinks(1);
+    const secondRowLinks = await harness.provideLinks(2);
+
+    expect(firstRowLinks?.map((link) => link.text)).toEqual([existingPrefix]);
+    expect(secondRowLinks?.map((link) => link.text)).toEqual([existingPrefix]);
+    expect(secondRowLinks?.[0].range).toEqual(firstRowLinks?.[0].range);
+    secondRowLinks?.[0].activate({} as MouseEvent, existingPrefix);
+    expect(harness.onActivate).toHaveBeenCalledWith(existingPrefix, expect.anything());
+  });
+
   it("does not join a short line that ended on purpose", async () => {
     // Same 80-column row, but the path line used only a quarter of it. Nothing
     // wrapped here, so the following sentence must stay a separate line.
