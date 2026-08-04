@@ -5,6 +5,7 @@ import { useWorkspaceListStore, usePaneMetadataStore } from "../../stores/worksp
 import { usePaneDragStore } from "../../stores/paneDragStore";
 import { useSavepointDragStore } from "../../stores/savepointDragStore";
 import { SIDEBAR_WIDTH } from "../../lib/constants";
+import { distinctAgentKinds } from "../../lib/agentKindColors";
 import { deriveDisplayStatus } from "../../lib/notificationStatus";
 import TabItem from "./TabItem";
 import type { Workspace } from "../../types";
@@ -59,9 +60,13 @@ const WorkspaceTabEntry = memo(function WorkspaceTabEntry({
   onClose,
   onRename,
 }: WorkspaceTabEntryProps) {
-  const sessionIds = useMemo(
-    () => ws.panes.flatMap((pane) => pane.tabs.map((tab) => tab.sessionId)),
+  const workspaceTabs = useMemo(
+    () => ws.panes.flatMap((pane) => pane.tabs),
     [ws.panes],
+  );
+  const sessionIds = useMemo(
+    () => workspaceTabs.map((tab) => tab.sessionId),
+    [workspaceTabs],
   );
   const tabMetadata = usePaneMetadataStore(useShallow((s) =>
     sessionIds.map((sessionId) => s.metadata[sessionId]),
@@ -88,6 +93,9 @@ const WorkspaceTabEntry = memo(function WorkspaceTabEntry({
     }
     if (tabLastLog[index]) lastLog = tabLastLog[index];
   });
+  const agentKinds = distinctAgentKinds(
+    workspaceTabs.map((tab, index) => tabMetadata[index]?.agentKind ?? tab.agentKind),
+  );
 
   const firstActiveTabSessionId = ws.panes[0]?.tabs.find((t) => t.id === ws.panes[0]?.activeTabId)?.sessionId;
   const firstPaneMeta = firstActiveTabSessionId ? metadataBySession[firstActiveTabSessionId] : undefined;
@@ -121,6 +129,7 @@ const WorkspaceTabEntry = memo(function WorkspaceTabEntry({
         workDoneCount={totalWsWorkDone || undefined}
         lastLogLine={lastLog}
         statusCounts={statusCounts}
+        agentKinds={agentKinds}
         active={active}
         onClick={() => { if (!draggingRef.current) onClick(ws.id); }}
         onClose={() => onClose(ws.id)}

@@ -14,6 +14,7 @@ import {
 import { useWorkspaceListStore } from "../../stores/workspaceListStore";
 import { useSettingsStore } from "../../stores/settingsStore";
 import { OVERLAY_EXIT_MS, useDeferredUnmount } from "../../hooks/useDeferredUnmount";
+import { KIND_COLORS } from "../../lib/agentKindColors";
 import { DocumentIcon, PencilIcon, TaskIcon } from "../icons/ChromeIcons";
 import "./CrsmPalette.css";
 
@@ -129,11 +130,6 @@ function splitPreviewTurns(preview: string): PreviewTurn[] {
   return out;
 }
 
-const KIND_COLORS: Record<TargetKind, { fg: string; bg: string }> = {
-  "claude": { fg: "#f0a878", bg: "rgba(255, 138, 61, 0.10)" },
-  "codex": { fg: "#8ab8e8", bg: "rgba(94, 158, 255, 0.10)" },
-  "claude-codex": { fg: "#7dcc97", bg: "rgba(74, 222, 128, 0.10)" },
-};
 const LIST_OVERSCAN = 6;
 const LIST_VIEWPORT_FALLBACK = 420;
 const HANDOFF_TIMEOUT_MS = 9000;

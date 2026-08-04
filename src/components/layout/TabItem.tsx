@@ -1,4 +1,7 @@
 import { memo, useState, useRef, useCallback, useEffect } from "react";
+import type { CSSProperties } from "react";
+import { KIND_COLORS } from "../../lib/agentKindColors";
+import type { AgentSessionKind } from "../../types";
 
 interface StatusCounts {
   working: number;
@@ -15,11 +18,20 @@ interface TabItemProps {
   workDoneCount?: number;
   lastLogLine?: string;
   statusCounts?: StatusCounts;
+  agentKinds?: readonly AgentSessionKind[];
   active: boolean;
   onClick: () => void;
   onClose: () => void;
   onRename?: (newName: string) => void;
 }
+
+const AGENT_KIND_ACCESSIBLE_LABELS: Record<AgentSessionKind, string> = {
+  "claude": "Claude",
+  "codex": "Codex",
+  "claude-codex": "Hybrid",
+};
+
+type AgentKindStyle = CSSProperties & { "--agent-kind-color": string };
 
 function StatusPip({ count, color, pulse = false }: { count: number; color: string; pulse?: boolean }) {
   return (
@@ -38,8 +50,9 @@ function StatusPip({ count, color, pulse = false }: { count: number; color: stri
   );
 }
 
-export default memo(function TabItem({ uiVariant = "default", name, paneCount, cwd, gitBranch, notificationCount, workDoneCount, lastLogLine, statusCounts, active, onClick, onClose, onRename }: TabItemProps) {
+export default memo(function TabItem({ uiVariant = "default", name, paneCount, cwd, gitBranch, notificationCount, workDoneCount, lastLogLine, statusCounts, agentKinds = [], active, onClick, onClose, onRename }: TabItemProps) {
   const hasAgents = statusCounts && (statusCounts.working + statusCounts.waiting) > 0;
+  const hasAgentKinds = agentKinds.length > 0;
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState(name);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -180,10 +193,26 @@ export default memo(function TabItem({ uiVariant = "default", name, paneCount, c
             {paneCount} {paneCount === 1 ? "pane" : "panes"}
           </span>
         </div>
-        {hasAgents && (
+        {(hasAgents || hasAgentKinds) && (
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            {statusCounts!.working > 0 && <StatusPip count={statusCounts!.working} color="var(--status-working)" pulse />}
-            {statusCounts!.waiting > 0 && <StatusPip count={statusCounts!.waiting} color="var(--status-waiting)" />}
+            {statusCounts && statusCounts.working > 0 && <StatusPip count={statusCounts.working} color="var(--status-working)" pulse />}
+            {statusCounts && statusCounts.waiting > 0 && <StatusPip count={statusCounts.waiting} color="var(--status-waiting)" />}
+            {hasAgentKinds && (
+              <span
+                className="workspace-agent-kind-dots"
+                role="img"
+                aria-label={`Agents: ${agentKinds.map((kind) => AGENT_KIND_ACCESSIBLE_LABELS[kind]).join(", ")}`}
+              >
+                {agentKinds.map((kind) => (
+                  <span
+                    key={kind}
+                    className="workspace-agent-kind-dot"
+                    aria-hidden="true"
+                    style={{ "--agent-kind-color": KIND_COLORS[kind].fg } as AgentKindStyle}
+                  />
+                ))}
+              </span>
+            )}
           </div>
         )}
         {lastLogLine && (

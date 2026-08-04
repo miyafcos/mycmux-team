@@ -310,6 +310,53 @@ div:hover>.tab-close-btn {
   transition: background var(--cmux-motion-fast) var(--cmux-ease);
 }
 
+.pane-tab-pill.has-agent-kind {
+  border-bottom: 2px solid color-mix(in srgb, var(--agent-kind-color) 55%, transparent) !important;
+}
+
+.pane-tab-pill.has-agent-kind.is-active {
+  border-bottom-color: color-mix(in srgb, var(--agent-kind-color) 85%, transparent) !important;
+}
+
+.agent-kind-label-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--agent-kind-color);
+  flex: 0 0 6px;
+}
+
+.agent-kind-badge {
+  min-width: 52px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  color: var(--agent-kind-fg);
+  background: var(--agent-kind-bg);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  line-height: normal;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.workspace-agent-kind-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.workspace-agent-kind-dot {
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--agent-kind-color);
+  opacity: 0.6;
+  flex: 0 0 5px;
+}
+
 .pane-tab-pill:hover {
   background: var(--cmux-hover) !important;
 }

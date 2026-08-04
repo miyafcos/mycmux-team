@@ -4,6 +4,7 @@ import { clampMenuPosition } from "../../lib/menuPosition";
 import { useShallow } from "zustand/react/shallow";
 import type { Pane, PaneTab } from "../../types";
 import { getAgent, getDefaultAgent } from "../../lib/agents";
+import { agentKindColor } from "../../lib/agentKindColors";
 import { crsmCreateHandoff } from "../../lib/ipc";
 import {
   buildDuplicateSessionPaneOptions,
@@ -152,6 +153,12 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): 
     );
   });
 }
+
+type AgentKindStyle = CSSProperties & {
+  "--agent-kind-color"?: string;
+  "--agent-kind-fg"?: string;
+  "--agent-kind-bg"?: string;
+};
 
 export function shouldShowPublishButton(
   activeTab: PaneTab | undefined,
@@ -358,6 +365,12 @@ const AGENT_KIND_LABELS: Record<string, string> = {
   "claude-codex": "Claude＋Codex",
 };
 
+const AGENT_KIND_BADGE_LABELS: Record<string, string> = {
+  "claude": "Claude",
+  "codex": "Codex",
+  "claude-codex": "Hybrid",
+};
+
 export function resolveActiveAgentLabel(
   agentId: string | undefined,
   agentKind: string | undefined,
@@ -559,6 +572,8 @@ function PaneTabListMenu({
   const renderTabRow = (tab: PaneTab, keyPrefix: string, showDetail: boolean) => {
     const isTabActive = tab.id === pane.activeTabId;
     const tabMeta = metadataBySession[tab.sessionId];
+    const rowAgentKind = tabMeta?.agentKind ?? tab.agentKind;
+    const rowKindColor = agentKindColor(rowAgentKind);
     const status = deriveDisplayStatus(tabMeta);
     const label = getTabDisplayLabel(tab, isTabActive);
     const attention = attentionBySession[tab.sessionId];
@@ -584,7 +599,12 @@ function PaneTabListMenu({
         role="menuitem"
         tabIndex={0}
         title={detail ?? label}
-        aria-label={[label, unreadLabel, detail].filter(Boolean).join(": ")}
+        aria-label={[
+          label,
+          rowKindColor ? AGENT_KIND_BADGE_LABELS[rowAgentKind ?? ""] : null,
+          unreadLabel,
+          detail,
+        ].filter(Boolean).join(": ")}
         onClick={() => {
           onSelectTab?.(tab.id);
           onCloseMenu();
@@ -617,6 +637,17 @@ function PaneTabListMenu({
             flexShrink: 0,
           }}
         />
+        {rowKindColor && (
+          <span
+            className="agent-kind-badge"
+            style={{
+              "--agent-kind-fg": rowKindColor.fg,
+              "--agent-kind-bg": rowKindColor.bg,
+            } as AgentKindStyle}
+          >
+            {AGENT_KIND_BADGE_LABELS[rowAgentKind ?? ""]}
+          </span>
+        )}
         <span style={{ flex: 1, minWidth: 0 }}>
           <span style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12 }}>
             {label}
@@ -803,6 +834,8 @@ export default memo(function PaneTabBar({
   );
   const activeStatus: EffectiveStatus = deriveDisplayStatus(activeMeta);
   const activeLastLog = activeTab ? lastLogBySession[activeTab.sessionId] : undefined;
+  const activeAgentKind = activeMeta?.agentKind ?? activeTab?.agentKind;
+  const activeKindColor = agentKindColor(activeAgentKind);
   const activeAgentLabel = activeTab
     ? resolveActiveAgentLabel(
         activeTab.agentId,
@@ -1374,6 +1407,7 @@ export default memo(function PaneTabBar({
         {pane.tabs.map((tab) => {
           const isTabActive = tab.id === pane.activeTabId;
           const tabMeta = metadataBySession[tab.sessionId];
+          const tabKindColor = agentKindColor(tabMeta?.agentKind ?? tab.agentKind);
           const tabNotificationCount = tabMeta?.notificationCount ?? 0;
           const tabWorkDoneCount = tabMeta?.workDoneCount ?? 0;
           const tabEffectiveStatus = deriveDisplayStatus(tabMeta);
@@ -1474,8 +1508,12 @@ export default memo(function PaneTabBar({
               aria-selected={isTabActive}
               tabIndex={0}
               title={tabTitle}
-              aria-label={[tabTitle, canonicalUnreadLabel].filter(Boolean).join(": ")}
-              className={`pane-tab-pill ${isTabActive ? "is-active" : ""}${isSavepointDropTarget ? " is-savepoint-write-target" : ""}`}
+              aria-label={[
+                tabTitle,
+                tabKindColor ? AGENT_KIND_BADGE_LABELS[tabMeta?.agentKind ?? tab.agentKind ?? ""] : null,
+                canonicalUnreadLabel,
+              ].filter(Boolean).join(": ")}
+              className={`pane-tab-pill ${isTabActive ? "is-active" : ""}${isSavepointDropTarget ? " is-savepoint-write-target" : ""}` + (tabKindColor ? " has-agent-kind" : "")}
               style={{
                 display: "flex",
                 alignItems: "center",
@@ -1487,10 +1525,11 @@ export default memo(function PaneTabBar({
                 cursor: isEditingTab ? "text" : "pointer",
                 background: isTabActive ? "var(--cmux-selected)" : "transparent",
                 borderRight: "1px solid var(--cmux-border-hairline)",
-                borderBottom: isTabActive ? "2px solid var(--cmux-accent)" : "2px solid transparent",
+                borderBottom: "2px solid transparent",
                 flexShrink: 1,
                 transition: "background 0.1s",
-              }}
+                "--agent-kind-color": tabKindColor?.fg,
+              } as AgentKindStyle}
             >
               {/* notification dot: amber = approval waiting, emerald = work done */}
               <AttentionUnreadDot category={canonicalUnreadCategory} />
@@ -1671,6 +1710,13 @@ export default memo(function PaneTabBar({
           <span style={{ fontSize: "var(--cmux-font-size-xs)", color: statusCfg.color, fontWeight: 600, flexShrink: 0, letterSpacing: "0.02em" }}>
             {statusCfg.title}
           </span>
+          {activeKindColor && (
+            <span
+              className="agent-kind-label-dot"
+              aria-hidden="true"
+              style={{ "--agent-kind-color": activeKindColor.fg } as AgentKindStyle}
+            />
+          )}
           <span style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-tertiary)", flexShrink: 0 }}>
             {activeAgentLabel}
           </span>
@@ -1690,7 +1736,7 @@ export default memo(function PaneTabBar({
       {usesCompactTabs && activeTab && (
         <>
           <div
-            className="pane-tab-pill is-active pane-tab-compact"
+            className={"pane-tab-pill is-active pane-tab-compact" + (activeKindColor ? " has-agent-kind" : "")}
             onPointerDown={(event) => {
               if (isEditingActiveTab || event.button !== 0) return;
               if (event.detail >= 2) {
@@ -1720,7 +1766,11 @@ export default memo(function PaneTabBar({
               setContextMenu({ tabId: activeTab.id, x: e.clientX, y: e.clientY });
             }}
             title={attentionDetail(activeAttention) ?? activeTabLabel}
-            aria-label={[activeTabLabel, activeUnreadLabel].filter(Boolean).join(": ")}
+            aria-label={[
+              activeTabLabel,
+              activeKindColor ? AGENT_KIND_BADGE_LABELS[activeAgentKind ?? ""] : null,
+              activeUnreadLabel,
+            ].filter(Boolean).join(": ")}
             style={{
               display: "flex",
               alignItems: "center",
@@ -1730,8 +1780,9 @@ export default memo(function PaneTabBar({
               flex: 1,
               minWidth: 0,
               cursor: isEditingActiveTab ? "text" : "default",
-              borderBottom: "2px solid var(--cmux-accent)",
-            }}
+              borderBottom: "2px solid transparent",
+              "--agent-kind-color": activeKindColor?.fg,
+            } as AgentKindStyle}
           >
             <AttentionUnreadDot category={activeUnreadCategory} />
             {activeNotificationCount > 0 && (
