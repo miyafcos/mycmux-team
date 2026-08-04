@@ -208,7 +208,7 @@ export function ThemeBackgroundPanel({
         }}
       >
         <div style={{ fontSize: 12, fontWeight: 700 }}>背景</div>
-        <div style={{ fontSize: 10, color: "var(--cmux-text-tertiary)" }}>
+        <div style={{ fontSize: 11, color: "var(--cmux-text-tertiary)" }}>
           {modeLabel}{backgroundChanged ? " / 変更あり" : ""}
         </div>
       </div>
@@ -309,7 +309,7 @@ export function ThemeBackgroundPanel({
           </label>
         </div>
 
-        <div style={{ fontSize: 10, color: "var(--cmux-text-tertiary)" }}>
+        <div style={{ fontSize: 11, color: "var(--cmux-text-tertiary)" }}>
           {filteredPresets.length} / {THEME_BACKGROUND_PRESETS.length} 件のプリセット
         </div>
 

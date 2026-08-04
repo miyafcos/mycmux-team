@@ -139,7 +139,7 @@ function PresetButton({
       <div
         style={{
           marginTop: 4,
-          fontSize: 10,
+          fontSize: 11,
           color: "var(--cmux-text-tertiary)",
           overflow: "hidden",
           textOverflow: "ellipsis",
@@ -194,7 +194,7 @@ function ColorTweakRow({
             {field.label}
           </span>
           {changed && (
-            <span style={{ color: "var(--cmux-accent)", fontSize: 9, fontWeight: 700, flexShrink: 0 }}>
+            <span style={{ color: "var(--cmux-accent)", fontSize: 11, fontWeight: 700, flexShrink: 0 }}>
               変更
             </span>
           )}
@@ -202,7 +202,7 @@ function ColorTweakRow({
         <div
           style={{
             marginTop: 2,
-            fontSize: 10,
+            fontSize: 11,
             color: "var(--cmux-text-tertiary)",
             overflow: "hidden",
             textOverflow: "ellipsis",
@@ -460,7 +460,7 @@ export function ThemeTweakPanel({
           }}
         >
           <div style={{ fontSize: 12, fontWeight: 700 }}>主要色</div>
-          <div style={{ fontSize: 10, color: "var(--cmux-text-tertiary)" }}>よく触る項目</div>
+          <div style={{ fontSize: 11, color: "var(--cmux-text-tertiary)" }}>よく触る項目</div>
         </div>
         {QUICK_TWEAK_FIELDS.map((field) => {
           const baseValue = readThemeColor(baseTheme, field.key);
@@ -499,7 +499,7 @@ export function ThemeTweakPanel({
           }}
         >
           <span style={{ fontSize: 12, fontWeight: 700 }}>詳細色</span>
-          <span style={{ fontSize: 10, color: "var(--cmux-text-tertiary)" }}>
+          <span style={{ fontSize: 11, color: "var(--cmux-text-tertiary)" }}>
             {showAdvanced ? "閉じる" : "ANSI 色など"}
           </span>
         </button>

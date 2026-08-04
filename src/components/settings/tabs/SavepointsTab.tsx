@@ -111,7 +111,7 @@ export function SavepointsTab({ onOpen }: SavepointsTabProps) {
           {onlineStrings.settingsStorageSyncHint}
         </p>
 
-        <div style={{ marginBottom: 7, color: "var(--cmux-text-dim)", fontSize: 10 }}>
+        <div style={{ marginBottom: 7, color: "var(--cmux-text-dim)", fontSize: 11 }}>
           {onlineStrings.settingsStorageCurrentLabel}
         </div>
         <div
@@ -129,7 +129,7 @@ export function SavepointsTab({ onOpen }: SavepointsTabProps) {
               gap: 7,
               marginBottom: currentDirectory ? 7 : 0,
               color: currentStatusColor,
-              fontSize: 10,
+              fontSize: 11,
               fontWeight: 700,
             }}
           >
@@ -174,7 +174,7 @@ export function SavepointsTab({ onOpen }: SavepointsTabProps) {
               style={{
                 marginBottom: 6,
                 color: "var(--cmux-text-secondary)",
-                fontSize: 10,
+                fontSize: 11,
                 fontWeight: 700,
               }}
             >
@@ -197,7 +197,7 @@ export function SavepointsTab({ onOpen }: SavepointsTabProps) {
             <div
               style={{
                 color: "var(--cmux-text-dim)",
-                fontSize: 10,
+                fontSize: 11,
                 lineHeight: 1.7,
               }}
             >
@@ -210,7 +210,7 @@ export function SavepointsTab({ onOpen }: SavepointsTabProps) {
           style={{
             marginTop: 14,
             color: "var(--cmux-text-dim)",
-            fontSize: 10,
+            fontSize: 11,
             lineHeight: 1.7,
           }}
         >

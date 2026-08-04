@@ -555,7 +555,7 @@ function AccountRow({ account, highlighted, toggling, deleting, onToggle, onReau
           {account.email ?? account.label}
         </span>
         {account.needs_reauth && (
-          <span style={{ fontSize: 10, color: "var(--cmux-usage-warn)", fontWeight: 700 }}>要再認証</span>
+          <span style={{ fontSize: 11, color: "var(--cmux-usage-warn)", fontWeight: 700 }}>要再認証</span>
         )}
       </div>
       <label

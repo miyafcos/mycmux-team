@@ -89,7 +89,7 @@ function FontPresetOption({
           <div
             style={{
               marginTop: 2,
-              fontSize: 10,
+              fontSize: 11,
               color: "var(--cmux-text-tertiary)",
               lineHeight: 1.25,
               overflow: "hidden",
@@ -101,7 +101,7 @@ function FontPresetOption({
           </div>
         </div>
         {active && (
-          <span style={{ flexShrink: 0, fontSize: 10, color: "var(--cmux-accent)", fontWeight: 700 }}>
+          <span style={{ flexShrink: 0, fontSize: 11, color: "var(--cmux-accent)", fontWeight: 700 }}>
             選択中
           </span>
         )}
@@ -116,7 +116,7 @@ function FontPresetOption({
               borderRadius: 999,
               padding: "1px 6px",
               color: "var(--cmux-text-secondary)",
-              fontSize: 9,
+              fontSize: 11,
               lineHeight: 1.25,
             }}
           >
@@ -206,7 +206,7 @@ export function ThemeFontSettings({
         <div style={{ display: "flex", justifyContent: "space-between", gap: 10, marginBottom: 8 }}>
           <div>
             <div style={{ fontSize: 12, color: "var(--cmux-text-secondary)" }}>端末フォント</div>
-            <div style={{ marginTop: 2, fontSize: 10, color: "var(--cmux-text-tertiary)" }}>
+            <div style={{ marginTop: 2, fontSize: 11, color: "var(--cmux-text-tertiary)" }}>
               3分類から選ぶ。すべて表プレビューつき
             </div>
           </div>
@@ -242,7 +242,7 @@ export function ThemeFontSettings({
                 }}
               >
                 <div style={{ fontSize: 12, fontWeight: 700 }}>{group.title}</div>
-                <div style={{ fontSize: 10, color: "var(--cmux-text-tertiary)" }}>{group.detail}</div>
+                <div style={{ fontSize: 11, color: "var(--cmux-text-tertiary)" }}>{group.detail}</div>
               </div>
               <div
                 style={{

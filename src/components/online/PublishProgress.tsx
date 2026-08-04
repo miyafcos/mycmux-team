@@ -34,7 +34,7 @@ export function PublishProgress({
         {result ? onlineStrings.publishStepDone : onlineStrings.publishProgressTitle}
       </div>
       {!result && (
-        <div style={{ marginTop: 2, fontSize: 10, color: "var(--cmux-text-tertiary)" }}>
+        <div style={{ marginTop: 2, fontSize: 11, color: "var(--cmux-text-tertiary)" }}>
           {onlineStrings.publishProgressHint}
         </div>
       )}

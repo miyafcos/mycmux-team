@@ -477,6 +477,7 @@ export default function OnlinePanel({ workspaceId, paneId }: OnlinePanelProps) {
       <div role="group" aria-label={onlineStrings.viewSwitcherLabel} style={styles.viewTabs}>
         <button
           type="button"
+          className="online-view-button"
           aria-pressed={view === "active"}
           style={{ ...styles.viewButton, ...(view === "active" ? styles.viewButtonActive : {}) }}
           onClick={() => {
@@ -489,6 +490,7 @@ export default function OnlinePanel({ workspaceId, paneId }: OnlinePanelProps) {
         </button>
         <button
           type="button"
+          className="online-view-button"
           aria-pressed={view === "trash"}
           style={{ ...styles.viewButton, ...(view === "trash" ? styles.viewButtonActive : {}) }}
           onClick={() => {
@@ -569,6 +571,7 @@ export default function OnlinePanel({ workspaceId, paneId }: OnlinePanelProps) {
                 {!trashed && (
                   <button
                      type="button"
+                     className="online-drag-handle"
                      data-savepoint-drag-handle="true"
                      aria-label={onlineStrings.dragHandleLabel(entry.summary_line)}
                     title={onlineStrings.dragHandleLabel(entry.summary_line)}
@@ -642,6 +645,7 @@ export default function OnlinePanel({ workspaceId, paneId }: OnlinePanelProps) {
                     <>
                       <button
                         type="button"
+                        className="online-icon-button"
                         aria-label={entry.pinned ? onlineStrings.pinOff : onlineStrings.pinOn}
                         title={entry.pinned ? onlineStrings.pinOff : onlineStrings.pinOn}
                         style={{
@@ -663,6 +667,7 @@ export default function OnlinePanel({ workspaceId, paneId }: OnlinePanelProps) {
                       </button>
                       <button
                         type="button"
+                        className="online-icon-button online-icon-button--danger"
                         aria-label={onlineStrings.moveToTrash}
                         title={onlineStrings.moveToTrash}
                         style={{ ...styles.iconButton, ...styles.dangerIconButton }}
@@ -713,6 +718,7 @@ export default function OnlinePanel({ workspaceId, paneId }: OnlinePanelProps) {
                     <div style={styles.trashActions}>
                       <button
                         type="button"
+                        className="online-action-button online-action-button--secondary"
                         style={styles.secondaryButton}
                         disabled={deletingBundle === entry.bundle_dir}
                         onClick={() => void restoreEntry(entry)}
@@ -721,6 +727,7 @@ export default function OnlinePanel({ workspaceId, paneId }: OnlinePanelProps) {
                       </button>
                       <button
                         type="button"
+                        className="online-action-button online-action-button--danger"
                         style={{
                           ...styles.deleteActionButton,
                           ...(armedDeleteBundle === entry.bundle_dir ? styles.deleteButtonArmed : {}),
@@ -737,6 +744,7 @@ export default function OnlinePanel({ workspaceId, paneId }: OnlinePanelProps) {
                     <div style={styles.actions}>
                       <button
                         type="button"
+                        className="online-action-button online-action-button--primary"
                         style={styles.primaryButton}
                         onClick={() => void handoffSummary(entry, "claude")}
                       >
@@ -744,6 +752,7 @@ export default function OnlinePanel({ workspaceId, paneId }: OnlinePanelProps) {
                       </button>
                       <button
                         type="button"
+                        className="online-action-button online-action-button--secondary"
                         style={styles.secondaryButton}
                         onClick={() => void handoffSummary(entry, "codex")}
                       >
@@ -751,6 +760,7 @@ export default function OnlinePanel({ workspaceId, paneId }: OnlinePanelProps) {
                       </button>
                       <button
                         type="button"
+                        className="online-action-button online-action-button--secondary"
                         style={styles.secondaryButton}
                         title={onlineStrings.joinFullNotice}
                         onClick={() => void joinFull(entry)}
@@ -759,6 +769,7 @@ export default function OnlinePanel({ workspaceId, paneId }: OnlinePanelProps) {
                       </button>
                       <button
                         type="button"
+                        className="online-action-button online-action-button--secondary"
                         style={styles.secondaryButton}
                         disabled={sharingBundle === entry.bundle_dir}
                         onClick={() => void shareTransfer(entry)}
@@ -781,6 +792,7 @@ export default function OnlinePanel({ workspaceId, paneId }: OnlinePanelProps) {
       >
         <button
           type="button"
+          className="online-local-footer-header"
           aria-expanded={!localSessionsCollapsed}
           aria-label={onlineStrings.panelLocalSessionsToggleAriaLabel}
           style={styles.localFooterHeader}
@@ -837,7 +849,7 @@ export default function OnlinePanel({ workspaceId, paneId }: OnlinePanelProps) {
                   return (
                     <div
                       key={session.terminalSessionId}
-                      className="online-session-row"
+                      className={jumpable ? "online-session-row online-session-row--clickable" : "online-session-row"}
                       style={{
                         ...styles.localSessionRow,
                         ...(published ? styles.localSessionRowPublished : {}),
@@ -912,6 +924,7 @@ export default function OnlinePanel({ workspaceId, paneId }: OnlinePanelProps) {
                       </div>
                       <button
                         type="button"
+                        className="online-local-publish-button"
                         style={{
                           ...styles.localPublishButton,
                           ...((!agentSessionId || publishing) ? styles.localPublishButtonDisabled : {}),
@@ -962,9 +975,9 @@ const onlinePanelHoverCss = `
   container-type: inline-size;
 }
 .online-session-row, .online-sp-card {
-  transition: transform 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
+  transition: transform var(--cmux-motion-fast) var(--cmux-ease), border-color var(--cmux-motion-fast) var(--cmux-ease), box-shadow var(--cmux-motion-fast) var(--cmux-ease);
 }
-.online-session-row:hover {
+.online-session-row--clickable:hover {
   transform: translateY(-1px);
   border-color: color-mix(in srgb, var(--cmux-accent) 45%, var(--cmux-border));
   box-shadow: 0 3px 10px color-mix(in srgb, var(--cmux-accent) 12%, transparent);
@@ -997,10 +1010,40 @@ const onlinePanelHoverCss = `
   white-space: nowrap;
 }
 .online-sp-card-disclosure svg {
-  transition: transform 120ms ease;
+  transition: transform var(--cmux-motion-fast) var(--cmux-ease);
 }
 .online-sp-card-disclosure[aria-expanded="true"] svg {
   transform: rotate(180deg);
+}
+.online-toolbar-button,
+.online-view-button,
+.online-local-footer-header,
+.online-drag-handle,
+.online-icon-button,
+.online-sp-card-disclosure,
+.online-action-button,
+.online-local-publish-button {
+  transition: transform var(--cmux-motion-fast) var(--cmux-ease), background var(--cmux-motion-fast) var(--cmux-ease), color var(--cmux-motion-fast) var(--cmux-ease), border-color var(--cmux-motion-fast) var(--cmux-ease), box-shadow var(--cmux-motion-fast) var(--cmux-ease);
+}
+.online-toolbar-button:hover:not(:disabled),
+.online-action-button--primary:hover:not(:disabled),
+.online-local-publish-button:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 3px 10px color-mix(in srgb, var(--cmux-accent) 18%, transparent);
+}
+.online-view-button:hover:not([aria-pressed="true"]),
+.online-local-footer-header:hover,
+.online-drag-handle:hover,
+.online-icon-button:hover:not(:disabled),
+.online-sp-card-disclosure:hover:not(:disabled),
+.online-action-button--secondary:hover:not(:disabled) {
+  background: var(--cmux-hover) !important;
+  color: var(--cmux-text) !important;
+}
+.online-icon-button--danger:hover:not(:disabled),
+.online-action-button--danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--cmux-red) 12%, transparent) !important;
+  border-color: var(--cmux-red) !important;
 }
 @container (max-width: 340px) {
   .online-panel-heading {
@@ -1032,8 +1075,20 @@ const onlinePanelHoverCss = `
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .online-session-row, .online-sp-card { transition: none; }
-  .online-session-row:hover, .online-sp-card:hover { transform: none; }
+  .online-session-row,
+  .online-sp-card,
+  .online-toolbar-button,
+  .online-view-button,
+  .online-local-footer-header,
+  .online-drag-handle,
+  .online-icon-button,
+  .online-action-button,
+  .online-local-publish-button { transition: none; }
+  .online-session-row--clickable:hover,
+  .online-sp-card:hover,
+  .online-toolbar-button:hover:not(:disabled),
+  .online-action-button--primary:hover:not(:disabled),
+  .online-local-publish-button:hover:not(:disabled) { transform: none; }
   .online-sp-card-disclosure svg { transition: none; }
 }
 `;
@@ -1082,7 +1137,7 @@ const styles: Record<string, React.CSSProperties> = {
     borderLeft: "2px solid var(--cmux-accent)",
     color: "var(--cmux-text-secondary)",
     background: "color-mix(in srgb, var(--cmux-accent) 7%, transparent)",
-    fontSize: 10.5,
+    fontSize: 11,
     lineHeight: 1.55,
   },
   refreshButton: {
@@ -1129,7 +1184,7 @@ const styles: Record<string, React.CSSProperties> = {
     boxShadow: "0 0 0 3px color-mix(in srgb, var(--cmux-accent) 20%, transparent), 0 12px 32px color-mix(in srgb, black 42%, transparent)",
   },
   transferDropTitle: { fontSize: 12.5, fontWeight: 750 },
-  transferDropHint: { color: "var(--cmux-text-secondary)", fontSize: 10.5 },
+  transferDropHint: { color: "var(--cmux-text-secondary)", fontSize: 11 },
   search: {
     width: "100%",
     boxSizing: "border-box",
@@ -1196,7 +1251,7 @@ const styles: Record<string, React.CSSProperties> = {
     background: "color-mix(in srgb, var(--cmux-accent) 16%, transparent)",
     fontVariantNumeric: "tabular-nums",
   },
-  localSessionsHint: { color: "var(--cmux-text-dim)", fontSize: 10, fontWeight: 400 },
+  localSessionsHint: { color: "var(--cmux-text-dim)", fontSize: 11, fontWeight: 400 },
   localSessionsEmpty: { padding: "12px 2px 3px", color: "var(--cmux-text-dim)", fontSize: 11 },
   localSessionsList: { display: "grid", gap: 8 },
   localSessionRow: {
@@ -1229,7 +1284,7 @@ const styles: Record<string, React.CSSProperties> = {
     columnGap: 10,
     rowGap: 3,
     color: "var(--cmux-text-dim)",
-    fontSize: 10,
+    fontSize: 11,
   },
   localSessionLogLine: {
     minWidth: 0,
@@ -1238,7 +1293,7 @@ const styles: Record<string, React.CSSProperties> = {
     whiteSpace: "nowrap",
     color: "var(--cmux-text-dim)",
     fontFamily: "'JetBrains Mono', 'Geist Mono', monospace",
-    fontSize: 10,
+    fontSize: 11,
   },
   metaItem: { minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 220 },
   metaItemMono: {
@@ -1246,8 +1301,8 @@ const styles: Record<string, React.CSSProperties> = {
     fontVariantNumeric: "tabular-nums",
     whiteSpace: "nowrap",
   },
-  savedChip: { marginLeft: "auto", flexShrink: 0, color: "var(--cmux-text-dim)", fontSize: 10, whiteSpace: "nowrap" },
-  savedChipPublished: { marginLeft: "auto", flexShrink: 0, color: "var(--cmux-accent)", fontSize: 10, whiteSpace: "nowrap" },
+  savedChip: { marginLeft: "auto", flexShrink: 0, color: "var(--cmux-text-dim)", fontSize: 11, whiteSpace: "nowrap" },
+  savedChipPublished: { marginLeft: "auto", flexShrink: 0, color: "var(--cmux-accent)", fontSize: 11, whiteSpace: "nowrap" },
   statusDotWorking: {
     width: 7,
     height: 7,
@@ -1277,7 +1332,7 @@ const styles: Record<string, React.CSSProperties> = {
     flexShrink: 0,
     padding: "1px 6px",
     borderRadius: 8,
-    fontSize: 9.5,
+    fontSize: 11,
     letterSpacing: "0.02em",
     color: "var(--cmux-text-dim)",
     border: "1px solid var(--cmux-border)",
@@ -1317,13 +1372,13 @@ const styles: Record<string, React.CSSProperties> = {
   },
   cardIdentity: { flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 1 },
   project: { minWidth: 0, fontSize: 12.5, fontWeight: 650, lineHeight: 1.2 },
-  owner: { minWidth: 0, color: "var(--cmux-text-dim)", fontSize: 9.5, lineHeight: 1.2 },
+  owner: { minWidth: 0, color: "var(--cmux-text-dim)", fontSize: 11, lineHeight: 1.2 },
   machine: { color: "inherit", fontSize: "inherit" },
   updated: {
     flexShrink: 0,
     alignSelf: "flex-start",
     color: "var(--cmux-text-dim)",
-    fontSize: 9.5,
+    fontSize: 11,
     lineHeight: 1.2,
     whiteSpace: "nowrap",
     fontVariantNumeric: "tabular-nums",
@@ -1331,15 +1386,15 @@ const styles: Record<string, React.CSSProperties> = {
   summary: { marginTop: 5, fontSize: 11.5, lineHeight: 1.35, color: "var(--cmux-text-secondary)" },
   cardFooter: { display: "flex", alignItems: "center", gap: 6, minWidth: 0, marginTop: 6 },
   metaRow: { flex: 1, minWidth: 0, display: "flex", flexWrap: "nowrap", alignItems: "center", gap: 5, overflow: "hidden" },
-  recordCurrentBadge: { flexShrink: 0, padding: "1px 5px", borderRadius: 9, fontSize: 9.5, color: "var(--cmux-accent)", border: "1px solid currentColor" },
-  recordClosedBadge: { flexShrink: 0, padding: "1px 5px", borderRadius: 9, fontSize: 9.5, color: "var(--cmux-text-dim)", border: "1px solid currentColor" },
-  recordFinalBadge: { flexShrink: 0, padding: "1px 5px", borderRadius: 9, fontSize: 9.5, color: "var(--cmux-yellow)", border: "1px solid currentColor", fontWeight: 600 },
-  warningBadge: { flexShrink: 0, padding: "1px 5px", borderRadius: 9, fontSize: 9.5, color: "var(--cmux-yellow)", border: "1px solid currentColor" },
-  receivedBadge: { flexShrink: 0, padding: "1px 5px", borderRadius: 9, fontSize: 9.5, color: "var(--cmux-accent)", border: "1px solid currentColor" },
+  recordCurrentBadge: { flexShrink: 0, padding: "1px 5px", borderRadius: 9, fontSize: 11, color: "var(--cmux-accent)", border: "1px solid currentColor" },
+  recordClosedBadge: { flexShrink: 0, padding: "1px 5px", borderRadius: 9, fontSize: 11, color: "var(--cmux-text-dim)", border: "1px solid currentColor" },
+  recordFinalBadge: { flexShrink: 0, padding: "1px 5px", borderRadius: 9, fontSize: 11, color: "var(--cmux-yellow)", border: "1px solid currentColor", fontWeight: 600 },
+  warningBadge: { flexShrink: 0, padding: "1px 5px", borderRadius: 9, fontSize: 11, color: "var(--cmux-yellow)", border: "1px solid currentColor" },
+  receivedBadge: { flexShrink: 0, padding: "1px 5px", borderRadius: 9, fontSize: 11, color: "var(--cmux-accent)", border: "1px solid currentColor" },
   openHereBadge: {
     padding: "1px 5px",
     borderRadius: 9,
-    fontSize: 9.5,
+    fontSize: 11,
     color: "var(--cmux-accent)",
     border: "1px solid currentColor",
     boxShadow: "0 0 8px color-mix(in srgb, var(--cmux-accent) 30%, transparent)",
@@ -1362,12 +1417,12 @@ const styles: Record<string, React.CSSProperties> = {
   dangerIconButton: { color: "var(--cmux-red)" },
   expandedPanel: { marginTop: 7, paddingTop: 7, borderTop: "1px solid var(--cmux-border)" },
   expandedMetaRow: { display: "flex", alignItems: "center", gap: 9, minWidth: 0, overflow: "hidden" },
-  sessionId: { minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--cmux-text-dim)", fontSize: 9.5 },
-  fileCount: { flexShrink: 0, color: "var(--cmux-text-dim)", fontSize: 9.5, whiteSpace: "nowrap" },
+  sessionId: { minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--cmux-text-dim)", fontSize: 11 },
+  fileCount: { flexShrink: 0, color: "var(--cmux-text-dim)", fontSize: 11, whiteSpace: "nowrap" },
   deleteButtonArmed: { borderColor: "var(--cmux-red)", background: "color-mix(in srgb, var(--cmux-red) 12%, transparent)" },
-  deleteActionButton: { minWidth: 0, border: "1px solid var(--cmux-red)", borderRadius: 7, padding: "6px 8px", color: "var(--cmux-red)", background: "transparent", cursor: "pointer", fontSize: 10.5, whiteSpace: "nowrap" },
+  deleteActionButton: { minWidth: 0, border: "1px solid var(--cmux-red)", borderRadius: 7, padding: "6px 8px", color: "var(--cmux-red)", background: "transparent", cursor: "pointer", fontSize: 11, whiteSpace: "nowrap" },
   actions: { display: "flex", flexWrap: "wrap", gap: 6, marginTop: 7 },
   trashActions: { display: "grid", gridTemplateColumns: "minmax(68px, 0.7fr) minmax(0, 1.3fr)", gap: 6, marginTop: 7 },
-  primaryButton: { minWidth: 0, border: 0, borderRadius: 7, padding: "6px 9px", color: "white", background: "var(--cmux-accent)", cursor: "pointer", fontSize: 10.5, whiteSpace: "nowrap" },
-  secondaryButton: { minWidth: 0, border: "1px solid var(--cmux-border)", borderRadius: 7, padding: "6px 9px", color: "var(--cmux-text)", background: "transparent", cursor: "pointer", fontSize: 10.5, whiteSpace: "nowrap" },
+  primaryButton: { minWidth: 0, border: 0, borderRadius: 7, padding: "6px 9px", color: "white", background: "var(--cmux-accent)", cursor: "pointer", fontSize: 11, whiteSpace: "nowrap" },
+  secondaryButton: { minWidth: 0, border: "1px solid var(--cmux-border)", borderRadius: 7, padding: "6px 9px", color: "var(--cmux-text)", background: "transparent", cursor: "pointer", fontSize: 11, whiteSpace: "nowrap" },
 };

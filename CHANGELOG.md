@@ -4,6 +4,15 @@
 
 ---
 
+## [0.21.9] - 2026-08-04
+
+UI/UX 底上げ Phase 3 (コンテンツ層) — 案B 全フェーズ完了。
+
+- Style: 設定ダイアログの左ナビ・閉じるボタンの hover を CSS クラス+motion トークン化 (useState hover の撤去・見た目は維持)
+- Style: OnlinePanel の各ボタン (ビュー切替・アイコン・アクション・publish・フッター) に hover 遷移。行の持ち上げ hover はクリック可能な行のみに限定。スタイル限定 (ロジック・DOM・文字列は不変)
+- Style: 日本語を含む極小テキストを 11px 床へ最終掃討 — 設定タブ (Savepoints)・OnlinePanel のチップ/ヒント/バッジ群・PublishProgress・テーマ編集パネル3枚・Usage の「要再認証」バッジ
+- Keep: savepoint カード密度契約 (test_savepoint_card_density_contract) は維持 — disclosure ボタンのクラスリテラルを保全
+
 ## [0.21.8] - 2026-08-04
 
 UI/UX 底上げ Phase 2 (クローム層)。

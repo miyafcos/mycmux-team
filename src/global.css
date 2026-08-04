@@ -305,7 +305,7 @@ div:hover>.tab-close-btn {
 .pane-tab-restore-badge.is-label {
   width: auto;
   padding: 0 5px;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
   white-space: nowrap;
 }

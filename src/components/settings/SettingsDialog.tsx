@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import "./SettingsDialog.css";
 import { useUsageStore } from "../../stores/usageStore";
 import { AppearanceTab } from "./tabs/AppearanceTab";
 import { NotificationsLayoutTab } from "./tabs/NotificationsLayoutTab";
@@ -74,24 +75,16 @@ interface NavItemProps {
 }
 
 function NavItem({ label, isActive, badge, onSelect }: NavItemProps) {
-  const [hovered, setHovered] = useState(false);
   return (
     <button
       type="button"
+      className="cmux-settings-nav-item"
+      data-active-settings-tab={isActive ? "true" : undefined}
       onClick={onSelect}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
       style={{
         width: "100%",
         padding: "8px 14px",
-        background: isActive
-          ? "color-mix(in srgb, var(--cmux-accent) 16%, transparent)"
-          : hovered
-            ? "color-mix(in srgb, var(--cmux-accent) 8%, transparent)"
-            : "transparent",
         border: "none",
-        borderLeft: isActive ? "2px solid var(--cmux-accent)" : "2px solid transparent",
-        color: isActive || hovered ? "var(--cmux-text)" : "var(--cmux-text-secondary)",
         cursor: "pointer",
         fontSize: 12,
         textAlign: "left",
@@ -108,7 +101,7 @@ function NavItem({ label, isActive, badge, onSelect }: NavItemProps) {
         <span
           style={{
             color: "var(--cmux-usage-warn)",
-            fontSize: 10,
+            fontSize: 11,
             fontWeight: 700,
             flexShrink: 0,
           }}
@@ -121,21 +114,17 @@ function NavItem({ label, isActive, badge, onSelect }: NavItemProps) {
 }
 
 function CloseButton({ onClose }: { onClose: () => void }) {
-  const [hovered, setHovered] = useState(false);
   return (
     <button
       type="button"
+      className="cmux-settings-close-button"
       onClick={onClose}
       aria-label="設定を閉じる"
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
       style={{
         width: 28,
         height: 28,
-        border: `1px solid ${hovered ? "var(--cmux-text-secondary)" : "var(--cmux-border)"}`,
         borderRadius: 6,
         background: "transparent",
-        color: hovered ? "var(--cmux-text)" : "var(--cmux-text-secondary)",
         cursor: "pointer",
         fontSize: 13,
         lineHeight: 1,
@@ -262,7 +251,7 @@ export default function SettingsDialog({ onClose, onOpenCrsmPalette, onOpenOnlin
                 <div
                   style={{
                     padding: sectionIndex === 0 ? "10px 16px 4px" : "18px 16px 4px",
-                    fontSize: 10,
+                    fontSize: 11,
                     fontWeight: 700,
                     letterSpacing: "0.08em",
                     color: "var(--cmux-text-dim, rgba(255,255,255,0.5))",
