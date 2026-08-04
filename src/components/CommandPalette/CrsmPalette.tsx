@@ -569,14 +569,15 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
     if (listRef.current) listRef.current.scrollTop = 0;
   }
 
+  // Search acts as a filter only — the list stays in last_activity order
+  // even while a query is active (Fuse relevance order is discarded).
   const sorted = useMemo(() => {
-    if (query.trim()) return filtered;
     return [...filtered].sort((a, b) => {
       const ta = Date.parse(a.last_activity) || 0;
       const tb = Date.parse(b.last_activity) || 0;
       return tb - ta;
     });
-  }, [filtered, query]);
+  }, [filtered]);
 
   const maxListed = deepLoaded ? MAX_LISTED_SESSIONS_DEEP : MAX_LISTED_SESSIONS_INITIAL;
   const listed = useMemo(() => sorted.slice(0, maxListed), [sorted, maxListed]);
