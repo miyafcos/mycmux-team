@@ -535,7 +535,7 @@ export default memo(function PathJumper({
 const containerStyle: CSSProperties = {
   position: "relative",
   padding: "6px",
-  borderBottom: "1px solid var(--cmux-border)",
+  borderBottom: "1px solid var(--cmux-border-hairline)",
 };
 
 const inputShellStyle: CSSProperties = {
@@ -584,7 +584,7 @@ const dropdownStyle: CSSProperties = {
   maxHeight: 280,
   overflowY: "auto",
   padding: 4,
-  background: "var(--cmux-surface, #1a1a1a)",
+  background: "var(--cmux-popover, #262626)",
   border: "1px solid var(--cmux-border)",
   borderRadius: 6,
   boxShadow: "var(--cmux-shadow-dropdown)",

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import json
 import sys
 import time
@@ -15,6 +16,58 @@ import savepoint_publish as sp  # noqa: E402
 SESSION_ID = "aaaabbbb-1111-2222-3333-444455556666"
 CWD_WIN = "C:\\Users\\alice\\Alice Dropbox\\TeamX\\事務関係\\案件A"
 DROPBOX_ROOT = "C:\\Users\\alice\\Alice Dropbox\\TeamX"
+
+
+def test_rename_with_retry_recovers_from_access_denied(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    src = tmp_path / "src"
+    dst = tmp_path / "dst"
+    src.mkdir()
+    original_rename = Path.rename
+    attempts = 0
+    sleeps: list[float] = []
+
+    def flaky_rename(path: Path, target: Path) -> Path:
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise PermissionError(errno.EACCES, "injected access denied", str(path))
+        return original_rename(path, target)
+
+    monkeypatch.setattr(Path, "rename", flaky_rename)
+    monkeypatch.setattr(sp.time, "sleep", sleeps.append)
+
+    sp._rename_with_retry(src, dst)
+
+    assert attempts == 3
+    assert sleeps == [0.05, 0.1]
+    assert dst.is_dir()
+
+
+def test_rename_with_retry_does_not_retry_other_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    src = tmp_path / "src"
+    dst = tmp_path / "dst"
+    src.mkdir()
+    attempts = 0
+    sleeps: list[float] = []
+
+    def failed_rename(path: Path, target: Path) -> Path:
+        nonlocal attempts
+        attempts += 1
+        raise OSError(errno.ENOSPC, "injected disk full", str(path))
+
+    monkeypatch.setattr(Path, "rename", failed_rename)
+    monkeypatch.setattr(sp.time, "sleep", sleeps.append)
+
+    with pytest.raises(OSError) as exc_info:
+        sp._rename_with_retry(src, dst)
+
+    assert exc_info.value.errno == errno.ENOSPC
+    assert attempts == 1
+    assert sleeps == []
 
 
 @pytest.mark.parametrize(
@@ -224,7 +277,7 @@ def test_finalize_after_trashed_final_starts_new_checkpoint(tmp_path: Path) -> N
     head_dir = online_dir / f"alice_{SESSION_ID[:8]}"
     trash_dir = online_dir / "_trash" / "11111111-2222-4333-8444-555555555555"
     trash_dir.parent.mkdir()
-    final_dir.rename(trash_dir)
+    sp._rename_with_retry(final_dir, trash_dir)
 
     head_manifest_path = head_dir / "manifest.json"
     head_manifest = json.loads(head_manifest_path.read_text(encoding="utf-8"))
@@ -251,7 +304,7 @@ def test_trashed_final_retry_reuses_bootstrapped_checkpoint(
     head_dir = online_dir / f"alice_{SESSION_ID[:8]}"
     trash_dir = online_dir / "_trash" / "11111111-2222-4333-8444-555555555555"
     trash_dir.parent.mkdir()
-    final_dir.rename(trash_dir)
+    sp._rename_with_retry(final_dir, trash_dir)
     head_manifest_path = head_dir / "manifest.json"
     head_manifest = json.loads(head_manifest_path.read_text(encoding="utf-8"))
     head_manifest[sp.TRASHED_FINAL_CHECKPOINT_FIELD] = finalized["checkpoint_id"]
@@ -332,7 +385,7 @@ def test_finalize_recovers_checkpoint_id_from_interrupted_swap(tmp_path: Path) -
     final_dir = Path(finalized["bundle_dir"])
     head_dir = final_dir.parents[1] / f"alice_{SESSION_ID[:8]}"
     stranded_head = head_dir.with_name(head_dir.name + ".old-crash")
-    head_dir.rename(stranded_head)
+    sp._rename_with_retry(head_dir, stranded_head)
 
     repeated = run_publish(tmp_path, record_kind="final")
 

@@ -397,7 +397,12 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
     "--cmux-bg-solid": currentTheme.chrome.background,
     "--cmux-bg": colorWithOpacity(currentTheme.chrome.background, panelOpacity),
     "--cmux-sidebar": colorWithOpacity(currentTheme.chrome.surface, panelOpacity),
-    "--cmux-popover": currentTheme.chrome.surface,
+    "--cmux-surface-raised": isLightChrome
+      ? `color-mix(in srgb, ${currentTheme.chrome.surface} 97%, black)`
+      : `color-mix(in srgb, ${currentTheme.chrome.surface} 96%, white)`,
+    "--cmux-popover": isLightChrome
+      ? `color-mix(in srgb, ${currentTheme.chrome.surface} 95%, black)`
+      : `color-mix(in srgb, ${currentTheme.chrome.surface} 93%, white)`,
     "--cmux-title-bg": colorWithOpacity(currentTheme.chrome.background, panelOpacity),
     "--cmux-surface": colorWithOpacity(currentTheme.chrome.surface, panelOpacity),
     "--cmux-terminal-bg": colorWithOpacity(
@@ -406,6 +411,9 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
     ),
     "--cmux-accent": currentTheme.chrome.accent,
     "--cmux-border": currentTheme.chrome.border,
+    "--cmux-border-hairline": isLightChrome
+      ? `color-mix(in srgb, ${currentTheme.chrome.border} 70%, transparent)`
+      : "rgba(255, 255, 255, 0.07)",
     "--cmux-text": currentTheme.chrome.text,
     "--cmux-text-secondary": currentTheme.chrome.textMuted,
     "--cmux-text-tertiary": currentTheme.chrome.textDim,
@@ -419,18 +427,21 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
     "--cmux-on-done": textOnColor(currentTheme.status.done),
     "--cmux-on-error": textOnColor(currentTheme.status.error),
     "--cmux-backdrop": isLightChrome ? "rgba(15, 23, 42, 0.22)" : "rgba(0, 0, 0, 0.55)",
+    "--cmux-edge-highlight": isLightChrome
+      ? "inset 0 1px 0 rgba(255, 255, 255, 0.6)"
+      : "inset 0 1px 0 rgba(255, 255, 255, 0.05)",
     "--cmux-focus-ring": "color-mix(in srgb, var(--cmux-accent) 45%, transparent)",
     "--cmux-dnd-tab": isLightChrome ? currentTheme.status.working : "#38bdf8",
     "--cmux-dnd-pane": isLightChrome ? currentTheme.status.waiting : "#f59e0b",
     "--cmux-usage-ok": isLightChrome ? currentTheme.status.done : "#3eb86b",
     "--cmux-usage-warn": isLightChrome ? currentTheme.status.waiting : "#f5a623",
     "--cmux-usage-danger": isLightChrome ? currentTheme.status.error : "#ff3b30",
-    "--cmux-shadow-menu": isLightChrome ? "0 8px 20px rgba(15, 23, 42, 0.16)" : "0 4px 12px rgba(0, 0, 0, 0.5)",
-    "--cmux-shadow-popover": isLightChrome ? "0 8px 26px rgba(15, 23, 42, 0.16)" : "0 4px 16px rgba(0,0,0,0.4)",
-    "--cmux-shadow-dropdown": isLightChrome ? "0 12px 28px rgba(15, 23, 42, 0.16)" : "0 10px 24px rgba(0, 0, 0, 0.32)",
-    "--cmux-shadow-dialog": isLightChrome ? "0 20px 60px rgba(15, 23, 42, 0.18)" : "0 18px 60px rgba(0,0,0,0.45)",
-    "--cmux-shadow-palette": isLightChrome ? "0 24px 70px rgba(15, 23, 42, 0.18)" : "0 24px 70px rgba(0,0,0,0.45)",
-    "--cmux-shadow-pane-menu": isLightChrome ? "0 8px 18px rgba(15, 23, 42, 0.14)" : "0 4px 12px rgba(0,0,0,0.2)",
+    "--cmux-shadow-menu": isLightChrome ? "var(--cmux-edge-highlight), 0 8px 20px rgba(15, 23, 42, 0.16)" : "var(--cmux-edge-highlight), 0 4px 12px rgba(0, 0, 0, 0.5)",
+    "--cmux-shadow-popover": isLightChrome ? "var(--cmux-edge-highlight), 0 8px 26px rgba(15, 23, 42, 0.16)" : "var(--cmux-edge-highlight), 0 4px 16px rgba(0,0,0,0.4)",
+    "--cmux-shadow-dropdown": isLightChrome ? "var(--cmux-edge-highlight), 0 12px 28px rgba(15, 23, 42, 0.16)" : "var(--cmux-edge-highlight), 0 10px 24px rgba(0, 0, 0, 0.32)",
+    "--cmux-shadow-dialog": isLightChrome ? "var(--cmux-edge-highlight), 0 20px 60px rgba(15, 23, 42, 0.18)" : "var(--cmux-edge-highlight), 0 18px 60px rgba(0,0,0,0.45)",
+    "--cmux-shadow-palette": isLightChrome ? "var(--cmux-edge-highlight), 0 24px 70px rgba(15, 23, 42, 0.18)" : "var(--cmux-edge-highlight), 0 24px 70px rgba(0,0,0,0.45)",
+    "--cmux-shadow-pane-menu": isLightChrome ? "var(--cmux-edge-highlight), 0 8px 18px rgba(15, 23, 42, 0.14)" : "var(--cmux-edge-highlight), 0 4px 12px rgba(0,0,0,0.2)",
     "--cmux-shadow-dnd": isLightChrome
       ? "0 14px 34px rgba(15, 23, 42, 0.18), inset 0 0 0 1px color-mix(in srgb, var(--cmux-text) 8%, transparent)"
       : "0 14px 34px rgba(0, 0, 0, 0.36), inset 0 0 0 1px rgba(255, 255, 255, 0.05)",

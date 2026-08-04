@@ -52,7 +52,8 @@
   border: 1px solid color-mix(in srgb, var(--cmux-text) 14%, transparent);
   background: transparent;
   color: inherit;
-  font-size: 11px;
+  font-size: var(--cmux-font-size-xs);
+  font-family: var(--cmux-font-mono);
   cursor: pointer;
   display: inline-flex;
   align-items: center;

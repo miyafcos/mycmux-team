@@ -45,7 +45,7 @@ export function UsagePopover({ closing = false, summary, lastError, accounts, ac
       <div
         style={{
           padding: "8px 10px",
-          borderBottom: "1px solid var(--cmux-border)",
+          borderBottom: "1px solid var(--cmux-border-hairline)",
           display: "flex",
           alignItems: "center",
           justifyContent: "space-between",
@@ -90,7 +90,7 @@ export function UsagePopover({ closing = false, summary, lastError, accounts, ac
         <div
           style={{
             padding: "6px 10px",
-            borderTop: "1px solid var(--cmux-border)",
+            borderTop: "1px solid var(--cmux-border-hairline)",
             color: "var(--cmux-usage-danger)",
             fontSize: 11,
             overflow: "hidden",
@@ -111,7 +111,7 @@ export function UsagePopover({ closing = false, summary, lastError, accounts, ac
       <div
         style={{
           padding: "7px 10px",
-          borderTop: "1px solid var(--cmux-border)",
+          borderTop: "1px solid var(--cmux-border-hairline)",
           display: "flex",
           alignItems: "center",
           justifyContent: "space-between",

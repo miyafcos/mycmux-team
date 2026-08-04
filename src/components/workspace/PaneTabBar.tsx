@@ -679,7 +679,7 @@ function PaneTabListMenu({
       }}
     >
       {menuSections.attention.length > 0 && (
-        <div style={{ paddingBottom: 5, marginBottom: 5, borderBottom: "1px solid var(--cmux-border)" }}>
+        <div style={{ paddingBottom: 5, marginBottom: 5, borderBottom: "1px solid var(--cmux-border-hairline)" }}>
           <div style={{ padding: "4px 7px 7px", fontSize: 11, fontWeight: 650, color: "var(--cmux-text-secondary)" }}>
             要対応
           </div>
@@ -1342,10 +1342,10 @@ export default memo(function PaneTabBar({
       style={{
         display: "flex",
         flexDirection: "column",
-        background: "var(--pane-tabbar-bg, var(--cmux-surface))",
+        background: "var(--pane-tabbar-bg, var(--cmux-surface-raised))",
         borderBottom: hasNotification
           ? "1px solid color-mix(in srgb, var(--notification-color) 58%, transparent)"
-          : "1px solid var(--cmux-border)",
+          : "1px solid var(--cmux-border-hairline)",
         flexShrink: 0,
         userSelect: "none",
         position: "relative",
@@ -1486,7 +1486,7 @@ export default memo(function PaneTabBar({
                 minWidth: isTabActive || canDuplicateSession ? 120 : 64,
                 cursor: isEditingTab ? "text" : "pointer",
                 background: isTabActive ? "var(--cmux-selected)" : "transparent",
-                borderRight: "1px solid var(--cmux-border)",
+                borderRight: "1px solid var(--cmux-border-hairline)",
                 borderBottom: isTabActive ? "2px solid var(--cmux-accent)" : "2px solid transparent",
                 flexShrink: 1,
                 transition: "background 0.1s",
@@ -1556,7 +1556,7 @@ export default memo(function PaneTabBar({
                   style={{
                     fontSize: 13,
                     fontWeight: isTabActive ? 600 : 400,
-                    fontFamily: "'JetBrains Mono', 'Geist Mono', monospace",
+                    fontFamily: "var(--cmux-font-mono)",
                     color: isTabActive ? "var(--cmux-text)" : "var(--cmux-text-secondary)",
                     overflow: "hidden",
                     textOverflow: "ellipsis",
@@ -1653,6 +1653,8 @@ export default memo(function PaneTabBar({
             flexShrink: 1,
             minWidth: 120,
             order: 1,
+            fontSize: "var(--cmux-font-size-xs)",
+            fontFamily: "var(--cmux-font-mono)",
           }}
         >
           <span
@@ -1666,16 +1668,16 @@ export default memo(function PaneTabBar({
               flexShrink: 0,
             }}
           />
-          <span style={{ fontSize: 11, color: statusCfg.color, fontWeight: 600, flexShrink: 0, letterSpacing: "0.02em" }}>
+          <span style={{ fontSize: "var(--cmux-font-size-xs)", color: statusCfg.color, fontWeight: 600, flexShrink: 0, letterSpacing: "0.02em" }}>
             {statusCfg.title}
           </span>
-          <span style={{ fontSize: 11, color: "var(--cmux-text-tertiary)", flexShrink: 0 }}>
+          <span style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-tertiary)", flexShrink: 0 }}>
             {activeAgentLabel}
           </span>
           {activeLastLog && (
             <>
-              <span style={{ fontSize: 11, color: "var(--cmux-text-tertiary)", flexShrink: 0 }}>—</span>
-              <span style={{ fontSize: 11, color: "var(--cmux-text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
+              <span style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-tertiary)", flexShrink: 0 }}>—</span>
+              <span style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
                 {activeLastLog}
               </span>
             </>
@@ -1776,7 +1778,7 @@ export default memo(function PaneTabBar({
                 style={{
                   fontSize: 13,
                   fontWeight: 600,
-                  fontFamily: "'JetBrains Mono', 'Geist Mono', monospace",
+                  fontFamily: "var(--cmux-font-mono)",
                   color: "var(--cmux-text)",
                   overflow: "hidden",
                   textOverflow: "ellipsis",

@@ -36,3 +36,12 @@ Windows (WebView2/DirectWrite) で不可能なのはフォントアンチエイ�
 ## 検証
 
 `npx tsc --noEmit` / `npx vitest run` / `python -m pytest tests/` / `cd src-tauri && cargo test --release` 全通過 + GUI 目視 (パレット開閉・検索・hover・blur)。
+
+## 第2弾: 最高品質化 (2026-08-04 夜 追加裁定 — A→B 段階実行)
+
+Phase 1〜4 (v0.21.7〜v0.21.10) 完了後の実査で確定した残差分。
+
+- **Phase A: 質感の統一** — ①面の高さの階段 (bg < surface < raised < overlay をテーマ色からの派生計算で導入・持ち上がり面の上端1px内側ハイライト) ②境界線の2階層化 (ヘアライン=区切り / 既存 border=操作輪郭) ③タイポトークン (--cmux-font-size-xs/sm/md) + メタ情報モノスペースを実在フォントへ統一 (SF Mono/Geist Mono は Windows 非実在 — ターミナルと同じ UDEV Gothic 系に) ④クロームの絵文字グリフ (✏☐📄等) を単色 SVG へ
+- **Phase B: 署名の確立** — エージェント種の色言語 (Claude橙/Codex青/Hybrid緑 = CrsmPalette の KIND_COLORS) をペインタブ下線・作業中ドット・ペイン枠へ一貫展開。「どのペインでどのエージェントか」が色で分かる mycmux 固有の見た目
+- 額縁 (xterm padding+角丸) は保留 — レイアウト契約検証が必要になった時点で単独フェーズ化
+- 制約は第1弾と同じ (コントラスト4.5:1テスト維持 / 色プリセット値は不変・派生計算のみ / 日本語11px床)

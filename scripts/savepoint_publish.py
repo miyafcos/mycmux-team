@@ -15,13 +15,16 @@ upsert: 同じ作業の再保存は同フォルダを atomic swap で上書き (
 from __future__ import annotations
 
 import argparse
+import errno
 import getpass
 import json
 import os
 import platform
 import re
 import shutil
+import stat
 import sys
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -325,19 +328,53 @@ def build_handoff_md(
     return "\n".join(lines), warnings
 
 
+_RENAME_RETRY_DELAYS = (0.05, 0.1, 0.2, 0.4, 0.8)
+
+
+def _rename_with_retry(src: Path, dst: Path) -> None:
+    """Rename a path, retrying only transient access-denied failures."""
+    for delay in _RENAME_RETRY_DELAYS:
+        try:
+            src.rename(dst)
+            return
+        except OSError as exc:
+            if not (
+                isinstance(exc, PermissionError)
+                or getattr(exc, "winerror", None) == 5
+                or exc.errno == errno.EACCES
+            ):
+                raise
+            time.sleep(delay)
+    src.rename(dst)
+
+
+def _remove_readonly_and_retry(function: Any, path: str, _exc_info: Any) -> None:
+    """Clear a read-only bit and retry the failed rmtree operation once."""
+    os.chmod(path, os.stat(path).st_mode | stat.S_IWRITE)
+    function(path)
+
+
+def _rmtree_with_readonly_retry(path: Path) -> None:
+    """Best-effort cleanup that can remove read-only bundle files."""
+    try:
+        shutil.rmtree(path, onerror=_remove_readonly_and_retry)
+    except OSError:
+        pass
+
+
 def atomic_swap_dir(tmp_dir: Path, target_dir: Path) -> None:
     """tmp_dir を target_dir へ入れ替える (受け手が読取り中でも壊れないように)。"""
     old_dir = target_dir.parent / (target_dir.name + f".old-{os.getpid()}-{uuid.uuid4().hex[:8]}")
     if target_dir.exists():
-        target_dir.rename(old_dir)
+        _rename_with_retry(target_dir, old_dir)
     try:
-        tmp_dir.rename(target_dir)
+        _rename_with_retry(tmp_dir, target_dir)
     except OSError:
         if old_dir.exists():  # 失敗時は旧版を戻す
-            old_dir.rename(target_dir)
+            _rename_with_retry(old_dir, target_dir)
         raise
     if old_dir.exists():
-        shutil.rmtree(old_dir, ignore_errors=True)
+        _rmtree_with_readonly_retry(old_dir)
 
 
 def atomic_create_dir(tmp_dir: Path, target_dir: Path) -> bool:
@@ -345,7 +382,7 @@ def atomic_create_dir(tmp_dir: Path, target_dir: Path) -> bool:
     if target_dir.exists():
         return False
     try:
-        tmp_dir.rename(target_dir)
+        _rename_with_retry(tmp_dir, target_dir)
     except OSError:
         if target_dir.exists():
             return False
@@ -532,7 +569,7 @@ def write_head_from_final_record(
         atomic_swap_dir(head_tmp, head_dir)
     finally:
         if head_tmp.exists():
-            shutil.rmtree(head_tmp, ignore_errors=True)
+            _rmtree_with_readonly_retry(head_tmp)
     return final_manifest
 
 
@@ -653,7 +690,7 @@ def publish(args: argparse.Namespace) -> dict[str, Any]:
             atomic_swap_dir(bootstrap_tmp, head_dir)
         finally:
             if bootstrap_tmp.exists():
-                shutil.rmtree(bootstrap_tmp, ignore_errors=True)
+                _rmtree_with_readonly_retry(bootstrap_tmp)
 
     target_dir.parent.mkdir(parents=True, exist_ok=True)
     used_existing_final = False
@@ -681,7 +718,7 @@ def publish(args: argparse.Namespace) -> dict[str, Any]:
             updated = updated or used_existing_final
     finally:
         if tmp_dir.exists():
-            shutil.rmtree(tmp_dir, ignore_errors=True)
+            _rmtree_with_readonly_retry(tmp_dir)
 
     result_lifecycle = lifecycle_from_manifest(manifest)
     result_summary = manifest.get("summary_line")

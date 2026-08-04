@@ -121,7 +121,7 @@ export default function TitleBar({
         display: "flex",
         alignItems: "center",
         background: "var(--cmux-title-bg)",
-        borderBottom: "1px solid var(--cmux-border)",
+        borderBottom: "1px solid var(--cmux-border-hairline)",
         flexShrink: 0,
         userSelect: "none",
         position: "relative",

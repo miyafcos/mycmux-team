@@ -14,6 +14,7 @@ import {
 import { useWorkspaceListStore } from "../../stores/workspaceListStore";
 import { useSettingsStore } from "../../stores/settingsStore";
 import { OVERLAY_EXIT_MS, useDeferredUnmount } from "../../hooks/useDeferredUnmount";
+import { DocumentIcon, PencilIcon, TaskIcon } from "../icons/ChromeIcons";
 import "./CrsmPalette.css";
 
 interface CrsmPaletteProps {
@@ -1026,15 +1027,21 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
                   <span style={styles.itemRow2Sep}>·</span>
                   <span style={styles.itemRow2Source}>{sourceShort(session.source)}</span>
                   {(session.files_modified?.length ?? 0) > 0 ? (
-                    <span style={styles.itemRow2Tag}>✏ {session.files_modified.length}</span>
+                    <span style={styles.itemRow2Tag} aria-label={`Modified files: ${session.files_modified.length}`}>
+                      <PencilIcon />
+                      <span style={styles.metadataCount}>{session.files_modified.length}</span>
+                    </span>
                   ) : null}
                   {(session.incomplete_tasks?.length ?? 0) > 0 ? (
-                    <span style={styles.itemRow2Tag}>☐ {session.incomplete_tasks.length}</span>
+                    <span style={styles.itemRow2Tag} aria-label={`Incomplete tasks: ${session.incomplete_tasks.length}`}>
+                      <TaskIcon />
+                      <span style={styles.metadataCount}>{session.incomplete_tasks.length}</span>
+                    </span>
                   ) : null}
                   {isSummaryOnlyClaudeSession(session) ? (
                     <span style={styles.itemRow2Tag}>要約のみ</span>
                   ) : null}
-                  {session.summary_file ? <span style={styles.itemRow2Tag}>📄</span> : null}
+                  {session.summary_file ? <span style={styles.itemRow2Tag} aria-label="Summary available"><DocumentIcon /></span> : null}
                 </span>
               </span>
             </button>
@@ -1132,11 +1139,12 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
                       {filesMod.length > 0 ? (
                         <div style={styles.detailSection}>
                           <div style={styles.detailSectionTitle}>
-                            ✏ 変更ファイル <span style={styles.detailSectionCount}>{filesMod.length}</span>
+                            <PencilIcon />
+                            変更ファイル <span style={styles.detailSectionCount}>{filesMod.length}</span>
                           </div>
                           <div style={styles.detailListWrap}>
                             {filesMod.map((f) => (
-                              <div key={f} style={styles.detailListItem} title={f}>
+                              <div key={f} style={{ ...styles.detailListItem, ...styles.detailFilePath }} title={f}>
                                 {f}
                               </div>
                             ))}
@@ -1146,7 +1154,8 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
                       {incTasks.length > 0 ? (
                         <div style={styles.detailSection}>
                           <div style={styles.detailSectionTitle}>
-                            ☐ 未完了 <span style={styles.detailSectionCount}>{incTasks.length}</span>
+                            <TaskIcon />
+                            未完了 <span style={styles.detailSectionCount}>{incTasks.length}</span>
                           </div>
                           <div style={styles.detailListWrap}>
                             {incTasks.map((t) => (
@@ -1159,7 +1168,10 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
                       ) : null}
                       {selected.summary_file ? (
                         <div style={styles.detailSection}>
-                          <div style={styles.detailSectionTitle}>📄 要約: {selected.summary_file}</div>
+                          <div style={styles.detailSectionTitle}>
+                            <DocumentIcon />
+                            要約: <span style={styles.detailSummaryPath}>{selected.summary_file}</span>
+                          </div>
                         </div>
                       ) : null}
                     </div>
@@ -1211,7 +1223,7 @@ const styles: Record<string, CSSProperties> = {
     padding: "14px 16px",
     border: 0,
     outline: 0,
-    borderBottom: "1px solid var(--cmux-border)",
+    borderBottom: "1px solid var(--cmux-border-hairline)",
     background: "color-mix(in srgb, var(--cmux-text) 6%, transparent)",
     color: "var(--cmux-text)",
     fontSize: 16,
@@ -1221,7 +1233,7 @@ const styles: Record<string, CSSProperties> = {
     gap: 8,
     alignItems: "center",
     padding: "10px 12px",
-    borderBottom: "1px solid var(--cmux-border)",
+    borderBottom: "1px solid var(--cmux-border-hairline)",
   },
   targetTitle: {
     fontSize: 13,
@@ -1248,7 +1260,7 @@ const styles: Record<string, CSSProperties> = {
     gap: 6,
     alignItems: "center",
     padding: "8px 12px",
-    borderBottom: "1px solid var(--cmux-border)",
+    borderBottom: "1px solid var(--cmux-border-hairline)",
   },
   mainArea: {
     display: "flex",
@@ -1260,7 +1272,7 @@ const styles: Record<string, CSSProperties> = {
     flex: "0 0 480px",
     overflowY: "auto",
     padding: 6,
-    borderRight: "1px solid var(--cmux-border)",
+    borderRight: "1px solid var(--cmux-border-hairline)",
   },
   detail: {
     flex: 1,
@@ -1290,7 +1302,8 @@ const styles: Record<string, CSSProperties> = {
     display: "inline-flex",
     alignItems: "baseline",
     gap: 3,
-    fontSize: 11,
+    fontSize: "var(--cmux-font-size-xs)",
+    fontFamily: "var(--cmux-font-mono)",
     fontVariantNumeric: "tabular-nums",
     opacity: 0.78,
   },
@@ -1301,7 +1314,7 @@ const styles: Record<string, CSSProperties> = {
   detailDuration: {
     marginLeft: 4,
     opacity: 0.55,
-    fontSize: 10,
+    fontSize: "var(--cmux-font-size-xs)",
   },
   detailLocation: {
     display: "flex",
@@ -1317,12 +1330,15 @@ const styles: Record<string, CSSProperties> = {
     userSelect: "text",
     flex: 1,
     minWidth: 0,
+    fontSize: "var(--cmux-font-size-xs)",
+    fontFamily: "var(--cmux-font-mono)",
   },
   detailSourceLabel: {
     padding: "0 5px",
     borderRadius: 3,
     background: "color-mix(in srgb, var(--cmux-text) 6%, transparent)",
-    fontSize: 10,
+    fontSize: "var(--cmux-font-size-xs)",
+    fontFamily: "var(--cmux-font-mono)",
     opacity: 0.85,
     flexShrink: 0,
   },
@@ -1331,7 +1347,8 @@ const styles: Record<string, CSSProperties> = {
     textOverflow: "ellipsis",
     whiteSpace: "nowrap",
     minWidth: 0,
-    fontSize: 11,
+    fontSize: "var(--cmux-font-size-xs)",
+    fontFamily: "var(--cmux-font-mono)",
     opacity: 0.42,
     userSelect: "text",
     flexShrink: 0,
@@ -1414,6 +1431,9 @@ const styles: Record<string, CSSProperties> = {
     gap: 1,
   },
   detailSectionTitle: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 4,
     fontSize: 11,
     fontWeight: 600,
     opacity: 0.7,
@@ -1422,14 +1442,26 @@ const styles: Record<string, CSSProperties> = {
   detailSectionCount: {
     marginLeft: 3,
     opacity: 0.5,
+    fontSize: "var(--cmux-font-size-xs)",
+    fontFamily: "var(--cmux-font-mono)",
+  },
+  detailSummaryPath: {
+    minWidth: 0,
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+    fontSize: "var(--cmux-font-size-xs)",
+    fontFamily: "var(--cmux-font-mono)",
   },
   detailListWrap: {
     display: "flex",
     flexDirection: "column",
     paddingLeft: 12,
-    fontSize: 11,
-    fontFamily: "ui-monospace, monospace",
+    fontSize: "var(--cmux-font-size-xs)",
     lineHeight: 1.4,
+  },
+  detailFilePath: {
+    fontFamily: "var(--cmux-font-mono)",
   },
   detailListItem: {
     opacity: 0.78,
@@ -1452,7 +1484,7 @@ const styles: Record<string, CSSProperties> = {
     gap: 6,
     alignItems: "center",
     padding: "6px 12px",
-    borderBottom: "1px solid var(--cmux-border)",
+    borderBottom: "1px solid var(--cmux-border-hairline)",
   },
   cwdLabel: {
     fontSize: 10,
@@ -1462,7 +1494,8 @@ const styles: Record<string, CSSProperties> = {
   },
   cwdCount: {
     opacity: 0.5,
-    fontSize: 10,
+    fontSize: "var(--cmux-font-size-xs)",
+    fontFamily: "var(--cmux-font-mono)",
     fontVariantNumeric: "tabular-nums",
   },
   virtualTrack: {
@@ -1514,22 +1547,34 @@ const styles: Record<string, CSSProperties> = {
     whiteSpace: "nowrap",
     overflow: "hidden",
     textOverflow: "ellipsis",
+    fontSize: "var(--cmux-font-size-xs)",
+    fontFamily: "var(--cmux-font-mono)",
   },
   itemRow2Sep: {
     opacity: 0.4,
   },
   itemRow2Source: {
     flexShrink: 0,
+    fontSize: "var(--cmux-font-size-xs)",
+    fontFamily: "var(--cmux-font-mono)",
   },
   itemRow2Tag: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 3,
     flexShrink: 0,
     padding: "0 4px",
     borderRadius: 3,
     background: "color-mix(in srgb, var(--cmux-text) 6%, transparent)",
-    fontSize: 11,
+    fontSize: "var(--cmux-font-size-xs)",
+  },
+  metadataCount: {
+    fontFamily: "var(--cmux-font-mono)",
+    fontVariantNumeric: "tabular-nums",
   },
   itemTimeSingle: {
-    fontSize: 11,
+    fontSize: "var(--cmux-font-size-xs)",
+    fontFamily: "var(--cmux-font-mono)",
     opacity: 0.65,
     minWidth: 56,
     whiteSpace: "nowrap",

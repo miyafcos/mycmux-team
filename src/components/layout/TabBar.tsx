@@ -219,7 +219,7 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
         display: "flex",
         flexDirection: "column",
         background: "var(--cmux-sidebar)",
-        borderRight: "1px solid var(--cmux-border)",
+        borderRight: "1px solid var(--cmux-border-hairline)",
         flexShrink: 0,
         overflowY: "hidden",
         overflowX: "hidden",
@@ -236,7 +236,7 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
       <div
         style={{
           padding: "10px 12px 6px 16px",
-          borderBottom: "1px solid var(--cmux-border)",
+          borderBottom: "1px solid var(--cmux-border-hairline)",
           display: "flex",
           justifyContent: "space-between",
           alignItems: "center",
@@ -294,7 +294,7 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
           border: "none",
           borderTop: newWorkspaceDropActive
             ? "1px solid color-mix(in srgb, var(--cmux-accent) 70%, var(--cmux-border))"
-            : "1px solid var(--cmux-border)",
+            : "1px solid var(--cmux-border-hairline)",
           color: newWorkspaceDropActive ? "var(--cmux-text)" : "var(--cmux-text-tertiary)",
           cursor: "pointer",
           padding: "10px 16px",

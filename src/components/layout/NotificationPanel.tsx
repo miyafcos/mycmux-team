@@ -34,7 +34,7 @@ const NotificationItem = memo(function NotificationItem({
       onClick={() => onActivate(notification)}
       style={{
         cursor: "pointer",
-        borderBottom: "1px solid var(--cmux-border)",
+        borderBottom: "1px solid var(--cmux-border-hairline)",
       }}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px" }}>
@@ -63,7 +63,7 @@ const NotificationItem = memo(function NotificationItem({
           padding: "0 12px 8px 12px",
           fontSize: 11,
           color: "var(--cmux-text-secondary)",
-          fontFamily: "monospace",
+          fontFamily: "var(--cmux-font-mono)",
           overflow: "hidden",
           textOverflow: "ellipsis",
           whiteSpace: "nowrap",
@@ -166,7 +166,7 @@ export default function NotificationPanel({ closing = false, onClose }: Notifica
         overflow: "hidden",
       }}
     >
-      <div style={{ padding: "8px 12px", borderBottom: "1px solid var(--cmux-border)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+      <div style={{ padding: "8px 12px", borderBottom: "1px solid var(--cmux-border-hairline)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <span style={{ fontWeight: 600, fontSize: 11 }}>Notifications</span>
         {notifications.length > 0 && (
           <button
