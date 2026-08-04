@@ -144,7 +144,7 @@ const parentPathStyle: CSSProperties = {
   textOverflow: "ellipsis",
   whiteSpace: "nowrap",
   color: "color-mix(in srgb, var(--cmux-text-muted, #a1a1aa) 86%, transparent)",
-  fontSize: 10,
+  fontSize: 11,
   lineHeight: "13px",
 };
 

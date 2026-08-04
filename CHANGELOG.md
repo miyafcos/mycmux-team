@@ -4,6 +4,15 @@
 
 ---
 
+## [0.21.8] - 2026-08-04
+
+UI/UX 底上げ Phase 2 (クローム層)。
+
+- Style: タイトルバーボタン・メニュー項目・ワークスペース項目・ペインタブ・ペイン操作ボタンの hover に motion トークンの transition を付与 (従来は0msで切替)
+- Refactor: onMouseEnter の style 直接書き換えによる hover (TabBar・TabItem・NotificationPanel) を CSS :hover クラスへ移行。ペインドラッグ中の hover 抑止は data 属性で維持
+- Add: アンカー型ポップオーバー (PathJumper・Usage・通知パネル) に共有入場アニメーション `.cmux-popover-panel`
+- Style: 日本語を含む 10px テキストを 11px へ (PathJumper エラー/ヒント/パス・Usage バッジ・Artifact ツールバーのパス)。復元バッジ 9px→10px
+
 ## [0.21.7] - 2026-08-04
 
 UI/UX 底上げ Phase 1 (計画: `docs/plans/2026-08-04-ui-uplift-plan.md`)。

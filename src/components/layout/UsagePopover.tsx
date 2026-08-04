@@ -20,6 +20,7 @@ const dateFormatter = new Intl.DateTimeFormat(undefined, {
 export function UsagePopover({ summary, lastError, accounts, accountsError }: UsagePopoverProps) {
   return (
     <div
+      className="cmux-popover-panel"
       style={{
         position: "absolute",
         top: "100%",
@@ -153,7 +154,7 @@ function UsageSection({
           {title}
         </span>
         {badge && (
-          <span style={{ color: badge.color, fontSize: 10, fontWeight: 700, flexShrink: 0 }}>
+          <span style={{ color: badge.color, fontSize: 11, fontWeight: 700, flexShrink: 0 }}>
             {badge.text}
           </span>
         )}

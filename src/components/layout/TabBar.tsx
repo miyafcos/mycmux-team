@@ -281,7 +281,8 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
         data-dnd-new-workspace-target="true"
         onClick={onNewWorkspace}
         title="New workspace (Ctrl+Shift+N)"
-        className={uiVariant === "cmux" ? "cmux-title-btn" : undefined}
+        className={`tab-new-workspace-btn${uiVariant === "cmux" ? " cmux-title-btn" : ""}`}
+        data-pane-drag-active={paneDragActive ? "true" : undefined}
         style={{
           display: "flex",
           alignItems: "center",
@@ -306,16 +307,6 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
           boxShadow: newWorkspaceDropActive
             ? "inset 0 0 0 1px color-mix(in srgb, var(--cmux-accent) 38%, transparent)"
             : "none",
-        }}
-        onMouseEnter={(e) => {
-          if (paneDragActive) return;
-          e.currentTarget.style.background = "var(--cmux-hover)";
-          e.currentTarget.style.color = "var(--cmux-text-secondary)";
-        }}
-        onMouseLeave={(e) => {
-          if (paneDragActive) return;
-          e.currentTarget.style.background = "none";
-          e.currentTarget.style.color = "var(--cmux-text-tertiary)";
         }}
       >
         <PlusIcon />

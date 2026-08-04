@@ -98,6 +98,11 @@
   animation: cmux-overlay-panel-in var(--cmux-motion-base) var(--cmux-ease);
 }
 
+.cmux-popover-panel {
+  transform-origin: top center;
+  animation: cmux-overlay-panel-in var(--cmux-motion-fast) var(--cmux-ease);
+}
+
 *,
 *::before,
 *::after {
@@ -139,6 +144,14 @@ div:hover>.tab-close-btn {
   opacity: 1 !important;
 }
 
+.tab-close-btn {
+  transition: opacity var(--cmux-motion-fast) var(--cmux-ease), color var(--cmux-motion-fast) var(--cmux-ease);
+}
+
+.tab-close-btn:hover {
+  color: var(--cmux-text) !important;
+}
+
 /* Icons in chrome stay flat so thin strokes remain crisp over translucent UI. */
 .cmux-title-btn svg,
 .pane-action-btn svg,
@@ -174,11 +187,15 @@ div:hover>.tab-close-btn {
   display: flex;
   align-items: center;
   border-radius: var(--cmux-radius-sm);
-  transition: color 0.1s, background 0.1s;
+  transition: color var(--cmux-motion-fast) var(--cmux-ease), background var(--cmux-motion-fast) var(--cmux-ease);
 }
 .pane-action-btn:hover {
   color: var(--cmux-text);
   background: var(--cmux-hover);
+}
+
+.cmux-title-btn {
+  transition: background var(--cmux-motion-fast) var(--cmux-ease), color var(--cmux-motion-fast) var(--cmux-ease);
 }
 
 .cmux-title-btn:hover {
@@ -186,9 +203,13 @@ div:hover>.tab-close-btn {
   color: var(--cmux-text-secondary) !important;
 }
 
-.cmux-title-btn--close:hover {
+.cmux-title-btn.cmux-title-btn--close:hover {
   background: color-mix(in srgb, var(--cmux-red) 22%, transparent) !important;
   color: var(--cmux-red) !important;
+}
+
+.cmux-menu-item {
+  transition: background var(--cmux-motion-fast) var(--cmux-ease);
 }
 
 .cmux-menu-item:hover:not(:disabled) {
@@ -197,11 +218,39 @@ div:hover>.tab-close-btn {
 
 .cmux-workspace-item {
   border: 1px solid transparent;
+  transition: background var(--cmux-motion-fast) var(--cmux-ease), color var(--cmux-motion-fast) var(--cmux-ease), border-color var(--cmux-motion-fast) var(--cmux-ease);
 }
 
 .cmux-workspace-item:hover:not([data-active-workspace="true"]) {
   background: var(--cmux-hover) !important;
+  color: var(--cmux-text) !important;
   border-color: var(--cmux-border);
+}
+
+.tab-workspace-item {
+  transition: background var(--cmux-motion-fast) var(--cmux-ease), color var(--cmux-motion-fast) var(--cmux-ease), border-color var(--cmux-motion-fast) var(--cmux-ease), box-shadow var(--cmux-motion-fast) var(--cmux-ease);
+}
+
+.tab-workspace-item:hover:not([data-active-workspace="true"]) {
+  background: var(--cmux-hover) !important;
+  color: var(--cmux-text) !important;
+}
+
+.tab-new-workspace-btn {
+  transition: background var(--cmux-motion-fast) var(--cmux-ease), color var(--cmux-motion-fast) var(--cmux-ease);
+}
+
+.tab-new-workspace-btn:hover:not([data-pane-drag-active="true"]) {
+  background: var(--cmux-hover) !important;
+  color: var(--cmux-text-secondary) !important;
+}
+
+.cmux-notification-item {
+  transition: background var(--cmux-motion-fast) var(--cmux-ease);
+}
+
+.cmux-notification-item:hover {
+  background: var(--cmux-hover) !important;
 }
 
 .pane-tabbar {
@@ -218,6 +267,7 @@ div:hover>.tab-close-btn {
 
 .pane-tab-pill {
   border-right-color: var(--cmux-border) !important;
+  transition: background var(--cmux-motion-fast) var(--cmux-ease);
 }
 
 .pane-tab-pill:hover {
@@ -255,8 +305,9 @@ div:hover>.tab-close-btn {
 .pane-tab-restore-badge.is-label {
   width: auto;
   padding: 0 5px;
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 600;
+  white-space: nowrap;
 }
 
 .ui-cmux .pane-tab-label {

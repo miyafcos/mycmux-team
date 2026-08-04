@@ -491,7 +491,7 @@ export default memo(function PathJumper({
 
       {isOpen ? (
         <div
-          className="cmux-overlay-panel"
+          className="cmux-popover-panel"
           role="listbox"
           style={dropdownStyle}
           onMouseDown={(event) => {
@@ -560,14 +560,14 @@ const inputStyle: CSSProperties = {
 const errorStyle: CSSProperties = {
   marginTop: 4,
   color: "var(--cmux-red)",
-  fontSize: 10,
+  fontSize: 11,
   lineHeight: 1.3,
 };
 
 const hintStyle: CSSProperties = {
   marginTop: 4,
   color: "var(--cmux-text-secondary, #888)",
-  fontSize: 10,
+  fontSize: 11,
   lineHeight: 1.3,
 };
 
@@ -643,7 +643,7 @@ const itemPathStyle: CSSProperties = {
   textOverflow: "ellipsis",
   whiteSpace: "nowrap",
   color: "var(--cmux-text-secondary, #888)",
-  fontSize: 10,
+  fontSize: 11,
 };
 
 const badgeStyle: CSSProperties = {

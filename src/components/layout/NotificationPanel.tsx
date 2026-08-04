@@ -29,13 +29,12 @@ const NotificationItem = memo(function NotificationItem({
 
   return (
     <div
+      className="cmux-notification-item"
       onClick={() => onActivate(notification)}
       style={{
         cursor: "pointer",
         borderBottom: "1px solid var(--cmux-border)",
       }}
-      onMouseEnter={(e) => { e.currentTarget.style.background = "var(--cmux-hover)"; }}
-      onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px" }}>
         <span style={{ flex: 1, fontWeight: 500, fontSize: 12 }}>{notification.workspaceName}</span>
@@ -144,6 +143,7 @@ export default function NotificationPanel({ onClose }: NotificationPanelProps) {
   return (
     <div
       ref={panelRef}
+      className="cmux-popover-panel"
       style={{
         position: "absolute",
         top: "100%",
