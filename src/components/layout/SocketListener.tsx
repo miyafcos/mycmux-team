@@ -882,6 +882,7 @@ export function useWorkspacePersist() {
           useThemeStore.getState().hydrateSettings({
             themeId: data.settings.theme_id,
             fontSize: data.settings.font_size,
+            lineHeight: data.settings.line_height,
             fontFamily: data.settings.font_family,
             themeTweaks: data.settings.theme_tweaks,
           });
@@ -1074,6 +1075,7 @@ export function useWorkspacePersist() {
         settings: {
           theme_id: themeState.themeId,
           font_size: themeState.fontSize,
+          line_height: themeState.lineHeight,
           font_family: themeState.fontFamily,
           theme_tweaks: themeState.themeTweaks,
           keybindings: keybindingState.overrides,

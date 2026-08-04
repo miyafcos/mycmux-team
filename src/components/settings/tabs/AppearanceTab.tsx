@@ -13,6 +13,8 @@ export function AppearanceTab() {
   const setFontSize = useThemeStore((s) => s.setFontSize);
   const fontFamily = useThemeStore((s) => s.fontFamily);
   const setFontFamily = useThemeStore((s) => s.setFontFamily);
+  const lineHeight = useThemeStore((s) => s.lineHeight);
+  const setLineHeight = useThemeStore((s) => s.setLineHeight);
   const themeTweaks = useThemeStore((s) => s.themeTweaks);
   const setThemeTweakColor = useThemeStore((s) => s.setThemeTweakColor);
   const applyThemeTweakPreset = useThemeStore((s) => s.applyThemeTweakPreset);
@@ -67,8 +69,10 @@ export function AppearanceTab() {
           changedCount={changedCount}
           fontSize={fontSize}
           fontFamily={fontFamily}
+          lineHeight={lineHeight}
           setFontSize={setFontSize}
           setFontFamily={setFontFamily}
+          setLineHeight={setLineHeight}
           setThemeTweakColor={setThemeTweakColor}
           applyThemeTweakPreset={applyThemeTweakPreset}
           setThemeBackground={setThemeBackground}

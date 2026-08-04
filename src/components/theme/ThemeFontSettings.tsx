@@ -3,8 +3,10 @@ import { TERMINAL_FONT_PRESETS, type TerminalFontPreset } from "../../stores/the
 interface ThemeFontSettingsProps {
   fontSize: number;
   fontFamily: string;
+  lineHeight: number;
   setFontSize: (size: number) => void;
   setFontFamily: (fontFamily: string) => void;
+  setLineHeight: (lineHeight: number) => void;
 }
 
 interface FontPresetGroup {
@@ -19,7 +21,7 @@ const FONT_PRESET_GROUPS: FontPresetGroup[] = [
     id: "code-standard",
     title: "コード・標準",
     detail: "普段使い。迷ったらここから",
-    presetIds: ["jetbrains-ja", "cascadia-biz", "consolas-meiryo"],
+    presetIds: ["jetbrains-ja", "udev-gothic", "udev-gothic-35", "cascadia-biz", "consolas-meiryo"],
   },
   {
     id: "ja-readable",
@@ -151,8 +153,10 @@ function findPresetById(id: string): TerminalFontPreset | undefined {
 export function ThemeFontSettings({
   fontSize,
   fontFamily,
+  lineHeight,
   setFontSize,
   setFontFamily,
+  setLineHeight,
 }: ThemeFontSettingsProps) {
   const usesKnownPreset = TERMINAL_FONT_PRESETS.some((preset) => preset.value === fontFamily);
 
@@ -179,6 +183,21 @@ export function ThemeFontSettings({
           max={24}
           value={fontSize}
           onChange={(event) => setFontSize(Number(event.target.value))}
+          style={{ width: "100%" }}
+        />
+      </div>
+
+      <div>
+        <div style={{ fontSize: 12, color: "var(--cmux-text-secondary)", marginBottom: 8 }}>
+          行間: {lineHeight.toFixed(2)}
+        </div>
+        <input
+          type="range"
+          min={1}
+          max={1.8}
+          step={0.05}
+          value={lineHeight}
+          onChange={(event) => setLineHeight(Number(event.target.value))}
           style={{ width: "100%" }}
         />
       </div>
@@ -240,7 +259,12 @@ export function ThemeFontSettings({
                       key={preset.id}
                       preset={preset}
                       active={preset.value === fontFamily}
-                      onSelect={() => setFontFamily(preset.value)}
+                      onSelect={() => {
+                        setFontFamily(preset.value);
+                        if (preset.recommendedLineHeight !== undefined) {
+                          setLineHeight(preset.recommendedLineHeight);
+                        }
+                      }}
                     />
                   );
                 })}

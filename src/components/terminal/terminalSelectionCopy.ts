@@ -4,13 +4,33 @@ import {
   isActiveTerminalInputTarget,
   refocusActiveTerminalIfNeeded,
 } from "./terminalFocusHelpers";
+import { useToastStore } from "../../stores/toastStore";
 
 const terminalSelectionCopyListeners = new WeakMap<Terminal, { dispose: () => void }>();
+export const MIN_AUTO_COPY_SELECTION_LENGTH = 3;
+const SUCCESS_TOAST_REPLACEMENT_WINDOW_MS = 1_200;
+let lastSuccessToastId: string | null = null;
+let lastSuccessToastAt = 0;
 
-function fallbackCopyTextToClipboard(text: string, restoreFocus?: () => void): void {
+function showCopyResultToast(text: string, succeeded: boolean): void {
+  const toastStore = useToastStore.getState();
+  if (!succeeded) {
+    toastStore.pushToast("コピーに失敗しました", "warning");
+    return;
+  }
+  const now = Date.now();
+  const elapsed = now - lastSuccessToastAt;
+  if (lastSuccessToastId && elapsed >= 0 && elapsed <= SUCCESS_TOAST_REPLACEMENT_WINDOW_MS) {
+    toastStore.dismissToast(lastSuccessToastId);
+  }
+  lastSuccessToastId = toastStore.pushToast(`コピーしました (${text.length}文字)`, "info");
+  lastSuccessToastAt = now;
+}
+
+function fallbackCopyTextToClipboard(text: string, restoreFocus?: () => void): boolean {
   if (typeof document === "undefined") {
     restoreFocus?.();
-    return;
+    return false;
   }
   const textarea = document.createElement("textarea");
   textarea.value = text;
@@ -20,30 +40,39 @@ function fallbackCopyTextToClipboard(text: string, restoreFocus?: () => void): v
   textarea.style.top = "0";
   document.body.appendChild(textarea);
   textarea.select();
+  let copied = false;
   try {
-    document.execCommand("copy");
+    copied = document.execCommand("copy");
   } catch {
     // Clipboard access is best effort; terminal selection must never break input.
   } finally {
     document.body.removeChild(textarea);
     restoreFocus?.();
   }
+  return copied;
 }
 
 function copyTextToClipboard(text: string, restoreFocus?: () => void): void {
-  if (!text) {
+  if (text.trim().length < MIN_AUTO_COPY_SELECTION_LENGTH) {
     restoreFocus?.();
     return;
   }
   const clipboard = typeof navigator !== "undefined" ? navigator.clipboard : undefined;
   if (clipboard?.writeText) {
-    clipboard
+    void clipboard
       .writeText(text)
       .then(() => restoreFocus?.())
-      .catch(() => fallbackCopyTextToClipboard(text, restoreFocus));
+      .catch(() => fallbackCopyTextToClipboard(text, restoreFocus))
+      .then((fallbackResult) => {
+        if (typeof fallbackResult === "boolean") {
+          showCopyResultToast(text, fallbackResult);
+        } else {
+          showCopyResultToast(text, true);
+        }
+      });
     return;
   }
-  fallbackCopyTextToClipboard(text, restoreFocus);
+  showCopyResultToast(text, fallbackCopyTextToClipboard(text, restoreFocus));
 }
 
 export function disposeSelectionCopyListener(currentTerm: Terminal | null | undefined): void {
@@ -59,9 +88,19 @@ export function registerSelectionCopyListener(currentTerm: Terminal, sessionId: 
 
   let selectionDirty = false;
   let copyTimer: number | null = null;
+  let lastNonEmptySelection = "";
   const selectionDisposable = currentTerm.onSelectionChange(() => {
     selectionDirty = true;
+    const selectedText = currentTerm.getSelection();
+    if (selectedText) {
+      lastNonEmptySelection = selectedText;
+    }
   });
+
+  const readSelectionForCopy = (): string => {
+    const selectedText = currentTerm.getSelection();
+    return selectedText || lastNonEmptySelection;
+  };
 
   const copySelectedText = (): void => {
     const restoreSelectionFocus = (): void => {
@@ -71,13 +110,14 @@ export function registerSelectionCopyListener(currentTerm: Terminal, sessionId: 
       }
       refocusActiveTerminalIfNeeded();
     };
-    const selectedText = currentTerm.getSelection();
+    const selectedText = readSelectionForCopy();
     if (!selectedText) {
       restoreSelectionFocus();
       return;
     }
     restoreSelectionFocus();
     copyTextToClipboard(selectedText, restoreSelectionFocus);
+    lastNonEmptySelection = "";
   };
 
   const flushSelectionCopy = (event?: Event) => {
@@ -102,6 +142,9 @@ export function registerSelectionCopyListener(currentTerm: Terminal, sessionId: 
 
   const win = currentTerm.element?.ownerDocument.defaultView ?? window;
   const termElement = currentTerm.element;
+  const resetSelectionSnapshot = () => {
+    lastNonEmptySelection = "";
+  };
   const flushContextMenuSelectionCopy = () => {
     if (copyTimer !== null) {
       window.clearTimeout(copyTimer);
@@ -112,6 +155,8 @@ export function registerSelectionCopyListener(currentTerm: Terminal, sessionId: 
       copySelectedText();
     }, 0);
   };
+  win.addEventListener("pointerdown", resetSelectionSnapshot, true);
+  win.addEventListener("mousedown", resetSelectionSnapshot, true);
   win.addEventListener("pointerup", flushSelectionCopy, true);
   win.addEventListener("mouseup", flushSelectionCopy, true);
   win.addEventListener("touchend", flushSelectionCopy, true);
@@ -123,6 +168,8 @@ export function registerSelectionCopyListener(currentTerm: Terminal, sessionId: 
         window.clearTimeout(copyTimer);
         copyTimer = null;
       }
+      win.removeEventListener("pointerdown", resetSelectionSnapshot, true);
+      win.removeEventListener("mousedown", resetSelectionSnapshot, true);
       win.removeEventListener("pointerup", flushSelectionCopy, true);
       win.removeEventListener("mouseup", flushSelectionCopy, true);
       win.removeEventListener("touchend", flushSelectionCopy, true);

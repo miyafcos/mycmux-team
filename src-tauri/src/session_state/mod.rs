@@ -614,6 +614,12 @@ impl SessionStateStore {
             .and_then(|record| record.view.session_epoch)
     }
 
+    pub fn current_view(&self, session_id: &str) -> Option<SessionView> {
+        self.sessions
+            .get(session_id)
+            .map(|record| record.view.clone())
+    }
+
     pub fn snapshot(&self, session_id: Option<&str>) -> SessionStateSnapshot {
         let mut sessions: Vec<_> = self
             .sessions

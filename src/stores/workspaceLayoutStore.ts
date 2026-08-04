@@ -1341,6 +1341,18 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
     const workspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
     if (!workspace) return;
     const pane = workspace.panes.find((candidate) => candidate.id === paneId);
+    const activeSessionId = useUiStore.getState().activePaneId;
+    const shouldBumpFocusRevision = Boolean(
+      pane
+      && pane.activeTabId !== tabId
+      && pane.tabs.some((tab) => tab.id === tabId)
+      && useWorkspaceListStore.getState().activeWorkspaceId === workspaceId
+      && (
+        activeSessionId === null
+        || pane.sessionId === activeSessionId
+        || pane.tabs.some((tab) => tab.sessionId === activeSessionId)
+      ),
+    );
     if (pane && pane.activeTabId !== tabId && pane.tabs.some((tab) => tab.id === tabId)) {
       bumpPaintStat("tab-switch");
     }
@@ -1353,6 +1365,9 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
     });
 
     useWorkspaceListStore.getState()._updateWorkspacePanes(workspaceId, newPanes);
+    if (shouldBumpFocusRevision) {
+      useUiStore.getState().bumpFocusRevision();
+    }
   },
 
   setTabLabel: (workspaceId, paneId, tabId, label) => {

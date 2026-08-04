@@ -1,10 +1,7 @@
 ﻿import type { ILink, Terminal } from "@xterm/xterm";
-import {
-  getTerminalWriteCounter,
-  registerTerminalCacheEvictionCleanup,
-} from "./terminalCache";
 import { homeDir } from "@tauri-apps/api/path";
 import { resolveLocalPathLinks, type ResolvedLocalPathLink } from "../../lib/ipc";
+import { getTerminalWriteCounter } from "./terminalCache";
 
 export const HTTP_LINK_REGEX = /https?:\/\/[^\s"'<>+\uFF0B]+[^\s"'<>+\uFF0B.,!?;:)}\]]/i;
 const ARTIFACT_EXTENSION_PATTERN = String.raw`html?|markdown|md|docx?|docm|dotx?|dotm|xlsx?|xlsm|xlsb|xltx?|xltm|pptx?|pptm|potx?|potm|ppsx?|ppsm`;
@@ -29,7 +26,12 @@ const ARTIFACT_LINK_MAX_HARD_CONTINUATION_LINES = 4;
 /// 74 of 80 cells (93%), while a deliberately short line runs 12 of 80 (15%).
 const ARTIFACT_LINK_MIN_WRAPPED_ROW_FILL = 0.5;
 const ARTIFACT_LINK_MAX_SEGMENT_CHARS = 8192;
-const ARTIFACT_LINK_CACHE_MAX_ENTRIES = 64;
+const LOCAL_PATH_RESOLUTION_CACHE_MAX_ENTRIES = 512;
+const LOCAL_PATH_RESOLUTION_HIT_TTL_MS = 30_000;
+const LOCAL_PATH_RESOLUTION_MISS_TTL_MS = 3_000;
+const LOCAL_PATH_PREWARM_DEBOUNCE_MS = 250;
+const LOCAL_PATH_PREWARM_CONTEXT_LINES = 8;
+const LOCAL_PATH_PREWARM_MAX_CANDIDATES = 64;
 const ARTIFACT_LINK_CANDIDATE_PREFIX_REGEX =
   /(?:file:\/\/\/|[A-Za-z]:[\\/]|(?<![A-Za-z0-9._\\/:])\/[A-Za-z]\/)/i;
 const BARE_LOCAL_PATH_PREFIX_REGEX =
@@ -57,31 +59,123 @@ export type ResolvedLocalPathLinkMatch = LocalFilePathLinkMatch & {
   activationUri: string;
 };
 
-type ArtifactLinkCacheValue = ILink[] | undefined | Promise<ILink[] | undefined>;
+type LocalPathResolutionCacheEntry = {
+  value: ResolvedLocalPathLink | null;
+  expiresAt: number;
+};
 
-const artifactLinkCache = new Map<string, ArtifactLinkCacheValue>();
+const localPathResolutionCache = new Map<string, LocalPathResolutionCacheEntry>();
+const localPathResolutionInFlight = new Map<string, Promise<ResolvedLocalPathLink | null>>();
+let localPathResolutionCacheGeneration = 0;
+let memoizedHomeDir: string | undefined;
+let homeDirSettled = false;
+let homeDirInFlight: Promise<string | undefined> | null = null;
 
-registerTerminalCacheEvictionCleanup(forgetArtifactLinkCacheForSession);
+// Resolution entries are path-global, so terminal session eviction must not clear them.
+export function clearLocalPathResolutionCache(): void {
+  localPathResolutionCache.clear();
+  localPathResolutionInFlight.clear();
+  localPathResolutionCacheGeneration++;
+  memoizedHomeDir = undefined;
+  homeDirSettled = false;
+  homeDirInFlight = null;
+}
 
-function rememberArtifactLinkCache(key: string, value: ArtifactLinkCacheValue): void {
-  if (artifactLinkCache.has(key)) {
-    artifactLinkCache.delete(key);
+function readLocalPathResolutionCache(
+  lookupText: string,
+): { found: boolean; value: ResolvedLocalPathLink | null } {
+  const cached = localPathResolutionCache.get(lookupText);
+  if (!cached) return { found: false, value: null };
+  if (cached.expiresAt <= Date.now()) {
+    localPathResolutionCache.delete(lookupText);
+    return { found: false, value: null };
   }
-  artifactLinkCache.set(key, value);
-  if (artifactLinkCache.size <= ARTIFACT_LINK_CACHE_MAX_ENTRIES) return;
-  const oldest = artifactLinkCache.keys().next().value;
+  localPathResolutionCache.delete(lookupText);
+  localPathResolutionCache.set(lookupText, cached);
+  return { found: true, value: cached.value };
+}
+
+function rememberLocalPathResolution(
+  lookupText: string,
+  value: ResolvedLocalPathLink | null,
+): void {
+  if (localPathResolutionCache.has(lookupText)) {
+    localPathResolutionCache.delete(lookupText);
+  }
+  localPathResolutionCache.set(lookupText, {
+    value,
+    expiresAt: Date.now() + (
+      value === null ? LOCAL_PATH_RESOLUTION_MISS_TTL_MS : LOCAL_PATH_RESOLUTION_HIT_TTL_MS
+    ),
+  });
+  if (localPathResolutionCache.size <= LOCAL_PATH_RESOLUTION_CACHE_MAX_ENTRIES) return;
+  const oldest = localPathResolutionCache.keys().next().value;
   if (oldest !== undefined) {
-    artifactLinkCache.delete(oldest);
+    localPathResolutionCache.delete(oldest);
   }
 }
 
-function forgetArtifactLinkCacheForSession(sessionId: string): void {
-  const prefix = `${sessionId}:`;
-  for (const key of artifactLinkCache.keys()) {
-    if (key.startsWith(prefix)) {
-      artifactLinkCache.delete(key);
+function resolveAndCacheLocalPathLookups(lookupTexts: string[]): Promise<void> {
+  const pending: Array<Promise<ResolvedLocalPathLink | null>> = [];
+  const newLookups: string[] = [];
+  for (const lookupText of new Set(lookupTexts)) {
+    if (readLocalPathResolutionCache(lookupText).found) continue;
+    const inFlight = localPathResolutionInFlight.get(lookupText);
+    if (inFlight) {
+      pending.push(inFlight);
+    } else {
+      newLookups.push(lookupText);
     }
   }
+
+  if (newLookups.length > 0) {
+    const generation = localPathResolutionCacheGeneration;
+    const batch = resolveLocalPathLinks(newLookups);
+    for (let index = 0; index < newLookups.length; index++) {
+      const lookupText = newLookups[index];
+      const item = batch
+        .then((resolved) => resolved[index] ?? null)
+        .then((value) => {
+          if (generation === localPathResolutionCacheGeneration) {
+            rememberLocalPathResolution(lookupText, value);
+          }
+          return value;
+        })
+        .finally(() => {
+          if (localPathResolutionInFlight.get(lookupText) === item) {
+            localPathResolutionInFlight.delete(lookupText);
+          }
+        });
+      localPathResolutionInFlight.set(lookupText, item);
+      pending.push(item);
+    }
+  }
+
+  return Promise.all(pending).then(() => undefined);
+}
+
+function ensureHomeDir(): Promise<string | undefined> {
+  if (homeDirSettled) return Promise.resolve(memoizedHomeDir);
+  if (homeDirInFlight) return homeDirInFlight;
+  const generation = localPathResolutionCacheGeneration;
+  const request = Promise.resolve()
+    .then(() => homeDir())
+    .then((value) => {
+      const normalized = value?.trim() || undefined;
+      if (generation === localPathResolutionCacheGeneration) {
+        memoizedHomeDir = normalized;
+        homeDirSettled = true;
+      }
+      return normalized;
+    })
+    .catch(() => undefined)
+    .finally(() => {
+      if (homeDirInFlight === request) {
+        homeDirInFlight = null;
+      }
+    });
+  homeDirInFlight = request;
+  return request;
 }
 
 type BufferLine = ReturnType<Terminal["buffer"]["active"]["getLine"]>;
@@ -436,235 +530,300 @@ export function registerArtifactLinkProvider(
   getCwd?: () => string | undefined,
 ) {
   let disposed = false;
+  type RowPathData = {
+    parts: ArtifactLinkPart[];
+    filePathMatches: LocalFilePathLinkMatch[];
+    prepared: PreparedPathCandidate[];
+    needsHome: boolean;
+  };
+  type RowLinkCollection = {
+    links: ILink[];
+    missing: string[];
+    fallbackLinks: ILink[];
+    needsHome: boolean;
+  };
+
+  const collectRowPathData = (bufferLineNumber: number): RowPathData | null => {
+    const buffer = term.buffer.active;
+    const targetLineIndex = bufferLineNumber - 1;
+    if (targetLineIndex < 0 || targetLineIndex >= buffer.length) return null;
+
+    let firstLineIndex = targetLineIndex;
+    let wrappedBefore = 0;
+    while (
+      firstLineIndex > 0 &&
+      wrappedBefore < ARTIFACT_LINK_MAX_WRAPPED_LINES &&
+      buffer.getLine(firstLineIndex)?.isWrapped
+    ) {
+      firstLineIndex--;
+      wrappedBefore++;
+    }
+    firstLineIndex = Math.max(0, firstLineIndex - ARTIFACT_LINK_CONTEXT_LINES);
+    let lastLineIndex = targetLineIndex;
+    let wrappedAfter = 0;
+    while (
+      lastLineIndex + 1 < buffer.length &&
+      wrappedAfter < ARTIFACT_LINK_MAX_WRAPPED_LINES &&
+      buffer.getLine(lastLineIndex + 1)?.isWrapped
+    ) {
+      lastLineIndex++;
+      wrappedAfter++;
+    }
+    lastLineIndex = Math.min(buffer.length - 1, lastLineIndex + ARTIFACT_LINK_CONTEXT_LINES);
+
+    let candidateScanTail = "";
+    let hasCandidate = false;
+    for (let lineIndex = firstLineIndex; lineIndex <= lastLineIndex; lineIndex++) {
+      const scanText = `${candidateScanTail}${buffer.getLine(lineIndex)?.translateToString(true) ?? ""}`;
+      if (hasArtifactLinkCandidate(scanText)) {
+        hasCandidate = true;
+        break;
+      }
+      candidateScanTail = scanText.slice(-16);
+    }
+    if (!hasCandidate) return null;
+
+    const parts: ArtifactLinkPart[] = [];
+    let segmentText = "";
+    let segmentJoinBlocked = false;
+    let hardContinuationLines = 0;
+    let previousLineWrittenCells = 0;
+    let previousLineTotalCells = 0;
+    for (let lineIndex = firstLineIndex; lineIndex <= lastLineIndex; lineIndex++) {
+      const line = buffer.getLine(lineIndex);
+      const isCurrentLineWrapped = Boolean(line?.isWrapped);
+      const nextIsWrapped = Boolean(buffer.getLine(lineIndex + 1)?.isWrapped);
+      const rawLineText = line?.translateToString(false) ?? "";
+      const trimmedLineText = line?.translateToString(true) ?? "";
+      const nextLineText = buffer.getLine(lineIndex + 1)?.translateToString(true) ?? "";
+      const writtenExtent = measureWrittenLineExtent(line, rawLineText);
+      let lineText = nextIsWrapped
+        ? normalizeSoftWrappedArtifactLine(
+            // Pass the written prefix, not the padded row: a wide glyph that
+            // did not fit in the last column leaves a blank cell behind, and
+            // treating that as a word gap injects a space into the path.
+            rawLineText.slice(0, writtenExtent.textLength),
+            nextLineText,
+          )
+        : trimmedLineText;
+      let sourceOffset = 0;
+      if (lineIndex > firstLineIndex) {
+        const canJoinSegment = !segmentJoinBlocked;
+        const isSoftContinuation = canJoinSegment && isCurrentLineWrapped;
+        const hardContinuation = stripHardContinuationPrefix(lineText);
+        // Agent TUIs may wrap inside a reserved right margin instead of the
+        // terminal edge. Disk resolution below trims any overlong join back to
+        // the longest prefix that actually exists.
+        const wrappedFullRow = previousLineTotalCells > 0
+          && previousLineWrittenCells >= previousLineTotalCells * ARTIFACT_LINK_MIN_WRAPPED_ROW_FILL;
+        const isHardArtifactContinuation = canJoinSegment
+          && !isCurrentLineWrapped
+          && hardContinuationLines < ARTIFACT_LINK_MAX_HARD_CONTINUATION_LINES
+          && wrappedFullRow
+          && hasOpenArtifactPath(segmentText)
+          && hardContinuation.text.length > 0;
+        const joiner = isSoftContinuation || isHardArtifactContinuation ? "" : "\n";
+        if (isHardArtifactContinuation) {
+          lineText = hardContinuation.text;
+          sourceOffset = hardContinuation.sourceOffset;
+          hardContinuationLines++;
+        }
+        parts.push({ text: joiner, nextLineIndex: lineIndex });
+        if (joiner === "\n") {
+          segmentText = "";
+          segmentJoinBlocked = false;
+          hardContinuationLines = 0;
+        } else {
+          segmentText += joiner;
+          if (segmentText.length > ARTIFACT_LINK_MAX_SEGMENT_CHARS) {
+            segmentText = "";
+            segmentJoinBlocked = true;
+          }
+        }
+      }
+      parts.push({ text: lineText, lineIndex, sourceOffset });
+      if (segmentJoinBlocked || segmentText.length + lineText.length > ARTIFACT_LINK_MAX_SEGMENT_CHARS) {
+        segmentText = "";
+        segmentJoinBlocked = true;
+      } else {
+        segmentText += lineText;
+      }
+      previousLineWrittenCells = writtenExtent.cellEnd;
+      previousLineTotalCells = line?.length ?? 0;
+    }
+
+    const text = parts.map((part) => part.text).join("");
+    const filePathMatches = findLocalFilePathLinks(text);
+    const candidates = [...filePathMatches, ...findBareLocalPathCandidates(text, [])];
+    const needsHome = !homeDirSettled
+      && candidates.some((candidate) => /^~[\\/]/.test(candidate.text));
+    const cwd = getCwd?.()?.trim() || undefined;
+    const prepared = candidates
+      .map((candidate) => preparePathCandidate(candidate, cwd, memoizedHomeDir))
+      .filter((candidate): candidate is PreparedPathCandidate => candidate !== null);
+    return { parts, filePathMatches, prepared, needsHome };
+  };
+
+  const collectRowLinks = (bufferLineNumber: number): RowLinkCollection => {
+    const data = collectRowPathData(bufferLineNumber);
+    if (!data) return { links: [], missing: [], fallbackLinks: [], needsHome: false };
+
+    const fallbackLinks = data.filePathMatches
+      .map((match) => createLocalPathLink(term, data.parts, bufferLineNumber, match, onActivate))
+      .filter((link): link is ILink => link !== null);
+    const missing = new Set<string>();
+    const resolved = data.prepared.map((candidate) => {
+      const cached = readLocalPathResolutionCache(candidate.lookupText);
+      if (!cached.found) missing.add(candidate.lookupText);
+      return cached.found ? cached.value : null;
+    });
+    const remapped = data.prepared.map((candidate, index) =>
+      remapResolvedPathLink(candidate, resolved[index]));
+    const links = mergeResolvedPathLinkMatches(
+      data.prepared.map((candidate) => candidate.candidate),
+      remapped.map((result) => result.display),
+      remapped.map((result) => result.activationPrefix),
+    )
+      .map((match) => createLocalPathLink(
+        term,
+        data.parts,
+        bufferLineNumber,
+        match,
+        onActivate,
+        match.activationUri,
+      ))
+      .filter((link): link is ILink => link !== null)
+      .sort(sortLinksByRange);
+    return { links, missing: [...missing], fallbackLinks, needsHome: data.needsHome };
+  };
+
   const provider = term.registerLinkProvider({
     provideLinks(bufferLineNumber, callback) {
-      const buffer = term.buffer.active;
-      const targetLineIndex = bufferLineNumber - 1;
-      if (targetLineIndex < 0 || targetLineIndex >= buffer.length) {
-        if (!disposed) callback(undefined);
-        return;
-      }
-
-      let firstLineIndex = targetLineIndex;
-      let wrappedBefore = 0;
-      while (
-        firstLineIndex > 0 &&
-        wrappedBefore < ARTIFACT_LINK_MAX_WRAPPED_LINES &&
-        buffer.getLine(firstLineIndex)?.isWrapped
-      ) {
-        firstLineIndex--;
-        wrappedBefore++;
-      }
-      firstLineIndex = Math.max(0, firstLineIndex - ARTIFACT_LINK_CONTEXT_LINES);
-      let lastLineIndex = targetLineIndex;
-      let wrappedAfter = 0;
-      while (
-        lastLineIndex + 1 < buffer.length &&
-        wrappedAfter < ARTIFACT_LINK_MAX_WRAPPED_LINES &&
-        buffer.getLine(lastLineIndex + 1)?.isWrapped
-      ) {
-        lastLineIndex++;
-        wrappedAfter++;
-      }
-      lastLineIndex = Math.min(buffer.length - 1, lastLineIndex + ARTIFACT_LINK_CONTEXT_LINES);
-
-      const writeCounter = getTerminalWriteCounter(sessionId);
-      const cwd = getCwd?.()?.trim() || undefined;
-      const cacheKey = [
-        sessionId,
-        writeCounter,
-        cwd ?? "",
-        bufferLineNumber,
-        firstLineIndex,
-        lastLineIndex,
-        buffer.length,
-        buffer.viewportY,
-        buffer.baseY,
-      ].join(":");
-      if (artifactLinkCache.has(cacheKey)) {
-        const cached = artifactLinkCache.get(cacheKey);
-        if (cached instanceof Promise) {
-          cached.then((result) => {
-            if (!disposed) callback(result);
+      const completeFromCurrentBuffer = (homeAttempted = false): void => {
+        const first = collectRowLinks(bufferLineNumber);
+        if (first.needsHome && !homeAttempted) {
+          void ensureHomeDir().then(() => {
+            if (!disposed) completeFromCurrentBuffer(true);
           });
-        } else if (!disposed) {
-          callback(cached);
+          return;
         }
-        return;
-      }
-
-      let candidateScanTail = "";
-      let hasCandidate = false;
-      for (let lineIndex = firstLineIndex; lineIndex <= lastLineIndex; lineIndex++) {
-        const scanText = `${candidateScanTail}${buffer.getLine(lineIndex)?.translateToString(true) ?? ""}`;
-        if (hasArtifactLinkCandidate(scanText)) {
-          hasCandidate = true;
-          break;
+        if (first.missing.length === 0) {
+          if (!disposed) callback(first.links.length > 0 ? first.links : undefined);
+          return;
         }
-        candidateScanTail = scanText.slice(-16);
-      }
-      if (!hasCandidate) {
-        rememberArtifactLinkCache(cacheKey, undefined);
-        if (!disposed) callback(undefined);
-        return;
-      }
-
-      const parts: ArtifactLinkPart[] = [];
-      let segmentText = "";
-      let segmentJoinBlocked = false;
-      let hardContinuationLines = 0;
-      let previousLineWrittenCells = 0;
-      let previousLineTotalCells = 0;
-      for (let lineIndex = firstLineIndex; lineIndex <= lastLineIndex; lineIndex++) {
-        const line = buffer.getLine(lineIndex);
-        const isCurrentLineWrapped = Boolean(line?.isWrapped);
-        const nextIsWrapped = Boolean(buffer.getLine(lineIndex + 1)?.isWrapped);
-        const rawLineText = line?.translateToString(false) ?? "";
-        const trimmedLineText = line?.translateToString(true) ?? "";
-        const nextLineText = buffer.getLine(lineIndex + 1)?.translateToString(true) ?? "";
-        const writtenExtent = measureWrittenLineExtent(line, rawLineText);
-        let lineText = nextIsWrapped
-          ? normalizeSoftWrappedArtifactLine(
-              // Pass the written prefix, not the padded row: a wide glyph that
-              // did not fit in the last column leaves a blank cell behind, and
-              // treating that as a word gap injects a space into the path.
-              rawLineText.slice(0, writtenExtent.textLength),
-              nextLineText,
-            )
-          : trimmedLineText;
-        let sourceOffset = 0;
-        if (lineIndex > firstLineIndex) {
-          const canJoinSegment = !segmentJoinBlocked;
-          const isSoftContinuation = canJoinSegment && isCurrentLineWrapped;
-          const hardContinuation = stripHardContinuationPrefix(lineText);
-          // An earlier rule required the previous row's leftover cells to be
-          // narrower than the continuation's leading glyph -- i.e. the TUI wrapped
-          // exactly at the terminal edge. Agent TUIs do not: Claude Code reserves
-          // a right margin and indents the continuation, so its rows stop ~6 cells
-          // short of 80 and every wrapped path it printed was silently unlinkable.
-          // Six leftover cells cannot be told from ten, so compare fill instead of
-          // leftovers: a wrapped row used nearly all its width either way, while a
-          // line that ended on purpose used a fraction of it.
-          //
-          // resolve_local_path_links backstops the rest -- it trims each candidate
-          // to its longest existing prefix, so a sentence glued onto a path falls
-          // off again and only joins that exist on disk ever become links.
-          const wrappedFullRow = previousLineTotalCells > 0
-            && previousLineWrittenCells >= previousLineTotalCells * ARTIFACT_LINK_MIN_WRAPPED_ROW_FILL;
-          const isHardArtifactContinuation = canJoinSegment
-            && !isCurrentLineWrapped
-            && hardContinuationLines < ARTIFACT_LINK_MAX_HARD_CONTINUATION_LINES
-            && wrappedFullRow
-            && hasOpenArtifactPath(segmentText)
-            && hardContinuation.text.length > 0;
-          const joiner = isSoftContinuation || isHardArtifactContinuation ? "" : "\n";
-          if (isHardArtifactContinuation) {
-            lineText = hardContinuation.text;
-            sourceOffset = hardContinuation.sourceOffset;
-            hardContinuationLines++;
-          }
-          parts.push({ text: joiner, nextLineIndex: lineIndex });
-          if (joiner === "\n") {
-            segmentText = "";
-            segmentJoinBlocked = false;
-            hardContinuationLines = 0;
-          } else {
-            segmentText += joiner;
-            if (segmentText.length > ARTIFACT_LINK_MAX_SEGMENT_CHARS) {
-              segmentText = "";
-              segmentJoinBlocked = true;
-            }
-          }
-        }
-        parts.push({ text: lineText, lineIndex, sourceOffset });
-        if (segmentJoinBlocked || segmentText.length + lineText.length > ARTIFACT_LINK_MAX_SEGMENT_CHARS) {
-          segmentText = "";
-          segmentJoinBlocked = true;
-        } else {
-          segmentText += lineText;
-        }
-        previousLineWrittenCells = writtenExtent.cellEnd;
-        previousLineTotalCells = line?.length ?? 0;
-      }
-      const text = parts.map((part) => part.text).join("");
-      const filePathMatches = findLocalFilePathLinks(text);
-      const fallbackLinks: ILink[] = [];
-      for (const match of filePathMatches) {
-        const link = createLocalPathLink(term, parts, bufferLineNumber, match, onActivate);
-        if (link) {
-          fallbackLinks.push(link);
-        }
-      }
-      const bareCandidates = findBareLocalPathCandidates(text, []);
-      const candidates = [...filePathMatches, ...bareCandidates];
-      if (candidates.length > 0) {
-        const needsHome = candidates.some((candidate) => /^~[\\/]/.test(candidate.text));
-        const homePromise = needsHome ? homeDir().catch(() => undefined) : Promise.resolve(undefined);
-        const resultPromise = homePromise
-          .then((home) => {
-            const prepared = candidates
-              .map((candidate) => preparePathCandidate(candidate, cwd, home))
-              .filter((candidate): candidate is PreparedPathCandidate => candidate !== null);
-            if (prepared.length === 0) {
-              return { prepared, resolvedLinks: [] as Array<ResolvedLocalPathLink | null> };
-            }
-            return resolveLocalPathLinks(prepared.map((candidate) => candidate.lookupText))
-              .then((resolvedLinks) => ({ prepared, resolvedLinks }));
-          })
-          .then(({ prepared, resolvedLinks }) => {
-            const remapped = prepared.map((candidate, index) =>
-              remapResolvedPathLink(candidate, resolvedLinks[index] ?? null));
-            const links: ILink[] = [];
-            for (const match of mergeResolvedPathLinkMatches(
-              prepared.map((candidate) => candidate.candidate),
-              remapped.map((result) => result.display),
-              remapped.map((result) => result.activationPrefix),
-            )) {
-              const link = createLocalPathLink(
-                term,
-                parts,
-                bufferLineNumber,
-                match,
-                onActivate,
-                match.activationUri,
-              );
-              if (link) {
-                links.push(link);
-              }
-            }
-            links.sort(sortLinksByRange);
-            const result = links.length > 0 ? links : undefined;
-            if (!disposed) rememberArtifactLinkCache(cacheKey, result);
-            return result;
+        void resolveAndCacheLocalPathLookups(first.missing)
+          .then(() => {
+            if (disposed) return;
+            const current = collectRowLinks(bufferLineNumber);
+            callback(current.links.length > 0 ? current.links : undefined);
           })
           .catch((error) => {
+            if (disposed) return;
             if (import.meta.env.DEV) {
               console.warn("[mycmux] failed to resolve local path links", error);
             }
-            const singleLineFallbackLinks = fallbackLinks.filter(
+            const current = collectRowLinks(bufferLineNumber);
+            const fallback = current.fallbackLinks.filter(
               (link) => link.range.start.y === link.range.end.y,
             );
-            const result = singleLineFallbackLinks.length > 0 ? singleLineFallbackLinks : undefined;
-            if (!disposed) rememberArtifactLinkCache(cacheKey, result);
-            return result;
+            callback(fallback.length > 0 ? fallback : undefined);
           });
-        rememberArtifactLinkCache(cacheKey, resultPromise);
-        resultPromise.then((result) => {
-          if (disposed) return;
-          callback(getTerminalWriteCounter(sessionId) === writeCounter ? result : undefined);
-        });
-        return;
-      }
-      const result = fallbackLinks.length > 0 ? fallbackLinks : undefined;
-      rememberArtifactLinkCache(cacheKey, result);
-      if (!disposed) callback(result);
+      };
+      completeFromCurrentBuffer();
     },
   });
+
+  let prewarmTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
+  let lastPrewarmSignature: string | null = null;
+  const prewarmRenderedRows = async (): Promise<void> => {
+    const buffer = term.buffer.active;
+    const prewarmSignature = [
+      getTerminalWriteCounter(sessionId),
+      buffer.viewportY,
+      buffer.baseY,
+      buffer.length,
+    ].join(":");
+    if (prewarmSignature === lastPrewarmSignature) return;
+    lastPrewarmSignature = prewarmSignature;
+
+    const firstLineIndex = Math.max(0, buffer.viewportY - LOCAL_PATH_PREWARM_CONTEXT_LINES);
+    const lastLineIndex = Math.min(
+      buffer.length - 1,
+      buffer.viewportY + Math.max(0, term.rows - 1) + LOCAL_PATH_PREWARM_CONTEXT_LINES,
+    );
+    const collectMissing = (limit: number): { missing: string[]; needsHome: boolean } => {
+      const missing = new Set<string>();
+      let needsHome = false;
+      const lineIndexes: number[] = [];
+      // Each scan covers 16 lines on either side, so a 16-line stride covers the full range.
+      for (
+        let lineIndex = firstLineIndex;
+        lineIndex <= lastLineIndex;
+        lineIndex += ARTIFACT_LINK_CONTEXT_LINES
+      ) {
+        lineIndexes.push(lineIndex);
+      }
+      if (
+        lastLineIndex >= firstLineIndex
+        && lineIndexes[lineIndexes.length - 1] !== lastLineIndex
+      ) {
+        lineIndexes.push(lastLineIndex);
+      }
+      for (const lineIndex of lineIndexes) {
+        const bufferLineNumber = lineIndex + 1;
+        const data = collectRowPathData(bufferLineNumber);
+        if (!data) continue;
+        needsHome ||= data.needsHome;
+        for (const candidate of data.prepared) {
+          if (readLocalPathResolutionCache(candidate.lookupText).found) continue;
+          if (localPathResolutionInFlight.has(candidate.lookupText)) continue;
+          missing.add(candidate.lookupText);
+          if (missing.size >= limit) break;
+        }
+        if (missing.size >= limit) break;
+      }
+      return { missing: [...missing], needsHome };
+    };
+
+    const first = collectMissing(LOCAL_PATH_PREWARM_MAX_CANDIDATES);
+    const homeRequest = first.needsHome ? ensureHomeDir() : null;
+    if (first.missing.length > 0) {
+      await resolveAndCacheLocalPathLookups(first.missing);
+    }
+    if (disposed || !homeRequest) return;
+    const home = await homeRequest;
+    if (disposed || !home) return;
+    const remaining = LOCAL_PATH_PREWARM_MAX_CANDIDATES - first.missing.length;
+    if (remaining > 0) {
+      const second = collectMissing(remaining);
+      if (second.missing.length > 0) {
+        await resolveAndCacheLocalPathLookups(second.missing);
+      }
+    }
+  };
+  const renderDisposable = term.onRender(() => {
+    if (prewarmTimer !== null) {
+      globalThis.clearTimeout(prewarmTimer);
+    }
+    prewarmTimer = globalThis.setTimeout(() => {
+      prewarmTimer = null;
+      void prewarmRenderedRows().catch((error) => {
+        if (import.meta.env.DEV) {
+          console.warn("[mycmux] failed to prewarm local path links", error);
+        }
+      });
+    }, LOCAL_PATH_PREWARM_DEBOUNCE_MS);
+  });
+
   return {
     dispose() {
       disposed = true;
+      if (prewarmTimer !== null) {
+        globalThis.clearTimeout(prewarmTimer);
+        prewarmTimer = null;
+      }
+      renderDisposable.dispose();
       provider.dispose();
-      forgetArtifactLinkCacheForSession(sessionId);
     },
   };
 }

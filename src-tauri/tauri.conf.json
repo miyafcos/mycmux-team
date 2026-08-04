@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "mycmux",
-  "version": "0.21.2",
+  "version": "0.21.4",
   "identifier": "com.miyazaki.mycmux",
   "build": {
     "frontendDist": "../dist",
@@ -36,7 +36,7 @@
         "https://github.com/miyafcos/mycmux-team/releases/download/mycmux-personal-updater/latest.json"
       ],
       "dialog": false,
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDc3MjRBRDg0REY0OEZERUQKUldUdC9VamZoSzBrZDlULzZ3UlR2NFdtS2pqU1g0UFRTUklGM2FQSE1zT2piQkRyUGxHSWVCUVoK"
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IENDNTMwNzdBMkQzOEYyQkIKUldTNzhqZ3RlZ2RUekhmcUtlN2RGL0lPWFlUWTNwS0Z3WlI2V1huOFNFblc2U1NheFdDcTF2WDkK"
     }
   },
   "bundle": {

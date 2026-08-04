@@ -38,6 +38,156 @@ pub struct SocketResponse {
     pub error: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SendTextExpectations {
+    session_id: String,
+    session_epoch: Option<u64>,
+    attention_id: Option<String>,
+    session_revision: Option<u64>,
+}
+
+fn aliased_value<'a>(
+    object: &'a serde_json::Map<String, Value>,
+    snake_case: &str,
+    camel_case: &str,
+) -> Result<Option<&'a Value>, String> {
+    match (object.get(snake_case), object.get(camel_case)) {
+        (Some(snake), Some(camel)) if snake != camel => Err(format!(
+            "pane.send_text {snake_case} and {camel_case} must match"
+        )),
+        (Some(value), _) | (_, Some(value)) => Ok(Some(value)),
+        (None, None) => Ok(None),
+    }
+}
+
+fn optional_u64_arg(
+    object: &serde_json::Map<String, Value>,
+    snake_case: &str,
+    camel_case: &str,
+) -> Result<Option<u64>, String> {
+    aliased_value(object, snake_case, camel_case)?
+        .map(|value| {
+            value.as_u64().ok_or_else(|| {
+                format!("pane.send_text {snake_case} must be a non-negative integer")
+            })
+        })
+        .transpose()
+}
+
+fn optional_string_arg(
+    object: &serde_json::Map<String, Value>,
+    snake_case: &str,
+    camel_case: &str,
+) -> Result<Option<String>, String> {
+    aliased_value(object, snake_case, camel_case)?
+        .map(|value| {
+            value
+                .as_str()
+                .map(str::to_string)
+                .ok_or_else(|| format!("pane.send_text {snake_case} must be a string"))
+        })
+        .transpose()
+}
+
+fn send_text_expectations(
+    command: &str,
+    args: &Value,
+) -> Result<Option<SendTextExpectations>, String> {
+    if command != "pane.send_text" {
+        return Ok(None);
+    }
+    let Some(object) = args.as_object() else {
+        // Keep malformed legacy requests on the existing frontend validation path.
+        return Ok(None);
+    };
+    let expectation_keys = [
+        "expected_session_epoch",
+        "expectedSessionEpoch",
+        "expected_attention_id",
+        "expectedAttentionId",
+        "expected_session_revision",
+        "expectedSessionRevision",
+    ];
+    if !expectation_keys.iter().any(|key| object.contains_key(*key)) {
+        return Ok(None);
+    }
+
+    let session_id = optional_string_arg(object, "session_id", "sessionId")?
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            "pane.send_text requires sessionId when expectations are provided".to_string()
+        })?;
+    Ok(Some(SendTextExpectations {
+        session_id,
+        session_epoch: optional_u64_arg(object, "expected_session_epoch", "expectedSessionEpoch")?,
+        attention_id: optional_string_arg(object, "expected_attention_id", "expectedAttentionId")?,
+        session_revision: optional_u64_arg(
+            object,
+            "expected_session_revision",
+            "expectedSessionRevision",
+        )?,
+    }))
+}
+
+fn stale_send_text_result(
+    store: &crate::session_state::SessionStateStore,
+    expectations: &SendTextExpectations,
+) -> Option<Value> {
+    let Some(current_view) = store.current_view(&expectations.session_id) else {
+        return Some(serde_json::json!({
+            "sent": false,
+            "reason": "unknown_session",
+            "current": Value::Null,
+        }));
+    };
+
+    let reason = if expectations
+        .session_epoch
+        .is_some_and(|expected| current_view.session_epoch != Some(expected))
+    {
+        Some("session_epoch")
+    } else if expectations
+        .attention_id
+        .as_ref()
+        .is_some_and(|expected| current_view.attention.attention_id.as_ref() != Some(expected))
+    {
+        Some("attention_id")
+    } else if expectations
+        .session_revision
+        .is_some_and(|expected| expected > current_view.session_revision)
+    {
+        // Revision advances for routine output. Old/equal values remain valid;
+        // only a future revision, which the caller could not have observed, is rejected.
+        Some("session_revision")
+    } else {
+        None
+    }?;
+
+    Some(serde_json::json!({
+        "sent": false,
+        "reason": reason,
+        "current": crate::status_feed::FeedSession::from(&current_view),
+    }))
+}
+
+fn guard_send_text_request(
+    store: &crate::session_state::SessionStateStore,
+    id: usize,
+    command: &str,
+    args: &Value,
+) -> Result<Option<SocketResponse>, String> {
+    let Some(expectations) = send_text_expectations(command, args)? else {
+        return Ok(None);
+    };
+    Ok(
+        stale_send_text_result(store, &expectations).map(|result| SocketResponse {
+            id,
+            result: Some(result),
+            error: None,
+        }),
+    )
+}
+
 fn state_view_session_id(args: &Value) -> Result<Option<String>, String> {
     if args.is_null() {
         return Ok(None);
@@ -255,6 +405,23 @@ async fn handle_connection(stream: TcpStream, app: AppHandle) {
                             let _ = writer.flush().await;
                             continue;
                         }
+                        let store = &app.state::<crate::AppState>().session_state_store;
+                        match guard_send_text_request(store, id, &cmd, &args) {
+                            Ok(Some(response)) => {
+                                let _ = write_json_line(&mut writer, &response).await;
+                                continue;
+                            }
+                            Ok(None) => {}
+                            Err(error) => {
+                                let response = SocketResponse {
+                                    id,
+                                    result: None,
+                                    error: Some(error),
+                                };
+                                let _ = write_json_line(&mut writer, &response).await;
+                                continue;
+                            }
+                        }
                         let (tx, rx) = oneshot::channel();
 
                         state.pending_requests.insert(id, tx);
@@ -371,7 +538,30 @@ pub fn read_socket_port() -> Option<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session_state::{Evidence, MonitorStatus, SessionStateStore};
+    use crate::session_state::{
+        AttentionKind, Evidence, EvidenceSignal, EvidenceSource, MonitorStatus, SessionStateStore,
+    };
+
+    fn attention_evidence(
+        observed_at: u64,
+        session_epoch: u64,
+        attention: AttentionKind,
+        attention_id: Option<&str>,
+    ) -> Evidence {
+        Evidence {
+            observed_at,
+            source: EvidenceSource::Hook,
+            session_epoch: Some(session_epoch),
+            process: None,
+            signal: EvidenceSignal::Hook {
+                attention,
+                attention_id: attention_id.map(str::to_string),
+                detail: None,
+                confidence: 1.0,
+                stale_after: 60_000,
+            },
+        }
+    }
 
     #[tokio::test]
     async fn frontend_response_is_forwarded_without_timeout() {
@@ -449,6 +639,207 @@ mod tests {
             Some("session-b".to_string())
         );
         assert!(state_view_session_id(&serde_json::json!({ "session_id": 3 })).is_err());
+    }
+
+    #[test]
+    fn send_text_without_expectations_stays_on_legacy_frontend_path() {
+        let store = SessionStateStore::new();
+        assert!(guard_send_text_request(
+            &store,
+            41,
+            "pane.send_text",
+            &serde_json::json!({
+                "sessionId": "session-a",
+                "text": "yes",
+                "enter": true,
+            }),
+        )
+        .unwrap()
+        .is_none());
+        assert!(
+            guard_send_text_request(&store, 42, "workspace.list", &serde_json::json!({}))
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn send_text_expectations_accept_snake_and_camel_case_aliases() {
+        let snake = send_text_expectations(
+            "pane.send_text",
+            &serde_json::json!({
+                "session_id": "session-a",
+                "expected_session_epoch": 7,
+                "expected_attention_id": "attention-a",
+                "expected_session_revision": 11,
+            }),
+        )
+        .unwrap()
+        .unwrap();
+        let camel = send_text_expectations(
+            "pane.send_text",
+            &serde_json::json!({
+                "sessionId": "session-a",
+                "expectedSessionEpoch": 7,
+                "expectedAttentionId": "attention-a",
+                "expectedSessionRevision": 11,
+            }),
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(snake, camel);
+        assert!(send_text_expectations(
+            "pane.send_text",
+            &serde_json::json!({
+                "sessionId": "session-a",
+                "expectedSessionEpoch": null,
+            }),
+        )
+        .is_err());
+        assert!(send_text_expectations(
+            "pane.send_text",
+            &serde_json::json!({
+                "sessionId": "session-a",
+                "expected_session_epoch": 7,
+                "expectedSessionEpoch": 8,
+            }),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn guarded_send_rejects_unknown_session_with_structured_result() {
+        let response = guard_send_text_request(
+            &SessionStateStore::new(),
+            43,
+            "pane.send_text",
+            &serde_json::json!({
+                "sessionId": "missing",
+                "expectedSessionEpoch": 1,
+            }),
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(response.id, 43);
+        assert_eq!(response.error, None);
+        assert_eq!(
+            response.result.unwrap(),
+            serde_json::json!({
+                "sent": false,
+                "reason": "unknown_session",
+                "current": null,
+            })
+        );
+    }
+
+    #[test]
+    fn guarded_send_rejects_epoch_mismatch_and_returns_latest_feed_view() {
+        let store = SessionStateStore::new();
+        store.ingest(
+            "session-a",
+            Evidence::monitor_status(10, 7, MonitorStatus::Idle, None),
+        );
+        let result = stale_send_text_result(
+            &store,
+            &SendTextExpectations {
+                session_id: "session-a".to_string(),
+                session_epoch: Some(6),
+                attention_id: None,
+                session_revision: None,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(result["sent"], false);
+        assert_eq!(result["reason"], "session_epoch");
+        assert_eq!(result["current"]["session_id"], "session-a");
+        assert_eq!(result["current"]["session_revision"], 1);
+        assert_eq!(result["current"]["status"]["session_epoch"], 7);
+    }
+
+    #[test]
+    fn guarded_send_rejects_changed_and_resolved_attention() {
+        let store = SessionStateStore::new();
+        store.ingest(
+            "session-a",
+            Evidence::monitor_status(10, 7, MonitorStatus::Idle, None),
+        );
+        store.ingest(
+            "session-a",
+            attention_evidence(20, 7, AttentionKind::Input, Some("attention-a")),
+        );
+        let expected_a = SendTextExpectations {
+            session_id: "session-a".to_string(),
+            session_epoch: None,
+            attention_id: Some("attention-a".to_string()),
+            session_revision: None,
+        };
+        assert_eq!(stale_send_text_result(&store, &expected_a), None);
+
+        store.ingest(
+            "session-a",
+            attention_evidence(30, 7, AttentionKind::Approval, Some("attention-b")),
+        );
+        let changed = stale_send_text_result(&store, &expected_a).unwrap();
+        assert_eq!(changed["reason"], "attention_id");
+        assert_eq!(
+            changed["current"]["status"]["attention"]["attention_id"],
+            "attention-b"
+        );
+
+        store.ingest(
+            "session-a",
+            attention_evidence(40, 7, AttentionKind::None, None),
+        );
+        let expected_b = SendTextExpectations {
+            attention_id: Some("attention-b".to_string()),
+            ..expected_a
+        };
+        let resolved = stale_send_text_result(&store, &expected_b).unwrap();
+        assert_eq!(resolved["reason"], "attention_id");
+        assert_eq!(
+            resolved["current"]["status"]["attention"]["attention_id"],
+            Value::Null
+        );
+    }
+
+    #[test]
+    fn guarded_send_allows_old_or_equal_revision_and_rejects_future_revision() {
+        let store = SessionStateStore::new();
+        let current = store.ingest(
+            "session-a",
+            Evidence::monitor_status(10, 7, MonitorStatus::Idle, None),
+        );
+        assert_eq!(current.session_revision, 1);
+
+        for expected_revision in [0, 1] {
+            assert_eq!(
+                stale_send_text_result(
+                    &store,
+                    &SendTextExpectations {
+                        session_id: "session-a".to_string(),
+                        session_epoch: None,
+                        attention_id: None,
+                        session_revision: Some(expected_revision),
+                    },
+                ),
+                None
+            );
+        }
+        let future = stale_send_text_result(
+            &store,
+            &SendTextExpectations {
+                session_id: "session-a".to_string(),
+                session_epoch: None,
+                attention_id: None,
+                session_revision: Some(2),
+            },
+        )
+        .unwrap();
+        assert_eq!(future["reason"], "session_revision");
+        assert_eq!(future["current"]["session_revision"], 1);
     }
 
     #[tokio::test]

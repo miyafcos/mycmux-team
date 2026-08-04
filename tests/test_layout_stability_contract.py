@@ -265,7 +265,7 @@ def test_terminal_renderer_auto_default_keeps_transparency_safety() -> None:
     global_css = read_repo_text("src/global.css")
 
     for snippet in [
-        "const DEFAULT_TERMINAL_LINE_HEIGHT = 1.1;",
+        "const DEFAULT_TERMINAL_LINE_HEIGHT = 1.35;",
         'import { WebglAddon } from "@xterm/addon-webgl";',
         "const webglRendererStates = new WeakMap<Terminal, WebglRendererState>();",
         "const webglRendererFailures = new WeakSet<Terminal>();",

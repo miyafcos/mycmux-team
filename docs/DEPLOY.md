@@ -52,7 +52,42 @@ powershell -ExecutionPolicy Bypass -File build-lite.ps1
 - 配布先 = `C:\Users\miyaz\mycmux-lite-app\`
 - NSIS / MSI / `latest.json` などの配布アセットがあれば `dist-uploads/` に集約
 
-## GitHub Releases (自動)
+## ローカルリリース経路 (Actions 非課金運用)
+
+GitHub Actions を使わず、個人版のビルド・署名・GitHub Release 作成・公開 updater feed のミラーをローカルで一括実行する。`build-personal.ps1` はローカル配置用であり、このリリース経路とは別。
+
+初回のみ、署名鍵のパスワードを Windows DPAPI で保存する。平文は保存されず、現在の Windows ユーザーと端末でのみ復号できる。
+秘密管理サービス側の原本は残し、`C:\Users\miyaz\.tauri\mycmux-updater.pass` はローカル実行専用の DPAPI キャッシュとして扱う。
+
+```powershell
+cd C:\Users\miyaz\cmux-for-linux-dev-master
+powershell -File scripts/release-local.ps1 -SetPassword
+```
+
+リリース時は次を実行する。バージョンは `package.json` から自動取得する。
+
+```powershell
+cd C:\Users\miyaz\cmux-for-linux-dev-master
+powershell -File scripts/release-local.ps1
+```
+
+前提:
+
+- ブランチが `master` で、追跡ファイルに未コミット変更がない
+- `package.json` と `src-tauri\tauri.conf.json` の version が一致する
+- 対象タグが現在の `HEAD` を指し、ローカルと `origin` で同じ commit に存在する
+- `gh auth status` が成功し、`miyafcos/mycmux` と `miyafcos/mycmux-team` の両方へ push できる
+- `C:\Users\miyaz\.tauri\mycmux-updater.key` が存在する
+
+失敗時の確認:
+
+- ガードで停止: ブランチ、追跡ファイルの差分、version、タグ、`gh` 認証・権限、署名鍵を確認
+- 事前検証で停止: `npx tsc --noEmit`、`npx vitest run`、`python -m pytest tests/` を個別実行
+- ビルドで停止: `src-tauri\target\release\bundle\nsis\` と `msi\` に installer と同名 `.sig` があるか確認
+- Release またはミラーで停止: `miyafcos/mycmux` の対象 Release と `mycmux-personal-updater` 固定 feed を確認
+- 設定復元で停止: `git diff -- src-tauri\tauri.conf.json` を確認。スクリプトは元のバイト列を `finally` で復元する
+
+## GitHub Releases (手動 workflow)
 
 ### リリース手順
 
@@ -74,7 +109,7 @@ powershell -ExecutionPolicy Bypass -File build-lite.ps1
    git tag v0.3.0-lite.2            # lite
    git push origin v0.3.1
    ```
-6. GitHub Actions が自動で `release.yml` を実行 → Windows ビルド → 署名 → release 作成 → `latest.json` + `.exe` + `.exe.sig` を assets に upload
+6. 必要な場合のみ GitHub の Actions 画面から `release.yml` を `workflow_dispatch` で手動実行 → Windows ビルド → 署名 → release 作成 → `latest.json` + `.exe` + `.exe.sig` を assets に upload
 7. リリースを確認:
    - 個人版: https://github.com/miyafcos/mycmux/releases
    - lite: https://github.com/miyafcos/mycmux-team/releases
@@ -97,8 +132,24 @@ private GitHub Release は標準 Tauri updater から認証なしで取得でき
 
 | 配布物 | 秘密鍵 | パスワード保管場所 |
 |---|---|---|
-| 個人版 | `C:\Users\miyaz\.tauri\mycmux-updater.key` | 1Password / Bitwarden |
+| 個人版 | `C:\Users\miyaz\.tauri\mycmux-updater.key` | `C:\Users\miyaz\.tauri\mycmux-updater.pass` (DPAPI) |
 | lite | `C:\Users\miyaz\.tauri\mycmux-lite-updater.key` | 1Password / Bitwarden |
+
+個人版の鍵は 2026-07-31 に作り直した。旧鍵のパスフレーズが失われ、1Password にも見つからなかったため。
+旧鍵は `mycmux-updater.key.old-20260731` / `mycmux-updater.key.pub.old-20260731` として同じディレクトリに残してある。
+
+新しいパスフレーズはランダム生成した 40 文字で、人間が覚える前提ではない。DPAPI で暗号化して
+`mycmux-updater.pass` に置いてあり、**この Windows ユーザーがこの端末でのみ**復号できる。
+`release-local.ps1` が自動で読むので、リリース時にパスワードを入力する必要はない。
+
+このため:
+
+- 端末を移行・再セットアップするときは鍵とパスワードを両方持ち込むか、鍵を作り直して
+  `tauri.conf.json` の `pubkey` を更新し、新版を1回だけ手動インストールする
+- GitHub Secrets の `TAURI_KEY_PERSONAL` / `TAURI_KEY_PERSONAL_PASSWORD` は**旧鍵のまま**。
+  Actions 経由でリリースを再開するときは先に更新すること (現在 Actions は非課金運用のため停止中)
+- 0.21.2 以前をインストールしている端末は、旧公開鍵しか持たないので新版を更新ボタンでは受け取れない。
+  0.21.3 以降を1回だけ手動インストールする必要がある
 
 ### GitHub Secrets
 

@@ -26,6 +26,27 @@ function workspaceContainsSession(workspace: Workspace | undefined, sessionId: s
   );
 }
 
+function activeFocusTargetSignature(
+  workspaces: Workspace[],
+  activeWorkspaceId: string | null,
+  activeSessionId: string | null,
+): string {
+  const workspace = workspaces.find((candidate) => candidate.id === activeWorkspaceId);
+  const pane = activeSessionId
+    ? workspace?.panes.find((candidate) =>
+        candidate.sessionId === activeSessionId
+        || candidate.tabs.some((tab) => tab.sessionId === activeSessionId),
+      )
+    : undefined;
+  const activeTab = pane?.tabs.find((tab) => tab.id === pane.activeTabId);
+  return JSON.stringify([
+    activeWorkspaceId,
+    pane?.id ?? null,
+    activeTab?.id ?? null,
+    activeTab?.sessionId ?? activeSessionId,
+  ]);
+}
+
 function clearZoomIfMissingFromWorkspace(workspace: Workspace | undefined): void {
   const uiState = useUiStore.getState();
   if (uiState.zoomedPaneId && !workspaceContainsPane(workspace, uiState.zoomedPaneId)) {
@@ -227,6 +248,7 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
   },
 
   createWorkspace: (name, gridTemplateId, panes, splitColumns, options) => {
+    const previousActiveWorkspaceId = get().activeWorkspaceId;
     const id = options?.id ?? uuid();
     const normalizedSplitColumns = normalizeSplitColumns(splitColumns, panes.map((pane) => pane.id));
 
@@ -252,6 +274,10 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
       activeWorkspaceId: options?.activate === false ? state.activeWorkspaceId : id,
     }));
 
+    if (options?.activate !== false && previousActiveWorkspaceId !== id) {
+      useUiStore.getState().bumpFocusRevision();
+    }
+
     if (options?.activate !== false) {
       clearZoomIfMissingFromWorkspace(workspace);
     }
@@ -260,6 +286,7 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
   },
 
   removeWorkspace: (id) => {
+    const previousActiveWorkspaceId = get().activeWorkspaceId;
     set((state) => {
       const remaining = state.workspaces.filter((w) => w.id !== id);
       const newActiveId =
@@ -270,6 +297,9 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
       return { workspaces: remaining, activeWorkspaceId: newActiveId, lastActivePaneByWorkspace };
     });
     const { workspaces, activeWorkspaceId } = get();
+    if (previousActiveWorkspaceId !== activeWorkspaceId) {
+      useUiStore.getState().bumpFocusRevision();
+    }
     clearZoomIfMissingFromWorkspace(workspaces.find((w) => w.id === activeWorkspaceId));
   },
 
@@ -301,6 +331,9 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
     }
 
     set({ activeWorkspaceId: id, lastActivePaneByWorkspace });
+    if (state.activeWorkspaceId !== id) {
+      useUiStore.getState().bumpFocusRevision();
+    }
     applyStructuralActivation(nextActivePaneId);
     clearZoomIfMissingFromWorkspace(workspace);
   },
@@ -346,6 +379,13 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
   },
 
   _updateWorkspacePanes: (id, panes, splitColumns, resetLayoutMetrics = false) => {
+    const beforeState = get();
+    const activeSessionId = useUiStore.getState().activePaneId;
+    const beforeFocusTarget = activeFocusTargetSignature(
+      beforeState.workspaces,
+      beforeState.activeWorkspaceId,
+      activeSessionId,
+    );
     set((state) => ({
       workspaces: state.workspaces.map((w) => {
         if (w.id !== id) return w;
@@ -372,6 +412,15 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
         };
       }),
     }));
+    const afterState = get();
+    const afterFocusTarget = activeFocusTargetSignature(
+      afterState.workspaces,
+      afterState.activeWorkspaceId,
+      useUiStore.getState().activePaneId,
+    );
+    if (beforeFocusTarget !== afterFocusTarget) {
+      useUiStore.getState().bumpFocusRevision();
+    }
   },
 
   setPaneAgentSessionFromMetadata: (sessionId, payload) => {

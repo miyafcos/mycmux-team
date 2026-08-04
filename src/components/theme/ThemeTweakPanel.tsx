@@ -22,8 +22,10 @@ interface ThemeTweakPanelProps {
   changedCount: number;
   fontSize: number;
   fontFamily: string;
+  lineHeight: number;
   setFontSize: (size: number) => void;
   setFontFamily: (fontFamily: string) => void;
+  setLineHeight: (lineHeight: number) => void;
   setThemeTweakColor: (key: ThemeTweakColorKey, color: string) => void;
   applyThemeTweakPreset: (colors: Partial<Record<ThemeTweakColorKey, string>>) => void;
   setThemeBackground: (background: Partial<ThemeBackgroundSettings>) => void;
@@ -309,8 +311,10 @@ export function ThemeTweakPanel({
   changedCount,
   fontSize,
   fontFamily,
+  lineHeight,
   setFontSize,
   setFontFamily,
+  setLineHeight,
   setThemeTweakColor,
   applyThemeTweakPreset,
   setThemeBackground,
@@ -336,8 +340,10 @@ export function ThemeTweakPanel({
       <ThemeFontSettings
         fontSize={fontSize}
         fontFamily={fontFamily}
+        lineHeight={lineHeight}
         setFontSize={setFontSize}
         setFontFamily={setFontFamily}
+        setLineHeight={setLineHeight}
       />
 
       <section style={{ marginBottom: 14 }}>

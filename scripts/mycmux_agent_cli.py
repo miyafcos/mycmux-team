@@ -71,6 +71,17 @@ def write_prompt(text: str) -> Path:
     return path.resolve()
 
 
+def parse_json_object(value: str) -> dict[str, Any]:
+    """Parse one JSON object without changing its fields."""
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise argparse.ArgumentTypeError(f"invalid JSON object: {exc.msg}") from exc
+    if not isinstance(parsed, dict):
+        raise argparse.ArgumentTypeError("value must be a JSON object")
+    return parsed
+
+
 def add_interactive_launch_arguments(
     parser: argparse.ArgumentParser, *, target_required: bool
 ) -> None:
@@ -138,6 +149,15 @@ def build_parser() -> argparse.ArgumentParser:
     add_interactive_launch_arguments(spawn_tab, target_required=False)
     spawn_tab.add_argument("command_argv", nargs=argparse.REMAINDER)
 
+    activate_tab = subparsers.add_parser("activate-tab", help="Activate a terminal tab")
+    activate_tab.add_argument("--session", required=True)
+
+    restore_activation = subparsers.add_parser(
+        "restore-activation",
+        help="Restore a prior activation when its token is still current",
+    )
+    restore_activation.add_argument("--token", required=True, type=parse_json_object)
+
     close_tab = subparsers.add_parser("close-tab", help="Close a terminal tab")
     close_tab.add_argument("--session", required=True)
 
@@ -154,6 +174,9 @@ def build_parser() -> argparse.ArgumentParser:
     send.add_argument("--session", required=True)
     send.add_argument("--text", required=True)
     send.add_argument("--enter", action="store_true")
+    send.add_argument("--expect-epoch", type=int)
+    send.add_argument("--expect-attention-id")
+    send.add_argument("--expect-revision", type=int)
 
     read = subparsers.add_parser("read", help="Read terminal buffer lines")
     read.add_argument("--session", required=True)
@@ -275,6 +298,10 @@ def request_for(namespace: argparse.Namespace) -> tuple[str, dict[str, Any]]:
         return "pane.spawn_tab", build_spawn_as_tab_request(namespace)
     if namespace.subcommand == "spawn-tab":
         return "pane.spawn_tab", build_spawn_tab_request(namespace)
+    if namespace.subcommand == "activate-tab":
+        return "pane.activate_tab", {"sessionId": namespace.session}
+    if namespace.subcommand == "restore-activation":
+        return "pane.restore_activation", namespace.token
     if namespace.subcommand == "close-tab":
         return "pane.close_tab", {"sessionId": namespace.session}
     if namespace.subcommand == "rename":
@@ -289,11 +316,15 @@ def request_for(namespace: argparse.Namespace) -> tuple[str, dict[str, Any]]:
             "toRow": namespace.row,
         }
     if namespace.subcommand == "send":
-        return "pane.send_text", {
+        args = {
             "sessionId": namespace.session,
             "text": namespace.text,
             "enter": namespace.enter,
         }
+        optional_arg(args, "expectedSessionEpoch", namespace.expect_epoch)
+        optional_arg(args, "expectedAttentionId", namespace.expect_attention_id)
+        optional_arg(args, "expectedSessionRevision", namespace.expect_revision)
+        return "pane.send_text", args
     if namespace.subcommand == "read":
         args = {"sessionId": namespace.session}
         optional_arg(args, "lines", namespace.lines)

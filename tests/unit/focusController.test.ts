@@ -27,7 +27,7 @@ function controllerHarness(extra: Partial<FocusControllerCoreOptions> = {}) {
 
 describe("focusController state machine", () => {
   beforeEach(() => {
-    useUiStore.setState({ activePaneId: null, lastActivePaneId: null });
+    useUiStore.setState({ activePaneId: null, lastActivePaneId: null, focusRevision: 0 });
   });
 
   afterEach(() => {
@@ -145,5 +145,34 @@ describe("focusController state machine", () => {
     applyStructuralActivation("structural");
 
     expect(useUiStore.getState().activePaneId).toBe("structural");
+    expect(useUiStore.getState().focusRevision).toBe(1);
+  });
+
+  it("does not increment revision for an idempotent activation", () => {
+    applyStructuralActivation("structural");
+    const revision = useUiStore.getState().focusRevision;
+
+    applyStructuralActivation("structural");
+
+    expect(useUiStore.getState().focusRevision).toBe(revision);
+  });
+
+  it("does not increment revision for pending, abort, wheel, or focus observations", () => {
+    useUiStore.setState({ activePaneId: "active", lastActivePaneId: "active", focusRevision: 0 });
+
+    focusController.request("pointer", {
+      sessionId: "pending",
+      action: "pending",
+      focus: false,
+    });
+    focusController.request("pointer", { sessionId: "pending", action: "abort" });
+    focusController.request("wheel", {
+      sessionId: "pending",
+      previousSessionId: "active",
+      action: "observe",
+    });
+    focusController.observeTerminalFocusIn("pending");
+
+    expect(useUiStore.getState().focusRevision).toBe(0);
   });
 });

@@ -9,6 +9,7 @@ env falls back to `pane.spawn`.
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 from typing import Any
@@ -50,8 +51,59 @@ def request_for_rename(argv: list[str]) -> tuple[str, dict[str, Any]]:
     return cli.request_for(namespace)
 
 
+def request_for_send(argv: list[str]) -> tuple[str, dict[str, Any]]:
+    namespace = cli.build_parser().parse_args(["send", *argv])
+    return cli.request_for(namespace)
+
+
+def request_for_activate_tab(argv: list[str]) -> tuple[str, dict[str, Any]]:
+    namespace = cli.build_parser().parse_args(["activate-tab", *argv])
+    return cli.request_for(namespace)
+
+
+def request_for_restore_activation(argv: list[str]) -> tuple[str, dict[str, Any]]:
+    namespace = cli.build_parser().parse_args(["restore-activation", *argv])
+    return cli.request_for(namespace)
+
+
 def test_panes_keeps_existing_default_route() -> None:
     assert request_for_panes([]) == ("pane.list", {})
+
+
+def test_send_without_expectations_preserves_existing_args() -> None:
+    assert request_for_send(
+        ["--session", PANE_SESSION_ID, "--text", "yes", "--enter"]
+    ) == (
+        "pane.send_text",
+        {"sessionId": PANE_SESSION_ID, "text": "yes", "enter": True},
+    )
+
+
+def test_send_expectation_flags_are_additive() -> None:
+    assert request_for_send(
+        [
+            "--session",
+            PANE_SESSION_ID,
+            "--text",
+            "yes",
+            "--expect-epoch",
+            "7",
+            "--expect-attention-id",
+            "attention-a",
+            "--expect-revision",
+            "11",
+        ]
+    ) == (
+        "pane.send_text",
+        {
+            "sessionId": PANE_SESSION_ID,
+            "text": "yes",
+            "enter": False,
+            "expectedSessionEpoch": 7,
+            "expectedAttentionId": "attention-a",
+            "expectedSessionRevision": 11,
+        },
+    )
 
 
 def test_panes_keeps_existing_workspace_route() -> None:
@@ -94,6 +146,44 @@ def test_rename_routes_label_and_preserves_empty_reset() -> None:
         "pane.rename_tab",
         {"sessionId": PANE_SESSION_ID, "label": ""},
     )
+
+
+def test_activate_tab_routes_session_id() -> None:
+    assert request_for_activate_tab(["--session", PANE_SESSION_ID]) == (
+        "pane.activate_tab",
+        {"sessionId": PANE_SESSION_ID},
+    )
+
+
+def test_restore_activation_routes_token_object_unchanged() -> None:
+    token = {
+        "previous_session_id": "previous",
+        "target_session_id": "target",
+        "focus_revision": 7,
+        "previous_session_identity": {
+            "server_epoch": "server",
+            "session_epoch": 11,
+            "pane_id": "pane-a",
+            "tab_id": "tab-a",
+        },
+        "target_session_identity": {
+            "server_epoch": "server",
+            "session_epoch": 12,
+            "pane_id": "pane-b",
+            "tab_id": "tab-b",
+        },
+    }
+    assert request_for_restore_activation(
+        ["--token", json.dumps(token)]
+    ) == ("pane.restore_activation", token)
+
+
+@pytest.mark.parametrize("value", ["[]", '"token"', "not-json"])
+def test_restore_activation_rejects_non_object_token(value: str) -> None:
+    with pytest.raises(SystemExit):
+        cli.build_parser().parse_args(
+            ["restore-activation", "--token", value]
+        )
 
 
 def test_env_and_no_placement_options_routes_to_same_pane_tab(

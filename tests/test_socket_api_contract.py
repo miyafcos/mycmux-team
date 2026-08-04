@@ -40,6 +40,8 @@ def test_socket_api_has_frontend_response_bridge() -> None:
 
     for snippet in [
         'case "pane.spawn_tab":',
+        'case "pane.activate_tab":',
+        'case "pane.restore_activation":',
         'case "pane.close_tab":',
         'case "pane.rename_tab":',
         'case "pane.move":',

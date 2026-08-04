@@ -275,6 +275,7 @@ export type SessionOutputSnapshot = Record<string, number | null>;
 
 export type SessionAttentionKind = "none" | "input" | "approval" | "error" | "done";
 export type SessionUiState = "working" | "idle" | "waiting" | "done" | "unknown";
+export type SessionLifecycle = "alive" | "exited" | "orphaned" | "unknown";
 
 export interface SessionAttentionPayload {
   attention_id: string | null;
@@ -284,6 +285,8 @@ export interface SessionAttentionPayload {
 }
 
 export interface SessionStatusPayload {
+  session_epoch: number | null;
+  lifecycle: SessionLifecycle;
   attention: SessionAttentionPayload;
   ui_state: SessionUiState;
 }
@@ -731,6 +734,7 @@ export interface WorkspaceConfig {
 
 export interface AppSettings {
   font_size: number;
+  line_height: number;
   font_family: string;
   theme_id: string;
   theme_tweaks?: ThemeTweaks;

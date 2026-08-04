@@ -1,8 +1,12 @@
 import { useEffect } from "react";
 import {
   AGENT_DORMANT_SWEEP_INTERVAL_MS,
+  DORMANCY_HISTORY_SCAN_LINES,
   clearSessionFrontendActivity,
+  fingerprintDormancySemanticState,
   getSessionFrontendActivity,
+  hasFreshAgentWork,
+  hasWorkingScreenEvidence,
   isEffectivelyWorking,
   observeDormancyActivity,
   readDormantThresholdMs,
@@ -21,7 +25,9 @@ import {
 } from "../lib/ipc";
 import { usePaneMetadataStore } from "../stores/paneMetadataStore";
 import { useSavepointDragStore } from "../stores/savepointDragStore";
+import { attentionCategory, useSessionAttentionStore } from "../stores/sessionAttentionStore";
 import { useWorkspaceListStore } from "../stores/workspaceListStore";
+import { getHeadlessBufferLines } from "../components/terminal/headlessBuffer";
 import { evictTerminalCache, liveTerms } from "../components/terminal/terminalCache";
 
 interface RuntimeDormancyTarget {
@@ -34,8 +40,12 @@ function collectRuntimeTargets(
   thresholdMs: number,
 ): RuntimeDormancyTarget[] {
   const { activeWorkspaceId, workspaces } = useWorkspaceListStore.getState();
-  const effectiveActiveWorkspaceId = activeWorkspaceId ?? workspaces[0]?.id ?? null;
+  const effectiveActiveWorkspaceId = workspaces.some((workspace) => workspace.id === activeWorkspaceId)
+    ? activeWorkspaceId
+    : workspaces[0]?.id ?? null;
   const dragSourceWorkspaceId = useSavepointDragStore.getState().item?.sourceWorkspaceId ?? null;
+  const paneMetadata = usePaneMetadataStore.getState().metadata;
+  const { attentionBySession, seenAttentionByTab } = useSessionAttentionStore.getState();
   const targets = new Map<string, RuntimeDormancyTarget>();
 
   for (const workspace of workspaces) {
@@ -46,18 +56,42 @@ function collectRuntimeTargets(
         const identity = resolveDormantResumeIdentity(tab);
         const metadata = ptyMetadata[tab.sessionId];
         if (!identity || !metadata) continue;
+        const mounted = liveTerms.has(tab.sessionId);
+        const tabMetadata = paneMetadata[tab.sessionId];
+        const visible = (
+          workspace.id === effectiveActiveWorkspaceId
+          || workspace.id === dragSourceWorkspaceId
+        ) && tab.id === renderedTabId;
+        const hasAttention = tabMetadata?.agentStatus === "waiting"
+          || (tabMetadata?.notificationCount ?? 0) > 0
+          || (tabMetadata?.workDoneCount ?? 0) > 0
+          || attentionCategory(
+            tab.id,
+            attentionBySession[tab.sessionId],
+            seenAttentionByTab,
+          ) !== null;
+        const existing = targets.get(tab.sessionId);
+        if (existing) {
+          existing.candidate.visible ||= visible;
+          existing.candidate.mounted ||= mounted;
+          existing.candidate.hasAttention ||= hasAttention;
+          existing.candidate.agentStatusFresh ||= mounted;
+          continue;
+        }
         targets.set(tab.sessionId, {
           sessionId: tab.sessionId,
           candidate: {
             agentKind: identity.agentKind,
             resumeSessionId: identity.resumeSessionId,
-            visible: (
-              workspace.id === effectiveActiveWorkspaceId
-              || workspace.id === dragSourceWorkspaceId
-            ) && tab.id === renderedTabId,
-            mounted: liveTerms.has(tab.sessionId),
+            visible,
+            mounted,
             processStatus: metadata.process_status ?? null,
             processName: metadata.process_name ?? null,
+            processStatusAt: metadata.process_status_at ?? null,
+            agentStatus: tabMetadata?.agentStatus ?? null,
+            agentStatusFresh: mounted,
+            hasAttention,
+            screenWorking: false,
             lastActivityAt: 0,
             thresholdMs,
           },
@@ -76,6 +110,36 @@ function findRuntimeTarget(
 ): RuntimeDormancyTarget | null {
   return collectRuntimeTargets(ptyMetadata, thresholdMs)
     .find((target) => target.sessionId === sessionId) ?? null;
+}
+
+async function observeRuntimeTarget(
+  target: RuntimeDormancyTarget,
+  snapshot: Awaited<ReturnType<typeof getSessionScrollback>>,
+  previous: DormancyObservation | undefined,
+  now: number,
+): Promise<{ candidate: DormantSessionCandidate; observation: DormancyObservation }> {
+  const lines = await getHeadlessBufferLines(
+    target.sessionId,
+    snapshot,
+    DORMANCY_HISTORY_SCAN_LINES,
+  );
+  const semanticFingerprint = await fingerprintDormancySemanticState(lines);
+  const observation = observeDormancyActivity(
+    previous,
+    snapshot.endOffset,
+    target.candidate.processStatusAt,
+    semanticFingerprint,
+    getSessionFrontendActivity(target.sessionId),
+    now,
+  );
+  return {
+    observation,
+    candidate: {
+      ...target.candidate,
+      screenWorking: hasWorkingScreenEvidence(lines),
+      lastActivityAt: observation.lastActivityAt,
+    },
+  };
 }
 
 export function useAgentDormancy(enabled: boolean): void {
@@ -112,6 +176,8 @@ export function useAgentDormancy(enabled: boolean): void {
           if (cancelled) return;
           if (
             target.candidate.visible
+            || target.candidate.hasAttention
+            || hasFreshAgentWork(target.candidate)
             || isEffectivelyWorking(target.candidate)
           ) {
             observations.delete(target.sessionId);
@@ -128,14 +194,20 @@ export function useAgentDormancy(enabled: boolean): void {
           if (cancelled) return;
 
           const now = Date.now();
-          const observation = observeDormancyActivity(
-            observations.get(target.sessionId),
-            snapshot.endOffset,
-            getSessionFrontendActivity(target.sessionId),
-            now,
-          );
-          observations.set(target.sessionId, observation);
-          const candidate = { ...target.candidate, lastActivityAt: observation.lastActivityAt };
+          let observed;
+          try {
+            observed = await observeRuntimeTarget(
+              target,
+              snapshot,
+              observations.get(target.sessionId),
+              now,
+            );
+          } catch {
+            observations.delete(target.sessionId);
+            continue;
+          }
+          observations.set(target.sessionId, observed.observation);
+          const { candidate } = observed;
           if (resolveDormantAction(candidate, now) === "none") continue;
 
           let latestSnapshot;
@@ -146,13 +218,20 @@ export function useAgentDormancy(enabled: boolean): void {
             continue;
           }
           const recheckedAt = Date.now();
-          const recheckedObservation = observeDormancyActivity(
-            observation,
-            latestSnapshot.endOffset,
-            getSessionFrontendActivity(target.sessionId),
-            recheckedAt,
-          );
-          observations.set(target.sessionId, recheckedObservation);
+          let rechecked;
+          try {
+            rechecked = await observeRuntimeTarget(
+              target,
+              latestSnapshot,
+              observed.observation,
+              recheckedAt,
+            );
+          } catch {
+            observations.delete(target.sessionId);
+            continue;
+          }
+          observations.set(target.sessionId, rechecked.observation);
+          if (resolveDormantAction(rechecked.candidate, recheckedAt) === "none") continue;
 
           let latestMetadata: PtyMetadataSnapshot;
           try {
@@ -165,21 +244,80 @@ export function useAgentDormancy(enabled: boolean): void {
             observations.delete(target.sessionId);
             continue;
           }
+          let finalSnapshot;
+          try {
+            finalSnapshot = await getSessionScrollback(target.sessionId);
+          } catch {
+            observations.delete(target.sessionId);
+            continue;
+          }
           const finalAt = Date.now();
-          const finalObservation = observeDormancyActivity(
-            recheckedObservation,
-            latestSnapshot.endOffset,
-            getSessionFrontendActivity(target.sessionId),
-            finalAt,
-          );
-          observations.set(target.sessionId, finalObservation);
+          let finalObserved;
+          try {
+            finalObserved = await observeRuntimeTarget(
+              latestTarget,
+              finalSnapshot,
+              rechecked.observation,
+              finalAt,
+            );
+          } catch {
+            observations.delete(target.sessionId);
+            continue;
+          }
+          observations.set(target.sessionId, finalObserved.observation);
+
+          let finalMetadata: PtyMetadataSnapshot;
+          try {
+            finalMetadata = await getPtyMetadataSnapshot();
+          } catch {
+            continue;
+          }
+          const finalTarget = findRuntimeTarget(target.sessionId, finalMetadata, thresholdMs);
+          if (!finalTarget || cancelled) {
+            observations.delete(target.sessionId);
+            continue;
+          }
+          let killSnapshot;
+          try {
+            killSnapshot = await getSessionScrollback(target.sessionId);
+          } catch {
+            observations.delete(target.sessionId);
+            continue;
+          }
+          const killCheckedAt = Date.now();
+          let killObserved;
+          try {
+            killObserved = await observeRuntimeTarget(
+              finalTarget,
+              killSnapshot,
+              finalObserved.observation,
+              killCheckedAt,
+            );
+          } catch {
+            observations.delete(target.sessionId);
+            continue;
+          }
+          observations.set(target.sessionId, killObserved.observation);
+          const killTarget = findRuntimeTarget(target.sessionId, finalMetadata, thresholdMs);
+          if (!killTarget || cancelled) {
+            observations.delete(target.sessionId);
+            continue;
+          }
           const finalCandidate = {
-            ...latestTarget.candidate,
-            lastActivityAt: finalObservation.lastActivityAt,
+            ...killObserved.candidate,
+            ...killTarget.candidate,
+            screenWorking: killObserved.candidate.screenWorking,
+            lastActivityAt: killObserved.observation.lastActivityAt,
           };
-          const action = resolveDormantAction(finalCandidate, finalAt);
+          const action = resolveDormantAction(finalCandidate, killCheckedAt);
           if (action === "none") {
-            if (finalCandidate.visible || isEffectivelyWorking(finalCandidate)) {
+            if (
+              finalCandidate.visible
+              || finalCandidate.hasAttention
+              || finalCandidate.screenWorking
+              || hasFreshAgentWork(finalCandidate)
+              || isEffectivelyWorking(finalCandidate)
+            ) {
               observations.delete(target.sessionId);
             }
             continue;
@@ -188,11 +326,46 @@ export function useAgentDormancy(enabled: boolean): void {
             evictTerminalCache(target.sessionId);
             continue;
           }
+          let preKillMetadata: PtyMetadataSnapshot;
+          try {
+            preKillMetadata = await getPtyMetadataSnapshot();
+          } catch {
+            continue;
+          }
+          const preKillTarget = findRuntimeTarget(target.sessionId, preKillMetadata, thresholdMs);
+          const preKillCandidate = preKillTarget ? {
+            ...finalCandidate,
+            ...preKillTarget.candidate,
+            screenWorking: finalCandidate.screenWorking,
+            lastActivityAt: finalCandidate.lastActivityAt,
+          } : null;
+          if (
+            !preKillCandidate
+            || preKillCandidate.processStatusAt !== finalCandidate.processStatusAt
+            || resolveDormantAction(preKillCandidate, Date.now()) !== "kill"
+          ) {
+            observations.delete(target.sessionId);
+            continue;
+          }
+          let preKillSnapshot;
+          try {
+            preKillSnapshot = await getSessionScrollback(target.sessionId);
+          } catch {
+            observations.delete(target.sessionId);
+            continue;
+          }
+          if (
+            preKillSnapshot.endOffset !== killSnapshot.endOffset
+            || (getSessionFrontendActivity(target.sessionId) ?? 0) > killCheckedAt
+          ) {
+            observations.delete(target.sessionId);
+            continue;
+          }
           if (
             cancelled
-            || finalCandidate.visible
-            || finalCandidate.mounted
-            || isEffectivelyWorking(finalCandidate)
+            || preKillCandidate.visible
+            || preKillCandidate.mounted
+            || isEffectivelyWorking(preKillCandidate)
             || liveTerms.has(target.sessionId)
           ) continue;
 

@@ -1,7 +1,8 @@
 import type { ILink, Terminal } from "@xterm/xterm";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { homeDir } from "@tauri-apps/api/path";
 import { resolveLocalPathLinks } from "../../src/lib/ipc";
+import { getTerminalWriteCounter } from "../../src/components/terminal/terminalCache";
 
 vi.mock("@tauri-apps/api/path", () => ({
   homeDir: vi.fn(),
@@ -17,6 +18,7 @@ vi.mock("../../src/components/terminal/terminalCache", () => ({
 }));
 
 import {
+  clearLocalPathResolutionCache,
   findBareLocalPathCandidates,
   findLocalFilePathLinks,
   isArtifactPreviewUri,
@@ -27,6 +29,7 @@ import {
 
 const mockedResolveLocalPathLinks = vi.mocked(resolveLocalPathLinks);
 const mockedHomeDir = vi.mocked(homeDir);
+const mockedGetTerminalWriteCounter = vi.mocked(getTerminalWriteCounter);
 let nextSessionId = 0;
 
 type HarnessLine = {
@@ -78,6 +81,7 @@ function createLinkProviderHarness(
   sessionId = `terminal-link-test-${nextSessionId++}`,
 ) {
   let provider: Parameters<Terminal["registerLinkProvider"]>[0] | undefined;
+  let renderListener: Parameters<Terminal["onRender"]>[0] | undefined;
   const sourceLines = typeof input === "string" ? [{ text: input }] : input;
   const lines = sourceLines.map(({ text, isWrapped = false, columns }) => {
     const { cells, columns: totalColumns } = buildHarnessCells(text, columns);
@@ -95,6 +99,7 @@ function createLinkProviderHarness(
     };
   });
   const term = {
+    rows: lines.length,
     buffer: {
       active: {
         length: lines.length,
@@ -105,6 +110,10 @@ function createLinkProviderHarness(
     },
     registerLinkProvider: (registered: Parameters<Terminal["registerLinkProvider"]>[0]) => {
       provider = registered;
+      return { dispose: vi.fn() };
+    },
+    onRender: (listener: Parameters<Terminal["onRender"]>[0]) => {
+      renderListener = listener;
       return { dispose: vi.fn() };
     },
   } as unknown as Terminal;
@@ -118,6 +127,10 @@ function createLinkProviderHarness(
       new Promise<ILink[] | undefined>((resolve) => {
         provider!.provideLinks(bufferLineNumber, resolve);
       }),
+    requestLinks: (callback: (links: ILink[] | undefined) => void, bufferLineNumber = 1) => {
+      provider!.provideLinks(bufferLineNumber, callback);
+    },
+    render: () => renderListener?.({ start: 0, end: Math.max(0, lines.length - 1) }),
   };
 }
 
@@ -125,6 +138,13 @@ describe("terminal local file path links", () => {
   beforeEach(() => {
     mockedResolveLocalPathLinks.mockReset();
     mockedHomeDir.mockReset();
+    mockedGetTerminalWriteCounter.mockReset();
+    mockedGetTerminalWriteCounter.mockReturnValue(0);
+    clearLocalPathResolutionCache();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it("matches drive-letter paths with arbitrary extensions", () => {
@@ -575,7 +595,9 @@ describe("terminal local file path links", () => {
     expect(links?.map((link) => link.text)).toEqual([JAPANESE_PATH]);
   });
 
-  it("evicts callback-bearing links when a provider is disposed", async () => {
+  it("rebuilds callback-bearing links for a replacement provider", async () => {
+    // Superseded contract. Resolution results are now path-global, so IPC call
+    // count no longer proves that a replacement provider owns fresh callbacks.
     const sessionId = "terminal-link-provider-rebind";
     const text = String.raw`C:\tmp\report.md`;
     mockedResolveLocalPathLinks.mockImplementation(async (candidates) =>
@@ -589,12 +611,13 @@ describe("terminal local file path links", () => {
     const links = await second.provideLinks();
     links?.[0].activate({} as MouseEvent, text);
 
-    expect(mockedResolveLocalPathLinks).toHaveBeenCalledTimes(2);
     expect(first.onActivate).not.toHaveBeenCalled();
     expect(second.onActivate).toHaveBeenCalledWith(text, expect.anything());
   });
 
-  it("does not let an in-flight disposed provider repopulate the link cache", async () => {
+  it("does not let an in-flight disposed provider retain callback ownership", async () => {
+    // Superseded contract. Replacement providers may share an in-flight path
+    // resolution, but each must still construct links with its own onActivate.
     const sessionId = "terminal-link-provider-in-flight";
     const text = String.raw`C:\tmp\report.md`;
     let resolveFirst: ((value: Array<{ existingPrefix: string; isDir: boolean } | null>) => void) | undefined;
@@ -612,16 +635,123 @@ describe("terminal local file path links", () => {
     first.dispose();
 
     const second = createLinkProviderHarness(text, undefined, sessionId);
-    await second.provideLinks();
+    const secondLinksPromise = second.provideLinks();
     resolveFirst?.([{ existingPrefix: text, isDir: false }]);
-    await Promise.resolve();
-    await Promise.resolve();
-    const cachedLinks = await second.provideLinks();
-    cachedLinks?.[0].activate({} as MouseEvent, text);
+    const secondLinks = await secondLinksPromise;
+    secondLinks?.[0].activate({} as MouseEvent, text);
 
-    expect(mockedResolveLocalPathLinks).toHaveBeenCalledTimes(2);
     expect(first.onActivate).not.toHaveBeenCalled();
     expect(second.onActivate).toHaveBeenCalledWith(text, expect.anything());
+  });
+
+  it("returns links even when output changes while resolution is in flight", async () => {
+    // Old behavior returned undefined whenever writeCounter changed before IPC
+    // completed, permanently poisoning that xterm row for the current hover.
+    const text = String.raw`C:\tmp\streaming-report.md`;
+    let resolveLookup: ((value: Array<{ existingPrefix: string; isDir: boolean } | null>) => void)
+      | undefined;
+    mockedResolveLocalPathLinks.mockImplementationOnce(() => new Promise((resolve) => {
+      resolveLookup = resolve;
+    }));
+    const harness = createLinkProviderHarness(text);
+    const linksPromise = harness.provideLinks();
+    await Promise.resolve();
+    mockedGetTerminalWriteCounter.mockReturnValue(1);
+
+    resolveLookup?.([{ existingPrefix: text, isDir: false }]);
+    const links = await linksPromise;
+
+    expect(links?.map((link) => link.text)).toEqual([text]);
+  });
+
+  it("returns the second hover synchronously from the resolution cache", async () => {
+    const text = String.raw`C:\tmp\cached-report.md`;
+    mockedResolveLocalPathLinks.mockImplementation(async (candidates) =>
+      candidates.map((existingPrefix) => ({ existingPrefix, isDir: false })),
+    );
+    const harness = createLinkProviderHarness(text);
+    await harness.provideLinks();
+    const callback = vi.fn();
+
+    harness.requestLinks(callback);
+
+    expect(callback).toHaveBeenCalledWith(expect.arrayContaining([
+      expect.objectContaining({ text }),
+    ]));
+    expect(mockedResolveLocalPathLinks).toHaveBeenCalledTimes(1);
+  });
+
+  it("prewarms rendered paths so the first hover returns synchronously", async () => {
+    vi.useFakeTimers();
+    const text = String.raw`C:\tmp\prewarmed-report.md`;
+    mockedResolveLocalPathLinks.mockImplementation(async (candidates) =>
+      candidates.map((existingPrefix) => ({ existingPrefix, isDir: false })),
+    );
+    const harness = createLinkProviderHarness(text);
+
+    harness.render();
+    await vi.advanceTimersByTimeAsync(250);
+    const callback = vi.fn();
+    harness.requestLinks(callback);
+
+    expect(callback).toHaveBeenCalledWith(expect.arrayContaining([
+      expect.objectContaining({ text }),
+    ]));
+    expect(mockedResolveLocalPathLinks).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not repeat prewarm when the terminal buffer is unchanged", async () => {
+    vi.useFakeTimers();
+    const text = String.raw`C:\tmp\unchanged-miss.md`;
+    mockedResolveLocalPathLinks.mockImplementation(async (candidates) =>
+      candidates.map(() => null),
+    );
+    const harness = createLinkProviderHarness(text);
+
+    harness.render();
+    await vi.advanceTimersByTimeAsync(250);
+    expect(mockedResolveLocalPathLinks).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(3_001);
+    harness.render();
+    harness.render();
+    await vi.advanceTimersByTimeAsync(250);
+
+    expect(mockedResolveLocalPathLinks).toHaveBeenCalledTimes(1);
+  });
+
+  it("deduplicates concurrent resolution for the same lookup text", async () => {
+    const text = String.raw`C:\tmp\shared-in-flight.md`;
+    let resolveLookup: ((value: Array<{ existingPrefix: string; isDir: boolean } | null>) => void)
+      | undefined;
+    mockedResolveLocalPathLinks.mockImplementationOnce(() => new Promise((resolve) => {
+      resolveLookup = resolve;
+    }));
+    const first = createLinkProviderHarness(text);
+    const second = createLinkProviderHarness(text);
+
+    const firstLinks = first.provideLinks();
+    const secondLinks = second.provideLinks();
+    expect(mockedResolveLocalPathLinks).toHaveBeenCalledTimes(1);
+    resolveLookup?.([{ existingPrefix: text, isDir: false }]);
+
+    expect((await firstLinks)?.[0].text).toBe(text);
+    expect((await secondLinks)?.[0].text).toBe(text);
+  });
+
+  it("retries a cached miss after its three-second TTL", async () => {
+    vi.useFakeTimers();
+    const text = String.raw`C:\tmp\created-later.md`;
+    mockedResolveLocalPathLinks.mockImplementation(async (candidates) => candidates.map(() => null));
+    const harness = createLinkProviderHarness(text);
+
+    await harness.provideLinks();
+    await harness.provideLinks();
+    expect(mockedResolveLocalPathLinks).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(3_001);
+    await harness.provideLinks();
+    expect(mockedResolveLocalPathLinks).toHaveBeenCalledTimes(2);
   });
 
   it("resolves dot, parent, and bare relative paths against the pane cwd", async () => {

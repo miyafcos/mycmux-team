@@ -1,4 +1,8 @@
-import type { PtyMetadataSnapshot, SessionOutputSnapshot } from "../../lib/ipc";
+import type {
+  PtyMetadataSnapshot,
+  SessionOutputSnapshot,
+  SessionStatusSnapshotPayload,
+} from "../../lib/ipc";
 import type { AgentSessionKind, Pane, PaneTab, Workspace } from "../../types";
 import type { PaneMetadata } from "../../stores/paneMetadataStore";
 import { deriveEffectiveStatus } from "../../lib/notificationStatus";
@@ -35,6 +39,27 @@ export interface SpawnTabPlan {
   paneOptions: SpawnPlan["paneOptions"] & {
     commandArgv?: string[];
   };
+}
+
+interface ActivationLocation {
+  workspace: Workspace;
+  pane: Pane;
+  tab: PaneTab;
+}
+
+export interface ActivationSessionIdentity {
+  server_epoch: string;
+  session_epoch: number | null;
+  pane_id: string;
+  tab_id: string;
+}
+
+export interface ActivationToken {
+  previous_session_id: string | null;
+  target_session_id: string;
+  focus_revision: number;
+  previous_session_identity: ActivationSessionIdentity | null;
+  target_session_identity: ActivationSessionIdentity;
 }
 
 function socketArgString(args: SocketArgs, ...keys: string[]): string | undefined {
@@ -228,6 +253,199 @@ export function findPaneBySessionId(
     if (pane) return { workspace, pane };
   }
   return null;
+}
+
+function findTabBySessionId(workspaces: Workspace[], sessionId: string): ActivationLocation | null {
+  for (const workspace of workspaces) {
+    for (const pane of workspace.panes) {
+      const tab = pane.tabs.find((candidate) => candidate.sessionId === sessionId);
+      if (tab) return { workspace, pane, tab };
+    }
+  }
+  return null;
+}
+
+function findActiveTabLocation(
+  workspaces: Workspace[],
+  activeWorkspaceId: string | null,
+  activeSessionId: string | null,
+): ActivationLocation | null {
+  const workspace = workspaces.find((candidate) => candidate.id === activeWorkspaceId);
+  if (!workspace || !activeSessionId) return null;
+  const pane = workspace.panes.find((candidate) =>
+    candidate.sessionId === activeSessionId
+    || candidate.tabs.some((tab) => tab.sessionId === activeSessionId)
+  );
+  if (!pane) return null;
+  const tab = pane.tabs.find((candidate) => candidate.id === pane.activeTabId);
+  return tab ? { workspace, pane, tab } : null;
+}
+
+function isTerminalLocation(location: ActivationLocation): boolean {
+  return location.tab.type === undefined || location.tab.type === "terminal";
+}
+
+function snapshotSession(
+  snapshot: SessionStatusSnapshotPayload,
+  sessionId: string,
+) {
+  return snapshot.sessions.find((session) => session.session_id === sessionId);
+}
+
+function sessionEpoch(
+  snapshot: SessionStatusSnapshotPayload,
+  sessionId: string,
+): number | null {
+  return snapshotSession(snapshot, sessionId)?.status.session_epoch ?? null;
+}
+
+async function activationSnapshot(
+  target: ActivationLocation,
+  getSnapshot: () => Promise<SessionStatusSnapshotPayload>,
+  initialSnapshot: SessionStatusSnapshotPayload,
+): Promise<SessionStatusSnapshotPayload> {
+  let snapshot = initialSnapshot;
+  if (!isTerminalLocation(target)) return snapshot;
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    const status = snapshotSession(snapshot, target.tab.sessionId)?.status;
+    if (status?.lifecycle === "alive" && status.session_epoch !== null) {
+      return snapshot;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    try {
+      snapshot = await getSnapshot();
+    } catch {
+      continue;
+    }
+  }
+  return snapshot;
+}
+
+function activationIdentity(
+  location: ActivationLocation,
+  snapshot: SessionStatusSnapshotPayload,
+): ActivationSessionIdentity {
+  return {
+    server_epoch: snapshot.server_epoch,
+    session_epoch: sessionEpoch(snapshot, location.tab.sessionId),
+    pane_id: location.pane.id,
+    tab_id: location.tab.id,
+  };
+}
+
+function parseActivationIdentity(value: unknown, name: string): ActivationSessionIdentity {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`pane.restore_activation requires ${name}`);
+  }
+  const identity = value as Record<string, unknown>;
+  const serverEpoch = identity.server_epoch;
+  const sessionEpochValue = identity.session_epoch;
+  const paneId = identity.pane_id;
+  const tabId = identity.tab_id;
+  if (
+    typeof serverEpoch !== "string"
+    || !serverEpoch
+    || (sessionEpochValue !== null
+      && (typeof sessionEpochValue !== "number"
+        || !Number.isFinite(sessionEpochValue)
+        || !Number.isInteger(sessionEpochValue)))
+    || typeof paneId !== "string"
+    || !paneId
+    || typeof tabId !== "string"
+    || !tabId
+  ) {
+    throw new Error(`pane.restore_activation has invalid ${name}`);
+  }
+  return {
+    server_epoch: serverEpoch,
+    session_epoch: sessionEpochValue as number | null,
+    pane_id: paneId,
+    tab_id: tabId,
+  };
+}
+
+function parseActivationToken(args: SocketArgs): ActivationToken {
+  const previousSessionIdValue = args?.previous_session_id;
+  const targetSessionId = socketArgString(args, "target_session_id");
+  const focusRevision = socketArgInteger(args, "focus_revision");
+  if (
+    previousSessionIdValue !== null
+    && (typeof previousSessionIdValue !== "string" || !previousSessionIdValue.trim())
+  ) {
+    throw new Error("pane.restore_activation has invalid previous_session_id");
+  }
+  if (!targetSessionId) {
+    throw new Error("pane.restore_activation requires target_session_id");
+  }
+  if (focusRevision === undefined || focusRevision < 0) {
+    throw new Error("pane.restore_activation requires focus_revision");
+  }
+  const previousIdentityValue = args?.previous_session_identity;
+  const previousIdentity = previousSessionIdValue === null
+    ? null
+    : parseActivationIdentity(previousIdentityValue, "previous_session_identity");
+  if (previousSessionIdValue === null && previousIdentityValue !== null) {
+    throw new Error("pane.restore_activation has invalid previous_session_identity");
+  }
+  return {
+    previous_session_id: previousSessionIdValue,
+    target_session_id: targetSessionId,
+    focus_revision: focusRevision,
+    previous_session_identity: previousIdentity,
+    target_session_identity: parseActivationIdentity(
+      args?.target_session_identity,
+      "target_session_identity",
+    ),
+  };
+}
+
+function sameActivationIdentity(
+  expected: ActivationSessionIdentity,
+  actual: ActivationSessionIdentity,
+): boolean {
+  return expected.server_epoch === actual.server_epoch
+    && expected.session_epoch === actual.session_epoch
+    && expected.pane_id === actual.pane_id
+    && expected.tab_id === actual.tab_id;
+}
+
+function isLocationActive(
+  location: ActivationLocation,
+  workspaces: Workspace[],
+  activeWorkspaceId: string | null,
+  activeSessionId: string | null,
+): boolean {
+  const active = findActiveTabLocation(workspaces, activeWorkspaceId, activeSessionId);
+  return active?.workspace.id === location.workspace.id
+    && active.pane.id === location.pane.id
+    && active.tab.id === location.tab.id
+    && active.tab.sessionId === location.tab.sessionId;
+}
+
+function activateLocation(
+  location: ActivationLocation,
+  stores: typeof import("../../stores/workspaceStore"),
+  focus: typeof import("../../lib/focusController"),
+): void {
+  const { useUiStore, useWorkspaceLayoutStore, useWorkspaceListStore } = stores;
+  if (isLocationActive(
+    location,
+    useWorkspaceListStore.getState().workspaces,
+    useWorkspaceListStore.getState().activeWorkspaceId,
+    useUiStore.getState().activePaneId,
+  )) {
+    return;
+  }
+  useWorkspaceListStore.getState().setActiveWorkspace(location.workspace.id);
+  useWorkspaceLayoutStore.getState().setActivePaneTab(
+    location.workspace.id,
+    location.pane.id,
+    location.tab.id,
+  );
+  focus.focusController.request("programmatic", {
+    sessionId: location.tab.sessionId,
+    focus: true,
+  });
 }
 
 export function serializeWorkspaceLayoutForSocket(workspace: Workspace) {
@@ -510,6 +728,113 @@ async function spawnTab(args: SocketArgs) {
     tabId: newTab.id,
     sessionId: newTab.sessionId,
     mode: plan.mode,
+  };
+}
+
+async function activateTab(args: SocketArgs): Promise<ActivationToken> {
+  const sessionId = socketArgString(args, "sessionId", "session_id");
+  if (!sessionId) throw new Error("pane.activate_tab requires sessionId");
+  const [stores, focus, { getSessionStatusSnapshot }] = await Promise.all([
+    import("../../stores/workspaceStore"),
+    import("../../lib/focusController"),
+    import("../../lib/ipc"),
+  ]);
+  const initialSnapshot = await getSessionStatusSnapshot();
+  const { useUiStore, useWorkspaceListStore } = stores;
+  const workspaceState = useWorkspaceListStore.getState();
+  const target = findTabBySessionId(workspaceState.workspaces, sessionId);
+  if (!target) throw new Error("pane.activate_tab session not found");
+
+  const uiState = useUiStore.getState();
+  const previous = findActiveTabLocation(
+    workspaceState.workspaces,
+    workspaceState.activeWorkspaceId,
+    uiState.activePaneId,
+  );
+  const previousSessionId = previous?.tab.sessionId ?? null;
+  activateLocation(target, stores, focus);
+  const focusRevision = useUiStore.getState().focusRevision;
+  const snapshot = await activationSnapshot(target, getSessionStatusSnapshot, initialSnapshot);
+  return {
+    previous_session_id: previousSessionId,
+    target_session_id: target.tab.sessionId,
+    focus_revision: focusRevision,
+    previous_session_identity: previous ? activationIdentity(previous, initialSnapshot) : null,
+    target_session_identity: activationIdentity(target, snapshot),
+  };
+}
+
+async function restoreActivation(args: SocketArgs) {
+  const token = parseActivationToken(args);
+  const [stores, focus, { getSessionStatusSnapshot }] = await Promise.all([
+    import("../../stores/workspaceStore"),
+    import("../../lib/focusController"),
+    import("../../lib/ipc"),
+  ]);
+  const snapshot = await getSessionStatusSnapshot();
+  const { useUiStore, useWorkspaceListStore } = stores;
+  const uiState = useUiStore.getState();
+  const workspaceState = useWorkspaceListStore.getState();
+
+  if (uiState.activePaneId !== token.target_session_id) {
+    return { restored: false, reason: "target_not_active" };
+  }
+  if (uiState.focusRevision !== token.focus_revision) {
+    return { restored: false, reason: "focus_revision_changed" };
+  }
+
+  const target = findTabBySessionId(workspaceState.workspaces, token.target_session_id);
+  if (!target) {
+    return { restored: false, reason: "target_session_missing" };
+  }
+  const targetStatus = snapshotSession(snapshot, token.target_session_id)?.status;
+  if (isTerminalLocation(target) && targetStatus?.lifecycle !== "alive") {
+    return { restored: false, reason: "target_session_not_alive" };
+  }
+  if (isTerminalLocation(target) && token.target_session_identity.session_epoch === null) {
+    return { restored: false, reason: "target_session_identity_unavailable" };
+  }
+  if (!sameActivationIdentity(
+    token.target_session_identity,
+    activationIdentity(target, snapshot),
+  )) {
+    return { restored: false, reason: "target_session_replaced" };
+  }
+  if (!isLocationActive(
+    target,
+    workspaceState.workspaces,
+    workspaceState.activeWorkspaceId,
+    uiState.activePaneId,
+  )) {
+    return { restored: false, reason: "target_not_active" };
+  }
+
+  if (!token.previous_session_id || !token.previous_session_identity) {
+    return { restored: false, reason: "previous_session_missing" };
+  }
+  const previous = findTabBySessionId(workspaceState.workspaces, token.previous_session_id);
+  if (!previous) {
+    return { restored: false, reason: "previous_session_missing" };
+  }
+  const previousStatus = snapshotSession(snapshot, token.previous_session_id)?.status;
+  if (isTerminalLocation(previous) && previousStatus?.lifecycle !== "alive") {
+    return { restored: false, reason: "previous_session_not_alive" };
+  }
+  if (isTerminalLocation(previous) && token.previous_session_identity.session_epoch === null) {
+    return { restored: false, reason: "previous_session_identity_unavailable" };
+  }
+  if (!sameActivationIdentity(
+    token.previous_session_identity,
+    activationIdentity(previous, snapshot),
+  )) {
+    return { restored: false, reason: "previous_session_replaced" };
+  }
+
+  activateLocation(previous, stores, focus);
+  return {
+    restored: true,
+    session_id: previous.tab.sessionId,
+    focus_revision: useUiStore.getState().focusRevision,
   };
 }
 
@@ -797,6 +1122,10 @@ export async function handleSocketCommand(cmd: string, args: SocketArgs): Promis
       return spawnPane(args);
     case "pane.spawn_tab":
       return spawnTab(args);
+    case "pane.activate_tab":
+      return activateTab(args);
+    case "pane.restore_activation":
+      return restoreActivation(args);
     case "pane.close_tab":
       return closeTab(args);
     case "pane.rename_tab":

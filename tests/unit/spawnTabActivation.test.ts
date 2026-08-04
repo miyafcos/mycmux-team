@@ -53,7 +53,7 @@ beforeEach(() => {
     activeWorkspaceId: workspaceId,
     lastActivePaneByWorkspace: {},
   });
-  useUiStore.setState({ activePaneId: originalSessionId });
+  useUiStore.setState({ activePaneId: originalSessionId, focusRevision: 0 });
 });
 
 describe("addTabToPaneWithOptions activation", () => {
@@ -96,6 +96,7 @@ describe("pane.spawn_tab activation", () => {
     expect(pane.tabs).toHaveLength(2);
     expect(pane.activeTabId).toBe(originalTabId);
     expect(useUiStore.getState().activePaneId).toBe(originalSessionId);
+    expect(useUiStore.getState().focusRevision).toBe(0);
     expect(ipcMocks.createSession).toHaveBeenCalledTimes(1);
     const createArgs = ipcMocks.createSession.mock.calls[0];
     expect(createArgs.slice(0, 5)).toEqual([
@@ -132,6 +133,7 @@ describe("pane.spawn_tab activation", () => {
     expect(pane.activeTabId).toBe(result.tabId);
     expect(pane.sessionId).toBe(result.sessionId);
     expect(useUiStore.getState().activePaneId).toBe(result.sessionId);
+    expect(useUiStore.getState().focusRevision).toBeGreaterThan(0);
     expect(ipcMocks.createSession).not.toHaveBeenCalled();
   });
 

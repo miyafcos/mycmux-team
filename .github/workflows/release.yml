@@ -1,9 +1,8 @@
 name: Release
 
+# Tag pushes are disabled because GitHub-hosted Actions billing is suspended.
+# Keep manual dispatch available for an intentionally selected runner.
 on:
-  push:
-    tags:
-      - "v*"
   workflow_dispatch:
     inputs:
       tag:
@@ -24,8 +23,8 @@ permissions:
 
 jobs:
   test:
-    # Manual dispatch can route the whole pipeline to the self-hosted runner
-    # (e.g. when GitHub-hosted minutes are exhausted); tag pushes stay hosted.
+    # Manual dispatch can route the whole pipeline to the selected runner.
+    # Tag pushes do not start this workflow while hosted Actions are unpaid.
     runs-on: ${{ github.event.inputs.runner || 'windows-latest' }}
     steps:
       - uses: actions/checkout@v4

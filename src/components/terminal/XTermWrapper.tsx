@@ -388,7 +388,7 @@ if (typeof window !== "undefined" && import.meta.env.DEV) {
     }
   }, 1000);
 }
-const DEFAULT_TERMINAL_LINE_HEIGHT = 1.1;
+const DEFAULT_TERMINAL_LINE_HEIGHT = 1.35;
 
 function resolveTerminalFontFamily(base: string, isCodex: boolean, explicitFontFamily: boolean): string {
   void isCodex;
@@ -402,9 +402,8 @@ function resolveTerminalFontSize(base: number, isCodex: boolean, explicitFontSiz
   return base;
 }
 
-function resolveTerminalLineHeight(isCodex: boolean): number {
-  void isCodex;
-  return DEFAULT_TERMINAL_LINE_HEIGHT;
+function resolveTerminalLineHeight(): number {
+  return useThemeStore.getState().lineHeight ?? DEFAULT_TERMINAL_LINE_HEIGHT;
 }
 
 function cleanTerminalSnapshotLine(text: string): string {
@@ -645,6 +644,7 @@ export default memo(function XTermWrapper({
   const storeTheme = useThemeStore((s) => s.theme);
   const storeFontSize = useThemeStore((s) => s.fontSize);
   const storeFontFamily = useThemeStore((s) => s.fontFamily);
+  const storeLineHeight = useThemeStore((s) => s.lineHeight);
   const storeBackground = useThemeStore((s) => s.themeTweaks.background);
   const terminalRenderer = useSettingsStore((s) => s.terminalRenderer);
   const previousTerminalRendererRef = useRef(terminalRenderer);
@@ -662,9 +662,10 @@ export default memo(function XTermWrapper({
       termRef.current.options.minimumContrastRatio = minContrastFor(mediaBackgroundActive);
       termRef.current.options.fontSize = storeFontSize;
       termRef.current.options.fontFamily = storeFontFamily;
+      termRef.current.options.lineHeight = storeLineHeight;
       setTimeout(() => syncResizeRef.current(true), 10);
     }
-  }, [storeTheme, storeFontSize, storeFontFamily, terminalOpacity, mediaBackgroundActive]);
+  }, [storeTheme, storeFontSize, storeFontFamily, storeLineHeight, terminalOpacity, mediaBackgroundActive]);
 
   // Scroll to bottom when this tab becomes active only if the user was already at bottom.
   useEffect(() => {
@@ -2048,6 +2049,7 @@ export default memo(function XTermWrapper({
       cached.term.options.minimumContrastRatio = minContrastFor(mediaBackgroundActive);
       cached.term.options.fontSize = storeFontSize;
       cached.term.options.fontFamily = storeFontFamily;
+      cached.term.options.lineHeight = storeLineHeight;
       cached.term.options.cursorBlink = useUiStore.getState().activePaneId === sessionId;
       recordCursorBlink(sessionId, cached.term.options.cursorBlink === true);
       cached.term.options.altClickMovesCursor = false;
@@ -2110,7 +2112,7 @@ export default memo(function XTermWrapper({
         fontWeight: 500,
         fontWeightBold: 700,
         letterSpacing: 0,
-        lineHeight: resolveTerminalLineHeight(formatsCodexOutput),
+        lineHeight: resolveTerminalLineHeight(),
         rescaleOverlappingGlyphs: true,
         customGlyphs: true,
         theme: initTheme,
@@ -2245,7 +2247,7 @@ export default memo(function XTermWrapper({
           if (disposed || termDisposed || !term || !cachedConfig) return;
           term.options.fontSize = resolveTerminalFontSize(fontSize ?? storeFontSize ?? cachedConfig.fontSize, formatsCodexOutput, fontSize !== undefined);
           term.options.fontFamily = resolveTerminalFontFamily(fontFamily ?? storeFontFamily ?? cachedConfig.fontFamily, formatsCodexOutput, fontFamily !== undefined);
-          term.options.lineHeight = resolveTerminalLineHeight(formatsCodexOutput);
+          term.options.lineHeight = resolveTerminalLineHeight();
           if (fitAddon) {
             fitAndSyncResize(term, fitAddon, true);
           }

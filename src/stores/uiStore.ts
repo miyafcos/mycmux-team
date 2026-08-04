@@ -9,11 +9,13 @@ interface UiState {
   isKeybindingsOpen: boolean;
   activePaneId: string | null;
   lastActivePaneId: string | null;
+  focusRevision: number;
   zoomedPaneId: string | null;
 
   toggleSidebar: () => void;
   setIsKeybindingsOpen: (open: boolean) => void;
   setActivePaneId: (id: string | null) => void;
+  bumpFocusRevision: () => void;
   setZoomedPaneId: (id: string | null) => void;
 }
 
@@ -22,6 +24,7 @@ export const useUiStore = create<UiState>((set) => ({
   isKeybindingsOpen: false,
   activePaneId: null,
   lastActivePaneId: null,
+  focusRevision: 0,
   zoomedPaneId: null,
 
   toggleSidebar: () => set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed })),
@@ -35,7 +38,9 @@ export const useUiStore = create<UiState>((set) => ({
       return {
         activePaneId: id,
         lastActivePaneId: nextLastActivePaneId,
+        focusRevision: state.focusRevision + (state.activePaneId === id ? 0 : 1),
       };
     }),
+  bumpFocusRevision: () => set((state) => ({ focusRevision: state.focusRevision + 1 })),
   setZoomedPaneId: (id) => set({ zoomedPaneId: id }),
 }));

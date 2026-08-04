@@ -162,9 +162,15 @@ fn default_font_family() -> String {
     "'JetBrainsMono Nerd Font Mono', 'JetBrains Mono', 'Geist Mono', 'SF Mono', 'BIZ UDGothic', 'MS Gothic', monospace".to_string()
 }
 
+fn default_line_height() -> f32 {
+    1.35
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
     pub font_size: u16,
+    #[serde(default = "default_line_height")]
+    pub line_height: f32,
     #[serde(default = "default_font_family")]
     pub font_family: String,
     pub theme_id: String,
@@ -192,6 +198,7 @@ impl Default for AppSettings {
     fn default() -> Self {
         Self {
             font_size: 14,
+            line_height: default_line_height(),
             font_family: default_font_family(),
             theme_id: "yoru-cafe".to_string(),
             theme_tweaks: default_theme_tweaks(),
@@ -511,6 +518,14 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn app_settings_missing_line_height_uses_default() {
+        let settings: AppSettings =
+            serde_json::from_str(r#"{"font_size":14,"theme_id":"yoru-cafe"}"#).unwrap();
+
+        assert_eq!(settings.line_height, 1.35);
+    }
 
     #[test]
     fn load_from_path_corrupt_json_quarantines_file_and_returns_default() {

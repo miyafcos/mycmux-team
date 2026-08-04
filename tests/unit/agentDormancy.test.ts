@@ -2,6 +2,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   AGENT_DORMANT_MINUTES_STORAGE_KEY,
   DEFAULT_AGENT_DORMANT_MINUTES,
+  fingerprintDormancySemanticState,
+  hasFreshAgentWork,
+  hasWorkingScreenEvidence,
   isAgentRestProcess,
   isEffectivelyWorking,
   observeDormancyActivity,
@@ -16,7 +19,7 @@ import {
 import type { PaneTab } from "../../src/types";
 
 const NOW = 10_000_000;
-const THRESHOLD_MS = 120 * 60 * 1_000;
+const THRESHOLD_MS = DEFAULT_AGENT_DORMANT_MINUTES * 60 * 1_000;
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -30,6 +33,11 @@ function candidate(overrides: Partial<DormantSessionCandidate> = {}): DormantSes
     mounted: false,
     processStatus: "idle",
     processName: null,
+    processStatusAt: 1_000,
+    agentStatus: null,
+    agentStatusFresh: false,
+    hasAttention: false,
+    screenWorking: false,
     lastActivityAt: NOW - THRESHOLD_MS,
     thresholdMs: THRESHOLD_MS,
     ...overrides,
@@ -37,7 +45,7 @@ function candidate(overrides: Partial<DormantSessionCandidate> = {}): DormantSes
 }
 
 describe("agent dormancy threshold", () => {
-  it("uses 120 minutes by default and disables at zero", () => {
+  it("uses the default minutes and disables at zero", () => {
     expect(resolveDormantThresholdMs(undefined)).toBe(DEFAULT_AGENT_DORMANT_MINUTES * 60 * 1_000);
     expect(resolveDormantThresholdMs("0")).toBe(0);
   });
@@ -106,6 +114,23 @@ describe("resolveDormantAction", () => {
       processStatus: "working",
       processName: null,
     }), NOW)).toBe("none");
+  });
+
+  it("fails closed when process status is unavailable", () => {
+    expect(resolveDormantAction(candidate({
+      processStatus: null,
+      processName: "claude.exe",
+    }), NOW)).toBe("none");
+  });
+
+  it("protects fresh agent work, working screen evidence, and attention", () => {
+    expect(resolveDormantAction(candidate({
+      agentStatus: "working",
+      agentStatusFresh: true,
+      lastActivityAt: 0,
+    }), NOW + 24 * THRESHOLD_MS)).toBe("none");
+    expect(resolveDormantAction(candidate({ screenWorking: true }), NOW)).toBe("none");
+    expect(resolveDormantAction(candidate({ hasAttention: true }), NOW)).toBe("none");
   });
 
   it("dormants a resting codex MCP process and still respects visibility", () => {
@@ -202,26 +227,152 @@ describe("effective agent work", () => {
       processStatus: "working",
       processName: null,
     }))).toBe(true);
+    expect(isEffectivelyWorking(candidate({
+      processStatus: null,
+      processName: "claude.exe",
+    }))).toBe(true);
+  });
+
+  it("trusts working and waiting agent status only while screen evidence is fresh", () => {
+    expect(hasFreshAgentWork(candidate({
+      agentStatus: "working",
+      agentStatusFresh: true,
+    }))).toBe(true);
+    expect(hasFreshAgentWork(candidate({
+      agentStatus: "waiting",
+      agentStatusFresh: true,
+    }))).toBe(true);
+    expect(hasFreshAgentWork(candidate({
+      agentStatus: "working",
+      agentStatusFresh: false,
+    }))).toBe(false);
   });
 });
 
 describe("dormancy activity observation", () => {
-  it("seeds at first observation and resets when output advances", () => {
-    const first = observeDormancyActivity(undefined, 10, undefined, 1_000);
-    expect(first).toEqual({ endOffset: 10, lastActivityAt: 1_000 });
-    expect(observeDormancyActivity(first, 11, undefined, 2_000)).toEqual({
+  it("seeds at first observation and resets when semantic history advances", () => {
+    const first = observeDormancyActivity(undefined, 10, 100, "history-a", undefined, 1_000);
+    expect(first).toEqual({
+      endOffset: 10,
+      processStatusAt: 100,
+      semanticFingerprint: "history-a",
+      lastActivityAt: 1_000,
+    });
+    expect(observeDormancyActivity(first, 11, 100, "history-b", undefined, 2_000)).toEqual({
       endOffset: 11,
+      processStatusAt: 100,
+      semanticFingerprint: "history-b",
       lastActivityAt: 2_000,
     });
   });
 
-  it("retains an unchanged output time but advances for a frontend write", () => {
-    const previous = { endOffset: 10, lastActivityAt: 1_000 };
-    expect(observeDormancyActivity(previous, 10, undefined, 3_000)).toEqual(previous);
-    expect(observeDormancyActivity(previous, 10, 2_500, 3_000)).toEqual({
+  it("ignores cosmetic output churn and becomes dormant at the threshold", () => {
+    const previous = {
       endOffset: 10,
+      processStatusAt: 100,
+      semanticFingerprint: "history-a",
+      lastActivityAt: 1_000,
+    };
+    const observed = observeDormancyActivity(
+      previous,
+      100_000,
+      100,
+      "history-a",
+      undefined,
+      1_000 + THRESHOLD_MS,
+    );
+    expect(observed.lastActivityAt).toBe(1_000);
+    expect(resolveDormantAction(candidate({
+      lastActivityAt: observed.lastActivityAt,
+    }), 1_000 + THRESHOLD_MS)).toBe("kill");
+  });
+
+  it("retains unchanged semantic output but advances for a frontend write", () => {
+    const previous = {
+      endOffset: 10,
+      processStatusAt: 100,
+      semanticFingerprint: "history-a",
+      lastActivityAt: 1_000,
+    };
+    expect(observeDormancyActivity(previous, 10, 100, "history-a", undefined, 3_000))
+      .toEqual(previous);
+    expect(observeDormancyActivity(previous, 10, 100, "history-a", 2_500, 3_000)).toEqual({
+      endOffset: 10,
+      processStatusAt: 100,
+      semanticFingerprint: "history-a",
       lastActivityAt: 2_500,
     });
+  });
+
+  it("fails closed for unclassifiable output and a changed foreground process", () => {
+    const unknown = {
+      endOffset: 10,
+      processStatusAt: 100,
+      semanticFingerprint: null,
+      lastActivityAt: 1_000,
+    };
+    expect(observeDormancyActivity(unknown, 11, 100, null, undefined, 2_000).lastActivityAt)
+      .toBe(2_000);
+    const known = { ...unknown, semanticFingerprint: "history-a" };
+    expect(observeDormancyActivity(known, 10, 200, "history-a", undefined, 3_000).lastActivityAt)
+      .toBe(3_000);
+  });
+});
+
+describe("dormancy screen semantics", () => {
+  it("fingerprints viewport output while normalizing known cosmetic status lines", async () => {
+    const lines = ["history", ...Array.from({ length: 24 }, (_, index) => `screen-${index}`)];
+    const changedTail = ["history", ...Array.from({ length: 24 }, (_, index) => `changed-${index}`)];
+    const changedHistory = ["other-history", ...lines.slice(1)];
+    const statusA = [
+      "Opus 5 (high) │ ~\\ime-dev │ main* │ CTX ▓▓▓▓░░░░░░░░ 36% │ $12.18 │ 3h39m │ API 7.8m │ PC",
+      "5h ▓░░░░░░░ 12% │ 7d ▓▓▓▓▓▓░░ 69%!",
+      "CC 2.1.220 │ sid 293817cf │ SK 50 · HK 8 · WF 0",
+    ];
+    const statusB = [
+      "Opus 5 (high) │ ~\\ime-dev │ main* │ CTX ▓▓▓▓▓░░░░░░░ 40% │ $13.01 │ 3h40m │ API 8.1m │ PC",
+      "5h ▓░░░░░░░ 11% │ 7d ▓▓▓▓▓▓░░ 70%!",
+      "CC 2.1.221 │ sid deadbeef │ SK 51 · HK 9 · WF 1",
+    ];
+
+    await expect(fingerprintDormancySemanticState(changedTail)).resolves
+      .not.toBe(await fingerprintDormancySemanticState(lines));
+    await expect(fingerprintDormancySemanticState(changedHistory)).resolves
+      .not.toBe(await fingerprintDormancySemanticState(lines));
+    await expect(fingerprintDormancySemanticState(statusA)).resolves
+      .toBe(await fingerprintDormancySemanticState(statusB));
+    await expect(fingerprintDormancySemanticState([])).resolves.toBeNull();
+  });
+
+  it("keeps an unmounted resident agent alive while real output changes", () => {
+    const previous = {
+      endOffset: 10,
+      processStatusAt: 100,
+      semanticFingerprint: "output-a",
+      lastActivityAt: 1_000,
+    };
+    const afterHours = NOW + 8 * THRESHOLD_MS;
+    const observed = observeDormancyActivity(
+      previous,
+      20,
+      100,
+      "output-b",
+      undefined,
+      afterHours,
+    );
+    expect(resolveDormantAction(candidate({
+      processStatus: "working",
+      processName: "claude.exe",
+      agentStatusFresh: false,
+      lastActivityAt: observed.lastActivityAt,
+    }), afterHours)).toBe("none");
+  });
+
+  it("recognizes active Claude and Codex screen evidence", () => {
+    expect(hasWorkingScreenEvidence(["✢ Orchestrating… (6m 59s · 21k tokens)"])).toBe(true);
+    expect(hasWorkingScreenEvidence(["• Working (4m 42s • esc to interrupt)"])).toBe(true);
+    expect(hasWorkingScreenEvidence(["Running 1 shell command"])).toBe(true);
+    expect(hasWorkingScreenEvidence(["❯", "CC 2.1.220 │ sid abc"])).toBe(false);
   });
 });
 

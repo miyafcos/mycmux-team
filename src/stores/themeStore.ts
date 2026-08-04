@@ -18,6 +18,7 @@ export interface TerminalFontPreset {
   sample: string;
   description: string;
   tags: string[];
+  recommendedLineHeight?: number;
 }
 
 export const DEFAULT_TERMINAL_FONT_FAMILY =
@@ -46,6 +47,25 @@ export const TERMINAL_FONT_PRESETS: TerminalFontPreset[] = [
     sample: "Aa 0123 日本語",
     description: "標準。英数字が締まり、日本語も安定",
     tags: ["標準", "コード"],
+    recommendedLineHeight: 1.35,
+  },
+  {
+    id: "udev-gothic",
+    label: "UDEV Gothic",
+    value: "'UDEV Gothic NF', 'UDEV Gothic', 'BIZ UDGothic', 'MS Gothic', monospace",
+    sample: "Aa 0123 日本語",
+    description: "ターミナル専用。日本語=BIZ UDゴシック、英数字=JetBrains Mono",
+    tags: ["日本語", "コード", "標準"],
+    recommendedLineHeight: 1.35,
+  },
+  {
+    id: "udev-gothic-35",
+    label: "UDEV Gothic 35",
+    value: "'UDEV Gothic 35NF', 'UDEV Gothic 35', 'BIZ UDGothic', 'MS Gothic', monospace",
+    sample: "Aa 0123 日本語",
+    description: "英数字が幅広の UDEV。英語ログ・パスが読みやすい",
+    tags: ["日本語", "コード"],
+    recommendedLineHeight: 1.4,
   },
   {
     id: "cascadia-biz",
@@ -54,6 +74,7 @@ export const TERMINAL_FONT_PRESETS: TerminalFontPreset[] = [
     sample: "Aa 0123 日本語",
     description: "丸み。Windows Terminal風で数字も読みやすい",
     tags: ["コード", "Windows"],
+    recommendedLineHeight: 1.35,
   },
   {
     id: "consolas-meiryo",
@@ -62,6 +83,7 @@ export const TERMINAL_FONT_PRESETS: TerminalFontPreset[] = [
     sample: "Aa 0123 日本語",
     description: "軽め。古典的IDE風で画面に余白が出る",
     tags: ["軽い", "IDE風"],
+    recommendedLineHeight: 1.3,
   },
   {
     id: "biz-readable",
@@ -70,6 +92,7 @@ export const TERMINAL_FONT_PRESETS: TerminalFontPreset[] = [
     sample: "Aa 0123 日本語",
     description: "日本語重視。太めで表と説明文を追いやすい",
     tags: ["日本語", "表"],
+    recommendedLineHeight: 1.4,
   },
   {
     id: "hg-gothic-m",
@@ -78,6 +101,7 @@ export const TERMINAL_FONT_PRESETS: TerminalFontPreset[] = [
     sample: "Aa 0123 日本語",
     description: "太め。教材やログの日本語が見やすい",
     tags: ["日本語", "太め"],
+    recommendedLineHeight: 1.4,
   },
   {
     id: "ms-gothic",
@@ -86,6 +110,7 @@ export const TERMINAL_FONT_PRESETS: TerminalFontPreset[] = [
     sample: "Aa 0123 日本語",
     description: "等幅。日本語表の列が揃いやすい",
     tags: ["等幅", "表", "日本語"],
+    recommendedLineHeight: 1.35,
   },
   {
     id: "mac-style",
@@ -94,6 +119,7 @@ export const TERMINAL_FONT_PRESETS: TerminalFontPreset[] = [
     sample: "Aa 0123 日本語",
     description: "Mac風。細めで画面の印象がすっきりする",
     tags: ["Mac風", "印象変更"],
+    recommendedLineHeight: 1.35,
   },
   {
     id: "ud-kyokasho",
@@ -102,6 +128,7 @@ export const TERMINAL_FONT_PRESETS: TerminalFontPreset[] = [
     sample: "Aa 0123 日本語",
     description: "教科書体。説明文の雰囲気がやわらかくなる",
     tags: ["教材", "印象変更"],
+    recommendedLineHeight: 1.5,
   },
   {
     id: "biz-udmincho",
@@ -110,6 +137,7 @@ export const TERMINAL_FONT_PRESETS: TerminalFontPreset[] = [
     sample: "Aa 0123 日本語",
     description: "明朝。文章が落ち着いて見える",
     tags: ["明朝", "印象変更"],
+    recommendedLineHeight: 1.45,
   },
 ];
 
@@ -118,18 +146,20 @@ interface ThemeState {
   theme: ThemeDefinition;
   fontSize: number;
   fontFamily: string;
+  lineHeight: number;
   themeTweaks: ThemeTweaks;
 
   setTheme: (id: string) => void;
   setFontSize: (size: number) => void;
   setFontFamily: (fontFamily: string) => void;
+  setLineHeight: (lineHeight: number) => void;
   setThemeTweakEnabled: (enabled: boolean) => void;
   setThemeTweakColor: (key: ThemeTweakColorKey, color: string) => void;
   applyThemeTweakPreset: (colors: Partial<Record<ThemeTweakColorKey, string>>) => void;
   setThemeBackground: (background: Partial<ThemeBackgroundSettings>) => void;
   clearThemeTweakColor: (key: ThemeTweakColorKey) => void;
   resetThemeTweaks: () => void;
-  hydrateSettings: (settings: { themeId?: string; fontSize?: number; fontFamily?: unknown; themeTweaks?: unknown }) => void;
+  hydrateSettings: (settings: { themeId?: string; fontSize?: number; fontFamily?: unknown; lineHeight?: unknown; themeTweaks?: unknown }) => void;
 }
 
 const ALL_THEME_TWEAK_COLOR_KEYS = Array.from(
@@ -189,11 +219,20 @@ function normalizeFontFamily(value: unknown): string {
   return trimmed;
 }
 
+export function normalizeLineHeight(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return 1.35;
+  }
+  const clamped = Math.max(1, Math.min(2, value));
+  return Math.round(clamped * 100) / 100;
+}
+
 export const useThemeStore = create<ThemeState>((set) => ({
   themeId: DEFAULT_THEME_ID,
   theme: getTheme(DEFAULT_THEME_ID),
   fontSize: 14,
   fontFamily: DEFAULT_TERMINAL_FONT_FAMILY,
+  lineHeight: 1.35,
   themeTweaks: DEFAULT_THEME_TWEAKS,
 
   setTheme: (id) => {
@@ -221,6 +260,10 @@ export const useThemeStore = create<ThemeState>((set) => ({
 
   setFontFamily: (fontFamily) => {
     set({ fontFamily: normalizeFontFamily(fontFamily) });
+  },
+
+  setLineHeight: (lineHeight) => {
+    set({ lineHeight: normalizeLineHeight(lineHeight) });
   },
 
   setThemeTweakEnabled: (enabled) => {
@@ -324,11 +367,13 @@ export const useThemeStore = create<ThemeState>((set) => ({
       ? Math.max(10, Math.min(24, settings.fontSize))
       : 14;
     const nextFontFamily = normalizeFontFamily(settings.fontFamily);
+    const nextLineHeight = normalizeLineHeight(settings.lineHeight);
     set({
       themeId: nextThemeId,
       theme: resolveTheme(nextThemeId, themeTweaks),
       fontSize: nextFont,
       fontFamily: nextFontFamily,
+      lineHeight: nextLineHeight,
       themeTweaks,
     });
   },

@@ -23,13 +23,16 @@ cd src-tauri && cargo test --release
 python -m pytest tests/   # sync-command allowlist 契約テスト含む
 ```
 
-- **既知問題 (2026-07-30 v0.21.1 で発生・未解決)**: `cargo test --release` の lib テストハーネス
-  (`mycmux_lib-*.exe`) が起動時に `STATUS_ENTRYPOINT_NOT_FOUND (0xc0000139)` で落ちる。
-  静的 import は正常な旧バイナリと完全一致 (dumpbin 316関数 diff ゼロ)・最小 Rust プロジェクトは
-  正常・`npm run tauri build` のアプリ本体 exe も正常 — テストハーネスのリンクだけ壊れる。
-  rustc 1.97.1 (7/16導入) は不変。このため CI release.yml の test ジョブも同エラーで落ちて
-  build-personal に到達しない (v0.21.1 は tag のみ・GH Release 無し・deploy はローカルビルド直配で実施)。
-  次に触る人はまず旧良品 `mycmux_lib-5c5542fada2b1207.exe` (動く) と新ビルドの差分から。
+- **`STATUS_ENTRYPOINT_NOT_FOUND (0xc0000139)` は再発する。直し方は manifest 埋め込み (2026-07-31 更新)**:
+  `cargo test --release` の lib テストハーネス (`mycmux_lib-*.exe`) が起動前に落ちる現象。7/30 に発生し
+  CI release.yml の test ジョブも落ちた (v0.21.1 は tag のみ・GH Release 無し・deploy はローカル直配)。
+  OS 再起動で一度消えたが、**`npm run tauri build` 後の新しいリンク結果で再発した** (7/31 実測)。
+  → 一過性のローダ状態ではなく**リンクされた test exe 側の問題**。原因は Common Controls v6 manifest 欠落
+  (`TaskDialogIndirect` を import するが v5.82 に該当 entrypoint が無い)。
+  **復旧手順 (数秒・OS 再起動は不要)**: Common Controls v6 依存だけを書いた manifest を用意し
+  `"C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\mt.exe" -manifest <manifest> -outputresource:"<test exe>;#1"`
+  を**生成された test exe にだけ**適用してから `cargo test --release` を再実行する (244 passed を確認済み)。
+  製品 exe・installed exe には適用しない。`npm run tauri build` で再リンクされるたびに再適用が要る。
 
 ## ビルド・デプロイの絶対ルール
 
