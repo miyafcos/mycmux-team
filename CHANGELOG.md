@@ -4,6 +4,16 @@
 
 ---
 
+## [0.21.7] - 2026-08-04
+
+UI/UX 底上げ Phase 1 (計画: `docs/plans/2026-08-04-ui-uplift-plan.md`)。
+
+- Add: デザイントークン (motion 3段 + easing / オーバーレイ blur / パレット・ダイアログの2層シャドウ) と共有オーバーレイクラス (`.cmux-overlay-backdrop` / `.cmux-overlay-panel` — blur 幕 + 160ms 入場アニメーション)。Resume パレット・設定・キーバインド・Usage・PathJumper に適用
+- Fix: Resume パレットの検索が最初の1000件しか対象にならなかった問題 — 検索中も「過去分も読み込んで検索」導線を表示
+- Perf: Fuse 検索インデックスを1キーストロークごとに再構築していたのをフィルタ変更時のみに
+- UX: Esc は検索語クリア→クローズの2段階 / PageUp・PageDown・Home・End 対応 / 読み込み中表示 / 検索マッチ箇所のハイライト
+- Style: パレットの操作要素を CSS クラス化して hover/transition を付与。日本語を含むテキストのフォント下限を 11px に
+
 ## [0.21.6] - 2026-08-04
 
 - Fix: Resume パレット (CRSM) で検索中も一覧が最終更新順 (last_activity 降順) を維持するように。従来は検索語を入れると Fuse.js の類似度スコア順で表示され、更新順ルールが崩れていた。検索は絞り込みのみを担う

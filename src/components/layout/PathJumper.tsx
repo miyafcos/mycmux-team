@@ -491,6 +491,7 @@ export default memo(function PathJumper({
 
       {isOpen ? (
         <div
+          className="cmux-overlay-panel"
           role="listbox"
           style={dropdownStyle}
           onMouseDown={(event) => {

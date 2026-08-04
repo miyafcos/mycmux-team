@@ -467,6 +467,7 @@ export default function UsageAccountsDialog() {
 
   return (
     <div
+      className="cmux-overlay-backdrop"
       role="dialog"
       aria-modal="true"
       onMouseDown={(e) => {
@@ -486,6 +487,7 @@ export default function UsageAccountsDialog() {
       }}
     >
       <div
+        className="cmux-overlay-panel"
         style={{
           width: "min(520px, calc(100vw - 32px))",
           maxHeight: "calc(100vh - 48px)",

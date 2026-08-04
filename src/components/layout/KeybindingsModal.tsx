@@ -68,6 +68,7 @@ export function KeybindingsPanel({ embedded = false, onClose }: KeybindingsPanel
 
   return (
     <div
+      className={embedded ? undefined : "cmux-overlay-panel"}
       onClick={(e) => e.stopPropagation()}
       style={{
         // Embedded (settings tab): fill the host's content column and let the
@@ -252,6 +253,7 @@ export default function KeybindingsModal({ onClose }: KeybindingsModalProps) {
 
   return (
     <div
+      className="cmux-overlay-backdrop"
       style={{
         position: "fixed",
         inset: 0,

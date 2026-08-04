@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { CSSProperties } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import Fuse from "fuse.js";
 import {
   crsmCreateHandoff,
@@ -13,6 +13,7 @@ import {
 } from "../../stores/workspaceStore";
 import { useWorkspaceListStore } from "../../stores/workspaceListStore";
 import { useSettingsStore } from "../../stores/settingsStore";
+import "./CrsmPalette.css";
 
 interface CrsmPaletteProps {
   open: boolean;
@@ -33,6 +34,65 @@ const LOAD_MORE_HEIGHT = 38;
 const TOP_CWD_CHIPS = 8;
 const SESSION_AUTO_REFRESH_COOLDOWN_MS = 10_000;
 const DIRECT_RESUME_FAST_CACHE_MS = 60_000;
+const STR_LOADING_SESSIONS = "\u5c65\u6b74\u3092\u8aad\u307f\u8fbc\u307f\u4e2d\u2026";
+const STR_DEEP_SEARCH_CTA = "\u904e\u53bb\u5206\u3082\u8aad\u307f\u8fbc\u3093\u3067\u691c\u7d22";
+
+export type CrsmEscapeAction = "clear-query" | "close";
+export type CrsmPageJumpKey = "PageUp" | "PageDown" | "Home" | "End";
+
+export function resolveCrsmEscapeAction(query: string): CrsmEscapeAction {
+  return query.length > 0 ? "clear-query" : "close";
+}
+
+export function pageJumpIndex(
+  currentIndex: number,
+  key: CrsmPageJumpKey,
+  itemCount: number,
+  viewportHeight: number,
+  itemHeight = ITEM_HEIGHT,
+): number {
+  const lastIndex = Math.max(itemCount - 1, 0);
+  if (key === "Home") return 0;
+  if (key === "End") return lastIndex;
+  const pageSize = Math.max(1, Math.floor(viewportHeight / itemHeight));
+  const nextIndex = currentIndex + (key === "PageDown" ? pageSize : -pageSize);
+  return Math.min(Math.max(nextIndex, 0), lastIndex);
+}
+
+export function sortSessionsByLastActivity<
+  T extends { last_activity: string | null | undefined },
+>(sessions: readonly T[]): T[] {
+  return [...sessions].sort((a, b) => {
+    const ta = Date.parse(a.last_activity ?? "") || 0;
+    const tb = Date.parse(b.last_activity ?? "") || 0;
+    return tb - ta;
+  });
+}
+
+function highlightedLabel(
+  labelValue: string | null,
+  ranges: readonly (readonly [number, number])[] | undefined,
+): ReactNode {
+  const label = labelValue ?? "";
+  if (!ranges?.length) return label;
+  const parts: ReactNode[] = [];
+  let cursor = 0;
+  for (const [start, end] of ranges) {
+    if (start > cursor) {
+      parts.push(<span key={`plain-${cursor}`}>{label.slice(cursor, start)}</span>);
+    }
+    parts.push(
+      <span key={`match-${start}`} className="cmux-match">
+        {label.slice(start, end + 1)}
+      </span>,
+    );
+    cursor = end + 1;
+  }
+  if (cursor < label.length) {
+    parts.push(<span key={`plain-${cursor}`}>{label.slice(cursor)}</span>);
+  }
+  return <>{parts}</>;
+}
 
 const SOURCE_LABELS: Record<string, string> = {
   "claude-live": "live",
@@ -551,15 +611,31 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
     return filteredByUserMsg.filter((s) => set.has(s.cwd));
   }, [filteredByUserMsg, cwdFilters]);
 
-  const filtered = useMemo(() => {
-    if (!query.trim()) return filteredByCwd;
-    const fuse = new Fuse(filteredByCwd, {
+  const fuse = useMemo(() => new Fuse(filteredByCwd, {
       keys: ["label", "preview", "cwd", "id", "kind"],
       threshold: 0.35,
       ignoreLocation: true,
-    });
-    return fuse.search(query).map((item) => item.item);
-  }, [filteredByCwd, query]);
+      includeMatches: true,
+    }), [filteredByCwd]);
+
+  const searchResults = useMemo(
+    () => query.trim() ? fuse.search(query) : [],
+    [fuse, query],
+  );
+  const filtered = useMemo(
+    () => query.trim() ? searchResults.map((result) => result.item) : filteredByCwd,
+    [filteredByCwd, query, searchResults],
+  );
+  const labelMatchRanges = useMemo(() => {
+    const result = new Map<string | null, readonly (readonly [number, number])[]>();
+    for (const searchResult of searchResults) {
+      const labelMatch = searchResult.matches?.find((match) => match.key === "label");
+      if (labelMatch) {
+        result.set(sessionKey(searchResult.item), labelMatch.indices);
+      }
+    }
+    return result;
+  }, [searchResults]);
 
   function toggleCwd(cwd: string) {
     cwdFilterTouchedRef.current = true;
@@ -571,17 +647,11 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
 
   // Search acts as a filter only — the list stays in last_activity order
   // even while a query is active (Fuse relevance order is discarded).
-  const sorted = useMemo(() => {
-    return [...filtered].sort((a, b) => {
-      const ta = Date.parse(a.last_activity) || 0;
-      const tb = Date.parse(b.last_activity) || 0;
-      return tb - ta;
-    });
-  }, [filtered]);
+  const sorted = useMemo(() => sortSessionsByLastActivity(filtered), [filtered]);
 
   const maxListed = deepLoaded ? MAX_LISTED_SESSIONS_DEEP : MAX_LISTED_SESSIONS_INITIAL;
   const listed = useMemo(() => sorted.slice(0, maxListed), [sorted, maxListed]);
-  const loadMoreVisible = !deepLoaded && !query.trim();
+  const loadMoreVisible = !deepLoaded;
 
   async function loadMore() {
     if (loadingMore || deepLoaded) return;
@@ -658,7 +728,15 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         event.preventDefault();
-        onClose();
+        if (resolveCrsmEscapeAction(query) === "clear-query") {
+          setQuery("");
+          setSelectedIndex(0);
+          setScrollTop(0);
+          if (listRef.current) listRef.current.scrollTop = 0;
+          setTargetPinned(false);
+        } else {
+          onClose();
+        }
         return;
       }
       if (event.key === "ArrowDown") {
@@ -669,6 +747,22 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
       if (event.key === "ArrowUp") {
         event.preventDefault();
         setSelectedIndex((value) => Math.max(value - 1, 0));
+        return;
+      }
+      if (
+        event.key === "PageUp"
+        || event.key === "PageDown"
+        || event.key === "Home"
+        || event.key === "End"
+      ) {
+        event.preventDefault();
+        const key = event.key as CrsmPageJumpKey;
+        setSelectedIndex((value) => pageJumpIndex(
+          value,
+          key,
+          listed.length,
+          listViewportHeight,
+        ));
         return;
       }
       if (event.key === "Tab") {
@@ -689,7 +783,7 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
     };
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [listed.length, open, onClose, selected, targetKind]);
+  }, [enabledTargets, listViewportHeight, listed.length, open, onClose, query, selected, targetKind]);
 
   async function openSelected(): Promise<void> {
     if (!selected || !activeWorkspace) return;
@@ -765,8 +859,8 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
   if (!open) return null;
 
   return (
-    <div style={styles.backdrop} onMouseDown={onClose}>
-      <div style={styles.panel} onMouseDown={(event) => event.stopPropagation()}>
+    <div className="cmux-overlay-backdrop" style={styles.backdrop} onMouseDown={onClose}>
+      <div className="cmux-overlay-panel" style={styles.panel} onMouseDown={(event) => event.stopPropagation()}>
         <input
           autoFocus
           value={query}
@@ -787,7 +881,7 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
             <button
               key={kind}
               type="button"
-              style={targetKind === kind ? styles.targetButtonActive : styles.targetButton}
+              className={`cmux-crsm-target-button${targetKind === kind ? " is-active" : ""}`}
               onClick={() => {
                 setTargetPinned(true);
                 setTargetKind(kind);
@@ -804,7 +898,7 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
             <button
               key={kind}
               type="button"
-              style={sessionFilter === kind ? styles.filterButtonActive : styles.filterButton}
+              className={`cmux-crsm-filter-button${sessionFilter === kind ? " is-active" : ""}`}
               onClick={() => {
                 setSessionFilter(kind);
                 setSelectedIndex(0);
@@ -831,7 +925,7 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
                   key={cwd}
                   type="button"
                   title={cwd}
-                  style={active ? styles.cwdChipActive : styles.cwdChip}
+                  className={`cmux-crsm-cwd-chip${active ? " is-active" : ""}`}
                   onClick={() => toggleCwd(cwd)}
                 >
                   {shortenCwd(cwd)}
@@ -842,7 +936,7 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
             {cwdCountsForDisplay.length > TOP_CWD_CHIPS ? (
               <button
                 type="button"
-                style={styles.cwdMoreToggle}
+                className="cmux-crsm-cwd-action"
                 onClick={() => setShowAllCwds((v) => !v)}
               >
                 {showAllCwds ? "閉じる ▴" : `他 ${cwdCountsForDisplay.length - TOP_CWD_CHIPS} 件 ▾`}
@@ -851,7 +945,7 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
             {cwdFilters.length > 0 ? (
               <button
                 type="button"
-                style={styles.cwdClear}
+                className="cmux-crsm-cwd-action cmux-crsm-cwd-action--clear"
                 onClick={() => {
                   cwdFilterTouchedRef.current = true;
                   setCwdFilters([]);
@@ -872,6 +966,9 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
             setListViewportHeight(event.currentTarget.clientHeight || LIST_VIEWPORT_FALLBACK);
           }}
         >
+          {sessions.length === 0 && !error ? (
+            <div className="cmux-crsm-loading">{STR_LOADING_SESSIONS}</div>
+          ) : (
           <div style={{ ...styles.virtualTrack, height: listed.length * ITEM_HEIGHT + (loadMoreVisible ? LOAD_MORE_HEIGHT : 0) }}>
           {virtualSessions.map((session, offset) => {
             const index = virtualStart + offset;
@@ -880,10 +977,8 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
             <button
               key={`${session.kind}:${session.id}`}
               type="button"
-              style={{
-                ...(index === selectedIndex ? styles.itemActive : styles.item),
-                top: index * ITEM_HEIGHT,
-              }}
+              className={`cmux-crsm-item${index === selectedIndex ? " is-active" : ""}`}
+              style={{ top: index * ITEM_HEIGHT, height: ITEM_HEIGHT - 2 }}
               onMouseMove={() => {
                 if (selectedIndex !== index) {
                   setSelectedIndex(index);
@@ -902,7 +997,9 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
               </span>
               <span style={styles.itemBody}>
                 <span style={styles.itemRow1}>
-                  <span style={styles.label} title={session.label}>{session.label}</span>
+                  <span style={styles.label} title={session.label}>
+                    {highlightedLabel(session.label, labelMatchRanges.get(sessionKey(session)))}
+                  </span>
                   <span style={styles.itemTimeSingle} title={formatStamp(session.last_activity)}>
                     {formatRelative(session.last_activity)}
                   </span>
@@ -929,16 +1026,20 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
           {loadMoreVisible ? (
             <button
               type="button"
-              style={{ ...styles.loadMore, top: listed.length * ITEM_HEIGHT }}
+              className="cmux-crsm-load-more"
+              style={{ top: listed.length * ITEM_HEIGHT, height: LOAD_MORE_HEIGHT - 6 }}
               onClick={() => void loadMore()}
               disabled={loadingMore}
             >
               {loadingMore
                 ? "読み込み中..."
-                : `さらに過去のセッションを読み込む (現在 ${listed.length} 件 → 全件)`}
+                : query.trim()
+                  ? `${STR_DEEP_SEARCH_CTA} (現在 ${listed.length} 件)`
+                  : `さらに過去のセッションを読み込む (現在 ${listed.length} 件 → 全件)`}
             </button>
           ) : null}
           </div>
+          )}
         </div>
         <div style={styles.detail}>
           {selected ? (
@@ -1105,30 +1206,6 @@ const styles: Record<string, CSSProperties> = {
     padding: "10px 12px",
     borderBottom: "1px solid var(--cmux-border)",
   },
-  targetButton: {
-    minWidth: 165,
-    display: "flex",
-    flexDirection: "column",
-    gap: 2,
-    padding: "8px 10px",
-    borderRadius: 7,
-    border: "1px solid color-mix(in srgb, var(--cmux-text) 18%, transparent)",
-    background: "transparent",
-    color: "inherit",
-    textAlign: "left",
-  },
-  targetButtonActive: {
-    minWidth: 165,
-    display: "flex",
-    flexDirection: "column",
-    gap: 2,
-    padding: "8px 10px",
-    borderRadius: 7,
-    border: "1px solid color-mix(in srgb, var(--cmux-text) 28%, transparent)",
-    background: "var(--cmux-selected)",
-    color: "inherit",
-    textAlign: "left",
-  },
   targetTitle: {
     fontSize: 13,
     fontWeight: 650,
@@ -1155,22 +1232,6 @@ const styles: Record<string, CSSProperties> = {
     alignItems: "center",
     padding: "8px 12px",
     borderBottom: "1px solid var(--cmux-border)",
-  },
-  filterButton: {
-    padding: "5px 9px",
-    borderRadius: 6,
-    border: "1px solid color-mix(in srgb, var(--cmux-text) 16%, transparent)",
-    background: "transparent",
-    color: "inherit",
-    fontSize: 12,
-  },
-  filterButtonActive: {
-    padding: "5px 9px",
-    borderRadius: 6,
-    border: "1px solid color-mix(in srgb, var(--cmux-text) 28%, transparent)",
-    background: "var(--cmux-selected)",
-    color: "inherit",
-    fontSize: 12,
   },
   mainArea: {
     display: "flex",
@@ -1253,7 +1314,7 @@ const styles: Record<string, CSSProperties> = {
     textOverflow: "ellipsis",
     whiteSpace: "nowrap",
     minWidth: 0,
-    fontSize: 10,
+    fontSize: 11,
     opacity: 0.42,
     userSelect: "text",
     flexShrink: 0,
@@ -1336,7 +1397,7 @@ const styles: Record<string, CSSProperties> = {
     gap: 1,
   },
   detailSectionTitle: {
-    fontSize: 10,
+    fontSize: 11,
     fontWeight: 600,
     opacity: 0.7,
     letterSpacing: "0.03em",
@@ -1382,94 +1443,14 @@ const styles: Record<string, CSSProperties> = {
     letterSpacing: "0.06em",
     marginRight: 2,
   },
-  cwdChip: {
-    padding: "3px 8px",
-    borderRadius: 11,
-    border: "1px solid color-mix(in srgb, var(--cmux-text) 14%, transparent)",
-    background: "transparent",
-    color: "inherit",
-    fontSize: 11,
-    cursor: "pointer",
-    display: "inline-flex",
-    alignItems: "center",
-    gap: 5,
-  },
-  cwdChipActive: {
-    padding: "3px 8px",
-    borderRadius: 11,
-    border: "1px solid color-mix(in srgb, var(--cmux-accent) 50%, transparent)",
-    background: "color-mix(in srgb, var(--cmux-accent) 14%, transparent)",
-    color: "inherit",
-    fontSize: 11,
-    cursor: "pointer",
-    display: "inline-flex",
-    alignItems: "center",
-    gap: 5,
-  },
   cwdCount: {
     opacity: 0.5,
     fontSize: 10,
     fontVariantNumeric: "tabular-nums",
   },
-  cwdMoreToggle: {
-    padding: "3px 6px",
-    borderRadius: 4,
-    border: "0",
-    background: "transparent",
-    color: "inherit",
-    opacity: 0.6,
-    fontSize: 11,
-    cursor: "pointer",
-  },
-  cwdClear: {
-    padding: "3px 8px",
-    borderRadius: 4,
-    border: "0",
-    background: "color-mix(in srgb, var(--cmux-red) 10%, transparent)",
-    color: "var(--cmux-red)",
-    fontSize: 11,
-    cursor: "pointer",
-    marginLeft: "auto",
-  },
   virtualTrack: {
     position: "relative",
     minHeight: "100%",
-  },
-  item: {
-    width: "100%",
-    height: ITEM_HEIGHT - 2,
-    position: "absolute",
-    left: 0,
-    right: 0,
-    boxSizing: "border-box",
-    display: "flex",
-    gap: 8,
-    alignItems: "center",
-    padding: "4px 10px",
-    border: 0,
-    borderRadius: 4,
-    background: "transparent",
-    color: "inherit",
-    textAlign: "left",
-    fontSize: 12,
-  },
-  itemActive: {
-    width: "100%",
-    height: ITEM_HEIGHT - 2,
-    position: "absolute",
-    left: 0,
-    right: 0,
-    boxSizing: "border-box",
-    display: "flex",
-    gap: 8,
-    alignItems: "center",
-    padding: "4px 10px",
-    border: 0,
-    borderRadius: 4,
-    background: "var(--cmux-selected)",
-    color: "inherit",
-    textAlign: "left",
-    fontSize: 12,
   },
   kind: {
     minWidth: 52,
@@ -1498,7 +1479,7 @@ const styles: Record<string, CSSProperties> = {
     display: "flex",
     alignItems: "center",
     gap: 6,
-    fontSize: 10,
+    fontSize: 11,
     opacity: 0.55,
     lineHeight: 1.2,
     minWidth: 0,
@@ -1528,7 +1509,7 @@ const styles: Record<string, CSSProperties> = {
     padding: "0 4px",
     borderRadius: 3,
     background: "color-mix(in srgb, var(--cmux-text) 6%, transparent)",
-    fontSize: 9,
+    fontSize: 11,
   },
   itemTimeSingle: {
     fontSize: 11,
@@ -1537,23 +1518,6 @@ const styles: Record<string, CSSProperties> = {
     whiteSpace: "nowrap",
     textAlign: "right",
     flexShrink: 0,
-  },
-  loadMore: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    height: LOAD_MORE_HEIGHT - 6,
-    margin: "3px 0",
-    boxSizing: "border-box",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    border: "1px dashed color-mix(in srgb, var(--cmux-text) 22%, transparent)",
-    borderRadius: 6,
-    background: "color-mix(in srgb, var(--cmux-text) 4%, transparent)",
-    color: "inherit",
-    fontSize: 12,
-    cursor: "pointer",
   },
   error: {
     padding: "10px 12px",

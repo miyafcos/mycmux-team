@@ -190,6 +190,7 @@ export default function SettingsDialog({ onClose, onOpenCrsmPalette, onOpenOnlin
 
   return (
     <div
+      className="cmux-overlay-backdrop"
       style={{
         position: "fixed",
         inset: 0,
@@ -207,6 +208,7 @@ export default function SettingsDialog({ onClose, onOpenCrsmPalette, onOpenOnlin
       }}
     >
       <div
+        className="cmux-overlay-panel"
         ref={panelRef}
         tabIndex={-1}
         role="dialog"

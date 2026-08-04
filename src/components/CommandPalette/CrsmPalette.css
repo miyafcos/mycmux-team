@@ -1,0 +1,141 @@
+.cmux-crsm-target-button {
+  min-width: 165px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  border-radius: 7px;
+  border: 1px solid color-mix(in srgb, var(--cmux-text) 18%, transparent);
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  transition: background var(--cmux-motion-fast) var(--cmux-ease);
+}
+
+.cmux-crsm-target-button:hover:not(.is-active),
+.cmux-crsm-filter-button:hover:not(.is-active),
+.cmux-crsm-cwd-chip:hover:not(.is-active),
+.cmux-crsm-cwd-action:hover,
+.cmux-crsm-item:hover:not(.is-active),
+.cmux-crsm-load-more:hover:not(:disabled) {
+  background: var(--cmux-hover);
+}
+
+.cmux-crsm-target-button.is-active {
+  border-color: color-mix(in srgb, var(--cmux-text) 28%, transparent);
+  background: var(--cmux-selected);
+}
+
+.cmux-crsm-filter-button {
+  padding: 5px 9px;
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, var(--cmux-text) 16%, transparent);
+  background: transparent;
+  color: inherit;
+  font-size: 12px;
+  transition: background var(--cmux-motion-fast) var(--cmux-ease);
+}
+
+.cmux-crsm-filter-button.is-active {
+  border-color: color-mix(in srgb, var(--cmux-text) 28%, transparent);
+  background: var(--cmux-selected);
+}
+
+.cmux-crsm-cwd-chip {
+  padding: 3px 8px;
+  border-radius: 11px;
+  border: 1px solid color-mix(in srgb, var(--cmux-text) 14%, transparent);
+  background: transparent;
+  color: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  transition: background var(--cmux-motion-fast) var(--cmux-ease);
+}
+
+.cmux-crsm-cwd-chip.is-active {
+  border-color: color-mix(in srgb, var(--cmux-accent) 50%, transparent);
+  background: color-mix(in srgb, var(--cmux-accent) 14%, transparent);
+}
+
+.cmux-crsm-cwd-action {
+  padding: 3px 6px;
+  border-radius: 4px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  opacity: 0.6;
+  font-size: 11px;
+  cursor: pointer;
+  transition: background var(--cmux-motion-fast) var(--cmux-ease);
+}
+
+.cmux-crsm-cwd-action--clear {
+  padding-inline: 8px;
+  background: color-mix(in srgb, var(--cmux-red) 10%, transparent);
+  color: var(--cmux-red);
+  opacity: 1;
+  margin-left: auto;
+}
+
+.cmux-crsm-item {
+  width: 100%;
+  position: absolute;
+  left: 0;
+  right: 0;
+  box-sizing: border-box;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 4px 10px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  font-size: 12px;
+  transition: background var(--cmux-motion-fast) var(--cmux-ease);
+}
+
+.cmux-crsm-item.is-active {
+  background: var(--cmux-selected);
+}
+
+.cmux-crsm-load-more {
+  position: absolute;
+  left: 0;
+  right: 0;
+  margin: 3px 0;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px dashed color-mix(in srgb, var(--cmux-text) 22%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--cmux-text) 4%, transparent);
+  color: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background var(--cmux-motion-fast) var(--cmux-ease);
+}
+
+.cmux-crsm-load-more:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.cmux-crsm-loading {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--cmux-text-secondary);
+  font-size: 12px;
+}
+
+.cmux-match {
+  background: color-mix(in srgb, var(--cmux-accent) 24%, transparent);
+  border-radius: 2px;
+}

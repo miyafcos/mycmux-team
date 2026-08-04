@@ -23,6 +23,11 @@
   --cmux-on-done: #0a0a0a;
   --cmux-on-error: #ffffff;
   --cmux-backdrop: rgba(0, 0, 0, 0.55);
+  --cmux-blur-overlay: blur(10px) saturate(1.2);
+  --cmux-motion-fast: 120ms;
+  --cmux-motion-base: 160ms;
+  --cmux-motion-slow: 240ms;
+  --cmux-ease: cubic-bezier(0.2, 0, 0, 1);
   --cmux-focus-ring: color-mix(in srgb, var(--cmux-accent) 45%, transparent);
   --cmux-dnd-tab: #38bdf8;
   --cmux-dnd-pane: #f59e0b;
@@ -32,8 +37,8 @@
   --cmux-shadow-menu: 0 4px 12px rgba(0, 0, 0, 0.5);
   --cmux-shadow-popover: 0 4px 16px rgba(0,0,0,0.4);
   --cmux-shadow-dropdown: 0 10px 24px rgba(0, 0, 0, 0.32);
-  --cmux-shadow-dialog: 0 18px 60px rgba(0,0,0,0.45);
-  --cmux-shadow-palette: 0 24px 70px rgba(0,0,0,0.45);
+  --cmux-shadow-dialog: 0 2px 8px rgba(0,0,0,0.24), 0 18px 60px rgba(0,0,0,0.45);
+  --cmux-shadow-palette: 0 2px 8px rgba(0,0,0,0.24), 0 24px 70px rgba(0,0,0,0.45);
   --cmux-shadow-pane-menu: 0 4px 12px rgba(0,0,0,0.2);
   --cmux-shadow-dnd:
     0 14px 34px rgba(0, 0, 0, 0.36),
@@ -64,6 +69,33 @@
      and explicit borders instead of multi-layer glow effects. */
   --cmux-chrome-icon-shadow: none;
   --cmux-chrome-text-shadow: none;
+}
+
+@keyframes cmux-overlay-backdrop-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes cmux-overlay-panel-in {
+  from {
+    opacity: 0;
+    transform: scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.cmux-overlay-backdrop {
+  background: var(--cmux-backdrop);
+  backdrop-filter: var(--cmux-blur-overlay);
+  animation: cmux-overlay-backdrop-in var(--cmux-motion-fast) var(--cmux-ease);
+}
+
+.cmux-overlay-panel {
+  transform-origin: top center;
+  animation: cmux-overlay-panel-in var(--cmux-motion-base) var(--cmux-ease);
 }
 
 *,
