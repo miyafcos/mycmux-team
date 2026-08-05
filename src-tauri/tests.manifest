@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!--
+  cargo test でリンクされる harness exe 用の manifest。
+
+  製品 exe には tauri-build が manifest を埋め込むが、test harness exe には何も付かない。
+  依存クレートが comctl32 の TaskDialogIndirect を import する一方、manifest 無しでは
+  Common Controls v5.82 が読み込まれ該当 entrypoint が存在しないため、テストが 1 行も
+  走らないまま STATUS_ENTRYPOINT_NOT_FOUND (0xc0000139) で落ちる。
+
+  build.rs が /MANIFEST:EMBED /MANIFESTINPUT でこのファイルをテストバイナリへ埋め込む。
+-->
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <dependency>
+    <dependentAssembly>
+      <assemblyIdentity
+        type="win32"
+        name="Microsoft.Windows.Common-Controls"
+        version="6.0.0.0"
+        processorArchitecture="*"
+        publicKeyToken="6595b64144ccf1df"
+        language="*"
+      />
+    </dependentAssembly>
+  </dependency>
+</assembly>

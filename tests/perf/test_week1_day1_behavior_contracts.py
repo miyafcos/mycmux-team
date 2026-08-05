@@ -11,38 +11,38 @@ EXPECTED_LAUNCHER_OPTIONS = [
     "Claude Code",
     "Codex",
     "claude-codex",
+    "Codex (Fugu Ultra)",
+    "claude-codex (Fugu)",
+    "Antigravity (agy)",
     "Claude Code (dangerous)",
     "Codex (dangerous)",
     "claude-codex (dangerous)",
     "Claude Code (resume)",
     "Codex (resume)",
     "claude-codex (resume)",
-    "Resume (pick session)",
-    "Codex (Fugu Ultra)",
-    "claude-codex (Fugu)",
-    "Antigravity (agy)",
     "Custom...",
     "Change directory (開発)...",
     "Change directory (案件)...",
+    "Change directory (最近・フォルダを辿る)...",
 ]
 
 EXPECTED_LAUNCHER_COMMANDS = [
     "claude --allow-dangerously-skip-permissions --permission-mode auto",
     "codex --no-alt-screen",
     "claude-codex",
+    "codex --no-alt-screen --profile fugu-ultra",
+    "claude-codex --backend fugu",
+    "agy",
     "claude --dangerously-skip-permissions --permission-mode bypassPermissions",
     "codex --no-alt-screen --dangerously-bypass-approvals-and-sandbox",
     "claude-codex --dangerously-skip-permissions --permission-mode bypassPermissions",
     "claude --allow-dangerously-skip-permissions --permission-mode auto --resume",
     "codex resume --no-alt-screen",
     "claude-codex --resume",
-    "__resume_pick__",
-    "codex --no-alt-screen --profile fugu-ultra",
-    "claude-codex --backend fugu",
-    "agy",
     "__custom__",
-    "__dir__",
+    "__dir_dev__",
     "__dir_anken__",
+    "__dir__",
 ]
 
 
@@ -71,6 +71,37 @@ def test_launcher_order_matches_current_contract() -> None:
     assert_contains(launcher, "FUGU_API_KEY", "src-tauri/src/launcher.sh")
     assert_contains(launcher_ps1, "Import-MycmuxUserEnvIfMissing", "src-tauri/src/launcher.ps1")
     assert_contains(launcher_ps1, "FUGU_API_KEY", "src-tauri/src/launcher.ps1")
+
+
+def test_directory_menu_is_reachable_with_arrows_only() -> None:
+    """Change directory は上下キー + Enter だけで最近使った/開発/案件/実フォルダへ入れること。
+
+    数字キーだけの選択に戻すと候補 10 件目以降へ到達できなくなる (launch-roots は
+    開発 23 件 / 案件 20 件あり、旧実装は 1〜9 しか受け付けなかった)。
+    """
+    launcher = read_repo_text("src-tauri/src/launcher.sh")
+
+    for snippet in [
+        "__pick_list",           # 共通ピッカー (ページ送り + 絞り込み)
+        "__read_pick_event",     # 印字可能文字を拾う入力リーダー
+        "__launch_dir_menu",     # トップ画面 (最近使った/開発/案件/辿る/Home)
+        "__browse_launch_dirs",  # 候補ファイル外へも行ける実フォルダ探索
+        "__record_dir_mru",      # 最近使った行き先の記録
+        "__norm_path",           # /c/... と C:/... の同一視 (今ここ判定)
+    ]:
+        assert_contains(launcher, snippet, "src-tauri/src/launcher.sh")
+
+    # 上下キー・Enter・→ 決定・← 戻るが全部イベントとして配線されていること
+    for snippet in ["__PICK_EVENT=up", "__PICK_EVENT=down", "__PICK_EVENT=enter", "__PICK_EVENT=esc"]:
+        assert_contains(launcher, snippet, "src-tauri/src/launcher.sh")
+
+    # d / a のショートカットは従来どおり開発 / 案件へ直行すること
+    assert_contains(launcher, "dirkey) __launch_dir_menu dev", "src-tauri/src/launcher.sh")
+    assert_contains(launcher, "ankenkey) __launch_dir_menu anken", "src-tauri/src/launcher.sh")
+
+    # 開発 / 案件はメインメニューから Enter 1回で候補一覧に入れること (トップ画面を挟まない)
+    assert_contains(launcher, "__dir_dev__)   __launch_dir_menu dev", "src-tauri/src/launcher.sh")
+    assert_contains(launcher, "__dir_anken__) __launch_dir_menu anken", "src-tauri/src/launcher.sh")
 
 
 def test_ctrl_p_history_palette_route_remains_wired() -> None:

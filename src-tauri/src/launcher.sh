@@ -338,207 +338,6 @@ __prompt_custom_command() {
   IFS= read -ru "$__CMUX_MENU_FD" cmd
 }
 
-__pick_resume_session() {
-  __open_menu_fd
-  if ! command -v crsm >/dev/null 2>&1; then
-    printf "\033[H\033[2J" >&$__CMUX_MENU_FD
-    echo "  crsm command not found." >&$__CMUX_MENU_FD
-    echo "" >&$__CMUX_MENU_FD
-    echo "  Press any key to return to menu." >&$__CMUX_MENU_FD
-    IFS= read -rsn1 -u "$__CMUX_MENU_FD" _ || true
-    return 1
-  fi
-
-  local __py
-  if command -v python3 >/dev/null 2>&1; then
-    __py=python3
-  elif command -v python >/dev/null 2>&1; then
-    __py=python
-  else
-    printf "\033[H\033[2J" >&$__CMUX_MENU_FD
-    echo "  python not found." >&$__CMUX_MENU_FD
-    echo "" >&$__CMUX_MENU_FD
-    echo "  Press any key to return to menu." >&$__CMUX_MENU_FD
-    IFS= read -rsn1 -u "$__CMUX_MENU_FD" _ || true
-    return 1
-  fi
-
-  printf "\033[H\033[2J" >&$__CMUX_MENU_FD
-  echo "  Loading sessions..." >&$__CMUX_MENU_FD
-  local __json __crsm_status=0
-  __json="$(crsm list --json --limit 20 2>/dev/null)" || __crsm_status=$?
-  if [ "$__crsm_status" -eq 0 ] && [[ "$__json" =~ ^[[:space:]]*\[[[:space:]]*\][[:space:]]*$ ]]; then
-    __json="$(crsm list --all --json --limit 20 2>/dev/null)" || __crsm_status=$?
-  fi
-  if [ "$__crsm_status" -ne 0 ]; then
-    printf "\033[H\033[2J" >&$__CMUX_MENU_FD
-    echo "  crsm list failed." >&$__CMUX_MENU_FD
-    echo "" >&$__CMUX_MENU_FD
-    echo "  Press any key to return to menu." >&$__CMUX_MENU_FD
-    IFS= read -rsn1 -u "$__CMUX_MENU_FD" _ || true
-    return 1
-  fi
-
-  local __pwd __tsv
-  __pwd="$(pwd -W 2>/dev/null || pwd)"
-  __tsv="$(MYCMUX_CRSM_JSON="$__json" MYCMUX_PICKER_CWD="$__pwd" "$__py" - <<'PY' 2>/dev/null
-import json
-import os
-from datetime import datetime, timezone
-
-def norm(path):
-    path = (path or "").strip().replace("\\", "/")
-    if len(path) >= 3 and path[0] == "/" and path[2] == "/":
-        path = path[1].upper() + ":" + path[2:]
-    while "//" in path:
-        path = path.replace("//", "/")
-    return path.rstrip("/").lower()
-
-def rel_time(value):
-    if not value:
-        return "-"
-    try:
-        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return "-"
-    now = datetime.now(timezone.utc)
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    sec = max(0, int((now - dt.astimezone(timezone.utc)).total_seconds()))
-    if sec < 60:
-        return f"{sec}s ago"
-    minutes = sec // 60
-    if minutes < 60:
-        return f"{minutes}m ago"
-    hours = minutes // 60
-    if hours < 24:
-        return f"{hours}h ago"
-    return f"{hours // 24}d ago"
-
-current = norm(os.environ.get("MYCMUX_PICKER_CWD", ""))
-try:
-    rows = json.loads(os.environ.get("MYCMUX_CRSM_JSON", "[]"))
-except json.JSONDecodeError:
-    rows = []
-if not isinstance(rows, list):
-    rows = []
-
-prepared = []
-for index, row in enumerate(rows):
-    if not isinstance(row, dict):
-        continue
-    kind = str(row.get("kind") or "")
-    sid = str(row.get("id") or "")
-    cwd = str(row.get("cwd") or "")
-    if kind not in {"claude", "codex", "claude-codex"} or not sid:
-        continue
-    label = str(row.get("label") or row.get("preview") or sid).replace("\t", " ").replace("\r", " ").replace("\n", " ")
-    label = " ".join(label.split())
-    prepared.append((0 if norm(cwd) == current else 1, index, kind, sid, cwd, rel_time(row.get("last_activity")), label[:90]))
-
-for _, _, kind, sid, cwd, rel, label in sorted(prepared):
-    print("\t".join([kind, sid, cwd, rel, label]))
-PY
-)"
-
-  if [ -z "$__tsv" ]; then
-    printf "\033[H\033[2J" >&$__CMUX_MENU_FD
-    echo "  No resume sessions found." >&$__CMUX_MENU_FD
-    echo "" >&$__CMUX_MENU_FD
-    echo "  Press any key to return to menu." >&$__CMUX_MENU_FD
-    IFS= read -rsn1 -u "$__CMUX_MENU_FD" _ || true
-    return 1
-  fi
-
-  local r_kinds=() r_ids=() r_cwds=() r_rels=() r_labels=()
-  local r_kind r_id r_cwd r_rel r_label
-  while IFS=$'\t' read -r r_kind r_id r_cwd r_rel r_label; do
-    [ -z "$r_kind" ] && continue
-    r_kinds+=("$r_kind")
-    r_ids+=("$r_id")
-    r_cwds+=("$r_cwd")
-    r_rels+=("$r_rel")
-    r_labels+=("$r_label")
-  done <<< "$__tsv"
-
-  local r_selected=0 r_count=${#r_ids[@]}
-  if [ "$r_count" -eq 0 ]; then
-    return 1
-  fi
-
-  __draw_resume_menu() {
-    printf "\033[H\033[2J" >&$__CMUX_MENU_FD
-    echo "" >&$__CMUX_MENU_FD
-    echo "  Resume session:  [dir: $(pwd -W 2>/dev/null || pwd)]" >&$__CMUX_MENU_FD
-    echo "" >&$__CMUX_MENU_FD
-    local i num mark disp
-    for i in "${!r_ids[@]}"; do
-      num=$((i + 1))
-      mark="  "
-      [ $i -eq $r_selected ] && mark="> "
-      disp="${r_cwds[$i]}"
-      case "$disp" in "$HOME"*) disp="~${disp#$HOME}" ;; esac
-      echo "${mark}${num}. ${r_kinds[$i]}  ${r_rels[$i]}  ${r_labels[$i]}" >&$__CMUX_MENU_FD
-      echo "     ${disp}" >&$__CMUX_MENU_FD
-    done
-    echo "" >&$__CMUX_MENU_FD
-    echo "  ^v: move   Enter/number: resume   Esc/q: back" >&$__CMUX_MENU_FD
-  }
-
-  __draw_resume_menu
-  while true; do
-    __read_menu_event
-    case "$__MENU_EVENT" in
-      eof|quit|esc) return 1 ;;
-      up) ((r_selected--)); [ $r_selected -lt 0 ] && r_selected=$((r_count - 1)) ;;
-      down) ((r_selected++)); [ $r_selected -ge $r_count ] && r_selected=0 ;;
-      enter) break ;;
-      digit)
-        local n second
-        n=$((__MENU_DIGIT - 1))
-        if [ "$__MENU_DIGIT" = "1" ] || [ "$__MENU_DIGIT" = "2" ]; then
-          if IFS= read -rsn1 -t 0.15 -u "$__CMUX_MENU_FD" second; then
-            case "$second" in
-              [0-9]) n=$((__MENU_DIGIT * 10 + second - 1)) ;;
-            esac
-          fi
-        fi
-        if [ $n -ge 0 ] && [ $n -lt $r_count ]; then
-          r_selected=$n
-          break
-        fi
-        ;;
-    esac
-    __draw_resume_menu
-  done
-
-  local kind="${r_kinds[$r_selected]}"
-  local sid="${r_ids[$r_selected]}"
-  local cwd="${r_cwds[$r_selected]}"
-  [ -d "$cwd" ] && cd "$cwd" 2>/dev/null || true
-
-  case "$kind" in
-    claude)
-      if __prepare_claude_resume "$sid"; then
-        __trust_claude_cwd
-        __write_session_mapping "$MYCMUX_PANE_SESSION_ID" "claude" "$sid"
-        eval "claude --dangerously-skip-permissions --permission-mode bypassPermissions --resume $sid"
-      else
-        __track_claude_session "$MYCMUX_PANE_SESSION_ID" &
-        eval "claude --dangerously-skip-permissions --permission-mode bypassPermissions --continue"
-      fi
-      ;;
-    codex)
-      __write_session_mapping "$MYCMUX_PANE_SESSION_ID" "codex" "$sid"
-      eval "codex resume --no-alt-screen $sid"
-      ;;
-    claude-codex)
-      __write_session_mapping "$MYCMUX_PANE_SESSION_ID" "claude-codex" "$sid"
-      eval "claude-codex --resume $sid"
-      ;;
-  esac
-}
-
 __ensure_fugu_env() {
   [ -n "${FUGU_API_KEY:-}" ] && return
   if command -v powershell.exe >/dev/null 2>&1; then
@@ -674,11 +473,57 @@ if [ -n "$MYCMUX_LAUNCH_TARGET" ]; then
   esac
 fi
 
-# d / a キーで出るディレクトリ選択。候補は ~/.mycmux/launch-roots.txt (name|path 形式)。
-# 表示名が「案件」始まりの行は案件メニュー (a / 16)、それ以外は開発メニュー (d / 15) に出る。
+# ディレクトリ選択。候補は ~/.mycmux/launch-roots.txt (name|path 形式)。
+# 表示名が「案件」始まりの行は案件セクション、それ以外は開発セクションに出る。
 # 選択で cd してメインメニューに戻る。以降の起動はそのディレクトリで行われるため、
 # Claude Code はそのリポジトリの CLAUDE.md / プロジェクト履歴を持つセッションになる。
+#
+# 操作は上下キー + Enter で完結させる。→ でも決定、← でも復帰。ホイールは当てにしない
+# (mycmux の wheel→PTY 合成は alternate screen のときだけ通るので、通常バッファに描く
+#  このメニューには届かない。届くのはスクロールバック操作だけ)。
 __ROOTS_FILE="$HOME/.mycmux/launch-roots.txt"
+__DIR_MRU_FILE="$HOME/.mycmux/launch-dirs-mru.txt"
+
+# 選んだ行き先を最近使った順で8件保持する (トップ画面の「最近使った」に出す)。
+__record_dir_mru() {
+  local target="$1"
+  [ -z "$target" ] && return
+  local tmp="${__DIR_MRU_FILE}.tmp"
+  mkdir -p "$(dirname "$__DIR_MRU_FILE")" 2>/dev/null
+  # 初回や全行除外で grep が 1 を返してもブロック全体を失敗にしないこと (mv が飛ぶ)
+  {
+    echo "$target"
+    if [ -f "$__DIR_MRU_FILE" ]; then
+      grep -vxF -- "$target" "$__DIR_MRU_FILE" 2>/dev/null | head -7
+    fi
+    true
+  } > "$tmp" 2>/dev/null
+  [ -s "$tmp" ] && mv -f "$tmp" "$__DIR_MRU_FILE" 2>/dev/null
+  return 0
+}
+
+# 比較用の正規化 (/c/Users/... と C:/Users/... を同一視する)。
+__norm_path() {
+  local p="${1//\\//}"
+  p="${p%/}"
+  if [[ "$p" =~ ^/([a-zA-Z])/(.*)$ ]]; then
+    p="${BASH_REMATCH[1]}:/${BASH_REMATCH[2]}"
+  fi
+  echo "${p,,}"
+}
+
+# 表示用の短縮 (案件は 事務関係/ 以降、ホーム配下は ~ 起点)。
+__short_path() {
+  local p="${1//\\//}"
+  case "$p" in
+    *事務関係/*) echo "…/${p#*事務関係/}"; return ;;
+  esac
+  case "$p" in
+    "$HOME") echo "~"; return ;;
+    "$HOME"/*) echo "~${p#$HOME}"; return ;;
+  esac
+  echo "$p"
+}
 
 # 案件メニューを開いたとき、最終更新が3時間より古ければ裏で再生成を蹴る (走査2〜3分・
 # 表示は現行リストのまま待たせない。次にメニューを開いた時に新しくなっている)。
@@ -696,73 +541,326 @@ __refresh_anken_roots_bg() {
   disown 2>/dev/null || true
 }
 
-__select_launch_root() {
-  local r_mode="${1:-dev}"
-  [ "$r_mode" = "anken" ] && __refresh_anken_roots_bg
-  __open_menu_fd
-  local r_names=() r_paths=()
-  if [ "$r_mode" = "dev" ]; then
-    r_names+=("Home"); r_paths+=("$HOME")
+# ピッカー用の1入力イベント。メインメニューの __read_menu_event と違い、印字可能文字を
+# そのまま返す (絞り込み検索に使う)。
+# 結果: __PICK_EVENT = eof/up/down/pgup/pgdn/home/end/enter/esc/bs/char
+#       __PICK_CHAR (char時)
+__read_pick_event() {
+  __PICK_EVENT=none; __PICK_CHAR=""
+  local key k2 k3 k4
+  if ! IFS= read -rsn1 -u "$__CMUX_MENU_FD" key; then
+    __PICK_EVENT=eof; return
   fi
-  if [ -f "$__ROOTS_FILE" ]; then
-    local name path
-    while IFS='|' read -r name path; do
-      case "$name" in ''|'#'*) continue ;; esac
-      [ -z "$path" ] && continue
-      case "$name" in
-        案件*)
-          [ "$r_mode" = "anken" ] || continue
-          name="${name#案件: }"; name="${name#案件:}"
-          ;;
-        *)
-          [ "$r_mode" = "dev" ] || continue
-          ;;
+  case "$key" in
+    $'\x1b')
+      if ! read -rsn1 -t 0.1 -u "$__CMUX_MENU_FD" k2; then
+        __PICK_EVENT=esc; return
+      fi
+      case "$k2" in
+        '['|'O') ;;
+        *) __PICK_EVENT=esc; return ;;
       esac
-      r_names+=("$name"); r_paths+=("$path")
-    done < "$__ROOTS_FILE"
-  fi
-  if [ ${#r_names[@]} -eq 0 ]; then
-    r_names=("(候補なし — python ~/.claude/scripts/update_launch_anken.py で生成)")
-    r_paths=(".")
-  fi
-  local r_title="開発  (edit ~/.mycmux/launch-roots.txt)"
-  [ "$r_mode" = "anken" ] && r_title="案件  (自動更新: update_launch_anken.py・週次月曜)"
-  local r_selected=0 r_count=${#r_names[@]}
-  __draw_root_menu() {
+      read -rsn1 -t 0.1 -u "$__CMUX_MENU_FD" k3 || { __PICK_EVENT=esc; return; }
+      case "$k3" in
+        A) __PICK_EVENT=up ;;
+        B) __PICK_EVENT=down ;;
+        C) __PICK_EVENT=enter ;;
+        D) __PICK_EVENT=esc ;;
+        H) __PICK_EVENT=home ;;
+        F) __PICK_EVENT=end ;;
+        5) read -rsn1 -t 0.1 -u "$__CMUX_MENU_FD" k4; __PICK_EVENT=pgup ;;
+        6) read -rsn1 -t 0.1 -u "$__CMUX_MENU_FD" k4; __PICK_EVENT=pgdn ;;
+      esac
+      ;;
+    '') __PICK_EVENT=enter ;;
+    $'\x7f'|$'\b') __PICK_EVENT=bs ;;
+    *) __PICK_EVENT=char; __PICK_CHAR="$key" ;;
+  esac
+}
+
+# 共通ピッカー。__PICK_LABELS[] / __PICK_PATHS[] を並べて上下キー + Enter で1件選ばせる。
+# 画面高さに合わせてページ送りするので、候補が何件あっても1画面は溢れない。
+# / を押すと絞り込みモードに入り、以降の文字入力でリアルタイムに絞られる (Esc で解除)。
+# 絞り込み中でなければ 1〜9 の数字でも即選択できる。
+# 引数: $1=タイトル $2=フッタの補足 (省略可)
+# 出力: __PICK_INDEX (__PICK_LABELS 上の 0-based 位置)。戻り値 1 = キャンセル
+__pick_list() {
+  local p_title="$1" p_note="${2:-}"
+  local p_total=${#__PICK_LABELS[@]}
+  [ "$p_total" -eq 0 ] && return 1
+  __open_menu_fd
+  local p_sel=0 p_top=0 p_query="" p_searching=0
+  local p_view=() p_cur
+  p_cur="$(__norm_path "$(pwd)")"
+
+  __pick_rebuild() {
+    local prev_idx=-1
+    [ ${#p_view[@]} -gt 0 ] && [ $p_sel -lt ${#p_view[@]} ] && prev_idx=${p_view[$p_sel]}
+    p_view=()
+    local idx hay
+    for idx in "${!__PICK_LABELS[@]}"; do
+      if [ -z "$p_query" ]; then
+        p_view+=("$idx")
+        continue
+      fi
+      hay="${__PICK_LABELS[$idx]} ${__PICK_PATHS[$idx]}"
+      if [[ "${hay,,}" == *"${p_query,,}"* ]]; then
+        p_view+=("$idx")
+      fi
+    done
+    # 絞り込み後もできるだけ同じ行を選んだままにする
+    local n
+    p_sel=0
+    if [ $prev_idx -ge 0 ]; then
+      for n in "${!p_view[@]}"; do
+        [ "${p_view[$n]}" = "$prev_idx" ] && { p_sel=$n; break; }
+      done
+    fi
+    p_top=0
+  }
+
+  __pick_draw() {
+    local vcount=${#p_view[@]}
+    local rows lines
+    lines=$(tput lines 2>/dev/null || echo 24)
+    rows=$((lines - 8)); [ $rows -lt 3 ] && rows=3
+    if [ $p_sel -lt $p_top ]; then p_top=$p_sel; fi
+    if [ $p_sel -ge $((p_top + rows)) ]; then p_top=$((p_sel - rows + 1)); fi
+    [ $p_top -lt 0 ] && p_top=0
     printf "\033[H\033[2J" >&$__CMUX_MENU_FD
     echo "" >&$__CMUX_MENU_FD
-    echo "  Launch directory — ${r_title}" >&$__CMUX_MENU_FD
-    echo "" >&$__CMUX_MENU_FD
-    local i disp
-    for i in "${!r_names[@]}"; do
-      local num=$((i + 1))
-      local mark="  "
-      [ $i -eq $r_selected ] && mark="> "
-      disp="${r_paths[$i]}"
-      case "$disp" in *事務関係/*) disp="…/${disp#*事務関係/}" ;; esac
-      echo "${mark}${num}. ${r_names[$i]}  (${disp})" >&$__CMUX_MENU_FD
+    echo "  ${p_title}" >&$__CMUX_MENU_FD
+    if [ $p_searching -eq 1 ]; then
+      echo "  絞り込み: ${p_query}_" >&$__CMUX_MENU_FD
+    else
+      echo "" >&$__CMUX_MENU_FD
+    fi
+    if [ $vcount -eq 0 ]; then
+      echo "  (該当なし)" >&$__CMUX_MENU_FD
+    fi
+    local n idx mark here
+    for (( n=p_top; n<p_top+rows && n<vcount; n++ )); do
+      idx=${p_view[$n]}
+      mark="   "
+      [ $n -eq $p_sel ] && mark=" > "
+      here=""
+      if [ -n "${__PICK_PATHS[$idx]}" ] && [ "$(__norm_path "${__PICK_PATHS[$idx]}")" = "$p_cur" ]; then
+        here="  ← 今ここ"
+      fi
+      echo "${mark}${__PICK_LABELS[$idx]}${here}" >&$__CMUX_MENU_FD
     done
     echo "" >&$__CMUX_MENU_FD
-    echo "  ^v: move   Enter/number: select   Esc/q: back" >&$__CMUX_MENU_FD
+    local pos="-"
+    [ $vcount -gt 0 ] && pos="$((p_sel + 1))/${vcount}"
+    if [ $p_searching -eq 1 ]; then
+      echo "  ${pos}   ^v 移動   Enter 決定   BS 一文字消す   Esc 絞り込み解除" >&$__CMUX_MENU_FD
+    else
+      echo "  ${pos}   ^v 移動   Enter/→ 決定   / 絞り込み   Esc/← 戻る${p_note:+   $p_note}" >&$__CMUX_MENU_FD
+    fi
+    if [ $vcount -gt 0 ] && [ -n "${__PICK_PATHS[${p_view[$p_sel]}]}" ]; then
+      echo "  → $(__short_path "${__PICK_PATHS[${p_view[$p_sel]}]}")" >&$__CMUX_MENU_FD
+    fi
   }
-  __draw_root_menu
+
+  __pick_rebuild
+  __pick_draw
   while true; do
-    __read_menu_event
-    case "$__MENU_EVENT" in
-      eof|quit|esc) return ;;
-      up) ((r_selected--)); [ $r_selected -lt 0 ] && r_selected=$((r_count - 1)) ;;
-      down) ((r_selected++)); [ $r_selected -ge $r_count ] && r_selected=0 ;;
-      enter) break ;;
-      digit)
-        if [ "$__MENU_DIGIT" != "0" ]; then
-          local n=$((__MENU_DIGIT - 1))
-          [ $n -lt $r_count ] && { r_selected=$n; break; }
+    __read_pick_event
+    case "$__PICK_EVENT" in
+      eof) return 1 ;;
+      esc)
+        if [ $p_searching -eq 1 ]; then
+          p_searching=0; p_query=""; __pick_rebuild
+        else
+          return 1
+        fi
+        ;;
+      up)
+        [ ${#p_view[@]} -eq 0 ] && { __pick_draw; continue; }
+        ((p_sel--)); [ $p_sel -lt 0 ] && p_sel=$(( ${#p_view[@]} - 1 ))
+        ;;
+      down)
+        [ ${#p_view[@]} -eq 0 ] && { __pick_draw; continue; }
+        ((p_sel++)); [ $p_sel -ge ${#p_view[@]} ] && p_sel=0
+        ;;
+      pgup) p_sel=$((p_sel - 10)); [ $p_sel -lt 0 ] && p_sel=0 ;;
+      pgdn)
+        p_sel=$((p_sel + 10))
+        [ $p_sel -ge ${#p_view[@]} ] && p_sel=$(( ${#p_view[@]} - 1 ))
+        [ $p_sel -lt 0 ] && p_sel=0
+        ;;
+      home) p_sel=0 ;;
+      end) p_sel=$(( ${#p_view[@]} - 1 )); [ $p_sel -lt 0 ] && p_sel=0 ;;
+      bs)
+        if [ $p_searching -eq 1 ] && [ -n "$p_query" ]; then
+          p_query="${p_query%?}"; __pick_rebuild
+        fi
+        ;;
+      enter)
+        [ ${#p_view[@]} -eq 0 ] && { __pick_draw; continue; }
+        __PICK_INDEX=${p_view[$p_sel]}
+        return 0
+        ;;
+      char)
+        if [ $p_searching -eq 1 ]; then
+          p_query="${p_query}${__PICK_CHAR}"; __pick_rebuild
+        else
+          case "$__PICK_CHAR" in
+            /) p_searching=1 ;;
+            q|Q) return 1 ;;
+            k|K)
+              [ ${#p_view[@]} -eq 0 ] && { __pick_draw; continue; }
+              ((p_sel--)); [ $p_sel -lt 0 ] && p_sel=$(( ${#p_view[@]} - 1 ))
+              ;;
+            j|J)
+              [ ${#p_view[@]} -eq 0 ] && { __pick_draw; continue; }
+              ((p_sel++)); [ $p_sel -ge ${#p_view[@]} ] && p_sel=0
+              ;;
+            [1-9])
+              local n=$((__PICK_CHAR - 1))
+              if [ $n -lt ${#p_view[@]} ]; then
+                __PICK_INDEX=${p_view[$n]}
+                return 0
+              fi
+              ;;
+          esac
         fi
         ;;
     esac
-    __draw_root_menu
+    __pick_draw
   done
-  cd "${r_paths[$r_selected]}" 2>/dev/null || true
+}
+
+# launch-roots.txt から1セクション分を __PICK_LABELS/__PICK_PATHS へ読み出す。
+__load_roots_section() {
+  local mode="$1" name path
+  __PICK_LABELS=(); __PICK_PATHS=()
+  [ -f "$__ROOTS_FILE" ] || return
+  while IFS='|' read -r name path; do
+    case "$name" in ''|'#'*) continue ;; esac
+    [ -z "$path" ] && continue
+    case "$name" in
+      案件*)
+        [ "$mode" = "anken" ] || continue
+        name="${name#案件: }"; name="${name#案件:}"
+        ;;
+      *)
+        [ "$mode" = "dev" ] || continue
+        ;;
+    esac
+    __PICK_LABELS+=("$name"); __PICK_PATHS+=("$path")
+  done < "$__ROOTS_FILE"
+}
+
+# 登録済み候補からの選択 (開発 / 案件 / 最近使った)。成功時 0 を返して cd 済み。
+__select_launch_root() {
+  local r_mode="${1:-dev}"
+  local r_title
+  case "$r_mode" in
+    anken)
+      __refresh_anken_roots_bg
+      __load_roots_section anken
+      r_title="案件  (自動更新: update_launch_anken.py)"
+      ;;
+    mru)
+      __PICK_LABELS=(); __PICK_PATHS=()
+      if [ -f "$__DIR_MRU_FILE" ]; then
+        local line
+        while IFS= read -r line; do
+          [ -z "$line" ] && continue
+          [ -d "$line" ] || continue
+          __PICK_LABELS+=("$(__short_path "$line")"); __PICK_PATHS+=("$line")
+        done < "$__DIR_MRU_FILE"
+      fi
+      r_title="最近使った"
+      ;;
+    *)
+      __load_roots_section dev
+      r_title="開発  (edit ~/.mycmux/launch-roots.txt)"
+      ;;
+  esac
+  if [ ${#__PICK_LABELS[@]} -eq 0 ]; then
+    __PICK_LABELS=("(候補なし)"); __PICK_PATHS=("")
+  fi
+  __pick_list "Change directory — ${r_title}" || return 1
+  local target="${__PICK_PATHS[$__PICK_INDEX]}"
+  [ -z "$target" ] && return 1
+  cd "$target" 2>/dev/null || return 1
+  __record_dir_mru "$target"
+  return 0
+}
+
+# 実フォルダを1階層ずつ辿る。候補ファイルに載っていない場所へも上下キーだけで行ける。
+__browse_launch_dirs() {
+  local cur
+  cur="$(pwd)"
+  while true; do
+    local entry
+    __PICK_LABELS=("✓ ここに決定") ; __PICK_PATHS=("$cur")
+    if [ "$(dirname "$cur")" != "$cur" ]; then
+      __PICK_LABELS+=("↑ 上のフォルダへ"); __PICK_PATHS+=("$(dirname "$cur")")
+    fi
+    while IFS= read -r entry; do
+      [ -z "$entry" ] && continue
+      __PICK_LABELS+=("${entry}/"); __PICK_PATHS+=("${cur%/}/$entry")
+    done < <(cd "$cur" 2>/dev/null && ls -1 2>/dev/null | while IFS= read -r e; do [ -d "$e" ] && echo "$e"; done)
+    __pick_list "フォルダを辿る — $(__short_path "$cur")" "Enter で1階層もぐる" || return 1
+    local target="${__PICK_PATHS[$__PICK_INDEX]}"
+    if [ "$__PICK_INDEX" -eq 0 ]; then
+      cd "$cur" 2>/dev/null || return 1
+      __record_dir_mru "$cur"
+      return 0
+    fi
+    [ -d "$target" ] && cur="$target"
+  done
+}
+
+# ディレクトリ選択のトップ画面。1画面を短く保ち、上下キー + Enter だけで
+# 「最近使った / 開発 / 案件 / 実フォルダを辿る / Home」のどこへでも入れるようにする。
+__launch_dir_menu() {
+  local direct="${1:-}"
+  if [ -n "$direct" ]; then
+    __select_launch_root "$direct"
+    return
+  fi
+  __open_menu_fd
+  while true; do
+    local mru_count=0
+    if [ -f "$__DIR_MRU_FILE" ]; then
+      mru_count=$(grep -c . "$__DIR_MRU_FILE" 2>/dev/null || echo 0)
+    fi
+    local dev_count anken_count
+    __load_roots_section dev;   dev_count=${#__PICK_LABELS[@]}
+    __load_roots_section anken; anken_count=${#__PICK_LABELS[@]}
+
+    local t_labels=() t_kinds=()
+    if [ "$mru_count" -gt 0 ]; then
+      t_labels+=("最近使った  (${mru_count})"); t_kinds+=("mru")
+    fi
+    t_labels+=("開発  (${dev_count})");   t_kinds+=("dev")
+    t_labels+=("案件  (${anken_count})"); t_kinds+=("anken")
+    t_labels+=("フォルダを辿る  (ここから下へ)"); t_kinds+=("browse")
+    t_labels+=("Home"); t_kinds+=("home")
+
+    __PICK_LABELS=("${t_labels[@]}")
+    __PICK_PATHS=()
+    local k
+    for k in "${t_kinds[@]}"; do
+      case "$k" in
+        home) __PICK_PATHS+=("$HOME") ;;
+        *) __PICK_PATHS+=("") ;;
+      esac
+    done
+
+    __pick_list "Change directory        now: $(__short_path "$(pwd)")" || return
+    case "${t_kinds[$__PICK_INDEX]}" in
+      mru)    __select_launch_root mru && return ;;
+      dev)    __select_launch_root dev && return ;;
+      anken)  __select_launch_root anken && return ;;
+      browse) __browse_launch_dirs && return ;;
+      home)   cd "$HOME" 2>/dev/null && __record_dir_mru "$HOME"; return ;;
+    esac
+  done
 }
 
 if [ -z "$cmd" ]; then
@@ -771,38 +869,38 @@ if [ -z "$cmd" ]; then
     "Claude Code"
     "Codex"
     "claude-codex"
+    "Codex (Fugu Ultra)"
+    "claude-codex (Fugu)"
+    "Antigravity (agy)"
     "Claude Code (dangerous)"
     "Codex (dangerous)"
     "claude-codex (dangerous)"
     "Claude Code (resume)"
     "Codex (resume)"
     "claude-codex (resume)"
-    "Resume (pick session)"
-    "Codex (Fugu Ultra)"
-    "claude-codex (Fugu)"
-    "Antigravity (agy)"
     "Custom..."
     "Change directory (開発)..."
     "Change directory (案件)..."
+    "Change directory (最近・フォルダを辿る)..."
   )
 
   commands=(
     "claude --allow-dangerously-skip-permissions --permission-mode auto"
     "codex --no-alt-screen"
     "claude-codex"
+    "codex --no-alt-screen --profile fugu-ultra"
+    "claude-codex --backend fugu"
+    "agy"
     "claude --dangerously-skip-permissions --permission-mode bypassPermissions"
     "codex --no-alt-screen --dangerously-bypass-approvals-and-sandbox"
     "claude-codex --dangerously-skip-permissions --permission-mode bypassPermissions"
     "claude --allow-dangerously-skip-permissions --permission-mode auto --resume"
     "codex resume --no-alt-screen"
     "claude-codex --resume"
-    "__resume_pick__"
-    "codex --no-alt-screen --profile fugu-ultra"
-    "claude-codex --backend fugu"
-    "agy"
     "__custom__"
-    "__dir__"
+    "__dir_dev__"
     "__dir_anken__"
+    "__dir__"
   )
 
   selected=0
@@ -827,16 +925,22 @@ if [ -z "$cmd" ]; then
     echo "  ^v: move   Enter/number: select   d: 開発dir   a: 案件dir   /: custom   Esc/q: shell" >&$__CMUX_MENU_FD
   }
 
+  # 選択中の項目がメニュー内で完結するものなら処理して 0 (メニュー継続) か 2 (起動済み) を返す。
+  # 1 を返したときだけ呼び出し側が break して cmd を eval する。
   __try_selected_menu_command() {
-    if [ "${commands[$selected]}" = "__resume_pick__" ]; then
-      tput cnorm >&$__CMUX_MENU_FD 2>/dev/null
-      if __pick_resume_session; then
-        return 2
-      fi
-      tput civis >&$__CMUX_MENU_FD 2>/dev/null
-      draw_menu
-      return 0
-    fi
+    case "${commands[$selected]}" in
+      __dir_dev__|__dir_anken__|__dir__)
+        # ディレクトリを変えたら選択を先頭 (Claude Code) に戻す
+        case "${commands[$selected]}" in
+          __dir_dev__)   __launch_dir_menu dev ;;
+          __dir_anken__) __launch_dir_menu anken ;;
+          *)             __launch_dir_menu ;;
+        esac
+        selected=0
+        draw_menu
+        return 0
+        ;;
+    esac
     return 1
   }
 
@@ -852,28 +956,18 @@ if [ -z "$cmd" ]; then
       up) ((selected--)); [ $selected -lt 0 ] && selected=$((count - 1)) ;;
       down) ((selected++)); [ $selected -ge $count ] && selected=0 ;;
       enter)
-        if [ $selected -eq $((count - 1)) ]; then
-          # 最下段 "Change directory (案件)..." — a キーと同じ動作。戻ったら先頭 (Claude Code) に選択を戻す
-          __select_launch_root anken
-          selected=0
-        elif [ $selected -eq $((count - 2)) ]; then
-          # "Change directory (開発)..." — d キーと同じ動作
-          __select_launch_root dev
-          selected=0
-        else
-          __try_selected_menu_command
-          __try_status=$?
-          if [ $__try_status -eq 0 ]; then
-            continue
-          elif [ $__try_status -eq 2 ]; then
-            return 0 2>/dev/null || exit 0
-          fi
-          break
+        __try_selected_menu_command
+        __try_status=$?
+        if [ $__try_status -eq 0 ]; then
+          continue
+        elif [ $__try_status -eq 2 ]; then
+          return 0 2>/dev/null || exit 0
         fi
+        break
         ;;
-      slash) selected=13; break ;;
-      dirkey) __select_launch_root dev ;;
-      ankenkey) __select_launch_root anken ;;
+      slash) selected=12; break ;;
+      dirkey) __launch_dir_menu dev ;;
+      ankenkey) __launch_dir_menu anken ;;
       digit)
         case "$__MENU_DIGIT" in
           1)
@@ -884,8 +978,8 @@ if [ -z "$cmd" ]; then
                 2) selected=11 ;;
                 3) selected=12 ;;
                 4) selected=13 ;;
-                5) __select_launch_root dev; selected=0; draw_menu; continue ;;
-                6) __select_launch_root anken; selected=0; draw_menu; continue ;;
+                5) selected=14 ;;
+                6) selected=15 ;;
                 *) selected=0 ;;
               esac
             else
@@ -932,7 +1026,7 @@ if [ -z "$cmd" ]; then
   printf "\033[H\033[2J" >&$__CMUX_MENU_FD
   cmd="${commands[$selected]}"
   # "__dir__" 系はメニュー内で処理済みのはずだが、万一漏れても eval しない
-  case "$cmd" in __dir__|__dir_anken__|__resume_pick__) cmd="" ;; esac
+  case "$cmd" in __dir__|__dir_dev__|__dir_anken__) cmd="" ;; esac
 fi
 
 if [ "$cmd" = "__custom__" ]; then

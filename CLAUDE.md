@@ -19,20 +19,25 @@ Tauri v2 (Rust) + React 19 + xterm.js のターミナルワークスペースア
 ```
 npx tsc --noEmit
 npx vitest run
-cd src-tauri && cargo test --release
-python -m pytest tests/   # sync-command allowlist 契約テスト含む
+python scripts/run_windows_tests.py   # Rust テスト (素の cargo test は使わない・下記)
+python -m pytest tests/               # sync-command allowlist 契約テスト含む
 ```
 
-- **`STATUS_ENTRYPOINT_NOT_FOUND (0xc0000139)` は再発する。直し方は manifest 埋め込み (2026-07-31 更新)**:
-  `cargo test --release` の lib テストハーネス (`mycmux_lib-*.exe`) が起動前に落ちる現象。7/30 に発生し
-  CI release.yml の test ジョブも落ちた (v0.21.1 は tag のみ・GH Release 無し・deploy はローカル直配)。
-  OS 再起動で一度消えたが、**`npm run tauri build` 後の新しいリンク結果で再発した** (7/31 実測)。
-  → 一過性のローダ状態ではなく**リンクされた test exe 側の問題**。原因は Common Controls v6 manifest 欠落
-  (`TaskDialogIndirect` を import するが v5.82 に該当 entrypoint が無い)。
-  **復旧手順 (数秒・OS 再起動は不要)**: Common Controls v6 依存だけを書いた manifest を用意し
-  `"C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\mt.exe" -manifest <manifest> -outputresource:"<test exe>;#1"`
-  を**生成された test exe にだけ**適用してから `cargo test --release` を再実行する (244 passed を確認済み)。
-  製品 exe・installed exe には適用しない。`npm run tauri build` で再リンクされるたびに再適用が要る。
+- **Rust テストは `cargo test --release` を直接叩かない。`scripts/run_windows_tests.py` を使う (2026-08-05 恒久化)**:
+  素の `cargo test --release` は lib テストハーネス (`mycmux_lib-*.exe`) が起動する前に
+  `STATUS_ENTRYPOINT_NOT_FOUND (0xc0000139)` で落ちる。原因は test harness に Common Controls v6
+  manifest が無いこと (依存クレートが `TaskDialogIndirect` を import するが v5.82 に該当 entrypoint が無い)。
+  製品 exe は tauri-build が manifest を埋めるので無関係。
+  スクリプトは `--no-run` でビルド → `src-tauri/tests.manifest` を mt.exe で埋め込み → **cargo を介さず
+  直接実行**する (`profile.test` で絞るので `examples/oauth_probe` のような対話バイナリは走らせない)。
+  CI の release.yml も同じスクリプトを呼ぶ。
+  - **mt.exe を手で当てて `cargo test` を再実行する旧手順は無効**。cargo が再リンクして manifest を
+    剥がすため、2026-08-05 に実測で 2 回とも失敗した
+  - リンカに `/MANIFEST:EMBED` を渡す案 (build.rs の `rustc-link-arg`) も不可。`rustc-link-arg-tests` は
+    stable Cargo が受け付けず、全ターゲットに渡すと **LNK1123 (COFF 変換失敗)** を踏むうえ製品 exe の
+    リンクにも影響する
+  - 履歴: 7/30 に初発 (v0.21.1 は tag のみで GH Release 無し)、7/31 に再発、8/5 の v0.21.15 の CI でも
+    再発してリリースが落ちた (v0.21.15 は欠番・v0.21.16 で再出荷)
 
 ## ビルド・デプロイの絶対ルール
 

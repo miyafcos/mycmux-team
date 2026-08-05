@@ -48,9 +48,14 @@ jobs:
         with:
           workspaces: src-tauri
 
+      # 素の `cargo test --release` は Windows で STATUS_ENTRYPOINT_NOT_FOUND (0xc0000139)
+      # を踏む: test harness exe には tauri-build の manifest が付かず、依存クレートが
+      # import する comctl32 の TaskDialogIndirect が Common Controls v5.82 に無いため、
+      # テストが 1 行も走らないまま落ちる。スクリプトがビルドと実行を分けて manifest を
+      # 埋めてから直接実行する (ローカル検証も同じコマンドを使う)。
       - name: Cargo test (release)
-        working-directory: src-tauri
-        run: cargo test --release
+        shell: bash
+        run: python scripts/run_windows_tests.py
 
       # Self-hosted runner uses the machine's Python (setup-python needs
       # admin registry access there); hosted runners install 3.10 as before.
