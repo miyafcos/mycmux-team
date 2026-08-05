@@ -47,6 +47,7 @@ type ArtifactLinkPart = {
   lineIndex?: number;
   nextLineIndex?: number;
   sourceOffset?: number;
+  hardBoundary?: boolean;
 };
 
 export type LocalFilePathLinkMatch = {
@@ -398,9 +399,19 @@ function activationUriForResolvedLocalPath(
 
 type PreparedPathCandidate = {
   candidate: LocalFilePathLinkMatch;
+  sourceCandidate: LocalFilePathLinkMatch;
   lookupText: string;
   lookupBase?: string;
   displayBase: string;
+  virtualSpaceOffsets: number[];
+  resolutionPriority: number;
+};
+
+type PathCandidateVariant = {
+  candidate: LocalFilePathLinkMatch;
+  sourceCandidate: LocalFilePathLinkMatch;
+  virtualSpaceOffsets: number[];
+  resolutionPriority: number;
 };
 
 function isAbsoluteLocalPath(text: string): boolean {
@@ -413,18 +424,19 @@ function withTrailingPathSeparator(base: string): string {
 }
 
 function preparePathCandidate(
-  candidate: LocalFilePathLinkMatch,
+  variant: PathCandidateVariant,
   cwd: string | undefined,
   home: string | undefined,
 ): PreparedPathCandidate | null {
+  const { candidate } = variant;
   if (isAbsoluteLocalPath(candidate.text)) {
-    return { candidate, lookupText: candidate.text, displayBase: "" };
+    return { ...variant, lookupText: candidate.text, displayBase: "" };
   }
   if (/^~[\\/]/.test(candidate.text)) {
     if (!home) return null;
     const lookupBase = withTrailingPathSeparator(home);
     return {
-      candidate,
+      ...variant,
       lookupText: `${lookupBase}${candidate.text.slice(2)}`,
       lookupBase,
       displayBase: candidate.text.slice(0, 2),
@@ -433,31 +445,108 @@ function preparePathCandidate(
   if (!cwd) return null;
   const lookupBase = withTrailingPathSeparator(cwd);
   return {
-    candidate,
+    ...variant,
     lookupText: `${lookupBase}${candidate.text}`,
     lookupBase,
     displayBase: "",
   };
 }
 
+function insertVirtualSpaces(
+  candidate: LocalFilePathLinkMatch,
+  boundaryOffsets: number[],
+): PathCandidateVariant {
+  let text = "";
+  let cursor = 0;
+  const virtualSpaceOffsets: number[] = [];
+  for (const boundaryOffset of boundaryOffsets) {
+    text += candidate.text.slice(cursor, boundaryOffset);
+    virtualSpaceOffsets.push(text.length);
+    text += " ";
+    cursor = boundaryOffset;
+  }
+  text += candidate.text.slice(cursor);
+  return {
+    candidate: {
+      text,
+      index: candidate.index,
+      endIndex: candidate.index + text.length,
+    },
+    sourceCandidate: candidate,
+    virtualSpaceOffsets,
+    resolutionPriority: virtualSpaceOffsets.length,
+  };
+}
+
+function expandPathCandidateVariants(
+  candidates: LocalFilePathLinkMatch[],
+  hardBoundaryOffsets: number[],
+): PathCandidateVariant[] {
+  const direct = candidates.map((candidate) => ({
+    candidate,
+    sourceCandidate: candidate,
+    virtualSpaceOffsets: [],
+    resolutionPriority: 0,
+  }));
+  const single: PathCandidateVariant[] = [];
+  const multiple: PathCandidateVariant[] = [];
+  for (const candidate of candidates) {
+    const localBoundaries = hardBoundaryOffsets
+      .filter((offset) => candidate.index < offset && offset < candidate.endIndex)
+      .map((offset) => offset - candidate.index);
+    const combinations = 1 << localBoundaries.length;
+    for (let mask = 1; mask < combinations; mask++) {
+      const selected = localBoundaries.filter((_, index) => (mask & (1 << index)) !== 0);
+      const variant = insertVirtualSpaces(candidate, selected);
+      (selected.length === 1 ? single : multiple).push(variant);
+    }
+  }
+  multiple.sort((left, right) =>
+    left.resolutionPriority - right.resolutionPriority);
+  return [...direct, ...single, ...multiple];
+}
+
+function limitPreparedPathCandidates(
+  prepared: PreparedPathCandidate[],
+  maxLookups: number,
+): PreparedPathCandidate[] {
+  const selected: PreparedPathCandidate[] = [];
+  const lookupTexts = new Set<string>();
+  for (const candidate of prepared) {
+    if (!lookupTexts.has(candidate.lookupText)) {
+      if (lookupTexts.size >= maxLookups) continue;
+      lookupTexts.add(candidate.lookupText);
+    }
+    selected.push(candidate);
+  }
+  return selected;
+}
+
 function remapResolvedPathLink(
   prepared: PreparedPathCandidate,
   resolved: ResolvedLocalPathLink | null,
 ): { display: ResolvedLocalPathLink | null; activationPrefix?: string } {
-  if (!resolved || !prepared.lookupBase) {
-    return { display: resolved, activationPrefix: resolved?.existingPrefix };
+  if (!resolved) return { display: null };
+  let existingPrefix = resolved.existingPrefix;
+  if (prepared.lookupBase) {
+    const prefixMatches = existingPrefix.toLowerCase().startsWith(
+      prepared.lookupBase.toLowerCase(),
+    );
+    if (!prefixMatches) return { display: null };
+    const suffix = existingPrefix.slice(prepared.lookupBase.length);
+    existingPrefix = `${prepared.displayBase}${suffix}`;
   }
-  const prefixMatches = resolved.existingPrefix.toLowerCase().startsWith(
-    prepared.lookupBase.toLowerCase(),
-  );
-  if (!prefixMatches) return { display: null };
-  const suffix = resolved.existingPrefix.slice(prepared.lookupBase.length);
-  const existingPrefix = `${prepared.displayBase}${suffix}`;
   if (!existingPrefix || !prepared.candidate.text.startsWith(existingPrefix)) {
     return { display: null };
   }
+  const consumedVirtualSpaces = prepared.virtualSpaceOffsets
+    .filter((offset) => offset < existingPrefix.length)
+    .length;
+  const sourceLength = existingPrefix.length - consumedVirtualSpaces;
+  const sourcePrefix = prepared.sourceCandidate.text.slice(0, sourceLength);
+  if (!sourcePrefix) return { display: null };
   return {
-    display: { existingPrefix, isDir: resolved.isDir },
+    display: { existingPrefix: sourcePrefix, isDir: resolved.isDir },
     activationPrefix: resolved.existingPrefix,
   };
 }
@@ -466,8 +555,9 @@ export function mergeResolvedPathLinkMatches(
   candidates: LocalFilePathLinkMatch[],
   resolvedLinks: Array<ResolvedLocalPathLink | null>,
   activationPrefixes: Array<string | undefined> = [],
+  resolutionPriorities: number[] = [],
 ): ResolvedLocalPathLinkMatch[] {
-  const matches: ResolvedLocalPathLinkMatch[] = [];
+  const matches: Array<{ match: ResolvedLocalPathLinkMatch; priority: number }> = [];
   for (let index = 0; index < candidates.length; index++) {
     const candidate = candidates[index];
     const resolved = resolvedLinks[index];
@@ -479,19 +569,25 @@ export function mergeResolvedPathLinkMatches(
       continue;
     }
     matches.push({
-      text: resolved.existingPrefix,
-      index: candidate.index,
-      endIndex: candidate.index + resolved.existingPrefix.length,
-      activationUri: activationUriForResolvedLocalPath(
-        activationPrefixes[index] ?? resolved.existingPrefix,
-        resolved,
-      ),
+      match: {
+        text: resolved.existingPrefix,
+        index: candidate.index,
+        endIndex: candidate.index + resolved.existingPrefix.length,
+        activationUri: activationUriForResolvedLocalPath(
+          activationPrefixes[index] ?? resolved.existingPrefix,
+          resolved,
+        ),
+      },
+      priority: resolutionPriorities[index] ?? 0,
     });
   }
 
-  matches.sort((left, right) => right.text.length - left.text.length || left.index - right.index);
+  matches.sort((left, right) =>
+    right.match.text.length - left.match.text.length
+    || left.priority - right.priority
+    || left.match.index - right.match.index);
   const merged: ResolvedLocalPathLinkMatch[] = [];
-  for (const match of matches) {
+  for (const { match } of matches) {
     if (merged.some((existing) => rangesOverlap(match, existing))) continue;
     merged.push(match);
   }
@@ -630,7 +726,11 @@ export function registerArtifactLinkProvider(
           sourceOffset = hardContinuation.sourceOffset;
           hardContinuationLines++;
         }
-        parts.push({ text: joiner, nextLineIndex: lineIndex });
+        parts.push({
+          text: joiner,
+          nextLineIndex: lineIndex,
+          hardBoundary: isHardArtifactContinuation,
+        });
         if (joiner === "\n") {
           segmentText = "";
           segmentJoinBlocked = false;
@@ -655,14 +755,23 @@ export function registerArtifactLinkProvider(
     }
 
     const text = parts.map((part) => part.text).join("");
+    let partOffset = 0;
+    const hardBoundaryOffsets: number[] = [];
+    for (const part of parts) {
+      if (part.hardBoundary) hardBoundaryOffsets.push(partOffset);
+      partOffset += part.text.length;
+    }
     const filePathMatches = findLocalFilePathLinks(text);
     const candidates = [...filePathMatches, ...findBareLocalPathCandidates(text, [])];
     const needsHome = !homeDirSettled
       && candidates.some((candidate) => /^~[\\/]/.test(candidate.text));
     const cwd = getCwd?.()?.trim() || undefined;
-    const prepared = candidates
-      .map((candidate) => preparePathCandidate(candidate, cwd, memoizedHomeDir))
-      .filter((candidate): candidate is PreparedPathCandidate => candidate !== null);
+    const prepared = limitPreparedPathCandidates(
+      expandPathCandidateVariants(candidates, [...new Set(hardBoundaryOffsets)])
+        .map((variant) => preparePathCandidate(variant, cwd, memoizedHomeDir))
+        .filter((candidate): candidate is PreparedPathCandidate => candidate !== null),
+      LOCAL_PATH_PREWARM_MAX_CANDIDATES,
+    );
     return { parts, filePathMatches, prepared, needsHome };
   };
 
@@ -682,9 +791,10 @@ export function registerArtifactLinkProvider(
     const remapped = data.prepared.map((candidate, index) =>
       remapResolvedPathLink(candidate, resolved[index]));
     const links = mergeResolvedPathLinkMatches(
-      data.prepared.map((candidate) => candidate.candidate),
+      data.prepared.map((candidate) => candidate.sourceCandidate),
       remapped.map((result) => result.display),
       remapped.map((result) => result.activationPrefix),
+      data.prepared.map((candidate) => candidate.resolutionPriority),
     )
       .map((match) => createLocalPathLink(
         term,

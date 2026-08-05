@@ -63,6 +63,10 @@ python -m pytest tests/               # sync-command allowlist 契約テスト�
     `printf '%s' "$(tr -d '\r\n' < ~/.tauri/mycmux-updater.key)" | gh secret set TAURI_KEY_PERSONAL --repo miyafcos/mycmux`
   - **リリース後の feed 検証は版数だけでは不十分**。latest.json の signature をデコードして key-id が
     tauri.conf.json の pubkey と一致することまで確認する (一致しないと更新ボタンが検証エラーで失敗する)
+- **self-hosted runner の起動は `scripts/start-release-runner.ps1` を使う** (手動の env 剥がしをやめる)。
+  BASH_FUNC_*/MYCMUX_*/CLAUDE* に加えて **FUGU_API_KEY 等の秘密系ユーザー env も剥がす** —
+  剥がさないと runner が継承し、ビルド中の環境ダンプ経由で **CI ログに平文で残る**
+  (run 30975163089 で実害。ログに出た鍵はローテーション推奨)。bash の Git 解決チェックも内蔵
 - タグ push 後の updater feed: CI の mirror ステップは secret 未設定で**成功表示のままスキップされる**。`scripts/mirror-personal-updater-feed.ps1 -SourceTag vX.Y.Z` をローカル実行し latest.json の version を確認
 - **リリース後は公開ミラーも更新**: `git commit-tree "master^{tree}" -p <team masterのHEAD> -m "sync: ..."` で履歴を持ち込まない sync コミットを作り `git push public <sha>:refs/heads/master`。ブランチをそのまま public へ push するのは禁止 (private 履歴が漏れる)
 

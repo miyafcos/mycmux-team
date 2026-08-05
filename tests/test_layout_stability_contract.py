@@ -375,7 +375,6 @@ def test_selection_copy_listener_survives_cached_terminal_remounts() -> None:
         "const pendingTail = terminalMouseModeOutputTailBySession.get(sessionId) ?? \"\";",
         "terminalMouseModeOutputTailBySession.delete(sessionId);",
         "const displayText = stripTerminalMouseModeControlSequencesForSession(sessionId, decodedText);",
-        "updateCodexOutputDetection(displayText);",
         "const output = displayText;",
         "stripTerminalMouseModeControlSequences(replayText)",
         "stripTerminalMouseModeControlSequences(displayReplay)",

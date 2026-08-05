@@ -116,7 +116,7 @@ export const WORKING_INDICATOR_PATTERNS: readonly RegExp[] = [
 // TUI input echo counts as output, so typing may keep the indicator active briefly.
 const ACTIVITY_WINDOW_MS = 7000;
 
-// Notification sound via Web Audio API 窶・short gentle chime
+// Notification sound via Web Audio API — short gentle chime
 let _audioCtx: AudioContext | null = null;
 function playNotificationSound() {
   try {
@@ -133,7 +133,7 @@ function playNotificationSound() {
     osc.start(ctx.currentTime);
     osc.stop(ctx.currentTime + 0.3);
   } catch {
-    // Audio not available 窶・silent fallback
+    // Audio not available — silent fallback
   }
 }
 
@@ -222,7 +222,7 @@ function withTerminalOpacity(theme: ITheme, opacity: number, mediaActive: boolea
 
 // xterm's minimumContrastRatio only works against an opaque, known background.
 // With a media background the terminal background is transparent (the wallpaper
-// is composited in CSS), so it must be disabled 窶・otherwise xterm corrects the
+// is composited in CSS), so it must be disabled — otherwise xterm corrects the
 // foreground against a phantom black background and washes out dark text.
 const TERMINAL_MIN_CONTRAST = 7;
 
@@ -379,7 +379,7 @@ function applyTerminalRenderer(
 }
 
 // Flush per-session write stats once per second. Idle sessions are skipped.
-// Debug builds only 窶・`import.meta.env.DEV` is statically false in production,
+// Debug builds only — `import.meta.env.DEV` is statically false in production,
 // so Vite drops this interval (and its per-second console spam) entirely.
 if (typeof window !== "undefined" && import.meta.env.DEV) {
   window.setInterval(() => {
@@ -396,18 +396,6 @@ if (typeof window !== "undefined" && import.meta.env.DEV) {
   }, 1000);
 }
 const DEFAULT_TERMINAL_LINE_HEIGHT = 1.35;
-
-function resolveTerminalFontFamily(base: string, isCodex: boolean, explicitFontFamily: boolean): string {
-  void isCodex;
-  void explicitFontFamily;
-  return base;
-}
-
-function resolveTerminalFontSize(base: number, isCodex: boolean, explicitFontSize: boolean): number {
-  void isCodex;
-  void explicitFontSize;
-  return base;
-}
 
 function resolveTerminalLineHeight(): number {
   return useThemeStore.getState().lineHeight ?? DEFAULT_TERMINAL_LINE_HEIGHT;
@@ -527,26 +515,6 @@ function getCommandName(command: string): string {
     .toLowerCase() ?? "";
 }
 
-function startsAsCodex(
-  command: string,
-  args: string[],
-  agentId?: string,
-  agentKind?: string,
-  launchEnv?: Record<string, string>,
-): boolean {
-  if (agentId === "codex" || agentKind === "codex" || agentKind === "claude-codex") return true;
-  if (
-    launchEnv?.MYCMUX_AGENT_KIND === "codex"
-    || launchEnv?.MYCMUX_AGENT_KIND === "claude-codex"
-    || launchEnv?.MYCMUX_RESUME === "codex"
-    || launchEnv?.MYCMUX_RESUME === "claude-codex"
-  ) {
-    return true;
-  }
-  if (getCommandName(command) === "codex") return true;
-  return args.some((arg) => getCommandName(arg) === "codex");
-}
-
 function startsAsAgentTui(
   command: string,
   args: string[],
@@ -572,25 +540,6 @@ function startsAsAgentTui(
     const argName = getCommandName(arg);
     return argName === "claude" || argName === "codex";
   });
-}
-
-function looksLikeCodexModelStatusLine(line: string): boolean {
-  return /\bgpt-5(?:\.\d+)?\b.*[\u00b7\u2022]\s*(?:~|[A-Za-z]:\\|\/)/i.test(line);
-}
-
-function looksLikeCodexPromptLine(line: string): boolean {
-  return (
-    /^\s*[窶ｺ笶ｯ>ﾂｻ笆ｶ笆ｸ]\s+/.test(line)
-    && !/\b(?:working|thinking|running|executing|searching|analyzing)\b/i.test(line)
-  ) || looksLikeCodexModelStatusLine(line);
-}
-
-function looksLikeCodexOutput(text: string): boolean {
-  return (
-    /\bOpenAI\s+Codex\b/i.test(text)
-    || /\bCodex session starting\b/i.test(text)
-    || text.split(/\r?\n/).some((line) => looksLikeCodexPromptLine(line.trim()))
-  );
 }
 
 function ensureConfigLoaded(): Promise<void> {
@@ -753,9 +702,7 @@ export default memo(function XTermWrapper({
     let approvalAbsentStreak = 0;
     let isImeComposing = false;
     let resizePendingDuringComposition = false;
-    let formatsCodexOutput = startsAsCodex(command, args, agentId, agentKind, launchEnv);
     const forceWheelMouseReport = startsAsAgentTui(command, args, agentId, agentKind, launchEnv);
-    let codexDetectionBuffer = "";
     let outputDecoder = getTerminalOutputDecoder(sessionId);
     let replayOutputDecoder = new TextDecoder();
     let replayMouseModeFilter = createTerminalMouseModeControlFilter();
@@ -838,16 +785,6 @@ export default memo(function XTermWrapper({
         outputActivityTimer = null;
         setOutputActive(false);
       }, ACTIVITY_WINDOW_MS);
-    };
-
-    const updateCodexOutputDetection = (text: string): boolean => {
-      if (!formatsCodexOutput && text.length > 0) {
-        codexDetectionBuffer = `${codexDetectionBuffer}${text}`.slice(-4096);
-      }
-      if (!formatsCodexOutput && looksLikeCodexOutput(codexDetectionBuffer || text)) {
-        formatsCodexOutput = true;
-      }
-      return formatsCodexOutput;
     };
 
     const settleStartupSession = (): void => {
@@ -1091,8 +1028,8 @@ export default memo(function XTermWrapper({
           // window-level keydown dispatcher, or they fire twice. For toggle
           // actions (pane.zoom.toggle) the second fire cancels the first,
           // leaving the shortcut dead in terminal panes. Returning false only
-          // tells xterm to skip PTY forwarding 窶・it does NOT stop DOM
-          // propagation 窶・so we stop it explicitly here. Other matched actions
+          // tells xterm to skip PTY forwarding — it does NOT stop DOM
+          // propagation — so we stop it explicitly here. Other matched actions
           // fall through to `return false` below and intentionally keep
           // bubbling to AppShell, which is their sole handler.
           if (actions.includes("terminal.search")) {
@@ -1712,7 +1649,6 @@ export default memo(function XTermWrapper({
             // PTY output is a stateful byte stream. Never rewrite chunks for
             // presentation: cursor movement and erase sequences were emitted
             // against the original character widths.
-            updateCodexOutputDetection(displayText);
             const output = displayText;
             if (import.meta.env.DEV) {
               diagStats.writes += 1;
@@ -2099,8 +2035,6 @@ export default memo(function XTermWrapper({
       removeWheelScrollGuard = attachTerminalWheelScroll(wheelScrollContainer, cached.term, sessionId, forceWheelMouseReport);
       removeWheelFocusGuard = registerTerminalWheelFocusGuard(cached.term, sessionId);
       removeFocusSync = registerTerminalFocusSync(cached.term, sessionId);
-      const cachedBufferText = getTerminalBufferLines(sessionId, 80).join("\n");
-      updateCodexOutputDetection(cachedBufferText);
       attachTerminalKeyHandler(cached.term);
       registerInputListeners(cached.term);
       registerScanListener(cached.term);
@@ -2138,8 +2072,8 @@ export default memo(function XTermWrapper({
       const initTheme = withTerminalOpacity(theme ?? storeTheme.terminal, terminalOpacity, mediaBackgroundActive);
       const baseFontSize = fontSize ?? storeFontSize ?? cfg?.fontSize ?? 14;
       const baseFontFamily = fontFamily ?? storeFontFamily ?? cfg?.fontFamily ?? DEFAULT_TERMINAL_FONT_FAMILY;
-      const initFontSize = resolveTerminalFontSize(baseFontSize, formatsCodexOutput, fontSize !== undefined);
-      const initFontFamily = resolveTerminalFontFamily(baseFontFamily, formatsCodexOutput, fontFamily !== undefined);
+      const initFontSize = baseFontSize;
+      const initFontFamily = baseFontFamily;
 
       const windowsBuildNumber = cfg?.windowsBuildNumber ?? undefined;
 
@@ -2197,7 +2131,6 @@ export default memo(function XTermWrapper({
       applyTerminalRenderer(sessionId, term, resolveEffectiveTerminalRendererFromStores());
       if (initialReplay && initialReplay.length > 0) {
         const replayText = initialReplay.join("\r\n");
-        updateCodexOutputDetection(replayText);
         const displayReplay = replayText;
         const replayBytes = new Blob([displayReplay]).size;
         diagStats.replays += 1;
@@ -2284,8 +2217,8 @@ export default memo(function XTermWrapper({
       if (!cfg && !fontSize && !fontFamily) {
         ensureConfigLoaded().then(() => {
           if (disposed || termDisposed || !term || !cachedConfig) return;
-          term.options.fontSize = resolveTerminalFontSize(fontSize ?? storeFontSize ?? cachedConfig.fontSize, formatsCodexOutput, fontSize !== undefined);
-          term.options.fontFamily = resolveTerminalFontFamily(fontFamily ?? storeFontFamily ?? cachedConfig.fontFamily, formatsCodexOutput, fontFamily !== undefined);
+          term.options.fontSize = fontSize ?? storeFontSize ?? cachedConfig.fontSize;
+          term.options.fontFamily = fontFamily ?? storeFontFamily ?? cachedConfig.fontFamily;
           term.options.lineHeight = resolveTerminalLineHeight();
           if (fitAddon) {
             fitAndSyncResize(term, fitAddon, true);

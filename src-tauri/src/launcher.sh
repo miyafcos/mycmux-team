@@ -503,26 +503,37 @@ __record_dir_mru() {
 }
 
 # 比較用の正規化 (/c/Users/... と C:/Users/... を同一視する)。
-__norm_path() {
+# 候補件数ぶん呼ぶので、結果は変数で返す版を本体にする ($() のサブシェルを避ける)。
+__norm_path_into() {
   local p="${1//\\//}"
   p="${p%/}"
   if [[ "$p" =~ ^/([a-zA-Z])/(.*)$ ]]; then
     p="${BASH_REMATCH[1]}:/${BASH_REMATCH[2]}"
   fi
-  echo "${p,,}"
+  __NORM_RESULT="${p,,}"
+}
+
+__norm_path() {
+  __norm_path_into "$1"
+  echo "$__NORM_RESULT"
 }
 
 # 表示用の短縮 (案件は 事務関係/ 以降、ホーム配下は ~ 起点)。
-__short_path() {
+__short_path_into() {
   local p="${1//\\//}"
   case "$p" in
-    *事務関係/*) echo "…/${p#*事務関係/}"; return ;;
+    *事務関係/*) __SHORT_RESULT="…/${p#*事務関係/}"; return ;;
   esac
   case "$p" in
-    "$HOME") echo "~"; return ;;
-    "$HOME"/*) echo "~${p#$HOME}"; return ;;
+    "$HOME") __SHORT_RESULT="~"; return ;;
+    "$HOME"/*) __SHORT_RESULT="~${p#$HOME}"; return ;;
   esac
-  echo "$p"
+  __SHORT_RESULT="$p"
+}
+
+__short_path() {
+  __short_path_into "$1"
+  echo "$__SHORT_RESULT"
 }
 
 # 案件メニューを開いたとき、最終更新が3時間より古ければ裏で再生成を蹴る (走査2〜3分・
@@ -593,6 +604,26 @@ __pick_list() {
   local p_view=() p_cur
   p_cur="$(__norm_path "$(pwd)")"
 
+  # 描画は 1 キー入力ごとに走るので、ループ内でサブシェルを起動しないこと。
+  # 正規化・短縮・端末高さは起動時に一度だけ求めて配列と変数に持つ
+  # (毎フレーム __norm_path/__short_path/tput を呼ぶと、候補行数ぶんプロセスが
+  #  生成されて上下キーの追従が体感できるほど遅くなる)。
+  local p_norms=() p_shorts=() p_rows p_lines
+  local __p_i
+  for __p_i in "${!__PICK_PATHS[@]}"; do
+    if [ -n "${__PICK_PATHS[$__p_i]}" ]; then
+      __norm_path_into "${__PICK_PATHS[$__p_i]}"
+      __short_path_into "${__PICK_PATHS[$__p_i]}"
+      p_norms+=("$__NORM_RESULT")
+      p_shorts+=("$__SHORT_RESULT")
+    else
+      p_norms+=("")
+      p_shorts+=("")
+    fi
+  done
+  p_lines=$(tput lines 2>/dev/null || echo 24)
+  p_rows=$((p_lines - 8)); [ $p_rows -lt 3 ] && p_rows=3
+
   __pick_rebuild() {
     local prev_idx=-1
     [ ${#p_view[@]} -gt 0 ] && [ $p_sel -lt ${#p_view[@]} ] && prev_idx=${p_view[$p_sel]}
@@ -619,11 +650,10 @@ __pick_list() {
     p_top=0
   }
 
+  # 1 キー入力ごとに走る。ここでサブシェル (コマンド置換) を使わないこと。
   __pick_draw() {
     local vcount=${#p_view[@]}
-    local rows lines
-    lines=$(tput lines 2>/dev/null || echo 24)
-    rows=$((lines - 8)); [ $rows -lt 3 ] && rows=3
+    local rows=$p_rows
     if [ $p_sel -lt $p_top ]; then p_top=$p_sel; fi
     if [ $p_sel -ge $((p_top + rows)) ]; then p_top=$((p_sel - rows + 1)); fi
     [ $p_top -lt 0 ] && p_top=0
@@ -644,7 +674,7 @@ __pick_list() {
       mark="   "
       [ $n -eq $p_sel ] && mark=" > "
       here=""
-      if [ -n "${__PICK_PATHS[$idx]}" ] && [ "$(__norm_path "${__PICK_PATHS[$idx]}")" = "$p_cur" ]; then
+      if [ -n "${p_norms[$idx]}" ] && [ "${p_norms[$idx]}" = "$p_cur" ]; then
         here="  ← 今ここ"
       fi
       echo "${mark}${__PICK_LABELS[$idx]}${here}" >&$__CMUX_MENU_FD
@@ -657,8 +687,8 @@ __pick_list() {
     else
       echo "  ${pos}   ^v 移動   Enter/→ 決定   / 絞り込み   Esc/← 戻る${p_note:+   $p_note}" >&$__CMUX_MENU_FD
     fi
-    if [ $vcount -gt 0 ] && [ -n "${__PICK_PATHS[${p_view[$p_sel]}]}" ]; then
-      echo "  → $(__short_path "${__PICK_PATHS[${p_view[$p_sel]}]}")" >&$__CMUX_MENU_FD
+    if [ $vcount -gt 0 ] && [ -n "${p_shorts[${p_view[$p_sel]}]}" ]; then
+      echo "  → ${p_shorts[${p_view[$p_sel]}]}" >&$__CMUX_MENU_FD
     fi
   }
 

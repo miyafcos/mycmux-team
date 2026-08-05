@@ -474,6 +474,61 @@ describe("terminal local file path links", () => {
     expect(links?.map((link) => link.text)).toEqual([existingPrefix]);
   });
 
+  it("recovers a path space omitted by a TUI at a hard-wrap boundary", async () => {
+    const first = "C:\\Users\\miyaz\\\u30a8\u30c7\u30e5\u30fb\u30d7\u30e9\u30cb\u30f3\u30b0\u5408\u540c\u4f1a\u793e";
+    const second = "Dropbox\\\u30a8\u30c7\u30e5\u30fb\u30d7\u30e9\u30cb\u30f3\u30b0\u9593\u5c4b\u53e3\u3000\u4ea8\\\u4e8b\u52d9\u95a2\u4fc2\\\u99ff\u53f0\\\u30e2\u30e2\u30b9\u30bf\\\u6570\u5b66\\19_";
+    const third = "\u30b9\u30e9\u30a4\u30c9\u5236\u4f5c\u524d\u6e96\u5099_260804\\13_\u6388\u696dIR\u8ee2\u63db_260804\\06_\u4f8b\u984c\u30d1\u30a4\u30ed\u30c3\u30c8_247";
+    const fourth = "-2\\12_\u30ec\u30d3\u30e5\u30fc\u63d0\u793a_247-2_v1.11_260805.html";
+    const joinedWithoutSpace = `${first}${second}${third}${fourth}`;
+    const existingPrefix = `${first} ${second}${third}${fourth}`;
+    mockedResolveLocalPathLinks.mockImplementation(async (candidates) =>
+      candidates.map((candidate) => candidate === existingPrefix
+        ? { existingPrefix, isDir: false }
+        : null),
+    );
+    const harness = createLinkProviderHarness([
+      { text: first, columns: 70 },
+      { text: second, columns: 70 },
+      { text: third, columns: 70 },
+      { text: fourth, columns: 70 },
+    ]);
+
+    const links = await harness.provideLinks(4);
+
+    expect(mockedResolveLocalPathLinks.mock.calls[0][0]).toContain(joinedWithoutSpace);
+    expect(mockedResolveLocalPathLinks.mock.calls[0][0]).toContain(existingPrefix);
+    expect(links?.map((link) => link.text)).toEqual([joinedWithoutSpace]);
+    expect(links?.[0].range).toEqual({
+      start: { x: 1, y: 1 },
+      end: { x: displayColumns(fourth), y: 4 },
+    });
+    links?.[0].activate({} as MouseEvent, joinedWithoutSpace);
+    expect(harness.onActivate).toHaveBeenCalledWith(existingPrefix, expect.anything());
+  });
+
+  it("prefers the direct join when word-split variants also resolve", async () => {
+    const first = String.raw`C:\work\very-`;
+    const second = "long\\nested\\";
+    const third = "report-";
+    const fourth = "final.md";
+    const existingPrefix = `${first}${second}${third}${fourth}`;
+    mockedResolveLocalPathLinks.mockImplementation(async (candidates) =>
+      candidates.map((candidate) => ({ existingPrefix: candidate, isDir: false })),
+    );
+    const harness = createLinkProviderHarness([
+      { text: first },
+      { text: second },
+      { text: third },
+      { text: fourth },
+    ]);
+
+    const links = await harness.provideLinks(4);
+
+    expect(links?.map((link) => link.text)).toEqual([existingPrefix]);
+    links?.[0].activate({} as MouseEvent, existingPrefix);
+    expect(harness.onActivate).toHaveBeenCalledWith(existingPrefix, expect.anything());
+  });
+
   it("keeps a backticked Unicode path clickable from either wrapped row", async () => {
     const head = "C:\\Users\\miyaz\\reports\\_quick\\2026-08\\mycmux_0.21.6\u21920.21.10_";
     const tail = "\u66F4\u65B0\u307E\u3068\u3081_0804-1836.html";
@@ -904,5 +959,23 @@ describe("terminal local file path links", () => {
     );
     expect(earlier).toHaveLength(1);
     expect(earlier[0].index).toBe(3);
+  });
+
+  it("prefers a direct resolution before the earlier-start tie-breaker", () => {
+    const matches = mergeResolvedPathLinkMatches(
+      [
+        { text: String.raw`C:\same suffix`, index: 3, endIndex: 17 },
+        { text: String.raw`C:\same suffix`, index: 5, endIndex: 19 },
+      ],
+      [
+        { existingPrefix: String.raw`C:\same`, isDir: false },
+        { existingPrefix: String.raw`C:\same`, isDir: false },
+      ],
+      [],
+      [1, 0],
+    );
+
+    expect(matches).toHaveLength(1);
+    expect(matches[0].index).toBe(5);
   });
 });
