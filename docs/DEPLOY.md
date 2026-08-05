@@ -1,6 +1,8 @@
 # Deploy & Release Guide
 
-mycmux と mycmux-lite の リリース・配布・自動更新の運用手順。
+mycmux のリリース・配布・自動更新の運用手順。
+
+> **lite 版 (mycmux-lite) は 2026-07-23 に配布終了**。worktree `C:\Users\miyaz\cmux-for-linux-dev` (branch `release/public-lite`) も撤収済みで、追従・cherry-pick は不要。本書内の lite 節は歴史的記録として残している。
 
 ---
 
@@ -9,21 +11,18 @@ mycmux と mycmux-lite の リリース・配布・自動更新の運用手順�
 | 配布物 | ブランチ | リポジトリ | 配布先 |
 |---|---|---|---|
 | **mycmux** (個人版) | `master` | `miyafcos/mycmux` (private) | 自分用、`C:\Users\miyaz\mycmux-app\` |
-| **mycmux-lite** (チーム版) | `release/public-lite` | `miyafcos/mycmux-team` (public) | チーム配布、`C:\Users\miyaz\mycmux-lite-app\` |
-
-両者は Bundle ID / config dir / localStorage key / インストールパスが完全分離されているので **同一 Windows 上で並行起動可能**。
+| ~~mycmux-lite (チーム版)~~ | ~~`release/public-lite`~~ | `miyafcos/mycmux-team` (public) | **配布終了 (2026-07-23)**。public repo は個人版の履歴分離ミラー + updater feed 置き場として継続 |
 
 ## バージョニング
 
-- 個人版タグ: `vX.Y.Z` (semver pure、例 `v0.3.0`, `v0.3.1`)
-- lite タグ: `vX.Y.Z-lite.N` (例 `v0.3.0-lite.1`, `v0.3.0-lite.2`)
-- `release.yml` workflow は tag 名で job を分岐 (`build-personal` / `build-lite`)。
+- 個人版タグ: `vX.Y.Z` (semver pure、例 `v0.21.17`)
+- lite タグ (`vX.Y.Z-lite.N`) は配布終了に伴い新規作成しない
 
-`package.json` と `src-tauri/Cargo.toml` と `src-tauri/tauri.conf.json` の `version` フィールドはタグ作成前に書き換えること。tag に `-lite.` 接尾辞があっても `tauri.conf.json` の `version` は `"0.3.0"` のような semver の本体だけにする (Tauri Updater がここを比較するため)。
+`package.json` と `package-lock.json` と `src-tauri/Cargo.toml` と `src-tauri/tauri.conf.json` と `Cargo.lock` の `version` はタグ作成前に揃えること (`tests/test_version_consistency.py` が5面一致を強制する)。
 
 ## ローカルビルド
 
-> **重要:** master と lite は git worktree で分離されている。Smart App Control の制約上、ビルドは必ずそれぞれの worktree ディレクトリ内で実行する (別ディレクトリだとブロックされる)。
+> **重要:** Smart App Control の制約上、ビルドは必ずこの worktree ディレクトリ内で実行する (別ディレクトリだとブロックされる)。
 
 ### 個人版 (master worktree)
 
@@ -40,17 +39,9 @@ powershell -ExecutionPolicy Bypass -File build-personal.ps1
 5. 既存 `C:\Users\miyaz\mycmux-app\mycmux.exe` をタイムスタンプ付き `.bak-YYYYMMDD-HHmmss` でバックアップ
 6. 新しい exe を配置
 
-### lite (release/public-lite worktree)
+### lite (配布終了・歴史的記録)
 
-```powershell
-cd C:\Users\miyaz\cmux-for-linux-dev
-powershell -ExecutionPolicy Bypass -File build-lite.ps1
-```
-
-`build-lite.ps1` は同等動作で:
-- 出力 exe 名 = `mycmux-lite.exe`
-- 配布先 = `C:\Users\miyaz\mycmux-lite-app\`
-- NSIS / MSI / `latest.json` などの配布アセットがあれば `dist-uploads/` に集約
+lite worktree (`C:\Users\miyaz\cmux-for-linux-dev`) と `build-lite.ps1` の運用は 2026-07-23 に終了した。
 
 ## ローカルリリース経路 (Actions 非課金運用)
 
@@ -93,26 +84,22 @@ powershell -File scripts/release-local.ps1
 
 1. ブランチを最新化:
    ```powershell
-   git checkout master  # or release/public-lite
+   git checkout master
    git pull origin master
    ```
-2. `package.json` / `src-tauri/Cargo.toml` / `src-tauri/tauri.conf.json` の `version` を更新
-3. `CHANGELOG.md` に新バージョンセクションを追加 (master / lite いずれの worktree でも単一の `CHANGELOG.md` 運用。lite-only / master-only の差分はその中で見出しを分けて明記する)
+2. バージョン5面 (`package.json` / `package-lock.json` / `src-tauri/Cargo.toml` / `src-tauri/tauri.conf.json` / `Cargo.lock`) を更新
+3. `CHANGELOG.md` に新バージョンセクションを追加
 4. commit:
    ```powershell
-   git commit -am "chore: release v0.3.1"
+   git commit -am "chore: release v0.21.17"
    ```
-5. tag を作成して push:
+5. tag を作成して push (tag push だけでは workflow は起動しない):
    ```powershell
-   git tag v0.3.1                  # 個人版
-   # または
-   git tag v0.3.0-lite.2            # lite
-   git push origin v0.3.1
+   git tag v0.21.17
+   git push origin v0.21.17
    ```
-6. 必要な場合のみ GitHub の Actions 画面から `release.yml` を `workflow_dispatch` で手動実行 → Windows ビルド → 署名 → release 作成 → `latest.json` + `.exe` + `.exe.sig` を assets に upload
-7. リリースを確認:
-   - 個人版: https://github.com/miyafcos/mycmux/releases
-   - lite: https://github.com/miyafcos/mycmux-team/releases
+6. GitHub の Actions 画面から `release.yml` を `workflow_dispatch` で手動実行 (runner は `windows-latest` / `self-hosted` を選択) → test job (tsc / vitest / `run_windows_tests.py` / pytest) → Windows ビルド → 署名 → release 作成 → `latest.json` + `.exe` + `.exe.sig` を assets に upload
+7. リリースを確認: https://github.com/miyafcos/mycmux/releases
 8. 個人版は private repo の Release asset を Tauri updater が直接読めないため、署名済みアセットを public repo の固定 feed にミラーする:
    - feed tag: `mycmux-personal-updater`
    - endpoint: `https://github.com/miyafcos/mycmux-team/releases/download/mycmux-personal-updater/latest.json`
@@ -122,7 +109,7 @@ powershell -File scripts/release-local.ps1
 ### Updater 用 `latest.json` の URL
 
 - 個人版: `https://github.com/miyafcos/mycmux-team/releases/download/mycmux-personal-updater/latest.json`
-- lite: `https://github.com/miyafcos/mycmux-team/releases/latest/download/latest.json`
+- lite (配布終了): `https://github.com/miyafcos/mycmux-team/releases/latest/download/latest.json`
 
 private GitHub Release は標準 Tauri updater から認証なしで取得できない。個人版の source は private のまま、updater に必要な署名済み配布物だけを public fixed feed に置く。
 
@@ -146,8 +133,13 @@ private GitHub Release は標準 Tauri updater から認証なしで取得でき
 
 - 端末を移行・再セットアップするときは鍵とパスワードを両方持ち込むか、鍵を作り直して
   `tauri.conf.json` の `pubkey` を更新し、新版を1回だけ手動インストールする
-- GitHub Secrets の `TAURI_KEY_PERSONAL` / `TAURI_KEY_PERSONAL_PASSWORD` は**旧鍵のまま**。
-  Actions 経由でリリースを再開するときは先に更新すること (現在 Actions は非課金運用のため停止中)
+- GitHub Secrets の `TAURI_KEY_PERSONAL` / `TAURI_KEY_PERSONAL_PASSWORD` は **2026-08-05 に現行鍵
+  (key-id `bbf2382d7a0753cc`) へ更新済み**。7/31 の鍵ローテート時に secret だけ旧鍵
+  (`edfd48df84ad2477`) のまま取り残され、8/5 の CI リリース (v0.21.16) が更新失敗になって発覚した経緯がある。
+  secret を再設定するときは PowerShell のパイプを使わない (PS 5.1 が BOM を付けて CI の base64 decode が
+  壊れる)。Bash から `printf '%s' "$(tr -d '\r\n' < ~/.tauri/mycmux-updater.key)" | gh secret set ...` で渡す
+- リリース後の feed 検証は版数だけでは不十分。`latest.json` の signature をデコードして key-id が
+  `tauri.conf.json` の `pubkey` と一致することまで確認する
 - 0.21.2 以前をインストールしている端末は、旧公開鍵しか持たないので新版を更新ボタンでは受け取れない。
   0.21.3 以降を1回だけ手動インストールする必要がある
 
@@ -155,8 +147,8 @@ private GitHub Release は標準 Tauri updater から認証なしで取得でき
 
 | repo | secret 名 |
 |---|---|
-| `miyafcos/mycmux` | `TAURI_KEY_PERSONAL`, `TAURI_KEY_PERSONAL_PASSWORD`, `TAURI_KEY_LITE`, `TAURI_KEY_LITE_PASSWORD` |
-| `miyafcos/mycmux-team` | `TAURI_KEY_LITE`, `TAURI_KEY_LITE_PASSWORD` |
+| `miyafcos/mycmux` | `TAURI_KEY_PERSONAL`, `TAURI_KEY_PERSONAL_PASSWORD` (2026-08-05 現行鍵へ更新済み), `MYCMUX_TEAM_RELEASE_TOKEN` (mirror ステップ用) |
+| `miyafcos/mycmux-team` | (lite 終了に伴い新規リリースでは未使用) |
 
 ### 鍵を失った場合
 
@@ -182,7 +174,7 @@ private GitHub Release は標準 Tauri updater から認証なしで取得でき
 - ダウンロード途中で中断 → 再度「更新を確認」を押す
 - lite が個人版を見てしまう → `mycmux-team/releases/latest` を個人版に使っていないか確認。個人版は必ず `mycmux-personal-updater` 固定 tag を使う
 
-## lite リリース前に必要な cherry-pick と workflow 追記 (改善プラン v3 S-3)
+## lite リリース前に必要な cherry-pick と workflow 追記 (改善プラン v3 S-3 — lite 配布終了により失効・歴史的記録)
 
 master (`cmux-for-linux-dev-master`) では以下を実施済み:
 - `scripts/normalize-updater-feed.ps1` を新設し、latest.json の plain `windows-x86_64` キーを `windows-x86_64-nsis` エントリの signature/url で上書きする正規化ロジックを括り出した (入力パス→出力パスの純関数的スクリプト)

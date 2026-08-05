@@ -51,6 +51,18 @@ python -m pytest tests/               # sync-command allowlist 契約テスト�
 
 - **push は既定 ON — ブランチもタグも** (2026-07-12 宮崎さん指示): master へのコミット後はそのまま `git push origin master` まで実施。リリースすべき変更がまとまったらタグも Claude 判断で打って push してよい (検証コマンド全通過が前提)。すべて事後報告。GitHub が常に最新になる設計が基本
 - 複数タグは1個ずつ push (multi-tag push は workflow trigger 漏れあり)
+- **updater の署名鍵は `~/.tauri/mycmux-updater.key` が正 (key-id `bbf2382d7a0753cc` = tauri.conf.json の pubkey)**。
+  パスワードは `~/.tauri/mycmux-updater.pass` に DPAPI で暗号化保存 (`ConvertTo-SecureString` で復号・平文ではない)。
+  CI secret (`TAURI_KEY_PERSONAL` / `_PASSWORD`) は 2026-08-05 にこの鍵へ更新済み。
+  - 経緯: 7/31 の鍵ローテートで `~/.tauri` と tauri.conf.json は新鍵に揃えたが **secret だけ旧鍵 (`edfd48df84ad2477`)
+    のまま取り残されていた**。8/4 までのリリースは `release-local.ps1` のローカル署名だったため露見せず、
+    8/5 に CI リリースした v0.21.16 が「更新に失敗」になって発覚 (欠番)
+  - **`gh secret set` に PowerShell のパイプを使わない**。PS 5.1 が出力に BOM を付け、CI が
+    `failed to decode base64 key: Invalid symbol 239, offset 0` で落ちる (8/5 に 2 回踏んだ。
+    `$OutputEncoding` を BOM なしにしても再発)。**Bash から stdin で渡す**のが正:
+    `printf '%s' "$(tr -d '\r\n' < ~/.tauri/mycmux-updater.key)" | gh secret set TAURI_KEY_PERSONAL --repo miyafcos/mycmux`
+  - **リリース後の feed 検証は版数だけでは不十分**。latest.json の signature をデコードして key-id が
+    tauri.conf.json の pubkey と一致することまで確認する (一致しないと更新ボタンが検証エラーで失敗する)
 - タグ push 後の updater feed: CI の mirror ステップは secret 未設定で**成功表示のままスキップされる**。`scripts/mirror-personal-updater-feed.ps1 -SourceTag vX.Y.Z` をローカル実行し latest.json の version を確認
 - **リリース後は公開ミラーも更新**: `git commit-tree "master^{tree}" -p <team masterのHEAD> -m "sync: ..."` で履歴を持ち込まない sync コミットを作り `git push public <sha>:refs/heads/master`。ブランチをそのまま public へ push するのは禁止 (private 履歴が漏れる)
 

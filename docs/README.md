@@ -41,7 +41,7 @@ AI agent terminal workspace built with Tauri v2 + React + xterm.js.
 
 ### Features — Pending (from cmux reference)
 - [ssh-remote-sessions.md](features/pending/ssh-remote-sessions.md) — SSH daemon, reconnect, port forwarding
-- [rich-browser.md](features/pending/rich-browser.md) — Profiles, history, DevTools, search engine
+- [rich-browser.md](features/implemented/rich-browser.md) — Profiles, history, DevTools, search engine
 - [input-and-interaction.md](features/pending/input-and-interaction.md) — Copy mode, broadcast, drag-drop, zoom, keybindings
 - [accessibility-and-motion.md](features/pending/accessibility-and-motion.md) — ARIA, high contrast, reduced motion, i18n
 - [ui-polish.md](features/pending/ui-polish.md) — Glassmorphism, error states, notification sounds, light theme

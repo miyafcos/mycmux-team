@@ -22,7 +22,7 @@ Upstream reference: `cai0baa/cmux-for-linux`.
 
 ## Current Version
 
-The current released version is **v0.20.1**. These five version surfaces must match:
+The current released version is **v0.21.17** (as of 2026-08-05; always confirm against `package.json`). These five version surfaces must match:
 
 - `package.json`
 - `package-lock.json` (root and `packages[""]`)
@@ -68,8 +68,8 @@ The installed executable is `C:\Users\miyaz\mycmux-app\mycmux.exe`. Deployment m
 
 1. Update the five version surfaces and `CHANGELOG.md`.
 2. Run the full verification baseline below.
-3. Commit `chore(release): vX.Y.Z`, create tag `vX.Y.Z`, and push the branch and tag to `origin`.
-4. Run `scripts\mirror-personal-updater-feed.ps1 -SourceTag vX.Y.Z` locally and verify the resulting `latest.json` version. The CI mirror step may skip when its secret is absent.
+3. Commit `chore(release): vX.Y.Z`, create tag `vX.Y.Z`, and push the branch and tag to `origin`. Tag pushes do NOT trigger CI; build either locally with `scripts\release-local.ps1` or by manually dispatching `.github/workflows/release.yml` (runner selectable: `windows-latest` / `self-hosted`).
+4. Run `scripts\mirror-personal-updater-feed.ps1 -SourceTag vX.Y.Z` locally and verify the resulting `latest.json` version. The CI mirror step may skip when its secret is absent. Also decode the `latest.json` signature and confirm its key-id matches the `pubkey` in `tauri.conf.json`; a version-only check misses a signing-key mismatch.
 5. Create a history-isolated public sync commit from the private `master` tree and push only that commit to `public/master`.
 
 ## Verification Baseline
@@ -79,12 +79,11 @@ Run from `C:\Users\miyaz\cmux-for-linux-dev-master`:
 ```powershell
 npx tsc --noEmit
 npx vitest run
-$env:Path = "$env:USERPROFILE\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin;$env:Path"
-cd src-tauri
-cargo test --release
-cd ..
+python scripts/run_windows_tests.py
 python -m pytest tests/ -q
 ```
+
+Do not run bare `cargo test --release` on Windows: the test harness exe lacks the Common Controls v6 manifest and dies with `STATUS_ENTRYPOINT_NOT_FOUND (0xc0000139)` before running a single test. `scripts/run_windows_tests.py` builds with `--no-run`, embeds `src-tauri/tests.manifest` via mt.exe, and executes the harness directly; CI uses the same script (made permanent 2026-08-05).
 
 The 2026-07-25 baseline before the current refactor was `tsc=0`, `vitest=411`, `cargo=193`, and `pytest=141`. Test counts must not decrease. `pytest-cache-files-*` permission warnings are known noise.
 
