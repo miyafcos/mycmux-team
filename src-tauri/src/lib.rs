@@ -332,17 +332,7 @@ pub fn run() {
 
             // FsWatcher: singleton per app, lives for app lifetime.
             let watcher = Arc::new(fs::FsWatcher::new(app_handle.clone()));
-            let _ = state.fs_watcher.set(watcher.clone());
-
-            // Re-watch any pinned roots restored from disk so the explorer
-            // reflects external changes as soon as the user opens it.
-            if let Ok(data) = db::storage::load(&app_handle) {
-                for root in &data.pinned_roots {
-                    if let Err(err) = watcher.watch(std::path::PathBuf::from(&root.path)) {
-                        eprintln!("[fs_watcher] failed to watch {}: {}", root.path, err);
-                    }
-                }
-            }
+            let _ = state.fs_watcher.set(watcher);
 
             socket::start_socket_listener(app_handle.clone());
             let remote_control = app.state::<Arc<remote::RemoteControl>>().inner().clone();

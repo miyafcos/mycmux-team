@@ -261,7 +261,7 @@ pub fn save_pinned_roots(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn watch_root(state: State<'_, AppState>, path: String) -> Result<(), String> {
     let watcher = state
         .fs_watcher
@@ -270,7 +270,7 @@ pub fn watch_root(state: State<'_, AppState>, path: String) -> Result<(), String
     watcher.watch(PathBuf::from(path))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn unwatch_root(state: State<'_, AppState>, path: String) -> Result<(), String> {
     let watcher = state
         .fs_watcher

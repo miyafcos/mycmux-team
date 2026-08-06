@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 use tauri::ipc::{Channel, InvokeResponseBody, Response};
 use tauri::{AppHandle, Emitter, State};
 
@@ -590,23 +592,116 @@ fn codex_session_file_matches(path: &Path, session_id: &str, cwd_key: &str) -> b
         .unwrap_or(false)
 }
 
-fn visit_codex_sessions_dir(dir: &Path, session_id: &str, cwd_key: &str) -> bool {
+const CODEX_SESSION_INDEX_TTL: Duration = Duration::from_secs(5);
+
+struct CodexSessionIndex {
+    built_at: Instant,
+    candidates: HashMap<String, Vec<PathBuf>>,
+    file_count: usize,
+}
+
+static CODEX_SESSION_INDEX: OnceLock<Mutex<Option<CodexSessionIndex>>> = OnceLock::new();
+/// `None` until the first report. Seeding this with `Instant::now() - 60s` would
+/// panic when the first lookup happens within a minute of boot, because the
+/// Windows Instant epoch is boot time.
+static CODEX_SESSION_INDEX_LAST_DIAGNOSTIC: OnceLock<Mutex<Option<Instant>>> = OnceLock::new();
+
+fn index_codex_sessions_dir(
+    dir: &Path,
+    candidates: &mut HashMap<String, Vec<PathBuf>>,
+    file_count: &mut usize,
+) {
     let Ok(entries) = std::fs::read_dir(dir) else {
-        return false;
+        return;
     };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
-            if visit_codex_sessions_dir(&path, session_id, cwd_key) {
-                return true;
-            }
+            index_codex_sessions_dir(&path, candidates, file_count);
             continue;
         }
-        if codex_session_file_matches(&path, session_id, cwd_key) {
-            return true;
+        *file_count += 1;
+        if let Some(session_id) = codex_session_id_from_path(&path) {
+            candidates.entry(session_id).or_default().push(path);
         }
     }
-    false
+}
+
+fn build_codex_session_index(sessions_dir: &Path) -> CodexSessionIndex {
+    let mut candidates = HashMap::new();
+    let mut file_count = 0;
+    index_codex_sessions_dir(sessions_dir, &mut candidates, &mut file_count);
+    CodexSessionIndex {
+        built_at: Instant::now(),
+        candidates,
+        file_count,
+    }
+}
+
+fn should_report_codex_session_index() -> bool {
+    let last_diagnostic = CODEX_SESSION_INDEX_LAST_DIAGNOSTIC.get_or_init(|| Mutex::new(None));
+    let mut last_diagnostic = last_diagnostic
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    if last_diagnostic.is_some_and(|at| at.elapsed() < Duration::from_secs(60)) {
+        return false;
+    }
+    *last_diagnostic = Some(Instant::now());
+    true
+}
+
+fn codex_session_candidates(
+    sessions_dir: &Path,
+    session_id: &str,
+) -> (Vec<PathBuf>, bool, usize, u128) {
+    let index = CODEX_SESSION_INDEX.get_or_init(|| Mutex::new(None));
+    let mut index = index.lock().unwrap_or_else(|error| error.into_inner());
+    let refresh_started = Instant::now();
+    let cache_hit = index
+        .as_ref()
+        .is_some_and(|cached| cached.built_at.elapsed() < CODEX_SESSION_INDEX_TTL);
+    if !cache_hit {
+        *index = Some(build_codex_session_index(sessions_dir));
+    }
+    let index = index.as_ref().expect("Codex session index was populated");
+    (
+        index
+            .candidates
+            .get(session_id)
+            .cloned()
+            .unwrap_or_default(),
+        cache_hit,
+        index.file_count,
+        refresh_started.elapsed().as_millis(),
+    )
+}
+
+fn codex_session_exists_in_dir(sessions_dir: &Path, session_id: &str, cwd_key: &str) -> bool {
+    let mut forced_rescan = false;
+    loop {
+        let (candidates, cache_hit, file_count, index_ms) =
+            codex_session_candidates(sessions_dir, session_id);
+        let found = candidates
+            .iter()
+            .any(|path| codex_session_file_matches(path, session_id, cwd_key));
+        if should_report_codex_session_index() {
+            eprintln!(
+                "[mycmux-diag codex_index] cache_hit={} files={} candidates={} index_ms={} forced_rescan={}",
+                cache_hit,
+                file_count,
+                candidates.len(),
+                index_ms,
+                forced_rescan,
+            );
+        }
+        if found || forced_rescan || !cache_hit || !candidates.is_empty() {
+            return found;
+        }
+        forced_rescan = true;
+        let index = CODEX_SESSION_INDEX.get_or_init(|| Mutex::new(None));
+        let mut index = index.lock().unwrap_or_else(|error| error.into_inner());
+        *index = None;
+    }
 }
 
 fn codex_session_exists(cwd: &str, session_id: &str) -> bool {
@@ -617,7 +712,7 @@ fn codex_session_exists(cwd: &str, session_id: &str) -> bool {
     if !sessions_dir.exists() {
         return false;
     }
-    visit_codex_sessions_dir(&sessions_dir, session_id, &normalize_cwd_key(cwd))
+    codex_session_exists_in_dir(&sessions_dir, session_id, &normalize_cwd_key(cwd))
 }
 
 pub(crate) fn can_restore_agent_session(kind: &str, session_id: &str, cwd: Option<&str>) -> bool {
@@ -1048,6 +1143,33 @@ mod tests {
             session_id,
             &normalize_cwd_key(r"C:\Users\other")
         ));
+    }
+
+    #[test]
+    fn codex_session_index_limits_payload_checks_to_filename_candidates() {
+        let dir = tempfile::tempdir().unwrap();
+        let session_id = "019bc371-82cf-7d82-ad0b-96d026aaca73";
+        let nested = dir.path().join("2026").join("01").join("15");
+        std::fs::create_dir_all(&nested).unwrap();
+        let matching = nested.join(format!("rollout-2026-01-15T15-55-54-{session_id}.jsonl"));
+        std::fs::write(
+            &matching,
+            format!(
+                "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{session_id}\",\"cwd\":\"C:\\\\Users\\\\miyaz\"}}}}\n"
+            ),
+        )
+        .unwrap();
+        std::fs::write(nested.join("not-a-session.jsonl"), "{}\n").unwrap();
+
+        let index = build_codex_session_index(dir.path());
+        assert_eq!(index.file_count, 2);
+        let candidates = index.candidates.get(session_id).unwrap();
+        assert_eq!(candidates, &vec![matching.clone()]);
+        assert!(candidates.iter().any(|path| codex_session_file_matches(
+            path,
+            session_id,
+            &normalize_cwd_key(r"C:\Users\miyaz"),
+        )));
     }
 
     fn env(pairs: &[(&str, &str)]) -> HashMap<String, String> {

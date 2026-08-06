@@ -18,8 +18,6 @@ SYNC_ALLOWLIST = {
     "get_window_count",
     "reveal_main_window",
     "quit_app",
-    "watch_root",
-    "unwatch_root",
 }
 
 BLOCKING_BODY_TOKENS = [

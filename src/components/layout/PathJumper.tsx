@@ -16,10 +16,11 @@ import {
   Star,
 } from "lucide-react";
 
-import type { FileEntry } from "../../lib/ipc";
+import { type FileEntry, unwatchRoot, watchRoot } from "../../lib/ipc";
 import { basename, pathSegmentsUnder } from "../../lib/paths";
 import { useFileExplorerStore } from "../../stores/fileExplorerStore";
 import { OVERLAY_EXIT_MS, useDeferredUnmount } from "../../hooks/useDeferredUnmount";
+import { PathJumperWatchController } from "./pathJumperWatch";
 
 type JumpResult = { ok: boolean; message: string };
 type JumpItemKind = "pinned" | "entry";
@@ -121,6 +122,11 @@ export default memo(function PathJumper({
   const inputRef = useRef<HTMLInputElement>(null);
   const rowRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const blurTimerRef = useRef<number | null>(null);
+  const isOpenRef = useRef(false);
+  const activeRootPathRef = useRef<string | null>(null);
+  const watchedRootPathRef = useRef<string | null>(null);
+  const drilledPathsRef = useRef(new Set<string>());
+  const watcherRef = useRef(new PathJumperWatchController({ watchRoot, unwatchRoot }));
 
   const trimmedQuery = query.trim();
 
@@ -143,6 +149,31 @@ export default memo(function PathJumper({
   }, [clearBlurTimer]);
 
   useEffect(() => () => clearBlurTimer(), [clearBlurTimer]);
+
+  useEffect(() => {
+    isOpenRef.current = isOpen;
+    const activeRootPath = activeRoot?.path ?? null;
+    if (watchedRootPathRef.current && watchedRootPathRef.current !== activeRootPath) {
+      drilledPathsRef.current.clear();
+    }
+    activeRootPathRef.current = activeRootPath;
+    watchedRootPathRef.current = activeRootPath;
+    if (!isOpen) {
+      drilledPathsRef.current.clear();
+      void watcherRef.current.sync(false, []);
+      return;
+    }
+
+    const paths = new Set(drilledPathsRef.current);
+    if (activeRoot?.path) {
+      paths.add(activeRoot.path);
+    }
+    void watcherRef.current.sync(true, paths);
+  }, [activeRoot?.path, isOpen]);
+
+  useEffect(() => () => {
+    void watcherRef.current.dispose();
+  }, []);
 
   // NOTE: PathJumper used to register its own Ctrl+P listener here, but that
   // duplicated the global "crsm.palette" shortcut (also Ctrl+P, see
@@ -305,6 +336,14 @@ export default memo(function PathJumper({
 
     setError(null);
     await setExpanded(selectedItem.path, true);
+    if (isOpenRef.current) {
+      drilledPathsRef.current.add(selectedItem.path);
+      const paths = new Set(drilledPathsRef.current);
+      if (activeRootPathRef.current) {
+        paths.add(activeRootPathRef.current);
+      }
+      void watcherRef.current.sync(true, paths);
+    }
     openDropdown();
     window.requestAnimationFrame(() => inputRef.current?.focus());
   }, [openDropdown, selectedItem, setExpanded]);

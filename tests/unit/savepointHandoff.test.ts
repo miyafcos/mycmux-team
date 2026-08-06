@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { onlineStrings } from "../../src/components/online/onlineStrings";
 import type { Pane, PaneTab } from "../../src/types";
 import {
   buildSavepointHandoffLaunchEnv,
@@ -148,6 +149,27 @@ describe("savepoint handoff draft", () => {
     );
     expect(draft).toBe("引き継ぎ書 C:/共有/引き継ぎ handoff.md を読む Enterは手動");
     expect(draft).not.toMatch(/[\r\n]/);
+  });
+
+  it("tells the receiving agent to summarise the premise and then stop", () => {
+    const handoffPath = "C:/共有/引き継ぎ/handoff.md";
+    const draft = sanitizeSavepointHandoffDraft(onlineStrings.joinPrompt(handoffPath));
+
+    // The draft is written into a live input box without a trailing Enter, so a
+    // line break here would submit a truncated instruction.
+    expect(draft).not.toMatch(/[\r\n]/);
+    expect(draft).toContain(handoffPath);
+
+    // The default must stop after organising the premise — the operator adds
+    // follow-up instructions in natural language afterwards.
+    expect(draft).toContain("そこで止まって");
+    expect(draft).toContain("指示を待って");
+    expect(draft).toContain("ファイルの変更・コマンド実行はしないでください");
+
+    // The four points the receiver has to report back before stopping.
+    for (const point of ["何の作業か", "前提・制約", "未確定", "次の一手"]) {
+      expect(draft).toContain(point);
+    }
   });
 });
 

@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 
@@ -206,3 +207,45 @@ def test_savepoint_overlay_copy_matches_left_right_full_resume_and_bottom_paste(
     assert 'direction === "left" ? "左に完全再開" : "右に完全再開"' in strings
     assert "下: この会話へ引き継ぎ" in strings
     assert "paneDndStrings.handoffSplit(savepointDropTarget.direction)" not in terminal_pane
+
+
+def _ts_join_prompt_body() -> str:
+    """Return the joinPrompt template literal with the TS placeholder normalised."""
+    source = read("src/components/online/onlineStrings.ts")
+    match = re.search(r"joinPrompt:[^`]*`(?P<body>[^`]*)`", source, re.DOTALL)
+    assert match, "joinPrompt template literal not found in onlineStrings.ts"
+    return match.group("body").replace("${handoffPath}", "{handoff}")
+
+
+def _py_summary_prompt_template() -> str:
+    """Return the concatenated SUMMARY_PROMPT_TEMPLATE literal from the CLI copy."""
+    source = read("scripts/savepoint_join.py")
+    match = re.search(
+        r"SUMMARY_PROMPT_TEMPLATE = \((?P<body>.*?)\n\)", source, re.DOTALL
+    )
+    assert match, "SUMMARY_PROMPT_TEMPLATE not found in savepoint_join.py"
+    parts = re.findall(r'"([^"]*)"', match.group("body"))
+    assert parts, "SUMMARY_PROMPT_TEMPLATE has no string literals"
+    return "".join(parts)
+
+
+def test_handoff_prompt_default_stops_after_organising_the_premise():
+    """The dropped-on agent must summarise and then wait, not start working."""
+    draft = _ts_join_prompt_body()
+
+    assert "{handoff}" in draft
+    # Newlines would be collapsed by sanitizeSavepointHandoffDraft anyway, but a
+    # literal one here means the authored copy no longer reads as one line.
+    assert "\n" not in draft
+    assert "そこで止まって" in draft
+    assert "指示を待って" in draft
+    assert "ファイルの変更・コマンド実行はしないでください" in draft
+    for point in ("何の作業か", "前提・制約", "未確定", "次の一手"):
+        assert point in draft
+    # The superseded "start working from where it left off" default must be gone.
+    assert "その内容の続きから作業してください" not in draft
+
+
+def test_handoff_prompt_stays_identical_between_the_ts_and_python_copies():
+    """savepoint_join.py duplicates the GUI prompt; keep the two from drifting."""
+    assert _py_summary_prompt_template() == _ts_join_prompt_body()

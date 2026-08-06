@@ -29,9 +29,14 @@ from savepoint_publish import (
     sanitize_project_dir,
 )
 
+# Must stay byte-identical to onlineStrings.ts joinPrompt (modulo the
+# placeholder), see tests/test_savepoint_drag_contract.py.
 SUMMARY_PROMPT_TEMPLATE = (
-    "引き継ぎ書 {handoff} を Read ツールで読み、その内容の続きから作業してください。"
-    "まず引き継ぎ内容の要点と、あなたが次に何をするつもりかを短く確認として提示してから作業に入ってください。"
+    "引き継ぎ書 {handoff} を Read ツールで読んでください。"
+    "読んだら、(1) 何の作業か（目的と現在地） (2) 前提・制約 (3) 未確定・要確認の点 "
+    "(4) そのまま進める場合の次の一手（案） の4点だけを簡潔に提示し、"
+    "そこで止まってこちらの指示を待ってください。"
+    "指示があるまでファイルの変更・コマンド実行はしないでください。"
 )
 
 

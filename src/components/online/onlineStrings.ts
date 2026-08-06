@@ -104,8 +104,10 @@ export const onlineStrings = {
   deletePermanentlyErrorPrefix: "完全削除に失敗: ",
   cleanupDone: "期限切れの記録を整理しました",
   joinCwdMissing: "元の作業フォルダが見つからないため、ホームフォルダで開きました。作業ファイルは含まれません。",
+  // The pasted draft has its newlines collapsed to spaces by
+  // sanitizeSavepointHandoffDraft, so this must read naturally as one line.
   joinPrompt: (handoffPath: string): string =>
-    `引き継ぎ書 ${handoffPath} を Read ツールで読み、その内容の続きから作業してください。まず引き継ぎ内容の要点と、あなたが次に何をするつもりかを短く確認として提示してから作業に入ってください。`,
+    `引き継ぎ書 ${handoffPath} を Read ツールで読んでください。読んだら、(1) 何の作業か（目的と現在地） (2) 前提・制約 (3) 未確定・要確認の点 (4) そのまま進める場合の次の一手（案） の4点だけを簡潔に提示し、そこで止まってこちらの指示を待ってください。指示があるまでファイルの変更・コマンド実行はしないでください。`,
   turnsSuffix: "往復",
   filesSuffix: "ファイル変更",
   // --- publish (pane tab bar) ---

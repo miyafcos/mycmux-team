@@ -15,6 +15,10 @@ pub fn start_monitor(
         let mut last_output_evidence_at: HashMap<String, u64> = HashMap::new();
         let mut session_epochs: HashMap<String, u64> = HashMap::new();
         let mut codex_rollout_detector = CodexRolloutDetector::new();
+        // `None` until the first report. Seeding this with `Instant::now() - 60s`
+        // would panic when mycmux starts within a minute of boot, because the
+        // Windows Instant epoch is boot time.
+        let mut last_refresh_diagnostic: Option<Instant> = None;
 
         // RS-5: git branch detection runs on a dedicated worker pool instead
         // of inline in this loop. `git_branch_cwd` records the CWD that the
@@ -52,7 +56,16 @@ pub fn start_monitor(
                 }
             }
 
-            // Refresh process info
+            let pids = manager.iter_pids();
+            let refresh_started = Instant::now();
+
+            // `OnlyIfNotSet` means sysinfo pays the Windows PEB read once per
+            // process, not once per tick: get_process_params() returns early when
+            // cmd and cwd are already populated. Narrowing this to PTY descendants
+            // therefore saves almost nothing (and short-lived spawns are inside the
+            // PTY tree anyway) while it would hide externally launched agents from
+            // collect_explicit_agent_session_ids below. Keep the full sweep; the
+            // diagnostic underneath is what tells us whether this tick is costly.
             sys.refresh_processes_specifics(
                 ProcessesToUpdate::All,
                 true,
@@ -61,6 +74,15 @@ pub fn start_monitor(
                     .with_cwd(UpdateKind::OnlyIfNotSet),
             );
             let child_index = build_child_index(&sys);
+            if last_refresh_diagnostic.is_none_or(|at| at.elapsed() >= Duration::from_secs(60)) {
+                eprintln!(
+                    "[mycmux-diag monitor] refresh_ms={} tracked_ptys={} processes={}",
+                    refresh_started.elapsed().as_millis(),
+                    pids.len(),
+                    sys.processes().len(),
+                );
+                last_refresh_diagnostic = Some(Instant::now());
+            }
             // Reserve every process-exact ID before per-pane fallback detection.
             // This prevents several --continue agents sharing a CWD from all
             // adopting the session that an exact --session-id process owns.
@@ -71,7 +93,6 @@ pub fn start_monitor(
             );
             let mut claimed_agent_session_ids = explicit_agent_session_ids;
 
-            let pids = manager.iter_pids();
             let agent_mappings = crate::commands::session_mapping::agent_mappings_for_ids(
                 pids.iter().map(|(session_id, _)| session_id.as_str()),
             );
@@ -584,3 +605,4 @@ pub fn start_monitor(
         }
     });
 }
+
