@@ -39,6 +39,7 @@ def test_socket_api_has_frontend_response_bridge() -> None:
     assert_contains(socket_rs, ".snapshot(session_id.as_deref())", "src-tauri/src/socket.rs")
 
     for snippet in [
+        'case "pane.spawn":',
         'case "pane.spawn_tab":',
         'case "pane.activate_tab":',
         'case "pane.restore_activation":',

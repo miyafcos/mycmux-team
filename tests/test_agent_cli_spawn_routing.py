@@ -210,7 +210,32 @@ def test_split_flag_forces_split_pane(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("MYCMUX_PANE_SESSION_ID", PANE_SESSION_ID)
     cmd, args = request_for_spawn(["--target", "claude", "--split"])
     assert cmd == "pane.spawn"
+    assert args["activate"] is False
+
+
+def test_split_activate_explicitly_switches_focus(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("MYCMUX_PANE_SESSION_ID", PANE_SESSION_ID)
+    cmd, args = request_for_spawn(["--target", "claude", "--split", "--activate"])
+    assert cmd == "pane.spawn"
     assert args["activate"] is True
+
+
+def test_split_reports_the_caller_pane_so_it_lands_next_to_the_caller(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without this the frontend falls back to the operator's active workspace,
+    so an agent in a background workspace splits the pane they are working in."""
+    monkeypatch.setenv("MYCMUX_PANE_SESSION_ID", PANE_SESSION_ID)
+    _, args = request_for_spawn(["--target", "claude", "--split"])
+    assert args["anchorSessionId"] == PANE_SESSION_ID
+
+
+def test_split_from_outside_a_pane_omits_the_caller_pane(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("MYCMUX_PANE_SESSION_ID", raising=False)
+    _, args = request_for_spawn(["--target", "claude", "--split"])
+    assert "anchorSessionId" not in args
 
 
 def test_split_no_activate_remains_supported(monkeypatch: pytest.MonkeyPatch) -> None:

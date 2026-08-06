@@ -375,6 +375,54 @@
     }
 
     #[test]
+    fn summary_join_hands_out_paths_without_the_extended_length_prefix() {
+        // fs::canonicalize returns `\\?\C:\...` on Windows. That form is what
+        // reaches the join prompt an agent is told to Read, and Claude Code
+        // denies Read on it (2026-08-06: silently, in "don't ask" mode). The
+        // summary must hand out plain paths no matter how the caller spelled
+        // the bundle directory.
+        let temp = tempdir().unwrap();
+        let home = temp.path().join("home");
+        let project = temp.path().join("dropbox").join("project-one");
+        let bundle = temp.path().join("online").join("fixture-bundle");
+        fs::create_dir_all(&home).unwrap();
+        fs::create_dir_all(&project).unwrap();
+        copy_fixture_bundle(&bundle);
+
+        let manifest_path = bundle.join("manifest.json");
+        let mut manifest: serde_json::Value = read_json(&manifest_path).unwrap();
+        manifest["cwd"] = serde_json::Value::String(project.to_string_lossy().into_owned());
+        fs::write(
+            &manifest_path,
+            serde_json::to_string_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+        let config_path = temp.path().join("savepoint.json");
+        fs::write(
+            &config_path,
+            serde_json::json!({ "local_dir": bundle.parent().unwrap() }).to_string(),
+        )
+        .unwrap();
+
+        let canonical_bundle = fs::canonicalize(&bundle).unwrap();
+        let summary =
+            join_savepoint_summary_from_config(&canonical_bundle, &config_path, &home).unwrap();
+
+        assert!(
+            !summary.handoff_path.starts_with(r"\\?\"),
+            "handoff_path still carries the extended-length prefix: {}",
+            summary.handoff_path
+        );
+        assert!(
+            !summary.resolved_cwd.starts_with(r"\\?\"),
+            "resolved_cwd still carries the extended-length prefix: {}",
+            summary.resolved_cwd
+        );
+        assert!(summary.handoff_path.ends_with("handoff.md"));
+        assert!(Path::new(&summary.handoff_path).is_file());
+    }
+
+    #[test]
     fn full_join_transplants_fixture_with_fresh_uuid() {
         let temp = tempdir().unwrap();
         let home = temp.path().join("home");

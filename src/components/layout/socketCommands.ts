@@ -31,6 +31,7 @@ export interface SpawnPlan {
     agentKind?: AgentSessionKind;
     agentSessionId?: string;
     launchEnv?: Record<string, string>;
+    activate?: boolean;
   };
 }
 
@@ -643,7 +644,19 @@ async function spawnPane(args: SocketArgs) {
 
   const plan = resolveSpawnPlan(args, handoffPromptPath);
   const workspaceState = useWorkspaceListStore.getState();
+  // Prefer the caller's own location over whatever the human is looking at.
+  // Falling straight back to activeWorkspaceId meant an agent sitting in a
+  // background workspace split the pane the operator was working in.
+  const callerSessionId = socketArgString(args, "anchorSessionId", "anchor_session_id");
+  const paneOwnsSession = (pane: { sessionId: string; tabs: { sessionId: string }[] }, sessionId: string) =>
+    pane.sessionId === sessionId || pane.tabs.some((tab) => tab.sessionId === sessionId);
+  const callerWorkspaceId = callerSessionId
+    ? workspaceState.workspaces.find((candidate) =>
+        candidate.panes.some((pane) => paneOwnsSession(pane, callerSessionId)),
+      )?.id
+    : undefined;
   const workspaceId = socketArgString(args, "workspaceId", "workspace_id")
+    ?? callerWorkspaceId
     ?? workspaceState.activeWorkspaceId
     ?? undefined;
   if (!workspaceId) throw new Error("pane.spawn requires an active workspace or workspaceId");
@@ -655,10 +668,13 @@ async function spawnPane(args: SocketArgs) {
   const activeSessionId = useUiStore.getState().activePaneId;
   const anchorPane = requestedAnchorId
     ? workspace.panes.find((pane) => pane.id === requestedAnchorId)
-    : workspace.panes.find((pane) =>
-        pane.sessionId === activeSessionId
-        || pane.tabs.some((tab) => tab.sessionId === activeSessionId),
-      ) ?? workspace.panes[0];
+    : (callerSessionId
+        ? workspace.panes.find((pane) => paneOwnsSession(pane, callerSessionId))
+        : undefined)
+      ?? (activeSessionId
+        ? workspace.panes.find((pane) => paneOwnsSession(pane, activeSessionId))
+        : undefined)
+      ?? workspace.panes[0];
   if (!anchorPane) throw new Error("pane.spawn anchor pane not found");
 
   const directionArg = socketArgString(args, "direction") ?? "right";
@@ -667,19 +683,22 @@ async function spawnPane(args: SocketArgs) {
   }
 
   const beforePaneIds = new Set(workspace.panes.map((pane) => pane.id));
+  const activate = socketArgBoolean(args, "activate", false);
   useWorkspaceLayoutStore.getState().addPaneToWorkspaceWithOptions(
     workspaceId,
     anchorPane.id,
     directionArg,
-    plan.paneOptions,
+    { ...plan.paneOptions, activate },
   );
   const updatedWorkspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
   const newPanes = updatedWorkspace?.panes.filter((pane) => !beforePaneIds.has(pane.id)) ?? [];
   if (newPanes.length !== 1) throw new Error("pane.spawn could not identify the new pane");
   const newPane = newPanes[0];
 
-  if (socketArgBoolean(args, "activate", true)) {
+  if (activate) {
     useWorkspaceListStore.getState().setActiveWorkspace(workspaceId);
+    const { focusController } = await import("../../lib/focusController");
+    focusController.request("programmatic", { sessionId: newPane.sessionId, focus: true });
   }
   return { workspaceId, paneId: newPane.id, sessionId: newPane.sessionId, mode: plan.mode };
 }

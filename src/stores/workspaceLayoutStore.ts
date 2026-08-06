@@ -673,7 +673,9 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
       normalizeWorkspaceSplitColumns(newSplitColumns),
       true,
     );
-    applyStructuralActivation(newPane.sessionId);
+    if (options.activate !== false) {
+      applyStructuralActivation(newPane.sessionId);
+    }
   },
 
   openOnlinePanel: (workspaceId, sourcePaneId) => {

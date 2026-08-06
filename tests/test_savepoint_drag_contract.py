@@ -162,6 +162,23 @@ def test_async_drop_revalidates_target_and_reports_invalid_release():
     assert "dismissToast(openingToastId)" in paste_runtime
 
 
+def test_savepoint_paste_moves_keyboard_focus_exactly_once_and_only_at_the_end():
+    """Activation must not yank focus before the up-to-2.5s liveness wait.
+
+    Two moves (one before the wait, one after) drag the operator back if they
+    stepped away in between. Zero moves is not the answer either: the draft is
+    typed without a trailing Enter, so their Enter has to reach the drop target.
+    """
+    paste_runtime = read("src/lib/savepointHandoffRuntime.ts")
+
+    assert 'focusController.request("drag", { sessionId: latestTarget.sessionId, focus: false });' in paste_runtime
+    assert "focusController.focusSessionSoon(readyTarget.sessionId);" in paste_runtime
+    # `focus: true` anywhere in this flow means the early activation started
+    # taking the keyboard again.
+    assert "focus: true" not in paste_runtime
+    assert paste_runtime.count("focusSessionSoon(") == 1
+
+
 def test_session_liveness_query_is_wired_through_all_tauri_layers():
     ipc = read("src/lib/ipc.ts")
     terminal_commands = read("src-tauri/src/commands/terminal.rs")

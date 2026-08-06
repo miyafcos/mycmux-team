@@ -96,7 +96,7 @@ export async function commitSavepointPaste(
       latestTarget.paneId,
       latestTarget.tabId,
     );
-    focusController.request("drag", { sessionId: latestTarget.sessionId, focus: true });
+    focusController.request("drag", { sessionId: latestTarget.sessionId, focus: false });
 
     if (!(await waitForSessionAlive(latestTarget.sessionId))) {
       useToastStore.getState().pushToast(onlineStrings.dragDropTargetNotReady, "warning");
@@ -110,6 +110,11 @@ export async function commitSavepointPaste(
 
     const draft = sanitizeSavepointHandoffDraft(onlineStrings.joinPrompt(joined.handoff_path));
     await writeToSession(readyTarget.sessionId, draft);
+    // The only keyboard-focus move of this flow, and it happens after the draft
+    // is in place. The activation above deliberately runs with `focus: false` so
+    // the operator is not yanked away and then dragged back once the up-to-2.5s
+    // liveness wait finishes. Focus has to land here though: the draft is typed
+    // without a trailing Enter, so the operator's Enter must reach this pane.
     focusController.focusSessionSoon(readyTarget.sessionId);
     useToastStore.getState().pushToast(
       joined.cwd_missing

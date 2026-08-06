@@ -234,8 +234,12 @@ def build_spawn_request(namespace: argparse.Namespace) -> dict[str, Any]:
     args: dict[str, Any] = {
         "target": namespace.target,
         "cwd": namespace.cwd if namespace.cwd is not None else os.getcwd(),
-        "activate": not namespace.no_activate,
+        "activate": namespace.activate,
     }
+    # Tells the frontend where the caller lives, so a split lands next to the
+    # agent that asked for it instead of next to whatever the operator is
+    # currently looking at.
+    optional_arg(args, "anchorSessionId", os.environ.get("MYCMUX_PANE_SESSION_ID"))
     optional_arg(args, "label", namespace.label)
     optional_arg(args, "workspaceId", namespace.workspace)
     optional_arg(args, "anchorPaneId", namespace.anchor_pane)

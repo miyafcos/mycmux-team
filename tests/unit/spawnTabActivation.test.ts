@@ -154,3 +154,33 @@ describe("pane.spawn_tab activation", () => {
     });
   });
 });
+
+describe("pane.spawn activation", () => {
+  it("keeps the current workspace and focus when activate is false", async () => {
+    const result = await handleSocketCommand("pane.spawn", {
+      target: "shell",
+      activate: false,
+    }) as { workspaceId: string; paneId: string; sessionId: string };
+
+    const currentWorkspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
+    expect(result.workspaceId).toBe(workspaceId);
+    expect(currentWorkspace?.panes).toHaveLength(2);
+    expect(currentWorkspace?.panes.some((pane) => pane.id === result.paneId)).toBe(true);
+    expect(useWorkspaceListStore.getState().activeWorkspaceId).toBe(workspaceId);
+    expect(useUiStore.getState().activePaneId).toBe(originalSessionId);
+    expect(useUiStore.getState().focusRevision).toBe(0);
+  });
+
+  it("activates and requests focus when explicitly requested", async () => {
+    const result = await handleSocketCommand("pane.spawn", {
+      target: "shell",
+      activate: true,
+    }) as {
+      sessionId: string;
+    };
+
+    expect(useWorkspaceListStore.getState().activeWorkspaceId).toBe(workspaceId);
+    expect(useUiStore.getState().activePaneId).toBe(result.sessionId);
+    expect(useUiStore.getState().focusRevision).toBeGreaterThan(0);
+  });
+});
