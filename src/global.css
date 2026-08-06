@@ -305,6 +305,43 @@ div:hover>.tab-close-btn {
   .pane-tabbar-status { display: none !important; }
 }
 
+/* The all-tabs dropdown necessarily floats over pane borders and neighbouring
+   tab bars, so it needs an overlay scrollbar instead of the chunky default
+   gutter that read as a stray line against the pane edge. */
+.pane-tab-menu {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--cmux-text) 22%, transparent) transparent;
+}
+
+.pane-tab-menu::-webkit-scrollbar {
+  width: 10px;
+}
+
+.pane-tab-menu::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.pane-tab-menu::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--cmux-text) 18%, transparent);
+  background-clip: padding-box;
+  border: 3px solid transparent;
+  border-radius: 999px;
+}
+
+.pane-tab-menu::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--cmux-text) 30%, transparent);
+  background-clip: padding-box;
+}
+
+.pane-tab-menu-row {
+  transition: background var(--cmux-motion-fast) var(--cmux-ease);
+}
+
+.pane-tab-menu-row:hover,
+.pane-tab-menu-row:focus-visible {
+  background: var(--cmux-hover) !important;
+}
+
 .pane-tab-pill {
   border-right-color: var(--cmux-border-hairline) !important;
   transition: background var(--cmux-motion-fast) var(--cmux-ease);

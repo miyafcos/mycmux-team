@@ -475,18 +475,22 @@ function AgentStatusDot({ status }: { status: EffectiveStatus }) {
   );
 }
 
+const ATTENTION_REASON_COLOR: Record<AttentionCategory, string> = {
+  waiting: "var(--status-waiting)",
+  error: "var(--status-error)",
+  done: "var(--status-done)",
+};
+
+const ATTENTION_REASON_LABEL: Record<AttentionCategory, string> = {
+  waiting: "入力待ち",
+  error: "エラー",
+  done: "完了",
+};
+
 function AttentionUnreadDot({ category }: { category: AttentionCategory | null }) {
   if (!category) return null;
-  const color = category === "waiting"
-    ? "var(--status-waiting)"
-    : category === "error"
-      ? "var(--status-error)"
-      : "var(--status-done)";
-  const label = category === "waiting"
-    ? "未確認の入力待ち"
-    : category === "error"
-      ? "未確認のエラー"
-      : "未確認の完了";
+  const color = ATTENTION_REASON_COLOR[category];
+  const label = `未確認の${ATTENTION_REASON_LABEL[category]}`;
   return (
     <span
       key={category}
@@ -507,15 +511,41 @@ function AttentionUnreadDot({ category }: { category: AttentionCategory | null }
   );
 }
 
-export function resolvePaneTabMenuSections(
+export interface PaneTabMenuRow {
+  tab: PaneTab;
+  category: AttentionCategory | null;
+  pinned: boolean;
+}
+
+// One list, not two. The previous two-section menu listed every attention tab a
+// second time under "全タブ", so a pane with four busy tabs showed eight rows
+// and the reader had to diff them. Attention tabs are hoisted to the top in
+// occurrence order and marked; everything else keeps its tab-strip order.
+export function resolvePaneTabMenuRows(
   tabs: PaneTab[],
   attentionBySession: Record<string, SessionAttention | undefined>,
   seenAttentionByTab: Map<string, string>,
-) {
-  return {
-    attention: resolveAttentionTabs(tabs, attentionBySession, seenAttentionByTab),
-    all: tabs,
-  };
+): PaneTabMenuRow[] {
+  const attention = resolveAttentionTabs(tabs, attentionBySession, seenAttentionByTab);
+  const pinnedIds = new Set(attention.map(({ tab }) => tab.id));
+  return [
+    ...attention.map(({ tab, category }) => ({ tab, category, pinned: true })),
+    ...tabs
+      .filter((tab) => !pinnedIds.has(tab.id))
+      .map((tab) => ({ tab, category: null, pinned: false })),
+  ];
+}
+
+// Prefer aligning the menu's right edge with the trigger, but fall back to
+// left-alignment when that would push it off the left edge — otherwise a narrow
+// pane's menu lands under an unrelated part of the window.
+export function resolvePaneTabMenuLeft(
+  anchorLeft: number,
+  anchorRight: number,
+  menuWidth: number,
+): number {
+  const rightAligned = anchorRight - menuWidth;
+  return rightAligned >= 8 ? rightAligned : anchorLeft;
 }
 
 export function shouldMarkAttentionSeen(
@@ -554,22 +584,28 @@ function PaneTabListMenu({
   // An absolute menu anchored inside the tab bar gets clipped by pane
   // overflow once the pane is narrower than the menu (compact/micro modes).
   const menuRef = useRef<HTMLDivElement | null>(null);
-  const menuWidth = Math.min(280, Math.max(180, window.innerWidth - 16));
-  const menuMaxHeight = Math.min(320, Math.max(120, window.innerHeight - 24));
+  const menuWidth = Math.min(300, Math.max(200, window.innerWidth - 16));
+  const menuMaxHeight = Math.min(360, Math.max(120, window.innerHeight - 24));
   const [menuPos, setMenuPos] = useState<{ left: number; top: number } | null>(null);
   useLayoutEffect(() => {
     const anchor = menuRef.current?.parentElement;
     if (!anchor) return;
     const rect = anchor.getBoundingClientRect();
     const height = Math.min(menuMaxHeight, menuRef.current?.offsetHeight ?? menuMaxHeight);
-    setMenuPos(clampMenuPosition(rect.right - menuWidth, rect.bottom + 2, menuWidth, height));
+    setMenuPos(clampMenuPosition(
+      resolvePaneTabMenuLeft(rect.left, rect.right, menuWidth),
+      rect.bottom + 6,
+      menuWidth,
+      height,
+    ));
   }, [menuMaxHeight, menuWidth]);
-  const menuSections = resolvePaneTabMenuSections(
+  const menuRows = resolvePaneTabMenuRows(
     pane.tabs,
     attentionBySession,
     seenAttentionByTab,
   );
-  const renderTabRow = (tab: PaneTab, keyPrefix: string, showDetail: boolean) => {
+  const pinnedCount = menuRows.filter((row) => row.pinned).length;
+  const renderTabRow = ({ tab, category, pinned }: PaneTabMenuRow, isLastPinned: boolean) => {
     const isTabActive = tab.id === pane.activeTabId;
     const tabMeta = metadataBySession[tab.sessionId];
     const rowAgentKind = tabMeta?.agentKind ?? tab.agentKind;
@@ -580,14 +616,11 @@ function PaneTabListMenu({
     const unreadCategory = isAttentionUnseen(tab.id, attention, seenAttentionByTab)
       ? attentionCategory(tab.id, attention, seenAttentionByTab)
       : null;
-    const unreadLabel = unreadCategory === "waiting"
-      ? "未確認の入力待ち"
-      : unreadCategory === "error"
-        ? "未確認のエラー"
-        : unreadCategory === "done"
-          ? "未確認の完了"
-          : null;
+    const unreadLabel = unreadCategory
+      ? `未確認の${ATTENTION_REASON_LABEL[unreadCategory]}`
+      : null;
     const detail = attentionDetail(attention);
+    const reasonColor = ATTENTION_REASON_COLOR[category ?? "done"];
     const showDeferredRestore = shouldShowDeferredRestoreBadge(
       tab,
       isTabActive,
@@ -595,7 +628,8 @@ function PaneTabListMenu({
     );
     return (
       <div
-        key={`${keyPrefix}-${tab.id}`}
+        key={tab.id}
+        className="pane-tab-menu-row"
         role="menuitem"
         tabIndex={0}
         title={detail ?? label}
@@ -618,10 +652,16 @@ function PaneTabListMenu({
         style={{
           display: "flex",
           alignItems: "center",
-          gap: 8,
-          minHeight: showDetail && detail ? 42 : 30,
-          padding: "2px 5px 2px 8px",
-          borderRadius: 5,
+          gap: 7,
+          minHeight: pinned && detail ? 44 : 32,
+          padding: "2px 5px 2px 6px",
+          marginBottom: isLastPinned ? 6 : 0,
+          borderRadius: 6,
+          // A colored rail marks "needs attention" without a section header, so
+          // the row keeps its place in the single ordered list.
+          borderLeft: pinned
+            ? `3px solid ${reasonColor}`
+            : "3px solid transparent",
           background: isTabActive ? "var(--cmux-selected)" : "transparent",
           color: "var(--cmux-text)",
           cursor: "pointer",
@@ -652,12 +692,29 @@ function PaneTabListMenu({
           <span style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12 }}>
             {label}
           </span>
-          {showDetail && detail && (
+          {pinned && detail && (
             <span style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 11, color: "var(--cmux-text-secondary)" }}>
               {detail}
             </span>
           )}
         </span>
+        {category && (
+          <span
+            style={{
+              flexShrink: 0,
+              fontSize: 10,
+              lineHeight: 1.5,
+              padding: "0 5px",
+              borderRadius: 999,
+              whiteSpace: "nowrap",
+              color: reasonColor,
+              border: `1px solid color-mix(in srgb, ${reasonColor} 45%, transparent)`,
+              background: `color-mix(in srgb, ${reasonColor} 12%, transparent)`,
+            }}
+          >
+            {ATTENTION_REASON_LABEL[category]}
+          </span>
+        )}
         {showDeferredRestore && (
           <span
             className="pane-tab-restore-badge is-label"
@@ -671,7 +728,7 @@ function PaneTabListMenu({
             未復元
           </span>
         )}
-        {keyPrefix === "all" && pane.tabs.length > 1 && (
+        {pane.tabs.length > 1 && (
           <button
             className="pane-action-btn"
             type="button"
@@ -691,6 +748,7 @@ function PaneTabListMenu({
   return (
     <div
       ref={menuRef}
+      className="cmux-popover-panel pane-tab-menu"
       role="menu"
       style={{
         position: "fixed",
@@ -704,23 +762,16 @@ function PaneTabListMenu({
         boxSizing: "border-box",
         padding: 6,
         border: "1px solid var(--cmux-border)",
-        borderRadius: 7,
+        borderRadius: 10,
         background: "var(--cmux-popover)",
-        boxShadow: "var(--cmux-shadow-pane-menu)",
+        // Dropdown-strength elevation: the pane-menu shadow was too faint to
+        // separate this from the pane borders it necessarily overlaps.
+        boxShadow: "var(--cmux-shadow-dropdown)",
       }}
     >
-      {menuSections.attention.length > 0 && (
-        <div style={{ paddingBottom: 5, marginBottom: 5, borderBottom: "1px solid var(--cmux-border-hairline)" }}>
-          <div style={{ padding: "4px 7px 7px", fontSize: 11, fontWeight: 650, color: "var(--cmux-text-secondary)" }}>
-            要対応
-          </div>
-          {menuSections.attention.map(({ tab }) => renderTabRow(tab, "attention", true))}
-        </div>
+      {menuRows.map((row, index) =>
+        renderTabRow(row, pinnedCount > 0 && index === pinnedCount - 1),
       )}
-      <div style={{ padding: "4px 7px 7px", fontSize: 11, fontWeight: 650, color: "var(--cmux-text-secondary)" }}>
-        全タブ
-      </div>
-      {menuSections.all.map((tab) => renderTabRow(tab, "all", false))}
     </div>
   );
 }

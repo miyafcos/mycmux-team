@@ -17,7 +17,8 @@ import {
   PANE_TABBAR_SLIM_EXIT,
   resolveActiveAgentLabel,
   resolvePaneTabBarActions,
-  resolvePaneTabMenuSections,
+  resolvePaneTabMenuLeft,
+  resolvePaneTabMenuRows,
   resolvePaneTabBarMode,
   shouldMarkAttentionSeen,
   shouldShowDeferredRestoreBadge,
@@ -340,32 +341,56 @@ describe("resolveActiveAgentLabel", () => {
   });
 });
 
-describe("resolvePaneTabMenuSections", () => {
-  it("adds an occurrence-ordered attention section without changing all-tab order", () => {
+describe("resolvePaneTabMenuRows", () => {
+  const attention = (sessionId: string, attentionId: string, kind: SessionAttention["kind"], occurrenceOrder: number): SessionAttention => ({
+    sessionId,
+    attentionId,
+    kind,
+    detail: null,
+    sessionRevision: 1,
+    uiState: kind === "done" ? "done" : "waiting",
+    stateSince: occurrenceOrder,
+    occurrenceOrder,
+  });
+
+  it("pins attention tabs in occurrence order and lists each tab exactly once", () => {
     const tabs = [
       tab({ id: "tab-a", sessionId: "session-a" }),
       tab({ id: "tab-b", sessionId: "session-b" }),
       tab({ id: "tab-c", sessionId: "session-c" }),
+      tab({ id: "tab-d", sessionId: "session-d" }),
     ];
-    const attention = (sessionId: string, attentionId: string, kind: SessionAttention["kind"], occurrenceOrder: number): SessionAttention => ({
-      sessionId,
-      attentionId,
-      kind,
-      detail: null,
-      sessionRevision: 1,
-      uiState: kind === "done" ? "done" : "waiting",
-      stateSince: occurrenceOrder,
-      occurrenceOrder,
-    });
-    const sections = resolvePaneTabMenuSections(tabs, {
+    const rows = resolvePaneTabMenuRows(tabs, {
       "session-a": attention("session-a", "attention-a", "done", 3),
       "session-b": attention("session-b", "attention-b", "approval", 1),
       "session-c": attention("session-c", "attention-c", "error", 2),
     }, new Map());
 
-    expect(sections.attention.map(({ tab: item }) => item.id)).toEqual(["tab-b", "tab-c", "tab-a"]);
-    expect(sections.all.map((item) => item.id)).toEqual(["tab-a", "tab-b", "tab-c"]);
-    expect(sections.all).toBe(tabs);
+    expect(rows.map((row) => row.tab.id)).toEqual(["tab-b", "tab-c", "tab-a", "tab-d"]);
+    expect(rows.map((row) => row.pinned)).toEqual([true, true, true, false]);
+    expect(rows.map((row) => row.category)).toEqual(["waiting", "error", "done", null]);
+    expect(new Set(rows.map((row) => row.tab.id)).size).toBe(tabs.length);
+  });
+
+  it("keeps tab-strip order when nothing needs attention", () => {
+    const tabs = [
+      tab({ id: "tab-a", sessionId: "session-a" }),
+      tab({ id: "tab-b", sessionId: "session-b" }),
+    ];
+    const rows = resolvePaneTabMenuRows(tabs, {}, new Map());
+
+    expect(rows.map((row) => row.tab.id)).toEqual(["tab-a", "tab-b"]);
+    expect(rows.every((row) => !row.pinned && row.category === null)).toBe(true);
+  });
+});
+
+describe("resolvePaneTabMenuLeft", () => {
+  it("right-aligns the menu with its trigger when there is room", () => {
+    expect(resolvePaneTabMenuLeft(400, 440, 280)).toBe(160);
+  });
+
+  it("left-aligns instead of drifting off the left edge in a narrow pane", () => {
+    expect(resolvePaneTabMenuLeft(20, 60, 280)).toBe(20);
   });
 });
 

@@ -72,6 +72,24 @@ describe("UI quality Phase A contracts", () => {
     expect(globalCss).toContain("border-right-color: var(--cmux-border-hairline) !important;");
   });
 
+  // Regression: Phase A moved the pane tab bar from --cmux-surface (which went
+  // through colorWithOpacity) to --cmux-surface-raised, which was opaque. Over
+  // a media background the bar rendered as a solid dark slab.
+  it("keeps the raised surface translucent under a media background", () => {
+    expect(appShell).toContain('"--cmux-surface-raised": withPanelOpacity(');
+    expect(appShell).toContain("const withPanelOpacity = (color: string) =>");
+    expect(appShell).toContain("panelOpacity >= 0.995");
+    expect(appShell).toContain("%, transparent)`");
+  });
+
+  it("elevates the all-tabs dropdown above the pane borders it overlaps", () => {
+    expect(paneTabBar).toContain('boxShadow: "var(--cmux-shadow-dropdown)"');
+    expect(paneTabBar).toContain('className="cmux-popover-panel pane-tab-menu"');
+    expect(globalCss).toContain(".pane-tab-menu {");
+    expect(globalCss).toContain("scrollbar-width: thin;");
+    expect(globalCss).toContain(".pane-tab-menu-row:hover,");
+  });
+
   it("uses monochrome SVG chrome icons instead of emoji glyphs", () => {
     expect(boundarySource).not.toMatch(/[\u270f\u2610\u{1f4c4}]/u);
 

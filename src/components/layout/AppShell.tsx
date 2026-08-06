@@ -392,14 +392,24 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
     themeBackground.mode === "image" && themeBackground.imagePath.length > 0
   );
   const panelOpacity = mediaBackgroundActive ? themeBackground.panelOpacity : 1;
+  // Ladder steps derived with color-mix() cannot be fed back through
+  // colorWithOpacity() (which only parses hex), so translucency is applied as a
+  // second color-mix toward transparent. Without this the pane tab bar renders
+  // as an opaque slab over a media background instead of letting it through.
+  const withPanelOpacity = (color: string) =>
+    panelOpacity >= 0.995
+      ? color
+      : `color-mix(in srgb, ${color} ${(panelOpacity * 100).toFixed(2)}%, transparent)`;
 
   const themeVars = {
     "--cmux-bg-solid": currentTheme.chrome.background,
     "--cmux-bg": colorWithOpacity(currentTheme.chrome.background, panelOpacity),
     "--cmux-sidebar": colorWithOpacity(currentTheme.chrome.surface, panelOpacity),
-    "--cmux-surface-raised": isLightChrome
-      ? `color-mix(in srgb, ${currentTheme.chrome.surface} 97%, black)`
-      : `color-mix(in srgb, ${currentTheme.chrome.surface} 96%, white)`,
+    "--cmux-surface-raised": withPanelOpacity(
+      isLightChrome
+        ? `color-mix(in srgb, ${currentTheme.chrome.surface} 97%, black)`
+        : `color-mix(in srgb, ${currentTheme.chrome.surface} 96%, white)`,
+    ),
     "--cmux-popover": isLightChrome
       ? `color-mix(in srgb, ${currentTheme.chrome.surface} 95%, black)`
       : `color-mix(in srgb, ${currentTheme.chrome.surface} 93%, white)`,

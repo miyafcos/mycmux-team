@@ -125,22 +125,58 @@ function FontPresetOption({
         ))}
       </div>
 
+      {/* The old 11px specimen made every preset look identical. The glyph line
+          is set large and limited to the characters that actually differ
+          between mono faces (zero/O, one/l/I, brackets, arrows); the Japanese
+          and table lines stay small because what they show is weight and
+          column alignment, not letterform. */}
       <div
         style={{
           border: "1px solid var(--cmux-border)",
           borderRadius: 6,
           background: "color-mix(in srgb, var(--cmux-bg) 88%, var(--cmux-text))",
-          padding: "6px 7px",
+          padding: "7px 8px",
           fontFamily: preset.value,
-          fontSize: 11,
-          lineHeight: 1.3,
           letterSpacing: 0,
           overflow: "hidden",
         }}
       >
-        <div style={{ whiteSpace: "pre", color: "var(--cmux-text)" }}>| 項目     | 金額   | 状態 |</div>
-        <div style={{ whiteSpace: "pre", color: "var(--cmux-text-secondary)" }}>| Codex入力 | 12,300 | 待機 |</div>
-        <div style={{ marginTop: 3, color: "var(--cmux-text)" }}>{preset.sample} fgIl| →</div>
+        <div
+          style={{
+            fontSize: 17,
+            lineHeight: 1.3,
+            color: "var(--cmux-text)",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          0Oo 1lI| {"{}[]"}
+        </div>
+        <div
+          style={{
+            fontSize: 14,
+            lineHeight: 1.35,
+            color: "var(--cmux-text)",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          国鬱ぎゅアガパ {preset.sample}
+        </div>
+        <div
+          style={{
+            marginTop: 3,
+            fontSize: 11,
+            lineHeight: 1.3,
+            whiteSpace: "pre",
+            color: "var(--cmux-text-secondary)",
+            overflow: "hidden",
+          }}
+        >
+          | 項目     | 12,300 | 待機 |
+        </div>
       </div>
     </button>
   );
@@ -247,7 +283,7 @@ export function ThemeFontSettings({
               <div
                 style={{
                   display: "grid",
-                  gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))",
+                  gridTemplateColumns: "repeat(auto-fit, minmax(215px, 1fr))",
                   gap: 8,
                 }}
               >
