@@ -249,3 +249,16 @@ def test_handoff_prompt_default_stops_after_organising_the_premise():
 def test_handoff_prompt_stays_identical_between_the_ts_and_python_copies():
     """savepoint_join.py duplicates the GUI prompt; keep the two from drifting."""
     assert _py_summary_prompt_template() == _ts_join_prompt_body()
+
+
+def test_handoff_prompt_cannot_become_a_shell_syntax_error():
+    """The draft is typed into an input box without Enter.
+
+    If the pane turns out to be a plain shell instead of a live agent, the
+    operator's Enter runs the draft as a command. Half-width shell metacharacters
+    turn that from a harmless "command not found" into a syntax error, so the
+    authored copy must not contain any.
+    """
+    draft = _ts_join_prompt_body()
+    for char in "()<>|&;$`\"'":
+        assert char not in draft, f"shell metacharacter {char!r} in join prompt"

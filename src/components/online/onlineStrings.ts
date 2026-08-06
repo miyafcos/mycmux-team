@@ -106,8 +106,12 @@ export const onlineStrings = {
   joinCwdMissing: "元の作業フォルダが見つからないため、ホームフォルダで開きました。作業ファイルは含まれません。",
   // The pasted draft has its newlines collapsed to spaces by
   // sanitizeSavepointHandoffDraft, so this must read naturally as one line.
+  // Keep it free of half-width ()<>|&;$` too: the draft lands in an input box
+  // without a trailing Enter, and if the pane turns out to be a plain shell the
+  // operator's Enter would otherwise produce a bash syntax error.
+  // Do not name a specific tool either — Claude has Read, Codex does not.
   joinPrompt: (handoffPath: string): string =>
-    `引き継ぎ書 ${handoffPath} を Read ツールで読んでください。読んだら、(1) 何の作業か（目的と現在地） (2) 前提・制約 (3) 未確定・要確認の点 (4) そのまま進める場合の次の一手（案） の4点だけを簡潔に提示し、そこで止まってこちらの指示を待ってください。指示があるまでファイルの変更・コマンド実行はしないでください。`,
+    `引き継ぎ書 ${handoffPath} を読んでください。読んだら、①何の作業か（目的と現在地）②前提・制約 ③未確定・要確認の点 ④そのまま進める場合の次の一手（案） の4点だけを簡潔に提示し、そこで止まってこちらの指示を待ってください。指示があるまでファイルの変更・コマンド実行はしないでください。`,
   turnsSuffix: "往復",
   filesSuffix: "ファイル変更",
   // --- publish (pane tab bar) ---
