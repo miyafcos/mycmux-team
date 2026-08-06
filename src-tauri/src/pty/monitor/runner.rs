@@ -75,12 +75,14 @@ pub fn start_monitor(
             );
             let child_index = build_child_index(&sys);
             if last_refresh_diagnostic.is_none_or(|at| at.elapsed() >= Duration::from_secs(60)) {
-                eprintln!(
+                let diagnostic = format!(
                     "[mycmux-diag monitor] refresh_ms={} tracked_ptys={} processes={}",
                     refresh_started.elapsed().as_millis(),
                     pids.len(),
                     sys.processes().len(),
                 );
+                eprintln!("{diagnostic}");
+                crate::diag::log(&diagnostic);
                 last_refresh_diagnostic = Some(Instant::now());
             }
             // Reserve every process-exact ID before per-pane fallback detection.
@@ -605,4 +607,3 @@ pub fn start_monitor(
         }
     });
 }
-

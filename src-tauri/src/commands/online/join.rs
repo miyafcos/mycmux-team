@@ -41,9 +41,12 @@ fn join_savepoint_summary_from_config(
     }
     let (resolved_cwd, cwd_missing) =
         resolve_join_cwd(&manifest.cwd, config.dropbox_root.as_deref(), home);
+    // These two strings leave the app: `handoff_path` is pasted into the join
+    // prompt an agent must Read, and `resolved_cwd` becomes a shell cwd. Both
+    // must be plain paths — see strip_extended_length_prefix.
     Ok(JoinSavepointSummary {
-        resolved_cwd: resolved_cwd.to_string_lossy().into_owned(),
-        handoff_path: handoff_path.to_string_lossy().into_owned(),
+        resolved_cwd: strip_extended_length_prefix(&resolved_cwd.to_string_lossy()),
+        handoff_path: strip_extended_length_prefix(&handoff_path.to_string_lossy()),
         cwd_missing,
         source_checkpoint_id: manifest.lifecycle.checkpoint_id,
     })

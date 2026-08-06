@@ -1,4 +1,5 @@
 mod commands;
+mod diag;
 mod db;
 mod events;
 mod fs;

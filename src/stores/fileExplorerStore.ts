@@ -18,6 +18,7 @@ interface FileExplorerState {
   activeRootId: string | null;
   searchIndex: SearchIndexMap;
   searchIndexStatus: SearchIndexStatusMap;
+  searchIndexBuiltAt: Record<string, number>;
 
   entries: EntriesMap;
   errors: ErrorsMap;
@@ -37,6 +38,7 @@ export const useFileExplorerStore = create<FileExplorerState>((set, get) => ({
   activeRootId: null,
   searchIndex: {},
   searchIndexStatus: {},
+  searchIndexBuiltAt: {},
   entries: {},
   errors: {},
   loadingPaths: new Set(),
@@ -72,12 +74,15 @@ export const useFileExplorerStore = create<FileExplorerState>((set, get) => ({
         if (!rootStillExists) {
           const nextSearchIndex = { ...state.searchIndex };
           const nextSearchIndexStatus = { ...state.searchIndexStatus };
+          const nextSearchIndexBuiltAt = { ...state.searchIndexBuiltAt };
           delete nextSearchIndex[rootPath];
           delete nextSearchIndexStatus[rootPath];
+          delete nextSearchIndexBuiltAt[rootPath];
           return {
             errors: nextErrors,
             searchIndex: nextSearchIndex,
             searchIndexStatus: nextSearchIndexStatus,
+            searchIndexBuiltAt: nextSearchIndexBuiltAt,
           };
         }
 
@@ -85,6 +90,7 @@ export const useFileExplorerStore = create<FileExplorerState>((set, get) => ({
           errors: nextErrors,
           searchIndex: { ...state.searchIndex, [rootPath]: result },
           searchIndexStatus: { ...state.searchIndexStatus, [rootPath]: "ready" },
+          searchIndexBuiltAt: { ...state.searchIndexBuiltAt, [rootPath]: Date.now() },
         };
       });
     } catch (err) {
@@ -93,11 +99,14 @@ export const useFileExplorerStore = create<FileExplorerState>((set, get) => ({
         if (!state.roots.some((root) => root.path === rootPath)) {
           const nextSearchIndex = { ...state.searchIndex };
           const nextSearchIndexStatus = { ...state.searchIndexStatus };
+          const nextSearchIndexBuiltAt = { ...state.searchIndexBuiltAt };
           delete nextSearchIndex[rootPath];
           delete nextSearchIndexStatus[rootPath];
+          delete nextSearchIndexBuiltAt[rootPath];
           return {
             searchIndex: nextSearchIndex,
             searchIndexStatus: nextSearchIndexStatus,
+            searchIndexBuiltAt: nextSearchIndexBuiltAt,
           };
         }
 

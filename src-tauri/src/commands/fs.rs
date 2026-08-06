@@ -10,7 +10,7 @@ use tauri::State;
 
 use crate::commands::artifact::artifact_path_from_uri;
 use crate::db::storage::{self, PinnedRoot};
-use crate::pty::path_norm::posix_drive_to_windows;
+use crate::pty::path_norm::{posix_drive_to_windows, strip_extended_length_prefix};
 use crate::AppState;
 
 #[derive(Debug, Clone, Serialize)]
@@ -122,11 +122,8 @@ pub fn normalize_path(path: String) -> Result<String, String> {
     }
     let input = posix_drive_to_windows(trimmed);
     match fs::canonicalize(PathBuf::from(&input)) {
-        Ok(p) => {
-            let s = p.to_string_lossy().to_string();
-            // Windows canonicalize produces `\\?\C:\...`; strip for display.
-            Ok(s.strip_prefix(r"\\?\").map(|s| s.to_string()).unwrap_or(s))
-        }
+        // Windows canonicalize produces `\\?\C:\...`; strip for display.
+        Ok(p) => Ok(strip_extended_length_prefix(&p.to_string_lossy())),
         Err(_) => Ok(input),
     }
 }

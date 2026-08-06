@@ -685,7 +685,7 @@ fn codex_session_exists_in_dir(sessions_dir: &Path, session_id: &str, cwd_key: &
             .iter()
             .any(|path| codex_session_file_matches(path, session_id, cwd_key));
         if should_report_codex_session_index() {
-            eprintln!(
+            let diagnostic = format!(
                 "[mycmux-diag codex_index] cache_hit={} files={} candidates={} index_ms={} forced_rescan={}",
                 cache_hit,
                 file_count,
@@ -693,6 +693,8 @@ fn codex_session_exists_in_dir(sessions_dir: &Path, session_id: &str, cwd_key: &
                 index_ms,
                 forced_rescan,
             );
+            eprintln!("{diagnostic}");
+            crate::diag::log(&diagnostic);
         }
         if found || forced_rescan || !cache_hit || !candidates.is_empty() {
             return found;

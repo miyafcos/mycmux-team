@@ -34,6 +34,15 @@ interface JumpItem {
 }
 
 const BLUR_CLOSE_DELAY_MS = 200;
+export const SEARCH_INDEX_TTL_MS = 5 * 60 * 1000;
+
+export function shouldRefreshSearchIndex(
+  status: "idle" | "building" | "ready" | "error",
+  builtAt: number | undefined,
+  now = Date.now(),
+): boolean {
+  return status === "idle" || (status === "ready" && now - (builtAt ?? 0) > SEARCH_INDEX_TTL_MS);
+}
 
 function pathKey(path: string): string {
   return path.replace(/[\\/]+$/, "").replace(/\\/g, "/").toLowerCase();
@@ -104,8 +113,10 @@ export default memo(function PathJumper({
   const entries = useFileExplorerStore((state) => state.entries);
   const searchIndex = useFileExplorerStore((state) => state.searchIndex);
   const searchIndexStatus = useFileExplorerStore((state) => state.searchIndexStatus);
+  const searchIndexBuiltAt = useFileExplorerStore((state) => state.searchIndexBuiltAt);
   const setExpanded = useFileExplorerStore((state) => state.setExpanded);
   const buildSearchIndex = useFileExplorerStore((state) => state.buildSearchIndex);
+  const invalidate = useFileExplorerStore((state) => state.invalidate);
 
   const activeRoot = useMemo(
     () => roots.find((root) => root.id === activeRootId) ?? null,
@@ -427,11 +438,30 @@ export default memo(function PathJumper({
   );
 
   const handleInputFocus = useCallback(() => {
-    if (activeRoot && activeRootSearchStatus === "idle") {
-      void buildSearchIndex(activeRoot.path);
+    if (activeRoot) {
+      // A C:\\ scan is expensive, so refresh only when the cached index is over five minutes old.
+      if (
+        shouldRefreshSearchIndex(
+          activeRootSearchStatus,
+          searchIndexBuiltAt[activeRoot.path],
+        )
+      ) {
+        void buildSearchIndex(activeRoot.path);
+      }
+      invalidate(activeRoot.path);
+      for (const path of drilledPathsRef.current) {
+        invalidate(path);
+      }
     }
     openDropdown();
-  }, [activeRoot, activeRootSearchStatus, buildSearchIndex, openDropdown]);
+  }, [
+    activeRoot,
+    activeRootSearchStatus,
+    buildSearchIndex,
+    invalidate,
+    openDropdown,
+    searchIndexBuiltAt,
+  ]);
 
   return (
     <div ref={containerRef} style={containerStyle}>

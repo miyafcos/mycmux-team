@@ -14,6 +14,27 @@ pub fn posix_drive_to_windows(path: &str) -> String {
     }
 }
 
+/// Strip the Windows extended-length prefix (`\\?\`) that `fs::canonicalize`
+/// prepends, so the path can be shown to a human or handed to an agent.
+///
+/// `\\?\C:\Users\me` → `C:\Users\me`, `\\?\UNC\server\share` → `\\server\share`.
+/// Anything else is returned unchanged.
+///
+/// Keep canonical (prefixed) paths for our own file I/O — the prefix is what
+/// lifts the MAX_PATH limit. Only strip it on the way out: agents reject the
+/// prefixed form (Claude Code's Read denies `\\?\...` because it matches no
+/// permission rule and reads as outside the working directory), and users
+/// cannot paste it into a shell.
+pub fn strip_extended_length_prefix(path: &str) -> String {
+    match path.strip_prefix(r"\\?\") {
+        Some(rest) => match rest.strip_prefix(r"UNC\") {
+            Some(unc) => format!(r"\\{unc}"),
+            None => rest.to_string(),
+        },
+        None => path.to_string(),
+    }
+}
+
 /// Mangle a working directory into the `~/.claude/projects/<key>` directory name.
 ///
 /// This must match Claude Code's raw cwd-derived project key and must not
@@ -81,6 +102,32 @@ mod tests {
     #[test]
     fn ignores_non_letter_first_segment() {
         assert_eq!(posix_drive_to_windows("/1/foo"), "/1/foo");
+    }
+
+    #[test]
+    fn strips_extended_length_drive_prefix() {
+        assert_eq!(
+            strip_extended_length_prefix(r"\\?\C:\Users\miyaz\.mycmux\online-dev\x\handoff.md"),
+            r"C:\Users\miyaz\.mycmux\online-dev\x\handoff.md"
+        );
+    }
+
+    #[test]
+    fn strips_extended_length_unc_prefix() {
+        assert_eq!(
+            strip_extended_length_prefix(r"\\?\UNC\server\share\file.md"),
+            r"\\server\share\file.md"
+        );
+    }
+
+    #[test]
+    fn leaves_plain_paths_untouched() {
+        assert_eq!(
+            strip_extended_length_prefix(r"C:\Users\miyaz\handoff.md"),
+            r"C:\Users\miyaz\handoff.md"
+        );
+        assert_eq!(strip_extended_length_prefix("/home/me/handoff.md"), "/home/me/handoff.md");
+        assert_eq!(strip_extended_length_prefix(""), "");
     }
 
     #[test]

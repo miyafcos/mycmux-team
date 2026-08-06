@@ -168,9 +168,11 @@ fn emit_changes(handle: &AppHandle, emit_state: &Arc<Mutex<EmitState>>, event: &
     }
 
     if let Some((emitted, debounced, excluded, rate_limited)) = diagnostic {
-        eprintln!(
+        let diagnostic = format!(
             "[mycmux-diag fs_watcher] emitted={emitted} debounced={debounced} excluded={excluded} rate_limited={rate_limited}"
         );
+        eprintln!("{diagnostic}");
+        crate::diag::log(&diagnostic);
     }
 }
 

@@ -1,3 +1,4 @@
+use crate::pty::path_norm::strip_extended_length_prefix;
 use chrono::{DateTime, Local, NaiveDateTime, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -516,7 +517,7 @@ fn online_savepoint_entry(
         claude_session_id: (identity.kind == SavepointAgentKind::Claude)
             .then_some(identity.session_id),
         files_written_count: manifest.files_written.len(),
-        handoff_path: handoff_path.to_string_lossy().into_owned(),
+        handoff_path: strip_extended_length_prefix(&handoff_path.to_string_lossy()),
         record_kind,
         lifecycle_status: manifest.lifecycle.status,
         checkpoint_id: manifest.lifecycle.checkpoint_id,
