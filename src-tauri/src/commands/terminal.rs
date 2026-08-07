@@ -269,7 +269,7 @@ pub fn create_session(
 }
 
 #[cfg(target_os = "windows")]
-fn prepare_spawn_command(command: &str, args: &mut Vec<String>) -> String {
+pub(crate) fn prepare_spawn_command(command: &str, args: &mut Vec<String>) -> String {
     let Some(resolved) = resolve_windows_command(command) else {
         return command.to_string();
     };
@@ -292,7 +292,7 @@ fn prepare_spawn_command(command: &str, args: &mut Vec<String>) -> String {
 }
 
 #[cfg(not(target_os = "windows"))]
-fn prepare_spawn_command(command: &str, _args: &mut Vec<String>) -> String {
+pub(crate) fn prepare_spawn_command(command: &str, _args: &mut Vec<String>) -> String {
     command.to_string()
 }
 
@@ -786,7 +786,7 @@ fn is_uuid_like(value: &str) -> bool {
 ///
 /// Keep this list in sync with `lib.rs::run()` startup `remove_var` and the
 /// frontend `EPHEMERAL_LAUNCH_ENV_KEYS` set in `SocketListener.tsx`.
-fn sanitize_launch_env(env: &mut HashMap<String, String>) {
+pub(crate) fn sanitize_launch_env(env: &mut HashMap<String, String>) {
     const ALWAYS_INTERNAL: &[&str] = &[
         "MYCMUX_PANE_SESSION_ID",
         "MYCMUX_TAB_ID",

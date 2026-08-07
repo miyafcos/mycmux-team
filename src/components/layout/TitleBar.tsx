@@ -5,6 +5,8 @@ import { IS_MAC } from "../../lib/keybindings";
 import NotificationPanel from "./NotificationPanel";
 import SettingsDialog from "../settings/SettingsDialog";
 import { UsageMeter } from "./UsageMeter";
+import { CliAccountBadge } from "./CliAccountBadge";
+import { TabSweepButton } from "./TabSweepButton";
 import UsageAccountsDialog from "./UsageAccountsDialog";
 import { onlineStrings } from "../online/onlineStrings";
 import { OVERLAY_EXIT_MS, useDeferredUnmount } from "../../hooks/useDeferredUnmount";
@@ -274,7 +276,9 @@ export default function TitleBar({
 
       {/* Right group: Minimize, Close */}
       <div style={{ display: "flex", alignItems: "center", gap: 2, paddingRight: 8, minWidth: groupMinWidth, justifyContent: "flex-end" }}>
+        <CliAccountBadge />
         <UsageMeter />
+        <TabSweepButton />
         <div style={{ position: "relative" }}>
           <button
             onClick={() => setIsSettingsOpen((v) => !v)}

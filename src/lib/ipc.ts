@@ -77,6 +77,10 @@ interface UriArgs { uri: string }
 interface CreateEntryArgs { parent: string; name: string }
 interface CompleteOauthLoginArgs { loginId: string; pastedCode: string }
 interface SetUsageAccountEnabledArgs extends AccountIdArgs { enabled: boolean }
+interface CaptureCliAccountArgs { provider: CliProvider; label?: string }
+interface SwitchCliAccountArgs { provider: CliProvider; profileId: string }
+interface ProfileIdArgs { profileId: string }
+interface RenameCliAccountArgs extends ProfileIdArgs { label: string }
 
 const sessionCreateTails = new Map<string, Promise<void>>();
 
@@ -954,4 +958,63 @@ export async function setUsageAccountEnabled(
   enabled: boolean,
 ): Promise<void> {
   return invoke<void>("set_usage_account_enabled", { accountId, enabled } satisfies SetUsageAccountEnabledArgs);
+}
+
+export type CliProvider = "claude" | "codex";
+
+export interface CliAccountProfile {
+  id: string;
+  provider: CliProvider;
+  label: string;
+  email: string | null;
+  identity_key: string;
+  plan: string | null;
+  org_name: string | null;
+  captured_at: string;
+  last_switched_at: string | null;
+  needs_relogin: boolean;
+}
+
+export interface CliLiveLogin {
+  provider: CliProvider;
+  present: boolean;
+  email: string | null;
+  identity_key: string | null;
+  plan: string | null;
+  org_name: string | null;
+  matched_profile_id: string | null;
+  error: string | null;
+}
+
+export interface CliAccountsSnapshot {
+  profiles: CliAccountProfile[];
+  live: CliLiveLogin[];
+  generated_at: string;
+}
+
+export interface CliSwitchResult {
+  profile: CliAccountProfile;
+  wrote_back_to: string | null;
+  backup_dir: string;
+  warnings: string[];
+}
+
+export async function listCliAccounts(): Promise<CliAccountsSnapshot> {
+  return invoke<CliAccountsSnapshot>("list_cli_accounts");
+}
+
+export async function captureCliAccount(provider: CliProvider, label?: string): Promise<CliAccountProfile> {
+  return invoke<CliAccountProfile>("capture_cli_account", { provider, label } satisfies CaptureCliAccountArgs);
+}
+
+export async function switchCliAccount(provider: CliProvider, profileId: string): Promise<CliSwitchResult> {
+  return invoke<CliSwitchResult>("switch_cli_account", { provider, profileId } satisfies SwitchCliAccountArgs);
+}
+
+export async function removeCliAccount(profileId: string): Promise<void> {
+  return invoke<void>("remove_cli_account", { profileId } satisfies ProfileIdArgs);
+}
+
+export async function renameCliAccount(profileId: string, label: string): Promise<CliAccountProfile> {
+  return invoke<CliAccountProfile>("rename_cli_account", { profileId, label } satisfies RenameCliAccountArgs);
 }

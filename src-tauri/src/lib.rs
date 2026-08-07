@@ -11,6 +11,7 @@ mod socket;
 mod status_feed;
 pub mod terminal_config;
 pub mod usage;
+mod cli_accounts;
 
 use pty::manager::SessionManager;
 use std::sync::atomic::AtomicBool;
@@ -265,6 +266,7 @@ pub fn run() {
             commands::online_publish::publish_savepoint,
             commands::online_publish::finalize_savepoint,
             commands::shell::get_default_shell,
+            commands::tab_sweep::run_tab_sweep_judge,
             commands::session_mapping::read_agent_session_mappings,
             commands::crsm::crsm_list_sessions,
             commands::crsm::crsm_create_handoff,
@@ -295,6 +297,11 @@ pub fn run() {
             commands::usage::remove_usage_account,
             commands::usage::set_usage_account_enabled,
             commands::usage::get_multi_usage,
+            commands::cli_accounts::list_cli_accounts,
+            commands::cli_accounts::capture_cli_account,
+            commands::cli_accounts::switch_cli_account,
+            commands::cli_accounts::remove_cli_account,
+            commands::cli_accounts::rename_cli_account,
             remote::get_remote_info,
             remote::rotate_remote_token,
             remote::get_remote_bind_all,

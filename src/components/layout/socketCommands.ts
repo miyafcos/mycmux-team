@@ -500,7 +500,7 @@ async function loadSessionOutputSnapshot(): Promise<SessionOutputSnapshot> {
   }
 }
 
-function processStatusReasonForTab(
+export function processStatusReasonForTab(
   type: PaneTab["type"],
   process: PtyMetadataSnapshot[string] | undefined,
   snapshotAvailable: boolean,
@@ -953,18 +953,19 @@ async function sendPaneText(args: SocketArgs) {
 }
 
 async function readPane(args: SocketArgs) {
-  const [{ getTerminalBufferLines, hasTerminalBuffer }, { useWorkspaceListStore }] = await Promise.all([
-    import("../terminal/XTermWrapper"),
-    import("../../stores/workspaceStore"),
-  ]);
+  const { useWorkspaceListStore } = await import("../../stores/workspaceStore");
   const sessionId = socketArgString(args, "sessionId", "session_id");
   if (!sessionId) throw new Error("pane.read requires sessionId");
   if (!isKnownPaneSession(useWorkspaceListStore.getState().workspaces, sessionId)) {
     throw new Error("pane.read session is not a known pane");
   }
+  return { sessionId, lines: await readPaneTail(sessionId, args?.lines) };
+}
+
+export async function readPaneTail(sessionId: string, lines: unknown): Promise<string[]> {
+  const { getTerminalBufferLines, hasTerminalBuffer } = await import("../terminal/XTermWrapper");
   if (hasTerminalBuffer(sessionId)) {
-    const count = clampPaneReadLines(args?.lines);
-    return { sessionId, lines: getTerminalBufferLines(sessionId, count) };
+    return getTerminalBufferLines(sessionId, clampPaneReadLines(lines));
   }
 
   const [{ getSessionScrollback }, { getHeadlessBufferLines }] = await Promise.all([
@@ -978,8 +979,7 @@ async function readPane(args: SocketArgs) {
     throw new Error("no terminal buffer for session");
   }
   if (snapshot.data.byteLength === 0) throw new Error("no terminal buffer for session");
-  const count = clampPaneReadLines(args?.lines);
-  return { sessionId, lines: await getHeadlessBufferLines(sessionId, snapshot, count) };
+  return getHeadlessBufferLines(sessionId, snapshot, clampPaneReadLines(lines));
 }
 
 async function movePane(args: SocketArgs) {
