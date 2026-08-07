@@ -1,9 +1,12 @@
 use std::collections::HashMap;
+use std::io::ErrorKind;
 use std::process::{Command as StdCommand, Stdio};
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, Command};
+use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
@@ -11,6 +14,66 @@ use crate::commands::terminal::{prepare_spawn_command, sanitize_launch_env};
 
 const JUDGE_MODEL: &str = "claude-haiku-4-5-20251001";
 const JUDGE_TIMEOUT: Duration = Duration::from_secs(90);
+
+type JudgeAbortRegistry = Mutex<HashMap<String, oneshot::Sender<()>>>;
+
+fn judge_abort_registry() -> &'static JudgeAbortRegistry {
+    static REGISTRY: OnceLock<JudgeAbortRegistry> = OnceLock::new();
+    REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TabSweepJudgeError {
+    code: &'static str,
+    detail: String,
+}
+
+impl TabSweepJudgeError {
+    fn new(code: &'static str, detail: impl Into<String>) -> Self {
+        Self {
+            code,
+            detail: detail.into(),
+        }
+    }
+
+    fn internal(detail: impl Into<String>) -> Self {
+        Self::new("internal", detail)
+    }
+}
+
+struct JudgeRegistration {
+    request_id: String,
+}
+
+impl JudgeRegistration {
+    fn register(
+        request_id: String,
+        sender: oneshot::Sender<()>,
+    ) -> Result<Self, TabSweepJudgeError> {
+        if request_id.trim().is_empty() {
+            return Err(TabSweepJudgeError::internal("judge request id is empty"));
+        }
+        let mut registry = judge_abort_registry()
+            .lock()
+            .map_err(|_| TabSweepJudgeError::internal("judge registry lock is poisoned"))?;
+        if registry.contains_key(&request_id) {
+            return Err(TabSweepJudgeError::internal(
+                "judge request id is already active",
+            ));
+        }
+        registry.insert(request_id.clone(), sender);
+        Ok(Self { request_id })
+    }
+}
+
+impl Drop for JudgeRegistration {
+    fn drop(&mut self) {
+        if let Ok(mut registry) = judge_abort_registry().lock() {
+            registry.remove(&self.request_id);
+        }
+    }
+}
 
 fn judge_args() -> Vec<String> {
     vec![
@@ -111,98 +174,176 @@ where
 }
 
 #[tauri::command]
-pub async fn run_tab_sweep_judge(prompt: String) -> Result<String, String> {
+pub async fn abort_tab_sweep_judge(request_id: String) -> Result<bool, TabSweepJudgeError> {
+    let sender = judge_abort_registry()
+        .lock()
+        .map_err(|_| TabSweepJudgeError::internal("judge registry lock is poisoned"))?
+        .remove(&request_id);
+    Ok(sender.is_some_and(|sender| sender.send(()).is_ok()))
+}
+
+#[tauri::command]
+pub async fn run_tab_sweep_judge(
+    prompt: String,
+    request_id: String,
+) -> Result<String, TabSweepJudgeError> {
+    let (cancel_sender, mut cancel_receiver) = oneshot::channel();
+    let _registration = JudgeRegistration::register(request_id, cancel_sender)?;
     let mut command = Command::from(build_judge_command(std::env::vars()));
     command.kill_on_drop(true);
-    let mut child = command
-        .spawn()
-        .map_err(|error| format!("failed to start tab sweep judge: {error}"))?;
+    let mut child = command.spawn().map_err(|error| {
+        let code = if error.kind() == ErrorKind::NotFound {
+            "cli_not_found"
+        } else {
+            "internal"
+        };
+        TabSweepJudgeError::new(code, format!("failed to start tab sweep judge: {error}"))
+    })?;
     let deadline = Instant::now() + JUDGE_TIMEOUT;
 
-    let mut stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| "tab sweep judge stdin unavailable".to_string())?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "tab sweep judge stdout unavailable".to_string())?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| "tab sweep judge stderr unavailable".to_string())?;
+    let Some(mut stdin) = child.stdin.take() else {
+        let cleanup = terminate_child_tree(&mut child).await.err();
+        return Err(TabSweepJudgeError::internal(format!(
+            "tab sweep judge stdin unavailable{}",
+            cleanup
+                .map(|detail| format!("; cleanup failed: {detail}"))
+                .unwrap_or_default()
+        )));
+    };
+    let Some(stdout) = child.stdout.take() else {
+        let cleanup = terminate_child_tree(&mut child).await.err();
+        return Err(TabSweepJudgeError::internal(format!(
+            "tab sweep judge stdout unavailable{}",
+            cleanup
+                .map(|detail| format!("; cleanup failed: {detail}"))
+                .unwrap_or_default()
+        )));
+    };
+    let Some(stderr) = child.stderr.take() else {
+        let cleanup = terminate_child_tree(&mut child).await.err();
+        return Err(TabSweepJudgeError::internal(format!(
+            "tab sweep judge stderr unavailable{}",
+            cleanup
+                .map(|detail| format!("; cleanup failed: {detail}"))
+                .unwrap_or_default()
+        )));
+    };
     let mut stdout_task = tokio::spawn(read_pipe(stdout));
     let mut stderr_task = tokio::spawn(read_pipe(stderr));
 
-    match tokio::time::timeout_at(deadline, stdin.write_all(prompt.as_bytes())).await {
-        Ok(Ok(())) => drop(stdin),
-        Ok(Err(error)) => {
+    let write_result = tokio::select! {
+        _ = &mut cancel_receiver => None,
+        result = tokio::time::timeout_at(deadline, stdin.write_all(prompt.as_bytes())) => Some(result),
+    };
+    match write_result {
+        None => {
             let cleanup = terminate_child_tree(&mut child).await.err();
             abort_output_tasks(&stdout_task, &stderr_task);
-            return Err(format!(
+            return Err(TabSweepJudgeError::new(
+                "cancelled",
+                cleanup
+                    .map(|detail| format!("judge cancelled; cleanup failed: {detail}"))
+                    .unwrap_or_else(|| "judge cancelled".to_string()),
+            ));
+        }
+        Some(Ok(Ok(()))) => drop(stdin),
+        Some(Ok(Err(error))) => {
+            let cleanup = terminate_child_tree(&mut child).await.err();
+            abort_output_tasks(&stdout_task, &stderr_task);
+            return Err(TabSweepJudgeError::internal(format!(
                 "failed to write tab sweep judge prompt: {error}{}",
                 cleanup
                     .map(|detail| format!("; cleanup failed: {detail}"))
                     .unwrap_or_default()
-            ));
+            )));
         }
-        Err(_) => {
+        Some(Err(_)) => {
             let cleanup = terminate_child_tree(&mut child).await.err();
             abort_output_tasks(&stdout_task, &stderr_task);
-            return Err(format!(
-                "tab sweep judge timed out after 90 seconds{}",
-                cleanup
-                    .map(|detail| format!("; cleanup failed: {detail}"))
-                    .unwrap_or_default()
+            return Err(TabSweepJudgeError::new(
+                "timeout",
+                format!(
+                    "tab sweep judge timed out after 90 seconds{}",
+                    cleanup
+                        .map(|detail| format!("; cleanup failed: {detail}"))
+                        .unwrap_or_default()
+                ),
             ));
         }
     }
 
-    let status = match tokio::time::timeout_at(deadline, child.wait()).await {
-        Ok(Ok(status)) => status,
-        Ok(Err(error)) => {
+    let wait_result = tokio::select! {
+        _ = &mut cancel_receiver => None,
+        result = tokio::time::timeout_at(deadline, child.wait()) => Some(result),
+    };
+    let status = match wait_result {
+        None => {
             let cleanup = terminate_child_tree(&mut child).await.err();
             abort_output_tasks(&stdout_task, &stderr_task);
-            return Err(format!(
+            return Err(TabSweepJudgeError::new(
+                "cancelled",
+                cleanup
+                    .map(|detail| format!("judge cancelled; cleanup failed: {detail}"))
+                    .unwrap_or_else(|| "judge cancelled".to_string()),
+            ));
+        }
+        Some(Ok(Ok(status))) => status,
+        Some(Ok(Err(error))) => {
+            let cleanup = terminate_child_tree(&mut child).await.err();
+            abort_output_tasks(&stdout_task, &stderr_task);
+            return Err(TabSweepJudgeError::internal(format!(
                 "tab sweep judge wait failed: {error}{}",
                 cleanup
                     .map(|detail| format!("; cleanup failed: {detail}"))
                     .unwrap_or_default()
-            ));
+            )));
         }
-        Err(_) => {
+        Some(Err(_)) => {
             let cleanup = terminate_child_tree(&mut child).await.err();
             abort_output_tasks(&stdout_task, &stderr_task);
-            return Err(format!(
-                "tab sweep judge timed out after 90 seconds{}",
-                cleanup
-                    .map(|detail| format!("; cleanup failed: {detail}"))
-                    .unwrap_or_default()
+            return Err(TabSweepJudgeError::new(
+                "timeout",
+                format!(
+                    "tab sweep judge timed out after 90 seconds{}",
+                    cleanup
+                        .map(|detail| format!("; cleanup failed: {detail}"))
+                        .unwrap_or_default()
+                ),
             ));
         }
     };
-    let (stdout, stderr) = match tokio::time::timeout_at(deadline, async {
-        let stdout = (&mut stdout_task)
-            .await
-            .map_err(|error| format!("tab sweep judge stdout task failed: {error}"))??;
-        let stderr = (&mut stderr_task)
-            .await
-            .map_err(|error| format!("tab sweep judge stderr task failed: {error}"))??;
-        Ok::<_, String>((stdout, stderr))
-    })
-    .await
-    {
-        Ok(result) => result?,
-        Err(_) => {
+    let output_result = tokio::select! {
+        _ = &mut cancel_receiver => None,
+        result = tokio::time::timeout_at(deadline, async {
+            let stdout = (&mut stdout_task)
+                .await
+                .map_err(|error| format!("tab sweep judge stdout task failed: {error}"))??;
+            let stderr = (&mut stderr_task)
+                .await
+                .map_err(|error| format!("tab sweep judge stderr task failed: {error}"))??;
+            Ok::<_, String>((stdout, stderr))
+        }) => Some(result),
+    };
+    let (stdout, stderr) = match output_result {
+        None => {
             abort_output_tasks(&stdout_task, &stderr_task);
-            return Err("tab sweep judge timed out after 90 seconds".to_string());
+            return Err(TabSweepJudgeError::new("cancelled", "judge cancelled"));
+        }
+        Some(Ok(Ok(result))) => result,
+        Some(Ok(Err(error))) => return Err(TabSweepJudgeError::internal(error)),
+        Some(Err(_)) => {
+            abort_output_tasks(&stdout_task, &stderr_task);
+            return Err(TabSweepJudgeError::new(
+                "timeout",
+                "tab sweep judge timed out after 90 seconds",
+            ));
         }
     };
     if !status.success() {
         let detail = String::from_utf8_lossy(&stderr);
-        return Err(format!(
-            "tab sweep judge exited with {status}: {}",
-            detail.trim()
+        return Err(TabSweepJudgeError::new(
+            "cli_failed",
+            format!("tab sweep judge exited with {status}: {}", detail.trim()),
         ));
     }
     Ok(String::from_utf8_lossy(&stdout).into_owned())
@@ -282,6 +423,37 @@ mod tests {
             .map(|argument| argument.to_string_lossy().into_owned())
             .collect();
         assert!(args.ends_with(&judge_args()));
+    }
+
+    #[tokio::test]
+    async fn abort_signal_is_request_scoped_and_idempotent() {
+        let request_id = "tab-sweep-abort-test".to_string();
+        let (sender, receiver) = oneshot::channel();
+        let registration =
+            JudgeRegistration::register(request_id.clone(), sender).expect("register judge");
+
+        assert!(abort_tab_sweep_judge(request_id.clone())
+            .await
+            .expect("abort judge"));
+        receiver.await.expect("receive abort signal");
+        assert!(!abort_tab_sweep_judge(request_id)
+            .await
+            .expect("second abort is a no-op"));
+        drop(registration);
+    }
+
+    #[test]
+    fn duplicate_request_ids_do_not_replace_the_active_sender() {
+        let request_id = "tab-sweep-duplicate-test".to_string();
+        let (first_sender, _first_receiver) = oneshot::channel();
+        let registration = JudgeRegistration::register(request_id.clone(), first_sender)
+            .expect("register first judge");
+        let (second_sender, _second_receiver) = oneshot::channel();
+        let error = JudgeRegistration::register(request_id, second_sender)
+            .err()
+            .expect("duplicate is rejected");
+        assert_eq!(error.code, "internal");
+        drop(registration);
     }
 
     #[cfg(windows)]

@@ -4,10 +4,18 @@ import type { Workspace } from "../../src/types";
 import {
   applySweep,
   buildJudgePrompt,
+  countUnseenSweepTabs,
+  formatJudgeError,
+  formatLastOutputAge,
+  formatSweepCompletion,
   hasIdlePrompt,
   hasQueuedInput,
+  lastMeaningfulTailLine,
   parseJudgeOutput,
+  parseJudgeOutputResult,
   scanTabs,
+  shortenCwdFromStart,
+  summarizeSweepReport,
   TAB_SWEEP_IDLE_MS,
   type SweepReport,
   type SweepScanSource,
@@ -187,6 +195,28 @@ describe("queued input detection", () => {
     expect(hasIdlePrompt(["❯"])).toBe(true);
     expect(hasIdlePrompt(["❯ queued"])).toBe(false);
   });
+
+  it.each([
+    ["PS C:\\Users\\miyaz>", true],
+    ["C:\\work\\project>", true],
+    ["$", true],
+    ["#", true],
+    ["user@host:~/work$", true],
+    ["PS C:\\Users\\miyaz> Get-ChildItem", false],
+    ["C:\\work> dir", false],
+    ["$ npm test", false],
+    ["# apt update", false],
+    ["price is $", false],
+    ["server listening", false],
+  ])("recognizes conservative shell prompt %j as idle=%s", (line, expected) => {
+    expect(hasIdlePrompt([line])).toBe(expected);
+  });
+
+  it("treats text after a shell prompt as queued input", () => {
+    expect(hasQueuedInput(["PS C:\\work> npm test"])).toBe(true);
+    expect(hasQueuedInput(["C:\\work> dir"])).toBe(true);
+    expect(hasQueuedInput(["$ git status"])).toBe(true);
+  });
 });
 
 describe("judge prompt and output", () => {
@@ -213,6 +243,56 @@ describe("judge prompt and output", () => {
       '[{"id":"a","verdict":"close"},{"id":"alien","verdict":"done_waiting"}]',
       ["a"],
     )).toEqual([{ id: "a", verdict: "unknown" }]);
+  });
+
+  it("reports malformed or incomplete judge output as invalid for the UI", () => {
+    expect(parseJudgeOutputResult("not-json", ["a"]).valid).toBe(false);
+    expect(parseJudgeOutputResult('[{"id":"a","verdict":"done_waiting"}]', ["a"]).valid).toBe(true);
+    expect(parseJudgeOutputResult('[{"id":"a","verdict":"done_waiting"}]', ["a", "b"]).valid).toBe(false);
+    expect(parseJudgeOutputResult('[{"id":"a","verdict":"close"}]', ["a"]).valid).toBe(false);
+  });
+});
+
+describe("tab sweep UI helpers", () => {
+  it("formats elapsed output age against the scan snapshot", () => {
+    expect(formatLastOutputAge(NOW - 9_000, NOW)).toBe("最終出力から9秒");
+    expect(formatLastOutputAge(NOW - 5 * 60_000, NOW)).toBe("最終出力から5分");
+    expect(formatLastOutputAge(NOW - 2 * 60 * 60_000, NOW)).toBe("最終出力から2時間");
+    expect(formatLastOutputAge(null, NOW)).toBe("最終出力時刻不明");
+  });
+
+  it("keeps the meaningful last line and the end of a long cwd", () => {
+    expect(lastMeaningfulTailLine(["build complete", "❯"])).toBe("build complete");
+    expect(lastMeaningfulTailLine(["❯"])).toBe("待機プロンプト");
+    const shortened = shortenCwdFromStart("C:\\Users\\miyaz\\very\\long\\project\\directory", 20);
+    expect(shortened.startsWith("…")).toBe(true);
+    expect(shortened.endsWith("project\\directory")).toBe(true);
+  });
+
+  it("includes skipped and failed counts in the completion summary", () => {
+    expect(formatSweepCompletion("2件閉じました", {
+      closed: 2,
+      renamed: 0,
+      skipped: ["a"],
+      errors: ["b: failed"],
+    })).toBe("2件閉じました（1件は状態が変わったため見送りました、1件は処理できませんでした）");
+  });
+
+  it("maps judge errors to Japanese while retaining raw detail", () => {
+    expect(formatJudgeError({ code: "timeout", detail: "timed out raw" })).toEqual({
+      summary: "判定が時間切れになりました。もう一度実行してください。",
+      raw: "timed out raw",
+    });
+    expect(formatJudgeError({ code: "cli_not_found", detail: "not found raw" }).summary).toContain("見つかりません");
+    expect(formatJudgeError({ code: "cli_failed", detail: "stderr raw" }).summary).toContain("エラー終了");
+  });
+
+  it("counts the union of unseen dead, candidate, and unnamed tabs", () => {
+    const candidate = tab("candidate", "CANDIDATE", true);
+    const summary = summarizeSweepReport(report([tab("dead", "DEAD"), candidate]));
+    expect(summary).toMatchObject({ dead: 1, candidates: 1, unnamed: 1 });
+    expect(countUnseenSweepTabs(summary, new Set())).toBe(2);
+    expect(countUnseenSweepTabs(summary, new Set(["candidate:candidate", "unnamed:candidate"]))).toBe(1);
   });
 });
 
@@ -258,6 +338,29 @@ describe("applySweep safety invariants", () => {
     expect(result.closed).toBe(1);
     expect(command).toHaveBeenCalledWith("pane.close_tab", { sessionId: "session-done" });
     expect(command).toHaveBeenCalledTimes(1);
+  });
+
+  it("B-9 manually closes a stable candidate without weakening the AI path", async () => {
+    const command = vi.fn(async () => ({}));
+    const current = report([tab("manual", "CANDIDATE")]);
+    const result = await applySweep(
+      { manualCloseCandidateTabIds: ["manual"] },
+      { scan: async () => current, command },
+    );
+    expect(result.closed).toBe(1);
+    expect(command).toHaveBeenCalledWith("pane.close_tab", { sessionId: "session-manual" });
+  });
+
+  it("B-9 keeps a manually selected tab when the second safety scan becomes locked", async () => {
+    const command = vi.fn(async () => ({}));
+    const states = [report([tab("manual", "CANDIDATE")]), report([tab("manual", "LOCKED")])];
+    const result = await applySweep(
+      { manualCloseCandidateTabIds: ["manual"] },
+      { scan: async () => states.shift() ?? report([]), command },
+    );
+    expect(result.closed).toBe(0);
+    expect(result.skipped).toEqual(["manual"]);
+    expect(command).not.toHaveBeenCalled();
   });
 
   it("S4 closes DEAD tabs without any judge verdict", async () => {

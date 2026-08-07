@@ -3,18 +3,19 @@ import { useCliAccountStore } from "../../stores/cliAccountStore";
 import { OVERLAY_EXIT_MS, useDeferredUnmount } from "../../hooks/useDeferredUnmount";
 import {
   badgeLabel,
-  hasAttention,
+  attentionReason,
   liveForProvider,
   CLI_ACCOUNT_POLL_INTERVAL_MS,
   PROVIDER_SHORT,
 } from "../../lib/cliAccounts";
 import { CliAccountMenu } from "./CliAccountMenu";
 
-type BadgeMode = "full" | "compact" | "hidden";
+type BadgeMode = "full" | "compact";
 
 export function CliAccountBadge() {
   const live = useCliAccountStore((state) => state.live);
   const profiles = useCliAccountStore((state) => state.profiles);
+  const fetchError = useCliAccountStore((state) => state.fetchError);
   const fetchAccounts = useCliAccountStore((state) => state.fetch);
   const [isOpen, setIsOpen] = useState(false);
   const { mounted: menuMounted, closing: menuClosing } = useDeferredUnmount(isOpen, OVERLAY_EXIT_MS);
@@ -55,13 +56,13 @@ export function CliAccountBadge() {
     };
   }, [isOpen]);
 
-  if (mode === "hidden" || live.length === 0) {
+  if (live.length === 0 && !fetchError) {
     return null;
   }
 
   const claude = liveForProvider(live, "claude");
   const codex = liveForProvider(live, "codex");
-  const attention = hasAttention(live, profiles);
+  const attention = attentionReason(live, profiles, fetchError);
   const fullText = `${PROVIDER_SHORT.claude} ${badgeLabel(claude, profiles)} · ${PROVIDER_SHORT.codex} ${badgeLabel(codex, profiles)}`;
 
   return (
@@ -70,8 +71,13 @@ export function CliAccountBadge() {
       style={{ position: "relative", height: 24, display: "flex", alignItems: "center" }}
     >
       <button
+        type="button"
         onClick={() => setIsOpen((value) => !value)}
-        title="CLI ログインアカウントの表示・切り替え"
+        title={attention ?? "CLI ログインアカウントの表示・切り替え"}
+        aria-label={attention ? `ログインアカウントを表示・切り替え。${attention}` : "ログインアカウントを表示・切り替え"}
+        aria-haspopup="dialog"
+        aria-expanded={isOpen}
+        aria-controls="cli-account-menu"
         className="cmux-title-btn"
         style={{
           background: "none",
@@ -88,11 +94,16 @@ export function CliAccountBadge() {
           textOverflow: "ellipsis",
         }}
       >
-        {mode === "full" ? fullText : `${PROVIDER_SHORT.claude}·${PROVIDER_SHORT.codex}`}
+        {fetchError && live.length === 0
+          ? "ログイン情報エラー"
+          : mode === "full" ? fullText : `${PROVIDER_SHORT.claude}·${PROVIDER_SHORT.codex}`}
       </button>
 
       {attention && (
         <span
+          title={attention}
+          role="img"
+          aria-label={attention}
           style={{
             position: "absolute",
             top: 2,
@@ -117,14 +128,11 @@ function useBadgeMode(): BadgeMode {
 
   useEffect(() => {
     const compactQuery = window.matchMedia("(max-width: 900px)");
-    const hiddenQuery = window.matchMedia("(max-width: 700px)");
     const update = () => setMode(readBadgeMode());
     compactQuery.addEventListener("change", update);
-    hiddenQuery.addEventListener("change", update);
     update();
     return () => {
       compactQuery.removeEventListener("change", update);
-      hiddenQuery.removeEventListener("change", update);
     };
   }, []);
 
@@ -133,7 +141,6 @@ function useBadgeMode(): BadgeMode {
 
 function readBadgeMode(): BadgeMode {
   if (typeof window === "undefined") return "full";
-  if (window.matchMedia("(max-width: 700px)").matches) return "hidden";
   if (window.matchMedia("(max-width: 900px)").matches) return "compact";
   return "full";
 }

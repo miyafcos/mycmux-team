@@ -25,6 +25,7 @@ export type KeybindingActionId =
   | "pane.tab.prev"
   | "pane.attention.next"
   | "settings.keybindings"
+  | "tab.sweep"
   | "pane.zoom.toggle"
   | "terminal.search"
   | "crsm.palette";
@@ -40,6 +41,7 @@ export const KEYBINDING_DEFINITIONS: KeybindingDefinition[] = [
   { action: "sidebar.toggle", title: "Toggle sidebar", category: "Global", defaultShortcut: "ctrl+b" },
   { action: "settings.keybindings", title: "Open keyboard shortcuts", category: "Global", defaultShortcut: "ctrl+," },
   { action: "crsm.palette", title: "Open Resume", category: "Global", defaultShortcut: "ctrl+p" },
+  { action: "tab.sweep", title: "タブ掃除を開く", category: "Global", defaultShortcut: "ctrl+shift+k" },
 
   { action: "workspace.new", title: "New workspace", category: "Workspace", defaultShortcut: "ctrl+shift+n" },
   { action: "workspace.next", title: "Next workspace", category: "Workspace", defaultShortcut: "ctrl+tab" },

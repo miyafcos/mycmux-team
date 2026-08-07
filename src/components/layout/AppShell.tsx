@@ -21,6 +21,7 @@ import KeybindingsModal from "./KeybindingsModal";
 import CrsmPalette, { preloadCrsmSessions } from "../CommandPalette/CrsmPalette";
 import { useKeybindingStore } from "../../stores/keybindingStore";
 import { isEditableTarget } from "../../lib/keybindings";
+import { TAB_SWEEP_OPEN_EVENT } from "./tabSweep";
 import { useThemeStore } from "../../stores/themeStore";
 import ErrorBoundary from "../common/ErrorBoundary";
 import { THEME_BACKGROUND_PRESETS } from "../../lib/themeTweaks";
@@ -578,7 +579,7 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       // Skip if modals are open
-      if (isKeybindingsOpen || isCrsmPaletteOpen) return;
+      if (isKeybindingsOpen || isCrsmPaletteOpen || document.getElementById("tab-sweep-panel")) return;
       if (isPlainXtermInputEvent(e)) return;
       // Skip if focus is on a native editable control (dialog inputs, selects,
       // contentEditable) outside the terminal — e.g. typing into
@@ -613,6 +614,10 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
 
         case "crsm.palette":
           setIsCrsmPaletteOpen(true);
+          break;
+
+        case "tab.sweep":
+          window.dispatchEvent(new Event(TAB_SWEEP_OPEN_EVENT));
           break;
 
         case "workspace.close":

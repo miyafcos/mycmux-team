@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  matchesTabSweepCommand,
   pageJumpIndex,
   resolveCrsmEscapeAction,
   sortSessionsByLastActivity,
@@ -31,5 +32,13 @@ describe("CrsmPalette helpers", () => {
     expect(pageJumpIndex(8, "Home", 20, 420, 48)).toBe(0);
     expect(pageJumpIndex(8, "End", 20, 420, 48)).toBe(19);
     expect(pageJumpIndex(18, "PageDown", 20, 420, 48)).toBe(19);
+  });
+
+  it("finds the tab sweep command without hijacking an empty Enter", () => {
+    expect(matchesTabSweepCommand("タブ掃除")).toBe(true);
+    expect(matchesTabSweepCommand("タブ")).toBe(true);
+    expect(matchesTabSweepCommand("tab sweep")).toBe(true);
+    expect(matchesTabSweepCommand("")).toBe(false);
+    expect(matchesTabSweepCommand("resume work")).toBe(false);
   });
 });

@@ -16,6 +16,7 @@ import { useSettingsStore } from "../../stores/settingsStore";
 import { OVERLAY_EXIT_MS, useDeferredUnmount } from "../../hooks/useDeferredUnmount";
 import { KIND_COLORS } from "../../lib/agentKindColors";
 import { DocumentIcon, PencilIcon, TaskIcon } from "../icons/ChromeIcons";
+import { TAB_SWEEP_OPEN_EVENT } from "../layout/tabSweep";
 import "./CrsmPalette.css";
 
 interface CrsmPaletteProps {
@@ -45,6 +46,12 @@ export type CrsmPageJumpKey = "PageUp" | "PageDown" | "Home" | "End";
 
 export function resolveCrsmEscapeAction(query: string): CrsmEscapeAction {
   return query.length > 0 ? "clear-query" : "close";
+}
+
+export function matchesTabSweepCommand(query: string): boolean {
+  const normalized = query.trim().toLocaleLowerCase().replace(/\s+/g, "");
+  if (!normalized) return false;
+  return ["タブ掃除", "tabsweep"].some((term) => term.includes(normalized));
 }
 
 export function pageJumpIndex(
@@ -723,6 +730,11 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
     }
   }, [selected, summaryOnlyConfirmKey]);
 
+  function openTabSweepCommand(): void {
+    onClose();
+    window.setTimeout(() => window.dispatchEvent(new Event(TAB_SWEEP_OPEN_EVENT)), OVERLAY_EXIT_MS);
+  }
+
   useEffect(() => {
     if (!open) return;
     const onKeyDown = (event: KeyboardEvent) => {
@@ -778,6 +790,10 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
       }
       if (event.key === "Enter") {
         event.preventDefault();
+        if (matchesTabSweepCommand(query)) {
+          openTabSweepCommand();
+          return;
+        }
         void openSelected();
       }
     };
@@ -887,6 +903,29 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
           placeholder="履歴を検索"
           style={styles.input}
         />
+        <button
+          type="button"
+          aria-label="タブ掃除を開く"
+          onClick={openTabSweepCommand}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 12,
+            margin: "8px 12px 0",
+            padding: "7px 10px",
+            border: `1px solid ${matchesTabSweepCommand(query) ? "var(--cmux-accent)" : "var(--cmux-border)"}`,
+            borderRadius: 6,
+            background: matchesTabSweepCommand(query) ? "var(--cmux-hover)" : "transparent",
+            color: "var(--cmux-text)",
+            cursor: "pointer",
+            fontSize: 11,
+            textAlign: "left",
+          }}
+        >
+          <span><strong>操作</strong> · タブ掃除を開く</span>
+          <kbd style={{ color: "var(--cmux-text-tertiary)", fontFamily: "inherit", fontSize: 10 }}>Ctrl+Shift+K</kbd>
+        </button>
         <div style={styles.targetRow}>
           {enabledTargets.map((kind) => (
             <button

@@ -10,6 +10,7 @@ import {
 export const TAB_SWEEP_JUDGE_MODEL = "claude-haiku-4-5-20251001";
 export const TAB_SWEEP_IDLE_MS = 5 * 60 * 1000;
 export const TAB_SWEEP_TAIL_LINES = 8;
+export const TAB_SWEEP_OPEN_EVENT = "mycmux:tab-sweep-open";
 
 export type SweepCategory = "DEAD" | "LOCKED" | "CANDIDATE";
 export type SweepLockReason =
@@ -69,6 +70,7 @@ export interface SweepScanSource {
 export interface SweepPlan {
   closeDeadTabIds?: string[];
   closeCandidateTabIds?: string[];
+  manualCloseCandidateTabIds?: string[];
   verdicts?: Verdict[];
   renames?: Array<{ id: string; label: string }>;
 }
@@ -83,6 +85,23 @@ export interface SweepApplyResult {
 export interface SweepApplyDependencies {
   scan: (id?: string) => Promise<SweepReport>;
   command: (cmd: string, args: Record<string, unknown>) => Promise<unknown>;
+}
+
+export interface SweepNoticeSummary {
+  dead: number;
+  candidates: number;
+  unnamed: number;
+  keys: string[];
+}
+
+export interface JudgeParseResult {
+  verdicts: Verdict[];
+  valid: boolean;
+}
+
+export interface JudgeErrorPresentation {
+  summary: string;
+  raw: string;
 }
 
 const STATUS_LINE_PATTERNS: readonly RegExp[] = [
@@ -108,20 +127,120 @@ function isIgnoredPromptDecoration(line: string): boolean {
   return normalized.length === 0 || STATUS_LINE_PATTERNS.some((pattern) => pattern.test(normalized));
 }
 
-export function hasQueuedInput(tail: readonly string[]): boolean {
-  for (let index = tail.length - 1; index >= 0; index -= 1) {
-    const line = tail[index] ?? "";
-    const promptIndex = line.lastIndexOf("❯");
-    if (promptIndex < 0) continue;
-    const inlineInput = line.slice(promptIndex + 1).trim();
-    if (inlineInput.length > 0 && !isIgnoredPromptDecoration(inlineInput)) return true;
-    return tail.slice(index + 1).some((nextLine) => !isIgnoredPromptDecoration(nextLine));
+interface PromptMatch {
+  input: string;
+}
+
+function matchPromptLine(line: string): PromptMatch | null {
+  const claudeIndex = line.lastIndexOf("❯");
+  if (claudeIndex >= 0) return { input: line.slice(claudeIndex + 1).trim() };
+  const patterns = [
+    /^\s*PS\s+[A-Za-z]:\\[^>\r\n]*>\s*(.*)$/i,
+    /^\s*(?:[A-Za-z]:\\|\\\\)[^>\r\n]*>\s*(.*)$/,
+    /^\s*(?:[\w.-]+@[\w.-]+(?::[^\r\n$#]{0,120})?|[~/.\\:\w-]{0,120})?[$#]\s*(.*)$/,
+  ];
+  for (const pattern of patterns) {
+    const match = line.match(pattern);
+    if (match) return { input: (match[1] ?? "").trim() };
   }
-  return false;
+  return null;
+}
+
+function findLastPrompt(tail: readonly string[]): { index: number; match: PromptMatch } | null {
+  for (let index = tail.length - 1; index >= 0; index -= 1) {
+    const match = matchPromptLine(tail[index] ?? "");
+    if (match) return { index, match };
+  }
+  return null;
+}
+
+export function hasQueuedInput(tail: readonly string[]): boolean {
+  const prompt = findLastPrompt(tail);
+  if (!prompt) return false;
+  if (prompt.match.input.length > 0 && !isIgnoredPromptDecoration(prompt.match.input)) return true;
+  return tail.slice(prompt.index + 1).some((nextLine) => !isIgnoredPromptDecoration(nextLine));
 }
 
 export function hasIdlePrompt(tail: readonly string[]): boolean {
-  return tail.some((line) => line.includes("❯")) && !hasQueuedInput(tail);
+  return findLastPrompt(tail) !== null && !hasQueuedInput(tail);
+}
+
+export function lastMeaningfulTailLine(tail: readonly string[]): string {
+  for (let index = tail.length - 1; index >= 0; index -= 1) {
+    const line = (tail[index] ?? "").trim().replace(/\s+/g, " ");
+    if (!line || isIgnoredPromptDecoration(line)) continue;
+    const prompt = matchPromptLine(line);
+    if (prompt && !prompt.input) continue;
+    return line;
+  }
+  return "待機プロンプト";
+}
+
+export function formatLastOutputAge(lastOutputAt: number | null, now: number): string {
+  if (lastOutputAt === null) return "最終出力時刻不明";
+  const elapsedSeconds = Math.max(0, Math.floor((now - lastOutputAt) / 1000));
+  if (elapsedSeconds < 60) return `最終出力から${elapsedSeconds}秒`;
+  const elapsedMinutes = Math.floor(elapsedSeconds / 60);
+  if (elapsedMinutes < 60) return `最終出力から${elapsedMinutes}分`;
+  const elapsedHours = Math.floor(elapsedMinutes / 60);
+  if (elapsedHours < 24) return `最終出力から${elapsedHours}時間`;
+  return `最終出力から${Math.floor(elapsedHours / 24)}日`;
+}
+
+export function shortenCwdFromStart(cwd: string, maxLength = 56): string {
+  const characters = Array.from(cwd);
+  if (characters.length <= maxLength) return cwd;
+  return `…${characters.slice(-(maxLength - 1)).join("")}`;
+}
+
+export function summarizeSweepReport(report: SweepReport): SweepNoticeSummary {
+  return {
+    dead: report.dead.length,
+    candidates: report.candidates.length,
+    unnamed: report.unnamed.length,
+    keys: [
+      ...report.dead.map((tab) => `dead:${tab.id}`),
+      ...report.candidates.map((tab) => `candidate:${tab.id}`),
+      ...report.unnamed.map((tab) => `unnamed:${tab.id}`),
+    ],
+  };
+}
+
+export function countUnseenSweepTabs(summary: SweepNoticeSummary, acknowledged: ReadonlySet<string>): number {
+  const unseenTabIds = new Set<string>();
+  for (const key of summary.keys) {
+    if (!acknowledged.has(key)) unseenTabIds.add(key.slice(key.indexOf(":") + 1));
+  }
+  return unseenTabIds.size;
+}
+
+export function formatSweepCompletion(base: string, result: SweepApplyResult): string {
+  const details: string[] = [];
+  if (result.skipped.length > 0) details.push(`${result.skipped.length}件は状態が変わったため見送りました`);
+  if (result.errors.length > 0) details.push(`${result.errors.length}件は処理できませんでした`);
+  return details.length > 0 ? `${base}（${details.join("、")}）` : base;
+}
+
+export function formatJudgeError(error: unknown): JudgeErrorPresentation {
+  const record = error && typeof error === "object" ? error as Record<string, unknown> : null;
+  const code = typeof record?.code === "string" ? record.code : "";
+  const raw = typeof record?.detail === "string"
+    ? record.detail
+    : error instanceof Error ? error.message : String(error);
+  const normalized = `${code} ${raw}`.toLowerCase();
+  if (code === "timeout" || normalized.includes("timed out")) {
+    return { summary: "判定が時間切れになりました。もう一度実行してください。", raw };
+  }
+  if (code === "cli_not_found" || normalized.includes("not found") || normalized.includes("os error 2")) {
+    return { summary: "判定に使うツールが見つかりません。Claude Code のインストールを確認してください。", raw };
+  }
+  if (code === "cli_failed" || normalized.includes("exited with")) {
+    return { summary: "判定ツールがエラー終了しました。詳細を確認して再実行してください。", raw };
+  }
+  if (code === "cancelled" || normalized.includes("cancel")) {
+    return { summary: "判定を中止しました。必要なら再実行してください。", raw };
+  }
+  return { summary: "判定に失敗しました。詳細を確認して再実行してください。", raw };
 }
 
 export async function readTail(sessionId: string, lines: number): Promise<string[]> {
@@ -342,6 +461,29 @@ export function parseJudgeOutput(raw: string, allowedIds?: Iterable<string>): Ve
   return knownIds.map((id) => verdicts.get(id) ?? { id, verdict: "unknown" });
 }
 
+export function parseJudgeOutputResult(raw: string, allowedIds: Iterable<string>): JudgeParseResult {
+  const knownIds = [...new Set(allowedIds)];
+  const verdicts = parseJudgeOutput(raw, knownIds);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw.trim());
+  } catch {
+    return { verdicts, valid: false };
+  }
+  if (!Array.isArray(parsed)) return { verdicts, valid: false };
+  const allowed = new Set(knownIds);
+  const seen = new Set<string>();
+  for (const entry of parsed) {
+    if (!entry || typeof entry !== "object") return { verdicts, valid: false };
+    const record = entry as Record<string, unknown>;
+    if (typeof record.id !== "string" || !allowed.has(record.id.trim())) return { verdicts, valid: false };
+    const id = record.id.trim();
+    if (seen.has(id) || !isJudgeVerdict(record.verdict)) return { verdicts, valid: false };
+    seen.add(id);
+  }
+  return { verdicts, valid: knownIds.every((id) => seen.has(id)) };
+}
+
 const defaultApplyDependencies: SweepApplyDependencies = {
   scan: (id) => scanTabs(undefined, id ? new Set([id]) : undefined),
   command: (cmd, args) => handleSocketCommand(cmd, args),
@@ -388,6 +530,7 @@ export async function applySweep(
   };
 
   for (const id of plan.closeDeadTabIds ?? []) await close(id, "DEAD");
+  for (const id of plan.manualCloseCandidateTabIds ?? []) await close(id, "CANDIDATE");
   for (const id of plan.closeCandidateTabIds ?? []) {
     if (verdictById.get(id)?.verdict !== "done_waiting") {
       result.skipped.push(id);

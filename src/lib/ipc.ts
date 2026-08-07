@@ -81,6 +81,11 @@ interface CaptureCliAccountArgs { provider: CliProvider; label?: string }
 interface SwitchCliAccountArgs { provider: CliProvider; profileId: string }
 interface ProfileIdArgs { profileId: string }
 interface RenameCliAccountArgs extends ProfileIdArgs { label: string }
+interface ResolveCliAccountOrphanArgs {
+  orphanId: string;
+  action: CliOrphanAction;
+  label?: string;
+}
 
 const sessionCreateTails = new Map<string, Promise<void>>();
 
@@ -986,9 +991,29 @@ export interface CliLiveLogin {
   error: string | null;
 }
 
+export interface CliAccountActivePointers {
+  claude: string | null;
+  codex: string | null;
+}
+
+export interface CliOrphanSnapshot {
+  id: string;
+  provider: CliProvider | null;
+  captured_at: string | null;
+  email: string | null;
+  identity_key: string | null;
+  plan: string | null;
+  org_name: string | null;
+  needs_relogin: boolean;
+  error: string | null;
+}
+
 export interface CliAccountsSnapshot {
   profiles: CliAccountProfile[];
   live: CliLiveLogin[];
+  active: CliAccountActivePointers;
+  orphans: CliOrphanSnapshot[];
+  backup_root: string;
   generated_at: string;
 }
 
@@ -1017,4 +1042,18 @@ export async function removeCliAccount(profileId: string): Promise<void> {
 
 export async function renameCliAccount(profileId: string, label: string): Promise<CliAccountProfile> {
   return invoke<CliAccountProfile>("rename_cli_account", { profileId, label } satisfies RenameCliAccountArgs);
+}
+
+export type CliOrphanAction = "register" | "discard";
+
+export async function resolveCliAccountOrphan(
+  orphanId: string,
+  action: CliOrphanAction,
+  label?: string,
+): Promise<CliAccountProfile | null> {
+  return invoke<CliAccountProfile | null>("resolve_cli_account_orphan", {
+    orphanId,
+    action,
+    label,
+  } satisfies ResolveCliAccountOrphanArgs);
 }
