@@ -901,6 +901,10 @@ export interface UsageSummary {
   codex_available: boolean;
   claude_error: string | null;
   codex_error: string | null;
+  claude_identity_key: string | null;
+  claude_email: string | null;
+  codex_identity_key: string | null;
+  codex_email: string | null;
   generated_at: string;
 }
 
@@ -916,6 +920,7 @@ export interface UsageAccountMeta {
 export interface AccountUsage {
   account_id: string;
   label: string;
+  email: string | null;
   enabled: boolean;
   needs_reauth: boolean;
   five_hour: WindowStat | null;

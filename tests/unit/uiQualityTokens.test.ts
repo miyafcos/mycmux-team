@@ -23,6 +23,8 @@ const boundarySource = [
   read("src/components/layout/TabBar.tsx"),
   read("src/components/layout/TabItem.tsx"),
   read("src/components/layout/NotificationPanel.tsx"),
+  read("src/components/layout/AccountsButton.tsx"),
+  read("src/components/layout/AccountsPanel.tsx"),
   read("src/components/layout/UsagePopover.tsx"),
   read("src/components/layout/PathJumper.tsx"),
 ].join("\n");

@@ -131,7 +131,7 @@ type SectionBadge = {
   color: string;
 };
 
-function UsageSection({
+export function UsageSection({
   title,
   badge,
   children,
@@ -211,7 +211,7 @@ type UsageRowProps = {
   stat: WindowStat | null;
 };
 
-function UsageRow({ label, stat }: UsageRowProps) {
+export function UsageRow({ label, stat }: UsageRowProps) {
   if (!stat) {
     return null;
   }
@@ -239,7 +239,7 @@ function thresholdColor(pct: number): string {
   return "var(--cmux-text-tertiary)";
 }
 
-function formatDate(value: string): string {
+export function formatDate(value: string): string {
   if (!value) {
     return "unknown";
   }

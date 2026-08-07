@@ -1,6 +1,10 @@
 use chrono::Utc;
 use serde::Serialize;
 
+use crate::cli_accounts::{
+    claude::{self, ClaudePaths},
+    codex::{self, CodexPaths},
+};
 use crate::usage::token_store::{self, StoredTokens, UsageAccountMeta};
 use crate::usage::{
     oauth_claude, oauth_codex, oauth_login, AccountUsage, CachedUsage, Cooldown, PendingLogin,
@@ -10,9 +14,64 @@ use crate::usage::{
 const COOLDOWN_BASE_MS: i64 = 300_000;
 const COOLDOWN_MAX_MS: i64 = 1_800_000;
 
+#[derive(Debug, Default, PartialEq, Eq)]
+struct UsageIdentityStamp {
+    claude_identity_key: Option<String>,
+    claude_email: Option<String>,
+    codex_identity_key: Option<String>,
+    codex_email: Option<String>,
+}
+
+fn read_usage_identity_stamp(
+    claude_paths: Option<&ClaudePaths>,
+    codex_paths: Option<&CodexPaths>,
+) -> UsageIdentityStamp {
+    let claude_live = claude_paths
+        .map(claude::read_live_identity)
+        .filter(|login| login.error.is_none());
+    let codex_live = codex_paths
+        .map(codex::read_live_identity)
+        .filter(|login| login.error.is_none());
+
+    UsageIdentityStamp {
+        claude_identity_key: claude_live
+            .as_ref()
+            .and_then(|login| login.identity_key.clone()),
+        claude_email: claude_live.and_then(|login| login.email),
+        codex_identity_key: codex_live
+            .as_ref()
+            .and_then(|login| login.identity_key.clone()),
+        codex_email: codex_live.and_then(|login| login.email),
+    }
+}
+
+fn stable_usage_identity_stamp(
+    before: UsageIdentityStamp,
+    after: UsageIdentityStamp,
+) -> UsageIdentityStamp {
+    if before == after {
+        before
+    } else {
+        UsageIdentityStamp::default()
+    }
+}
+
+fn stamp_usage_summary(mut summary: UsageSummary, identity: UsageIdentityStamp) -> UsageSummary {
+    summary.claude_identity_key = identity.claude_identity_key;
+    summary.claude_email = identity.claude_email;
+    summary.codex_identity_key = identity.codex_identity_key;
+    summary.codex_email = identity.codex_email;
+    summary
+}
+
 #[tauri::command]
 pub async fn get_usage_summary() -> Result<UsageSummary, String> {
+    let claude_paths = ClaudePaths::resolve().ok();
+    let codex_paths = CodexPaths::resolve().ok();
+    let identity_before = read_usage_identity_stamp(claude_paths.as_ref(), codex_paths.as_ref());
     let (claude_result, codex_result) = tokio::join!(oauth_claude::fetch(), oauth_codex::fetch());
+    let identity_after = read_usage_identity_stamp(claude_paths.as_ref(), codex_paths.as_ref());
+    let identity = stable_usage_identity_stamp(identity_before, identity_after);
 
     let (claude_5h, claude_7d, claude_7d_sonnet, claude_7d_opus, claude_available, claude_error) =
         match claude_result {
@@ -38,19 +97,26 @@ pub async fn get_usage_summary() -> Result<UsageSummary, String> {
         Err(error) => (None, None, false, Some(error)),
     };
 
-    Ok(UsageSummary {
-        claude_5h,
-        claude_7d,
-        claude_7d_sonnet,
-        claude_7d_opus,
-        codex_5h,
-        codex_7d,
-        claude_available,
-        codex_available,
-        claude_error,
-        codex_error,
-        generated_at: chrono::Utc::now().to_rfc3339(),
-    })
+    Ok(stamp_usage_summary(
+        UsageSummary {
+            claude_5h,
+            claude_7d,
+            claude_7d_sonnet,
+            claude_7d_opus,
+            codex_5h,
+            codex_7d,
+            claude_available,
+            codex_available,
+            claude_error,
+            codex_error,
+            claude_identity_key: None,
+            claude_email: None,
+            codex_identity_key: None,
+            codex_email: None,
+            generated_at: chrono::Utc::now().to_rfc3339(),
+        },
+        identity,
+    ))
 }
 
 #[derive(Serialize)]
@@ -244,6 +310,7 @@ pub async fn get_multi_usage(
         let now_ms = Utc::now().timestamp_millis();
         if let Some(mut cached) = cached_account(&state, &account.account_id, now_ms).await {
             cached.label = account.label.clone();
+            cached.email = account.email.clone();
             cached.enabled = true;
             cached.needs_reauth = false;
             output.push(cached);
@@ -283,6 +350,7 @@ pub async fn get_multi_usage(
                 let account_usage = AccountUsage {
                     account_id: account.account_id.clone(),
                     label: account.label.clone(),
+                    email: account.email.clone(),
                     enabled: true,
                     needs_reauth: false,
                     five_hour: usage.five_hour,
@@ -375,6 +443,7 @@ fn empty_account_usage(
     AccountUsage {
         account_id: account.account_id.clone(),
         label: account.label.clone(),
+        email: account.email.clone(),
         enabled: account.enabled,
         needs_reauth,
         five_hour: None,
@@ -401,4 +470,109 @@ fn rfc3339(timestamp_ms: i64) -> String {
     chrono::DateTime::<Utc>::from_timestamp_millis(timestamp_ms)
         .map(|timestamp| timestamp.to_rfc3339())
         .unwrap_or_else(|| Utc::now().to_rfc3339())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::tempdir;
+
+    const CLAUDE_JSON: &str = include_str!("../cli_accounts/fixtures/claude_json_sample.json");
+    const CODEX_AUTH: &str = include_str!("../cli_accounts/fixtures/codex_auth_sample.json");
+
+    #[test]
+    fn identity_stamp_matches_existing_live_readers() {
+        let dir = tempdir().unwrap();
+        let claude_paths = ClaudePaths {
+            credentials: dir.path().join("credentials.json"),
+            claude_json: dir.path().join("claude.json"),
+        };
+        let codex_paths = CodexPaths {
+            auth: dir.path().join("auth.json"),
+        };
+        fs::write(&claude_paths.claude_json, CLAUDE_JSON).unwrap();
+        fs::write(&codex_paths.auth, CODEX_AUTH).unwrap();
+
+        let stamp = read_usage_identity_stamp(Some(&claude_paths), Some(&codex_paths));
+
+        assert_eq!(
+            stamp,
+            UsageIdentityStamp {
+                claude_identity_key: Some("claude-account-a".into()),
+                claude_email: Some("a@example.test".into()),
+                codex_identity_key: Some("codex-account-a".into()),
+                codex_email: Some("codex@example.test".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn identity_stamp_returns_none_without_failing_summary() {
+        let dir = tempdir().unwrap();
+        let claude_paths = ClaudePaths {
+            credentials: dir.path().join("missing-credentials.json"),
+            claude_json: dir.path().join("invalid-claude.json"),
+        };
+        let codex_paths = CodexPaths {
+            auth: dir.path().join("invalid-codex.json"),
+        };
+        fs::write(&claude_paths.claude_json, "not-json").unwrap();
+        fs::write(&codex_paths.auth, "not-json").unwrap();
+
+        let identity = read_usage_identity_stamp(Some(&claude_paths), Some(&codex_paths));
+        assert_eq!(identity, UsageIdentityStamp::default());
+
+        let summary = stamp_usage_summary(
+            UsageSummary {
+                claude_5h: Some(crate::usage::WindowStat {
+                    pct: 42.0,
+                    resets_at: "reset".into(),
+                }),
+                claude_7d: None,
+                claude_7d_sonnet: None,
+                claude_7d_opus: None,
+                codex_5h: None,
+                codex_7d: None,
+                claude_available: true,
+                codex_available: false,
+                claude_error: None,
+                codex_error: None,
+                claude_identity_key: Some("must-be-cleared".into()),
+                claude_email: Some("must-be-cleared@example.test".into()),
+                codex_identity_key: None,
+                codex_email: None,
+                generated_at: "generated".into(),
+            },
+            identity,
+        );
+
+        assert_eq!(
+            summary.claude_5h.as_ref().map(|window| window.pct),
+            Some(42.0)
+        );
+        assert!(summary.claude_available);
+        assert_eq!(summary.generated_at, "generated");
+        assert!(summary.claude_identity_key.is_none());
+        assert!(summary.claude_email.is_none());
+    }
+
+    #[test]
+    fn identity_stamp_is_discarded_when_account_changes_during_fetch() {
+        let before = UsageIdentityStamp {
+            claude_identity_key: Some("account-a".into()),
+            claude_email: Some("a@example.test".into()),
+            ..UsageIdentityStamp::default()
+        };
+        let after = UsageIdentityStamp {
+            claude_identity_key: Some("account-b".into()),
+            claude_email: Some("b@example.test".into()),
+            ..UsageIdentityStamp::default()
+        };
+
+        assert_eq!(
+            stable_usage_identity_stamp(before, after),
+            UsageIdentityStamp::default()
+        );
+    }
 }

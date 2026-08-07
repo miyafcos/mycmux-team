@@ -3,13 +3,16 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 const menuSourcePath = fileURLToPath(
-  new URL("../../src/components/layout/CliAccountMenu.tsx", import.meta.url),
+  new URL("../../src/components/layout/AccountsPanel.tsx", import.meta.url),
 );
 const badgeSourcePath = fileURLToPath(
-  new URL("../../src/components/layout/CliAccountBadge.tsx", import.meta.url),
+  new URL("../../src/components/layout/AccountsButton.tsx", import.meta.url),
 );
 const panelSourcePath = fileURLToPath(
   new URL("../../src/components/settings/CliAccountsPanel.tsx", import.meta.url),
+);
+const titleBarSourcePath = fileURLToPath(
+  new URL("../../src/components/layout/TitleBar.tsx", import.meta.url),
 );
 
 describe("CliAccountMenu active account guard", () => {
@@ -44,6 +47,24 @@ describe("CliAccountBadge accessibility contracts", () => {
     expect(menuSource).toContain('querySelector<HTMLButtonElement>("button:not([disabled])")');
     expect(menuSource).toContain("(firstButton ?? menuRef.current)?.focus()");
   });
+
+  it("keeps all four width modes reachable and polling centralized", () => {
+    const source = readFileSync(badgeSourcePath, "utf8");
+    const titleBarSource = readFileSync(titleBarSourcePath, "utf8");
+    expect(source).toContain('type AccountsButtonMode = "full" | "medium" | "compact" | "extreme"');
+    expect(source).toContain('if (resolved === "hidden") return "extreme";');
+    expect(source).toContain('if (resolved === "compact" && flags.max900) return "compact";');
+    expect(source).toContain('if (resolved === "compact") return "medium";');
+    expect(source).toContain('return "full";');
+    expect(source).toContain("resolveMeterMode(flags, hasAccountChips)");
+    expect(source).toContain("<span>5h</span>");
+    expect(source).toContain("<span>7d</span>");
+    expect(source).not.toContain("setInterval");
+    expect(source).not.toContain('addEventListener("focus"');
+    expect(titleBarSource).toContain("<AccountsButton />");
+    expect(titleBarSource).not.toContain("<CliAccountBadge />");
+    expect(titleBarSource).not.toContain("<UsageMeter />");
+  });
 });
 
 describe("CliAccountsPanel editing contracts", () => {
@@ -51,5 +72,21 @@ describe("CliAccountsPanel editing contracts", () => {
     const source = readFileSync(panelSourcePath, "utf8");
     expect(source).toContain('event.key === "Enter" && !event.nativeEvent.isComposing');
     expect(source).toContain('event.key === "Escape" && !event.nativeEvent.isComposing');
+  });
+});
+
+describe("AccountsPanel usage provenance", () => {
+  it("labels CLI live and OAuth account values separately", () => {
+    const source = readFileSync(menuSourcePath, "utf8");
+    const usageBlock = source.slice(
+      source.indexOf('{row.usage.source !== "none"'),
+      source.indexOf("{row.notices.map"),
+    );
+    expect(source).toContain('if (source === "cli-live") return "CLI 使用量";');
+    expect(source).toContain('if (source === "oauth-account") return "使用量登録";');
+    expect(usageBlock).toContain("{usageSourceLabel(row.usage.source)}");
+    expect(usageBlock).toContain("row.usage.error && (");
+    expect(usageBlock).toContain('<UsageRow label="5h"');
+    expect(usageBlock).toContain('<UsageRow label="7d"');
   });
 });

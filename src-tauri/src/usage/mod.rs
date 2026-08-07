@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 pub const PENDING_LOGIN_TTL_SECS: u64 = 600;
-pub const USAGE_CACHE_TTL_MS: i64 = 150_000;
+pub const USAGE_CACHE_TTL_MS: i64 = 60_000;
 
 /// Best-effort append-only failure log for OAuth flows
 /// (`<app_data>/logs/oauth.log`). Release builds run with
@@ -108,6 +108,10 @@ pub struct UsageSummary {
     pub codex_available: bool,
     pub claude_error: Option<String>,
     pub codex_error: Option<String>,
+    pub claude_identity_key: Option<String>,
+    pub claude_email: Option<String>,
+    pub codex_identity_key: Option<String>,
+    pub codex_email: Option<String>,
     pub generated_at: String,
 }
 
@@ -115,6 +119,7 @@ pub struct UsageSummary {
 pub struct AccountUsage {
     pub account_id: String,
     pub label: String,
+    pub email: Option<String>,
     pub enabled: bool,
     pub needs_reauth: bool,
     pub five_hour: Option<WindowStat>,

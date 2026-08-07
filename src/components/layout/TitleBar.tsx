@@ -4,12 +4,12 @@ import { useWorkspaceListStore, useUiStore, usePaneMetadataStore } from "../../s
 import { IS_MAC } from "../../lib/keybindings";
 import NotificationPanel from "./NotificationPanel";
 import SettingsDialog from "../settings/SettingsDialog";
-import { UsageMeter } from "./UsageMeter";
-import { CliAccountBadge } from "./CliAccountBadge";
+import { AccountsButton } from "./AccountsButton";
 import { TabSweepButton } from "./TabSweepButton";
 import UsageAccountsDialog from "./UsageAccountsDialog";
 import { onlineStrings } from "../online/onlineStrings";
 import { OVERLAY_EXIT_MS, useDeferredUnmount } from "../../hooks/useDeferredUnmount";
+import { useAccountsPolling } from "../../hooks/useAccountsPolling";
 
 interface TitleBarProps {
   uiVariant?: "default" | "cmux";
@@ -61,6 +61,7 @@ export default function TitleBar({
   onOpenOnlinePanel,
   onOpenCrsmPalette,
 }: TitleBarProps) {
+  useAccountsPolling();
   const activeWorkspace = useWorkspaceListStore((s) => s.getActiveWorkspace());
   const toggleSidebar = useUiStore((s) => s.toggleSidebar);
   const totalNotifications = usePaneMetadataStore((s) =>
@@ -276,8 +277,7 @@ export default function TitleBar({
 
       {/* Right group: Minimize, Close */}
       <div style={{ display: "flex", alignItems: "center", gap: 2, paddingRight: 8, minWidth: groupMinWidth, justifyContent: "flex-end" }}>
-        <CliAccountBadge />
-        <UsageMeter />
+        <AccountsButton />
         <TabSweepButton />
         <div style={{ position: "relative" }}>
           <button

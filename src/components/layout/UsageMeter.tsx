@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { UsagePopover } from "./UsagePopover";
 import { useUsageStore, type WindowStat } from "../../stores/usageStore";
-import { USAGE_POLL_INTERVAL_MS } from "../../lib/constants";
 import { OVERLAY_EXIT_MS, useDeferredUnmount } from "../../hooks/useDeferredUnmount";
 import {
   orderAccounts,
@@ -14,21 +13,11 @@ export function UsageMeter() {
   const lastError = useUsageStore((state) => state.lastError);
   const accounts = useUsageStore((state) => state.accounts);
   const accountsError = useUsageStore((state) => state.accountsError);
-  const fetchUsage = useUsageStore((state) => state.fetch);
   const hasAccountChips = orderAccounts(accounts).length > 0;
   const mode = useMeterMode(hasAccountChips);
   const [isOpen, setIsOpen] = useState(false);
   const { mounted: popoverMounted, closing: popoverClosing } = useDeferredUnmount(isOpen, OVERLAY_EXIT_MS);
   const closeTimerRef = useRef<number | null>(null);
-
-  useEffect(() => {
-    void fetchUsage();
-    const interval = window.setInterval(() => {
-      void fetchUsage();
-    }, USAGE_POLL_INTERVAL_MS);
-
-    return () => window.clearInterval(interval);
-  }, [fetchUsage]);
 
   useEffect(() => {
     return () => {

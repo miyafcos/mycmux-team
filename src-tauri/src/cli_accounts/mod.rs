@@ -1,6 +1,6 @@
 mod atomic;
-mod claude;
-mod codex;
+pub(crate) mod claude;
+pub(crate) mod codex;
 mod json_splice;
 mod registry;
 mod snapshot;

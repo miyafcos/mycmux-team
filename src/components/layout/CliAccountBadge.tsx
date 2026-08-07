@@ -5,7 +5,6 @@ import {
   badgeLabel,
   attentionReason,
   liveForProvider,
-  CLI_ACCOUNT_POLL_INTERVAL_MS,
   PROVIDER_SHORT,
 } from "../../lib/cliAccounts";
 import { CliAccountMenu } from "./CliAccountMenu";
@@ -16,24 +15,10 @@ export function CliAccountBadge() {
   const live = useCliAccountStore((state) => state.live);
   const profiles = useCliAccountStore((state) => state.profiles);
   const fetchError = useCliAccountStore((state) => state.fetchError);
-  const fetchAccounts = useCliAccountStore((state) => state.fetch);
   const [isOpen, setIsOpen] = useState(false);
   const { mounted: menuMounted, closing: menuClosing } = useDeferredUnmount(isOpen, OVERLAY_EXIT_MS);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const mode = useBadgeMode();
-
-  useEffect(() => {
-    void fetchAccounts();
-    const interval = window.setInterval(() => {
-      void fetchAccounts();
-    }, CLI_ACCOUNT_POLL_INTERVAL_MS);
-    const onFocus = () => void fetchAccounts();
-    window.addEventListener("focus", onFocus);
-    return () => {
-      window.clearInterval(interval);
-      window.removeEventListener("focus", onFocus);
-    };
-  }, [fetchAccounts]);
 
   useEffect(() => {
     if (!isOpen) return;
