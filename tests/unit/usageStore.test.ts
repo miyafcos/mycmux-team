@@ -1,16 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../src/lib/ipc", () => ({
-  getUsageSummary: vi.fn(),
-  getMultiUsage: vi.fn(),
+  getAccountUsage: vi.fn(),
 }));
 
-import { getUsageSummary, getMultiUsage } from "../../src/lib/ipc";
-import type { AccountUsage, UsageSummary } from "../../src/lib/ipc";
+import { getAccountUsage } from "../../src/lib/ipc";
+import type { AccountUsageReport, ProfileUsage } from "../../src/lib/ipc";
 import { __resetUsageStoreForTests, useUsageStore } from "../../src/stores/usageStore";
 
-const mockedGetUsageSummary = vi.mocked(getUsageSummary);
-const mockedGetMultiUsage = vi.mocked(getMultiUsage);
+const mockedGetAccountUsage = vi.mocked(getAccountUsage);
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -22,154 +20,112 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-const summaryFixture: UsageSummary = {
-  claude_5h: { pct: 10, resets_at: "2026-01-01T00:00:00Z" },
-  claude_7d: { pct: 20, resets_at: "2026-01-01T00:00:00Z" },
-  claude_7d_sonnet: null,
-  claude_7d_opus: null,
-  codex_5h: null,
-  codex_7d: null,
-  claude_available: true,
-  codex_available: false,
-  claude_error: null,
-  codex_error: null,
-  generated_at: "2026-01-01T00:00:00Z",
-};
-
-function makeAccountFixture(accountId: string): AccountUsage {
+function makeRow(profileId: string, pct: number): ProfileUsage {
   return {
-    account_id: accountId,
-    label: accountId,
-    enabled: true,
-    needs_reauth: false,
-    five_hour: { pct: 5, resets_at: "2026-01-01T00:00:00Z" },
+    profile_id: profileId,
+    provider: "claude",
+    label: profileId,
+    email: null,
+    plan: null,
+    registered: true,
+    is_active: false,
+    needs_relogin: false,
+    state: "ok",
+    five_hour: { pct, resets_at: "2026-01-01T00:00:00Z" },
     seven_day: null,
     seven_day_sonnet: null,
     seven_day_opus: null,
-    error: null,
+    error_code: null,
+    retry_at: null,
     fetched_at: "2026-01-01T00:00:00Z",
   };
 }
 
-describe("usageStore", () => {
+function makeReport(rows: ProfileUsage[], generatedAt = "2026-01-01T00:00:00Z"): AccountUsageReport {
+  return { accounts: rows, generated_at: generatedAt };
+}
+
+describe("useUsageStore", () => {
   beforeEach(() => {
-    mockedGetUsageSummary.mockReset();
-    mockedGetMultiUsage.mockReset();
     __resetUsageStoreForTests();
+    mockedGetAccountUsage.mockReset();
   });
 
   afterEach(() => {
     __resetUsageStoreForTests();
   });
 
-  it("populates both slices on a successful fetch", async () => {
-    const accountFixture = makeAccountFixture("a");
-    mockedGetUsageSummary.mockResolvedValue(summaryFixture);
-    mockedGetMultiUsage.mockResolvedValue([accountFixture]);
+  it("stores the report and clears any previous error", () => {
+    const report = makeReport([makeRow("a", 12)]);
+    mockedGetAccountUsage.mockResolvedValue(report);
 
+    return useUsageStore
+      .getState()
+      .fetch()
+      .then(() => {
+        const state = useUsageStore.getState();
+        expect(state.accounts).toEqual(report.accounts);
+        expect(state.generatedAt).toBe("2026-01-01T00:00:00Z");
+        expect(state.lastError).toBeNull();
+        expect(state.lastFetchedAt).not.toBeNull();
+      });
+  });
+
+  it("keeps the last known-good rows when a fetch fails", async () => {
+    mockedGetAccountUsage.mockResolvedValueOnce(makeReport([makeRow("a", 12)]));
+    await useUsageStore.getState().fetch();
+
+    mockedGetAccountUsage.mockRejectedValueOnce(new Error("backend down"));
     await useUsageStore.getState().fetch();
 
     const state = useUsageStore.getState();
-    expect(state.summary).toEqual(summaryFixture);
-    expect(state.accounts).toEqual([accountFixture]);
-    expect(state.lastError).toBeNull();
-    expect(state.accountsError).toBeNull();
+    expect(state.accounts).toHaveLength(1);
+    expect(state.accounts[0].profile_id).toBe("a");
+    expect(state.lastError).toBe("backend down");
   });
 
-  it("updates accounts even when the summary fetch fails", async () => {
-    const accountFixture = makeAccountFixture("a");
-    mockedGetUsageSummary.mockRejectedValue(new Error("summary boom"));
-    mockedGetMultiUsage.mockResolvedValue([accountFixture]);
+  it("drops an earlier response that resolves after a newer one", async () => {
+    const slow = deferred<AccountUsageReport>();
+    const fast = deferred<AccountUsageReport>();
+    mockedGetAccountUsage.mockReturnValueOnce(slow.promise).mockReturnValueOnce(fast.promise);
 
-    await useUsageStore.getState().fetch();
+    const firstCall = useUsageStore.getState().fetch();
+    const secondCall = useUsageStore.getState().fetch();
+
+    fast.resolve(makeReport([makeRow("newer", 50)], "2026-01-02T00:00:00Z"));
+    await secondCall;
+    slow.resolve(makeReport([makeRow("older", 10)], "2026-01-01T00:00:00Z"));
+    await firstCall;
 
     const state = useUsageStore.getState();
-    expect(state.summary).toBeNull();
-    expect(state.lastError).toBe("summary boom");
-    expect(state.accounts).toEqual([accountFixture]);
-    expect(state.accountsError).toBeNull();
+    expect(state.accounts.map((row) => row.profile_id)).toEqual(["newer"]);
+    expect(state.generatedAt).toBe("2026-01-02T00:00:00Z");
   });
 
-  it("updates the summary even when the accounts fetch fails", async () => {
-    mockedGetUsageSummary.mockResolvedValue(summaryFixture);
-    mockedGetMultiUsage.mockRejectedValue(new Error("accounts boom"));
+  it("drops a stale rejection so it cannot clobber a newer success", async () => {
+    const slow = deferred<AccountUsageReport>();
+    const fast = deferred<AccountUsageReport>();
+    mockedGetAccountUsage.mockReturnValueOnce(slow.promise).mockReturnValueOnce(fast.promise);
 
+    const firstCall = useUsageStore.getState().fetch();
+    const secondCall = useUsageStore.getState().fetch();
+
+    fast.resolve(makeReport([makeRow("newer", 50)]));
+    await secondCall;
+    slow.reject(new Error("stale failure"));
+    await firstCall;
+
+    expect(useUsageStore.getState().lastError).toBeNull();
+  });
+
+  it("replaces the row list outright rather than merging", async () => {
+    mockedGetAccountUsage.mockResolvedValueOnce(makeReport([makeRow("a", 12), makeRow("b", 30)]));
     await useUsageStore.getState().fetch();
 
-    const state = useUsageStore.getState();
-    expect(state.summary).toEqual(summaryFixture);
-    expect(state.lastError).toBeNull();
-    expect(state.accounts).toEqual([]);
-    expect(state.accountsError).toBe("accounts boom");
-  });
-
-  it("keeps stale summary and accounts when a later fetch fails entirely", async () => {
-    const accountFixture = makeAccountFixture("a");
-    mockedGetUsageSummary.mockResolvedValueOnce(summaryFixture);
-    mockedGetMultiUsage.mockResolvedValueOnce([accountFixture]);
+    // 'b' has gone (removed account); a stale merge would keep showing it.
+    mockedGetAccountUsage.mockResolvedValueOnce(makeReport([makeRow("a", 15)]));
     await useUsageStore.getState().fetch();
 
-    mockedGetUsageSummary.mockRejectedValueOnce(new Error("fail2"));
-    mockedGetMultiUsage.mockRejectedValueOnce(new Error("fail2b"));
-    await useUsageStore.getState().fetch();
-
-    const state = useUsageStore.getState();
-    expect(state.summary).toEqual(summaryFixture);
-    expect(state.accounts).toEqual([accountFixture]);
-    expect(state.lastError).toBe("fail2");
-    expect(state.accountsError).toBe("fail2b");
-  });
-
-  it("discards a stale accounts response that resolves after a newer fetch", async () => {
-    const accountA = makeAccountFixture("older");
-    const accountB = makeAccountFixture("newer");
-    mockedGetUsageSummary.mockResolvedValue(summaryFixture);
-
-    const first = deferred<AccountUsage[]>();
-    const second = deferred<AccountUsage[]>();
-    mockedGetMultiUsage.mockImplementationOnce(() => first.promise);
-    mockedGetMultiUsage.mockImplementationOnce(() => second.promise);
-
-    const p1 = useUsageStore.getState().fetch();
-    const p2 = useUsageStore.getState().fetch();
-
-    // Newer call resolves first.
-    second.resolve([accountB]);
-    await p2;
-    expect(useUsageStore.getState().accounts).toEqual([accountB]);
-
-    // Older call resolves later -- must be dropped, not overwrite the newer result.
-    first.resolve([accountA]);
-    await p1;
-    expect(useUsageStore.getState().accounts).toEqual([accountB]);
-  });
-
-  it("fetchAccounts only updates the accounts slice", async () => {
-    useUsageStore.setState({
-      summary: summaryFixture,
-      lastError: "pre-existing error",
-      lastFetchedAt: 123,
-    });
-    const accountFixture = makeAccountFixture("a");
-    mockedGetMultiUsage.mockResolvedValueOnce([accountFixture]);
-
-    await useUsageStore.getState().fetchAccounts();
-
-    const state = useUsageStore.getState();
-    expect(state.accounts).toEqual([accountFixture]);
-    expect(state.accountsError).toBeNull();
-    expect(state.summary).toEqual(summaryFixture);
-    expect(state.lastError).toBe("pre-existing error");
-    expect(mockedGetUsageSummary).not.toHaveBeenCalled();
-  });
-
-  it("openAccountsDialog/closeAccountsDialog toggle dialog state and reauth target", () => {
-    useUsageStore.getState().openAccountsDialog("acc-1");
-    expect(useUsageStore.getState().accountsDialogOpen).toBe(true);
-    expect(useUsageStore.getState().reauthTargetId).toBe("acc-1");
-
-    useUsageStore.getState().closeAccountsDialog();
-    expect(useUsageStore.getState().accountsDialogOpen).toBe(false);
-    expect(useUsageStore.getState().reauthTargetId).toBeNull();
+    expect(useUsageStore.getState().accounts.map((row) => row.profile_id)).toEqual(["a"]);
   });
 });

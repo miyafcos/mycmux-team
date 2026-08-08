@@ -44,8 +44,8 @@ pub fn find_top_level_member(text: &str, key: &str) -> Result<Option<(usize, usi
         i = ws(b, end); match b.get(i) { Some(b',') => i += 1, Some(b'}') => return Ok(None), _ => return Err(SpliceError::UnexpectedSyntax) }
     }
 }
-pub fn extract_top_level_member<'a>(text: &'a str, key: &str) -> Result<Option<&'a str>, SpliceError> { Ok(find_top_level_member(text, key)?.map(|(s,e)| &text[s..e])) }
-pub fn replace_top_level_member(text: &str, key: &str, new_value_text: &str) -> Result<String, SpliceError> {
+pub(crate) fn extract_top_level_member<'a>(text: &'a str, key: &str) -> Result<Option<&'a str>, SpliceError> { Ok(find_top_level_member(text, key)?.map(|(s,e)| &text[s..e])) }
+pub(crate) fn replace_top_level_member(text: &str, key: &str, new_value_text: &str) -> Result<String, SpliceError> {
     let source: serde_json::Value = serde_json::from_str(text).map_err(|_| SpliceError::InvalidSourceJson)?;
     if !source.is_object() { return Err(SpliceError::ExpectedRootObject); }
     serde_json::from_str::<serde_json::Value>(new_value_text).map_err(|_| SpliceError::InvalidReplacementJson)?;

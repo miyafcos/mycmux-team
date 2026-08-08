@@ -6,7 +6,6 @@ import NotificationPanel from "./NotificationPanel";
 import SettingsDialog from "../settings/SettingsDialog";
 import { AccountsButton } from "./AccountsButton";
 import { TabSweepButton } from "./TabSweepButton";
-import UsageAccountsDialog from "./UsageAccountsDialog";
 import { onlineStrings } from "../online/onlineStrings";
 import { OVERLAY_EXIT_MS, useDeferredUnmount } from "../../hooks/useDeferredUnmount";
 import { useAccountsPolling } from "../../hooks/useAccountsPolling";
@@ -72,6 +71,7 @@ export default function TitleBar({
   );
   const [notificationPanelOpen, setNotificationPanelOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [settingsTab, setSettingsTab] = useState<"appearance" | "usage">("appearance");
   const { mounted: notificationPanelMounted, closing: notificationPanelClosing } = useDeferredUnmount(
     notificationPanelOpen,
     OVERLAY_EXIT_MS,
@@ -277,11 +277,19 @@ export default function TitleBar({
 
       {/* Right group: Minimize, Close */}
       <div style={{ display: "flex", alignItems: "center", gap: 2, paddingRight: 8, minWidth: groupMinWidth, justifyContent: "flex-end" }}>
-        <AccountsButton />
+        <AccountsButton
+          onOpenUsageSettings={() => {
+            setSettingsTab("usage");
+            setIsSettingsOpen(true);
+          }}
+        />
         <TabSweepButton />
         <div style={{ position: "relative" }}>
           <button
-            onClick={() => setIsSettingsOpen((v) => !v)}
+            onClick={() => {
+              setSettingsTab("appearance");
+              setIsSettingsOpen((v) => !v);
+            }}
             title="Settings"
             className="cmux-title-btn"
             style={{
@@ -301,6 +309,7 @@ export default function TitleBar({
             <SettingsDialog
               closing={settingsClosing}
               onClose={() => setIsSettingsOpen(false)}
+              initialTab={settingsTab}
               onOpenCrsmPalette={onOpenCrsmPalette}
               onOpenOnlinePanel={onOpenOnlinePanel}
             />
@@ -378,7 +387,6 @@ export default function TitleBar({
           </>
         )}
       </div>
-      <UsageAccountsDialog />
     </div>
   );
 }

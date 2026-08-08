@@ -20,7 +20,6 @@ interface PathArgs { path: string }
 interface SourcePathArgs { sourcePath: string }
 interface BundleDirArgs { bundleDir: string }
 interface EnabledArgs { enabled: boolean }
-interface AccountIdArgs { accountId: string }
 interface CreateSessionArgs {
   sessionId: string;
   command: string;
@@ -75,8 +74,6 @@ interface CandidatesArgs { candidates: string[] }
 interface PinnedRootsArgs { pinnedRoots: PinnedRoot[] }
 interface UriArgs { uri: string }
 interface CreateEntryArgs { parent: string; name: string }
-interface CompleteOauthLoginArgs { loginId: string; pastedCode: string }
-interface SetUsageAccountEnabledArgs extends AccountIdArgs { enabled: boolean }
 interface CaptureCliAccountArgs { provider: CliProvider; label?: string }
 interface SwitchCliAccountArgs { provider: CliProvider; profileId: string }
 interface ProfileIdArgs { profileId: string }
@@ -784,7 +781,6 @@ export async function saveSettings(settings: AppSettings): Promise<void> {
   return invoke<void>("save_settings", { settings } satisfies SaveSettingsArgs);
 }
 
-
 export async function sendSocketResponse(id: number, result: any, error: string | null): Promise<void> {
   return invoke<void>("socket_response", { id, result, error } satisfies SocketResponseArgs);
 }
@@ -890,84 +886,34 @@ export interface WindowStat {
   resets_at: string;
 }
 
-export interface UsageSummary {
-  claude_5h: WindowStat | null;
-  claude_7d: WindowStat | null;
-  claude_7d_sonnet: WindowStat | null;
-  claude_7d_opus: WindowStat | null;
-  codex_5h: WindowStat | null;
-  codex_7d: WindowStat | null;
-  claude_available: boolean;
-  codex_available: boolean;
-  claude_error: string | null;
-  codex_error: string | null;
-  claude_identity_key: string | null;
-  claude_email: string | null;
-  codex_identity_key: string | null;
-  codex_email: string | null;
-  generated_at: string;
-}
+export type UsageRowState = "ok" | "wait_for_cli" | "cooldown" | "needs_relogin" | "unsupported" | "error";
 
-export interface UsageAccountMeta {
-  account_id: string;
-  label: string;
-  email?: string | null;
-  enabled: boolean;
-  needs_reauth: boolean;
-  created_at?: string;
-}
-
-export interface AccountUsage {
-  account_id: string;
+export interface ProfileUsage {
+  profile_id: string;
+  provider: CliProvider;
   label: string;
   email: string | null;
-  enabled: boolean;
-  needs_reauth: boolean;
+  plan: string | null;
+  registered: boolean;
+  is_active: boolean;
+  needs_relogin: boolean;
+  state: UsageRowState;
   five_hour: WindowStat | null;
   seven_day: WindowStat | null;
   seven_day_sonnet: WindowStat | null;
   seven_day_opus: WindowStat | null;
-  error: string | null;
+  error_code: string | null;
+  retry_at: string | null;
   fetched_at: string;
 }
 
-export interface OauthLoginStart {
-  authorize_url: string;
-  login_id: string;
+export interface AccountUsageReport {
+  accounts: ProfileUsage[];
+  generated_at: string;
 }
 
-export async function getUsageSummary(): Promise<UsageSummary> {
-  return invoke<UsageSummary>("get_usage_summary");
-}
-
-export async function getMultiUsage(): Promise<AccountUsage[]> {
-  return invoke<AccountUsage[]>("get_multi_usage");
-}
-
-export async function startOauthLogin(): Promise<OauthLoginStart> {
-  return invoke<OauthLoginStart>("start_oauth_login");
-}
-
-export async function completeOauthLogin(
-  loginId: string,
-  pastedCode: string,
-): Promise<UsageAccountMeta> {
-  return invoke<UsageAccountMeta>("complete_oauth_login", { loginId, pastedCode } satisfies CompleteOauthLoginArgs);
-}
-
-export async function listUsageAccounts(): Promise<UsageAccountMeta[]> {
-  return invoke<UsageAccountMeta[]>("list_usage_accounts");
-}
-
-export async function removeUsageAccount(accountId: string): Promise<void> {
-  return invoke<void>("remove_usage_account", { accountId } satisfies AccountIdArgs);
-}
-
-export async function setUsageAccountEnabled(
-  accountId: string,
-  enabled: boolean,
-): Promise<void> {
-  return invoke<void>("set_usage_account_enabled", { accountId, enabled } satisfies SetUsageAccountEnabledArgs);
+export async function getAccountUsage(): Promise<AccountUsageReport> {
+  return invoke<AccountUsageReport>("get_account_usage");
 }
 
 export type CliProvider = "claude" | "codex";

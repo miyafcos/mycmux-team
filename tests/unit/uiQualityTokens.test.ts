@@ -25,7 +25,7 @@ const boundarySource = [
   read("src/components/layout/NotificationPanel.tsx"),
   read("src/components/layout/AccountsButton.tsx"),
   read("src/components/layout/AccountsPanel.tsx"),
-  read("src/components/layout/UsagePopover.tsx"),
+  read("src/components/settings/tabs/UsageTab.tsx"),
   read("src/components/layout/PathJumper.tsx"),
 ].join("\n");
 
@@ -111,5 +111,20 @@ describe("UI quality Phase A contracts", () => {
     expect(crsmPalette).toContain("...styles.detailFilePath");
     const detailListWrap = crsmPalette.match(/detailListWrap:\s*\{([\s\S]*?)\n\s*\},/)?.[1] ?? "";
     expect(detailListWrap).not.toContain("fontFamily");
+  });
+
+  it("keeps the account surfaces on design tokens rather than bare numbers", () => {
+    const accountSources = [
+      "src/components/layout/AccountsButton.tsx",
+      "src/components/layout/AccountsPanel.tsx",
+      "src/components/settings/tabs/UsageTab.tsx",
+    ].map((path) => [path, read(path)] as const);
+
+    for (const [path, source] of accountSources) {
+      // A bare fontSize was how 10px crept in, which is unreadable on Windows.
+      expect(source, path).not.toMatch(/fontSize:\s*\d/);
+      expect(source, path).toContain("var(--cmux-font-size-");
+      expect(source, path).toContain("var(--cmux-space-");
+    }
   });
 });

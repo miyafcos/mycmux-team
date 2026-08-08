@@ -1,6 +1,7 @@
+mod cli_accounts;
 mod commands;
-mod diag;
 mod db;
+mod diag;
 mod events;
 mod fs;
 mod pty;
@@ -11,7 +12,6 @@ mod socket;
 mod status_feed;
 pub mod terminal_config;
 pub mod usage;
-mod cli_accounts;
 
 use pty::manager::SessionManager;
 use std::sync::atomic::AtomicBool;
@@ -231,7 +231,7 @@ pub fn run() {
         })
         .manage(remote_control)
         .manage(remote_sessions)
-        .manage(usage::UsageOauthState::new())
+        .manage(usage::UsageState::new())
         .invoke_handler(tauri::generate_handler![
             commands::terminal::create_session,
             commands::terminal::write_to_session,
@@ -291,13 +291,7 @@ pub fn run() {
             commands::window::get_window_count,
             commands::window::reveal_main_window,
             commands::window::quit_app,
-            commands::usage::get_usage_summary,
-            commands::usage::start_oauth_login,
-            commands::usage::complete_oauth_login,
-            commands::usage::list_usage_accounts,
-            commands::usage::remove_usage_account,
-            commands::usage::set_usage_account_enabled,
-            commands::usage::get_multi_usage,
+            commands::usage::get_account_usage,
             commands::cli_accounts::list_cli_accounts,
             commands::cli_accounts::capture_cli_account,
             commands::cli_accounts::switch_cli_account,
@@ -321,6 +315,9 @@ pub fn run() {
                 eprintln!("[launcher] failed to install launcher scripts: {err}");
             }
             warn_if_dual_install(&app_handle);
+            if let Ok(app_data) = app_handle.path().app_data_dir() {
+                usage::legacy::retire_legacy_usage_oauth(&app_handle, &app_data);
+            }
             let app_data_parent = app_handle
                 .path()
                 .app_data_dir()

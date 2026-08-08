@@ -1,7 +1,7 @@
 mod atomic;
 pub(crate) mod claude;
 pub(crate) mod codex;
-mod json_splice;
+pub(crate) mod json_splice;
 mod registry;
 mod snapshot;
 
@@ -47,6 +47,13 @@ pub const WARN_SWITCH_METADATA_NOT_SAVED: &str = "cli_account.warning.switch_met
 pub enum CliProvider {
     Claude,
     Codex,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SnapshotUpdate {
+    Applied,
+    Conflict,
+    NotFound,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -380,6 +387,49 @@ fn mutation_guard() -> Result<MutexGuard<'static, ()>, String> {
         .get_or_init(|| Mutex::new(()))
         .lock()
         .map_err(|_| ERR_ACCOUNTS_UNAVAILABLE.to_string())
+}
+
+/// Replace credential text in a snapshot only when its refresh token still matches.
+pub fn update_snapshot_tokens(
+    base: &Path,
+    profile_id: &str,
+    provider: CliProvider,
+    expected_refresh_token: &str,
+    rewrite: impl FnOnce(&str) -> Result<String, String>,
+) -> Result<SnapshotUpdate, String> {
+    let _guard = mutation_guard()?;
+    let mut stored = match snapshot::load(base, profile_id) {
+        Ok(stored) => stored,
+        Err(error) => {
+            snapshot::validate_snapshot_id(profile_id)?;
+            let path = snapshot::snapshot_dir(base).join(format!("{profile_id}.json"));
+            if path.is_file() {
+                return Err(error);
+            }
+            return Ok(SnapshotUpdate::NotFound);
+        }
+    };
+
+    let text = match (&mut stored, provider) {
+        (snapshot::StoredSnapshot::Claude(stored), CliProvider::Claude) => {
+            let tokens = crate::usage::credentials::claude_tokens(&stored.credentials_text)?;
+            if tokens.refresh_token != expected_refresh_token {
+                return Ok(SnapshotUpdate::Conflict);
+            }
+            &mut stored.credentials_text
+        }
+        (snapshot::StoredSnapshot::Codex(stored), CliProvider::Codex) => {
+            let tokens = crate::usage::credentials::codex_tokens(&stored.auth_text)?;
+            if tokens.refresh_token.as_deref() != Some(expected_refresh_token) {
+                return Ok(SnapshotUpdate::Conflict);
+            }
+            &mut stored.auth_text
+        }
+        _ => return Err(ERR_SNAPSHOT_PROVIDER_MISMATCH.to_string()),
+    };
+    *text = rewrite(text)?;
+    snapshot::save(base, profile_id, &stored).map_err(|_| ERR_REGISTRY_SAVE_FAILED.to_string())?;
+    Ok(SnapshotUpdate::Applied)
 }
 
 pub fn list_resolved(base: &Path) -> Result<CliAccountsSnapshot, String> {

@@ -1,23 +1,16 @@
 import { create } from "zustand";
-import { getUsageSummary, getMultiUsage, type AccountUsage, type UsageSummary } from "../lib/ipc";
-import { mergeAccounts } from "../lib/usageAccounts";
+import { getAccountUsage, type ProfileUsage } from "../lib/ipc";
 
-// Re-exported so existing consumers (UsageMeter, UsagePopover) keep working
-// against the store's public surface without reaching into lib/ipc directly.
-export type { WindowStat, UsageSummary } from "../lib/ipc";
+// Re-exported so consumers keep working against the store's public surface
+// without reaching into lib/ipc directly.
+export type { WindowStat, ProfileUsage } from "../lib/ipc";
 
 type UsageState = {
-  summary: UsageSummary | null;
+  accounts: ProfileUsage[];
+  generatedAt: string | null;
   lastError: string | null;
   lastFetchedAt: number | null;
-  accounts: AccountUsage[];
-  accountsError: string | null;
-  accountsDialogOpen: boolean;
-  reauthTargetId: string | null;
   fetch: () => Promise<void>;
-  fetchAccounts: () => Promise<void>;
-  openAccountsDialog: (reauthTargetId?: string) => void;
-  closeAccountsDialog: () => void;
 };
 
 function errorMessage(error: unknown): string {
@@ -27,94 +20,49 @@ function errorMessage(error: unknown): string {
   return String(error);
 }
 
-// Monotonic sequence counters guard against out-of-order responses: if a
+// Monotonic sequence counter guards against out-of-order responses: if a
 // slower, earlier fetch resolves after a newer one, its result is dropped.
-let summarySeq = 0;
 let accountsSeq = 0;
 
 export const useUsageStore = create<UsageState>((set) => ({
-  summary: null,
+  accounts: [],
+  generatedAt: null,
   lastError: null,
   lastFetchedAt: null,
-  accounts: [],
-  accountsError: null,
-  accountsDialogOpen: false,
-  reauthTargetId: null,
 
   fetch: async () => {
-    const mySummarySeq = ++summarySeq;
-    const myAccountsSeq = ++accountsSeq;
-
-    const [summaryResult, accountsResult] = await Promise.allSettled([
-      getUsageSummary(),
-      getMultiUsage(),
-    ]);
-
-    if (mySummarySeq === summarySeq) {
-      if (summaryResult.status === "fulfilled") {
-        set({
-          summary: summaryResult.value,
-          lastError: null,
-          lastFetchedAt: Date.now(),
-        });
-      } else {
-        // Stale-while-error: keep the last known-good summary, only surface the error.
-        set({
-          lastError: errorMessage(summaryResult.reason),
-          lastFetchedAt: Date.now(),
-        });
-      }
-    }
-
-    if (myAccountsSeq === accountsSeq) {
-      if (accountsResult.status === "fulfilled") {
-        set((state) => ({
-          accounts: mergeAccounts(state.accounts, accountsResult.value),
-          accountsError: null,
-        }));
-      } else {
-        // Stale-while-error: keep the last known-good accounts list.
-        set({ accountsError: errorMessage(accountsResult.reason) });
-      }
-    }
-  },
-
-  fetchAccounts: async () => {
-    const myAccountsSeq = ++accountsSeq;
+    const mySeq = ++accountsSeq;
     try {
-      const next = await getMultiUsage();
-      if (myAccountsSeq === accountsSeq) {
-        set((state) => ({
-          accounts: mergeAccounts(state.accounts, next),
-          accountsError: null,
-        }));
+      const report = await getAccountUsage();
+      if (mySeq !== accountsSeq) {
+        return;
       }
+      // The backend answers with every row each time, including per-row
+      // failures, so the report replaces the list outright. Merging would keep
+      // showing a stale number next to a row that is telling us why it has none.
+      set({
+        accounts: report.accounts,
+        generatedAt: report.generated_at,
+        lastError: null,
+        lastFetchedAt: Date.now(),
+      });
     } catch (error) {
-      if (myAccountsSeq === accountsSeq) {
-        set({ accountsError: errorMessage(error) });
+      if (mySeq !== accountsSeq) {
+        return;
       }
+      // Stale-while-error: the whole call failed, so keep the last known-good
+      // rows on screen and surface only the error.
+      set({ lastError: errorMessage(error), lastFetchedAt: Date.now() });
     }
-  },
-
-  openAccountsDialog: (reauthTargetId) => {
-    set({ accountsDialogOpen: true, reauthTargetId: reauthTargetId ?? null });
-  },
-
-  closeAccountsDialog: () => {
-    set({ accountsDialogOpen: false, reauthTargetId: null });
   },
 }));
 
 export function __resetUsageStoreForTests(): void {
-  summarySeq = 0;
   accountsSeq = 0;
   useUsageStore.setState({
-    summary: null,
+    accounts: [],
+    generatedAt: null,
     lastError: null,
     lastFetchedAt: null,
-    accounts: [],
-    accountsError: null,
-    accountsDialogOpen: false,
-    reauthTargetId: null,
   });
 }

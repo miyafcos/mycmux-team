@@ -140,15 +140,17 @@ interface SettingsDialogProps {
   onClose: () => void;
   onOpenCrsmPalette?: () => void;
   onOpenOnlinePanel: () => void;
+  /** Lets a caller land straight on a tab, e.g. the accounts panel's detail link. */
+  initialTab?: SettingsTabId;
 }
 
-export default function SettingsDialog({ closing = false, onClose, onOpenCrsmPalette, onOpenOnlinePanel }: SettingsDialogProps) {
-  const [activeTab, setActiveTab] = useState<SettingsTabId>("appearance");
+export default function SettingsDialog({ closing = false, onClose, onOpenCrsmPalette, onOpenOnlinePanel, initialTab }: SettingsDialogProps) {
+  const [activeTab, setActiveTab] = useState<SettingsTabId>(initialTab ?? "appearance");
   const previouslyFocusedRef = useRef<HTMLElement | null>(null);
   const panelRef = useRef<HTMLDivElement>(null);
 
   const usageAccounts = useUsageStore((s) => s.accounts);
-  const usageReauthCount = usageAccounts.filter((a) => a.enabled && a.needs_reauth).length;
+  const usageReauthCount = usageAccounts.filter((a) => a.state === "needs_relogin").length;
 
   // Focus capture on open / restore on close, mirroring the pattern used by
   // KeybindingsModal.tsx and UsageAccountsDialog.tsx.

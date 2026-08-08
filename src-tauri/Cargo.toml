@@ -1,6 +1,6 @@
 [package]
 name = "mycmux"
-version = "0.21.27"
+version = "0.21.28"
 description = "mycmux - AI agent terminal workspace"
 authors = ["miyafcos"]
 edition = "2021"
@@ -42,7 +42,6 @@ uuid = { version = "1", features = ["v4"] }
 rand = "0.8.5"
 hex = "0.4"
 base64 = "0.22"
-keyring = { version = "3", features = ["windows-native", "apple-native", "sync-secret-service"] }
 sha2 = "0.10"
 futures-util = "0.3"
 tauri-plugin-dialog = "2.7.0"

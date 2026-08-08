@@ -33,6 +33,10 @@ pub struct CodexClaims {
     pub email: Option<String>,
     pub account_id: Option<String>,
     pub plan: Option<String>,
+    /// `exp` in milliseconds. Identity reads ignore it on purpose -- an expired
+    /// token still names its owner -- but usage lookups need it to decide
+    /// whether the token is worth sending.
+    pub expires_at_ms: Option<i64>,
 }
 
 pub fn decode_id_token_claims(jwt: &str) -> Result<CodexClaims, String> {
@@ -61,6 +65,10 @@ pub fn decode_id_token_claims(jwt: &str) -> Result<CodexClaims, String> {
             .get("chatgpt_plan_type")
             .and_then(Value::as_str)
             .map(str::to_string),
+        expires_at_ms: value
+            .get("exp")
+            .and_then(Value::as_i64)
+            .and_then(|exp| exp.checked_mul(1000)),
     })
 }
 

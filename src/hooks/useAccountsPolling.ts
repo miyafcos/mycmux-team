@@ -1,7 +1,9 @@
 import { useEffect, useRef } from "react";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { CLI_ACCOUNT_POLL_INTERVAL_MS } from "../lib/cliAccounts";
 import { USAGE_POLL_INTERVAL_MS } from "../lib/constants";
 import { useCliAccountStore } from "../stores/cliAccountStore";
+import { useToastStore } from "../stores/toastStore";
 import { useUsageStore } from "../stores/usageStore";
 
 const USAGE_FOCUS_MIN_INTERVAL_MS = 60_000;
@@ -42,6 +44,38 @@ export function pollPlan(input: PollPlanInput): AccountsPollPlan {
   };
 }
 
+/**
+ * Tells the user, once, that accounts registered through the old browser OAuth
+ * flow are no longer read. Their saved data is moved aside rather than deleted,
+ * but the numbers stop appearing until the account is captured from the CLI.
+ */
+function useLegacyUsageRetirementNotice(): void {
+  useEffect(() => {
+    let unlisten: UnlistenFn | undefined;
+    let cancelled = false;
+    void listen<number>("mycmux://usage-legacy-retired", (event) => {
+      const count = typeof event.payload === "number" ? event.payload : 0;
+      if (count <= 0) return;
+      useToastStore
+        .getState()
+        .pushToast(
+          `使用量の登録方式が変わりました。CLI でログインして「現在のログインを登録」を押してください（対象 ${count} 件）。`,
+          "info",
+        );
+    }).then((fn) => {
+      if (cancelled) {
+        fn();
+        return;
+      }
+      unlisten = fn;
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
+}
+
 export function useAccountsPolling(): void {
   const fetchCli = useCliAccountStore((state) => state.fetch);
   const fetchUsage = useUsageStore((state) => state.fetch);
@@ -49,6 +83,8 @@ export function useAccountsPolling(): void {
   const lastUsageAt = useRef<number | null>(null);
   const cliInFlight = useRef(false);
   const usageInFlight = useRef(false);
+
+  useLegacyUsageRetirementNotice();
 
   useEffect(() => {
     const observedUsageAt = () => {

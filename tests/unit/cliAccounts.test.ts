@@ -1,12 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import {
-  badgeLabel,
   attentionReason,
   canSwitchCliAccount,
   cliAccountProfileActivity,
   cliAccountMessage,
   executeCliAccountSwitch,
-  hasAttention,
   orderCliAccountProfiles,
   runningAgentPaneDetails,
   runningAgentCounts,
@@ -43,37 +41,6 @@ function liveLogin(overrides: Partial<CliLiveLogin> = {}): CliLiveLogin {
     ...overrides,
   };
 }
-
-describe("badgeLabel", () => {
-  it("shows 未ログイン when live info is absent or not present", () => {
-    expect(badgeLabel(undefined, [])).toBe("未ログイン");
-    expect(badgeLabel(liveLogin({ present: false, email: null, identity_key: null }), [])).toBe(
-      "未ログイン",
-    );
-  });
-
-  it("shows ? on read errors", () => {
-    expect(badgeLabel(liveLogin({ error: "boom" }), [])).toBe("?");
-  });
-
-  it("prefers the registered label when matched", () => {
-    const p = profile({ id: "claude-x", label: "仕事用" });
-    expect(badgeLabel(liveLogin({ matched_profile_id: "claude-x" }), [p])).toBe("仕事用");
-  });
-
-  it("falls back to the email localpart, then 未登録", () => {
-    expect(badgeLabel(liveLogin({ email: "abc@example.com" }), [])).toBe("abc");
-    expect(badgeLabel(liveLogin({ email: null }), [])).toBe("未登録");
-  });
-});
-
-describe("hasAttention", () => {
-  it("flags live read errors and needs_relogin profiles", () => {
-    expect(hasAttention([liveLogin({ error: "x" })], [])).toBe(true);
-    expect(hasAttention([], [profile({ needs_relogin: true })])).toBe(true);
-    expect(hasAttention([liveLogin()], [profile()])).toBe(false);
-  });
-});
 
 describe("runningAgentCounts", () => {
   it("counts only panes whose foreground process is not a shell", () => {

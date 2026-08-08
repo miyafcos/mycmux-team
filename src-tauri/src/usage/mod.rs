@@ -1,14 +1,14 @@
+pub mod credentials;
+pub mod legacy;
 pub mod oauth_claude;
-pub mod oauth_login;
 pub mod oauth_codex;
-pub mod token_store;
+pub mod refresh;
 mod util;
 
 use serde::Serialize;
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-pub const PENDING_LOGIN_TTL_SECS: u64 = 600;
 pub const USAGE_CACHE_TTL_MS: i64 = 60_000;
 
 /// Best-effort append-only failure log for OAuth flows
@@ -39,15 +39,14 @@ pub fn log_oauth_failure(app: &tauri::AppHandle, context: &str, detail: &str) {
         .and_then(|mut file| std::io::Write::write_all(&mut file, line.as_bytes()));
 }
 
-pub struct UsageOauthState {
+pub struct UsageState {
     pub http: reqwest::Client,
-    pub pending_logins: tokio::sync::Mutex<HashMap<String, PendingLogin>>,
     pub refresh_lock: tokio::sync::Mutex<()>,
     pub cooldowns: tokio::sync::Mutex<HashMap<String, Cooldown>>,
-    pub usage_cache: tokio::sync::Mutex<HashMap<String, CachedUsage>>,
+    pub profile_usage_cache: tokio::sync::Mutex<HashMap<String, CachedWindows>>,
 }
 
-impl UsageOauthState {
+impl UsageState {
     pub fn new() -> Self {
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(30))
@@ -57,26 +56,17 @@ impl UsageOauthState {
 
         Self {
             http,
-            pending_logins: tokio::sync::Mutex::new(HashMap::new()),
             refresh_lock: tokio::sync::Mutex::new(()),
             cooldowns: tokio::sync::Mutex::new(HashMap::new()),
-            usage_cache: tokio::sync::Mutex::new(HashMap::new()),
+            profile_usage_cache: tokio::sync::Mutex::new(HashMap::new()),
         }
     }
 }
 
-impl Default for UsageOauthState {
+impl Default for UsageState {
     fn default() -> Self {
         Self::new()
     }
-}
-
-#[derive(Clone)]
-pub struct PendingLogin {
-    pub verifier: String,
-    pub state: String,
-    pub redirect_uri: String,
-    pub created_at: Instant,
 }
 
 #[derive(Clone, Copy)]
@@ -85,47 +75,114 @@ pub struct Cooldown {
     pub backoff_ms: i64,
 }
 
-pub struct CachedUsage {
-    pub account: AccountUsage,
-    pub fetched_at_ms: i64,
-}
-
 #[derive(Serialize, Clone, Debug)]
 pub struct WindowStat {
     pub pct: f64,
     pub resets_at: String,
 }
 
-#[derive(Serialize, Clone, Debug)]
-pub struct UsageSummary {
-    pub claude_5h: Option<WindowStat>,
-    pub claude_7d: Option<WindowStat>,
-    pub claude_7d_sonnet: Option<WindowStat>,
-    pub claude_7d_opus: Option<WindowStat>,
-    pub codex_5h: Option<WindowStat>,
-    pub codex_7d: Option<WindowStat>,
-    pub claude_available: bool,
-    pub codex_available: bool,
-    pub claude_error: Option<String>,
-    pub codex_error: Option<String>,
-    pub claude_identity_key: Option<String>,
-    pub claude_email: Option<String>,
-    pub codex_identity_key: Option<String>,
-    pub codex_email: Option<String>,
-    pub generated_at: String,
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum UsageRowState {
+    Ok,
+    WaitForCli,
+    Cooldown,
+    NeedsRelogin,
+    Unsupported,
+    Error,
 }
 
 #[derive(Serialize, Clone, Debug)]
-pub struct AccountUsage {
-    pub account_id: String,
+pub struct ProfileUsage {
+    pub profile_id: String,
+    pub provider: crate::cli_accounts::CliProvider,
     pub label: String,
     pub email: Option<String>,
-    pub enabled: bool,
-    pub needs_reauth: bool,
+    pub plan: Option<String>,
+    pub registered: bool,
+    pub is_active: bool,
+    pub needs_relogin: bool,
+    pub state: UsageRowState,
     pub five_hour: Option<WindowStat>,
     pub seven_day: Option<WindowStat>,
     pub seven_day_sonnet: Option<WindowStat>,
     pub seven_day_opus: Option<WindowStat>,
-    pub error: Option<String>,
+    pub error_code: Option<String>,
+    pub retry_at: Option<String>,
     pub fetched_at: String,
+}
+
+#[derive(Serialize, Clone, Debug)]
+pub struct AccountUsageReport {
+    pub accounts: Vec<ProfileUsage>,
+    pub generated_at: String,
+}
+
+#[derive(Clone)]
+pub struct CachedWindows {
+    pub five_hour: Option<WindowStat>,
+    pub seven_day: Option<WindowStat>,
+    pub seven_day_sonnet: Option<WindowStat>,
+    pub seven_day_opus: Option<WindowStat>,
+    pub fetched_at_ms: i64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn usage_row_state_serializes_snake_case() {
+        for (state, expected) in [
+            (UsageRowState::Ok, "\"ok\""),
+            (UsageRowState::WaitForCli, "\"wait_for_cli\""),
+            (UsageRowState::Cooldown, "\"cooldown\""),
+            (UsageRowState::NeedsRelogin, "\"needs_relogin\""),
+            (UsageRowState::Unsupported, "\"unsupported\""),
+            (UsageRowState::Error, "\"error\""),
+        ] {
+            assert_eq!(serde_json::to_string(&state).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn profile_usage_wire_contains_no_token_material() {
+        let synthetic_access = "synthetic-access";
+        let synthetic_refresh = "synthetic-refresh";
+        let usage = ProfileUsage {
+            profile_id: "profile".into(),
+            provider: crate::cli_accounts::CliProvider::Claude,
+            label: "label".into(),
+            email: None,
+            plan: None,
+            registered: true,
+            is_active: false,
+            needs_relogin: false,
+            state: UsageRowState::Ok,
+            five_hour: None,
+            seven_day: None,
+            seven_day_sonnet: None,
+            seven_day_opus: None,
+            error_code: None,
+            retry_at: None,
+            fetched_at: "now".into(),
+        };
+        let wire = serde_json::to_string(&usage).unwrap();
+        assert!(!wire.contains(synthetic_access));
+        assert!(!wire.contains(synthetic_refresh));
+        let refreshed = crate::usage::refresh::RefreshedClaude {
+            access_token: synthetic_access.into(),
+            refresh_token: Some(synthetic_refresh.into()),
+            expires_at_ms: 1,
+            refresh_expires_at_ms: None,
+        };
+        let codex = crate::usage::refresh::RefreshedCodex {
+            access_token: synthetic_access.into(),
+            refresh_token: Some(synthetic_refresh.into()),
+            id_token: None,
+        };
+        let debug = format!("{refreshed:?} {codex:?}");
+        assert!(!debug.contains(synthetic_access));
+        assert!(!debug.contains(synthetic_refresh));
+    }
 }

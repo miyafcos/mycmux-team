@@ -24,20 +24,45 @@ struct CodexCredentials {
 
 pub async fn fetch() -> Result<CodexUsage, String> {
     let credentials = load_credentials()?;
-    let client = reqwest::Client::new();
+    fetch_with_token(
+        &reqwest::Client::new(),
+        &credentials.access_token,
+        credentials.account_id.as_deref(),
+    )
+    .await
+    .map_err(|(_, error)| error)
+}
+
+pub async fn fetch_with_token(
+    client: &reqwest::Client,
+    access_token: &str,
+    account_id: Option<&str>,
+) -> Result<CodexUsage, (Option<u16>, String)> {
+    let credentials = CodexCredentials {
+        access_token: access_token.to_string(),
+        account_id: account_id.map(str::to_string),
+    };
     let urls = usage_urls();
     let mut errors = Vec::new();
 
     for url in urls {
         match fetch_from_url(&client, &credentials, &url).await {
             Ok(usage) => return Ok(usage),
-            Err(error) => errors.push(format!("{url}: {error}")),
+            Err((status, error)) => errors.push((status, format!("{url}: {error}"))),
         }
     }
 
-    Err(format!(
-        "Codex rate-limit endpoint unavailable: {}",
-        errors.join(" | ")
+    let status = errors.iter().find_map(|(status, _)| *status);
+    Err((
+        status,
+        format!(
+            "Codex rate-limit endpoint unavailable: {}",
+            errors
+                .into_iter()
+                .map(|(_, error)| error)
+                .collect::<Vec<_>>()
+                .join(" | ")
+        ),
     ))
 }
 
@@ -45,34 +70,38 @@ async fn fetch_from_url(
     client: &reqwest::Client,
     credentials: &CodexCredentials,
     url: &str,
-) -> Result<CodexUsage, String> {
+) -> Result<CodexUsage, (Option<u16>, String)> {
     let mut request = client
         .get(url)
         .bearer_auth(&credentials.access_token)
         .header(USER_AGENT, "CodexBar")
         .header(ACCEPT, "application/json");
 
-    if let Some(account_id) = credentials.account_id.as_deref().filter(|value| !value.is_empty()) {
+    if let Some(account_id) = credentials
+        .account_id
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    {
         request = request.header("ChatGPT-Account-Id", account_id);
     }
 
     let response = request
         .send()
         .await
-        .map_err(|error| format!("network error: {error}"))?;
+        .map_err(|error| (None, format!("network error: {error}")))?;
     let status = response.status();
     let body = response
         .text()
         .await
-        .map_err(|error| format!("response read failed: {error}"))?;
+        .map_err(|error| (None, format!("response read failed: {error}")))?;
 
     if !status.is_success() {
-        return Err(http_error(status.as_u16(), &body));
+        return Err((Some(status.as_u16()), http_error(status.as_u16(), &body)));
     }
 
-    let value: Value =
-        serde_json::from_str(&body).map_err(|error| format!("JSON parse failed: {error}"))?;
-    parse_usage(&value).ok_or_else(|| "rate-limit windows missing in response".to_string())
+    let value: Value = serde_json::from_str(&body)
+        .map_err(|error| (None, format!("JSON parse failed: {error}")))?;
+    parse_usage(&value).ok_or_else(|| (None, "rate-limit windows missing in response".to_string()))
 }
 
 fn load_credentials() -> Result<CodexCredentials, String> {
@@ -208,7 +237,13 @@ fn parse_window(root: &Value, keys: &[&str]) -> Option<ParsedWindow> {
     }
     let pct = number_field(
         window,
-        &["used_percent", "usedPercent", "utilization", "percent", "pct"],
+        &[
+            "used_percent",
+            "usedPercent",
+            "utilization",
+            "percent",
+            "pct",
+        ],
     )?;
     let resets_at = reset_field(window).unwrap_or_default();
     let window_seconds = number_field(window, &["limit_window_seconds", "limitWindowSeconds"])

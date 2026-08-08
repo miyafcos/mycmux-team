@@ -225,6 +225,76 @@ fn switch_flow_end_to_end_in_tempdir() {
     assert!(snapshot::load(d.path(), &first.id).is_ok());
     assert!(d.path().join("cli_account_backups").is_dir());
 }
+
+#[test]
+fn update_snapshot_tokens_rejects_stale_refresh_token() {
+    let d = tempdir().unwrap();
+    let cp = ClaudePaths {
+        credentials: d.path().join("credentials.json"),
+        claude_json: d.path().join("claude.json"),
+    };
+    let xp = CodexPaths {
+        auth: d.path().join("auth.json"),
+    };
+    fs::write(&cp.credentials, CREDS).unwrap();
+    fs::write(&cp.claude_json, CLAUDE_JSON).unwrap();
+    let profile = capture_account(d.path(), &cp, &xp, CliProvider::Claude, None).unwrap();
+    let path = snapshot::snapshot_dir(d.path()).join(format!("{}.json", profile.id));
+    let before = fs::read(&path).unwrap();
+    assert_eq!(
+        update_snapshot_tokens(
+            d.path(),
+            &profile.id,
+            CliProvider::Claude,
+            "synthetic-stale-refresh",
+            |text| Ok(text.replace("synthetic-access", "synthetic-next-access")),
+        ),
+        Ok(SnapshotUpdate::Conflict)
+    );
+    assert_eq!(fs::read(path).unwrap(), before);
+}
+
+#[test]
+fn refreshed_snapshot_still_restores_byte_exact() {
+    let d = tempdir().unwrap();
+    let cp = ClaudePaths {
+        credentials: d.path().join("credentials.json"),
+        claude_json: d.path().join("claude.json"),
+    };
+    let xp = CodexPaths {
+        auth: d.path().join("auth.json"),
+    };
+    fs::write(&cp.credentials, CREDS).unwrap();
+    fs::write(&cp.claude_json, CLAUDE_JSON).unwrap();
+    let first = capture_account(d.path(), &cp, &xp, CliProvider::Claude, None).unwrap();
+    let changed = CLAUDE_JSON
+        .replace("claude-account-a", "claude-account-b")
+        .replace("a@example.test", "b@example.test");
+    fs::write(&cp.claude_json, &changed).unwrap();
+    let second = capture_account(d.path(), &cp, &xp, CliProvider::Claude, None).unwrap();
+    fs::write(&cp.credentials, CREDS).unwrap();
+    fs::write(&cp.claude_json, CLAUDE_JSON).unwrap();
+    let expected = CREDS
+        .replace("synthetic-access", "synthetic-refreshed-access")
+        .replace("synthetic-refresh", "synthetic-refreshed-refresh");
+    assert_eq!(
+        update_snapshot_tokens(
+            d.path(),
+            &second.id,
+            CliProvider::Claude,
+            "synthetic-refresh",
+            |_| Ok(expected.clone()),
+        ),
+        Ok(SnapshotUpdate::Applied)
+    );
+    switch_account(d.path(), &cp, &xp, CliProvider::Claude, &second.id).unwrap();
+    assert_eq!(fs::read(&cp.credentials).unwrap(), expected.as_bytes());
+    assert_eq!(
+        claude::read_live_identity(&cp).identity_key.as_deref(),
+        Some(second.identity_key.as_str())
+    );
+    assert!(snapshot::load(d.path(), &first.id).is_ok());
+}
 #[test]
 fn switch_writes_orphan_snapshot_for_unregistered_live_login() {
     let d = tempdir().unwrap();

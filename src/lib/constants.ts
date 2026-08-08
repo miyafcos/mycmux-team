@@ -9,7 +9,6 @@ export const SESSION_ID_PREFIX = "pty";
 export const RESIZE_DEBOUNCE_MS = 100;
 export const INIT_DELAY_MS = 300;
 export const USAGE_POLL_INTERVAL_MS = 180_000;
-export const USAGE_METER_MAX_ACCOUNT_CHIPS = 2;
 
 export function makeSessionId(workspaceId: string, paneId: string): string {
   return `${SESSION_ID_PREFIX}-${workspaceId}-${paneId}`;

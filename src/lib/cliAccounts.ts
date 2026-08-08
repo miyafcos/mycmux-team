@@ -82,35 +82,6 @@ export function liveForProvider(
   return live.find((entry) => entry.provider === provider);
 }
 
-/**
- * Label shown on the titlebar badge for one provider.
- * Priority: registered label > email localpart > 未登録 / 未ログイン / "?".
- */
-export function badgeLabel(
-  live: CliLiveLogin | undefined,
-  profiles: CliAccountProfile[],
-): string {
-  if (!live) return "未ログイン";
-  if (live.error) return "?";
-  if (!live.present) return "未ログイン";
-  const matched = live.matched_profile_id
-    ? profiles.find((profile) => profile.id === live.matched_profile_id)
-    : undefined;
-  if (matched) return matched.label;
-  if (live.email) {
-    const localpart = live.email.split("@")[0];
-    return localpart || live.email;
-  }
-  return "未登録";
-}
-
-export function hasAttention(
-  live: CliLiveLogin[],
-  profiles: CliAccountProfile[],
-): boolean {
-  return attentionReason(live, profiles) !== null;
-}
-
 export function attentionReason(
   live: CliLiveLogin[],
   profiles: CliAccountProfile[],

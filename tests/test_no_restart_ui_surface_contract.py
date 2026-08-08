@@ -265,27 +265,27 @@ def test_file_preview_agent_usage_and_fault_surfaces_remain_wired() -> None:
         ],
     )
     assert_snippets(
-        "src/components/layout/UsageMeter.tsx",
+        "src/components/layout/AccountsButton.tsx",
         [
-            "import { UsagePopover } from \"./UsagePopover\";",
-            "export function UsageMeter() {",
-            "showCodex={Boolean(showCodex)}",
+            "export function AccountsButton({ onOpenUsageSettings }",
+            "<AccountsPanel",
+            "resolveMeterMode(flags, hasAccountChips)",
         ],
     )
     assert_snippets(
-        "src/components/layout/UsagePopover.tsx",
+        "src/components/layout/AccountsPanel.tsx",
         [
-            '<UsageSection title="Claude Code">',
-            '<UsageSection title="Codex">',
-            "summary.codex_error",
+            "export function AccountsPanel(",
+            "{PROVIDER_SHORT[row.provider]}",
+            "switchWarningText(",
         ],
     )
     assert_snippets(
         "src-tauri/src/commands/usage.rs",
         [
-            "pub async fn get_usage_summary() -> Result<UsageSummary, String>",
-            "let (claude_result, codex_result) = tokio::join!(oauth_claude::fetch(), oauth_codex::fetch());",
-            "generated_at: chrono::Utc::now().to_rfc3339(),",
+            "pub async fn get_account_usage(",
+            "fn planned_rows(",
+            "fn classify_live_identity(",
         ],
     )
     assert_snippets(
