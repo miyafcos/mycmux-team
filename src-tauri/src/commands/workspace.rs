@@ -1,9 +1,7 @@
 use tauri::AppHandle;
 
 use crate::commands::terminal::can_restore_agent_session;
-use crate::db::storage::{
-    self, AppSettings, PaneConfig, PaneTabConfig, PersistentData, WorkspaceConfig,
-};
+use crate::db::storage::{self, PaneConfig, PaneTabConfig, PersistentData};
 
 #[tauri::command(async)]
 pub fn load_persistent_data(app_handle: AppHandle) -> Result<PersistentData, String> {
@@ -22,30 +20,6 @@ pub fn save_persistent_data(app_handle: AppHandle, mut data: PersistentData) -> 
         disk.active_workspace_id = data.active_workspace_id;
         disk.active_pane_id = data.active_pane_id;
         disk.active_tab_id = data.active_tab_id;
-    })
-}
-
-#[tauri::command(async)]
-pub fn save_workspaces(
-    app_handle: AppHandle,
-    workspaces: Vec<WorkspaceConfig>,
-    active_workspace_id: Option<String>,
-    active_pane_id: Option<String>,
-) -> Result<(), String> {
-    storage::update(&app_handle, |data| {
-        data.schema_version = 1;
-        data.workspaces = workspaces;
-        data.active_workspace_id = active_workspace_id;
-        data.active_pane_id = active_pane_id;
-        data.active_tab_id = None;
-    })
-}
-
-#[tauri::command(async)]
-pub fn save_settings(app_handle: AppHandle, settings: AppSettings) -> Result<(), String> {
-    storage::update(&app_handle, |data| {
-        data.schema_version = 1;
-        data.settings = settings;
     })
 }
 
@@ -182,6 +156,7 @@ mod tests {
                 "missing-session".to_string(),
             )])),
             active_tab_id: None,
+            pinned_tab_id: None,
             tabs: None,
         }
     }

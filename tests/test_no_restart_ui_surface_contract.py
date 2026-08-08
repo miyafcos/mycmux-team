@@ -221,22 +221,16 @@ def test_savepoints_and_remote_control_have_separate_settings_destinations() -> 
 
 
 def test_file_preview_agent_usage_and_fault_surfaces_remain_wired() -> None:
-    assert_snippets(
+    # PathJumper / fileExplorerStore were deleted with the dead-code sweep:
+    # the only renderer of PathJumper was FileExplorerSidebar (removed in
+    # b7f0238), so both files had zero reachable callers. Their contracts are
+    # replaced by an existence check so the dead surface cannot silently return.
+    for removed in (
         "src/components/layout/PathJumper.tsx",
-        [
-            "const searchIndex = useFileExplorerStore((state) => state.searchIndex);",
-            "const searchIndexStatus = useFileExplorerStore((state) => state.searchIndexStatus);",
-            "collectLoadedEntries(activeRoot.path, entries)",
-        ],
-    )
-    assert_snippets(
+        "src/components/layout/pathJumperWatch.ts",
         "src/stores/fileExplorerStore.ts",
-        [
-            "const result = await walkTree(rootPath, [], 10, 50_000, false);",
-            "const result = await listDirectory(path);",
-            "searchIndexStatus: { ...state.searchIndexStatus, [rootPath]: \"ready\" },",
-        ],
-    )
+    ):
+        assert not (REPO_ROOT / removed).exists(), f"unreachable UI surface returned: {removed}"
     assert_snippets(
         "src/stores/workspaceLayoutStore.ts",
         [

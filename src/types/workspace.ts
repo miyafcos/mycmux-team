@@ -77,6 +77,8 @@ export interface Pane {
   /** Active tab's duplicate restore identity retained for manual recovery. */
   suppressedAgentSessions?: SuppressedAgentSession[];
   launchEnv?: Record<string, string>;
+  /** Tab that keeps display ownership on merge; always sorts first. */
+  pinnedTabId?: string;
 }
 
 export type AgentSessionKind = "claude" | "codex" | "claude-codex";

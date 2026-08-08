@@ -207,20 +207,7 @@ pub(super) fn detect_claude_family_session_id_in_dirs(
     )
 }
 
-pub(super) fn normalize_cwd_key(cwd: &str) -> String {
-    let normalized = if cwd.starts_with('/') && cwd.len() > 2 && cwd.as_bytes()[2] == b'/' {
-        format!(
-            "{}:{}",
-            cwd[1..2].to_uppercase(),
-            cwd[2..].replace('/', "\\")
-        )
-    } else {
-        cwd.replace('/', "\\")
-    };
-    normalized
-        .trim_end_matches(['\\', '/'])
-        .to_ascii_lowercase()
-}
+pub(super) use super::super::path_norm::normalize_cwd_key;
 
 pub(super) fn codex_session_meta(path: &std::path::Path) -> Option<(String, String)> {
     let file = match std::fs::File::open(path) {

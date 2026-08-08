@@ -19,7 +19,12 @@ function tab(id: string): PaneTab {
   };
 }
 
-function pane(id: string, tabIds: string[], activeTabId = tabIds[tabIds.length - 1]): Pane {
+function pane(
+  id: string,
+  tabIds: string[],
+  activeTabId = tabIds[tabIds.length - 1],
+  pinnedTabId?: string,
+): Pane {
   const tabs = tabIds.map(tab);
   const activeTab = tabs.find((candidate) => candidate.id === activeTabId) ?? tabs[0];
   return {
@@ -28,6 +33,7 @@ function pane(id: string, tabIds: string[], activeTabId = tabIds[tabIds.length -
     sessionId: activeTab.sessionId,
     tabs,
     activeTabId: activeTab.id,
+    pinnedTabId,
   };
 }
 
@@ -220,5 +226,242 @@ describe("workspaceLayoutStore structural moves", () => {
       agentId: "agent-a2",
     });
     expect(getPane("target", "pane-a").tabs.map((candidate) => candidate.id)).toEqual(["a1", "a2"]);
+  });
+});
+
+describe("workspaceLayoutStore pinned tabs", () => {
+  it("keeps display ownership when a tab is dropped into a pinned pane (same workspace)", () => {
+    setWorkspaces([
+      workspace(
+        "source",
+        [pane("pane-a", ["a1", "a2"]), pane("pane-b", ["b1", "b2"], "b1", "b1")],
+        [["pane-a", "pane-b"]],
+      ),
+    ]);
+
+    useWorkspaceLayoutStore.getState().moveTabToPane("source", "pane-a", "a2", "source", "pane-b");
+
+    expect(getPane("source", "pane-b")).toMatchObject({
+      activeTabId: "b1",
+      sessionId: "session-b1",
+      agentId: "agent-b1",
+      pinnedTabId: "b1",
+    });
+    expect(getPane("source", "pane-b").tabs.map((candidate) => candidate.id)).toEqual(["b1", "b2", "a2"]);
+  });
+
+  it("keeps display ownership when a tab is dropped into a pinned pane (cross workspace)", () => {
+    setWorkspaces([
+      workspace("source", [pane("pane-a", ["a1", "a2"])], [["pane-a"]]),
+      workspace("target", [pane("pane-c", ["c1", "c2"], "c2", "c1")], [["pane-c"]]),
+    ]);
+
+    useWorkspaceLayoutStore.getState().moveTabToPane("source", "pane-a", "a2", "target", "pane-c");
+
+    expect(getPane("target", "pane-c")).toMatchObject({
+      activeTabId: "c1",
+      sessionId: "session-c1",
+      agentId: "agent-c1",
+      pinnedTabId: "c1",
+    });
+    expect(getPane("target", "pane-c").tabs.map((candidate) => candidate.id)).toEqual(["c1", "c2", "a2"]);
+  });
+
+  it("keeps display ownership when a pane is merged into a pinned pane (same workspace)", () => {
+    setWorkspaces([
+      workspace(
+        "source",
+        [pane("pane-a", ["a1", "a2"]), pane("pane-b", ["b1", "b2"], "b2", "b1")],
+        [["pane-a", "pane-b"]],
+      ),
+    ]);
+
+    useWorkspaceLayoutStore.getState().movePaneToPane("source", "pane-a", "source", "pane-b");
+
+    expect(getPane("source", "pane-b")).toMatchObject({
+      activeTabId: "b1",
+      sessionId: "session-b1",
+      agentId: "agent-b1",
+      pinnedTabId: "b1",
+    });
+    expect(getPane("source", "pane-b").tabs.map((candidate) => candidate.id)).toEqual(["b1", "b2", "a1", "a2"]);
+  });
+
+  it("keeps display ownership when a pane is merged into a pinned pane (cross workspace)", () => {
+    setWorkspaces([
+      workspace("source", [pane("pane-a", ["a1", "a2"]), pane("pane-z", ["z1"])], [["pane-a", "pane-z"]]),
+      workspace("target", [pane("pane-c", ["c1", "c2"], "c2", "c1")], [["pane-c"]]),
+    ]);
+
+    useWorkspaceLayoutStore.getState().movePaneToPane("source", "pane-a", "target", "pane-c");
+
+    expect(getPane("target", "pane-c")).toMatchObject({
+      activeTabId: "c1",
+      sessionId: "session-c1",
+      agentId: "agent-c1",
+      pinnedTabId: "c1",
+    });
+    expect(getPane("target", "pane-c").tabs.map((candidate) => candidate.id)).toEqual(["c1", "c2", "a1", "a2"]);
+  });
+
+  it("still lets the incoming tab win when the target pane has no pin", () => {
+    setWorkspaces([
+      workspace(
+        "source",
+        [pane("pane-a", ["a1", "a2"]), pane("pane-b", ["b1", "b2"], "b1")],
+        [["pane-a", "pane-b"]],
+      ),
+    ]);
+
+    useWorkspaceLayoutStore.getState().moveTabToPane("source", "pane-a", "a2", "source", "pane-b");
+
+    expect(getPane("source", "pane-b")).toMatchObject({
+      activeTabId: "a2",
+      sessionId: "session-a2",
+    });
+    expect(getPane("source", "pane-b").pinnedTabId).toBeUndefined();
+  });
+
+  it("leaves manual tab switching untouched on a pinned pane", () => {
+    setWorkspaces([
+      workspace("source", [pane("pane-a", ["a1", "a2", "a3"], "a1", "a1")], [["pane-a"]]),
+    ]);
+
+    useWorkspaceLayoutStore.getState().setActivePaneTab("source", "pane-a", "a3");
+
+    expect(getPane("source", "pane-a")).toMatchObject({
+      activeTabId: "a3",
+      sessionId: "session-a3",
+      pinnedTabId: "a1",
+    });
+  });
+
+  it("toggles a pin without stealing focus and keeps the pinned tab first", () => {
+    setWorkspaces([
+      workspace("source", [pane("pane-a", ["a1", "a2", "a3"], "a1")], [["pane-a"]]),
+    ]);
+
+    useWorkspaceLayoutStore.getState().togglePaneTabPin("source", "pane-a", "a3");
+
+    expect(getPane("source", "pane-a")).toMatchObject({
+      activeTabId: "a1",
+      sessionId: "session-a1",
+      pinnedTabId: "a3",
+    });
+    expect(getPane("source", "pane-a").tabs.map((candidate) => candidate.id)).toEqual(["a3", "a1", "a2"]);
+
+    useWorkspaceLayoutStore.getState().togglePaneTabPin("source", "pane-a", "a3");
+
+    expect(getPane("source", "pane-a").pinnedTabId).toBeUndefined();
+    expect(getPane("source", "pane-a").activeTabId).toBe("a1");
+    expect(getPane("source", "pane-a").tabs.map((candidate) => candidate.id)).toEqual(["a3", "a1", "a2"]);
+  });
+
+  it("drops the pin when the pinned tab is closed", () => {
+    setWorkspaces([
+      workspace("source", [pane("pane-a", ["a1", "a2"], "a2", "a1")], [["pane-a"]]),
+    ]);
+
+    useWorkspaceLayoutStore.getState().removeTabFromPane("source", "pane-a", "a1");
+
+    expect(getPane("source", "pane-a").pinnedTabId).toBeUndefined();
+    expect(getPane("source", "pane-a").tabs.map((candidate) => candidate.id)).toEqual(["a2"]);
+  });
+
+  it("clears the source pin when the pinned tab is dragged into another pane", () => {
+    setWorkspaces([
+      workspace(
+        "source",
+        [pane("pane-a", ["a1", "a2"], "a2", "a1"), pane("pane-b", ["b1"])],
+        [["pane-a", "pane-b"]],
+      ),
+    ]);
+
+    useWorkspaceLayoutStore.getState().moveTabToPane("source", "pane-a", "a1", "source", "pane-b");
+
+    expect(getPane("source", "pane-a").pinnedTabId).toBeUndefined();
+    expect(getPane("source", "pane-b").pinnedTabId).toBeUndefined();
+    expect(getPane("source", "pane-b")).toMatchObject({ activeTabId: "a1" });
+  });
+
+  it("clears the source pin when the pinned tab is dragged into a split", () => {
+    setWorkspaces([
+      workspace(
+        "source",
+        [pane("pane-a", ["a1", "a2"], "a2", "a1"), pane("pane-b", ["b1"])],
+        [["pane-a", "pane-b"]],
+      ),
+    ]);
+
+    useWorkspaceLayoutStore.getState().moveTabToSplit("source", "pane-a", "a1", "source", "pane-b", "right");
+
+    expect(getPane("source", "pane-a").pinnedTabId).toBeUndefined();
+    expect(getPane("source", "pane-new").pinnedTabId).toBeUndefined();
+    expect(getPane("source", "pane-new").tabs.map((candidate) => candidate.id)).toEqual(["a1"]);
+  });
+
+  it("clears the source pin when the pinned tab is dragged into a new workspace", () => {
+    setWorkspaces([
+      workspace("source", [pane("pane-a", ["a1", "a2"], "a2", "a1")], [["pane-a"]]),
+    ]);
+
+    const moved = useWorkspaceLayoutStore.getState().moveTabToNewWorkspace(
+      "source",
+      "pane-a",
+      "a1",
+      "workspace-new",
+      "Detached",
+    );
+
+    expect(moved).toBe(true);
+    expect(getPane("source", "pane-a").pinnedTabId).toBeUndefined();
+    expect(getPane("workspace-new", "pane-new").pinnedTabId).toBeUndefined();
+    expect(getPane("workspace-new", "pane-new").tabs.map((candidate) => candidate.id)).toEqual(["a1"]);
+  });
+
+  it("restores a persisted pin and sorts it first", () => {
+    const { panes } = useWorkspaceLayoutStore.getState().restorePanes(
+      "ws-restore",
+      [{
+        pane_id: "pane-a",
+        agent_id: "shell-starter",
+        label: null,
+        active_tab_id: "t1",
+        pinned_tab_id: "t3",
+        tabs: [
+          { tab_id: "t1", agent_id: "shell-starter" },
+          { tab_id: "t2", agent_id: "shell-starter" },
+          { tab_id: "t3", agent_id: "shell-starter" },
+        ],
+      }],
+      null,
+      "1x1",
+    );
+
+    expect(panes[0].pinnedTabId).toBe("t3");
+    expect(panes[0].tabs.map((candidate) => candidate.id)).toEqual(["t3", "t1", "t2"]);
+    expect(panes[0].activeTabId).toBe("t1");
+  });
+
+  it("drops a persisted pin that no longer names a restored tab", () => {
+    const { panes } = useWorkspaceLayoutStore.getState().restorePanes(
+      "ws-restore",
+      [{
+        pane_id: "pane-a",
+        agent_id: "shell-starter",
+        label: null,
+        active_tab_id: "t1",
+        pinned_tab_id: "gone",
+        tabs: [
+          { tab_id: "t1", agent_id: "shell-starter" },
+          { tab_id: "t2", agent_id: "shell-starter" },
+        ],
+      }],
+      null,
+      "1x1",
+    );
+
+    expect(panes[0].pinnedTabId).toBeUndefined();
+    expect(panes[0].tabs.map((candidate) => candidate.id)).toEqual(["t1", "t2"]);
   });
 });

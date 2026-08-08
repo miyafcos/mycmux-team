@@ -32,6 +32,7 @@ import { listen } from "@tauri-apps/api/event";
 import { beforePaneClose } from "../../lib/paneCloseLifecycle";
 import { popClosedPane } from "../../stores/closedPaneStore";
 import { useOnlineSavepointStore } from "../../stores/onlineSavepointStore";
+import { paneContainsSession } from "../../stores/workspaceListStore";
 import {
   resolveNextAttentionTarget,
   useSessionAttentionStore,
@@ -357,6 +358,7 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
   const removePaneFromWorkspace = useWorkspaceLayoutStore((s) => s.removePaneFromWorkspace);
   const addTabToPane = useWorkspaceLayoutStore((s) => s.addTabToPane);
   const setActivePaneTab = useWorkspaceLayoutStore((s) => s.setActivePaneTab);
+  const togglePaneTabPin = useWorkspaceLayoutStore((s) => s.togglePaneTabPin);
   const isKeybindingsOpen = useUiStore((s) => s.isKeybindingsOpen);
   const setIsKeybindingsOpen = useUiStore((s) => s.setIsKeybindingsOpen);
   const { mounted: keybindingsMounted, closing: keybindingsClosing } = useDeferredUnmount(
@@ -573,13 +575,36 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
   }, []);
 
   // Keyboard shortcuts — use refs so the listener doesn't re-attach on every state change
-  const stateRef = useRef({ workspaces, activeId, activePaneId, lastActivePaneId });
-  stateRef.current = { workspaces, activeId, activePaneId, lastActivePaneId };
+  // isCrsmPaletteOpen and isKeybindingsOpen live here too: they flip on every
+  // modal open/close, and keeping them in the effect deps tore down and
+  // re-attached the window keydown listener each time. The guard below reads
+  // them from the ref at event time, so the values it sees are identical to the
+  // ones a re-attached listener saw.
+  const stateRef = useRef({
+    workspaces,
+    activeId,
+    activePaneId,
+    lastActivePaneId,
+    isCrsmPaletteOpen,
+    isKeybindingsOpen,
+  });
+  stateRef.current = {
+    workspaces,
+    activeId,
+    activePaneId,
+    lastActivePaneId,
+    isCrsmPaletteOpen,
+    isKeybindingsOpen,
+  };
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       // Skip if modals are open
-      if (isKeybindingsOpen || isCrsmPaletteOpen || document.getElementById("tab-sweep-panel")) return;
+      if (
+        stateRef.current.isKeybindingsOpen
+        || stateRef.current.isCrsmPaletteOpen
+        || document.getElementById("tab-sweep-panel")
+      ) return;
       if (isPlainXtermInputEvent(e)) return;
       // Skip if focus is on a native editable control (dialog inputs, selects,
       // contentEditable) outside the terminal — e.g. typing into
@@ -689,6 +714,15 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
           if (activePane) {
             const currentZoomed = useUiStore.getState().zoomedPaneId;
             setZoomedPaneId(currentZoomed === activePane.id ? null : activePane.id);
+          }
+          break;
+        }
+
+        case "pane.tab.pin.toggle": {
+          const activeWs = ws.find((w) => w.id === aid);
+          const activePane = activeWs?.panes.find((p) => paneMatchesSession(p, apid));
+          if (activeWs && activePane) {
+            togglePaneTabPin(activeWs.id, activePane.id, activePane.activeTabId);
           }
           break;
         }
@@ -807,9 +841,7 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
           // because findPaneInDirection uses pane DOM nodes.
           const resolvePaneSessionId = (sid: string | null | undefined) => {
             if (!sid) return null;
-            const pane = activeWs.panes.find(
-              (p) => p.sessionId === sid || p.tabs.some((t) => t.sessionId === sid),
-            );
+            const pane = activeWs.panes.find((p) => paneContainsSession(p, sid));
             return pane?.sessionId ?? null;
           };
           const originId =
@@ -849,8 +881,6 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [
     getActionsForEvent,
-    isKeybindingsOpen,
-    isCrsmPaletteOpen,
     setIsKeybindingsOpen,
     handleCloseWorkspace,
     toggleSidebar,
@@ -861,6 +891,7 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
     removePaneFromWorkspace,
     addTabToPane,
     setActivePaneTab,
+    togglePaneTabPin,
     setZoomedPaneId,
   ]);
 

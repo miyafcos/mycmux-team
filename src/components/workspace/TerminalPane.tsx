@@ -27,6 +27,7 @@ import { killSession, previewArtifactUriForSessionV2 } from "../../lib/ipc";
 import { revealPathInExplorer } from "../../lib/ipc";
 import { isArtifactPreviewUri, isDirectoryLikeUri } from "../terminal/terminalLinkProvider";
 import { focusController } from "../../lib/focusController";
+import { useDismissOnOutside } from "../../hooks/useDismissOnOutside";
 import { usePaneDragStore, type PaneDragItem, type PaneDropTarget } from "../../stores/paneDragStore";
 import { useSavepointDragStore } from "../../stores/savepointDragStore";
 import { resolveLiveSavepointTargetKind, savepointTargetLabel } from "../../lib/savepointHandoff";
@@ -378,22 +379,11 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
 
   const hasNotification = notificationCount > 0;
 
-  useEffect(() => {
-    if (!artifactLinkPopover) return;
-    const onMouseDown = (event: MouseEvent) => {
-      if (artifactLinkPopoverRef.current?.contains(event.target as Node)) return;
-      setArtifactLinkPopover(null);
-    };
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setArtifactLinkPopover(null);
-    };
-    window.addEventListener("mousedown", onMouseDown, true);
-    window.addEventListener("keydown", onKeyDown, true);
-    return () => {
-      window.removeEventListener("mousedown", onMouseDown, true);
-      window.removeEventListener("keydown", onKeyDown, true);
-    };
-  }, [artifactLinkPopover]);
+  useDismissOnOutside(
+    Boolean(artifactLinkPopover),
+    artifactLinkPopoverRef,
+    () => setArtifactLinkPopover(null),
+  );
 
   // Two-state border: active (accent) or inactive (transparent).
   // Notification border is handled by the CSS .has-notification class.

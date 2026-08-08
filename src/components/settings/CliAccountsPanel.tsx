@@ -7,8 +7,10 @@ import { revealInExplorer, type CliAccountProfile, type CliOrphanSnapshot, type 
 import {
   PROVIDER_ORDER,
   PROVIDER_TITLE,
+  canSwitchCliAccount,
   cliAccountProfileActivity,
   cliAccountMessage,
+  executeCliAccountSwitch,
   liveForProvider,
   orderCliAccountProfiles,
   runningAgentCounts,
@@ -235,18 +237,23 @@ function ProfileRow({
   const providerBusy = busyProfileId !== null;
 
   const handleSwitch = async () => {
-    if (providerBusy || active || profile.needs_relogin) return;
+    if (!canSwitchCliAccount(active, providerBusy, profile.needs_relogin)) return;
     const count = runningAgentCounts(paneMetadata)[profile.provider];
     const paneDetails = runningAgentPaneDetails(paneMetadata, profile.provider);
     const warning = switchWarningText(count, profile.provider, profile.label, paneDetails);
-    const accepted = await confirm(warning, {
-      title: "CLI アカウントを切り替える",
-      kind: "warning",
-      okLabel: "切り替える",
-      cancelLabel: "キャンセル",
-    }).catch(() => false);
-    if (!accepted) return;
-    await switchTo(profile.provider, profile.id);
+    await executeCliAccountSwitch(
+      active,
+      providerBusy,
+      profile.needs_relogin,
+      () =>
+        confirm(warning, {
+          title: "CLI アカウントを切り替える",
+          kind: "warning",
+          okLabel: "切り替える",
+          cancelLabel: "キャンセル",
+        }).catch(() => false),
+      () => switchTo(profile.provider, profile.id),
+    );
   };
 
   const handleDelete = async () => {

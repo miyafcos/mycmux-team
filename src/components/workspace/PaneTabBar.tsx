@@ -14,6 +14,7 @@ import {
 import { usePaneMetadataStore, useWorkspaceListStore } from "../../stores/workspaceStore";
 import type { PaneMetadata } from "../../stores/paneMetadataStore";
 import { deriveDisplayStatus, type EffectiveStatus } from "../../lib/notificationStatus";
+import { useDismissOnOutside } from "../../hooks/useDismissOnOutside";
 import { usePaneDragSource } from "../../hooks/usePaneDragSource";
 import { useSavepointPublish } from "../../hooks/useSavepointPublish";
 import { useSavepointDragStore } from "../../stores/savepointDragStore";
@@ -35,7 +36,9 @@ import {
 } from "../../stores/sessionAttentionStore";
 import {
   isSavepointAgentKind,
+  notifySavepointPublished,
   savepointIdentityKey,
+  savepointPublishErrorMessage,
   type SavepointAgentKind,
 } from "../online/onlineSavepoints";
 
@@ -130,6 +133,15 @@ const PlusIcon = () => (
 const BookmarkIcon = () => (
   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
     <path d="M6 3h12a1 1 0 0 1 1 1v17l-7-4-7 4V4a1 1 0 0 1 1-1z"></path>
+  </svg>
+);
+
+const PinIcon = ({ size = 12, filled = false }: { size?: number; filled?: boolean }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill={filled ? "currentColor" : "none"}
+       stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"
+       aria-hidden="true" focusable="false">
+    <path d="M9 3h6l-1 5 3 3v2H7v-2l3-3-1-5Z" />
+    <line x1="12" y1="13" x2="12" y2="21" />
   </svg>
 );
 
@@ -327,6 +339,12 @@ export function resolvePaneTabBarActions(
   };
 }
 
+// Narrow modes drop the inline pin button entirely — they only have room for a
+// static indicator. The dropdown row stays the always-available toggle surface.
+export function shouldShowInlinePinControl(mode: PaneTabBarMode): boolean {
+  return mode === "full" || mode === "slim" || mode === "compact" || mode === "compact3";
+}
+
 export function formatTabPosition(activeIndex: number, total: number): string {
   const safeTotal = Math.max(1, total);
   const position = activeIndex >= 0 && activeIndex < safeTotal ? activeIndex + 1 : 1;
@@ -514,25 +532,44 @@ function AttentionUnreadDot({ category }: { category: AttentionCategory | null }
 export interface PaneTabMenuRow {
   tab: PaneTab;
   category: AttentionCategory | null;
-  pinned: boolean;
+  /** Hoisted to the top because the session needs attention. */
+  hoisted: boolean;
+  /** The pane's user-pinned tab (`Pane.pinnedTabId`). */
+  isPinned: boolean;
 }
 
 // One list, not two. The previous two-section menu listed every attention tab a
 // second time under "全タブ", so a pane with four busy tabs showed eight rows
 // and the reader had to diff them. Attention tabs are hoisted to the top in
 // occurrence order and marked; everything else keeps its tab-strip order.
+// The user-pinned tab outranks attention and is extracted before hoisting, so
+// it leads the list and still appears exactly once.
 export function resolvePaneTabMenuRows(
   tabs: PaneTab[],
   attentionBySession: Record<string, SessionAttention | undefined>,
   seenAttentionByTab: Map<string, string>,
+  pinnedTabId?: string,
 ): PaneTabMenuRow[] {
-  const attention = resolveAttentionTabs(tabs, attentionBySession, seenAttentionByTab);
-  const pinnedIds = new Set(attention.map(({ tab }) => tab.id));
+  const pinnedTab = pinnedTabId
+    ? tabs.find((tab) => tab.id === pinnedTabId)
+    : undefined;
+  const rest = pinnedTab ? tabs.filter((tab) => tab.id !== pinnedTab.id) : tabs;
+  const attention = resolveAttentionTabs(rest, attentionBySession, seenAttentionByTab);
+  const hoistedIds = new Set(attention.map(({ tab }) => tab.id));
+  const pinnedRow: PaneTabMenuRow[] = pinnedTab
+    ? [{
+        tab: pinnedTab,
+        category: attentionCategory(pinnedTab.id, attentionBySession[pinnedTab.sessionId], seenAttentionByTab),
+        hoisted: false,
+        isPinned: true,
+      }]
+    : [];
   return [
-    ...attention.map(({ tab, category }) => ({ tab, category, pinned: true })),
-    ...tabs
-      .filter((tab) => !pinnedIds.has(tab.id))
-      .map((tab) => ({ tab, category: null, pinned: false })),
+    ...pinnedRow,
+    ...attention.map(({ tab, category }) => ({ tab, category, hoisted: true, isPinned: false })),
+    ...rest
+      .filter((tab) => !hoistedIds.has(tab.id))
+      .map((tab) => ({ tab, category: null, hoisted: false, isPinned: false })),
   ];
 }
 
@@ -568,6 +605,7 @@ function PaneTabListMenu({
   hasTerminalBuffer,
   onSelectTab,
   onRemoveTab,
+  onTogglePin,
   onCloseMenu,
 }: {
   pane: Pane;
@@ -578,6 +616,7 @@ function PaneTabListMenu({
   hasTerminalBuffer: (sessionId: string) => boolean;
   onSelectTab?: (tabId: string) => void;
   onRemoveTab?: (tabId: string) => void;
+  onTogglePin: (tabId: string) => void;
   onCloseMenu: () => void;
 }) {
   // Fixed positioning + viewport clamping, matching the tab context menu.
@@ -603,9 +642,12 @@ function PaneTabListMenu({
     pane.tabs,
     attentionBySession,
     seenAttentionByTab,
+    pane.pinnedTabId,
   );
-  const pinnedCount = menuRows.filter((row) => row.pinned).length;
-  const renderTabRow = ({ tab, category, pinned }: PaneTabMenuRow, isLastPinned: boolean) => {
+  // The pinned row leads the same top group the hoisted rows form, so the
+  // separator sits below both.
+  const topGroupCount = menuRows.filter((row) => row.hoisted || row.isPinned).length;
+  const renderTabRow = ({ tab, category, hoisted, isPinned }: PaneTabMenuRow, isLastHoisted: boolean) => {
     const isTabActive = tab.id === pane.activeTabId;
     const tabMeta = metadataBySession[tab.sessionId];
     const rowAgentKind = tabMeta?.agentKind ?? tab.agentKind;
@@ -653,21 +695,30 @@ function PaneTabListMenu({
           display: "flex",
           alignItems: "center",
           gap: 7,
-          minHeight: pinned && detail ? 44 : 32,
+          minHeight: hoisted && detail ? 44 : 32,
           padding: "2px 5px 2px 6px",
-          marginBottom: isLastPinned ? 6 : 0,
+          marginBottom: isLastHoisted ? 6 : 0,
           borderRadius: 6,
           // A colored rail marks "needs attention" without a section header, so
           // the row keeps its place in the single ordered list.
-          borderLeft: pinned
+          borderLeft: hoisted
             ? `3px solid ${reasonColor}`
             : "3px solid transparent",
-          background: isTabActive ? "var(--cmux-selected)" : "transparent",
+          background: isTabActive
+            ? "var(--cmux-selected)"
+            : isPinned
+              ? "color-mix(in srgb, var(--cmux-accent) 12%, transparent)"
+              : "transparent",
           color: "var(--cmux-text)",
           cursor: "pointer",
         }}
       >
         <AttentionUnreadDot category={unreadCategory} />
+        {isPinned && (
+          <span style={{ color: "var(--cmux-accent)", display: "inline-flex", flexShrink: 0 }}>
+            <PinIcon size={11} filled />
+          </span>
+        )}
         <span
           style={{
             width: 8,
@@ -692,7 +743,7 @@ function PaneTabListMenu({
           <span style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12 }}>
             {label}
           </span>
-          {pinned && detail && (
+          {hoisted && detail && (
             <span style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 11, color: "var(--cmux-text-secondary)" }}>
               {detail}
             </span>
@@ -728,6 +779,20 @@ function PaneTabListMenu({
             未復元
           </span>
         )}
+        <button
+          className={`pane-action-btn pane-tab-menu-pin-btn${isPinned ? " is-pinned" : ""}`}
+          type="button"
+          title={isPinned ? "Unpin tab" : "Pin tab"}
+          aria-label={isPinned ? "Unpin tab" : "Pin tab"}
+          aria-pressed={isPinned}
+          onClick={(event) => {
+            event.stopPropagation();
+            onTogglePin(tab.id);
+          }}
+          style={{ padding: 3, flexShrink: 0 }}
+        >
+          <PinIcon size={11} filled={isPinned} />
+        </button>
         {pane.tabs.length > 1 && (
           <button
             className="pane-action-btn"
@@ -770,7 +835,7 @@ function PaneTabListMenu({
       }}
     >
       {menuRows.map((row, index) =>
-        renderTabRow(row, pinnedCount > 0 && index === pinnedCount - 1),
+        renderTabRow(row, topGroupCount > 0 && index === topGroupCount - 1),
       )}
     </div>
   );
@@ -833,6 +898,7 @@ export default memo(function PaneTabBar({
       : null,
   );
   const setTabLabel = useWorkspaceLayoutStore((s) => s.setTabLabel);
+  const togglePaneTabPin = useWorkspaceLayoutStore((s) => s.togglePaneTabPin);
   const addPaneToWorkspaceWithOptions = useWorkspaceLayoutStore(
     (s) => s.addPaneToWorkspaceWithOptions,
   );
@@ -992,23 +1058,7 @@ export default memo(function PaneTabBar({
     return () => window.clearTimeout(timeoutId);
   }, [editingTabId]);
 
-  useEffect(() => {
-    if (!contextMenu) return;
-    const onMouseDown = (event: MouseEvent) => {
-      if (contextMenuRef.current && !contextMenuRef.current.contains(event.target as Node)) {
-        setContextMenu(null);
-      }
-    };
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setContextMenu(null);
-    };
-    window.addEventListener("mousedown", onMouseDown, true);
-    window.addEventListener("keydown", onKeyDown, true);
-    return () => {
-      window.removeEventListener("mousedown", onMouseDown, true);
-      window.removeEventListener("keydown", onKeyDown, true);
-    };
-  }, [contextMenu]);
+  useDismissOnOutside(Boolean(contextMenu), contextMenuRef, () => setContextMenu(null));
 
   useLayoutEffect(() => {
     if (!contextMenu || !contextMenuRef.current) return;
@@ -1019,41 +1069,9 @@ export default memo(function PaneTabBar({
     );
   }, [contextMenu]);
 
-  useEffect(() => {
-    if (!publishPopoverOpen) return;
-    const onMouseDown = (event: MouseEvent) => {
-      if (publishPopoverRef.current && !publishPopoverRef.current.contains(event.target as Node)) {
-        setPublishPopoverOpen(false);
-      }
-    };
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setPublishPopoverOpen(false);
-    };
-    window.addEventListener("mousedown", onMouseDown, true);
-    window.addEventListener("keydown", onKeyDown, true);
-    return () => {
-      window.removeEventListener("mousedown", onMouseDown, true);
-      window.removeEventListener("keydown", onKeyDown, true);
-    };
-  }, [publishPopoverOpen]);
+  useDismissOnOutside(publishPopoverOpen, publishPopoverRef, () => setPublishPopoverOpen(false));
 
-  useEffect(() => {
-    if (!allTabsOpen) return;
-    const onMouseDown = (event: MouseEvent) => {
-      if (allTabsMenuRef.current && !allTabsMenuRef.current.contains(event.target as Node)) {
-        setAllTabsOpen(false);
-      }
-    };
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setAllTabsOpen(false);
-    };
-    window.addEventListener("mousedown", onMouseDown, true);
-    window.addEventListener("keydown", onKeyDown, true);
-    return () => {
-      window.removeEventListener("mousedown", onMouseDown, true);
-      window.removeEventListener("keydown", onKeyDown, true);
-    };
-  }, [allTabsOpen]);
+  useDismissOnOutside(allTabsOpen, allTabsMenuRef, () => setAllTabsOpen(false));
 
   // Adaptive layout progressively folds low-priority actions, then the tab
   // strip, then priority actions while preserving usable hit targets.
@@ -1074,23 +1092,7 @@ export default memo(function PaneTabBar({
     if (overflowActions.length === 0) setKebabOpen(false);
   }, [overflowActions.length]);
 
-  useEffect(() => {
-    if (!kebabOpen) return;
-    const onMouseDown = (event: MouseEvent) => {
-      if (kebabRef.current && !kebabRef.current.contains(event.target as Node)) {
-        setKebabOpen(false);
-      }
-    };
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setKebabOpen(false);
-    };
-    window.addEventListener("mousedown", onMouseDown, true);
-    window.addEventListener("keydown", onKeyDown, true);
-    return () => {
-      window.removeEventListener("mousedown", onMouseDown, true);
-      window.removeEventListener("keydown", onKeyDown, true);
-    };
-  }, [kebabOpen]);
+  useDismissOnOutside(kebabOpen, kebabRef, () => setKebabOpen(false));
 
   useEffect(() => {
     const strip = tabStripRef.current;
@@ -1155,27 +1157,10 @@ export default memo(function PaneTabBar({
         closedReason: recordKind === "final" ? "manual" : undefined,
       });
       if (!outcome.ok) throw outcome.error;
-      const result = outcome.result;
-      useToastStore.getState().pushToast(
-        (recordKind === "final"
-          ? onlineStrings.finalizeSuccess
-          : (result.updated ? onlineStrings.publishSuccessUpdate : onlineStrings.publishSuccessNew))
-          + (result.warnings.length > 0
-            ? ` — ${result.warnings.length}${onlineStrings.publishWarningsSuffix}`
-            : ""),
-        "warning",
-      );
-      void useOnlineSavepointStore.getState().refresh();
-      window.dispatchEvent(new CustomEvent("mycmux:savepoint-published"));
+      notifySavepointPublished(outcome.result, recordKind);
       setPublishSummary("");
     } catch (error) {
-      const message = String(error);
-      useToastStore.getState().pushToast(
-        message.includes("Session transcript") && message.includes("not found")
-          ? onlineStrings.publishNoTranscript
-          : onlineStrings.publishErrorPrefix + message,
-        "error",
-      );
+      useToastStore.getState().pushToast(savepointPublishErrorMessage(error), "error");
     }
   }, [activeTab, agentKind, agentSessionId, metadataBySession, pane.cwd, publishSummary, publishing, runSavepointPublish]);
 
@@ -1215,10 +1200,21 @@ export default memo(function PaneTabBar({
     setContextMenu(null);
   }, [contextMenu, pane.id, setTabLabel, workspaceId]);
 
+  const handleToggleTabPin = useCallback((tabId: string) => {
+    togglePaneTabPin(workspaceId, pane.id, tabId);
+  }, [pane.id, togglePaneTabPin, workspaceId]);
+
+  const handleTogglePinContextTab = useCallback(() => {
+    if (!contextMenu) return;
+    togglePaneTabPin(workspaceId, pane.id, contextMenu.tabId);
+    setContextMenu(null);
+  }, [contextMenu, pane.id, togglePaneTabPin, workspaceId]);
+
   const contextTab = contextMenu
     ? pane.tabs.find((candidate) => candidate.id === contextMenu.tabId)
     : undefined;
   const canResetContextTabName = contextTab?.label !== undefined;
+  const isContextTabPinned = contextTab !== undefined && contextTab.id === pane.pinnedTabId;
 
   const activeTabIndex = pane.tabs.findIndex((t) => t.id === pane.activeTabId);
   const activeTabLabel = activeTab ? getTabDisplayLabel(activeTab, true) : "";
@@ -1238,6 +1234,8 @@ export default memo(function PaneTabBar({
         : null;
   const usesTabStrip = renderMode === "full" || renderMode === "slim";
   const usesCompactTabs = !usesTabStrip && activeTab !== undefined;
+  const showsInlinePinControl = shouldShowInlinePinControl(renderMode);
+  const isActiveTabPinned = activeTab !== undefined && activeTab.id === pane.pinnedTabId;
   const paneActions = (
     <>
       {visibleActions.includes("new-tab") && (
@@ -1486,6 +1484,7 @@ export default memo(function PaneTabBar({
           const duplicateSessionTitle = tabMeta?.agentKind === "codex"
             ? "Duplicate session (handoff)"
             : "Duplicate session";
+          const isTabPinned = tab.id === pane.pinnedTabId;
           const showDeferredRestore = shouldShowDeferredRestoreBadge(
             tab,
             isTabActive,
@@ -1564,7 +1563,7 @@ export default memo(function PaneTabBar({
                 tabKindColor ? AGENT_KIND_BADGE_LABELS[tabMeta?.agentKind ?? tab.agentKind ?? ""] : null,
                 canonicalUnreadLabel,
               ].filter(Boolean).join(": ")}
-              className={`pane-tab-pill ${isTabActive ? "is-active" : ""}${isSavepointDropTarget ? " is-savepoint-write-target" : ""}` + (tabKindColor ? " has-agent-kind" : "")}
+              className={`pane-tab-pill ${isTabActive ? "is-active" : ""}${isSavepointDropTarget ? " is-savepoint-write-target" : ""}` + (tabKindColor ? " has-agent-kind" : "") + (isTabPinned ? " is-pinned" : "")}
               style={{
                 display: "flex",
                 alignItems: "center",
@@ -1572,7 +1571,8 @@ export default memo(function PaneTabBar({
                 padding: "0 8px 0 7px",
                 height: 36,
                 maxWidth: 160,
-                minWidth: isTabActive || canDuplicateSession ? 120 : 64,
+                // Widened to budget the always-mounted pin button.
+                minWidth: isTabActive || canDuplicateSession ? 120 : 76,
                 cursor: isEditingTab ? "text" : "pointer",
                 background: isTabActive ? "var(--cmux-selected)" : "transparent",
                 borderRight: "1px solid var(--cmux-border-hairline)",
@@ -1591,9 +1591,15 @@ export default memo(function PaneTabBar({
                 <span title="Work done" style={{ width: 7, height: 7, borderRadius: "50%", background: "var(--status-done)", boxShadow: "0 0 0 1px var(--cmux-bg-solid)", flexShrink: 0 }} />
               )}
               <AgentStatusDot status={tabEffectiveStatus} />
-              {/* folder icon */}
-              <span style={{ color: isTabActive ? "var(--cmux-accent)" : "var(--cmux-text-tertiary)", flexShrink: 0 }}>
-                <FolderIcon />
+              {/* folder icon — swapped for the pin marker at constant width */}
+              <span style={{
+                color: isTabPinned
+                  ? "var(--cmux-accent)"
+                  : isTabActive ? "var(--cmux-accent)" : "var(--cmux-text-tertiary)",
+                display: "inline-flex",
+                flexShrink: 0,
+              }}>
+                {isTabPinned ? <PinIcon size={13} filled /> : <FolderIcon />}
               </span>
               {showDeferredRestore && (
                 <span
@@ -1658,6 +1664,24 @@ export default memo(function PaneTabBar({
                   {label}
                 </span>
               )}
+              {/* Always mounted (opacity-hidden until hover/focus/pinned/active)
+                  so the overflow ResizeObserver measures a stable width. */}
+              <button
+                type="button"
+                className={`pane-action-btn pane-tab-pin-btn${isTabPinned ? " is-pinned" : ""}`}
+                aria-label={isTabPinned ? "Unpin tab" : "Pin tab"}
+                aria-pressed={isTabPinned}
+                title={isTabPinned ? "Unpin tab" : "Pin tab"}
+                onPointerDown={(event) => event.stopPropagation()}
+                onDoubleClick={(event) => event.stopPropagation()}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  handleToggleTabPin(tab.id);
+                }}
+                style={{ padding: 3, flexShrink: 0 }}
+              >
+                <PinIcon />
+              </button>
               {canDuplicateSession && (
                 <button
                   type="button"
@@ -1719,6 +1743,7 @@ export default memo(function PaneTabBar({
               hasTerminalBuffer={hasTerminalBuffer}
               onSelectTab={onSelectTab}
               onRemoveTab={onRemoveTab}
+              onTogglePin={handleToggleTabPin}
               onCloseMenu={() => setAllTabsOpen(false)}
             />
           )}
@@ -1843,6 +1868,18 @@ export default memo(function PaneTabBar({
               <span title="Work done" style={{ width: 7, height: 7, borderRadius: "50%", background: "var(--status-done)", boxShadow: "0 0 0 1px var(--cmux-bg-solid)", flexShrink: 0 }} />
             )}
             <AgentStatusDot status={activeStatus} />
+            {/* Narrow modes have no room for the toggle: show the state only,
+                and let the dropdown row do the toggling. */}
+            {!showsInlinePinControl && isActiveTabPinned && (
+              <span
+                title="Pinned tab"
+                aria-label="Pinned tab"
+                role="img"
+                style={{ color: "var(--cmux-accent)", display: "inline-flex", flexShrink: 0 }}
+              >
+                <PinIcon size={12} filled />
+              </span>
+            )}
             {isEditingActiveTab ? (
               <input
                 ref={inputRef}
@@ -1891,6 +1928,24 @@ export default memo(function PaneTabBar({
               >
                 {activeTabLabel}
               </span>
+            )}
+            {showsInlinePinControl && (
+              <button
+                type="button"
+                className={`pane-action-btn pane-tab-pin-btn${isActiveTabPinned ? " is-pinned" : ""}`}
+                aria-label={isActiveTabPinned ? "Unpin tab" : "Pin tab"}
+                aria-pressed={isActiveTabPinned}
+                title={isActiveTabPinned ? "Unpin tab" : "Pin tab"}
+                onPointerDown={(event) => event.stopPropagation()}
+                onDoubleClick={(event) => event.stopPropagation()}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  handleToggleTabPin(activeTab.id);
+                }}
+                style={{ padding: 4, flexShrink: 0 }}
+              >
+                <PinIcon />
+              </button>
             )}
             {activeMeta?.agentKind && activeMeta.agentSessionId && (
               <button
@@ -1941,6 +1996,7 @@ export default memo(function PaneTabBar({
                 hasTerminalBuffer={hasTerminalBuffer}
                 onSelectTab={onSelectTab}
                 onRemoveTab={onRemoveTab}
+                onTogglePin={handleToggleTabPin}
                 onCloseMenu={() => setAllTabsOpen(false)}
               />
             )}
@@ -2064,6 +2120,9 @@ export default memo(function PaneTabBar({
             onClick={handleResetContextTab}
           >
             Reset name to auto
+          </PaneTabContextMenuItem>
+          <PaneTabContextMenuItem onClick={handleTogglePinContextTab}>
+            {isContextTabPinned ? "Unpin tab" : "Pin tab"}
           </PaneTabContextMenuItem>
         </div>
       )}

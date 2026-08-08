@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { OVERLAY_EXIT_MS, useDeferredUnmount } from "../../hooks/useDeferredUnmount";
+import { useDismissOnOutside } from "../../hooks/useDismissOnOutside";
 import type { CliProvider, ProfileUsage, WindowStat } from "../../lib/ipc";
 import {
   PROVIDER_SHORT,
@@ -28,27 +29,17 @@ export function AccountsButton({ onOpenUsageSettings }: { onOpenUsageSettings: (
   const chipLabels = useMemo(() => buildChipLabels(rows), [rows]);
   const mode = useAccountsButtonMode(rows.length > 0);
 
-  useEffect(() => {
-    if (!isOpen) return;
-    const onMouseDown = (event: MouseEvent) => {
-      if (rootRef.current && !rootRef.current.contains(event.target as Node)) {
-        setIsOpen(false);
-      }
-    };
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        setIsOpen(false);
-        triggerRef.current?.focus();
-      }
-    };
-    document.addEventListener("mousedown", onMouseDown);
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.removeEventListener("mousedown", onMouseDown);
-      document.removeEventListener("keydown", onKeyDown);
-    };
-  }, [isOpen]);
+  useDismissOnOutside(
+    isOpen,
+    rootRef,
+    (reason) => {
+      setIsOpen(false);
+      // Escape is a keyboard gesture, so focus goes back to the trigger. An
+      // outside click already moved focus wherever the user clicked.
+      if (reason === "escape") triggerRef.current?.focus();
+    },
+    { preventDefaultOnEscape: true },
+  );
 
   const attentionMessages = [
     lastError,

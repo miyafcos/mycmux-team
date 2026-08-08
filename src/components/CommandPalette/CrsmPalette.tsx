@@ -11,7 +11,7 @@ import {
   useUiStore,
   useWorkspaceLayoutStore,
 } from "../../stores/workspaceStore";
-import { useWorkspaceListStore } from "../../stores/workspaceListStore";
+import { paneContainsSession, useWorkspaceListStore } from "../../stores/workspaceListStore";
 import { useSettingsStore } from "../../stores/settingsStore";
 import { OVERLAY_EXIT_MS, useDeferredUnmount } from "../../hooks/useDeferredUnmount";
 import { KIND_COLORS } from "../../lib/agentKindColors";
@@ -560,9 +560,7 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
 
   const activePaneCwd = useMemo(() => {
     if (!activeWorkspace) return activePaneMetadataCwd;
-    const pane = activeWorkspace.panes.find((candidate) =>
-      candidate.sessionId === activePaneId || candidate.tabs.some((tab) => tab.sessionId === activePaneId),
-    );
+    const pane = activeWorkspace.panes.find((candidate) => paneContainsSession(candidate, activePaneId));
     const activeTab = pane?.tabs.find((tab) => tab.id === pane.activeTabId)
       ?? pane?.tabs.find((tab) => tab.sessionId === activePaneId)
       ?? pane?.tabs[0];

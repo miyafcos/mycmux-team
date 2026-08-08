@@ -419,14 +419,7 @@ pub(super) fn agent_kind_from_process(sys: &System, pid: Pid) -> Option<Detected
     None
 }
 
-/// Canonical UUID shape (8-4-4-4-12 hex) — mirrors terminal.rs::is_uuid_like.
-pub(super) fn is_uuid_like(value: &str) -> bool {
-    value.len() == 36
-        && value.bytes().enumerate().all(|(i, b)| match i {
-            8 | 13 | 18 | 23 => b == b'-',
-            _ => b.is_ascii_hexdigit(),
-        })
-}
+pub(super) use crate::util::ids::is_uuid_like;
 
 /// Extract the exact session id from the agent process's own command line
 /// (`--session-id <uuid>` / `--resume <uuid>` / a bare uuid positional for

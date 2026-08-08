@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::{self, File};
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -115,6 +115,8 @@ pub struct PaneConfig {
     #[serde(default)]
     pub active_tab_id: Option<String>,
     #[serde(default)]
+    pub pinned_tab_id: Option<String>,
+    #[serde(default)]
     pub tabs: Option<Vec<PaneTabConfig>>,
 }
 
@@ -210,13 +212,10 @@ impl Default for AppSettings {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PinnedRoot {
-    pub id: String,
-    pub path: String,
-    pub name: String,
-}
-
+// NOTE: no `deny_unknown_fields` here on purpose. Retired keys (e.g. the
+// former `pinned_roots`, dropped with the file-explorer sidebar) can still be
+// present in an existing data.json; serde must ignore them rather than fail
+// the whole load.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PersistentData {
     #[serde(default = "default_schema_version")]
@@ -229,8 +228,6 @@ pub struct PersistentData {
     pub active_pane_id: Option<String>,
     #[serde(default)]
     pub active_tab_id: Option<String>,
-    #[serde(default)]
-    pub pinned_roots: Vec<PinnedRoot>,
 }
 
 impl Default for PersistentData {
@@ -242,7 +239,6 @@ impl Default for PersistentData {
             active_workspace_id: None,
             active_pane_id: None,
             active_tab_id: None,
-            pinned_roots: Vec::new(),
         }
     }
 }
@@ -430,13 +426,13 @@ fn load_from_path(path: &Path) -> Result<PersistentData, String> {
     }
 }
 
+/// Write the serialized data file and fsync it.
+///
+/// Deliberately not the atomic helper: `save_to_path` writes to its own named
+/// tmp path so `replace_data_file` can take a pre-replace backup of the live
+/// file between the write and the rename.
 fn write_json_file(path: &Path, json: &str) -> Result<(), String> {
-    let mut file = File::create(path)
-        .map_err(|error| format!("Failed to create {}: {error}", path.display()))?;
-    file.write_all(json.as_bytes())
-        .map_err(|error| format!("Failed to write {}: {error}", path.display()))?;
-    file.sync_all()
-        .map_err(|error| format!("Failed to flush {}: {error}", path.display()))
+    crate::util::atomic_write::write_synced(path, json.as_bytes())
 }
 
 fn replace_data_file(path: &Path, tmp_path: &Path) -> Result<(), String> {
@@ -679,6 +675,34 @@ mod tests {
             Some("codex")
         );
         assert!(pane.suppressed_agent_sessions.is_none());
+    }
+
+    #[test]
+    fn pinned_tab_id_round_trip() {
+        let pane: PaneConfig = serde_json::from_str(
+            r#"{"agent_id":"shell-starter","label":null,"cwd":null,"active_tab_id":"tab-1","pinned_tab_id":"tab-2"}"#,
+        )
+        .unwrap();
+
+        assert_eq!(pane.pinned_tab_id.as_deref(), Some("tab-2"));
+
+        let serialized = serde_json::to_string(&pane).unwrap();
+        let restored: PaneConfig = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(restored.pinned_tab_id.as_deref(), Some("tab-2"));
+    }
+
+    #[test]
+    fn pinned_tab_id_defaults_to_none_when_absent() {
+        let pane: PaneConfig = serde_json::from_str(
+            r#"{"agent_id":"shell-starter","label":null,"cwd":null}"#,
+        )
+        .unwrap();
+
+        assert!(pane.pinned_tab_id.is_none());
+
+        let serialized = serde_json::to_string(&pane).unwrap();
+        let restored: PaneConfig = serde_json::from_str(&serialized).unwrap();
+        assert!(restored.pinned_tab_id.is_none());
     }
 
     #[test]

@@ -2,16 +2,24 @@ import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type Ref } from "react";
 import {
   applySweep,
+  applyVerdictSelection,
   buildJudgePrompt,
+  buildSweepRows,
   formatJudgeError,
   formatLastOutputAge,
   formatSweepCompletion,
+  initialSweepSelection,
   lastMeaningfulTailLine,
   parseJudgeOutputResult,
+  retainSweepSelection,
   scanTabs,
   shortenCwdFromStart,
+  splitSweepSelection,
+  toggleSweepSelection,
+  type SweepCategory,
   type SweepLockReason,
   type SweepReport,
+  type SweepRow,
   type SweepTab,
   type Verdict,
 } from "./tabSweep";
@@ -21,7 +29,6 @@ interface TabSweepPanelProps {
   visible: boolean;
   closing?: boolean;
   onClose: () => void;
-  onReportChange?: (report: SweepReport) => void;
 }
 
 const lockReasonLabels: Record<SweepLockReason, string> = {
@@ -40,6 +47,12 @@ const verdictLabels: Record<Exclude<Verdict["verdict"], "unknown">, string> = {
   working: "作業中",
 };
 
+const groupLabels: Record<SweepCategory, string> = {
+  DEAD: "プロセス終了済み",
+  CANDIDATE: "入力待ちの候補",
+  LOCKED: "ロック中（閉じられません）",
+};
+
 const actionButtonStyle: CSSProperties = {
   border: "1px solid var(--cmux-border)",
   borderRadius: 5,
@@ -49,6 +62,14 @@ const actionButtonStyle: CSSProperties = {
   fontSize: 11,
   cursor: "pointer",
   whiteSpace: "nowrap",
+};
+
+const chipStyle: CSSProperties = {
+  padding: "2px 6px",
+  borderRadius: 999,
+  background: "var(--cmux-hover)",
+  color: "var(--cmux-text-secondary)",
+  fontSize: 9,
 };
 
 function ActionButton({
@@ -84,33 +105,6 @@ function ActionButton({
     >
       {children}
     </button>
-  );
-}
-
-function Section({
-  title,
-  subtitle,
-  action,
-  muted = false,
-  children,
-}: {
-  title: string;
-  subtitle: string;
-  action?: ReactNode;
-  muted?: boolean;
-  children: ReactNode;
-}) {
-  return (
-    <section style={{ padding: "12px 16px", borderBottom: "1px solid var(--cmux-border-hairline)", opacity: muted ? 0.66 : 1 }}>
-      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", flexWrap: "wrap", gap: 8, marginBottom: 8 }}>
-        <div style={{ minWidth: 0 }}>
-          <h3 style={{ margin: 0, fontSize: 12, fontWeight: 650, color: "var(--cmux-text)" }}>{title}</h3>
-          <div style={{ marginTop: 2, fontSize: 10, color: "var(--cmux-text-tertiary)" }}>{subtitle}</div>
-        </div>
-        {action}
-      </div>
-      <div style={{ display: "grid", gap: 6 }}>{children}</div>
-    </section>
   );
 }
 
@@ -156,13 +150,9 @@ function TabIdentity({
   );
 }
 
-function EmptyRow({ children }: { children: ReactNode }) {
-  return <div style={{ color: "var(--cmux-text-tertiary)", fontSize: 11, padding: "4px 0" }}>{children}</div>;
-}
-
 function SkeletonRows() {
   return (
-    <div aria-label="タブを確認中" style={{ display: "grid", gap: 6 }}>
+    <div aria-label="タブを確認中" style={{ display: "grid", gap: 6, padding: "12px 16px" }}>
       {["72%", "55%"].map((width) => (
         <div key={width} style={{ width, height: 18, borderRadius: 4, background: "var(--cmux-hover)", opacity: 0.65 }} />
       ))}
@@ -174,7 +164,11 @@ function verdictInputKey(tab: SweepTab): string {
   return JSON.stringify([tab.category, tab.unnamed, tab.label ?? "", tab.cwd ?? "", tab.tail]);
 }
 
-export function TabSweepPanel({ open, visible, closing = false, onClose, onReportChange }: TabSweepPanelProps) {
+function tabName(tab: SweepTab): string {
+  return tab.label?.trim() || "無名タブ";
+}
+
+export function TabSweepPanel({ open, visible, closing = false, onClose }: TabSweepPanelProps) {
   const panelRef = useRef<HTMLDivElement>(null);
   const previouslyFocusedRef = useRef<HTMLElement | null>(null);
   const verdictInputsRef = useRef(new Map<string, string>());
@@ -182,6 +176,7 @@ export function TabSweepPanel({ open, visible, closing = false, onClose, onRepor
   const focusOnOpenRef = useRef(false);
   const [report, setReport] = useState<SweepReport | null>(null);
   const [verdicts, setVerdicts] = useState<Verdict[]>([]);
+  const [selection, setSelection] = useState<ReadonlySet<string>>(() => new Set<string>());
   const [judged, setJudged] = useState(false);
   const [scanning, setScanning] = useState(false);
   const [judging, setJudging] = useState(false);
@@ -191,19 +186,19 @@ export function TabSweepPanel({ open, visible, closing = false, onClose, onRepor
   const [judgeTargetCount, setJudgeTargetCount] = useState(0);
   const [judgeElapsedSeconds, setJudgeElapsedSeconds] = useState(0);
   const [judgeErrorDetail, setJudgeErrorDetail] = useState<string | null>(null);
-  const [lockedExpanded, setLockedExpanded] = useState(false);
 
   const rescan = useCallback(async (clearJudge = true): Promise<boolean> => {
     setScanning(true);
     try {
       const next = await scanTabs();
+      const nextRows = buildSweepRows(next);
       setReport(next);
-      onReportChange?.(next);
       if (clearJudge) {
         verdictInputsRef.current.clear();
         setVerdicts([]);
         setJudged(false);
         setJudgeErrorDetail(null);
+        setSelection(initialSweepSelection(nextRows));
       } else {
         const currentById = new Map(next.tabs.map((tab) => [tab.id, tab]));
         setVerdicts((current) => current.filter((verdict) => {
@@ -211,6 +206,7 @@ export function TabSweepPanel({ open, visible, closing = false, onClose, onRepor
           return tab !== undefined
             && verdictInputsRef.current.get(verdict.id) === verdictInputKey(tab);
         }));
+        setSelection((current) => retainSweepSelection(current, nextRows));
       }
       setStatus("確認完了");
       return true;
@@ -220,7 +216,7 @@ export function TabSweepPanel({ open, visible, closing = false, onClose, onRepor
     } finally {
       setScanning(false);
     }
-  }, [onReportChange]);
+  }, []);
 
   useEffect(() => {
     if (!open) return;
@@ -237,7 +233,7 @@ export function TabSweepPanel({ open, visible, closing = false, onClose, onRepor
 
   useEffect(() => {
     if (!open || judging) return;
-    void rescan(report === null);
+    void rescan(true);
   }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
@@ -270,13 +266,17 @@ export function TabSweepPanel({ open, visible, closing = false, onClose, onRepor
         'button:not(:disabled), [href], input:not(:disabled), [tabindex]:not([tabindex="-1"])',
       )];
       if (focusable.length === 0) return;
-      const first = panelRef.current.querySelector<HTMLElement>(
-        'button[data-tab-sweep-primary="true"]:not(:disabled)',
-      ) ?? focusable[0];
+      // Wrapping follows DOM order; the primary button is only the entry point.
+      // (The primary is the footer's close button, which is also the last
+      // focusable — using it as the wrap anchor would pin Tab on that one node.)
+      const first = focusable[0];
       const last = focusable[focusable.length - 1];
+      const entry = panelRef.current.querySelector<HTMLElement>(
+        'button[data-tab-sweep-primary="true"]:not(:disabled)',
+      ) ?? first;
       if (document.activeElement === panelRef.current) {
         event.preventDefault();
-        (event.shiftKey ? last : first).focus();
+        (event.shiftKey ? last : entry).focus();
       } else if (event.shiftKey && document.activeElement === first) {
         event.preventDefault();
         last.focus();
@@ -289,24 +289,20 @@ export function TabSweepPanel({ open, visible, closing = false, onClose, onRepor
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [closing, onClose, open]);
 
+  const rows = useMemo(() => buildSweepRows(report), [report]);
   const verdictById = useMemo(
     () => new Map(verdicts.map((verdict) => [verdict.id, verdict])),
     [verdicts],
   );
-  const doneCandidates = report?.candidates.filter(
-    (tab) => verdictById.get(tab.id)?.verdict === "done_waiting",
-  ) ?? [];
-  const labelSuggestions = report?.unnamed.flatMap((tab) => {
-    const label = verdictById.get(tab.id)?.label;
-    return label ? [{ tab, label }] : [];
-  }) ?? [];
   const busy = scanning || judging || applying;
   const scannedAt = report?.scannedAt ?? Date.now();
-  const noSweepItems = report !== null
-    && report.dead.length === 0
-    && report.candidates.length === 0
-    && report.locked.length === 0
-    && report.unnamed.length === 0;
+  const selectedCount = useMemo(() => {
+    const { deadIds, candidateIds } = splitSweepSelection(selection, rows);
+    return deadIds.length + candidateIds.length;
+  }, [rows, selection]);
+  const judgeableCount = rows.filter(
+    (row) => row.kind === "CANDIDATE" || (row.kind !== "DEAD" && row.tab.unnamed),
+  ).length;
 
   const runJudge = async () => {
     if (!report || busy) return;
@@ -345,7 +341,10 @@ export function TabSweepPanel({ open, visible, closing = false, onClose, onRepor
       }
       setVerdicts(parsed.verdicts);
       setJudged(true);
-      setStatus("AI判定が完了しました");
+      // The judge only proposes ticks — it never removes the user's own choices
+      // and never gates the close button.
+      setSelection((current) => applyVerdictSelection(current, rows, parsed.verdicts));
+      setStatus("AI判定が完了しました。チェックは自由に変えられます");
     } catch (error) {
       if (activeJudgeRequestRef.current !== requestId) return;
       const presentation = formatJudgeError(error);
@@ -401,7 +400,20 @@ export function TabSweepPanel({ open, visible, closing = false, onClose, onRepor
     }
   };
 
+  const closeSelected = () => {
+    const { deadIds, candidateIds } = splitSweepSelection(selection, rows);
+    if (deadIds.length + candidateIds.length === 0) return;
+    void applyAndRefresh(
+      // Candidates go through the manual channel: the two-scan safety check in
+      // applySweep still runs, but no verdict is required to close them.
+      { closeDeadTabIds: deadIds, manualCloseCandidateTabIds: candidateIds },
+      (result) => `${result.closed}件閉じました`,
+    );
+  };
+
   if (!visible) return null;
+
+  let renderedGroup: SweepCategory | null = null;
 
   return (
     <div
@@ -454,7 +466,7 @@ export function TabSweepPanel({ open, visible, closing = false, onClose, onRepor
           <div style={{ display: "flex", gap: 6, flex: "none" }}>
             <ActionButton
               disabled={busy}
-              primary={Boolean(report && report.dead.length === 0 && report.candidates.length === 0 && report.unnamed.length === 0)}
+              primary={rows.length === 0}
               onClick={() => void rescan(true)}
             >
               再確認
@@ -470,173 +482,131 @@ export function TabSweepPanel({ open, visible, closing = false, onClose, onRepor
               <pre style={{ margin: "8px 0 0", maxHeight: 120, overflow: "auto", whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{judgeErrorDetail}</pre>
             </details>
           ) : null}
-          {noSweepItems ? (
+          {scanning && !report ? <SkeletonRows /> : null}
+          {report && rows.length === 0 ? (
             <div role="status" style={{ padding: "12px 16px", color: "var(--cmux-text-secondary)", fontSize: 11 }}>
               掃除できるタブはありません
             </div>
           ) : null}
-          <Section
-            title={`① 即掃除できる${report ? ` (${report.dead.length})` : ""}`}
-            subtitle="プロセスが終了済みです。閉じても Ctrl+Shift+T で復元できます"
-            action={(
-              <ActionButton
-                danger
-                primary={Boolean(report && report.dead.length > 0)}
-                disabled={busy || !report || report.dead.length === 0}
-                onClick={() => void applyAndRefresh(
-                  { closeDeadTabIds: report?.dead.map((tab) => tab.id) ?? [] },
-                  (result) => `${result.closed}件閉じました`,
-                )}
-              >
-                全部閉じる
-              </ActionButton>
-            )}
-          >
-            {scanning && !report ? <SkeletonRows /> : null}
-            {report?.dead.map((tab) => <TabIdentity key={tab.id} tab={tab} scannedAt={scannedAt} />)}
-            {report && report.dead.length === 0 && <EmptyRow>ありません</EmptyRow>}
-          </Section>
-
-          <Section
-            title={`② AI 判定候補${report ? ` (${report.candidates.length})` : ""}`}
-            subtitle="入力待ちの候補です。AI判定前でも安全確認を通して個別に閉じられます"
-            action={(
-              <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4, maxWidth: 330 }}>
-                <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "flex-end", gap: 6 }}>
-                  {judged ? (
-                    <ActionButton
-                      disabled={busy || doneCandidates.length === 0}
-                      onClick={() => void applyAndRefresh(
-                        {
-                          closeCandidateTabIds: doneCandidates.map((tab) => tab.id),
-                          verdicts,
-                        },
-                        (result) => `${result.closed}件閉じました`,
-                      )}
-                    >
-                      完了判定をまとめて閉じる
-                    </ActionButton>
-                  ) : null}
-                  {judging ? (
-                    <ActionButton danger onClick={() => void cancelJudge()}>中止</ActionButton>
-                  ) : (
-                    <ActionButton
-                      primary={Boolean(report && report.dead.length === 0 && (report.candidates.length > 0 || report.unnamed.length > 0))}
-                      disabled={busy || !report || (report.candidates.length === 0 && report.unnamed.length === 0)}
-                      onClick={() => void runJudge()}
-                    >
-                      {judgeErrorDetail ? "AI判定を再実行" : "AI判定を実行"}
-                    </ActionButton>
-                  )}
-                </div>
-                <div style={{ fontSize: 9, lineHeight: 1.35, color: "var(--cmux-text-tertiary)", textAlign: "right" }}>
-                  各タブの画面末尾8行と作業フォルダを Claude (haiku) に送って判定します
-                </div>
-              </div>
-            )}
-          >
-            {scanning && !report ? <SkeletonRows /> : null}
-            {report?.candidates.map((tab) => {
+          <div style={{ padding: "4px 16px 12px" }}>
+            {rows.map((row: SweepRow) => {
+              const { tab, kind, selectable } = row;
+              const checked = selection.has(tab.id);
               const verdict = verdictById.get(tab.id);
+              const suggestedLabel = tab.unnamed ? verdict?.label : undefined;
+              const groupHeader = renderedGroup === kind ? null : (
+                <div
+                  key={`group-${kind}`}
+                  style={{
+                    marginTop: renderedGroup === null ? 8 : 14,
+                    marginBottom: 4,
+                    fontSize: 9,
+                    letterSpacing: "0.06em",
+                    color: "var(--cmux-text-tertiary)",
+                    borderBottom: "1px solid var(--cmux-border-hairline)",
+                    paddingBottom: 3,
+                  }}
+                >
+                  {groupLabels[kind]}
+                </div>
+              );
+              renderedGroup = kind;
               return (
-                <div key={tab.id} style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto", gap: 10, alignItems: "center" }}>
-                  <TabIdentity
-                    tab={tab}
-                    scannedAt={scannedAt}
-                    showActivity
-                    detail={verdict && verdict.verdict !== "unknown" ? (
-                      <div style={{ marginTop: 3, fontSize: 10, color: "var(--cmux-accent)" }}>{verdictLabels[verdict.verdict]}</div>
-                    ) : undefined}
-                  />
-                  <ActionButton
-                    disabled={busy || (judged && verdict?.verdict !== "done_waiting")}
-                    ariaLabel={`${tab.label?.trim() || "無名タブ"}を閉じる。Ctrl+Shift+Tで復元できます`}
-                    onClick={() => void applyAndRefresh(
-                      judged
-                        ? { closeCandidateTabIds: [tab.id], verdicts }
-                        : { manualCloseCandidateTabIds: [tab.id] },
-                      (result) => `${result.closed}件閉じました`,
-                    )}
+                <div key={tab.id}>
+                  {groupHeader}
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "auto minmax(0, 1fr)",
+                      gap: 9,
+                      alignItems: "start",
+                      padding: "5px 0",
+                      opacity: selectable ? 1 : 0.66,
+                    }}
                   >
-                    閉じる
-                  </ActionButton>
+                    <input
+                      type="checkbox"
+                      checked={selectable && checked}
+                      disabled={!selectable || busy}
+                      aria-label={selectable
+                        ? `${tabName(tab)}を閉じる対象にする`
+                        : `${tabName(tab)}は${tab.lockReasons.map((reason) => lockReasonLabels[reason]).join("・")}のため閉じられません`}
+                      onChange={(event) => setSelection(
+                        (current) => toggleSweepSelection(current, tab.id, event.target.checked),
+                      )}
+                      style={{ marginTop: 2, cursor: selectable && !busy ? "pointer" : "default" }}
+                    />
+                    <TabIdentity
+                      tab={tab}
+                      scannedAt={scannedAt}
+                      showActivity={kind !== "DEAD"}
+                      detail={(
+                        <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 5, marginTop: 4 }}>
+                          {kind === "DEAD" ? <span style={chipStyle}>プロセス終了済み</span> : null}
+                          {kind === "LOCKED"
+                            ? tab.lockReasons.map((reason) => (
+                              <span key={reason} style={chipStyle}>{lockReasonLabels[reason]}</span>
+                            ))
+                            : null}
+                          {verdict && verdict.verdict !== "unknown" ? (
+                            <span style={{ ...chipStyle, color: "var(--cmux-accent)" }}>{verdictLabels[verdict.verdict]}</span>
+                          ) : null}
+                          {suggestedLabel ? (
+                            <>
+                              <span style={{ fontSize: 10, color: "var(--cmux-accent)" }}>{`ラベル案: ${suggestedLabel}`}</span>
+                              <ActionButton
+                                disabled={busy}
+                                ariaLabel={`${tabName(tab)}に${suggestedLabel}を適用`}
+                                onClick={() => void applyAndRefresh(
+                                  { renames: [{ id: tab.id, label: suggestedLabel }] },
+                                  (result) => `${result.renamed}件にラベルを付けました`,
+                                )}
+                              >
+                                適用
+                              </ActionButton>
+                            </>
+                          ) : null}
+                        </div>
+                      )}
+                    />
+                  </div>
                 </div>
               );
             })}
-            {report && report.candidates.length === 0 && <EmptyRow>ありません</EmptyRow>}
-            <div style={{ marginTop: 4, fontSize: 10, color: "var(--cmux-text-secondary)" }}>
+          </div>
+        </div>
+
+        <footer style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8, padding: "10px 16px", borderTop: "1px solid var(--cmux-border)" }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 3, minWidth: 0 }}>
+            <div style={{ display: "flex", gap: 6 }}>
+              {judging ? (
+                <ActionButton danger onClick={() => void cancelJudge()}>中止</ActionButton>
+              ) : (
+                <ActionButton
+                  disabled={busy || judgeableCount === 0}
+                  onClick={() => void runJudge()}
+                >
+                  {judgeErrorDetail ? "AI判定を再実行" : judged ? "AIに選ばせ直す" : "AIに選ばせる"}
+                </ActionButton>
+              )}
+            </div>
+            <div style={{ fontSize: 9, lineHeight: 1.35, color: "var(--cmux-text-tertiary)" }}>
+              各タブの画面末尾8行と作業フォルダを Claude (haiku) に送って判定します（チェックの提案のみ）
+            </div>
+            <div style={{ fontSize: 10, color: "var(--cmux-text-secondary)" }}>
               閉じたタブは Ctrl+Shift+T で復元できます（会話も再開されます）
             </div>
-          </Section>
-
-          <Section
-            title={`④ 無名タブのラベル案 (${labelSuggestions.length})`}
-            subtitle="AI判定後、既存ラベルを上書きせず無名タブだけに候補を出します"
-            muted={!judged}
-            action={(
-              <ActionButton
-                disabled={busy || labelSuggestions.length === 0}
-                onClick={() => void applyAndRefresh(
-                  { renames: labelSuggestions.map(({ tab, label }) => ({ id: tab.id, label })) },
-                  (result) => `${result.renamed}件にラベルを付けました`,
-                )}
-              >
-                全部適用
-              </ActionButton>
-            )}
+          </div>
+          <ActionButton
+            danger
+            primary={selectedCount > 0}
+            disabled={busy || selectedCount === 0}
+            ariaLabel={`選択した${selectedCount}件のタブを閉じる。Ctrl+Shift+Tで復元できます`}
+            onClick={closeSelected}
           >
-            {labelSuggestions.map(({ tab, label }) => (
-              <div key={tab.id} style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center" }}>
-                <div style={{ flex: "1 1 220px", minWidth: 0 }}><TabIdentity tab={tab} scannedAt={scannedAt} /></div>
-                <span style={{ fontSize: 11, color: "var(--cmux-accent)" }}>{label}</span>
-                <ActionButton
-                  disabled={busy}
-                  ariaLabel={`${tab.label?.trim() || "無名タブ"}に${label}を適用`}
-                  onClick={() => void applyAndRefresh(
-                    { renames: [{ id: tab.id, label }] },
-                    (result) => `${result.renamed}件にラベルを付けました`,
-                  )}
-                >
-                  適用
-                </ActionButton>
-              </div>
-            ))}
-            {labelSuggestions.length === 0 && <EmptyRow>{judged ? "提案はありません" : "AI判定後に提案を表示します"}</EmptyRow>}
-          </Section>
-
-          <Section
-            title={`③ ロック中${report ? ` (${report.locked.length})` : ""}`}
-            subtitle="入力・出力・表示・作業状態を検知したため、自動でも手動でも閉じません"
-            action={(
-              <ActionButton
-                ariaLabel={lockedExpanded ? "ロック中の一覧を折りたたむ" : "ロック中の一覧を開く"}
-                onClick={() => setLockedExpanded((value) => !value)}
-              >
-                {lockedExpanded ? "折りたたむ" : `表示する${report ? ` (${report.locked.length})` : ""}`}
-              </ActionButton>
-            )}
-          >
-            {scanning && !report ? <SkeletonRows /> : null}
-            {lockedExpanded ? report?.locked.map((tab) => (
-              <TabIdentity
-                key={tab.id}
-                tab={tab}
-                scannedAt={scannedAt}
-                showActivity
-                detail={(
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 4 }}>
-                    {tab.lockReasons.map((reason) => (
-                      <span key={reason} style={{ padding: "2px 6px", borderRadius: 999, background: "var(--cmux-hover)", color: "var(--cmux-text-secondary)", fontSize: 9 }}>
-                        {lockReasonLabels[reason]}
-                      </span>
-                    ))}
-                  </div>
-                )}
-              />
-            )) : <EmptyRow>件数のみ表示しています</EmptyRow>}
-            {lockedExpanded && report && report.locked.length === 0 && <EmptyRow>ありません</EmptyRow>}
-          </Section>
-        </div>
+            {`選択した${selectedCount}件を閉じる`}
+          </ActionButton>
+        </footer>
       </div>
     </div>
   );

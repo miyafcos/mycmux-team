@@ -411,6 +411,35 @@ div:hover>.tab-close-btn {
   border-right: none !important;
 }
 
+/* Pinned tab. Declared after .pane-tab-compact so it outranks the earlier
+   !important backgrounds on .pane-tab-pill / .pane-tab-pill.is-active. */
+.pane-tab-pill.is-pinned {
+  background: color-mix(in srgb, var(--cmux-accent) 12%, transparent) !important;
+  box-shadow: inset 2px 0 0 var(--cmux-accent);
+  border-right: 1px solid color-mix(in srgb, var(--cmux-accent) 45%, var(--cmux-border)) !important;
+}
+
+.pane-tab-pill.is-pinned.is-active {
+  background: color-mix(in srgb, var(--cmux-accent) 18%, var(--cmux-selected)) !important;
+}
+
+.pane-tab-pin-btn {
+  opacity: 0;
+  transition: opacity var(--cmux-motion-fast) var(--cmux-ease), color var(--cmux-motion-fast) var(--cmux-ease);
+}
+
+.pane-tab-pill:hover .pane-tab-pin-btn,
+.pane-tab-pill.is-active .pane-tab-pin-btn,
+.pane-tab-pin-btn:focus-visible,
+.pane-tab-pin-btn.is-pinned {
+  opacity: 1;
+}
+
+.pane-tab-pin-btn.is-pinned,
+.pane-tab-menu-pin-btn.is-pinned {
+  color: var(--cmux-accent);
+}
+
 .pane-tab-restore-badge {
   display: inline-flex;
   align-items: center;
@@ -964,9 +993,8 @@ div:hover>.tab-close-btn {
 
 /* Accessibility: keyboard focus indicator.
    Several components set outline:"none" as an inline style (AgentSelector's
-   <select>, OnlinePanel's search input, PathJumper's input, the
-   FileExplorerSidebar rename input, etc.) with no compensating focus style,
-   so keyboard-only/screen-magnifier users can't tell which control has
+   <select>, OnlinePanel's search input, etc.) with no compensating focus
+   style, so keyboard-only/screen-magnifier users can't tell which control has
    focus. :focus-visible only fires for keyboard focus (not mouse clicks),
    so this adds no ring on click; !important is required to beat those
    inline overrides. */

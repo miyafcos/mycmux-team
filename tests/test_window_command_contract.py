@@ -21,8 +21,6 @@ def test_window_leader_commands_are_exposed_to_frontend() -> None:
     for snippet in [
         "export async function claimLeader(): Promise<boolean>",
         'return invoke<boolean>("claim_leader");',
-        "export async function getWindowCount(): Promise<number>",
-        'return invoke<number>("get_window_count");',
         "export async function revealMainWindow(): Promise<void>",
         'return invoke<void>("reveal_main_window");',
         "export async function quitApp(): Promise<void>",
@@ -32,11 +30,16 @@ def test_window_leader_commands_are_exposed_to_frontend() -> None:
 
     for command in [
         "commands::window::claim_leader",
-        "commands::window::get_window_count",
         "commands::window::reveal_main_window",
         "commands::window::quit_app",
     ]:
         assert_contains(lib_rs, command, "src-tauri/src/lib.rs")
+
+    # get_window_count was removed with the dead-code sweep (no frontend caller
+    # since the file-explorer sidebar went away). Keep it gone on both sides so
+    # it cannot creep back in unwired.
+    assert "getWindowCount" not in ipc
+    assert "get_window_count" not in lib_rs
 
 
 def test_window_state_plugin_preserves_hidden_startup_contract() -> None:
@@ -62,8 +65,6 @@ def test_window_leader_commands_have_safe_single_instance_semantics() -> None:
     for snippet in [
         "pub fn claim_leader(state: State<'_, AppState>) -> bool",
         ".compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)",
-        "pub fn get_window_count(app: AppHandle) -> usize",
-        "app.webview_windows().len()",
         "pub fn reveal_main_window(app: AppHandle) -> Result<(), String>",
         "app.run_on_main_thread(move ||",
         'app_handle.get_webview_window("main")',

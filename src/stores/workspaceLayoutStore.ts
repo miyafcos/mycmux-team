@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { v4 as uuid } from "uuid";
 import type { ArtifactSourceKind, Pane, PaneTab, GridTemplateId, SuppressedAgentSession, Workspace } from "../types";
 import type { PaneConfig } from "../lib/ipc";
+import { declaredAgentKind, declaredAgentSessionId } from "../lib/agentSessionConfig";
 import { getGridTemplate } from "../lib/gridTemplates";
 import { getDefaultAgent } from "../lib/agents";
 import { makeSessionId } from "../lib/constants";
@@ -194,6 +195,37 @@ function applyActiveTabFields(pane: Pane, activeTab: PaneTab): Pane {
   };
 }
 
+/**
+ * Ordering invariant: when `pinnedTabId` is set, that tab is `tabs[0]`. The
+ * array itself is reordered (never sorted at render) so keyboard cycling,
+ * formatTabPosition and persistence all agree on the same order.
+ */
+export function withPinnedTabFirst(pane: Pane): Pane {
+  if (!pane.pinnedTabId) return pane;
+  const index = pane.tabs.findIndex((tab) => tab.id === pane.pinnedTabId);
+  if (index <= 0) return pane;
+  const pinnedTab = pane.tabs[index];
+  return {
+    ...pane,
+    tabs: [pinnedTab, ...pane.tabs.filter((tab) => tab.id !== pinnedTab.id)],
+  };
+}
+
+/** Self-heal (like `zoomedPaneId`): a pin never survives its tab leaving the pane. */
+export function clearPinIfMissing(pane: Pane): Pane {
+  if (!pane.pinnedTabId) return pane;
+  if (pane.tabs.some((tab) => tab.id === pane.pinnedTabId)) return pane;
+  return { ...pane, pinnedTabId: undefined };
+}
+
+/** Drag-merge guard: a live pin keeps display ownership over the incoming tab. */
+export function resolveMergeActiveTabId(pane: Pane, incomingActiveTabId: string): string {
+  if (pane.pinnedTabId && pane.tabs.some((tab) => tab.id === pane.pinnedTabId)) {
+    return pane.pinnedTabId;
+  }
+  return incomingActiveTabId;
+}
+
 function removeTabFromPane(pane: Pane, tabId: string): Pane | null {
   const remaining = pane.tabs.filter((tab) => tab.id !== tabId);
   if (remaining.length === 0) return null;
@@ -201,7 +233,42 @@ function removeTabFromPane(pane: Pane, tabId: string): Pane | null {
     ? remaining[remaining.length - 1].id
     : pane.activeTabId;
   const activeTab = remaining.find((tab) => tab.id === preferredActiveId) ?? remaining[0];
-  return applyActiveTabFields({ ...pane, tabs: remaining }, activeTab);
+  return clearPinIfMissing(applyActiveTabFields({ ...pane, tabs: remaining }, activeTab));
+}
+
+interface DetachedTabPanes {
+  panes: Pane[];
+  /** True when the tab was the pane's last one, so the pane itself is gone. */
+  removedSourcePane: boolean;
+}
+
+/**
+ * Pull one tab out of its pane, dropping the pane entirely when that tab was
+ * the last one. Every move-a-tab-elsewhere action starts here.
+ */
+function detachTabFromPanes(panes: Pane[], sourcePaneId: string, tabId: string): DetachedTabPanes {
+  let removedSourcePane = false;
+  const nextPanes = panes.flatMap((pane) => {
+    if (pane.id !== sourcePaneId) return [pane];
+    const updated = removeTabFromPane(pane, tabId);
+    if (!updated) {
+      removedSourcePane = true;
+      return [];
+    }
+    return [updated];
+  });
+  return { panes: nextPanes, removedSourcePane };
+}
+
+/** A workspace that just lost its last pane to another workspace is discarded. */
+function removeWorkspaceIfEmpty(
+  listStore: { removeWorkspace: (workspaceId: string) => void },
+  workspaceId: string,
+  remainingPanes: Pane[],
+): void {
+  if (remainingPanes.length === 0) {
+    listStore.removeWorkspace(workspaceId);
+  }
 }
 
 function appendTabsToPane(pane: Pane, tabs: PaneTab[], activeTabId: string): Pane {
@@ -343,6 +410,12 @@ interface WorkspaceLayoutState {
   removeTabFromPane: (workspaceId: string, paneId: string, tabId: string) => void;
   setActivePaneTab: (workspaceId: string, paneId: string, tabId: string) => void;
   setTabLabel: (workspaceId: string, paneId: string, tabId: string, label: string | undefined) => void;
+  /**
+   * Toggle the pane's single pinned tab. Pinning never changes `activeTabId`
+   * (pinning must not steal focus); it only moves the tab to index 0 and makes
+   * it win the drag-merge active-tab contest.
+   */
+  togglePaneTabPin: (workspaceId: string, paneId: string, tabId: string) => void;
   setTabAgentId: (workspaceId: string, paneId: string, tabId: string, agentId: string) => void;
   /**
    * Self-healing clear for a downgraded restore: find the tab whose
@@ -483,14 +556,14 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
             label: pc.label ?? undefined,
             cwd: pc.cwd ?? undefined,
             claudeSessionId: pc.claude_session_id ?? undefined,
-            agentKind: pc.agent_kind ?? (pc.claude_session_id ? "claude" : undefined),
-            agentSessionId: pc.agent_session_id ?? pc.claude_session_id ?? undefined,
+            agentKind: declaredAgentKind(pc) ?? undefined,
+            agentSessionId: declaredAgentSessionId(pc) ?? undefined,
             suppressedAgentSessions: restoreSuppressedAgentSessions(pc.suppressed_agent_sessions),
             launchEnv: pc.launch_env ?? undefined,
           })];
       const activeTab = tabs.find((tab) => tab.id === pc.active_tab_id) ?? tabs[0];
       const agentId = activeTab?.agentId || normalizeRestoredAgentId(pc.agent_id) || defaultAgentId;
-      return {
+      return withPinnedTabFirst({
         id: paneId,
         agentId,
         sessionId: activeTab.sessionId,
@@ -504,7 +577,10 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
         suppressedAgentSessions: activeTab.suppressedAgentSessions
           ?? restoreSuppressedAgentSessions(pc.suppressed_agent_sessions),
         launchEnv: activeTab.launchEnv ?? pc.launch_env ?? undefined,
-      };
+        pinnedTabId: tabs.some((tab) => tab.id === pc.pinned_tab_id)
+          ? pc.pinned_tab_id ?? undefined
+          : undefined,
+      });
     });
 
     let splitColumns: string[][];
@@ -587,27 +663,10 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
 
     // Initialize splitColumns if not present (single column with all panes)
     const existingColumns = cloneSplitColumns(workspace);
-
-    let newSplitColumns: string[][];
-    if (direction === "down") {
-      // Insert new pane after afterPaneId in its column (same column, below)
-      newSplitColumns = existingColumns.map((col) => {
-        const idx = col.indexOf(afterPaneId);
-        if (idx === -1) return col;
-        const newCol = [...col];
-        newCol.splice(idx + 1, 0, paneId);
-        return newCol;
-      });
-    } else {
-      // direction === "right": insert new column after the column containing afterPaneId
-      newSplitColumns = [];
-      for (const col of existingColumns) {
-        newSplitColumns.push(col);
-        if (col.includes(afterPaneId)) {
-          newSplitColumns.push([paneId]);
-        }
-      }
-    }
+    // A missing anchor leaves the columns alone; _updateWorkspacePanes then
+    // appends the new pane to the last column.
+    const newSplitColumns = insertPaneIdIntoColumns(existingColumns, afterPaneId, paneId, direction)
+      ?? existingColumns;
 
     useWorkspaceListStore.getState()._updateWorkspacePanes(
       workspaceId,
@@ -647,25 +706,8 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
     };
     const newPanes = [...workspace.panes, newPane];
     const existingColumns = cloneSplitColumns(workspace);
-
-    let newSplitColumns: string[][];
-    if (direction === "down") {
-      newSplitColumns = existingColumns.map((col) => {
-        const idx = col.indexOf(afterPaneId);
-        if (idx === -1) return col;
-        const newCol = [...col];
-        newCol.splice(idx + 1, 0, paneId);
-        return newCol;
-      });
-    } else {
-      newSplitColumns = [];
-      for (const col of existingColumns) {
-        newSplitColumns.push(col);
-        if (col.includes(afterPaneId)) {
-          newSplitColumns.push([paneId]);
-        }
-      }
-    }
+    const newSplitColumns = insertPaneIdIntoColumns(existingColumns, afterPaneId, paneId, direction)
+      ?? existingColumns;
 
     useWorkspaceListStore.getState()._updateWorkspacePanes(
       workspaceId,
@@ -945,7 +987,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
       if (removedActiveTarget) {
         nextActivePaneId = activeTab.sessionId;
       }
-      return [applyActiveTabFields({ ...p, tabs: remaining }, activeTab)];
+      return [clearPinIfMissing(applyActiveTabFields({ ...p, tabs: remaining }, activeTab))];
     });
 
     const nextSplitColumns = removedPane && workspace.splitColumns
@@ -1010,7 +1052,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
           return [updated];
         }
         if (pane.id === targetPaneId) {
-          return [appendTabsToPane(pane, [tab], tab.id)];
+          return [appendTabsToPane(pane, [tab], resolveMergeActiveTabId(pane, tab.id))];
         }
         return [pane];
       });
@@ -1026,18 +1068,15 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
       return;
     }
 
-    let removedSourcePane = false;
-    const sourcePanes = sourceWorkspace.panes.flatMap((pane) => {
-      if (pane.id !== sourcePaneId) return [pane];
-      const updated = removeTabFromPane(pane, tabId);
-      if (!updated) {
-        removedSourcePane = true;
-        return [];
-      }
-      return [updated];
-    });
+    const { panes: sourcePanes, removedSourcePane } = detachTabFromPanes(
+      sourceWorkspace.panes,
+      sourcePaneId,
+      tabId,
+    );
     const targetPanes = targetWorkspace.panes.map((pane) =>
-      pane.id === targetPaneId ? appendTabsToPane(pane, [tab], tab.id) : pane,
+      pane.id === targetPaneId
+        ? appendTabsToPane(pane, [tab], resolveMergeActiveTabId(pane, tab.id))
+        : pane,
     );
 
     const sourceSplitColumns = removedSourcePane
@@ -1050,9 +1089,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
       removedSourcePane,
     );
     listStore._updateWorkspacePanes(targetWorkspaceId, targetPanes);
-    if (sourcePanes.length === 0) {
-      listStore.removeWorkspace(sourceWorkspaceId);
-    }
+    removeWorkspaceIfEmpty(listStore, sourceWorkspaceId, sourcePanes);
   },
 
   moveTabToSplit: (sourceWorkspaceId, sourcePaneId, tabId, targetWorkspaceId, targetPaneId, direction) => {
@@ -1070,16 +1107,11 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
     const newPane = makePaneFromTab(uuid(), tab);
 
     if (sourceWorkspaceId === targetWorkspaceId) {
-      let removedSourcePane = false;
-      const panesAfterSource = sourceWorkspace.panes.flatMap((pane) => {
-        if (pane.id !== sourcePaneId) return [pane];
-        const updated = removeTabFromPane(pane, tabId);
-        if (!updated) {
-          removedSourcePane = true;
-          return [];
-        }
-        return [updated];
-      });
+      const { panes: panesAfterSource, removedSourcePane } = detachTabFromPanes(
+        sourceWorkspace.panes,
+        sourcePaneId,
+        tabId,
+      );
       if (!panesAfterSource.some((pane) => pane.id === targetPaneId)) return;
       const baseColumns = removedSourcePane
         ? removePaneIdFromColumns(cloneSplitColumns(sourceWorkspace), sourcePaneId)
@@ -1095,16 +1127,11 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
       return;
     }
 
-    let removedSourcePane = false;
-    const sourcePanes = sourceWorkspace.panes.flatMap((pane) => {
-      if (pane.id !== sourcePaneId) return [pane];
-      const updated = removeTabFromPane(pane, tabId);
-      if (!updated) {
-        removedSourcePane = true;
-        return [];
-      }
-      return [updated];
-    });
+    const { panes: sourcePanes, removedSourcePane } = detachTabFromPanes(
+      sourceWorkspace.panes,
+      sourcePaneId,
+      tabId,
+    );
     const targetColumns = insertPaneIdIntoColumns(
       cloneSplitColumns(targetWorkspace),
       targetPaneId,
@@ -1128,9 +1155,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
       normalizeWorkspaceSplitColumns(targetColumns),
       true,
     );
-    if (sourcePanes.length === 0) {
-      listStore.removeWorkspace(sourceWorkspaceId);
-    }
+    removeWorkspaceIfEmpty(listStore, sourceWorkspaceId, sourcePanes);
   },
 
   movePaneToPosition: (workspaceId, paneId, toColumn, toRow) => {
@@ -1182,7 +1207,11 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
       const newPanes = sourceWorkspace.panes.flatMap((pane) => {
         if (pane.id === sourcePaneId) return [];
         if (pane.id === targetPaneId) {
-          return [appendTabsToPane(pane, sourcePane.tabs, sourcePane.activeTabId)];
+          return [appendTabsToPane(
+            pane,
+            sourcePane.tabs,
+            resolveMergeActiveTabId(pane, sourcePane.activeTabId),
+          )];
         }
         return [pane];
       });
@@ -1200,7 +1229,11 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
     const sourceSplitColumns = removePaneIdFromColumns(cloneSplitColumns(sourceWorkspace), sourcePaneId);
     const targetPanes = targetWorkspace.panes.map((pane) =>
       pane.id === targetPaneId
-        ? appendTabsToPane(pane, sourcePane.tabs, sourcePane.activeTabId)
+        ? appendTabsToPane(
+            pane,
+            sourcePane.tabs,
+            resolveMergeActiveTabId(pane, sourcePane.activeTabId),
+          )
         : pane,
     );
     listStore._updateWorkspacePanes(
@@ -1210,9 +1243,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
       true,
     );
     listStore._updateWorkspacePanes(targetWorkspaceId, targetPanes);
-    if (sourcePanes.length === 0) {
-      listStore.removeWorkspace(sourceWorkspaceId);
-    }
+    removeWorkspaceIfEmpty(listStore, sourceWorkspaceId, sourcePanes);
   },
 
   movePaneToSplit: (sourceWorkspaceId, sourcePaneId, targetWorkspaceId, targetPaneId, direction) => {
@@ -1261,9 +1292,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
       normalizeWorkspaceSplitColumns(targetColumns),
       true,
     );
-    if (sourcePanes.length === 0) {
-      listStore.removeWorkspace(sourceWorkspaceId);
-    }
+    removeWorkspaceIfEmpty(listStore, sourceWorkspaceId, sourcePanes);
   },
 
   moveTabToNewWorkspace: (sourceWorkspaceId, sourcePaneId, tabId, targetWorkspaceId, workspaceName) => {
@@ -1275,16 +1304,11 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
     const tab = sourcePane?.tabs.find((candidate) => candidate.id === tabId);
     if (!sourcePane || !tab) return false;
 
-    let removedSourcePane = false;
-    const sourcePanes = sourceWorkspace.panes.flatMap((pane) => {
-      if (pane.id !== sourcePaneId) return [pane];
-      const updated = removeTabFromPane(pane, tabId);
-      if (!updated) {
-        removedSourcePane = true;
-        return [];
-      }
-      return [updated];
-    });
+    const { panes: sourcePanes, removedSourcePane } = detachTabFromPanes(
+      sourceWorkspace.panes,
+      sourcePaneId,
+      tabId,
+    );
     const sourceSplitColumns = removedSourcePane
       ? removePaneIdFromColumns(cloneSplitColumns(sourceWorkspace), sourcePaneId)
       : undefined;
@@ -1303,9 +1327,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
       [[newPane.id]],
       { id: targetWorkspaceId },
     );
-    if (sourcePanes.length === 0) {
-      listStore.removeWorkspace(sourceWorkspaceId);
-    }
+    removeWorkspaceIfEmpty(listStore, sourceWorkspaceId, sourcePanes);
     return true;
   },
 
@@ -1333,9 +1355,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
       [[sourcePane.id]],
       { id: targetWorkspaceId },
     );
-    if (sourcePanes.length === 0) {
-      listStore.removeWorkspace(sourceWorkspaceId);
-    }
+    removeWorkspaceIfEmpty(listStore, sourceWorkspaceId, sourcePanes);
     return true;
   },
 
@@ -1393,6 +1413,23 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
         ...pane,
         tabs,
       };
+    });
+
+    if (!didChange) return;
+    useWorkspaceListStore.getState()._updateWorkspacePanes(workspaceId, newPanes);
+  },
+
+  togglePaneTabPin: (workspaceId, paneId, tabId) => {
+    const workspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
+    if (!workspace) return;
+
+    let didChange = false;
+    const newPanes = workspace.panes.map((pane) => {
+      if (pane.id !== paneId) return pane;
+      if (!pane.tabs.some((tab) => tab.id === tabId)) return pane;
+      didChange = true;
+      const nextPinned = pane.pinnedTabId === tabId ? undefined : tabId;
+      return withPinnedTabFirst({ ...pane, pinnedTabId: nextPinned });
     });
 
     if (!didChange) return;

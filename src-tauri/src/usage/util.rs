@@ -1,6 +1,14 @@
 use chrono::{TimeZone, Utc};
 use serde_json::Value;
 
+/// Stand-in for a secret in `Debug` output.
+///
+/// Token values must never reach a log line or a panic message; the length is
+/// the only detail worth keeping (it distinguishes "empty" from "present").
+pub(super) fn redacted(value: &str) -> String {
+    format!("<redacted len={}>", value.len())
+}
+
 pub(super) fn number_field(value: &Value, keys: &[&str]) -> Option<f64> {
     keys.iter().find_map(|key| {
         let raw = value.get(*key)?;

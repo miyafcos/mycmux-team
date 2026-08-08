@@ -5,7 +5,6 @@ import {
   cleanupOnlineSavepoints,
   joinSavepointFull,
   joinSavepointSummary,
-  listOnlineSavepoints,
   listTrashedOnlineSavepoints,
   toggleSavepointPin,
 } from "../../lib/ipc";
@@ -27,9 +26,12 @@ import {
   isFinalSavepoint,
   isTrashedSavepoint,
   isExpiringSoon,
+  notifySavepointPublished,
   purgeSavepoint,
   projectNameFromCwd,
   restoreSavepoint,
+  savepointPublishErrorMessage,
+  SAVEPOINT_PUBLISHED_EVENT,
   savepointAgentKind,
   savepointEntryIdentityKey,
   savepointIdentityKey,
@@ -185,25 +187,24 @@ export default function OnlinePanel({ workspaceId, paneId }: OnlinePanelProps) {
       } catch (cleanupError) {
         console.warn("[mycmux] failed to clean online savepoints", cleanupError);
       }
-      const [activeResult, trashResult] = await Promise.allSettled([
-        listOnlineSavepoints(),
-        listTrashedOnlineSavepoints(),
+      // The active list comes from the store so this panel and the startup
+      // refresh share one read; the store also owns publishedSessionIds.
+      const [activeEntries, trashResult] = await Promise.all([
+        useOnlineSavepointStore.getState().refresh(),
+        listTrashedOnlineSavepoints().then(
+          (entries) => entries,
+          (reason) => {
+            console.error("[mycmux] failed to load trashed online savepoints", reason);
+            return null;
+          },
+        ),
       ]);
       if (generation !== loadGenerationRef.current) return;
-      const activeEntries = activeResult.status === "fulfilled" ? activeResult.value : null;
-      const trashedEntries = trashResult.status === "fulfilled" ? trashResult.value : null;
+      const trashedEntries = trashResult;
       setEntries((current) => [
         ...(activeEntries ?? current.filter((entry) => !isTrashedSavepoint(entry))),
         ...(trashedEntries ?? current.filter(isTrashedSavepoint)),
       ]);
-      if (activeEntries) {
-        useOnlineSavepointStore.getState().setFromEntries(activeEntries);
-      } else if (activeResult.status === "rejected") {
-        console.error("[mycmux] failed to load active online savepoints", activeResult.reason);
-      }
-      if (!trashedEntries && trashResult.status === "rejected") {
-        console.error("[mycmux] failed to load trashed online savepoints", trashResult.reason);
-      }
       if (!activeEntries || !trashedEntries) {
         setError(activeEntries ? onlineStrings.trashLoadError : onlineStrings.loadError);
       }
@@ -241,12 +242,12 @@ export default function OnlinePanel({ workspaceId, paneId }: OnlinePanelProps) {
       void load();
     };
     window.addEventListener("mycmux:workspace-visibility-change", onWorkspaceVisibility);
-    window.addEventListener("mycmux:savepoint-published", onSavepointPublished);
+    window.addEventListener(SAVEPOINT_PUBLISHED_EVENT, onSavepointPublished);
     window.addEventListener(SAVEPOINT_RECEIVED_EVENT, onSavepointPublished);
     document.addEventListener("visibilitychange", onDocumentVisibility);
     return () => {
       window.removeEventListener("mycmux:workspace-visibility-change", onWorkspaceVisibility);
-      window.removeEventListener("mycmux:savepoint-published", onSavepointPublished);
+      window.removeEventListener(SAVEPOINT_PUBLISHED_EVENT, onSavepointPublished);
       window.removeEventListener(SAVEPOINT_RECEIVED_EVENT, onSavepointPublished);
       document.removeEventListener("visibilitychange", onDocumentVisibility);
     };
@@ -272,11 +273,14 @@ export default function OnlinePanel({ workspaceId, paneId }: OnlinePanelProps) {
       agentSessionId,
     });
     if (outcome.ok) {
-      await load();
+      // Shared completion path: toast + index refresh + the published event this
+      // panel already listens on. Do not call load() as well — that would run
+      // the list request twice for one publish.
+      notifySavepointPublished(outcome.result);
     } else {
-      setError(onlineStrings.publishErrorPrefix + String(outcome.error));
+      setError(savepointPublishErrorMessage(outcome.error));
     }
-  }, [load, runSavepointPublish]);
+  }, [runSavepointPublish]);
 
   const handoffSummary = useCallback(async (
     entry: OnlineSavepointEntry,

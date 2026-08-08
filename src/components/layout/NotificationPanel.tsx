@@ -1,4 +1,5 @@
-import { memo, useEffect, useMemo, useRef } from "react";
+import { memo, useMemo, useRef } from "react";
+import { useDismissOnOutside } from "../../hooks/useDismissOnOutside";
 import { useWorkspaceListStore, usePaneMetadataStore, useWorkspaceLayoutStore } from "../../stores/workspaceStore";
 import { getAgent } from "../../lib/agents";
 import { focusController } from "../../lib/focusController";
@@ -124,16 +125,7 @@ export default function NotificationPanel({ closing = false, onClose }: Notifica
     });
   }, [workspaces, paneMetadata]);
 
-  useEffect(() => {
-    if (closing) return;
-    const handler = (e: MouseEvent) => {
-      if (panelRef.current && !panelRef.current.contains(e.target as Node)) {
-        onClose();
-      }
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, [closing, onClose]);
+  useDismissOnOutside(!closing, panelRef, onClose);
 
   function handleClearAll() {
     for (const n of notifications) {

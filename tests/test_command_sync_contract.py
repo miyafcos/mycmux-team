@@ -15,7 +15,6 @@ SYNC_ALLOWLIST = {
     "get_pty_metadata_snapshot",
     "socket_response",
     "claim_leader",
-    "get_window_count",
     "reveal_main_window",
     "quit_app",
 }

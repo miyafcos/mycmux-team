@@ -23,6 +23,7 @@ export type KeybindingActionId =
   | "pane.reopen"
   | "pane.tab.next"
   | "pane.tab.prev"
+  | "pane.tab.pin.toggle"
   | "pane.attention.next"
   | "settings.keybindings"
   | "tab.sweep"
@@ -69,6 +70,7 @@ export const KEYBINDING_DEFINITIONS: KeybindingDefinition[] = [
   { action: "pane.tab.next", title: "Next tab in pane", category: "Pane", defaultShortcut: "ctrl+alt+pagedown" },
   { action: "pane.tab.prev", title: "Previous tab in pane", category: "Pane", defaultShortcut: "ctrl+alt+pageup" },
   { action: "pane.attention.next", title: "Next attention", category: "Pane", defaultShortcut: "ctrl+alt+a" },
+  { action: "pane.tab.pin.toggle", title: "アクティブタブをピン留め", category: "Pane", defaultShortcut: "ctrl+alt+p" },
 
   { action: "terminal.search", title: "Find in terminal", category: "Terminal", defaultShortcut: "ctrl+shift+f" },
 

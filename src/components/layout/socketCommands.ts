@@ -6,6 +6,7 @@ import type {
 import type { AgentSessionKind, Pane, PaneTab, Workspace } from "../../types";
 import type { PaneMetadata } from "../../stores/paneMetadataStore";
 import { deriveEffectiveStatus } from "../../lib/notificationStatus";
+import { paneContainsSession, workspaceContainsSession } from "../../stores/workspaceListStore";
 import {
   DEFAULT_LAYOUT_SIZE,
   columnWidthsMatch,
@@ -247,10 +248,7 @@ export function findPaneBySessionId(
   sessionId: string,
 ): { workspace: Workspace; pane: Pane } | null {
   for (const workspace of workspaces) {
-    const pane = workspace.panes.find((candidate) =>
-      candidate.sessionId === sessionId
-      || candidate.tabs.some((tab) => tab.sessionId === sessionId)
-    );
+    const pane = workspace.panes.find((candidate) => paneContainsSession(candidate, sessionId));
     if (pane) return { workspace, pane };
   }
   return null;
@@ -273,10 +271,7 @@ function findActiveTabLocation(
 ): ActivationLocation | null {
   const workspace = workspaces.find((candidate) => candidate.id === activeWorkspaceId);
   if (!workspace || !activeSessionId) return null;
-  const pane = workspace.panes.find((candidate) =>
-    candidate.sessionId === activeSessionId
-    || candidate.tabs.some((tab) => tab.sessionId === activeSessionId)
-  );
+  const pane = workspace.panes.find((candidate) => paneContainsSession(candidate, activeSessionId));
   if (!pane) return null;
   const tab = pane.tabs.find((candidate) => candidate.id === pane.activeTabId);
   return tab ? { workspace, pane, tab } : null;
@@ -648,11 +643,9 @@ async function spawnPane(args: SocketArgs) {
   // Falling straight back to activeWorkspaceId meant an agent sitting in a
   // background workspace split the pane the operator was working in.
   const callerSessionId = socketArgString(args, "anchorSessionId", "anchor_session_id");
-  const paneOwnsSession = (pane: { sessionId: string; tabs: { sessionId: string }[] }, sessionId: string) =>
-    pane.sessionId === sessionId || pane.tabs.some((tab) => tab.sessionId === sessionId);
   const callerWorkspaceId = callerSessionId
     ? workspaceState.workspaces.find((candidate) =>
-        candidate.panes.some((pane) => paneOwnsSession(pane, callerSessionId)),
+        workspaceContainsSession(candidate, callerSessionId),
       )?.id
     : undefined;
   const workspaceId = socketArgString(args, "workspaceId", "workspace_id")
@@ -669,10 +662,10 @@ async function spawnPane(args: SocketArgs) {
   const anchorPane = requestedAnchorId
     ? workspace.panes.find((pane) => pane.id === requestedAnchorId)
     : (callerSessionId
-        ? workspace.panes.find((pane) => paneOwnsSession(pane, callerSessionId))
+        ? workspace.panes.find((pane) => paneContainsSession(pane,callerSessionId))
         : undefined)
       ?? (activeSessionId
-        ? workspace.panes.find((pane) => paneOwnsSession(pane, activeSessionId))
+        ? workspace.panes.find((pane) => paneContainsSession(pane,activeSessionId))
         : undefined)
       ?? workspace.panes[0];
   if (!anchorPane) throw new Error("pane.spawn anchor pane not found");

@@ -47,6 +47,12 @@ async fn tailscale_ip() -> Option<String> {
 async fn run_tailscale_ip(program: &str) -> Option<String> {
     let mut cmd = TokioCommand::new(program);
     cmd.args(["ip", "-4"]);
+    #[cfg(windows)]
+    {
+        // Without this the console subsystem flashes a window on every probe,
+        // and this runs whenever the remote QR panel is opened.
+        cmd.creation_flags(crate::util::process::CREATE_NO_WINDOW);
+    }
 
     let output = match timeout(TAILSCALE_CMD_TIMEOUT, cmd.output()).await {
         Ok(Ok(output)) => output,
@@ -67,33 +73,6 @@ async fn run_tailscale_ip(program: &str) -> Option<String> {
 /// Build the connection URL.
 pub fn connection_url(ip: &str, port: u16, token: &str) -> String {
     format!("http://{}:{}/?token={}", ip, port, token)
-}
-
-/// Render a QR code as ASCII art for terminal display.
-#[allow(dead_code)]
-pub fn ascii_qr(url: &str) -> String {
-    let code = match QrCode::new(url.as_bytes()) {
-        Ok(c) => c,
-        Err(_) => return format!("(QR generation failed for: {url})"),
-    };
-
-    let width = code.width();
-    let data = code.to_colors();
-    let mut out = String::new();
-
-    out.push_str(&"  ".repeat(width + 2));
-    out.push('\n');
-
-    for row in 0..width {
-        out.push_str("  ");
-        for col in 0..width {
-            let dark = data[row * width + col] == qrcode::Color::Dark;
-            out.push_str(if dark { "\u{2588}\u{2588}" } else { "  " });
-        }
-        out.push_str("  \n");
-    }
-
-    out
 }
 
 /// Render a QR code as a minimal SVG string.

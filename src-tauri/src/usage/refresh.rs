@@ -3,7 +3,7 @@ use serde::Deserialize;
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use super::util::truncate;
+use super::util::{redacted, truncate};
 
 pub const CLAUDE_TOKEN_URL: &str = "https://platform.claude.com/v1/oauth/token";
 pub const CLAUDE_CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
@@ -45,10 +45,6 @@ pub struct RefreshedCodex {
     pub access_token: String,
     pub refresh_token: Option<String>,
     pub id_token: Option<String>,
-}
-
-fn redacted(value: &str) -> String {
-    format!("<redacted len={}>", value.len())
 }
 
 impl fmt::Debug for RefreshedClaude {

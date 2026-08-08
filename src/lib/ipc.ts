@@ -56,24 +56,9 @@ interface CrsmCreateHandoffArgs {
 }
 interface SessionIdsArgs { sessionIds: string[] }
 interface SavePersistentDataArgs { data: PersistentData }
-interface SaveWorkspacesArgs {
-  workspaces: WorkspaceConfig[];
-  activeWorkspaceId: string | null;
-  activePaneId: string | null;
-}
-interface SaveSettingsArgs { settings: AppSettings }
 interface SocketResponseArgs { id: number; result: any; error: string | null }
-interface WalkTreeArgs {
-  root: string;
-  excludes: string[];
-  maxDepth: number | null;
-  limit: number | null;
-  includeHidden: boolean;
-}
 interface CandidatesArgs { candidates: string[] }
-interface PinnedRootsArgs { pinnedRoots: PinnedRoot[] }
 interface UriArgs { uri: string }
-interface CreateEntryArgs { parent: string; name: string }
 interface CaptureCliAccountArgs { provider: CliProvider; label?: string }
 interface SwitchCliAccountArgs { provider: CliProvider; profileId: string }
 interface ProfileIdArgs { profileId: string }
@@ -206,14 +191,6 @@ export async function resizeSession(
 
 export async function killSession(sessionId: string): Promise<void> {
   return invoke<void>("kill_session", { sessionId } satisfies SessionIdArgs);
-}
-
-export async function previewArtifactForSession(sessionId: string): Promise<string> {
-  return invoke<string>("preview_artifact_for_session", { sessionId } satisfies SessionIdArgs);
-}
-
-export async function previewArtifactUriForSession(sessionId: string, uri: string): Promise<string> {
-  return invoke<string>("preview_artifact_uri_for_session", { sessionId, uri } satisfies ArtifactUriArgs);
 }
 
 export interface PreviewArtifactInfo {
@@ -671,10 +648,6 @@ export async function claimLeader(): Promise<boolean> {
   return invoke<boolean>("claim_leader");
 }
 
-export async function getWindowCount(): Promise<number> {
-  return invoke<number>("get_window_count");
-}
-
 export async function revealMainWindow(): Promise<void> {
   return invoke<void>("reveal_main_window");
 }
@@ -718,6 +691,7 @@ export interface PaneConfig {
   suppressed_agent_sessions?: SuppressedAgentSessionConfig[] | null;
   launch_env?: Record<string, string> | null;
   active_tab_id?: string | null;
+  pinned_tab_id?: string | null;
   tabs?: PaneTabConfig[] | null;
 }
 
@@ -754,7 +728,6 @@ export interface PersistentData {
   active_workspace_id?: string | null;
   active_pane_id?: string | null;
   active_tab_id?: string | null;
-  pinned_roots?: PinnedRoot[];
 }
 
 export async function loadPersistentData(): Promise<PersistentData> {
@@ -765,64 +738,11 @@ export async function savePersistentData(data: PersistentData): Promise<void> {
   return invoke<void>("save_persistent_data", { data } satisfies SavePersistentDataArgs);
 }
 
-export async function saveWorkspaces(
-  workspaces: WorkspaceConfig[],
-  activeWorkspaceId?: string | null,
-  activePaneId?: string | null,
-): Promise<void> {
-  return invoke<void>("save_workspaces", {
-    workspaces,
-    activeWorkspaceId: activeWorkspaceId ?? null,
-    activePaneId: activePaneId ?? null,
-  } satisfies SaveWorkspacesArgs);
-}
-
-export async function saveSettings(settings: AppSettings): Promise<void> {
-  return invoke<void>("save_settings", { settings } satisfies SaveSettingsArgs);
-}
-
 export async function sendSocketResponse(id: number, result: any, error: string | null): Promise<void> {
   return invoke<void>("socket_response", { id, result, error } satisfies SocketResponseArgs);
 }
 
-// ─── File explorer commands ──────────────────────────────────────────────────
-
-export interface FileEntry {
-  name: string;
-  path: string;
-  is_dir: boolean;
-  modified?: number;
-}
-
-export interface PinnedRoot {
-  id: string;
-  path: string;
-  name: string;
-}
-
-export async function listDirectory(path: string): Promise<FileEntry[]> {
-  return invoke<FileEntry[]>("list_directory", { path } satisfies PathArgs);
-}
-
-export async function walkTree(
-  root: string,
-  excludes: string[] = [],
-  maxDepth?: number,
-  limit?: number,
-  includeHidden = false,
-): Promise<FileEntry[]> {
-  return invoke<FileEntry[]>("walk_tree", {
-    root,
-    excludes,
-    maxDepth: maxDepth ?? null,
-    limit: limit ?? null,
-    includeHidden,
-  } satisfies WalkTreeArgs);
-}
-
-export async function normalizePath(path: string): Promise<string> {
-  return invoke<string>("normalize_path", { path } satisfies PathArgs);
-}
+// ─── Local path commands ─────────────────────────────────────────────────────
 
 export interface ResolvedLocalPathLink {
   existingPrefix: string;
@@ -835,18 +755,6 @@ export async function resolveLocalPathLinks(
   return invoke<Array<ResolvedLocalPathLink | null>>("resolve_local_path_links", { candidates } satisfies CandidatesArgs);
 }
 
-export async function savePinnedRoots(pinnedRoots: PinnedRoot[]): Promise<void> {
-  return invoke<void>("save_pinned_roots", { pinnedRoots } satisfies PinnedRootsArgs);
-}
-
-export async function watchRoot(path: string): Promise<void> {
-  return invoke<void>("watch_root", { path } satisfies PathArgs);
-}
-
-export async function unwatchRoot(path: string): Promise<void> {
-  return invoke<void>("unwatch_root", { path } satisfies PathArgs);
-}
-
 export async function revealInExplorer(path: string): Promise<void> {
   return invoke<void>("reveal_in_explorer", { path } satisfies PathArgs);
 }
@@ -857,26 +765,6 @@ export async function revealPathInExplorer(uri: string): Promise<void> {
 
 export async function openWithDefault(path: string): Promise<void> {
   return invoke<void>("open_with_default", { path } satisfies PathArgs);
-}
-
-export async function createFile(parent: string, name: string): Promise<string> {
-  return invoke<string>("create_file", { parent, name } satisfies CreateEntryArgs);
-}
-
-export async function createFolder(parent: string, name: string): Promise<string> {
-  return invoke<string>("create_folder", { parent, name } satisfies CreateEntryArgs);
-}
-
-export interface FsChangedPayload {
-  path: string;
-}
-
-export function onFsChanged(
-  callback: (payload: FsChangedPayload) => void,
-): Promise<UnlistenFn> {
-  return listen<FsChangedPayload>("fs_changed", (event) => {
-    callback(event.payload);
-  });
 }
 
 // ─── Usage / usage accounts ─────────────────────────────────────────────────

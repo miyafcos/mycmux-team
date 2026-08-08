@@ -1,4 +1,6 @@
 use super::*;
+use crate::util::atomic_write::AtomicWrite;
+use crate::util::task::run_blocking;
 use chrono::{Duration as ChronoDuration, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -155,73 +157,70 @@ fn export_savepoint_transfer_at(
     if !destination_path.is_absolute() || !is_transfer_path(destination_path) {
         return Err("Transfer destination must be an absolute .mycmux-transfer path".to_string());
     }
-    let destination_parent = destination_path
+    if destination_path
         .parent()
         .filter(|path| path.is_dir())
-        .ok_or_else(|| "Transfer destination folder was not found".to_string())?;
+        .is_none()
+    {
+        return Err("Transfer destination folder was not found".to_string());
+    }
     let (manifest_path, handoff_path, transcript_path, manifest) =
         transfer_bundle_files(local_dir, bundle_dir)?;
     let transfer_id = Uuid::new_v4().to_string();
-    let mut temp = tempfile::NamedTempFile::new_in(destination_parent)
-        .map_err(|error| format!("Failed to create transfer file: {error}"))?;
-    {
-        let options = SimpleFileOptions::default()
-            .compression_method(CompressionMethod::Deflated)
-            .unix_permissions(0o600);
-        let mut writer = ZipWriter::new(temp.as_file_mut());
-        let payloads = vec![
-            write_zip_file(
-                &mut writer,
-                MANIFEST_ENTRY,
-                &manifest_path,
-                options,
-                MAX_MANIFEST_BYTES,
-            )?,
-            write_zip_file(
-                &mut writer,
-                HANDOFF_ENTRY,
-                &handoff_path,
-                options,
-                MAX_HANDOFF_BYTES,
-            )?,
-            write_zip_file(
-                &mut writer,
-                TRANSCRIPT_ENTRY,
-                &transcript_path,
-                options,
-                MAX_TRANSCRIPT_BYTES,
-            )?,
-        ];
-        let envelope = TransferEnvelope {
-            format: TRANSFER_FORMAT.to_string(),
-            schema: TRANSFER_SCHEMA,
-            transfer_id: transfer_id.clone(),
-            created_at: Utc::now().to_rfc3339(),
-            source_checkpoint_id: manifest.lifecycle.checkpoint_id,
-            payloads,
-        };
-        let envelope_json = serde_json::to_vec_pretty(&envelope)
-            .map_err(|error| format!("Failed to serialize transfer metadata: {error}"))?;
-        if envelope_json.len() as u64 > MAX_TRANSFER_BYTES {
-            return Err("Transfer metadata is too large".to_string());
-        }
-        writer
-            .start_file(TRANSFER_ENTRY, options)
-            .map_err(|error| format!("Failed to add transfer metadata: {error}"))?;
-        writer
-            .write_all(&envelope_json)
-            .map_err(|error| format!("Failed to write transfer metadata: {error}"))?;
-        writer
-            .finish()
-            .map_err(|error| format!("Failed to finish transfer file: {error}"))?;
-    }
-    temp.flush()
-        .map_err(|error| format!("Failed to flush transfer file: {error}"))?;
-    temp.as_file()
-        .sync_all()
-        .map_err(|error| format!("Failed to sync transfer file: {error}"))?;
-    temp.persist(destination_path)
-        .map_err(|error| format!("Failed to save transfer file: {}", error.error))?;
+    AtomicWrite::new("transfer file", "Failed to save transfer file")
+        .parent_missing("Transfer destination folder was not found")
+        .write_with(destination_path, |temp_file| {
+            let options = SimpleFileOptions::default()
+                .compression_method(CompressionMethod::Deflated)
+                .unix_permissions(0o600);
+            let mut writer = ZipWriter::new(temp_file);
+            let payloads = vec![
+                write_zip_file(
+                    &mut writer,
+                    MANIFEST_ENTRY,
+                    &manifest_path,
+                    options,
+                    MAX_MANIFEST_BYTES,
+                )?,
+                write_zip_file(
+                    &mut writer,
+                    HANDOFF_ENTRY,
+                    &handoff_path,
+                    options,
+                    MAX_HANDOFF_BYTES,
+                )?,
+                write_zip_file(
+                    &mut writer,
+                    TRANSCRIPT_ENTRY,
+                    &transcript_path,
+                    options,
+                    MAX_TRANSCRIPT_BYTES,
+                )?,
+            ];
+            let envelope = TransferEnvelope {
+                format: TRANSFER_FORMAT.to_string(),
+                schema: TRANSFER_SCHEMA,
+                transfer_id: transfer_id.clone(),
+                created_at: Utc::now().to_rfc3339(),
+                source_checkpoint_id: manifest.lifecycle.checkpoint_id,
+                payloads,
+            };
+            let envelope_json = serde_json::to_vec_pretty(&envelope)
+                .map_err(|error| format!("Failed to serialize transfer metadata: {error}"))?;
+            if envelope_json.len() as u64 > MAX_TRANSFER_BYTES {
+                return Err("Transfer metadata is too large".to_string());
+            }
+            writer
+                .start_file(TRANSFER_ENTRY, options)
+                .map_err(|error| format!("Failed to add transfer metadata: {error}"))?;
+            writer
+                .write_all(&envelope_json)
+                .map_err(|error| format!("Failed to write transfer metadata: {error}"))?;
+            writer
+                .finish()
+                .map_err(|error| format!("Failed to finish transfer file: {error}"))?;
+            Ok(())
+        })?;
     Ok(ExportSavepointTransferResult {
         path: path_for_display(destination_path),
         transfer_id,
@@ -549,7 +548,7 @@ pub async fn export_savepoint_transfer(
     bundle_dir: String,
     destination_path: String,
 ) -> Result<ExportSavepointTransferResult, String> {
-    tauri::async_runtime::spawn_blocking(move || {
+    run_blocking("export_savepoint_transfer", move || {
         let _publish_guard = super::super::online_publish::PUBLISH_LOCK
             .lock()
             .map_err(|_| "Savepoint publisher lock is unavailable".to_string())?;
@@ -564,14 +563,13 @@ pub async fn export_savepoint_transfer(
         )
     })
     .await
-    .map_err(|error| format!("Savepoint transfer task failed: {error}"))?
 }
 
 #[tauri::command]
 pub async fn import_savepoint_transfer(
     source_path: String,
 ) -> Result<ImportSavepointTransferResult, String> {
-    tauri::async_runtime::spawn_blocking(move || {
+    run_blocking("import_savepoint_transfer", move || {
         let _publish_guard = super::super::online_publish::PUBLISH_LOCK
             .lock()
             .map_err(|_| "Savepoint publisher lock is unavailable".to_string())?;
@@ -582,7 +580,6 @@ pub async fn import_savepoint_transfer(
         import_savepoint_transfer_at(&local_dir, Path::new(&source_path))
     })
     .await
-    .map_err(|error| format!("Savepoint import task failed: {error}"))?
 }
 
 #[cfg(test)]

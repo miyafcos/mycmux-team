@@ -79,8 +79,7 @@ fn command_output_with_timeout(
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        command.creation_flags(CREATE_NO_WINDOW);
+        command.creation_flags(crate::util::process::CREATE_NO_WINDOW);
     }
     let mut child = match command.spawn()
     {
@@ -165,9 +164,7 @@ fn run_crsm_json(args: &[String], timeout: Duration) -> Result<Value, String> {
 }
 
 async fn run_crsm_json_async(args: Vec<String>, timeout: Duration) -> Result<Value, String> {
-    tauri::async_runtime::spawn_blocking(move || run_crsm_json(&args, timeout))
-        .await
-        .map_err(|error| format!("join crsm command: {error}"))?
+    crate::util::task::run_blocking("crsm command", move || run_crsm_json(&args, timeout)).await
 }
 
 #[tauri::command]

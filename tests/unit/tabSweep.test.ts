@@ -3,19 +3,23 @@ import type { PtyMetadataSnapshot } from "../../src/lib/ipc";
 import type { Workspace } from "../../src/types";
 import {
   applySweep,
+  applyVerdictSelection,
   buildJudgePrompt,
-  countUnseenSweepTabs,
+  buildSweepRows,
   formatJudgeError,
   formatLastOutputAge,
   formatSweepCompletion,
   hasIdlePrompt,
   hasQueuedInput,
+  initialSweepSelection,
   lastMeaningfulTailLine,
   parseJudgeOutput,
   parseJudgeOutputResult,
+  retainSweepSelection,
   scanTabs,
   shortenCwdFromStart,
-  summarizeSweepReport,
+  splitSweepSelection,
+  toggleSweepSelection,
   TAB_SWEEP_IDLE_MS,
   type SweepReport,
   type SweepScanSource,
@@ -287,12 +291,82 @@ describe("tab sweep UI helpers", () => {
     expect(formatJudgeError({ code: "cli_failed", detail: "stderr raw" }).summary).toContain("エラー終了");
   });
 
-  it("counts the union of unseen dead, candidate, and unnamed tabs", () => {
-    const candidate = tab("candidate", "CANDIDATE", true);
-    const summary = summarizeSweepReport(report([tab("dead", "DEAD"), candidate]));
-    expect(summary).toMatchObject({ dead: 1, candidates: 1, unnamed: 1 });
-    expect(countUnseenSweepTabs(summary, new Set())).toBe(2);
-    expect(countUnseenSweepTabs(summary, new Set(["candidate:candidate", "unnamed:candidate"]))).toBe(1);
+});
+
+describe("sweep row list and checkbox state", () => {
+  function aged(id: string, category: SweepTab["category"], lastOutputAt: number | null): SweepTab {
+    return { ...tab(id, category), lastOutputAt };
+  }
+
+  it("orders DEAD, then CANDIDATE oldest-output-first, then LOCKED", () => {
+    const rows = buildSweepRows(report([
+      aged("locked", "LOCKED", NOW - 1_000),
+      aged("recent-candidate", "CANDIDATE", NOW - 60_000),
+      aged("dead", "DEAD", NOW),
+      aged("old-candidate", "CANDIDATE", NOW - 86_400_000),
+      aged("unknown-candidate", "CANDIDATE", null),
+    ]));
+    expect(rows.map((row) => row.tab.id)).toEqual([
+      "dead",
+      "unknown-candidate",
+      "old-candidate",
+      "recent-candidate",
+      "locked",
+    ]);
+    expect(rows.map((row) => row.selectable)).toEqual([true, true, true, true, false]);
+    expect(buildSweepRows(null)).toEqual([]);
+  });
+
+  it("checks DEAD by default, leaves CANDIDATE clear, and never selects LOCKED", () => {
+    const rows = buildSweepRows(report([
+      tab("dead", "DEAD"),
+      tab("candidate", "CANDIDATE"),
+      tab("locked", "LOCKED"),
+    ]));
+    const selection = initialSweepSelection(rows);
+    expect([...selection]).toEqual(["dead"]);
+    // A LOCKED id cannot survive even if something tries to force it in.
+    expect([...retainSweepSelection(new Set(["dead", "locked", "gone"]), rows)]).toEqual(["dead"]);
+  });
+
+  it("lets the judge propose ticks without clearing or gating the user's own", () => {
+    const rows = buildSweepRows(report([
+      tab("dead", "DEAD"),
+      tab("done", "CANDIDATE"),
+      tab("busy", "CANDIDATE"),
+      tab("manual", "CANDIDATE"),
+    ]));
+    const selection = applyVerdictSelection(
+      new Set(["dead", "manual"]),
+      rows,
+      [
+        { id: "done", verdict: "done_waiting" },
+        { id: "busy", verdict: "working" },
+        { id: "manual", verdict: "working" },
+      ],
+    );
+    expect([...selection].sort()).toEqual(["dead", "done", "manual"]);
+    expect(selection.has("busy")).toBe(false);
+  });
+
+  it("toggles single rows and splits the selection into the two close channels", () => {
+    const rows = buildSweepRows(report([
+      tab("dead", "DEAD"),
+      tab("candidate", "CANDIDATE"),
+      tab("locked", "LOCKED"),
+    ]));
+    let selection: ReadonlySet<string> = initialSweepSelection(rows);
+    selection = toggleSweepSelection(selection, "candidate", true);
+    selection = toggleSweepSelection(selection, "locked", true);
+    expect(splitSweepSelection(selection, rows)).toEqual({
+      deadIds: ["dead"],
+      candidateIds: ["candidate"],
+    });
+    selection = toggleSweepSelection(selection, "dead", false);
+    expect(splitSweepSelection(selection, rows)).toEqual({
+      deadIds: [],
+      candidateIds: ["candidate"],
+    });
   });
 });
 

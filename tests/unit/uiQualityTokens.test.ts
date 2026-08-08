@@ -26,7 +26,6 @@ const boundarySource = [
   read("src/components/layout/AccountsButton.tsx"),
   read("src/components/layout/AccountsPanel.tsx"),
   read("src/components/settings/tabs/UsageTab.tsx"),
-  read("src/components/layout/PathJumper.tsx"),
 ].join("\n");
 
 describe("UI quality Phase A contracts", () => {

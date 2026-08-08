@@ -1,6 +1,6 @@
 [package]
 name = "mycmux"
-version = "0.21.28"
+version = "0.21.29"
 description = "mycmux - AI agent terminal workspace"
 authors = ["miyafcos"]
 edition = "2021"
@@ -29,9 +29,7 @@ glob = "0.3"
 chrono = { version = "0.4", features = ["serde"] }
 sysinfo = "0.38.4"
 dirs = "6.0.0"
-notify = "6"
 tempfile = "3"
-ignore = "0.4"
 
 # Remote terminal (WebSocket server for iPhone access)
 axum = { version = "0.8", features = ["ws"] }

@@ -14,7 +14,6 @@ import {
   savePersistentData,
   readAgentSessionMappings,
   getPtyMetadataSnapshot,
-  onFsChanged,
   quitApp,
   sendSocketResponse,
   type AgentSessionMapping,
@@ -26,7 +25,6 @@ import {
 import type { AgentSessionKind, SuppressedAgentSession, Workspace } from "../../types";
 import { useThemeStore } from "../../stores/themeStore";
 import { useKeybindingStore } from "../../stores/keybindingStore";
-import { useFileExplorerStore } from "../../stores/fileExplorerStore";
 import { deriveEffectiveStatus, isShellProcess } from "../../lib/notificationStatus";
 import { confirmAgentSessionClear } from "../../lib/agentSessionClearGuard";
 import { makeSessionId } from "../../lib/constants";
@@ -34,7 +32,12 @@ import { normalizeReadableSplitColumns, reconcileSplitColumnsForPanes } from "..
 import { focusController } from "../../lib/focusController";
 import { getTerminalBufferLines, getTerminalWriteCounter, hasTerminalBuffer } from "../terminal/XTermWrapper";
 import { useToastStore } from "../../stores/toastStore";
-import { agentSessionIdentityKey } from "../../stores/workspaceListStore";
+import {
+  agentSessionIdentityKey,
+  paneContainsSession,
+  workspaceContainsSession,
+} from "../../stores/workspaceListStore";
+import { declaredAgentKind, declaredAgentSessionId } from "../../lib/agentSessionConfig";
 import {
   filterConflictingAgentMappings,
   resolvePersistedSelection,
@@ -219,23 +222,20 @@ function getTabConfigKind(
   tabConfig: PaneTabConfig,
   fallbackAgentId?: string | null,
 ): AgentSessionKind | null {
-  return tabConfig.agent_kind
-    ?? (tabConfig.claude_session_id ? "claude" : null)
+  return declaredAgentKind(tabConfig)
     ?? inferAgentKindFromAgentId(tabConfig.agent_id || fallbackAgentId);
 }
 
 function getTabConfigSessionId(tabConfig: PaneTabConfig): string | null {
-  return tabConfig.agent_session_id ?? tabConfig.claude_session_id ?? null;
+  return declaredAgentSessionId(tabConfig);
 }
 
 function getPaneConfigKind(paneConfig: PaneConfig): AgentSessionKind | null {
-  return paneConfig.agent_kind
-    ?? (paneConfig.claude_session_id ? "claude" : null)
-    ?? inferAgentKindFromAgentId(paneConfig.agent_id);
+  return declaredAgentKind(paneConfig) ?? inferAgentKindFromAgentId(paneConfig.agent_id);
 }
 
 function getPaneConfigSessionId(paneConfig: PaneConfig): string | null {
-  return paneConfig.agent_session_id ?? paneConfig.claude_session_id ?? null;
+  return declaredAgentSessionId(paneConfig);
 }
 
 function applyMappingToTabConfig(
@@ -387,9 +387,7 @@ function getConfigAgentSessionKey(
 }
 
 function getTabAgentSessionKey(tab: PaneTabConfig): string | null {
-  const kind = tab.agent_kind ?? (tab.claude_session_id ? "claude" : null);
-  const sessionId = tab.agent_session_id ?? tab.claude_session_id ?? null;
-  return getConfigAgentSessionKey(kind, sessionId);
+  return getConfigAgentSessionKey(declaredAgentKind(tab), declaredAgentSessionId(tab));
 }
 
 function getPaneAgentSessionKey(pane: PaneConfig): string | null {
@@ -397,8 +395,8 @@ function getPaneAgentSessionKey(pane: PaneConfig): string | null {
 }
 
 function clearDuplicateTabAgentSession(tab: PaneTabConfig): PaneTabConfig {
-  const kind = tab.agent_kind ?? (tab.claude_session_id ? "claude" : null);
-  const sessionId = tab.agent_session_id ?? tab.claude_session_id ?? null;
+  const kind = declaredAgentKind(tab);
+  const sessionId = declaredAgentSessionId(tab);
   return {
     ...tab,
     suppressed_agent_sessions: kind && sessionId
@@ -455,8 +453,7 @@ function agentIdForSessionKind(kind: AgentSessionKind | null | undefined): strin
 }
 
 function normalizeAgentSessionTab(tab: PaneTabConfig): PaneTabConfig {
-  const kind = tab.agent_kind ?? (tab.claude_session_id ? "claude" : null);
-  const agentId = agentIdForSessionKind(kind);
+  const agentId = agentIdForSessionKind(declaredAgentKind(tab));
   return {
     ...clearAgentTerminalSnapshot(tab),
     agent_id: agentId ?? tab.agent_id,
@@ -476,8 +473,8 @@ function syncPaneAgentSessionFromActiveTab(pane: PaneConfig, tabs: PaneTabConfig
     return pane;
   }
   const activeTab = tabs.find((tab) => tab.tab_id === pane.active_tab_id) ?? tabs[0];
-  const kind = activeTab.agent_kind ?? (activeTab.claude_session_id ? "claude" : null);
-  const sessionId = activeTab.agent_session_id ?? activeTab.claude_session_id ?? null;
+  const kind = declaredAgentKind(activeTab);
+  const sessionId = declaredAgentSessionId(activeTab);
   return {
     ...pane,
     tabs,
@@ -812,6 +809,11 @@ export function toConfig(ws: Workspace, _agentMappings: Record<string, AgentSess
         ),
         launch_env: stripEphemeralLaunchEnv(p.launchEnv ?? activeTab?.launchEnv),
         active_tab_id: activeTab.id,
+        // A pin aimed at a browser/online tab has no persisted counterpart, so
+        // it must save as null instead of a dangling id.
+        pinned_tab_id: persistedTabs.some((t) => t.id === p.pinnedTabId)
+          ? p.pinnedTabId ?? null
+          : null,
         tabs: persistedTabs.map((tab) => {
           const tabMeta = metaState[tab.sessionId];
           const isActivePersistedTab = tab.id === activeTab.id;
@@ -887,9 +889,6 @@ export function useWorkspacePersist() {
             themeTweaks: data.settings.theme_tweaks,
           });
           useKeybindingStore.getState().hydrateOverrides(data.settings.keybindings ?? {});
-          if (data.pinned_roots && data.pinned_roots.length > 0) {
-            useFileExplorerStore.getState().setRoots(data.pinned_roots);
-          }
 
           if (data.workspaces.length > 0) {
             const listStore = useWorkspaceListStore.getState();
@@ -1012,7 +1011,7 @@ export function useWorkspacePersist() {
         : null;
       const activeSessionId = uiState.activePaneId ?? lastActivePaneSessionId.current;
       const activePane = activeWorkspace?.panes.find((pane) =>
-        pane.sessionId === activeSessionId || pane.tabs.some((tab) => tab.sessionId === activeSessionId),
+        paneContainsSession(pane, activeSessionId),
       ) ?? activeWorkspace?.panes[0] ?? null;
       const activeTab = activePane?.tabs.find((tab) => tab.sessionId === activeSessionId)
         ?? activePane?.tabs.find((tab) => tab.id === activePane.activeTabId)
@@ -1020,14 +1019,10 @@ export function useWorkspacePersist() {
         ?? null;
       const fallbackSessionId = lastActivePaneSessionId.current;
       const fallbackWorkspace = fallbackSessionId
-        ? state.workspaces.find((workspace) => workspace.panes.some((pane) =>
-            pane.sessionId === fallbackSessionId
-              || pane.tabs.some((tab) => tab.sessionId === fallbackSessionId),
-          ))
+        ? state.workspaces.find((workspace) => workspaceContainsSession(workspace, fallbackSessionId))
         : null;
       const fallbackPane = fallbackWorkspace?.panes.find((pane) =>
-        pane.sessionId === fallbackSessionId
-          || pane.tabs.some((tab) => tab.sessionId === fallbackSessionId),
+        paneContainsSession(pane, fallbackSessionId),
       ) ?? null;
       const fallbackTab = fallbackPane?.tabs.find((tab) => tab.sessionId === fallbackSessionId)
         ?? fallbackPane?.tabs.find((tab) => tab.id === fallbackPane.activeTabId)
@@ -1322,18 +1317,6 @@ export function useWorkspacePersist() {
       }
     });
 
-    return () => {
-      unlisten.then((f) => f()).catch(() => {});
-    };
-  }, []);
-
-  // Subscribe to fs_changed events from notify watcher — invalidate the
-  // affected directory so the explorer re-fetches on next expand (or
-  // immediately if already open).
-  useEffect(() => {
-    const unlisten = onFsChanged((payload) => {
-      useFileExplorerStore.getState().invalidate(payload.path);
-    });
     return () => {
       unlisten.then((f) => f()).catch(() => {});
     };

@@ -35,26 +35,48 @@ pub fn strip_extended_length_prefix(path: &str) -> String {
     }
 }
 
+/// Resolve a working directory to the canonical spelling used when matching a
+/// pane's CWD against the CWD recorded inside an agent session file.
+///
+/// The three steps each fix a different way the same directory gets spelled:
+///   1. Git-Bash drive paths (`/c/Users/me`) become Windows paths, and every
+///      separator becomes a backslash, because a pane's CWD may arrive from a
+///      POSIX-style shell while the agent wrote a Windows path (or vice versa).
+///   2. Trailing separators are dropped (`C:\src\` and `C:\src` are one place).
+///   3. `canonicalize` resolves junctions, symlinks, 8.3 short names, and case,
+///      so a pane launched through `C:\PROGRA~1\x` matches a session recorded
+///      as `C:\Program Files\x`. This is the step that makes the key correct;
+///      without it the two spellings look like different directories and an
+///      agent session silently fails to resume. A path that does not exist is
+///      left as-is — a missing directory has nothing to resolve, and the
+///      caller still needs a stable key for it.
+///
+/// The `\\?\` prefix `canonicalize` adds is stripped again so the key can also
+/// be shown in an error message.
+pub fn normalize_agent_cwd(cwd: &str) -> String {
+    let normalized = posix_drive_to_windows(cwd).replace('/', "\\");
+    let trimmed = normalized.trim_end_matches(['\\', '/']);
+    let resolved = std::path::Path::new(trimmed)
+        .canonicalize()
+        .map(|path| path.to_string_lossy().to_string())
+        .unwrap_or_else(|_| trimmed.to_string());
+    strip_extended_length_prefix(&resolved)
+}
+
+/// Case-insensitive form of [`normalize_agent_cwd`], for use as a lookup or
+/// comparison key. Windows paths are case-insensitive, and agents record
+/// whatever casing the user typed.
+pub fn normalize_cwd_key(cwd: &str) -> String {
+    normalize_agent_cwd(cwd).to_ascii_lowercase()
+}
+
 /// Mangle a working directory into the `~/.claude/projects/<key>` directory name.
 ///
 /// This must match Claude Code's raw cwd-derived project key and must not
 /// canonicalize, because junctions, symlinks, and Windows path normalization can
 /// produce a different on-disk project directory.
 pub fn claude_project_key(path: &str) -> String {
-    let normalized = if path.starts_with('/')
-        && path.len() > 2
-        && path.as_bytes()[1].is_ascii_alphabetic()
-        && path.as_bytes()[2] == b'/'
-    {
-        format!(
-            "{}:{}",
-            path[1..2].to_uppercase(),
-            path[2..].replace('/', "\\")
-        )
-    } else {
-        path.to_string()
-    };
-    normalized
+    posix_drive_to_windows(path)
         .trim_end_matches(['/', '\\'])
         .chars()
         .map(|ch| {
@@ -128,6 +150,45 @@ mod tests {
         );
         assert_eq!(strip_extended_length_prefix("/home/me/handoff.md"), "/home/me/handoff.md");
         assert_eq!(strip_extended_length_prefix(""), "");
+    }
+
+    #[test]
+    fn normalize_cwd_key_is_case_insensitive_and_drops_trailing_separators() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().to_string_lossy().to_string();
+        assert_eq!(
+            normalize_cwd_key(&base),
+            normalize_cwd_key(&format!("{}\\", base.to_uppercase()))
+        );
+    }
+
+    #[test]
+    fn normalize_cwd_key_matches_posix_and_windows_spellings_of_one_directory() {
+        // Only meaningful where a drive letter exists; on other platforms both
+        // spellings still have to agree with each other.
+        let windows = r"C:\Users";
+        let posix = "/c/Users";
+        assert_eq!(normalize_cwd_key(windows), normalize_cwd_key(posix));
+    }
+
+    #[test]
+    fn normalize_agent_cwd_leaves_missing_directories_alone() {
+        assert_eq!(
+            normalize_agent_cwd(r"C:\mycmux-does-not-exist\sub\"),
+            r"C:\mycmux-does-not-exist\sub"
+        );
+    }
+
+    #[test]
+    fn normalize_agent_cwd_resolves_a_relative_spelling_of_an_existing_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let nested = dir.path().join("child");
+        std::fs::create_dir(&nested).unwrap();
+        let indirect = nested.join("..").join("child");
+        assert_eq!(
+            normalize_agent_cwd(&indirect.to_string_lossy()),
+            normalize_agent_cwd(&nested.to_string_lossy())
+        );
     }
 
     #[test]

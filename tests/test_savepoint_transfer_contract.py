@@ -20,10 +20,14 @@ def test_transfer_archive_is_fixed_atomic_and_runs_off_the_ui_thread() -> None:
         'const TRANSCRIPT_ENTRY: &str = "bundle/transcript/session.jsonl";',
     ):
         assert entry in transfer
-    assert "NamedTempFile::new_in(destination_parent)" in transfer
-    assert "temp.persist(destination_path)" in transfer
+    # The archive is built into a temp file beside the destination and renamed
+    # over it only after fsync; util::atomic_write owns those steps now.
+    assert 'AtomicWrite::new("transfer file", "Failed to save transfer file")' in transfer
+    assert ".write_with(destination_path, |temp_file|" in transfer
     assert "tempdir_in(local_dir)" in transfer
-    assert "tauri::async_runtime::spawn_blocking" in transfer
+    # run_blocking wraps tauri::async_runtime::spawn_blocking.
+    assert 'run_blocking("export_savepoint_transfer"' in transfer
+    assert 'run_blocking("import_savepoint_transfer"' in transfer
     assert "ZipArchive::extract" not in transfer
     assert "transfer_digest(&envelope)" in transfer
     assert "is_link_or_reparse_point" in transfer

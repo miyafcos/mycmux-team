@@ -22,6 +22,7 @@ import {
   resolvePaneTabBarMode,
   shouldMarkAttentionSeen,
   shouldShowDeferredRestoreBadge,
+  shouldShowInlinePinControl,
   shouldShowPublishButton,
 } from "../../src/components/workspace/PaneTabBar";
 import type { SessionAttention } from "../../src/stores/sessionAttentionStore";
@@ -353,7 +354,7 @@ describe("resolvePaneTabMenuRows", () => {
     occurrenceOrder,
   });
 
-  it("pins attention tabs in occurrence order and lists each tab exactly once", () => {
+  it("hoists attention tabs in occurrence order and lists each tab exactly once", () => {
     const tabs = [
       tab({ id: "tab-a", sessionId: "session-a" }),
       tab({ id: "tab-b", sessionId: "session-b" }),
@@ -367,7 +368,8 @@ describe("resolvePaneTabMenuRows", () => {
     }, new Map());
 
     expect(rows.map((row) => row.tab.id)).toEqual(["tab-b", "tab-c", "tab-a", "tab-d"]);
-    expect(rows.map((row) => row.pinned)).toEqual([true, true, true, false]);
+    expect(rows.map((row) => row.hoisted)).toEqual([true, true, true, false]);
+    expect(rows.every((row) => !row.isPinned)).toBe(true);
     expect(rows.map((row) => row.category)).toEqual(["waiting", "error", "done", null]);
     expect(new Set(rows.map((row) => row.tab.id)).size).toBe(tabs.length);
   });
@@ -380,7 +382,61 @@ describe("resolvePaneTabMenuRows", () => {
     const rows = resolvePaneTabMenuRows(tabs, {}, new Map());
 
     expect(rows.map((row) => row.tab.id)).toEqual(["tab-a", "tab-b"]);
-    expect(rows.every((row) => !row.pinned && row.category === null)).toBe(true);
+    expect(rows.every((row) => !row.hoisted && !row.isPinned && row.category === null)).toBe(true);
+  });
+
+  it("puts the pinned tab first even when another tab has unseen attention", () => {
+    const tabs = [
+      tab({ id: "tab-a", sessionId: "session-a" }),
+      tab({ id: "tab-b", sessionId: "session-b" }),
+      tab({ id: "tab-c", sessionId: "session-c" }),
+    ];
+    const rows = resolvePaneTabMenuRows(tabs, {
+      "session-b": attention("session-b", "attention-b", "approval", 1),
+      "session-c": attention("session-c", "attention-c", "error", 2),
+    }, new Map(), "tab-c");
+
+    expect(rows.map((row) => row.tab.id)).toEqual(["tab-c", "tab-b", "tab-a"]);
+    expect(rows.map((row) => row.isPinned)).toEqual([true, false, false]);
+    expect(rows.map((row) => row.hoisted)).toEqual([false, true, false]);
+    // The pinned row keeps its attention category so the badge still renders,
+    // and it appears exactly once despite also needing attention.
+    expect(rows.map((row) => row.category)).toEqual(["error", "waiting", null]);
+    expect(new Set(rows.map((row) => row.tab.id)).size).toBe(tabs.length);
+  });
+
+  it("ignores a pinned id that no longer names a tab", () => {
+    const tabs = [
+      tab({ id: "tab-a", sessionId: "session-a" }),
+      tab({ id: "tab-b", sessionId: "session-b" }),
+    ];
+    const rows = resolvePaneTabMenuRows(tabs, {}, new Map(), "tab-gone");
+
+    expect(rows.map((row) => row.tab.id)).toEqual(["tab-a", "tab-b"]);
+    expect(rows.every((row) => !row.isPinned)).toBe(true);
+  });
+});
+
+describe("shouldShowInlinePinControl", () => {
+  it("shows the inline toggle only in modes wide enough for a button", () => {
+    const modes: PaneTabBarMode[] = [
+      "full",
+      "slim",
+      "compact",
+      "compact3",
+      "compact2",
+      "compact1",
+      "micro",
+    ];
+    expect(modes.map((mode) => shouldShowInlinePinControl(mode))).toEqual([
+      true,
+      true,
+      true,
+      true,
+      false,
+      false,
+      false,
+    ]);
   });
 });
 

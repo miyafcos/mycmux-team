@@ -87,11 +87,15 @@ export interface SweepApplyDependencies {
   command: (cmd: string, args: Record<string, unknown>) => Promise<unknown>;
 }
 
-export interface SweepNoticeSummary {
-  dead: number;
-  candidates: number;
-  unnamed: number;
-  keys: string[];
+/**
+ * One line of the sweep panel's single list. `selectable` is the only gate on
+ * whether the row's checkbox can be ticked — LOCKED tabs are never closable,
+ * everything else is, judged or not.
+ */
+export interface SweepRow {
+  tab: SweepTab;
+  kind: SweepCategory;
+  selectable: boolean;
 }
 
 export interface JudgeParseResult {
@@ -193,25 +197,86 @@ export function shortenCwdFromStart(cwd: string, maxLength = 56): string {
   return `…${characters.slice(-(maxLength - 1)).join("")}`;
 }
 
-export function summarizeSweepReport(report: SweepReport): SweepNoticeSummary {
-  return {
-    dead: report.dead.length,
-    candidates: report.candidates.length,
-    unnamed: report.unnamed.length,
-    keys: [
-      ...report.dead.map((tab) => `dead:${tab.id}`),
-      ...report.candidates.map((tab) => `candidate:${tab.id}`),
-      ...report.unnamed.map((tab) => `unnamed:${tab.id}`),
-    ],
-  };
+const SWEEP_ROW_ORDER: Record<SweepCategory, number> = { DEAD: 0, CANDIDATE: 1, LOCKED: 2 };
+
+/**
+ * Flatten a report into the panel's single ordered list: DEAD first (safe and
+ * usually what the user came for), then CANDIDATE oldest-output-first, then the
+ * LOCKED tabs that exist only to explain why they are not offered.
+ */
+export function buildSweepRows(report: SweepReport | null): SweepRow[] {
+  if (!report) return [];
+  const rows: SweepRow[] = report.tabs.map((tab) => ({
+    tab,
+    kind: tab.category,
+    selectable: tab.category !== "LOCKED",
+  }));
+  return rows.sort((first, second) => {
+    const byKind = SWEEP_ROW_ORDER[first.kind] - SWEEP_ROW_ORDER[second.kind];
+    if (byKind !== 0) return byKind;
+    if (first.kind !== "CANDIDATE") return 0;
+    // Unknown last-output sorts as oldest; Array#sort is stable so ties keep scan order.
+    return (first.tab.lastOutputAt ?? 0) - (second.tab.lastOutputAt ?? 0);
+  });
 }
 
-export function countUnseenSweepTabs(summary: SweepNoticeSummary, acknowledged: ReadonlySet<string>): number {
-  const unseenTabIds = new Set<string>();
-  for (const key of summary.keys) {
-    if (!acknowledged.has(key)) unseenTabIds.add(key.slice(key.indexOf(":") + 1));
+/** DEAD rows start ticked, CANDIDATE rows start clear, LOCKED rows cannot be ticked. */
+export function initialSweepSelection(rows: readonly SweepRow[]): Set<string> {
+  return new Set(rows.filter((row) => row.kind === "DEAD").map((row) => row.tab.id));
+}
+
+/** Drop ids that no longer exist or stopped being selectable after a rescan. */
+export function retainSweepSelection(
+  selection: ReadonlySet<string>,
+  rows: readonly SweepRow[],
+): Set<string> {
+  const selectable = new Set(rows.filter((row) => row.selectable).map((row) => row.tab.id));
+  return new Set([...selection].filter((id) => selectable.has(id)));
+}
+
+/**
+ * The AI judge proposes ticks; it never removes them and never gates closing.
+ * done_waiting candidates get checked, every other choice the user made stands.
+ */
+export function applyVerdictSelection(
+  selection: ReadonlySet<string>,
+  rows: readonly SweepRow[],
+  verdicts: readonly Verdict[],
+): Set<string> {
+  const doneIds = new Set(
+    verdicts.filter((verdict) => verdict.verdict === "done_waiting").map((verdict) => verdict.id),
+  );
+  const next = retainSweepSelection(selection, rows);
+  for (const row of rows) {
+    if (row.kind === "CANDIDATE" && doneIds.has(row.tab.id)) next.add(row.tab.id);
   }
-  return unseenTabIds.size;
+  return next;
+}
+
+export function toggleSweepSelection(
+  selection: ReadonlySet<string>,
+  id: string,
+  checked: boolean,
+): Set<string> {
+  const next = new Set(selection);
+  if (checked) next.add(id);
+  else next.delete(id);
+  return next;
+}
+
+/** Split ticked rows into the two applySweep close channels. */
+export function splitSweepSelection(
+  selection: ReadonlySet<string>,
+  rows: readonly SweepRow[],
+): { deadIds: string[]; candidateIds: string[] } {
+  const deadIds: string[] = [];
+  const candidateIds: string[] = [];
+  for (const row of rows) {
+    if (!row.selectable || !selection.has(row.tab.id)) continue;
+    if (row.kind === "DEAD") deadIds.push(row.tab.id);
+    else candidateIds.push(row.tab.id);
+  }
+  return { deadIds, candidateIds };
 }
 
 export function formatSweepCompletion(base: string, result: SweepApplyResult): string {
@@ -279,25 +344,6 @@ async function loadDefaultSource(now = Date.now()): Promise<SweepScanSource> {
     readTail,
     now,
   };
-}
-
-export async function countDeadTabs(): Promise<number> {
-  const source = await loadDefaultSource();
-  let count = 0;
-  for (const workspace of source.workspaces) {
-    for (const pane of workspace.panes) {
-      for (const tab of pane.tabs) {
-        if (!isTerminalTab(tab)) continue;
-        const reason = processStatusReasonForTab(
-          tab.type,
-          source.processMetadata[tab.sessionId],
-          source.processMetadataAvailable,
-        );
-        if (isDeadReason(reason)) count += 1;
-      }
-    }
-  }
-  return count;
 }
 
 export async function scanTabs(

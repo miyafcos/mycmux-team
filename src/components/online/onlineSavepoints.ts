@@ -1,4 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { PublishSavepointResult } from "../../lib/ipc";
+import { useOnlineSavepointStore } from "../../stores/onlineSavepointStore";
+import { useToastStore } from "../../stores/toastStore";
 import { onlineStrings } from "./onlineStrings";
 
 export interface OnlineSavepointEntry {
@@ -247,4 +250,47 @@ export function isExpiringSoon(expiresAt: string, now = Date.now()): boolean {
   if (!Number.isFinite(expires)) return false;
   const remaining = expires - now;
   return remaining >= 0 && remaining < 6 * 60 * 60 * 1000;
+}
+
+export const SAVEPOINT_PUBLISHED_EVENT = "mycmux:savepoint-published";
+
+/** Toast/status text for a savepoint publish that succeeded. */
+export function savepointPublishSuccessMessage(
+  result: PublishSavepointResult,
+  recordKind: "current" | "final" = "current",
+): string {
+  const base = recordKind === "final"
+    ? onlineStrings.finalizeSuccess
+    : result.updated
+      ? onlineStrings.publishSuccessUpdate
+      : onlineStrings.publishSuccessNew;
+  return result.warnings.length > 0
+    ? `${base} — ${result.warnings.length}${onlineStrings.publishWarningsSuffix}`
+    : base;
+}
+
+/** Human-readable text for a savepoint publish that failed. */
+export function savepointPublishErrorMessage(error: unknown): string {
+  const message = String(error);
+  return message.includes("Session transcript") && message.includes("not found")
+    ? onlineStrings.publishNoTranscript
+    : onlineStrings.publishErrorPrefix + message;
+}
+
+/**
+ * The one completion path for a successful savepoint publish, whichever UI
+ * started it: toast, published-index refresh, and the DOM event the Online
+ * panel listens on. Callers must NOT reload the savepoint list themselves —
+ * the event already does that, and doing both loads twice.
+ */
+export function notifySavepointPublished(
+  result: PublishSavepointResult,
+  recordKind: "current" | "final" = "current",
+): void {
+  useToastStore.getState().pushToast(
+    savepointPublishSuccessMessage(result, recordKind),
+    "warning",
+  );
+  void useOnlineSavepointStore.getState().refresh();
+  window.dispatchEvent(new CustomEvent(SAVEPOINT_PUBLISHED_EVENT));
 }

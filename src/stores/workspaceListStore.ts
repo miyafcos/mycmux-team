@@ -17,13 +17,22 @@ function workspaceContainsPane(workspace: Workspace | undefined, paneId: string 
   return Boolean(paneId && workspace?.panes.some((pane) => pane.id === paneId));
 }
 
-function workspaceContainsSession(workspace: Workspace | undefined, sessionId: string | null): boolean {
+/** A pane owns a session id through its own pane session or any of its tabs. */
+export function paneContainsSession(
+  pane: { sessionId: string; tabs: { sessionId: string }[] },
+  sessionId: string | null | undefined,
+): boolean {
   return Boolean(
     sessionId
-      && workspace?.panes.some((pane) =>
-        pane.sessionId === sessionId || pane.tabs.some((tab) => tab.sessionId === sessionId),
-      ),
+      && (pane.sessionId === sessionId || pane.tabs.some((tab) => tab.sessionId === sessionId)),
   );
+}
+
+export function workspaceContainsSession(
+  workspace: Workspace | undefined,
+  sessionId: string | null | undefined,
+): boolean {
+  return Boolean(workspace?.panes.some((pane) => paneContainsSession(pane, sessionId)));
 }
 
 function activeFocusTargetSignature(

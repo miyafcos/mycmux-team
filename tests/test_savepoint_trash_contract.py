@@ -31,7 +31,11 @@ def test_trash_view_disables_handoff_and_keeps_permanent_delete_confirmed():
 
     assert 'const [view, setView] = useState<SavepointListView>("active")' in panel
     assert "const loadGenerationRef = useRef(0)" in panel
-    assert "Promise.allSettled" in panel
+    # Active and trashed lists must fail independently: each side resolves to
+    # null on error (store refresh / inline rejection handler) instead of one
+    # rejection discarding the other list.
+    assert "useOnlineSavepointStore.getState().refresh()" in panel
+    assert "activeEntries ? onlineStrings.trashLoadError : onlineStrings.loadError" in panel
     assert "generation !== loadGenerationRef.current" in panel
     assert 'onPointerDown={trashed ? undefined' in panel
     assert "{!trashed && (" in panel

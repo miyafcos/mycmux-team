@@ -3,7 +3,6 @@ mod commands;
 mod db;
 mod diag;
 mod events;
-mod fs;
 mod pty;
 mod remote;
 mod session_retention;
@@ -12,10 +11,11 @@ mod socket;
 mod status_feed;
 pub mod terminal_config;
 pub mod usage;
+mod util;
 
 use pty::manager::SessionManager;
 use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 #[cfg(target_os = "windows")]
 mod single_instance {
@@ -63,7 +63,6 @@ pub struct AppState {
     pub status_feed: status_feed::StatusFeed,
     pub bootstrapped: AtomicBool,
     pub metadata_store: pty::monitor::MetadataStore,
-    pub fs_watcher: OnceLock<Arc<fs::FsWatcher>>,
 }
 
 fn install_launcher_script() -> Result<(), String> {
@@ -208,7 +207,6 @@ pub fn run() {
         status_feed,
         bootstrapped: AtomicBool::new(false),
         metadata_store: metadata_store.clone(),
-        fs_watcher: OnceLock::new(),
     };
 
     tauri::Builder::default()
@@ -241,8 +239,6 @@ pub fn run() {
             commands::terminal::set_frontend_visible,
             commands::terminal::get_session_scrollback,
             commands::terminal::kill_session,
-            commands::artifact::preview_artifact_for_session,
-            commands::artifact::preview_artifact_uri_for_session,
             commands::artifact::preview_artifact_uri_for_session_v2,
             commands::artifact::read_editable_artifact,
             commands::artifact::save_editable_artifact,
@@ -273,22 +269,11 @@ pub fn run() {
             commands::crsm::crsm_create_handoff,
             commands::workspace::load_persistent_data,
             commands::workspace::save_persistent_data,
-            commands::workspace::save_workspaces,
-            commands::workspace::save_settings,
-            commands::fs::list_directory,
-            commands::fs::walk_tree,
-            commands::fs::normalize_path,
             commands::fs::resolve_local_path_links,
-            commands::fs::save_pinned_roots,
-            commands::fs::watch_root,
-            commands::fs::unwatch_root,
             commands::fs::reveal_in_explorer,
             commands::fs::reveal_path_in_explorer,
             commands::fs::open_with_default,
-            commands::fs::create_file,
-            commands::fs::create_folder,
             commands::window::claim_leader,
-            commands::window::get_window_count,
             commands::window::reveal_main_window,
             commands::window::quit_app,
             commands::usage::get_account_usage,
@@ -336,10 +321,6 @@ pub fn run() {
                 &app_handle,
                 state.session_state_store.clone(),
             );
-
-            // FsWatcher: singleton per app, lives for app lifetime.
-            let watcher = Arc::new(fs::FsWatcher::new(app_handle.clone()));
-            let _ = state.fs_watcher.set(watcher);
 
             socket::start_socket_listener(app_handle.clone());
             let remote_control = app.state::<Arc<remote::RemoteControl>>().inner().clone();

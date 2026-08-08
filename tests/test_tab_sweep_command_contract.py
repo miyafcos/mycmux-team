@@ -64,23 +64,53 @@ def test_tab_sweep_ui_contract_covers_all_entry_points_and_safety_copy() -> None
     app_shell = read("src/components/layout/AppShell.tsx")
     palette = read("src/components/CommandPalette/CrsmPalette.tsx")
 
+    # Closing always goes through the manual channel: the AI judge proposes
+    # checkboxes, it is not a gate on the close button.
     assert 'manualCloseCandidateTabIds' in panel
-    assert 'closeCandidateTabIds: [tab.id], verdicts' in panel
+    assert 'closeCandidateTabIds' not in panel
     assert "閉じたタブは Ctrl+Shift+T で復元できます（会話も再開されます）" in panel
     assert "各タブの画面末尾8行と作業フォルダを Claude (haiku) に送って判定します" in panel
     assert "掃除できるタブはありません" in panel
-    assert "① 即掃除できる" in panel
-    assert "② AI 判定候補" in panel
-    assert "④ 無名タブのラベル案" in panel
-    assert "③ ロック中" in panel
-    assert "lockedExpanded" in panel
+
+    # One list with checkboxes — the numbered sections and their per-section
+    # action buttons are gone, and so is the collapsed LOCKED list.
+    assert 'type="checkbox"' in panel
+    assert "選択した${selectedCount}件を閉じる" in panel
+    assert "① 即掃除できる" not in panel
+    assert "② AI 判定候補" not in panel
+    assert "④ 無名タブのラベル案" not in panel
+    assert "③ ロック中" not in panel
+    assert "lockedExpanded" not in panel
+    assert "ラベル案: " in panel
+
     assert "lastMeaningfulTailLine" in panel
     assert "shortenCwdFromStart" in panel
-    assert "onReportChange" in panel
-    assert "countUnseenSweepTabs" in button
+    for helper in (
+        "buildSweepRows",
+        "initialSweepSelection",
+        "applyVerdictSelection",
+        "retainSweepSelection",
+        "splitSweepSelection",
+        "toggleSweepSelection",
+    ):
+        assert helper in panel
+        assert f"export function {helper}" in sweep
+
+    # The button is a plain toggle: no badge, no background scanning.
+    assert "onReportChange" not in panel
+    assert "onReportChange" not in button
+    assert "countUnseenSweepTabs" not in button
+    assert "summarizeSweepReport" not in button
+    assert "scanTabs" not in button
+    assert "setInterval" not in button
+    assert "pty-exit" not in button
     assert "TAB_SWEEP_OPEN_EVENT" in button
     assert 'visible={mounted}' in button
     assert 'open={open}' in button
+
+    # The removed notice helpers must not come back on the module either.
+    assert "summarizeSweepReport" not in sweep
+    assert "countUnseenSweepTabs" not in sweep
     assert 'manualCloseCandidateTabIds?: string[]' in sweep
     assert '| "tab.sweep"' in keybindings
     assert 'action: "tab.sweep"' in keybindings

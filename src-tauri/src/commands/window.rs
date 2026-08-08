@@ -70,11 +70,6 @@ pub fn claim_leader(state: State<'_, AppState>) -> bool {
 }
 
 #[tauri::command]
-pub fn get_window_count(app: AppHandle) -> usize {
-    app.webview_windows().len()
-}
-
-#[tauri::command]
 pub fn reveal_main_window(app: AppHandle) -> Result<(), String> {
     let app_handle = app.clone();
     app.run_on_main_thread(move || {

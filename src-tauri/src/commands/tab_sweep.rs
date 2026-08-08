@@ -115,8 +115,7 @@ where
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        command.creation_flags(CREATE_NO_WINDOW);
+        command.creation_flags(crate::util::process::CREATE_NO_WINDOW);
     }
     command
 }
@@ -128,8 +127,7 @@ async fn terminate_child_tree(child: &mut Child) -> Result<(), String> {
         taskkill.args(["/PID", &pid.to_string(), "/T", "/F"]);
         {
             use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            taskkill.creation_flags(CREATE_NO_WINDOW);
+            taskkill.creation_flags(crate::util::process::CREATE_NO_WINDOW);
         }
         let mut taskkill = Command::from(taskkill);
         taskkill.kill_on_drop(true);

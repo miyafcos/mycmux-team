@@ -1,21 +1,12 @@
 fn write_json_atomic(path: &Path, value: &serde_json::Value) -> Result<(), String> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| "Manifest parent directory not found".to_string())?;
     let json = serde_json::to_string_pretty(value)
         .map_err(|error| format!("Failed to serialize {}: {error}", path.display()))?;
-    let mut temp = tempfile::NamedTempFile::new_in(parent)
-        .map_err(|error| format!("Failed to create temporary manifest: {error}"))?;
-    temp.write_all(json.as_bytes())
-        .map_err(|error| format!("Failed to write temporary manifest: {error}"))?;
-    temp.flush()
-        .map_err(|error| format!("Failed to flush temporary manifest: {error}"))?;
-    temp.as_file()
-        .sync_all()
-        .map_err(|error| format!("Failed to sync temporary manifest: {error}"))?;
-    temp.persist(path)
-        .map(|_| ())
-        .map_err(|error| format!("Failed to replace {}: {}", path.display(), error.error))
+    crate::util::atomic_write::AtomicWrite::new(
+        "temporary manifest",
+        format!("Failed to replace {}", path.display()),
+    )
+    .parent_missing("Manifest parent directory not found")
+    .write_bytes(path, json.as_bytes())
 }
 
 fn lifecycle_from_value(manifest: &serde_json::Value) -> SavepointLifecycle {

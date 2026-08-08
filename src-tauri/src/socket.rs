@@ -526,15 +526,6 @@ pub fn start_socket_listener(app: AppHandle) {
     });
 }
 
-/// Read the port from the port file (for use by CLI tools)
-#[allow(dead_code)]
-pub fn read_socket_port() -> Option<u16> {
-    let port_file = get_port_file_path();
-    std::fs::read_to_string(&port_file)
-        .ok()
-        .and_then(|s| s.trim().parse().ok())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

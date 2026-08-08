@@ -1,3 +1,4 @@
+use super::util::redacted;
 use crate::cli_accounts::json_splice;
 use serde_json::{Number, Value};
 use std::fmt;
@@ -23,10 +24,6 @@ pub struct CodexTokens {
     /// stores no expiry field in auth.json, so this stays None for opaque
     /// tokens and callers must treat that as "unknown", not "expired".
     pub access_expires_at_ms: Option<i64>,
-}
-
-fn redacted(value: &str) -> String {
-    format!("<redacted len={}>", value.len())
 }
 
 impl fmt::Debug for ClaudeTokens {

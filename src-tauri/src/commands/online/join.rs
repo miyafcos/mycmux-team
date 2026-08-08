@@ -145,19 +145,20 @@ fn import_codex_transcript(
         "rollout-{}-{import_id}.jsonl",
         now.format("%Y-%m-%dT%H-%M-%S")
     ));
-    let mut temp = tempfile::NamedTempFile::new_in(&target_dir)
-        .map_err(|error| format!("Failed to create Codex transcript import: {error}"))?;
-    serde_json::to_writer(temp.as_file_mut(), &session_meta)
-        .map_err(|error| format!("Failed to write Codex session metadata: {error}"))?;
-    temp.write_all(b"\n")
-        .map_err(|error| format!("Failed to write Codex transcript import: {error}"))?;
-    std::io::copy(&mut reader, temp.as_file_mut())
-        .map_err(|error| format!("Failed to copy Codex transcript: {error}"))?;
-    temp.as_file_mut()
-        .sync_all()
-        .map_err(|error| format!("Failed to flush Codex transcript import: {error}"))?;
-    temp.persist(&target)
-        .map_err(|error| format!("Failed to install {}: {}", target.display(), error.error))?;
+    crate::util::atomic_write::AtomicWrite::new(
+        "Codex transcript import",
+        format!("Failed to install {}", target.display()),
+    )
+    .write_with(&target, |temp_file| {
+        serde_json::to_writer(&mut *temp_file, &session_meta)
+            .map_err(|error| format!("Failed to write Codex session metadata: {error}"))?;
+        temp_file
+            .write_all(b"\n")
+            .map_err(|error| format!("Failed to write Codex transcript import: {error}"))?;
+        std::io::copy(&mut reader, temp_file)
+            .map_err(|error| format!("Failed to copy Codex transcript: {error}"))?;
+        Ok(())
+    })?;
     Ok(import_id)
 }
 

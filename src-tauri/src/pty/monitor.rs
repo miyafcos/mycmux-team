@@ -4,7 +4,7 @@ use std::io::BufRead;
 use std::os::windows::process::CommandExt;
 use std::process::Command;
 #[cfg(target_os = "windows")]
-const CREATE_NO_WINDOW: u32 = 0x08000000;
+use crate::util::process::CREATE_NO_WINDOW;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
