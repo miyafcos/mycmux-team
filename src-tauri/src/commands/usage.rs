@@ -974,6 +974,57 @@ async fn remember_refresh_rejection(app: &tauri::AppHandle, row: &PlannedRow) {
     }
 }
 
+/// Drop an account whose refresh token the provider has explicitly disowned.
+///
+/// Only `invalid_grant` reaches here. A bare 400 or 401 also classifies as
+/// `Rejected` (see `usage::refresh::classify_refresh_error`), and a proxy or
+/// captive portal answering with HTML would land there too - retiring on that
+/// would delete a working account over a network hiccup.
+///
+/// Returns whether the account was retired. The account keeps its credentials:
+/// the snapshot is renamed aside, not deleted.
+async fn retire_rejected_account(app: &tauri::AppHandle, state: &UsageState, row: &PlannedRow) -> bool {
+    let Ok(base) = app.path().app_data_dir() else {
+        crate::usage::log_oauth_failure(
+            app,
+            "get_account_usage_retire",
+            &format!("profile={} app_data_dir_unavailable", row.profile_id),
+        );
+        return false;
+    };
+    let profile_id = row.profile_id.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let claude_paths = ClaudePaths::resolve()?;
+        let codex_paths = CodexPaths::resolve()?;
+        crate::cli_accounts::retire_rejected_account(
+            &base,
+            &profile_id,
+            &claude_paths,
+            &codex_paths,
+        )
+    })
+    .await;
+    match result.unwrap_or_else(|error| Err(error.to_string())) {
+        Ok(true) => {
+            // The row is gone from the registry, so its cached windows, cooldown
+            // and deferred slot would otherwise linger for the process lifetime.
+            state.clear_profile(&row.profile_id).await;
+            use tauri::Emitter;
+            let _ = app.emit("mycmux://cli-account-retired", row.label.clone());
+            true
+        }
+        Ok(false) => false,
+        Err(error) => {
+            crate::usage::log_oauth_failure(
+                app,
+                "get_account_usage_retire",
+                &format!("profile={} {error}", row.profile_id),
+            );
+            false
+        }
+    }
+}
+
 async fn refresh_failure(
     app: &tauri::AppHandle,
     state: &UsageState,
@@ -993,7 +1044,7 @@ async fn refresh_failure(
         ),
     );
     match error {
-        refresh::RefreshError::Rejected { .. } => {
+        refresh::RefreshError::Rejected { ref code, .. } => {
             // A rejected refresh usually means the provider rotated this token
             // away while the CLI held the account, and only a human re-login
             // can fix that. But the account can also have gone live between the
@@ -1006,6 +1057,23 @@ async fn refresh_failure(
                         row,
                         UsageRowState::WaitForCli,
                         Some(ERROR_TOKEN_EXPIRED_ACTIVE),
+                        None,
+                    ),
+                };
+            }
+            // An explicit invalid_grant is the provider disowning this refresh
+            // token, which no amount of retrying fixes. Retire the account so it
+            // stops spending a request every poll: the budget is IP-wide, so a
+            // dead account crowds the healthy ones into a rate-limit cooldown.
+            // Unregistered live rows have no registry entry to retire.
+            if row.registered && code.as_deref() == Some("invalid_grant")
+                && retire_rejected_account(app, state, row).await
+            {
+                return FetchResult {
+                    usage: profile_usage(
+                        row,
+                        UsageRowState::NeedsRelogin,
+                        Some(ERROR_NEEDS_RELOGIN),
                         None,
                     ),
                 };

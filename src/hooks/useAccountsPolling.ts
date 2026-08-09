@@ -76,6 +76,43 @@ function useLegacyUsageRetirementNotice(): void {
   }, []);
 }
 
+/**
+ * Says which account was dropped, and refreshes the list right away.
+ *
+ * The backend retires an account whose refresh token the provider disowned, so
+ * a row can disappear without the user doing anything. Without the toast that
+ * reads as an account silently vanishing; without the refetch the settings list
+ * keeps a ghost row for up to a poll interval, and switching to it fails.
+ */
+function useCliAccountRetirementNotice(): void {
+  useEffect(() => {
+    let unlisten: UnlistenFn | undefined;
+    let cancelled = false;
+    void listen<string>("mycmux://cli-account-retired", (event) => {
+      const label = typeof event.payload === "string" ? event.payload.trim() : "";
+      useToastStore
+        .getState()
+        .pushToast(
+          label
+            ? `${label} は再ログインが必要なため登録から外しました。`
+            : "再ログインが必要なアカウントを登録から外しました。",
+          "info",
+        );
+      void useCliAccountStore.getState().fetch();
+    }).then((fn) => {
+      if (cancelled) {
+        fn();
+        return;
+      }
+      unlisten = fn;
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
+}
+
 export function useAccountsPolling(): void {
   const fetchCli = useCliAccountStore((state) => state.fetch);
   const fetchUsage = useUsageStore((state) => state.fetch);
@@ -85,6 +122,7 @@ export function useAccountsPolling(): void {
   const usageInFlight = useRef(false);
 
   useLegacyUsageRetirementNotice();
+  useCliAccountRetirementNotice();
 
   useEffect(() => {
     const observedUsageAt = () => {

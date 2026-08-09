@@ -471,6 +471,52 @@ pub(crate) fn record_refresh_rejection(
     registry::save(base, &file).map_err(|_| ERR_REGISTRY_SAVE_FAILED.to_string())
 }
 
+pub fn retire_rejected_account(
+    base: &Path,
+    profile_id: &str,
+    claude_paths: &claude::ClaudePaths,
+    codex_paths: &codex::CodexPaths,
+) -> Result<bool, String> {
+    let _guard = mutation_guard()?;
+    let mut file = registry::load(base).map_err(|_| ERR_ACCOUNTS_UNAVAILABLE.to_string())?;
+    let Some(provider) = file
+        .profiles
+        .iter()
+        .find(|profile| profile.id == profile_id)
+        .map(|profile| profile.provider)
+    else {
+        return Ok(false);
+    };
+
+    // Re-read the provider's live identity while holding the same guard as the
+    // registry mutation. Missing live files are definitively inactive; read
+    // errors or an unnamed live login are unknown and must fail closed.
+    let live = match provider {
+        CliProvider::Claude => claude::read_live_identity(claude_paths),
+        CliProvider::Codex => codex::read_live_identity(codex_paths),
+    };
+    let live = match_live(live, &file.profiles);
+    let definitively_inactive = live.error.is_none()
+        && (!live.present
+            || (live.identity_key.is_some()
+                && live.matched_profile_id.as_deref() != Some(profile_id)));
+    if !definitively_inactive {
+        return Ok(false);
+    }
+
+    if !registry::remove_profile(&mut file, profile_id) {
+        return Ok(false);
+    }
+    registry::save(base, &file).map_err(|_| ERR_REMOVE_FAILED.to_string())?;
+    if let Err(error) = snapshot::retire(base, profile_id) {
+        crate::diag_warn!(
+            "cli_accounts",
+            "failed to retire rejected snapshot profile={profile_id}: {error}"
+        );
+    }
+    Ok(true)
+}
+
 pub fn list_resolved(base: &Path) -> Result<CliAccountsSnapshot, String> {
     let claude_paths = claude::ClaudePaths::resolve()?;
     let codex_paths = codex::CodexPaths::resolve()?;

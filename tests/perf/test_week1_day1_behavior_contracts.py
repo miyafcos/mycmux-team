@@ -10,9 +10,10 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 EXPECTED_LAUNCHER_OPTIONS = [
     "Claude Code",
     "Codex",
-    "claude-codex",
+    "claude-codex (Codex Models)",
     "Codex (Fugu Ultra)",
     "claude-codex (Fugu)",
+    "claude-codex (Open Models)",
     "Antigravity (agy)",
     "Claude Code (dangerous)",
     "Codex (dangerous)",
@@ -29,9 +30,10 @@ EXPECTED_LAUNCHER_OPTIONS = [
 EXPECTED_LAUNCHER_COMMANDS = [
     "claude --allow-dangerously-skip-permissions --permission-mode auto",
     "codex --no-alt-screen",
-    "claude-codex",
+    "claude-codex --backend gpt",
     "codex --no-alt-screen --profile fugu-ultra",
     "claude-codex --backend fugu",
+    "claude-codex --backend fcc",
     "agy",
     "claude --dangerously-skip-permissions --permission-mode bypassPermissions",
     "codex --no-alt-screen --dangerously-bypass-approvals-and-sandbox",
@@ -71,6 +73,31 @@ def test_launcher_order_matches_current_contract() -> None:
     assert_contains(launcher, "FUGU_API_KEY", "src-tauri/src/launcher.sh")
     assert_contains(launcher_ps1, "Import-MycmuxUserEnvIfMissing", "src-tauri/src/launcher.ps1")
     assert_contains(launcher_ps1, "FUGU_API_KEY", "src-tauri/src/launcher.ps1")
+    for command in (
+        "claude-codex --backend gpt",
+        "claude-codex --backend fugu",
+        "claude-codex --backend fcc",
+    ):
+        assert command in EXPECTED_LAUNCHER_COMMANDS
+    assert_contains(launcher, "slash) selected=13", "src-tauri/src/launcher.sh")
+    assert_contains(launcher, "7) selected=16", "src-tauri/src/launcher.sh")
+
+
+def test_integrated_model_profiles_match_powershell_launcher() -> None:
+    launcher_ps1 = read_repo_text("src-tauri/src/launcher.ps1")
+    expected = {
+        "claude-codex (Codex Models)": "gpt",
+        "claude-codex (Fugu)": "fugu",
+        "claude-codex (Open Models)": "fcc",
+    }
+    for label, backend in expected.items():
+        assert_contains(
+            launcher_ps1,
+            f'New-MycmuxOption "{label}" @("claude-codex", "--backend", "{backend}") "claude-codex"',
+            "src-tauri/src/launcher.ps1",
+        )
+    for alias in ('"claude-codex-open"', '"fcc"', '"fcc-claude"'):
+        assert_contains(launcher_ps1, alias, "src-tauri/src/launcher.ps1")
 
 
 def test_directory_menu_is_reachable_with_arrows_only() -> None:

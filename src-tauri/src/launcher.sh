@@ -443,7 +443,7 @@ if [ -n "$MYCMUX_LAUNCH_TARGET" ]; then
       cmd="codex --no-alt-screen --dangerously-bypass-approvals-and-sandbox"
       ;;
     claude-codex)
-      cmd="claude-codex"
+      cmd="claude-codex --backend gpt"
       ;;
     claude-codex-resume)
       cmd="claude-codex --resume"
@@ -456,6 +456,9 @@ if [ -n "$MYCMUX_LAUNCH_TARGET" ]; then
       ;;
     claude-codex-fugu)
       cmd="claude-codex --backend fugu"
+      ;;
+    claude-codex-open|fcc|fcc-claude)
+      cmd="claude-codex --backend fcc"
       ;;
     custom)
       cmd="__custom__"
@@ -898,9 +901,10 @@ if [ -z "$cmd" ]; then
   options=(
     "Claude Code"
     "Codex"
-    "claude-codex"
+    "claude-codex (Codex Models)"
     "Codex (Fugu Ultra)"
     "claude-codex (Fugu)"
+    "claude-codex (Open Models)"
     "Antigravity (agy)"
     "Claude Code (dangerous)"
     "Codex (dangerous)"
@@ -917,9 +921,10 @@ if [ -z "$cmd" ]; then
   commands=(
     "claude --allow-dangerously-skip-permissions --permission-mode auto"
     "codex --no-alt-screen"
-    "claude-codex"
+    "claude-codex --backend gpt"
     "codex --no-alt-screen --profile fugu-ultra"
     "claude-codex --backend fugu"
+    "claude-codex --backend fcc"
     "agy"
     "claude --dangerously-skip-permissions --permission-mode bypassPermissions"
     "codex --no-alt-screen --dangerously-bypass-approvals-and-sandbox"
@@ -995,7 +1000,7 @@ if [ -z "$cmd" ]; then
         fi
         break
         ;;
-      slash) selected=12; break ;;
+      slash) selected=13; break ;;
       dirkey) __launch_dir_menu dev ;;
       ankenkey) __launch_dir_menu anken ;;
       digit)
@@ -1010,6 +1015,7 @@ if [ -z "$cmd" ]; then
                 4) selected=13 ;;
                 5) selected=14 ;;
                 6) selected=15 ;;
+                7) selected=16 ;;
                 *) selected=0 ;;
               esac
             else

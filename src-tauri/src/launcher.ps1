@@ -335,17 +335,18 @@ function Invoke-MycmuxResumeFromEnv {
 $Options = @(
   New-MycmuxOption "Claude Code" @("claude", "--allow-dangerously-skip-permissions", "--permission-mode", "auto") "claude"
   New-MycmuxOption "Codex" @("codex", "--no-alt-screen") "codex"
-  New-MycmuxOption "claude-codex" @("claude-codex") "claude-codex"
+  New-MycmuxOption "claude-codex (Codex Models)" @("claude-codex", "--backend", "gpt") "claude-codex"
+  New-MycmuxOption "Codex (Fugu Ultra)" @("codex", "--no-alt-screen", "--profile", "fugu-ultra") "codex"
+  New-MycmuxOption "claude-codex (Fugu)" @("claude-codex", "--backend", "fugu") "claude-codex"
+  New-MycmuxOption "claude-codex (Open Models)" @("claude-codex", "--backend", "fcc") "claude-codex"
+  # Gemini CLI was sunset for individual accounts on 2026-06-18; agy (Antigravity CLI) replaces it
+  New-MycmuxOption "Antigravity (agy)" @("agy") $null
   New-MycmuxOption "Claude Code (dangerous)" @("claude", "--dangerously-skip-permissions", "--permission-mode", "bypassPermissions") "claude"
   New-MycmuxOption "Codex (dangerous)" @("codex", "--no-alt-screen", "--dangerously-bypass-approvals-and-sandbox") "codex"
   New-MycmuxOption "claude-codex (dangerous)" @("claude-codex", "--dangerously-skip-permissions", "--permission-mode", "bypassPermissions") "claude-codex"
   New-MycmuxOption "Claude Code (resume)" @("claude", "--allow-dangerously-skip-permissions", "--permission-mode", "auto", "--resume") "claude"
   New-MycmuxOption "Codex (resume)" @("codex", "resume", "--no-alt-screen") "codex"
   New-MycmuxOption "claude-codex (resume)" @("claude-codex", "--resume") "claude-codex"
-  New-MycmuxOption "Codex (Fugu Ultra)" @("codex", "--no-alt-screen", "--profile", "fugu-ultra") "codex"
-  New-MycmuxOption "claude-codex (Fugu)" @("claude-codex", "--backend", "fugu") "claude-codex"
-  # Gemini CLI was sunset for individual accounts on 2026-06-18; agy (Antigravity CLI) replaces it
-  New-MycmuxOption "Antigravity (agy)" @("agy") $null
   New-MycmuxOption "Custom..." @("__custom__") $null
 )
 
@@ -353,18 +354,21 @@ $LaunchTargets = @{
   "claude" = $Options[0]
   "codex" = $Options[1]
   "claude-codex" = $Options[2]
-  "claude-dangerous" = $Options[3]
-  "codex-dangerous" = $Options[4]
-  "claude-codex-dangerous" = $Options[5]
-  "claude-resume" = $Options[6]
-  "codex-resume" = $Options[7]
-  "claude-codex-resume" = $Options[8]
-  "codex-fugu-ultra" = $Options[9]
-  "claude-codex-fugu" = $Options[10]
-  "agy" = $Options[11]
-  "gemini" = $Options[11]
-  "antigravity" = $Options[11]
-  "custom" = $Options[12]
+  "codex-fugu-ultra" = $Options[3]
+  "claude-codex-fugu" = $Options[4]
+  "claude-codex-open" = $Options[5]
+  "fcc" = $Options[5]
+  "fcc-claude" = $Options[5]
+  "agy" = $Options[6]
+  "gemini" = $Options[6]
+  "antigravity" = $Options[6]
+  "claude-dangerous" = $Options[7]
+  "codex-dangerous" = $Options[8]
+  "claude-codex-dangerous" = $Options[9]
+  "claude-resume" = $Options[10]
+  "codex-resume" = $Options[11]
+  "claude-codex-resume" = $Options[12]
+  "custom" = $Options[13]
 }
 
 function Invoke-MycmuxCustomCommand {

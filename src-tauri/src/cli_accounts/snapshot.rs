@@ -109,6 +109,7 @@ pub fn save_orphan(
 
 fn safe_orphan_id(id: &str) -> bool {
     safe_snapshot_id(id)
+        && !id.contains(".rejected-")
         && (id.starts_with("unregistered-claude-") || id.starts_with("unregistered-codex-"))
 }
 
@@ -136,6 +137,35 @@ pub fn remove(base: &Path, id: &str) -> Result<(), String> {
         fs::remove_file(path).map_err(|_| ERR_ORPHAN_MANAGE_FAILED.to_string())?;
     }
     Ok(())
+}
+
+pub fn retire(base: &Path, id: &str) -> Result<Option<PathBuf>, String> {
+    let source = snapshot_path(base, id)?;
+    if !source.is_file() {
+        return Ok(None);
+    }
+
+    let stamp = Utc::now().format("%Y%m%d");
+    let root = snapshot_dir(base);
+    let mut sequence = 1usize;
+    let destination = loop {
+        let suffix = if sequence == 1 {
+            String::new()
+        } else {
+            format!("-{sequence}")
+        };
+        let candidate = root.join(format!("{id}.rejected-{stamp}{suffix}.json"));
+        if !candidate.exists() {
+            break candidate;
+        }
+        sequence += 1;
+    };
+
+    fs::rename(&source, &destination)
+        .map_err(|error| format!("Failed to retire snapshot: {error}"))?;
+    // Rejected archives deliberately fail `safe_orphan_id`, so a recoverable
+    // credential file cannot reappear in the UI as an unregistered account.
+    Ok(Some(destination))
 }
 
 fn string_field(value: &Value, key: &str) -> Option<String> {
