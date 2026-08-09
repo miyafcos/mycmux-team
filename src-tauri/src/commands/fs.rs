@@ -202,7 +202,7 @@ fn local_path_candidate_to_path(value: &str) -> Option<PathBuf> {
     if path.is_empty() {
         return None;
     }
-    if path.len() >= 7 && path[..7].eq_ignore_ascii_case("file://") {
+    if path.as_bytes().len() >= 7 && path.as_bytes()[..7].eq_ignore_ascii_case(b"file://") {
         path = &path[7..];
         if cfg!(windows) && path.starts_with('/') && path.len() > 2 && path.as_bytes()[2] == b':' {
             path = &path[1..];
@@ -330,10 +330,55 @@ mod tests {
         let value = display_path(path).replace('\\', "/");
         let bytes = value.as_bytes();
         if bytes.len() >= 3 && bytes[1] == b':' && bytes[2] == b'/' {
-            format!("/{}{}", value[0..1].to_ascii_lowercase(), &value[2..])
+            let drive = char::from(bytes[0]).to_ascii_lowercase();
+            format!("/{drive}{}", &value[2..])
         } else {
             value
         }
+    }
+
+    #[test]
+    fn utf8_slice_regression_local_path_candidate_survives_multibyte_prefixes() {
+        // Terminal link candidates can begin with multibyte prose. The old
+        // file-scheme check sliced byte 7 even when it was inside a character.
+        for candidate in [
+            "レポート.md",
+            "│ 出力",
+            "日本語",
+            "を参照",
+            "file",
+            "file:/",
+        ] {
+            assert_eq!(
+                local_path_candidate_to_path(candidate),
+                Some(PathBuf::from(candidate))
+            );
+        }
+        assert_eq!(
+            local_path_candidate_to_path("FILE://C:/x"),
+            Some(PathBuf::from("C:/x"))
+        );
+    }
+
+    #[tokio::test]
+    async fn utf8_slice_regression_resolve_batch_survives_multibyte_candidate() {
+        // A spawn-blocking panic is converted to an all-None result. Keep a
+        // real second candidate so the old panic cannot look like success.
+        let temp = TestTempDir::new();
+        let dir = temp.path.join("resolved-after-japanese-candidate");
+        std::fs::create_dir_all(&dir).unwrap();
+        let dir_text = display_path(&dir);
+
+        assert_eq!(
+            resolve_local_path_links(vec!["日本語だけの候補".to_string(), dir_text.clone()]).await,
+            vec![
+                None,
+                Some(ResolvedLocalPathLink {
+                    existing_prefix: dir_text,
+                    is_dir: true,
+                }),
+            ]
+        );
     }
 
     #[test]

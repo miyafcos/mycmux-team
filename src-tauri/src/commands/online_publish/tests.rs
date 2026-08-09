@@ -226,6 +226,19 @@
     }
 
     #[test]
+    fn utf8_slice_regression_tokenize_survives_lowercase_expansion() {
+        // Lowercasing U+0130 expands its byte length. The old code applied the
+        // original root byte length to the normalized path and sliced mid-char.
+        let mapper = PathMapper {
+            dropbox_root: Some("C:\\İ".to_string()),
+        };
+        assert_eq!(
+            mapper.tokenize("c:/i\u{307}/案件/Report.md"),
+            ("{DROPBOX}/案件/Report.md".to_string(), true)
+        );
+    }
+
+    #[test]
     fn truncate_flattens_whitespace_and_appends_ellipsis() {
         assert_eq!(truncate("a  b\n\nc", 80), "a b c");
         let long = "あ".repeat(100);
@@ -278,6 +291,35 @@
             .unwrap()
             .flatten()
             .any(|entry| entry.file_name().to_string_lossy().contains(".tmp-"),));
+    }
+
+    #[test]
+    fn utf8_slice_regression_publish_warning_truncates_non_ascii_session_ids() {
+        // Session IDs arrive from the frontend. The old warning formatter
+        // treated an eight-byte slice as eight characters and panicked.
+        let mut fixture = setup_fixture();
+        let project_dir = fixture
+            .projects_dir
+            .join(sanitize_project_dir(&fixture.cwd));
+        let resolved = "実際会話セッション識別子";
+        fs::rename(
+            project_dir.join(format!("{}.jsonl", fixture.session_id)),
+            project_dir.join(format!("{resolved}.jsonl")),
+        )
+        .unwrap();
+        fixture.session_id = resolved.to_string();
+        let requested = "要求記録セッション識別子";
+        let now = Utc.with_ymd_and_hms(2026, 7, 11, 3, 0, 0).single().unwrap();
+
+        let result = publish_fixture(&fixture, Some(requested), None, now);
+        let requested_prefix: String = requested.chars().take(8).collect();
+        let resolved_prefix: String = resolved.chars().take(8).collect();
+        assert_eq!(
+            result.warnings[0],
+            format!(
+                "タブ記録のセッション {requested_prefix} に会話ログが無いため、この作業ディレクトリの最新会話 {resolved_prefix} を保存しました"
+            )
+        );
     }
 
     #[test]

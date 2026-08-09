@@ -51,8 +51,8 @@ fn publish_savepoint_impl(
                 0,
                 format!(
                     "タブ記録のセッション {} に会話ログが無いため、この作業ディレクトリの最新会話 {} を保存しました",
-                    &requested[..requested.len().min(8)],
-                    &session_id[..session_id.len().min(8)]
+                    requested.chars().take(8).collect::<String>(),
+                    session_id.chars().take(8).collect::<String>()
                 ),
             );
         }

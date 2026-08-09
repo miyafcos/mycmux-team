@@ -119,20 +119,40 @@ impl SocketAuth {
         provided.is_some_and(|provided| crate::remote::auth::validate_token(provided, expected))
     }
 
-    fn note_rejection(&self, peer: SocketAddr) {
+    /// Log a rejection with enough detail to find the caller.
+    ///
+    /// The peer address alone identifies nothing: these clients connect once
+    /// per request, so the ephemeral port differs every time. Tracking a run of
+    /// 411 rejections back to its source took a process sweep and a full-text
+    /// search of the machine. The command name says what the caller wanted, and
+    /// `had_token` separates "never sent one" (a client that predates socket
+    /// auth) from "sent a stale one" (a long-lived client holding a token from
+    /// before the last mycmux restart, since the token is regenerated on every
+    /// start). The token value itself is never logged.
+    fn note_rejection(&self, peer: SocketAddr, command: Option<&str>, had_token: bool) {
         let Some(suppressed) = self
             .rejection_log
             .take_report(now_millis(), REJECTION_LOG_INTERVAL_MS)
         else {
             return;
         };
+        let reason = if had_token { "stale token" } else { "no token" };
+        let command = command.unwrap_or("<unknown>");
         if suppressed == 0 {
-            crate::diag_warn!("socket", "Rejected unauthenticated request from {}", peer);
+            crate::diag_warn!(
+                "socket",
+                "Rejected request from {} (cmd={}, {})",
+                peer,
+                command,
+                reason
+            );
         } else {
             crate::diag_warn!(
                 "socket",
-                "Rejected unauthenticated request from {} ({} more suppressed in the last {}s)",
+                "Rejected request from {} (cmd={}, {}) ({} more suppressed in the last {}s)",
                 peer,
+                command,
+                reason,
                 suppressed,
                 REJECTION_LOG_INTERVAL_MS / 1000
             );
@@ -491,7 +511,11 @@ async fn handle_connection(
                     // and drop the credential from the payload either way.
                     let provided_token = take_request_token(&mut parsed);
                     if !auth.authorize(provided_token.as_deref()) {
-                        auth.note_rejection(peer);
+                        auth.note_rejection(
+                            peer,
+                            parsed.get("cmd").and_then(Value::as_str),
+                            provided_token.is_some(),
+                        );
                         let _ = write_json_line(&mut writer, &unauthorized_response()).await;
                         return;
                     }

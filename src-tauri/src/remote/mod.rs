@@ -316,11 +316,7 @@ pub async fn rotate_remote_token(
 fn extract_workspace_id(session_id: &str) -> Option<&str> {
     let rest = session_id.strip_prefix("pty-")?;
     // UUID format: 8-4-4-4-12 = 36 chars
-    if rest.len() >= 36 {
-        Some(&rest[..36])
-    } else {
-        None
-    }
+    rest.get(..36)
 }
 
 fn basename(path: &str) -> Option<&str> {
@@ -632,5 +628,20 @@ async fn serve_static(uri: axum::http::Uri) -> impl axum::response::IntoResponse
                     .into_response(),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::extract_workspace_id;
+
+    #[test]
+    fn utf8_slice_regression_workspace_id_rejects_mid_character_boundary() {
+        // Byte 36 is inside `日` (bytes 35..38). The old fixed byte slice
+        // panicked instead of rejecting the malformed session identifier.
+        let session_id = format!("pty-{}日-pane-tab", "a".repeat(35));
+        let rest = session_id.strip_prefix("pty-").unwrap();
+        assert!(!rest.is_char_boundary(36));
+        assert_eq!(extract_workspace_id(&session_id), None);
     }
 }

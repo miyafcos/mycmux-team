@@ -59,7 +59,11 @@ def test_local_socket_requires_a_token_from_every_caller() -> None:
         # Token is taken (and stripped) before anything dispatches the request.
         "let provided_token = take_request_token(&mut parsed);",
         "if !auth.authorize(provided_token.as_deref()) {",
-        "auth.note_rejection(peer);",
+        # A rejection is logged with the command name and whether a token was
+        # present at all: the peer port is ephemeral and identifies nothing.
+        "auth.note_rejection(",
+        'parsed.get("cmd").and_then(Value::as_str),',
+        "provided_token.is_some(),",
         'error: "unauthorized",',
         'const SOCKET_TOKEN_FILE: &str = "mycmux.token";',
         'const SOCKET_AUTH_ENV: &str = "MYCMUX_SOCKET_AUTH";',

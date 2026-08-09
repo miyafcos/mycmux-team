@@ -575,7 +575,8 @@ fn parse_color_line(line: &str, key: &str) -> Option<[u8; 3]> {
 
 fn parse_hex_color(s: &str) -> Option<[u8; 3]> {
     let s = s.trim().trim_matches('"').trim_start_matches('#');
-    if s.len() == 6 {
+    let bytes = s.as_bytes();
+    if bytes.len() == 6 && bytes.iter().all(|byte| byte.is_ascii_hexdigit()) {
         let r = u8::from_str_radix(&s[0..2], 16).ok()?;
         let g = u8::from_str_radix(&s[2..4], 16).ok()?;
         let b = u8::from_str_radix(&s[4..6], 16).ok()?;
@@ -617,5 +618,19 @@ fn system_monospace_font() -> String {
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     {
         "monospace".to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_hex_color;
+
+    #[test]
+    fn utf8_slice_regression_hex_color_rejects_non_ascii_and_non_hex() {
+        // A six-byte non-ASCII value passed the old byte-length check, then
+        // panicked when the parser sliced it at two-byte boundaries.
+        assert_eq!(parse_hex_color("あい"), None);
+        assert_eq!(parse_hex_color("ffgg"), None);
+        assert_eq!(parse_hex_color("ff00gg"), None);
     }
 }

@@ -26,11 +26,18 @@ impl PathMapper {
             let root = root.trim_end_matches('/');
             let lower = normalized.to_lowercase();
             let root_lower = root.to_lowercase();
-            if lower.starts_with(&format!("{root_lower}/")) {
-                return (
-                    format!("{DROPBOX_TOKEN}{}", &normalized[root.len()..]),
-                    true,
-                );
+            if lower
+                .strip_prefix(&root_lower)
+                .and_then(|suffix| suffix.strip_prefix('/'))
+                .is_some()
+            {
+                let root_component_count = root.split('/').count();
+                if let Some(suffix) = normalized
+                    .splitn(root_component_count + 1, '/')
+                    .nth(root_component_count)
+                {
+                    return (format!("{DROPBOX_TOKEN}/{suffix}"), true);
+                }
             }
             if lower == root_lower {
                 return (DROPBOX_TOKEN.to_string(), true);
