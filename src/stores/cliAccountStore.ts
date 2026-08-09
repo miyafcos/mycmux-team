@@ -16,6 +16,11 @@ import {
   type CliSwitchResult,
 } from "../lib/ipc";
 import { cliAccountMessage } from "../lib/cliAccounts";
+import {
+  SWITCH_REVERT_CHECK_MS,
+  switchRevertMessage,
+  switchWasReverted,
+} from "../lib/switchRevertWatch";
 import { useToastStore } from "./toastStore";
 import { useUsageStore } from "./usageStore";
 
@@ -47,6 +52,38 @@ const EMPTY_BUSY: BusyByProvider = { claude: null, codex: null };
 
 let fetchSeq = 0;
 let mutationTail: Promise<void> = Promise.resolve();
+
+/** Bumped by every switch so a pending revert check for an older one is dropped. */
+let switchSeq = 0;
+
+/**
+ * Verify once, a few seconds later, that the switch is still in effect.
+ *
+ * A session still running under the previous account rewrites the credential
+ * file on its next token refresh, which silently undoes the switch. Nothing in
+ * the switch path can prevent that, so the least the app can do is say so
+ * instead of leaving the user to discover it from a failing agent.
+ */
+function scheduleSwitchRevertCheck(
+  get: () => CliAccountStoreState,
+  provider: CliProvider,
+  targetIdentityKey: string | null | undefined,
+  label: string,
+): void {
+  if (!targetIdentityKey) return;
+  const sequence = ++switchSeq;
+  setTimeout(() => {
+    if (sequence !== switchSeq) return;
+    void get()
+      .fetch()
+      .then(() => {
+        if (sequence !== switchSeq) return;
+        if (switchWasReverted(provider, targetIdentityKey, get().live)) {
+          useToastStore.getState().pushToast(switchRevertMessage(label), "warning");
+        }
+      });
+  }, SWITCH_REVERT_CHECK_MS);
+}
 
 function enqueueMutation<T>(operation: () => Promise<T>): Promise<T> {
   const result = mutationTail.then(operation, operation);
@@ -134,6 +171,7 @@ export const useCliAccountStore = create<CliAccountStoreState>((set, get) => {
           identityMismatch || metadataNotSaved ? "warning" : "info",
         );
         await Promise.all([get().fetch(), useUsageStore.getState().fetch()]);
+        scheduleSwitchRevertCheck(get, provider, result.profile.identity_key, result.profile.label);
         return result;
       } catch (error) {
         set({ operationError: cliAccountMessage(error) });

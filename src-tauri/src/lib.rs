@@ -292,6 +292,7 @@ pub fn run() {
             commands::fs::open_with_default,
             commands::window::claim_leader,
             commands::window::reveal_main_window,
+            commands::window::open_child_window,
             commands::window::quit_app,
             commands::usage::get_account_usage,
             commands::cli_accounts::list_cli_accounts,
@@ -338,6 +339,13 @@ pub fn run() {
                 &app_handle,
                 state.session_state_store.clone(),
             );
+
+            // Token rotation invalidates a stored CLI snapshot the moment the
+            // provider hands the live CLI a new refresh token, so the snapshot
+            // of whichever account is logged in has to follow the live file.
+            if let Ok(accounts_base) = app_handle.path().app_data_dir() {
+                cli_accounts::live_sync::start_live_sync(accounts_base);
+            }
 
             socket::start_socket_listener(app_handle.clone());
             let remote_control = app.state::<Arc<remote::RemoteControl>>().inner().clone();

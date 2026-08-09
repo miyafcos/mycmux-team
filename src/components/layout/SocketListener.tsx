@@ -43,6 +43,7 @@ import {
   resolvePersistedSelection,
 } from "../../lib/sessionRestoreSafety";
 import { handleSocketCommand } from "./socketCommands";
+import { isMainWindow } from "../../lib/windowContext";
 
 // Socket dispatch lives in socketCommands.ts. Keep these command markers here
 // for the frontend bridge contract: case "workspace.list":, case "pane.list":,
@@ -880,6 +881,18 @@ export function useWorkspacePersist() {
     if (loaded.current) return;
     loaded.current = true;
 
+    // Multi-window (Phase 3a): the persistence engine is a main-window
+    // singleton. Child windows must not even *attempt* leadership — claiming
+    // it is a one-shot compare_exchange, so a child that raced ahead of main
+    // would take the flag and main would then load nothing. Children get no
+    // workspaces in 3a (hydration/adoption lands in 3b) and render the
+    // zero-workspace empty state.
+    if (!isMainWindow()) {
+      isLeader.current = false;
+      _resolveLoaded();
+      return;
+    }
+
     claimLeader()
       .then((gotLeadership) => {
         isLeader.current = gotLeadership;
@@ -1013,6 +1026,14 @@ export function useWorkspacePersist() {
 
   // Auto-save — only leader saves. Dirty-flag + debounce (interval retired).
   useEffect(() => {
+    // Multi-window (Phase 3a): main is the sole data.json writer AND the sole
+    // owner of the quit path. A child window registers neither the store
+    // subscriptions/autosave nor the onCloseRequested handler below, so
+    // closing a child just closes that window — quitApp() (kill_all + exit)
+    // is unreachable from here, and the PTY sessions of the other windows
+    // survive. Phase 3b replaces the plain close with merge-back to main.
+    if (!isMainWindow()) return;
+
     let dirty = false;
     let debounceTimer: ReturnType<typeof setTimeout> | null = null;
     let syncInFlight: Promise<boolean> | null = null;
@@ -1354,6 +1375,14 @@ export function useWorkspacePersist() {
   }, []);
 
   useEffect(() => {
+    // Multi-window (Phase 3a): Rust broadcasts socket-request to every window
+    // (`app.emit("socket-request", &req)` in socket.rs — deliberately NOT
+    // emit_to, see test_socket_api_contract.py). Exactly one window may run
+    // the command or every socket call would execute N times and N responses
+    // would race for the same request id. Main handles them; children return
+    // before subscribing.
+    if (!isMainWindow()) return;
+
     const unlisten = listen<SocketRequestPayload>("socket-request", async (event) => {
       const { id, cmd, args } = event.payload;
       try {
@@ -1373,6 +1402,11 @@ export function useWorkspacePersist() {
   // Surface recovery from a broken agent-restore request (session jsonl missing),
   // whether via a suppressed fallback id or `--continue` / `resume --last`.
   useEffect(() => {
+    // Multi-window (Phase 3a): another broadcast emit. Child windows own no
+    // sessions yet, so the store rewrite below would be a no-op there while the
+    // toast fired once per open window. Phase 3b routes this by owning window.
+    if (!isMainWindow()) return;
+
     const unlisten = listen<{
       session_id: string;
       kind: string;

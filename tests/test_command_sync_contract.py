@@ -16,6 +16,11 @@ SYNC_ALLOWLIST = {
     "socket_response",
     "claim_leader",
     "reveal_main_window",
+    # Multi-window Phase 3a: the body only allocates a label and posts the
+    # WebviewWindowBuilder to the main thread (mirrors reveal_main_window).
+    # It must stay sync — a #[tauri::command(async)] variant would build the
+    # window off the main thread, which tao forbids on Windows/macOS.
+    "open_child_window",
     "quit_app",
 }
 

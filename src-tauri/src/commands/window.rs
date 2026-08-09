@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tauri::{AppHandle, Manager, State};
@@ -82,6 +83,168 @@ pub fn reveal_main_window(app: AppHandle) -> Result<(), String> {
     .map_err(|e| e.to_string())
 }
 
+/// Label prefix for every non-main window. It has to stay in sync with the
+/// capability glob in `capabilities/default.json` (`"mycmux-w*"`): a window
+/// whose label falls outside that glob gets zero permissions, so every
+/// `invoke` from it fails silently-ish (see the child boot probe in App.tsx).
+pub const CHILD_WINDOW_LABEL_PREFIX: &str = "mycmux-w";
+
+const CHILD_WINDOW_DEFAULT_WIDTH: f64 = 1200.0;
+const CHILD_WINDOW_DEFAULT_HEIGHT: f64 = 800.0;
+const CHILD_WINDOW_MIN_WIDTH: f64 = 600.0;
+const CHILD_WINDOW_MIN_HEIGHT: f64 = 400.0;
+
+/// Deterministic, reused child-window labels: `mycmux-w1`, `mycmux-w2`, … and
+/// always the *lowest free* index. Reuse (rather than a monotonic counter)
+/// keeps `WindowConfig.id` stable across restarts once Phase 3d persists window
+/// layout, and keeps the label set small enough to reason about.
+///
+/// Pure so it can be unit-tested without a Tauri app handle.
+pub fn next_child_window_label(existing: &[String]) -> String {
+    let used: HashSet<u32> = existing
+        .iter()
+        .filter_map(|label| child_window_index(label))
+        .collect();
+
+    let mut candidate = 1u32;
+    while used.contains(&candidate) {
+        candidate += 1;
+    }
+    format!("{CHILD_WINDOW_LABEL_PREFIX}{candidate}")
+}
+
+/// `mycmux-w7` → `Some(7)`; anything else (including `main`, `mycmux-w`,
+/// `mycmux-w0`, `mycmux-w07`, `mycmux-w1x`) → `None`. Only canonical decimal
+/// indices count as taken, so a hand-crafted label can never wedge the
+/// allocator.
+fn child_window_index(label: &str) -> Option<u32> {
+    let rest = label.strip_prefix(CHILD_WINDOW_LABEL_PREFIX)?;
+    if rest.is_empty() || rest.starts_with('0') || !rest.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    rest.parse::<u32>().ok().filter(|index| *index >= 1)
+}
+
+/// A caller-supplied label must stay inside the capability glob, otherwise the
+/// new window would come up permission-less.
+pub fn is_valid_child_window_label(label: &str) -> bool {
+    child_window_index(label).is_some()
+}
+
+/// Grace period before Rust force-reveals a child window the frontend never
+/// revealed itself. Long enough for a normal boot (frontend shows itself after
+/// first paint), short enough that a broken window is not invisible for long.
+const CHILD_WINDOW_REVEAL_FALLBACK_MS: u64 = 6000;
+
+fn schedule_child_window_reveal_fallback(app: AppHandle, label: String) {
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(
+            CHILD_WINDOW_REVEAL_FALLBACK_MS,
+        ));
+        let Some(window) = app.get_webview_window(&label) else {
+            return; // closed in the meantime
+        };
+        if window.is_visible().unwrap_or(true) {
+            return; // frontend revealed it normally
+        }
+        crate::diag_warn!(
+            "window",
+            "child window {label} never revealed itself — forcing show (capability issue?)"
+        );
+        let _ = window.show();
+    });
+}
+
+/// Phase 3a: open an additional app window. It boots the same frontend bundle;
+/// every main-window-only singleton (persistence, socket handling, quit path,
+/// updater) is gated behind `isMainWindow()` on the JS side.
+///
+/// Sync + `run_on_main_thread` mirrors `reveal_main_window`: the command body
+/// itself only allocates a label (cheap, no blocking work — see
+/// `tests/test_command_sync_contract.py`), and the actual window construction
+/// is posted to the main thread. Like `reveal_main_window` the posted closure
+/// is fire-and-forget; blocking on its result from a sync command would
+/// deadlock the event loop that has to run it.
+#[tauri::command]
+pub fn open_child_window(
+    app: AppHandle,
+    label: Option<String>,
+    x: Option<f64>,
+    y: Option<f64>,
+    width: Option<f64>,
+    height: Option<f64>,
+) -> Result<String, String> {
+    let existing: Vec<String> = app.webview_windows().keys().cloned().collect();
+    let label = match label {
+        Some(requested) => {
+            if !is_valid_child_window_label(&requested) {
+                return Err(format!(
+                    "invalid child window label {requested:?} (must be {CHILD_WINDOW_LABEL_PREFIX}<n>)"
+                ));
+            }
+            requested
+        }
+        None => next_child_window_label(&existing),
+    };
+
+    if let Some(window) = app.get_webview_window(&label) {
+        // Idempotent: asking for a label that is already open just reveals it.
+        let _ = window.show();
+        let _ = window.set_focus();
+        return Ok(label);
+    }
+
+    let app_handle = app.clone();
+    let build_label = label.clone();
+    app.run_on_main_thread(move || {
+        let mut builder = tauri::WebviewWindowBuilder::new(
+            &app_handle,
+            &build_label,
+            tauri::WebviewUrl::default(),
+        )
+        .title("mycmux")
+        // Same undecorated chrome as the main window (tauri.conf.json) — the
+        // in-app TitleBar draws the controls.
+        .decorations(false)
+        .resizable(true)
+        // Revealed by the frontend after first paint (App.tsx), mirroring the
+        // main window's hidden-until-ready startup.
+        .visible(false)
+        .min_inner_size(CHILD_WINDOW_MIN_WIDTH, CHILD_WINDOW_MIN_HEIGHT)
+        .inner_size(
+            width.unwrap_or(CHILD_WINDOW_DEFAULT_WIDTH),
+            height.unwrap_or(CHILD_WINDOW_DEFAULT_HEIGHT),
+        );
+
+        if let (Some(x), Some(y)) = (x, y) {
+            builder = builder.position(x, y);
+        }
+
+        match builder.build() {
+            Ok(window) => {
+                // Per-window taskbar button needs its own icon (mirrors lib.rs
+                // doing this for "main").
+                if let Some(icon) = app_handle.default_window_icon().cloned() {
+                    let _ = window.set_icon(icon);
+                }
+                // Safety net for the failure mode the JS boot probe exists to
+                // report: if the capability glob ever stops covering this
+                // label, the frontend cannot show its own window either (that
+                // is an IPC call too), and the hard error UI would render into
+                // a window nobody can see. Reveal it from Rust if the frontend
+                // has not done so itself.
+                schedule_child_window_reveal_fallback(app_handle.clone(), build_label.clone());
+            }
+            Err(err) => {
+                crate::diag_warn!("window", "failed to open child window {build_label}: {err}");
+            }
+        }
+    })
+    .map_err(|e| e.to_string())?;
+
+    Ok(label)
+}
+
 #[tauri::command]
 pub fn quit_app(
     app: AppHandle,
@@ -92,4 +255,94 @@ pub fn quit_app(
     remote_sessions.kill_all();
     app.exit(0);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn labels(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| value.to_string()).collect()
+    }
+
+    #[test]
+    fn first_child_window_label_is_w1() {
+        assert_eq!(next_child_window_label(&[]), "mycmux-w1");
+        assert_eq!(next_child_window_label(&labels(&["main"])), "mycmux-w1");
+    }
+
+    #[test]
+    fn allocation_walks_up_from_one() {
+        assert_eq!(
+            next_child_window_label(&labels(&["main", "mycmux-w1"])),
+            "mycmux-w2"
+        );
+        assert_eq!(
+            next_child_window_label(&labels(&["main", "mycmux-w1", "mycmux-w2"])),
+            "mycmux-w3"
+        );
+    }
+
+    #[test]
+    fn labels_are_reused_at_the_lowest_free_index() {
+        // w1 was closed — the next window takes its slot back instead of
+        // growing the counter forever.
+        assert_eq!(
+            next_child_window_label(&labels(&["main", "mycmux-w2", "mycmux-w3"])),
+            "mycmux-w1"
+        );
+        assert_eq!(
+            next_child_window_label(&labels(&["main", "mycmux-w1", "mycmux-w3"])),
+            "mycmux-w2"
+        );
+    }
+
+    #[test]
+    fn ordering_does_not_matter() {
+        assert_eq!(
+            next_child_window_label(&labels(&["mycmux-w3", "mycmux-w1", "main", "mycmux-w2"])),
+            "mycmux-w4"
+        );
+    }
+
+    #[test]
+    fn malformed_labels_never_wedge_the_allocator() {
+        assert_eq!(
+            next_child_window_label(&labels(&[
+                "mycmux-w",
+                "mycmux-w0",
+                "mycmux-w01",
+                "mycmux-w1x",
+                "mycmux-wa",
+                "devtools",
+            ])),
+            "mycmux-w1"
+        );
+    }
+
+    #[test]
+    fn only_canonical_child_labels_are_accepted_from_callers() {
+        assert!(is_valid_child_window_label("mycmux-w1"));
+        assert!(is_valid_child_window_label("mycmux-w42"));
+        assert!(!is_valid_child_window_label("main"));
+        assert!(!is_valid_child_window_label("mycmux-w"));
+        assert!(!is_valid_child_window_label("mycmux-w0"));
+        assert!(!is_valid_child_window_label("mycmux-w01"));
+        assert!(!is_valid_child_window_label("mycmux-w1x"));
+        assert!(!is_valid_child_window_label("other-w1"));
+    }
+
+    #[test]
+    fn child_labels_stay_inside_the_capability_glob() {
+        // capabilities/default.json: "windows": ["main", "mycmux-w*"]
+        for existing in [
+            vec![],
+            labels(&["mycmux-w1"]),
+            labels(&["mycmux-w1", "mycmux-w2"]),
+        ] {
+            let label = next_child_window_label(&existing);
+            assert!(label.starts_with(CHILD_WINDOW_LABEL_PREFIX), "{label}");
+            assert!(is_valid_child_window_label(&label), "{label}");
+        }
+    }
 }

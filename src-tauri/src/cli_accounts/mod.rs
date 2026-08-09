@@ -2,6 +2,7 @@ mod atomic;
 pub(crate) mod claude;
 pub(crate) mod codex;
 pub(crate) mod json_splice;
+pub(crate) mod live_sync;
 mod registry;
 mod snapshot;
 
@@ -381,12 +382,21 @@ pub fn switch_account(
     })
 }
 
-fn mutation_guard() -> Result<MutexGuard<'static, ()>, String> {
+fn mutation_lock() -> &'static Mutex<()> {
     static MUTATION_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    MUTATION_LOCK
-        .get_or_init(|| Mutex::new(()))
+    MUTATION_LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn mutation_guard() -> Result<MutexGuard<'static, ()>, String> {
+    mutation_lock()
         .lock()
         .map_err(|_| ERR_ACCOUNTS_UNAVAILABLE.to_string())
+}
+
+/// Non-blocking variant for background work that must never delay a
+/// user-initiated switch: `None` means "busy, try again next tick".
+fn try_mutation_guard() -> Option<MutexGuard<'static, ()>> {
+    mutation_lock().try_lock().ok()
 }
 
 /// Replace credential text in a snapshot only when its refresh token still matches.

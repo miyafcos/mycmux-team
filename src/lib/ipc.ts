@@ -656,6 +656,31 @@ export async function quitApp(): Promise<void> {
   return invoke<void>("quit_app");
 }
 
+export interface OpenChildWindowOptions {
+  /** `mycmux-w<n>`; omit to take the lowest free index. */
+  label?: string;
+  x?: number;
+  y?: number;
+  width?: number;
+  height?: number;
+}
+
+/**
+ * Phase 3a: open an additional (child) app window and return its label. The
+ * window boots hidden and reveals itself after first paint — see App.tsx.
+ */
+export async function openChildWindow(
+  options: OpenChildWindowOptions = {},
+): Promise<string> {
+  return invoke<string>("open_child_window", {
+    label: options.label ?? null,
+    x: options.x ?? null,
+    y: options.y ?? null,
+    width: options.width ?? null,
+    height: options.height ?? null,
+  });
+}
+
 // ─── Persistence commands ────────────────────────────────────────────────────
 
 export interface SuppressedAgentSessionConfig {

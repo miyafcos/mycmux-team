@@ -25,12 +25,16 @@ def test_window_leader_commands_are_exposed_to_frontend() -> None:
         'return invoke<void>("reveal_main_window");',
         "export async function quitApp(): Promise<void>",
         'return invoke<void>("quit_app");',
+        # Multi-window Phase 3a
+        "export async function openChildWindow(",
+        'return invoke<string>("open_child_window", {',
     ]:
         assert_contains(ipc, snippet, "src/lib/ipc.ts")
 
     for command in [
         "commands::window::claim_leader",
         "commands::window::reveal_main_window",
+        "commands::window::open_child_window",
         "commands::window::quit_app",
     ]:
         assert_contains(lib_rs, command, "src-tauri/src/lib.rs")
@@ -72,6 +76,14 @@ def test_window_leader_commands_have_safe_single_instance_semantics() -> None:
         "ensure_window_bounds(&window);",
         "state.session_manager.kill_all();",
         "app.exit(0);",
+        # Multi-window Phase 3a: child windows are built on the main thread
+        # (same pattern as reveal_main_window) and boot hidden.
+        "pub fn open_child_window(",
+        "pub fn next_child_window_label(existing: &[String]) -> String",
+        "tauri::WebviewWindowBuilder::new(",
+        ".decorations(false)",
+        ".visible(false)",
+        ".min_inner_size(CHILD_WINDOW_MIN_WIDTH, CHILD_WINDOW_MIN_HEIGHT)",
     ]:
         assert_contains(window_rs, snippet, "src-tauri/src/commands/window.rs")
 

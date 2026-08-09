@@ -8,6 +8,7 @@ import {
   usePaneMetadataStore,
 } from "../../stores/workspaceStore";
 import { killSession } from "../../lib/ipc";
+import { isMainWindow } from "../../lib/windowContext";
 import { evictTerminalCache } from "../terminal/XTermWrapper";
 import { SIDEBAR_WIDTH } from "../../lib/constants";
 import TabBar from "./TabBar";
@@ -378,11 +379,16 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
   const currentTheme = useThemeStore((s) => s.theme);
   const themeBackground = useThemeStore((s) => s.themeTweaks.background);
 
+  // Multi-window (Phase 3a): both of these are app-wide singleton fetches
+  // (crsm session index / savepoint index). Running them once per window just
+  // duplicates the work and the backend chatter, so main owns them.
   useEffect(() => {
+    if (!isMainWindow()) return;
     preloadCrsmSessions();
   }, []);
 
   useEffect(() => {
+    if (!isMainWindow()) return;
     void useOnlineSavepointStore.getState().refresh();
   }, []);
 
@@ -500,6 +506,11 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
   // The Rust side already emits "remote-error"; without a listener the Settings →
   // Remote panel would just sit blank with no way to know it failed.
   useEffect(() => {
+    // Multi-window (Phase 3a): "remote-error" is a broadcast emit, and the
+    // remote server is a process-wide singleton. Without this guard every open
+    // window would pop its own modal for the same failure.
+    if (!isMainWindow()) return;
+
     // Capture the listen() promise itself (not its resolved value) so cleanup
     // can chain onto it regardless of whether it resolves before or after
     // unmount — assigning `unlisten` inside a separate .then() left a window

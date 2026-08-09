@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   useWorkspaceListStore,
   usePaneMetadataStore
@@ -15,7 +16,10 @@ import {
   getLaunchCwd,
   revealMainWindow,
   readAgentSessionMappings,
+  getTerminalConfig,
 } from "./lib/ipc";
+import { isMainWindow, windowLabel } from "./lib/windowContext";
+import { installChildWindowDevHook } from "./lib/multiWindowDev";
 import { useUiStore } from "./stores/uiStore";
 import { agentSessionIdentityKey } from "./stores/workspaceListStore";
 import { useSettingsStore } from "./stores/settingsStore";
@@ -137,11 +141,17 @@ async function applyAgentSessionMappings(): Promise<void> {
 function App() {
   const [ready, setReady] = useState(false);
   const [startupMaskVisible, setStartupMaskVisible] = useState(true);
+  const [childProbeError, setChildProbeError] = useState<string | null>(null);
   const uiVariantEnv = import.meta.env.VITE_UI_VARIANT;
   const uiVariant = uiVariantEnv === "mycmux" || uiVariantEnv === "cmux" ? "cmux" : "default";
+  // Multi-window (Phase 3a): the app-wide singletons below run in the main
+  // window only. Child windows (`mycmux-w<n>`) render the same shell but skip
+  // persistence, the socket handler, the quit path, dormancy sweeps and the
+  // updater — see src/lib/windowContext.ts.
+  const isMain = isMainWindow();
 
   useWorkspacePersist();
-  useAgentDormancy(ready);
+  useAgentDormancy(ready && isMain);
 
   useEffect(() => {
     async function bootstrap() {
@@ -156,7 +166,10 @@ function App() {
       // No launch cwd (Start Menu / pinned shortcut) intentionally creates
       // nothing — AppShell shows the empty-state panel instead of dropping the
       // user into a bare app behind a modal.
-      if (listStore.workspaces.length === 0 && launchCwd) {
+      // Child windows never bootstrap a workspace either: they start empty and
+      // receive their workspaces by adoption (Phase 3b), so creating one here
+      // would spawn a stray PTY on every tear-out.
+      if (isMain && listStore.workspaces.length === 0 && launchCwd) {
         createWorkspaceAtCwd(launchCwd);
       }
 
@@ -327,6 +340,32 @@ function App() {
     };
   }, []);
 
+  // Child boot probe: prove IPC actually works in this window before letting it
+  // masquerade as a usable shell. A capability mismatch (capabilities/default.json
+  // must list the `mycmux-w*` glob) leaves a child window permission-less, and
+  // then *every* invoke fails — which would otherwise show up as an empty,
+  // inert window with errors buried in a devtools console nobody opened.
+  useEffect(() => {
+    installChildWindowDevHook();
+    if (isMain) return;
+
+    let cancelled = false;
+    getTerminalConfig()
+      .then(() => {
+        if (!cancelled) setChildProbeError(null);
+      })
+      .catch((error) => {
+        console.error("[multiwindow] child window IPC probe failed", error);
+        if (!cancelled) {
+          setChildProbeError(error instanceof Error ? error.message : String(error));
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isMain]);
+
   useEffect(() => {
     if (!ready) return;
 
@@ -339,6 +378,17 @@ function App() {
         rafB = requestAnimationFrame(async () => {
           if (cancelled) return;
           try {
+            if (!isMain) {
+              // Child windows are built hidden (open_child_window →
+              // `.visible(false)`) and reveal themselves after first paint.
+              // There is no startup session gate to wait for: a child restores
+              // nothing in Phase 3a.
+              const childWindow = getCurrentWindow();
+              await childWindow.show();
+              await childWindow.setFocus();
+              setStartupMaskVisible(false);
+              return;
+            }
             const { expected } = getStartupSessionGateSnapshot();
             const startupTimeoutMs = Math.min(12000, Math.max(1800, 700 + expected * 350));
             const gateResult = await waitForStartupSessionGate(startupTimeoutMs);
@@ -365,7 +415,54 @@ function App() {
       if (rafA) cancelAnimationFrame(rafA);
       if (rafB) cancelAnimationFrame(rafB);
     };
-  }, [ready]);
+  }, [ready, isMain]);
+
+  if (childProbeError) {
+    return (
+      <div
+        style={{
+          width: "100vw",
+          height: "100vh",
+          background: "#2a0b0b",
+          color: "#ffd7d7",
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: "center",
+          gap: 12,
+          padding: 32,
+          textAlign: "center",
+          font: "13px/1.6 system-ui, sans-serif",
+          userSelect: "text",
+        }}
+      >
+        <div style={{ fontSize: 18, fontWeight: 700 }}>
+          このウィンドウはバックエンドに接続できません
+        </div>
+        <div style={{ maxWidth: 620 }}>
+          ウィンドウ <code>{windowLabel()}</code> からの IPC が失敗しました。
+          <br />
+          src-tauri/capabilities/default.json の windows に
+          <code> &quot;mycmux-w*&quot; </code>
+          が含まれているか確認してください。
+        </div>
+        <pre
+          style={{
+            maxWidth: "80vw",
+            maxHeight: "40vh",
+            overflow: "auto",
+            background: "rgba(0,0,0,0.35)",
+            padding: 12,
+            borderRadius: 6,
+            fontSize: 12,
+            whiteSpace: "pre-wrap",
+          }}
+        >
+          {childProbeError}
+        </pre>
+      </div>
+    );
+  }
 
   if (!ready) {
     return (

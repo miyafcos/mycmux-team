@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import { useToastStore } from "../../../stores/toastStore";
 import { runUpdateCheck, type UpdatePhase } from "../../../lib/forcedAutoUpdater";
+import { isMainWindow } from "../../../lib/windowContext";
 import { dialogButtonStyle, sectionHeadingStyle } from "../tabStyles";
 
 type UpdateStatus = "idle" | "checking" | "latest" | "downloading" | "ready" | "error";
@@ -52,6 +53,10 @@ export function AppInfoTab() {
   };
 
   const checking = updateStatus === "checking" || updateStatus === "downloading";
+  // Multi-window (Phase 3a): the updater relaunches the whole process after
+  // installing, so it must run from exactly one window. Main owns it; child
+  // windows only show the version.
+  const canCheckForUpdates = isMainWindow();
 
   return (
     <div>
@@ -60,17 +65,25 @@ export function AppInfoTab() {
         現在のバージョン: {currentVersion}
       </div>
 
-      <button
-        onClick={handleCheckUpdate}
-        disabled={checking}
-        style={{
-          ...dialogButtonStyle,
-          opacity: checking ? 0.5 : 1,
-          cursor: checking ? "wait" : "pointer",
-        }}
-      >
-        更新を確認
-      </button>
+      {!canCheckForUpdates && (
+        <div style={{ fontSize: 11, color: "var(--cmux-text-dim)" }}>
+          更新の確認はメインウィンドウから行ってください。
+        </div>
+      )}
+
+      {canCheckForUpdates && (
+        <button
+          onClick={handleCheckUpdate}
+          disabled={checking}
+          style={{
+            ...dialogButtonStyle,
+            opacity: checking ? 0.5 : 1,
+            cursor: checking ? "wait" : "pointer",
+          }}
+        >
+          更新を確認
+        </button>
+      )}
       {updateMsg && (
         <div
           style={{

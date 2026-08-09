@@ -841,6 +841,30 @@ async fn usage_fetch_failure(
     }
 }
 
+/// Re-capture the live CLI login into this row's snapshot, but only when the
+/// live login *is* this account. Returns whether the snapshot was replaced.
+///
+/// The refresh plan is made before the request goes out, so an account that was
+/// inactive then can be live by the time the answer comes back. In that window
+/// the stored copy is simply older than the file on disk, and the recovery is
+/// to take the file — not to tell the user to log in again.
+async fn recapture_live_snapshot(app: &tauri::AppHandle, row: &PlannedRow) -> bool {
+    if !matches!(live_identity_check(row), LiveIdentityCheck::Active) {
+        return false;
+    }
+    let Ok(base) = app.path().app_data_dir() else {
+        return false;
+    };
+    let provider = row.provider;
+    matches!(
+        tokio::task::spawn_blocking(move || crate::cli_accounts::capture_resolved(
+            &base, provider, None
+        ))
+        .await,
+        Ok(Ok(_))
+    )
+}
+
 async fn refresh_failure(
     app: &tauri::AppHandle,
     state: &UsageState,
@@ -860,14 +884,32 @@ async fn refresh_failure(
         ),
     );
     match error {
-        refresh::RefreshError::Rejected { .. } => FetchResult {
-            usage: profile_usage(
-                row,
-                UsageRowState::NeedsRelogin,
-                Some(ERROR_NEEDS_RELOGIN),
-                None,
-            ),
-        },
+        refresh::RefreshError::Rejected { .. } => {
+            // A rejected refresh usually means the provider rotated this token
+            // away while the CLI held the account, and only a human re-login
+            // can fix that. But the account can also have gone live between the
+            // plan and the request, in which case the live file is the newer
+            // copy and re-capturing it costs nothing: park the row for one
+            // cycle instead of stranding it at "needs re-login" forever.
+            if recapture_live_snapshot(app, row).await {
+                return FetchResult {
+                    usage: profile_usage(
+                        row,
+                        UsageRowState::WaitForCli,
+                        Some(ERROR_TOKEN_EXPIRED_ACTIVE),
+                        None,
+                    ),
+                };
+            }
+            FetchResult {
+                usage: profile_usage(
+                    row,
+                    UsageRowState::NeedsRelogin,
+                    Some(ERROR_NEEDS_RELOGIN),
+                    None,
+                ),
+            }
+        }
         refresh::RefreshError::Unsupported { .. } => FetchResult {
             usage: profile_usage(
                 row,
