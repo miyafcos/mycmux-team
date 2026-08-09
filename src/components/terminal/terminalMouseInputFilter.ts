@@ -2,6 +2,7 @@ import type { Terminal } from "@xterm/xterm";
 import { chunkedWrite, registerTerminalCacheEvictionCleanup } from "./terminalCache";
 import { shouldSuppressWheelFocusInput } from "./terminalFocusHelpers";
 import { bump as bumpPaintStat } from "../../lib/paintStats";
+import { useThemeStore } from "../../stores/themeStore";
 
 export type FilteredTerminalInput = {
   data: string;
@@ -131,6 +132,68 @@ export function filterWheelFocusInputSequences(
 const WHEEL_DELTA_LINE = 1;
 const WHEEL_DELTA_PAGE = 2;
 
+let pendingZoomAmount = 0;
+let zoomFlushHandle: number | null = null;
+let zoomFlushUsesAnimationFrame = false;
+
+export function wheelDeltaToZoomAmount(event: Pick<WheelEvent, "deltaY" | "deltaMode">): number {
+  if (!Number.isFinite(event.deltaY)) return 0;
+  if (event.deltaMode === WHEEL_DELTA_PAGE) return event.deltaY;
+  if (event.deltaMode === WHEEL_DELTA_LINE) return event.deltaY / 3;
+  return event.deltaY / 100;
+}
+
+function flushFontZoom(): void {
+  zoomFlushHandle = null;
+  const steps = Math.trunc(pendingZoomAmount);
+  if (steps === 0) return;
+  pendingZoomAmount -= steps;
+  useThemeStore.getState().adjustFontSize(-steps);
+}
+
+function queueFontZoom(amount: number): void {
+  if (!Number.isFinite(amount) || amount === 0) return;
+  pendingZoomAmount += amount;
+  if (zoomFlushHandle !== null) return;
+  if (typeof requestAnimationFrame === "function") {
+    zoomFlushUsesAnimationFrame = true;
+    zoomFlushHandle = requestAnimationFrame(flushFontZoom);
+  } else {
+    zoomFlushUsesAnimationFrame = false;
+    zoomFlushHandle = globalThis.setTimeout(flushFontZoom, 16) as unknown as number;
+  }
+}
+
+// Ctrl+wheel zooms the terminal font from anywhere in the window, not just over
+// a terminal pane: the tab strip, the sidebar and the settings dialog all count.
+// This runs in the capture phase on window, so it lands before the per-pane
+// handler in attachTerminalWheelScroll and before the tab strip's own wheel
+// translation; stopPropagation keeps exactly one of them from firing.
+export function attachGlobalFontZoom(target: Window): () => void {
+  const handleWheel = (event: WheelEvent): void => {
+    if (event.defaultPrevented || event.metaKey) return;
+    if (!event.ctrlKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    event.stopPropagation();
+    queueFontZoom(wheelDeltaToZoomAmount(event));
+  };
+  target.addEventListener("wheel", handleWheel, { capture: true, passive: false });
+  return () => target.removeEventListener("wheel", handleWheel, { capture: true } as EventListenerOptions);
+}
+
+export function resetFontZoomQueueForTests(): void {
+  if (zoomFlushHandle !== null) {
+    if (zoomFlushUsesAnimationFrame && typeof cancelAnimationFrame === "function") {
+      cancelAnimationFrame(zoomFlushHandle);
+    } else {
+      globalThis.clearTimeout(zoomFlushHandle);
+    }
+  }
+  pendingZoomAmount = 0;
+  zoomFlushHandle = null;
+  zoomFlushUsesAnimationFrame = false;
+}
+
 function wheelDeltaToTerminalLines(event: WheelEvent, rows: number): number {
   const rawDelta = event.deltaY;
   if (rawDelta === 0) return 0;
@@ -172,6 +235,15 @@ export function shouldForwardWheelToApplication(
 export function attachTerminalWheelScroll(container: HTMLElement, currentTerm: Terminal, sessionId: string, forceMouseReport: boolean): () => void {
   const handleWheel = (event: WheelEvent): void => {
     if (event.defaultPrevented || event.metaKey) return;
+    if (event.ctrlKey && !event.shiftKey && !event.altKey) {
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+      // Plain Ctrl+wheel is global font zoom instead of a Ctrl-modified SGR
+      // report. Ctrl+Shift remains reserved for local terminal history.
+      queueFontZoom(wheelDeltaToZoomAmount(event));
+      return;
+    }
     const lines = wheelDeltaToTerminalLines(event, currentTerm.rows);
     if (lines === 0) return;
     event.preventDefault();

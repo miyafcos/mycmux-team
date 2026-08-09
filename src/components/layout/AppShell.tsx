@@ -10,6 +10,7 @@ import {
 import { killSession } from "../../lib/ipc";
 import { isMainWindow } from "../../lib/windowContext";
 import { evictTerminalCache } from "../terminal/XTermWrapper";
+import { attachGlobalFontZoom } from "../terminal/terminalMouseInputFilter";
 import { SIDEBAR_WIDTH } from "../../lib/constants";
 import TabBar from "./TabBar";
 import TitleBar from "./TitleBar";
@@ -953,6 +954,9 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
     togglePaneTabPin,
     setZoomedPaneId,
   ]);
+
+  // Ctrl+wheel resizes the terminal font anywhere in the window.
+  useEffect(() => attachGlobalFontZoom(window), []);
 
   return (
     <div

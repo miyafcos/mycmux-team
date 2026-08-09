@@ -141,6 +141,9 @@ export const TERMINAL_FONT_PRESETS: TerminalFontPreset[] = [
   },
 ];
 
+export const FONT_SIZE_MIN = 10;
+export const FONT_SIZE_MAX = 24;
+
 interface ThemeState {
   themeId: string;
   theme: ThemeDefinition;
@@ -151,6 +154,7 @@ interface ThemeState {
 
   setTheme: (id: string) => void;
   setFontSize: (size: number) => void;
+  adjustFontSize: (delta: number) => void;
   setFontFamily: (fontFamily: string) => void;
   setLineHeight: (lineHeight: number) => void;
   setThemeTweakEnabled: (enabled: boolean) => void;
@@ -227,6 +231,13 @@ export function normalizeLineHeight(value: unknown): number {
   return Math.round(clamped * 100) / 100;
 }
 
+export function normalizeFontSize(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return 14;
+  }
+  return Math.max(FONT_SIZE_MIN, Math.min(FONT_SIZE_MAX, Math.round(value)));
+}
+
 export const useThemeStore = create<ThemeState>((set) => ({
   themeId: DEFAULT_THEME_ID,
   theme: getTheme(DEFAULT_THEME_ID),
@@ -255,7 +266,14 @@ export const useThemeStore = create<ThemeState>((set) => ({
   },
 
   setFontSize: (fontSize) => {
-    set({ fontSize: Math.max(10, Math.min(24, fontSize)) });
+    set({ fontSize: normalizeFontSize(fontSize) });
+  },
+
+  adjustFontSize: (delta) => {
+    set((state) => {
+      const fontSize = normalizeFontSize(state.fontSize + delta);
+      return fontSize === state.fontSize ? state : { fontSize };
+    });
   },
 
   setFontFamily: (fontFamily) => {
@@ -363,9 +381,7 @@ export const useThemeStore = create<ThemeState>((set) => ({
   hydrateSettings: (settings) => {
     const nextThemeId = resolveThemeId(settings.themeId ?? DEFAULT_THEME_ID);
     const themeTweaks = migrateLegacyThemeSettings(settings.themeId, settings.themeTweaks);
-    const nextFont = typeof settings.fontSize === "number"
-      ? Math.max(10, Math.min(24, settings.fontSize))
-      : 14;
+    const nextFont = normalizeFontSize(settings.fontSize);
     const nextFontFamily = normalizeFontFamily(settings.fontFamily);
     const nextLineHeight = normalizeLineHeight(settings.lineHeight);
     set({

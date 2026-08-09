@@ -1,4 +1,9 @@
-import { TERMINAL_FONT_PRESETS, type TerminalFontPreset } from "../../stores/themeStore";
+import {
+  FONT_SIZE_MAX,
+  FONT_SIZE_MIN,
+  TERMINAL_FONT_PRESETS,
+  type TerminalFontPreset,
+} from "../../stores/themeStore";
 
 interface ThemeFontSettingsProps {
   fontSize: number;
@@ -215,8 +220,8 @@ export function ThemeFontSettings({
         </div>
         <input
           type="range"
-          min={10}
-          max={24}
+          min={FONT_SIZE_MIN}
+          max={FONT_SIZE_MAX}
           value={fontSize}
           onChange={(event) => setFontSize(Number(event.target.value))}
           style={{ width: "100%" }}

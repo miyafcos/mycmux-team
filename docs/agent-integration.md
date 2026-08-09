@@ -59,12 +59,17 @@ Gemini CLI は 2026-06-18 に個人アカウント向け終了 (実測: `Ineligi
 **spawn-tab の任意コマンド argv 経路**で可視タブを立てる:
 
 ```
-python scripts/mycmux_agent_cli.py spawn-tab --label agy -- agy -i "C:/path/spec.md を読んで実行して"
+python scripts/mycmux_agent_cli.py spawn-tab --label agy -- env NO_COLOR=1 agy -i "C:/path/spec.md を読んで実行して"
 ```
 
 - `-i` = 初期プロンプトつき対話モード (委譲の既定)。`-p` はヘッドレス単発 (許可場面は上記3つと同じ)
 - 長い spec は argv に直接埋めず、spec ファイルを書いて「読んで実行」と渡す (quoting 事故防止)
 - launcher メニューにも「Antigravity (agy)」あり (手動起動用・v0.150 系以降のビルドに同梱)
+- **`NO_COLOR=1` を必ず付ける** (2026-08-09 追加)。agy は Google のライト配色をハードコードしていて、
+  本文が `rgb(32,33,36)` (ほぼ黒)、インラインコードが 256色 index 254 (明るいグレー) の背景ベタ塗りになる。
+  端末の背景色を一度も問い合わせない (ConPTY キャプチャで OSC 11 の送出ゼロ) ため mycmux 側から
+  「暗いテーマだ」と伝える経路が無く、テーマ切替の env も持たない (`AGY_CLI_*` は 9 個あるが色関連はゼロ)。
+  色を落とすのが唯一の対処。launcher 側は `launcher.sh` の `gemini|agy|antigravity)` で同じ env を適用済み
 
 ### 完了検知の規約
 

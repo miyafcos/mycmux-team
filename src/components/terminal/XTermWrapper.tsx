@@ -593,6 +593,7 @@ export default memo(function XTermWrapper({
   const fitAddonRef = useRef<FitAddon | null>(null);
   const isAtBottomRef = useRef(true);
   const syncResizeRef = useRef<(force?: boolean) => void>(() => {});
+  const settingsResizeTimerRef = useRef<number | null>(null);
   // Latest-value mirror of the PTY launch parameters. The terminal effect below
   // is keyed on [sessionId] alone (adding these would respawn the terminal on
   // every metadata update), so anything it reads *after* its first synchronous
@@ -632,15 +633,26 @@ export default memo(function XTermWrapper({
 
   // Dynamically update terminal theme and font size
   useEffect(() => {
-    if (termRef.current) {
-      bumpPaintStat("settings", sessionId);
-      termRef.current.options.theme = withTerminalOpacity(storeTheme.terminal, terminalOpacity, mediaBackgroundActive);
-      termRef.current.options.minimumContrastRatio = minContrastFor(mediaBackgroundActive);
-      termRef.current.options.fontSize = storeFontSize;
-      termRef.current.options.fontFamily = storeFontFamily;
-      termRef.current.options.lineHeight = storeLineHeight;
-      setTimeout(() => syncResizeRef.current(true), 10);
+    if (!termRef.current) return;
+    bumpPaintStat("settings", sessionId);
+    termRef.current.options.theme = withTerminalOpacity(storeTheme.terminal, terminalOpacity, mediaBackgroundActive);
+    termRef.current.options.minimumContrastRatio = minContrastFor(mediaBackgroundActive);
+    termRef.current.options.fontSize = storeFontSize;
+    termRef.current.options.fontFamily = storeFontFamily;
+    termRef.current.options.lineHeight = storeLineHeight;
+    if (settingsResizeTimerRef.current !== null) {
+      window.clearTimeout(settingsResizeTimerRef.current);
     }
+    settingsResizeTimerRef.current = window.setTimeout(() => {
+      settingsResizeTimerRef.current = null;
+      syncResizeRef.current(true);
+    }, 60);
+    return () => {
+      if (settingsResizeTimerRef.current !== null) {
+        window.clearTimeout(settingsResizeTimerRef.current);
+        settingsResizeTimerRef.current = null;
+      }
+    };
   }, [storeTheme, storeFontSize, storeFontFamily, storeLineHeight, terminalOpacity, mediaBackgroundActive]);
 
   // Scroll to bottom when this tab becomes active only if the user was already at bottom.
