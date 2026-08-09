@@ -37,6 +37,13 @@ export default memo(function PaneDragOverlay() {
     target ? "is-droppable" : "",
   ].filter(Boolean).join(" ");
 
+  // Outside the window there is nothing to draw the ghost against (the pointer
+  // has left the viewport), so tear-out readiness gets a stationary banner
+  // instead of a cursor-following hint.
+  if (target?.kind === "new-window") {
+    return <TearOutBanner label={`⬈ ${paneDndStrings.dropInNewWindow}`} />;
+  }
+
   return (
     <div
       ref={ghostRef}
@@ -58,3 +65,31 @@ export default memo(function PaneDragOverlay() {
     </div>
   );
 });
+
+/** Shared by tab/pane drags and the sidebar workspace drag (TabBar). */
+export function TearOutBanner({ label }: { label: string }) {
+  return (
+    <div
+      role="status"
+      style={{
+        position: "fixed",
+        top: 10,
+        left: "50%",
+        transform: "translateX(-50%)",
+        zIndex: 200,
+        padding: "6px 14px",
+        borderRadius: 999,
+        background: "var(--cmux-popover)",
+        border: "1px solid var(--cmux-accent)",
+        boxShadow: "var(--cmux-shadow-popover)",
+        color: "var(--cmux-text)",
+        fontSize: 12,
+        fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+        pointerEvents: "none",
+        whiteSpace: "nowrap",
+      }}
+    >
+      {label}
+    </div>
+  );
+}

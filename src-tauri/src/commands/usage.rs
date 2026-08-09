@@ -16,8 +16,10 @@ const COOLDOWN_MAX_MS: i64 = 1_800_000;
 /// Ceiling on outbound requests per poll. Counted in requests, not rows: a row
 /// that has to refresh spends two (refresh + usage), and one that refreshes
 /// after a 401 spends three. Anthropic rate-limits by IP, so the budget belongs
-/// to the whole round rather than to each account.
-const MAX_FETCH_PER_ROUND: usize = 8;
+/// to the whole round rather than to each account. Rows that run out of budget
+/// go first on the next round (see `deferred_priority`), so a long account
+/// list rotates through instead of starving its tail.
+const MAX_FETCH_PER_ROUND: usize = 12;
 const ERROR_RATE_LIMITED: &str = "usage.error.rate_limited";
 const ERROR_NEEDS_RELOGIN: &str = "usage.error.needs_relogin";
 const ERROR_TOKEN_EXPIRED_ACTIVE: &str = "usage.error.token_expired_active";
@@ -140,6 +142,7 @@ fn profile_usage(
         seven_day: None,
         seven_day_sonnet: None,
         seven_day_opus: None,
+        model_windows: Vec::new(),
         error_code: error_code.map(str::to_string),
         retry_at,
         fetched_at: Utc::now().to_rfc3339(),
@@ -187,6 +190,7 @@ fn with_windows(mut usage: ProfileUsage, windows: CachedWindows) -> ProfileUsage
     usage.seven_day = windows.seven_day;
     usage.seven_day_sonnet = windows.seven_day_sonnet;
     usage.seven_day_opus = windows.seven_day_opus;
+    usage.model_windows = windows.model_windows;
     usage.fetched_at = rfc3339(windows.fetched_at_ms);
     usage
 }
@@ -224,16 +228,19 @@ pub async fn get_account_usage(
         .map_err(|error| error.to_string())?;
     let accounts = crate::cli_accounts::list_resolved(&base)?;
     let rows = planned_rows(&accounts.profiles, &accounts.live);
+    let priority = std::mem::take(&mut *state.deferred_priority.lock().await);
     let mut output = Vec::with_capacity(rows.len());
+    let mut deferred_ids = Vec::new();
     let mut fetch_count = 0usize;
     let mut provider_rate_limited: std::collections::HashMap<String, usize> =
         std::collections::HashMap::new();
-    for row in rows {
+    for index in processing_order(&rows, &priority) {
+        let row = rows[index].clone();
         let now_ms = Utc::now().timestamp_millis();
         if let Some(cached) = cached_profile_windows(&state, &row.profile_id, now_ms).await {
-            output.push(with_windows(
-                profile_usage(&row, UsageRowState::Ok, None, None),
-                cached,
+            output.push((
+                index,
+                with_windows(profile_usage(&row, UsageRowState::Ok, None, None), cached),
             ));
             continue;
         }
@@ -244,34 +251,32 @@ pub async fn get_account_usage(
             None => active_cooldown(&state, &cooldown_key, now_ms).await,
         };
         if let Some(cooldown) = pause {
-            output.push(cooldown_usage(&state, &row, Some(rfc3339(cooldown.until_ms))).await);
+            output.push((
+                index,
+                cooldown_usage(&state, &row, Some(rfc3339(cooldown.until_ms))).await,
+            ));
             continue;
         }
         if row.provider == CliProvider::Codex && !row.is_active && refresh::codex_refresh_disabled()
         {
-            output.push(profile_usage(
-                &row,
-                UsageRowState::Unsupported,
-                Some(ERROR_CODEX_UNSUPPORTED),
-                None,
+            output.push((
+                index,
+                profile_usage(&row, UsageRowState::Unsupported, Some(ERROR_CODEX_UNSUPPORTED), None),
             ));
             continue;
         }
         if row.needs_relogin {
-            output.push(profile_usage(
-                &row,
-                UsageRowState::NeedsRelogin,
-                Some(ERROR_NEEDS_RELOGIN),
-                None,
+            output.push((
+                index,
+                profile_usage(&row, UsageRowState::NeedsRelogin, Some(ERROR_NEEDS_RELOGIN), None),
             ));
             continue;
         }
         if fetch_count >= MAX_FETCH_PER_ROUND {
-            output.push(profile_usage(
-                &row,
-                UsageRowState::Error,
-                Some(ERROR_DEFERRED),
-                None,
+            deferred_ids.push(row.profile_id.clone());
+            output.push((
+                index,
+                profile_usage(&row, UsageRowState::Error, Some(ERROR_DEFERRED), None),
             ));
             continue;
         }
@@ -299,11 +304,9 @@ pub async fn get_account_usage(
             .ok_or_else(|| ERROR_SNAPSHOT_UNAVAILABLE.to_string())
         };
         let Ok(source) = source else {
-            output.push(profile_usage(
-                &row,
-                UsageRowState::Error,
-                Some(ERROR_SNAPSHOT_UNAVAILABLE),
-                None,
+            output.push((
+                index,
+                profile_usage(&row, UsageRowState::Error, Some(ERROR_SNAPSHOT_UNAVAILABLE), None),
             ));
             continue;
         };
@@ -322,12 +325,31 @@ pub async fn get_account_usage(
                 apply_429_cooldown(&state, &provider_key, Utc::now().timestamp_millis()).await;
             }
         }
-        output.push(result.usage);
+        output.push((index, result.usage));
     }
+    *state.deferred_priority.lock().await = deferred_ids;
+    output.sort_by_key(|(index, _)| *index);
     Ok(AccountUsageReport {
-        accounts: output,
+        accounts: output.into_iter().map(|(_, usage)| usage).collect(),
         generated_at: Utc::now().to_rfc3339(),
     })
+}
+
+/// The order rows are *processed* in, distinct from the order they are
+/// reported in: rows deferred last round come first so the budget reaches
+/// them, everything else keeps its planned position.
+fn processing_order(rows: &[PlannedRow], priority: &[String]) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..rows.len()).collect();
+    order.sort_by_key(|&index| {
+        match priority
+            .iter()
+            .position(|id| id == &rows[index].profile_id)
+        {
+            Some(rank) => (0usize, rank, index),
+            None => (1usize, 0usize, index),
+        }
+    });
+    order
 }
 
 struct FetchResult {
@@ -368,7 +390,8 @@ async fn fetch_claude_profile(
         }
     };
     let now_ms = Utc::now().timestamp_millis();
-    let access_token = match credentials::plan_token_source(
+    let mut refreshed_once = false;
+    let mut access_token = match credentials::plan_token_source(
         row.is_active,
         Some(tokens.expires_at_ms),
         tokens.refresh_expires_at_ms,
@@ -398,75 +421,132 @@ async fn fetch_claude_profile(
             }
         }
         credentials::TokenPlan::RefreshSnapshot => {
-            match live_identity_check(row) {
-                LiveIdentityCheck::Active => {
-                    return FetchResult {
-                        usage: profile_usage(
-                            row,
-                            UsageRowState::WaitForCli,
-                            Some(ERROR_TOKEN_EXPIRED_ACTIVE),
-                            None,
-                        ),
-                    }
-                }
-                LiveIdentityCheck::Unknown => {
-                    return FetchResult {
-                        usage: profile_usage(
-                            row,
-                            UsageRowState::Error,
-                            Some(ERROR_SNAPSHOT_UNAVAILABLE),
-                            None,
-                        ),
-                    }
-                }
-                LiveIdentityCheck::Inactive => {}
-            }
-            stagger_before_fetch(fetch_count).await;
-            let refreshed = match refresh::refresh_claude(&state.http, &tokens.refresh_token).await
+            refreshed_once = true;
+            match refresh_claude_snapshot(app, state, base, row, &tokens, cooldown_key, fetch_count)
+                .await
             {
-                Ok(value) => value,
-                Err(error) => return refresh_failure(app, state, row, cooldown_key, error).await,
-            };
-            let next = credentials::ClaudeTokens {
-                access_token: refreshed.access_token.clone(),
-                refresh_token: refreshed
-                    .refresh_token
-                    .unwrap_or(tokens.refresh_token.clone()),
-                expires_at_ms: refreshed.expires_at_ms,
-                refresh_expires_at_ms: refreshed
-                    .refresh_expires_at_ms
-                    .or(tokens.refresh_expires_at_ms),
-                subscription_type: tokens.subscription_type.clone(),
-            };
-            match write_snapshot(base, row, &tokens.refresh_token, move |text| {
-                credentials::claude_credentials_with(text, &next)
-            })
-            .await
-            {
-                SnapshotWrite::Applied => {}
-                SnapshotWrite::Conflict => return FetchResult { usage: profile_usage(row, UsageRowState::Error, Some(ERROR_SNAPSHOT_CONFLICT), None) },
-                SnapshotWrite::Unavailable => return FetchResult { usage: profile_usage(row, UsageRowState::Error, Some(ERROR_SNAPSHOT_UNAVAILABLE), None) },
+                Ok(token) => token,
+                Err(result) => return result,
             }
-            refreshed.access_token
         }
     };
+    loop {
+        stagger_before_fetch(fetch_count).await;
+        let (status, detail) =
+            match oauth_claude::fetch_with_token_status(&state.http, &access_token).await {
+                Ok(usage) => {
+                    return successful_fetch(
+                        state,
+                        row,
+                        usage.five_hour,
+                        usage.seven_day,
+                        usage.seven_day_sonnet,
+                        usage.seven_day_opus,
+                        usage.model_windows,
+                        cooldown_key,
+                    )
+                    .await
+                }
+                Err(error) => error,
+            };
+        if !should_retry_claude_after_unauthorized(status, row.is_active, refreshed_once) {
+            return usage_fetch_failure(app, state, row, cooldown_key, status, &detail).await;
+        }
+        refreshed_once = true;
+        access_token = match refresh_claude_snapshot(
+            app,
+            state,
+            base,
+            row,
+            &tokens,
+            cooldown_key,
+            fetch_count,
+        )
+        .await
+        {
+            Ok(token) => token,
+            Err(result) => return result,
+        };
+    }
+}
+
+/// A Claude access token can be dead long before its printed expiry: the CLI
+/// rotates the pair whenever it refreshes, and the server invalidates the old
+/// access token with it. The clock-based plan cannot see that, so a 401/403
+/// from the usage endpoint is the real signal. Refresh once and retry -- but
+/// never for the account the CLI is logged into (the CLI will rotate it
+/// itself), and never twice within one poll.
+fn should_retry_claude_after_unauthorized(
+    status: Option<u16>,
+    is_active: bool,
+    already_refreshed: bool,
+) -> bool {
+    matches!(status, Some(401) | Some(403)) && !is_active && !already_refreshed
+}
+
+/// Refresh an inactive Claude snapshot and persist the new tokens before using
+/// them. Returns the fresh access token, or the FetchResult the caller should
+/// return as-is.
+async fn refresh_claude_snapshot(
+    app: &tauri::AppHandle,
+    state: &UsageState,
+    base: &std::path::Path,
+    row: &PlannedRow,
+    tokens: &credentials::ClaudeTokens,
+    cooldown_key: &str,
+    fetch_count: &mut usize,
+) -> Result<String, FetchResult> {
+    match live_identity_check(row) {
+        LiveIdentityCheck::Active => {
+            return Err(FetchResult {
+                usage: profile_usage(
+                    row,
+                    UsageRowState::WaitForCli,
+                    Some(ERROR_TOKEN_EXPIRED_ACTIVE),
+                    None,
+                ),
+            })
+        }
+        LiveIdentityCheck::Unknown => {
+            return Err(FetchResult {
+                usage: profile_usage(
+                    row,
+                    UsageRowState::Error,
+                    Some(ERROR_SNAPSHOT_UNAVAILABLE),
+                    None,
+                ),
+            })
+        }
+        LiveIdentityCheck::Inactive => {}
+    }
     stagger_before_fetch(fetch_count).await;
-    match oauth_claude::fetch_with_token_status(&state.http, &access_token).await {
-        Ok(usage) => {
-            successful_fetch(
-                state,
-                row,
-                usage.five_hour,
-                usage.seven_day,
-                usage.seven_day_sonnet,
-                usage.seven_day_opus,
-                cooldown_key,
-            )
-            .await
-        }
-        Err((status, detail)) => {
-            usage_fetch_failure(app, state, row, cooldown_key, status, &detail).await
-        }
+    let refreshed = match refresh::refresh_claude(&state.http, &tokens.refresh_token).await {
+        Ok(value) => value,
+        Err(error) => return Err(refresh_failure(app, state, row, cooldown_key, error).await),
+    };
+    let next = credentials::ClaudeTokens {
+        access_token: refreshed.access_token.clone(),
+        refresh_token: refreshed
+            .refresh_token
+            .unwrap_or(tokens.refresh_token.clone()),
+        expires_at_ms: refreshed.expires_at_ms,
+        refresh_expires_at_ms: refreshed
+            .refresh_expires_at_ms
+            .or(tokens.refresh_expires_at_ms),
+        subscription_type: tokens.subscription_type.clone(),
+    };
+    match write_snapshot(base, row, &tokens.refresh_token, move |text| {
+        credentials::claude_credentials_with(text, &next)
+    })
+    .await
+    {
+        SnapshotWrite::Applied => Ok(refreshed.access_token),
+        SnapshotWrite::Conflict => Err(FetchResult {
+            usage: profile_usage(row, UsageRowState::Error, Some(ERROR_SNAPSHOT_CONFLICT), None),
+        }),
+        SnapshotWrite::Unavailable => Err(FetchResult {
+            usage: profile_usage(row, UsageRowState::Error, Some(ERROR_SNAPSHOT_UNAVAILABLE), None),
+        }),
     }
 }
 
@@ -571,6 +651,7 @@ async fn fetch_codex_profile(
                     usage.seven_day,
                     None,
                     None,
+                    Vec::new(),
                     cooldown_key,
                 )
                 .await
@@ -776,6 +857,7 @@ where
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn successful_fetch(
     state: &UsageState,
     row: &PlannedRow,
@@ -783,6 +865,7 @@ async fn successful_fetch(
     seven_day: Option<crate::usage::WindowStat>,
     seven_day_sonnet: Option<crate::usage::WindowStat>,
     seven_day_opus: Option<crate::usage::WindowStat>,
+    model_windows: Vec<crate::usage::NamedWindow>,
     cooldown_key: &str,
 ) -> FetchResult {
     let fetched_at_ms = Utc::now().timestamp_millis();
@@ -791,19 +874,21 @@ async fn successful_fetch(
         seven_day,
         seven_day_sonnet,
         seven_day_opus,
+        model_windows,
         fetched_at_ms,
     };
-    state.profile_usage_cache.lock().await.insert(
-        row.profile_id.clone(),
-        CachedWindows {
-            five_hour: windows.five_hour.clone(),
-            seven_day: windows.seven_day.clone(),
-            seven_day_sonnet: windows.seven_day_sonnet.clone(),
-            seven_day_opus: windows.seven_day_opus.clone(),
-            fetched_at_ms,
-        },
-    );
-    state.cooldowns.lock().await.remove(cooldown_key);
+    state
+        .profile_usage_cache
+        .lock()
+        .await
+        .insert(row.profile_id.clone(), windows.clone());
+    // A success also clears the provider-wide pause: it proves this address is
+    // not rate-limited right now, so the doubled backoff a past 429 left
+    // behind must not outlive the condition it measured.
+    let mut cooldowns = state.cooldowns.lock().await;
+    cooldowns.remove(cooldown_key);
+    cooldowns.remove(&provider_cooldown_key(row.provider));
+    drop(cooldowns);
     FetchResult {
         usage: with_windows(profile_usage(row, UsageRowState::Ok, None, None), windows),
     }
@@ -1254,6 +1339,7 @@ mod tests {
                 seven_day: None,
                 seven_day_sonnet: None,
                 seven_day_opus: None,
+                model_windows: Vec::new(),
                 fetched_at_ms: 1,
             },
         );
@@ -1268,6 +1354,73 @@ mod tests {
         assert_eq!(usage.retry_at.as_deref(), Some("soon"));
         assert_eq!(usage.five_hour.as_ref().map(|stat| stat.pct), Some(12.0));
         assert_eq!(usage.fetched_at, rfc3339(1));
+    }
+
+    #[test]
+    fn claude_unauthorized_retry_only_once_and_never_for_active() {
+        // status, is_active, already_refreshed
+        assert!(should_retry_claude_after_unauthorized(Some(401), false, false));
+        assert!(should_retry_claude_after_unauthorized(Some(403), false, false));
+        // The CLI holds this account; it rotates its own tokens.
+        assert!(!should_retry_claude_after_unauthorized(Some(401), true, false));
+        // Never twice in one poll.
+        assert!(!should_retry_claude_after_unauthorized(Some(401), false, true));
+        // Other statuses are not an authentication problem.
+        for status in [None, Some(400), Some(429), Some(500)] {
+            assert!(!should_retry_claude_after_unauthorized(status, false, false));
+        }
+    }
+
+    #[test]
+    fn processing_order_puts_deferred_rows_first_without_reordering_output() {
+        let row = |id: &str| PlannedRow {
+            profile_id: id.into(),
+            provider: CliProvider::Claude,
+            label: id.into(),
+            email: None,
+            plan: None,
+            identity_key: None,
+            registered: true,
+            is_active: false,
+            needs_relogin: false,
+        };
+        let rows = vec![row("a"), row("b"), row("c"), row("d")];
+
+        // No history: planned order.
+        assert_eq!(processing_order(&rows, &[]), vec![0, 1, 2, 3]);
+        // Deferred rows jump the queue in their deferred order; the rest keep
+        // their planned positions. Ids that no longer exist are ignored.
+        let priority = vec!["c".to_string(), "b".to_string(), "gone".to_string()];
+        assert_eq!(processing_order(&rows, &priority), vec![2, 1, 0, 3]);
+    }
+
+    #[tokio::test]
+    async fn success_clears_profile_and_provider_cooldowns() {
+        let state = UsageState::new();
+        let row = PlannedRow {
+            profile_id: "p".into(),
+            provider: CliProvider::Claude,
+            label: "L".into(),
+            email: None,
+            plan: None,
+            identity_key: None,
+            registered: true,
+            is_active: false,
+            needs_relogin: false,
+        };
+        let profile_key = profile_cooldown_key("p");
+        let provider_key = provider_cooldown_key(CliProvider::Claude);
+        apply_429_cooldown(&state, &profile_key, 1).await;
+        apply_429_cooldown(&state, &provider_key, 1).await;
+        apply_429_cooldown(&state, &provider_key, 1).await; // backoff has grown
+
+        successful_fetch(&state, &row, None, None, None, None, Vec::new(), &profile_key).await;
+
+        // Both entries are gone, so the next 429 starts from the base backoff
+        // instead of resuming a stale doubled one.
+        let cooldowns = state.cooldowns.lock().await;
+        assert!(!cooldowns.contains_key(&profile_key));
+        assert!(!cooldowns.contains_key(&provider_key));
     }
 
     #[tokio::test]

@@ -245,6 +245,9 @@ function getDropPreviewLabel(
   if (target.kind === "new-workspace") {
     return paneDndStrings.moveToNewWorkspace;
   }
+  if (target.kind === "new-window") {
+    return paneDndStrings.dropInNewWindow;
+  }
   if (target.zone === "center") {
     return item.kind === "tab" ? paneDndStrings.attachTab : paneDndStrings.mergePane;
   }

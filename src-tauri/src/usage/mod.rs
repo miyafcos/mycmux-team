@@ -9,7 +9,10 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::time::Duration;
 
-pub const USAGE_CACHE_TTL_MS: i64 = 60_000;
+/// Slightly under the frontend poll interval (180s), so a scheduled poll
+/// always fetches fresh numbers while a focus-triggered poll shortly after
+/// one is served from cache instead of flapping between hit and miss.
+pub const USAGE_CACHE_TTL_MS: i64 = 150_000;
 
 /// Best-effort append-only failure log for OAuth flows
 /// (`<app_data>/logs/oauth.log`). Release builds run with
@@ -44,6 +47,9 @@ pub struct UsageState {
     pub refresh_lock: tokio::sync::Mutex<()>,
     pub cooldowns: tokio::sync::Mutex<HashMap<String, Cooldown>>,
     pub profile_usage_cache: tokio::sync::Mutex<HashMap<String, CachedWindows>>,
+    /// Rows that ran out of budget last round, served first on the next one so
+    /// no account is starved forever by its position in the list.
+    pub deferred_priority: tokio::sync::Mutex<Vec<String>>,
 }
 
 impl UsageState {
@@ -59,6 +65,7 @@ impl UsageState {
             refresh_lock: tokio::sync::Mutex::new(()),
             cooldowns: tokio::sync::Mutex::new(HashMap::new()),
             profile_usage_cache: tokio::sync::Mutex::new(HashMap::new()),
+            deferred_priority: tokio::sync::Mutex::new(Vec::new()),
         }
     }
 }
@@ -75,10 +82,19 @@ pub struct Cooldown {
     pub backoff_ms: i64,
 }
 
-#[derive(Serialize, Clone, Debug)]
+#[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct WindowStat {
     pub pct: f64,
     pub resets_at: String,
+}
+
+/// A usage window the API named but this code did not anticipate — per-model
+/// limits and whatever the provider adds next. Parsed structurally (any object
+/// with a utilization number) so new windows appear without a release.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct NamedWindow {
+    pub key: String,
+    pub window: WindowStat,
 }
 
 #[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -107,6 +123,7 @@ pub struct ProfileUsage {
     pub seven_day: Option<WindowStat>,
     pub seven_day_sonnet: Option<WindowStat>,
     pub seven_day_opus: Option<WindowStat>,
+    pub model_windows: Vec<NamedWindow>,
     pub error_code: Option<String>,
     pub retry_at: Option<String>,
     pub fetched_at: String,
@@ -124,6 +141,7 @@ pub struct CachedWindows {
     pub seven_day: Option<WindowStat>,
     pub seven_day_sonnet: Option<WindowStat>,
     pub seven_day_opus: Option<WindowStat>,
+    pub model_windows: Vec<NamedWindow>,
     pub fetched_at_ms: i64,
 }
 
@@ -163,6 +181,7 @@ mod tests {
             seven_day: None,
             seven_day_sonnet: None,
             seven_day_opus: None,
+            model_windows: Vec::new(),
             error_code: None,
             retry_at: None,
             fetched_at: "now".into(),

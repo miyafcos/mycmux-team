@@ -14,6 +14,7 @@ import {
 import {
   PROVIDER_SHORT,
   formatPct,
+  formatResetShort,
   formatUpdatedAt,
   resetHint,
   rowMessage,
@@ -317,6 +318,17 @@ function AccountRow({ row, onClose }: { row: ProfileUsage; onClose: () => void }
         <span style={{ display: "flex", gap: "var(--cmux-space-5)", alignItems: "center" }}>
           <UsageBar label="5h" stat={row.five_hour} />
           <UsageBar label="7d" stat={row.seven_day} />
+          <span
+            title={`取得 ${formatUpdatedAt(row.fetched_at)}`}
+            style={{
+              marginLeft: "auto",
+              fontSize: "var(--cmux-font-size-xs)",
+              color: "var(--cmux-text-dim)",
+              whiteSpace: "nowrap",
+            }}
+          >
+            取得 {formatResetShort(row.fetched_at) || formatUpdatedAt(row.fetched_at)}
+          </span>
         </span>
       )}
     </button>
@@ -360,6 +372,11 @@ function UsageBar({ label, stat }: { label: string; stat: WindowStat | null }) {
             })}
           </span>
           <span style={{ color: usageColor(stat.pct), minWidth: 30 }}>{formatPct(stat.pct)}</span>
+          {stat.resets_at && formatResetShort(stat.resets_at) && (
+            <span style={{ color: "var(--cmux-text-dim)", whiteSpace: "nowrap" }}>
+              ↻{formatResetShort(stat.resets_at)}
+            </span>
+          )}
         </>
       ) : (
         <span>—</span>

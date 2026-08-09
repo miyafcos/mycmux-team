@@ -35,6 +35,13 @@ interface TabItemProps {
   active: boolean;
   onClick: () => void;
   onClose: () => void;
+  /**
+   * Open the workspace menu (color, rename, new window) at the given screen
+   * point. Lives on a hover button because right-click is not a reliable
+   * gesture here: the native WebView2 menu it used to race is suppressed, and
+   * some users disable right-click entirely.
+   */
+  onMenu?: (x: number, y: number) => void;
   onRename?: (newName: string) => void;
   /**
    * Bumped by the sidebar context menu to open inline rename without the user
@@ -98,7 +105,7 @@ function UnseenAttentionRing({ count, category }: { count: number; category: Att
   );
 }
 
-export default memo(function TabItem({ uiVariant = "default", name, paneCount, cwd, gitBranch, notificationCount, workDoneCount, lastLogLine, statusCounts, unseenAttentionCount = 0, unseenAttentionCategory = null, agentKinds = [], color, active, onClick, onClose, onRename, renameSignal = 0 }: TabItemProps) {
+export default memo(function TabItem({ uiVariant = "default", name, paneCount, cwd, gitBranch, notificationCount, workDoneCount, lastLogLine, statusCounts, unseenAttentionCount = 0, unseenAttentionCategory = null, agentKinds = [], color, active, onClick, onClose, onMenu, onRename, renameSignal = 0 }: TabItemProps) {
   const hasAgents = statusCounts && (statusCounts.working + statusCounts.waiting) > 0;
   const hasAgentKinds = agentKinds.length > 0;
   const hasUnseenAttention = unseenAttentionCount > 0 && unseenAttentionCategory !== null;
@@ -315,6 +322,32 @@ export default memo(function TabItem({ uiVariant = "default", name, paneCount, c
         </span>
       </div>
 
+      {onMenu && (
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            const rect = e.currentTarget.getBoundingClientRect();
+            onMenu(rect.left, rect.bottom + 4);
+          }}
+          onDoubleClick={(e) => e.stopPropagation()}
+          style={{
+            background: "none",
+            border: "none",
+            color: "var(--cmux-text-tertiary)",
+            cursor: "pointer",
+            fontSize: "12px",
+            padding: "2px 4px",
+            lineHeight: 1,
+            flexShrink: 0,
+            opacity: 0,
+          }}
+          title="ワークスペースのメニュー"
+          aria-haspopup="menu"
+          className="tab-close-btn"
+        >
+          ⋮
+        </button>
+      )}
       <button
         onClick={(e) => {
           e.stopPropagation();

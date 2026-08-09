@@ -50,7 +50,6 @@ export function UsageTab() {
                 <TableHeader>7d</TableHeader>
                 <TableHeader>7d Sonnet</TableHeader>
                 <TableHeader>7d Opus</TableHeader>
-                <TableHeader>リセット</TableHeader>
                 <TableHeader>取得時刻</TableHeader>
                 <TableHeader>状態</TableHeader>
               </tr>
@@ -58,7 +57,7 @@ export function UsageTab() {
             <tbody>
               {rows.length === 0 ? (
                 <tr>
-                  <td colSpan={8} style={{ padding: 10, color: "var(--cmux-text-dim)" }}>
+                  <td colSpan={7} style={{ padding: 10, color: "var(--cmux-text-dim)" }}>
                     アカウント情報がありません。
                   </td>
                 </tr>
@@ -82,46 +81,85 @@ export function UsageTab() {
 
 function UsageDetailRow({ row }: { row: ProfileUsage }) {
   const message = rowMessage(row);
-  // Every window resets on the same 5h/7d cadence, so the earliest one is the
-  // only reset time worth a column.
-  const nextReset = [row.five_hour, row.seven_day, row.seven_day_sonnet, row.seven_day_opus]
-    .filter((stat): stat is WindowStat => stat !== null)
-    .map((stat) => stat.resets_at)
-    .sort()[0];
 
   return (
-    <tr style={{ borderTop: "1px solid var(--cmux-border-hairline)" }}>
-      <TableCell>
-        <div style={{ display: "grid", gap: 2 }}>
-          <span style={{ color: "var(--cmux-text-tertiary)" }}>{PROVIDER_SHORT[row.provider]}</span>
-          <span>{row.email ?? row.label}</span>
-          {row.plan && <span style={{ color: "var(--cmux-text-dim)" }}>{row.plan}</span>}
-        </div>
-      </TableCell>
-      <PctCell stat={row.five_hour} />
-      <PctCell stat={row.seven_day} />
-      <PctCell stat={row.seven_day_sonnet} />
-      <PctCell stat={row.seven_day_opus} />
-      <TableCell>{nextReset ? formatUpdatedAt(nextReset) : "—"}</TableCell>
-      <TableCell>{formatUpdatedAt(row.fetched_at)}</TableCell>
-      <TableCell>
-        <div style={{ display: "grid", gap: 2 }}>
-          <span
+    <>
+      <tr style={{ borderTop: "1px solid var(--cmux-border-hairline)" }}>
+        <TableCell>
+          <div style={{ display: "grid", gap: 2 }}>
+            <span style={{ color: "var(--cmux-text-tertiary)" }}>{PROVIDER_SHORT[row.provider]}</span>
+            <span>{row.email ?? row.label}</span>
+            {row.plan && <span style={{ color: "var(--cmux-text-dim)" }}>{row.plan}</span>}
+          </div>
+        </TableCell>
+        <PctCell stat={row.five_hour} />
+        <PctCell stat={row.seven_day} />
+        <PctCell stat={row.seven_day_sonnet} />
+        <PctCell stat={row.seven_day_opus} />
+        <TableCell>{formatUpdatedAt(row.fetched_at)}</TableCell>
+        <TableCell>
+          <div style={{ display: "grid", gap: 2 }}>
+            <span
+              style={{
+                color: row.is_active ? "var(--cmux-usage-ok)" : "var(--cmux-text-dim)",
+              }}
+            >
+              {row.is_active ? "使用中" : row.registered ? "登録済み" : "CLI 未登録"}
+            </span>
+            {message && <span style={{ color: "var(--cmux-text-dim)" }}>{message}</span>}
+          </div>
+        </TableCell>
+      </tr>
+      {row.model_windows.length > 0 && (
+        <tr>
+          <td
+            colSpan={7}
             style={{
-              color: row.is_active ? "var(--cmux-usage-ok)" : "var(--cmux-text-dim)",
+              padding: "0 8px 8px",
+              fontSize: "var(--cmux-font-size-xs)",
+              color: "var(--cmux-text-dim)",
             }}
           >
-            {row.is_active ? "使用中" : row.registered ? "登録済み" : "CLI 未登録"}
-          </span>
-          {message && <span style={{ color: "var(--cmux-text-dim)" }}>{message}</span>}
-        </div>
-      </TableCell>
-    </tr>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: "6px 14px" }}>
+              {row.model_windows.map((named) => (
+                <span key={named.key} style={{ whiteSpace: "nowrap" }}>
+                  {named.key} {formatPct(named.window.pct)}
+                  {named.window.resets_at && (
+                    <span> ・リセット {formatUpdatedAt(named.window.resets_at)}</span>
+                  )}
+                </span>
+              ))}
+            </div>
+          </td>
+        </tr>
+      )}
+    </>
   );
 }
 
+/**
+ * A window's own reset time sits under its number: each of the four limits
+ * resets on its own clock, so a single shared column could only lie about
+ * three of them (and did — an empty resets_at sorted ahead of every real one
+ * and blanked the whole column).
+ */
 function PctCell({ stat }: { stat: WindowStat | null }) {
-  return <TableCell>{stat ? formatPct(stat.pct) : "—"}</TableCell>;
+  return (
+    <TableCell>
+      {stat ? (
+        <div style={{ display: "grid", gap: 2 }}>
+          <span>{formatPct(stat.pct)}</span>
+          {stat.resets_at && (
+            <span style={{ color: "var(--cmux-text-dim)", whiteSpace: "nowrap" }}>
+              ↻ {formatUpdatedAt(stat.resets_at)}
+            </span>
+          )}
+        </div>
+      ) : (
+        "—"
+      )}
+    </TableCell>
+  );
 }
 
 function TableHeader({ children }: { children: string }) {

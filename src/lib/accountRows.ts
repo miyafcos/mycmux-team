@@ -34,19 +34,19 @@ function compareText(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
-/** Stable and non-destructive: the same input always yields the same order. */
+/**
+ * Fixed, state-independent order: provider, registered before live-only, then
+ * label. This used to also rank by attention, active and usage, which meant
+ * every fetch could shuffle the list — a row you were about to click moved
+ * away whenever an error appeared or a percentage changed. Each account now
+ * keeps one place; "in use" and errors are shown on the row, not by position.
+ */
 export function orderAccountRows(rows: ProfileUsage[]): ProfileUsage[] {
   return rows.slice().sort((left, right) => {
     const providerOrder =
       PROVIDER_ORDER.indexOf(left.provider) - PROVIDER_ORDER.indexOf(right.provider);
     if (providerOrder !== 0) return providerOrder;
-    const leftAttention = rowNeedsAttention(left);
-    const rightAttention = rowNeedsAttention(right);
-    if (leftAttention !== rightAttention) return leftAttention ? -1 : 1;
-    if (left.is_active !== right.is_active) return left.is_active ? -1 : 1;
-    const leftPct = worstPct(left) ?? -1;
-    const rightPct = worstPct(right) ?? -1;
-    if (leftPct !== rightPct) return rightPct - leftPct;
+    if (left.registered !== right.registered) return left.registered ? -1 : 1;
     const labelOrder = compareText(left.label, right.label);
     return labelOrder !== 0 ? labelOrder : compareText(left.profile_id, right.profile_id);
   });
@@ -97,6 +97,32 @@ export function resetHint(stat: WindowStat | null): string | undefined {
   return stat ? `リセット ${formatUpdatedAt(stat.resets_at)}` : undefined;
 }
 
+const resetTimeFormatter = new Intl.DateTimeFormat(undefined, {
+  hour: "2-digit",
+  minute: "2-digit",
+});
+
+const resetDayFormatter = new Intl.DateTimeFormat(undefined, {
+  month: "numeric",
+  day: "numeric",
+});
+
+/**
+ * The reset moment at glance width: a clock time when it lands today
+ * ("16:00"), the date when it does not ("8/12"). Empty for a window whose
+ * reset the API left out.
+ */
+export function formatResetShort(iso: string, now: Date = new Date()): string {
+  if (!iso) return "";
+  const parsed = new Date(iso);
+  if (Number.isNaN(parsed.getTime())) return "";
+  const sameDay =
+    parsed.getFullYear() === now.getFullYear() &&
+    parsed.getMonth() === now.getMonth() &&
+    parsed.getDate() === now.getDate();
+  return sameDay ? resetTimeFormatter.format(parsed) : resetDayFormatter.format(parsed);
+}
+
 const USAGE_ERROR_MESSAGE: Record<string, string> = {
   "usage.error.rate_limited": "取得を一時停止しています。しばらくしてから再表示されます。",
   "usage.error.needs_relogin":
@@ -134,14 +160,15 @@ const USAGE_STATE_MESSAGE: Record<UsageRowState, string> = {
 export function staleWindowsNote(row: ProfileUsage): string {
   if (row.state !== "cooldown" || !rowHasWindows(row)) return "";
   const note = `${formatUpdatedAt(row.fetched_at)} 時点・更新一時停止中`;
-  return row.retry_at ? `${note}・${formatUpdatedAt(row.retry_at)} に再開` : note;
+  return row.retry_at ? `${note}・${formatUpdatedAt(row.retry_at)} 頃に再開` : note;
 }
 
 /** What to show in place of the numbers. Empty string means "show numbers". */
 export function rowMessage(row: ProfileUsage): string {
   if (row.state === "ok") return "";
   if (row.state === "cooldown" && row.retry_at) {
-    return `取得を一時停止しています。${formatUpdatedAt(row.retry_at)} に再開します。`;
+    // 頃: the time is a local backoff estimate, not the server's word.
+    return `取得を一時停止しています。${formatUpdatedAt(row.retry_at)} 頃に再開します。`;
   }
   return usageErrorMessage(row.error_code) ?? USAGE_STATE_MESSAGE[row.state];
 }

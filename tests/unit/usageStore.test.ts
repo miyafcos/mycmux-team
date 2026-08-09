@@ -35,6 +35,7 @@ function makeRow(profileId: string, pct: number): ProfileUsage {
     seven_day: null,
     seven_day_sonnet: null,
     seven_day_opus: null,
+    model_windows: [],
     error_code: null,
     retry_at: null,
     fetched_at: "2026-01-01T00:00:00Z",

@@ -885,6 +885,12 @@ export interface WindowStat {
   resets_at: string;
 }
 
+/** A usage window the API named beyond the fixed four (per-model limits etc.). */
+export interface NamedWindowStat {
+  key: string;
+  window: WindowStat;
+}
+
 export type UsageRowState = "ok" | "wait_for_cli" | "cooldown" | "needs_relogin" | "unsupported" | "error";
 
 export interface ProfileUsage {
@@ -901,6 +907,7 @@ export interface ProfileUsage {
   seven_day: WindowStat | null;
   seven_day_sonnet: WindowStat | null;
   seven_day_opus: WindowStat | null;
+  model_windows: NamedWindowStat[];
   error_code: string | null;
   retry_at: string | null;
   fetched_at: string;

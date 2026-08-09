@@ -7,6 +7,7 @@ const SESSION_SPLIT_LABELS = {
 
 export const paneDndStrings = {
   moveToNewWorkspace: "新しいワークスペースへ移動",
+  dropInNewWindow: "離すと新しいウィンドウで開きます",
   attachTab: "このペインのタブに追加",
   mergePane: "ペインを統合",
   split: {

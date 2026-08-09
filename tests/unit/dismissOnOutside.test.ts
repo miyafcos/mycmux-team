@@ -56,11 +56,14 @@ describe("isOutsideDismiss", () => {
 describe("useDismissOnOutside wiring", () => {
   const hook = source("src/hooks/useDismissOnOutside.ts");
 
-  it("registers mousedown and Escape together, in capture, with symmetric cleanup", () => {
+  it("registers mousedown, contextmenu and Escape together, in capture, with symmetric cleanup", () => {
     expect(hook).toContain('if (!active) return;');
-    expect(hook.match(/window\.addEventListener\(/g)).toHaveLength(2);
-    expect(hook.match(/window\.removeEventListener\(/g)).toHaveLength(2);
+    expect(hook.match(/window\.addEventListener\(/g)).toHaveLength(3);
+    expect(hook.match(/window\.removeEventListener\(/g)).toHaveLength(3);
     expect(hook).toContain('window.addEventListener("mousedown", onMouseDown, true)');
+    // Right-click does not reliably deliver a mousedown, and with the native
+    // context menu suppressed it would otherwise leave popovers stranded open.
+    expect(hook).toContain('window.addEventListener("contextmenu", onMouseDown, true)');
     expect(hook).toContain('window.addEventListener("keydown", onKeyDown, true)');
     expect(hook).toContain('if (event.key !== "Escape") return;');
     // The effect must not re-attach when the caller passes a fresh callback or

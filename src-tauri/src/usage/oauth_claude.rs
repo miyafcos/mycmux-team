@@ -1,5 +1,5 @@
 use super::util::{epoch_to_rfc3339, normalize_pct, number_field, number_to_i64, truncate};
-use crate::usage::WindowStat;
+use crate::usage::{NamedWindow, WindowStat};
 use chrono::{DateTime, Utc};
 use reqwest::header::{ACCEPT, CONTENT_TYPE, USER_AGENT};
 use serde_json::Value;
@@ -18,6 +18,9 @@ pub struct ClaudeUsage {
     pub seven_day: Option<WindowStat>,
     pub seven_day_sonnet: Option<WindowStat>,
     pub seven_day_opus: Option<WindowStat>,
+    /// Windows beyond the four fixed keys — per-model weekly limits and any
+    /// future additions. See [`parse_extra_windows`].
+    pub model_windows: Vec<NamedWindow>,
 }
 
 impl ClaudeUsage {
@@ -74,12 +77,69 @@ pub async fn fetch_with_token_status(
     let value: Value = serde_json::from_str(&body)
         .map_err(|error| (None, format!("Claude OAuth JSON parse failed: {error}")))?;
 
-    Ok(ClaudeUsage {
-        five_hour: parse_window(&value, &["five_hour"]),
-        seven_day: parse_window(&value, &["seven_day"]),
-        seven_day_sonnet: parse_window(&value, &["seven_day_sonnet"]),
-        seven_day_opus: parse_window(&value, &["seven_day_opus"]),
-    })
+    Ok(parse_usage(&value))
+}
+
+fn parse_usage(value: &Value) -> ClaudeUsage {
+    ClaudeUsage {
+        five_hour: parse_window(value, &["five_hour"]),
+        seven_day: parse_window(value, &["seven_day"]),
+        seven_day_sonnet: parse_window(value, &["seven_day_sonnet"]),
+        seven_day_opus: parse_window(value, &["seven_day_opus"]),
+        model_windows: parse_extra_windows(value),
+    }
+}
+
+const KNOWN_WINDOW_KEYS: [&str; 4] = ["five_hour", "seven_day", "seven_day_sonnet", "seven_day_opus"];
+
+/// Every window the response carries beyond the four fixed keys.
+///
+/// The endpoint has grown windows before (per-model weekly limits) and will
+/// again; naming them here would mean a release per model. So this parses by
+/// shape instead: any other top-level object with a utilization number is a
+/// window, and any entry of a top-level `limits` array that names itself and
+/// carries one is too. Objects that don't look like windows are skipped, so a
+/// response without extras yields an empty list rather than an error.
+fn parse_extra_windows(root: &Value) -> Vec<NamedWindow> {
+    let mut extras = Vec::new();
+    if let Some(map) = root.as_object() {
+        for (key, value) in map {
+            if KNOWN_WINDOW_KEYS.contains(&key.as_str()) || !value.is_object() {
+                continue;
+            }
+            if let Some(window) = parse_window(root, &[key.as_str()]) {
+                extras.push(NamedWindow {
+                    key: key.clone(),
+                    window,
+                });
+            }
+        }
+    }
+    if let Some(limits) = root.get("limits").and_then(Value::as_array) {
+        for entry in limits {
+            let Some(name) = ["name", "model", "id", "key"]
+                .iter()
+                .find_map(|key| entry.get(*key).and_then(Value::as_str))
+                .filter(|name| !name.trim().is_empty())
+            else {
+                continue;
+            };
+            let Some(pct) = number_field(
+                entry,
+                &["utilization", "used_percent", "usedPercent", "percent", "pct"],
+            ) else {
+                continue;
+            };
+            extras.push(NamedWindow {
+                key: name.to_string(),
+                window: WindowStat {
+                    pct: normalize_pct(pct),
+                    resets_at: reset_field(entry).unwrap_or_default(),
+                },
+            });
+        }
+    }
+    extras
 }
 
 fn load_access_token() -> Result<String, String> {
@@ -160,4 +220,69 @@ fn http_error(label: &str, status: u16, body: &str) -> String {
         return format!("{label} error: HTTP {status}");
     }
     format!("{label} error: HTTP {status}: {}", truncate(&cleaned, 300))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn parse_usage_reads_the_four_fixed_windows() {
+        let usage = parse_usage(&json!({
+            "five_hour": { "utilization": 12.5, "resets_at": "2026-08-09T16:00:00Z" },
+            "seven_day": { "utilization": 58, "resets_at": "2026-08-12T00:00:00Z" },
+            "seven_day_sonnet": null,
+        }));
+        assert_eq!(usage.five_hour.as_ref().map(|stat| stat.pct), Some(12.5));
+        assert_eq!(
+            usage.five_hour.as_ref().map(|stat| stat.resets_at.as_str()),
+            Some("2026-08-09T16:00:00+00:00")
+        );
+        assert_eq!(usage.seven_day.as_ref().map(|stat| stat.pct), Some(58.0));
+        assert!(usage.seven_day_sonnet.is_none());
+        assert!(usage.seven_day_opus.is_none());
+        assert!(usage.model_windows.is_empty());
+    }
+
+    #[test]
+    fn extra_windows_are_parsed_by_shape_not_by_name() {
+        let usage = parse_usage(&json!({
+            "five_hour": { "utilization": 1.5 },
+            // An unanticipated per-model window: object with a utilization.
+            "seven_day_fable": { "utilization": 33, "resets_at": "2026-08-12T00:00:00Z" },
+            // Objects without a utilization number are not windows.
+            "account": { "email": "someone@example.com" },
+            // Non-objects are skipped outright.
+            "plan": "max",
+        }));
+        assert_eq!(usage.model_windows.len(), 1);
+        assert_eq!(usage.model_windows[0].key, "seven_day_fable");
+        assert_eq!(usage.model_windows[0].window.pct, 33.0);
+        assert_eq!(
+            usage.model_windows[0].window.resets_at,
+            "2026-08-12T00:00:00+00:00"
+        );
+        // The fixed four never duplicate into the extras.
+        assert_eq!(usage.five_hour.as_ref().map(|stat| stat.pct), Some(1.5));
+    }
+
+    #[test]
+    fn limits_array_entries_become_named_windows() {
+        let usage = parse_usage(&json!({
+            "limits": [
+                { "name": "fable", "utilization": 0.42, "resets_at": 1770000000 },
+                { "model": "opus", "utilization": 7 },
+                { "name": "", "utilization": 5 },
+                { "name": "no-utilization" },
+            ]
+        }));
+        assert_eq!(usage.model_windows.len(), 2);
+        assert_eq!(usage.model_windows[0].key, "fable");
+        assert_eq!(usage.model_windows[0].window.pct, 42.0);
+        assert!(!usage.model_windows[0].window.resets_at.is_empty());
+        assert_eq!(usage.model_windows[1].key, "opus");
+        assert_eq!(usage.model_windows[1].window.pct, 7.0);
+        assert_eq!(usage.model_windows[1].window.resets_at, "");
+    }
 }

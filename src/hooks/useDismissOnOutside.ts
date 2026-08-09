@@ -78,9 +78,14 @@ export function useDismissOnOutside(
     };
 
     window.addEventListener("mousedown", onMouseDown, true);
+    // Right-click outside must dismiss too: it does not always deliver a
+    // mousedown (and used to leave menus stranded open under the suppressed
+    // native context menu).
+    window.addEventListener("contextmenu", onMouseDown, true);
     window.addEventListener("keydown", onKeyDown, true);
     return () => {
       window.removeEventListener("mousedown", onMouseDown, true);
+      window.removeEventListener("contextmenu", onMouseDown, true);
       window.removeEventListener("keydown", onKeyDown, true);
     };
   }, [active]);

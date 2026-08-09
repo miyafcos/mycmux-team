@@ -41,6 +41,17 @@ export type PaneDropTarget =
       kind: "new-workspace";
     }
   | {
+      /**
+       * Pointer released outside the window (Phase 3c drag tear-out): the
+       * dragged tab/pane becomes a new workspace in a new OS window at the
+       * recorded screen point. Set by the drag loop's viewport check, never by
+       * DOM hit-testing — there is no element out there to hit.
+       */
+      kind: "new-window";
+      screenX: number;
+      screenY: number;
+    }
+  | {
       kind: "handoff";
       workspaceId: string;
       paneId: string;

@@ -34,6 +34,16 @@ window.addEventListener("error", (e) => {
   console.error("[mycmux] uncaught error:", e.error ?? e.message);
 });
 
+// Suppress the WebView2 native context menu everywhere. That menu runs a modal
+// message loop in its own window, and it opens while our focus controller is
+// still retrying focus and the selection-copy path may run a synchronous
+// execCommand("copy") — a combination observed to hang the whole app on
+// right-click. Nothing in the UI depends on the native menu; in-app menus are
+// plain DOM and open fine with preventDefault in place, and the right-click
+// selection-copy listener still fires (preventDefault does not stop
+// propagation).
+window.addEventListener("contextmenu", (e) => e.preventDefault());
+
 initializePerfDiagnostics();
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(

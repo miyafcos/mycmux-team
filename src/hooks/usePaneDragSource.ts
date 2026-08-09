@@ -10,6 +10,8 @@ import { useWorkspaceListStore } from "../stores/workspaceListStore";
 import { useSavepointDragStore } from "../stores/savepointDragStore";
 import { focusController } from "../lib/focusController";
 import { publishSavepoint } from "../lib/ipc";
+import { isOutsideWindowViewport } from "../lib/windowEdge";
+import { tearOutWorkspaceToNewWindow } from "../lib/workspaceTearOut";
 import {
   isPaneDropTargetEligible,
   prioritizePaneHandoffDropTarget,
@@ -84,7 +86,7 @@ function canDropTarget(item: PaneDragItem, target: PaneDropTarget): boolean {
   const sourcePane = sourceWorkspace.panes.find((pane) => pane.id === item.paneId);
   if (!sourcePane) return false;
 
-  if (target.kind === "new-workspace") {
+  if (target.kind === "new-workspace" || target.kind === "new-window") {
     return item.kind === "pane" || sourcePane.tabs.some((tab) => tab.id === item.tabId);
   }
 
@@ -231,7 +233,7 @@ function commitPaneDragDrop(item: PaneDragItem, target: PaneDropTarget | null): 
     return;
   }
 
-  if (target.kind === "new-workspace") {
+  if (target.kind === "new-workspace" || target.kind === "new-window") {
     const workspaceId = crypto.randomUUID();
     const workspaceName = `Workspace ${listStore.workspaces.length + 1}`;
     const moved = item.kind === "tab"
@@ -249,6 +251,19 @@ function commitPaneDragDrop(item: PaneDragItem, target: PaneDropTarget | null): 
           workspaceName,
         );
     if (!moved) return;
+    if (target.kind === "new-window") {
+      // Dropped outside the window: the fresh workspace immediately tears out
+      // to a new OS window at the drop point. If opening the window fails the
+      // workspace simply stays here — nothing to undo, nothing lost.
+      void tearOutWorkspaceToNewWindow(workspaceId, {
+        x: target.screenX - 40,
+        y: target.screenY - 20,
+      }).catch((error) => {
+        console.error("[multiwindow] drag tear-out failed", error);
+        useToastStore.getState().pushToast("新しいウィンドウを開けませんでした", "error");
+      });
+      return;
+    }
     useWorkspaceListStore.getState().setActiveWorkspace(workspaceId);
     focusController.request("drag", { sessionId: focusSessionId, focus: true });
     return;
@@ -409,7 +424,24 @@ export function usePaneDragSource() {
       nativeEvent.preventDefault();
       const dragStore = usePaneDragStore.getState();
       dragStore.moveDrag({ x: nativeEvent.clientX, y: nativeEvent.clientY });
-      dragStore.setTarget(resolveDropTargetAtPoint(nativeEvent.clientX, nativeEvent.clientY, item));
+      let target = resolveDropTargetAtPoint(nativeEvent.clientX, nativeEvent.clientY, item);
+      if (
+        !target &&
+        isOutsideWindowViewport(
+          nativeEvent.clientX,
+          nativeEvent.clientY,
+          window.innerWidth,
+          window.innerHeight,
+        )
+      ) {
+        const candidate = {
+          kind: "new-window" as const,
+          screenX: nativeEvent.screenX,
+          screenY: nativeEvent.screenY,
+        };
+        target = canDropTarget(item, candidate) ? candidate : null;
+      }
+      dragStore.setTarget(target);
       updateWorkspaceHover(nativeEvent.clientX, nativeEvent.clientY);
     }
 

@@ -139,7 +139,10 @@ export const useCliAccountStore = create<CliAccountStoreState>((set, get) => {
       setBusy(provider, `capture:${provider}`);
       try {
         const profile = await enqueueMutation(() => captureCliAccount(provider, label));
-        await get().fetch();
+        // Refresh usage too: a capture retitles the row (live:* -> profile id),
+        // and leaving the usage list on the old ids for up to one poll interval
+        // reads as the panel "losing" the account it just registered.
+        await Promise.all([get().fetch(), useUsageStore.getState().fetch()]);
         return profile;
       } catch (error) {
         set({ operationError: cliAccountMessage(error) });

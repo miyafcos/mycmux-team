@@ -3,6 +3,7 @@ import type { ProfileUsage, UsageRowState, WindowStat } from "../../src/lib/ipc"
 import {
   USAGE_STATE_MESSAGE,
   formatPct,
+  formatResetShort,
   orderAccountRows,
   rowHasWindows,
   rowMessage,
@@ -32,6 +33,7 @@ function row(overrides: Partial<ProfileUsage> = {}): ProfileUsage {
     seven_day: null,
     seven_day_sonnet: null,
     seven_day_opus: null,
+    model_windows: [],
     error_code: null,
     retry_at: null,
     fetched_at: "2026-08-08T12:00:00Z",
@@ -58,21 +60,37 @@ describe("orderAccountRows", () => {
     }
   });
 
-  it("ranks by provider, attention, active, worst pct, then label", () => {
+  it("ranks by provider, registration, then label — never by state or usage", () => {
     const ordered = orderAccountRows([
       row({ profile_id: "codex-quiet", provider: "codex", label: "z" }),
+      row({ profile_id: "live:claude", label: "aa-live", registered: false }),
       row({ profile_id: "claude-busy", label: "busy", five_hour: stat(80) }),
-      row({ profile_id: "claude-idle", label: "idle", five_hour: stat(5) }),
       row({ profile_id: "claude-active", label: "active", is_active: true, five_hour: stat(1) }),
       row({ profile_id: "claude-broken", label: "broken", state: "needs_relogin" }),
     ]);
     expect(ordered.map((entry) => entry.profile_id)).toEqual([
-      "claude-broken", // attention wins over everything within a provider
-      "claude-active", // then the account in use
-      "claude-busy", // then the highest usage
-      "claude-idle",
+      "claude-active", // plain label order within a provider...
+      "claude-broken", // ...errors do not jump the queue
+      "claude-busy", // ...nor does a high percentage
+      "live:claude", // unregistered live logins trail the registered rows
       "codex-quiet", // codex always trails claude
     ]);
+  });
+
+  it("keeps a row in its place when only its state changes between fetches", () => {
+    const before = [
+      row({ profile_id: "a", label: "a" }),
+      row({ profile_id: "b", label: "b" }),
+      row({ profile_id: "c", label: "c" }),
+    ];
+    const after = [
+      before[0],
+      row({ profile_id: "b", label: "b", state: "error", error_code: "usage.error.upstream" }),
+      row({ profile_id: "c", label: "c", five_hour: stat(99) }),
+    ];
+    expect(orderAccountRows(before).map((entry) => entry.profile_id)).toEqual(
+      orderAccountRows(after).map((entry) => entry.profile_id),
+    );
   });
 
   it("does not mutate its input", () => {
@@ -89,6 +107,20 @@ describe("worstPct", () => {
     expect(worstPct(row({ five_hour: stat(70), seven_day: stat(3) }))).toBe(70);
     expect(worstPct(row({ seven_day: stat(8) }))).toBe(8);
     expect(worstPct(row())).toBeNull();
+  });
+});
+
+describe("formatResetShort", () => {
+  const now = new Date("2026-08-09T12:00:00");
+
+  it("shows a clock time for a same-day reset and a date otherwise", () => {
+    expect(formatResetShort("2026-08-09T16:00:00", now)).toMatch(/16[:時]00/);
+    expect(formatResetShort("2026-08-12T00:00:00", now)).toMatch(/8[/月]12/);
+  });
+
+  it("is empty for missing or unparsable values", () => {
+    expect(formatResetShort("", now)).toBe("");
+    expect(formatResetShort("not-a-date", now)).toBe("");
   });
 });
 

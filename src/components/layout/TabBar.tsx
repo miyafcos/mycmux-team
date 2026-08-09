@@ -22,6 +22,9 @@ import {
 } from "../../lib/workspaceColors";
 import TabItem from "./TabItem";
 import { tearOutWorkspaceToNewWindow } from "../../lib/workspaceTearOut";
+import { isOutsideWindowViewport } from "../../lib/windowEdge";
+import { TearOutBanner } from "../workspace/PaneDragOverlay";
+import { paneDndStrings } from "../workspace/paneDndStrings";
 import { useToastStore } from "../../stores/toastStore";
 import type { Workspace } from "../../types";
 
@@ -125,8 +128,9 @@ interface WorkspaceTabEntryProps {
   renameSignal: number;
   onPointerDown: (e: React.PointerEvent, index: number) => void;
   onPointerMove: (e: React.PointerEvent) => void;
-  onPointerUp: () => void;
+  onPointerUp: (e: React.PointerEvent) => void;
   onContextMenu: (e: React.MouseEvent, workspaceId: string) => void;
+  onMenu: (workspaceId: string, x: number, y: number) => void;
   onClick: (workspaceId: string) => void;
   onClose: (workspaceId: string) => void;
   onRename: (workspaceId: string, newName: string) => void;
@@ -148,6 +152,7 @@ const WorkspaceTabEntry = memo(function WorkspaceTabEntry({
   onPointerMove,
   onPointerUp,
   onContextMenu,
+  onMenu,
   onClick,
   onClose,
   onRename,
@@ -248,6 +253,7 @@ const WorkspaceTabEntry = memo(function WorkspaceTabEntry({
         renameSignal={renameSignal}
         onClick={() => { if (!draggingRef.current) onClick(ws.id); }}
         onClose={() => onClose(ws.id)}
+        onMenu={(x, y) => onMenu(ws.id, x, y)}
         onRename={(newName) => onRename(ws.id, newName)}
       />
     </div>
@@ -271,12 +277,16 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
 
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [dropIndex, setDropIndex] = useState<number | null>(null);
+  // Pointer is currently outside the window mid-drag: releasing tears the
+  // workspace out to a new OS window instead of reordering.
+  const [tearOutReady, setTearOutReady] = useState(false);
   const [contextMenu, setContextMenu] = useState<{ workspaceId: string; x: number; y: number } | null>(null);
   const [contextMenuPos, setContextMenuPos] = useState({ left: 0, top: 0 });
   const [renameSignals, setRenameSignals] = useState<Record<string, number>>({});
   const contextMenuRef = useRef<HTMLDivElement | null>(null);
   const itemRefs = useRef<(HTMLDivElement | null)[]>([]);
   const startY = useRef(0);
+  const startX = useRef(0);
   const dragging = useRef(false);
   const pointerIdRef = useRef<number | null>(null);
   const dragElRef = useRef<HTMLElement | null>(null);
@@ -287,6 +297,7 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
     const target = e.target as HTMLElement;
     if (target.tagName === "BUTTON" || target.tagName === "INPUT" || target.closest("button, input")) return;
     startY.current = e.clientY;
+    startX.current = e.clientX;
     dragging.current = false;
     pointerIdRef.current = e.pointerId;
     dragElRef.current = e.currentTarget as HTMLElement;
@@ -297,11 +308,27 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
     if (paneDragActive) return;
     if (dragIndex === null) return;
     if (!dragging.current) {
-      if (Math.abs(e.clientY - startY.current) < 5) return;
+      // Vertical movement starts a reorder; a mostly-horizontal pull (out of
+      // the sidebar) starts the same drag so it can leave the window.
+      if (Math.abs(e.clientY - startY.current) < 5 && Math.abs(e.clientX - startX.current) < 24) return;
       dragging.current = true;
       if (dragElRef.current && pointerIdRef.current !== null) {
         dragElRef.current.setPointerCapture(pointerIdRef.current);
       }
+    }
+    // Pointer capture keeps the moves coming after the cursor leaves the
+    // window; out there the gesture stops meaning "reorder" and starts
+    // meaning "tear out" (Phase 3c).
+    const outside = isOutsideWindowViewport(
+      e.clientX,
+      e.clientY,
+      window.innerWidth,
+      window.innerHeight,
+    );
+    setTearOutReady(outside);
+    if (outside) {
+      setDropIndex(null);
+      return;
     }
     const y = e.clientY;
     let target = 0;
@@ -315,23 +342,36 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
     setDropIndex(target === dragIndex ? null : target);
   }, [dragIndex, paneDragActive, workspaces.length]);
 
-  const handlePointerUp = useCallback(() => {
+  const handlePointerUp = useCallback((e: React.PointerEvent) => {
     if (paneDragActive) return;
-    if (dragIndex !== null && dropIndex !== null && dragging.current) {
+    if (dragging.current && tearOutReady && dragIndex !== null) {
+      const workspace = workspaces[dragIndex];
+      if (workspace) {
+        void tearOutWorkspaceToNewWindow(workspace.id, {
+          x: e.screenX - 40,
+          y: e.screenY - 20,
+        }).catch((err) => {
+          console.error("[multiwindow] drag tear-out failed", err);
+          useToastStore.getState().pushToast("新しいウィンドウを開けませんでした", "error");
+        });
+      }
+    } else if (dragIndex !== null && dropIndex !== null && dragging.current) {
       reorder(dragIndex, dropIndex);
     }
+    setTearOutReady(false);
     setDragIndex(null);
     setDropIndex(null);
     dragging.current = false;
     pointerIdRef.current = null;
     dragElRef.current = null;
-  }, [dragIndex, dropIndex, paneDragActive, reorder]);
+  }, [dragIndex, dropIndex, paneDragActive, reorder, tearOutReady, workspaces]);
 
   useEffect(() => {
     const up = () => {
       if (dragIndex !== null) {
         setDragIndex(null);
         setDropIndex(null);
+        setTearOutReady(false);
         dragging.current = false;
       }
     };
@@ -343,6 +383,12 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
     e.preventDefault();
     e.stopPropagation();
     setContextMenu({ workspaceId, x: e.clientX, y: e.clientY });
+  }, []);
+
+  // The primary, mouse-only route to the same menu: the ⋮ hover button on the
+  // row. Right-click still works but nothing depends on it.
+  const handleMenuButton = useCallback((workspaceId: string, x: number, y: number) => {
+    setContextMenu((prev) => (prev?.workspaceId === workspaceId ? null : { workspaceId, x, y }));
   }, []);
 
   useDismissOnOutside(Boolean(contextMenu), contextMenuRef, () => setContextMenu(null));
@@ -425,6 +471,7 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
               onPointerMove={handlePointerMove}
               onPointerUp={handlePointerUp}
               onContextMenu={handleContextMenu}
+              onMenu={handleMenuButton}
               onClick={setActive}
               onClose={onCloseWorkspace}
               onRename={rename}
@@ -470,6 +517,8 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
         <PlusIcon />
         <span>New workspace</span>
       </button>
+
+      {tearOutReady && <TearOutBanner label={`⬈ ${paneDndStrings.dropInNewWindow}`} />}
 
       {contextMenu && contextWorkspace && (
         <div

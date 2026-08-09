@@ -32,6 +32,13 @@ function fallbackCopyTextToClipboard(text: string, restoreFocus?: () => void): b
     restoreFocus?.();
     return false;
   }
+  // execCommand("copy") needs a focused document, and running it while focus
+  // is elsewhere (e.g. another window took it mid-gesture) turns this into a
+  // synchronous focus fight. Losing one copy is the cheaper failure.
+  if (typeof document.hasFocus === "function" && !document.hasFocus()) {
+    restoreFocus?.();
+    return false;
+  }
   const textarea = document.createElement("textarea");
   textarea.value = text;
   textarea.setAttribute("readonly", "true");
