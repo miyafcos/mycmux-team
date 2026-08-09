@@ -20,6 +20,7 @@ import {
   resolvePaneTabMenuLeft,
   resolvePaneTabMenuRows,
   resolvePaneTabBarMode,
+  shouldCloseTabOnAuxClick,
   shouldMarkAttentionSeen,
   shouldShowDeferredRestoreBadge,
   shouldShowInlinePinControl,
@@ -456,5 +457,21 @@ describe("shouldMarkAttentionSeen", () => {
     expect(shouldMarkAttentionSeen(false, "tab-a", "attention-a")).toBe(false);
     expect(shouldMarkAttentionSeen(true, undefined, "attention-a")).toBe(false);
     expect(shouldMarkAttentionSeen(true, "tab-a", null)).toBe(false);
+  });
+});
+
+describe("shouldCloseTabOnAuxClick", () => {
+  it("closes on the middle button only", () => {
+    expect(shouldCloseTabOnAuxClick(1, false, false)).toBe(true);
+    expect(shouldCloseTabOnAuxClick(0, false, false)).toBe(false);
+    expect(shouldCloseTabOnAuxClick(2, false, false)).toBe(false);
+  });
+
+  it("declines while the pill is renaming, so the text field keeps the button", () => {
+    expect(shouldCloseTabOnAuxClick(1, true, false)).toBe(false);
+  });
+
+  it("declines on the pin, duplicate and close controls the pill hosts", () => {
+    expect(shouldCloseTabOnAuxClick(1, false, true)).toBe(false);
   });
 });

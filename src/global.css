@@ -1031,3 +1031,88 @@ a:focus-visible {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.45; }
 }
+
+/* Tab-strip drag reorder marker. A zero-width flex item carries the line so
+   inserting it between pills never reflows the strip; the line itself is
+   painted by the pseudo-element and can overhang both pill edges. */
+.pane-tab-drop-indicator {
+  position: relative;
+  flex: 0 0 0;
+  width: 0;
+  align-self: stretch;
+  pointer-events: none;
+}
+
+.pane-tab-drop-indicator::after {
+  content: "";
+  position: absolute;
+  top: 5px;
+  bottom: 5px;
+  left: -1px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--cmux-accent);
+  transition: opacity var(--cmux-motion-fast) var(--cmux-ease);
+  animation: cmux-tab-drop-indicator-in var(--cmux-motion-fast) var(--cmux-ease);
+}
+
+@keyframes cmux-tab-drop-indicator-in {
+  from { opacity: 0; transform: scaleY(0.4); }
+  to { opacity: 1; transform: scaleY(1); }
+}
+
+/* Workspace colors — the sidebar's Chrome-tab-group style picker.
+   The raw palette value is only ever painted as a small accent (the swatch
+   itself, the 3px row bar, the title bar dot); every surface derived from it
+   goes through color-mix() against the chrome tokens, so the theme's contrast
+   guarantees survive on both dark and light chrome. */
+/* Fixed 5-wide grid so the nine choices always land as a tidy 5 + 4, instead
+   of reflowing with the menu width. */
+.workspace-color-swatches {
+  display: grid;
+  grid-template-columns: repeat(5, 18px);
+  gap: var(--cmux-space-3);
+  padding: var(--cmux-space-2) var(--cmux-space-6) var(--cmux-space-3);
+  justify-content: start;
+}
+
+.workspace-color-swatch {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid color-mix(in srgb, var(--cmux-text) 22%, transparent);
+  background: var(--workspace-swatch-color, transparent);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+
+.workspace-color-swatch:hover {
+  transform: scale(1.12);
+}
+
+.workspace-color-swatch[aria-pressed="true"] {
+  box-shadow: 0 0 0 2px var(--cmux-popover), 0 0 0 3px var(--cmux-text);
+}
+
+/* "なし" reads as an empty swatch with a strike through it. */
+.workspace-color-swatch--none {
+  background:
+    linear-gradient(
+      to bottom right,
+      transparent calc(50% - 1px),
+      color-mix(in srgb, var(--cmux-text) 55%, transparent) calc(50% - 1px),
+      color-mix(in srgb, var(--cmux-text) 55%, transparent) calc(50% + 1px),
+      transparent calc(50% + 1px)
+    );
+}
+
+/* Title bar dot marking the active workspace's color. */
+.workspace-color-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--workspace-swatch-color, transparent);
+}

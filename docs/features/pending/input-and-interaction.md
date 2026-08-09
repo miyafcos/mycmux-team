@@ -20,14 +20,15 @@ Type once, send to all visible panes simultaneously.
 | Needs | Broadcast flag in workspace store, input tee in `XTermWrapper.onData` |
 | Priority | **Low** |
 
-## Drag-and-Drop
+## Drag-and-Drop (file drop)
 
-Drop files into terminal to paste paths, drop tabs to reorder.
+Drop files into terminal to paste paths. Tab drag-reorder shipped — see
+`implemented/workspaces-and-layout.md`.
 
 | Detail | Description |
 |--------|-------------|
-| cmux | File drop inserts escaped path, tab drag reorders workspaces |
-| Needs | `onDrop` handlers on `TerminalPane` (file→path) and `TabBar` (reorder) |
+| cmux | File drop inserts escaped path |
+| Needs | `onDrop` handler on `TerminalPane` (file→path) |
 | Priority | **Medium** |
 
 ## Context Menus

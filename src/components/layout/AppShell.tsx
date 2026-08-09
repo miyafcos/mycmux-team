@@ -32,7 +32,11 @@ import { OVERLAY_EXIT_MS, useDeferredUnmount } from "../../hooks/useDeferredUnmo
 import { confirm, message } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 import { beforePaneClose } from "../../lib/paneCloseLifecycle";
-import { popClosedPane } from "../../stores/closedPaneStore";
+import {
+  peekClosedPane,
+  popClosedPane,
+  pushClosedWorkspace,
+} from "../../stores/closedPaneStore";
 import { useOnlineSavepointStore } from "../../stores/onlineSavepointStore";
 import { paneContainsSession } from "../../stores/workspaceListStore";
 import {
@@ -567,8 +571,18 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
       // can be added to this workspace while confirm() was awaited (drag-and-
       // drop, pane.reopen, etc.), and the stale closure would skip their
       // session kill / cache eviction while still removing the workspace.
-      const ws = useWorkspaceListStore.getState().workspaces.find((w) => w.id === id);
+      const listState = useWorkspaceListStore.getState();
+      const ws = listState.workspaces.find((w) => w.id === id);
       if (ws) {
+        // Record the workspace's tabs before their sessions die so
+        // Ctrl+Shift+T can undo the close. Bounded by
+        // CLOSED_WORKSPACE_BULK_LIMIT (half the history) — one gesture must not
+        // flush every individually-closed pane. The focused session ranks
+        // first so the most recently used tab comes back first.
+        const focusedSessionId = listState.activeWorkspaceId === id
+          ? useUiStore.getState().activePaneId
+          : listState.lastActivePaneByWorkspace[id] ?? null;
+        pushClosedWorkspace(ws, focusedSessionId);
         for (const pane of ws.panes) {
           for (const tab of pane.tabs) {
             evictTerminalCache(tab.sessionId);
@@ -772,14 +786,34 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
         }
 
         case "pane.reopen": {
-          const activeWs = ws.find((w) => w.id === aid);
-          if (!activeWs) return;
-          const anchorPane = activeWs.panes.find((p) => paneMatchesSession(p, apid))
-            ?? activeWs.panes.find((p) => paneMatchesSession(p, lpid))
-            ?? activeWs.panes[0];
-          if (!anchorPane) return;
-          const closedPane = popClosedPane();
+          // Peek before committing: the entry stays on the stack unless we can
+          // actually place the restored pane somewhere.
+          const closedPane = peekClosedPane();
           if (!closedPane) return;
+          // Prefer the workspace the pane was closed from; fall back to the
+          // current one when that workspace is gone (or was never recorded).
+          const sourceWs = closedPane.workspaceId
+            ? ws.find((w) => w.id === closedPane.workspaceId)
+            : undefined;
+          const targetWs = sourceWs ?? ws.find((w) => w.id === aid);
+          if (!targetWs) return;
+          const targetIsActive = targetWs.id === aid;
+          const targetLastPaneSession = targetIsActive
+            ? null
+            : useWorkspaceListStore.getState().lastActivePaneByWorkspace[targetWs.id] ?? null;
+          const anchorPane = targetIsActive
+            ? (targetWs.panes.find((p) => paneMatchesSession(p, apid))
+              ?? targetWs.panes.find((p) => paneMatchesSession(p, lpid))
+              ?? targetWs.panes[0])
+            : (targetWs.panes.find((p) => paneMatchesSession(p, targetLastPaneSession))
+              ?? targetWs.panes[0]);
+          if (!anchorPane) return;
+          popClosedPane();
+          if (!targetIsActive) {
+            // Bring the user to where the pane is being restored, otherwise the
+            // new pane appears in a workspace they cannot see.
+            setActiveWorkspace(targetWs.id);
+          }
           const launchEnv: Record<string, string> | undefined =
             closedPane.agentKind && closedPane.agentSessionId
               ? {
@@ -788,7 +822,7 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
                   MYCMUX_AGENT_KIND: closedPane.agentKind,
                 }
               : undefined;
-          addPaneToWorkspaceWithOptions(activeWs.id, anchorPane.id, "right", {
+          addPaneToWorkspaceWithOptions(targetWs.id, anchorPane.id, "right", {
             agentId: "shell-starter",
             label: closedPane.label ?? undefined,
             cwd: closedPane.cwd ?? undefined,

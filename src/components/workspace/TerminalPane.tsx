@@ -32,6 +32,7 @@ import { usePaneDragStore, type PaneDragItem, type PaneDropTarget } from "../../
 import { useSavepointDragStore } from "../../stores/savepointDragStore";
 import { resolveLiveSavepointTargetKind, savepointTargetLabel } from "../../lib/savepointHandoff";
 import { resolvePaneHandoffEligibility } from "../../lib/paneHandoff";
+import { pushClosedTab } from "../../stores/closedPaneStore";
 import { onlineStrings } from "../online/onlineStrings";
 
 interface TerminalPaneProps {
@@ -239,7 +240,7 @@ function defaultOpenUriForLocalPath(uri: string): string {
 
 function getDropPreviewLabel(
   item: PaneDragItem,
-  target: Exclude<PaneDropTarget, { kind: "handoff" }>,
+  target: Exclude<PaneDropTarget, { kind: "handoff" | "tab-index" }>,
 ): string {
   if (target.kind === "new-workspace") {
     return paneDndStrings.moveToNewWorkspace;
@@ -502,6 +503,15 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
       }
     }
     if (isTerminalTab(tab)) {
+      // Record the tab-pill × close so Ctrl+Shift+T can bring it back. One
+      // per-tab entry covers both routes: closing a tab of a multi-tab pane,
+      // and closing a pane's last tab (which drops the pane) — either way the
+      // entry carries that tab's own cwd / agent identity. Skipped when
+      // removeTabFromPane would refuse the removal (last tab of the last pane),
+      // so we never offer to reopen a tab that is still on screen.
+      if (p && ws && (p.tabs.length > 1 || ws.panes.length > 1)) {
+        pushClosedTab(p, tab, { workspaceId, workspaceName: ws.name });
+      }
       evictTerminalCache(tab.sessionId);
       killSession(tab.sessionId).catch((err) =>
         console.warn("[mycmux] killSession failed", tab.sessionId, err),

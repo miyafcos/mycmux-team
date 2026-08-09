@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import type { CSSProperties } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useWorkspaceListStore, useUiStore, usePaneMetadataStore } from "../../stores/workspaceStore";
 import { IS_MAC } from "../../lib/keybindings";
@@ -7,6 +8,7 @@ import SettingsDialog from "../settings/SettingsDialog";
 import { AccountsButton } from "./AccountsButton";
 import { TabSweepButton } from "./TabSweepButton";
 import { onlineStrings } from "../online/onlineStrings";
+import { resolveWorkspaceColor } from "../../lib/workspaceColors";
 import { OVERLAY_EXIT_MS, useDeferredUnmount } from "../../hooks/useDeferredUnmount";
 import { useAccountsPolling } from "../../hooks/useAccountsPolling";
 
@@ -62,6 +64,7 @@ export default function TitleBar({
 }: TitleBarProps) {
   useAccountsPolling();
   const activeWorkspace = useWorkspaceListStore((s) => s.getActiveWorkspace());
+  const activeWorkspaceColor = resolveWorkspaceColor(activeWorkspace?.color);
   const toggleSidebar = useUiStore((s) => s.toggleSidebar);
   const totalNotifications = usePaneMetadataStore((s) =>
     Object.values(s.metadata).reduce(
@@ -257,6 +260,15 @@ export default function TitleBar({
         {activeWorkspace && (
           <>
             <span data-tauri-drag-region style={{ flexShrink: 0, color: "var(--cmux-text-secondary)", fontSize: 12 }}>·</span>
+            {activeWorkspaceColor && (
+              <span
+                data-tauri-drag-region
+                className="workspace-color-dot"
+                title={activeWorkspaceColor.label}
+                aria-hidden="true"
+                style={{ "--workspace-swatch-color": activeWorkspaceColor.value } as CSSProperties}
+              />
+            )}
             <span
               data-tauri-drag-region
               style={{

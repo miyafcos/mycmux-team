@@ -21,6 +21,7 @@ import {
   resolveAttentionTabs,
   resolveNextAttentionTarget,
   SEEN_ATTENTION_STORAGE_KEY,
+  summarizeUnseenAttention,
   useSessionAttentionStore,
 } from "../../src/stores/sessionAttentionStore";
 
@@ -136,6 +137,57 @@ describe("canonical attention connection", () => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+});
+
+describe("summarizeUnseenAttention", () => {
+  const tabs = [
+    tab("tab-a", "session-a"),
+    tab("tab-b", "session-b"),
+    tab("tab-c", "session-c"),
+  ];
+
+  function summarize() {
+    const state = useSessionAttentionStore.getState();
+    return summarizeUnseenAttention(tabs, state.attentionBySession, state.seenAttentionByTab);
+  }
+
+  it("reports nothing when there is no attention at all", () => {
+    expect(summarize()).toEqual({ count: 0, category: null });
+  });
+
+  it("counts every unseen tab and reports the most urgent category", () => {
+    useSessionAttentionStore.getState().applySnapshot(snapshot([
+      session("session-a", "attention-a", "done", 1, 100),
+      session("session-b", "attention-b", "error", 1, 200),
+      session("session-c", "attention-c", "approval", 1, 300),
+    ]));
+
+    expect(summarize()).toEqual({ count: 3, category: "waiting" });
+  });
+
+  it("drops a tab once its attention has been seen", () => {
+    const store = useSessionAttentionStore.getState();
+    store.applySnapshot(snapshot([
+      session("session-a", "attention-a", "approval", 1, 100),
+      session("session-b", "attention-b", "error", 1, 200),
+    ]));
+    store.markSeen("tab-a", "attention-a");
+
+    expect(summarize()).toEqual({ count: 1, category: "error" });
+
+    useSessionAttentionStore.getState().markSeen("tab-b", "attention-b");
+    expect(summarize()).toEqual({ count: 0, category: null });
+  });
+
+  it("ignores sessions with no attention id or a resolved 'none' kind", () => {
+    useSessionAttentionStore.getState().applySnapshot(snapshot([
+      session("session-a", null, "approval", 1, 100),
+      session("session-b", "attention-b", "none", 1, 200),
+      session("session-c", "attention-c", "input", 1, 300),
+    ]));
+
+    expect(summarize()).toEqual({ count: 1, category: "waiting" });
+  });
 });
 
 describe("seen attention identity", () => {

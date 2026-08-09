@@ -419,6 +419,44 @@ describe("workspaceLayoutStore pinned tabs", () => {
     expect(getPane("workspace-new", "pane-new").tabs.map((candidate) => candidate.id)).toEqual(["a1"]);
   });
 
+  it("clamps a non-pinned tab out of slot 0", () => {
+    setWorkspaces([
+      workspace("source", [pane("pane-a", ["a1", "a2", "a3"], "a2", "a1")], [["pane-a"]]),
+    ]);
+
+    useWorkspaceLayoutStore.getState().reorderPaneTab("source", "pane-a", "a3", 0);
+
+    expect(getPane("source", "pane-a").tabs.map((candidate) => candidate.id))
+      .toEqual(["a1", "a3", "a2"]);
+    expect(getPane("source", "pane-a").pinnedTabId).toBe("a1");
+    expect(getPane("source", "pane-a").activeTabId).toBe("a2");
+  });
+
+  it("unpins the pinned tab when it is dragged off the head", () => {
+    setWorkspaces([
+      workspace("source", [pane("pane-a", ["a1", "a2", "a3"], "a1", "a1")], [["pane-a"]]),
+    ]);
+
+    useWorkspaceLayoutStore.getState().reorderPaneTab("source", "pane-a", "a1", 2);
+
+    expect(getPane("source", "pane-a").tabs.map((candidate) => candidate.id))
+      .toEqual(["a2", "a1", "a3"]);
+    expect(getPane("source", "pane-a").pinnedTabId).toBeUndefined();
+    expect(getPane("source", "pane-a").activeTabId).toBe("a1");
+  });
+
+  it("keeps the pin when the pinned tab is dropped back on slot 0", () => {
+    setWorkspaces([
+      workspace("source", [pane("pane-a", ["a1", "a2", "a3"], "a3", "a1")], [["pane-a"]]),
+    ]);
+
+    useWorkspaceLayoutStore.getState().reorderPaneTab("source", "pane-a", "a1", 0);
+
+    expect(getPane("source", "pane-a").tabs.map((candidate) => candidate.id))
+      .toEqual(["a1", "a2", "a3"]);
+    expect(getPane("source", "pane-a").pinnedTabId).toBe("a1");
+  });
+
   it("restores a persisted pin and sorts it first", () => {
     const { panes } = useWorkspaceLayoutStore.getState().restorePanes(
       "ws-restore",
@@ -463,5 +501,112 @@ describe("workspaceLayoutStore pinned tabs", () => {
 
     expect(panes[0].pinnedTabId).toBeUndefined();
     expect(panes[0].tabs.map((candidate) => candidate.id)).toEqual(["t1", "t2"]);
+  });
+});
+
+describe("workspaceLayoutStore tab reorder", () => {
+  it("moves a tab to the head of the strip", () => {
+    setWorkspaces([
+      workspace("source", [pane("pane-a", ["a1", "a2", "a3"], "a2")], [["pane-a"]]),
+    ]);
+
+    useWorkspaceLayoutStore.getState().reorderPaneTab("source", "pane-a", "a3", 0);
+
+    expect(getPane("source", "pane-a").tabs.map((candidate) => candidate.id))
+      .toEqual(["a3", "a1", "a2"]);
+  });
+
+  it("moves a tab to the end of the strip", () => {
+    setWorkspaces([
+      workspace("source", [pane("pane-a", ["a1", "a2", "a3"], "a2")], [["pane-a"]]),
+    ]);
+
+    useWorkspaceLayoutStore.getState().reorderPaneTab("source", "pane-a", "a1", 3);
+
+    expect(getPane("source", "pane-a").tabs.map((candidate) => candidate.id))
+      .toEqual(["a2", "a3", "a1"]);
+  });
+
+  it("keeps the displayed tab when the order changes", () => {
+    setWorkspaces([
+      workspace("source", [pane("pane-a", ["a1", "a2", "a3"], "a2")], [["pane-a"]]),
+    ]);
+
+    useWorkspaceLayoutStore.getState().reorderPaneTab("source", "pane-a", "a3", 1);
+
+    expect(getPane("source", "pane-a")).toMatchObject({
+      activeTabId: "a2",
+      sessionId: "session-a2",
+      agentId: "agent-a2",
+    });
+    expect(getPane("source", "pane-a").tabs.map((candidate) => candidate.id))
+      .toEqual(["a1", "a3", "a2"]);
+  });
+
+  it("treats both slots around the dragged tab as a no-op", () => {
+    setWorkspaces([
+      workspace("source", [pane("pane-a", ["a1", "a2", "a3"], "a1")], [["pane-a"]]),
+    ]);
+    const before = getPane("source", "pane-a");
+
+    useWorkspaceLayoutStore.getState().reorderPaneTab("source", "pane-a", "a2", 1);
+    useWorkspaceLayoutStore.getState().reorderPaneTab("source", "pane-a", "a2", 2);
+
+    expect(getPane("source", "pane-a")).toBe(before);
+  });
+
+  it("clamps an out-of-range slot instead of dropping the tab", () => {
+    setWorkspaces([
+      workspace("source", [pane("pane-a", ["a1", "a2", "a3"], "a1")], [["pane-a"]]),
+    ]);
+
+    useWorkspaceLayoutStore.getState().reorderPaneTab("source", "pane-a", "a1", 99);
+    expect(getPane("source", "pane-a").tabs.map((candidate) => candidate.id))
+      .toEqual(["a2", "a3", "a1"]);
+
+    useWorkspaceLayoutStore.getState().reorderPaneTab("source", "pane-a", "a1", -5);
+    expect(getPane("source", "pane-a").tabs.map((candidate) => candidate.id))
+      .toEqual(["a1", "a2", "a3"]);
+  });
+
+  it("ignores unknown panes and tabs", () => {
+    setWorkspaces([
+      workspace("source", [pane("pane-a", ["a1", "a2"], "a1")], [["pane-a"]]),
+    ]);
+    const before = getPane("source", "pane-a");
+
+    useWorkspaceLayoutStore.getState().reorderPaneTab("source", "pane-a", "missing", 0);
+    useWorkspaceLayoutStore.getState().reorderPaneTab("source", "pane-missing", "a2", 0);
+    useWorkspaceLayoutStore.getState().reorderPaneTab("missing", "pane-a", "a2", 0);
+
+    expect(getPane("source", "pane-a")).toBe(before);
+  });
+
+  it("round-trips the reordered strip through persistence", () => {
+    setWorkspaces([
+      workspace("source", [pane("pane-a", ["t1", "t2", "t3"], "t1")], [["pane-a"]]),
+    ]);
+
+    useWorkspaceLayoutStore.getState().reorderPaneTab("source", "pane-a", "t3", 0);
+    const savedOrder = getPane("source", "pane-a").tabs.map((candidate) => candidate.id);
+    expect(savedOrder).toEqual(["t3", "t1", "t2"]);
+
+    // The tabs array *is* the persisted order (SocketListener maps it 1:1 into
+    // `tabs: [...]`), so restoring the same sequence must reproduce the strip.
+    const { panes } = useWorkspaceLayoutStore.getState().restorePanes(
+      "ws-restore",
+      [{
+        pane_id: "pane-a",
+        agent_id: "shell-starter",
+        label: null,
+        active_tab_id: "t1",
+        tabs: savedOrder.map((tabId) => ({ tab_id: tabId, agent_id: "shell-starter" })),
+      }],
+      null,
+      "1x1",
+    );
+
+    expect(panes[0].tabs.map((candidate) => candidate.id)).toEqual(savedOrder);
+    expect(panes[0].activeTabId).toBe("t1");
   });
 });

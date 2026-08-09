@@ -685,6 +685,37 @@ mod tests {
         assert!(pane.suppressed_agent_sessions.is_none());
     }
 
+    /// The sidebar's workspace grouping color lives only in data.json — if it
+    /// stopped round-tripping here every group would silently reset on restart.
+    #[test]
+    fn workspace_color_round_trip() {
+        // r##"…"## because the hex color puts a `"#` sequence inside the literal.
+        let workspace: WorkspaceConfig = serde_json::from_str(
+            r##"{"id":"ws-1","name":"Workspace","grid_template_id":"1x1","panes":[],"created_at":1,"color":"#4C8DF6"}"##,
+        )
+        .unwrap();
+
+        assert_eq!(workspace.color.as_deref(), Some("#4C8DF6"));
+
+        let serialized = serde_json::to_string(&workspace).unwrap();
+        let restored: WorkspaceConfig = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(restored.color.as_deref(), Some("#4C8DF6"));
+    }
+
+    #[test]
+    fn workspace_color_defaults_to_none_when_absent() {
+        let workspace: WorkspaceConfig = serde_json::from_str(
+            r#"{"id":"ws-1","name":"Workspace","grid_template_id":"1x1","panes":[],"created_at":1}"#,
+        )
+        .unwrap();
+
+        assert!(workspace.color.is_none());
+
+        let serialized = serde_json::to_string(&workspace).unwrap();
+        let restored: WorkspaceConfig = serde_json::from_str(&serialized).unwrap();
+        assert!(restored.color.is_none());
+    }
+
     #[test]
     fn pinned_tab_id_round_trip() {
         let pane: PaneConfig = serde_json::from_str(

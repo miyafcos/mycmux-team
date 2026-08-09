@@ -54,9 +54,9 @@ Rich workspace info in sidebar: pane count, running processes, Git branch.
 | Detail | Description |
 |--------|-------------|
 | cmux | Tab bar shows workspace color, title, icon, dirty indicator, notification badge, Git branch |
-| Needs | Extend `TabItem` with metadata display (pane count, active process) |
-| Needs | Git branch detection via Rust `git2` crate or shell command |
-| Priority | **Medium** |
+| Shipped | Workspace color groups, pane count, Git branch, notification / work-done badges, unseen-attention ring, last-log preview — see `implemented/workspaces-and-layout.md` |
+| Needs | Workspace icon and dirty indicator |
+| Priority | **Low** |
 
 ## Port Scanner
 

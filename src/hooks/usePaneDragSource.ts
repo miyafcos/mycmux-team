@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, type PointerEvent as ReactPointerEvent } from "react";
 import {
+  resolveTabInsertionIndex,
   usePaneDragStore,
   type PaneDragItem,
   type PaneDropTarget,
@@ -91,6 +92,17 @@ function canDropTarget(item: PaneDragItem, target: PaneDropTarget): boolean {
     return resolvePaneHandoffContext(item, target.workspaceId, target.paneId) !== null;
   }
 
+  if (target.kind === "tab-index") {
+    // Reorder is same-pane only. Moving a tab into another pane already has a
+    // dedicated target (that pane's center/split zones), and letting the strip
+    // be a second cross-pane surface would give one hover two meanings.
+    return item.kind === "tab"
+      && item.workspaceId === target.workspaceId
+      && item.paneId === target.paneId
+      && sourcePane.tabs.length >= 2
+      && sourcePane.tabs.some((tab) => tab.id === item.tabId);
+  }
+
   const targetWorkspace = listState.getWorkspace(target.workspaceId);
   if (!targetWorkspace) return false;
 
@@ -125,6 +137,29 @@ function resolveDropTargetAtPoint(x: number, y: number, item: PaneDragItem): Pan
     const target = { kind: "new-workspace" as const };
     fallbackTarget = canDropTarget(item, target) ? target : null;
     return prioritizePaneHandoffDropTarget(Boolean(handoffElement), handoffTarget, fallbackTarget);
+  }
+
+  // The tab strip sits inside the pane, so it must be tested before the pane
+  // zones: over its own strip a tab drag means "reorder", not "split up".
+  const stripElement = element?.closest<HTMLElement>("[data-pane-tab-strip]");
+  const stripPaneId = stripElement?.getAttribute("data-pane-tab-strip");
+  const stripWorkspaceId = stripElement
+    ?.closest<HTMLElement>("[data-dnd-workspace-id]")
+    ?.getAttribute("data-dnd-workspace-id");
+  if (stripElement && stripPaneId && stripWorkspaceId) {
+    const spans = Array.from(
+      stripElement.querySelectorAll<HTMLElement>("[data-tab-id]"),
+    ).map((pill) => pill.getBoundingClientRect());
+    const target = {
+      kind: "tab-index" as const,
+      workspaceId: stripWorkspaceId,
+      paneId: stripPaneId,
+      index: resolveTabInsertionIndex(spans, x),
+    };
+    // Cross-pane and single-tab drags fall through to the pane zones below.
+    if (canDropTarget(item, target)) {
+      return prioritizePaneHandoffDropTarget(Boolean(handoffElement), handoffTarget, target);
+    }
   }
 
   const paneElement = element?.closest<HTMLElement>("[data-dnd-workspace-id][data-dnd-pane-id]");
@@ -186,6 +221,15 @@ function commitPaneDragDrop(item: PaneDragItem, target: PaneDropTarget | null): 
   const focusSessionId = getFocusSessionId(item);
   const layoutStore = useWorkspaceLayoutStore.getState();
   const listStore = useWorkspaceListStore.getState();
+
+  if (target.kind === "tab-index") {
+    // canDropTarget already pinned this to a tab drag inside the same pane.
+    if (item.kind !== "tab") return;
+    layoutStore.reorderPaneTab(target.workspaceId, target.paneId, item.tabId, target.index);
+    useWorkspaceListStore.getState().setActiveWorkspace(target.workspaceId);
+    focusController.request("drag", { sessionId: focusSessionId, focus: true });
+    return;
+  }
 
   if (target.kind === "new-workspace") {
     const workspaceId = crypto.randomUUID();

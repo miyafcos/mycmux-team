@@ -829,7 +829,13 @@ def test_streaming_last_log_updates_do_not_rearm_workspace_autosave() -> None:
     assert "const unsubMeta = usePaneMetadataStore.subscribe((state, previousState) => {" in socket_listener
     assert "if (state.metadata !== previousState.metadata) markDirty();" in socket_listener
     assert "const { lastLogLine, ...metadataFields } = filtered;" in metadata_store
-    assert "return changed ? { metadata: nextMetadata, lastLog: nextLastLog } : state;" in metadata_store
+    assert (
+        "return changed ? { metadata: nextMetadata, lastLog: nextLastLog, "
+        "lastLogAt: nextLastLogAt } : state;"
+    ) in metadata_store
+    # lastLogAt rides in its own slice for the same reason lastLog does: the
+    # autosave subscription above only watches `state.metadata`.
+    assert "lastLogAt: Record<string, number>;" in metadata_store
 
 
 def test_terminal_layout_resync_is_scoped_to_its_workspace() -> None:

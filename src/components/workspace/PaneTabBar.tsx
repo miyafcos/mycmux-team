@@ -1,6 +1,11 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
 import { clampMenuPosition } from "../../lib/menuPosition";
+import {
+  ATTENTION_REASON_COLOR,
+  ATTENTION_REASON_LABEL,
+  unseenAttentionLabel,
+} from "../../lib/attentionPresentation";
 import { useShallow } from "zustand/react/shallow";
 import type { Pane, PaneTab } from "../../types";
 import { getAgent, getDefaultAgent } from "../../lib/agents";
@@ -16,6 +21,7 @@ import type { PaneMetadata } from "../../stores/paneMetadataStore";
 import { deriveDisplayStatus, type EffectiveStatus } from "../../lib/notificationStatus";
 import { useDismissOnOutside } from "../../hooks/useDismissOnOutside";
 import { usePaneDragSource } from "../../hooks/usePaneDragSource";
+import { usePaneDragStore } from "../../stores/paneDragStore";
 import { useSavepointPublish } from "../../hooks/useSavepointPublish";
 import { useSavepointDragStore } from "../../stores/savepointDragStore";
 import { focusController } from "../../lib/focusController";
@@ -221,6 +227,29 @@ export function shouldShowDeferredRestoreBadge(
 
 export function isTabActivationKey(key: string): boolean {
   return key === "Enter" || key === " ";
+}
+
+/** The mouse button browsers report for a middle click. */
+export const MIDDLE_MOUSE_BUTTON = 1;
+
+/**
+ * Middle-clicking a tab pill closes it, the way a browser tab does.
+ *
+ * Declines while the pill is in inline-rename mode (the middle button belongs
+ * to the text field then) and when the press landed on one of the pill's own
+ * controls — the pin, duplicate and close buttons keep their own meaning.
+ */
+export function shouldCloseTabOnAuxClick(
+  button: number,
+  isEditing: boolean,
+  onPillControl: boolean,
+): boolean {
+  return button === MIDDLE_MOUSE_BUTTON && !isEditing && !onPillControl;
+}
+
+/** True when `target` sits inside a control the pill hosts rather than the pill itself. */
+export function isPillControlTarget(target: EventTarget | null): boolean {
+  return target instanceof Element && Boolean(target.closest("button, input"));
 }
 
 export type PaneTabBarMode =
@@ -493,22 +522,10 @@ function AgentStatusDot({ status }: { status: EffectiveStatus }) {
   );
 }
 
-const ATTENTION_REASON_COLOR: Record<AttentionCategory, string> = {
-  waiting: "var(--status-waiting)",
-  error: "var(--status-error)",
-  done: "var(--status-done)",
-};
-
-const ATTENTION_REASON_LABEL: Record<AttentionCategory, string> = {
-  waiting: "入力待ち",
-  error: "エラー",
-  done: "完了",
-};
-
 function AttentionUnreadDot({ category }: { category: AttentionCategory | null }) {
   if (!category) return null;
   const color = ATTENTION_REASON_COLOR[category];
-  const label = `未確認の${ATTENTION_REASON_LABEL[category]}`;
+  const label = unseenAttentionLabel(category);
   return (
     <span
       key={category}
@@ -658,9 +675,7 @@ function PaneTabListMenu({
     const unreadCategory = isAttentionUnseen(tab.id, attention, seenAttentionByTab)
       ? attentionCategory(tab.id, attention, seenAttentionByTab)
       : null;
-    const unreadLabel = unreadCategory
-      ? `未確認の${ATTENTION_REASON_LABEL[unreadCategory]}`
-      : null;
+    const unreadLabel = unreadCategory ? unseenAttentionLabel(unreadCategory) : null;
     const detail = attentionDetail(attention);
     const reasonColor = ATTENTION_REASON_COLOR[category ?? "done"];
     const showDeferredRestore = shouldShowDeferredRestoreBadge(
@@ -890,6 +905,14 @@ export default memo(function PaneTabBar({
     return next;
   }, [pane.tabs, tabAttention]);
   const { beginPointerDrag, shouldSuppressClick } = usePaneDragSource();
+  // Insertion slot of an in-progress reorder over this pane's strip, or null.
+  const tabInsertionIndex = usePaneDragStore((state) =>
+    state.target?.kind === "tab-index"
+      && state.target.workspaceId === workspaceId
+      && state.target.paneId === pane.id
+      ? state.target.index
+      : null,
+  );
   const savepointDropTabId = useSavepointDragStore((state) =>
     state.target?.mode === "paste"
       && state.target.workspaceId === workspaceId
@@ -1443,6 +1466,7 @@ export default memo(function PaneTabBar({
         ref={tabStripRef}
         className="pane-tab-scroll"
         role="tablist"
+        data-pane-tab-strip={pane.id}
         style={{
           display: "flex",
           alignItems: "center",
@@ -1453,7 +1477,7 @@ export default memo(function PaneTabBar({
           minWidth: 0,
         }}
       >
-        {pane.tabs.map((tab) => {
+        {pane.tabs.map((tab, tabIndex) => {
           const isTabActive = tab.id === pane.activeTabId;
           const tabMeta = metadataBySession[tab.sessionId];
           const tabKindColor = agentKindColor(tabMeta?.agentKind ?? tab.agentKind);
@@ -1497,8 +1521,12 @@ export default memo(function PaneTabBar({
             : label;
 
           return (
+            <Fragment key={tab.id}>
+            {tabInsertionIndex === tabIndex && (
+              <span className="pane-tab-drop-indicator" aria-hidden="true" />
+            )}
             <div
-              key={tab.id}
+              data-tab-id={tab.id}
               data-savepoint-drop-workspace-id={workspaceId}
               data-savepoint-drop-pane-id={pane.id}
               data-savepoint-drop-tab-id={tab.id}
@@ -1507,6 +1535,12 @@ export default memo(function PaneTabBar({
                 else tabPillRefs.current.delete(tab.id);
               }}
               onPointerDown={(event) => {
+                // Swallow the middle-button press so the webview never arms its
+                // autoscroll cursor; the close itself runs on auxclick.
+                if (!isEditingTab && event.button === MIDDLE_MOUSE_BUTTON) {
+                  event.preventDefault();
+                  return;
+                }
                 if (isEditingTab || event.button !== 0) return;
                 if (event.detail >= 2) {
                   event.preventDefault();
@@ -1528,6 +1562,18 @@ export default memo(function PaneTabBar({
                 e.stopPropagation();
                 suppressNextTabClick();
                 startEditingTab(tab.id, label);
+              }}
+              onAuxClick={(event) => {
+                if (!shouldCloseTabOnAuxClick(
+                  event.button,
+                  isEditingTab,
+                  isPillControlTarget(event.target),
+                )) return;
+                event.preventDefault();
+                event.stopPropagation();
+                // Same handler as the pill's × so the close is recorded for
+                // Ctrl+Shift+T.
+                onRemoveTab?.(tab.id);
               }}
               onContextMenu={(e) => {
                 e.preventDefault();
@@ -1713,8 +1759,12 @@ export default memo(function PaneTabBar({
                 </button>
               )}
             </div>
+            </Fragment>
           );
         })}
+        {tabInsertionIndex === pane.tabs.length && (
+          <span className="pane-tab-drop-indicator" aria-hidden="true" />
+        )}
       </div>
 
       {tabsOverflowing && (
@@ -1814,6 +1864,10 @@ export default memo(function PaneTabBar({
           <div
             className={"pane-tab-pill is-active pane-tab-compact" + (activeKindColor ? " has-agent-kind" : "")}
             onPointerDown={(event) => {
+              if (!isEditingActiveTab && event.button === MIDDLE_MOUSE_BUTTON) {
+                event.preventDefault();
+                return;
+              }
               if (isEditingActiveTab || event.button !== 0) return;
               if (event.detail >= 2) {
                 event.preventDefault();
@@ -1835,6 +1889,16 @@ export default memo(function PaneTabBar({
               e.stopPropagation();
               suppressNextTabClick();
               startEditingTab(activeTab.id, activeTabLabel);
+            }}
+            onAuxClick={(event) => {
+              if (!shouldCloseTabOnAuxClick(
+                event.button,
+                isEditingActiveTab,
+                isPillControlTarget(event.target),
+              )) return;
+              event.preventDefault();
+              event.stopPropagation();
+              onRemoveTab?.(activeTab.id);
             }}
             onContextMenu={(e) => {
               e.preventDefault();

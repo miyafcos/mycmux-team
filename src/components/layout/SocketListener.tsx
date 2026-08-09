@@ -780,6 +780,9 @@ export function toConfig(ws: Workspace, _agentMappings: Record<string, AgentSess
     id: ws.id,
     name: ws.name,
     grid_template_id: ws.gridTemplateId,
+    // Workspace color must round-trip: it is the only sidebar grouping cue and
+    // silently dropping it here would reset every group on restart.
+    color: ws.color ?? null,
     panes: paneEntries.map(({ pane: p, activeTab, persistedTabs }) => {
       const paneMeta = metaState[p.sessionId];
       const activeTabMeta = activeTab ? metaState[activeTab.sessionId] : undefined;
@@ -957,6 +960,7 @@ export function useWorkspacePersist() {
                   {
                     id: cfg.id,
                     createdAt: cfg.created_at,
+                    color: cfg.color ?? undefined,
                     columnWidths: cfg.column_widths ?? undefined,
                     rowHeightsPerCol: cfg.row_heights_per_col ?? undefined,
                     activate: false,

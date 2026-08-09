@@ -8,6 +8,7 @@ import {
   reconcileLayoutMetrics,
   rowHeightsMatch,
 } from "../lib/layoutMetrics";
+import { normalizeWorkspaceColor } from "../lib/workspaceColors";
 import { useUiStore } from "./uiStore";
 import { applyStructuralActivation } from "../lib/focusController";
 import { useToastStore } from "./toastStore";
@@ -214,6 +215,8 @@ interface WorkspaceListState {
   removeWorkspace: (id: string) => void;
   setActiveWorkspace: (id: string) => void;
   renameWorkspace: (id: string, name: string) => void;
+  /** Set (or clear, with undefined) the Chrome-tab-group style workspace color. */
+  setWorkspaceColor: (id: string, color: string | undefined) => void;
   setWorkspaceStatus: (id: string, status: Workspace["status"]) => void;
   reorderWorkspaces: (fromIndex: number, toIndex: number) => void;
   setWorkspaceLayoutMetrics: (
@@ -269,7 +272,7 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
       splitColumns: normalizedSplitColumns,
       status: "running",
       createdAt: options?.createdAt ?? Date.now(),
-      color: options?.color,
+      color: normalizeWorkspaceColor(options?.color),
       columnWidths: columnWidthsMatch(normalizedSplitColumns, options?.columnWidths)
         ? options?.columnWidths
         : undefined,
@@ -351,6 +354,17 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
     set((state) => ({
       workspaces: state.workspaces.map((w) =>
         w.id === id ? { ...w, name } : w
+      ),
+    }));
+  },
+
+  setWorkspaceColor: (id, color) => {
+    // Normalized on the way in so an unknown hex (hand-edited data.json, a
+    // retired palette entry) can never reach the chrome.
+    const normalized = normalizeWorkspaceColor(color);
+    set((state) => ({
+      workspaces: state.workspaces.map((w) =>
+        w.id === id ? { ...w, color: normalized } : w
       ),
     }));
   },

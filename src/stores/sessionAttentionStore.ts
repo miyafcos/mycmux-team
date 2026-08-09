@@ -191,6 +191,40 @@ const ATTENTION_PRIORITY: Record<AttentionCategory, number> = {
   done: 2,
 };
 
+export interface UnseenAttentionSummary {
+  /** How many of the given tabs carry an attention the user has not seen. */
+  count: number;
+  /** The most urgent of those categories, or null when count is 0. */
+  category: AttentionCategory | null;
+}
+
+/**
+ * Roll a set of tabs up into the single indicator a container row can show.
+ *
+ * Deliberately built from the same `isAttentionUnseen` + `attentionCategory`
+ * pair the pane tab pills use, so a workspace row and its pills can never
+ * disagree about what counts as unread.
+ */
+export function summarizeUnseenAttention(
+  tabs: readonly Pick<PaneTab, "id" | "sessionId">[],
+  attentionBySession: Record<string, SessionAttention | undefined>,
+  seenAttentionByTab: Map<string, string>,
+): UnseenAttentionSummary {
+  let count = 0;
+  let category: AttentionCategory | null = null;
+  for (const tab of tabs) {
+    const attention = attentionBySession[tab.sessionId];
+    if (!isAttentionUnseen(tab.id, attention, seenAttentionByTab)) continue;
+    const tabCategory = attentionCategory(tab.id, attention, seenAttentionByTab);
+    if (!tabCategory) continue;
+    count += 1;
+    if (category === null || ATTENTION_PRIORITY[tabCategory] < ATTENTION_PRIORITY[category]) {
+      category = tabCategory;
+    }
+  }
+  return { count, category };
+}
+
 export function resolveNextAttentionTarget(
   workspaces: Workspace[],
   attentionBySession: Record<string, SessionAttention>,

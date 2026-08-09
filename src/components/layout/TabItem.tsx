@@ -1,6 +1,9 @@
 import { memo, useState, useRef, useCallback, useEffect } from "react";
 import type { CSSProperties } from "react";
 import { KIND_COLORS } from "../../lib/agentKindColors";
+import { ATTENTION_REASON_COLOR, unseenAttentionLabel } from "../../lib/attentionPresentation";
+import { resolveWorkspaceColor, workspaceRowBackground } from "../../lib/workspaceColors";
+import type { AttentionCategory } from "../../stores/sessionAttentionStore";
 import type { AgentSessionKind } from "../../types";
 
 interface StatusCounts {
@@ -18,11 +21,26 @@ interface TabItemProps {
   workDoneCount?: number;
   lastLogLine?: string;
   statusCounts?: StatusCounts;
+  /**
+   * Tabs in this workspace carrying an attention the user has not looked at.
+   * Distinct from notificationCount / workDoneCount, which count events rather
+   * than unread state, so this gets its own indicator instead of a badge.
+   */
+  unseenAttentionCount?: number;
+  /** Most urgent unseen category, used only to color the indicator. */
+  unseenAttentionCategory?: AttentionCategory | null;
   agentKinds?: readonly AgentSessionKind[];
+  /** Persisted workspace color (a palette hex) or undefined for no group. */
+  color?: string;
   active: boolean;
   onClick: () => void;
   onClose: () => void;
   onRename?: (newName: string) => void;
+  /**
+   * Bumped by the sidebar context menu to open inline rename without the user
+   * having to double-click the row a second time.
+   */
+  renameSignal?: number;
 }
 
 const AGENT_KIND_ACCESSIBLE_LABELS: Record<AgentSessionKind, string> = {
@@ -50,12 +68,44 @@ function StatusPip({ count, color, pulse = false }: { count: number; color: stri
   );
 }
 
-export default memo(function TabItem({ uiVariant = "default", name, paneCount, cwd, gitBranch, notificationCount, workDoneCount, lastLogLine, statusCounts, agentKinds = [], active, onClick, onClose, onRename }: TabItemProps) {
+// Mirrors the pane tab pill's AttentionUnreadDot: a hollow ring, colored by
+// category, so "unseen" reads the same in the sidebar as it does on the pill.
+// The count only appears above one, matching StatusPip.
+function UnseenAttentionRing({ count, category }: { count: number; category: AttentionCategory }) {
+  const color = ATTENTION_REASON_COLOR[category];
+  const label = unseenAttentionLabel(category);
+  return (
+    <span
+      className="cmux-badge-pop"
+      role="img"
+      title={label}
+      aria-label={count > 1 ? `${label} ${count}` : label}
+      style={{ display: "flex", alignItems: "center", gap: 3 }}
+    >
+      <span style={{
+        width: 8,
+        height: 8,
+        borderRadius: "50%",
+        border: `2px solid ${color}`,
+        background: "transparent",
+        boxSizing: "border-box",
+        flexShrink: 0,
+      }} />
+      {count > 1 && (
+        <span style={{ fontSize: 10, color, fontWeight: 600, lineHeight: 1 }}>{count}</span>
+      )}
+    </span>
+  );
+}
+
+export default memo(function TabItem({ uiVariant = "default", name, paneCount, cwd, gitBranch, notificationCount, workDoneCount, lastLogLine, statusCounts, unseenAttentionCount = 0, unseenAttentionCategory = null, agentKinds = [], color, active, onClick, onClose, onRename, renameSignal = 0 }: TabItemProps) {
   const hasAgents = statusCounts && (statusCounts.working + statusCounts.waiting) > 0;
   const hasAgentKinds = agentKinds.length > 0;
+  const hasUnseenAttention = unseenAttentionCount > 0 && unseenAttentionCategory !== null;
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState(name);
   const inputRef = useRef<HTMLInputElement>(null);
+  const workspaceColor = resolveWorkspaceColor(color)?.value;
 
   useEffect(() => {
     if (editing) {
@@ -66,6 +116,16 @@ export default memo(function TabItem({ uiVariant = "default", name, paneCount, c
       }, 0);
     }
   }, [editing, name]);
+
+  // Only a *change* of the signal opens the editor. Depending on the raw value
+  // would re-open rename every time the parent hands down a fresh onRename
+  // closure, which it does on nearly every sidebar render.
+  const lastRenameSignal = useRef(renameSignal);
+  useEffect(() => {
+    if (renameSignal === lastRenameSignal.current) return;
+    lastRenameSignal.current = renameSignal;
+    if (onRename) setEditing(true);
+  }, [renameSignal, onRename]);
 
   const commitRename = useCallback(() => {
     const trimmed = editValue.trim();
@@ -91,19 +151,31 @@ export default memo(function TabItem({ uiVariant = "default", name, paneCount, c
       onDoubleClick={handleDoubleClick}
       className={`tab-workspace-item${uiVariant === "cmux" ? " cmux-workspace-item" : ""}`}
       data-active-workspace={active ? "true" : undefined}
+      data-workspace-color={workspaceColor ?? undefined}
       style={{
         display: "flex",
         alignItems: "center",
         justifyContent: "space-between",
         padding: "9px 10px 9px 12px",
         cursor: "pointer",
-        background: active ? "var(--cmux-selected)" : "transparent",
+        // Two independent signals share this row, so they use disjoint
+        // channels: the far-left 3px bar is the workspace group color, while
+        // "active" stays the selected surface + inset ring + bold label. A
+        // colored row keeps both by mixing the group tint *over* whichever
+        // surface the active state already chose.
+        background: workspaceRowBackground(
+          workspaceColor,
+          active,
+          active ? "var(--cmux-selected)" : "transparent",
+        ),
         color: active ? "var(--cmux-text)" : "var(--cmux-text-secondary)",
         fontSize: "13px",
         fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
         userSelect: "none",
         borderRadius: uiVariant === "cmux" ? "0 6px 6px 0" : "0 6px 6px 0",
-        borderLeft: active ? "3px solid var(--cmux-accent)" : "3px solid transparent",
+        borderLeft: workspaceColor
+          ? `3px solid ${workspaceColor}`
+          : active ? "3px solid var(--cmux-accent)" : "3px solid transparent",
         boxShadow: active ? "inset 0 0 0 1px color-mix(in srgb, var(--cmux-text) 10%, transparent)" : "none",
         margin: "0 8px 0 0",
         marginTop: "2px",
@@ -193,8 +265,11 @@ export default memo(function TabItem({ uiVariant = "default", name, paneCount, c
             {paneCount} {paneCount === 1 ? "pane" : "panes"}
           </span>
         </div>
-        {(hasAgents || hasAgentKinds) && (
+        {(hasAgents || hasAgentKinds || hasUnseenAttention) && (
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            {hasUnseenAttention && unseenAttentionCategory && (
+              <UnseenAttentionRing count={unseenAttentionCount} category={unseenAttentionCategory} />
+            )}
             {statusCounts && statusCounts.working > 0 && <StatusPip count={statusCounts.working} color="var(--status-working)" pulse />}
             {statusCounts && statusCounts.waiting > 0 && <StatusPip count={statusCounts.waiting} color="var(--status-waiting)" />}
             {hasAgentKinds && (

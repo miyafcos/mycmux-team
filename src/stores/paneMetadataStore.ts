@@ -27,6 +27,15 @@ export interface PaneMetadata {
 export interface PaneMetadataState {
   metadata: Record<string, PaneMetadata>;
   lastLog: Record<string, string>;
+  /**
+   * Epoch milliseconds when each session's `lastLog` entry last changed.
+   * Its own slice, like `lastLog`, so streaming log updates never touch the
+   * low-frequency `metadata` reference (see SocketListener's autosave
+   * subscription). Consumers that summarise several sessions at once — the
+   * sidebar's one-line preview — need this to pick the newest line instead of
+   * whichever session happened to come last in iteration order.
+   */
+  lastLogAt: Record<string, number>;
   setMetadata: (sessionId: string, data: Partial<PaneMetadata>) => void;
   clearAgentStatus: (sessionId: string) => void;
   clearClaudeSessionId: (sessionId: string) => void;
@@ -57,6 +66,7 @@ function effectiveAgentStatus(metadata?: PaneMetadata): AgentStatus {
 export const usePaneMetadataStore = create<PaneMetadataState>((set) => ({
   metadata: {},
   lastLog: {},
+  lastLogAt: {},
 
   setMetadata: (sessionId, data) => set((state) => {
     const filtered = dropUndefined(data);
@@ -65,12 +75,17 @@ export const usePaneMetadataStore = create<PaneMetadataState>((set) => ({
     const hasLastLogLine = Object.prototype.hasOwnProperty.call(filtered, "lastLogLine");
     const hasMetadataFields = Object.keys(metadataFields).length > 0;
     let nextLastLog = state.lastLog;
+    let nextLastLogAt = state.lastLogAt;
     let nextMetadata = state.metadata;
     let changed = false;
     if (hasLastLogLine && lastLogLine !== undefined && state.lastLog[sessionId] !== lastLogLine) {
       nextLastLog = {
         ...state.lastLog,
         [sessionId]: lastLogLine,
+      };
+      nextLastLogAt = {
+        ...state.lastLogAt,
+        [sessionId]: Date.now(),
       };
       const prevMetadata = state.metadata[sessionId];
       if (prevMetadata) {
@@ -85,7 +100,7 @@ export const usePaneMetadataStore = create<PaneMetadataState>((set) => ({
       changed = true;
     }
     if (!hasMetadataFields) {
-      return changed ? { metadata: nextMetadata, lastLog: nextLastLog } : state;
+      return changed ? { metadata: nextMetadata, lastLog: nextLastLog, lastLogAt: nextLastLogAt } : state;
     }
     const prev = nextMetadata[sessionId];
     // Reset the approval-notification dedupe key when the agent leaves waiting.
@@ -113,7 +128,7 @@ export const usePaneMetadataStore = create<PaneMetadataState>((set) => ({
     if (prev) {
       const keys = Object.keys(nextData) as (keyof PaneMetadata)[];
       const metadataChanged = keys.some((k) => prev[k] !== nextData[k]);
-      if (!metadataChanged) return changed ? { lastLog: nextLastLog } : state;
+      if (!metadataChanged) return changed ? { lastLog: nextLastLog, lastLogAt: nextLastLogAt } : state;
     }
     nextMetadata = {
       ...nextMetadata,
@@ -122,6 +137,7 @@ export const usePaneMetadataStore = create<PaneMetadataState>((set) => ({
     return {
       metadata: nextMetadata,
       lastLog: nextLastLog,
+      lastLogAt: nextLastLogAt,
     };
   }),
 
@@ -258,6 +274,7 @@ export const usePaneMetadataStore = create<PaneMetadataState>((set) => ({
   removeMetadata: (sessionId) => set((state) => {
     const { [sessionId]: _, ...rest } = state.metadata;
     const { [sessionId]: _lastLog, ...lastLogRest } = state.lastLog;
-    return { metadata: rest, lastLog: lastLogRest };
+    const { [sessionId]: _lastLogAt, ...lastLogAtRest } = state.lastLogAt;
+    return { metadata: rest, lastLog: lastLogRest, lastLogAt: lastLogAtRest };
   }),
 }));

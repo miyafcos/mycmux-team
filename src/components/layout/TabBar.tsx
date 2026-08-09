@@ -1,5 +1,5 @@
-import { memo, useRef, useState, useCallback, useEffect, useMemo } from "react";
-import type { MutableRefObject } from "react";
+import { memo, useRef, useState, useCallback, useEffect, useLayoutEffect, useMemo } from "react";
+import type { CSSProperties, MutableRefObject, ReactNode } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useWorkspaceListStore, usePaneMetadataStore } from "../../stores/workspaceStore";
 import { usePaneDragStore } from "../../stores/paneDragStore";
@@ -7,6 +7,19 @@ import { useSavepointDragStore } from "../../stores/savepointDragStore";
 import { SIDEBAR_WIDTH } from "../../lib/constants";
 import { distinctAgentKinds } from "../../lib/agentKindColors";
 import { deriveDisplayStatus } from "../../lib/notificationStatus";
+import { clampMenuPosition } from "../../lib/menuPosition";
+import { pickMostRecentLastLog } from "../../lib/lastLogRecency";
+import {
+  summarizeUnseenAttention,
+  useSessionAttentionStore,
+  type SessionAttention,
+} from "../../stores/sessionAttentionStore";
+import { useDismissOnOutside } from "../../hooks/useDismissOnOutside";
+import {
+  WORKSPACE_COLORS,
+  WORKSPACE_COLOR_NONE_LABEL,
+  resolveWorkspaceColor,
+} from "../../lib/workspaceColors";
 import TabItem from "./TabItem";
 import type { Workspace } from "../../types";
 
@@ -23,6 +36,79 @@ interface TabBarProps {
   onCloseWorkspace: (id: string) => void;
 }
 
+// Mirrors the pane tab bar's context menu chrome so the two menus read as one
+// system (see PaneTabBar's paneTabContextMenuStyle).
+const workspaceContextMenuStyle: CSSProperties = {
+  position: "fixed",
+  zIndex: 100,
+  background: "var(--cmux-popover)",
+  border: "1px solid var(--cmux-border)",
+  borderRadius: 6,
+  padding: "4px 0",
+  boxShadow: "var(--cmux-shadow-pane-menu)",
+  minWidth: 176,
+  fontSize: 13,
+  fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+};
+
+function WorkspaceContextMenuItem({ children, onClick }: { children: ReactNode; onClick: () => void }) {
+  return (
+    <div
+      role="menuitem"
+      tabIndex={0}
+      onClick={onClick}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onClick();
+        }
+      }}
+      onMouseEnter={(e) => { e.currentTarget.style.background = "var(--cmux-hover)"; }}
+      onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+      style={{
+        padding: "6px 12px",
+        cursor: "pointer",
+        color: "var(--cmux-text)",
+        userSelect: "none",
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
+interface WorkspaceColorSwatchesProps {
+  selected: string | undefined;
+  onSelect: (color: string | undefined) => void;
+}
+
+function WorkspaceColorSwatches({ selected, onSelect }: WorkspaceColorSwatchesProps) {
+  return (
+    <div className="workspace-color-swatches" role="group" aria-label="ワークスペースの色">
+      {WORKSPACE_COLORS.map((option) => (
+        <button
+          key={option.id}
+          type="button"
+          className="workspace-color-swatch"
+          title={option.label}
+          aria-label={option.label}
+          aria-pressed={selected === option.value}
+          style={{ "--workspace-swatch-color": option.value } as CSSProperties}
+          onClick={() => onSelect(option.value)}
+        />
+      ))}
+      <button
+        type="button"
+        className="workspace-color-swatch workspace-color-swatch--none"
+        title={WORKSPACE_COLOR_NONE_LABEL}
+        aria-label={WORKSPACE_COLOR_NONE_LABEL}
+        aria-pressed={selected === undefined}
+        onClick={() => onSelect(undefined)}
+      />
+    </div>
+  );
+}
+
 interface WorkspaceTabEntryProps {
   uiVariant: "default" | "cmux";
   ws: Workspace;
@@ -34,9 +120,11 @@ interface WorkspaceTabEntryProps {
   hoverWorkspaceId: string | null;
   draggingRef: MutableRefObject<boolean>;
   itemRefs: MutableRefObject<(HTMLDivElement | null)[]>;
+  renameSignal: number;
   onPointerDown: (e: React.PointerEvent, index: number) => void;
   onPointerMove: (e: React.PointerEvent) => void;
   onPointerUp: () => void;
+  onContextMenu: (e: React.MouseEvent, workspaceId: string) => void;
   onClick: (workspaceId: string) => void;
   onClose: (workspaceId: string) => void;
   onRename: (workspaceId: string, newName: string) => void;
@@ -53,9 +141,11 @@ const WorkspaceTabEntry = memo(function WorkspaceTabEntry({
   hoverWorkspaceId,
   draggingRef,
   itemRefs,
+  renameSignal,
   onPointerDown,
   onPointerMove,
   onPointerUp,
+  onContextMenu,
   onClick,
   onClose,
   onRename,
@@ -74,15 +164,23 @@ const WorkspaceTabEntry = memo(function WorkspaceTabEntry({
   const tabLastLog = usePaneMetadataStore(useShallow((s) =>
     sessionIds.map((sessionId) => s.lastLog[sessionId]),
   ));
+  const tabLastLogAt = usePaneMetadataStore(useShallow((s) =>
+    sessionIds.map((sessionId) => s.lastLogAt[sessionId]),
+  ));
+  const tabAttention = useSessionAttentionStore(useShallow((s) =>
+    sessionIds.map((sessionId) => s.attentionBySession[sessionId]),
+  ));
+  const seenAttentionByTab = useSessionAttentionStore((s) => s.seenAttentionByTab);
 
   let totalWsNotifications = 0;
   let totalWsWorkDone = 0;
-  let lastLog: string | undefined;
   const statusCounts = { working: 0, waiting: 0 };
   const metadataBySession: Record<string, typeof tabMetadata[number]> = {};
+  const attentionBySession: Record<string, SessionAttention | undefined> = {};
   sessionIds.forEach((sessionId, index) => {
     const m = tabMetadata[index];
     metadataBySession[sessionId] = m;
+    attentionBySession[sessionId] = tabAttention[index];
     if (m) {
       totalWsNotifications += m.notificationCount ?? 0;
       totalWsWorkDone += m.workDoneCount ?? 0;
@@ -91,8 +189,18 @@ const WorkspaceTabEntry = memo(function WorkspaceTabEntry({
         statusCounts[eff]++;
       }
     }
-    if (tabLastLog[index]) lastLog = tabLastLog[index];
   });
+  // Newest line wins, not the last tab the loop happened to visit.
+  const lastLog = pickMostRecentLastLog(
+    sessionIds.map((_, index) => ({ line: tabLastLog[index], at: tabLastLogAt[index] })),
+  );
+  // A background workspace holding an unread error/approval used to look idle
+  // in the sidebar unless it also bumped a notification counter.
+  const unseenAttention = summarizeUnseenAttention(
+    workspaceTabs,
+    attentionBySession,
+    seenAttentionByTab,
+  );
   const agentKinds = distinctAgentKinds(
     workspaceTabs.map((tab, index) => tabMetadata[index]?.agentKind ?? tab.agentKind),
   );
@@ -110,6 +218,7 @@ const WorkspaceTabEntry = memo(function WorkspaceTabEntry({
       onPointerDown={(e) => onPointerDown(e, wsIndex)}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
+      onContextMenu={(e) => onContextMenu(e, ws.id)}
       style={{
         touchAction: "none",
         opacity: isDragged ? 0.35 : 1,
@@ -129,8 +238,12 @@ const WorkspaceTabEntry = memo(function WorkspaceTabEntry({
         workDoneCount={totalWsWorkDone || undefined}
         lastLogLine={lastLog}
         statusCounts={statusCounts}
+        unseenAttentionCount={unseenAttention.count}
+        unseenAttentionCategory={unseenAttention.category}
         agentKinds={agentKinds}
+        color={ws.color}
         active={active}
+        renameSignal={renameSignal}
         onClick={() => { if (!draggingRef.current) onClick(ws.id); }}
         onClose={() => onClose(ws.id)}
         onRename={(newName) => onRename(ws.id, newName)}
@@ -145,6 +258,7 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
   const setActive = useWorkspaceListStore((s) => s.setActiveWorkspace);
   const reorder = useWorkspaceListStore((s) => s.reorderWorkspaces);
   const rename = useWorkspaceListStore((s) => s.renameWorkspace);
+  const setWorkspaceColor = useWorkspaceListStore((s) => s.setWorkspaceColor);
   const paneMoveDragActive = usePaneDragStore((s) => s.item !== null);
   const paneMoveHoverWorkspaceId = usePaneDragStore((s) => s.hoverWorkspaceId);
   const savepointDragActive = useSavepointDragStore((s) => s.item !== null);
@@ -155,6 +269,10 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
 
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [dropIndex, setDropIndex] = useState<number | null>(null);
+  const [contextMenu, setContextMenu] = useState<{ workspaceId: string; x: number; y: number } | null>(null);
+  const [contextMenuPos, setContextMenuPos] = useState({ left: 0, top: 0 });
+  const [renameSignals, setRenameSignals] = useState<Record<string, number>>({});
+  const contextMenuRef = useRef<HTMLDivElement | null>(null);
   const itemRefs = useRef<(HTMLDivElement | null)[]>([]);
   const startY = useRef(0);
   const dragging = useRef(false);
@@ -219,6 +337,33 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
     return () => window.removeEventListener("pointerup", up);
   }, [dragIndex]);
 
+  const handleContextMenu = useCallback((e: React.MouseEvent, workspaceId: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setContextMenu({ workspaceId, x: e.clientX, y: e.clientY });
+  }, []);
+
+  useDismissOnOutside(Boolean(contextMenu), contextMenuRef, () => setContextMenu(null));
+
+  useLayoutEffect(() => {
+    if (!contextMenu || !contextMenuRef.current) return;
+    const rect = contextMenuRef.current.getBoundingClientRect();
+    const { left, top } = clampMenuPosition(contextMenu.x, contextMenu.y, rect.width, rect.height);
+    setContextMenuPos((prev) => (prev.left === left && prev.top === top ? prev : { left, top }));
+  }, [contextMenu]);
+
+  // A workspace closed while its menu is open must not leave a menu pointing at
+  // nothing.
+  useEffect(() => {
+    if (contextMenu && !workspaces.some((ws) => ws.id === contextMenu.workspaceId)) {
+      setContextMenu(null);
+    }
+  }, [contextMenu, workspaces]);
+
+  const contextWorkspace = contextMenu
+    ? workspaces.find((ws) => ws.id === contextMenu.workspaceId)
+    : undefined;
+
   return (
     <div
       data-tauri-drag-region
@@ -273,9 +418,11 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
               hoverWorkspaceId={hoverWorkspaceId}
               draggingRef={dragging}
               itemRefs={itemRefs}
+              renameSignal={renameSignals[ws.id] ?? 0}
               onPointerDown={handlePointerDown}
               onPointerMove={handlePointerMove}
               onPointerUp={handlePointerUp}
+              onContextMenu={handleContextMenu}
               onClick={setActive}
               onClose={onCloseWorkspace}
               onRename={rename}
@@ -321,6 +468,54 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
         <PlusIcon />
         <span>New workspace</span>
       </button>
+
+      {contextMenu && contextWorkspace && (
+        <div
+          ref={contextMenuRef}
+          role="menu"
+          aria-label="ワークスペースの操作"
+          style={{
+            ...workspaceContextMenuStyle,
+            top: contextMenuPos.top,
+            left: contextMenuPos.left,
+          }}
+        >
+          <div
+            style={{
+              padding: "4px 12px 2px",
+              color: "var(--cmux-text-tertiary)",
+              fontSize: 11,
+              fontWeight: 600,
+              userSelect: "none",
+            }}
+          >
+            色
+          </div>
+          <WorkspaceColorSwatches
+            selected={resolveWorkspaceColor(contextWorkspace.color)?.value}
+            onSelect={(color) => {
+              setWorkspaceColor(contextWorkspace.id, color);
+              setContextMenu(null);
+            }}
+          />
+          <div
+            style={{
+              height: 1,
+              margin: "4px 0",
+              background: "var(--cmux-border-hairline)",
+            }}
+          />
+          <WorkspaceContextMenuItem
+            onClick={() => {
+              const workspaceId = contextWorkspace.id;
+              setContextMenu(null);
+              setRenameSignals((prev) => ({ ...prev, [workspaceId]: (prev[workspaceId] ?? 0) + 1 }));
+            }}
+          >
+            名前を変更
+          </WorkspaceContextMenuItem>
+        </div>
+      )}
     </div>
   );
 }

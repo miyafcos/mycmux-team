@@ -416,6 +416,27 @@ interface WorkspaceLayoutState {
    * it win the drag-merge active-tab contest.
    */
   togglePaneTabPin: (workspaceId: string, paneId: string, tabId: string) => void;
+  /**
+   * Drag reorder inside one pane's tab strip. `insertIndex` is a slot measured
+   * against the pane's *current* tabs array (0..tabs.length): the tab lands
+   * before the tab currently at that slot, so dropping a tab on its own slot
+   * (or the one right after it) is a no-op. `activeTabId` never changes —
+   * reordering must not switch which terminal is displayed.
+   *
+   * Pinned-tab rules (pin means 先頭固定, `tabs[0]`):
+   * - a non-pinned tab can never take slot 0 while a live pin exists; it
+   *   clamps to slot 1
+   * - dragging the pinned tab itself off the head unpins it. Pinning is a user
+   *   toggle, and physically dragging that tab elsewhere is the same explicit
+   *   choice, so the move wins over the pin instead of being silently refused.
+   *   Dropping it back on slot 0 keeps the pin.
+   */
+  reorderPaneTab: (
+    workspaceId: string,
+    paneId: string,
+    tabId: string,
+    insertIndex: number,
+  ) => void;
   setTabAgentId: (workspaceId: string, paneId: string, tabId: string, agentId: string) => void;
   /**
    * Self-healing clear for a downgraded restore: find the tab whose
@@ -1430,6 +1451,39 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
       didChange = true;
       const nextPinned = pane.pinnedTabId === tabId ? undefined : tabId;
       return withPinnedTabFirst({ ...pane, pinnedTabId: nextPinned });
+    });
+
+    if (!didChange) return;
+    useWorkspaceListStore.getState()._updateWorkspacePanes(workspaceId, newPanes);
+  },
+
+  reorderPaneTab: (workspaceId, paneId, tabId, insertIndex) => {
+    const workspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
+    if (!workspace) return;
+
+    let didChange = false;
+    const newPanes = workspace.panes.map((pane) => {
+      if (pane.id !== paneId) return pane;
+      const fromIndex = pane.tabs.findIndex((tab) => tab.id === tabId);
+      if (fromIndex === -1) return pane;
+
+      const hasLivePin = pane.pinnedTabId !== undefined
+        && pane.tabs.some((tab) => tab.id === pane.pinnedTabId);
+      const isPinnedTab = hasLivePin && pane.pinnedTabId === tabId;
+      // The pinned tab owns slot 0, so every other tab starts at slot 1.
+      const lowestSlot = hasLivePin && !isPinnedTab ? 1 : 0;
+      const slot = Math.min(Math.max(insertIndex, lowestSlot), pane.tabs.length);
+      // Slots are measured with the dragged tab still in the array; removing it
+      // first shifts every slot after it one to the left.
+      const toIndex = slot > fromIndex ? slot - 1 : slot;
+      if (toIndex === fromIndex) return pane;
+
+      const tabs = pane.tabs.filter((tab) => tab.id !== tabId);
+      tabs.splice(toIndex, 0, pane.tabs[fromIndex]);
+      didChange = true;
+      const pinnedTabId = isPinnedTab && toIndex !== 0 ? undefined : pane.pinnedTabId;
+      // Belt and braces: the clamp above already keeps a live pin at slot 0.
+      return withPinnedTabFirst({ ...pane, tabs, pinnedTabId });
     });
 
     if (!didChange) return;

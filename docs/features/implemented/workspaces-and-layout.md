@@ -79,6 +79,8 @@ Tab actions:
 - **Close tab**: removes tab; if last tab, removes entire pane
 - **Switch tab**: sets `activeTabId`; only the active terminal tab mounts its renderer. Inactive terminal tabs keep their PTY session running and restore scrollback when selected.
 - **Cycle tabs**: `Ctrl+Alt+PageDown` / `Ctrl+Alt+PageUp` (`pane.tab.next` / `pane.tab.prev`, v0.15.0)
+- **Reorder tabs**: drag a pill along its strip; an insertion indicator marks the slot and `reorderPaneTab` commits the drop. Sidebar workspace rows reorder by drag the same way.
+- **Middle-click close**: middle-clicking a tab pill closes it through the same path as the pill's ×, so `Ctrl+Shift+T` can reopen it.
 
 ### Adaptive compact tab bar (v0.15.0)
 
@@ -97,5 +99,9 @@ dropdown and the full-mode overflow menu share `PaneTabListMenu`.
 
 ## Workspace Colors
 
-6 rotating colors: `#89b4fa`, `#a6e3a1`, `#f9e2af`, `#f38ba8`, `#94e2d5`, `#f5c2e7`.
-Auto-assigned by `workspaces.length % 6`, or user-provided.
+A fixed 8-entry palette (`src/lib/workspaceColors.ts`), chosen by the user from the
+sidebar row's right-click menu and persisted in `Workspace.color`. No color is
+assigned automatically; a workspace has none until it is picked. Values outside
+the palette (hand-edited `data.json`) normalise to "no color", and the raw hex is
+only ever painted as a 3px row bar plus a `color-mix()` row tint, so theme
+contrast holds on both light and dark chrome.
