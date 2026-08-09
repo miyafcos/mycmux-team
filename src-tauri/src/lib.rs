@@ -129,8 +129,9 @@ fn warn_if_dual_install(app_handle: &tauri::AppHandle) {
             return;
         }
 
-        eprintln!(
-            "[dual-install] detected per-machine ({}) and per-user ({}) installs",
+        crate::diag_warn!(
+            "dual-install",
+            "detected per-machine ({}) and per-user ({}) installs",
             per_machine.display(),
             per_user.display()
         );
@@ -161,13 +162,29 @@ fn warn_if_dual_install(app_handle: &tauri::AppHandle) {
 pub fn run() {
     std::panic::set_hook(Box::new(|info| {
         eprintln!("[mycmux][panic] {info}");
+        // Release builds have no console, so the stderr line above goes nowhere.
+        // Mirror payload + location into ~/.mycmux/diag.log. Everything below is
+        // infallible by construction: a panic inside the hook would abort.
+        let location = info.location().map(|location| {
+            format!(
+                "{}:{}:{}",
+                location.file(),
+                location.line(),
+                location.column()
+            )
+        });
+        let report = diag::format_panic_report(
+            &diag::panic_payload_text(info.payload()),
+            location.as_deref(),
+        );
+        diag::log_panic(&report);
     }));
 
     let _single_instance_guard = match single_instance::acquire() {
         Ok(Some(guard)) => Some(guard),
         Ok(None) => return,
         Err(error) => {
-            eprintln!("[mycmux] {error}");
+            crate::diag_warn!("mycmux", "{error}");
             return;
         }
     };
@@ -297,7 +314,7 @@ pub fn run() {
             let state = app.state::<AppState>();
             state.status_feed.set_app_handle(app_handle.clone());
             if let Err(err) = install_launcher_script() {
-                eprintln!("[launcher] failed to install launcher scripts: {err}");
+                crate::diag_warn!("launcher", "failed to install launcher scripts: {err}");
             }
             warn_if_dual_install(&app_handle);
             if let Ok(app_data) = app_handle.path().app_data_dir() {

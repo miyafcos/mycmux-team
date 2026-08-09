@@ -160,7 +160,11 @@ jobs:
           prerelease: false
 
       - name: Mirror personal updater feed
+        id: mirror
         shell: powershell
+        # continue-on-error keeps the mirror's own diagnostics visible instead of
+        # aborting the job mid-step; the verification step below is what actually
+        # fails the release when the mirror was skipped or did not land.
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.MYCMUX_TEAM_RELEASE_TOKEN }}
@@ -175,3 +179,25 @@ jobs:
             exit 1
           }
           .\scripts\mirror-personal-updater-feed.ps1 -SourceTag $env:SOURCE_TAG
+
+      # Two real incidents this step exists for:
+      #   1. the mirror step above is continue-on-error, so a missing
+      #      MYCMUX_TEAM_RELEASE_TOKEN used to leave the whole release green
+      #      while the public updater feed never advanced (silent skip);
+      #   2. v0.21.16 (2026-08-05) was signed with a rotated-away key because
+      #      the CI secret still held the old one -- the feed had the right
+      #      version, so version-only checks passed and users' update button
+      #      failed with a signature verification error.
+      # Failing here is intentional: a release that users cannot install is not
+      # a successful release.
+      - name: Verify public updater feed (version + signing key-id)
+        shell: bash
+        env:
+          MIRROR_OUTCOME: ${{ steps.mirror.outcome }}
+          SOURCE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          if [ "$MIRROR_OUTCOME" != "success" ]; then
+            echo "::error::updater feed mirror step did not succeed (outcome=$MIRROR_OUTCOME); the public feed was not updated and existing installations will not see this release."
+            exit 1
+          fi
+          python scripts/verify_updater_feed.py --expect-version "${SOURCE_TAG#v}"

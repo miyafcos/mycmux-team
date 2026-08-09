@@ -473,6 +473,14 @@ See ``CHANGELOG.md`` for details.
     throw "公開 feed の version ($feedVersion) が期待値 ($Version) と一致しません。"
   }
   Write-Host "公開 updater feed: PASS (version $feedVersion)"
+
+  # 版数一致だけでは v0.21.16 事故 (署名鍵ローテート漏れ) を検知できない。
+  # 公開 feed の全 platforms[] 署名から minisign key-id を取り出し、
+  # tauri.conf.json の pubkey と一致するところまで機械検証する。
+  Write-Stage "updater feed の署名 key-id を検証"
+  $verifyScript = Join-Path $PSScriptRoot "verify_updater_feed.py"
+  Invoke-NativeVisible -FilePath "python" -Arguments @($verifyScript, "--expect-version", $Version) -Label "updater feed の署名 key-id 検証"
+  Write-Host "updater feed の署名 key-id 検証: PASS"
 } finally {
   $plainStoredPassword = $null
 

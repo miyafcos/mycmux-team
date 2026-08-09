@@ -9,7 +9,7 @@ Tauri v2 (Rust) + React 19 + xterm.js のターミナルワークスペースア
 
 - フロント: `src/` (React + TypeScript + Zustand)
 - バックエンド: `src-tauri/src/` (Rust + Tauri v2)、PTY 管理は `src-tauri/src/pty/`
-- 設定保存: `%APPDATA%/com.miyazaki.mycmux/data.json` / ソケット: `~/.mycmux/mycmux.port`
+- 設定保存: `%APPDATA%/com.miyazaki.mycmux/data.json` / ソケット: `~/.mycmux/mycmux.port` (+ 認証トークン `~/.mycmux/mycmux.token` — 全リクエストに `"token"` 必須。逃げ道 `MYCMUX_SOCKET_AUTH=off`)
 - 稼働中 exe: `~/mycmux-app/mycmux.exe` (updater 対象外・deploy スクリプトで差し替え)
 - ランチャー: `~/.mycmux/bin/launcher.sh` (新規ペインの起動メニュー。`~/bin/launcher.sh` は旧世代)
 - エージェント委譲規約: `docs/agent-integration.md` — mycmux 内の Codex/Claude 委譲は `scripts/mycmux_agent_cli.py spawn` で可視タブを立てるのが正 (各エージェント側ルールの所在もここに記載)

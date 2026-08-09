@@ -78,6 +78,7 @@ import {
   stripTerminalMouseModeControlSequencesForSession,
 } from "./terminalMouseInputFilter";
 import { HTTP_LINK_REGEX, registerArtifactLinkProvider } from "./terminalLinkProvider";
+import { buildLaunchRequest, type TerminalLaunchParams } from "./terminalLaunchParams";
 import { TerminalAckCoalescer } from "../../lib/terminalAckCoalescer";
 import {
   findApprovalPromptDetail,
@@ -592,6 +593,25 @@ export default memo(function XTermWrapper({
   const fitAddonRef = useRef<FitAddon | null>(null);
   const isAtBottomRef = useRef(true);
   const syncResizeRef = useRef<(force?: boolean) => void>(() => {});
+  // Latest-value mirror of the PTY launch parameters. The terminal effect below
+  // is keyed on [sessionId] alone (adding these would respawn the terminal on
+  // every metadata update), so anything it reads *after* its first synchronous
+  // pass — above all the async attach — must go through this ref instead of the
+  // frozen closure. See terminalLaunchParams.ts for the failure it prevents.
+  //
+  // Refreshed during render rather than in an effect on purpose: the attach path
+  // can resume from an in-flight promise between a commit and the passive-effect
+  // flush, and that gap is exactly the race this ref exists to close. Safe here
+  // because the values are derived from store state that never rolls back, and
+  // this component is rendered without Suspense/transitions.
+  const launchParamsRef = useRef<TerminalLaunchParams>({
+    command,
+    args,
+    cwd,
+    launchEnv,
+    restoreFallbackSessionIds,
+  });
+  launchParamsRef.current = { command, args, cwd, launchEnv, restoreFallbackSessionIds };
 
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
@@ -1011,7 +1031,10 @@ export default memo(function XTermWrapper({
         if (e.key === "Enter" && e.shiftKey && !e.ctrlKey && !e.altKey) {
           if (!shouldAcceptTerminalInput(sessionId)) return false;
           const processTitle = usePaneMetadataStore.getState().metadata[sessionId]?.processTitle;
-          enqueueSessionWrite(sessionId, getShiftEnterSequence(command, processTitle));
+          enqueueSessionWrite(
+            sessionId,
+            getShiftEnterSequence(launchParamsRef.current.command, processTitle),
+          );
           return false;
         }
 
@@ -1767,16 +1790,20 @@ export default memo(function XTermWrapper({
     };
 
     const attachFrontendChannel = async (cols: number, rows: number): Promise<void> => {
+      // Read the launch parameters at attach time, not at effect-setup time:
+      // the resume env (MYCMUX_AGENT_KIND / MYCMUX_SESSION_ID / MYCMUX_RESUME)
+      // can land between this effect's first pass and the actual spawn.
+      const launch = buildLaunchRequest(launchParamsRef.current);
       await createSession(
         sessionId,
-        command,
-        args,
+        launch.command,
+        launch.args,
         cols,
         rows,
         enqueueFrontendBatch,
-        cwd,
-        launchEnv || undefined,
-        restoreFallbackSessionIds,
+        launch.cwd,
+        launch.env,
+        launch.restoreFallbackSessionIds,
       );
       frontendChannelReady = true;
       if (cols > 0 && rows > 0) {
@@ -1921,7 +1948,7 @@ export default memo(function XTermWrapper({
         } else {
           open(uri).catch(err => console.error("Failed to open local artifact:", err));
         }
-      }, () => usePaneMetadataStore.getState().metadata[sessionId]?.cwd ?? cwd);
+      }, () => usePaneMetadataStore.getState().metadata[sessionId]?.cwd ?? launchParamsRef.current.cwd);
     };
 
     const cleanup = (): void => {

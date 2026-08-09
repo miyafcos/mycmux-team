@@ -76,7 +76,7 @@ Tauri v2 (Rust) + React 19 + Zustand + xterm.js のターミナルワークス�
 - 契約テスト (pytest) が落ち、**テストと実装のどちらが正か判断できない**とき — テストを書き換えて通すのは、移動に伴うパス更新のみ許可。アサーション内容の変更は質問
 - フロントに露出するエラーメッセージ文字列 (例: `agent-restore-downgraded` 系) を変えたくなったとき
 - `data.json` のスキーマ (`PersistentData`) に影響が及ぶとき — 保存済みユーザーデータの互換性問題
-- remote / socket の認証・bind 挙動を変えたくなったとき (socket.rs の無認証 loopback-only は現状**受容済みリスク**であり変更対象ではない)
+- remote / socket の認証・bind 挙動を変えたくなったとき (socket.rs は 2026-08-09 に loopback + トークン認証へ移行済み。`~/.mycmux/mycmux.token` 方式と `MYCMUX_SOCKET_AUTH=off` の逃げ道はリファクタで動かさない)
 - 削除候補が本当に不要か確信が持てないとき (grep 参照ゼロを確認できない場合)
 - §8 の Phase 6 (提案のみ) 項目を実装したくなったとき — 必ず提案文書で止める
 

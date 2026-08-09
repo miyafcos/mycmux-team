@@ -498,6 +498,7 @@ impl PtySession {
         let write_pending_bytes = Arc::new(AtomicUsize::new(0));
         let writer_failed = Arc::new(AtomicBool::new(false));
         let writer_failed_thread = writer_failed.clone();
+        let writer_failed_session_id = session_id.clone();
         thread::spawn(move || {
             let mut writer = writer;
             while let Some(input) = write_rx.blocking_recv() {
@@ -511,6 +512,12 @@ impl PtySession {
                 }
                 if broken {
                     writer_failed_thread.store(true, Ordering::Release);
+                    // Fires at most once per session: `write` short-circuits on
+                    // `writer_failed` and this thread exits immediately.
+                    crate::diag_warn!(
+                        "pty",
+                        "session {writer_failed_session_id} input writer broke; terminal input is dead"
+                    );
                     break;
                 }
             }
@@ -864,6 +871,13 @@ impl PtySession {
             }
             Err(mpsc::error::TrySendError::Closed(_)) => {
                 self.writer_failed.store(true, Ordering::Release);
+                // Fires at most once per session: the guard above short-circuits
+                // every later write once `writer_failed` is set.
+                crate::diag_warn!(
+                    "pty",
+                    "input queue closed for session epoch {}; terminal input is dead",
+                    self.session_epoch
+                );
                 Err("PTY_INPUT_WRITER_FAILED: PTY writer thread has exited".to_string())
             }
         }

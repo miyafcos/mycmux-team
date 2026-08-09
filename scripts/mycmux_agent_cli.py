@@ -16,6 +16,7 @@ from typing import Any, Sequence
 
 TIMEOUT_SECONDS = 35.0
 PORT_FILE = Path.home() / ".mycmux" / "mycmux.port"
+TOKEN_FILE = Path.home() / ".mycmux" / "mycmux.token"
 PROMPT_DIR = Path.home() / ".mycmux" / "agent-prompts"
 AGENT_TARGETS = ("claude", "codex", "claude-codex", "shell")
 AGENT_KINDS = ("claude", "codex", "claude-codex")
@@ -33,9 +34,27 @@ def read_port(path: Path = PORT_FILE) -> int:
     return port
 
 
+def read_token(path: Path = TOKEN_FILE) -> str | None:
+    """Read the socket token mycmux writes next to the port file.
+
+    A missing file means the running mycmux predates socket auth or was started
+    with ``MYCMUX_SOCKET_AUTH=off``; the request then goes out unauthenticated
+    exactly as before.
+    """
+    try:
+        token = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return token or None
+
+
 def send_request(cmd: str, args: dict[str, Any]) -> Any:
     """Send one newline-delimited request and return its result."""
-    request = json.dumps({"cmd": cmd, "args": args}, ensure_ascii=False) + "\n"
+    payload: dict[str, Any] = {"cmd": cmd, "args": args}
+    token = read_token()
+    if token is not None:
+        payload["token"] = token
+    request = json.dumps(payload, ensure_ascii=False) + "\n"
     port = read_port()
     try:
         with socket.create_connection(
@@ -57,6 +76,12 @@ def send_request(cmd: str, args: dict[str, Any]) -> Any:
     if not isinstance(response, dict):
         raise RuntimeError("mycmux returned an invalid response object")
     error = response.get("error")
+    if error == "unauthorized":
+        raise RuntimeError(
+            f"mycmux rejected the request as unauthorized: no valid token in {TOKEN_FILE} "
+            "(restart mycmux so it rewrites the token, or start it with "
+            "MYCMUX_SOCKET_AUTH=off)"
+        )
     if error is not None:
         raise RuntimeError(str(error))
     return response.get("result")

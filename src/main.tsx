@@ -3,10 +3,31 @@ import { Profiler } from "react";
 import App from "./App";
 import { initializePerfDiagnostics } from "./lib/perfDiagnostics";
 import { recordReactCommit } from "./lib/paintStats";
+import { useToastStore } from "./stores/toastStore";
 import "./global.css";
+
+// Sole unhandledrejection handler for the app (App.tsx used to register a second
+// one). preventDefault() is deliberately NOT called: the only stated reason for
+// it was generic crash-proofing (03cfd61), and suppressing the default report
+// hides the rejection from devtools.
+const UNHANDLED_REJECTION_TOAST_THROTTLE_MS = 15000;
+let lastUnhandledRejectionToastAt = 0;
 
 window.addEventListener("unhandledrejection", (e) => {
   console.error("[mycmux] unhandled rejection:", e.reason);
+  const now = Date.now();
+  if (now - lastUnhandledRejectionToastAt < UNHANDLED_REJECTION_TOAST_THROTTLE_MS) return;
+  lastUnhandledRejectionToastAt = now;
+  const rawDetail = e.reason instanceof Error ? e.reason.message : String(e.reason ?? "");
+  const detail = rawDetail.length > 160 ? `${rawDetail.slice(0, 160)}…` : rawDetail;
+  useToastStore
+    .getState()
+    .pushToast(
+      detail
+        ? `内部エラーが発生しました: ${detail}`
+        : "内部エラーが発生しました (詳細はコンソール)",
+      "warning",
+    );
 });
 
 window.addEventListener("error", (e) => {

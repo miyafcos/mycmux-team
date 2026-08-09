@@ -130,7 +130,10 @@ impl SessionManager {
                     Instant::now(),
                 )
             },
-        )?;
+        )
+        .inspect_err(|error| {
+            crate::diag_warn!("pty", "create session {session_id} failed: {error}");
+        })?;
         Ok(())
     }
 

@@ -52,6 +52,19 @@ const SAVE_FAILURE_TOAST_DEBOUNCE_MS = 10000;
 const MAX_SUPPRESSED_AGENT_SESSIONS = 5;
 let lastSaveFailureToastAt = 0;
 
+/**
+ * Backoff ladder for autosave retries. A failed save only sets `dirty` back to
+ * true, so without a self-scheduled retry the write would wait for the next
+ * store mutation — which may never come on an idle workspace.
+ */
+export const SAVE_RETRY_DELAYS_MS = [5000, 15000, 30000] as const;
+
+/** `failureCount` is the number of consecutive failures already seen (0-based). */
+export function saveRetryDelayMs(failureCount: number): number {
+  const index = Math.min(Math.max(failureCount, 0), SAVE_RETRY_DELAYS_MS.length - 1);
+  return SAVE_RETRY_DELAYS_MS[index];
+}
+
 interface AgentSessionLocation {
   workspaceId: string;
   paneId: string | null;
@@ -1001,6 +1014,8 @@ export function useWorkspacePersist() {
     let syncInFlight: Promise<boolean> | null = null;
     let closing = false;
     let closePromptOpen = false;
+    let saveFailureStreak = 0;
+    let saveRetryTimer: ReturnType<typeof setTimeout> | null = null;
 
     const buildSnapshot = (agentMappings: Record<string, AgentSessionMapping> = {}) => {
       const state = useWorkspaceListStore.getState();
@@ -1101,15 +1116,23 @@ export function useWorkspacePersist() {
       }
       dirty = false;
       const run = savePersistentData(buildSnapshot(agentMappings))
-        .then(() => true)
+        .then(() => {
+          // Streak broken: drop the pending retry and reset the ladder.
+          clearSaveRetry();
+          saveFailureStreak = 0;
+          return true;
+        })
         .catch((err) => {
           dirty = true; // allow next trigger to retry
           console.warn("[persist] Failed to save:", err);
           const now = Date.now();
-          if (now - lastSaveFailureToastAt >= SAVE_FAILURE_TOAST_DEBOUNCE_MS) {
+          const firstOfStreak = saveFailureStreak === 0;
+          if (firstOfStreak && now - lastSaveFailureToastAt >= SAVE_FAILURE_TOAST_DEBOUNCE_MS) {
             lastSaveFailureToastAt = now;
             useToastStore.getState().pushToast("Workspace save failed — check before restarting", "error");
           }
+          scheduleSaveRetry();
+          saveFailureStreak += 1;
           return false;
         });
       syncInFlight = run;
@@ -1127,6 +1150,24 @@ export function useWorkspacePersist() {
       debounceTimer = setTimeout(() => {
         void sync();
       }, delayMs);
+    }
+
+    function clearSaveRetry(): void {
+      if (saveRetryTimer) {
+        clearTimeout(saveRetryTimer);
+        saveRetryTimer = null;
+      }
+    }
+
+    // A failed save leaves `dirty = true` but nothing scheduled, so an idle
+    // workspace would never write again. Keep at most one retry pending and let
+    // `sync()` re-check leadership / in-flight coalescing when it fires.
+    function scheduleSaveRetry(): void {
+      if (saveRetryTimer || closing) return;
+      saveRetryTimer = setTimeout(() => {
+        saveRetryTimer = null;
+        void sync();
+      }, saveRetryDelayMs(saveFailureStreak));
     }
 
     const debouncedSync = () => {
@@ -1209,6 +1250,7 @@ export function useWorkspacePersist() {
           clearTimeout(debounceTimer);
           debounceTimer = null;
         }
+        clearSaveRetry();
         void sync(true);
       }
     };
@@ -1254,6 +1296,7 @@ export function useWorkspacePersist() {
         clearTimeout(debounceTimer);
         debounceTimer = null;
       }
+      clearSaveRetry();
       let shouldQuitAfterSave = false;
       try {
         while (true) {
@@ -1300,6 +1343,7 @@ export function useWorkspacePersist() {
       unsubKeys();
       unsubUi();
       if (debounceTimer) clearTimeout(debounceTimer);
+      clearSaveRetry();
       window.removeEventListener("beforeunload", handleBeforeUnload);
       unlistenCloseRequested.then((f) => f()).catch(() => {});
     };

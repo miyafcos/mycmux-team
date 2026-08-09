@@ -37,6 +37,21 @@ python scripts/mycmux_agent_cli.py spawn --target <claude|codex> --prompt-file <
 - effort やモデル指定は CLI フラグでは渡らない — **spec 本文に日本語で明記**する
 - 割り込みは send_text → 数秒後に素の Enter 後追い (ペースト扱いで Enter が飲まれるため)
 
+### ソケット認証 (2026-08-09 追加・自作ツールを書くとき必読)
+
+ローカルソケットは**トークン必須**になった (ループバックは認可の境界ではないため)。CLI 経由なら意識不要 —
+`mycmux_agent_cli.py` が自動で添付する。生ソケットを直接叩くツールを書く場合だけ以下に従う:
+
+```
+{"cmd": "pane.list_all", "args": {}, "token": "<~/.mycmux/mycmux.token の中身>"}\n
+```
+
+- トークンは mycmux の**起動ごとに再生成**される 64桁 hex。毎回ファイルから読む (キャッシュしない)
+- 欠落・不一致は `{"ok":false,"error":"unauthorized"}` を返して即切断。`status.subscribe` などフィード系フレームも同じ扱い
+- トークンファイルが無い = その mycmux が認証導入前か `MYCMUX_SOCKET_AUTH=off` 起動。素で送ってよい
+- 未移行の外部ツールがあるときの逃げ道は、mycmux を `MYCMUX_SOCKET_AUTH=off` の環境で起動すること (全リクエストが無認証で通る。diag.log に警告が残る)
+- 詳細は `docs/features/implemented/socket-api-and-automation.md` の「認証」節
+
 ### Antigravity (agy) の可視 spawn (2026-07-16 追加)
 
 Gemini CLI は 2026-06-18 に個人アカウント向け終了 (実測: `IneligibleTierError`)。後継は

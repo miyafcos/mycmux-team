@@ -1,11 +1,14 @@
 use dashmap::DashMap;
+use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
 use std::sync::{
-    atomic::{AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     Arc,
 };
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
@@ -18,6 +21,18 @@ use tokio::sync::oneshot;
 /// spawned tokio task and its `pending_requests` entry forever.
 const FRONTEND_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 const STATUS_RECONCILE_INTERVAL: Duration = Duration::from_secs(90);
+
+/// Every process on the machine can reach 127.0.0.1, so the loopback peer check
+/// is not an authorization boundary — it only keeps the LAN out. Callers must
+/// additionally prove they can read this process's token file, which lives next
+/// to the port file. Same posture as the remote server (`remote/auth.rs`), but a
+/// separate secret with a separate lifetime: it is regenerated on every start.
+const SOCKET_TOKEN_FILE: &str = "mycmux.token";
+/// Escape hatch for external consumers that have not been migrated yet.
+const SOCKET_AUTH_ENV: &str = "MYCMUX_SOCKET_AUTH";
+/// Rejected callers usually retry in a loop and diag.log rotates at 1 MiB, so
+/// report at most one rejection per window and fold the rest into a count.
+const REJECTION_LOG_INTERVAL_MS: u64 = 60_000;
 
 pub struct SocketState {
     pub pending_requests: Arc<DashMap<usize, oneshot::Sender<SocketResponse>>>,
@@ -36,6 +51,130 @@ pub struct SocketResponse {
     pub id: usize,
     pub result: Option<Value>,
     pub error: Option<String>,
+}
+
+/// Keeps a retrying unauthorized caller from filling diag.log.
+#[derive(Debug)]
+struct RejectionLogThrottle {
+    logged_once: AtomicBool,
+    last_logged_ms: AtomicU64,
+    suppressed: AtomicU64,
+}
+
+impl RejectionLogThrottle {
+    fn new() -> Self {
+        Self {
+            logged_once: AtomicBool::new(false),
+            last_logged_ms: AtomicU64::new(0),
+            suppressed: AtomicU64::new(0),
+        }
+    }
+
+    /// `Some(suppressed_since_the_last_report)` when this rejection should be
+    /// logged, `None` when it falls inside the current quiet window.
+    ///
+    // ponytail: lock-free read-modify-write, so a burst can emit two lines for
+    // one window; a mutex here would serialize the reject path for no
+    // diagnostic gain. Swap in a Mutex only if the count must be exact.
+    fn take_report(&self, now_ms: u64, interval_ms: u64) -> Option<u64> {
+        let due = !self.logged_once.load(Ordering::Acquire)
+            || now_ms.saturating_sub(self.last_logged_ms.load(Ordering::Acquire)) >= interval_ms;
+        if !due {
+            self.suppressed.fetch_add(1, Ordering::Relaxed);
+            return None;
+        }
+        self.logged_once.store(true, Ordering::Release);
+        self.last_logged_ms.store(now_ms, Ordering::Release);
+        Some(self.suppressed.swap(0, Ordering::Relaxed))
+    }
+}
+
+/// Access control for the local automation socket.
+#[derive(Debug)]
+pub struct SocketAuth {
+    /// `None` means enforcement is switched off (`MYCMUX_SOCKET_AUTH=off`).
+    expected_token: Option<String>,
+    rejection_log: RejectionLogThrottle,
+}
+
+impl SocketAuth {
+    fn enforcing(token: String) -> Self {
+        Self {
+            expected_token: Some(token),
+            rejection_log: RejectionLogThrottle::new(),
+        }
+    }
+
+    fn disabled() -> Self {
+        Self {
+            expected_token: None,
+            rejection_log: RejectionLogThrottle::new(),
+        }
+    }
+
+    fn authorize(&self, provided: Option<&str>) -> bool {
+        let Some(expected) = self.expected_token.as_deref() else {
+            return true;
+        };
+        provided.is_some_and(|provided| crate::remote::auth::validate_token(provided, expected))
+    }
+
+    fn note_rejection(&self, peer: SocketAddr) {
+        let Some(suppressed) = self
+            .rejection_log
+            .take_report(now_millis(), REJECTION_LOG_INTERVAL_MS)
+        else {
+            return;
+        };
+        if suppressed == 0 {
+            crate::diag_warn!("socket", "Rejected unauthenticated request from {}", peer);
+        } else {
+            crate::diag_warn!(
+                "socket",
+                "Rejected unauthenticated request from {} ({} more suppressed in the last {}s)",
+                peer,
+                suppressed,
+                REJECTION_LOG_INTERVAL_MS / 1000
+            );
+        }
+    }
+}
+
+fn now_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Remove the credential from the request so it never reaches the frontend
+/// bridge, the emitted `socket-request` payload, or any log line.
+fn take_request_token(parsed: &mut Value) -> Option<String> {
+    match parsed.as_object_mut()?.remove("token")? {
+        Value::String(token) => Some(token),
+        _ => None,
+    }
+}
+
+/// A struct (not `json!`) so the field order on the wire is the documented one:
+/// `serde_json::Map` sorts keys alphabetically unless `preserve_order` is on.
+#[derive(Debug, Serialize)]
+struct UnauthorizedResponse {
+    ok: bool,
+    error: &'static str,
+}
+
+fn unauthorized_response() -> UnauthorizedResponse {
+    UnauthorizedResponse {
+        ok: false,
+        error: "unauthorized",
+    }
+}
+
+/// Only the documented `off` value disables enforcement; anything else (empty,
+/// typo, `false`) keeps the socket authenticated.
+fn auth_disabled_by_setting(raw: Option<&str>) -> bool {
+    raw.is_some_and(|value| value.trim().eq_ignore_ascii_case("off"))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -326,7 +465,12 @@ async fn serve_status_connection(
     }
 }
 
-async fn handle_connection(stream: TcpStream, app: AppHandle) {
+async fn handle_connection(
+    stream: TcpStream,
+    app: AppHandle,
+    auth: Arc<SocketAuth>,
+    peer: SocketAddr,
+) {
     let state = app.state::<SocketState>();
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
@@ -343,6 +487,14 @@ async fn handle_connection(stream: TcpStream, app: AppHandle) {
                 }
 
                 if let Ok(mut parsed) = serde_json::from_str::<Value>(trimmed) {
+                    // Authenticate before anything else looks at the request,
+                    // and drop the credential from the payload either way.
+                    let provided_token = take_request_token(&mut parsed);
+                    if !auth.authorize(provided_token.as_deref()) {
+                        auth.note_rejection(peer);
+                        let _ = write_json_line(&mut writer, &unauthorized_response()).await;
+                        return;
+                    }
                     if parsed.get("cmd").and_then(Value::as_str) == Some("status.subscribe") {
                         let request_id = parsed.get("id").and_then(Value::as_u64).unwrap_or(0);
                         let request = serde_json::from_value::<crate::status_feed::FeedRequest>(
@@ -462,13 +614,77 @@ async fn handle_connection(stream: TcpStream, app: AppHandle) {
     }
 }
 
-/// Get the path to the port file for socket discovery
-fn get_port_file_path() -> std::path::PathBuf {
-    let mut path = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
+/// Directory that holds the socket discovery files (`~/.mycmux`).
+fn get_discovery_dir() -> PathBuf {
+    let mut path = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
     path.push(".mycmux");
     std::fs::create_dir_all(&path).ok();
+    path
+}
+
+/// Get the path to the port file for socket discovery
+fn get_port_file_path() -> PathBuf {
+    let mut path = get_discovery_dir();
     path.push("mycmux.port");
     path
+}
+
+/// Get the path to the token file that authorizes socket callers.
+fn get_token_file_path() -> PathBuf {
+    let mut path = get_discovery_dir();
+    path.push(SOCKET_TOKEN_FILE);
+    path
+}
+
+/// Generate a new 32-byte hex token (same shape as the remote token).
+fn generate_socket_token() -> String {
+    let mut bytes = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    hex::encode(bytes)
+}
+
+/// Write a fresh per-process token. The file is rewritten on every start, so a
+/// token captured from an earlier run cannot drive this one.
+fn write_socket_token(path: &Path) -> std::io::Result<String> {
+    let token = generate_socket_token();
+    std::fs::write(path, &token)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(token)
+}
+
+/// Decide this process's socket access control and publish the token file.
+fn prepare_socket_auth(token_file: &Path) -> SocketAuth {
+    if auth_disabled_by_setting(std::env::var(SOCKET_AUTH_ENV).ok().as_deref()) {
+        // Leave no stale secret behind: consumers must not keep sending a token
+        // that this process would ignore.
+        let _ = std::fs::remove_file(token_file);
+        crate::diag_warn!(
+            "socket",
+            "{}=off — the local socket accepts unauthenticated requests",
+            SOCKET_AUTH_ENV
+        );
+        return SocketAuth::disabled();
+    }
+    match write_socket_token(token_file) {
+        Ok(token) => SocketAuth::enforcing(token),
+        Err(error) => {
+            // Fail closed. An unwritable token file must not silently restore
+            // the old "any local process may drive the app" behaviour; keep the
+            // unreadable token so every request is rejected until it is fixed.
+            crate::diag_warn!(
+                "socket",
+                "Failed to write token file {}: {} — the local socket will reject every request until {}=off",
+                token_file.display(),
+                error,
+                SOCKET_AUTH_ENV
+            );
+            SocketAuth::enforcing(generate_socket_token())
+        }
+    }
 }
 
 /// Clean up old Unix socket file if it exists (for migration from old versions)
@@ -484,6 +700,9 @@ pub fn start_socket_listener(app: AppHandle) {
     cleanup_legacy_socket();
 
     let port_file = get_port_file_path();
+    // Publish the token before the port: a consumer that can see the port file
+    // must already be able to read the token that goes with it.
+    let auth = Arc::new(prepare_socket_auth(&get_token_file_path()));
 
     tauri::async_runtime::spawn(async move {
         // Bind to localhost with port 0 to get a random available port
@@ -494,7 +713,7 @@ pub fn start_socket_listener(app: AppHandle) {
 
                 // Write port to file for CLI tools to discover
                 if let Err(e) = std::fs::write(&port_file, port.to_string()) {
-                    eprintln!("Failed to write port file: {}", e);
+                    crate::diag_warn!("socket", "Failed to write port file: {}", e);
                     return;
                 }
 
@@ -508,19 +727,24 @@ pub fn start_socket_listener(app: AppHandle) {
                     if let Ok((stream, peer_addr)) = listener.accept().await {
                         // Only accept connections from localhost for security
                         if !peer_addr.ip().is_loopback() {
-                            eprintln!("Rejected non-localhost connection from {}", peer_addr);
+                            crate::diag_warn!(
+                                "socket",
+                                "Rejected non-localhost connection from {}",
+                                peer_addr
+                            );
                             continue;
                         }
 
                         let app_clone = app.clone();
+                        let auth = auth.clone();
                         tauri::async_runtime::spawn(async move {
-                            handle_connection(stream, app_clone).await;
+                            handle_connection(stream, app_clone, auth, peer_addr).await;
                         });
                     }
                 }
             }
             Err(e) => {
-                eprintln!("Failed to bind TCP socket: {}", e);
+                crate::diag_warn!("socket", "Failed to bind TCP socket: {}", e);
             }
         }
     });
@@ -552,6 +776,102 @@ mod tests {
                 stale_after: 60_000,
             },
         }
+    }
+
+    fn enforcing_auth() -> SocketAuth {
+        SocketAuth::enforcing("a".repeat(64))
+    }
+
+    #[test]
+    fn valid_token_is_accepted_and_stripped_from_the_request() {
+        let auth = enforcing_auth();
+        let mut request = serde_json::json!({
+            "cmd": "pane.list_all",
+            "args": {},
+            "token": "a".repeat(64),
+        });
+
+        let provided = take_request_token(&mut request);
+
+        assert_eq!(provided.as_deref(), Some("a".repeat(64).as_str()));
+        assert!(auth.authorize(provided.as_deref()));
+        // The credential must not reach the frontend bridge or any log line.
+        assert_eq!(
+            request,
+            serde_json::json!({ "cmd": "pane.list_all", "args": {} })
+        );
+    }
+
+    #[test]
+    fn missing_wrong_and_non_string_tokens_are_rejected() {
+        let auth = enforcing_auth();
+
+        assert!(!auth.authorize(None));
+        assert!(!auth.authorize(Some("")));
+        assert!(!auth.authorize(Some(&format!("{}b", "a".repeat(63)))));
+        assert!(!auth.authorize(Some("a")));
+
+        let mut numeric = serde_json::json!({ "cmd": "pane.list_all", "token": 7 });
+        assert_eq!(take_request_token(&mut numeric), None);
+        assert_eq!(numeric, serde_json::json!({ "cmd": "pane.list_all" }));
+    }
+
+    #[test]
+    fn disabled_auth_accepts_requests_with_and_without_a_token() {
+        let auth = SocketAuth::disabled();
+
+        assert!(auth.authorize(None));
+        assert!(auth.authorize(Some("whatever")));
+    }
+
+    #[test]
+    fn only_the_documented_off_value_disables_enforcement() {
+        // Parameter seam: the env var is read once at startup, never in tests.
+        assert!(auth_disabled_by_setting(Some("off")));
+        assert!(auth_disabled_by_setting(Some(" OFF ")));
+        assert!(!auth_disabled_by_setting(None));
+        assert!(!auth_disabled_by_setting(Some("")));
+        assert!(!auth_disabled_by_setting(Some("false")));
+        assert!(!auth_disabled_by_setting(Some("0")));
+        assert!(!auth_disabled_by_setting(Some("offline")));
+    }
+
+    #[test]
+    fn unauthorized_reply_is_the_documented_wire_shape() {
+        assert_eq!(
+            serde_json::to_string(&unauthorized_response()).unwrap(),
+            r#"{"ok":false,"error":"unauthorized"}"#
+        );
+    }
+
+    #[test]
+    fn rejection_logging_reports_once_per_window_and_counts_the_rest() {
+        let throttle = RejectionLogThrottle::new();
+
+        assert_eq!(throttle.take_report(1_000, 60_000), Some(0));
+        assert_eq!(throttle.take_report(1_001, 60_000), None);
+        assert_eq!(throttle.take_report(60_999, 60_000), None);
+        // Window elapsed: report, carrying the retries that were swallowed.
+        assert_eq!(throttle.take_report(61_000, 60_000), Some(2));
+        assert_eq!(throttle.take_report(61_001, 60_000), None);
+        assert_eq!(throttle.take_report(200_000, 60_000), Some(1));
+    }
+
+    #[test]
+    fn socket_tokens_are_fresh_64_char_hex_written_next_to_the_port_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join(SOCKET_TOKEN_FILE);
+
+        let first = write_socket_token(&path).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), first);
+        assert_eq!(first.len(), 64);
+        assert!(first.chars().all(|ch| ch.is_ascii_hexdigit()));
+
+        // Per-process lifetime: restarting overwrites the previous secret.
+        let second = write_socket_token(&path).unwrap();
+        assert_ne!(first, second);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), second);
+        assert!(!SocketAuth::enforcing(second).authorize(Some(&first)));
     }
 
     #[tokio::test]

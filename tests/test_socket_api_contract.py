@@ -50,6 +50,36 @@ def test_socket_api_has_frontend_response_bridge() -> None:
         assert_contains(socket_commands, snippet, "src/components/layout/socketCommands.ts")
 
 
+def test_local_socket_requires_a_token_from_every_caller() -> None:
+    socket_rs = read_repo_text("src-tauri/src/socket.rs")
+    agent_cli = read_repo_text("scripts/mycmux_agent_cli.py")
+    status_probe = read_repo_text("scripts/status_feed_probe.py")
+
+    for snippet in [
+        # Token is taken (and stripped) before anything dispatches the request.
+        "let provided_token = take_request_token(&mut parsed);",
+        "if !auth.authorize(provided_token.as_deref()) {",
+        "auth.note_rejection(peer);",
+        'error: "unauthorized",',
+        'const SOCKET_TOKEN_FILE: &str = "mycmux.token";',
+        'const SOCKET_AUTH_ENV: &str = "MYCMUX_SOCKET_AUTH";',
+        "crate::remote::auth::validate_token(provided, expected)",
+    ]:
+        assert_contains(socket_rs, snippet, "src-tauri/src/socket.rs")
+
+    for snippet in [
+        'TOKEN_FILE = Path.home() / ".mycmux" / "mycmux.token"',
+        'payload["token"] = token',
+    ]:
+        assert_contains(agent_cli, snippet, "scripts/mycmux_agent_cli.py")
+
+    for snippet in [
+        'TOKEN_FILE_NAME = "mycmux.token"',
+        'payload["token"] = token',
+    ]:
+        assert_contains(status_probe, snippet, "scripts/status_feed_probe.py")
+
+
 def test_one_shot_tab_command_is_not_persisted() -> None:
     socket_listener = read_repo_text("src/components/layout/SocketListener.tsx")
     assert "command_argv" not in socket_listener

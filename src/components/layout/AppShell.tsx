@@ -16,6 +16,8 @@ import WorkspaceView from "../workspace/WorkspaceView";
 import PaneDragOverlay from "../workspace/PaneDragOverlay";
 import SavepointDragOverlay from "../online/SavepointDragOverlay";
 import WorkspaceSetup from "../setup/WorkspaceSetup";
+import EmptyWorkspaceState from "../setup/EmptyWorkspaceState";
+import { resolveEmptyWorkspaceState } from "../../lib/workspaceBootstrap";
 import SocketListener from "./SocketListener";
 import KeybindingsModal from "./KeybindingsModal";
 import CrsmPalette, { preloadCrsmSessions } from "../CommandPalette/CrsmPalette";
@@ -341,6 +343,9 @@ interface AppShellProps {
 
 export default function AppShell({ uiVariant = "default" }: AppShellProps) {
   const [showSetup, setShowSetup] = useState(false);
+  // Sticky once this session has held a workspace — drives first-run vs
+  // "you closed your last workspace" copy in the empty state.
+  const [hasCreatedWorkspace, setHasCreatedWorkspace] = useState(false);
   const [isCrsmPaletteOpen, setIsCrsmPaletteOpen] = useState(false);
   const workspaces = useWorkspaceListStore((s) => s.workspaces);
   const activeId = useWorkspaceListStore((s) => s.activeWorkspaceId);
@@ -472,11 +477,20 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
     colorScheme: currentTheme.colorScheme,
   } as React.CSSProperties;
 
+  // Zero workspaces no longer force-opens the setup modal (that dropped a
+  // Start-Menu launch straight into a modal over a bare app). EmptyWorkspaceState
+  // owns that surface now and offers the modal as one of its actions.
   useEffect(() => {
-    if (workspaces.length === 0) {
-      setShowSetup(true);
+    if (workspaces.length > 0 && !hasCreatedWorkspace) {
+      setHasCreatedWorkspace(true);
     }
-  }, [workspaces.length]);
+  }, [workspaces.length, hasCreatedWorkspace]);
+
+  const emptyStateVariant = resolveEmptyWorkspaceState({
+    workspaceCount: workspaces.length,
+    setupOpen: showSetup,
+    hasCreatedWorkspace,
+  });
 
   // Surface backend remote-server failures (port bind, token validation, etc.)
   // The Rust side already emits "remote-error"; without a listener the Settings →
@@ -978,6 +992,13 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
           <ErrorBoundary fallback={chromeCrashFallback("コマンドパレット")}>
             <CrsmPalette open={isCrsmPaletteOpen} onClose={() => setIsCrsmPaletteOpen(false)} />
           </ErrorBoundary>
+          {emptyStateVariant && (
+            <div style={{ position: "absolute", inset: 0, zIndex: 45, background: "var(--cmux-bg)" }}>
+              <ErrorBoundary fallback={chromeCrashFallback("ワークスペース未作成画面")}>
+                <EmptyWorkspaceState variant={emptyStateVariant} onOpenSetup={handleNewWorkspace} />
+              </ErrorBoundary>
+            </div>
+          )}
           {showSetup && (
             <div style={{ position: "absolute", inset: 0, zIndex: 50, background: "var(--cmux-bg)" }}>
               <ErrorBoundary fallback={chromeCrashFallback("ワークスペース作成画面")}>

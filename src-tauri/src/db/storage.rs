@@ -314,8 +314,9 @@ fn cleanup_old_pre_replace_backups(path: &Path, keep: Option<&Path>) {
             continue;
         }
         if let Err(error) = fs::remove_file(&backup) {
-            eprintln!(
-                "[mycmux] failed to remove old data backup {}: {error}",
+            crate::diag_warn!(
+                "storage",
+                "failed to remove old data backup {}: {error}",
                 backup.display()
             );
         }
@@ -385,8 +386,9 @@ fn recover_from_pre_replace_backup(
             let _backup_path = quarantine_data_file(path, reason)?;
         }
         copy_file_and_sync(&backup_path, path)?;
-        eprintln!(
-            "[mycmux][storage] recovered {} from {} after {}",
+        crate::diag_warn!(
+            "storage",
+            "recovered {} from {} after {}",
             path.display(),
             backup_path.display(),
             reason
@@ -481,10 +483,16 @@ fn save_to_path(path: &Path, data: &PersistentData) -> Result<(), String> {
         .map_err(|error| format!("Failed to serialize data: {error}"))?;
 
     write_json_file(&tmp_path, &json)?;
-    replace_data_file(path, &tmp_path).inspect_err(|_error| {
+    replace_data_file(path, &tmp_path).inspect_err(|replace_error| {
+        crate::diag_warn!(
+            "storage",
+            "failed to save {}: {replace_error}",
+            path.display()
+        );
         if let Err(error) = fs::remove_file(&tmp_path) {
-            eprintln!(
-                "[mycmux] failed to remove temporary data file {}: {error}",
+            crate::diag_warn!(
+                "storage",
+                "failed to remove temporary data file {}: {error}",
                 tmp_path.display()
             );
         }

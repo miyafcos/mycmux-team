@@ -2,9 +2,9 @@ import { useEffect, useState } from "react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import {
   useWorkspaceListStore,
-  useWorkspaceLayoutStore,
   usePaneMetadataStore
 } from "./stores/workspaceStore";
+import { createWorkspaceAtCwd } from "./lib/workspaceBootstrap";
 import { useWorkspacePersist, persistLoaded } from "./components/layout/SocketListener";
 import {
   preloadTerminalConfig,
@@ -42,11 +42,8 @@ import { connectSessionAttentionStore } from "./stores/sessionAttentionStore";
 // Kick off config fetch immediately — will be cached by the time terminals mount
 preloadTerminalConfig();
 
-// Prevent unhandled promise rejections from crashing the app
-window.addEventListener("unhandledrejection", (e) => {
-  console.warn("[mycmux] unhandled rejection:", e.reason);
-  e.preventDefault();
-});
+// unhandledrejection is handled once in main.tsx (registered earlier, logs and
+// surfaces a throttled toast) — do not register a second listener here.
 
 function waitForSettingsHydration(): Promise<void> {
   if (useSettingsStore.persist.hasHydrated()) {
@@ -156,22 +153,11 @@ function App() {
         launchCwd = await getLaunchCwd();
       } catch { /* ignore */ }
 
-      if (listStore.workspaces.length === 0) {
-        if (launchCwd) {
-          const workspaceId = crypto.randomUUID();
-          const { panes, splitColumns } = useWorkspaceLayoutStore.getState().buildInitialPanes(workspaceId, "1x1");
-
-          for (const pane of panes) {
-            pane.cwd = launchCwd;
-            for (const tab of pane.tabs) {
-              tab.cwd = launchCwd;
-            }
-          }
-
-          listStore.createWorkspace("Terminal", "1x1", panes, splitColumns, {
-            id: workspaceId,
-          });
-        }
+      // No launch cwd (Start Menu / pinned shortcut) intentionally creates
+      // nothing — AppShell shows the empty-state panel instead of dropping the
+      // user into a bare app behind a modal.
+      if (listStore.workspaces.length === 0 && launchCwd) {
+        createWorkspaceAtCwd(launchCwd);
       }
 
       const currentListState = useWorkspaceListStore.getState();

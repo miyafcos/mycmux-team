@@ -131,7 +131,7 @@ impl RemoteControl {
             *current = new_token;
         }
         let _ = self.disconnect_tx.send(());
-        eprintln!("[remote] token rotated; new suffix={suffix}");
+        crate::diag_warn!("remote", "token rotated; new suffix={suffix}");
         Ok(self.info().await)
     }
 }
@@ -219,7 +219,7 @@ pub fn start_remote_server(
                 Some(p)
             }
             None => {
-                eprintln!("[remote] Could not determine home directory for port file");
+                crate::diag_warn!("remote", "Could not determine home directory for port file");
                 None
             }
         };
@@ -256,7 +256,7 @@ pub fn start_remote_server(
         let listener = match tokio::net::TcpListener::bind(&addr).await {
             Ok(l) => l,
             Err(e) => {
-                eprintln!("[remote] Failed to bind {addr}: {e}");
+                crate::diag_warn!("remote", "Failed to bind {addr}: {e}");
                 if let Some(ref pf) = port_file {
                     let _ = std::fs::remove_file(pf);
                 }
@@ -274,7 +274,7 @@ pub fn start_remote_server(
         )
         .await
         {
-            eprintln!("[remote] Server error: {e}");
+            crate::diag_warn!("remote", "Server error: {e}");
         }
     });
 }

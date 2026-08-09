@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
 import Fuse from "fuse.js";
+import { homeDir } from "@tauri-apps/api/path";
 import {
   crsmCreateHandoff,
   crsmListSessions,
@@ -177,23 +178,76 @@ function targetSummary(session: CrsmSessionEntry | undefined, target: OpenTarget
   return `${agentTitle(target)}へ引き継ぎ`;
 }
 
-function shortenCwd(cwd: string): string {
-  if (!cwd) return "";
-  const homeWin = "C:\\Users\\miyaz";
-  const homePosix = "/c/Users/miyaz";
-  let path = cwd;
-  if (path === homeWin || path === homePosix) return "~";
-  if (path.startsWith(homeWin + "\\")) {
-    path = path.slice(homeWin.length + 1);
-  } else if (path.startsWith(homePosix + "/")) {
-    path = path.slice(homePosix.length + 1);
-  } else {
-    const seg = path.split(/[\\/]/);
-    return seg[seg.length - 1] || cwd;
+/**
+ * Every spelling of the home directory a session cwd may arrive in: the OS form
+ * plus the Git-Bash `/c/Users/...` form, since sessions started from either shell
+ * land in the same list.
+ */
+export function homePathVariants(home: string | null | undefined): string[] {
+  const trimmed = (home ?? "").trim().replace(/[\\/]+$/, "");
+  if (!trimmed) return [];
+  const variants = new Set<string>([trimmed]);
+  const windowsDrive = trimmed.match(/^([A-Za-z]):[\\/](.*)$/);
+  if (windowsDrive) {
+    const [, drive, rest] = windowsDrive;
+    const withSlashes = rest.replace(/\\/g, "/");
+    variants.add(`${drive}:\\${withSlashes.replace(/\//g, "\\")}`);
+    variants.add(`${drive}:/${withSlashes}`);
+    variants.add(`/${drive.toLowerCase()}/${withSlashes}`);
   }
-  const parts = path.split(/[\\/]/);
-  if (parts.length <= 2) return parts.join("/");
-  return ".../" + parts.slice(-2).join("/");
+  return [...variants];
+}
+
+/**
+ * Pure display helper: `homePaths` comes from `homePathVariants` at runtime, so
+ * an unknown home simply degrades to the last path segment.
+ */
+export function shortenCwd(cwd: string, homePaths: readonly string[] = []): string {
+  if (!cwd) return "";
+  for (const home of homePaths) {
+    if (!home) continue;
+    if (cwd === home) return "~";
+    if (!cwd.startsWith(home + "\\") && !cwd.startsWith(home + "/")) continue;
+    const parts = cwd.slice(home.length + 1).split(/[\\/]/);
+    if (parts.length <= 2) return parts.join("/");
+    return ".../" + parts.slice(-2).join("/");
+  }
+  const seg = cwd.split(/[\\/]/);
+  return seg[seg.length - 1] || cwd;
+}
+
+let cachedHomePathVariants: string[] = [];
+let homePathVariantsRequest: Promise<string[]> | null = null;
+
+function loadHomePathVariants(): Promise<string[]> {
+  if (!homePathVariantsRequest) {
+    homePathVariantsRequest = (async () => {
+      try {
+        cachedHomePathVariants = homePathVariants(await homeDir());
+      } catch {
+        // No Tauri path API (or no resolvable home): keep the empty list, which
+        // makes shortenCwd fall back to the plain last-segment form.
+        cachedHomePathVariants = [];
+      }
+      return cachedHomePathVariants;
+    })();
+  }
+  return homePathVariantsRequest;
+}
+
+/** Component-side wrapper around the pure `shortenCwd`. */
+function useShortenCwd(): (cwd: string) => string {
+  const [homePaths, setHomePaths] = useState<string[]>(cachedHomePathVariants);
+  useEffect(() => {
+    let cancelled = false;
+    void loadHomePathVariants().then((variants) => {
+      if (!cancelled) setHomePaths(variants);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  return useMemo(() => (cwd: string) => shortenCwd(cwd, homePaths), [homePaths]);
 }
 
 function normalizeCwdKey(cwd: string | null | undefined): string {
@@ -443,6 +497,7 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
   const [cwdFilters, setCwdFilters] = useState<string[]>([]);
   const [showAllCwds, setShowAllCwds] = useState(false);
   const [summaryOnlyConfirmKey, setSummaryOnlyConfirmKey] = useState<string | null>(null);
+  const shortenCwdForDisplay = useShortenCwd();
   const listRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const requestIdRef = useRef(0);
@@ -976,7 +1031,7 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
                   className={`cmux-crsm-cwd-chip${active ? " is-active" : ""}`}
                   onClick={() => toggleCwd(cwd)}
                 >
-                  {shortenCwd(cwd)}
+                  {shortenCwdForDisplay(cwd)}
                   <span style={styles.cwdCount}>{count}</span>
                 </button>
               );
@@ -1056,7 +1111,7 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
                   </span>
                 </span>
                 <span style={styles.itemRow2}>
-                  <span style={styles.itemRow2Cwd} title={session.cwd}>{shortenCwd(session.cwd)}</span>
+                  <span style={styles.itemRow2Cwd} title={session.cwd}>{shortenCwdForDisplay(session.cwd)}</span>
                   <span style={styles.itemRow2Sep}>·</span>
                   <span style={styles.itemRow2Source}>{sourceShort(session.source)}</span>
                   {(session.files_modified?.length ?? 0) > 0 ? (

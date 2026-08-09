@@ -14,23 +14,26 @@ from typing import Any, TextIO
 
 
 DEFAULT_PORT_FILE = Path.home() / ".mycmux" / "mycmux.port"
+TOKEN_FILE_NAME = "mycmux.token"
 PROTOCOL_VERSION = 2
 
 
-def encode_request(request_id: int, command: str) -> bytes:
-    payload = {
+def encode_request(request_id: int, command: str, token: str | None = None) -> bytes:
+    payload: dict[str, Any] = {
         "v": PROTOCOL_VERSION,
         "id": request_id,
         "cmd": command,
         "args": {},
     }
+    if token is not None:
+        payload["token"] = token
     return (json.dumps(payload, ensure_ascii=True, separators=(",", ":")) + "\n").encode(
         "utf-8"
     )
 
 
-def build_subscribe_frame() -> bytes:
-    return encode_request(1, "status.subscribe")
+def build_subscribe_frame(token: str | None = None) -> bytes:
+    return encode_request(1, "status.subscribe", token)
 
 
 def read_port(port_file: Path) -> int:
@@ -39,6 +42,20 @@ def read_port(port_file: Path) -> int:
     if not 1 <= port <= 65535:
         raise ValueError(f"invalid port in {port_file}: {port}")
     return port
+
+
+def read_token(token_file: Path) -> str | None:
+    """Read the socket token mycmux writes next to the port file.
+
+    A missing file means the running mycmux predates socket auth or was started
+    with ``MYCMUX_SOCKET_AUTH=off``; frames then go out unauthenticated exactly
+    as before.
+    """
+    try:
+        token = token_file.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return token or None
 
 
 @dataclass
@@ -148,6 +165,7 @@ def run_probe(
     *,
     timeout: float,
     port_file: Path = DEFAULT_PORT_FILE,
+    token_file: Path | None = None,
     output: TextIO = sys.stdout,
     tracker: FeedTracker | None = None,
 ) -> int:
@@ -155,13 +173,18 @@ def run_probe(
         raise ValueError("--timeout must be greater than zero")
 
     port = read_port(port_file)
+    # The token lives next to the port file, so a --port-file override keeps
+    # both discovery files pointing at the same mycmux instance.
+    token = read_token(
+        token_file if token_file is not None else port_file.with_name(TOKEN_FILE_NAME)
+    )
     deadline = time.monotonic() + timeout
     buffer = bytearray()
     state = tracker or FeedTracker()
     next_request_id = 2
 
     with socket.create_connection(("127.0.0.1", port), timeout=min(timeout, 5.0)) as conn:
-        conn.sendall(build_subscribe_frame())
+        conn.sendall(build_subscribe_frame(token))
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -192,7 +215,9 @@ def run_probe(
                 output.write(line + "\n")
                 output.flush()
                 if state.observe(frame):
-                    conn.sendall(encode_request(next_request_id, "status.snapshot"))
+                    conn.sendall(
+                        encode_request(next_request_id, "status.snapshot", token)
+                    )
                     next_request_id += 1
     return 0
 
@@ -211,13 +236,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=DEFAULT_PORT_FILE,
         help=argparse.SUPPRESS,
     )
+    parser.add_argument(
+        "--token-file",
+        type=Path,
+        default=None,
+        help=argparse.SUPPRESS,
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     try:
-        return run_probe(timeout=args.timeout, port_file=args.port_file)
+        return run_probe(
+            timeout=args.timeout,
+            port_file=args.port_file,
+            token_file=args.token_file,
+        )
     except (OSError, UnicodeError, ValueError) as error:
         print(f"status feed probe failed: {error}", file=sys.stderr)
         return 1

@@ -2,15 +2,16 @@
 
 ## 概要
 
-mycmux は起動時に `127.0.0.1` のランダムポートで TCP を待ち受け、ポート番号を `~/.mycmux/mycmux.port` に書き出します。外部プロセスはこのポートに改行区切りの JSON を1行送るとペイン操作を実行でき、結果が JSON 1行で返ります。ループバック以外からの接続は `socket.rs` 側で拒否します。
+mycmux は起動時に `127.0.0.1` のランダムポートで TCP を待ち受け、ポート番号を `~/.mycmux/mycmux.port` に書き出します。外部プロセスはこのポートに改行区切りの JSON を1行送るとペイン操作を実行でき、結果が JSON 1行で返ります。ループバック以外からの接続は `socket.rs` 側で拒否し、さらに**全リクエストにトークンが必要**です (下記「認証」)。
 
 主な用途は、ペイン内で動く Claude Code / Codex からの mycmux 操作です。「続きの実装を別エージェントにやらせたい」とき、エージェント自身が可視の新ペインを開いて相手を起動できます (v0.14.17)。
 
 ## プロトコル
 
 ```
-リクエスト:  {"cmd": "pane.spawn", "args": {...}}\n
+リクエスト:  {"cmd": "pane.spawn", "args": {...}, "token": "<64桁hex>"}\n
 レスポンス:  {"id": 0, "result": {...}, "error": null}\n
+認証失敗:    {"ok": false, "error": "unauthorized"}\n   ← 直後に切断
 ```
 
 | 層 | 実装 |
@@ -18,7 +19,19 @@ mycmux は起動時に `127.0.0.1` のランダムポートで TCP を待ち受�
 | TCP 待ち受け | `src-tauri/src/socket.rs` (`start_socket_listener`) — リクエストを `socket-request` イベントとしてフロントエンドへ橋渡し。応答待ちは30秒でタイムアウト |
 | コマンド処理 | `src/components/layout/socketCommands.ts` (`handleSocketCommand`) — `SocketListener.tsx` がイベントを受けて呼び出す |
 | ポート発見 | `~/.mycmux/mycmux.port` |
+| トークン | `~/.mycmux/mycmux.token` (起動ごとに再生成) |
 | CLI | `scripts/mycmux_agent_cli.py` (Python 標準ライブラリのみ) |
+
+## 認証 (2026-08-09 追加)
+
+ループバックは**認可の境界ではない** — 同じ PC 上のどのユーザーセッションのどのプロセスからも届くため、従来はローカルの任意プロセスが pane spawn / send_text / close を叩けました。remote サーバと同じ姿勢に揃えて、ローカルソケットにもトークン認証を入れています。
+
+- mycmux は起動のたびに 32 バイト乱数を hex 化した**プロセス固有トークン**を `~/.mycmux/mycmux.token` へ書き出す (ポートファイルより先に書く)。前回起動のトークンは使えない
+- 呼び出し側は毎リクエストの JSON トップレベルに `"token": "<ファイルの中身>"` を入れる。`status.subscribe` / `status.snapshot` のフィードフレームも同じ
+- 検証は定数時間比較 (`remote::auth::validate_token`)。不一致・欠落なら `{"ok":false,"error":"unauthorized"}` を返して即切断する。`token` フィールドは検証後に取り除かれ、フロントエンドにもログにも渡らない
+- 拒否は diag.log に記録するが、リトライループで 1MB ログを潰さないよう**60秒に1行 + 抑止件数**にまとめる
+- **逃げ道**: 未対応の外部ツールがある場合は、mycmux を `MYCMUX_SOCKET_AUTH=off` の環境で起動すると認証を無効化できる (起動時に diag.log へ警告を残し、紛らわしい古いトークンファイルは削除する)
+- 同梱の消費者 (`scripts/mycmux_agent_cli.py`・`scripts/status_feed_probe.py`・`scripts/mycmux_doctor_lite.py`) はトークンファイルがあれば自動で添付し、無ければ従来どおり素で送る (旧バージョンの mycmux とも話せる)
 
 ## 実装済みコマンド
 
@@ -49,7 +62,7 @@ env 構築は純関数 `resolveSpawnPlan` に分離してあり、`tests/unit/so
 
 ## 安全設計
 
-- ループバック限定・認証なし。GUI パレットで人間ができる操作を CLI に開放したもので、権限は増えていない
+- ループバック限定 + プロセス固有トークン (上記「認証」)。GUI パレットで人間ができる操作を、トークンを読める呼び出し元にだけ開放している
 - `MYCMUX_LAUNCH_TARGET` は ephemeral env ガード3層 (lib.rs 起動時 `remove_var` / SocketListener の永続化フィルタ / 契約テスト `tests/test_ephemeral_env_keys_contract.py`) に登録済み。data.json に残らないため、復元時にエージェントが勝手に起動する事故 (v0.4.0 の env 汚染事故と同型) は起きない
 - `pane.send_text` は生の端末入力。CLI ヘルプにも「対象 sessionId を確認してから使う」旨を明記
 

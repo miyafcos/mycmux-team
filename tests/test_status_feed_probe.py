@@ -144,6 +144,77 @@ def test_probe_detects_gap_requests_snapshot_and_converges(tmp_path: Path) -> No
     assert len(output.getvalue().splitlines()) == 5
 
 
+def test_probe_authenticates_every_frame_when_a_token_file_exists(
+    tmp_path: Path,
+) -> None:
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port_file = tmp_path / "mycmux.port"
+    port_file.write_text(str(listener.getsockname()[1]), encoding="utf-8")
+    token = "c" * 64
+    # The token is discovered next to the port file, trailing newline and all.
+    (tmp_path / "mycmux.token").write_text(token + "\n", encoding="utf-8")
+    requests: list[dict[str, Any]] = []
+    errors: list[BaseException] = []
+
+    def serve() -> None:
+        try:
+            connection, _ = listener.accept()
+            with connection:
+                requests.append(_read_json_line(connection))
+                connection.sendall(
+                    b"".join(
+                        _line(frame)
+                        for frame in [
+                            {
+                                "v": 2,
+                                "kind": "response",
+                                "id": 1,
+                                "result": {"subscribed": True},
+                                "error": None,
+                            },
+                            {
+                                "v": 2,
+                                "kind": "event",
+                                "event": "status.resync_required",
+                                "server_epoch": "epoch-a",
+                                "seq": 3,
+                                "reason": "queue_overflow",
+                            },
+                        ]
+                    )
+                )
+                requests.append(_read_json_line(connection))
+        except BaseException as error:  # pragma: no cover - re-raised below
+            errors.append(error)
+        finally:
+            listener.close()
+
+    server = threading.Thread(target=serve, daemon=True)
+    server.start()
+    output = io.StringIO()
+
+    assert (
+        status_feed_probe.run_probe(
+            timeout=2,
+            port_file=port_file,
+            output=output,
+            tracker=status_feed_probe.FeedTracker(),
+        )
+        == 0
+    )
+    server.join(timeout=3)
+    assert not server.is_alive()
+    if errors:
+        raise errors[0]
+
+    assert requests == [
+        {"v": 2, "id": 1, "cmd": "status.subscribe", "args": {}, "token": token},
+        {"v": 2, "id": 2, "cmd": "status.snapshot", "args": {}, "token": token},
+    ]
+
+
 def test_tracker_requests_snapshot_on_epoch_change() -> None:
     tracker = status_feed_probe.FeedTracker()
     tracker.observe(
