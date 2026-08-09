@@ -16,10 +16,18 @@ import {
   getPtyMetadataSnapshot,
   quitApp,
   sendSocketResponse,
+  getAppSettings,
+  getWindowFragments,
+  publishWindowFragment,
+  releaseWorkspaces,
+  takePendingAdoption,
+  WINDOW_ADOPT_EVENT,
   type AgentSessionMapping,
   type PtyMetadata,
   type PaneConfig,
   type PaneTabConfig,
+  type WindowAdoptPayload,
+  type WindowFragment,
   type WorkspaceConfig,
 } from "../../lib/ipc";
 import type { AgentSessionKind, SuppressedAgentSession, Workspace } from "../../types";
@@ -43,7 +51,12 @@ import {
   resolvePersistedSelection,
 } from "../../lib/sessionRestoreSafety";
 import { handleSocketCommand } from "./socketCommands";
-import { isMainWindow } from "../../lib/windowContext";
+import { isMainWindow, windowLabel, MAIN_WINDOW_LABEL } from "../../lib/windowContext";
+import { mergeWindowFragmentWorkspaces } from "../../lib/windowFragments";
+import {
+  filterAlreadyRestoredConfigs,
+  restoreWorkspaceConfigs,
+} from "../../lib/workspaceRestore";
 
 // Socket dispatch lives in socketCommands.ts. Keep these command markers here
 // for the frontend bridge contract: case "workspace.list":, case "pane.list":,
@@ -51,6 +64,12 @@ import { isMainWindow } from "../../lib/windowContext";
 
 const SAVE_FAILURE_TOAST_DEBOUNCE_MS = 10000;
 const MAX_SUPPRESSED_AGENT_SESSIONS = 5;
+/**
+ * Same 500ms the leader uses for its autosave debounce. It bounds how stale a
+ * non-main window's contribution to `data.json` can be — the close path
+ * publishes synchronously before releasing, so a merge-back is never stale.
+ */
+const WINDOW_FRAGMENT_PUBLISH_DEBOUNCE_MS = 500;
 let lastSaveFailureToastAt = 0;
 
 /**
@@ -115,21 +134,6 @@ export function reportAgentSessionDedupeConflicts(conflicts: AgentSessionDedupeC
 
 export function __resetAgentSessionDedupeReporterForTests(): void {
   reportedAgentSessionDedupeConflicts = new Set<string>();
-}
-
-/** Transpose row-major split indices to column-major for legacy data migration */
-function transposeSplitRowsToCols(splitRows: number[][]): number[][] {
-  if (!splitRows.length) return [];
-  const maxCols = Math.max(...splitRows.map((r) => r.length));
-  const cols: number[][] = [];
-  for (let c = 0; c < maxCols; c++) {
-    const col: number[] = [];
-    for (const row of splitRows) {
-      if (c < row.length) col.push(row[c]);
-    }
-    if (col.length > 0) cols.push(col);
-  }
-  return cols;
 }
 
 function normalizeSplitColumns(ws: Workspace): string[][] | null {
@@ -870,6 +874,85 @@ export const persistLoaded = new Promise<void>((resolve) => {
   _resolveLoaded = resolve;
 });
 
+/**
+ * Take over workspaces handed to this window by another one (Phase 3b):
+ * a child booting after a tear-out, or main after a merge-back.
+ *
+ * Restore — not respawn. The configs carry the original pane/tab ids, so
+ * `makeSessionId` reproduces the same session ids and `create_session` takes
+ * the reattach branch in `pty/manager.rs`. Nothing here may kill a session.
+ */
+function adoptWorkspaceConfigs(configs: WorkspaceConfig[]): string[] {
+  const restorable = filterAlreadyRestoredConfigs(configs)
+    .map(dropEmptyTabPanesFromConfig)
+    .filter((cfg) => cfg.panes.length > 0);
+  if (restorable.length === 0) return [];
+
+  const hadWorkspaces = useWorkspaceListStore.getState().workspaces.length > 0;
+  const { restoredWorkspaceIds } = restoreWorkspaceConfigs(restorable);
+
+  // Only an empty window auto-selects. A merge-back into a working main window
+  // must not yank the user off whatever they were looking at.
+  const firstAdoptedId = restoredWorkspaceIds[0];
+  if (!hadWorkspaces && firstAdoptedId) {
+    const listStore = useWorkspaceListStore.getState();
+    listStore.setActiveWorkspace(firstAdoptedId);
+    focusController.request("programmatic", {
+      sessionId: listStore.getWorkspace(firstAdoptedId)?.panes[0]?.sessionId ?? null,
+      focus: false,
+    });
+  }
+  return restoredWorkspaceIds;
+}
+
+/**
+ * Child-window boot. No `data.json` read (that stays main's), no leadership
+ * claim: settings/theme/keybindings come from `get_app_settings`, workspaces
+ * from the adoption queue the tear-out filled before this window existed.
+ */
+async function hydrateChildWindow(): Promise<void> {
+  const settings = await getAppSettings();
+  useThemeStore.getState().hydrateSettings({
+    themeId: settings.theme_id,
+    fontSize: settings.font_size,
+    lineHeight: settings.line_height,
+    fontFamily: settings.font_family,
+    themeTweaks: settings.theme_tweaks,
+  });
+  useKeybindingStore.getState().hydrateOverrides(settings.keybindings ?? {});
+
+  const adopted = await takePendingAdoption(windowLabel());
+  if (adopted.length > 0) {
+    adoptWorkspaceConfigs(adopted);
+  }
+}
+
+/** This window's current workspaces, in the shape `data.json` stores. */
+function buildWindowFragment(): WindowFragment {
+  const state = useWorkspaceListStore.getState();
+  const uiState = useUiStore.getState();
+  const activeSessionId = uiState.activePaneId;
+  const activeWorkspace = state.workspaces.find((workspace) =>
+    workspaceContainsSession(workspace, activeSessionId),
+  ) ?? state.workspaces.find((workspace) => workspace.id === state.activeWorkspaceId) ?? null;
+  const activePane = activeWorkspace?.panes.find((pane) =>
+    paneContainsSession(pane, activeSessionId),
+  ) ?? null;
+  const activeTab = activePane?.tabs.find((tab) => tab.sessionId === activeSessionId)
+    ?? activePane?.tabs.find((tab) => tab.id === activePane.activeTabId)
+    ?? null;
+
+  return {
+    window_label: windowLabel(),
+    workspaces: state.workspaces
+      .map((workspace) => toConfig(workspace))
+      .filter((config) => config.panes.length > 0),
+    active_workspace_id: activeWorkspace?.id ?? null,
+    active_pane_id: activePane?.id ?? null,
+    active_tab_id: activeTab?.id ?? null,
+  };
+}
+
 export function useWorkspacePersist() {
   const loaded = useRef(false);
   const isLeader = useRef(false);
@@ -881,15 +964,20 @@ export function useWorkspacePersist() {
     if (loaded.current) return;
     loaded.current = true;
 
-    // Multi-window (Phase 3a): the persistence engine is a main-window
-    // singleton. Child windows must not even *attempt* leadership — claiming
-    // it is a one-shot compare_exchange, so a child that raced ahead of main
-    // would take the flag and main would then load nothing. Children get no
-    // workspaces in 3a (hydration/adoption lands in 3b) and render the
-    // zero-workspace empty state.
+    // Multi-window: the persistence engine is a main-window singleton. Child
+    // windows must not even *attempt* leadership — claiming it is a one-shot
+    // compare_exchange, so a child that raced ahead of main would take the
+    // flag and main would then load nothing. A child hydrates from
+    // get_app_settings + its adoption queue instead (Phase 3b).
     if (!isMainWindow()) {
       isLeader.current = false;
-      _resolveLoaded();
+      hydrateChildWindow()
+        .catch((err) => {
+          console.warn("[persist] Failed to hydrate child window:", err);
+        })
+        .finally(() => {
+          _resolveLoaded();
+        });
       return;
     }
 
@@ -921,7 +1009,6 @@ export function useWorkspacePersist() {
 
           if (data.workspaces.length > 0) {
             const listStore = useWorkspaceListStore.getState();
-            const layoutStore = useWorkspaceLayoutStore.getState();
             let restoredActivePaneSessionId: string | null = null;
             const bootstrapWorkspaceIds = new Set(listStore.workspaces.map((ws) => ws.id));
             const persistedConfigs = data.workspaces
@@ -954,40 +1041,13 @@ export function useWorkspacePersist() {
               : 0;
 
             if (listStore.workspaces.length <= 1) {
-              for (const cfg of restoredConfigs) {
-                // Use split_columns if available; fall back to transposed split_rows for old data
-                const splitData = cfg.split_columns
-                  ?? (cfg.split_rows ? transposeSplitRowsToCols(cfg.split_rows) : null);
-                const { panes, splitColumns } = layoutStore.restorePanes(
-                  cfg.id,
-                  cfg.panes,
-                  splitData,
-                  cfg.grid_template_id as Workspace["gridTemplateId"],
-                );
-
-                listStore.createWorkspace(
-                  cfg.name,
-                  cfg.grid_template_id as Workspace["gridTemplateId"],
-                  panes,
-                  splitColumns,
-                  {
-                    id: cfg.id,
-                    createdAt: cfg.created_at,
-                    color: cfg.color ?? undefined,
-                    columnWidths: cfg.column_widths ?? undefined,
-                    rowHeightsPerCol: cfg.row_heights_per_col ?? undefined,
-                    activate: false,
-                  },
-                );
-
-                if (cfg.id === data.active_workspace_id) {
-                  const activePane = data.active_pane_id
-                    ? panes.find((pane) => pane.id === data.active_pane_id)
-                    : panes.find((pane) => pane.tabs.some((tab) => tab.id === data.active_tab_id));
-                  const activeTab = activePane?.tabs.find((tab) => tab.id === data.active_tab_id);
-                  restoredActivePaneSessionId = activeTab?.sessionId ?? activePane?.sessionId ?? null;
-                }
-              }
+              // Shared with the multi-window adoption paths (child boot after a
+              // tear-out, main after a merge-back) — see lib/workspaceRestore.ts.
+              restoredActivePaneSessionId = restoreWorkspaceConfigs(restoredConfigs, {
+                activeWorkspaceId: data.active_workspace_id,
+                activePaneId: data.active_pane_id,
+                activeTabId: data.active_tab_id,
+              }).activePaneSessionId;
               const restoredWorkspaceIds = new Set(restoredConfigs.map((cfg) => cfg.id));
               for (const bootstrapId of bootstrapWorkspaceIds) {
                 if (!restoredWorkspaceIds.has(bootstrapId)) {
@@ -1042,7 +1102,10 @@ export function useWorkspacePersist() {
     let saveFailureStreak = 0;
     let saveRetryTimer: ReturnType<typeof setTimeout> | null = null;
 
-    const buildSnapshot = (agentMappings: Record<string, AgentSessionMapping> = {}) => {
+    const buildSnapshot = (
+      agentMappings: Record<string, AgentSessionMapping> = {},
+      windowFragments: WindowFragment[] = [],
+    ) => {
       const state = useWorkspaceListStore.getState();
       const uiState = useUiStore.getState();
       const activeWorkspaceId = state.activeWorkspaceId ?? null;
@@ -1076,9 +1139,16 @@ export function useWorkspacePersist() {
       // restore-complete / a one-shot 15s fallback, so agents launched later
       // would otherwise miss the persisted snapshot. applyMappingToTabConfig
       // never overwrites live values; it only fills gaps.
-      const rawConfigs = state.workspaces
-        .map((workspace) => toConfig(workspace))
-        .filter((config) => config.panes.length > 0);
+      // Multi-window (Phase 3b): main is still the sole data.json writer, but
+      // after a tear-out it no longer holds every workspace. Appending the
+      // other windows' published fragments keeps data.json (and the phone
+      // remote, which reads it for workspace names) complete.
+      const rawConfigs = mergeWindowFragmentWorkspaces(
+        state.workspaces
+          .map((workspace) => toConfig(workspace))
+          .filter((config) => config.panes.length > 0),
+        windowFragments,
+      );
       const safeMappings = filterConflictingAgentMappings(rawConfigs, agentMappings);
       const mappedConfigs = rawConfigs.map((config) => applyMappingsToConfig(config, safeMappings));
       const persistedSelection = resolvePersistedSelection(
@@ -1139,8 +1209,14 @@ export function useWorkspacePersist() {
       } catch (err) {
         console.warn("[persist] Failed to read agent session mappings:", err);
       }
+      let windowFragments: WindowFragment[] = [];
+      try {
+        windowFragments = await getWindowFragments();
+      } catch (err) {
+        console.warn("[persist] Failed to read other windows' workspaces:", err);
+      }
       dirty = false;
-      const run = savePersistentData(buildSnapshot(agentMappings))
+      const run = savePersistentData(buildSnapshot(agentMappings, windowFragments))
         .then(() => {
           // Streak broken: drop the pending retry and reset the ladder.
           clearSaveRetry();
@@ -1371,6 +1447,127 @@ export function useWorkspacePersist() {
       clearSaveRetry();
       window.removeEventListener("beforeunload", handleBeforeUnload);
       unlistenCloseRequested.then((f) => f()).catch(() => {});
+    };
+  }, []);
+
+  // Multi-window (Phase 3b): a child window publishes its workspaces to the
+  // Rust registry instead of writing data.json — main merges every fragment
+  // into its own snapshot. Mirrors the leader's markDirty/debounce above.
+  useEffect(() => {
+    if (isMainWindow()) return;
+
+    let publishTimer: ReturnType<typeof setTimeout> | null = null;
+    let disposed = false;
+    let closing = false;
+
+    const clearPublishTimer = () => {
+      if (publishTimer) {
+        clearTimeout(publishTimer);
+        publishTimer = null;
+      }
+    };
+
+    const publishNow = async (): Promise<void> => {
+      clearPublishTimer();
+      try {
+        await publishWindowFragment(buildWindowFragment());
+      } catch (err) {
+        console.warn("[persist] Failed to publish window fragment:", err);
+      }
+    };
+
+    const markDirty = () => {
+      if (disposed || closing) return;
+      clearPublishTimer();
+      publishTimer = setTimeout(() => {
+        publishTimer = null;
+        void publishNow();
+      }, WINDOW_FRAGMENT_PUBLISH_DEBOUNCE_MS);
+    };
+
+    // Publish once as soon as adoption is done, without waiting for the first
+    // debounce tick: a window closed immediately after a tear-out must still
+    // have something the registry can hand back to main.
+    void persistLoaded.then(() => {
+      if (!disposed) void publishNow();
+    });
+
+    const unsubList = useWorkspaceListStore.subscribe(markDirty);
+    const unsubLayout = useWorkspaceLayoutStore.subscribe(markDirty);
+    const unsubMeta = usePaneMetadataStore.subscribe((state, previousState) => {
+      if (state.metadata !== previousState.metadata) markDirty();
+    });
+    const unsubUi = useUiStore.subscribe((state, previousState) => {
+      if (state.activePaneId !== previousState.activePaneId) markDirty();
+    });
+
+    // Merge-back. Closing a child window must not take its workspaces (or
+    // their live agents) with it, so it hands them to main before it goes.
+    // Nothing here kills a session: kill_all stays bound to the *main*
+    // window's Destroyed event (lib.rs), and the Rust registry re-adopts on
+    // behalf of a child that dies without getting this far.
+    const unlistenCloseRequested = getCurrentWindow().onCloseRequested(async (event) => {
+      if (closing) return;
+      event.preventDefault();
+      closing = true;
+      clearPublishTimer();
+      try {
+        // Publish first — release can only move what the registry knows about.
+        await publishWindowFragment(buildWindowFragment());
+        const workspaceIds = useWorkspaceListStore
+          .getState()
+          .workspaces.map((workspace) => workspace.id);
+        if (workspaceIds.length > 0) {
+          await releaseWorkspaces(windowLabel(), workspaceIds, MAIN_WINDOW_LABEL);
+        }
+      } catch (err) {
+        console.warn("[persist] Failed to hand workspaces back to the main window:", err);
+      }
+      await getCurrentWindow().destroy();
+    });
+
+    return () => {
+      disposed = true;
+      clearPublishTimer();
+      unsubList();
+      unsubLayout();
+      unsubMeta();
+      unsubUi();
+      unlistenCloseRequested.then((f) => f()).catch(() => {});
+    };
+  }, []);
+
+  // Multi-window (Phase 3b): every window drains its own adoption queue —
+  // a child on boot (tear-out), main on `window-adopt` (a child closed or
+  // died holding workspaces) and once at startup for an event that fired
+  // before this listener existed.
+  useEffect(() => {
+    let disposed = false;
+
+    const drain = async () => {
+      // Never race the startup restore: adopting into a half-restored store
+      // would fight the `workspaces.length <= 1` bootstrap reconciliation.
+      await persistLoaded;
+      if (disposed) return;
+      try {
+        const adopted = await takePendingAdoption(windowLabel());
+        if (!disposed && adopted.length > 0) {
+          adoptWorkspaceConfigs(adopted);
+        }
+      } catch (err) {
+        console.warn("[persist] Failed to adopt workspaces from another window:", err);
+      }
+    };
+
+    void drain();
+    const unlisten = listen<WindowAdoptPayload>(WINDOW_ADOPT_EVENT, (event) => {
+      if (event.payload.to_label !== windowLabel()) return;
+      void drain();
+    });
+
+    return () => {
+      disposed = true;
+      unlisten.then((f) => f()).catch(() => {});
     };
   }, []);
 

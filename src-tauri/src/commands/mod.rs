@@ -9,5 +9,6 @@ pub mod tab_sweep;
 pub mod terminal;
 pub mod usage;
 pub mod window;
+pub mod window_registry;
 pub mod workspace;
 pub mod cli_accounts;

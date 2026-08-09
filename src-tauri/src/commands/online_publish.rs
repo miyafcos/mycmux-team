@@ -112,6 +112,7 @@ pub fn publish_savepoint(
     claude_session_id: Option<String>,
     summary: Option<String>,
     next_step: Option<String>,
+    window_label: Option<String>,
 ) -> Result<PublishSavepointResult, String> {
     let home = dirs::home_dir().ok_or_else(|| "Failed to resolve home directory".to_string())?;
     let agent_kind = agent_kind.unwrap_or(SavepointAgentKind::Claude);
@@ -123,8 +124,17 @@ pub fn publish_savepoint(
         SavepointAgentKind::Claude => home.join(".claude").join("projects"),
         SavepointAgentKind::Codex => home.join(".codex").join("sessions"),
     };
-    let mut emit_progress = |payload: PublishProgressPayload| {
-        let _ = app.emit(PUBLISH_PROGRESS_EVENT, payload);
+    // Multi-window: the progress stream belongs to the window that started
+    // the publish. Broadcasting it made every open window animate the same
+    // savepoint. `window_label` is optional so the socket/CLI callers (which
+    // have no window) keep the broadcast behaviour.
+    let mut emit_progress = |payload: PublishProgressPayload| match window_label.as_deref() {
+        Some(label) => {
+            let _ = app.emit_to(label, PUBLISH_PROGRESS_EVENT, payload);
+        }
+        None => {
+            let _ = app.emit(PUBLISH_PROGRESS_EVENT, payload);
+        }
     };
     publish_savepoint_impl(
         &home.join(".mycmux").join("savepoint.json"),
@@ -152,6 +162,7 @@ pub fn finalize_savepoint(
     summary: Option<String>,
     next_step: Option<String>,
     closed_reason: Option<SavepointCloseReason>,
+    window_label: Option<String>,
 ) -> Result<PublishSavepointResult, String> {
     let home = dirs::home_dir().ok_or_else(|| "Failed to resolve home directory".to_string())?;
     let agent_kind = agent_kind.unwrap_or(SavepointAgentKind::Claude);
@@ -163,8 +174,17 @@ pub fn finalize_savepoint(
         SavepointAgentKind::Claude => home.join(".claude").join("projects"),
         SavepointAgentKind::Codex => home.join(".codex").join("sessions"),
     };
-    let mut emit_progress = |payload: PublishProgressPayload| {
-        let _ = app.emit(PUBLISH_PROGRESS_EVENT, payload);
+    // Multi-window: the progress stream belongs to the window that started
+    // the publish. Broadcasting it made every open window animate the same
+    // savepoint. `window_label` is optional so the socket/CLI callers (which
+    // have no window) keep the broadcast behaviour.
+    let mut emit_progress = |payload: PublishProgressPayload| match window_label.as_deref() {
+        Some(label) => {
+            let _ = app.emit_to(label, PUBLISH_PROGRESS_EVENT, payload);
+        }
+        None => {
+            let _ = app.emit(PUBLISH_PROGRESS_EVENT, payload);
+        }
     };
     publish_savepoint_impl(
         &home.join(".mycmux").join("savepoint.json"),

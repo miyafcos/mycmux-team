@@ -155,25 +155,19 @@ fn schedule_child_window_reveal_fallback(app: AppHandle, label: String) {
     });
 }
 
-/// Phase 3a: open an additional app window. It boots the same frontend bundle;
-/// every main-window-only singleton (persistence, socket handling, quit path,
-/// updater) is gated behind `isMainWindow()` on the JS side.
-///
-/// Sync + `run_on_main_thread` mirrors `reveal_main_window`: the command body
-/// itself only allocates a label (cheap, no blocking work — see
-/// `tests/test_command_sync_contract.py`), and the actual window construction
-/// is posted to the main thread. Like `reveal_main_window` the posted closure
-/// is fire-and-forget; blocking on its result from a sync command would
-/// deadlock the event loop that has to run it.
-#[tauri::command]
-pub fn open_child_window(
-    app: AppHandle,
+/// Outcome of label allocation: either the label is free and the caller must
+/// build the window, or a window already carries it and was revealed instead.
+pub enum ResolvedChildWindow {
+    New(String),
+    Existing(String),
+}
+
+/// Resolve the label a new child window should take: the caller's request
+/// (validated against the capability glob) or the lowest free index.
+pub fn resolve_child_window_label(
+    app: &AppHandle,
     label: Option<String>,
-    x: Option<f64>,
-    y: Option<f64>,
-    width: Option<f64>,
-    height: Option<f64>,
-) -> Result<String, String> {
+) -> Result<ResolvedChildWindow, String> {
     let existing: Vec<String> = app.webview_windows().keys().cloned().collect();
     let label = match label {
         Some(requested) => {
@@ -191,11 +185,30 @@ pub fn open_child_window(
         // Idempotent: asking for a label that is already open just reveals it.
         let _ = window.show();
         let _ = window.set_focus();
-        return Ok(label);
+        return Ok(ResolvedChildWindow::Existing(label));
     }
 
+    Ok(ResolvedChildWindow::New(label))
+}
+
+/// Post the actual window construction to the main thread (tao forbids
+/// building windows off it on Windows/macOS). Fire-and-forget by design: like
+/// `reveal_main_window`, blocking on the result from a sync command would
+/// deadlock the very event loop that has to run the closure.
+///
+/// Shared by `open_child_window` (Phase 3a dev hook) and
+/// `open_workspace_window` (Phase 3b tear-out) so both windows get identical
+/// chrome, the reveal fallback and the merge-back-on-destroy hook.
+pub fn spawn_child_window(
+    app: &AppHandle,
+    label: String,
+    x: Option<f64>,
+    y: Option<f64>,
+    width: Option<f64>,
+    height: Option<f64>,
+) -> Result<(), String> {
     let app_handle = app.clone();
-    let build_label = label.clone();
+    let build_label = label;
     app.run_on_main_thread(move || {
         let mut builder = tauri::WebviewWindowBuilder::new(
             &app_handle,
@@ -234,15 +247,56 @@ pub fn open_child_window(
                 // a window nobody can see. Reveal it from Rust if the frontend
                 // has not done so itself.
                 schedule_child_window_reveal_fallback(app_handle.clone(), build_label.clone());
+
+                // Merge-back safety net (Phase 3b). The clean close path
+                // releases the window's workspaces itself, so this normally
+                // finds nothing. It exists for the paths that never run JS:
+                // a crashed webview, an OS-forced close, the taskbar's
+                // "close window". Whatever is still assigned to the label
+                // goes back to main, sessions and all.
+                let reclaim_handle = app_handle.clone();
+                let reclaim_label = build_label.clone();
+                window.on_window_event(move |event| {
+                    if let tauri::WindowEvent::Destroyed = event {
+                        crate::commands::window_registry::reclaim_destroyed_window(
+                            &reclaim_handle,
+                            &reclaim_label,
+                        );
+                    }
+                });
             }
             Err(err) => {
                 crate::diag_warn!("window", "failed to open child window {build_label}: {err}");
             }
         }
     })
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| e.to_string())
+}
 
-    Ok(label)
+/// Phase 3a: open an additional app window. It boots the same frontend bundle;
+/// every main-window-only singleton (persistence, socket handling, quit path,
+/// updater) is gated behind `isMainWindow()` on the JS side.
+///
+/// Sync + `run_on_main_thread` mirrors `reveal_main_window`: the command body
+/// itself only allocates a label (cheap, no blocking work — see
+/// `tests/test_command_sync_contract.py`), and the actual window construction
+/// is posted to the main thread.
+#[tauri::command]
+pub fn open_child_window(
+    app: AppHandle,
+    label: Option<String>,
+    x: Option<f64>,
+    y: Option<f64>,
+    width: Option<f64>,
+    height: Option<f64>,
+) -> Result<String, String> {
+    match resolve_child_window_label(&app, label)? {
+        ResolvedChildWindow::Existing(label) => Ok(label),
+        ResolvedChildWindow::New(label) => {
+            spawn_child_window(&app, label.clone(), x, y, width, height)?;
+            Ok(label)
+        }
+    }
 }
 
 #[tauri::command]

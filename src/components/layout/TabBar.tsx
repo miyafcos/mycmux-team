@@ -21,6 +21,8 @@ import {
   resolveWorkspaceColor,
 } from "../../lib/workspaceColors";
 import TabItem from "./TabItem";
+import { tearOutWorkspaceToNewWindow } from "../../lib/workspaceTearOut";
+import { useToastStore } from "../../stores/toastStore";
 import type { Workspace } from "../../types";
 
 const PlusIcon = () => (
@@ -513,6 +515,27 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
             }}
           >
             名前を変更
+          </WorkspaceContextMenuItem>
+          <WorkspaceContextMenuItem
+            onClick={() => {
+              // Tear-out (Phase 3b). The workspace moves to a new OS window
+              // with its sessions still running; closing that window merges it
+              // back here. Allowed even for the last workspace — the sessions
+              // live on in the new window and this one shows its empty state.
+              const workspaceId = contextWorkspace.id;
+              setContextMenu(null);
+              void tearOutWorkspaceToNewWindow(workspaceId, {
+                x: window.screenX + 80,
+                y: window.screenY + 60,
+              }).catch((err) => {
+                console.error("[multiwindow] tear-out failed", err);
+                useToastStore
+                  .getState()
+                  .pushToast("新しいウィンドウを開けませんでした", "error");
+              });
+            }}
+          >
+            新しいウィンドウで開く
           </WorkspaceContextMenuItem>
         </div>
       )}

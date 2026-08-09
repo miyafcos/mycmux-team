@@ -93,7 +93,9 @@ describe("workspace color render surfaces stay wired", () => {
   it("round-trips the color through the persisted workspace config", () => {
     const socketListener = read("src/components/layout/SocketListener.tsx");
     expect(socketListener).toContain("color: ws.color ?? null,");
-    expect(socketListener).toContain("color: cfg.color ?? undefined,");
+    // The read side lives in the shared restore helper, which the startup
+    // restore and the multi-window adoption paths both go through.
+    expect(read("src/lib/workspaceRestore.ts")).toContain("color: cfg.color ?? undefined,");
     expect(read("src/lib/ipc.ts")).toContain("color?: string | null;");
     expect(read("src-tauri/src/db/storage.rs")).toContain("pub color: Option<String>,");
   });

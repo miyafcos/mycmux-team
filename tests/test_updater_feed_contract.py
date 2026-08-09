@@ -139,7 +139,11 @@ def test_normalize_updater_feed_fails_closed_without_nsis_entry(tmp_path: Path) 
         text=True,
     )
     assert result.returncode != 0, "normalize script must fail closed when the nsis entry is missing"
-    assert "windows-x86_64-nsis" in result.stderr
+    # PowerShell hard-wraps its error records at the host's console width, so
+    # the platform key can arrive split across lines ("windows-x86_64-\nnsis").
+    # Compare with whitespace removed or this passes from a wide terminal and
+    # fails from the release script's narrower one.
+    assert "windows-x86_64-nsis" in "".join(result.stderr.split())
 
 
 # ---------------------------------------------------------------------------

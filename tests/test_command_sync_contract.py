@@ -21,6 +21,10 @@ SYNC_ALLOWLIST = {
     # It must stay sync — a #[tauri::command(async)] variant would build the
     # window off the main thread, which tao forbids on Windows/macOS.
     "open_child_window",
+    # Multi-window Phase 3b: same shape as open_child_window — in-memory
+    # registry bookkeeping plus a WebviewWindowBuilder posted to the main
+    # thread. The window must be built there, so this cannot go async either.
+    "open_workspace_window",
     "quit_app",
 }
 

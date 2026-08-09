@@ -12,6 +12,7 @@ import {
 import type { AgentSessionKind, ArtifactSourceKind, ThemeTweaks } from "../types";
 import type { OnlineSavepointEntry } from "../components/online/onlineSavepoints";
 import { markSessionFrontendActivity } from "./agentDormancy";
+import { windowLabel } from "./windowContext";
 
 export { getCurrentSessionEpoch, type FrontendDataBatch };
 
@@ -45,6 +46,8 @@ interface PublishSavepointArgs {
   claudeSessionId: string | null;
   summary: string | null;
   nextStep: string | null;
+  /** Scope the progress stream to the window that started the publish. */
+  windowLabel: string | null;
 }
 interface FinalizeSavepointArgs extends PublishSavepointArgs { closedReason: SavepointCloseReason }
 interface CrsmListSessionsArgs { query: string | null; limit: number; refresh: boolean }
@@ -509,6 +512,7 @@ export async function publishSavepoint(options: {
     claudeSessionId: options.agentKind === "claude" ? options.agentSessionId : null,
     summary: options.summary ?? null,
     nextStep: options.nextStep ?? null,
+    windowLabel: windowLabel(),
   } satisfies PublishSavepointArgs);
 }
 
@@ -528,6 +532,7 @@ export async function finalizeSavepoint(options: {
     summary: options.summary ?? null,
     nextStep: options.nextStep ?? null,
     closedReason: options.closedReason ?? "manual",
+    windowLabel: windowLabel(),
   } satisfies FinalizeSavepointArgs);
 }
 
@@ -679,6 +684,87 @@ export async function openChildWindow(
     width: options.width ?? null,
     height: options.height ?? null,
   });
+}
+
+// ─── Multi-window workspace registry (Phase 3b) ──────────────────────────────
+
+/** Broadcast revision counter — ownership changed somewhere. */
+export const WINDOW_REGISTRY_CHANGED_EVENT = "mycmux://window-registry-changed";
+/** Targeted at the window that has workspaces waiting in its adoption queue. */
+export const WINDOW_ADOPT_EVENT = "mycmux://window-adopt";
+
+/** One window's published workspace list + its active selection. */
+export interface WindowFragment {
+  window_label: string;
+  /** Synthetic entry: workspaces queued for that window but not yet adopted. */
+  pending?: boolean;
+  workspaces: WorkspaceConfig[];
+  active_workspace_id?: string | null;
+  active_pane_id?: string | null;
+  active_tab_id?: string | null;
+}
+
+export interface WindowAdoptPayload {
+  from_label: string;
+  to_label: string;
+  workspace_ids: string[];
+}
+
+export interface OpenWorkspaceWindowOptions extends OpenChildWindowOptions {
+  /** The window handing the workspaces over (`windowLabel()`). */
+  fromLabel: string;
+  /** Serialized workspaces — the same shape `save_persistent_data` stores. */
+  workspaces: WorkspaceConfig[];
+}
+
+/**
+ * Open a window that adopts `workspaces` on boot, and return its label. The
+ * caller removes them from its own stores afterwards **without killing any
+ * session** — see `tearOutWorkspaceToNewWindow`.
+ */
+export async function openWorkspaceWindow(
+  options: OpenWorkspaceWindowOptions,
+): Promise<string> {
+  return invoke<string>("open_workspace_window", {
+    fromLabel: options.fromLabel,
+    workspaces: options.workspaces,
+    label: options.label ?? null,
+    x: options.x ?? null,
+    y: options.y ?? null,
+    width: options.width ?? null,
+    height: options.height ?? null,
+  });
+}
+
+/**
+ * Every window publishes its own workspaces here. Main merges the non-main
+ * fragments into `data.json`; children never call `savePersistentData`.
+ */
+export async function publishWindowFragment(fragment: WindowFragment): Promise<void> {
+  return invoke<void>("publish_window_fragment", { fragment });
+}
+
+/** Drain (and thereby claim) the workspaces queued for a window. */
+export async function takePendingAdoption(label: string): Promise<WorkspaceConfig[]> {
+  return invoke<WorkspaceConfig[]>("take_pending_adoption", { label });
+}
+
+/** Hand workspaces to another window; returns how many actually moved. */
+export async function releaseWorkspaces(
+  fromLabel: string,
+  workspaceIds: string[],
+  toLabel: string,
+): Promise<number> {
+  return invoke<number>("release_workspaces", { fromLabel, workspaceIds, toLabel });
+}
+
+export async function getWindowFragments(): Promise<WindowFragment[]> {
+  return invoke<WindowFragment[]>("get_window_fragments");
+}
+
+/** Settings-only hydration for windows that must not load workspaces. */
+export async function getAppSettings(): Promise<AppSettings> {
+  return invoke<AppSettings>("get_app_settings");
 }
 
 // ─── Persistence commands ────────────────────────────────────────────────────

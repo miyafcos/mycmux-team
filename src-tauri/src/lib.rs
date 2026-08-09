@@ -12,6 +12,7 @@ mod status_feed;
 pub mod terminal_config;
 pub mod usage;
 mod util;
+pub mod window_registry;
 
 use pty::manager::SessionManager;
 use std::sync::atomic::AtomicBool;
@@ -63,6 +64,11 @@ pub struct AppState {
     pub status_feed: status_feed::StatusFeed,
     pub bootstrapped: AtomicBool,
     pub metadata_store: pty::monitor::MetadataStore,
+    /// Multi-window (Phase 3b): who owns which workspace, plus each window's
+    /// last published workspace list. In-memory only — on restart every
+    /// workspace collapses back into main via `data.json` (window layout
+    /// persistence is Phase 3d).
+    pub window_registry: window_registry::WindowRegistry,
 }
 
 fn install_launcher_script() -> Result<(), String> {
@@ -224,6 +230,7 @@ pub fn run() {
         status_feed,
         bootstrapped: AtomicBool::new(false),
         metadata_store: metadata_store.clone(),
+        window_registry: window_registry::WindowRegistry::new(),
     };
 
     tauri::Builder::default()
@@ -294,6 +301,12 @@ pub fn run() {
             commands::window::reveal_main_window,
             commands::window::open_child_window,
             commands::window::quit_app,
+            commands::window_registry::open_workspace_window,
+            commands::window_registry::publish_window_fragment,
+            commands::window_registry::take_pending_adoption,
+            commands::window_registry::release_workspaces,
+            commands::window_registry::get_window_fragments,
+            commands::window_registry::get_app_settings,
             commands::usage::get_account_usage,
             commands::cli_accounts::list_cli_accounts,
             commands::cli_accounts::capture_cli_account,
