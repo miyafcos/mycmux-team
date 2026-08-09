@@ -1014,6 +1014,23 @@ mod tests {
     }
 
     #[test]
+    fn file_uri_decode_survives_a_percent_before_a_multibyte_char() {
+        // Reading the two hex digits by slicing the &str panicked whenever the
+        // '%' was followed by a multi-byte character, and this runs over every
+        // line scanned for path links - a Japanese sentence or a box-drawing
+        // rule in ordinary terminal output was enough to hit it repeatedly.
+        assert_eq!(decode_file_uri("100%。次へ"), "100%。次へ");
+        assert_eq!(decode_file_uri("│ 50% │"), "│ 50% │");
+        assert_eq!(decode_file_uri("%E3%83%AC%あ"), "レ%あ");
+        // A trailing '%' has no digits left to read.
+        assert_eq!(decode_file_uri("done 100%"), "done 100%");
+        assert_eq!(decode_file_uri("%"), "%");
+        assert_eq!(decode_file_uri("%4"), "%4");
+        // Non-hex after '%' stays literal rather than being consumed.
+        assert_eq!(decode_file_uri("%zz"), "%zz");
+    }
+
+    #[test]
     fn artifact_path_from_raw_windows_path_trims_cli_decoration() {
         let path = artifact_path_from_uri(r"C:\Users\miyaz\report.html＋＋＋").unwrap();
         assert_eq!(

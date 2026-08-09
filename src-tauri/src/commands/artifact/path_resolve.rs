@@ -16,15 +16,28 @@ use super::{
     artifact_source_kind, ensure_artifact_file_within_read_limit, is_allowed_artifact_path,
     is_allowed_external_artifact_path, is_previewable_artifact, sidetab_session_dir,
 };
+fn hex_digit(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
 pub(super) fn decode_file_uri(value: &str) -> String {
     let mut decoded = Vec::with_capacity(value.len());
     let bytes = value.as_bytes();
     let mut index = 0;
     while index < bytes.len() {
+        // Read the two hex digits as bytes. Slicing the &str here would panic
+        // whenever a '%' is followed by a multi-byte character, which terminal
+        // output hits constantly - a Japanese sentence or a box-drawing rule is
+        // enough, and this runs over every line we scan for path links.
         if bytes[index] == b'%' && index + 2 < bytes.len() {
-            let hex = &value[index + 1..index + 3];
-            if let Ok(byte) = u8::from_str_radix(hex, 16) {
-                decoded.push(byte);
+            if let (Some(high), Some(low)) = (hex_digit(bytes[index + 1]), hex_digit(bytes[index + 2]))
+            {
+                decoded.push(high * 16 + low);
                 index += 3;
                 continue;
             }
