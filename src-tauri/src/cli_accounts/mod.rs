@@ -74,6 +74,12 @@ pub struct CliAccountProfile {
     pub last_switched_at: Option<String>,
     #[serde(default)]
     pub needs_relogin: bool,
+    /// When the provider last refused this account's refresh token. A refusal is
+    /// server-side state that the stored expiry cannot see, so it has to be
+    /// remembered - otherwise every poll spends a request rediscovering it and
+    /// eats into the IP-wide rate limit that the healthy accounts share.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refresh_rejected_at: Option<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -165,6 +171,7 @@ fn refreshed_profiles(base: &Path, profiles: &[CliAccountProfile]) -> Vec<CliAcc
                     _ => true,
                 };
             }
+            profile.needs_relogin |= profile.refresh_rejected_at.is_some();
             profile
         })
         .collect()
@@ -255,6 +262,7 @@ pub fn capture_account(
             }
             snapshot::StoredSnapshot::Codex(_) => false,
         },
+        refresh_rejected_at: None,
     };
     snapshot::save(base, &id, &stored).map_err(|_| ERR_REGISTRY_SAVE_FAILED.to_string())?;
     registry::upsert_by_identity_key(&mut file, profile.clone());
@@ -282,6 +290,7 @@ pub fn switch_account(
     };
     let mut warnings = Vec::new();
     let mut wrote_back_to = None;
+    let mut cleared_live_rejection = false;
     if live.present {
         let (current, identity) = match provider {
             CliProvider::Claude => {
@@ -302,12 +311,13 @@ pub fn switch_account(
         if let Some(identity) = identity {
             if let Some(profile) = file
                 .profiles
-                .iter()
+                .iter_mut()
                 .find(|profile| profile.provider == provider && profile.identity_key == identity)
             {
                 snapshot::save(base, &profile.id, &current)
                     .map_err(|_| ERR_REGISTRY_SAVE_FAILED.to_string())?;
                 wrote_back_to = Some(profile.id.clone());
+                cleared_live_rejection = profile.refresh_rejected_at.take().is_some();
                 if profile.id == target.id {
                     warnings.push(WARN_ACTIVE_SNAPSHOT_REFRESHED.to_string());
                 }
@@ -317,6 +327,9 @@ pub fn switch_account(
                 warnings.push(WARN_UNREGISTERED_LIVE_LOGIN_SAVED.to_string());
             }
         }
+    }
+    if cleared_live_rejection {
+        registry::save(base, &file).map_err(|_| ERR_REGISTRY_SAVE_FAILED.to_string())?;
     }
 
     let stored =
@@ -442,6 +455,22 @@ pub fn update_snapshot_tokens(
     Ok(SnapshotUpdate::Applied)
 }
 
+pub(crate) fn record_refresh_rejection(
+    base: &Path,
+    profile_id: &str,
+    rejected_at: String,
+) -> Result<(), String> {
+    let _guard = mutation_guard()?;
+    let mut file = registry::load(base).map_err(|_| ERR_ACCOUNTS_UNAVAILABLE.to_string())?;
+    let profile = file
+        .profiles
+        .iter_mut()
+        .find(|profile| profile.id == profile_id)
+        .ok_or_else(|| ERR_PROFILE_NOT_FOUND.to_string())?;
+    profile.refresh_rejected_at = Some(rejected_at);
+    registry::save(base, &file).map_err(|_| ERR_REGISTRY_SAVE_FAILED.to_string())
+}
+
 pub fn list_resolved(base: &Path) -> Result<CliAccountsSnapshot, String> {
     let claude_paths = claude::ClaudePaths::resolve()?;
     let codex_paths = codex::CodexPaths::resolve()?;
@@ -553,6 +582,7 @@ fn resolve_orphan_inner(
                     .unwrap_or_else(|| Utc::now().to_rfc3339()),
                 last_switched_at: None,
                 needs_relogin: metadata.needs_relogin,
+                refresh_rejected_at: None,
             };
             registry::upsert_by_identity_key(&mut file, profile.clone());
             registry::save(base, &file).map_err(|_| ERR_ORPHAN_MANAGE_FAILED.to_string())?;

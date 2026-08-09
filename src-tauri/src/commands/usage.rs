@@ -950,6 +950,30 @@ async fn recapture_live_snapshot(app: &tauri::AppHandle, row: &PlannedRow) -> bo
     )
 }
 
+async fn remember_refresh_rejection(app: &tauri::AppHandle, row: &PlannedRow) {
+    let Ok(base) = app.path().app_data_dir() else {
+        crate::usage::log_oauth_failure(
+            app,
+            "get_account_usage_refresh_record",
+            &format!("profile={} app_data_dir_unavailable", row.profile_id),
+        );
+        return;
+    };
+    let profile_id = row.profile_id.clone();
+    let rejected_at = Utc::now().to_rfc3339();
+    let result = tokio::task::spawn_blocking(move || {
+        crate::cli_accounts::record_refresh_rejection(&base, &profile_id, rejected_at)
+    })
+    .await;
+    if let Err(error) = result.unwrap_or_else(|error| Err(error.to_string())) {
+        crate::usage::log_oauth_failure(
+            app,
+            "get_account_usage_refresh_record",
+            &format!("profile={} {error}", row.profile_id),
+        );
+    }
+}
+
 async fn refresh_failure(
     app: &tauri::AppHandle,
     state: &UsageState,
@@ -986,9 +1010,25 @@ async fn refresh_failure(
                     ),
                 };
             }
+            remember_refresh_rejection(app, row).await;
+            // A user can finish re-login after the first live check but before
+            // the registry write. Re-capture once more so that race cannot put
+            // a stale rejection marker back onto freshly captured tokens.
+            if recapture_live_snapshot(app, row).await {
+                return FetchResult {
+                    usage: profile_usage(
+                        row,
+                        UsageRowState::WaitForCli,
+                        Some(ERROR_TOKEN_EXPIRED_ACTIVE),
+                        None,
+                    ),
+                };
+            }
+            let mut relogin_row = row.clone();
+            relogin_row.needs_relogin = true;
             FetchResult {
                 usage: profile_usage(
-                    row,
+                    &relogin_row,
                     UsageRowState::NeedsRelogin,
                     Some(ERROR_NEEDS_RELOGIN),
                     None,
@@ -1080,6 +1120,7 @@ mod tests {
             captured_at: "now".into(),
             last_switched_at: None,
             needs_relogin: false,
+            refresh_rejected_at: None,
         }
     }
 

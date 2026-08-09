@@ -111,12 +111,41 @@ fn registry_round_trip_and_defaults() {
         captured_at: "x".into(),
         last_switched_at: None,
         needs_relogin: false,
+        refresh_rejected_at: None,
     };
     registry::upsert_by_identity_key(&mut f, p);
     registry::save(d.path(), &f).unwrap();
     assert_eq!(registry::load(d.path()).unwrap().profiles.len(), 1);
     fs::write(d.path().join("cli_accounts.json"), "{}").unwrap();
     assert!(registry::load(d.path()).unwrap().profiles.is_empty());
+}
+
+#[test]
+fn registry_loads_legacy_profile_without_refresh_rejection() {
+    let d = tempdir().unwrap();
+    fs::write(
+        d.path().join("cli_accounts.json"),
+        r#"{
+  "version": 1,
+  "profiles": [{
+    "id": "claude-legacy",
+    "provider": "claude",
+    "label": "legacy",
+    "identity_key": "legacy-account",
+    "captured_at": "2026-08-08T00:00:00Z",
+    "needs_relogin": false
+  }],
+  "active": {}
+}"#,
+    )
+    .unwrap();
+
+    let file = registry::load(d.path()).unwrap();
+    assert!(file.profiles[0].refresh_rejected_at.is_none());
+    registry::save(d.path(), &file).unwrap();
+    assert!(!fs::read_to_string(d.path().join("cli_accounts.json"))
+        .unwrap()
+        .contains("refresh_rejected_at"));
 }
 #[test]
 fn backup_rotation_keeps_ten_newest() {
@@ -227,6 +256,47 @@ fn switch_flow_end_to_end_in_tempdir() {
 }
 
 #[test]
+fn switch_persists_live_rejection_clear_before_target_validation() {
+    let d = tempdir().unwrap();
+    let cp = ClaudePaths {
+        credentials: d.path().join("credentials.json"),
+        claude_json: d.path().join("claude.json"),
+    };
+    let xp = CodexPaths {
+        auth: d.path().join("auth.json"),
+    };
+    fs::write(&cp.credentials, CREDS).unwrap();
+    fs::write(&cp.claude_json, CLAUDE_JSON).unwrap();
+    let first = capture_account(d.path(), &cp, &xp, CliProvider::Claude, None).unwrap();
+    let changed = CLAUDE_JSON
+        .replace("claude-account-a", "claude-account-b")
+        .replace("a@example.test", "b@example.test");
+    fs::write(&cp.claude_json, &changed).unwrap();
+    let second = capture_account(d.path(), &cp, &xp, CliProvider::Claude, None).unwrap();
+    record_refresh_rejection(d.path(), &first.id, "2026-08-09T00:00:00Z".into()).unwrap();
+    fs::write(&cp.claude_json, CLAUDE_JSON).unwrap();
+    fs::write(
+        snapshot::snapshot_dir(d.path()).join(format!("{}.json", second.id)),
+        "{}",
+    )
+    .unwrap();
+
+    let result = switch_account(d.path(), &cp, &xp, CliProvider::Claude, &second.id);
+    assert!(matches!(
+        result,
+        Err(ref error) if error == ERR_SNAPSHOT_UNAVAILABLE
+    ));
+    let saved = registry::load(d.path()).unwrap();
+    assert!(saved
+        .profiles
+        .iter()
+        .find(|profile| profile.id == first.id)
+        .unwrap()
+        .refresh_rejected_at
+        .is_none());
+}
+
+#[test]
 fn update_snapshot_tokens_rejects_stale_refresh_token() {
     let d = tempdir().unwrap();
     let cp = ClaudePaths {
@@ -332,6 +402,7 @@ fn test_profile(id: &str) -> CliAccountProfile {
         captured_at: "captured".into(),
         last_switched_at: Some("switched".into()),
         needs_relogin: true,
+        refresh_rejected_at: None,
     }
 }
 #[test]
@@ -361,7 +432,8 @@ fn remove_resolved_deletes_snapshot_and_clears_active_pointer() {
 #[test]
 fn rename_resolved_changes_only_label() {
     let d = tempdir().unwrap();
-    let profile = test_profile("claude-12345678");
+    let mut profile = test_profile("claude-12345678");
+    profile.refresh_rejected_at = Some("2026-08-09T00:00:00Z".into());
     let mut file = registry::CliAccountsFile::default();
     registry::upsert_by_identity_key(&mut file, profile.clone());
     registry::save(d.path(), &file).unwrap();
@@ -375,6 +447,7 @@ fn rename_resolved_changes_only_label() {
     assert_eq!(renamed.captured_at, profile.captured_at);
     assert_eq!(renamed.last_switched_at, profile.last_switched_at);
     assert_eq!(renamed.needs_relogin, profile.needs_relogin);
+    assert_eq!(renamed.refresh_rejected_at, profile.refresh_rejected_at);
 }
 
 #[test]
@@ -405,6 +478,86 @@ fn list_recomputes_relogin_without_rewriting_registry() {
         fs::read_to_string(d.path().join("cli_accounts.json")).unwrap(),
         registry_before
     );
+}
+
+#[test]
+fn refresh_rejection_forces_relogin_with_future_expiry() {
+    let d = tempdir().unwrap();
+    let mut profile = test_profile("claude-12345678");
+    profile.needs_relogin = false;
+    profile.refresh_rejected_at = Some("2026-08-09T00:00:00Z".into());
+    let stored = snapshot::StoredSnapshot::Claude(snapshot::ClaudeSnapshot {
+        version: 1,
+        provider: CliProvider::Claude,
+        captured_at: "x".into(),
+        credentials_text: CREDS.into(),
+        oauth_account_text: CLAUDE_JSON.into(),
+    });
+    snapshot::save(d.path(), &profile.id, &stored).unwrap();
+
+    let profiles = refreshed_profiles(d.path(), &[profile]);
+    assert!(profiles[0].needs_relogin);
+
+    let mut codex = test_profile("codex-12345678");
+    codex.provider = CliProvider::Codex;
+    codex.needs_relogin = false;
+    codex.refresh_rejected_at = Some("2026-08-09T00:00:00Z".into());
+    assert!(refreshed_profiles(d.path(), &[codex])[0].needs_relogin);
+}
+
+#[test]
+fn no_refresh_rejection_uses_stored_expiry_only() {
+    let d = tempdir().unwrap();
+    let mut profile = test_profile("claude-12345678");
+    profile.refresh_rejected_at = None;
+    let future = snapshot::StoredSnapshot::Claude(snapshot::ClaudeSnapshot {
+        version: 1,
+        provider: CliProvider::Claude,
+        captured_at: "x".into(),
+        credentials_text: CREDS.into(),
+        oauth_account_text: CLAUDE_JSON.into(),
+    });
+    snapshot::save(d.path(), &profile.id, &future).unwrap();
+    assert!(!refreshed_profiles(d.path(), &[profile.clone()])[0].needs_relogin);
+
+    let expired = snapshot::StoredSnapshot::Claude(snapshot::ClaudeSnapshot {
+        credentials_text: r#"{"claudeAiOauth":{"refreshTokenExpiresAt":1}}"#.into(),
+        ..match future {
+            snapshot::StoredSnapshot::Claude(stored) => stored,
+            _ => unreachable!(),
+        }
+    });
+    snapshot::save(d.path(), &profile.id, &expired).unwrap();
+    assert!(refreshed_profiles(d.path(), &[profile])[0].needs_relogin);
+}
+
+#[test]
+fn recapture_clears_refresh_rejection() {
+    let d = tempdir().unwrap();
+    let cp = ClaudePaths {
+        credentials: d.path().join("credentials.json"),
+        claude_json: d.path().join("claude.json"),
+    };
+    let xp = CodexPaths {
+        auth: d.path().join("auth.json"),
+    };
+    fs::write(&cp.credentials, CREDS).unwrap();
+    fs::write(&cp.claude_json, CLAUDE_JSON).unwrap();
+    let first = capture_account(d.path(), &cp, &xp, CliProvider::Claude, None).unwrap();
+    record_refresh_rejection(d.path(), &first.id, "2026-08-09T00:00:00Z".into()).unwrap();
+    assert_eq!(
+        registry::load(d.path()).unwrap().profiles[0]
+            .refresh_rejected_at
+            .as_deref(),
+        Some("2026-08-09T00:00:00Z")
+    );
+
+    let recaptured = capture_account(d.path(), &cp, &xp, CliProvider::Claude, None).unwrap();
+    assert_eq!(recaptured.id, first.id);
+    assert!(recaptured.refresh_rejected_at.is_none());
+    let saved = registry::load(d.path()).unwrap();
+    assert_eq!(saved.profiles.len(), 1);
+    assert!(saved.profiles[0].refresh_rejected_at.is_none());
 }
 
 #[test]

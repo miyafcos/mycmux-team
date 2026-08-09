@@ -137,7 +137,7 @@ pub fn sync_provider(
         return SyncOutcome::NoLiveLogin;
     }
 
-    let file = match registry::load(base) {
+    let mut file = match registry::load(base) {
         Ok(file) => file,
         Err(error) => {
             stamps.forget(&watched);
@@ -165,7 +165,23 @@ pub fn sync_provider(
         }
     };
     match snapshot::save(base, &profile_id, &stored) {
-        Ok(_) => SyncOutcome::Resynced(profile_id),
+        Ok(_) => {
+            let cleared = file
+                .profiles
+                .iter_mut()
+                .find(|profile| profile.id == profile_id)
+                .is_some_and(|profile| profile.refresh_rejected_at.take().is_some());
+            if !cleared {
+                return SyncOutcome::Resynced(profile_id);
+            }
+            match registry::save(base, &file) {
+                Ok(_) => SyncOutcome::Resynced(profile_id),
+                Err(error) => {
+                    stamps.forget(&watched);
+                    SyncOutcome::Failed(error)
+                }
+            }
+        }
         Err(error) => {
             stamps.forget(&watched);
             SyncOutcome::Failed(error)
@@ -216,6 +232,9 @@ mod tests {
     use std::fs;
     use tempfile::tempdir;
 
+    const CLAUDE_JSON: &str = include_str!("fixtures/claude_json_sample.json");
+    const CREDS: &str = include_str!("fixtures/claude_credentials_sample.json");
+
     fn profile(id: &str, provider: CliProvider, identity: &str) -> CliAccountProfile {
         CliAccountProfile {
             id: id.to_string(),
@@ -228,6 +247,7 @@ mod tests {
             captured_at: String::new(),
             last_switched_at: None,
             needs_relogin: false,
+            refresh_rejected_at: None,
         }
     }
 
@@ -280,5 +300,39 @@ mod tests {
         assert!(stamps.changed(&[path.as_path()]));
         stamps.forget(&[path.as_path()]);
         assert!(stamps.changed(&[path.as_path()]), "forgotten stamp is seen again");
+    }
+
+    #[test]
+    fn resync_clears_refresh_rejection_after_capturing_live_tokens() {
+        let dir = tempdir().unwrap();
+        let claude_paths = claude::ClaudePaths {
+            credentials: dir.path().join("credentials.json"),
+            claude_json: dir.path().join("claude.json"),
+        };
+        let codex_paths = codex::CodexPaths {
+            auth: dir.path().join("auth.json"),
+        };
+        fs::write(&claude_paths.credentials, CREDS).unwrap();
+        fs::write(&claude_paths.claude_json, CLAUDE_JSON).unwrap();
+        let mut file = registry::CliAccountsFile::default();
+        let mut registered = profile("claude-1", CliProvider::Claude, "claude-account-a");
+        registered.refresh_rejected_at = Some("2026-08-09T00:00:00Z".into());
+        file.profiles.push(registered);
+        registry::save(dir.path(), &file).unwrap();
+
+        let mut stamps = FileStamps::new();
+        assert_eq!(
+            sync_provider(
+                dir.path(),
+                CliProvider::Claude,
+                &claude_paths,
+                &codex_paths,
+                &mut stamps,
+            ),
+            SyncOutcome::Resynced("claude-1".into())
+        );
+        assert!(registry::load(dir.path()).unwrap().profiles[0]
+            .refresh_rejected_at
+            .is_none());
     }
 }
