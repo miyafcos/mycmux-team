@@ -3,12 +3,15 @@ pub(crate) mod claude;
 pub(crate) mod codex;
 pub(crate) mod json_splice;
 pub(crate) mod live_sync;
+pub(crate) mod login_watch;
 mod registry;
 mod snapshot;
+pub(crate) mod staging;
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::{
+    fs,
     path::Path,
     sync::{Mutex, MutexGuard, OnceLock},
 };
@@ -37,6 +40,12 @@ pub const ERR_CLAUDE_IDENTITY_UNREADABLE: &str = "cli_account.error.claude_ident
 pub const ERR_CLAUDE_IDENTITY_INVALID: &str = "cli_account.error.claude_identity_invalid";
 pub const ERR_CODEX_IDENTITY_UNREADABLE: &str = "cli_account.error.codex_identity_unreadable";
 pub const ERR_CODEX_IDENTITY_INVALID: &str = "cli_account.error.codex_identity_invalid";
+pub const ERR_LOGIN_STAGING_FAILED: &str = "cli_account.error.login_staging_failed";
+pub const ERR_LOGIN_IDENTITY_MISMATCH: &str = "cli_account.error.login_identity_mismatch";
+pub const ERR_LOGIN_TIMEOUT: &str = "cli_account.error.login_timeout";
+pub const ERR_LOGIN_CANCELLED: &str = "cli_account.error.login_cancelled";
+pub const ERR_LOGIN_ALREADY_RUNNING: &str = "cli_account.error.login_already_running";
+pub const ERR_LOGIN_SESSION_NOT_FOUND: &str = "cli_account.error.login_session_not_found";
 pub const WARN_ACTIVE_SNAPSHOT_REFRESHED: &str = "cli_account.warning.active_snapshot_refreshed";
 pub const WARN_UNREGISTERED_LIVE_LOGIN_SAVED: &str =
     "cli_account.warning.unregistered_live_login_saved";
@@ -471,52 +480,6 @@ pub(crate) fn record_refresh_rejection(
     registry::save(base, &file).map_err(|_| ERR_REGISTRY_SAVE_FAILED.to_string())
 }
 
-pub fn retire_rejected_account(
-    base: &Path,
-    profile_id: &str,
-    claude_paths: &claude::ClaudePaths,
-    codex_paths: &codex::CodexPaths,
-) -> Result<bool, String> {
-    let _guard = mutation_guard()?;
-    let mut file = registry::load(base).map_err(|_| ERR_ACCOUNTS_UNAVAILABLE.to_string())?;
-    let Some(provider) = file
-        .profiles
-        .iter()
-        .find(|profile| profile.id == profile_id)
-        .map(|profile| profile.provider)
-    else {
-        return Ok(false);
-    };
-
-    // Re-read the provider's live identity while holding the same guard as the
-    // registry mutation. Missing live files are definitively inactive; read
-    // errors or an unnamed live login are unknown and must fail closed.
-    let live = match provider {
-        CliProvider::Claude => claude::read_live_identity(claude_paths),
-        CliProvider::Codex => codex::read_live_identity(codex_paths),
-    };
-    let live = match_live(live, &file.profiles);
-    let definitively_inactive = live.error.is_none()
-        && (!live.present
-            || (live.identity_key.is_some()
-                && live.matched_profile_id.as_deref() != Some(profile_id)));
-    if !definitively_inactive {
-        return Ok(false);
-    }
-
-    if !registry::remove_profile(&mut file, profile_id) {
-        return Ok(false);
-    }
-    registry::save(base, &file).map_err(|_| ERR_REMOVE_FAILED.to_string())?;
-    if let Err(error) = snapshot::retire(base, profile_id) {
-        crate::diag_warn!(
-            "cli_accounts",
-            "failed to retire rejected snapshot profile={profile_id}: {error}"
-        );
-    }
-    Ok(true)
-}
-
 pub fn list_resolved(base: &Path) -> Result<CliAccountsSnapshot, String> {
     let claude_paths = claude::ClaudePaths::resolve()?;
     let codex_paths = codex::CodexPaths::resolve()?;
@@ -575,6 +538,100 @@ pub fn rename_resolved(
         .ok_or_else(|| ERR_PROFILE_NOT_FOUND.to_string())?;
     registry::save(base, &file).map_err(|_| ERR_RENAME_FAILED.to_string())?;
     Ok(profile)
+}
+
+/// The identity a registered profile stands for.
+///
+/// An isolated re-login needs it up front: the staging directory is only
+/// allowed to become this profile's snapshot, and nothing else.
+pub fn profile_identity_key(
+    base: &Path,
+    provider: CliProvider,
+    profile_id: &str,
+) -> Result<String, String> {
+    registry::load(base)
+        .map_err(|_| ERR_ACCOUNTS_UNAVAILABLE.to_string())?
+        .profiles
+        .iter()
+        .find(|profile| profile.id == profile_id && profile.provider == provider)
+        .map(|profile| profile.identity_key.clone())
+        .ok_or_else(|| ERR_PROFILE_NOT_FOUND.to_string())
+}
+
+/// Restore profiles that the retired-account path deleted before it was removed.
+/// Runs once at startup. Returns the ids it restored.
+pub fn rescue_rejected_snapshots(base: &Path) -> Result<Vec<String>, String> {
+    let _guard = mutation_guard()?;
+    let mut file = registry::load(base).map_err(|_| ERR_ACCOUNTS_UNAVAILABLE.to_string())?;
+    let root = snapshot::snapshot_dir(base);
+    let mut restored = Vec::new();
+
+    for (id, archived_path) in snapshot::list_rejected(base)? {
+        let live_path = root.join(format!("{id}.json"));
+        if live_path.exists() || file.profiles.iter().any(|profile| profile.id == id) {
+            continue;
+        }
+        let Ok(text) = fs::read_to_string(&archived_path) else {
+            continue;
+        };
+        let Ok(stored) = serde_json::from_str::<snapshot::StoredSnapshot>(&text) else {
+            continue;
+        };
+        let Ok(metadata) = snapshot::metadata_from_stored(&id, &stored, false) else {
+            continue;
+        };
+        let (Some(provider), Some(identity_key), Some(captured_at)) = (
+            metadata.provider,
+            metadata.identity_key,
+            metadata.captured_at,
+        ) else {
+            continue;
+        };
+        if file
+            .profiles
+            .iter()
+            .any(|profile| profile.provider == provider && profile.identity_key == identity_key)
+        {
+            continue;
+        }
+        let Ok(modified) = fs::metadata(&archived_path).and_then(|metadata| metadata.modified())
+        else {
+            continue;
+        };
+        let rejected_at: DateTime<Utc> = modified.into();
+        // Skip rather than abort: returning here would strand every archive
+        // already renamed in this pass outside the registry, and the next run
+        // would skip them for having a live snapshot name.
+        if let Err(error) = fs::rename(&archived_path, &live_path) {
+            crate::diag_warn!(
+                "cli_accounts",
+                "failed to restore rejected snapshot {id}: {error}"
+            );
+            continue;
+        }
+        file.profiles.push(CliAccountProfile {
+            id: id.clone(),
+            provider,
+            label: metadata
+                .email
+                .clone()
+                .unwrap_or_else(|| identity_key.chars().take(8).collect()),
+            email: metadata.email,
+            identity_key,
+            plan: metadata.plan,
+            org_name: metadata.org_name,
+            captured_at,
+            last_switched_at: None,
+            needs_relogin: true,
+            refresh_rejected_at: Some(rejected_at.to_rfc3339()),
+        });
+        restored.push(id);
+    }
+
+    if !restored.is_empty() {
+        registry::save(base, &file).map_err(|_| ERR_REGISTRY_SAVE_FAILED.to_string())?;
+    }
+    Ok(restored)
 }
 
 fn resolve_orphan_inner(

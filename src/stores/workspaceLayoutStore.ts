@@ -25,7 +25,7 @@ function makeTab(
   paneId: string,
   agentId: string,
   type: PaneTab["type"] = "terminal",
-  options?: Partial<Pick<PaneTab, "id" | "label" | "cwd" | "lastProcess" | "claudeSessionId" | "agentKind" | "agentSessionId" | "suppressedAgentSessions" | "launchEnv" | "initialPrompt" | "commandArgv" | "terminalSnapshot" | "htmlPath" | "sourcePath" | "sourceKind" | "previewPath" | "isDirty" | "reloadCounter">>,
+  options?: Partial<Pick<PaneTab, "id" | "label" | "cwd" | "lastProcess" | "claudeSessionId" | "agentKind" | "agentSessionId" | "suppressedAgentSessions" | "launchEnv" | "initialPrompt" | "commandArgv" | "ephemeral" | "terminalSnapshot" | "htmlPath" | "sourcePath" | "sourceKind" | "previewPath" | "isDirty" | "reloadCounter">>,
 ): PaneTab {
   const tabId = options?.id ?? uuid();
   return {
@@ -43,6 +43,7 @@ function makeTab(
     launchEnv: options?.launchEnv,
     initialPrompt: options?.initialPrompt,
     commandArgv: options?.commandArgv,
+    ephemeral: options?.ephemeral,
     terminalSnapshot: options?.terminalSnapshot,
     htmlPath: options?.htmlPath,
     sourcePath: options?.sourcePath,
@@ -373,6 +374,8 @@ interface TerminalLaunchOptions {
   launchEnv?: Record<string, string>;
   initialPrompt?: string;
   commandArgv?: string[];
+  /** Keep the tab out of layout persistence (see `PaneTab.ephemeral`). */
+  ephemeral?: boolean;
   activate?: boolean;
 }
 
@@ -712,6 +715,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
       launchEnv: options.launchEnv,
       initialPrompt: options.initialPrompt,
       commandArgv: options.commandArgv,
+      ephemeral: options.ephemeral,
     });
     const newPane: Pane = {
       id: paneId,
@@ -828,6 +832,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
       launchEnv: options.launchEnv,
       initialPrompt: options.initialPrompt,
       commandArgv: options.commandArgv,
+      ephemeral: options.ephemeral,
     });
     const newPanes = workspace.panes.map((pane) => {
       if (pane.id !== paneId) return pane;

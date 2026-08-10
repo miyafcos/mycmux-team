@@ -1,12 +1,15 @@
 import { useEffect, useState } from "react";
 import { confirm } from "@tauri-apps/plugin-dialog";
+import { CliLoginProgress } from "../common/CliLoginProgress";
 import { useCliAccountStore } from "../../stores/cliAccountStore";
+import { useCliLoginStore } from "../../stores/cliLoginStore";
 import { useToastStore } from "../../stores/toastStore";
 import { usePaneMetadataStore } from "../../stores/paneMetadataStore";
 import { revealInExplorer, type CliAccountProfile, type CliOrphanSnapshot, type CliProvider } from "../../lib/ipc";
 import {
   PROVIDER_ORDER,
   PROVIDER_TITLE,
+  addAccountLabel,
   canSwitchCliAccount,
   cliAccountProfileActivity,
   cliAccountMessage,
@@ -72,6 +75,8 @@ export function CliAccountsPanel() {
         セッションから反映)。切り替え前には認証ファイルを自動バックアップします。
       </div>
 
+      <AddAccountSection />
+
       {PROVIDER_ORDER.map((provider) => (
         <ProviderPanel key={provider} provider={provider} />
       ))}
@@ -122,14 +127,48 @@ export function CliAccountsPanel() {
           paddingTop: 10,
         }}
       >
-        注意: 登録は「CLI で通常ログインした状態」をスナップショット保存する方式です。
-        アカウントを追加するには、先に <code>claude /login</code> または{" "}
-        <code>codex login</code> で対象アカウントにログインしてから「現在のログインを
-        登録/更新」を押してください。Codex の切り替えは auth.json 全体を入れ替えるため、
-        OPENAI_API_KEY を手動設定している場合はそれも切り替わります (切り替え前の内容は
-        バックアップに残ります)。
+        補足: 「現在のログインを登録/更新」は、すでに <code>claude /login</code> または{" "}
+        <code>codex login</code> でログイン済みのアカウントを取り込むためのボタンです。
+        Codex の切り替えは auth.json 全体を入れ替えるため、OPENAI_API_KEY を手動設定して
+        いる場合はそれも切り替わります (切り替え前の内容はバックアップに残ります)。
       </div>
     </div>
+  );
+}
+
+/**
+ * The direct way to add an account: mycmux opens the CLI login in a pane with
+ * its config directory pointed at a staging copy, so the account that is
+ * currently logged in is never disturbed.
+ */
+function AddAccountSection() {
+  const busyByProvider = useCliAccountStore((state) => state.busyByProvider);
+  const loginByProvider = useCliLoginStore((state) => state.byProvider);
+  const startLogin = useCliLoginStore((state) => state.start);
+
+  return (
+    <section style={{ display: "grid", gap: 6 }} aria-label="アカウントの追加">
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+        {PROVIDER_ORDER.map((provider) => (
+          <button
+            key={provider}
+            type="button"
+            onClick={() => void startLogin(provider, "new")}
+            disabled={busyByProvider[provider] !== null}
+            style={{
+              ...inlineButtonStyle,
+              opacity: busyByProvider[provider] !== null ? 0.6 : 1,
+              cursor: busyByProvider[provider] !== null ? "default" : "pointer",
+            }}
+          >
+            + {addAccountLabel(provider)}
+          </button>
+        ))}
+      </div>
+      {PROVIDER_ORDER.filter((provider) => loginByProvider[provider]).map((provider) => (
+        <CliLoginProgress key={provider} provider={provider} />
+      ))}
+    </section>
   );
 }
 
@@ -231,6 +270,7 @@ function ProfileRow({
   const switchTo = useCliAccountStore((state) => state.switchTo);
   const remove = useCliAccountStore((state) => state.remove);
   const rename = useCliAccountStore((state) => state.rename);
+  const startLogin = useCliLoginStore((state) => state.start);
   const paneMetadata = usePaneMetadataStore((state) => state.metadata);
   const [editing, setEditing] = useState(false);
   const [labelDraft, setLabelDraft] = useState(profile.label);
@@ -355,6 +395,17 @@ function ProfileRow({
       </div>
 
       <span style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+        {/*
+          A profile that lost its refresh token is kept rather than deleted, so
+          this button repairs it in place: same id, same label, new credentials.
+        */}
+        {profile.needs_relogin && (
+          <RowButton
+            label="再ログイン"
+            onClick={() => void startLogin(profile.provider, "reauth", profile.id)}
+            disabled={providerBusy}
+          />
+        )}
         {!active && (
           <RowButton
             label={busyProfileId === profile.id ? "切替中…" : "切り替え"}

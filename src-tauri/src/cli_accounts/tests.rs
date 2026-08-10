@@ -430,7 +430,7 @@ fn remove_resolved_deletes_snapshot_and_clears_active_pointer() {
         .exists());
 }
 /// Registry + snapshot for one account, with no live login files on disk.
-fn retire_fixture(dir: &Path, id: &str, identity: &str) -> CliAccountProfile {
+fn rescue_fixture(dir: &Path, id: &str, identity: &str) -> CliAccountProfile {
     let mut profile = test_profile(id);
     profile.identity_key = identity.into();
     let mut file = registry::CliAccountsFile::default();
@@ -442,124 +442,98 @@ fn retire_fixture(dir: &Path, id: &str, identity: &str) -> CliAccountProfile {
         provider: CliProvider::Claude,
         captured_at: "x".into(),
         credentials_text: CREDS.into(),
-        oauth_account_text: CLAUDE_JSON.into(),
+        oauth_account_text: r#"{"accountUuid":"claude-account-a","emailAddress":"a@example.test","organizationName":"Example Org"}"#.into(),
     });
     snapshot::save(dir, &profile.id, &stored).unwrap();
     profile
 }
 
-fn retire_paths(dir: &Path) -> (ClaudePaths, CodexPaths) {
-    (
-        ClaudePaths {
-            credentials: dir.join("live-credentials.json"),
-            claude_json: dir.join("live-claude.json"),
-        },
-        CodexPaths {
-            auth: dir.join("live-auth.json"),
-        },
-    )
+fn archived_snapshot(dir: &Path, id: &str) -> std::path::PathBuf {
+    let profile = rescue_fixture(dir, id, "claude-account-a");
+    let live = snapshot::snapshot_dir(dir).join(format!("{}.json", profile.id));
+    let archive =
+        snapshot::snapshot_dir(dir).join(format!("{}.rejected-20260810.json", profile.id));
+    fs::rename(live, &archive).unwrap();
+    let mut file = registry::load(dir).unwrap();
+    assert!(registry::remove_profile(&mut file, &profile.id));
+    registry::save(dir, &file).unwrap();
+    archive
 }
 
-fn rejected_archives(dir: &Path, id: &str) -> Vec<String> {
-    fs::read_dir(snapshot::snapshot_dir(dir))
+#[test]
+fn list_rejected_keeps_only_the_newest_archive_per_id() {
+    let d = tempdir().unwrap();
+    let old = archived_snapshot(d.path(), "claude-12345678");
+    let old_time = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+    fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&old)
         .unwrap()
-        .filter_map(|entry| entry.ok())
-        .map(|entry| entry.file_name().to_string_lossy().into_owned())
-        .filter(|name| name.starts_with(&format!("{id}.rejected-")))
-        .collect()
-}
+        .set_times(fs::FileTimes::new().set_modified(old_time))
+        .unwrap();
+    let profile = rescue_fixture(d.path(), "claude-12345678", "claude-account-a");
+    let live = snapshot::snapshot_dir(d.path()).join(format!("{}.json", profile.id));
+    let latest =
+        snapshot::snapshot_dir(d.path()).join(format!("{}.rejected-20260810-2.json", profile.id));
+    fs::rename(live, &latest).unwrap();
+    let mut file = registry::load(d.path()).unwrap();
+    assert!(registry::remove_profile(&mut file, &profile.id));
+    registry::save(d.path(), &file).unwrap();
 
-#[test]
-fn retire_rejected_account_archives_snapshot_and_clears_active_pointer() {
-    let d = tempdir().unwrap();
-    let profile = retire_fixture(d.path(), "claude-12345678", "claude-account-a");
-    let (cp, xp) = retire_paths(d.path());
-
-    assert!(retire_rejected_account(d.path(), &profile.id, &cp, &xp).unwrap());
-
-    let saved = registry::load(d.path()).unwrap();
-    assert!(saved.profiles.is_empty(), "profile is gone from the registry");
-    assert!(saved.active.claude.is_none(), "active pointer is cleared");
-    assert!(
-        !snapshot::snapshot_dir(d.path())
-            .join(format!("{}.json", profile.id))
-            .exists(),
-        "the original snapshot name is freed"
-    );
-    // Credentials survive, under a name the orphan listing will not surface.
-    let archives = rejected_archives(d.path(), &profile.id);
-    assert_eq!(archives.len(), 1, "credentials are archived, not deleted");
-    assert!(
-        snapshot::list_orphans(d.path(), &[])
-            .unwrap()
-            .is_empty(),
-        "an archived credential never reappears as an unregistered account"
+    assert_eq!(
+        snapshot::list_rejected(d.path()).unwrap(),
+        vec![(profile.id, latest)]
     );
 }
 
 #[test]
-fn retire_rejected_account_keeps_the_live_login() {
+fn rescue_restores_a_rejected_snapshot() {
     let d = tempdir().unwrap();
-    let profile = retire_fixture(d.path(), "claude-12345678", "claude-account-a");
-    let (cp, xp) = retire_paths(d.path());
-    // The same account is the one the CLI currently holds.
-    fs::write(&cp.credentials, CREDS).unwrap();
-    fs::write(&cp.claude_json, CLAUDE_JSON).unwrap();
+    let archive = archived_snapshot(d.path(), "claude-12345678");
+    assert_eq!(
+        snapshot::list_rejected(d.path()).unwrap(),
+        vec![("claude-12345678".into(), archive.clone())]
+    );
+    let restored = rescue_rejected_snapshots(d.path()).unwrap();
 
-    assert!(!retire_rejected_account(d.path(), &profile.id, &cp, &xp).unwrap());
-
+    assert_eq!(restored, vec!["claude-12345678"]);
     let saved = registry::load(d.path()).unwrap();
-    assert_eq!(saved.profiles.len(), 1, "a live account is never retired");
+    assert_eq!(saved.profiles.len(), 1);
+    assert!(saved.profiles[0].needs_relogin);
+    assert!(saved.profiles[0].refresh_rejected_at.is_some());
     assert!(snapshot::snapshot_dir(d.path())
-        .join(format!("{}.json", profile.id))
-        .exists());
-    assert!(rejected_archives(d.path(), &profile.id).is_empty());
+        .join("claude-12345678.json")
+        .is_file());
+    assert!(!archive.exists());
 }
 
 #[test]
-fn retire_rejected_account_leaves_a_different_live_account_alone() {
+fn rescue_skips_when_a_live_snapshot_exists() {
     let d = tempdir().unwrap();
-    // Registered under an identity the live login does not match.
-    let profile = retire_fixture(d.path(), "claude-12345678", "claude-account-b");
-    let (cp, xp) = retire_paths(d.path());
-    fs::write(&cp.credentials, CREDS).unwrap();
-    fs::write(&cp.claude_json, CLAUDE_JSON).unwrap();
+    let archive = archived_snapshot(d.path(), "claude-12345678");
+    let stored: snapshot::StoredSnapshot =
+        serde_json::from_str(&fs::read_to_string(&archive).unwrap()).unwrap();
+    snapshot::save(d.path(), "claude-12345678", &stored).unwrap();
 
-    assert!(retire_rejected_account(d.path(), &profile.id, &cp, &xp).unwrap());
+    assert!(rescue_rejected_snapshots(d.path()).unwrap().is_empty());
     assert!(registry::load(d.path()).unwrap().profiles.is_empty());
+    assert!(archive.is_file());
 }
 
 #[test]
-fn retire_rejected_account_is_idempotent() {
+fn rescue_skips_a_duplicate_identity() {
     let d = tempdir().unwrap();
-    let profile = retire_fixture(d.path(), "claude-12345678", "claude-account-a");
-    let (cp, xp) = retire_paths(d.path());
+    let archive = archived_snapshot(d.path(), "claude-12345678");
+    let mut duplicate = test_profile("claude-87654321");
+    duplicate.identity_key = "claude-account-a".into();
+    let mut file = registry::CliAccountsFile::default();
+    registry::upsert_by_identity_key(&mut file, duplicate);
+    registry::save(d.path(), &file).unwrap();
 
-    assert!(retire_rejected_account(d.path(), &profile.id, &cp, &xp).unwrap());
-    // Second call: the registry no longer knows the id, so it is a no-op rather
-    // than an error - the poll that triggered it must not be derailed.
-    assert!(!retire_rejected_account(d.path(), &profile.id, &cp, &xp).unwrap());
-    assert_eq!(rejected_archives(d.path(), &profile.id).len(), 1);
-}
-
-#[test]
-fn retire_snapshot_twice_keeps_both_archives() {
-    let d = tempdir().unwrap();
-    let stored = snapshot::StoredSnapshot::Claude(snapshot::ClaudeSnapshot {
-        version: 1,
-        provider: CliProvider::Claude,
-        captured_at: "x".into(),
-        credentials_text: CREDS.into(),
-        oauth_account_text: CLAUDE_JSON.into(),
-    });
-    snapshot::save(d.path(), "claude-12345678", &stored).unwrap();
-    assert!(snapshot::retire(d.path(), "claude-12345678").unwrap().is_some());
-    // Re-registered, then rejected again on the same day.
-    snapshot::save(d.path(), "claude-12345678", &stored).unwrap();
-    assert!(snapshot::retire(d.path(), "claude-12345678").unwrap().is_some());
-    assert_eq!(rejected_archives(d.path(), "claude-12345678").len(), 2);
-    // Nothing left to archive.
-    assert!(snapshot::retire(d.path(), "claude-12345678").unwrap().is_none());
+    assert!(rescue_rejected_snapshots(d.path()).unwrap().is_empty());
+    assert_eq!(registry::load(d.path()).unwrap().profiles.len(), 1);
+    assert!(archive.is_file());
 }
 
 #[test]
@@ -636,6 +610,27 @@ fn refresh_rejection_forces_relogin_with_future_expiry() {
     codex.needs_relogin = false;
     codex.refresh_rejected_at = Some("2026-08-09T00:00:00Z".into());
     assert!(refreshed_profiles(d.path(), &[codex])[0].needs_relogin);
+}
+
+#[test]
+fn refresh_rejection_marks_but_keeps_profile() {
+    let d = tempdir().unwrap();
+    let profile = rescue_fixture(d.path(), "claude-12345678", "claude-account-a");
+    record_refresh_rejection(d.path(), &profile.id, "2026-08-10T00:00:00Z".into()).unwrap();
+
+    assert_eq!(registry::load(d.path()).unwrap().profiles.len(), 1);
+    let cp = ClaudePaths {
+        credentials: d.path().join("live-credentials.json"),
+        claude_json: d.path().join("live-claude.json"),
+    };
+    let xp = CodexPaths {
+        auth: d.path().join("live-auth.json"),
+    };
+    assert!(list(d.path(), &cp, &xp).unwrap().profiles[0].needs_relogin);
+    assert!(snapshot::snapshot_dir(d.path())
+        .join("claude-12345678.json")
+        .is_file());
+    assert!(snapshot::list_rejected(d.path()).unwrap().is_empty());
 }
 
 #[test]

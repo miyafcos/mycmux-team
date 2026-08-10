@@ -1,7 +1,8 @@
-import type {
-  PtyMetadataSnapshot,
-  SessionOutputSnapshot,
-  SessionStatusSnapshotPayload,
+import {
+  writeToSession,
+  type PtyMetadataSnapshot,
+  type SessionOutputSnapshot,
+  type SessionStatusSnapshotPayload,
 } from "../../lib/ipc";
 import type { AgentSessionKind, Pane, PaneTab, Workspace } from "../../types";
 import type { PaneMetadata } from "../../stores/paneMetadataStore";
@@ -925,24 +926,151 @@ async function renameTab(args: SocketArgs) {
   throw new Error("pane.rename_tab session not found");
 }
 
+const SEND_CONFIRM_LINES = 24;
+const SEND_CONFIRM_POLL_MS = 50;
+const SEND_TEXT_SETTLE_TIMEOUT_MS = 2_000;
+const SEND_ENTER_CONFIRM_TIMEOUT_MS = 1_200;
+const SEND_ENTER_MAX_ATTEMPTS = 3;
+
+function waitForSendConfirmationPoll(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, SEND_CONFIRM_POLL_MS));
+}
+
+async function readPaneSnapshot(sessionId: string): Promise<string | null> {
+  try {
+    return JSON.stringify(await readPaneTail(sessionId, SEND_CONFIRM_LINES));
+  } catch {
+    return null;
+  }
+}
+
+async function waitForTypedTextToSettle(
+  sessionId: string,
+  beforeText: string | null,
+): Promise<{ snapshot: string | null; settled: boolean }> {
+  if (beforeText === null) return { snapshot: null, settled: false };
+
+  let last = beforeText;
+  let observedEcho = false;
+  let stableSamples = 0;
+  const polls = Math.ceil(SEND_TEXT_SETTLE_TIMEOUT_MS / SEND_CONFIRM_POLL_MS);
+  for (let poll = 0; poll < polls; poll += 1) {
+    await waitForSendConfirmationPoll();
+    const current = await readPaneSnapshot(sessionId);
+    if (current === null) continue;
+    if (current !== beforeText) observedEcho = true;
+    stableSamples = observedEcho && current === last ? stableSamples + 1 : 0;
+    last = current;
+    if (stableSamples >= 1) return { snapshot: current, settled: true };
+  }
+  return { snapshot: last, settled: false };
+}
+
+async function waitForPaneToAdvance(
+  sessionId: string,
+  beforeEnter: string,
+): Promise<"advanced" | "unchanged" | "unavailable"> {
+  let readable = false;
+  let unavailable = false;
+  const polls = Math.ceil(SEND_ENTER_CONFIRM_TIMEOUT_MS / SEND_CONFIRM_POLL_MS);
+  for (let poll = 0; poll < polls; poll += 1) {
+    await waitForSendConfirmationPoll();
+    const current = await readPaneSnapshot(sessionId);
+    if (current === null) {
+      unavailable = true;
+      continue;
+    }
+    readable = true;
+    if (current !== beforeEnter) return "advanced";
+  }
+  return readable && !unavailable ? "unchanged" : "unavailable";
+}
+
+const paneSendTails = new Map<string, Promise<unknown>>();
+
+async function serializePaneSend<T>(sessionId: string, operation: () => Promise<T>): Promise<T> {
+  const previous = paneSendTails.get(sessionId) ?? Promise.resolve();
+  const current = previous.catch(() => undefined).then(operation);
+  paneSendTails.set(sessionId, current);
+  try {
+    return await current;
+  } finally {
+    if (paneSendTails.get(sessionId) === current) paneSendTails.delete(sessionId);
+  }
+}
+
 async function sendPaneText(args: SocketArgs) {
-  const [{ writeToSession }, { useWorkspaceListStore }] = await Promise.all([
-    import("../../lib/ipc"),
-    import("../../stores/workspaceStore"),
-  ]);
+  const { useWorkspaceListStore } = await import("../../stores/workspaceStore");
   const sessionId = socketArgString(args, "sessionId", "session_id");
   if (!sessionId) throw new Error("pane.send_text requires sessionId");
   const textValue = args?.text;
-  const enter = socketArgBoolean(args, "enter", false);
+  const enterValue = args?.enter;
+  if (enterValue !== undefined && typeof enterValue !== "boolean") {
+    throw new Error("pane.send_text enter must be a boolean");
+  }
+  const enter = enterValue ?? false;
   if (typeof textValue !== "string" || (!textValue && !enter)) {
     throw new Error("pane.send_text requires text, unless enter is true");
   }
   if (!isKnownPaneSession(useWorkspaceListStore.getState().workspaces, sessionId)) {
     throw new Error("pane.send_text session is not a known pane");
   }
-  const data = textValue + (enter ? "\r" : "");
-  await writeToSession(sessionId, data);
-  return { sessionId, bytes: data.length };
+  return serializePaneSend(sessionId, async () => {
+    const bytes = textValue.length + (enter ? 1 : 0);
+    if (!enter) {
+      await writeToSession(sessionId, textValue);
+      return { sessionId, bytes };
+    }
+
+    const beforeText = await readPaneSnapshot(sessionId);
+    let beforeEnter = beforeText;
+    let canConfirm = beforeEnter !== null;
+    if (textValue) {
+      await writeToSession(sessionId, textValue);
+      const settled = await waitForTypedTextToSettle(sessionId, beforeText);
+      beforeEnter = settled.snapshot;
+      canConfirm = settled.settled && beforeEnter !== null;
+    }
+
+    if (!canConfirm || beforeEnter === null) {
+      await writeToSession(sessionId, "\r");
+      return {
+        sessionId,
+        bytes,
+        ok: false,
+        confirmed: false,
+        attempts: 1,
+        reason: "verification_unavailable",
+      };
+    }
+
+    for (let attempts = 1; attempts <= SEND_ENTER_MAX_ATTEMPTS; attempts += 1) {
+      await writeToSession(sessionId, "\r");
+      const outcome = await waitForPaneToAdvance(sessionId, beforeEnter);
+      if (outcome === "advanced") {
+        return { sessionId, bytes, ok: true, confirmed: true, attempts };
+      }
+      if (outcome === "unavailable") {
+        return {
+          sessionId,
+          bytes,
+          ok: false,
+          confirmed: false,
+          attempts,
+          reason: "verification_unavailable",
+        };
+      }
+    }
+
+    return {
+      sessionId,
+      bytes,
+      ok: false,
+      confirmed: false,
+      attempts: SEND_ENTER_MAX_ATTEMPTS,
+      reason: "submit_unconfirmed",
+    };
+  });
 }
 
 async function readPane(args: SocketArgs) {

@@ -139,46 +139,20 @@ pub fn remove(base: &Path, id: &str) -> Result<(), String> {
     Ok(())
 }
 
-pub fn retire(base: &Path, id: &str) -> Result<Option<PathBuf>, String> {
-    let source = snapshot_path(base, id)?;
-    if !source.is_file() {
-        return Ok(None);
-    }
-
-    let stamp = Utc::now().format("%Y%m%d");
-    let root = snapshot_dir(base);
-    let mut sequence = 1usize;
-    let destination = loop {
-        let suffix = if sequence == 1 {
-            String::new()
-        } else {
-            format!("-{sequence}")
-        };
-        let candidate = root.join(format!("{id}.rejected-{stamp}{suffix}.json"));
-        if !candidate.exists() {
-            break candidate;
-        }
-        sequence += 1;
-    };
-
-    fs::rename(&source, &destination)
-        .map_err(|error| format!("Failed to retire snapshot: {error}"))?;
-    // Rejected archives deliberately fail `safe_orphan_id`, so a recoverable
-    // credential file cannot reappear in the UI as an unregistered account.
-    Ok(Some(destination))
-}
-
 fn string_field(value: &Value, key: &str) -> Option<String> {
     value.get(key).and_then(Value::as_str).map(str::to_string)
 }
 
-pub fn metadata_for_orphan(
+pub(crate) fn metadata_from_stored(
     id: &str,
     snapshot: &StoredSnapshot,
+    require_orphan_prefix: bool,
 ) -> Result<CliOrphanSnapshot, String> {
     match snapshot {
         StoredSnapshot::Claude(stored) => {
-            if stored.provider != CliProvider::Claude || !id.starts_with("unregistered-claude-") {
+            if stored.provider != CliProvider::Claude
+                || (require_orphan_prefix && !id.starts_with("unregistered-claude-"))
+            {
                 return Err(ERR_ORPHAN_INVALID.to_string());
             }
             let account: Value = serde_json::from_str(&stored.oauth_account_text)
@@ -202,7 +176,9 @@ pub fn metadata_for_orphan(
             })
         }
         StoredSnapshot::Codex(stored) => {
-            if stored.provider != CliProvider::Codex || !id.starts_with("unregistered-codex-") {
+            if stored.provider != CliProvider::Codex
+                || (require_orphan_prefix && !id.starts_with("unregistered-codex-"))
+            {
                 return Err(ERR_ORPHAN_INVALID.to_string());
             }
             let value: Value = serde_json::from_str(&stored.auth_text)
@@ -232,6 +208,63 @@ pub fn metadata_for_orphan(
             })
         }
     }
+}
+
+pub fn metadata_for_orphan(
+    id: &str,
+    snapshot: &StoredSnapshot,
+) -> Result<CliOrphanSnapshot, String> {
+    metadata_from_stored(id, snapshot, true)
+}
+
+/// Returns the most recent rejected archive for each registered snapshot id.
+pub fn list_rejected(base: &Path) -> Result<Vec<(String, PathBuf)>, String> {
+    let root = snapshot_dir(base);
+    if !root.is_dir() {
+        return Ok(Vec::new());
+    }
+
+    let mut rejected: Vec<(String, PathBuf, std::time::SystemTime)> = Vec::new();
+    for entry in fs::read_dir(root)
+        .map_err(|error| error.to_string())?
+        .flatten()
+    {
+        let path = entry.path();
+        if !path.is_file() || path.extension().and_then(|value| value.to_str()) != Some("json") {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        let Some((id, _)) = name
+            .strip_suffix(".json")
+            .and_then(|name| name.split_once(".rejected-"))
+        else {
+            continue;
+        };
+        if !safe_snapshot_id(id) || !(id.starts_with("claude-") || id.starts_with("codex-")) {
+            continue;
+        }
+        let modified = entry.metadata().and_then(|metadata| metadata.modified());
+        let Ok(modified) = modified else {
+            continue;
+        };
+        if let Some(existing) = rejected
+            .iter_mut()
+            .find(|(existing_id, _, _)| existing_id == id)
+        {
+            if modified > existing.2 {
+                *existing = (id.to_string(), path, modified);
+            }
+        } else {
+            rejected.push((id.to_string(), path, modified));
+        }
+    }
+    rejected.sort_by(|left, right| left.0.cmp(&right.0));
+    Ok(rejected
+        .into_iter()
+        .map(|(id, path, _)| (id, path))
+        .collect())
 }
 
 pub fn list_orphans(

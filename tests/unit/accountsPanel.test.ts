@@ -9,6 +9,7 @@ const panelSource = read("../../src/components/layout/AccountsPanel.tsx");
 const buttonSource = read("../../src/components/layout/AccountsButton.tsx");
 const cliPanelSource = read("../../src/components/settings/CliAccountsPanel.tsx");
 const titleBarSource = read("../../src/components/layout/TitleBar.tsx");
+const progressSource = read("../../src/components/common/CliLoginProgress.tsx");
 
 describe("active account guard", () => {
   it("never switches to the account already in use and keeps its row disabled", () => {
@@ -113,5 +114,55 @@ describe("CliAccountsPanel editing contracts", () => {
   it("does not submit or cancel a rename while the IME is composing", () => {
     expect(cliPanelSource).toContain('event.key === "Enter" && !event.nativeEvent.isComposing');
     expect(cliPanelSource).toContain('event.key === "Escape" && !event.nativeEvent.isComposing');
+  });
+});
+
+describe("add account entry points", () => {
+  const footerSource = panelSource.slice(panelSource.indexOf("function Footer"));
+
+  it("lets the panel add an account with no live login, unlike capture", () => {
+    expect(footerSource).toContain("+ アカウントを追加");
+    // Only an in-flight login disables it; `canCapture` gates the other button.
+    expect(footerSource).toContain("disabled={loginInProgress}");
+    expect(footerSource).toContain('startLogin(provider, "new")');
+  });
+
+  it("shows the wait in the button and takes its abort from the shared component", () => {
+    expect(footerSource).toContain("ログイン待機中… ${loginRemainingLabel(loginEntry.startedAt, nowMs)}");
+    expect(footerSource).toContain("<CliLoginProgress provider={loginProvider} compact />");
+    // Exactly one abort control in the footer, and it is the shared one.
+    expect(progressSource).toContain("中止");
+    expect(footerSource).not.toContain("中止");
+  });
+
+  it("keeps one abort control and the three stage strings in the shared component", () => {
+    expect(progressSource).toContain('"ログイン画面を開いています…"');
+    expect(progressSource).toContain('"登録中…"');
+    expect(progressSource).toContain("`ログインの完了を待っています… ${loginRemainingLabel(entry.startedAt, nowMs)}`");
+    expect(cliPanelSource).toContain("<CliLoginProgress key={provider} provider={provider} />");
+  });
+
+  it("opens the provider choice on left click, never a context menu", () => {
+    expect(footerSource).toContain('aria-haspopup="menu"');
+    expect(footerSource).toContain("setAddMenuOpen((open) => !open)");
+    expect(panelSource).not.toContain("onContextMenu");
+  });
+
+  it("keeps capture as a separate action and explains what it is for", () => {
+    expect(footerSource).toContain("+ 現在のログインを登録");
+    expect(footerSource).toContain('title="CLIで既にログイン済みのアカウントを取り込みます"');
+    // The capture label must not read "登録中…" while a *login* holds the provider.
+    expect(footerSource).toContain("busyByProvider[provider] === `capture:${provider}`");
+  });
+
+  it("offers add buttons and an in-place relogin in the settings panel", () => {
+    expect(cliPanelSource).toContain("+ {addAccountLabel(provider)}");
+    expect(cliPanelSource).toContain('label="再ログイン"');
+    expect(cliPanelSource).toContain('startLogin(profile.provider, "reauth", profile.id)');
+    // A profile kept for re-login must still be removable from the same row.
+    expect(cliPanelSource).toContain('label="削除"');
+    // The old CLI-first instructions stay, demoted to a note.
+    expect(cliPanelSource).toContain("現在のログインを登録/更新");
+    expect(cliPanelSource).toContain("codex login");
   });
 });

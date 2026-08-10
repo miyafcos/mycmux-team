@@ -8,6 +8,8 @@ import sys
 import threading
 from pathlib import Path
 
+import pytest
+
 
 REPO_ROOT = Path(__file__).parents[1]
 CLI_SCRIPT = REPO_ROOT / "scripts" / "mycmux_agent_cli.py"
@@ -250,6 +252,134 @@ def test_real_cli_send_without_expectations_preserves_legacy_args(
     assert received == [
         b'{"cmd": "pane.send_text", "args": {"sessionId": "session-a", "text": "yes", "enter": true}}\n'
     ]
+    assert result.returncode == 1
+    assert json.loads(result.stdout) == {
+        "sessionId": "session-a",
+        "bytes": 4,
+        "ok": False,
+        "confirmed": False,
+        "reason": "confirmation_unavailable",
+    }
+    assert result.stderr == ""
+
+
+@pytest.mark.parametrize(
+    "server_result",
+    [None, {}, {"ok": True, "confirmed": False}],
+)
+def test_real_cli_send_enter_fails_closed_without_confirmation(
+    tmp_path: Path,
+    server_result: object,
+) -> None:
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port_dir = tmp_path / ".mycmux"
+    port_dir.mkdir()
+    (port_dir / "mycmux.port").write_text(
+        str(listener.getsockname()[1]), encoding="utf-8"
+    )
+    received: list[bytes] = []
+    errors: list[BaseException] = []
+    reply = json.dumps({"id": 10, "result": server_result, "error": None}).encode() + b"\n"
+    server = _serve_one_request(listener, reply, received, errors)
+
+    result = _run_cli(
+        tmp_path,
+        ["send", "--session", "session-a", "--text", "yes", "--enter"],
+    )
+    server.join(timeout=3)
+    assert not server.is_alive()
+    if errors:
+        raise errors[0]
+
+    assert result.returncode == 1
+    parsed = json.loads(result.stdout)
+    assert parsed["ok"] is False
+    assert parsed["confirmed"] is False
+    assert parsed["reason"] == "confirmation_unavailable"
+    assert result.stderr == ""
+
+
+def test_real_cli_send_enter_accepts_only_explicit_confirmation(tmp_path: Path) -> None:
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port_dir = tmp_path / ".mycmux"
+    port_dir.mkdir()
+    (port_dir / "mycmux.port").write_text(
+        str(listener.getsockname()[1]), encoding="utf-8"
+    )
+    received: list[bytes] = []
+    errors: list[BaseException] = []
+    confirmed = {
+        "sessionId": "session-a",
+        "bytes": 4,
+        "ok": True,
+        "confirmed": True,
+        "attempts": 1,
+    }
+    reply = json.dumps({"id": 11, "result": confirmed, "error": None}).encode() + b"\n"
+    server = _serve_one_request(listener, reply, received, errors)
+
+    result = _run_cli(
+        tmp_path,
+        ["send", "--session", "session-a", "--text", "yes", "--enter"],
+    )
+    server.join(timeout=3)
+    assert not server.is_alive()
+    if errors:
+        raise errors[0]
+
     assert result.returncode == 0
-    assert result.stdout == json.dumps({"sessionId": "session-a", "bytes": 4}) + "\n"
+    assert json.loads(result.stdout) == confirmed
+    assert result.stderr == ""
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        {
+            "sessionId": "session-a",
+            "bytes": 4,
+            "ok": False,
+            "confirmed": False,
+            "attempts": 3,
+            "reason": "submit_unconfirmed",
+        },
+        {
+            "sent": False,
+            "reason": "attention_id",
+            "current": {"session_id": "session-a"},
+        },
+    ],
+)
+def test_real_cli_send_returns_nonzero_for_structured_failure(
+    tmp_path: Path,
+    failure: dict[str, object],
+) -> None:
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port_dir = tmp_path / ".mycmux"
+    port_dir.mkdir()
+    (port_dir / "mycmux.port").write_text(
+        str(listener.getsockname()[1]), encoding="utf-8"
+    )
+    received: list[bytes] = []
+    errors: list[BaseException] = []
+    reply = json.dumps({"id": 10, "result": failure, "error": None}).encode() + b"\n"
+    server = _serve_one_request(listener, reply, received, errors)
+
+    result = _run_cli(
+        tmp_path,
+        ["send", "--session", "session-a", "--text", "yes", "--enter"],
+    )
+    server.join(timeout=3)
+    assert not server.is_alive()
+    if errors:
+        raise errors[0]
+
+    assert result.returncode == 1
+    assert json.loads(result.stdout) == failure
     assert result.stderr == ""

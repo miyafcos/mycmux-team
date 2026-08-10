@@ -497,6 +497,12 @@ where
 }
 
 fn should_trust_claude_workspace(command: &str, env: &HashMap<String, String>) -> bool {
+    // A pane launched with CLAUDE_CONFIG_DIR reads its config from the staging
+    // directory. Writing trust into the live ~/.claude.json has no effect there
+    // and only rewrites the file, which makes live_sync re-capture for nothing.
+    if env.contains_key("CLAUDE_CONFIG_DIR") {
+        return false;
+    }
     let kind = env
         .get("MYCMUX_AGENT_KIND")
         .or_else(|| env.get("MYCMUX_RESUME"))
@@ -814,6 +820,34 @@ mod tests {
         let mut e = env(&[("MYCMUX_SESSION_ID", "abc-123")]);
         sanitize_launch_env(&mut e);
         assert!(!e.contains_key("MYCMUX_SESSION_ID"));
+    }
+
+    #[test]
+    fn isolated_login_panes_are_never_trusted_into_the_live_config() {
+        // The pane reads ~/.claude.json from the staging directory, so writing
+        // trust into the live file would only churn it for live_sync.
+        let e = env(&[
+            ("MYCMUX_AGENT_KIND", "claude"),
+            ("CLAUDE_CONFIG_DIR", "C:/data/cli_login_staging/abc"),
+        ]);
+        assert!(!should_trust_claude_workspace("claude", &e));
+        assert!(!should_trust_claude_workspace(
+            "C:/tools/claude.cmd",
+            &env(&[("CLAUDE_CONFIG_DIR", "C:/data/cli_login_staging/abc")]),
+        ));
+    }
+
+    #[test]
+    fn ordinary_claude_panes_still_trust_their_workspace() {
+        assert!(should_trust_claude_workspace(
+            "claude",
+            &env(&[("HOME", "/home/u")])
+        ));
+        assert!(should_trust_claude_workspace(
+            "bash",
+            &env(&[("MYCMUX_AGENT_KIND", "claude")])
+        ));
+        assert!(!should_trust_claude_workspace("bash", &env(&[])));
     }
 
     #[test]

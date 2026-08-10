@@ -1,4 +1,4 @@
-import type { CliAccountProfile, CliLiveLogin, CliProvider } from "./ipc";
+import { CLI_LOGIN_TIMEOUT_MS, type CliAccountProfile, type CliLiveLogin, type CliLoginMode, type CliProvider } from "./ipc";
 
 export const CLI_ACCOUNT_POLL_INTERVAL_MS = 60_000;
 
@@ -57,6 +57,18 @@ const CLI_ACCOUNT_MESSAGES: Record<string, string> = {
     "原因: Codexのログイン情報を読み取れませんでした。次にすること: Codexでログイン状態を確認してください。",
   "cli_account.error.codex_identity_invalid":
     "原因: Codexのログイン情報を解析できませんでした。次にすること: Codexで再ログインしてください。",
+  "cli_account.error.login_staging_failed":
+    "原因: ログイン用の一時フォルダーを作成できませんでした。次にすること: 保存先の空き容量とアクセス権を確認して、もう一度お試しください。",
+  "cli_account.error.login_identity_mismatch":
+    "原因: 再ログインの対象と違うアカウントでログインされました。次にすること: 開いているログイン画面でログアウトしてから、対象のアカウントで入り直してください。",
+  "cli_account.error.login_timeout":
+    "原因: 制限時間内にログインが完了しませんでした。次にすること: 一時フォルダーは破棄しました。もう一度アカウントの追加からお試しください。",
+  "cli_account.error.login_cancelled":
+    "原因: ログインを中止しました。次にすること: 一時フォルダーは破棄しました。追加が必要な場合はもう一度お試しください。",
+  "cli_account.error.login_already_running":
+    "原因: このCLIのログインがすでに進行中です。次にすること: 開いているログインタブを完了するか中止してから、もう一度お試しください。",
+  "cli_account.error.login_session_not_found":
+    "原因: 対象のログイン処理が見つかりません。次にすること: 一覧を更新してから、もう一度お試しください。",
   "cli_account.warning.active_snapshot_refreshed":
     "使用中アカウントの保存情報を更新しました。認証情報の切り替えは行っていません。",
   "cli_account.warning.unregistered_live_login_saved":
@@ -73,6 +85,37 @@ export function cliAccountMessage(value: unknown): string {
     CLI_ACCOUNT_MESSAGES[raw] ??
     "原因: CLIアカウント情報を処理できませんでした。次にすること: ログイン状態を確認して、もう一度お試しください。"
   );
+}
+
+/**
+ * Wording for the add-account entry points. Kept here so the titlebar panel can
+ * name a provider without importing the grouping heading vocabulary the panel
+ * deliberately dropped.
+ */
+export function addAccountLabel(provider: CliProvider): string {
+  return `${PROVIDER_TITLE[provider]} のアカウントを追加`;
+}
+
+/** Label of the pane tab the isolated login runs in. */
+export function loginTabLabel(provider: CliProvider, mode: CliLoginMode): string {
+  return `${PROVIDER_TITLE[provider]} ${mode === "reauth" ? "再ログイン" : "ログイン"}`;
+}
+
+/**
+ * The watcher keeps running after a mismatch so the user can log out and come
+ * back with the right account; the message has to say that, and naming the
+ * account that did log in is what makes the mistake obvious.
+ */
+export function loginIdentityMismatchMessage(email: string | null): string {
+  const base = cliAccountMessage("cli_account.error.login_identity_mismatch");
+  return email ? `${base}（ログインされたアカウント: ${email}）` : base;
+}
+
+/** Remaining time before the Rust watcher gives up, as m:ss. */
+export function loginRemainingLabel(startedAt: number | null, nowMs: number): string {
+  const elapsed = startedAt === null ? 0 : Math.max(0, nowMs - startedAt);
+  const remainingSecs = Math.ceil(Math.max(0, CLI_LOGIN_TIMEOUT_MS - elapsed) / 1000);
+  return `${Math.floor(remainingSecs / 60)}:${String(remainingSecs % 60).padStart(2, "0")}`;
 }
 
 export function liveForProvider(

@@ -11,6 +11,7 @@ import { onlineStrings } from "../online/onlineStrings";
 import { resolveWorkspaceColor } from "../../lib/workspaceColors";
 import { OVERLAY_EXIT_MS, useDeferredUnmount } from "../../hooks/useDeferredUnmount";
 import { useAccountsPolling } from "../../hooks/useAccountsPolling";
+import { useCliLoginEvents } from "../../hooks/useCliLoginEvents";
 
 interface TitleBarProps {
   uiVariant?: "default" | "cmux";
@@ -63,6 +64,7 @@ export default function TitleBar({
   onOpenCrsmPalette,
 }: TitleBarProps) {
   useAccountsPolling();
+  useCliLoginEvents();
   const activeWorkspace = useWorkspaceListStore((s) => s.getActiveWorkspace());
   const activeWorkspaceColor = resolveWorkspaceColor(activeWorkspace?.color);
   const toggleSidebar = useUiStore((s) => s.toggleSidebar);

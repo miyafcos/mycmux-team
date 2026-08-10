@@ -180,7 +180,7 @@ def test_browser_preview_panes_are_not_persisted_as_empty_terminal_panes() -> No
         "const keepPane = !pane.tabs || pane.tabs.length > 0;",
         ".map(dropEmptyTabPanesFromConfig)",
         ".filter((cfg) => cfg.panes.length > 0)",
-        'const persistedTabs = pane.tabs.filter((tab) => tab.type !== "browser");',
+        'const persistedTabs = pane.tabs.filter((tab) => tab.type !== "browser" && !tab.ephemeral);',
         "if (persistedTabs.length === 0) return null;",
         "const droppedEphemeralPane = paneEntries.length !== ws.panes.length;",
         "column_widths: droppedEphemeralPane ? null : normalizeColumnWidths(ws, splitColumns),",

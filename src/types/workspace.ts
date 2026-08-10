@@ -43,6 +43,12 @@ export interface PaneTab {
   initialPrompt?: string;
   /** Ephemeral command override for the first agent launch; not persisted. */
   commandArgv?: string[];
+  /**
+   * One-shot tab (isolated CLI login and the like). Excluded from layout
+   * persistence so a restart never resurrects a terminal pointing at a staging
+   * directory that no longer exists.
+   */
+  ephemeral?: boolean;
   terminalSnapshot?: string[];
   /** Browser tabs: local file path (already normalized, no file:// prefix). */
   htmlPath?: string;

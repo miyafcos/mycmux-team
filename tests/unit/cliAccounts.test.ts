@@ -1,10 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  addAccountLabel,
   attentionReason,
   canSwitchCliAccount,
   cliAccountProfileActivity,
   cliAccountMessage,
   executeCliAccountSwitch,
+  loginIdentityMismatchMessage,
+  loginRemainingLabel,
+  loginTabLabel,
   orderCliAccountProfiles,
   runningAgentPaneDetails,
   runningAgentCounts,
@@ -167,5 +171,45 @@ describe("account UX helpers", () => {
     expect(cliAccountMessage("cli_account.error.needs_relogin")).toContain("再ログイン");
     expect(cliAccountMessage(new Error("raw backend details"))).not.toContain("raw backend details");
     expect(cliAccountMessage("unknown")).toMatch(/^原因:.*次にすること:/);
+  });
+});
+
+describe("isolated CLI login", () => {
+  const LOGIN_CODES = [
+    "cli_account.error.login_staging_failed",
+    "cli_account.error.login_identity_mismatch",
+    "cli_account.error.login_timeout",
+    "cli_account.error.login_cancelled",
+    "cli_account.error.login_already_running",
+    "cli_account.error.login_session_not_found",
+  ] as const;
+
+  it.each(LOGIN_CODES)("explains %s instead of falling back to the generic text", (code) => {
+    const message = cliAccountMessage(code);
+    expect(message).not.toBe(cliAccountMessage("cli_account.error.__not_a_real_code__"));
+    expect(message).toMatch(/^原因:.*次にすること:/);
+  });
+
+  it("names the account that logged in when the identity does not match", () => {
+    expect(loginIdentityMismatchMessage("other@example.com")).toContain("other@example.com");
+    expect(loginIdentityMismatchMessage(null)).toBe(
+      cliAccountMessage("cli_account.error.login_identity_mismatch"),
+    );
+  });
+
+  it("labels the entry points and the login tab per provider and mode", () => {
+    expect(addAccountLabel("claude")).toBe("Claude Code のアカウントを追加");
+    expect(addAccountLabel("codex")).toBe("Codex のアカウントを追加");
+    expect(loginTabLabel("claude", "new")).toBe("Claude Code ログイン");
+    expect(loginTabLabel("codex", "reauth")).toBe("Codex 再ログイン");
+  });
+
+  it("counts the countdown down from the backend timeout and stops at zero", () => {
+    const startedAt = 1_000_000;
+    expect(loginRemainingLabel(startedAt, startedAt)).toBe("10:00");
+    expect(loginRemainingLabel(startedAt, startedAt + 61_000)).toBe("8:59");
+    expect(loginRemainingLabel(startedAt, startedAt + 600_000)).toBe("0:00");
+    expect(loginRemainingLabel(startedAt, startedAt + 999_000)).toBe("0:00");
+    expect(loginRemainingLabel(null, startedAt)).toBe("10:00");
   });
 });

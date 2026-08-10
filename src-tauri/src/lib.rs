@@ -1,3 +1,4 @@
+pub mod ailog;
 mod cli_accounts;
 mod commands;
 mod db;
@@ -254,6 +255,7 @@ pub fn run() {
         .manage(remote_control)
         .manage(remote_sessions)
         .manage(usage::UsageState::new())
+        .manage(cli_accounts::login_watch::LoginRegistry::default())
         .invoke_handler(tauri::generate_handler![
             commands::terminal::create_session,
             commands::terminal::write_to_session,
@@ -308,11 +310,26 @@ pub fn run() {
             commands::window_registry::get_window_fragments,
             commands::window_registry::get_app_settings,
             commands::usage::get_account_usage,
+            commands::ailog::ailog_index_start,
+            commands::ailog::ailog_index_cancel,
+            commands::ailog::ailog_index_status,
+            commands::ailog::ailog_overview,
+            commands::ailog::ailog_series,
+            commands::ailog::ailog_breakdown,
+            commands::ailog::ailog_sessions,
+            commands::ailog::ailog_session_detail,
+            commands::ailog::ailog_models,
+            commands::ailog::ailog_efficiency,
+            commands::ailog::ailog_get_prices,
+            commands::ailog::ailog_set_price,
             commands::cli_accounts::list_cli_accounts,
             commands::cli_accounts::capture_cli_account,
             commands::cli_accounts::switch_cli_account,
             commands::cli_accounts::remove_cli_account,
             commands::cli_accounts::rename_cli_account,
+            commands::cli_accounts::begin_cli_login,
+            commands::cli_accounts::cancel_cli_login,
+            commands::cli_accounts::list_cli_login_sessions,
             cli_accounts::resolve_cli_account_orphan,
             remote::get_remote_info,
             remote::rotate_remote_token,
@@ -357,6 +374,24 @@ pub fn run() {
             // provider hands the live CLI a new refresh token, so the snapshot
             // of whichever account is logged in has to follow the live file.
             if let Ok(accounts_base) = app_handle.path().app_data_dir() {
+                match cli_accounts::rescue_rejected_snapshots(&accounts_base) {
+                    Ok(restored) if !restored.is_empty() => crate::diag::log(&format!(
+                        "[cli_accounts] restored {} previously rejected account snapshot(s)",
+                        restored.len()
+                    )),
+                    Ok(_) => {}
+                    Err(error) => crate::diag_warn!(
+                        "cli_accounts",
+                        "failed to rescue rejected account snapshots at startup: {error}"
+                    ),
+                }
+                // An abandoned isolated login leaves its staging directory
+                // behind (the CLI can still hold a handle when we try to clean
+                // up), so the next launch is the reliable place to reclaim it.
+                cli_accounts::staging::sweep_stale_staging(
+                    &accounts_base,
+                    std::time::Duration::from_secs(86_400),
+                );
                 cli_accounts::live_sync::start_live_sync(accounts_base);
             }
 

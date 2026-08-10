@@ -376,7 +376,36 @@ def main(argv: Sequence[str] | None = None) -> int:
     except RuntimeError as exc:
         print(str(exc), file=sys.stderr)
         return 1
+    failed = False
+    if namespace.subcommand == "send":
+        failed = isinstance(result, dict) and (
+            result.get("ok") is False or result.get("sent") is False
+        )
+        if namespace.enter and not (
+            isinstance(result, dict)
+            and result.get("ok") is True
+            and result.get("confirmed") is True
+        ):
+            failed = True
+            if isinstance(result, dict) and not (
+                result.get("ok") is False or result.get("sent") is False
+            ):
+                result = {
+                    **result,
+                    "ok": False,
+                    "confirmed": False,
+                    "reason": "confirmation_unavailable",
+                }
+            elif not isinstance(result, dict):
+                result = {
+                    "ok": False,
+                    "confirmed": False,
+                    "reason": "confirmation_unavailable",
+                    "legacyResult": result,
+                }
     print(json.dumps(result, ensure_ascii=False))
+    if failed:
+        return 1
     return 0
 
 

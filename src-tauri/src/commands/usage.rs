@@ -167,7 +167,12 @@ async fn cached_profile_windows(
 /// allowed to ask for fresh ones, so an expired entry is still the best answer
 /// it has.
 async fn stale_profile_windows(state: &UsageState, profile_id: &str) -> Option<CachedWindows> {
-    state.profile_usage_cache.lock().await.get(profile_id).cloned()
+    state
+        .profile_usage_cache
+        .lock()
+        .await
+        .get(profile_id)
+        .cloned()
 }
 
 /// A cooldown pauses the asking, not the numbers: the row keeps the last
@@ -178,7 +183,12 @@ async fn cooldown_usage(
     row: &PlannedRow,
     retry_at: Option<String>,
 ) -> ProfileUsage {
-    let usage = profile_usage(row, UsageRowState::Cooldown, Some(ERROR_RATE_LIMITED), retry_at);
+    let usage = profile_usage(
+        row,
+        UsageRowState::Cooldown,
+        Some(ERROR_RATE_LIMITED),
+        retry_at,
+    );
     match stale_profile_windows(state, &row.profile_id).await {
         Some(stale) => with_windows(usage, stale),
         None => usage,
@@ -261,14 +271,24 @@ pub async fn get_account_usage(
         {
             output.push((
                 index,
-                profile_usage(&row, UsageRowState::Unsupported, Some(ERROR_CODEX_UNSUPPORTED), None),
+                profile_usage(
+                    &row,
+                    UsageRowState::Unsupported,
+                    Some(ERROR_CODEX_UNSUPPORTED),
+                    None,
+                ),
             ));
             continue;
         }
         if row.needs_relogin {
             output.push((
                 index,
-                profile_usage(&row, UsageRowState::NeedsRelogin, Some(ERROR_NEEDS_RELOGIN), None),
+                profile_usage(
+                    &row,
+                    UsageRowState::NeedsRelogin,
+                    Some(ERROR_NEEDS_RELOGIN),
+                    None,
+                ),
             ));
             continue;
         }
@@ -306,20 +326,45 @@ pub async fn get_account_usage(
         let Ok(source) = source else {
             output.push((
                 index,
-                profile_usage(&row, UsageRowState::Error, Some(ERROR_SNAPSHOT_UNAVAILABLE), None),
+                profile_usage(
+                    &row,
+                    UsageRowState::Error,
+                    Some(ERROR_SNAPSHOT_UNAVAILABLE),
+                    None,
+                ),
             ));
             continue;
         };
         let result = match row.provider {
             CliProvider::Claude => {
-                fetch_claude_profile(&app, &state, &base, &row, &source, &cooldown_key, &mut fetch_count).await
+                fetch_claude_profile(
+                    &app,
+                    &state,
+                    &base,
+                    &row,
+                    &source,
+                    &cooldown_key,
+                    &mut fetch_count,
+                )
+                .await
             }
             CliProvider::Codex => {
-                fetch_codex_profile(&app, &state, &base, &row, &source, &cooldown_key, &mut fetch_count).await
+                fetch_codex_profile(
+                    &app,
+                    &state,
+                    &base,
+                    &row,
+                    &source,
+                    &cooldown_key,
+                    &mut fetch_count,
+                )
+                .await
             }
         };
         if result.usage.state == UsageRowState::Cooldown {
-            let seen = provider_rate_limited.entry(provider_key.clone()).or_insert(0);
+            let seen = provider_rate_limited
+                .entry(provider_key.clone())
+                .or_insert(0);
             *seen += 1;
             if *seen >= PROVIDER_PAUSE_THRESHOLD {
                 apply_429_cooldown(&state, &provider_key, Utc::now().timestamp_millis()).await;
@@ -341,10 +386,7 @@ pub async fn get_account_usage(
 fn processing_order(rows: &[PlannedRow], priority: &[String]) -> Vec<usize> {
     let mut order: Vec<usize> = (0..rows.len()).collect();
     order.sort_by_key(|&index| {
-        match priority
-            .iter()
-            .position(|id| id == &rows[index].profile_id)
-        {
+        match priority.iter().position(|id| id == &rows[index].profile_id) {
             Some(rank) => (0usize, rank, index),
             None => (1usize, 0usize, index),
         }
@@ -542,10 +584,20 @@ async fn refresh_claude_snapshot(
     {
         SnapshotWrite::Applied => Ok(refreshed.access_token),
         SnapshotWrite::Conflict => Err(FetchResult {
-            usage: profile_usage(row, UsageRowState::Error, Some(ERROR_SNAPSHOT_CONFLICT), None),
+            usage: profile_usage(
+                row,
+                UsageRowState::Error,
+                Some(ERROR_SNAPSHOT_CONFLICT),
+                None,
+            ),
         }),
         SnapshotWrite::Unavailable => Err(FetchResult {
-            usage: profile_usage(row, UsageRowState::Error, Some(ERROR_SNAPSHOT_UNAVAILABLE), None),
+            usage: profile_usage(
+                row,
+                UsageRowState::Error,
+                Some(ERROR_SNAPSHOT_UNAVAILABLE),
+                None,
+            ),
         }),
     }
 }
@@ -768,10 +820,20 @@ async fn refresh_codex_snapshot(
     {
         SnapshotWrite::Applied => Ok(refreshed.access_token),
         SnapshotWrite::Conflict => Err(FetchResult {
-            usage: profile_usage(row, UsageRowState::Error, Some(ERROR_SNAPSHOT_CONFLICT), None),
+            usage: profile_usage(
+                row,
+                UsageRowState::Error,
+                Some(ERROR_SNAPSHOT_CONFLICT),
+                None,
+            ),
         }),
         SnapshotWrite::Unavailable => Err(FetchResult {
-            usage: profile_usage(row, UsageRowState::Error, Some(ERROR_SNAPSHOT_UNAVAILABLE), None),
+            usage: profile_usage(
+                row,
+                UsageRowState::Error,
+                Some(ERROR_SNAPSHOT_UNAVAILABLE),
+                None,
+            ),
         }),
     }
 }
@@ -842,13 +904,15 @@ where
     let profile_id = row.profile_id.clone();
     let provider = row.provider;
     let expected = expected_refresh_token.to_string();
-    match tokio::task::spawn_blocking(move || crate::cli_accounts::update_snapshot_tokens(
-        &base,
-        &profile_id,
-        provider,
-        &expected,
-        rewrite
-    ))
+    match tokio::task::spawn_blocking(move || {
+        crate::cli_accounts::update_snapshot_tokens(
+            &base,
+            &profile_id,
+            provider,
+            &expected,
+            rewrite,
+        )
+    })
     .await
     {
         Ok(Ok(SnapshotUpdate::Applied)) => SnapshotWrite::Applied,
@@ -974,57 +1038,6 @@ async fn remember_refresh_rejection(app: &tauri::AppHandle, row: &PlannedRow) {
     }
 }
 
-/// Drop an account whose refresh token the provider has explicitly disowned.
-///
-/// Only `invalid_grant` reaches here. A bare 400 or 401 also classifies as
-/// `Rejected` (see `usage::refresh::classify_refresh_error`), and a proxy or
-/// captive portal answering with HTML would land there too - retiring on that
-/// would delete a working account over a network hiccup.
-///
-/// Returns whether the account was retired. The account keeps its credentials:
-/// the snapshot is renamed aside, not deleted.
-async fn retire_rejected_account(app: &tauri::AppHandle, state: &UsageState, row: &PlannedRow) -> bool {
-    let Ok(base) = app.path().app_data_dir() else {
-        crate::usage::log_oauth_failure(
-            app,
-            "get_account_usage_retire",
-            &format!("profile={} app_data_dir_unavailable", row.profile_id),
-        );
-        return false;
-    };
-    let profile_id = row.profile_id.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        let claude_paths = ClaudePaths::resolve()?;
-        let codex_paths = CodexPaths::resolve()?;
-        crate::cli_accounts::retire_rejected_account(
-            &base,
-            &profile_id,
-            &claude_paths,
-            &codex_paths,
-        )
-    })
-    .await;
-    match result.unwrap_or_else(|error| Err(error.to_string())) {
-        Ok(true) => {
-            // The row is gone from the registry, so its cached windows, cooldown
-            // and deferred slot would otherwise linger for the process lifetime.
-            state.clear_profile(&row.profile_id).await;
-            use tauri::Emitter;
-            let _ = app.emit("mycmux://cli-account-retired", row.label.clone());
-            true
-        }
-        Ok(false) => false,
-        Err(error) => {
-            crate::usage::log_oauth_failure(
-                app,
-                "get_account_usage_retire",
-                &format!("profile={} {error}", row.profile_id),
-            );
-            false
-        }
-    }
-}
-
 async fn refresh_failure(
     app: &tauri::AppHandle,
     state: &UsageState,
@@ -1044,7 +1057,7 @@ async fn refresh_failure(
         ),
     );
     match error {
-        refresh::RefreshError::Rejected { ref code, .. } => {
+        refresh::RefreshError::Rejected { .. } => {
             // A rejected refresh usually means the provider rotated this token
             // away while the CLI held the account, and only a human re-login
             // can fix that. But the account can also have gone live between the
@@ -1057,23 +1070,6 @@ async fn refresh_failure(
                         row,
                         UsageRowState::WaitForCli,
                         Some(ERROR_TOKEN_EXPIRED_ACTIVE),
-                        None,
-                    ),
-                };
-            }
-            // An explicit invalid_grant is the provider disowning this refresh
-            // token, which no amount of retrying fixes. Retire the account so it
-            // stops spending a request every poll: the budget is IP-wide, so a
-            // dead account crowds the healthy ones into a rate-limit cooldown.
-            // Unregistered live rows have no registry entry to retire.
-            if row.registered && code.as_deref() == Some("invalid_grant")
-                && retire_rejected_account(app, state, row).await
-            {
-                return FetchResult {
-                    usage: profile_usage(
-                        row,
-                        UsageRowState::NeedsRelogin,
-                        Some(ERROR_NEEDS_RELOGIN),
                         None,
                     ),
                 };
@@ -1152,11 +1148,7 @@ pub(crate) async fn apply_429_cooldown(state: &UsageState, account_id: &str, now
     );
 }
 
-async fn active_cooldown(
-    state: &UsageState,
-    account_id: &str,
-    now_ms: i64,
-) -> Option<Cooldown> {
+async fn active_cooldown(state: &UsageState, account_id: &str, now_ms: i64) -> Option<Cooldown> {
     state
         .cooldowns
         .lock()
@@ -1412,9 +1404,11 @@ mod tests {
         let paused = active_cooldown(&state, &key, now).await.expect("paused");
         assert_eq!(paused.until_ms, now + COOLDOWN_BASE_MS);
         // Other providers are unaffected.
-        assert!(active_cooldown(&state, &provider_cooldown_key(CliProvider::Codex), now)
-            .await
-            .is_none());
+        assert!(
+            active_cooldown(&state, &provider_cooldown_key(CliProvider::Codex), now)
+                .await
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -1455,7 +1449,9 @@ mod tests {
 
         // The fresh path refuses an expired entry...
         let long_after = 1 + USAGE_CACHE_TTL_MS * 10;
-        assert!(cached_profile_windows(&state, "p", long_after).await.is_none());
+        assert!(cached_profile_windows(&state, "p", long_after)
+            .await
+            .is_none());
         // ...but the cooldown row still carries it, dated by its own fetch time.
         let usage = cooldown_usage(&state, &row, Some("soon".into())).await;
         assert_eq!(usage.state, UsageRowState::Cooldown);
@@ -1468,15 +1464,33 @@ mod tests {
     #[test]
     fn claude_unauthorized_retry_only_once_and_never_for_active() {
         // status, is_active, already_refreshed
-        assert!(should_retry_claude_after_unauthorized(Some(401), false, false));
-        assert!(should_retry_claude_after_unauthorized(Some(403), false, false));
+        assert!(should_retry_claude_after_unauthorized(
+            Some(401),
+            false,
+            false
+        ));
+        assert!(should_retry_claude_after_unauthorized(
+            Some(403),
+            false,
+            false
+        ));
         // The CLI holds this account; it rotates its own tokens.
-        assert!(!should_retry_claude_after_unauthorized(Some(401), true, false));
+        assert!(!should_retry_claude_after_unauthorized(
+            Some(401),
+            true,
+            false
+        ));
         // Never twice in one poll.
-        assert!(!should_retry_claude_after_unauthorized(Some(401), false, true));
+        assert!(!should_retry_claude_after_unauthorized(
+            Some(401),
+            false,
+            true
+        ));
         // Other statuses are not an authentication problem.
         for status in [None, Some(400), Some(429), Some(500)] {
-            assert!(!should_retry_claude_after_unauthorized(status, false, false));
+            assert!(!should_retry_claude_after_unauthorized(
+                status, false, false
+            ));
         }
     }
 
@@ -1523,7 +1537,17 @@ mod tests {
         apply_429_cooldown(&state, &provider_key, 1).await;
         apply_429_cooldown(&state, &provider_key, 1).await; // backoff has grown
 
-        successful_fetch(&state, &row, None, None, None, None, Vec::new(), &profile_key).await;
+        successful_fetch(
+            &state,
+            &row,
+            None,
+            None,
+            None,
+            None,
+            Vec::new(),
+            &profile_key,
+        )
+        .await;
 
         // Both entries are gone, so the next 429 starts from the base backoff
         // instead of resuming a stale doubled one.
@@ -1546,5 +1570,4 @@ mod tests {
             vec![300_000, 600_000, 1_200_000, 1_800_000, 1_800_000]
         );
     }
-
 }

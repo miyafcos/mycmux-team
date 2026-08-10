@@ -43,6 +43,13 @@ export interface CliAccountStoreState {
   remove(provider: CliProvider, profileId: string): Promise<boolean>;
   rename(provider: CliProvider, profileId: string, label: string): Promise<boolean>;
   resolveOrphan(orphan: CliOrphanSnapshot, action: CliOrphanAction, label?: string): Promise<boolean>;
+  /**
+   * Reserve a provider for an isolated CLI login. Logins can take minutes, so
+   * they must not go through `enqueueMutation` — that queue would block every
+   * switch and capture for the whole wait. They borrow `busyByProvider`
+   * instead, which is what actually excludes concurrent work per provider.
+   */
+  setLoginBusy(provider: CliProvider, key: string | null): void;
   dismissOperationError(): void;
   dismissSwitchWarnings(): void;
 }
@@ -233,6 +240,8 @@ export const useCliAccountStore = create<CliAccountStoreState>((set, get) => {
         setBusy(provider, null);
       }
     },
+
+    setLoginBusy: (provider, key) => setBusy(provider, key),
 
     dismissOperationError: () => set({ operationError: null }),
     dismissSwitchWarnings: () =>

@@ -1,12 +1,14 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import type { ProfileUsage, WindowStat } from "../../lib/ipc";
 import {
   PROVIDER_ORDER,
+  addAccountLabel,
   canSwitchCliAccount,
   cliAccountMessage,
   executeCliAccountSwitch,
   liveForProvider,
+  loginRemainingLabel,
   runningAgentCounts,
   runningAgentPaneDetails,
   switchWarningText,
@@ -22,7 +24,9 @@ import {
   usageBarColor,
   usageColor,
 } from "../../lib/accountRows";
+import { CliLoginProgress } from "../common/CliLoginProgress";
 import { useCliAccountStore } from "../../stores/cliAccountStore";
+import { useCliLoginStore } from "../../stores/cliLoginStore";
 import { usePaneMetadataStore } from "../../stores/paneMetadataStore";
 import { useUsageStore } from "../../stores/usageStore";
 
@@ -389,9 +393,33 @@ function Footer({ onOpenUsageSettings }: { onOpenUsageSettings: () => void }) {
   const live = useCliAccountStore((state) => state.live);
   const capture = useCliAccountStore((state) => state.capture);
   const busyByProvider = useCliAccountStore((state) => state.busyByProvider);
+  const loginByProvider = useCliLoginStore((state) => state.byProvider);
+  const startLogin = useCliLoginStore((state) => state.start);
+  const [addMenuOpen, setAddMenuOpen] = useState(false);
+  const [nowMs, setNowMs] = useState(() => Date.now());
+
   const capturable = PROVIDER_ORDER.filter((provider) => liveForProvider(live, provider)?.present);
+  const captureBusy = PROVIDER_ORDER.some(
+    (provider) => busyByProvider[provider] === `capture:${provider}`,
+  );
   const busy = PROVIDER_ORDER.some((provider) => busyByProvider[provider] !== null);
   const canCapture = capturable.length > 0 && !busy;
+  // Adding an account does not need a live login — that is the whole point of
+  // the button, so it is never gated on `capturable`.
+  const loginProvider = PROVIDER_ORDER.find((provider) => loginByProvider[provider]) ?? null;
+  const loginEntry = loginProvider ? loginByProvider[loginProvider] : null;
+  const loginInProgress = loginEntry !== null;
+
+  useEffect(() => {
+    if (loginEntry?.stage !== "waiting") return;
+    setNowMs(Date.now());
+    const timer = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [loginEntry?.stage]);
+
+  useEffect(() => {
+    if (loginInProgress) setAddMenuOpen(false);
+  }, [loginInProgress]);
 
   const handleCapture = async () => {
     for (const provider of capturable) {
@@ -402,25 +430,103 @@ function Footer({ onOpenUsageSettings }: { onOpenUsageSettings: () => void }) {
   return (
     <footer
       style={{
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "space-between",
-        gap: "var(--cmux-space-4)",
+        display: "grid",
+        gap: "var(--cmux-space-2)",
         padding: "var(--cmux-space-3) var(--cmux-space-5)",
         borderTop: "1px solid var(--cmux-border-hairline)",
       }}
     >
-      <button
-        type="button"
-        onClick={handleCapture}
-        disabled={!canCapture}
-        style={{ ...panelButtonStyle, opacity: canCapture ? 1 : 0.6 }}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: "var(--cmux-space-4)",
+        }}
       >
-        {busy ? "登録中…" : capturable.length > 0 ? "+ 現在のログインを登録" : "先にログインが必要です"}
-      </button>
-      <button type="button" onClick={onOpenUsageSettings} style={panelButtonStyle}>
-        ⚙ 詳細
-      </button>
+        <div style={{ position: "relative", display: "flex", gap: "var(--cmux-space-2)" }}>
+          <button
+            type="button"
+            onClick={() => setAddMenuOpen((open) => !open)}
+            disabled={loginInProgress}
+            aria-haspopup="menu"
+            aria-expanded={addMenuOpen}
+            style={{ ...panelButtonStyle, opacity: loginInProgress ? 0.6 : 1 }}
+          >
+            {loginEntry
+              ? loginEntry.stage === "waiting"
+                ? `ログイン待機中… ${loginRemainingLabel(loginEntry.startedAt, nowMs)}`
+                : loginEntry.stage === "capturing"
+                  ? "登録中…"
+                  : "ログイン画面を開いています…"
+              : "+ アカウントを追加"}
+          </button>
+          {/* The abort control comes from the shared component so both panels
+              agree on when it is offered; the stage text is suppressed because
+              the button beside it already shows it. */}
+          {loginProvider && <CliLoginProgress provider={loginProvider} compact />}
+          {addMenuOpen && !loginInProgress && (
+            <div
+              role="menu"
+              aria-label="追加するアカウントの種類"
+              style={{
+                position: "absolute",
+                bottom: "100%",
+                left: 0,
+                marginBottom: 4,
+                display: "grid",
+                gap: 2,
+                padding: 4,
+                minWidth: 200,
+                background: "var(--cmux-popover)",
+                border: "1px solid var(--cmux-border)",
+                borderRadius: "var(--cmux-radius-sm)",
+                boxShadow: "var(--cmux-shadow-popover)",
+                zIndex: 110,
+              }}
+            >
+              {PROVIDER_ORDER.map((provider) => (
+                <button
+                  key={provider}
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setAddMenuOpen(false);
+                    void startLogin(provider, "new");
+                  }}
+                  style={{
+                    ...panelButtonStyle,
+                    border: 0,
+                    background: "none",
+                    textAlign: "left",
+                  }}
+                >
+                  {addAccountLabel(provider)}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+        <button type="button" onClick={onOpenUsageSettings} style={panelButtonStyle}>
+          ⚙ 詳細
+        </button>
+      </div>
+
+      <div style={{ display: "flex" }}>
+        <button
+          type="button"
+          onClick={handleCapture}
+          disabled={!canCapture}
+          title="CLIで既にログイン済みのアカウントを取り込みます"
+          style={{ ...panelButtonStyle, opacity: canCapture ? 1 : 0.6 }}
+        >
+          {captureBusy
+            ? "登録中…"
+            : capturable.length > 0
+              ? "+ 現在のログインを登録"
+              : "先にログインが必要です"}
+        </button>
+      </div>
     </footer>
   );
 }

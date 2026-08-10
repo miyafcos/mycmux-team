@@ -755,7 +755,10 @@ export function toConfig(ws: Workspace, _agentMappings: Record<string, AgentSess
   const metaState = usePaneMetadataStore.getState().metadata;
   const paneEntries = ws.panes
     .map((pane) => {
-      const persistedTabs = pane.tabs.filter((tab) => tab.type !== "browser");
+      // Ephemeral tabs (isolated CLI login) are dropped alongside browser tabs:
+      // their staging directory is gone by the next launch, so restoring them
+      // would revive a terminal pointed at nothing.
+      const persistedTabs = pane.tabs.filter((tab) => tab.type !== "browser" && !tab.ephemeral);
       if (persistedTabs.length === 0) return null;
       const terminalTabs = persistedTabs.filter((tab) => tab.type !== "online");
       if (terminalTabs.length === 0) return null;

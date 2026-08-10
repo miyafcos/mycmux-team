@@ -1,0 +1,7 @@
+//! Unit tests for the AI log indexer. Populated in `fixtures.rs` /
+//! `parse_tests.rs` once the module compiles.
+
+mod fixtures;
+mod index_tests;
+mod parse_tests;
+mod price_tests;

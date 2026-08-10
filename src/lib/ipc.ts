@@ -71,6 +71,12 @@ interface ResolveCliAccountOrphanArgs {
   action: CliOrphanAction;
   label?: string;
 }
+interface BeginCliLoginArgs {
+  provider: CliProvider;
+  mode: CliLoginMode;
+  expectedProfileId?: string;
+}
+interface LoginIdArgs { loginId: string }
 
 const sessionCreateTails = new Map<string, Promise<void>>();
 
@@ -1013,4 +1019,74 @@ export async function resolveCliAccountOrphan(
     action,
     label,
   } satisfies ResolveCliAccountOrphanArgs);
+}
+
+// ─── Isolated CLI login (add an account without touching the live one) ───────
+
+export type CliLoginMode = "new" | "reauth";
+
+/**
+ * How the backend wants the CLI launched. The command, arguments and
+ * environment are decided in Rust because the isolation guarantee rests
+ * entirely on the config-directory override — never rebuild them here, pass
+ * them through to the pane as they arrive.
+ */
+export interface CliLoginSession {
+  login_id: string;
+  provider: CliProvider;
+  command: string;
+  args: string[];
+  env: Record<string, string>;
+  staging_dir: string;
+}
+
+export interface CliLoginSessionStatus {
+  login_id: string;
+  provider: CliProvider;
+  mode: string;
+  staging_dir: string;
+  elapsed_secs: number;
+}
+
+export interface CliLoginCompletedPayload {
+  login_id: string;
+  profile: CliAccountProfile;
+  updated_existing: boolean;
+}
+
+export interface CliLoginFailedPayload {
+  login_id: string;
+  code: string;
+}
+
+export interface CliLoginIdentityMismatchPayload {
+  login_id: string;
+  email: string | null;
+}
+
+export const CLI_LOGIN_COMPLETED_EVENT = "mycmux://cli-login-completed";
+export const CLI_LOGIN_FAILED_EVENT = "mycmux://cli-login-failed";
+export const CLI_LOGIN_IDENTITY_MISMATCH_EVENT = "mycmux://cli-login-identity-mismatch";
+
+/** Rust gives up on an unfinished login after this long and emits login_timeout. */
+export const CLI_LOGIN_TIMEOUT_MS = 600_000;
+
+export async function beginCliLogin(
+  provider: CliProvider,
+  mode: CliLoginMode,
+  expectedProfileId?: string,
+): Promise<CliLoginSession> {
+  return invoke<CliLoginSession>("begin_cli_login", {
+    provider,
+    mode,
+    expectedProfileId,
+  } satisfies BeginCliLoginArgs);
+}
+
+export async function cancelCliLogin(loginId: string): Promise<void> {
+  return invoke<void>("cancel_cli_login", { loginId } satisfies LoginIdArgs);
+}
+
+export async function listCliLoginSessions(): Promise<CliLoginSessionStatus[]> {
+  return invoke<CliLoginSessionStatus[]>("list_cli_login_sessions");
 }
