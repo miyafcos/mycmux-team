@@ -44,7 +44,7 @@ export function UsageTab() {
             }}
           >
             <thead>
-              <tr style={{ background: "var(--cmux-bg-hover, rgba(127,127,127,0.08))" }}>
+              <tr style={{ background: "var(--cmux-hover)" }}>
                 <TableHeader>アカウント</TableHeader>
                 <TableHeader>5h</TableHeader>
                 <TableHeader>7d</TableHeader>

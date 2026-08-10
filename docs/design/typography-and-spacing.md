@@ -73,16 +73,38 @@ Ligatures are explicitly disabled in terminal content. Canvas uses `optimize-con
 | `TAB_BAR_HEIGHT` | 36px | Sidebar tab height |
 | `SIDEBAR_WIDTH` | 200px | Sidebar width |
 
-## xterm.js Terminal Options
+## xterm.js Terminal Options (current)
 
 ```typescript
 {
-  fontSize: 14,           // after scaling
-  fontWeight: 400,
-  fontWeightBold: 600,
-  letterSpacing: -1,      // tighter tracking
-  lineHeight: 1.0,        // no extra line spacing
-  scrollback: 5000,       // lines of scrollback buffer
-  smoothScrollDuration: 0, // instant scroll
+  fontSize: <store>,       // themeStore.fontSize (10-24, slider)
+  fontWeight: 500,
+  fontWeightBold: 700,
+  letterSpacing: 0,        // fixed; a user setting was evaluated 2026-08-11
+                           // and deferred (refit + IME composition-view risk
+                           // outweighs the gain; line height covers the need)
+  lineHeight: <store>,     // themeStore.lineHeight (1.0-1.8, default 1.35)
+  scrollback: 5000,
 }
 ```
+
+## UI Density (2026-08-11)
+
+`themeStore.uiDensity` = `"compact" | "standard" | "relaxed"` (persisted as
+`settings.ui_density`). `AppShell.themeVars` drives the tokens; "standard" is
+byte-identical to the historical static values (guarded by
+`tests/unit/uiDensity.test.ts`).
+
+| Token | compact | standard | relaxed |
+|---|---|---|---|
+| `--cmux-font-size-xs/sm/md` | 11/12/13px | 11/12/13px | 12/13/15px |
+| `--cmux-line-height-ui` | 1.25 | normal | 1.8 |
+| `--cmux-space-*` scale | ×0.85 | ×1.0 | ×1.25 |
+
+## Minimum Font Size Rule
+
+Japanese-bearing text in the UI chrome must be **≥ 11px**
+(`var(--cmux-font-size-xs)`). Latin/digit-only badges may use 10px; 9px is
+banned everywhere (enforced by `tests/unit/uiQualityTokens.test.ts`).
+Rationale: Windows renders Japanese below 11px with visibly degraded quality
+(docs/plans/2026-08-04-ui-uplift-plan.md).

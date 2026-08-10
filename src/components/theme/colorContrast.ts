@@ -22,6 +22,11 @@ function normalizeHex(hex: string): string {
   throw new Error(`colorContrast: expected a #rrggbb hex color, got "${hex}"`);
 }
 
+/** Whether `value` is a literal #rgb/#rrggbb color these helpers can measure. */
+export function isHexColor(value: string): boolean {
+  return HEX6_RE.test(value) || HEX3_RE.test(value);
+}
+
 function hexToRgb(hex: string): [number, number, number] {
   const normalized = normalizeHex(hex);
   return [
@@ -157,4 +162,25 @@ export function applyContrastFloor(
 
   const result = mixHex(color, toward, hi);
   return contrastRatio(result, against) >= target ? result : normalizeHex(toward);
+}
+
+/**
+ * The accent color as it must look when used for *text*: lifted toward the
+ * theme's main text color only as far as the AA body floor needs. Fills,
+ * borders and carets keep the authored accent — only glyphs need the floor.
+ *
+ * A user color tweak can store a non-hex value (rgba() is accepted there), so
+ * unmeasurable input is returned untouched rather than thrown on: this runs
+ * during render of the app chrome.
+ */
+export function resolveAccentTextColor(
+  accent: string,
+  text: string,
+  background: string,
+  target: number = DEFAULT_CONTRAST_TARGET,
+): string {
+  if (!isHexColor(accent) || !isHexColor(text) || !isHexColor(background)) {
+    return accent;
+  }
+  return applyContrastFloor(accent, text, background, target);
 }

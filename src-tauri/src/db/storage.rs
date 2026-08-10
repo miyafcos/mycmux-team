@@ -168,6 +168,10 @@ fn default_line_height() -> f32 {
     1.35
 }
 
+fn default_ui_density() -> String {
+    "standard".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
     pub font_size: u16,
@@ -178,6 +182,10 @@ pub struct AppSettings {
     pub theme_id: String,
     #[serde(default = "default_theme_tweaks")]
     pub theme_tweaks: serde_json::Value,
+    /// UI chrome density ("compact" | "standard" | "relaxed"). Validated on
+    /// the frontend (normalizeUiDensity); stored as an opaque string here.
+    #[serde(default = "default_ui_density")]
+    pub ui_density: String,
     #[serde(default)]
     pub keybindings: HashMap<String, String>,
     /// When true, persistence is triggered by Zustand subscribers + debounce
@@ -204,6 +212,7 @@ impl Default for AppSettings {
             font_family: default_font_family(),
             theme_id: "yoru-cafe".to_string(),
             theme_tweaks: default_theme_tweaks(),
+            ui_density: default_ui_density(),
             keybindings: HashMap::new(),
             dirty_save_mode: true,
             osc7_tracking_enabled: true,
@@ -529,6 +538,14 @@ mod tests {
             serde_json::from_str(r#"{"font_size":14,"theme_id":"yoru-cafe"}"#).unwrap();
 
         assert_eq!(settings.line_height, 1.35);
+    }
+
+    #[test]
+    fn app_settings_missing_ui_density_uses_default() {
+        let settings: AppSettings =
+            serde_json::from_str(r#"{"font_size":14,"theme_id":"yoru-cafe"}"#).unwrap();
+
+        assert_eq!(settings.ui_density, "standard");
     }
 
     #[test]

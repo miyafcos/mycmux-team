@@ -1,4 +1,4 @@
-﻿import { memo, useEffect, useRef, useState, useCallback } from "react";
+﻿import { memo, useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
@@ -78,6 +78,7 @@ import {
   stripTerminalMouseModeControlSequencesForSession,
 } from "./terminalMouseInputFilter";
 import { HTTP_LINK_REGEX, registerArtifactLinkProvider } from "./terminalLinkProvider";
+import { ANSI_KEYS, withAnsiContrastFloor } from "./terminalThemeColors";
 import { buildLaunchRequest, type TerminalLaunchParams } from "./terminalLaunchParams";
 import { TerminalAckCoalescer } from "../../lib/terminalAckCoalescer";
 import {
@@ -177,18 +178,15 @@ function queueTerminalVisibilityUpdate(sessionId: string, visible: boolean): voi
     });
 }
 
-const ANSI_KEYS: (keyof ITheme)[] = [
-  "black", "red", "green", "yellow", "blue", "magenta", "cyan", "white",
-  "brightBlack", "brightRed", "brightGreen", "brightYellow",
-  "brightBlue", "brightMagenta", "brightCyan", "brightWhite",
-];
-
-function buildThemeFromConfig(cfg: { background: string; foreground: string; ansi: string[] }): ITheme {
+function buildThemeFromConfig(
+  cfg: { background: string; foreground: string; ansi: string[] },
+  selectionBackground: string | undefined,
+): ITheme {
   const theme: ITheme = {
     background: cfg.background,
     foreground: cfg.foreground,
     cursor: cfg.foreground,
-    selectionBackground: "#404040",
+    selectionBackground,
   };
   for (let i = 0; i < ANSI_KEYS.length && i < cfg.ansi.length; i++) {
     (theme as Record<string, string>)[ANSI_KEYS[i] as string] = cfg.ansi[i];
@@ -219,6 +217,13 @@ function withTerminalOpacity(theme: ITheme, opacity: number, mediaActive: boolea
     ...theme,
     background: mediaActive ? "rgba(0, 0, 0, 0)" : colorWithOpacity(theme.background, opacity),
   };
+}
+
+// The single place an ITheme is prepared for xterm. Every path that assigns
+// options.theme goes through here so the wallpaper-mode ANSI floor (which the
+// disabled minimumContrastRatio no longer provides) can never be skipped.
+function resolveTerminalTheme(theme: ITheme, opacity: number, mediaActive: boolean): ITheme {
+  return withTerminalOpacity(withAnsiContrastFloor(theme, mediaActive), opacity, mediaActive);
 }
 
 // xterm's minimumContrastRatio only works against an opaque, known background.
@@ -555,7 +560,10 @@ function ensureConfigLoaded(): Promise<void> {
       const scaled = rawSize < 12 ? Math.round(rawSize * 1.6) : rawSize;
       const fontSize = Math.max(14, scaled);
       cachedConfig = {
-        theme: buildThemeFromConfig(cfg),
+        theme: buildThemeFromConfig(
+          cfg,
+          useThemeStore.getState().theme.terminal.selectionBackground,
+        ),
         fontSize,
         fontFamily: `'${cfg.font_family}', monospace`,
         windowsBuildNumber: cfg.windows_build_number,
@@ -635,7 +643,7 @@ export default memo(function XTermWrapper({
   useEffect(() => {
     if (!termRef.current) return;
     bumpPaintStat("settings", sessionId);
-    termRef.current.options.theme = withTerminalOpacity(storeTheme.terminal, terminalOpacity, mediaBackgroundActive);
+    termRef.current.options.theme = resolveTerminalTheme(storeTheme.terminal, terminalOpacity, mediaBackgroundActive);
     termRef.current.options.minimumContrastRatio = minContrastFor(mediaBackgroundActive);
     termRef.current.options.fontSize = storeFontSize;
     termRef.current.options.fontFamily = storeFontFamily;
@@ -2059,7 +2067,7 @@ export default memo(function XTermWrapper({
       fitAddonRef.current = cached.fitAddon;
       searchAddonRef.current = cached.searchAddon;
       lastSynchronizedScrollbackEnd = cached.scrollbackEnd ?? 0;
-      cached.term.options.theme = withTerminalOpacity(storeTheme.terminal, terminalOpacity, mediaBackgroundActive);
+      cached.term.options.theme = resolveTerminalTheme(storeTheme.terminal, terminalOpacity, mediaBackgroundActive);
       cached.term.options.minimumContrastRatio = minContrastFor(mediaBackgroundActive);
       cached.term.options.fontSize = storeFontSize;
       cached.term.options.fontFamily = storeFontFamily;
@@ -2108,7 +2116,7 @@ export default memo(function XTermWrapper({
     async function init(): Promise<void> {
       if (disposed) return;
       const cfg = cachedConfig;
-      const initTheme = withTerminalOpacity(theme ?? storeTheme.terminal, terminalOpacity, mediaBackgroundActive);
+      const initTheme = resolveTerminalTheme(theme ?? storeTheme.terminal, terminalOpacity, mediaBackgroundActive);
       const baseFontSize = fontSize ?? storeFontSize ?? cfg?.fontSize ?? 14;
       const baseFontFamily = fontFamily ?? storeFontFamily ?? cfg?.fontFamily ?? DEFAULT_TERMINAL_FONT_FAMILY;
       const initFontSize = baseFontSize;
@@ -2272,15 +2280,28 @@ export default memo(function XTermWrapper({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
 
+  const searchDecorations = useMemo(() => {
+    const match = storeTheme.terminal.selectionBackground;
+    const active = storeTheme.chrome.accent;
+    return {
+      matchBackground: match,
+      matchBorder: active,
+      matchOverviewRuler: active,
+      activeMatchBackground: active,
+      activeMatchBorder: active,
+      activeMatchColorOverviewRuler: active,
+    };
+  }, [storeTheme]);
+
   const handleSearchChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const val = e.target.value;
     setSearchQuery(val);
     if (val && searchAddonRef.current) {
-      searchAddonRef.current.findNext(val, { decorations: { matchBackground: '#404040', matchBorder: '#89b4fa', matchOverviewRuler: '#89b4fa', activeMatchBackground: '#89b4fa', activeMatchBorder: '#89b4fa', activeMatchColorOverviewRuler: '#89b4fa' } });
+      searchAddonRef.current.findNext(val, { decorations: searchDecorations });
     } else if (searchAddonRef.current) {
       searchAddonRef.current.clearDecorations();
     }
-  }, []);
+  }, [searchDecorations]);
 
   const handleSearchKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Enter") {

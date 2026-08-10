@@ -608,7 +608,8 @@ fn smoke_real_claude_project() {
             "mixedSessions": models.mixed_sessions,
             "totalSessions": models.total_sessions,
             "handoffs": models.handoffs,
-            "workTags": models.by_work_tag.iter().map(|row| &row.work_tag).collect::<Vec<_>>(),
+            "byWorkTag": models.by_work_tag,
+            "overlapping": models.overlapping,
             "unpricedModels": models.unpriced_models,
         }))
         .unwrap()

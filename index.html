@@ -11,13 +11,50 @@
         height: 100%;
         margin: 0;
         overflow: hidden;
-        background: #0a0a0a;
-        color: #ededed;
+        background: var(--cmux-boot-bg, #0a0a0a);
+        color: var(--cmux-boot-fg, #ededed);
       }
     </style>
     <title>mycmux</title>
   </head>
   <body>
+    <script>
+      // Paint the last known chrome ground before the React bundle loads —
+      // otherwise every launch flashes the dark default, which is jarring on a
+      // light theme. The value is written by AppShell (key "mycmux-boot-chrome")
+      // and is only ever validated and assigned to style properties, never
+      // inserted as markup.
+      (function () {
+        var background = "#0a0a0a";
+        var foreground = "#ededed";
+        var scheme = "dark";
+        try {
+          var raw = window.localStorage.getItem("mycmux-boot-chrome");
+          var saved = raw ? JSON.parse(raw) : null;
+          if (saved && saved.colorScheme === "light") {
+            scheme = "light";
+            foreground = "#1a1a1a";
+          }
+          if (
+            saved
+            && typeof saved.background === "string"
+            && /^(#[0-9a-fA-F]{3,8}|rgba?\([0-9.,%\s]+\))$/.test(saved.background.trim())
+          ) {
+            background = saved.background.trim();
+          }
+        } catch (error) {
+          // Unreadable or corrupt entry: keep the built-in dark ground.
+        }
+        var root = document.documentElement;
+        root.style.setProperty("--cmux-boot-bg", background);
+        root.style.setProperty("--cmux-boot-fg", foreground);
+        root.style.background = background;
+        root.style.colorScheme = scheme;
+        if (document.body) {
+          document.body.style.background = background;
+        }
+      })();
+    </script>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

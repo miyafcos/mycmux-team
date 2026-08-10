@@ -1,6 +1,7 @@
 import { useThemeStore } from "../../../stores/themeStore";
 import { useSettingsStore } from "../../../stores/settingsStore";
 import { getTheme } from "../../theme/themeDefinitions";
+import { ThemePicker } from "../../theme/ThemePicker";
 import { ThemeTweakPanel } from "../../theme/ThemeTweakPanel";
 import { checkboxLabelStyle, sectionHeadingStyle } from "../tabStyles";
 
@@ -64,6 +65,7 @@ export function AppearanceTab() {
       </div>
       <div style={{ flex: 1, minHeight: 0 }}>
         <ThemeTweakPanel
+          topSlot={<ThemePicker />}
           baseTheme={baseTheme}
           themeTweaks={themeTweaks}
           changedCount={changedCount}

@@ -46,7 +46,7 @@ const NotificationItem = memo(function NotificationItem({
         <span key={`${notification.kind}-${notification.count}`} className="cmux-badge-pop" style={{
           background: notification.kind === "waiting" ? "var(--status-waiting)" : "var(--status-done)",
           color: notification.kind === "waiting" ? "var(--cmux-on-waiting)" : "var(--cmux-on-done)",
-          fontSize: 9,
+          fontSize: 10,
           fontWeight: "bold",
           borderRadius: "50%",
           width: 16,

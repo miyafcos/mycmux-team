@@ -77,6 +77,55 @@ describe("normalizeLineHeight", () => {
   });
 });
 
+describe("setTheme / restoreThemeSnapshot", () => {
+  const cleanState = () => {
+    useThemeStore.getState().hydrateSettings({ themeId: "mayonaka", themeTweaks: undefined });
+    useThemeStore.setState({ previousThemeSnapshot: null });
+  };
+
+  it("switches cleanly: drops color tweaks, keeps background tweaks", () => {
+    cleanState();
+    useThemeStore.getState().setThemeTweakColor("chrome.accent", "#ff0000");
+    useThemeStore.getState().setThemeBackground({ panelOpacity: 0.5 });
+
+    useThemeStore.getState().setTheme("kyokuya");
+
+    const state = useThemeStore.getState();
+    expect(state.themeId).toBe("kyokuya");
+    expect(state.themeTweaks.colors).toEqual({});
+    expect(state.themeTweaks.background.panelOpacity).toBe(0.5);
+  });
+
+  it("round-trips the pre-switch theme and tweaks via the snapshot", () => {
+    cleanState();
+    useThemeStore.getState().setThemeTweakColor("chrome.accent", "#ff0000");
+
+    useThemeStore.getState().setTheme("asanagi");
+    expect(useThemeStore.getState().previousThemeSnapshot?.themeId).toBe("mayonaka");
+
+    useThemeStore.getState().restoreThemeSnapshot();
+
+    const state = useThemeStore.getState();
+    expect(state.themeId).toBe("mayonaka");
+    expect(state.themeTweaks.colors["chrome.accent"]).toBe("#ff0000");
+    expect(state.theme.chrome.accent).toBe("#ff0000");
+    expect(state.previousThemeSnapshot).toBeNull();
+  });
+
+  it("restore without a snapshot is a no-op", () => {
+    cleanState();
+    const before = useThemeStore.getState().themeId;
+    useThemeStore.getState().restoreThemeSnapshot();
+    expect(useThemeStore.getState().themeId).toBe(before);
+  });
+
+  it("falls back to the default theme for unknown ids", () => {
+    cleanState();
+    useThemeStore.getState().setTheme("no-such-theme");
+    expect(useThemeStore.getState().themeId).toBe("mayonaka");
+  });
+});
+
 describe("terminal font presets", () => {
   it.each([
     ["udev-gothic", "'UDEV Gothic NF', 'UDEV Gothic', 'BIZ UDGothic', 'MS Gothic', monospace"],

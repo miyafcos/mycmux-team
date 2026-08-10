@@ -11,6 +11,10 @@
 //! happens while a profile is active silently rots its snapshot. This watcher
 //! re-captures whenever the live file changes, so the active profile's stored
 //! copy is never more than one poll behind.
+//!
+//! The same tick also auto-registers a live login that belongs to no profile
+//! yet (e.g. `claude login` / `codex login` run outside the app), so the
+//! account list needs no manual "register current login" step.
 
 use std::{
     collections::HashMap,
@@ -34,9 +38,12 @@ pub enum SyncOutcome {
     Unchanged,
     /// No live login present (logged out, or the file is not readable yet).
     NoLiveLogin,
-    /// Live login belongs to no registered profile. Deliberately *not* stored:
-    /// creating profiles is a user-initiated action ("register current login").
-    Unregistered,
+    /// Live login exposes no identity key, so it can neither be matched to a
+    /// profile nor registered as one. Nothing to do until the CLI writes one.
+    NoIdentity,
+    /// Live login belonged to no profile and was auto-registered under this
+    /// freshly created profile id.
+    Registered(String),
     /// Snapshot rewritten for this profile id.
     Resynced(String),
     /// Capture or save failed; the stamp is left untouched so the next tick retries.
@@ -146,7 +153,19 @@ pub fn sync_provider(
     };
     let Some(profile_id) = resync_target(provider, live.identity_key.as_deref(), &file.profiles)
     else {
-        return SyncOutcome::Unregistered;
+        if live.identity_key.is_none() {
+            return SyncOutcome::NoIdentity;
+        }
+        // A live login with no matching profile: register it in place. Must go
+        // through `capture_account` (not `capture_resolved`) — the caller of
+        // this tick already holds the non-reentrant mutation guard.
+        return match super::capture_account(base, claude_paths, codex_paths, provider, None) {
+            Ok(profile) => SyncOutcome::Registered(profile.id),
+            Err(error) => {
+                stamps.forget(&watched);
+                SyncOutcome::Failed(error)
+            }
+        };
     };
 
     let stored = match provider {
@@ -215,11 +234,19 @@ pub fn start_live_sync(base: PathBuf) {
                             "live snapshot sync failed ({provider:?}): {error}"
                         );
                     }
+                    // Rare enough to log, and the one outcome that changes the
+                    // account list without a user action.
+                    SyncOutcome::Registered(profile_id) => {
+                        crate::diag_warn!(
+                            "cli-accounts",
+                            "auto-registered live login ({provider:?}) as {profile_id}"
+                        );
+                    }
                     // Success is the common case and would thrash the 1MB log.
                     SyncOutcome::Resynced(_)
                     | SyncOutcome::Unchanged
                     | SyncOutcome::NoLiveLogin
-                    | SyncOutcome::Unregistered => {}
+                    | SyncOutcome::NoIdentity => {}
                 }
             }
         }
@@ -300,6 +327,38 @@ mod tests {
         assert!(stamps.changed(&[path.as_path()]));
         stamps.forget(&[path.as_path()]);
         assert!(stamps.changed(&[path.as_path()]), "forgotten stamp is seen again");
+    }
+
+    #[test]
+    fn unregistered_live_login_is_auto_registered() {
+        let dir = tempdir().unwrap();
+        let claude_paths = claude::ClaudePaths {
+            credentials: dir.path().join("credentials.json"),
+            claude_json: dir.path().join("claude.json"),
+        };
+        let codex_paths = codex::CodexPaths {
+            auth: dir.path().join("auth.json"),
+        };
+        fs::write(&claude_paths.credentials, CREDS).unwrap();
+        fs::write(&claude_paths.claude_json, CLAUDE_JSON).unwrap();
+        registry::save(dir.path(), &registry::CliAccountsFile::default()).unwrap();
+
+        let mut stamps = FileStamps::new();
+        let outcome = sync_provider(
+            dir.path(),
+            CliProvider::Claude,
+            &claude_paths,
+            &codex_paths,
+            &mut stamps,
+        );
+        let SyncOutcome::Registered(profile_id) = outcome else {
+            panic!("expected auto-registration, got {outcome:?}");
+        };
+        let profiles = registry::load(dir.path()).unwrap().profiles;
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(profiles[0].id, profile_id);
+        assert_eq!(profiles[0].provider, CliProvider::Claude);
+        assert_eq!(profiles[0].identity_key, "claude-account-a");
     }
 
     #[test]

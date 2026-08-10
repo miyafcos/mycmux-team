@@ -45,3 +45,14 @@ Phase 1〜4 (v0.21.7〜v0.21.10) 完了後の実査で確定した残差分。
 - **Phase B: 署名の確立** — エージェント種の色言語 (Claude橙/Codex青/Hybrid緑 = CrsmPalette の KIND_COLORS) をペインタブ下線・作業中ドット・ペイン枠へ一貫展開。「どのペインでどのエージェントか」が色で分かる mycmux 固有の見た目
 - 額縁 (xterm padding+角丸) は保留 — レイアウト契約検証が必要になった時点で単独フェーズ化
 - 制約は第1弾と同じ (コントラスト4.5:1テスト維持 / 色プリセット値は不変・派生計算のみ / 日本語11px床)
+
+## 2026-08-11 追記 (テーマ・識字性・密度の実装状況)
+
+- テーマピッカー復活 (ThemePicker: おすすめ6+全30グループ展開)・識字性修正
+  (--cmux-yellow 定義 / --cmux-accent-text 派生 / xterm 選択・検索ハイライトの
+  テーマ追従 / 壁紙ON時 ANSI 下限 / 起動黒フラッシュ解消) を実装済み
+- タイポトークンは uiDensity (compact/standard/relaxed) の実行時駆動に昇格。
+  standard は従来値と完全同値 (tests/unit/uiDensity.test.ts で固定)
+- 日本語11px床は tests/unit/uiQualityTokens.test.ts で機械化
+- letterSpacing のユーザー設定化は見送り (fit 再計算+IME composition-view 固定
+  との検証コストに対し行間設定で代替可能なため)。再検討時は単独フェーズで

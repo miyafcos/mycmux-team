@@ -51,7 +51,7 @@ function chipStyle(active: boolean): CSSProperties {
     border: active ? "1px solid var(--cmux-accent)" : "1px solid var(--cmux-border)",
     borderRadius: 7,
     background: active ? "var(--cmux-selected)" : "transparent",
-    color: active ? "var(--cmux-accent)" : "var(--cmux-text-secondary)",
+    color: active ? "var(--cmux-accent-text)" : "var(--cmux-text-secondary)",
     cursor: "pointer",
     padding: "0 10px",
     fontSize: 11,

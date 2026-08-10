@@ -17,6 +17,7 @@ import { ThemeBackgroundPanel } from "./ThemeBackgroundPanel";
 import { ThemeFontSettings } from "./ThemeFontSettings";
 
 interface ThemeTweakPanelProps {
+  topSlot?: React.ReactNode;
   baseTheme: ThemeDefinition;
   themeTweaks: ThemeTweaks;
   changedCount: number;
@@ -194,7 +195,7 @@ function ColorTweakRow({
             {field.label}
           </span>
           {changed && (
-            <span style={{ color: "var(--cmux-accent)", fontSize: 11, fontWeight: 700, flexShrink: 0 }}>
+            <span style={{ color: "var(--cmux-accent-text)", fontSize: 11, fontWeight: 700, flexShrink: 0 }}>
               変更
             </span>
           )}
@@ -245,7 +246,7 @@ function ColorTweakRow({
         <div
           style={{
             marginTop: 2,
-            fontSize: 9,
+            fontSize: 10,
             color: "var(--cmux-text-dim)",
             overflow: "hidden",
             textOverflow: "ellipsis",
@@ -306,6 +307,7 @@ function AdvancedColorRow({
 }
 
 export function ThemeTweakPanel({
+  topSlot,
   baseTheme,
   themeTweaks,
   changedCount,
@@ -337,6 +339,7 @@ export function ThemeTweakPanel({
 
   return (
     <div style={{ height: "100%", overflowY: "auto", padding: 18 }}>
+      {topSlot}
       <ThemeFontSettings
         fontSize={fontSize}
         fontFamily={fontFamily}
@@ -356,7 +359,7 @@ export function ThemeTweakPanel({
             gap: 10,
           }}
         >
-          <div style={{ fontSize: 12, fontWeight: 700 }}>外観プリセット</div>
+          <div style={{ fontSize: 12, fontWeight: 700 }}>選んだテーマの微調整</div>
           <div
             style={{
               display: "flex",
@@ -391,7 +394,7 @@ export function ThemeTweakPanel({
                       border: "none",
                       borderRadius: 5,
                       background: active ? "var(--cmux-selected)" : "transparent",
-                      color: active ? "var(--cmux-accent)" : "var(--cmux-text-secondary)",
+                      color: active ? "var(--cmux-accent-text)" : "var(--cmux-text-secondary)",
                       cursor: "pointer",
                       fontSize: 11,
                       fontWeight: active ? 700 : 500,

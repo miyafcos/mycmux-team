@@ -836,6 +836,7 @@ export interface AppSettings {
   theme_id: string;
   theme_tweaks?: ThemeTweaks;
   keybindings?: Record<string, string>;
+  ui_density?: string;
 }
 
 export interface PersistentData {

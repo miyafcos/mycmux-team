@@ -94,12 +94,13 @@ describe("panel layout", () => {
     expect(panelSource).toContain("title={resetHint(stat)}");
   });
 
-  it("offers capture and a link to the detail tab in the footer", () => {
-    expect(panelSource).toContain("+ 現在のログインを登録");
-    expect(panelSource).toContain("先にログインが必要です");
+  it("links to the detail tab and leaves capture to the backend watcher", () => {
     expect(panelSource).toContain("⚙ 詳細");
     expect(panelSource).toContain("onOpenUsageSettings");
-    expect(panelSource).toContain("disabled={!canCapture}");
+    // Outside logins are auto-registered by live_sync, so the footer has no
+    // manual capture button (the settings panel keeps its update variant).
+    expect(panelSource).not.toContain("+ 現在のログインを登録");
+    expect(panelSource).not.toContain("先にログインが必要です");
   });
 
   it("confirms before switching and keeps the warning wording", () => {
@@ -148,11 +149,12 @@ describe("add account entry points", () => {
     expect(panelSource).not.toContain("onContextMenu");
   });
 
-  it("keeps capture as a separate action and explains what it is for", () => {
-    expect(footerSource).toContain("+ 現在のログインを登録");
-    expect(footerSource).toContain('title="CLIで既にログイン済みのアカウントを取り込みます"');
-    // The capture label must not read "登録中…" while a *login* holds the provider.
-    expect(footerSource).toContain("busyByProvider[provider] === `capture:${provider}`");
+  it("has no manual capture action; registration is the watcher's job", () => {
+    expect(footerSource).not.toContain("現在のログインを登録");
+    expect(footerSource).not.toContain("capture(");
+    // An unregistered row can still be captured in place while the watcher
+    // has not caught up yet.
+    expect(panelSource).toContain("await capture(row.provider)");
   });
 
   it("offers add buttons and an in-place relogin in the settings panel", () => {

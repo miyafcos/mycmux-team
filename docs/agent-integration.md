@@ -87,6 +87,12 @@ spawn したタブの完了・生存は画面でなく**実体を3層でポー�
 - `pane.read` (v0.18.0 以降の裏起動タブはレンダラ非生成で常に空)
 - サブエージェントの自己申告 (「保存しました」) を成果と見なさない
 
+## 配布物: session-dispatch スキル (Claude Code 用)
+
+本契約を Claude Code 側で実運用するスキルの移植版を `examples/claude-skills/session-dispatch/`
+に同梱している (spec 生成 → 裏タブ spawn → 台帳 → 自動検収 → 自動 close)。
+別環境へ展開するときは同フォルダの README.md に従って `~/.claude/skills/` へコピーする。
+
 ## 各エージェント側のルールの所在 (このマシン)
 
 | エージェント | ルールファイル | 該当節 |

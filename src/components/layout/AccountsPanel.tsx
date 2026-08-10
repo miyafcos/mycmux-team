@@ -7,7 +7,6 @@ import {
   canSwitchCliAccount,
   cliAccountMessage,
   executeCliAccountSwitch,
-  liveForProvider,
   loginRemainingLabel,
   runningAgentCounts,
   runningAgentPaneDetails,
@@ -127,7 +126,10 @@ export function AccountsPanel({
         </div>
       )}
 
-      {(fetchError || usageError || operationError || lastSwitchResult?.warnings.length) && (
+      {(fetchError ||
+        usageError ||
+        operationError ||
+        (lastSwitchResult?.warnings.length ?? 0) > 0) && (
         <div
           style={{
             display: "grid",
@@ -390,22 +392,13 @@ function UsageBar({ label, stat }: { label: string; stat: WindowStat | null }) {
 }
 
 function Footer({ onOpenUsageSettings }: { onOpenUsageSettings: () => void }) {
-  const live = useCliAccountStore((state) => state.live);
-  const capture = useCliAccountStore((state) => state.capture);
-  const busyByProvider = useCliAccountStore((state) => state.busyByProvider);
   const loginByProvider = useCliLoginStore((state) => state.byProvider);
   const startLogin = useCliLoginStore((state) => state.start);
   const [addMenuOpen, setAddMenuOpen] = useState(false);
   const [nowMs, setNowMs] = useState(() => Date.now());
 
-  const capturable = PROVIDER_ORDER.filter((provider) => liveForProvider(live, provider)?.present);
-  const captureBusy = PROVIDER_ORDER.some(
-    (provider) => busyByProvider[provider] === `capture:${provider}`,
-  );
-  const busy = PROVIDER_ORDER.some((provider) => busyByProvider[provider] !== null);
-  const canCapture = capturable.length > 0 && !busy;
-  // Adding an account does not need a live login — that is the whole point of
-  // the button, so it is never gated on `capturable`.
+  // Logins made outside the app are picked up by the backend live-sync watcher
+  // and registered automatically, so the footer offers no capture button.
   const loginProvider = PROVIDER_ORDER.find((provider) => loginByProvider[provider]) ?? null;
   const loginEntry = loginProvider ? loginByProvider[loginProvider] : null;
   const loginInProgress = loginEntry !== null;
@@ -420,12 +413,6 @@ function Footer({ onOpenUsageSettings }: { onOpenUsageSettings: () => void }) {
   useEffect(() => {
     if (loginInProgress) setAddMenuOpen(false);
   }, [loginInProgress]);
-
-  const handleCapture = async () => {
-    for (const provider of capturable) {
-      await capture(provider);
-    }
-  };
 
   return (
     <footer
@@ -509,22 +496,6 @@ function Footer({ onOpenUsageSettings }: { onOpenUsageSettings: () => void }) {
         </div>
         <button type="button" onClick={onOpenUsageSettings} style={panelButtonStyle}>
           ⚙ 詳細
-        </button>
-      </div>
-
-      <div style={{ display: "flex" }}>
-        <button
-          type="button"
-          onClick={handleCapture}
-          disabled={!canCapture}
-          title="CLIで既にログイン済みのアカウントを取り込みます"
-          style={{ ...panelButtonStyle, opacity: canCapture ? 1 : 0.6 }}
-        >
-          {captureBusy
-            ? "登録中…"
-            : capturable.length > 0
-              ? "+ 現在のログインを登録"
-              : "先にログインが必要です"}
         </button>
       </div>
     </footer>

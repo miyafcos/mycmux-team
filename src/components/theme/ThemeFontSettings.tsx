@@ -2,8 +2,16 @@ import {
   FONT_SIZE_MAX,
   FONT_SIZE_MIN,
   TERMINAL_FONT_PRESETS,
+  useThemeStore,
   type TerminalFontPreset,
+  type UiDensity,
 } from "../../stores/themeStore";
+
+const UI_DENSITY_OPTIONS: Array<{ value: UiDensity; label: string; detail: string }> = [
+  { value: "compact", label: "つめる", detail: "行間と余白を絞って一覧性を上げる" },
+  { value: "standard", label: "標準", detail: "これまでどおりの表示" },
+  { value: "relaxed", label: "ゆったり", detail: "文字を一回り大きく、行間と余白を広く" },
+];
 
 interface ThemeFontSettingsProps {
   fontSize: number;
@@ -41,6 +49,58 @@ const FONT_PRESET_GROUPS: FontPresetGroup[] = [
     presetIds: ["mac-style", "ud-kyokasho", "biz-udmincho"],
   },
 ];
+
+function UiDensityPicker() {
+  const uiDensity = useThemeStore((s) => s.uiDensity);
+  const setUiDensity = useThemeStore((s) => s.setUiDensity);
+  const activeDetail = UI_DENSITY_OPTIONS.find((option) => option.value === uiDensity)?.detail;
+
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 8 }}>
+        <div style={{ fontSize: 12, color: "var(--cmux-text-secondary)" }}>画面の余白と文字の大きさ</div>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(3, 1fr)",
+            gap: 4,
+            padding: 3,
+            border: "1px solid var(--cmux-border)",
+            borderRadius: 7,
+            background: "color-mix(in srgb, var(--cmux-text) 4%, transparent)",
+          }}
+        >
+          {UI_DENSITY_OPTIONS.map((option) => {
+            const active = uiDensity === option.value;
+            return (
+              <button
+                key={option.value}
+                type="button"
+                onClick={() => setUiDensity(option.value)}
+                style={{
+                  height: 26,
+                  minWidth: 62,
+                  border: "none",
+                  borderRadius: 5,
+                  background: active ? "var(--cmux-selected)" : "transparent",
+                  color: active ? "var(--cmux-accent-text)" : "var(--cmux-text-secondary)",
+                  cursor: "pointer",
+                  fontSize: 11,
+                  fontWeight: active ? 700 : 500,
+                }}
+              >
+                {option.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+      {activeDetail ? (
+        <div style={{ fontSize: 11, color: "var(--cmux-text-tertiary)" }}>{activeDetail}</div>
+      ) : null}
+    </div>
+  );
+}
 
 function FontPresetOption({
   preset,
@@ -83,7 +143,7 @@ function FontPresetOption({
             style={{
               fontSize: 12,
               fontWeight: 700,
-              color: active ? "var(--cmux-accent)" : "var(--cmux-text)",
+              color: active ? "var(--cmux-accent-text)" : "var(--cmux-text)",
               overflow: "hidden",
               textOverflow: "ellipsis",
               whiteSpace: "nowrap",
@@ -106,7 +166,7 @@ function FontPresetOption({
           </div>
         </div>
         {active && (
-          <span style={{ flexShrink: 0, fontSize: 11, color: "var(--cmux-accent)", fontWeight: 700 }}>
+          <span style={{ flexShrink: 0, fontSize: 11, color: "var(--cmux-accent-text)", fontWeight: 700 }}>
             選択中
           </span>
         )}
@@ -214,6 +274,8 @@ export function ThemeFontSettings({
         gap: 12,
       }}
     >
+      <UiDensityPicker />
+
       <div>
         <div style={{ fontSize: 12, color: "var(--cmux-text-secondary)", marginBottom: 8 }}>
           フォントサイズ: {fontSize}px

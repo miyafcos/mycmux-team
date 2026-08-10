@@ -52,7 +52,7 @@ export function PublishProgress({
                 color: complete ? "var(--cmux-text)" : "var(--cmux-text-tertiary)",
               }}
             >
-              <span style={{ width: 12, color: complete ? "var(--cmux-accent)" : undefined }}>
+              <span style={{ width: 12, color: complete ? "var(--cmux-accent-text)" : undefined }}>
                 {complete ? "✓" : "○"}
               </span>
               <span>{step.label}</span>

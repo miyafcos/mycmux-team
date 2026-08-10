@@ -144,6 +144,29 @@ export const TERMINAL_FONT_PRESETS: TerminalFontPreset[] = [
 export const FONT_SIZE_MIN = 10;
 export const FONT_SIZE_MAX = 24;
 
+export type UiDensity = "compact" | "standard" | "relaxed";
+
+// Chrome-wide density axis, independent from the color theme. "standard" must
+// stay byte-identical to the historical static tokens in global.css — existing
+// users see no change (guarded by tests/unit/uiDensity.test.ts).
+export const UI_DENSITY_TOKENS: Record<
+  UiDensity,
+  { fontXs: string; fontSm: string; fontMd: string; lineHeightUi: string; spaceScale: number }
+> = {
+  compact: { fontXs: "11px", fontSm: "12px", fontMd: "13px", lineHeightUi: "1.25", spaceScale: 0.85 },
+  standard: { fontXs: "11px", fontSm: "12px", fontMd: "13px", lineHeightUi: "normal", spaceScale: 1 },
+  relaxed: { fontXs: "12px", fontSm: "13px", fontMd: "15px", lineHeightUi: "1.8", spaceScale: 1.25 },
+};
+
+export function normalizeUiDensity(value: unknown): UiDensity {
+  return value === "compact" || value === "relaxed" ? value : "standard";
+}
+
+export interface ThemeSnapshot {
+  themeId: string;
+  themeTweaks: ThemeTweaks;
+}
+
 interface ThemeState {
   themeId: string;
   theme: ThemeDefinition;
@@ -151,8 +174,12 @@ interface ThemeState {
   fontFamily: string;
   lineHeight: number;
   themeTweaks: ThemeTweaks;
+  previousThemeSnapshot: ThemeSnapshot | null;
+  uiDensity: UiDensity;
 
   setTheme: (id: string) => void;
+  restoreThemeSnapshot: () => void;
+  setUiDensity: (density: UiDensity) => void;
   setFontSize: (size: number) => void;
   adjustFontSize: (delta: number) => void;
   setFontFamily: (fontFamily: string) => void;
@@ -163,7 +190,7 @@ interface ThemeState {
   setThemeBackground: (background: Partial<ThemeBackgroundSettings>) => void;
   clearThemeTweakColor: (key: ThemeTweakColorKey) => void;
   resetThemeTweaks: () => void;
-  hydrateSettings: (settings: { themeId?: string; fontSize?: number; fontFamily?: unknown; lineHeight?: unknown; themeTweaks?: unknown }) => void;
+  hydrateSettings: (settings: { themeId?: string; fontSize?: number; fontFamily?: unknown; lineHeight?: unknown; themeTweaks?: unknown; uiDensity?: unknown }) => void;
 }
 
 const ALL_THEME_TWEAK_COLOR_KEYS = Array.from(
@@ -245,13 +272,20 @@ export const useThemeStore = create<ThemeState>((set) => ({
   fontFamily: DEFAULT_TERMINAL_FONT_FAMILY,
   lineHeight: 1.35,
   themeTweaks: DEFAULT_THEME_TWEAKS,
+  previousThemeSnapshot: null,
+  uiDensity: "standard",
+
+  setUiDensity: (density) => {
+    set({ uiDensity: normalizeUiDensity(density) });
+  },
 
   setTheme: (id) => {
     const nextThemeId = resolveThemeId(id);
     set((state) => {
       // Picking a theme is a clean switch: the chosen theme becomes the base
       // and the previous theme's per-key color tweaks are dropped. Background
-      // tweaks (image / opacity) are preserved.
+      // tweaks (image / opacity) are preserved. The pre-switch state is kept
+      // as a snapshot so the discard can be undone from the toast.
       const themeTweaks = normalizeThemeTweaks({
         ...state.themeTweaks,
         colors: {},
@@ -261,6 +295,26 @@ export const useThemeStore = create<ThemeState>((set) => ({
         themeId: nextThemeId,
         theme: resolveTheme(nextThemeId, themeTweaks),
         themeTweaks,
+        previousThemeSnapshot: {
+          themeId: state.themeId,
+          themeTweaks: state.themeTweaks,
+        },
+      };
+    });
+  },
+
+  restoreThemeSnapshot: () => {
+    set((state) => {
+      const snapshot = state.previousThemeSnapshot;
+      if (!snapshot) {
+        return state;
+      }
+      const themeTweaks = normalizeThemeTweaks(snapshot.themeTweaks);
+      return {
+        themeId: snapshot.themeId,
+        theme: resolveTheme(snapshot.themeId, themeTweaks),
+        themeTweaks,
+        previousThemeSnapshot: null,
       };
     });
   },
@@ -391,6 +445,7 @@ export const useThemeStore = create<ThemeState>((set) => ({
       fontFamily: nextFontFamily,
       lineHeight: nextLineHeight,
       themeTweaks,
+      uiDensity: normalizeUiDensity(settings.uiDensity),
     });
   },
 }));

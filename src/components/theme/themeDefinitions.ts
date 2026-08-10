@@ -1197,6 +1197,18 @@ export const THEMES: ThemeDefinition[] = THEME_DRAFTS
     return orderA - orderB;
   });
 
+// Curated subset shown before the full 30-theme list. Picked from measured
+// contrast (tests/unit/themeContrast.test.ts covers the floor for all themes):
+// the axes are high-contrast dark/light, low-stimulus dark, and a cool tone.
+export const RECOMMENDED_THEMES: Array<{ id: string; reason: string }> = [
+  { id: "mayonaka", reason: "くっきり見える暗色（既定）" },
+  { id: "graphite", reason: "迷ったらこれ。補助文字まで読みやすい" },
+  { id: "arctic-night", reason: "目が疲れにくい寒色の暗色" },
+  { id: "kyokuya", reason: "まぶしさを抑えた低刺激の暗色" },
+  { id: "ink-day", reason: "くっきり見える明色" },
+  { id: "asanagi", reason: "昼間・資料作業向けの明色" },
+];
+
 const THEME_ALIASES: Record<string, string> = {
   "yoru-cafe": "mayonaka",
   kokuyou: "kyokuya",

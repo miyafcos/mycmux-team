@@ -81,6 +81,7 @@ python -m pytest tests/               # sync-command allowlist 契約テスト�
 - **portable_pty は親 env を inherit する**。`MYCMUX_*` 系 env の扱いを変える時は `lib.rs` の `remove_var` と `terminal.rs::sanitize_launch_env` の多層防御を壊さないこと (v0.4.0 の全ペイン自動 resume 事故の再発防止)
 - data.json への `agent_session_id` / `agent_kind` / `claude_session_id` 保存は v0.5.6 で多層安全弁とセットに再導入済み (保存自体は現行仕様)。ただし安全弁 (`sanitize_launch_env` / `EPHEMERAL_LAUNCH_ENV_KEYS` / `lib.rs` の `remove_var` / `dedupeAgentSessionsInConfigs` / `tests/test_ephemeral_env_keys_contract.py`) を壊す・迂回する変更は禁止
 - sync `#[tauri::command]` を増やす変更は `tests/test_command_sync_contract.py` の allowlist と整合させる
+- テーマ・トークン・タイポを触るときの契約 = `tests/unit/tokenContract.test.ts` (未定義 `var(--cmux-*)` 禁止) / `themeContrast.test.ts` (WCAG床+ANSIラチェット) / `uiDensity.test.ts` (standard=現行同値固定) / `uiQualityTokens.test.ts` (日本語9px禁止)。詳細は `docs/design/theme-system.md`
 
 ## 詳細情報
 

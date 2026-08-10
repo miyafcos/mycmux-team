@@ -112,6 +112,50 @@ describe("UI quality Phase A contracts", () => {
     expect(detailListWrap).not.toContain("fontFamily");
   });
 
+  // Chrome font floor: text that can carry Japanese must sit on
+  // --cmux-font-size-xs (11px) because Windows Japanese glyphs fall apart
+  // below it. Tags and badges whose content is only Latin letters, digits, or
+  // symbols (agent kind pills, kbd chips, "Aa" theme swatches, counters) may
+  // stay at 10. A bare 9 is banned outright, in either the numeric or the
+  // "9px" string form.
+  it("keeps every swept chrome surface at or above the 10px floor", () => {
+    const sweptFiles = [
+      "src/global.css",
+      "src/components/CommandPalette/CrsmPalette.tsx",
+      "src/components/CommandPalette/CrsmPalette.css",
+      "src/components/layout/NotificationPanel.tsx",
+      "src/components/layout/TabItem.tsx",
+      "src/components/layout/TabSweepPanel.tsx",
+      "src/components/online/OnlinePanel.tsx",
+      "src/components/settings/CliAccountsPanel.tsx",
+      "src/components/setup/GridPreview.tsx",
+      "src/components/theme/ThemeBackgroundPanel.tsx",
+      "src/components/theme/ThemeTweakPanel.tsx",
+      "src/components/theme/ThemePicker.tsx",
+      "src/components/theme/ThemeFontSettings.tsx",
+      "src/components/workspace/ArtifactEditorToolbar.tsx",
+      "src/components/workspace/PaneTabBar.tsx",
+    ];
+
+    for (const path of sweptFiles) {
+      const source = read(path);
+      expect(source, path).not.toMatch(/fontSize:\s*"?9"?/);
+      expect(source, path).not.toMatch(/font-size:\s*9px/);
+    }
+  });
+
+  // The panels below render dynamic Japanese (workspace names, sweep verdicts,
+  // account status), so they must reach for the token instead of a raw number.
+  it("puts the Japanese-bearing panels on the xs typography token", () => {
+    for (const path of [
+      "src/components/layout/TabSweepPanel.tsx",
+      "src/components/settings/CliAccountsPanel.tsx",
+      "src/components/workspace/PaneTabBar.tsx",
+    ]) {
+      expect(read(path), path).toContain('fontSize: "var(--cmux-font-size-xs)"');
+    }
+  });
+
   it("keeps the account surfaces on design tokens rather than bare numbers", () => {
     const accountSources = [
       "src/components/layout/AccountsButton.tsx",

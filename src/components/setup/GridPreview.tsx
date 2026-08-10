@@ -57,7 +57,7 @@ export default function GridPreview({ template, selected, onClick }: GridPreview
       <span
         style={{
           fontSize: 10,
-          color: selected ? "var(--cmux-accent)" : "var(--cmux-text-tertiary)",
+          color: selected ? "var(--cmux-accent-text)" : "var(--cmux-text-tertiary)",
           fontFamily: "'JetBrains Mono', monospace",
         }}
       >

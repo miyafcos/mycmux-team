@@ -341,7 +341,7 @@ function ProfileRow({
         padding: "5px 8px",
         borderRadius: 4,
         border: "1px solid var(--cmux-border-hairline)",
-        background: active ? "var(--cmux-bg-hover, rgba(127,127,127,0.12))" : "none",
+        background: active ? "var(--cmux-hover)" : "none",
       }}
     >
       <span style={{ width: 12, flexShrink: 0 }}>{active ? "✓" : ""}</span>
@@ -383,11 +383,11 @@ function ProfileRow({
           <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
             {profile.label}
             {profile.needs_relogin && (
-              <span style={{ color: "var(--cmux-usage-warn)", marginLeft: 6, fontSize: 10 }}>要再ログイン</span>
+              <span style={{ color: "var(--cmux-usage-warn)", marginLeft: 6, fontSize: "var(--cmux-font-size-xs)" }}>要再ログイン</span>
             )}
           </span>
         )}
-        <span style={{ color: "var(--cmux-text-tertiary)", fontSize: 10, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+        <span style={{ color: "var(--cmux-text-tertiary)", fontSize: "var(--cmux-font-size-xs)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
           {[profile.email, profile.plan, `登録: ${formatDate(profile.captured_at)}`, formatLastSwitched(profile.last_switched_at)]
             .filter(Boolean)
             .join(" · ")}
@@ -463,7 +463,7 @@ function OrphanRow({ orphan }: { orphan: CliOrphanSnapshot }) {
     <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 8px", border: "1px solid var(--cmux-border-hairline)", borderRadius: 4 }}>
       <div style={{ minWidth: 0, flex: 1 }}>
         <div>{orphan.provider ? PROVIDER_TITLE[orphan.provider] : "読み取り不能"} · {orphan.email ?? orphan.identity_key ?? orphan.id}</div>
-        <div style={{ color: "var(--cmux-text-tertiary)", fontSize: 10 }}>
+        <div style={{ color: "var(--cmux-text-tertiary)", fontSize: "var(--cmux-font-size-xs)" }}>
           保存: {formatDate(orphan.captured_at)}
           {orphan.error ? ` · ${cliAccountMessage(orphan.error)}` : ""}
         </div>

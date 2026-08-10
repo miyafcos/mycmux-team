@@ -69,7 +69,7 @@ const chipStyle: CSSProperties = {
   borderRadius: 999,
   background: "var(--cmux-hover)",
   color: "var(--cmux-text-secondary)",
-  fontSize: 9,
+  fontSize: "var(--cmux-font-size-xs)",
 };
 
 function ActionButton({
@@ -124,7 +124,7 @@ function TabIdentity({
       <div style={{ fontSize: 11, color: "var(--cmux-text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
         {tab.label?.trim() || "無名タブ"}
       </div>
-      <div style={{ display: "flex", alignItems: "center", gap: 5, minWidth: 0, marginTop: 2, fontSize: 10, color: "var(--cmux-text-tertiary)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 5, minWidth: 0, marginTop: 2, fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-tertiary)" }}>
         <span style={{ flex: "none" }}>{tab.workspaceName}</span>
         {tab.cwd ? <span aria-hidden="true">·</span> : null}
         {tab.cwd ? (
@@ -138,7 +138,7 @@ function TabIdentity({
         ) : null}
       </div>
       {showActivity ? (
-        <div style={{ display: "flex", gap: 8, minWidth: 0, marginTop: 3, color: "var(--cmux-text-secondary)", fontSize: 10 }}>
+        <div style={{ display: "flex", gap: 8, minWidth: 0, marginTop: 3, color: "var(--cmux-text-secondary)", fontSize: "var(--cmux-font-size-xs)" }}>
           <span style={{ flex: "none" }}>{formatLastOutputAge(tab.lastOutputAt, scannedAt)}</span>
           <span aria-label={`画面末尾: ${lastMeaningfulTailLine(tab.tail)}`} style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
             {lastMeaningfulTailLine(tab.tail)}
@@ -459,7 +459,7 @@ export function TabSweepPanel({ open, visible, closing = false, onClose }: TabSw
         <header style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "12px 16px", borderBottom: "1px solid var(--cmux-border)" }}>
           <div style={{ minWidth: 0 }}>
             <div style={{ fontSize: 14, fontWeight: 700 }}>タブ掃除</div>
-            <div role="status" aria-live="polite" title={status} style={{ marginTop: 2, fontSize: 10, color: "var(--cmux-text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            <div role="status" aria-live="polite" title={status} style={{ marginTop: 2, fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
               {judging ? `${judgeTargetCount}件を判定中 · ${judgeElapsedSeconds}秒経過` : status}
             </div>
           </div>
@@ -477,7 +477,7 @@ export function TabSweepPanel({ open, visible, closing = false, onClose }: TabSw
 
         <div style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
           {judgeErrorDetail ? (
-            <details style={{ margin: "10px 16px 0", padding: "8px 10px", border: "1px solid var(--cmux-border)", borderRadius: 6, fontSize: 10, color: "var(--cmux-text-secondary)" }}>
+            <details style={{ margin: "10px 16px 0", padding: "8px 10px", border: "1px solid var(--cmux-border)", borderRadius: 6, fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-secondary)" }}>
               <summary style={{ cursor: "pointer" }}>エラーの詳細</summary>
               <pre style={{ margin: "8px 0 0", maxHeight: 120, overflow: "auto", whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{judgeErrorDetail}</pre>
             </details>
@@ -500,7 +500,7 @@ export function TabSweepPanel({ open, visible, closing = false, onClose }: TabSw
                   style={{
                     marginTop: renderedGroup === null ? 8 : 14,
                     marginBottom: 4,
-                    fontSize: 9,
+                    fontSize: "var(--cmux-font-size-xs)",
                     letterSpacing: "0.06em",
                     color: "var(--cmux-text-tertiary)",
                     borderBottom: "1px solid var(--cmux-border-hairline)",
@@ -549,11 +549,11 @@ export function TabSweepPanel({ open, visible, closing = false, onClose }: TabSw
                             ))
                             : null}
                           {verdict && verdict.verdict !== "unknown" ? (
-                            <span style={{ ...chipStyle, color: "var(--cmux-accent)" }}>{verdictLabels[verdict.verdict]}</span>
+                            <span style={{ ...chipStyle, color: "var(--cmux-accent-text)" }}>{verdictLabels[verdict.verdict]}</span>
                           ) : null}
                           {suggestedLabel ? (
                             <>
-                              <span style={{ fontSize: 10, color: "var(--cmux-accent)" }}>{`ラベル案: ${suggestedLabel}`}</span>
+                              <span style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-accent-text)" }}>{`ラベル案: ${suggestedLabel}`}</span>
                               <ActionButton
                                 disabled={busy}
                                 ariaLabel={`${tabName(tab)}に${suggestedLabel}を適用`}
@@ -590,10 +590,10 @@ export function TabSweepPanel({ open, visible, closing = false, onClose }: TabSw
                 </ActionButton>
               )}
             </div>
-            <div style={{ fontSize: 9, lineHeight: 1.35, color: "var(--cmux-text-tertiary)" }}>
+            <div style={{ fontSize: "var(--cmux-font-size-xs)", lineHeight: 1.35, color: "var(--cmux-text-tertiary)" }}>
               各タブの画面末尾8行と作業フォルダを Claude (haiku) に送って判定します（チェックの提案のみ）
             </div>
-            <div style={{ fontSize: 10, color: "var(--cmux-text-secondary)" }}>
+            <div style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-secondary)" }}>
               閉じたタブは Ctrl+Shift+T で復元できます（会話も再開されます）
             </div>
           </div>

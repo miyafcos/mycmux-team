@@ -730,7 +730,7 @@ function PaneTabListMenu({
       >
         <AttentionUnreadDot category={unreadCategory} />
         {isPinned && (
-          <span style={{ color: "var(--cmux-accent)", display: "inline-flex", flexShrink: 0 }}>
+          <span style={{ color: "var(--cmux-accent-text)", display: "inline-flex", flexShrink: 0 }}>
             <PinIcon size={11} filled />
           </span>
         )}
@@ -768,7 +768,7 @@ function PaneTabListMenu({
           <span
             style={{
               flexShrink: 0,
-              fontSize: 10,
+              fontSize: "var(--cmux-font-size-xs)",
               lineHeight: 1.5,
               padding: "0 5px",
               borderRadius: 999,
@@ -1291,7 +1291,7 @@ export default memo(function PaneTabBar({
                 ? (published ? onlineStrings.publishButtonTitleUpdate : onlineStrings.publishButtonTitleNew)
                 : onlineStrings.publishNoSession}
               style={{
-                color: published ? "var(--cmux-accent)" : undefined,
+                color: published ? "var(--cmux-accent-text)" : undefined,
                 opacity: agentSessionId ? 1 : 0.55,
               }}
             >
@@ -1640,8 +1640,8 @@ export default memo(function PaneTabBar({
               {/* folder icon — swapped for the pin marker at constant width */}
               <span style={{
                 color: isTabPinned
-                  ? "var(--cmux-accent)"
-                  : isTabActive ? "var(--cmux-accent)" : "var(--cmux-text-tertiary)",
+                  ? "var(--cmux-accent-text)"
+                  : isTabActive ? "var(--cmux-accent-text)" : "var(--cmux-text-tertiary)",
                 display: "inline-flex",
                 flexShrink: 0,
               }}>
@@ -1939,7 +1939,7 @@ export default memo(function PaneTabBar({
                 title="Pinned tab"
                 aria-label="Pinned tab"
                 role="img"
-                style={{ color: "var(--cmux-accent)", display: "inline-flex", flexShrink: 0 }}
+                style={{ color: "var(--cmux-accent-text)", display: "inline-flex", flexShrink: 0 }}
               >
                 <PinIcon size={12} filled />
               </span>

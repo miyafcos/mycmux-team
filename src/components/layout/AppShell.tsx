@@ -26,9 +26,10 @@ import CrsmPalette, { preloadCrsmSessions } from "../CommandPalette/CrsmPalette"
 import { useKeybindingStore } from "../../stores/keybindingStore";
 import { isEditableTarget } from "../../lib/keybindings";
 import { TAB_SWEEP_OPEN_EVENT } from "./tabSweep";
-import { useThemeStore } from "../../stores/themeStore";
+import { UI_DENSITY_TOKENS, useThemeStore } from "../../stores/themeStore";
 import ErrorBoundary from "../common/ErrorBoundary";
 import { THEME_BACKGROUND_PRESETS } from "../../lib/themeTweaks";
+import { contrastRatio, isHexColor, resolveAccentTextColor } from "../theme/colorContrast";
 import { focusController } from "../../lib/focusController";
 import { OVERLAY_EXIT_MS, useDeferredUnmount } from "../../hooks/useDeferredUnmount";
 import { confirm, message } from "@tauri-apps/plugin-dialog";
@@ -64,6 +65,10 @@ const TERMINAL_PLAIN_INPUT_KEYS = new Set([
   "PageDown",
   "Insert",
 ]);
+
+// Read back by the inline script in index.html before the React bundle loads,
+// so a light theme no longer flashes the dark default ground on every launch.
+const BOOT_CHROME_STORAGE_KEY = "mycmux-boot-chrome";
 
 function colorWithOpacity(color: string, opacity: number): string {
   if (opacity >= 0.995) {
@@ -104,8 +109,20 @@ function isLightColor(color: string): boolean {
   return (red * 299 + green * 587 + blue * 114) / 1000 > LIGHT_COLOR_LUMINANCE_THRESHOLD;
 }
 
+// Glyph color for text painted on top of a filled swatch (accent buttons,
+// status badges, notification counters) — i.e. every --cmux-on-* token.
+// White is kept whenever it clears the WCAG AA floor (preserves the
+// conventional white-on-blue look); otherwise pure black takes over, which is
+// mathematically safe: any fill where white measures < 4.5:1 is light enough
+// that black measures >= ~4.67:1. The previous luma-140 threshold paired with
+// #0a0a0a carried no such guarantee — mid-tone light fills (the light themes'
+// status.done/error, several light accents) landed as low as 3.16:1. Non-hex
+// input (a user color tweak may store rgba()) keeps the white fallback.
 function textOnColor(color: string): string {
-  return isLightColor(color) ? "#0a0a0a" : "#ffffff";
+  if (!isHexColor(color)) {
+    return "#ffffff";
+  }
+  return contrastRatio("#ffffff", color) >= 4.5 ? "#ffffff" : "#000000";
 }
 
 function AppBackgroundLayer({ background }: { background: ThemeBackgroundSettings }) {
@@ -379,6 +396,7 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
   const getActionsForEvent = useKeybindingStore((s) => s.getActionsForEvent);
   const currentTheme = useThemeStore((s) => s.theme);
   const themeBackground = useThemeStore((s) => s.themeTweaks.background);
+  const uiDensity = useThemeStore((s) => s.uiDensity);
 
   // Multi-window (Phase 3a): both of these are app-wide singleton fetches
   // (crsm session index / savepoint index). Running them once per window just
@@ -420,7 +438,21 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
       ? color
       : `color-mix(in srgb, ${color} ${(panelOpacity * 100).toFixed(2)}%, transparent)`;
 
+  const densityTokens = UI_DENSITY_TOKENS[uiDensity];
+  const densitySpace = (base: number) => `${Math.round(base * densityTokens.spaceScale)}px`;
+
   const themeVars = {
+    "--cmux-font-size-xs": densityTokens.fontXs,
+    "--cmux-font-size-sm": densityTokens.fontSm,
+    "--cmux-font-size-md": densityTokens.fontMd,
+    "--cmux-line-height-ui": densityTokens.lineHeightUi,
+    "--cmux-space-1": densitySpace(2),
+    "--cmux-space-2": densitySpace(4),
+    "--cmux-space-3": densitySpace(6),
+    "--cmux-space-4": densitySpace(8),
+    "--cmux-space-5": densitySpace(10),
+    "--cmux-space-6": densitySpace(12),
+    "--cmux-space-7": densitySpace(16),
     "--cmux-bg-solid": currentTheme.chrome.background,
     "--cmux-bg": colorWithOpacity(currentTheme.chrome.background, panelOpacity),
     "--cmux-sidebar": colorWithOpacity(currentTheme.chrome.surface, panelOpacity),
@@ -439,6 +471,11 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
       mediaBackgroundActive ? themeBackground.terminalOpacity : 1,
     ),
     "--cmux-accent": currentTheme.chrome.accent,
+    "--cmux-accent-text": resolveAccentTextColor(
+      currentTheme.chrome.accent,
+      currentTheme.chrome.text,
+      currentTheme.chrome.background,
+    ),
     "--cmux-border": currentTheme.chrome.border,
     "--cmux-border-hairline": isLightChrome
       ? `color-mix(in srgb, ${currentTheme.chrome.border} 70%, transparent)`
@@ -450,6 +487,7 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
     "--cmux-hover": currentTheme.chrome.hover,
     "--cmux-selected": currentTheme.chrome.selected,
     "--cmux-red": currentTheme.chrome.danger,
+    "--cmux-yellow": currentTheme.status.waiting,
     "--cmux-on-accent": textOnColor(currentTheme.chrome.accent),
     "--cmux-on-working": textOnColor(currentTheme.status.working),
     "--cmux-on-waiting": textOnColor(currentTheme.status.waiting),
@@ -487,6 +525,21 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
     "--cmux-chrome-icon-shadow": "none",
     colorScheme: currentTheme.colorScheme,
   } as React.CSSProperties;
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        BOOT_CHROME_STORAGE_KEY,
+        JSON.stringify({
+          background: currentTheme.chrome.background,
+          colorScheme: currentTheme.colorScheme,
+        }),
+      );
+    } catch {
+      // Storage can be unavailable (quota, restricted webview). The next boot
+      // just falls back to the default ground instead of the theme's.
+    }
+  }, [currentTheme.chrome.background, currentTheme.colorScheme]);
 
   // Zero workspaces no longer force-opens the setup modal (that dropped a
   // Start-Menu launch straight into a modal over a bare app). EmptyWorkspaceState

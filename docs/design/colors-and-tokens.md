@@ -7,14 +7,31 @@
   --cmux-bg: #0a0a0a;
   --cmux-sidebar: #1E1E1E;
   --cmux-accent: #0A84FF;
+  --cmux-accent-text: #0A84FF;  /* AA-floored variant for text-color use */
+  --cmux-yellow: #f5c542;       /* warning; theme-driven (status.waiting) */
   --cmux-border: rgba(255, 255, 255, 0.1);
   --cmux-text: rgba(255, 255, 255, 0.9);
   --cmux-text-secondary: rgba(255, 255, 255, 0.6);
   --cmux-text-tertiary: rgba(255, 255, 255, 0.3);
+  --cmux-line-height-ui: normal; /* density-driven (uiDensity) */
+  --cmux-boot-bg: #0a0a0a;       /* first-frame ground, set by index.html */
 }
 ```
 
-Note: These are static fallback values. Theme-driven colors come from `ThemeDefinition.chrome.*` applied via inline styles.
+Note: These are static fallback values. At runtime `AppShell.tsx` overrides
+them from the active `ThemeDefinition` via the `themeVars` object (single
+conversion point) spread on the root element. Font-size (`--cmux-font-size-*`),
+`--cmux-line-height-ui`, and `--cmux-space-*` are overridden per the
+`uiDensity` setting ("standard" is byte-identical to the static values).
+
+Rules:
+
+- Text colored with the accent must use `--cmux-accent-text` (contrast-floored
+  per theme); fills/borders/outlines keep `--cmux-accent`.
+- `--cmux-text-muted` and `--cmux-bg-hover` do NOT exist — use
+  `--cmux-text-secondary` / `--cmux-hover`. Every `var(--cmux-*)` reference
+  must be defined in `:root`; `tests/unit/tokenContract.test.ts` enforces this
+  (fallback values do not exempt a missing definition).
 
 ## Opacity Scale
 

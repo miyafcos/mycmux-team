@@ -2,16 +2,22 @@ import { create } from "zustand";
 
 export type ToastKind = "error" | "warning" | "info";
 
+export interface ToastAction {
+  label: string;
+  run: () => void;
+}
+
 export interface Toast {
   id: string;
   message: string;
   kind: ToastKind;
   createdAt: number;
+  action?: ToastAction;
 }
 
 interface ToastState {
   toasts: Toast[];
-  pushToast: (message: string, kind?: ToastKind) => string;
+  pushToast: (message: string, kind?: ToastKind, action?: ToastAction) => string;
   dismissToast: (id: string) => void;
 }
 
@@ -33,13 +39,14 @@ function clearToastTimer(id: string): void {
 
 export const useToastStore = create<ToastState>((set, get) => ({
   toasts: [],
-  pushToast: (message, kind = "error") => {
+  pushToast: (message, kind = "error", action) => {
     const id = createToastId();
     const toast: Toast = {
       id,
       message,
       kind,
       createdAt: Date.now(),
+      action,
     };
 
     set((state) => {

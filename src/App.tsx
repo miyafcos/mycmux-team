@@ -423,8 +423,8 @@ function App() {
         style={{
           width: "100vw",
           height: "100vh",
-          background: "#2a0b0b",
-          color: "#ffd7d7",
+          background: "color-mix(in srgb, var(--cmux-red) 16%, var(--cmux-boot-bg, #0a0a0a))",
+          color: "var(--cmux-boot-fg, #ededed)",
           display: "flex",
           flexDirection: "column",
           alignItems: "center",
@@ -470,14 +470,14 @@ function App() {
         style={{
           width: "100vw",
           height: "100vh",
-          background: "#0a0a0a",
+          background: "var(--cmux-boot-bg, #0a0a0a)",
         }}
       />
     );
   }
 
   return (
-    <div style={{ position: "relative", width: "100vw", height: "100vh", background: "#0a0a0a" }}>
+    <div style={{ position: "relative", width: "100vw", height: "100vh", background: "var(--cmux-boot-bg, #0a0a0a)" }}>
       <ErrorBoundary>
         <AppShell uiVariant={uiVariant} />
         <ToastHost />
@@ -487,7 +487,7 @@ function App() {
           style={{
             position: "absolute",
             inset: 0,
-            background: "#0a0a0a",
+            background: "var(--cmux-boot-bg, #0a0a0a)",
             zIndex: 9999,
             pointerEvents: "none",
           }}

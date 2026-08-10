@@ -921,6 +921,7 @@ async function hydrateChildWindow(): Promise<void> {
     lineHeight: settings.line_height,
     fontFamily: settings.font_family,
     themeTweaks: settings.theme_tweaks,
+    uiDensity: settings.ui_density,
   });
   useKeybindingStore.getState().hydrateOverrides(settings.keybindings ?? {});
 
@@ -1007,6 +1008,7 @@ export function useWorkspacePersist() {
             lineHeight: data.settings.line_height,
             fontFamily: data.settings.font_family,
             themeTweaks: data.settings.theme_tweaks,
+            uiDensity: data.settings.ui_density,
           });
           useKeybindingStore.getState().hydrateOverrides(data.settings.keybindings ?? {});
 
@@ -1187,6 +1189,7 @@ export function useWorkspacePersist() {
           font_family: themeState.fontFamily,
           theme_tweaks: themeState.themeTweaks,
           keybindings: keybindingState.overrides,
+          ui_density: themeState.uiDensity,
         },
         active_workspace_id: finalSelection.workspaceId,
         active_pane_id: finalSelection.paneId,

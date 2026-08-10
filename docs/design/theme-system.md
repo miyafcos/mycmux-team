@@ -1,92 +1,109 @@
 # Theme System
 
+Updated 2026-08-11 (theme picker restoration). Source of truth:
+`src/components/theme/themeDefinitions.ts`.
+
 ## ThemeDefinition Structure
 
 ```typescript
 interface ThemeDefinition {
   id: string;
-  name: string;
-  terminal: TerminalColors;  // Applied to xterm.js
-  chrome: {                  // Applied to UI wrapper
-    background: string;      // Deepest layer (sidebar, app bg)
-    surface: string;         // Elevated surfaces (pane bg)
-    border: string;          // Borders and dividers
-    text: string;            // Primary text
-    textMuted: string;       // Secondary/inactive text
-    accent: string;          // Active indicators, links
-  };
-}
-```
-
-`TerminalColors` has 20 fields: `background`, `foreground`, `cursor`, `selectionBackground`, plus 16 ANSI colors (`black` through `brightWhite`).
-
-## Bundled Themes (9)
-
-| ID | Name | Terminal BG | Accent |
-|----|------|-------------|--------|
-| `midnight` | Midnight | `#0a0a0a` | `#89b4fa` |
-| `catppuccin-mocha` | Catppuccin Mocha | `#1e1e2e` | `#89b4fa` |
-| `dracula` | Dracula | `#282a36` | `#bd93f9` |
-| `nord` | Nord | `#2e3440` | `#88c0d0` |
-| `one-dark` | One Dark | `#282c34` | `#61afef` |
-| `tokyo-night` | Tokyo Night | `#1a1b26` | `#7aa2f7` |
-| `gruvbox-dark` | Gruvbox Dark | `#282828` | `#fabd2f` |
-| `solarized-dark` | Solarized Dark | `#002b36` | `#268bd2` |
-| `github-dark` | GitHub Dark | `#0d1117` | `#58a6ff` |
-
-Default theme: `midnight`.
-
-## How to Add a Theme
-
-1. Add a `ThemeDefinition` object to the `THEMES` array in `src/components/theme/themeDefinitions.ts`
-2. Define all 20 terminal colors + 6 chrome colors
-3. Theme is immediately available in `ThemeSwitcher`
-
-No registration step needed — the `THEMES` array is the registry.
-
-```typescript
-{
-  id: "my-theme",
-  name: "My Theme",
-  terminal: {
-    background: "#...",
-    foreground: "#...",
-    cursor: "#...",
-    selectionBackground: "#...",
-    // ... 16 ANSI colors
-  },
+  name: string;            // Japanese display name (真夜中, 極夜, ...)
+  group: ThemeGroup;       // "calm-dark" | "vivid-dark" | "light"
+  description: string;
+  colorScheme: "dark" | "light";
+  terminal: TerminalColors; // 20 fields: bg/fg/cursor/selection + 16 ANSI
   chrome: {
-    background: "#...",  // darkest
-    surface: "#...",     // slightly lighter
-    border: "#...",
-    text: "#...",
-    textMuted: "#...",
-    accent: "#...",
-  },
+    background: string;
+    surface: string;
+    border: string;
+    text: string;
+    textMuted: string;
+    textDim: string;
+    accent: string;
+    hover: string;
+    selected: string;
+    danger: string;
+  };
+  status: { working; waiting; done; error };
+  notification: string;
 }
 ```
 
-## Runtime Theme Switching
+Themes are authored as `ThemeDraft`s (a subset) and completed by
+`completeTheme()`, which:
+
+- derives `colorScheme` from the group,
+- **clamps `textMuted`/`textDim` to a WCAG AA 4.5:1 floor** against
+  `chrome.background` (`applyContrastFloor` / `resolveDimColor` in
+  `colorContrast.ts`),
+- fills `hover`/`selected`/`danger`/`status`/`notification` defaults per scheme.
+
+## Bundled Themes (30)
+
+30 themes in three groups: 静かな暗色 (calm-dark), 個性の強い暗色
+(vivid-dark), 明るい配色 (light, 9 themes). Default: `mayonaka` (真夜中).
+Legacy ids (e.g. `yoru-cafe`, `midnight`-era names) are mapped by
+`THEME_ALIASES` in `resolveThemeId()`.
+
+`RECOMMENDED_THEMES` is a curated shortlist (6 entries, both schemes) shown
+first in the picker; entries carry a use-case reason and are guarded by
+`tests/unit/themeRecommendations.test.ts` (existence, dark+light coverage,
+AA-safe accent text).
+
+## Picker UI
+
+`src/components/theme/ThemePicker.tsx`, mounted at the top of the appearance
+tab (`AppearanceTab` → `ThemeTweakPanel topSlot`). Recommended cards are
+always visible; the full 30-theme list expands per group. It is a
+`radiogroup` with roving focus (arrow keys / Home / End).
+
+Selection flow:
 
 ```
-ThemeSwitcher.onClick(themeId)
-  → themeStore.setTheme(id)
-    → getTheme(id) looks up THEMES array
-    → store.theme updated
-      → Components re-render with new theme
-      → XTermWrapper applies theme to xterm.js options
+ThemePicker.onSelect(theme)
+  → themeStore.setTheme(id)      // clean switch: color tweaks dropped,
+                                 // background tweaks kept; previous
+                                 // themeId+tweaks saved as a snapshot
+  → toast (only when tweaks were discarded) with an undo action
+  → restoreThemeSnapshot()       // undo: full round-trip
 ```
 
-Theme selection persists via `saveSettings({ theme_id })` → `data.json`.
+Do not remove the picker wiring: the original regression (30 themes defined,
+`setTheme()` with zero callers after `ThemeSwitcher.tsx` was deleted) is
+guarded by `tests/unit/themeRecommendations.test.ts`.
 
-## Theme Layering
+## Runtime Application
 
-The chrome layer intentionally uses colors slightly different from the terminal:
+`AppShell.tsx` builds `themeVars` (the single conversion point) and spreads it
+on the root element: chrome colors, derived tokens (`--cmux-accent-text`,
+`--cmux-yellow`, shadows, on-colors), density tokens, and `colorScheme`.
+`XTermWrapper` consumes `theme.terminal` via `resolveTerminalTheme()`
+(`terminalThemeColors.ts`), which pre-applies an ANSI contrast floor when a
+wallpaper background disables xterm's own `minimumContrastRatio` guard.
 
-```
-chrome.background  ← darkest (sidebar, app shell)
-chrome.surface     ← terminal container background
-terminal.background ← xterm.js canvas
-```
+Persistence: `settings.theme_id` + `settings.theme_tweaks` in `data.json`
+(save + two hydrate sites in `SocketListener.tsx` — main window and child
+window; update BOTH when adding fields).
 
-This creates subtle depth separation between UI chrome and terminal content.
+## Fine-tuning vs. Themes
+
+`ThemeTweakPanel` ("選んだテーマの微調整") overlays per-key color tweaks on the
+selected theme (`applyThemeTweaks`). The dark/light preset toggle applies a
+tweak preset — it does not change `themeId`. `setTheme` is the only clean
+switch.
+
+## Out of Scope (decided 2026-08-11)
+
+`BrowserPane`'s injected editor CSS stays light-fixed on purpose: it renders a
+document-editing surface (white paper on a desk, Word-like). Making it follow
+dark themes would produce "black paper", which is a worse defect. Do not
+theme it.
+
+## Contrast Contracts
+
+- `tests/unit/themeContrast.test.ts` — WCAG floors across all 30 themes
+  (text/muted/dim/accent-text vs chrome bg; terminal fg/bg ≥ 7; on-colors;
+  ANSI ratchet).
+- `tests/unit/tokenContract.test.ts` — every `var(--cmux-*)` reference must
+  be defined in `global.css` `:root`; `themeVars` keys ⊆ `:root` keys.

@@ -1,47 +1,47 @@
 # Theming
 
-## 9 Bundled Themes
+Updated 2026-08-11. Details and contracts: `docs/design/theme-system.md`.
 
-All dark themes, covering major terminal color schemes:
+## 30 Bundled Themes
 
-- Midnight (default) — deepest black
-- Catppuccin Mocha — warm purple-blue
-- Dracula — purple accent
-- Nord — cool blue-grey
-- One Dark — Atom-inspired
-- Tokyo Night — Japanese night palette
-- Gruvbox Dark — warm retro
-- Solarized Dark — classic dual-mode
-- GitHub Dark — GitHub's dark mode
+Three groups — 静かな暗色 (calm-dark), 個性の強い暗色 (vivid-dark), 明るい配色
+(light, 9 themes) — defined in `themeDefinitions.ts` with Japanese names.
+Default: `mayonaka` (真夜中). `completeTheme()` enforces a WCAG AA 4.5:1 floor
+on muted/dim text at definition time.
 
 ## Runtime Switching
 
-`ThemeSwitcher` component (in sidebar) lists all themes. Selecting one:
+`ThemePicker` (settings → 外観, top of the tab) shows 6 recommended themes
+(`RECOMMENDED_THEMES`, with use-case labels) and an expandable full list per
+group. Selecting one:
 
-1. `themeStore.setTheme(id)` → updates store
-2. `getTheme(id)` looks up the `THEMES` array
-3. Components reading `themeStore` re-render with new colors
-4. `saveSettings({ theme_id })` persists choice to disk
+1. `themeStore.setTheme(id)` — clean switch: per-key color tweaks are dropped,
+   background tweaks kept, previous themeId+tweaks stored as a snapshot
+2. When tweaks were discarded, a toast offers 元に戻す →
+   `restoreThemeSnapshot()`
+3. Components re-render; `AppShell` rebuilds `themeVars` (CSS variables ARE
+   theme-driven at runtime — the static `:root` values are only first-frame
+   fallbacks)
+4. Persisted via `settings.theme_id` in `data.json`
 
 ## What Gets Themed
 
 | Target | Source | Mechanism |
 |--------|--------|-----------|
-| xterm.js terminal | `theme.terminal.*` | `term.options.theme = ITheme` |
-| Sidebar, title bar | `theme.chrome.*` | Inline styles reading store |
-| Pane headers | Hardcoded `#1a1a1a` | Not theme-driven (TODO) |
-| CSS variables | `global.css :root` | Static, not updated by theme |
+| xterm.js terminal | `theme.terminal.*` | `resolveTerminalTheme()` → ITheme (ANSI contrast floor pre-applied when a wallpaper disables xterm's own guard) |
+| All UI chrome | `theme.chrome.*` + derived | `AppShell.themeVars` → CSS variables on the root element |
+| Warning/accent text | derived | `--cmux-yellow` (status.waiting), `--cmux-accent-text` (AA-floored) |
+| First frame | last theme | `localStorage["mycmux-boot-chrome"]` + inline script in `index.html` (`--cmux-boot-bg`) |
 
-Note: CSS custom properties (`--cmux-*`) are currently static. Theme switching works through inline styles and xterm.js theme options, not CSS variable updates.
+## Fine-tuning
 
-## Config-Detected Colors
-
-On first load, `terminal_config.rs` detects colors from the user's native terminal (ghostty/alacritty/kitty). These are used as the xterm.js theme, overriding the default theme's terminal colors.
-
-The chrome UI colors always come from the selected `ThemeDefinition`.
+`ThemeTweakPanel` (選んだテーマの微調整) overlays per-key colors, dark/light
+tweak presets, background wallpapers, terminal font/size/line-height, and the
+UI density setting (`uiDensity` — see `docs/design/typography-and-spacing.md`).
 
 ## Persistence
 
-- Stored in `data.json` as `settings.theme_id`
-- Default: `"catppuccin-mocha"` in Rust, `"midnight"` in `themeStore`
-- Font size also persists: `settings.font_size`
+`data.json` `settings`: `theme_id`, `theme_tweaks`, `font_size`,
+`line_height`, `font_family`, `ui_density`. Save + two hydrate sites live in
+`SocketListener.tsx` (main window and child window — update both when adding
+fields).

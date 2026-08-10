@@ -194,7 +194,7 @@ export default memo(function TabItem({ uiVariant = "default", name, paneCount, c
             <span key={`waiting-${notificationCount}`} className="cmux-badge-pop" title="Waiting for approval" style={{
               background: "var(--status-waiting)",
               color: "var(--cmux-on-waiting)",
-              fontSize: "9px",
+              fontSize: "10px",
               fontWeight: "bold",
               borderRadius: "50%",
               width: "14px",
@@ -210,7 +210,7 @@ export default memo(function TabItem({ uiVariant = "default", name, paneCount, c
             <span key={`done-${workDoneCount}`} className="cmux-badge-pop" title="Work done" style={{
               background: "var(--status-done)",
               color: "var(--cmux-on-done)",
-              fontSize: "9px",
+              fontSize: "10px",
               fontWeight: "bold",
               borderRadius: "50%",
               width: "14px",

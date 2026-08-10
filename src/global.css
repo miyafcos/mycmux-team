@@ -4,6 +4,9 @@
   --cmux-sidebar: #1E1E1E;
   --cmux-popover: #262626;
   --cmux-accent: #0A84FF;
+  /* Accent tuned for text: AppShell re-derives it per theme so glyphs keep the
+     AA floor against the chrome background. Fills/borders use --cmux-accent. */
+  --cmux-accent-text: #0A84FF;
   --cmux-border: rgba(255, 255, 255, 0.1);
   --cmux-border-hairline: rgba(255, 255, 255, 0.07);
   --cmux-text: rgba(255, 255, 255, 0.9);
@@ -19,6 +22,11 @@
   --cmux-hover: rgba(255, 255, 255, 0.06);
   --cmux-selected: rgba(255, 255, 255, 0.08);
   --cmux-red: #ff5555;
+  --cmux-yellow: #f5c542;
+  /* Boot ground: the inline script in index.html overrides these on
+     documentElement from the last known theme before React mounts. */
+  --cmux-boot-bg: #0a0a0a;
+  --cmux-boot-fg: #ededed;
   --cmux-on-accent: #ffffff;
   --cmux-on-working: #ffffff;
   --cmux-on-waiting: #0a0a0a;
@@ -34,6 +42,9 @@
   --cmux-font-size-xs: 11px;
   --cmux-font-size-sm: 12px;
   --cmux-font-size-md: 13px;
+  /* UI chrome line-height, driven by the density setting (AppShell overrides
+     per uiDensity). "normal" keeps the historical look for "standard". */
+  --cmux-line-height-ui: normal;
   --cmux-font-mono: "UDEV Gothic NF", "UDEV Gothic", "JetBrains Mono", Consolas, monospace;
   --cmux-focus-ring: color-mix(in srgb, var(--cmux-accent) 45%, transparent);
   --cmux-dnd-tab: #38bdf8;
@@ -152,6 +163,7 @@ body,
   overflow: hidden;
   background: var(--cmux-bg);
   color: var(--cmux-text);
+  line-height: var(--cmux-line-height-ui);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -437,7 +449,7 @@ div:hover>.tab-close-btn {
 
 .pane-tab-pin-btn.is-pinned,
 .pane-tab-menu-pin-btn.is-pinned {
-  color: var(--cmux-accent);
+  color: var(--cmux-accent-text);
 }
 
 .pane-tab-restore-badge {
@@ -450,7 +462,7 @@ div:hover>.tab-close-btn {
   flex-shrink: 0;
   border: 1px solid color-mix(in srgb, var(--cmux-accent) 58%, var(--cmux-border));
   border-radius: 999px;
-  color: var(--cmux-accent);
+  color: var(--cmux-accent-text);
   font-size: 7px;
   line-height: 1;
 }
@@ -868,7 +880,7 @@ div:hover>.tab-close-btn {
 }
 
 .savepoint-write-preview__prompt {
-  color: var(--cmux-accent);
+  color: var(--cmux-accent-text);
   font-size: 18px;
   font-weight: 700;
   line-height: 1;

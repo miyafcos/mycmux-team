@@ -51,6 +51,9 @@ export function SavepointsTab({ onOpen }: SavepointsTabProps) {
         : onlineStrings.settingsStorageReadyOnFirstSave;
   const currentStatusColor =
     storageLoadError ? "var(--cmux-red)" : "var(--cmux-accent)";
+  // Same status, read as text rather than painted as the status dot.
+  const currentStatusTextColor =
+    storageLoadError ? "var(--cmux-red)" : "var(--cmux-accent-text)";
 
   return (
     <div>
@@ -128,7 +131,7 @@ export function SavepointsTab({ onOpen }: SavepointsTabProps) {
               alignItems: "center",
               gap: 7,
               marginBottom: currentDirectory ? 7 : 0,
-              color: currentStatusColor,
+              color: currentStatusTextColor,
               fontSize: 11,
               fontWeight: 700,
             }}
@@ -285,7 +288,7 @@ export function SavepointsTab({ onOpen }: SavepointsTabProps) {
         style={{
           ...dialogButtonStyle,
           borderColor: "var(--cmux-accent)",
-          color: "var(--cmux-accent)",
+          color: "var(--cmux-accent-text)",
           fontWeight: 700,
           padding: "8px 12px",
           maxWidth: "100%",

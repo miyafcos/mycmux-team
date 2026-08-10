@@ -32,14 +32,13 @@ export default function ToastHost() {
       {toasts.map((toast) => {
         const { color, Icon } = kindStyles[toast.kind];
         return (
-          <button
+          <div
             key={toast.id}
-            type="button"
             onClick={() => dismissToast(toast.id)}
             role={toast.kind === "error" ? "alert" : "status"}
             style={{
               display: "grid",
-              gridTemplateColumns: "18px 1fr",
+              gridTemplateColumns: toast.action ? "18px 1fr auto" : "18px 1fr",
               gap: 10,
               alignItems: "center",
               width: "100%",
@@ -59,7 +58,32 @@ export default function ToastHost() {
           >
             <Icon size={16} color={color} aria-hidden="true" />
             <span style={{ overflowWrap: "anywhere" }}>{toast.message}</span>
-          </button>
+            {toast.action ? (
+              <button
+                type="button"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  toast.action?.run();
+                  dismissToast(toast.id);
+                }}
+                style={{
+                  height: 26,
+                  padding: "0 10px",
+                  border: "1px solid var(--cmux-border)",
+                  borderRadius: 5,
+                  background: "transparent",
+                  color: "var(--cmux-accent-text)",
+                  fontFamily: "inherit",
+                  fontSize: 11,
+                  fontWeight: 700,
+                  cursor: "pointer",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {toast.action.label}
+              </button>
+            ) : null}
+          </div>
         );
       })}
     </div>
