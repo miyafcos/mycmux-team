@@ -5,6 +5,7 @@ pub mod fs;
 pub mod online;
 pub mod online_publish;
 pub mod pets;
+pub mod pet_gallery;
 pub mod session_mapping;
 pub mod shell;
 pub mod tab_sweep;

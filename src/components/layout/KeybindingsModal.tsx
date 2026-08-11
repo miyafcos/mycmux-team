@@ -1,5 +1,6 @@
-import { useMemo, useState, useEffect, useRef } from "react";
+import { useMemo, useState, useEffect } from "react";
 import type { JSX } from "react";
+import { OverlayShell } from "../common/OverlayShell";
 import {
   KEYBINDING_DEFINITIONS,
   formatShortcutLabel,
@@ -16,6 +17,7 @@ interface KeybindingsModalProps {
 
 interface KeybindingsPanelProps {
   embedded?: boolean;
+  hosted?: boolean;
   closing?: boolean;
   onClose?: () => void;
 }
@@ -25,7 +27,7 @@ interface KeybindingsPanelProps {
 // own. Rebind capture (and its capture-phase Escape cancel) always lives
 // here regardless of embedding, since that capture-phase stopPropagation is
 // what keeps a host's own Escape-close from firing mid-capture.
-export function KeybindingsPanel({ embedded = false, closing = false, onClose }: KeybindingsPanelProps): JSX.Element {
+export function KeybindingsPanel({ embedded = false, hosted = false, closing = false, onClose }: KeybindingsPanelProps): JSX.Element {
   const keybindings = useKeybindingStore((s) => s.keybindings);
   const overrides = useKeybindingStore((s) => s.overrides);
   const setOverride = useKeybindingStore((s) => s.setOverride);
@@ -72,21 +74,25 @@ export function KeybindingsPanel({ embedded = false, closing = false, onClose }:
     return () => window.removeEventListener("keydown", onKeyDown, true);
   }, [capturing, clearOverride, closing, setOverride]);
 
+  const contentOnly = embedded || hosted;
+
   return (
     <div
-      className={embedded ? undefined : `cmux-overlay-panel${closing ? " is-closing" : ""}`}
+      className={contentOnly ? undefined : `cmux-overlay-panel${closing ? " is-closing" : ""}`}
       onClick={(e) => e.stopPropagation()}
       style={{
         // Embedded (settings tab): fill the host's content column and let the
         // host own chrome + scrolling. Standalone: the original modal panel.
-        width: embedded ? "100%" : "min(920px, 94vw)",
-        maxHeight: embedded ? undefined : "88vh",
+        width: contentOnly ? "100%" : "min(920px, 94vw)",
+        maxHeight: contentOnly ? undefined : "88vh",
+        flex: hosted ? 1 : undefined,
+        minHeight: hosted ? 0 : undefined,
         overflow: "hidden",
         display: "flex",
         flexDirection: "column",
-        background: embedded ? "transparent" : "var(--cmux-surface)",
-        border: embedded ? "none" : "1px solid var(--cmux-border)",
-        borderRadius: embedded ? 0 : 8,
+        background: contentOnly ? "transparent" : "var(--cmux-surface)",
+        border: contentOnly ? "none" : "1px solid var(--cmux-border)",
+        borderRadius: contentOnly ? 0 : 8,
       }}
     >
       <div style={{ padding: "14px 16px", borderBottom: "1px solid var(--cmux-border)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -230,51 +236,16 @@ export function KeybindingsPanel({ embedded = false, closing = false, onClose }:
 }
 
 export default function KeybindingsModal({ closing = false, onClose }: KeybindingsModalProps) {
-  const previouslyFocusedRef = useRef<HTMLElement | null>(null);
-
-  // Restore focus to whatever had it before the modal opened once it closes.
-  useEffect(() => {
-    previouslyFocusedRef.current = document.activeElement as HTMLElement | null;
-    return () => {
-      const prev = previouslyFocusedRef.current;
-      if (prev && document.contains(prev)) {
-        prev.focus();
-      }
-    };
-  }, []);
-
-  // Escape closes the modal. While KeybindingsPanel is mid-capture, its own
-  // window-level capture-phase listener calls stopPropagation() on Escape,
-  // which keeps that key from ever reaching this bubble-phase listener --
-  // so no explicit "capturing" check is needed here.
-  useEffect(() => {
-    if (closing) return;
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
-      e.preventDefault();
-      onClose();
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [closing, onClose]);
-
   return (
-    <div
-      className={`cmux-overlay-backdrop${closing ? " is-closing" : ""}`}
-      inert={closing ? true : undefined}
-      aria-hidden={closing ? true : undefined}
-      style={{
-        position: "fixed",
-        inset: 0,
-        zIndex: 9999,
-        background: "var(--cmux-backdrop)",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-      }}
-      onClick={closing ? undefined : onClose}
+    <OverlayShell
+      open={!closing}
+      closing={closing}
+      onClose={onClose}
+      size="full"
+      layer="top"
+      ariaLabel="キーボードショートカット"
     >
-      <KeybindingsPanel closing={closing} onClose={onClose} />
-    </div>
+      <KeybindingsPanel hosted closing={closing} onClose={onClose} />
+    </OverlayShell>
   );
 }

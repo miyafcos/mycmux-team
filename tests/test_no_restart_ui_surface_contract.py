@@ -129,7 +129,7 @@ def test_savepoints_and_remote_control_have_separate_settings_destinations() -> 
             "onOpenOnlinePanel: () => void;",
             'activeTab === "savepoints"',
             "onOpenOnlinePanel();",
-            'width: "clamp(148px, 23vw, 208px)"',
+            'width: "clamp(168px, 16vw, 280px)"',
         ],
     )
     assert_snippets(

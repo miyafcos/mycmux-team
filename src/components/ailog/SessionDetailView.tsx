@@ -122,12 +122,13 @@ export function SessionDetailView({ detail, onClose }: { detail: SessionDetail; 
           <div style={noteStyle}>ターンの記録がありません。</div>
         ) : (
           <ScrollBox>
-            <svg
-              viewBox={`0 0 ${chartWidth} ${chartHeight}`}
-              role="img"
-              aria-label="ターンごとのコスト"
-              style={{ width: "100%", minWidth: 420, height: chartHeight, display: "block" }}
-            >
+            <div style={{ display: "grid", gridTemplateColumns: "minmax(420px, 1fr)" }}>
+              <svg
+                viewBox={`0 0 ${chartWidth} ${chartHeight}`}
+                role="img"
+                aria-label="ターンごとのコスト"
+                style={{ width: "100%", minWidth: 0, height: chartHeight, display: "block" }}
+              >
               {bars.map((bar, index) => {
                 const height = peak > 0 ? (bar.costUsd / peak) * (chartHeight - 8) : 0;
                 return (
@@ -145,7 +146,8 @@ export function SessionDetailView({ detail, onClose }: { detail: SessionDetail; 
                   </rect>
                 );
               })}
-            </svg>
+              </svg>
+            </div>
           </ScrollBox>
         )}
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 4, ...noteStyle }}>

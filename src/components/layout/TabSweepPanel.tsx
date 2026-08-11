@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type Ref } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type Ref } from "react";
+import { OverlayShell } from "../common/OverlayShell";
 import {
   applySweep,
   applyVerdictSelection,
@@ -169,8 +170,6 @@ function tabName(tab: SweepTab): string {
 }
 
 export function TabSweepPanel({ open, visible, closing = false, onClose }: TabSweepPanelProps) {
-  const panelRef = useRef<HTMLDivElement>(null);
-  const previouslyFocusedRef = useRef<HTMLElement | null>(null);
   const verdictInputsRef = useRef(new Map<string, string>());
   const activeJudgeRequestRef = useRef<string | null>(null);
   const focusOnOpenRef = useRef(false);
@@ -220,16 +219,8 @@ export function TabSweepPanel({ open, visible, closing = false, onClose }: TabSw
 
   useEffect(() => {
     if (!open) return;
-    previouslyFocusedRef.current = document.activeElement as HTMLElement | null;
     focusOnOpenRef.current = true;
-    window.setTimeout(() => panelRef.current?.focus(), 0);
   }, [open]);
-
-  useEffect(() => {
-    if (visible) return;
-    const previous = previouslyFocusedRef.current;
-    if (previous && document.contains(previous)) previous.focus();
-  }, [visible]);
 
   useEffect(() => {
     if (!open || judging) return;
@@ -238,10 +229,11 @@ export function TabSweepPanel({ open, visible, closing = false, onClose }: TabSw
 
   useEffect(() => {
     if (!open || scanning || !focusOnOpenRef.current) return;
-    const primary = panelRef.current?.querySelector<HTMLButtonElement>(
+    const panel = document.getElementById("tab-sweep-panel");
+    const primary = panel?.querySelector<HTMLButtonElement>(
       'button[data-tab-sweep-primary="true"]:not(:disabled)',
     );
-    (primary ?? panelRef.current)?.focus();
+    (primary ?? panel)?.focus();
     focusOnOpenRef.current = false;
   }, [open, report, scanning]);
 
@@ -256,13 +248,9 @@ export function TabSweepPanel({ open, visible, closing = false, onClose }: TabSw
   useEffect(() => {
     if (!open || closing) return;
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        onClose();
-        return;
-      }
-      if (event.key !== "Tab" || !panelRef.current) return;
-      const focusable = [...panelRef.current.querySelectorAll<HTMLElement>(
+      const panel = document.getElementById("tab-sweep-panel");
+      if (event.key !== "Tab" || !panel) return;
+      const focusable = [...panel.querySelectorAll<HTMLElement>(
         'button:not(:disabled), [href], input:not(:disabled), [tabindex]:not([tabindex="-1"])',
       )];
       if (focusable.length === 0) return;
@@ -271,10 +259,10 @@ export function TabSweepPanel({ open, visible, closing = false, onClose }: TabSw
       // focusable — using it as the wrap anchor would pin Tab on that one node.)
       const first = focusable[0];
       const last = focusable[focusable.length - 1];
-      const entry = panelRef.current.querySelector<HTMLElement>(
+      const entry = panel.querySelector<HTMLElement>(
         'button[data-tab-sweep-primary="true"]:not(:disabled)',
       ) ?? first;
-      if (document.activeElement === panelRef.current) {
+      if (document.activeElement === panel) {
         event.preventDefault();
         (event.shiftKey ? last : entry).focus();
       } else if (event.shiftKey && document.activeElement === first) {
@@ -287,7 +275,7 @@ export function TabSweepPanel({ open, visible, closing = false, onClose }: TabSw
     };
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [closing, onClose, open]);
+  }, [closing, open]);
 
   const rows = useMemo(() => buildSweepRows(report), [report]);
   const verdictById = useMemo(
@@ -416,46 +404,14 @@ export function TabSweepPanel({ open, visible, closing = false, onClose }: TabSw
   let renderedGroup: SweepCategory | null = null;
 
   return (
-    <div
-      className={`cmux-overlay-backdrop${closing ? " is-closing" : ""}`}
-      inert={closing ? true : undefined}
-      aria-hidden={closing ? true : undefined}
-      style={{
-        position: "fixed",
-        inset: 0,
-        background: "var(--cmux-backdrop)",
-        display: "flex",
-        justifyContent: "center",
-        alignItems: "center",
-        zIndex: 1000,
-        padding: 16,
-      }}
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) onClose();
-      }}
+    <OverlayShell
+      open={open}
+      closing={closing}
+      onClose={onClose}
+      size="full"
+      ariaLabel="タブ掃除"
+      id="tab-sweep-panel"
     >
-      <div
-        id="tab-sweep-panel"
-        className={`cmux-overlay-panel${closing ? " is-closing" : ""}`}
-        ref={panelRef}
-        tabIndex={-1}
-        role="dialog"
-        aria-modal="true"
-        aria-label="タブ掃除"
-        onMouseDown={(event) => event.stopPropagation()}
-        style={{
-          width: "min(640px, calc(100vw - 32px))",
-          height: "min(680px, calc(100vh - 64px))",
-          background: "var(--cmux-popover)",
-          border: "1px solid var(--cmux-border)",
-          borderRadius: 10,
-          boxShadow: "var(--cmux-shadow-dialog)",
-          color: "var(--cmux-text)",
-          overflow: "hidden",
-          display: "flex",
-          flexDirection: "column",
-        }}
-      >
         <header style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "12px 16px", borderBottom: "1px solid var(--cmux-border)" }}>
           <div style={{ minWidth: 0 }}>
             <div style={{ fontSize: 14, fontWeight: 700 }}>タブ掃除</div>
@@ -488,7 +444,7 @@ export function TabSweepPanel({ open, visible, closing = false, onClose }: TabSw
               掃除できるタブはありません
             </div>
           ) : null}
-          <div style={{ padding: "4px 16px 12px" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(360px, 1fr))", gap: "8px 12px", padding: "4px 16px 12px" }}>
             {rows.map((row: SweepRow) => {
               const { tab, kind, selectable } = row;
               const checked = selection.has(tab.id);
@@ -496,8 +452,8 @@ export function TabSweepPanel({ open, visible, closing = false, onClose }: TabSw
               const suggestedLabel = tab.unnamed ? verdict?.label : undefined;
               const groupHeader = renderedGroup === kind ? null : (
                 <div
-                  key={`group-${kind}`}
                   style={{
+                    gridColumn: "1 / -1",
                     marginTop: renderedGroup === null ? 8 : 14,
                     marginBottom: 4,
                     fontSize: "var(--cmux-font-size-xs)",
@@ -512,7 +468,7 @@ export function TabSweepPanel({ open, visible, closing = false, onClose }: TabSw
               );
               renderedGroup = kind;
               return (
-                <div key={tab.id}>
+                <Fragment key={tab.id}>
                   {groupHeader}
                   <div
                     style={{
@@ -520,7 +476,10 @@ export function TabSweepPanel({ open, visible, closing = false, onClose }: TabSw
                       gridTemplateColumns: "auto minmax(0, 1fr)",
                       gap: 9,
                       alignItems: "start",
-                      padding: "5px 0",
+                      padding: 10,
+                      border: "1px solid var(--cmux-border)",
+                      borderRadius: 8,
+                      background: "var(--cmux-surface-raised)",
                       opacity: selectable ? 1 : 0.66,
                     }}
                   >
@@ -570,7 +529,7 @@ export function TabSweepPanel({ open, visible, closing = false, onClose }: TabSw
                       )}
                     />
                   </div>
-                </div>
+                </Fragment>
               );
             })}
           </div>
@@ -607,7 +566,6 @@ export function TabSweepPanel({ open, visible, closing = false, onClose }: TabSw
             {`選択した${selectedCount}件を閉じる`}
           </ActionButton>
         </footer>
-      </div>
-    </div>
+    </OverlayShell>
   );
 }

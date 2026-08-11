@@ -60,7 +60,7 @@ export function SavepointsTab({ onOpen }: SavepointsTabProps) {
       <div style={sectionHeadingStyle}>{onlineStrings.settingsHeading}</div>
       <p
         style={{
-          maxWidth: 620,
+          maxWidth: "min(900px, 100%)",
           margin: "0 0 22px",
           color: "var(--cmux-text-secondary)",
           fontSize: 12,
@@ -73,7 +73,6 @@ export function SavepointsTab({ onOpen }: SavepointsTabProps) {
       <section
         aria-labelledby="savepoint-storage-heading"
         style={{
-          maxWidth: 620,
           marginBottom: 22,
           paddingBottom: 22,
           borderBottom: "1px solid var(--cmux-border)",
@@ -230,7 +229,7 @@ export function SavepointsTab({ onOpen }: SavepointsTabProps) {
         aria-label={onlineStrings.settingsSaveMethodsAriaLabel}
         style={{
           display: "grid",
-          gridTemplateColumns: "repeat(auto-fit, minmax(min(150px, 100%), 1fr))",
+          gridTemplateColumns: "repeat(auto-fill, minmax(min(240px, 100%), 1fr))",
           gap: 18,
           margin: "0 0 18px",
           padding: 0,

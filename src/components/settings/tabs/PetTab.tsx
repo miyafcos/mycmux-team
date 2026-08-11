@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import PetSprite from "../../workspace/PetSprite";
-import { listPets } from "../../../lib/ipc";
+import { listPets, listQuarantinedPets, quarantinePet, restorePet, type ListedPet, type QuarantinedPet } from "../../../lib/ipc";
 import { candidatesFromListedPets, resolvePet } from "../../../lib/pets";
 import { usePetSettingsStore } from "../../../stores/petSettingsStore";
 import { useWorkspaceListStore } from "../../../stores/workspaceListStore";
 import { dialogButtonStyle, dividerStyle, sectionHeadingStyle } from "../tabStyles";
 import { petSettingsStrings } from "../settingsStrings";
+import { PetGallerySection } from "./PetGallerySection";
 
 const hintStyle = {
   margin: "-4px 0 10px",
@@ -37,6 +38,8 @@ export function PetTab() {
   const workspaces = useWorkspaceListStore((state) => state.workspaces);
   const setWorkspacePet = useWorkspaceListStore((state) => state.setWorkspacePet);
   const [scanning, setScanning] = useState(false);
+  const [invalidPets, setInvalidPets] = useState<ListedPet[]>([]);
+  const [quarantinedPets, setQuarantinedPets] = useState<QuarantinedPet[]>([]);
   const requestId = useRef(0);
 
   const enabledPets = useMemo(
@@ -48,8 +51,13 @@ export function PetTab() {
     const currentRequest = ++requestId.current;
     setScanning(true);
     try {
-      const listed = await listPets();
-      if (currentRequest === requestId.current) setPets(candidatesFromListedPets(listed));
+      const [listed, quarantined] = await Promise.all([listPets(), listQuarantinedPets()]);
+      if (currentRequest === requestId.current) {
+        const candidates = candidatesFromListedPets(listed);
+        setPets(candidates.candidates);
+        setInvalidPets(candidates.invalid);
+        setQuarantinedPets(quarantined);
+      }
     } catch (error) {
       console.warn("[pets] Failed to rescan pets:", error);
     } finally {
@@ -78,6 +86,24 @@ export function PetTab() {
     }
     const index = enabledPets.findIndex((pet) => pet.id === currentId);
     return enabledPets[(index + 1 + enabledPets.length) % enabledPets.length]?.id;
+  };
+
+  const quarantine = async (folder: string) => {
+    try {
+      await quarantinePet(folder);
+      await rescan();
+    } catch (error) {
+      console.warn("[pets] Failed to quarantine pet:", error);
+    }
+  };
+
+  const restore = async (folder: string) => {
+    try {
+      await restorePet(folder);
+      await rescan();
+    } catch (error) {
+      console.warn("[pets] Failed to restore pet:", error);
+    }
   };
 
   return (
@@ -121,9 +147,10 @@ export function PetTab() {
                   gap: 4,
                 }}
               >
-                <span style={{ display: "flex", marginRight: -8 }}><PetSprite atlasUrl={pet.atlasUrl} state="running" height={46} /></span>
+                <span style={{ display: "flex", marginRight: -8 }}><PetSprite atlasUrl={pet.atlasUrl} state="running" height={46} rows={pet.rows} /></span>
                 <span style={{ fontSize: 12, maxWidth: "100%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{pet.name}</span>
                 <span style={{ fontSize: 10, color: "var(--cmux-text-dim)" }}>{pet.source === "bundled" ? petSettingsStrings.bundledSourceLabel : petSettingsStrings.externalSourceLabel}</span>
+                <span style={{ fontSize: 10, color: "var(--cmux-text-dim)" }}>8×{pet.rows}</span>
               </button>
             );
           })}
@@ -155,6 +182,37 @@ export function PetTab() {
           {petSettingsStrings.rescanButton}
         </button>
       </section>
+
+      <div style={dividerStyle} />
+      <PetGallerySection installedIds={pets.map((pet) => pet.id)} onInstalled={rescan} />
+
+      {invalidPets.length > 0 && <>
+        <div style={dividerStyle} />
+        <section>
+          <div style={sectionHeadingStyle}>{petSettingsStrings.invalidTitle}</div>
+          <div style={hintStyle}>{petSettingsStrings.invalidHint}</div>
+          <div style={{ display: "grid", gap: 6 }}>
+            {invalidPets.map((pet) => <div key={pet.id} style={{ border: "1px solid var(--cmux-border)", borderRadius: 6, padding: "6px 8px", display: "flex", alignItems: "center", gap: 8 }}>
+              <div style={{ minWidth: 0, flex: 1 }}><div style={{ fontSize: 12 }}>{pet.name}</div><div style={{ color: "var(--cmux-text-dim)", fontSize: 10 }}>{pet.warning ?? "Unknown atlas format"}</div></div>
+              <button type="button" style={dialogButtonStyle} onClick={() => void quarantine(pet.folder)}>{petSettingsStrings.quarantineButton}</button>
+            </div>)}
+          </div>
+        </section>
+      </>}
+
+      {quarantinedPets.length > 0 && <>
+        <div style={dividerStyle} />
+        <section>
+          <div style={sectionHeadingStyle}>{petSettingsStrings.quarantinedTitle}</div>
+          <div style={hintStyle}>{petSettingsStrings.quarantinedHint}</div>
+          <div style={{ display: "grid", gap: 6 }}>
+            {quarantinedPets.map((pet) => <div key={pet.folder} style={{ border: "1px solid var(--cmux-border)", borderRadius: 6, padding: "6px 8px", display: "flex", alignItems: "center", gap: 8 }}>
+              <div style={{ minWidth: 0, flex: 1 }}><div style={{ fontSize: 12 }}>{pet.name}</div><div style={{ color: "var(--cmux-text-dim)", fontSize: 10 }}>{pet.warning ?? (pet.rows ? `8×${pet.rows}` : "Unknown atlas format")}</div></div>
+              <button type="button" style={dialogButtonStyle} onClick={() => void restore(pet.folder)}>{petSettingsStrings.restoreButton}</button>
+            </div>)}
+          </div>
+        </section>
+      </>}
 
       <div style={dividerStyle} />
       <section>

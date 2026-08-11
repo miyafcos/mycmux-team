@@ -87,7 +87,7 @@ export function RemoteTab() {
   return (
     <div>
       <div style={sectionHeadingStyle}>{settingsStrings.remoteTabLabel}</div>
-      <div style={{ maxWidth: 620, fontSize: 11, lineHeight: 1.65, color: "var(--cmux-text-dim)", marginBottom: 12 }}>
+      <div style={{ maxWidth: "min(900px, 100%)", fontSize: 11, lineHeight: 1.65, color: "var(--cmux-text-dim)", marginBottom: 12 }}>
         {settingsStrings.remoteDescription}
       </div>
       <div style={{ fontSize: 11, color: "var(--cmux-text-dim)", marginBottom: 12 }}>

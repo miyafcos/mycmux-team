@@ -8,6 +8,7 @@
 
 import { useEffect, useRef, useState } from "react";
 
+import { OverlayShell } from "../common/OverlayShell";
 import { listenIndexProgress } from "../../lib/ailog";
 import { useAilogStore, SESSION_PAGE_SIZE } from "../../stores/ailogStore";
 import { CostHeatmap } from "./CostHeatmap";
@@ -28,8 +29,6 @@ interface AiLogPanelProps {
 }
 
 export function AiLogPanel({ open, visible, closing = false, onClose }: AiLogPanelProps) {
-  const panelRef = useRef<HTMLDivElement>(null);
-  const previouslyFocusedRef = useRef<HTMLElement | null>(null);
   const wasIndexingRef = useRef(false);
   const [detailOpen, setDetailOpen] = useState(false);
 
@@ -77,35 +76,6 @@ export function AiLogPanel({ open, visible, closing = false, onClose }: AiLogPan
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, running]);
 
-  useEffect(() => {
-    if (!open) return;
-    previouslyFocusedRef.current = document.activeElement as HTMLElement | null;
-    window.setTimeout(() => panelRef.current?.focus(), 0);
-  }, [open]);
-
-  useEffect(() => {
-    if (visible) return;
-    const previous = previouslyFocusedRef.current;
-    if (previous && document.contains(previous)) previous.focus();
-  }, [visible]);
-
-  useEffect(() => {
-    if (!open || closing) return;
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      if (detailOpen) {
-        setDetailOpen(false);
-        store.closeDetail();
-        return;
-      }
-      onClose();
-    };
-    document.addEventListener("keydown", handleKeyDown);
-    return () => document.removeEventListener("keydown", handleKeyDown);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [closing, detailOpen, onClose, open]);
-
   if (!visible) return null;
 
   const { overview, series, models, projects, sessions, loading, error, indexStatus } = store;
@@ -120,48 +90,24 @@ export function AiLogPanel({ open, visible, closing = false, onClose }: AiLogPan
     setDetailOpen(false);
     store.closeDetail();
   };
+  const handleEscape = () => {
+    if (detailOpen) {
+      closeDetail();
+      return true;
+    }
+    return false;
+  };
 
   return (
-    <div
-      className={`cmux-overlay-backdrop${closing ? " is-closing" : ""}`}
-      inert={closing ? true : undefined}
-      aria-hidden={closing ? true : undefined}
-      style={{
-        position: "fixed",
-        inset: 0,
-        background: "var(--cmux-backdrop)",
-        display: "flex",
-        justifyContent: "center",
-        alignItems: "center",
-        zIndex: 1000,
-        padding: 16,
-      }}
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) onClose();
-      }}
+    <OverlayShell
+      open={open}
+      closing={closing}
+      onClose={onClose}
+      onEscape={handleEscape}
+      size="full"
+      ariaLabel="AIログ分析"
+      id="ailog-panel"
     >
-      <div
-        id="ailog-panel"
-        className={`cmux-overlay-panel${closing ? " is-closing" : ""}`}
-        ref={panelRef}
-        tabIndex={-1}
-        role="dialog"
-        aria-modal="true"
-        aria-label="AIログ分析"
-        onMouseDown={(event) => event.stopPropagation()}
-        style={{
-          width: "min(1400px, calc(100vw - 32px))",
-          height: "min(940px, calc(100vh - 56px))",
-          background: "var(--cmux-popover)",
-          border: "1px solid var(--cmux-border)",
-          borderRadius: 10,
-          boxShadow: "var(--cmux-shadow-dialog)",
-          color: "var(--cmux-text)",
-          overflow: "hidden",
-          display: "flex",
-          flexDirection: "column",
-        }}
-      >
         <header
           style={{
             display: "flex",
@@ -320,7 +266,6 @@ export function AiLogPanel({ open, visible, closing = false, onClose }: AiLogPan
             ) : null}
           </div>
         </div>
-      </div>
-    </div>
+    </OverlayShell>
   );
 }

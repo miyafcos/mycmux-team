@@ -87,6 +87,16 @@
      and explicit borders instead of multi-layer glow effects. */
   --cmux-chrome-icon-shadow: none;
   --cmux-chrome-text-shadow: none;
+  --cmux-overlay-z: 1000;
+  --cmux-overlay-z-top: 9999;
+  --cmux-overlay-gutter: 16px;
+  --cmux-overlay-full-width: min(1680px, calc(100vw - 48px));
+  --cmux-overlay-full-height: calc(100vh - 48px);
+  --cmux-overlay-wide-width: min(1280px, calc(100vw - 48px));
+  --cmux-overlay-wide-height: min(900px, calc(100vh - 64px));
+  --cmux-overlay-dialog-width: min(920px, calc(100vw - 32px));
+  --cmux-overlay-dialog-height: min(640px, calc(100vh - 80px));
+  --cmux-overlay-radius: 10px;
 }
 
 @keyframes cmux-overlay-backdrop-in {

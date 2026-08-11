@@ -861,15 +861,62 @@ export async function savePersistentData(data: PersistentData): Promise<void> {
   return invoke<void>("save_persistent_data", { data } satisfies SavePersistentDataArgs);
 }
 
-export interface ListedPet {
-  id: string;
-  name: string;
-  source: "bundled" | "external";
-  atlas_b64?: string | null;
-}
+import type { ListedPet } from "./pets";
+export type { ListedPet } from "./pets";
 
 export async function listPets(): Promise<ListedPet[]> {
   return invoke<ListedPet[]>("list_pets");
+}
+
+export interface GalleryPet {
+  id: string;
+  displayName: string;
+  description: string;
+  tags: string[];
+  likeCount: number;
+  downloadCount: number;
+  previewUrl: string;
+  atlasSize: string;
+  statesDetected: string[];
+}
+
+export interface GalleryPage {
+  pets: GalleryPet[];
+  total: number;
+}
+
+export interface QuarantinedPet {
+  folder: string;
+  name: string;
+  atlas_width?: number | null;
+  atlas_height?: number | null;
+  rows?: number | null;
+  valid: boolean;
+  warning?: string | null;
+}
+
+export async function fetchPetGallery(query = "", page = 1, pageSize = 24, sort = "new"): Promise<GalleryPage> {
+  return invoke<GalleryPage>("fetch_pet_gallery", { query: query.trim() || null, page, pageSize, sort });
+}
+
+export async function fetchPetPreview(previewUrl: string): Promise<string> {
+  return invoke<string>("fetch_pet_preview", { previewUrl });
+}
+
+export async function installPetFromGallery(id: string): Promise<ListedPet> {
+  return invoke<ListedPet>("install_pet_from_gallery", { id });
+}
+
+export async function quarantinePet(folder: string): Promise<string> {
+  return invoke<string>("quarantine_pet", { folder });
+}
+
+export async function restorePet(folder: string): Promise<void> {
+  return invoke<void>("restore_pet", { folder });
+}
+
+export async function listQuarantinedPets(): Promise<QuarantinedPet[]> {
+  return invoke<QuarantinedPet[]>("list_quarantined_pets");
 }
 
 export async function sendSocketResponse(id: number, result: any, error: string | null): Promise<void> {

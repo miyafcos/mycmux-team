@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import "./SettingsDialog.css";
+import { OverlayShell } from "../common/OverlayShell";
 import { useUsageStore } from "../../stores/usageStore";
 import { AppearanceTab } from "./tabs/AppearanceTab";
 import { NotificationsLayoutTab } from "./tabs/NotificationsLayoutTab";
@@ -149,91 +150,18 @@ interface SettingsDialogProps {
 
 export default function SettingsDialog({ closing = false, onClose, onOpenCrsmPalette, onOpenOnlinePanel, initialTab }: SettingsDialogProps) {
   const [activeTab, setActiveTab] = useState<SettingsTabId>(initialTab ?? "appearance");
-  const previouslyFocusedRef = useRef<HTMLElement | null>(null);
-  const panelRef = useRef<HTMLDivElement>(null);
 
   const usageAccounts = useUsageStore((s) => s.accounts);
   const usageReauthCount = usageAccounts.filter((a) => a.state === "needs_relogin").length;
 
-  // Focus capture on open / restore on close, mirroring the pattern used by
-  // KeybindingsModal.tsx and UsageAccountsDialog.tsx.
-  useEffect(() => {
-    previouslyFocusedRef.current = document.activeElement as HTMLElement | null;
-    panelRef.current?.focus();
-    return () => {
-      const prev = previouslyFocusedRef.current;
-      if (prev && document.contains(prev)) {
-        prev.focus();
-      }
-    };
-  }, []);
-
-  // Escape closes the dialog. Nested confirms (Remote tab's token rotation,
-  // the accounts panel's delete) all use window.confirm(), which blocks JS
-  // execution entirely while open, so they can never race with this listener.
-  // A rebind capture in the keybindings tab intercepts Escape in the capture
-  // phase (stopPropagation) before it reaches this bubble-phase handler.
-  useEffect(() => {
-    if (!closing) panelRef.current?.focus();
-  }, [closing]);
-
-  useEffect(() => {
-    if (closing) return;
-    const handler = (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
-      e.preventDefault();
-      onClose();
-    };
-    document.addEventListener("keydown", handler);
-    return () => document.removeEventListener("keydown", handler);
-  }, [closing, onClose]);
-
   return (
-    <div
-      className={`cmux-overlay-backdrop${closing ? " is-closing" : ""}`}
-      inert={closing ? true : undefined}
-      aria-hidden={closing ? true : undefined}
-      style={{
-        position: "fixed",
-        inset: 0,
-        background: "var(--cmux-backdrop)",
-        display: "flex",
-        justifyContent: "center",
-        alignItems: "center",
-        zIndex: 1000,
-        padding: 16,
-      }}
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) {
-          onClose();
-        }
-      }}
+    <OverlayShell
+      open={!closing}
+      closing={closing}
+      onClose={onClose}
+      size="full"
+      ariaLabel="設定"
     >
-      <div
-        className={`cmux-overlay-panel${closing ? " is-closing" : ""}`}
-        ref={panelRef}
-        tabIndex={-1}
-        role="dialog"
-        aria-modal="true"
-        onMouseDown={(e) => e.stopPropagation()}
-        style={{
-          width: 920,
-          maxWidth: "calc(100vw - 32px)",
-          // Fixed height: the dialog frame must not resize (and re-center)
-          // when switching tabs — tab content scrolls inside instead.
-          height: "min(640px, calc(100vh - 80px))",
-          background: "var(--cmux-popover)",
-          border: "1px solid var(--cmux-border)",
-          borderRadius: 10,
-          boxShadow: "var(--cmux-shadow-dialog)",
-          display: "flex",
-          flexDirection: "column",
-          overflow: "hidden",
-          color: "var(--cmux-text)",
-          fontFamily: "'JetBrains Mono', monospace",
-          outline: "none",
-        }}
-      >
         <div
           style={{
             padding: "16px 18px",
@@ -252,7 +180,7 @@ export default function SettingsDialog({ closing = false, onClose, onOpenCrsmPal
         <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: "flex" }}>
           <nav
             style={{
-              width: "clamp(148px, 23vw, 208px)",
+              width: "clamp(168px, 16vw, 280px)",
               flexShrink: 0,
               borderRight: "1px solid var(--cmux-border)",
               overflowY: "auto",
@@ -304,7 +232,6 @@ export default function SettingsDialog({ closing = false, onClose, onOpenCrsmPal
             {activeTab === "appInfo" && <AppInfoTab />}
           </div>
         </div>
-      </div>
-    </div>
+    </OverlayShell>
   );
 }

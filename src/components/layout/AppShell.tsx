@@ -26,7 +26,7 @@ import CrsmPalette, { preloadCrsmSessions } from "../CommandPalette/CrsmPalette"
 import { useKeybindingStore } from "../../stores/keybindingStore";
 import { isEditableTarget } from "../../lib/keybindings";
 import { TAB_SWEEP_OPEN_EVENT } from "./tabSweep";
-import { DASHBOARD_OPEN_EVENT } from "../dashboard/dashboardEvents";
+import { DashboardView } from "../dashboard/DashboardView";
 import { UI_DENSITY_TOKENS, useThemeStore } from "../../stores/themeStore";
 import ErrorBoundary from "../common/ErrorBoundary";
 import { THEME_BACKGROUND_PRESETS } from "../../lib/themeTweaks";
@@ -47,6 +47,7 @@ import {
   resolveNextAttentionTarget,
   useSessionAttentionStore,
 } from "../../stores/sessionAttentionStore";
+import { useDashboardViewStore } from "../../stores/dashboardViewStore";
 
 type Direction = "up" | "down" | "left" | "right";
 
@@ -372,6 +373,9 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
   const [hasCreatedWorkspace, setHasCreatedWorkspace] = useState(false);
   const [isCrsmPaletteOpen, setIsCrsmPaletteOpen] = useState(false);
   const workspaces = useWorkspaceListStore((s) => s.workspaces);
+  const dashboardOpen = useDashboardViewStore((s) => s.open);
+  const toggleDashboard = useDashboardViewStore((s) => s.toggle);
+  const closeDashboard = useDashboardViewStore((s) => s.close);
   const activeId = useWorkspaceListStore((s) => s.activeWorkspaceId);
   const sidebarCollapsed = useUiStore((s) => s.sidebarCollapsed);
   const setActiveWorkspace = useWorkspaceListStore((s) => s.setActiveWorkspace);
@@ -681,6 +685,7 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
     lastActivePaneId,
     isCrsmPaletteOpen,
     isKeybindingsOpen,
+    dashboardOpen,
   });
   stateRef.current = {
     workspaces,
@@ -689,6 +694,7 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
     lastActivePaneId,
     isCrsmPaletteOpen,
     isKeybindingsOpen,
+    dashboardOpen,
   };
 
   useEffect(() => {
@@ -698,8 +704,8 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
         stateRef.current.isKeybindingsOpen
         || stateRef.current.isCrsmPaletteOpen
         || document.getElementById("tab-sweep-panel")
-        || document.getElementById("dashboard-panel")
       ) return;
+      if (stateRef.current.dashboardOpen && !(e.ctrlKey && e.shiftKey && e.key.toLowerCase() === "g")) return;
       if (isPlainXtermInputEvent(e)) return;
       // Skip if focus is on a native editable control (dialog inputs, selects,
       // contentEditable) outside the terminal — e.g. typing into
@@ -741,7 +747,7 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
           break;
 
         case "dashboard.open":
-          window.dispatchEvent(new Event(DASHBOARD_OPEN_EVENT));
+          toggleDashboard();
           break;
 
         case "workspace.close":
@@ -1089,7 +1095,14 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
             position: "relative",
           }}
         >
-          <WorkspaceView />
+          <div style={{ position: "absolute", inset: 0, visibility: dashboardOpen ? "hidden" : "visible", pointerEvents: dashboardOpen ? "none" : "auto" }}>
+            <WorkspaceView />
+          </div>
+          {dashboardOpen && (
+            <ErrorBoundary fallback={chromeCrashFallback("Dashboard")}>
+              <DashboardView onClose={closeDashboard} />
+            </ErrorBoundary>
+          )}
           <PaneDragOverlay />
           <SavepointDragOverlay />
           {keybindingsMounted && (
