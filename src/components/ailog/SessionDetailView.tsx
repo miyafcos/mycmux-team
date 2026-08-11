@@ -98,6 +98,10 @@ export function SessionDetailView({ detail, onClose }: { detail: SessionDetail; 
             {`${kindLabel(detail.session.kind)} · ${detail.session.primaryModel ?? "—"} · ${formatLocalDateTime(detail.session.startedAt)} 〜 ${formatLocalDateTime(detail.session.endedAt)}`}
           </div>
           <div style={{ ...noteStyle, marginTop: 2, overflowWrap: "anywhere" }}>{detail.cwd ?? "作業フォルダ不明"}</div>
+          <div style={{ ...noteStyle, marginTop: 2, overflowWrap: "anywhere" }}>
+            {`要約: ${detail.session.goalSummary?.trim() || detail.aiTitle?.trim() || detail.firstPrompt?.trim() || "（無題）"}`}
+            {detail.session.goalCluster?.trim() ? ` · トピック: ${detail.session.goalCluster.trim()}` : ""}
+          </div>
           <div style={{ display: "flex", gap: 4, marginTop: 5, flexWrap: "wrap" }}>
             {detail.session.workTags.map((tag) => (
               <Chip key={tag} title={workTagHint(tag)}>

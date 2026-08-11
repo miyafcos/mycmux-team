@@ -286,6 +286,8 @@ export interface SessionRow {
   compactCount: number;
   costUsd: number;
   reworkScore: number;
+  goalSummary: string | null;
+  goalCluster: string | null;
 }
 
 export interface SessionsReport {
@@ -424,11 +426,38 @@ export interface IndexStartResult {
   alreadyRunning: boolean;
 }
 
+export interface SummarizeStatus {
+  running: boolean;
+  sessionsDone: number;
+  sessionsTotal: number;
+  sessionsRemaining: number;
+  lastFinishedAt: number;
+  lastError: string | null;
+}
+
+export interface SummarizeProgress {
+  phase: string;
+  sessionsDone: number;
+  sessionsTotal: number;
+  sessionsRemaining: number;
+  elapsedMs: number;
+}
+
+export interface SummarizeStartResult {
+  started: boolean;
+  alreadyRunning: boolean;
+}
+
+export interface SummarizeCancelResult {
+  cancelled: boolean;
+}
+
 export interface IndexCancelResult {
   cancelled: boolean;
 }
 
 export const AILOG_INDEX_PROGRESS_EVENT = "ailog://index-progress";
+export const AILOG_SUMMARIZE_PROGRESS_EVENT = "ailog://summarize-progress";
 
 // ---------------------------------------------------------------------------
 // Commands
@@ -444,6 +473,18 @@ export async function ailogIndexCancel(): Promise<IndexCancelResult> {
 
 export async function ailogIndexStatus(): Promise<IndexStatus> {
   return invoke<IndexStatus>("ailog_index_status");
+}
+
+export async function ailogSummarizeStart(batchSize?: number): Promise<SummarizeStartResult> {
+  return invoke<SummarizeStartResult>("ailog_summarize_start", { batchSize });
+}
+
+export async function ailogSummarizeCancel(): Promise<SummarizeCancelResult> {
+  return invoke<SummarizeCancelResult>("ailog_summarize_cancel");
+}
+
+export async function ailogSummarizeStatus(): Promise<SummarizeStatus> {
+  return invoke<SummarizeStatus>("ailog_summarize_status");
 }
 
 export async function ailogOverview(
@@ -502,6 +543,14 @@ export async function listenIndexProgress(
   handler: (progress: IndexProgress) => void,
 ): Promise<UnlistenFn> {
   return listen<IndexProgress>(AILOG_INDEX_PROGRESS_EVENT, (event) =>
+    handler(event.payload),
+  );
+}
+
+export async function listenSummarizeProgress(
+  handler: (progress: SummarizeProgress) => void,
+): Promise<UnlistenFn> {
+  return listen<SummarizeProgress>(AILOG_SUMMARIZE_PROGRESS_EVENT, (event) =>
     handler(event.payload),
   );
 }

@@ -12,9 +12,11 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 
 use crate::ailog::index::{self, IndexOptions, IndexProgress};
+use crate::ailog::summarize::{self, SummarizeProgress};
 use crate::ailog::{query, Filters, Range};
 
 pub const INDEX_PROGRESS_EVENT: &str = "ailog://index-progress";
+pub const SUMMARIZE_PROGRESS_EVENT: &str = "ailog://summarize-progress";
 
 /// Live indexer state. One indexing pass runs at a time; a second start
 /// request is refused rather than queued so two writers can never race.
@@ -26,6 +28,34 @@ struct IndexerState {
     sessions: AtomicUsize,
     last_finished_at: Mutex<i64>,
     last_error: Mutex<Option<String>>,
+}
+
+/// Summary work owns an external CLI child, so its cancellation state also
+/// keeps the handle needed to terminate that child immediately.
+struct SummarizerState {
+    running: AtomicBool,
+    cancel: Arc<AtomicBool>,
+    sessions_done: AtomicUsize,
+    sessions_total: AtomicUsize,
+    sessions_remaining: AtomicUsize,
+    last_finished_at: Mutex<i64>,
+    last_error: Mutex<Option<String>>,
+    child: Arc<Mutex<Option<std::process::Child>>>,
+}
+
+impl SummarizerState {
+    fn new() -> Self {
+        Self {
+            running: AtomicBool::new(false),
+            cancel: Arc::new(AtomicBool::new(false)),
+            sessions_done: AtomicUsize::new(0),
+            sessions_total: AtomicUsize::new(0),
+            sessions_remaining: AtomicUsize::new(0),
+            last_finished_at: Mutex::new(0),
+            last_error: Mutex::new(None),
+            child: Arc::new(Mutex::new(None)),
+        }
+    }
 }
 
 impl IndexerState {
@@ -45,6 +75,18 @@ impl IndexerState {
 fn indexer_state() -> &'static IndexerState {
     static STATE: OnceLock<IndexerState> = OnceLock::new();
     STATE.get_or_init(IndexerState::new)
+}
+
+fn summarizer_state() -> &'static SummarizerState {
+    static STATE: OnceLock<SummarizerState> = OnceLock::new();
+    STATE.get_or_init(SummarizerState::new)
+}
+
+/// SQLite has one writer at a time. This gate makes index and summary starts
+/// mutually exclusive even when the two button clicks arrive concurrently.
+fn runner_gate() -> &'static AtomicBool {
+    static GATE: AtomicBool = AtomicBool::new(false);
+    &GATE
 }
 
 fn now_ms() -> i64 {
@@ -79,12 +121,16 @@ pub async fn ailog_index_start(
     app: AppHandle,
     args: IndexStartArgs,
 ) -> Result<IndexStartResult, String> {
+    if runner_gate().compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+        return Ok(IndexStartResult { started: false, already_running: true });
+    }
     let state = indexer_state();
     if state
         .running
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
         .is_err()
     {
+        runner_gate().store(false, Ordering::SeqCst);
         return Ok(IndexStartResult {
             started: false,
             already_running: true,
@@ -104,6 +150,7 @@ pub async fn ailog_index_start(
         Ok(path) => path,
         Err(err) => {
             state.running.store(false, Ordering::SeqCst);
+            runner_gate().store(false, Ordering::SeqCst);
             return Err(err);
         }
     };
@@ -157,11 +204,128 @@ pub async fn ailog_index_start(
             }
         }
         state.running.store(false, Ordering::SeqCst);
+        runner_gate().store(false, Ordering::SeqCst);
     });
 
     Ok(IndexStartResult {
         started: true,
         already_running: false,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// LLM summaries (F3)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SummarizeStartResult {
+    pub started: bool,
+    pub already_running: bool,
+}
+
+#[tauri::command(async)]
+pub async fn ailog_summarize_start(
+    app: AppHandle,
+    batch_size: Option<u32>,
+) -> Result<SummarizeStartResult, String> {
+    if runner_gate().compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+        return Ok(SummarizeStartResult { started: false, already_running: true });
+    }
+    let state = summarizer_state();
+    if state.running.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+        runner_gate().store(false, Ordering::SeqCst);
+        return Ok(SummarizeStartResult { started: false, already_running: true });
+    }
+    state.cancel.store(false, Ordering::SeqCst);
+    state.sessions_done.store(0, Ordering::Relaxed);
+    state.sessions_total.store(0, Ordering::Relaxed);
+    state.sessions_remaining.store(0, Ordering::Relaxed);
+    *state.last_error.lock().unwrap_or_else(|err| err.into_inner()) = None;
+    let db_path = match crate::ailog::db_path() {
+        Ok(path) => path,
+        Err(err) => {
+            state.running.store(false, Ordering::SeqCst);
+            runner_gate().store(false, Ordering::SeqCst);
+            return Err(err);
+        }
+    };
+    let cancel = state.cancel.clone();
+    let child = state.child.clone();
+    let size = summarize::clamp_batch_size(batch_size);
+    tauri::async_runtime::spawn(async move {
+        let sink: summarize::ProgressSink = {
+            let app = app.clone();
+            Arc::new(move |progress: SummarizeProgress| {
+                let state = summarizer_state();
+                state.sessions_done.store(progress.sessions_done, Ordering::Relaxed);
+                state.sessions_total.store(progress.sessions_total, Ordering::Relaxed);
+                state.sessions_remaining.store(progress.sessions_remaining, Ordering::Relaxed);
+                let _ = app.emit(SUMMARIZE_PROGRESS_EVENT, progress);
+            })
+        };
+        let result = summarize::run_summarize(db_path, size, cancel, child, Some(sink)).await;
+        let state = summarizer_state();
+        match result {
+            Ok(report) => {
+                state.sessions_done.store(report.sessions_done, Ordering::Relaxed);
+                state.sessions_total.store(report.sessions_total, Ordering::Relaxed);
+                state.sessions_remaining.store(report.sessions_remaining, Ordering::Relaxed);
+                *state.last_finished_at.lock().unwrap_or_else(|err| err.into_inner()) = now_ms();
+                if !report.errors.is_empty() {
+                    *state.last_error.lock().unwrap_or_else(|err| err.into_inner()) = Some(report.errors.join("; "));
+                }
+            }
+            Err(err) => *state.last_error.lock().unwrap_or_else(|error| error.into_inner()) = Some(err),
+        }
+        state.running.store(false, Ordering::SeqCst);
+        runner_gate().store(false, Ordering::SeqCst);
+    });
+    Ok(SummarizeStartResult { started: true, already_running: false })
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SummarizeCancelResult {
+    pub cancelled: bool,
+}
+
+#[tauri::command(async)]
+pub async fn ailog_summarize_cancel() -> Result<SummarizeCancelResult, String> {
+    let state = summarizer_state();
+    let running = state.running.load(Ordering::SeqCst);
+    state.cancel.store(true, Ordering::SeqCst);
+    if let Some(mut child) = state.child.lock().unwrap_or_else(|err| err.into_inner()).take() {
+        let _ = std::process::Command::new("taskkill")
+            .args(["/PID", &child.id().to_string(), "/T", "/F"])
+            .status();
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    Ok(SummarizeCancelResult { cancelled: running })
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SummarizeStatus {
+    pub running: bool,
+    pub sessions_done: usize,
+    pub sessions_total: usize,
+    pub sessions_remaining: usize,
+    pub last_finished_at: i64,
+    pub last_error: Option<String>,
+}
+
+#[tauri::command(async)]
+pub async fn ailog_summarize_status() -> Result<SummarizeStatus, String> {
+    let state = summarizer_state();
+    Ok(SummarizeStatus {
+        running: state.running.load(Ordering::SeqCst),
+        sessions_done: state.sessions_done.load(Ordering::Relaxed),
+        sessions_total: state.sessions_total.load(Ordering::Relaxed),
+        sessions_remaining: state.sessions_remaining.load(Ordering::Relaxed),
+        last_finished_at: *state.last_finished_at.lock().unwrap_or_else(|err| err.into_inner()),
+        last_error: state.last_error.lock().unwrap_or_else(|err| err.into_inner()).clone(),
     })
 }
 

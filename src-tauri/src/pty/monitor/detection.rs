@@ -22,7 +22,11 @@ pub(super) fn build_child_index(sys: &System) -> HashMap<Pid, Vec<Pid>> {
     child_index
 }
 
-pub(super) fn deepest_child_pid(sys: &System, child_index: &HashMap<Pid, Vec<Pid>>, pid: Pid) -> Pid {
+pub(super) fn deepest_child_pid(
+    sys: &System,
+    child_index: &HashMap<Pid, Vec<Pid>>,
+    pid: Pid,
+) -> Pid {
     let next_child = child_index
         .get(&pid)
         .into_iter()
@@ -41,11 +45,25 @@ pub(super) fn deepest_child_pid(sys: &System, child_index: &HashMap<Pid, Vec<Pid
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum DetectedAgentKind {
     Codex = 1,
     Claude = 2,
     ClaudeCodex = 3,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum AgentDetectionSource {
+    InterpreterScript,
+    ExecutableName,
+}
+
+#[derive(Clone, Copy)]
+struct AgentDescendantCandidate {
+    kind: DetectedAgentKind,
+    pid: Pid,
+    depth: usize,
+    source: AgentDetectionSource,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -160,8 +178,8 @@ where
     }
 
     let previous_is_claude_codex = previous_agent_kind == Some("claude-codex");
-    let previous_session_id = previous_session_id
-        .filter(|candidate| !excluded_session_ids.contains(candidate));
+    let previous_session_id =
+        previous_session_id.filter(|candidate| !excluded_session_ids.contains(candidate));
     let cached_session_id =
         cached_session_id.filter(|candidate| !excluded_session_ids.contains(candidate));
 
@@ -207,8 +225,7 @@ where
         Some("claude") => "claude",
         _ => return None,
     };
-    previous_session_id
-        .map(|session_id| AgentSessionAttribution::new(previous_kind, session_id))
+    previous_session_id.map(|session_id| AgentSessionAttribution::new(previous_kind, session_id))
 }
 
 pub(super) fn mapping_matches_agent_session(
@@ -373,12 +390,7 @@ where
     detected
 }
 
-pub(super) fn agent_kind_from_process(sys: &System, pid: Pid) -> Option<DetectedAgentKind> {
-    let process = sys.process(pid)?;
-    let name = process.name().to_string_lossy();
-    if is_system_process(&name) || is_shell_process(&name) {
-        return None;
-    }
+fn agent_kind_from_executable_name(name: &str) -> Option<DetectedAgentKind> {
     let lower_name = name.to_ascii_lowercase();
     if lower_name.contains("claude-codex") {
         return Some(DetectedAgentKind::ClaudeCodex);
@@ -389,34 +401,73 @@ pub(super) fn agent_kind_from_process(sys: &System, pid: Pid) -> Option<Detected
     if lower_name.contains("codex") {
         return Some(DetectedAgentKind::Codex);
     }
+    None
+}
 
-    let leaf = lower_name.strip_suffix(".exe").unwrap_or(&lower_name);
-    if leaf != "node" && leaf != "bun" {
+/// Classify node/bun only from its executable and script-path arguments.
+/// Prompts routinely include arbitrary filesystem paths (including `.claude`),
+/// so later arguments must never participate in agent identity detection.
+pub(super) fn classify_interpreter_cmdline(args: &[String]) -> Option<DetectedAgentKind> {
+    let interpreter = args.first()?.to_ascii_lowercase();
+    let interpreter_leaf = interpreter
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(&interpreter)
+        .strip_suffix(".exe")
+        .unwrap_or(&interpreter);
+    if !matches!(interpreter_leaf, "node" | "bun") {
         return None;
     }
-
-    let lower_cmd = process
-        .cmd()
-        .iter()
-        .map(|arg| arg.to_string_lossy().to_string())
-        .collect::<Vec<String>>()
-        .join(" ")
-        .to_ascii_lowercase();
-    if lower_cmd.contains("claude-codex") {
-        return Some(DetectedAgentKind::ClaudeCodex);
-    }
-    if lower_cmd.contains("claude") {
-        return Some(DetectedAgentKind::Claude);
-    }
-    if lower_cmd.contains("@openai/codex")
-        || lower_cmd.contains("codex.js")
-        || lower_cmd.contains(" codex")
-        || lower_cmd.contains("\\codex")
-        || lower_cmd.contains("/codex")
+    let script_path = args.get(1)?.to_ascii_lowercase();
+    if script_path.contains("@openai/codex")
+        || script_path.contains("/codex")
+        || script_path.contains("\\codex")
     {
         return Some(DetectedAgentKind::Codex);
     }
+    if script_path.contains("claude-codex") {
+        return Some(DetectedAgentKind::ClaudeCodex);
+    }
+    if script_path.contains("claude") {
+        return Some(DetectedAgentKind::Claude);
+    }
     None
+}
+
+fn agent_detection_from_process(
+    sys: &System,
+    pid: Pid,
+) -> Option<(DetectedAgentKind, AgentDetectionSource)> {
+    let process = sys.process(pid)?;
+    let name = process.name().to_string_lossy();
+    if is_system_process(&name) || is_shell_process(&name) {
+        return None;
+    }
+    if let Some(kind) = agent_kind_from_executable_name(&name) {
+        return Some((kind, AgentDetectionSource::ExecutableName));
+    }
+    let args = process
+        .cmd()
+        .iter()
+        .map(|arg| arg.to_string_lossy().to_string())
+        .collect::<Vec<String>>();
+    classify_interpreter_cmdline(&args).map(|kind| (kind, AgentDetectionSource::InterpreterScript))
+}
+
+pub(super) fn agent_kind_from_process(sys: &System, pid: Pid) -> Option<DetectedAgentKind> {
+    agent_detection_from_process(sys, pid).map(|(kind, _)| kind)
+}
+
+pub(super) fn mapping_kind_is_grounded_in_detected_process(
+    mapping_kind: &str,
+    detected_kind: DetectedAgentKind,
+) -> bool {
+    matches!(
+        (mapping_kind, detected_kind),
+        ("codex", DetectedAgentKind::Codex)
+            | ("claude", DetectedAgentKind::Claude)
+            | ("claude-codex", DetectedAgentKind::ClaudeCodex)
+    )
 }
 
 pub(super) use crate::util::ids::is_uuid_like;
@@ -494,31 +545,153 @@ pub(super) fn find_agent_descendant(
     child_index: &HashMap<Pid, Vec<Pid>>,
     shell_pid: Pid,
 ) -> Option<(DetectedAgentKind, Pid)> {
-    let mut best: Option<(DetectedAgentKind, Pid)> = None;
+    let deepest_pid = deepest_child_pid(sys, child_index, shell_pid);
+    let mut candidates = Vec::new();
     let mut visited: HashSet<Pid> = HashSet::new();
-    let mut stack = child_index.get(&shell_pid).cloned().unwrap_or_default();
+    let mut stack = child_index
+        .get(&shell_pid)
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|pid| (pid, 1usize))
+        .collect::<Vec<_>>();
 
-    while let Some(pid) = stack.pop() {
+    while let Some((pid, depth)) = stack.pop() {
         if !visited.insert(pid) {
             continue;
         }
-        if let Some(kind) = agent_kind_from_process(sys, pid) {
-            best = Some(match best {
-                Some((current_kind, current_pid)) if current_kind >= kind => {
-                    (current_kind, current_pid)
-                }
-                _ => (kind, pid),
+        if let Some((kind, source)) = agent_detection_from_process(sys, pid) {
+            candidates.push(AgentDescendantCandidate {
+                kind,
+                pid,
+                depth,
+                source,
             });
-            if best.map(|(best_kind, _)| best_kind) == Some(DetectedAgentKind::ClaudeCodex) {
-                break;
-            }
         }
         if let Some(children) = child_index.get(&pid) {
-            stack.extend(children.iter().copied());
+            stack.extend(children.iter().copied().map(|child| (child, depth + 1)));
         }
     }
 
-    best
+    select_agent_descendant(&candidates, deepest_pid)
+        .map(|candidate| (candidate.kind, candidate.pid))
+}
+
+fn select_agent_descendant(
+    candidates: &[AgentDescendantCandidate],
+    deepest_pid: Pid,
+) -> Option<AgentDescendantCandidate> {
+    candidates
+        .iter()
+        .copied()
+        .find(|candidate| candidate.pid == deepest_pid)
+        .or_else(|| {
+            candidates
+                .iter()
+                .copied()
+                .max_by_key(|candidate| (candidate.source, candidate.depth, candidate.pid.as_u32()))
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn interpreter_classification_ignores_prompt_paths() {
+        let args = vec![
+            "node.exe".to_string(),
+            "C:\\Users\\miyaz\\AppData\\Roaming\\npm\\node_modules\\@openai\\codex\\bin\\codex.js"
+                .to_string(),
+            "--no-alt-screen".to_string(),
+            "Handoff C:\\Users\\miyaz\\.claude\\dispatch".to_string(),
+        ];
+        assert_eq!(
+            classify_interpreter_cmdline(&args),
+            Some(DetectedAgentKind::Codex)
+        );
+    }
+
+    #[test]
+    fn interpreter_classifies_claude_from_its_script_path() {
+        let args = vec![
+            "node.exe".to_string(),
+            "C:\\tools\\claude\\cli.js".to_string(),
+            "prompt".to_string(),
+        ];
+        assert_eq!(
+            classify_interpreter_cmdline(&args),
+            Some(DetectedAgentKind::Claude)
+        );
+    }
+
+    #[test]
+    fn interpreter_does_not_classify_prompt_mentions() {
+        let args = vec![
+            "node.exe".to_string(),
+            "C:\\tools\\app.js".to_string(),
+            "codex is only mentioned in this prompt".to_string(),
+        ];
+        assert_eq!(classify_interpreter_cmdline(&args), None);
+    }
+
+    #[test]
+    fn powershell_node_codex_tree_prefers_the_deepest_direct_codex_process() {
+        // Models PowerShell -> node(codex.js, prompt includes .claude) -> codex.exe.
+        // PowerShell is not an agent candidate, while both lower nodes are Codex.
+        let node_with_codex_script = AgentDescendantCandidate {
+            kind: DetectedAgentKind::Codex,
+            pid: Pid::from_u32(20),
+            depth: 2,
+            source: AgentDetectionSource::InterpreterScript,
+        };
+        let codex_child = AgentDescendantCandidate {
+            kind: DetectedAgentKind::Codex,
+            pid: Pid::from_u32(30),
+            depth: 3,
+            source: AgentDetectionSource::ExecutableName,
+        };
+        let selected =
+            select_agent_descendant(&[node_with_codex_script, codex_child], codex_child.pid).unwrap();
+        assert_eq!(selected.kind, DetectedAgentKind::Codex);
+        assert_eq!(selected.pid, codex_child.pid);
+    }
+
+    #[test]
+    fn descendant_selection_prefers_executable_evidence_then_depth() {
+        let shallow_executable = AgentDescendantCandidate {
+            kind: DetectedAgentKind::Codex,
+            pid: Pid::from_u32(10),
+            depth: 1,
+            source: AgentDetectionSource::ExecutableName,
+        };
+        let deep_interpreter = AgentDescendantCandidate {
+            kind: DetectedAgentKind::Claude,
+            pid: Pid::from_u32(40),
+            depth: 4,
+            source: AgentDetectionSource::InterpreterScript,
+        };
+        let selected =
+            select_agent_descendant(&[shallow_executable, deep_interpreter], Pid::from_u32(99))
+                .unwrap();
+        assert_eq!(selected.kind, DetectedAgentKind::Codex);
+    }
+
+    #[test]
+    fn mapping_persistence_requires_the_matching_process_identity() {
+        assert!(mapping_kind_is_grounded_in_detected_process(
+            "codex",
+            DetectedAgentKind::Codex
+        ));
+        assert!(!mapping_kind_is_grounded_in_detected_process(
+            "claude",
+            DetectedAgentKind::Codex
+        ));
+        assert!(!mapping_kind_is_grounded_in_detected_process(
+            "claude-codex",
+            DetectedAgentKind::Claude
+        ));
+    }
 }
 
 /// Get the CWD of the foreground process (deepest child), falling back to shell CWD.

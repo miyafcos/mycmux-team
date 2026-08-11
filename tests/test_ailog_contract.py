@@ -30,6 +30,9 @@ EXPECTED_COMMANDS = {
     "ailog_index_start",
     "ailog_index_cancel",
     "ailog_index_status",
+    "ailog_summarize_start",
+    "ailog_summarize_cancel",
+    "ailog_summarize_status",
     "ailog_overview",
     "ailog_series",
     "ailog_breakdown",
@@ -118,6 +121,7 @@ def test_module_files_exist() -> None:
         "metrics.rs",
         "price.rs",
         "query.rs",
+        "summarize.rs",
     ]
     missing = [name for name in expected if not (AILOG_MODULE / name).is_file()]
     assert not missing, "missing ailog module files: " + ", ".join(missing)

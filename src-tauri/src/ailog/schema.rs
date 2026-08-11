@@ -146,6 +146,11 @@ CREATE TABLE IF NOT EXISTS summary (
   cost_note    TEXT,
   input_tokens INTEGER,
   output_tokens INTEGER,
+  goal_summary TEXT,
+  goal_cluster TEXT,
+  summary TEXT,
+  cluster TEXT,
+  model TEXT,
   PRIMARY KEY (kind, session_id)
 );
 
@@ -202,9 +207,43 @@ pub fn init(conn: &Connection) -> Result<(), String> {
 
     conn.execute_batch(DDL)
         .map_err(|err| format!("apply schema: {err}"))?;
+    ensure_f3_columns(conn)?;
     conn.pragma_update(None, "user_version", USER_VERSION)
         .map_err(|err| format!("write user_version: {err}"))?;
 
     crate::ailog::price::seed_defaults(conn)?;
+    Ok(())
+}
+
+/// F3 was reserved in the v2 schema, so upgrade its placeholder columns
+/// without bumping `user_version` (which would force a full re-index).
+fn ensure_f3_columns(conn: &Connection) -> Result<(), String> {
+    for (table, column) in [
+        ("session", "goal_summary"),
+        ("session", "goal_cluster"),
+        ("summary", "goal_summary"),
+        ("summary", "goal_cluster"),
+        ("summary", "summary"),
+        ("summary", "cluster"),
+        ("summary", "model"),
+    ] {
+        let mut stmt = conn
+            .prepare(&format!("PRAGMA table_info({table})"))
+            .map_err(|err| format!("inspect {table}: {err}"))?;
+        let present = stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .map_err(|err| format!("read {table} columns: {err}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|err| format!("collect {table} columns: {err}"))?
+            .iter()
+            .any(|name| name == column);
+        if !present {
+            conn.execute(
+                &format!("ALTER TABLE {table} ADD COLUMN {column} TEXT"),
+                [],
+            )
+            .map_err(|err| format!("add {table}.{column}: {err}"))?;
+        }
+    }
     Ok(())
 }

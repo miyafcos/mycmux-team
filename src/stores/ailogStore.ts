@@ -17,6 +17,9 @@ import {
   ailogIndexCancel,
   ailogIndexStart,
   ailogIndexStatus,
+  ailogSummarizeCancel,
+  ailogSummarizeStart,
+  ailogSummarizeStatus,
   ailogModels,
   ailogOverview,
   ailogSeries,
@@ -29,6 +32,8 @@ import {
   type BreakdownReport,
   type IndexProgress,
   type IndexStatus,
+  type SummarizeProgress,
+  type SummarizeStatus,
   type ModelsReport,
   type Overview,
   type SeriesReport,
@@ -49,7 +54,7 @@ export const SESSION_PAGE_SIZE = 100;
 
 export type SessionSort = "cost" | "rework" | "recent";
 
-export type SelectionType = "model" | "tag" | "leaf" | "project";
+export type SelectionType = "model" | "tag" | "topic" | "leaf" | "project";
 
 export interface AilogSelection {
   type: SelectionType;
@@ -97,6 +102,9 @@ interface AilogState {
   indexStatus: IndexStatus | null;
   indexProgress: IndexProgress | null;
   indexError: string | null;
+  summarizeStatus: SummarizeStatus | null;
+  summarizeProgress: SummarizeProgress | null;
+  summarizeError: string | null;
 
   // --- actions ---
   setPreset: (preset: RangePreset) => void;
@@ -118,6 +126,10 @@ interface AilogState {
   applyIndexProgress: (progress: IndexProgress) => void;
   startIndex: (full: boolean) => Promise<void>;
   cancelIndex: () => Promise<void>;
+  refreshSummarizeStatus: () => Promise<void>;
+  applySummarizeProgress: (progress: SummarizeProgress) => void;
+  startSummarize: () => Promise<void>;
+  cancelSummarize: () => Promise<void>;
 }
 
 let refreshSeq = 0;
@@ -175,6 +187,9 @@ const initialState = {
   indexStatus: null,
   indexProgress: null,
   indexError: null,
+  summarizeStatus: null,
+  summarizeProgress: null,
+  summarizeError: null,
 };
 
 export const useAilogStore = create<AilogState>((set, get) => ({
@@ -317,6 +332,40 @@ export const useAilogStore = create<AilogState>((set, get) => ({
       await get().refreshIndexStatus();
     } catch (error) {
       set({ indexError: errorMessage(error) });
+    }
+  },
+
+  refreshSummarizeStatus: async () => {
+    try {
+      const summarizeStatus = await ailogSummarizeStatus();
+      set({ summarizeStatus, summarizeError: summarizeStatus.lastError });
+    } catch (error) {
+      set({ summarizeError: errorMessage(error) });
+    }
+  },
+
+  applySummarizeProgress: (summarizeProgress) => {
+    set({ summarizeProgress });
+    if (summarizeProgress.phase === "done") void get().refreshSummarizeStatus();
+  },
+
+  startSummarize: async () => {
+    set({ summarizeError: null });
+    try {
+      const result = await ailogSummarizeStart();
+      if (result.alreadyRunning) set({ summarizeError: "インデックスまたは要約処理がすでに実行中です" });
+      await get().refreshSummarizeStatus();
+    } catch (error) {
+      set({ summarizeError: errorMessage(error) });
+    }
+  },
+
+  cancelSummarize: async () => {
+    try {
+      await ailogSummarizeCancel();
+      await get().refreshSummarizeStatus();
+    } catch (error) {
+      set({ summarizeError: errorMessage(error) });
     }
   },
 }));

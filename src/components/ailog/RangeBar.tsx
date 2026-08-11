@@ -11,6 +11,8 @@ import {
   formatLocalDateTime,
   type IndexProgress,
   type IndexStatus,
+  type SummarizeProgress,
+  type SummarizeStatus,
   type Overview,
   type RangePreset,
 } from "../../lib/ailog";
@@ -28,6 +30,11 @@ export function RangeBar({
   indexError,
   onStartIndex,
   onCancelIndex,
+  summarizeStatus,
+  summarizeProgress,
+  summarizeError,
+  onStartSummarize,
+  onCancelSummarize,
   onRefresh,
   loading,
   excludeSynthetic,
@@ -46,6 +53,11 @@ export function RangeBar({
   indexError: string | null;
   onStartIndex: () => void;
   onCancelIndex: () => void;
+  summarizeStatus: SummarizeStatus | null;
+  summarizeProgress: SummarizeProgress | null;
+  summarizeError: string | null;
+  onStartSummarize: () => void;
+  onCancelSummarize: () => void;
   onRefresh: () => void;
   loading: boolean;
   excludeSynthetic: boolean;
@@ -58,6 +70,9 @@ export function RangeBar({
   const total = indexProgress?.filesTotal ?? indexStatus?.filesTotal ?? 0;
   const pct = total > 0 ? Math.min(100, (done / total) * 100) : 0;
   const freshness = overview?.indexFreshness;
+  const summarizing = summarizeStatus?.running ?? false;
+  const summaryDone = summarizeProgress?.sessionsDone ?? summarizeStatus?.sessionsDone ?? 0;
+  const summaryTotal = summarizeProgress?.sessionsTotal ?? summarizeStatus?.sessionsTotal ?? 0;
   const customIncomplete = preset === "custom" && (!customFrom || !customTo);
 
   return (
@@ -104,6 +119,15 @@ export function RangeBar({
             再インデックス
           </button>
         )}
+        {summarizing ? (
+          <button type="button" onClick={onCancelSummarize} style={{ ...subtleButtonStyle, color: "var(--cmux-red)" }}>
+            要約を中断
+          </button>
+        ) : (
+          <button type="button" onClick={onStartSummarize} disabled={running} style={{ ...subtleButtonStyle, opacity: running ? 0.5 : 1 }}>
+            要約を実行
+          </button>
+        )}
       </div>
 
       {customIncomplete ? (
@@ -130,6 +154,13 @@ export function RangeBar({
           </span>
         </div>
       ) : null}
+
+      {summarizing ? (
+        <div style={{ fontSize: 10, color: "var(--cmux-text-secondary)" }}>
+          {`処理済み ${formatCount(summaryDone)} / 全 ${formatCount(summaryTotal)}`}
+        </div>
+      ) : null}
+      {summarizeError ? <div style={{ fontSize: 10, color: "var(--cmux-red)" }}>{summarizeError}</div> : null}
 
       <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
         <label style={checkboxLabelStyle}>

@@ -9,7 +9,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import { OverlayShell } from "../common/OverlayShell";
-import { listenIndexProgress } from "../../lib/ailog";
+import { listenIndexProgress, listenSummarizeProgress } from "../../lib/ailog";
 import { useAilogStore, SESSION_PAGE_SIZE } from "../../stores/ailogStore";
 import { CostHeatmap } from "./CostHeatmap";
 import { ModelTable } from "./ModelTable";
@@ -30,6 +30,7 @@ interface AiLogPanelProps {
 
 export function AiLogPanel({ open, visible, closing = false, onClose }: AiLogPanelProps) {
   const wasIndexingRef = useRef(false);
+  const wasSummarizingRef = useRef(false);
   const [detailOpen, setDetailOpen] = useState(false);
 
   const store = useAilogStore();
@@ -39,7 +40,19 @@ export function AiLogPanel({ open, visible, closing = false, onClose }: AiLogPan
   useEffect(() => {
     if (!open) return;
     void store.refreshIndexStatus();
+    void store.refreshSummarizeStatus();
     void store.refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    void listenSummarizeProgress((progress) => store.applySummarizeProgress(progress)).then((fn) => {
+      if (cancelled) fn(); else unlisten = fn;
+    });
+    return () => { cancelled = true; unlisten?.(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
@@ -75,6 +88,19 @@ export function AiLogPanel({ open, visible, closing = false, onClose }: AiLogPan
     return () => window.clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, running]);
+
+  const summarizing = store.summarizeStatus?.running ?? false;
+  useEffect(() => {
+    if (!open) return;
+    if (!summarizing) {
+      if (wasSummarizingRef.current) { wasSummarizingRef.current = false; void store.refresh(); }
+      return;
+    }
+    wasSummarizingRef.current = true;
+    const timer = window.setInterval(() => void store.refreshSummarizeStatus(), 1_500);
+    return () => window.clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, summarizing]);
 
   if (!visible) return null;
 
@@ -148,6 +174,11 @@ export function AiLogPanel({ open, visible, closing = false, onClose }: AiLogPan
               indexError={store.indexError}
               onStartIndex={() => void store.startIndex(false)}
               onCancelIndex={() => void store.cancelIndex()}
+              summarizeStatus={store.summarizeStatus}
+              summarizeProgress={store.summarizeProgress}
+              summarizeError={store.summarizeError}
+              onStartSummarize={() => void store.startSummarize()}
+              onCancelSummarize={() => void store.cancelSummarize()}
               onRefresh={() => void store.refresh()}
               loading={loading}
               excludeSynthetic={store.excludeSynthetic}

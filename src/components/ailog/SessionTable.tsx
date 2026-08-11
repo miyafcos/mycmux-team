@@ -72,6 +72,7 @@ export function SessionTable({
             <tr>
               <th style={thLeftStyle}>日時</th>
               <th style={thLeftStyle}>主題</th>
+              <th style={thLeftStyle}>要約</th>
               <th style={thLeftStyle}>案件</th>
               <th style={thLeftStyle}>モデル</th>
               <th style={thStyle}>ターン</th>
@@ -93,6 +94,9 @@ export function SessionTable({
                   <td style={tdStyle}>{formatLocalDateTime(row.startedAt)}</td>
                   <td style={tdLeftStyle} title={row.title ?? undefined}>
                     {row.title?.trim() || "（無題）"}
+                  </td>
+                  <td style={{ ...tdLeftStyle, maxWidth: 260 }} title={row.goalSummary?.trim() || row.title || undefined}>
+                    {row.goalSummary?.trim() || row.title?.trim() || "（無題）"}
                   </td>
                   <td style={tdLeftStyle} title={row.projectLabel ?? undefined}>
                     {row.projectLabel ?? "—"}

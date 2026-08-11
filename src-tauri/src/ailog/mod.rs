@@ -20,6 +20,7 @@ pub mod parse_codex;
 pub mod price;
 pub mod query;
 pub mod schema;
+pub mod summarize;
 
 #[cfg(test)]
 mod tests;

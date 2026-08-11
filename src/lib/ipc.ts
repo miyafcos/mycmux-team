@@ -256,6 +256,7 @@ export interface PtyMetadata {
   process_name?: string;
   process_status?: "working" | "idle";
   process_status_at?: number;
+  last_output_at?: number;
   agent_active: boolean;
   claude_session_id?: string;
   agent_kind?: AgentSessionKind;

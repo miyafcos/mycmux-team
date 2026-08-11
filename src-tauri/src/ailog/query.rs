@@ -1500,6 +1500,8 @@ pub struct SessionRow {
     pub compact_count: i64,
     pub cost_usd: f64,
     pub rework_score: f64,
+    pub goal_summary: Option<String>,
+    pub goal_cluster: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1559,7 +1561,8 @@ pub fn sessions(
             .query_row(
                 "SELECT ai_title, first_prompt, project_label, git_branch, origin, \
                  primary_model, model_count, is_sidechain, work_tags, started_at, ended_at, \
-                 wall_ms, active_ms, turn_count, user_msg_count, compact_count, cost_usd \
+                 wall_ms, active_ms, turn_count, user_msg_count, compact_count, cost_usd, \
+                 goal_summary, goal_cluster \
                  FROM session WHERE kind = ?1 AND session_id = ?2",
                 rusqlite::params![key.0, key.1],
                 |row| {
@@ -1585,6 +1588,8 @@ pub fn sessions(
                         compact_count: row.get(15)?,
                         cost_usd: row.get(16)?,
                         rework_score: 0.0,
+                        goal_summary: row.get(17)?,
+                        goal_cluster: row.get(18)?,
                     })
                 },
             )
@@ -1784,13 +1789,15 @@ pub fn session_detail(
         prompt_chars,
         read_files,
         written_files,
+        goal_summary,
+        goal_cluster,
     ) = conn
         .query_row(
             "SELECT ai_title, first_prompt, project_label, git_branch, origin, primary_model, \
              model_count, is_sidechain, work_tags, started_at, ended_at, wall_ms, active_ms, \
              turn_count, user_msg_count, compact_count, cost_usd, cwd, goal_key, agent_names, \
              cli_version, plan_type, read_chars, exec_chars, write_chars, fetch_chars, \
-             other_chars, prompt_chars, read_files, written_files \
+             other_chars, prompt_chars, read_files, written_files, goal_summary, goal_cluster \
              FROM session WHERE kind = ?1 AND session_id = ?2",
             rusqlite::params![kind, session_id],
             |row| {
@@ -1825,6 +1832,8 @@ pub fn session_detail(
                     row.get::<_, i64>(27)?,
                     row.get::<_, i64>(28)?,
                     row.get::<_, i64>(29)?,
+                    row.get::<_, Option<String>>(30)?,
+                    row.get::<_, Option<String>>(31)?,
                 ))
             },
         )
@@ -2026,6 +2035,8 @@ pub fn session_detail(
             compact_count,
             cost_usd,
             rework_score: rework.score,
+            goal_summary,
+            goal_cluster,
         },
         cwd,
         ai_title,

@@ -10,6 +10,7 @@ import { useShallow } from "zustand/react/shallow";
 import type { Pane, PaneTab } from "../../types";
 import { getAgent, getDefaultAgent } from "../../lib/agents";
 import { getTabDisplayLabel } from "../../lib/tabDisplayLabel";
+import { resolveDisplayAgentKind } from "../../lib/agentDisplayKind";
 import { agentKindColor } from "../../lib/agentKindColors";
 import { crsmCreateHandoff } from "../../lib/ipc";
 import {
@@ -435,12 +436,14 @@ const AGENT_KIND_LABELS: Record<string, string> = {
   "claude": "Claude Code",
   "codex": "Codex",
   "claude-codex": "Claude＋Codex",
+  "antigravity": "Antigravity",
 };
 
 const AGENT_KIND_BADGE_LABELS: Record<string, string> = {
   "claude": "Claude",
   "codex": "Codex",
   "claude-codex": "Hybrid",
+  "antigravity": "Antigravity",
 };
 
 export function resolveActiveAgentLabel(
@@ -547,7 +550,7 @@ function TabStatusIndicatorDot({ indicator }: { indicator: TabStatusIndicator })
   );
 }
 
-function TabAgentIcon({ kind, indicator }: { kind: string | undefined; indicator: TabStatusIndicator }) {
+function TabAgentIcon({ kind, indicator }: { kind: string | null | undefined; indicator: TabStatusIndicator }) {
   if (!agentKindColor(kind)) return null;
   return (
     <span style={{ position: "relative", display: "inline-flex", width: 14, height: 14, flexShrink: 0 }}>
@@ -718,7 +721,10 @@ function PaneTabListMenu({
   const renderTabRow = ({ tab, category, hoisted, isPinned }: PaneTabMenuRow, isLastHoisted: boolean) => {
     const isTabActive = tab.id === pane.activeTabId;
     const tabMeta = metadataBySession[tab.sessionId];
-    const rowAgentKind = tabMeta?.agentKind ?? tab.agentKind;
+    const rowAgentKind = resolveDisplayAgentKind(
+      tabMeta?.agentKind ?? tab.agentKind,
+      tab.commandArgv,
+    );
     const rowKindColor = agentKindColor(rowAgentKind);
     const status = deriveDisplayStatus(tabMeta);
     const label = getTabDisplayLabel(tab, isTabActive);
@@ -1028,12 +1034,15 @@ export default memo(function PaneTabBar({
   );
   const activeStatus: EffectiveStatus = deriveDisplayStatus(activeMeta);
   const activeLastLog = activeTab ? lastLogBySession[activeTab.sessionId] : undefined;
-  const activeAgentKind = activeMeta?.agentKind ?? activeTab?.agentKind;
+  const activeAgentKind = resolveDisplayAgentKind(
+    activeMeta?.agentKind ?? activeTab?.agentKind,
+    activeTab?.commandArgv,
+  );
   const activeKindColor = agentKindColor(activeAgentKind);
   const activeAgentLabel = activeTab
     ? resolveActiveAgentLabel(
         activeTab.agentId,
-        activeMeta?.agentKind ?? activeTab.agentKind,
+        activeAgentKind ?? undefined,
         getAgent(activeTab.agentId)?.name,
       )
     : "シェル";
@@ -1534,11 +1543,14 @@ export default memo(function PaneTabBar({
         {pane.tabs.map((tab, tabIndex) => {
           const isTabActive = tab.id === pane.activeTabId;
           const tabMeta = metadataBySession[tab.sessionId];
-          const tabKindColor = agentKindColor(tabMeta?.agentKind ?? tab.agentKind);
+          const tabAgentKind = resolveDisplayAgentKind(
+            tabMeta?.agentKind ?? tab.agentKind,
+            tab.commandArgv,
+          );
+          const tabKindColor = agentKindColor(tabAgentKind);
           const tabNotificationCount = tabMeta?.notificationCount ?? 0;
           const tabWorkDoneCount = tabMeta?.workDoneCount ?? 0;
           const tabEffectiveStatus = deriveDisplayStatus(tabMeta);
-          const tabAgentKind = tabMeta?.agentKind ?? tab.agentKind;
           const canonicalAttention = attentionBySession[tab.sessionId];
           const canonicalUnreadCategory = isAttentionUnseen(
             tab.id,

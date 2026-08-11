@@ -240,6 +240,8 @@ function App() {
         gitBranch: meta.git_branch,
         processTitle: meta.process_name ?? undefined,
         processIsShell,
+        backendLastOutputAt: meta.last_output_at,
+        backendProcessStatus: meta.process_status,
         claudeSessionId: sessionClaimAccepted && agentActive ? meta.claude_session_id ?? undefined : undefined,
         agentKind: sessionClaimAccepted && agentActive ? meta.agent_kind ?? undefined : undefined,
         agentSessionId: sessionClaimAccepted && agentActive ? meta.agent_session_id ?? undefined : undefined,

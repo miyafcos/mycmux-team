@@ -10,6 +10,7 @@
 import type { SessionRow } from "../../lib/ailog";
 import type { AilogSelection, SessionSort } from "../../stores/ailogStore";
 import { UNKNOWN_PROJECT, UNTITLED, type LeafDimension } from "./sankeyModel";
+import { UNSUMMARIZED_KEY } from "./sankeyModel";
 
 export function sortSessions(rows: SessionRow[], sort: SessionSort): SessionRow[] {
   const copy = [...rows];
@@ -39,6 +40,9 @@ export function filterSessions(
   if (!selection) return rows;
   if (selection.type === "tag") {
     return rows.filter((row) => row.workTags.includes(selection.key));
+  }
+  if (selection.type === "topic") {
+    return rows.filter((row) => (row.goalCluster?.trim() || UNSUMMARIZED_KEY) === selection.key);
   }
   if (selection.type === "leaf" && leafDimension === "title") {
     return rows.filter((row) => (row.title?.trim() || UNTITLED) === selection.key);

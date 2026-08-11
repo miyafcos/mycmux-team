@@ -488,7 +488,10 @@ pub fn start_monitor(
                     if let (Some(kind), Some(current_agent_session_id)) =
                         (agent_kind.as_deref(), agent_session_id.as_deref())
                     {
-                        if should_write_agent_session_mapping(
+                        let process_identity_matches = foreground_agent.is_some_and(|(detected_kind, _)| {
+                            mapping_kind_is_grounded_in_detected_process(kind, detected_kind)
+                        });
+                        if process_identity_matches && should_write_agent_session_mapping(
                             &agent_mappings,
                             &session_id,
                             kind,
@@ -540,6 +543,7 @@ pub fn start_monitor(
                         process_name: process_name.clone(),
                         process_status,
                         process_status_at,
+                        last_output_at: last_output_evidence_at.get(&session_id).copied(),
                         agent_active,
                         claude_session_id: claude_session_id.clone(),
                         agent_kind: agent_kind.clone(),
@@ -553,6 +557,7 @@ pub fn start_monitor(
                                 || old.process_name != process_name
                                 || old.process_status != metadata.process_status
                                 || old.process_status_at != metadata.process_status_at
+                                || old.last_output_at != metadata.last_output_at
                                 || old.agent_active != agent_active
                                 || old.claude_session_id != claude_session_id
                                 || old.agent_kind != agent_kind

@@ -27,6 +27,7 @@ pub struct PtyMetadata {
     pub process_name: Option<String>,
     pub process_status: Option<String>,
     pub process_status_at: Option<i64>,
+    pub last_output_at: Option<u64>,
     pub agent_active: bool,
     pub claude_session_id: Option<String>,
     pub agent_kind: Option<String>,

@@ -26,6 +26,7 @@
             process_name: Some("codex".to_string()),
             process_status: Some("working".to_string()),
             process_status_at: None,
+            last_output_at: Some(1_725_000_000_123),
             agent_active: true,
             claude_session_id,
             agent_kind,
@@ -34,6 +35,7 @@
 
         assert_eq!(metadata.agent_kind.as_deref(), Some("codex"));
         assert!(metadata.agent_session_id.is_none());
+        assert_eq!(metadata.last_output_at, Some(1_725_000_000_123));
     }
 
     #[test]

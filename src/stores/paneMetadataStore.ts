@@ -11,6 +11,9 @@ export interface PaneMetadata {
   gitBranch?: string;
   processTitle?: string;
   processIsShell?: boolean;
+  /** Backend PTY output timestamp, independent of frontend visibility. */
+  backendLastOutputAt?: number;
+  backendProcessStatus?: "working" | "idle";
   outputActive?: boolean;
   workingPatternVisible?: boolean;
   agentStatus?: AgentStatus;

@@ -2,6 +2,8 @@ import type { PaneMetadata } from "../stores/paneMetadataStore";
 
 export type EffectiveStatus = "waiting" | "working" | "idle";
 
+const BACKEND_OUTPUT_ACTIVE_WINDOW_MS = 15_000;
+
 const SHELL_LEAVES: ReadonlySet<string> = new Set([
   "bash",
   "sh",
@@ -28,7 +30,10 @@ export function deriveEffectiveStatus(meta?: PaneMetadata): EffectiveStatus {
 
 export function deriveDisplayStatus(meta?: PaneMetadata): EffectiveStatus {
   if (meta?.agentStatus === "waiting") return "waiting";
-  if (meta?.processIsShell === false && (meta.outputActive || meta.workingPatternVisible)) {
+  const backendOutputRecent = meta?.backendLastOutputAt !== undefined
+    && Date.now() - meta.backendLastOutputAt <= BACKEND_OUTPUT_ACTIVE_WINDOW_MS;
+  if (meta?.processIsShell === false
+    && (meta.outputActive || meta.workingPatternVisible || backendOutputRecent)) {
     return "working";
   }
   return "idle";

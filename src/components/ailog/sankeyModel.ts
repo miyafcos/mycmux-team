@@ -29,6 +29,8 @@ export const OTHER_KEY = "__other__";
 export const UNTAGGED_KEY = "__untagged__";
 export const UNKNOWN_PROJECT = "(unknown)";
 export const UNTITLED = "(untitled)";
+export const UNSUMMARIZED_KEY = "__unsummarized__";
+export const UNSUMMARIZED_LABEL = "(未要約)";
 
 /** A node whose share is at least this much is called out as too coarse. */
 export const DOMINANT_SHARE_PCT = 40;
@@ -447,6 +449,56 @@ export function buildProjectSankeyGraph(input: Omit<SankeyBuildInput, "leafDimen
       truncatedSessions: Math.max(0, input.totalSessions - input.sessions.length), fetchedSessions: input.sessions.length, totalSessions: input.totalSessions,
       projectOther: { count: projectRollup.otherCount, value: projectRollup.otherValue }, tagOther: { count: tagRollup.otherCount, value: tagRollup.otherValue }, modelOther: { count: modelRollup.otherCount, value: modelRollup.otherValue },
     },
+  };
+}
+
+/** Client-side F3 topic layer. One session has one cluster, so unlike work
+ * tags it never double-counts a session across the middle band. */
+export function buildProjectTopicSankeyGraph(input: Pick<SankeyBuildInput, "sessions" | "totalSessions" | "excludeSynthetic" | "grandTotal" | "topN">): ProjectSankeyGraph {
+  const projectValues = new Map<string, number>();
+  const topicValues = new Map<string, number>();
+  const modelValues = new Map<string, number>();
+  const projectTopic = new Map<string, { value: number; sessions: number }>();
+  const topicModel = new Map<string, { value: number; sessions: number }>();
+  let syntheticCost = 0;
+  for (const session of input.sessions) {
+    const model = session.primaryModel?.trim() || "(不明モデル)";
+    if (input.excludeSynthetic && model === SYNTHETIC_MODEL) { syntheticCost += session.costUsd; continue; }
+    const project = session.projectLabel?.trim() || UNKNOWN_PROJECT;
+    const topic = session.goalCluster?.trim() || UNSUMMARIZED_KEY;
+    addTo(projectValues, project, session.costUsd);
+    addTo(topicValues, topic, session.costUsd);
+    addTo(modelValues, model, session.costUsd);
+    for (const [map, key] of [[projectTopic, `${project}\u0000${topic}`], [topicModel, `${topic}\u0000${model}`]] as const) {
+      const entry = map.get(key) ?? { value: 0, sessions: 0 };
+      entry.value += session.costUsd; entry.sessions += 1; map.set(key, entry);
+    }
+  }
+  const projectsRollup = rollupTopN([...projectValues.entries()].map(([key, value]) => ({ key, label: key, value })), 10);
+  const topicsRollup = rollupTopN([...topicValues.entries()].map(([key, value]) => ({ key, label: key === UNSUMMARIZED_KEY ? UNSUMMARIZED_LABEL : key, value })), 10);
+  const modelsRollup = rollupTopN([...modelValues.entries()].map(([key, value]) => ({ key, label: key, value })), input.topN.model);
+  const projectKeys = new Set(projectsRollup.entries.map((entry) => entry.key));
+  const topicKeys = new Set(topicsRollup.entries.map((entry) => entry.key));
+  const modelKeys = new Set(modelsRollup.entries.map((entry) => entry.key));
+  const rolled = (source: Map<string, { value: number; sessions: number }>, left: Set<string>, right: Set<string>) => {
+    const out = new Map<string, { value: number; sessions: number }>();
+    for (const [pair, entry] of source) {
+      const [rawLeft, rawRight] = pair.split("\u0000");
+      const a = left.has(rawLeft) ? rawLeft : OTHER_KEY; const b = right.has(rawRight) ? rawRight : OTHER_KEY;
+      if (!left.has(a) || !right.has(b)) continue;
+      const result = out.get(`${a}\u0000${b}`) ?? { value: 0, sessions: 0 };
+      result.value += entry.value; result.sessions += entry.sessions; out.set(`${a}\u0000${b}`, result);
+    }
+    return [...out.entries()].map(([pair, entry]) => { const [source, target] = pair.split("\u0000"); return { source, target, value: entry.value, sessionCount: entry.sessions }; });
+  };
+  const total = (values: Map<string, number>) => [...values.values()].reduce((sum, value) => sum + value, 0);
+  return {
+    projects: toNodes(projectsRollup, total(projectValues), () => "セッション"),
+    tags: toNodes(topicsRollup, total(topicValues), () => "目的クラスタ"),
+    models: toNodes(modelsRollup, total(modelValues), () => "セッションのコスト"),
+    projectToTag: rolled(projectTopic, projectKeys, topicKeys),
+    tagToModel: rolled(topicModel, topicKeys, modelKeys),
+    notes: { grandTotal: input.grandTotal, syntheticExcluded: input.excludeSynthetic, syntheticCost, untaggedSessions: 0, untaggedCost: 0, truncatedSessions: Math.max(0, input.totalSessions - input.sessions.length), fetchedSessions: input.sessions.length, totalSessions: input.totalSessions, projectOther: { count: projectsRollup.otherCount, value: projectsRollup.otherValue }, tagOther: { count: topicsRollup.otherCount, value: topicsRollup.otherValue }, modelOther: { count: modelsRollup.otherCount, value: modelsRollup.otherValue } },
   };
 }
 

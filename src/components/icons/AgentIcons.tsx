@@ -6,7 +6,7 @@ type AgentIconProps = Omit<SVGProps<SVGSVGElement>, "height" | "width"> & {
 };
 
 type AgentKindIconProps = {
-  kind?: string;
+  kind?: string | null;
   size?: number;
   chip?: boolean;
 };
@@ -44,6 +44,30 @@ export function CodexAgentIcon({ size = 12, ...props }: AgentIconProps) {
   );
 }
 
+export function AntigravityAgentIcon({ size = 14 }: { size?: number }) {
+  const gid = useId();
+  const d = "M3 20.5 C8.5 19.5 9.5 6.5 12 6.5 C14.5 6.5 15.5 19.5 21 20.5";
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <defs>
+        <linearGradient id={`${gid}-x`} x1="3" y1="12" x2="21" y2="12" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stopColor="#3087fa" />
+          <stop offset="0.35" stopColor="#57b657" />
+          <stop offset="0.6" stopColor="#f6863a" />
+          <stop offset="0.8" stopColor="#e25652" />
+          <stop offset="1" stopColor="#7b7bcc" />
+        </linearGradient>
+        <linearGradient id={`${gid}-y`} x1="12" y1="22" x2="12" y2="8" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stopColor="#3087fa" />
+          <stop offset="0.45" stopColor="#3087fa" stopOpacity="0" />
+        </linearGradient>
+      </defs>
+      <path d={d} stroke={`url(#${gid}-x)`} strokeWidth="4.6" strokeLinecap="round" />
+      <path d={d} stroke={`url(#${gid}-y)`} strokeWidth="4.6" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 export function HybridAgentIcon({ size = 12 }: Pick<AgentIconProps, "size">) {
   const overlapSize = Math.max(1, Math.round(size * 0.68));
   return (
@@ -62,6 +86,7 @@ const chipStyles: Record<string, CSSProperties> = {
   claude: { background: "rgba(217,119,87,.12)", borderColor: "rgba(217,119,87,.30)" },
   codex: { background: "rgba(122,157,255,.10)", borderColor: "rgba(122,157,255,.30)" },
   "claude-codex": { background: "rgba(125,204,151,.10)", borderColor: "rgba(125,204,151,.30)" },
+  antigravity: { background: "rgba(66,133,244,.10)", borderColor: "rgba(66,133,244,.30)" },
 };
 
 export function AgentKindIcon({ kind, size = 14, chip = true }: AgentKindIconProps) {
@@ -71,7 +96,9 @@ export function AgentKindIcon({ kind, size = 14, chip = true }: AgentKindIconPro
       ? CodexAgentIcon
       : kind === "claude-codex"
         ? HybridAgentIcon
-        : null;
+        : kind === "antigravity"
+          ? AntigravityAgentIcon
+          : null;
 
   if (!Icon) return null;
   if (!chip) return <Icon size={size} />;
