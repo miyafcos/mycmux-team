@@ -1,0 +1,38 @@
+// ダッシュボード (全ワークスペース×全ペインの一覧) の文言。
+// 用語は「ワークスペース > タブ > ペイン」(2026-08-11 確定)。
+// 表示方針: 一覧面はアイコン+数字+最短ラベル、のぞき窓だけ言葉を許す (モック第5便)。
+export const dashboardStrings = {
+  buttonTitle: "ダッシュボード",
+  panelAriaLabel: "ダッシュボード — 全ペイン一覧",
+  groupWaiting: "要対応",
+  groupWaitingSub: "返事待ち",
+  groupStalled: "止まってるかも",
+  groupStalledSub: "無反応・未送信・落ちた",
+  groupWorking: "作業中",
+  groupDone: "完了",
+  sortByWorkspace: "ワークスペース順",
+  sortByAttention: "要対応順",
+  visibleCount: "表示中",
+  backgroundCount: "裏で稼働",
+  backgroundBadge: "裏",
+  unobservedBadge: "観測外",
+  liveUpdating: "自動更新中",
+  peekButton: "のぞく",
+  jumpButton: "移動 ▸",
+  jumpButtonTitle: "このペインへ移動",
+  myInstructionLabel: "私の指示",
+  agentAskingLabel: "エージェントの質問",
+  clearDoneButton: (n: number): string => `完了 ${n}件を既読にする`,
+  peekEscHint: "Esc で戻る",
+  peekPrev: "← 前",
+  peekNext: "次 →",
+  emptyState: "表示できるペインがありません",
+  countUnit: (n: number): string => `${n}件`,
+  paneLocation: (tab: number | string, pane: number | string): string => `タブ${tab}·P${pane}`,
+  // 停滞理由 (P5: 常時検知の3分類)
+  stallNoOutput: "5分以上 出力なし",
+  stallQueuedInput: "未送信の指示が残っている",
+  stallPtyDead: "プロセスが終了している",
+  stallSince: (min: number): string => `${min}分 無反応`,
+  stallQueuedPreviewLabel: "未送信テキスト",
+} as const;

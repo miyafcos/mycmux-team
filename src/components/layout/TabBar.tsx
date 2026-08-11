@@ -21,12 +21,16 @@ import {
   resolveWorkspaceColor,
 } from "../../lib/workspaceColors";
 import TabItem from "./TabItem";
+import type { PetSpriteState } from "../workspace/PetSprite";
+import { useStallStore } from "../../stores/stallStore";
 import { tearOutWorkspaceToNewWindow } from "../../lib/workspaceTearOut";
 import { isOutsideWindowViewport } from "../../lib/windowEdge";
 import { TearOutBanner } from "../workspace/PaneDragOverlay";
 import { paneDndStrings } from "../workspace/paneDndStrings";
 import { useToastStore } from "../../stores/toastStore";
 import type { Workspace } from "../../types";
+import { resolvePet } from "../../lib/pets";
+import { usePetSettingsStore } from "../../stores/petSettingsStore";
 
 const PlusIcon = () => (
   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -157,6 +161,8 @@ const WorkspaceTabEntry = memo(function WorkspaceTabEntry({
   onClose,
   onRename,
 }: WorkspaceTabEntryProps) {
+  const petDisplayMode = usePetSettingsStore((state) => state.petDisplayMode);
+  const pets = usePetSettingsStore((state) => state.pets);
   const workspaceTabs = useMemo(
     () => ws.panes.flatMap((pane) => pane.tabs),
     [ws.panes],
@@ -177,10 +183,14 @@ const WorkspaceTabEntry = memo(function WorkspaceTabEntry({
   const tabAttention = useSessionAttentionStore(useShallow((s) =>
     sessionIds.map((sessionId) => s.attentionBySession[sessionId]),
   ));
+  const tabStalls = useStallStore(useShallow((s) =>
+    sessionIds.map((sessionId) => s.entries[sessionId]),
+  ));
   const seenAttentionByTab = useSessionAttentionStore((s) => s.seenAttentionByTab);
 
   let totalWsNotifications = 0;
   let totalWsWorkDone = 0;
+  let hasWorkspaceError = false;
   const statusCounts = { working: 0, waiting: 0 };
   const metadataBySession: Record<string, typeof tabMetadata[number]> = {};
   const attentionBySession: Record<string, SessionAttention | undefined> = {};
@@ -188,6 +198,7 @@ const WorkspaceTabEntry = memo(function WorkspaceTabEntry({
     const m = tabMetadata[index];
     metadataBySession[sessionId] = m;
     attentionBySession[sessionId] = tabAttention[index];
+    if (tabAttention[index]?.kind === "error") hasWorkspaceError = true;
     if (m) {
       totalWsNotifications += m.notificationCount ?? 0;
       totalWsWorkDone += m.workDoneCount ?? 0;
@@ -211,6 +222,15 @@ const WorkspaceTabEntry = memo(function WorkspaceTabEntry({
   const agentKinds = distinctAgentKinds(
     workspaceTabs.map((tab, index) => tabMetadata[index]?.agentKind ?? tab.agentKind),
   );
+  const petState: PetSpriteState = statusCounts.waiting > 0
+    ? "waving"
+    : hasWorkspaceError
+      ? "failed"
+      : tabStalls.some(Boolean)
+        ? "waiting"
+        : statusCounts.working > 0
+          ? "running"
+          : "idle";
 
   const firstActiveTabSessionId = ws.panes[0]?.tabs.find((t) => t.id === ws.panes[0]?.activeTabId)?.sessionId;
   const firstPaneMeta = firstActiveTabSessionId ? metadataBySession[firstActiveTabSessionId] : undefined;
@@ -245,6 +265,9 @@ const WorkspaceTabEntry = memo(function WorkspaceTabEntry({
         workDoneCount={totalWsWorkDone || undefined}
         lastLogLine={lastLog}
         statusCounts={statusCounts}
+        petState={petState}
+        petAtlasUrl={resolvePet(pets, ws.pet).atlasUrl}
+        showPet={petDisplayMode !== "none"}
         unseenAttentionCount={unseenAttention.count}
         unseenAttentionCategory={unseenAttention.category}
         agentKinds={agentKinds}

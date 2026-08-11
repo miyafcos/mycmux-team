@@ -13,6 +13,7 @@ import { useUiStore } from "./uiStore";
 import { applyStructuralActivation } from "../lib/focusController";
 import { useToastStore } from "./toastStore";
 import { bump as bumpPaintStat } from "../lib/paintStats";
+import { usePetSettingsStore } from "./petSettingsStore";
 
 function workspaceContainsPane(workspace: Workspace | undefined, paneId: string | null): boolean {
   return Boolean(paneId && workspace?.panes.some((pane) => pane.id === paneId));
@@ -189,6 +190,7 @@ interface CreateWorkspaceOptions {
   columnWidths?: number[];
   rowHeightsPerCol?: number[][];
   activate?: boolean;
+  pet?: string;
 }
 
 /**
@@ -217,6 +219,7 @@ interface WorkspaceListState {
   renameWorkspace: (id: string, name: string) => void;
   /** Set (or clear, with undefined) the Chrome-tab-group style workspace color. */
   setWorkspaceColor: (id: string, color: string | undefined) => void;
+  setWorkspacePet: (id: string, pet: string | undefined) => void;
   setWorkspaceStatus: (id: string, status: Workspace["status"]) => void;
   reorderWorkspaces: (fromIndex: number, toIndex: number) => void;
   setWorkspaceLayoutMetrics: (
@@ -263,6 +266,16 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
     const previousActiveWorkspaceId = get().activeWorkspaceId;
     const id = options?.id ?? uuid();
     const normalizedSplitColumns = normalizeSplitColumns(splitColumns, panes.map((pane) => pane.id));
+    const petSettings = usePetSettingsStore.getState();
+    const enabledPets = petSettings.pets.filter((pet) => !petSettings.petDisabled.includes(pet.id));
+    const fallbackPet = enabledPets[0]?.id ?? "clawd";
+    const generatedPet = petSettings.petNewWorkspaceMode === "choose"
+      ? undefined
+      : petSettings.petNewWorkspaceMode === "fixed"
+        ? (petSettings.petFixedId && enabledPets.some((pet) => pet.id === petSettings.petFixedId)
+          ? petSettings.petFixedId
+          : fallbackPet)
+        : enabledPets[Math.floor(Math.random() * enabledPets.length)]?.id ?? fallbackPet;
 
     const workspace: Workspace = {
       id,
@@ -273,6 +286,7 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
       status: "running",
       createdAt: options?.createdAt ?? Date.now(),
       color: normalizeWorkspaceColor(options?.color),
+      pet: options && Object.prototype.hasOwnProperty.call(options, "pet") ? options.pet : generatedPet,
       columnWidths: columnWidthsMatch(normalizedSplitColumns, options?.columnWidths)
         ? options?.columnWidths
         : undefined,
@@ -366,6 +380,12 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
       workspaces: state.workspaces.map((w) =>
         w.id === id ? { ...w, color: normalized } : w
       ),
+    }));
+  },
+
+  setWorkspacePet: (id, pet) => {
+    set((state) => ({
+      workspaces: state.workspaces.map((workspace) => workspace.id === id ? { ...workspace, pet } : workspace),
     }));
   },
 

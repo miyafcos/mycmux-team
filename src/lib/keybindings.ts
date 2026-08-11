@@ -27,6 +27,7 @@ export type KeybindingActionId =
   | "pane.attention.next"
   | "settings.keybindings"
   | "tab.sweep"
+  | "dashboard.open"
   | "pane.zoom.toggle"
   | "terminal.search"
   | "crsm.palette";
@@ -43,6 +44,7 @@ export const KEYBINDING_DEFINITIONS: KeybindingDefinition[] = [
   { action: "settings.keybindings", title: "Open keyboard shortcuts", category: "Global", defaultShortcut: "ctrl+," },
   { action: "crsm.palette", title: "Open Resume", category: "Global", defaultShortcut: "ctrl+p" },
   { action: "tab.sweep", title: "タブ掃除を開く", category: "Global", defaultShortcut: "ctrl+shift+k" },
+  { action: "dashboard.open", title: "Open dashboard", category: "Global", defaultShortcut: "ctrl+shift+g" },
 
   { action: "workspace.new", title: "New workspace", category: "Workspace", defaultShortcut: "ctrl+shift+n" },
   { action: "workspace.next", title: "Next workspace", category: "Workspace", defaultShortcut: "ctrl+tab" },
@@ -70,7 +72,7 @@ export const KEYBINDING_DEFINITIONS: KeybindingDefinition[] = [
   { action: "pane.tab.next", title: "Next tab in pane", category: "Pane", defaultShortcut: "ctrl+alt+pagedown" },
   { action: "pane.tab.prev", title: "Previous tab in pane", category: "Pane", defaultShortcut: "ctrl+alt+pageup" },
   { action: "pane.attention.next", title: "Next attention", category: "Pane", defaultShortcut: "ctrl+alt+a" },
-  { action: "pane.tab.pin.toggle", title: "アクティブタブをピン留め", category: "Pane", defaultShortcut: "ctrl+alt+p" },
+  { action: "pane.tab.pin.toggle", title: "アクティブペインをピン留め", category: "Pane", defaultShortcut: "ctrl+alt+p" },
 
   { action: "terminal.search", title: "Find in terminal", category: "Terminal", defaultShortcut: "ctrl+shift+f" },
 

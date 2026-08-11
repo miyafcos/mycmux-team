@@ -6,6 +6,7 @@ import { IS_MAC } from "../../lib/keybindings";
 import NotificationPanel from "./NotificationPanel";
 import SettingsDialog from "../settings/SettingsDialog";
 import { AiLogButton } from "../ailog/AiLogButton";
+import { DashboardButton } from "../dashboard/DashboardButton";
 import { AccountsButton } from "./AccountsButton";
 import { TabSweepButton } from "./TabSweepButton";
 import { onlineStrings } from "../online/onlineStrings";
@@ -300,6 +301,7 @@ export default function TitleBar({
         />
         <TabSweepButton />
         <AiLogButton />
+        <DashboardButton />
         <div style={{ position: "relative" }}>
           <button
             onClick={() => {

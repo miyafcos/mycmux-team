@@ -3,6 +3,7 @@ import type { CSSProperties } from "react";
 import { KIND_COLORS } from "../../lib/agentKindColors";
 import { ATTENTION_REASON_COLOR, unseenAttentionLabel } from "../../lib/attentionPresentation";
 import { resolveWorkspaceColor, workspaceRowBackground } from "../../lib/workspaceColors";
+import PetSprite, { type PetSpriteState } from "../workspace/PetSprite";
 import type { AttentionCategory } from "../../stores/sessionAttentionStore";
 import type { AgentSessionKind } from "../../types";
 
@@ -21,6 +22,9 @@ interface TabItemProps {
   workDoneCount?: number;
   lastLogLine?: string;
   statusCounts?: StatusCounts;
+  petState?: PetSpriteState;
+  petAtlasUrl?: string;
+  showPet?: boolean;
   /**
    * Tabs in this workspace carrying an attention the user has not looked at.
    * Distinct from notificationCount / workDoneCount, which count events rather
@@ -105,7 +109,7 @@ function UnseenAttentionRing({ count, category }: { count: number; category: Att
   );
 }
 
-export default memo(function TabItem({ uiVariant = "default", name, paneCount, cwd, gitBranch, notificationCount, workDoneCount, lastLogLine, statusCounts, unseenAttentionCount = 0, unseenAttentionCategory = null, agentKinds = [], color, active, onClick, onClose, onMenu, onRename, renameSignal = 0 }: TabItemProps) {
+export default memo(function TabItem({ uiVariant = "default", name, paneCount, cwd, gitBranch, notificationCount, workDoneCount, lastLogLine, statusCounts, petState = "idle", petAtlasUrl, showPet = true, unseenAttentionCount = 0, unseenAttentionCategory = null, agentKinds = [], color, active, onClick, onClose, onMenu, onRename, renameSignal = 0 }: TabItemProps) {
   const hasAgents = statusCounts && (statusCounts.working + statusCounts.waiting) > 0;
   const hasAgentKinds = agentKinds.length > 0;
   const hasUnseenAttention = unseenAttentionCount > 0 && unseenAttentionCategory !== null;
@@ -188,6 +192,7 @@ export default memo(function TabItem({ uiVariant = "default", name, paneCount, c
         marginTop: "2px",
       } as React.CSSProperties & Record<string, string | number>}
     >
+      {showPet && petAtlasUrl && <PetSprite atlasUrl={petAtlasUrl} state={petState} height={40} />}
       <div style={{ display: "flex", flexDirection: "column", gap: 5, minWidth: 0, overflow: "hidden", flex: 1 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
           {notificationCount ? (

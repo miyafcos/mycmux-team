@@ -9,6 +9,7 @@ import {
 import { useShallow } from "zustand/react/shallow";
 import type { Pane, PaneTab } from "../../types";
 import { getAgent, getDefaultAgent } from "../../lib/agents";
+import { getTabDisplayLabel } from "../../lib/tabDisplayLabel";
 import { agentKindColor } from "../../lib/agentKindColors";
 import { crsmCreateHandoff } from "../../lib/ipc";
 import {
@@ -31,6 +32,7 @@ import { useToastStore } from "../../stores/toastStore";
 import { useOnlineSavepointStore } from "../../stores/onlineSavepointStore";
 import { onlineStrings } from "../online/onlineStrings";
 import { PublishProgress } from "../online/PublishProgress";
+import { AgentKindIcon } from "../icons/AgentIcons";
 import {
   attentionCategory,
   attentionDetail,
@@ -744,6 +746,9 @@ function PaneTabListMenu({
           }}
         />
         {rowKindColor && (
+          <AgentKindIcon kind={rowAgentKind} size={14} />
+        )}
+        {rowKindColor && (
           <span
             className="agent-kind-badge"
             style={{
@@ -993,16 +998,10 @@ export default memo(function PaneTabBar({
     useSessionAttentionStore.getState().markSeen(activeTab.id, activeAttention.attentionId);
   }, [activeAttention?.attentionId, activeTab?.id, isVisible]);
 
-  const getTabDisplayLabel = useCallback((tab: PaneTab, isTabActive: boolean) => {
-    const agent = getAgent(tab.agentId) ?? getDefaultAgent();
-    const tabMeta = metadataBySession[tab.sessionId];
-    const tabProcessTitle = tabMeta?.processTitle;
-    const tabCwd = tabMeta?.cwd;
-    return tab.label
-      ?? (tabProcessTitle
-          ? tabProcessTitle
-          : (isTabActive && tabCwd ? tabCwd.split("/").pop() || agent.name : agent.name));
-  }, [metadataBySession]);
+  const displayTabLabel = useCallback(
+    (tab: PaneTab, isTabActive: boolean) => getTabDisplayLabel(tab, isTabActive, metadataBySession),
+    [metadataBySession],
+  );
 
   const handleDuplicateSession = useCallback(async (
     tab: PaneTab,
@@ -1214,8 +1213,8 @@ export default memo(function PaneTabBar({
       setContextMenu(null);
       return;
     }
-    startEditingTab(tab.id, getTabDisplayLabel(tab, tab.id === pane.activeTabId));
-  }, [contextMenu, getTabDisplayLabel, pane.activeTabId, pane.tabs, startEditingTab]);
+    startEditingTab(tab.id, displayTabLabel(tab, tab.id === pane.activeTabId));
+  }, [contextMenu, displayTabLabel, pane.activeTabId, pane.tabs, startEditingTab]);
 
   const handleResetContextTab = useCallback(() => {
     if (!contextMenu) return;
@@ -1240,7 +1239,7 @@ export default memo(function PaneTabBar({
   const isContextTabPinned = contextTab !== undefined && contextTab.id === pane.pinnedTabId;
 
   const activeTabIndex = pane.tabs.findIndex((t) => t.id === pane.activeTabId);
-  const activeTabLabel = activeTab ? getTabDisplayLabel(activeTab, true) : "";
+  const activeTabLabel = activeTab ? displayTabLabel(activeTab, true) : "";
   const isEditingActiveTab = activeTab ? editingTabId === activeTab.id : false;
   const activeNotificationCount = activeMeta?.notificationCount ?? 0;
   const activeWorkDoneCount = activeMeta?.workDoneCount ?? 0;
@@ -1500,7 +1499,7 @@ export default memo(function PaneTabBar({
               : canonicalUnreadCategory === "done"
                 ? "未確認の完了"
                 : null;
-          const label = getTabDisplayLabel(tab, isTabActive);
+          const label = displayTabLabel(tab, isTabActive);
           const isEditingTab = editingTabId === tab.id;
           const isSavepointDropTarget = savepointDropTabId === tab.id;
           const canDuplicateSession = Boolean(tabMeta?.agentKind && tabMeta.agentSessionId);
@@ -1660,6 +1659,7 @@ export default memo(function PaneTabBar({
                   ▶
                 </span>
               )}
+              <AgentKindIcon kind={tabMeta?.agentKind ?? tab.agentKind} size={14} />
               {/* label */}
               {isEditingTab ? (
                 <input
@@ -1789,7 +1789,7 @@ export default memo(function PaneTabBar({
               metadataBySession={metadataBySession}
               attentionBySession={attentionBySession}
               seenAttentionByTab={seenAttentionByTab}
-              getTabDisplayLabel={getTabDisplayLabel}
+              getTabDisplayLabel={displayTabLabel}
               hasTerminalBuffer={hasTerminalBuffer}
               onSelectTab={onSelectTab}
               onRemoveTab={onRemoveTab}
@@ -1837,11 +1837,14 @@ export default memo(function PaneTabBar({
             {statusCfg.title}
           </span>
           {activeKindColor && (
-            <span
-              className="agent-kind-label-dot"
-              aria-hidden="true"
-              style={{ "--agent-kind-color": activeKindColor.fg } as AgentKindStyle}
-            />
+            <>
+              <span
+                className="agent-kind-label-dot"
+                aria-hidden="true"
+                style={{ "--agent-kind-color": activeKindColor.fg } as AgentKindStyle}
+              />
+              <AgentKindIcon kind={activeAgentKind} size={14} />
+            </>
           )}
           <span style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-tertiary)", flexShrink: 0 }}>
             {activeAgentLabel}
@@ -1944,6 +1947,7 @@ export default memo(function PaneTabBar({
                 <PinIcon size={12} filled />
               </span>
             )}
+            <AgentKindIcon kind={activeAgentKind} size={14} />
             {isEditingActiveTab ? (
               <input
                 ref={inputRef}
@@ -2056,7 +2060,7 @@ export default memo(function PaneTabBar({
                 metadataBySession={metadataBySession}
                 attentionBySession={attentionBySession}
                 seenAttentionByTab={seenAttentionByTab}
-                getTabDisplayLabel={getTabDisplayLabel}
+                getTabDisplayLabel={displayTabLabel}
                 hasTerminalBuffer={hasTerminalBuffer}
                 onSelectTab={onSelectTab}
                 onRemoveTab={onRemoveTab}

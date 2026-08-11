@@ -295,6 +295,7 @@ pub fn run() {
             commands::crsm::crsm_create_handoff,
             commands::workspace::load_persistent_data,
             commands::workspace::save_persistent_data,
+            commands::pets::list_pets,
             commands::fs::resolve_local_path_links,
             commands::fs::reveal_in_explorer,
             commands::fs::reveal_path_in_explorer,

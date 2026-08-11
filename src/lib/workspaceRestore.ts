@@ -77,6 +77,7 @@ export function restoreWorkspaceConfigs(
         id: cfg.id,
         createdAt: cfg.created_at,
         color: cfg.color ?? undefined,
+        pet: cfg.pet ?? undefined,
         columnWidths: cfg.column_widths ?? undefined,
         rowHeightsPerCol: cfg.row_heights_per_col ?? undefined,
         activate: false,

@@ -101,6 +101,8 @@ export interface Workspace {
   status: WorkspaceStatus;
   createdAt: number;
   color?: string;
+  /** Assigned pet id; undefined is the lazy-choice state for a new workspace. */
+  pet?: string;
   /** Each entry is a column of pane IDs for dynamic split tracking (column-first layout) */
   splitColumns?: string[][];
   /** Saved widths for top-level columns (outer horizontal Allotment) */

@@ -33,6 +33,7 @@ import {
 import type { AgentSessionKind, SuppressedAgentSession, Workspace } from "../../types";
 import { useThemeStore } from "../../stores/themeStore";
 import { useKeybindingStore } from "../../stores/keybindingStore";
+import { usePetSettingsStore } from "../../stores/petSettingsStore";
 import { deriveEffectiveStatus, isShellProcess } from "../../lib/notificationStatus";
 import { confirmAgentSessionClear } from "../../lib/agentSessionClearGuard";
 import { makeSessionId } from "../../lib/constants";
@@ -791,6 +792,7 @@ export function toConfig(ws: Workspace, _agentMappings: Record<string, AgentSess
     // Workspace color must round-trip: it is the only sidebar grouping cue and
     // silently dropping it here would reset every group on restart.
     color: ws.color ?? null,
+    pet: ws.pet ?? null,
     panes: paneEntries.map(({ pane: p, activeTab, persistedTabs }) => {
       const paneMeta = metaState[p.sessionId];
       const activeTabMeta = activeTab ? metaState[activeTab.sessionId] : undefined;
@@ -924,6 +926,12 @@ async function hydrateChildWindow(): Promise<void> {
     uiDensity: settings.ui_density,
   });
   useKeybindingStore.getState().hydrateOverrides(settings.keybindings ?? {});
+  usePetSettingsStore.getState().hydratePetSettings({
+    petDisplayMode: settings.pet_display_mode,
+    petNewWorkspaceMode: settings.pet_new_ws_mode,
+    petDisabled: settings.pet_disabled,
+    petFixedId: settings.pet_fixed_id ?? undefined,
+  });
 
   const adopted = await takePendingAdoption(windowLabel());
   if (adopted.length > 0) {
@@ -1011,6 +1019,12 @@ export function useWorkspacePersist() {
             uiDensity: data.settings.ui_density,
           });
           useKeybindingStore.getState().hydrateOverrides(data.settings.keybindings ?? {});
+          usePetSettingsStore.getState().hydratePetSettings({
+            petDisplayMode: data.settings.pet_display_mode,
+            petNewWorkspaceMode: data.settings.pet_new_ws_mode,
+            petDisabled: data.settings.pet_disabled,
+            petFixedId: data.settings.pet_fixed_id ?? undefined,
+          });
 
           if (data.workspaces.length > 0) {
             const listStore = useWorkspaceListStore.getState();
@@ -1138,6 +1152,7 @@ export function useWorkspacePersist() {
         ?? null;
       const themeState = useThemeStore.getState();
       const keybindingState = useKeybindingStore.getState();
+      const petSettings = usePetSettingsStore.getState();
 
       // Mappings written by launcher.sh during this session (pane-sessions/*.txt)
       // are applied at save time too — App.tsx only refreshes them at startup /
@@ -1190,6 +1205,10 @@ export function useWorkspacePersist() {
           theme_tweaks: themeState.themeTweaks,
           keybindings: keybindingState.overrides,
           ui_density: themeState.uiDensity,
+          pet_display_mode: petSettings.petDisplayMode,
+          pet_new_ws_mode: petSettings.petNewWorkspaceMode,
+          pet_disabled: petSettings.petDisabled,
+          pet_fixed_id: petSettings.petFixedId ?? null,
         },
         active_workspace_id: finalSelection.workspaceId,
         active_pane_id: finalSelection.paneId,
@@ -1336,6 +1355,14 @@ export function useWorkspacePersist() {
     });
     const unsubTheme = useThemeStore.subscribe(markDirty);
     const unsubKeys = useKeybindingStore.subscribe(markDirty);
+    const unsubPets = usePetSettingsStore.subscribe((state, previousState) => {
+      if (
+        state.petDisplayMode !== previousState.petDisplayMode
+        || state.petNewWorkspaceMode !== previousState.petNewWorkspaceMode
+        || state.petDisabled !== previousState.petDisabled
+        || state.petFixedId !== previousState.petFixedId
+      ) markDirty();
+    });
     const unsubUi = useUiStore.subscribe((state, prevState) => {
       if (state.activePaneId) {
         const activeTerminalExists = useWorkspaceListStore.getState().workspaces.some((workspace) =>
@@ -1448,6 +1475,7 @@ export function useWorkspacePersist() {
       unsubMeta();
       unsubTheme();
       unsubKeys();
+      unsubPets();
       unsubUi();
       if (debounceTimer) clearTimeout(debounceTimer);
       clearSaveRetry();

@@ -1001,6 +1001,7 @@ async function serializePaneSend<T>(sessionId: string, operation: () => Promise<
 
 async function sendPaneText(args: SocketArgs) {
   const { useWorkspaceListStore } = await import("../../stores/workspaceStore");
+  const { recordRecentInputText } = await import("../../stores/recentInputStore");
   const sessionId = socketArgString(args, "sessionId", "session_id");
   if (!sessionId) throw new Error("pane.send_text requires sessionId");
   const textValue = args?.text;
@@ -1034,6 +1035,7 @@ async function sendPaneText(args: SocketArgs) {
 
     if (!canConfirm || beforeEnter === null) {
       await writeToSession(sessionId, "\r");
+      if (textValue) recordRecentInputText(sessionId, textValue);
       return {
         sessionId,
         bytes,
@@ -1046,6 +1048,7 @@ async function sendPaneText(args: SocketArgs) {
 
     for (let attempts = 1; attempts <= SEND_ENTER_MAX_ATTEMPTS; attempts += 1) {
       await writeToSession(sessionId, "\r");
+      if (attempts === 1 && textValue) recordRecentInputText(sessionId, textValue);
       const outcome = await waitForPaneToAdvance(sessionId, beforeEnter);
       if (outcome === "advanced") {
         return { sessionId, bytes, ok: true, confirmed: true, attempts };

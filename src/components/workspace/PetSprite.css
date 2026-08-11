@@ -1,0 +1,41 @@
+.cmux-pet-sprite {
+  background-repeat: no-repeat;
+  flex: none;
+  margin-right: 8px;
+  image-rendering: pixelated;
+  animation-name: var(--pet-animation);
+  animation-duration: var(--pet-duration);
+  animation-timing-function: steps(var(--pet-frames));
+  animation-iteration-count: infinite;
+}
+
+.cmux-pet-sprite__probe {
+  display: none;
+}
+
+@keyframes cmux-pet-sprite-4 {
+  from { background-position: 0 var(--pet-row-offset); }
+  to { background-position: calc(var(--pet-frame-width) * -4) var(--pet-row-offset); }
+}
+
+@keyframes cmux-pet-sprite-5 {
+  from { background-position: 0 var(--pet-row-offset); }
+  to { background-position: calc(var(--pet-frame-width) * -5) var(--pet-row-offset); }
+}
+
+@keyframes cmux-pet-sprite-6 {
+  from { background-position: 0 var(--pet-row-offset); }
+  to { background-position: calc(var(--pet-frame-width) * -6) var(--pet-row-offset); }
+}
+
+@keyframes cmux-pet-sprite-8 {
+  from { background-position: 0 var(--pet-row-offset); }
+  to { background-position: calc(var(--pet-frame-width) * -8) var(--pet-row-offset); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cmux-pet-sprite {
+    animation: none !important;
+    background-position: 0 var(--pet-row-offset) !important;
+  }
+}

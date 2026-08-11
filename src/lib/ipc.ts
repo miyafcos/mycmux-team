@@ -819,6 +819,7 @@ export interface WorkspaceConfig {
   panes: PaneConfig[];
   created_at: number;
   color?: string | null;
+  pet?: string | null;
   split_columns?: number[][] | null;
   column_widths?: number[] | null;
   row_heights_per_col?: number[][] | null;
@@ -837,6 +838,10 @@ export interface AppSettings {
   theme_tweaks?: ThemeTweaks;
   keybindings?: Record<string, string>;
   ui_density?: string;
+  pet_display_mode?: "ws" | "both" | "none";
+  pet_new_ws_mode?: "random" | "choose" | "fixed";
+  pet_disabled?: string[];
+  pet_fixed_id?: string | null;
 }
 
 export interface PersistentData {
@@ -854,6 +859,17 @@ export async function loadPersistentData(): Promise<PersistentData> {
 
 export async function savePersistentData(data: PersistentData): Promise<void> {
   return invoke<void>("save_persistent_data", { data } satisfies SavePersistentDataArgs);
+}
+
+export interface ListedPet {
+  id: string;
+  name: string;
+  source: "bundled" | "external";
+  atlas_b64?: string | null;
+}
+
+export async function listPets(): Promise<ListedPet[]> {
+  return invoke<ListedPet[]>("list_pets");
 }
 
 export async function sendSocketResponse(id: number, result: any, error: string | null): Promise<void> {

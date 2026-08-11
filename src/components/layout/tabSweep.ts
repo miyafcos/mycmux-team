@@ -165,6 +165,18 @@ export function hasQueuedInput(tail: readonly string[]): boolean {
   return tail.slice(prompt.index + 1).some((nextLine) => !isIgnoredPromptDecoration(nextLine));
 }
 
+export function getQueuedInputPreview(tail: readonly string[]): string | undefined {
+  const prompt = findLastPrompt(tail);
+  if (!prompt || !hasQueuedInput(tail)) return undefined;
+  if (prompt.match.input.length > 0 && !isIgnoredPromptDecoration(prompt.match.input)) {
+    return prompt.match.input;
+  }
+  return tail
+    .slice(prompt.index + 1)
+    .map((line) => line.trim())
+    .find((line) => !isIgnoredPromptDecoration(line));
+}
+
 export function hasIdlePrompt(tail: readonly string[]): boolean {
   return findLastPrompt(tail) !== null && !hasQueuedInput(tail);
 }

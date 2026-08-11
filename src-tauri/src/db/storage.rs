@@ -129,6 +129,8 @@ pub struct WorkspaceConfig {
     pub created_at: u64,
     #[serde(default)]
     pub color: Option<String>,
+    #[serde(default)]
+    pub pet: Option<String>,
     // Legacy row-first fields (kept for deserialization of old data)
     #[serde(default)]
     pub split_rows: Option<Vec<Vec<usize>>>,
@@ -172,6 +174,14 @@ fn default_ui_density() -> String {
     "standard".to_string()
 }
 
+fn default_pet_display_mode() -> String {
+    "ws".to_string()
+}
+
+fn default_pet_new_ws_mode() -> String {
+    "random".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
     pub font_size: u16,
@@ -202,6 +212,14 @@ pub struct AppSettings {
     /// only. Read once at startup; a change takes effect on next app launch.
     #[serde(default)]
     pub remote_bind_all: bool,
+    #[serde(default = "default_pet_display_mode")]
+    pub pet_display_mode: String,
+    #[serde(default = "default_pet_new_ws_mode")]
+    pub pet_new_ws_mode: String,
+    #[serde(default)]
+    pub pet_disabled: Vec<String>,
+    #[serde(default)]
+    pub pet_fixed_id: Option<String>,
 }
 
 impl Default for AppSettings {
@@ -217,6 +235,10 @@ impl Default for AppSettings {
             dirty_save_mode: true,
             osc7_tracking_enabled: true,
             remote_bind_all: false,
+            pet_display_mode: default_pet_display_mode(),
+            pet_new_ws_mode: default_pet_new_ws_mode(),
+            pet_disabled: Vec::new(),
+            pet_fixed_id: None,
         }
     }
 }
@@ -549,6 +571,17 @@ mod tests {
     }
 
     #[test]
+    fn app_settings_missing_pet_settings_use_defaults() {
+        let settings: AppSettings =
+            serde_json::from_str(r#"{"font_size":14,"theme_id":"yoru-cafe"}"#).unwrap();
+
+        assert_eq!(settings.pet_display_mode, "ws");
+        assert_eq!(settings.pet_new_ws_mode, "random");
+        assert!(settings.pet_disabled.is_empty());
+        assert!(settings.pet_fixed_id.is_none());
+    }
+
+    #[test]
     fn load_from_path_corrupt_json_quarantines_file_and_returns_default() {
         let temp_dir = tempfile::tempdir().unwrap();
         let path = temp_dir.path().join("data.json");
@@ -731,6 +764,20 @@ mod tests {
         let serialized = serde_json::to_string(&workspace).unwrap();
         let restored: WorkspaceConfig = serde_json::from_str(&serialized).unwrap();
         assert!(restored.color.is_none());
+    }
+
+    #[test]
+    fn workspace_pet_defaults_to_none_when_absent_and_round_trips() {
+        let mut workspace: WorkspaceConfig = serde_json::from_str(
+            r#"{"id":"ws-1","name":"Workspace","grid_template_id":"1x1","panes":[],"created_at":1}"#,
+        )
+        .unwrap();
+        assert!(workspace.pet.is_none());
+
+        workspace.pet = Some("clawd".to_string());
+        let serialized = serde_json::to_string(&workspace).unwrap();
+        let restored: WorkspaceConfig = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(restored.pet.as_deref(), Some("clawd"));
     }
 
     #[test]

@@ -5,7 +5,7 @@ import {
   normalizeShortcut,
 } from "../../src/lib/keybindings";
 
-describe("tab sweep keybinding", () => {
+describe("global keybindings", () => {
   it("registers a non-conflicting global command", () => {
     const definition = getActionDefinition("tab.sweep");
     expect(definition).toMatchObject({
@@ -16,5 +16,13 @@ describe("tab sweep keybinding", () => {
 
     const shortcuts = KEYBINDING_DEFINITIONS.map((item) => normalizeShortcut(item.defaultShortcut));
     expect(new Set(shortcuts).size).toBe(shortcuts.length);
+  });
+
+  it("registers the dashboard command without a shortcut conflict", () => {
+    expect(getActionDefinition("dashboard.open")).toMatchObject({
+      title: "Open dashboard",
+      category: "Global",
+      defaultShortcut: "ctrl+shift+g",
+    });
   });
 });

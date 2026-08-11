@@ -9,12 +9,14 @@ import { RemoteTab } from "./tabs/RemoteTab";
 import { UsageTab } from "./tabs/UsageTab";
 import { KeybindingsTab } from "./tabs/KeybindingsTab";
 import { AppInfoTab } from "./tabs/AppInfoTab";
+import { PetTab } from "./tabs/PetTab";
 import { tabBodyStyle } from "./tabStyles";
 import { onlineStrings } from "../online/onlineStrings";
-import { settingsStrings } from "./settingsStrings";
+import { petSettingsStrings, settingsStrings } from "./settingsStrings";
 
 type SettingsTabId =
   | "appearance"
+  | "pet"
   | "notifications"
   | "resume"
   | "savepoints"
@@ -40,6 +42,7 @@ const SETTINGS_SECTIONS: SettingsSectionDef[] = [
     label: "表示",
     tabs: [
       { id: "appearance", label: "外観" },
+      { id: "pet", label: petSettingsStrings.tabLabel },
       { id: "notifications", label: "通知とレイアウト" },
     ],
   },
@@ -284,6 +287,7 @@ export default function SettingsDialog({ closing = false, onClose, onOpenCrsmPal
 
           <div style={activeTab === "appearance" ? { flex: 1, minWidth: 0, minHeight: 0 } : tabBodyStyle}>
             {activeTab === "appearance" && <AppearanceTab />}
+            {activeTab === "pet" && <PetTab />}
             {activeTab === "notifications" && <NotificationsLayoutTab />}
             {activeTab === "resume" && <ResumeTab onOpenCrsmPalette={onOpenCrsmPalette} onClose={onClose} />}
             {activeTab === "savepoints" && (

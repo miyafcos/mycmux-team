@@ -42,6 +42,7 @@ import { useToastStore } from "./stores/toastStore";
 import { onlineStrings } from "./components/online/onlineStrings";
 import { useAgentDormancy } from "./hooks/useAgentDormancy";
 import { connectSessionAttentionStore } from "./stores/sessionAttentionStore";
+import { connectStallStore } from "./stores/stallStore";
 
 // Kick off config fetch immediately — will be cached by the time terminals mount
 preloadTerminalConfig();
@@ -264,6 +265,7 @@ function App() {
     unlistenAttention.catch((error) => {
       console.warn("[attention] Failed to subscribe to session status changes", error);
     });
+    const disconnectStallDetection = connectStallStore();
 
     // Drag-and-drop: route folder drops to the correct terminal pane
     const unlistenDragDrop = getCurrentWebview().onDragDropEvent(async (event) => {
@@ -334,6 +336,7 @@ function App() {
       unlistenMeta.then((f) => f()).catch(() => {});
       unlistenWorkDone.then((f) => f()).catch(() => {});
       unlistenAttention.then((f) => f()).catch(() => {});
+      disconnectStallDetection();
       unlistenDragDrop.then((f) => f()).catch(() => {});
       window.removeEventListener(STARTUP_RESTORE_COMPLETE_EVENT, refreshAgentSessionMappings);
       window.clearTimeout(mappingFallbackTimer);
