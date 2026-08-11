@@ -16,7 +16,7 @@ export const cardStyle: CSSProperties = {
 };
 
 export const noteStyle: CSSProperties = {
-  fontSize: 10,
+  fontSize: "var(--cmux-font-size-xs)",
   lineHeight: 1.5,
   color: "var(--cmux-text-tertiary)",
 };
@@ -27,7 +27,7 @@ export const subtleButtonStyle: CSSProperties = {
   background: "var(--cmux-hover)",
   color: "var(--cmux-text)",
   padding: "4px 9px",
-  fontSize: 11,
+  fontSize: "var(--cmux-font-size-xs)",
   cursor: "pointer",
   whiteSpace: "nowrap",
 };
@@ -58,7 +58,7 @@ export function Section({
         }}
       >
         <div style={{ minWidth: 0 }}>
-          <h2 style={{ margin: 0, fontSize: 13, fontWeight: 700, color: "var(--cmux-text)" }}>{title}</h2>
+          <h2 style={{ margin: 0, fontSize: "var(--cmux-font-size-md)", fontWeight: 700, color: "var(--cmux-text)" }}>{title}</h2>
           {subtitle ? <div style={{ ...noteStyle, marginTop: 3 }}>{subtitle}</div> : null}
         </div>
         {actions ? <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>{actions}</div> : null}
@@ -92,7 +92,7 @@ export function Chip({
         background: "var(--cmux-hover)",
         border: "1px solid var(--cmux-border-hairline)",
         color,
-        fontSize: 9,
+        fontSize: "var(--cmux-font-size-xs)",
         whiteSpace: "nowrap",
       }}
     >
@@ -127,7 +127,7 @@ export function ButtonGroup<T extends string | number>({
             style={{
               ...subtleButtonStyle,
               padding: "3px 8px",
-              fontSize: 10,
+              fontSize: "var(--cmux-font-size-xs)",
               background: active ? "var(--cmux-accent)" : "var(--cmux-hover)",
               color: active ? "var(--cmux-on-accent)" : "var(--cmux-text-secondary)",
               borderColor: active ? "var(--cmux-accent)" : "var(--cmux-border)",
@@ -153,7 +153,7 @@ export function ScrollBox({ children, maxHeight }: { children: ReactNode; maxHei
 export const tableStyle: CSSProperties = {
   borderCollapse: "collapse",
   width: "100%",
-  fontSize: 11,
+  fontSize: "var(--cmux-font-size-xs)",
   fontVariantNumeric: "tabular-nums",
 };
 
@@ -162,7 +162,7 @@ export const thStyle: CSSProperties = {
   padding: "5px 8px",
   color: "var(--cmux-text-tertiary)",
   fontWeight: 600,
-  fontSize: 10,
+  fontSize: "var(--cmux-font-size-xs)",
   borderBottom: "1px solid var(--cmux-border)",
   whiteSpace: "nowrap",
 };
@@ -257,10 +257,10 @@ export function EmptyState({
         borderColor: kind === "error" ? "var(--cmux-red)" : "var(--cmux-border)",
       }}
     >
-      <div style={{ fontSize: 12, fontWeight: 700, color: kind === "error" ? "var(--cmux-red)" : "var(--cmux-text)" }}>
+      <div style={{ fontSize: "var(--cmux-font-size-sm)", fontWeight: 700, color: kind === "error" ? "var(--cmux-red)" : "var(--cmux-text)" }}>
         {entry.title}
       </div>
-      <div style={{ fontSize: 11, color: "var(--cmux-text-secondary)", lineHeight: 1.6 }}>{entry.body}</div>
+      <div style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-secondary)", lineHeight: 1.6 }}>{entry.body}</div>
       {message ? (
         <pre
           style={{
@@ -270,7 +270,7 @@ export function EmptyState({
             overflow: "auto",
             whiteSpace: "pre-wrap",
             overflowWrap: "anywhere",
-            fontSize: 10,
+            fontSize: "var(--cmux-font-size-xs)",
             color: "var(--cmux-text-secondary)",
             background: "var(--cmux-hover)",
             borderRadius: 6,

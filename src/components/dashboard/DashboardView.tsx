@@ -120,8 +120,10 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === "g") return;
       const target = event.target as HTMLElement | null;
-      const editable = target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || Boolean(target?.isContentEditable);
+      const interactive = target instanceof HTMLButtonElement || target instanceof HTMLSelectElement || Boolean(target?.closest("[data-livebrief-interactive='true']"));
+      const editable = target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || Boolean(target?.isContentEditable) || interactive;
       if (editable) {
+        if (event.isComposing) return;
         if (event.key === "Escape" && viewState.query) {
           event.preventDefault();
           event.stopPropagation();
@@ -196,12 +198,12 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
   return <div ref={rootRef} tabIndex={-1} role="region" aria-label={dashboardStrings.viewAriaLabel} style={rootStyle}>
     <header style={headerStyle}>
       <div style={{ minWidth: 0 }}>
-        <div style={{ display: "flex", gap: 10, alignItems: "baseline" }}><strong>{dashboardStrings.buttonTitle}</strong><span style={{ color: "var(--cmux-text-secondary)", fontSize: 12 }}>{dashboardStrings.totalSummary(cards.length, workspaces.length)}</span></div>
+        <div style={{ display: "flex", gap: 10, alignItems: "baseline" }}><strong>{dashboardStrings.buttonTitle}</strong><span style={{ color: "var(--cmux-text-secondary)", fontSize: "var(--cmux-font-size-sm)" }}>{dashboardStrings.totalSummary(cards.length, workspaces.length)}</span></div>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
           {(["waiting", "stalled", "working", "idle", "done"] as const).map((group) => <span key={group} style={chipStyle}>{groupLabel(group)} {counts[group]}</span>)}
         </div>
       </div>
-      <span style={{ color: "var(--status-done)", fontSize: 11 }}>{dashboardStrings.liveUpdating} ●</span>
+      <span style={{ color: "var(--status-done)", fontSize: "var(--cmux-font-size-xs)" }}>{dashboardStrings.liveUpdating} ●</span>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 6, justifyContent: "flex-end" }}>
         <input ref={searchRef} value={viewState.query} onChange={(event) => viewState.setQuery(event.target.value)} placeholder={dashboardStrings.searchPlaceholder} style={inputStyle} />
         <select aria-label={dashboardStrings.sortByAttention} value={viewState.sortMode} onChange={(event) => viewState.setSortMode(event.target.value as "attention" | "workspace" | "agent")} style={controlStyle}>
@@ -221,24 +223,24 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
         <select value={viewState.agentFilter ?? ""} onChange={(event) => viewState.setAgentFilter(event.target.value || null)} style={controlStyle}><option value="">{dashboardStrings.allWorkspaces}</option><option value="claude">claude</option><option value="codex">codex</option><option value="claude-codex">claude-codex</option><option value="none">none</option></select>
       </aside>
       <main style={{ flex: 1, minWidth: 0, overflow: "auto", padding: 14 }}>
-        {viewState.query || viewState.workspaceFilter || Object.values(viewState.quickFilters).some(Boolean) || viewState.agentFilter ? <div style={{ color: "var(--cmux-text-secondary)", fontSize: 11, marginBottom: 10 }}>{dashboardStrings.filteredSummary(filteredCards.length, cards.length)}</div> : null}
+        {viewState.query || viewState.workspaceFilter || Object.values(viewState.quickFilters).some(Boolean) || viewState.agentFilter ? <div style={{ color: "var(--cmux-text-secondary)", fontSize: "var(--cmux-font-size-xs)", marginBottom: 10 }}>{dashboardStrings.filteredSummary(filteredCards.length, cards.length)}</div> : null}
         {urgentCards.length ? <section style={{ marginBottom: 18 }}><div style={sectionHeadingStyle}>{dashboardStrings.urgentRibbonTitle}</div><div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(340px, 1fr))", gap: 8 }}>{urgentCards.map((card) => <DashboardCard key={card.tab.id} card={card} selected={selectedCard?.tab.id === card.tab.id} now={now} urgent onSelect={viewState.setSelectedTabId} onJump={jumpToCard} />)}</div></section> : null}
         {sections.map((section) => <section key={section.id} style={{ marginBottom: 18 }}><div style={sectionHeadingStyle}>{sectionTitle(section.id, section.cards)} ({section.cards.length})</div><div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(340px, 1fr))", gap: 8 }}>{section.cards.map((card) => <DashboardCard key={card.tab.id} card={card} selected={selectedCard?.tab.id === card.tab.id} now={now} onSelect={viewState.setSelectedTabId} onJump={jumpToCard} />)}</div></section>)}
       </main>
       <DashboardDetailPane card={selectedCard} now={now} onJump={jumpToCard} />
     </div>
-    <footer style={{ borderTop: "1px solid var(--cmux-border)", padding: "7px 12px", color: "var(--cmux-text-secondary)", fontSize: 11 }}>{dashboardStrings.keyboardHint}</footer>
+    <footer style={{ borderTop: "1px solid var(--cmux-border)", padding: "7px 12px", color: "var(--cmux-text-secondary)", fontSize: "var(--cmux-font-size-xs)" }}>{dashboardStrings.keyboardHint}</footer>
   </div>;
 }
 
 const rootStyle = { position: "absolute" as const, inset: 0, zIndex: 40, background: "var(--cmux-bg)", color: "var(--cmux-text)", display: "flex", flexDirection: "column" as const, outline: "none" };
 const headerStyle = { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" as const, padding: "12px 14px", borderBottom: "1px solid var(--cmux-border)", background: "var(--cmux-popover)" };
-const chipStyle = { border: "1px solid var(--cmux-border)", borderRadius: 999, color: "var(--cmux-text-secondary)", fontSize: 11, padding: "2px 7px" };
-const controlStyle = { background: "var(--cmux-bg)", border: "1px solid var(--cmux-border)", borderRadius: "var(--cmux-radius-sm)", color: "var(--cmux-text)", fontSize: 11, minHeight: 27, padding: "3px 6px" };
+const chipStyle = { border: "1px solid var(--cmux-border)", borderRadius: 999, color: "var(--cmux-text-secondary)", fontSize: "var(--cmux-font-size-xs)", padding: "2px 7px" };
+const controlStyle = { background: "var(--cmux-bg)", border: "1px solid var(--cmux-border)", borderRadius: "var(--cmux-radius-sm)", color: "var(--cmux-text)", fontSize: "var(--cmux-font-size-xs)", minHeight: 27, padding: "3px 6px" };
 const inputStyle = { ...controlStyle, width: 240 };
 const buttonStyle = { ...controlStyle, cursor: "pointer" };
 const railStyle = { flex: "0 0 220px", width: 220, overflow: "auto", borderRight: "1px solid var(--cmux-border)", background: "var(--cmux-popover)", padding: 10, display: "flex", flexDirection: "column" as const, gap: 5 };
-const railButtonStyle = (selected: boolean) => ({ display: "flex", justifyContent: "space-between", gap: 8, background: selected ? "color-mix(in srgb, var(--cmux-accent) 14%, transparent)" : "transparent", border: "1px solid transparent", borderRadius: "var(--cmux-radius-sm)", color: "var(--cmux-text)", cursor: "pointer", fontSize: 11, padding: "5px 6px", textAlign: "left" as const });
-const railLabelStyle = { marginTop: 12, color: "var(--cmux-text-secondary)", fontSize: 11 };
-const checkStyle = { color: "var(--cmux-text-secondary)", fontSize: 11 };
-const sectionHeadingStyle = { marginBottom: 8, color: "var(--cmux-text-secondary)", fontSize: 12, fontWeight: 700 };
+const railButtonStyle = (selected: boolean) => ({ display: "flex", justifyContent: "space-between", gap: 8, background: selected ? "color-mix(in srgb, var(--cmux-accent) 14%, transparent)" : "transparent", border: "1px solid transparent", borderRadius: "var(--cmux-radius-sm)", color: "var(--cmux-text)", cursor: "pointer", fontSize: "var(--cmux-font-size-xs)", padding: "5px 6px", textAlign: "left" as const });
+const railLabelStyle = { marginTop: 12, color: "var(--cmux-text-secondary)", fontSize: "var(--cmux-font-size-xs)" };
+const checkStyle = { color: "var(--cmux-text-secondary)", fontSize: "var(--cmux-font-size-xs)" };
+const sectionHeadingStyle = { marginBottom: 8, color: "var(--cmux-text-secondary)", fontSize: "var(--cmux-font-size-sm)", fontWeight: 700 };

@@ -107,6 +107,10 @@ function transformSgrParameters(parameters: string): string {
 export class LightDarkColorAdapt {
   private pending = "";
 
+  reset(): void {
+    this.pending = "";
+  }
+
   transform(chunk: string): string {
     const input = this.pending + chunk;
     this.pending = "";
@@ -185,4 +189,32 @@ export function shouldAdaptLightColors(command: string, configuredCommands: read
   const normalizedCommand = normalizeCommandName(command);
   if (!normalizedCommand) return false;
   return configuredCommands.some((configured) => normalizeCommandName(configured) === normalizedCommand);
+}
+
+export function shouldAdaptLightColorsForPane(
+  command: string,
+  processTitle: string | undefined,
+  configuredCommands: readonly string[],
+): boolean {
+  return shouldAdaptLightColors(command, configuredCommands)
+    || shouldAdaptLightColors(processTitle ?? "", configuredCommands);
+}
+
+/** Keeps a streaming adapter stateful while command eligibility changes. */
+export class LightDarkColorAdaptController {
+  private enabled = false;
+
+  private readonly adapter = new LightDarkColorAdapt();
+
+  transform(chunk: string, enabled: boolean): string {
+    if (this.enabled && !enabled) {
+      this.adapter.reset();
+    }
+    this.enabled = enabled;
+    return enabled ? this.adapter.transform(chunk) : chunk;
+  }
+
+  reset(): void {
+    this.adapter.reset();
+  }
 }

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { fetchPetGallery, fetchPetPreview, installPetFromGallery, type GalleryPage, type GalleryPet } from "../../../lib/ipc";
+import { fetchPetGallery, fetchPetPreview, installPetFromGallery, quarantinePet, type GalleryPage, type GalleryPet } from "../../../lib/ipc";
 import { useToastStore } from "../../../stores/toastStore";
 import { dialogButtonStyle, sectionHeadingStyle } from "../tabStyles";
 import { petSettingsStrings } from "../settingsStrings";
@@ -51,6 +51,7 @@ export function PetGallerySection({ installedIds, onInstalled }: PetGallerySecti
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(false);
   const [installing, setInstalling] = useState<string | null>(null);
+  const [quarantining, setQuarantining] = useState<string | null>(null);
   const [previewFallbacks, setPreviewFallbacks] = useState<Record<string, string>>({});
 
   useEffect(() => {
@@ -93,6 +94,18 @@ export function PetGallerySection({ installedIds, onInstalled }: PetGallerySecti
     }
   };
 
+  const quarantine = async (id: string) => {
+    setQuarantining(id);
+    try {
+      await quarantinePet(id);
+      await onInstalled();
+    } catch (quarantineError) {
+      console.warn("[pets] Gallery quarantine failed", quarantineError);
+    } finally {
+      setQuarantining(null);
+    }
+  };
+
   return <section>
     <div style={sectionHeadingStyle}>{petSettingsStrings.galleryTitle}</div>
     <div style={{ margin: "-4px 0 10px", color: "var(--cmux-text-dim)", fontSize: 11, lineHeight: 1.5 }}>{petSettingsStrings.galleryHint}</div>
@@ -101,15 +114,15 @@ export function PetGallerySection({ installedIds, onInstalled }: PetGallerySecti
     {!loading && !error && displayedPets.length === 0 && <div style={{ color: "var(--cmux-text-dim)", fontSize: 11 }}>{petSettingsStrings.galleryEmpty}</div>}
     <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))", gap: 8 }}>
       {displayedPets.map((pet) => {
-        const installed = isGalleryInstalled(pet.id, installedIds);
+        const installed = installedIds.includes(`external:${pet.id}`);
         const preview = previewFallbacks[pet.id] ?? pet.previewUrl;
         return <article key={pet.id} style={{ border: "1px solid var(--cmux-border)", borderRadius: 7, padding: 8, minWidth: 0 }}>
           {preview && <img src={preview} alt="" onError={() => void loadPreviewFallback(pet)} style={{ display: "block", width: "100%", height: 88, objectFit: "contain" }} />}
           <div style={{ fontSize: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginTop: 4 }}>{pet.displayName || pet.id}</div>
           <div style={{ minHeight: 16, color: "var(--cmux-text-dim)", fontSize: 10 }}>{pet.tags.slice(0, 2).join(" · ")}</div>
           <div style={{ color: "var(--cmux-text-dim)", fontSize: 10 }}>♥ {pet.likeCount}{atlasSizeBadge(pet.atlasSize) ? ` · ${atlasSizeBadge(pet.atlasSize)}` : ""}</div>
-          <button type="button" style={{ ...dialogButtonStyle, marginTop: 6, width: "100%" }} disabled={installed || installing === pet.id} onClick={() => void install(pet.id)}>
-            {installed ? petSettingsStrings.galleryInstalled : installing === pet.id ? petSettingsStrings.galleryInstalling : petSettingsStrings.galleryInstall}
+          <button type="button" style={{ ...dialogButtonStyle, marginTop: 6, width: "100%" }} disabled={installing === pet.id || quarantining === pet.id} onClick={() => void (installed ? quarantine(pet.id) : install(pet.id))}>
+            {installed ? petSettingsStrings.galleryQuarantine : installing === pet.id ? petSettingsStrings.galleryInstalling : petSettingsStrings.galleryInstall}
           </button>
         </article>;
       })}

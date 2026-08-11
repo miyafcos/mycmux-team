@@ -13,6 +13,7 @@ use super::osc7::Osc7Parser;
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::mpsc as std_mpsc;
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, Notify};
 
@@ -143,12 +144,16 @@ impl ScrollbackSnapshot {
 struct QueuedInput {
     data: Vec<u8>,
     pending_bytes: Arc<AtomicUsize>,
+    completion: Option<std_mpsc::Sender<Result<(), String>>>,
 }
 
 impl Drop for QueuedInput {
     fn drop(&mut self) {
         self.pending_bytes
             .fetch_sub(self.data.len(), Ordering::Release);
+        if let Some(completion) = self.completion.take() {
+            let _ = completion.send(Err("PTY_INPUT_WRITER_FAILED: input was not written".to_string()));
+        }
     }
 }
 
@@ -406,6 +411,8 @@ pub struct PtySession {
     write_tx: mpsc::Sender<QueuedInput>,
     write_pending_bytes: Arc<AtomicUsize>,
     writer_failed: Arc<AtomicBool>,
+    input_gate: Mutex<()>,
+    input_revision: AtomicU64,
     pub broadcast: broadcast::Sender<Vec<u8>>,
     scrollback: Arc<Mutex<VecDeque<u8>>>,
     scrollback_end: Arc<AtomicU64>,
@@ -502,6 +509,7 @@ impl PtySession {
         thread::spawn(move || {
             let mut writer = writer;
             while let Some(input) = write_rx.blocking_recv() {
+                let mut input = input;
                 let mut broken = false;
                 // Chunk writes to avoid PTY buffer overflow (conpty ~4KB limit).
                 for chunk in input.data.chunks(INPUT_WRITE_CHUNK_BYTES) {
@@ -511,6 +519,9 @@ impl PtySession {
                     }
                 }
                 if broken {
+                    if let Some(completion) = input.completion.take() {
+                        let _ = completion.send(Err("PTY_INPUT_WRITER_FAILED: PTY writer failed during write".to_string()));
+                    }
                     writer_failed_thread.store(true, Ordering::Release);
                     // Fires at most once per session: `write` short-circuits on
                     // `writer_failed` and this thread exits immediately.
@@ -519,6 +530,9 @@ impl PtySession {
                         "session {writer_failed_session_id} input writer broke; terminal input is dead"
                     );
                     break;
+                }
+                if let Some(completion) = input.completion.take() {
+                    let _ = completion.send(Ok(()));
                 }
             }
         });
@@ -815,6 +829,8 @@ impl PtySession {
             write_tx,
             write_pending_bytes,
             writer_failed,
+            input_gate: Mutex::new(()),
+            input_revision: AtomicU64::new(0),
             broadcast: broadcast_tx,
             scrollback,
             scrollback_end,
@@ -842,6 +858,20 @@ impl PtySession {
     }
 
     pub fn write(&self, data: &[u8]) -> Result<(), String> {
+        let _input_guard = self
+            .input_gate
+            .lock()
+            .map_err(|_| "PTY_INPUT_WRITER_FAILED: input gate is poisoned".to_string())?;
+        self.enqueue_input(data, None)?;
+        self.input_revision.fetch_add(1, Ordering::AcqRel);
+        Ok(())
+    }
+
+    fn enqueue_input(
+        &self,
+        data: &[u8],
+        completion: Option<std_mpsc::Sender<Result<(), String>>>,
+    ) -> Result<(), String> {
         // Reserve bytes before the non-blocking enqueue. QueuedInput::drop
         // releases the reservation after either consumption or rejection.
         if data.is_empty() {
@@ -865,6 +895,7 @@ impl PtySession {
         let input = QueuedInput {
             data: data.to_vec(),
             pending_bytes: self.write_pending_bytes.clone(),
+            completion,
         };
         match self.write_tx.try_send(input) {
             Ok(()) => Ok(()),
@@ -883,6 +914,32 @@ impl PtySession {
                 Err("PTY_INPUT_WRITER_FAILED: PTY writer thread has exited".to_string())
             }
         }
+    }
+
+    /// Enqueue one complete intervention frame after comparing the revision
+    /// shared by every input producer. The returned receiver resolves only
+    /// when the dedicated PTY writer has written and flushed the whole frame.
+    pub fn write_intervention_if_revision(
+        &self,
+        expected_revision: u64,
+        data: &[u8],
+    ) -> Result<std_mpsc::Receiver<Result<(), String>>, String> {
+        let _input_guard = self
+            .input_gate
+            .lock()
+            .map_err(|_| "PTY_INPUT_WRITER_FAILED: input gate is poisoned".to_string())?;
+        let actual = self.input_revision.load(Ordering::Acquire);
+        if actual != expected_revision {
+            return Err(format!("PTY_INPUT_REVISION_CONFLICT:{actual}"));
+        }
+        let (completion_tx, completion_rx) = std_mpsc::channel();
+        self.enqueue_input(data, Some(completion_tx))?;
+        self.input_revision.fetch_add(1, Ordering::AcqRel);
+        Ok(completion_rx)
+    }
+
+    pub fn input_revision(&self) -> u64 {
+        self.input_revision.load(Ordering::Acquire)
     }
 
     pub fn resize(&self, cols: u16, rows: u16) -> Result<(), String> {
@@ -1262,6 +1319,7 @@ mod tests {
             let _input = QueuedInput {
                 data: vec![1, 2, 3],
                 pending_bytes: pending.clone(),
+                completion: None,
             };
             assert_eq!(pending.load(Ordering::Acquire), 3);
         }

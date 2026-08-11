@@ -43,7 +43,7 @@ export function ModelTable({
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-        <span style={{ fontSize: 10, color: "var(--cmux-text-tertiary)" }}>粒度</span>
+        <span style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-tertiary)" }}>粒度</span>
         <ButtonGroup
           ariaLabel="モデルの粒度"
           value={granularity}

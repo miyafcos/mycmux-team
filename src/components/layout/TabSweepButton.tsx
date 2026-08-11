@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { OVERLAY_EXIT_MS, useDeferredUnmount } from "../../hooks/useDeferredUnmount";
+import { SweepIcon } from "../icons/ChromeIcons";
 import { TAB_SWEEP_OPEN_EVENT } from "./tabSweep";
 import { TabSweepPanel } from "./TabSweepPanel";
 
@@ -44,7 +45,7 @@ export function TabSweepButton() {
           alignItems: "center",
         }}
       >
-        <span aria-hidden="true" style={{ fontSize: 13, lineHeight: 1 }}>🧹</span>
+        <SweepIcon />
       </button>
       <TabSweepPanel
         open={open}

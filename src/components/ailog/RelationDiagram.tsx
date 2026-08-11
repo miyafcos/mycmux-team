@@ -71,14 +71,14 @@ export function RelationDiagram({ models, sessions, excludeSynthetic, topN, onTo
   return <div style={{ display: "flex", flexDirection: "column", gap: 10, minWidth: 0 }}>
     <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
       <ButtonGroup ariaLabel="関係図の中間層" value={layer} onChange={(value) => { setLayer(value as "tag" | "topic"); onSelect(null); }} options={[{ value: "tag", label: "作業種別" }, { value: "topic", label: "トピック" }]} />
-      <span style={{ fontSize: 10, color: "var(--cmux-text-tertiary)" }}>案件はコスト上位 10 件 + その他</span>
-      {(["model"] as (keyof TopNSetting)[]).map((entry) => <label key={entry} style={{ fontSize: 10, color: "var(--cmux-text-tertiary)" }}>
+      <span style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-tertiary)" }}>案件はコスト上位 10 件 + その他</span>
+      {(["model"] as (keyof TopNSetting)[]).map((entry) => <label key={entry} style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-tertiary)" }}>
         モデル
         <select aria-label={`${entry} の表示件数`} value={String(topN[entry])} onChange={(event) => onTopN(entry, Number(event.target.value))} style={selectStyle}>
           {[5, 8, 12].map((value) => <option key={value} value={value}>{value}</option>)}
         </select>
       </label>)}
-      {selection ? <button type="button" onClick={() => onSelect(null)} style={{ ...subtleButtonStyle, fontSize: 10 }}>{`絞り込み解除：${selection.label}`}</button> : null}
+      {selection ? <button type="button" onClick={() => onSelect(null)} style={{ ...subtleButtonStyle, fontSize: "var(--cmux-font-size-xs)" }}>{`絞り込み解除：${selection.label}`}</button> : null}
     </div>
     {empty ? <div style={noteStyle}>この期間に描ける関係がありません。</div> : <ScrollBox><svg viewBox={`0 0 ${VIEW_W} ${height}`} role="img" aria-label={`案件から${layer === "topic" ? "トピック" : "作業種別"}、モデルへのコストの流れ`} style={{ width: "100%", minWidth: 900, height: "auto", display: "block" }}>
       {["案件", layer === "topic" ? "トピック" : "作業種別", "モデル"].map((label, index) => <text key={label} x={COLUMN_X[index]} y={18} style={headerTextStyle}>{label}</text>)}
@@ -116,7 +116,7 @@ function NodeMark({ node, datum, color, selected, dimmed, onClick }: { node: Lai
     <text x={node.x + node.width + 8} y={node.y + node.height / 2 + 12} style={nodeValueStyle}>{`${formatUsdShort(node.value)} (${formatPct(datum?.sharePct ?? 0)})`}</text>
   </g>;
 }
-const headerTextStyle = { fill: "var(--cmux-text-tertiary)", fontSize: 12, fontWeight: 600 } as const;
-const nodeLabelStyle = { fill: "var(--cmux-text)", fontSize: 12 } as const;
-const nodeValueStyle = { fill: "var(--cmux-text-secondary)", fontSize: 11, fontVariantNumeric: "tabular-nums" } as const;
-const selectStyle = { marginLeft: 4, background: "var(--cmux-hover)", border: "1px solid var(--cmux-border)", borderRadius: 5, color: "var(--cmux-text)", fontSize: 10, padding: "2px 4px" } as const;
+const headerTextStyle = { fill: "var(--cmux-text-tertiary)", fontSize: "var(--cmux-font-size-sm)", fontWeight: 600 } as const;
+const nodeLabelStyle = { fill: "var(--cmux-text)", fontSize: "var(--cmux-font-size-sm)" } as const;
+const nodeValueStyle = { fill: "var(--cmux-text-secondary)", fontSize: "var(--cmux-font-size-xs)", fontVariantNumeric: "tabular-nums" } as const;
+const selectStyle = { marginLeft: 4, background: "var(--cmux-hover)", border: "1px solid var(--cmux-border)", borderRadius: 5, color: "var(--cmux-text)", fontSize: "var(--cmux-font-size-xs)", padding: "2px 4px" } as const;

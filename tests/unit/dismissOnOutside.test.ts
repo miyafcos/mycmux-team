@@ -83,6 +83,7 @@ describe("popover dismiss call sites", () => {
     "src/components/layout/NotificationPanel.tsx",
     "src/components/workspace/PaneTabBar.tsx",
     "src/components/workspace/TerminalPane.tsx",
+    "src/components/settings/tabs/PetTab.tsx",
   ];
 
   it("uses the shared hook instead of hand-rolled listeners", () => {
@@ -94,12 +95,12 @@ describe("popover dismiss call sites", () => {
     }
   });
 
-  it("covers all seven popovers", () => {
+  it("covers all eight popovers", () => {
     const total = callSites.reduce(
       (count, path) => count + (source(path).match(/useDismissOnOutside\(/g)?.length ?? 0),
       0,
     );
-    // AccountsButton 1, NotificationPanel 1, PaneTabBar 4, TerminalPane 1.
-    expect(total).toBe(7);
+    // AccountsButton 1, NotificationPanel 1, PaneTabBar 4, TerminalPane 1, PetTab 1.
+    expect(total).toBe(8);
   });
 });

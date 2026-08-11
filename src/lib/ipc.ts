@@ -839,6 +839,7 @@ export interface AppSettings {
   theme_tweaks?: ThemeTweaks;
   keybindings?: Record<string, string>;
   ui_density?: string;
+  ui_font_scale?: number;
   pet_display_mode?: "ws" | "both" | "none";
   pet_new_ws_mode?: "random" | "choose" | "fixed";
   pet_disabled?: string[];

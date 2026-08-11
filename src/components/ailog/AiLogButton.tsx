@@ -1,6 +1,7 @@
 import { useCallback, useState } from "react";
 
 import { OVERLAY_EXIT_MS, useDeferredUnmount } from "../../hooks/useDeferredUnmount";
+import { AiLogIcon } from "../icons/ChromeIcons";
 import { AiLogPanel } from "./AiLogPanel";
 
 /**
@@ -36,9 +37,7 @@ export function AiLogButton() {
           alignItems: "center",
         }}
       >
-        <span aria-hidden="true" style={{ fontSize: 13, lineHeight: 1 }}>
-          📊
-        </span>
+        <AiLogIcon />
       </button>
       <AiLogPanel open={open} visible={mounted} closing={closing} onClose={closePanel} />
     </div>

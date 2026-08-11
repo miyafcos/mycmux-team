@@ -26,6 +26,8 @@ const boundarySource = [
   read("src/components/layout/AccountsButton.tsx"),
   read("src/components/layout/AccountsPanel.tsx"),
   read("src/components/settings/tabs/UsageTab.tsx"),
+  read("src/components/layout/TabSweepButton.tsx"),
+  read("src/components/ailog/AiLogButton.tsx"),
 ].join("\n");
 
 describe("UI quality Phase A contracts", () => {
@@ -92,12 +94,16 @@ describe("UI quality Phase A contracts", () => {
   });
 
   it("uses monochrome SVG chrome icons instead of emoji glyphs", () => {
-    expect(boundarySource).not.toMatch(/[\u270f\u2610\u{1f4c4}]/u);
+    expect(boundarySource).not.toMatch(/[\u270f\u2610\u{1f4c4}\u{1f9f9}\u{1f4ca}]/u);
 
-    for (const icon of ["PencilIcon", "TaskIcon", "DocumentIcon"]) {
+    for (const icon of ["PencilIcon", "TaskIcon", "DocumentIcon", "SweepIcon", "AiLogIcon"]) {
       expect(chromeIcons).toMatch(new RegExp(`export function ${icon}`));
-      expect(crsmPalette).toContain(`<${icon}`);
     }
+    expect(crsmPalette).toContain("<PencilIcon");
+    expect(crsmPalette).toContain("<TaskIcon");
+    expect(crsmPalette).toContain("<DocumentIcon");
+    expect(read("src/components/layout/TabSweepButton.tsx")).toContain("<SweepIcon");
+    expect(read("src/components/ailog/AiLogButton.tsx")).toContain("<AiLogIcon");
     expect(chromeIcons).toContain('stroke: "currentColor"');
   });
 
@@ -135,6 +141,17 @@ describe("UI quality Phase A contracts", () => {
       "src/components/theme/ThemeFontSettings.tsx",
       "src/components/workspace/ArtifactEditorToolbar.tsx",
       "src/components/workspace/PaneTabBar.tsx",
+      "src/components/ailog/ui.tsx",
+      "src/components/ailog/CostHeatmap.tsx",
+      "src/components/ailog/ModelTable.tsx",
+      "src/components/ailog/RangeBar.tsx",
+      "src/components/ailog/RelationDiagram.tsx",
+      "src/components/ailog/SessionDetailView.tsx",
+      "src/components/ailog/SessionTable.tsx",
+      "src/components/ailog/SummaryCards.tsx",
+      "src/components/dashboard/DashboardCard.tsx",
+      "src/components/dashboard/DashboardDetailPane.tsx",
+      "src/components/dashboard/DashboardView.tsx",
     ];
 
     for (const path of sweptFiles) {

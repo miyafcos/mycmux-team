@@ -94,7 +94,7 @@ export function RangeBar({
               onChange={(event) => onCustomRange(event.target.value, customTo)}
               style={dateInputStyle}
             />
-            <span style={{ color: "var(--cmux-text-tertiary)", fontSize: 11 }}>〜</span>
+            <span style={{ color: "var(--cmux-text-tertiary)", fontSize: "var(--cmux-font-size-xs)" }}>〜</span>
             <input
               type="date"
               aria-label="終了日"
@@ -131,7 +131,7 @@ export function RangeBar({
       </div>
 
       {customIncomplete ? (
-        <div style={{ fontSize: 10, color: "var(--cmux-usage-warn)" }}>
+        <div style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-usage-warn)" }}>
           日付を 2 つ選ぶと反映されます（それまでは直前の期間のままです）
         </div>
       ) : null}
@@ -148,7 +148,7 @@ export function RangeBar({
           >
             <div style={{ width: `${pct}%`, height: "100%", background: "var(--cmux-accent)" }} />
           </div>
-          <span style={{ fontSize: 10, color: "var(--cmux-text-secondary)", whiteSpace: "nowrap" }}>
+          <span style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-secondary)", whiteSpace: "nowrap" }}>
             {`${formatCount(done)} / ${formatCount(total)} ファイル`}
             {indexProgress?.sessions ? ` · ${formatCount(indexProgress.sessions)} セッション` : ""}
           </span>
@@ -156,11 +156,11 @@ export function RangeBar({
       ) : null}
 
       {summarizing ? (
-        <div style={{ fontSize: 10, color: "var(--cmux-text-secondary)" }}>
+        <div style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-secondary)" }}>
           {`処理済み ${formatCount(summaryDone)} / 全 ${formatCount(summaryTotal)}`}
         </div>
       ) : null}
-      {summarizeError ? <div style={{ fontSize: 10, color: "var(--cmux-red)" }}>{summarizeError}</div> : null}
+      {summarizeError ? <div style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-red)" }}>{summarizeError}</div> : null}
 
       <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
         <label style={checkboxLabelStyle}>
@@ -192,11 +192,11 @@ export function RangeBar({
       </div>
 
       {indexError ? (
-        <div style={{ fontSize: 10, color: "var(--cmux-red)", overflowWrap: "anywhere" }}>{indexError}</div>
+        <div style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-red)", overflowWrap: "anywhere" }}>{indexError}</div>
       ) : null}
 
       {overview ? (
-        <div style={{ fontSize: 10, color: "var(--cmux-text-tertiary)", lineHeight: 1.5 }}>
+        <div style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-tertiary)", lineHeight: 1.5 }}>
           {overview.costNote}
           {overview.priceSource ? `（単価: ${overview.priceSource}）` : ""}
           {overview.unpricedModels.length > 0
@@ -213,7 +213,7 @@ const dateInputStyle = {
   border: "1px solid var(--cmux-border)",
   borderRadius: 5,
   color: "var(--cmux-text)",
-  fontSize: 11,
+  fontSize: "var(--cmux-font-size-xs)",
   padding: "3px 6px",
   colorScheme: "light dark" as const,
 };
@@ -222,7 +222,7 @@ const checkboxLabelStyle = {
   display: "flex",
   alignItems: "center",
   gap: 5,
-  fontSize: 10,
+  fontSize: "var(--cmux-font-size-xs)",
   color: "var(--cmux-text-secondary)",
   cursor: "pointer",
 };

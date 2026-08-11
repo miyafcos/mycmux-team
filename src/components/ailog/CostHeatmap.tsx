@@ -13,7 +13,7 @@ import type { SeriesReport } from "../../lib/ailog";
 import { buildHeatmapGrid, dragSpan, levelOf, type HeatmapCell } from "./heatmapModel";
 import { noteStyle } from "./ui";
 
-const CELL = 11;
+const CELL = "var(--cmux-font-size-xs)";
 const CELL_GAP = 2;
 const WEEKDAY_LABELS = ["日", "月", "火", "水", "木", "金", "土"];
 
@@ -90,8 +90,8 @@ export function CostHeatmap({
                 key={label}
                 style={{
                   height: CELL,
-                  fontSize: 8,
-                  lineHeight: `${CELL}px`,
+                  fontSize: "var(--cmux-font-size-xs)",
+                  lineHeight: CELL,
                   color: "var(--cmux-text-tertiary)",
                   visibility: index % 2 === 1 ? "visible" : "hidden",
                 }}
@@ -101,13 +101,13 @@ export function CostHeatmap({
             ))}
           </div>
           <div style={{ minWidth: "min-content" }}>
-            <div style={{ display: "flex", gap: CELL_GAP, height: 12 }}>
+            <div style={{ display: "flex", gap: CELL_GAP, height: CELL }}>
               {grid.weeks.map((_, index) => {
                 const label = monthLabels.find((entry) => entry.index === index);
                 return (
                   <div
                     key={index}
-                    style={{ width: CELL, fontSize: 8, color: "var(--cmux-text-tertiary)", whiteSpace: "nowrap" }}
+                    style={{ width: CELL, fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-tertiary)", whiteSpace: "nowrap" }}
                   >
                     {label?.label ?? ""}
                   </div>

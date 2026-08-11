@@ -91,7 +91,7 @@ export function SessionDetailView({ detail, onClose }: { detail: SessionDetail; 
     <div style={{ display: "flex", flexDirection: "column", gap: 12, minWidth: 0 }}>
       <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
         <div style={{ minWidth: 0 }}>
-          <div style={{ fontSize: 13, fontWeight: 700, overflowWrap: "anywhere" }}>
+          <div style={{ fontSize: "var(--cmux-font-size-md)", fontWeight: 700, overflowWrap: "anywhere" }}>
             {detail.aiTitle?.trim() || detail.session.title?.trim() || "（無題）"}
           </div>
           <div style={{ ...noteStyle, marginTop: 3 }}>
@@ -121,7 +121,7 @@ export function SessionDetailView({ detail, onClose }: { detail: SessionDetail; 
       </div>
 
       <div>
-        <div style={{ fontSize: 11, fontWeight: 700, marginBottom: 4 }}>ターン別コスト推移</div>
+        <div style={{ fontSize: "var(--cmux-font-size-xs)", fontWeight: 700, marginBottom: 4 }}>ターン別コスト推移</div>
         {bars.length === 0 ? (
           <div style={noteStyle}>ターンの記録がありません。</div>
         ) : (
@@ -168,21 +168,21 @@ export function SessionDetailView({ detail, onClose }: { detail: SessionDetail; 
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 10 }}>
         <div>
-          <div style={{ fontSize: 11, fontWeight: 700, marginBottom: 4 }}>取り込み側（読み）</div>
+          <div style={{ fontSize: "var(--cmux-font-size-xs)", fontWeight: 700, marginBottom: 4 }}>取り込み側（読み）</div>
           <div style={{ fontSize: 16, fontWeight: 700 }}>{formatUsd(breakdown.ingest.costUsd)}</div>
           <div style={noteStyle}>
             {`${formatTokens(breakdown.ingest.tokens)}（入力 ${formatTokens(breakdown.ingest.input)} / キャッシュ読み ${formatTokens(breakdown.ingest.cacheRead)} / キャッシュ書き ${formatTokens(breakdown.ingest.cacheWrite)}）`}
           </div>
         </div>
         <div>
-          <div style={{ fontSize: 11, fontWeight: 700, marginBottom: 4 }}>生成側（書き）</div>
+          <div style={{ fontSize: "var(--cmux-font-size-xs)", fontWeight: 700, marginBottom: 4 }}>生成側（書き）</div>
           <div style={{ fontSize: 16, fontWeight: 700 }}>{formatUsd(breakdown.generate.costUsd)}</div>
           <div style={noteStyle}>
             {`${formatTokens(breakdown.generate.tokens)}（出力 ${formatTokens(breakdown.generate.output)} / 推論 ${formatTokens(breakdown.generate.reasoning)}）`}
           </div>
         </div>
         <div>
-          <div style={{ fontSize: 11, fontWeight: 700, marginBottom: 4 }}>取り込み側の割合</div>
+          <div style={{ fontSize: "var(--cmux-font-size-xs)", fontWeight: 700, marginBottom: 4 }}>取り込み側の割合</div>
           <div style={{ fontSize: 16, fontWeight: 700 }}>{formatRatio(breakdown.ingestRatio)}</div>
           <div style={noteStyle}>{`キャッシュヒット率 ${formatRatio(breakdown.cacheHitRate)}`}</div>
         </div>
@@ -190,7 +190,7 @@ export function SessionDetailView({ detail, onClose }: { detail: SessionDetail; 
       <div style={noteStyle}>{breakdown.note}</div>
 
       <div>
-        <div style={{ fontSize: 11, fontWeight: 700, marginBottom: 4 }}>文字数の内訳（推定）</div>
+        <div style={{ fontSize: "var(--cmux-font-size-xs)", fontWeight: 700, marginBottom: 4 }}>文字数の内訳（推定）</div>
         <div style={noteStyle}>
           {`読み ${formatCount(chars.read)} / 実行 ${formatCount(chars.exec)} / 書き ${formatCount(chars.write)} / 取得 ${formatCount(chars.fetch)} / 指示 ${formatCount(chars.prompt)} / その他 ${formatCount(chars.other)}（合計 ${formatCount(charTotal)} 文字）`}
         </div>
@@ -200,7 +200,7 @@ export function SessionDetailView({ detail, onClose }: { detail: SessionDetail; 
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 12 }}>
         <div style={{ minWidth: 0 }}>
-          <div style={{ fontSize: 11, fontWeight: 700, marginBottom: 4 }}>ツール別</div>
+          <div style={{ fontSize: "var(--cmux-font-size-xs)", fontWeight: 700, marginBottom: 4 }}>ツール別</div>
           <ScrollBox maxHeight={200}>
             <table style={tableStyle}>
               <thead>
@@ -233,7 +233,7 @@ export function SessionDetailView({ detail, onClose }: { detail: SessionDetail; 
         </div>
 
         <div style={{ minWidth: 0 }}>
-          <div style={{ fontSize: 11, fontWeight: 700, marginBottom: 4 }}>手戻り</div>
+          <div style={{ fontSize: "var(--cmux-font-size-xs)", fontWeight: 700, marginBottom: 4 }}>手戻り</div>
           <table style={tableStyle}>
             <tbody>
               <tr>
@@ -267,9 +267,9 @@ export function SessionDetailView({ detail, onClose }: { detail: SessionDetail; 
       </div>
 
       <div>
-        <div style={{ fontSize: 11, fontWeight: 700, marginBottom: 4 }}>要約</div>
+        <div style={{ fontSize: "var(--cmux-font-size-xs)", fontWeight: 700, marginBottom: 4 }}>要約</div>
         {detail.summary ? (
-          <div style={{ fontSize: 11, color: "var(--cmux-text-secondary)", lineHeight: 1.7, whiteSpace: "pre-wrap" }}>
+          <div style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-secondary)", lineHeight: 1.7, whiteSpace: "pre-wrap" }}>
             {[detail.summary.findings, detail.summary.reworkNote, detail.summary.costNote]
               .filter((value): value is string => Boolean(value))
               .join("\n")}

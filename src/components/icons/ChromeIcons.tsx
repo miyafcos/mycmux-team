@@ -43,3 +43,21 @@ export function DocumentIcon({ size = 12, ...props }: ChromeIconProps) {
     </svg>
   );
 }
+
+export function SweepIcon({ size = 12, ...props }: ChromeIconProps) {
+  return (
+    <svg {...sharedProps(size)} {...props}>
+      <path d="m5 4 10 10" />
+      <path d="m13 16 4-4 3 3-4 4-7 1 1-7 3 3Z" />
+    </svg>
+  );
+}
+
+export function AiLogIcon({ size = 12, ...props }: ChromeIconProps) {
+  return (
+    <svg {...sharedProps(size)} {...props}>
+      <path d="M4 19V5M4 19h16" />
+      <path d="m7 15 4-4 3 2 4-6" />
+    </svg>
+  );
+}

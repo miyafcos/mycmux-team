@@ -402,6 +402,7 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
   const currentTheme = useThemeStore((s) => s.theme);
   const themeBackground = useThemeStore((s) => s.themeTweaks.background);
   const uiDensity = useThemeStore((s) => s.uiDensity);
+  const uiFontScale = useThemeStore((s) => s.uiFontScale);
 
   // Multi-window (Phase 3a): both of these are app-wide singleton fetches
   // (crsm session index / savepoint index). Running them once per window just
@@ -445,11 +446,15 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
 
   const densityTokens = UI_DENSITY_TOKENS[uiDensity];
   const densitySpace = (base: number) => `${Math.round(base * densityTokens.spaceScale)}px`;
+  const scalePx = (value: string) => {
+    if (uiFontScale === 1) return value;
+    return `${Math.max(11, Math.round(Number.parseFloat(value) * uiFontScale))}px`;
+  };
 
   const themeVars = {
-    "--cmux-font-size-xs": densityTokens.fontXs,
-    "--cmux-font-size-sm": densityTokens.fontSm,
-    "--cmux-font-size-md": densityTokens.fontMd,
+    "--cmux-font-size-xs": scalePx(densityTokens.fontXs),
+    "--cmux-font-size-sm": scalePx(densityTokens.fontSm),
+    "--cmux-font-size-md": scalePx(densityTokens.fontMd),
     "--cmux-line-height-ui": densityTokens.lineHeightUi,
     "--cmux-space-1": densitySpace(2),
     "--cmux-space-2": densitySpace(4),

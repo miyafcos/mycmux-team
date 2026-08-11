@@ -145,6 +145,10 @@ export const FONT_SIZE_MIN = 10;
 export const FONT_SIZE_MAX = 24;
 
 export type UiDensity = "compact" | "standard" | "relaxed";
+export const UI_FONT_SCALE_DEFAULT = 1;
+export const UI_FONT_SCALE_MIN = 0.9;
+export const UI_FONT_SCALE_MAX = 1.5;
+export const UI_FONT_SCALE_STEP = 0.05;
 
 // Chrome-wide density axis, independent from the color theme. "standard" must
 // stay byte-identical to the historical static tokens in global.css — existing
@@ -162,6 +166,12 @@ export function normalizeUiDensity(value: unknown): UiDensity {
   return value === "compact" || value === "relaxed" ? value : "standard";
 }
 
+export function normalizeUiFontScale(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return UI_FONT_SCALE_DEFAULT;
+  const clamped = Math.max(UI_FONT_SCALE_MIN, Math.min(UI_FONT_SCALE_MAX, value));
+  return Number((Math.round(clamped / UI_FONT_SCALE_STEP) * UI_FONT_SCALE_STEP).toFixed(2));
+}
+
 export interface ThemeSnapshot {
   themeId: string;
   themeTweaks: ThemeTweaks;
@@ -176,10 +186,12 @@ interface ThemeState {
   themeTweaks: ThemeTweaks;
   previousThemeSnapshot: ThemeSnapshot | null;
   uiDensity: UiDensity;
+  uiFontScale: number;
 
   setTheme: (id: string) => void;
   restoreThemeSnapshot: () => void;
   setUiDensity: (density: UiDensity) => void;
+  setUiFontScale: (scale: number) => void;
   setFontSize: (size: number) => void;
   adjustFontSize: (delta: number) => void;
   setFontFamily: (fontFamily: string) => void;
@@ -190,7 +202,7 @@ interface ThemeState {
   setThemeBackground: (background: Partial<ThemeBackgroundSettings>) => void;
   clearThemeTweakColor: (key: ThemeTweakColorKey) => void;
   resetThemeTweaks: () => void;
-  hydrateSettings: (settings: { themeId?: string; fontSize?: number; fontFamily?: unknown; lineHeight?: unknown; themeTweaks?: unknown; uiDensity?: unknown }) => void;
+  hydrateSettings: (settings: { themeId?: string; fontSize?: number; fontFamily?: unknown; lineHeight?: unknown; themeTweaks?: unknown; uiDensity?: unknown; uiFontScale?: unknown }) => void;
 }
 
 const ALL_THEME_TWEAK_COLOR_KEYS = Array.from(
@@ -274,9 +286,14 @@ export const useThemeStore = create<ThemeState>((set) => ({
   themeTweaks: DEFAULT_THEME_TWEAKS,
   previousThemeSnapshot: null,
   uiDensity: "standard",
+  uiFontScale: UI_FONT_SCALE_DEFAULT,
 
   setUiDensity: (density) => {
     set({ uiDensity: normalizeUiDensity(density) });
+  },
+
+  setUiFontScale: (scale) => {
+    set({ uiFontScale: normalizeUiFontScale(scale) });
   },
 
   setTheme: (id) => {
@@ -446,6 +463,7 @@ export const useThemeStore = create<ThemeState>((set) => ({
       lineHeight: nextLineHeight,
       themeTweaks,
       uiDensity: normalizeUiDensity(settings.uiDensity),
+      uiFontScale: normalizeUiFontScale(settings.uiFontScale),
     });
   },
 }));

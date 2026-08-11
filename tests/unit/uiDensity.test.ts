@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   UI_DENSITY_TOKENS,
   normalizeUiDensity,
+  normalizeUiFontScale,
   useThemeStore,
 } from "../../src/stores/themeStore";
 
@@ -56,6 +57,22 @@ describe("UI_DENSITY_TOKENS", () => {
   });
 });
 
+describe("normalizeUiFontScale", () => {
+  it.each([undefined, null, "1", Number.NaN, Number.POSITIVE_INFINITY])(
+    "falls back to 1 for invalid value %s",
+    (value) => {
+      expect(normalizeUiFontScale(value)).toBe(1);
+    },
+  );
+
+  it("clamps and rounds to 0.05 increments", () => {
+    expect(normalizeUiFontScale(0.1)).toBe(0.9);
+    expect(normalizeUiFontScale(0.926)).toBe(0.95);
+    expect(normalizeUiFontScale(1.49)).toBe(1.5);
+    expect(normalizeUiFontScale(2)).toBe(1.5);
+  });
+});
+
 describe("uiDensity store", () => {
   it("setUiDensity normalizes its input", () => {
     useThemeStore.getState().setUiDensity("relaxed");
@@ -73,6 +90,17 @@ describe("uiDensity store", () => {
   });
 });
 
+describe("uiFontScale store", () => {
+  it("normalizes setters and hydration", () => {
+    useThemeStore.getState().setUiFontScale(1.26);
+    expect(useThemeStore.getState().uiFontScale).toBe(1.25);
+    useThemeStore.getState().hydrateSettings({ uiFontScale: 0.9 });
+    expect(useThemeStore.getState().uiFontScale).toBe(0.9);
+    useThemeStore.getState().hydrateSettings({});
+    expect(useThemeStore.getState().uiFontScale).toBe(1);
+  });
+});
+
 describe("ui_density persistence wiring", () => {
   // The classic bug is updating only one of the two hydrate sites (main
   // window vs child window). Guard all three touchpoints at source level.
@@ -86,6 +114,16 @@ describe("ui_density persistence wiring", () => {
     expect(hydrateSites.length).toBe(2);
   });
 
+  it("SocketListener saves and hydrates ui_font_scale on both paths", () => {
+    const source = readFileSync(
+      join(__dirname, "../../src/components/layout/SocketListener.tsx"),
+      "utf8",
+    );
+    expect(source).toMatch(/ui_font_scale:\s*themeState\.uiFontScale/);
+    const hydrateSites = source.match(/uiFontScale:\s*(?:data\.)?settings\.ui_font_scale/g) ?? [];
+    expect(hydrateSites.length).toBe(2);
+  });
+
   it("AppShell drives the density tokens", () => {
     const source = readFileSync(
       join(__dirname, "../../src/components/layout/AppShell.tsx"),
@@ -93,5 +131,7 @@ describe("ui_density persistence wiring", () => {
     );
     expect(source).toMatch(/--cmux-line-height-ui/);
     expect(source).toMatch(/UI_DENSITY_TOKENS/);
+    expect(source).toMatch(/uiFontScale/);
+    expect(source).toMatch(/Math\.max\(11,/);
   });
 });

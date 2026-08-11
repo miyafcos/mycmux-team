@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { LightDarkColorAdapt, shouldAdaptLightColors } from "../../src/lib/lightDarkColorAdapt";
+import {
+  LightDarkColorAdapt,
+  LightDarkColorAdaptController,
+  shouldAdaptLightColors,
+  shouldAdaptLightColorsForPane,
+} from "../../src/lib/lightDarkColorAdapt";
 
 describe("LightDarkColorAdapt", () => {
   it("inverts truecolor lightness while retaining hue and saturation", () => {
@@ -41,6 +46,13 @@ describe("LightDarkColorAdapt", () => {
     expect(adapter.transform("2;33;36mテキスト")).toBe("\u001b[38;2;219;220;223mテキスト");
   });
 
+  it("drops a pending escape sequence when reset", () => {
+    const adapter = new LightDarkColorAdapt();
+    expect(adapter.transform("\u001b[38;2;3")).toBe("");
+    adapter.reset();
+    expect(adapter.transform("2;33;36m")).toBe("2;33;36m");
+  });
+
   it("passes SGR-free chunks through unchanged", () => {
     const adapter = new LightDarkColorAdapt();
     const source = "plain テキスト\r\n";
@@ -64,5 +76,21 @@ describe("shouldAdaptLightColors", () => {
   it("matches the configured command by executable name only", () => {
     expect(shouldAdaptLightColors("C:\\tools\\agy.exe", ["agy"])).toBe(true);
     expect(shouldAdaptLightColors("other", ["agy"])).toBe(false);
+  });
+
+  it("enables process-title matches alongside the launch command", () => {
+    expect(shouldAdaptLightColorsForPane("bash", "agy", ["agy"])).toBe(true);
+    expect(shouldAdaptLightColorsForPane("bash", "bash", ["agy"])).toBe(false);
+    expect(shouldAdaptLightColorsForPane("agy", "bash", ["agy"])).toBe(true);
+  });
+});
+
+describe("LightDarkColorAdaptController", () => {
+  it("resets pending output when process-title eligibility changes from agy to bash", () => {
+    const adapter = new LightDarkColorAdaptController();
+    const configuredCommands = ["agy"];
+    expect(adapter.transform("\u001b[38;2;3", shouldAdaptLightColorsForPane("bash", "agy", configuredCommands))).toBe("");
+    expect(adapter.transform("2;33;36m", shouldAdaptLightColorsForPane("bash", "bash", configuredCommands))).toBe("2;33;36m");
+    expect(adapter.transform("\u001b[38;2;32;33;36m", shouldAdaptLightColorsForPane("bash", "agy", configuredCommands))).toBe("\u001b[38;2;219;220;223m");
   });
 });

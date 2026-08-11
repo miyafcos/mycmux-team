@@ -145,6 +145,22 @@ impl SessionManager {
         session.write(data)
     }
 
+    /// Queue exactly one intervention frame only if no other terminal input
+    /// has advanced the per-PTY input revision since the expectation was read.
+    /// This intentionally does not reuse the renderer data-channel generation.
+    pub fn write_intervention_if_revision(
+        &self,
+        session_id: &str,
+        expected_revision: u64,
+        data: &[u8],
+    ) -> Result<std::sync::mpsc::Receiver<Result<(), String>>, String> {
+        let session = self
+            .sessions
+            .get(session_id)
+            .ok_or_else(|| format!("Session not found: {session_id}"))?;
+        session.write_intervention_if_revision(expected_revision, data)
+    }
+
     pub fn resize(&self, session_id: &str, cols: u16, rows: u16) -> Result<(), String> {
         let session = self
             .sessions
@@ -238,6 +254,16 @@ impl SessionManager {
         self.sessions
             .get(session_id)
             .map(|session| (session.session_epoch(), session.last_output_at()))
+    }
+
+    pub fn intervention_observation(&self, session_id: &str) -> Option<(u64, u64, Option<u32>)> {
+        self.sessions.get(session_id).map(|session| {
+            (
+                session.session_epoch(),
+                session.input_revision(),
+                session.process_id(),
+            )
+        })
     }
 
     /// Get a reference to a session by ID.

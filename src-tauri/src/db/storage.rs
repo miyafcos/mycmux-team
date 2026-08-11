@@ -174,6 +174,10 @@ fn default_ui_density() -> String {
     "standard".to_string()
 }
 
+fn default_ui_font_scale() -> f32 {
+    1.0
+}
+
 fn default_pet_display_mode() -> String {
     "ws".to_string()
 }
@@ -196,6 +200,8 @@ pub struct AppSettings {
     /// the frontend (normalizeUiDensity); stored as an opaque string here.
     #[serde(default = "default_ui_density")]
     pub ui_density: String,
+    #[serde(default = "default_ui_font_scale")]
+    pub ui_font_scale: f32,
     #[serde(default)]
     pub keybindings: HashMap<String, String>,
     /// When true, persistence is triggered by Zustand subscribers + debounce
@@ -231,6 +237,7 @@ impl Default for AppSettings {
             theme_id: "yoru-cafe".to_string(),
             theme_tweaks: default_theme_tweaks(),
             ui_density: default_ui_density(),
+            ui_font_scale: default_ui_font_scale(),
             keybindings: HashMap::new(),
             dirty_save_mode: true,
             osc7_tracking_enabled: true,
@@ -568,6 +575,14 @@ mod tests {
             serde_json::from_str(r#"{"font_size":14,"theme_id":"yoru-cafe"}"#).unwrap();
 
         assert_eq!(settings.ui_density, "standard");
+    }
+
+    #[test]
+    fn app_settings_missing_ui_font_scale_uses_default() {
+        let settings: AppSettings =
+            serde_json::from_str(r#"{"font_size":14,"theme_id":"yoru-cafe"}"#).unwrap();
+
+        assert_eq!(settings.ui_font_scale, 1.0);
     }
 
     #[test]

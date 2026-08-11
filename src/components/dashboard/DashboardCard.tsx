@@ -29,7 +29,7 @@ function groupLabel(group: DashboardCardModel["group"]): string {
 }
 
 function InfoLine({ label, value, mono = false }: { label?: string; value: string; mono?: boolean }) {
-  return <div style={{ display: "flex", gap: 6, minWidth: 0, fontSize: 11, color: "var(--cmux-text-secondary)" }}>
+  return <div style={{ display: "flex", gap: 6, minWidth: 0, fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-secondary)" }}>
     {label ? <span style={{ flex: "0 0 auto" }}>{label}</span> : null}
     <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: mono ? "monospace" : undefined }}>{value}</span>
   </div>;
@@ -75,17 +75,17 @@ export const DashboardCard = memo(function DashboardCard({
   >
     <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
       <AgentKindIcon kind={card.agentKind === "none" ? undefined : card.agentKind} size={14} />
-      <strong style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12 }}>{card.label}</strong>
+      <strong style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: "var(--cmux-font-size-sm)" }}>{card.label}</strong>
       {card.background ? <span style={badgeStyle}>{dashboardStrings.backgroundBadge}</span> : null}
       {card.unobserved ? <span style={badgeStyle}>{dashboardStrings.unobservedBadge}</span> : null}
       <span style={{ ...badgeStyle, marginLeft: "auto", color: statusColor(card.status) }}>{groupLabel(card.group)}</span>
-      <span style={{ color: "var(--cmux-text-tertiary)", fontSize: 11 }}>{elapsedLabel(card.lastActivityAt, now)}</span>
+      <span style={{ color: "var(--cmux-text-tertiary)", fontSize: "var(--cmux-font-size-xs)" }}>{elapsedLabel(card.lastActivityAt, now)}</span>
     </div>
     <div style={{ marginTop: 7, display: "grid", gap: 4 }}>
       <InfoLine value={`${card.workspace.name} › ${dashboardStrings.paneLocation(card.tabIndex + 1, card.paneIndex + 1)}${card.metadata?.cwd ? ` · ${card.metadata.cwd.split(/[\\/]/).filter(Boolean).pop()}` : ""}`} />
       {card.group !== "done" && recentInput ? <InfoLine label={dashboardStrings.myInstructionLabel} value={recentInput.text} /> : null}
       {card.group !== "done" && asking ? urgent
-        ? <div style={{ color: "var(--cmux-text-secondary)", fontSize: 11, lineHeight: "15px", maxHeight: 30, overflow: "hidden" }}>{dashboardStrings.agentAskingLabel}: {asking}</div>
+        ? <div style={{ color: "var(--cmux-text-secondary)", fontSize: "var(--cmux-font-size-xs)", lineHeight: "15px", maxHeight: 30, overflow: "hidden" }}>{dashboardStrings.agentAskingLabel}: {asking}</div>
         : <InfoLine label={dashboardStrings.agentAskingLabel} value={asking} /> : null}
       {card.group !== "done" && stallReason && card.stall ? <InfoLine label={stallReason} value={dashboardStrings.stallSince(Math.max(0, Math.floor((now - card.stall.since) / 60_000)))} /> : null}
       {card.group !== "done" && card.lastLog ? <InfoLine value={card.lastLog} mono /> : null}
@@ -96,5 +96,5 @@ export const DashboardCard = memo(function DashboardCard({
   </article>;
 });
 
-const badgeStyle = { flex: "0 0 auto", border: "1px solid var(--cmux-border)", borderRadius: 999, padding: "1px 5px", fontSize: 11, color: "var(--cmux-text-secondary)" };
-const buttonStyle = { background: "transparent", border: "1px solid var(--cmux-border)", borderRadius: "var(--cmux-radius-sm)", color: "var(--cmux-text)", cursor: "pointer", fontSize: 11, padding: "3px 7px" };
+const badgeStyle = { flex: "0 0 auto", border: "1px solid var(--cmux-border)", borderRadius: 999, padding: "1px 5px", fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-secondary)" };
+const buttonStyle = { background: "transparent", border: "1px solid var(--cmux-border)", borderRadius: "var(--cmux-radius-sm)", color: "var(--cmux-text)", cursor: "pointer", fontSize: "var(--cmux-font-size-xs)", padding: "3px 7px" };

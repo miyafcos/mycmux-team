@@ -924,6 +924,7 @@ async function hydrateChildWindow(): Promise<void> {
     fontFamily: settings.font_family,
     themeTweaks: settings.theme_tweaks,
     uiDensity: settings.ui_density,
+    uiFontScale: settings.ui_font_scale,
   });
   useKeybindingStore.getState().hydrateOverrides(settings.keybindings ?? {});
   usePetSettingsStore.getState().hydratePetSettings({
@@ -1017,6 +1018,7 @@ export function useWorkspacePersist() {
             fontFamily: data.settings.font_family,
             themeTweaks: data.settings.theme_tweaks,
             uiDensity: data.settings.ui_density,
+            uiFontScale: data.settings.ui_font_scale,
           });
           useKeybindingStore.getState().hydrateOverrides(data.settings.keybindings ?? {});
           usePetSettingsStore.getState().hydratePetSettings({
@@ -1205,6 +1207,7 @@ export function useWorkspacePersist() {
           theme_tweaks: themeState.themeTweaks,
           keybindings: keybindingState.overrides,
           ui_density: themeState.uiDensity,
+          ui_font_scale: themeState.uiFontScale,
           pet_display_mode: petSettings.petDisplayMode,
           pet_new_ws_mode: petSettings.petNewWorkspaceMode,
           pet_disabled: petSettings.petDisabled,

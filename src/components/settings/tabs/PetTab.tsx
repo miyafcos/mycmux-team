@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import PetSprite from "../../workspace/PetSprite";
+import { useDismissOnOutside } from "../../../hooks/useDismissOnOutside";
 import { listPets, listQuarantinedPets, quarantinePet, restorePet, type ListedPet, type QuarantinedPet } from "../../../lib/ipc";
 import { candidatesFromListedPets, resolvePet } from "../../../lib/pets";
 import { usePetSettingsStore } from "../../../stores/petSettingsStore";
@@ -40,7 +41,10 @@ export function PetTab() {
   const [scanning, setScanning] = useState(false);
   const [invalidPets, setInvalidPets] = useState<ListedPet[]>([]);
   const [quarantinedPets, setQuarantinedPets] = useState<QuarantinedPet[]>([]);
+  const [candidateQuarantineId, setCandidateQuarantineId] = useState<string | null>(null);
+  const [pickerWorkspaceId, setPickerWorkspaceId] = useState<string | null>(null);
   const requestId = useRef(0);
+  const pickerRef = useRef<HTMLDivElement | null>(null);
 
   const enabledPets = useMemo(
     () => pets.filter((pet) => !disabled.includes(pet.id)),
@@ -69,6 +73,8 @@ export function PetTab() {
     void rescan();
     return () => { requestId.current += 1; };
   }, [rescan]);
+
+  useDismissOnOutside(Boolean(pickerWorkspaceId), pickerRef, () => setPickerWorkspaceId(null), { preventDefaultOnEscape: true });
 
   const toggleCandidate = (id: string) => {
     const isDisabled = disabled.includes(id);
@@ -127,31 +133,66 @@ export function PetTab() {
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(132px, 100%), 1fr))", gap: 8 }}>
           {pets.map((pet) => {
             const enabled = !disabled.includes(pet.id);
+            const confirmingQuarantine = candidateQuarantineId === pet.id;
             return (
-              <button
+              <div
                 key={pet.id}
-                type="button"
-                aria-pressed={enabled}
-                onClick={() => toggleCandidate(pet.id)}
                 style={{
                   border: `1px solid ${enabled ? "var(--cmux-accent)" : "var(--cmux-border)"}`,
                   borderRadius: 7,
                   background: enabled ? "color-mix(in srgb, var(--cmux-accent) 12%, transparent)" : "transparent",
                   color: "var(--cmux-text)",
-                  cursor: enabled && enabledPets.length <= 1 ? "not-allowed" : "pointer",
                   minHeight: 94,
-                  padding: 8,
-                  display: "flex",
-                  flexDirection: "column",
-                  alignItems: "center",
-                  gap: 4,
+                  position: "relative",
                 }}
               >
-                <span style={{ display: "flex", marginRight: -8 }}><PetSprite atlasUrl={pet.atlasUrl} state="running" height={46} rows={pet.rows} /></span>
-                <span style={{ fontSize: 12, maxWidth: "100%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{pet.name}</span>
-                <span style={{ fontSize: 10, color: "var(--cmux-text-dim)" }}>{pet.source === "bundled" ? petSettingsStrings.bundledSourceLabel : petSettingsStrings.externalSourceLabel}</span>
-                <span style={{ fontSize: 10, color: "var(--cmux-text-dim)" }}>8×{pet.rows}</span>
-              </button>
+                <button
+                  type="button"
+                  aria-pressed={enabled}
+                  onClick={() => toggleCandidate(pet.id)}
+                  style={{
+                    border: 0,
+                    borderRadius: 7,
+                    background: "transparent",
+                    color: "inherit",
+                    cursor: enabled && enabledPets.length <= 1 ? "not-allowed" : "pointer",
+                    minHeight: 92,
+                    padding: 8,
+                    width: "100%",
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "center",
+                    gap: 4,
+                  }}
+                >
+                  <span style={{ display: "flex", marginRight: -8 }}><PetSprite atlasUrl={pet.atlasUrl} state="running" height={46} rows={pet.rows} /></span>
+                  <span style={{ fontSize: 12, maxWidth: "100%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{pet.name}</span>
+                  <span style={{ fontSize: 10, color: "var(--cmux-text-dim)" }}>{pet.source === "bundled" ? petSettingsStrings.bundledSourceLabel : petSettingsStrings.externalSourceLabel}</span>
+                  <span style={{ fontSize: 10, color: "var(--cmux-text-dim)" }}>8×{pet.rows}</span>
+                </button>
+                {pet.source === "external" && !confirmingQuarantine && (
+                  <button
+                    type="button"
+                    title={petSettingsStrings.petQuarantineAction}
+                    aria-label={petSettingsStrings.petQuarantineAction}
+                    onClick={() => setCandidateQuarantineId(pet.id)}
+                    style={{ position: "absolute", top: 4, right: 4, border: 0, borderRadius: 4, padding: "2px 5px", background: "var(--cmux-surface-raised)", color: "var(--cmux-text-dim)", cursor: "pointer", fontSize: 13, lineHeight: 1 }}
+                  >
+                    <svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true">
+                      <path d="M2 2l8 8M10 2l-8 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                    </svg>
+                  </button>
+                )}
+                {confirmingQuarantine && (
+                  <div style={{ position: "absolute", inset: 0, zIndex: 1, display: "grid", alignContent: "center", gap: 6, padding: 8, borderRadius: 7, background: "var(--cmux-popover)", fontSize: 10 }}>
+                    <span>{petSettingsStrings.petQuarantineHint}</span>
+                    <span style={{ display: "flex", gap: 4 }}>
+                      <button type="button" style={dialogButtonStyle} onClick={() => { setCandidateQuarantineId(null); void quarantine(pet.folder); }}>{petSettingsStrings.petQuarantineAction}</button>
+                      <button type="button" style={dialogButtonStyle} onClick={() => setCandidateQuarantineId(null)}>{petSettingsStrings.petPickerCancel}</button>
+                    </span>
+                  </div>
+                )}
+              </div>
             );
           })}
         </div>
@@ -222,12 +263,26 @@ export function PetTab() {
           {workspaces.map((workspace) => {
             const pet = workspace.pet ? resolvePet(pets, workspace.pet) : undefined;
             return (
-              <div key={workspace.id} style={{ border: "1px solid var(--cmux-border)", borderRadius: 6, padding: "6px 8px", display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+              <div key={workspace.id} ref={pickerWorkspaceId === workspace.id ? pickerRef : undefined} style={{ border: "1px solid var(--cmux-border)", borderRadius: 6, padding: "6px 8px", display: "flex", alignItems: "center", gap: 8, minWidth: 0, position: "relative" }}>
                 <span style={{ display: "flex", marginRight: -8 }}><PetSprite atlasUrl={(pet ?? resolvePet(pets, undefined)).atlasUrl} state="idle" height={26} /></span>
                 <span style={{ flex: 1, minWidth: 0, fontSize: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{workspace.name}</span>
                 <span style={{ maxWidth: 108, fontSize: 11, color: "var(--cmux-text-dim)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{pet?.name ?? "-"}</span>
                 <button type="button" style={dialogButtonStyle} onClick={() => setWorkspacePet(workspace.id, nextPet(workspace.pet, true))}>{petSettingsStrings.rerollButton}</button>
-                <button type="button" style={dialogButtonStyle} onClick={() => setWorkspacePet(workspace.id, nextPet(workspace.pet, false))}>{petSettingsStrings.changeButton}</button>
+                <button type="button" style={dialogButtonStyle} aria-haspopup="dialog" aria-expanded={pickerWorkspaceId === workspace.id} onClick={() => setPickerWorkspaceId((current) => current === workspace.id ? null : workspace.id)}>{petSettingsStrings.changeButton}</button>
+                {pickerWorkspaceId === workspace.id && (
+                  <div className="cmux-popover-panel" role="dialog" aria-label={petSettingsStrings.petPickerTitle} style={{ position: "absolute", top: "calc(100% + 4px)", right: 0, zIndex: 10, width: 250, maxWidth: "calc(100vw - 32px)", padding: 8, display: "grid", gap: 8, background: "var(--cmux-popover)", border: "1px solid var(--cmux-border)", borderRadius: 7, boxShadow: "var(--cmux-shadow-popover)" }}>
+                    <div style={{ fontSize: 12, fontWeight: 700 }}>{petSettingsStrings.petPickerTitle}</div>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 6 }}>
+                      {enabledPets.map((candidate) => (
+                        <button key={candidate.id} type="button" title={candidate.name} onClick={() => { setWorkspacePet(workspace.id, candidate.id); setPickerWorkspaceId(null); }} style={{ border: `1px solid ${candidate.id === workspace.pet ? "var(--cmux-accent)" : "var(--cmux-border)"}`, borderRadius: 5, padding: 4, background: "transparent", color: "var(--cmux-text)", cursor: "pointer", display: "grid", justifyItems: "center", gap: 2, minWidth: 0 }}>
+                          <PetSprite atlasUrl={candidate.atlasUrl} state="idle" height={30} rows={candidate.rows} />
+                          <span style={{ width: "100%", fontSize: 10, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{candidate.name}</span>
+                        </button>
+                      ))}
+                    </div>
+                    <button type="button" style={{ ...dialogButtonStyle, justifySelf: "end" }} onClick={() => setPickerWorkspaceId(null)}>{petSettingsStrings.petPickerCancel}</button>
+                  </div>
+                )}
               </div>
             );
           })}

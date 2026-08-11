@@ -25,7 +25,7 @@ import {
 import { usePaneMetadataStore, useUiStore } from "../../stores/workspaceStore";
 import { useKeybindingStore } from "../../stores/keybindingStore";
 import { useSettingsStore } from "../../stores/settingsStore";
-import { LightDarkColorAdapt, shouldAdaptLightColors } from "../../lib/lightDarkColorAdapt";
+import { LightDarkColorAdaptController, shouldAdaptLightColorsForPane } from "../../lib/lightDarkColorAdapt";
 import { resolveEffectiveTerminalRenderer } from "../../stores/settingsMigration";
 import { DEFAULT_TERMINAL_FONT_FAMILY, useThemeStore } from "../../stores/themeStore";
 import { useToastStore } from "../../stores/toastStore";
@@ -636,6 +636,10 @@ export default memo(function XTermWrapper({
   const colorAdaptCommands = useSettingsStore((s) => s.colorAdaptCommands);
   const colorAdaptCommandsRef = useRef(colorAdaptCommands);
   colorAdaptCommandsRef.current = colorAdaptCommands;
+  const processTitle = usePaneMetadataStore((s) => s.metadata[sessionId]?.processTitle);
+  const processTitleRef = useRef(processTitle);
+  processTitleRef.current = processTitle;
+  const colorAdapterRef = useRef(new LightDarkColorAdaptController());
   const previousTerminalRendererRef = useRef(terminalRenderer);
   const { mediaBackgroundActive, terminalOpacity } = resolveTerminalBackgroundState(storeBackground);
   // Single source of truth: is this tab the currently-focused terminal?
@@ -727,10 +731,6 @@ export default memo(function XTermWrapper({
     let titleDisposable: { dispose: () => void } | null = null;
     let artifactLinkProviderDisposable: { dispose: () => void } | null = null;
     let term: Terminal | null = null;
-    const colorAdapter = shouldAdaptLightColors(
-      launchParamsRef.current.command,
-      colorAdaptCommandsRef.current,
-    ) ? new LightDarkColorAdapt() : null;
     let fitAddon: FitAddon | null = null;
     let removeCompositionGuard: (() => void) | null = null;
     let removePaintFocusListeners: (() => void) | null = null;
@@ -1458,8 +1458,13 @@ export default memo(function XTermWrapper({
           resolve();
         };
         try {
-          const displayOutput = colorAdapter && typeof output === "string"
-            ? colorAdapter.transform(output)
+          const colorAdaptEnabled = shouldAdaptLightColorsForPane(
+            launchParamsRef.current.command,
+            processTitleRef.current,
+            colorAdaptCommandsRef.current,
+          );
+          const displayOutput = typeof output === "string"
+            ? colorAdapterRef.current.transform(output, colorAdaptEnabled)
             : output;
           term.write(displayOutput, finish);
         } catch {
@@ -1525,6 +1530,7 @@ export default memo(function XTermWrapper({
       const previousOpacity = terminalElement?.style.opacity ?? "";
       if (terminalElement) terminalElement.style.opacity = "0";
       try {
+        colorAdapterRef.current.reset();
         term.reset();
         outputDecoder = resetTerminalOutputDecoder(sessionId);
         const replayText = outputDecoder.decode(scrollback, { stream: true });
@@ -1594,6 +1600,7 @@ export default memo(function XTermWrapper({
         || recoveryPlan.action === "initial-replay";
       if (replacesVisibleBuffer) {
         if (terminalElement) terminalElement.style.opacity = "0";
+        colorAdapterRef.current.reset();
         term.reset();
         outputDecoder = resetTerminalOutputDecoder(sessionId);
       }
@@ -1759,6 +1766,7 @@ export default memo(function XTermWrapper({
         }
         replayOutputDecoder = new TextDecoder();
         replayMouseModeFilter = createTerminalMouseModeControlFilter();
+        colorAdapterRef.current.reset();
         term.reset();
         replayActive = true;
       },
@@ -1984,6 +1992,7 @@ export default memo(function XTermWrapper({
     };
 
     const cleanup = (): void => {
+      colorAdapterRef.current.reset();
       invalidateContainerVisibilityMemo();
       clearResizeTimer();
       clearRefreshTimers();
@@ -2204,7 +2213,12 @@ export default memo(function XTermWrapper({
           const output = `${stripTerminalMouseModeControlSequences(displayReplay)}\r\n`;
           const measuredBytes = terminalWriteByteLength(output);
           const writeMeasurement = recordTerminalWriteStart(sessionId, measuredBytes);
-          const adaptedOutput = colorAdapter ? colorAdapter.transform(output) : output;
+          const colorAdaptEnabled = shouldAdaptLightColorsForPane(
+            launchParamsRef.current.command,
+            processTitleRef.current,
+            colorAdaptCommandsRef.current,
+          );
+          const adaptedOutput = colorAdapterRef.current.transform(output, colorAdaptEnabled);
           replayTerm.write(adaptedOutput, () => {
             recordTerminalWriteCallback(writeMeasurement);
             resolve();

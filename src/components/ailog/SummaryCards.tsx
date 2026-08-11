@@ -72,9 +72,9 @@ export function SummaryCards({ overview, preset }: { overview: Overview; preset:
     >
       {cards.map((card) => (
         <div key={card.label} style={{ ...cardStyle, padding: "10px 12px 11px" }} title={card.hint}>
-          <div style={{ fontSize: 10, color: "var(--cmux-text-tertiary)" }}>{card.label}</div>
+          <div style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-tertiary)" }}>{card.label}</div>
           <div style={{ fontSize: 18, fontWeight: 700, letterSpacing: "-0.01em", marginTop: 2 }}>{card.value}</div>
-          <div style={{ marginTop: 3, fontSize: 10, minHeight: 14 }}>
+          <div style={{ marginTop: 3, fontSize: "var(--cmux-font-size-xs)", minHeight: 14 }}>
             {card.delta === null ? (
               <span style={{ color: "var(--cmux-text-tertiary)" }}>—</span>
             ) : showCompare ? (

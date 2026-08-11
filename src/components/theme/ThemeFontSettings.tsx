@@ -2,6 +2,10 @@ import {
   FONT_SIZE_MAX,
   FONT_SIZE_MIN,
   TERMINAL_FONT_PRESETS,
+  UI_FONT_SCALE_DEFAULT,
+  UI_FONT_SCALE_MAX,
+  UI_FONT_SCALE_MIN,
+  UI_FONT_SCALE_STEP,
   useThemeStore,
   type TerminalFontPreset,
   type UiDensity,
@@ -53,7 +57,10 @@ const FONT_PRESET_GROUPS: FontPresetGroup[] = [
 function UiDensityPicker() {
   const uiDensity = useThemeStore((s) => s.uiDensity);
   const setUiDensity = useThemeStore((s) => s.setUiDensity);
+  const uiFontScale = useThemeStore((s) => s.uiFontScale);
+  const setUiFontScale = useThemeStore((s) => s.setUiFontScale);
   const activeDetail = UI_DENSITY_OPTIONS.find((option) => option.value === uiDensity)?.detail;
+  const isUiFontScaleDefault = uiFontScale === UI_FONT_SCALE_DEFAULT;
 
   return (
     <div>
@@ -98,6 +105,41 @@ function UiDensityPicker() {
       {activeDetail ? (
         <div style={{ fontSize: 11, color: "var(--cmux-text-tertiary)" }}>{activeDetail}</div>
       ) : null}
+      <div style={{ marginTop: 10 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 8 }}>
+          <label htmlFor="ui-font-scale" style={{ fontSize: 12, color: "var(--cmux-text-secondary)" }}>
+            画面の文字サイズ {Math.round(uiFontScale * 100)}%
+          </label>
+          <button
+            type="button"
+            onClick={() => setUiFontScale(UI_FONT_SCALE_DEFAULT)}
+            disabled={isUiFontScaleDefault}
+            style={{
+              height: 26,
+              border: "1px solid var(--cmux-border)",
+              borderRadius: 7,
+              background: "transparent",
+              color: isUiFontScaleDefault ? "var(--cmux-text-dim)" : "var(--cmux-text-secondary)",
+              cursor: isUiFontScaleDefault ? "default" : "pointer",
+              padding: "0 10px",
+              fontSize: 11,
+              whiteSpace: "nowrap",
+            }}
+          >
+            リセット
+          </button>
+        </div>
+        <input
+          id="ui-font-scale"
+          type="range"
+          min={UI_FONT_SCALE_MIN}
+          max={UI_FONT_SCALE_MAX}
+          step={UI_FONT_SCALE_STEP}
+          value={uiFontScale}
+          onChange={(event) => setUiFontScale(Number(event.target.value))}
+          style={{ width: "100%" }}
+        />
+      </div>
     </div>
   );
 }

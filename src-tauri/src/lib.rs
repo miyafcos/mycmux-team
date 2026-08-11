@@ -4,6 +4,7 @@ mod commands;
 mod db;
 mod diag;
 mod events;
+mod livebrief;
 mod pty;
 mod remote;
 mod session_retention;
@@ -65,6 +66,7 @@ pub struct AppState {
     pub status_feed: status_feed::StatusFeed,
     pub bootstrapped: AtomicBool,
     pub metadata_store: pty::monitor::MetadataStore,
+    pub livebrief_service: livebrief::LiveBriefService,
     /// Multi-window (Phase 3b): who owns which workspace, plus each window's
     /// last published workspace list. In-memory only — on restart every
     /// workspace collapses back into main via `data.json` (window layout
@@ -225,12 +227,14 @@ pub fn run() {
     let session_state_store = session_state::SessionStateStore::new();
     let status_feed = status_feed::StatusFeed::new(session_state_store.clone());
     session_state_store.set_change_listener(status_feed.change_listener());
+    let session_manager = Arc::new(SessionManager::new());
     let state = AppState {
-        session_manager: Arc::new(SessionManager::new()),
+        session_manager: session_manager.clone(),
         session_state_store,
         status_feed,
         bootstrapped: AtomicBool::new(false),
         metadata_store: metadata_store.clone(),
+        livebrief_service: livebrief::LiveBriefService::new(session_manager, metadata_store.clone()),
         window_registry: window_registry::WindowRegistry::new(),
     };
 
@@ -273,6 +277,8 @@ pub fn run() {
             commands::terminal::get_session_output_snapshot,
             commands::terminal::is_directory,
             commands::terminal::get_launch_cwd,
+            livebrief::get_live_briefs,
+            livebrief::send_intervention,
             commands::online::list_online_savepoints,
             commands::online::list_trashed_online_savepoints,
             commands::online::get_savepoint_storage_settings,
@@ -354,6 +360,7 @@ pub fn run() {
             let app_handle = app.handle().clone();
             let state = app.state::<AppState>();
             state.status_feed.set_app_handle(app_handle.clone());
+            state.livebrief_service.start(app_handle.clone());
             if let Err(err) = install_launcher_script() {
                 crate::diag_warn!("launcher", "failed to install launcher scripts: {err}");
             }
