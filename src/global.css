@@ -1,6 +1,7 @@
 :root {
   --cmux-bg: #0a0a0a;
   --cmux-bg-solid: #0a0a0a;
+  --cmux-surface-solid: #161616;
   --cmux-sidebar: #1E1E1E;
   --cmux-popover: #262626;
   --cmux-accent: #0A84FF;
@@ -318,13 +319,6 @@ div:hover>.tab-close-btn {
   background: var(--pane-tabbar-bg, var(--cmux-surface-raised)) !important;
   box-shadow: var(--cmux-edge-highlight);
   container-type: inline-size;
-}
-
-/* PaneTabBar manages progressive slim, compact, and micro React layouts by
-   measured width. The status readout is additionally hidden at 420px.
-   (!important because the status bar sets display via inline style.) */
-@container (max-width: 420px) {
-  .pane-tabbar-status { display: none !important; }
 }
 
 /* The all-tabs dropdown necessarily floats over pane borders and neighbouring

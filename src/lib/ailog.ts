@@ -763,6 +763,26 @@ export function formatAgo(ms: number, now = Date.now()): string {
   return `${Math.floor(diff / 86_400_000)}日前`;
 }
 
+/** `1分30秒` / `45秒` / `2時間5分` */
+export function formatDuration(ms: number): string {
+  const totalSec = Math.max(0, Math.round(safe(ms) / 1000));
+  const hours = Math.floor(totalSec / 3600);
+  const mins = Math.floor((totalSec % 3600) / 60);
+  const secs = totalSec % 60;
+  if (hours > 0) return `${hours}時間${mins}分`;
+  if (mins > 0) return `${mins}分${secs}秒`;
+  return `${secs}秒`;
+}
+
+/** `128MB` / `1.2GB` */
+export function formatBytes(bytes: number): string {
+  const value = Math.max(0, safe(bytes));
+  if (value >= 1_073_741_824) return `${(value / 1_073_741_824).toFixed(1)}GB`;
+  if (value >= 1_048_576) return `${(value / 1_048_576).toFixed(0)}MB`;
+  if (value >= 1_024) return `${(value / 1_024).toFixed(0)}KB`;
+  return `${Math.round(value)}B`;
+}
+
 export function errorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
   if (typeof error === "string") return error;

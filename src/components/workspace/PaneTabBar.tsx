@@ -936,9 +936,6 @@ export default memo(function PaneTabBar({
   const tabMetadata = usePaneMetadataStore(useShallow((s) =>
     pane.tabs.map((tab) => s.metadata[tab.sessionId]),
   ));
-  const tabLastLog = usePaneMetadataStore(useShallow((s) =>
-    pane.tabs.map((tab) => s.lastLog[tab.sessionId]),
-  ));
   const tabAttention = useSessionAttentionStore(useShallow((s) =>
     pane.tabs.map((tab) => s.attentionBySession[tab.sessionId]),
   ));
@@ -950,13 +947,6 @@ export default memo(function PaneTabBar({
     });
     return next;
   }, [pane.tabs, tabMetadata]);
-  const lastLogBySession = useMemo(() => {
-    const next: Record<string, string | undefined> = {};
-    pane.tabs.forEach((tab, index) => {
-      next[tab.sessionId] = tabLastLog[index];
-    });
-    return next;
-  }, [pane.tabs, tabLastLog]);
   const attentionBySession = useMemo(() => {
     const next: Record<string, typeof tabAttention[number]> = {};
     pane.tabs.forEach((tab, index) => {
@@ -1033,7 +1023,6 @@ export default memo(function PaneTabBar({
     publishIdentityKey ? state.publishedSessionIds[publishIdentityKey] === true : false,
   );
   const activeStatus: EffectiveStatus = deriveDisplayStatus(activeMeta);
-  const activeLastLog = activeTab ? lastLogBySession[activeTab.sessionId] : undefined;
   const activeAgentKind = resolveDisplayAgentKind(
     activeMeta?.agentKind ?? activeTab?.agentKind,
     activeTab?.commandArgv,
@@ -1046,8 +1035,6 @@ export default memo(function PaneTabBar({
         getAgent(activeTab.agentId)?.name,
       )
     : "シェル";
-  const showStatusBar = activeStatus !== "idle";
-  const statusCfg = STATUS_CONFIG[activeStatus];
   const paneDragLabel = activeMeta?.processTitle ?? activeTab?.label ?? activeAgentLabel;
 
   useEffect(() => {
@@ -1847,66 +1834,6 @@ export default memo(function PaneTabBar({
               onTogglePin={handleToggleTabPin}
               onCloseMenu={() => setAllTabsOpen(false)}
             />
-          )}
-        </div>
-      )}
-
-      {showStatusBar && (
-        <div
-          className="pane-tabbar-status"
-          style={{
-            height: 22,
-            maxWidth: "min(360px, 38%)",
-            display: "flex",
-            alignItems: "center",
-            gap: 6,
-            padding: "0 2px",
-            marginLeft: 6,
-            border: "none",
-            borderRadius: 0,
-            background: "transparent",
-            overflow: "hidden",
-            flexShrink: 1,
-            minWidth: 120,
-            order: 1,
-            fontSize: "var(--cmux-font-size-xs)",
-            fontFamily: "var(--cmux-font-mono)",
-          }}
-        >
-          <span
-            className="cmux-status-dot"
-            style={{
-              width: 6,
-              height: 6,
-              borderRadius: statusCfg.shape === "diamond" ? 2 : "50%",
-              background: statusCfg.color,
-              transform: statusCfg.shape === "diamond" ? "rotate(45deg)" : undefined,
-              flexShrink: 0,
-            }}
-          />
-          <span style={{ fontSize: "var(--cmux-font-size-xs)", color: statusCfg.color, fontWeight: 600, flexShrink: 0, letterSpacing: "0.02em" }}>
-            {statusCfg.title}
-          </span>
-          {activeKindColor && (
-            <>
-              <span
-                className="agent-kind-label-dot"
-                aria-hidden="true"
-                style={{ "--agent-kind-color": activeKindColor.fg } as AgentKindStyle}
-              />
-              <AgentKindIcon kind={activeAgentKind} size={14} />
-            </>
-          )}
-          <span style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-tertiary)", flexShrink: 0 }}>
-            {activeAgentLabel}
-          </span>
-          {activeLastLog && (
-            <>
-              <span style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-tertiary)", flexShrink: 0 }}>—</span>
-              <span style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
-                {activeLastLog}
-              </span>
-            </>
           )}
         </div>
       )}

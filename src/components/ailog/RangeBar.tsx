@@ -7,7 +7,9 @@
 import {
   RANGE_PRESETS,
   formatAgo,
+  formatBytes,
   formatCount,
+  formatDuration,
   formatLocalDateTime,
   type IndexProgress,
   type IndexStatus,
@@ -136,28 +138,44 @@ export function RangeBar({
         </div>
       ) : null}
 
-      {running ? (
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <div
-            role="progressbar"
-            aria-valuemin={0}
-            aria-valuemax={100}
-            aria-valuenow={Math.round(pct)}
-            aria-label="インデックス進捗"
-            style={{ flex: 1, height: 5, borderRadius: 3, background: "var(--cmux-hover)", overflow: "hidden" }}
-          >
-            <div style={{ width: `${pct}%`, height: "100%", background: "var(--cmux-accent)" }} />
+      {running ? (() => {
+        const discovering = !indexProgress || (indexProgress.phase !== "parsing" && indexProgress.phase !== "done");
+        const bytesDone = indexProgress?.bytesDone ?? 0;
+        const bytesTotal = indexProgress?.bytesTotal ?? 0;
+        const elapsedMs = indexProgress?.elapsedMs ?? 0;
+        const etaMs = !discovering && bytesDone > 1_048_576 && bytesTotal > bytesDone
+          ? (elapsedMs * (bytesTotal - bytesDone)) / bytesDone
+          : null;
+        return (
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <div
+              role="progressbar"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={Math.round(pct)}
+              aria-label="インデックス進捗"
+              style={{ flex: 1, height: 5, borderRadius: 3, background: "var(--cmux-hover)", overflow: "hidden" }}
+            >
+              <div style={{ width: `${discovering ? 0 : pct}%`, height: "100%", background: "var(--cmux-accent)" }} />
+            </div>
+            <span style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-secondary)", whiteSpace: "nowrap" }}>
+              {discovering
+                ? "ファイル一覧を作成中…"
+                : [
+                    `${formatCount(done)} / ${formatCount(total)} ファイル`,
+                    indexProgress?.sessions ? `${formatCount(indexProgress.sessions)} セッション` : null,
+                    bytesTotal > 0 ? `${formatBytes(bytesDone)} / ${formatBytes(bytesTotal)}` : null,
+                    `経過 ${formatDuration(elapsedMs)}`,
+                    etaMs !== null ? `残り約 ${formatDuration(etaMs)}` : null,
+                  ].filter(Boolean).join(" · ")}
+            </span>
           </div>
-          <span style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-secondary)", whiteSpace: "nowrap" }}>
-            {`${formatCount(done)} / ${formatCount(total)} ファイル`}
-            {indexProgress?.sessions ? ` · ${formatCount(indexProgress.sessions)} セッション` : ""}
-          </span>
-        </div>
-      ) : null}
+        );
+      })() : null}
 
       {summarizing ? (
         <div style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-secondary)" }}>
-          {`処理済み ${formatCount(summaryDone)} / 全 ${formatCount(summaryTotal)}`}
+          {`処理済み ${formatCount(summaryDone)} / 全 ${formatCount(summaryTotal)} · 経過 ${formatDuration(summarizeProgress?.elapsedMs ?? 0)}`}
         </div>
       ) : null}
       {summarizeError ? <div style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-red)" }}>{summarizeError}</div> : null}

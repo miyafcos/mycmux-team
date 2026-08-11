@@ -314,7 +314,7 @@ export const useAilogStore = create<AilogState>((set, get) => ({
   },
 
   startIndex: async (full) => {
-    set({ indexError: null });
+    set({ indexError: null, indexProgress: null });
     try {
       const result = await ailogIndexStart(full);
       if (result.alreadyRunning) {

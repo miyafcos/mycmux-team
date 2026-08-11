@@ -1,43 +1,34 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { CSSProperties } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 import { focusController } from "../../lib/focusController";
 import { useDashboardViewStore } from "../../stores/dashboardViewStore";
+import { connectLiveBriefStore, startEventPolling, stopEventPolling, useLiveBriefStore } from "../../stores/liveBriefStore";
 import { usePaneMetadataStore, useUiStore, useWorkspaceLayoutStore, useWorkspaceListStore } from "../../stores/workspaceStore";
 import { useSessionAttentionStore } from "../../stores/sessionAttentionStore";
 import { useStallStore } from "../../stores/stallStore";
 import { hasTerminalBuffer } from "../terminal/XTermWrapper";
-import { DashboardCard } from "./DashboardCard";
-import { DashboardDetailPane } from "./DashboardDetailPane";
+import { DashboardSessionDetail } from "./DashboardSessionDetail";
+import { DashboardSessionList, useFrozenCardOrder } from "./DashboardSessionList";
 import {
   applyDashboardFilters,
   buildDashboardCards,
-  groupSections,
-  urgentRibbon,
+  countByDisplayState,
+  needsHumanCards,
+  orderDashboardCards,
   type DashboardCardModel,
 } from "./dashboardModel";
 import { dashboardStrings } from "./dashboardStrings";
 
-function groupLabel(group: DashboardCardModel["group"]): string {
-  if (group === "waiting") return dashboardStrings.groupWaiting;
-  if (group === "stalled") return dashboardStrings.groupStalled;
-  if (group === "done") return dashboardStrings.groupDone;
-  if (group === "working") return dashboardStrings.groupWorking;
-  return dashboardStrings.groupIdle;
-}
-
-function sectionTitle(sectionId: string, cards: readonly DashboardCardModel[]): string {
-  const first = cards[0];
-  if (!first) return sectionId;
-  if (["waiting", "stalled", "working", "idle", "done"].includes(sectionId)) return groupLabel(sectionId as DashboardCardModel["group"]);
-  if (["claude", "codex", "claude-codex", "none"].includes(sectionId)) return sectionId;
-  return first.workspace.name;
-}
+const AGENT_KINDS = ["claude", "codex", "claude-codex", "none"] as const;
 
 export function DashboardView({ onClose }: { onClose: () => void }) {
   const rootRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const [now, setNow] = useState(() => Date.now());
+  const [listHovered, setListHovered] = useState(false);
+  const [searchFocused, setSearchFocused] = useState(false);
   const viewState = useDashboardViewStore(useShallow((state) => ({
     sortMode: state.sortMode,
     query: state.query,
@@ -63,6 +54,7 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
     attentionBySession: state.attentionBySession,
     seenAttentionByTab: state.seenAttentionByTab,
   })));
+  const briefsBySession = useLiveBriefStore((state) => state.briefsBySession);
   const cards = useMemo(() => buildDashboardCards(workspaces, {
     metadataBySession: metadataState.metadata,
     lastLogBySession: metadataState.lastLog,
@@ -70,22 +62,31 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
     attentionBySession: attentionState.attentionBySession,
     seenAttentionByTab: attentionState.seenAttentionByTab,
     stallsBySession,
+    briefsBySession,
     now,
     hasTerminalBuffer,
-  }), [attentionState, metadataState, now, stallsBySession, workspaces]);
+  }), [attentionState, briefsBySession, metadataState, now, stallsBySession, workspaces]);
   const filteredCards = useMemo(() => applyDashboardFilters(cards, {
     query: viewState.query,
     workspaceId: viewState.workspaceFilter,
-    attentionOnly: viewState.quickFilters.attentionOnly,
-    stalledOnly: viewState.quickFilters.stalledOnly,
-    backgroundOnly: viewState.quickFilters.backgroundOnly,
-    unobservedOnly: viewState.quickFilters.unobservedOnly,
+    needsHumanOnly: viewState.quickFilters.needsHumanOnly,
     agentKind: viewState.agentFilter,
-  }), [cards, viewState]);
-  const sections = useMemo(() => groupSections(filteredCards, viewState.sortMode), [filteredCards, viewState.sortMode]);
-  const orderedCards = useMemo(() => sections.flatMap((section) => section.cards), [sections]);
+  }), [cards, viewState.agentFilter, viewState.query, viewState.quickFilters.needsHumanOnly, viewState.workspaceFilter]);
+
+  // 並べ替えの凍結: ポインタが一覧の上にある / 検索中は直前の並びを維持する。
+  const frozen = listHovered || searchFocused;
+  const liveOrdered = useMemo(() => orderDashboardCards(filteredCards, viewState.sortMode), [filteredCards, viewState.sortMode]);
+  const orderedCards = useFrozenCardOrder(liveOrdered, frozen);
+  const liveUrgent = useMemo(() => needsHumanCards(filteredCards), [filteredCards]);
+  const urgentCards = useFrozenCardOrder(liveUrgent, frozen);
   const selectedCard = orderedCards.find((card) => card.tab.id === viewState.selectedTabId) ?? orderedCards[0] ?? null;
-  const urgentCards = useMemo(() => urgentRibbon(filteredCards), [filteredCards]);
+  const counts = useMemo(() => countByDisplayState(cards), [cards]);
+  // 「既読にする」対象は未読の done 通知そのもの。表示状態 (done) とは一致しないことがある。
+  const clearableCards = useMemo(
+    () => cards.filter((card) => card.attentionCategory === "done" && card.attention?.attentionId),
+    [cards],
+  );
+  const filterActive = Boolean(viewState.query || viewState.workspaceFilter || viewState.quickFilters.needsHumanOnly || viewState.agentFilter);
 
   useEffect(() => {
     setNow(Date.now());
@@ -94,6 +95,20 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
     window.setTimeout(() => rootRef.current?.focus(), 0);
     return () => window.clearInterval(interval);
   }, []);
+
+  // brief の購読はビュー1枚につき1本 (store 側が参照数で束ねる)。
+  useEffect(() => connectLiveBriefStore(), []);
+
+  // 意味イベントの取得は「選んでいる1セッション」だけ。閉じたら止める。
+  const selectedSessionId = selectedCard?.tab.sessionId ?? null;
+  useEffect(() => {
+    if (!selectedSessionId) {
+      stopEventPolling();
+      return;
+    }
+    startEventPolling(selectedSessionId);
+    return () => stopEventPolling();
+  }, [selectedSessionId]);
 
   useEffect(() => {
     if (!viewState.selectedTabId && selectedCard) viewState.setSelectedTabId(selectedCard.tab.id);
@@ -151,12 +166,11 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
         return;
       }
       if (event.key === "Tab") {
-        const waiting = orderedCards.filter((card) => card.group === "waiting");
-        if (!waiting.length) return;
+        if (!urgentCards.length) return;
         event.preventDefault();
         event.stopPropagation();
-        const index = selectedCard ? waiting.findIndex((card) => card.tab.id === selectedCard.tab.id) : -1;
-        viewState.setSelectedTabId(waiting[(index + 1 + waiting.length) % waiting.length].tab.id);
+        const index = selectedCard ? urgentCards.findIndex((card) => card.tab.id === selectedCard.tab.id) : -1;
+        viewState.setSelectedTabId(urgentCards[(index + 1 + urgentCards.length) % urgentCards.length].tab.id);
         return;
       }
       const delta = event.key === "j" || event.key === "ArrowDown" ? 1 : event.key === "k" || event.key === "ArrowUp" ? -1 : 0;
@@ -165,82 +179,148 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
         event.stopPropagation();
         const index = selectedCard ? orderedCards.findIndex((card) => card.tab.id === selectedCard.tab.id) : 0;
         viewState.setSelectedTabId(orderedCards[(index + delta + orderedCards.length) % orderedCards.length].tab.id);
-        return;
-      }
-      const sectionDelta = event.key === "h" || event.key === "ArrowLeft" ? -1 : event.key === "l" || event.key === "ArrowRight" ? 1 : 0;
-      if (sectionDelta && sections.length) {
-        event.preventDefault();
-        event.stopPropagation();
-        const currentSection = sections.findIndex((section) => section.cards.some((card) => card.tab.id === selectedCard?.tab.id));
-        const next = sections[(Math.max(0, currentSection) + sectionDelta + sections.length) % sections.length];
-        viewState.setSelectedTabId(next.cards[0].tab.id);
       }
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
-  }, [close, jumpToCard, orderedCards, sections, selectedCard, viewState]);
+  }, [close, jumpToCard, orderedCards, selectedCard, urgentCards, viewState]);
 
-  const counts = {
-    waiting: cards.filter((card) => card.group === "waiting").length,
-    stalled: cards.filter((card) => card.group === "stalled").length,
-    working: cards.filter((card) => card.group === "working").length,
-    idle: cards.filter((card) => card.group === "idle").length,
-    done: cards.filter((card) => card.group === "done").length,
-  };
   const clearDone = () => {
-    for (const card of cards) {
-      if (card.attentionCategory === "done" && card.attention?.attentionId) {
+    for (const card of clearableCards) {
+      if (card.attention?.attentionId) {
         useSessionAttentionStore.getState().markSeen(card.tab.id, card.attention.attentionId);
       }
     }
   };
+  const toggleWorkspace = (workspaceId: string | null) => {
+    viewState.setWorkspaceFilter(viewState.workspaceFilter === workspaceId ? null : workspaceId);
+  };
 
   return <div ref={rootRef} tabIndex={-1} role="region" aria-label={dashboardStrings.viewAriaLabel} style={rootStyle}>
     <header style={headerStyle}>
-      <div style={{ minWidth: 0 }}>
-        <div style={{ display: "flex", gap: 10, alignItems: "baseline" }}><strong>{dashboardStrings.buttonTitle}</strong><span style={{ color: "var(--cmux-text-secondary)", fontSize: "var(--cmux-font-size-sm)" }}>{dashboardStrings.totalSummary(cards.length, workspaces.length)}</span></div>
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
-          {(["waiting", "stalled", "working", "idle", "done"] as const).map((group) => <span key={group} style={chipStyle}>{groupLabel(group)} {counts[group]}</span>)}
-        </div>
-      </div>
-      <span style={{ color: "var(--status-done)", fontSize: "var(--cmux-font-size-xs)" }}>{dashboardStrings.liveUpdating} ●</span>
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, justifyContent: "flex-end" }}>
-        <input ref={searchRef} value={viewState.query} onChange={(event) => viewState.setQuery(event.target.value)} placeholder={dashboardStrings.searchPlaceholder} style={inputStyle} />
-        <select aria-label={dashboardStrings.sortByAttention} value={viewState.sortMode} onChange={(event) => viewState.setSortMode(event.target.value as "attention" | "workspace" | "agent")} style={controlStyle}>
-          <option value="attention">{dashboardStrings.sortByAttention}</option><option value="workspace">{dashboardStrings.sortByWorkspace}</option><option value="agent">{dashboardStrings.sortByAgent}</option>
-        </select>
-        {counts.done > 0 ? <button type="button" style={buttonStyle} onClick={clearDone}>{dashboardStrings.clearDoneButton(counts.done)}</button> : null}
+      <div style={headerRowStyle}>
+        <strong>{dashboardStrings.buttonTitle}</strong>
+        <span style={mutedStyle}>{dashboardStrings.totalSummary(cards.length, workspaces.length)}</span>
+        <span style={{ ...chipStyle, color: "var(--status-waiting)" }}>{dashboardStrings.stateNeedsHuman} {counts.needsHuman + counts.error}</span>
+        <span style={{ ...chipStyle, color: "var(--status-working)" }}>{dashboardStrings.stateRunning} {counts.running}</span>
+        <span style={{ ...chipStyle, color: "var(--cmux-yellow)" }}>{dashboardStrings.stateNoUpdate} {counts.noUpdate}</span>
+        <span style={{ ...chipStyle, color: "var(--status-done)" }}>{dashboardStrings.stateDone} {counts.done}</span>
+        <span style={{ marginLeft: "auto", color: "var(--status-done)", fontSize: "var(--cmux-font-size-sm)" }}>{dashboardStrings.liveUpdating} ●</span>
+        {clearableCards.length > 0 ? <button type="button" style={buttonStyle} onClick={clearDone}>{dashboardStrings.clearDoneButton(clearableCards.length)}</button> : null}
         <button type="button" style={buttonStyle} onClick={close}>{dashboardStrings.backToSession} (Esc)</button>
+      </div>
+      <div style={headerRowStyle}>
+        <button type="button" style={filterChipStyle(viewState.workspaceFilter === null)} onClick={() => toggleWorkspace(null)}>
+          {dashboardStrings.allWorkspaces} {cards.length}
+        </button>
+        {workspaces.map((workspace) => <button
+          key={workspace.id}
+          type="button"
+          style={filterChipStyle(viewState.workspaceFilter === workspace.id)}
+          onClick={() => toggleWorkspace(workspace.id)}
+        >{workspace.name} {cards.filter((card) => card.workspaceId === workspace.id).length}</button>)}
+        <button
+          type="button"
+          aria-pressed={viewState.quickFilters.needsHumanOnly}
+          style={filterChipStyle(viewState.quickFilters.needsHumanOnly)}
+          onClick={() => viewState.setQuickFilter("needsHumanOnly", !viewState.quickFilters.needsHumanOnly)}
+        >{dashboardStrings.filterNeedsHumanOnly}</button>
+        <select
+          aria-label={dashboardStrings.agentFilterTitle}
+          value={viewState.agentFilter ?? ""}
+          onChange={(event) => viewState.setAgentFilter(event.target.value || null)}
+          style={controlStyle}
+        >
+          <option value="">{dashboardStrings.agentFilterTitle}: {dashboardStrings.allWorkspaces}</option>
+          {AGENT_KINDS.map((kind) => <option key={kind} value={kind}>{kind}</option>)}
+        </select>
+        <input
+          ref={searchRef}
+          value={viewState.query}
+          onChange={(event) => viewState.setQuery(event.target.value)}
+          onFocus={() => setSearchFocused(true)}
+          onBlur={() => setSearchFocused(false)}
+          placeholder={dashboardStrings.searchPlaceholder}
+          style={inputStyle}
+        />
+        <select
+          aria-label={dashboardStrings.sortByAttention}
+          value={viewState.sortMode}
+          onChange={(event) => viewState.setSortMode(event.target.value as "attention" | "workspace")}
+          style={controlStyle}
+        >
+          <option value="attention">{dashboardStrings.sortByAttention}</option>
+          <option value="workspace">{dashboardStrings.sortByWorkspace}</option>
+        </select>
+        {filterActive ? <span style={mutedStyle}>{dashboardStrings.filteredSummary(filteredCards.length, cards.length)}</span> : null}
       </div>
     </header>
     <div style={{ flex: 1, minHeight: 0, display: "flex", overflow: "hidden" }}>
-      <aside style={railStyle}>
-        <button type="button" style={railButtonStyle(viewState.workspaceFilter === null)} onClick={() => viewState.setWorkspaceFilter(null)}>{dashboardStrings.allWorkspaces} <span>{cards.length}</span></button>
-        {workspaces.map((workspace) => <button key={workspace.id} type="button" style={railButtonStyle(viewState.workspaceFilter === workspace.id)} onClick={() => viewState.setWorkspaceFilter(workspace.id)}>{workspace.name} <span>{cards.filter((card) => card.workspaceId === workspace.id).length}</span></button>)}
-        <strong style={railLabelStyle}>{dashboardStrings.filterTitle}</strong>
-        {([ ["attentionOnly", dashboardStrings.filterAttentionOnly], ["stalledOnly", dashboardStrings.filterStalledOnly], ["backgroundOnly", dashboardStrings.filterBackgroundOnly], ["unobservedOnly", dashboardStrings.filterUnobservedOnly] ] as const).map(([key, label]) => <label key={key} style={checkStyle}><input type="checkbox" checked={viewState.quickFilters[key]} onChange={(event) => viewState.setQuickFilter(key, event.target.checked)} /> {label}</label>)}
-        <strong style={railLabelStyle}>{dashboardStrings.agentFilterTitle}</strong>
-        <select value={viewState.agentFilter ?? ""} onChange={(event) => viewState.setAgentFilter(event.target.value || null)} style={controlStyle}><option value="">{dashboardStrings.allWorkspaces}</option><option value="claude">claude</option><option value="codex">codex</option><option value="claude-codex">claude-codex</option><option value="none">none</option></select>
-      </aside>
-      <main style={{ flex: 1, minWidth: 0, overflow: "auto", padding: 14 }}>
-        {viewState.query || viewState.workspaceFilter || Object.values(viewState.quickFilters).some(Boolean) || viewState.agentFilter ? <div style={{ color: "var(--cmux-text-secondary)", fontSize: "var(--cmux-font-size-xs)", marginBottom: 10 }}>{dashboardStrings.filteredSummary(filteredCards.length, cards.length)}</div> : null}
-        {urgentCards.length ? <section style={{ marginBottom: 18 }}><div style={sectionHeadingStyle}>{dashboardStrings.urgentRibbonTitle}</div><div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(340px, 1fr))", gap: 8 }}>{urgentCards.map((card) => <DashboardCard key={card.tab.id} card={card} selected={selectedCard?.tab.id === card.tab.id} now={now} urgent onSelect={viewState.setSelectedTabId} onJump={jumpToCard} />)}</div></section> : null}
-        {sections.map((section) => <section key={section.id} style={{ marginBottom: 18 }}><div style={sectionHeadingStyle}>{sectionTitle(section.id, section.cards)} ({section.cards.length})</div><div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(340px, 1fr))", gap: 8 }}>{section.cards.map((card) => <DashboardCard key={card.tab.id} card={card} selected={selectedCard?.tab.id === card.tab.id} now={now} onSelect={viewState.setSelectedTabId} onJump={jumpToCard} />)}</div></section>)}
-      </main>
-      <DashboardDetailPane card={selectedCard} now={now} onJump={jumpToCard} />
+      <DashboardSessionList
+        needsHuman={urgentCards}
+        all={orderedCards}
+        selectedTabId={selectedCard?.tab.id ?? null}
+        now={now}
+        onSelect={viewState.setSelectedTabId}
+        onJump={jumpToCard}
+        onHoverChange={setListHovered}
+      />
+      <DashboardSessionDetail card={selectedCard} now={now} onJump={jumpToCard} />
     </div>
-    <footer style={{ borderTop: "1px solid var(--cmux-border)", padding: "7px 12px", color: "var(--cmux-text-secondary)", fontSize: "var(--cmux-font-size-xs)" }}>{dashboardStrings.keyboardHint}</footer>
+    <footer style={footerStyle}>{dashboardStrings.keyboardHint}</footer>
   </div>;
 }
 
-const rootStyle = { position: "absolute" as const, inset: 0, zIndex: 40, background: "var(--cmux-bg)", color: "var(--cmux-text)", display: "flex", flexDirection: "column" as const, outline: "none" };
-const headerStyle = { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" as const, padding: "12px 14px", borderBottom: "1px solid var(--cmux-border)", background: "var(--cmux-popover)" };
-const chipStyle = { border: "1px solid var(--cmux-border)", borderRadius: 999, color: "var(--cmux-text-secondary)", fontSize: "var(--cmux-font-size-xs)", padding: "2px 7px" };
-const controlStyle = { background: "var(--cmux-bg)", border: "1px solid var(--cmux-border)", borderRadius: "var(--cmux-radius-sm)", color: "var(--cmux-text)", fontSize: "var(--cmux-font-size-xs)", minHeight: 27, padding: "3px 6px" };
-const inputStyle = { ...controlStyle, width: 240 };
-const buttonStyle = { ...controlStyle, cursor: "pointer" };
-const railStyle = { flex: "0 0 220px", width: 220, overflow: "auto", borderRight: "1px solid var(--cmux-border)", background: "var(--cmux-popover)", padding: 10, display: "flex", flexDirection: "column" as const, gap: 5 };
-const railButtonStyle = (selected: boolean) => ({ display: "flex", justifyContent: "space-between", gap: 8, background: selected ? "color-mix(in srgb, var(--cmux-accent) 14%, transparent)" : "transparent", border: "1px solid transparent", borderRadius: "var(--cmux-radius-sm)", color: "var(--cmux-text)", cursor: "pointer", fontSize: "var(--cmux-font-size-xs)", padding: "5px 6px", textAlign: "left" as const });
-const railLabelStyle = { marginTop: 12, color: "var(--cmux-text-secondary)", fontSize: "var(--cmux-font-size-xs)" };
-const checkStyle = { color: "var(--cmux-text-secondary)", fontSize: "var(--cmux-font-size-xs)" };
-const sectionHeadingStyle = { marginBottom: 8, color: "var(--cmux-text-secondary)", fontSize: "var(--cmux-font-size-sm)", fontWeight: 700 };
+const rootStyle = {
+  position: "absolute" as const,
+  inset: 0,
+  zIndex: 40,
+  background: "var(--cmux-bg)",
+  color: "var(--cmux-text)",
+  display: "flex",
+  flexDirection: "column" as const,
+  outline: "none",
+  "--cmux-bg": "var(--cmux-bg-solid)",
+  "--cmux-surface": "var(--cmux-surface-solid)",
+} as CSSProperties;
+const headerStyle: CSSProperties = {
+  display: "grid",
+  gap: 8,
+  padding: "10px 14px",
+  borderBottom: "1px solid var(--cmux-border)",
+  background: "var(--cmux-popover)",
+};
+const headerRowStyle: CSSProperties = { display: "flex", alignItems: "center", flexWrap: "wrap", gap: 6, minWidth: 0 };
+const mutedStyle: CSSProperties = { color: "var(--cmux-text-secondary)", fontSize: "var(--cmux-font-size-sm)" };
+const chipStyle: CSSProperties = {
+  border: "1px solid var(--cmux-border)",
+  borderRadius: 999,
+  fontSize: "var(--cmux-font-size-sm)",
+  padding: "1px 8px",
+};
+const controlStyle: CSSProperties = {
+  background: "var(--cmux-bg)",
+  border: "1px solid var(--cmux-border)",
+  borderRadius: "var(--cmux-radius-sm)",
+  color: "var(--cmux-text)",
+  fontSize: "var(--cmux-font-size-sm)",
+  minHeight: 27,
+  padding: "3px 6px",
+};
+const inputStyle: CSSProperties = { ...controlStyle, width: 240 };
+const buttonStyle: CSSProperties = { ...controlStyle, cursor: "pointer" };
+const filterChipStyle = (selected: boolean): CSSProperties => ({
+  background: selected ? "color-mix(in srgb, var(--cmux-accent) 16%, transparent)" : "transparent",
+  border: `1px solid ${selected ? "var(--cmux-accent)" : "var(--cmux-border)"}`,
+  borderRadius: 999,
+  color: "var(--cmux-text)",
+  cursor: "pointer",
+  fontSize: "var(--cmux-font-size-sm)",
+  padding: "2px 9px",
+});
+const footerStyle: CSSProperties = {
+  borderTop: "1px solid var(--cmux-border)",
+  padding: "7px 12px",
+  color: "var(--cmux-text-secondary)",
+  fontSize: "var(--cmux-font-size-sm)",
+};

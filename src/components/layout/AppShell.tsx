@@ -464,6 +464,7 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
     "--cmux-space-6": densitySpace(12),
     "--cmux-space-7": densitySpace(16),
     "--cmux-bg-solid": currentTheme.chrome.background,
+    "--cmux-surface-solid": currentTheme.chrome.surface,
     "--cmux-bg": colorWithOpacity(currentTheme.chrome.background, panelOpacity),
     "--cmux-sidebar": colorWithOpacity(currentTheme.chrome.surface, panelOpacity),
     "--cmux-surface-raised": withPanelOpacity(

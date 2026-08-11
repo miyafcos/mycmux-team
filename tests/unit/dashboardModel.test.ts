@@ -3,11 +3,14 @@ import { describe, expect, it } from "vitest";
 import {
   applyDashboardFilters,
   buildDashboardCards,
+  countByDisplayState,
   groupDashboardCard,
-  sortCardsWithinGroup,
-  urgentRibbon,
+  needsHumanCards,
+  orderDashboardCards,
+  resolveDisplayState,
   type DashboardCardModel,
 } from "../../src/components/dashboard/dashboardModel";
+import type { LiveSessionBrief } from "../../src/lib/livebrief";
 import type { Workspace } from "../../src/types";
 
 const now = 1_000_000;
@@ -26,6 +29,39 @@ function workspace(): Workspace {
       tabs: [{ id: "tab-1", sessionId: "s-1", agentId: "claude", label: "Alpha", type: "terminal" }],
     }],
   } as Workspace;
+}
+
+function brief(overrides: Partial<LiveSessionBrief> = {}): LiveSessionBrief {
+  return {
+    ptySessionId: "s-1",
+    agentSessionId: "a-1",
+    agentKind: "claude",
+    ptyInstanceId: "pty-1",
+    ptyGeneration: 1,
+    sourceRevision: 1,
+    ptyInputRevision: 1,
+    task: "目的",
+    taskSourceEventIds: [],
+    activityKind: null,
+    activityText: "実行中",
+    activitySourceEventId: null,
+    checkpoint: "確認済み",
+    checkpointEvidenceEventIds: [],
+    pendingInputKind: null,
+    pendingPrompt: null,
+    pendingOptions: [],
+    promptEventId: null,
+    promptHash: null,
+    eventSeq: 1,
+    operationalState: "running",
+    telemetryHealth: "live",
+    lastEventAt: now,
+    lastSuccessfulReadAt: now,
+    updatedAt: now,
+    serviceEpoch: "epoch",
+    briefRevision: 1,
+    ...overrides,
+  };
 }
 
 function cards(input: Partial<Parameters<typeof buildDashboardCards>[1]> = {}) {
@@ -48,8 +84,15 @@ function card(overrides: Partial<DashboardCardModel>): DashboardCardModel {
     group: "idle",
     status: "idle",
     lastActivityAt: 0,
+    noUpdateMinutes: null,
     ...overrides,
   };
+}
+
+/** tab.id が同じだと並び替えの Map が潰れるので、テスト用に別 id を振る。 */
+function distinct(overrides: Partial<DashboardCardModel>, id: string): DashboardCardModel {
+  const base = card(overrides);
+  return { ...base, tab: { ...base.tab, id } };
 }
 
 describe("dashboard model", () => {
@@ -75,58 +118,172 @@ describe("dashboard model", () => {
     expect(built.label).toBe("Alpha");
   });
 
-  it("sorts each group according to its specified key", () => {
-    const waiting = sortCardsWithinGroup([
-      card({ group: "waiting", attention: { occurrenceOrder: 2 } as DashboardCardModel["attention"] }),
-      card({ group: "waiting", attention: { occurrenceOrder: 1 } as DashboardCardModel["attention"] }),
-    ], "waiting");
-    expect(waiting.map((item) => item.attention?.occurrenceOrder)).toEqual([1, 2]);
+  it("carries the livebrief fields onto the card", () => {
+    const [built] = cards({
+      briefsBySession: { "s-1": brief({ operationalState: "needsHuman" }) },
+      lastLogAtBySession: { "s-1": now - 60_000 },
+    });
+    expect(built.telemetryHealth).toBe("live");
+    expect(built.operationalState).toBe("needsHuman");
+    expect(built.task).toBe("目的");
+    expect(built.activityText).toBe("実行中");
+    expect(built.checkpoint).toBe("確認済み");
+    expect(built.noUpdateMinutes).toBe(0);
+  });
 
-    const stalled = sortCardsWithinGroup([
-      card({ group: "stalled", stall: { sessionId: "s", reason: "no_output", since: 1 } }),
-      card({ group: "stalled", stall: { sessionId: "s", reason: "queued_input", since: 3 } }),
-      card({ group: "stalled", stall: { sessionId: "s", reason: "pty_dead", since: 5 } }),
-    ], "stalled");
-    expect(stalled.map((item) => item.stall?.reason)).toEqual(["pty_dead", "queued_input", "no_output"]);
+  describe("resolveDisplayState", () => {
+    it("lets a live livebrief win over the attention feed", () => {
+      expect(resolveDisplayState(card({
+        telemetryHealth: "live",
+        operationalState: "needsHuman",
+        attentionCategory: "done",
+        group: "done",
+        noUpdateMinutes: 0,
+      }))).toBe("needsHuman");
+      expect(resolveDisplayState(card({
+        telemetryHealth: "live",
+        operationalState: "running",
+        attentionCategory: null,
+        noUpdateMinutes: 1,
+      }))).toBe("running");
+      expect(resolveDisplayState(card({
+        telemetryHealth: "live",
+        operationalState: "ready",
+        attentionCategory: null,
+        noUpdateMinutes: 0,
+      }))).toBe("idle");
+    });
 
-    const working = sortCardsWithinGroup([
-      card({ group: "working", lastActivityAt: 1 }),
-      card({ group: "working", lastActivityAt: 2 }),
-    ], "working");
-    expect(working.map((item) => item.lastActivityAt)).toEqual([2, 1]);
+    it("still reports an error while the livebrief is live", () => {
+      expect(resolveDisplayState(card({
+        telemetryHealth: "live",
+        operationalState: "running",
+        attentionCategory: "error",
+        noUpdateMinutes: 0,
+      }))).toBe("error");
+    });
+
+    it("calls a live session stale once it passes the five minute threshold", () => {
+      expect(resolveDisplayState(card({
+        telemetryHealth: "live",
+        operationalState: "running",
+        noUpdateMinutes: 4,
+      }))).toBe("running");
+      expect(resolveDisplayState(card({
+        telemetryHealth: "live",
+        operationalState: "running",
+        noUpdateMinutes: 5,
+      }))).toBe("noUpdate");
+      // 人間待ちは古くても要対応のまま (先に人間の手が要る)。
+      expect(resolveDisplayState(card({
+        telemetryHealth: "live",
+        operationalState: "needsHuman",
+        noUpdateMinutes: 90,
+      }))).toBe("needsHuman");
+    });
+
+    it("falls back to the attention/stall/metadata judgement when telemetry is not live", () => {
+      // livebrief が needsHuman でも live でなければ採らない。
+      expect(resolveDisplayState(card({
+        telemetryHealth: "unlinked",
+        operationalState: "needsHuman",
+        attentionCategory: null,
+        group: "working",
+        lastActivityAt: now - 1,
+      }))).toBe("running");
+      expect(resolveDisplayState(card({
+        telemetryHealth: "unavailable",
+        attentionCategory: "waiting",
+        group: "waiting",
+      }))).toBe("needsHuman");
+      expect(resolveDisplayState(card({
+        attentionCategory: "error",
+        group: "waiting",
+      }))).toBe("error");
+      expect(resolveDisplayState(card({
+        stall: { sessionId: "s", reason: "no_output", since: 0 },
+        group: "stalled",
+      }))).toBe("noUpdate");
+      expect(resolveDisplayState(card({ attentionCategory: "done", group: "done" }))).toBe("done");
+      expect(resolveDisplayState(card({ group: "idle", lastActivityAt: now - 600_000 }))).toBe("noUpdate");
+      // 一度も動いていないタブを「更新なし」と言い切らない。
+      expect(resolveDisplayState(card({ group: "idle", lastActivityAt: 0 }))).toBe("idle");
+    });
+  });
+
+  it("orders every session into the single needsHuman > error > running > noUpdate > idle > done list", () => {
+    const done = distinct({ attentionCategory: "done", group: "done" }, "t-done");
+    const idle = distinct({ group: "idle", lastActivityAt: 0 }, "t-idle");
+    const noUpdate = distinct({ group: "idle", lastActivityAt: now - 600_000, noUpdateMinutes: 10 }, "t-noupdate");
+    const running = distinct({ group: "working", lastActivityAt: now - 1 }, "t-running");
+    const error = distinct({ attentionCategory: "error", group: "waiting" }, "t-error");
+    const needsHuman = distinct({ attentionCategory: "waiting", group: "waiting" }, "t-needs");
+    const ordered = orderDashboardCards([done, idle, noUpdate, running, error, needsHuman], "attention");
+    expect(ordered.map((item) => item.tab.id)).toEqual([
+      "t-needs", "t-error", "t-running", "t-noupdate", "t-idle", "t-done",
+    ]);
+  });
+
+  it("puts the oldest waiting session first inside the needsHuman section", () => {
+    const items = [5, 4, 3, 2, 1].map((occurrenceOrder) => distinct({
+      attentionCategory: "waiting",
+      group: "waiting",
+      attention: { occurrenceOrder } as DashboardCardModel["attention"],
+    }, `t-${occurrenceOrder}`));
+    expect(needsHumanCards([])).toEqual([]);
+    expect(needsHumanCards(items).map((item) => item.attention?.occurrenceOrder)).toEqual([1, 2, 3, 4, 5]);
+    // done / running は要対応セクションに混ぜない。
+    expect(needsHumanCards([distinct({ attentionCategory: "done", group: "done" }, "t-done")])).toEqual([]);
+  });
+
+  it("keeps each workspace together when sorting by workspace", () => {
+    const first = { ...distinct({ attentionCategory: "done", group: "done" }, "t-a"), workspaceIndex: 0 };
+    const second = { ...distinct({ attentionCategory: "waiting", group: "waiting" }, "t-b"), workspaceIndex: 1 };
+    expect(orderDashboardCards([second, first], "workspace").map((item) => item.tab.id)).toEqual(["t-a", "t-b"]);
+    expect(orderDashboardCards([second, first], "attention").map((item) => item.tab.id)).toEqual(["t-b", "t-a"]);
+  });
+
+  it("counts every session under exactly one display state", () => {
+    const counts = countByDisplayState([
+      distinct({ attentionCategory: "waiting", group: "waiting" }, "t-1"),
+      distinct({ attentionCategory: "error", group: "waiting" }, "t-2"),
+      distinct({ group: "working", lastActivityAt: now - 1 }, "t-3"),
+      distinct({ attentionCategory: "done", group: "done" }, "t-4"),
+    ]);
+    expect(counts).toEqual({ needsHuman: 1, error: 1, running: 1, noUpdate: 0, idle: 0, done: 1 });
   });
 
   it("applies every filter as an intersection", () => {
     const selected = card({
       workspaceId: "ws-1",
       workspace: { ...workspace(), name: "Match" },
+      attentionCategory: "waiting",
       group: "waiting",
-      background: true,
-      unobserved: true,
       agentKind: "codex",
       label: "Needle",
       metadata: { cwd: "C:/needle" },
     });
-    const excluded = card({ workspaceId: "ws-2", group: "waiting", background: true, unobserved: true, agentKind: "codex" });
+    const excluded = card({ workspaceId: "ws-2", attentionCategory: "waiting", group: "waiting", agentKind: "codex" });
     expect(applyDashboardFilters([selected, excluded], {
       query: "needle",
       workspaceId: "ws-1",
-      attentionOnly: true,
-      stalledOnly: false,
-      backgroundOnly: true,
-      unobservedOnly: true,
+      needsHumanOnly: true,
       agentKind: "codex",
     })).toEqual([selected]);
   });
 
-  it("limits urgent ribbon to the oldest three waiting cards", () => {
-    const items = [5, 4, 3, 2, 1].map((occurrenceOrder) => card({
-      group: "waiting",
-      attention: { occurrenceOrder } as DashboardCardModel["attention"],
-    }));
-    expect(urgentRibbon([])).toEqual([]);
-    expect(urgentRibbon(items.slice(0, 1))).toHaveLength(1);
-    expect(urgentRibbon(items.slice(0, 3))).toHaveLength(3);
-    expect(urgentRibbon(items).map((item) => item.attention?.occurrenceOrder)).toEqual([1, 2, 3]);
+  it("drops everything but needsHuman and error under the needsHumanOnly filter", () => {
+    const waiting = distinct({ attentionCategory: "waiting", group: "waiting" }, "t-1");
+    const errored = distinct({ attentionCategory: "error", group: "waiting" }, "t-2");
+    const running = distinct({ group: "working", lastActivityAt: now - 1 }, "t-3");
+    const filters = { query: "", workspaceId: null, needsHumanOnly: true, agentKind: null };
+    expect(applyDashboardFilters([waiting, errored, running], filters).map((item) => item.tab.id))
+      .toEqual(["t-1", "t-2"]);
+  });
+
+  it("searches the livebrief summary as well as the terminal fields", () => {
+    const withTask = card({ task: "章立ての整理", activityText: null });
+    const filters = { query: "章立て", workspaceId: null, needsHumanOnly: false, agentKind: null };
+    expect(applyDashboardFilters([withTask], filters)).toEqual([withTask]);
   });
 });

@@ -1,3 +1,4 @@
+import type { LiveSessionBrief } from "../../lib/livebrief";
 import { deriveDisplayStatus } from "../../lib/notificationStatus";
 import { getTabDisplayLabel } from "../../lib/tabDisplayLabel";
 import type { PaneMetadata } from "../../stores/paneMetadataStore";
@@ -9,10 +10,20 @@ import {
   type SessionAttention,
 } from "../../stores/sessionAttentionStore";
 import type { Pane, PaneTab, Workspace } from "../../types";
+import { noUpdateMinutes } from "./liveTimelineModel";
 
 export type DashboardGroup = "waiting" | "stalled" | "done" | "working" | "idle";
 export type DashboardStatus = DashboardGroup | "error" | "unobserved";
 export type DashboardAgentKind = "claude" | "codex" | "claude-codex" | "none";
+
+/**
+ * 画面に出す1本化した状態。カードのグリッド時代の group/section を置き換える。
+ * livebrief が生きている間はそちらが正、そうでなければ attention/stall/metadata へ落ちる。
+ */
+export type DashboardDisplayState = "needsHuman" | "error" | "running" | "noUpdate" | "done" | "idle";
+
+/** 「更新なし」と言い切るまでの猶予 (分)。 */
+export const NO_UPDATE_THRESHOLD_MINUTES = 5;
 
 export interface DashboardCardModel {
   workspace: Workspace;
@@ -23,6 +34,7 @@ export interface DashboardCardModel {
   paneIndex: number;
   tab: PaneTab;
   tabIndex: number;
+  /** 同じタブの非アクティブペインかどうか。並びの内部判断だけに使い、表示には出さない。 */
   background: boolean;
   attention?: SessionAttention;
   attentionCategory: AttentionCategory | null;
@@ -34,7 +46,17 @@ export interface DashboardCardModel {
   lastActivityAt: number;
   label: string;
   agentKind: DashboardAgentKind;
+  /** xterm のバッファを持っていないだけの状態。表示には出さない (断定できないため)。 */
   unobserved: boolean;
+  // --- livebrief 由来 (telemetryHealth === "live" のときだけ意味がある) ---
+  brief?: LiveSessionBrief;
+  operationalState?: string;
+  telemetryHealth?: string;
+  task?: string | null;
+  activityText?: string | null;
+  checkpoint?: string | null;
+  /** 最後に何かが起きてからの経過分。基準が取れなければ null。 */
+  noUpdateMinutes: number | null;
 }
 
 export interface DashboardModelInput {
@@ -44,6 +66,7 @@ export interface DashboardModelInput {
   attentionBySession: Record<string, SessionAttention | undefined>;
   seenAttentionByTab: Map<string, string>;
   stallsBySession: Record<string, StallEntry | undefined>;
+  briefsBySession?: Record<string, LiveSessionBrief | undefined>;
   now: number;
   hasTerminalBuffer: (sessionId: string) => boolean;
 }
@@ -51,30 +74,18 @@ export interface DashboardModelInput {
 export interface DashboardFilters {
   query: string;
   workspaceId: string | null;
-  attentionOnly: boolean;
-  stalledOnly: boolean;
-  backgroundOnly: boolean;
-  unobservedOnly: boolean;
+  needsHumanOnly: boolean;
   agentKind: string | null;
 }
 
-export interface DashboardSection {
-  id: string;
-  cards: DashboardCardModel[];
-}
-
-export const DASHBOARD_GROUP_ORDER: readonly DashboardGroup[] = ["waiting", "stalled", "done", "working", "idle"];
-const STALL_REASON_ORDER: Record<StallEntry["reason"], number> = {
-  pty_dead: 0,
-  queued_input: 1,
-  no_output: 2,
-};
-const GROUP_ORDER: Record<DashboardGroup, number> = {
-  waiting: 0,
-  stalled: 1,
-  done: 2,
-  working: 3,
+/** 一本化した並び順: 人間入力待ち > エラー > 実行中 > 更新なし > 待機 > 完了。 */
+const STATE_ORDER: Record<DashboardDisplayState, number> = {
+  needsHuman: 0,
+  error: 1,
+  running: 2,
+  noUpdate: 3,
   idle: 4,
+  done: 5,
 };
 
 function tieBreak(left: DashboardCardModel, right: DashboardCardModel): number {
@@ -96,8 +107,30 @@ export function groupDashboardCard(
   if (category === "waiting" || category === "error") return "waiting";
   if (stall) return "stalled";
   if (category === "done") return "done";
-  if (now - lastActivityAt <= 5 * 60_000) return "working";
+  if (now - lastActivityAt <= NO_UPDATE_THRESHOLD_MINUTES * 60_000) return "working";
   return "idle";
+}
+
+/**
+ * livebrief が「生きている」と言える間はそれを正とし、そうでなければ
+ * 従来の attention / stall / metadata 判定へ落とす。断定できないものは idle。
+ */
+export function resolveDisplayState(card: DashboardCardModel): DashboardDisplayState {
+  if (card.telemetryHealth === "live") {
+    if (card.operationalState === "needsHuman") return "needsHuman";
+    if (card.attentionCategory === "error") return "error";
+    if ((card.noUpdateMinutes ?? 0) >= NO_UPDATE_THRESHOLD_MINUTES) return "noUpdate";
+    if (card.operationalState === "running") return "running";
+    if (card.attentionCategory === "done") return "done";
+    return "idle";
+  }
+  if (card.attentionCategory === "waiting") return "needsHuman";
+  if (card.attentionCategory === "error") return "error";
+  if (card.stall) return "noUpdate";
+  if (card.attentionCategory === "done") return "done";
+  // まだ一度も動いていないタブを「更新なし」と言い切らない。
+  if (!card.lastActivityAt) return "idle";
+  return card.group === "idle" ? "noUpdate" : "running";
 }
 
 export function buildDashboardCards(workspaces: readonly Workspace[], input: DashboardModelInput): DashboardCardModel[] {
@@ -109,6 +142,7 @@ export function buildDashboardCards(workspaces: readonly Workspace[], input: Das
         const attention = input.attentionBySession[tab.sessionId];
         const category = attentionCategory(tab.id, attention, input.seenAttentionByTab);
         const stall = input.stallsBySession[tab.sessionId];
+        const brief = input.briefsBySession?.[tab.sessionId];
         const lastActivityAt = Math.max(
           input.lastLogAtBySession[tab.sessionId] ?? 0,
           metadata?.screenStatusAt ?? 0,
@@ -119,6 +153,9 @@ export function buildDashboardCards(workspaces: readonly Workspace[], input: Das
         const status: DashboardStatus = category === "error"
           ? "error"
           : category ?? (stall ? "stalled" : (unobserved ? "unobserved" : deriveDisplayStatus(metadata)));
+        const activityMinutes = lastActivityAt
+          ? Math.max(0, Math.floor((input.now - lastActivityAt) / 60_000))
+          : null;
         cards.push({
           workspace,
           workspaceId: workspace.id,
@@ -140,6 +177,13 @@ export function buildDashboardCards(workspaces: readonly Workspace[], input: Das
           label: getTabDisplayLabel(tab, tab.id === pane.activeTabId, input.metadataBySession),
           agentKind: normalizeAgentKind(metadata?.agentKind ?? tab.agentKind),
           unobserved,
+          brief,
+          operationalState: brief?.operationalState,
+          telemetryHealth: brief?.telemetryHealth,
+          task: brief?.task ?? null,
+          activityText: brief?.activityText ?? null,
+          checkpoint: brief?.checkpoint ?? null,
+          noUpdateMinutes: noUpdateMinutes(brief, input.now) ?? activityMinutes,
         });
       }
     }
@@ -147,40 +191,77 @@ export function buildDashboardCards(workspaces: readonly Workspace[], input: Das
   return cards;
 }
 
-function compareCardsWithinGroup(left: DashboardCardModel, right: DashboardCardModel, group: DashboardGroup): number {
-  if (group === "waiting") {
+function compareWithinState(
+  left: DashboardCardModel,
+  right: DashboardCardModel,
+  state: DashboardDisplayState,
+): number {
+  if (state === "needsHuman" || state === "error") {
+    // 古いものから。待たせている時間が長いものほど先に人間の手が要る。
     return (left.attention?.occurrenceOrder ?? Number.MAX_SAFE_INTEGER) - (right.attention?.occurrenceOrder ?? Number.MAX_SAFE_INTEGER)
+      || (right.noUpdateMinutes ?? 0) - (left.noUpdateMinutes ?? 0)
       || tieBreak(left, right);
   }
-  if (group === "stalled") {
-    return STALL_REASON_ORDER[left.stall?.reason ?? "no_output"] - STALL_REASON_ORDER[right.stall?.reason ?? "no_output"]
-      || (left.stall?.since ?? 0) - (right.stall?.since ?? 0)
-      || tieBreak(left, right);
+  if (state === "noUpdate") {
+    return (right.noUpdateMinutes ?? 0) - (left.noUpdateMinutes ?? 0) || tieBreak(left, right);
   }
-  if (group === "done") {
-    return (right.attention?.occurrenceOrder ?? 0) - (left.attention?.occurrenceOrder ?? 0)
-      || tieBreak(left, right);
+  if (state === "done") {
+    return (right.attention?.occurrenceOrder ?? 0) - (left.attention?.occurrenceOrder ?? 0) || tieBreak(left, right);
   }
   return right.lastActivityAt - left.lastActivityAt || tieBreak(left, right);
 }
 
-export function sortCardsWithinGroup(cards: readonly DashboardCardModel[], group: DashboardGroup): DashboardCardModel[] {
-  return [...cards].sort((left, right) => compareCardsWithinGroup(left, right, group));
+/** 一本化順 (要対応順) / ワークスペース順のどちらかで並べ切った1本のリストを返す。 */
+export function orderDashboardCards(
+  cards: readonly DashboardCardModel[],
+  sortMode: "attention" | "workspace",
+): DashboardCardModel[] {
+  const stateByTab = new Map(cards.map((card) => [card.tab.id, resolveDisplayState(card)] as const));
+  const stateOf = (card: DashboardCardModel): DashboardDisplayState => stateByTab.get(card.tab.id) ?? "idle";
+  return [...cards].sort((left, right) => {
+    if (sortMode === "workspace" && left.workspaceIndex !== right.workspaceIndex) {
+      return left.workspaceIndex - right.workspaceIndex;
+    }
+    const leftState = stateOf(left);
+    const rightState = stateOf(right);
+    return STATE_ORDER[leftState] - STATE_ORDER[rightState]
+      || compareWithinState(left, right, leftState);
+  });
 }
 
-function compareCardsByGroup(left: DashboardCardModel, right: DashboardCardModel): number {
-  return GROUP_ORDER[left.group] - GROUP_ORDER[right.group]
-    || compareCardsWithinGroup(left, right, left.group);
+/** 「要対応」セクションの中身。人間入力待ちとエラーだけを古い順に。 */
+export function needsHumanCards(cards: readonly DashboardCardModel[]): DashboardCardModel[] {
+  return orderDashboardCards(
+    cards.filter((card) => {
+      const state = resolveDisplayState(card);
+      return state === "needsHuman" || state === "error";
+    }),
+    "attention",
+  );
+}
+
+/** カウントチップ用の内訳。要対応にはエラーも数える (どちらも人間の手が要る)。 */
+export function countByDisplayState(cards: readonly DashboardCardModel[]): Record<DashboardDisplayState, number> {
+  const counts: Record<DashboardDisplayState, number> = {
+    needsHuman: 0,
+    error: 0,
+    running: 0,
+    noUpdate: 0,
+    idle: 0,
+    done: 0,
+  };
+  for (const card of cards) counts[resolveDisplayState(card)] += 1;
+  return counts;
 }
 
 export function applyDashboardFilters(cards: readonly DashboardCardModel[], filters: DashboardFilters): DashboardCardModel[] {
   const query = filters.query.trim().toLocaleLowerCase();
   return cards.filter((card) => {
     if (filters.workspaceId && card.workspaceId !== filters.workspaceId) return false;
-    if (filters.attentionOnly && card.group !== "waiting") return false;
-    if (filters.stalledOnly && card.group !== "stalled") return false;
-    if (filters.backgroundOnly && !card.background) return false;
-    if (filters.unobservedOnly && !card.unobserved) return false;
+    if (filters.needsHumanOnly) {
+      const state = resolveDisplayState(card);
+      if (state !== "needsHuman" && state !== "error") return false;
+    }
     if (filters.agentKind && card.agentKind !== filters.agentKind) return false;
     if (!query) return true;
     const searchable = [
@@ -188,39 +269,10 @@ export function applyDashboardFilters(cards: readonly DashboardCardModel[], filt
       card.label,
       card.metadata?.cwd ?? "",
       card.lastLog ?? "",
+      card.task ?? "",
+      card.activityText ?? "",
       attentionDetail(card.attention) ?? "",
     ].join("\n").toLocaleLowerCase();
     return searchable.includes(query);
   });
-}
-
-export function groupSections(
-  cards: readonly DashboardCardModel[],
-  sortMode: "attention" | "workspace" | "agent",
-): DashboardSection[] {
-  if (sortMode === "attention") {
-    return DASHBOARD_GROUP_ORDER.map((group) => ({
-      id: group,
-      cards: sortCardsWithinGroup(cards.filter((card) => card.group === group), group),
-    })).filter((section) => section.cards.length > 0);
-  }
-  if (sortMode === "workspace") {
-    const workspaceIds = [...new Set(cards.map((card) => card.workspaceId))];
-    return workspaceIds.map((workspaceId) => {
-      const workspaceCards = cards.filter((card) => card.workspaceId === workspaceId);
-      return {
-        id: workspaceId,
-        cards: [...workspaceCards].sort(compareCardsByGroup),
-      };
-    });
-  }
-  const kinds: DashboardAgentKind[] = ["claude", "codex", "claude-codex", "none"];
-  return kinds.map((kind) => ({
-    id: kind,
-    cards: cards.filter((card) => card.agentKind === kind).sort(compareCardsByGroup),
-  })).filter((section) => section.cards.length > 0);
-}
-
-export function urgentRibbon(cards: readonly DashboardCardModel[]): DashboardCardModel[] {
-  return sortCardsWithinGroup(cards.filter((card) => card.group === "waiting"), "waiting").slice(0, 3);
 }

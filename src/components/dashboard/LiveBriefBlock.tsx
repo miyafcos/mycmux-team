@@ -2,42 +2,22 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import {
   freezeExpectation,
-  getLiveBriefs,
-  onLiveBriefUpdate,
   sendIntervention,
   targetKey,
   type InterventionAction,
   type InterventionResult,
-  type LiveSessionBrief,
 } from "../../lib/livebrief";
-
-type BriefMap = Record<string, LiveSessionBrief>;
-
-function mergeBrief(previous: BriefMap, incoming: LiveSessionBrief): BriefMap {
-  const current = previous[incoming.ptySessionId];
-  if (current && (current.serviceEpoch !== incoming.serviceEpoch || current.briefRevision >= incoming.briefRevision)) return previous;
-  return { ...previous, [incoming.ptySessionId]: incoming };
-}
+import { connectLiveBriefStore, useLiveBriefStore } from "../../stores/liveBriefStore";
+import { dashboardStrings } from "./dashboardStrings";
 
 export function LiveBriefBlock({ sessionId, targetLabel }: { sessionId: string; targetLabel: string }) {
-  const [briefs, setBriefs] = useState<BriefMap>({});
   const [draftByTarget, setDraftByTarget] = useState<Record<string, string>>({});
   const [resultByTarget, setResultByTarget] = useState<Record<string, InterventionResult>>({});
   const [inFlightByTarget, setInFlightByTarget] = useState<Record<string, boolean>>({});
-  const brief = briefs[sessionId];
+  const brief = useLiveBriefStore((state) => state.briefsBySession[sessionId]);
   const key = brief ? targetKey(brief) : null;
 
-  useEffect(() => {
-    let disposed = false;
-    let unlisten: (() => void) | undefined;
-    void onLiveBriefUpdate((incoming) => {
-      if (!disposed) setBriefs((previous) => mergeBrief(previous, incoming));
-    }).then((nextUnlisten) => { if (disposed) nextUnlisten(); else unlisten = nextUnlisten; });
-    void getLiveBriefs().then((snapshot) => {
-      if (!disposed) setBriefs((previous) => snapshot.reduce((next, incoming) => mergeBrief(next, incoming), previous));
-    }).catch(() => {});
-    return () => { disposed = true; unlisten?.(); };
-  }, []);
+  useEffect(() => connectLiveBriefStore(), []);
 
   const enabled = Boolean(brief && key && brief.telemetryHealth === "live" && brief.operationalState === "needsHuman" && !inFlightByTarget[key]);
   const draft = key ? draftByTarget[key] ?? "" : "";
@@ -60,25 +40,37 @@ export function LiveBriefBlock({ sessionId, targetLabel }: { sessionId: string; 
 
   const resultText = useMemo(() => {
     if (!result) return null;
-    if (result.type === "confirmed") return "Input confirmed in the transcript.";
-    if (result.type === "conflict") return "The target changed; nothing was sent.";
-    if (result.type === "busy") return "An intervention for this prompt is already in progress.";
-    if (result.type === "rejectedBeforeWrite") return `Nothing was sent: ${result.reason}.`;
-    if (result.type === "indeterminatePartial") return "Write outcome is indeterminate. Open the terminal; do not resend automatically.";
-    return "Write was not confirmed. The prompt remains actionable; do not resend automatically.";
+    if (result.type === "confirmed") return dashboardStrings.interventionConfirmed;
+    if (result.type === "conflict") return dashboardStrings.interventionConflict;
+    if (result.type === "busy") return dashboardStrings.interventionBusy;
+    if (result.type === "writtenAwaitingEvidence") return dashboardStrings.interventionWritten;
+    if (result.type === "rejectedBeforeWrite") return dashboardStrings.interventionRejected(result.reason);
+    if (result.type === "indeterminatePartial") return dashboardStrings.interventionIndeterminate;
+    return dashboardStrings.interventionUnconfirmed;
   }, [result]);
 
-  if (!brief) return null;
+  if (!brief) {
+    return <section style={blockStyle}>
+      <div style={bannerStyle}><strong>{dashboardStrings.liveBriefTitle}</strong><span>{targetLabel}</span></div>
+      <div style={resultStyle}>{dashboardStrings.telemetryUnlinked}</div>
+    </section>;
+  }
+  const healthNote = brief.telemetryHealth === "live"
+    ? null
+    : brief.telemetryHealth === "unlinked"
+      ? dashboardStrings.telemetryUnlinked
+      : dashboardStrings.telemetryUnavailable;
   return <section data-livebrief-interactive="true" style={blockStyle}>
-    <div style={bannerStyle}><strong>Live brief (experimental)</strong><span>{targetLabel} · {brief.agentKind} · PTY {brief.ptyGeneration} · {brief.telemetryHealth}</span></div>
-    {brief.task ? <div><span style={labelStyle}>Task</span>{brief.task}</div> : null}
-    {brief.activityText ? <div><span style={labelStyle}>Now</span>{brief.activityText}</div> : null}
-    {brief.checkpoint ? <div><span style={labelStyle}>Checkpoint</span>{brief.checkpoint}</div> : null}
-    {brief.pendingPrompt ? <div style={{ marginTop: 8 }}><span style={labelStyle}>Question</span>{brief.pendingPrompt}</div> : null}
+    <div style={bannerStyle}><strong>{dashboardStrings.liveBriefTitle}</strong><span>{targetLabel} · {brief.agentKind} · PTY {brief.ptyGeneration}</span></div>
+    {healthNote ? <div style={resultStyle}>{healthNote}</div> : null}
+    {brief.task ? <div><span style={labelStyle}>{dashboardStrings.liveBriefTaskLabel}</span>{brief.task}</div> : null}
+    {brief.activityText ? <div><span style={labelStyle}>{dashboardStrings.liveBriefActivityLabel}</span>{brief.activityText}</div> : null}
+    {brief.checkpoint ? <div><span style={labelStyle}>{dashboardStrings.liveBriefCheckpointLabel}</span>{brief.checkpoint}</div> : null}
+    {brief.pendingPrompt ? <div style={{ marginTop: 8 }}><span style={labelStyle}>{dashboardStrings.liveBriefQuestionLabel}</span>{brief.pendingPrompt}</div> : null}
     {brief.pendingOptions.length ? <div style={actionsStyle}>{brief.pendingOptions.map((option) => <button key={option.id} type="button" disabled={!enabled} style={buttonStyle} onClick={() => void submit({ type: "choose", optionId: option.id })}>{option.label}</button>)}</div> : null}
     {brief.pendingInputKind === "freeText" || brief.pendingInputKind === "blocker" ? <div style={actionsStyle}>
-      <input value={draft} disabled={!enabled} aria-label="Live intervention reply" onChange={(event) => key && setDraftByTarget((previous) => ({ ...previous, [key]: event.target.value }))} onKeyDown={(event) => { if (event.nativeEvent.isComposing || event.key !== "Enter") return; event.preventDefault(); if (draft.trim()) void submit({ type: "replyText", text: draft }); }} style={inputStyle} />
-      <button type="button" disabled={!enabled || !draft.trim()} style={buttonStyle} onClick={() => void submit({ type: "replyText", text: draft })}>Send reply</button>
+      <input value={draft} disabled={!enabled} aria-label={dashboardStrings.liveBriefReplyAriaLabel} onChange={(event) => key && setDraftByTarget((previous) => ({ ...previous, [key]: event.target.value }))} onKeyDown={(event) => { if (event.nativeEvent.isComposing || event.key !== "Enter") return; event.preventDefault(); if (draft.trim()) void submit({ type: "replyText", text: draft }); }} style={inputStyle} />
+      <button type="button" disabled={!enabled || !draft.trim()} style={buttonStyle} onClick={() => void submit({ type: "replyText", text: draft })}>{dashboardStrings.liveBriefSendReply}</button>
     </div> : null}
     {resultText ? <div style={resultStyle}>{resultText}</div> : null}
   </section>;

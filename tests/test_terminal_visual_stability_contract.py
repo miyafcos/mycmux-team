@@ -25,7 +25,6 @@ def test_status_indicators_are_flat_and_localized() -> None:
     assert "boxShadow: `0 0 0 3px" not in pane_tab_bar
     assert 'title: "作業中"' in pane_tab_bar
     assert 'title: "入力待ち"' in pane_tab_bar
-    assert 'border: "none"' in pane_tab_bar
     assert 'background: "transparent"' in pane_tab_bar
     assert "color-mix(in srgb, ${statusCfg.color} 10%, transparent)" not in pane_tab_bar
 

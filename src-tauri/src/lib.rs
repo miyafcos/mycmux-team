@@ -278,6 +278,7 @@ pub fn run() {
             commands::terminal::is_directory,
             commands::terminal::get_launch_cwd,
             livebrief::get_live_briefs,
+            livebrief::get_live_events,
             livebrief::send_intervention,
             commands::online::list_online_savepoints,
             commands::online::list_trashed_online_savepoints,
