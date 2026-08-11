@@ -11,6 +11,7 @@ interface SettingsState {
   notificationsEnabled: boolean;
   notificationSoundEnabled: boolean;
   terminalRenderer: TerminalRenderer;
+  colorAdaptCommands: string[];
   // CRSM Palette per-kind visibility (Ctrl+P session list).
   // When false the corresponding kind disappears from both the palette
   // list and the filter chips. Defaults true so existing users see no
@@ -30,6 +31,7 @@ interface SettingsState {
   setNotificationsEnabled: (v: boolean) => void;
   setNotificationSoundEnabled: (v: boolean) => void;
   setTerminalRenderer: (v: TerminalRenderer) => void;
+  setColorAdaptCommands: (v: string[]) => void;
   setCrsmShowClaude: (v: boolean) => void;
   setCrsmShowCodex: (v: boolean) => void;
   setCrsmShowClaudeCodex: (v: boolean) => void;
@@ -44,6 +46,7 @@ export const useSettingsStore = create<SettingsState>()(
       notificationsEnabled: true,
       notificationSoundEnabled: true,
       terminalRenderer: resolveDefaultTerminalRenderer(),
+      colorAdaptCommands: ["agy"],
       crsmShowClaude: true,
       crsmShowCodex: true,
       crsmShowClaudeCodex: true,
@@ -53,6 +56,7 @@ export const useSettingsStore = create<SettingsState>()(
       setNotificationsEnabled: (v) => set({ notificationsEnabled: v }),
       setNotificationSoundEnabled: (v) => set({ notificationSoundEnabled: v }),
       setTerminalRenderer: (v) => set({ terminalRenderer: v }),
+      setColorAdaptCommands: (v) => set({ colorAdaptCommands: v }),
       setCrsmShowClaude: (v) => set({ crsmShowClaude: v }),
       setCrsmShowCodex: (v) => set({ crsmShowCodex: v }),
       setCrsmShowClaudeCodex: (v) => set({ crsmShowClaudeCodex: v }),

@@ -462,22 +462,16 @@ div:hover>.tab-close-btn {
   color: var(--cmux-accent-text);
 }
 
-.pane-tab-restore-badge {
+.pane-tab-restore-badge.is-label {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 14px;
-  height: 14px;
   box-sizing: border-box;
   flex-shrink: 0;
   border: 1px solid color-mix(in srgb, var(--cmux-accent) 58%, var(--cmux-border));
   border-radius: 999px;
   color: var(--cmux-accent-text);
-  font-size: 7px;
   line-height: 1;
-}
-
-.pane-tab-restore-badge.is-label {
   width: auto;
   padding: 0 5px;
   font-size: 11px;
@@ -487,6 +481,10 @@ div:hover>.tab-close-btn {
 
 .ui-cmux .pane-tab-label {
   font-family: var(--cmux-font-mono) !important;
+}
+
+.pane-tab-label.is-deferred-restore {
+  opacity: 0.72;
 }
 
 .xterm-screen {
@@ -520,18 +518,8 @@ div:hover>.tab-close-btn {
   background: var(--cmux-accent) !important;
 }
 
-/* Agent status dot pulse */
-@keyframes agentPulse {
-  0%, 100% { opacity: 1; }
-  50%       { opacity: 0.35; }
-}
-
 .cmux-status-dot {
   transition: background var(--cmux-motion-base) var(--cmux-ease);
-}
-
-.cmux-status-dot--working {
-  animation: agentPulse 1.6s ease-in-out infinite;
 }
 
 @keyframes cmux-badge-pop {

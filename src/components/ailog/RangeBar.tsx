@@ -93,7 +93,7 @@ export function RangeBar({
         <span style={{ flex: 1 }} />
 
         <button type="button" onClick={onRefresh} disabled={loading} style={{ ...subtleButtonStyle, opacity: loading ? 0.5 : 1 }}>
-          {loading ? "読み込み中…" : "再読込"}
+          {loading ? "集計を更新中…" : "再読込"}
         </button>
         {running ? (
           <button type="button" onClick={onCancelIndex} style={{ ...subtleButtonStyle, color: "var(--cmux-red)" }}>

@@ -25,6 +25,7 @@ import {
 import { usePaneMetadataStore, useUiStore } from "../../stores/workspaceStore";
 import { useKeybindingStore } from "../../stores/keybindingStore";
 import { useSettingsStore } from "../../stores/settingsStore";
+import { LightDarkColorAdapt, shouldAdaptLightColors } from "../../lib/lightDarkColorAdapt";
 import { resolveEffectiveTerminalRenderer } from "../../stores/settingsMigration";
 import { DEFAULT_TERMINAL_FONT_FAMILY, useThemeStore } from "../../stores/themeStore";
 import { useToastStore } from "../../stores/toastStore";
@@ -632,6 +633,9 @@ export default memo(function XTermWrapper({
   const storeLineHeight = useThemeStore((s) => s.lineHeight);
   const storeBackground = useThemeStore((s) => s.themeTweaks.background);
   const terminalRenderer = useSettingsStore((s) => s.terminalRenderer);
+  const colorAdaptCommands = useSettingsStore((s) => s.colorAdaptCommands);
+  const colorAdaptCommandsRef = useRef(colorAdaptCommands);
+  colorAdaptCommandsRef.current = colorAdaptCommands;
   const previousTerminalRendererRef = useRef(terminalRenderer);
   const { mediaBackgroundActive, terminalOpacity } = resolveTerminalBackgroundState(storeBackground);
   // Single source of truth: is this tab the currently-focused terminal?
@@ -723,6 +727,10 @@ export default memo(function XTermWrapper({
     let titleDisposable: { dispose: () => void } | null = null;
     let artifactLinkProviderDisposable: { dispose: () => void } | null = null;
     let term: Terminal | null = null;
+    const colorAdapter = shouldAdaptLightColors(
+      launchParamsRef.current.command,
+      colorAdaptCommandsRef.current,
+    ) ? new LightDarkColorAdapt() : null;
     let fitAddon: FitAddon | null = null;
     let removeCompositionGuard: (() => void) | null = null;
     let removePaintFocusListeners: (() => void) | null = null;
@@ -1450,7 +1458,10 @@ export default memo(function XTermWrapper({
           resolve();
         };
         try {
-          term.write(output, finish);
+          const displayOutput = colorAdapter && typeof output === "string"
+            ? colorAdapter.transform(output)
+            : output;
+          term.write(displayOutput, finish);
         } catch {
           finish();
         }
@@ -1689,9 +1700,10 @@ export default memo(function XTermWrapper({
             }
             const decodedText = outputDecoder.decode(chunk, { stream: true });
             const displayText = stripTerminalMouseModeControlSequencesForSession(sessionId, decodedText);
-            // PTY output is a stateful byte stream. Never rewrite chunks for
-            // presentation: cursor movement and erase sequences were emitted
-            // against the original character widths.
+            // PTY output is a stateful byte stream. Do not rewrite its text or
+            // cursor sequences: they were emitted against the original widths.
+            // The write helper only changes non-printing SGR color parameters
+            // for configured commands immediately before xterm rendering.
             const output = displayText;
             if (import.meta.env.DEV) {
               diagStats.writes += 1;
@@ -2192,7 +2204,8 @@ export default memo(function XTermWrapper({
           const output = `${stripTerminalMouseModeControlSequences(displayReplay)}\r\n`;
           const measuredBytes = terminalWriteByteLength(output);
           const writeMeasurement = recordTerminalWriteStart(sessionId, measuredBytes);
-          replayTerm.write(output, () => {
+          const adaptedOutput = colorAdapter ? colorAdapter.transform(output) : output;
+          replayTerm.write(adaptedOutput, () => {
             recordTerminalWriteCallback(writeMeasurement);
             resolve();
           });

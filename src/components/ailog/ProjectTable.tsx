@@ -77,7 +77,7 @@ export function ProjectTable({
         </table>
       </ScrollBox>
       <div style={noteStyle}>
-        {`${formatCount(report.rows.length)} 案件。行をクリックするとその案件で全体を絞り込みます。案件名はセッションの作業フォルダ（末尾 2 階層）です。`}
+        {`${formatCount(report.rows.length)} 案件。行をクリックするとその案件で全体を絞り込みます。案件名は作業パスと編集・参照ファイルから決定します。`}
       </div>
     </div>
   );

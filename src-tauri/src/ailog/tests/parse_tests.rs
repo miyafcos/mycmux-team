@@ -186,73 +186,78 @@ fn base_stats() -> WorkTagStats {
         user_msg_count: 0,
         turn_count: 0,
         compact_count: 0,
+        read_chars: 0,
+        exec_chars: 0,
+        write_chars: 0,
     }
 }
 
 #[test]
 fn work_tag_thresholds_are_inclusive_at_the_boundary() {
-    // explore: >= 50%
+    // explore: >= 25%
     let mut stats = base_stats();
-    stats.read_calls = 50;
+    stats.read_calls = 25;
     assert!(metrics::work_tags(&stats).contains(&"explore".to_string()));
-    stats.read_calls = 49;
+    stats.read_calls = 24;
+    // Pin another tag so the never-empty fallback cannot re-add explore.
+    stats.verify_runs = 1;
     assert!(!metrics::work_tags(&stats).contains(&"explore".to_string()));
 
-    // implement: >= 20%
+    // implement: >= 8%
     let mut stats = base_stats();
-    stats.edit_calls = 20;
+    stats.edit_calls = 8;
     assert!(metrics::work_tags(&stats).contains(&"implement".to_string()));
-    stats.edit_calls = 19;
+    stats.edit_calls = 7;
     assert!(!metrics::work_tags(&stats).contains(&"implement".to_string()));
 
-    // verify: >= 5 runs
+    // verify: >= 1 run
     let mut stats = base_stats();
-    stats.verify_runs = 5;
+    stats.verify_runs = 1;
     assert!(metrics::work_tags(&stats).contains(&"verify".to_string()));
-    stats.verify_runs = 4;
+    stats.verify_runs = 0;
     assert!(!metrics::work_tags(&stats).contains(&"verify".to_string()));
 
-    // debug: rate >= 0.10 AND retry >= 2 (both required)
+    // debug: rate >= 0.10 AND retry >= 1 (both required)
     let mut stats = base_stats();
     stats.tool_error_rate = 0.10;
-    stats.retry_bash = 2;
-    assert!(metrics::work_tags(&stats).contains(&"debug".to_string()));
     stats.retry_bash = 1;
+    assert!(metrics::work_tags(&stats).contains(&"debug".to_string()));
+    stats.retry_bash = 0;
     assert!(!metrics::work_tags(&stats).contains(&"debug".to_string()));
-    stats.retry_bash = 2;
+    stats.retry_bash = 1;
     stats.tool_error_rate = 0.09;
     assert!(!metrics::work_tags(&stats).contains(&"debug".to_string()));
 
-    // orchestrate: >= 1
+    // orchestrate: >= 2
     let mut stats = base_stats();
-    stats.orchestrate_calls = 1;
+    stats.orchestrate_calls = 2;
     assert!(metrics::work_tags(&stats).contains(&"orchestrate".to_string()));
-    stats.orchestrate_calls = 0;
+    stats.orchestrate_calls = 1;
     assert!(!metrics::work_tags(&stats).contains(&"orchestrate".to_string()));
 
-    // research: >= 3
+    // research: >= 1
     let mut stats = base_stats();
-    stats.research_calls = 3;
+    stats.research_calls = 1;
     assert!(metrics::work_tags(&stats).contains(&"research".to_string()));
-    stats.research_calls = 2;
+    stats.research_calls = 0;
     assert!(!metrics::work_tags(&stats).contains(&"research".to_string()));
 
-    // converse: tool_calls < 5 AND user messages >= 3
+    // converse: tool_calls < 3 AND user messages >= 3
     let mut stats = base_stats();
-    stats.tool_calls = 4;
+    stats.tool_calls = 2;
     stats.user_msg_count = 3;
     assert!(metrics::work_tags(&stats).contains(&"converse".to_string()));
-    stats.tool_calls = 5;
+    stats.tool_calls = 3;
     assert!(!metrics::work_tags(&stats).contains(&"converse".to_string()));
-    stats.tool_calls = 4;
+    stats.tool_calls = 2;
     stats.user_msg_count = 2;
     assert!(!metrics::work_tags(&stats).contains(&"converse".to_string()));
 
-    // longhaul: turns >= 100 OR any compaction
+    // longhaul: turns >= 75 OR any compaction
     let mut stats = base_stats();
-    stats.turn_count = 100;
+    stats.turn_count = 75;
     assert!(metrics::work_tags(&stats).contains(&"longhaul".to_string()));
-    stats.turn_count = 99;
+    stats.turn_count = 74;
     assert!(!metrics::work_tags(&stats).contains(&"longhaul".to_string()));
     stats.compact_count = 1;
     assert!(metrics::work_tags(&stats).contains(&"longhaul".to_string()));
@@ -265,13 +270,16 @@ fn a_session_can_carry_several_tags_at_once() {
         read_calls: 6,
         edit_calls: 3,
         verify_runs: 5,
-        orchestrate_calls: 1,
+        orchestrate_calls: 2,
         research_calls: 3,
         tool_error_rate: 0.2,
         retry_bash: 3,
         user_msg_count: 1,
         turn_count: 120,
         compact_count: 1,
+        read_chars: 0,
+        exec_chars: 0,
+        write_chars: 0,
     };
     let tags = metrics::work_tags(&stats);
     for expected in [
@@ -289,12 +297,16 @@ fn a_session_can_carry_several_tags_at_once() {
 }
 
 #[test]
-fn zero_tool_calls_never_produce_a_ratio_tag() {
+fn work_tag_fallback_is_deterministic_and_never_empty() {
     let mut stats = base_stats();
     stats.tool_calls = 0;
     let tags = metrics::work_tags(&stats);
-    assert!(!tags.contains(&"explore".to_string()));
-    assert!(!tags.contains(&"implement".to_string()));
+    assert_eq!(tags, vec!["explore"]);
+    stats.read_chars = 2;
+    stats.exec_chars = 9;
+    assert_eq!(metrics::work_tags(&stats), vec!["verify"]);
+    stats.write_chars = 10;
+    assert_eq!(metrics::work_tags(&stats), vec!["implement"]);
 }
 
 #[test]

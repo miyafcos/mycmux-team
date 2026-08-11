@@ -66,12 +66,6 @@ interface PaneTabBarProps {
   hasTerminalBuffer: (sessionId: string) => boolean;
 }
 
-const FolderIcon = () => (
-  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
-  </svg>
-);
-
 const SplitRightIcon = () => (
   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
     <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
@@ -399,6 +393,35 @@ const STATUS_CONFIG: Record<EffectiveStatus, { color: string; title: string; sha
   idle:    { color: "transparent",           title: "", shape: "circle" },
 };
 
+export type TabStatusIndicator = "error" | "waiting" | "done" | "working" | null;
+
+export function resolveTabStatusIndicator({
+  unreadAttentionCategory,
+  notificationCount,
+  workDoneCount,
+  displayStatus,
+}: {
+  unreadAttentionCategory: AttentionCategory | null;
+  notificationCount: number;
+  workDoneCount: number;
+  displayStatus: EffectiveStatus;
+}): TabStatusIndicator {
+  if (unreadAttentionCategory === "error") return "error";
+  if (displayStatus === "waiting" || notificationCount > 0 || unreadAttentionCategory === "waiting") {
+    return "waiting";
+  }
+  if (workDoneCount > 0 || unreadAttentionCategory === "done") return "done";
+  if (displayStatus === "working") return "working";
+  return null;
+}
+
+const TAB_STATUS_INDICATOR_CONFIG: Record<Exclude<TabStatusIndicator, null>, { color: string; title: string }> = {
+  error: { color: ATTENTION_REASON_COLOR.error, title: unseenAttentionLabel("error") },
+  waiting: { color: ATTENTION_REASON_COLOR.waiting, title: unseenAttentionLabel("waiting") },
+  done: { color: ATTENTION_REASON_COLOR.done, title: unseenAttentionLabel("done") },
+  working: { color: "var(--status-working)", title: "作業中" },
+};
+
 const AGENT_LABELS: Record<string, string> = {
   "shell-starter": "起動メニュー",
   "claude-code": "Claude Code",
@@ -504,23 +527,49 @@ function PaneTabContextMenuItem({
   );
 }
 
-function AgentStatusDot({ status }: { status: EffectiveStatus }) {
-  const cfg = STATUS_CONFIG[status];
-  if (status === "idle" || !cfg) return null;
+function TabStatusIndicatorDot({ indicator }: { indicator: TabStatusIndicator }) {
+  if (!indicator) return null;
+  const config = TAB_STATUS_INDICATOR_CONFIG[indicator];
   return (
     <span
-      className={`cmux-status-dot${status === "working" ? " cmux-status-dot--working" : ""}`}
-      title={cfg.title}
+      title={config.title}
+      aria-label={config.title}
+      role="img"
       style={{
-        width: cfg.shape === "diamond" ? 9 : 8,
-        height: cfg.shape === "diamond" ? 9 : 8,
-        borderRadius: cfg.shape === "diamond" ? 2 : "50%",
-        background: cfg.color,
-        boxShadow: "0 0 0 1px var(--cmux-bg-solid)",
+        width: 5,
+        height: 5,
+        borderRadius: "50%",
+        background: config.color,
+        boxShadow: "0 0 0 1px var(--cmux-bg)",
         flexShrink: 0,
-        transform: cfg.shape === "diamond" ? "rotate(45deg)" : undefined,
       }}
     />
+  );
+}
+
+function TabAgentIcon({ kind, indicator }: { kind: string | undefined; indicator: TabStatusIndicator }) {
+  if (!agentKindColor(kind)) return null;
+  return (
+    <span style={{ position: "relative", display: "inline-flex", width: 14, height: 14, flexShrink: 0 }}>
+      <AgentKindIcon kind={kind} size={14} />
+      {indicator && (
+        <span
+          title={TAB_STATUS_INDICATOR_CONFIG[indicator].title}
+          aria-label={TAB_STATUS_INDICATOR_CONFIG[indicator].title}
+          role="img"
+          style={{
+            position: "absolute",
+            right: -1,
+            bottom: -1,
+            width: 5,
+            height: 5,
+            borderRadius: "50%",
+            background: TAB_STATUS_INDICATOR_CONFIG[indicator].color,
+            boxShadow: "0 0 0 1px var(--cmux-bg)",
+          }}
+        />
+      )}
+    </span>
   );
 }
 
@@ -1254,6 +1303,12 @@ export default memo(function PaneTabBar({
       : activeUnreadCategory === "done"
         ? "未確認の完了"
         : null;
+  const activeStatusIndicator = resolveTabStatusIndicator({
+    unreadAttentionCategory: activeUnreadCategory,
+    notificationCount: activeNotificationCount,
+    workDoneCount: activeWorkDoneCount,
+    displayStatus: activeStatus,
+  });
   const usesTabStrip = renderMode === "full" || renderMode === "slim";
   const usesCompactTabs = !usesTabStrip && activeTab !== undefined;
   const showsInlinePinControl = shouldShowInlinePinControl(renderMode);
@@ -1483,6 +1538,7 @@ export default memo(function PaneTabBar({
           const tabNotificationCount = tabMeta?.notificationCount ?? 0;
           const tabWorkDoneCount = tabMeta?.workDoneCount ?? 0;
           const tabEffectiveStatus = deriveDisplayStatus(tabMeta);
+          const tabAgentKind = tabMeta?.agentKind ?? tab.agentKind;
           const canonicalAttention = attentionBySession[tab.sessionId];
           const canonicalUnreadCategory = isAttentionUnseen(
             tab.id,
@@ -1499,6 +1555,12 @@ export default memo(function PaneTabBar({
               : canonicalUnreadCategory === "done"
                 ? "未確認の完了"
                 : null;
+          const tabStatusIndicator = resolveTabStatusIndicator({
+            unreadAttentionCategory: canonicalUnreadCategory,
+            notificationCount: tabNotificationCount,
+            workDoneCount: tabWorkDoneCount,
+            displayStatus: tabEffectiveStatus,
+          });
           const label = displayTabLabel(tab, isTabActive);
           const isEditingTab = editingTabId === tab.id;
           const isSavepointDropTarget = savepointDropTabId === tab.id;
@@ -1605,7 +1667,7 @@ export default memo(function PaneTabBar({
               title={tabTitle}
               aria-label={[
                 tabTitle,
-                tabKindColor ? AGENT_KIND_BADGE_LABELS[tabMeta?.agentKind ?? tab.agentKind ?? ""] : null,
+                tabKindColor ? AGENT_KIND_BADGE_LABELS[tabAgentKind ?? ""] : null,
                 canonicalUnreadLabel,
               ].filter(Boolean).join(": ")}
               className={`pane-tab-pill ${isTabActive ? "is-active" : ""}${isSavepointDropTarget ? " is-savepoint-write-target" : ""}` + (tabKindColor ? " has-agent-kind" : "") + (isTabPinned ? " is-pinned" : "")}
@@ -1627,39 +1689,16 @@ export default memo(function PaneTabBar({
                 "--agent-kind-color": tabKindColor?.fg,
               } as AgentKindStyle}
             >
-              {/* notification dot: amber = approval waiting, emerald = work done */}
-              <AttentionUnreadDot category={canonicalUnreadCategory} />
-              {tabNotificationCount > 0 && (
-                <span title="Waiting for approval" style={{ width: 7, height: 7, borderRadius: "50%", background: "var(--status-waiting)", boxShadow: "0 0 0 1px var(--cmux-bg-solid)", flexShrink: 0 }} />
+              {tabKindColor ? (
+                <TabAgentIcon kind={tabAgentKind} indicator={tabStatusIndicator} />
+              ) : (
+                <TabStatusIndicatorDot indicator={tabStatusIndicator} />
               )}
-              {tabNotificationCount === 0 && tabWorkDoneCount > 0 && (
-                <span title="Work done" style={{ width: 7, height: 7, borderRadius: "50%", background: "var(--status-done)", boxShadow: "0 0 0 1px var(--cmux-bg-solid)", flexShrink: 0 }} />
-              )}
-              <AgentStatusDot status={tabEffectiveStatus} />
-              {/* folder icon — swapped for the pin marker at constant width */}
-              <span style={{
-                color: isTabPinned
-                  ? "var(--cmux-accent-text)"
-                  : isTabActive ? "var(--cmux-accent-text)" : "var(--cmux-text-tertiary)",
-                display: "inline-flex",
-                flexShrink: 0,
-              }}>
-                {isTabPinned ? <PinIcon size={13} filled /> : <FolderIcon />}
-              </span>
-              {showDeferredRestore && (
-                <span
-                  className="pane-tab-restore-badge"
-                  title="未復元 — クリックで再開"
-                  aria-label="未復元 — クリックで再開"
-                  style={{
-                    color: "var(--cmux-usage-warn)",
-                    borderColor: "color-mix(in srgb, var(--cmux-usage-warn) 58%, var(--cmux-border))",
-                  }}
-                >
-                  ▶
+              {isTabPinned && (
+                <span style={{ color: "var(--cmux-accent-text)", display: "inline-flex", flexShrink: 0 }}>
+                  <PinIcon size={13} filled />
                 </span>
               )}
-              <AgentKindIcon kind={tabMeta?.agentKind ?? tab.agentKind} size={14} />
               {/* label */}
               {isEditingTab ? (
                 <input
@@ -1694,7 +1733,7 @@ export default memo(function PaneTabBar({
                 />
               ) : (
                 <span
-                  className="pane-tab-label"
+                  className={`pane-tab-label${showDeferredRestore ? " is-deferred-restore" : ""}`}
                   style={{
                     fontSize: 13,
                     fontWeight: isTabActive ? 600 : 400,
@@ -1823,7 +1862,7 @@ export default memo(function PaneTabBar({
           }}
         >
           <span
-            className={`cmux-status-dot${activeStatus === "working" ? " cmux-status-dot--working" : ""}`}
+            className="cmux-status-dot"
             style={{
               width: 6,
               height: 6,
@@ -1927,14 +1966,11 @@ export default memo(function PaneTabBar({
               "--agent-kind-color": activeKindColor?.fg,
             } as AgentKindStyle}
           >
-            <AttentionUnreadDot category={activeUnreadCategory} />
-            {activeNotificationCount > 0 && (
-              <span title="Waiting for approval" style={{ width: 7, height: 7, borderRadius: "50%", background: "var(--status-waiting)", boxShadow: "0 0 0 1px var(--cmux-bg-solid)", flexShrink: 0 }} />
+            {activeKindColor ? (
+              <TabAgentIcon kind={activeAgentKind} indicator={activeStatusIndicator} />
+            ) : (
+              <TabStatusIndicatorDot indicator={activeStatusIndicator} />
             )}
-            {activeNotificationCount === 0 && activeWorkDoneCount > 0 && (
-              <span title="Work done" style={{ width: 7, height: 7, borderRadius: "50%", background: "var(--status-done)", boxShadow: "0 0 0 1px var(--cmux-bg-solid)", flexShrink: 0 }} />
-            )}
-            <AgentStatusDot status={activeStatus} />
             {/* Narrow modes have no room for the toggle: show the state only,
                 and let the dropdown row do the toggling. */}
             {!showsInlinePinControl && isActiveTabPinned && (
@@ -1947,7 +1983,6 @@ export default memo(function PaneTabBar({
                 <PinIcon size={12} filled />
               </span>
             )}
-            <AgentKindIcon kind={activeAgentKind} size={14} />
             {isEditingActiveTab ? (
               <input
                 ref={inputRef}

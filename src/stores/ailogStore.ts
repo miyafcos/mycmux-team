@@ -293,7 +293,10 @@ export const useAilogStore = create<AilogState>((set, get) => ({
     }
   },
 
-  applyIndexProgress: (indexProgress) => set({ indexProgress }),
+  applyIndexProgress: (indexProgress) => {
+    set({ indexProgress });
+    if (indexProgress.phase === "done") void get().refreshIndexStatus();
+  },
 
   startIndex: async (full) => {
     set({ indexError: null });

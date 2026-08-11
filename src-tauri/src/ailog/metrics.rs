@@ -207,15 +207,19 @@ pub fn file_churn(files: &BTreeMap<String, FileTouchRow>) -> (i64, i64) {
 // Work tags
 // ---------------------------------------------------------------------------
 
-pub const EXPLORE_RATIO: f64 = 0.50;
-pub const IMPLEMENT_RATIO: f64 = 0.20;
-pub const VERIFY_MIN_RUNS: i64 = 5;
+// These low thresholds reflect the observed sparse tool-event distribution.
+// The final character-volume fallback guarantees every non-conversation
+// session still receives one useful tag when no explicit signal is present.
+pub const EXPLORE_RATIO: f64 = 0.25;
+pub const IMPLEMENT_RATIO: f64 = 0.08;
+pub const VERIFY_MIN_RUNS: i64 = 1;
 pub const DEBUG_ERROR_RATE: f64 = 0.10;
-pub const DEBUG_MIN_RETRY: i64 = 2;
-pub const RESEARCH_MIN_CALLS: i64 = 3;
-pub const CONVERSE_MAX_TOOLS: i64 = 5;
+pub const DEBUG_MIN_RETRY: i64 = 1;
+pub const ORCHESTRATE_MIN_CALLS: i64 = 2;
+pub const RESEARCH_MIN_CALLS: i64 = 1;
+pub const CONVERSE_MAX_TOOLS: i64 = 3;
 pub const CONVERSE_MIN_MESSAGES: i64 = 3;
-pub const LONGHAUL_MIN_TURNS: i64 = 100;
+pub const LONGHAUL_MIN_TURNS: i64 = 75;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct WorkTagStats {
@@ -230,6 +234,9 @@ pub struct WorkTagStats {
     pub user_msg_count: i64,
     pub turn_count: i64,
     pub compact_count: i64,
+    pub read_chars: i64,
+    pub exec_chars: i64,
+    pub write_chars: i64,
 }
 
 /// Tags are **not** mutually exclusive. Summing cost per tag therefore exceeds
@@ -252,7 +259,7 @@ pub fn work_tags(stats: &WorkTagStats) -> Vec<String> {
     if stats.tool_error_rate >= DEBUG_ERROR_RATE && stats.retry_bash >= DEBUG_MIN_RETRY {
         tags.push("debug".to_string());
     }
-    if stats.orchestrate_calls >= 1 {
+    if stats.orchestrate_calls >= ORCHESTRATE_MIN_CALLS {
         tags.push("orchestrate".to_string());
     }
     if stats.research_calls >= RESEARCH_MIN_CALLS {
@@ -263,6 +270,15 @@ pub fn work_tags(stats: &WorkTagStats) -> Vec<String> {
     }
     if stats.turn_count >= LONGHAUL_MIN_TURNS || stats.compact_count >= 1 {
         tags.push("longhaul".to_string());
+    }
+    if tags.is_empty() {
+        // Read, exec, write is also the deterministic tie order. This handles
+        // old sparse rows whose three recorded volumes are all zero.
+        let mut fallback = (stats.read_chars, "explore");
+        for candidate in [(stats.exec_chars, "verify"), (stats.write_chars, "implement")] {
+            if candidate.0 > fallback.0 { fallback = candidate; }
+        }
+        tags.push(fallback.1.to_string());
     }
     tags
 }

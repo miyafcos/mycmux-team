@@ -79,7 +79,8 @@ export function AiLogPanel({ open, visible, closing = false, onClose }: AiLogPan
   if (!visible) return null;
 
   const { overview, series, models, projects, sessions, loading, error, indexStatus } = store;
-  const neverIndexed = (indexStatus?.lastFinishedAt ?? 0) === 0;
+  const statusPending = indexStatus === null && store.indexError === null;
+  const neverIndexed = indexStatus !== null && indexStatus.lastFinishedAt === 0;
   const noData = Boolean(overview) && (overview?.totals.sessions ?? 0) === 0;
 
   const openDetail = (kind: string, sessionId: string) => {
@@ -122,7 +123,7 @@ export function AiLogPanel({ open, visible, closing = false, onClose }: AiLogPan
             <div style={{ fontSize: 14, fontWeight: 700 }}>AI ログ分析</div>
             <div role="status" aria-live="polite" style={{ ...noteStyle, marginTop: 2 }}>
               {loading
-                ? "集計中…"
+                ? "集計を更新中…"
                 : overview
                   ? `${overview.range.label} · ${overview.totals.sessions.toLocaleString("en-US")} セッション`
                   : "—"}
@@ -162,6 +163,8 @@ export function AiLogPanel({ open, visible, closing = false, onClose }: AiLogPan
                 <SkeletonBlock height={70} label="サマリーを読み込み中" />
                 <SkeletonBlock height={160} label="集計を読み込み中" />
               </div>
+            ) : noData && statusPending ? (
+              <div style={noteStyle}>インデックス状態を確認中です。</div>
             ) : noData ? (
               <EmptyState
                 kind={neverIndexed ? "not-indexed" : "no-data"}
@@ -181,22 +184,18 @@ export function AiLogPanel({ open, visible, closing = false, onClose }: AiLogPan
 
                 <Section
                   title="関係図"
-                  subtitle="モデル → 作業種別 → 案件（または主題）へのコストの流れ。ノードをクリックすると絞り込みます。"
+                  subtitle="案件 → 作業種別 → モデルのコストの流れ。ノードをクリックすると絞り込みます。"
                 >
                   {models && sessions ? (
                     <RelationDiagram
                       models={models}
                       sessions={sessions}
-                      leafDimension={store.leafDimension}
-                      onLeafDimension={store.setLeafDimension}
                       excludeSynthetic={store.excludeSynthetic}
                       topN={store.topN}
                       onTopN={store.setTopN}
                       grandTotal={overview.totals.costUsd}
                       selection={store.selection}
                       onSelect={store.setSelection}
-                      drillProject={store.drillProject}
-                      onDrillProject={store.setDrillProject}
                     />
                   ) : null}
                 </Section>

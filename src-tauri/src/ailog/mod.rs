@@ -14,6 +14,7 @@
 
 pub mod index;
 pub mod metrics;
+pub mod project_rules;
 pub mod parse_claude;
 pub mod parse_codex;
 pub mod price;

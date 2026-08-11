@@ -4,6 +4,7 @@ import { layoutSankey, type SankeyLayoutOptions } from "../../src/components/ail
 import {
   DOMINANT_SHARE_PCT,
   OTHER_KEY,
+  buildProjectSankeyGraph,
   buildSankeyGraph,
   rollupTopN,
   titlesWithinProject,
@@ -364,5 +365,40 @@ describe("sankey graph assembly", () => {
     expect(graph.leaves).toHaveLength(0);
     expect(graph.notes.bandMismatchPct).toBe(0);
     expect(graph.notes.dominantLeaf).toBeNull();
+  });
+});
+
+describe("project-first sankey graph", () => {
+  it("orders projects, tags, and models and preserves link session counts", () => {
+    const graph = buildProjectSankeyGraph({
+      byWorkTag: [{ workTag: "implement", perModel: [{ model: "gpt-5.6", sessions: 2, turns: 3, costUsd: 30, ingestCost: 10, generateCost: 20, avgRework: 0 }] }],
+      sessions: [
+        session({ sessionId: "a", projectLabel: "project-a", workTags: ["implement"], costUsd: 10 }),
+        session({ sessionId: "b", projectLabel: "project-a", workTags: ["implement"], costUsd: 20 }),
+      ],
+      totalSessions: 2,
+      excludeSynthetic: true,
+      grandTotal: 30,
+      topN: { model: 8, tag: 8, leaf: 8 },
+    });
+    expect(graph.projects.map((node) => node.key)).toEqual(["project-a"]);
+    expect(graph.tags.map((node) => node.key)).toEqual(["implement"]);
+    expect(graph.models.map((node) => node.key)).toEqual(["gpt-5.6"]);
+    expect(graph.projectToTag).toEqual([{ source: "project-a", target: "implement", value: 30, sessionCount: 2 }]);
+    expect(graph.tagToModel).toEqual([{ source: "implement", target: "gpt-5.6", value: 30, sessionCount: 2 }]);
+  });
+
+  it("keeps ten projects and folds the remaining projects into other", () => {
+    const graph = buildProjectSankeyGraph({
+      byWorkTag: [{ workTag: "verify", perModel: [{ model: "gpt-5.6", sessions: 11, turns: 11, costUsd: 66, ingestCost: 0, generateCost: 66, avgRework: 0 }] }],
+      sessions: Array.from({ length: 11 }, (_, index) => session({ sessionId: `p${index}`, projectLabel: `p${index}`, workTags: ["verify"], costUsd: index + 1 })),
+      totalSessions: 11,
+      excludeSynthetic: true,
+      grandTotal: 66,
+      topN: { model: 8, tag: 8, leaf: 8 },
+    });
+    expect(graph.projects).toHaveLength(11);
+    expect(graph.projects.at(-1)?.key).toBe(OTHER_KEY);
+    expect(graph.notes.projectOther).toEqual({ count: 1, value: 1 });
   });
 });

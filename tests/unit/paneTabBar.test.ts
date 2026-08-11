@@ -17,6 +17,7 @@ import {
   PANE_TABBAR_SLIM_EXIT,
   resolveActiveAgentLabel,
   resolvePaneTabBarActions,
+  resolveTabStatusIndicator,
   resolvePaneTabMenuLeft,
   resolvePaneTabMenuRows,
   resolvePaneTabBarMode,
@@ -108,6 +109,50 @@ describe("shouldShowDeferredRestoreBadge", () => {
     const saved = { agentKind: "claude" as const, agentSessionId: "session-id" };
     expect(shouldShowDeferredRestoreBadge(tab({ ...saved, type: "browser" }), false, false)).toBe(false);
     expect(shouldShowDeferredRestoreBadge(tab({ ...saved, type: "online" }), false, false)).toBe(false);
+  });
+});
+
+describe("resolveTabStatusIndicator", () => {
+  it("keeps error ahead of all other tab signals", () => {
+    expect(resolveTabStatusIndicator({
+      unreadAttentionCategory: "error",
+      notificationCount: 1,
+      workDoneCount: 1,
+      displayStatus: "working",
+    })).toBe("error");
+  });
+
+  it.each([
+    { unreadAttentionCategory: null, notificationCount: 0, workDoneCount: 1, displayStatus: "waiting" as const },
+    { unreadAttentionCategory: null, notificationCount: 1, workDoneCount: 1, displayStatus: "working" as const },
+    { unreadAttentionCategory: "waiting" as const, notificationCount: 0, workDoneCount: 1, displayStatus: "working" as const },
+  ])("keeps waiting ahead of done and working: %o", (input) => {
+    expect(resolveTabStatusIndicator(input)).toBe("waiting");
+  });
+
+  it.each([
+    { unreadAttentionCategory: null, notificationCount: 0, workDoneCount: 1, displayStatus: "working" as const },
+    { unreadAttentionCategory: "done" as const, notificationCount: 0, workDoneCount: 0, displayStatus: "working" as const },
+  ])("keeps done ahead of working: %o", (input) => {
+    expect(resolveTabStatusIndicator(input)).toBe("done");
+  });
+
+  it("shows working only after higher-priority signals are absent", () => {
+    expect(resolveTabStatusIndicator({
+      unreadAttentionCategory: null,
+      notificationCount: 0,
+      workDoneCount: 0,
+      displayStatus: "working",
+    })).toBe("working");
+  });
+
+  it("returns no indicator for an idle tab without attention", () => {
+    expect(resolveTabStatusIndicator({
+      unreadAttentionCategory: null,
+      notificationCount: 0,
+      workDoneCount: 0,
+      displayStatus: "idle",
+    })).toBeNull();
   });
 });
 

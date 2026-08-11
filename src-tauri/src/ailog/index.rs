@@ -16,18 +16,19 @@ use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::{Instant, UNIX_EPOCH};
 
-use rusqlite::{params, Connection, Transaction};
+use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::Serialize;
 
 use crate::ailog::metrics::{self, ToolClass};
 use crate::ailog::price::{self, PriceTable};
 use crate::ailog::{
-    parse_claude, parse_codex, project_key, project_label, ChunkData, SessionChunk, ToolRow,
+    parse_claude, parse_codex, project_rules, ChunkData, SessionChunk, ToolRow,
     KIND_CLAUDE, KIND_CODEX,
 };
 
 /// Minimum gap between progress events, per spec §5.
 pub const PROGRESS_THROTTLE_MS: u128 = 250;
+const DERIVATION_VERSION: &str = "project-work-v2";
 
 #[derive(Debug, Clone)]
 pub struct IndexOptions {
@@ -325,6 +326,7 @@ pub async fn run_index(
         for (kind, session_id) in &touched {
             recompute_session(&tx, kind, session_id, &prices)?;
         }
+        rederive_projects_and_tags_if_needed(&tx, &prices)?;
         tx.execute(
             "INSERT INTO index_state (key, value) VALUES ('last_finished_at', ?1) \
              ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -440,6 +442,66 @@ pub async fn run_index(
     Ok(report)
 }
 
+/// Upgrade derived project and work-tag values in-place. This reads only the
+/// indexed SQLite tables; transcript source files are never reparsed.
+fn rederive_projects_and_tags_if_needed(
+    tx: &Transaction<'_>,
+    prices: &PriceTable,
+) -> Result<(), String> {
+    let current: Option<String> = tx
+        .query_row(
+            "SELECT value FROM index_state WHERE key = 'derivation_version'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|err| format!("read derivation_version: {err}"))?;
+    if current.as_deref() == Some(DERIVATION_VERSION) {
+        return Ok(());
+    }
+
+    let sessions = {
+        let mut stmt = tx
+            .prepare("SELECT kind, session_id, cwd FROM session")
+            .map_err(|err| format!("prepare derivation sessions: {err}"))?;
+        let rows = stmt
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<String>>(2)?)))
+            .map_err(|err| format!("scan derivation sessions: {err}"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|err| format!("read derivation session: {err}"))?
+    };
+
+    for (kind, session_id, cwd) in sessions {
+        if let Some(cwd) = cwd {
+            let touches = {
+                let mut stmt = tx
+                    .prepare("SELECT path FROM file_touch WHERE kind = ?1 AND session_id = ?2")
+                    .map_err(|err| format!("prepare derivation touches: {err}"))?;
+                let rows = stmt
+                    .query_map(params![kind, session_id], |row| row.get::<_, String>(0))
+                    .map_err(|err| format!("scan derivation touches: {err}"))?;
+                rows.collect::<Result<Vec<_>, _>>()
+                    .map_err(|err| format!("read derivation touch: {err}"))?
+            };
+            let touch_refs: Vec<&str> = touches.iter().map(String::as_str).collect();
+            let attribution = project_rules::derive_project(&cwd, &touch_refs);
+            tx.execute(
+                "UPDATE session SET project_key = ?3, project_label = ?4 WHERE kind = ?1 AND session_id = ?2",
+                params![kind, session_id, attribution.key, attribution.label],
+            )
+            .map_err(|err| format!("update project derivation: {err}"))?;
+        }
+        recompute_session(tx, &kind, &session_id, prices)?;
+    }
+    tx.execute(
+        "INSERT INTO index_state (key, value) VALUES ('derivation_version', ?1) \
+         ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        params![DERIVATION_VERSION],
+    )
+    .map_err(|err| format!("write derivation_version: {err}"))?;
+    Ok(())
+}
+
 /// Read the requested byte range and hand it to the format's parser.
 ///
 /// Only whole newline-terminated lines are consumed, so a transcript that is
@@ -518,7 +580,11 @@ fn delete_session(tx: &Transaction<'_>, kind: &str, session_id: &str) -> Result<
 
 fn apply_chunk(tx: &Transaction<'_>, chunk: &SessionChunk) -> Result<(), String> {
     let (project_key_value, project_label_value) = match &chunk.cwd {
-        Some(cwd) => (Some(project_key(cwd)), Some(project_label(cwd))),
+        Some(cwd) => {
+            let touches: Vec<&str> = chunk.files.keys().map(String::as_str).collect();
+            let attribution = project_rules::derive_project(cwd, &touches);
+            (Some(attribution.key), Some(attribution.label))
+        }
         None => (None, None),
     };
     let agent_names = if chunk.agent_names.is_empty() {
@@ -963,10 +1029,10 @@ pub fn recompute_session(
     let written_files = files.values().filter(|f| f.edit_count > 0).count() as i64;
 
     // --- session-level state --------------------------------------------
-    let (user_msg_count, compact_count, ends_on_tool, ai_title, first_prompt, started, ended) = tx
+    let (user_msg_count, compact_count, ends_on_tool, ai_title, first_prompt, started, ended, read_chars, exec_chars, write_chars) = tx
         .query_row(
             "SELECT user_msg_count, compact_count, ends_on_tool, ai_title, first_prompt, \
-             started_at, ended_at FROM session WHERE kind = ?1 AND session_id = ?2",
+             started_at, ended_at, read_chars, exec_chars, write_chars FROM session WHERE kind = ?1 AND session_id = ?2",
             params![kind, session_id],
             |row| {
                 Ok((
@@ -977,6 +1043,9 @@ pub fn recompute_session(
                     row.get::<_, Option<String>>(4)?,
                     row.get::<_, Option<i64>>(5)?,
                     row.get::<_, Option<i64>>(6)?,
+                    row.get::<_, i64>(7)?,
+                    row.get::<_, i64>(8)?,
+                    row.get::<_, i64>(9)?,
                 ))
             },
         )
@@ -1005,6 +1074,9 @@ pub fn recompute_session(
         user_msg_count,
         turn_count,
         compact_count,
+        read_chars,
+        exec_chars,
+        write_chars,
     });
     let tags_json = serde_json::to_string(&tags).unwrap_or_else(|_| "[]".to_string());
     let goal = metrics::goal_key(ai_title.as_deref(), first_prompt.as_deref());
