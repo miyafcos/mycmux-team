@@ -238,6 +238,7 @@ pub fn create_session(
     }
     let command = prepare_spawn_command(&requested_command, &mut args);
     inject_osc7_hook(&command, &mut args, &mut env_map);
+    inject_no_color_for_agy(&command, &mut env_map);
     if should_trust_claude_workspace(&requested_command, &env_map) {
         if let Some(trusted_cwd) = launch_cwd.as_deref() {
             if let Err(error) = ensure_claude_project_trusted(trusted_cwd) {
@@ -667,6 +668,23 @@ fn inject_osc7_hook(command: &str, args: &mut Vec<String>, env: &mut HashMap<Str
     }
 }
 
+/// agy (Antigravity CLI) hardcodes light-background ANSI/256-color escapes and
+/// never queries the terminal background (OSC 11); mycmux's 16-color ANSI theme
+/// cannot patch the truecolor/256-color output it emits directly, and agy has no
+/// --theme/--no-color flag (confirmed on agy 1.1.11). NO_COLOR=1 is the only known
+/// mitigation. This only covers panes whose own top-level command IS the agent
+/// binary (e.g. a BUILT_IN_AGENTS direct launch such as `command: "gemini"` in
+/// src/lib/agents.ts) — panes that reach agy via launcher.sh/launcher.ps1's own
+/// menu are handled inside those scripts instead, since Rust never sees the
+/// inner `eval`'d command.
+fn inject_no_color_for_agy(command: &str, env: &mut HashMap<String, String>) {
+    let leaf = command_leaf(command).to_ascii_lowercase();
+    if matches!(leaf.as_str(), "agy" | "antigravity" | "gemini") {
+        env.entry("NO_COLOR".to_string())
+            .or_insert_with(|| "1".to_string());
+    }
+}
+
 #[tauri::command]
 pub fn write_to_session(
     state: State<'_, AppState>,
@@ -1056,5 +1074,37 @@ mod tests {
         let original = args.clone();
         apply_agent_restore_fallback_args("bash", &mut args, "codex");
         assert_eq!(args, original);
+    }
+
+    #[test]
+    fn injects_no_color_for_direct_agy_launch() {
+        let mut e = env(&[]);
+        inject_no_color_for_agy("agy", &mut e);
+        assert_eq!(e.get("NO_COLOR"), Some(&"1".to_string()));
+    }
+
+    #[test]
+    fn injects_no_color_for_antigravity_and_gemini_leaves_too() {
+        let mut e = env(&[]);
+        inject_no_color_for_agy("C:\\Users\\miyaz\\AppData\\Local\\agy\\bin\\antigravity.exe", &mut e);
+        assert_eq!(e.get("NO_COLOR"), Some(&"1".to_string()));
+
+        let mut e2 = env(&[]);
+        inject_no_color_for_agy("gemini", &mut e2);
+        assert_eq!(e2.get("NO_COLOR"), Some(&"1".to_string()));
+    }
+
+    #[test]
+    fn injects_no_color_leaves_existing_value_alone() {
+        let mut e = env(&[("NO_COLOR", "0")]);
+        inject_no_color_for_agy("agy", &mut e);
+        assert_eq!(e.get("NO_COLOR"), Some(&"0".to_string()));
+    }
+
+    #[test]
+    fn does_not_inject_no_color_for_unrelated_commands() {
+        let mut e = env(&[]);
+        inject_no_color_for_agy("bash", &mut e);
+        assert!(!e.contains_key("NO_COLOR"));
     }
 }

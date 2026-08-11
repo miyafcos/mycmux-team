@@ -1092,7 +1092,22 @@ if [ -n "$cmd" ]; then
     echo "Starting..." >&$__CMUX_MENU_FD
     echo "" >&$__CMUX_MENU_FD
   fi
-  eval "$cmd"
+  # agy (Antigravity CLI) hardcodes light-background ANSI/256-color escapes and
+  # never queries the terminal background (OSC 11); mycmux's ANSI theme cannot
+  # patch the truecolor/256-color output it emits directly, and agy has no
+  # --theme/--no-color flag (confirmed on agy 1.1.11). NO_COLOR=1 is the only
+  # known mitigation. Scope it to this one invocation only (VAR=val cmd, not
+  # export) — this script is sourced from .bashrc and the shell that follows
+  # `eval` is the same process (the caller execs bash -i into it), so an
+  # exported NO_COLOR would keep suppressing colors for ls/git/etc. after agy
+  # exits.
+  __eval_cmd="$cmd"
+  case "$cmd" in
+    agy|agy\ *|gemini|gemini\ *|antigravity|antigravity\ *)
+      __eval_cmd="NO_COLOR=1 $cmd"
+      ;;
+  esac
+  eval "$__eval_cmd"
 fi
 
 [ -f "$HOME/.mycmux/bin/launcher.local.sh" ] && . "$HOME/.mycmux/bin/launcher.local.sh" || true

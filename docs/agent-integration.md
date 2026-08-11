@@ -69,7 +69,16 @@ python scripts/mycmux_agent_cli.py spawn-tab --label agy -- env NO_COLOR=1 agy -
   本文が `rgb(32,33,36)` (ほぼ黒)、インラインコードが 256色 index 254 (明るいグレー) の背景ベタ塗りになる。
   端末の背景色を一度も問い合わせない (ConPTY キャプチャで OSC 11 の送出ゼロ) ため mycmux 側から
   「暗いテーマだ」と伝える経路が無く、テーマ切替の env も持たない (`AGY_CLI_*` は 9 個あるが色関連はゼロ)。
-  色を落とすのが唯一の対処。launcher 側は `launcher.sh` の `gemini|agy|antigravity)` で同じ env を適用済み
+  色を落とすのが唯一の対処 (agy 1.1.11 で `--theme`/`--no-color` 等の代替フラグが無いことも確認済み)。
+  **launcher メニュー側も 2026-08-11 に実装** (それ以前はこの節の記述と実装が食い違っていた —
+  `launcher.sh`/`launcher.ps1` の `gemini|agy|antigravity` 分岐は `cmd` を `agy` にするだけで env は
+  一切足していなかった)。実装は `eval`/`& $exe` 直前の1点で、対象コマンドのときだけ**その1回の
+  呼び出しにだけスコープして** `NO_COLOR=1` を前置する — `launcher.sh` は `.bashrc` から source され
+  末尾で `exec bash -i` により同一プロセスへ戻るため `export` すると agy 終了後も `ls`/`git diff` 等の
+  色が消えたまま残るリークになる。`launcher.ps1` は `-NoExit` の同一プロセスがそのまま生き続けるため
+  try/finally で必ず元の値へ復元する。加えて `terminal.rs::inject_no_color_for_agy` が、launcher を
+  経由せず `command="gemini"` 等を直接 spawn するビルトインエージェント経路
+  (`src/lib/agents.ts`) 向けの防御として同じ処理を担う
 
 ### 完了検知の規約
 

@@ -246,6 +246,40 @@ function Add-MycmuxClaudeSessionIdToCommandArray {
   return @("claude", "--session-id", $sid)
 }
 
+function Test-MycmuxColorSensitiveAgentLeaf {
+  param([Parameter(Mandatory = $true)][string]$Leaf)
+  $bare = (Split-Path -Leaf $Leaf) -replace '\.(exe|cmd|bat|com)$', ''
+  return $bare -in @("agy", "antigravity", "gemini")
+}
+
+function Invoke-MycmuxWithNoColorGuard {
+  param(
+    [Parameter(Mandatory = $true)][string]$Leaf,
+    [Parameter(Mandatory = $true)][scriptblock]$Action
+  )
+  # agy (Antigravity CLI) hardcodes light-background ANSI/256-color escapes and
+  # never queries the terminal background (OSC 11); mycmux's ANSI theme cannot
+  # patch the truecolor/256-color output it emits directly, and agy has no
+  # --theme/--no-color flag (confirmed on agy 1.1.11). NO_COLOR=1 is the only
+  # known mitigation. Unlike launcher.sh (which execs into a fresh shell after
+  # the command finishes), this host runs -NoExit and stays the same process,
+  # so a leaked $env:NO_COLOR would keep suppressing colors after agy exits —
+  # always restore the previous value in finally.
+  if (-not (Test-MycmuxColorSensitiveAgentLeaf $Leaf)) {
+    & $Action
+    return
+  }
+  $hadPrevious = Test-Path Env:\NO_COLOR
+  $previous = $env:NO_COLOR
+  $env:NO_COLOR = "1"
+  try {
+    & $Action
+  } finally {
+    if ($hadPrevious) { $env:NO_COLOR = $previous }
+    else { Remove-Item Env:\NO_COLOR -ErrorAction SilentlyContinue }
+  }
+}
+
 function Invoke-MycmuxCommandArray {
   param([Parameter(Mandatory = $true)][string[]]$Command)
   if ($Command.Count -eq 0) {
@@ -381,7 +415,8 @@ function Invoke-MycmuxCustomCommand {
   }
   $cmd = Add-MycmuxClaudeSessionIdToCommandText $cmd
   Start-MycmuxCommandSessionTracking $cmd $env:MYCMUX_PANE_SESSION_ID
-  Invoke-Expression $cmd
+  $leaf = ($cmd -split '\s+', 2)[0]
+  Invoke-MycmuxWithNoColorGuard -Leaf $leaf -Action { Invoke-Expression $cmd }
 }
 
 function Invoke-MycmuxOption {
@@ -418,7 +453,7 @@ function Invoke-MycmuxOption {
     $args = $command[1..($command.Count - 1)]
   }
   Start-MycmuxCommandSessionTracking ($command -join " ") $env:MYCMUX_PANE_SESSION_ID
-  & $exe @args
+  Invoke-MycmuxWithNoColorGuard -Leaf $exe -Action { & $exe @args }
 }
 
 function Draw-MycmuxMenu {
