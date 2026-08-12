@@ -48,11 +48,15 @@ export interface DashboardCardModel {
   agentKind: DashboardAgentKind;
   /** xterm のバッファを持っていないだけの状態。表示には出さない (断定できないため)。 */
   unobserved: boolean;
+  /** 一度も開いていないタブ。telemetry も端末バッファも活動記録も無い状態だけを指す。 */
+  neverStarted: boolean;
   // --- livebrief 由来 (telemetryHealth === "live" のときだけ意味がある) ---
   brief?: LiveSessionBrief;
   operationalState?: string;
   telemetryHealth?: string;
   task?: string | null;
+  /** 直近の「私の指示」。brief 直結なので一覧行はイベント取得を待たずに出せる。 */
+  latestInstruction?: string | null;
   activityText?: string | null;
   checkpoint?: string | null;
   /** 最後に何かが起きてからの経過分。基準が取れなければ null。 */
@@ -126,6 +130,8 @@ export function resolveDisplayState(card: DashboardCardModel): DashboardDisplayS
   }
   if (card.attentionCategory === "waiting") return "needsHuman";
   if (card.attentionCategory === "error") return "error";
+  // まだ一度も開いていないタブに「更新なし」「作業中」を貼らない (未起動はバッジで出す)。
+  if (card.neverStarted) return "idle";
   if (card.stall) return "noUpdate";
   if (card.attentionCategory === "done") return "done";
   // まだ一度も動いていないタブを「更新なし」と言い切らない。
@@ -177,10 +183,12 @@ export function buildDashboardCards(workspaces: readonly Workspace[], input: Das
           label: getTabDisplayLabel(tab, tab.id === pane.activeTabId, input.metadataBySession),
           agentKind: normalizeAgentKind(metadata?.agentKind ?? tab.agentKind),
           unobserved,
+          neverStarted: !brief && unobserved && !lastActivityAt,
           brief,
           operationalState: brief?.operationalState,
           telemetryHealth: brief?.telemetryHealth,
           task: brief?.task ?? null,
+          latestInstruction: brief?.latestInstruction ?? null,
           activityText: brief?.activityText ?? null,
           checkpoint: brief?.checkpoint ?? null,
           noUpdateMinutes: noUpdateMinutes(brief, input.now) ?? activityMinutes,
@@ -254,6 +262,33 @@ export function countByDisplayState(cards: readonly DashboardCardModel[]): Recor
   return counts;
 }
 
+/** ヘッダの visinfo 1本目 (`Nペイン · Mタブ · Kワークスペース`) の内訳。 */
+export interface DashboardStructureCounts {
+  panes: number;
+  tabs: number;
+  workspaces: number;
+}
+
+/**
+ * 表示用の総数。ペイン = レイアウト上の区画、タブ = その中のセッション。
+ * カード1枚 = タブ1本なので、tabs はカード総数と一致する。
+ */
+export function countWorkspaceStructure(workspaces: readonly Workspace[]): DashboardStructureCounts {
+  let panes = 0;
+  let tabs = 0;
+  for (const workspace of workspaces) {
+    panes += workspace.panes.length;
+    for (const pane of workspace.panes) tabs += pane.tabs.length;
+  }
+  return { panes, tabs, workspaces: workspaces.length };
+}
+
+/** ヘッダの visinfo 2本目 (`表示中 N / 裏で稼働 M`)。端末バッファを持つ数が「表示中」。 */
+export function countVisibility(cards: readonly DashboardCardModel[]): { visible: number; background: number } {
+  const visible = cards.reduce((total, card) => total + (card.unobserved ? 0 : 1), 0);
+  return { visible, background: cards.length - visible };
+}
+
 export function applyDashboardFilters(cards: readonly DashboardCardModel[], filters: DashboardFilters): DashboardCardModel[] {
   const query = filters.query.trim().toLocaleLowerCase();
   return cards.filter((card) => {
@@ -270,6 +305,7 @@ export function applyDashboardFilters(cards: readonly DashboardCardModel[], filt
       card.metadata?.cwd ?? "",
       card.lastLog ?? "",
       card.task ?? "",
+      card.latestInstruction ?? "",
       card.activityText ?? "",
       attentionDetail(card.attention) ?? "",
     ].join("\n").toLocaleLowerCase();

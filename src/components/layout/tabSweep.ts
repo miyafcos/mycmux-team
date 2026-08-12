@@ -1,6 +1,7 @@
 import type { PtyMetadataSnapshot, SessionOutputSnapshot } from "../../lib/ipc";
 import type { PaneMetadata } from "../../stores/paneMetadataStore";
 import type { PaneTab, Workspace } from "../../types";
+import { reconcileSplitColumnsForPanes } from "../../lib/layoutColumns";
 import {
   handleSocketCommand,
   processStatusReasonForTab,
@@ -10,6 +11,9 @@ import {
 export const TAB_SWEEP_JUDGE_MODEL = "claude-haiku-4-5-20251001";
 export const TAB_SWEEP_IDLE_MS = 5 * 60 * 1000;
 export const TAB_SWEEP_TAIL_LINES = 8;
+export const TAB_NAMING_MODEL = "claude-sonnet-5";
+export const TAB_NAMING_TAIL_LINES = 14;
+export const TAB_NAMING_LABEL_MAX = 20;
 export const TAB_SWEEP_OPEN_EVENT = "mycmux:tab-sweep-open";
 
 export type SweepCategory = "DEAD" | "LOCKED" | "CANDIDATE";
@@ -72,7 +76,33 @@ export interface SweepPlan {
   closeCandidateTabIds?: string[];
   manualCloseCandidateTabIds?: string[];
   verdicts?: Verdict[];
-  renames?: Array<{ id: string; label: string }>;
+  renames?: Array<{ id: string; label: string; overwrite?: boolean }>;
+}
+
+export interface NamingTab {
+  id: string;
+  sessionId: string;
+  label: string;
+  cwd: string;
+  agentKind: string;
+  isPaneHead: boolean;
+  tail: string[];
+}
+
+export interface NamingPaneGroup {
+  paneId: string;
+  column: number;
+  tabs: NamingTab[];
+}
+
+export interface NamingProposal {
+  id: string;
+  label: string;
+}
+
+export interface NamingParseResult {
+  proposals: NamingProposal[];
+  valid: boolean;
 }
 
 export interface SweepApplyResult {
@@ -451,6 +481,62 @@ export async function scanTabs(
   };
 }
 
+/**
+ * Collect every live terminal in the visible workspace, including tabs the
+ * sweep safety classifier would lock. Naming is a read-only proposal step, so
+ * it intentionally does not inherit the close-path eligibility rules.
+ */
+export async function scanNamingContext(): Promise<NamingPaneGroup[]> {
+  const source = await loadDefaultSource();
+  const workspace = source.workspaces.find((item) => item.id === source.activeWorkspaceId);
+  if (!workspace) return [];
+
+  const paneById = new Map(workspace.panes.map((pane) => [pane.id, pane]));
+  const columns = reconcileSplitColumnsForPanes(
+    workspace.splitColumns,
+    workspace.panes.map((pane) => pane.id),
+  );
+  const groups: NamingPaneGroup[] = [];
+
+  for (const [columnIndex, paneIds] of columns.entries()) {
+    for (const paneId of paneIds) {
+      const pane = paneById.get(paneId);
+      if (!pane) continue;
+      const displayedTabId = pane.tabs.some((tab) => tab.id === pane.activeTabId)
+        ? pane.activeTabId
+        : pane.tabs[0]?.id;
+      const tabs: NamingTab[] = [];
+      for (const tab of pane.tabs) {
+        if (!isTerminalTab(tab)) continue;
+        const reason = processStatusReasonForTab(
+          tab.type,
+          source.processMetadata[tab.sessionId],
+          source.processMetadataAvailable,
+        );
+        if (isDeadReason(reason)) continue;
+        let tail: string[] = [];
+        try {
+          tail = await source.readTail(tab.sessionId, TAB_NAMING_TAIL_LINES);
+        } catch {
+          // A missing buffer must not hide a still-live tab from the naming model.
+        }
+        const metadata = source.metadata[tab.sessionId];
+        tabs.push({
+          id: tab.id,
+          sessionId: tab.sessionId,
+          label: tab.label ?? "",
+          cwd: tab.cwd ?? pane.cwd ?? metadata?.cwd ?? "",
+          agentKind: tab.agentKind ?? pane.agentKind ?? metadata?.agentKind ?? "",
+          isPaneHead: tab.id === displayedTabId,
+          tail,
+        });
+      }
+      if (tabs.length > 0) groups.push({ paneId, column: columnIndex + 1, tabs });
+    }
+  }
+  return groups;
+}
+
 export function buildJudgePrompt(candidates: readonly SweepTab[], unnamed: readonly SweepTab[]): string {
   const uniqueTabs = new Map<string, SweepTab>();
   for (const tab of [...candidates, ...unnamed]) uniqueTabs.set(tab.id, tab);
@@ -470,11 +556,56 @@ export function buildJudgePrompt(candidates: readonly SweepTab[], unnamed: reado
   ].join("\n");
 }
 
-function normalizeSuggestedLabel(value: unknown): string | undefined {
+export function buildNamingPrompt(groups: readonly NamingPaneGroup[]): string {
+  const payload = groups.map((group) => ({
+    ...group,
+    tabs: group.tabs.map((tab) => ({ ...tab, tail: tab.tail.slice(-TAB_NAMING_TAIL_LINES) })),
+  }));
+  return [
+    "次のワークスペース内の全タブに体系的な名前を提案してください。",
+    "ペイン見出し（isPaneHead が true）は「領域 内容」の形にし、全角20文字以内にしてください。",
+    "同じ領域に属する別ペインは先頭語（領域）を共有してください。",
+    "従属タブ（isPaneHead が false）は「↳実行者 対象」の形にしてください。実行者は tail と作業フォルダから codex / claude / 合成 などを判断してください。",
+    "記号 + ＋ ' ` \" < > は使わないでください。",
+    "出力は JSON 配列のみです。コードフェンスや説明文は禁止です。形式は [{\"id\":\"...\",\"label\":\"...\"}] です。",
+    "全タブに対して必ず1件ずつ返してください。",
+    JSON.stringify(payload),
+  ].join("\n");
+}
+
+export function normalizeSuggestedLabel(value: unknown, maxLength = 12): string | undefined {
   if (typeof value !== "string") return undefined;
-  const trimmed = value.trim();
+  const trimmed = value.replace(/[+＋'`"<>]/gu, "").trim();
   if (!trimmed) return undefined;
-  return [...trimmed].slice(0, 12).join("");
+  return [...trimmed].slice(0, maxLength).join("");
+}
+
+export function parseNamingOutput(raw: string, allowedIds: Iterable<string>): NamingParseResult {
+  const knownIds = [...new Set(allowedIds)];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw.trim());
+  } catch {
+    return { proposals: [], valid: false };
+  }
+  if (!Array.isArray(parsed)) return { proposals: [], valid: false };
+
+  const allowed = new Set(knownIds);
+  const proposals = new Map<string, NamingProposal>();
+  for (const entry of parsed) {
+    if (!entry || typeof entry !== "object") return { proposals: [], valid: false };
+    const record = entry as Record<string, unknown>;
+    if (typeof record.id !== "string" || !record.id.trim()) return { proposals: [], valid: false };
+    const id = record.id.trim();
+    if (!allowed.has(id) || proposals.has(id)) continue;
+    const label = normalizeSuggestedLabel(record.label, TAB_NAMING_LABEL_MAX);
+    if (!label) return { proposals: [], valid: false };
+    proposals.set(id, { id, label });
+  }
+  return {
+    proposals: [...proposals.values()],
+    valid: knownIds.every((id) => proposals.has(id)),
+  };
 }
 
 function isJudgeVerdict(value: unknown): value is JudgeVerdict {
@@ -598,8 +729,11 @@ export async function applySweep(
   }
   for (const rename of plan.renames ?? []) {
     const current = await currentTab(rename.id);
-    const label = normalizeSuggestedLabel(rename.label);
-    if (!current || current.category === "DEAD" || !current.unnamed || !label) {
+    const label = normalizeSuggestedLabel(
+      rename.label,
+      rename.overwrite === true ? TAB_NAMING_LABEL_MAX : 12,
+    );
+    if (!current || current.category === "DEAD" || (!rename.overwrite && !current.unnamed) || !label) {
       result.skipped.push(rename.id);
       continue;
     }

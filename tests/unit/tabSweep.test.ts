@@ -5,6 +5,7 @@ import {
   applySweep,
   applyVerdictSelection,
   buildJudgePrompt,
+  buildNamingPrompt,
   buildSweepRows,
   formatJudgeError,
   formatLastOutputAge,
@@ -13,8 +14,10 @@ import {
   hasQueuedInput,
   initialSweepSelection,
   lastMeaningfulTailLine,
+  normalizeSuggestedLabel,
   parseJudgeOutput,
   parseJudgeOutputResult,
+  parseNamingOutput,
   retainSweepSelection,
   scanTabs,
   shortenCwdFromStart,
@@ -24,6 +27,7 @@ import {
   type SweepReport,
   type SweepScanSource,
   type SweepTab,
+  type NamingPaneGroup,
 } from "../../src/components/layout/tabSweep";
 
 const NOW = 1_800_000_000_000;
@@ -257,6 +261,60 @@ describe("judge prompt and output", () => {
   });
 });
 
+describe("naming prompt and output", () => {
+  const groups: NamingPaneGroup[] = [
+    {
+      paneId: "pane-a",
+      column: 1,
+      tabs: [
+        { id: "head-a", sessionId: "session-head-a", label: "既存A", cwd: "C:\\math", agentKind: "claude", isPaneHead: true, tail: ["数学の検証"] },
+        { id: "child-a", sessionId: "session-child-a", label: "", cwd: "C:\\math", agentKind: "codex", isPaneHead: false, tail: ["試作"] },
+      ],
+    },
+    {
+      paneId: "pane-b",
+      column: 2,
+      tabs: [
+        { id: "head-b", sessionId: "session-head-b", label: "既存B", cwd: "C:\\tts", agentKind: "", isPaneHead: true, tail: ["比較"] },
+      ],
+    },
+  ];
+
+  it("includes every pane and tab with the shared-area naming rules", () => {
+    const prompt = buildNamingPrompt(groups);
+    expect(prompt).toContain('"paneId":"pane-a"');
+    expect(prompt).toContain('"paneId":"pane-b"');
+    expect(prompt).toContain('"id":"head-a"');
+    expect(prompt).toContain('"id":"child-a"');
+    expect(prompt).toContain('"id":"head-b"');
+    expect(prompt).toContain("↳");
+    expect(prompt).toContain("20文字");
+    expect(prompt).toContain("先頭語");
+    expect(prompt).toContain("JSON 配列のみ");
+  });
+
+  it("parses complete output while dropping unknown ids and keeping the first duplicate", () => {
+    expect(parseNamingOutput(
+      '[{"id":"a","label":"最初"},{"id":"a","label":"後"},{"id":"alien","label":"無視"},{"id":"b","label":"次"}]',
+      ["a", "b"],
+    )).toEqual({
+      proposals: [{ id: "a", label: "最初" }, { id: "b", label: "次" }],
+      valid: true,
+    });
+  });
+
+  it("rejects code fences and incomplete naming JSON", () => {
+    expect(parseNamingOutput('```json\n[{"id":"a","label":"名前"}]\n```', ["a"]).valid).toBe(false);
+    expect(parseNamingOutput('[{"id":"a","label":"名前"}', ["a"]).valid).toBe(false);
+  });
+
+  it("normalizes naming labels to twenty code points without unsafe symbols", () => {
+    expect(normalizeSuggestedLabel("12345678901234567890123", 20)).toBe("12345678901234567890");
+    expect(normalizeSuggestedLabel("+＋'`\"<>安全", 20)).toBe("安全");
+    expect(normalizeSuggestedLabel("+＋'`\"<>", 20)).toBeUndefined();
+  });
+});
+
 describe("tab sweep UI helpers", () => {
   it("formats elapsed output age against the scan snapshot", () => {
     expect(formatLastOutputAge(NOW - 9_000, NOW)).toBe("最終出力から9秒");
@@ -463,5 +521,43 @@ describe("applySweep safety invariants", () => {
       label: "新しい名前",
     });
     expect(command).toHaveBeenCalledTimes(1);
+  });
+
+  it("renames an existing label only with explicit overwrite", async () => {
+    const command = vi.fn(async () => ({}));
+    const named = { ...tab("named", "CANDIDATE"), unnamed: false, label: "既存" };
+    const result = await applySweep(
+      { renames: [{ id: "named", label: "更新名", overwrite: true }] },
+      { scan: async () => report([named]), command },
+    );
+    expect(result.renamed).toBe(1);
+    expect(command).toHaveBeenCalledWith("pane.rename_tab", {
+      sessionId: "session-named",
+      label: "更新名",
+    });
+  });
+
+  it("keeps named tabs unchanged when overwrite is omitted", async () => {
+    const command = vi.fn(async () => ({}));
+    const named = { ...tab("named", "CANDIDATE"), unnamed: false, label: "既存" };
+    const result = await applySweep(
+      { renames: [{ id: "named", label: "更新名" }] },
+      { scan: async () => report([named]), command },
+    );
+    expect(result.renamed).toBe(0);
+    expect(result.skipped).toEqual(["named"]);
+    expect(command).not.toHaveBeenCalled();
+  });
+
+  it("never renames a DEAD tab even with overwrite", async () => {
+    const command = vi.fn(async () => ({}));
+    const dead = { ...tab("dead", "DEAD"), label: "既存", unnamed: false };
+    const result = await applySweep(
+      { renames: [{ id: "dead", label: "更新名", overwrite: true }] },
+      { scan: async () => report([dead]), command },
+    );
+    expect(result.renamed).toBe(0);
+    expect(result.skipped).toEqual(["dead"]);
+    expect(command).not.toHaveBeenCalled();
   });
 });

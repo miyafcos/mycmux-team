@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 
+use crate::ailog::digest;
 use crate::ailog::index::{self, IndexOptions, IndexProgress};
 use crate::ailog::summarize::{self, SummarizeProgress};
 use crate::ailog::{query, Filters, Range};
@@ -38,6 +39,10 @@ struct SummarizerState {
     sessions_done: AtomicUsize,
     sessions_total: AtomicUsize,
     sessions_remaining: AtomicUsize,
+    estimated_input_chars: AtomicUsize,
+    input_tokens: AtomicUsize,
+    output_tokens: AtomicUsize,
+    started_at: Mutex<i64>,
     last_finished_at: Mutex<i64>,
     last_error: Mutex<Option<String>>,
     child: Arc<Mutex<Option<std::process::Child>>>,
@@ -51,6 +56,10 @@ impl SummarizerState {
             sessions_done: AtomicUsize::new(0),
             sessions_total: AtomicUsize::new(0),
             sessions_remaining: AtomicUsize::new(0),
+            estimated_input_chars: AtomicUsize::new(0),
+            input_tokens: AtomicUsize::new(0),
+            output_tokens: AtomicUsize::new(0),
+            started_at: Mutex::new(0),
             last_finished_at: Mutex::new(0),
             last_error: Mutex::new(None),
             child: Arc::new(Mutex::new(None)),
@@ -121,8 +130,14 @@ pub async fn ailog_index_start(
     app: AppHandle,
     args: IndexStartArgs,
 ) -> Result<IndexStartResult, String> {
-    if runner_gate().compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
-        return Ok(IndexStartResult { started: false, already_running: true });
+    if runner_gate()
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return Ok(IndexStartResult {
+            started: false,
+            already_running: true,
+        });
     }
     let state = indexer_state();
     if state
@@ -222,26 +237,56 @@ pub async fn ailog_index_start(
 pub struct SummarizeStartResult {
     pub started: bool,
     pub already_running: bool,
+    pub target_count: usize,
+    pub estimated_input_chars: usize,
 }
 
 #[tauri::command(async)]
 pub async fn ailog_summarize_start(
     app: AppHandle,
     batch_size: Option<u32>,
+    force: Option<bool>,
 ) -> Result<SummarizeStartResult, String> {
-    if runner_gate().compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
-        return Ok(SummarizeStartResult { started: false, already_running: true });
+    if runner_gate()
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return Ok(SummarizeStartResult {
+            started: false,
+            already_running: true,
+            target_count: 0,
+            estimated_input_chars: 0,
+        });
     }
     let state = summarizer_state();
-    if state.running.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+    if state
+        .running
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
         runner_gate().store(false, Ordering::SeqCst);
-        return Ok(SummarizeStartResult { started: false, already_running: true });
+        return Ok(SummarizeStartResult {
+            started: false,
+            already_running: true,
+            target_count: 0,
+            estimated_input_chars: 0,
+        });
     }
     state.cancel.store(false, Ordering::SeqCst);
     state.sessions_done.store(0, Ordering::Relaxed);
     state.sessions_total.store(0, Ordering::Relaxed);
     state.sessions_remaining.store(0, Ordering::Relaxed);
-    *state.last_error.lock().unwrap_or_else(|err| err.into_inner()) = None;
+    state.estimated_input_chars.store(0, Ordering::Relaxed);
+    state.input_tokens.store(0, Ordering::Relaxed);
+    state.output_tokens.store(0, Ordering::Relaxed);
+    *state
+        .started_at
+        .lock()
+        .unwrap_or_else(|err| err.into_inner()) = now_ms();
+    *state
+        .last_error
+        .lock()
+        .unwrap_or_else(|err| err.into_inner()) = None;
     let db_path = match crate::ailog::db_path() {
         Ok(path) => path,
         Err(err) => {
@@ -253,35 +298,87 @@ pub async fn ailog_summarize_start(
     let cancel = state.cancel.clone();
     let child = state.child.clone();
     let size = summarize::clamp_batch_size(batch_size);
+    let force = force.unwrap_or(false);
+    let (target_count, estimated_input_chars) =
+        match open().and_then(|conn| summarize::estimate_pending(&conn, size, force)) {
+            Ok(value) => value,
+            Err(err) => {
+                state.running.store(false, Ordering::SeqCst);
+                runner_gate().store(false, Ordering::SeqCst);
+                return Err(err);
+            }
+        };
+    state.sessions_total.store(target_count, Ordering::Relaxed);
+    state
+        .sessions_remaining
+        .store(target_count, Ordering::Relaxed);
+    state
+        .estimated_input_chars
+        .store(estimated_input_chars, Ordering::Relaxed);
     tauri::async_runtime::spawn(async move {
         let sink: summarize::ProgressSink = {
             let app = app.clone();
             Arc::new(move |progress: SummarizeProgress| {
                 let state = summarizer_state();
-                state.sessions_done.store(progress.sessions_done, Ordering::Relaxed);
-                state.sessions_total.store(progress.sessions_total, Ordering::Relaxed);
-                state.sessions_remaining.store(progress.sessions_remaining, Ordering::Relaxed);
+                state
+                    .sessions_done
+                    .store(progress.sessions_done, Ordering::Relaxed);
+                state
+                    .sessions_total
+                    .store(progress.sessions_total, Ordering::Relaxed);
+                state
+                    .sessions_remaining
+                    .store(progress.sessions_remaining, Ordering::Relaxed);
                 let _ = app.emit(SUMMARIZE_PROGRESS_EVENT, progress);
             })
         };
-        let result = summarize::run_summarize(db_path, size, cancel, child, Some(sink)).await;
+        let result =
+            summarize::run_summarize(db_path, size, force, cancel, child, Some(sink)).await;
         let state = summarizer_state();
         match result {
             Ok(report) => {
-                state.sessions_done.store(report.sessions_done, Ordering::Relaxed);
-                state.sessions_total.store(report.sessions_total, Ordering::Relaxed);
-                state.sessions_remaining.store(report.sessions_remaining, Ordering::Relaxed);
-                *state.last_finished_at.lock().unwrap_or_else(|err| err.into_inner()) = now_ms();
+                state
+                    .sessions_done
+                    .store(report.sessions_done, Ordering::Relaxed);
+                state
+                    .sessions_total
+                    .store(report.sessions_total, Ordering::Relaxed);
+                state
+                    .sessions_remaining
+                    .store(report.sessions_remaining, Ordering::Relaxed);
+                state
+                    .input_tokens
+                    .store(report.input_tokens.max(0) as usize, Ordering::Relaxed);
+                state
+                    .output_tokens
+                    .store(report.output_tokens.max(0) as usize, Ordering::Relaxed);
+                *state
+                    .last_finished_at
+                    .lock()
+                    .unwrap_or_else(|err| err.into_inner()) = now_ms();
                 if !report.errors.is_empty() {
-                    *state.last_error.lock().unwrap_or_else(|err| err.into_inner()) = Some(report.errors.join("; "));
+                    *state
+                        .last_error
+                        .lock()
+                        .unwrap_or_else(|err| err.into_inner()) = Some(report.errors.join("; "));
                 }
             }
-            Err(err) => *state.last_error.lock().unwrap_or_else(|error| error.into_inner()) = Some(err),
+            Err(err) => {
+                *state
+                    .last_error
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner()) = Some(err)
+            }
         }
         state.running.store(false, Ordering::SeqCst);
         runner_gate().store(false, Ordering::SeqCst);
     });
-    Ok(SummarizeStartResult { started: true, already_running: false })
+    Ok(SummarizeStartResult {
+        started: true,
+        already_running: false,
+        target_count,
+        estimated_input_chars,
+    })
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -295,7 +392,12 @@ pub async fn ailog_summarize_cancel() -> Result<SummarizeCancelResult, String> {
     let state = summarizer_state();
     let running = state.running.load(Ordering::SeqCst);
     state.cancel.store(true, Ordering::SeqCst);
-    if let Some(mut child) = state.child.lock().unwrap_or_else(|err| err.into_inner()).take() {
+    if let Some(mut child) = state
+        .child
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .take()
+    {
         let _ = std::process::Command::new("taskkill")
             .args(["/PID", &child.id().to_string(), "/T", "/F"])
             .status();
@@ -314,6 +416,10 @@ pub struct SummarizeStatus {
     pub sessions_remaining: usize,
     pub last_finished_at: i64,
     pub last_error: Option<String>,
+    pub elapsed_ms: u64,
+    pub estimated_input_chars: usize,
+    pub input_tokens: usize,
+    pub output_tokens: usize,
 }
 
 #[tauri::command(async)]
@@ -324,8 +430,24 @@ pub async fn ailog_summarize_status() -> Result<SummarizeStatus, String> {
         sessions_done: state.sessions_done.load(Ordering::Relaxed),
         sessions_total: state.sessions_total.load(Ordering::Relaxed),
         sessions_remaining: state.sessions_remaining.load(Ordering::Relaxed),
-        last_finished_at: *state.last_finished_at.lock().unwrap_or_else(|err| err.into_inner()),
-        last_error: state.last_error.lock().unwrap_or_else(|err| err.into_inner()).clone(),
+        last_finished_at: *state
+            .last_finished_at
+            .lock()
+            .unwrap_or_else(|err| err.into_inner()),
+        last_error: state
+            .last_error
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .clone(),
+        elapsed_ms: (now_ms()
+            - *state
+                .started_at
+                .lock()
+                .unwrap_or_else(|err| err.into_inner()))
+        .max(0) as u64,
+        estimated_input_chars: state.estimated_input_chars.load(Ordering::Relaxed),
+        input_tokens: state.input_tokens.load(Ordering::Relaxed),
+        output_tokens: state.output_tokens.load(Ordering::Relaxed),
     })
 }
 
@@ -389,8 +511,64 @@ pub async fn ailog_index_status() -> Result<IndexStatus, String> {
 }
 
 // ---------------------------------------------------------------------------
+// Daily digest (F3-derived daily entrance)
+// ---------------------------------------------------------------------------
+
+#[tauri::command(async)]
+pub async fn ailog_digest_get(date: String) -> Result<digest::DigestReport, String> {
+    let conn = open()?;
+    digest::get(&conn, &date)
+}
+
+#[tauri::command(async)]
+pub async fn ailog_digest_generate(
+    date: String,
+    force: Option<bool>,
+) -> Result<digest::DigestReport, String> {
+    if runner_gate()
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return Err("インデックスまたは要約処理が実行中です".to_string());
+    }
+    let result =
+        open().and_then(|mut conn| digest::generate(&mut conn, &date, force.unwrap_or(false)));
+    runner_gate().store(false, Ordering::SeqCst);
+    result
+}
+
+// ---------------------------------------------------------------------------
 // Reports
 // ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DashboardArgs {
+    #[serde(default = "default_dashboard_granularity")]
+    pub granularity: String,
+}
+
+fn default_dashboard_granularity() -> String {
+    "family".to_string()
+}
+
+#[tauri::command(async)]
+pub async fn ailog_dashboard(
+    range: Option<Range>,
+    filters: Option<Filters>,
+    args: Option<DashboardArgs>,
+) -> Result<query::DashboardReport, String> {
+    let conn = open()?;
+    query::dashboard(
+        &conn,
+        &range.unwrap_or_default(),
+        &filters.unwrap_or_default(),
+        &args
+            .map(|value| value.granularity)
+            .unwrap_or_else(default_dashboard_granularity),
+        now_ms(),
+    )
+}
 
 #[tauri::command(async)]
 pub async fn ailog_overview(

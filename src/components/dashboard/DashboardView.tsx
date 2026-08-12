@@ -4,7 +4,13 @@ import { useShallow } from "zustand/react/shallow";
 
 import { focusController } from "../../lib/focusController";
 import { useDashboardViewStore } from "../../stores/dashboardViewStore";
-import { connectLiveBriefStore, startEventPolling, stopEventPolling, useLiveBriefStore } from "../../stores/liveBriefStore";
+import {
+  connectLiveBriefStore,
+  LIVE_EVENT_VISIBLE_LIMIT,
+  stopEventPolling,
+  syncDashboardEvents,
+  useLiveBriefStore,
+} from "../../stores/liveBriefStore";
 import { usePaneMetadataStore, useUiStore, useWorkspaceLayoutStore, useWorkspaceListStore } from "../../stores/workspaceStore";
 import { useSessionAttentionStore } from "../../stores/sessionAttentionStore";
 import { useStallStore } from "../../stores/stallStore";
@@ -15,17 +21,38 @@ import {
   applyDashboardFilters,
   buildDashboardCards,
   countByDisplayState,
+  countVisibility,
+  countWorkspaceStructure,
   needsHumanCards,
   orderDashboardCards,
   type DashboardCardModel,
 } from "./dashboardModel";
 import { dashboardStrings } from "./dashboardStrings";
+import {
+  chooseOption,
+  isInterventionAccepted,
+  questionModel,
+  useInterventionFeedbackStore,
+} from "./interventionRouting";
+import { ReplyComposer } from "./ReplyComposer";
+import { targetKey } from "../../lib/livebrief";
 
 const AGENT_KINDS = ["claude", "codex", "claude-codex", "none"] as const;
+/** 番号キーで撃てる選択肢。ここを増やすなら dashboardStrings.numberKeyHint も直す。 */
+const NUMBER_KEYS = ["1", "2", "3"];
+
+/** 状態ごとの件数。色に加えて丸ドットを添え、色だけの符号化にしない。 */
+function CountPill({ color, label, count }: { color: string; label: string; count: number }) {
+  return <span style={countPillStyle(color)}>
+    <i style={countDotStyle(color)} />
+    {label} {count}
+  </span>;
+}
 
 export function DashboardView({ onClose }: { onClose: () => void }) {
   const rootRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
+  const composerRef = useRef<HTMLTextAreaElement>(null);
   const [now, setNow] = useState(() => Date.now());
   const [listHovered, setListHovered] = useState(false);
   const [searchFocused, setSearchFocused] = useState(false);
@@ -81,6 +108,8 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
   const urgentCards = useFrozenCardOrder(liveUrgent, frozen);
   const selectedCard = orderedCards.find((card) => card.tab.id === viewState.selectedTabId) ?? orderedCards[0] ?? null;
   const counts = useMemo(() => countByDisplayState(cards), [cards]);
+  const structure = useMemo(() => countWorkspaceStructure(workspaces), [workspaces]);
+  const visibility = useMemo(() => countVisibility(cards), [cards]);
   // 「既読にする」対象は未読の done 通知そのもの。表示状態 (done) とは一致しないことがある。
   const clearableCards = useMemo(
     () => cards.filter((card) => card.attentionCategory === "done" && card.attention?.attentionId),
@@ -99,20 +128,47 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
   // brief の購読はビュー1枚につき1本 (store 側が参照数で束ねる)。
   useEffect(() => connectLiveBriefStore(), []);
 
-  // 意味イベントの取得は「選んでいる1セッション」だけ。閉じたら止める。
+  // 意味イベントの取得は「表示中の全セッション (浅く)」+「選択中1本 (深く)」。
+  // 要対応 → 選択中 → 表示順、の優先で上限まで詰める。
   const selectedSessionId = selectedCard?.tab.sessionId ?? null;
+  const visibleKey = useMemo(() => {
+    const ids: string[] = [];
+    const push = (id: string | null) => { if (id && !ids.includes(id)) ids.push(id); };
+    for (const card of urgentCards) push(card.tab.sessionId);
+    push(selectedSessionId);
+    for (const card of orderedCards) push(card.tab.sessionId);
+    return ids.slice(0, LIVE_EVENT_VISIBLE_LIMIT).join(",");
+  }, [orderedCards, selectedSessionId, urgentCards]);
   useEffect(() => {
-    if (!selectedSessionId) {
-      stopEventPolling();
-      return;
-    }
-    startEventPolling(selectedSessionId);
-    return () => stopEventPolling();
-  }, [selectedSessionId]);
+    syncDashboardEvents({
+      selectedId: selectedSessionId,
+      visibleIds: visibleKey ? visibleKey.split(",") : [],
+    });
+  }, [selectedSessionId, visibleKey]);
+  // ビューを閉じたら両方止める (張り替えでは止めない)。
+  useEffect(() => () => stopEventPolling(), []);
+  // 介入の結果表示は開いている間だけのもの。次に開いたとき前回の結果が残っていると、
+  // 古い成功で勝手にカードが送られる (自動選択移動) ので閉じたら捨てる。
+  useEffect(() => () => useInterventionFeedbackStore.getState().reset(), []);
 
   useEffect(() => {
     if (!viewState.selectedTabId && selectedCard) viewState.setSelectedTabId(selectedCard.tab.id);
   }, [selectedCard, viewState]);
+
+  // 介入が通ったら次の要対応へ送る。ただし打ちかけの下書きがあるうちは動かさない。
+  const selectedDraft = useDashboardViewStore((state) => (selectedSessionId ? state.draftBySession[selectedSessionId] ?? "" : ""));
+  const selectedTargetKey = selectedCard?.brief ? targetKey(selectedCard.brief) : null;
+  const selectedResult = useInterventionFeedbackStore((state) => (selectedTargetKey ? state.resultByTarget[selectedTargetKey] : undefined));
+  const advancedResultRef = useRef<unknown>(undefined);
+  useEffect(() => {
+    if (!selectedResult || advancedResultRef.current === selectedResult) return;
+    advancedResultRef.current = selectedResult;
+    if (!isInterventionAccepted(selectedResult) || selectedDraft.trim()) return;
+    const next = urgentCards.find((card) => card.tab.id !== selectedCard?.tab.id);
+    if (next) viewState.setSelectedTabId(next.tab.id);
+  }, [selectedCard, selectedDraft, selectedResult, urgentCards, viewState]);
+
+  const focusComposer = useCallback(() => { composerRef.current?.focus(); }, []);
 
   const close = useCallback(() => {
     onClose();
@@ -173,6 +229,26 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
         viewState.setSelectedTabId(urgentCards[(index + 1 + urgentCards.length) % urgentCards.length].tab.id);
         return;
       }
+      // 1/2/3: 選択中カードの選択肢をそのまま撃つ (カードのボタンと同じ経路)。
+      // 選択肢が 4 個以上あるときは番号で撃たない (取り違えが起きる)。
+      const numberIndex = NUMBER_KEYS.indexOf(event.key);
+      if (numberIndex >= 0 && selectedCard) {
+        const store = useLiveBriefStore.getState();
+        const brief = store.briefsBySession[selectedCard.tab.sessionId];
+        // 詳細スライスが空 (未取得・0件) なら一覧スライスで代替する。
+        const detailEvents = store.eventsBySession[selectedCard.tab.sessionId];
+        const events = detailEvents?.length ? detailEvents : store.listEventsBySession[selectedCard.tab.sessionId];
+        const model = questionModel(brief, events);
+        const option = model && model.canSend && model.options.length <= NUMBER_KEYS.length
+          ? model.options[numberIndex]
+          : undefined;
+        if (option) {
+          event.preventDefault();
+          event.stopPropagation();
+          void chooseOption(brief, option.id);
+          return;
+        }
+      }
       const delta = event.key === "j" || event.key === "ArrowDown" ? 1 : event.key === "k" || event.key === "ArrowUp" ? -1 : 0;
       if (delta && orderedCards.length) {
         event.preventDefault();
@@ -200,40 +276,31 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
     <header style={headerStyle}>
       <div style={headerRowStyle}>
         <strong>{dashboardStrings.buttonTitle}</strong>
-        <span style={mutedStyle}>{dashboardStrings.totalSummary(cards.length, workspaces.length)}</span>
-        <span style={{ ...chipStyle, color: "var(--status-waiting)" }}>{dashboardStrings.stateNeedsHuman} {counts.needsHuman + counts.error}</span>
-        <span style={{ ...chipStyle, color: "var(--status-working)" }}>{dashboardStrings.stateRunning} {counts.running}</span>
-        <span style={{ ...chipStyle, color: "var(--cmux-yellow)" }}>{dashboardStrings.stateNoUpdate} {counts.noUpdate}</span>
-        <span style={{ ...chipStyle, color: "var(--status-done)" }}>{dashboardStrings.stateDone} {counts.done}</span>
-        <span style={{ marginLeft: "auto", color: "var(--status-done)", fontSize: "var(--cmux-font-size-sm)" }}>{dashboardStrings.liveUpdating} ●</span>
+        <span style={visinfoStyle}>{dashboardStrings.visinfoCounts(structure.panes, structure.tabs, structure.workspaces)}</span>
+        <span style={visinfoStyle}>{dashboardStrings.visinfoVisible(visibility.visible, visibility.background)}</span>
+        <CountPill color="var(--status-waiting)" label={dashboardStrings.stateNeedsHuman} count={counts.needsHuman + counts.error} />
+        <CountPill color="var(--status-working)" label={dashboardStrings.stateRunning} count={counts.running} />
+        <CountPill color="var(--cmux-status-stall)" label={dashboardStrings.stateNoUpdate} count={counts.noUpdate} />
+        <CountPill color="var(--status-done)" label={dashboardStrings.stateDone} count={counts.done} />
+        <span style={livePingStyle}><i className="cmux-dash-ping" />{dashboardStrings.liveUpdating}</span>
+        <span style={{ marginLeft: "auto", display: "flex", gap: 4 }}>
+          <button
+            type="button"
+            aria-pressed={viewState.sortMode === "attention"}
+            style={filterChipStyle(viewState.sortMode === "attention")}
+            onClick={() => viewState.setSortMode("attention")}
+          >{dashboardStrings.sortByAttention}</button>
+          <button
+            type="button"
+            aria-pressed={viewState.sortMode === "workspace"}
+            style={filterChipStyle(viewState.sortMode === "workspace")}
+            onClick={() => viewState.setSortMode("workspace")}
+          >{dashboardStrings.sortByWorkspace}</button>
+        </span>
         {clearableCards.length > 0 ? <button type="button" style={buttonStyle} onClick={clearDone}>{dashboardStrings.clearDoneButton(clearableCards.length)}</button> : null}
         <button type="button" style={buttonStyle} onClick={close}>{dashboardStrings.backToSession} (Esc)</button>
       </div>
       <div style={headerRowStyle}>
-        <button type="button" style={filterChipStyle(viewState.workspaceFilter === null)} onClick={() => toggleWorkspace(null)}>
-          {dashboardStrings.allWorkspaces} {cards.length}
-        </button>
-        {workspaces.map((workspace) => <button
-          key={workspace.id}
-          type="button"
-          style={filterChipStyle(viewState.workspaceFilter === workspace.id)}
-          onClick={() => toggleWorkspace(workspace.id)}
-        >{workspace.name} {cards.filter((card) => card.workspaceId === workspace.id).length}</button>)}
-        <button
-          type="button"
-          aria-pressed={viewState.quickFilters.needsHumanOnly}
-          style={filterChipStyle(viewState.quickFilters.needsHumanOnly)}
-          onClick={() => viewState.setQuickFilter("needsHumanOnly", !viewState.quickFilters.needsHumanOnly)}
-        >{dashboardStrings.filterNeedsHumanOnly}</button>
-        <select
-          aria-label={dashboardStrings.agentFilterTitle}
-          value={viewState.agentFilter ?? ""}
-          onChange={(event) => viewState.setAgentFilter(event.target.value || null)}
-          style={controlStyle}
-        >
-          <option value="">{dashboardStrings.agentFilterTitle}: {dashboardStrings.allWorkspaces}</option>
-          {AGENT_KINDS.map((kind) => <option key={kind} value={kind}>{kind}</option>)}
-        </select>
         <input
           ref={searchRef}
           value={viewState.query}
@@ -243,15 +310,30 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
           placeholder={dashboardStrings.searchPlaceholder}
           style={inputStyle}
         />
+        <button type="button" style={filterChipStyle(viewState.workspaceFilter === null)} onClick={() => toggleWorkspace(null)}>
+          {dashboardStrings.allWorkspaces} {cards.length}
+        </button>
+        {workspaces.map((workspace) => <button
+          key={workspace.id}
+          type="button"
+          style={filterChipStyle(viewState.workspaceFilter === workspace.id)}
+          onClick={() => toggleWorkspace(workspace.id)}
+        >{workspace.name} {cards.filter((card) => card.workspaceId === workspace.id).length}</button>)}
         <select
-          aria-label={dashboardStrings.sortByAttention}
-          value={viewState.sortMode}
-          onChange={(event) => viewState.setSortMode(event.target.value as "attention" | "workspace")}
+          aria-label={dashboardStrings.agentFilterTitle}
+          value={viewState.agentFilter ?? ""}
+          onChange={(event) => viewState.setAgentFilter(event.target.value || null)}
           style={controlStyle}
         >
-          <option value="attention">{dashboardStrings.sortByAttention}</option>
-          <option value="workspace">{dashboardStrings.sortByWorkspace}</option>
+          <option value="">{dashboardStrings.agentFilterTitle}: {dashboardStrings.allWorkspaces}</option>
+          {AGENT_KINDS.map((kind) => <option key={kind} value={kind}>{kind}</option>)}
         </select>
+        <button
+          type="button"
+          aria-pressed={viewState.quickFilters.needsHumanOnly}
+          style={filterChipStyle(viewState.quickFilters.needsHumanOnly)}
+          onClick={() => viewState.setQuickFilter("needsHumanOnly", !viewState.quickFilters.needsHumanOnly)}
+        >{dashboardStrings.filterNeedsHumanOnly}</button>
         {filterActive ? <span style={mutedStyle}>{dashboardStrings.filteredSummary(filteredCards.length, cards.length)}</span> : null}
       </div>
     </header>
@@ -264,10 +346,14 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
         onSelect={viewState.setSelectedTabId}
         onJump={jumpToCard}
         onHoverChange={setListHovered}
+        onFocusComposer={focusComposer}
       />
-      <DashboardSessionDetail card={selectedCard} now={now} onJump={jumpToCard} />
+      <DashboardSessionDetail card={selectedCard} now={now} onJump={jumpToCard} onFocusComposer={focusComposer} />
     </div>
-    <footer style={footerStyle}>{dashboardStrings.keyboardHint}</footer>
+    <footer style={footerStyle}>
+      <ReplyComposer card={selectedCard} inputRef={composerRef} />
+      <span style={hintStyle}>{dashboardStrings.keyboardHint}</span>
+    </footer>
   </div>;
 }
 
@@ -292,11 +378,37 @@ const headerStyle: CSSProperties = {
 };
 const headerRowStyle: CSSProperties = { display: "flex", alignItems: "center", flexWrap: "wrap", gap: 6, minWidth: 0 };
 const mutedStyle: CSSProperties = { color: "var(--cmux-text-secondary)", fontSize: "var(--cmux-font-size-sm)" };
-const chipStyle: CSSProperties = {
+/** 「いま何本あるか」の事実だけを枠で囲って出す (状態の色は付けない)。 */
+const visinfoStyle: CSSProperties = {
   border: "1px solid var(--cmux-border)",
-  borderRadius: 999,
-  fontSize: "var(--cmux-font-size-sm)",
-  padding: "1px 8px",
+  borderRadius: "var(--cmux-radius-md)",
+  color: "var(--cmux-text-secondary)",
+  fontSize: "var(--cmux-font-size-xs)",
+  padding: "1px 9px",
+};
+const countPillStyle = (color: string): CSSProperties => ({
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 5,
+  borderRadius: "var(--cmux-radius-pill)",
+  padding: "2px 9px",
+  fontSize: "var(--cmux-font-size-xs)",
+  background: `color-mix(in srgb, ${color} 15%, transparent)`,
+  color,
+});
+const countDotStyle = (color: string): CSSProperties => ({
+  width: 7,
+  height: 7,
+  borderRadius: "50%",
+  flex: "none",
+  background: color,
+});
+const livePingStyle: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 5,
+  color: "var(--status-done)",
+  fontSize: "var(--cmux-font-size-xs)",
 };
 const controlStyle: CSSProperties = {
   background: "var(--cmux-bg)",
@@ -319,8 +431,18 @@ const filterChipStyle = (selected: boolean): CSSProperties => ({
   padding: "2px 9px",
 });
 const footerStyle: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 12,
+  minWidth: 0,
   borderTop: "1px solid var(--cmux-border)",
   padding: "7px 12px",
   color: "var(--cmux-text-secondary)",
   fontSize: "var(--cmux-font-size-sm)",
+  background: "var(--cmux-popover)",
+};
+const hintStyle: CSSProperties = {
+  flex: "0 0 auto",
+  color: "var(--cmux-text-tertiary)",
+  fontSize: "var(--cmux-font-size-xs)",
 };

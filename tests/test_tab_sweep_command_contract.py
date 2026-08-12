@@ -120,3 +120,46 @@ def test_tab_sweep_ui_contract_covers_all_entry_points_and_safety_copy() -> None
     assert "matchesTabSweepCommand(query)" in palette
     assert "タブ掃除を開く" in palette
     assert "window.dispatchEvent(new Event(TAB_SWEEP_OPEN_EVENT))" in palette
+
+
+def test_naming_mode_is_wired_to_the_fixed_sonnet_model() -> None:
+    rust = read("src-tauri/src/commands/tab_sweep.rs")
+    panel = read("src/components/layout/TabSweepPanel.tsx")
+
+    signature = re.search(
+        r"pub async fn run_tab_sweep_judge\((?P<body>.*?)\) -> Result<String, TabSweepJudgeError>",
+        rust,
+        re.DOTALL,
+    )
+    assert signature is not None
+    assert "mode: Option<String>" in signature.group("body")
+    assert 'const JUDGE_MODEL: &str = "claude-haiku-4-5-20251001";' in rust
+    assert 'const NAMING_MODEL: &str = "claude-sonnet-5";' in rust
+    assert 'Some("naming") => (NAMING_MODEL, NAMING_TIMEOUT)' in rust
+
+    naming = re.search(
+        r"const runNaming = async \(\) => \{(?P<body>.*?)\n  \};\n\n  const cancelNaming",
+        panel,
+        re.DOTALL,
+    )
+    assert naming is not None
+    body = naming.group("body")
+    assert 'invoke<string>("run_tab_sweep_judge"' in body
+    assert 'mode: "naming"' in body
+
+
+def test_naming_judge_only_proposes_names_and_ui_copy_is_present() -> None:
+    panel = read("src/components/layout/TabSweepPanel.tsx")
+    naming = re.search(
+        r"const runNaming = async \(\) => \{(?P<body>.*?)\n  \};\n\n  const cancelNaming",
+        panel,
+        re.DOTALL,
+    )
+    assert naming is not None
+    body = naming.group("body")
+    assert "applySweep" not in body
+    assert "pane.close_tab" not in body
+    assert "closeCandidateTabIds" not in body
+    assert "名前の提案" in panel
+    assert "名前を元に戻す" in panel
+    assert "名前整理は全タブの画面末尾14行・作業フォルダ・ペイン構成を Claude (sonnet) に送ります（適用は手動）" in panel

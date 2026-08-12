@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef } from "react";
 import type { CSSProperties } from "react";
 
 import type { SemanticEventEnvelope } from "../../lib/livebrief";
+import { instructionBlockStyle } from "./DashboardCardRow";
 import { dashboardStrings } from "./dashboardStrings";
 import { toTimelineRows, type TimelineRow } from "./liveTimelineModel";
 
@@ -36,15 +37,16 @@ function RowBody({ row }: { row: TimelineRow }) {
     case "answer":
       return <div style={answerStyle}>{row.title}</div>;
     case "agentText":
-      return <div style={agentTextStyle}>{row.title}</div>;
+      return <div style={agentTextStyle}>{`● ${row.title}`}</div>;
     case "tool":
       return <div style={monoStyle}>
         <span>{toolLabel(row)}</span>
         {row.detail ? <span style={{ marginLeft: 6, color: okColor(row.ok) }}>{row.detail}</span> : null}
       </div>;
     case "result":
-      return <div style={{ ...monoStyle, color: okColor(row.ok) }}>
-        <span>{`⎿ ${toolLabel(row)}`}</span>
+      return <div style={{ ...resultStyle, color: okColor(row.ok) }}>
+        <span style={resultMarkStyle}>⎿ </span>
+        <span>{toolLabel(row)}</span>
         {row.detail ? <span style={{ marginLeft: 6 }}>{row.detail}</span> : null}
       </div>;
     case "question":
@@ -118,13 +120,13 @@ const clockStyle: CSSProperties = {
 // 日本語が入りうる行は sm (12px) 以上。mono のパス・ツール行だけ xs を許す。
 const textStyle: CSSProperties = {
   fontSize: "var(--cmux-font-size-sm)",
-  lineHeight: 1.5,
+  lineHeight: 1.75,
   overflowWrap: "anywhere",
 };
+/** 「私の指示」は一覧カードと同じ面にして、どこで見ても同じものだと分かるようにする。 */
 const instructionStyle: CSSProperties = {
   ...textStyle,
-  borderLeft: "2px solid var(--cmux-accent)",
-  paddingLeft: 7,
+  ...instructionBlockStyle,
   color: "var(--cmux-text)",
 };
 const answerStyle: CSSProperties = { ...textStyle, paddingLeft: 9, color: "var(--cmux-text-secondary)" };
@@ -133,15 +135,20 @@ const questionStyle: CSSProperties = {
   ...textStyle,
   background: "color-mix(in srgb, var(--status-waiting) 10%, transparent)",
   borderRadius: "var(--cmux-radius-sm)",
+  color: "var(--status-waiting)",
   padding: "3px 7px",
 };
 const errorStyle: CSSProperties = { ...textStyle, color: "var(--status-error)" };
 const monoStyle: CSSProperties = {
   fontSize: "var(--cmux-font-size-xs)",
   fontFamily: "var(--cmux-font-mono)",
+  lineHeight: 1.75,
   color: "var(--cmux-text-secondary)",
   overflowWrap: "anywhere",
 };
+/** 結果行は ⎿ をぶら下げて、折り返しが本文の頭に揃うようにする。 */
+const resultStyle: CSSProperties = { ...monoStyle, paddingLeft: 14, textIndent: -14 };
+const resultMarkStyle: CSSProperties = { color: "var(--cmux-text-tertiary)" };
 const emptyStyle: CSSProperties = {
   color: "var(--cmux-text-secondary)",
   fontSize: "var(--cmux-font-size-sm)",

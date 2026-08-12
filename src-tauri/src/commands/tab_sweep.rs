@@ -14,6 +14,8 @@ use crate::commands::terminal::{prepare_spawn_command, sanitize_launch_env};
 
 const JUDGE_MODEL: &str = "claude-haiku-4-5-20251001";
 const JUDGE_TIMEOUT: Duration = Duration::from_secs(90);
+const NAMING_MODEL: &str = "claude-sonnet-5";
+const NAMING_TIMEOUT: Duration = Duration::from_secs(180);
 
 type JudgeAbortRegistry = Mutex<HashMap<String, oneshot::Sender<()>>>;
 
@@ -75,11 +77,11 @@ impl Drop for JudgeRegistration {
     }
 }
 
-fn judge_args() -> Vec<String> {
+fn judge_args(model: &str) -> Vec<String> {
     vec![
         "-p".to_string(),
         "--model".to_string(),
-        JUDGE_MODEL.to_string(),
+        model.to_string(),
         "--output-format".to_string(),
         "text".to_string(),
     ]
@@ -98,11 +100,11 @@ where
     sanitized
 }
 
-fn build_judge_command<I>(env: I) -> StdCommand
+fn build_judge_command<I>(env: I, model: &str) -> StdCommand
 where
     I: IntoIterator<Item = (String, String)>,
 {
-    let mut args = judge_args();
+    let mut args = judge_args(model);
     let program = prepare_spawn_command("claude", &mut args);
     let mut command = StdCommand::new(program);
     command
@@ -184,10 +186,21 @@ pub async fn abort_tab_sweep_judge(request_id: String) -> Result<bool, TabSweepJ
 pub async fn run_tab_sweep_judge(
     prompt: String,
     request_id: String,
+    mode: Option<String>,
 ) -> Result<String, TabSweepJudgeError> {
+    let (model, timeout) = match mode.as_deref() {
+        None | Some("judge") => (JUDGE_MODEL, JUDGE_TIMEOUT),
+        Some("naming") => (NAMING_MODEL, NAMING_TIMEOUT),
+        Some(value) => {
+            return Err(TabSweepJudgeError::new(
+                "invalid_mode",
+                format!("unsupported tab sweep mode: {value}"),
+            ));
+        }
+    };
     let (cancel_sender, mut cancel_receiver) = oneshot::channel();
     let _registration = JudgeRegistration::register(request_id, cancel_sender)?;
-    let mut command = Command::from(build_judge_command(std::env::vars()));
+    let mut command = Command::from(build_judge_command(std::env::vars(), model));
     command.kill_on_drop(true);
     let mut child = command.spawn().map_err(|error| {
         let code = if error.kind() == ErrorKind::NotFound {
@@ -197,7 +210,7 @@ pub async fn run_tab_sweep_judge(
         };
         TabSweepJudgeError::new(code, format!("failed to start tab sweep judge: {error}"))
     })?;
-    let deadline = Instant::now() + JUDGE_TIMEOUT;
+    let deadline = Instant::now() + timeout;
 
     let Some(mut stdin) = child.stdin.take() else {
         let cleanup = terminate_child_tree(&mut child).await.err();
@@ -261,7 +274,8 @@ pub async fn run_tab_sweep_judge(
             return Err(TabSweepJudgeError::new(
                 "timeout",
                 format!(
-                    "tab sweep judge timed out after 90 seconds{}",
+                    "tab sweep judge timed out after {} seconds{}",
+                    timeout.as_secs(),
                     cleanup
                         .map(|detail| format!("; cleanup failed: {detail}"))
                         .unwrap_or_default()
@@ -302,7 +316,8 @@ pub async fn run_tab_sweep_judge(
             return Err(TabSweepJudgeError::new(
                 "timeout",
                 format!(
-                    "tab sweep judge timed out after 90 seconds{}",
+                    "tab sweep judge timed out after {} seconds{}",
+                    timeout.as_secs(),
                     cleanup
                         .map(|detail| format!("; cleanup failed: {detail}"))
                         .unwrap_or_default()
@@ -333,7 +348,10 @@ pub async fn run_tab_sweep_judge(
             abort_output_tasks(&stdout_task, &stderr_task);
             return Err(TabSweepJudgeError::new(
                 "timeout",
-                "tab sweep judge timed out after 90 seconds",
+                format!(
+                    "tab sweep judge timed out after {} seconds",
+                    timeout.as_secs()
+                ),
             ));
         }
     };
@@ -354,7 +372,7 @@ mod tests {
     #[test]
     fn judge_arguments_are_stable_and_do_not_contain_the_prompt() {
         let prompt = "do not put this prompt in argv";
-        let args = judge_args();
+        let args = judge_args(JUDGE_MODEL);
         assert_eq!(
             args,
             vec![
@@ -394,10 +412,13 @@ mod tests {
 
     #[test]
     fn built_command_applies_sanitized_environment_and_piped_stdio() {
-        let command = build_judge_command([
-            ("PATH".to_string(), "safe-path".to_string()),
-            ("MYCMUX_RESUME".to_string(), "claude".to_string()),
-        ]);
+        let command = build_judge_command(
+            [
+                ("PATH".to_string(), "safe-path".to_string()),
+                ("MYCMUX_RESUME".to_string(), "claude".to_string()),
+            ],
+            JUDGE_MODEL,
+        );
         let environment: HashMap<_, _> = command
             .get_envs()
             .filter_map(|(key, value)| {
@@ -420,7 +441,42 @@ mod tests {
             .get_args()
             .map(|argument| argument.to_string_lossy().into_owned())
             .collect();
-        assert!(args.ends_with(&judge_args()));
+        assert!(args.ends_with(&judge_args(JUDGE_MODEL)));
+    }
+
+    #[test]
+    fn naming_command_uses_sonnet_with_the_same_sanitized_environment() {
+        let command = build_judge_command(
+            [
+                ("PATH".to_string(), "safe-path".to_string()),
+                ("MYCMUX_RESUME".to_string(), "claude".to_string()),
+            ],
+            NAMING_MODEL,
+        );
+        let environment: HashMap<_, _> = command
+            .get_envs()
+            .filter_map(|(key, value)| {
+                value.map(|value| {
+                    (
+                        key.to_string_lossy().into_owned(),
+                        value.to_string_lossy().into_owned(),
+                    )
+                })
+            })
+            .collect();
+        assert_eq!(
+            environment.get("PATH").map(String::as_str),
+            Some("safe-path")
+        );
+        assert!(!environment
+            .keys()
+            .any(|key| key.to_ascii_uppercase().starts_with("MYCMUX_")));
+        let args: Vec<_> = command
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect();
+        assert!(args.ends_with(&judge_args(NAMING_MODEL)));
+        assert!(args.iter().any(|argument| argument == NAMING_MODEL));
     }
 
     #[tokio::test]
@@ -460,13 +516,13 @@ mod tests {
         let directory = tempfile::tempdir().expect("temp dir");
         let shim = directory.path().join("claude.cmd");
         std::fs::write(&shim, "@echo off\r\n").expect("write shim");
-        let mut args = judge_args();
+        let mut args = judge_args(JUDGE_MODEL);
         let program = prepare_spawn_command(&shim.to_string_lossy(), &mut args);
         let expected_comspec = std::env::var("COMSPEC")
             .unwrap_or_else(|_| "C:\\Windows\\System32\\cmd.exe".to_string());
         assert_eq!(program, expected_comspec);
         assert_eq!(args[0..2], ["/d", "/c"]);
         assert_eq!(args[2], shim.to_string_lossy());
-        assert_eq!(args[3..], judge_args());
+        assert_eq!(args[3..], judge_args(JUDGE_MODEL));
     }
 }

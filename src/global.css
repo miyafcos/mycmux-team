@@ -76,6 +76,14 @@
   --cmux-radius-sm: 4px;
   --cmux-radius-md: 6px;
   --cmux-radius-lg: 8px;
+  /* Dashboard card geometry (mock 2026-08-11): cards sit on a 10px radius and
+     every state pill is a full round. */
+  --cmux-radius-card: 10px;
+  --cmux-radius-pill: 999px;
+  /* "止まってるかも" (noUpdate). The other four states reuse --status-*; this is
+     the only state without one, so it gets its own hue instead of the warning
+     yellow it used to borrow. */
+  --cmux-status-stall: #b48ead;
   --sash-size: 4px !important;
 
   --status-working: #3b82f6;
@@ -1119,4 +1127,42 @@ a:focus-visible {
   border-radius: 50%;
   flex-shrink: 0;
   background: var(--workspace-swatch-color, transparent);
+}
+
+/* ===== Dashboard (2026-08-12 mock parity) =====
+   Hover lives in CSS, not in React state: re-rendering a 100-row list on every
+   pointer move is how the board used to stutter. The rows carry inline styles
+   (state colour is data-driven), so the hover rule needs !important to win over
+   them — and it only repaints the three non-rail edges, because the 3px left
+   rail is the state signal and must never turn accent. */
+.cmux-dash-row:hover {
+  border-top-color: var(--cmux-accent) !important;
+  border-right-color: var(--cmux-accent) !important;
+  border-bottom-color: var(--cmux-accent) !important;
+}
+
+/* "自動更新中" heartbeat. */
+.cmux-dash-ping {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--status-done);
+  animation: cmux-dash-ping 1.6s ease-in-out infinite;
+}
+
+@keyframes cmux-dash-ping {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cmux-dash-ping {
+    animation: none;
+  }
 }

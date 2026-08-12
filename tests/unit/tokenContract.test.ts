@@ -57,7 +57,15 @@ describe("cmux design token contract", () => {
   });
 
   it("defines the readability tokens this phase introduced", () => {
-    for (const token of ["--cmux-accent-text", "--cmux-yellow", "--cmux-boot-bg"]) {
+    for (const token of [
+      "--cmux-accent-text",
+      "--cmux-yellow",
+      "--cmux-boot-bg",
+      // Dashboard mock parity (2026-08-12): the stall hue and the card/pill radii.
+      "--cmux-status-stall",
+      "--cmux-radius-card",
+      "--cmux-radius-pill",
+    ]) {
       expect(definedTokens.has(token), token).toBe(true);
     }
     // The boot ground is only useful if AppShell keeps feeding the key that

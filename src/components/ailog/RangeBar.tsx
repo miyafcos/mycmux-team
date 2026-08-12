@@ -117,7 +117,7 @@ export function RangeBar({
             インデックスを中断
           </button>
         ) : (
-          <button type="button" onClick={onStartIndex} style={subtleButtonStyle}>
+          <button type="button" onClick={onStartIndex} disabled={summarizing} style={{ ...subtleButtonStyle, opacity: summarizing ? 0.5 : 1 }}>
             再インデックス
           </button>
         )}
@@ -179,6 +179,11 @@ export function RangeBar({
         </div>
       ) : null}
       {summarizeError ? <div style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-red)" }}>{summarizeError}</div> : null}
+      {overview && overview.excludedInternal.sessions > 0 ? (
+        <div style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-secondary)" }}>
+          {`内部処理 ${formatCount(overview.excludedInternal.sessions)} 件 ($${overview.excludedInternal.costUsd.toFixed(2)}) を除外`}
+        </div>
+      ) : null}
 
       <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
         <label style={checkboxLabelStyle}>

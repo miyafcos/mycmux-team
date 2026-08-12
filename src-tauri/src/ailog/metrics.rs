@@ -275,8 +275,13 @@ pub fn work_tags(stats: &WorkTagStats) -> Vec<String> {
         // Read, exec, write is also the deterministic tie order. This handles
         // old sparse rows whose three recorded volumes are all zero.
         let mut fallback = (stats.read_chars, "explore");
-        for candidate in [(stats.exec_chars, "verify"), (stats.write_chars, "implement")] {
-            if candidate.0 > fallback.0 { fallback = candidate; }
+        for candidate in [
+            (stats.exec_chars, "verify"),
+            (stats.write_chars, "implement"),
+        ] {
+            if candidate.0 > fallback.0 {
+                fallback = candidate;
+            }
         }
         tags.push(fallback.1.to_string());
     }

@@ -22,8 +22,8 @@ use serde::Serialize;
 use crate::ailog::metrics::{self, ToolClass};
 use crate::ailog::price::{self, PriceTable};
 use crate::ailog::{
-    parse_claude, parse_codex, project_rules, ChunkData, SessionChunk, ToolRow,
-    KIND_CLAUDE, KIND_CODEX,
+    parse_claude, parse_codex, project_rules, ChunkData, SessionChunk, ToolRow, KIND_CLAUDE,
+    KIND_CODEX,
 };
 
 /// Minimum gap between progress events, per spec §5.
@@ -465,7 +465,13 @@ fn rederive_projects_and_tags_if_needed(
             .prepare("SELECT kind, session_id, cwd FROM session")
             .map_err(|err| format!("prepare derivation sessions: {err}"))?;
         let rows = stmt
-            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<String>>(2)?)))
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            })
             .map_err(|err| format!("scan derivation sessions: {err}"))?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|err| format!("read derivation session: {err}"))?
@@ -609,7 +615,8 @@ fn apply_chunk(tx: &Transaction<'_>, chunk: &SessionChunk) -> Result<(), String>
            first_prompt = COALESCE(session.first_prompt, excluded.first_prompt), \
            slug = COALESCE(excluded.slug, session.slug), \
            entrypoint = COALESCE(excluded.entrypoint, session.entrypoint), \
-           origin = COALESCE(excluded.origin, session.origin), \
+           origin = CASE WHEN session.origin = 'ailog-internal' OR excluded.origin = 'ailog-internal' \
+                         THEN 'ailog-internal' ELSE COALESCE(excluded.origin, session.origin) END, \
            is_sidechain = MAX(session.is_sidechain, excluded.is_sidechain), \
            agent_names = COALESCE(excluded.agent_names, session.agent_names), \
            cli_version = COALESCE(excluded.cli_version, session.cli_version), \

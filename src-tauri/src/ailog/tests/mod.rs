@@ -5,3 +5,4 @@ mod fixtures;
 mod index_tests;
 mod parse_tests;
 mod price_tests;
+mod query_compat_tests;

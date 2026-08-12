@@ -12,12 +12,13 @@
 //! metered pricing", not a bill. See [`price`] for how the default table is
 //! sourced and why unknown models stay at zero instead of being guessed.
 
+pub mod digest;
 pub mod index;
 pub mod metrics;
-pub mod project_rules;
 pub mod parse_claude;
 pub mod parse_codex;
 pub mod price;
+pub mod project_rules;
 pub mod query;
 pub mod schema;
 pub mod summarize;
@@ -42,6 +43,7 @@ pub const KIND_CODEX: &str = "codex";
 /// Codex run) get `other`; everything else stays `unknown`.
 pub const ORIGIN_UNKNOWN: &str = "unknown";
 pub const ORIGIN_OTHER: &str = "other";
+pub const ORIGIN_AILOG_INTERNAL: &str = "ailog-internal";
 
 /// Path of the analytics database (`~/.mycmux/ailog.db`).
 pub fn db_path() -> Result<PathBuf, String> {
@@ -52,6 +54,12 @@ pub fn db_path() -> Result<PathBuf, String> {
 /// Default Claude transcript root (`~/.claude/projects`).
 pub fn claude_root() -> Option<PathBuf> {
     dirs::home_dir().map(|home| home.join(".claude").join("projects"))
+}
+
+/// Default claude-codex transcript root (`~/.claude-codex/config/projects`).
+/// The wrapper keeps its own config home but writes Claude's transcript shape.
+pub fn claude_codex_root() -> Option<PathBuf> {
+    dirs::home_dir().map(|home| home.join(".claude-codex").join("config").join("projects"))
 }
 
 /// Default Codex transcript root (`~/.codex/sessions`).

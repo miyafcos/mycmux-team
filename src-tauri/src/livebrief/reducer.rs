@@ -21,6 +21,7 @@ impl PendingOption { pub fn new(id: String, label: String, payload: String) -> S
 #[derive(Clone, Debug)]
 pub struct LiveBriefReducer {
     task: Option<String>,
+    latest_instruction: Option<String>,
     task_source_event_ids: Vec<String>,
     open_tools: Vec<(String, String, Option<String>, String)>,
     activity: Option<(String, String, String)>,
@@ -31,18 +32,21 @@ pub struct LiveBriefReducer {
 }
 
 impl LiveBriefReducer {
-    pub fn new() -> Self { Self { task: None, task_source_event_ids: Vec::new(), open_tools: Vec::new(), activity: None, checkpoint: None, pending: None, event_seq: 0, last_event_at: None } }
+    pub fn new() -> Self { Self { task: None, latest_instruction: None, task_source_event_ids: Vec::new(), open_tools: Vec::new(), activity: None, checkpoint: None, pending: None, event_seq: 0, last_event_at: None } }
 
     pub fn apply(&mut self, event: &SemanticEventEnvelope) {
         self.event_seq = self.event_seq.saturating_add(1);
         self.last_event_at = Some(event.occurred_at);
         match &event.kind {
             SemanticEventKind::UserMessage { kind, text, .. } => match kind {
-                UserMessageKind::TaskStart => { self.task = Some(text.clone()); self.task_source_event_ids = vec![event.event_id.clone()]; }
+                UserMessageKind::TaskStart => { self.task = Some(text.clone()); self.latest_instruction = Some(text.clone()); self.task_source_event_ids = vec![event.event_id.clone()]; }
                 UserMessageKind::TaskChange | UserMessageKind::Correction => {
                     self.task = Some(match &self.task { Some(task) => format!("{task} / {text}"), None => text.clone() });
+                    self.latest_instruction = Some(text.clone());
                     self.task_source_event_ids.push(event.event_id.clone());
                 }
+                // An answer or an acknowledgement is not a new instruction: the
+                // brief must keep showing the last thing actually asked for.
                 UserMessageKind::Answer | UserMessageKind::Ack => {}
             },
             SemanticEventKind::ToolStart { call_id, tool, target } => self.open_tools.push((call_id.clone(), tool.clone(), target.clone(), event.event_id.clone())),
@@ -70,7 +74,7 @@ impl LiveBriefReducer {
             sha256_hex(format!("{id}|{prompt}|{kind:?}|{values}").as_bytes())
         });
         LiveSessionBrief {
-            binding, task: self.task.clone(), task_source_event_ids: self.task_source_event_ids.clone(),
+            binding, task: self.task.clone(), latest_instruction: self.latest_instruction.clone(), task_source_event_ids: self.task_source_event_ids.clone(),
             activity_kind: activity.as_ref().map(|activity| activity.0.clone()), activity_text: activity.as_ref().map(|activity| activity.1.clone()), activity_source_event_id: activity.as_ref().map(|activity| activity.2.clone()),
             checkpoint: self.checkpoint.as_ref().map(|checkpoint| checkpoint.0.clone()), checkpoint_evidence_event_ids: self.checkpoint.as_ref().map(|checkpoint| checkpoint.1.clone()).unwrap_or_default(),
             pending_input_kind: pending.as_ref().map(|pending| pending.3.clone()), pending_prompt: pending.as_ref().map(|pending| pending.2.clone()), pending_options: pending.as_ref().map(|pending| pending.4.clone()).unwrap_or_default(),
@@ -99,6 +103,21 @@ mod tests {
         reducer.apply(&event("c", SemanticEventKind::UserMessage { kind: UserMessageKind::Answer, text: "yes".to_string(), digest: String::new() }));
         assert_eq!(reducer.task.as_deref(), Some("Initial / Change"));
     }
+    #[test]
+    fn latest_instruction_follows_task_changes_but_not_replies() {
+        let mut reducer = LiveBriefReducer::new();
+        reducer.apply(&event("a", SemanticEventKind::UserMessage { kind: UserMessageKind::TaskStart, text: "Initial".to_string(), digest: String::new() }));
+        assert_eq!(reducer.latest_instruction.as_deref(), Some("Initial"));
+        reducer.apply(&event("b", SemanticEventKind::UserMessage { kind: UserMessageKind::TaskChange, text: "Change".to_string(), digest: String::new() }));
+        assert_eq!(reducer.latest_instruction.as_deref(), Some("Change"));
+        reducer.apply(&event("c", SemanticEventKind::UserMessage { kind: UserMessageKind::Answer, text: "yes".to_string(), digest: String::new() }));
+        reducer.apply(&event("d", SemanticEventKind::UserMessage { kind: UserMessageKind::Ack, text: "ok".to_string(), digest: String::new() }));
+        assert_eq!(reducer.latest_instruction.as_deref(), Some("Change"));
+        reducer.apply(&event("e", SemanticEventKind::UserMessage { kind: UserMessageKind::Correction, text: "違う".to_string(), digest: String::new() }));
+        assert_eq!(reducer.latest_instruction.as_deref(), Some("違う"));
+        assert_eq!(reducer.task.as_deref(), Some("Initial / Change / 違う"));
+    }
+
     #[test]
     fn only_matching_resolution_clears_attention() {
         let mut reducer = LiveBriefReducer::new();

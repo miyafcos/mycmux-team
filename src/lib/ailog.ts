@@ -150,6 +150,11 @@ export interface IndexFreshness {
   staleFiles: number;
 }
 
+export interface ExcludedInternal {
+  sessions: number;
+  costUsd: number;
+}
+
 export interface Overview {
   range: RangeOut;
   totals: Totals;
@@ -159,6 +164,7 @@ export interface Overview {
   topProjects: ProjectRow[];
   topTitles: TitleRow[];
   rework: ReworkSummary;
+  excludedInternal: ExcludedInternal;
   cacheHitRate: number;
   priceSource: string;
   unpricedModels: string[];
@@ -381,6 +387,10 @@ export interface SummaryRow {
   findings: string | null;
   reworkNote: string | null;
   costNote: string | null;
+  outcome: string | null;
+  confidence: string | null;
+  reworkCategory: string | null;
+  promptVersion: number | null;
 }
 
 export interface SessionDetail {
@@ -433,6 +443,54 @@ export interface SummarizeStatus {
   sessionsRemaining: number;
   lastFinishedAt: number;
   lastError: string | null;
+  elapsedMs: number;
+  estimatedInputChars: number;
+  inputTokens: number;
+  outputTokens: number;
+}
+
+export type DigestConfidence = "high" | "medium" | "low";
+
+export interface DigestContent {
+  headline: string;
+  wins: string[];
+  biggestRework: { exists: boolean; text: string };
+  valueNote: string;
+  suggestion: string;
+  confidence: DigestConfidence;
+}
+
+export interface DigestOutcomes {
+  done: number;
+  partial: number;
+  abandoned: number;
+  unclear: number;
+}
+
+export interface DigestMetrics {
+  sessions: number;
+  costUsd: number;
+  turns: number;
+  averageRework: number;
+  outcomes: DigestOutcomes;
+  previousSessions: number;
+  previousCostUsd: number;
+  previousTurns: number;
+  costPct: number;
+}
+
+export interface DigestRecord {
+  date: string;
+  createdAt: number;
+  promptVersion: number;
+  modelUsed: string | null;
+  content: DigestContent;
+}
+
+export interface DigestReport {
+  date: string;
+  digest: DigestRecord | null;
+  metrics: DigestMetrics;
 }
 
 export interface SummarizeProgress {
@@ -446,10 +504,20 @@ export interface SummarizeProgress {
 export interface SummarizeStartResult {
   started: boolean;
   alreadyRunning: boolean;
+  targetCount: number;
+  estimatedInputChars: number;
 }
 
 export interface SummarizeCancelResult {
   cancelled: boolean;
+}
+
+export interface DashboardReport {
+  overview: Overview;
+  series: SeriesReport;
+  models: ModelsReport;
+  projects: BreakdownReport;
+  sessions: SessionsReport;
 }
 
 export interface IndexCancelResult {
@@ -475,8 +543,8 @@ export async function ailogIndexStatus(): Promise<IndexStatus> {
   return invoke<IndexStatus>("ailog_index_status");
 }
 
-export async function ailogSummarizeStart(batchSize?: number): Promise<SummarizeStartResult> {
-  return invoke<SummarizeStartResult>("ailog_summarize_start", { batchSize });
+export async function ailogSummarizeStart(batchSize?: number, force = false): Promise<SummarizeStartResult> {
+  return invoke<SummarizeStartResult>("ailog_summarize_start", { batchSize, force });
 }
 
 export async function ailogSummarizeCancel(): Promise<SummarizeCancelResult> {
@@ -485,6 +553,26 @@ export async function ailogSummarizeCancel(): Promise<SummarizeCancelResult> {
 
 export async function ailogSummarizeStatus(): Promise<SummarizeStatus> {
   return invoke<SummarizeStatus>("ailog_summarize_status");
+}
+
+export async function ailogDigestGet(date: string): Promise<DigestReport> {
+  return invoke<DigestReport>("ailog_digest_get", { date });
+}
+
+export async function ailogDigestGenerate(date: string, force = false): Promise<DigestReport> {
+  return invoke<DigestReport>("ailog_digest_generate", { date, force });
+}
+
+export async function ailogDashboard(
+  range: AilogRange,
+  filters: AilogFilters,
+  granularity: string,
+): Promise<DashboardReport> {
+  return invoke<DashboardReport>("ailog_dashboard", {
+    range,
+    filters,
+    args: { granularity },
+  });
 }
 
 export async function ailogOverview(

@@ -51,14 +51,17 @@ export const dashboardStrings = {
   liveBriefActivityLabel: "実行中",
   liveBriefCheckpointLabel: "確認済み",
   liveBriefQuestionLabel: "質問",
-  liveBriefReplyAriaLabel: "エージェントへの返信",
-  liveBriefSendReply: "返信を送る",
   // 介入結果 (intervene.rs の InterventionResult 7種に対応)
   interventionConfirmed: "送信を会話ログで確認しました",
   interventionConflict: "対象が変わったため送っていません",
   interventionBusy: "この質問への送信は処理中です",
   interventionWritten: "書き込みました。会話ログでの反映を待っています",
   interventionRejected: (reason: string): string => `送っていません: ${reason}`,
+  interventionReason: (code: string): string => {
+    if (code === "target_missing") return "質問の対象を特定できませんでした";
+    if (code === "transport") return "内部通信に失敗しました";
+    return code;
+  },
   interventionIndeterminate: "書き込み結果が不確定です。端末で確認してください (自動再送はしません)",
   interventionUnconfirmed: "書き込みは会話ログで未確認です。質問は残っています (自動再送はしません)",
   // テレメトリの健全性 (TelemetryHealth)
@@ -81,4 +84,21 @@ export const dashboardStrings = {
   terminalUnreadable: "この端末の内容は読み取れませんでした",
   fallbackTitle: "端末から拾える情報",
   fallbackHint: "生のログは [端末] タブで確認できます",
+  // v2: 終了・未起動 (断定しない事実表示)
+  telemetryEnded: "エージェント終了 (記録は保持)",
+  stateNotStarted: "未起動",
+  notStartedDetail: "まだ開いていないタブです ([端末] で開くと記録が始まります)",
+  // v2: 常設コンポーザ (ReplyComposer)
+  composerPlaceholder: "ここに指示をタイプ → Enter で送信 (送達確認つき)",
+  composerSend: "送信 ⏎",
+  composerAriaLabel: "選択中のペインへの指示入力",
+  composerTo: (ws: string, tab: number | string, pane: string): string => `→ ${ws} · タブ${tab} · ${pane}`,
+  composerRunningDisabled: "作業中です。終わるまで待つか [端末] タブで直接送ってください",
+  composerNotStarted: "まだ開いていないタブなので送信できません",
+  sendConfirmedOnScreen: "送信を画面で確認しました",
+  sendUnverified: "送信しましたが画面で確認できませんでした",
+  sendFailedBeforeWrite: "送信できませんでした (実行前にエラー)",
+  // v2: ヘッダの visinfo
+  visinfoCounts: (panes: number, tabs: number, ws: number): string => `${panes}ペイン · ${tabs}タブ · ${ws}ワークスペース`,
+  visinfoVisible: (visible: number, background: number): string => `表示中 ${visible} / 裏で稼働 ${background}`,
 } as const;

@@ -9,9 +9,10 @@
 import { useEffect, useRef, useState } from "react";
 
 import { OverlayShell } from "../common/OverlayShell";
-import { listenIndexProgress, listenSummarizeProgress } from "../../lib/ailog";
+import { listenIndexProgress, listenSummarizeProgress, toDayInput } from "../../lib/ailog";
 import { useAilogStore, SESSION_PAGE_SIZE } from "../../stores/ailogStore";
 import { CostHeatmap } from "./CostHeatmap";
+import { DigestView } from "./DigestView";
 import { ModelTable } from "./ModelTable";
 import { ProjectTable } from "./ProjectTable";
 import { RangeBar } from "./RangeBar";
@@ -31,7 +32,11 @@ interface AiLogPanelProps {
 export function AiLogPanel({ open, visible, closing = false, onClose }: AiLogPanelProps) {
   const wasIndexingRef = useRef(false);
   const wasSummarizingRef = useRef(false);
+  const autoStartedRef = useRef(false);
+  const autoDigestStartedRef = useRef(false);
+  const digestPreparationRef = useRef(false);
   const [detailOpen, setDetailOpen] = useState(false);
+  const [view, setView] = useState<"digest" | "detail">("digest");
 
   const store = useAilogStore();
 
@@ -39,10 +44,28 @@ export function AiLogPanel({ open, visible, closing = false, onClose }: AiLogPan
   // then the reports.
   useEffect(() => {
     if (!open) return;
-    void store.refreshIndexStatus();
-    void store.refreshSummarizeStatus();
-    void store.refresh();
+    let cancelled = false;
+    void (async () => {
+      await store.refreshIndexStatus();
+      await store.refreshSummarizeStatus();
+      if (cancelled) return;
+      const status = useAilogStore.getState().summarizeStatus;
+      if (!autoStartedRef.current && !status?.running && (status?.sessionsRemaining ?? 0) > 0) {
+        autoStartedRef.current = true;
+        await store.startSummarize();
+      }
+      digestPreparationRef.current = true;
+      await store.refresh();
+    })();
+    return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
+  useEffect(() => {
+    if (open) return;
+    autoDigestStartedRef.current = false;
+    digestPreparationRef.current = false;
+    setView("digest");
   }, [open]);
 
   useEffect(() => {
@@ -102,6 +125,22 @@ export function AiLogPanel({ open, visible, closing = false, onClose }: AiLogPan
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, summarizing]);
 
+  useEffect(() => {
+    if (!open || !digestPreparationRef.current || !store.summarizeStatus || summarizing || autoDigestStartedRef.current) return;
+    autoDigestStartedRef.current = true;
+    const now = new Date();
+    const yesterday = toDayInput(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 1));
+    void (async () => {
+      store.setDigestDate(yesterday);
+      await useAilogStore.getState().refreshDigest(yesterday);
+      const current = useAilogStore.getState();
+      if (current.digestDate === yesterday && !current.digestReport?.digest) {
+        await current.generateDigest(false);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, summarizing]);
+
   if (!visible) return null;
 
   const { overview, series, models, projects, sessions, loading, error, indexStatus } = store;
@@ -152,16 +191,31 @@ export function AiLogPanel({ open, visible, closing = false, onClose }: AiLogPan
                 ? "集計を更新中…"
                 : overview
                   ? `${overview.range.label} · ${overview.totals.sessions.toLocaleString("en-US")} セッション`
-                  : "—"}
+              : "—"}
             </div>
           </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <button type="button" aria-pressed={view === "digest"} onClick={() => setView("digest")} style={subtleButtonStyle}>振り返り</button>
+            <button type="button" aria-pressed={view === "detail"} onClick={() => setView("detail")} style={subtleButtonStyle}>詳細</button>
           <button type="button" aria-label="閉じる" onClick={onClose} style={{ ...subtleButtonStyle, padding: "3px 8px" }}>
             ×
           </button>
+          </div>
         </header>
 
         <div style={{ flex: 1, minHeight: 0, overflowY: "auto", overflowX: "hidden" }}>
           <div style={{ display: "flex", flexDirection: "column", gap: 12, padding: "12px 16px 20px", minWidth: 0 }}>
+            {view === "digest" ? (
+              <DigestView
+                report={store.digestReport}
+                loading={store.digestLoading}
+                generating={store.digestGenerating}
+                onPrevious={() => store.stepDigestDate(-1)}
+                onNext={() => store.stepDigestDate(1)}
+                onRegenerate={() => void store.generateDigest(true)}
+              />
+            ) : (
+              <>
             <RangeBar
               preset={store.preset}
               customFrom={store.customFrom}
@@ -294,6 +348,8 @@ export function AiLogPanel({ open, visible, closing = false, onClose }: AiLogPan
                 ) : null}
               </>
             ) : null}
+              </>
+            )}
           </div>
         </div>
     </OverlayShell>

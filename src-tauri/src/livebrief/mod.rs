@@ -54,6 +54,8 @@ pub struct LiveSessionBrief {
     #[serde(flatten)]
     pub binding: LiveBinding,
     pub task: Option<String>,
+    /// The most recent instruction on its own, without the folded task history.
+    pub latest_instruction: Option<String>,
     pub task_source_event_ids: Vec<String>,
     pub activity_kind: Option<String>,
     pub activity_text: Option<String>,
@@ -96,6 +98,7 @@ pub struct LiveSessionEvents {
 /// without a full re-read.
 #[derive(Clone, Debug)]
 struct SnapshotIdentity {
+    path: PathBuf,
     file_identity: String,
     binding: LiveBinding,
     telemetry_health: String,
@@ -125,6 +128,7 @@ pub(crate) struct SessionSnapshot {
 impl SessionSnapshot {
     fn identity(&self) -> SnapshotIdentity {
         SnapshotIdentity {
+            path: self.cursor.path.clone(),
             file_identity: self.cursor.file_identity.clone(),
             binding: self.brief.binding.clone(),
             telemetry_health: self.brief.telemetry_health.clone(),
@@ -203,9 +207,11 @@ impl LiveBriefService {
                 snapshot.brief.updated_at = now;
             }
         }
-        for (session_id, mut snapshot) in next {
+        for (session_id, snapshot) in next {
             let previous = state.sessions.get(&session_id);
+            let mut snapshot = keep_last_picture(previous, snapshot);
             let changed = previous.map(|old| brief_changed(&old.brief, &snapshot.brief)).unwrap_or(true);
+            let previous_revision = previous.map(|old| old.brief.brief_revision).unwrap_or(0);
             if changed {
                 state.brief_revision = state.brief_revision.saturating_add(1);
                 snapshot.brief.brief_revision = state.brief_revision;
@@ -215,7 +221,7 @@ impl LiveBriefService {
             } else {
                 // Same meaning as last tick: keep the revision (and therefore the
                 // frontend's merge guard) still, and emit nothing.
-                snapshot.brief.brief_revision = previous.map(|old| old.brief.brief_revision).unwrap_or(0);
+                snapshot.brief.brief_revision = previous_revision;
             }
             state.sessions.insert(session_id, snapshot);
         }
@@ -235,7 +241,7 @@ impl LiveBriefService {
         let (pty_generation, pty_input_revision, _) = self.manager
             .intervention_observation(pty_session_id)
             .unwrap_or((0, 0, None));
-        let mapping = mapping.filter(|mapping| matches!(mapping.agent_kind.as_deref(), Some("claude") | Some("codex")));
+        let mapping = mapping.filter(|mapping| matches!(mapping.agent_kind.as_deref(), Some("claude") | Some("codex") | Some("claude-codex")));
         let Some(mapping) = mapping else {
             return Some(unavailable_snapshot(
                 self.base_binding(pty_session_id, "", "", pty_generation, pty_input_revision),
@@ -252,6 +258,14 @@ impl LiveBriefService {
             ));
         }
         let binding = self.base_binding(pty_session_id, kind, &mapping.session_id, pty_generation, pty_input_revision);
+        // The cached path is checked first: a live snapshot whose transcript has
+        // not moved is reusable without the recursive glob, which otherwise ran
+        // once a second per pane.
+        if let Some(prior) = prior.filter(|prior| prior.telemetry_health == "live") {
+            if let Ok(metadata) = std::fs::metadata(&prior.path) {
+                if reuses_prior_snapshot(Some(prior), &prior.path, &metadata, &binding) { return None; }
+            }
+        }
         let Some(path) = locate_transcript(kind, &mapping.session_id) else {
             return Some(unavailable_snapshot(binding, "unavailable", &self.service_epoch));
         };
@@ -311,6 +325,33 @@ impl LiveBriefService {
     pub(crate) fn metadata(&self) -> &MetadataStore { &self.metadata }
 }
 
+/// Keep the last meaningful picture of a pane whose agent has gone away.
+///
+/// When an agent exits the mapping disappears and the rebuild yields an empty
+/// `unlinked`/`unavailable` snapshot, which used to wipe the event ring and the
+/// task the operator was still reading. The history is carried over and marked
+/// `ended` instead. Everything actionable — the pending question and its hashes
+/// — is dropped on purpose: intervening against a prompt whose agent no longer
+/// exists would type into whatever now owns the PTY.
+fn keep_last_picture(previous: Option<&SessionSnapshot>, next: SessionSnapshot) -> SessionSnapshot {
+    if next.brief.telemetry_health == "live" || !next.events.is_empty() { return next; }
+    let Some(previous) = previous else { return next };
+    if previous.brief.telemetry_health == "ended" { return previous.clone(); }
+    if previous.brief.telemetry_health != "live" { return next; }
+    let mut merged = previous.clone();
+    merged.brief.binding = next.brief.binding;
+    merged.brief.telemetry_health = "ended".to_string();
+    merged.brief.operational_state = "ended".to_string();
+    merged.brief.pending_input_kind = None;
+    merged.brief.pending_prompt = None;
+    merged.brief.pending_options = Vec::new();
+    merged.brief.prompt_event_id = None;
+    merged.brief.prompt_hash = None;
+    merged.brief.last_successful_read_at = next.brief.last_successful_read_at;
+    merged.brief.updated_at = next.brief.updated_at;
+    merged
+}
+
 /// True when two briefs differ in meaning. `updated_at`,
 /// `last_successful_read_at` and `brief_revision` are excluded on purpose:
 /// the reducer stamps the first two with `now` on every rebuild, so a plain
@@ -318,6 +359,7 @@ impl LiveBriefService {
 fn brief_changed(old: &LiveSessionBrief, new: &LiveSessionBrief) -> bool {
     old.binding != new.binding
         || old.task != new.task
+        || old.latest_instruction != new.latest_instruction
         || old.task_source_event_ids != new.task_source_event_ids
         || old.activity_kind != new.activity_kind
         || old.activity_text != new.activity_text
@@ -362,11 +404,12 @@ fn clamp_event_limit(limit: Option<usize>) -> usize {
 fn locate_transcript(kind: &str, session_id: &str) -> Option<PathBuf> {
     let root = match kind {
         "claude" => crate::ailog::claude_root()?,
+        "claude-codex" => crate::ailog::claude_codex_root()?,
         "codex" => crate::ailog::codex_root()?,
         _ => return None,
     };
     let pattern = match kind {
-        "claude" => format!("{}/**/{}.jsonl", root.display(), session_id),
+        "claude" | "claude-codex" => format!("{}/**/{}.jsonl", root.display(), session_id),
         "codex" => format!("{}/**/*{}.jsonl", root.display(), session_id),
         _ => unreachable!(),
     };
@@ -422,7 +465,7 @@ fn complete_lines(bytes: &[u8]) -> Result<Vec<&str>, String> {
 fn unavailable_snapshot(binding: LiveBinding, health: &str, service_epoch: &str) -> SessionSnapshot {
     let now = unix_ms();
     let brief = LiveSessionBrief {
-        binding, task: None, task_source_event_ids: Vec::new(), activity_kind: None, activity_text: None,
+        binding, task: None, latest_instruction: None, task_source_event_ids: Vec::new(), activity_kind: None, activity_text: None,
         activity_source_event_id: None, checkpoint: None, checkpoint_evidence_event_ids: Vec::new(),
         pending_input_kind: None, pending_prompt: None, pending_options: Vec::new(), prompt_event_id: None,
         prompt_hash: None, event_seq: 0, operational_state: "running".to_string(), telemetry_health: health.to_string(),
@@ -519,6 +562,75 @@ mod tests {
         let mut next = old.clone();
         next.binding.source_revision += 1;
         assert!(brief_changed(&old, &next));
+    }
+
+    #[test]
+    fn the_brief_exposes_latest_instruction_as_camel_case() {
+        let mut brief = unavailable_snapshot(test_binding(), "live", "epoch").brief;
+        brief.latest_instruction = Some("run the tests".to_string());
+        let json: serde_json::Value = serde_json::from_str(&serde_json::to_string(&brief).unwrap()).unwrap();
+        assert_eq!(json.get("latestInstruction").and_then(serde_json::Value::as_str), Some("run the tests"));
+    }
+
+    #[test]
+    fn brief_changed_sees_a_new_latest_instruction() {
+        let old = unavailable_snapshot(test_binding(), "live", "epoch").brief;
+        let mut next = old.clone();
+        next.latest_instruction = Some("run the tests".to_string());
+        assert!(brief_changed(&old, &next));
+    }
+
+    #[test]
+    fn an_ended_agent_keeps_its_history_but_loses_its_pending_question() {
+        let mut previous = unavailable_snapshot(test_binding(), "live", "epoch");
+        previous.brief.task = Some("ship it".to_string());
+        previous.brief.latest_instruction = Some("ship it".to_string());
+        previous.brief.activity_kind = Some("Read".to_string());
+        previous.brief.activity_text = Some("Inspecting a.rs".to_string());
+        previous.brief.checkpoint = Some("Tests: 3 passed, 0 failed".to_string());
+        previous.brief.last_event_at = Some(1_700_000_000_000);
+        previous.brief.event_seq = 12;
+        previous.brief.pending_input_kind = Some(PendingInputKind::Choice);
+        previous.brief.pending_prompt = Some("Continue?".to_string());
+        previous.brief.pending_options = vec![PendingOption::new("option-0".to_string(), "Yes".to_string(), "y".to_string())];
+        previous.brief.prompt_event_id = Some("p1".to_string());
+        previous.brief.prompt_hash = Some("hash".to_string());
+        previous.events.push_back(SemanticEventEnvelope {
+            event_id: "e1".to_string(), source_revision: 1, occurred_at: 1, source_byte_start: 0, source_byte_end: 1,
+            kind: adapter::SemanticEventKind::AgentMessage { text: "done".to_string() },
+        });
+
+        let mut gone_binding = test_binding();
+        gone_binding.pty_input_revision += 1;
+        let merged = keep_last_picture(Some(&previous), unavailable_snapshot(gone_binding.clone(), "unlinked", "epoch"));
+
+        assert_eq!(merged.brief.telemetry_health, "ended");
+        assert_eq!(merged.brief.operational_state, "ended");
+        assert_eq!(merged.brief.task.as_deref(), Some("ship it"));
+        assert_eq!(merged.brief.latest_instruction.as_deref(), Some("ship it"));
+        assert_eq!(merged.brief.activity_kind.as_deref(), Some("Read"));
+        assert_eq!(merged.brief.activity_text.as_deref(), Some("Inspecting a.rs"));
+        assert_eq!(merged.brief.checkpoint.as_deref(), Some("Tests: 3 passed, 0 failed"));
+        assert_eq!(merged.brief.last_event_at, Some(1_700_000_000_000));
+        assert_eq!(merged.brief.event_seq, 12);
+        assert_eq!(merged.events.len(), 1);
+        assert_eq!(merged.brief.binding, gone_binding);
+        assert!(merged.brief.pending_input_kind.is_none());
+        assert!(merged.brief.pending_prompt.is_none());
+        assert!(merged.brief.pending_options.is_empty());
+        assert!(merged.brief.prompt_event_id.is_none());
+        assert!(merged.brief.prompt_hash.is_none());
+
+        // Already ended: kept as-is rather than rebuilt on every tick.
+        let again = keep_last_picture(Some(&merged), unavailable_snapshot(test_binding(), "unlinked", "epoch"));
+        assert_eq!(again.brief.telemetry_health, "ended");
+        assert_eq!(again.events.len(), 1);
+        assert!(!brief_changed(&merged.brief, &again.brief));
+
+        // A live rebuild always wins over the retained picture.
+        let live = keep_last_picture(Some(&merged), unavailable_snapshot(test_binding(), "live", "epoch"));
+        assert_eq!(live.brief.telemetry_health, "live");
+        assert!(live.brief.task.is_none());
     }
 
     #[test]

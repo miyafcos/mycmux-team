@@ -22,10 +22,11 @@ use serde_json::Value;
 
 use crate::ailog::{
     metrics, parse_ts, truncate_chars, ChunkData, ResultRow, SessionChunk, ToolRow, TurnRow,
-    KIND_CLAUDE, ORIGIN_OTHER, ORIGIN_UNKNOWN,
+    KIND_CLAUDE, ORIGIN_AILOG_INTERNAL, ORIGIN_OTHER, ORIGIN_UNKNOWN,
 };
 
 const FIRST_PROMPT_CHARS: usize = 300;
+const AILOG_SUMMARIZER_MARKER: &str = "[mycmux-ailog-summarizer]";
 
 /// Parse a run of complete JSONL lines.
 ///
@@ -143,11 +144,13 @@ fn apply_common_meta(session: &mut SessionChunk, value: &Value) {
         // `MYCMUX_*` never reaches the transcript, so a mycmux launch is
         // indistinguishable from a bare terminal. Only a non-CLI entrypoint
         // proves the session ran somewhere else.
-        session.origin = if entrypoint == "cli" {
-            ORIGIN_UNKNOWN.to_string()
-        } else {
-            ORIGIN_OTHER.to_string()
-        };
+        if session.origin != ORIGIN_AILOG_INTERNAL {
+            session.origin = if entrypoint == "cli" {
+                ORIGIN_UNKNOWN.to_string()
+            } else {
+                ORIGIN_OTHER.to_string()
+            };
+        }
     }
     if value
         .get("isSidechain")
@@ -327,6 +330,9 @@ fn record_user_text(session: &mut SessionChunk, text: &str) {
     session.user_msg_count += 1;
     session.prompt_chars += trimmed.chars().count() as i64;
     if session.first_prompt.is_none() {
+        if trimmed.starts_with(AILOG_SUMMARIZER_MARKER) {
+            session.origin = ORIGIN_AILOG_INTERNAL.to_string();
+        }
         session.first_prompt = Some(truncate_chars(trimmed, FIRST_PROMPT_CHARS));
     }
     if metrics::is_correction(trimmed) {
@@ -428,4 +434,18 @@ fn content_chars(value: Option<&Value>) -> i64 {
 
 fn num(value: &Value, key: &str) -> i64 {
     value.get(key).and_then(Value::as_i64).unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn summarizer_marker_classifies_the_session_as_internal() {
+        let data = parse_chunk(
+            r#"{"type":"user","sessionId":"s","entrypoint":"cli","message":{"content":"[mycmux-ailog-summarizer]\nsummary input"}}"#,
+            "fallback",
+        );
+        assert_eq!(data.sessions["s"].origin, ORIGIN_AILOG_INTERNAL);
+    }
 }

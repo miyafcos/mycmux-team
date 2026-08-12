@@ -6,8 +6,8 @@ import { attentionDetail, useSessionAttentionStore } from "../../stores/sessionA
 import { useDashboardViewStore, type DashboardDetailTab } from "../../stores/dashboardViewStore";
 import { DashboardTerminalTab } from "./DashboardTerminalTab";
 import { EventTimeline } from "./EventTimeline";
-import { LiveBriefBlock } from "./LiveBriefBlock";
-import { displayStateColor, displayStateLabel } from "./DashboardSessionList";
+import { QuestionCard } from "./QuestionCard";
+import { displayStateColor, displayStateLabel, stallLabel, statePillStyle } from "./DashboardSessionList";
 import { resolveDisplayState, type DashboardCardModel } from "./dashboardModel";
 import { dashboardStrings } from "./dashboardStrings";
 
@@ -20,12 +20,6 @@ const DETAIL_TABS: ReadonlyArray<[DashboardDetailTab, string]> = [
   ["history", dashboardStrings.tabHistory],
   ["terminal", dashboardStrings.tabTerminal],
 ];
-
-function stallLabel(reason: string): string {
-  if (reason === "pty_dead") return dashboardStrings.stallPtyDead;
-  if (reason === "queued_input") return dashboardStrings.stallQueuedInput;
-  return dashboardStrings.stallNoOutput;
-}
 
 function SummaryLine({ label, value }: { label: string; value: string }) {
   return <div style={summaryLineStyle}>
@@ -54,10 +48,11 @@ function TelemetryFallback({ card, now }: { card: DashboardCardModel; now: numbe
   </section>;
 }
 
-export function DashboardSessionDetail({ card, now, onJump }: {
+export function DashboardSessionDetail({ card, now, onJump, onFocusComposer }: {
   card: DashboardCardModel | null;
   now: number;
   onJump: (card: DashboardCardModel) => void;
+  onFocusComposer: () => void;
 }) {
   const detailTab = useDashboardViewStore((state) => state.detailTab);
   const setDetailTab = useDashboardViewStore((state) => state.setDetailTab);
@@ -71,7 +66,9 @@ export function DashboardSessionDetail({ card, now, onJump }: {
   }
 
   const state = resolveDisplayState(card);
-  const live = card.telemetryHealth === "live";
+  const ended = card.telemetryHealth === "ended";
+  // 終了後も要約は保持された内容をそのまま出す (fallback へ落とさない)。
+  const live = card.telemetryHealth === "live" || ended;
   const elapsedMinutes = card.noUpdateMinutes
     ?? (card.lastActivityAt ? Math.max(0, Math.floor((now - card.lastActivityAt) / 60_000)) : null);
   const elapsedText = elapsedMinutes === null
@@ -84,7 +81,10 @@ export function DashboardSessionDetail({ card, now, onJump }: {
   return <section style={paneStyle}>
     <header style={headerStyle}>
       <div style={breadcrumbStyle}>{dashboardStrings.breadcrumb(card.workspace.name, card.tabIndex + 1, card.paneIndex + 1)}</div>
-      <span style={{ ...chipStyle, color: displayStateColor(state), borderColor: displayStateColor(state) }}>{displayStateLabel(state)}</span>
+      {card.neverStarted
+        ? <span style={statePillStyle("var(--cmux-text-tertiary)")}>{dashboardStrings.stateNotStarted}</span>
+        : <span style={statePillStyle(displayStateColor(state))}>{displayStateLabel(state)}</span>}
+      {ended ? <span style={statePillStyle("var(--cmux-text-tertiary)")}>{dashboardStrings.telemetryEnded}</span> : null}
       <span style={elapsedStyle}>{elapsedText}</span>
       {card.attentionCategory === "done" && card.attention?.attentionId
         ? <button type="button" style={buttonStyle} onClick={() => markSeen(card.tab.id, card.attention?.attentionId ?? "")}>{dashboardStrings.markReadButton}</button>
@@ -108,15 +108,25 @@ export function DashboardSessionDetail({ card, now, onJump }: {
     {detailTab === "terminal" ? <DashboardTerminalTab sessionId={card.tab.sessionId} /> : null}
     {detailTab === "history" ? <EventTimeline events={timelineEvents} limit={HISTORY_TIMELINE_ROWS} /> : null}
     {detailTab === "now" ? <div style={nowStyle}>
-      {live ? <section style={summaryBlockStyle}>
+      {card.neverStarted ? <section style={summaryBlockStyle}>
+        <div style={{ color: "var(--cmux-text-secondary)" }}>{dashboardStrings.notStartedDetail}</div>
+      </section> : live ? <section style={summaryBlockStyle}>
         <div style={sectionTitleStyle}>{dashboardStrings.liveBriefTitle}</div>
         {card.task ? <SummaryLine label={dashboardStrings.liveBriefTaskLabel} value={card.task} /> : null}
         {card.activityText ? <SummaryLine label={dashboardStrings.liveBriefActivityLabel} value={card.activityText} /> : null}
         {card.checkpoint ? <SummaryLine label={dashboardStrings.liveBriefCheckpointLabel} value={card.checkpoint} /> : null}
         {card.stall ? <SummaryLine label={stallLabel(card.stall.reason)} value={dashboardStrings.stallSince(Math.max(0, Math.floor((now - card.stall.since) / 60_000)))} /> : null}
       </section> : <TelemetryFallback card={card} now={now} />}
-      <LiveBriefBlock sessionId={card.tab.sessionId} targetLabel={`${card.workspace.name} › ${card.label}`} />
-      <EventTimeline events={timelineEvents} limit={NOW_TIMELINE_ROWS} />
+      {card.neverStarted ? null : <>
+        <EventTimeline events={timelineEvents} limit={NOW_TIMELINE_ROWS} />
+        {/* 質問カードはタイムラインの下 (フッタ) に置く。終了済みは介入できないので出さない。 */}
+        {ended || state !== "needsHuman" ? null : <QuestionCard
+          brief={card.brief}
+          events={timelineEvents}
+          targetLabel={`${card.workspace.name} › ${card.label}`}
+          onFocusComposer={onFocusComposer}
+        />}
+      </>}
     </div> : null}
   </section>;
 }
@@ -139,13 +149,6 @@ const breadcrumbStyle: CSSProperties = {
   whiteSpace: "nowrap",
   fontSize: "var(--cmux-font-size-md)",
   fontWeight: 700,
-};
-const chipStyle: CSSProperties = {
-  flex: "0 0 auto",
-  border: "1px solid var(--cmux-border)",
-  borderRadius: 999,
-  padding: "0 6px",
-  fontSize: "var(--cmux-font-size-sm)",
 };
 const elapsedStyle: CSSProperties = { flex: "0 0 auto", color: "var(--cmux-text-tertiary)", fontSize: "var(--cmux-font-size-sm)" };
 const buttonStyle: CSSProperties = {

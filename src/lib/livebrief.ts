@@ -17,6 +17,8 @@ export interface LiveBinding {
 
 export interface LiveSessionBrief extends LiveBinding {
   task: string | null;
+  /** 直近の「私の指示」原文。answer / ack では上書きされない (reducer.rs と同じ約束)。 */
+  latestInstruction: string | null;
   taskSourceEventIds: string[];
   activityKind: string | null;
   activityText: string | null;
@@ -102,6 +104,15 @@ export function getLiveBriefs(): Promise<LiveSessionBrief[]> {
 
 /** Matches `DEFAULT_EVENT_LIMIT` in src-tauri/src/livebrief/mod.rs. */
 export const LIVE_EVENT_LIMIT = 50;
+
+/**
+ * 一覧行 (表示中の全セッション) に要る本数。連鎖3件+指示が拾えれば足りるので
+ * 詳細より小さく取り、可視セッション数ぶんの往復を軽くする。
+ */
+export const LIVE_EVENT_LIST_LIMIT = 12;
+
+/** 詳細ペイン ([経緯] タブ) が出す行数。1 セッションぶんだけ深く取る。 */
+export const LIVE_EVENT_DETAIL_LIMIT = 200;
 
 export function getLiveEvents(ptySessionIds: string[], limit: number = LIVE_EVENT_LIMIT): Promise<LiveSessionEvents[]> {
   return invoke<LiveSessionEvents[]>("get_live_events", { ptySessionIds, limit });

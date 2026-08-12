@@ -234,7 +234,10 @@ pub fn run() {
         status_feed,
         bootstrapped: AtomicBool::new(false),
         metadata_store: metadata_store.clone(),
-        livebrief_service: livebrief::LiveBriefService::new(session_manager, metadata_store.clone()),
+        livebrief_service: livebrief::LiveBriefService::new(
+            session_manager,
+            metadata_store.clone(),
+        ),
         window_registry: window_registry::WindowRegistry::new(),
     };
 
@@ -330,6 +333,9 @@ pub fn run() {
             commands::ailog::ailog_summarize_start,
             commands::ailog::ailog_summarize_cancel,
             commands::ailog::ailog_summarize_status,
+            commands::ailog::ailog_digest_get,
+            commands::ailog::ailog_digest_generate,
+            commands::ailog::ailog_dashboard,
             commands::ailog::ailog_overview,
             commands::ailog::ailog_series,
             commands::ailog::ailog_breakdown,

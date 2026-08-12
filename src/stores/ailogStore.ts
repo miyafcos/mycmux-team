@@ -3,7 +3,7 @@
  * reports the panel draws from.
  *
  * Loading rules that matter:
- * - Every report for one refresh is fetched in parallel and committed together,
+ * - Every report for one refresh is fetched together and committed together,
  *   so the screen never mixes two different ranges.
  * - A stale response (the user changed the range mid-flight) is dropped by the
  *   sequence guard rather than overwriting newer data.
@@ -13,23 +13,22 @@
 import { create } from "zustand";
 
 import {
-  ailogBreakdown,
+  ailogDashboard,
+  ailogDigestGenerate,
+  ailogDigestGet,
   ailogIndexCancel,
   ailogIndexStart,
   ailogIndexStatus,
   ailogSummarizeCancel,
   ailogSummarizeStart,
   ailogSummarizeStatus,
-  ailogModels,
-  ailogOverview,
-  ailogSeries,
   ailogSessionDetail,
-  ailogSessions,
   buildRange,
   emptyFilters,
   errorMessage,
   type AilogRange,
   type BreakdownReport,
+  type DigestReport,
   type IndexProgress,
   type IndexStatus,
   type SummarizeProgress,
@@ -40,6 +39,7 @@ import {
   type SessionDetail,
   type SessionsReport,
   type RangePreset,
+  toDayInput,
 } from "../lib/ailog";
 import type { LeafDimension } from "../components/ailog/sankeyModel";
 
@@ -105,6 +105,11 @@ interface AilogState {
   summarizeStatus: SummarizeStatus | null;
   summarizeProgress: SummarizeProgress | null;
   summarizeError: string | null;
+  digestDate: string;
+  digestReport: DigestReport | null;
+  digestLoading: boolean;
+  digestGenerating: boolean;
+  digestError: string | null;
 
   // --- actions ---
   setPreset: (preset: RangePreset) => void;
@@ -128,12 +133,27 @@ interface AilogState {
   cancelIndex: () => Promise<void>;
   refreshSummarizeStatus: () => Promise<void>;
   applySummarizeProgress: (progress: SummarizeProgress) => void;
-  startSummarize: () => Promise<void>;
+  startSummarize: (force?: boolean) => Promise<void>;
   cancelSummarize: () => Promise<void>;
+  setDigestDate: (date: string) => void;
+  stepDigestDate: (days: number) => void;
+  refreshDigest: (date?: string) => Promise<void>;
+  generateDigest: (force?: boolean) => Promise<void>;
 }
 
 let refreshSeq = 0;
 let detailSeq = 0;
+let digestSeq = 0;
+
+function utcDayOffset(days: number): string {
+  const now = new Date();
+  return toDayInput(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + days));
+}
+
+function shiftUtcDay(date: string, days: number): string {
+  const ms = Date.parse(`${date}T00:00:00Z`);
+  return Number.isFinite(ms) ? toDayInput(ms + days * 86_400_000) : utcDayOffset(days);
+}
 
 /**
  * A selection the backend can honour: model families and project labels are
@@ -190,6 +210,11 @@ const initialState = {
   summarizeStatus: null,
   summarizeProgress: null,
   summarizeError: null,
+  digestDate: utcDayOffset(-1),
+  digestReport: null,
+  digestLoading: false,
+  digestGenerating: false,
+  digestError: null,
 };
 
 export const useAilogStore = create<AilogState>((set, get) => ({
@@ -247,13 +272,11 @@ export const useAilogStore = create<AilogState>((set, get) => ({
     const mySeq = ++refreshSeq;
     set({ loading: true, error: null });
     try {
-      const [overview, series, models, projects, sessions] = await Promise.all([
-        ailogOverview(range, filters),
-        ailogSeries(range, filters, { bucket: "day", groupBy: "none" }),
-        ailogModels(range, filters, { granularity, bucket: "day" }),
-        ailogBreakdown(range, filters, "project"),
-        ailogSessions(range, filters, { sort: "cost", limit: SESSION_FETCH_LIMIT, offset: 0 }),
-      ]);
+      const { overview, series, models, projects, sessions } = await ailogDashboard(
+        range,
+        filters,
+        granularity,
+      );
       if (mySeq !== refreshSeq) return;
       set({
         overview,
@@ -349,10 +372,10 @@ export const useAilogStore = create<AilogState>((set, get) => ({
     if (summarizeProgress.phase === "done") void get().refreshSummarizeStatus();
   },
 
-  startSummarize: async () => {
-    set({ summarizeError: null });
+  startSummarize: async (force = false) => {
+    set({ summarizeError: null, summarizeProgress: null });
     try {
-      const result = await ailogSummarizeStart();
+      const result = await ailogSummarizeStart(undefined, force);
       if (result.alreadyRunning) set({ summarizeError: "インデックスまたは要約処理がすでに実行中です" });
       await get().refreshSummarizeStatus();
     } catch (error) {
@@ -368,10 +391,45 @@ export const useAilogStore = create<AilogState>((set, get) => ({
       set({ summarizeError: errorMessage(error) });
     }
   },
+
+  setDigestDate: (digestDate) => {
+    set({ digestDate });
+    void get().refreshDigest(digestDate);
+  },
+
+  stepDigestDate: (days) => get().setDigestDate(shiftUtcDay(get().digestDate, days)),
+
+  refreshDigest: async (date = get().digestDate) => {
+    const mySeq = ++digestSeq;
+    set({ digestLoading: true, digestError: null });
+    try {
+      const digestReport = await ailogDigestGet(date);
+      if (mySeq !== digestSeq || get().digestDate !== date) return;
+      set({ digestReport, digestLoading: false, digestError: null });
+    } catch (error) {
+      if (mySeq !== digestSeq || get().digestDate !== date) return;
+      set({ digestReport: null, digestLoading: false, digestError: errorMessage(error) });
+    }
+  },
+
+  generateDigest: async (force = false) => {
+    const date = get().digestDate;
+    const mySeq = ++digestSeq;
+    set({ digestGenerating: true, digestError: null });
+    try {
+      const digestReport = await ailogDigestGenerate(date, force);
+      if (mySeq !== digestSeq || get().digestDate !== date) return;
+      set({ digestReport, digestGenerating: false, digestLoading: false, digestError: null });
+    } catch (error) {
+      if (mySeq !== digestSeq || get().digestDate !== date) return;
+      set({ digestGenerating: false, digestError: errorMessage(error) });
+    }
+  },
 }));
 
 export function __resetAilogStoreForTests(): void {
   refreshSeq = 0;
   detailSeq = 0;
+  digestSeq = 0;
   useAilogStore.setState({ ...initialState });
 }

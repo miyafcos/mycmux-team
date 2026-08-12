@@ -151,7 +151,23 @@ CREATE TABLE IF NOT EXISTS summary (
   summary TEXT,
   cluster TEXT,
   model TEXT,
+  outcome TEXT,
+  confidence TEXT,
+  rework_category TEXT,
+  prompt_version INTEGER,
+  parse_error TEXT,
   PRIMARY KEY (kind, session_id)
+);
+
+CREATE TABLE IF NOT EXISTS digest (
+  kind           TEXT NOT NULL DEFAULT 'all',
+  date           TEXT NOT NULL,
+  created_at     INTEGER NOT NULL,
+  prompt_version INTEGER NOT NULL,
+  model_used     TEXT,
+  json           TEXT,
+  parse_error    TEXT,
+  PRIMARY KEY (kind, date)
 );
 
 CREATE TABLE IF NOT EXISTS price (
@@ -181,6 +197,7 @@ const TABLES: &[&str] = &[
     "file_touch",
     "rework",
     "summary",
+    "digest",
     "index_state",
 ];
 
@@ -226,6 +243,11 @@ fn ensure_f3_columns(conn: &Connection) -> Result<(), String> {
         ("summary", "summary"),
         ("summary", "cluster"),
         ("summary", "model"),
+        ("summary", "outcome"),
+        ("summary", "confidence"),
+        ("summary", "rework_category"),
+        ("summary", "prompt_version"),
+        ("summary", "parse_error"),
     ] {
         let mut stmt = conn
             .prepare(&format!("PRAGMA table_info({table})"))
@@ -238,11 +260,13 @@ fn ensure_f3_columns(conn: &Connection) -> Result<(), String> {
             .iter()
             .any(|name| name == column);
         if !present {
-            conn.execute(
-                &format!("ALTER TABLE {table} ADD COLUMN {column} TEXT"),
-                [],
-            )
-            .map_err(|err| format!("add {table}.{column}: {err}"))?;
+            let ty = if column == "prompt_version" {
+                "INTEGER"
+            } else {
+                "TEXT"
+            };
+            conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {column} {ty}"), [])
+                .map_err(|err| format!("add {table}.{column}: {err}"))?;
         }
     }
     Ok(())

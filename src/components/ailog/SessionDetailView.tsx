@@ -28,6 +28,19 @@ import { Chip, ScrollBox, noteStyle, subtleButtonStyle, tableStyle, tdLeftStyle,
 /** Above this many turns the bars are grouped so the chart stays readable. */
 const MAX_BARS = 240;
 
+const OUTCOME_LABELS: Record<string, string> = { done: "完遂", partial: "途中まで", abandoned: "中断", unclear: "不明" };
+const FINDING_LABELS: Record<string, string> = { cause: "原因", constraint: "制約", gotcha: "ハマり", decision: "決定", verified: "検証済" };
+const REWORK_LABELS: Record<string, string> = { "spec-ambiguity": "仕様曖昧", "wrong-assumption": "思い込み", "env-issue": "環境問題", "tool-failure": "ツール失敗", "scope-creep": "スコープ拡大" };
+
+export function summaryFindings(value: string | null): Array<{ text: string; kind: string }> {
+  if (!value) return [];
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((entry): entry is { text: string; kind: string } => Boolean(entry && typeof entry === "object" && typeof (entry as { text?: unknown }).text === "string" && typeof (entry as { kind?: unknown }).kind === "string"));
+  } catch { return []; }
+}
+
 export interface TurnBar {
   fromSeq: number;
   toSeq: number;
@@ -270,9 +283,20 @@ export function SessionDetailView({ detail, onClose }: { detail: SessionDetail; 
         <div style={{ fontSize: "var(--cmux-font-size-xs)", fontWeight: 700, marginBottom: 4 }}>要約</div>
         {detail.summary ? (
           <div style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-secondary)", lineHeight: 1.7, whiteSpace: "pre-wrap" }}>
-            {[detail.summary.findings, detail.summary.reworkNote, detail.summary.costNote]
-              .filter((value): value is string => Boolean(value))
-              .join("\n")}
+            <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 4 }}>
+              {detail.summary.outcome && OUTCOME_LABELS[detail.summary.outcome] ? <Chip>{OUTCOME_LABELS[detail.summary.outcome]}</Chip> : null}
+              {detail.summary.confidence === "low" ? <Chip tone="warn">低確度</Chip> : null}
+            </div>
+            {summaryFindings(detail.summary.findings).map((finding, index) => (
+              <div key={`${finding.kind}-${index}`}><span style={{ fontWeight: 700 }}>{FINDING_LABELS[finding.kind] ?? finding.kind}</span>{` ${finding.text}`}</div>
+            ))}
+            {detail.summary.reworkNote ? (() => {
+              let cause = detail.summary.reworkNote;
+              try { const value: unknown = JSON.parse(cause); if (value && typeof value === "object" && typeof (value as { cause?: unknown }).cause === "string") cause = (value as { cause: string }).cause; } catch { /* legacy text remains readable */ }
+              const category = detail.summary.reworkCategory ? REWORK_LABELS[detail.summary.reworkCategory] : undefined;
+              return cause ? <div>{category ? `${category} ${cause}` : cause}</div> : null;
+            })() : null}
+            {detail.summary.costNote ? <div>{detail.summary.costNote}</div> : null}
             <div style={{ ...noteStyle, marginTop: 4 }}>
               {`${formatLocalDateTime(detail.summary.createdAt)} · ${detail.summary.modelUsed ?? "モデル不明"}`}
             </div>

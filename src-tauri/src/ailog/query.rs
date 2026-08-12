@@ -14,7 +14,9 @@
 //!   exceeds the grand total; the response sets `overlapping` instead of
 //!   inventing a split.
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::sync::Arc;
 
 use rusqlite::types::Value as SqlValue;
 use rusqlite::{params_from_iter, Connection};
@@ -66,6 +68,9 @@ fn build_where(range: &ResolvedRange, filters: &Filters, force_sidechain: bool) 
     push_in(&mut clauses, &mut params, "t.effort", &filters.efforts);
     push_in(&mut clauses, &mut params, "s.git_branch", &filters.branches);
     push_in(&mut clauses, &mut params, "s.origin", &filters.origins);
+    if filters.origins.is_empty() {
+        clauses.push("COALESCE(s.origin, 'unknown') <> 'ailog-internal'".to_string());
+    }
 
     if !filters.models.is_empty() {
         let holes = vec!["?"; filters.models.len()].join(",");
@@ -162,12 +167,54 @@ struct TurnRecord {
     abandoned: bool,
 }
 
+struct TurnCache {
+    entries: HashMap<String, Arc<Vec<TurnRecord>>>,
+}
+
+thread_local! {
+    static TURN_CACHE: RefCell<Option<TurnCache>> = const { RefCell::new(None) };
+}
+
+fn turn_cache_key(range: &ResolvedRange, filters: &Filters, force_sidechain: bool) -> String {
+    format!(
+        "{}:{}:{force_sidechain}:{}",
+        range.from,
+        range.to,
+        serde_json::to_string(filters).unwrap_or_default(),
+    )
+}
+
+/// Reuse the same filtered turn rows while assembling a dashboard response.
+/// The cache is deliberately thread-local and scoped to one request: it avoids
+/// repeated scans without retaining a potentially large analytics database in
+/// process memory after the response has been sent.
+fn with_turn_cache<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    TURN_CACHE.with(|cache| {
+        debug_assert!(cache.borrow().is_none(), "turn cache scopes must not nest");
+        *cache.borrow_mut() = Some(TurnCache {
+            entries: HashMap::new(),
+        });
+    });
+    let result = f();
+    TURN_CACHE.with(|cache| *cache.borrow_mut() = None);
+    result
+}
+
 fn read_turns(
     conn: &Connection,
     range: &ResolvedRange,
     filters: &Filters,
     force_sidechain: bool,
-) -> Result<Vec<TurnRecord>, String> {
+) -> Result<Arc<Vec<TurnRecord>>, String> {
+    let cache_key = turn_cache_key(range, filters, force_sidechain);
+    if let Some(cached) = TURN_CACHE.with(|cache| {
+        cache
+            .borrow()
+            .as_ref()
+            .and_then(|value| value.entries.get(&cache_key).cloned())
+    }) {
+        return Ok(cached);
+    }
     let filter = build_where(range, filters, force_sidechain);
     let sql = format!(
         "{TURN_SELECT} WHERE {} ORDER BY t.kind, t.session_id, t.seq",
@@ -219,7 +266,13 @@ fn read_turns(
     for row in rows {
         out.push(row.map_err(|err| format!("turn row: {err}"))?);
     }
-    Ok(out)
+    let turns = Arc::new(out);
+    TURN_CACHE.with(|cache| {
+        if let Some(cache) = cache.borrow_mut().as_mut() {
+            cache.entries.insert(cache_key, turns.clone());
+        }
+    });
+    Ok(turns)
 }
 
 // ---------------------------------------------------------------------------
@@ -547,12 +600,20 @@ pub struct Overview {
     pub top_projects: Vec<ProjectRow>,
     pub top_titles: Vec<TitleRow>,
     pub rework: ReworkSummary,
+    pub excluded_internal: ExcludedInternal,
     pub cache_hit_rate: f64,
     pub price_source: String,
     pub unpriced_models: Vec<String>,
     pub index_freshness: IndexFreshness,
     /// Reminder for the UI: these are metered-equivalent estimates, not bills.
     pub cost_note: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExcludedInternal {
+    pub sessions: i64,
+    pub cost_usd: f64,
 }
 
 pub const COST_NOTE: &str =
@@ -793,6 +854,10 @@ pub fn overview(
     let previous = run_pass(&previous_turns, &prices);
     let previous_rework = rework_summary(conn, &previous.sessions)?;
     let current_rework = rework_summary(conn, &pass.sessions)?;
+    let mut internal_filters = filters.clone();
+    internal_filters.origins = vec!["ailog-internal".to_string()];
+    let internal_turns = read_turns(conn, &resolved, &internal_filters, false)?;
+    let internal_pass = run_pass(&internal_turns, &prices);
 
     let compare_previous = ComparePrevious {
         sessions_pct: pct_change(sessions_count as f64, previous.sessions.len() as f64),
@@ -890,6 +955,10 @@ pub fn overview(
         top_projects,
         top_titles,
         rework: current_rework,
+        excluded_internal: ExcludedInternal {
+            sessions: internal_pass.sessions.len() as i64,
+            cost_usd: internal_pass.totals.cost,
+        },
         cache_hit_rate: pass.totals.cache_hit_rate(),
         price_source: prices.source_summary(),
         unpriced_models: pass.unpriced.iter().cloned().collect(),
@@ -1009,7 +1078,7 @@ pub fn series(
     let mut group_sessions: BTreeMap<(i64, String), HashSet<SessionKey>> = BTreeMap::new();
     let mut unpriced = BTreeSet::new();
 
-    for turn in &turns {
+    for turn in turns.iter() {
         let bucket = bucket_start(turn.ts, &options.bucket);
         let group = group_value(turn, &options.group_by);
         let key: SessionKey = (turn.kind.clone(), turn.session_id.clone());
@@ -1135,7 +1204,7 @@ pub fn breakdown(
     let mut total_cost = 0.0;
     let mut overlapping = false;
 
-    for turn in &turns {
+    for turn in turns.iter() {
         total_cost += turn.cost;
         let key: SessionKey = (turn.kind.clone(), turn.session_id.clone());
         session_rework.insert(key.clone(), turn.rework);
@@ -1326,7 +1395,7 @@ pub fn models(
 
     let mut series_map: BTreeMap<i64, BTreeMap<String, TokenAcc>> = BTreeMap::new();
     let mut series_sessions: BTreeMap<(i64, String), HashSet<SessionKey>> = BTreeMap::new();
-    for turn in &turns {
+    for turn in turns.iter() {
         let name = if options.granularity == "raw" {
             turn.model.clone()
         } else {
@@ -1371,7 +1440,7 @@ pub fn models(
     // no claim about whether the switch helped.
     let mut handoff_counts: BTreeMap<(String, String), i64> = BTreeMap::new();
     let mut last_seen: HashMap<SessionKey, String> = HashMap::new();
-    for turn in &turns {
+    for turn in turns.iter() {
         let name = if options.granularity == "raw" {
             turn.model.clone()
         } else {
@@ -1514,6 +1583,19 @@ pub struct SessionsReport {
     pub cost_note: String,
 }
 
+/// The five reports rendered by the dashboard share the same range and
+/// filters. Returning them together lets the query layer share its filtered
+/// turn rows rather than scanning the same window once per card.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DashboardReport {
+    pub overview: Overview,
+    pub series: SeriesReport,
+    pub models: ModelsReport,
+    pub projects: BreakdownReport,
+    pub sessions: SessionsReport,
+}
+
 pub fn sessions(
     conn: &Connection,
     range: &Range,
@@ -1556,47 +1638,69 @@ pub fn sessions(
     let page: Vec<SessionKey> = keys.into_iter().skip(offset).take(limit).collect();
 
     let mut rows = Vec::with_capacity(page.len());
-    for key in page {
-        let row = conn
-            .query_row(
-                "SELECT ai_title, first_prompt, project_label, git_branch, origin, \
-                 primary_model, model_count, is_sidechain, work_tags, started_at, ended_at, \
-                 wall_ms, active_ms, turn_count, user_msg_count, compact_count, cost_usd, \
-                 goal_summary, goal_cluster \
-                 FROM session WHERE kind = ?1 AND session_id = ?2",
-                rusqlite::params![key.0, key.1],
-                |row| {
-                    Ok(SessionRow {
-                        kind: key.0.clone(),
-                        session_id: key.1.clone(),
-                        title: row
-                            .get::<_, Option<String>>(0)?
-                            .or(row.get::<_, Option<String>>(1)?),
-                        project_label: row.get(2)?,
-                        git_branch: row.get(3)?,
-                        origin: row.get(4)?,
-                        primary_model: row.get(5)?,
-                        model_count: row.get(6)?,
-                        is_sidechain: row.get::<_, i64>(7)? != 0,
-                        work_tags: parse_json_array(row.get::<_, Option<String>>(8)?.as_deref()),
-                        started_at: row.get(9)?,
-                        ended_at: row.get(10)?,
-                        wall_ms: row.get(11)?,
-                        active_ms: row.get(12)?,
-                        turn_count: row.get(13)?,
-                        user_msg_count: row.get(14)?,
-                        compact_count: row.get(15)?,
-                        cost_usd: row.get(16)?,
-                        rework_score: 0.0,
-                        goal_summary: row.get(17)?,
-                        goal_cluster: row.get(18)?,
-                    })
-                },
-            )
-            .map_err(|err| format!("read session row: {err}"))?;
-        let mut row = row;
-        row.rework_score = pass.sessions.get(&key).map(|s| s.rework).unwrap_or(0.0);
-        rows.push(row);
+    if !page.is_empty() {
+        let requested = std::iter::repeat("(?, ?, ?)")
+            .take(page.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "WITH requested(position, kind, session_id) AS (VALUES {requested}) \
+             SELECT requested.kind, requested.session_id, s.ai_title, s.first_prompt, \
+                    s.project_label, s.git_branch, s.origin, s.primary_model, s.model_count, \
+                    s.is_sidechain, s.work_tags, s.started_at, s.ended_at, s.wall_ms, \
+                    s.active_ms, s.turn_count, s.user_msg_count, s.compact_count, s.cost_usd, \
+                    s.goal_summary, s.goal_cluster \
+             FROM requested \
+             JOIN session s ON s.kind = requested.kind AND s.session_id = requested.session_id \
+             ORDER BY requested.position"
+        );
+        let mut params = Vec::with_capacity(page.len() * 3);
+        for (position, (kind, session_id)) in page.iter().enumerate() {
+            params.push(SqlValue::Integer(position as i64));
+            params.push(SqlValue::Text(kind.clone()));
+            params.push(SqlValue::Text(session_id.clone()));
+        }
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|err| format!("prepare session page: {err}"))?;
+        let result_rows = stmt
+            .query_map(params_from_iter(params.iter()), |row| {
+                Ok(SessionRow {
+                    kind: row.get(0)?,
+                    session_id: row.get(1)?,
+                    title: row
+                        .get::<_, Option<String>>(2)?
+                        .or(row.get::<_, Option<String>>(3)?),
+                    project_label: row.get(4)?,
+                    git_branch: row.get(5)?,
+                    origin: row.get(6)?,
+                    primary_model: row.get(7)?,
+                    model_count: row.get(8)?,
+                    is_sidechain: row.get::<_, i64>(9)? != 0,
+                    work_tags: parse_json_array(row.get::<_, Option<String>>(10)?.as_deref()),
+                    started_at: row.get(11)?,
+                    ended_at: row.get(12)?,
+                    wall_ms: row.get(13)?,
+                    active_ms: row.get(14)?,
+                    turn_count: row.get(15)?,
+                    user_msg_count: row.get(16)?,
+                    compact_count: row.get(17)?,
+                    cost_usd: row.get(18)?,
+                    rework_score: 0.0,
+                    goal_summary: row.get(19)?,
+                    goal_cluster: row.get(20)?,
+                })
+            })
+            .map_err(|err| format!("run session page: {err}"))?;
+        for row in result_rows {
+            let mut row = row.map_err(|err| format!("read session row: {err}"))?;
+            row.rework_score = pass
+                .sessions
+                .get(&(row.kind.clone(), row.session_id.clone()))
+                .map(|session| session.rework)
+                .unwrap_or(0.0);
+            rows.push(row);
+        }
     }
 
     Ok(SessionsReport {
@@ -1609,6 +1713,56 @@ pub fn sessions(
         total,
         price_source: prices.source_summary(),
         cost_note: COST_NOTE.to_string(),
+    })
+}
+
+/// Assemble the dashboard from one connection and a request-scoped turn-row
+/// cache. The report functions remain public for the drill-down surfaces and
+/// for parity testing, while the dashboard only reads the current and
+/// comparison windows once each.
+pub fn dashboard(
+    conn: &Connection,
+    range: &Range,
+    filters: &Filters,
+    granularity: &str,
+    now_ms: i64,
+) -> Result<DashboardReport, String> {
+    with_turn_cache(|| {
+        Ok(DashboardReport {
+            overview: overview(conn, range, filters, now_ms)?,
+            series: series(
+                conn,
+                range,
+                filters,
+                &SeriesOptions {
+                    bucket: "day".to_string(),
+                    group_by: "none".to_string(),
+                },
+                now_ms,
+            )?,
+            models: models(
+                conn,
+                range,
+                filters,
+                &ModelsOptions {
+                    granularity: granularity.to_string(),
+                    bucket: "day".to_string(),
+                },
+                now_ms,
+            )?,
+            projects: breakdown(conn, range, filters, "project", now_ms)?,
+            sessions: sessions(
+                conn,
+                range,
+                filters,
+                &SessionsOptions {
+                    sort: "cost".to_string(),
+                    limit: 5000,
+                    offset: 0,
+                },
+                now_ms,
+            )?,
+        })
     })
 }
 
@@ -1728,6 +1882,10 @@ pub struct SummaryRow {
     pub findings: Option<String>,
     pub rework_note: Option<String>,
     pub cost_note: Option<String>,
+    pub outcome: Option<String>,
+    pub confidence: Option<String>,
+    pub rework_category: Option<String>,
+    pub prompt_version: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1968,7 +2126,7 @@ pub fn session_detail(
 
     let summary = conn
         .query_row(
-            "SELECT created_at, model_used, findings, rework_note, cost_note FROM summary \
+            "SELECT created_at, model_used, findings, rework_note, cost_note, outcome, confidence, rework_category, prompt_version FROM summary \
              WHERE kind = ?1 AND session_id = ?2",
             rusqlite::params![kind, session_id],
             |row| {
@@ -1978,6 +2136,10 @@ pub fn session_detail(
                     findings: row.get(2)?,
                     rework_note: row.get(3)?,
                     cost_note: row.get(4)?,
+                    outcome: row.get(5)?,
+                    confidence: row.get(6)?,
+                    rework_category: row.get(7)?,
+                    prompt_version: row.get(8)?,
                 })
             },
         )
@@ -2167,7 +2329,7 @@ pub fn efficiency(
     let mut by_subagent: BTreeMap<String, (TokenAcc, HashSet<SessionKey>)> = BTreeMap::new();
     let mut by_compaction: BTreeMap<String, (TokenAcc, HashSet<SessionKey>)> = BTreeMap::new();
 
-    for turn in &turns {
+    for turn in turns.iter() {
         let key: SessionKey = (turn.kind.clone(), turn.session_id.clone());
         let model = turn.family.clone().unwrap_or_else(|| "(unknown)".into());
         let effort = turn.effort.clone().unwrap_or_else(|| "(none)".into());

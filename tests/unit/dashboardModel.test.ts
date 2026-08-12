@@ -4,6 +4,8 @@ import {
   applyDashboardFilters,
   buildDashboardCards,
   countByDisplayState,
+  countVisibility,
+  countWorkspaceStructure,
   groupDashboardCard,
   needsHumanCards,
   orderDashboardCards,
@@ -41,6 +43,7 @@ function brief(overrides: Partial<LiveSessionBrief> = {}): LiveSessionBrief {
     sourceRevision: 1,
     ptyInputRevision: 1,
     task: "目的",
+    latestInstruction: "テストを通して",
     taskSourceEventIds: [],
     activityKind: null,
     activityText: "実行中",
@@ -128,7 +131,37 @@ describe("dashboard model", () => {
     expect(built.task).toBe("目的");
     expect(built.activityText).toBe("実行中");
     expect(built.checkpoint).toBe("確認済み");
+    expect(built.latestInstruction).toBe("テストを通して");
+    expect(built.neverStarted).toBe(false);
     expect(built.noUpdateMinutes).toBe(0);
+  });
+
+  it("marks a tab that has no brief, no buffer and no activity as never started", () => {
+    const [built] = cards({ hasTerminalBuffer: () => false });
+    expect(built.neverStarted).toBe(true);
+    expect(built.latestInstruction).toBeNull();
+    // 端末バッファが無いだけの稼働中タブは未起動ではない。
+    expect(cards({ hasTerminalBuffer: () => false, lastLogAtBySession: { "s-1": now - 1 } })[0].neverStarted).toBe(false);
+    // brief があるなら未起動ではない。
+    expect(cards({ hasTerminalBuffer: () => false, briefsBySession: { "s-1": brief() } })[0].neverStarted).toBe(false);
+  });
+
+  it("never calls a never-started tab stale or running", () => {
+    const [built] = cards({ hasTerminalBuffer: () => false });
+    expect(resolveDisplayState(built)).toBe("idle");
+    // stall / group が付いていても未起動なら断定しない。
+    expect(resolveDisplayState({
+      ...built,
+      stall: { sessionId: "s-1", reason: "no_output", since: 0 },
+      group: "stalled",
+    })).toBe("idle");
+    expect(resolveDisplayState({ ...built, group: "working" })).toBe("idle");
+  });
+
+  it("searches the brief instruction as well", () => {
+    const [built] = cards({ briefsBySession: { "s-1": brief({ latestInstruction: "章立ての整理" }) } });
+    const filters = { query: "章立て", workspaceId: null, needsHumanOnly: false, agentKind: null };
+    expect(applyDashboardFilters([built], filters)).toEqual([built]);
   });
 
   describe("resolveDisplayState", () => {
@@ -251,6 +284,35 @@ describe("dashboard model", () => {
       distinct({ attentionCategory: "done", group: "done" }, "t-4"),
     ]);
     expect(counts).toEqual({ needsHuman: 1, error: 1, running: 1, noUpdate: 0, idle: 0, done: 1 });
+  });
+
+  it("counts the header structure as panes, tabs and workspaces", () => {
+    const base = workspace();
+    const second: Workspace = {
+      ...base,
+      id: "ws-2",
+      name: "Workspace B",
+      panes: [
+        { id: "pane-2", sessionId: "s-2", activeTabId: "tab-2", tabs: [
+          { id: "tab-2", sessionId: "s-2", agentId: "claude", label: "Beta", type: "terminal" },
+          { id: "tab-3", sessionId: "s-3", agentId: "codex", label: "Gamma", type: "terminal" },
+        ] },
+        { id: "pane-3", sessionId: "s-4", activeTabId: "tab-4", tabs: [
+          { id: "tab-4", sessionId: "s-4", agentId: "codex", label: "Delta", type: "terminal" },
+        ] },
+      ],
+    } as Workspace;
+    expect(countWorkspaceStructure([base, second])).toEqual({ panes: 3, tabs: 4, workspaces: 2 });
+    expect(countWorkspaceStructure([])).toEqual({ panes: 0, tabs: 0, workspaces: 0 });
+  });
+
+  it("splits visible from background by the terminal buffer, not by the state", () => {
+    expect(countVisibility([
+      distinct({ unobserved: false }, "t-1"),
+      distinct({ unobserved: true }, "t-2"),
+      distinct({ unobserved: true }, "t-3"),
+    ])).toEqual({ visible: 1, background: 2 });
+    expect(countVisibility([])).toEqual({ visible: 0, background: 0 });
   });
 
   it("applies every filter as an intersection", () => {
