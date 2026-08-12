@@ -1716,6 +1716,347 @@ pub fn sessions(
     })
 }
 
+// ---------------------------------------------------------------------------
+// Learning feed and rework rankings (Phase 2)
+// ---------------------------------------------------------------------------
+
+const FINDING_REPEAT_THRESHOLD: f64 = 0.55;
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct FindingsOptions {
+    pub kind: Option<String>,
+    pub query: Option<String>,
+    pub limit: i64,
+    pub offset: i64,
+}
+
+impl Default for FindingsOptions {
+    fn default() -> Self {
+        Self {
+            kind: None,
+            query: None,
+            limit: 50,
+            offset: 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FindingRow {
+    pub text: String,
+    pub kind: String,
+    pub session_id: String,
+    pub session_kind: String,
+    pub date: i64,
+    pub goal_summary: Option<String>,
+    pub project_label: Option<String>,
+    pub cost_usd: f64,
+    pub repeat_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FindingsReport {
+    pub rows: Vec<FindingRow>,
+    pub total: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolRankingRow {
+    pub name: String,
+    pub target: Option<String>,
+    pub executions: i64,
+    pub failures: i64,
+    pub failure_rate: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileRankingRow {
+    pub path: String,
+    pub edit_count: i64,
+    pub session_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReworkRankingsReport {
+    pub failed_commands: Vec<ToolRankingRow>,
+    pub rewritten_files: Vec<FileRankingRow>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StoredFinding {
+    text: String,
+    kind: String,
+}
+
+fn learning_keys(
+    conn: &Connection,
+    resolved: &ResolvedRange,
+    filters: &Filters,
+) -> Result<BTreeSet<SessionKey>, String> {
+    let turns = read_turns(conn, resolved, filters, false)?;
+    Ok(turns
+        .iter()
+        .filter(|turn| turn.origin.as_deref() != Some("ailog-internal"))
+        .map(|turn| (turn.kind.clone(), turn.session_id.clone()))
+        .collect())
+}
+
+fn normalized_ngrams(text: &str) -> HashSet<String> {
+    let normalized: String = text
+        .chars()
+        .filter(|ch| !ch.is_whitespace() && !ch.is_ascii_punctuation())
+        .flat_map(char::to_lowercase)
+        .collect();
+    let chars: Vec<char> = normalized.chars().collect();
+    chars.windows(3).map(|gram| gram.iter().collect()).collect()
+}
+
+fn jaccard(left: &HashSet<String>, right: &HashSet<String>) -> f64 {
+    let union = left.union(right).count();
+    if union == 0 {
+        return 0.0;
+    }
+    left.intersection(right).count() as f64 / union as f64
+}
+
+fn apply_repeat_counts(rows: &mut [FindingRow]) {
+    let grams: Vec<HashSet<String>> = rows
+        .iter()
+        .map(|row| normalized_ngrams(&row.text))
+        .collect();
+    let mut parents: Vec<usize> = (0..rows.len()).collect();
+    fn root(parents: &mut [usize], node: usize) -> usize {
+        if parents[node] != node {
+            let parent = root(parents, parents[node]);
+            parents[node] = parent;
+        }
+        parents[node]
+    }
+    // ponytail: O(n^2) pairwise 3-gram jaccard; switch to minhash/LSH if findings exceed ~5k per range
+    for left in 0..rows.len() {
+        for right in (left + 1)..rows.len() {
+            if rows[left].session_kind == rows[right].session_kind
+                && rows[left].session_id == rows[right].session_id
+            {
+                continue;
+            }
+            if jaccard(&grams[left], &grams[right]) >= FINDING_REPEAT_THRESHOLD {
+                let left_root = root(&mut parents, left);
+                let right_root = root(&mut parents, right);
+                if left_root != right_root {
+                    parents[right_root] = left_root;
+                }
+            }
+        }
+    }
+    let mut counts: HashMap<usize, i64> = HashMap::new();
+    for index in 0..rows.len() {
+        let group = root(&mut parents, index);
+        *counts.entry(group).or_default() += 1;
+    }
+    for index in 0..rows.len() {
+        rows[index].repeat_count = counts[&root(&mut parents, index)];
+    }
+}
+
+pub fn findings(
+    conn: &Connection,
+    range: &Range,
+    filters: &Filters,
+    options: &FindingsOptions,
+    now_ms: i64,
+) -> Result<FindingsReport, String> {
+    let (resolved, _) = range.resolve(now_ms);
+    let keys = learning_keys(conn, &resolved, filters)?;
+    if keys.is_empty() {
+        return Ok(FindingsReport {
+            rows: Vec::new(),
+            total: 0,
+        });
+    }
+    let kind_filter = options.kind.as_deref().filter(|value| !value.is_empty());
+    let query_filter = options
+        .query
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .map(str::to_lowercase);
+    let mut stmt = conn.prepare(
+        "SELECT sm.kind, sm.session_id, sm.findings, s.started_at, COALESCE(sm.goal_summary, s.goal_summary), s.project_label, COALESCE(s.cost_usd, 0) \
+         FROM summary sm JOIN session s ON s.kind = sm.kind AND s.session_id = sm.session_id \
+         WHERE COALESCE(s.origin, 'unknown') <> 'ailog-internal'"
+    ).map_err(|err| format!("prepare findings: {err}"))?;
+    let records = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<i64>>(3)?.unwrap_or(0),
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, Option<String>>(5)?,
+                row.get::<_, f64>(6)?,
+            ))
+        })
+        .map_err(|err| format!("query findings: {err}"))?;
+    let mut rows = Vec::new();
+    for record in records {
+        let (session_kind, session_id, raw, date, goal_summary, project_label, cost_usd) =
+            record.map_err(|err| format!("read finding: {err}"))?;
+        if !keys.contains(&(session_kind.clone(), session_id.clone())) {
+            continue;
+        }
+        let stored: Vec<StoredFinding> = raw
+            .as_deref()
+            .and_then(|value| serde_json::from_str(value).ok())
+            .unwrap_or_default();
+        for finding in stored {
+            if finding.text.trim().is_empty()
+                || kind_filter.is_some_and(|kind| kind != finding.kind)
+                || query_filter
+                    .as_ref()
+                    .is_some_and(|query| !finding.text.to_lowercase().contains(query))
+            {
+                continue;
+            }
+            rows.push(FindingRow {
+                text: finding.text,
+                kind: finding.kind,
+                session_id: session_id.clone(),
+                session_kind: session_kind.clone(),
+                date,
+                goal_summary: goal_summary.clone(),
+                project_label: project_label.clone(),
+                cost_usd,
+                repeat_count: 1,
+            });
+        }
+    }
+    rows.sort_by(|left, right| {
+        right
+            .date
+            .cmp(&left.date)
+            .then_with(|| left.session_kind.cmp(&right.session_kind))
+            .then_with(|| left.session_id.cmp(&right.session_id))
+    });
+    apply_repeat_counts(&mut rows);
+    let total = rows.len() as i64;
+    let offset = options.offset.max(0) as usize;
+    let limit = options.limit.clamp(0, 50) as usize;
+    Ok(FindingsReport {
+        rows: rows.into_iter().skip(offset).take(limit).collect(),
+        total,
+    })
+}
+
+pub fn rework_rankings(
+    conn: &Connection,
+    range: &Range,
+    filters: &Filters,
+    now_ms: i64,
+) -> Result<ReworkRankingsReport, String> {
+    let (resolved, _) = range.resolve(now_ms);
+    let keys = learning_keys(conn, &resolved, filters)?;
+    if keys.is_empty() {
+        return Ok(ReworkRankingsReport {
+            failed_commands: Vec::new(),
+            rewritten_files: Vec::new(),
+        });
+    }
+    let mut tools: BTreeMap<(String, Option<String>), (i64, i64)> = BTreeMap::new();
+    let mut tool_stmt = conn.prepare("SELECT te.kind, te.session_id, te.name, NULLIF(TRIM(te.target), ''), COALESCE(te.is_error, 0) FROM tool_event te JOIN session s ON s.kind=te.kind AND s.session_id=te.session_id WHERE te.ts >= ? AND te.ts <= ? AND COALESCE(s.origin, 'unknown') <> 'ailog-internal'").map_err(|err| format!("prepare tool rankings: {err}"))?;
+    let tool_rows = tool_stmt
+        .query_map([resolved.from, resolved.to], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, i64>(4)?,
+            ))
+        })
+        .map_err(|err| format!("query tool rankings: {err}"))?;
+    for row in tool_rows {
+        let (kind, session_id, name, target, is_error) =
+            row.map_err(|err| format!("read tool ranking: {err}"))?;
+        if !keys.contains(&(kind, session_id)) {
+            continue;
+        }
+        let entry = tools.entry((name, target)).or_default();
+        entry.0 += 1;
+        entry.1 += (is_error != 0) as i64;
+    }
+    let mut failed_commands: Vec<ToolRankingRow> = tools
+        .into_iter()
+        .filter_map(|((name, target), (executions, failures))| {
+            (failures > 0).then(|| ToolRankingRow {
+                name,
+                target,
+                executions,
+                failures,
+                failure_rate: failures as f64 / executions as f64,
+            })
+        })
+        .collect();
+    failed_commands.sort_by(|left, right| {
+        right
+            .failures
+            .cmp(&left.failures)
+            .then_with(|| right.executions.cmp(&left.executions))
+            .then_with(|| left.name.cmp(&right.name))
+            .then_with(|| left.target.cmp(&right.target))
+    });
+    failed_commands.truncate(10);
+    let mut files: BTreeMap<String, (i64, BTreeSet<SessionKey>)> = BTreeMap::new();
+    let mut file_stmt = conn.prepare("SELECT ft.kind, ft.session_id, ft.path, COALESCE(ft.edit_count, 0) FROM file_touch ft JOIN session s ON s.kind=ft.kind AND s.session_id=ft.session_id WHERE COALESCE(ft.edit_count, 0) >= 3 AND COALESCE(s.origin, 'unknown') <> 'ailog-internal'").map_err(|err| format!("prepare file rankings: {err}"))?;
+    let file_rows = file_stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        })
+        .map_err(|err| format!("query file rankings: {err}"))?;
+    for row in file_rows {
+        let (kind, session_id, path, edits) =
+            row.map_err(|err| format!("read file ranking: {err}"))?;
+        let key = (kind, session_id);
+        if !keys.contains(&key) {
+            continue;
+        }
+        let entry = files.entry(path).or_insert_with(|| (0, BTreeSet::new()));
+        entry.0 += edits;
+        entry.1.insert(key);
+    }
+    let mut rewritten_files: Vec<FileRankingRow> = files
+        .into_iter()
+        .map(|(path, (edit_count, sessions))| FileRankingRow {
+            path,
+            edit_count,
+            session_count: sessions.len() as i64,
+        })
+        .collect();
+    rewritten_files.sort_by(|left, right| {
+        right
+            .edit_count
+            .cmp(&left.edit_count)
+            .then_with(|| right.session_count.cmp(&left.session_count))
+            .then_with(|| left.path.cmp(&right.path))
+    });
+    rewritten_files.truncate(10);
+    Ok(ReworkRankingsReport {
+        failed_commands,
+        rewritten_files,
+    })
+}
+
 /// Assemble the dashboard from one connection and a request-scoped turn-row
 /// cache. The report functions remain public for the drill-down surfaces and
 /// for parity testing, while the dashboard only reads the current and
@@ -2267,6 +2608,106 @@ pub const INTERPRETATION_NOTE: &str =
     "These groups are reported side by side. Differences between them are not \
      evidence of cause: a model, effort level or compaction event is chosen for \
      reasons that also affect the work itself.";
+
+// user rule: split sessions beyond 300k context
+pub const LARGE_CONTEXT_THRESHOLD: i64 = 300_000;
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuleCheckSession {
+    pub kind: String,
+    pub session_id: String,
+    pub title: Option<String>,
+    pub project_label: Option<String>,
+    pub cost_usd: f64,
+    pub max_context_tokens: i64,
+    pub compact_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuleCheckFinding {
+    pub count: i64,
+    pub sessions: Vec<RuleCheckSession>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuleCheckReport {
+    pub range: RangeOut,
+    pub large_context: RuleCheckFinding,
+    pub compacted: RuleCheckFinding,
+}
+
+#[derive(Default)]
+struct RuleCheckAcc {
+    title: Option<String>,
+    project_label: Option<String>,
+    cost_usd: f64,
+    max_context_tokens: i64,
+    compact_count: i64,
+}
+
+pub fn rule_check(
+    conn: &Connection,
+    range: &Range,
+    filters: &Filters,
+    now_ms: i64,
+) -> Result<RuleCheckReport, String> {
+    let (resolved, label) = range.resolve(now_ms);
+    let turns = read_turns(conn, &resolved, filters, false)?;
+    let mut sessions: BTreeMap<SessionKey, RuleCheckAcc> = BTreeMap::new();
+    for turn in turns.iter().filter(|turn| turn.origin.as_deref() != Some("ailog-internal")) {
+        let entry = sessions
+            .entry((turn.kind.clone(), turn.session_id.clone()))
+            .or_default();
+        entry.title = entry.title.clone().or_else(|| turn.ai_title.clone()).or_else(|| turn.first_prompt.clone());
+        entry.project_label = entry.project_label.clone().or_else(|| turn.project_label.clone());
+        entry.cost_usd += turn.cost;
+        entry.max_context_tokens = entry.max_context_tokens.max(turn.input + turn.cache_read);
+        entry.compact_count = entry.compact_count.max(turn.compacts);
+    }
+
+    let make_finding = |matches: Vec<RuleCheckSession>| RuleCheckFinding {
+        count: matches.len() as i64,
+        sessions: matches.into_iter().take(5).collect(),
+    };
+    let mut rows: Vec<RuleCheckSession> = sessions
+        .into_iter()
+        .map(|((kind, session_id), acc)| RuleCheckSession {
+            kind,
+            session_id,
+            title: acc.title,
+            project_label: acc.project_label,
+            cost_usd: acc.cost_usd,
+            max_context_tokens: acc.max_context_tokens,
+            compact_count: acc.compact_count,
+        })
+        .collect();
+    rows.sort_by(|a, b| {
+        b.cost_usd
+            .partial_cmp(&a.cost_usd)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.kind.cmp(&b.kind))
+            .then_with(|| a.session_id.cmp(&b.session_id))
+    });
+    let large_context = make_finding(
+        rows.iter()
+            .filter(|row| row.max_context_tokens > LARGE_CONTEXT_THRESHOLD)
+            .cloned()
+            .collect(),
+    );
+    let compacted = make_finding(
+        rows.into_iter()
+            .filter(|row| row.compact_count > 0)
+            .collect(),
+    );
+    Ok(RuleCheckReport {
+        range: RangeOut { from: resolved.from, to: resolved.to, label },
+        large_context,
+        compacted,
+    })
+}
 
 fn efficiency_rows(
     groups: BTreeMap<String, (TokenAcc, HashSet<SessionKey>)>,

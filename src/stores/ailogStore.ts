@@ -14,6 +14,13 @@ import { create } from "zustand";
 
 import {
   ailogDashboard,
+  ailogBreakdown,
+  ailogEfficiency,
+  ailogFindings,
+  ailogGetPrices,
+  ailogReworkRankings,
+  ailogRuleCheck,
+  ailogSetPrice,
   ailogDigestGenerate,
   ailogDigestGet,
   ailogIndexCancel,
@@ -28,7 +35,10 @@ import {
   errorMessage,
   type AilogRange,
   type BreakdownReport,
+  type EfficiencyReport,
   type DigestReport,
+  type FindingKind,
+  type FindingsReport,
   type IndexProgress,
   type IndexStatus,
   type SummarizeProgress,
@@ -39,6 +49,9 @@ import {
   type SessionDetail,
   type SessionsReport,
   type RangePreset,
+  type ReworkRankingsReport,
+  type PriceEntry,
+  type RuleCheckReport,
   toDayInput,
 } from "../lib/ailog";
 import type { LeafDimension } from "../components/ailog/sankeyModel";
@@ -51,8 +64,10 @@ import type { LeafDimension } from "../components/ailog/sankeyModel";
 export const SESSION_FETCH_LIMIT = 5_000;
 
 export const SESSION_PAGE_SIZE = 100;
+export const FINDINGS_PAGE_SIZE = 50;
 
 export type SessionSort = "cost" | "rework" | "recent";
+export type BreakdownDimension = "project" | "branch" | "effort" | "origin" | "title" | "agent";
 
 export type SelectionType = "model" | "tag" | "topic" | "leaf" | "project";
 
@@ -83,15 +98,21 @@ interface AilogState {
   selection: AilogSelection | null;
   /** Project whose titles are expanded under the diagram. */
   drillProject: string | null;
+  breakdownDimension: BreakdownDimension;
 
   // --- data ---
   overview: Overview | null;
   series: SeriesReport | null;
   models: ModelsReport | null;
   projects: BreakdownReport | null;
+  breakdown: BreakdownReport | null;
   sessions: SessionsReport | null;
   detail: SessionDetail | null;
   detailKey: { kind: string; sessionId: string } | null;
+  findings: FindingsReport | null;
+  rankings: ReworkRankingsReport | null;
+  findingKind: FindingKind | null;
+  findingQuery: string;
 
   // --- status ---
   loading: boolean;
@@ -110,6 +131,16 @@ interface AilogState {
   digestLoading: boolean;
   digestGenerating: boolean;
   digestError: string | null;
+  learningLoading: boolean;
+  learningError: string | null;
+  efficiency: EfficiencyReport | null;
+  ruleCheck: RuleCheckReport | null;
+  experimentLoading: boolean;
+  experimentError: string | null;
+  prices: PriceEntry[] | null;
+  pricesLoading: boolean;
+  pricesError: string | null;
+  repricedSessions: number | null;
 
   // --- actions ---
   setPreset: (preset: RangePreset) => void;
@@ -123,8 +154,13 @@ interface AilogState {
   setSessionPage: (value: number) => void;
   setSelection: (selection: AilogSelection | null) => void;
   setDrillProject: (value: string | null) => void;
+  setBreakdownDimension: (value: BreakdownDimension) => void;
   currentRange: () => AilogRange | null;
   refresh: () => Promise<void>;
+  refreshBreakdown: () => Promise<void>;
+  refreshExperiment: () => Promise<void>;
+  refreshPrices: () => Promise<void>;
+  savePrice: (entry: PriceEntry) => Promise<void>;
   openDetail: (kind: string, sessionId: string) => Promise<void>;
   closeDetail: () => void;
   refreshIndexStatus: () => Promise<void>;
@@ -139,11 +175,18 @@ interface AilogState {
   stepDigestDate: (days: number) => void;
   refreshDigest: (date?: string) => Promise<void>;
   generateDigest: (force?: boolean) => Promise<void>;
+  setFindingKind: (kind: FindingKind | null) => void;
+  setFindingQuery: (query: string) => void;
+  refreshLearning: (append?: boolean) => Promise<void>;
 }
 
 let refreshSeq = 0;
 let detailSeq = 0;
 let digestSeq = 0;
+let learningSeq = 0;
+let breakdownSeq = 0;
+let experimentSeq = 0;
+let priceSeq = 0;
 
 function utcDayOffset(days: number): string {
   const now = new Date();
@@ -192,13 +235,19 @@ const initialState = {
   sessionPage: 0,
   selection: null,
   drillProject: null,
+  breakdownDimension: "project" as BreakdownDimension,
   overview: null,
   series: null,
   models: null,
   projects: null,
+  breakdown: null,
   sessions: null,
   detail: null,
   detailKey: null,
+  findings: null,
+  rankings: null,
+  findingKind: null,
+  findingQuery: "",
   loading: false,
   loadedAt: null,
   error: null,
@@ -215,6 +264,16 @@ const initialState = {
   digestLoading: false,
   digestGenerating: false,
   digestError: null,
+  learningLoading: false,
+  learningError: null,
+  efficiency: null,
+  ruleCheck: null,
+  experimentLoading: false,
+  experimentError: null,
+  prices: null,
+  pricesLoading: false,
+  pricesError: null,
+  repricedSessions: null,
 };
 
 export const useAilogStore = create<AilogState>((set, get) => ({
@@ -254,6 +313,10 @@ export const useAilogStore = create<AilogState>((set, get) => ({
     }
   },
   setDrillProject: (drillProject) => set({ drillProject }),
+  setBreakdownDimension: (breakdownDimension) => {
+    set({ breakdownDimension });
+    void get().refreshBreakdown();
+  },
 
   currentRange: () => {
     const { preset, customFrom, customTo } = get();
@@ -283,6 +346,7 @@ export const useAilogStore = create<AilogState>((set, get) => ({
         series,
         models,
         projects,
+        breakdown: get().breakdownDimension === "project" ? projects : get().breakdown,
         sessions,
         loading: false,
         loadedAt: Date.now(),
@@ -299,8 +363,76 @@ export const useAilogStore = create<AilogState>((set, get) => ({
         series: null,
         models: null,
         projects: null,
+        breakdown: null,
         sessions: null,
       });
+    }
+  },
+
+  refreshBreakdown: async () => {
+    const range = get().currentRange();
+    if (!range) return;
+    const dimension = get().breakdownDimension;
+    const filters = selectionFilters(
+      { ...emptyFilters(), includeSidechain: get().includeSidechain },
+      get().selection,
+      get().leafDimension,
+    );
+    const mySeq = ++breakdownSeq;
+    try {
+      const breakdown = await ailogBreakdown(range, filters, dimension);
+      if (mySeq !== breakdownSeq || get().breakdownDimension !== dimension) return;
+      set({ breakdown });
+    } catch (error) {
+      if (mySeq !== breakdownSeq) return;
+      set({ error: errorMessage(error), breakdown: null });
+    }
+  },
+
+  refreshExperiment: async () => {
+    const range = get().currentRange();
+    if (!range) return;
+    const filters = selectionFilters(
+      { ...emptyFilters(), includeSidechain: get().includeSidechain },
+      get().selection,
+      get().leafDimension,
+    );
+    const mySeq = ++experimentSeq;
+    set({ experimentLoading: true, experimentError: null });
+    try {
+      const [efficiency, ruleCheck] = await Promise.all([
+        ailogEfficiency(range, filters),
+        ailogRuleCheck(range, filters),
+      ]);
+      if (mySeq !== experimentSeq) return;
+      set({ efficiency, ruleCheck, experimentLoading: false });
+    } catch (error) {
+      if (mySeq !== experimentSeq) return;
+      set({ experimentLoading: false, experimentError: errorMessage(error), efficiency: null, ruleCheck: null });
+    }
+  },
+
+  refreshPrices: async () => {
+    const mySeq = ++priceSeq;
+    set({ pricesLoading: true, pricesError: null });
+    try {
+      const prices = await ailogGetPrices();
+      if (mySeq !== priceSeq) return;
+      set({ prices, pricesLoading: false });
+    } catch (error) {
+      if (mySeq !== priceSeq) return;
+      set({ pricesLoading: false, pricesError: errorMessage(error) });
+    }
+  },
+
+  savePrice: async (entry) => {
+    set({ pricesError: null, repricedSessions: null });
+    try {
+      const result = await ailogSetPrice(entry);
+      set({ repricedSessions: result.repricedSessions });
+      await Promise.all([get().refresh(), get().refreshPrices(), get().refreshBreakdown(), get().refreshExperiment()]);
+    } catch (error) {
+      set({ pricesError: errorMessage(error) });
     }
   },
 
@@ -425,11 +557,52 @@ export const useAilogStore = create<AilogState>((set, get) => ({
       set({ digestGenerating: false, digestError: errorMessage(error) });
     }
   },
+
+  setFindingKind: (findingKind) => {
+    set({ findingKind, findings: null });
+    void get().refreshLearning();
+  },
+
+  setFindingQuery: (findingQuery) => {
+    set({ findingQuery, findings: null });
+    void get().refreshLearning();
+  },
+
+  refreshLearning: async (append = false) => {
+    const range = get().currentRange();
+    if (!range) return;
+    const filters = selectionFilters(
+      { ...emptyFilters(), includeSidechain: get().includeSidechain },
+      get().selection,
+      get().leafDimension,
+    );
+    const previous = get().findings;
+    const offset = append ? (previous?.rows.length ?? 0) : 0;
+    const mySeq = ++learningSeq;
+    set({ learningLoading: true, learningError: null });
+    try {
+      const [findings, rankings] = await Promise.all([
+        ailogFindings(range, filters, { kind: get().findingKind, query: get().findingQuery, limit: FINDINGS_PAGE_SIZE, offset }),
+        append && get().rankings ? Promise.resolve(get().rankings) : ailogReworkRankings(range, filters),
+      ]);
+      if (mySeq !== learningSeq) return;
+      set({
+        findings: append && previous ? { ...findings, rows: [...previous.rows, ...findings.rows] } : findings,
+        rankings,
+        learningLoading: false,
+        learningError: null,
+      });
+    } catch (error) {
+      if (mySeq !== learningSeq) return;
+      set({ learningLoading: false, learningError: errorMessage(error) });
+    }
+  },
 }));
 
 export function __resetAilogStoreForTests(): void {
   refreshSeq = 0;
   detailSeq = 0;
   digestSeq = 0;
+  learningSeq = 0;
   useAilogStore.setState({ ...initialState });
 }

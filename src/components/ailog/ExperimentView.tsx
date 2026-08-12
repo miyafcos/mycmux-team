@@ -1,0 +1,77 @@
+import {
+  formatCount,
+  formatPct,
+  formatScore,
+  formatUsd,
+  type EfficiencyReport,
+  type EfficiencyRow,
+  type QuantileRow,
+  type RuleCheckFinding,
+  type RuleCheckReport,
+} from "../../lib/ailog";
+import { noteStyle, ScrollBox, tableStyle, tdLeftStyle, tdStyle, thLeftStyle, thStyle, Section } from "./ui";
+
+const insufficient = "データ不足 (比較対象が揃っていません)";
+
+function EfficiencyCard({ title, rows, note }: { title: string; rows: EfficiencyRow[]; note: string }) {
+  return (
+    <Section title={title}>
+      {rows.length <= 1 ? <div style={noteStyle}>{insufficient}</div> : (
+        <ScrollBox>
+          <table style={tableStyle}>
+            <thead><tr><th style={thLeftStyle}>—</th><th style={thStyle}>セッション</th><th style={thStyle}>平均コスト</th><th style={thStyle}>平均手戻り</th><th style={thStyle}>キャッシュ率</th><th style={thStyle}>出力密度</th><th style={thStyle}>中断率</th></tr></thead>
+            <tbody>{rows.map((row) => <tr key={row.key}><td style={tdLeftStyle}>{row.key}</td><td style={tdStyle}>{formatCount(row.sessions)}</td><td style={tdStyle}>{formatUsd(row.avgSessionCost)}</td><td style={tdStyle}>{formatScore(row.avgRework)}</td><td style={tdStyle}>{formatPct(row.cacheHitRate * 100)}</td><td style={tdStyle}>{formatScore(row.outputDensity)}</td><td style={tdStyle}>{formatPct(row.abandonedRate * 100)}</td></tr>)}</tbody>
+          </table>
+        </ScrollBox>
+      )}
+      <div style={{ ...noteStyle, marginTop: 8 }}>{note}</div>
+    </Section>
+  );
+}
+
+function QuantileCard({ rows, note }: { rows: QuantileRow[]; note: string }) {
+  return (
+    <Section title="長いセッションは損？">
+      {rows.length <= 1 ? <div style={noteStyle}>{insufficient}</div> : (
+        <ScrollBox>
+          <table style={tableStyle}>
+            <thead><tr><th style={thLeftStyle}>—</th><th style={thStyle}>ターン数</th><th style={thStyle}>セッション</th><th style={thStyle}>平均コスト</th><th style={thStyle}>平均手戻り</th></tr></thead>
+            <tbody>{rows.map((row) => <tr key={row.quantile}><td style={tdLeftStyle}>{row.quantile}</td><td style={tdStyle}>{`${formatCount(row.minTurns)}–${formatCount(row.maxTurns)}`}</td><td style={tdStyle}>{formatCount(row.sessions)}</td><td style={tdStyle}>{formatUsd(row.avgCost)}</td><td style={tdStyle}>{formatScore(row.avgRework)}</td></tr>)}</tbody>
+          </table>
+        </ScrollBox>
+      )}
+      <div style={{ ...noteStyle, marginTop: 8 }}>{note}</div>
+    </Section>
+  );
+}
+
+function RuleList({ title, finding, onOpenDetail }: { title: string; finding: RuleCheckFinding; onOpenDetail: (kind: string, sessionId: string) => void }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      <div style={{ fontWeight: 700 }}>{`${title}: ${formatCount(finding.count)} 件`}</div>
+      {finding.count === 0 ? <div style={noteStyle}>該当なし</div> : finding.sessions.map((session) => (
+        <button key={`${session.kind}:${session.sessionId}`} type="button" onClick={() => onOpenDetail(session.kind, session.sessionId)} style={{ textAlign: "left", border: "1px solid var(--cmux-border-hairline)", background: "var(--cmux-hover)", color: "var(--cmux-text)", borderRadius: 5, padding: "5px 8px", cursor: "pointer" }}>
+          {session.title ?? session.sessionId} · {formatUsd(session.costUsd)}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+export function ExperimentView({ report, rules, loading, error, onOpenDetail }: { report: EfficiencyReport | null; rules: RuleCheckReport | null; loading: boolean; error: string | null; onOpenDetail: (kind: string, sessionId: string) => void }) {
+  if (loading) return <div style={noteStyle}>—</div>;
+  if (error) return <div role="alert" style={noteStyle}>{error}</div>;
+  if (!report || !rules) return null;
+  return <>
+    <EfficiencyCard title="effort を上げると見合っている？" rows={report.byEffort} note={report.interpretationNote} />
+    <EfficiencyCard title="サブエージェント委譲で何が変わる？" rows={report.bySubagent} note={report.interpretationNote} />
+    <EfficiencyCard title="compact が起きたセッションはどう違う？" rows={report.byCompaction} note={report.interpretationNote} />
+    <QuantileCard rows={report.turnQuantiles} note={report.interpretationNote} />
+    <Section title="ルール通信簿">
+      <div style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))" }}>
+        <RuleList title="巨大コンテキスト (300k超)" finding={rules.largeContext} onOpenDetail={onOpenDetail} />
+        <RuleList title="compact 発生" finding={rules.compacted} onOpenDetail={onOpenDetail} />
+      </div>
+    </Section>
+  </>;
+}

@@ -43,6 +43,9 @@ EXPECTED_COMMANDS = {
     "ailog_session_detail",
     "ailog_models",
     "ailog_efficiency",
+    "ailog_rule_check",
+    "ailog_findings",
+    "ailog_rework_rankings",
     "ailog_get_prices",
     "ailog_set_price",
 }

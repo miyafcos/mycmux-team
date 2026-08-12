@@ -224,6 +224,76 @@ export interface BreakdownReport {
   costNote: string;
 }
 
+export interface EfficiencyRow {
+  key: string;
+  sessions: number;
+  turns: number;
+  avgSessionCost: number;
+  avgRework: number;
+  cacheHitRate: number;
+  outputDensity: number;
+  abandonedRate: number;
+}
+
+export interface QuantileRow {
+  quantile: string;
+  minTurns: number;
+  maxTurns: number;
+  sessions: number;
+  avgCost: number;
+  avgRework: number;
+}
+
+export interface EfficiencyReport {
+  range: RangeOut;
+  byModel: EfficiencyRow[];
+  byEffort: EfficiencyRow[];
+  bySubagent: EfficiencyRow[];
+  byCompaction: EfficiencyRow[];
+  turnQuantiles: QuantileRow[];
+  priceSource: string;
+  unpricedModels: string[];
+  interpretationNote: string;
+  costNote: string;
+}
+
+export interface PriceEntry {
+  model: string;
+  inputPerMtok: number;
+  outputPerMtok: number;
+  cacheReadPerMtok: number;
+  cacheWrite5mPerMtok: number;
+  cacheWrite1hPerMtok: number;
+  source: string;
+  updatedAt: number;
+}
+
+export interface SetPriceResult {
+  model: string;
+  repricedSessions: number;
+}
+
+export interface RuleCheckSession {
+  kind: string;
+  sessionId: string;
+  title: string | null;
+  projectLabel: string | null;
+  costUsd: number;
+  maxContextTokens: number;
+  compactCount: number;
+}
+
+export interface RuleCheckFinding {
+  count: number;
+  sessions: RuleCheckSession[];
+}
+
+export interface RuleCheckReport {
+  range: RangeOut;
+  largeContext: RuleCheckFinding;
+  compacted: RuleCheckFinding;
+}
+
 export interface ModelSeriesEntry {
   model: string;
   costUsd: number;
@@ -520,6 +590,44 @@ export interface DashboardReport {
   sessions: SessionsReport;
 }
 
+export type FindingKind = "cause" | "constraint" | "gotcha" | "decision" | "verified";
+
+export interface FindingRow {
+  text: string;
+  kind: FindingKind;
+  sessionId: string;
+  sessionKind: string;
+  date: number;
+  goalSummary: string | null;
+  projectLabel: string | null;
+  costUsd: number;
+  repeatCount: number;
+}
+
+export interface FindingsReport {
+  rows: FindingRow[];
+  total: number;
+}
+
+export interface ToolRankingRow {
+  name: string;
+  target: string | null;
+  executions: number;
+  failures: number;
+  failureRate: number;
+}
+
+export interface FileRankingRow {
+  path: string;
+  editCount: number;
+  sessionCount: number;
+}
+
+export interface ReworkRankingsReport {
+  failedCommands: ToolRankingRow[];
+  rewrittenFiles: FileRankingRow[];
+}
+
 export interface IndexCancelResult {
   cancelled: boolean;
 }
@@ -602,6 +710,28 @@ export async function ailogBreakdown(
   });
 }
 
+export async function ailogEfficiency(
+  range: AilogRange,
+  filters: AilogFilters,
+): Promise<EfficiencyReport> {
+  return invoke<EfficiencyReport>("ailog_efficiency", { range, filters });
+}
+
+export async function ailogRuleCheck(
+  range: AilogRange,
+  filters: AilogFilters,
+): Promise<RuleCheckReport> {
+  return invoke<RuleCheckReport>("ailog_rule_check", { range, filters });
+}
+
+export async function ailogGetPrices(): Promise<PriceEntry[]> {
+  return invoke<PriceEntry[]>("ailog_get_prices");
+}
+
+export async function ailogSetPrice(entry: PriceEntry): Promise<SetPriceResult> {
+  return invoke<SetPriceResult>("ailog_set_price", { entry });
+}
+
 export async function ailogSessions(
   range: AilogRange,
   filters: AilogFilters,
@@ -625,6 +755,21 @@ export async function ailogModels(
   options: { granularity?: string; bucket?: string } = {},
 ): Promise<ModelsReport> {
   return invoke<ModelsReport>("ailog_models", { range, filters, options });
+}
+
+export async function ailogFindings(
+  range: AilogRange,
+  filters: AilogFilters,
+  options: { kind?: FindingKind | null; query?: string; limit?: number; offset?: number } = {},
+): Promise<FindingsReport> {
+  return invoke<FindingsReport>("ailog_findings", { range, filters, ...options });
+}
+
+export async function ailogReworkRankings(
+  range: AilogRange,
+  filters: AilogFilters,
+): Promise<ReworkRankingsReport> {
+  return invoke<ReworkRankingsReport>("ailog_rework_rankings", { range, filters });
 }
 
 export async function listenIndexProgress(

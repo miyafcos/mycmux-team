@@ -20,11 +20,15 @@ export function ProjectTable({
   overview,
   selection,
   onSelect,
+  dimensionLabel = "案件",
+  projectMode = true,
 }: {
   report: BreakdownReport;
   overview: Overview | null;
   selection: AilogSelection | null;
   onSelect: (selection: AilogSelection | null) => void;
+  dimensionLabel?: string;
+  projectMode?: boolean;
 }) {
   const topTitles = new Map(
     (overview?.topProjects ?? []).map((project) => [project.projectLabel, project.topTitle]),
@@ -36,24 +40,24 @@ export function ProjectTable({
         <table style={tableStyle}>
           <thead>
             <tr>
-              <th style={thLeftStyle}>案件</th>
+              <th style={thLeftStyle}>{dimensionLabel}</th>
               <th style={thStyle}>セッション</th>
               <th style={thStyle}>コスト</th>
               <th style={thStyle}>シェア</th>
-              <th style={thLeftStyle}>主な主題</th>
+              {projectMode ? <th style={thLeftStyle}>主な主題</th> : null}
               <th style={thStyle}>平均手戻り</th>
             </tr>
           </thead>
           <tbody>
             {report.rows.map((row) => {
-              const selected =
+              const selected = projectMode &&
                 (selection?.type === "project" || selection?.type === "leaf") && selection.key === row.key;
               return (
                 <tr
                   key={row.key}
                   aria-selected={selected}
-                  style={{ background: selected ? "var(--cmux-selected)" : undefined, cursor: "pointer" }}
-                  onClick={() => onSelect(selected ? null : { type: "project", key: row.key, label: row.key })}
+                  style={{ background: selected ? "var(--cmux-selected)" : undefined, cursor: projectMode ? "pointer" : undefined }}
+                  onClick={() => projectMode && onSelect(selected ? null : { type: "project", key: row.key, label: row.key })}
                 >
                   <td style={tdLeftStyle} title={row.key}>
                     {row.key}
@@ -66,9 +70,7 @@ export function ProjectTable({
                       {formatPct(row.sharePct)}
                     </span>
                   </td>
-                  <td style={tdLeftStyle} title={topTitles.get(row.key) ?? undefined}>
-                    {topTitles.get(row.key) ?? "—"}
-                  </td>
+                  {projectMode ? <td style={tdLeftStyle} title={topTitles.get(row.key) ?? undefined}>{topTitles.get(row.key) ?? "—"}</td> : null}
                   <td style={tdStyle}>{formatScore(row.avgRework)}</td>
                 </tr>
               );
@@ -77,7 +79,7 @@ export function ProjectTable({
         </table>
       </ScrollBox>
       <div style={noteStyle}>
-        {`${formatCount(report.rows.length)} 案件。行をクリックするとその案件で全体を絞り込みます。案件名は作業パスと編集・参照ファイルから決定します。`}
+        {projectMode ? `${formatCount(report.rows.length)} 案件。行をクリックするとその案件で全体を絞り込みます。案件名は作業パスと編集・参照ファイルから決定します。` : formatCount(report.rows.length)}
       </div>
     </div>
   );

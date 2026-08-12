@@ -13,14 +13,17 @@ import { listenIndexProgress, listenSummarizeProgress, toDayInput } from "../../
 import { useAilogStore, SESSION_PAGE_SIZE } from "../../stores/ailogStore";
 import { CostHeatmap } from "./CostHeatmap";
 import { DigestView } from "./DigestView";
+import { LearningView } from "./LearningView";
+import { ExperimentView } from "./ExperimentView";
 import { ModelTable } from "./ModelTable";
 import { ProjectTable } from "./ProjectTable";
+import { PriceSettings } from "./PriceSettings";
 import { RangeBar } from "./RangeBar";
 import { RelationDiagram } from "./RelationDiagram";
 import { SessionDetailView } from "./SessionDetailView";
 import { SessionTable } from "./SessionTable";
 import { SummaryCards } from "./SummaryCards";
-import { EmptyState, Section, SkeletonBlock, noteStyle, subtleButtonStyle } from "./ui";
+import { ButtonGroup, EmptyState, Section, SkeletonBlock, noteStyle, subtleButtonStyle } from "./ui";
 
 interface AiLogPanelProps {
   open: boolean;
@@ -36,7 +39,7 @@ export function AiLogPanel({ open, visible, closing = false, onClose }: AiLogPan
   const autoDigestStartedRef = useRef(false);
   const digestPreparationRef = useRef(false);
   const [detailOpen, setDetailOpen] = useState(false);
-  const [view, setView] = useState<"digest" | "detail">("digest");
+  const [view, setView] = useState<"digest" | "learning" | "experiment" | "detail">("digest");
 
   const store = useAilogStore();
 
@@ -126,6 +129,24 @@ export function AiLogPanel({ open, visible, closing = false, onClose }: AiLogPan
   }, [open, summarizing]);
 
   useEffect(() => {
+    if (open && view === "learning") void store.refreshLearning();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, view, store.preset, store.customFrom, store.customTo, store.includeSidechain, store.selection]);
+
+  useEffect(() => {
+    if (open && view === "experiment") void store.refreshExperiment();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, view, store.preset, store.customFrom, store.customTo, store.includeSidechain, store.selection]);
+
+  useEffect(() => {
+    if (open && view === "detail") {
+      void store.refreshBreakdown();
+      void store.refreshPrices();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, view]);
+
+  useEffect(() => {
     if (!open || !digestPreparationRef.current || !store.summarizeStatus || summarizing || autoDigestStartedRef.current) return;
     autoDigestStartedRef.current = true;
     const now = new Date();
@@ -143,13 +164,14 @@ export function AiLogPanel({ open, visible, closing = false, onClose }: AiLogPan
 
   if (!visible) return null;
 
-  const { overview, series, models, projects, sessions, loading, error, indexStatus } = store;
+  const { overview, series, models, sessions, loading, error, indexStatus } = store;
   const statusPending = indexStatus === null && store.indexError === null;
   const neverIndexed = indexStatus !== null && indexStatus.lastFinishedAt === 0;
   const noData = Boolean(overview) && (overview?.totals.sessions ?? 0) === 0;
 
   const openDetail = (kind: string, sessionId: string) => {
     setDetailOpen(true);
+    setView("detail");
     void store.openDetail(kind, sessionId);
   };
   const closeDetail = () => {
@@ -196,6 +218,8 @@ export function AiLogPanel({ open, visible, closing = false, onClose }: AiLogPan
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
             <button type="button" aria-pressed={view === "digest"} onClick={() => setView("digest")} style={subtleButtonStyle}>振り返り</button>
+            <button type="button" aria-pressed={view === "learning"} onClick={() => setView("learning")} style={subtleButtonStyle}>学び</button>
+            <button type="button" aria-pressed={view === "experiment"} onClick={() => setView("experiment")} style={subtleButtonStyle}>実験</button>
             <button type="button" aria-pressed={view === "detail"} onClick={() => setView("detail")} style={subtleButtonStyle}>詳細</button>
           <button type="button" aria-label="閉じる" onClick={onClose} style={{ ...subtleButtonStyle, padding: "3px 8px" }}>
             ×
@@ -213,6 +237,27 @@ export function AiLogPanel({ open, visible, closing = false, onClose }: AiLogPan
                 onPrevious={() => store.stepDigestDate(-1)}
                 onNext={() => store.stepDigestDate(1)}
                 onRegenerate={() => void store.generateDigest(true)}
+              />
+            ) : view === "learning" ? (
+              <LearningView
+                findings={store.findings}
+                rankings={store.rankings}
+                kind={store.findingKind}
+                query={store.findingQuery}
+                loading={store.learningLoading}
+                error={store.learningError}
+                onKindChange={store.setFindingKind}
+                onQueryChange={store.setFindingQuery}
+                onLoadMore={() => void store.refreshLearning(true)}
+                onOpenDetail={openDetail}
+              />
+            ) : view === "experiment" ? (
+              <ExperimentView
+                report={store.efficiency}
+                rules={store.ruleCheck}
+                loading={store.experimentLoading}
+                error={store.experimentError}
+                onOpenDetail={openDetail}
               />
             ) : (
               <>
@@ -298,13 +343,24 @@ export function AiLogPanel({ open, visible, closing = false, onClose }: AiLogPan
                   ) : null}
                 </Section>
 
-                <Section title="案件別">
-                  {projects ? (
+                <Section title="案件別" actions={<ButtonGroup
+                  ariaLabel="内訳"
+                  value={store.breakdownDimension}
+                  onChange={store.setBreakdownDimension}
+                  options={[
+                    { value: "project", label: "案件" }, { value: "branch", label: "ブランチ" },
+                    { value: "effort", label: "effort" }, { value: "origin", label: "起動元" },
+                    { value: "title", label: "主題" }, { value: "agent", label: "エージェント" },
+                  ]}
+                />}>
+                  {store.breakdown ? (
                     <ProjectTable
-                      report={projects}
+                      report={store.breakdown}
                       overview={overview}
                       selection={store.selection}
                       onSelect={store.setSelection}
+                      dimensionLabel={({ project: "案件", branch: "ブランチ", effort: "effort", origin: "起動元", title: "主題", agent: "エージェント" })[store.breakdownDimension]}
+                      projectMode={store.breakdownDimension === "project"}
                     />
                   ) : null}
                 </Section>
@@ -346,6 +402,17 @@ export function AiLogPanel({ open, visible, closing = false, onClose }: AiLogPan
                     ) : null}
                   </Section>
                 ) : null}
+
+                <Section title="単価設定">
+                  <PriceSettings
+                    prices={store.prices}
+                    unpricedModels={overview.unpricedModels}
+                    loading={store.pricesLoading}
+                    error={store.pricesError}
+                    repricedSessions={store.repricedSessions}
+                    onSave={(entry) => void store.savePrice(entry)}
+                  />
+                </Section>
               </>
             ) : null}
               </>

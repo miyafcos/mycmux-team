@@ -689,6 +689,58 @@ pub async fn ailog_efficiency(
     )
 }
 
+#[tauri::command(async)]
+pub async fn ailog_rule_check(
+    range: Option<Range>,
+    filters: Option<Filters>,
+) -> Result<query::RuleCheckReport, String> {
+    let conn = open()?;
+    query::rule_check(
+        &conn,
+        &range.unwrap_or_default(),
+        &filters.unwrap_or_default(),
+        now_ms(),
+    )
+}
+
+#[tauri::command(async)]
+pub async fn ailog_findings(
+    range: Option<Range>,
+    filters: Option<Filters>,
+    kind: Option<String>,
+    query: Option<String>,
+    limit: Option<i64>,
+    offset: Option<i64>,
+) -> Result<query::FindingsReport, String> {
+    let conn = open()?;
+    query::findings(
+        &conn,
+        &range.unwrap_or_default(),
+        &filters.unwrap_or_default(),
+        &query::FindingsOptions {
+            kind,
+            query,
+            limit: limit.unwrap_or(50),
+            offset: offset.unwrap_or(0),
+        },
+        now_ms(),
+    )
+}
+
+#[tauri::command(async)]
+pub async fn ailog_rework_rankings(
+    range: Option<Range>,
+    filters: Option<Filters>,
+) -> Result<query::ReworkRankingsReport, String> {
+    let conn = open()?;
+    query::rework_rankings(
+        &conn,
+        &range.unwrap_or_default(),
+        &filters.unwrap_or_default(),
+        now_ms(),
+    )
+}
+
 // ---------------------------------------------------------------------------
 // Prices
 // ---------------------------------------------------------------------------
