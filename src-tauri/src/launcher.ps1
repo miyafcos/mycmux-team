@@ -158,13 +158,19 @@ function Start-MycmuxSessionTracking {
     return
   }
   $homeDir = $HOME
-  Start-Job -ArgumentList $PaneId, $Kind, $ProjectDir, $homeDir -ScriptBlock {
-    param($PaneId, $Kind, $ProjectDir, $HomeDir)
+  # Trackers guess which log belongs to the pane just launched. A file that
+  # predates the launch cannot be that log, and adopting it would bind the pane
+  # to somebody else's session, so anything older than $startedAt is rejected
+  # and no mapping is written. Mirrors __newest_file_since in launcher.sh.
+  $startedAt = (Get-Date).ToUniversalTime()
+  Start-Job -ArgumentList $PaneId, $Kind, $ProjectDir, $homeDir, $startedAt -ScriptBlock {
+    param($PaneId, $Kind, $ProjectDir, $HomeDir, $StartedAt)
     Start-Sleep -Seconds 4
     if ($Kind -eq "codex") {
       $searchDir = Join-Path $HomeDir ".codex\sessions"
       if (-not (Test-Path -LiteralPath $searchDir)) { return }
       $latest = Get-ChildItem -LiteralPath $searchDir -Recurse -Filter "rollout-*.jsonl" -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.LastWriteTimeUtc -ge $StartedAt } |
         Sort-Object LastWriteTimeUtc -Descending |
         Select-Object -First 1
       if ($null -eq $latest) { return }
@@ -174,6 +180,7 @@ function Start-MycmuxSessionTracking {
     } else {
       if ([string]::IsNullOrWhiteSpace($ProjectDir) -or -not (Test-Path -LiteralPath $ProjectDir)) { return }
       $latest = Get-ChildItem -LiteralPath $ProjectDir -Filter "*.jsonl" -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.LastWriteTimeUtc -ge $StartedAt } |
         Sort-Object LastWriteTimeUtc -Descending |
         Select-Object -First 1
       if ($null -eq $latest) { return }
@@ -302,19 +309,32 @@ function Invoke-MycmuxHandoffFromEnv {
   }
   $handoffFile = $env:MYCMUX_HANDOFF_PROMPT_FILE
   $bootstrap = "Handoff from previous session. Read `"$handoffFile`" and continue from where it left off."
+  # A handoff pane starts a brand new agent session, so it must get its own id
+  # the same way the normal launch path does. Writing the *source* pane id here
+  # (the old "<kind>-handoff:<pane>" mapping) left the pane with no real session
+  # id, so restore fell back to `--continue` and adopted another tab's
+  # conversation in the same cwd. Mirrors the handoff branch in launcher.sh.
   switch -Wildcard ($env:MYCMUX_HANDOFF) {
     "claude" {
-      Write-MycmuxSessionMapping $env:MYCMUX_PANE_SESSION_ID "claude-handoff" $env:MYCMUX_HANDOFF_FROM_SESSION
-      Invoke-MycmuxCommandArray -Command @("claude", "--allow-dangerously-skip-permissions", "--permission-mode", "auto", $bootstrap)
+      $sid = Get-MycmuxStableSessionId (Get-MycmuxClaudeProjectDir)
+      if ([string]::IsNullOrWhiteSpace($sid)) {
+        Start-MycmuxSessionTracking $env:MYCMUX_PANE_SESSION_ID "claude" (Get-MycmuxClaudeProjectDir)
+        Invoke-MycmuxCommandArray -Command @("claude", "--allow-dangerously-skip-permissions", "--permission-mode", "auto", $bootstrap)
+      } else {
+        Write-MycmuxSessionMapping $env:MYCMUX_PANE_SESSION_ID "claude" $sid
+        Invoke-MycmuxCommandArray -Command @("claude", "--session-id", $sid, "--allow-dangerously-skip-permissions", "--permission-mode", "auto", $bootstrap)
+      }
       return $true
     }
     "codex" {
-      Write-MycmuxSessionMapping $env:MYCMUX_PANE_SESSION_ID "codex-handoff" $env:MYCMUX_HANDOFF_FROM_SESSION
+      # codex has no --session-id flag, so the real id can only be learned after
+      # the fact from the rollout log it writes.
+      Start-MycmuxSessionTracking $env:MYCMUX_PANE_SESSION_ID "codex" $null
       Invoke-MycmuxCommandArray -Command @("codex", "--no-alt-screen", $bootstrap)
       return $true
     }
     "claude-codex" {
-      Write-MycmuxSessionMapping $env:MYCMUX_PANE_SESSION_ID "claude-codex-handoff" $env:MYCMUX_HANDOFF_FROM_SESSION
+      Start-MycmuxSessionTracking $env:MYCMUX_PANE_SESSION_ID "claude-codex" (Get-MycmuxClaudeCodexProjectDir)
       Invoke-MycmuxCommandArray -Command @("claude-codex", $bootstrap)
       return $true
     }

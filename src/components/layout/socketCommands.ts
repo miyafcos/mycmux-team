@@ -676,7 +676,13 @@ async function spawnPane(args: SocketArgs) {
     throw new Error(`unsupported pane.spawn direction: ${directionArg}`);
   }
 
-  const beforePaneIds = new Set(workspace.panes.map((pane) => pane.id));
+  // Snapshot straight from the store, not from the `workspace` read above: the
+  // handoff round-trip earlier in this function gives other socket clients a
+  // window to add or remove panes.
+  const beforePaneIds = new Set(
+    (useWorkspaceListStore.getState().getWorkspace(workspaceId)?.panes ?? [])
+      .map((pane) => pane.id),
+  );
   const activate = socketArgBoolean(args, "activate", false);
   useWorkspaceLayoutStore.getState().addPaneToWorkspaceWithOptions(
     workspaceId,
@@ -686,13 +692,29 @@ async function spawnPane(args: SocketArgs) {
   );
   const updatedWorkspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
   const newPanes = updatedWorkspace?.panes.filter((pane) => !beforePaneIds.has(pane.id)) ?? [];
-  if (newPanes.length !== 1) throw new Error("pane.spawn could not identify the new pane");
+  // A pane left behind by a failed spawn has no PTY, so it sits there until
+  // somebody clicks it and unwittingly starts the stale spec. Undo before
+  // reporting the failure.
+  const rollbackNewPanes = () => {
+    for (const pane of newPanes) {
+      useWorkspaceLayoutStore.getState().removePaneFromWorkspace(workspaceId, pane.id);
+    }
+  };
+  if (newPanes.length !== 1) {
+    rollbackNewPanes();
+    throw new Error("pane.spawn could not identify the new pane");
+  }
   const newPane = newPanes[0];
 
-  if (activate) {
-    useWorkspaceListStore.getState().setActiveWorkspace(workspaceId);
-    const { focusController } = await import("../../lib/focusController");
-    focusController.request("programmatic", { sessionId: newPane.sessionId, focus: true });
+  try {
+    if (activate) {
+      useWorkspaceListStore.getState().setActiveWorkspace(workspaceId);
+      const { focusController } = await import("../../lib/focusController");
+      focusController.request("programmatic", { sessionId: newPane.sessionId, focus: true });
+    }
+  } catch (error) {
+    rollbackNewPanes();
+    throw error;
   }
   return { workspaceId, paneId: newPane.id, sessionId: newPane.sessionId, mode: plan.mode };
 }
@@ -715,7 +737,13 @@ async function spawnTab(args: SocketArgs) {
   const plan = hasCommandArgv || !target
     ? resolveSpawnTabPlan(args)
     : resolveSpawnTabPlan(args, await resolveHandoffPromptPath(args));
-  const { workspace, pane } = owner;
+  // Re-resolve after the handoff round-trip above: `owner` was read before that
+  // await, so its tab list can already be stale by the time we diff it.
+  const current = findPaneBySessionId(
+    useWorkspaceListStore.getState().workspaces,
+    anchorSessionId,
+  ) ?? owner;
+  const { workspace, pane } = current;
   const beforeTabIds = new Set(pane.tabs.map((tab) => tab.id));
   const activate = socketArgBoolean(args, "activate", false);
   useWorkspaceLayoutStore.getState().addTabToPaneWithOptions(
@@ -730,10 +758,26 @@ async function spawnTab(args: SocketArgs) {
     .getWorkspace(workspace.id)
     ?.panes.find((candidate) => candidate.id === pane.id);
   const newTabs = updatedPane?.tabs.filter((tab) => !beforeTabIds.has(tab.id)) ?? [];
-  if (newTabs.length !== 1) throw new Error("pane.spawn_tab could not identify the new tab");
+  // A tab left behind by a failed spawn has no PTY, so it sits there until
+  // somebody clicks it and unwittingly starts the stale spec. Undo before
+  // reporting the failure.
+  const rollbackNewTabs = () => {
+    for (const tab of newTabs) {
+      useWorkspaceLayoutStore.getState().removeTabFromPane(workspace.id, pane.id, tab.id);
+    }
+  };
+  if (newTabs.length !== 1) {
+    rollbackNewTabs();
+    throw new Error("pane.spawn_tab could not identify the new tab");
+  }
   const newTab = newTabs[0];
   if (!activate && updatedPane) {
-    await startBackgroundTabSession(newTab, updatedPane);
+    try {
+      await startBackgroundTabSession(newTab, updatedPane);
+    } catch (error) {
+      rollbackNewTabs();
+      throw error;
+    }
   }
   return {
     workspaceId: workspace.id,

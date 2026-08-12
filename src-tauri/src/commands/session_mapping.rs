@@ -15,26 +15,25 @@ pub(crate) fn is_agent_session_kind(value: &str) -> bool {
     matches!(value, "claude" | "codex" | "claude-codex")
 }
 
+/// Fail closed: only `<known kind>:<id>` counts as a mapping.
+///
+/// The old fallback treated any unrecognised line as a bare session id, so a
+/// junk line such as `claude-handoff:pty-…` came back as a session id with no
+/// kind. The frontend then defaulted it to "claude" and persisted the whole
+/// string, and restore later failed to validate it and downgraded to
+/// `claude --continue`, adopting another tab's conversation in the same cwd.
+/// Every writer emits `<kind>:<id>`, so nothing legitimate needs the fallback.
 fn parse_agent_session_mapping(contents: &str) -> Option<AgentSessionMapping> {
     let trimmed = contents.trim_start_matches('\u{feff}').trim();
-    if trimmed.is_empty() {
+    let (kind, session_id) = trimmed.split_once(':')?;
+    let kind = kind.trim();
+    let session_id = session_id.trim();
+    if !is_agent_session_kind(kind) || session_id.is_empty() {
         return None;
     }
-
-    if let Some((kind, session_id)) = trimmed.split_once(':') {
-        let kind = kind.trim();
-        let session_id = session_id.trim();
-        if is_agent_session_kind(kind) && !session_id.is_empty() {
-            return Some(AgentSessionMapping {
-                agent_kind: Some(kind.to_string()),
-                session_id: session_id.to_string(),
-            });
-        }
-    }
-
     Some(AgentSessionMapping {
-        agent_kind: None,
-        session_id: trimmed.to_string(),
+        agent_kind: Some(kind.to_string()),
+        session_id: session_id.to_string(),
     })
 }
 
@@ -220,10 +219,51 @@ mod tests {
     }
 
     #[test]
-    fn parse_agent_session_mapping_without_kind() {
-        let mapping = parse_agent_session_mapping("abc-123\n").unwrap();
-        assert_eq!(mapping.agent_kind, None);
-        assert_eq!(mapping.session_id, "abc-123");
+    fn parse_agent_session_mapping_accepts_every_known_kind() {
+        for kind in ["claude", "codex", "claude-codex"] {
+            let mapping = parse_agent_session_mapping(&format!("{kind}:abc-123\n")).unwrap();
+            assert_eq!(mapping.agent_kind.as_deref(), Some(kind));
+            assert_eq!(mapping.session_id, "abc-123");
+        }
+    }
+
+    #[test]
+    fn parse_agent_session_mapping_rejects_handoff_kinds() {
+        // Junk written by the pre-fix handoff branches: the source pane id, not
+        // an agent session id. Adopting it downgraded restore to `--continue`.
+        for line in [
+            "claude-handoff:pty-0d0aaee6-6932d3e6-561f2273\n",
+            "codex-handoff:pty-0d0aaee6-6932d3e6-561f2273\n",
+            "claude-codex-handoff:pty-0d0aaee6-6932d3e6-561f2273\n",
+        ] {
+            assert!(parse_agent_session_mapping(line).is_none(), "{line}");
+        }
+    }
+
+    #[test]
+    fn parse_agent_session_mapping_rejects_lines_without_a_known_kind() {
+        // No colon at all (legacy bare id), empty kind, empty id, blank file.
+        for line in ["abc-123\n", ":abc-123\n", "claude:\n", "claude:   \n", "", "\n", "   \n"] {
+            assert!(parse_agent_session_mapping(line).is_none(), "{line:?}");
+        }
+    }
+
+    #[test]
+    fn targeted_mapping_read_skips_unparseable_files() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("pane-1.txt"), "claude:session-1\n").unwrap();
+        std::fs::write(
+            dir.path().join("pane-2.txt"),
+            "claude-handoff:pty-abc-def\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("pane-3.txt"), "session-3\n").unwrap();
+
+        let mappings =
+            read_session_mapping_files_for_ids(dir.path(), ["pane-1", "pane-2", "pane-3"]);
+
+        assert_eq!(mappings.len(), 1);
+        assert_eq!(mappings["pane-1"].session_id, "session-1");
     }
 
     #[test]

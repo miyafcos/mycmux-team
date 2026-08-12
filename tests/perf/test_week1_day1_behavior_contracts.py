@@ -62,6 +62,10 @@ def assert_contains(text: str, snippet: str, source: str) -> None:
     assert snippet in text, f"Missing snippet in {source}: {snippet}"
 
 
+def assert_not_contains(text: str, snippet: str, source: str) -> None:
+    assert snippet not in text, f"Forbidden snippet in {source}: {snippet}"
+
+
 def test_launcher_order_matches_current_contract() -> None:
     launcher = read_repo_text("src-tauri/src/launcher.sh")
     launcher_ps1 = read_repo_text("src-tauri/src/launcher.ps1")
@@ -160,24 +164,34 @@ def test_resume_and_handoff_environment_contract_remains_wired() -> None:
     for snippet in [
         "MYCMUX_HANDOFF",
         "MYCMUX_HANDOFF_PROMPT_FILE",
-        "MYCMUX_HANDOFF_FROM_SESSION",
         "MYCMUX_RESUME",
         "MYCMUX_SESSION_ID",
         "__write_session_mapping",
         "codex resume --no-alt-screen --last",
+        # A handoff pane must mint its own session id, not inherit the source
+        # pane's — see the handoff branch in launcher.sh.
+        'claude --session-id "$__handoff_sid"',
+        '__write_session_mapping "$MYCMUX_PANE_SESSION_ID" "claude" "$__handoff_sid"',
     ]:
         assert_contains(launcher, snippet, "src-tauri/src/launcher.sh")
 
     for snippet in [
         "MYCMUX_HANDOFF",
         "MYCMUX_HANDOFF_PROMPT_FILE",
-        "MYCMUX_HANDOFF_FROM_SESSION",
         "MYCMUX_RESUME",
         "MYCMUX_SESSION_ID",
         "Write-MycmuxSessionMapping",
         '@("codex", "resume", "--no-alt-screen", "--last")',
+        'Write-MycmuxSessionMapping $env:MYCMUX_PANE_SESSION_ID "claude" $sid',
     ]:
         assert_contains(launcher_ps1, snippet, "src-tauri/src/launcher.ps1")
+
+    # The "<kind>-handoff:<source pane id>" mappings are junk: no reader accepts
+    # them, and persisting one downgraded restore to `claude --continue`, which
+    # hijacked another tab's conversation in the same cwd.
+    for snippet in ["claude-handoff", "codex-handoff", "claude-codex-handoff"]:
+        assert_not_contains(launcher, snippet, "src-tauri/src/launcher.sh")
+        assert_not_contains(launcher_ps1, snippet, "src-tauri/src/launcher.ps1")
 
     for snippet in [
         "resolveSavedAgentSession",

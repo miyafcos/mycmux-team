@@ -48,7 +48,11 @@ import {
   paneContainsSession,
   workspaceContainsSession,
 } from "../../stores/workspaceListStore";
-import { declaredAgentKind, declaredAgentSessionId } from "../../lib/agentSessionConfig";
+import {
+  declaredAgentKind,
+  declaredAgentSessionId,
+  type AgentSessionConfigFields,
+} from "../../lib/agentSessionConfig";
 import {
   filterConflictingAgentMappings,
   resolvePersistedSelection,
@@ -231,11 +235,29 @@ const STARTUP_RESTORE_AUTOSAVE_PER_WORKSPACE_MS = 700;
 const STARTUP_RESTORE_AUTOSAVE_PER_PANE_MS = 500;
 const STARTUP_RESTORE_AUTOSAVE_MAX_HOLD_MS = 30000;
 
+/**
+ * Reject session ids that cannot have come from an agent.
+ *
+ * Pre-fix handoff panes wrote `<kind>-handoff:<source pane id>` into the pane
+ * mapping file; older readers surfaced the whole line as a session id and this
+ * component persisted it. Restore then failed to validate it and downgraded to
+ * `claude --continue`, adopting another tab's conversation in the same cwd.
+ *
+ * The test is deliberately loose: only characters no real id carries. Claude
+ * ids are UUIDv4 and codex ids UUIDv7 (verified against ~/.mycmux/pane-sessions
+ * and the persisted config), so a stricter UUID match would risk discarding a
+ * legitimate id from a future agent.
+ */
+export function isJunkAgentSessionId(sessionId: string | null | undefined): boolean {
+  if (!sessionId) return false;
+  return /[:\s/\\]/.test(sessionId);
+}
+
 function getMappingKind(
   mapping: AgentSessionMapping | undefined,
   existingKind: AgentSessionKind | null,
 ): AgentSessionKind | null {
-  if (!mapping?.session_id) return null;
+  if (!mapping?.session_id || isJunkAgentSessionId(mapping.session_id)) return null;
   return mapping.agent_kind ?? existingKind ?? "claude";
 }
 
@@ -302,7 +324,7 @@ function applyMappingToPaneConfig(
   };
 }
 
-function applyMappingsToConfig(
+export function applyMappingsToConfig(
   cfg: WorkspaceConfig,
   agentMappings: Record<string, AgentSessionMapping>,
 ): WorkspaceConfig {
@@ -521,12 +543,42 @@ function tabConfigWithPaneAgentSessionFallback(tab: PaneTabConfig, pane: PaneCon
   };
 }
 
+/**
+ * Drop agent-session ids that cannot be real (see isJunkAgentSessionId). Runs on
+ * both the load and the save path, so a config already poisoned by the pre-fix
+ * handoff branches is neutralised on the next launch instead of driving another
+ * `claude --continue` hijack.
+ */
+function clearJunkAgentSessionFields<T extends AgentSessionConfigFields>(config: T): T {
+  const junkAgentSessionId = isJunkAgentSessionId(config.agent_session_id);
+  const junkClaudeSessionId = isJunkAgentSessionId(config.claude_session_id);
+  if (!junkAgentSessionId && !junkClaudeSessionId) return config;
+  return {
+    ...config,
+    agent_kind: junkAgentSessionId ? null : config.agent_kind,
+    agent_session_id: junkAgentSessionId ? null : config.agent_session_id,
+    claude_session_id: junkClaudeSessionId ? null : config.claude_session_id,
+  };
+}
+
+function clearJunkAgentSessionsInConfig(cfg: WorkspaceConfig): WorkspaceConfig {
+  return {
+    ...cfg,
+    panes: cfg.panes.map((pane) => {
+      const sanitizedPane = clearJunkAgentSessionFields(pane);
+      const tabs = pane.tabs?.map(clearJunkAgentSessionFields);
+      return tabs ? { ...sanitizedPane, tabs } : sanitizedPane;
+    }),
+  };
+}
+
 export function dedupeAgentSessionsInConfigs(
-  configs: WorkspaceConfig[],
+  inputConfigs: WorkspaceConfig[],
   activeWorkspaceId: string | null | undefined,
   activePaneId: string | null | undefined,
   activeTabId: string | null | undefined,
 ): AgentSessionDedupeResult {
+  const configs = inputConfigs.map(clearJunkAgentSessionsInConfig);
   const winningCandidateIds = new Set<string>();
   const claimedKeys = new Set<string>();
   const candidates: Array<{

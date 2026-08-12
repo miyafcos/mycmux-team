@@ -132,6 +132,26 @@ __get_claude_codex_project_dir() {
   echo "$HOME/.claude-codex/config/projects/$mangled"
 }
 
+# Newest file under $1 matching name pattern $2, but only when it was last
+# written at or after epoch $3. $4 caps the search depth (empty = recursive).
+# Session trackers guess which log belongs to the pane they just launched; a
+# file that predates the launch cannot be that log, and attributing it would
+# bind the pane to somebody else's session. No mapping is safer than a wrong
+# one, so an out-of-window candidate yields nothing.
+__newest_file_since() {
+  local dir="$1"
+  local pattern="$2"
+  local since="$3"
+  local depth="$4"
+  local find_cmd=(find "$dir")
+  [ -n "$depth" ] && find_cmd+=(-maxdepth "$depth")
+  find_cmd+=(-name "$pattern" -type f -printf '%T@ %p\n')
+  "${find_cmd[@]}" 2>/dev/null \
+    | sort -rn \
+    | head -1 \
+    | awk -v since="$since" '$1 + 0 >= since + 0 { sub(/^[^ ]+ /, ""); print }'
+}
+
 __track_latest_jsonl_in_dir() {
   local pane_id="$1"
   local project_dir="$2"
@@ -139,9 +159,11 @@ __track_latest_jsonl_in_dir() {
   [ -z "$pane_id" ] && return
   [ ! -d "$project_dir" ] && return
 
+  local started_at
+  started_at=$(date +%s)
   sleep 4
   local latest
-  latest=$(ls -t "$project_dir"/*.jsonl 2>/dev/null | head -1)
+  latest=$(__newest_file_since "$project_dir" '*.jsonl' "$started_at" 1)
   if [ -n "$latest" ]; then
     __write_session_mapping "$pane_id" "$kind" "$(basename "$latest" .jsonl)"
   fi
@@ -162,12 +184,11 @@ __track_codex_session() {
   local sessions_dir="$HOME/.codex/sessions"
   [ ! -d "$sessions_dir" ] && return
 
+  local started_at
+  started_at=$(date +%s)
   sleep 4
   local latest
-  latest=$(find "$sessions_dir" -name "rollout-*.jsonl" -type f -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
-  if [ -z "$latest" ]; then
-    latest=$(find "$sessions_dir" -name "rollout-*.jsonl" -type f 2>/dev/null | xargs ls -t 2>/dev/null | head -1)
-  fi
+  latest=$(__newest_file_since "$sessions_dir" 'rollout-*.jsonl' "$started_at" "")
   if [ -n "$latest" ]; then
     local fname
     fname=$(basename "$latest" .jsonl)
@@ -187,6 +208,12 @@ __track_command_session() {
   if [[ "$cmd" == *"claude-codex"* ]]; then
     __track_claude_codex_session "$pane_id" &
   elif [[ "$cmd" == *"claude"* ]]; then
+    # A command that already carries --session-id owns its mapping; a follow-up
+    # tracker would overwrite it with whatever jsonl happened to be newest.
+    # Mirrors the guard in launcher.ps1 Start-MycmuxCommandSessionTracking.
+    case " $cmd " in
+      *" --session-id "*|*" --session-id="*) return ;;
+    esac
     __track_claude_session "$pane_id" &
   elif [[ "$cmd" == *"codex"* ]]; then
     __track_codex_session "$pane_id" &
@@ -354,17 +381,31 @@ cmd=""
 if [ -n "$MYCMUX_HANDOFF" ]; then
   __handoff_file="$MYCMUX_HANDOFF_PROMPT_FILE"
   __bootstrap="Handoff from previous session. Read \"${__handoff_file}\" and continue from where it left off."
+  # A handoff pane starts a brand new agent session; it must get its own id the
+  # same way the normal launch path does. Writing the *source* pane id here (the
+  # old "<kind>-handoff:<pane>" mapping) left the pane with no real session id,
+  # so restore fell back to `--continue` and adopted another tab's conversation
+  # in the same cwd.
   case "$MYCMUX_HANDOFF" in
     claude)
-      __write_session_mapping "$MYCMUX_PANE_SESSION_ID" "claude-handoff" "$MYCMUX_HANDOFF_FROM_SESSION"
-      claude --allow-dangerously-skip-permissions --permission-mode auto "$__bootstrap"
+      __handoff_project_dir="$(__get_claude_project_dir)"
+      __handoff_sid="$(__stable_new_session_id "$__handoff_project_dir")"
+      if [ -n "$__handoff_sid" ]; then
+        __write_session_mapping "$MYCMUX_PANE_SESSION_ID" "claude" "$__handoff_sid"
+        claude --session-id "$__handoff_sid" --allow-dangerously-skip-permissions --permission-mode auto "$__bootstrap"
+      else
+        __track_claude_session "$MYCMUX_PANE_SESSION_ID" &
+        claude --allow-dangerously-skip-permissions --permission-mode auto "$__bootstrap"
+      fi
       ;;
     codex)
-      __write_session_mapping "$MYCMUX_PANE_SESSION_ID" "codex-handoff" "$MYCMUX_HANDOFF_FROM_SESSION"
+      # codex has no --session-id flag, so the real id can only be learned after
+      # the fact from the rollout log it writes.
+      __track_codex_session "$MYCMUX_PANE_SESSION_ID" &
       codex --no-alt-screen "$__bootstrap"
       ;;
     claude-codex)
-      __write_session_mapping "$MYCMUX_PANE_SESSION_ID" "claude-codex-handoff" "$MYCMUX_HANDOFF_FROM_SESSION"
+      __track_claude_codex_session "$MYCMUX_PANE_SESSION_ID" &
       claude-codex "$__bootstrap"
       ;;
   esac
