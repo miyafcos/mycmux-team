@@ -3,7 +3,7 @@ import type { CSSProperties, ReactNode } from "react";
 
 import { DashboardCardRow } from "./DashboardCardRow";
 import { dashboardStrings } from "./dashboardStrings";
-import type { DashboardCardModel } from "./dashboardModel";
+import { resolveDisplayState, type DashboardCardModel } from "./dashboardModel";
 
 // 行の見た目と状態語は DashboardCardRow が持つ。詳細ペインが従来どおり
 // このモジュールから取れるように、ここで通しておく。
@@ -51,21 +51,29 @@ function Section({ title, count, children }: { title: string; count: number; chi
 export function DashboardSessionList({
   needsHuman,
   all,
+  deferred,
+  deferredExpanded,
+  hideWorkspaceBadge,
   selectedTabId,
   now,
   onSelect,
   onJump,
   onHoverChange,
   onFocusComposer,
+  onToggleDeferred,
 }: {
   needsHuman: readonly DashboardCardModel[];
   all: readonly DashboardCardModel[];
+  deferred: readonly DashboardCardModel[];
+  deferredExpanded: boolean;
+  hideWorkspaceBadge: boolean;
   selectedTabId: string | null;
   now: number;
   onSelect: (tabId: string) => void;
   onJump: (card: DashboardCardModel) => void;
   onHoverChange: (hovered: boolean) => void;
   onFocusComposer: () => void;
+  onToggleDeferred: () => void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const hoveredRef = useRef(false);
@@ -92,6 +100,7 @@ export function DashboardSessionList({
         card={card}
         selected={card.tab.id === selectedTabId}
         now={now}
+        hideWorkspaceBadge={hideWorkspaceBadge}
         onSelect={onSelect}
         onJump={onJump}
         onFocusComposer={onFocusComposer}
@@ -104,12 +113,32 @@ export function DashboardSessionList({
           card={card}
           selected={card.tab.id === selectedTabId}
           now={now}
+          hideWorkspaceBadge={hideWorkspaceBadge}
           onSelect={onSelect}
           onJump={onJump}
           onFocusComposer={onFocusComposer}
         />)
         : <div style={emptyStyle}>{dashboardStrings.listEmpty}</div>}
     </Section>
+    {deferred.length ? <section style={{ display: "grid", gap: 8 }}>
+      <button
+        type="button"
+        title={dashboardStrings.collapsedTitle}
+        aria-expanded={deferredExpanded}
+        onClick={() => onToggleDeferred()}
+        style={disclosureStyle}
+      >{`${deferredExpanded ? "▾" : "▸"} ${dashboardStrings.collapsedDone(deferred.filter((card) => resolveDisplayState(card) === "done").length)} ／ ${dashboardStrings.collapsedIdle(deferred.filter((card) => resolveDisplayState(card) !== "done").length)}`}</button>
+      {deferredExpanded ? deferred.map((card) => <DashboardCardRow
+        key={card.tab.id}
+        card={card}
+        selected={card.tab.id === selectedTabId}
+        now={now}
+        hideWorkspaceBadge={hideWorkspaceBadge}
+        onSelect={onSelect}
+        onJump={onJump}
+        onFocusComposer={onFocusComposer}
+      />) : null}
+    </section> : null}
   </div>;
 }
 
@@ -135,4 +164,13 @@ const emptyStyle: CSSProperties = {
   color: "var(--cmux-text-secondary)",
   fontSize: "var(--cmux-font-size-sm)",
   padding: "8px 2px",
+};
+const disclosureStyle: CSSProperties = {
+  background: "transparent",
+  border: "0",
+  color: "var(--cmux-text-secondary)",
+  cursor: "pointer",
+  fontSize: "var(--cmux-font-size-sm)",
+  padding: "4px 2px",
+  textAlign: "left",
 };

@@ -59,10 +59,11 @@ export const instructionBlockStyle: CSSProperties = {
  * 状態は4重に符号化する: 左レール (全状態) / 地 (要対応・エラー・更新なし) /
  * 枠 (同3状態) / 状態ピル。色だけに頼らないための冗長化。
  */
-function CardRow({ card, selected, now, onSelect, onJump, onFocusComposer }: {
+function CardRow({ card, selected, now, hideWorkspaceBadge, onSelect, onJump, onFocusComposer }: {
   card: DashboardCardModel;
   selected: boolean;
   now: number;
+  hideWorkspaceBadge: boolean;
   onSelect: (tabId: string) => void;
   onJump: (card: DashboardCardModel) => void;
   onFocusComposer: () => void;
@@ -88,7 +89,7 @@ function CardRow({ card, selected, now, onSelect, onJump, onFocusComposer }: {
   const stateColor = displayStateColor(state);
   // 地と枠を状態色に寄せるのは「人間の手が要る」3状態だけ。作業中・完了は素の面のまま。
   const emphasized = state === "needsHuman" || state === "error" || state === "noUpdate";
-  const folded = state === "done";
+  const showStatePill = notStarted || state === "needsHuman" || state === "error" || state === "noUpdate";
 
   const openTerminal = () => {
     onSelect(card.tab.id);
@@ -104,7 +105,6 @@ function CardRow({ card, selected, now, onSelect, onJump, onFocusComposer }: {
     onDoubleClick={() => onJump(card)}
     style={{
       ...cardStyle,
-      ...(folded ? foldedStyle : null),
       background: emphasized ? `color-mix(in srgb, ${stateColor} 8%, transparent)` : "var(--cmux-surface)",
       borderColor: selected
         ? "var(--cmux-accent)"
@@ -116,11 +116,10 @@ function CardRow({ card, selected, now, onSelect, onJump, onFocusComposer }: {
     <div style={headLineStyle}>
       <AgentKindIcon kind={card.agentKind === "none" ? undefined : card.agentKind} size={20} />
       <strong style={labelStyle}>{card.label}</strong>
-      <span style={workspaceBadgeStyle}>{card.workspace.name}</span>
-      <span style={positionBadgeStyle}>{dashboardStrings.paneLocation(card.tabIndex + 1, card.paneIndex + 1)}</span>
+      {hideWorkspaceBadge ? null : <span style={workspaceBadgeStyle}>{card.workspace.name}</span>}
       {notStarted
         ? <span style={statePillStyle("var(--cmux-text-tertiary)")}>{dashboardStrings.stateNotStarted}</span>
-        : <span style={statePillStyle(stateColor)}>{displayStateLabel(state)}</span>}
+        : showStatePill ? <span style={statePillStyle(stateColor)}>{displayStateLabel(state)}</span> : null}
       {ended ? <span style={statePillStyle("var(--cmux-text-tertiary)")}>{dashboardStrings.telemetryEnded}</span> : null}
       <span style={elapsedStyle}>{elapsedMinutes === null ? "" : dashboardStrings.elapsed(elapsedMinutes)}</span>
       {/* モックは「移動 ▸」。短縮語は dashboardStrings に無いので既存文言をそのまま使う。 */}
@@ -131,7 +130,7 @@ function CardRow({ card, selected, now, onSelect, onJump, onFocusComposer }: {
         onClick={(event) => { event.stopPropagation(); onJump(card); }}
       >{`${dashboardStrings.jumpButtonTitle} ▸`}</button>
     </div>
-    {folded ? null : <>
+    <>
       {notStarted
         // 未起動: 断定できるのは「まだ開いていない」ことと置き場所だけ。
         ? (card.metadata?.cwd ? <div style={monoLineStyle}>{card.metadata.cwd}</div> : null)
@@ -190,7 +189,7 @@ function CardRow({ card, selected, now, onSelect, onJump, onFocusComposer }: {
         onFocusComposer={onFocusComposer}
         compact
       /> : null}
-    </>}
+    </>
   </div>;
 }
 
@@ -202,12 +201,10 @@ const cardStyle: CSSProperties = {
   minWidth: 0,
   padding: "8px 11px",
   border: "1px solid var(--cmux-border)",
-  borderLeft: "3px solid var(--cmux-border)",
+  borderLeft: "4px solid var(--cmux-border)",
   borderRadius: "var(--cmux-radius-card)",
   cursor: "pointer",
 };
-/** 完了は畳む: 見出し1行だけ残して面積と彩度を落とす。 */
-const foldedStyle: CSSProperties = { padding: "5px 11px", opacity: 0.72 };
 const headLineStyle: CSSProperties = { display: "flex", alignItems: "center", gap: 6, minWidth: 0 };
 const labelStyle: CSSProperties = {
   flex: 1,
@@ -215,7 +212,7 @@ const labelStyle: CSSProperties = {
   overflow: "hidden",
   textOverflow: "ellipsis",
   whiteSpace: "nowrap",
-  fontSize: "var(--cmux-font-size-md)",
+  fontSize: "calc(var(--cmux-font-size-md) + 1px)",
 };
 const oneLineStyle: CSSProperties = { minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
 const workspaceBadgeStyle: CSSProperties = {
@@ -224,15 +221,6 @@ const workspaceBadgeStyle: CSSProperties = {
   maxWidth: "34%",
   color: "var(--cmux-text-secondary)",
   fontSize: "var(--cmux-font-size-xs)",
-};
-/** 英数字と区切りだけのバッジなので 10px を許す (日本語行の下限は 11px)。 */
-const positionBadgeStyle: CSSProperties = {
-  flex: "0 0 auto",
-  border: "1px solid var(--cmux-border)",
-  borderRadius: 4,
-  padding: "0 5px",
-  color: "var(--cmux-text-secondary)",
-  fontSize: 10,
 };
 const elapsedStyle: CSSProperties = {
   flex: "0 0 auto",
@@ -257,7 +245,7 @@ const instructionStyle: CSSProperties = {
   WebkitBoxOrient: "vertical",
   WebkitLineClamp: 2,
   overflow: "hidden",
-  fontSize: "var(--cmux-font-size-sm)",
+  fontSize: "var(--cmux-font-size-md)",
   color: "var(--cmux-text)",
 };
 const instructionTagStyle: CSSProperties = {

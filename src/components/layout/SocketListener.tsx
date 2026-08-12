@@ -29,7 +29,9 @@ import {
   type WindowAdoptPayload,
   type WindowFragment,
   type WorkspaceConfig,
+  listPets,
 } from "../../lib/ipc";
+import { candidatesFromListedPets } from "../../lib/pets";
 import type { AgentSessionKind, SuppressedAgentSession, Workspace } from "../../types";
 import { useThemeStore } from "../../stores/themeStore";
 import { useKeybindingStore } from "../../stores/keybindingStore";
@@ -911,6 +913,22 @@ function adoptWorkspaceConfigs(configs: WorkspaceConfig[]): string[] {
 }
 
 /**
+ * External pets live on disk and are only known through `list_pets`. Without
+ * this startup load the catalog is just the bundled pet, so every workspace
+ * assigned an external pet silently renders as Clawd until the Pet settings
+ * tab happens to mount and rescan — which made the pet appear to "change"
+ * after opening and closing settings.
+ */
+async function loadPetCatalog(): Promise<void> {
+  try {
+    const listed = await listPets();
+    usePetSettingsStore.getState().setPets(candidatesFromListedPets(listed).candidates);
+  } catch (error) {
+    console.warn("[pets] Failed to load pet catalog at startup:", error);
+  }
+}
+
+/**
  * Child-window boot. No `data.json` read (that stays main's), no leadership
  * claim: settings/theme/keybindings come from `get_app_settings`, workspaces
  * from the adoption queue the tear-out filled before this window existed.
@@ -933,6 +951,7 @@ async function hydrateChildWindow(): Promise<void> {
     petDisabled: settings.pet_disabled,
     petFixedId: settings.pet_fixed_id ?? undefined,
   });
+  void loadPetCatalog();
 
   const adopted = await takePendingAdoption(windowLabel());
   if (adopted.length > 0) {
@@ -1027,6 +1046,7 @@ export function useWorkspacePersist() {
             petDisabled: data.settings.pet_disabled,
             petFixedId: data.settings.pet_fixed_id ?? undefined,
           });
+          void loadPetCatalog();
 
           if (data.workspaces.length > 0) {
             const listStore = useWorkspaceListStore.getState();

@@ -331,7 +331,8 @@ fn execute(input: &DigestInput) -> Result<String, String> {
     let payload =
         serde_json::to_string(input).map_err(|error| format!("encode digest input: {error}"))?;
     let prompt = format!("{MARKER}\n{PROMPT}\n{payload}");
-    let mut child = Command::new(codex_program())
+    let mut command = Command::new(codex_program());
+    command
         .args([
             "exec",
             "--model",
@@ -342,7 +343,13 @@ fn execute(input: &DigestInput) -> Result<String, String> {
         ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(crate::util::process::CREATE_NO_WINDOW);
+    }
+    let mut child = command
         .spawn()
         .map_err(|error| format!("start digest codex: {error}"))?;
     {
@@ -387,9 +394,14 @@ fn execute(input: &DigestInput) -> Result<String, String> {
 }
 
 fn stop_child(child: &mut Child) {
-    let _ = Command::new("taskkill")
-        .args(["/PID", &child.id().to_string(), "/T", "/F"])
-        .status();
+    let mut taskkill = Command::new("taskkill");
+    taskkill.args(["/PID", &child.id().to_string(), "/T", "/F"]);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        taskkill.creation_flags(crate::util::process::CREATE_NO_WINDOW);
+    }
+    let _ = taskkill.status();
     let _ = child.kill();
     let _ = child.wait();
 }

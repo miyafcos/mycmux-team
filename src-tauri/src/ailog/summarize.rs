@@ -515,7 +515,8 @@ fn execute_session(
     let payload =
         serde_json::to_string(input).map_err(|err| format!("encode summary input: {err}"))?;
     let prompt = format!("{MARKER}\n{PROMPT}\n{payload}");
-    let mut child = Command::new(codex_program())
+    let mut command = Command::new(codex_program());
+    command
         .args([
             "exec",
             "--model",
@@ -526,7 +527,13 @@ fn execute_session(
         ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(crate::util::process::CREATE_NO_WINDOW);
+    }
+    let mut child = command
         .spawn()
         .map_err(|err| format!("start codex summarizer: {err}"))?;
     // Take (not borrow) stdin so it drops after the write; codex exec reads
@@ -547,9 +554,14 @@ fn execute_session(
                 .unwrap_or_else(|err| err.into_inner())
                 .take()
             {
-                let _ = Command::new("taskkill")
-                    .args(["/PID", &running.id().to_string(), "/T", "/F"])
-                    .status();
+                let mut taskkill = Command::new("taskkill");
+                taskkill.args(["/PID", &running.id().to_string(), "/T", "/F"]);
+                #[cfg(windows)]
+                {
+                    use std::os::windows::process::CommandExt;
+                    taskkill.creation_flags(crate::util::process::CREATE_NO_WINDOW);
+                }
+                let _ = taskkill.status();
                 let _ = running.kill();
                 let _ = running.wait();
             }

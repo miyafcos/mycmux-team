@@ -12,9 +12,9 @@ export const dashboardStrings = {
   stateNoUpdate: "更新なし",
   stateDone: "完了",
   stateIdle: "待機",
-  sortByWorkspace: "ワークスペース順",
-  sortByAttention: "要対応順",
-  liveUpdating: "自動更新中",
+  collapsedDone: (n: number): string => `完了 ${n}件`,
+  collapsedIdle: (n: number): string => `待機・未起動 ${n}件`,
+  collapsedTitle: "クリックで展開",
   jumpButtonTitle: "このペインへ移動",
   myInstructionLabel: "私の指示",
   agentAskingLabel: "エージェントの質問",
@@ -36,7 +36,6 @@ export const dashboardStrings = {
   sectionAllSessions: "全セッション",
   searchPlaceholder: "検索 (ワークスペース・ラベル・cwd・ログ)",
   backToSession: "セッションへ戻る",
-  filterNeedsHumanOnly: "要対応のみ",
   agentFilterTitle: "エージェント",
   allWorkspaces: "全て",
   keyboardHint: "j/k 選択 · Enter 移動 · Tab 次の要対応 · / 検索 · Esc 戻る",
@@ -98,7 +97,4 @@ export const dashboardStrings = {
   sendConfirmedOnScreen: "送信を画面で確認しました",
   sendUnverified: "送信しましたが画面で確認できませんでした",
   sendFailedBeforeWrite: "送信できませんでした (実行前にエラー)",
-  // v2: ヘッダの visinfo
-  visinfoCounts: (panes: number, tabs: number, ws: number): string => `${panes}ペイン · ${tabs}タブ · ${ws}ワークスペース`,
-  visinfoVisible: (visible: number, background: number): string => `表示中 ${visible} / 裏で稼働 ${background}`,
 } as const;

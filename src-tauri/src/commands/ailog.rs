@@ -398,9 +398,14 @@ pub async fn ailog_summarize_cancel() -> Result<SummarizeCancelResult, String> {
         .unwrap_or_else(|err| err.into_inner())
         .take()
     {
-        let _ = std::process::Command::new("taskkill")
-            .args(["/PID", &child.id().to_string(), "/T", "/F"])
-            .status();
+        let mut taskkill = std::process::Command::new("taskkill");
+        taskkill.args(["/PID", &child.id().to_string(), "/T", "/F"]);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            taskkill.creation_flags(crate::util::process::CREATE_NO_WINDOW);
+        }
+        let _ = taskkill.status();
         let _ = child.kill();
         let _ = child.wait();
     }

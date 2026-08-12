@@ -7,8 +7,10 @@ import {
   countVisibility,
   countWorkspaceStructure,
   groupDashboardCard,
+  matchesDashboardStateFilter,
   needsHumanCards,
   orderDashboardCards,
+  partitionDashboardCards,
   resolveDisplayState,
   type DashboardCardModel,
 } from "../../src/components/dashboard/dashboardModel";
@@ -341,6 +343,32 @@ describe("dashboard model", () => {
     const filters = { query: "", workspaceId: null, needsHumanOnly: true, agentKind: null };
     expect(applyDashboardFilters([waiting, errored, running], filters).map((item) => item.tab.id))
       .toEqual(["t-1", "t-2"]);
+  });
+
+  it("treats the 要対応 count filter as needsHuman plus error", () => {
+    const waiting = distinct({ attentionCategory: "waiting", group: "waiting" }, "t-waiting");
+    const errored = distinct({ attentionCategory: "error", group: "waiting" }, "t-error");
+    const running = distinct({ group: "working", lastActivityAt: now - 1 }, "t-running");
+    expect(applyDashboardFilters([waiting, errored, running], {
+      query: "",
+      workspaceId: null,
+      needsHumanOnly: false,
+      agentKind: null,
+      stateFilter: "needsHuman",
+    }).map((item) => item.tab.id)).toEqual(["t-waiting", "t-error"]);
+    expect(matchesDashboardStateFilter(running, "needsHuman")).toBe(false);
+  });
+
+  it("partitions completed, idle, and never-started cards behind the disclosure", () => {
+    const waiting = distinct({ attentionCategory: "waiting", group: "waiting" }, "t-waiting");
+    const running = distinct({ group: "working", lastActivityAt: now - 1 }, "t-running");
+    const done = distinct({ attentionCategory: "done", group: "done" }, "t-done");
+    const idle = distinct({ group: "idle", lastActivityAt: 0 }, "t-idle");
+    const neverStarted = distinct({ neverStarted: true, group: "working", lastActivityAt: now - 1 }, "t-never");
+    const result = partitionDashboardCards([waiting, running, done, idle, neverStarted]);
+    expect(result.needsHuman.map((item) => item.tab.id)).toEqual(["t-waiting"]);
+    expect(result.active.map((item) => item.tab.id)).toEqual(["t-running"]);
+    expect(result.deferred.map((item) => item.tab.id)).toEqual(["t-done", "t-idle", "t-never"]);
   });
 
   it("searches the livebrief summary as well as the terminal fields", () => {

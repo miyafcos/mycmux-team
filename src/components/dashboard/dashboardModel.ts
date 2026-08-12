@@ -21,6 +21,7 @@ export type DashboardAgentKind = "claude" | "codex" | "claude-codex" | "none";
  * livebrief が生きている間はそちらが正、そうでなければ attention/stall/metadata へ落ちる。
  */
 export type DashboardDisplayState = "needsHuman" | "error" | "running" | "noUpdate" | "done" | "idle";
+export type DashboardStateFilter = "needsHuman" | "running" | "noUpdate" | "done";
 
 /** 「更新なし」と言い切るまでの猶予 (分)。 */
 export const NO_UPDATE_THRESHOLD_MINUTES = 5;
@@ -80,6 +81,7 @@ export interface DashboardFilters {
   workspaceId: string | null;
   needsHumanOnly: boolean;
   agentKind: string | null;
+  stateFilter?: DashboardStateFilter | null;
 }
 
 /** 一本化した並び順: 人間入力待ち > エラー > 実行中 > 更新なし > 待機 > 完了。 */
@@ -262,6 +264,33 @@ export function countByDisplayState(cards: readonly DashboardCardModel[]): Recor
   return counts;
 }
 
+/** Count-pill filters map "要対応" to both human-input and error states. */
+export function matchesDashboardStateFilter(card: DashboardCardModel, stateFilter: DashboardStateFilter | null | undefined): boolean {
+  if (!stateFilter) return true;
+  const state = resolveDisplayState(card);
+  return stateFilter === "needsHuman"
+    ? state === "needsHuman" || state === "error"
+    : state === stateFilter;
+}
+
+/** The primary list stays focused; completed, idle, and never-started cards live behind one disclosure. */
+export function partitionDashboardCards(cards: readonly DashboardCardModel[]): {
+  needsHuman: DashboardCardModel[];
+  active: DashboardCardModel[];
+  deferred: DashboardCardModel[];
+} {
+  const needsHuman: DashboardCardModel[] = [];
+  const active: DashboardCardModel[] = [];
+  const deferred: DashboardCardModel[] = [];
+  for (const card of cards) {
+    const state = resolveDisplayState(card);
+    if (state === "needsHuman" || state === "error") needsHuman.push(card);
+    else if (state === "running" || state === "noUpdate") active.push(card);
+    else deferred.push(card);
+  }
+  return { needsHuman, active, deferred };
+}
+
 /** ヘッダの visinfo 1本目 (`Nペイン · Mタブ · Kワークスペース`) の内訳。 */
 export interface DashboardStructureCounts {
   panes: number;
@@ -293,6 +322,7 @@ export function applyDashboardFilters(cards: readonly DashboardCardModel[], filt
   const query = filters.query.trim().toLocaleLowerCase();
   return cards.filter((card) => {
     if (filters.workspaceId && card.workspaceId !== filters.workspaceId) return false;
+    if (!matchesDashboardStateFilter(card, filters.stateFilter)) return false;
     if (filters.needsHumanOnly) {
       const state = resolveDisplayState(card);
       if (state !== "needsHuman" && state !== "error") return false;
