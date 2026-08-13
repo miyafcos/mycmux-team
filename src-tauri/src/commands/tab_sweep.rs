@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::io::ErrorKind;
-use std::process::{Command as StdCommand, Stdio};
+use std::process::Command as StdCommand;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
@@ -10,11 +10,7 @@ use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
-use crate::commands::terminal::{prepare_spawn_command, sanitize_launch_env};
-
-const JUDGE_MODEL: &str = "claude-haiku-4-5-20251001";
 const JUDGE_TIMEOUT: Duration = Duration::from_secs(90);
-const NAMING_MODEL: &str = "claude-sonnet-5";
 const NAMING_TIMEOUT: Duration = Duration::from_secs(180);
 
 type JudgeAbortRegistry = Mutex<HashMap<String, oneshot::Sender<()>>>;
@@ -75,51 +71,6 @@ impl Drop for JudgeRegistration {
             registry.remove(&self.request_id);
         }
     }
-}
-
-fn judge_args(model: &str) -> Vec<String> {
-    vec![
-        "-p".to_string(),
-        "--model".to_string(),
-        model.to_string(),
-        "--output-format".to_string(),
-        "text".to_string(),
-    ]
-}
-
-fn judge_environment<I>(env: I) -> HashMap<String, String>
-where
-    I: IntoIterator<Item = (String, String)>,
-{
-    let mut sanitized: HashMap<String, String> = env.into_iter().collect();
-    sanitize_launch_env(&mut sanitized);
-    // The PTY sanitizer intentionally preserves valid resume/handoff payloads.
-    // A one-shot judge must never inherit any mycmux control channel, even if
-    // the parent process was started from such a shell.
-    sanitized.retain(|key, _| !key.to_ascii_uppercase().starts_with("MYCMUX_"));
-    sanitized
-}
-
-fn build_judge_command<I>(env: I, model: &str) -> StdCommand
-where
-    I: IntoIterator<Item = (String, String)>,
-{
-    let mut args = judge_args(model);
-    let program = prepare_spawn_command("claude", &mut args);
-    let mut command = StdCommand::new(program);
-    command
-        .args(args)
-        .env_clear()
-        .envs(judge_environment(env))
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(crate::util::process::CREATE_NO_WINDOW);
-    }
-    command
 }
 
 #[cfg(windows)]
@@ -184,13 +135,18 @@ pub async fn abort_tab_sweep_judge(request_id: String) -> Result<bool, TabSweepJ
 
 #[tauri::command]
 pub async fn run_tab_sweep_judge(
+    app: tauri::AppHandle,
     prompt: String,
     request_id: String,
     mode: Option<String>,
 ) -> Result<String, TabSweepJudgeError> {
-    let (model, timeout) = match mode.as_deref() {
-        None | Some("judge") => (JUDGE_MODEL, JUDGE_TIMEOUT),
-        Some("naming") => (NAMING_MODEL, NAMING_TIMEOUT),
+    let cfg = crate::ai::resolve(&app);
+    if !cfg.enabled {
+        return Err(TabSweepJudgeError::new("ai_disabled", "ai features are disabled in settings"));
+    }
+    let timeout = match mode.as_deref() {
+        None | Some("judge") => JUDGE_TIMEOUT,
+        Some("naming") => NAMING_TIMEOUT,
         Some(value) => {
             return Err(TabSweepJudgeError::new(
                 "invalid_mode",
@@ -200,7 +156,7 @@ pub async fn run_tab_sweep_judge(
     };
     let (cancel_sender, mut cancel_receiver) = oneshot::channel();
     let _registration = JudgeRegistration::register(request_id, cancel_sender)?;
-    let mut command = Command::from(build_judge_command(std::env::vars(), model));
+    let mut command = Command::from(crate::ai::build_command(&cfg, std::env::vars()));
     command.kill_on_drop(true);
     let mut child = command.spawn().map_err(|error| {
         let code = if error.kind() == ErrorKind::NotFound {
@@ -369,115 +325,6 @@ pub async fn run_tab_sweep_judge(
 mod tests {
     use super::*;
 
-    #[test]
-    fn judge_arguments_are_stable_and_do_not_contain_the_prompt() {
-        let prompt = "do not put this prompt in argv";
-        let args = judge_args(JUDGE_MODEL);
-        assert_eq!(
-            args,
-            vec![
-                "-p",
-                "--model",
-                "claude-haiku-4-5-20251001",
-                "--output-format",
-                "text",
-            ]
-        );
-        assert!(!args.iter().any(|argument| argument.contains(prompt)));
-    }
-
-    #[test]
-    fn judge_environment_strips_every_mycmux_control_variable() {
-        let env = judge_environment([
-            ("PATH".to_string(), "safe-path".to_string()),
-            ("MYCMUX_RESUME".to_string(), "claude".to_string()),
-            ("MYCMUX_SESSION_ID".to_string(), "saved-session".to_string()),
-            ("MYCMUX_AGENT_KIND".to_string(), "claude".to_string()),
-            ("MYCMUX_HANDOFF".to_string(), "1".to_string()),
-            (
-                "MYCMUX_HANDOFF_FROM_SESSION".to_string(),
-                "source-session".to_string(),
-            ),
-            ("MYCMUX_LAUNCH_TARGET".to_string(), "codex".to_string()),
-            ("mycmux_lowercase_probe".to_string(), "leak".to_string()),
-            ("__CMUX_LAUNCHER_DONE".to_string(), "1".to_string()),
-        ]);
-        assert_eq!(env.get("PATH").map(String::as_str), Some("safe-path"));
-        assert!(!env.keys().any(|key| key.starts_with("MYCMUX_")));
-        assert!(!env
-            .keys()
-            .any(|key| key.to_ascii_uppercase().starts_with("MYCMUX_")));
-        assert!(!env.contains_key("__CMUX_LAUNCHER_DONE"));
-    }
-
-    #[test]
-    fn built_command_applies_sanitized_environment_and_piped_stdio() {
-        let command = build_judge_command(
-            [
-                ("PATH".to_string(), "safe-path".to_string()),
-                ("MYCMUX_RESUME".to_string(), "claude".to_string()),
-            ],
-            JUDGE_MODEL,
-        );
-        let environment: HashMap<_, _> = command
-            .get_envs()
-            .filter_map(|(key, value)| {
-                value.map(|value| {
-                    (
-                        key.to_string_lossy().into_owned(),
-                        value.to_string_lossy().into_owned(),
-                    )
-                })
-            })
-            .collect();
-        assert_eq!(
-            environment.get("PATH").map(String::as_str),
-            Some("safe-path")
-        );
-        assert!(!environment
-            .keys()
-            .any(|key| key.to_ascii_uppercase().starts_with("MYCMUX_")));
-        let args: Vec<_> = command
-            .get_args()
-            .map(|argument| argument.to_string_lossy().into_owned())
-            .collect();
-        assert!(args.ends_with(&judge_args(JUDGE_MODEL)));
-    }
-
-    #[test]
-    fn naming_command_uses_sonnet_with_the_same_sanitized_environment() {
-        let command = build_judge_command(
-            [
-                ("PATH".to_string(), "safe-path".to_string()),
-                ("MYCMUX_RESUME".to_string(), "claude".to_string()),
-            ],
-            NAMING_MODEL,
-        );
-        let environment: HashMap<_, _> = command
-            .get_envs()
-            .filter_map(|(key, value)| {
-                value.map(|value| {
-                    (
-                        key.to_string_lossy().into_owned(),
-                        value.to_string_lossy().into_owned(),
-                    )
-                })
-            })
-            .collect();
-        assert_eq!(
-            environment.get("PATH").map(String::as_str),
-            Some("safe-path")
-        );
-        assert!(!environment
-            .keys()
-            .any(|key| key.to_ascii_uppercase().starts_with("MYCMUX_")));
-        let args: Vec<_> = command
-            .get_args()
-            .map(|argument| argument.to_string_lossy().into_owned())
-            .collect();
-        assert!(args.ends_with(&judge_args(NAMING_MODEL)));
-        assert!(args.iter().any(|argument| argument == NAMING_MODEL));
-    }
 
     #[tokio::test]
     async fn abort_signal_is_request_scoped_and_idempotent() {
@@ -510,19 +357,4 @@ mod tests {
         drop(registration);
     }
 
-    #[cfg(windows)]
-    #[test]
-    fn cmd_shim_uses_comspec_without_mutating_process_path() {
-        let directory = tempfile::tempdir().expect("temp dir");
-        let shim = directory.path().join("claude.cmd");
-        std::fs::write(&shim, "@echo off\r\n").expect("write shim");
-        let mut args = judge_args(JUDGE_MODEL);
-        let program = prepare_spawn_command(&shim.to_string_lossy(), &mut args);
-        let expected_comspec = std::env::var("COMSPEC")
-            .unwrap_or_else(|_| "C:\\Windows\\System32\\cmd.exe".to_string());
-        assert_eq!(program, expected_comspec);
-        assert_eq!(args[0..2], ["/d", "/c"]);
-        assert_eq!(args[2], shim.to_string_lossy());
-        assert_eq!(args[3..], judge_args(JUDGE_MODEL));
-    }
 }

@@ -3,7 +3,7 @@ import type { CSSProperties, RefObject } from "react";
 
 import { handleSocketCommand } from "../layout/socketCommands";
 import { useLiveBriefStore } from "../../stores/liveBriefStore";
-import { useDashboardViewStore } from "../../stores/dashboardViewStore";
+import { useComposerStore } from "../../stores/composerStore";
 import type { DashboardCardModel } from "./dashboardModel";
 import { dashboardStrings } from "./dashboardStrings";
 import {
@@ -40,8 +40,8 @@ export function ReplyComposer({ card, inputRef }: {
 }) {
   const sessionId = card?.tab.sessionId ?? null;
   const brief = useLiveBriefStore((state) => (sessionId ? state.briefsBySession[sessionId] : undefined));
-  const draft = useDashboardViewStore((state) => (sessionId ? state.draftBySession[sessionId] ?? "" : ""));
-  const setDraft = useDashboardViewStore((state) => state.setDraft);
+  const draft = useComposerStore((state) => (sessionId ? state.draftBySession[sessionId] ?? "" : ""));
+  const setDraft = useComposerStore((state) => state.setDraft);
   const [sending, setSending] = useState(false);
   const [note, setNote] = useState<ComposerNote | null>(null);
 

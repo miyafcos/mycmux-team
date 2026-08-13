@@ -23,13 +23,14 @@ export function normalizeGalleryResponse(value: unknown): GalleryPage {
       id: stringValue(pet.id), displayName: stringValue(pet.displayName), description: stringValue(pet.description),
       tags: Array.isArray(pet.tags) ? pet.tags.filter((tag): tag is string => typeof tag === "string") : [],
       likeCount: numberValue(pet.likeCount), downloadCount: numberValue(pet.downloadCount), previewUrl: stringValue(pet.previewUrl),
-      atlasSize: stringValue(pet.atlasSize), statesDetected: Array.isArray(pet.statesDetected) ? pet.statesDetected.filter((state): state is string => typeof state === "string") : [],
+      atlasSize: stringValue(pet.atlasSize), statesDetected: numberValue(pet.statesDetected),
     })),
   };
 }
 
 export function atlasSizeBadge(atlasSize: string): string {
   if (atlasSize === "1536x1872") return "8×9";
+  if (atlasSize === "1536x2080") return "8×10";
   if (atlasSize === "1536x2288") return "8×11";
   return "";
 }
@@ -49,7 +50,7 @@ export function PetGallerySection({ installedIds, onInstalled }: PetGallerySecti
   const [page, setPage] = useState(1);
   const [gallery, setGallery] = useState<GalleryPage>(emptyPage);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [installing, setInstalling] = useState<string | null>(null);
   const [quarantining, setQuarantining] = useState<string | null>(null);
   const [previewFallbacks, setPreviewFallbacks] = useState<Record<string, string>>({});
@@ -61,11 +62,12 @@ export function PetGallerySection({ installedIds, onInstalled }: PetGallerySecti
 
   useEffect(() => {
     let active = true;
-    setLoading(true); setError(false);
+    setLoading(true); setError(null);
     void fetchPetGallery(query, page).then((response) => {
       if (active) setGallery(normalizeGalleryResponse(response));
-    }).catch(() => {
-      if (active) { setGallery(emptyPage); setError(true); }
+    }).catch((fetchError) => {
+      console.warn("[pets] Gallery fetch failed", fetchError);
+      if (active) { setGallery(emptyPage); setError(String(fetchError)); }
     }).finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, [page, query]);
@@ -110,11 +112,14 @@ export function PetGallerySection({ installedIds, onInstalled }: PetGallerySecti
     <div style={sectionHeadingStyle}>{petSettingsStrings.galleryTitle}</div>
     <div style={{ margin: "-4px 0 10px", color: "var(--cmux-text-dim)", fontSize: 11, lineHeight: 1.5 }}>{petSettingsStrings.galleryHint}</div>
     <input value={searchInput} onChange={(event) => setSearchInput(event.target.value)} placeholder={petSettingsStrings.gallerySearchPlaceholder} style={{ boxSizing: "border-box", width: "100%", marginBottom: 8 }} />
-    {error && <div style={{ color: "var(--cmux-text)", fontSize: 11, marginBottom: 8 }}>{petSettingsStrings.galleryError}</div>}
+    {error && <div style={{ color: "var(--cmux-text)", fontSize: 11, marginBottom: 8 }}>
+      {petSettingsStrings.galleryError}
+      <div style={{ color: "var(--cmux-text-dim)", fontSize: 10, wordBreak: "break-all" }}>{error}</div>
+    </div>}
     {!loading && !error && displayedPets.length === 0 && <div style={{ color: "var(--cmux-text-dim)", fontSize: 11 }}>{petSettingsStrings.galleryEmpty}</div>}
     <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))", gap: 8 }}>
       {displayedPets.map((pet) => {
-        const installed = installedIds.includes(`external:${pet.id}`);
+        const installed = isGalleryInstalled(pet.id, installedIds);
         const preview = previewFallbacks[pet.id] ?? pet.previewUrl;
         return <article key={pet.id} style={{ border: "1px solid var(--cmux-border)", borderRadius: 7, padding: 8, minWidth: 0 }}>
           {preview && <img src={preview} alt="" onError={() => void loadPreviewFallback(pet)} style={{ display: "block", width: "100%", height: 88, objectFit: "contain" }} />}

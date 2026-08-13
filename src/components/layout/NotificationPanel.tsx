@@ -16,7 +16,7 @@ type NotificationEntry = {
   tabId: string;
   sessionId: string;
   count: number;
-  kind: "waiting" | "done";
+  kind: "waiting";
   label: string;
 };
 
@@ -44,8 +44,8 @@ const NotificationItem = memo(function NotificationItem({
           {notification.label}
         </span>
         <span key={`${notification.kind}-${notification.count}`} className="cmux-badge-pop" style={{
-          background: notification.kind === "waiting" ? "var(--status-waiting)" : "var(--status-done)",
-          color: notification.kind === "waiting" ? "var(--cmux-on-waiting)" : "var(--cmux-on-done)",
+          background: "var(--status-waiting)",
+          color: "var(--cmux-on-waiting)",
           fontSize: 10,
           fontWeight: "bold",
           borderRadius: "50%",
@@ -104,25 +104,11 @@ export default function NotificationPanel({ closing = false, onClose }: Notifica
               kind: "waiting",
               label,
             });
-          } else if ((m.workDoneCount ?? 0) > 0) {
-            result.push({
-              workspaceId: ws.id,
-              workspaceName: ws.name,
-              paneId: pane.id,
-              tabId: tab.id,
-              sessionId: tab.sessionId,
-              count: m.workDoneCount ?? 0,
-              kind: "done",
-              label,
-            });
           }
         }
       }
     }
-    return result.sort((a, b) => {
-      if (a.kind !== b.kind) return a.kind === "waiting" ? -1 : 1;
-      return b.count - a.count;
-    });
+    return result.sort((a, b) => b.count - a.count);
   }, [workspaces, paneMetadata]);
 
   useDismissOnOutside(!closing, panelRef, onClose);

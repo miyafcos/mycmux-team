@@ -2029,6 +2029,46 @@ fn apply_repeat_counts(rows: &mut [FindingRow]) -> bool {
     false
 }
 
+#[cfg(test)]
+mod repeat_tests {
+    use super::*;
+
+    fn row(group: &str, index: usize) -> FindingRow {
+        let words = if group == "alpha" {
+            "alpha bravo charlie delta echo foxtrot"
+        } else {
+            "uniform victor whiskey xray yankee zulu"
+        };
+        FindingRow {
+            text: format!("{words} {index}"),
+            kind: "gotcha".into(), session_id: format!("s-{group}-{index}"),
+            session_kind: "codex".into(), date: index as i64,
+            goal_summary: None, project_label: None, cost_usd: 0.0, repeat_count: 1,
+        }
+    }
+
+    #[test]
+    fn lsh_matches_exact_for_threshold_separated_300_row_fixture() {
+        let mut approximate = (0..150).map(|i| row("alpha", i)).collect::<Vec<_>>();
+        approximate.extend((0..150).map(|i| row("omega", i + 150)));
+        let mut exact = approximate.clone();
+        // Same-group strings share every 3-gram except the numeric suffix;
+        // group vocabularies are disjoint, so this fixture is away from .55.
+        assert!(jaccard(&normalized_ngrams(&approximate[0].text), &normalized_ngrams(&approximate[1].text)) >= 0.7);
+        assert!(jaccard(&normalized_ngrams(&approximate[0].text), &normalized_ngrams(&approximate[151].text)) <= 0.35);
+        assert!(!apply_repeat_counts(&mut approximate));
+        apply_repeat_counts_exact(&mut exact);
+        assert_eq!(approximate.iter().map(|r| r.repeat_count).collect::<Vec<_>>(), exact.iter().map(|r| r.repeat_count).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn repeat_detection_reports_truncation_over_limit() {
+        let mut rows = (0..=MAX_REPEAT_ROWS).map(|i| row("unique", i)).collect::<Vec<_>>();
+        assert!(apply_repeat_counts(&mut rows));
+        assert!(rows.iter().all(|row| row.repeat_count == 1));
+    }
+}
+
 pub fn findings(
     conn: &Connection,
     range: &Range,

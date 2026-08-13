@@ -133,24 +133,105 @@ __get_claude_codex_project_dir() {
   echo "$HOME/.claude-codex/config/projects/$mangled"
 }
 
-# Newest file under $1 matching name pattern $2, but only when it was last
-# written at or after epoch $3. $4 caps the search depth (empty = recursive).
+# Print one unclaimed candidate under $1 matching name pattern $2 only when it
+# was written at or after epoch $3, its recorded CWD matches $6, and no other
+# pane already maps that session id. $4 caps the search depth (empty = recursive).
 # Session trackers guess which log belongs to the pane they just launched; a
 # file that predates the launch cannot be that log, and attributing it would
-# bind the pane to somebody else's session. No mapping is safer than a wrong
-# one, so an out-of-window candidate yields nothing.
-__newest_file_since() {
+# bind the pane to somebody else's session. No mapping is safer than a wrong or
+# ambiguous one, so zero or multiple candidates yield nothing.
+__single_unclaimed_session_since() {
   local dir="$1"
   local pattern="$2"
   local since="$3"
   local depth="$4"
-  local find_cmd=(find "$dir")
-  [ -n "$depth" ] && find_cmd+=(-maxdepth "$depth")
-  find_cmd+=(-name "$pattern" -type f -printf '%T@ %p\n')
-  "${find_cmd[@]}" 2>/dev/null \
-    | sort -rn \
-    | head -1 \
-    | awk -v since="$since" '$1 + 0 >= since + 0 { sub(/^[^ ]+ /, ""); print }'
+  local pane_id="$5"
+  local kind="$6"
+  local launch_cwd="$7"
+  local runtime_dir="${MYCMUX_RUNTIME_DIR:-$HOME/.mycmux}"
+  PYTHONIOENCODING=utf-8 MYCMUX_TRACK_DIR="$dir" MYCMUX_TRACK_PATTERN="$pattern" MYCMUX_TRACK_SINCE="$since" MYCMUX_TRACK_DEPTH="$depth" MYCMUX_TRACK_PANE_ID="$pane_id" MYCMUX_TRACK_KIND="$kind" MYCMUX_TRACK_CWD="$launch_cwd" MYCMUX_TRACK_RUNTIME_DIR="$runtime_dir" python - <<'PY' 2>/dev/null
+import json
+import os
+import re
+from pathlib import Path
+
+def normalize_cwd(value):
+    if not isinstance(value, str) or not value.strip():
+        return None
+    value = value.strip()
+    if re.match(r"^/[A-Za-z]/", value):
+        value = f"{value[1].upper()}:{value[2:]}"
+    try:
+        value = os.path.realpath(value)
+    except OSError:
+        pass
+    value = value.replace("/", "\\").rstrip("\\/")
+    return value.lower()
+
+root = Path(os.environ["MYCMUX_TRACK_DIR"])
+pattern = os.environ["MYCMUX_TRACK_PATTERN"]
+depth = os.environ["MYCMUX_TRACK_DEPTH"]
+since = float(os.environ["MYCMUX_TRACK_SINCE"])
+pane_id = os.environ["MYCMUX_TRACK_PANE_ID"]
+kind = os.environ["MYCMUX_TRACK_KIND"]
+expected_cwd = normalize_cwd(os.environ["MYCMUX_TRACK_CWD"])
+if not expected_cwd:
+    raise SystemExit
+
+try:
+    paths = root.rglob(pattern) if not depth else root.glob(pattern)
+    files = [path for path in paths if path.is_file() and path.stat().st_mtime >= since]
+except OSError:
+    raise SystemExit
+
+claimed = set()
+map_dir = Path(os.environ["MYCMUX_TRACK_RUNTIME_DIR"]) / "pane-sessions"
+try:
+    for mapping_file in map_dir.glob("*.txt"):
+        if mapping_file.stem == pane_id:
+            continue
+        match = re.match(r"^(?:claude|codex|claude-codex):(.+?)\s*$", mapping_file.read_text(encoding="utf-8-sig"))
+        if match:
+            claimed.add(match.group(1))
+except OSError:
+    pass
+
+candidates = []
+for path in files:
+    cwd = None
+    try:
+        with path.open(encoding="utf-8-sig") as handle:
+            if kind == "codex":
+                try:
+                    cwd = (json.loads(next(handle)).get("payload") or {}).get("cwd")
+                except (StopIteration, TypeError, ValueError):
+                    continue
+            else:
+                for index, line in enumerate(handle):
+                    if index >= 32:
+                        break
+                    try:
+                        value = json.loads(line)
+                    except (TypeError, ValueError):
+                        continue
+                    cwd = value.get("cwd")
+                    if cwd:
+                        break
+    except OSError:
+        continue
+    if normalize_cwd(cwd) != expected_cwd:
+        continue
+    if kind == "codex":
+        match = re.search(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", path.stem)
+        session_id = match.group(0) if match else None
+    else:
+        session_id = path.stem
+    if session_id and session_id not in claimed:
+        candidates.append(session_id)
+
+if len(candidates) == 1:
+    print(candidates[0])
+PY
 }
 
 __track_latest_jsonl_in_dir() {
@@ -161,12 +242,14 @@ __track_latest_jsonl_in_dir() {
   [ ! -d "$project_dir" ] && return
 
   local started_at
-  started_at=$(date +%s)
+  started_at=$(date +%s.%N)
+  local launch_cwd
+  launch_cwd="$(pwd)"
   sleep 4
-  local latest
-  latest=$(__newest_file_since "$project_dir" '*.jsonl' "$started_at" 1)
-  if [ -n "$latest" ]; then
-    __write_session_mapping "$pane_id" "$kind" "$(basename "$latest" .jsonl)"
+  local session_id
+  session_id=$(__single_unclaimed_session_since "$project_dir" '*.jsonl' "$started_at" 1 "$pane_id" "$kind" "$launch_cwd")
+  if [ -n "$session_id" ]; then
+    __write_session_mapping "$pane_id" "$kind" "$session_id"
   fi
 }
 
@@ -186,18 +269,14 @@ __track_codex_session() {
   [ ! -d "$sessions_dir" ] && return
 
   local started_at
-  started_at=$(date +%s)
+  started_at=$(date +%s.%N)
+  local launch_cwd
+  launch_cwd="$(pwd)"
   sleep 4
-  local latest
-  latest=$(__newest_file_since "$sessions_dir" 'rollout-*.jsonl' "$started_at" "")
-  if [ -n "$latest" ]; then
-    local fname
-    fname=$(basename "$latest" .jsonl)
-    local uuid
-    uuid=$(echo "$fname" | grep -oP '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
-    if [ -n "$uuid" ]; then
-      __write_session_mapping "$pane_id" "codex" "$uuid"
-    fi
+  local session_id
+  session_id=$(__single_unclaimed_session_since "$sessions_dir" 'rollout-*.jsonl' "$started_at" "" "$pane_id" "codex" "$launch_cwd")
+  if [ -n "$session_id" ]; then
+    __write_session_mapping "$pane_id" "codex" "$session_id"
   fi
 }
 

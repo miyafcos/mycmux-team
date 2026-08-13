@@ -42,6 +42,7 @@ export function RangeBar({
   summarizeError,
   onDismissSummarizeError,
   onStartSummarize,
+  aiDisabledReason,
   onCancelSummarize,
   onRefresh,
   loading,
@@ -69,6 +70,8 @@ export function RangeBar({
   summarizeError: string | null;
   onDismissSummarizeError: () => void;
   onStartSummarize: () => void;
+  /** Set when the AI setting is off; also used as the button's tooltip. */
+  aiDisabledReason?: string;
   onCancelSummarize: () => void;
   onRefresh: () => void;
   loading: boolean;
@@ -144,7 +147,13 @@ export function RangeBar({
             要約を中断
           </button>
         ) : (
-          <button type="button" onClick={onStartSummarize} disabled={running} style={{ ...subtleButtonStyle, opacity: running ? 0.5 : 1 }}>
+          <button
+            type="button"
+            onClick={onStartSummarize}
+            disabled={running || aiDisabledReason !== undefined}
+            title={aiDisabledReason}
+            style={{ ...subtleButtonStyle, opacity: running || aiDisabledReason !== undefined ? 0.5 : 1 }}
+          >
             要約を実行
           </button>
         )}

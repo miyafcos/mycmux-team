@@ -13,6 +13,8 @@ export function NotificationsLayoutTab() {
   const setShowSplitRightButton = useSettingsStore((s) => s.setShowSplitRightButton);
   const showSplitDownButton = useSettingsStore((s) => s.showSplitDownButton);
   const setShowSplitDownButton = useSettingsStore((s) => s.setShowSplitDownButton);
+  const paneComposerEnabled = useSettingsStore((s) => s.paneComposerEnabled);
+  const setPaneComposerEnabled = useSettingsStore((s) => s.setPaneComposerEnabled);
 
   return (
     <div>
@@ -52,6 +54,20 @@ export function NotificationsLayoutTab() {
         />
         <span>「下に分割」ボタンを表示</span>
       </label>
+
+      <div style={{ ...sectionHeadingStyle, marginTop: 20 }}>ターミナル入力</div>
+      <label style={checkboxLabelStyle}>
+        <input
+          type="checkbox"
+          checked={paneComposerEnabled}
+          onChange={(e) => setPaneComposerEnabled(e.target.checked)}
+        />
+        <span>ペインの下に入力欄を出す</span>
+      </label>
+      <div style={{ color: "var(--cmux-text-dim)", fontSize: 12, marginTop: 4 }}>
+        文字を選んで消す・書き直すといった編集ができる入力欄です。Enter で送信、Shift+Enter で改行。
+        ペインが低いときは自動的に隠れます。
+      </div>
     </div>
   );
 }

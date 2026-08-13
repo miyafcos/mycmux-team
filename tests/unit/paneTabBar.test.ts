@@ -16,16 +16,20 @@ import {
   PANE_TABBAR_SLIM_ENTER,
   PANE_TABBAR_SLIM_EXIT,
   resolveActiveAgentLabel,
+  resolveChipPreviewDirection,
   resolvePaneTabBarActions,
   resolveTabStatusIndicator,
+  resolvePaneTabPresentation,
   resolvePaneTabMenuLeft,
   resolvePaneTabMenuRows,
   resolvePaneTabBarMode,
   shouldCloseTabOnAuxClick,
   shouldMarkAttentionSeen,
   shouldShowDeferredRestoreBadge,
+  shouldShowChipPreview,
   shouldShowInlinePinControl,
   shouldShowPublishButton,
+  shouldStartRenameOnDoubleClick,
 } from "../../src/components/workspace/PaneTabBar";
 import type { SessionAttention } from "../../src/stores/sessionAttentionStore";
 import type {
@@ -69,6 +73,17 @@ describe("shouldShowPublishButton", () => {
     expect(shouldShowPublishButton(tab(), undefined)).toBe(false);
     expect(shouldShowPublishButton(tab({ type: "browser", agentKind: "claude" }), undefined)).toBe(false);
     expect(shouldShowPublishButton(tab({ type: "online", claudeSessionId: "session-id" }), undefined)).toBe(false);
+  });
+
+  it("does not show for unsupported claude-codex sessions", () => {
+    expect(shouldShowPublishButton(tab({
+      agentKind: "claude-codex",
+      agentSessionId: "claude-codex-session",
+    }), undefined)).toBe(false);
+    expect(shouldShowPublishButton(tab(), {
+      agentKind: "claude-codex",
+      agentSessionId: "claude-codex-session",
+    })).toBe(false);
   });
 
   it("stays visible while the agent runs a shell subprocess (transient shell foreground)", () => {
@@ -117,31 +132,29 @@ describe("resolveTabStatusIndicator", () => {
     expect(resolveTabStatusIndicator({
       unreadAttentionCategory: "error",
       notificationCount: 1,
-      workDoneCount: 1,
       displayStatus: "working",
     })).toBe("error");
   });
 
   it.each([
-    { unreadAttentionCategory: null, notificationCount: 0, workDoneCount: 1, displayStatus: "waiting" as const },
-    { unreadAttentionCategory: null, notificationCount: 1, workDoneCount: 1, displayStatus: "working" as const },
-    { unreadAttentionCategory: "waiting" as const, notificationCount: 0, workDoneCount: 1, displayStatus: "working" as const },
-  ])("keeps waiting ahead of done and working: %o", (input) => {
+    { unreadAttentionCategory: null, notificationCount: 0, displayStatus: "waiting" as const },
+    { unreadAttentionCategory: null, notificationCount: 1, displayStatus: "working" as const },
+    { unreadAttentionCategory: "waiting" as const, notificationCount: 0, displayStatus: "working" as const },
+  ])("keeps waiting ahead of working: %o", (input) => {
     expect(resolveTabStatusIndicator(input)).toBe("waiting");
   });
 
   it.each([
-    { unreadAttentionCategory: null, notificationCount: 0, workDoneCount: 1, displayStatus: "working" as const },
-    { unreadAttentionCategory: "done" as const, notificationCount: 0, workDoneCount: 0, displayStatus: "working" as const },
-  ])("keeps done ahead of working: %o", (input) => {
-    expect(resolveTabStatusIndicator(input)).toBe("done");
+    { unreadAttentionCategory: null, notificationCount: 0, displayStatus: "working" as const },
+    { unreadAttentionCategory: "done" as const, notificationCount: 0, displayStatus: "working" as const },
+  ])("does not show done ahead of working: %o", (input) => {
+    expect(resolveTabStatusIndicator(input)).toBe("working");
   });
 
   it("shows working only after higher-priority signals are absent", () => {
     expect(resolveTabStatusIndicator({
       unreadAttentionCategory: null,
       notificationCount: 0,
-      workDoneCount: 0,
       displayStatus: "working",
     })).toBe("working");
   });
@@ -150,7 +163,6 @@ describe("resolveTabStatusIndicator", () => {
     expect(resolveTabStatusIndicator({
       unreadAttentionCategory: null,
       notificationCount: 0,
-      workDoneCount: 0,
       displayStatus: "idle",
     })).toBeNull();
   });
@@ -314,9 +326,9 @@ describe("resolvePaneTabBarActions", () => {
     full: allActions,
     slim: ["publish", "split-right", "zoom", "close"],
     compact: ["publish", "split-right", "zoom", "close"],
-    compact3: ["split-right", "zoom", "close"],
-    compact2: ["zoom", "close"],
-    compact1: ["close"],
+    compact3: ["publish", "zoom", "close"],
+    compact2: ["publish", "close"],
+    compact1: ["publish"],
     micro: [],
   };
 
@@ -340,6 +352,13 @@ describe("resolvePaneTabBarActions", () => {
     }
   }
 
+  it.each(["compact3", "compact2", "compact1"] as const)(
+    "keeps publish visible in %s mode",
+    (mode) => {
+      expect(resolvePaneTabBarActions(mode, { showPublish: true }).visible).toContain("publish");
+    },
+  );
+
   it("folds priority actions one at a time in the requested order", () => {
     const visibleSets = modes.map(
       (mode) => resolvePaneTabBarActions(mode, { showPublish: true }).visible,
@@ -351,10 +370,10 @@ describe("resolvePaneTabBarActions", () => {
     expect(removedPerTier).toEqual([
       ["new-tab", "split-down"],
       [],
-      ["publish"],
       ["split-right"],
       ["zoom"],
       ["close"],
+      ["publish"],
     ]);
     for (let index = 1; index < visibleSets.length; index += 1) {
       expect(visibleSets[index].every((action) => visibleSets[index - 1].includes(action)))
@@ -414,9 +433,9 @@ describe("resolvePaneTabMenuRows", () => {
     }, new Map());
 
     expect(rows.map((row) => row.tab.id)).toEqual(["tab-b", "tab-c", "tab-a", "tab-d"]);
-    expect(rows.map((row) => row.hoisted)).toEqual([true, true, true, false]);
+    expect(rows.map((row) => row.hoisted)).toEqual([true, true, false, false]);
     expect(rows.every((row) => !row.isPinned)).toBe(true);
-    expect(rows.map((row) => row.category)).toEqual(["waiting", "error", "done", null]);
+    expect(rows.map((row) => row.category)).toEqual(["waiting", "error", null, null]);
     expect(new Set(rows.map((row) => row.tab.id)).size).toBe(tabs.length);
   });
 
@@ -518,5 +537,32 @@ describe("shouldCloseTabOnAuxClick", () => {
 
   it("declines on the pin, duplicate and close controls the pill hosts", () => {
     expect(shouldCloseTabOnAuxClick(1, false, true)).toBe(false);
+  });
+});
+
+describe("pane tab chip presentation", () => {
+  it("keeps only the active tab as a full pill", () => {
+    expect(resolvePaneTabPresentation("active", "active")).toBe("pill");
+    expect(resolvePaneTabPresentation("pinned", "active")).toBe("chip");
+    expect(resolvePaneTabPresentation("tab", null)).toBe("chip");
+    expect(resolvePaneTabPresentation("tab", undefined)).toBe("chip");
+  });
+
+  it("shows a chip preview only when hovering outside a drag", () => {
+    expect(shouldShowChipPreview(true, false)).toBe(true);
+    expect(shouldShowChipPreview(false, false)).toBe(false);
+    expect(shouldShowChipPreview(true, true)).toBe(false);
+  });
+
+  it("flips a chip preview only when the right side overflows", () => {
+    expect(resolveChipPreviewDirection(100, 0, 400, 200)).toBe("right");
+    expect(resolveChipPreviewDirection(250, 0, 400, 200)).toBe("left");
+    expect(resolveChipPreviewDirection(50, 0, 150, 200)).toBe("right");
+    expect(resolveChipPreviewDirection(200, 0, 400, 200)).toBe("right");
+  });
+
+  it("allows rename only from a full pill", () => {
+    expect(shouldStartRenameOnDoubleClick("pill")).toBe(true);
+    expect(shouldStartRenameOnDoubleClick("chip")).toBe(false);
   });
 });

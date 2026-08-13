@@ -187,6 +187,34 @@ function hasSocketArg(args: SocketArgs, ...keys: string[]): boolean {
   return keys.some((key) => args != null && Object.prototype.hasOwnProperty.call(args, key));
 }
 
+/**
+ * A raw command spawn, shared by pane.spawn and pane.spawn_tab. Both accept
+ * commandArgv: `spawn-tab --detach` puts a long-running agent in its own pane
+ * so closing the caller's pane cannot take it down, and that only helps if the
+ * agent can be launched by argv the way the same-pane route already allows.
+ */
+function resolveCommandArgvPlan(args: SocketArgs, command: string): SpawnTabPlan {
+  const value = args?.commandArgv ?? args?.command_argv;
+  if (
+    !Array.isArray(value)
+    || value.length === 0
+    || value.some((item) => typeof item !== "string" || item.trim().length === 0)
+  ) {
+    throw new Error(`${command} commandArgv must be a non-empty array of non-empty strings`);
+  }
+  const label = socketArgString(args, "label");
+  const cwd = socketArgString(args, "cwd");
+  return {
+    mode: "command",
+    paneOptions: {
+      agentId: "shell-starter",
+      ...(label ? { label } : {}),
+      ...(cwd ? { cwd } : {}),
+      commandArgv: value,
+    },
+  };
+}
+
 export function resolveSpawnTabPlan(
   args: SocketArgs,
   handoffPromptPath?: string,
@@ -197,29 +225,23 @@ export function resolveSpawnTabPlan(
     throw new Error("pane.spawn_tab accepts either commandArgv or target, not both");
   }
 
-  if (hasCommandArgv) {
-    const value = args?.commandArgv ?? args?.command_argv;
-    if (
-      !Array.isArray(value)
-      || value.length === 0
-      || value.some((item) => typeof item !== "string" || item.trim().length === 0)
-    ) {
-      throw new Error("pane.spawn_tab commandArgv must be a non-empty array of non-empty strings");
-    }
-    const label = socketArgString(args, "label");
-    const cwd = socketArgString(args, "cwd");
-    return {
-      mode: "command",
-      paneOptions: {
-        agentId: "shell-starter",
-        ...(label ? { label } : {}),
-        ...(cwd ? { cwd } : {}),
-        commandArgv: value,
-      },
-    };
-  }
+  if (hasCommandArgv) return resolveCommandArgvPlan(args, "pane.spawn_tab");
 
   if (!target) throw new Error("pane.spawn_tab requires commandArgv or target");
+  const plan = resolveSpawnPlan(args, handoffPromptPath);
+  return { mode: plan.mode, paneOptions: plan.paneOptions };
+}
+
+export function resolveSpawnPanePlan(
+  args: SocketArgs,
+  handoffPromptPath?: string,
+): SpawnTabPlan {
+  const hasCommandArgv = hasSocketArg(args, "commandArgv", "command_argv");
+  const target = socketArgString(args, "target");
+  if (hasCommandArgv && target) {
+    throw new Error("pane.spawn accepts either commandArgv or target, not both");
+  }
+  if (hasCommandArgv) return resolveCommandArgvPlan(args, "pane.spawn");
   const plan = resolveSpawnPlan(args, handoffPromptPath);
   return { mode: plan.mode, paneOptions: plan.paneOptions };
 }
@@ -636,9 +658,12 @@ async function spawnPane(args: SocketArgs) {
     useWorkspaceLayoutStore,
     useWorkspaceListStore,
   } = await import("../../stores/workspaceStore");
-  const handoffPromptPath = await resolveHandoffPromptPath(args);
+  const hasCommandArgv = hasSocketArg(args, "commandArgv", "command_argv");
+  const handoffPromptPath = hasCommandArgv
+    ? undefined
+    : await resolveHandoffPromptPath(args);
 
-  const plan = resolveSpawnPlan(args, handoffPromptPath);
+  const plan = resolveSpawnPanePlan(args, handoffPromptPath);
   const workspaceState = useWorkspaceListStore.getState();
   // Prefer the caller's own location over whatever the human is looking at.
   // Falling straight back to activeWorkspaceId meant an agent sitting in a
@@ -975,6 +1000,30 @@ const SEND_CONFIRM_POLL_MS = 50;
 const SEND_TEXT_SETTLE_TIMEOUT_MS = 2_000;
 const SEND_ENTER_CONFIRM_TIMEOUT_MS = 1_200;
 const SEND_ENTER_MAX_ATTEMPTS = 3;
+const SEND_UNVERIFIED_NOTE = "no delivery verification; use --enter or --key to get confirmation";
+
+const SEND_KEY_BYTES = {
+  enter: "\r",
+  esc: "\x1b",
+  tab: "\t",
+  up: "\x1b[A",
+  down: "\x1b[B",
+  left: "\x1b[D",
+  right: "\x1b[C",
+  "ctrl-c": "\x03",
+  space: " ",
+  backspace: "\x7f",
+} as const;
+
+type SendKey = keyof typeof SEND_KEY_BYTES;
+
+function socketSendKey(value: unknown): SendKey | null {
+  if (value === undefined) return null;
+  if (typeof value !== "string" || !(value in SEND_KEY_BYTES)) {
+    throw new Error("pane.send_text key is not supported");
+  }
+  return value as SendKey;
+}
 
 function waitForSendConfirmationPoll(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, SEND_CONFIRM_POLL_MS));
@@ -1050,21 +1099,31 @@ async function sendPaneText(args: SocketArgs) {
   if (!sessionId) throw new Error("pane.send_text requires sessionId");
   const textValue = args?.text;
   const enterValue = args?.enter;
+  const key = socketSendKey(args?.key);
   if (enterValue !== undefined && typeof enterValue !== "boolean") {
     throw new Error("pane.send_text enter must be a boolean");
   }
   const enter = enterValue ?? false;
-  if (typeof textValue !== "string" || (!textValue && !enter)) {
-    throw new Error("pane.send_text requires text, unless enter is true");
+  if (key !== null && enter) {
+    throw new Error("pane.send_text key cannot be combined with enter");
+  }
+  if (typeof textValue !== "string" || (!textValue && !enter && key === null)) {
+    throw new Error("pane.send_text requires text, unless enter or key is set");
   }
   if (!isKnownPaneSession(useWorkspaceListStore.getState().workspaces, sessionId)) {
     throw new Error("pane.send_text session is not a known pane");
   }
   return serializePaneSend(sessionId, async () => {
-    const bytes = textValue.length + (enter ? 1 : 0);
-    if (!enter) {
+    const keyBytes = key === null ? "\r" : SEND_KEY_BYTES[key];
+    const bytes = textValue.length + (enter || key !== null ? keyBytes.length : 0);
+    if (!enter && key === null) {
       await writeToSession(sessionId, textValue);
-      return { sessionId, bytes };
+      return {
+        sessionId,
+        queuedBytes: new TextEncoder().encode(textValue).byteLength,
+        unverified: true,
+        note: SEND_UNVERIFIED_NOTE,
+      };
     }
 
     const beforeText = await readPaneSnapshot(sessionId);
@@ -1078,7 +1137,7 @@ async function sendPaneText(args: SocketArgs) {
     }
 
     if (!canConfirm || beforeEnter === null) {
-      await writeToSession(sessionId, "\r");
+      await writeToSession(sessionId, keyBytes);
       if (textValue) recordRecentInputText(sessionId, textValue);
       return {
         sessionId,
@@ -1090,8 +1149,9 @@ async function sendPaneText(args: SocketArgs) {
       };
     }
 
-    for (let attempts = 1; attempts <= SEND_ENTER_MAX_ATTEMPTS; attempts += 1) {
-      await writeToSession(sessionId, "\r");
+    const maxAttempts = key === null ? SEND_ENTER_MAX_ATTEMPTS : 1;
+    for (let attempts = 1; attempts <= maxAttempts; attempts += 1) {
+      await writeToSession(sessionId, keyBytes);
       if (attempts === 1 && textValue) recordRecentInputText(sessionId, textValue);
       const outcome = await waitForPaneToAdvance(sessionId, beforeEnter);
       if (outcome === "advanced") {
@@ -1114,7 +1174,7 @@ async function sendPaneText(args: SocketArgs) {
       bytes,
       ok: false,
       confirmed: false,
-      attempts: SEND_ENTER_MAX_ATTEMPTS,
+      attempts: maxAttempts,
       reason: "submit_unconfirmed",
     };
   });

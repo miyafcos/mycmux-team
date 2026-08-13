@@ -12,8 +12,6 @@ interface DashboardViewState {
   completedExpanded: boolean;
   selectedTabId: string | null;
   detailTab: DashboardDetailTab;
-  /** 常設コンポーザの下書き。セッションごとに分けて持ち、永続化しない。 */
-  draftBySession: Record<string, string>;
   toggle: () => void;
   openView: () => void;
   close: () => void;
@@ -24,7 +22,6 @@ interface DashboardViewState {
   setCompletedExpanded: (expanded: boolean) => void;
   setSelectedTabId: (tabId: string | null) => void;
   setDetailTab: (tab: DashboardDetailTab) => void;
-  setDraft: (sessionId: string, text: string) => void;
 }
 
 export const useDashboardViewStore = create<DashboardViewState>((set) => ({
@@ -36,7 +33,6 @@ export const useDashboardViewStore = create<DashboardViewState>((set) => ({
   completedExpanded: false,
   selectedTabId: null,
   detailTab: "chat",
-  draftBySession: {},
   toggle: () => set((state) => ({ open: !state.open })),
   openView: () => set({ open: true }),
   close: () => set({ open: false }),
@@ -50,7 +46,4 @@ export const useDashboardViewStore = create<DashboardViewState>((set) => ({
   setCompletedExpanded: (completedExpanded) => set({ completedExpanded }),
   setSelectedTabId: (selectedTabId) => set({ selectedTabId }),
   setDetailTab: (detailTab) => set({ detailTab }),
-  setDraft: (sessionId, text) => set((state) => ({
-    draftBySession: { ...state.draftBySession, [sessionId]: text },
-  })),
 }));

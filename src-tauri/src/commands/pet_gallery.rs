@@ -21,8 +21,9 @@ const ALLOWED_ARCHIVE_ENTRIES: &[&str] = &["pet.json", "spritesheet.webp", "spri
 struct ApiValidationReport {
     #[serde(default)]
     atlas_size: String,
+    /// codex-pets.net reports the number of detected states, not their names.
     #[serde(default)]
-    states_detected: Vec<String>,
+    states_detected: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -47,8 +48,9 @@ struct ApiPet {
 
 #[derive(Debug, Deserialize)]
 struct ApiPage {
+    /// Kept untyped so one entry with a drifted schema cannot blank the whole page.
     #[serde(default)]
-    pets: Vec<ApiPet>,
+    pets: Vec<serde_json::Value>,
     #[serde(default)]
     total: u64,
 }
@@ -64,7 +66,7 @@ pub struct GalleryPet {
     download_count: u64,
     preview_url: String,
     atlas_size: String,
-    states_detected: Vec<String>,
+    states_detected: u32,
 }
 
 #[derive(Debug, Serialize)]
@@ -255,20 +257,34 @@ fn install_archive_at(root: &Path, id: String, bytes: Vec<u8>) -> Result<PetInfo
     Ok(pet_info_from_directory(id, &destination))
 }
 
+const GALLERY_SORTS: &[&str] = &["new", "popular", "trending", "downloads"];
+
+fn gallery_sort(sort: Option<String>) -> String {
+    sort.filter(|value| GALLERY_SORTS.contains(&value.as_str())).unwrap_or_else(|| "new".to_string())
+}
+
+fn parse_gallery_page(body: &[u8]) -> Result<GalleryPage, String> {
+    let page: ApiPage = serde_json::from_slice(body).map_err(|error| format!("Invalid gallery response: {error}"))?;
+    let pets = page.pets.into_iter().filter_map(|value| {
+        // Drop only the entries whose schema drifted, never the whole page.
+        let pet: ApiPet = serde_json::from_value(value).ok()?;
+        let report = pet.validation_report.unwrap_or(ApiValidationReport { atlas_size: String::new(), states_detected: 0 });
+        Some(GalleryPet { id: pet.id, display_name: pet.display_name, description: pet.description, tags: pet.tags, like_count: pet.like_count, download_count: pet.download_count, preview_url: pet.preview_url, atlas_size: report.atlas_size, states_detected: report.states_detected })
+    }).collect();
+    Ok(GalleryPage { pets, total: page.total })
+}
+
 #[tauri::command(async)]
-pub async fn fetch_pet_gallery(query: Option<String>, page: u32, page_size: u32, _sort: Option<String>) -> Result<GalleryPage, String> {
+pub async fn fetch_pet_gallery(query: Option<String>, page: u32, page_size: u32, sort: Option<String>) -> Result<GalleryPage, String> {
     let client = reqwest::Client::builder().timeout(Duration::from_secs(15)).build()
         .map_err(|error| format!("Could not initialize gallery client: {error}"))?;
     let page = page.max(1);
     let response = client.get("https://codex-pets.net/api/pets")
-        .query(&[("page", page.to_string()), ("pageSize", page_size.clamp(1, 48).to_string()), ("sort", "new".to_string()), ("q", query.unwrap_or_default())])
+        .query(&[("page", page.to_string()), ("pageSize", page_size.clamp(1, 48).to_string()), ("sort", gallery_sort(sort)), ("q", query.unwrap_or_default())])
         .send().await.map_err(|error| format!("Could not fetch pet gallery: {error}"))?
         .error_for_status().map_err(|error| format!("Could not fetch pet gallery: {error}"))?;
-    let page: ApiPage = response.json().await.map_err(|error| format!("Invalid gallery response: {error}"))?;
-    Ok(GalleryPage { pets: page.pets.into_iter().map(|pet| {
-        let report = pet.validation_report.unwrap_or(ApiValidationReport { atlas_size: String::new(), states_detected: Vec::new() });
-        GalleryPet { id: pet.id, display_name: pet.display_name, description: pet.description, tags: pet.tags, like_count: pet.like_count, download_count: pet.download_count, preview_url: pet.preview_url, atlas_size: report.atlas_size, states_detected: report.states_detected }
-    }).collect(), total: page.total })
+    let body = response.bytes().await.map_err(|error| format!("Could not read gallery response: {error}"))?;
+    parse_gallery_page(&body)
 }
 
 #[tauri::command(async)]
@@ -330,6 +346,37 @@ mod tests {
         assert!(!is_safe_folder(".."));
         assert!(!is_safe_folder("a/b"));
         assert!(!is_safe_folder("_disabled"));
+    }
+
+    #[test]
+    fn gallery_page_parses_numeric_states_detected() {
+        // codex-pets.net returns statesDetected as a count; the array shape blanked the gallery.
+        let body = br#"{"pets":[{"id":"twix-snickers","displayName":"Twix & Snickers","description":"d",
+            "tags":["animated","cute"],"likeCount":3,"downloadCount":7,
+            "previewUrl":"https://codex-pets.net/assets/pets/v/1/twix-snickers/preview.webp",
+            "validationReport":{"atlasSize":"1536x2288","statesDetected":11,"cellSize":"192x208"}}],
+            "page":1,"pageSize":24,"total":3029,"totalPages":127}"#;
+        let page = parse_gallery_page(body).expect("page should parse");
+        assert_eq!(page.total, 3029);
+        assert_eq!(page.pets.len(), 1);
+        assert_eq!(page.pets[0].atlas_size, "1536x2288");
+        assert_eq!(page.pets[0].states_detected, 11);
+    }
+
+    #[test]
+    fn gallery_page_keeps_valid_pets_when_one_entry_is_broken() {
+        let body = br#"{"pets":[{"id":"ok-one"},{"displayName":"missing id"},{"id":"ok-two","validationReport":null}],"total":3}"#;
+        let page = parse_gallery_page(body).expect("page should parse");
+        assert_eq!(page.total, 3);
+        assert_eq!(page.pets.iter().map(|pet| pet.id.as_str()).collect::<Vec<_>>(), vec!["ok-one", "ok-two"]);
+        assert_eq!(page.pets[1].states_detected, 0);
+    }
+
+    #[test]
+    fn gallery_sort_falls_back_to_new() {
+        assert_eq!(gallery_sort(Some("popular".to_string())), "popular");
+        assert_eq!(gallery_sort(Some("; drop".to_string())), "new");
+        assert_eq!(gallery_sort(None), "new");
     }
 
     #[test]

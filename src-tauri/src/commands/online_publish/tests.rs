@@ -828,7 +828,7 @@
         write_codex_transcript(&correct, requested, requested, "C:/work/codex");
 
         let (located, id) =
-            locate_codex_transcript(temp.path(), "C:/work/codex", Some(requested)).unwrap();
+            crate::agent_transcript::locate_codex_transcript(temp.path(), "C:/work/codex", Some(requested)).unwrap();
         assert_eq!(located, correct);
         assert_eq!(id, requested);
     }
@@ -845,7 +845,7 @@
         write_codex_transcript(&path, existing, existing, "C:/work/codex");
 
         let error =
-            locate_codex_transcript(temp.path(), "C:/work/codex", Some(missing)).unwrap_err();
+            crate::agent_transcript::locate_codex_transcript(temp.path(), "C:/work/codex", Some(missing)).unwrap_err();
         assert!(error.contains(missing));
     }
 

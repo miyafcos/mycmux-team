@@ -1,4 +1,5 @@
 import type { PaneMetadata } from "../stores/paneMetadataStore";
+import type { DispatchEntry } from "./ipc";
 
 export type EffectiveStatus = "waiting" | "working" | "idle";
 
@@ -37,4 +38,19 @@ export function deriveDisplayStatus(meta?: PaneMetadata): EffectiveStatus {
     return "working";
   }
   return "idle";
+}
+
+const dispatchStateLabels: Record<DispatchEntry["liveState"], string> = {
+  CLOSED: "終了済み",
+  DONE: "完了",
+  DONE_NEEDS_REVIEW: "完了・未確認",
+  ASK: "判断待ち",
+  NO_LOG: "ログ未作成",
+  RUNNING: "実行中",
+  RATE_LIMITED: "レート制限で待機中",
+  STALL: "停止",
+};
+
+export function dispatchStateLabel(state: DispatchEntry["liveState"]): string {
+  return dispatchStateLabels[state];
 }

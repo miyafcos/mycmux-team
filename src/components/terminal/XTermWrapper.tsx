@@ -29,6 +29,7 @@ import { LightDarkColorAdaptController, shouldAdaptLightColorsForPane } from "..
 import { resolveEffectiveTerminalRenderer } from "../../stores/settingsMigration";
 import { DEFAULT_TERMINAL_FONT_FAMILY, useThemeStore } from "../../stores/themeStore";
 import { useToastStore } from "../../stores/toastStore";
+import { observeSessionInput } from "../../lib/inputLineDraft";
 import type { IDisposable, ITheme } from "@xterm/xterm";
 import type { ThemeBackgroundSettings } from "../../types";
 import { markStartupSessionSettled } from "../../lib/startupSessionGate";
@@ -87,6 +88,7 @@ import {
   resolveWaitingTransition,
   scanForApproval,
 } from "../../lib/approvalScan";
+import { scanRateLimit } from "../../lib/rateLimitScan";
 import {
   bump as bumpPaintStat,
   recordApprovalScan,
@@ -748,6 +750,8 @@ export default memo(function XTermWrapper({
     let sessionStarted = false;
     let lastLogLine = "";
     let approvalAbsentStreak = 0;
+    let rateLimitAbsentStreak = 0;
+    let rateLimitVisible = false;
     let isImeComposing = false;
     let resizePendingDuringComposition = false;
     const forceWheelMouseReport = startsAsAgentTui(command, args, agentId, agentKind, launchEnv);
@@ -1056,6 +1060,7 @@ export default memo(function XTermWrapper({
           return true;
         }
 
+
         if (e.key === "Enter" && e.shiftKey && !e.ctrlKey && !e.altKey) {
           if (!shouldAcceptTerminalInput(sessionId)) return false;
           const processTitle = usePaneMetadataStore.getState().metadata[sessionId]?.processTitle;
@@ -1106,7 +1111,7 @@ export default memo(function XTermWrapper({
     };
 
     const publishScreenScanEvidence = (
-      attention: "approval" | "none",
+      attention: "approval" | "rate_limited" | "none",
       detail: string | null,
       attentionId: string | null,
       resync: boolean,
@@ -1179,8 +1184,33 @@ export default memo(function XTermWrapper({
       }
 
       bumpPaintStat("scan", sessionId);
+      const rateLimit = scanRateLimit(scanLines.join("\n"));
       const approvalPatternId = scanForApproval(scanLines);
       const prevStatus = usePaneMetadataStore.getState().metadata[sessionId]?.agentStatus;
+      if (rateLimit.kind === "limit-reached") {
+        const newlyVisible = !rateLimitVisible;
+        rateLimitVisible = true;
+        rateLimitAbsentStreak = 0;
+        if (newlyVisible) {
+          publishScreenScanEvidence(
+            "rate_limited",
+            rateLimit.evidence,
+            `rate-limit:${sessionId}:${rateLimit.evidence}`,
+            resync,
+          );
+        }
+      } else if (rateLimitVisible) {
+        rateLimitAbsentStreak += 1;
+        if (rateLimitAbsentStreak >= 2) {
+          rateLimitVisible = false;
+          rateLimitAbsentStreak = 0;
+          publishScreenScanEvidence("none", null, null, resync);
+        }
+      }
+      if (rateLimit.kind === "limit-reached") {
+        if (scanStartedAt !== null) recordApprovalScan(performance.now() - scanStartedAt, sessionId);
+        return;
+      }
       const transition = resolveWaitingTransition(
         { waiting: prevStatus === "waiting", absentStreak: approvalAbsentStreak },
         approvalPatternId,
@@ -1914,6 +1944,7 @@ export default memo(function XTermWrapper({
           clearActiveTerminalNotification(sessionId);
           focusTerminalIfNeeded(currentTerm, sessionId);
         }
+        observeSessionInput(sessionId, inputData);
         chunkedWrite(sessionId, inputData);
         if (hasNonWheelInput) {
           try {

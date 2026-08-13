@@ -30,6 +30,7 @@ export type KeybindingActionId =
   | "dashboard.open"
   | "pane.zoom.toggle"
   | "terminal.search"
+  | "composer.focus"
   | "crsm.palette";
 
 export interface KeybindingDefinition {
@@ -75,6 +76,8 @@ export const KEYBINDING_DEFINITIONS: KeybindingDefinition[] = [
   { action: "pane.tab.pin.toggle", title: "アクティブペインをピン留め", category: "Pane", defaultShortcut: "ctrl+alt+p" },
 
   { action: "terminal.search", title: "Find in terminal", category: "Terminal", defaultShortcut: "ctrl+shift+f" },
+  // Not ctrl+shift+i: that is the WebView's own DevTools shortcut.
+  { action: "composer.focus", title: "ペインの入力欄へ移動", category: "Terminal", defaultShortcut: "ctrl+alt+i" },
 
 ];
 

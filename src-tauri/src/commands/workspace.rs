@@ -13,14 +13,24 @@ pub fn load_persistent_data(app_handle: AppHandle) -> Result<PersistentData, Str
 #[tauri::command(async)]
 pub fn save_persistent_data(app_handle: AppHandle, mut data: PersistentData) -> Result<(), String> {
     data.schema_version = 1;
-    storage::update(&app_handle, move |disk| {
+    storage::update(&app_handle, move |disk| merge_persistent_data(disk, data))
+}
+
+fn merge_persistent_data(disk: &mut PersistentData, data: PersistentData) {
         disk.schema_version = data.schema_version;
         disk.workspaces = data.workspaces;
+        // These settings have no frontend store or setter, so the frontend's
+        // persistence payload omits them; preserve their Rust-owned values.
+        let remote_bind_all = disk.settings.remote_bind_all;
+        let dirty_save_mode = disk.settings.dirty_save_mode;
+        let osc7_tracking_enabled = disk.settings.osc7_tracking_enabled;
         disk.settings = data.settings;
+        disk.settings.remote_bind_all = remote_bind_all;
+        disk.settings.dirty_save_mode = dirty_save_mode;
+        disk.settings.osc7_tracking_enabled = osc7_tracking_enabled;
         disk.active_workspace_id = data.active_workspace_id;
         disk.active_pane_id = data.active_pane_id;
         disk.active_tab_id = data.active_tab_id;
-    })
 }
 
 fn infer_agent_kind(
@@ -211,5 +221,25 @@ mod tests {
                 .map(String::as_str),
             Some("tab-session")
         );
+    }
+
+    #[test]
+    fn merge_persistent_data_preserves_rust_owned_settings() {
+        let mut disk = PersistentData::default();
+        disk.settings.remote_bind_all = true;
+        disk.settings.dirty_save_mode = true;
+        disk.settings.osc7_tracking_enabled = false;
+        let mut incoming = PersistentData::default();
+        incoming.settings.remote_bind_all = false;
+        incoming.settings.dirty_save_mode = false;
+        incoming.settings.osc7_tracking_enabled = true;
+        incoming.settings.font_size = 19;
+
+        merge_persistent_data(&mut disk, incoming);
+
+        assert!(disk.settings.remote_bind_all);
+        assert!(disk.settings.dirty_save_mode);
+        assert!(!disk.settings.osc7_tracking_enabled);
+        assert_eq!(disk.settings.font_size, 19);
     }
 }

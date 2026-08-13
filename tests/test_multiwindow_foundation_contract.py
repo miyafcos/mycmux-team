@@ -168,6 +168,7 @@ def test_app_level_singletons_are_main_window_only() -> None:
         "const isMain = isMainWindow();",
         # Dormancy sweeps kill idle agent sessions — must not double-fire.
         "useAgentDormancy(ready && isMain);",
+        "connectDispatchWatchdog();",
         # Children start empty; bootstrap would spawn a stray PTY per tear-out.
         "if (isMain && listStore.workspaces.length === 0 && launchCwd) {",
         # Children reveal themselves; only main runs the startup session gate.

@@ -80,88 +80,6 @@ pub(crate) fn sanitize_project_dir(cwd: &str) -> String {
         .collect()
 }
 
-fn import_codex_transcript(
-    transcript: &Path,
-    sessions_root: &Path,
-    expected_session_id: &str,
-    resolved_cwd: &str,
-) -> Result<String, String> {
-    Uuid::parse_str(expected_session_id)
-        .map_err(|_| "Codex savepoint session id is invalid".to_string())?;
-    let source = fs::File::open(transcript)
-        .map_err(|error| format!("Failed to open {}: {error}", transcript.display()))?;
-    let mut reader = BufReader::new(source);
-    let mut first_line = String::new();
-    if reader
-        .read_line(&mut first_line)
-        .map_err(|error| format!("Failed to read {}: {error}", transcript.display()))?
-        == 0
-    {
-        return Err("Codex savepoint transcript is empty".to_string());
-    }
-    let mut session_meta: serde_json::Value = serde_json::from_str(first_line.trim_end())
-        .map_err(|error| format!("Invalid Codex session metadata: {error}"))?;
-    if session_meta.get("type").and_then(serde_json::Value::as_str) != Some("session_meta") {
-        return Err("Codex savepoint transcript does not start with session_meta".to_string());
-    }
-    let payload = session_meta
-        .get_mut("payload")
-        .and_then(serde_json::Value::as_object_mut)
-        .ok_or_else(|| "Codex session_meta payload is invalid".to_string())?;
-    let source_id = payload
-        .get("id")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| "Codex session_meta id is missing".to_string())?;
-    let root_session_id = payload
-        .get("session_id")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| "Codex session_meta root session id is missing".to_string())?;
-    if source_id != expected_session_id || root_session_id != expected_session_id {
-        return Err("Codex savepoint transcript identity does not match its manifest".to_string());
-    }
-
-    let import_id = Uuid::new_v4().to_string();
-    payload.insert(
-        "id".to_string(),
-        serde_json::Value::String(import_id.clone()),
-    );
-    payload.insert(
-        "session_id".to_string(),
-        serde_json::Value::String(import_id.clone()),
-    );
-    payload.insert(
-        "cwd".to_string(),
-        serde_json::Value::String(resolved_cwd.to_string()),
-    );
-
-    let now = Local::now();
-    let target_dir = sessions_root
-        .join(now.format("%Y").to_string())
-        .join(now.format("%m").to_string())
-        .join(now.format("%d").to_string());
-    fs::create_dir_all(&target_dir)
-        .map_err(|error| format!("Failed to create {}: {error}", target_dir.display()))?;
-    let target = target_dir.join(format!(
-        "rollout-{}-{import_id}.jsonl",
-        now.format("%Y-%m-%dT%H-%M-%S")
-    ));
-    crate::util::atomic_write::AtomicWrite::new(
-        "Codex transcript import",
-        format!("Failed to install {}", target.display()),
-    )
-    .write_with(&target, |temp_file| {
-        serde_json::to_writer(&mut *temp_file, &session_meta)
-            .map_err(|error| format!("Failed to write Codex session metadata: {error}"))?;
-        temp_file
-            .write_all(b"\n")
-            .map_err(|error| format!("Failed to write Codex transcript import: {error}"))?;
-        std::io::copy(&mut reader, temp_file)
-            .map_err(|error| format!("Failed to copy Codex transcript: {error}"))?;
-        Ok(())
-    })?;
-    Ok(import_id)
-}
-
 fn join_savepoint_full_from_config(
     bundle_dir: &Path,
     config_path: &Path,
@@ -203,7 +121,7 @@ fn join_savepoint_full_from_config(
             (resume_session_id, command_argv)
         }
         SavepointAgentKind::Codex => {
-            let resume_session_id = import_codex_transcript(
+            let resume_session_id = crate::agent_transcript::import_codex_transcript(
                 &transcript,
                 &home.join(".codex").join("sessions"),
                 &identity.session_id,

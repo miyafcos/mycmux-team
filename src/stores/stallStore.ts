@@ -1,11 +1,14 @@
 import { create } from "zustand";
 
-import { getPtyMetadataSnapshot, type PtyMetadataSnapshot, type SessionAttentionKind, type SessionUiState } from "../lib/ipc";
+import { getPtyMetadataSnapshot, getSessionScrollback, type PtyMetadataSnapshot, type SessionAttentionKind, type SessionUiState } from "../lib/ipc";
+import { fingerprintDormancySemanticState } from "../lib/agentDormancy";
+import { detectPromptShape } from "../lib/promptShape";
+import { resolveStallVerdict } from "../lib/stallVerdict";
+import type { SessionActivity } from "../lib/sessionStatusSignals";
 import type { PaneTab } from "../types";
 import { hasTerminalBuffer } from "../components/terminal/XTermWrapper";
 import {
   getQueuedInputPreview,
-  hasIdlePrompt,
   readTail,
   TAB_SWEEP_IDLE_MS,
   TAB_SWEEP_TAIL_LINES,
@@ -17,7 +20,7 @@ import { useSessionAttentionStore } from "./sessionAttentionStore";
 export const STALL_CHECK_INTERVAL_MS = 30_000;
 export const STALL_STAGE_TWO_LIMIT = 5;
 
-export type StallReason = "no_output" | "queued_input" | "pty_dead";
+export type StallReason = "no_output" | "queued_input" | "silent" | "pty_dead";
 
 export interface StallEntry {
   sessionId: string;
@@ -37,12 +40,40 @@ export interface StallStageOneSession {
   processStatusReason: string | null;
   hasLivePty: boolean;
   hasTerminalBuffer: boolean;
+  processActivity?: SessionActivity;
 }
 
 export interface StallStageOneCandidate {
   sessionId: string;
   since: number;
   ptyDead: boolean;
+  processActivity: SessionActivity;
+}
+
+interface ScreenObservation {
+  endOffset: number;
+  semanticFingerprint: string | null;
+  screenAdvanced: boolean;
+  lastActivityAt: number;
+}
+
+export function observeScreenActivity(
+  previous: ScreenObservation | undefined,
+  endOffset: number,
+  semanticFingerprint: string | null,
+  now: number,
+): ScreenObservation {
+  const screenAdvanced = previous !== undefined && (
+    previous.semanticFingerprint === null || semanticFingerprint === null
+      ? previous.endOffset !== endOffset
+      : previous.semanticFingerprint !== semanticFingerprint
+  );
+  return {
+    endOffset,
+    semanticFingerprint,
+    screenAdvanced,
+    lastActivityAt: !previous || screenAdvanced ? now : previous.lastActivityAt,
+  };
 }
 
 interface StallStoreState {
@@ -70,12 +101,12 @@ export function selectStallCandidates(
     if (session.attentionUiState && session.attentionUiState !== "idle") continue;
     const since = latestStallActivityAt(session);
     if (session.processStatusReason === "no_live_pty_session") {
-      candidates.push({ sessionId: session.sessionId, since, ptyDead: true });
+      candidates.push({ sessionId: session.sessionId, since, ptyDead: true, processActivity: session.processActivity ?? "unknown" });
       continue;
     }
     if (!session.hasLivePty && !session.hasTerminalBuffer) continue;
     if (now - since < TAB_SWEEP_IDLE_MS) continue;
-    candidates.push({ sessionId: session.sessionId, since, ptyDead: false });
+    candidates.push({ sessionId: session.sessionId, since, ptyDead: false, processActivity: session.processActivity ?? "unknown" });
   }
   return candidates;
 }
@@ -83,21 +114,31 @@ export function selectStallCandidates(
 export function classifyStallCandidate(
   candidate: StallStageOneCandidate,
   tail: readonly string[],
+  screenAdvanced = false,
+  screenSilentMs = 0,
 ): StallEntry | null {
-  if (candidate.ptyDead) {
-    return { sessionId: candidate.sessionId, reason: "pty_dead", since: candidate.since };
-  }
   const queuedInput = getQueuedInputPreview(tail);
-  if (queuedInput) {
+  const verdict = resolveStallVerdict({
+    processActivity: candidate.processActivity ?? "unknown",
+    queuedInput: Boolean(queuedInput),
+    screenAdvanced,
+    screenSilentMs,
+    promptShape: detectPromptShape(tail),
+    ptyAlive: !candidate.ptyDead,
+  }, TAB_SWEEP_IDLE_MS);
+  if (verdict.state === "waiting" && verdict.reason === "queued_input") {
     return {
       sessionId: candidate.sessionId,
       reason: "queued_input",
       since: candidate.since,
-      detail: Array.from(queuedInput).slice(0, 120).join(""),
+      detail: Array.from(queuedInput!).slice(0, 120).join(""),
     };
   }
-  if (hasIdlePrompt(tail)) {
-    return { sessionId: candidate.sessionId, reason: "no_output", since: candidate.since };
+  if (verdict.state === "stalled" && verdict.reason === "pty_dead") {
+    return { sessionId: candidate.sessionId, reason: "pty_dead", since: candidate.since };
+  }
+  if (verdict.state === "stalled" && verdict.reason === "silent") {
+    return { sessionId: candidate.sessionId, reason: "silent", since: candidate.since };
   }
   return null;
 }
@@ -153,6 +194,7 @@ export function connectStallStore(): () => void {
   let disposed = false;
   let tickRunning = false;
   let roundRobinCursor = 0;
+  const screenObservations = new Map<string, ScreenObservation>();
 
   const tick = async (): Promise<void> => {
     if (disposed || tickRunning || document.visibilityState !== "visible") return;
@@ -169,6 +211,7 @@ export function connectStallStore(): () => void {
 
       const metadataState = usePaneMetadataStore.getState();
       const attentionBySession = useSessionAttentionStore.getState().attentionBySession;
+      const statusSignalsBySession = useSessionAttentionStore.getState().statusSignalsBySession;
       const sessions = [...sessionMap().values()].map((tab) => {
         const metadata = metadataState.metadata[tab.sessionId];
         const processStatusReason = processStatusReasonForTab(
@@ -187,6 +230,7 @@ export function connectStallStore(): () => void {
           processStatusReason,
           hasLivePty: processStatusReason !== "no_live_pty_session" && processStatusReason !== "snapshot_unavailable",
           hasTerminalBuffer: hasTerminalBuffer(tab.sessionId),
+          processActivity: statusSignalsBySession[tab.sessionId]?.activity ?? "unknown",
         } satisfies StallStageOneSession;
       });
       const candidates = selectStallCandidates(sessions, Date.now());
@@ -211,7 +255,27 @@ export function connectStallStore(): () => void {
       }
       const confirmed = await Promise.all(selected.map(async (candidate) => {
         try {
-          return classifyStallCandidate(candidate, await readTail(candidate.sessionId, TAB_SWEEP_TAIL_LINES));
+          const [tail, scrollback] = await Promise.all([
+            readTail(candidate.sessionId, TAB_SWEEP_TAIL_LINES),
+            getSessionScrollback(candidate.sessionId),
+          ]);
+          const lines = new TextDecoder().decode(scrollback.data).split(/\r?\n/u);
+          let semanticFingerprint: string | null = null;
+          try {
+            semanticFingerprint = await fingerprintDormancySemanticState(lines);
+          } catch {
+            semanticFingerprint = null;
+          }
+          const previous = screenObservations.get(candidate.sessionId);
+          const observation = observeScreenActivity(previous, scrollback.endOffset, semanticFingerprint, Date.now());
+          const screenAdvanced = observation.screenAdvanced;
+          screenObservations.set(candidate.sessionId, observation);
+          return classifyStallCandidate(
+            candidate,
+            tail,
+            screenAdvanced,
+            Math.max(0, Date.now() - observation.lastActivityAt),
+          );
         } catch {
           return null;
         }

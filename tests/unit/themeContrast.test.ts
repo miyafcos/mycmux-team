@@ -40,9 +40,9 @@ function textOnColor(color: string): string {
   return contrastRatio("#ffffff", color) >= 4.5 ? "#ffffff" : "#000000";
 }
 
-type OnColorKey = "accent" | "working" | "waiting" | "done" | "error";
+type OnColorKey = "accent" | "working" | "waiting" | "done" | "error" | "stall";
 
-const ON_COLOR_KEYS: OnColorKey[] = ["accent", "working", "waiting", "done", "error"];
+const ON_COLOR_KEYS: OnColorKey[] = ["accent", "working", "waiting", "done", "error", "stall"];
 
 function onColorSource(theme: ThemeDefinition, key: OnColorKey): string {
   return key === "accent" ? theme.chrome.accent : theme.status[key];
@@ -622,6 +622,10 @@ describe("theme chrome text contrast", () => {
 
   it.each(THEME_CASES)("%s: textDim meets contrast floor against chrome.background", (id, theme) => {
     assertContrast(id, "chrome.textDim / chrome.background", contrastRatio(theme.chrome.textDim, theme.chrome.background), CONTRAST_TARGET);
+  });
+
+  it.each(THEME_CASES)("%s: stall text meets contrast floor against chrome.background", (id, theme) => {
+    assertContrast(id, "status.stall / chrome.background", contrastRatio(theme.status.stall, theme.chrome.background), CONTRAST_TARGET);
   });
 
   // The authored accent is chosen to read as a fill/border color, so on several

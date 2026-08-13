@@ -22,6 +22,7 @@ const DEFAULT_DARK_STATUS: ThemeStatusColors = {
   waiting: "#f6c177",
   done: "#4ade80",
   error: "#fb7185",
+  stall: "#b48ead",
 };
 
 const DEFAULT_LIGHT_STATUS: ThemeStatusColors = {
@@ -29,6 +30,7 @@ const DEFAULT_LIGHT_STATUS: ThemeStatusColors = {
   waiting: "#c7832a",
   done: "#2f9a68",
   error: "#c85757",
+  stall: "#79558f",
 };
 
 function completeTheme(theme: ThemeDraft): ThemeDefinition {

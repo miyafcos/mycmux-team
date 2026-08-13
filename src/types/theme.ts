@@ -29,6 +29,7 @@ export interface ThemeStatusColors {
   waiting: string;
   done: string;
   error: string;
+  stall: string;
 }
 
 export type ThemeTweakColorKey =

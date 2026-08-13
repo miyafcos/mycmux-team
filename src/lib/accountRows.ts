@@ -154,9 +154,13 @@ export function displayWindows(
   return [...fixed, ...models];
 }
 
+// hour12 is pinned: the meter row is laid out to the character, and a 12-hour
+// locale renders "04:00 PM" where the design budgets for "16:00" - wide enough
+// to push the row's trailing label back out of view.
 const resetTimeFormatter = new Intl.DateTimeFormat(undefined, {
   hour: "2-digit",
   minute: "2-digit",
+  hour12: false,
 });
 
 const resetDayFormatter = new Intl.DateTimeFormat(undefined, {

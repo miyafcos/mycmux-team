@@ -313,7 +313,7 @@ def test_terminal_renderer_auto_default_keeps_transparency_safety() -> None:
     # the v4 migration lifts only the forced "dom" values to "auto", keeping
     # explicit legacy WebGL opt-ins untouched.
     for snippet in [
-        "export const SETTINGS_STORE_VERSION = 4;",
+        "export const SETTINGS_STORE_VERSION = 5;",
         'export type TerminalRenderer = "auto" | "webgl" | "dom";',
         "export function resolveDefaultTerminalRenderer(",
         'return "auto";',

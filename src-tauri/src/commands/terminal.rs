@@ -515,7 +515,7 @@ fn should_trust_claude_workspace(command: &str, env: &HashMap<String, String>) -
     kind == Some("claude") || command_leaf(command).eq_ignore_ascii_case("claude")
 }
 
-fn resolve_launch_cwd(cwd: Option<&str>) -> Option<String> {
+pub(crate) fn resolve_launch_cwd(cwd: Option<&str>) -> Option<String> {
     if let Some(value) = cwd.filter(|value| !value.trim().is_empty()) {
         return Some(value.to_string());
     }
@@ -571,6 +571,17 @@ pub(crate) fn sanitize_launch_env(env: &mut HashMap<String, String>) {
         "MYCMUX_HANDOFF_PROMPT_FILE",
         "MYCMUX_HANDOFF_FROM_SESSION",
     ];
+
+    // Windows environment names are case-insensitive. Keep canonical keys for
+    // the existing legitimacy checks below, but strip every case alias before
+    // handing the map to portable-pty where aliases would otherwise merge.
+    env.retain(|key, _| {
+        !ALWAYS_INTERNAL
+            .iter()
+            .chain(RESUME_QUARTET.iter())
+            .chain(HANDOFF_QUARTET.iter())
+            .any(|protected| key != *protected && key.eq_ignore_ascii_case(protected))
+    });
 
     let has_session = env
         .get("MYCMUX_SESSION_ID")
@@ -843,6 +854,25 @@ mod tests {
         let mut e = env(&[("MYCMUX_SESSION_ID", "abc-123")]);
         sanitize_launch_env(&mut e);
         assert!(!e.contains_key("MYCMUX_SESSION_ID"));
+    }
+
+    #[test]
+    fn sanitize_strips_noncanonical_case_aliases_of_ephemeral_keys() {
+        let mut e = env(&[
+            ("mycmux_pane_session_id", "pane-1"),
+            ("MyCmUx_ReSuMe", "claude"),
+            ("mYcMuX_hAnDoFf", "codex"),
+            ("__cmux_launcher_done", "1"),
+            ("SAFE", "value"),
+        ]);
+        sanitize_launch_env(&mut e);
+        assert!(e.keys().all(|key| {
+            !key.eq_ignore_ascii_case("MYCMUX_PANE_SESSION_ID")
+                && !key.eq_ignore_ascii_case("MYCMUX_RESUME")
+                && !key.eq_ignore_ascii_case("MYCMUX_HANDOFF")
+                && !key.eq_ignore_ascii_case("__CMUX_LAUNCHER_DONE")
+        }));
+        assert_eq!(e.get("SAFE"), Some(&"value".to_string()));
     }
 
     #[test]

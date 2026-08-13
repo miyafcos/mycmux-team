@@ -1,10 +1,11 @@
 //! Agent-session restore validation for `create_session`.
 //!
 //! Answers one question: is the saved session this pane wants to resume
-//! actually on disk, recorded against this working directory? Claude Code
-//! keeps a per-project transcript file; Codex keeps a rollout log whose first
-//! line carries the session id and the CWD it ran in. Resuming an id that does
-//! not match leaves the user staring at a fresh agent with no history, so
+//! actually on disk? Claude Code keeps a per-project transcript file; Codex
+//! keeps a rollout log whose first line carries the session id. The launcher
+//! chooses the working directory for a valid Claude session, so this module
+//! only decides whether its saved id may be passed through. Resuming an id that
+//! does not exist leaves the user staring at a fresh agent with no history, so
 //! `create_session` downgrades to `--continue` instead.
 
 use std::collections::HashMap;
@@ -36,7 +37,7 @@ fn codex_session_id_from_path(path: &Path) -> Option<String> {
     let id = stem.get(stem.len().saturating_sub(36)..)?;
     is_uuid_like(id).then(|| id.to_string())
 }
-fn codex_session_file_matches(path: &Path, session_id: &str, cwd_key: &str) -> bool {
+fn codex_session_file_matches(path: &Path, session_id: &str) -> bool {
     if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
         return false;
     }
@@ -61,11 +62,7 @@ fn codex_session_file_matches(path: &Path, session_id: &str, cwd_key: &str) -> b
     if payload_id != Some(session_id) {
         return false;
     }
-    payload
-        .and_then(|payload| payload.get("cwd"))
-        .and_then(|cwd| cwd.as_str())
-        .map(|cwd| normalize_cwd_key(cwd) == cwd_key)
-        .unwrap_or(false)
+    true
 }
 
 const CODEX_SESSION_INDEX_TTL: Duration = Duration::from_secs(5);
@@ -152,14 +149,14 @@ fn codex_session_candidates(
     )
 }
 
-fn codex_session_exists_in_dir(sessions_dir: &Path, session_id: &str, cwd_key: &str) -> bool {
+fn codex_session_exists_in_dir(sessions_dir: &Path, session_id: &str) -> bool {
     let mut forced_rescan = false;
     loop {
         let (candidates, cache_hit, file_count, index_ms) =
             codex_session_candidates(sessions_dir, session_id);
         let found = candidates
             .iter()
-            .any(|path| codex_session_file_matches(path, session_id, cwd_key));
+            .any(|path| codex_session_file_matches(path, session_id));
         if should_report_codex_session_index() {
             let diagnostic = format!(
                 "[mycmux-diag codex_index] cache_hit={} files={} candidates={} index_ms={} forced_rescan={}",
@@ -182,7 +179,7 @@ fn codex_session_exists_in_dir(sessions_dir: &Path, session_id: &str, cwd_key: &
     }
 }
 
-fn codex_session_exists(cwd: &str, session_id: &str) -> bool {
+fn codex_session_exists(session_id: &str) -> bool {
     let Some(home) = dirs::home_dir() else {
         return false;
     };
@@ -190,18 +187,45 @@ fn codex_session_exists(cwd: &str, session_id: &str) -> bool {
     if !sessions_dir.exists() {
         return false;
     }
-    codex_session_exists_in_dir(&sessions_dir, session_id, &normalize_cwd_key(cwd))
+    codex_session_exists_in_dir(&sessions_dir, session_id)
+}
+
+fn claude_session_exists_in_projects_dir(
+    projects_dir: &Path,
+    cwd: Option<&str>,
+    session_id: &str,
+) -> bool {
+    if !is_uuid_like(session_id) {
+        return false;
+    }
+    if let Some(cwd) = cwd {
+        let primary = projects_dir
+            .join(claude_project_key(cwd))
+            .join(format!("{session_id}.jsonl"));
+        if primary.is_file() {
+            return true;
+        }
+    }
+    let Ok(entries) = std::fs::read_dir(projects_dir) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        let project_dir = entry.path();
+        project_dir.is_dir() && project_dir.join(format!("{session_id}.jsonl")).is_file()
+    })
+}
+
+fn claude_session_exists(cwd: Option<&str>, session_id: &str) -> bool {
+    let Some(home) = dirs::home_dir() else {
+        return false;
+    };
+    claude_session_exists_in_projects_dir(&home.join(".claude").join("projects"), cwd, session_id)
 }
 
 pub(crate) fn can_restore_agent_session(kind: &str, session_id: &str, cwd: Option<&str>) -> bool {
-    let Some(cwd) = resolve_launch_cwd(cwd) else {
-        return false;
-    };
     match kind {
-        "claude" => claude_session_path(&cwd, session_id)
-            .map(|path| path.is_file())
-            .unwrap_or(false),
-        "codex" => codex_session_exists(&cwd, session_id),
+        "claude" => claude_session_exists(cwd, session_id),
+        "codex" => codex_session_exists(session_id),
         // claude-codex is an optional external wrapper; do not block it here.
         "claude-codex" => true,
         _ => false,
@@ -329,7 +353,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn codex_session_file_requires_matching_id_and_cwd() {
+    fn codex_session_file_requires_matching_id_regardless_of_payload_cwd() {
         let dir = tempfile::tempdir().unwrap();
         let session_id = "019bc371-82cf-7d82-ad0b-96d026aaca73";
         let path = dir
@@ -343,20 +367,10 @@ mod tests {
         )
         .unwrap();
 
-        assert!(codex_session_file_matches(
-            &path,
-            session_id,
-            &normalize_cwd_key(r"C:\Users\miyaz")
-        ));
+        assert!(codex_session_file_matches(&path, session_id));
         assert!(!codex_session_file_matches(
             &path,
             "019bc371-82cf-7d82-ad0b-96d026aaca74",
-            &normalize_cwd_key(r"C:\Users\miyaz")
-        ));
-        assert!(!codex_session_file_matches(
-            &path,
-            session_id,
-            &normalize_cwd_key(r"C:\Users\other")
         ));
     }
 
@@ -380,10 +394,57 @@ mod tests {
         assert_eq!(index.file_count, 2);
         let candidates = index.candidates.get(session_id).unwrap();
         assert_eq!(candidates, &vec![matching.clone()]);
-        assert!(candidates.iter().any(|path| codex_session_file_matches(
-            path,
+        assert!(candidates
+            .iter()
+            .any(|path| codex_session_file_matches(path, session_id)));
+    }
+
+    #[test]
+    fn claude_session_is_restorable_from_another_project_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let projects_dir = dir.path().join("projects");
+        let session_id = "019bc371-82cf-7d82-ad0b-96d026aaca73";
+        let other_project = projects_dir.join("different-project-key");
+        std::fs::create_dir_all(&other_project).unwrap();
+        std::fs::write(other_project.join(format!("{session_id}.jsonl")), "{}\n").unwrap();
+
+        assert!(claude_session_exists_in_projects_dir(
+            &projects_dir,
+            Some(r"C:\Users\miyaz\expected-project"),
             session_id,
-            &normalize_cwd_key(r"C:\Users\miyaz"),
-        )));
+        ));
+    }
+
+    #[test]
+    fn missing_agent_sessions_remain_unrestorable() {
+        let dir = tempfile::tempdir().unwrap();
+        let session_id = "019bc371-82cf-7d82-ad0b-96d026aaca73";
+        let claude_projects = dir.path().join("claude-projects");
+        let codex_sessions = dir.path().join("codex-sessions");
+        std::fs::create_dir_all(&claude_projects).unwrap();
+        std::fs::create_dir_all(&codex_sessions).unwrap();
+
+        assert!(!claude_session_exists_in_projects_dir(
+            &claude_projects,
+            Some(r"C:\Users\miyaz\expected-project"),
+            session_id,
+        ));
+        assert!(!codex_session_exists_in_dir(&codex_sessions, session_id));
+    }
+
+    #[test]
+    fn non_uuid_claude_id_does_not_scan_other_projects() {
+        let dir = tempfile::tempdir().unwrap();
+        let projects_dir = dir.path().join("projects");
+        let session_id = "not-a-uuid";
+        let other_project = projects_dir.join("different-project-key");
+        std::fs::create_dir_all(&other_project).unwrap();
+        std::fs::write(other_project.join(format!("{session_id}.jsonl")), "{}\n").unwrap();
+
+        assert!(!claude_session_exists_in_projects_dir(
+            &projects_dir,
+            Some(r"C:\Users\miyaz\expected-project"),
+            session_id,
+        ));
     }
 }

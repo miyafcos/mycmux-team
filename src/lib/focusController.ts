@@ -228,6 +228,17 @@ function focusXtermInElement(el: HTMLElement | null | undefined): boolean {
   return false;
 }
 
+/**
+ * A pane composer is a real text field the user aimed at. The terminal refocus
+ * retries run for a few hundred milliseconds, so without this they would yank
+ * the caret back out of the composer a tap or two after it was opened.
+ */
+export function composerHoldsFocus(): boolean {
+  if (typeof document === "undefined") return false;
+  const active = document.activeElement;
+  return active instanceof Element && Boolean(active.closest("[data-composer-session]"));
+}
+
 function focusSessionSoon(
   sessionId: string | null | undefined,
   options: { allowInactive?: boolean } = {},
@@ -236,6 +247,7 @@ function focusSessionSoon(
   let attempts = 0;
   const restoreFocus = (): void => {
     attempts += 1;
+    if (composerHoldsFocus()) return;
     if (!options.allowInactive && getActiveSessionId() !== sessionId) return;
     const target = focusTargets.get(sessionId);
     if (target) {

@@ -25,6 +25,12 @@ import sys
 import time
 from pathlib import Path
 
+# Progress messages contain Japanese; a cp932 console would raise
+# UnicodeEncodeError mid-run and abort the whole test pass.
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = REPO_ROOT / "src-tauri" / "tests.manifest"
 WINDOWS_KITS_BIN = Path(r"C:\Program Files (x86)\Windows Kits\10\bin")

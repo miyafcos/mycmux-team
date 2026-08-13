@@ -31,8 +31,12 @@ fn publish_savepoint_impl(
         .or_else(sysinfo::System::host_name)
         .unwrap_or_default();
 
-    let (jsonl_path, session_id) =
-        locate_agent_transcript(transcript_root, agent_kind, cwd, agent_session_id)?;
+    let (jsonl_path, session_id) = crate::agent_transcript::locate_agent_transcript(
+        transcript_root,
+        agent_kind,
+        cwd,
+        agent_session_id,
+    )?;
     let digest = digest_agent_transcript(agent_kind, &jsonl_path)?;
     progress(publish_progress(
         PublishProgressStage::Digest,

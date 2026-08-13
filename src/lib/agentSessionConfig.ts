@@ -23,3 +23,12 @@ export function declaredAgentKind(config: AgentSessionConfigFields): AgentSessio
 export function declaredAgentSessionId(config: AgentSessionConfigFields): string | null {
   return config.agent_session_id ?? config.claude_session_id ?? null;
 }
+
+export function agentIdForSessionKind(
+  kind: AgentSessionKind | null | undefined,
+): "claude-code" | "codex" | "shell-starter" | null {
+  if (kind === "claude") return "claude-code";
+  if (kind === "codex") return "codex";
+  if (kind === "claude-codex") return "shell-starter";
+  return null;
+}

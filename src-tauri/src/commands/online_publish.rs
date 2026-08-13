@@ -97,8 +97,6 @@ pub struct PublishSavepointResult {
 
 include!("online_publish/digest.rs");
 
-include!("online_publish/transcript.rs");
-
 include!("online_publish/lifecycle.rs");
 
 include!("online_publish/publish.rs");

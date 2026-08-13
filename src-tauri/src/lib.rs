@@ -1,8 +1,11 @@
 pub mod ailog;
+mod agent_transcript;
+mod ai;
 mod cli_accounts;
 mod commands;
 mod db;
 mod diag;
+mod dispatch;
 mod events;
 mod livebrief;
 mod pty;
@@ -294,6 +297,7 @@ pub fn run() {
             commands::online::get_savepoint_storage_settings,
             commands::online::join_savepoint_summary,
             commands::online::join_savepoint_full,
+            commands::agent_session_clone::duplicate_agent_session,
             commands::online::toggle_savepoint_pin,
             commands::online::delete_online_savepoint,
             commands::online::restore_online_savepoint,
@@ -306,6 +310,8 @@ pub fn run() {
             commands::shell::get_default_shell,
             commands::tab_sweep::run_tab_sweep_judge,
             commands::tab_sweep::abort_tab_sweep_judge,
+            commands::dispatch::dispatch_scan,
+            commands::dispatch::dispatch_claim_watchdog,
             commands::session_mapping::read_agent_session_mappings,
             commands::crsm::crsm_list_sessions,
             commands::crsm::crsm_create_handoff,

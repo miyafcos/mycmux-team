@@ -155,14 +155,22 @@ describe("summarizeUnseenAttention", () => {
     expect(summarize()).toEqual({ count: 0, category: null });
   });
 
-  it("counts every unseen tab and reports the most urgent category", () => {
+  it("counts every unseen actionable tab and reports the most urgent category", () => {
     useSessionAttentionStore.getState().applySnapshot(snapshot([
       session("session-a", "attention-a", "done", 1, 100),
       session("session-b", "attention-b", "error", 1, 200),
       session("session-c", "attention-c", "approval", 1, 300),
     ]));
 
-    expect(summarize()).toEqual({ count: 3, category: "waiting" });
+    expect(summarize()).toEqual({ count: 2, category: "waiting" });
+  });
+
+  it("does not count a tab whose only unseen attention is done", () => {
+    useSessionAttentionStore.getState().applySnapshot(snapshot([
+      session("session-a", "attention-a", "done", 1, 100),
+    ]));
+
+    expect(summarize()).toEqual({ count: 0, category: null });
   });
 
   it("drops a tab once its attention has been seen", () => {
@@ -332,7 +340,7 @@ describe("attention routing", () => {
       .toEqual(["tab-w", "tab-e"]);
   });
 
-  it("routes waiting before error before unseen done and rotates after the current target", () => {
+  it("routes waiting before error, excludes unseen done, and rotates after the current target", () => {
     const tabs = [tab("tab-d", "session-d"), tab("tab-e", "session-e"), tab("tab-w", "session-w")];
     const store = useSessionAttentionStore.getState();
     store.applySnapshot(snapshot([
@@ -360,7 +368,7 @@ describe("attention routing", () => {
       state.attentionBySession,
       state.seenAttentionByTab,
       "tab-e",
-    )?.tab.id).toBe("tab-d");
+    )?.tab.id).toBe("tab-w");
   });
 
   it("returns null when no attention target exists", () => {

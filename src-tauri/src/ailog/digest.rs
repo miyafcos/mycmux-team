@@ -1,9 +1,8 @@
 //! Daily AI-log digest generation and persistence.
 
-use std::collections::HashMap;
 use std::env;
 use std::io::Write;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -15,7 +14,6 @@ use crate::ailog::{truncate_chars, ORIGIN_AILOG_INTERNAL};
 
 pub const PROMPT_VERSION: i64 = 1;
 const PROMPT: &str = include_str!("prompts/digest_v1_ja.txt");
-const MODEL: &str = "gpt-5.6-luna";
 const TIMEOUT: Duration = Duration::from_secs(120);
 const MARKER: &str = "[mycmux-ailog-summarizer]";
 
@@ -179,7 +177,7 @@ pub fn get(conn: &Connection, date: &str) -> Result<DigestReport, String> {
     })
 }
 
-pub fn generate(conn: &mut Connection, date: &str, force: bool) -> Result<DigestReport, String> {
+pub fn generate(conn: &mut Connection, date: &str, force: bool, ai: &crate::ai::AiConfig) -> Result<DigestReport, String> {
     let (start, end) = day_bounds(date)?;
     if !needs_generation(conn, date, force)? {
         return get(conn, date);
@@ -188,9 +186,9 @@ pub fn generate(conn: &mut Connection, date: &str, force: bool) -> Result<Digest
     if input.sessions.is_empty() {
         return get(conn, date);
     }
-    match execute(&input).and_then(|raw| validate_output(&raw)) {
+    match execute(&input, ai).and_then(|raw| validate_output(&raw)) {
         Ok(content) => {
-            save_success(conn, date, &content)?;
+            save_success(conn, date, &content, ai)?;
             get(conn, date)
         }
         Err(error) => {
@@ -208,7 +206,7 @@ pub fn generate(conn: &mut Connection, date: &str, force: bool) -> Result<Digest
 fn error_kind(error: &str) -> &'static str {
     if error.contains("timed out") {
         "timeout"
-    } else if error.contains("start digest codex") {
+    } else if error.contains("start digest AI") {
         "spawn"
     } else if error.contains("exited") {
         "exit"
@@ -371,45 +369,21 @@ fn outcome_counts(conn: &Connection, start: i64, end: i64) -> Result<OutcomeCoun
     Ok(counts)
 }
 
-fn execute(input: &DigestInput) -> Result<String, String> {
+fn execute(input: &DigestInput, ai: &crate::ai::AiConfig) -> Result<String, String> {
     let payload =
         serde_json::to_string(input).map_err(|error| format!("encode digest input: {error}"))?;
     let prompt = format!("{MARKER}\n{PROMPT}\n{payload}");
-    let mut args = vec![
-        "exec".to_string(),
-        "--model".to_string(),
-        MODEL.to_string(),
-        "-c".to_string(),
-        "features.fast_mode=false".to_string(),
-        "-".to_string(),
-    ];
-    let program = crate::commands::terminal::prepare_spawn_command(codex_program(), &mut args);
-    let mut environment: HashMap<String, String> = env::vars().collect();
-    crate::commands::terminal::sanitize_launch_env(&mut environment);
-    environment.retain(|key, _| !key.to_ascii_uppercase().starts_with("MYCMUX_"));
     let cwd = env::current_dir().map_err(|err| format!("digest working directory: {err}"))?;
-    let mut command = Command::new(program);
-    command
-        .args(args)
-        .current_dir(cwd)
-        .env_clear()
-        .envs(environment)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(crate::util::process::CREATE_NO_WINDOW);
-    }
+    let mut command = crate::ai::build_command(ai, env::vars());
+    command.current_dir(cwd);
     let mut child = command
         .spawn()
-        .map_err(|error| format!("start digest codex: {error}"))?;
+        .map_err(|error| format!("start digest AI: {error}"))?;
     {
         let mut stdin = child
             .stdin
             .take()
-            .ok_or_else(|| "digest codex stdin unavailable".to_string())?;
+            .ok_or_else(|| "digest AI stdin unavailable".to_string())?;
         stdin
             .write_all(prompt.as_bytes())
             .map_err(|error| format!("write digest prompt: {error}"))?;
@@ -420,11 +394,11 @@ fn execute(input: &DigestInput) -> Result<String, String> {
     loop {
         if started.elapsed() >= TIMEOUT {
             stop_child(&mut child);
-            return Err("digest codex timed out after 120 seconds".to_string());
+            return Err("digest AI timed out after 120 seconds".to_string());
         }
         if let Some(status) = child
             .try_wait()
-            .map_err(|error| format!("wait digest codex: {error}"))?
+            .map_err(|error| format!("wait digest AI: {error}"))?
         {
             let mut stdout_bytes = Vec::new();
             let mut stderr_bytes = Vec::new();
@@ -440,7 +414,7 @@ fn execute(input: &DigestInput) -> Result<String, String> {
             let stderr_text = String::from_utf8_lossy(&stderr_bytes).into_owned();
             if !status.success() {
                 return Err(format!(
-                    "digest codex exited {status}: {}",
+                    "digest AI exited {status}: {}",
                     stderr_text.trim()
                 ));
             }
@@ -461,14 +435,6 @@ fn stop_child(child: &mut Child) {
     let _ = taskkill.status();
     let _ = child.kill();
     let _ = child.wait();
-}
-
-fn codex_program() -> &'static str {
-    if cfg!(windows) {
-        "codex.cmd"
-    } else {
-        "codex"
-    }
 }
 
 fn validate_output(raw: &str) -> Result<DigestContent, String> {
@@ -531,13 +497,13 @@ fn normalize_outcome(value: &str) -> String {
     }
 }
 
-fn save_success(conn: &mut Connection, date: &str, content: &DigestContent) -> Result<(), String> {
+fn save_success(conn: &mut Connection, date: &str, content: &DigestContent, ai: &crate::ai::AiConfig) -> Result<(), String> {
     let json =
         serde_json::to_string(content).map_err(|error| format!("encode digest result: {error}"))?;
     conn.execute(
         "INSERT INTO digest(kind,date,created_at,prompt_version,model_used,json,parse_error) VALUES('all',?1,?2,?3,?4,?5,NULL)\
          ON CONFLICT(kind,date) DO UPDATE SET created_at=excluded.created_at,prompt_version=excluded.prompt_version,model_used=excluded.model_used,json=excluded.json,parse_error=NULL",
-        params![date, Utc::now().timestamp_millis(), PROMPT_VERSION, MODEL, json],
+        params![date, Utc::now().timestamp_millis(), PROMPT_VERSION, ai.sanitized_model(), json],
     ).map_err(|error| format!("save digest: {error}"))?;
     Ok(())
 }
@@ -602,6 +568,7 @@ mod tests {
     #[test]
     fn prompt_version_controls_regeneration() {
         let mut conn = seeded();
+        let ai = crate::ai::AiConfig::default();
         assert!(needs_generation(&conn, "2026-08-12", false).expect("missing"));
         save_success(
             &mut conn,
@@ -617,6 +584,7 @@ mod tests {
                 suggestion: "s".into(),
                 confidence: "high".into(),
             },
+            &ai,
         )
         .expect("save");
         assert!(!needs_generation(&conn, "2026-08-12", false).expect("current"));
@@ -640,6 +608,7 @@ mod tests {
                 suggestion: "s".into(),
                 confidence: "high".into(),
             },
+            &ai,
         )
         .expect("restore current");
         assert!(needs_generation(&conn, "2026-08-12", true).expect("force"));
@@ -650,6 +619,7 @@ mod tests {
     #[test]
     fn saved_digest_is_returned_with_metrics() {
         let mut conn = seeded();
+        let ai = crate::ai::AiConfig::default();
         let content = DigestContent {
             headline: "h".into(),
             wins: vec!["w".into()],
@@ -661,7 +631,7 @@ mod tests {
             suggestion: "s".into(),
             confidence: "high".into(),
         };
-        save_success(&mut conn, "2026-08-12", &content).expect("save");
+        save_success(&mut conn, "2026-08-12", &content, &ai).expect("save");
         let report = get(&conn, "2026-08-12").expect("get");
         assert_eq!(report.digest.expect("digest").content, content);
         assert_eq!(report.metrics.outcomes.done, 1);
@@ -671,8 +641,9 @@ mod tests {
     #[ignore = "calls the local Codex CLI once; run explicitly for the release smoke"]
     fn real_codex_smoke_saves_digest_json() {
         let mut conn = seeded();
+        let ai = crate::ai::AiConfig::default();
         let report =
-            generate(&mut conn, "2026-08-12", true).expect("generate digest through Codex");
+            generate(&mut conn, "2026-08-12", true, &ai).expect("generate digest through Codex");
         assert!(
             report.digest.is_some(),
             "a successful Codex response must be saved in digest"

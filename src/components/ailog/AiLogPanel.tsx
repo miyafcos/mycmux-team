@@ -13,6 +13,8 @@ import { dayOffsetInput, listenIndexProgress, listenSummarizeProgress, toDayInpu
 import { useAilogStore, SESSION_PAGE_SIZE } from "../../stores/ailogStore";
 import { jobDisplayError } from "../../stores/ailogStore";
 import { useAilogPolling } from "../../hooks/useAilogPolling";
+import { useAiSettingsStore } from "../../stores/aiSettingsStore";
+import { aiSettingsStrings } from "../settings/settingsStrings";
 import { CostHeatmap } from "./CostHeatmap";
 import { DigestView } from "./DigestView";
 import { LearningView } from "./LearningView";
@@ -45,6 +47,8 @@ export function AiLogPanel({ open, visible, closing = false, onClose }: AiLogPan
   const [view, setView] = useState<"usage" | "digest" | "learning" | "experiment" | "detail">("usage");
 
   const store = useAilogStore();
+  const aiEnabled = useAiSettingsStore((s) => s.aiEnabled);
+  const aiDisabledReason = aiEnabled ? undefined : aiSettingsStrings.disabledReason;
 
   // Open: pull the index status first (it decides which empty state applies),
   // then the reports.
@@ -56,7 +60,9 @@ export function AiLogPanel({ open, visible, closing = false, onClose }: AiLogPan
       await store.refreshSummarizeStatus();
       if (cancelled) return;
       const status = useAilogStore.getState().summarize.status;
-      if (!autoStartedRef.current && !status?.running && (status?.sessionsRemaining ?? 0) > 0) {
+      // Opening this panel must not spend tokens when the user turned the
+      // background AI off (Settings > AI).
+      if (aiEnabled && !autoStartedRef.current && !status?.running && (status?.sessionsRemaining ?? 0) > 0) {
         autoStartedRef.current = true;
         await store.startSummarize();
       }
@@ -140,6 +146,7 @@ export function AiLogPanel({ open, visible, closing = false, onClose }: AiLogPan
   // never start a billable run. `autoDigestStartedRef` keeps it to once per
   // panel session so re-entering the tab does not regenerate.
   useEffect(() => {
+    if (!aiEnabled) return;
     if (!open || view !== "digest" || summarizing || autoDigestStartedRef.current) return;
     autoDigestStartedRef.current = true;
     const yesterday = dayOffsetInput(-1);
@@ -251,6 +258,7 @@ export function AiLogPanel({ open, visible, closing = false, onClose }: AiLogPan
                   summarizeError={summarizeError}
                   onDismissSummarizeError={store.dismissSummarizeError}
                   onStartSummarize={() => void store.startSummarize()}
+                  aiDisabledReason={aiDisabledReason}
                   onCancelSummarize={() => void store.cancelSummarize()}
                   onRefresh={() => void store.refreshUsage()}
                   loading={store.usageLoading}
@@ -300,6 +308,7 @@ export function AiLogPanel({ open, visible, closing = false, onClose }: AiLogPan
                 summarizeStatus={summarizeStatus}
                 summarizeError={summarizeError}
                 onStartSummarize={() => void store.startSummarize()}
+                aiDisabledReason={aiDisabledReason}
               />
             ) : view === "learning" ? (
               <LearningView
@@ -344,6 +353,7 @@ export function AiLogPanel({ open, visible, closing = false, onClose }: AiLogPan
               summarizeError={summarizeError}
               onDismissSummarizeError={store.dismissSummarizeError}
               onStartSummarize={() => void store.startSummarize()}
+              aiDisabledReason={aiDisabledReason}
               onCancelSummarize={() => void store.cancelSummarize()}
               onRefresh={() => void store.refresh()}
               loading={loading}

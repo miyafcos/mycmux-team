@@ -33,6 +33,7 @@
   --cmux-on-waiting: #0a0a0a;
   --cmux-on-done: #0a0a0a;
   --cmux-on-error: #ffffff;
+  --cmux-on-stall: #ffffff;
   --cmux-backdrop: rgba(0, 0, 0, 0.55);
   --cmux-blur-overlay: blur(10px) saturate(1.2);
   --cmux-motion-fast: 120ms;
@@ -402,22 +403,6 @@ div:hover>.tab-close-btn {
   flex-shrink: 0;
 }
 
-.workspace-agent-kind-dots {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-}
-
-.workspace-agent-kind-dot {
-  display: inline-block;
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: var(--agent-kind-color);
-  opacity: 0.6;
-  flex: 0 0 5px;
-}
-
 .pane-tab-pill:hover {
   background: var(--cmux-hover) !important;
 }
@@ -445,6 +430,92 @@ div:hover>.tab-close-btn {
 
 .pane-tab-pill.is-pinned.is-active {
   background: color-mix(in srgb, var(--cmux-accent) 18%, var(--cmux-selected)) !important;
+}
+
+.pane-tab-pill.pane-tab-chip,
+.pane-tab-pill.pane-tab-chip:hover {
+  background: transparent !important;
+  border-right: none !important;
+}
+
+.pane-tab-chip-face {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--cmux-border-hairline);
+  border-radius: 7px;
+  background: var(--cmux-hover);
+  transition: background var(--cmux-motion-fast) var(--cmux-ease), border-color var(--cmux-motion-fast) var(--cmux-ease);
+}
+
+.pane-tab-chip.has-agent-kind .pane-tab-chip-face {
+  border-color: color-mix(in srgb, var(--agent-kind-color) 30%, var(--cmux-border-hairline));
+  background: color-mix(in srgb, var(--agent-kind-color) 8%, transparent);
+}
+
+.pane-tab-chip:hover .pane-tab-chip-face {
+  background: var(--cmux-selected);
+}
+
+.pane-tab-chip.has-agent-kind:hover .pane-tab-chip-face {
+  background: color-mix(in srgb, var(--agent-kind-color) 16%, transparent);
+}
+
+.pane-tab-chip.is-pinned .pane-tab-chip-face {
+  border-color: var(--cmux-accent);
+  box-shadow: 0 0 0 1px var(--cmux-accent);
+}
+
+.pane-tab-chip.is-savepoint-write-target .pane-tab-chip-face {
+  box-shadow: 0 0 0 2px var(--cmux-accent);
+}
+
+.pane-tab-chip-pin-badge {
+  position: absolute;
+  top: 4px;
+  right: 1px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--cmux-surface-raised);
+  color: var(--cmux-accent-text);
+  pointer-events: none;
+}
+
+.pane-tab-chip-preview {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  max-width: 200px;
+  padding: 0 10px 0 7px;
+  overflow: hidden;
+  white-space: nowrap;
+  border: 1px solid var(--cmux-border);
+  border-radius: 14px;
+  background: var(--cmux-surface-raised);
+  box-shadow: var(--cmux-shadow-pane-menu);
+  pointer-events: none;
+  z-index: 5;
+  animation: cmux-chip-preview-in var(--cmux-motion-base) var(--cmux-ease);
+}
+
+.pane-tab-chip-preview.is-left {
+  transform-origin: right center;
+}
+
+@keyframes cmux-chip-preview-in {
+  from { opacity: 0; max-width: 26px; }
+  to { opacity: 1; max-width: 200px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pane-tab-chip-preview { animation: none; }
 }
 
 .pane-tab-pin-btn {
@@ -625,6 +696,12 @@ div:hover>.tab-close-btn {
 
 .terminal-pane-border.has-notification[data-active-pane="true"]::after {
   animation: none;
+}
+
+/* The pane composer's send affordance appears only once there is text to send. */
+@keyframes cmux-composer-send-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
 }
 
 /* Pane/tab drag-and-drop affordances */

@@ -8,6 +8,7 @@ import {
   type SessionStatusSnapshotPayload,
   type SessionUiState,
 } from "../lib/ipc";
+import { readSessionStatusSignals, type SessionStatusSignals } from "../lib/sessionStatusSignals";
 import type { PaneTab, Workspace } from "../types";
 
 export const SEEN_ATTENTION_STORAGE_KEY = "mycmux:seen-attention-by-tab";
@@ -30,6 +31,16 @@ export interface SessionAttention {
 
 export type AttentionCategory = "waiting" | "error" | "done";
 
+/** Only states that require a person to act belong in notification UI. */
+export const BLOCKING_ATTENTION_CATEGORIES = ["waiting", "error"] as const;
+
+export function isBlockingAttention(
+  category: AttentionCategory | null | undefined,
+): category is (typeof BLOCKING_ATTENTION_CATEGORIES)[number] {
+  return category !== null && category !== undefined
+    && (BLOCKING_ATTENTION_CATEGORIES as readonly string[]).includes(category);
+}
+
 export interface AttentionTabTarget {
   workspaceId: string;
   paneId: string;
@@ -40,6 +51,7 @@ export interface AttentionTabTarget {
 
 interface SessionAttentionState {
   attentionBySession: Record<string, SessionAttention>;
+  statusSignalsBySession: Record<string, SessionStatusSignals>;
   seenAttentionByTab: Map<string, string>;
   nextOccurrenceOrder: number;
   serverEpoch: string | null;
@@ -104,9 +116,9 @@ function toSessionAttention(
 }
 
 function applyPayload(
-  state: Pick<SessionAttentionState, "attentionBySession" | "nextOccurrenceOrder">,
+  state: Pick<SessionAttentionState, "attentionBySession" | "statusSignalsBySession" | "nextOccurrenceOrder">,
   payload: FeedSessionPayload,
-): Pick<SessionAttentionState, "attentionBySession" | "nextOccurrenceOrder"> {
+): Pick<SessionAttentionState, "attentionBySession" | "statusSignalsBySession" | "nextOccurrenceOrder"> {
   const previous = state.attentionBySession[payload.session_id];
   if (previous && payload.session_revision < previous.sessionRevision) return state;
 
@@ -115,6 +127,8 @@ function applyPayload(
     ? previous.occurrenceOrder
     : state.nextOccurrenceOrder;
   const next = toSessionAttention(payload, occurrenceOrder);
+  const signals = readSessionStatusSignals(payload.status);
+  const previousSignals = state.statusSignalsBySession[payload.session_id];
   if (
     previous
     && previous.attentionId === next.attentionId
@@ -123,6 +137,12 @@ function applyPayload(
     && previous.sessionRevision === next.sessionRevision
     && previous.uiState === next.uiState
     && previous.stateSince === next.stateSince
+    && previousSignals?.activity === signals.activity
+    && previousSignals?.health === signals.health
+    && previousSignals?.lastOutputAt === signals.lastOutputAt
+    && previousSignals?.lastMonitorAt === signals.lastMonitorAt
+    && previousSignals?.lastEvidenceAt === signals.lastEvidenceAt
+    && previousSignals?.processStartedAt === signals.processStartedAt
   ) {
     return state;
   }
@@ -131,6 +151,10 @@ function applyPayload(
     attentionBySession: {
       ...state.attentionBySession,
       [payload.session_id]: next,
+    },
+    statusSignalsBySession: {
+      ...state.statusSignalsBySession,
+      [payload.session_id]: signals,
     },
     nextOccurrenceOrder: sameAttention && previous
       ? state.nextOccurrenceOrder
@@ -157,7 +181,7 @@ export function attentionCategory(
 ): AttentionCategory | null {
   if (!attention?.attentionId) return null;
   if (attention.kind === "input" || attention.kind === "approval") return "waiting";
-  if (attention.kind === "error") return "error";
+  if (attention.kind === "error" || attention.kind === "rate_limited") return "error";
   if (attention.kind === "done" && isAttentionUnseen(tabId, attention, seenAttentionByTab)) {
     return "done";
   }
@@ -165,7 +189,7 @@ export function attentionCategory(
 }
 
 export function attentionDetail(attention: SessionAttention | undefined): string | null {
-  if (!attention || (attention.kind !== "input" && attention.kind !== "approval")) return null;
+  if (!attention || (attention.kind !== "input" && attention.kind !== "approval" && attention.kind !== "rate_limited")) return null;
   const detail = attention.detail?.replace(/\s+/g, " ").trim();
   return detail || null;
 }
@@ -192,7 +216,7 @@ const ATTENTION_PRIORITY: Record<AttentionCategory, number> = {
 };
 
 export interface UnseenAttentionSummary {
-  /** How many of the given tabs carry an attention the user has not seen. */
+  /** How many of the given tabs carry unseen actionable attention. */
   count: number;
   /** The most urgent of those categories, or null when count is 0. */
   category: AttentionCategory | null;
@@ -216,7 +240,7 @@ export function summarizeUnseenAttention(
     const attention = attentionBySession[tab.sessionId];
     if (!isAttentionUnseen(tab.id, attention, seenAttentionByTab)) continue;
     const tabCategory = attentionCategory(tab.id, attention, seenAttentionByTab);
-    if (!tabCategory) continue;
+    if (!isBlockingAttention(tabCategory)) continue;
     count += 1;
     if (category === null || ATTENTION_PRIORITY[tabCategory] < ATTENTION_PRIORITY[category]) {
       category = tabCategory;
@@ -237,7 +261,7 @@ export function resolveNextAttentionTarget(
       for (const tab of pane.tabs) {
         const attention = attentionBySession[tab.sessionId];
         const category = attentionCategory(tab.id, attention, seenAttentionByTab);
-        if (attention && category) {
+        if (attention && isBlockingAttention(category)) {
           candidates.push({ workspaceId: workspace.id, paneId: pane.id, tab, attention, category });
         }
       }
@@ -259,6 +283,7 @@ export function resolveNextAttentionTarget(
 
 export const useSessionAttentionStore = create<SessionAttentionState>((set) => ({
   attentionBySession: {},
+  statusSignalsBySession: {},
   seenAttentionByTab: readSeenAttention(),
   nextOccurrenceOrder: 1,
   serverEpoch: null,
@@ -266,8 +291,9 @@ export const useSessionAttentionStore = create<SessionAttentionState>((set) => (
 
   applySnapshot: (payload) => set((state) => {
     if (state.serverEpoch === payload.server_epoch && payload.seq < state.lastSeq) return state;
-    let next: Pick<SessionAttentionState, "attentionBySession" | "nextOccurrenceOrder"> = {
+    let next: Pick<SessionAttentionState, "attentionBySession" | "statusSignalsBySession" | "nextOccurrenceOrder"> = {
       attentionBySession: {},
+      statusSignalsBySession: {},
       nextOccurrenceOrder: 1,
     };
     const ordered = [...payload.sessions].sort((left, right) => (
@@ -283,7 +309,7 @@ export const useSessionAttentionStore = create<SessionAttentionState>((set) => (
     if (sameEpoch && payload.seq <= state.lastSeq) return state;
     const base = sameEpoch
       ? state
-      : { attentionBySession: {}, nextOccurrenceOrder: 1 };
+      : { attentionBySession: {}, statusSignalsBySession: {}, nextOccurrenceOrder: 1 };
     return {
       ...applyPayload(base, payload),
       serverEpoch: payload.server_epoch,
@@ -303,6 +329,7 @@ export const useSessionAttentionStore = create<SessionAttentionState>((set) => (
 
   resetForTests: () => set({
     attentionBySession: {},
+    statusSignalsBySession: {},
     seenAttentionByTab: new Map(),
     nextOccurrenceOrder: 1,
     serverEpoch: null,

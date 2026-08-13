@@ -42,10 +42,14 @@ def test_judge_action_never_applies_or_closes_tabs_implicitly() -> None:
 
 def test_judge_process_uses_stdin_pipes_and_a_clean_environment() -> None:
     source = read("src-tauri/src/commands/tab_sweep.rs")
-    assert ".env_clear()" in source
-    assert ".stdin(Stdio::piped())" in source
-    assert ".stdout(Stdio::piped())" in source
-    assert ".stderr(Stdio::piped())" in source
+    # Command construction moved into crate::ai so tab sweep, the ailog
+    # summariser and the digest share one hardened spawn recipe. The
+    # properties themselves are unchanged, so assert them at their new home.
+    runner = read("src-tauri/src/ai/mod.rs")
+    assert ".env_clear()" in runner
+    assert ".stdin(Stdio::piped())" in runner
+    assert ".stdout(Stdio::piped())" in runner
+    assert ".stderr(Stdio::piped())" in runner
     assert "stdin.write_all(prompt.as_bytes())" in source
     assert ".arg(prompt)" not in source
     assert "oneshot::channel" in source
@@ -69,7 +73,11 @@ def test_tab_sweep_ui_contract_covers_all_entry_points_and_safety_copy() -> None
     assert 'manualCloseCandidateTabIds' in panel
     assert 'closeCandidateTabIds' not in panel
     assert "閉じたタブは Ctrl+Shift+T で復元できます（会話も再開されます）" in panel
-    assert "各タブの画面末尾8行と作業フォルダを Claude (haiku) に送って判定します" in panel
+    # The model is a user setting now, so the disclosure is built in
+    # tabSweep.ts. What must not regress is that it still says exactly what
+    # leaves the machine.
+    assert "各タブの画面末尾${TAB_SWEEP_TAIL_LINES}行と作業フォルダを ${target} に送って判定します（チェックの提案のみ）" in sweep
+    assert 'formatSweepAiNote("judge"' in panel
     assert "掃除できるタブはありません" in panel
 
     # One list with checkboxes — the numbered sections and their per-section
@@ -133,9 +141,9 @@ def test_naming_mode_is_wired_to_the_fixed_sonnet_model() -> None:
     )
     assert signature is not None
     assert "mode: Option<String>" in signature.group("body")
-    assert 'const JUDGE_MODEL: &str = "claude-haiku-4-5-20251001";' in rust
-    assert 'const NAMING_MODEL: &str = "claude-sonnet-5";' in rust
-    assert 'Some("naming") => (NAMING_MODEL, NAMING_TIMEOUT)' in rust
+    assert "crate::ai::resolve(" in rust
+    assert "const JUDGE_MODEL" not in rust
+    assert "ai_disabled" in rust
 
     naming = re.search(
         r"const runNaming = async \(\) => \{(?P<body>.*?)\n  \};\n\n  const cancelNaming",
@@ -162,4 +170,6 @@ def test_naming_judge_only_proposes_names_and_ui_copy_is_present() -> None:
     assert "closeCandidateTabIds" not in body
     assert "名前の提案" in panel
     assert "名前を元に戻す" in panel
-    assert "名前整理は全タブの画面末尾14行・作業フォルダ・ペイン構成を Claude (sonnet) に送ります（適用は手動）" in panel
+    sweep_source = read("src/components/layout/tabSweep.ts")
+    assert "名前整理は全タブの画面末尾${TAB_NAMING_TAIL_LINES}行・作業フォルダ・ペイン構成を ${target} に送ります（適用は手動）" in sweep_source
+    assert 'formatSweepAiNote("naming"' in panel

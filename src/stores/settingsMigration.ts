@@ -1,4 +1,4 @@
-export const SETTINGS_STORE_VERSION = 4;
+export const SETTINGS_STORE_VERSION = 5;
 
 export type TerminalRenderer = "auto" | "webgl" | "dom";
 
@@ -90,6 +90,16 @@ export function migratePersistedSettings(
   // opaque terminal backgrounds.
   if (persistedVersion < 4 && migrated.terminalRenderer === "dom") {
     migrated.terminalRenderer = "auto";
+  }
+  if (persistedVersion < 5) {
+    if (typeof migrated.dispatchWatchdogEnabled !== "boolean") migrated.dispatchWatchdogEnabled = true;
+    if (!Number.isFinite(migrated.dispatchWatchdogIntervalMinutes) || Number(migrated.dispatchWatchdogIntervalMinutes) < 1) {
+      migrated.dispatchWatchdogIntervalMinutes = 10;
+    }
+    if (!Number.isFinite(migrated.dispatchStallMinutes) || Number(migrated.dispatchStallMinutes) < 1) {
+      migrated.dispatchStallMinutes = 45;
+    }
+    if (typeof migrated.dispatchWatchdogNotify !== "boolean") migrated.dispatchWatchdogNotify = true;
   }
   return migrated;
 }

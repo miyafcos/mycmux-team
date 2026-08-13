@@ -77,7 +77,7 @@ export default function TitleBar({
   const toggleSidebar = useUiStore((s) => s.toggleSidebar);
   const totalNotifications = usePaneMetadataStore((s) =>
     Object.values(s.metadata).reduce(
-      (sum, m) => sum + (m.notificationCount ?? 0) + (m.workDoneCount ?? 0),
+      (sum, m) => sum + (m.notificationCount ?? 0),
       0,
     ),
   );

@@ -33,9 +33,10 @@ import { THEME_BACKGROUND_PRESETS } from "../../lib/themeTweaks";
 import { contrastRatio, isHexColor, resolveAccentTextColor } from "../theme/colorContrast";
 import { focusController } from "../../lib/focusController";
 import { OVERLAY_EXIT_MS, useDeferredUnmount } from "../../hooks/useDeferredUnmount";
-import { confirm, message } from "@tauri-apps/plugin-dialog";
+import { message } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 import { beforePaneClose } from "../../lib/paneCloseLifecycle";
+import { confirmPaneClose } from "../../lib/paneCloseConfirmation";
 import {
   peekClosedPane,
   popClosedPane,
@@ -504,6 +505,8 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
     "--cmux-on-waiting": textOnColor(currentTheme.status.waiting),
     "--cmux-on-done": textOnColor(currentTheme.status.done),
     "--cmux-on-error": textOnColor(currentTheme.status.error),
+    "--cmux-status-stall": currentTheme.status.stall,
+    "--cmux-on-stall": textOnColor(currentTheme.status.stall),
     "--cmux-backdrop": isLightChrome ? "rgba(15, 23, 42, 0.22)" : "rgba(0, 0, 0, 0.55)",
     "--cmux-edge-highlight": isLightChrome
       ? "inset 0 1px 0 rgba(255, 255, 255, 0.6)"
@@ -633,15 +636,10 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
 
   const handleCloseWorkspace = useCallback(
     async (id: string) => {
-      const wsName = workspaces.find((w) => w.id === id)?.name ?? "ワークスペース";
-      const shouldClose = await confirm(`ワークスペース「${wsName}」を閉じますか？`, {
-        title: "ワークスペースを閉じる",
-        kind: "warning",
-        okLabel: "閉じる",
-        cancelLabel: "キャンセル",
-      }).catch(() => false);
-
-      if (!shouldClose) return;
+      const requestedWorkspace = useWorkspaceListStore.getState().getWorkspace(id);
+      if (!requestedWorkspace) return;
+      const workspaceName = requestedWorkspace.name ?? "ワークスペース";
+      if (!await confirmPaneClose(requestedWorkspace.panes, "workspace", { workspaceName })) return;
 
       // Re-read fresh from the store (not the `workspaces` closure) — panes
       // can be added to this workspace while confirm() was awaited (drag-and-
@@ -649,6 +647,9 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
       // session kill / cache eviction while still removing the workspace.
       const listState = useWorkspaceListStore.getState();
       const ws = listState.workspaces.find((w) => w.id === id);
+      if (ws && ws.panes.flatMap((pane) => pane.tabs).map((tab) => tab.sessionId).join("\0")
+        !== requestedWorkspace.panes.flatMap((pane) => pane.tabs).map((tab) => tab.sessionId).join("\0")
+        && !await confirmPaneClose(ws.panes, "workspace", { workspaceName })) return;
       if (ws) {
         // Record the workspace's tabs before their sessions die so
         // Ctrl+Shift+T can undo the close. Bounded by
@@ -756,6 +757,12 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
           toggleDashboard();
           break;
 
+        case "composer.focus":
+          window.dispatchEvent(new CustomEvent("mycmux:composer-focus", {
+            detail: { sessionId: useUiStore.getState().activePaneId },
+          }));
+          break;
+
         case "workspace.close":
           if (aid) handleCloseWorkspace(aid);
           break;
@@ -842,28 +849,36 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
           const activeWs = ws.find((w) => w.id === aid);
           const activePane = activeWs?.panes.find((p) => paneMatchesSession(p, apid));
           if (activeWs && activePane && activeWs.panes.length > 1) {
-            beforePaneClose(activePane);
-            for (const tab of activePane.tabs) {
-              evictTerminalCache(tab.sessionId);
-              killSession(tab.sessionId).catch((err) =>
-                console.warn("[mycmux] killSession failed", tab.sessionId, err),
-              );
-              usePaneMetadataStore.getState().removeMetadata(tab.sessionId);
-            }
-            removePaneFromWorkspace(activeWs.id, activePane.id);
-            // Focus a remaining pane after close
-            const remaining = activeWs.panes.filter((p) => p.id !== activePane.id);
-            if (remaining.length > 0) {
-              const neighbor =
-                findPaneInDirection(apid!, "right", remaining) ||
-                findPaneInDirection(apid!, "down", remaining) ||
-                findPaneInDirection(apid!, "left", remaining) ||
-                findPaneInDirection(apid!, "up", remaining) ||
-                remaining[0].sessionId;
-              focusController.request("keyboard", { sessionId: neighbor, focus: true });
-            } else {
-              focusController.request("keyboard", { sessionId: null, focus: false });
-            }
+            void (async () => {
+              if (!await confirmPaneClose([activePane], "pane")) return;
+              const currentWorkspace = useWorkspaceListStore.getState().getWorkspace(activeWs.id);
+              const currentPane = currentWorkspace?.panes.find((pane) => pane.id === activePane.id);
+              if (!currentWorkspace || !currentPane || currentWorkspace.panes.length <= 1) return;
+              if (currentPane.tabs.map((tab) => tab.sessionId).join("\0") !== activePane.tabs.map((tab) => tab.sessionId).join("\0")
+                && !await confirmPaneClose([currentPane], "pane")) return;
+              beforePaneClose(currentPane);
+              for (const tab of currentPane.tabs) {
+                evictTerminalCache(tab.sessionId);
+                killSession(tab.sessionId).catch((err) =>
+                  console.warn("[mycmux] killSession failed", tab.sessionId, err),
+                );
+                usePaneMetadataStore.getState().removeMetadata(tab.sessionId);
+              }
+              removePaneFromWorkspace(currentWorkspace.id, currentPane.id);
+              // Focus a remaining pane after close
+              const remaining = currentWorkspace.panes.filter((p) => p.id !== currentPane.id);
+              if (remaining.length > 0) {
+                const neighbor =
+                  findPaneInDirection(apid!, "right", remaining) ||
+                  findPaneInDirection(apid!, "down", remaining) ||
+                  findPaneInDirection(apid!, "left", remaining) ||
+                  findPaneInDirection(apid!, "up", remaining) ||
+                  remaining[0].sessionId;
+                focusController.request("keyboard", { sessionId: neighbor, focus: true });
+              } else {
+                focusController.request("keyboard", { sessionId: null, focus: false });
+              }
+            })();
           }
           break;
         }

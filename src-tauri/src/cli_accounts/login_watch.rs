@@ -427,9 +427,28 @@ mod tests {
     const CREDS: &str = include_str!("fixtures/claude_credentials_sample.json");
     const CODEX: &str = include_str!("fixtures/codex_auth_sample.json");
 
+    /// Windows advances file timestamps on the ~15ms system tick, so writes a
+    /// test performs microseconds apart can land on the same mtime. Stamping
+    /// each write forward keeps "the user logged in again" observable no matter
+    /// how fast the machine running the test is.
+    fn write_stamped(path: PathBuf, contents: &str) {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static TICK: AtomicU64 = AtomicU64::new(0);
+
+        fs::write(&path, contents).unwrap();
+        let seconds = 1_700_000_000 + TICK.fetch_add(1, Ordering::Relaxed);
+        let stamp = std::time::UNIX_EPOCH + std::time::Duration::from_secs(seconds);
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_modified(stamp))
+            .unwrap();
+    }
+
     fn staged_claude(dir: &Path, claude_json: &str) {
-        fs::write(dir.join(".claude.json"), claude_json).unwrap();
-        fs::write(dir.join(".credentials.json"), CREDS).unwrap();
+        write_stamped(dir.join(".claude.json"), claude_json);
+        write_stamped(dir.join(".credentials.json"), CREDS);
     }
 
     #[test]

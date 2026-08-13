@@ -296,6 +296,57 @@ def test_real_cli_send_without_expectations_preserves_legacy_args(
     assert result.stderr == ""
 
 
+def test_real_cli_warns_for_an_unverified_text_only_send(tmp_path: Path) -> None:
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port_dir = tmp_path / ".mycmux"
+    port_dir.mkdir()
+    (port_dir / "mycmux.port").write_text(str(listener.getsockname()[1]), encoding="utf-8")
+    received: list[bytes] = []
+    errors: list[BaseException] = []
+    reply = b'{"id":9,"result":{"sessionId":"session-a","queuedBytes":3,"unverified":true},"error":null}\n'
+    server = _serve_one_request(listener, reply, received, errors)
+
+    result = _run_cli(tmp_path, ["send", "--session", "session-a", "--text", "yes"])
+    server.join(timeout=3)
+    assert not server.is_alive()
+    if errors:
+        raise errors[0]
+
+    assert received == [
+        b'{"cmd": "pane.send_text", "args": {"sessionId": "session-a", "text": "yes", "enter": false}}\n'
+    ]
+    assert result.returncode == 0
+    assert json.loads(result.stdout)["unverified"] is True
+    assert "without delivery verification" in result.stderr
+
+
+def test_real_cli_key_sends_semantic_key_and_requires_confirmation(tmp_path: Path) -> None:
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port_dir = tmp_path / ".mycmux"
+    port_dir.mkdir()
+    (port_dir / "mycmux.port").write_text(str(listener.getsockname()[1]), encoding="utf-8")
+    received: list[bytes] = []
+    errors: list[BaseException] = []
+    reply = b'{"id":9,"result":{"sessionId":"session-a","ok":true,"confirmed":true,"attempts":1},"error":null}\n'
+    server = _serve_one_request(listener, reply, received, errors)
+
+    result = _run_cli(tmp_path, ["send", "--session", "session-a", "--key", "up"])
+    server.join(timeout=3)
+    assert not server.is_alive()
+    if errors:
+        raise errors[0]
+
+    assert received == [
+        b'{"cmd": "pane.send_text", "args": {"sessionId": "session-a", "text": "", "enter": false, "key": "up"}}\n'
+    ]
+    assert result.returncode == 0
+    assert json.loads(result.stdout)["confirmed"] is True
+
+
 @pytest.mark.parametrize(
     "server_result",
     [None, {}, {"ok": True, "confirmed": False}],

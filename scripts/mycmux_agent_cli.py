@@ -181,8 +181,11 @@ def build_parser() -> argparse.ArgumentParser:
     add_spawn_arguments(spawn)
 
     spawn_tab = subparsers.add_parser("spawn-tab", help="Spawn a tab in the owning pane")
+    spawn_tab.add_argument("--anchor-session")
     spawn_tab.add_argument(
-        "--anchor-session", default=os.environ.get("MYCMUX_PANE_SESSION_ID")
+        "--detach",
+        action="store_true",
+        help="Put the new tab in its own pane, so closing the caller's pane cannot take it down.",
     )
     spawn_tab.add_argument("--cwd", default=os.getcwd())
     spawn_tab.add_argument("--label")
@@ -215,8 +218,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     send = subparsers.add_parser("send", help="Type text into a live terminal")
     send.add_argument("--session", required=True)
-    send.add_argument("--text", required=True)
-    send.add_argument("--enter", action="store_true")
+    send.add_argument("--text", default="")
+    send_mode = send.add_mutually_exclusive_group()
+    send_mode.add_argument("--enter", action="store_true")
+    send_mode.add_argument(
+        "--key",
+        choices=("enter", "esc", "tab", "up", "down", "left", "right", "ctrl-c", "space", "backspace"),
+    )
     send.add_argument("--expect-epoch", type=int)
     send.add_argument("--expect-attention-id")
     send.add_argument("--expect-revision", type=int)
@@ -292,7 +300,12 @@ def build_spawn_request(namespace: argparse.Namespace) -> dict[str, Any]:
 
 
 def build_spawn_tab_request(namespace: argparse.Namespace) -> dict[str, Any]:
-    if not namespace.anchor_session:
+    if namespace.detach and namespace.anchor_session:
+        raise RuntimeError("spawn-tab --detach cannot be used with --anchor-session")
+    anchor_session = namespace.anchor_session or os.environ.get("MYCMUX_PANE_SESSION_ID")
+    if not anchor_session:
+        if namespace.detach:
+            return build_detached_spawn_request(namespace)
         raise RuntimeError(
             "spawn-tab requires --anchor-session or MYCMUX_PANE_SESSION_ID"
         )
@@ -306,7 +319,7 @@ def build_spawn_tab_request(namespace: argparse.Namespace) -> dict[str, Any]:
         raise RuntimeError("spawn-tab requires exactly one of command argv or --target")
 
     args: dict[str, Any] = {
-        "anchorSessionId": namespace.anchor_session,
+        "anchorSessionId": anchor_session,
         "cwd": namespace.cwd,
         "activate": namespace.activate,
     }
@@ -330,6 +343,31 @@ def build_spawn_tab_request(namespace: argparse.Namespace) -> dict[str, Any]:
     return args
 
 
+def build_detached_spawn_request(namespace: argparse.Namespace) -> dict[str, Any]:
+    command_argv = list(namespace.command_argv)
+    if command_argv and command_argv[0] == "--":
+        command_argv = command_argv[1:]
+    has_command = bool(command_argv)
+    has_target = namespace.target is not None
+    if has_command == has_target:
+        raise RuntimeError("spawn-tab requires exactly one of command argv or --target")
+
+    args: dict[str, Any] = {
+        "cwd": namespace.cwd,
+        "activate": namespace.activate,
+    }
+    optional_arg(args, "anchorSessionId", os.environ.get("MYCMUX_PANE_SESSION_ID"))
+    optional_arg(args, "label", namespace.label)
+    if has_command:
+        if any(value is not None for value in (namespace.prompt, namespace.prompt_file, namespace.handoff_from_session, namespace.handoff_from_kind, namespace.resume_session)):
+            raise RuntimeError("spawn-tab command argv cannot use interactive launch options")
+        args["commandArgv"] = command_argv
+    else:
+        args["target"] = namespace.target
+        add_launch_mode_request_args(args, namespace)
+    return args
+
+
 def request_for(namespace: argparse.Namespace) -> tuple[str, dict[str, Any]]:
     if namespace.subcommand == "workspaces":
         return "workspace.list", {}
@@ -344,6 +382,10 @@ def request_for(namespace: argparse.Namespace) -> tuple[str, dict[str, Any]]:
             return "pane.spawn", build_spawn_request(namespace)
         return "pane.spawn_tab", build_spawn_as_tab_request(namespace)
     if namespace.subcommand == "spawn-tab":
+        if namespace.detach:
+            if namespace.anchor_session:
+                raise RuntimeError("spawn-tab --detach cannot be used with --anchor-session")
+            return "pane.spawn", build_detached_spawn_request(namespace)
         return "pane.spawn_tab", build_spawn_tab_request(namespace)
     if namespace.subcommand == "activate-tab":
         return "pane.activate_tab", {"sessionId": namespace.session}
@@ -363,11 +405,14 @@ def request_for(namespace: argparse.Namespace) -> tuple[str, dict[str, Any]]:
             "toRow": namespace.row,
         }
     if namespace.subcommand == "send":
+        if not namespace.text and not namespace.enter and namespace.key is None:
+            raise RuntimeError("send requires --text, --enter, or --key")
         args = {
             "sessionId": namespace.session,
             "text": namespace.text,
             "enter": namespace.enter,
         }
+        optional_arg(args, "key", namespace.key)
         optional_arg(args, "expectedSessionEpoch", namespace.expect_epoch)
         optional_arg(args, "expectedAttentionId", namespace.expect_attention_id)
         optional_arg(args, "expectedSessionRevision", namespace.expect_revision)
@@ -399,7 +444,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         failed = isinstance(result, dict) and (
             result.get("ok") is False or result.get("sent") is False
         )
-        if namespace.enter and not (
+        verification_requested = namespace.enter or namespace.key is not None
+        if verification_requested and not (
             isinstance(result, dict)
             and result.get("ok") is True
             and result.get("confirmed") is True
@@ -421,6 +467,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "reason": "confirmation_unavailable",
                     "legacyResult": result,
                 }
+        if isinstance(result, dict) and result.get("unverified") is True:
+            print(
+                "warning: input was queued without delivery verification; use --enter or --key",
+                file=sys.stderr,
+            )
     print(json.dumps(result, ensure_ascii=False))
     if failed:
         return 1

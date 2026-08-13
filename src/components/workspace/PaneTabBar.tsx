@@ -12,10 +12,10 @@ import { getAgent, getDefaultAgent } from "../../lib/agents";
 import { getTabDisplayLabel } from "../../lib/tabDisplayLabel";
 import { resolveDisplayAgentKind } from "../../lib/agentDisplayKind";
 import { agentKindColor } from "../../lib/agentKindColors";
-import { crsmCreateHandoff } from "../../lib/ipc";
+import { crsmCreateHandoff, duplicateAgentSession } from "../../lib/ipc";
 import {
+  buildClonedDuplicateSessionPaneOptions,
   buildDuplicateSessionPaneOptions,
-  buildForkDuplicateSessionPaneOptions,
   resolveDuplicateSessionSource,
 } from "../../lib/duplicateSession";
 import { usePaneMetadataStore, useWorkspaceListStore } from "../../stores/workspaceStore";
@@ -37,6 +37,7 @@ import { AgentKindIcon } from "../icons/AgentIcons";
 import {
   attentionCategory,
   attentionDetail,
+  isBlockingAttention,
   isAttentionUnseen,
   resolveAttentionTabs,
   useSessionAttentionStore,
@@ -180,6 +181,9 @@ export function shouldShowPublishButton(
   activeMeta: Pick<PaneMetadata, "agentKind" | "agentSessionId" | "claudeSessionId"> | undefined,
 ): boolean {
   if (!activeTab || activeTab.type === "browser" || activeTab.type === "online") return false;
+  if (activeMeta?.agentKind === "claude-codex" || activeTab.agentKind === "claude-codex") {
+    return false;
+  }
   // Deliberately not gated on processIsShell: the deepest-child heuristic
   // reports shell names while an agent runs tool subprocesses (for the whole
   // command duration with PowerShell tools), which made this button blink in
@@ -228,6 +232,35 @@ export function isTabActivationKey(key: string): boolean {
 
 /** The mouse button browsers report for a middle click. */
 export const MIDDLE_MOUSE_BUTTON = 1;
+const PANE_TAB_CHIP_PREVIEW_MAX_WIDTH = 200;
+
+export type PaneTabPresentation = "pill" | "chip";
+
+export function resolvePaneTabPresentation(
+  tabId: string,
+  activeTabId: string | null | undefined,
+): PaneTabPresentation {
+  return tabId === activeTabId ? "pill" : "chip";
+}
+
+export function shouldShowChipPreview(hovered: boolean, dragActive: boolean): boolean {
+  return hovered && !dragActive;
+}
+
+export function resolveChipPreviewDirection(
+  chipLeft: number,
+  containerLeft: number,
+  containerRight: number,
+  previewWidth: number,
+): "right" | "left" {
+  const available = containerRight - containerLeft;
+  if (previewWidth >= available) return "right";
+  return chipLeft + previewWidth <= containerRight ? "right" : "left";
+}
+
+export function shouldStartRenameOnDoubleClick(presentation: PaneTabPresentation): boolean {
+  return presentation === "pill";
+}
 
 /**
  * Middle-clicking a tab pill closes it, the way a browser tab does.
@@ -308,10 +341,10 @@ const PANE_TABBAR_ACTION_ORDER: readonly PaneTabBarActionId[] = [
 ];
 
 const PANE_TABBAR_PRIORITY_ACTIONS: readonly PaneTabBarActionId[] = [
-  "publish",
   "split-right",
   "zoom",
   "close",
+  "publish",
 ];
 
 // Each boundary owns its collapse and restore thresholds. Walking the ordered
@@ -394,24 +427,21 @@ const STATUS_CONFIG: Record<EffectiveStatus, { color: string; title: string; sha
   idle:    { color: "transparent",           title: "", shape: "circle" },
 };
 
-export type TabStatusIndicator = "error" | "waiting" | "done" | "working" | null;
+export type TabStatusIndicator = "error" | "waiting" | "working" | null;
 
 export function resolveTabStatusIndicator({
   unreadAttentionCategory,
   notificationCount,
-  workDoneCount,
   displayStatus,
 }: {
   unreadAttentionCategory: AttentionCategory | null;
   notificationCount: number;
-  workDoneCount: number;
   displayStatus: EffectiveStatus;
 }): TabStatusIndicator {
   if (unreadAttentionCategory === "error") return "error";
   if (displayStatus === "waiting" || notificationCount > 0 || unreadAttentionCategory === "waiting") {
     return "waiting";
   }
-  if (workDoneCount > 0 || unreadAttentionCategory === "done") return "done";
   if (displayStatus === "working") return "working";
   return null;
 }
@@ -419,7 +449,6 @@ export function resolveTabStatusIndicator({
 const TAB_STATUS_INDICATOR_CONFIG: Record<Exclude<TabStatusIndicator, null>, { color: string; title: string }> = {
   error: { color: ATTENTION_REASON_COLOR.error, title: unseenAttentionLabel("error") },
   waiting: { color: ATTENTION_REASON_COLOR.waiting, title: unseenAttentionLabel("waiting") },
-  done: { color: ATTENTION_REASON_COLOR.done, title: unseenAttentionLabel("done") },
   working: { color: "var(--status-working)", title: "作業中" },
 };
 
@@ -625,7 +654,8 @@ export function resolvePaneTabMenuRows(
     ? tabs.find((tab) => tab.id === pinnedTabId)
     : undefined;
   const rest = pinnedTab ? tabs.filter((tab) => tab.id !== pinnedTab.id) : tabs;
-  const attention = resolveAttentionTabs(rest, attentionBySession, seenAttentionByTab);
+  const attention = resolveAttentionTabs(rest, attentionBySession, seenAttentionByTab)
+    .filter(({ category }) => isBlockingAttention(category));
   const hoistedIds = new Set(attention.map(({ tab }) => tab.id));
   const pinnedRow: PaneTabMenuRow[] = pinnedTab
     ? [{
@@ -732,9 +762,10 @@ function PaneTabListMenu({
     const unreadCategory = isAttentionUnseen(tab.id, attention, seenAttentionByTab)
       ? attentionCategory(tab.id, attention, seenAttentionByTab)
       : null;
-    const unreadLabel = unreadCategory ? unseenAttentionLabel(unreadCategory) : null;
+    const blockingUnreadCategory = isBlockingAttention(unreadCategory) ? unreadCategory : null;
+    const unreadLabel = blockingUnreadCategory ? unseenAttentionLabel(blockingUnreadCategory) : null;
     const detail = attentionDetail(attention);
-    const reasonColor = ATTENTION_REASON_COLOR[category ?? "done"];
+    const reasonColor = ATTENTION_REASON_COLOR[category ?? "waiting"];
     const showDeferredRestore = shouldShowDeferredRestoreBadge(
       tab,
       isTabActive,
@@ -785,7 +816,7 @@ function PaneTabListMenu({
           cursor: "pointer",
         }}
       >
-        <AttentionUnreadDot category={unreadCategory} />
+        <AttentionUnreadDot category={blockingUnreadCategory} />
         {isPinned && (
           <span style={{ color: "var(--cmux-accent-text)", display: "inline-flex", flexShrink: 0 }}>
             <PinIcon size={11} filled />
@@ -955,6 +986,7 @@ export default memo(function PaneTabBar({
     return next;
   }, [pane.tabs, tabAttention]);
   const { beginPointerDrag, shouldSuppressClick } = usePaneDragSource();
+  const chipDragActive = usePaneDragStore((state) => state.item !== null);
   // Insertion slot of an in-progress reorder over this pane's strip, or null.
   const tabInsertionIndex = usePaneDragStore((state) =>
     state.target?.kind === "tab-index"
@@ -976,6 +1008,8 @@ export default memo(function PaneTabBar({
     (s) => s.addPaneToWorkspaceWithOptions,
   );
   const [editingTabId, setEditingTabId] = useState<string | null>(null);
+  const [previewTabId, setPreviewTabId] = useState<string | null>(null);
+  const previewTimerRef = useRef<number | null>(null);
   const [editValue, setEditValue] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
   const skipNextBlurCommitRef = useRef(false);
@@ -1048,14 +1082,36 @@ export default memo(function PaneTabBar({
     [metadataBySession],
   );
 
+  const clearChipPreviewTimer = useCallback(() => {
+    if (previewTimerRef.current !== null) {
+      window.clearTimeout(previewTimerRef.current);
+      previewTimerRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => () => clearChipPreviewTimer(), [clearChipPreviewTimer]);
+
+  useEffect(() => {
+    clearChipPreviewTimer();
+    setPreviewTabId(null);
+  }, [clearChipPreviewTimer, pane.activeTabId]);
+
+  useEffect(() => {
+    if (!chipDragActive) return;
+    clearChipPreviewTimer();
+    setPreviewTabId(null);
+  }, [chipDragActive, clearChipPreviewTimer]);
+
   const handleDuplicateSession = useCallback(async (
     tab: PaneTab,
     label: string,
   ): Promise<void> => {
     if (duplicateSessionLocksRef.current.has(tab.id)) return;
 
+    const metadata = usePaneMetadataStore.getState().metadata[tab.sessionId];
     const source = resolveDuplicateSessionSource({
-      metadata: usePaneMetadataStore.getState().metadata[tab.sessionId],
+      metadata,
+      metadataCwd: metadata?.cwd,
       tabCwd: tab.cwd,
       paneCwd: pane.cwd,
       label,
@@ -1072,21 +1128,32 @@ export default memo(function PaneTabBar({
     setDuplicatingTabIds((current) => new Set(current).add(tab.id));
 
     try {
-      const paneOptions = source.agentKind === "codex"
-        ? buildDuplicateSessionPaneOptions(
-            source,
-            (await withTimeout(
-              crsmCreateHandoff(
-                source.agentSessionId,
-                source.agentKind,
-                source.agentKind,
-                20,
-              ),
-              HANDOFF_TIMEOUT_MS,
-              "CRSM handoff",
-            )).path,
-          )
-        : buildForkDuplicateSessionPaneOptions(source);
+      let paneOptions;
+      try {
+        paneOptions = buildClonedDuplicateSessionPaneOptions(
+          source,
+          await duplicateAgentSession(source.agentKind, source.agentSessionId, source.cwd),
+        );
+      } catch (cloneError) {
+        const message = cloneError instanceof Error ? cloneError.message : String(cloneError);
+        useToastStore.getState().pushToast(
+          `セッションの複製に失敗しました (${message})。引き継ぎ方式で開きます。`,
+          "warning",
+        );
+        paneOptions = buildDuplicateSessionPaneOptions(
+          source,
+          (await withTimeout(
+            crsmCreateHandoff(
+              source.agentSessionId,
+              source.agentKind,
+              source.agentKind,
+              20,
+            ),
+            HANDOFF_TIMEOUT_MS,
+            "CRSM handoff",
+          )).path,
+        );
+      }
       const sourcePane = useWorkspaceListStore.getState()
         .getWorkspace(workspaceId)
         ?.panes.find((candidate) => candidate.id === pane.id);
@@ -1287,26 +1354,52 @@ export default memo(function PaneTabBar({
   const activeTabLabel = activeTab ? displayTabLabel(activeTab, true) : "";
   const isEditingActiveTab = activeTab ? editingTabId === activeTab.id : false;
   const activeNotificationCount = activeMeta?.notificationCount ?? 0;
-  const activeWorkDoneCount = activeMeta?.workDoneCount ?? 0;
   const activeUnreadCategory = activeTab
     && isAttentionUnseen(activeTab.id, activeAttention, seenAttentionByTab)
     ? attentionCategory(activeTab.id, activeAttention, seenAttentionByTab)
     : null;
-  const activeUnreadLabel = activeUnreadCategory === "waiting"
+  const activeBlockingUnreadCategory = isBlockingAttention(activeUnreadCategory)
+    ? activeUnreadCategory
+    : null;
+  const activeUnreadLabel = activeAttention?.kind === "rate_limited"
+    ? "未確認の枠切れ"
+    : activeBlockingUnreadCategory === "waiting"
     ? "未確認の入力待ち"
-    : activeUnreadCategory === "error"
+    : activeBlockingUnreadCategory === "error"
       ? "未確認のエラー"
-      : activeUnreadCategory === "done"
-        ? "未確認の完了"
         : null;
   const activeStatusIndicator = resolveTabStatusIndicator({
-    unreadAttentionCategory: activeUnreadCategory,
+    unreadAttentionCategory: activeBlockingUnreadCategory,
     notificationCount: activeNotificationCount,
-    workDoneCount: activeWorkDoneCount,
     displayStatus: activeStatus,
   });
   const usesTabStrip = renderMode === "full" || renderMode === "slim";
   const usesCompactTabs = !usesTabStrip && activeTab !== undefined;
+  const previewTab = previewTabId ? pane.tabs.find((tab) => tab.id === previewTabId) : undefined;
+  const previewElement = previewTab ? tabPillRefs.current.get(previewTab.id) : undefined;
+  // Measured only while a preview is open: these force a layout, and this bar
+  // re-renders on every session status tick.
+  const previewChipRect = previewElement?.getBoundingClientRect();
+  const previewBarRect = previewChipRect ? barRef.current?.getBoundingClientRect() : undefined;
+  const previewDirection = previewChipRect && previewBarRect
+    ? resolveChipPreviewDirection(
+        previewChipRect.left,
+        previewBarRect.left,
+        previewBarRect.right,
+        PANE_TAB_CHIP_PREVIEW_MAX_WIDTH,
+      )
+    : "right";
+  const previewLeft = previewChipRect && previewBarRect
+    ? previewChipRect.left - previewBarRect.left
+    : 0;
+  const previewRight = previewChipRect && previewBarRect
+    ? previewChipRect.right - previewBarRect.left
+    : 0;
+  const previewMeta = previewTab ? metadataBySession[previewTab.sessionId] : undefined;
+  const previewAgentKind = previewTab
+    ? resolveDisplayAgentKind(previewMeta?.agentKind ?? previewTab.agentKind, previewTab.commandArgv)
+    : undefined;
+  const previewKindColor = agentKindColor(previewAgentKind);
   const showsInlinePinControl = shouldShowInlinePinControl(renderMode);
   const isActiveTabPinned = activeTab !== undefined && activeTab.id === pane.pinnedTabId;
   const paneActions = (
@@ -1526,6 +1619,7 @@ export default memo(function PaneTabBar({
           scrollbarWidth: "none",
           minWidth: 0,
         }}
+        onScroll={() => setPreviewTabId(null)}
       >
         {pane.tabs.map((tab, tabIndex) => {
           const isTabActive = tab.id === pane.activeTabId;
@@ -1536,7 +1630,6 @@ export default memo(function PaneTabBar({
           );
           const tabKindColor = agentKindColor(tabAgentKind);
           const tabNotificationCount = tabMeta?.notificationCount ?? 0;
-          const tabWorkDoneCount = tabMeta?.workDoneCount ?? 0;
           const tabEffectiveStatus = deriveDisplayStatus(tabMeta);
           const canonicalAttention = attentionBySession[tab.sessionId];
           const canonicalUnreadCategory = isAttentionUnseen(
@@ -1546,28 +1639,31 @@ export default memo(function PaneTabBar({
           )
             ? attentionCategory(tab.id, canonicalAttention, seenAttentionByTab)
             : null;
+          const canonicalBlockingUnreadCategory = isBlockingAttention(canonicalUnreadCategory)
+            ? canonicalUnreadCategory
+            : null;
           const canonicalDetail = attentionDetail(canonicalAttention);
-          const canonicalUnreadLabel = canonicalUnreadCategory === "waiting"
+          const canonicalUnreadLabel = canonicalAttention?.kind === "rate_limited"
+            ? "未確認の枠切れ"
+            : canonicalBlockingUnreadCategory === "waiting"
             ? "未確認の入力待ち"
-            : canonicalUnreadCategory === "error"
+            : canonicalBlockingUnreadCategory === "error"
               ? "未確認のエラー"
-              : canonicalUnreadCategory === "done"
-                ? "未確認の完了"
                 : null;
           const tabStatusIndicator = resolveTabStatusIndicator({
-            unreadAttentionCategory: canonicalUnreadCategory,
+            unreadAttentionCategory: canonicalBlockingUnreadCategory,
             notificationCount: tabNotificationCount,
-            workDoneCount: tabWorkDoneCount,
             displayStatus: tabEffectiveStatus,
           });
           const label = displayTabLabel(tab, isTabActive);
-          const isEditingTab = editingTabId === tab.id;
+          const presentation = resolvePaneTabPresentation(tab.id, pane.activeTabId);
+          const isChip = presentation === "chip";
+          const canRenameOnDoubleClick = shouldStartRenameOnDoubleClick(presentation);
+          const isEditingTab = !isChip && editingTabId === tab.id;
           const isSavepointDropTarget = savepointDropTabId === tab.id;
           const canDuplicateSession = Boolean(tabMeta?.agentKind && tabMeta.agentSessionId);
           const isDuplicatingSession = duplicatingTabIds.has(tab.id);
-          const duplicateSessionTitle = tabMeta?.agentKind === "codex"
-            ? "Duplicate session (handoff)"
-            : "Duplicate session";
+          const duplicateSessionTitle = "セッションを複製";
           const isTabPinned = tab.id === pane.pinnedTabId;
           const showDeferredRestore = shouldShowDeferredRestoreBadge(
             tab,
@@ -1595,6 +1691,10 @@ export default memo(function PaneTabBar({
                 else tabPillRefs.current.delete(tab.id);
               }}
               onPointerDown={(event) => {
+                if (isChip) {
+                  clearChipPreviewTimer();
+                  setPreviewTabId(null);
+                }
                 // Swallow the middle-button press so the webview never arms its
                 // autoscroll cursor; the close itself runs on auxclick.
                 if (!isEditingTab && event.button === MIDDLE_MOUSE_BUTTON) {
@@ -1602,7 +1702,7 @@ export default memo(function PaneTabBar({
                   return;
                 }
                 if (isEditingTab || event.button !== 0) return;
-                if (event.detail >= 2) {
+                if (canRenameOnDoubleClick && event.detail >= 2) {
                   event.preventDefault();
                   event.stopPropagation();
                   suppressNextTabClick();
@@ -1618,6 +1718,7 @@ export default memo(function PaneTabBar({
                 });
               }}
               onDoubleClick={(e) => {
+                if (!canRenameOnDoubleClick) return;
                 e.preventDefault();
                 e.stopPropagation();
                 suppressNextTabClick();
@@ -1642,11 +1743,13 @@ export default memo(function PaneTabBar({
               }}
               onClick={(event) => {
                 if (event.detail >= 2) {
-                  event.preventDefault();
-                  event.stopPropagation();
-                  suppressNextTabClick();
-                  startEditingTab(tab.id, label);
-                  return;
+                  if (canRenameOnDoubleClick) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    suppressNextTabClick();
+                    startEditingTab(tab.id, label);
+                    return;
+                  }
                 }
                 if (isEditingTab || focusController.shouldSuppressTabClick() || shouldSuppressClick()) {
                   event.preventDefault();
@@ -1663,14 +1766,30 @@ export default memo(function PaneTabBar({
               role="tab"
               aria-selected={isTabActive}
               tabIndex={0}
-              title={tabTitle}
+              title={isChip ? undefined : tabTitle}
               aria-label={[
                 tabTitle,
                 tabKindColor ? AGENT_KIND_BADGE_LABELS[tabAgentKind ?? ""] : null,
                 canonicalUnreadLabel,
               ].filter(Boolean).join(": ")}
-              className={`pane-tab-pill ${isTabActive ? "is-active" : ""}${isSavepointDropTarget ? " is-savepoint-write-target" : ""}` + (tabKindColor ? " has-agent-kind" : "") + (isTabPinned ? " is-pinned" : "")}
-              style={{
+              className={`pane-tab-pill ${isChip ? "pane-tab-chip" : isTabActive ? "is-active" : ""}${isSavepointDropTarget ? " is-savepoint-write-target" : ""}` + (tabKindColor ? " has-agent-kind" : "") + (isTabPinned ? " is-pinned" : "")}
+              style={isChip ? {
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                position: "relative",
+                padding: 0,
+                height: 36,
+                width: 26,
+                minWidth: 26,
+                maxWidth: 26,
+                flexShrink: 0,
+                cursor: "pointer",
+                background: "transparent",
+                borderRight: "none",
+                borderBottom: "2px solid transparent",
+                "--agent-kind-color": tabKindColor?.fg,
+              } as AgentKindStyle : {
                 display: "flex",
                 alignItems: "center",
                 gap: 4,
@@ -1687,7 +1806,32 @@ export default memo(function PaneTabBar({
                 transition: "background 0.1s",
                 "--agent-kind-color": tabKindColor?.fg,
               } as AgentKindStyle}
+              onPointerEnter={isChip ? () => {
+                clearChipPreviewTimer();
+                if (!shouldShowChipPreview(true, chipDragActive)) return;
+                previewTimerRef.current = window.setTimeout(() => {
+                  setPreviewTabId(tab.id);
+                }, 120);
+              } : undefined}
+              onPointerLeave={isChip ? () => {
+                clearChipPreviewTimer();
+                setPreviewTabId((id) => id === tab.id ? null : id);
+              } : undefined}
             >
+              {isChip ? <>
+                <span className="pane-tab-chip-face">
+                  {tabKindColor ? (
+                    <TabAgentIcon kind={tabAgentKind} indicator={tabStatusIndicator} />
+                  ) : (
+                    <TabStatusIndicatorDot indicator={tabStatusIndicator} />
+                  )}
+                </span>
+                {isTabPinned && (
+                  <span className="pane-tab-chip-pin-badge" aria-hidden="true">
+                    <PinIcon size={7} filled />
+                  </span>
+                )}
+              </> : <>
               {tabKindColor ? (
                 <TabAgentIcon kind={tabAgentKind} indicator={tabStatusIndicator} />
               ) : (
@@ -1796,6 +1940,7 @@ export default memo(function PaneTabBar({
                   <CloseIcon size={9} />
                 </button>
               )}
+              </>}
             </div>
             </Fragment>
           );
@@ -1995,12 +2140,8 @@ export default memo(function PaneTabBar({
                 className="pane-action-btn"
                 disabled={duplicatingTabIds.has(activeTab.id)}
                 aria-busy={duplicatingTabIds.has(activeTab.id) || undefined}
-                aria-label={activeMeta.agentKind === "codex"
-                  ? "Duplicate session (handoff)"
-                  : "Duplicate session"}
-                title={activeMeta.agentKind === "codex"
-                  ? "Duplicate session (handoff)"
-                  : "Duplicate session"}
+                aria-label="セッションを複製"
+                title="セッションを複製"
                 onPointerDown={(event) => event.stopPropagation()}
                 onDoubleClick={(event) => event.stopPropagation()}
                 onClick={(event) => {
@@ -2047,6 +2188,30 @@ export default memo(function PaneTabBar({
         </>
       )}
       </div>{/* end tab pills row */}
+      {previewTab && previewChipRect && previewBarRect && (
+        <div
+          className={`pane-tab-chip-preview${previewDirection === "left" ? " is-left" : ""}`}
+          aria-hidden="true"
+          style={{
+            position: "absolute",
+            top: 4,
+            ...(previewDirection === "right"
+              ? { left: previewLeft }
+              : { left: previewRight - PANE_TAB_CHIP_PREVIEW_MAX_WIDTH }),
+            "--agent-kind-color": previewKindColor?.fg,
+          } as AgentKindStyle}
+        >
+          {previewKindColor && <TabAgentIcon kind={previewAgentKind} indicator={null} />}
+          <span style={{
+            fontSize: "var(--cmux-font-size-xs)",
+            fontFamily: "var(--cmux-font-mono)",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+          }}>
+            {displayTabLabel(previewTab, false)}
+          </span>
+        </div>
+      )}
       {publishPopoverOpen && agentSessionId && (
         <div
           ref={publishPopoverRef}

@@ -13,6 +13,7 @@ import {
 import { focusController } from "../../lib/focusController";
 import { evictTerminalCache } from "../terminal/XTermWrapper";
 import { beforePaneClose } from "../../lib/paneCloseLifecycle";
+import { confirmPaneClose } from "../../lib/paneCloseConfirmation";
 import { useSavepointDragStore } from "../../stores/savepointDragStore";
 import TerminalPane from "./TerminalPane";
 import ErrorBoundary from "../common/ErrorBoundary";
@@ -87,14 +88,23 @@ export const TerminalGrid = memo(function TerminalGrid({
   const innerAllotmentRefs = useRef(new Map<string, AllotmentHandle>());
   const previousLayoutStructureRef = useRef<LayoutStructureSnapshot | null>(null);
 
-  const handleClose = useCallback((paneId: string) => {
+  const handleClose = useCallback(async (paneId: string) => {
     // Kill all PTY sessions — read fresh state to avoid stale closure
     const ws = useWorkspaceListStore.getState().getWorkspace(workspaceId);
     if (!ws || ws.panes.length <= 1) return;
     const pane = ws.panes.find((p) => p.id === paneId);
-    if (pane) {
-      beforePaneClose(pane);
-      for (const tab of pane.tabs) {
+    if (!pane || !await confirmPaneClose([pane], "pane")) return;
+
+    // Re-read after the asynchronous confirmation so tabs added while it was
+    // open are not silently killed without being included in the warning.
+    const currentWorkspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
+    const currentPane = currentWorkspace?.panes.find((p) => p.id === paneId);
+    if (!currentWorkspace || !currentPane || currentWorkspace.panes.length <= 1) return;
+    if (currentPane.tabs.map((tab) => tab.sessionId).join("\0") !== pane.tabs.map((tab) => tab.sessionId).join("\0")
+      && !await confirmPaneClose([currentPane], "pane")) return;
+    {
+      beforePaneClose(currentPane);
+      for (const tab of currentPane.tabs) {
         evictTerminalCache(tab.sessionId);
         killSession(tab.sessionId).catch((err) =>
           console.warn("[mycmux] killSession failed", tab.sessionId, err),
@@ -102,8 +112,8 @@ export const TerminalGrid = memo(function TerminalGrid({
         usePaneMetadataStore.getState().removeMetadata(tab.sessionId);
       }
     }
-    const paneIndex = ws.panes.findIndex((p) => p.id === paneId);
-    const remainingPanes = ws.panes.filter((p) => p.id !== paneId);
+    const paneIndex = currentWorkspace.panes.findIndex((p) => p.id === paneId);
+    const remainingPanes = currentWorkspace.panes.filter((p) => p.id !== paneId);
     const nextPane = remainingPanes[Math.min(Math.max(paneIndex, 0), remainingPanes.length - 1)] ?? remainingPanes[0];
     const nextActiveTab = nextPane?.tabs.find((tab) => tab.id === nextPane.activeTabId) ?? nextPane?.tabs[0];
     focusController.request("programmatic", {

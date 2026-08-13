@@ -37,6 +37,7 @@ function candidate(overrides: Partial<DormantSessionCandidate> = {}): DormantSes
     agentStatus: null,
     agentStatusFresh: false,
     hasAttention: false,
+    rateLimited: false,
     screenWorking: false,
     lastActivityAt: NOW - THRESHOLD_MS,
     thresholdMs: THRESHOLD_MS,
@@ -131,6 +132,7 @@ describe("resolveDormantAction", () => {
     }), NOW + 24 * THRESHOLD_MS)).toBe("none");
     expect(resolveDormantAction(candidate({ screenWorking: true }), NOW)).toBe("none");
     expect(resolveDormantAction(candidate({ hasAttention: true }), NOW)).toBe("none");
+    expect(resolveDormantAction(candidate({ rateLimited: true }), NOW)).toBe("none");
   });
 
   it("dormants a resting codex MCP process and still respects visibility", () => {

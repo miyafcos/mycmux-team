@@ -14,6 +14,9 @@ describe("scanForApproval", () => {
     "Esc to cancel \u00b7 Enter to send",
     "ctrl-g to edit in external editor",
     "press enter to continue reading the log",
+    "> 1. まず設定ファイルを開く",
+    "see docs/ask user question flow for details",
+    "if you type your answer in the form it is saved automatically",
   ])("does not match an idle or finished line: %s", (line) => {
     expect(scanForApproval([line])).toBe(0);
   });
@@ -21,19 +24,17 @@ describe("scanForApproval", () => {
   it.each([
     ["Do you want to proceed?", 2],
     ["\u276F 1. Yes", 9],
-    ["  2. No, and tell Claude what to do differently", 10],
+    ["  2. No, and tell Claude what to do differently", 9],
     ["Would you like to run the following command?", 4],
     ["Allow Bash to run git push? (y/n)", 1],
     ["Ask User Question", 5],
-    ["Overwrite existing file? [y/N]", 12],
+    ["  \u2502 Ask user question  \u2502", 5],
+    ["Overwrite existing file? [y/N]", 11],
     ["Would you like to continue?", 3],
     ["Hook Bash requires confirmation", 6],
     ["Type your response", 7],
     ["Shift + Tab to approve", 8],
-    ["\u203A 3. Choose another option", 9],
-    ["\u25B6 4. Choose another option", 9],
-    ["> 5. Choose another option", 9],
-    ["Continue? (y/n):", 11],
+    ["Continue? (y/n):", 10],
   ] as const)("matches a real approval line: %s", (line, patternId) => {
     expect(scanForApproval([line])).toBe(patternId);
   });

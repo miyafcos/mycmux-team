@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { WORKING_INDICATOR_PATTERNS } from "../../src/components/terminal/XTermWrapper";
-import { deriveDisplayStatus } from "../../src/lib/notificationStatus";
+import { deriveDisplayStatus, dispatchStateLabel } from "../../src/lib/notificationStatus";
 import type { PaneMetadata } from "../../src/stores/paneMetadataStore";
 
 describe("deriveDisplayStatus", () => {
@@ -27,6 +27,17 @@ describe("deriveDisplayStatus", () => {
       vi.restoreAllMocks();
     },
   );
+});
+
+describe("dispatchStateLabel", () => {
+  it.each([
+    "CLOSED", "DONE", "DONE_NEEDS_REVIEW", "ASK", "NO_LOG", "RUNNING", "RATE_LIMITED", "STALL",
+  ] as const)("does not expose the internal enum %s", (state) => {
+    const label = dispatchStateLabel(state);
+    expect(label).not.toBe(state);
+    // Every label is user-facing Japanese, never a raw enum or placeholder.
+    expect(label).toMatch(/[぀-ヿ一-鿿]/);
+  });
 });
 
 describe("WORKING_INDICATOR_PATTERNS", () => {

@@ -9,6 +9,7 @@ import {
   buildSweepRows,
   formatJudgeError,
   formatLastOutputAge,
+  formatSweepAiNote,
   formatSweepCompletion,
   initialSweepSelection,
   lastMeaningfulTailLine,
@@ -29,6 +30,8 @@ import {
   type NamingProposal,
   type NamingTab,
 } from "./tabSweep";
+import { useAiSettingsStore } from "../../stores/aiSettingsStore";
+import { aiSettingsStrings } from "../settings/settingsStrings";
 
 interface TabSweepPanelProps {
   open: boolean;
@@ -86,6 +89,7 @@ function ActionButton({
   ariaLabel,
   buttonRef,
   primary = false,
+  title,
 }: {
   children: ReactNode;
   danger?: boolean;
@@ -94,6 +98,7 @@ function ActionButton({
   ariaLabel?: string;
   buttonRef?: Ref<HTMLButtonElement>;
   primary?: boolean;
+  title?: string;
 }) {
   return (
     <button
@@ -103,6 +108,7 @@ function ActionButton({
       data-tab-sweep-primary={primary ? "true" : undefined}
       onClick={onClick}
       aria-label={ariaLabel}
+      title={title}
       style={{
         ...actionButtonStyle,
         ...(danger ? { color: "var(--cmux-red)", borderColor: "color-mix(in srgb, var(--cmux-red) 45%, var(--cmux-border))" } : {}),
@@ -196,6 +202,9 @@ export function TabSweepPanel({ open, visible, closing = false, onClose }: TabSw
   const [namingTabs, setNamingTabs] = useState<Map<string, NamingTab>>(() => new Map());
   const [namingSelection, setNamingSelection] = useState<ReadonlySet<string>>(() => new Set<string>());
   const [undoRenames, setUndoRenames] = useState<NamingProposal[]>([]);
+  const aiProvider = useAiSettingsStore((s) => s.aiProvider);
+  const aiModel = useAiSettingsStore((s) => s.aiModel);
+  const aiEnabled = useAiSettingsStore((s) => s.aiEnabled);
 
   const rescan = useCallback(async (clearJudge = true): Promise<boolean> => {
     setScanning(true);
@@ -340,7 +349,7 @@ export function TabSweepPanel({ open, visible, closing = false, onClose }: TabSw
       if (activeJudgeRequestRef.current !== requestId) return;
       const parsed = parseJudgeOutputResult(raw, ids);
       if (!parsed.valid) {
-        const error = formatJudgeError({ code: "parse_failed", detail: "judge output was not a complete valid JSON array" });
+        const error = formatJudgeError({ code: "parse_failed", detail: "judge output was not a complete valid JSON array" }, aiProvider);
         setVerdicts([]);
         setJudged(false);
         setJudgeErrorDetail(error.raw);
@@ -355,7 +364,7 @@ export function TabSweepPanel({ open, visible, closing = false, onClose }: TabSw
       setStatus("AI判定が完了しました。チェックは自由に変えられます");
     } catch (error) {
       if (activeJudgeRequestRef.current !== requestId) return;
-      const presentation = formatJudgeError(error);
+      const presentation = formatJudgeError(error, aiProvider);
       setVerdicts([]);
       setJudged(false);
       setJudgeErrorDetail(presentation.raw);
@@ -378,7 +387,7 @@ export function TabSweepPanel({ open, visible, closing = false, onClose }: TabSw
       await invoke<boolean>("abort_tab_sweep_judge", { requestId });
       setStatus("判定を中止しました。必要なら再実行してください。");
     } catch (error) {
-      const presentation = formatJudgeError(error);
+      const presentation = formatJudgeError(error, aiProvider);
       setStatus(presentation.summary);
       setJudgeErrorDetail(presentation.raw);
     } finally {
@@ -434,7 +443,7 @@ export function TabSweepPanel({ open, visible, closing = false, onClose }: TabSw
       setStatus("名前の提案が完成しました。チェックは自由に変えられます");
     } catch (error) {
       if (activeNamingRequestRef.current !== requestId) return;
-      const presentation = formatJudgeError(error);
+      const presentation = formatJudgeError(error, aiProvider);
       setJudgeErrorDetail(presentation.raw);
       setStatus(presentation.summary);
     } finally {
@@ -455,7 +464,7 @@ export function TabSweepPanel({ open, visible, closing = false, onClose }: TabSw
       await invoke<boolean>("abort_tab_sweep_judge", { requestId });
       setStatus("名前の提案を中止しました。必要なら再実行してください。");
     } catch (error) {
-      const presentation = formatJudgeError(error);
+      const presentation = formatJudgeError(error, aiProvider);
       setStatus(presentation.summary);
       setJudgeErrorDetail(presentation.raw);
     } finally {
@@ -735,7 +744,8 @@ export function TabSweepPanel({ open, visible, closing = false, onClose }: TabSw
                 <ActionButton danger onClick={() => void cancelJudge()}>中止</ActionButton>
               ) : (
                 <ActionButton
-                  disabled={busy || judgeableCount === 0}
+                  disabled={busy || judgeableCount === 0 || !aiEnabled}
+                  title={aiEnabled ? undefined : aiSettingsStrings.disabledReason}
                   onClick={() => void runJudge()}
                 >
                   {judgeErrorDetail ? "AI判定を再実行" : judged ? "AIに選ばせ直す" : "AIに選ばせる"}
@@ -745,7 +755,8 @@ export function TabSweepPanel({ open, visible, closing = false, onClose }: TabSw
                 <ActionButton danger onClick={() => void cancelNaming()}>中止</ActionButton>
               ) : (
                 <ActionButton
-                  disabled={busy}
+                  disabled={busy || !aiEnabled}
+                  title={aiEnabled ? undefined : aiSettingsStrings.disabledReason}
                   onClick={() => void runNaming()}
                 >
                   {namingProposals.length > 0 ? "名前を提案し直す" : "AIに名前を整えさせる"}
@@ -753,11 +764,13 @@ export function TabSweepPanel({ open, visible, closing = false, onClose }: TabSw
               )}
             </div>
             <div style={{ fontSize: "var(--cmux-font-size-xs)", lineHeight: 1.35, color: "var(--cmux-text-tertiary)" }}>
-              各タブの画面末尾8行と作業フォルダを Claude (haiku) に送って判定します（チェックの提案のみ）
+              {formatSweepAiNote("judge", aiProvider, aiModel, aiEnabled)}
             </div>
-            <div style={{ fontSize: "var(--cmux-font-size-xs)", lineHeight: 1.35, color: "var(--cmux-text-tertiary)" }}>
-              名前整理は全タブの画面末尾14行・作業フォルダ・ペイン構成を Claude (sonnet) に送ります（適用は手動）
-            </div>
+            {aiEnabled && (
+              <div style={{ fontSize: "var(--cmux-font-size-xs)", lineHeight: 1.35, color: "var(--cmux-text-tertiary)" }}>
+                {formatSweepAiNote("naming", aiProvider, aiModel, aiEnabled)}
+              </div>
+            )}
             <div style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-secondary)" }}>
               閉じたタブは Ctrl+Shift+T で復元できます（会話も再開されます）
             </div>

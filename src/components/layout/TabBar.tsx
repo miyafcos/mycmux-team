@@ -5,10 +5,9 @@ import { useWorkspaceListStore, usePaneMetadataStore } from "../../stores/worksp
 import { usePaneDragStore } from "../../stores/paneDragStore";
 import { useSavepointDragStore } from "../../stores/savepointDragStore";
 import { SIDEBAR_WIDTH } from "../../lib/constants";
-import { distinctAgentKinds } from "../../lib/agentKindColors";
 import { deriveDisplayStatus } from "../../lib/notificationStatus";
 import { clampMenuPosition } from "../../lib/menuPosition";
-import { pickMostRecentLastLog } from "../../lib/lastLogRecency";
+import { workspaceTabCount, workspaceTabPreview } from "../../lib/workspaceRow";
 import {
   summarizeUnseenAttention,
   useSessionAttentionStore,
@@ -174,12 +173,6 @@ const WorkspaceTabEntry = memo(function WorkspaceTabEntry({
   const tabMetadata = usePaneMetadataStore(useShallow((s) =>
     sessionIds.map((sessionId) => s.metadata[sessionId]),
   ));
-  const tabLastLog = usePaneMetadataStore(useShallow((s) =>
-    sessionIds.map((sessionId) => s.lastLog[sessionId]),
-  ));
-  const tabLastLogAt = usePaneMetadataStore(useShallow((s) =>
-    sessionIds.map((sessionId) => s.lastLogAt[sessionId]),
-  ));
   const tabAttention = useSessionAttentionStore(useShallow((s) =>
     sessionIds.map((sessionId) => s.attentionBySession[sessionId]),
   ));
@@ -189,38 +182,27 @@ const WorkspaceTabEntry = memo(function WorkspaceTabEntry({
   const seenAttentionByTab = useSessionAttentionStore((s) => s.seenAttentionByTab);
 
   let totalWsNotifications = 0;
-  let totalWsWorkDone = 0;
   let hasWorkspaceError = false;
   const statusCounts = { working: 0, waiting: 0 };
-  const metadataBySession: Record<string, typeof tabMetadata[number]> = {};
   const attentionBySession: Record<string, SessionAttention | undefined> = {};
   sessionIds.forEach((sessionId, index) => {
     const m = tabMetadata[index];
-    metadataBySession[sessionId] = m;
     attentionBySession[sessionId] = tabAttention[index];
     if (tabAttention[index]?.kind === "error") hasWorkspaceError = true;
     if (m) {
       totalWsNotifications += m.notificationCount ?? 0;
-      totalWsWorkDone += m.workDoneCount ?? 0;
       const eff = deriveDisplayStatus(m);
       if (eff === "working" || eff === "waiting") {
         statusCounts[eff]++;
       }
     }
   });
-  // Newest line wins, not the last tab the loop happened to visit.
-  const lastLog = pickMostRecentLastLog(
-    sessionIds.map((_, index) => ({ line: tabLastLog[index], at: tabLastLogAt[index] })),
-  );
   // A background workspace holding an unread error/approval used to look idle
   // in the sidebar unless it also bumped a notification counter.
   const unseenAttention = summarizeUnseenAttention(
     workspaceTabs,
     attentionBySession,
     seenAttentionByTab,
-  );
-  const agentKinds = distinctAgentKinds(
-    workspaceTabs.map((tab, index) => tabMetadata[index]?.agentKind ?? tab.agentKind),
   );
   const petState: PetSpriteState = statusCounts.waiting > 0
     ? "waving"
@@ -232,8 +214,7 @@ const WorkspaceTabEntry = memo(function WorkspaceTabEntry({
           ? "running"
           : "idle";
 
-  const firstActiveTabSessionId = ws.panes[0]?.tabs.find((t) => t.id === ws.panes[0]?.activeTabId)?.sessionId;
-  const firstPaneMeta = firstActiveTabSessionId ? metadataBySession[firstActiveTabSessionId] : undefined;
+  const tabPreview = workspaceTabPreview(ws);
   const isDragged = draggingRef.current && dragIndex === wsIndex;
   const showLine = draggingRef.current && dropIndex === wsIndex && dragIndex !== wsIndex;
   const isPaneDropHover = paneDragActive && hoverWorkspaceId === ws.id;
@@ -258,19 +239,15 @@ const WorkspaceTabEntry = memo(function WorkspaceTabEntry({
       <TabItem
         uiVariant={uiVariant}
         name={ws.name}
-        paneCount={ws.panes.length}
-        cwd={firstPaneMeta?.cwd}
-        gitBranch={firstPaneMeta?.gitBranch}
+        tabCount={workspaceTabCount(ws)}
+        activeTabLabels={tabPreview.labels}
+        remainingTabCount={tabPreview.remainingCount}
         notificationCount={totalWsNotifications || undefined}
-        workDoneCount={totalWsWorkDone || undefined}
-        lastLogLine={lastLog}
-        statusCounts={statusCounts}
         petState={petState}
         petAtlasUrl={resolvePet(pets, ws.pet).atlasUrl}
         showPet={petDisplayMode !== "none"}
         unseenAttentionCount={unseenAttention.count}
         unseenAttentionCategory={unseenAttention.category}
-        agentKinds={agentKinds}
         color={ws.color}
         active={active}
         renameSignal={renameSignal}

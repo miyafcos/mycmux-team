@@ -28,6 +28,11 @@ interface SettingsState {
   // column splits are the primary flow, but the button is toggleable
   // for symmetry with the split-down button.
   showSplitRightButton: boolean;
+  dispatchWatchdogEnabled: boolean;
+  dispatchWatchdogIntervalMinutes: number;
+  dispatchStallMinutes: number;
+  dispatchWatchdogNotify: boolean;
+  paneComposerEnabled: boolean;
   setNotificationsEnabled: (v: boolean) => void;
   setNotificationSoundEnabled: (v: boolean) => void;
   setTerminalRenderer: (v: TerminalRenderer) => void;
@@ -38,6 +43,11 @@ interface SettingsState {
   setHideSessionsWithoutUserMessages: (v: boolean) => void;
   setShowSplitDownButton: (v: boolean) => void;
   setShowSplitRightButton: (v: boolean) => void;
+  setDispatchWatchdogEnabled: (v: boolean) => void;
+  setDispatchWatchdogIntervalMinutes: (v: number) => void;
+  setDispatchStallMinutes: (v: number) => void;
+  setDispatchWatchdogNotify: (v: boolean) => void;
+  setPaneComposerEnabled: (v: boolean) => void;
 }
 
 export const useSettingsStore = create<SettingsState>()(
@@ -53,6 +63,11 @@ export const useSettingsStore = create<SettingsState>()(
       hideSessionsWithoutUserMessages: true,
       showSplitDownButton: false,
       showSplitRightButton: true,
+      dispatchWatchdogEnabled: true,
+      dispatchWatchdogIntervalMinutes: 10,
+      dispatchStallMinutes: 45,
+      dispatchWatchdogNotify: true,
+      paneComposerEnabled: true,
       setNotificationsEnabled: (v) => set({ notificationsEnabled: v }),
       setNotificationSoundEnabled: (v) => set({ notificationSoundEnabled: v }),
       setTerminalRenderer: (v) => set({ terminalRenderer: v }),
@@ -63,6 +78,11 @@ export const useSettingsStore = create<SettingsState>()(
       setHideSessionsWithoutUserMessages: (v) => set({ hideSessionsWithoutUserMessages: v }),
       setShowSplitDownButton: (v) => set({ showSplitDownButton: v }),
       setShowSplitRightButton: (v) => set({ showSplitRightButton: v }),
+      setDispatchWatchdogEnabled: (v) => set({ dispatchWatchdogEnabled: v }),
+      setDispatchWatchdogIntervalMinutes: (v) => set({ dispatchWatchdogIntervalMinutes: v }),
+      setDispatchStallMinutes: (v) => set({ dispatchStallMinutes: v }),
+      setDispatchWatchdogNotify: (v) => set({ dispatchWatchdogNotify: v }),
+      setPaneComposerEnabled: (v) => set({ paneComposerEnabled: v }),
     }),
     {
       name: "mycmux-settings",

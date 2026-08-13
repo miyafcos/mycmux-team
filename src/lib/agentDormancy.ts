@@ -27,6 +27,7 @@ export interface DormantSessionCandidate {
   agentStatus: "working" | "waiting" | "done" | "idle" | null;
   agentStatusFresh: boolean;
   hasAttention: boolean;
+  rateLimited: boolean;
   screenWorking: boolean;
   lastActivityAt: number;
   thresholdMs: number;
@@ -112,6 +113,7 @@ export function resolveDormantAction(
     && Boolean(candidate.resumeSessionId)
     && !candidate.visible
     && !candidate.hasAttention
+    && !candidate.rateLimited
     && !candidate.screenWorking
     && !hasFreshAgentWork(candidate)
     && !isEffectivelyWorking(candidate)

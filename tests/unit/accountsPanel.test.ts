@@ -78,6 +78,23 @@ describe("panel layout", () => {
     expect(panelSource).not.toContain("PROVIDER_TITLE");
   });
 
+  it("keeps the trailing status label on screen no matter how many meters a row has", () => {
+    // A row is a one-column grid: an auto column would take its width from the
+    // widest line (the meters), lay the line above out at that width, and push
+    // "使用中" past the 400px panel, which clips it.
+    expect(panelSource).toContain('gridTemplateColumns: "minmax(0, 1fr)"');
+    // Per-model windows buy their space by shrinking the meters, not by
+    // wrapping the row onto more lines.
+    expect(panelSource).toContain(
+      'const dense = windows.length >= 4 ? "tight" : windows.length >= 3 ? "snug" : "roomy"',
+    );
+    expect(panelSource).toContain(
+      'const cells = dense === "tight" ? 3 : dense === "snug" ? 5 : 10',
+    );
+    expect(panelSource).toContain('dense !== "tight" &&');
+    expect(panelSource).not.toContain('flexWrap: "wrap"');
+  });
+
   it("drops the provenance vocabulary that existed to reconcile two sources", () => {
     for (const gone of [
       "usageSourceLabel",

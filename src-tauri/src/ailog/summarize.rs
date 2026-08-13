@@ -6,10 +6,11 @@
 
 use std::collections::{HashMap, HashSet};
 use std::env;
+#[cfg(test)]
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -155,13 +156,14 @@ pub async fn run_summarize(
     batch_size: u32,
     force: bool,
     range: ResolvedRange,
+    ai: crate::ai::AiConfig,
     cancel: Arc<AtomicBool>,
     children: ChildRegistry,
     progress: Option<ProgressSink>,
 ) -> Result<SummarizeReport, String> {
     tokio::task::spawn_blocking(move || {
         run_summarize_blocking(
-            db_path, batch_size, force, range, cancel, children, progress,
+            db_path, batch_size, force, range, ai, cancel, children, progress,
         )
     })
     .await
@@ -169,7 +171,7 @@ pub async fn run_summarize(
 }
 
 /// Summarise exactly one session without acquiring the dashboard batch gate.
-pub async fn run_summarize_one(db_path: PathBuf, kind: String, session_id: String) -> Result<(), String> {
+pub async fn run_summarize_one(db_path: PathBuf, kind: String, session_id: String, ai: crate::ai::AiConfig) -> Result<(), String> {
     tokio::task::spawn_blocking(move || {
         let mut conn = crate::ailog::open_db(&db_path)?;
         let session = conn.query_row(
@@ -179,10 +181,10 @@ pub async fn run_summarize_one(db_path: PathBuf, kind: String, session_id: Strin
         let input = build_input(&conn, &session)?;
         let cancel = AtomicBool::new(false);
         let children: ChildRegistry = Arc::new(Mutex::new(HashMap::new()));
-        let result = execute_session(&input, &cancel, &children)
+        let result = execute_session(&input, &ai, &cancel, &children)
             .and_then(|raw| validate_output(&raw, &input.id));
         match result {
-            Ok(result) => upsert_result(&mut conn, &session, &result),
+            Ok(result) => upsert_result(&mut conn, &session, &result, &ai),
             Err(error) => {
                 crate::diag_warn!("ailog", "single summary {}/{} failed: {error}", session.kind, session.session_id);
                 save_parse_error(&mut conn, &session, &error)?;
@@ -197,6 +199,7 @@ fn run_summarize_blocking(
     batch_size: u32,
     force: bool,
     range: ResolvedRange,
+    ai: crate::ai::AiConfig,
     cancel: Arc<AtomicBool>,
     children: ChildRegistry,
     progress: Option<ProgressSink>,
@@ -231,8 +234,9 @@ fn run_summarize_blocking(
                     .map(|(session, input)| {
                         let worker_cancel = cancel.clone();
                         let worker_children = children.clone();
+                        let worker_ai = ai.clone();
                         scope.spawn(move || {
-                            let result = execute_session(input, &worker_cancel, &worker_children)
+                            let result = execute_session(input, &worker_ai, &worker_cancel, &worker_children)
                                 .and_then(|raw| {
                                     validate_output(&raw, &input.id).map_err(|err| {
                                         format!(
@@ -257,7 +261,7 @@ fn run_summarize_blocking(
             for (session, result) in results {
                 match result {
                     Ok(result) => {
-                        upsert_result(&mut conn, session, &result)?;
+                        upsert_result(&mut conn, session, &result, &ai)?;
                         report.sessions_done += 1;
                     }
                     Err(error) => {
@@ -494,7 +498,20 @@ fn quantitative(conn: &Connection, s: &PendingSession) -> Result<String, String>
 }
 
 fn read_transcript_material(path: &str) -> Result<TranscriptMaterial, String> {
-    let text = fs::read_to_string(path).map_err(|err| format!("read transcript {path}: {err}"))?;
+    // Material is evidence for a prompt, not an unbounded transcript cache.
+    // Read JSONL lossily under the same hard budget on every platform so a
+    // malformed or very large source cannot make a summarisation worker spike.
+    const MATERIAL_BYTES: u64 = 8 * 1024 * 1024;
+    const MATERIAL_LINES: u64 = 200_000;
+    let mut text = String::new();
+    crate::ailog::jsonl::for_each_line(
+        std::path::Path::new(path),
+        crate::ailog::jsonl::Budget { max_bytes: MATERIAL_BYTES, max_lines: MATERIAL_LINES },
+        |line| {
+            text.push_str(line);
+            std::ops::ControlFlow::Continue(())
+        },
+    )?;
     if text
         .lines()
         .find_map(|line| serde_json::from_str::<Value>(line).ok())
@@ -621,43 +638,20 @@ fn text_blocks(value: Option<&Value>) -> Vec<String> {
 
 fn execute_session(
     input: &InputSession,
+    ai: &crate::ai::AiConfig,
     cancel: &AtomicBool,
     children: &ChildRegistry,
 ) -> Result<String, String> {
     let payload =
         serde_json::to_string(input).map_err(|err| format!("encode summary input: {err}"))?;
     let prompt = format!("{MARKER}\n{PROMPT}\n{payload}");
-    let mut args = vec![
-        "exec".to_string(),
-        "--model".to_string(),
-        "gpt-5.6-luna".to_string(),
-        "-c".to_string(),
-        "features.fast_mode=false".to_string(),
-        "-".to_string(),
-    ];
-    let program = crate::commands::terminal::prepare_spawn_command(codex_program(), &mut args);
-    let mut environment: HashMap<String, String> = env::vars().collect();
-    crate::commands::terminal::sanitize_launch_env(&mut environment);
-    environment.retain(|key, _| !key.to_ascii_uppercase().starts_with("MYCMUX_"));
     let cwd = env::current_dir().map_err(|err| format!("summary working directory: {err}"))?;
-    let mut command = Command::new(program);
-    command
-        .args(args)
-        .current_dir(cwd)
-        .env_clear()
-        .envs(environment)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(crate::util::process::CREATE_NO_WINDOW);
-    }
+    let mut command = crate::ai::build_command(ai, env::vars());
+    command.current_dir(cwd);
     let mut child = command
         .spawn()
-        .map_err(|err| format!("start codex summarizer: {err}"))?;
-    // Take (not borrow) stdin so it drops after the write; codex exec reads
+        .map_err(|err| format!("start AI summarizer: {err}"))?;
+    // Take (not borrow) stdin so it drops after the write; the AI command reads
     // "-" until EOF and never starts while the pipe stays open.
     if let Some(mut stdin) = child.stdin.take() {
         stdin
@@ -745,14 +739,6 @@ pub fn stop_child_tree(mut child: Child) {
     let _ = taskkill.status();
     let _ = child.kill();
     let _ = child.wait();
-}
-
-fn codex_program() -> &'static str {
-    if cfg!(windows) {
-        "codex.cmd"
-    } else {
-        "codex"
-    }
 }
 
 fn validate_output(raw: &str, expected_id: &str) -> Result<ValidResult, String> {
@@ -875,6 +861,7 @@ fn upsert_result(
     conn: &mut Connection,
     session: &PendingSession,
     result: &ValidResult,
+    ai: &crate::ai::AiConfig,
 ) -> Result<(), String> {
     let tx = conn
         .transaction()
@@ -895,9 +882,9 @@ fn upsert_result(
     let rework = serde_json::json!({"happened": result.rework_happened, "cause": result.rework_cause, "category": result.rework_category}).to_string();
     tx.execute(
         "INSERT INTO summary (kind,session_id,created_at,model_used,findings,rework_note,cost_note,goal_summary,goal_cluster,summary,cluster,model,outcome,confidence,rework_category,prompt_version,parse_error,error_kind,input_tokens,output_tokens,attempt_count,last_error_at,last_ok_at) \
-         VALUES (?1,?2,?3,'gpt-5.6-luna',?4,?5,?6,?7,?8,?7,?8,'gpt-5.6-luna',?9,?10,?11,?12,NULL,CASE WHEN ?13 THEN 'id-mismatch' ELSE NULL END,0,0,0,NULL,?3) \
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?8,?9,?4,?10,?11,?12,?13,NULL,CASE WHEN ?14 THEN 'id-mismatch' ELSE NULL END,0,0,0,NULL,?3) \
          ON CONFLICT(kind,session_id) DO UPDATE SET created_at=excluded.created_at, model_used=excluded.model_used, findings=excluded.findings, rework_note=excluded.rework_note, cost_note=excluded.cost_note, goal_summary=excluded.goal_summary, goal_cluster=excluded.goal_cluster, summary=excluded.summary, cluster=excluded.cluster, model=excluded.model, outcome=excluded.outcome, confidence=excluded.confidence, rework_category=excluded.rework_category, prompt_version=excluded.prompt_version, parse_error=NULL, error_kind=excluded.error_kind, last_ok_at=excluded.created_at, last_error_at=NULL",
-        params![session.kind, session.session_id, now, findings, rework, result.cost_note, result.goal, result.cluster, result.outcome, result.confidence, result.rework_category, PROMPT_VERSION, result.id_mismatch],
+         params![session.kind, session.session_id, now, ai.sanitized_model(), findings, rework, result.cost_note, result.goal, result.cluster, result.outcome, result.confidence, result.rework_category, PROMPT_VERSION, result.id_mismatch],
     ).map_err(|err| format!("upsert summary row: {err}"))?;
     tx.commit()
         .map_err(|err| format!("commit summary transaction: {err}"))
@@ -909,7 +896,7 @@ fn save_parse_error(
     error: &str,
 ) -> Result<(), String> {
     let now = chrono::Utc::now().timestamp_millis();
-    let kind = if error.contains("timed out") { "timeout" } else if error.contains("cancelled") { "cancelled" } else if error.contains("start codex") { "spawn" } else if error.contains("exited") { "exit" } else { "parse" };
+    let kind = if error.contains("timed out") { "timeout" } else if error.contains("cancelled") { "cancelled" } else if error.contains("start AI") { "spawn" } else if error.contains("exited") { "exit" } else { "parse" };
     conn.execute("INSERT INTO summary (kind,session_id,created_at,parse_error,error_kind,prompt_version,attempt_count,last_error_at) VALUES (?1,?2,?3,?4,?5,?6,1,?3) ON CONFLICT(kind,session_id) DO UPDATE SET created_at=excluded.created_at,parse_error=excluded.parse_error,error_kind=excluded.error_kind,prompt_version=excluded.prompt_version,attempt_count=COALESCE(summary.attempt_count,0)+1,last_error_at=excluded.last_error_at", params![session.kind, session.session_id, now, crate::ailog::truncate_chars(error, 500), kind, PROMPT_VERSION]).map_err(|err| format!("save parse error: {err}"))?;
     Ok(())
 }
@@ -1161,6 +1148,18 @@ mod tests {
             pending_count(&conn, false, range).expect("exhausted failure stops"),
             0
         );
+    }
+
+    #[test]
+    fn upsert_result_records_configured_model() {
+        let mut conn = Connection::open_in_memory().expect("memory database");
+        crate::ailog::schema::init(&conn).expect("schema");
+        let session = PendingSession { kind: "codex".into(), session_id: "model-test".into(), source_path: None, ai_title: None, first_prompt: None, turn_count: 0, compact_count: 0, wall_ms: None, cost_usd: 0.0 };
+        let result = ValidResult { id_mismatch: false, goal: "goal".into(), cluster: "other".into(), outcome: "done".into(), findings: vec![], rework_happened: false, rework_cause: String::new(), rework_category: "none".into(), cost_note: String::new(), confidence: "high".into() };
+        let ai = crate::ai::AiConfig { provider: crate::ai::AiProvider::Codex, model: "configured-test-model".into(), enabled: true };
+        upsert_result(&mut conn, &session, &result, &ai).expect("upsert");
+        let model: String = conn.query_row("SELECT model_used FROM summary WHERE kind=?1 AND session_id=?2", params![session.kind, session.session_id], |row| row.get(0)).expect("model");
+        assert_eq!(model, "configured-test-model");
     }
 
     #[test]

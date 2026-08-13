@@ -1,5 +1,7 @@
 import type { AgentSessionKind } from "../types";
 import type { PaneMetadata } from "../stores/paneMetadataStore";
+import type { DuplicateAgentSessionResult } from "./ipc";
+import { agentIdForSessionKind } from "./agentSessionConfig";
 
 export interface DuplicateSessionSource {
   agentKind: AgentSessionKind;
@@ -10,6 +12,7 @@ export interface DuplicateSessionSource {
 
 interface DuplicateSessionSourceInput {
   metadata: Pick<PaneMetadata, "agentKind" | "agentSessionId"> | undefined;
+  metadataCwd?: string;
   tabCwd?: string;
   paneCwd?: string;
   label: string;
@@ -23,25 +26,30 @@ export interface DuplicateSessionPaneOptions {
   launchEnv: Record<string, string>;
 }
 
-export function buildForkDuplicateSessionPaneOptions(
+export interface ClonedDuplicateSessionPaneOptions {
+  agentId: "claude-code" | "codex" | "shell-starter";
+  label: string;
+  cwd: string;
+  agentKind: AgentSessionKind;
+  agentSessionId: string;
+}
+
+export function buildClonedDuplicateSessionPaneOptions(
   source: DuplicateSessionSource,
-): DuplicateSessionPaneOptions {
+  clone: DuplicateAgentSessionResult,
+): ClonedDuplicateSessionPaneOptions {
   return {
-    agentId: "shell-starter",
+    agentId: agentIdForSessionKind(clone.agent_kind)!,
     label: source.label,
-    cwd: source.cwd,
-    agentKind: source.agentKind,
-    launchEnv: {
-      MYCMUX_AGENT_KIND: source.agentKind,
-      MYCMUX_RESUME: source.agentKind,
-      MYCMUX_SESSION_ID: source.agentSessionId,
-      MYCMUX_RESUME_FORK: "1",
-    },
+    cwd: clone.resolved_cwd,
+    agentKind: clone.agent_kind,
+    agentSessionId: clone.new_session_id,
   };
 }
 
 export function resolveDuplicateSessionSource({
   metadata,
+  metadataCwd,
   tabCwd,
   paneCwd,
   label,
@@ -51,7 +59,7 @@ export function resolveDuplicateSessionSource({
   return {
     agentKind: metadata.agentKind,
     agentSessionId: metadata.agentSessionId,
-    cwd: tabCwd ?? paneCwd,
+    cwd: metadataCwd ?? tabCwd ?? paneCwd,
     label,
   };
 }

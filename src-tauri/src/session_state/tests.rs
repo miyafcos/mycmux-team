@@ -146,6 +146,21 @@ fn replay_unmounted_waiting_is_renderer_independent() {
 }
 
 #[test]
+fn rate_limited_screen_scan_is_waiting() {
+    let view = replay(&[screen(
+        10,
+        EPOCH,
+        AttentionKind::RateLimited,
+        Some("rate-limit"),
+        Some("usage limit reached"),
+        true,
+        false,
+    )]);
+    assert_eq!(view.attention.kind, AttentionKind::RateLimited);
+    assert_eq!(derive_ui_state(&view), UiSessionState::Waiting);
+}
+
+#[test]
 fn replay_hook_and_scan_merge_independent_of_arrival_order() {
     let scan = screen(
         10,
@@ -177,13 +192,13 @@ fn replay_hook_and_scan_merge_independent_of_arrival_order() {
 }
 
 #[test]
-fn replay_output_after_done_only_changes_activity() {
+fn replay_output_after_work_done_does_not_set_attention() {
     let view = assert_deterministic(&[
         Evidence::work_done(10, EPOCH, "claude".into(), "pwsh".into()),
         Evidence::last_output(11, EPOCH, OutputOrigin::Pty),
     ]);
     assert_eq!(view.activity, Activity::Streaming);
-    assert_eq!(view.attention.kind, AttentionKind::Done);
+    assert_eq!(view.attention.kind, AttentionKind::None);
 }
 
 #[test]

@@ -243,7 +243,12 @@ function AccountRow({
   const message = rowMessage(row);
   const staleNote = staleWindowsNote(row);
   const windows = displayWindows(row);
-  const cells = windows.length >= 3 ? 5 : 10;
+  // The panel is 400px wide and every row stays on one line, so each extra
+  // window (per-model weekly limits) has to buy its space from the bars
+  // themselves. Without this the meter line's min-content grew past the panel
+  // and pushed the "使用中" label of the line above out of view.
+  const dense = windows.length >= 4 ? "tight" : windows.length >= 3 ? "snug" : "roomy";
+  const cells = dense === "tight" ? 3 : dense === "snug" ? 5 : 10;
   const action = row.is_active
     ? "使用中"
     : isBusy
@@ -260,6 +265,10 @@ function AccountRow({
       title={row.email ?? row.label}
       style={{
         display: "grid",
+        // minmax(0, 1fr): a wide meter line must never widen the row's only
+        // column, or the line above is laid out at that width and its trailing
+        // label is clipped by the panel's overflow.
+        gridTemplateColumns: "minmax(0, 1fr)",
         gap: "var(--cmux-space-1)",
         width: "100%",
         padding: "var(--cmux-space-3) var(--cmux-space-5)",
@@ -335,13 +344,14 @@ function AccountRow({
           <span
             style={{
               display: "flex",
-              gap: "var(--cmux-space-5)",
+              gap: dense === "roomy" ? "var(--cmux-space-5)" : "var(--cmux-space-3)",
               alignItems: "center",
+              minWidth: 0,
               opacity: 0.55,
             }}
           >
             {windows.map(({ key, ...window }) => (
-              <UsageBar key={key} {...window} cells={cells} />
+              <UsageBar key={key} {...window} cells={cells} dense={dense} />
             ))}
           </span>
           <span
@@ -369,13 +379,14 @@ function AccountRow({
         <span
           style={{
             display: "flex",
-            gap: "var(--cmux-space-5)",
+            gap: dense === "roomy" ? "var(--cmux-space-5)" : "var(--cmux-space-3)",
             alignItems: "center",
+            minWidth: 0,
           }}
         >
           {windows.length > 0 ? (
             windows.map(({ key, ...window }) => (
-              <UsageBar key={key} {...window} cells={cells} />
+              <UsageBar key={key} {...window} cells={cells} dense={dense} />
             ))
           ) : (
             <span style={{ color: "var(--cmux-text-tertiary)" }}>—</span>
@@ -384,12 +395,13 @@ function AccountRow({
             title={`取得 ${formatUpdatedAt(row.fetched_at)}`}
             style={{
               marginLeft: "auto",
+              paddingLeft: "var(--cmux-space-2)",
               fontSize: "var(--cmux-font-size-xs)",
               color: "var(--cmux-text-dim)",
               whiteSpace: "nowrap",
             }}
           >
-            取得{" "}
+            {dense === "roomy" ? "取得 " : ""}
             {formatResetShort(row.fetched_at) ||
               formatUpdatedAt(row.fetched_at)}
           </span>
@@ -404,11 +416,13 @@ function UsageBar({
   stat,
   hint,
   cells,
+  dense = "roomy",
 }: {
   label: string;
   stat: WindowStat;
   hint: string;
   cells: number;
+  dense?: "roomy" | "snug" | "tight";
 }) {
   return (
     <span
@@ -416,9 +430,10 @@ function UsageBar({
       style={{
         display: "flex",
         alignItems: "center",
-        gap: "var(--cmux-space-2)",
+        gap: dense === "tight" ? 2 : "var(--cmux-space-2)",
         fontSize: "var(--cmux-font-size-xs)",
         color: "var(--cmux-text-tertiary)",
+        flexShrink: 0,
       }}
     >
       <span>{label}</span>
@@ -449,14 +464,25 @@ function UsageBar({
             );
           })}
         </span>
-        <span style={{ color: usageColor(stat.pct), minWidth: 30 }}>
+        <span
+          style={{
+            color: usageColor(stat.pct),
+            minWidth: dense === "roomy" ? 30 : 26,
+          }}
+        >
           {formatPct(stat.pct)}
         </span>
-        {stat.resets_at && formatResetShort(stat.resets_at) && (
-          <span style={{ color: "var(--cmux-text-dim)", whiteSpace: "nowrap" }}>
-            ↻{formatResetShort(stat.resets_at)}
-          </span>
-        )}
+        {/* The reset countdown is the first thing to go when a row carries
+            per-model windows; `title` still spells it out on hover. */}
+        {dense !== "tight" &&
+          stat.resets_at &&
+          formatResetShort(stat.resets_at) && (
+            <span
+              style={{ color: "var(--cmux-text-dim)", whiteSpace: "nowrap" }}
+            >
+              ↻{formatResetShort(stat.resets_at)}
+            </span>
+          )}
       </>
     </span>
   );

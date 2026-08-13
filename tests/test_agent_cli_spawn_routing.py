@@ -106,6 +106,22 @@ def test_send_expectation_flags_are_additive() -> None:
     )
 
 
+def test_send_key_routes_semantic_key_after_text() -> None:
+    assert request_for_send(
+        ["--session", PANE_SESSION_ID, "--text", "yes", "--key", "up"]
+    ) == (
+        "pane.send_text",
+        {"sessionId": PANE_SESSION_ID, "text": "yes", "enter": False, "key": "up"},
+    )
+
+
+def test_send_key_can_be_used_without_text() -> None:
+    assert request_for_send(["--session", PANE_SESSION_ID, "--key", "enter"]) == (
+        "pane.send_text",
+        {"sessionId": PANE_SESSION_ID, "text": "", "enter": False, "key": "enter"},
+    )
+
+
 def test_panes_keeps_existing_workspace_route() -> None:
     assert request_for_panes(["--workspace", "workspace-1"]) == (
         "pane.list",
@@ -299,3 +315,20 @@ def test_spawn_tab_no_activate_remains_supported() -> None:
     cmd, args = request_for_spawn_tab(["--no-activate", "--target", "claude"])
     assert cmd == "pane.spawn_tab"
     assert args["activate"] is False
+
+
+def test_spawn_tab_detach_routes_to_a_new_pane(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("MYCMUX_PANE_SESSION_ID", PANE_SESSION_ID)
+    namespace = cli.build_parser().parse_args(["spawn-tab", "--detach", "--target", "codex"])
+    cmd, args = cli.request_for(namespace)
+    assert cmd == "pane.spawn"
+    assert args["anchorSessionId"] == PANE_SESSION_ID
+    assert args["target"] == "codex"
+
+
+def test_spawn_tab_detach_rejects_explicit_anchor() -> None:
+    namespace = cli.build_parser().parse_args([
+        "spawn-tab", "--detach", "--anchor-session", PANE_SESSION_ID, "--target", "codex",
+    ])
+    with pytest.raises(RuntimeError, match="cannot be used with --anchor-session"):
+        cli.request_for(namespace)

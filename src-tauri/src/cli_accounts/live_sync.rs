@@ -50,11 +50,16 @@ pub enum SyncOutcome {
     Failed(String),
 }
 
-/// mtime bookkeeping per watched file. Kept outside the sync function so the
+/// Change bookkeeping per watched file. Kept outside the sync function so the
 /// caller owns it across ticks and tests can drive several ticks in a row.
+///
+/// The stamp carries the length as well as the mtime: Windows file timestamps
+/// advance on the ~15ms system tick, so a credentials file rewritten inside one
+/// tick keeps its mtime and a mtime-only stamp would read the rotation as
+/// "unchanged" and never capture it.
 #[derive(Default)]
 pub struct FileStamps {
-    stamps: HashMap<PathBuf, SystemTime>,
+    stamps: HashMap<PathBuf, (SystemTime, u64)>,
 }
 
 impl FileStamps {
@@ -68,7 +73,9 @@ impl FileStamps {
     pub fn changed(&mut self, paths: &[&Path]) -> bool {
         let mut changed = false;
         for path in paths {
-            let current = std::fs::metadata(path).and_then(|meta| meta.modified()).ok();
+            let current = std::fs::metadata(path)
+                .and_then(|meta| Ok((meta.modified()?, meta.len())))
+                .ok();
             match current {
                 Some(stamp) => {
                     if self.stamps.insert((*path).to_path_buf(), stamp) != Some(stamp) {
@@ -276,6 +283,28 @@ mod tests {
             needs_relogin: false,
             refresh_rejected_at: None,
         }
+    }
+
+    #[test]
+    fn a_rewrite_inside_one_timestamp_tick_still_counts_as_a_change() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("credentials.json");
+        let mut stamps = FileStamps::new();
+        fs::write(&path, "aa").unwrap();
+        let times = fs::FileTimes::new()
+            .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000));
+        let pin = |path: &std::path::Path| {
+            fs::OpenOptions::new().write(true).open(path).unwrap().set_times(times).unwrap();
+        };
+        pin(&path);
+        assert!(stamps.changed(&[path.as_path()]));
+
+        // Same mtime, different content length: a rotation Windows' 15ms
+        // timestamp granularity would otherwise hide from the watcher.
+        fs::write(&path, "aaa").unwrap();
+        pin(&path);
+        assert!(stamps.changed(&[path.as_path()]));
+        assert!(!stamps.changed(&[path.as_path()]));
     }
 
     #[test]

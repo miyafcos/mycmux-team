@@ -10,6 +10,7 @@ import {
 import type { PaneConfig, WorkspaceConfig } from "../../src/lib/ipc";
 import { useWorkspaceLayoutStore } from "../../src/stores/workspaceLayoutStore";
 import { __resetToastStoreForTests, useToastStore } from "../../src/stores/toastStore";
+import { buildClonedDuplicateSessionPaneOptions } from "../../src/lib/duplicateSession";
 import type { Workspace } from "../../src/types";
 
 function paneConfig(
@@ -70,6 +71,55 @@ describe("collectWorkspaceConfigSessionIds", () => {
 });
 
 describe("dedupeAgentSessionsInConfigs", () => {
+  it.each([
+    ["claude", "claude-code"],
+    ["codex", "codex"],
+    ["claude-codex", "shell-starter"],
+  ] as const)("round-trips cloned %s sessions through persistence and restore", (agentKind, agentId) => {
+    const cloned = buildClonedDuplicateSessionPaneOptions({
+      agentKind,
+      agentSessionId: "source-session",
+      label: "Source task",
+    }, {
+      agent_kind: agentKind,
+      source_session_id: "source-session",
+      new_session_id: `${agentKind}-cloned-session`,
+      resolved_cwd: "C:\\cloned",
+    });
+    const workspace: Workspace = {
+      id: "workspace",
+      name: "Workspace",
+      gridTemplateId: "1x1",
+      panes: [{
+        id: "pane",
+        sessionId: "pty-pane",
+        agentId: cloned.agentId,
+        tabs: [{
+          id: "tab",
+          sessionId: "pty-tab",
+          agentId: cloned.agentId,
+          type: "terminal",
+          agentKind: cloned.agentKind,
+          agentSessionId: cloned.agentSessionId,
+        }],
+        activeTabId: "tab",
+      }],
+      status: "running",
+      createdAt: 1,
+      splitColumns: [["pane"]],
+    };
+
+    const saved = toConfig(workspace);
+    const savedTab = saved.panes[0].tabs![0];
+    expect([savedTab.agent_id, savedTab.agent_kind, savedTab.agent_session_id])
+      .toEqual([agentId, agentKind, cloned.agentSessionId]);
+
+    const restored = useWorkspaceLayoutStore.getState().restorePanes("workspace", saved.panes, [[0]], "1x1");
+    const restoredTab = restored.panes[0].tabs[0];
+    expect([restoredTab.agentId, restoredTab.agentKind, restoredTab.agentSessionId])
+      .toEqual([agentId, agentKind, cloned.agentSessionId]);
+  });
+
   it("keeps the active owner and parks the losing restore identity", () => {
     const firstPane = paneConfig("pane-first", "tab-first");
     firstPane.tabs![0].suppressed_agent_sessions = [{
@@ -107,6 +157,7 @@ describe("dedupeAgentSessionsInConfigs", () => {
     expect(active.agent_session_id).toBe("shared-session");
     expect(result.conflicts).toEqual([{
       key: "claude:shared-session",
+      reason: "active",
       winner: { workspaceId: "workspace", paneId: "pane-active", tabId: "tab-active" },
       loser: { workspaceId: "workspace", paneId: "pane-first", tabId: "tab-first" },
     }]);
@@ -124,6 +175,7 @@ describe("dedupeAgentSessionsInConfigs", () => {
     );
     expect(duplicate.configs[0].panes[0].tabs![0].agent_session_id).toBe("shared-session");
     expect(duplicate.configs[0].panes[1].tabs![0].agent_session_id).toBeNull();
+    expect(duplicate.conflicts[0].reason).toBe("order");
 
     const differentKinds = dedupeAgentSessionsInConfigs(
       [workspaceConfig([
@@ -136,6 +188,29 @@ describe("dedupeAgentSessionsInConfigs", () => {
     );
     expect(differentKinds.conflicts).toEqual([]);
     expect(differentKinds.configs[0].panes[1].tabs![0].agent_session_id).toBe("shared-session");
+  });
+
+  it("keeps a self-owned session over a later non-active duplicate", () => {
+    const result = dedupeAgentSessionsInConfigs(
+      [workspaceConfig([
+        paneConfig("pane-first", "tab-first"),
+        paneConfig("pane-self", "shared-session"),
+      ])],
+      null,
+      null,
+      null,
+    );
+
+    const first = result.configs[0].panes[0].tabs![0];
+    const selfOwned = result.configs[0].panes[1].tabs![0];
+    expect(first.agent_session_id).toBeNull();
+    expect(selfOwned.agent_session_id).toBe("shared-session");
+    expect(result.conflicts).toEqual([{
+      key: "claude:shared-session",
+      reason: "self-owned",
+      winner: { workspaceId: "workspace", paneId: "pane-self", tabId: "shared-session" },
+      loser: { workspaceId: "workspace", paneId: "pane-first", tabId: "tab-first" },
+    }]);
   });
 
   it("bounds parked history to the five most recent unique identities", () => {
@@ -166,6 +241,7 @@ describe("dedupeAgentSessionsInConfigs", () => {
   it("reports a continuing conflict once and reports it again after resolution", () => {
     const conflict: AgentSessionDedupeConflict = {
       key: "claude:shared-session",
+      reason: "active",
       winner: { workspaceId: "workspace", paneId: "pane-a", tabId: "tab-a" },
       loser: { workspaceId: "workspace", paneId: "pane-b", tabId: "tab-b" },
     };

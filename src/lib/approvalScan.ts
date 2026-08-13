@@ -5,11 +5,12 @@ export const APPROVAL_PATTERNS: readonly RegExp[] = [
   /do you want to (proceed|continue|make this edit|run)\b/i, // Direct action confirmation.
   /would you like to (proceed|continue)\b/i, // Plan or continuation confirmation.
   /would you like to run the following command\?/i, // Codex command approval.
-  /ask user question/i, // AskUserQuestion box title.
+  /^\s*(?:\u2502\s*)?ask user question(?:\s*\u2502)?\s*$/i, // AskUserQuestion box title.
   /hook \w+ requires confirmation/i, // Hook confirmation prompt.
-  /type your (answer|response)/i, // Open answer prompt.
+  // Anchored at line start so prose that merely mentions the phrase cannot
+  // match; the leading class absorbs box-drawing borders without naming them.
+  /^[^A-Za-z]*type your (answer|response)\b/i, // Open answer prompt.
   /shift\s*\+\s*tab to approve/i, // Plan approval footer.
-  new RegExp("^\\s*[\\u276F\\u203A\\u25B6>]\\s*\\d+\\.\\s"), // Cursor-marked choice.
   /^\s*(?:[\u276F\u203A\u25B6>]\s*)?\d+\.\s*(?:yes|no)\b/i, // Explicit yes/no choice.
   /\(y\/n\)\s*[?:]?\s*$/i, // Trailing interactive y/n prompt.
   /\[y\/N\]\s*$/, // Shell-style default-no prompt.

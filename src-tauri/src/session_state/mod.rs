@@ -32,6 +32,7 @@ pub enum AttentionKind {
     None,
     Input,
     Approval,
+    RateLimited,
     Error,
     Done,
 }
@@ -271,7 +272,7 @@ pub enum UiSessionState {
 
 pub fn derive_ui_state(view: &SessionView) -> UiSessionState {
     match view.attention.kind {
-        AttentionKind::Input | AttentionKind::Approval | AttentionKind::Error => {
+        AttentionKind::Input | AttentionKind::Approval | AttentionKind::RateLimited | AttentionKind::Error => {
             UiSessionState::Waiting
         }
         AttentionKind::Done => UiSessionState::Done,
@@ -440,23 +441,6 @@ pub fn reduce(previous: &SessionView, evidence: &Evidence) -> SessionView {
             view.activity = Activity::Idle;
             view.lifecycle = Lifecycle::Alive;
             view.health = Health::Fresh;
-            if matches!(
-                view.attention.kind,
-                AttentionKind::None | AttentionKind::Done
-            ) {
-                let detail = Some("Foreground work returned to the shell".to_string());
-                apply_attention(
-                    &mut view,
-                    evidence,
-                    AttentionUpdate {
-                        kind: AttentionKind::Done,
-                        supplied_id: None,
-                        detail: &detail,
-                        confidence: 0.65,
-                        stale_after: DEFAULT_ATTENTION_STALE_AFTER_MS,
-                    },
-                );
-            }
         }
         EvidenceSignal::LastOutput { origin } => {
             if *origin != OutputOrigin::Pty || evidence.observed_at <= view.last_output_at {

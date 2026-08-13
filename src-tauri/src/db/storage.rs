@@ -176,6 +176,9 @@ fn default_ui_density() -> String {
     "standard".to_string()
 }
 
+fn default_ai_provider() -> String { crate::ai::AiConfig::default().provider.as_storage().to_string() }
+fn default_ai_model() -> String { crate::ai::AiConfig::default().model }
+
 fn default_ui_font_scale() -> f32 {
     1.0
 }
@@ -206,6 +209,12 @@ pub struct AppSettings {
     pub ui_font_scale: f32,
     #[serde(default)]
     pub keybindings: HashMap<String, String>,
+    #[serde(default = "default_ai_provider")]
+    pub ai_provider: String,
+    #[serde(default = "default_ai_model")]
+    pub ai_model: String,
+    #[serde(default = "default_true")]
+    pub ai_enabled: bool,
     /// When true, persistence is triggered by Zustand subscribers + debounce
     /// instead of a fixed interval. Rollback switch for Phase A.
     #[serde(default = "default_true")]
@@ -241,6 +250,9 @@ impl Default for AppSettings {
             ui_density: default_ui_density(),
             ui_font_scale: default_ui_font_scale(),
             keybindings: HashMap::new(),
+            ai_provider: default_ai_provider(),
+            ai_model: default_ai_model(),
+            ai_enabled: true,
             dirty_save_mode: true,
             osc7_tracking_enabled: true,
             remote_bind_all: false,
@@ -576,6 +588,14 @@ mod tests {
             serde_json::from_str(r#"{"font_size":14,"theme_id":"yoru-cafe"}"#).unwrap();
 
         assert_eq!(settings.line_height, 1.35);
+    }
+
+    #[test]
+    fn app_settings_missing_ai_settings_use_defaults() {
+        let settings: AppSettings = serde_json::from_str(r#"{"font_size":14,"theme_id":"yoru-cafe"}"#).unwrap();
+        assert_eq!(settings.ai_provider, crate::ai::AiConfig::default().provider.as_storage());
+        assert_eq!(settings.ai_model, crate::ai::AiConfig::default().model);
+        assert!(settings.ai_enabled);
     }
 
     #[test]

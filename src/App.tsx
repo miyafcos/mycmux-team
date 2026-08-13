@@ -43,6 +43,7 @@ import { onlineStrings } from "./components/online/onlineStrings";
 import { useAgentDormancy } from "./hooks/useAgentDormancy";
 import { connectSessionAttentionStore } from "./stores/sessionAttentionStore";
 import { connectStallStore } from "./stores/stallStore";
+import { connectDispatchWatchdog } from "./stores/dispatchWatchdogStore";
 
 // Kick off config fetch immediately — will be cached by the time terminals mount
 preloadTerminalConfig();
@@ -153,6 +154,11 @@ function App() {
 
   useWorkspacePersist();
   useAgentDormancy(ready && isMain);
+
+  useEffect(() => {
+    if (!ready || !isMain) return;
+    return connectDispatchWatchdog();
+  }, [ready, isMain]);
 
   useEffect(() => {
     async function bootstrap() {

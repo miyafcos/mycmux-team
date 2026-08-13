@@ -1,39 +1,27 @@
 import { memo, useState, useRef, useCallback, useEffect } from "react";
-import type { CSSProperties } from "react";
-import { KIND_COLORS } from "../../lib/agentKindColors";
 import { ATTENTION_REASON_COLOR, unseenAttentionLabel } from "../../lib/attentionPresentation";
 import { resolveWorkspaceColor, workspaceRowBackground } from "../../lib/workspaceColors";
 import PetSprite, { type PetSpriteState } from "../workspace/PetSprite";
 import type { AttentionCategory } from "../../stores/sessionAttentionStore";
-import type { AgentSessionKind } from "../../types";
-
-interface StatusCounts {
-  working: number;
-  waiting: number;
-}
 
 interface TabItemProps {
   uiVariant?: "default" | "cmux";
   name: string;
-  paneCount: number;
-  cwd?: string;
-  gitBranch?: string;
+  tabCount: number;
+  activeTabLabels?: readonly string[];
+  remainingTabCount?: number;
   notificationCount?: number;
-  workDoneCount?: number;
-  lastLogLine?: string;
-  statusCounts?: StatusCounts;
   petState?: PetSpriteState;
   petAtlasUrl?: string;
   showPet?: boolean;
   /**
    * Tabs in this workspace carrying an attention the user has not looked at.
-   * Distinct from notificationCount / workDoneCount, which count events rather
-   * than unread state, so this gets its own indicator instead of a badge.
+   * Distinct from notificationCount, which counts events rather than unread
+   * state, so this gets its own indicator instead of a badge.
    */
   unseenAttentionCount?: number;
   /** Most urgent unseen category, used only to color the indicator. */
   unseenAttentionCategory?: AttentionCategory | null;
-  agentKinds?: readonly AgentSessionKind[];
   /** Persisted workspace color (a palette hex) or undefined for no group. */
   color?: string;
   active: boolean;
@@ -54,34 +42,9 @@ interface TabItemProps {
   renameSignal?: number;
 }
 
-const AGENT_KIND_ACCESSIBLE_LABELS: Record<AgentSessionKind, string> = {
-  "claude": "Claude",
-  "codex": "Codex",
-  "claude-codex": "Hybrid",
-};
-
-type AgentKindStyle = CSSProperties & { "--agent-kind-color": string };
-
-function StatusPip({ count, color, pulse = false }: { count: number; color: string; pulse?: boolean }) {
-  return (
-    <span style={{ display: "flex", alignItems: "center", gap: 3 }}>
-      <span className={`cmux-status-dot${pulse ? " cmux-status-dot--working" : ""}`} style={{
-        width: 6,
-        height: 6,
-        borderRadius: "50%",
-        background: color,
-        flexShrink: 0,
-      }} />
-      {count > 1 && (
-        <span style={{ fontSize: 10, color, fontWeight: 600, lineHeight: 1 }}>{count}</span>
-      )}
-    </span>
-  );
-}
-
 // Mirrors the pane tab pill's AttentionUnreadDot: a hollow ring, colored by
 // category, so "unseen" reads the same in the sidebar as it does on the pill.
-// The count only appears above one, matching StatusPip.
+// The count only appears above one.
 function UnseenAttentionRing({ count, category }: { count: number; category: AttentionCategory }) {
   const color = ATTENTION_REASON_COLOR[category];
   const label = unseenAttentionLabel(category);
@@ -109,9 +72,7 @@ function UnseenAttentionRing({ count, category }: { count: number; category: Att
   );
 }
 
-export default memo(function TabItem({ uiVariant = "default", name, paneCount, cwd, gitBranch, notificationCount, workDoneCount, lastLogLine, statusCounts, petState = "idle", petAtlasUrl, showPet = true, unseenAttentionCount = 0, unseenAttentionCategory = null, agentKinds = [], color, active, onClick, onClose, onMenu, onRename, renameSignal = 0 }: TabItemProps) {
-  const hasAgents = statusCounts && (statusCounts.working + statusCounts.waiting) > 0;
-  const hasAgentKinds = agentKinds.length > 0;
+export default memo(function TabItem({ uiVariant = "default", name, tabCount, activeTabLabels = [], remainingTabCount = 0, notificationCount, petState = "idle", petAtlasUrl, showPet = true, unseenAttentionCount = 0, unseenAttentionCategory = null, color, active, onClick, onClose, onMenu, onRename, renameSignal = 0 }: TabItemProps) {
   const hasUnseenAttention = unseenAttentionCount > 0 && unseenAttentionCategory !== null;
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState(name);
@@ -211,22 +172,6 @@ export default memo(function TabItem({ uiVariant = "default", name, paneCount, c
             }}>
               {notificationCount}
             </span>
-          ) : workDoneCount ? (
-            <span key={`done-${workDoneCount}`} className="cmux-badge-pop" title="Work done" style={{
-              background: "var(--status-done)",
-              color: "var(--cmux-on-done)",
-              fontSize: "10px",
-              fontWeight: "bold",
-              borderRadius: "50%",
-              width: "14px",
-              height: "14px",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              flexShrink: 0
-            }}>
-              {workDoneCount}
-            </span>
           ) : null}
           {editing ? (
             <input
@@ -274,57 +219,37 @@ export default memo(function TabItem({ uiVariant = "default", name, paneCount, c
             background: active ? "color-mix(in srgb, var(--cmux-text) 16%, transparent)" : "color-mix(in srgb, var(--cmux-text) 9%, transparent)",
             color: active ? "var(--cmux-text)" : "var(--cmux-text-tertiary)"
           }}>
-            {paneCount} {paneCount === 1 ? "pane" : "panes"}
+            {tabCount} {tabCount === 1 ? "tab" : "tabs"}
           </span>
         </div>
-        {(hasAgents || hasAgentKinds || hasUnseenAttention) && (
+        {active && activeTabLabels.map((label, index) => (
+          <span
+            key={`${index}-${label}`}
+            title={label}
+            style={{
+              fontSize: "12px",
+              color: "var(--cmux-text-secondary)",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+              lineHeight: 1.2,
+            }}
+          >
+            {label}
+          </span>
+        ))}
+        {active && remainingTabCount > 0 && (
+          <span style={{ fontSize: "12px", color: "var(--cmux-text-tertiary)", lineHeight: 1.2 }}>
+            ほか {remainingTabCount}
+          </span>
+        )}
+        {hasUnseenAttention && (
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
             {hasUnseenAttention && unseenAttentionCategory && (
               <UnseenAttentionRing count={unseenAttentionCount} category={unseenAttentionCategory} />
             )}
-            {statusCounts && statusCounts.working > 0 && <StatusPip count={statusCounts.working} color="var(--status-working)" pulse />}
-            {statusCounts && statusCounts.waiting > 0 && <StatusPip count={statusCounts.waiting} color="var(--status-waiting)" />}
-            {hasAgentKinds && (
-              <span
-                className="workspace-agent-kind-dots"
-                role="img"
-                aria-label={`Agents: ${agentKinds.map((kind) => AGENT_KIND_ACCESSIBLE_LABELS[kind]).join(", ")}`}
-              >
-                {agentKinds.map((kind) => (
-                  <span
-                    key={kind}
-                    className="workspace-agent-kind-dot"
-                    aria-hidden="true"
-                    style={{ "--agent-kind-color": KIND_COLORS[kind].fg } as AgentKindStyle}
-                  />
-                ))}
-              </span>
-            )}
           </div>
         )}
-        {lastLogLine && (
-          <span style={{
-            fontSize: "12px",
-            color: active ? "var(--cmux-text)" : "var(--cmux-text-secondary)",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-            lineHeight: 1.2
-          }}>
-            {lastLogLine}
-          </span>
-        )}
-        <span style={{
-          fontSize: "11px",
-          color: "var(--cmux-text-tertiary)",
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-          whiteSpace: "nowrap",
-          lineHeight: 1.2
-        }}>
-          {cwd ? cwd.replace(/^\/home\/[^\/]+/, '~') : 'Starting session...'}
-          {gitBranch ? ` —  ${gitBranch}` : ''}
-        </span>
       </div>
 
       {onMenu && (

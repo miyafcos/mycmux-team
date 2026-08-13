@@ -13,6 +13,7 @@
 //! sourced and why unknown models stay at zero instead of being guessed.
 
 pub mod digest;
+pub mod db;
 pub mod index;
 pub mod jsonl;
 pub mod migrate;
@@ -71,14 +72,7 @@ pub fn codex_root() -> Option<PathBuf> {
 }
 
 pub fn open_db(path: &std::path::Path) -> Result<rusqlite::Connection, String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|err| format!("create {parent:?}: {err}"))?;
-    }
-    let conn = rusqlite::Connection::open(path).map_err(|err| format!("open {path:?}: {err}"))?;
-    schema::init(&conn)?;
-    migrate::apply(&conn)?;
-    backfill::internal_origin(&conn)?;
-    Ok(conn)
+    db::writer(path)
 }
 
 // ---------------------------------------------------------------------------

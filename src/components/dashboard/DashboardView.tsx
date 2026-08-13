@@ -3,7 +3,10 @@ import type { CSSProperties } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 import { focusController } from "../../lib/focusController";
+import { dispatchScan, type DispatchEntry } from "../../lib/ipc";
+import { dispatchStateLabel } from "../../lib/notificationStatus";
 import { useDashboardViewStore } from "../../stores/dashboardViewStore";
+import { useComposerStore } from "../../stores/composerStore";
 import {
   connectLiveBriefStore,
   LIVE_EVENT_VISIBLE_LIMIT,
@@ -53,6 +56,7 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
   const searchRef = useRef<HTMLInputElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const [now, setNow] = useState(() => Date.now());
+  const [dispatchEntries, setDispatchEntries] = useState<DispatchEntry[]>([]);
   const [listHovered, setListHovered] = useState(false);
   const [searchFocused, setSearchFocused] = useState(false);
   const viewState = useDashboardViewStore(useShallow((state) => ({
@@ -129,6 +133,16 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
     return () => window.clearInterval(interval);
   }, []);
 
+  useEffect(() => {
+    let disposed = false;
+    const refresh = () => {
+      void dispatchScan().then((entries) => { if (!disposed) setDispatchEntries(entries); }).catch(() => {});
+    };
+    refresh();
+    const interval = window.setInterval(refresh, 30_000);
+    return () => { disposed = true; window.clearInterval(interval); };
+  }, []);
+
   // brief の購読はビュー1枚につき1本 (store 側が参照数で束ねる)。
   useEffect(() => connectLiveBriefStore(), []);
 
@@ -160,7 +174,7 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
   }, [selectedCard, viewState]);
 
   // 介入が通ったら次の要対応へ送る。ただし打ちかけの下書きがあるうちは動かさない。
-  const selectedDraft = useDashboardViewStore((state) => (selectedSessionId ? state.draftBySession[selectedSessionId] ?? "" : ""));
+  const selectedDraft = useComposerStore((state) => (selectedSessionId ? state.draftBySession[selectedSessionId] ?? "" : ""));
   const selectedTargetKey = selectedCard?.brief ? targetKey(selectedCard.brief) : null;
   const selectedResult = useInterventionFeedbackStore((state) => (selectedTargetKey ? state.resultByTarget[selectedTargetKey] : undefined));
   const advancedResultRef = useRef<unknown>(undefined);
@@ -315,6 +329,16 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
         {filterActive ? <span style={mutedStyle}>{dashboardStrings.filteredSummary(filteredCards.length, cards.length)}</span> : null}
       </div>
     </header>
+    {dispatchEntries.length > 0 ? <section aria-label={"委譲セッション"} style={dispatchStyle}>
+      <span style={dispatchTitleStyle}>{"委譲セッション"} {dispatchEntries.length}</span>
+      {dispatchEntries.map((entry) => <div key={entry.slug} style={dispatchEntryStyle}>
+        <span style={{ ...dispatchStateStyle, color: dispatchStateColor(entry.liveState) }}>{dispatchStateLabel(entry.liveState)}</span>
+        <span>{entry.slug}</span>
+        <span style={mutedStyle}>{entry.status ?? "-"}</span>
+        <span style={mutedStyle}>{formatDispatchAge(entry.sessionLogAgeMinutes)}</span>
+        {entry.label ? <span style={mutedStyle}>{entry.label}</span> : null}
+      </div>)}
+    </section> : null}
     <div style={{ flex: 1, minHeight: 0, display: "flex", overflow: "hidden" }}>
       <DashboardSessionList
         needsHuman={urgentCards}
@@ -339,6 +363,21 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
   </div>;
 }
 
+function formatDispatchAge(age: number): string {
+  if (age < 0) return "ログなし";
+  if (age < 1) return "たった今";
+  if (age < 60) return `${Math.floor(age)}分前`;
+  return `${Math.floor(age / 60)}時間前`;
+}
+
+function dispatchStateColor(state: DispatchEntry["liveState"]): string {
+  if (state === "DONE" || state === "CLOSED") return "var(--status-done)";
+  if (state === "DONE_NEEDS_REVIEW" || state === "ASK") return "var(--status-waiting)";
+  if (state === "STALL") return "var(--cmux-status-stall)";
+  if (state === "RATE_LIMITED") return "var(--status-waiting)";
+  return "var(--status-working)";
+}
+
 const rootStyle = {
   position: "absolute" as const,
   inset: 0,
@@ -356,6 +395,10 @@ const headerStyle: CSSProperties = {
   borderBottom: "1px solid var(--cmux-border)",
   background: "var(--cmux-popover)",
 };
+const dispatchStyle: CSSProperties = { padding: "6px 14px", borderBottom: "1px solid var(--cmux-border)", background: "var(--cmux-popover)", display: "flex", alignItems: "center", gap: 10, overflowX: "auto", fontSize: "var(--cmux-font-size-xs)" };
+const dispatchTitleStyle: CSSProperties = { fontWeight: 600, flex: "0 0 auto" };
+const dispatchEntryStyle: CSSProperties = { display: "inline-flex", alignItems: "center", gap: 6, whiteSpace: "nowrap" };
+const dispatchStateStyle: CSSProperties = { fontWeight: 600 };
 const headerRowStyle: CSSProperties = { display: "flex", alignItems: "center", flexWrap: "wrap", gap: 6, minWidth: 0 };
 const mutedStyle: CSSProperties = { color: "var(--cmux-text-secondary)", fontSize: "var(--cmux-font-size-sm)" };
 const countPillStyle = (color: string, active: boolean): CSSProperties => ({

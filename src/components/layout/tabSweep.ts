@@ -2,16 +2,16 @@ import type { PtyMetadataSnapshot, SessionOutputSnapshot } from "../../lib/ipc";
 import type { PaneMetadata } from "../../stores/paneMetadataStore";
 import type { PaneTab, Workspace } from "../../types";
 import { reconcileSplitColumnsForPanes } from "../../lib/layoutColumns";
+import { aiProviderDef, type AiProviderId } from "../../lib/aiModels";
+import { aiSettingsStrings } from "../settings/settingsStrings";
 import {
   handleSocketCommand,
   processStatusReasonForTab,
   readPaneTail,
 } from "./socketCommands";
 
-export const TAB_SWEEP_JUDGE_MODEL = "claude-haiku-4-5-20251001";
 export const TAB_SWEEP_IDLE_MS = 5 * 60 * 1000;
 export const TAB_SWEEP_TAIL_LINES = 8;
-export const TAB_NAMING_MODEL = "claude-sonnet-5";
 export const TAB_NAMING_TAIL_LINES = 14;
 export const TAB_NAMING_LABEL_MAX = 20;
 export const TAB_SWEEP_OPEN_EVENT = "mycmux:tab-sweep-open";
@@ -156,7 +156,7 @@ function isDeadReason(reason: string | null): boolean {
   return reason === "no_live_pty_session" || reason === "snapshot_unavailable";
 }
 
-function isIgnoredPromptDecoration(line: string): boolean {
+export function isIgnoredPromptDecoration(line: string): boolean {
   const normalized = line.trim();
   return normalized.length === 0 || STATUS_LINE_PATTERNS.some((pattern) => pattern.test(normalized));
 }
@@ -328,18 +328,42 @@ export function formatSweepCompletion(base: string, result: SweepApplyResult): s
   return details.length > 0 ? `${base}（${details.join("、")}）` : base;
 }
 
-export function formatJudgeError(error: unknown): JudgeErrorPresentation {
+/**
+ * Footer note telling the user what actually gets sent, and to which AI. The
+ * model is a user setting now, so this cannot be a fixed string.
+ */
+export function formatSweepAiNote(
+  kind: "judge" | "naming",
+  provider: AiProviderId,
+  model: string,
+  enabled: boolean,
+): string {
+  if (!enabled) return aiSettingsStrings.disabledReason;
+  const target = `${aiProviderDef(provider).label} (${model})`;
+  return kind === "judge"
+    ? `各タブの画面末尾${TAB_SWEEP_TAIL_LINES}行と作業フォルダを ${target} に送って判定します（チェックの提案のみ）`
+    : `名前整理は全タブの画面末尾${TAB_NAMING_TAIL_LINES}行・作業フォルダ・ペイン構成を ${target} に送ります（適用は手動）`;
+}
+
+export function formatJudgeError(error: unknown, provider: AiProviderId): JudgeErrorPresentation {
   const record = error && typeof error === "object" ? error as Record<string, unknown> : null;
   const code = typeof record?.code === "string" ? record.code : "";
   const raw = typeof record?.detail === "string"
     ? record.detail
     : error instanceof Error ? error.message : String(error);
   const normalized = `${code} ${raw}`.toLowerCase();
+  if (code === "ai_disabled" || normalized.includes("ai_disabled")) {
+    return { summary: `${aiSettingsStrings.disabledReason}。`, raw };
+  }
   if (code === "timeout" || normalized.includes("timed out")) {
     return { summary: "判定が時間切れになりました。もう一度実行してください。", raw };
   }
   if (code === "cli_not_found" || normalized.includes("not found") || normalized.includes("os error 2")) {
-    return { summary: "判定に使うツールが見つかりません。Claude Code のインストールを確認してください。", raw };
+    const def = aiProviderDef(provider);
+    return {
+      summary: `判定に使うツールが見つかりません。${def.label} (${def.cli}) のインストールを確認してください。`,
+      raw,
+    };
   }
   if (code === "cli_failed" || normalized.includes("exited with")) {
     return { summary: "判定ツールがエラー終了しました。詳細を確認して再実行してください。", raw };

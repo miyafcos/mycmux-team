@@ -20,6 +20,11 @@ interface SessionIdArgs { sessionId: string }
 interface PathArgs { path: string }
 interface SourcePathArgs { sourcePath: string }
 interface BundleDirArgs { bundleDir: string }
+interface DuplicateAgentSessionArgs {
+  kind: AgentSessionKind;
+  sessionId: string;
+  cwd?: string;
+}
 interface EnabledArgs { enabled: boolean }
 interface CreateSessionArgs {
   sessionId: string;
@@ -79,6 +84,39 @@ interface BeginCliLoginArgs {
 interface LoginIdArgs { loginId: string }
 
 const sessionCreateTails = new Map<string, Promise<void>>();
+
+export interface DispatchEntry {
+  slug: string;
+  label?: string | null;
+  dir?: string | null;
+  cwd?: string | null;
+  tabSessionId?: string | null;
+  tabId?: string | null;
+  target?: string | null;
+  status?: string | null;
+  verify?: string | null;
+  workstream?: string | null;
+  stage?: string | null;
+  ts?: string | null;
+  hasDone: boolean;
+  hasAsk: boolean;
+  hasVerdict: boolean;
+  doneMtimeMs?: number | null;
+  askMtimeMs?: number | null;
+  verdictMtimeMs?: number | null;
+  dirMtimeMs?: number | null;
+  sessionLogName?: string | null;
+  sessionLogAgeMinutes: number;
+  liveState: "CLOSED" | "DONE" | "DONE_NEEDS_REVIEW" | "ASK" | "NO_LOG" | "RUNNING" | "RATE_LIMITED" | "STALL";
+}
+
+export async function dispatchScan(includeClosed?: boolean): Promise<DispatchEntry[]> {
+  return invoke<DispatchEntry[]>("dispatch_scan", { includeClosed: includeClosed ?? null });
+}
+
+export async function dispatchClaimWatchdog(ttlMs: number): Promise<boolean> {
+  return invoke<boolean>("dispatch_claim_watchdog", { ttlMs });
+}
 
 export async function createSession(
   sessionId: string,
@@ -266,7 +304,7 @@ export interface PtyMetadata {
 export type PtyMetadataSnapshot = Record<string, PtyMetadata>;
 export type SessionOutputSnapshot = Record<string, number | null>;
 
-export type SessionAttentionKind = "none" | "input" | "approval" | "error" | "done";
+export type SessionAttentionKind = "none" | "input" | "approval" | "rate_limited" | "error" | "done";
 export type SessionUiState = "working" | "idle" | "waiting" | "done" | "unknown";
 export type SessionLifecycle = "alive" | "exited" | "orphaned" | "unknown";
 
@@ -458,6 +496,24 @@ export async function joinSavepointSummary(bundleDir: string): Promise<JoinSavep
 
 export async function joinSavepointFull(bundleDir: string): Promise<JoinSavepointFullResult> {
   return invoke<JoinSavepointFullResult>("join_savepoint_full", { bundleDir } satisfies BundleDirArgs);
+}
+
+export interface DuplicateAgentSessionResult {
+  agent_kind: AgentSessionKind;
+  source_session_id: string;
+  new_session_id: string;
+  resolved_cwd: string;
+}
+
+export async function duplicateAgentSession(
+  kind: AgentSessionKind,
+  sessionId: string,
+  cwd?: string,
+): Promise<DuplicateAgentSessionResult> {
+  return invoke<DuplicateAgentSessionResult>(
+    "duplicate_agent_session",
+    { kind, sessionId, cwd } satisfies DuplicateAgentSessionArgs,
+  );
 }
 
 export async function toggleSavepointPin(bundleDir: string): Promise<ToggleSavepointPinResult> {
@@ -844,6 +900,9 @@ export interface AppSettings {
   pet_new_ws_mode?: "random" | "choose" | "fixed";
   pet_disabled?: string[];
   pet_fixed_id?: string | null;
+  ai_provider?: string;
+  ai_model?: string;
+  ai_enabled?: boolean;
 }
 
 export interface PersistentData {
@@ -879,7 +938,7 @@ export interface GalleryPet {
   downloadCount: number;
   previewUrl: string;
   atlasSize: string;
-  statesDetected: string[];
+  statesDetected: number;
 }
 
 export interface GalleryPage {

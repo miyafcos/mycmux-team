@@ -9,7 +9,7 @@ struct SessionDigest {
     turn_count: usize,
 }
 
-fn norm_slashes(path: &str) -> String {
+pub(crate) fn norm_slashes(path: &str) -> String {
     path.replace('\\', "/")
 }
 
@@ -162,14 +162,14 @@ fn digest_claude_transcript(jsonl_path: &Path) -> Result<SessionDigest, String> 
 }
 
 #[derive(Debug)]
-struct CodexSessionMeta {
-    id: String,
-    root_session_id: String,
-    cwd: Option<String>,
+pub(crate) struct CodexSessionMeta {
+    pub(crate) id: String,
+    pub(crate) root_session_id: String,
+    pub(crate) cwd: Option<String>,
     git_branch: Option<String>,
 }
 
-fn read_codex_session_meta(jsonl_path: &Path) -> Result<CodexSessionMeta, String> {
+pub(crate) fn read_codex_session_meta(jsonl_path: &Path) -> Result<CodexSessionMeta, String> {
     let file = fs::File::open(jsonl_path)
         .map_err(|error| format!("Failed to open {}: {error}", jsonl_path.display()))?;
     let mut reader = std::io::BufReader::new(file);
@@ -349,6 +349,16 @@ fn digest_codex_transcript(jsonl_path: &Path) -> Result<SessionDigest, String> {
         latest_final_message
     };
     Ok(digest)
+}
+
+fn digest_agent_transcript(
+    kind: SavepointAgentKind,
+    transcript: &Path,
+) -> Result<SessionDigest, String> {
+    match kind {
+        SavepointAgentKind::Claude => digest_claude_transcript(transcript),
+        SavepointAgentKind::Codex => digest_codex_transcript(transcript),
+    }
 }
 
 fn truncate(text: &str, limit: usize) -> String {

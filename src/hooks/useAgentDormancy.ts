@@ -70,11 +70,13 @@ function collectRuntimeTargets(
             attentionBySession[tab.sessionId],
             seenAttentionByTab,
           ) !== null;
+        const rateLimited = attentionBySession[tab.sessionId]?.kind === "rate_limited";
         const existing = targets.get(tab.sessionId);
         if (existing) {
           existing.candidate.visible ||= visible;
           existing.candidate.mounted ||= mounted;
           existing.candidate.hasAttention ||= hasAttention;
+          existing.candidate.rateLimited ||= rateLimited;
           existing.candidate.agentStatusFresh ||= mounted;
           continue;
         }
@@ -91,6 +93,7 @@ function collectRuntimeTargets(
             agentStatus: tabMetadata?.agentStatus ?? null,
             agentStatusFresh: mounted,
             hasAttention,
+            rateLimited,
             screenWorking: false,
             lastActivityAt: 0,
             thresholdMs,
@@ -314,6 +317,7 @@ export function useAgentDormancy(enabled: boolean): void {
             if (
               finalCandidate.visible
               || finalCandidate.hasAttention
+              || finalCandidate.rateLimited
               || finalCandidate.screenWorking
               || hasFreshAgentWork(finalCandidate)
               || isEffectivelyWorking(finalCandidate)

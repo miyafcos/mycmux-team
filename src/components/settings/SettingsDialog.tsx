@@ -4,6 +4,8 @@ import { OverlayShell } from "../common/OverlayShell";
 import { useUsageStore } from "../../stores/usageStore";
 import { AppearanceTab } from "./tabs/AppearanceTab";
 import { NotificationsLayoutTab } from "./tabs/NotificationsLayoutTab";
+import { AutomationTab } from "./tabs/AutomationTab";
+import { AiTab } from "./tabs/AiTab";
 import { ResumeTab } from "./tabs/ResumeTab";
 import { SavepointsTab } from "./tabs/SavepointsTab";
 import { RemoteTab } from "./tabs/RemoteTab";
@@ -13,12 +15,14 @@ import { AppInfoTab } from "./tabs/AppInfoTab";
 import { PetTab } from "./tabs/PetTab";
 import { tabBodyStyle } from "./tabStyles";
 import { onlineStrings } from "../online/onlineStrings";
-import { petSettingsStrings, settingsStrings } from "./settingsStrings";
+import { aiSettingsStrings, petSettingsStrings, settingsStrings } from "./settingsStrings";
 
 type SettingsTabId =
   | "appearance"
   | "pet"
   | "notifications"
+  | "automation"
+  | "ai"
   | "resume"
   | "savepoints"
   | "remote"
@@ -52,6 +56,8 @@ const SETTINGS_SECTIONS: SettingsSectionDef[] = [
     tabs: [
       { id: "resume", label: "このPCの履歴から再開" },
       { id: "savepoints", label: onlineStrings.settingsTabLabel },
+      { id: "automation", label: "自動監視" },
+      { id: "ai", label: aiSettingsStrings.tabLabel },
     ],
   },
   {
@@ -217,6 +223,8 @@ export default function SettingsDialog({ closing = false, onClose, onOpenCrsmPal
             {activeTab === "appearance" && <AppearanceTab />}
             {activeTab === "pet" && <PetTab />}
             {activeTab === "notifications" && <NotificationsLayoutTab />}
+            {activeTab === "automation" && <AutomationTab />}
+            {activeTab === "ai" && <AiTab />}
             {activeTab === "resume" && <ResumeTab onOpenCrsmPalette={onOpenCrsmPalette} onClose={onClose} />}
             {activeTab === "savepoints" && (
               <SavepointsTab

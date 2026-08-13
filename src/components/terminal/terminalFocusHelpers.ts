@@ -1,5 +1,6 @@
 import type { Terminal } from "@xterm/xterm";
 import { focusController } from "../../lib/focusController";
+import { forgetSessionDraft } from "../../lib/inputLineDraft";
 import { usePaneMetadataStore, useUiStore } from "../../stores/workspaceStore";
 import { registerTerminalCacheEvictionCleanup } from "./terminalCache";
 
@@ -22,6 +23,7 @@ const TERMINAL_PLAIN_INPUT_KEYS = new Set([
 
 registerTerminalCacheEvictionCleanup((sessionId) => {
   focusController.clearSession(sessionId);
+  forgetSessionDraft(sessionId);
 });
 
 export function markTerminalHasLiveOutput(sessionId: string): void {

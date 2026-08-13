@@ -34,6 +34,8 @@ import { resolveLiveSavepointTargetKind, savepointTargetLabel } from "../../lib/
 import { resolvePaneHandoffEligibility } from "../../lib/paneHandoff";
 import { pushClosedTab } from "../../stores/closedPaneStore";
 import { onlineStrings } from "../online/onlineStrings";
+import { useSettingsStore } from "../../stores/settingsStore";
+import { PaneComposer } from "../composer/PaneComposer";
 
 interface TerminalPaneProps {
   pane: Pane;
@@ -183,6 +185,10 @@ function truncatePaneActionError(message: string, max = 96): string {
 }
 
 const PANE_CLICK_ACTIVATE_MAX_DISTANCE_PX = 5;
+/** Below this the pane is too short to spend two lines on an input box. */
+const COMPOSER_MIN_PANE_HEIGHT = 200;
+/** Hysteresis, so a pane resting on the boundary cannot flicker the composer. */
+const COMPOSER_RESTORE_PANE_HEIGHT = 224;
 
 type PaneActivationOptions = {
   focusTerminal?: boolean;
@@ -202,7 +208,7 @@ type ArtifactLinkPopoverState = {
   y: number;
 };
 
-const PANE_CLICK_IGNORED_TARGET_SELECTOR = [
+export const PANE_CLICK_IGNORED_TARGET_SELECTOR = [
   "button",
   "a",
   "input",
@@ -214,6 +220,9 @@ const PANE_CLICK_IGNORED_TARGET_SELECTOR = [
   ".pane-tab-pill",
   ".pane-action-btn",
   "[data-pane-drag-handle]",
+  // The composer's padding and badge are part of the input, not the terminal:
+  // hitting them must not hand the keyboard back to xterm mid-tap.
+  "[data-composer-session]",
 ].join(",");
 
 function shouldIgnorePaneClickActivationTarget(target: EventTarget | null): boolean {
@@ -295,6 +304,7 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
     activeTab ? s.metadata[activeTab.sessionId] : undefined,
   );
   const activeTabMetadataAgentKind = activeTabMetadata?.agentKind;
+  const activeTabMetadataProcessTitle = activeTabMetadata?.processTitle;
   const savepointPaneTargetKind = savepointDragItem
     ? resolveLiveSavepointTargetKind(activeTab, activeTabMetadataAgentKind)
     : null;
@@ -327,6 +337,11 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
       )
     : null;
   const paneRootRef = useRef<HTMLDivElement>(null);
+  // A composer costs the pane two lines, which is a bad trade once the pane is
+  // short enough that the terminal itself is the scarce thing.
+  const composerEnabled = useSettingsStore((state) => state.paneComposerEnabled);
+  const [paneIsTall, setPaneIsTall] = useState(true);
+  const showComposer = composerEnabled && paneIsTall;
   const pendingPaneClickActivationRef = useRef<PendingPaneClickActivation | null>(null);
   const pendingPreviewUriRef = useRef<string | null>(null);
   const artifactLinkPopoverRef = useRef<HTMLDivElement>(null);
@@ -337,9 +352,7 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
   const notificationCount = usePaneMetadataStore((s) =>
     pane.tabs.reduce(
       (sum, tab) =>
-        sum +
-        (s.metadata[tab.sessionId]?.notificationCount ?? 0) +
-        (s.metadata[tab.sessionId]?.workDoneCount ?? 0),
+        sum + (s.metadata[tab.sessionId]?.notificationCount ?? 0),
       0,
     ),
   );
@@ -354,6 +367,19 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
   const refreshBrowserTabPreview = useWorkspaceLayoutStore((s) => s.refreshBrowserTabPreview);
 
   // OSC 9988 from XTermWrapper. Match by pane.tabs membership (not activeTab)
+  useEffect(() => {
+    const root = paneRootRef.current;
+    if (!root || !composerEnabled) return;
+    const observer = new ResizeObserver(([entry]) => {
+      const height = entry?.contentRect.height ?? 0;
+      setPaneIsTall((wasTall) => (wasTall
+        ? height >= COMPOSER_MIN_PANE_HEIGHT
+        : height >= COMPOSER_RESTORE_PANE_HEIGHT));
+    });
+    observer.observe(root);
+    return () => observer.disconnect();
+  }, [composerEnabled]);
+
   // so reloads still fire after the browser tab is activated and the terminal
   // sessionId is no longer activeTab.sessionId.
   useEffect(() => {
@@ -857,6 +883,22 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
           </div>
         )}
       </div>
+      {showComposer && activeTab && agent && (
+        <ErrorBoundary>
+          <PaneComposer
+            sessionId={activeTab.sessionId}
+            active={isActive}
+            target={{
+              command: launchCommand,
+              args: launchArgs,
+              agentId: resolvedAgentId,
+              agentKind: savedAgentSession?.kind ?? activeTab.agentKind ?? activeTabMetadataAgentKind,
+              launchEnv,
+              processTitle: activeTabMetadataProcessTitle,
+            }}
+          />
+        </ErrorBoundary>
+      )}
       {dropPreviewClass && (
         <div className={dropPreviewClass}>
           {dropPreviewLabel && (

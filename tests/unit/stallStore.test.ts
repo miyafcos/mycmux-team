@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   classifyStallCandidate,
+  observeScreenActivity,
   selectStallCandidates,
   type StallStageOneSession,
 } from "../../src/stores/stallStore";
@@ -31,7 +32,7 @@ describe("selectStallCandidates", () => {
       session({ sessionId: "fresh-agent", agentStatusAt: NOW - TAB_SWEEP_IDLE_MS + 1 }),
     ], NOW);
 
-    expect(candidates).toEqual([{ sessionId: "boundary", since: NOW - TAB_SWEEP_IDLE_MS, ptyDead: false }]);
+    expect(candidates).toEqual([{ sessionId: "boundary", since: NOW - TAB_SWEEP_IDLE_MS, ptyDead: false, processActivity: "unknown" }]);
   });
 
   it("excludes attention and accepts a terminal buffer without a live PTY snapshot", () => {
@@ -42,13 +43,13 @@ describe("selectStallCandidates", () => {
       session({ sessionId: "not-terminal", type: "browser" }),
     ], NOW);
 
-    expect(candidates).toEqual([{ sessionId: "buffer", since: NOW - TAB_SWEEP_IDLE_MS, ptyDead: false }]);
+    expect(candidates).toEqual([{ sessionId: "buffer", since: NOW - TAB_SWEEP_IDLE_MS, ptyDead: false, processActivity: "unknown" }]);
   });
 
   it("adds a confirmed dead PTY without waiting for an idle interval", () => {
     expect(selectStallCandidates([
       session({ sessionId: "dead", lastLogAt: NOW, processStatusReason: "no_live_pty_session", hasLivePty: false }),
-    ], NOW)).toEqual([{ sessionId: "dead", since: NOW, ptyDead: true }]);
+    ], NOW)).toEqual([{ sessionId: "dead", since: NOW, ptyDead: true, processActivity: "unknown" }]);
   });
 });
 
@@ -59,10 +60,8 @@ describe("classifyStallCandidate", () => {
     });
   });
 
-  it("distinguishes an idle prompt from typed but unsent input", () => {
-    expect(classifyStallCandidate({ sessionId: "idle", since: 10, ptyDead: false }, ["❯"])).toEqual({
-      sessionId: "idle", reason: "no_output", since: 10,
-    });
+  it("keeps an idle prompt waiting while retaining queued-input detection", () => {
+    expect(classifyStallCandidate({ sessionId: "idle", since: 10, ptyDead: false }, ["❯"])).toBeNull();
     expect(classifyStallCandidate({ sessionId: "queued", since: 10, ptyDead: false }, ["❯ typed text"])).toEqual({
       sessionId: "queued", reason: "queued_input", since: 10, detail: "typed text",
     });
@@ -74,5 +73,25 @@ describe("classifyStallCandidate", () => {
       sessionId: "queued", reason: "queued_input", since: 10, detail: "x".repeat(120),
     });
     expect(classifyStallCandidate({ sessionId: "unknown", since: 10, ptyDead: false }, ["still working"])).toBeNull();
+  });
+});
+
+describe("observeScreenActivity", () => {
+  it("does not reset the silent clock for cosmetic raw screen churn", () => {
+    const first = observeScreenActivity(undefined, 10, "same", 100);
+    const cosmeticChurn = observeScreenActivity(first, 20, "same", 200);
+    expect(cosmeticChurn.lastActivityAt).toBe(100);
+    expect(classifyStallCandidate(
+      { sessionId: "silent", since: 10, ptyDead: false, processActivity: "running_silent" },
+      [],
+      false,
+      TAB_SWEEP_IDLE_MS,
+    )).toEqual({ sessionId: "silent", reason: "silent", since: 10 });
+  });
+
+  it("treats raw offset progress as activity only when a fingerprint is unavailable", () => {
+    const first = observeScreenActivity(undefined, 10, null, 100);
+    const rawAdvance = observeScreenActivity(first, 20, null, 200);
+    expect(rawAdvance.lastActivityAt).toBe(200);
   });
 });

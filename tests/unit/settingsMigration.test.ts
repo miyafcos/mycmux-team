@@ -13,7 +13,7 @@ describe("settings persistence migration", () => {
       { notificationsEnabled: true },
       0,
       "Macintosh; Intel Mac OS X",
-    )).toEqual({
+    )).toMatchObject({
       terminalRenderer: "auto",
       notificationsEnabled: true,
     });
@@ -24,7 +24,7 @@ describe("settings persistence migration", () => {
       { useWebglRenderer: false, notificationsEnabled: true },
       0,
       "Windows NT 10.0",
-    )).toEqual({
+    )).toMatchObject({
       terminalRenderer: "auto",
       notificationsEnabled: true,
     });
@@ -35,7 +35,7 @@ describe("settings persistence migration", () => {
       { useWebglRenderer: true, notificationsEnabled: true },
       0,
       "Windows NT 10.0",
-    )).toEqual({
+    )).toMatchObject({
       terminalRenderer: "webgl",
       notificationsEnabled: true,
     });
@@ -46,7 +46,7 @@ describe("settings persistence migration", () => {
       { useWebglRenderer: true, notificationsEnabled: true },
       0,
       "Macintosh; Intel Mac OS X",
-    )).toEqual({
+    )).toMatchObject({
       terminalRenderer: "webgl",
       notificationsEnabled: true,
     });
@@ -57,7 +57,7 @@ describe("settings persistence migration", () => {
       { terminalRenderer: "webgl", notificationsEnabled: true },
       1,
       "Windows NT 10.0",
-    )).toEqual({
+    )).toMatchObject({
       terminalRenderer: "auto",
       notificationsEnabled: true,
     });
@@ -68,7 +68,7 @@ describe("settings persistence migration", () => {
       { terminalRenderer: "webgl", notificationsEnabled: true },
       2,
       "Macintosh; Intel Mac OS X",
-    )).toEqual({
+    )).toMatchObject({
       terminalRenderer: "auto",
       notificationsEnabled: true,
     });
@@ -79,7 +79,7 @@ describe("settings persistence migration", () => {
       { terminalRenderer: "webgl", notificationsEnabled: true },
       2,
       "Windows NT 10.0",
-    )).toEqual({
+    )).toMatchObject({
       terminalRenderer: "webgl",
       notificationsEnabled: true,
     });
@@ -98,7 +98,7 @@ describe("settings persistence migration", () => {
     expect(migratePersistedSettings(
       { terminalRenderer: "dom", notificationsEnabled: true },
       3,
-    )).toEqual({
+    )).toMatchObject({
       terminalRenderer: "auto",
       notificationsEnabled: true,
     });
@@ -108,7 +108,7 @@ describe("settings persistence migration", () => {
     expect(migratePersistedSettings(
       { terminalRenderer: "webgl", notificationsEnabled: true },
       3,
-    )).toEqual({
+    )).toMatchObject({
       terminalRenderer: "webgl",
       notificationsEnabled: true,
     });
@@ -118,15 +118,24 @@ describe("settings persistence migration", () => {
     expect(migratePersistedSettings(
       { terminalRenderer: "canvas", notificationsEnabled: true },
       3,
-    )).toEqual({
+    )).toMatchObject({
       terminalRenderer: "auto",
       notificationsEnabled: true,
     });
   });
 
-  it.each([4, 5])("does not migrate settings at version %i", (version) => {
+  it.each([5, 6])("does not migrate settings at version %i", (version) => {
     const persisted = { terminalRenderer: "dom", notificationsEnabled: true };
     expect(migratePersistedSettings(persisted, version)).toBe(persisted);
+  });
+
+  it("adds valid watchdog defaults in version 5", () => {
+    expect(migratePersistedSettings({ notificationsEnabled: true }, 4)).toMatchObject({
+      dispatchWatchdogEnabled: true,
+      dispatchWatchdogIntervalMinutes: 10,
+      dispatchStallMinutes: 45,
+      dispatchWatchdogNotify: true,
+    });
   });
 });
 

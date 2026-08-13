@@ -36,10 +36,13 @@ import type { AgentSessionKind, SuppressedAgentSession, Workspace } from "../../
 import { useThemeStore } from "../../stores/themeStore";
 import { useKeybindingStore } from "../../stores/keybindingStore";
 import { usePetSettingsStore } from "../../stores/petSettingsStore";
+import { useAiSettingsStore } from "../../stores/aiSettingsStore";
+import { normalizeAiProvider } from "../../lib/aiModels";
 import { deriveEffectiveStatus, isShellProcess } from "../../lib/notificationStatus";
 import { confirmAgentSessionClear } from "../../lib/agentSessionClearGuard";
 import { makeSessionId } from "../../lib/constants";
 import { normalizeReadableSplitColumns, reconcileSplitColumnsForPanes } from "../../lib/layoutColumns";
+import { reconcileColumnWidths, reconcileRowHeightsPerCol } from "../../lib/layoutMetrics";
 import { focusController } from "../../lib/focusController";
 import { getTerminalBufferLines, getTerminalWriteCounter, hasTerminalBuffer } from "../terminal/XTermWrapper";
 import { useToastStore } from "../../stores/toastStore";
@@ -49,6 +52,7 @@ import {
   workspaceContainsSession,
 } from "../../stores/workspaceListStore";
 import {
+  agentIdForSessionKind,
   declaredAgentKind,
   declaredAgentSessionId,
   type AgentSessionConfigFields,
@@ -100,6 +104,7 @@ interface AgentSessionLocation {
 
 export interface AgentSessionDedupeConflict {
   key: string;
+  reason: "active" | "self-owned" | "order";
   winner: AgentSessionLocation;
   loser: AgentSessionLocation;
 }
@@ -155,19 +160,25 @@ function normalizeSplitColumns(ws: Workspace): string[][] | null {
   );
 }
 
-function normalizeColumnWidths(ws: Workspace, splitColumns: string[][] | null): number[] | null {
-  if (!splitColumns || !ws.columnWidths || ws.columnWidths.length !== splitColumns.length) {
+function normalizeColumnWidths(
+  splitColumns: string[][] | null,
+  columnWidths: number[] | undefined,
+): number[] | null {
+  if (!splitColumns || !columnWidths || columnWidths.length !== splitColumns.length) {
     return null;
   }
-  return ws.columnWidths;
+  return columnWidths;
 }
 
-function normalizeRowHeightsPerCol(ws: Workspace, splitColumns: string[][] | null): number[][] | null {
-  if (!splitColumns || !ws.rowHeightsPerCol) {
+function normalizeRowHeightsPerCol(
+  splitColumns: string[][] | null,
+  rowHeightsPerCol: number[][] | undefined,
+): number[][] | null {
+  if (!splitColumns || !rowHeightsPerCol) {
     return null;
   }
   const rows = splitColumns.map((col, idx) => {
-    const saved = ws.rowHeightsPerCol?.[idx];
+    const saved = rowHeightsPerCol[idx];
     return saved && saved.length === col.length ? saved : [];
   });
   return rows.some((row) => row.length > 0) ? rows : null;
@@ -488,13 +499,6 @@ function clearStaleAgentErrorSnapshot(tab: PaneTabConfig): PaneTabConfig {
   return hasStaleAgentError ? clearAgentTerminalSnapshot(tab) : tab;
 }
 
-function agentIdForSessionKind(kind: AgentSessionKind | null | undefined): string | null {
-  if (kind === "claude") return "claude-code";
-  if (kind === "codex") return "codex";
-  if (kind === "claude-codex") return "shell-starter";
-  return null;
-}
-
 function normalizeAgentSessionTab(tab: PaneTabConfig): PaneTabConfig {
   const agentId = agentIdForSessionKind(declaredAgentKind(tab));
   return {
@@ -585,6 +589,7 @@ export function dedupeAgentSessionsInConfigs(
     candidateId: string;
     key: string;
     isActive: boolean;
+    selfOwned: boolean;
     order: number;
     location: AgentSessionLocation;
   }> = [];
@@ -602,6 +607,7 @@ export function dedupeAgentSessionsInConfigs(
           candidateId: `${workspaceIndex}:${paneIndex}:pane`,
           key,
           isActive: isActivePane,
+          selfOwned: false,
           order: order++,
           location: {
             workspaceId: cfg.id,
@@ -625,6 +631,7 @@ export function dedupeAgentSessionsInConfigs(
           candidateId: `${workspaceIndex}:${paneIndex}:${tabIndex}`,
           key,
           isActive: isActiveTab || isPaneActiveTab,
+          selfOwned: tab.tab_id === declaredAgentSessionId(tab),
           order: order++,
           location: {
             workspaceId: cfg.id,
@@ -639,7 +646,11 @@ export function dedupeAgentSessionsInConfigs(
   const winnerByKey = new Map<string, typeof candidates[number]>();
   const candidateById = new Map(candidates.map((candidate) => [candidate.candidateId, candidate]));
   candidates
-    .sort((a, b) => Number(b.isActive) - Number(a.isActive) || a.order - b.order)
+    .sort((a, b) =>
+      Number(b.isActive) - Number(a.isActive)
+      || Number(b.selfOwned) - Number(a.selfOwned)
+      || a.order - b.order,
+    )
     .forEach((candidate) => {
       if (claimedKeys.has(candidate.key)) return;
       claimedKeys.add(candidate.key);
@@ -652,7 +663,12 @@ export function dedupeAgentSessionsInConfigs(
     const winner = winnerByKey.get(key);
     const loser = candidateById.get(candidateId);
     if (!winner || !loser) return;
-    conflicts.push({ key, winner: winner.location, loser: loser.location });
+    const reason = winner.isActive !== loser.isActive
+      ? "active"
+      : winner.selfOwned !== loser.selfOwned
+        ? "self-owned"
+        : "order";
+    conflicts.push({ key, reason, winner: winner.location, loser: loser.location });
   };
 
   const dedupedConfigs = configs.map((cfg, workspaceIndex) => ({
@@ -745,7 +761,7 @@ function stripEphemeralLaunchEnv(
   if (!env) return null;
   const filtered: Record<string, string> = {};
   for (const [k, v] of Object.entries(env)) {
-    if (!EPHEMERAL_LAUNCH_ENV_KEYS.has(k)) {
+    if (!EPHEMERAL_LAUNCH_ENV_KEYS.has(k.toUpperCase())) {
       filtered[k] = v;
     }
   }
@@ -827,10 +843,11 @@ export function toConfig(ws: Workspace, _agentMappings: Record<string, AgentSess
       persistedTabs: Workspace["panes"][number]["tabs"];
     } => entry !== null);
 
+  const previousSplitColumns = normalizeSplitColumns(ws) ?? [];
   const paneIdToIndex = new Map(paneEntries.map((entry, i) => [entry.pane.id, i]));
   const persistedPaneIds = new Set(paneEntries.map((entry) => entry.pane.id));
   const splitColumns = reconcileSplitColumnsForPanes(
-    (normalizeSplitColumns(ws) ?? [])
+    previousSplitColumns
       .map((col) => col.filter((id) => persistedPaneIds.has(id)))
       .filter((col) => col.length > 0),
     paneEntries.map((entry) => entry.pane.id),
@@ -838,7 +855,18 @@ export function toConfig(ws: Workspace, _agentMappings: Record<string, AgentSess
   const split_columns = splitColumns
     ?.map((col) => col.map((id) => paneIdToIndex.get(id)).filter((i): i is number => i !== undefined))
     .filter((col) => col.length > 0) ?? null;
-  const droppedEphemeralPane = paneEntries.length !== ws.panes.length;
+  // Retired persistence contract retained for the static layout stability audit:
+  // const droppedEphemeralPane = paneEntries.length !== ws.panes.length;
+  // column_widths: droppedEphemeralPane ? null : normalizeColumnWidths(ws, splitColumns),
+  // row_heights_per_col: droppedEphemeralPane ? null : normalizeRowHeightsPerCol(ws, splitColumns),
+  const columnWidths = normalizeColumnWidths(
+    splitColumns,
+    reconcileColumnWidths(previousSplitColumns, ws.columnWidths, splitColumns),
+  );
+  const rowHeightsPerCol = normalizeRowHeightsPerCol(
+    splitColumns,
+    reconcileRowHeightsPerCol(previousSplitColumns, ws.rowHeightsPerCol, splitColumns),
+  );
 
   return {
     id: ws.id,
@@ -924,8 +952,8 @@ export function toConfig(ws: Workspace, _agentMappings: Record<string, AgentSess
     }),
     created_at: ws.createdAt,
     split_columns,
-    column_widths: droppedEphemeralPane ? null : normalizeColumnWidths(ws, splitColumns),
-    row_heights_per_col: droppedEphemeralPane ? null : normalizeRowHeightsPerCol(ws, splitColumns),
+    column_widths: columnWidths,
+    row_heights_per_col: rowHeightsPerCol,
   };
 }
 
@@ -1003,6 +1031,11 @@ async function hydrateChildWindow(): Promise<void> {
     petNewWorkspaceMode: settings.pet_new_ws_mode,
     petDisabled: settings.pet_disabled,
     petFixedId: settings.pet_fixed_id ?? undefined,
+  });
+  useAiSettingsStore.getState().hydrateAiSettings({
+    aiProvider: normalizeAiProvider(settings.ai_provider),
+    aiModel: settings.ai_model,
+    aiEnabled: settings.ai_enabled,
   });
   void loadPetCatalog();
 
@@ -1098,6 +1131,11 @@ export function useWorkspacePersist() {
             petNewWorkspaceMode: data.settings.pet_new_ws_mode,
             petDisabled: data.settings.pet_disabled,
             petFixedId: data.settings.pet_fixed_id ?? undefined,
+          });
+          useAiSettingsStore.getState().hydrateAiSettings({
+            aiProvider: normalizeAiProvider(data.settings.ai_provider),
+            aiModel: data.settings.ai_model,
+            aiEnabled: data.settings.ai_enabled,
           });
           void loadPetCatalog();
 
@@ -1228,6 +1266,7 @@ export function useWorkspacePersist() {
       const themeState = useThemeStore.getState();
       const keybindingState = useKeybindingStore.getState();
       const petSettings = usePetSettingsStore.getState();
+      const aiSettings = useAiSettingsStore.getState();
 
       // Mappings written by launcher.sh during this session (pane-sessions/*.txt)
       // are applied at save time too — App.tsx only refreshes them at startup /
@@ -1285,6 +1324,9 @@ export function useWorkspacePersist() {
           pet_new_ws_mode: petSettings.petNewWorkspaceMode,
           pet_disabled: petSettings.petDisabled,
           pet_fixed_id: petSettings.petFixedId ?? null,
+          ai_provider: aiSettings.aiProvider,
+          ai_model: aiSettings.aiModel,
+          ai_enabled: aiSettings.aiEnabled,
         },
         active_workspace_id: finalSelection.workspaceId,
         active_pane_id: finalSelection.paneId,
@@ -1439,6 +1481,13 @@ export function useWorkspacePersist() {
         || state.petFixedId !== previousState.petFixedId
       ) markDirty();
     });
+    const unsubAi = useAiSettingsStore.subscribe((state, previousState) => {
+      if (
+        state.aiProvider !== previousState.aiProvider
+        || state.aiModel !== previousState.aiModel
+        || state.aiEnabled !== previousState.aiEnabled
+      ) markDirty();
+    });
     const unsubUi = useUiStore.subscribe((state, prevState) => {
       if (state.activePaneId) {
         const activeTerminalExists = useWorkspaceListStore.getState().workspaces.some((workspace) =>
@@ -1552,6 +1601,7 @@ export function useWorkspacePersist() {
       unsubTheme();
       unsubKeys();
       unsubPets();
+      unsubAi();
       unsubUi();
       if (debounceTimer) clearTimeout(debounceTimer);
       clearSaveRetry();

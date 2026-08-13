@@ -113,7 +113,12 @@ fn now_ms() -> i64 {
 
 fn open() -> Result<rusqlite::Connection, String> {
     let path = crate::ailog::db_path()?;
-    crate::ailog::open_db(&path)
+    crate::ailog::db::reader(&path)
+}
+
+fn open_writer() -> Result<rusqlite::Connection, String> {
+    let path = crate::ailog::db_path()?;
+    crate::ailog::db::writer(&path)
 }
 
 // ---------------------------------------------------------------------------
@@ -257,6 +262,10 @@ pub async fn ailog_summarize_start(
     force: Option<bool>,
     range: Option<Range>,
 ) -> Result<SummarizeStartResult, String> {
+    let ai = crate::ai::resolve(&app);
+    if !ai.enabled {
+        return Err("ai_disabled".to_string());
+    }
     if runner_gate()
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
         .is_err()
@@ -355,6 +364,7 @@ pub async fn ailog_summarize_start(
             size,
             force,
             summary_range,
+            ai,
             cancel,
             children,
             Some(sink),
@@ -539,9 +549,14 @@ pub async fn ailog_digest_get(date: String) -> Result<digest::DigestReport, Stri
 
 #[tauri::command(async)]
 pub async fn ailog_digest_generate(
+    app: AppHandle,
     date: String,
     force: Option<bool>,
 ) -> Result<digest::DigestReport, String> {
+    let ai = crate::ai::resolve(&app);
+    if !ai.enabled {
+        return Err("ai_disabled".to_string());
+    }
     if digest_gate()
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
         .is_err()
@@ -549,8 +564,8 @@ pub async fn ailog_digest_generate(
         return Err("日次ダイジェスト処理が実行中です".to_string());
     }
     let worker = tokio::task::spawn_blocking(move || {
-        let mut conn = open()?;
-        digest::generate(&mut conn, &date, force.unwrap_or(false))
+        let mut conn = open_writer()?;
+        digest::generate(&mut conn, &date, force.unwrap_or(false), &ai)
     })
     .await;
     digest_gate().store(false, Ordering::SeqCst);
@@ -698,9 +713,13 @@ pub async fn ailog_session_transcript(
 }
 
 #[tauri::command(async)]
-pub async fn ailog_session_summarize(args: SessionDetailArgs) -> Result<(), String> {
+pub async fn ailog_session_summarize(app: AppHandle, args: SessionDetailArgs) -> Result<(), String> {
+    let ai = crate::ai::resolve(&app);
+    if !ai.enabled {
+        return Err("ai_disabled".to_string());
+    }
     let db_path = crate::ailog::db_path()?;
-    summarize::run_summarize_one(db_path, args.kind, args.session_id).await
+    summarize::run_summarize_one(db_path, args.kind, args.session_id, ai).await
 }
 
 #[tauri::command(async)]
@@ -821,7 +840,7 @@ pub struct SetPriceResult {
 
 #[tauri::command(async)]
 pub async fn ailog_set_price(entry: query::PriceEntry) -> Result<SetPriceResult, String> {
-    let mut conn = open()?;
+    let mut conn = open_writer()?;
     // Changing a rate changes every stored cost derived from it, so the whole
     // database is re-priced rather than left inconsistent until the next index.
     let repriced = query::set_price(&mut conn, &entry)?;

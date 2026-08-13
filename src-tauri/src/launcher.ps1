@@ -162,34 +162,82 @@ function Start-MycmuxSessionTracking {
   # Trackers guess which log belongs to the pane just launched. A file that
   # predates the launch cannot be that log, and adopting it would bind the pane
   # to somebody else's session, so anything older than $startedAt is rejected
-  # and no mapping is written. Mirrors __newest_file_since in launcher.sh.
+  # and no mapping is written. Ambiguous candidates are rejected too, because
+  # a wrong mapping is worse than leaving attribution to the monitor.
   $startedAt = (Get-Date).ToUniversalTime()
-  Start-Job -ArgumentList $PaneId, $Kind, $ProjectDir, $homeDir, $startedAt -ScriptBlock {
-    param($PaneId, $Kind, $ProjectDir, $HomeDir, $StartedAt)
+  $launchCwd = (Get-Location).Path
+  $runtimeDir = if ($env:MYCMUX_RUNTIME_DIR) { $env:MYCMUX_RUNTIME_DIR } else { Join-Path $homeDir ".mycmux" }
+  Start-Job -ArgumentList $PaneId, $Kind, $ProjectDir, $homeDir, $startedAt, $launchCwd, $runtimeDir -ScriptBlock {
+    param($PaneId, $Kind, $ProjectDir, $HomeDir, $StartedAt, $LaunchCwd, $RuntimeDir)
     Start-Sleep -Seconds 4
+
+    function Normalize-MycmuxTrackingCwd {
+      param([string]$Path)
+      if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
+      if ($Path -match "^/([a-zA-Z])/(.*)$") {
+        $Path = ("{0}:\{1}" -f $Matches[1].ToUpperInvariant(), $Matches[2].Replace("/", "\"))
+      }
+      try { $Path = (Resolve-Path -LiteralPath $Path -ErrorAction Stop).Path } catch {
+        try { $Path = [System.IO.Path]::GetFullPath($Path) } catch { }
+      }
+      return $Path.Replace("/", "\").TrimEnd([char[]]@('\', '/')).ToLowerInvariant()
+    }
+
+    function Get-MycmuxTrackingCandidate {
+      param($File, [string]$CandidateKind, [string]$ExpectedCwd)
+      $candidateCwd = $null
+      if ($CandidateKind -eq "codex") {
+        $firstLine = [System.IO.File]::ReadLines($File.FullName, [System.Text.Encoding]::UTF8) | Select-Object -First 1
+        try { $candidateCwd = [string](($firstLine | ConvertFrom-Json -ErrorAction Stop).payload.cwd) } catch { return $null }
+      } else {
+        $lineCount = 0
+        foreach ($line in [System.IO.File]::ReadLines($File.FullName, [System.Text.Encoding]::UTF8)) {
+          if (++$lineCount -gt 32) { break }
+          try { $value = $line | ConvertFrom-Json -ErrorAction Stop } catch { continue }
+          $candidateCwd = [string]$value.cwd
+          if (-not [string]::IsNullOrWhiteSpace($candidateCwd)) { break }
+        }
+      }
+      if ((Normalize-MycmuxTrackingCwd $candidateCwd) -ne $ExpectedCwd) { return $null }
+      if ($CandidateKind -eq "codex") {
+        $match = [regex]::Match([System.IO.Path]::GetFileNameWithoutExtension($File.Name), "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+        if (-not $match.Success) { return $null }
+        $sessionId = $match.Value
+      } else {
+        $sessionId = [System.IO.Path]::GetFileNameWithoutExtension($File.Name)
+      }
+      if ([string]::IsNullOrWhiteSpace($sessionId)) { return $null }
+      return [pscustomobject]@{ SessionId = $sessionId; File = $File }
+    }
+
+    $normalizedLaunchCwd = Normalize-MycmuxTrackingCwd $LaunchCwd
+    if ([string]::IsNullOrWhiteSpace($normalizedLaunchCwd)) { return }
     if ($Kind -eq "codex") {
       $searchDir = Join-Path $HomeDir ".codex\sessions"
       if (-not (Test-Path -LiteralPath $searchDir)) { return }
-      $latest = Get-ChildItem -LiteralPath $searchDir -Recurse -Filter "rollout-*.jsonl" -File -ErrorAction SilentlyContinue |
-        Where-Object { $_.LastWriteTimeUtc -ge $StartedAt } |
-        Sort-Object LastWriteTimeUtc -Descending |
-        Select-Object -First 1
-      if ($null -eq $latest) { return }
-      $match = [regex]::Match([System.IO.Path]::GetFileNameWithoutExtension($latest.Name), "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
-      if (-not $match.Success) { return }
-      $sessionId = $match.Value
+      $files = Get-ChildItem -LiteralPath $searchDir -Recurse -Filter "rollout-*.jsonl" -File -ErrorAction SilentlyContinue
     } else {
       if ([string]::IsNullOrWhiteSpace($ProjectDir) -or -not (Test-Path -LiteralPath $ProjectDir)) { return }
-      $latest = Get-ChildItem -LiteralPath $ProjectDir -Filter "*.jsonl" -File -ErrorAction SilentlyContinue |
-        Where-Object { $_.LastWriteTimeUtc -ge $StartedAt } |
-        Sort-Object LastWriteTimeUtc -Descending |
-        Select-Object -First 1
-      if ($null -eq $latest) { return }
-      $sessionId = [System.IO.Path]::GetFileNameWithoutExtension($latest.Name)
+      $files = Get-ChildItem -LiteralPath $ProjectDir -Filter "*.jsonl" -File -ErrorAction SilentlyContinue
     }
-    if ([string]::IsNullOrWhiteSpace($sessionId)) { return }
-    $runtimeDir = if ($env:MYCMUX_RUNTIME_DIR) { $env:MYCMUX_RUNTIME_DIR } else { Join-Path $HomeDir ".mycmux" }
-    $mapDir = Join-Path $runtimeDir "pane-sessions"
+
+    $candidates = @($files |
+      Where-Object { $_.LastWriteTimeUtc -ge $StartedAt } |
+      ForEach-Object { Get-MycmuxTrackingCandidate $_ $Kind $normalizedLaunchCwd } |
+      Where-Object { $null -ne $_ })
+    $mapDir = Join-Path $RuntimeDir "pane-sessions"
+    $claimedSessionIds = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+    if (Test-Path -LiteralPath $mapDir) {
+      foreach ($mapFile in Get-ChildItem -LiteralPath $mapDir -Filter "*.txt" -File -ErrorAction SilentlyContinue) {
+        if ($mapFile.BaseName -eq $PaneId) { continue }
+        try { $mapping = [System.IO.File]::ReadAllText($mapFile.FullName, [System.Text.Encoding]::UTF8).Trim() } catch { continue }
+        if ($mapping -match '^(?:claude|codex|claude-codex):(.+)$') { [void]$claimedSessionIds.Add($Matches[1]) }
+      }
+    }
+    $remainingCandidates = @($candidates |
+      Where-Object { -not $claimedSessionIds.Contains($_.SessionId) })
+    if ($remainingCandidates.Count -ne 1) { return }
+    $sessionId = $remainingCandidates[0].SessionId
     New-Item -ItemType Directory -Force -Path $mapDir | Out-Null
     $mapPath = Join-Path $mapDir "$PaneId.txt"
     $encoding = New-Object System.Text.UTF8Encoding($false)
@@ -351,8 +399,13 @@ function Invoke-MycmuxResumeFromEnv {
   switch -Wildcard ($env:MYCMUX_RESUME) {
     "claude-codex*" {
       if ($env:MYCMUX_SESSION_ID) {
-        Write-MycmuxSessionMapping $env:MYCMUX_PANE_SESSION_ID "claude-codex" $env:MYCMUX_SESSION_ID
-        Invoke-MycmuxCommandArray -Command @("claude-codex", "--resume", $env:MYCMUX_SESSION_ID)
+        if ($env:MYCMUX_RESUME_FORK -eq "1") {
+          Start-MycmuxSessionTracking $env:MYCMUX_PANE_SESSION_ID "claude-codex" (Get-MycmuxClaudeCodexProjectDir)
+          Invoke-MycmuxCommandArray -Command @("claude-codex", "--resume", $env:MYCMUX_SESSION_ID, "--fork-session")
+        } else {
+          Write-MycmuxSessionMapping $env:MYCMUX_PANE_SESSION_ID "claude-codex" $env:MYCMUX_SESSION_ID
+          Invoke-MycmuxCommandArray -Command @("claude-codex", "--resume", $env:MYCMUX_SESSION_ID)
+        }
       } else {
         Start-MycmuxSessionTracking $env:MYCMUX_PANE_SESSION_ID "claude-codex" (Get-MycmuxClaudeCodexProjectDir)
         Invoke-MycmuxCommandArray -Command @("claude-codex", "--continue")
@@ -362,8 +415,13 @@ function Invoke-MycmuxResumeFromEnv {
     "claude*" {
       if ($env:MYCMUX_SESSION_ID) {
         if (Set-MycmuxClaudeResumeLocation $env:MYCMUX_SESSION_ID) {
-          Write-MycmuxSessionMapping $env:MYCMUX_PANE_SESSION_ID "claude" $env:MYCMUX_SESSION_ID
-          Invoke-MycmuxCommandArray -Command @("claude", "--dangerously-skip-permissions", "--permission-mode", "bypassPermissions", "--resume", $env:MYCMUX_SESSION_ID)
+          if ($env:MYCMUX_RESUME_FORK -eq "1") {
+            Start-MycmuxSessionTracking $env:MYCMUX_PANE_SESSION_ID "claude" (Get-MycmuxClaudeProjectDir)
+            Invoke-MycmuxCommandArray -Command @("claude", "--dangerously-skip-permissions", "--permission-mode", "bypassPermissions", "--resume", $env:MYCMUX_SESSION_ID, "--fork-session")
+          } else {
+            Write-MycmuxSessionMapping $env:MYCMUX_PANE_SESSION_ID "claude" $env:MYCMUX_SESSION_ID
+            Invoke-MycmuxCommandArray -Command @("claude", "--dangerously-skip-permissions", "--permission-mode", "bypassPermissions", "--resume", $env:MYCMUX_SESSION_ID)
+          }
         } else {
           Start-MycmuxSessionTracking $env:MYCMUX_PANE_SESSION_ID "claude" (Get-MycmuxClaudeProjectDir)
           Invoke-MycmuxCommandArray -Command @("claude", "--dangerously-skip-permissions", "--permission-mode", "bypassPermissions", "--continue")

@@ -13,6 +13,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { aiSettingsStrings } from "../components/settings/settingsStrings";
 
 // ---------------------------------------------------------------------------
 // Query inputs
@@ -1154,7 +1155,9 @@ export function formatBytes(bytes: number): string {
 }
 
 export function errorMessage(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  if (typeof error === "string") return error;
-  return String(error);
+  const raw = error instanceof Error ? error.message : typeof error === "string" ? error : String(error);
+  // The summarise/digest commands reject with this marker rather than a
+  // Japanese sentence, so the backend stays free of UI copy.
+  if (raw.trim() === "ai_disabled") return aiSettingsStrings.disabledReason;
+  return raw;
 }

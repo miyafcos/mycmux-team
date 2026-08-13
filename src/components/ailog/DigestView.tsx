@@ -11,6 +11,7 @@ export function DigestView({
   summarizeStatus,
   summarizeError,
   onStartSummarize,
+  aiDisabledReason,
 }: {
   report: DigestReport | null;
   loading: boolean;
@@ -21,7 +22,10 @@ export function DigestView({
   summarizeStatus?: SummarizeStatus | null;
   summarizeError?: string | null;
   onStartSummarize?: () => void;
+  /** Set when the AI setting is off; also used as each button's tooltip. */
+  aiDisabledReason?: string;
 }) {
+  const aiOff = aiDisabledReason !== undefined;
   const content = report?.digest?.content;
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -31,15 +35,17 @@ export function DigestView({
           <span style={{ fontVariantNumeric: "tabular-nums", fontWeight: 700 }}>{report?.date ?? ""}</span>
           <button type="button" onClick={onNext} style={subtleButtonStyle}>›</button>
         </div>
-        <button type="button" onClick={onRegenerate} disabled={generating} style={{ ...subtleButtonStyle, opacity: generating ? 0.5 : 1 }}>再生成</button>
+        <button type="button" onClick={onRegenerate} disabled={generating || aiOff} title={aiDisabledReason} style={{ ...subtleButtonStyle, opacity: generating || aiOff ? 0.5 : 1 }}>再生成</button>
       </div>
+
+      {aiOff ? <div style={noteStyle}>{aiDisabledReason}</div> : null}
 
       {loading || generating ? <div style={noteStyle}>生成中…</div> : null}
       {summarizeStatus?.running ? <div style={noteStyle}>要約中 {summarizeStatus.sessionsDone.toLocaleString()} / {summarizeStatus.sessionsTotal.toLocaleString()}（残り {summarizeStatus.sessionsRemaining.toLocaleString()}）</div> : null}
       {summarizeError || report?.parseError ? <div style={{ ...cardStyle, borderColor: "var(--cmux-usage-warn)" }}>エラー: {summarizeError ?? report?.parseError}</div> : null}
       {!loading && !generating && !content ? <div style={cardStyle}>
         <div>{report?.reason ?? "この日の要約はまだありません"}</div>
-        {(summarizeStatus?.sessionsRemaining ?? 0) > 0 && onStartSummarize ? <button type="button" onClick={onStartSummarize} style={{ ...subtleButtonStyle, marginTop: 10 }}>未要約 {summarizeStatus!.sessionsRemaining.toLocaleString()} 件 — 要約を実行</button> : null}
+        {(summarizeStatus?.sessionsRemaining ?? 0) > 0 && onStartSummarize ? <button type="button" onClick={onStartSummarize} disabled={aiOff} title={aiDisabledReason} style={{ ...subtleButtonStyle, marginTop: 10, opacity: aiOff ? 0.5 : 1 }}>未要約 {summarizeStatus!.sessionsRemaining.toLocaleString()} 件 — 要約を実行</button> : null}
       </div> : null}
       {content ? (
         <>

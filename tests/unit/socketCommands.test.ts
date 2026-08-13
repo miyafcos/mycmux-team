@@ -5,6 +5,7 @@ import {
   findPaneBySessionId,
   handleSocketCommand,
   resolveSpawnPlan,
+  resolveSpawnPanePlan,
   resolveSpawnTabPlan,
   serializePaneForSocket,
 } from "../../src/components/layout/socketCommands";
@@ -156,6 +157,29 @@ describe("resolveSpawnTabPlan", () => {
   it("rejects invalid command argv values", () => {
     expect(() => resolveSpawnTabPlan({ commandArgv: [] })).toThrow();
     expect(() => resolveSpawnTabPlan({ commandArgv: ["cmd.exe", 1] })).toThrow();
+  });
+
+  // spawn-tab --detach routes to pane.spawn, so a raw-argv agent (the case the
+  // detach flag exists for) has to survive that route too.
+  it("accepts command argv on the split-pane route as well", () => {
+    const plan = resolveSpawnPanePlan({
+      commandArgv: ["agy", "-i", "spec"],
+      cwd: "C:\\repo",
+      label: "agy",
+    });
+    expect(plan).toEqual({
+      mode: "command",
+      paneOptions: {
+        agentId: "shell-starter",
+        cwd: "C:\\repo",
+        label: "agy",
+        commandArgv: ["agy", "-i", "spec"],
+      },
+    });
+  });
+
+  it("rejects command argv combined with a target on the split-pane route", () => {
+    expect(() => resolveSpawnPanePlan({ commandArgv: ["agy"], target: "codex" })).toThrow();
   });
 
   it("rejects command argv combined with a target", () => {

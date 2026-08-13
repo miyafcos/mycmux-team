@@ -8,6 +8,7 @@ import {
   buildNamingPrompt,
   buildSweepRows,
   formatJudgeError,
+  formatSweepAiNote,
   formatLastOutputAge,
   formatSweepCompletion,
   hasIdlePrompt,
@@ -341,14 +342,42 @@ describe("tab sweep UI helpers", () => {
   });
 
   it("maps judge errors to Japanese while retaining raw detail", () => {
-    expect(formatJudgeError({ code: "timeout", detail: "timed out raw" })).toEqual({
+    expect(formatJudgeError({ code: "timeout", detail: "timed out raw" }, "codex")).toEqual({
       summary: "判定が時間切れになりました。もう一度実行してください。",
       raw: "timed out raw",
     });
-    expect(formatJudgeError({ code: "cli_not_found", detail: "not found raw" }).summary).toContain("見つかりません");
-    expect(formatJudgeError({ code: "cli_failed", detail: "stderr raw" }).summary).toContain("エラー終了");
+    expect(formatJudgeError({ code: "cli_not_found", detail: "not found raw" }, "codex").summary).toContain("見つかりません");
+    expect(formatJudgeError({ code: "cli_failed", detail: "stderr raw" }, "codex").summary).toContain("エラー終了");
   });
 
+  it("names the configured CLI when it is missing, not a fixed one", () => {
+    expect(formatJudgeError({ code: "cli_not_found", detail: "x" }, "codex").summary).toContain("Codex (codex)");
+    expect(formatJudgeError({ code: "cli_not_found", detail: "x" }, "claude-code").summary)
+      .toContain("Claude Code (claude)");
+  });
+
+  it("explains the ai_disabled rejection the backend returns", () => {
+    expect(formatJudgeError({ code: "ai_disabled", detail: "ai features are disabled in settings" }, "codex").summary)
+      .toContain("AI機能を有効にする");
+  });
+
+});
+
+describe("tab sweep AI footer note", () => {
+  it("names the configured provider and model instead of a hardcoded one", () => {
+    const judge = formatSweepAiNote("judge", "codex", "gpt-5.6-terra", true);
+    expect(judge).toContain("Codex (gpt-5.6-terra)");
+    expect(judge).toContain("8行");
+    expect(judge).not.toContain("haiku");
+
+    const naming = formatSweepAiNote("naming", "claude-code", "claude-opus-5", true);
+    expect(naming).toContain("Claude Code (claude-opus-5)");
+    expect(naming).toContain("14行");
+  });
+
+  it("explains why nothing will run when the AI setting is off", () => {
+    expect(formatSweepAiNote("judge", "codex", "gpt-5.6-luna", false)).toContain("AI機能を有効にする");
+  });
 });
 
 describe("sweep row list and checkbox state", () => {

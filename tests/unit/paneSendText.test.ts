@@ -310,8 +310,8 @@ describe("pane.send_text confirmed enter", () => {
     expect(ipcMocks.writeToSession.mock.calls).toEqual([[sessionId, "first"]]);
     releaseFirstWrite();
     await expect(Promise.all([first, second])).resolves.toEqual([
-      { sessionId, bytes: 5 },
-      { sessionId, bytes: 6 },
+      { sessionId, queuedBytes: 5, unverified: true, note: "no delivery verification; use --enter or --key to get confirmation" },
+      { sessionId, queuedBytes: 6, unverified: true, note: "no delivery verification; use --enter or --key to get confirmation" },
     ]);
     expect(ipcMocks.writeToSession.mock.calls).toEqual([
       [sessionId, "first"],
@@ -319,12 +319,50 @@ describe("pane.send_text confirmed enter", () => {
     ]);
   });
 
-  it("keeps the legacy one-write result when Enter was not requested", async () => {
+  it("labels a one-write result as unverified when Enter was not requested", async () => {
     await expect(
       handleSocketCommand("pane.send_text", { sessionId, text: "typed only", enter: false }),
-    ).resolves.toEqual({ sessionId, bytes: 10 });
+    ).resolves.toEqual({
+      sessionId,
+      queuedBytes: 10,
+      unverified: true,
+      note: "no delivery verification; use --enter or --key to get confirmation",
+    });
     expect(ipcMocks.writeToSession).toHaveBeenCalledOnce();
     expect(ipcMocks.writeToSession).toHaveBeenCalledWith(sessionId, "typed only");
     expect(terminalBufferMocks.getTerminalBufferLines).not.toHaveBeenCalled();
+  });
+
+  it("writes an arrow key once and confirms its screen effect without appending Enter", async () => {
+    terminalBufferMocks.getTerminalBufferLines
+      .mockReturnValueOnce(["ready"])
+      .mockReturnValueOnce(["history command"]);
+
+    const pending = handleSocketCommand("pane.send_text", { sessionId, text: "", key: "up" });
+    await flushSendTimers();
+
+    await expect(pending).resolves.toMatchObject({
+      sessionId,
+      ok: true,
+      confirmed: true,
+      attempts: 1,
+    });
+    expect(ipcMocks.writeToSession.mock.calls).toEqual([[sessionId, "\x1b[A"]]);
+  });
+
+  it.each([
+    ["enter", "\r"], ["esc", "\x1b"], ["tab", "\t"], ["up", "\x1b[A"],
+    ["down", "\x1b[B"], ["left", "\x1b[D"], ["right", "\x1b[C"],
+    ["ctrl-c", "\x03"], ["space", " "], ["backspace", "\x7f"],
+  ])("maps key %s to its terminal byte sequence", async (key, expected) => {
+    terminalBufferMocks.getTerminalBufferLines
+      .mockReturnValueOnce(["ready"])
+      .mockReturnValueOnce(["changed"]);
+
+    const pending = handleSocketCommand("pane.send_text", { sessionId, text: "", key });
+    await flushSendTimers();
+
+    await expect(pending).resolves.toMatchObject({ confirmed: true });
+    expect(ipcMocks.writeToSession).toHaveBeenCalledWith(sessionId, expected);
   });
 });
