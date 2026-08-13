@@ -120,6 +120,18 @@ fn build_where(range: &ResolvedRange, filters: &Filters, force_sidechain: bool) 
     }
 }
 
+/// The shared `WHERE` fragment, for callers that aggregate in SQL instead of
+/// walking `TurnRecord`s. Returned as owned parts so the private `Where` type
+/// stays inside this module. The fragment assumes the caller aliases `turn` as
+/// `t` and `session` as `s`, exactly like [`TURN_SELECT`].
+pub(crate) fn shared_where(
+    range: &ResolvedRange,
+    filters: &Filters,
+) -> (String, Vec<SqlValue>) {
+    let built = build_where(range, filters, false);
+    (built.sql, built.params)
+}
+
 const TURN_SELECT: &str = "SELECT t.kind, t.session_id, t.seq, t.ts, t.model, t.model_family, \
      t.effort, t.input_tokens, t.output_tokens, t.cache_read_tokens, \
      t.cache_write_5m_tokens, t.cache_write_1h_tokens, t.reasoning_tokens, t.duration_ms, \
@@ -782,7 +794,7 @@ fn build_model_rows(pass: &Pass, granularity: &str, prices: &PriceTable) -> Vec<
     rows
 }
 
-fn index_freshness(conn: &Connection) -> IndexFreshness {
+pub(crate) fn index_freshness(conn: &Connection) -> IndexFreshness {
     let last_indexed_at = conn
         .query_row(
             "SELECT value FROM index_state WHERE key = 'last_finished_at'",
@@ -996,6 +1008,11 @@ pub struct SeriesGroup {
     pub input: i64,
     pub output: i64,
     pub cache_read: i64,
+    /// 5m and 1h cache writes combined. Reasoning tokens are deliberately not
+    /// exposed here: Codex counts them inside `output`, and Claude folds them
+    /// into `output` too, so a "total tokens" view that added them would
+    /// double-count. See `price::cost_for_turn`.
+    pub cache_write: i64,
     pub cost_usd: f64,
 }
 
@@ -1021,35 +1038,60 @@ pub struct SeriesReport {
     pub cost_note: String,
 }
 
-/// Snap a timestamp to the start of its bucket, in UTC.
-pub fn bucket_start(ts: i64, bucket: &str) -> i64 {
+/// Minutes east of UTC used to cut day/week/month boundaries (JST).
+///
+/// 17.2% of recorded turns land in the 15:00-23:59 UTC window, which is already
+/// the next day locally; cutting at UTC files them under the previous day. This
+/// is a single constant rather than a per-request option so that every ailog
+/// surface — series, models, heatmap, digest — agrees on what "a day" is. If
+/// one of them read a different offset the same session would appear on two
+/// different dates depending on which tab you opened.
+pub const DAY_BOUNDARY_OFFSET_MIN: i64 = 9 * 60;
+
+/// Snap a timestamp to the start of its bucket, `offset_min` east of UTC.
+/// Pass 0 to get plain UTC bucketing.
+pub fn bucket_start_at(ts: i64, bucket: &str, offset_min: i64) -> i64 {
     use chrono::{Datelike, TimeZone, Utc};
-    let Some(dt) = Utc.timestamp_millis_opt(ts).single() else {
+    let shift = offset_min * 60_000;
+    // Translate into local time, reuse the UTC truncation, translate back.
+    let Some(dt) = Utc.timestamp_millis_opt(ts + shift).single() else {
         return ts;
     };
     let day = Utc
         .with_ymd_and_hms(dt.year(), dt.month(), dt.day(), 0, 0, 0)
         .single();
-    match bucket {
+    let local = match bucket {
         "week" => {
             // ISO weeks start on Monday.
             let offset = dt.weekday().num_days_from_monday() as i64;
             day.map(|d| d.timestamp_millis() - offset * 86_400_000)
-                .unwrap_or(ts)
         }
         "month" => Utc
             .with_ymd_and_hms(dt.year(), dt.month(), 1, 0, 0, 0)
             .single()
-            .map(|d| d.timestamp_millis())
-            .unwrap_or(ts),
-        _ => day.map(|d| d.timestamp_millis()).unwrap_or(ts),
-    }
+            .map(|d| d.timestamp_millis()),
+        _ => day.map(|d| d.timestamp_millis()),
+    };
+    local.map(|ms| ms - shift).unwrap_or(ts)
+}
+
+/// Snap a timestamp to the start of its bucket, in local time (JST).
+pub fn bucket_start(ts: i64, bucket: &str) -> i64 {
+    bucket_start_at(ts, bucket, DAY_BOUNDARY_OFFSET_MIN)
 }
 
 fn group_value(turn: &TurnRecord, group_by: &str) -> String {
     match group_by {
         "model" => turn
             .family
+            .clone()
+            .unwrap_or_else(|| "(unknown)".to_string()),
+        // Raw model names keep sol / terra / luna apart, which the `gpt-5.6`
+        // family bucket hides. Turns with no model recorded (Codex emits
+        // `token_count` events without one) share the `(unknown)` label with
+        // the family grouping so the two modes stay comparable.
+        "model_raw" => turn
+            .model
             .clone()
             .unwrap_or_else(|| "(unknown)".to_string()),
         "kind" => turn.kind.clone(),
@@ -1118,6 +1160,7 @@ pub fn series(
                     input: acc.input,
                     output: acc.output,
                     cache_read: acc.cache_read,
+                    cache_write: acc.cache_write,
                     cost_usd: acc.cost,
                 })
                 .collect();
@@ -1573,6 +1616,63 @@ pub struct SessionRow {
     pub goal_cluster: Option<String>,
 }
 
+/// Compact display title shared by the session list and detail response.
+/// A first prompt is deliberately reduced to its opening sentence so the API
+/// never turns a 300-character raw instruction into a heading.
+fn display_title(
+    ai_title: Option<String>,
+    goal_summary: Option<String>,
+    first_prompt: Option<String>,
+) -> Option<String> {
+    ai_title
+        .and_then(non_blank)
+        .or_else(|| goal_summary.and_then(non_blank))
+        .or_else(|| first_prompt.and_then(first_sentence))
+}
+
+fn non_blank(value: String) -> Option<String> {
+    let value = value.trim();
+    (!value.is_empty()).then(|| value.to_string())
+}
+
+fn first_sentence(value: String) -> Option<String> {
+    let value = value.trim();
+    let end = value
+        .char_indices()
+        .find_map(|(index, ch)| matches!(ch, '。' | '！' | '？' | '.' | '!' | '?' | '\n' | '\r').then_some(index + ch.len_utf8()))
+        .unwrap_or(value.len());
+    non_blank(value[..end].to_string())
+}
+
+#[cfg(test)]
+mod display_title_tests {
+    use super::display_title;
+
+    #[test]
+    fn title_priority_uses_ai_then_summary_then_first_sentence() {
+        assert_eq!(
+            display_title(
+                Some(" AI title ".to_string()),
+                Some("goal summary".to_string()),
+                Some("first sentence。second sentence".to_string()),
+            ),
+            Some("AI title".to_string()),
+        );
+        assert_eq!(
+            display_title(
+                Some("  ".to_string()),
+                Some(" goal summary ".to_string()),
+                Some("first sentence。second sentence".to_string()),
+            ),
+            Some("goal summary".to_string()),
+        );
+        assert_eq!(
+            display_title(None, None, Some(" first sentence。second sentence".to_string())),
+            Some("first sentence。".to_string()),
+        );
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionsReport {
@@ -1668,9 +1768,11 @@ pub fn sessions(
                 Ok(SessionRow {
                     kind: row.get(0)?,
                     session_id: row.get(1)?,
-                    title: row
-                        .get::<_, Option<String>>(2)?
-                        .or(row.get::<_, Option<String>>(3)?),
+                    title: display_title(
+                        row.get(2)?,
+                        row.get(19)?,
+                        row.get(3)?,
+                    ),
                     project_label: row.get(4)?,
                     git_branch: row.get(5)?,
                     origin: row.get(6)?,
@@ -2521,7 +2623,11 @@ pub fn session_detail(
         session: SessionRow {
             kind: kind.to_string(),
             session_id: session_id.to_string(),
-            title: ai_title.clone().or_else(|| first_prompt.clone()),
+            title: display_title(
+                ai_title.clone(),
+                goal_summary.clone(),
+                first_prompt.clone(),
+            ),
             project_label,
             git_branch,
             origin,
@@ -2657,12 +2763,22 @@ pub fn rule_check(
     let (resolved, label) = range.resolve(now_ms);
     let turns = read_turns(conn, &resolved, filters, false)?;
     let mut sessions: BTreeMap<SessionKey, RuleCheckAcc> = BTreeMap::new();
-    for turn in turns.iter().filter(|turn| turn.origin.as_deref() != Some("ailog-internal")) {
+    for turn in turns
+        .iter()
+        .filter(|turn| turn.origin.as_deref() != Some("ailog-internal"))
+    {
         let entry = sessions
             .entry((turn.kind.clone(), turn.session_id.clone()))
             .or_default();
-        entry.title = entry.title.clone().or_else(|| turn.ai_title.clone()).or_else(|| turn.first_prompt.clone());
-        entry.project_label = entry.project_label.clone().or_else(|| turn.project_label.clone());
+        entry.title = entry
+            .title
+            .clone()
+            .or_else(|| turn.ai_title.clone())
+            .or_else(|| turn.first_prompt.clone());
+        entry.project_label = entry
+            .project_label
+            .clone()
+            .or_else(|| turn.project_label.clone());
         entry.cost_usd += turn.cost;
         entry.max_context_tokens = entry.max_context_tokens.max(turn.input + turn.cache_read);
         entry.compact_count = entry.compact_count.max(turn.compacts);
@@ -2703,7 +2819,11 @@ pub fn rule_check(
             .collect(),
     );
     Ok(RuleCheckReport {
-        range: RangeOut { from: resolved.from, to: resolved.to, label },
+        range: RangeOut {
+            from: resolved.from,
+            to: resolved.to,
+            label,
+        },
         large_context,
         compacted,
     })

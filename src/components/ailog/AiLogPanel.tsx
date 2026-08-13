@@ -9,7 +9,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import { OverlayShell } from "../common/OverlayShell";
-import { listenIndexProgress, listenSummarizeProgress, toDayInput } from "../../lib/ailog";
+import { dayOffsetInput, listenIndexProgress, listenSummarizeProgress, toDayInput } from "../../lib/ailog";
 import { useAilogStore, SESSION_PAGE_SIZE } from "../../stores/ailogStore";
 import { CostHeatmap } from "./CostHeatmap";
 import { DigestView } from "./DigestView";
@@ -23,6 +23,7 @@ import { RelationDiagram } from "./RelationDiagram";
 import { SessionDetailView } from "./SessionDetailView";
 import { SessionTable } from "./SessionTable";
 import { SummaryCards } from "./SummaryCards";
+import { UsageView } from "./UsageView";
 import { ButtonGroup, EmptyState, Section, SkeletonBlock, noteStyle, subtleButtonStyle } from "./ui";
 
 interface AiLogPanelProps {
@@ -37,9 +38,11 @@ export function AiLogPanel({ open, visible, closing = false, onClose }: AiLogPan
   const wasSummarizingRef = useRef(false);
   const autoStartedRef = useRef(false);
   const autoDigestStartedRef = useRef(false);
-  const digestPreparationRef = useRef(false);
   const [detailOpen, setDetailOpen] = useState(false);
-  const [view, setView] = useState<"digest" | "learning" | "experiment" | "detail">("digest");
+  // Usage opens first on purpose: it is the only view built entirely from SQL
+  // aggregates, so it has something to show even when nothing has been
+  // summarised and the summariser subprocess is unavailable.
+  const [view, setView] = useState<"usage" | "digest" | "learning" | "experiment" | "detail">("usage");
 
   const store = useAilogStore();
 
@@ -57,7 +60,6 @@ export function AiLogPanel({ open, visible, closing = false, onClose }: AiLogPan
         autoStartedRef.current = true;
         await store.startSummarize();
       }
-      digestPreparationRef.current = true;
       await store.refresh();
     })();
     return () => { cancelled = true; };
@@ -67,8 +69,7 @@ export function AiLogPanel({ open, visible, closing = false, onClose }: AiLogPan
   useEffect(() => {
     if (open) return;
     autoDigestStartedRef.current = false;
-    digestPreparationRef.current = false;
-    setView("digest");
+    setView("usage");
   }, [open]);
 
   useEffect(() => {
@@ -129,6 +130,11 @@ export function AiLogPanel({ open, visible, closing = false, onClose }: AiLogPan
   }, [open, summarizing]);
 
   useEffect(() => {
+    if (open && view === "usage") void store.refreshUsage();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, view, store.preset, store.customFrom, store.customTo, store.includeSidechain, store.selection, store.granularity, store.usageBucket]);
+
+  useEffect(() => {
     if (open && view === "learning") void store.refreshLearning();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, view, store.preset, store.customFrom, store.customTo, store.includeSidechain, store.selection]);
@@ -146,11 +152,14 @@ export function AiLogPanel({ open, visible, closing = false, onClose }: AiLogPan
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, view]);
 
+  // Generating a digest spawns an LLM subprocess, so it is deferred until the
+  // tab that displays one is actually opened: merely opening the panel must
+  // never start a billable run. `autoDigestStartedRef` keeps it to once per
+  // panel session so re-entering the tab does not regenerate.
   useEffect(() => {
-    if (!open || !digestPreparationRef.current || !store.summarizeStatus || summarizing || autoDigestStartedRef.current) return;
+    if (!open || view !== "digest" || summarizing || autoDigestStartedRef.current) return;
     autoDigestStartedRef.current = true;
-    const now = new Date();
-    const yesterday = toDayInput(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 1));
+    const yesterday = dayOffsetInput(-1);
     void (async () => {
       store.setDigestDate(yesterday);
       await useAilogStore.getState().refreshDigest(yesterday);
@@ -160,7 +169,7 @@ export function AiLogPanel({ open, visible, closing = false, onClose }: AiLogPan
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, summarizing]);
+  }, [open, view, summarizing]);
 
   if (!visible) return null;
 
@@ -217,6 +226,7 @@ export function AiLogPanel({ open, visible, closing = false, onClose }: AiLogPan
             </div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <button type="button" aria-pressed={view === "usage"} onClick={() => setView("usage")} style={subtleButtonStyle}>使用量</button>
             <button type="button" aria-pressed={view === "digest"} onClick={() => setView("digest")} style={subtleButtonStyle}>振り返り</button>
             <button type="button" aria-pressed={view === "learning"} onClick={() => setView("learning")} style={subtleButtonStyle}>学び</button>
             <button type="button" aria-pressed={view === "experiment"} onClick={() => setView("experiment")} style={subtleButtonStyle}>実験</button>
@@ -229,7 +239,65 @@ export function AiLogPanel({ open, visible, closing = false, onClose }: AiLogPan
 
         <div style={{ flex: 1, minHeight: 0, overflowY: "auto", overflowX: "hidden" }}>
           <div style={{ display: "flex", flexDirection: "column", gap: 12, padding: "12px 16px 20px", minWidth: 0 }}>
-            {view === "digest" ? (
+            {view === "usage" ? (
+              <>
+                <RangeBar
+                  preset={store.preset}
+                  customFrom={store.customFrom}
+                  customTo={store.customTo}
+                  onPreset={store.setPreset}
+                  onCustomRange={store.setCustomRange}
+                  summaryPreset={store.summaryPreset}
+                  onSummaryPreset={store.setSummaryPreset}
+                  overview={overview}
+                  indexStatus={indexStatus}
+                  indexProgress={store.indexProgress}
+                  indexError={store.indexError}
+                  onStartIndex={() => void store.startIndex(false)}
+                  onCancelIndex={() => void store.cancelIndex()}
+                  summarizeStatus={store.summarizeStatus}
+                  summarizeProgress={store.summarizeProgress}
+                  summarizeError={store.summarizeError}
+                  onStartSummarize={() => void store.startSummarize()}
+                  onCancelSummarize={() => void store.cancelSummarize()}
+                  onRefresh={() => void store.refreshUsage()}
+                  loading={store.usageLoading}
+                  excludeSynthetic={store.excludeSynthetic}
+                  onExcludeSynthetic={store.setExcludeSynthetic}
+                  includeSidechain={store.includeSidechain}
+                  onIncludeSidechain={store.setIncludeSidechain}
+                />
+                {statusPending ? (
+                  <div style={noteStyle}>インデックス状態を確認中です…</div>
+                ) : neverIndexed ? (
+                  <EmptyState kind="not-indexed" onPrimary={() => void store.startIndex(false)} busy={store.indexStatus?.running} />
+                ) : (
+                  <UsageView
+                    series={store.usageSeries}
+                    rhythm={store.usageRhythm}
+                    loading={store.usageLoading}
+                    error={store.usageError}
+                    metric={store.usageMetric}
+                    onMetric={store.setUsageMetric}
+                    stack={store.usageStack}
+                    onStack={store.setUsageStack}
+                    bucket={store.usageBucket}
+                    onBucket={store.setUsageBucket}
+                    granularity={store.granularity}
+                    onGranularity={store.setGranularity}
+                    rangeReady={store.currentRange() !== null}
+                    selectionLabel={store.selection?.key ?? null}
+                    onClearSelection={() => store.setSelection(null)}
+                    onRetry={() => void store.refreshUsage()}
+                    onReindex={() => void store.startIndex(false)}
+                    onPickDay={(day) => {
+                      const value = toDayInput(day);
+                      store.setCustomRange(value, value);
+                    }}
+                  />
+                )}
+              </>
+            ) : view === "digest" ? (
               <DigestView
                 report={store.digestReport}
                 loading={store.digestLoading}
@@ -237,6 +305,9 @@ export function AiLogPanel({ open, visible, closing = false, onClose }: AiLogPan
                 onPrevious={() => store.stepDigestDate(-1)}
                 onNext={() => store.stepDigestDate(1)}
                 onRegenerate={() => void store.generateDigest(true)}
+                summarizeStatus={store.summarizeStatus}
+                summarizeError={store.summarizeError}
+                onStartSummarize={() => void store.startSummarize()}
               />
             ) : view === "learning" ? (
               <LearningView
@@ -267,6 +338,8 @@ export function AiLogPanel({ open, visible, closing = false, onClose }: AiLogPan
               customTo={store.customTo}
               onPreset={store.setPreset}
               onCustomRange={store.setCustomRange}
+              summaryPreset={store.summaryPreset}
+              onSummaryPreset={store.setSummaryPreset}
               overview={overview}
               indexStatus={indexStatus}
               indexProgress={store.indexProgress}
@@ -353,7 +426,9 @@ export function AiLogPanel({ open, visible, closing = false, onClose }: AiLogPan
                     { value: "title", label: "主題" }, { value: "agent", label: "エージェント" },
                   ]}
                 />}>
-                  {store.breakdown ? (
+                  {store.breakdownError ? (
+                    <EmptyState kind="error" message={store.breakdownError} onPrimary={() => void store.refreshBreakdown()} />
+                  ) : store.breakdown ? (
                     <ProjectTable
                       report={store.breakdown}
                       overview={overview}
@@ -398,7 +473,7 @@ export function AiLogPanel({ open, visible, closing = false, onClose }: AiLogPan
                     ) : store.detailLoading ? (
                       <SkeletonBlock height={120} label="詳細を読み込み中" />
                     ) : store.detail ? (
-                      <SessionDetailView detail={store.detail} onClose={closeDetail} />
+                      <SessionDetailView detail={store.detail} transcript={store.transcript} transcriptLoading={store.transcriptLoading} transcriptError={store.transcriptError} sessionSummarizing={store.sessionSummarizing} sessionSummarizeError={store.sessionSummarizeError} onSummarize={() => void store.summarizeSession(store.detail!.session.kind, store.detail!.session.sessionId)} onClose={closeDetail} />
                     ) : null}
                   </Section>
                 ) : null}

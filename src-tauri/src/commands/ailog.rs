@@ -5,6 +5,7 @@
 //! them all async is also what keeps `tests/test_command_sync_contract.py`
 //! green without extending its allowlist.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -14,7 +15,7 @@ use tauri::{AppHandle, Emitter};
 use crate::ailog::digest;
 use crate::ailog::index::{self, IndexOptions, IndexProgress};
 use crate::ailog::summarize::{self, SummarizeProgress};
-use crate::ailog::{query, Filters, Range};
+use crate::ailog::{query, usage, Filters, Range, ResolvedRange};
 
 pub const INDEX_PROGRESS_EVENT: &str = "ailog://index-progress";
 pub const SUMMARIZE_PROGRESS_EVENT: &str = "ailog://summarize-progress";
@@ -45,7 +46,7 @@ struct SummarizerState {
     started_at: Mutex<i64>,
     last_finished_at: Mutex<i64>,
     last_error: Mutex<Option<String>>,
-    child: Arc<Mutex<Option<std::process::Child>>>,
+    children: summarize::ChildRegistry,
 }
 
 impl SummarizerState {
@@ -62,7 +63,7 @@ impl SummarizerState {
             started_at: Mutex::new(0),
             last_finished_at: Mutex::new(0),
             last_error: Mutex::new(None),
-            child: Arc::new(Mutex::new(None)),
+            children: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }
@@ -246,6 +247,7 @@ pub async fn ailog_summarize_start(
     app: AppHandle,
     batch_size: Option<u32>,
     force: Option<bool>,
+    range: Option<Range>,
 ) -> Result<SummarizeStartResult, String> {
     if runner_gate()
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -296,18 +298,26 @@ pub async fn ailog_summarize_start(
         }
     };
     let cancel = state.cancel.clone();
-    let child = state.child.clone();
+    let children = state.children.clone();
     let size = summarize::clamp_batch_size(batch_size);
     let force = force.unwrap_or(false);
-    let (target_count, estimated_input_chars) =
-        match open().and_then(|conn| summarize::estimate_pending(&conn, size, force)) {
-            Ok(value) => value,
-            Err(err) => {
-                state.running.store(false, Ordering::SeqCst);
-                runner_gate().store(false, Ordering::SeqCst);
-                return Err(err);
-            }
-        };
+    let summary_range = range
+        .unwrap_or(Range {
+            preset: Some("7d".to_string()),
+            ..Default::default()
+        })
+        .resolve(now_ms())
+        .0;
+    let (target_count, estimated_input_chars) = match open()
+        .and_then(|conn| summarize::estimate_pending(&conn, size, force, summary_range))
+    {
+        Ok(value) => value,
+        Err(err) => {
+            state.running.store(false, Ordering::SeqCst);
+            runner_gate().store(false, Ordering::SeqCst);
+            return Err(err);
+        }
+    };
     state.sessions_total.store(target_count, Ordering::Relaxed);
     state
         .sessions_remaining
@@ -332,8 +342,16 @@ pub async fn ailog_summarize_start(
                 let _ = app.emit(SUMMARIZE_PROGRESS_EVENT, progress);
             })
         };
-        let result =
-            summarize::run_summarize(db_path, size, force, cancel, child, Some(sink)).await;
+        let result = summarize::run_summarize(
+            db_path,
+            size,
+            force,
+            summary_range,
+            cancel,
+            children,
+            Some(sink),
+        )
+        .await;
         let state = summarizer_state();
         match result {
             Ok(report) => {
@@ -392,22 +410,12 @@ pub async fn ailog_summarize_cancel() -> Result<SummarizeCancelResult, String> {
     let state = summarizer_state();
     let running = state.running.load(Ordering::SeqCst);
     state.cancel.store(true, Ordering::SeqCst);
-    if let Some(mut child) = state
-        .child
+    let children = std::mem::take(&mut *state
+        .children
         .lock()
-        .unwrap_or_else(|err| err.into_inner())
-        .take()
-    {
-        let mut taskkill = std::process::Command::new("taskkill");
-        taskkill.args(["/PID", &child.id().to_string(), "/T", "/F"]);
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            taskkill.creation_flags(crate::util::process::CREATE_NO_WINDOW);
-        }
-        let _ = taskkill.status();
-        let _ = child.kill();
-        let _ = child.wait();
+        .unwrap_or_else(|err| err.into_inner()));
+    for (_, child) in children {
+        summarize::stop_child_tree(child);
     }
     Ok(SummarizeCancelResult { cancelled: running })
 }
@@ -428,13 +436,43 @@ pub struct SummarizeStatus {
 }
 
 #[tauri::command(async)]
-pub async fn ailog_summarize_status() -> Result<SummarizeStatus, String> {
+pub async fn ailog_summarize_status(range: Option<Range>) -> Result<SummarizeStatus, String> {
     let state = summarizer_state();
+    summarize_status_with(state, range, now_ms(), |summary_range| {
+        open().and_then(|conn| summarize::pending_count(&conn, false, summary_range))
+    })
+}
+
+fn summarize_status_with<F>(
+    state: &SummarizerState,
+    range: Option<Range>,
+    now: i64,
+    pending_count: F,
+) -> Result<SummarizeStatus, String>
+where
+    F: FnOnce(ResolvedRange) -> Result<usize, String>,
+{
+    let running = state.running.load(Ordering::SeqCst);
+    // A restarted app has no in-memory progress, but its queue is durable.
+    // Read it from SQLite whenever no pass is actively updating the counters.
+    let summary_range = range
+        .unwrap_or(Range {
+            preset: Some("7d".to_string()),
+            ..Default::default()
+        })
+        .resolve(now)
+        .0;
+    let pending = if running {
+        None
+    } else {
+        Some(pending_count(summary_range)?)
+    };
     Ok(SummarizeStatus {
-        running: state.running.load(Ordering::SeqCst),
+        running,
         sessions_done: state.sessions_done.load(Ordering::Relaxed),
         sessions_total: state.sessions_total.load(Ordering::Relaxed),
-        sessions_remaining: state.sessions_remaining.load(Ordering::Relaxed),
+        sessions_remaining: pending
+            .unwrap_or_else(|| state.sessions_remaining.load(Ordering::Relaxed)),
         last_finished_at: *state
             .last_finished_at
             .lock()
@@ -444,7 +482,7 @@ pub async fn ailog_summarize_status() -> Result<SummarizeStatus, String> {
             .lock()
             .unwrap_or_else(|err| err.into_inner())
             .clone(),
-        elapsed_ms: (now_ms()
+        elapsed_ms: (now
             - *state
                 .started_at
                 .lock()
@@ -664,6 +702,31 @@ pub async fn ailog_session_detail(args: SessionDetailArgs) -> Result<query::Sess
     query::session_detail(&conn, &args.kind, &args.session_id)
 }
 
+/// Read a bounded transcript on a blocking worker; raw JSONL is never sent to
+/// the webview and the UI only receives display-safe conversation entries.
+#[tauri::command(async)]
+pub async fn ailog_session_transcript(
+    args: SessionDetailArgs,
+) -> Result<crate::ailog::transcript::TranscriptReport, String> {
+    let path = {
+        let conn = open()?;
+        conn.query_row(
+            "SELECT path FROM source_file WHERE kind=?1 AND session_id=?2 ORDER BY last_indexed DESC LIMIT 1",
+            rusqlite::params![args.kind, args.session_id], |row| row.get::<_, String>(0),
+        ).map_err(|err| format!("transcript source not found: {err}"))?
+    };
+    tokio::task::spawn_blocking(move || {
+        let text = std::fs::read_to_string(&path).map_err(|err| format!("read transcript {path}: {err}"))?;
+        crate::ailog::transcript::extract(&args.kind, &text)
+    }).await.map_err(|err| format!("transcript worker: {err}"))?
+}
+
+#[tauri::command(async)]
+pub async fn ailog_session_summarize(args: SessionDetailArgs) -> Result<(), String> {
+    let db_path = crate::ailog::db_path()?;
+    summarize::run_summarize_one(db_path, args.kind, args.session_id).await
+}
+
 #[tauri::command(async)]
 pub async fn ailog_models(
     range: Option<Range>,
@@ -732,6 +795,23 @@ pub async fn ailog_findings(
     )
 }
 
+/// Absolute-volume view: totals, per-day series, hour-of-day and weekday shape,
+/// and streaks. Aggregated entirely in SQL, so it answers over the full history
+/// and stays available when the summariser subprocess is not.
+#[tauri::command(async)]
+pub async fn ailog_usage_rhythm(
+    range: Option<Range>,
+    filters: Option<Filters>,
+) -> Result<usage::UsageRhythmReport, String> {
+    let conn = open()?;
+    usage::rhythm(
+        &conn,
+        &range.unwrap_or_default(),
+        &filters.unwrap_or_default(),
+        now_ms(),
+    )
+}
+
 #[tauri::command(async)]
 pub async fn ailog_rework_rankings(
     range: Option<Range>,
@@ -773,4 +853,38 @@ pub async fn ailog_set_price(entry: query::PriceEntry) -> Result<SetPriceResult,
         model: entry.model,
         repriced_sessions: repriced,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn idle_summarize_status_reads_default_seven_day_pending_count_from_db() {
+        let conn = rusqlite::Connection::open_in_memory().expect("memory database");
+        crate::ailog::schema::init(&conn).expect("schema");
+        let now = 2_000_000_000_000_i64;
+        conn.execute(
+            "INSERT INTO session(kind, session_id, origin, started_at) VALUES ('codex', 'recent', 'unknown', ?1)",
+            [now - 6 * 86_400_000],
+        )
+        .expect("recent session");
+        conn.execute(
+            "INSERT INTO session(kind, session_id, origin, started_at) VALUES ('codex', 'old', 'unknown', ?1)",
+            [now - 8 * 86_400_000],
+        )
+        .expect("old session");
+        let state = SummarizerState::new();
+
+        let status = summarize_status_with(&state, None, now, |range| {
+            summarize::pending_count(&conn, false, range)
+        })
+        .expect("status");
+
+        assert!(!status.running);
+        assert_eq!(status.sessions_done, 0);
+        assert_eq!(status.sessions_total, 0);
+        assert_eq!(state.sessions_remaining.load(Ordering::Relaxed), 0);
+        assert_eq!(status.sessions_remaining, 1);
+    }
 }

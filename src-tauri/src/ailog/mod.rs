@@ -22,6 +22,8 @@ pub mod project_rules;
 pub mod query;
 pub mod schema;
 pub mod summarize;
+pub mod transcript;
+pub mod usage;
 
 #[cfg(test)]
 mod tests;
@@ -45,10 +47,9 @@ pub const ORIGIN_UNKNOWN: &str = "unknown";
 pub const ORIGIN_OTHER: &str = "other";
 pub const ORIGIN_AILOG_INTERNAL: &str = "ailog-internal";
 
-/// Path of the analytics database (`~/.mycmux/ailog.db`).
+/// Path of the analytics database (the active mycmux runtime directory).
 pub fn db_path() -> Result<PathBuf, String> {
-    let home = dirs::home_dir().ok_or_else(|| "home directory is not available".to_string())?;
-    Ok(home.join(".mycmux").join("ailog.db"))
+    Ok(crate::test_profile::runtime_dir()?.join("ailog.db"))
 }
 
 /// Default Claude transcript root (`~/.claude/projects`).

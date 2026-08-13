@@ -22,11 +22,76 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = REPO_ROOT / "src-tauri" / "tests.manifest"
 WINDOWS_KITS_BIN = Path(r"C:\Program Files (x86)\Windows Kits\10\bin")
+
+# RAM gate: rustc release build peaks >2GB; this machine has BSOD 0x133 history
+# under RAM exhaustion, and long-running production jobs may share the box.
+# Refuse to start a build below MIN_BUILD_RAM_GB and throttle below LOW_RAM_JOBS_GB.
+MIN_BUILD_RAM_GB = 5.0
+LOW_RAM_JOBS_GB = 8.0
+RAM_POLL_SECONDS = 60
+
+
+def available_ram_gb() -> float | None:
+    """Windows の空き物理メモリ (GB)。取得できなければ None。"""
+    if os.name != "nt":
+        return None
+    import ctypes
+
+    class MEMORYSTATUSEX(ctypes.Structure):
+        _fields_ = [
+            ("dwLength", ctypes.c_ulong),
+            ("dwMemoryLoad", ctypes.c_ulong),
+            ("ullTotalPhys", ctypes.c_ulonglong),
+            ("ullAvailPhys", ctypes.c_ulonglong),
+            ("ullTotalPageFile", ctypes.c_ulonglong),
+            ("ullAvailPageFile", ctypes.c_ulonglong),
+            ("ullTotalVirtual", ctypes.c_ulonglong),
+            ("ullAvailVirtual", ctypes.c_ulonglong),
+            ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+        ]
+
+    stat = MEMORYSTATUSEX()
+    stat.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+    if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
+        return None
+    return stat.ullAvailPhys / (1024**3)
+
+
+def wait_for_build_ram() -> list[str]:
+    """空きRAMがビルド安全水準に達するまで待ち、cargo に足す追加引数を返す。
+
+    MYCMUX_SKIP_RAM_GATE=1 で無効化。既定の最大待ち時間は 120 分で、
+    それでも足りなければ RAM を食い潰すよりビルド中止を選ぶ (fail-closed)。
+    """
+    if os.environ.get("MYCMUX_SKIP_RAM_GATE") == "1":
+        return []
+    avail = available_ram_gb()
+    if avail is None:
+        return []
+    max_wait_min = float(os.environ.get("MYCMUX_RAM_GATE_MAX_WAIT_MIN", "120"))
+    deadline = time.monotonic() + max_wait_min * 60
+    while avail is not None and avail < MIN_BUILD_RAM_GB:
+        if time.monotonic() >= deadline:
+            sys.exit(
+                f"空きRAM {avail:.1f}GB < {MIN_BUILD_RAM_GB}GB のままビルドを中止しました "
+                f"(BSOD 0x133 予防・{max_wait_min:.0f}分待機後)。他ジョブ終了後に再実行してください。"
+            )
+        print(
+            f"RAM gate: 空き {avail:.1f}GB < {MIN_BUILD_RAM_GB}GB — {RAM_POLL_SECONDS}秒待機",
+            flush=True,
+        )
+        time.sleep(RAM_POLL_SECONDS)
+        avail = available_ram_gb()
+    if avail is not None and avail < LOW_RAM_JOBS_GB:
+        print(f"RAM gate: 空き {avail:.1f}GB < {LOW_RAM_JOBS_GB}GB — cargo -j 2 で実行", flush=True)
+        return ["-j", "2"]
+    return []
 
 
 def find_mt_exe() -> Path | None:
@@ -39,8 +104,9 @@ def find_mt_exe() -> Path | None:
 
 def build_test_binaries(manifest_dir: Path) -> list[Path]:
     """cargo test --no-run を走らせ、生成された test exe の一覧を返す。"""
+    extra_args = wait_for_build_ram()
     proc = subprocess.run(
-        ["cargo", "test", "--release", "--no-run", "--message-format=json"],
+        ["cargo", "test", "--release", "--no-run", "--message-format=json", *extra_args],
         cwd=manifest_dir,
         capture_output=True,
         text=True,

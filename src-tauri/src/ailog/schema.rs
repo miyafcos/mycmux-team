@@ -232,6 +232,27 @@ pub fn init(conn: &Connection) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(test)]
+mod tests {
+    use rusqlite::Connection;
+
+    #[test]
+    fn init_backfills_internal_codex_summarizer_rows_idempotently() {
+        let conn = Connection::open_in_memory().expect("memory database");
+        super::init(&conn).expect("schema");
+        conn.execute("INSERT INTO session(kind, session_id, first_prompt, origin) VALUES ('codex', 'internal', '[mycmux-ailog-summarizer] input', 'unknown')", []).expect("session");
+        super::init(&conn).expect("repeat schema migration");
+        let origin: String = conn
+            .query_row(
+                "SELECT origin FROM session WHERE session_id='internal'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("origin");
+        assert_eq!(origin, "ailog-internal");
+    }
+}
+
 /// F3 was reserved in the v2 schema, so upgrade its placeholder columns
 /// without bumping `user_version` (which would force a full re-index).
 fn ensure_f3_columns(conn: &Connection) -> Result<(), String> {
@@ -248,6 +269,8 @@ fn ensure_f3_columns(conn: &Connection) -> Result<(), String> {
         ("summary", "rework_category"),
         ("summary", "prompt_version"),
         ("summary", "parse_error"),
+        ("summary", "attempt_count"),
+        ("summary", "last_error_at"),
     ] {
         let mut stmt = conn
             .prepare(&format!("PRAGMA table_info({table})"))
@@ -260,7 +283,10 @@ fn ensure_f3_columns(conn: &Connection) -> Result<(), String> {
             .iter()
             .any(|name| name == column);
         if !present {
-            let ty = if column == "prompt_version" {
+            let ty = if column == "prompt_version"
+                || column == "attempt_count"
+                || column == "last_error_at"
+            {
                 "INTEGER"
             } else {
                 "TEXT"
@@ -269,5 +295,12 @@ fn ensure_f3_columns(conn: &Connection) -> Result<(), String> {
                 .map_err(|err| format!("add {table}.{column}: {err}"))?;
         }
     }
+    // Earlier Codex runs did not recognize our own summarizer prompt.  This
+    // backfill is deliberately narrow and idempotent; it never touches user
+    // transcripts or summary content.
+    conn.execute(
+        "UPDATE session SET origin='ailog-internal' WHERE kind='codex' AND first_prompt LIKE '[mycmux-ailog-summarizer]%' AND COALESCE(origin,'unknown') <> 'ailog-internal'",
+        [],
+    ).map_err(|err| format!("mark internal Codex sessions: {err}"))?;
     Ok(())
 }

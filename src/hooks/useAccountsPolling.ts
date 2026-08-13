@@ -76,7 +76,7 @@ function useLegacyUsageRetirementNotice(): void {
   }, []);
 }
 
-export function useAccountsPolling(): void {
+export function useAccountsPolling(enabled = true): void {
   const fetchCli = useCliAccountStore((state) => state.fetch);
   const fetchUsage = useUsageStore((state) => state.fetch);
   const lastCliAt = useRef<number | null>(null);
@@ -87,6 +87,7 @@ export function useAccountsPolling(): void {
   useLegacyUsageRetirementNotice();
 
   useEffect(() => {
+    if (!enabled) return;
     const observedUsageAt = () => {
       const storeTimestamp = useUsageStore.getState().lastFetchedAt;
       if (lastUsageAt.current === null) return storeTimestamp;
@@ -158,5 +159,5 @@ export function useAccountsPolling(): void {
       if (usageTimer !== null) window.clearTimeout(usageTimer);
       window.removeEventListener("focus", onFocus);
     };
-  }, [fetchCli, fetchUsage]);
+  }, [enabled, fetchCli, fetchUsage]);
 }

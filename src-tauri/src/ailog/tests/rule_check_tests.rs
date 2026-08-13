@@ -46,14 +46,31 @@ fn rule_check_observes_threshold_excludes_internal_and_returns_top_five() {
             if index % 2 == 0 { 1 } else { 0 },
         );
     }
-    seed(&conn, "internal", "keep", "ailog-internal", 500_000, 0, 999.0, 2);
+    seed(
+        &conn,
+        "internal",
+        "keep",
+        "ailog-internal",
+        500_000,
+        0,
+        999.0,
+        2,
+    );
 
     let report = query::rule_check(&conn, &Range::default(), &Filters::default(), NOW).unwrap();
     assert_eq!(report.large_context.count, 6);
     assert_eq!(report.large_context.sessions.len(), 5);
     assert_eq!(report.large_context.sessions[0].session_id, "large-5");
-    assert!(report.large_context.sessions.iter().all(|row| row.session_id != "exact"));
-    assert!(report.large_context.sessions.iter().all(|row| row.session_id != "internal"));
+    assert!(report
+        .large_context
+        .sessions
+        .iter()
+        .all(|row| row.session_id != "exact"));
+    assert!(report
+        .large_context
+        .sessions
+        .iter()
+        .all(|row| row.session_id != "internal"));
     assert_eq!(report.compacted.count, 3);
     assert_eq!(report.compacted.sessions[0].session_id, "large-4");
 }
@@ -82,12 +99,16 @@ fn smoke_real_database_efficiency_and_rule_check_are_read_only() {
     }
     let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .expect("open live ailog database read-only");
-    let range = Range { from: None, to: None, preset: Some("all".to_string()) };
+    let range = Range {
+        from: None,
+        to: None,
+        preset: Some("all".to_string()),
+    };
     let now = chrono::Utc::now().timestamp_millis();
-    let efficiency = query::efficiency(&conn, &range, &Filters::default(), now)
-        .expect("live efficiency");
-    let rules = query::rule_check(&conn, &range, &Filters::default(), now)
-        .expect("live rule check");
+    let efficiency =
+        query::efficiency(&conn, &range, &Filters::default(), now).expect("live efficiency");
+    let rules =
+        query::rule_check(&conn, &range, &Filters::default(), now).expect("live rule check");
     println!(
         "live efficiency effort={} subagent={} compaction={} quantiles={}; rule_check large_context={} compacted={}",
         efficiency.by_effort.len(),

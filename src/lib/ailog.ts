@@ -179,6 +179,12 @@ export interface SeriesGroup {
   input: number;
   output: number;
   cacheRead: number;
+  /**
+   * 5m and 1h cache writes combined. Reasoning tokens are deliberately absent:
+   * both providers already count them inside `output`, so a total that added
+   * them would double-count.
+   */
+  cacheWrite: number;
   costUsd: number;
 }
 
@@ -198,6 +204,67 @@ export interface SeriesReport {
   priceSource: string;
   unpricedModels: string[];
   costNote: string;
+}
+
+// ---------------------------------------------------------------------------
+// Usage rhythm (ailog_usage_rhythm)
+// ---------------------------------------------------------------------------
+
+export interface RhythmTotals {
+  turns: number;
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  /** input + output + cacheRead + cacheWrite. */
+  total: number;
+  /** input + output. What was actually sent and generated fresh. */
+  io: number;
+  costUsd: number;
+}
+
+export interface RhythmDay {
+  /** Start of the local day, as a UTC epoch-millisecond timestamp. */
+  day: number;
+  turns: number;
+  io: number;
+  total: number;
+  costUsd: number;
+}
+
+/** Hour-of-day (0-23) or weekday (0 = Sunday). Always the full cycle. */
+export interface RhythmSlot {
+  slot: number;
+  turns: number;
+  io: number;
+  total: number;
+}
+
+export interface StreakInfo {
+  /** Consecutive active days ending at `currentThroughDay` — not necessarily today. */
+  current: number;
+  currentThroughDay: number | null;
+  longest: number;
+  longestEndDay: number | null;
+}
+
+export interface UsageRhythmReport {
+  range: RangeOut;
+  /** Minutes east of UTC used to cut days; matches `DAY_OFFSET_MIN`. */
+  dayOffsetMinutes: number;
+  totals: RhythmTotals;
+  days: RhythmDay[];
+  byHour: RhythmSlot[];
+  byWeekday: RhythmSlot[];
+  activeDays: number;
+  /** Calendar days between the first and last active day, inclusive. */
+  spanDays: number;
+  firstDay: number | null;
+  lastDay: number | null;
+  streak: StreakInfo;
+  busiestTotal: RhythmDay | null;
+  busiestIo: RhythmDay | null;
+  indexFreshness: IndexFreshness;
 }
 
 export interface BreakdownRow {
@@ -364,6 +431,19 @@ export interface SessionRow {
   reworkScore: number;
   goalSummary: string | null;
   goalCluster: string | null;
+}
+
+export interface TranscriptMessage {
+  role: string;
+  text: string;
+  toolName: string | null;
+  toolTarget: string | null;
+}
+
+export interface TranscriptReport {
+  messages: TranscriptMessage[];
+  truncated: boolean;
+  omittedCount: number;
 }
 
 export interface SessionsReport {
@@ -561,6 +641,8 @@ export interface DigestReport {
   date: string;
   digest: DigestRecord | null;
   metrics: DigestMetrics;
+  reason: string | null;
+  parseError: string | null;
 }
 
 export interface SummarizeProgress {
@@ -651,16 +733,24 @@ export async function ailogIndexStatus(): Promise<IndexStatus> {
   return invoke<IndexStatus>("ailog_index_status");
 }
 
-export async function ailogSummarizeStart(batchSize?: number, force = false): Promise<SummarizeStartResult> {
-  return invoke<SummarizeStartResult>("ailog_summarize_start", { batchSize, force });
+export type SummaryRangePreset = "7d" | "30d" | "all";
+
+export const SUMMARY_RANGE_PRESETS: { id: SummaryRangePreset; label: string }[] = [
+  { id: "7d", label: "直近7日" },
+  { id: "30d", label: "直近30日" },
+  { id: "all", label: "全部" },
+];
+
+export async function ailogSummarizeStart(batchSize?: number, force = false, range: AilogRange = { preset: "7d" }): Promise<SummarizeStartResult> {
+  return invoke<SummarizeStartResult>("ailog_summarize_start", { batchSize, force, range });
 }
 
 export async function ailogSummarizeCancel(): Promise<SummarizeCancelResult> {
   return invoke<SummarizeCancelResult>("ailog_summarize_cancel");
 }
 
-export async function ailogSummarizeStatus(): Promise<SummarizeStatus> {
-  return invoke<SummarizeStatus>("ailog_summarize_status");
+export async function ailogSummarizeStatus(range: AilogRange = { preset: "7d" }): Promise<SummarizeStatus> {
+  return invoke<SummarizeStatus>("ailog_summarize_status", { range });
 }
 
 export async function ailogDigestGet(date: string): Promise<DigestReport> {
@@ -749,6 +839,14 @@ export async function ailogSessionDetail(
   });
 }
 
+export async function ailogSessionTranscript(kind: string, sessionId: string): Promise<TranscriptReport> {
+  return invoke<TranscriptReport>("ailog_session_transcript", { args: { kind, sessionId } });
+}
+
+export async function ailogSessionSummarize(kind: string, sessionId: string): Promise<void> {
+  return invoke<void>("ailog_session_summarize", { args: { kind, sessionId } });
+}
+
 export async function ailogModels(
   range: AilogRange,
   filters: AilogFilters,
@@ -770,6 +868,13 @@ export async function ailogReworkRankings(
   filters: AilogFilters,
 ): Promise<ReworkRankingsReport> {
   return invoke<ReworkRankingsReport>("ailog_rework_rankings", { range, filters });
+}
+
+export async function ailogUsageRhythm(
+  range: AilogRange,
+  filters: AilogFilters,
+): Promise<UsageRhythmReport> {
+  return invoke<UsageRhythmReport>("ailog_usage_rhythm", { range, filters });
 }
 
 export async function listenIndexProgress(
@@ -809,7 +914,16 @@ export function rangePresetLabel(preset: RangePreset): string {
 
 const DAY_MS = 86_400_000;
 
-/** `YYYY-MM-DD` -> UTC midnight, or null when the string is not a real date. */
+/**
+ * Minutes east of UTC used to cut day buckets. Must match
+ * `DAY_BOUNDARY_OFFSET_MIN` in `src-tauri/src/ailog/query.rs`: the backend
+ * snaps buckets to local midnight, so formatting them in UTC would show every
+ * bucket a day early.
+ */
+export const DAY_OFFSET_MIN = 540;
+const DAY_OFFSET_MS = DAY_OFFSET_MIN * 60_000;
+
+/** `YYYY-MM-DD` -> local midnight, or null when the string is not a real date. */
 export function parseDayInput(value: string): number | null {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value.trim());
   if (!match) return null;
@@ -822,15 +936,24 @@ export function parseDayInput(value: string): number | null {
   if (back.getUTCFullYear() !== year || back.getUTCMonth() !== month - 1 || back.getUTCDate() !== day) {
     return null;
   }
-  return ms;
+  return ms - DAY_OFFSET_MS;
 }
 
-/** UTC midnight -> `YYYY-MM-DD` (the value shape `<input type="date">` wants). */
+/** Local midnight -> `YYYY-MM-DD` (the value shape `<input type="date">` wants). */
 export function toDayInput(ms: number): string {
-  const date = new Date(ms);
-  const month = `${date.getUTCMonth() + 1}`.padStart(2, "0");
-  const day = `${date.getUTCDate()}`.padStart(2, "0");
-  return `${date.getUTCFullYear()}-${month}-${day}`;
+  return formatDayBucket(ms);
+}
+
+/** `YYYY-MM-DD` for today (or `offsetDays` away), in the bucketing timezone. */
+export function dayOffsetInput(offsetDays = 0, now = Date.now()): string {
+  return formatDayBucket(now + offsetDays * DAY_MS);
+}
+
+/** Shift a `YYYY-MM-DD` string by whole days, staying in the bucket timezone. */
+export function shiftDayInput(value: string, offsetDays: number): string {
+  const parsed = parseDayInput(value);
+  if (parsed === null) return value;
+  return formatDayBucket(parsed + offsetDays * DAY_MS);
 }
 
 /**
@@ -968,12 +1091,26 @@ export function deltaDirection(pct: number): "up" | "down" | "flat" {
   return value > 0 ? "up" : "down";
 }
 
-/** Day buckets are UTC midnights, so they are rendered in UTC too. */
-export function formatUtcDay(ms: number): string {
-  const date = new Date(ms);
+/**
+ * Render a day bucket. Buckets arrive snapped to local midnight (see
+ * `DAY_OFFSET_MIN`), so the offset is added back before reading the calendar
+ * fields off the UTC side of the Date.
+ */
+export function formatDayBucket(ms: number): string {
+  const date = new Date(ms + DAY_OFFSET_MS);
   const month = `${date.getUTCMonth() + 1}`.padStart(2, "0");
   const day = `${date.getUTCDate()}`.padStart(2, "0");
   return `${date.getUTCFullYear()}-${month}-${day}`;
+}
+
+/** Weekday of a day bucket, 0 = Sunday, in the bucketing timezone. */
+export function dayBucketWeekday(ms: number): number {
+  return new Date(ms + DAY_OFFSET_MS).getUTCDay();
+}
+
+/** Month index (0-11) of a day bucket, in the bucketing timezone. */
+export function dayBucketMonth(ms: number): number {
+  return new Date(ms + DAY_OFFSET_MS).getUTCMonth();
 }
 
 export function formatLocalDateTime(ms: number | null | undefined): string {

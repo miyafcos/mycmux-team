@@ -32,6 +32,8 @@ const report: DigestReport = {
     previousTurns: 5,
     costPct: 75,
   },
+  reason: null,
+  parseError: null,
 };
 
 function render(overrides: Partial<ComponentProps<typeof DigestView>> = {}) {
@@ -59,6 +61,12 @@ describe("DigestView", () => {
 
   it("shows the defined empty copy", () => {
     expect(render({ report: { ...report, digest: null } })).toContain("この日の要約はまだありません");
+  });
+
+  it("shows a pending summary action and digest error in the default view", () => {
+    const html = render({ report: { ...report, digest: null, reason: "先に要約が必要です", parseError: "codex failed" }, summarizeStatus: { running: false, sessionsDone: 0, sessionsTotal: 0, sessionsRemaining: 12, lastFinishedAt: 0, lastError: null, elapsedMs: 0, estimatedInputChars: 0, inputTokens: 0, outputTokens: 0 }, onStartSummarize: () => {} });
+    expect(html).toContain("未要約 12 件 — 要約を実行");
+    expect(html).toContain("codex failed");
   });
 
   it("shows generation progress", () => {

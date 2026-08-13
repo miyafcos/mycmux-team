@@ -96,6 +96,27 @@ def test_real_cli_sends_the_socket_token_when_mycmux_published_one(
     assert result.stderr == ""
 
 
+def test_real_cli_prefers_the_injected_runtime_directory(tmp_path: Path) -> None:
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    runtime = tmp_path / "runtime-test"
+    runtime.mkdir()
+    (runtime / "mycmux.port").write_text(str(listener.getsockname()[1]), encoding="utf-8")
+    received: list[bytes] = []
+    errors: list[BaseException] = []
+    server = _serve_one_request(listener, b'{"id":7,"result":{"ok":true},"error":null}\n', received, errors)
+
+    env = os.environ.copy()
+    env.update({"HOME": str(tmp_path), "USERPROFILE": str(tmp_path), "MYCMUX_RUNTIME_DIR": str(runtime), "PYTHONUTF8": "1"})
+    result = subprocess.run([sys.executable, str(CLI_SCRIPT), "workspaces"], cwd=REPO_ROOT, env=env, text=True, encoding="utf-8", capture_output=True, timeout=10, check=False)
+    server.join(timeout=3)
+    assert not server.is_alive()
+    if errors:
+        raise errors[0]
+    assert result.returncode == 0
+
+
 def test_real_cli_reports_an_unauthorized_rejection_with_the_token_path(
     tmp_path: Path,
 ) -> None:

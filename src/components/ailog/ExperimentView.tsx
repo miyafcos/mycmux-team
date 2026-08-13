@@ -9,7 +9,7 @@ import {
   type RuleCheckFinding,
   type RuleCheckReport,
 } from "../../lib/ailog";
-import { noteStyle, ScrollBox, tableStyle, tdLeftStyle, tdStyle, thLeftStyle, thStyle, Section } from "./ui";
+import { EmptyState, noteStyle, ScrollBox, SkeletonBlock, tableStyle, tdLeftStyle, tdStyle, thLeftStyle, thStyle, Section } from "./ui";
 
 const insufficient = "データ不足 (比較対象が揃っていません)";
 
@@ -59,9 +59,13 @@ function RuleList({ title, finding, onOpenDetail }: { title: string; finding: Ru
 }
 
 export function ExperimentView({ report, rules, loading, error, onOpenDetail }: { report: EfficiencyReport | null; rules: RuleCheckReport | null; loading: boolean; error: string | null; onOpenDetail: (kind: string, sessionId: string) => void }) {
-  if (loading) return <div style={noteStyle}>—</div>;
-  if (error) return <div role="alert" style={noteStyle}>{error}</div>;
-  if (!report || !rules) return null;
+  // Each state says which one it is. Returning null for "no report yet" used to
+  // render a blank panel with no loading indicator and no error — indis­tin­guish­able
+  // from a tab that had silently failed. A half-filled custom range reaches
+  // here that way, because the refresh short-circuits before it starts.
+  if (loading) return <SkeletonBlock height={140} label="実験データを読み込み中" />;
+  if (error) return <EmptyState kind="error" message={error} />;
+  if (!report || !rules) return <EmptyState kind="no-data" message="期間を2つの日付で指定すると反映されます。" />;
   return <>
     <EfficiencyCard title="effort を上げると見合っている？" rows={report.byEffort} note={report.interpretationNote} />
     <EfficiencyCard title="サブエージェント委譲で何が変わる？" rows={report.bySubagent} note={report.interpretationNote} />

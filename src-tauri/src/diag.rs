@@ -20,12 +20,12 @@ pub fn log(line: &str) {
         // the developer's real ~/.mycmux/diag.log. `log_to_home` stays testable.
         return;
     }
-    let Some(home) = dirs::home_dir() else {
+    let Ok(runtime_dir) = crate::test_profile::runtime_dir() else {
         return;
     };
     let lock = WRITE_LOCK.get_or_init(|| Mutex::new(()));
     let _guard = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    let _ = log_to_home(&home, line);
+    let _ = log_to_dir(&runtime_dir, line);
 }
 
 /// Log a warning/error from `module`. Release builds have no console, so every
@@ -50,12 +50,12 @@ pub fn log_panic(line: &str) {
     if cfg!(test) {
         return;
     }
-    let Some(home) = dirs::home_dir() else {
+    let Ok(runtime_dir) = crate::test_profile::runtime_dir() else {
         return;
     };
     let lock = WRITE_LOCK.get_or_init(|| Mutex::new(()));
     let _guard = lock.try_lock().ok();
-    let _ = log_to_home(&home, line);
+    let _ = log_to_dir(&runtime_dir, line);
 }
 
 /// Render the panic payload as text. `panic!` payloads are `&str` or `String`
@@ -93,9 +93,15 @@ macro_rules! diag_warn {
     }};
 }
 
+// Production writes through log_to_dir with the active runtime dir; tests
+// exercise rotation via a temp "home" through this wrapper.
+#[cfg(test)]
 fn log_to_home(home: &Path, line: &str) -> io::Result<()> {
-    let dir = home.join(".mycmux");
-    fs::create_dir_all(&dir)?;
+    log_to_dir(&home.join(".mycmux"), line)
+}
+
+fn log_to_dir(dir: &Path, line: &str) -> io::Result<()> {
+    fs::create_dir_all(dir)?;
 
     let path = dir.join("diag.log");
     let rotated = dir.join("diag.log.1");
@@ -108,7 +114,11 @@ fn log_to_home(home: &Path, line: &str) -> io::Result<()> {
     }
 
     let mut file = OpenOptions::new().create(true).append(true).open(path)?;
-    writeln!(file, "{} {line}", Local::now().format("%Y-%m-%dT%H:%M:%S%:z"))
+    writeln!(
+        file,
+        "{} {line}",
+        Local::now().format("%Y-%m-%dT%H:%M:%S%:z")
+    )
 }
 
 #[cfg(test)]

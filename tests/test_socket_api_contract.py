@@ -72,7 +72,10 @@ def test_local_socket_requires_a_token_from_every_caller() -> None:
         assert_contains(socket_rs, snippet, "src-tauri/src/socket.rs")
 
     for snippet in [
-        'TOKEN_FILE = Path.home() / ".mycmux" / "mycmux.token"',
+        # Token discovery follows the active runtime dir so --profile
+        # instances read their own token, never the production one.
+        'return runtime_dir() / "mycmux.token"',
+        'os.environ.get("MYCMUX_RUNTIME_DIR")',
         'payload["token"] = token',
     ]:
         assert_contains(agent_cli, snippet, "scripts/mycmux_agent_cli.py")

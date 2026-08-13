@@ -36,7 +36,8 @@ describe("account polling cadence", () => {
     const hook = source("src/hooks/useAccountsPolling.ts");
     const titleBar = source("src/components/layout/TitleBar.tsx");
 
-    expect(titleBar.match(/useAccountsPolling\(\)/g)).toHaveLength(1);
+    expect(titleBar.match(/useAccountsPolling\(testProfile === null\)/g)).toHaveLength(1);
+    expect(hook).toContain("if (!enabled) return;");
     expect(hook.match(/window\.setTimeout/g)).toHaveLength(2);
     expect(hook.match(/window\.clearTimeout/g)).toHaveLength(4);
     expect(hook).toContain('window.addEventListener("focus", onFocus)');

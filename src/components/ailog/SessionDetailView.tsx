@@ -7,7 +7,7 @@
  * are a separate, clearly-labelled estimate — they are not costs.
  */
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 
 import {
   formatCount,
@@ -21,6 +21,7 @@ import {
   workTagLabel,
   type SessionDetail,
   type TurnDetail,
+  type TranscriptReport,
 } from "../../lib/ailog";
 import { hashedColor } from "./palette";
 import { Chip, ScrollBox, noteStyle, subtleButtonStyle, tableStyle, tdLeftStyle, tdStyle, thLeftStyle, thStyle } from "./ui";
@@ -85,7 +86,8 @@ export function bucketTurns(turns: TurnDetail[], maxBars = MAX_BARS): { bars: Tu
   return { bars, grouped: true };
 }
 
-export function SessionDetailView({ detail, onClose }: { detail: SessionDetail; onClose: () => void }) {
+export function SessionDetailView({ detail, transcript, transcriptLoading, transcriptError, sessionSummarizing, sessionSummarizeError, onSummarize, onClose }: { detail: SessionDetail; transcript: TranscriptReport | null; transcriptLoading: boolean; transcriptError: string | null; sessionSummarizing: boolean; sessionSummarizeError: string | null; onSummarize: () => void; onClose: () => void }) {
+  const [expanded, setExpanded] = useState<Set<number>>(() => new Set());
   const { bars, grouped } = useMemo(() => bucketTurns(detail.turns), [detail.turns]);
   const peak = bars.reduce((max, bar) => Math.max(max, bar.costUsd), 0);
   const models = useMemo(() => {
@@ -104,15 +106,15 @@ export function SessionDetailView({ detail, onClose }: { detail: SessionDetail; 
     <div style={{ display: "flex", flexDirection: "column", gap: 12, minWidth: 0 }}>
       <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
         <div style={{ minWidth: 0 }}>
-          <div style={{ fontSize: "var(--cmux-font-size-md)", fontWeight: 700, overflowWrap: "anywhere" }}>
-            {detail.aiTitle?.trim() || detail.session.title?.trim() || "（無題）"}
+          <div style={{ fontSize: "var(--cmux-font-size-md)", fontWeight: 700, overflowWrap: "anywhere", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
+            {detail.session.title?.trim() || "（無題）"}
           </div>
           <div style={{ ...noteStyle, marginTop: 3 }}>
             {`${kindLabel(detail.session.kind)} · ${detail.session.primaryModel ?? "—"} · ${formatLocalDateTime(detail.session.startedAt)} 〜 ${formatLocalDateTime(detail.session.endedAt)}`}
           </div>
           <div style={{ ...noteStyle, marginTop: 2, overflowWrap: "anywhere" }}>{detail.cwd ?? "作業フォルダ不明"}</div>
           <div style={{ ...noteStyle, marginTop: 2, overflowWrap: "anywhere" }}>
-            {`要約: ${detail.session.goalSummary?.trim() || detail.aiTitle?.trim() || detail.firstPrompt?.trim() || "（無題）"}`}
+            {`要約: ${detail.session.goalSummary?.trim() || "未要約"}`}
             {detail.session.goalCluster?.trim() ? ` · トピック: ${detail.session.goalCluster.trim()}` : ""}
           </div>
           <div style={{ display: "flex", gap: 4, marginTop: 5, flexWrap: "wrap" }}>
@@ -131,6 +133,18 @@ export function SessionDetailView({ detail, onClose }: { detail: SessionDetail; 
         <button type="button" onClick={onClose} style={subtleButtonStyle}>
           詳細を閉じる
         </button>
+      </div>
+
+      <div>
+        <div style={{ fontSize: "var(--cmux-font-size-xs)", fontWeight: 700, marginBottom: 4 }}>会話</div>
+        {transcriptLoading ? <div style={noteStyle}>会話を読み込み中…</div> : null}
+        {transcriptError ? <div style={{ ...noteStyle, color: "var(--cmux-red)" }}>{transcriptError}</div> : null}
+        {transcript ? <ScrollBox maxHeight={360}><div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          {transcript.messages.map((message, index) => message.role === "tool" ? (
+            <details key={index} style={{ ...noteStyle, border: "1px solid var(--cmux-border)", borderRadius: 4, padding: "4px 6px" }}><summary>{`${message.toolName ?? "tool"}${message.toolTarget ? ` · ${message.toolTarget}` : ""}`}</summary>{message.text ? <pre style={{ margin: "6px 0 0", whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontFamily: "var(--cmux-font-mono, monospace)" }}>{message.text}</pre> : null}</details>
+          ) : <div key={index} style={{ borderLeft: `3px solid ${message.role === "user" ? "var(--cmux-accent)" : "var(--cmux-border)"}`, paddingLeft: 8 }}><div style={{ ...noteStyle, fontWeight: 700 }}>{message.role === "user" ? "依頼" : "応答"}</div><div style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", lineHeight: 1.55, ...(expanded.has(index) ? {} : { display: "-webkit-box", WebkitLineClamp: 8, WebkitBoxOrient: "vertical", overflow: "hidden" }) }}>{message.text}</div>{message.text.split("\n").length > 8 ? <button type="button" style={subtleButtonStyle} onClick={() => setExpanded((old) => { const next = new Set(old); if (next.has(index)) next.delete(index); else next.add(index); return next; })}>{expanded.has(index) ? "折りたたむ" : "展開"}</button> : null}</div>)}
+          {transcript.truncated ? <div style={noteStyle}>{`表示上限のため ${transcript.omittedCount} 件を省略しています`}</div> : null}
+        </div></ScrollBox> : null}
       </div>
 
       <div>
@@ -302,7 +316,13 @@ export function SessionDetailView({ detail, onClose }: { detail: SessionDetail; 
             </div>
           </div>
         ) : (
-          <div style={noteStyle}>未要約（要約機能は F3 で追加予定です）</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+            <Chip tone="warn">未要約</Chip>
+            <button type="button" onClick={onSummarize} disabled={sessionSummarizing} style={{ ...subtleButtonStyle, opacity: sessionSummarizing ? 0.6 : 1 }}>
+              {sessionSummarizing ? "要約中…" : "このセッションを要約する"}
+            </button>
+            {sessionSummarizeError ? <span style={{ ...noteStyle, color: "var(--cmux-red)" }}>{sessionSummarizeError}</span> : null}
+          </div>
         )}
       </div>
 

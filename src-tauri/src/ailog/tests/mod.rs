@@ -8,3 +8,4 @@ mod parse_tests;
 mod price_tests;
 mod query_compat_tests;
 mod rule_check_tests;
+mod usage_series_tests;

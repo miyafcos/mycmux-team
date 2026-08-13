@@ -38,7 +38,8 @@ function Write-MycmuxSessionMapping {
   if ([string]::IsNullOrWhiteSpace($PaneId) -or [string]::IsNullOrWhiteSpace($SessionId)) {
     return
   }
-  $mapDir = Join-Path $HOME ".mycmux\pane-sessions"
+  $runtimeDir = if ($env:MYCMUX_RUNTIME_DIR) { $env:MYCMUX_RUNTIME_DIR } else { Join-Path $HOME ".mycmux" }
+  $mapDir = Join-Path $runtimeDir "pane-sessions"
   New-Item -ItemType Directory -Force -Path $mapDir | Out-Null
   $mapPath = Join-Path $mapDir "$PaneId.txt"
   $encoding = New-Object System.Text.UTF8Encoding($false)
@@ -187,7 +188,8 @@ function Start-MycmuxSessionTracking {
       $sessionId = [System.IO.Path]::GetFileNameWithoutExtension($latest.Name)
     }
     if ([string]::IsNullOrWhiteSpace($sessionId)) { return }
-    $mapDir = Join-Path $HomeDir ".mycmux\pane-sessions"
+    $runtimeDir = if ($env:MYCMUX_RUNTIME_DIR) { $env:MYCMUX_RUNTIME_DIR } else { Join-Path $HomeDir ".mycmux" }
+    $mapDir = Join-Path $runtimeDir "pane-sessions"
     New-Item -ItemType Directory -Force -Path $mapDir | Out-Null
     $mapPath = Join-Path $mapDir "$PaneId.txt"
     $encoding = New-Object System.Text.UTF8Encoding($false)

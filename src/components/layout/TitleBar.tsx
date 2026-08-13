@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import type { CSSProperties } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { invoke } from "@tauri-apps/api/core";
 import { useWorkspaceListStore, useUiStore, usePaneMetadataStore } from "../../stores/workspaceStore";
 import { IS_MAC } from "../../lib/keybindings";
 import NotificationPanel from "./NotificationPanel";
@@ -65,7 +66,11 @@ export default function TitleBar({
   onOpenOnlinePanel,
   onOpenCrsmPalette,
 }: TitleBarProps) {
-  useAccountsPolling();
+  const [testProfile, setTestProfile] = useState<string | null | undefined>(undefined);
+  useEffect(() => {
+    void invoke<string | null>("get_test_profile").then(setTestProfile).catch(() => {});
+  }, []);
+  useAccountsPolling(testProfile === null);
   useCliLoginEvents();
   const activeWorkspace = useWorkspaceListStore((s) => s.getActiveWorkspace());
   const activeWorkspaceColor = resolveWorkspaceColor(activeWorkspace?.color);
@@ -137,6 +142,22 @@ export default function TitleBar({
         position: "relative",
       }}
     >
+      {testProfile && (
+        <div
+          style={{
+            marginLeft: 10,
+            padding: "3px 7px",
+            borderRadius: 4,
+            background: "var(--cmux-red)",
+            color: "white",
+            fontSize: 11,
+            fontWeight: 800,
+            letterSpacing: 0.3,
+          }}
+        >
+          TEST ({testProfile})
+        </div>
+      )}
       {/* Left group: Sidebar, Bell, Plus */}
       {/* macOS (titleBarStyle: Overlay): native traffic lights float over the
           top-left corner, so inset the button group past them */}

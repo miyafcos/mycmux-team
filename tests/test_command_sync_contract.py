@@ -26,6 +26,9 @@ SYNC_ALLOWLIST = {
     # thread. The window must be built there, so this cannot go async either.
     "open_workspace_window",
     "quit_app",
+    # Test-profile mode: a OnceLock read plus a String clone (same class as
+    # get_pty_metadata_snapshot) — legitimately cheap and sync.
+    "get_test_profile",
 }
 
 BLOCKING_BODY_TOKENS = [

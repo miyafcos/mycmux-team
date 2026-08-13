@@ -1,5 +1,7 @@
 //! Daily AI-log digest generation and persistence.
 
+use std::collections::HashMap;
+use std::env;
 use std::io::{Read, Write};
 use std::process::{Child, Command, Stdio};
 use std::thread;
@@ -73,6 +75,8 @@ pub struct DigestReport {
     pub date: String,
     pub digest: Option<DigestRecord>,
     pub metrics: DigestMetrics,
+    pub reason: Option<String>,
+    pub parse_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -125,6 +129,14 @@ struct RawDigestContent {
 pub fn get(conn: &Connection, date: &str) -> Result<DigestReport, String> {
     let (start, end) = day_bounds(date)?;
     let metrics = read_metrics(conn, start, end)?;
+    let parse_error = conn
+        .query_row(
+            "SELECT parse_error FROM digest WHERE kind='all' AND date=?1",
+            [date],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .ok()
+        .flatten();
     let digest = conn
         .query_row(
             "SELECT created_at,prompt_version,model_used,json FROM digest WHERE kind='all' AND date=?1 AND json IS NOT NULL",
@@ -147,10 +159,23 @@ pub fn get(conn: &Connection, date: &str) -> Result<DigestReport, String> {
                 content,
             })
         });
+    let reason = if digest.is_none() {
+        Some(if parse_error.is_some() {
+            "生成エラーがあります".to_string()
+        } else if metrics.sessions == 0 {
+            "この日の要約対象がありません。先に要約が必要です".to_string()
+        } else {
+            "この日の要約はまだありません".to_string()
+        })
+    } else {
+        None
+    };
     Ok(DigestReport {
         date: date.to_string(),
         digest,
         metrics,
+        reason,
+        parse_error,
     })
 }
 
@@ -331,16 +356,25 @@ fn execute(input: &DigestInput) -> Result<String, String> {
     let payload =
         serde_json::to_string(input).map_err(|error| format!("encode digest input: {error}"))?;
     let prompt = format!("{MARKER}\n{PROMPT}\n{payload}");
-    let mut command = Command::new(codex_program());
+    let mut args = vec![
+        "exec".to_string(),
+        "--model".to_string(),
+        MODEL.to_string(),
+        "-c".to_string(),
+        "features.fast_mode=false".to_string(),
+        "-".to_string(),
+    ];
+    let program = crate::commands::terminal::prepare_spawn_command(codex_program(), &mut args);
+    let mut environment: HashMap<String, String> = env::vars().collect();
+    crate::commands::terminal::sanitize_launch_env(&mut environment);
+    environment.retain(|key, _| !key.to_ascii_uppercase().starts_with("MYCMUX_"));
+    let cwd = env::current_dir().map_err(|err| format!("digest working directory: {err}"))?;
+    let mut command = Command::new(program);
     command
-        .args([
-            "exec",
-            "--model",
-            MODEL,
-            "-c",
-            "features.fast_mode=false",
-            "-",
-        ])
+        .args(args)
+        .current_dir(cwd)
+        .env_clear()
+        .envs(environment)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -494,15 +528,19 @@ fn save_parse_error(conn: &mut Connection, date: &str, error: &str) -> Result<()
     Ok(())
 }
 
+/// A digest date names a local (JST) day, matching the day buckets the rest of
+/// ailog reports. Cutting this at UTC would put the same session on a different
+/// date than the usage chart shows.
 fn day_bounds(date: &str) -> Result<(i64, i64), String> {
-    let day = NaiveDate::parse_from_str(date, "%Y-%m-%d")
-        .map_err(|_| format!("invalid UTC date: {date}"))?;
+    let day =
+        NaiveDate::parse_from_str(date, "%Y-%m-%d").map_err(|_| format!("invalid date: {date}"))?;
     let start = Utc
         .from_utc_datetime(
             &day.and_hms_opt(0, 0, 0)
-                .ok_or_else(|| format!("invalid UTC date: {date}"))?,
+                .ok_or_else(|| format!("invalid date: {date}"))?,
         )
-        .timestamp_millis();
+        .timestamp_millis()
+        - crate::ailog::query::DAY_BOUNDARY_OFFSET_MIN * 60_000;
     Ok((start, start + 86_400_000))
 }
 

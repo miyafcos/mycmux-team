@@ -15,15 +15,31 @@ from typing import Any, Sequence
 
 
 TIMEOUT_SECONDS = 35.0
-PORT_FILE = Path.home() / ".mycmux" / "mycmux.port"
-TOKEN_FILE = Path.home() / ".mycmux" / "mycmux.token"
-PROMPT_DIR = Path.home() / ".mycmux" / "agent-prompts"
+
+
+def runtime_dir() -> Path:
+    """Return the app-provided runtime directory or the legacy default."""
+    value = os.environ.get("MYCMUX_RUNTIME_DIR")
+    return Path(value) if value else Path.home() / ".mycmux"
+
+
+def port_file() -> Path:
+    return runtime_dir() / "mycmux.port"
+
+
+def token_file() -> Path:
+    return runtime_dir() / "mycmux.token"
+
+
+def prompt_dir() -> Path:
+    return runtime_dir() / "agent-prompts"
 AGENT_TARGETS = ("claude", "codex", "claude-codex", "shell")
 AGENT_KINDS = ("claude", "codex", "claude-codex")
 
 
-def read_port(path: Path = PORT_FILE) -> int:
+def read_port(path: Path | None = None) -> int:
     """Read and validate the loopback socket port."""
+    path = path or port_file()
     try:
         value = path.read_text(encoding="utf-8").strip()
         port = int(value)
@@ -34,13 +50,14 @@ def read_port(path: Path = PORT_FILE) -> int:
     return port
 
 
-def read_token(path: Path = TOKEN_FILE) -> str | None:
+def read_token(path: Path | None = None) -> str | None:
     """Read the socket token mycmux writes next to the port file.
 
     A missing file means the running mycmux predates socket auth or was started
     with ``MYCMUX_SOCKET_AUTH=off``; the request then goes out unauthenticated
     exactly as before.
     """
+    path = path or token_file()
     try:
         token = path.read_text(encoding="utf-8").strip()
     except OSError:
@@ -78,7 +95,7 @@ def send_request(cmd: str, args: dict[str, Any]) -> Any:
     error = response.get("error")
     if error == "unauthorized":
         raise RuntimeError(
-            f"mycmux rejected the request as unauthorized: no valid token in {TOKEN_FILE} "
+            f"mycmux rejected the request as unauthorized: no valid token in {token_file()} "
             "(restart mycmux so it rewrites the token, or start it with "
             "MYCMUX_SOCKET_AUTH=off)"
         )
@@ -89,9 +106,10 @@ def send_request(cmd: str, args: dict[str, Any]) -> Any:
 
 def write_prompt(text: str) -> Path:
     """Persist an inline prompt and return its absolute path."""
-    PROMPT_DIR.mkdir(parents=True, exist_ok=True)
+    directory = prompt_dir()
+    directory.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    path = PROMPT_DIR / f"{timestamp}-{secrets.token_hex(3)}.md"
+    path = directory / f"{timestamp}-{secrets.token_hex(3)}.md"
     path.write_text(text, encoding="utf-8")
     return path.resolve()
 

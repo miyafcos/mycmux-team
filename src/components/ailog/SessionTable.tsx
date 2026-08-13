@@ -95,8 +95,8 @@ export function SessionTable({
                   <td style={tdLeftStyle} title={row.title ?? undefined}>
                     {row.title?.trim() || "（無題）"}
                   </td>
-                  <td style={{ ...tdLeftStyle, maxWidth: 260 }} title={row.goalSummary?.trim() || row.title || undefined}>
-                    {row.goalSummary?.trim() || row.title?.trim() || "（無題）"}
+                  <td style={{ ...tdLeftStyle, maxWidth: 260 }} title={row.goalSummary?.trim() || undefined}>
+                    {row.goalSummary?.trim() ? row.goalSummary.trim() : <Chip tone="warn">未要約</Chip>}
                   </td>
                   <td style={tdLeftStyle} title={row.projectLabel ?? undefined}>
                     {row.projectLabel ?? "—"}

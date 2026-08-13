@@ -8,7 +8,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { formatCount, formatUsd, formatUtcDay, toDayInput } from "../../lib/ailog";
+import { dayBucketMonth, formatCount, formatDayBucket, formatUsd, toDayInput } from "../../lib/ailog";
 import type { SeriesReport } from "../../lib/ailog";
 import { buildHeatmapGrid, dragSpan, levelOf, type HeatmapCell } from "./heatmapModel";
 import { noteStyle } from "./ui";
@@ -73,7 +73,7 @@ export function CostHeatmap({
   const monthLabels: { index: number; label: string }[] = [];
   let lastMonth = -1;
   grid.weeks.forEach((week, index) => {
-    const month = new Date(week[0].ts).getUTCMonth();
+    const month = dayBucketMonth(week[0].ts);
     if (month !== lastMonth) {
       monthLabels.push({ index, label: `${month + 1}月` });
       lastMonth = month;
@@ -125,11 +125,11 @@ export function CostHeatmap({
                         key={cell.ts}
                         role="button"
                         tabIndex={-1}
-                        aria-label={`${formatUtcDay(cell.ts)} ${formatUsd(cell.costUsd)} ${formatCount(cell.sessions)}セッション`}
+                        aria-label={`${formatDayBucket(cell.ts)} ${formatUsd(cell.costUsd)} ${formatCount(cell.sessions)}セッション`}
                         title={
                           cell.present
-                            ? `${formatUtcDay(cell.ts)}\n${formatUsd(cell.costUsd)}\n${formatCount(cell.sessions)} セッション / ${formatCount(cell.turns)} ターン`
-                            : formatUtcDay(cell.ts)
+                            ? `${formatDayBucket(cell.ts)}\n${formatUsd(cell.costUsd)}\n${formatCount(cell.sessions)} セッション / ${formatCount(cell.turns)} ターン`
+                            : formatDayBucket(cell.ts)
                         }
                         onPointerDown={(event) => {
                           event.preventDefault();
@@ -174,9 +174,9 @@ export function CostHeatmap({
           </span>
         </span>
         <span>
-          {`${formatUtcDay(grid.firstTs)} 〜 ${formatUtcDay(grid.lastTs)}・記録のある日 ${formatCount(grid.dayCount)} 日・合計 ${formatUsd(grid.totalCost)}`}
+          {`${formatDayBucket(grid.firstTs)} 〜 ${formatDayBucket(grid.lastTs)}・記録のある日 ${formatCount(grid.dayCount)} 日・合計 ${formatUsd(grid.totalCost)}`}
         </span>
-        <span>日付は UTC 基準です</span>
+        <span>日付は JST 基準です</span>
       </div>
     </div>
   );

@@ -5,6 +5,7 @@
 //! an outcome and any rework.
 
 use std::collections::{HashMap, HashSet};
+use std::env;
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
@@ -17,12 +18,18 @@ use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::ailog::ResolvedRange;
+
 pub const DEFAULT_BATCH_SIZE: u32 = 50;
 pub const MIN_BATCH_SIZE: u32 = 1;
 pub const MAX_BATCH_SIZE: u32 = 100;
 pub const SESSION_TIMEOUT: Duration = Duration::from_secs(120);
 pub const PROMPT_VERSION: i64 = 2;
+pub const DEFAULT_SCOPE_DAYS: u32 = 7;
+const RETRY_DELAY_MS: i64 = 15 * 60 * 1000;
+const MAX_ATTEMPTS: i64 = 3;
 const INPUT_LIMIT: usize = 12_000;
+const MAX_CONCURRENCY: usize = 2;
 const PROMPT: &str = include_str!("prompts/summarize_v2_ja.txt");
 const MARKER: &str = "[mycmux-ailog-summarizer]";
 
@@ -49,6 +56,7 @@ pub struct SummarizeReport {
 }
 
 pub type ProgressSink = Arc<dyn Fn(SummarizeProgress) + Send + Sync>;
+pub type ChildRegistry = Arc<Mutex<HashMap<u32, Child>>>;
 
 #[derive(Debug, Clone)]
 struct PendingSession {
@@ -132,42 +140,62 @@ pub fn estimate_pending(
     conn: &Connection,
     batch_size: u32,
     force: bool,
+    range: ResolvedRange,
 ) -> Result<(usize, usize), String> {
-    let total = pending_count(conn, force)?;
-    let entries = fetch_pending(conn, total.max(batch_size as usize), force, &HashSet::new())?;
-    let chars = entries
-        .iter()
-        .map(|entry| build_input(conn, entry).map(|input| input.material.chars().count()))
-        .sum::<Result<usize, _>>()?;
-    Ok((entries.len(), chars))
+    let total = pending_count(conn, force, range)?;
+    // Never reopen every transcript just to produce an estimate.  The caller
+    // needs a prompt count before it starts, not a multi-gigabyte preview.
+    let _ = batch_size;
+    Ok((total, 0))
 }
 
 pub async fn run_summarize(
     db_path: PathBuf,
     batch_size: u32,
     force: bool,
+    range: ResolvedRange,
     cancel: Arc<AtomicBool>,
-    child: Arc<Mutex<Option<Child>>>,
+    children: ChildRegistry,
     progress: Option<ProgressSink>,
 ) -> Result<SummarizeReport, String> {
     tokio::task::spawn_blocking(move || {
-        run_summarize_blocking(db_path, batch_size, force, cancel, child, progress)
+        run_summarize_blocking(
+            db_path, batch_size, force, range, cancel, children, progress,
+        )
     })
     .await
     .map_err(|err| format!("summarizer task: {err}"))?
+}
+
+/// Summarise exactly one session without acquiring the dashboard batch gate.
+pub async fn run_summarize_one(db_path: PathBuf, kind: String, session_id: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        let mut conn = crate::ailog::open_db(&db_path)?;
+        let session = conn.query_row(
+            "SELECT s.kind, s.session_id, sf.path, s.ai_title, s.first_prompt, s.turn_count, s.compact_count, s.wall_ms, s.cost_usd FROM session s LEFT JOIN source_file sf ON sf.kind=s.kind AND sf.session_id=s.session_id WHERE s.kind=?1 AND s.session_id=?2 ORDER BY sf.last_indexed DESC LIMIT 1",
+            params![kind, session_id], pending_row,
+        ).map_err(|err| format!("session for summary not found: {err}"))?;
+        let input = build_input(&conn, &session)?;
+        let cancel = AtomicBool::new(false);
+        let children: ChildRegistry = Arc::new(Mutex::new(HashMap::new()));
+        let raw = execute_session(&input, &cancel, &children)?;
+        let result = validate_output(&raw, &input.id)?;
+        upsert_result(&mut conn, &session, &result)
+    }).await.map_err(|err| format!("single summary worker: {err}"))?
 }
 
 fn run_summarize_blocking(
     db_path: PathBuf,
     batch_size: u32,
     force: bool,
+    range: ResolvedRange,
     cancel: Arc<AtomicBool>,
-    child_slot: Arc<Mutex<Option<Child>>>,
+    children: ChildRegistry,
     progress: Option<ProgressSink>,
 ) -> Result<SummarizeReport, String> {
     let started = Instant::now();
     let mut conn = crate::ailog::open_db(&db_path)?;
-    let total = pending_count(&conn, force)?;
+    let total = pending_count(&conn, force, range)?;
     let mut report = SummarizeReport {
         sessions_total: total,
         sessions_remaining: total,
@@ -177,39 +205,68 @@ fn run_summarize_blocking(
     emit(&progress, "running", &report, started);
 
     while !cancel.load(Ordering::SeqCst) {
-        let batch = fetch_pending(&conn, batch_size as usize, force, &failed)?;
+        let batch = fetch_pending(&conn, batch_size as usize, force, range, &failed)?;
         if batch.is_empty() {
             break;
         }
-        for session in batch {
+        let inputs = batch
+            .into_iter()
+            .map(|session| build_input(&conn, &session).map(|input| (session, input)))
+            .collect::<Result<Vec<_>, _>>()?;
+        for group in inputs.chunks(MAX_CONCURRENCY) {
             if cancel.load(Ordering::SeqCst) {
                 break;
             }
-            let input = build_input(&conn, &session)?;
-            let result = execute_session(&input, &cancel, &child_slot).and_then(|raw| {
-                validate_output(&raw, &input.id).map_err(|err| {
-                    format!("{err}; raw: {}", crate::ailog::truncate_chars(&raw, 500))
-                })
-            });
-            match result {
-                Ok(result) => {
-                    upsert_result(&mut conn, &session, &result)?;
-                    report.sessions_done += 1;
+            let results = std::thread::scope(|scope| {
+                let workers = group
+                    .iter()
+                    .map(|(session, input)| {
+                        let worker_cancel = cancel.clone();
+                        let worker_children = children.clone();
+                        scope.spawn(move || {
+                            let result = execute_session(input, &worker_cancel, &worker_children)
+                                .and_then(|raw| {
+                                    validate_output(&raw, &input.id).map_err(|err| {
+                                        format!(
+                                            "{err}; raw: {}",
+                                            crate::ailog::truncate_chars(&raw, 500)
+                                        )
+                                    })
+                                });
+                            (session, result)
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                workers
+                    .into_iter()
+                    .map(|worker| {
+                        worker
+                            .join()
+                            .map_err(|_| "summarizer worker panicked".to_string())
+                    })
+                    .collect::<Result<Vec<_>, _>>()
+            })?;
+            for (session, result) in results {
+                match result {
+                    Ok(result) => {
+                        upsert_result(&mut conn, session, &result)?;
+                        report.sessions_done += 1;
+                    }
+                    Err(error) => {
+                        save_parse_error(&mut conn, session, &error)?;
+                        failed.insert(key(session));
+                        report
+                            .errors
+                            .push(format!("{}/{}: {error}", session.kind, session.session_id));
+                    }
                 }
-                Err(error) => {
-                    save_parse_error(&mut conn, &session, &error)?;
-                    failed.insert(key(&session));
-                    report
-                        .errors
-                        .push(format!("{}/{}: {error}", session.kind, session.session_id));
-                }
+                report.sessions_remaining = pending_count(&conn, force, range)?;
+                emit(&progress, "running", &report, started);
             }
-            report.sessions_remaining = pending_count(&conn, force)?;
-            emit(&progress, "running", &report, started);
         }
     }
     report.cancelled = cancel.load(Ordering::SeqCst);
-    report.sessions_remaining = pending_count(&conn, force)?;
+    report.sessions_remaining = pending_count(&conn, force, range)?;
     let (input_tokens, output_tokens) = conn.query_row(
         "SELECT COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0) FROM summary WHERE prompt_version = ?1",
         [PROMPT_VERSION], |row| Ok((row.get(0)?, row.get(1)?)),
@@ -240,16 +297,32 @@ fn pending_where(force: bool) -> &'static str {
     if force {
         "COALESCE(s.origin, 'unknown') <> 'ailog-internal'"
     } else {
-        "COALESCE(s.origin, 'unknown') <> 'ailog-internal' AND (x.prompt_version IS NULL OR x.prompt_version < ?1)"
+        "COALESCE(s.origin, 'unknown') <> 'ailog-internal' AND (x.prompt_version IS NULL OR x.prompt_version < ?3 OR (x.parse_error IS NOT NULL AND COALESCE(x.attempt_count, 0) < ?4 AND COALESCE(x.last_error_at, x.created_at, 0) <= ?5))"
     }
 }
 
-fn pending_count(conn: &Connection, force: bool) -> Result<usize, String> {
-    let sql = format!("SELECT COUNT(*) FROM session s LEFT JOIN summary x ON x.kind=s.kind AND x.session_id=s.session_id WHERE {}", pending_where(force));
+pub fn pending_count(
+    conn: &Connection,
+    force: bool,
+    range: ResolvedRange,
+) -> Result<usize, String> {
+    let sql = format!("SELECT COUNT(*) FROM session s LEFT JOIN summary x ON x.kind=s.kind AND x.session_id=s.session_id WHERE s.started_at >= ?1 AND s.started_at <= ?2 AND {}", pending_where(force));
     let count = if force {
-        conn.query_row(&sql, [], |row| row.get::<_, i64>(0))
+        conn.query_row(&sql, params![range.from, range.to], |row| {
+            row.get::<_, i64>(0)
+        })
     } else {
-        conn.query_row(&sql, [PROMPT_VERSION], |row| row.get::<_, i64>(0))
+        conn.query_row(
+            &sql,
+            params![
+                range.from,
+                range.to,
+                PROMPT_VERSION,
+                MAX_ATTEMPTS,
+                chrono::Utc::now().timestamp_millis() - RETRY_DELAY_MS
+            ],
+            |row| row.get::<_, i64>(0),
+        )
     };
     count
         .map(|value| value.max(0) as usize)
@@ -260,20 +333,31 @@ fn fetch_pending(
     conn: &Connection,
     limit: usize,
     force: bool,
+    range: ResolvedRange,
     failed: &HashSet<String>,
 ) -> Result<Vec<PendingSession>, String> {
     let sql = format!(
         "SELECT s.kind, s.session_id, sf.path, s.ai_title, s.first_prompt, s.turn_count, s.compact_count, s.wall_ms, s.cost_usd \
          FROM session s LEFT JOIN summary x ON x.kind=s.kind AND x.session_id=s.session_id \
          LEFT JOIN source_file sf ON sf.kind=s.kind AND sf.session_id=s.session_id \
-         WHERE {} ORDER BY s.started_at DESC, s.session_id DESC LIMIT ?{}", pending_where(force), if force { "1" } else { "2" });
+         WHERE s.started_at >= ?1 AND s.started_at <= ?2 AND {} ORDER BY s.started_at DESC, s.session_id DESC LIMIT ?{}", pending_where(force), if force { "3" } else { "6" });
     let mut stmt = conn
         .prepare(&sql)
         .map_err(|err| format!("prepare pending summaries: {err}"))?;
     let rows = if force {
-        stmt.query_map([limit as i64], pending_row)
+        stmt.query_map(params![range.from, range.to, limit as i64], pending_row)
     } else {
-        stmt.query_map(params![PROMPT_VERSION, limit as i64], pending_row)
+        stmt.query_map(
+            params![
+                range.from,
+                range.to,
+                PROMPT_VERSION,
+                MAX_ATTEMPTS,
+                chrono::Utc::now().timestamp_millis() - RETRY_DELAY_MS,
+                limit as i64
+            ],
+            pending_row,
+        )
     }
     .map_err(|err| format!("query pending summaries: {err}"))?;
     let mut out = Vec::new();
@@ -403,6 +487,26 @@ fn quantitative(conn: &Connection, s: &PendingSession) -> Result<String, String>
 
 fn read_transcript_material(path: &str) -> Result<TranscriptMaterial, String> {
     let text = fs::read_to_string(path).map_err(|err| format!("read transcript {path}: {err}"))?;
+    if text
+        .lines()
+        .find_map(|line| serde_json::from_str::<Value>(line).ok())
+        .and_then(|value| {
+            value
+                .get("type")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .as_deref()
+        == Some("session_meta")
+    {
+        let material = crate::ailog::parse_codex::extract_material(&text);
+        return Ok(TranscriptMaterial {
+            user: material.user,
+            errors: material.errors,
+            assistant_last: material.assistant_last,
+            bash: Vec::new(),
+        });
+    }
     let mut out = TranscriptMaterial::default();
     let mut errors = HashSet::new();
     let mut bash_calls: HashMap<String, String> = HashMap::new();
@@ -510,21 +614,30 @@ fn text_blocks(value: Option<&Value>) -> Vec<String> {
 fn execute_session(
     input: &InputSession,
     cancel: &AtomicBool,
-    child_slot: &Arc<Mutex<Option<Child>>>,
+    children: &ChildRegistry,
 ) -> Result<String, String> {
     let payload =
         serde_json::to_string(input).map_err(|err| format!("encode summary input: {err}"))?;
     let prompt = format!("{MARKER}\n{PROMPT}\n{payload}");
-    let mut command = Command::new(codex_program());
+    let mut args = vec![
+        "exec".to_string(),
+        "--model".to_string(),
+        "gpt-5.6-luna".to_string(),
+        "-c".to_string(),
+        "features.fast_mode=false".to_string(),
+        "-".to_string(),
+    ];
+    let program = crate::commands::terminal::prepare_spawn_command(codex_program(), &mut args);
+    let mut environment: HashMap<String, String> = env::vars().collect();
+    crate::commands::terminal::sanitize_launch_env(&mut environment);
+    environment.retain(|key, _| !key.to_ascii_uppercase().starts_with("MYCMUX_"));
+    let cwd = env::current_dir().map_err(|err| format!("summary working directory: {err}"))?;
+    let mut command = Command::new(program);
     command
-        .args([
-            "exec",
-            "--model",
-            "gpt-5.6-luna",
-            "-c",
-            "features.fast_mode=false",
-            "-",
-        ])
+        .args(args)
+        .current_dir(cwd)
+        .env_clear()
+        .envs(environment)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -545,25 +658,30 @@ fn execute_session(
     }
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
-    *child_slot.lock().unwrap_or_else(|err| err.into_inner()) = Some(child);
+    let pid = child.id();
+    let mut child = Some(child);
+    let cancelled_before_register = {
+        let mut guard = children.lock().unwrap_or_else(|err| err.into_inner());
+        if cancel.load(Ordering::SeqCst) {
+            true
+        } else {
+            guard.insert(pid, child.take().expect("child not yet registered"));
+            false
+        }
+    };
+    if cancelled_before_register {
+        stop_child_tree(child.expect("cancelled child"));
+        return Err("summarizer cancelled".to_string());
+    }
     let started = Instant::now();
     loop {
         if cancel.load(Ordering::SeqCst) || started.elapsed() >= SESSION_TIMEOUT {
-            if let Some(mut running) = child_slot
+            if let Some(running) = children
                 .lock()
                 .unwrap_or_else(|err| err.into_inner())
-                .take()
+                .remove(&pid)
             {
-                let mut taskkill = Command::new("taskkill");
-                taskkill.args(["/PID", &running.id().to_string(), "/T", "/F"]);
-                #[cfg(windows)]
-                {
-                    use std::os::windows::process::CommandExt;
-                    taskkill.creation_flags(crate::util::process::CREATE_NO_WINDOW);
-                }
-                let _ = taskkill.status();
-                let _ = running.kill();
-                let _ = running.wait();
+                stop_child_tree(running);
             }
             return Err(if cancel.load(Ordering::SeqCst) {
                 "summarizer cancelled".to_string()
@@ -572,18 +690,18 @@ fn execute_session(
             });
         }
         let finished = {
-            let mut guard = child_slot.lock().unwrap_or_else(|err| err.into_inner());
+            let mut guard = children.lock().unwrap_or_else(|err| err.into_inner());
             guard
-                .as_mut()
+                .get_mut(&pid)
                 .map(|running| running.try_wait())
                 .transpose()
                 .map_err(|err| format!("wait summarizer: {err}"))?
         };
         if let Some(status) = finished.flatten() {
-            let _ = child_slot
+            let _ = children
                 .lock()
                 .unwrap_or_else(|err| err.into_inner())
-                .take();
+                .remove(&pid);
             let mut stdout_text = String::new();
             let mut stderr_text = String::new();
             if let Some(mut handle) = stdout {
@@ -604,6 +722,19 @@ fn execute_session(
         }
         std::thread::sleep(Duration::from_millis(100));
     }
+}
+
+pub fn stop_child_tree(mut child: Child) {
+    let mut taskkill = Command::new("taskkill");
+    taskkill.args(["/PID", &child.id().to_string(), "/T", "/F"]);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        taskkill.creation_flags(crate::util::process::CREATE_NO_WINDOW);
+    }
+    let _ = taskkill.status();
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 fn codex_program() -> &'static str {
@@ -751,9 +882,9 @@ fn upsert_result(
         serde_json::to_string(&result.findings).map_err(|err| format!("encode findings: {err}"))?;
     let rework = serde_json::json!({"happened": result.rework_happened, "cause": result.rework_cause, "category": result.rework_category}).to_string();
     tx.execute(
-        "INSERT INTO summary (kind,session_id,created_at,model_used,findings,rework_note,cost_note,goal_summary,goal_cluster,summary,cluster,model,outcome,confidence,rework_category,prompt_version,parse_error,input_tokens,output_tokens) \
-         VALUES (?1,?2,?3,'gpt-5.6-luna',?4,?5,?6,?7,?8,?7,?8,'gpt-5.6-luna',?9,?10,?11,?12,NULL,0,0) \
-         ON CONFLICT(kind,session_id) DO UPDATE SET created_at=excluded.created_at, model_used=excluded.model_used, findings=excluded.findings, rework_note=excluded.rework_note, cost_note=excluded.cost_note, goal_summary=excluded.goal_summary, goal_cluster=excluded.goal_cluster, summary=excluded.summary, cluster=excluded.cluster, model=excluded.model, outcome=excluded.outcome, confidence=excluded.confidence, rework_category=excluded.rework_category, prompt_version=excluded.prompt_version, parse_error=NULL",
+        "INSERT INTO summary (kind,session_id,created_at,model_used,findings,rework_note,cost_note,goal_summary,goal_cluster,summary,cluster,model,outcome,confidence,rework_category,prompt_version,parse_error,input_tokens,output_tokens,attempt_count,last_error_at) \
+         VALUES (?1,?2,?3,'gpt-5.6-luna',?4,?5,?6,?7,?8,?7,?8,'gpt-5.6-luna',?9,?10,?11,?12,NULL,0,0,0,NULL) \
+         ON CONFLICT(kind,session_id) DO UPDATE SET created_at=excluded.created_at, model_used=excluded.model_used, findings=excluded.findings, rework_note=excluded.rework_note, cost_note=excluded.cost_note, goal_summary=excluded.goal_summary, goal_cluster=excluded.goal_cluster, summary=excluded.summary, cluster=excluded.cluster, model=excluded.model, outcome=excluded.outcome, confidence=excluded.confidence, rework_category=excluded.rework_category, prompt_version=excluded.prompt_version, parse_error=NULL, attempt_count=0, last_error_at=NULL",
         params![session.kind, session.session_id, now, findings, rework, result.cost_note, result.goal, result.cluster, result.outcome, result.confidence, result.rework_category, PROMPT_VERSION],
     ).map_err(|err| format!("upsert summary row: {err}"))?;
     tx.commit()
@@ -765,13 +896,18 @@ fn save_parse_error(
     session: &PendingSession,
     error: &str,
 ) -> Result<(), String> {
-    conn.execute("INSERT INTO summary (kind,session_id,created_at,parse_error,prompt_version) VALUES (?1,?2,?3,?4,?5) ON CONFLICT(kind,session_id) DO UPDATE SET created_at=excluded.created_at,parse_error=excluded.parse_error", params![session.kind, session.session_id, chrono::Utc::now().timestamp_millis(), crate::ailog::truncate_chars(error, 500), PROMPT_VERSION]).map_err(|err| format!("save parse error: {err}"))?;
+    let now = chrono::Utc::now().timestamp_millis();
+    conn.execute("INSERT INTO summary (kind,session_id,created_at,parse_error,prompt_version,attempt_count,last_error_at) VALUES (?1,?2,?3,?4,?5,1,?3) ON CONFLICT(kind,session_id) DO UPDATE SET created_at=excluded.created_at,parse_error=excluded.parse_error,prompt_version=excluded.prompt_version,attempt_count=COALESCE(summary.attempt_count,0)+1,last_error_at=excluded.last_error_at", params![session.kind, session.session_id, now, crate::ailog::truncate_chars(error, 500), PROMPT_VERSION]).map_err(|err| format!("save parse error: {err}"))?;
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    const ALL_RANGE: ResolvedRange = ResolvedRange {
+        from: i64::MIN / 4,
+        to: i64::MAX / 4,
+    };
     #[test]
     fn enums_round_to_fixed_values() {
         assert_eq!(normalize_cluster("教材"), "other");
@@ -807,18 +943,204 @@ mod tests {
         let conn = Connection::open_in_memory().expect("memory database");
         crate::ailog::schema::init(&conn).expect("schema");
         conn.execute(
-            "INSERT INTO session(kind, session_id, origin) VALUES ('codex', 's', 'unknown')",
+            "INSERT INTO session(kind, session_id, origin, started_at) VALUES ('codex', 's', 'unknown', 1)",
             [],
         )
         .expect("session");
         conn.execute("INSERT INTO summary(kind, session_id, created_at, prompt_version) VALUES ('codex', 's', 1, 1)", []).expect("old summary");
-        assert_eq!(pending_count(&conn, false).expect("old pending"), 1);
-        conn.execute("UPDATE summary SET prompt_version=?1", [PROMPT_VERSION])
-            .expect("current summary");
-        assert_eq!(pending_count(&conn, false).expect("current skipped"), 0);
         assert_eq!(
-            pending_count(&conn, true).expect("force includes current"),
+            pending_count(&conn, false, ALL_RANGE).expect("old pending"),
             1
         );
+        conn.execute("UPDATE summary SET prompt_version=?1", [PROMPT_VERSION])
+            .expect("current summary");
+        assert_eq!(
+            pending_count(&conn, false, ALL_RANGE).expect("current skipped"),
+            0
+        );
+        assert_eq!(
+            pending_count(&conn, true, ALL_RANGE).expect("force includes current"),
+            1
+        );
+    }
+
+    #[test]
+    fn current_parse_errors_become_pending_after_the_retry_window() {
+        let conn = Connection::open_in_memory().expect("memory database");
+        crate::ailog::schema::init(&conn).expect("schema");
+        conn.execute(
+            "INSERT INTO session(kind, session_id, origin, started_at) VALUES ('codex', 'retry', 'unknown', 1)",
+            [],
+        )
+        .expect("session");
+        conn.execute("INSERT INTO summary(kind, session_id, created_at, prompt_version, parse_error, attempt_count, last_error_at) VALUES ('codex', 'retry', 1, ?1, 'failed', 1, 1)", [PROMPT_VERSION]).expect("failed summary");
+        assert_eq!(
+            pending_count(&conn, false, ALL_RANGE).expect("retry pending"),
+            1
+        );
+    }
+
+    #[test]
+    fn pending_scope_applies_to_count_and_fetch() {
+        let conn = Connection::open_in_memory().expect("memory database");
+        crate::ailog::schema::init(&conn).expect("schema");
+        let now = 2_000_000_000_000_i64;
+        for (id, age_days) in [("six", 6), ("eight", 8), ("thirty_one", 31)] {
+            conn.execute(
+                "INSERT INTO session(kind, session_id, origin, started_at) VALUES ('codex', ?1, 'unknown', ?2)",
+                params![id, now - age_days * 86_400_000],
+            ).expect("session");
+        }
+        let seven_days = ResolvedRange {
+            from: now - 7 * 86_400_000,
+            to: now,
+        };
+        let thirty_days = ResolvedRange {
+            from: now - 30 * 86_400_000,
+            to: now,
+        };
+        assert_eq!(
+            pending_count(&conn, false, seven_days).expect("7 day count"),
+            1
+        );
+        assert_eq!(
+            pending_count(&conn, false, thirty_days).expect("30 day count"),
+            2
+        );
+        assert_eq!(
+            pending_count(&conn, false, ALL_RANGE).expect("all count"),
+            3
+        );
+        let seven =
+            fetch_pending(&conn, 10, false, seven_days, &HashSet::new()).expect("7 day fetch");
+        assert_eq!(
+            seven
+                .iter()
+                .map(|entry| entry.session_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["six"]
+        );
+    }
+
+    #[test]
+    fn retry_pending_excludes_recent_exhausted_and_successful_rows() {
+        let conn = Connection::open_in_memory().expect("memory database");
+        crate::ailog::schema::init(&conn).expect("schema");
+        let now = chrono::Utc::now().timestamp_millis();
+        for id in ["old_error", "recent_error", "exhausted_error", "successful"] {
+            conn.execute("INSERT INTO session(kind, session_id, origin, started_at) VALUES ('codex', ?1, 'unknown', ?2)", params![id, now]).expect("session");
+        }
+        for (id, error, attempts, error_at) in [
+            ("old_error", Some("failed"), 1, now - RETRY_DELAY_MS - 1),
+            ("recent_error", Some("failed"), 1, now),
+            (
+                "exhausted_error",
+                Some("failed"),
+                MAX_ATTEMPTS,
+                now - RETRY_DELAY_MS - 1,
+            ),
+            ("successful", None, 1, now - RETRY_DELAY_MS - 1),
+        ] {
+            conn.execute("INSERT INTO summary(kind, session_id, created_at, prompt_version, parse_error, attempt_count, last_error_at) VALUES ('codex', ?1, ?2, ?3, ?4, ?5, ?6)", params![id, now, PROMPT_VERSION, error, attempts, error_at]).expect("summary");
+        }
+        let range = ResolvedRange {
+            from: now - 1,
+            to: now + 1,
+        };
+        assert_eq!(
+            pending_count(&conn, false, range).expect("only old error retries"),
+            1
+        );
+    }
+
+    #[test]
+    fn old_prompt_parse_error_obeys_retry_window_and_attempt_limit_after_save() {
+        let mut conn = Connection::open_in_memory().expect("memory database");
+        crate::ailog::schema::init(&conn).expect("schema");
+        let now = chrono::Utc::now().timestamp_millis();
+        conn.execute(
+            "INSERT INTO session(kind, session_id, origin, started_at) VALUES ('codex', 'old-retry', 'unknown', ?1)",
+            [now],
+        )
+        .expect("session");
+        conn.execute(
+            "INSERT INTO summary(kind, session_id, created_at, prompt_version, parse_error, attempt_count, last_error_at) VALUES ('codex', 'old-retry', ?1, ?2, 'old failure', 1, ?1)",
+            params![now, PROMPT_VERSION - 1],
+        )
+        .expect("old failed summary");
+        let range = ResolvedRange {
+            from: now - 1,
+            to: now + 1,
+        };
+        assert_eq!(
+            pending_count(&conn, false, range).expect("old prompt is pending"),
+            1
+        );
+
+        let session = PendingSession {
+            kind: "codex".to_string(),
+            session_id: "old-retry".to_string(),
+            source_path: None,
+            ai_title: None,
+            first_prompt: None,
+            turn_count: 0,
+            compact_count: 0,
+            wall_ms: None,
+            cost_usd: 0.0,
+        };
+        save_parse_error(&mut conn, &session, "new failure").expect("save failure");
+        let (version, attempts, last_error_at): (i64, i64, i64) = conn
+            .query_row(
+                "SELECT prompt_version, attempt_count, last_error_at FROM summary WHERE kind='codex' AND session_id='old-retry'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("saved retry state");
+        assert_eq!(version, PROMPT_VERSION);
+        assert_eq!(attempts, 2);
+        assert!(last_error_at >= now);
+        assert_eq!(
+            pending_count(&conn, false, range).expect("recent failure waits"),
+            0
+        );
+
+        conn.execute(
+            "UPDATE summary SET last_error_at=?1 WHERE kind='codex' AND session_id='old-retry'",
+            [chrono::Utc::now().timestamp_millis() - RETRY_DELAY_MS - 1],
+        )
+        .expect("expire retry window");
+        assert_eq!(
+            pending_count(&conn, false, range).expect("expired failure retries"),
+            1
+        );
+        conn.execute(
+            "UPDATE summary SET attempt_count=?1 WHERE kind='codex' AND session_id='old-retry'",
+            [MAX_ATTEMPTS],
+        )
+        .expect("exhaust attempts");
+        assert_eq!(
+            pending_count(&conn, false, range).expect("exhausted failure stops"),
+            0
+        );
+    }
+
+    #[test]
+    fn codex_rollout_material_keeps_user_answer_and_error() {
+        let path =
+            std::env::temp_dir().join(format!("ailog-material-{}.jsonl", std::process::id()));
+        fs::write(&path, concat!(
+            r#"{"type":"session_meta","payload":{"id":"s"}}"#, "\n",
+            r#"{"type":"event_msg","payload":{"type":"user_message","message":"fix the parser"}}"#, "\n",
+            r#"{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"text":"implemented the fix"}]}}"#, "\n",
+            r#"{"type":"response_item","payload":{"type":"function_call_output","is_error":true,"output":"Error: denied"}}"#,
+        )).expect("fixture");
+        let material = read_transcript_material(&path.to_string_lossy()).expect("material");
+        let _ = fs::remove_file(path);
+        assert_eq!(material.user, vec!["fix the parser"]);
+        assert_eq!(
+            material.assistant_last.as_deref(),
+            Some("implemented the fix")
+        );
+        assert_eq!(material.errors, vec!["Error: denied"]);
     }
 }

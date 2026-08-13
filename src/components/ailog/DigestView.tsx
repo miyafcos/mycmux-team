@@ -1,4 +1,4 @@
-import { formatCount, formatDelta, formatUsd, type DigestReport } from "../../lib/ailog";
+import { formatCount, formatDelta, formatUsd, type DigestReport, type SummarizeStatus } from "../../lib/ailog";
 import { cardStyle, Chip, noteStyle, subtleButtonStyle } from "./ui";
 
 export function DigestView({
@@ -8,6 +8,9 @@ export function DigestView({
   onPrevious,
   onNext,
   onRegenerate,
+  summarizeStatus,
+  summarizeError,
+  onStartSummarize,
 }: {
   report: DigestReport | null;
   loading: boolean;
@@ -15,6 +18,9 @@ export function DigestView({
   onPrevious: () => void;
   onNext: () => void;
   onRegenerate: () => void;
+  summarizeStatus?: SummarizeStatus | null;
+  summarizeError?: string | null;
+  onStartSummarize?: () => void;
 }) {
   const content = report?.digest?.content;
   return (
@@ -29,7 +35,12 @@ export function DigestView({
       </div>
 
       {loading || generating ? <div style={noteStyle}>生成中…</div> : null}
-      {!loading && !generating && !content ? <div style={cardStyle}>この日の要約はまだありません</div> : null}
+      {summarizeStatus?.running ? <div style={noteStyle}>要約中 {summarizeStatus.sessionsDone.toLocaleString()} / {summarizeStatus.sessionsTotal.toLocaleString()}（残り {summarizeStatus.sessionsRemaining.toLocaleString()}）</div> : null}
+      {summarizeError || summarizeStatus?.lastError || report?.parseError ? <div style={{ ...cardStyle, borderColor: "var(--cmux-usage-warn)" }}>エラー: {summarizeError ?? summarizeStatus?.lastError ?? report?.parseError}</div> : null}
+      {!loading && !generating && !content ? <div style={cardStyle}>
+        <div>{report?.reason ?? "この日の要約はまだありません"}</div>
+        {(summarizeStatus?.sessionsRemaining ?? 0) > 0 && onStartSummarize ? <button type="button" onClick={onStartSummarize} style={{ ...subtleButtonStyle, marginTop: 10 }}>未要約 {summarizeStatus!.sessionsRemaining.toLocaleString()} 件 — 要約を実行</button> : null}
+      </div> : null}
       {content ? (
         <>
           <section style={cardStyle}>

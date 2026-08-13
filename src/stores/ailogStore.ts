@@ -29,10 +29,17 @@ import {
   ailogSummarizeCancel,
   ailogSummarizeStart,
   ailogSummarizeStatus,
+  ailogSeries,
   ailogSessionDetail,
+  ailogSessionSummarize,
+  ailogSessionTranscript,
+  ailogUsageRhythm,
   buildRange,
+  dayOffsetInput,
   emptyFilters,
   errorMessage,
+  parseDayInput,
+  shiftDayInput,
   type AilogRange,
   type BreakdownReport,
   type EfficiencyReport,
@@ -47,14 +54,17 @@ import {
   type Overview,
   type SeriesReport,
   type SessionDetail,
+  type TranscriptReport,
   type SessionsReport,
   type RangePreset,
+  type SummaryRangePreset,
   type ReworkRankingsReport,
   type PriceEntry,
   type RuleCheckReport,
-  toDayInput,
+  type UsageRhythmReport,
 } from "../lib/ailog";
 import type { LeafDimension } from "../components/ailog/sankeyModel";
+import type { UsageMetric } from "../components/ailog/usageModel";
 
 /**
  * Ceiling on the session list fetch. The whole 6.4GB corpus is 995 sessions, so
@@ -88,6 +98,7 @@ interface AilogState {
   preset: RangePreset;
   customFrom: string;
   customTo: string;
+  summaryPreset: SummaryRangePreset;
   excludeSynthetic: boolean;
   includeSidechain: boolean;
   leafDimension: LeafDimension;
@@ -106,9 +117,16 @@ interface AilogState {
   models: ModelsReport | null;
   projects: BreakdownReport | null;
   breakdown: BreakdownReport | null;
+  /** Scoped to the breakdown section; see `refreshBreakdown`. */
+  breakdownError: string | null;
   sessions: SessionsReport | null;
   detail: SessionDetail | null;
   detailKey: { kind: string; sessionId: string } | null;
+  transcript: TranscriptReport | null;
+  transcriptLoading: boolean;
+  transcriptError: string | null;
+  sessionSummarizing: boolean;
+  sessionSummarizeError: string | null;
   findings: FindingsReport | null;
   rankings: ReworkRankingsReport | null;
   findingKind: FindingKind | null;
@@ -137,6 +155,13 @@ interface AilogState {
   ruleCheck: RuleCheckReport | null;
   experimentLoading: boolean;
   experimentError: string | null;
+  usageMetric: UsageMetric;
+  usageStack: "absolute" | "share";
+  usageBucket: "day" | "week" | "month";
+  usageSeries: SeriesReport | null;
+  usageRhythm: UsageRhythmReport | null;
+  usageLoading: boolean;
+  usageError: string | null;
   prices: PriceEntry[] | null;
   pricesLoading: boolean;
   pricesError: string | null;
@@ -145,6 +170,11 @@ interface AilogState {
   // --- actions ---
   setPreset: (preset: RangePreset) => void;
   setCustomRange: (from: string, to: string) => void;
+  setUsageMetric: (metric: UsageMetric) => void;
+  setUsageStack: (stack: "absolute" | "share") => void;
+  setUsageBucket: (bucket: "day" | "week" | "month") => void;
+  refreshUsage: () => Promise<void>;
+  setSummaryPreset: (preset: SummaryRangePreset) => void;
   setExcludeSynthetic: (value: boolean) => void;
   setIncludeSidechain: (value: boolean) => void;
   setLeafDimension: (value: LeafDimension) => void;
@@ -162,6 +192,8 @@ interface AilogState {
   refreshPrices: () => Promise<void>;
   savePrice: (entry: PriceEntry) => Promise<void>;
   openDetail: (kind: string, sessionId: string) => Promise<void>;
+  loadTranscript: (kind: string, sessionId: string) => Promise<void>;
+  summarizeSession: (kind: string, sessionId: string) => Promise<void>;
   closeDetail: () => void;
   refreshIndexStatus: () => Promise<void>;
   applyIndexProgress: (progress: IndexProgress) => void;
@@ -182,20 +214,26 @@ interface AilogState {
 
 let refreshSeq = 0;
 let detailSeq = 0;
+let transcriptSeq = 0;
 let digestSeq = 0;
 let learningSeq = 0;
 let breakdownSeq = 0;
 let experimentSeq = 0;
 let priceSeq = 0;
+let usageSeq = 0;
 
-function utcDayOffset(days: number): string {
-  const now = new Date();
-  return toDayInput(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + days));
+/**
+ * Digest dates name a local day, matching the day buckets every other ailog
+ * surface reports. Deriving them in UTC would ask for yesterday's digest for
+ * nine hours of every local day.
+ */
+function localDayOffset(days: number): string {
+  return dayOffsetInput(days);
 }
 
-function shiftUtcDay(date: string, days: number): string {
-  const ms = Date.parse(`${date}T00:00:00Z`);
-  return Number.isFinite(ms) ? toDayInput(ms + days * 86_400_000) : utcDayOffset(days);
+function shiftLocalDay(date: string, days: number): string {
+  const shifted = shiftDayInput(date, days);
+  return shifted === date && parseDayInput(date) === null ? localDayOffset(days) : shifted;
 }
 
 /**
@@ -226,6 +264,7 @@ const initialState = {
   preset: "30d" as RangePreset,
   customFrom: "",
   customTo: "",
+  summaryPreset: "7d" as SummaryRangePreset,
   excludeSynthetic: true,
   includeSidechain: false,
   leafDimension: "project" as LeafDimension,
@@ -241,9 +280,15 @@ const initialState = {
   models: null,
   projects: null,
   breakdown: null,
+  breakdownError: null,
   sessions: null,
   detail: null,
   detailKey: null,
+  transcript: null,
+  transcriptLoading: false,
+  transcriptError: null,
+  sessionSummarizing: false,
+  sessionSummarizeError: null,
   findings: null,
   rankings: null,
   findingKind: null,
@@ -259,7 +304,7 @@ const initialState = {
   summarizeStatus: null,
   summarizeProgress: null,
   summarizeError: null,
-  digestDate: utcDayOffset(-1),
+  digestDate: localDayOffset(-1),
   digestReport: null,
   digestLoading: false,
   digestGenerating: false,
@@ -270,6 +315,16 @@ const initialState = {
   ruleCheck: null,
   experimentLoading: false,
   experimentError: null,
+  // Fresh input/output is the default: measured in total tokens the picture is
+  // 95% cache reads, which answers a different question than "how much did I
+  // actually put through a model".
+  usageMetric: "ioTokens" as UsageMetric,
+  usageStack: "absolute" as "absolute" | "share",
+  usageBucket: "day" as "day" | "week" | "month",
+  usageSeries: null,
+  usageRhythm: null,
+  usageLoading: false,
+  usageError: null,
   prices: null,
   pricesLoading: false,
   pricesError: null,
@@ -281,24 +336,37 @@ export const useAilogStore = create<AilogState>((set, get) => ({
 
   setPreset: (preset) => {
     set({ preset, sessionPage: 0, selection: null, drillProject: null });
-    if (get().currentRange()) void get().refresh();
+    if (get().currentRange()) {
+      void get().refresh();
+      void get().refreshUsage();
+    }
   },
 
   setCustomRange: (customFrom, customTo) => {
     set({ customFrom, customTo, preset: "custom", sessionPage: 0 });
-    if (get().currentRange()) void get().refresh();
+    if (get().currentRange()) {
+      void get().refresh();
+      void get().refreshUsage();
+    }
+  },
+
+  setSummaryPreset: (summaryPreset) => {
+    set({ summaryPreset });
+    void get().refreshSummarizeStatus();
   },
 
   setExcludeSynthetic: (excludeSynthetic) => set({ excludeSynthetic }),
   setIncludeSidechain: (includeSidechain) => {
     set({ includeSidechain, sessionPage: 0 });
     void get().refresh();
+    void get().refreshUsage();
   },
   setLeafDimension: (leafDimension) => set({ leafDimension, drillProject: null }),
   setTopN: (layer, value) => set((state) => ({ topN: { ...state.topN, [layer]: value } })),
   setGranularity: (granularity) => {
     set({ granularity });
     void get().refresh();
+    void get().refreshUsage();
   },
   setSessionSort: (sessionSort) => set({ sessionSort, sessionPage: 0 }),
   setSessionPage: (sessionPage) => set({ sessionPage: Math.max(0, sessionPage) }),
@@ -382,10 +450,14 @@ export const useAilogStore = create<AilogState>((set, get) => ({
     try {
       const breakdown = await ailogBreakdown(range, filters, dimension);
       if (mySeq !== breakdownSeq || get().breakdownDimension !== dimension) return;
-      set({ breakdown });
+      set({ breakdown, breakdownError: null });
     } catch (error) {
       if (mySeq !== breakdownSeq) return;
-      set({ error: errorMessage(error), breakdown: null });
+      // Scoped to the breakdown section. The global `error` is reserved for
+      // `refresh()`, which fetches every report at once: setting it here
+      // replaced the whole dashboard with a failure screen even though the
+      // overview, series and model tables had all loaded fine.
+      set({ breakdownError: errorMessage(error), breakdown: null });
     }
   },
 
@@ -438,20 +510,47 @@ export const useAilogStore = create<AilogState>((set, get) => ({
 
   openDetail: async (kind, sessionId) => {
     const mySeq = ++detailSeq;
-    set({ detailLoading: true, detailError: null, detailKey: { kind, sessionId }, detail: null });
+    transcriptSeq += 1;
+    set({ detailLoading: true, detailError: null, detailKey: { kind, sessionId }, detail: null, transcript: null, transcriptLoading: false, transcriptError: null, sessionSummarizeError: null });
     try {
       const detail = await ailogSessionDetail(kind, sessionId);
       if (mySeq !== detailSeq) return;
       set({ detail, detailLoading: false });
+      void get().loadTranscript(kind, sessionId);
     } catch (error) {
       if (mySeq !== detailSeq) return;
       set({ detailLoading: false, detailError: errorMessage(error) });
     }
   },
 
+  loadTranscript: async (kind, sessionId) => {
+    const mySeq = ++transcriptSeq;
+    set({ transcriptLoading: true, transcriptError: null });
+    try {
+      const transcript = await ailogSessionTranscript(kind, sessionId);
+      if (mySeq !== transcriptSeq) return;
+      set({ transcript, transcriptLoading: false });
+    } catch (error) {
+      if (mySeq !== transcriptSeq) return;
+      set({ transcriptLoading: false, transcriptError: errorMessage(error) });
+    }
+  },
+
+  summarizeSession: async (kind, sessionId) => {
+    set({ sessionSummarizing: true, sessionSummarizeError: null });
+    try {
+      await ailogSessionSummarize(kind, sessionId);
+      await Promise.all([get().openDetail(kind, sessionId), get().refresh(), get().refreshSummarizeStatus()]);
+      set({ sessionSummarizing: false });
+    } catch (error) {
+      set({ sessionSummarizing: false, sessionSummarizeError: errorMessage(error) });
+    }
+  },
+
   closeDetail: () => {
     detailSeq += 1;
-    set({ detail: null, detailKey: null, detailError: null, detailLoading: false });
+    transcriptSeq += 1;
+    set({ detail: null, detailKey: null, detailError: null, detailLoading: false, transcript: null, transcriptLoading: false, transcriptError: null, sessionSummarizing: false, sessionSummarizeError: null });
   },
 
   refreshIndexStatus: async () => {
@@ -492,7 +591,7 @@ export const useAilogStore = create<AilogState>((set, get) => ({
 
   refreshSummarizeStatus: async () => {
     try {
-      const summarizeStatus = await ailogSummarizeStatus();
+      const summarizeStatus = await ailogSummarizeStatus({ preset: get().summaryPreset });
       set({ summarizeStatus, summarizeError: summarizeStatus.lastError });
     } catch (error) {
       set({ summarizeError: errorMessage(error) });
@@ -507,7 +606,7 @@ export const useAilogStore = create<AilogState>((set, get) => ({
   startSummarize: async (force = false) => {
     set({ summarizeError: null, summarizeProgress: null });
     try {
-      const result = await ailogSummarizeStart(undefined, force);
+      const result = await ailogSummarizeStart(undefined, force, { preset: get().summaryPreset });
       if (result.alreadyRunning) set({ summarizeError: "インデックスまたは要約処理がすでに実行中です" });
       await get().refreshSummarizeStatus();
     } catch (error) {
@@ -529,7 +628,7 @@ export const useAilogStore = create<AilogState>((set, get) => ({
     void get().refreshDigest(digestDate);
   },
 
-  stepDigestDate: (days) => get().setDigestDate(shiftUtcDay(get().digestDate, days)),
+  stepDigestDate: (days) => get().setDigestDate(shiftLocalDay(get().digestDate, days)),
 
   refreshDigest: async (date = get().digestDate) => {
     const mySeq = ++digestSeq;
@@ -568,6 +667,45 @@ export const useAilogStore = create<AilogState>((set, get) => ({
     void get().refreshLearning();
   },
 
+  setUsageMetric: (usageMetric) => set({ usageMetric }),
+  setUsageStack: (usageStack) => set({ usageStack }),
+  setUsageBucket: (usageBucket) => {
+    set({ usageBucket });
+    void get().refreshUsage();
+  },
+
+  /**
+   * The usage tab is deliberately independent of `refresh()`: it must render
+   * from SQL aggregates alone, so a failure in any other report cannot blank
+   * it, and its own failure is scoped to `usageError`.
+   */
+  refreshUsage: async () => {
+    const range = get().currentRange();
+    if (!range) return;
+    const filters = selectionFilters(
+      { ...emptyFilters(), includeSidechain: get().includeSidechain },
+      get().selection,
+      get().leafDimension,
+    );
+    const mySeq = ++usageSeq;
+    set({ usageLoading: true, usageError: null });
+    try {
+      const [usageSeries, usageRhythm] = await Promise.all([
+        ailogSeries(range, filters, {
+          bucket: get().usageBucket,
+          // `model` is the family; `model_raw` keeps sol / terra / luna apart.
+          groupBy: get().granularity === "raw" ? "model_raw" : "model",
+        }),
+        ailogUsageRhythm(range, filters),
+      ]);
+      if (mySeq !== usageSeq) return;
+      set({ usageSeries, usageRhythm, usageLoading: false, usageError: null });
+    } catch (error) {
+      if (mySeq !== usageSeq) return;
+      set({ usageLoading: false, usageError: errorMessage(error) });
+    }
+  },
+
   refreshLearning: async (append = false) => {
     const range = get().currentRange();
     if (!range) return;
@@ -604,5 +742,6 @@ export function __resetAilogStoreForTests(): void {
   detailSeq = 0;
   digestSeq = 0;
   learningSeq = 0;
+  usageSeq = 0;
   useAilogStore.setState({ ...initialState });
 }

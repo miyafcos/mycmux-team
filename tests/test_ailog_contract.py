@@ -41,11 +41,14 @@ EXPECTED_COMMANDS = {
     "ailog_breakdown",
     "ailog_sessions",
     "ailog_session_detail",
+    "ailog_session_transcript",
+    "ailog_session_summarize",
     "ailog_models",
     "ailog_efficiency",
     "ailog_rule_check",
     "ailog_findings",
     "ailog_rework_rankings",
+    "ailog_usage_rhythm",
     "ailog_get_prices",
     "ailog_set_price",
 }
@@ -156,3 +159,14 @@ def test_unknown_models_are_never_priced_by_substitution() -> None:
         "cost_for_turn must return a zero split for an unpriced model"
     )
     assert "return CostSplit::default();" in price_text
+
+
+def test_summarizer_cancellation_tracks_every_parallel_child() -> None:
+    """A two-worker pass must drain a shared child registry, not one slot."""
+    text = read(AILOG_COMMANDS)
+    summary_text = read(AILOG_MODULE / "summarize.rs")
+    assert "children: summarize::ChildRegistry" in text
+    assert "std::mem::take(&mut *state\n        .children" in text
+    assert "for (_, child) in children" in text
+    assert "let worker_children = children.clone();" in summary_text
+    assert "let local_child" not in summary_text

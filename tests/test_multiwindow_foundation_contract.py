@@ -221,13 +221,15 @@ def test_updater_ui_is_main_window_only() -> None:
     app_info = read_repo_text(APP_INFO_TAB)
 
     for snippet in [
-        "const canCheckForUpdates = isMainWindow();",
+        # The updater stays gated on the main window; test-profile instances
+        # additionally disable it (testProfile === null).
+        "const canCheckForUpdates = isMainWindow() && testProfile === null;",
         "{canCheckForUpdates && (",
     ]:
         assert_contains(app_info, snippet, APP_INFO_TAB)
 
     handler_index = app_info.index("const handleCheckUpdate")
-    assert app_info.index("const canCheckForUpdates = isMainWindow();") > handler_index
+    assert app_info.index("const canCheckForUpdates = isMainWindow()") > handler_index
 
 
 def test_window_registry_commands_are_exposed() -> None:

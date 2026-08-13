@@ -17,6 +17,8 @@ import {
   type SummarizeStatus,
   type Overview,
   type RangePreset,
+  type SummaryRangePreset,
+  SUMMARY_RANGE_PRESETS,
 } from "../../lib/ailog";
 import { ButtonGroup, Chip, subtleButtonStyle } from "./ui";
 
@@ -26,6 +28,8 @@ export function RangeBar({
   customTo,
   onPreset,
   onCustomRange,
+  summaryPreset,
+  onSummaryPreset,
   overview,
   indexStatus,
   indexProgress,
@@ -49,6 +53,8 @@ export function RangeBar({
   customTo: string;
   onPreset: (preset: RangePreset) => void;
   onCustomRange: (from: string, to: string) => void;
+  summaryPreset: SummaryRangePreset;
+  onSummaryPreset: (preset: SummaryRangePreset) => void;
   overview: Overview | null;
   indexStatus: IndexStatus | null;
   indexProgress: IndexProgress | null;
@@ -106,6 +112,14 @@ export function RangeBar({
             />
           </span>
         ) : null}
+
+        <span style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-secondary)" }}>要約対象</span>
+        <ButtonGroup
+          ariaLabel="要約対象期間"
+          value={summaryPreset}
+          onChange={onSummaryPreset}
+          options={SUMMARY_RANGE_PRESETS.map((entry) => ({ value: entry.id, label: entry.label }))}
+        />
 
         <span style={{ flex: 1 }} />
 

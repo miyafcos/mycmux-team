@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  DAY_OFFSET_MIN,
   RANGE_PRESETS,
   WORK_TAG_LABELS,
   buildRange,
+  dayOffsetInput,
   formatCount,
+  formatDayBucket,
   formatDelta,
   formatHours,
   formatPct,
@@ -13,12 +16,15 @@ import {
   formatUsd,
   formatUsdShort,
   parseDayInput,
+  shiftDayInput,
   toDayInput,
   workTagHint,
   workTagLabel,
 } from "../../src/lib/ailog";
 
 const DAY_MS = 86_400_000;
+/** Day boundaries are cut locally; see `DAY_OFFSET_MIN`. */
+const OFFSET_MS = DAY_OFFSET_MIN * 60_000;
 
 describe("number formatting", () => {
   it("uses locale grouping for money, tokens, counts, percentages and hours", () => {
@@ -78,15 +84,15 @@ describe("range presets", () => {
   it("makes a custom range inclusive on both ends", () => {
     const range = buildRange("custom", "2026-08-01", "2026-08-10");
     expect(range).toEqual({
-      from: Date.UTC(2026, 7, 1),
-      to: Date.UTC(2026, 7, 10) + DAY_MS - 1,
+      from: Date.UTC(2026, 7, 1) - OFFSET_MS,
+      to: Date.UTC(2026, 7, 10) - OFFSET_MS + DAY_MS - 1,
     });
   });
 
   it("treats a single day as that whole day", () => {
     const range = buildRange("custom", "2026-08-10", "2026-08-10");
-    expect(range?.from).toBe(Date.UTC(2026, 7, 10));
-    expect(range?.to).toBe(Date.UTC(2026, 7, 10) + DAY_MS - 1);
+    expect(range?.from).toBe(Date.UTC(2026, 7, 10) - OFFSET_MS);
+    expect(range?.to).toBe(Date.UTC(2026, 7, 10) - OFFSET_MS + DAY_MS - 1);
     expect((range?.to ?? 0) - (range?.from ?? 0)).toBe(DAY_MS - 1);
   });
 
@@ -105,8 +111,35 @@ describe("range presets", () => {
   });
 
   it("round-trips the date input format", () => {
-    expect(toDayInput(Date.UTC(2026, 0, 5))).toBe("2026-01-05");
-    expect(parseDayInput("2026-01-05")).toBe(Date.UTC(2026, 0, 5));
+    expect(toDayInput(parseDayInput("2026-01-05") ?? 0)).toBe("2026-01-05");
+    expect(parseDayInput("2026-01-05")).toBe(Date.UTC(2026, 0, 5) - OFFSET_MS);
+  });
+
+  it("cuts the day at local midnight, not UTC midnight", () => {
+    // 2026-08-12T15:00Z is already the 13th locally; the instant one
+    // millisecond earlier is still the 12th.
+    const localMidnight = Date.UTC(2026, 7, 13) - OFFSET_MS;
+    expect(formatDayBucket(localMidnight)).toBe("2026-08-13");
+    expect(formatDayBucket(localMidnight - 1)).toBe("2026-08-12");
+    // Both instants share a UTC calendar day, which is what the old UTC
+    // bucketing collapsed them onto.
+    expect(new Date(localMidnight).getUTCDate()).toBe(12);
+    expect(new Date(localMidnight - 1).getUTCDate()).toBe(12);
+  });
+
+  it("steps day inputs without drifting across the offset", () => {
+    expect(shiftDayInput("2026-08-13", -1)).toBe("2026-08-12");
+    expect(shiftDayInput("2026-08-13", 1)).toBe("2026-08-14");
+    expect(shiftDayInput("2026-03-01", -1)).toBe("2026-02-28");
+    expect(shiftDayInput("not-a-date", -1)).toBe("not-a-date");
+  });
+
+  it("derives today and yesterday in the bucketing timezone", () => {
+    // 2026-08-12T16:00Z is 2026-08-13 01:00 local: a UTC-based helper would
+    // answer with the 12th here.
+    const now = Date.UTC(2026, 7, 12, 16, 0, 0);
+    expect(dayOffsetInput(0, now)).toBe("2026-08-13");
+    expect(dayOffsetInput(-1, now)).toBe("2026-08-12");
   });
 });
 

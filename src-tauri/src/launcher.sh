@@ -19,7 +19,8 @@ __write_session_mapping() {
   local kind="$2"
   local session_id="$3"
   [ -z "$pane_id" ] || [ -z "$session_id" ] && return
-  local map_dir="$HOME/.mycmux/pane-sessions"
+  local runtime_dir="${MYCMUX_RUNTIME_DIR:-$HOME/.mycmux}"
+  local map_dir="$runtime_dir/pane-sessions"
   mkdir -p "$map_dir" 2>/dev/null
   if [ -n "$kind" ]; then
     echo "$kind:$session_id" > "$map_dir/$pane_id.txt"

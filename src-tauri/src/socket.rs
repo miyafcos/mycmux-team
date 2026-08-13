@@ -640,8 +640,7 @@ async fn handle_connection(
 
 /// Directory that holds the socket discovery files (`~/.mycmux`).
 fn get_discovery_dir() -> PathBuf {
-    let mut path = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
-    path.push(".mycmux");
+    let path = crate::test_profile::runtime_dir().unwrap_or_else(|_| PathBuf::from("/tmp/.mycmux"));
     std::fs::create_dir_all(&path).ok();
     path
 }

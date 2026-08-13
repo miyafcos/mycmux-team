@@ -11,6 +11,7 @@ mod session_retention;
 mod session_state;
 mod socket;
 mod status_feed;
+mod test_profile;
 pub mod terminal_config;
 pub mod usage;
 mod util;
@@ -36,8 +37,9 @@ mod single_instance {
         }
     }
 
-    pub fn acquire() -> Result<Option<InstanceGuard>, String> {
-        let name = format!("Local\\miyazaki-{}-single-instance", env!("CARGO_PKG_NAME"));
+    pub fn acquire(profile: Option<&str>) -> Result<Option<InstanceGuard>, String> {
+        let suffix = profile.map(|name| format!("-profile-{name}")).unwrap_or_default();
+        let name = format!("Local\\miyazaki-{}-single-instance{suffix}", env!("CARGO_PKG_NAME"));
         let wide_name: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
         let handle = unsafe { CreateMutexW(None, true, PCWSTR(wide_name.as_ptr())) }
             .map_err(|error| format!("Failed to create single-instance mutex: {error}"))?;
@@ -55,7 +57,7 @@ mod single_instance {
 mod single_instance {
     pub struct InstanceGuard;
 
-    pub fn acquire() -> Result<Option<InstanceGuard>, String> {
+    pub fn acquire(_profile: Option<&str>) -> Result<Option<InstanceGuard>, String> {
         Ok(Some(InstanceGuard))
     }
 }
@@ -75,8 +77,7 @@ pub struct AppState {
 }
 
 fn install_launcher_script() -> Result<(), String> {
-    let home = dirs::home_dir().ok_or_else(|| "Failed to resolve home directory".to_string())?;
-    let bin_dir = home.join(".mycmux").join("bin");
+    let bin_dir = test_profile::runtime_dir()?.join("bin");
     std::fs::create_dir_all(&bin_dir)
         .map_err(|e| format!("Failed to create launcher directory: {e}"))?;
 
@@ -169,6 +170,10 @@ fn warn_if_dual_install(app_handle: &tauri::AppHandle) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    if let Err(error) = test_profile::init_from_args() {
+        eprintln!("[mycmux] {error}");
+        return;
+    }
     std::panic::set_hook(Box::new(|info| {
         eprintln!("[mycmux][panic] {info}");
         // Release builds have no console, so the stderr line above goes nowhere.
@@ -189,7 +194,7 @@ pub fn run() {
         diag::log_panic(&report);
     }));
 
-    let _single_instance_guard = match single_instance::acquire() {
+    let _single_instance_guard = match single_instance::acquire(test_profile::name()) {
         Ok(Some(guard)) => Some(guard),
         Ok(None) => return,
         Err(error) => {
@@ -215,6 +220,7 @@ pub fn run() {
         "MYCMUX_HTML_OUT",
         "MYCMUX_MARKDOWN_OUT",
         "MYCMUX_ARTIFACTS_DIR",
+        "MYCMUX_RUNTIME_DIR",
         "__CMUX_LAUNCHER_DONE",
     ] {
         std::env::remove_var(key);
@@ -326,6 +332,7 @@ pub fn run() {
             commands::window_registry::release_workspaces,
             commands::window_registry::get_window_fragments,
             commands::window_registry::get_app_settings,
+            test_profile::get_test_profile,
             commands::usage::get_account_usage,
             commands::ailog::ailog_index_start,
             commands::ailog::ailog_index_cancel,
@@ -341,11 +348,14 @@ pub fn run() {
             commands::ailog::ailog_breakdown,
             commands::ailog::ailog_sessions,
             commands::ailog::ailog_session_detail,
+            commands::ailog::ailog_session_transcript,
+            commands::ailog::ailog_session_summarize,
             commands::ailog::ailog_models,
             commands::ailog::ailog_efficiency,
             commands::ailog::ailog_rule_check,
             commands::ailog::ailog_findings,
             commands::ailog::ailog_rework_rankings,
+            commands::ailog::ailog_usage_rhythm,
             commands::ailog::ailog_get_prices,
             commands::ailog::ailog_set_price,
             commands::cli_accounts::list_cli_accounts,
@@ -368,6 +378,11 @@ pub fn run() {
             use tauri::Manager;
 
             let app_handle = app.handle().clone();
+            if let Some(profile) = test_profile::name() {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.set_title(&format!("mycmux — TEST ({profile})"));
+                }
+            }
             let state = app.state::<AppState>();
             state.status_feed.set_app_handle(app_handle.clone());
             state.livebrief_service.start(app_handle.clone());
@@ -375,15 +390,18 @@ pub fn run() {
                 crate::diag_warn!("launcher", "failed to install launcher scripts: {err}");
             }
             warn_if_dual_install(&app_handle);
+            if !test_profile::is_active() {
             if let Ok(app_data) = app_handle.path().app_data_dir() {
                 usage::legacy::retire_legacy_usage_oauth(&app_handle, &app_data);
+            }
             }
             let app_data_parent = app_handle
                 .path()
                 .app_data_dir()
+                .map(test_profile::app_data_dir_from)
                 .ok()
                 .and_then(|path| path.parent().map(std::path::Path::to_path_buf));
-            let mycmux_dir = dirs::home_dir().map(|home| home.join(".mycmux"));
+            let mycmux_dir = test_profile::runtime_dir().ok();
             session_retention::run_startup_retention(app_data_parent, mycmux_dir);
             let ms = state.metadata_store.clone();
             pty::monitor::start_monitor(
@@ -400,6 +418,7 @@ pub fn run() {
             // Token rotation invalidates a stored CLI snapshot the moment the
             // provider hands the live CLI a new refresh token, so the snapshot
             // of whichever account is logged in has to follow the live file.
+            if !test_profile::is_active() {
             if let Ok(accounts_base) = app_handle.path().app_data_dir() {
                 match cli_accounts::rescue_rejected_snapshots(&accounts_base) {
                     Ok(restored) if !restored.is_empty() => crate::diag::log(&format!(
@@ -420,6 +439,7 @@ pub fn run() {
                     std::time::Duration::from_secs(86_400),
                 );
                 cli_accounts::live_sync::start_live_sync(accounts_base);
+            }
             }
 
             socket::start_socket_listener(app_handle.clone());

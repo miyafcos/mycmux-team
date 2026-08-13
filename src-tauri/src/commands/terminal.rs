@@ -63,9 +63,7 @@ pub fn get_pty_metadata_snapshot(state: State<'_, AppState>) -> HashMap<String, 
 }
 
 #[tauri::command(async)]
-pub fn get_session_output_snapshot(
-    state: State<'_, AppState>,
-) -> HashMap<String, Option<u64>> {
+pub fn get_session_output_snapshot(state: State<'_, AppState>) -> HashMap<String, Option<u64>> {
     state.session_manager.last_output_snapshot()
 }
 
@@ -186,8 +184,8 @@ pub fn create_session(
         && session_id != "."
         && session_id != "..";
     if session_id_is_safe {
-        if let Some(home) = dirs::home_dir() {
-            let html_dir = home.join(".mycmux").join("sessions").join(&session_id);
+        if let Ok(runtime_dir) = crate::test_profile::runtime_dir() {
+            let html_dir = runtime_dir.join("sessions").join(&session_id);
             match std::fs::create_dir_all(&html_dir) {
                 Ok(()) => {
                     let html_path = html_dir.join("out.html");
@@ -224,6 +222,12 @@ pub fn create_session(
     // here cannot be forged — same pattern as MYCMUX_HTML_OUT above.
     if session_id_is_safe {
         env_map.insert("MYCMUX_PANE_SESSION_ID".to_string(), session_id.clone());
+    }
+    if let Ok(runtime_dir) = crate::test_profile::runtime_dir() {
+        env_map.insert(
+            "MYCMUX_RUNTIME_DIR".to_string(),
+            runtime_dir.to_string_lossy().to_string(),
+        );
     }
     if let Some(tab_id) = incoming_tab_id {
         if is_uuid_like(&tab_id) {
@@ -553,6 +557,7 @@ pub(crate) fn sanitize_launch_env(env: &mut HashMap<String, String>) {
         "MYCMUX_HTML_OUT",
         "MYCMUX_MARKDOWN_OUT",
         "MYCMUX_ARTIFACTS_DIR",
+        "MYCMUX_RUNTIME_DIR",
     ];
     const RESUME_QUARTET: &[&str] = &[
         "MYCMUX_RESUME",
@@ -889,10 +894,7 @@ mod tests {
             e.get("MYCMUX_AGENT_KIND").map(String::as_str),
             Some("claude")
         );
-        assert_eq!(
-            e.get("MYCMUX_RESUME_FORK").map(String::as_str),
-            Some("1")
-        );
+        assert_eq!(e.get("MYCMUX_RESUME_FORK").map(String::as_str), Some("1"));
         assert!(!e.contains_key("MYCMUX_PANE_SESSION_ID"));
         assert!(!e.contains_key("__CMUX_LAUNCHER_DONE"));
         assert_eq!(e.get("HOME").map(String::as_str), Some("/home/u"));
@@ -1086,7 +1088,10 @@ mod tests {
     #[test]
     fn injects_no_color_for_antigravity_and_gemini_leaves_too() {
         let mut e = env(&[]);
-        inject_no_color_for_agy("C:\\Users\\miyaz\\AppData\\Local\\agy\\bin\\antigravity.exe", &mut e);
+        inject_no_color_for_agy(
+            "C:\\Users\\miyaz\\AppData\\Local\\agy\\bin\\antigravity.exe",
+            &mut e,
+        );
         assert_eq!(e.get("NO_COLOR"), Some(&"1".to_string()));
 
         let mut e2 = env(&[]);

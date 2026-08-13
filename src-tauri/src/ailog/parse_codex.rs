@@ -23,10 +23,23 @@ use serde_json::Value;
 
 use crate::ailog::{
     metrics, parse_ts, truncate_chars, ChunkData, ResultRow, SessionChunk, ToolRow, TurnRow,
-    KIND_CODEX, ORIGIN_OTHER, ORIGIN_UNKNOWN,
+    KIND_CODEX, ORIGIN_AILOG_INTERNAL, ORIGIN_OTHER, ORIGIN_UNKNOWN,
 };
 
 const FIRST_PROMPT_CHARS: usize = 300;
+const AILOG_SUMMARIZER_MARKER: &str = "[mycmux-ailog-summarizer]";
+
+/// Human-readable rollout evidence shared with the summary pipeline.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct RolloutMaterial {
+    pub user: Vec<String>,
+    pub errors: Vec<String>,
+    pub assistant_last: Option<String>,
+}
+
+pub fn extract_material(text: &str) -> RolloutMaterial {
+    parse_rollout(text, "material-only").1
+}
 
 /// Leading markers that identify a `role: "user"` record as harness-injected
 /// context rather than something the operator typed.
@@ -45,8 +58,15 @@ const INJECTED_PREFIXES: &[&str] = &[
 /// `fallback_session` should be the rollout id embedded in the file name; it
 /// is used until a `session_meta` record supplies the authoritative id.
 pub fn parse_chunk(text: &str, fallback_session: &str) -> ChunkData {
+    parse_rollout(text, fallback_session).0
+}
+
+/// Parse indexing data and summary evidence in one JSONL traversal so both
+/// consumers agree on user messages, final assistant text, and errors.
+fn parse_rollout(text: &str, fallback_session: &str) -> (ChunkData, RolloutMaterial) {
     let mut data = ChunkData::default();
     let mut session = SessionChunk::new(KIND_CODEX, fallback_session.to_string());
+    let mut material = RolloutMaterial::default();
 
     let mut current_model: Option<String> = None;
     let mut current_effort: Option<String> = None;
@@ -54,6 +74,8 @@ pub fn parse_chunk(text: &str, fallback_session: &str) -> ChunkData {
     let mut turn_starts: HashMap<String, i64> = HashMap::new();
     let mut seen_prompts: HashSet<String> = HashSet::new();
     let mut turn_keys: HashSet<String> = HashSet::new();
+    let mut material_users: HashSet<String> = HashSet::new();
+    let mut material_errors: HashSet<String> = HashSet::new();
 
     for line in text.lines() {
         let line = line.trim();
@@ -142,10 +164,21 @@ pub fn parse_chunk(text: &str, fallback_session: &str) -> ChunkData {
                 if let Some(turn_id) = payload.get("turn_id").and_then(Value::as_str) {
                     turn_starts.remove(turn_id);
                 }
+                let reason = payload
+                    .get("reason")
+                    .and_then(Value::as_str)
+                    .unwrap_or("turn aborted")
+                    .trim()
+                    .to_string();
+                record_material_error(&mut material, &mut material_errors, reason, true);
             }
             ("event_msg", "user_message") => {
                 if let Some(message) = payload.get("message").and_then(Value::as_str) {
+                    if message.trim_start().starts_with(AILOG_SUMMARIZER_MARKER) {
+                        session.origin = ORIGIN_AILOG_INTERNAL.to_string();
+                    }
                     record_user_text(&mut session, message, &mut seen_prompts);
+                    record_material_user(&mut material, &mut material_users, message);
                 }
             }
             ("event_msg", "context_compacted") => session.compact_count += 1,
@@ -153,7 +186,16 @@ pub fn parse_chunk(text: &str, fallback_session: &str) -> ChunkData {
             ("response_item", "message") => {
                 if payload.get("role").and_then(Value::as_str) == Some("user") {
                     let text = collect_text(payload.get("content"));
+                    if text.trim_start().starts_with(AILOG_SUMMARIZER_MARKER) {
+                        session.origin = ORIGIN_AILOG_INTERNAL.to_string();
+                    }
                     record_user_text(&mut session, &text, &mut seen_prompts);
+                    record_material_user(&mut material, &mut material_users, &text);
+                } else if payload.get("role").and_then(Value::as_str) == Some("assistant") {
+                    let text = collect_text(payload.get("content")).trim().to_string();
+                    if !text.is_empty() {
+                        material.assistant_last = Some(text);
+                    }
                 }
             }
             ("response_item", "function_call") | ("response_item", "custom_tool_call") => {
@@ -161,6 +203,19 @@ pub fn parse_chunk(text: &str, fallback_session: &str) -> ChunkData {
             }
             ("response_item", "function_call_output")
             | ("response_item", "custom_tool_call_output") => {
+                let raw = payload
+                    .get("output")
+                    .or_else(|| payload.get("content"))
+                    .map(|value| collect_text(Some(value)))
+                    .unwrap_or_default();
+                if payload
+                    .get("is_error")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+                    || raw.to_ascii_lowercase().contains("error")
+                {
+                    record_material_error(&mut material, &mut material_errors, raw, false);
+                }
                 handle_tool_output(&mut session, &payload, ts, &call_names);
             }
             ("event_msg", "patch_apply_end") => {
@@ -187,7 +242,32 @@ pub fn parse_chunk(text: &str, fallback_session: &str) -> ChunkData {
     session.turn_count_hint = session.turns.len() as i64;
     let session_id = session.session_id.clone();
     data.sessions.insert(session_id, session);
-    data
+    (data, material)
+}
+
+fn record_material_user(
+    material: &mut RolloutMaterial,
+    seen: &mut HashSet<String>,
+    text: &str,
+) {
+    let text = text.trim().to_string();
+    if !text.is_empty()
+        && !text.starts_with(AILOG_SUMMARIZER_MARKER)
+        && seen.insert(text.clone())
+    {
+        material.user.push(text);
+    }
+}
+
+fn record_material_error(
+    material: &mut RolloutMaterial,
+    seen: &mut HashSet<String>,
+    text: String,
+    include_empty: bool,
+) {
+    if (include_empty || !text.is_empty()) && seen.insert(text.clone()) {
+        material.errors.push(text);
+    }
 }
 
 fn apply_session_meta(session: &mut SessionChunk, payload: &Value) {
@@ -530,4 +610,51 @@ fn collect_text(value: Option<&Value>) -> String {
 
 fn num(value: &Value, key: &str) -> i64 {
     value.get(key).and_then(Value::as_i64).unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shared_rollout_parse_keeps_index_stats_and_material_in_sync() {
+        let (data, material) = parse_rollout(
+            concat!(
+                "not-json\n",
+                r#"{"type":"event_msg","payload":{"type":"user_message","message":"same prompt"}}"#,
+                "\n",
+                r#"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"text":"same prompt"}]}}"#,
+            ),
+            "fallback",
+        );
+        let session = data.sessions.get("fallback").expect("session");
+        assert_eq!(data.lines, 2);
+        assert_eq!(data.parse_errors, 1);
+        assert_eq!(session.user_msg_count, 1);
+        assert_eq!(material.user, vec!["same prompt"]);
+    }
+
+    #[test]
+    fn summarizer_marker_classifies_codex_session_as_internal() {
+        let data = parse_chunk(
+            r#"{"type":"event_msg","payload":{"type":"user_message","message":"[mycmux-ailog-summarizer]\ninput"}}"#,
+            "fallback",
+        );
+        assert_eq!(
+            data.sessions.get("fallback").expect("session").origin,
+            ORIGIN_AILOG_INTERNAL
+        );
+    }
+
+    #[test]
+    fn response_item_user_marker_classifies_codex_session_as_internal() {
+        let data = parse_chunk(
+            r#"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"text":"[mycmux-ailog-summarizer] input"}]}}"#,
+            "fallback",
+        );
+        assert_eq!(
+            data.sessions.get("fallback").expect("session").origin,
+            ORIGIN_AILOG_INTERNAL
+        );
+    }
 }

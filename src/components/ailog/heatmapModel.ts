@@ -2,12 +2,12 @@
  * Calendar grid for the daily cost heatmap. Pure, so the week alignment and the
  * colour thresholds can be pinned by tests.
  *
- * Day buckets arrive from `ailog_series` snapped to UTC midnight, so the whole
- * grid is built in UTC. Mixing in local time would shift a day's cost into its
- * neighbour for anyone east or west of Greenwich.
+ * Day buckets arrive from `ailog_series` already snapped to the start of a
+ * local day (`DAY_BOUNDARY_OFFSET_MIN`). They are used as grid keys verbatim:
+ * re-rounding them here would move each day onto the preceding one.
  */
 
-import type { SeriesBucket } from "../../lib/ailog";
+import { dayBucketWeekday, type SeriesBucket } from "../../lib/ailog";
 
 export const DAY_MS = 86_400_000;
 
@@ -30,10 +30,6 @@ export interface HeatmapGrid {
   thresholds: number[];
   totalCost: number;
   dayCount: number;
-}
-
-function utcMidnight(ts: number): number {
-  return Math.floor(ts / DAY_MS) * DAY_MS;
 }
 
 /** Quartiles of the non-zero days, so a few huge days cannot flatten the rest. */
@@ -63,7 +59,7 @@ export function levelOf(cost: number, thresholds: number[]): 0 | 1 | 2 | 3 | 4 {
 export function buildHeatmapGrid(buckets: SeriesBucket[]): HeatmapGrid {
   const byDay = new Map<number, SeriesBucket>();
   for (const bucket of buckets) {
-    byDay.set(utcMidnight(bucket.bucket), bucket);
+    byDay.set(bucket.bucket, bucket);
   }
   const days = [...byDay.keys()].sort((a, b) => a - b);
   if (days.length === 0) {
@@ -80,9 +76,9 @@ export function buildHeatmapGrid(buckets: SeriesBucket[]): HeatmapGrid {
 
   const firstTs = days[0];
   const lastTs = days[days.length - 1];
-  const startWeekday = new Date(firstTs).getUTCDay();
+  const startWeekday = dayBucketWeekday(firstTs);
   const gridStart = firstTs - startWeekday * DAY_MS;
-  const endWeekday = new Date(lastTs).getUTCDay();
+  const endWeekday = dayBucketWeekday(lastTs);
   const gridEnd = lastTs + (6 - endWeekday) * DAY_MS;
 
   const weeks: HeatmapCell[][] = [];

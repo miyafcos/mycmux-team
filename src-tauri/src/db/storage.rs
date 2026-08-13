@@ -45,7 +45,9 @@ mod interprocess_data_lock {
         if wait_result == WAIT_TIMEOUT {
             Err("Timed out waiting for data-file mutex".to_string())
         } else {
-            Err(format!("Unexpected data-file mutex wait result: {wait_result:?}"))
+            Err(format!(
+                "Unexpected data-file mutex wait result: {wait_result:?}"
+            ))
         }
     }
 }
@@ -288,10 +290,11 @@ fn save_lock() -> &'static Mutex<()> {
 
 fn data_path(app_handle: &tauri::AppHandle) -> Result<PathBuf, String> {
     use tauri::Manager;
-    let dir = app_handle
+    let default_dir = app_handle
         .path()
         .app_data_dir()
         .map_err(|e| format!("Failed to get app data dir: {e}"))?;
+    let dir = crate::test_profile::app_data_dir_from(default_dir);
     fs::create_dir_all(&dir).map_err(|e| format!("Failed to create app data dir: {e}"))?;
     Ok(dir.join("data.json"))
 }
@@ -337,8 +340,14 @@ fn pre_replace_backups(path: &Path) -> Vec<PathBuf> {
         .filter(|candidate| is_pre_replace_backup(path, candidate))
         .collect::<Vec<_>>();
     backups.sort_by(|left, right| {
-        let left_modified = left.metadata().and_then(|metadata| metadata.modified()).ok();
-        let right_modified = right.metadata().and_then(|metadata| metadata.modified()).ok();
+        let left_modified = left
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .ok();
+        let right_modified = right
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .ok();
         right_modified
             .cmp(&left_modified)
             .then_with(|| right.file_name().cmp(&left.file_name()))
@@ -692,7 +701,10 @@ mod tests {
         assert!(path.exists());
         assert!(!tmp_path.exists());
         assert_eq!(
-            load_from_path(&path).unwrap().active_workspace_id.as_deref(),
+            load_from_path(&path)
+                .unwrap()
+                .active_workspace_id
+                .as_deref(),
             Some("next")
         );
         let backups = pre_replace_backups(&path);
@@ -728,7 +740,10 @@ mod tests {
         assert_eq!(loaded.active_workspace_id.as_deref(), Some("old"));
         assert!(path.exists());
         assert_eq!(
-            load_from_path(&path).unwrap().active_workspace_id.as_deref(),
+            load_from_path(&path)
+                .unwrap()
+                .active_workspace_id
+                .as_deref(),
             Some("old")
         );
     }
@@ -811,10 +826,9 @@ mod tests {
 
     #[test]
     fn pinned_tab_id_defaults_to_none_when_absent() {
-        let pane: PaneConfig = serde_json::from_str(
-            r#"{"agent_id":"shell-starter","label":null,"cwd":null}"#,
-        )
-        .unwrap();
+        let pane: PaneConfig =
+            serde_json::from_str(r#"{"agent_id":"shell-starter","label":null,"cwd":null}"#)
+                .unwrap();
 
         assert!(pane.pinned_tab_id.is_none());
 

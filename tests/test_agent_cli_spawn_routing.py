@@ -273,11 +273,11 @@ def test_prompt_writes_prompt_file_and_records_from_session(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setenv("MYCMUX_PANE_SESSION_ID", PANE_SESSION_ID)
-    monkeypatch.setattr(cli, "PROMPT_DIR", tmp_path)
+    monkeypatch.setenv("MYCMUX_RUNTIME_DIR", str(tmp_path))
     cmd, args = request_for_spawn(["--target", "claude", "--prompt", "続きを頼む"])
     assert cmd == "pane.spawn_tab"
     prompt_file = Path(args["promptFile"])
-    assert prompt_file.parent == tmp_path.resolve()
+    assert prompt_file.parent == (tmp_path / "agent-prompts").resolve()
     assert prompt_file.read_text(encoding="utf-8") == "続きを頼む"
     assert args["fromSessionId"] == PANE_SESSION_ID
 
