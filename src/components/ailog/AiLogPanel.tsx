@@ -11,6 +11,8 @@ import { useEffect, useRef, useState } from "react";
 import { OverlayShell } from "../common/OverlayShell";
 import { dayOffsetInput, listenIndexProgress, listenSummarizeProgress, toDayInput } from "../../lib/ailog";
 import { useAilogStore, SESSION_PAGE_SIZE } from "../../stores/ailogStore";
+import { jobDisplayError } from "../../stores/ailogStore";
+import { useAilogPolling } from "../../hooks/useAilogPolling";
 import { CostHeatmap } from "./CostHeatmap";
 import { DigestView } from "./DigestView";
 import { LearningView } from "./LearningView";
@@ -34,8 +36,6 @@ interface AiLogPanelProps {
 }
 
 export function AiLogPanel({ open, visible, closing = false, onClose }: AiLogPanelProps) {
-  const wasIndexingRef = useRef(false);
-  const wasSummarizingRef = useRef(false);
   const autoStartedRef = useRef(false);
   const autoDigestStartedRef = useRef(false);
   const [detailOpen, setDetailOpen] = useState(false);
@@ -55,7 +55,7 @@ export function AiLogPanel({ open, visible, closing = false, onClose }: AiLogPan
       await store.refreshIndexStatus();
       await store.refreshSummarizeStatus();
       if (cancelled) return;
-      const status = useAilogStore.getState().summarizeStatus;
+      const status = useAilogStore.getState().summarize.status;
       if (!autoStartedRef.current && !status?.running && (status?.sessionsRemaining ?? 0) > 0) {
         autoStartedRef.current = true;
         await store.startSummarize();
@@ -76,9 +76,10 @@ export function AiLogPanel({ open, visible, closing = false, onClose }: AiLogPan
     if (!open) return;
     let unlisten: (() => void) | undefined;
     let cancelled = false;
+    store.setSummarizeEventsAvailable(true);
     void listenSummarizeProgress((progress) => store.applySummarizeProgress(progress)).then((fn) => {
       if (cancelled) fn(); else unlisten = fn;
-    });
+    }).catch(() => { if (!cancelled) store.setSummarizeEventsAvailable(false); });
     return () => { cancelled = true; unlisten?.(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
@@ -87,10 +88,11 @@ export function AiLogPanel({ open, visible, closing = false, onClose }: AiLogPan
     if (!open) return;
     let unlisten: (() => void) | undefined;
     let cancelled = false;
+    store.setIndexEventsAvailable(true);
     void listenIndexProgress((progress) => store.applyIndexProgress(progress)).then((fn) => {
       if (cancelled) fn();
       else unlisten = fn;
-    });
+    }).catch(() => { if (!cancelled) store.setIndexEventsAvailable(false); });
     return () => {
       cancelled = true;
       unlisten?.();
@@ -98,36 +100,17 @@ export function AiLogPanel({ open, visible, closing = false, onClose }: AiLogPan
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
-  // While a pass is running the status is polled; the moment it stops, the
-  // reports are refetched so the new rows appear without a manual reload.
-  const running = store.indexStatus?.running ?? false;
-  useEffect(() => {
-    if (!open) return;
-    if (!running) {
-      if (wasIndexingRef.current) {
-        wasIndexingRef.current = false;
-        void store.refresh();
-      }
-      return;
-    }
-    wasIndexingRef.current = true;
-    const timer = window.setInterval(() => void store.refreshIndexStatus(), 1_500);
-    return () => window.clearInterval(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, running]);
-
-  const summarizing = store.summarizeStatus?.running ?? false;
-  useEffect(() => {
-    if (!open) return;
-    if (!summarizing) {
-      if (wasSummarizingRef.current) { wasSummarizingRef.current = false; void store.refresh(); }
-      return;
-    }
-    wasSummarizingRef.current = true;
-    const timer = window.setInterval(() => void store.refreshSummarizeStatus(), 1_500);
-    return () => window.clearInterval(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, summarizing]);
+  const running = store.index.status?.running ?? false;
+  const summarizing = store.summarize.status?.running ?? false;
+  useAilogPolling({
+    open,
+    indexRunning: running,
+    summarizeRunning: summarizing,
+    eventsHealthy: (!running || store.index.eventsAvailable) && (!summarizing || store.summarize.eventsAvailable),
+    refreshIndexStatus: store.refreshIndexStatus,
+    refreshSummarizeStatus: store.refreshSummarizeStatus,
+    refreshReports: store.refresh,
+  });
 
   useEffect(() => {
     if (open && view === "usage") void store.refreshUsage();
@@ -173,8 +156,12 @@ export function AiLogPanel({ open, visible, closing = false, onClose }: AiLogPan
 
   if (!visible) return null;
 
-  const { overview, series, models, sessions, loading, error, indexStatus } = store;
-  const statusPending = indexStatus === null && store.indexError === null;
+  const { overview, series, models, sessions, loading, dashboardError, index: indexJob, summarize: summarizeJob } = store;
+  const indexStatus = indexJob.status;
+  const summarizeStatus = summarizeJob.status;
+  const indexError = jobDisplayError(indexJob);
+  const summarizeError = jobDisplayError(summarizeJob);
+  const statusPending = indexStatus === null && indexJob.statusError === null;
   const neverIndexed = indexStatus !== null && indexStatus.lastFinishedAt === 0;
   const noData = Boolean(overview) && (overview?.totals.sessions ?? 0) === 0;
 
@@ -239,6 +226,9 @@ export function AiLogPanel({ open, visible, closing = false, onClose }: AiLogPan
 
         <div style={{ flex: 1, minHeight: 0, overflowY: "auto", overflowX: "hidden" }}>
           <div style={{ display: "flex", flexDirection: "column", gap: 12, padding: "12px 16px 20px", minWidth: 0 }}>
+            {(running && !indexJob.eventsAvailable) || (summarizing && !summarizeJob.eventsAvailable) ? (
+              <div style={noteStyle}>進捗イベントに接続できないため、状態を短い間隔で確認しています。</div>
+            ) : null}
             {view === "usage" ? (
               <>
                 <RangeBar
@@ -251,13 +241,15 @@ export function AiLogPanel({ open, visible, closing = false, onClose }: AiLogPan
                   onSummaryPreset={store.setSummaryPreset}
                   overview={overview}
                   indexStatus={indexStatus}
-                  indexProgress={store.indexProgress}
-                  indexError={store.indexError}
+                  indexProgress={indexJob.progress}
+                  indexError={indexError}
+                  onDismissIndexError={store.dismissIndexError}
                   onStartIndex={() => void store.startIndex(false)}
                   onCancelIndex={() => void store.cancelIndex()}
-                  summarizeStatus={store.summarizeStatus}
-                  summarizeProgress={store.summarizeProgress}
-                  summarizeError={store.summarizeError}
+                  summarizeStatus={summarizeStatus}
+                  summarizeProgress={summarizeJob.progress}
+                  summarizeError={summarizeError}
+                  onDismissSummarizeError={store.dismissSummarizeError}
                   onStartSummarize={() => void store.startSummarize()}
                   onCancelSummarize={() => void store.cancelSummarize()}
                   onRefresh={() => void store.refreshUsage()}
@@ -270,7 +262,7 @@ export function AiLogPanel({ open, visible, closing = false, onClose }: AiLogPan
                 {statusPending ? (
                   <div style={noteStyle}>インデックス状態を確認中です…</div>
                 ) : neverIndexed ? (
-                  <EmptyState kind="not-indexed" onPrimary={() => void store.startIndex(false)} busy={store.indexStatus?.running} />
+                  <EmptyState kind="not-indexed" onPrimary={() => void store.startIndex(false)} busy={indexStatus?.running} />
                 ) : (
                   <UsageView
                     series={store.usageSeries}
@@ -305,8 +297,8 @@ export function AiLogPanel({ open, visible, closing = false, onClose }: AiLogPan
                 onPrevious={() => store.stepDigestDate(-1)}
                 onNext={() => store.stepDigestDate(1)}
                 onRegenerate={() => void store.generateDigest(true)}
-                summarizeStatus={store.summarizeStatus}
-                summarizeError={store.summarizeError}
+                summarizeStatus={summarizeStatus}
+                summarizeError={summarizeError}
                 onStartSummarize={() => void store.startSummarize()}
               />
             ) : view === "learning" ? (
@@ -342,13 +334,15 @@ export function AiLogPanel({ open, visible, closing = false, onClose }: AiLogPan
               onSummaryPreset={store.setSummaryPreset}
               overview={overview}
               indexStatus={indexStatus}
-              indexProgress={store.indexProgress}
-              indexError={store.indexError}
+              indexProgress={indexJob.progress}
+              indexError={indexError}
+              onDismissIndexError={store.dismissIndexError}
               onStartIndex={() => void store.startIndex(false)}
               onCancelIndex={() => void store.cancelIndex()}
-              summarizeStatus={store.summarizeStatus}
-              summarizeProgress={store.summarizeProgress}
-              summarizeError={store.summarizeError}
+              summarizeStatus={summarizeStatus}
+              summarizeProgress={summarizeJob.progress}
+              summarizeError={summarizeError}
+              onDismissSummarizeError={store.dismissSummarizeError}
               onStartSummarize={() => void store.startSummarize()}
               onCancelSummarize={() => void store.cancelSummarize()}
               onRefresh={() => void store.refresh()}
@@ -359,8 +353,8 @@ export function AiLogPanel({ open, visible, closing = false, onClose }: AiLogPan
               onIncludeSidechain={store.setIncludeSidechain}
             />
 
-            {error ? (
-              <EmptyState kind="error" message={error} onPrimary={() => void store.refresh()} primaryLabel="再試行" />
+            {dashboardError ? (
+              <EmptyState kind="error" message={dashboardError} onPrimary={() => void store.refresh()} primaryLabel="再試行" />
             ) : loading && !overview ? (
               <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                 <SkeletonBlock height={70} label="サマリーを読み込み中" />

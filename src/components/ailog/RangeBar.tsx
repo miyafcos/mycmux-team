@@ -34,11 +34,13 @@ export function RangeBar({
   indexStatus,
   indexProgress,
   indexError,
+  onDismissIndexError,
   onStartIndex,
   onCancelIndex,
   summarizeStatus,
   summarizeProgress,
   summarizeError,
+  onDismissSummarizeError,
   onStartSummarize,
   onCancelSummarize,
   onRefresh,
@@ -59,11 +61,13 @@ export function RangeBar({
   indexStatus: IndexStatus | null;
   indexProgress: IndexProgress | null;
   indexError: string | null;
+  onDismissIndexError: () => void;
   onStartIndex: () => void;
   onCancelIndex: () => void;
   summarizeStatus: SummarizeStatus | null;
   summarizeProgress: SummarizeProgress | null;
   summarizeError: string | null;
+  onDismissSummarizeError: () => void;
   onStartSummarize: () => void;
   onCancelSummarize: () => void;
   onRefresh: () => void;
@@ -192,7 +196,7 @@ export function RangeBar({
           {`処理済み ${formatCount(summaryDone)} / 全 ${formatCount(summaryTotal)} · 経過 ${formatDuration(summarizeProgress?.elapsedMs ?? 0)}`}
         </div>
       ) : null}
-      {summarizeError ? <div style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-red)" }}>{summarizeError}</div> : null}
+      {summarizeError ? <div style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-red)" }}>{summarizeError} <button type="button" onClick={onDismissSummarizeError} style={subtleButtonStyle}>閉じる</button></div> : null}
       {overview && overview.excludedInternal.sessions > 0 ? (
         <div style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-secondary)" }}>
           {`内部処理 ${formatCount(overview.excludedInternal.sessions)} 件 ($${overview.excludedInternal.costUsd.toFixed(2)}) を除外`}
@@ -229,7 +233,7 @@ export function RangeBar({
       </div>
 
       {indexError ? (
-        <div style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-red)", overflowWrap: "anywhere" }}>{indexError}</div>
+        <div style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-red)", overflowWrap: "anywhere" }}>{indexError} <button type="button" onClick={onDismissIndexError} style={subtleButtonStyle}>閉じる</button></div>
       ) : null}
 
       {overview ? (

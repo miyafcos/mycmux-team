@@ -1,7 +1,7 @@
 import { create } from "zustand";
 
 export type DashboardStateFilter = "needsHuman" | "running" | "noUpdate" | "done";
-export type DashboardDetailTab = "now" | "history" | "terminal";
+export type DashboardDetailTab = "chat" | "now" | "history" | "terminal";
 
 interface DashboardViewState {
   open: boolean;
@@ -35,7 +35,7 @@ export const useDashboardViewStore = create<DashboardViewState>((set) => ({
   stateFilter: null,
   completedExpanded: false,
   selectedTabId: null,
-  detailTab: "now",
+  detailTab: "chat",
   draftBySession: {},
   toggle: () => set((state) => ({ open: !state.open })),
   openView: () => set({ open: true }),

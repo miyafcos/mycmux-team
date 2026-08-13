@@ -5,6 +5,7 @@ import { useRecentInputStore } from "../../stores/recentInputStore";
 import { attentionDetail, useSessionAttentionStore } from "../../stores/sessionAttentionStore";
 import { useDashboardViewStore, type DashboardDetailTab } from "../../stores/dashboardViewStore";
 import { DashboardTerminalTab } from "./DashboardTerminalTab";
+import { ChatTranscript } from "./ChatTranscript";
 import { EventTimeline } from "./EventTimeline";
 import { QuestionCard } from "./QuestionCard";
 import { displayStateColor, displayStateLabel, stallLabel, statePillStyle } from "./DashboardSessionList";
@@ -16,6 +17,7 @@ const NOW_TIMELINE_ROWS = 15;
 const HISTORY_TIMELINE_ROWS = 200;
 
 const DETAIL_TABS: ReadonlyArray<[DashboardDetailTab, string]> = [
+  ["chat", dashboardStrings.tabChat],
   ["now", dashboardStrings.tabNow],
   ["history", dashboardStrings.tabHistory],
   ["terminal", dashboardStrings.tabTerminal],
@@ -105,6 +107,15 @@ export function DashboardSessionDetail({ card, now, onJump, onFocusComposer }: {
         }}
       >{label}</button>)}
     </nav>
+    {detailTab === "chat" ? <div style={nowStyle}>
+      <ChatTranscript events={timelineEvents} />
+      {ended || state !== "needsHuman" ? null : <QuestionCard
+        brief={card.brief}
+        events={timelineEvents}
+        targetLabel={`${card.workspace.name} › ${card.label}`}
+        onFocusComposer={onFocusComposer}
+      />}
+    </div> : null}
     {detailTab === "terminal" ? <DashboardTerminalTab sessionId={card.tab.sessionId} /> : null}
     {detailTab === "history" ? <EventTimeline events={timelineEvents} limit={HISTORY_TIMELINE_ROWS} /> : null}
     {detailTab === "now" ? <div style={nowStyle}>

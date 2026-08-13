@@ -69,6 +69,7 @@ export const dashboardStrings = {
   lastCheckedAgo: (min: number): string => `最終確認 ${min}分前`,
   noUpdateFor: (min: number): string => `更新なし ${min}分`,
   // 詳細ペインのタブ
+  tabChat: "チャット",
   tabNow: "現在",
   tabHistory: "経緯",
   tabTerminal: "端末",
@@ -76,6 +77,11 @@ export const dashboardStrings = {
   otherFreeText: "その他 (自由入力)…",
   numberKeyHint: "1 / 2 / 3 キーでも選択",
   openTerminalButton: "端末を開く",
+  // チャット (ChatTranscript)
+  chatEmpty: "まだ会話の記録がありません ([経緯]・[端末] も確認できます)",
+  chatAriaLabel: "会話ログ (整形表示)",
+  chatRoleUser: "私",
+  chatRoleAgent: "エージェント",
   // 経緯 (EventTimeline) / 端末タブ
   timelineEmpty: "まだ会話の記録がありません",
   timelineAriaLabel: "会話の経緯",

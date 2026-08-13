@@ -79,6 +79,31 @@ export const FINDINGS_PAGE_SIZE = 50;
 export type SessionSort = "cost" | "rework" | "recent";
 export type BreakdownDimension = "project" | "branch" | "effort" | "origin" | "title" | "agent";
 
+export interface Async<T> {
+  data: T | null;
+  loading: boolean;
+  error: string | null;
+  loadedAt: number | null;
+}
+
+export interface JobState<S, P> {
+  status: S | null;
+  progress: P | null;
+  statusError: string | null;
+  actionError: string | null;
+  dismissedError: string | null;
+  eventsAvailable: boolean;
+}
+
+export function jobBackgroundError<S extends { running: boolean; lastError: string | null }>(job: JobState<S, unknown>): string | null {
+  const { status, dismissedError } = job;
+  return !status?.running && status?.lastError && status.lastError !== dismissedError ? status.lastError : null;
+}
+
+export function jobDisplayError<S extends { running: boolean; lastError: string | null }>(job: JobState<S, unknown>): string | null {
+  return job.actionError ?? job.statusError ?? jobBackgroundError(job);
+}
+
 export type SelectionType = "model" | "tag" | "topic" | "leaf" | "project";
 
 export interface AilogSelection {
@@ -135,15 +160,11 @@ interface AilogState {
   // --- status ---
   loading: boolean;
   loadedAt: number | null;
-  error: string | null;
+  dashboardError: string | null;
   detailLoading: boolean;
   detailError: string | null;
-  indexStatus: IndexStatus | null;
-  indexProgress: IndexProgress | null;
-  indexError: string | null;
-  summarizeStatus: SummarizeStatus | null;
-  summarizeProgress: SummarizeProgress | null;
-  summarizeError: string | null;
+  index: JobState<IndexStatus, IndexProgress>;
+  summarize: JobState<SummarizeStatus, SummarizeProgress>;
   digestDate: string;
   digestReport: DigestReport | null;
   digestLoading: boolean;
@@ -195,6 +216,10 @@ interface AilogState {
   loadTranscript: (kind: string, sessionId: string) => Promise<void>;
   summarizeSession: (kind: string, sessionId: string) => Promise<void>;
   closeDetail: () => void;
+  dismissIndexError: () => void;
+  dismissSummarizeError: () => void;
+  setIndexEventsAvailable: (available: boolean) => void;
+  setSummarizeEventsAvailable: (available: boolean) => void;
   refreshIndexStatus: () => Promise<void>;
   applyIndexProgress: (progress: IndexProgress) => void;
   startIndex: (full: boolean) => Promise<void>;
@@ -295,15 +320,11 @@ const initialState = {
   findingQuery: "",
   loading: false,
   loadedAt: null,
-  error: null,
+  dashboardError: null,
   detailLoading: false,
   detailError: null,
-  indexStatus: null,
-  indexProgress: null,
-  indexError: null,
-  summarizeStatus: null,
-  summarizeProgress: null,
-  summarizeError: null,
+  index: { status: null, progress: null, statusError: null, actionError: null, dismissedError: null, eventsAvailable: true },
+  summarize: { status: null, progress: null, statusError: null, actionError: null, dismissedError: null, eventsAvailable: true },
   digestDate: localDayOffset(-1),
   digestReport: null,
   digestLoading: false,
@@ -401,7 +422,7 @@ export const useAilogStore = create<AilogState>((set, get) => ({
     );
     const granularity = get().granularity;
     const mySeq = ++refreshSeq;
-    set({ loading: true, error: null });
+    set({ loading: true, dashboardError: null });
     try {
       const { overview, series, models, projects, sessions } = await ailogDashboard(
         range,
@@ -418,7 +439,7 @@ export const useAilogStore = create<AilogState>((set, get) => ({
         sessions,
         loading: false,
         loadedAt: Date.now(),
-        error: null,
+        dashboardError: null,
       });
     } catch (error) {
       if (mySeq !== refreshSeq) return;
@@ -426,7 +447,7 @@ export const useAilogStore = create<AilogState>((set, get) => ({
       // the reports are cleared and the reason is shown instead.
       set({
         loading: false,
-        error: errorMessage(error),
+        dashboardError: errorMessage(error),
         overview: null,
         series: null,
         models: null,
@@ -553,30 +574,35 @@ export const useAilogStore = create<AilogState>((set, get) => ({
     set({ detail: null, detailKey: null, detailError: null, detailLoading: false, transcript: null, transcriptLoading: false, transcriptError: null, sessionSummarizing: false, sessionSummarizeError: null });
   },
 
+  dismissIndexError: () => set((state) => ({ index: { ...state.index, dismissedError: state.index.status?.lastError ?? null, actionError: null, statusError: null } })),
+  dismissSummarizeError: () => set((state) => ({ summarize: { ...state.summarize, dismissedError: state.summarize.status?.lastError ?? null, actionError: null, statusError: null } })),
+  setIndexEventsAvailable: (eventsAvailable) => set((state) => ({ index: { ...state.index, eventsAvailable } })),
+  setSummarizeEventsAvailable: (eventsAvailable) => set((state) => ({ summarize: { ...state.summarize, eventsAvailable } })),
+
   refreshIndexStatus: async () => {
     try {
       const indexStatus = await ailogIndexStatus();
-      set({ indexStatus, indexError: indexStatus.lastError });
+      set((state) => ({ index: { ...state.index, status: indexStatus, statusError: null } }));
     } catch (error) {
-      set({ indexError: errorMessage(error) });
+      set((state) => ({ index: { ...state.index, statusError: errorMessage(error) } }));
     }
   },
 
   applyIndexProgress: (indexProgress) => {
-    set({ indexProgress });
+    set((state) => ({ index: { ...state.index, progress: indexProgress } }));
     if (indexProgress.phase === "done") void get().refreshIndexStatus();
   },
 
   startIndex: async (full) => {
-    set({ indexError: null, indexProgress: null });
+    set((state) => ({ index: { ...state.index, actionError: null, dismissedError: null, progress: null } }));
     try {
       const result = await ailogIndexStart(full);
       if (result.alreadyRunning) {
-        set({ indexError: "インデックス処理はすでに実行中です" });
+        set((state) => ({ index: { ...state.index, actionError: "インデックス処理はすでに実行中です" } }));
       }
       await get().refreshIndexStatus();
     } catch (error) {
-      set({ indexError: errorMessage(error) });
+      set((state) => ({ index: { ...state.index, actionError: errorMessage(error) } }));
     }
   },
 
@@ -585,32 +611,32 @@ export const useAilogStore = create<AilogState>((set, get) => ({
       await ailogIndexCancel();
       await get().refreshIndexStatus();
     } catch (error) {
-      set({ indexError: errorMessage(error) });
+      set((state) => ({ index: { ...state.index, actionError: errorMessage(error) } }));
     }
   },
 
   refreshSummarizeStatus: async () => {
     try {
       const summarizeStatus = await ailogSummarizeStatus({ preset: get().summaryPreset });
-      set({ summarizeStatus, summarizeError: summarizeStatus.lastError });
+      set((state) => ({ summarize: { ...state.summarize, status: summarizeStatus, statusError: null } }));
     } catch (error) {
-      set({ summarizeError: errorMessage(error) });
+      set((state) => ({ summarize: { ...state.summarize, statusError: errorMessage(error) } }));
     }
   },
 
   applySummarizeProgress: (summarizeProgress) => {
-    set({ summarizeProgress });
+    set((state) => ({ summarize: { ...state.summarize, progress: summarizeProgress } }));
     if (summarizeProgress.phase === "done") void get().refreshSummarizeStatus();
   },
 
   startSummarize: async (force = false) => {
-    set({ summarizeError: null, summarizeProgress: null });
+    set((state) => ({ summarize: { ...state.summarize, actionError: null, dismissedError: null, progress: null } }));
     try {
       const result = await ailogSummarizeStart(undefined, force, { preset: get().summaryPreset });
-      if (result.alreadyRunning) set({ summarizeError: "インデックスまたは要約処理がすでに実行中です" });
+      if (result.alreadyRunning) set((state) => ({ summarize: { ...state.summarize, actionError: "インデックスまたは要約処理がすでに実行中です" } }));
       await get().refreshSummarizeStatus();
     } catch (error) {
-      set({ summarizeError: errorMessage(error) });
+      set((state) => ({ summarize: { ...state.summarize, actionError: errorMessage(error) } }));
     }
   },
 
@@ -619,12 +645,13 @@ export const useAilogStore = create<AilogState>((set, get) => ({
       await ailogSummarizeCancel();
       await get().refreshSummarizeStatus();
     } catch (error) {
-      set({ summarizeError: errorMessage(error) });
+      set((state) => ({ summarize: { ...state.summarize, actionError: errorMessage(error) } }));
     }
   },
 
   setDigestDate: (digestDate) => {
-    set({ digestDate });
+    digestSeq += 1;
+    set({ digestDate, digestGenerating: false });
     void get().refreshDigest(digestDate);
   },
 
@@ -635,10 +662,10 @@ export const useAilogStore = create<AilogState>((set, get) => ({
     set({ digestLoading: true, digestError: null });
     try {
       const digestReport = await ailogDigestGet(date);
-      if (mySeq !== digestSeq || get().digestDate !== date) return;
+      if (mySeq !== digestSeq) return;
       set({ digestReport, digestLoading: false, digestError: null });
     } catch (error) {
-      if (mySeq !== digestSeq || get().digestDate !== date) return;
+      if (mySeq !== digestSeq) return;
       set({ digestReport: null, digestLoading: false, digestError: errorMessage(error) });
     }
   },
@@ -649,11 +676,13 @@ export const useAilogStore = create<AilogState>((set, get) => ({
     set({ digestGenerating: true, digestError: null });
     try {
       const digestReport = await ailogDigestGenerate(date, force);
-      if (mySeq !== digestSeq || get().digestDate !== date) return;
-      set({ digestReport, digestGenerating: false, digestLoading: false, digestError: null });
+      if (mySeq !== digestSeq) return;
+      set({ digestReport, digestLoading: false, digestError: null });
     } catch (error) {
-      if (mySeq !== digestSeq || get().digestDate !== date) return;
-      set({ digestGenerating: false, digestError: errorMessage(error) });
+      if (mySeq !== digestSeq) return;
+      set({ digestError: errorMessage(error) });
+    } finally {
+      if (mySeq === digestSeq) set({ digestGenerating: false });
     }
   },
 

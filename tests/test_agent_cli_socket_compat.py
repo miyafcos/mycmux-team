@@ -47,6 +47,10 @@ def _serve_one_request(
 
 def _run_cli(tmp_path: Path, argv: list[str]) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
+    # A real mycmux pane injects MYCMUX_RUNTIME_DIR; without stripping it the
+    # CLI under test would talk to the live app socket instead of the fake
+    # server behind the tmp_path HOME.
+    env.pop("MYCMUX_RUNTIME_DIR", None)
     env["HOME"] = str(tmp_path)
     env["USERPROFILE"] = str(tmp_path)
     env["PYTHONUTF8"] = "1"
@@ -183,6 +187,10 @@ def test_real_cli_preserves_legacy_one_shot_wire_format(tmp_path: Path) -> None:
     server = threading.Thread(target=serve, daemon=True)
     server.start()
     env = os.environ.copy()
+    # A real mycmux pane injects MYCMUX_RUNTIME_DIR; without stripping it the
+    # CLI under test would talk to the live app socket instead of the fake
+    # server behind the tmp_path HOME.
+    env.pop("MYCMUX_RUNTIME_DIR", None)
     env["HOME"] = str(tmp_path)
     env["USERPROFILE"] = str(tmp_path)
     env["PYTHONUTF8"] = "1"
@@ -243,6 +251,10 @@ def test_real_cli_send_without_expectations_preserves_legacy_args(
     server = threading.Thread(target=serve, daemon=True)
     server.start()
     env = os.environ.copy()
+    # A real mycmux pane injects MYCMUX_RUNTIME_DIR; without stripping it the
+    # CLI under test would talk to the live app socket instead of the fake
+    # server behind the tmp_path HOME.
+    env.pop("MYCMUX_RUNTIME_DIR", None)
     env["HOME"] = str(tmp_path)
     env["USERPROFILE"] = str(tmp_path)
     env["PYTHONUTF8"] = "1"
