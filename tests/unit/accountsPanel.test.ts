@@ -41,7 +41,8 @@ describe("titlebar button", () => {
     expect(buttonSource).toContain('aria-haspopup="dialog"');
     expect(buttonSource).toContain("aria-expanded={isOpen}");
     expect(panelSource).toContain('role="dialog"');
-    expect(panelSource).toContain('querySelector<HTMLButtonElement>("button:not([disabled])")');
+    expect(panelSource).toContain('querySelector<HTMLButtonElement>(');
+    expect(panelSource).toContain('"button:not([disabled])"');
     expect(panelSource).toContain("(firstButton ?? menuRef.current)?.focus()");
   });
 
@@ -71,8 +72,8 @@ describe("titlebar button", () => {
 describe("panel layout", () => {
   it("puts each account on one row of two lines with a provider badge", () => {
     expect(panelSource).toContain("{PROVIDER_SHORT[row.provider]}");
-    expect(panelSource).toContain('<UsageBar label="5h"');
-    expect(panelSource).toContain('<UsageBar label="7d"');
+    expect(panelSource).toContain("const windows = displayWindows(row)");
+    expect(panelSource).toContain("windows.map(({ key, ...window })");
     // The provider headings the old panel grouped by are gone.
     expect(panelSource).not.toContain("PROVIDER_TITLE");
   });
@@ -91,7 +92,7 @@ describe("panel layout", () => {
 
   it("shows reset times in the local language, on hover", () => {
     expect(panelSource).not.toContain("Resets at");
-    expect(panelSource).toContain("title={resetHint(stat)}");
+    expect(panelSource).toContain("title={hint}");
   });
 
   it("links to the detail tab and leaves capture to the backend watcher", () => {

@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::env;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -194,9 +194,28 @@ pub fn generate(conn: &mut Connection, date: &str, force: bool) -> Result<Digest
             get(conn, date)
         }
         Err(error) => {
+            crate::diag_warn!(
+                "ailog",
+                "digest generation failed for {date} ({})",
+                error_kind(&error)
+            );
             save_parse_error(conn, date, &error)?;
             Err(error)
         }
+    }
+}
+
+fn error_kind(error: &str) -> &'static str {
+    if error.contains("timed out") {
+        "timeout"
+    } else if error.contains("start digest codex") {
+        "spawn"
+    } else if error.contains("exited") {
+        "exit"
+    } else if error.contains("parse") || error.contains("JSON") {
+        "parse"
+    } else {
+        "db-or-input"
     }
 }
 
@@ -407,14 +426,18 @@ fn execute(input: &DigestInput) -> Result<String, String> {
             .try_wait()
             .map_err(|error| format!("wait digest codex: {error}"))?
         {
-            let mut stdout_text = String::new();
-            let mut stderr_text = String::new();
+            let mut stdout_bytes = Vec::new();
+            let mut stderr_bytes = Vec::new();
             if let Some(mut handle) = stdout {
-                let _ = handle.read_to_string(&mut stdout_text);
+                use std::io::Read;
+                let _ = handle.read_to_end(&mut stdout_bytes);
             }
             if let Some(mut handle) = stderr {
-                let _ = handle.read_to_string(&mut stderr_text);
+                use std::io::Read;
+                let _ = handle.read_to_end(&mut stderr_bytes);
             }
+            let stdout_text = String::from_utf8_lossy(&stdout_bytes).into_owned();
+            let stderr_text = String::from_utf8_lossy(&stderr_bytes).into_owned();
             if !status.success() {
                 return Err(format!(
                     "digest codex exited {status}: {}",

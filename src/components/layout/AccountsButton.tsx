@@ -1,5 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { OVERLAY_EXIT_MS, useDeferredUnmount } from "../../hooks/useDeferredUnmount";
+import {
+  OVERLAY_EXIT_MS,
+  useDeferredUnmount,
+} from "../../hooks/useDeferredUnmount";
 import { useDismissOnOutside } from "../../hooks/useDismissOnOutside";
 import type { CliProvider, ProfileUsage, WindowStat } from "../../lib/ipc";
 import {
@@ -11,7 +14,11 @@ import {
   rowNeedsAttention,
   usageBarColor,
 } from "../../lib/accountRows";
-import { buildChipLabels, capVisible, resolveMeterMode } from "../../lib/usageAccounts";
+import {
+  buildChipLabels,
+  capVisible,
+  resolveMeterMode,
+} from "../../lib/usageAccounts";
 import { useUsageStore } from "../../stores/usageStore";
 import { AccountsPanel } from "./AccountsPanel";
 
@@ -21,7 +28,10 @@ export function AccountsButton({ onOpenUsageSettings }: { onOpenUsageSettings: (
   const accounts = useUsageStore((state) => state.accounts);
   const lastError = useUsageStore((state) => state.lastError);
   const [isOpen, setIsOpen] = useState(false);
-  const { mounted: panelMounted, closing: panelClosing } = useDeferredUnmount(isOpen, OVERLAY_EXIT_MS);
+  const { mounted: panelMounted, closing: panelClosing } = useDeferredUnmount(
+    isOpen,
+    OVERLAY_EXIT_MS,
+  );
   const rootRef = useRef<HTMLDivElement | null>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
 
@@ -43,10 +53,13 @@ export function AccountsButton({ onOpenUsageSettings }: { onOpenUsageSettings: (
 
   const attentionMessages = [
     lastError,
-    ...rows.filter(rowNeedsAttention).map((row) => `${row.label}: ${rowMessage(row)}`),
+    ...rows
+      .filter(rowNeedsAttention)
+      .map((row) => `${row.label}: ${rowMessage(row)}`),
   ].filter((message): message is string => Boolean(message));
   const hasAttention = attentionMessages.length > 0;
-  const attention = [...new Set(attentionMessages)].join("\n") || "アカウントと使用量";
+  const attention =
+    [...new Set(attentionMessages)].join("\n") || "アカウントと使用量";
 
   // Two frames: hand focus back to the trigger before the dialog claims it, so
   // closing the dialog returns the user where they started.
@@ -66,14 +79,23 @@ export function AccountsButton({ onOpenUsageSettings }: { onOpenUsageSettings: (
   return (
     <div
       ref={rootRef}
-      style={{ position: "relative", height: 24, display: "flex", alignItems: "center" }}
+      style={{
+        position: "relative",
+        height: 24,
+        display: "flex",
+        alignItems: "center",
+      }}
     >
       <button
         ref={triggerRef}
         type="button"
         onClick={() => setIsOpen((value) => !value)}
         title={attention}
-        aria-label={hasAttention ? `アカウントと使用量。${attention}` : "アカウントと使用量"}
+        aria-label={
+          hasAttention
+            ? `アカウントと使用量。${attention}`
+            : "アカウントと使用量"
+        }
         aria-haspopup="dialog"
         aria-expanded={isOpen}
         aria-controls="accounts-panel"
@@ -92,7 +114,8 @@ export function AccountsButton({ onOpenUsageSettings }: { onOpenUsageSettings: (
           color: "var(--cmux-text-secondary)",
           cursor: "pointer",
           fontSize: "var(--cmux-font-size-xs)",
-          fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+          fontFamily:
+            "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
           whiteSpace: "nowrap",
           overflow: "hidden",
         }}
@@ -108,7 +131,9 @@ export function AccountsButton({ onOpenUsageSettings }: { onOpenUsageSettings: (
               height: 5,
               flexShrink: 0,
               borderRadius: "50%",
-              background: lastError ? "var(--cmux-usage-danger)" : "var(--cmux-usage-warn)",
+              background: lastError
+                ? "var(--cmux-usage-danger)"
+                : "var(--cmux-usage-warn)",
             }}
           />
         )}
@@ -148,9 +173,19 @@ function AccountsButtonLabel({
         minWidth: 0,
       }}
     >
-      <ProviderSummary provider="claude" rows={rows} chipLabels={chipLabels} mode={mode} />
+      <ProviderSummary
+        provider="claude"
+        rows={rows}
+        chipLabels={chipLabels}
+        mode={mode}
+      />
       <span aria-hidden="true">·</span>
-      <ProviderSummary provider="codex" rows={rows} chipLabels={chipLabels} mode={mode} />
+      <ProviderSummary
+        provider="codex"
+        rows={rows}
+        chipLabels={chipLabels}
+        mode={mode}
+      />
     </span>
   );
 }
@@ -172,7 +207,9 @@ function ProviderSummary({
     ? [activeRow, ...providerRows.filter((row) => row !== activeRow)]
     : providerRows;
   const row = capVisible(prioritized, 1).visible[0];
-  const label = row ? (chipLabels.get(row.profile_id) ?? row.label.slice(0, 4)) : "—";
+  const label = row
+    ? (chipLabels.get(row.profile_id) ?? row.label.slice(0, 4))
+    : "—";
   const showLabel = mode !== "compact" || provider === "claude";
 
   return (
@@ -186,7 +223,11 @@ function ProviderSummary({
     >
       <span>{PROVIDER_SHORT[provider]}</span>
       {showLabel && (
-        <span style={{ maxWidth: 54, overflow: "hidden", textOverflow: "ellipsis" }}>{label}</span>
+        <span
+          style={{ maxWidth: 54, overflow: "hidden", textOverflow: "ellipsis" }}
+        >
+          {label}
+        </span>
       )}
       <ProviderUsageSummary row={row} mode={mode} />
     </span>
@@ -203,7 +244,8 @@ function ProviderUsageSummary({
   // A cooldown row still holds its last successful numbers -- show those
   // rather than a dash for up to half an hour.
   const showsNumbers =
-    row && (row.state === "ok" || (row.state === "cooldown" && rowHasWindows(row)));
+    row &&
+    (row.state === "ok" || (row.state === "cooldown" && rowHasWindows(row)));
   const fiveHour = showsNumbers ? row.five_hour : null;
   const sevenDay = showsNumbers ? row.seven_day : null;
   if (!fiveHour && !sevenDay) {
@@ -222,7 +264,11 @@ function ProviderUsageSummary({
   if (mode === "medium") {
     return (
       <span>
-        {fiveHour ? formatPct(fiveHour.pct) : "—"}/{sevenDay ? formatPct(sevenDay.pct) : "—"}
+        {fiveHour && sevenDay
+          ? `${formatPct(fiveHour.pct)}/${formatPct(sevenDay.pct)}`
+          : fiveHour
+            ? `5h ${formatPct(fiveHour.pct)}`
+            : `7d ${formatPct(sevenDay!.pct)}`}
       </span>
     );
   }
@@ -248,7 +294,8 @@ function WindowChip({ label, stat }: { label: string; stat: WindowStat }) {
 }
 
 function MiniBar({ stat }: { stat: WindowStat }) {
-  const activeCells = stat.pct <= 0 ? 0 : Math.max(1, Math.ceil(Math.min(100, stat.pct) / 20));
+  const activeCells =
+    stat.pct <= 0 ? 0 : Math.max(1, Math.ceil(Math.min(100, stat.pct) / 20));
   return (
     <span style={{ display: "flex", alignItems: "center" }} aria-hidden="true">
       {[0, 1, 2, 3, 4].map((cell) => (
@@ -258,7 +305,10 @@ function MiniBar({ stat }: { stat: WindowStat }) {
             width: 5,
             height: 5,
             marginRight: 1,
-            background: cell < activeCells ? usageBarColor(stat.pct) : "var(--cmux-border)",
+            background:
+              cell < activeCells
+                ? usageBarColor(stat.pct)
+                : "var(--cmux-border)",
           }}
         />
       ))}
@@ -267,7 +317,9 @@ function MiniBar({ stat }: { stat: WindowStat }) {
 }
 
 function useAccountsButtonMode(hasAccountChips: boolean): AccountsButtonMode {
-  const [mode, setMode] = useState<AccountsButtonMode>(() => readAccountsButtonMode(hasAccountChips));
+  const [mode, setMode] = useState<AccountsButtonMode>(() =>
+    readAccountsButtonMode(hasAccountChips),
+  );
 
   useEffect(() => {
     const queries = [
@@ -278,7 +330,8 @@ function useAccountsButtonMode(hasAccountChips: boolean): AccountsButtonMode {
     const update = () => setMode(readAccountsButtonMode(hasAccountChips));
     queries.forEach((query) => query.addEventListener("change", update));
     update();
-    return () => queries.forEach((query) => query.removeEventListener("change", update));
+    return () =>
+      queries.forEach((query) => query.removeEventListener("change", update));
   }, [hasAccountChips]);
 
   return mode;

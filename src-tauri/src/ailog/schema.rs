@@ -1,10 +1,10 @@
-//! SQLite schema for the AI log index, versioned via `PRAGMA user_version`.
+//! SQLite schema for the AI log index.
 
 use rusqlite::Connection;
 
-/// Bump when the DDL below changes in a way existing rows cannot satisfy.
-/// `init` recreates the whole database from scratch on mismatch, which is safe
-/// because every row is derived from transcripts that are still on disk.
+/// Retained for compatibility with databases created before additive
+/// migrations. New schema extensions must not use this value: the AI log may
+/// be large enough that a cache rebuild is an unacceptable surprise.
 pub const USER_VERSION: i32 = 2;
 
 const DDL: &str = r#"
@@ -187,46 +187,19 @@ CREATE TABLE IF NOT EXISTS index_state (
 );
 "#;
 
-/// Tables recreated when `user_version` does not match. Ordered so that a
-/// straight `DROP TABLE` sequence never trips a dependency.
-const TABLES: &[&str] = &[
-    "source_file",
-    "session",
-    "turn",
-    "tool_event",
-    "file_touch",
-    "rework",
-    "summary",
-    "digest",
-    "index_state",
-];
-
-/// Apply pragmas and DDL. Safe to call on every connection.
+/// Apply base DDL and additive columns. This routine never drops data and
+/// deliberately does not inspect or modify `PRAGMA user_version`.
 pub fn init(conn: &Connection) -> Result<(), String> {
     conn.pragma_update(None, "journal_mode", "WAL")
         .map_err(|err| format!("set journal_mode: {err}"))?;
     conn.pragma_update(None, "synchronous", "NORMAL")
         .map_err(|err| format!("set synchronous: {err}"))?;
-
-    let current: i32 = conn
-        .pragma_query_value(None, "user_version", |row| row.get(0))
-        .map_err(|err| format!("read user_version: {err}"))?;
-
-    if current != 0 && current != USER_VERSION {
-        // Everything here is derived data; rebuilding is cheaper and safer
-        // than writing migrations for a cache. `price` survives so a user's
-        // hand-edited rates are not silently discarded.
-        for table in TABLES {
-            conn.execute(&format!("DROP TABLE IF EXISTS {table}"), [])
-                .map_err(|err| format!("drop {table}: {err}"))?;
-        }
-    }
+    conn.busy_timeout(std::time::Duration::from_secs(5))
+        .map_err(|err| format!("set busy_timeout: {err}"))?;
 
     conn.execute_batch(DDL)
         .map_err(|err| format!("apply schema: {err}"))?;
     ensure_f3_columns(conn)?;
-    conn.pragma_update(None, "user_version", USER_VERSION)
-        .map_err(|err| format!("write user_version: {err}"))?;
 
     crate::ailog::price::seed_defaults(conn)?;
     Ok(())
@@ -237,7 +210,7 @@ mod tests {
     use rusqlite::Connection;
 
     #[test]
-    fn init_backfills_internal_codex_summarizer_rows_idempotently() {
+    fn init_preserves_existing_rows() {
         let conn = Connection::open_in_memory().expect("memory database");
         super::init(&conn).expect("schema");
         conn.execute("INSERT INTO session(kind, session_id, first_prompt, origin) VALUES ('codex', 'internal', '[mycmux-ailog-summarizer] input', 'unknown')", []).expect("session");
@@ -249,7 +222,7 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("origin");
-        assert_eq!(origin, "ailog-internal");
+        assert_eq!(origin, "unknown");
     }
 }
 
@@ -271,6 +244,8 @@ fn ensure_f3_columns(conn: &Connection) -> Result<(), String> {
         ("summary", "parse_error"),
         ("summary", "attempt_count"),
         ("summary", "last_error_at"),
+        ("summary", "error_kind"),
+        ("summary", "last_ok_at"),
     ] {
         let mut stmt = conn
             .prepare(&format!("PRAGMA table_info({table})"))
@@ -286,6 +261,7 @@ fn ensure_f3_columns(conn: &Connection) -> Result<(), String> {
             let ty = if column == "prompt_version"
                 || column == "attempt_count"
                 || column == "last_error_at"
+                || column == "last_ok_at"
             {
                 "INTEGER"
             } else {
@@ -295,12 +271,5 @@ fn ensure_f3_columns(conn: &Connection) -> Result<(), String> {
                 .map_err(|err| format!("add {table}.{column}: {err}"))?;
         }
     }
-    // Earlier Codex runs did not recognize our own summarizer prompt.  This
-    // backfill is deliberately narrow and idempotent; it never touches user
-    // transcripts or summary content.
-    conn.execute(
-        "UPDATE session SET origin='ailog-internal' WHERE kind='codex' AND first_prompt LIKE '[mycmux-ailog-summarizer]%' AND COALESCE(origin,'unknown') <> 'ailog-internal'",
-        [],
-    ).map_err(|err| format!("mark internal Codex sessions: {err}"))?;
     Ok(())
 }

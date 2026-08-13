@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
-import type { ProfileUsage, UsageRowState, WindowStat } from "../../src/lib/ipc";
+import type {
+  ProfileUsage,
+  UsageRowState,
+  WindowStat,
+} from "../../src/lib/ipc";
 import {
   USAGE_STATE_MESSAGE,
+  displayWindows,
   formatPct,
   formatResetShort,
   orderAccountRows,
@@ -44,9 +49,24 @@ function row(overrides: Partial<ProfileUsage> = {}): ProfileUsage {
 describe("orderAccountRows", () => {
   it("is deterministic regardless of input order", () => {
     const rows = [
-      row({ profile_id: "d", label: "d", provider: "codex", five_hour: stat(90) }),
-      row({ profile_id: "a", label: "a", is_active: true, five_hour: stat(10) }),
-      row({ profile_id: "b", label: "b", state: "error", error_code: "usage.error.network" }),
+      row({
+        profile_id: "d",
+        label: "d",
+        provider: "codex",
+        five_hour: stat(90),
+      }),
+      row({
+        profile_id: "a",
+        label: "a",
+        is_active: true,
+        five_hour: stat(10),
+      }),
+      row({
+        profile_id: "b",
+        label: "b",
+        state: "error",
+        error_code: "usage.error.network",
+      }),
       row({ profile_id: "c", label: "c", five_hour: stat(50) }),
     ];
     const expected = orderAccountRows(rows).map((entry) => entry.profile_id);
@@ -56,7 +76,9 @@ describe("orderAccountRows", () => {
       [1, 3, 2, 0],
     ]) {
       const reordered = shuffle.map((index) => rows[index]);
-      expect(orderAccountRows(reordered).map((entry) => entry.profile_id)).toEqual(expected);
+      expect(
+        orderAccountRows(reordered).map((entry) => entry.profile_id),
+      ).toEqual(expected);
     }
   });
 
@@ -65,8 +87,17 @@ describe("orderAccountRows", () => {
       row({ profile_id: "codex-quiet", provider: "codex", label: "z" }),
       row({ profile_id: "live:claude", label: "aa-live", registered: false }),
       row({ profile_id: "claude-busy", label: "busy", five_hour: stat(80) }),
-      row({ profile_id: "claude-active", label: "active", is_active: true, five_hour: stat(1) }),
-      row({ profile_id: "claude-broken", label: "broken", state: "needs_relogin" }),
+      row({
+        profile_id: "claude-active",
+        label: "active",
+        is_active: true,
+        five_hour: stat(1),
+      }),
+      row({
+        profile_id: "claude-broken",
+        label: "broken",
+        state: "needs_relogin",
+      }),
     ]);
     expect(ordered.map((entry) => entry.profile_id)).toEqual([
       "claude-active", // plain label order within a provider...
@@ -85,7 +116,12 @@ describe("orderAccountRows", () => {
     ];
     const after = [
       before[0],
-      row({ profile_id: "b", label: "b", state: "error", error_code: "usage.error.upstream" }),
+      row({
+        profile_id: "b",
+        label: "b",
+        state: "error",
+        error_code: "usage.error.upstream",
+      }),
       row({ profile_id: "c", label: "c", five_hour: stat(99) }),
     ];
     expect(orderAccountRows(before).map((entry) => entry.profile_id)).toEqual(
@@ -94,7 +130,10 @@ describe("orderAccountRows", () => {
   });
 
   it("does not mutate its input", () => {
-    const rows = [row({ profile_id: "b", label: "b" }), row({ profile_id: "a", label: "a" })];
+    const rows = [
+      row({ profile_id: "b", label: "b" }),
+      row({ profile_id: "a", label: "a" }),
+    ];
     const before = rows.map((entry) => entry.profile_id);
     orderAccountRows(rows);
     expect(rows.map((entry) => entry.profile_id)).toEqual(before);
@@ -103,10 +142,67 @@ describe("orderAccountRows", () => {
 
 describe("worstPct", () => {
   it("takes the larger of the two headline windows and null when neither exists", () => {
-    expect(worstPct(row({ five_hour: stat(12), seven_day: stat(40) }))).toBe(40);
+    expect(worstPct(row({ five_hour: stat(12), seven_day: stat(40) }))).toBe(
+      40,
+    );
     expect(worstPct(row({ five_hour: stat(70), seven_day: stat(3) }))).toBe(70);
     expect(worstPct(row({ seven_day: stat(8) }))).toBe(8);
     expect(worstPct(row())).toBeNull();
+  });
+
+  it("includes model-specific windows", () => {
+    expect(
+      worstPct(
+        row({
+          seven_day: stat(40),
+          model_windows: [{ key: "Fable", window: stat(54) }],
+        }),
+      ),
+    ).toBe(54);
+  });
+
+  it("includes legacy model windows", () => {
+    expect(worstPct(row({ seven_day_sonnet: stat(63) }))).toBe(63);
+  });
+});
+
+describe("displayWindows", () => {
+  it("skips null fixed windows and appends abbreviated model windows", () => {
+    const windows = displayWindows(
+      row({
+        seven_day: stat(37),
+        model_windows: [{ key: "seven_day_fable", window: stat(54) }],
+      }),
+    );
+    expect(windows.map(({ label, stat: value }) => [label, value.pct])).toEqual(
+      [
+        ["7d", 37],
+        ["F", 54],
+      ],
+    );
+    expect(windows[1].hint).toContain("fable");
+  });
+
+  it("includes legacy Sonnet and Opus windows", () => {
+    const windows = displayWindows(
+      row({ seven_day_sonnet: stat(41), seven_day_opus: stat(58) }),
+    );
+    expect(windows.map(({ key, label, stat: value }) => [key, label, value.pct])).toEqual([
+      ["seven_day_sonnet", "S", 41],
+      ["seven_day_opus", "O", 58],
+    ]);
+  });
+
+  it("keeps distinct keys for models with the same abbreviation", () => {
+    const windows = displayWindows(
+      row({
+        model_windows: [
+          { key: "Fable", window: stat(31) },
+          { key: "Falcon", window: stat(47) },
+        ],
+      }),
+    );
+    expect(windows.map(({ key }) => key)).toEqual(["model:Fable", "model:Falcon"]);
   });
 });
 
@@ -169,7 +265,13 @@ describe("row messaging", () => {
 
   it("shows nothing for a healthy row and something for every other state", () => {
     expect(rowMessage(row())).toBe("");
-    for (const state of ["wait_for_cli", "cooldown", "needs_relogin", "unsupported", "error"] as const) {
+    for (const state of [
+      "wait_for_cli",
+      "cooldown",
+      "needs_relogin",
+      "unsupported",
+      "error",
+    ] as const) {
       expect(rowMessage(row({ state }))).not.toBe("");
       expect(rowNeedsAttention(row({ state }))).toBe(true);
     }
@@ -177,9 +279,13 @@ describe("row messaging", () => {
   });
 
   it("names the resume time when a cooldown has one", () => {
-    const withTime = rowMessage(row({ state: "cooldown", retry_at: "2026-08-08T20:00:00Z" }));
+    const withTime = rowMessage(
+      row({ state: "cooldown", retry_at: "2026-08-08T20:00:00Z" }),
+    );
     expect(withTime).toContain("再開");
-    expect(rowMessage(row({ state: "cooldown" }))).toBe("取得を一時停止しています。");
+    expect(rowMessage(row({ state: "cooldown" }))).toBe(
+      "取得を一時停止しています。",
+    );
   });
 
   it("keeps a cooldown row with stale numbers out of the attention set", () => {
@@ -190,6 +296,11 @@ describe("row messaging", () => {
     expect(rowNeedsAttention(row({ state: "cooldown" }))).toBe(true);
     // A relogin can never ride on stale numbers -- it has none.
     expect(rowNeedsAttention(row({ state: "needs_relogin" }))).toBe(true);
+    expect(
+      rowHasWindows(
+        row({ model_windows: [{ key: "Fable", window: stat(54) }] }),
+      ),
+    ).toBe(true);
   });
 
   it("captions stale numbers with their age and the resume time", () => {
@@ -203,7 +314,9 @@ describe("row messaging", () => {
     expect(note).toContain("更新一時停止中");
     expect(note).toContain("に再開");
     // No known resume time: say so by omission, not by guessing one.
-    const noRetry = staleWindowsNote(row({ state: "cooldown", five_hour: stat(26) }));
+    const noRetry = staleWindowsNote(
+      row({ state: "cooldown", five_hour: stat(26) }),
+    );
     expect(noRetry).toContain("時点");
     expect(noRetry).not.toContain("に再開");
     // Healthy rows and blank cooldowns carry no caption.
@@ -212,11 +325,13 @@ describe("row messaging", () => {
   });
 
   it("prefers the specific error code over the generic state message", () => {
-    const message = rowMessage(row({ state: "error", error_code: "usage.error.network" }));
+    const message = rowMessage(
+      row({ state: "error", error_code: "usage.error.network" }),
+    );
     expect(message).toContain("ネットワーク");
     // An unknown code must not blank the row out.
-    expect(rowMessage(row({ state: "error", error_code: "usage.error.who_knows" }))).toBe(
-      USAGE_STATE_MESSAGE.error,
-    );
+    expect(
+      rowMessage(row({ state: "error", error_code: "usage.error.who_knows" })),
+    ).toBe(USAGE_STATE_MESSAGE.error);
   });
 });

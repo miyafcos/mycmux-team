@@ -14,6 +14,8 @@
 
 pub mod digest;
 pub mod index;
+pub mod jsonl;
+pub mod migrate;
 pub mod metrics;
 pub mod parse_claude;
 pub mod parse_codex;
@@ -74,6 +76,8 @@ pub fn open_db(path: &std::path::Path) -> Result<rusqlite::Connection, String> {
     }
     let conn = rusqlite::Connection::open(path).map_err(|err| format!("open {path:?}: {err}"))?;
     schema::init(&conn)?;
+    migrate::apply(&conn)?;
+    backfill::internal_origin(&conn)?;
     Ok(conn)
 }
 
@@ -371,3 +375,4 @@ pub fn truncate_chars(value: &str, max: usize) -> String {
     }
     value.chars().take(max).collect()
 }
+pub mod backfill;

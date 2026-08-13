@@ -1823,6 +1823,10 @@ pub fn sessions(
 // ---------------------------------------------------------------------------
 
 const FINDING_REPEAT_THRESHOLD: f64 = 0.55;
+const MAX_REPEAT_ROWS: usize = 20_000;
+const MINHASH_COUNT: usize = 16;
+const LSH_BANDS: usize = 8;
+const LSH_ROWS: usize = 2;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
@@ -1863,6 +1867,7 @@ pub struct FindingRow {
 pub struct FindingsReport {
     pub rows: Vec<FindingRow>,
     pub total: i64,
+    pub repeat_truncated: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1927,7 +1932,28 @@ fn jaccard(left: &HashSet<String>, right: &HashSet<String>) -> f64 {
     left.intersection(right).count() as f64 / union as f64
 }
 
-fn apply_repeat_counts(rows: &mut [FindingRow]) {
+fn hash64(bytes: &[u8], seed: u64) -> u64 {
+    // Fixed FNV-1a variant: repeat grouping must never depend on process RNG.
+    let mut value = 0xcbf2_9ce4_8422_2325u64 ^ seed;
+    for byte in bytes {
+        value ^= u64::from(*byte);
+        value = value.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    value ^ (value >> 32)
+}
+
+fn minhash(grams: &HashSet<String>) -> [u64; MINHASH_COUNT] {
+    let mut signature = [u64::MAX; MINHASH_COUNT];
+    for gram in grams {
+        for (index, slot) in signature.iter_mut().enumerate() {
+            let seed = 0x9e37_79b9_7f4a_7c15u64.wrapping_mul((index + 1) as u64);
+            *slot = (*slot).min(hash64(gram.as_bytes(), seed));
+        }
+    }
+    signature
+}
+
+fn apply_repeat_counts_exact(rows: &mut [FindingRow]) {
     let grams: Vec<HashSet<String>> = rows
         .iter()
         .map(|row| normalized_ngrams(&row.text))
@@ -1940,7 +1966,6 @@ fn apply_repeat_counts(rows: &mut [FindingRow]) {
         }
         parents[node]
     }
-    // ponytail: O(n^2) pairwise 3-gram jaccard; switch to minhash/LSH if findings exceed ~5k per range
     for left in 0..rows.len() {
         for right in (left + 1)..rows.len() {
             if rows[left].session_kind == rows[right].session_kind
@@ -1967,6 +1992,43 @@ fn apply_repeat_counts(rows: &mut [FindingRow]) {
     }
 }
 
+fn apply_repeat_counts(rows: &mut [FindingRow]) -> bool {
+    if rows.len() > MAX_REPEAT_ROWS {
+        return true;
+    }
+    let grams: Vec<HashSet<String>> = rows.iter().map(|row| normalized_ngrams(&row.text)).collect();
+    let signatures: Vec<[u64; MINHASH_COUNT]> = grams.iter().map(minhash).collect();
+    let mut candidates: HashMap<(usize, u64, u64), Vec<usize>> = HashMap::new();
+    let mut parents: Vec<usize> = (0..rows.len()).collect();
+    fn root(parents: &mut [usize], node: usize) -> usize {
+        if parents[node] != node { let parent = root(parents, parents[node]); parents[node] = parent; }
+        parents[node]
+    }
+    for (index, signature) in signatures.iter().enumerate() {
+        for band in 0..LSH_BANDS {
+            let start = band * LSH_ROWS;
+            let key = (band, signature[start], signature[start + 1]);
+            if let Some(previous) = candidates.get(&key) {
+                for &left in previous {
+                    if rows[left].session_kind == rows[index].session_kind && rows[left].session_id == rows[index].session_id { continue; }
+                    // Threshold-neighbour pairs are intentionally approximate: an LSH miss
+                    // can only under-count repeats, never create an unverified repeat.
+                    if jaccard(&grams[left], &grams[index]) >= FINDING_REPEAT_THRESHOLD {
+                        let left_root = root(&mut parents, left);
+                        let right_root = root(&mut parents, index);
+                        if left_root != right_root { parents[right_root] = left_root; }
+                    }
+                }
+            }
+            candidates.entry(key).or_default().push(index);
+        }
+    }
+    let mut counts: HashMap<usize, i64> = HashMap::new();
+    for index in 0..rows.len() { let group = root(&mut parents, index); *counts.entry(group).or_default() += 1; }
+    for index in 0..rows.len() { rows[index].repeat_count = counts[&root(&mut parents, index)]; }
+    false
+}
+
 pub fn findings(
     conn: &Connection,
     range: &Range,
@@ -1980,6 +2042,7 @@ pub fn findings(
         return Ok(FindingsReport {
             rows: Vec::new(),
             total: 0,
+            repeat_truncated: false,
         });
     }
     let kind_filter = options.kind.as_deref().filter(|value| !value.is_empty());
@@ -2046,13 +2109,14 @@ pub fn findings(
             .then_with(|| left.session_kind.cmp(&right.session_kind))
             .then_with(|| left.session_id.cmp(&right.session_id))
     });
-    apply_repeat_counts(&mut rows);
+    let repeat_truncated = apply_repeat_counts(&mut rows);
     let total = rows.len() as i64;
     let offset = options.offset.max(0) as usize;
     let limit = options.limit.clamp(0, 50) as usize;
     Ok(FindingsReport {
         rows: rows.into_iter().skip(offset).take(limit).collect(),
         total,
+        repeat_truncated,
     })
 }
 

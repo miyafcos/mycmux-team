@@ -15,7 +15,7 @@ use tauri::{AppHandle, Emitter};
 use crate::ailog::digest;
 use crate::ailog::index::{self, IndexOptions, IndexProgress};
 use crate::ailog::summarize::{self, SummarizeProgress};
-use crate::ailog::{query, usage, Filters, Range, ResolvedRange};
+use crate::ailog::{query, usage, Filters, Range};
 
 pub const INDEX_PROGRESS_EVENT: &str = "ailog://index-progress";
 pub const SUMMARIZE_PROGRESS_EVENT: &str = "ailog://summarize-progress";
@@ -95,6 +95,14 @@ fn summarizer_state() -> &'static SummarizerState {
 /// SQLite has one writer at a time. This gate makes index and summary starts
 /// mutually exclusive even when the two button clicks arrive concurrently.
 fn runner_gate() -> &'static AtomicBool {
+    static GATE: AtomicBool = AtomicBool::new(false);
+    &GATE
+}
+
+/// Digest generation can run an external CLI for up to two minutes.  It owns
+/// its own gate so it never blocks an index or summary start merely by waiting
+/// for a read-only daily report to finish.
+fn digest_gate() -> &'static AtomicBool {
     static GATE: AtomicBool = AtomicBool::new(false);
     &GATE
 }
@@ -436,43 +444,17 @@ pub struct SummarizeStatus {
 }
 
 #[tauri::command(async)]
-pub async fn ailog_summarize_status(range: Option<Range>) -> Result<SummarizeStatus, String> {
-    let state = summarizer_state();
-    summarize_status_with(state, range, now_ms(), |summary_range| {
-        open().and_then(|conn| summarize::pending_count(&conn, false, summary_range))
-    })
+pub async fn ailog_summarize_status(_range: Option<Range>) -> Result<SummarizeStatus, String> {
+    Ok(summarize_status_with(summarizer_state(), now_ms()))
 }
 
-fn summarize_status_with<F>(
-    state: &SummarizerState,
-    range: Option<Range>,
-    now: i64,
-    pending_count: F,
-) -> Result<SummarizeStatus, String>
-where
-    F: FnOnce(ResolvedRange) -> Result<usize, String>,
-{
+fn summarize_status_with(state: &SummarizerState, now: i64) -> SummarizeStatus {
     let running = state.running.load(Ordering::SeqCst);
-    // A restarted app has no in-memory progress, but its queue is durable.
-    // Read it from SQLite whenever no pass is actively updating the counters.
-    let summary_range = range
-        .unwrap_or(Range {
-            preset: Some("7d".to_string()),
-            ..Default::default()
-        })
-        .resolve(now)
-        .0;
-    let pending = if running {
-        None
-    } else {
-        Some(pending_count(summary_range)?)
-    };
-    Ok(SummarizeStatus {
+    SummarizeStatus {
         running,
         sessions_done: state.sessions_done.load(Ordering::Relaxed),
         sessions_total: state.sessions_total.load(Ordering::Relaxed),
-        sessions_remaining: pending
-            .unwrap_or_else(|| state.sessions_remaining.load(Ordering::Relaxed)),
+        sessions_remaining: state.sessions_remaining.load(Ordering::Relaxed),
         last_finished_at: *state
             .last_finished_at
             .lock()
@@ -491,7 +473,7 @@ where
         estimated_input_chars: state.estimated_input_chars.load(Ordering::Relaxed),
         input_tokens: state.input_tokens.load(Ordering::Relaxed),
         output_tokens: state.output_tokens.load(Ordering::Relaxed),
-    })
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -522,18 +504,6 @@ pub struct IndexStatus {
 #[tauri::command(async)]
 pub async fn ailog_index_status() -> Result<IndexStatus, String> {
     let state = indexer_state();
-    let persisted = open()
-        .ok()
-        .and_then(|conn| {
-            conn.query_row(
-                "SELECT value FROM index_state WHERE key = 'last_finished_at'",
-                [],
-                |row| row.get::<_, String>(0),
-            )
-            .ok()
-        })
-        .and_then(|value| value.parse::<i64>().ok())
-        .unwrap_or(0);
     let in_memory = *state
         .last_finished_at
         .lock()
@@ -544,7 +514,7 @@ pub async fn ailog_index_status() -> Result<IndexStatus, String> {
         files_done: state.files_done.load(Ordering::Relaxed),
         files_total: state.files_total.load(Ordering::Relaxed),
         sessions: state.sessions.load(Ordering::Relaxed),
-        last_finished_at: in_memory.max(persisted),
+        last_finished_at: in_memory,
         last_error: state
             .last_error
             .lock()
@@ -559,8 +529,12 @@ pub async fn ailog_index_status() -> Result<IndexStatus, String> {
 
 #[tauri::command(async)]
 pub async fn ailog_digest_get(date: String) -> Result<digest::DigestReport, String> {
-    let conn = open()?;
-    digest::get(&conn, &date)
+    tokio::task::spawn_blocking(move || {
+        let conn = open()?;
+        digest::get(&conn, &date)
+    })
+    .await
+    .map_err(|err| format!("digest reader task failed: {err}"))?
 }
 
 #[tauri::command(async)]
@@ -568,16 +542,19 @@ pub async fn ailog_digest_generate(
     date: String,
     force: Option<bool>,
 ) -> Result<digest::DigestReport, String> {
-    if runner_gate()
+    if digest_gate()
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
         .is_err()
     {
-        return Err("インデックスまたは要約処理が実行中です".to_string());
+        return Err("日次ダイジェスト処理が実行中です".to_string());
     }
-    let result =
-        open().and_then(|mut conn| digest::generate(&mut conn, &date, force.unwrap_or(false)));
-    runner_gate().store(false, Ordering::SeqCst);
-    result
+    let worker = tokio::task::spawn_blocking(move || {
+        let mut conn = open()?;
+        digest::generate(&mut conn, &date, force.unwrap_or(false))
+    })
+    .await;
+    digest_gate().store(false, Ordering::SeqCst);
+    worker.map_err(|err| format!("digest worker task failed: {err}"))?
 }
 
 // ---------------------------------------------------------------------------
@@ -716,8 +693,7 @@ pub async fn ailog_session_transcript(
         ).map_err(|err| format!("transcript source not found: {err}"))?
     };
     tokio::task::spawn_blocking(move || {
-        let text = std::fs::read_to_string(&path).map_err(|err| format!("read transcript {path}: {err}"))?;
-        crate::ailog::transcript::extract(&args.kind, &text)
+        crate::ailog::transcript::extract_path(&args.kind, std::path::Path::new(&path))
     }).await.map_err(|err| format!("transcript worker: {err}"))?
 }
 
@@ -860,31 +836,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn idle_summarize_status_reads_default_seven_day_pending_count_from_db() {
-        let conn = rusqlite::Connection::open_in_memory().expect("memory database");
-        crate::ailog::schema::init(&conn).expect("schema");
+    fn idle_summarize_status_uses_memory_without_opening_the_database() {
         let now = 2_000_000_000_000_i64;
-        conn.execute(
-            "INSERT INTO session(kind, session_id, origin, started_at) VALUES ('codex', 'recent', 'unknown', ?1)",
-            [now - 6 * 86_400_000],
-        )
-        .expect("recent session");
-        conn.execute(
-            "INSERT INTO session(kind, session_id, origin, started_at) VALUES ('codex', 'old', 'unknown', ?1)",
-            [now - 8 * 86_400_000],
-        )
-        .expect("old session");
         let state = SummarizerState::new();
+        state.sessions_remaining.store(7, Ordering::Relaxed);
 
-        let status = summarize_status_with(&state, None, now, |range| {
-            summarize::pending_count(&conn, false, range)
-        })
-        .expect("status");
+        let status = summarize_status_with(&state, now);
 
         assert!(!status.running);
         assert_eq!(status.sessions_done, 0);
         assert_eq!(status.sessions_total, 0);
-        assert_eq!(state.sessions_remaining.load(Ordering::Relaxed), 0);
-        assert_eq!(status.sessions_remaining, 1);
+        assert_eq!(state.sessions_remaining.load(Ordering::Relaxed), 7);
+        assert_eq!(status.sessions_remaining, 7);
     }
 }

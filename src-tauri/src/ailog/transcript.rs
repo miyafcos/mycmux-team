@@ -21,6 +21,9 @@ pub struct TranscriptReport {
     pub messages: Vec<TranscriptMessage>,
     pub truncated: bool,
     pub omitted_count: usize,
+    pub bytes_read: u64,
+    pub file_bytes: u64,
+    pub scan_truncated: bool,
 }
 
 pub fn extract(kind: &str, text: &str) -> Result<TranscriptReport, String> {
@@ -33,7 +36,17 @@ pub fn extract(kind: &str, text: &str) -> Result<TranscriptReport, String> {
             if messages.len() < MESSAGE_LIMIT { messages.push(message); } else { omitted += 1; }
         }
     }
-    Ok(TranscriptReport { messages, truncated: omitted > 0, omitted_count: omitted })
+    Ok(TranscriptReport { messages, truncated: omitted > 0, omitted_count: omitted, bytes_read: text.len() as u64, file_bytes: text.len() as u64, scan_truncated: false })
+}
+
+pub fn extract_path(kind: &str, path: &std::path::Path) -> Result<TranscriptReport, String> {
+    if kind != KIND_CLAUDE && kind != KIND_CODEX { return Err("unsupported transcript kind".to_string()); }
+    let mut messages = Vec::new(); let mut omitted = 0;
+    let stats = crate::ailog::jsonl::for_each_line(path, crate::ailog::jsonl::Budget { max_bytes: 64 * 1024 * 1024, max_lines: 200_000 }, |line| {
+        if let Ok(value) = serde_json::from_str::<Value>(line) { for message in messages_from_value(kind, &value) { if messages.len() < MESSAGE_LIMIT { messages.push(message); } else { omitted += 1; } } }
+        std::ops::ControlFlow::Continue(())
+    })?;
+    Ok(TranscriptReport { messages, truncated: omitted > 0 || stats.scan_truncated, omitted_count: omitted, bytes_read: stats.bytes_read, file_bytes: stats.file_bytes, scan_truncated: stats.scan_truncated })
 }
 
 fn messages_from_value(kind: &str, value: &Value) -> Vec<TranscriptMessage> {

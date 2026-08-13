@@ -3,7 +3,7 @@ use crate::usage::{NamedWindow, WindowStat};
 use chrono::{DateTime, Utc};
 use reqwest::header::{ACCEPT, CONTENT_TYPE, USER_AGENT};
 use serde_json::Value;
-use std::{fs, path::PathBuf};
+use std::{collections::HashSet, fs, path::PathBuf};
 
 const USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
 const BETA_HEADER: &str = "oauth-2025-04-20";
@@ -90,21 +90,69 @@ fn parse_usage(value: &Value) -> ClaudeUsage {
     }
 }
 
-const KNOWN_WINDOW_KEYS: [&str; 4] = ["five_hour", "seven_day", "seven_day_sonnet", "seven_day_opus"];
+const KNOWN_WINDOW_KEYS: [&str; 4] = [
+    "five_hour",
+    "seven_day",
+    "seven_day_sonnet",
+    "seven_day_opus",
+];
 
 /// Every window the response carries beyond the four fixed keys.
 ///
 /// The endpoint has grown windows before (per-model weekly limits) and will
 /// again; naming them here would mean a release per model. So this parses by
-/// shape instead: any other top-level object with a utilization number is a
-/// window, and any entry of a top-level `limits` array that names itself and
-/// carries one is too. Objects that don't look like windows are skipped, so a
-/// response without extras yields an empty list rather than an error.
+/// shape instead: `seven_day_` top-level objects with a utilization number are
+/// windows, and named entries of a top-level `limits` array are too. Objects
+/// that don't look like windows are skipped, so a response without extras
+/// yields an empty list rather than an error. Limits entries win over a legacy
+/// top-level key for the same model.
 fn parse_extra_windows(root: &Value) -> Vec<NamedWindow> {
     let mut extras = Vec::new();
+    let mut limit_names = HashSet::new();
+    if let Some(limits) = root.get("limits").and_then(Value::as_array) {
+        for entry in limits {
+            let name = ["name", "model", "id", "key"]
+                .iter()
+                .find_map(|key| entry.get(*key).and_then(Value::as_str))
+                .or_else(|| {
+                    entry
+                        .pointer("/scope/model/display_name")
+                        .and_then(Value::as_str)
+                })
+                .or_else(|| entry.pointer("/scope/model/id").and_then(Value::as_str))
+                .filter(|name| !name.trim().is_empty());
+            let Some(name) = name else {
+                continue;
+            };
+            let Some(pct) = number_field(
+                entry,
+                &[
+                    "utilization",
+                    "used_percent",
+                    "usedPercent",
+                    "percent",
+                    "pct",
+                ],
+            ) else {
+                continue;
+            };
+            limit_names.insert(model_window_key(name));
+            extras.push(NamedWindow {
+                key: name.to_string(),
+                window: WindowStat {
+                    pct: normalize_pct(pct),
+                    resets_at: reset_field(entry).unwrap_or_default(),
+                },
+            });
+        }
+    }
     if let Some(map) = root.as_object() {
         for (key, value) in map {
-            if KNOWN_WINDOW_KEYS.contains(&key.as_str()) || !value.is_object() {
+            if KNOWN_WINDOW_KEYS.contains(&key.as_str())
+                || !key.starts_with("seven_day_")
+                || !value.is_object()
+                || limit_names.contains(&model_window_key(key))
+            {
                 continue;
             }
             if let Some(window) = parse_window(root, &[key.as_str()]) {
@@ -115,31 +163,13 @@ fn parse_extra_windows(root: &Value) -> Vec<NamedWindow> {
             }
         }
     }
-    if let Some(limits) = root.get("limits").and_then(Value::as_array) {
-        for entry in limits {
-            let Some(name) = ["name", "model", "id", "key"]
-                .iter()
-                .find_map(|key| entry.get(*key).and_then(Value::as_str))
-                .filter(|name| !name.trim().is_empty())
-            else {
-                continue;
-            };
-            let Some(pct) = number_field(
-                entry,
-                &["utilization", "used_percent", "usedPercent", "percent", "pct"],
-            ) else {
-                continue;
-            };
-            extras.push(NamedWindow {
-                key: name.to_string(),
-                window: WindowStat {
-                    pct: normalize_pct(pct),
-                    resets_at: reset_field(entry).unwrap_or_default(),
-                },
-            });
-        }
-    }
     extras
+}
+
+fn model_window_key(name: &str) -> String {
+    name.strip_prefix("seven_day_")
+        .unwrap_or(name)
+        .to_ascii_lowercase()
 }
 
 fn load_access_token() -> Result<String, String> {
@@ -155,11 +185,15 @@ fn load_access_token() -> Result<String, String> {
         .get("accessToken")
         .and_then(Value::as_str)
         .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| "Claude OAuth access token missing. Run `claude` to re-authenticate.".to_string())?;
+        .ok_or_else(|| {
+            "Claude OAuth access token missing. Run `claude` to re-authenticate.".to_string()
+        })?;
     let expires_at = oauth
         .get("expiresAt")
         .and_then(number_to_i64)
-        .ok_or_else(|| "Claude OAuth expiry missing. Run `claude` to re-authenticate.".to_string())?;
+        .ok_or_else(|| {
+            "Claude OAuth expiry missing. Run `claude` to re-authenticate.".to_string()
+        })?;
     let expires_at_ms = if expires_at < 10_000_000_000 {
         expires_at.saturating_mul(1000)
     } else {
@@ -186,7 +220,13 @@ fn parse_window(root: &Value, keys: &[&str]) -> Option<WindowStat> {
     }
     let pct = number_field(
         window,
-        &["utilization", "used_percent", "usedPercent", "percent", "pct"],
+        &[
+            "utilization",
+            "used_percent",
+            "usedPercent",
+            "percent",
+            "pct",
+        ],
     )?;
     Some(WindowStat {
         pct: normalize_pct(pct),
@@ -284,5 +324,33 @@ mod tests {
         assert_eq!(usage.model_windows[1].key, "opus");
         assert_eq!(usage.model_windows[1].window.pct, 7.0);
         assert_eq!(usage.model_windows[1].window.resets_at, "");
+    }
+
+    #[test]
+    fn scoped_limit_windows_include_fable_without_unrelated_top_level_objects() {
+        let usage = parse_usage(&json!({
+            "five_hour": { "utilization": 30.0, "resets_at": "2026-08-12T20:20:00.998692+00:00" },
+            "seven_day": { "utilization": 32.0, "resets_at": "2026-08-18T20:00:00.998713+00:00" },
+            "seven_day_oauth_apps": null,
+            "seven_day_opus": null,
+            "seven_day_sonnet": null,
+            "nimbus_quill": { "utilization": 0.0, "resets_at": null },
+            "extra_usage": { "is_enabled": false, "utilization": null },
+            "limits": [
+                { "kind": "session", "group": "session", "percent": 30, "resets_at": "2026-08-12T20:20:00.998692+00:00", "scope": null },
+                { "kind": "weekly_all", "group": "weekly", "percent": 32, "resets_at": "2026-08-18T20:00:00.998713+00:00", "scope": null },
+                { "kind": "weekly_scoped", "group": "weekly", "percent": 54, "resets_at": "2026-08-18T20:00:00.998991+00:00", "scope": { "model": { "id": null, "display_name": "Fable" } } }
+            ],
+            "spend": { "percent": 0 }
+        }));
+        assert_eq!(usage.five_hour.as_ref().map(|stat| stat.pct), Some(30.0));
+        assert_eq!(usage.seven_day.as_ref().map(|stat| stat.pct), Some(32.0));
+        assert_eq!(usage.model_windows.len(), 1);
+        assert_eq!(usage.model_windows[0].key, "Fable");
+        assert_eq!(usage.model_windows[0].window.pct, 54.0);
+        assert_eq!(
+            usage.model_windows[0].window.resets_at,
+            "2026-08-18T20:00:00.998991+00:00"
+        );
     }
 }

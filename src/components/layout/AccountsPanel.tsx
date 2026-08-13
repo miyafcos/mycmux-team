@@ -14,10 +14,10 @@ import {
 } from "../../lib/cliAccounts";
 import {
   PROVIDER_SHORT,
+  displayWindows,
   formatPct,
   formatResetShort,
   formatUpdatedAt,
-  resetHint,
   rowMessage,
   staleWindowsNote,
   usageBarColor,
@@ -44,9 +44,15 @@ export function AccountsPanel({
 }: AccountsPanelProps) {
   const fetchError = useCliAccountStore((state) => state.fetchError);
   const operationError = useCliAccountStore((state) => state.operationError);
-  const lastSwitchResult = useCliAccountStore((state) => state.lastSwitchResult);
-  const dismissOperationError = useCliAccountStore((state) => state.dismissOperationError);
-  const dismissSwitchWarnings = useCliAccountStore((state) => state.dismissSwitchWarnings);
+  const lastSwitchResult = useCliAccountStore(
+    (state) => state.lastSwitchResult,
+  );
+  const dismissOperationError = useCliAccountStore(
+    (state) => state.dismissOperationError,
+  );
+  const dismissSwitchWarnings = useCliAccountStore(
+    (state) => state.dismissSwitchWarnings,
+  );
   const usageError = useUsageStore((state) => state.lastError);
   const generatedAt = useUsageStore((state) => state.generatedAt);
   const menuRef = useRef<HTMLDivElement | null>(null);
@@ -54,7 +60,9 @@ export function AccountsPanel({
   useEffect(() => {
     if (closing) return;
     const frame = window.requestAnimationFrame(() => {
-      const firstButton = menuRef.current?.querySelector<HTMLButtonElement>("button:not([disabled])");
+      const firstButton = menuRef.current?.querySelector<HTMLButtonElement>(
+        "button:not([disabled])",
+      );
       (firstButton ?? menuRef.current)?.focus();
     });
     return () => window.cancelAnimationFrame(frame);
@@ -97,7 +105,9 @@ export function AccountsPanel({
           borderBottom: "1px solid var(--cmux-border-hairline)",
         }}
       >
-        <span style={{ fontSize: "var(--cmux-font-size-xs)", fontWeight: 700 }}>アカウント</span>
+        <span style={{ fontSize: "var(--cmux-font-size-xs)", fontWeight: 700 }}>
+          アカウント
+        </span>
         <span
           style={{
             fontSize: "var(--cmux-font-size-xs)",
@@ -139,10 +149,21 @@ export function AccountsPanel({
             fontSize: "var(--cmux-font-size-xs)",
           }}
         >
-          {fetchError && <div style={{ color: "var(--cmux-usage-danger)" }}>{fetchError}</div>}
-          {usageError && <div style={{ color: "var(--cmux-usage-danger)" }}>{usageError}</div>}
+          {fetchError && (
+            <div style={{ color: "var(--cmux-usage-danger)" }}>
+              {fetchError}
+            </div>
+          )}
+          {usageError && (
+            <div style={{ color: "var(--cmux-usage-danger)" }}>
+              {usageError}
+            </div>
+          )}
           {operationError && (
-            <Dismissable color="var(--cmux-usage-danger)" onDismiss={dismissOperationError}>
+            <Dismissable
+              color="var(--cmux-usage-danger)"
+              onDismiss={dismissOperationError}
+            >
               {operationError}
             </Dismissable>
           )}
@@ -163,8 +184,16 @@ export function AccountsPanel({
   );
 }
 
-function AccountRow({ row, onClose }: { row: ProfileUsage; onClose: () => void }) {
-  const busyProfileId = useCliAccountStore((state) => state.busyByProvider[row.provider]);
+function AccountRow({
+  row,
+  onClose,
+}: {
+  row: ProfileUsage;
+  onClose: () => void;
+}) {
+  const busyProfileId = useCliAccountStore(
+    (state) => state.busyByProvider[row.provider],
+  );
   const switchTo = useCliAccountStore((state) => state.switchTo);
   const capture = useCliAccountStore((state) => state.capture);
   const paneMetadata = usePaneMetadataStore((state) => state.metadata);
@@ -185,10 +214,16 @@ function AccountRow({ row, onClose }: { row: ProfileUsage; onClose: () => void }
       await capture(row.provider);
       return;
     }
-    if (!canSwitchCliAccount(row.is_active, providerBusy, row.needs_relogin)) return;
+    if (!canSwitchCliAccount(row.is_active, providerBusy, row.needs_relogin))
+      return;
     const count = runningAgentCounts(paneMetadata)[row.provider];
     const paneDetails = runningAgentPaneDetails(paneMetadata, row.provider);
-    const warning = switchWarningText(count, row.provider, row.label, paneDetails);
+    const warning = switchWarningText(
+      count,
+      row.provider,
+      row.label,
+      paneDetails,
+    );
     const result = await executeCliAccountSwitch(
       row.is_active,
       providerBusy,
@@ -207,6 +242,8 @@ function AccountRow({ row, onClose }: { row: ProfileUsage; onClose: () => void }
 
   const message = rowMessage(row);
   const staleNote = staleWindowsNote(row);
+  const windows = displayWindows(row);
+  const cells = windows.length >= 3 ? 5 : 10;
   const action = row.is_active
     ? "使用中"
     : isBusy
@@ -284,7 +321,9 @@ function AccountRow({ row, onClose }: { row: ProfileUsage; onClose: () => void }
           style={{
             flexShrink: 0,
             fontSize: "var(--cmux-font-size-xs)",
-            color: row.is_active ? "var(--cmux-text)" : "var(--cmux-text-tertiary)",
+            color: row.is_active
+              ? "var(--cmux-text)"
+              : "var(--cmux-text-tertiary)",
           }}
         >
           {action}
@@ -301,10 +340,16 @@ function AccountRow({ row, onClose }: { row: ProfileUsage; onClose: () => void }
               opacity: 0.55,
             }}
           >
-            <UsageBar label="5h" stat={row.five_hour} />
-            <UsageBar label="7d" stat={row.seven_day} />
+            {windows.map(({ key, ...window }) => (
+              <UsageBar key={key} {...window} cells={cells} />
+            ))}
           </span>
-          <span style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-dim)" }}>
+          <span
+            style={{
+              fontSize: "var(--cmux-font-size-xs)",
+              color: "var(--cmux-text-dim)",
+            }}
+          >
             {staleNote}
           </span>
         </>
@@ -321,9 +366,20 @@ function AccountRow({ row, onClose }: { row: ProfileUsage; onClose: () => void }
           {message}
         </span>
       ) : (
-        <span style={{ display: "flex", gap: "var(--cmux-space-5)", alignItems: "center" }}>
-          <UsageBar label="5h" stat={row.five_hour} />
-          <UsageBar label="7d" stat={row.seven_day} />
+        <span
+          style={{
+            display: "flex",
+            gap: "var(--cmux-space-5)",
+            alignItems: "center",
+          }}
+        >
+          {windows.length > 0 ? (
+            windows.map(({ key, ...window }) => (
+              <UsageBar key={key} {...window} cells={cells} />
+            ))
+          ) : (
+            <span style={{ color: "var(--cmux-text-tertiary)" }}>—</span>
+          )}
           <span
             title={`取得 ${formatUpdatedAt(row.fetched_at)}`}
             style={{
@@ -333,7 +389,9 @@ function AccountRow({ row, onClose }: { row: ProfileUsage; onClose: () => void }
               whiteSpace: "nowrap",
             }}
           >
-            取得 {formatResetShort(row.fetched_at) || formatUpdatedAt(row.fetched_at)}
+            取得{" "}
+            {formatResetShort(row.fetched_at) ||
+              formatUpdatedAt(row.fetched_at)}
           </span>
         </span>
       )}
@@ -341,12 +399,20 @@ function AccountRow({ row, onClose }: { row: ProfileUsage; onClose: () => void }
   );
 }
 
-const BAR_CELLS = 10;
-
-function UsageBar({ label, stat }: { label: string; stat: WindowStat | null }) {
+function UsageBar({
+  label,
+  stat,
+  hint,
+  cells,
+}: {
+  label: string;
+  stat: WindowStat;
+  hint: string;
+  cells: number;
+}) {
   return (
     <span
-      title={resetHint(stat)}
+      title={hint}
       style={{
         display: "flex",
         alignItems: "center",
@@ -356,37 +422,42 @@ function UsageBar({ label, stat }: { label: string; stat: WindowStat | null }) {
       }}
     >
       <span>{label}</span>
-      {stat ? (
-        <>
-          <span style={{ display: "flex", alignItems: "center" }} aria-hidden="true">
-            {Array.from({ length: BAR_CELLS }, (_, cell) => {
-              const lit =
-                stat.pct <= 0
-                  ? 0
-                  : Math.max(1, Math.ceil(Math.min(100, stat.pct) / (100 / BAR_CELLS)));
-              return (
-                <span
-                  key={cell}
-                  style={{
-                    width: 5,
-                    height: 6,
-                    marginRight: 1,
-                    background: cell < lit ? usageBarColor(stat.pct) : "var(--cmux-border)",
-                  }}
-                />
-              );
-            })}
+      <>
+        <span
+          style={{ display: "flex", alignItems: "center" }}
+          aria-hidden="true"
+        >
+          {Array.from({ length: cells }, (_, cell) => {
+            const lit =
+              stat.pct <= 0
+                ? 0
+                : Math.max(
+                    1,
+                    Math.ceil(Math.min(100, stat.pct) / (100 / cells)),
+                  );
+            return (
+              <span
+                key={cell}
+                style={{
+                  width: 5,
+                  height: 6,
+                  marginRight: 1,
+                  background:
+                    cell < lit ? usageBarColor(stat.pct) : "var(--cmux-border)",
+                }}
+              />
+            );
+          })}
+        </span>
+        <span style={{ color: usageColor(stat.pct), minWidth: 30 }}>
+          {formatPct(stat.pct)}
+        </span>
+        {stat.resets_at && formatResetShort(stat.resets_at) && (
+          <span style={{ color: "var(--cmux-text-dim)", whiteSpace: "nowrap" }}>
+            ↻{formatResetShort(stat.resets_at)}
           </span>
-          <span style={{ color: usageColor(stat.pct), minWidth: 30 }}>{formatPct(stat.pct)}</span>
-          {stat.resets_at && formatResetShort(stat.resets_at) && (
-            <span style={{ color: "var(--cmux-text-dim)", whiteSpace: "nowrap" }}>
-              ↻{formatResetShort(stat.resets_at)}
-            </span>
-          )}
-        </>
-      ) : (
-        <span>—</span>
-      )}
+        )}
+      </>
     </span>
   );
 }
@@ -399,7 +470,8 @@ function Footer({ onOpenUsageSettings }: { onOpenUsageSettings: () => void }) {
 
   // Logins made outside the app are picked up by the backend live-sync watcher
   // and registered automatically, so the footer offers no capture button.
-  const loginProvider = PROVIDER_ORDER.find((provider) => loginByProvider[provider]) ?? null;
+  const loginProvider =
+    PROVIDER_ORDER.find((provider) => loginByProvider[provider]) ?? null;
   const loginEntry = loginProvider ? loginByProvider[loginProvider] : null;
   const loginInProgress = loginEntry !== null;
 
@@ -431,7 +503,13 @@ function Footer({ onOpenUsageSettings }: { onOpenUsageSettings: () => void }) {
           gap: "var(--cmux-space-4)",
         }}
       >
-        <div style={{ position: "relative", display: "flex", gap: "var(--cmux-space-2)" }}>
+        <div
+          style={{
+            position: "relative",
+            display: "flex",
+            gap: "var(--cmux-space-2)",
+          }}
+        >
           <button
             type="button"
             onClick={() => setAddMenuOpen((open) => !open)}
@@ -451,7 +529,9 @@ function Footer({ onOpenUsageSettings }: { onOpenUsageSettings: () => void }) {
           {/* The abort control comes from the shared component so both panels
               agree on when it is offered; the stage text is suppressed because
               the button beside it already shows it. */}
-          {loginProvider && <CliLoginProgress provider={loginProvider} compact />}
+          {loginProvider && (
+            <CliLoginProgress provider={loginProvider} compact />
+          )}
           {addMenuOpen && !loginInProgress && (
             <div
               role="menu"
@@ -494,7 +574,11 @@ function Footer({ onOpenUsageSettings }: { onOpenUsageSettings: () => void }) {
             </div>
           )}
         </div>
-        <button type="button" onClick={onOpenUsageSettings} style={panelButtonStyle}>
+        <button
+          type="button"
+          onClick={onOpenUsageSettings}
+          style={panelButtonStyle}
+        >
           ⚙ 詳細
         </button>
       </div>
@@ -512,7 +596,14 @@ function Dismissable({
   children: React.ReactNode;
 }) {
   return (
-    <div style={{ display: "flex", alignItems: "baseline", gap: "var(--cmux-space-2)", color }}>
+    <div
+      style={{
+        display: "flex",
+        alignItems: "baseline",
+        gap: "var(--cmux-space-2)",
+        color,
+      }}
+    >
       <span style={{ flex: 1, minWidth: 0 }}>{children}</span>
       <button
         type="button"

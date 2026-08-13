@@ -112,6 +112,38 @@ fn same_session_findings_do_not_form_a_repeat_group() {
 }
 
 #[test]
+fn lsh_repeat_counts_match_exact_groups_away_from_the_threshold() {
+    let fixture = Fixture::new();
+    let conn = fixture.conn();
+    // 150 identical members per group have similarity 1.0 within a group and
+    // intentionally disjoint 3-grams across groups, well away from 0.55.
+    for index in 0..300 {
+        let (id, text) = if index < 150 {
+            (format!("alpha-{index}"), "alpha bravo charlie delta echo foxtrot")
+        } else {
+            (format!("omega-{index}"), "uniform victor whiskey xray yankee zulu")
+        };
+        seed(
+            &conn,
+            &id,
+            1_000 + index as i64,
+            "unknown",
+            &format!(r#"[{{\"text\":\"{text}\",\"kind\":\"gotcha\"}}]"#),
+        );
+    }
+    let options = query::FindingsOptions { limit: 50, ..Default::default() };
+    let first = query::findings(&conn, &Range::default(), &Filters::default(), &options, NOW).unwrap();
+    let second = query::findings(&conn, &Range::default(), &Filters::default(), &options, NOW).unwrap();
+    assert!(!first.repeat_truncated);
+    assert_eq!(first.rows.len(), second.rows.len());
+    assert!(first.rows.iter().all(|row| row.repeat_count == 150));
+    assert_eq!(
+        first.rows.iter().map(|row| row.repeat_count).collect::<Vec<_>>(),
+        second.rows.iter().map(|row| row.repeat_count).collect::<Vec<_>>(),
+    );
+}
+
+#[test]
 fn rankings_aggregate_rates_and_allow_empty_file_touch() {
     let fixture = Fixture::new();
     let conn = fixture.conn();

@@ -111,6 +111,7 @@ struct OutputRework {
 
 #[derive(Debug, Clone)]
 struct ValidResult {
+    id_mismatch: bool,
     goal: String,
     cluster: String,
     outcome: String,
@@ -178,9 +179,16 @@ pub async fn run_summarize_one(db_path: PathBuf, kind: String, session_id: Strin
         let input = build_input(&conn, &session)?;
         let cancel = AtomicBool::new(false);
         let children: ChildRegistry = Arc::new(Mutex::new(HashMap::new()));
-        let raw = execute_session(&input, &cancel, &children)?;
-        let result = validate_output(&raw, &input.id)?;
-        upsert_result(&mut conn, &session, &result)
+        let result = execute_session(&input, &cancel, &children)
+            .and_then(|raw| validate_output(&raw, &input.id));
+        match result {
+            Ok(result) => upsert_result(&mut conn, &session, &result),
+            Err(error) => {
+                crate::diag_warn!("ailog", "single summary {}/{} failed: {error}", session.kind, session.session_id);
+                save_parse_error(&mut conn, &session, &error)?;
+                Err(error)
+            }
+        }
     }).await.map_err(|err| format!("single summary worker: {err}"))?
 }
 
@@ -297,7 +305,7 @@ fn pending_where(force: bool) -> &'static str {
     if force {
         "COALESCE(s.origin, 'unknown') <> 'ailog-internal'"
     } else {
-        "COALESCE(s.origin, 'unknown') <> 'ailog-internal' AND (x.prompt_version IS NULL OR x.prompt_version < ?3 OR (x.parse_error IS NOT NULL AND COALESCE(x.attempt_count, 0) < ?4 AND COALESCE(x.last_error_at, x.created_at, 0) <= ?5))"
+        "COALESCE(s.origin, 'unknown') <> 'ailog-internal' AND s.is_sidechain=0 AND s.turn_count>=3 AND EXISTS (SELECT 1 FROM source_file sf WHERE sf.kind=s.kind AND sf.session_id=s.session_id) AND (x.prompt_version IS NULL OR x.prompt_version < ?3 OR (x.parse_error IS NOT NULL AND COALESCE(x.attempt_count, 0) < ?4 AND COALESCE(x.last_error_at, x.created_at, 0) <= ?5))"
     }
 }
 
@@ -702,16 +710,18 @@ fn execute_session(
                 .lock()
                 .unwrap_or_else(|err| err.into_inner())
                 .remove(&pid);
-            let mut stdout_text = String::new();
-            let mut stderr_text = String::new();
+            let mut stdout_bytes = Vec::new();
+            let mut stderr_bytes = Vec::new();
             if let Some(mut handle) = stdout {
                 use std::io::Read;
-                let _ = handle.read_to_string(&mut stdout_text);
+                let _ = handle.read_to_end(&mut stdout_bytes);
             }
             if let Some(mut handle) = stderr {
                 use std::io::Read;
-                let _ = handle.read_to_string(&mut stderr_text);
+                let _ = handle.read_to_end(&mut stderr_bytes);
             }
+            let stdout_text = String::from_utf8_lossy(&stdout_bytes).into_owned();
+            let stderr_text = String::from_utf8_lossy(&stderr_bytes).into_owned();
             if !status.success() {
                 return Err(format!(
                     "summarizer exited {status}: {}",
@@ -750,8 +760,9 @@ fn validate_output(raw: &str, expected_id: &str) -> Result<ValidResult, String> 
         .ok_or_else(|| "summarizer output contained no JSON object".to_string())?;
     let parsed: OutputResult =
         serde_json::from_str(value).map_err(|err| format!("parse summarizer JSON: {err}"))?;
-    if parsed.id != expected_id {
-        return Err("summarizer output had an unexpected session id".to_string());
+    let id_mismatch = parsed.id != expected_id;
+    if id_mismatch {
+        crate::diag_warn!("ailog", "summary output id mismatch: expected {expected_id}, received {}", parsed.id);
     }
     let findings = parsed
         .findings
@@ -767,6 +778,7 @@ fn validate_output(raw: &str, expected_id: &str) -> Result<ValidResult, String> 
         .collect();
     let happened = parsed.rework.happened;
     Ok(ValidResult {
+        id_mismatch,
         goal: crate::ailog::truncate_chars(parsed.goal.trim(), 60),
         cluster: normalize_cluster(&parsed.goal_cluster),
         outcome: normalize_outcome(&parsed.outcome),
@@ -882,10 +894,10 @@ fn upsert_result(
         serde_json::to_string(&result.findings).map_err(|err| format!("encode findings: {err}"))?;
     let rework = serde_json::json!({"happened": result.rework_happened, "cause": result.rework_cause, "category": result.rework_category}).to_string();
     tx.execute(
-        "INSERT INTO summary (kind,session_id,created_at,model_used,findings,rework_note,cost_note,goal_summary,goal_cluster,summary,cluster,model,outcome,confidence,rework_category,prompt_version,parse_error,input_tokens,output_tokens,attempt_count,last_error_at) \
-         VALUES (?1,?2,?3,'gpt-5.6-luna',?4,?5,?6,?7,?8,?7,?8,'gpt-5.6-luna',?9,?10,?11,?12,NULL,0,0,0,NULL) \
-         ON CONFLICT(kind,session_id) DO UPDATE SET created_at=excluded.created_at, model_used=excluded.model_used, findings=excluded.findings, rework_note=excluded.rework_note, cost_note=excluded.cost_note, goal_summary=excluded.goal_summary, goal_cluster=excluded.goal_cluster, summary=excluded.summary, cluster=excluded.cluster, model=excluded.model, outcome=excluded.outcome, confidence=excluded.confidence, rework_category=excluded.rework_category, prompt_version=excluded.prompt_version, parse_error=NULL, attempt_count=0, last_error_at=NULL",
-        params![session.kind, session.session_id, now, findings, rework, result.cost_note, result.goal, result.cluster, result.outcome, result.confidence, result.rework_category, PROMPT_VERSION],
+        "INSERT INTO summary (kind,session_id,created_at,model_used,findings,rework_note,cost_note,goal_summary,goal_cluster,summary,cluster,model,outcome,confidence,rework_category,prompt_version,parse_error,error_kind,input_tokens,output_tokens,attempt_count,last_error_at,last_ok_at) \
+         VALUES (?1,?2,?3,'gpt-5.6-luna',?4,?5,?6,?7,?8,?7,?8,'gpt-5.6-luna',?9,?10,?11,?12,NULL,CASE WHEN ?13 THEN 'id-mismatch' ELSE NULL END,0,0,0,NULL,?3) \
+         ON CONFLICT(kind,session_id) DO UPDATE SET created_at=excluded.created_at, model_used=excluded.model_used, findings=excluded.findings, rework_note=excluded.rework_note, cost_note=excluded.cost_note, goal_summary=excluded.goal_summary, goal_cluster=excluded.goal_cluster, summary=excluded.summary, cluster=excluded.cluster, model=excluded.model, outcome=excluded.outcome, confidence=excluded.confidence, rework_category=excluded.rework_category, prompt_version=excluded.prompt_version, parse_error=NULL, error_kind=excluded.error_kind, last_ok_at=excluded.created_at, last_error_at=NULL",
+        params![session.kind, session.session_id, now, findings, rework, result.cost_note, result.goal, result.cluster, result.outcome, result.confidence, result.rework_category, PROMPT_VERSION, result.id_mismatch],
     ).map_err(|err| format!("upsert summary row: {err}"))?;
     tx.commit()
         .map_err(|err| format!("commit summary transaction: {err}"))
@@ -897,7 +909,8 @@ fn save_parse_error(
     error: &str,
 ) -> Result<(), String> {
     let now = chrono::Utc::now().timestamp_millis();
-    conn.execute("INSERT INTO summary (kind,session_id,created_at,parse_error,prompt_version,attempt_count,last_error_at) VALUES (?1,?2,?3,?4,?5,1,?3) ON CONFLICT(kind,session_id) DO UPDATE SET created_at=excluded.created_at,parse_error=excluded.parse_error,prompt_version=excluded.prompt_version,attempt_count=COALESCE(summary.attempt_count,0)+1,last_error_at=excluded.last_error_at", params![session.kind, session.session_id, now, crate::ailog::truncate_chars(error, 500), PROMPT_VERSION]).map_err(|err| format!("save parse error: {err}"))?;
+    let kind = if error.contains("timed out") { "timeout" } else if error.contains("cancelled") { "cancelled" } else if error.contains("start codex") { "spawn" } else if error.contains("exited") { "exit" } else { "parse" };
+    conn.execute("INSERT INTO summary (kind,session_id,created_at,parse_error,error_kind,prompt_version,attempt_count,last_error_at) VALUES (?1,?2,?3,?4,?5,?6,1,?3) ON CONFLICT(kind,session_id) DO UPDATE SET created_at=excluded.created_at,parse_error=excluded.parse_error,error_kind=excluded.error_kind,prompt_version=excluded.prompt_version,attempt_count=COALESCE(summary.attempt_count,0)+1,last_error_at=excluded.last_error_at", params![session.kind, session.session_id, now, crate::ailog::truncate_chars(error, 500), kind, PROMPT_VERSION]).map_err(|err| format!("save parse error: {err}"))?;
     Ok(())
 }
 
@@ -908,6 +921,19 @@ mod tests {
         from: i64::MIN / 4,
         to: i64::MAX / 4,
     };
+
+    fn insert_eligible_session(conn: &Connection, id: &str, started_at: i64) {
+        conn.execute(
+            "INSERT INTO session(kind, session_id, origin, started_at, is_sidechain, turn_count) VALUES ('codex', ?1, 'unknown', ?2, 0, 3)",
+            params![id, started_at],
+        )
+        .expect("eligible session");
+        conn.execute(
+            "INSERT INTO source_file(path, kind, size_bytes, mtime_ns, parsed_bytes, parsed_lines, session_id, last_indexed) VALUES (?1, 'codex', 0, 0, 0, 0, ?2, 0)",
+            params![format!("C:/test/{id}.jsonl"), id],
+        )
+        .expect("eligible source file");
+    }
     #[test]
     fn enums_round_to_fixed_values() {
         assert_eq!(normalize_cluster("教材"), "other");
@@ -922,6 +948,14 @@ mod tests {
             extract_json("text ```json\n{\"a\":1}\n```"),
             Some("{\"a\":1}")
         );
+    }
+
+    #[test]
+    fn output_with_one_character_id_mismatch_is_accepted() {
+        let raw = r#"{"id":"session-abd","goal":"goal","goal_cluster":"other","outcome":"done","findings":[],"rework":{"happened":false},"cost_note":"","confidence":"high"}"#;
+        let result = validate_output(raw, "session-abc").expect("accepted output");
+        assert!(result.id_mismatch);
+        assert_eq!(result.goal, "goal");
     }
     #[test]
     fn input_limit_keeps_higher_priority_material() {
@@ -942,11 +976,7 @@ mod tests {
     fn prompt_version_selects_old_rows_unless_forced() {
         let conn = Connection::open_in_memory().expect("memory database");
         crate::ailog::schema::init(&conn).expect("schema");
-        conn.execute(
-            "INSERT INTO session(kind, session_id, origin, started_at) VALUES ('codex', 's', 'unknown', 1)",
-            [],
-        )
-        .expect("session");
+        insert_eligible_session(&conn, "s", 1);
         conn.execute("INSERT INTO summary(kind, session_id, created_at, prompt_version) VALUES ('codex', 's', 1, 1)", []).expect("old summary");
         assert_eq!(
             pending_count(&conn, false, ALL_RANGE).expect("old pending"),
@@ -968,11 +998,7 @@ mod tests {
     fn current_parse_errors_become_pending_after_the_retry_window() {
         let conn = Connection::open_in_memory().expect("memory database");
         crate::ailog::schema::init(&conn).expect("schema");
-        conn.execute(
-            "INSERT INTO session(kind, session_id, origin, started_at) VALUES ('codex', 'retry', 'unknown', 1)",
-            [],
-        )
-        .expect("session");
+        insert_eligible_session(&conn, "retry", 1);
         conn.execute("INSERT INTO summary(kind, session_id, created_at, prompt_version, parse_error, attempt_count, last_error_at) VALUES ('codex', 'retry', 1, ?1, 'failed', 1, 1)", [PROMPT_VERSION]).expect("failed summary");
         assert_eq!(
             pending_count(&conn, false, ALL_RANGE).expect("retry pending"),
@@ -986,10 +1012,7 @@ mod tests {
         crate::ailog::schema::init(&conn).expect("schema");
         let now = 2_000_000_000_000_i64;
         for (id, age_days) in [("six", 6), ("eight", 8), ("thirty_one", 31)] {
-            conn.execute(
-                "INSERT INTO session(kind, session_id, origin, started_at) VALUES ('codex', ?1, 'unknown', ?2)",
-                params![id, now - age_days * 86_400_000],
-            ).expect("session");
+            insert_eligible_session(&conn, id, now - age_days * 86_400_000);
         }
         let seven_days = ResolvedRange {
             from: now - 7 * 86_400_000,
@@ -1023,12 +1046,32 @@ mod tests {
     }
 
     #[test]
+    fn default_scope_excludes_sidechains_but_force_includes_them() {
+        let conn = Connection::open_in_memory().expect("memory database");
+        crate::ailog::schema::init(&conn).expect("schema");
+        insert_eligible_session(&conn, "main", 1);
+        conn.execute(
+            "INSERT INTO session(kind, session_id, origin, started_at, is_sidechain, turn_count) VALUES ('codex', 'sidechain', 'unknown', 1, 1, 3)",
+            [],
+        )
+        .expect("sidechain session");
+        conn.execute(
+            "INSERT INTO source_file(path, kind, size_bytes, mtime_ns, parsed_bytes, parsed_lines, session_id, last_indexed) VALUES ('C:/test/sidechain.jsonl', 'codex', 0, 0, 0, 0, 'sidechain', 0)",
+            [],
+        )
+        .expect("sidechain source file");
+
+        assert_eq!(pending_count(&conn, false, ALL_RANGE).expect("default scope"), 1);
+        assert_eq!(pending_count(&conn, true, ALL_RANGE).expect("force scope"), 2);
+    }
+
+    #[test]
     fn retry_pending_excludes_recent_exhausted_and_successful_rows() {
         let conn = Connection::open_in_memory().expect("memory database");
         crate::ailog::schema::init(&conn).expect("schema");
         let now = chrono::Utc::now().timestamp_millis();
         for id in ["old_error", "recent_error", "exhausted_error", "successful"] {
-            conn.execute("INSERT INTO session(kind, session_id, origin, started_at) VALUES ('codex', ?1, 'unknown', ?2)", params![id, now]).expect("session");
+            insert_eligible_session(&conn, id, now);
         }
         for (id, error, attempts, error_at) in [
             ("old_error", Some("failed"), 1, now - RETRY_DELAY_MS - 1),
@@ -1058,11 +1101,7 @@ mod tests {
         let mut conn = Connection::open_in_memory().expect("memory database");
         crate::ailog::schema::init(&conn).expect("schema");
         let now = chrono::Utc::now().timestamp_millis();
-        conn.execute(
-            "INSERT INTO session(kind, session_id, origin, started_at) VALUES ('codex', 'old-retry', 'unknown', ?1)",
-            [now],
-        )
-        .expect("session");
+        insert_eligible_session(&conn, "old-retry", now);
         conn.execute(
             "INSERT INTO summary(kind, session_id, created_at, prompt_version, parse_error, attempt_count, last_error_at) VALUES ('codex', 'old-retry', ?1, ?2, 'old failure', 1, ?1)",
             params![now, PROMPT_VERSION - 1],
