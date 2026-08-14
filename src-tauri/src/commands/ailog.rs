@@ -5,7 +5,7 @@
 //! them all async is also what keeps `tests/test_command_sync_contract.py`
 //! green without extending its allowlist.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -47,6 +47,7 @@ struct SummarizerState {
     last_finished_at: Mutex<i64>,
     last_error: Mutex<Option<String>>,
     children: summarize::ChildRegistry,
+    active_sessions: summarize::SessionSummaryRegistry,
 }
 
 impl SummarizerState {
@@ -64,6 +65,7 @@ impl SummarizerState {
             last_finished_at: Mutex::new(0),
             last_error: Mutex::new(None),
             children: Arc::new(Mutex::new(HashMap::new())),
+            active_sessions: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 }
@@ -367,6 +369,7 @@ pub async fn ailog_summarize_start(
             ai,
             cancel,
             children,
+            summarizer_state().active_sessions.clone(),
             Some(sink),
         )
         .await;
@@ -719,7 +722,14 @@ pub async fn ailog_session_summarize(app: AppHandle, args: SessionDetailArgs) ->
         return Err("ai_disabled".to_string());
     }
     let db_path = crate::ailog::db_path()?;
-    summarize::run_summarize_one(db_path, args.kind, args.session_id, ai).await
+    summarize::run_summarize_one(
+        db_path,
+        args.kind,
+        args.session_id,
+        ai,
+        summarizer_state().active_sessions.clone(),
+    )
+    .await
 }
 
 #[tauri::command(async)]

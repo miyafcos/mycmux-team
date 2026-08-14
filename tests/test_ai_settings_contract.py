@@ -106,9 +106,3 @@ def test_backend_owned_settings_survive_a_snapshot_save() -> None:
             f"{field} is now in buildSnapshot; drop it from the preserve list in workspace.rs"
         )
         assert field in workspace, f"save_persistent_data does not preserve {field}"
-
-
-def test_ailog_panel_does_not_auto_spend_tokens_when_ai_is_off() -> None:
-    text = read_repo_text("src/components/ailog/AiLogPanel.tsx")
-    assert "if (!aiEnabled) return;" in text, "digest auto-generation is not gated"
-    assert "aiEnabled && !autoStartedRef.current" in text, "auto summarize is not gated"

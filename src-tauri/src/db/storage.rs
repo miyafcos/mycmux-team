@@ -400,7 +400,7 @@ fn read_data_file(path: &Path) -> Result<String, String> {
         .map_err(|error| format!("Failed to open {}: {error}", path.display()))?
         .read_to_string(&mut contents)
         .map_err(|error| format!("Failed to read {}: {error}", path.display()))?;
-    Ok(contents)
+    Ok(contents.strip_prefix('\u{feff}').unwrap_or(&contents).to_string())
 }
 
 fn parse_persistent_data(path: &Path) -> Result<PersistentData, String> {
@@ -661,6 +661,28 @@ mod tests {
                 .to_string_lossy()
                 .contains("empty")
         }));
+    }
+
+    #[test]
+    fn load_from_path_accepts_utf8_bom_without_quarantining_clone_data() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("data.json");
+        // Windows PowerShell 5.1 clones write UTF-8 with a BOM; build a
+        // schema-valid file the normal way, then prepend that BOM.
+        let cloned = PersistentData {
+            active_workspace_id: Some("cloned".to_string()),
+            ..Default::default()
+        };
+        save_to_path(&path, &cloned).unwrap();
+        let json = fs::read(&path).unwrap();
+        let mut with_bom = b"\xEF\xBB\xBF".to_vec();
+        with_bom.extend_from_slice(&json);
+        fs::write(&path, with_bom).unwrap();
+
+        let data = load_from_path(&path).unwrap();
+
+        assert_eq!(data.active_workspace_id.as_deref(), Some("cloned"));
+        assert!(path.exists());
     }
 
     #[test]

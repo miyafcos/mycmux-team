@@ -103,4 +103,19 @@ mod tests {
         assert_eq!(runtime_dir_for(Some("rc-1"), PathBuf::from("C:/Users/example")), PathBuf::from("C:/Users/example/.mycmux-rc-1"));
         assert_eq!(app_data_dir_for(Some("rc-1"), PathBuf::from("C:/AppData/com.miyazaki.mycmux")), PathBuf::from("C:/AppData/com.miyazaki.mycmux/profiles/rc-1"));
     }
+
+    #[test]
+    fn profile_runtime_children_stay_under_the_profile_root() {
+        let runtime = runtime_dir_for(Some("rc-1"), PathBuf::from("C:/Users/example"));
+
+        for child in [
+            "pane-sessions",
+            "remote-token",
+            "remote.port",
+            "savepoint.json",
+            "savepoints",
+        ] {
+            assert_eq!(runtime.join(child), PathBuf::from(format!("C:/Users/example/.mycmux-rc-1/{child}")));
+        }
+    }
 }

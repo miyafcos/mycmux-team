@@ -225,6 +225,16 @@ def run_cleanup(tmp_path: Path, *, dry_run: bool = True, machine: str = "test-pc
     return sc.cleanup(sc.build_parser().parse_args(argv))
 
 
+def test_join_and_cleanup_default_configs_follow_the_injected_runtime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = tmp_path / "profile-runtime"
+    monkeypatch.setenv("MYCMUX_RUNTIME_DIR", str(runtime))
+
+    assert sj.build_parser().parse_args(["bundle"]).config == str(runtime / "savepoint.json")
+    assert sc.build_parser().parse_args([]).config == str(runtime / "savepoint.json")
+
+
 def test_cleanup_reports_all_expired_unpinned_in_the_local_store(tmp_path: Path) -> None:
     online = tmp_path / "online"
     expired = make_bundle(online, "alice_expired1", expires_in_hours=-1)

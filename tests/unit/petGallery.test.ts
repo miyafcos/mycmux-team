@@ -1,12 +1,24 @@
 import { describe, expect, it } from "vitest";
-import { atlasSizeBadge, isGalleryInstalled, normalizeGalleryResponse } from "../../src/components/settings/tabs/PetGallerySection";
+import { atlasSizeBadge, isGalleryInstalled, normalizeGalleryResponse, thumbnailUrl } from "../../src/components/settings/tabs/PetGallerySection";
 
 describe("pet gallery helpers", () => {
   it("normalizes missing API fields", () => {
     expect(normalizeGalleryResponse({ pets: [{ id: "kurisu", tags: ["anime", 3] }] })).toEqual({
       total: 0,
-      pets: [{ id: "kurisu", displayName: "", description: "", tags: ["anime"], likeCount: 0, downloadCount: 0, previewUrl: "", atlasSize: "", statesDetected: 0 }],
+      pets: [{ id: "kurisu", displayName: "", description: "", tags: ["anime"], likeCount: 0, downloadCount: 0, previewUrl: "", posterUrl: "", atlasSize: "", statesDetected: 0 }],
     });
+  });
+
+  it("thumbnails the single frame, not the filmstrip", () => {
+    // previewUrl is 7008x104 for an eleven-row pet: rendered in a card it is a hairline.
+    expect(thumbnailUrl({ posterUrl: "poster.webp", previewUrl: "preview.webp" })).toBe("poster.webp");
+    expect(thumbnailUrl({ posterUrl: "", previewUrl: "preview.webp" })).toBe("preview.webp");
+  });
+
+  it("keeps a preview-only pet when posterUrl is null", () => {
+    const page = normalizeGalleryResponse({ pets: [{ id: "preview-only", previewUrl: "preview.webp", posterUrl: null }] });
+    expect(page.pets).toHaveLength(1);
+    expect(thumbnailUrl(page.pets[0])).toBe("preview.webp");
   });
 
   it("keeps the numeric state count the gallery API returns", () => {

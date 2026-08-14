@@ -6,8 +6,11 @@
  * rather than skipped: a quiet week has to look like a quiet week.
  */
 
+import { useState } from "react";
+
 import { formatUsd } from "../../lib/ailog";
 import {
+  USAGE_METRICS,
   formatMetric,
   groupLabel,
   layoutStack,
@@ -27,6 +30,8 @@ export function UsageDailyChart({
   highlight,
   onHighlight,
   onPickDay,
+  onOpenDigest,
+  digestLinkLabel = "その日のまとめへ",
 }: {
   model: UsageModel;
   metric: UsageMetric;
@@ -34,9 +39,12 @@ export function UsageDailyChart({
   highlight: string | null;
   onHighlight: (group: string | null) => void;
   onPickDay?: (day: number) => void;
+  onOpenDigest?: (day: number) => void;
+  digestLinkLabel?: string;
 }) {
+  const [selectedDay, setSelectedDay] = useState<number | null>(null);
   if (model.days.length === 0) {
-    return <div style={noteStyle}>この期間に記録がありません。</div>;
+    return <div style={noteStyle}>この期間に記録がありません。期間を広げるか、再インデックスしてください。</div>;
   }
 
   const barWidth = Math.max(MIN_BAR, Math.min(28, Math.floor(760 / model.days.length)));
@@ -50,7 +58,7 @@ export function UsageDailyChart({
           height={HEIGHT}
           viewBox={`0 0 ${width} ${HEIGHT}`}
           role="img"
-          aria-label={`日別の${metric === "turns" ? "ターン数" : "使用量"}`}
+          aria-label={`日別の${USAGE_METRICS.find((entry) => entry.id === metric)?.label ?? "集計"}`}
           style={{ display: "block" }}
         >
           {model.days.map((day, index) => {
@@ -72,7 +80,7 @@ export function UsageDailyChart({
                   height={HEIGHT}
                   fill="transparent"
                   style={{ cursor: onPickDay ? "pointer" : "default" }}
-                  onClick={onPickDay ? () => onPickDay(day.day) : undefined}
+                  onClick={() => { setSelectedDay(day.day); onPickDay?.(day.day); }}
                 >
                   <title>{tooltip}</title>
                 </rect>
@@ -98,6 +106,8 @@ export function UsageDailyChart({
           })}
         </svg>
       </ScrollBox>
+
+      {selectedDay !== null && onOpenDigest ? <button type="button" onClick={() => onOpenDigest(selectedDay)} style={{ alignSelf: "flex-start", border: "1px solid var(--cmux-border)", borderRadius: 5, background: "var(--cmux-hover)", color: "var(--cmux-text)", padding: "3px 9px", fontSize: "var(--cmux-font-size-xs)", cursor: "pointer" }}>{digestLinkLabel}</button> : null}
 
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
         {model.legend.map((entry) => {

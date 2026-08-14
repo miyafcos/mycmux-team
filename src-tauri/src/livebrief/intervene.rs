@@ -163,8 +163,8 @@ impl<'a> AuditRecord<'a> {
     fn prepared(expectation: &'a InterventionExpectation, action: &'a InterventionAction, payload: &str) -> Self { Self { ts: unix_ms(), intervention_id: &expectation.intervention_id, pty_session_id: &expectation.pty_session_id, action: match action { InterventionAction::ReplyText { .. } => "replyText", InterventionAction::Choose { .. } => "choose" }, utf8_bytes: payload.len(), sha256: sha256_hex(normalize(payload).as_bytes()), stage: "prepared" } }
 }
 fn append_audit(record: &AuditRecord<'_>, stage: &str) -> Result<(), String> {
-    let home = dirs::home_dir().ok_or_else(|| "home unavailable".to_string())?;
-    let dir = home.join(".mycmux"); std::fs::create_dir_all(&dir).map_err(|error| format!("create audit directory: {error}"))?;
+    let dir = crate::test_profile::runtime_dir()?;
+    std::fs::create_dir_all(&dir).map_err(|error| format!("create audit directory: {error}"))?;
     let line = serde_json::to_string(&AuditRecord { ts: record.ts, intervention_id: record.intervention_id, pty_session_id: record.pty_session_id, action: record.action, utf8_bytes: record.utf8_bytes, sha256: record.sha256.clone(), stage }).map_err(|error| format!("serialize audit: {error}"))?;
     let path = dir.join("intervention-log.jsonl");
     let mut file = OpenOptions::new().create(true).append(true).open(path).map_err(|error| format!("open audit: {error}"))?;

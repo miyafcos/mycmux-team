@@ -41,6 +41,11 @@ def _session(revision: int, state: str) -> dict[str, Any]:
     }
 
 
+def test_runtime_dir_uses_the_profile_runtime_when_injected(monkeypatch) -> None:
+    monkeypatch.setenv("MYCMUX_RUNTIME_DIR", "C:/profile-runtime")
+    assert status_feed_probe.runtime_dir() == Path("C:/profile-runtime")
+
+
 def test_probe_detects_gap_requests_snapshot_and_converges(tmp_path: Path) -> None:
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     listener.bind(("127.0.0.1", 0))

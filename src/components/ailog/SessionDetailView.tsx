@@ -86,7 +86,7 @@ export function bucketTurns(turns: TurnDetail[], maxBars = MAX_BARS): { bars: Tu
   return { bars, grouped: true };
 }
 
-export function SessionDetailView({ detail, transcript, transcriptLoading, transcriptError, sessionSummarizing, sessionSummarizeError, onSummarize, onClose }: { detail: SessionDetail; transcript: TranscriptReport | null; transcriptLoading: boolean; transcriptError: string | null; sessionSummarizing: boolean; sessionSummarizeError: string | null; onSummarize: () => void; onClose: () => void }) {
+export function SessionDetailView({ detail, transcript, transcriptLoading, transcriptError, sessionSummarizing, sessionSummarizeError, onSummarize, onClose, aiDisabledReason }: { detail: SessionDetail; transcript: TranscriptReport | null; transcriptLoading: boolean; transcriptError: string | null; sessionSummarizing: boolean; sessionSummarizeError: string | null; onSummarize: () => void; onClose: () => void; aiDisabledReason?: string }) {
   const [expanded, setExpanded] = useState<Set<number>>(() => new Set());
   const { bars, grouped } = useMemo(() => bucketTurns(detail.turns), [detail.turns]);
   const peak = bars.reduce((max, bar) => Math.max(max, bar.costUsd), 0);
@@ -148,16 +148,16 @@ export function SessionDetailView({ detail, transcript, transcriptLoading, trans
       </div>
 
       <div>
-        <div style={{ fontSize: "var(--cmux-font-size-xs)", fontWeight: 700, marginBottom: 4 }}>ターン別コスト推移</div>
+        <div style={{ fontSize: "var(--cmux-font-size-xs)", fontWeight: 700, marginBottom: 4 }}>ターン別コスト相当推移</div>
         {bars.length === 0 ? (
-          <div style={noteStyle}>ターンの記録がありません。</div>
+          <div style={noteStyle}>ターンの記録がありません。再インデックスすると取り込まれることがあります。</div>
         ) : (
           <ScrollBox>
             <div style={{ display: "grid", gridTemplateColumns: "minmax(420px, 1fr)" }}>
               <svg
                 viewBox={`0 0 ${chartWidth} ${chartHeight}`}
                 role="img"
-                aria-label="ターンごとのコスト"
+                aria-label="ターンごとのコスト相当"
                 style={{ width: "100%", minWidth: 0, height: chartHeight, display: "block" }}
               >
               {bars.map((bar, index) => {
@@ -211,7 +211,7 @@ export function SessionDetailView({ detail, transcript, transcriptLoading, trans
         <div>
           <div style={{ fontSize: "var(--cmux-font-size-xs)", fontWeight: 700, marginBottom: 4 }}>取り込み側の割合</div>
           <div style={{ fontSize: 16, fontWeight: 700 }}>{formatRatio(breakdown.ingestRatio)}</div>
-          <div style={noteStyle}>{`キャッシュヒット率 ${formatRatio(breakdown.cacheHitRate)}`}</div>
+          <div style={noteStyle}>{`キャッシュ率 ${formatRatio(breakdown.cacheHitRate)}`}</div>
         </div>
       </div>
       <div style={noteStyle}>{breakdown.note}</div>
@@ -221,8 +221,8 @@ export function SessionDetailView({ detail, transcript, transcriptLoading, trans
         <div style={noteStyle}>
           {`読み ${formatCount(chars.read)} / 実行 ${formatCount(chars.exec)} / 書き ${formatCount(chars.write)} / 取得 ${formatCount(chars.fetch)} / 指示 ${formatCount(chars.prompt)} / その他 ${formatCount(chars.other)}（合計 ${formatCount(charTotal)} 文字）`}
         </div>
-        <div style={noteStyle}>{`推定方法: ${chars.estimation}　読んだファイル ${formatCount(detail.costBreakdown.ioFiles.readFiles)} / 書いたファイル ${formatCount(detail.costBreakdown.ioFiles.writtenFiles)}`}</div>
-        <div style={noteStyle}>これは文字数の推定であってコストではありません。</div>
+        <div style={noteStyle}>{`推定方法: ${chars.estimation === "char_count_only" ? "文字数のみ" : chars.estimation}　読んだファイル ${formatCount(detail.costBreakdown.ioFiles.readFiles)} / 書いたファイル ${formatCount(detail.costBreakdown.ioFiles.writtenFiles)}`}</div>
+        <div style={noteStyle}>これは文字数の推定であってコスト相当ではありません。</div>
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 12 }}>
@@ -250,7 +250,7 @@ export function SessionDetailView({ detail, transcript, transcriptLoading, trans
                 {detail.tools.length === 0 ? (
                   <tr>
                     <td style={tdLeftStyle} colSpan={4}>
-                      ツールの実行記録がありません
+                      ツールの実行記録がありません (このセッションではツールが使われていません)
                     </td>
                   </tr>
                 ) : null}
@@ -318,7 +318,7 @@ export function SessionDetailView({ detail, transcript, transcriptLoading, trans
         ) : (
           <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
             <Chip tone="warn">未要約</Chip>
-            <button type="button" onClick={onSummarize} disabled={sessionSummarizing} style={{ ...subtleButtonStyle, opacity: sessionSummarizing ? 0.6 : 1 }}>
+            <button type="button" onClick={onSummarize} disabled={sessionSummarizing || aiDisabledReason !== undefined} title={aiDisabledReason} style={{ ...subtleButtonStyle, opacity: sessionSummarizing || aiDisabledReason !== undefined ? 0.6 : 1 }}>
               {sessionSummarizing ? "要約中…" : "このセッションを要約する"}
             </button>
             {sessionSummarizeError ? <span style={{ ...noteStyle, color: "var(--cmux-red)" }}>{sessionSummarizeError}</span> : null}

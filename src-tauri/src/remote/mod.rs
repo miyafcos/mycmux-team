@@ -10,7 +10,7 @@ use axum::Router;
 use serde::Serialize;
 use session::RemoteSessionManager;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU16, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::Emitter;
@@ -41,7 +41,7 @@ pub struct RemoteInfo {
 
 pub struct RemoteControl {
     token: RwLock<String>,
-    port: u16,
+    port: AtomicU16,
     clients: dashmap::DashMap<u64, RemoteClient>,
     next_client_id: AtomicU64,
     disconnect_tx: broadcast::Sender<()>,
@@ -52,7 +52,7 @@ impl RemoteControl {
         let (disconnect_tx, _) = broadcast::channel(32);
         Self {
             token: RwLock::new(auth::load_or_create_token()),
-            port: configured_port(),
+            port: AtomicU16::new(configured_port()),
             clients: dashmap::DashMap::new(),
             next_client_id: AtomicU64::new(1),
             disconnect_tx,
@@ -60,7 +60,11 @@ impl RemoteControl {
     }
 
     pub fn port(&self) -> u16 {
-        self.port
+        self.port.load(Ordering::Relaxed)
+    }
+
+    fn set_port(&self, port: u16) {
+        self.port.store(port, Ordering::Relaxed);
     }
 
     pub async fn validate_token(&self, provided: &str) -> bool {
@@ -102,7 +106,7 @@ impl RemoteControl {
     pub async fn info(&self) -> RemoteInfo {
         let token = self.current_token().await;
         let ip = qr::local_ip().await.unwrap_or_else(|| "localhost".to_string());
-        let url = qr::connection_url(&ip, self.port, &token);
+        let url = qr::connection_url(&ip, self.port(), &token);
         let mut connected_clients: Vec<RemoteClientSnapshot> = self
             .clients
             .iter()
@@ -137,10 +141,13 @@ impl RemoteControl {
 }
 
 fn configured_port() -> u16 {
-    std::env::var("MYCMUX_REMOTE_PORT")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(7682)
+    configured_port_for(crate::test_profile::is_active(), std::env::var("MYCMUX_REMOTE_PORT").ok().as_deref())
+}
+
+fn configured_port_for(profile_active: bool, env_port: Option<&str>) -> u16 {
+    env_port
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(if profile_active { 0 } else { 7682 })
 }
 
 fn current_time_ms() -> u64 {
@@ -209,41 +216,6 @@ pub fn start_remote_server(
             .fallback(get(serve_static))
             .with_state(state.clone());
 
-        // Write port file for discovery
-        let port_file = match dirs::home_dir() {
-            Some(mut p) => {
-                p.push(".mycmux");
-                std::fs::create_dir_all(&p).ok();
-                p.push("remote.port");
-                let _ = std::fs::write(&p, port.to_string());
-                Some(p)
-            }
-            None => {
-                crate::diag_warn!("remote", "Could not determine home directory for port file");
-                None
-            }
-        };
-
-        #[cfg(debug_assertions)]
-        {
-            // Print connection info + QR (prefer Tailscale IP for anywhere access)
-            if let Some(ip) = qr::local_ip().await {
-                let token = state.control.current_token().await;
-                let suffix = token_suffix(&token);
-                let via = if ip.starts_with("100.") {
-                    "Tailscale"
-                } else {
-                    "LAN"
-                };
-                println!("\n=== mycmux Remote Terminal ({via}) ===");
-                println!("URL: http://{ip}:{port}/#token=<hidden>; token suffix={suffix}");
-                println!("Open Settings > Remote: QR to show the live QR code.");
-                println!("==============================\n");
-            } else {
-                println!("[remote] Could not detect local IP. Access via http://localhost:{port}");
-            }
-        }
-
         // S-2: default to loopback-only; only bind 0.0.0.0 (LAN/Tailscale
         // reachable) when the user has opted in via persisted settings.
         let bind_host = if bind_all { "0.0.0.0" } else { "127.0.0.1" };
@@ -257,9 +229,6 @@ pub fn start_remote_server(
             Ok(l) => l,
             Err(e) => {
                 crate::diag_warn!("remote", "Failed to bind {addr}: {e}");
-                if let Some(ref pf) = port_file {
-                    let _ = std::fs::remove_file(pf);
-                }
                 let _ = state.app_handle.emit(
                     "remote-error",
                     format!("Remote terminal failed: port {port} in use"),
@@ -267,6 +236,41 @@ pub fn start_remote_server(
                 return;
             }
         };
+        let port = match listener.local_addr() {
+            Ok(addr) => addr.port(),
+            Err(error) => {
+                crate::diag_warn!("remote", "Could not determine the bound remote port: {error}");
+                return;
+            }
+        };
+        control.set_port(port);
+
+        match crate::test_profile::runtime_dir() {
+            Ok(mut path) => {
+                std::fs::create_dir_all(&path).ok();
+                path.push("remote.port");
+                if let Err(error) = std::fs::write(&path, port.to_string()) {
+                    crate::diag_warn!("remote", "Could not write {}: {error}", path.display());
+                }
+            }
+            Err(_) => crate::diag_warn!("remote", "Could not determine home directory for port file"),
+        }
+
+        #[cfg(debug_assertions)]
+        {
+            // Print connection info + QR (prefer Tailscale IP for anywhere access)
+            if let Some(ip) = qr::local_ip().await {
+                let token = state.control.current_token().await;
+                let suffix = token_suffix(&token);
+                let via = if ip.starts_with("100.") { "Tailscale" } else { "LAN" };
+                println!("\n=== mycmux Remote Terminal ({via}) ===");
+                println!("URL: http://{ip}:{port}/#token=<hidden>; token suffix={suffix}");
+                println!("Open Settings > Remote: QR to show the live QR code.");
+                println!("==============================\n");
+            } else {
+                println!("[remote] Could not detect local IP. Access via http://localhost:{port}");
+            }
+        }
 
         if let Err(e) = axum::serve(
             listener,
@@ -633,7 +637,16 @@ async fn serve_static(uri: axum::http::Uri) -> impl axum::response::IntoResponse
 
 #[cfg(test)]
 mod tests {
+    use super::configured_port_for;
     use super::extract_workspace_id;
+
+    #[test]
+    fn profile_uses_an_ephemeral_remote_port_unless_overridden() {
+        assert_eq!(configured_port_for(false, None), 7682);
+        assert_eq!(configured_port_for(true, None), 0);
+        assert_eq!(configured_port_for(true, Some("8123")), 8123);
+        assert_eq!(configured_port_for(false, Some("8123")), 8123);
+    }
 
     #[test]
     fn utf8_slice_regression_workspace_id_rejects_mid_character_boundary() {

@@ -628,9 +628,7 @@ pub struct ExcludedInternal {
     pub cost_usd: f64,
 }
 
-pub const COST_NOTE: &str =
-    "Costs are reference estimates of metered pricing, not actual billing. \
-     Models without a published rate contribute zero and are listed in unpricedModels.";
+pub const COST_NOTE: &str = "コスト相当は公表料率に基づく参考推定で、実際の請求額ではありません。単価のないモデルは 0 として計上し、単価未設定の一覧に出します。";
 
 // ---------------------------------------------------------------------------
 // Rework aggregation helper
@@ -2368,11 +2366,7 @@ pub struct SessionCostBreakdown {
     pub note: String,
 }
 
-pub const BREAKDOWN_NOTE: &str =
-    "Ingest cost covers everything sent to the model — conversation history, \
-     system prompt, file contents and tool results — so it is an upper bound on \
-     reading cost, not reading cost itself. The character counts are a separate \
-     estimate and are never converted to tokens.";
+pub const BREAKDOWN_NOTE: &str = "取り込み側は会話履歴・システムプロンプト・ファイル内容・ツール結果などモデルへ送った全量を含むため、読みのコスト相当の上限であって読みそのものではありません。文字数は別系統の推定で、トークンへは換算しません。";
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -2814,10 +2808,7 @@ pub struct EfficiencyReport {
     pub cost_note: String,
 }
 
-pub const INTERPRETATION_NOTE: &str =
-    "These groups are reported side by side. Differences between them are not \
-     evidence of cause: a model, effort level or compaction event is chosen for \
-     reasons that also affect the work itself.";
+pub const INTERPRETATION_NOTE: &str = "各グループは並べて表示しているだけで、差は因果の証拠ではありません。モデル・effort・compact の選択は、作業内容そのものにも影響する理由で行われています。";
 
 // user rule: split sessions beyond 300k context
 pub const LARGE_CONTEXT_THRESHOLD: i64 = 300_000;

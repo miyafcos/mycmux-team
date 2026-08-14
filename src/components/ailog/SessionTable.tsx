@@ -59,7 +59,7 @@ export function SessionTable({
           value={sort}
           onChange={onSort}
           options={[
-            { value: "cost" as SessionSort, label: "コスト降順" },
+            { value: "cost" as SessionSort, label: "コスト相当降順" },
             { value: "rework" as SessionSort, label: "手戻り降順" },
             { value: "recent" as SessionSort, label: "新しい順" },
           ]}
@@ -76,7 +76,7 @@ export function SessionTable({
               <th style={thLeftStyle}>案件</th>
               <th style={thLeftStyle}>モデル</th>
               <th style={thStyle}>ターン</th>
-              <th style={thStyle}>コスト</th>
+              <th style={thStyle}>コスト相当</th>
               <th style={thStyle}>手戻り</th>
               <th style={thLeftStyle}>作業種別</th>
             </tr>
@@ -147,7 +147,7 @@ export function SessionTable({
         </button>
         <span style={noteStyle}>
           {view.total === 0
-            ? "該当するセッションはありません"
+            ? "該当するセッションはありません (絞り込みや期間を変えると表示されます)"
             : `${formatCount(view.from)}–${formatCount(view.to)} / ${formatCount(view.total)} 件（${view.page + 1} / ${view.pageCount} ページ）`}
         </span>
       </div>

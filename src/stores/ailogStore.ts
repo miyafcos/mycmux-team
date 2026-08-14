@@ -154,6 +154,9 @@ interface AilogState {
   sessionSummarizeError: string | null;
   findings: FindingsReport | null;
   rankings: ReworkRankingsReport | null;
+  /** Backend findings consumed before the segment-specific client filter. */
+  learningRawOffset: number;
+  learningHasMore: boolean;
   findingKind: FindingKind | null;
   findingQuery: string;
 
@@ -211,7 +214,7 @@ interface AilogState {
   refreshBreakdown: () => Promise<void>;
   refreshExperiment: () => Promise<void>;
   refreshPrices: () => Promise<void>;
-  savePrice: (entry: PriceEntry) => Promise<void>;
+  savePrice: (entry: PriceEntry) => Promise<boolean>;
   openDetail: (kind: string, sessionId: string) => Promise<void>;
   loadTranscript: (kind: string, sessionId: string) => Promise<void>;
   summarizeSession: (kind: string, sessionId: string) => Promise<void>;
@@ -234,7 +237,7 @@ interface AilogState {
   generateDigest: (force?: boolean) => Promise<void>;
   setFindingKind: (kind: FindingKind | null) => void;
   setFindingQuery: (query: string) => void;
-  refreshLearning: (append?: boolean) => Promise<void>;
+  refreshLearning: (options?: { append?: boolean; kinds?: FindingKind[]; includeRankings?: boolean }) => Promise<void>;
 }
 
 let refreshSeq = 0;
@@ -316,6 +319,8 @@ const initialState = {
   sessionSummarizeError: null,
   findings: null,
   rankings: null,
+  learningRawOffset: 0,
+  learningHasMore: false,
   findingKind: null,
   findingQuery: "",
   loading: false,
@@ -357,18 +362,10 @@ export const useAilogStore = create<AilogState>((set, get) => ({
 
   setPreset: (preset) => {
     set({ preset, sessionPage: 0, selection: null, drillProject: null });
-    if (get().currentRange()) {
-      void get().refresh();
-      void get().refreshUsage();
-    }
   },
 
   setCustomRange: (customFrom, customTo) => {
     set({ customFrom, customTo, preset: "custom", sessionPage: 0 });
-    if (get().currentRange()) {
-      void get().refresh();
-      void get().refreshUsage();
-    }
   },
 
   setSummaryPreset: (summaryPreset) => {
@@ -379,32 +376,20 @@ export const useAilogStore = create<AilogState>((set, get) => ({
   setExcludeSynthetic: (excludeSynthetic) => set({ excludeSynthetic }),
   setIncludeSidechain: (includeSidechain) => {
     set({ includeSidechain, sessionPage: 0 });
-    void get().refresh();
-    void get().refreshUsage();
   },
   setLeafDimension: (leafDimension) => set({ leafDimension, drillProject: null }),
   setTopN: (layer, value) => set((state) => ({ topN: { ...state.topN, [layer]: value } })),
   setGranularity: (granularity) => {
     set({ granularity });
-    void get().refresh();
-    void get().refreshUsage();
   },
   setSessionSort: (sessionSort) => set({ sessionSort, sessionPage: 0 }),
   setSessionPage: (sessionPage) => set({ sessionPage: Math.max(0, sessionPage) }),
   setSelection: (selection) => {
-    const previous = get().selection;
     set({ selection, sessionPage: 0 });
-    // Model and project selections are real backend filters, so the whole
-    // dashboard narrows with them. A work-tag selection has no backend filter
-    // (F1 exposes none) and stays a session-list filter, which the panel says.
-    if (isServerFilterable(previous, get().leafDimension) || isServerFilterable(selection, get().leafDimension)) {
-      void get().refresh();
-    }
   },
   setDrillProject: (drillProject) => set({ drillProject }),
   setBreakdownDimension: (breakdownDimension) => {
     set({ breakdownDimension });
-    void get().refreshBreakdown();
   },
 
   currentRange: () => {
@@ -523,9 +508,10 @@ export const useAilogStore = create<AilogState>((set, get) => ({
     try {
       const result = await ailogSetPrice(entry);
       set({ repricedSessions: result.repricedSessions });
-      await Promise.all([get().refresh(), get().refreshPrices(), get().refreshBreakdown(), get().refreshExperiment()]);
+      return true;
     } catch (error) {
       set({ pricesError: errorMessage(error) });
+      return false;
     }
   },
 
@@ -558,13 +544,22 @@ export const useAilogStore = create<AilogState>((set, get) => ({
   },
 
   summarizeSession: async (kind, sessionId) => {
+    if (get().sessionSummarizing) return;
+    const startedWithoutDetail = get().detailKey === null;
+    const isCurrentDetail = () => {
+      const detailKey = get().detailKey;
+      return detailKey?.kind === kind && detailKey.sessionId === sessionId;
+    };
     set({ sessionSummarizing: true, sessionSummarizeError: null });
     try {
       await ailogSessionSummarize(kind, sessionId);
-      await Promise.all([get().openDetail(kind, sessionId), get().refresh(), get().refreshSummarizeStatus()]);
-      set({ sessionSummarizing: false });
+      await Promise.all([
+        isCurrentDetail() ? get().openDetail(kind, sessionId) : Promise.resolve(),
+        get().refreshSummarizeStatus(),
+      ]);
+      if (startedWithoutDetail || isCurrentDetail()) set({ sessionSummarizing: false });
     } catch (error) {
-      set({ sessionSummarizing: false, sessionSummarizeError: errorMessage(error) });
+      if (startedWithoutDetail || isCurrentDetail()) set({ sessionSummarizing: false, sessionSummarizeError: errorMessage(error) });
     }
   },
 
@@ -652,7 +647,6 @@ export const useAilogStore = create<AilogState>((set, get) => ({
   setDigestDate: (digestDate) => {
     digestSeq += 1;
     set({ digestDate, digestGenerating: false });
-    void get().refreshDigest(digestDate);
   },
 
   stepDigestDate: (days) => get().setDigestDate(shiftLocalDay(get().digestDate, days)),
@@ -687,21 +681,18 @@ export const useAilogStore = create<AilogState>((set, get) => ({
   },
 
   setFindingKind: (findingKind) => {
-    set({ findingKind, findings: null });
-    void get().refreshLearning();
+    learningSeq += 1;
+    set({ findingKind, findings: null, learningRawOffset: 0, learningHasMore: false });
   },
 
   setFindingQuery: (findingQuery) => {
-    set({ findingQuery, findings: null });
-    void get().refreshLearning();
+    learningSeq += 1;
+    set({ findingQuery, findings: null, learningRawOffset: 0, learningHasMore: false });
   },
 
   setUsageMetric: (usageMetric) => set({ usageMetric }),
   setUsageStack: (usageStack) => set({ usageStack }),
-  setUsageBucket: (usageBucket) => {
-    set({ usageBucket });
-    void get().refreshUsage();
-  },
+  setUsageBucket: (usageBucket) => set({ usageBucket }),
 
   /**
    * The usage tab is deliberately independent of `refresh()`: it must render
@@ -735,7 +726,8 @@ export const useAilogStore = create<AilogState>((set, get) => ({
     }
   },
 
-  refreshLearning: async (append = false) => {
+  refreshLearning: async (options = {}) => {
+    const { append = false, kinds, includeRankings = true } = options;
     const range = get().currentRange();
     if (!range) return;
     const filters = selectionFilters(
@@ -744,18 +736,25 @@ export const useAilogStore = create<AilogState>((set, get) => ({
       get().leafDimension,
     );
     const previous = get().findings;
-    const offset = append ? (previous?.rows.length ?? 0) : 0;
+    const offset = append ? get().learningRawOffset : 0;
     const mySeq = ++learningSeq;
     set({ learningLoading: true, learningError: null });
     try {
       const [findings, rankings] = await Promise.all([
         ailogFindings(range, filters, { kind: get().findingKind, query: get().findingQuery, limit: FINDINGS_PAGE_SIZE, offset }),
-        append && get().rankings ? Promise.resolve(get().rankings) : ailogReworkRankings(range, filters),
+        includeRankings ? (append && get().rankings ? Promise.resolve(get().rankings) : ailogReworkRankings(range, filters)) : Promise.resolve(null),
       ]);
       if (mySeq !== learningSeq) return;
+      const filteredRows = kinds ? findings.rows.filter((row) => kinds.includes(row.kind)) : findings.rows;
+      const mergedRows = append && previous
+        ? [...previous.rows, ...filteredRows].filter((row, index, rows) => rows.findIndex((candidate) => candidate.sessionKind === row.sessionKind && candidate.sessionId === row.sessionId && candidate.kind === row.kind && candidate.date === row.date && candidate.text === row.text) === index)
+        : filteredRows;
+      const nextRawOffset = offset + findings.rows.length;
       set({
-        findings: append && previous ? { ...findings, rows: [...previous.rows, ...findings.rows] } : findings,
-        rankings,
+        findings: { ...findings, rows: mergedRows },
+        rankings: includeRankings ? rankings : null,
+        learningRawOffset: nextRawOffset,
+        learningHasMore: findings.rows.length > 0 && nextRawOffset < findings.total,
         learningLoading: false,
         learningError: null,
       });
@@ -769,8 +768,12 @@ export const useAilogStore = create<AilogState>((set, get) => ({
 export function __resetAilogStoreForTests(): void {
   refreshSeq = 0;
   detailSeq = 0;
+  transcriptSeq = 0;
   digestSeq = 0;
   learningSeq = 0;
+  breakdownSeq = 0;
+  experimentSeq = 0;
+  priceSeq = 0;
   usageSeq = 0;
   useAilogStore.setState({ ...initialState });
 }

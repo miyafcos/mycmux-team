@@ -229,6 +229,9 @@ pub fn create_session(
             runtime_dir.to_string_lossy().to_string(),
         );
     }
+    if crate::test_profile::is_active() {
+        env_map.insert("MYCMUX_TEST_PROFILE".to_string(), "1".to_string());
+    }
     if let Some(tab_id) = incoming_tab_id {
         if is_uuid_like(&tab_id) {
             env_map.insert("MYCMUX_TAB_ID".to_string(), tab_id);
@@ -558,6 +561,7 @@ pub(crate) fn sanitize_launch_env(env: &mut HashMap<String, String>) {
         "MYCMUX_MARKDOWN_OUT",
         "MYCMUX_ARTIFACTS_DIR",
         "MYCMUX_RUNTIME_DIR",
+        "MYCMUX_TEST_PROFILE",
     ];
     const RESUME_QUARTET: &[&str] = &[
         "MYCMUX_RESUME",

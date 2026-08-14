@@ -439,7 +439,7 @@ export function buildProjectSankeyGraph(input: Omit<SankeyBuildInput, "leafDimen
   }
   const projects = toNodes(projectRollup, [...projectValues.values()].reduce((a, b) => a + b, 0), (key, entry) => entry.isOther ? `${entry.otherCount} 件を集約` : `${projectCounts.get(key) ?? 0} セッション`);
   const tags = toNodes(tagRollup, [...tagValues.values()].reduce((a, b) => a + b, 0), (key) => workTagHint(key));
-  const models = toNodes(modelRollup, [...modelValues.values()].reduce((a, b) => a + b, 0), () => "期間内ターンのコスト");
+  const models = toNodes(modelRollup, [...modelValues.values()].reduce((a, b) => a + b, 0), () => "期間内ターンのコスト相当");
   return {
     projects, tags, models,
     projectToTag: [...projectToTag.entries()].map(([key, entry]) => { const [source, target] = key.split("\u0000"); return { source, target, value: entry.value, sessionCount: entry.sessions }; }),
@@ -495,7 +495,7 @@ export function buildProjectTopicSankeyGraph(input: Pick<SankeyBuildInput, "sess
   return {
     projects: toNodes(projectsRollup, total(projectValues), () => "セッション"),
     tags: toNodes(topicsRollup, total(topicValues), () => "目的クラスタ"),
-    models: toNodes(modelsRollup, total(modelValues), () => "セッションのコスト"),
+    models: toNodes(modelsRollup, total(modelValues), () => "セッションのコスト相当"),
     projectToTag: rolled(projectTopic, projectKeys, topicKeys),
     tagToModel: rolled(topicModel, topicKeys, modelKeys),
     notes: { grandTotal: input.grandTotal, syntheticExcluded: input.excludeSynthetic, syntheticCost, untaggedSessions: 0, untaggedCost: 0, truncatedSessions: Math.max(0, input.totalSessions - input.sessions.length), fetchedSessions: input.sessions.length, totalSessions: input.totalSessions, projectOther: { count: projectsRollup.otherCount, value: projectsRollup.otherValue }, tagOther: { count: topicsRollup.otherCount, value: topicsRollup.otherValue }, modelOther: { count: modelsRollup.otherCount, value: modelsRollup.otherValue } },

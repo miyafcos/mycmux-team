@@ -62,7 +62,7 @@ export function ModelTable({
               <th style={thLeftStyle}>モデル</th>
               <th style={thStyle}>セッション</th>
               <th style={thStyle}>ターン</th>
-              <th style={thStyle}>コスト</th>
+              <th style={thStyle}>コスト相当</th>
               <th style={thStyle}>シェア</th>
               <th style={thStyle} title="プロンプト・キャッシュ読み書きなど入力側">取り込み側</th>
               <th style={thStyle} title="出力・推論トークンなど生成側">生成側</th>

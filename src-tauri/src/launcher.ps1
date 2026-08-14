@@ -616,5 +616,6 @@ while ($true) {
 
 Invoke-MycmuxOption $Options[$selected]
 
-$localHook = Join-Path $HOME ".mycmux\bin\launcher.local.ps1"
+$localRuntimeDir = if ($env:MYCMUX_RUNTIME_DIR) { $env:MYCMUX_RUNTIME_DIR } else { Join-Path $HOME ".mycmux" }
+$localHook = Join-Path $localRuntimeDir "bin\launcher.local.ps1"
 if (Test-Path $localHook) { . $localHook }

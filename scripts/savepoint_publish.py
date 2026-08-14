@@ -43,6 +43,11 @@ DROPBOX_TOKEN = "{DROPBOX}"
 IO_REPARSE_TAG_NAME_SURROGATE = 0x20000000
 
 
+def runtime_dir(home: Path | None = None) -> Path:
+    configured = os.environ.get("MYCMUX_RUNTIME_DIR")
+    return Path(configured).expanduser() if configured else (home or Path.home()) / ".mycmux"
+
+
 def resolve_local_savepoint_dir(
     explicit_dir: str | None,
     config: dict[str, Any],
@@ -60,14 +65,15 @@ def resolve_local_savepoint_dir(
             return candidate
 
     home = (home or Path.home()).resolve()
-    default = home / ".mycmux" / "savepoints"
+    mycmux_home = runtime_dir(home)
+    default = mycmux_home / "savepoints"
     legacy = config.get("online_dir")
     if isinstance(legacy, str) and legacy.strip():
         candidate = Path(legacy).expanduser()
         try:
             resolved = candidate.resolve(strict=True)
-            mycmux_home = (home / ".mycmux").resolve(strict=True)
-            if resolved.is_dir() and resolved.is_relative_to(mycmux_home):
+            resolved_runtime = mycmux_home.resolve(strict=True)
+            if resolved.is_dir() and resolved.is_relative_to(resolved_runtime):
                 return resolved
         except OSError:
             pass
@@ -752,7 +758,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--expire-hours", type=int, default=DEFAULT_EXPIRE_HOURS)
     parser.add_argument("--record-kind", choices=RECORD_KINDS, default="current")
     parser.add_argument("--close-reason", choices=CLOSE_REASONS, default="manual")
-    parser.add_argument("--config", default="~/.mycmux/savepoint.json")
+    parser.add_argument("--config", default=str(runtime_dir() / "savepoint.json"))
     parser.add_argument("--claude-projects-dir", default=str(Path.home() / ".claude" / "projects"))
     return parser
 

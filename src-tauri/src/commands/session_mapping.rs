@@ -38,7 +38,9 @@ fn parse_agent_session_mapping(contents: &str) -> Option<AgentSessionMapping> {
 }
 
 fn session_mapping_dir() -> Option<PathBuf> {
-    dirs::home_dir().map(|home| home.join(".mycmux").join("pane-sessions"))
+    crate::test_profile::runtime_dir()
+        .ok()
+        .map(|runtime_dir| runtime_dir.join("pane-sessions"))
 }
 
 fn is_safe_mapping_id(session_id: &str) -> bool {

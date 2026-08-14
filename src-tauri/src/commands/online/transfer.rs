@@ -554,7 +554,7 @@ pub async fn export_savepoint_transfer(
             .map_err(|_| "Savepoint publisher lock is unavailable".to_string())?;
         let home =
             dirs::home_dir().ok_or_else(|| "Failed to resolve home directory".to_string())?;
-        let config_path = home.join(".mycmux").join("savepoint.json");
+        let config_path = crate::test_profile::runtime_dir()?.join("savepoint.json");
         let local_dir = local_savepoint_dir_from_config(&config_path, &home)?;
         export_savepoint_transfer_at(
             &local_dir,
@@ -575,7 +575,7 @@ pub async fn import_savepoint_transfer(
             .map_err(|_| "Savepoint publisher lock is unavailable".to_string())?;
         let home =
             dirs::home_dir().ok_or_else(|| "Failed to resolve home directory".to_string())?;
-        let config_path = home.join(".mycmux").join("savepoint.json");
+        let config_path = crate::test_profile::runtime_dir()?.join("savepoint.json");
         let local_dir = local_savepoint_dir_from_config(&config_path, &home)?;
         import_savepoint_transfer_at(&local_dir, Path::new(&source_path))
     })

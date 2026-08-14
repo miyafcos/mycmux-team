@@ -9,6 +9,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { open } from "@tauri-apps/plugin-shell";
+import { invoke } from "@tauri-apps/api/core";
 import ErrorBoundary from "../common/ErrorBoundary";
 import type { AgentSessionKind, Pane, PaneTab } from "../../types";
 import PaneTabBar from "./PaneTabBar";
@@ -151,19 +152,25 @@ function normalizeHtmlPath(payload: string): string {
  * path is fully untrusted — any program writing to the pane could forge the
  * escape with a path to credentials or any other local file, and assetProtocol
  * scope is "**". The Rust backend injects exactly one canonical sidetab path per
- * session (~/.mycmux/sessions/<sessionId>/out.html) and strips inbound overrides,
+ * session (the active runtime directory's sessions/<sessionId>/out.html) and strips inbound overrides,
  * so the only legitimate target is that file. Bind the rendered path to the
  * pane's own (app-assigned) sessionId and the fixed leaf, rejecting everything
  * else regardless of where $HOME lives. paneSessionId is trusted; the path is not.
  */
-function isCanonicalSidetabPath(normalizedPath: string, paneSessionId: string): boolean {
+function isCanonicalSidetabPath(
+  normalizedPath: string,
+  paneSessionId: string,
+  testProfile: string | null | undefined,
+): boolean {
+  if (testProfile === undefined) return false;
   if (!paneSessionId || /[\\/]/.test(paneSessionId) || paneSessionId.includes("..")) {
     return false;
   }
   if (normalizedPath.includes("..")) {
     return false;
   }
-  const expectedSuffix = `/.mycmux/sessions/${paneSessionId}/out.html`;
+  const runtimeLeaf = testProfile ? `.mycmux-${testProfile}` : ".mycmux";
+  const expectedSuffix = `/${runtimeLeaf}/sessions/${paneSessionId}/out.html`;
   // Path segments are backend-fixed lowercase + a lowercase-hex uuid; compare
   // case-insensitively so Windows drive/home casing never yields a false reject.
   return normalizedPath.toLowerCase().endsWith(expectedSuffix.toLowerCase());
@@ -264,6 +271,10 @@ function getDropPreviewLabel(
 }
 
 export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitRight, onSplitDown }: TerminalPaneProps) {
+  const [testProfile, setTestProfile] = useState<string | null | undefined>(undefined);
+  useEffect(() => {
+    void invoke<string | null>("get_test_profile").then(setTestProfile).catch(() => setTestProfile(undefined));
+  }, []);
   // Derived boolean selectors only re-render when THIS pane's state actually changes.
   // isActive checks against any of this pane's tab sessionIds so the border
   // follows the session that is actually receiving input, not mouse selection.
@@ -394,7 +405,7 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
       // Reject forged OSC payloads that point anywhere but this session's
       // canonical sidetab file. Without this, terminal output could render
       // arbitrary local files in the iframe (assetProtocol scope is "**").
-      if (!isCanonicalSidetabPath(htmlPath, detail.paneSessionId)) {
+      if (!isCanonicalSidetabPath(htmlPath, detail.paneSessionId, testProfile)) {
         return;
       }
       openOrReloadHtmlPreviewPane(workspaceId, pane.id, {
@@ -405,7 +416,7 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
     };
     window.addEventListener("mycmux:html-out", handler);
     return () => window.removeEventListener("mycmux:html-out", handler);
-  }, [pane.tabs, pane.id, workspaceId, openOrReloadHtmlPreviewPane]);
+  }, [pane.tabs, pane.id, workspaceId, openOrReloadHtmlPreviewPane, testProfile]);
 
   const hasNotification = notificationCount > 0;
 

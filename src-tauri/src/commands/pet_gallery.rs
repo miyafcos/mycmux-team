@@ -40,8 +40,12 @@ struct ApiPet {
     like_count: u64,
     #[serde(default)]
     download_count: u64,
+    /// The whole animation laid out side by side (thousands of px wide).
     #[serde(default)]
     preview_url: String,
+    /// A single frame, which is what a thumbnail wants.
+    #[serde(default)]
+    poster_url: Option<String>,
     #[serde(default)]
     validation_report: Option<ApiValidationReport>,
 }
@@ -65,6 +69,7 @@ pub struct GalleryPet {
     like_count: u64,
     download_count: u64,
     preview_url: String,
+    poster_url: Option<String>,
     atlas_size: String,
     states_detected: u32,
 }
@@ -91,6 +96,13 @@ fn pets_root() -> Result<PathBuf, String> {
     dirs::home_dir()
         .map(|home| home.join(".codex").join("pets"))
         .ok_or_else(|| "Could not resolve the home directory".to_string())
+}
+
+fn ensure_pet_mutation_allowed(profile_active: bool) -> Result<(), String> {
+    if profile_active {
+        return Err("Pet changes are disabled while a test profile is active".to_string());
+    }
+    Ok(())
 }
 
 fn is_safe_id(value: &str) -> bool {
@@ -269,7 +281,7 @@ fn parse_gallery_page(body: &[u8]) -> Result<GalleryPage, String> {
         // Drop only the entries whose schema drifted, never the whole page.
         let pet: ApiPet = serde_json::from_value(value).ok()?;
         let report = pet.validation_report.unwrap_or(ApiValidationReport { atlas_size: String::new(), states_detected: 0 });
-        Some(GalleryPet { id: pet.id, display_name: pet.display_name, description: pet.description, tags: pet.tags, like_count: pet.like_count, download_count: pet.download_count, preview_url: pet.preview_url, atlas_size: report.atlas_size, states_detected: report.states_detected })
+        Some(GalleryPet { id: pet.id, display_name: pet.display_name, description: pet.description, tags: pet.tags, like_count: pet.like_count, download_count: pet.download_count, preview_url: pet.preview_url, poster_url: pet.poster_url, atlas_size: report.atlas_size, states_detected: report.states_detected })
     }).collect();
     Ok(GalleryPage { pets, total: page.total })
 }
@@ -301,6 +313,7 @@ pub async fn fetch_pet_preview(preview_url: String) -> Result<String, String> {
 
 #[tauri::command(async)]
 pub async fn install_pet_from_gallery(id: String) -> Result<PetInfo, String> {
+    ensure_pet_mutation_allowed(crate::test_profile::is_active())?;
     if !is_safe_id(&id) { return Err("Invalid pet id".to_string()); }
     let client = reqwest::Client::builder().timeout(Duration::from_secs(15)).redirect(reqwest::redirect::Policy::none()).build()
         .map_err(|error| format!("Could not initialize gallery client: {error}"))?;
@@ -313,12 +326,14 @@ pub async fn install_pet_from_gallery(id: String) -> Result<PetInfo, String> {
 
 #[tauri::command(async)]
 pub async fn quarantine_pet(folder: String) -> Result<String, String> {
+    ensure_pet_mutation_allowed(crate::test_profile::is_active())?;
     let root = pets_root()?;
     tokio::task::spawn_blocking(move || quarantine_at(&root, &folder)).await.map_err(|error| format!("Pet quarantine task failed: {error}"))?
 }
 
 #[tauri::command(async)]
 pub async fn restore_pet(folder: String) -> Result<(), String> {
+    ensure_pet_mutation_allowed(crate::test_profile::is_active())?;
     let root = pets_root()?;
     tokio::task::spawn_blocking(move || restore_at(&root, &folder)).await.map_err(|error| format!("Pet restore task failed: {error}"))?
 }
@@ -354,6 +369,7 @@ mod tests {
         let body = br#"{"pets":[{"id":"twix-snickers","displayName":"Twix & Snickers","description":"d",
             "tags":["animated","cute"],"likeCount":3,"downloadCount":7,
             "previewUrl":"https://codex-pets.net/assets/pets/v/1/twix-snickers/preview.webp",
+            "posterUrl":"https://codex-pets.net/assets/pets/v/1/twix-snickers/poster.webp",
             "validationReport":{"atlasSize":"1536x2288","statesDetected":11,"cellSize":"192x208"}}],
             "page":1,"pageSize":24,"total":3029,"totalPages":127}"#;
         let page = parse_gallery_page(body).expect("page should parse");
@@ -361,6 +377,23 @@ mod tests {
         assert_eq!(page.pets.len(), 1);
         assert_eq!(page.pets[0].atlas_size, "1536x2288");
         assert_eq!(page.pets[0].states_detected, 11);
+        // The thumbnail needs the single frame; previewUrl is a 7008x104 filmstrip.
+        assert_eq!(page.pets[0].poster_url.as_deref(), Some("https://codex-pets.net/assets/pets/v/1/twix-snickers/poster.webp"));
+    }
+
+    #[test]
+    fn profile_rejects_every_pet_mutation_before_touching_the_shared_root() {
+        assert!(ensure_pet_mutation_allowed(false).is_ok());
+        assert!(ensure_pet_mutation_allowed(true).is_err());
+    }
+
+    #[test]
+    fn gallery_page_keeps_pet_when_poster_url_is_null() {
+        let body = br#"{"pets":[{"id":"preview-only","previewUrl":"https://codex-pets.net/preview.webp","posterUrl":null}],"total":1}"#;
+        let page = parse_gallery_page(body).expect("page should parse");
+        assert_eq!(page.pets.len(), 1);
+        assert_eq!(page.pets[0].preview_url, "https://codex-pets.net/preview.webp");
+        assert!(page.pets[0].poster_url.is_none());
     }
 
     #[test]

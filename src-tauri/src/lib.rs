@@ -224,6 +224,7 @@ pub fn run() {
         "MYCMUX_MARKDOWN_OUT",
         "MYCMUX_ARTIFACTS_DIR",
         "MYCMUX_RUNTIME_DIR",
+        "MYCMUX_TEST_PROFILE",
         "__CMUX_LAUNCHER_DONE",
     ] {
         std::env::remove_var(key);

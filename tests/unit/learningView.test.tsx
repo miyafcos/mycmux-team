@@ -28,11 +28,24 @@ describe("LearningView", () => {
   });
 
   it("renders the defined empty copy", () => {
-    expect(render({ findings: { rows: [], total: 0 } })).toContain("該当する学びはまだありません (要約が進むと増えます)");
+    expect(render({ findings: { rows: [], total: 0 } })).toContain("この分類の記録はまだありません (要約が進むと増えます)");
+  });
+
+  it("keeps load more available when a raw page has no rows for this segment", () => {
+    const html = render({ findings: { rows: [], total: 50 }, hasMore: true });
+    expect(html).toContain("この分類の記録はまだありません");
+    expect(html).toContain("さらに読み込む");
   });
 
   it("renders a repeat badge", () => {
     expect(render()).toContain("同じ罠 2 回目");
+    expect(render()).toContain("要約");
+    expect(render()).toContain("数えた");
+  });
+
+  it("offers a same-day breakdown only for a dated recurring gotcha", () => {
+    expect(render({ onOpenBreakdown: () => {} })).toContain("その日の内訳へ");
+    expect(render({ findings: { total: 1, rows: [{ ...findings.rows[0], repeatCount: 1 }] }, onOpenBreakdown: () => {} })).not.toContain("その日の内訳へ");
   });
 
   it("marks the selected kind filter", () => {

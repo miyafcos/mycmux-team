@@ -3,8 +3,7 @@ use std::path::PathBuf;
 
 /// Path to the persisted authentication token.
 fn token_path() -> PathBuf {
-    let mut p = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
-    p.push(".mycmux");
+    let mut p = crate::test_profile::runtime_dir().unwrap_or_else(|_| PathBuf::from("/tmp/.mycmux"));
     std::fs::create_dir_all(&p).ok();
     p.push("remote-token");
     p

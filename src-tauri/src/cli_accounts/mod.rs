@@ -701,10 +701,11 @@ pub async fn resolve_cli_account_orphan(
     action: CliOrphanAction,
     label: Option<String>,
 ) -> Result<Option<CliAccountProfile>, String> {
-    let base = app
+    let default_dir = app
         .path()
         .app_data_dir()
         .map_err(|_| ERR_ACCOUNTS_UNAVAILABLE.to_string())?;
+    let base = crate::test_profile::app_data_dir_from(default_dir);
     resolve_orphan_inner(&base, &orphan_id, action, label)
 }
 

@@ -605,8 +605,9 @@ fi
 # 操作は上下キー + Enter で完結させる。→ でも決定、← でも復帰。ホイールは当てにしない
 # (mycmux の wheel→PTY 合成は alternate screen のときだけ通るので、通常バッファに描く
 #  このメニューには届かない。届くのはスクロールバック操作だけ)。
-__ROOTS_FILE="$HOME/.mycmux/launch-roots.txt"
-__DIR_MRU_FILE="$HOME/.mycmux/launch-dirs-mru.txt"
+__LAUNCH_RUNTIME_DIR="${MYCMUX_RUNTIME_DIR:-$HOME/.mycmux}"
+__ROOTS_FILE="$__LAUNCH_RUNTIME_DIR/launch-roots.txt"
+__DIR_MRU_FILE="$__LAUNCH_RUNTIME_DIR/launch-dirs-mru.txt"
 
 # 選んだ行き先を最近使った順で8件保持する (トップ画面の「最近使った」に出す)。
 __record_dir_mru() {
@@ -663,8 +664,9 @@ __short_path() {
 # 案件メニューを開いたとき、最終更新が3時間より古ければ裏で再生成を蹴る (走査2〜3分・
 # 表示は現行リストのまま待たせない。次にメニューを開いた時に新しくなっている)。
 __refresh_anken_roots_bg() {
-  local log="$HOME/.mycmux/launch-roots-anken.log"
-  local lock="$HOME/.mycmux/launch-roots-anken.lock"
+  [ "${MYCMUX_TEST_PROFILE:-}" = "1" ] && return 0
+  local log="$__LAUNCH_RUNTIME_DIR/launch-roots-anken.log"
+  local lock="$__LAUNCH_RUNTIME_DIR/launch-roots-anken.lock"
   local script="$HOME/.claude/scripts/update_launch_anken.py"
   [ -f "$script" ] || return 0
   command -v python >/dev/null 2>&1 || return 0
@@ -1216,4 +1218,4 @@ if [ -n "$cmd" ]; then
   eval "$cmd"
 fi
 
-[ -f "$HOME/.mycmux/bin/launcher.local.sh" ] && . "$HOME/.mycmux/bin/launcher.local.sh" || true
+[ -f "$__LAUNCH_RUNTIME_DIR/bin/launcher.local.sh" ] && . "$__LAUNCH_RUNTIME_DIR/bin/launcher.local.sh" || true

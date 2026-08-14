@@ -105,6 +105,9 @@ pub(super) fn detect_claude_session_id(
     min_created: Option<std::time::SystemTime>,
     excluded_session_ids: &HashSet<String>,
 ) -> Option<String> {
+    if crate::test_profile::is_active() {
+        return None;
+    }
     let home = dirs::home_dir()?;
     let mangled = super::super::path_norm::claude_project_key(cwd);
     let project_dir = home.join(".claude").join("projects").join(&mangled);
@@ -129,6 +132,9 @@ pub(super) fn detect_claude_codex_session_id(
     min_created: Option<std::time::SystemTime>,
     excluded_session_ids: &HashSet<String>,
 ) -> Option<String> {
+    if crate::test_profile::is_active() {
+        return None;
+    }
     let home = dirs::home_dir()?;
     let mangled = super::super::path_norm::claude_project_key(cwd);
     let project_dir = home
@@ -351,6 +357,9 @@ pub(super) fn detect_codex_session_id(
     min_created: Option<std::time::SystemTime>,
     excluded_session_ids: &HashSet<String>,
 ) -> Option<String> {
+    if crate::test_profile::is_active() {
+        return None;
+    }
     let home = dirs::home_dir()?;
     let sessions_dir = home.join(".codex").join("sessions");
     if !sessions_dir.exists() {

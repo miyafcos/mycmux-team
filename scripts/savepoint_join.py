@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import sys
 import uuid
@@ -28,6 +29,11 @@ from savepoint_publish import (
     norm_slashes,
     sanitize_project_dir,
 )
+
+
+def runtime_dir() -> Path:
+    configured = os.environ.get("MYCMUX_RUNTIME_DIR")
+    return Path(configured).expanduser() if configured else Path.home() / ".mycmux"
 
 # Must stay byte-identical to onlineStrings.ts joinPrompt (modulo the
 # placeholder), see tests/test_savepoint_drag_contract.py.
@@ -163,7 +169,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("bundle_dir", help="バンドルフォルダのパス")
     parser.add_argument("--mode", choices=["summary", "full"], default="summary")
     parser.add_argument("--dropbox-root", help="自機の Dropbox ルート (既定: config)")
-    parser.add_argument("--config", default="~/.mycmux/savepoint.json")
+    parser.add_argument("--config", default=str(runtime_dir() / "savepoint.json"))
     parser.add_argument("--claude-projects-dir", default=str(Path.home() / ".claude" / "projects"))
     parser.add_argument("--home", help="cwd フォールバック先 (テスト用・既定: ホーム)")
     return parser

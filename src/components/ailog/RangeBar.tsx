@@ -248,7 +248,7 @@ export function RangeBar({
       {overview ? (
         <div style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-tertiary)", lineHeight: 1.5 }}>
           {overview.costNote}
-          {overview.priceSource ? `（単価: ${overview.priceSource}）` : ""}
+          {overview.priceSource ? `（単価: ${{ default: "既定", user: "手入力", mixed: "既定+手入力" }[overview.priceSource] ?? overview.priceSource}）` : ""}
           {overview.unpricedModels.length > 0
             ? `　単価未設定: ${overview.unpricedModels.join(", ")}（$0 で計上）`
             : ""}

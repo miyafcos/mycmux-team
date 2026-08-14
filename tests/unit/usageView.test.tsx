@@ -116,13 +116,13 @@ describe("summarizeUsage", () => {
 describe("UsageView states", () => {
   it("shows a skeleton while loading with no data yet", () => {
     const html = render({ series: null, rhythm: null, loading: true });
-    expect(html).toContain("使用量を読み込み中");
+    expect(html).toContain("集計を読み込み中");
   });
 
   it("shows the error inside the section and keeps the section heading", () => {
     const html = render({ error: "db is locked" });
     expect(html).toContain("db is locked");
-    expect(html).toContain("使用量");
+    expect(html).toContain("トータル");
     expect(html).toContain("読み込みに失敗しました");
   });
 

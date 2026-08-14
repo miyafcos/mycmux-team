@@ -71,7 +71,7 @@ export function RelationDiagram({ models, sessions, excludeSynthetic, topN, onTo
   return <div style={{ display: "flex", flexDirection: "column", gap: 10, minWidth: 0 }}>
     <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
       <ButtonGroup ariaLabel="関係図の中間層" value={layer} onChange={(value) => { setLayer(value as "tag" | "topic"); onSelect(null); }} options={[{ value: "tag", label: "作業種別" }, { value: "topic", label: "トピック" }]} />
-      <span style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-tertiary)" }}>案件はコスト上位 10 件 + その他</span>
+      <span style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-tertiary)" }}>案件はコスト相当上位 10 件 + その他</span>
       {(["model"] as (keyof TopNSetting)[]).map((entry) => <label key={entry} style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-tertiary)" }}>
         モデル
         <select aria-label={`${entry} の表示件数`} value={String(topN[entry])} onChange={(event) => onTopN(entry, Number(event.target.value))} style={selectStyle}>
@@ -80,7 +80,7 @@ export function RelationDiagram({ models, sessions, excludeSynthetic, topN, onTo
       </label>)}
       {selection ? <button type="button" onClick={() => onSelect(null)} style={{ ...subtleButtonStyle, fontSize: "var(--cmux-font-size-xs)" }}>{`絞り込み解除：${selection.label}`}</button> : null}
     </div>
-    {empty ? <div style={noteStyle}>この期間に描ける関係がありません。</div> : <ScrollBox><svg viewBox={`0 0 ${VIEW_W} ${height}`} role="img" aria-label={`案件から${layer === "topic" ? "トピック" : "作業種別"}、モデルへのコストの流れ`} style={{ width: "100%", minWidth: 900, height: "auto", display: "block" }}>
+    {empty ? <div style={noteStyle}>この期間に描ける関係がありません。期間を広げると表示されます。</div> : <ScrollBox><svg viewBox={`0 0 ${VIEW_W} ${height}`} role="img" aria-label={`案件から${layer === "topic" ? "トピック" : "作業種別"}、モデルへのコスト相当の流れ`} style={{ width: "100%", minWidth: 900, height: "auto", display: "block" }}>
       {["案件", layer === "topic" ? "トピック" : "作業種別", "モデル"].map((label, index) => <text key={label} x={COLUMN_X[index]} y={18} style={headerTextStyle}>{label}</text>)}
       {layout.flows.map((flow) => {
         const id = `${flow.layer}:${flow.source}>${flow.target}`;

@@ -58,6 +58,43 @@ pub struct SummarizeReport {
 
 pub type ProgressSink = Arc<dyn Fn(SummarizeProgress) + Send + Sync>;
 pub type ChildRegistry = Arc<Mutex<HashMap<u32, Child>>>;
+pub type SessionSummaryRegistry = Arc<Mutex<HashSet<String>>>;
+
+/// Holds a per-session summary claim until the associated CLI work finishes.
+/// The lock is only used to claim/release the key; it is never held while a
+/// subprocess or SQLite work is in progress.
+pub struct SessionSummaryLease {
+    registry: SessionSummaryRegistry,
+    key: String,
+}
+
+impl Drop for SessionSummaryLease {
+    fn drop(&mut self) {
+        self.registry
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .remove(&self.key);
+    }
+}
+
+pub fn try_claim_session(
+    registry: &SessionSummaryRegistry,
+    kind: &str,
+    session_id: &str,
+) -> Option<SessionSummaryLease> {
+    let key = format!("{kind}\0{session_id}");
+    let mut active = registry.lock().unwrap_or_else(|err| err.into_inner());
+    if !active.insert(key.clone()) {
+        return None;
+    }
+    // The guard must be released before a lease can exist: a lease's Drop
+    // re-locks this registry, so constructing one under the guard deadlocks.
+    drop(active);
+    Some(SessionSummaryLease {
+        registry: registry.clone(),
+        key,
+    })
+}
 
 #[derive(Debug, Clone)]
 struct PendingSession {
@@ -159,11 +196,12 @@ pub async fn run_summarize(
     ai: crate::ai::AiConfig,
     cancel: Arc<AtomicBool>,
     children: ChildRegistry,
+    active_sessions: SessionSummaryRegistry,
     progress: Option<ProgressSink>,
 ) -> Result<SummarizeReport, String> {
     tokio::task::spawn_blocking(move || {
         run_summarize_blocking(
-            db_path, batch_size, force, range, ai, cancel, children, progress,
+            db_path, batch_size, force, range, ai, cancel, children, active_sessions, progress,
         )
     })
     .await
@@ -171,8 +209,18 @@ pub async fn run_summarize(
 }
 
 /// Summarise exactly one session without acquiring the dashboard batch gate.
-pub async fn run_summarize_one(db_path: PathBuf, kind: String, session_id: String, ai: crate::ai::AiConfig) -> Result<(), String> {
+pub async fn run_summarize_one(
+    db_path: PathBuf,
+    kind: String,
+    session_id: String,
+    ai: crate::ai::AiConfig,
+    active_sessions: SessionSummaryRegistry,
+) -> Result<(), String> {
+    let Some(lease) = try_claim_session(&active_sessions, &kind, &session_id) else {
+        return Ok(());
+    };
     tokio::task::spawn_blocking(move || {
+        let _lease = lease;
         let mut conn = crate::ailog::open_db(&db_path)?;
         let session = conn.query_row(
             "SELECT s.kind, s.session_id, sf.path, s.ai_title, s.first_prompt, s.turn_count, s.compact_count, s.wall_ms, s.cost_usd FROM session s LEFT JOIN source_file sf ON sf.kind=s.kind AND sf.session_id=s.session_id WHERE s.kind=?1 AND s.session_id=?2 ORDER BY sf.last_indexed DESC LIMIT 1",
@@ -194,6 +242,11 @@ pub async fn run_summarize_one(db_path: PathBuf, kind: String, session_id: Strin
     }).await.map_err(|err| format!("single summary worker: {err}"))?
 }
 
+enum BatchSessionResult {
+    Completed(Result<ValidResult, String>, SessionSummaryLease),
+    Busy,
+}
+
 fn run_summarize_blocking(
     db_path: PathBuf,
     batch_size: u32,
@@ -202,6 +255,7 @@ fn run_summarize_blocking(
     ai: crate::ai::AiConfig,
     cancel: Arc<AtomicBool>,
     children: ChildRegistry,
+    active_sessions: SessionSummaryRegistry,
     progress: Option<ProgressSink>,
 ) -> Result<SummarizeReport, String> {
     let started = Instant::now();
@@ -212,11 +266,11 @@ fn run_summarize_blocking(
         sessions_remaining: total,
         ..Default::default()
     };
-    let mut failed = HashSet::new();
+    let mut excluded = HashSet::new();
     emit(&progress, "running", &report, started);
 
     while !cancel.load(Ordering::SeqCst) {
-        let batch = fetch_pending(&conn, batch_size as usize, force, range, &failed)?;
+        let batch = fetch_pending(&conn, batch_size as usize, force, range, &excluded)?;
         if batch.is_empty() {
             break;
         }
@@ -234,8 +288,16 @@ fn run_summarize_blocking(
                     .map(|(session, input)| {
                         let worker_cancel = cancel.clone();
                         let worker_children = children.clone();
+                        let worker_active_sessions = active_sessions.clone();
                         let worker_ai = ai.clone();
                         scope.spawn(move || {
+                            let Some(lease) = try_claim_session(
+                                &worker_active_sessions,
+                                &session.kind,
+                                &session.session_id,
+                            ) else {
+                                return (session, BatchSessionResult::Busy);
+                            };
                             let result = execute_session(input, &worker_ai, &worker_cancel, &worker_children)
                                 .and_then(|raw| {
                                     validate_output(&raw, &input.id).map_err(|err| {
@@ -245,7 +307,7 @@ fn run_summarize_blocking(
                                         )
                                     })
                                 });
-                            (session, result)
+                            (session, BatchSessionResult::Completed(result, lease))
                         })
                     })
                     .collect::<Vec<_>>();
@@ -260,25 +322,43 @@ fn run_summarize_blocking(
             })?;
             for (session, result) in results {
                 match result {
-                    Ok(result) => {
+                    BatchSessionResult::Completed(Ok(result), _lease) => {
                         upsert_result(&mut conn, session, &result, &ai)?;
                         report.sessions_done += 1;
+                        // `force` deliberately includes already summarized sessions, so
+                        // the database query alone would select this same row again.
+                        // Exclude every handled row for the lifetime of this run.
+                        excluded.insert(key(session));
                     }
-                    Err(error) => {
+                    BatchSessionResult::Completed(Err(error), _lease) => {
                         save_parse_error(&mut conn, session, &error)?;
-                        failed.insert(key(session));
+                        excluded.insert(key(session));
                         report
                             .errors
                             .push(format!("{}/{}: {error}", session.kind, session.session_id));
                     }
+                    BatchSessionResult::Busy => {
+                        // Another explicit or batch request owns this session.
+                        // It remains pending for a later pass, but must not be
+                        // refetched forever or recorded as a parse failure.
+                        excluded.insert(key(session));
+                    }
                 }
-                report.sessions_remaining = pending_count(&conn, force, range)?;
+                report.sessions_remaining = if force {
+                    total.saturating_sub(report.sessions_done)
+                } else {
+                    pending_count(&conn, force, range)?
+                };
                 emit(&progress, "running", &report, started);
             }
         }
     }
     report.cancelled = cancel.load(Ordering::SeqCst);
-    report.sessions_remaining = pending_count(&conn, force, range)?;
+    report.sessions_remaining = if force {
+        total.saturating_sub(report.sessions_done)
+    } else {
+        pending_count(&conn, force, range)?
+    };
     let (input_tokens, output_tokens) = conn.query_row(
         "SELECT COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0) FROM summary WHERE prompt_version = ?1",
         [PROMPT_VERSION], |row| Ok((row.get(0)?, row.get(1)?)),
@@ -346,18 +426,23 @@ fn fetch_pending(
     limit: usize,
     force: bool,
     range: ResolvedRange,
-    failed: &HashSet<String>,
+    excluded: &HashSet<String>,
 ) -> Result<Vec<PendingSession>, String> {
     let sql = format!(
         "SELECT s.kind, s.session_id, sf.path, s.ai_title, s.first_prompt, s.turn_count, s.compact_count, s.wall_ms, s.cost_usd \
          FROM session s LEFT JOIN summary x ON x.kind=s.kind AND x.session_id=s.session_id \
          LEFT JOIN source_file sf ON sf.kind=s.kind AND sf.session_id=s.session_id \
+           AND sf.path=(SELECT latest.path FROM source_file latest WHERE latest.kind=s.kind AND latest.session_id=s.session_id ORDER BY latest.last_indexed DESC, latest.path ASC LIMIT 1) \
          WHERE s.started_at >= ?1 AND s.started_at <= ?2 AND {} ORDER BY s.started_at DESC, s.session_id DESC LIMIT ?{}", pending_where(force), if force { "3" } else { "6" });
     let mut stmt = conn
         .prepare(&sql)
         .map_err(|err| format!("prepare pending summaries: {err}"))?;
+    // Rows excluded in this run can still be at the head of the SQL result.
+    // Fetch enough rows to fill a fresh batch after filtering them, otherwise a
+    // forced run with batch_size=1 would stop after its first success.
+    let query_limit = limit.saturating_add(excluded.len()) as i64;
     let rows = if force {
-        stmt.query_map(params![range.from, range.to, limit as i64], pending_row)
+        stmt.query_map(params![range.from, range.to, query_limit], pending_row)
     } else {
         stmt.query_map(
             params![
@@ -366,7 +451,7 @@ fn fetch_pending(
                 PROMPT_VERSION,
                 MAX_ATTEMPTS,
                 chrono::Utc::now().timestamp_millis() - RETRY_DELAY_MS,
-                limit as i64
+                query_limit
             ],
             pending_row,
         )
@@ -375,7 +460,7 @@ fn fetch_pending(
     let mut out = Vec::new();
     for row in rows {
         let entry = row.map_err(|err| format!("read pending summary: {err}"))?;
-        if !failed.contains(&key(&entry)) {
+        if !excluded.contains(&key(&entry)) {
             out.push(entry);
         }
     }
@@ -921,6 +1006,55 @@ mod tests {
         )
         .expect("eligible source file");
     }
+
+    #[test]
+    fn same_session_claim_is_exclusive_and_released() {
+        let registry: SessionSummaryRegistry = Arc::new(Mutex::new(HashSet::new()));
+        let first = try_claim_session(&registry, "codex", "same").expect("first claim");
+        assert!(try_claim_session(&registry, "codex", "same").is_none());
+        assert!(try_claim_session(&registry, "claude", "same").is_some());
+        drop(first);
+        assert!(try_claim_session(&registry, "codex", "same").is_some());
+    }
+
+    #[test]
+    fn fetch_pending_uses_only_the_latest_source_for_each_session() {
+        let conn = Connection::open_in_memory().expect("memory database");
+        crate::ailog::schema::init(&conn).expect("schema");
+        insert_eligible_session(&conn, "same", 1);
+        conn.execute(
+            "INSERT INTO source_file(path, kind, size_bytes, mtime_ns, parsed_bytes, parsed_lines, session_id, last_indexed) VALUES ('C:/test/same-new.jsonl', 'codex', 0, 0, 0, 0, 'same', 10)",
+            [],
+        )
+        .expect("newer source");
+        let rows = fetch_pending(&conn, 10, false, ALL_RANGE, &HashSet::new()).expect("pending rows");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].source_path.as_deref(), Some("C:/test/same-new.jsonl"));
+    }
+
+    #[test]
+    fn force_fetch_skips_completed_sessions_and_advances_to_the_next_one() {
+        let conn = Connection::open_in_memory().expect("memory database");
+        crate::ailog::schema::init(&conn).expect("schema");
+        insert_eligible_session(&conn, "first", 1);
+        insert_eligible_session(&conn, "second", 2);
+
+        let first = fetch_pending(&conn, 1, true, ALL_RANGE, &HashSet::new())
+            .expect("first forced batch");
+        assert_eq!(first[0].session_id, "second");
+
+        let mut completed = HashSet::new();
+        completed.insert(key(&first[0]));
+        let second = fetch_pending(&conn, 1, true, ALL_RANGE, &completed)
+            .expect("second forced batch");
+        assert_eq!(second[0].session_id, "first");
+
+        completed.insert(key(&second[0]));
+        assert!(fetch_pending(&conn, 1, true, ALL_RANGE, &completed)
+            .expect("forced run stop condition")
+            .is_empty());
+    }
+
     #[test]
     fn enums_round_to_fixed_values() {
         assert_eq!(normalize_cluster("教材"), "other");

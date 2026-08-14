@@ -1,503 +1,136 @@
-/**
- * The AI log dashboard overlay.
- *
- * Layout follows the other overlays in the app (backdrop + panel, Escape to
- * close, focus returned on exit). Every control inside is a left click: there is
- * no context menu anywhere in this panel.
- */
-
-import { useEffect, useRef, useState } from "react";
+/** The two-surface AI log dashboard. Navigation never starts LLM work. */
+import { useCallback, useEffect, useState } from "react";
 
 import { OverlayShell } from "../common/OverlayShell";
-import { dayOffsetInput, listenIndexProgress, listenSummarizeProgress, toDayInput } from "../../lib/ailog";
-import { useAilogStore, SESSION_PAGE_SIZE } from "../../stores/ailogStore";
-import { jobDisplayError } from "../../stores/ailogStore";
+import { listenIndexProgress, listenSummarizeProgress, toDayInput } from "../../lib/ailog";
+import { jobDisplayError, useAilogStore } from "../../stores/ailogStore";
 import { useAilogPolling } from "../../hooks/useAilogPolling";
 import { useAiSettingsStore } from "../../stores/aiSettingsStore";
 import { aiSettingsStrings } from "../settings/settingsStrings";
-import { CostHeatmap } from "./CostHeatmap";
 import { DigestView } from "./DigestView";
-import { LearningView } from "./LearningView";
 import { ExperimentView } from "./ExperimentView";
-import { ModelTable } from "./ModelTable";
-import { ProjectTable } from "./ProjectTable";
+import { LearningView } from "./LearningView";
+import { RecordBreakdownView } from "./RecordBreakdownView";
 import { PriceSettings } from "./PriceSettings";
 import { RangeBar } from "./RangeBar";
-import { RelationDiagram } from "./RelationDiagram";
 import { SessionDetailView } from "./SessionDetailView";
-import { SessionTable } from "./SessionTable";
-import { SummaryCards } from "./SummaryCards";
+import { dailyDigestNavigation, findingKindsForSegment, isExplicitLlmIntent, loadersForSegment, recordBreakdownNavigation, shouldRefreshBreakdown, type AilogSurface, type InsightSegment, type RecordSegment } from "./panelModel";
+import { EmptyState, Section, SkeletonBlock, noteStyle, subtleButtonStyle } from "./ui";
 import { UsageView } from "./UsageView";
-import { ButtonGroup, EmptyState, Section, SkeletonBlock, noteStyle, subtleButtonStyle } from "./ui";
 
-interface AiLogPanelProps {
-  open: boolean;
-  visible: boolean;
-  closing?: boolean;
-  onClose: () => void;
-}
+interface AiLogPanelProps { open: boolean; visible: boolean; closing?: boolean; onClose: () => void; }
 
 export function AiLogPanel({ open, visible, closing = false, onClose }: AiLogPanelProps) {
-  const autoStartedRef = useRef(false);
-  const autoDigestStartedRef = useRef(false);
+  const [surface, setSurface] = useState<AilogSurface>("record");
+  const [recordSegment, setRecordSegment] = useState<RecordSegment>("when");
+  const [insightSegment, setInsightSegment] = useState<InsightSegment>("daily");
   const [detailOpen, setDetailOpen] = useState(false);
-  // Usage opens first on purpose: it is the only view built entirely from SQL
-  // aggregates, so it has something to show even when nothing has been
-  // summarised and the summariser subprocess is unavailable.
-  const [view, setView] = useState<"usage" | "digest" | "learning" | "experiment" | "detail">("usage");
-
   const store = useAilogStore();
   const aiEnabled = useAiSettingsStore((s) => s.aiEnabled);
   const aiDisabledReason = aiEnabled ? undefined : aiSettingsStrings.disabledReason;
 
-  // Open: pull the index status first (it decides which empty state applies),
-  // then the reports.
   useEffect(() => {
     if (!open) return;
-    let cancelled = false;
-    void (async () => {
-      await store.refreshIndexStatus();
-      await store.refreshSummarizeStatus();
-      if (cancelled) return;
-      const status = useAilogStore.getState().summarize.status;
-      // Opening this panel must not spend tokens when the user turned the
-      // background AI off (Settings > AI).
-      if (aiEnabled && !autoStartedRef.current && !status?.running && (status?.sessionsRemaining ?? 0) > 0) {
-        autoStartedRef.current = true;
-        await store.startSummarize();
-      }
-      await store.refresh();
-    })();
-    return () => { cancelled = true; };
+    void store.refreshIndexStatus();
+    void store.refreshSummarizeStatus();
+    // No report and no LLM work is started here: both are segment-driven.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
-
+  const closeDetail = useCallback(() => { setDetailOpen(false); store.closeDetail(); }, [store.closeDetail]);
   useEffect(() => {
     if (open) return;
-    autoDigestStartedRef.current = false;
-    setView("usage");
-  }, [open]);
+    setSurface("record");
+    setRecordSegment("when");
+    setInsightSegment("daily");
+    closeDetail();
+  }, [closeDetail, open]);
+  useEffect(() => () => { store.closeDetail(); }, [store.closeDetail]);
+
+  const refreshVisibleSegment = useCallback(async (): Promise<void> => {
+    if (!open) return;
+    const loaders = loadersForSegment(surface, surface === "record" ? recordSegment : insightSegment);
+    if (loaders.includes("usage")) return store.refreshUsage();
+    if (loaders.includes("breakdown") && shouldRefreshBreakdown(surface, recordSegment)) {
+      await Promise.all([store.refresh(), store.refreshBreakdown(), store.refreshPrices()]);
+      return;
+    }
+    if (loaders.includes("experiment")) return store.refreshExperiment();
+    if (loaders.includes("digest")) return store.refreshDigest();
+    if (loaders.includes("findings")) return store.refreshLearning({ kinds: findingKindsForSegment(insightSegment), includeRankings: loaders.includes("rankings") });
+  }, [insightSegment, open, recordSegment, store.refresh, store.refreshBreakdown, store.refreshDigest, store.refreshExperiment, store.refreshLearning, store.refreshPrices, store.refreshUsage, surface]);
+
+  useEffect(() => { void refreshVisibleSegment(); }, [refreshVisibleSegment, store.preset, store.customFrom, store.customTo, store.includeSidechain, store.selection, store.leafDimension, store.granularity, store.usageBucket, store.breakdownDimension, store.digestDate, store.findingKind, store.findingQuery]);
 
   useEffect(() => {
     if (!open) return;
-    let unlisten: (() => void) | undefined;
-    let cancelled = false;
+    let unlisten: (() => void) | undefined; let cancelled = false;
     store.setSummarizeEventsAvailable(true);
-    void listenSummarizeProgress((progress) => store.applySummarizeProgress(progress)).then((fn) => {
-      if (cancelled) fn(); else unlisten = fn;
-    }).catch(() => { if (!cancelled) store.setSummarizeEventsAvailable(false); });
+    void listenSummarizeProgress((progress) => store.applySummarizeProgress(progress)).then((fn) => { if (cancelled) fn(); else unlisten = fn; }).catch(() => { if (!cancelled) store.setSummarizeEventsAvailable(false); });
     return () => { cancelled = true; unlisten?.(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
-
   useEffect(() => {
     if (!open) return;
-    let unlisten: (() => void) | undefined;
-    let cancelled = false;
+    let unlisten: (() => void) | undefined; let cancelled = false;
     store.setIndexEventsAvailable(true);
-    void listenIndexProgress((progress) => store.applyIndexProgress(progress)).then((fn) => {
-      if (cancelled) fn();
-      else unlisten = fn;
-    }).catch(() => { if (!cancelled) store.setIndexEventsAvailable(false); });
-    return () => {
-      cancelled = true;
-      unlisten?.();
-    };
+    void listenIndexProgress((progress) => store.applyIndexProgress(progress)).then((fn) => { if (cancelled) fn(); else unlisten = fn; }).catch(() => { if (!cancelled) store.setIndexEventsAvailable(false); });
+    return () => { cancelled = true; unlisten?.(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
   const running = store.index.status?.running ?? false;
   const summarizing = store.summarize.status?.running ?? false;
-  useAilogPolling({
-    open,
-    indexRunning: running,
-    summarizeRunning: summarizing,
-    eventsHealthy: (!running || store.index.eventsAvailable) && (!summarizing || store.summarize.eventsAvailable),
-    refreshIndexStatus: store.refreshIndexStatus,
-    refreshSummarizeStatus: store.refreshSummarizeStatus,
-    refreshReports: store.refresh,
-  });
-
-  useEffect(() => {
-    if (open && view === "usage") void store.refreshUsage();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, view, store.preset, store.customFrom, store.customTo, store.includeSidechain, store.selection, store.granularity, store.usageBucket]);
-
-  useEffect(() => {
-    if (open && view === "learning") void store.refreshLearning();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, view, store.preset, store.customFrom, store.customTo, store.includeSidechain, store.selection]);
-
-  useEffect(() => {
-    if (open && view === "experiment") void store.refreshExperiment();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, view, store.preset, store.customFrom, store.customTo, store.includeSidechain, store.selection]);
-
-  useEffect(() => {
-    if (open && view === "detail") {
-      void store.refreshBreakdown();
-      void store.refreshPrices();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, view]);
-
-  // Generating a digest spawns an LLM subprocess, so it is deferred until the
-  // tab that displays one is actually opened: merely opening the panel must
-  // never start a billable run. `autoDigestStartedRef` keeps it to once per
-  // panel session so re-entering the tab does not regenerate.
-  useEffect(() => {
-    if (!aiEnabled) return;
-    if (!open || view !== "digest" || summarizing || autoDigestStartedRef.current) return;
-    autoDigestStartedRef.current = true;
-    const yesterday = dayOffsetInput(-1);
-    void (async () => {
-      store.setDigestDate(yesterday);
-      await useAilogStore.getState().refreshDigest(yesterday);
-      const current = useAilogStore.getState();
-      if (current.digestDate === yesterday && !current.digestReport?.digest) {
-        await current.generateDigest(false);
-      }
-    })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, view, summarizing]);
+  useAilogPolling({ open, indexRunning: running, summarizeRunning: summarizing, eventsHealthy: (!running || store.index.eventsAvailable) && (!summarizing || store.summarize.eventsAvailable), refreshIndexStatus: store.refreshIndexStatus, refreshSummarizeStatus: store.refreshSummarizeStatus, refreshReports: refreshVisibleSegment });
 
   if (!visible) return null;
-
-  const { overview, series, models, sessions, loading, dashboardError, index: indexJob, summarize: summarizeJob } = store;
-  const indexStatus = indexJob.status;
-  const summarizeStatus = summarizeJob.status;
-  const indexError = jobDisplayError(indexJob);
-  const summarizeError = jobDisplayError(summarizeJob);
-  const statusPending = indexStatus === null && indexJob.statusError === null;
+  const indexStatus = store.index.status; const summarizeStatus = store.summarize.status;
+  const statusPending = indexStatus === null && store.index.statusError === null;
   const neverIndexed = indexStatus !== null && indexStatus.lastFinishedAt === 0;
-  const noData = Boolean(overview) && (overview?.totals.sessions ?? 0) === 0;
-
-  const openDetail = (kind: string, sessionId: string) => {
-    setDetailOpen(true);
-    setView("detail");
-    void store.openDetail(kind, sessionId);
+  const noData = Boolean(store.overview) && (store.overview?.totals.sessions ?? 0) === 0;
+  const openDetail = (kind: string, sessionId: string) => { setDetailOpen(true); void store.openDetail(kind, sessionId); };
+  const activeRecordLoad = () => void refreshVisibleSegment();
+  const dailyDigestLinkLabel = "その日のまとめへ";
+  const runExplicitLlm = (intent: string, action: () => Promise<void>) => {
+    if (!aiEnabled) return;
+    if (isExplicitLlmIntent(intent)) void action();
   };
-  const closeDetail = () => {
-    setDetailOpen(false);
-    store.closeDetail();
+  const openDailyDigest = (day: number) => {
+    const target = dailyDigestNavigation(toDayInput(day));
+    setSurface(target.surface); setInsightSegment(target.segment); store.setDigestDate(target.date);
   };
-  const handleEscape = () => {
-    if (detailOpen) {
-      closeDetail();
-      return true;
-    }
-    return false;
+  const openRecordBreakdown = (day: number) => {
+    const target = recordBreakdownNavigation(toDayInput(day));
+    setSurface(target.surface); setRecordSegment(target.segment); store.setCustomRange(target.from, target.to);
   };
+  const changeInsightSegment = (segment: InsightSegment) => {
+    const allowed = findingKindsForSegment(segment);
+    if (allowed.length > 0 && store.findingKind && !allowed.includes(store.findingKind)) store.setFindingKind(null);
+    setInsightSegment(segment);
+  };
+  const closePanel = () => { closeDetail(); onClose(); };
 
-  return (
-    <OverlayShell
-      open={open}
-      closing={closing}
-      onClose={onClose}
-      onEscape={handleEscape}
-      size="full"
-      ariaLabel="AIログ分析"
-      id="ailog-panel"
-    >
-        <header
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            gap: 12,
-            padding: "12px 16px",
-            borderBottom: "1px solid var(--cmux-border)",
-          }}
-        >
-          <div style={{ minWidth: 0 }}>
-            <div style={{ fontSize: 14, fontWeight: 700 }}>AI ログ分析</div>
-            <div role="status" aria-live="polite" style={{ ...noteStyle, marginTop: 2 }}>
-              {loading
-                ? "集計を更新中…"
-                : overview
-                  ? `${overview.range.label} · ${overview.totals.sessions.toLocaleString("en-US")} セッション`
-              : "—"}
-            </div>
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <button type="button" aria-pressed={view === "usage"} onClick={() => setView("usage")} style={subtleButtonStyle}>使用量</button>
-            <button type="button" aria-pressed={view === "digest"} onClick={() => setView("digest")} style={subtleButtonStyle}>振り返り</button>
-            <button type="button" aria-pressed={view === "learning"} onClick={() => setView("learning")} style={subtleButtonStyle}>学び</button>
-            <button type="button" aria-pressed={view === "experiment"} onClick={() => setView("experiment")} style={subtleButtonStyle}>実験</button>
-            <button type="button" aria-pressed={view === "detail"} onClick={() => setView("detail")} style={subtleButtonStyle}>詳細</button>
-          <button type="button" aria-label="閉じる" onClick={onClose} style={{ ...subtleButtonStyle, padding: "3px 8px" }}>
-            ×
-          </button>
-          </div>
-        </header>
+  return <OverlayShell open={open} closing={closing} onClose={closePanel} closeOnEscape={!detailOpen} size="full" ariaLabel="AIログ分析" id="ailog-panel">
+    <header style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "12px 16px", borderBottom: "1px solid var(--cmux-border)" }}>
+      <div><div style={{ fontSize: 14, fontWeight: 700 }}>AI ログ分析</div><div role="status" aria-live="polite" style={{ ...noteStyle, marginTop: 2 }}>{store.loading ? "集計を更新中…" : store.overview ? `${store.overview.range.label} · ${store.overview.totals.sessions.toLocaleString("en-US")} セッション` : "—"}</div></div>
+      <div style={{ display: "flex", alignItems: "center", gap: 6 }}><button type="button" aria-pressed={surface === "record"} onClick={() => setSurface("record")} style={subtleButtonStyle}>使った量</button><button type="button" aria-pressed={surface === "insight"} onClick={() => setSurface("insight")} style={subtleButtonStyle}>わかったこと</button><button type="button" aria-label="閉じる" onClick={closePanel} style={{ ...subtleButtonStyle, padding: "3px 8px" }}>×</button></div>
+    </header>
+    <div style={{ flex: 1, minHeight: 0, overflowY: "auto", overflowX: "hidden" }}><div style={{ display: "flex", flexDirection: "column", gap: 12, padding: "12px 16px 20px", minWidth: 0 }}>
+      {(running && !store.index.eventsAvailable) || (summarizing && !store.summarize.eventsAvailable) ? <div style={noteStyle}>進捗イベントに接続できないため、状態を短い間隔で確認しています。</div> : null}
+      {surface === "record" ? <>
+        <RangeBar preset={store.preset} customFrom={store.customFrom} customTo={store.customTo} onPreset={store.setPreset} onCustomRange={store.setCustomRange} summaryPreset={store.summaryPreset} onSummaryPreset={store.setSummaryPreset} overview={store.overview} indexStatus={indexStatus} indexProgress={store.index.progress} indexError={jobDisplayError(store.index)} onDismissIndexError={store.dismissIndexError} onStartIndex={() => void store.startIndex(false)} onCancelIndex={() => void store.cancelIndex()} summarizeStatus={summarizeStatus} summarizeProgress={store.summarize.progress} summarizeError={jobDisplayError(store.summarize)} onDismissSummarizeError={store.dismissSummarizeError} onStartSummarize={() => runExplicitLlm("startSummarize", () => store.startSummarize())} aiDisabledReason={aiDisabledReason} onCancelSummarize={() => void store.cancelSummarize()} onRefresh={activeRecordLoad} loading={recordSegment === "when" ? store.usageLoading : recordSegment === "what" ? store.loading : store.experimentLoading} excludeSynthetic={store.excludeSynthetic} onExcludeSynthetic={store.setExcludeSynthetic} includeSidechain={store.includeSidechain} onIncludeSidechain={store.setIncludeSidechain} />
+        <Segment buttons={[['when','いつ・どれだけ'],['what','何に'],['how','使い方で変わる？']]} value={recordSegment} onChange={setRecordSegment} />
+        {recordSegment === "when" ? (statusPending ? <div style={noteStyle}>インデックス状態を確認中です…</div> : neverIndexed ? <EmptyState kind="not-indexed" onPrimary={() => void store.startIndex(false)} busy={indexStatus?.running} /> : <UsageView series={store.usageSeries} rhythm={store.usageRhythm} loading={store.usageLoading} error={store.usageError} metric={store.usageMetric} onMetric={store.setUsageMetric} stack={store.usageStack} onStack={store.setUsageStack} bucket={store.usageBucket} onBucket={store.setUsageBucket} granularity={store.granularity} onGranularity={store.setGranularity} rangeReady={store.currentRange() !== null} selectionLabel={store.selection?.key ?? null} onClearSelection={() => store.setSelection(null)} onRetry={() => void store.refreshUsage()} onReindex={() => void store.startIndex(false)} onPickDay={(day) => { const value = toDayInput(day); store.setCustomRange(value, value); }} onOpenDigest={openDailyDigest} digestLinkLabel={dailyDigestLinkLabel} />) : null}
+        {recordSegment === "what" ? <><RecordBreakdownView overview={store.overview} series={store.series} models={store.models} sessions={store.sessions} loading={store.loading} error={store.dashboardError} statusPending={statusPending} neverIndexed={neverIndexed} noData={noData} running={running} preset={store.preset} excludeSynthetic={store.excludeSynthetic} topN={store.topN} granularity={store.granularity} selection={store.selection} breakdownDimension={store.breakdownDimension} breakdown={store.breakdown} breakdownError={store.breakdownError} sessionSort={store.sessionSort} sessionPage={store.sessionPage} leafDimension={store.leafDimension} detailKey={store.detailKey} onRefresh={() => void refreshVisibleSegment()} onStartIndex={() => void store.startIndex(false)} onSelectRange={store.setCustomRange} onTopN={store.setTopN} onGranularity={store.setGranularity} onSelect={store.setSelection} onBreakdownDimension={store.setBreakdownDimension} onRefreshBreakdown={() => void store.refreshBreakdown()} onSessionSort={store.setSessionSort} onSessionPage={store.setSessionPage} onOpenDetail={openDetail} /><Section title="単価設定"><PriceSettings prices={store.prices} unpricedModels={store.overview?.unpricedModels ?? []} loading={store.pricesLoading} error={store.pricesError} repricedSessions={store.repricedSessions} onSave={async (entry) => { if (await store.savePrice(entry)) await refreshVisibleSegment(); }} /></Section></> : null}
+        {recordSegment === "how" ? <ExperimentView report={store.efficiency} rules={store.ruleCheck} loading={store.experimentLoading} error={store.experimentError} onOpenDetail={openDetail} /> : null}
+      </> : <>
+        <Segment buttons={[['daily','その日のまとめ'],['recurring','何度も起きてること'],['decisions','決めたこと']]} value={insightSegment} onChange={changeInsightSegment} />
+        {insightSegment === "daily" ? <DigestView report={store.digestReport} loading={store.digestLoading} generating={store.digestGenerating} error={store.digestError} onRetry={() => void store.refreshDigest()} onPrevious={() => store.stepDigestDate(-1)} onNext={() => store.stepDigestDate(1)} onRegenerate={() => runExplicitLlm("regenerateDigest", () => store.generateDigest(true))} summarizeStatus={summarizeStatus} summarizeError={jobDisplayError(store.summarize)} onStartSummarize={() => runExplicitLlm("startSummarize", () => store.startSummarize())} aiDisabledReason={aiDisabledReason} /> : <LearningView findings={store.findings} rankings={store.rankings} hasMore={store.learningHasMore} kind={store.findingKind} query={store.findingQuery} loading={store.learningLoading} error={store.learningError} onKindChange={store.setFindingKind} onQueryChange={store.setFindingQuery} onLoadMore={() => void store.refreshLearning({ append: true, kinds: findingKindsForSegment(insightSegment), includeRankings: insightSegment === "recurring" })} onOpenDetail={openDetail} onOpenBreakdown={openRecordBreakdown} title={insightSegment === "recurring" ? "何度も起きてること" : "決めたこと"} allowedKinds={findingKindsForSegment(insightSegment)} showRankings={insightSegment === "recurring"} />}
+      </>}
+    </div></div>
+    {detailOpen ? <OverlayShell open={detailOpen} onClose={closeDetail} size="wide" layer="top" ariaLabel="セッション詳細">{store.detailError ? <EmptyState kind="error" message={store.detailError} onPrimary={() => store.detailKey ? void store.openDetail(store.detailKey.kind, store.detailKey.sessionId) : undefined} primaryLabel="再試行" /> : store.detailLoading ? <div style={{ padding: 16 }}><SkeletonBlock height={120} label="詳細を読み込み中" /></div> : store.detail ? <div style={{ padding: 16, overflowY: "auto" }}><SessionDetailView detail={store.detail} transcript={store.transcript} transcriptLoading={store.transcriptLoading} transcriptError={store.transcriptError} sessionSummarizing={store.sessionSummarizing} sessionSummarizeError={store.sessionSummarizeError} aiDisabledReason={aiDisabledReason} onSummarize={() => runExplicitLlm("summarizeSession", () => store.summarizeSession(store.detail!.session.kind, store.detail!.session.sessionId))} onClose={closeDetail} /></div> : null}</OverlayShell> : null}
+  </OverlayShell>;
+}
 
-        <div style={{ flex: 1, minHeight: 0, overflowY: "auto", overflowX: "hidden" }}>
-          <div style={{ display: "flex", flexDirection: "column", gap: 12, padding: "12px 16px 20px", minWidth: 0 }}>
-            {(running && !indexJob.eventsAvailable) || (summarizing && !summarizeJob.eventsAvailable) ? (
-              <div style={noteStyle}>進捗イベントに接続できないため、状態を短い間隔で確認しています。</div>
-            ) : null}
-            {view === "usage" ? (
-              <>
-                <RangeBar
-                  preset={store.preset}
-                  customFrom={store.customFrom}
-                  customTo={store.customTo}
-                  onPreset={store.setPreset}
-                  onCustomRange={store.setCustomRange}
-                  summaryPreset={store.summaryPreset}
-                  onSummaryPreset={store.setSummaryPreset}
-                  overview={overview}
-                  indexStatus={indexStatus}
-                  indexProgress={indexJob.progress}
-                  indexError={indexError}
-                  onDismissIndexError={store.dismissIndexError}
-                  onStartIndex={() => void store.startIndex(false)}
-                  onCancelIndex={() => void store.cancelIndex()}
-                  summarizeStatus={summarizeStatus}
-                  summarizeProgress={summarizeJob.progress}
-                  summarizeError={summarizeError}
-                  onDismissSummarizeError={store.dismissSummarizeError}
-                  onStartSummarize={() => void store.startSummarize()}
-                  aiDisabledReason={aiDisabledReason}
-                  onCancelSummarize={() => void store.cancelSummarize()}
-                  onRefresh={() => void store.refreshUsage()}
-                  loading={store.usageLoading}
-                  excludeSynthetic={store.excludeSynthetic}
-                  onExcludeSynthetic={store.setExcludeSynthetic}
-                  includeSidechain={store.includeSidechain}
-                  onIncludeSidechain={store.setIncludeSidechain}
-                />
-                {statusPending ? (
-                  <div style={noteStyle}>インデックス状態を確認中です…</div>
-                ) : neverIndexed ? (
-                  <EmptyState kind="not-indexed" onPrimary={() => void store.startIndex(false)} busy={indexStatus?.running} />
-                ) : (
-                  <UsageView
-                    series={store.usageSeries}
-                    rhythm={store.usageRhythm}
-                    loading={store.usageLoading}
-                    error={store.usageError}
-                    metric={store.usageMetric}
-                    onMetric={store.setUsageMetric}
-                    stack={store.usageStack}
-                    onStack={store.setUsageStack}
-                    bucket={store.usageBucket}
-                    onBucket={store.setUsageBucket}
-                    granularity={store.granularity}
-                    onGranularity={store.setGranularity}
-                    rangeReady={store.currentRange() !== null}
-                    selectionLabel={store.selection?.key ?? null}
-                    onClearSelection={() => store.setSelection(null)}
-                    onRetry={() => void store.refreshUsage()}
-                    onReindex={() => void store.startIndex(false)}
-                    onPickDay={(day) => {
-                      const value = toDayInput(day);
-                      store.setCustomRange(value, value);
-                    }}
-                  />
-                )}
-              </>
-            ) : view === "digest" ? (
-              <DigestView
-                report={store.digestReport}
-                loading={store.digestLoading}
-                generating={store.digestGenerating}
-                onPrevious={() => store.stepDigestDate(-1)}
-                onNext={() => store.stepDigestDate(1)}
-                onRegenerate={() => void store.generateDigest(true)}
-                summarizeStatus={summarizeStatus}
-                summarizeError={summarizeError}
-                onStartSummarize={() => void store.startSummarize()}
-                aiDisabledReason={aiDisabledReason}
-              />
-            ) : view === "learning" ? (
-              <LearningView
-                findings={store.findings}
-                rankings={store.rankings}
-                kind={store.findingKind}
-                query={store.findingQuery}
-                loading={store.learningLoading}
-                error={store.learningError}
-                onKindChange={store.setFindingKind}
-                onQueryChange={store.setFindingQuery}
-                onLoadMore={() => void store.refreshLearning(true)}
-                onOpenDetail={openDetail}
-              />
-            ) : view === "experiment" ? (
-              <ExperimentView
-                report={store.efficiency}
-                rules={store.ruleCheck}
-                loading={store.experimentLoading}
-                error={store.experimentError}
-                onOpenDetail={openDetail}
-              />
-            ) : (
-              <>
-            <RangeBar
-              preset={store.preset}
-              customFrom={store.customFrom}
-              customTo={store.customTo}
-              onPreset={store.setPreset}
-              onCustomRange={store.setCustomRange}
-              summaryPreset={store.summaryPreset}
-              onSummaryPreset={store.setSummaryPreset}
-              overview={overview}
-              indexStatus={indexStatus}
-              indexProgress={indexJob.progress}
-              indexError={indexError}
-              onDismissIndexError={store.dismissIndexError}
-              onStartIndex={() => void store.startIndex(false)}
-              onCancelIndex={() => void store.cancelIndex()}
-              summarizeStatus={summarizeStatus}
-              summarizeProgress={summarizeJob.progress}
-              summarizeError={summarizeError}
-              onDismissSummarizeError={store.dismissSummarizeError}
-              onStartSummarize={() => void store.startSummarize()}
-              aiDisabledReason={aiDisabledReason}
-              onCancelSummarize={() => void store.cancelSummarize()}
-              onRefresh={() => void store.refresh()}
-              loading={loading}
-              excludeSynthetic={store.excludeSynthetic}
-              onExcludeSynthetic={store.setExcludeSynthetic}
-              includeSidechain={store.includeSidechain}
-              onIncludeSidechain={store.setIncludeSidechain}
-            />
-
-            {dashboardError ? (
-              <EmptyState kind="error" message={dashboardError} onPrimary={() => void store.refresh()} primaryLabel="再試行" />
-            ) : loading && !overview ? (
-              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                <SkeletonBlock height={70} label="サマリーを読み込み中" />
-                <SkeletonBlock height={160} label="集計を読み込み中" />
-              </div>
-            ) : noData && statusPending ? (
-              <div style={noteStyle}>インデックス状態を確認中です。</div>
-            ) : noData ? (
-              <EmptyState
-                kind={neverIndexed ? "not-indexed" : "no-data"}
-                onPrimary={() => void store.startIndex(false)}
-                busy={running}
-              />
-            ) : overview ? (
-              <>
-                <SummaryCards overview={overview} preset={store.preset} />
-
-                <Section
-                  title="期間ヒートマップ"
-                  subtitle="日別のコスト相当。ドラッグで期間を選ぶと、下のすべてが連動します。"
-                >
-                  {series ? <CostHeatmap series={series} onSelectRange={store.setCustomRange} /> : null}
-                </Section>
-
-                <Section
-                  title="関係図"
-                  subtitle="案件 → 作業種別 → モデルのコストの流れ。ノードをクリックすると絞り込みます。"
-                >
-                  {models && sessions ? (
-                    <RelationDiagram
-                      models={models}
-                      sessions={sessions}
-                      excludeSynthetic={store.excludeSynthetic}
-                      topN={store.topN}
-                      onTopN={store.setTopN}
-                      grandTotal={overview.totals.costUsd}
-                      selection={store.selection}
-                      onSelect={store.setSelection}
-                    />
-                  ) : null}
-                </Section>
-
-                <Section title="モデル別">
-                  {models ? (
-                    <ModelTable
-                      report={models}
-                      granularity={store.granularity}
-                      onGranularity={store.setGranularity}
-                      excludeSynthetic={store.excludeSynthetic}
-                      selection={store.selection}
-                      onSelect={store.setSelection}
-                    />
-                  ) : null}
-                </Section>
-
-                <Section title="案件別" actions={<ButtonGroup
-                  ariaLabel="内訳"
-                  value={store.breakdownDimension}
-                  onChange={store.setBreakdownDimension}
-                  options={[
-                    { value: "project", label: "案件" }, { value: "branch", label: "ブランチ" },
-                    { value: "effort", label: "effort" }, { value: "origin", label: "起動元" },
-                    { value: "title", label: "主題" }, { value: "agent", label: "エージェント" },
-                  ]}
-                />}>
-                  {store.breakdownError ? (
-                    <EmptyState kind="error" message={store.breakdownError} onPrimary={() => void store.refreshBreakdown()} />
-                  ) : store.breakdown ? (
-                    <ProjectTable
-                      report={store.breakdown}
-                      overview={overview}
-                      selection={store.selection}
-                      onSelect={store.setSelection}
-                      dimensionLabel={({ project: "案件", branch: "ブランチ", effort: "effort", origin: "起動元", title: "主題", agent: "エージェント" })[store.breakdownDimension]}
-                      projectMode={store.breakdownDimension === "project"}
-                    />
-                  ) : null}
-                </Section>
-
-                <Section title="セッション一覧">
-                  {sessions ? (
-                    <SessionTable
-                      report={sessions}
-                      sort={store.sessionSort}
-                      onSort={store.setSessionSort}
-                      page={store.sessionPage}
-                      onPage={store.setSessionPage}
-                      pageSize={SESSION_PAGE_SIZE}
-                      selection={store.selection}
-                      leafDimension={store.leafDimension}
-                      onOpenDetail={openDetail}
-                      activeKey={store.detailKey}
-                    />
-                  ) : null}
-                </Section>
-
-                {detailOpen ? (
-                  <Section title="セッション詳細">
-                    {store.detailError ? (
-                      <EmptyState
-                        kind="error"
-                        message={store.detailError}
-                        onPrimary={() =>
-                          store.detailKey
-                            ? void store.openDetail(store.detailKey.kind, store.detailKey.sessionId)
-                            : undefined
-                        }
-                        primaryLabel="再試行"
-                      />
-                    ) : store.detailLoading ? (
-                      <SkeletonBlock height={120} label="詳細を読み込み中" />
-                    ) : store.detail ? (
-                      <SessionDetailView detail={store.detail} transcript={store.transcript} transcriptLoading={store.transcriptLoading} transcriptError={store.transcriptError} sessionSummarizing={store.sessionSummarizing} sessionSummarizeError={store.sessionSummarizeError} onSummarize={() => void store.summarizeSession(store.detail!.session.kind, store.detail!.session.sessionId)} onClose={closeDetail} />
-                    ) : null}
-                  </Section>
-                ) : null}
-
-                <Section title="単価設定">
-                  <PriceSettings
-                    prices={store.prices}
-                    unpricedModels={overview.unpricedModels}
-                    loading={store.pricesLoading}
-                    error={store.pricesError}
-                    repricedSessions={store.repricedSessions}
-                    onSave={(entry) => void store.savePrice(entry)}
-                  />
-                </Section>
-              </>
-            ) : null}
-              </>
-            )}
-          </div>
-        </div>
-    </OverlayShell>
-  );
+function Segment<T extends string>({ buttons, value, onChange }: { buttons: readonly (readonly [T, string])[]; value: T; onChange: (value: T) => void }) {
+  return <div role="group" aria-label="段" style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>{buttons.map(([id, label]) => <button key={id} type="button" aria-pressed={value === id} onClick={() => onChange(id)} style={subtleButtonStyle}>{label}</button>)}</div>;
 }

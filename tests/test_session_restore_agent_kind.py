@@ -136,7 +136,7 @@ def test_agent_kind_round_trip_contract_remains_wired() -> None:
 
     for snippet in [
         "fn write_session_mapping_file_to_dir(",
-        'home.join(".mycmux").join("pane-sessions")',
+            'crate::test_profile::runtime_dir()',
         "write_text_file_atomic(",
         "fn read_session_mapping_files_for_ids",
         "fn is_safe_mapping_id(",

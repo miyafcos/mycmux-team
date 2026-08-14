@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import socket
 import sys
 import time
@@ -13,7 +14,12 @@ from pathlib import Path
 from typing import Any, TextIO
 
 
-DEFAULT_PORT_FILE = Path.home() / ".mycmux" / "mycmux.port"
+def runtime_dir() -> Path:
+    configured = os.environ.get("MYCMUX_RUNTIME_DIR")
+    return Path(configured).expanduser() if configured else Path.home() / ".mycmux"
+
+
+DEFAULT_PORT_FILE = runtime_dir() / "mycmux.port"
 TOKEN_FILE_NAME = "mycmux.token"
 PROTOCOL_VERSION = 2
 

@@ -181,7 +181,7 @@ def test_savepoints_and_remote_control_have_separate_settings_destinations() -> 
         "src-tauri/src/commands/online.rs",
         [
             "fn existing_directory_inside_mycmux_home",
-            'home.join(".mycmux").join("savepoints")',
+                'runtime_dir_from_home(home).join("savepoints")',
             "legacy_directory",
         ],
     )

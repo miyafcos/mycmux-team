@@ -37,6 +37,8 @@ export function UsageView({
   onRetry,
   onReindex,
   onPickDay,
+  onOpenDigest,
+  digestLinkLabel,
 }: {
   series: SeriesReport | null;
   rhythm: UsageRhythmReport | null;
@@ -56,6 +58,8 @@ export function UsageView({
   onRetry: () => void;
   onReindex: () => void;
   onPickDay?: (day: number) => void;
+  onOpenDigest?: (day: number) => void;
+  digestLinkLabel?: string;
 }) {
   const [highlight, setHighlight] = useState<string | null>(null);
   const model = useMemo(
@@ -65,7 +69,7 @@ export function UsageView({
 
   if (!rangeReady) {
     return (
-      <Section title="使用量">
+      <Section title="トータル">
         <div style={noteStyle}>期間を2つの日付で指定すると反映されます。</div>
       </Section>
     );
@@ -73,7 +77,7 @@ export function UsageView({
 
   if (error) {
     return (
-      <Section title="使用量">
+      <Section title="トータル">
         <EmptyState kind="error" message={error} onPrimary={onRetry} />
       </Section>
     );
@@ -81,9 +85,9 @@ export function UsageView({
 
   if (!series || !rhythm) {
     return (
-      <Section title="使用量">
+      <Section title="トータル">
         {loading ? (
-          <SkeletonBlock height={220} label="使用量を読み込み中" />
+          <SkeletonBlock height={220} label="集計を読み込み中" />
         ) : (
           <EmptyState kind="no-data" onPrimary={onReindex} />
         )}
@@ -98,8 +102,8 @@ export function UsageView({
   return (
     <>
       <Section
-        title="使用量"
-        subtitle="コストではなく、実際に処理した量で並べています。指標を切り替えると順位が変わります。"
+        title="トータル"
+        subtitle="コスト相当ではなく、実際に処理した量で並べています。指標を切り替えると順位が変わります。"
         actions={
           <ButtonGroup
             ariaLabel="指標"
@@ -205,6 +209,8 @@ export function UsageView({
             highlight={highlight}
             onHighlight={setHighlight}
             onPickDay={onPickDay}
+            onOpenDigest={onOpenDigest}
+            digestLinkLabel={digestLinkLabel}
           />
         ) : null}
       </Section>

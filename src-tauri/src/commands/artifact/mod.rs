@@ -74,8 +74,8 @@ fn sidetab_session_dir(session_id: &str) -> Result<PathBuf, String> {
     if !is_safe_session_id(session_id) {
         return Err("Invalid session id".to_string());
     }
-    let home = dirs::home_dir().ok_or_else(|| "Failed to resolve home directory".to_string())?;
-    Ok(home.join(".mycmux").join("sessions").join(session_id))
+    let runtime_dir = crate::test_profile::runtime_dir()?;
+    Ok(runtime_dir.join("sessions").join(session_id))
 }
 
 fn normalize_preview_path(path: &Path) -> PathBuf {

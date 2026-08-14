@@ -13,12 +13,12 @@ const report: EfficiencyReport = {
 const rules: RuleCheckReport = { range: report.range, largeContext: { count: 0, sessions: [] }, compacted: { count: 0, sessions: [] } };
 
 describe("ExperimentView", () => {
-  it("renders all question cards and API interpretation note when comparisons exist", () => {
+  it("renders the target-named sections and API interpretation note when comparisons exist", () => {
     const html = renderToStaticMarkup(<ExperimentView report={report} rules={rules} loading={false} error={null} onOpenDetail={() => {}} />);
-    expect(html).toContain("effort を上げると見合っている？");
-    expect(html).toContain("サブエージェント委譲で何が変わる？");
-    expect(html).toContain("compact が起きたセッションはどう違う？");
-    expect(html).toContain("長いセッションは損？");
+    expect(html).toContain(">effort</h2>");
+    expect(html).toContain(">サブエージェント</h2>");
+    expect(html).toContain(">compact</h2>");
+    expect(html).toContain(">セッションの長さ</h2>");
     expect(html).toContain("note");
     expect(html).toContain("Q1");
   });

@@ -25,6 +25,7 @@ from savepoint_publish import (
     load_config,
     manifest_identity,
     resolve_local_savepoint_dir,
+    runtime_dir,
     safe_final_records_dir,
 )
 
@@ -160,7 +161,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="期限切れの引き継ぎ記録を読み取り専用で確認する")
     parser.add_argument("--online-dir", help="対象を明示指定 (既定: mycmux のローカル保存先)")
     parser.add_argument("--machine", help="自機名 (既定: config → hostname)")
-    parser.add_argument("--config", default="~/.mycmux/savepoint.json")
+    parser.add_argument("--config", default=str(runtime_dir() / "savepoint.json"))
     parser.add_argument("--dry-run", action="store_true")
     return parser
 

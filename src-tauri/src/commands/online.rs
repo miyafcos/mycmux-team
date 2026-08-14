@@ -334,14 +334,31 @@ pub(crate) fn load_config(config_path: &Path) -> Result<SavepointConfig, String>
 }
 
 fn existing_directory_inside_mycmux_home(path: &Path, home: &Path) -> Option<PathBuf> {
-    let root = fs::canonicalize(home.join(".mycmux")).ok()?;
+    let root = fs::canonicalize(runtime_dir_from_home(home)).ok()?;
     let candidate = fs::canonicalize(path).ok()?;
     (candidate.is_dir() && candidate.starts_with(&root)).then_some(candidate)
+}
+
+fn runtime_dir_from_home(home: &Path) -> PathBuf {
+    crate::test_profile::runtime_dir_from(home.to_path_buf())
+}
+
+fn savepoint_config_path(home: &Path) -> PathBuf {
+    runtime_dir_from_home(home).join("savepoint.json")
 }
 
 pub(crate) fn local_savepoint_dir(
     config: &SavepointConfig,
     home: &Path,
+) -> Result<PathBuf, String> {
+    let profile_runtime = crate::test_profile::is_active().then(|| runtime_dir_from_home(home));
+    local_savepoint_dir_for_profile(config, home, profile_runtime.as_deref())
+}
+
+fn local_savepoint_dir_for_profile(
+    config: &SavepointConfig,
+    home: &Path,
+    profile_runtime: Option<&Path>,
 ) -> Result<PathBuf, String> {
     if let Some(local_dir) = config
         .local_dir
@@ -351,6 +368,12 @@ pub(crate) fn local_savepoint_dir(
     {
         let local_dir = expand_home_path(local_dir, home);
         if local_dir.is_absolute() && !is_link_or_reparse_point(&local_dir) {
+            if profile_runtime
+                .map(|runtime| !path_is_inside_runtime_dir(&local_dir, runtime))
+                .unwrap_or(false)
+            {
+                return Err("Profile savepoint local_dir must stay inside its runtime directory".to_string());
+            }
             return Ok(local_dir);
         }
     }
@@ -368,7 +391,14 @@ pub(crate) fn local_savepoint_dir(
         }
     }
 
-    Ok(home.join(".mycmux").join("savepoints"))
+    Ok(runtime_dir_from_home(home).join("savepoints"))
+}
+
+fn path_is_inside_runtime_dir(path: &Path, runtime_dir: &Path) -> bool {
+    !path
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+        && path.starts_with(runtime_dir)
 }
 
 pub(crate) fn local_savepoint_dir_from_config(
@@ -657,19 +687,19 @@ include!("online/lifecycle.rs");
 #[tauri::command(async)]
 pub fn list_online_savepoints() -> Result<Vec<OnlineSavepointEntry>, String> {
     let home = dirs::home_dir().ok_or_else(|| "Failed to resolve home directory".to_string())?;
-    list_online_savepoints_from_config(&home.join(".mycmux").join("savepoint.json"), &home)
+    list_online_savepoints_from_config(&savepoint_config_path(&home), &home)
 }
 
 #[tauri::command(async)]
 pub fn list_trashed_online_savepoints() -> Result<Vec<OnlineSavepointEntry>, String> {
     let home = dirs::home_dir().ok_or_else(|| "Failed to resolve home directory".to_string())?;
-    list_trashed_online_savepoints_from_config(&home.join(".mycmux").join("savepoint.json"), &home)
+    list_trashed_online_savepoints_from_config(&savepoint_config_path(&home), &home)
 }
 
 #[tauri::command(async)]
 pub fn get_savepoint_storage_settings() -> Result<SavepointStorageSettings, String> {
     let home = dirs::home_dir().ok_or_else(|| "Failed to resolve home directory".to_string())?;
-    get_savepoint_storage_settings_from_config(&home.join(".mycmux").join("savepoint.json"), &home)
+    get_savepoint_storage_settings_from_config(&savepoint_config_path(&home), &home)
 }
 
 #[tauri::command(async)]
@@ -677,7 +707,7 @@ pub fn join_savepoint_summary(bundle_dir: String) -> Result<JoinSavepointSummary
     let home = dirs::home_dir().ok_or_else(|| "Failed to resolve home directory".to_string())?;
     join_savepoint_summary_from_config(
         Path::new(&bundle_dir),
-        &home.join(".mycmux").join("savepoint.json"),
+        &savepoint_config_path(&home),
         &home,
     )
 }
@@ -687,7 +717,7 @@ pub fn join_savepoint_full(bundle_dir: String) -> Result<JoinSavepointFull, Stri
     let home = dirs::home_dir().ok_or_else(|| "Failed to resolve home directory".to_string())?;
     join_savepoint_full_from_config(
         Path::new(&bundle_dir),
-        &home.join(".mycmux").join("savepoint.json"),
+        &savepoint_config_path(&home),
         &home,
         &home.join(".claude").join("projects"),
     )
@@ -699,7 +729,7 @@ pub fn toggle_savepoint_pin(bundle_dir: String) -> Result<ToggleSavepointPinResu
         .lock()
         .map_err(|_| "Savepoint publisher lock is unavailable".to_string())?;
     let home = dirs::home_dir().ok_or_else(|| "Failed to resolve home directory".to_string())?;
-    let config = load_config(&home.join(".mycmux").join("savepoint.json"))?;
+    let config = load_config(&savepoint_config_path(&home))?;
     let local_dir = local_savepoint_dir(&config, &home)?;
     let (_, bundle_dir, _, _, _) = resolve_active_savepoint(&local_dir, Path::new(&bundle_dir))?;
     toggle_savepoint_pin_at(&bundle_dir)
@@ -711,7 +741,7 @@ pub fn delete_online_savepoint(bundle_dir: String) -> Result<(), String> {
         .lock()
         .map_err(|_| "Savepoint publisher lock is unavailable".to_string())?;
     let home = dirs::home_dir().ok_or_else(|| "Failed to resolve home directory".to_string())?;
-    let config = load_config(&home.join(".mycmux").join("savepoint.json"))?;
+    let config = load_config(&savepoint_config_path(&home))?;
     let online_dir = local_savepoint_dir(&config, &home)?;
     trash_online_savepoint_at(
         &online_dir,
@@ -728,7 +758,7 @@ pub fn restore_online_savepoint(bundle_dir: String, trash_id: String) -> Result<
         .lock()
         .map_err(|_| "Savepoint publisher lock is unavailable".to_string())?;
     let home = dirs::home_dir().ok_or_else(|| "Failed to resolve home directory".to_string())?;
-    let config = load_config(&home.join(".mycmux").join("savepoint.json"))?;
+    let config = load_config(&savepoint_config_path(&home))?;
     let online_dir = local_savepoint_dir(&config, &home)?;
     restore_online_savepoint_at(&online_dir, Path::new(&bundle_dir), &trash_id).map(|_| ())
 }
@@ -739,7 +769,7 @@ pub fn purge_online_savepoint(bundle_dir: String, trash_id: String) -> Result<()
         .lock()
         .map_err(|_| "Savepoint publisher lock is unavailable".to_string())?;
     let home = dirs::home_dir().ok_or_else(|| "Failed to resolve home directory".to_string())?;
-    let config = load_config(&home.join(".mycmux").join("savepoint.json"))?;
+    let config = load_config(&savepoint_config_path(&home))?;
     let online_dir = local_savepoint_dir(&config, &home)?;
     purge_online_savepoint_at(&online_dir, Path::new(&bundle_dir), &trash_id)
 }
@@ -748,7 +778,7 @@ pub fn purge_online_savepoint(bundle_dir: String, trash_id: String) -> Result<()
 pub fn cleanup_online_savepoints() -> Result<CleanupOnlineSavepointsResult, String> {
     let home = dirs::home_dir().ok_or_else(|| "Failed to resolve home directory".to_string())?;
     cleanup_online_savepoints_from_config(
-        &home.join(".mycmux").join("savepoint.json"),
+        &savepoint_config_path(&home),
         &home,
         Utc::now(),
         SystemTime::now(),

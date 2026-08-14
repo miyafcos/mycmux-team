@@ -22,9 +22,10 @@ pub const USAGE_CACHE_TTL_MS: i64 = 150_000;
 /// only; never token values.
 pub fn log_oauth_failure(app: &tauri::AppHandle, context: &str, detail: &str) {
     use tauri::Manager;
-    let Ok(data_dir) = app.path().app_data_dir() else {
+    let Ok(default_dir) = app.path().app_data_dir() else {
         return;
     };
+    let data_dir = crate::test_profile::app_data_dir_from(default_dir);
     let logs_dir = data_dir.join("logs");
     if std::fs::create_dir_all(&logs_dir).is_err() {
         return;

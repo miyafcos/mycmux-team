@@ -43,7 +43,7 @@ export function SummaryCards({ overview, preset }: { overview: Overview; preset:
       hint: "従量課金だった場合の金額。請求額ではありません",
     },
     {
-      label: "キャッシュヒット率",
+      label: "キャッシュ率",
       value: formatRatio(overview.cacheHitRate),
       delta: null,
       hint: "取り込み側トークンのうちキャッシュ読み出しが占める割合",

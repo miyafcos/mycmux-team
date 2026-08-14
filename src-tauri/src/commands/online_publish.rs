@@ -135,7 +135,7 @@ pub fn publish_savepoint(
         }
     };
     publish_savepoint_impl(
-        &home.join(".mycmux").join("savepoint.json"),
+        &crate::test_profile::runtime_dir_from(home.clone()).join("savepoint.json"),
         &home,
         &transcript_root,
         agent_kind,
@@ -185,7 +185,7 @@ pub fn finalize_savepoint(
         }
     };
     publish_savepoint_impl(
-        &home.join(".mycmux").join("savepoint.json"),
+        &crate::test_profile::runtime_dir_from(home.clone()).join("savepoint.json"),
         &home,
         &transcript_root,
         agent_kind,

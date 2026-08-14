@@ -406,7 +406,11 @@ def test_final_records_path_must_be_a_real_directory(tmp_path: Path) -> None:
         sp.safe_final_records_dir(online_dir, True)
 
 
-def test_local_store_resolver_ignores_an_old_shared_directory(tmp_path: Path) -> None:
+def test_local_store_resolver_ignores_an_old_shared_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A mycmux pane injects MYCMUX_RUNTIME_DIR; this test models the no-env case.
+    monkeypatch.delenv("MYCMUX_RUNTIME_DIR", raising=False)
     home = tmp_path / "home"
     shared = tmp_path / "shared"
     (home / ".mycmux").mkdir(parents=True)
@@ -421,7 +425,21 @@ def test_local_store_resolver_ignores_an_old_shared_directory(tmp_path: Path) ->
     assert resolved == home.resolve() / ".mycmux" / "savepoints"
 
 
-def test_local_store_resolver_reuses_an_existing_mycmux_legacy_path(tmp_path: Path) -> None:
+def test_local_store_resolver_uses_the_injected_runtime_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = tmp_path / "profile-runtime"
+    monkeypatch.setenv("MYCMUX_RUNTIME_DIR", str(runtime))
+
+    resolved = sp.resolve_local_savepoint_dir(None, {}, home=tmp_path / "home")
+
+    assert resolved == runtime / "savepoints"
+
+
+def test_local_store_resolver_reuses_an_existing_mycmux_legacy_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("MYCMUX_RUNTIME_DIR", raising=False)
     home = tmp_path / "home"
     existing = home / ".mycmux" / "online-dev"
     existing.mkdir(parents=True)

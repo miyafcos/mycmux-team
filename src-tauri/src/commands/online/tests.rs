@@ -106,6 +106,39 @@
         );
     }
 
+    #[test]
+    fn profile_rejects_an_absolute_local_dir_outside_its_runtime() {
+        let temp = tempdir().unwrap();
+        let home = temp.path().join("home");
+        let config = SavepointConfig {
+            local_dir: Some(home.join(".mycmux").join("savepoints").to_string_lossy().into_owned()),
+            ..SavepointConfig::default()
+        };
+
+        let profile_runtime = home.join(".mycmux-profile");
+        let error = local_savepoint_dir_for_profile(&config, &home, Some(&profile_runtime))
+            .expect_err("profile must not reach the production savepoint tree");
+
+        assert!(error.contains("must stay inside its runtime directory"));
+    }
+
+    #[test]
+    fn profile_accepts_an_absolute_local_dir_inside_its_runtime() {
+        let temp = tempdir().unwrap();
+        let home = temp.path().join("home");
+        let runtime = home.join(".mycmux-profile");
+        let local_dir = runtime.join("savepoints").join("isolated");
+        let config = SavepointConfig {
+            local_dir: Some(local_dir.to_string_lossy().into_owned()),
+            ..SavepointConfig::default()
+        };
+
+        assert_eq!(
+            local_savepoint_dir_for_profile(&config, &home, Some(&runtime)).unwrap(),
+            local_dir
+        );
+    }
+
     fn fixture_online_dir() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("src")

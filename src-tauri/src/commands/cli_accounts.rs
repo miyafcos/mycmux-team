@@ -18,7 +18,11 @@ use crate::cli_accounts::{
 use crate::util::task::run_blocking;
 
 fn app_data_dir(app: &AppHandle) -> Result<std::path::PathBuf, String> {
-    app.path().app_data_dir().map_err(|e| format!("Failed to resolve application data directory: {e}"))
+    let default_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Failed to resolve application data directory: {e}"))?;
+    Ok(crate::test_profile::app_data_dir_from(default_dir))
 }
 
 /// How the frontend must launch the CLI so it logs in *beside* the live
@@ -50,6 +54,9 @@ pub async fn capture_cli_account(app: AppHandle, provider: CliProvider, label: O
 
 #[tauri::command(async)]
 pub async fn switch_cli_account(app: AppHandle, provider: CliProvider, profile_id: String) -> Result<CliSwitchResult, String> {
+    if crate::test_profile::is_active() {
+        return Err("CLI account switching is disabled while a test profile is active".to_string());
+    }
     let result = cli_accounts::switch_resolved(&app_data_dir(&app)?, provider, &profile_id);
     if let Err(error) = &result {
         crate::usage::log_oauth_failure(&app, "switch_cli_account", error);

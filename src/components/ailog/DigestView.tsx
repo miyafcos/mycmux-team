@@ -12,6 +12,8 @@ export function DigestView({
   summarizeError,
   onStartSummarize,
   aiDisabledReason,
+  error,
+  onRetry,
 }: {
   report: DigestReport | null;
   loading: boolean;
@@ -24,6 +26,9 @@ export function DigestView({
   onStartSummarize?: () => void;
   /** Set when the AI setting is off; also used as each button's tooltip. */
   aiDisabledReason?: string;
+  /** A saved-digest GET failed; retrying never starts LLM work. */
+  error?: string | null;
+  onRetry?: () => void;
 }) {
   const aiOff = aiDisabledReason !== undefined;
   const content = report?.digest?.content;
@@ -42,9 +47,10 @@ export function DigestView({
 
       {loading || generating ? <div style={noteStyle}>生成中…</div> : null}
       {summarizeStatus?.running ? <div style={noteStyle}>要約中 {summarizeStatus.sessionsDone.toLocaleString()} / {summarizeStatus.sessionsTotal.toLocaleString()}（残り {summarizeStatus.sessionsRemaining.toLocaleString()}）</div> : null}
+      {error ? <div style={{ ...cardStyle, borderColor: "var(--cmux-usage-warn)" }}><div>読み込みに失敗しました: {error}</div>{onRetry ? <button type="button" onClick={onRetry} style={{ ...subtleButtonStyle, marginTop: 10 }}>再試行</button> : null}</div> : null}
       {summarizeError || report?.parseError ? <div style={{ ...cardStyle, borderColor: "var(--cmux-usage-warn)" }}>エラー: {summarizeError ?? report?.parseError}</div> : null}
       {!loading && !generating && !content ? <div style={cardStyle}>
-        <div>{report?.reason ?? "この日の要約はまだありません"}</div>
+        <div>{report?.reason ?? "この日の要約はまだありません。要約を実行すると表示されます。"}</div>
         {(summarizeStatus?.sessionsRemaining ?? 0) > 0 && onStartSummarize ? <button type="button" onClick={onStartSummarize} disabled={aiOff} title={aiDisabledReason} style={{ ...subtleButtonStyle, marginTop: 10, opacity: aiOff ? 0.5 : 1 }}>未要約 {summarizeStatus!.sessionsRemaining.toLocaleString()} 件 — 要約を実行</button> : null}
       </div> : null}
       {content ? (

@@ -63,7 +63,7 @@ export function CostHeatmap({
   }, [anchor, commit, hoverTs]);
 
   if (grid.weeks.length === 0) {
-    return <div style={noteStyle}>この期間には日別の記録がありません。</div>;
+    return <div style={noteStyle}>この期間には日別の記録がありません。期間を広げると表示されます。</div>;
   }
 
   const selection = anchor !== null ? dragSpan(anchor, hoverTs ?? anchor) : null;

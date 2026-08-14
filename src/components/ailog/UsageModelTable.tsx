@@ -87,7 +87,7 @@ export function UsageModelTable({
     unpriced.has(group) || report.unpricedModels.some((model) => model.startsWith(`${group}-`));
 
   if (rows.length === 0) {
-    return <div style={noteStyle}>この期間に記録がありません。</div>;
+    return <div style={noteStyle}>この期間に記録がありません。期間を広げるか、再インデックスしてください。</div>;
   }
 
   return (

@@ -22,6 +22,7 @@ EXPECTED_EPHEMERAL_ENV_KEYS = {
     "MYCMUX_MARKDOWN_OUT",
     "MYCMUX_ARTIFACTS_DIR",
     "MYCMUX_RUNTIME_DIR",
+    "MYCMUX_TEST_PROFILE",
     "__CMUX_LAUNCHER_DONE",
 }
 
@@ -118,7 +119,9 @@ def test_ephemeral_env_keys_stay_in_sync_across_all_guards() -> None:
         ),
         "src/components/layout/SocketListener.tsx persistence filter": (
             extract_socket_listener_keys(),
-            EXPECTED_EPHEMERAL_ENV_KEYS,
+            # This key is injected only by the backend after frontend state is
+            # already fixed, so it cannot be persisted by SocketListener.
+            EXPECTED_EPHEMERAL_ENV_KEYS - {"MYCMUX_TEST_PROFILE"},
         ),
     }
 

@@ -73,6 +73,12 @@ describe("DigestView", () => {
     expect(render({ generating: true })).toContain("生成中…");
   });
 
+  it("shows a saved-digest GET failure with a retry that is separate from generation", () => {
+    const html = render({ error: "database is locked", onRetry: () => {} });
+    expect(html).toContain("読み込みに失敗しました: database is locked");
+    expect(html).toContain("再試行");
+  });
+
   it("notes low confidence", () => {
     const low: DigestReport = { ...report, digest: { ...report.digest!, content: { ...report.digest!.content, confidence: "low" } } };
     expect(render({ report: low })).toContain("低確度 (素材が少ない日)");

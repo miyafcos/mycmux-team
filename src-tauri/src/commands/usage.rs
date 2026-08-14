@@ -232,10 +232,11 @@ pub async fn get_account_usage(
     app: tauri::AppHandle,
     state: tauri::State<'_, UsageState>,
 ) -> Result<AccountUsageReport, String> {
-    let base = app
+    let default_dir = app
         .path()
         .app_data_dir()
         .map_err(|error| error.to_string())?;
+    let base = crate::test_profile::app_data_dir_from(default_dir);
     let accounts = crate::cli_accounts::list_resolved(&base)?;
     let rows = planned_rows(&accounts.profiles, &accounts.live);
     let priority = std::mem::take(&mut *state.deferred_priority.lock().await);
@@ -1001,9 +1002,10 @@ async fn recapture_live_snapshot(app: &tauri::AppHandle, row: &PlannedRow) -> bo
     if !matches!(live_identity_check(row), LiveIdentityCheck::Active) {
         return false;
     }
-    let Ok(base) = app.path().app_data_dir() else {
+    let Ok(default_dir) = app.path().app_data_dir() else {
         return false;
     };
+    let base = crate::test_profile::app_data_dir_from(default_dir);
     let provider = row.provider;
     matches!(
         tokio::task::spawn_blocking(move || crate::cli_accounts::capture_resolved(
@@ -1015,7 +1017,7 @@ async fn recapture_live_snapshot(app: &tauri::AppHandle, row: &PlannedRow) -> bo
 }
 
 async fn remember_refresh_rejection(app: &tauri::AppHandle, row: &PlannedRow) {
-    let Ok(base) = app.path().app_data_dir() else {
+    let Ok(default_dir) = app.path().app_data_dir() else {
         crate::usage::log_oauth_failure(
             app,
             "get_account_usage_refresh_record",
@@ -1023,6 +1025,7 @@ async fn remember_refresh_rejection(app: &tauri::AppHandle, row: &PlannedRow) {
         );
         return;
     };
+    let base = crate::test_profile::app_data_dir_from(default_dir);
     let profile_id = row.profile_id.clone();
     let rejected_at = Utc::now().to_rfc3339();
     let result = tokio::task::spawn_blocking(move || {

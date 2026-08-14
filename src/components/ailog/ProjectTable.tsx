@@ -42,7 +42,7 @@ export function ProjectTable({
             <tr>
               <th style={thLeftStyle}>{dimensionLabel}</th>
               <th style={thStyle}>セッション</th>
-              <th style={thStyle}>コスト</th>
+              <th style={thStyle}>コスト相当</th>
               <th style={thStyle}>シェア</th>
               {projectMode ? <th style={thLeftStyle}>主な主題</th> : null}
               <th style={thStyle}>平均手戻り</th>

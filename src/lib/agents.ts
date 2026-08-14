@@ -1,17 +1,33 @@
 import type { AgentDefinition } from "../types";
+import { invoke } from "@tauri-apps/api/core";
 import { getDefaultShell } from "./ipc";
 
 // Resolved at runtime via IPC — falls back to /bin/bash until loaded
 let _detectedShell = { command: "/bin/bash", args: [] as string[] };
+let _runtimeLeaf: string | undefined;
 
-const BASH_LAUNCHER_SCRIPT = "$HOME/.mycmux/bin/launcher.sh";
-const POWERSHELL_LAUNCHER_COMMAND = "$launcher = Join-Path $HOME '.mycmux\\bin\\launcher.ps1'; if (Test-Path -LiteralPath $launcher) { & $launcher } else { Write-Host 'mycmux launcher is not installed. Restart mycmux or reinstall the latest version.' }";
-const CMD_LAUNCHER_COMMAND = "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File \"%USERPROFILE%\\.mycmux\\bin\\launcher.ps1\"";
+function bashLauncherScript(): string {
+  return _runtimeLeaf ? `$HOME/${_runtimeLeaf}/bin/launcher.sh` : "";
+}
+
+function powerShellLauncherCommand(): string {
+  if (!_runtimeLeaf) return "Write-Host 'mycmux launcher profile could not be verified; refusing to launch it.'";
+  return `$launcher = Join-Path $HOME '${_runtimeLeaf}\\bin\\launcher.ps1'; if (Test-Path -LiteralPath $launcher) { & $launcher } else { Write-Host 'mycmux launcher is not installed. Restart mycmux or reinstall the latest version.' }`;
+}
+
+function cmdLauncherCommand(): string {
+  if (!_runtimeLeaf) return "echo mycmux launcher profile could not be verified; refusing to launch it.";
+  return `powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%USERPROFILE%\\${_runtimeLeaf}\\bin\\launcher.ps1"`;
+}
 
 export async function initDefaultShell(): Promise<void> {
   try {
     _detectedShell = await getDefaultShell();
   } catch { /* keep fallback */ }
+  try {
+    const profile = await invoke<string | null>("get_test_profile");
+    _runtimeLeaf = profile ? `.mycmux-${profile}` : ".mycmux";
+  } catch { /* Unknown profile state must not launch through production paths. */ }
 }
 
 export const BUILT_IN_AGENTS: AgentDefinition[] = [
@@ -22,10 +38,11 @@ export const BUILT_IN_AGENTS: AgentDefinition[] = [
     get command() { return _detectedShell.command; },
     get args() {
       if (isBashLikeShell(_detectedShell.command)) {
+        if (!bashLauncherScript()) return _detectedShell.args;
         return [
           "-i",
           "-c",
-          `if [ -f "${BASH_LAUNCHER_SCRIPT}" ]; then source "${BASH_LAUNCHER_SCRIPT}"; fi; exec "\${SHELL:-/bin/bash}" -i`,
+          `if [ -f "${bashLauncherScript()}" ]; then source "${bashLauncherScript()}"; fi; exec "\${SHELL:-/bin/bash}" -i`,
         ];
       }
       if (isPowerShellLikeShell(_detectedShell.command)) {
@@ -35,11 +52,11 @@ export const BUILT_IN_AGENTS: AgentDefinition[] = [
           "-ExecutionPolicy",
           "Bypass",
           "-Command",
-          POWERSHELL_LAUNCHER_COMMAND,
+          powerShellLauncherCommand(),
         ];
       }
       if (isCmdLikeShell(_detectedShell.command)) {
-        return ["/d", "/k", CMD_LAUNCHER_COMMAND];
+        return ["/d", "/k", cmdLauncherCommand()];
       }
       return _detectedShell.args;
     },

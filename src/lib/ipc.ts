@@ -936,7 +936,10 @@ export interface GalleryPet {
   tags: string[];
   likeCount: number;
   downloadCount: number;
+  /** The whole animation side by side — thousands of px wide, not a thumbnail. */
   previewUrl: string;
+  /** A single frame: this is the one to show on a card. */
+  posterUrl: string;
   atlasSize: string;
   statesDetected: number;
 }

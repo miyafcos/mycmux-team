@@ -118,7 +118,7 @@ export function UsageTotals({
           </div>
         </Card>
 
-        <Card label="コスト算入外">
+        <Card label="算入外">
           <div style={{ fontSize: "var(--cmux-font-size-md)", fontWeight: 700, marginTop: 3 }}>
             {data.unpricedModels.length > 0 ? `${formatCount(data.unpricedModels.length)} モデル` : "なし"}
           </div>
