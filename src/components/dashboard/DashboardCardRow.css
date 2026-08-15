@@ -1,0 +1,53 @@
+.cmux-dash-row {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  gap: 8px;
+  margin: 0 0 4px;
+  padding: 8px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--cmux-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  content-visibility: auto;
+  contain-intrinsic-size: 0 70px;
+  animation: cmux-dash-row-in 180ms cubic-bezier(.16, 1, .3, 1) both;
+  transition: background 180ms var(--cmux-ease), border-color 180ms var(--cmux-ease);
+}
+
+.cmux-dash-row:hover { background: var(--cmux-surface-raised); }
+.cmux-dash-row.is-ask {
+  border-color: color-mix(in srgb, var(--status-waiting) 55%, transparent);
+  background: color-mix(in srgb, var(--status-waiting) 9%, var(--cmux-bg-solid));
+}
+.cmux-dash-row.is-error {
+  border-color: color-mix(in srgb, var(--status-error) 55%, transparent);
+  background: color-mix(in srgb, var(--status-error) 8%, var(--cmux-bg-solid));
+}
+.cmux-dash-row.is-selected {
+  border-color: var(--cmux-border);
+  background: var(--cmux-selected);
+}
+.cmux-dash-row-agent { width: 3px; flex: 0 0 3px; border-radius: 2px; }
+.cmux-dash-row-body { display: block; flex: 1; min-width: 0; }
+.cmux-dash-row-title { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.cmux-dash-row-title strong { overflow: hidden; flex: 1; color: var(--cmux-text); font-size: var(--cmux-font-size-md); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.cmux-dash-row-workspace { min-width: 0; flex: 0 1 auto; max-width: 42%; overflow: hidden; border-radius: 4px; padding: 0 5px; background: var(--cmux-popover); color: var(--cmux-text-secondary); font-size: var(--cmux-font-size-xs); text-overflow: ellipsis; white-space: nowrap; }
+.cmux-dash-row-preview { display: block; margin-top: 2px; overflow: hidden; color: var(--cmux-text-tertiary); font-size: 11.5px; text-overflow: ellipsis; white-space: nowrap; }
+.cmux-dash-row-status { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 3px; min-width: 0; }
+.cmux-dash-row-activity,
+.cmux-dash-row-elapsed { overflow: hidden; color: var(--cmux-text-tertiary); font-size: var(--cmux-font-size-xs); text-overflow: ellipsis; white-space: nowrap; }
+.cmux-dash-row-activity,
+.cmux-dash-row-elapsed { display: none; }
+
+@keyframes cmux-dash-row-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cmux-dash-row { animation: none; transition: none; }
+}

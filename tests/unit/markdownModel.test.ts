@@ -33,6 +33,54 @@ describe("parseMarkdown", () => {
     ] }]);
   });
 
+  it("parses aligned tables with inline cells and marks numeric columns", () => {
+    const [table] = parseMarkdown(
+      "| 対象 | **本数** | `実測` |\n|:---|:--:|---:|\n| [資料](https://example.test) | 12 | 3.5 |",
+    );
+
+    expect(table).toMatchObject({
+      type: "table",
+      align: ["left", "center", "right"],
+      numeric: [false, true, true],
+      header: [
+        [{ type: "text", text: "対象" }],
+        [{ type: "bold", children: [{ type: "text", text: "本数" }] }],
+        [{ type: "code", text: "実測" }],
+      ],
+      rows: [[[{ type: "link", url: "https://example.test" }], [{ type: "text", text: "12" }], [{ type: "text", text: "3.5" }]]],
+    });
+  });
+
+  it("keeps malformed tables as the original paragraph text", () => {
+    expect(parseMarkdown("| A | B |\n| only one cell |")).toEqual([
+      { type: "paragraph", inline: [{ type: "text", text: "| A | B |\n| only one cell |" }] },
+    ]);
+    expect(parseMarkdown("| A | B |\n| --- | --- |\n| only one cell |")).toEqual([
+      { type: "paragraph", inline: [{ type: "text", text: "| A | B |\n| --- | --- |\n| only one cell |" }] },
+    ]);
+  });
+
+  it("parses horizontal rules, checklists, and nested lists", () => {
+    const [list, rule] = parseMarkdown("- [ ] parent\n  1. [x] child\n  2. child two\n- sibling\n\n---");
+
+    expect(list).toMatchObject({
+      type: "list",
+      ordered: false,
+      items: [
+        {
+          checked: false,
+          children: [{
+            type: "list",
+            ordered: true,
+            items: [{ checked: true }, { checked: null }],
+          }],
+        },
+        { checked: null, children: [] },
+      ],
+    });
+    expect(rule).toEqual({ type: "hr" });
+  });
+
   it("is safe for empty and malformed input", () => {
     expect(parseMarkdown("")).toEqual([]);
     expect(() => parseMarkdown("**unclosed [link](")).not.toThrow();

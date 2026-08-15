@@ -89,4 +89,60 @@ describe("SocketListener layout persistence", () => {
     expect(saved.panes[0].launch_env).toEqual({ SAFE: "value" });
     expect(saved.panes[0].tabs![0].launch_env).toEqual({ SAFE: "value" });
   });
+
+  it("round-trips declared tab intent using the persisted snake_case schema", () => {
+    const source = pane("declared");
+    source.tabs[0] = {
+      ...source.tabs[0],
+      lifecycle: "declared",
+      origin: { kind: "agent", parentTabId: "parent-tab" },
+      declaredPrompt: "inspect the sibling session",
+      declaredTarget: "codex",
+    };
+    source.activeTabId = source.tabs[0].id;
+    const saved = toConfig(workspace([source], [["declared"]], [1], [[1]]));
+    expect(saved.panes[0].tabs![0]).toMatchObject({
+      lifecycle: "declared",
+      origin: { kind: "agent", parent_tab_id: "parent-tab" },
+      declared_prompt: "inspect the sibling session",
+      declared_target: "codex",
+    });
+  });
+
+  it("persists no resume identity or snapshot for a declared tab", () => {
+    const source = pane("declared-poison");
+    const declared = source.tabs[0];
+    Object.assign(source, {
+      claudeSessionId: "pane-claude",
+      agentKind: "claude",
+      agentSessionId: "pane-agent",
+      suppressedAgentSessions: [{ agentKind: "claude", agentSessionId: "pane-suppressed" }],
+    });
+    Object.assign(declared, {
+      lifecycle: "declared",
+      declaredTarget: "claude",
+      claudeSessionId: "tab-claude",
+      agentKind: "claude",
+      agentSessionId: "tab-agent",
+      suppressedAgentSessions: [{ agentKind: "claude", agentSessionId: "tab-suppressed" }],
+      terminalSnapshot: ["resume me"],
+    });
+
+    const saved = toConfig(workspace([source], [[source.id]], [1], [[1]]));
+    expect(saved.panes[0]).toMatchObject({
+      claude_session_id: null,
+      agent_kind: null,
+      agent_session_id: null,
+      suppressed_agent_sessions: null,
+    });
+    expect(saved.panes[0].tabs![0]).toMatchObject({
+      lifecycle: "declared",
+      declared_target: "claude",
+      claude_session_id: null,
+      agent_kind: null,
+      agent_session_id: null,
+      suppressed_agent_sessions: null,
+      terminal_snapshot: null,
+    });
+  });
 });

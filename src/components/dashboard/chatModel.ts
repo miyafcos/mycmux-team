@@ -7,6 +7,18 @@ export interface ChatMessage {
   at: number;
 }
 
+export interface ToolTranscriptItem {
+  id: string;
+  tool: string;
+  target: string | null;
+  ok: boolean | undefined;
+  summary: string | null;
+}
+
+export type ChatTranscriptRow =
+  | { kind: "message"; message: ChatMessage }
+  | { kind: "toolGroup"; id: string; tools: ToolTranscriptItem[] };
+
 export function toChatMessages(events: readonly SemanticEventEnvelope[]): ChatMessage[] {
   const messages: ChatMessage[] = [];
   for (const envelope of events) {
@@ -24,6 +36,52 @@ export function toChatMessages(events: readonly SemanticEventEnvelope[]): ChatMe
     if (event.type === "userMessage") messages.push({ id: envelope.eventId, role: "user", text: event.text, at: envelope.occurredAt });
     else if (event.type === "question") messages.push({ id: envelope.eventId, role: "question", text: event.prompt, at: envelope.occurredAt });
     else if (event.type === "error") messages.push({ id: envelope.eventId, role: "error", text: event.text, at: envelope.occurredAt });
+    else if (event.type === "testResult" && event.fail > 0) messages.push({
+      id: envelope.eventId,
+      role: "error",
+      text: `テスト結果: ${event.fail}件失敗、${event.pass}件成功`,
+      at: envelope.occurredAt,
+    });
   }
   return messages;
+}
+
+/**
+ * Keeps content-bearing events in source order while folding adjacent tool work.
+ * The first tool event id is deliberately retained as the stable disclosure key.
+ */
+export function toChatTranscriptRows(events: readonly SemanticEventEnvelope[]): ChatTranscriptRow[] {
+  const messages = toChatMessages(events);
+  const messageById = new Map(messages.map((message) => [message.id, message] as const));
+  const endByCallId = new Map(events.flatMap((event) => (
+    event.kind.type === "toolEnd" ? [[event.kind.call_id, event.kind] as const] : []
+  )));
+  const rows: ChatTranscriptRow[] = [];
+  let pendingTools: ToolTranscriptItem[] = [];
+
+  const flushTools = () => {
+    if (!pendingTools.length) return;
+    rows.push({ kind: "toolGroup", id: pendingTools[0].id, tools: pendingTools });
+    pendingTools = [];
+  };
+
+  for (const envelope of events) {
+    const message = messageById.get(envelope.eventId);
+    if (message) {
+      flushTools();
+      rows.push({ kind: "message", message });
+      continue;
+    }
+    if (envelope.kind.type !== "toolStart") continue;
+    const end = endByCallId.get(envelope.kind.call_id);
+    pendingTools.push({
+      id: envelope.eventId,
+      tool: envelope.kind.tool,
+      target: envelope.kind.target,
+      ok: end?.ok,
+      summary: end?.summary ?? null,
+    });
+  }
+  flushTools();
+  return rows;
 }

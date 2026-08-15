@@ -6,7 +6,7 @@
  * has no context menu — right click is not a supported input in this app.
  */
 
-import type { CSSProperties, ReactNode } from "react";
+import { useState, type CSSProperties, type ReactNode } from "react";
 
 export const cardStyle: CSSProperties = {
   background: "var(--cmux-surface)",
@@ -107,14 +107,18 @@ export function ButtonGroup<T extends string | number>({
   value,
   onChange,
   ariaLabel,
+  roleLabel = ariaLabel,
 }: {
   options: { value: T; label: string; title?: string }[];
   value: T;
   onChange: (value: T) => void;
   ariaLabel: string;
+  /** Visible counterpart to the group name; ariaLabel alone is not enough context. */
+  roleLabel?: string;
 }) {
   return (
     <div role="group" aria-label={ariaLabel} style={{ display: "flex", gap: 2, flexWrap: "wrap" }}>
+      <span style={{ alignSelf: "center", color: "var(--cmux-text-tertiary)", fontSize: "var(--cmux-font-size-xs)", whiteSpace: "nowrap" }}>{roleLabel}:</span>
       {options.map((option) => {
         const active = option.value === value;
         return (
@@ -301,5 +305,31 @@ export function SkeletonBlock({ height = 90, label }: { height?: number; label: 
         opacity: 0.6,
       }}
     />
+  );
+}
+
+/** Keeps previous data visible while its replacement is loading. */
+export function RefreshingBlock({ busy, children }: { busy: boolean; children: ReactNode }) {
+  return (
+    <div aria-busy={busy} data-ailog-refreshing={busy ? "true" : "false"} style={{ minWidth: 0 }}>
+      {busy ? (
+        <div role="status" aria-live="polite" style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6, color: "var(--cmux-text-tertiary)", fontSize: "var(--cmux-font-size-xs)" }}>
+          <span>更新中…</span>
+          <span aria-hidden="true" style={{ display: "block", flex: 1, maxWidth: 72, height: 3, borderRadius: 999, background: "var(--cmux-accent)", opacity: 0.8 }} />
+        </div>
+      ) : null}
+      <div style={{ opacity: busy ? 0.55 : 1, transition: "opacity var(--cmux-motion-fast) var(--cmux-ease)" }}>{children}</div>
+    </div>
+  );
+}
+
+/** A closed details block that does not mount its contents until opened. */
+export function DeferredDetails({ summary, subtitle, children }: { summary: string; subtitle?: ReactNode; children: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <details onToggle={(event) => setOpen(event.currentTarget.open)} style={{ ...cardStyle, padding: 0 }}>
+      <summary style={{ cursor: "pointer", padding: "14px 16px", color: "var(--cmux-text)", fontSize: "var(--cmux-font-size-md)", fontWeight: 700 }}>{summary}</summary>
+      {open ? <div style={{ padding: "0 16px 16px" }}>{subtitle ? <div style={{ ...noteStyle, marginBottom: 10 }}>{subtitle}</div> : null}{children}</div> : null}
+    </details>
   );
 }

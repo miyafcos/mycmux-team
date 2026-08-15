@@ -7,18 +7,18 @@ import { ProjectTable } from "./ProjectTable";
 import { RelationDiagram } from "./RelationDiagram";
 import { SessionTable } from "./SessionTable";
 import { SummaryCards } from "./SummaryCards";
-import { ButtonGroup, EmptyState, Section, SkeletonBlock, noteStyle } from "./ui";
+import { ButtonGroup, DeferredDetails, EmptyState, Section, SkeletonBlock, noteStyle } from "./ui";
 import { SESSION_PAGE_SIZE } from "../../stores/ailogStore";
 
 export function RecordBreakdownView(props: {
   overview: Overview | null; series: SeriesReport | null; models: ModelsReport | null; sessions: SessionsReport | null;
   loading: boolean; error: string | null; statusPending: boolean; neverIndexed: boolean; noData: boolean; running: boolean;
   preset: RangePreset; excludeSynthetic: boolean; topN: TopNSetting;
-  granularity: "family" | "raw"; selection: AilogSelection | null; breakdownDimension: BreakdownDimension;
-  breakdown: BreakdownReport | null; breakdownError: string | null; sessionSort: SessionSort; sessionPage: number;
+  selection: AilogSelection | null; breakdownDimension: BreakdownDimension;
+  breakdown: BreakdownReport | null; breakdownError: string | null; breakdownLoading: boolean; sessionSort: SessionSort; sessionPage: number;
   leafDimension: LeafDimension; detailKey: { kind: string; sessionId: string } | null;
   onRefresh: () => void; onStartIndex: () => void; onSelectRange: (from: string, to: string) => void;
-  onTopN: (layer: keyof TopNSetting, value: number) => void; onGranularity: (value: "family" | "raw") => void;
+  onTopN: (layer: keyof TopNSetting, value: number) => void;
   onSelect: (selection: AilogSelection | null) => void; onBreakdownDimension: (value: BreakdownDimension) => void;
   onRefreshBreakdown: () => void; onSessionSort: (value: SessionSort) => void; onSessionPage: (value: number) => void;
   onOpenDetail: (kind: string, sessionId: string) => void;
@@ -31,12 +31,24 @@ export function RecordBreakdownView(props: {
   if (!p.overview) return null;
   return <>
     <SummaryCards overview={p.overview} preset={p.preset} />
-    <Section title="期間ヒートマップ" subtitle="日別のコスト相当。ドラッグで期間を選ぶと、この段が連動します。">{p.series ? <CostHeatmap series={p.series} onSelectRange={p.onSelectRange} /> : null}</Section>
-    <Section title="関係図" subtitle="案件 → 作業種別 → モデルのコスト相当の流れ。ノードをクリックすると絞り込みます。">{p.models && p.sessions ? <RelationDiagram models={p.models} sessions={p.sessions} excludeSynthetic={p.excludeSynthetic} topN={p.topN} onTopN={p.onTopN} grandTotal={p.overview.totals.costUsd} selection={p.selection} onSelect={p.onSelect} /> : null}</Section>
-    <Section title="モデル別">{p.models ? <ModelTable report={p.models} granularity={p.granularity} onGranularity={p.onGranularity} excludeSynthetic={p.excludeSynthetic} selection={p.selection} onSelect={p.onSelect} /> : null}</Section>
+    <DeferredDetails summary="期間ヒートマップ" subtitle="日別のコスト相当。ドラッグで期間を選ぶと、この段が連動します。">{p.series ? <CostHeatmap series={p.series} onSelectRange={p.onSelectRange} /> : null}</DeferredDetails>
+    <DeferredDetails summary="関係図" subtitle="案件 → 作業種別 → モデルのコスト相当の流れ。ノードをクリックすると絞り込みます。">{p.models && p.sessions ? <RelationDiagram models={p.models} sessions={p.sessions} excludeSynthetic={p.excludeSynthetic} topN={p.topN} onTopN={p.onTopN} grandTotal={p.overview.totals.costUsd} selection={p.selection} onSelect={p.onSelect} /> : null}</DeferredDetails>
+    <Section title="モデル別">{p.models ? <ModelTable report={p.models} excludeSynthetic={p.excludeSynthetic} selection={p.selection} onSelect={p.onSelect} /> : null}</Section>
     <Section title="案件別" actions={<ButtonGroup ariaLabel="内訳" value={p.breakdownDimension} onChange={p.onBreakdownDimension} options={[{ value: "project", label: "案件" }, { value: "branch", label: "ブランチ" }, { value: "effort", label: "effort" }, { value: "origin", label: "起動元" }, { value: "title", label: "主題" }, { value: "agent", label: "エージェント" }]} />}>
-      {p.breakdownError ? <EmptyState kind="error" message={p.breakdownError} onPrimary={p.onRefreshBreakdown} /> : p.breakdown ? <ProjectTable report={p.breakdown} overview={p.overview} selection={p.selection} onSelect={p.onSelect} dimensionLabel={({ project: "案件", branch: "ブランチ", effort: "effort", origin: "起動元", title: "主題", agent: "エージェント" })[p.breakdownDimension]} projectMode={p.breakdownDimension === "project"} /> : null}
+      {p.selection?.type === "project" ? <button type="button" onClick={() => p.onSelect(null)} title="絞り込みを解除します" style={clearFilterStyle}>{`絞り込み中: ${p.selection.label} ×`}</button> : null}
+      {p.breakdownError ? <EmptyState kind="error" message={p.breakdownError} onPrimary={p.onRefreshBreakdown} /> : p.breakdown ? <ProjectTable report={p.breakdown} overview={p.overview} selection={p.selection} onSelect={p.onSelect} dimensionLabel={({ project: "案件", branch: "ブランチ", effort: "effort", origin: "起動元", title: "主題", agent: "エージェント" })[p.breakdownDimension]} projectMode={p.breakdownDimension === "project"} /> : p.breakdownLoading ? <SkeletonBlock height={120} label="更新中…" /> : null}
     </Section>
-    <Section title="セッション一覧">{p.sessions ? <SessionTable report={p.sessions} sort={p.sessionSort} onSort={p.onSessionSort} page={p.sessionPage} onPage={p.onSessionPage} pageSize={SESSION_PAGE_SIZE} selection={p.selection} leafDimension={p.leafDimension} onOpenDetail={p.onOpenDetail} activeKey={p.detailKey} /> : null}</Section>
+    <Section title="セッション一覧">{p.sessions ? <SessionTable report={p.sessions} sort={p.sessionSort} onSort={p.onSessionSort} page={p.sessionPage} onPage={p.onSessionPage} pageSize={SESSION_PAGE_SIZE} selection={p.selection} leafDimension={p.leafDimension} onOpenDetail={p.onOpenDetail} activeKey={p.detailKey} priceCoverage={p.overview?.priceCoverage} /> : null}</Section>
   </>;
 }
+
+const clearFilterStyle = {
+  alignSelf: "flex-start",
+  border: "1px solid var(--cmux-accent)",
+  borderRadius: 999,
+  background: "var(--cmux-hover)",
+  color: "var(--cmux-accent)",
+  padding: "2px 9px",
+  fontSize: "var(--cmux-font-size-xs)",
+  cursor: "pointer",
+};

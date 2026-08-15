@@ -88,11 +88,16 @@ def test_window_leader_commands_have_safe_single_instance_semantics() -> None:
         assert_contains(window_rs, snippet, "src-tauri/src/commands/window.rs")
 
     for snippet in [
-        "const gateResult = await waitForStartupSessionGate(startupTimeoutMs);",
+        "const gateCompletion = waitForStartupSessionGate(startupTimeoutMs);",
         "await revealMainWindow();",
         "setStartupMaskVisible(false);",
+        "void gateCompletion.then((gateResult) => {",
     ]:
         assert_contains(app, snippet, "src/App.tsx")
+
+    assert app.index("const gateCompletion = waitForStartupSessionGate(startupTimeoutMs);") < app.index(
+        "await revealMainWindow();"
+    ) < app.index("void gateCompletion.then((gateResult) => {")
 
     for snippet in [
         "claimLeader()",

@@ -8,9 +8,9 @@ describe("ailog panel model", () => {
     expect([...recurringFindingKinds, ...decisionFindingKinds].sort()).toEqual(["cause", "constraint", "decision", "gotcha", "verified"]);
   });
 
-  it("loads only the visible segment", () => {
+  it("maps each segment to its cache resource group", () => {
     expect(loadersForSegment("record", "when")).toEqual(["usage"]);
-    expect(loadersForSegment("record", "what")).toEqual(["breakdown", "prices"]);
+    expect(loadersForSegment("record", "what")).toEqual(["breakdown"]);
     expect(loadersForSegment("record", "how")).toEqual(["experiment"]);
     expect(loadersForSegment("insight", "daily")).toEqual(["digest"]);
     expect(loadersForSegment("insight", "recurring")).toEqual(["findings", "rankings"]);

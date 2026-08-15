@@ -5,6 +5,7 @@ import {
   type SessionStatusSnapshotPayload,
 } from "../../lib/ipc";
 import type { AgentSessionKind, Pane, PaneTab, Workspace } from "../../types";
+import { isDeclaredTab, isRestorableTab, type RestorablePaneTab } from "../../lib/tabLifecycle";
 import type { PaneMetadata } from "../../stores/paneMetadataStore";
 import { deriveEffectiveStatus } from "../../lib/notificationStatus";
 import { paneContainsSession, workspaceContainsSession } from "../../stores/workspaceListStore";
@@ -17,6 +18,8 @@ import {
   normalizeReadableSplitColumns,
   reconcileSplitColumnsForPanes,
 } from "../../lib/layoutColumns";
+import { applyLayoutMutation } from "../../lib/layoutMutation";
+import { collectPaneCloseVictims } from "../../lib/paneCloseImpact";
 
 type SocketArgs = Record<string, unknown> | null | undefined;
 type SpawnTarget = AgentSessionKind | "shell";
@@ -566,6 +569,8 @@ export function serializePaneForSocket(
         agentKind: tab.agentKind,
         claudeSessionId: tab.claudeSessionId,
         agentSessionId: tab.agentSessionId,
+        lifecycle: tab.lifecycle,
+        declaredTarget: tab.declaredTarget,
         lastProcess: tab.lastProcess,
         agentStatus: tabMetadata?.agentStatus ?? deriveEffectiveStatus(tabMetadata),
         agentStatusAt: tabMetadata?.agentStatusAt ?? null,
@@ -587,7 +592,7 @@ export function serializePaneForSocket(
   };
 }
 
-async function startBackgroundTabSession(tab: PaneTab, pane: Pane): Promise<void> {
+export async function startBackgroundTabSession(tab: RestorablePaneTab, pane: Pane): Promise<void> {
   const [{ getAgent, getDefaultAgent }, { ackFrontendData, createSession }] = await Promise.all([
     import("../../lib/agents"),
     import("../../lib/ipc"),
@@ -796,6 +801,10 @@ async function spawnTab(args: SocketArgs) {
     throw new Error("pane.spawn_tab could not identify the new tab");
   }
   const newTab = newTabs[0];
+  if (!isRestorableTab(newTab)) {
+    rollbackNewTabs();
+    throw new Error("pane.spawn_tab created a non-restorable tab");
+  }
   if (!activate && updatedPane) {
     try {
       await startBackgroundTabSession(newTab, updatedPane);
@@ -811,6 +820,91 @@ async function spawnTab(args: SocketArgs) {
     sessionId: newTab.sessionId,
     mode: plan.mode,
   };
+}
+
+type DeclaredLaunchResult = {
+  ok: boolean;
+  reason?: "flag-disabled" | "not-found" | "not-declared";
+  tabId?: string;
+  sessionId?: string;
+  pending?: boolean;
+};
+const declaredLaunchRequests = new Map<string, Promise<DeclaredLaunchResult>>();
+const DECLARED_LAUNCH_REQUEST_LIMIT = 256;
+
+function retainDeclaredLaunchRequest(requestId: string, result: Promise<DeclaredLaunchResult>): void {
+  declaredLaunchRequests.set(requestId, result);
+  if (declaredLaunchRequests.size > DECLARED_LAUNCH_REQUEST_LIMIT) {
+    const oldest = declaredLaunchRequests.keys().next().value;
+    if (oldest) declaredLaunchRequests.delete(oldest);
+  }
+}
+
+function findTabById(workspaces: Workspace[], tabId: string): { workspace: Workspace; pane: Pane; tab: PaneTab } | null {
+  for (const workspace of workspaces) {
+    for (const pane of workspace.panes) {
+      const tab = pane.tabs.find((candidate) => candidate.id === tabId);
+      if (tab) return { workspace, pane, tab };
+    }
+  }
+  return null;
+}
+
+async function declareTab(args: SocketArgs) {
+  const { useWorkspaceLayoutStore, useWorkspaceListStore } = await import("../../stores/workspaceStore");
+  const paneId = socketArgString(args, "paneId", "pane_id");
+  const sessionId = socketArgString(args, "sessionId", "session_id");
+  const label = socketArgString(args, "label");
+  if (!label) throw new Error("pane.declare_tab requires a non-empty label");
+  const match = paneId
+    ? useWorkspaceListStore.getState().workspaces.map((workspace) => ({ workspace, pane: workspace.panes.find((candidate) => candidate.id === paneId) })).find((candidate) => candidate.pane)
+    : sessionId ? findPaneBySessionId(useWorkspaceListStore.getState().workspaces, sessionId) : null;
+  if (!match?.pane) throw new Error("pane.declare_tab requires paneId or sessionId");
+  const originKind = socketArgString(args, "origin") === "agent" ? "agent" : "human";
+  const parentTabId = socketArgString(args, "parentTabId", "parent_tab_id");
+  const tab = useWorkspaceLayoutStore.getState().declareTab(match.workspace.id, match.pane.id, {
+    label,
+    declaredPrompt: socketArgString(args, "declaredPrompt", "declared_prompt"),
+    declaredTarget: socketArgString(args, "declaredTarget", "declared_target"),
+    origin: { kind: originKind, parentTabId },
+  });
+  if (!tab) throw new Error("pane.declare_tab could not add tab");
+  return { tabId: tab.id, workspaceId: match.workspace.id, paneId: match.pane.id };
+}
+
+/** Inactive-workspace launches only convert state and remain pending until that workspace is activated. */
+async function launchDeclared(args: SocketArgs): Promise<DeclaredLaunchResult> {
+  const tabId = socketArgString(args, "tabId", "tab_id");
+  const requestId = socketArgString(args, "requestId", "request_id");
+  if (!tabId || !requestId) throw new Error("pane.launch_declared requires tabId and requestId");
+  const cached = declaredLaunchRequests.get(requestId);
+  if (cached) return cached;
+  const run = (async (): Promise<DeclaredLaunchResult> => {
+    const { useSettingsStore } = await import("../../stores/settingsStore");
+    if (!useSettingsStore.getState().declaredLaunchEnabled) return { ok: false, reason: "flag-disabled" };
+    const { useWorkspaceLayoutStore, useWorkspaceListStore } = await import("../../stores/workspaceStore");
+    const owner = findTabById(useWorkspaceListStore.getState().workspaces, tabId);
+    if (!owner) return { ok: false, reason: "not-found" };
+    if (!isDeclaredTab(owner.tab)) return { ok: false, reason: "not-declared" };
+    const pending = useWorkspaceListStore.getState().activeWorkspaceId !== owner.workspace.id;
+    const launched = useWorkspaceLayoutStore.getState().launchDeclaredTab(owner.workspace.id, owner.pane.id, tabId);
+    if (!launched) return { ok: false, reason: "not-declared" };
+    return { ok: true, tabId: launched.id, sessionId: launched.sessionId, pending };
+  })();
+  retainDeclaredLaunchRequest(requestId, run);
+  void run.then(
+    (result) => {
+      if (!result.ok && declaredLaunchRequests.get(requestId) === run) {
+        declaredLaunchRequests.delete(requestId);
+      }
+    },
+    () => {
+      if (declaredLaunchRequests.get(requestId) === run) {
+        declaredLaunchRequests.delete(requestId);
+      }
+    },
+  );
+  return run;
 }
 
 async function activateTab(args: SocketArgs): Promise<ActivationToken> {
@@ -964,6 +1058,65 @@ async function closeTab(args: SocketArgs) {
   return { workspaceId: workspace.id, paneId: pane.id, tabId: tab.id };
 }
 
+/**
+ * Applies one close-tabs layout mutation. If every pane in a multi-pane
+ * workspace becomes empty, cleanup retains one empty pane for the workspace.
+ */
+async function closeTabs(args: SocketArgs) {
+  const tabIds = Array.isArray(args?.tabIds)
+    ? args.tabIds.filter((value): value is string => typeof value === "string" && value.length > 0)
+    : [];
+  if (tabIds.length === 0) throw new Error("pane.close_tabs requires tabIds");
+  const { usePaneMetadataStore, useUiStore, useWorkspaceListStore } = await import("../../stores/workspaceStore");
+  const before = useWorkspaceListStore.getState().workspaces;
+  const selected = new Set(tabIds);
+  for (const workspace of before) {
+    if (workspace.panes.length !== 1) continue;
+    const [onlyPane] = workspace.panes;
+    if (onlyPane.tabs.length > 0 && onlyPane.tabs.every((tab) => selected.has(tab.id))) {
+      throw new Error("refusing to close the last tab of the last pane");
+    }
+  }
+  const ownerByTabId = new Map(before.flatMap((workspace) => workspace.panes.flatMap((pane) => (
+    pane.tabs.map((tab) => [tab.id, { workspace, pane, tab }] as const)
+  ))));
+  const selectedPanes = before.flatMap((workspace) => workspace.panes.map((pane) => ({
+    ...pane,
+    tabs: pane.tabs.filter((tab) => selected.has(tab.id)),
+  }))).filter((pane) => pane.tabs.length > 0);
+  const victims = collectPaneCloseVictims(selectedPanes, usePaneMetadataStore.getState().metadata);
+  if (victims.length > 0) console.warn(`[pane.close_tabs] closing ${victims.length} active/agent tab(s)`);
+  const { workspaces, summary } = applyLayoutMutation(before, {
+    kind: "close-tabs",
+    operationId: crypto.randomUUID(),
+    tabIds,
+  }, 0);
+  const closedOwners = summary.closed
+    .map((tabId) => ownerByTabId.get(tabId))
+    .filter((owner): owner is NonNullable<typeof owner> => owner !== undefined);
+  const { pushClosedTab } = await import("../../stores/closedPaneStore");
+  for (const { workspace, pane, tab } of closedOwners) {
+    pushClosedTab(pane, tab, { workspaceId: workspace.id, workspaceName: workspace.name });
+  }
+  const focusedSessionId = useUiStore.getState().activePaneId;
+  const killedFocusedSession = closedOwners.some(({ tab }) => (
+    tab.type === "terminal" && !isDeclaredTab(tab) && tab.sessionId === focusedSessionId
+  ));
+  useWorkspaceListStore.getState()._replaceWorkspaces(workspaces);
+  if (killedFocusedSession) useUiStore.getState().bumpFocusRevision();
+  const [{ evictTerminalCache }, { killSession }] = await Promise.all([
+    import("../terminal/XTermWrapper"),
+    import("../../lib/ipc"),
+  ]);
+  for (const { tab } of closedOwners) {
+    if (tab.type !== "terminal" || isDeclaredTab(tab)) continue;
+    evictTerminalCache(tab.sessionId);
+    usePaneMetadataStore.getState().removeMetadata(tab.sessionId);
+    void killSession(tab.sessionId).catch((error) => console.warn("[mycmux] killSession failed", tab.sessionId, error));
+  }
+  return { ...summary, victims };
+}
+
 async function renameTab(args: SocketArgs) {
   const sessionId = socketArgString(args, "sessionId", "session_id");
   if (!sessionId) throw new Error("pane.rename_tab requires sessionId");
@@ -1110,7 +1263,12 @@ async function sendPaneText(args: SocketArgs) {
   if (typeof textValue !== "string" || (!textValue && !enter && key === null)) {
     throw new Error("pane.send_text requires text, unless enter or key is set");
   }
-  if (!isKnownPaneSession(useWorkspaceListStore.getState().workspaces, sessionId)) {
+  const workspaces = useWorkspaceListStore.getState().workspaces;
+  const target = findTabBySessionId(workspaces, sessionId);
+  if (target && isDeclaredTab(target.tab)) {
+    throw new Error("pane.send_text cannot target a declared tab");
+  }
+  if (!isKnownPaneSession(workspaces, sessionId)) {
     throw new Error("pane.send_text session is not a known pane");
   }
   return serializePaneSend(sessionId, async () => {
@@ -1184,7 +1342,12 @@ async function readPane(args: SocketArgs) {
   const { useWorkspaceListStore } = await import("../../stores/workspaceStore");
   const sessionId = socketArgString(args, "sessionId", "session_id");
   if (!sessionId) throw new Error("pane.read requires sessionId");
-  if (!isKnownPaneSession(useWorkspaceListStore.getState().workspaces, sessionId)) {
+  const workspaces = useWorkspaceListStore.getState().workspaces;
+  const target = findTabBySessionId(workspaces, sessionId);
+  if (target && isDeclaredTab(target.tab)) {
+    throw new Error("pane.read cannot target a declared tab");
+  }
+  if (!isKnownPaneSession(workspaces, sessionId)) {
     throw new Error("pane.read session is not a known pane");
   }
   return { sessionId, lines: await readPaneTail(sessionId, args?.lines) };
@@ -1369,12 +1532,18 @@ export async function handleSocketCommand(cmd: string, args: SocketArgs): Promis
       return spawnPane(args);
     case "pane.spawn_tab":
       return spawnTab(args);
+    case "pane.declare_tab":
+      return declareTab(args);
+    case "pane.launch_declared":
+      return launchDeclared(args);
     case "pane.activate_tab":
       return activateTab(args);
     case "pane.restore_activation":
       return restoreActivation(args);
     case "pane.close_tab":
       return closeTab(args);
+    case "pane.close_tabs":
+      return closeTabs(args);
     case "pane.rename_tab":
       return renameTab(args);
     case "pane.send_text":

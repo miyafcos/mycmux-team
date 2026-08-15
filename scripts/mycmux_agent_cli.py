@@ -195,6 +195,18 @@ def build_parser() -> argparse.ArgumentParser:
     add_interactive_launch_arguments(spawn_tab, target_required=False)
     spawn_tab.add_argument("command_argv", nargs=argparse.REMAINDER)
 
+    declare_tab = subparsers.add_parser("declare-tab", help="Declare a tab without starting a PTY")
+    declare_tab.add_argument("--session", required=True)
+    declare_tab.add_argument("--label", required=True)
+    declare_tab.add_argument("--prompt")
+    declare_tab.add_argument("--target", choices=("claude", "codex"))
+    declare_tab.add_argument(
+        "--origin",
+        choices=("agent", "human"),
+        default="agent",
+        help="Declaration origin (default: agent)",
+    )
+
     activate_tab = subparsers.add_parser("activate-tab", help="Activate a terminal tab")
     activate_tab.add_argument("--session", required=True)
 
@@ -387,6 +399,15 @@ def request_for(namespace: argparse.Namespace) -> tuple[str, dict[str, Any]]:
                 raise RuntimeError("spawn-tab --detach cannot be used with --anchor-session")
             return "pane.spawn", build_detached_spawn_request(namespace)
         return "pane.spawn_tab", build_spawn_tab_request(namespace)
+    if namespace.subcommand == "declare-tab":
+        args = {
+            "sessionId": namespace.session,
+            "label": namespace.label,
+            "origin": namespace.origin,
+        }
+        optional_arg(args, "declaredPrompt", namespace.prompt)
+        optional_arg(args, "declaredTarget", namespace.target)
+        return "pane.declare_tab", args
     if namespace.subcommand == "activate-tab":
         return "pane.activate_tab", {"sessionId": namespace.session}
     if namespace.subcommand == "restore-activation":

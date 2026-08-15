@@ -105,6 +105,14 @@ describe("pane handoff drop target priority", () => {
     expect(resolvePaneDropZone(rect, 500, 590)).toBe("down");
   });
 
+  it("uses the default edge ratio unchanged and narrows the center when requested", () => {
+    const rect = { left: 0, right: 300, top: 0, bottom: 200, width: 300, height: 200 };
+
+    expect(resolvePaneDropZone(rect, 60, 100)).toBe(resolvePaneDropZone(rect, 60, 100, 0.16));
+    expect(resolvePaneDropZone(rect, 60, 100)).toBe("center");
+    expect(resolvePaneDropZone(rect, 60, 100, 0.22)).toBe("left");
+  });
+
   it("resolves a hit-tested handoff chip before the regular pane zone", () => {
     const handoffTarget: PaneDropTarget = {
       kind: "handoff",

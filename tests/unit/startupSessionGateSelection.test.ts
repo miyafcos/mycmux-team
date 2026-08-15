@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { collectStartupSessionIds } from "../../src/lib/startupSessionGate";
+import {
+  collectStartupSessionIds,
+  isStartupSessionPending,
+  markStartupSessionSettled,
+  prepareStartupSessionGate,
+  subscribeStartupSessionGate,
+} from "../../src/lib/startupSessionGate";
 import type { Workspace } from "../../src/types";
 
 function workspace(
@@ -57,5 +63,18 @@ describe("startup session gate selection", () => {
 
     expect(collectStartupSessionIds([first, second], null)).toEqual(["first-visible"]);
     expect(collectStartupSessionIds([first, second], "deleted-workspace")).toEqual(["first-visible"]);
+  });
+
+  it("notifies panes as their startup acknowledgements arrive", () => {
+    prepareStartupSessionGate(["session-a", "session-b"]);
+    const observed: boolean[] = [];
+    const stop = subscribeStartupSessionGate(() => observed.push(isStartupSessionPending("session-a")));
+
+    markStartupSessionSettled("session-a");
+    markStartupSessionSettled("session-b");
+    stop();
+
+    expect(observed).toEqual([false, false]);
+    expect(isStartupSessionPending("session-a")).toBe(false);
   });
 });

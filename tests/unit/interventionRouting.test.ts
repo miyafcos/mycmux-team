@@ -79,9 +79,9 @@ describe("resolveComposerRoute", () => {
     expect(resolveComposerRoute(brief({ operationalState: "needsHuman" }), true)).toEqual({ kind: "intervention" });
   });
 
-  it("blocks while the agent is running", () => {
+  it("keeps the composer usable while the agent is running (input is queued by the TUI)", () => {
     expect(resolveComposerRoute(brief({ operationalState: "running" }), true))
-      .toEqual({ kind: "disabled", reason: "running" });
+      .toEqual({ kind: "paneSendText" });
   });
 
   it("falls back to raw pane input when the agent is ready or in any other live state", () => {

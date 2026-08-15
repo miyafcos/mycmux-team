@@ -402,15 +402,15 @@ function App() {
             }
             const { expected } = getStartupSessionGateSnapshot();
             const startupTimeoutMs = Math.min(12000, Math.max(1800, 700 + expected * 350));
-            const gateResult = await waitForStartupSessionGate(startupTimeoutMs);
-            if (gateResult.timedOut) {
-              console.warn(`[startup] reveal timeout with ${gateResult.pending} sessions still pending`);
-            }
-            if (cancelled) return;
+            const gateCompletion = waitForStartupSessionGate(startupTimeoutMs);
             await revealMainWindow();
-            await new Promise((resolve) => window.setTimeout(resolve, gateResult.timedOut ? 250 : 160));
             if (cancelled) return;
             setStartupMaskVisible(false);
+            void gateCompletion.then((gateResult) => {
+              if (gateResult.timedOut) {
+                console.warn(`[startup] session gate timed out with ${gateResult.pending} sessions still pending`);
+              }
+            });
           } catch (error) {
             console.error(error);
             setStartupMaskVisible(false);

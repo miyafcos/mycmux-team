@@ -13,8 +13,7 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU16, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::Emitter;
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{broadcast, oneshot, Mutex, RwLock};
 
 #[derive(Clone)]
 struct RemoteClient {
@@ -138,6 +137,11 @@ impl RemoteControl {
         crate::diag_warn!("remote", "token rotated; new suffix={suffix}");
         Ok(self.info().await)
     }
+
+    fn disconnect_all(&self) {
+        self.clients.clear();
+        let _ = self.disconnect_tx.send(());
+    }
 }
 
 fn configured_port() -> u16 {
@@ -182,105 +186,94 @@ pub struct RemoteState {
 #[folder = "src/remote/client/"]
 struct ClientAssets;
 
-/// Start the remote WebSocket server on a background tokio task.
-///
-/// `bind_all` selects the listen address: `true` binds `0.0.0.0` (reachable
-/// from the LAN/Tailscale, matching pre-S-2 behavior), `false` (the default)
-/// binds `127.0.0.1` only. This is read once at startup from persisted
-/// settings (`AppSettings::remote_bind_all`) — changes take effect on the
-/// next app restart.
-pub fn start_remote_server(
-    app: tauri::AppHandle,
-    session_manager: Arc<crate::pty::manager::SessionManager>,
-    metadata_store: crate::pty::monitor::MetadataStore,
-    control: Arc<RemoteControl>,
-    sessions: Arc<RemoteSessionManager>,
-    bind_all: bool,
-) {
-    tauri::async_runtime::spawn(async move {
-        let port = control.port();
+struct RemoteServerTask {
+    shutdown: oneshot::Sender<()>,
+    join: tauri::async_runtime::JoinHandle<()>,
+}
+
+pub struct RemoteServerRuntime {
+    task: Mutex<Option<RemoteServerTask>>,
+}
+
+impl RemoteServerRuntime {
+    pub fn new() -> Self {
+        Self { task: Mutex::new(None) }
+    }
+
+    pub async fn enable(
+        &self,
+        app_handle: tauri::AppHandle,
+        session_manager: Arc<crate::pty::manager::SessionManager>,
+        metadata_store: crate::pty::monitor::MetadataStore,
+        control: Arc<RemoteControl>,
+        sessions: Arc<RemoteSessionManager>,
+        bind_all: bool,
+    ) -> Result<(), String> {
+        let mut task = self.task.lock().await;
+        if task.is_some() {
+            return Ok(());
+        }
+        let bind_host = if bind_all { "0.0.0.0" } else { "127.0.0.1" };
+        let addr = format!("{bind_host}:{}", control.port());
+        let listener = tokio::net::TcpListener::bind(&addr)
+            .await
+            .map_err(|error| format!("リモート接続を開始できませんでした: {error}"))?;
+        let bound_addr = listener.local_addr().map_err(|error| {
+            format!("リモート接続のポートを取得できませんでした: {error}")
+        })?;
+        let port = bound_addr.port();
+        control.set_port(port);
+        write_remote_port_file(port);
 
         let state = Arc::new(RemoteState {
             control: control.clone(),
             sessions,
             app_session_manager: session_manager,
             metadata_store,
-            app_handle: app,
+            app_handle,
         });
-
-        let app = Router::new()
+        let router = Router::new()
             .route("/ws", get(ws_handler::ws_upgrade))
             .route("/ws/status", get(status_ws::ws_upgrade))
             .route("/qr", get(serve_qr))
             .route("/api/state", get(api_state))
             .fallback(get(serve_static))
-            .with_state(state.clone());
+            .with_state(state);
+        let (shutdown, shutdown_rx) = oneshot::channel();
+        let join = tauri::async_runtime::spawn(async move {
+            if let Err(error) = axum::serve(listener, router.into_make_service_with_connect_info::<SocketAddr>())
+                .with_graceful_shutdown(async { let _ = shutdown_rx.await; })
+                .await
+            {
+                crate::diag_warn!("remote", "Server error: {error}");
+            }
+        });
+        *task = Some(RemoteServerTask { shutdown, join });
+        Ok(())
+    }
 
-        // S-2: default to loopback-only; only bind 0.0.0.0 (LAN/Tailscale
-        // reachable) when the user has opted in via persisted settings.
-        let bind_host = if bind_all { "0.0.0.0" } else { "127.0.0.1" };
-        let addr = format!("{bind_host}:{port}");
-        #[cfg(debug_assertions)]
-        {
-            println!("[remote] Listening on {addr}");
+    pub async fn disable(&self, control: &RemoteControl) {
+        let task = self.task.lock().await.take();
+        control.disconnect_all();
+        control.set_port(configured_port());
+        if let Some(task) = task {
+            let _ = task.shutdown.send(());
+            let _ = task.join.await;
         }
+    }
+}
 
-        let listener = match tokio::net::TcpListener::bind(&addr).await {
-            Ok(l) => l,
-            Err(e) => {
-                crate::diag_warn!("remote", "Failed to bind {addr}: {e}");
-                let _ = state.app_handle.emit(
-                    "remote-error",
-                    format!("Remote terminal failed: port {port} in use"),
-                );
-                return;
-            }
-        };
-        let port = match listener.local_addr() {
-            Ok(addr) => addr.port(),
-            Err(error) => {
-                crate::diag_warn!("remote", "Could not determine the bound remote port: {error}");
-                return;
-            }
-        };
-        control.set_port(port);
-
-        match crate::test_profile::runtime_dir() {
-            Ok(mut path) => {
-                std::fs::create_dir_all(&path).ok();
-                path.push("remote.port");
-                if let Err(error) = std::fs::write(&path, port.to_string()) {
-                    crate::diag_warn!("remote", "Could not write {}: {error}", path.display());
-                }
-            }
-            Err(_) => crate::diag_warn!("remote", "Could not determine home directory for port file"),
-        }
-
-        #[cfg(debug_assertions)]
-        {
-            // Print connection info + QR (prefer Tailscale IP for anywhere access)
-            if let Some(ip) = qr::local_ip().await {
-                let token = state.control.current_token().await;
-                let suffix = token_suffix(&token);
-                let via = if ip.starts_with("100.") { "Tailscale" } else { "LAN" };
-                println!("\n=== mycmux Remote Terminal ({via}) ===");
-                println!("URL: http://{ip}:{port}/#token=<hidden>; token suffix={suffix}");
-                println!("Open Settings > Remote: QR to show the live QR code.");
-                println!("==============================\n");
-            } else {
-                println!("[remote] Could not detect local IP. Access via http://localhost:{port}");
+fn write_remote_port_file(port: u16) {
+    match crate::test_profile::runtime_dir() {
+        Ok(mut path) => {
+            std::fs::create_dir_all(&path).ok();
+            path.push("remote.port");
+            if let Err(error) = std::fs::write(&path, port.to_string()) {
+                crate::diag_warn!("remote", "Could not write {}: {error}", path.display());
             }
         }
-
-        if let Err(e) = axum::serve(
-            listener,
-            app.into_make_service_with_connect_info::<SocketAddr>(),
-        )
-        .await
-        {
-            crate::diag_warn!("remote", "Server error: {e}");
-        }
-    });
+        Err(_) => crate::diag_warn!("remote", "Could not determine home directory for port file"),
+    }
 }
 
 #[tauri::command]
@@ -288,6 +281,37 @@ pub async fn get_remote_info(
     control: tauri::State<'_, Arc<RemoteControl>>,
 ) -> Result<RemoteInfo, String> {
     Ok(control.info().await)
+}
+
+#[tauri::command(async)]
+pub fn get_remote_enabled(app_handle: tauri::AppHandle) -> Result<bool, String> {
+    Ok(crate::db::storage::load(&app_handle)?.settings.remote_enabled)
+}
+
+#[tauri::command(async)]
+pub async fn set_remote_enabled(
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, crate::AppState>,
+    runtime: tauri::State<'_, RemoteServerRuntime>,
+    control: tauri::State<'_, Arc<RemoteControl>>,
+    sessions: tauri::State<'_, Arc<RemoteSessionManager>>,
+    enabled: bool,
+) -> Result<bool, String> {
+    let bind_all = crate::db::storage::load(&app_handle)?.settings.remote_bind_all;
+    if enabled {
+        runtime.enable(
+            app_handle.clone(),
+            state.session_manager.clone(),
+            state.metadata_store.clone(),
+            control.inner().clone(),
+            sessions.inner().clone(),
+            bind_all,
+        ).await?;
+    } else {
+        runtime.disable(control.inner().as_ref()).await;
+    }
+    crate::db::storage::update(&app_handle, |data| data.settings.remote_enabled = enabled)?;
+    Ok(enabled)
 }
 
 /// Read the persisted "bind remote to LAN" preference

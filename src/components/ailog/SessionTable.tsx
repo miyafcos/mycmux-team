@@ -4,6 +4,7 @@
  */
 
 import { useMemo } from "react";
+import { useVirtualRows } from "../../hooks/useVirtualRows";
 
 import {
   formatCount,
@@ -13,12 +14,15 @@ import {
   kindLabel,
   workTagHint,
   workTagLabel,
+  type PriceCoverage,
   type SessionsReport,
 } from "../../lib/ailog";
 import type { AilogSelection, SessionSort } from "../../stores/ailogStore";
+import { useThemeStore } from "../../stores/themeStore";
 import type { LeafDimension } from "./sankeyModel";
 import { filterSessions, pageSessions, sortSessions } from "./sessionFilter";
-import { ButtonGroup, Chip, ScrollBox, noteStyle, subtleButtonStyle, tableStyle, tdLeftStyle, tdStyle, thLeftStyle, thStyle } from "./ui";
+import { getSessionTableRowMetrics } from "./sessionTableRowHeight";
+import { ButtonGroup, Chip, noteStyle, subtleButtonStyle, tableStyle, tdLeftStyle, tdStyle, thLeftStyle, thStyle } from "./ui";
 
 export function SessionTable({
   report,
@@ -31,6 +35,7 @@ export function SessionTable({
   leafDimension,
   onOpenDetail,
   activeKey,
+  priceCoverage,
 }: {
   report: SessionsReport;
   sort: SessionSort;
@@ -42,13 +47,24 @@ export function SessionTable({
   leafDimension: LeafDimension;
   onOpenDetail: (kind: string, sessionId: string) => void;
   activeKey: { kind: string; sessionId: string } | null;
+  priceCoverage?: PriceCoverage;
 }) {
   const view = useMemo(() => {
     const filtered = filterSessions(report.rows, selection, leafDimension);
     return pageSessions(sortSessions(filtered, sort), page, pageSize);
   }, [report.rows, selection, leafDimension, sort, page, pageSize]);
+  const uiDensity = useThemeStore((state) => state.uiDensity);
+  const uiFontScale = useThemeStore((state) => state.uiFontScale);
+  const rowMetrics = useMemo(
+    () => getSessionTableRowMetrics(uiDensity, uiFontScale),
+    [uiDensity, uiFontScale],
+  );
 
   const truncated = Math.max(0, report.total - report.rows.length);
+  const virtual = useVirtualRows(view.rows.length, rowMetrics.rowHeight);
+  const costLabel = priceCoverage && priceCoverage.coveredTokenRatio < 1
+    ? `コスト相当 (単価既知の ${Math.round(priceCoverage.coveredTokenRatio * 100)}% 分)`
+    : "コスト相当";
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}>
@@ -66,7 +82,7 @@ export function SessionTable({
         />
       </div>
 
-      <ScrollBox maxHeight={420}>
+      <div ref={virtual.ref} onScroll={virtual.onScroll} style={{ maxHeight: 420, overflow: "auto", border: "1px solid var(--cmux-border)", borderRadius: 6 }}>
         <table style={tableStyle}>
           <thead>
             <tr>
@@ -76,19 +92,25 @@ export function SessionTable({
               <th style={thLeftStyle}>案件</th>
               <th style={thLeftStyle}>モデル</th>
               <th style={thStyle}>ターン</th>
-              <th style={thStyle}>コスト相当</th>
+              <th style={thStyle}>{costLabel}</th>
               <th style={thStyle}>手戻り</th>
               <th style={thLeftStyle}>作業種別</th>
             </tr>
           </thead>
           <tbody>
-            {view.rows.map((row) => {
+            {virtual.paddingTop > 0 && <tr><td colSpan={9} style={{ height: virtual.paddingTop, padding: 0 }} /></tr>}
+            {view.rows.slice(virtual.start, virtual.end).map((row) => {
               const active = activeKey?.kind === row.kind && activeKey.sessionId === row.sessionId;
               return (
                 <tr
                   key={`${row.kind}:${row.sessionId}`}
                   aria-selected={active}
-                  style={{ background: active ? "var(--cmux-selected)" : undefined, cursor: "pointer" }}
+                  style={{
+                    height: rowMetrics.rowHeight,
+                    lineHeight: rowMetrics.lineHeight,
+                    background: active ? "var(--cmux-selected)" : undefined,
+                    cursor: "pointer",
+                  }}
                   onClick={() => onOpenDetail(row.kind, row.sessionId)}
                 >
                   <td style={tdStyle}>{formatLocalDateTime(row.startedAt)}</td>
@@ -109,7 +131,7 @@ export function SessionTable({
                   <td style={tdStyle}>{formatUsd(row.costUsd)}</td>
                   <td style={tdStyle}>{formatScore(row.reworkScore)}</td>
                   <td style={{ ...tdLeftStyle, maxWidth: 220 }}>
-                    <span style={{ display: "inline-flex", gap: 3, flexWrap: "wrap" }}>
+                    <span style={{ display: "inline-flex", gap: 3, maxWidth: "100%", overflow: "hidden", flexWrap: "nowrap" }}>
                       {row.workTags.length === 0 ? (
                         <span style={{ color: "var(--cmux-text-tertiary)" }}>—</span>
                       ) : (
@@ -124,9 +146,10 @@ export function SessionTable({
                 </tr>
               );
             })}
+            {virtual.paddingBottom > 0 && <tr><td colSpan={9} style={{ height: virtual.paddingBottom, padding: 0 }} /></tr>}
           </tbody>
         </table>
-      </ScrollBox>
+      </div>
 
       <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
         <button

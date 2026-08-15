@@ -1,7 +1,5 @@
 /**
- * Header row: range picker, re-index control, index freshness and the cost
- * caveat. The caveat is printed verbatim from the backend so the wording can
- * never drift from what the numbers actually mean.
+ * Header row: range picker, re-index control, and index freshness.
  */
 
 import {
@@ -10,7 +8,6 @@ import {
   formatBytes,
   formatCount,
   formatDuration,
-  formatLocalDateTime,
   type IndexProgress,
   type IndexStatus,
   type SummarizeProgress,
@@ -19,6 +16,7 @@ import {
   type RangePreset,
   type SummaryRangePreset,
   SUMMARY_RANGE_PRESETS,
+  type UsageRhythmReport,
 } from "../../lib/ailog";
 import { ButtonGroup, Chip, subtleButtonStyle } from "./ui";
 
@@ -31,6 +29,7 @@ export function RangeBar({
   summaryPreset,
   onSummaryPreset,
   overview,
+  usageRhythm,
   indexStatus,
   indexProgress,
   indexError,
@@ -59,6 +58,8 @@ export function RangeBar({
   summaryPreset: SummaryRangePreset;
   onSummaryPreset: (preset: SummaryRangePreset) => void;
   overview: Overview | null;
+  /** Usage is the default segment, so it supplies freshness before dashboard prefetch settles. */
+  usageRhythm: UsageRhythmReport | null;
   indexStatus: IndexStatus | null;
   indexProgress: IndexProgress | null;
   indexError: string | null;
@@ -84,7 +85,7 @@ export function RangeBar({
   const done = indexProgress?.filesDone ?? indexStatus?.filesDone ?? 0;
   const total = indexProgress?.filesTotal ?? indexStatus?.filesTotal ?? 0;
   const pct = total > 0 ? Math.min(100, (done / total) * 100) : 0;
-  const freshness = overview?.indexFreshness;
+  const freshness = overview?.indexFreshness ?? usageRhythm?.indexFreshness;
   const summarizing = summarizeStatus?.running ?? false;
   const summaryDone = summarizeProgress?.sessionsDone ?? summarizeStatus?.sessionsDone ?? 0;
   const summaryTotal = summarizeProgress?.sessionsTotal ?? summarizeStatus?.sessionsTotal ?? 0;
@@ -231,7 +232,7 @@ export function RangeBar({
         </label>
         {freshness ? (
           <Chip title="最後にインデックスが完了した時刻">
-            {`最終インデックス ${formatLocalDateTime(freshness.lastIndexedAt)}（${formatAgo(freshness.lastIndexedAt)}）`}
+            {`記録は ${formatAgo(freshness.lastIndexedAt)}まで`}
           </Chip>
         ) : null}
         {freshness && freshness.staleFiles > 0 ? (
@@ -249,9 +250,6 @@ export function RangeBar({
         <div style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-tertiary)", lineHeight: 1.5 }}>
           {overview.costNote}
           {overview.priceSource ? `（単価: ${{ default: "既定", user: "手入力", mixed: "既定+手入力" }[overview.priceSource] ?? overview.priceSource}）` : ""}
-          {overview.unpricedModels.length > 0
-            ? `　単価未設定: ${overview.unpricedModels.join(", ")}（$0 で計上）`
-            : ""}
         </div>
       ) : null}
     </div>

@@ -25,7 +25,7 @@ import KeybindingsModal from "./KeybindingsModal";
 import CrsmPalette, { preloadCrsmSessions } from "../CommandPalette/CrsmPalette";
 import { useKeybindingStore } from "../../stores/keybindingStore";
 import { isEditableTarget } from "../../lib/keybindings";
-import { TAB_SWEEP_OPEN_EVENT } from "./tabSweep";
+import { TAB_RESTORE_CLOSED_EVENT, TAB_SWEEP_OPEN_EVENT } from "./tabSweep";
 import { DashboardView } from "../dashboard/DashboardView";
 import { UI_DENSITY_TOKENS, useThemeStore } from "../../stores/themeStore";
 import ErrorBoundary from "../common/ErrorBoundary";
@@ -126,6 +126,19 @@ function textOnColor(color: string): string {
     return "#ffffff";
   }
   return contrastRatio("#ffffff", color) >= 4.5 ? "#ffffff" : "#000000";
+}
+
+export function dashboardTypographyVars(
+  fontFamily: string,
+  fontSize: number,
+  lineHeight: number,
+  uiFontScale: number,
+) {
+  return {
+    "--cmux-dash-body-font": fontFamily,
+    "--cmux-dash-font-size": `${Math.max(10, Math.round(fontSize * uiFontScale))}px`,
+    "--cmux-dash-line-height": String(lineHeight),
+  };
 }
 
 function AppBackgroundLayer({ background }: { background: ThemeBackgroundSettings }) {
@@ -402,6 +415,9 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
   const getActionsForEvent = useKeybindingStore((s) => s.getActionsForEvent);
   const currentTheme = useThemeStore((s) => s.theme);
   const themeBackground = useThemeStore((s) => s.themeTweaks.background);
+  const fontFamily = useThemeStore((s) => s.fontFamily);
+  const fontSize = useThemeStore((s) => s.fontSize);
+  const lineHeight = useThemeStore((s) => s.lineHeight);
   const uiDensity = useThemeStore((s) => s.uiDensity);
   const uiFontScale = useThemeStore((s) => s.uiFontScale);
 
@@ -457,6 +473,7 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
     "--cmux-font-size-sm": scalePx(densityTokens.fontSm),
     "--cmux-font-size-md": scalePx(densityTokens.fontMd),
     "--cmux-line-height-ui": densityTokens.lineHeightUi,
+    ...dashboardTypographyVars(fontFamily, fontSize, lineHeight, uiFontScale),
     "--cmux-space-1": densitySpace(2),
     "--cmux-space-2": densitySpace(4),
     "--cmux-space-3": densitySpace(6),
@@ -704,6 +721,58 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
     dashboardOpen,
   };
 
+  const restoreClosedPane = useCallback(() => {
+    const {
+      workspaces: ws,
+      activeId: aid,
+      activePaneId: apid,
+      lastActivePaneId: lpid,
+    } = stateRef.current;
+    // Peek before committing: the entry stays on the stack unless we can
+    // actually place the restored pane somewhere.
+    const closedPane = peekClosedPane();
+    if (!closedPane) return;
+    const sourceWs = closedPane.workspaceId
+      ? ws.find((workspace) => workspace.id === closedPane.workspaceId)
+      : undefined;
+    const targetWs = sourceWs ?? ws.find((workspace) => workspace.id === aid);
+    if (!targetWs) return;
+    const targetIsActive = targetWs.id === aid;
+    const targetLastPaneSession = targetIsActive
+      ? null
+      : useWorkspaceListStore.getState().lastActivePaneByWorkspace[targetWs.id] ?? null;
+    const anchorPane = targetIsActive
+      ? (targetWs.panes.find((pane) => paneMatchesSession(pane, apid))
+        ?? targetWs.panes.find((pane) => paneMatchesSession(pane, lpid))
+        ?? targetWs.panes[0])
+      : (targetWs.panes.find((pane) => paneMatchesSession(pane, targetLastPaneSession))
+        ?? targetWs.panes[0]);
+    if (!anchorPane) return;
+    popClosedPane();
+    if (!targetIsActive) setActiveWorkspace(targetWs.id);
+    const launchEnv: Record<string, string> | undefined =
+      closedPane.agentKind && closedPane.agentSessionId
+        ? {
+            MYCMUX_RESUME: closedPane.agentKind,
+            MYCMUX_SESSION_ID: closedPane.agentSessionId,
+            MYCMUX_AGENT_KIND: closedPane.agentKind,
+          }
+        : undefined;
+    addPaneToWorkspaceWithOptions(targetWs.id, anchorPane.id, "right", {
+      agentId: "shell-starter",
+      label: closedPane.label ?? undefined,
+      cwd: closedPane.cwd ?? undefined,
+      agentKind: closedPane.agentKind ?? undefined,
+      agentSessionId: closedPane.agentSessionId ?? undefined,
+      launchEnv,
+    });
+  }, [addPaneToWorkspaceWithOptions, setActiveWorkspace]);
+
+  useEffect(() => {
+    window.addEventListener(TAB_RESTORE_CLOSED_EVENT, restoreClosedPane);
+    return () => window.removeEventListener(TAB_RESTORE_CLOSED_EVENT, restoreClosedPane);
+  }, [restoreClosedPane]);
+
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       // Skip if modals are open
@@ -884,50 +953,7 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
         }
 
         case "pane.reopen": {
-          // Peek before committing: the entry stays on the stack unless we can
-          // actually place the restored pane somewhere.
-          const closedPane = peekClosedPane();
-          if (!closedPane) return;
-          // Prefer the workspace the pane was closed from; fall back to the
-          // current one when that workspace is gone (or was never recorded).
-          const sourceWs = closedPane.workspaceId
-            ? ws.find((w) => w.id === closedPane.workspaceId)
-            : undefined;
-          const targetWs = sourceWs ?? ws.find((w) => w.id === aid);
-          if (!targetWs) return;
-          const targetIsActive = targetWs.id === aid;
-          const targetLastPaneSession = targetIsActive
-            ? null
-            : useWorkspaceListStore.getState().lastActivePaneByWorkspace[targetWs.id] ?? null;
-          const anchorPane = targetIsActive
-            ? (targetWs.panes.find((p) => paneMatchesSession(p, apid))
-              ?? targetWs.panes.find((p) => paneMatchesSession(p, lpid))
-              ?? targetWs.panes[0])
-            : (targetWs.panes.find((p) => paneMatchesSession(p, targetLastPaneSession))
-              ?? targetWs.panes[0]);
-          if (!anchorPane) return;
-          popClosedPane();
-          if (!targetIsActive) {
-            // Bring the user to where the pane is being restored, otherwise the
-            // new pane appears in a workspace they cannot see.
-            setActiveWorkspace(targetWs.id);
-          }
-          const launchEnv: Record<string, string> | undefined =
-            closedPane.agentKind && closedPane.agentSessionId
-              ? {
-                  MYCMUX_RESUME: closedPane.agentKind,
-                  MYCMUX_SESSION_ID: closedPane.agentSessionId,
-                  MYCMUX_AGENT_KIND: closedPane.agentKind,
-                }
-              : undefined;
-          addPaneToWorkspaceWithOptions(targetWs.id, anchorPane.id, "right", {
-            agentId: "shell-starter",
-            label: closedPane.label ?? undefined,
-            cwd: closedPane.cwd ?? undefined,
-            agentKind: closedPane.agentKind ?? undefined,
-            agentSessionId: closedPane.agentSessionId ?? undefined,
-            launchEnv,
-          });
+          restoreClosedPane();
           break;
         }
 
@@ -1034,6 +1060,7 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
     setActiveWorkspace,
     addPaneToWorkspace,
     addPaneToWorkspaceWithOptions,
+    restoreClosedPane,
     removePaneFromWorkspace,
     addTabToPane,
     setActivePaneTab,

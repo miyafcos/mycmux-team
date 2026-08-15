@@ -22,10 +22,12 @@ fn merge_persistent_data(disk: &mut PersistentData, data: PersistentData) {
         // These settings have no frontend store or setter, so the frontend's
         // persistence payload omits them; preserve their Rust-owned values.
         let remote_bind_all = disk.settings.remote_bind_all;
+        let remote_enabled = disk.settings.remote_enabled;
         let dirty_save_mode = disk.settings.dirty_save_mode;
         let osc7_tracking_enabled = disk.settings.osc7_tracking_enabled;
         disk.settings = data.settings;
         disk.settings.remote_bind_all = remote_bind_all;
+        disk.settings.remote_enabled = remote_enabled;
         disk.settings.dirty_save_mode = dirty_save_mode;
         disk.settings.osc7_tracking_enabled = osc7_tracking_enabled;
         disk.active_workspace_id = data.active_workspace_id;
@@ -209,6 +211,10 @@ mod tests {
                 "tab-session".to_string(),
             )])),
             terminal_snapshot: None,
+            lifecycle: None,
+            origin: None,
+            declared_prompt: None,
+            declared_target: None,
         }]);
 
         sync_pane_from_active_tab(&mut pane);

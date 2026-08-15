@@ -39,6 +39,7 @@ interface CreateSessionArgs {
 }
 interface AckFrontendDataArgs extends SessionIdArgs { generation: number; seq: number; bytes: number }
 interface SetFrontendVisibleArgs extends SessionIdArgs { visible: boolean }
+interface SetAppFrontendVisibleArgs { visible: boolean }
 interface WriteToSessionArgs extends SessionIdArgs { data: string }
 interface ResizeSessionArgs extends SessionIdArgs { cols: number; rows: number }
 interface ArtifactUriArgs extends SessionIdArgs { uri: string }
@@ -203,6 +204,10 @@ export async function ackFrontendData(
 
 export async function setFrontendVisible(sessionId: string, visible: boolean): Promise<void> {
   return invoke<void>("set_frontend_visible", { sessionId, visible } satisfies SetFrontendVisibleArgs);
+}
+
+export async function setAppFrontendVisible(visible: boolean): Promise<void> {
+  return invoke<void>("set_app_frontend_visible", { visible } satisfies SetAppFrontendVisibleArgs);
 }
 
 export interface ScrollbackSnapshot {
@@ -690,6 +695,14 @@ export async function setRemoteBindAll(enabled: boolean): Promise<boolean> {
   return invoke<boolean>("set_remote_bind_all", { enabled } satisfies EnabledArgs);
 }
 
+export async function getRemoteEnabled(): Promise<boolean> {
+  return invoke<boolean>("get_remote_enabled");
+}
+
+export async function setRemoteEnabled(enabled: boolean): Promise<boolean> {
+  return invoke<boolean>("set_remote_enabled", { enabled } satisfies EnabledArgs);
+}
+
 export interface AgentSessionMapping {
   agent_kind?: AgentSessionKind | null;
   session_id: string;
@@ -851,6 +864,10 @@ export interface PaneTabConfig {
   suppressed_agent_sessions?: SuppressedAgentSessionConfig[] | null;
   launch_env?: Record<string, string> | null;
   terminal_snapshot?: string[] | null;
+  lifecycle?: "declared" | null;
+  origin?: { kind: "human" | "agent"; parent_tab_id?: string | null } | null;
+  declared_prompt?: string | null;
+  declared_target?: string | null;
 }
 
 export interface PaneConfig {

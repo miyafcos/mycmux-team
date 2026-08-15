@@ -23,38 +23,47 @@ export function SummaryCards({ overview, preset }: { overview: Overview; preset:
   const showCompare = preset !== "all";
   const { totals, comparePrevious, rework } = overview;
 
-  const cards: { label: string; value: string; delta: number | null; hint: string }[] = [
+  const costLabel = overview.priceCoverage.coveredTokenRatio < 1
+    ? `コスト相当 (単価既知の ${Math.round(overview.priceCoverage.coveredTokenRatio * 100)}% 分)`
+    : "コスト相当";
+  const cards: { kind: "default" | "cost" | "rework"; label: string; value: string; delta: number | null; hint: string }[] = [
     {
+      kind: "default",
       label: "セッション",
       value: formatCount(totals.sessions),
       delta: comparePrevious.sessionsPct,
       hint: "期間内に 1 ターン以上あったセッション数",
     },
     {
+      kind: "default",
       label: "ターン",
       value: formatCount(totals.turns),
       delta: null,
       hint: "課金対象のやり取り 1 往復を 1 ターンとして数えた数",
     },
     {
-      label: "コスト相当",
+      kind: "cost",
+      label: costLabel,
       value: formatUsd(totals.costUsd),
       delta: comparePrevious.costPct,
       hint: "従量課金だった場合の金額。請求額ではありません",
     },
     {
+      kind: "default",
       label: "キャッシュ率",
       value: formatRatio(overview.cacheHitRate),
       delta: null,
       hint: "取り込み側トークンのうちキャッシュ読み出しが占める割合",
     },
     {
+      kind: "default",
       label: "実稼働時間",
       value: formatHours(totals.activeMs),
       delta: null,
       hint: "無操作の空白を除いた実働時間",
     },
     {
+      kind: "rework",
       label: "手戻り平均",
       value: formatScore(rework.avgScore),
       delta: comparePrevious.reworkPct,
@@ -78,7 +87,7 @@ export function SummaryCards({ overview, preset }: { overview: Overview; preset:
             {card.delta === null ? (
               <span style={{ color: "var(--cmux-text-tertiary)" }}>—</span>
             ) : showCompare ? (
-              <span style={{ color: deltaColor(card.label, card.delta) }}>
+              <span style={{ color: deltaColor(card.kind, card.delta) }}>
                 {`${formatDelta(card.delta)} 前期間比`}
               </span>
             ) : (
@@ -95,10 +104,10 @@ export function SummaryCards({ overview, preset }: { overview: Overview; preset:
  * More sessions is neutral, more cost or more rework is worse. Colour follows
  * that meaning rather than the sign of the number.
  */
-function deltaColor(label: string, delta: number): string {
+function deltaColor(kind: "default" | "cost" | "rework", delta: number): string {
   const direction = deltaDirection(delta);
   if (direction === "flat") return "var(--cmux-text-tertiary)";
-  if (label === "コスト相当" || label === "手戻り平均") {
+  if (kind === "cost" || kind === "rework") {
     return direction === "up" ? "var(--cmux-usage-warn)" : "var(--cmux-usage-ok)";
   }
   return "var(--cmux-text-secondary)";

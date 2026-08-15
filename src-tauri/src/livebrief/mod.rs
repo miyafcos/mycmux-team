@@ -10,6 +10,7 @@ mod reducer;
 
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -150,6 +151,7 @@ pub struct LiveBriefService {
     service_epoch: String,
     app_handle: Arc<OnceLock<AppHandle>>,
     started: Arc<OnceLock<()>>,
+    subscribers: Arc<AtomicUsize>,
     coordinators: Arc<DashMap<String, Arc<Mutex<intervene::Coordinator>>>>,
 }
 
@@ -162,6 +164,7 @@ impl LiveBriefService {
             service_epoch: Uuid::new_v4().to_string(),
             app_handle: Arc::new(OnceLock::new()),
             started: Arc::new(OnceLock::new()),
+            subscribers: Arc::new(AtomicUsize::new(0)),
             coordinators: Arc::new(DashMap::new()),
         }
     }
@@ -173,9 +176,21 @@ impl LiveBriefService {
         }
         let service = self.clone();
         thread::spawn(move || loop {
+            if service.subscribers.load(Ordering::Acquire) == 0 {
+                thread::sleep(Duration::from_secs(30));
+                continue;
+            }
             service.refresh_all();
             thread::sleep(Duration::from_secs(1));
         });
+    }
+
+    pub fn subscribe(&self) {
+        self.subscribers.fetch_add(1, Ordering::AcqRel);
+    }
+
+    pub fn unsubscribe(&self) {
+        let _ = self.subscribers.fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| count.checked_sub(1));
     }
 
     pub fn snapshots(&self) -> Vec<LiveSessionBrief> {
@@ -215,8 +230,10 @@ impl LiveBriefService {
             if changed {
                 state.brief_revision = state.brief_revision.saturating_add(1);
                 snapshot.brief.brief_revision = state.brief_revision;
-                if let Some(app) = self.app_handle.get() {
+                if self.subscribers.load(Ordering::Acquire) > 0 {
+                    if let Some(app) = self.app_handle.get() {
                     let _ = app.emit(EVENT_NAME, LiveBriefUpdate { brief: snapshot.brief.clone() });
+                    }
                 }
             } else {
                 // Same meaning as last tick: keep the revision (and therefore the
@@ -484,6 +501,18 @@ pub(crate) fn unix_ms() -> i64 { SystemTime::now().duration_since(UNIX_EPOCH).ma
 
 #[tauri::command(async)]
 pub async fn get_live_briefs(state: State<'_, AppState>) -> Result<Vec<LiveSessionBrief>, String> { Ok(state.livebrief_service.snapshots()) }
+
+#[tauri::command(async)]
+pub async fn subscribe_live_briefs(state: State<'_, AppState>) -> Result<(), String> {
+    state.livebrief_service.subscribe();
+    Ok(())
+}
+
+#[tauri::command(async)]
+pub async fn unsubscribe_live_briefs(state: State<'_, AppState>) -> Result<(), String> {
+    state.livebrief_service.unsubscribe();
+    Ok(())
+}
 
 #[tauri::command(async)]
 pub async fn get_live_events(

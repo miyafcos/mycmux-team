@@ -1,6 +1,6 @@
 //! Model normalisation, the price ladder, and range resolution.
 
-use crate::ailog::price::{self, PriceTable};
+use crate::ailog::price::{self, ModelClass, ModelProvider, PriceTable};
 use crate::ailog::Range;
 
 #[test]
@@ -78,6 +78,43 @@ fn price_lookup_walks_raw_then_variant_then_family() {
     assert_eq!(opus.price.input, 5.0);
 
     assert!(table.lookup("totally-unknown-model-x").is_none());
+}
+
+#[test]
+fn model_classes_follow_the_zero_configuration_rules() {
+    let table = PriceTable::from_defaults();
+    let cases = [
+        ("gpt-5.6-terra", ModelClass::Priced),
+        ("ollama/llama3", ModelClass::Local),
+        ("foo/bar", ModelClass::Local),
+        ("<synthetic>", ModelClass::Internal),
+        ("fugu-ultra", ModelClass::Flat),
+        ("gpt-5.55", ModelClass::Unknown),
+        // Slash-delimited local distribution names have precedence over a
+        // fugu substring, as fixed by MODEL_CLASS_RULES ordering.
+        ("fugu/ultra", ModelClass::Local),
+    ];
+    for (model, expected) in cases {
+        assert_eq!(table.classify(model), expected, "{model}");
+    }
+}
+
+#[test]
+fn model_providers_follow_the_shared_classification_rules() {
+    let table = PriceTable::from_defaults();
+    let cases = [
+        ("claude-opus-5", ModelProvider::Anthropic),
+        // A price-table miss must not erase the company classification.
+        ("gpt-5.55", ModelProvider::Openai),
+        ("gemini-2.5-pro", ModelProvider::Google),
+        ("ollama/llama3", ModelProvider::Local),
+        ("fugu/ultra", ModelProvider::Local),
+        ("<synthetic>", ModelProvider::Other),
+        ("totally-unknown-model-x", ModelProvider::Other),
+    ];
+    for (model, expected) in cases {
+        assert_eq!(table.provider(model), expected, "{model}");
+    }
 }
 
 #[test]
@@ -209,4 +246,31 @@ fn ytd_starts_at_the_first_of_january() {
     assert_eq!(start.year(), now.year());
     assert_eq!(start.month(), 1);
     assert_eq!(start.day(), 1);
+}
+
+#[test]
+fn coverage_counts_priced_local_and_flat_but_not_internal_or_unknown() {
+    use crate::ailog::price::PriceTable;
+    use crate::ailog::query::PriceCoverageAcc;
+
+    let prices = PriceTable::from_defaults();
+    let mut coverage = PriceCoverageAcc::default();
+    for (model, tokens) in [
+        ("gpt-5.6-terra", 100),
+        ("ollama/llama3", 200),
+        ("fugu-ultra", 300),
+        ("<synthetic>", 400),
+        ("totally-unknown-model-x", 500),
+    ] {
+        coverage.add_model_tokens(Some(model), tokens, &prices);
+    }
+    let coverage = coverage.finish();
+    assert_eq!(coverage.priced.tokens, 100);
+    assert_eq!(coverage.local.tokens, 200);
+    assert_eq!(coverage.flat.tokens, 300);
+    assert_eq!(coverage.internal.tokens, 400);
+    assert_eq!(coverage.unknown.tokens, 500);
+    // 600 covered out of 1100 cost-bearing tokens; the 400 internal tokens
+    // stay out of the denominator.
+    assert!((coverage.covered_token_ratio - 600.0 / 1100.0).abs() < f64::EPSILON);
 }

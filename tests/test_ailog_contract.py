@@ -141,12 +141,23 @@ def test_costs_are_labelled_as_estimates() -> None:
     """Every aggregation response must carry the price provenance.
 
     The operator is on flat-rate plans, so a bare dollar figure would be read
-    as a bill. `price_source` plus `unpriced_models` is what lets the UI say
-    "reference estimate" and show which models contributed nothing.
+    as a bill. `price_source` plus `price_coverage` tells the UI how much of
+    the token volume has a known metered-equivalent cost.
     """
     query_text = read(AILOG_MODULE / "query.rs")
-    for field in ("price_source", "unpriced_models", "cost_note"):
+    for field in ("price_source", "price_coverage", "cost_note"):
         assert f"pub {field}:" in query_text, f"query.rs must expose `{field}`"
+
+
+def test_legacy_unpriced_banner_text_is_absent_from_source() -> None:
+    """The zero-configuration policy must not leave a reachable old warning."""
+    source_text = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (REPO_ROOT / "src").rglob("*.*")
+        if path.is_file() and path.suffix in {".ts", ".tsx", ".css"}
+    )
+    for legacy in ("公表料率が登録されていない", "単価未設定:", "$0 で計上"):
+        assert legacy not in source_text, f"legacy price warning remains in src/: {legacy}"
 
 
 def test_unknown_models_are_never_priced_by_substitution() -> None:

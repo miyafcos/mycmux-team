@@ -33,6 +33,8 @@ interface SettingsState {
   dispatchStallMinutes: number;
   dispatchWatchdogNotify: boolean;
   paneComposerEnabled: boolean;
+  /** Deliberately off until an operator explicitly enables declared-tab launch. */
+  declaredLaunchEnabled: boolean;
   setNotificationsEnabled: (v: boolean) => void;
   setNotificationSoundEnabled: (v: boolean) => void;
   setTerminalRenderer: (v: TerminalRenderer) => void;
@@ -48,6 +50,7 @@ interface SettingsState {
   setDispatchStallMinutes: (v: number) => void;
   setDispatchWatchdogNotify: (v: boolean) => void;
   setPaneComposerEnabled: (v: boolean) => void;
+  setDeclaredLaunchEnabled: (v: boolean) => void;
 }
 
 export const useSettingsStore = create<SettingsState>()(
@@ -68,6 +71,7 @@ export const useSettingsStore = create<SettingsState>()(
       dispatchStallMinutes: 45,
       dispatchWatchdogNotify: true,
       paneComposerEnabled: true,
+      declaredLaunchEnabled: false,
       setNotificationsEnabled: (v) => set({ notificationsEnabled: v }),
       setNotificationSoundEnabled: (v) => set({ notificationSoundEnabled: v }),
       setTerminalRenderer: (v) => set({ terminalRenderer: v }),
@@ -83,6 +87,7 @@ export const useSettingsStore = create<SettingsState>()(
       setDispatchStallMinutes: (v) => set({ dispatchStallMinutes: v }),
       setDispatchWatchdogNotify: (v) => set({ dispatchWatchdogNotify: v }),
       setPaneComposerEnabled: (v) => set({ paneComposerEnabled: v }),
+      setDeclaredLaunchEnabled: (v) => set({ declaredLaunchEnabled: v }),
     }),
     {
       name: "mycmux-settings",

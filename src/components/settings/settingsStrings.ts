@@ -5,8 +5,8 @@ export const settingsStrings = {
 
 // バックグラウンドで動く AI (タブ掃除の判定・命名 / AIログの要約・ダイジェスト) の文言。
 export const aiSettingsStrings = {
-  tabLabel: "AI",
-  title: "バックグラウンドで使う AI",
+  tabLabel: "AI とおまかせ",
+  title: "バックグラウンド AI",
   description: "アプリが自動で AI を呼ぶ場面すべてで、ここの設定が使われます。対象は「タブ掃除の AI判定・AI命名」と「AIログのセッション要約・日次ダイジェスト」の4つです。",
   enableLabel: "AI機能を有効にする",
   enableHint: "オフにすると4つの機能すべてが止まります。AIログのパネルを開いたときの自動要約・自動ダイジェストも実行されません (集計や使用量の表示はそのまま見られます)。",
@@ -20,7 +20,7 @@ export const aiSettingsStrings = {
   costNote: "AIログのセッション要約は一度に多くのセッションを処理します。高コストのモデルを選ぶと、その分の費用と時間が増えます。",
   runningNote: "実行中の処理には反映されません。次に実行するぶんから切り替わります。",
   resetButton: "既定に戻す",
-  disabledReason: "設定 > AI で「AI機能を有効にする」がオフになっています",
+  disabledReason: "設定 > AI とおまかせ で「AI機能を有効にする」がオフになっています",
 } as const;
 
 // キャラ (pet) 設定タブの文言。用語は「ワークスペース > タブ > ペイン」(2026-08-11 確定)。

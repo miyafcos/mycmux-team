@@ -419,6 +419,66 @@ describe("workspaceLayoutStore pinned tabs", () => {
     expect(getPane("workspace-new", "pane-new").tabs.map((candidate) => candidate.id)).toEqual(["a1"]);
   });
 
+  it("keeps the existing activation behavior when a new-workspace option is omitted", () => {
+    setWorkspaces([
+      workspace("source", [pane("pane-a", ["a1", "a2"]), pane("pane-b", ["b1"])], [["pane-a", "pane-b"]]),
+    ]);
+    useUiStore.setState({ activePaneId: "session-a2", focusRevision: 0 });
+
+    const moved = useWorkspaceLayoutStore.getState().moveTabToNewWorkspace(
+      "source",
+      "pane-a",
+      "a1",
+      "workspace-new",
+      "Detached",
+    );
+
+    expect(moved).toBe(true);
+    expect(useWorkspaceListStore.getState().activeWorkspaceId).toBe("workspace-new");
+    expect(useUiStore.getState().focusRevision).toBe(1);
+  });
+
+  it("keeps the active workspace and focus revision when a caller opts out of activation", () => {
+    setWorkspaces([
+      workspace("source", [pane("pane-a", ["a1", "a2"]), pane("pane-b", ["b1"])], [["pane-a", "pane-b"]]),
+    ]);
+    useUiStore.setState({ activePaneId: "session-a2", focusRevision: 0 });
+
+    const moved = useWorkspaceLayoutStore.getState().moveTabToNewWorkspace(
+      "source",
+      "pane-a",
+      "a1",
+      "workspace-new",
+      "Detached",
+      { activate: false },
+    );
+
+    expect(moved).toBe(true);
+    expect(useWorkspaceListStore.getState().activeWorkspaceId).toBe("source");
+    expect(useUiStore.getState().focusRevision).toBe(0);
+    expect(getWorkspace("workspace-new").splitColumns).toEqual([["pane-new"]]);
+  });
+
+  it("also keeps the active workspace and focus revision for a passive pane move", () => {
+    setWorkspaces([
+      workspace("source", [pane("pane-a", ["a1"]), pane("pane-b", ["b1"])], [["pane-a", "pane-b"]]),
+    ]);
+    useUiStore.setState({ activePaneId: "session-b1", focusRevision: 0 });
+
+    const moved = useWorkspaceLayoutStore.getState().movePaneToNewWorkspace(
+      "source",
+      "pane-a",
+      "workspace-new",
+      "Detached",
+      { activate: false },
+    );
+
+    expect(moved).toBe(true);
+    expect(useWorkspaceListStore.getState().activeWorkspaceId).toBe("source");
+    expect(useUiStore.getState().focusRevision).toBe(0);
+    expect(getWorkspace("workspace-new").splitColumns).toEqual([["pane-a"]]);
+  });
+
   it("clamps a non-pinned tab out of slot 0", () => {
     setWorkspaces([
       workspace("source", [pane("pane-a", ["a1", "a2", "a3"], "a2", "a1")], [["pane-a"]]),

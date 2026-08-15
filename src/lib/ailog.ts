@@ -118,7 +118,23 @@ export interface ModelRow {
   firstUsedAt: number;
   lastUsedAt: number;
   byEffort: EffortRow[];
-  priced: boolean;
+  modelClass: ModelPriceClass;
+}
+
+export type ModelPriceClass = "priced" | "local" | "internal" | "flat" | "unknown";
+
+export interface PriceClassCoverage {
+  models: string[];
+  tokens: number;
+}
+
+export interface PriceCoverage {
+  priced: PriceClassCoverage;
+  local: PriceClassCoverage;
+  internal: PriceClassCoverage;
+  flat: PriceClassCoverage;
+  unknown: PriceClassCoverage;
+  coveredTokenRatio: number;
 }
 
 export interface ProjectRow {
@@ -168,7 +184,7 @@ export interface Overview {
   excludedInternal: ExcludedInternal;
   cacheHitRate: number;
   priceSource: string;
-  unpricedModels: string[];
+  priceCoverage: PriceCoverage;
   indexFreshness: IndexFreshness;
   costNote: string;
 }
@@ -189,6 +205,10 @@ export interface SeriesGroup {
   costUsd: number;
 }
 
+/** The one UI choice used by both the daily series and model breakdown. */
+export type AilogGranularity = "provider" | "family" | "raw";
+export type SeriesGroupBy = "provider" | "model" | "model_raw";
+
 export interface SeriesBucket {
   bucket: number;
   turns: number;
@@ -200,10 +220,10 @@ export interface SeriesBucket {
 export interface SeriesReport {
   range: RangeOut;
   bucket: string;
-  groupBy: string;
+  groupBy: SeriesGroupBy;
   buckets: SeriesBucket[];
   priceSource: string;
-  unpricedModels: string[];
+  priceCoverage: PriceCoverage;
   costNote: string;
 }
 
@@ -288,7 +308,7 @@ export interface BreakdownReport {
   rows: BreakdownRow[];
   overlapping: boolean;
   priceSource: string;
-  unpricedModels: string[];
+  priceCoverage: PriceCoverage;
   costNote: string;
 }
 
@@ -320,7 +340,7 @@ export interface EfficiencyReport {
   byCompaction: EfficiencyRow[];
   turnQuantiles: QuantileRow[];
   priceSource: string;
-  unpricedModels: string[];
+  priceCoverage: PriceCoverage;
   interpretationNote: string;
   costNote: string;
 }
@@ -397,7 +417,7 @@ export interface WorkTagRow {
 
 export interface ModelsReport {
   range: RangeOut;
-  granularity: string;
+  granularity: AilogGranularity;
   rows: ModelRow[];
   series: ModelSeriesBucket[];
   mixedSessions: number;
@@ -406,7 +426,7 @@ export interface ModelsReport {
   overlapping: boolean;
   totalSessions: number;
   priceSource: string;
-  unpricedModels: string[];
+  priceCoverage: PriceCoverage;
   costNote: string;
 }
 
@@ -559,7 +579,7 @@ export interface SessionDetail {
   costBreakdown: SessionCostBreakdown;
   summary: SummaryRow | null;
   priceSource: string;
-  unpricedModels: string[];
+  priceCoverage: PriceCoverage;
   costNote: string;
 }
 
@@ -765,7 +785,7 @@ export async function ailogDigestGenerate(date: string, force = false): Promise<
 export async function ailogDashboard(
   range: AilogRange,
   filters: AilogFilters,
-  granularity: string,
+  granularity: AilogGranularity,
 ): Promise<DashboardReport> {
   return invoke<DashboardReport>("ailog_dashboard", {
     range,
@@ -784,7 +804,7 @@ export async function ailogOverview(
 export async function ailogSeries(
   range: AilogRange,
   filters: AilogFilters,
-  options: { bucket?: string; groupBy?: string } = {},
+  options: { bucket?: string; groupBy?: SeriesGroupBy } = {},
 ): Promise<SeriesReport> {
   return invoke<SeriesReport>("ailog_series", { range, filters, options });
 }
@@ -851,7 +871,7 @@ export async function ailogSessionSummarize(kind: string, sessionId: string): Pr
 export async function ailogModels(
   range: AilogRange,
   filters: AilogFilters,
-  options: { granularity?: string; bucket?: string } = {},
+  options: { granularity?: AilogGranularity; bucket?: string } = {},
 ): Promise<ModelsReport> {
   return invoke<ModelsReport>("ailog_models", { range, filters, options });
 }

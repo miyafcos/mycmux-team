@@ -1,0 +1,106 @@
+// @vitest-environment jsdom
+
+import { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const mocks = vi.hoisted(() => ({
+  open: vi.fn(),
+  preview: vi.fn(),
+  reveal: vi.fn(),
+  resolve: vi.fn(),
+  openPreviewPane: vi.fn(),
+}));
+
+vi.mock("@tauri-apps/plugin-shell", () => ({ open: mocks.open }));
+vi.mock("../../src/lib/ipc", () => ({
+  previewArtifactUriForSessionV2: mocks.preview,
+  revealPathInExplorer: mocks.reveal,
+}));
+vi.mock("../../src/stores/workspaceStore", () => ({
+  useWorkspaceLayoutStore: (selector: (state: { openOrReloadHtmlPreviewPane: typeof mocks.openPreviewPane }) => unknown) => selector({ openOrReloadHtmlPreviewPane: mocks.openPreviewPane }),
+}));
+vi.mock("../../src/components/terminal/terminalLinkProvider", () => ({
+  HTTP_LINK_REGEX: /https?:\/\/[^\s]+/i,
+  isArtifactPreviewUri: (uri: string) => /\.(?:md|html?)$/i.test(uri),
+  isDirectoryLikeUri: (uri: string) => /[\\/]$/.test(uri),
+  resolveTextLocalPathLinks: mocks.resolve,
+}));
+
+import { DashboardLinkedText } from "../../src/components/dashboard/DashboardLinkedText";
+
+let container: HTMLDivElement;
+let root: Root;
+
+beforeEach(() => {
+  container = document.createElement("div");
+  document.body.appendChild(container);
+  root = createRoot(container);
+  mocks.open.mockReset();
+  mocks.preview.mockReset();
+  mocks.reveal.mockReset();
+  mocks.resolve.mockReset();
+  mocks.openPreviewPane.mockReset();
+});
+
+afterEach(() => {
+  act(() => root.unmount());
+  window.getSelection()?.removeAllRanges();
+  container.remove();
+});
+
+async function renderText(text: string): Promise<void> {
+  await act(async () => {
+    root.render(<DashboardLinkedText text={text} />);
+    await Promise.resolve();
+  });
+}
+
+describe("DashboardLinkedText", () => {
+  it("renders only paths confirmed by the terminal resolver", async () => {
+    mocks.resolve.mockResolvedValue([]);
+
+    await renderText("C:\\missing\\not-real.pdf");
+
+    expect(container.querySelectorAll("a")).toHaveLength(0);
+  });
+
+  it("opens a resolved directory in Explorer", async () => {
+    const path = "C:\\Users\\miyaz\\Dropbox\\成果物\\";
+    mocks.resolve.mockResolvedValue([{ text: path, index: 0, endIndex: path.length, activationUri: path }]);
+
+    await renderText(path);
+    await act(async () => { (container.querySelector("a") as HTMLAnchorElement).click(); });
+
+    expect(mocks.reveal).toHaveBeenCalledWith(path);
+  });
+
+  it("does not activate a path after text is drag-selected", async () => {
+    const path = "C:\\Users\\miyaz\\Dropbox\\成果物\\";
+    mocks.resolve.mockResolvedValue([{ text: path, index: 0, endIndex: path.length, activationUri: path }]);
+
+    await renderText(path);
+    const link = container.querySelector("a") as HTMLAnchorElement;
+    const selection = window.getSelection()!;
+    const range = document.createRange();
+    range.selectNodeContents(link);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    await act(async () => { link.click(); });
+
+    expect(mocks.reveal).not.toHaveBeenCalled();
+  });
+
+  it("offers the terminal-equivalent default-app and Explorer choices for a resolved file", async () => {
+    const path = "C:\\Users\\miyaz\\Dropbox\\成果物\\report.pdf";
+    mocks.resolve.mockResolvedValue([{ text: path, index: 0, endIndex: path.length, activationUri: path }]);
+
+    await renderText(path);
+    await act(async () => { (container.querySelector("a") as HTMLAnchorElement).click(); });
+
+    expect([...container.querySelectorAll("button")].map((button) => button.textContent)).toEqual([
+      "既定のアプリで開く",
+      "エクスプローラーで表示",
+    ]);
+  });
+});

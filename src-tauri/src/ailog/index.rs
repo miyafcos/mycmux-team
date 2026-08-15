@@ -63,6 +63,20 @@ pub struct IndexProgress {
 
 #[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct IndexPhaseTimings {
+    /// Source-file discovery plus the incremental-state lookup.
+    pub scan_ms: u64,
+    /// Wall-clock time spent waiting for parse workers. This overlaps database
+    /// writes because the single writer consumes completed chunks concurrently.
+    pub parse_ms: u64,
+    /// Time spent applying parsed chunks to SQLite, excluding final derivation.
+    pub db_write_ms: u64,
+    /// Time spent recomputing touched sessions and final index metadata.
+    pub post_process_ms: u64,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct IndexReport {
     pub files_total: usize,
     pub files_done: usize,
@@ -71,6 +85,7 @@ pub struct IndexReport {
     pub bytes_done: u64,
     pub bytes_total: u64,
     pub elapsed_ms: u64,
+    pub timings: IndexPhaseTimings,
     pub cancelled: bool,
     pub errors: Vec<String>,
 }
@@ -153,6 +168,7 @@ pub async fn run_index(
     progress: Option<ProgressSink>,
 ) -> Result<IndexReport, String> {
     let started = Instant::now();
+    let scan_started = Instant::now();
     let roots = if options.roots.is_empty() {
         default_roots()
     } else {
@@ -162,9 +178,9 @@ pub async fn run_index(
     // --- discovery -------------------------------------------------------
     let mut known: HashMap<String, (u64, i64, u64)> = HashMap::new();
     {
-        let conn = crate::ailog::open_db(&options.db_path)?;
+        let mut conn = crate::ailog::open_db(&options.db_path)?;
         if options.full {
-            clear_all(&conn)?;
+            clear_all(&mut conn)?;
         } else {
             let mut stmt = conn
                 .prepare("SELECT path, size_bytes, mtime_ns, parsed_bytes FROM source_file")
@@ -230,17 +246,51 @@ pub async fn run_index(
     }
 
     let files_total = jobs.len();
+    let scan_ms = scan_started.elapsed().as_millis() as u64;
     let (tx, rx) = mpsc::channel::<WriteMsg>();
 
     // --- writer ----------------------------------------------------------
     let db_path = options.db_path.clone();
-    let writer = tokio::task::spawn_blocking(move || -> Result<(usize, Vec<String>), String> {
+    let writer = tokio::task::spawn_blocking(move || -> Result<(usize, Vec<String>, u64, u64), String> {
         let mut conn = crate::ailog::open_db(&db_path)?;
         let prices = PriceTable::load(&conn)?;
         let mut touched: HashSet<(String, String)> = HashSet::new();
         let mut errors = Vec::new();
+        let mut db_write_ms = 0u64;
+
+        // Keep the index pass atomic. The prior file-at-a-time transaction
+        // made a full initial import pay a journal sync for every JSONL file.
+        // The writer remains single-threaded, so readers can still parse in
+        // parallel without retaining completed chunks in memory.
+        let tx = conn
+            .transaction()
+            .map_err(|err| format!("begin index transaction: {err}"))?;
+        let mut source_file_upsert = tx
+            .prepare_cached(
+                "INSERT INTO source_file (path, kind, size_bytes, mtime_ns, parsed_bytes, \
+                 parsed_lines, session_id, last_indexed, parse_error) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL) \
+                 ON CONFLICT(path) DO UPDATE SET kind=excluded.kind, \
+                 size_bytes=excluded.size_bytes, mtime_ns=excluded.mtime_ns, \
+                 parsed_bytes=excluded.parsed_bytes, \
+                 parsed_lines=CASE WHEN ?9 THEN excluded.parsed_lines \
+                   ELSE source_file.parsed_lines + excluded.parsed_lines END, \
+                 session_id=COALESCE(excluded.session_id, source_file.session_id), \
+                 last_indexed=excluded.last_indexed, parse_error=NULL",
+            )
+            .map_err(|err| format!("prepare source_file upsert: {err}"))?;
+        let mut source_file_error = tx
+            .prepare_cached(
+                "INSERT INTO source_file (path, kind, size_bytes, mtime_ns, parsed_bytes, \
+                 parsed_lines, session_id, last_indexed, parse_error) \
+                 VALUES (?1, ?2, ?3, ?4, 0, 0, NULL, ?5, ?6) \
+                 ON CONFLICT(path) DO UPDATE SET parse_error=excluded.parse_error, \
+                 last_indexed=excluded.last_indexed",
+            )
+            .map_err(|err| format!("prepare source_file error: {err}"))?;
 
         while let Ok(message) = rx.recv() {
+            let write_started = Instant::now();
             match message {
                 WriteMsg::Chunk {
                     job_path,
@@ -251,9 +301,6 @@ pub async fn run_index(
                     reset,
                     data,
                 } => {
-                    let tx = conn
-                        .transaction()
-                        .map_err(|err| format!("begin transaction: {err}"))?;
                     if reset {
                         for session_id in data.sessions.keys() {
                             delete_session(&tx, kind, session_id)?;
@@ -264,17 +311,7 @@ pub async fn run_index(
                         touched.insert((kind.to_string(), chunk.session_id.clone()));
                     }
                     let session_id = data.sessions.keys().next().cloned();
-                    tx.execute(
-                        "INSERT INTO source_file (path, kind, size_bytes, mtime_ns, parsed_bytes, \
-                         parsed_lines, session_id, last_indexed, parse_error) \
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL) \
-                         ON CONFLICT(path) DO UPDATE SET kind=excluded.kind, \
-                         size_bytes=excluded.size_bytes, mtime_ns=excluded.mtime_ns, \
-                         parsed_bytes=excluded.parsed_bytes, \
-                         parsed_lines=CASE WHEN ?9 THEN excluded.parsed_lines \
-                           ELSE source_file.parsed_lines + excluded.parsed_lines END, \
-                         session_id=COALESCE(excluded.session_id, source_file.session_id), \
-                         last_indexed=excluded.last_indexed, parse_error=NULL",
+                    source_file_upsert.execute(
                         params![
                             job_path,
                             kind,
@@ -288,8 +325,6 @@ pub async fn run_index(
                         ],
                     )
                     .map_err(|err| format!("write source_file: {err}"))?;
-                    tx.commit()
-                        .map_err(|err| format!("commit transaction: {err}"))?;
                 }
                 WriteMsg::Failed {
                     job_path,
@@ -299,12 +334,7 @@ pub async fn run_index(
                     message,
                 } => {
                     errors.push(format!("{job_path}: {message}"));
-                    conn.execute(
-                        "INSERT INTO source_file (path, kind, size_bytes, mtime_ns, parsed_bytes, \
-                         parsed_lines, session_id, last_indexed, parse_error) \
-                         VALUES (?1, ?2, ?3, ?4, 0, 0, NULL, ?5, ?6) \
-                         ON CONFLICT(path) DO UPDATE SET parse_error=excluded.parse_error, \
-                         last_indexed=excluded.last_indexed",
+                    source_file_error.execute(
                         params![
                             job_path,
                             kind,
@@ -317,12 +347,13 @@ pub async fn run_index(
                     .map_err(|err| format!("write source_file error: {err}"))?;
                 }
             }
+            db_write_ms += write_started.elapsed().as_millis() as u64;
         }
 
+        let post_process_started = Instant::now();
         let count = touched.len();
-        let tx = conn
-            .transaction()
-            .map_err(|err| format!("begin finalize: {err}"))?;
+        drop(source_file_error);
+        drop(source_file_upsert);
         for (kind, session_id) in &touched {
             recompute_session(&tx, kind, session_id, &prices)?;
         }
@@ -335,7 +366,12 @@ pub async fn run_index(
         .map_err(|err| format!("write index_state: {err}"))?;
         tx.commit()
             .map_err(|err| format!("commit finalize: {err}"))?;
-        Ok((count, errors))
+        Ok((
+            count,
+            errors,
+            db_write_ms,
+            post_process_started.elapsed().as_millis() as u64,
+        ))
     });
 
     // --- readers ---------------------------------------------------------
@@ -345,6 +381,7 @@ pub async fn run_index(
         .min(8);
     let semaphore = Arc::new(tokio::sync::Semaphore::new(workers));
 
+    let parse_started = Instant::now();
     let mut handles = Vec::with_capacity(jobs.len());
     let mut cancelled = false;
     for job in jobs {
@@ -413,7 +450,8 @@ pub async fn run_index(
         }
     }
 
-    let (sessions, errors) = writer
+    let parse_ms = parse_started.elapsed().as_millis() as u64;
+    let (sessions, errors, db_write_ms, post_process_ms) = writer
         .await
         .map_err(|err| format!("writer task: {err}"))??;
 
@@ -425,6 +463,12 @@ pub async fn run_index(
         bytes_done,
         bytes_total,
         elapsed_ms: started.elapsed().as_millis() as u64,
+        timings: IndexPhaseTimings {
+            scan_ms,
+            parse_ms,
+            db_write_ms,
+            post_process_ms,
+        },
         cancelled: cancelled || cancel.load(Ordering::Relaxed),
         errors,
     };
@@ -554,7 +598,10 @@ fn read_and_parse(job: &FileJob) -> Result<ChunkData, String> {
     Ok(data)
 }
 
-fn clear_all(conn: &Connection) -> Result<(), String> {
+fn clear_all(conn: &mut Connection) -> Result<(), String> {
+    let tx = conn
+        .transaction()
+        .map_err(|err| format!("begin clear transaction: {err}"))?;
     for table in [
         "source_file",
         "session",
@@ -563,9 +610,11 @@ fn clear_all(conn: &Connection) -> Result<(), String> {
         "file_touch",
         "rework",
     ] {
-        conn.execute(&format!("DELETE FROM {table}"), [])
+        tx.execute(&format!("DELETE FROM {table}"), [])
             .map_err(|err| format!("clear {table}: {err}"))?;
     }
+    tx.commit()
+        .map_err(|err| format!("commit clear transaction: {err}"))?;
     Ok(())
 }
 

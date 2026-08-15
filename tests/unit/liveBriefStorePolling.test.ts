@@ -16,6 +16,7 @@ import {
 } from "../../src/lib/livebrief";
 import {
   __resetLiveBriefStoreForTests,
+  connectLiveBriefStore,
   LIVE_EVENT_LIST_POLL_MS,
   LIVE_EVENT_POLL_MS,
   stopEventPolling,
@@ -73,6 +74,12 @@ function eventCalls(): Array<{ ptySessionIds: string[]; limit: number }> {
   return mocks.invoke.mock.calls
     .filter((call) => call[0] === "get_live_events")
     .map((call) => call[1] as { ptySessionIds: string[]; limit: number });
+}
+
+function backendSubscriptionCalls(): string[] {
+  return mocks.invoke.mock.calls
+    .map((call) => call[0] as string)
+    .filter((command) => command === "subscribe_live_briefs" || command === "unsubscribe_live_briefs");
 }
 
 /** 発火済みの取得 Promise をすべて解決させる。 */
@@ -205,6 +212,31 @@ describe("syncDashboardEvents", () => {
     mocks.invoke.mockClear();
     await vi.advanceTimersByTimeAsync(LIVE_EVENT_LIST_POLL_MS * 4);
     expect(eventCalls()).toEqual([]);
+  });
+});
+
+describe("connectLiveBriefStore", () => {
+  it("keeps the backend sweep subscribed only while a visible dashboard is connected", async () => {
+    const dispose = connectLiveBriefStore();
+    await settle();
+    expect(backendSubscriptionCalls()).toEqual(["subscribe_live_briefs"]);
+
+    mocks.invoke.mockClear();
+    fakeDocument.visibilityState = "hidden";
+    fireVisibilityChange();
+    await settle();
+    expect(backendSubscriptionCalls()).toEqual(["unsubscribe_live_briefs"]);
+
+    mocks.invoke.mockClear();
+    fakeDocument.visibilityState = "visible";
+    fireVisibilityChange();
+    await settle();
+    expect(backendSubscriptionCalls()).toEqual(["subscribe_live_briefs"]);
+
+    mocks.invoke.mockClear();
+    dispose();
+    await settle();
+    expect(backendSubscriptionCalls()).toEqual(["unsubscribe_live_briefs"]);
   });
 });
 

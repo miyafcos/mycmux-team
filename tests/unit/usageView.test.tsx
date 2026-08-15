@@ -4,10 +4,19 @@ import { describe, expect, it } from "vitest";
 import { DAY_OFFSET_MIN, type SeriesReport, type UsageRhythmReport } from "../../src/lib/ailog";
 import { UsageView } from "../../src/components/ailog/UsageView";
 import { UsageModelTable } from "../../src/components/ailog/UsageModelTable";
+import { UsageRhythm } from "../../src/components/ailog/UsageRhythm";
 import { UsageTotals, summarizeUsage } from "../../src/components/ailog/UsageTotals";
 
 const OFFSET_MS = DAY_OFFSET_MIN * 60_000;
 const AUG13 = Date.UTC(2026, 7, 13) - OFFSET_MS;
+const priceCoverage = {
+  priced: { models: ["claude-fable-5"], tokens: 300 },
+  local: { models: [], tokens: 0 },
+  internal: { models: [], tokens: 0 },
+  flat: { models: [], tokens: 0 },
+  unknown: { models: ["gpt-5.5"], tokens: 100 },
+  coveredTokenRatio: 0.75,
+};
 
 function group(name: string, over: Record<string, number> = {}) {
   return {
@@ -40,7 +49,7 @@ const series: SeriesReport = {
     },
   ],
   priceSource: "default",
-  unpricedModels: ["gpt-5.5"],
+  priceCoverage,
   costNote: "estimate",
 };
 
@@ -77,10 +86,7 @@ function render(over: Partial<Parameters<typeof UsageView>[0]> = {}) {
       granularity="family"
       onGranularity={() => {}}
       rangeReady
-      selectionLabel={null}
-      onClearSelection={() => {}}
       onRetry={() => {}}
-      onReindex={() => {}}
       {...over}
     />,
   );
@@ -131,51 +137,82 @@ describe("UsageView states", () => {
     expect(html).toContain("期間を2つの日付で指定すると反映されます");
   });
 
-  it("renders every section when data is present", () => {
+  it("renders the overview with the rhythm and selected grouping closed", () => {
     const html = render();
-    expect(html).toContain("日別 × モデル別");
+    expect(html).toContain("日別 × 系統別");
     expect(html).toContain("稼働リズム");
-    expect(html).toContain("モデル別の内訳");
+    expect(html).toContain("<details");
+    expect(html).toContain(">系統</summary>");
     expect(html).toContain("2026-08-13");
   });
 
+  it("labels each control row visually with the v6 wording", () => {
+    const html = render();
+    for (const label of ["指標:", "単位:", "表示:", "まとめ方:", "入出力トークン", "総トークン", "ターン数", "セッション数", "日", "週", "月", "実数", "構成比", "会社", "系統", "モデル"]) {
+      expect(html).toContain(label);
+    }
+    expect(html).not.toContain("ファミリー");
+    expect(html).not.toContain("モデル名");
+    expect(html).not.toContain("バケット");
+  });
+
   it("labels the hour axis with the offset it is measured in", () => {
-    expect(render()).toContain("+09:00");
+    expect(renderToStaticMarkup(<UsageRhythm report={rhythm} metric="ioTokens" />)).toContain("+09:00");
   });
 
   it("says session counts are not stacked when that metric is selected", () => {
     const html = render({ metric: "sessions" });
     expect(html).toContain("積み上げず");
   });
+
+  it("uses the five fixed company labels in chart and table", () => {
+    const providerSeries: SeriesReport = {
+      ...series,
+      groupBy: "provider",
+      buckets: [{
+        ...series.buckets[0],
+        groups: ["anthropic", "openai", "google", "local", "other"].map((name) => group(name, { input: 10 })),
+      }],
+    };
+    const html = render({ series: providerSeries, granularity: "provider" });
+    const tableHtml = renderToStaticMarkup(<UsageModelTable report={providerSeries} metric="ioTokens" />);
+    for (const label of ["Anthropic", "OpenAI", "Google", "ローカル", "その他"]) {
+      expect(html).toContain(label);
+      expect(tableHtml).toContain(label);
+    }
+    expect(html).toContain("日別 × 会社別");
+    expect(tableHtml).toContain(">会社</th>");
+  });
 });
 
-describe("unpriced models", () => {
-  it("names them in the totals rather than folding them into $0.00", () => {
+describe("price coverage", () => {
+  it("prints the covered percentage next to the cost label", () => {
     const html = renderToStaticMarkup(<UsageTotals report={series} metric="ioTokens" />);
-    expect(html).toContain("gpt-5.5");
-    expect(html).toContain("コスト相当に一切含まれていません");
+    expect(html).toContain("コスト相当 (単価既知の 75% 分)");
+    expect(html).not.toContain("--cmux-usage-warn");
+    expect(html).not.toContain("公表料率が登録されていない");
   });
 
-  it("stays silent when every model has a rate", () => {
-    const priced: SeriesReport = { ...series, unpricedModels: [] };
+  it("omits the coverage suffix at 100%", () => {
+    const priced: SeriesReport = { ...series, priceCoverage: { ...priceCoverage, unknown: { models: [], tokens: 0 }, coveredTokenRatio: 1 } };
     const html = renderToStaticMarkup(<UsageTotals report={priced} metric="ioTokens" />);
-    expect(html).toContain("この期間のモデルはすべて単価が登録されています");
-    expect(html).not.toContain("コスト相当に一切含まれていません");
+    expect(html).toContain("コスト相当 (副次)");
+    expect(html).not.toContain("単価既知の");
   });
 
-  it("prints 未設定 in the cost column instead of a zero amount", () => {
+  it("prints a dash for unknown model costs", () => {
     const html = renderToStaticMarkup(<UsageModelTable report={series} metric="ioTokens" />);
-    expect(html).toContain("未設定");
-    expect(html).not.toContain("$0.00");
+    expect(html).toContain("単価未公表のため除外");
+    expect(html).toContain(">—</td>");
   });
 
-  it("prints 算出不可 for turns that recorded no model name", () => {
+  it("prints a dash for turns that recorded no model name", () => {
     const withUnknown: SeriesReport = {
       ...series,
       buckets: [{ ...series.buckets[0], groups: [group("(unknown)", { input: 7 })] }],
     };
     const html = renderToStaticMarkup(<UsageModelTable report={withUnknown} metric="ioTokens" />);
     expect(html).toContain("モデル不明");
-    expect(html).toContain("算出不可");
+    expect(html).toContain("単価未公表のため除外");
   });
 });

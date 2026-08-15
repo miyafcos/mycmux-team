@@ -25,6 +25,23 @@ export function collectPaneCloseVictims(
   }));
 }
 
+/** Live agent tabs that would be terminated by closing the supplied panes. */
+export function collectLiveAgentTabs(
+  panes: readonly Pane[],
+  metadataBySession: Record<string, PaneMetadata | undefined>,
+): PaneCloseVictim[] {
+  return panes.flatMap((pane) => pane.tabs.flatMap((tab) => {
+    const metadata = metadataBySession[tab.sessionId];
+    const agentKind = metadata?.agentKind ?? tab.agentKind;
+    if (!agentKind || metadata?.processIsShell === true) return [];
+    return [{
+      sessionId: tab.sessionId,
+      label: getTabDisplayLabel(tab, tab.id === pane.activeTabId, metadataBySession),
+      reason: "agent" as const,
+    }];
+  }));
+}
+
 function deriveVictimReason(
   tab: PaneTab,
   metadata: PaneMetadata | undefined,

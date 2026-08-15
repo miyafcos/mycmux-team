@@ -62,6 +62,14 @@ export interface PaneTab {
   isDirty?: boolean;
   /** Browser tabs: bump to force <iframe> remount when the same htmlPath is re-emitted. */
   reloadCounter?: number;
+  /** A declared tab is visible in planning UI but must not be restored or launched. */
+  lifecycle?: "declared";
+  /** Stable ownership metadata for dashboard grouping; runtime session ids are not used here. */
+  origin?: { kind: "human" | "agent"; parentTabId?: string };
+  /** Intent captured before a declared tab is launched. */
+  declaredPrompt?: string;
+  /** Intended agent or execution target captured before launch. */
+  declaredTarget?: string;
 }
 
 export interface Pane {

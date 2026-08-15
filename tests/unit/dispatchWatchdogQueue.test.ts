@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { buildWatchdogQueue, WAITING_KINDS, type WatchdogItem } from "../../src/stores/dispatchWatchdogStore";
+import { buildWatchdogQueue, telemetryForSkip, telemetryForTick, WAITING_KINDS, type WatchdogItem } from "../../src/stores/dispatchWatchdogStore";
 import type { DispatchEntry } from "../../src/lib/ipc";
 
 const NOW = Date.parse("2026-08-13T12:00:00.000Z");
@@ -37,6 +37,11 @@ function queue(
 }
 
 describe("buildWatchdogQueue", () => {
+  it("records display telemetry for a successful tick and a hidden skip without queue input", () => {
+    expect(telemetryForTick(NOW, 5, true)).toMatchObject({ lastTickAt: NOW, nextTickDueAt: NOW + 5 * MINUTE, lastSkipReason: null });
+    expect(telemetryForSkip("hidden")).toMatchObject({ running: false, lastTickAt: null, lastSkipReason: "hidden", nextTickDueAt: null });
+  });
+
   it("keeps ASK ahead of DONE and stalled", () => {
     const result = queue([entry({ hasAsk: true, hasDone: true, askMtimeMs: 10, doneMtimeMs: 11, sessionLogAgeMinutes: 60 })]);
     expect(result.queue.map((item) => item.kind)).toEqual(["ask"]);

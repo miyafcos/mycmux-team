@@ -53,9 +53,10 @@ export function resolvePaneDropZone(
   rect: PaneDropRect,
   x: number,
   y: number,
+  edgeRatio = 0.16,
 ): PaneDropZone {
-  const horizontalBand = Math.min(72, Math.max(24, rect.width * 0.16));
-  const verticalBand = Math.min(60, Math.max(22, rect.height * 0.16));
+  const horizontalBand = Math.min(72, Math.max(24, rect.width * edgeRatio));
+  const verticalBand = Math.min(60, Math.max(22, rect.height * edgeRatio));
   const distances = [
     { zone: "left" as const, value: x - rect.left, limit: horizontalBand },
     { zone: "right" as const, value: rect.right - x, limit: horizontalBand },

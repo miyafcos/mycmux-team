@@ -124,6 +124,43 @@ fn raw_grouping_separates_variants_that_the_family_hides() {
 }
 
 #[test]
+fn provider_grouping_is_shared_by_daily_series_and_model_rows() {
+    let fixture = Fixture::new();
+    fixture.write("S1.jsonl", CLAUDE_SPLIT_REQUEST);
+    fixture.write("S4.jsonl", CLAUDE_UNKNOWN_MODEL);
+    let openai_turn = CLAUDE_SPLIT_REQUEST[0]
+        .replace("\"sessionId\":\"S1\"", "\"sessionId\":\"S5\"")
+        .replace("\"requestId\":\"req_1\"", "\"requestId\":\"req_openai\"")
+        .replace("claude-opus-5", "gpt-5.6-terra");
+    fixture.write("S2.jsonl", &[openai_turn.as_str()]);
+    fixture.index(KIND_CLAUDE, false);
+    let conn = fixture.conn();
+
+    let mut groups: Vec<String> = series_groups(&conn, "provider")
+        .into_iter()
+        .map(|row| row.group)
+        .collect();
+    groups.sort();
+    groups.dedup();
+    assert_eq!(groups, vec!["anthropic", "openai", "other"]);
+
+    let models = query::models(
+        &conn,
+        &Range::default(),
+        &Filters::default(),
+        &query::ModelsOptions {
+            granularity: "provider".to_string(),
+            bucket: "day".to_string(),
+        },
+        NOW,
+    )
+    .unwrap();
+    let mut rows: Vec<String> = models.rows.into_iter().map(|row| row.model).collect();
+    rows.sort();
+    assert_eq!(rows, vec!["anthropic", "openai", "other"]);
+}
+
+#[test]
 fn series_reports_cache_writes_as_the_sum_of_both_ttls() {
     let fixture = Fixture::new();
     // CLAUDE_SPLIT_REQUEST carries 0 ephemeral-5m and 500 ephemeral-1h tokens

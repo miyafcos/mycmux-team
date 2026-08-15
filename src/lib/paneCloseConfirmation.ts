@@ -1,7 +1,8 @@
 import { confirm } from "@tauri-apps/plugin-dialog";
 import type { Pane } from "../types";
 import { usePaneMetadataStore } from "../stores/paneMetadataStore";
-import { collectPaneCloseVictims, paneCloseImpactMessage } from "./paneCloseImpact";
+import { collectLiveAgentTabs, collectPaneCloseVictims, paneCloseImpactMessage } from "./paneCloseImpact";
+import { agentCloseDialogOptions } from "./agentCloseDialog";
 
 export interface PaneCloseConfirmOptions {
   /** Shown in the body when a workspace is closed, so the target is unambiguous. */
@@ -13,23 +14,31 @@ export async function confirmPaneClose(
   scope: "pane" | "workspace",
   options: PaneCloseConfirmOptions = {},
 ): Promise<boolean> {
-  const victims = collectPaneCloseVictims(panes, usePaneMetadataStore.getState().metadata);
+  const metadata = usePaneMetadataStore.getState().metadata;
+  const victims = collectPaneCloseVictims(panes, metadata);
+  const liveAgentTabs = scope === "pane" ? collectLiveAgentTabs(panes, metadata) : [];
   // A pane holding nothing live closes unprompted, the way it always has.
   // A workspace never did: it asked every time, and it keeps asking even when
   // no tab looks busy, because the close takes every pane in it.
   if (victims.length === 0 && scope === "pane") return true;
 
-  const body = victims.length > 0
-    ? paneCloseImpactMessage(victims)
+  const body = scope === "pane" && liveAgentTabs.length > 0
+    ? `このペインには実行中のエージェントタブが ${liveAgentTabs.length} 件あります。まとめて閉じますか？`
+    : victims.length > 0
+      ? paneCloseImpactMessage(victims)
     : "開いているタブは、まとめて終了します。";
   const named = scope === "workspace" && options.workspaceName
     ? `ワークスペース「${options.workspaceName}」\n${body}`
     : body;
 
   return confirm(named, {
-    title: scope === "workspace" ? "このワークスペースを閉じます" : "このペインを閉じます",
-    kind: "warning",
-    okLabel: "閉じる",
-    cancelLabel: "やめる",
+    ...(scope === "pane"
+      ? agentCloseDialogOptions("このペインを閉じます")
+      : {
+          title: "このワークスペースを閉じます",
+          kind: "warning" as const,
+          okLabel: "閉じる",
+          cancelLabel: "やめる",
+        }),
   }).catch(() => false);
 }

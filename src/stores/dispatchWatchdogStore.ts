@@ -41,6 +41,43 @@ export interface WatchdogAttention {
   stateSince?: number;
 }
 
+export interface DispatchWatchdogTelemetry {
+  running: boolean;
+  lastTickAt: number | null;
+  nextTickDueAt: number | null;
+  lastSkipReason: "hidden" | "not-main-window" | "disabled" | null;
+  notifySuppressed: boolean;
+}
+
+const INITIAL_TELEMETRY: DispatchWatchdogTelemetry = {
+  running: false,
+  lastTickAt: null,
+  nextTickDueAt: null,
+  lastSkipReason: null,
+  notifySuppressed: false,
+};
+
+/** Display-only telemetry helpers; they do not participate in watchdog decisions. */
+export function telemetryForTick(checkedAt: number, intervalMinutes: number, notifyEnabled: boolean): Partial<DispatchWatchdogTelemetry> {
+  return {
+    running: true,
+    lastTickAt: checkedAt,
+    nextTickDueAt: checkedAt + Math.max(1, intervalMinutes) * MINUTE_MS,
+    lastSkipReason: null,
+    notifySuppressed: !notifyEnabled,
+  };
+}
+
+export function telemetryForSkip(reason: NonNullable<DispatchWatchdogTelemetry["lastSkipReason"]>): Partial<DispatchWatchdogTelemetry> {
+  return {
+    running: false,
+    lastTickAt: null,
+    nextTickDueAt: null,
+    lastSkipReason: reason,
+    notifySuppressed: false,
+  };
+}
+
 export interface BuildWatchdogQueueInput {
   entries: readonly DispatchEntry[];
   stallEntries: Readonly<Record<string, StallEntry>>;
@@ -145,21 +182,25 @@ export function buildWatchdogQueue(input: BuildWatchdogQueueInput): { queue: Wat
 interface DispatchWatchdogState {
   queue: WatchdogItem[];
   notifiedKeys: Set<string>;
+  telemetry: DispatchWatchdogTelemetry;
   replaceQueue: (queue: WatchdogItem[]) => void;
   markNotified: (keys: readonly string[]) => void;
+  setTelemetry: (telemetry: Partial<DispatchWatchdogTelemetry>) => void;
   clear: () => void;
 }
 
 export const useDispatchWatchdogStore = create<DispatchWatchdogState>((set) => ({
   queue: [],
   notifiedKeys: new Set(),
+  telemetry: INITIAL_TELEMETRY,
   replaceQueue: (queue) => set({ queue }),
   markNotified: (keys) => set((state) => {
     const notifiedKeys = new Set(state.notifiedKeys);
     for (const key of keys) notifiedKeys.add(key);
     return { notifiedKeys };
   }),
-  clear: () => set({ queue: [], notifiedKeys: new Set() }),
+  setTelemetry: (telemetry) => set((state) => ({ telemetry: { ...state.telemetry, ...telemetry } })),
+  clear: () => set({ queue: [], notifiedKeys: new Set(), telemetry: INITIAL_TELEMETRY }),
 }));
 
 function knownSessionIds(): Set<string> {
@@ -190,18 +231,33 @@ export function connectDispatchWatchdog(): () => void {
   let disposed = false;
   let tickRunning = false;
 
+  const setTelemetrySafely = (telemetry: Partial<DispatchWatchdogTelemetry>): void => {
+    try {
+      useDispatchWatchdogStore.getState().setTelemetry(telemetry);
+    } catch (error) {
+      console.warn("[dispatch-watchdog] Telemetry update failed", error);
+    }
+  };
+
   const tick = async (): Promise<void> => {
-    if (disposed || tickRunning || document.visibilityState !== "visible") return;
+    if (disposed || tickRunning) return;
+    if (document.visibilityState !== "visible") {
+      setTelemetrySafely(telemetryForSkip("hidden"));
+      return;
+    }
     tickRunning = true;
+    const checkedAt = Date.now();
     try {
       const settings = useSettingsStore.getState();
       if (!settings.dispatchWatchdogEnabled) {
+        setTelemetrySafely(telemetryForSkip("disabled"));
         useDispatchWatchdogStore.getState().replaceQueue([]);
         return;
       }
       const ownsNotificationLease = await dispatchClaimWatchdog(settings.dispatchWatchdogIntervalMinutes * MINUTE_MS * 3);
       const entries = await dispatchScan();
       if (disposed) return;
+      setTelemetrySafely(telemetryForTick(checkedAt, settings.dispatchWatchdogIntervalMinutes, settings.dispatchWatchdogNotify));
       const queue = buildWatchdogQueue({
         entries,
         stallEntries: useStallStore.getState().entries,
@@ -242,7 +298,10 @@ export function connectDispatchWatchdog(): () => void {
   };
   const startInterval = (): void => {
     stopInterval();
-    if (document.visibilityState !== "visible") return;
+    if (document.visibilityState !== "visible") {
+      setTelemetrySafely(telemetryForSkip("hidden"));
+      return;
+    }
     void tick();
     const minutes = Math.max(1, useSettingsStore.getState().dispatchWatchdogIntervalMinutes);
     intervalId = window.setInterval(() => void tick(), minutes * MINUTE_MS);

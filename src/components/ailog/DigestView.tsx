@@ -1,5 +1,5 @@
 import { formatCount, formatDelta, formatUsd, type DigestReport, type SummarizeStatus } from "../../lib/ailog";
-import { cardStyle, Chip, noteStyle, subtleButtonStyle } from "./ui";
+import { cardStyle, Chip, DeferredDetails, noteStyle, SkeletonBlock, subtleButtonStyle } from "./ui";
 
 export function DigestView({
   report,
@@ -46,6 +46,7 @@ export function DigestView({
       {aiOff ? <div style={noteStyle}>{aiDisabledReason}</div> : null}
 
       {loading || generating ? <div style={noteStyle}>生成中…</div> : null}
+      {!report && (loading || generating) ? <SkeletonBlock height={160} label="更新中…" /> : null}
       {summarizeStatus?.running ? <div style={noteStyle}>要約中 {summarizeStatus.sessionsDone.toLocaleString()} / {summarizeStatus.sessionsTotal.toLocaleString()}（残り {summarizeStatus.sessionsRemaining.toLocaleString()}）</div> : null}
       {error ? <div style={{ ...cardStyle, borderColor: "var(--cmux-usage-warn)" }}><div>読み込みに失敗しました: {error}</div>{onRetry ? <button type="button" onClick={onRetry} style={{ ...subtleButtonStyle, marginTop: 10 }}>再試行</button> : null}</div> : null}
       {summarizeError || report?.parseError ? <div style={{ ...cardStyle, borderColor: "var(--cmux-usage-warn)" }}>エラー: {summarizeError ?? report?.parseError}</div> : null}
@@ -71,12 +72,11 @@ export function DigestView({
           </section>
 
           {content.wins.length ? (
-            <section style={cardStyle}>
-              <h3 style={{ margin: 0, fontSize: "var(--cmux-font-size-sm)" }}>うまくいったこと</h3>
+            <DeferredDetails summary="うまくいったこと">
               <ul style={{ margin: "8px 0 0", paddingLeft: 20 }}>
                 {content.wins.map((win, index) => <li key={`${index}-${win}`}>{win}</li>)}
               </ul>
-            </section>
+            </DeferredDetails>
           ) : null}
 
           {content.biggestRework.exists ? (
@@ -86,10 +86,9 @@ export function DigestView({
             </section>
           ) : null}
 
-          <section style={cardStyle}>
-            <h3 style={{ margin: 0, fontSize: "var(--cmux-font-size-sm)" }}>得られたもの</h3>
+          <DeferredDetails summary="得られたもの">
             <p style={{ margin: "8px 0 0", lineHeight: 1.6 }}>{content.valueNote}</p>
-          </section>
+          </DeferredDetails>
 
           <section style={{ ...cardStyle, borderColor: "var(--cmux-accent)", background: "color-mix(in srgb, var(--cmux-accent) 8%, var(--cmux-surface))" }}>
             <h3 style={{ margin: 0, fontSize: "var(--cmux-font-size-sm)" }}>今日の提案</h3>

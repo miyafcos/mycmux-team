@@ -70,6 +70,13 @@ pub struct SuppressedAgentSessionConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PaneTabOriginConfig {
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_tab_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PaneTabConfig {
     #[serde(default)]
     pub tab_id: Option<String>,
@@ -93,6 +100,14 @@ pub struct PaneTabConfig {
     pub launch_env: Option<HashMap<String, String>>,
     #[serde(default)]
     pub terminal_snapshot: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lifecycle: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<PaneTabOriginConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub declared_prompt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub declared_target: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -229,6 +244,8 @@ pub struct AppSettings {
     /// only. Read once at startup; a change takes effect on next app launch.
     #[serde(default)]
     pub remote_bind_all: bool,
+    #[serde(default = "default_true")]
+    pub remote_enabled: bool,
     #[serde(default = "default_pet_display_mode")]
     pub pet_display_mode: String,
     #[serde(default = "default_pet_new_ws_mode")]
@@ -256,6 +273,7 @@ impl Default for AppSettings {
             dirty_save_mode: true,
             osc7_tracking_enabled: true,
             remote_bind_all: false,
+            remote_enabled: false,
             pet_display_mode: default_pet_display_mode(),
             pet_new_ws_mode: default_pet_new_ws_mode(),
             pet_disabled: Vec::new(),
@@ -538,7 +556,7 @@ fn save_to_path(path: &Path, data: &PersistentData) -> Result<(), String> {
         "{file_name}.tmp-{}-{timestamp}",
         std::process::id()
     ));
-    let json = serde_json::to_string_pretty(data)
+    let json = serde_json::to_string(data)
         .map_err(|error| format!("Failed to serialize data: {error}"))?;
 
     write_json_file(&tmp_path, &json)?;
@@ -623,6 +641,31 @@ mod tests {
         assert_eq!(settings.pet_new_ws_mode, "random");
         assert!(settings.pet_disabled.is_empty());
         assert!(settings.pet_fixed_id.is_none());
+    }
+
+    #[test]
+    fn remote_enabled_defaults_true_only_for_legacy_data() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("data.json");
+
+        let new_install = load_from_path(&path).unwrap();
+        assert!(!new_install.settings.remote_enabled);
+
+        fs::write(
+            &path,
+            r#"{"schema_version":1,"workspaces":[],"settings":{"font_size":14,"theme_id":"yoru-cafe"}}"#,
+        )
+        .unwrap();
+        let legacy_install = load_from_path(&path).unwrap();
+        assert!(legacy_install.settings.remote_enabled);
+
+        fs::write(
+            &path,
+            r#"{"schema_version":1,"workspaces":[],"settings":{"font_size":14,"theme_id":"yoru-cafe","remote_enabled":false}}"#,
+        )
+        .unwrap();
+        let explicit_opt_out = load_from_path(&path).unwrap();
+        assert!(!explicit_opt_out.settings.remote_enabled);
     }
 
     #[test]

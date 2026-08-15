@@ -10,6 +10,7 @@ import {
   reconcileStableLayoutColumnIdentities,
   type StableLayoutColumnIdentity,
 } from "../../lib/layoutColumns";
+import { fitLayoutSizes } from "../../lib/layoutMetrics";
 import { focusController } from "../../lib/focusController";
 import { evictTerminalCache } from "../terminal/XTermWrapper";
 import { beforePaneClose } from "../../lib/paneCloseLifecycle";
@@ -30,41 +31,6 @@ interface TerminalGridProps {
 interface LayoutStructureSnapshot {
   columnSignature: string;
   rowSignatures: Map<string, string>;
-}
-
-function positiveLayoutSizes(sizes: number[] | undefined, itemCount: number): number[] | null {
-  if (!sizes || sizes.length !== itemCount) return null;
-  const cleaned = sizes.map((size) =>
-    typeof size === "number" && Number.isFinite(size) && size > 0 ? size : null,
-  );
-  return cleaned.every((size): size is number => size !== null) ? cleaned : null;
-}
-
-function fitLayoutSizes(
-  sizes: number[] | undefined,
-  availableSize: number,
-  itemCount: number,
-): number[] | undefined {
-  const fitSize = Math.floor(availableSize);
-  if (itemCount <= 0 || fitSize <= 0) return undefined;
-
-  const source = positiveLayoutSizes(sizes, itemCount) ?? Array.from({ length: itemCount }, () => 1);
-  const total = source.reduce((sum, size) => sum + size, 0);
-  if (total <= 0) return undefined;
-
-  const rawSizes = source.map((size) => (size / total) * fitSize);
-  const fitted = rawSizes.map((size) => Math.floor(size));
-  let remaining = fitSize - fitted.reduce((sum, size) => sum + size, 0);
-  const order = rawSizes
-    .map((size, index) => ({ index, fraction: size - Math.floor(size) }))
-    .sort((a, b) => b.fraction - a.fraction);
-
-  for (let idx = 0; remaining > 0 && order.length > 0; idx = (idx + 1) % order.length) {
-    fitted[order[idx].index] += 1;
-    remaining -= 1;
-  }
-
-  return fitted;
 }
 
 function sameViewportSize(

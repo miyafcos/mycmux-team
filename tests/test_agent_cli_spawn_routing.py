@@ -66,6 +66,11 @@ def request_for_restore_activation(argv: list[str]) -> tuple[str, dict[str, Any]
     return cli.request_for(namespace)
 
 
+def request_for_declare_tab(argv: list[str]) -> tuple[str, dict[str, Any]]:
+    namespace = cli.build_parser().parse_args(["declare-tab", *argv])
+    return cli.request_for(namespace)
+
+
 def test_panes_keeps_existing_default_route() -> None:
     assert request_for_panes([]) == ("pane.list", {})
 
@@ -168,6 +173,41 @@ def test_activate_tab_routes_session_id() -> None:
     assert request_for_activate_tab(["--session", PANE_SESSION_ID]) == (
         "pane.activate_tab",
         {"sessionId": PANE_SESSION_ID},
+    )
+
+
+def test_declare_tab_defaults_origin_to_agent() -> None:
+    assert request_for_declare_tab(
+        ["--session", PANE_SESSION_ID, "--label", "Later"]
+    ) == (
+        "pane.declare_tab",
+        {"sessionId": PANE_SESSION_ID, "label": "Later", "origin": "agent"},
+    )
+
+
+def test_declare_tab_forwards_explicit_human_origin_and_intent() -> None:
+    assert request_for_declare_tab(
+        [
+            "--session",
+            PANE_SESSION_ID,
+            "--label",
+            "Later",
+            "--prompt",
+            "Inspect",
+            "--target",
+            "codex",
+            "--origin",
+            "human",
+        ]
+    ) == (
+        "pane.declare_tab",
+        {
+            "sessionId": PANE_SESSION_ID,
+            "label": "Later",
+            "origin": "human",
+            "declaredPrompt": "Inspect",
+            "declaredTarget": "codex",
+        },
     )
 
 

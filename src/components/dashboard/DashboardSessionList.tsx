@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef } from "react";
-import type { CSSProperties, ReactNode } from "react";
+import type { ReactNode, RefObject } from "react";
 
 import { DashboardCardRow } from "./DashboardCardRow";
 import { dashboardStrings } from "./dashboardStrings";
-import { resolveDisplayState, type DashboardCardModel } from "./dashboardModel";
+import type { DashboardCardModel } from "./dashboardModel";
+import { groupCardsByAttentionSection } from "./dashboardAttentionOrder";
 
 // 行の見た目と状態語は DashboardCardRow が持つ。詳細ペインが従来どおり
 // このモジュールから取れるように、ここで通しておく。
@@ -42,8 +43,8 @@ export function useFrozenCardOrder(
 }
 
 function Section({ title, count, children }: { title: string; count: number; children: ReactNode }) {
-  return <section style={{ display: "grid", gap: 8 }}>
-    <div style={sectionHeadingStyle}>{title} <span style={{ color: "var(--cmux-text-tertiary)" }}>{dashboardStrings.countUnit(count)}</span></div>
+  return <section className="cmux-dash-list-section">
+    <div className="cmux-dash-list-heading">{`${title} (${count})`}</div>
     {children}
   </section>;
 }
@@ -52,28 +53,44 @@ export function DashboardSessionList({
   needsHuman,
   all,
   deferred,
-  deferredExpanded,
   hideWorkspaceBadge,
   selectedTabId,
   now,
   onSelect,
   onJump,
   onHoverChange,
-  onFocusComposer,
-  onToggleDeferred,
+  query,
+  searchInputRef,
+  onQueryChange,
+  onSearchFocusChange,
+  onClose,
+  clearDoneCount,
+  onClearDone,
+  filteredSummary,
+  reportInboxCount,
+  reportInboxOpen,
+  onOpenReportInbox,
 }: {
   needsHuman: readonly DashboardCardModel[];
   all: readonly DashboardCardModel[];
   deferred: readonly DashboardCardModel[];
-  deferredExpanded: boolean;
   hideWorkspaceBadge: boolean;
   selectedTabId: string | null;
   now: number;
   onSelect: (tabId: string) => void;
   onJump: (card: DashboardCardModel) => void;
   onHoverChange: (hovered: boolean) => void;
-  onFocusComposer: () => void;
-  onToggleDeferred: () => void;
+  query: string;
+  searchInputRef: RefObject<HTMLInputElement | null>;
+  onQueryChange: (query: string) => void;
+  onSearchFocusChange: (focused: boolean) => void;
+  onClose: () => void;
+  clearDoneCount: number;
+  onClearDone: () => void;
+  filteredSummary: string | null;
+  reportInboxCount: number;
+  reportInboxOpen: boolean;
+  onOpenReportInbox: () => void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const hoveredRef = useRef(false);
@@ -86,91 +103,61 @@ export function DashboardSessionList({
     rows[rows.length - 1]?.scrollIntoView({ block: "nearest" });
   }, [selectedTabId]);
 
+  const attentionSections = useMemo(() => {
+    const cards = [...needsHuman, ...all, ...deferred];
+    return groupCardsByAttentionSection(cards);
+  }, [all, deferred, needsHuman]);
+
+  const row = (card: DashboardCardModel, key: string) => <DashboardCardRow
+    key={key}
+    card={card}
+    selected={card.tab.id === selectedTabId}
+    now={now}
+    hideWorkspaceBadge={hideWorkspaceBadge}
+    onSelect={onSelect}
+    onJump={onJump}
+  />;
+
   return <div
     ref={scrollRef}
     role="group"
     aria-label={dashboardStrings.sessionListAriaLabel}
     onPointerEnter={() => { hoveredRef.current = true; onHoverChange(true); }}
     onPointerLeave={() => { hoveredRef.current = false; onHoverChange(false); }}
-    style={listStyle}
+    className="cmux-dash-list is-attention"
   >
-    {needsHuman.length ? <Section title={dashboardStrings.sectionNeedsHuman} count={needsHuman.length}>
-      {needsHuman.map((card) => <DashboardCardRow
-        key={`needs-${card.tab.id}`}
-        card={card}
-        selected={card.tab.id === selectedTabId}
-        now={now}
-        hideWorkspaceBadge={hideWorkspaceBadge}
-        onSelect={onSelect}
-        onJump={onJump}
-        onFocusComposer={onFocusComposer}
-      />)}
-    </Section> : null}
-    <Section title={dashboardStrings.sectionAllSessions} count={all.length}>
-      {all.length
-        ? all.map((card) => <DashboardCardRow
-          key={card.tab.id}
-          card={card}
-          selected={card.tab.id === selectedTabId}
-          now={now}
-          hideWorkspaceBadge={hideWorkspaceBadge}
-          onSelect={onSelect}
-          onJump={onJump}
-          onFocusComposer={onFocusComposer}
-        />)
-        : <div style={emptyStyle}>{dashboardStrings.listEmpty}</div>}
-    </Section>
-    {deferred.length ? <section style={{ display: "grid", gap: 8 }}>
-      <button
-        type="button"
-        title={dashboardStrings.collapsedTitle}
-        aria-expanded={deferredExpanded}
-        onClick={() => onToggleDeferred()}
-        style={disclosureStyle}
-      >{`${deferredExpanded ? "▾" : "▸"} ${dashboardStrings.collapsedDone(deferred.filter((card) => resolveDisplayState(card) === "done").length)} ／ ${dashboardStrings.collapsedIdle(deferred.filter((card) => resolveDisplayState(card) !== "done").length)}`}</button>
-      {deferredExpanded ? deferred.map((card) => <DashboardCardRow
-        key={card.tab.id}
-        card={card}
-        selected={card.tab.id === selectedTabId}
-        now={now}
-        hideWorkspaceBadge={hideWorkspaceBadge}
-        onSelect={onSelect}
-        onJump={onJump}
-        onFocusComposer={onFocusComposer}
-      />) : null}
-    </section> : null}
+    <div className="cmux-dash-list-search">
+      <input
+        ref={searchInputRef}
+        value={query}
+        aria-label={dashboardStrings.searchPlaceholder}
+        placeholder={dashboardStrings.searchPlaceholder}
+        onChange={(event) => onQueryChange(event.target.value)}
+        onFocus={() => onSearchFocusChange(true)}
+        onBlur={() => onSearchFocusChange(false)}
+      />
+      {filteredSummary ? <span>{filteredSummary}</span> : null}
+    </div>
+    <button
+      type="button"
+      data-report-inbox-nav="true"
+      className={`cmux-dash-report-nav${reportInboxOpen ? " is-selected" : ""}`}
+      aria-pressed={reportInboxOpen}
+      onClick={onOpenReportInbox}
+    >
+      <span>{dashboardStrings.reportInboxTitle}</span>
+      <small>{dashboardStrings.reportInboxHint}</small>
+      {reportInboxCount ? <b>{reportInboxCount}</b> : null}
+    </button>
+    <div className="cmux-dash-list-scroll">
+    <Section title={dashboardStrings.sectionNeedsAnswer} count={attentionSections.needsAnswer.length}>{attentionSections.needsAnswer.map((card) => row(card, `answer-${card.tab.id}`))}</Section>
+    <Section title={dashboardStrings.sectionNeedsReview} count={attentionSections.needsReview.length}>{attentionSections.needsReview.map((card) => row(card, `review-${card.tab.id}`))}</Section>
+    <Section title={dashboardStrings.sectionWorking} count={attentionSections.working.length}>{attentionSections.working.map((card) => row(card, `working-${card.tab.id}`))}</Section>
+    <Section title={dashboardStrings.sectionOther} count={attentionSections.other.length}>{attentionSections.other.map((card) => row(card, `other-${card.tab.id}`))}</Section>
+    </div>
+    <div className="cmux-dash-list-footer">
+      {clearDoneCount > 0 ? <button type="button" onClick={onClearDone}>{dashboardStrings.clearDoneButton(clearDoneCount)}</button> : null}
+      <button type="button" onClick={onClose}>{dashboardStrings.backToSession}</button>
+    </div>
   </div>;
 }
-
-const listStyle: CSSProperties = {
-  flex: "0 0 clamp(420px, 36vw, 520px)",
-  width: "clamp(420px, 36vw, 520px)",
-  overflowY: "auto",
-  borderRight: "1px solid var(--cmux-border)",
-  // カードを面として浮かせたいので、一覧の地はカードより暗い側に置く。
-  background: "var(--cmux-bg)",
-  padding: "9px 12px",
-  display: "grid",
-  gap: 14,
-  alignContent: "start",
-};
-const sectionHeadingStyle: CSSProperties = {
-  color: "var(--cmux-text-secondary)",
-  fontSize: "var(--cmux-font-size-sm)",
-  fontWeight: 700,
-  padding: "0 2px",
-};
-const emptyStyle: CSSProperties = {
-  color: "var(--cmux-text-secondary)",
-  fontSize: "var(--cmux-font-size-sm)",
-  padding: "8px 2px",
-};
-const disclosureStyle: CSSProperties = {
-  background: "transparent",
-  border: "0",
-  color: "var(--cmux-text-secondary)",
-  cursor: "pointer",
-  fontSize: "var(--cmux-font-size-sm)",
-  padding: "4px 2px",
-  textAlign: "left",
-};

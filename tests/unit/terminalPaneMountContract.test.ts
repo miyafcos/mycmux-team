@@ -13,6 +13,10 @@ const socketCommandsSource = readFileSync(
   new URL("../../src/components/layout/socketCommands.ts", import.meta.url),
   "utf8",
 );
+const paneTabBarSource = readFileSync(
+  new URL("../../src/components/workspace/PaneTabBar.tsx", import.meta.url),
+  "utf8",
+);
 
 describe("terminal tab mount contract", () => {
   it("mounts one renderer for the active tab instead of every pane tab", () => {
@@ -58,5 +62,12 @@ describe("terminal tab mount contract", () => {
     expect(headlessBlock).not.toContain("XTermWrapper");
     expect(headlessBlock).not.toContain("@xterm/");
     expect(headlessBlock).not.toContain("new Terminal");
+  });
+
+  it("routes declared tab clicks through the flag-guarded layout-store action", () => {
+    expect(paneTabBarSource).not.toContain("handleSocketCommand");
+    expect(paneTabBarSource).toContain("const launchDeclaredTab = useWorkspaceLayoutStore");
+    expect(paneTabBarSource).toContain("if (!declaredLaunchEnabled) return;");
+    expect(paneTabBarSource).not.toContain("is-declared");
   });
 });

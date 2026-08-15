@@ -36,7 +36,9 @@ function maybeEmitStartupRestoreComplete(): void {
     return;
   }
   gate.completionEmitted = true;
-  window.dispatchEvent(new CustomEvent(STARTUP_RESTORE_COMPLETE_EVENT));
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent(STARTUP_RESTORE_COMPLETE_EVENT));
+  }
 }
 
 function createGate(sessionIds: string[]): StartupSessionGateState {
@@ -68,10 +70,16 @@ function createGate(sessionIds: string[]): StartupSessionGateState {
 }
 
 let gate = createGate([]);
+const listeners = new Set<() => void>();
+
+function notifyListeners(): void {
+  listeners.forEach((listener) => listener());
+}
 
 export function prepareStartupSessionGate(sessionIds: string[]): void {
   gate = createGate(sessionIds);
-  if (gate.pending.size === 0) {
+  notifyListeners();
+  if (gate.pending.size === 0 && typeof window !== "undefined") {
     window.queueMicrotask(maybeEmitStartupRestoreComplete);
   }
 }
@@ -85,11 +93,22 @@ export function markStartupSessionSettled(sessionId: string): void {
     return;
   }
 
+  notifyListeners();
+
   if (gate.pending.size === 0) {
     gate.resolveReady?.();
     gate.resolveReady = null;
     maybeEmitStartupRestoreComplete();
   }
+}
+
+export function isStartupSessionPending(sessionId: string): boolean {
+  return gate.pending.has(sessionId);
+}
+
+export function subscribeStartupSessionGate(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
 }
 
 export function getStartupSessionGateSnapshot(): { expected: number; pending: number } {

@@ -235,6 +235,8 @@ interface WorkspaceListState {
     splitColumns?: string[][],
     resetLayoutMetrics?: boolean,
   ) => void;
+  /** Atomic whole-layout replacement for a single layout mutation transaction. */
+  _replaceWorkspaces: (workspaces: Workspace[]) => void;
 
   /**
    * Sync live agent session metadata (from Rust pty_metadata event) into
@@ -464,6 +466,10 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
     if (beforeFocusTarget !== afterFocusTarget) {
       useUiStore.getState().bumpFocusRevision();
     }
+  },
+
+  _replaceWorkspaces: (workspaces) => {
+    set({ workspaces });
   },
 
   setPaneAgentSessionFromMetadata: (sessionId, payload) => {

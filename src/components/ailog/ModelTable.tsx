@@ -18,19 +18,22 @@ import {
   type ModelsReport,
 } from "../../lib/ailog";
 import type { AilogSelection } from "../../stores/ailogStore";
-import { ButtonGroup, Chip, ScrollBox, ShareBar, noteStyle, tableStyle, tdLeftStyle, tdStyle, thLeftStyle, thStyle } from "./ui";
+import { ScrollBox, ShareBar, noteStyle, tableStyle, tdLeftStyle, tdStyle, thLeftStyle, thStyle } from "./ui";
+
+function costCell(modelClass: ModelsReport["rows"][number]["modelClass"], costUsd: number) {
+  if (modelClass === "unknown") return { value: "—", title: "単価未公表のため除外" };
+  if (modelClass === "local") return { value: formatUsd(0), title: "ローカル実行 — 費用なし" };
+  if (modelClass === "flat") return { value: formatUsd(0), title: "定額プラン — 従量費用なし" };
+  return { value: formatUsd(costUsd), title: undefined };
+}
 
 export function ModelTable({
   report,
-  granularity,
-  onGranularity,
   excludeSynthetic,
   selection,
   onSelect,
 }: {
   report: ModelsReport;
-  granularity: "family" | "raw";
-  onGranularity: (value: "family" | "raw") => void;
   excludeSynthetic: boolean;
   selection: AilogSelection | null;
   onSelect: (selection: AilogSelection | null) => void;
@@ -39,21 +42,13 @@ export function ModelTable({
   const rows = excludeSynthetic ? report.rows.filter((row) => !hidden.includes(row)) : report.rows;
   const sessionSum = rows.reduce((sum, row) => sum + row.sessions, 0);
   const hiddenCost = hidden.reduce((sum, row) => sum + row.costUsd, 0);
+  const costLabel = report.priceCoverage.coveredTokenRatio < 1
+    ? `コスト相当 (単価既知の ${Math.round(report.priceCoverage.coveredTokenRatio * 100)}% 分)`
+    : "コスト相当";
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-        <span style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-tertiary)" }}>粒度</span>
-        <ButtonGroup
-          ariaLabel="モデルの粒度"
-          value={granularity}
-          onChange={onGranularity}
-          options={[
-            { value: "family" as const, label: "ファミリー", title: "opus-5 のように束ねる" },
-            { value: "raw" as const, label: "生のモデル名", title: "terra / sol などの派生も分ける" },
-          ]}
-        />
-      </div>
+      {selection?.type === "model" ? <button type="button" onClick={() => onSelect(null)} title="絞り込みを解除します" style={clearFilterStyle}>{`絞り込み中: ${selection.label} ×`}</button> : null}
 
       <ScrollBox maxHeight={340}>
         <table style={tableStyle}>
@@ -62,7 +57,7 @@ export function ModelTable({
               <th style={thLeftStyle}>モデル</th>
               <th style={thStyle}>セッション</th>
               <th style={thStyle}>ターン</th>
-              <th style={thStyle}>コスト相当</th>
+              <th style={thStyle}>{costLabel}</th>
               <th style={thStyle}>シェア</th>
               <th style={thStyle} title="プロンプト・キャッシュ読み書きなど入力側">取り込み側</th>
               <th style={thStyle} title="出力・推論トークンなど生成側">生成側</th>
@@ -78,6 +73,7 @@ export function ModelTable({
           <tbody>
             {rows.map((row) => {
               const selected = selection?.type === "model" && selection.key === row.model;
+              const cost = costCell(row.modelClass, row.costUsd);
               return (
                 <tr
                   key={row.model}
@@ -90,12 +86,11 @@ export function ModelTable({
                   <td style={tdLeftStyle} title={row.model}>
                     <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
                       {row.model}
-                      {row.priced ? null : <Chip tone="warn" title="単価表に無いモデル">単価未設定 — $0 計上</Chip>}
                     </span>
                   </td>
                   <td style={tdStyle}>{formatCount(row.sessions)}</td>
                   <td style={tdStyle}>{formatCount(row.turns)}</td>
-                  <td style={tdStyle}>{formatUsd(row.costUsd)}</td>
+                  <td style={tdStyle} title={cost.title}>{cost.value}</td>
                   <td style={tdStyle}>
                     <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
                       <ShareBar pct={row.sharePct} />
@@ -130,3 +125,14 @@ export function ModelTable({
     </div>
   );
 }
+
+const clearFilterStyle = {
+  alignSelf: "flex-start",
+  border: "1px solid var(--cmux-accent)",
+  borderRadius: 999,
+  background: "var(--cmux-hover)",
+  color: "var(--cmux-accent)",
+  padding: "2px 9px",
+  fontSize: "var(--cmux-font-size-xs)",
+  cursor: "pointer",
+};

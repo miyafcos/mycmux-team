@@ -1,6 +1,7 @@
 import { create } from "zustand";
 
 export type PaneDropZone = "center" | "left" | "right" | "up" | "down";
+export type PaneDragSurface = "workspace" | "minimap";
 
 export type PaneDragItem =
   | {
@@ -9,6 +10,9 @@ export type PaneDragItem =
       paneId: string;
       tabId: string;
       label: string;
+      /** The minimap has atomic, non-focusing drop semantics. */
+      surface?: PaneDragSurface;
+      sourceLayoutRevision?: string;
     }
   | {
       kind: "pane";
@@ -16,6 +20,7 @@ export type PaneDragItem =
       paneId: string;
       label: string;
       tabCount: number;
+      surface?: PaneDragSurface;
     };
 
 export type PaneDropTarget =
@@ -24,6 +29,7 @@ export type PaneDropTarget =
       workspaceId: string;
       paneId: string;
       zone: PaneDropZone;
+      surface?: PaneDragSurface;
     }
   | {
       /**
@@ -39,6 +45,7 @@ export type PaneDropTarget =
     }
   | {
       kind: "new-workspace";
+      surface?: PaneDragSurface;
     }
   | {
       /**

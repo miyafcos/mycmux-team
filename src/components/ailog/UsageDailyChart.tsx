@@ -8,7 +8,7 @@
 
 import { useState } from "react";
 
-import { formatUsd } from "../../lib/ailog";
+import { formatUsd, type SeriesGroupBy } from "../../lib/ailog";
 import {
   USAGE_METRICS,
   formatMetric,
@@ -31,7 +31,8 @@ export function UsageDailyChart({
   onHighlight,
   onPickDay,
   onOpenDigest,
-  digestLinkLabel = "その日のまとめへ",
+  digestLinkLabel = "日別まとめへ",
+  groupBy,
 }: {
   model: UsageModel;
   metric: UsageMetric;
@@ -41,6 +42,7 @@ export function UsageDailyChart({
   onPickDay?: (day: number) => void;
   onOpenDigest?: (day: number) => void;
   digestLinkLabel?: string;
+  groupBy: SeriesGroupBy;
 }) {
   const [selectedDay, setSelectedDay] = useState<number | null>(null);
   if (model.days.length === 0) {
@@ -67,7 +69,7 @@ export function UsageDailyChart({
             const tooltip = [
               day.label,
               `合計 ${formatMetric(day.total, metric)}`,
-              ...rects.map((rect) => `${groupLabel(rect.group)} ${formatMetric(rect.value, metric)}`),
+              ...rects.map((rect) => `${groupLabel(rect.group, groupBy)} ${formatMetric(rect.value, metric)}`),
               `セッション ${day.sessions}`,
               `コスト相当 ${formatUsd(day.costUsd)}`,
             ].join("\n");
@@ -135,7 +137,7 @@ export function UsageDailyChart({
                 aria-hidden="true"
                 style={{ width: 9, height: 9, borderRadius: 2, background: entry.color, display: "inline-block" }}
               />
-              {groupLabel(entry.group)}
+              {groupLabel(entry.group, groupBy)}
               <span style={{ color: "var(--cmux-text-tertiary)" }}>{formatMetric(entry.value, metric)}</span>
             </button>
           );
@@ -144,7 +146,7 @@ export function UsageDailyChart({
 
       <div style={noteStyle}>
         {`${model.days[0].label} 〜 ${model.days[model.days.length - 1].label}・記録のある日 ${model.days.filter((day) => day.present).length} 日`}
-        {model.foldedCount > 0 ? `・下位 ${model.foldedCount} モデルは「その他」にまとめています` : ""}
+        {model.foldedCount > 0 ? `・下位 ${model.foldedCount} ${groupBy === "provider" ? "会社" : groupBy === "model" ? "系統" : "モデル"}は「その他」にまとめています` : ""}
       </div>
     </div>
   );

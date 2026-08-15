@@ -67,6 +67,22 @@ async function flushSendTimers(): Promise<void> {
 }
 
 describe("pane.send_text confirmed enter", () => {
+  it("rejects a declared tab before any write or buffer read", async () => {
+    const state = useWorkspaceListStore.getState();
+    const declaredWorkspace = state.workspaces[0];
+    declaredWorkspace.panes[0].tabs[0].lifecycle = "declared";
+    useWorkspaceListStore.setState({ workspaces: [declaredWorkspace] });
+
+    await expect(handleSocketCommand("pane.send_text", {
+      sessionId,
+      text: "do not send",
+      enter: true,
+    })).rejects.toThrow("pane.send_text cannot target a declared tab");
+    expect(ipcMocks.writeToSession).not.toHaveBeenCalled();
+    expect(terminalBufferMocks.hasTerminalBuffer).not.toHaveBeenCalled();
+    expect(terminalBufferMocks.getTerminalBufferLines).not.toHaveBeenCalled();
+  });
+
   it("separates the observed bytes:995 Japanese payload and confirms screen advance", async () => {
     vi.useRealTimers();
     const text = observed995JapaneseText;

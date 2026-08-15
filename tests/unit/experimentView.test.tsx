@@ -3,12 +3,11 @@ import { describe, expect, it } from "vitest";
 
 import type { EfficiencyReport, RuleCheckReport } from "../../src/lib/ailog";
 import { ExperimentView } from "../../src/components/ailog/ExperimentView";
-import { isValidNonNegativeDecimal } from "../../src/components/ailog/PriceSettings";
 
 const row = { key: "high", sessions: 2, turns: 10, avgSessionCost: 1, avgRework: 0.2, cacheHitRate: 0.5, outputDensity: 20, abandonedRate: 0 };
 const report: EfficiencyReport = {
   range: { from: 0, to: 1, label: "all" }, byModel: [], byEffort: [row, { ...row, key: "low" }], bySubagent: [row, { ...row, key: "main" }], byCompaction: [row, { ...row, key: "none" }],
-  turnQuantiles: [ { quantile: "Q1", minTurns: 1, maxTurns: 2, sessions: 2, avgCost: 1, avgRework: 0.1 }, { quantile: "Q2", minTurns: 3, maxTurns: 4, sessions: 2, avgCost: 2, avgRework: 0.2 } ], priceSource: "default", unpricedModels: [], interpretationNote: "note", costNote: "cost",
+  turnQuantiles: [ { quantile: "Q1", minTurns: 1, maxTurns: 2, sessions: 2, avgCost: 1, avgRework: 0.1 }, { quantile: "Q2", minTurns: 3, maxTurns: 4, sessions: 2, avgCost: 2, avgRework: 0.2 } ], priceSource: "default", priceCoverage: { priced: { models: [], tokens: 0 }, local: { models: [], tokens: 0 }, internal: { models: [], tokens: 0 }, flat: { models: [], tokens: 0 }, unknown: { models: [], tokens: 0 }, coveredTokenRatio: 1 }, interpretationNote: "note", costNote: "cost",
 };
 const rules: RuleCheckReport = { range: report.range, largeContext: { count: 0, sessions: [] }, compacted: { count: 0, sessions: [] } };
 
@@ -28,8 +27,4 @@ describe("ExperimentView", () => {
     expect(html).toContain("データ不足 (比較対象が揃っていません)");
   });
 
-  it("rejects invalid price inputs", () => {
-    for (const value of ["", "-1", "abc", "Infinity"]) expect(isValidNonNegativeDecimal(value)).toBe(false);
-    for (const value of ["0", "0.125"]) expect(isValidNonNegativeDecimal(value)).toBe(true);
-  });
 });

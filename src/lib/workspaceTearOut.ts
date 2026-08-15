@@ -1,7 +1,7 @@
 import { openWorkspaceWindow } from "./ipc";
 import { windowLabel } from "./windowContext";
 import { focusController } from "./focusController";
-import { useWorkspaceListStore } from "../stores/workspaceStore";
+import { usePaneMetadataStore, useWorkspaceListStore } from "../stores/workspaceStore";
 import { evictTerminalCache } from "../components/terminal/terminalCache";
 import { toConfig } from "../components/layout/SocketListener";
 import type { Workspace } from "../types";
@@ -61,6 +61,10 @@ export async function tearOutWorkspaceToNewWindow(
   for (const sessionId of sessionIdsInWorkspace(workspace)) {
     evictTerminalCache(sessionId);
     focusController.clearSession(sessionId);
+    // The new window owns these sessions now. Leaving their metadata behind
+    // keeps counting their notifications in a window that can no longer show
+    // them — the bell lights up over a panel that lists nothing.
+    usePaneMetadataStore.getState().removeMetadata(sessionId);
   }
   useWorkspaceListStore.getState().removeWorkspace(workspaceId);
 

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   __resetAgentSessionDedupeReporterForTests,
+  collectLiveTerminalSessionIds,
   collectWorkspaceConfigSessionIds,
   dedupeAgentSessionsInConfigs,
   reportAgentSessionDedupeConflicts,
@@ -9,9 +10,10 @@ import {
 } from "../../src/components/layout/SocketListener";
 import type { PaneConfig, WorkspaceConfig } from "../../src/lib/ipc";
 import { useWorkspaceLayoutStore } from "../../src/stores/workspaceLayoutStore";
+import { useWorkspaceListStore } from "../../src/stores/workspaceListStore";
 import { __resetToastStoreForTests, useToastStore } from "../../src/stores/toastStore";
 import { buildClonedDuplicateSessionPaneOptions } from "../../src/lib/duplicateSession";
-import type { Workspace } from "../../src/types";
+import type { PaneTab, Workspace } from "../../src/types";
 
 function paneConfig(
   paneId: string,
@@ -68,9 +70,98 @@ describe("collectWorkspaceConfigSessionIds", () => {
       "pty-workspace-pane-b-tab-b",
     ]);
   });
+
+  it("excludes declared and explicit-null lifecycle tab PTY ids", () => {
+    const config = workspaceConfig([paneConfig("pane-a", "normal")]);
+    config.panes[0].tabs!.push({
+      tab_id: "declared",
+      agent_id: "shell-starter",
+      type: "terminal",
+      lifecycle: "declared",
+    }, {
+      tab_id: "null-lifecycle",
+      agent_id: "shell-starter",
+      type: "terminal",
+      lifecycle: null,
+    });
+
+    expect(collectWorkspaceConfigSessionIds([config])).toEqual([
+      "pty-workspace-pane-a",
+      "pty-workspace-pane-a-normal",
+    ]);
+  });
+
+  it("skips the declared active session while retaining restorable background tabs", () => {
+    const declared: PaneTab = {
+      id: "declared",
+      sessionId: "declared-session",
+      agentId: "shell-starter",
+      type: "terminal",
+      lifecycle: "declared",
+    };
+    const normal: PaneTab = {
+      id: "normal",
+      sessionId: "normal-session",
+      agentId: "shell-starter",
+      type: "terminal",
+    };
+    const workspace: Workspace = {
+      id: "live-workspace",
+      name: "Live",
+      gridTemplateId: "1x1",
+      status: "running",
+      createdAt: 1,
+      panes: [{
+        id: "pane-live",
+        agentId: declared.agentId,
+        sessionId: declared.sessionId,
+        tabs: [declared, normal],
+        activeTabId: declared.id,
+      }],
+    };
+    useWorkspaceListStore.setState({ workspaces: [workspace], activeWorkspaceId: workspace.id });
+
+    expect(collectLiveTerminalSessionIds()).toEqual([normal.sessionId]);
+
+    workspace.panes[0].activeTabId = normal.id;
+    workspace.panes[0].sessionId = normal.sessionId;
+    useWorkspaceListStore.setState({ workspaces: [workspace] });
+    expect(collectLiveTerminalSessionIds()).toEqual([normal.sessionId]);
+  });
 });
 
 describe("dedupeAgentSessionsInConfigs", () => {
+  it("does not apply pane-level resume identity to an active declared tab", () => {
+    const declared = paneConfig("pane-declared", "tab-declared");
+    Object.assign(declared.tabs![0], {
+      lifecycle: "declared",
+      agent_kind: null,
+      agent_session_id: null,
+      claude_session_id: null,
+      suppressed_agent_sessions: null,
+      terminal_snapshot: null,
+    });
+
+    const result = dedupeAgentSessionsInConfigs(
+      [workspaceConfig([declared])],
+      "workspace",
+      "pane-declared",
+      "tab-declared",
+    );
+    const pane = result.configs[0].panes[0];
+    expect(pane.tabs![0]).toMatchObject({
+      lifecycle: "declared",
+      agent_kind: null,
+      agent_session_id: null,
+      claude_session_id: null,
+      suppressed_agent_sessions: null,
+      terminal_snapshot: null,
+    });
+    expect(pane.agent_kind).toBeNull();
+    expect(pane.agent_session_id).toBeNull();
+    expect(pane.claude_session_id).toBeNull();
+  });
+
   it.each([
     ["claude", "claude-code"],
     ["codex", "codex"],

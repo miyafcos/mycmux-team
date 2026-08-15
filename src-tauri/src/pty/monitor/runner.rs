@@ -5,6 +5,7 @@ pub fn start_monitor(
     manager: Arc<SessionManager>,
     metadata_store: MetadataStore,
     session_state_store: crate::session_state::SessionStateStore,
+    frontend_visible: Arc<std::sync::atomic::AtomicBool>,
 ) {
     thread::spawn(move || {
         let mut sys = System::new();
@@ -34,10 +35,12 @@ pub fn start_monitor(
         let mut git_in_flight: HashSet<String> = HashSet::new();
 
         loop {
-            // 5s cadence: OSC 7 handles CWD instantly for bash/zsh/fish;
+            // OSC 7 handles CWD instantly for bash/zsh/fish;
             // sysinfo is now the fallback for cmd.exe / PowerShell and the
             // safety net that fills in git_branch / process_name.
-            thread::sleep(Duration::from_secs(5));
+            thread::sleep(monitor_refresh_interval(
+                frontend_visible.load(std::sync::atomic::Ordering::Acquire),
+            ));
 
             // Drain any git branch lookups that finished since the last tick.
             // Applying results here (before the per-session pass) means a
@@ -611,4 +614,20 @@ pub fn start_monitor(
             git_branch_cwd.retain(|k, _| active_keys.contains(k));
         }
     });
+}
+
+fn monitor_refresh_interval(frontend_visible: bool) -> Duration {
+    Duration::from_secs(if frontend_visible { 5 } else { 20 })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::monitor_refresh_interval;
+    use std::time::Duration;
+
+    #[test]
+    fn refresh_interval_slows_only_when_frontend_is_hidden() {
+        assert_eq!(monitor_refresh_interval(true), Duration::from_secs(5));
+        assert_eq!(monitor_refresh_interval(false), Duration::from_secs(20));
+    }
 }

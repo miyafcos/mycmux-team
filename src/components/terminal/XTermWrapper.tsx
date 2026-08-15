@@ -45,6 +45,7 @@ import {
   chunkedWrite,
   enqueueSessionWrite,
   getTerminalOutputDecoder,
+  getTerminalWriteCounter as terminalWriteCounter,
   liveTerms,
   planTerminalScrollbackRecovery,
   registerTerminalCacheEvictionCleanup,
@@ -89,6 +90,7 @@ import {
   scanForApproval,
 } from "../../lib/approvalScan";
 import { scanRateLimit } from "../../lib/rateLimitScan";
+import { observeTerminalVisibility } from "../../lib/terminalVisibilityTracker";
 import {
   bump as bumpPaintStat,
   recordApprovalScan,
@@ -752,6 +754,7 @@ export default memo(function XTermWrapper({
     let approvalAbsentStreak = 0;
     let rateLimitAbsentStreak = 0;
     let rateLimitVisible = false;
+    let lastScanSignature: string | null = null;
     let isImeComposing = false;
     let resizePendingDuringComposition = false;
     const forceWheelMouseReport = startsAsAgentTui(command, args, agentId, agentKind, launchEnv);
@@ -775,7 +778,7 @@ export default memo(function XTermWrapper({
     const ackCoalescer = new TerminalAckCoalescer(({ generation, seq, bytes }) => (
       ackFrontendData(sessionId, generation, seq, bytes)
     ));
-    let visibilityObserver: MutationObserver | null = null;
+    let stopVisibilityTracking: (() => void) | null = null;
     let containerVisibilityMemo:
       | { sampledAt: number; displayed: boolean; painted: boolean; writableSize: boolean }
       | null = null;
@@ -1144,6 +1147,9 @@ export default memo(function XTermWrapper({
       }
 
       const bottom = buf.length - 1;
+      const scanSignature = `${terminalWriteCounter(sessionId)}:${buf.length}:${buf.baseY}:${buf.cursorY}:${buf.cursorX}`;
+      if (scanSignature === lastScanSignature && approvalAbsentStreak === 0 && rateLimitAbsentStreak === 0) return;
+      lastScanSignature = scanSignature;
       const top = Math.max(0, bottom - 15);
       const scanLines: string[] = [];
       let lastNonEmpty = "";
@@ -1428,32 +1434,18 @@ export default memo(function XTermWrapper({
     };
 
     const startVisibilityObserver = (): void => {
-      visibilityObserver?.disconnect();
-      visibilityObserver = new MutationObserver(handleFrontendVisibilitySignal);
-      let current: HTMLElement | null = container;
-      while (current) {
-        visibilityObserver.observe(current, {
-          attributes: true,
-          attributeFilter: ["class", "style", "hidden", "aria-hidden"],
-        });
-        current = current.parentElement;
-      }
-      window.addEventListener("focus", handleFrontendVisibilitySignal);
-      window.addEventListener("blur", handleFrontendVisibilitySignal);
-      window.addEventListener("mycmux:workspace-visibility-change", handleFrontendVisibilitySignal);
-      window.addEventListener("mycmux:terminal-layout-change", handleTerminalLayoutSignal);
-      document.addEventListener("visibilitychange", handleFrontendVisibilitySignal);
-      handleFrontendVisibilitySignal();
+      stopVisibilityTracking?.();
+      stopVisibilityTracking = observeTerminalVisibility(
+        container,
+        workspaceId,
+        handleFrontendVisibilitySignal,
+        () => handleTerminalLayoutSignal(new CustomEvent("mycmux:terminal-layout-change", { detail: { workspaceId } })),
+      );
     };
 
     const stopVisibilityObserver = (): void => {
-      visibilityObserver?.disconnect();
-      visibilityObserver = null;
-      window.removeEventListener("focus", handleFrontendVisibilitySignal);
-      window.removeEventListener("blur", handleFrontendVisibilitySignal);
-      window.removeEventListener("mycmux:workspace-visibility-change", handleFrontendVisibilitySignal);
-      window.removeEventListener("mycmux:terminal-layout-change", handleTerminalLayoutSignal);
-      document.removeEventListener("visibilitychange", handleFrontendVisibilitySignal);
+      stopVisibilityTracking?.();
+      stopVisibilityTracking = null;
     };
 
     const writeTerminalOutput = (

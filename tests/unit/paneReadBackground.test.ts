@@ -64,6 +64,21 @@ beforeEach(() => {
 });
 
 describe("pane.read background fallback", () => {
+  it("rejects a declared tab before any renderer or PTY read", async () => {
+    const state = useWorkspaceListStore.getState();
+    const declaredWorkspace = state.workspaces[0];
+    declaredWorkspace.panes[0].tabs[1].lifecycle = "declared";
+    useWorkspaceListStore.setState({ workspaces: [declaredWorkspace] });
+
+    await expect(handleSocketCommand("pane.read", { sessionId })).rejects.toThrow(
+      "pane.read cannot target a declared tab",
+    );
+    expect(terminalBufferMocks.hasTerminalBuffer).not.toHaveBeenCalled();
+    expect(terminalBufferMocks.getTerminalBufferLines).not.toHaveBeenCalled();
+    expect(ipcMocks.getSessionScrollback).not.toHaveBeenCalled();
+    expect(headlessBufferMocks.getHeadlessBufferLines).not.toHaveBeenCalled();
+  });
+
   it("preserves the existing renderer-buffer path exactly", async () => {
     terminalBufferMocks.hasTerminalBuffer.mockReturnValue(true);
     terminalBufferMocks.getTerminalBufferLines.mockReturnValue(["visible", "unchanged"]);

@@ -22,7 +22,7 @@ use rusqlite::types::Value as SqlValue;
 use rusqlite::{params_from_iter, Connection};
 use serde::{Deserialize, Serialize};
 
-use crate::ailog::price::{normalize, PriceTable};
+use crate::ailog::price::{normalize, ModelClass, PriceTable};
 use crate::ailog::{Filters, Range, ResolvedRange};
 
 type SessionKey = (String, String);
@@ -359,6 +359,88 @@ impl TokenAcc {
     }
 }
 
+fn turn_tokens(turn: &TurnRecord) -> i64 {
+    turn.input + turn.output + turn.cache_read + turn.cache_write
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PriceClassCoverage {
+    pub models: Vec<String>,
+    pub tokens: i64,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PriceCoverage {
+    pub priced: PriceClassCoverage,
+    pub local: PriceClassCoverage,
+    pub internal: PriceClassCoverage,
+    pub flat: PriceClassCoverage,
+    pub unknown: PriceClassCoverage,
+    pub covered_token_ratio: f64,
+}
+
+#[derive(Default)]
+pub(crate) struct PriceCoverageAcc {
+    priced: (BTreeSet<String>, i64),
+    local: (BTreeSet<String>, i64),
+    internal: (BTreeSet<String>, i64),
+    flat: (BTreeSet<String>, i64),
+    unknown: (BTreeSet<String>, i64),
+}
+
+impl PriceCoverageAcc {
+    fn add(&mut self, turn: &TurnRecord, prices: &PriceTable) {
+        self.add_model_tokens(turn.model.as_deref(), turn_tokens(turn), prices);
+    }
+
+    pub(crate) fn add_model_tokens(&mut self, model: Option<&str>, tokens: i64, prices: &PriceTable) {
+        let class = model
+            .map(|model| prices.classify(model))
+            .unwrap_or(ModelClass::Unknown);
+        let target = match class {
+            ModelClass::Priced => &mut self.priced,
+            ModelClass::Local => &mut self.local,
+            ModelClass::Internal => &mut self.internal,
+            ModelClass::Flat => &mut self.flat,
+            ModelClass::Unknown => &mut self.unknown,
+        };
+        if let Some(model) = model {
+            target.0.insert(model.to_string());
+        }
+        target.1 += tokens;
+    }
+
+    pub(crate) fn finish(&self) -> PriceCoverage {
+        let as_coverage = |entry: &(BTreeSet<String>, i64)| PriceClassCoverage {
+            models: entry.0.iter().cloned().collect(),
+            tokens: entry.1,
+        };
+        // Internal rows (<synthetic>) have no cost concept at all, so they sit
+        // outside the ratio: the label answers "of the tokens that could carry
+        // a cost, how many are priced?"
+        let total = self.priced.1 + self.local.1 + self.flat.1 + self.unknown.1;
+        let covered = self.priced.1 + self.local.1 + self.flat.1;
+        PriceCoverage {
+            priced: as_coverage(&self.priced),
+            local: as_coverage(&self.local),
+            internal: as_coverage(&self.internal),
+            flat: as_coverage(&self.flat),
+            unknown: as_coverage(&self.unknown),
+            covered_token_ratio: if total > 0 { covered as f64 / total as f64 } else { 1.0 },
+        }
+    }
+}
+
+fn price_coverage(turns: &[TurnRecord], prices: &PriceTable) -> PriceCoverage {
+    let mut coverage = PriceCoverageAcc::default();
+    for turn in turns {
+        coverage.add(turn, prices);
+    }
+    coverage.finish()
+}
+
 #[derive(Debug, Clone)]
 struct SessionAcc {
     project_label: Option<String>,
@@ -384,12 +466,18 @@ fn parse_json_array(value: Option<&str>) -> Vec<String> {
 struct Pass {
     totals: TokenAcc,
     sessions: BTreeMap<SessionKey, SessionAcc>,
+    by_provider: BTreeMap<String, TokenAcc>,
     by_family: BTreeMap<String, TokenAcc>,
     by_raw: BTreeMap<String, TokenAcc>,
+    provider_sessions: BTreeMap<String, HashSet<SessionKey>>,
     family_sessions: BTreeMap<String, HashSet<SessionKey>>,
     raw_sessions: BTreeMap<String, HashSet<SessionKey>>,
+    provider_effort: BTreeMap<(String, String), TokenAcc>,
     family_effort: BTreeMap<(String, String), TokenAcc>,
-    unpriced: BTreeSet<String>,
+    price_coverage: PriceCoverageAcc,
+    model_classes: BTreeMap<String, ModelClass>,
+    provider_model_classes: BTreeMap<String, BTreeSet<ModelClass>>,
+    family_model_classes: BTreeMap<String, BTreeSet<ModelClass>>,
     tag_model: BTreeMap<(String, String), TokenAcc>,
     tag_model_sessions: BTreeMap<(String, String), HashSet<SessionKey>>,
 }
@@ -398,18 +486,25 @@ fn run_pass(turns: &[TurnRecord], prices: &PriceTable) -> Pass {
     let mut pass = Pass {
         totals: TokenAcc::default(),
         sessions: BTreeMap::new(),
+        by_provider: BTreeMap::new(),
         by_family: BTreeMap::new(),
         by_raw: BTreeMap::new(),
+        provider_sessions: BTreeMap::new(),
         family_sessions: BTreeMap::new(),
         raw_sessions: BTreeMap::new(),
+        provider_effort: BTreeMap::new(),
         family_effort: BTreeMap::new(),
-        unpriced: BTreeSet::new(),
+        price_coverage: PriceCoverageAcc::default(),
+        model_classes: BTreeMap::new(),
+        provider_model_classes: BTreeMap::new(),
+        family_model_classes: BTreeMap::new(),
         tag_model: BTreeMap::new(),
         tag_model_sessions: BTreeMap::new(),
     };
     for turn in turns {
         let key: SessionKey = (turn.kind.clone(), turn.session_id.clone());
         pass.totals.add(turn);
+        pass.price_coverage.add(turn, prices);
 
         let entry = pass
             .sessions
@@ -429,10 +524,36 @@ fn run_pass(turns: &[TurnRecord], prices: &PriceTable) -> Pass {
             });
         entry.tokens.add(turn);
 
+        let provider = turn
+            .model
+            .as_deref()
+            .map(|model| prices.provider(model).as_str().to_string())
+            .unwrap_or_else(|| "other".to_string());
+        let model_class = turn
+            .model
+            .as_deref()
+            .map(|model| prices.classify(model))
+            .unwrap_or(ModelClass::Unknown);
+        pass.by_provider
+            .entry(provider.clone())
+            .or_default()
+            .add(turn);
+        pass.provider_sessions
+            .entry(provider.clone())
+            .or_default()
+            .insert(key.clone());
+        pass.provider_model_classes
+            .entry(provider.clone())
+            .or_default()
+            .insert(model_class);
+        let effort = turn.effort.clone().unwrap_or_else(|| "(none)".to_string());
+        pass.provider_effort
+            .entry((provider, effort.clone()))
+            .or_default()
+            .add(turn);
+
         if let Some(model) = &turn.model {
-            if prices.lookup(model).is_none() {
-                pass.unpriced.insert(model.clone());
-            }
+            pass.model_classes.insert(model.clone(), model_class);
             pass.by_raw.entry(model.clone()).or_default().add(turn);
             pass.raw_sessions
                 .entry(model.clone())
@@ -441,6 +562,10 @@ fn run_pass(turns: &[TurnRecord], prices: &PriceTable) -> Pass {
         }
 
         if let Some(family) = &turn.family {
+            pass.family_model_classes
+                .entry(family.clone())
+                .or_default()
+                .insert(model_class);
             entry.families.insert(family.clone());
             pass.by_family.entry(family.clone()).or_default().add(turn);
             pass.family_sessions
@@ -448,7 +573,6 @@ fn run_pass(turns: &[TurnRecord], prices: &PriceTable) -> Pass {
                 .or_default()
                 .insert(key.clone());
 
-            let effort = turn.effort.clone().unwrap_or_else(|| "(none)".to_string());
             pass.family_effort
                 .entry((family.clone(), effort))
                 .or_default()
@@ -549,7 +673,7 @@ pub struct ModelRow {
     pub first_used_at: i64,
     pub last_used_at: i64,
     pub by_effort: Vec<EffortRow>,
-    pub priced: bool,
+    pub model_class: ModelClass,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -615,7 +739,7 @@ pub struct Overview {
     pub excluded_internal: ExcludedInternal,
     pub cache_hit_rate: f64,
     pub price_source: String,
-    pub unpriced_models: Vec<String>,
+    pub price_coverage: PriceCoverage,
     pub index_freshness: IndexFreshness,
     /// Reminder for the UI: these are metered-equivalent estimates, not bills.
     pub cost_note: String,
@@ -628,7 +752,7 @@ pub struct ExcludedInternal {
     pub cost_usd: f64,
 }
 
-pub const COST_NOTE: &str = "コスト相当は公表料率に基づく参考推定で、実際の請求額ではありません。単価のないモデルは 0 として計上し、単価未設定の一覧に出します。";
+pub const COST_NOTE: &str = "コスト相当は公表料率に基づく参考推定で、実際の請求額ではありません。単価未公表のモデルは推定せず除外します。";
 
 // ---------------------------------------------------------------------------
 // Rework aggregation helper
@@ -698,10 +822,10 @@ fn pct_change(current: f64, previous: f64) -> f64 {
 }
 
 fn build_model_rows(pass: &Pass, granularity: &str, prices: &PriceTable) -> Vec<ModelRow> {
-    let (source, session_index) = if granularity == "raw" {
-        (&pass.by_raw, &pass.raw_sessions)
-    } else {
-        (&pass.by_family, &pass.family_sessions)
+    let (source, session_index) = match granularity {
+        "raw" => (&pass.by_raw, &pass.raw_sessions),
+        "provider" => (&pass.by_provider, &pass.provider_sessions),
+        _ => (&pass.by_family, &pass.family_sessions),
     };
     let total_cost: f64 = pass.totals.cost;
 
@@ -726,10 +850,19 @@ fn build_model_rows(pass: &Pass, granularity: &str, prices: &PriceTable) -> Vec<
             } else {
                 name.clone()
             };
-            let by_effort = pass
-                .family_effort
+            let effort_index = if granularity == "provider" {
+                &pass.provider_effort
+            } else {
+                &pass.family_effort
+            };
+            let effort_key = if granularity == "provider" {
+                name
+            } else {
+                &family
+            };
+            let by_effort = effort_index
                 .iter()
-                .filter(|((model, _), _)| model == &family)
+                .filter(|((model, _), _)| model == effort_key)
                 .map(|((_, effort), acc)| EffortRow {
                     effort: effort.clone(),
                     turns: acc.turns,
@@ -739,6 +872,24 @@ fn build_model_rows(pass: &Pass, granularity: &str, prices: &PriceTable) -> Vec<
                     avg_turn_ms: acc.avg_turn_ms(),
                 })
                 .collect();
+
+            let model_class = if granularity == "raw" {
+                pass.model_classes
+                    .get(name)
+                    .copied()
+                    .unwrap_or_else(|| prices.classify(name))
+            } else {
+                let classes = if granularity == "provider" {
+                    pass.provider_model_classes.get(name)
+                } else {
+                    pass.family_model_classes.get(name)
+                };
+                match classes {
+                    Some(classes) if classes.len() == 1 => *classes.iter().next().expect("non-empty class set"),
+                    Some(classes) if classes.contains(&ModelClass::Unknown) => ModelClass::Unknown,
+                    _ => ModelClass::Priced,
+                }
+            };
 
             ModelRow {
                 model: name.clone(),
@@ -777,7 +928,7 @@ fn build_model_rows(pass: &Pass, granularity: &str, prices: &PriceTable) -> Vec<
                 first_used_at: acc.first_used.unwrap_or(0),
                 last_used_at: acc.last_used.unwrap_or(0),
                 by_effort,
-                priced: prices.lookup(name).is_some(),
+                model_class,
             }
         })
         .collect();
@@ -971,7 +1122,7 @@ pub fn overview(
         },
         cache_hit_rate: pass.totals.cache_hit_rate(),
         price_source: prices.source_summary(),
-        unpriced_models: pass.unpriced.iter().cloned().collect(),
+        price_coverage: pass.price_coverage.finish(),
         index_freshness: index_freshness(conn),
         cost_note: COST_NOTE.to_string(),
     })
@@ -1032,7 +1183,7 @@ pub struct SeriesReport {
     pub group_by: String,
     pub buckets: Vec<SeriesBucket>,
     pub price_source: String,
-    pub unpriced_models: Vec<String>,
+    pub price_coverage: PriceCoverage,
     pub cost_note: String,
 }
 
@@ -1078,20 +1229,31 @@ pub fn bucket_start(ts: i64, bucket: &str) -> i64 {
     bucket_start_at(ts, bucket, DAY_BOUNDARY_OFFSET_MIN)
 }
 
-fn group_value(turn: &TurnRecord, group_by: &str) -> String {
+fn model_group_value(turn: &TurnRecord, granularity: &str, prices: &PriceTable) -> Option<String> {
+    match granularity {
+        "raw" => turn.model.clone(),
+        "provider" => Some(
+            turn.model
+                .as_deref()
+                .map(|model| prices.provider(model).as_str().to_string())
+                .unwrap_or_else(|| "other".to_string()),
+        ),
+        _ => turn.family.clone(),
+    }
+}
+
+fn group_value(turn: &TurnRecord, group_by: &str, prices: &PriceTable) -> String {
     match group_by {
-        "model" => turn
-            .family
-            .clone()
+        "model" => model_group_value(turn, "family", prices)
             .unwrap_or_else(|| "(unknown)".to_string()),
         // Raw model names keep sol / terra / luna apart, which the `gpt-5.6`
         // family bucket hides. Turns with no model recorded (Codex emits
         // `token_count` events without one) share the `(unknown)` label with
         // the family grouping so the two modes stay comparable.
-        "model_raw" => turn
-            .model
-            .clone()
+        "model_raw" => model_group_value(turn, "raw", prices)
             .unwrap_or_else(|| "(unknown)".to_string()),
+        "provider" => model_group_value(turn, "provider", prices)
+            .expect("provider grouping always has an other bucket"),
         "kind" => turn.kind.clone(),
         "project" => turn
             .project_label
@@ -1116,11 +1278,10 @@ pub fn series(
     let mut buckets: BTreeMap<i64, BTreeMap<String, TokenAcc>> = BTreeMap::new();
     let mut bucket_sessions: BTreeMap<i64, HashSet<SessionKey>> = BTreeMap::new();
     let mut group_sessions: BTreeMap<(i64, String), HashSet<SessionKey>> = BTreeMap::new();
-    let mut unpriced = BTreeSet::new();
 
     for turn in turns.iter() {
         let bucket = bucket_start(turn.ts, &options.bucket);
-        let group = group_value(turn, &options.group_by);
+        let group = group_value(turn, &options.group_by, &prices);
         let key: SessionKey = (turn.kind.clone(), turn.session_id.clone());
         buckets
             .entry(bucket)
@@ -1136,11 +1297,6 @@ pub fn series(
             .entry((bucket, group))
             .or_default()
             .insert(key);
-        if let Some(model) = &turn.model {
-            if prices.lookup(model).is_none() {
-                unpriced.insert(model.clone());
-            }
-        }
     }
 
     let out = buckets
@@ -1185,7 +1341,7 @@ pub fn series(
         group_by: options.group_by.clone(),
         buckets: out,
         price_source: prices.source_summary(),
-        unpriced_models: unpriced.into_iter().collect(),
+        price_coverage: price_coverage(&turns, &prices),
         cost_note: COST_NOTE.to_string(),
     })
 }
@@ -1220,7 +1376,7 @@ pub struct BreakdownReport {
     /// multi-agent sessions), so the rows deliberately sum above the total.
     pub overlapping: bool,
     pub price_source: String,
-    pub unpriced_models: Vec<String>,
+    pub price_coverage: PriceCoverage,
     pub cost_note: String,
 }
 
@@ -1241,7 +1397,6 @@ pub fn breakdown(
     let mut groups: BTreeMap<String, TokenAcc> = BTreeMap::new();
     let mut sessions: BTreeMap<String, HashSet<SessionKey>> = BTreeMap::new();
     let mut session_rework: HashMap<SessionKey, f64> = HashMap::new();
-    let mut unpriced = BTreeSet::new();
     let mut total_cost = 0.0;
     let mut overlapping = false;
 
@@ -1249,11 +1404,6 @@ pub fn breakdown(
         total_cost += turn.cost;
         let key: SessionKey = (turn.kind.clone(), turn.session_id.clone());
         session_rework.insert(key.clone(), turn.rework);
-        if let Some(model) = &turn.model {
-            if prices.lookup(model).is_none() {
-                unpriced.insert(model.clone());
-            }
-        }
 
         let keys: Vec<String> = match dimension {
             "model" => vec![turn.family.clone().unwrap_or_else(|| "(unknown)".into())],
@@ -1334,7 +1484,7 @@ pub fn breakdown(
         rows,
         overlapping,
         price_source: prices.source_summary(),
-        unpriced_models: unpriced.into_iter().collect(),
+        price_coverage: price_coverage(&turns, &prices),
         cost_note: COST_NOTE.to_string(),
     })
 }
@@ -1417,7 +1567,7 @@ pub struct ModelsReport {
     pub overlapping: bool,
     pub total_sessions: i64,
     pub price_source: String,
-    pub unpriced_models: Vec<String>,
+    pub price_coverage: PriceCoverage,
     pub cost_note: String,
 }
 
@@ -1437,11 +1587,7 @@ pub fn models(
     let mut series_map: BTreeMap<i64, BTreeMap<String, TokenAcc>> = BTreeMap::new();
     let mut series_sessions: BTreeMap<(i64, String), HashSet<SessionKey>> = BTreeMap::new();
     for turn in turns.iter() {
-        let name = if options.granularity == "raw" {
-            turn.model.clone()
-        } else {
-            turn.family.clone()
-        };
+        let name = model_group_value(turn, &options.granularity, &prices);
         let Some(name) = name else { continue };
         let bucket = bucket_start(turn.ts, &options.bucket);
         series_map
@@ -1482,11 +1628,7 @@ pub fn models(
     let mut handoff_counts: BTreeMap<(String, String), i64> = BTreeMap::new();
     let mut last_seen: HashMap<SessionKey, String> = HashMap::new();
     for turn in turns.iter() {
-        let name = if options.granularity == "raw" {
-            turn.model.clone()
-        } else {
-            turn.family.clone()
-        };
+        let name = model_group_value(turn, &options.granularity, &prices);
         let Some(name) = name else { continue };
         let key: SessionKey = (turn.kind.clone(), turn.session_id.clone());
         match last_seen.get(&key) {
@@ -1561,7 +1703,7 @@ pub fn models(
         overlapping: true,
         total_sessions: pass.sessions.len() as i64,
         price_source: prices.source_summary(),
-        unpriced_models: pass.unpriced.iter().cloned().collect(),
+        price_coverage: pass.price_coverage.finish(),
         cost_note: COST_NOTE.to_string(),
     })
 }
@@ -2446,7 +2588,7 @@ pub struct SessionDetail {
     pub cost_breakdown: SessionCostBreakdown,
     pub summary: Option<SummaryRow>,
     pub price_source: String,
-    pub unpriced_models: Vec<String>,
+    pub price_coverage: PriceCoverage,
     pub cost_note: String,
 }
 
@@ -2539,7 +2681,7 @@ pub fn session_detail(
         .map_err(|err| format!("session {kind}/{session_id} not found: {err}"))?;
 
     let mut turns = Vec::new();
-    let mut unpriced = BTreeSet::new();
+    let mut price_coverage = PriceCoverageAcc::default();
     let mut ingest = IngestSide {
         tokens: 0,
         cost_usd: 0.0,
@@ -2591,11 +2733,6 @@ pub fn session_detail(
             .map_err(|err| format!("read turns: {err}"))?;
         for row in rows {
             let (turn, ingest_cost, generate_cost) = row.map_err(|err| format!("turn: {err}"))?;
-            if let Some(model) = &turn.model {
-                if prices.lookup(model).is_none() {
-                    unpriced.insert(model.clone());
-                }
-            }
             ingest.input += turn.input;
             ingest.cache_read += turn.cache_read;
             ingest.cache_write += turn.cache_write;
@@ -2603,6 +2740,11 @@ pub fn session_detail(
             generate.output += turn.output;
             generate.reasoning += turn.reasoning;
             generate.cost_usd += generate_cost;
+            price_coverage.add_model_tokens(
+                turn.model.as_deref(),
+                turn.input + turn.output + turn.cache_read + turn.cache_write,
+                &prices,
+            );
             turns.push(turn);
         }
     }
@@ -2758,7 +2900,7 @@ pub fn session_detail(
         cost_breakdown,
         summary,
         price_source: prices.source_summary(),
-        unpriced_models: unpriced.into_iter().collect(),
+        price_coverage: price_coverage.finish(),
         cost_note: COST_NOTE.to_string(),
     })
 }
@@ -2801,7 +2943,7 @@ pub struct EfficiencyReport {
     pub by_compaction: Vec<EfficiencyRow>,
     pub turn_quantiles: Vec<QuantileRow>,
     pub price_source: String,
-    pub unpriced_models: Vec<String>,
+    pub price_coverage: PriceCoverage,
     /// Everything here is a side-by-side comparison. No causal claim is made
     /// or implied by any field.
     pub interpretation_note: String,
@@ -3049,7 +3191,7 @@ pub fn efficiency(
         by_compaction: efficiency_rows(by_compaction, &pass.sessions),
         turn_quantiles,
         price_source: prices.source_summary(),
-        unpriced_models: pass.unpriced.iter().cloned().collect(),
+        price_coverage: pass.price_coverage.finish(),
         interpretation_note: INTERPRETATION_NOTE.to_string(),
         cost_note: COST_NOTE.to_string(),
     })

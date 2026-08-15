@@ -20,7 +20,7 @@ export type DashboardAgentKind = "claude" | "codex" | "claude-codex" | "none";
  * 画面に出す1本化した状態。カードのグリッド時代の group/section を置き換える。
  * livebrief が生きている間はそちらが正、そうでなければ attention/stall/metadata へ落ちる。
  */
-export type DashboardDisplayState = "needsHuman" | "error" | "running" | "noUpdate" | "done" | "idle";
+export type DashboardDisplayState = "needsHuman" | "error" | "running" | "noUpdate" | "done" | "idle" | "stopped";
 export type DashboardStateFilter = "needsHuman" | "running" | "noUpdate" | "done";
 
 /** 「更新なし」と言い切るまでの猶予 (分)。 */
@@ -92,6 +92,7 @@ const STATE_ORDER: Record<DashboardDisplayState, number> = {
   noUpdate: 3,
   idle: 4,
   done: 5,
+  stopped: 6,
 };
 
 function tieBreak(left: DashboardCardModel, right: DashboardCardModel): number {
@@ -132,10 +133,11 @@ export function resolveDisplayState(card: DashboardCardModel): DashboardDisplayS
   }
   if (card.attentionCategory === "waiting") return "needsHuman";
   if (card.attentionCategory === "error") return "error";
+  if (card.attentionCategory === "done") return "done";
+  if (card.telemetryHealth === "ended" || card.stall?.reason === "pty_dead") return "stopped";
   // まだ一度も開いていないタブに「更新なし」「作業中」を貼らない (未起動はバッジで出す)。
   if (card.neverStarted) return "idle";
   if (card.stall) return "noUpdate";
-  if (card.attentionCategory === "done") return "done";
   // まだ一度も動いていないタブを「更新なし」と言い切らない。
   if (!card.lastActivityAt) return "idle";
   return card.group === "idle" ? "noUpdate" : "running";
@@ -250,20 +252,6 @@ export function needsHumanCards(cards: readonly DashboardCardModel[]): Dashboard
   );
 }
 
-/** カウントチップ用の内訳。要対応にはエラーも数える (どちらも人間の手が要る)。 */
-export function countByDisplayState(cards: readonly DashboardCardModel[]): Record<DashboardDisplayState, number> {
-  const counts: Record<DashboardDisplayState, number> = {
-    needsHuman: 0,
-    error: 0,
-    running: 0,
-    noUpdate: 0,
-    idle: 0,
-    done: 0,
-  };
-  for (const card of cards) counts[resolveDisplayState(card)] += 1;
-  return counts;
-}
-
 /** Count-pill filters map "要対応" to both human-input and error states. */
 export function matchesDashboardStateFilter(card: DashboardCardModel, stateFilter: DashboardStateFilter | null | undefined): boolean {
   if (!stateFilter) return true;
@@ -292,32 +280,6 @@ export function partitionDashboardCards(cards: readonly DashboardCardModel[]): {
 }
 
 /** ヘッダの visinfo 1本目 (`Nペイン · Mタブ · Kワークスペース`) の内訳。 */
-export interface DashboardStructureCounts {
-  panes: number;
-  tabs: number;
-  workspaces: number;
-}
-
-/**
- * 表示用の総数。ペイン = レイアウト上の区画、タブ = その中のセッション。
- * カード1枚 = タブ1本なので、tabs はカード総数と一致する。
- */
-export function countWorkspaceStructure(workspaces: readonly Workspace[]): DashboardStructureCounts {
-  let panes = 0;
-  let tabs = 0;
-  for (const workspace of workspaces) {
-    panes += workspace.panes.length;
-    for (const pane of workspace.panes) tabs += pane.tabs.length;
-  }
-  return { panes, tabs, workspaces: workspaces.length };
-}
-
-/** ヘッダの visinfo 2本目 (`表示中 N / 裏で稼働 M`)。端末バッファを持つ数が「表示中」。 */
-export function countVisibility(cards: readonly DashboardCardModel[]): { visible: number; background: number } {
-  const visible = cards.reduce((total, card) => total + (card.unobserved ? 0 : 1), 0);
-  return { visible, background: cards.length - visible };
-}
-
 export function applyDashboardFilters(cards: readonly DashboardCardModel[], filters: DashboardFilters): DashboardCardModel[] {
   const query = filters.query.trim().toLocaleLowerCase();
   return cards.filter((card) => {

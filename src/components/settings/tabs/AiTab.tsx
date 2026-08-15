@@ -2,9 +2,11 @@ import { useEffect, useState } from "react";
 import { useAiSettingsStore } from "../../../stores/aiSettingsStore";
 import { AI_PROVIDERS, aiProviderDef, classifyModelForProvider } from "../../../lib/aiModels";
 import { aiSettingsStrings } from "../settingsStrings";
+import { AutomationTab } from "./AutomationTab";
 import {
   checkboxLabelStyle,
   checkboxLabelStyleFor,
+  dividerStyle,
   dialogButtonStyle,
   sectionHeadingStyle,
 } from "../tabStyles";
@@ -95,6 +97,22 @@ export function AiTab() {
       <button type="button" style={{ ...dialogButtonStyle, marginTop: 16 }} onClick={reset}>
         {aiSettingsStrings.resetButton}
       </button>
+
+      <div style={dividerStyle} />
+
+      <section aria-labelledby="cmux-delegation-watch-heading">
+        <AutomationTab />
+      </section>
+
+      <div style={dividerStyle} />
+
+      <section aria-labelledby="cmux-reply-draft-heading" data-ai-reply-draft-placeholder>
+        <div id="cmux-reply-draft-heading" style={sectionHeadingStyle}>返信案の先回り (準備中)</div>
+        <div style={hintStyle}>
+          返信が必要そうな内容を先回りして、選べる候補として準備します。
+        </div>
+        {/* L3: place reply-draft suggestion controls in this section. */}
+      </section>
     </div>
   );
 }

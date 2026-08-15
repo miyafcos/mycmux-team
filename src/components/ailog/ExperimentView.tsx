@@ -73,7 +73,7 @@ export function ExperimentView({ report, rules, loading, error, onOpenDetail }: 
   // render a blank panel with no loading indicator and no error — indis­tin­guish­able
   // from a tab that had silently failed. A half-filled custom range reaches
   // here that way, because the refresh short-circuits before it starts.
-  if (loading) return <SkeletonBlock height={140} label="比較を読み込み中" />;
+  if (loading && (!report || !rules)) return <SkeletonBlock height={140} label="比較を読み込み中" />;
   if (error) return <EmptyState kind="error" message={error} />;
   if (!report || !rules) return <EmptyState kind="no-data" message="期間を2つの日付で指定すると反映されます。" />;
   return <>

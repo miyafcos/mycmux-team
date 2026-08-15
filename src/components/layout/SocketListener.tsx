@@ -13,6 +13,7 @@ import {
   claimLeader,
   savePersistentData,
   readAgentSessionMappings,
+  setAppFrontendVisible,
   getPtyMetadataSnapshot,
   quitApp,
   sendSocketResponse,
@@ -38,8 +39,9 @@ import { useKeybindingStore } from "../../stores/keybindingStore";
 import { usePetSettingsStore } from "../../stores/petSettingsStore";
 import { useAiSettingsStore } from "../../stores/aiSettingsStore";
 import { normalizeAiProvider } from "../../lib/aiModels";
-import { deriveEffectiveStatus, isShellProcess } from "../../lib/notificationStatus";
+import { isShellProcess } from "../../lib/notificationStatus";
 import { confirmAgentSessionClear } from "../../lib/agentSessionClearGuard";
+import { agentCloseDialogOptions } from "../../lib/agentCloseDialog";
 import { makeSessionId } from "../../lib/constants";
 import { normalizeReadableSplitColumns, reconcileSplitColumnsForPanes } from "../../lib/layoutColumns";
 import { reconcileColumnWidths, reconcileRowHeightsPerCol } from "../../lib/layoutMetrics";
@@ -68,6 +70,7 @@ import {
   filterAlreadyRestoredConfigs,
   restoreWorkspaceConfigs,
 } from "../../lib/workspaceRestore";
+import { isDeclaredTab, isRestorableTab } from "../../lib/tabLifecycle";
 
 // Socket dispatch lives in socketCommands.ts. Keep these command markers here
 // for the frontend bridge contract: case "workspace.list":, case "pane.list":,
@@ -348,6 +351,7 @@ export function applyMappingsToConfig(
       const paneSessionId = makeSessionId(cfg.id, paneId);
       const paneMapping = agentMappings[paneSessionId];
       const tabs = paneConfig.tabs?.map((tabConfig, index) => {
+        if (!isRestorableTab(tabConfig)) return tabConfig;
         const tabId = tabConfig.tab_id;
         if (!tabId) return tabConfig;
         const tabSessionId = makeSessionId(cfg.id, `${paneId}-${tabId}`);
@@ -375,7 +379,7 @@ export function collectWorkspaceConfigSessionIds(configs: WorkspaceConfig[]): st
       if (!pane.pane_id) continue;
       sessionIds.add(makeSessionId(config.id, pane.pane_id));
       for (const tab of pane.tabs ?? []) {
-        if (tab.tab_id) {
+        if (isRestorableTab(tab) && tab.tab_id) {
           sessionIds.add(makeSessionId(config.id, `${pane.pane_id}-${tab.tab_id}`));
         }
       }
@@ -384,13 +388,14 @@ export function collectWorkspaceConfigSessionIds(configs: WorkspaceConfig[]): st
   return Array.from(sessionIds);
 }
 
-function collectLiveTerminalSessionIds(): string[] {
+export function collectLiveTerminalSessionIds(): string[] {
   const sessionIds = new Set<string>();
   for (const workspace of useWorkspaceListStore.getState().workspaces) {
     for (const pane of workspace.panes) {
-      sessionIds.add(pane.sessionId);
+      const activeTab = pane.tabs.find((tab) => tab.id === pane.activeTabId) ?? pane.tabs[0];
+      if (!activeTab || !isDeclaredTab(activeTab)) sessionIds.add(pane.sessionId);
       for (const tab of pane.tabs) {
-        if (tab.type === "terminal") sessionIds.add(tab.sessionId);
+        if (tab.type === "terminal" && isRestorableTab(tab)) sessionIds.add(tab.sessionId);
       }
     }
   }
@@ -398,7 +403,7 @@ function collectLiveTerminalSessionIds(): string[] {
 }
 
 function tabConfigHasRestorableAgentSession(tab: PaneTabConfig): boolean {
-  return Boolean((tab.agent_kind && tab.agent_session_id) || tab.claude_session_id);
+  return isRestorableTab(tab) && Boolean((tab.agent_kind && tab.agent_session_id) || tab.claude_session_id);
 }
 
 type SocketRequestPayload = {
@@ -441,6 +446,7 @@ function getConfigAgentSessionKey(
 }
 
 function getTabAgentSessionKey(tab: PaneTabConfig): string | null {
+  if (!isRestorableTab(tab)) return null;
   return getConfigAgentSessionKey(declaredAgentKind(tab), declaredAgentSessionId(tab));
 }
 
@@ -533,6 +539,17 @@ function syncPaneAgentSessionFromActiveTab(pane: PaneConfig, tabs: PaneTabConfig
 }
 
 function tabConfigWithPaneAgentSessionFallback(tab: PaneTabConfig, pane: PaneConfig): PaneTabConfig {
+  if (tab.lifecycle === "declared") {
+    return {
+      ...tab,
+      claude_session_id: null,
+      agent_kind: null,
+      agent_session_id: null,
+      suppressed_agent_sessions: null,
+      terminal_snapshot: null,
+    };
+  }
+  if (!isRestorableTab(tab)) return tab;
   if (getTabAgentSessionKey(tab)) return tab;
   const paneKind = getPaneConfigKind(pane);
   const paneSessionId = getPaneConfigSessionId(pane);
@@ -879,6 +896,7 @@ export function toConfig(ws: Workspace, _agentMappings: Record<string, AgentSess
     panes: paneEntries.map(({ pane: p, activeTab, persistedTabs }) => {
       const paneMeta = metaState[p.sessionId];
       const activeTabMeta = activeTab ? metaState[activeTab.sessionId] : undefined;
+      const activeTabDeclared = isDeclaredTab(activeTab);
       const paneCwd = paneMeta?.cwd ?? activeTab?.cwd ?? p.cwd ?? null;
       // 4-level fallback so live agent session metadata never disappears even
       // if the workspaceListStore mirror lags one event behind:
@@ -886,24 +904,27 @@ export function toConfig(ws: Workspace, _agentMappings: Record<string, AgentSess
       //   2. Pane mirror.{...}
       //   3. paneMetadataStore[pane.sessionId]
       //   4. paneMetadataStore[activeTab.sessionId]
-      const liveClaudeId =
-        activeTab?.claudeSessionId
-        ?? p.claudeSessionId
-        ?? paneMeta?.claudeSessionId
-        ?? activeTabMeta?.claudeSessionId
-        ?? null;
-      const liveKind =
-        activeTab?.agentKind
-        ?? p.agentKind
-        ?? paneMeta?.agentKind
-        ?? activeTabMeta?.agentKind
-        ?? null;
-      const liveAgentId =
-        activeTab?.agentSessionId
-        ?? p.agentSessionId
-        ?? paneMeta?.agentSessionId
-        ?? activeTabMeta?.agentSessionId
-        ?? null;
+      const liveClaudeId = activeTabDeclared
+        ? null
+        : activeTab.claudeSessionId
+          ?? p.claudeSessionId
+          ?? paneMeta?.claudeSessionId
+          ?? activeTabMeta?.claudeSessionId
+          ?? null;
+      const liveKind = activeTabDeclared
+        ? null
+        : activeTab.agentKind
+          ?? p.agentKind
+          ?? paneMeta?.agentKind
+          ?? activeTabMeta?.agentKind
+          ?? null;
+      const liveAgentId = activeTabDeclared
+        ? null
+        : activeTab.agentSessionId
+          ?? p.agentSessionId
+          ?? paneMeta?.agentSessionId
+          ?? activeTabMeta?.agentSessionId
+          ?? null;
       return {
         pane_id: p.id,
         agent_id: activeTab?.agentId ?? p.agentId,
@@ -913,9 +934,11 @@ export function toConfig(ws: Workspace, _agentMappings: Record<string, AgentSess
         claude_session_id: liveClaudeId,
         agent_kind: liveKind,
         agent_session_id: liveAgentId,
-        suppressed_agent_sessions: toSuppressedAgentSessionConfigs(
-          activeTab.suppressedAgentSessions ?? p.suppressedAgentSessions,
-        ),
+        suppressed_agent_sessions: activeTabDeclared
+          ? null
+          : toSuppressedAgentSessionConfigs(
+            activeTab.suppressedAgentSessions ?? p.suppressedAgentSessions,
+          ),
         launch_env: stripEphemeralLaunchEnv(p.launchEnv ?? activeTab?.launchEnv),
         active_tab_id: activeTab.id,
         // A pin aimed at a browser/online tab has no persisted counterpart, so
@@ -925,14 +948,21 @@ export function toConfig(ws: Workspace, _agentMappings: Record<string, AgentSess
           : null,
         tabs: persistedTabs.map((tab) => {
           const tabMeta = metaState[tab.sessionId];
+          const declared = isDeclaredTab(tab);
           const isActivePersistedTab = tab.id === activeTab.id;
-          const tabKind = tab.agentKind ?? tabMeta?.agentKind ?? (isActivePersistedTab ? liveKind : null);
-          const tabAgentId = tab.agentSessionId
-            ?? tabMeta?.agentSessionId
-            ?? (isActivePersistedTab ? liveAgentId ?? liveClaudeId : null);
-          const tabClaudeId = tab.claudeSessionId
-            ?? tabMeta?.claudeSessionId
-            ?? (isActivePersistedTab && tabKind === "claude" ? tabAgentId ?? liveClaudeId : null);
+          const tabKind = declared
+            ? null
+            : tab.agentKind ?? tabMeta?.agentKind ?? (isActivePersistedTab ? liveKind : null);
+          const tabAgentId = declared
+            ? null
+            : tab.agentSessionId
+              ?? tabMeta?.agentSessionId
+              ?? (isActivePersistedTab ? liveAgentId ?? liveClaudeId : null);
+          const tabClaudeId = declared
+            ? null
+            : tab.claudeSessionId
+              ?? tabMeta?.claudeSessionId
+              ?? (isActivePersistedTab && tabKind === "claude" ? tabAgentId ?? liveClaudeId : null);
           return {
             tab_id: tab.id,
             agent_id: tab.agentId,
@@ -943,9 +973,19 @@ export function toConfig(ws: Workspace, _agentMappings: Record<string, AgentSess
             claude_session_id: tabClaudeId,
             agent_kind: tabKind,
             agent_session_id: tabAgentId,
-            suppressed_agent_sessions: toSuppressedAgentSessionConfigs(tab.suppressedAgentSessions),
+            suppressed_agent_sessions: declared
+              ? null
+              : toSuppressedAgentSessionConfigs(tab.suppressedAgentSessions),
             launch_env: stripEphemeralLaunchEnv(tab.launchEnv),
-            terminal_snapshot: getTerminalSnapshot(tab.sessionId) ?? tab.terminalSnapshot ?? null,
+            terminal_snapshot: declared
+              ? null
+              : getTerminalSnapshot(tab.sessionId) ?? tab.terminalSnapshot ?? null,
+            lifecycle: tab.lifecycle ?? null,
+            origin: tab.origin
+              ? { kind: tab.origin.kind, parent_tab_id: tab.origin.parentTabId ?? null }
+              : null,
+            declared_prompt: tab.declaredPrompt ?? null,
+            declared_target: tab.declaredTarget ?? null,
           };
         }),
       };
@@ -1076,6 +1116,15 @@ export function useWorkspacePersist() {
   const isLeader = useRef(false);
   const lastActivePaneSessionId = useRef<string | null>(null);
   const startupAutosaveHoldUntil = useRef(0);
+
+  useEffect(() => {
+    const reportVisibility = () => {
+      void setAppFrontendVisible(document.visibilityState !== "hidden").catch(() => {});
+    };
+    reportVisibility();
+    document.addEventListener("visibilitychange", reportVisibility);
+    return () => document.removeEventListener("visibilitychange", reportVisibility);
+  }, []);
 
   // Load on mount — only leader bootstraps
   useEffect(() => {
@@ -1233,6 +1282,10 @@ export function useWorkspacePersist() {
     let closePromptOpen = false;
     let saveFailureStreak = 0;
     let saveRetryTimer: ReturnType<typeof setTimeout> | null = null;
+    let cachedAgentMappings: Record<string, AgentSessionMapping> = {};
+    let cachedMappingSessionIds = "";
+    let agentMappingsDirty = true;
+    let lastWrittenSnapshot: string | null = null;
 
     const buildSnapshot = (
       agentMappings: Record<string, AgentSessionMapping> = {},
@@ -1346,21 +1399,35 @@ export function useWorkspacePersist() {
         scheduleSync(startupHoldRemainingMs + 100);
         return true;
       }
-      let agentMappings: Record<string, AgentSessionMapping> = {};
-      try {
-        agentMappings = await readAgentSessionMappings(collectLiveTerminalSessionIds());
-      } catch (err) {
-        console.warn("[persist] Failed to read agent session mappings:", err);
+      const mappingSessionIds = [...collectLiveTerminalSessionIds()].sort();
+      const mappingSessionKey = mappingSessionIds.join("\0");
+      if (agentMappingsDirty || cachedMappingSessionIds !== mappingSessionKey) {
+        try {
+          cachedAgentMappings = await readAgentSessionMappings(mappingSessionIds);
+          cachedMappingSessionIds = mappingSessionKey;
+          agentMappingsDirty = false;
+        } catch (err) {
+          agentMappingsDirty = true;
+          console.warn("[persist] Failed to read agent session mappings:", err);
+        }
       }
+      const agentMappings = cachedAgentMappings;
       let windowFragments: WindowFragment[] = [];
       try {
         windowFragments = await getWindowFragments();
       } catch (err) {
         console.warn("[persist] Failed to read other windows' workspaces:", err);
       }
+      const snapshot = buildSnapshot(agentMappings, windowFragments);
+      const serializedSnapshot = JSON.stringify(snapshot);
+      if (serializedSnapshot === lastWrittenSnapshot) {
+        dirty = false;
+        return true;
+      }
       dirty = false;
-      const run = savePersistentData(buildSnapshot(agentMappings, windowFragments))
+      const run = savePersistentData(snapshot)
         .then(() => {
+          lastWrittenSnapshot = serializedSnapshot;
           // Streak broken: drop the pending retry and reset the ladder.
           clearSaveRetry();
           saveFailureStreak = 0;
@@ -1423,7 +1490,7 @@ export function useWorkspacePersist() {
       debouncedSync();
     };
 
-    const countBusySessions = () => {
+    const countLiveAgentSessions = () => {
       const { workspaces } = useWorkspaceListStore.getState();
       const { metadata } = usePaneMetadataStore.getState();
       const sessionIds = new Set<string>();
@@ -1440,14 +1507,14 @@ export function useWorkspacePersist() {
         }
       }
 
-      let busyCount = 0;
+      let agentCount = 0;
       for (const sessionId of sessionIds) {
-        const status = deriveEffectiveStatus(metadata[sessionId]);
-        if (status === "working" || status === "waiting") {
-          busyCount += 1;
+        const pane = metadata[sessionId];
+        if (pane?.processIsShell === false && pane.agentKind) {
+          agentCount += 1;
         }
       }
-      return busyCount;
+      return agentCount;
     };
 
     const promptAfterFinalSaveFailure = async (): Promise<"retry" | "quit-anyway"> => {
@@ -1469,7 +1536,10 @@ export function useWorkspacePersist() {
       // lastLog is a high-frequency UI-only slice. It is intentionally absent
       // from buildSnapshot, so terminal streaming must not keep resetting the
       // workspace autosave debounce timer.
-      if (state.metadata !== previousState.metadata) markDirty();
+      if (state.metadata !== previousState.metadata) {
+        markDirty();
+        agentMappingsDirty = true;
+      }
     });
     const unsubTheme = useThemeStore.subscribe(markDirty);
     const unsubKeys = useKeybindingStore.subscribe(markDirty);
@@ -1526,20 +1596,15 @@ export function useWorkspacePersist() {
       } catch (err) {
         console.warn("[persist] Failed to refresh pty metadata before close prompt:", err);
       }
-      const busyCount = countBusySessions();
+      const agentCount = countLiveAgentSessions();
 
-      if (busyCount > 0) {
+      if (agentCount > 0) {
         closePromptOpen = true;
         let shouldQuit = false;
         try {
           shouldQuit = await confirm(
-            `実行中または入力待ちのセッションが ${busyCount} 件あります。終了するとすべての端末を閉じます。終了しますか？`,
-            {
-              title: "mycmux を終了",
-              kind: "warning",
-              okLabel: "終了",
-              cancelLabel: "キャンセル",
-            },
+            `実行中のエージェントが ${agentCount} 件あります。終了しますか？`,
+            agentCloseDialogOptions("mycmux を終了"),
           );
         } catch (err) {
           console.warn("[persist] Failed to show quit confirmation:", err);

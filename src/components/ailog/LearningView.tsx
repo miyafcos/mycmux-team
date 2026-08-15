@@ -1,4 +1,4 @@
-import { ButtonGroup, Chip, EmptyState, ScrollBox, Section, noteStyle, subtleButtonStyle, tableStyle, tdLeftStyle, tdStyle, thLeftStyle, thStyle } from "./ui";
+import { ButtonGroup, Chip, EmptyState, ScrollBox, Section, SkeletonBlock, noteStyle, subtleButtonStyle, tableStyle, tdLeftStyle, tdStyle, thLeftStyle, thStyle } from "./ui";
 import type { FindingKind, FindingsReport, ReworkRankingsReport } from "../../lib/ailog";
 
 const KIND_OPTIONS: { value: FindingKind | "all"; label: string }[] = [
@@ -44,7 +44,7 @@ export function LearningView({
           <ButtonGroup options={options} value={kind ?? "all"} onChange={(value) => onKindChange(value === "all" ? null : value)} ariaLabel={sectionTitle} />
           <input aria-label="検索" type="search" value={query} onChange={(event) => onQueryChange(event.target.value)} placeholder="検索" style={{ height: 28, minWidth: 180, border: "1px solid var(--cmux-border)", borderRadius: 5, background: "var(--cmux-hover)", color: "var(--cmux-text)", padding: "0 8px", fontSize: "var(--cmux-font-size-xs)" }} />
         </div>
-        {error ? <EmptyState kind="error" message={error} /> : (
+        {error ? <EmptyState kind="error" message={error} /> : loading && !findings ? <div style={{ marginTop: 12 }}><SkeletonBlock height={140} label="更新中…" /></div> : (
           <>{rows.length === 0 && !loading ? <div style={{ ...noteStyle, marginTop: 12 }}>この分類の記録はまだありません (要約が進むと増えます)</div> : <div style={{ display: "flex", flexDirection: "column", gap: 7, marginTop: 12 }}>
               {rows.map((row, index) => <div key={`${row.sessionKind}:${row.sessionId}:${index}`} style={{ textAlign: "left", border: "1px solid var(--cmux-border-hairline)", borderRadius: 6, background: "var(--cmux-hover)", color: "var(--cmux-text)", padding: "8px 10px" }}>
                 <button type="button" onClick={() => onOpenDetail(row.sessionKind, row.sessionId)} style={{ width: "100%", textAlign: "left", border: 0, background: "transparent", color: "inherit", padding: 0, cursor: "pointer" }}>

@@ -33,6 +33,9 @@ export function ProjectTable({
   const topTitles = new Map(
     (overview?.topProjects ?? []).map((project) => [project.projectLabel, project.topTitle]),
   );
+  const costLabel = report.priceCoverage.coveredTokenRatio < 1
+    ? `コスト相当 (単価既知の ${Math.round(report.priceCoverage.coveredTokenRatio * 100)}% 分)`
+    : "コスト相当";
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}>
@@ -42,7 +45,7 @@ export function ProjectTable({
             <tr>
               <th style={thLeftStyle}>{dimensionLabel}</th>
               <th style={thStyle}>セッション</th>
-              <th style={thStyle}>コスト相当</th>
+              <th style={thStyle}>{costLabel}</th>
               <th style={thStyle}>シェア</th>
               {projectMode ? <th style={thLeftStyle}>主な主題</th> : null}
               <th style={thStyle}>平均手戻り</th>

@@ -154,7 +154,11 @@ def test_persistence_engine_is_main_window_only() -> None:
     )
 
     # data.json stays a main-window-only write.
-    save_index = socket_listener.index("savePersistentData(buildSnapshot(")
+    snapshot_index = socket_listener.index(
+        "const snapshot = buildSnapshot(agentMappings, windowFragments);"
+    )
+    save_index = socket_listener.index("savePersistentData(snapshot)")
+    assert snapshot_index < save_index
     assert socket_listener.index("// Auto-save — only leader saves.") < save_index
     assert socket_listener.index(MAIN_ONLY_GUARD, socket_listener.index(
         "// Auto-save — only leader saves."
@@ -174,8 +178,8 @@ def test_app_level_singletons_are_main_window_only() -> None:
         # Children reveal themselves; only main runs the startup session gate.
         "if (!isMain) {",
         "await childWindow.show();",
-        # Main path preserved (also pinned by test_window_command_contract.py).
-        "const gateResult = await waitForStartupSessionGate(startupTimeoutMs);",
+        # Main starts the gate before reveal but does not block on it.
+        "const gateCompletion = waitForStartupSessionGate(startupTimeoutMs);",
         "await revealMainWindow();",
     ]:
         assert_contains(app, snippet, APP)
@@ -297,7 +301,8 @@ def test_leader_snapshot_merges_the_other_windows_workspaces() -> None:
 
     for snippet in [
         "windowFragments = await getWindowFragments();",
-        "savePersistentData(buildSnapshot(agentMappings, windowFragments))",
+        "const snapshot = buildSnapshot(agentMappings, windowFragments);",
+        "savePersistentData(snapshot)",
         "const rawConfigs = mergeWindowFragmentWorkspaces(",
     ]:
         assert_contains(socket_listener, snippet, SOCKET_LISTENER)

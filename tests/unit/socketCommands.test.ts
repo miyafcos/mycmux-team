@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pane, PaneTab, Workspace } from "../../src/types";
 import {
   clampPaneReadLines,
@@ -13,6 +13,9 @@ import { liveTerms } from "../../src/components/terminal/terminalCache";
 import { usePaneMetadataStore } from "../../src/stores/paneMetadataStore";
 import { useUiStore } from "../../src/stores/uiStore";
 import { useWorkspaceListStore } from "../../src/stores/workspaceListStore";
+import { useWorkspaceLayoutStore } from "../../src/stores/workspaceLayoutStore";
+import { useSettingsStore } from "../../src/stores/settingsStore";
+import { getClosedPaneCount, popClosedPane } from "../../src/stores/closedPaneStore";
 
 describe("resolveSpawnPlan", () => {
   it("builds a generated handoff launch environment", () => {
@@ -310,6 +313,10 @@ function socketLayoutWorkspace(splitColumns: string[][]): Workspace {
 
 describe("pane socket responses", () => {
   beforeEach(() => {
+    vi.restoreAllMocks();
+    while (popClosedPane()) {
+      // Keep undo-history assertions isolated between socket tests.
+    }
     useWorkspaceListStore.setState({
       workspaces: [],
       activeWorkspaceId: null,
@@ -318,6 +325,287 @@ describe("pane socket responses", () => {
     useUiStore.setState({ activePaneId: null });
     usePaneMetadataStore.setState({ metadata: {}, lastLog: {} });
     liveTerms.clear();
+    useSettingsStore.setState({ declaredLaunchEnabled: false });
+  });
+
+  it("fails closed when declared launch is disabled without mutating its tab", async () => {
+    const declared: PaneTab = { id: "declared", sessionId: "declared-session", agentId: "shell-starter", type: "terminal", lifecycle: "declared" };
+    const workspace = socketWorkspace("workspace-a", "Workspace A", "pane-a", [declared]);
+    useWorkspaceListStore.setState({ workspaces: [workspace], activeWorkspaceId: workspace.id });
+
+    await expect(handleSocketCommand("pane.launch_declared", { tabId: declared.id, requestId: "flag-off" }))
+      .resolves.toEqual({ ok: false, reason: "flag-disabled" });
+    expect(useWorkspaceListStore.getState().getWorkspace(workspace.id)!.panes[0].tabs[0].lifecycle).toBe("declared");
+
+    useSettingsStore.setState({ declaredLaunchEnabled: true });
+    await expect(handleSocketCommand("pane.launch_declared", { tabId: declared.id, requestId: "flag-off" }))
+      .resolves.toEqual({
+        ok: true,
+        tabId: declared.id,
+        sessionId: declared.sessionId,
+        pending: false,
+      });
+  });
+
+  it("launches one declared tab once for three concurrent requests with the same requestId", async () => {
+    const declared: PaneTab = { id: "declared-once", sessionId: "declared-once-session", agentId: "shell-starter", type: "terminal", lifecycle: "declared", declaredTarget: "codex", declaredPrompt: "inspect" };
+    const workspace = socketWorkspace("workspace-a", "Workspace A", "pane-a", [declared]);
+    useWorkspaceListStore.setState({ workspaces: [workspace], activeWorkspaceId: workspace.id });
+    useSettingsStore.setState({ declaredLaunchEnabled: true });
+    const launch = () => handleSocketCommand("pane.launch_declared", { tabId: declared.id, requestId: "once" });
+
+    await expect(Promise.all([launch(), launch(), launch()])).resolves.toEqual([
+      { ok: true, tabId: declared.id, sessionId: declared.sessionId, pending: false },
+      { ok: true, tabId: declared.id, sessionId: declared.sessionId, pending: false },
+      { ok: true, tabId: declared.id, sessionId: declared.sessionId, pending: false },
+    ]);
+    const launched = useWorkspaceListStore.getState().getWorkspace(workspace.id)!.panes[0].tabs[0];
+    expect(launched).toMatchObject({ agentId: "codex", agentKind: "codex", initialPrompt: "inspect" });
+    expect(launched.lifecycle).toBeUndefined();
+  });
+
+  it("drops rejected launch requests from the idempotency cache so they can retry", async () => {
+    const declared: PaneTab = {
+      id: "declared-retry",
+      sessionId: "declared-retry-session",
+      agentId: "shell-starter",
+      type: "terminal",
+      lifecycle: "declared",
+    };
+    const workspace = socketWorkspace("workspace-retry", "Workspace Retry", "pane-retry", [declared]);
+    useWorkspaceListStore.setState({ workspaces: [workspace], activeWorkspaceId: workspace.id });
+    useSettingsStore.setState({ declaredLaunchEnabled: true });
+    const launchSpy = vi.spyOn(useWorkspaceLayoutStore.getState(), "launchDeclaredTab")
+      .mockImplementationOnce(() => {
+        throw new Error("transient launch failure");
+      });
+
+    await expect(handleSocketCommand("pane.launch_declared", {
+      tabId: declared.id,
+      requestId: "retry-after-rejection",
+    })).rejects.toThrow("transient launch failure");
+    await expect(handleSocketCommand("pane.launch_declared", {
+      tabId: declared.id,
+      requestId: "retry-after-rejection",
+    })).resolves.toMatchObject({ ok: true, tabId: declared.id, pending: false });
+    expect(launchSpy).toHaveBeenCalledTimes(2);
+    launchSpy.mockRestore();
+  });
+
+  it("distinguishes missing and ordinary tabs and marks inactive-workspace launches pending", async () => {
+    const ordinary: PaneTab = {
+      id: "ordinary",
+      sessionId: "ordinary-session",
+      agentId: "shell-starter",
+      type: "terminal",
+    };
+    const declared: PaneTab = {
+      id: "declared-background",
+      sessionId: "declared-background-session",
+      agentId: "shell-starter",
+      type: "terminal",
+      lifecycle: "declared",
+    };
+    const active = socketWorkspace("workspace-active", "Active", "pane-active", [ordinary]);
+    const background = socketWorkspace("workspace-background", "Background", "pane-background", [declared]);
+    useWorkspaceListStore.setState({ workspaces: [active, background], activeWorkspaceId: active.id });
+    useSettingsStore.setState({ declaredLaunchEnabled: true });
+
+    await expect(handleSocketCommand("pane.launch_declared", {
+      tabId: "missing",
+      requestId: "not-found",
+    })).resolves.toEqual({ ok: false, reason: "not-found" });
+    await expect(handleSocketCommand("pane.launch_declared", {
+      tabId: ordinary.id,
+      requestId: "not-declared",
+    })).resolves.toEqual({ ok: false, reason: "not-declared" });
+    await expect(handleSocketCommand("pane.launch_declared", {
+      tabId: declared.id,
+      requestId: "background-pending",
+    })).resolves.toEqual({
+      ok: true,
+      tabId: declared.id,
+      sessionId: declared.sessionId,
+      pending: true,
+    });
+  });
+
+  it("launches a poisoned declaration only through the explicit safe allowlist", () => {
+    const declared: PaneTab = {
+      id: "declared-poison",
+      sessionId: "declared-poison-session",
+      agentId: "shell-starter",
+      type: "terminal",
+      lifecycle: "declared",
+      declaredTarget: "claude",
+      declaredPrompt: "fresh prompt",
+      claudeSessionId: "sibling-claude",
+      agentKind: "codex",
+      agentSessionId: "sibling-agent",
+      suppressedAgentSessions: [{ agentKind: "claude", agentSessionId: "sibling-suppressed" }],
+      terminalSnapshot: ["resume sibling"],
+      launchEnv: { MYCMUX_RESUME: "claude", MYCMUX_SESSION_ID: "sibling-claude" },
+    };
+    const workspace = socketWorkspace("workspace-safe", "Safe", "pane-safe", [declared]);
+    useWorkspaceListStore.setState({ workspaces: [workspace], activeWorkspaceId: workspace.id });
+
+    const launched = useWorkspaceLayoutStore.getState().launchDeclaredTab(
+      workspace.id,
+      workspace.panes[0].id,
+      declared.id,
+    )!;
+
+    expect(launched).toMatchObject({
+      id: declared.id,
+      sessionId: declared.sessionId,
+      agentId: "claude-code",
+      agentKind: "claude",
+      initialPrompt: "fresh prompt",
+    });
+    expect(launched).not.toHaveProperty("lifecycle");
+    expect(launched.claudeSessionId).toBeUndefined();
+    expect(launched.agentSessionId).toBeUndefined();
+    expect(launched.suppressedAgentSessions).toBeUndefined();
+    expect(launched.terminalSnapshot).toBeUndefined();
+    expect(launched.launchEnv).toBeUndefined();
+  });
+
+  it("serializes declared lifecycle and target over the socket", () => {
+    const declared: PaneTab = {
+      id: "declared-serialized",
+      sessionId: "declared-serialized-session",
+      agentId: "shell-starter",
+      type: "terminal",
+      lifecycle: "declared",
+      declaredTarget: "codex",
+    };
+    const workspace = socketWorkspace("workspace-serialized", "Serialized", "pane-serialized", [declared]);
+
+    const serialized = serializePaneForSocket(workspace.panes[0], {
+      activeSessionId: null,
+      metadata: {},
+      processMetadata: {},
+      processMetadataAvailable: true,
+      lastOutputBySession: {},
+      isTerminalMounted: () => false,
+    });
+
+    expect(serialized.tabs[0]).toMatchObject({
+      lifecycle: "declared",
+      declaredTarget: "codex",
+    });
+  });
+
+  it("closes declared tabs in one layout replacement without creating PTY cleanup work", async () => {
+    const tabs: PaneTab[] = [0, 1, 2].map((index) => ({
+      id: `declared-close-${index}`, sessionId: `declared-close-session-${index}`, agentId: "shell-starter", type: "terminal", lifecycle: "declared",
+    }));
+    const workspace = socketWorkspace("workspace-a", "Workspace A", "pane-a", [tabs[0]]);
+    workspace.panes = tabs.map((tab, index) => ({
+      id: `pane-${index}`,
+      agentId: tab.agentId,
+      sessionId: tab.sessionId,
+      tabs: [tab],
+      activeTabId: tab.id,
+    }));
+    workspace.splitColumns = [["pane-0"], ["pane-1"], ["pane-2"]];
+    workspace.columnWidths = [20, 30, 50];
+    workspace.rowHeightsPerCol = [[100], [100], [100]];
+    const replace = vi.spyOn(useWorkspaceListStore.getState(), "_replaceWorkspaces");
+    useWorkspaceListStore.setState({ workspaces: [workspace], activeWorkspaceId: workspace.id });
+
+    const result = await handleSocketCommand("pane.close_tabs", { tabIds: tabs.map((tab) => tab.id) }) as {
+      closed: string[];
+      skipped: string[];
+      removedPanes: string[];
+      retainedEmptyPanes: string[];
+      removedColumns: number;
+      affectedWorkspaces: string[];
+      staleRevision: boolean;
+      victims: unknown[];
+    };
+    expect(result).toEqual({
+      moved: [],
+      closed: tabs.map((tab) => tab.id),
+      skipped: [],
+      removedPanes: ["pane-0", "pane-1"],
+      retainedEmptyPanes: ["pane-2"],
+      removedColumns: 2,
+      affectedWorkspaces: [workspace.id],
+      staleRevision: false,
+      victims: [],
+    });
+    expect(replace).toHaveBeenCalledTimes(1);
+    const updated = useWorkspaceListStore.getState().getWorkspace(workspace.id)!;
+    expect(updated.panes).toHaveLength(1);
+    expect(updated.panes[0]).toMatchObject({ id: "pane-2", tabs: [], activeTabId: "" });
+    expect(updated.splitColumns).toEqual([["pane-2"]]);
+    expect(updated.columnWidths).toEqual([50]);
+    expect(updated.rowHeightsPerCol).toEqual([[100]]);
+    expect(getClosedPaneCount()).toBe(3);
+    replace.mockRestore();
+  });
+
+  it("rejects closing every tab in the last pane without mutation or undo entries", async () => {
+    const tabs: PaneTab[] = ["a", "b"].map((id) => ({
+      id,
+      sessionId: `session-${id}`,
+      agentId: "shell-starter",
+      type: "terminal",
+      lifecycle: "declared",
+    }));
+    const workspace = socketWorkspace("workspace-last", "Last", "pane-last", tabs);
+    const replace = vi.spyOn(useWorkspaceListStore.getState(), "_replaceWorkspaces");
+    useWorkspaceListStore.setState({ workspaces: [workspace], activeWorkspaceId: workspace.id });
+
+    await expect(handleSocketCommand("pane.close_tabs", {
+      tabIds: tabs.map((tab) => tab.id),
+    })).rejects.toThrow("refusing to close the last tab of the last pane");
+    expect(replace).not.toHaveBeenCalled();
+    expect(useWorkspaceListStore.getState().getWorkspace(workspace.id)!.panes[0].tabs).toHaveLength(2);
+    expect(getClosedPaneCount()).toBe(0);
+    replace.mockRestore();
+  });
+
+  it("reports live victims and bumps focus once when a focused session is killed", async () => {
+    const focused: PaneTab = {
+      id: "focused-tab",
+      sessionId: "focused-session",
+      agentId: "claude-code",
+      label: "Focused agent",
+      type: "terminal",
+      agentKind: "claude",
+    };
+    const keeper: PaneTab = {
+      id: "keeper-tab",
+      sessionId: "keeper-session",
+      agentId: "shell-starter",
+      type: "terminal",
+      lifecycle: "declared",
+    };
+    const workspace = socketWorkspace("workspace-focus", "Focus", "pane-focused", [focused]);
+    workspace.panes.push({
+      id: "pane-keeper",
+      agentId: keeper.agentId,
+      sessionId: keeper.sessionId,
+      tabs: [keeper],
+      activeTabId: keeper.id,
+    });
+    workspace.splitColumns = [["pane-focused"], ["pane-keeper"]];
+    useWorkspaceListStore.setState({ workspaces: [workspace], activeWorkspaceId: workspace.id });
+    useUiStore.setState({ activePaneId: focused.sessionId, focusRevision: 7 });
+
+    const result = await handleSocketCommand("pane.close_tabs", { tabIds: [focused.id] }) as {
+      victims: Array<{ sessionId: string; label: string; reason: string }>;
+    };
+
+    expect(result.victims).toEqual([{
+      sessionId: focused.sessionId,
+      label: "Focused agent",
+      reason: "agent",
+    }]);
+    expect(useUiStore.getState().focusRevision).toBe(8);
+    expect(getClosedPaneCount()).toBe(1);
   });
 
   it("exposes tab identities, status freshness, and the active session", async () => {

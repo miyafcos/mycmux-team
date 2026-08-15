@@ -44,7 +44,9 @@ window.addEventListener("error", (e) => {
 // propagation).
 window.addEventListener("contextmenu", (e) => e.preventDefault());
 
-initializePerfDiagnostics();
+if (import.meta.env.DEV) {
+  initializePerfDiagnostics();
+}
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   import.meta.env.DEV ? (

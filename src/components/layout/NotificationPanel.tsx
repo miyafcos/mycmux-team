@@ -1,24 +1,13 @@
 import { memo, useMemo, useRef } from "react";
 import { useDismissOnOutside } from "../../hooks/useDismissOnOutside";
 import { useWorkspaceListStore, usePaneMetadataStore, useWorkspaceLayoutStore } from "../../stores/workspaceStore";
-import { getAgent } from "../../lib/agents";
+import { collectNotificationEntries, type NotificationEntry } from "../../lib/notificationEntries";
 import { focusController } from "../../lib/focusController";
 
 interface NotificationPanelProps {
   closing?: boolean;
   onClose: () => void;
 }
-
-type NotificationEntry = {
-  workspaceId: string;
-  workspaceName: string;
-  paneId: string;
-  tabId: string;
-  sessionId: string;
-  count: number;
-  kind: "waiting";
-  label: string;
-};
 
 const NotificationItem = memo(function NotificationItem({
   notification,
@@ -84,32 +73,10 @@ export default function NotificationPanel({ closing = false, onClose }: Notifica
   const clearNotification = usePaneMetadataStore((s) => s.clearNotification);
   const panelRef = useRef<HTMLDivElement>(null);
 
-  const notifications = useMemo(() => {
-    const result: NotificationEntry[] = [];
-    for (const ws of workspaces) {
-      for (const pane of ws.panes) {
-        for (const tab of pane.tabs) {
-          const m = paneMetadata[tab.sessionId];
-          if (!m) continue;
-          const agentName = getAgent(tab.agentId)?.name ?? "Shell";
-          const label = tab.label ?? m.processTitle ?? m.cwd?.split("/").pop() ?? agentName;
-          if ((m.notificationCount ?? 0) > 0) {
-            result.push({
-              workspaceId: ws.id,
-              workspaceName: ws.name,
-              paneId: pane.id,
-              tabId: tab.id,
-              sessionId: tab.sessionId,
-              count: m.notificationCount ?? 0,
-              kind: "waiting",
-              label,
-            });
-          }
-        }
-      }
-    }
-    return result.sort((a, b) => b.count - a.count);
-  }, [workspaces, paneMetadata]);
+  const notifications = useMemo(
+    () => collectNotificationEntries(workspaces, paneMetadata),
+    [workspaces, paneMetadata],
+  );
 
   useDismissOnOutside(!closing, panelRef, onClose);
 

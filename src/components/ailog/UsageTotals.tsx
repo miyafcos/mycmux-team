@@ -7,7 +7,7 @@
  * it an undercount by construction.
  */
 
-import { formatCount, formatUsd, type SeriesReport } from "../../lib/ailog";
+import { formatUsd, type PriceCoverage, type SeriesReport } from "../../lib/ailog";
 import { formatMetric, metricValue, usageMetricInfo, type UsageMetric } from "./usageModel";
 import { Chip, cardStyle, noteStyle } from "./ui";
 
@@ -18,7 +18,7 @@ export interface UsageTotalsData {
   gpt: number;
   other: number;
   cacheShare: number;
-  unpricedModels: string[];
+  priceCoverage: PriceCoverage;
 }
 
 /**
@@ -64,7 +64,7 @@ export function summarizeUsage(report: SeriesReport, metric: UsageMetric): Usage
     gpt,
     other,
     cacheShare: allTokens > 0 ? cacheTokens / allTokens : 0,
-    unpricedModels: report.unpricedModels,
+    priceCoverage: report.priceCoverage,
   };
 }
 
@@ -109,7 +109,7 @@ export function UsageTotals({
           </div>
         </Card>
 
-        <Card label="コスト相当 (副次)">
+        <Card label={data.priceCoverage.coveredTokenRatio < 1 ? `コスト相当 (単価既知の ${Math.round(data.priceCoverage.coveredTokenRatio * 100)}% 分)` : "コスト相当 (副次)"}>
           <div style={{ fontSize: "var(--cmux-font-size-md)", fontWeight: 700, marginTop: 3, color: "var(--cmux-text-secondary)" }}>
             {formatUsd(data.costUsd)}
           </div>
@@ -118,16 +118,6 @@ export function UsageTotals({
           </div>
         </Card>
 
-        <Card label="算入外">
-          <div style={{ fontSize: "var(--cmux-font-size-md)", fontWeight: 700, marginTop: 3 }}>
-            {data.unpricedModels.length > 0 ? `${formatCount(data.unpricedModels.length)} モデル` : "なし"}
-          </div>
-          <div style={{ ...noteStyle, marginTop: 3 }}>
-            {data.unpricedModels.length > 0
-              ? `${data.unpricedModels.slice(0, 3).join(", ")}${data.unpricedModels.length > 3 ? " ほか" : ""} は単価未設定`
-              : "この期間のモデルはすべて単価が登録されています"}
-          </div>
-        </Card>
       </div>
 
       {metric === "totalTokens" && data.cacheShare > 0 ? (
@@ -137,11 +127,6 @@ export function UsageTotals({
         </div>
       ) : null}
 
-      {data.unpricedModels.length > 0 ? (
-        <div style={{ ...noteStyle, color: "var(--cmux-usage-warn)" }}>
-          {`${data.unpricedModels.join(", ")} は公表料率が登録されていないため、コスト相当に一切含まれていません。トークン量には含まれています。`}
-        </div>
-      ) : null}
     </div>
   );
 }

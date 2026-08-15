@@ -11,13 +11,75 @@
 //! # Sourcing rule
 //!
 //! A model only gets a row if a published rate was available when this table
-//! was written. Anything else is reported in `unpriced_models` and contributes
-//! zero — a nearby model's rate is never substituted, because a wrong number
-//! that looks precise is worse than a visible gap.
+//! was written. Anything else is classified explicitly and never receives a
+//! nearby model's rate, because a wrong number that looks precise is worse
+//! than an honest coverage boundary.
 
 use std::collections::HashMap;
 
 use rusqlite::Connection;
+use serde::Serialize;
+
+/// Deterministic classification rules for model names. These constants are the
+/// single source of truth for the zero-configuration price policy.
+pub const MODEL_CLASS_RULES: ModelClassRules = ModelClassRules {
+    internal_exact: &["<synthetic>"],
+    local_markers: &["ollama/"],
+    flat_markers: &["fugu"],
+    provider_prefixes: &[
+        ("claude-", ModelProvider::Anthropic),
+        ("gpt-", ModelProvider::Openai),
+        ("gemini-", ModelProvider::Google),
+    ],
+};
+
+pub struct ModelClassRules {
+    pub internal_exact: &'static [&'static str],
+    pub local_markers: &'static [&'static str],
+    pub flat_markers: &'static [&'static str],
+    pub provider_prefixes: &'static [(&'static str, ModelProvider)],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ModelClass {
+    Priced,
+    Local,
+    Internal,
+    Flat,
+    Unknown,
+}
+
+/// Company inferred from a recorded model name. This is deliberately separate
+/// from [`ModelClass`]: an unpriced `gpt-*` model is still OpenAI, while an
+/// arbitrary slash-delimited local model has no cloud provider.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ModelProvider {
+    Anthropic,
+    Openai,
+    Google,
+    Local,
+    Other,
+}
+
+impl ModelProvider {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Anthropic => "anthropic",
+            Self::Openai => "openai",
+            Self::Google => "google",
+            Self::Local => "local",
+            Self::Other => "other",
+        }
+    }
+}
+
+impl ModelClass {
+    pub const fn is_covered(self) -> bool {
+        matches!(self, Self::Priced | Self::Local | Self::Flat)
+    }
+}
 
 /// Per-million-token rates in USD.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -223,8 +285,60 @@ impl PriceTable {
         out
     }
 
-    /// Ladder: exact raw name, then `family-variant`, then family.
+    /// Classify a model before resolving a rate. Local, internal, and flat
+    /// models intentionally do not resolve to an interchangeable catalog rate.
+    pub fn classify(&self, raw: &str) -> ModelClass {
+        let normalized = raw.trim().to_ascii_lowercase();
+        if MODEL_CLASS_RULES
+            .internal_exact
+            .iter()
+            .any(|name| raw.trim() == *name)
+        {
+            return ModelClass::Internal;
+        }
+        if is_local_model(raw, &normalized) {
+            return ModelClass::Local;
+        }
+        if MODEL_CLASS_RULES
+            .flat_markers
+            .iter()
+            .any(|marker| normalized.contains(marker))
+        {
+            return ModelClass::Flat;
+        }
+        if self.lookup_catalog(raw).is_some() {
+            ModelClass::Priced
+        } else {
+            ModelClass::Unknown
+        }
+    }
+
+    /// Classify the company from the raw model name using the same rule table
+    /// as price classes. Local takes precedence so slash-delimited local
+    /// distribution names cannot be misreported as a cloud model.
+    pub fn provider(&self, raw: &str) -> ModelProvider {
+        let normalized = raw.trim().to_ascii_lowercase();
+        if is_local_model(raw, &normalized) {
+            return ModelProvider::Local;
+        }
+        MODEL_CLASS_RULES
+            .provider_prefixes
+            .iter()
+            .find_map(|(prefix, provider)| normalized.starts_with(prefix).then_some(*provider))
+            .unwrap_or(ModelProvider::Other)
+    }
+
+    /// Resolve only metered catalog rates. All other classes intentionally
+    /// produce a zero cost, including a historical manual override.
     pub fn lookup(&self, raw: &str) -> Option<&PriceRow> {
+        if self.classify(raw) != ModelClass::Priced {
+            return None;
+        }
+        self.lookup_catalog(raw)
+    }
+
+    /// Ladder: exact raw name, then `family-variant`, then family.
+    fn lookup_catalog(&self, raw: &str) -> Option<&PriceRow> {
         let id = normalize(raw);
         if let Some(row) = self.rows.get(&id.raw) {
             return Some(row);
@@ -253,6 +367,14 @@ impl PriceTable {
             _ => "default".to_string(),
         }
     }
+}
+
+fn is_local_model(raw: &str, normalized: &str) -> bool {
+    MODEL_CLASS_RULES
+        .local_markers
+        .iter()
+        .any(|marker| normalized.contains(marker))
+        || raw.trim().contains('/')
 }
 
 /// Cost split into the two halves spec §4.5 treats as exact.

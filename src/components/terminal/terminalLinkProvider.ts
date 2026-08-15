@@ -594,6 +594,45 @@ export function mergeResolvedPathLinkMatches(
   return merged.sort((left, right) => left.index - right.index || left.endIndex - right.endIndex);
 }
 
+/**
+ * Resolve local paths in ordinary text with the terminal provider's detector,
+ * cache, and longest-existing-prefix rules. Dashboard surfaces use this rather
+ * than maintaining a second (and inevitably divergent) path resolver.
+ */
+export async function resolveTextLocalPathLinks(
+  text: string,
+  cwd?: string,
+): Promise<ResolvedLocalPathLinkMatch[]> {
+  const candidates = [
+    ...findLocalFilePathLinks(text),
+    ...findBareLocalPathCandidates(text, []),
+  ];
+  if (!candidates.length) return [];
+
+  const normalizedCwd = cwd?.trim() || undefined;
+  const needsHome = candidates.some((candidate) => /^~[\\/]/.test(candidate.text));
+  const home = needsHome ? await ensureHomeDir() : memoizedHomeDir;
+  const prepared = limitPreparedPathCandidates(
+    expandPathCandidateVariants(candidates, [])
+      .map((variant) => preparePathCandidate(variant, normalizedCwd, home))
+      .filter((candidate): candidate is PreparedPathCandidate => candidate !== null),
+    LOCAL_PATH_PREWARM_MAX_CANDIDATES,
+  );
+  if (!prepared.length) return [];
+
+  await resolveAndCacheLocalPathLookups(prepared.map((candidate) => candidate.lookupText));
+  const remapped = prepared.map((candidate) => {
+    const cached = readLocalPathResolutionCache(candidate.lookupText);
+    return remapResolvedPathLink(candidate, cached.found ? cached.value : null);
+  });
+  return mergeResolvedPathLinkMatches(
+    prepared.map((candidate) => candidate.sourceCandidate),
+    remapped.map((result) => result.display),
+    remapped.map((result) => result.activationPrefix),
+    prepared.map((candidate) => candidate.resolutionPriority),
+  );
+}
+
 function createLocalPathLink(
   term: Terminal,
   parts: ArtifactLinkPart[],

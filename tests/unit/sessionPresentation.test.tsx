@@ -10,7 +10,7 @@ const detail: SessionDetail = {
   cwd: null, aiTitle: null, firstPrompt: "最初の依頼。二文目", goalKey: null, agentNames: [], cliVersion: null, planType: null, turns: [], tools: [],
   rework: { toolErrorCount: 0, toolCallCount: 0, toolErrorRate: 0, correctionHits: 0, maxFileEdits: 0, churnFiles: 0, retryBash: 0, abandoned: false, score: 0, scoreNote: "" },
   costBreakdown: { ingest: { tokens: 0, costUsd: 0, input: 0, cacheRead: 0, cacheWrite: 0 }, generate: { tokens: 0, costUsd: 0, output: 0, reasoning: 0 }, ingestRatio: 0, cacheHitRate: 0, ioChars: { read: 0, exec: 0, write: 0, fetch: 0, prompt: 0, other: 0, estimation: "" }, ioFiles: { readFiles: 0, writtenFiles: 0 }, note: "" },
-  summary: null, priceSource: "", unpricedModels: [], costNote: "",
+  summary: null, priceSource: "", priceCoverage: { priced: { models: [], tokens: 0 }, local: { models: [], tokens: 0 }, internal: { models: [], tokens: 0 }, flat: { models: [], tokens: 0 }, unknown: { models: [], tokens: 0 }, coveredTokenRatio: 1 }, costNote: "",
 };
 
 function renderDetail(value = detail) {

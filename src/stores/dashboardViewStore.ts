@@ -1,7 +1,6 @@
 import { create } from "zustand";
 
 export type DashboardStateFilter = "needsHuman" | "running" | "noUpdate" | "done";
-export type DashboardDetailTab = "chat" | "now" | "history" | "terminal";
 
 interface DashboardViewState {
   open: boolean;
@@ -9,9 +8,10 @@ interface DashboardViewState {
   workspaceFilter: string | null;
   agentFilter: string | null;
   stateFilter: DashboardStateFilter | null;
-  completedExpanded: boolean;
   selectedTabId: string | null;
-  detailTab: DashboardDetailTab;
+  reportInboxOpen: boolean;
+  highlightedEventId: string | null;
+  highlightedEventRequest: number;
   toggle: () => void;
   openView: () => void;
   close: () => void;
@@ -19,9 +19,10 @@ interface DashboardViewState {
   setWorkspaceFilter: (workspaceId: string | null) => void;
   setAgentFilter: (agentKind: string | null) => void;
   setStateFilter: (stateFilter: DashboardStateFilter | null) => void;
-  setCompletedExpanded: (expanded: boolean) => void;
   setSelectedTabId: (tabId: string | null) => void;
-  setDetailTab: (tab: DashboardDetailTab) => void;
+  openReportInbox: () => void;
+  closeReportInbox: () => void;
+  setHighlightedEventId: (eventId: string | null) => void;
 }
 
 export const useDashboardViewStore = create<DashboardViewState>((set) => ({
@@ -30,20 +31,22 @@ export const useDashboardViewStore = create<DashboardViewState>((set) => ({
   workspaceFilter: null,
   agentFilter: null,
   stateFilter: null,
-  completedExpanded: false,
   selectedTabId: null,
-  detailTab: "chat",
+  reportInboxOpen: false,
+  highlightedEventId: null,
+  highlightedEventRequest: 0,
   toggle: () => set((state) => ({ open: !state.open })),
   openView: () => set({ open: true }),
   close: () => set({ open: false }),
   setQuery: (query) => set({ query }),
   setWorkspaceFilter: (workspaceFilter) => set({ workspaceFilter }),
   setAgentFilter: (agentFilter) => set({ agentFilter }),
-  setStateFilter: (stateFilter) => set((state) => ({
-    stateFilter,
-    completedExpanded: stateFilter === "done" ? true : state.completedExpanded,
+  setStateFilter: (stateFilter) => set({ stateFilter }),
+  setSelectedTabId: (selectedTabId) => set({ selectedTabId, reportInboxOpen: false }),
+  openReportInbox: () => set({ reportInboxOpen: true, highlightedEventId: null }),
+  closeReportInbox: () => set({ reportInboxOpen: false }),
+  setHighlightedEventId: (highlightedEventId) => set((state) => ({
+    highlightedEventId,
+    highlightedEventRequest: state.highlightedEventRequest + 1,
   })),
-  setCompletedExpanded: (completedExpanded) => set({ completedExpanded }),
-  setSelectedTabId: (selectedTabId) => set({ selectedTabId }),
-  setDetailTab: (detailTab) => set({ detailTab }),
 }));

@@ -103,6 +103,66 @@ fn a_truncated_file_is_reparsed_from_the_start() {
 }
 
 #[test]
+fn synthetic_index_benchmark_reports_phase_timings_and_skips_unchanged_files() {
+    const FILES: usize = 96;
+    const TURNS_PER_FILE: usize = 32;
+
+    let fixture = Fixture::new();
+    for file_index in 0..FILES {
+        let path = fixture.logs.join(format!("benchmark-{file_index}.jsonl"));
+        let mut body = String::new();
+        for turn_index in 0..TURNS_PER_FILE {
+            body.push_str(&format!(
+                r#"{{"type":"assistant","sessionId":"BENCH-{file_index}","requestId":"request-{turn_index}","timestamp":"2026-08-01T00:{:02}:{:02}.000Z","cwd":"C:\\bench","entrypoint":"cli","uuid":"bench-{file_index}-{turn_index}","message":{{"id":"message-{turn_index}","model":"claude-opus-5","role":"assistant","content":[],"usage":{{"input_tokens":100,"output_tokens":200,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}}}}"#,
+                turn_index / 60,
+                turn_index % 60,
+            ));
+            body.push('\n');
+        }
+        std::fs::write(path, body).expect("write benchmark transcript");
+    }
+
+    let full = fixture.index(KIND_CLAUDE, true);
+    assert_eq!(full.files_done, FILES);
+    assert_eq!(fixture.count("turn"), (FILES * TURNS_PER_FILE) as i64);
+
+    let unchanged = fixture.index(KIND_CLAUDE, false);
+    assert_eq!(unchanged.files_done, 0, "unchanged inputs must not reparse");
+    assert_eq!(unchanged.files_skipped, FILES);
+    assert_eq!(unchanged.bytes_done, 0);
+    assert_eq!(unchanged.sessions, 0, "unchanged inputs must not recompute");
+
+    fixture.append(
+        "benchmark-0.jsonl",
+        &[r#"{"type":"assistant","sessionId":"BENCH-0","requestId":"request-appended","timestamp":"2026-08-01T01:00:00.000Z","cwd":"C:\\bench","entrypoint":"cli","uuid":"bench-appended","message":{"id":"message-appended","model":"claude-opus-5","role":"assistant","content":[],"usage":{"input_tokens":100,"output_tokens":200,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}"#],
+    );
+    let appended = fixture.index(KIND_CLAUDE, false);
+    assert_eq!(appended.files_done, 1);
+    assert_eq!(appended.files_skipped, FILES - 1);
+    assert_eq!(appended.sessions, 1, "only the changed session recomputes");
+
+    println!(
+        "AILOG_INDEX_BENCH files={FILES} turns={} full_ms={} full_scan_ms={} full_parse_ms={} full_db_write_ms={} full_post_process_ms={} unchanged_ms={} unchanged_scan_ms={} unchanged_parse_ms={} unchanged_db_write_ms={} unchanged_post_process_ms={} append_ms={} append_scan_ms={} append_parse_ms={} append_db_write_ms={} append_post_process_ms={}",
+        FILES * TURNS_PER_FILE,
+        full.elapsed_ms,
+        full.timings.scan_ms,
+        full.timings.parse_ms,
+        full.timings.db_write_ms,
+        full.timings.post_process_ms,
+        unchanged.elapsed_ms,
+        unchanged.timings.scan_ms,
+        unchanged.timings.parse_ms,
+        unchanged.timings.db_write_ms,
+        unchanged.timings.post_process_ms,
+        appended.elapsed_ms,
+        appended.timings.scan_ms,
+        appended.timings.parse_ms,
+        appended.timings.db_write_ms,
+        appended.timings.post_process_ms,
+    );
+}
+
+#[test]
 fn a_partial_trailing_line_is_left_for_the_next_pass() {
     let fixture = Fixture::new();
     let path = fixture.logs.join("S1.jsonl");
@@ -273,10 +333,8 @@ fn an_unknown_model_is_reported_rather_than_guessed() {
 
     let overview = query::overview(&conn, &all_time(), &Filters::default(), NOW).unwrap();
     assert_eq!(overview.totals.cost_usd, 0.0);
-    assert_eq!(
-        overview.unpriced_models,
-        vec!["totally-unknown-model-x".to_string()]
-    );
+    assert_eq!(overview.price_coverage.unknown.models, vec!["totally-unknown-model-x".to_string()]);
+    assert_eq!(overview.price_coverage.covered_token_ratio, 0.0);
     assert_eq!(overview.price_source, "default");
 
     let row = overview
@@ -284,7 +342,7 @@ fn an_unknown_model_is_reported_rather_than_guessed() {
         .iter()
         .find(|row| row.family == "totally-unknown-model-x")
         .expect("unknown model still appears");
-    assert!(!row.priced);
+    assert_eq!(row.model_class, crate::ailog::price::ModelClass::Unknown);
     assert_eq!(row.turns, 1);
 }
 
@@ -490,7 +548,7 @@ fn codex_sessions_index_and_aggregate() {
         "cost was {} expected {expected}",
         overview.totals.cost_usd
     );
-    assert!(overview.unpriced_models.is_empty());
+    assert_eq!(overview.price_coverage.covered_token_ratio, 1.0);
 
     let detail = query::session_detail(&conn, KIND_CODEX, "CX1").unwrap();
     assert_eq!(detail.plan_type.as_deref(), Some("pro"));
@@ -610,7 +668,7 @@ fn smoke_real_claude_project() {
             "handoffs": models.handoffs,
             "byWorkTag": models.by_work_tag,
             "overlapping": models.overlapping,
-            "unpricedModels": models.unpriced_models,
+            "priceCoverage": models.price_coverage,
         }))
         .unwrap()
     );
@@ -665,6 +723,6 @@ fn price_edits_reprice_the_stored_costs() {
     let overview = query::overview(&conn, &all_time(), &Filters::default(), NOW).unwrap();
     // 1000 input * $1e6/MTok + 2000 output * $2e6/MTok = 1000 + 4000.
     assert!((overview.totals.cost_usd - 5_000.0).abs() < 1e-6);
-    assert!(overview.unpriced_models.is_empty());
+    assert_eq!(overview.price_coverage.covered_token_ratio, 1.0);
     assert_eq!(overview.price_source, "mixed");
 }

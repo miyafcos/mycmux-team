@@ -70,6 +70,7 @@ pub struct AppState {
     pub session_state_store: session_state::SessionStateStore,
     pub status_feed: status_feed::StatusFeed,
     pub bootstrapped: AtomicBool,
+    pub frontend_visible: Arc<AtomicBool>,
     pub metadata_store: pty::monitor::MetadataStore,
     pub livebrief_service: livebrief::LiveBriefService,
     /// Multi-window (Phase 3b): who owns which workspace, plus each window's
@@ -243,6 +244,7 @@ pub fn run() {
         session_state_store,
         status_feed,
         bootstrapped: AtomicBool::new(false),
+        frontend_visible: Arc::new(AtomicBool::new(true)),
         metadata_store: metadata_store.clone(),
         livebrief_service: livebrief::LiveBriefService::new(
             session_manager,
@@ -271,6 +273,7 @@ pub fn run() {
         })
         .manage(remote_control)
         .manage(remote_sessions)
+        .manage(remote::RemoteServerRuntime::new())
         .manage(usage::UsageState::new())
         .manage(cli_accounts::login_watch::LoginRegistry::default())
         .invoke_handler(tauri::generate_handler![
@@ -280,6 +283,7 @@ pub fn run() {
             commands::terminal::resize_session,
             commands::terminal::ack_frontend_data,
             commands::terminal::set_frontend_visible,
+            commands::terminal::set_app_frontend_visible,
             commands::terminal::get_session_scrollback,
             commands::terminal::kill_session,
             commands::artifact::preview_artifact_uri_for_session_v2,
@@ -291,6 +295,8 @@ pub fn run() {
             commands::terminal::is_directory,
             commands::terminal::get_launch_cwd,
             livebrief::get_live_briefs,
+            livebrief::subscribe_live_briefs,
+            livebrief::unsubscribe_live_briefs,
             livebrief::get_live_events,
             livebrief::send_intervention,
             commands::online::list_online_savepoints,
@@ -378,6 +384,8 @@ pub fn run() {
             remote::rotate_remote_token,
             remote::get_remote_bind_all,
             remote::set_remote_bind_all,
+            remote::get_remote_enabled,
+            remote::set_remote_enabled,
             status_feed::get_session_status_snapshot,
             socket::socket_response,
         ])
@@ -416,6 +424,7 @@ pub fn run() {
                 state.session_manager.clone(),
                 ms.clone(),
                 state.session_state_store.clone(),
+                state.frontend_visible.clone(),
             );
             session_state::register_frontend_listener(
                 &app_handle,
@@ -455,20 +464,29 @@ pub fn run() {
                 .state::<Arc<remote::session::RemoteSessionManager>>()
                 .inner()
                 .clone();
+            let remote_runtime = app.state::<remote::RemoteServerRuntime>();
             // S-2: read the persisted LAN-bind preference once at startup;
             // changes to this setting take effect on next launch (see
             // remote::set_remote_bind_all).
-            let remote_bind_all = db::storage::load(&app_handle)
-                .map(|data| data.settings.remote_bind_all)
-                .unwrap_or(false);
-            remote::start_remote_server(
-                app_handle.clone(),
-                state.session_manager.clone(),
-                ms,
-                remote_control,
-                remote_sessions.clone(),
-                remote_bind_all,
-            );
+            let remote_settings = db::storage::load(&app_handle)
+                .map(|data| (data.settings.remote_enabled, data.settings.remote_bind_all))
+                .unwrap_or((false, false));
+            if remote_settings.0 {
+                if let Err(error) = tauri::async_runtime::block_on(remote_runtime.enable(
+                    app_handle.clone(),
+                    state.session_manager.clone(),
+                    ms,
+                    remote_control,
+                    remote_sessions.clone(),
+                    remote_settings.1,
+                )) {
+                    crate::diag_warn!("remote", "Failed to start enabled remote server: {error}");
+                    // Legacy users default to enabled, so a bind failure (e.g. port
+                    // in use) must reach the UI — AppShell listens for this event.
+                    use tauri::Emitter;
+                    let _ = app_handle.emit("remote-error", format!("Failed to start remote server: {error}"));
+                }
+            }
             // Kill all PTY sessions when the main window closes
             let mgr = state.session_manager.clone();
             if let Some(main_window) = app.get_webview_window("main") {

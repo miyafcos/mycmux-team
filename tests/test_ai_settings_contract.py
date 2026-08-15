@@ -35,6 +35,40 @@ def test_settings_dialog_exposes_the_ai_tab() -> None:
             'activeTab === "ai" && <AiTab />',
         ],
     )
+    dialog = read_repo_text("src/components/settings/SettingsDialog.tsx")
+    assert '"automation"' not in dialog
+    assert "AutomationTab" not in dialog
+
+
+def test_ai_tab_combines_ai_watch_and_reply_draft_sections() -> None:
+    text = read_repo_text("src/components/settings/tabs/AiTab.tsx")
+    for snippet in (
+        '<AutomationTab />',
+        '返信案の先回り (準備中)',
+        "data-ai-reply-draft-placeholder",
+        "L3: place reply-draft suggestion controls in this section.",
+    ):
+        assert snippet in text, f"Missing combined settings section: {snippet}"
+    assert "<input" not in text.split("data-ai-reply-draft-placeholder", 1)[1], (
+        "reply-draft placeholder must not add an inactive control"
+    )
+    assert 'title: "バックグラウンド AI"' in read_repo_text(
+        "src/components/settings/settingsStrings.ts"
+    )
+
+
+def test_watchdog_settings_keep_the_existing_store_keys_and_setters() -> None:
+    text = read_repo_text("src/components/settings/tabs/AutomationTab.tsx")
+    for snippet in (
+        "dispatchWatchdogEnabled",
+        "dispatchWatchdogIntervalMinutes",
+        "dispatchStallMinutes",
+        "setDispatchWatchdogEnabled",
+        "setDispatchWatchdogIntervalMinutes",
+        "setDispatchStallMinutes",
+        "setDispatchWatchdogNotify",
+    ):
+        assert snippet in text, f"Watchdog store contract changed: {snippet}"
 
 
 def test_ai_tab_uses_a_free_entry_combobox() -> None:

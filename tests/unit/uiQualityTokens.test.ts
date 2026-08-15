@@ -152,7 +152,6 @@ describe("UI quality Phase A contracts", () => {
       "src/components/dashboard/DashboardCardRow.tsx",
       "src/components/dashboard/DashboardSessionList.tsx",
       "src/components/dashboard/DashboardSessionDetail.tsx",
-      "src/components/dashboard/EventTimeline.tsx",
       "src/components/dashboard/DashboardTerminalTab.tsx",
       "src/components/dashboard/DashboardView.tsx",
       "src/components/dashboard/QuestionCard.tsx",

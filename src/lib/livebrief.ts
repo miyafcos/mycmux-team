@@ -102,6 +102,14 @@ export function getLiveBriefs(): Promise<LiveSessionBrief[]> {
   return invoke<LiveSessionBrief[]>("get_live_briefs");
 }
 
+export function subscribeLiveBriefs(): Promise<void> {
+  return invoke<void>("subscribe_live_briefs");
+}
+
+export function unsubscribeLiveBriefs(): Promise<void> {
+  return invoke<void>("unsubscribe_live_briefs");
+}
+
 /** Matches `DEFAULT_EVENT_LIMIT` in src-tauri/src/livebrief/mod.rs. */
 export const LIVE_EVENT_LIMIT = 50;
 

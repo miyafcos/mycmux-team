@@ -35,11 +35,14 @@ def test_agent_kind_round_trip_contract_remains_wired() -> None:
         "agent_kind: liveKind",
         "agent_session_id: liveAgentId",
         "const isActivePersistedTab = tab.id === activeTab.id;",
-        "const tabKind = tab.agentKind ?? tabMeta?.agentKind ?? (isActivePersistedTab ? liveKind : null);",
-        "const tabAgentId = tab.agentSessionId",
+        "const declared = isDeclaredTab(tab);",
+        "const tabKind = declared",
+        "const tabAgentId = declared",
+        "const tabClaudeId = declared",
         "agent_kind: tabKind",
         "agent_session_id: tabAgentId",
-        "suppressed_agent_sessions: toSuppressedAgentSessionConfigs",
+        "suppressed_agent_sessions: declared",
+        "terminal_snapshot: declared",
         "agent_kind: paneConfig.agent_kind ?? mappingKind",
         "agent_kind: tabConfig.agent_kind ?? mappingKind",
         "function tabConfigWithPaneAgentSessionFallback(",
@@ -67,9 +70,11 @@ def test_agent_kind_round_trip_contract_remains_wired() -> None:
         "agentKind: tabAgentKind",
         "agentSessionId: tabAgentSessionId",
         "suppressedAgentSessions: restoreSuppressedAgentSessions",
-        "agentKind: activeTab.agentKind ?? pc.agent_kind ?? undefined",
-        "agentSessionId: activeTab.agentSessionId ?? pc.agent_session_id ?? undefined",
-    ]:
+        "const activeTabDeclared = isDeclaredTab(activeTab);",
+        "agentKind: activeTabDeclared",
+        "agentSessionId: activeTabDeclared",
+        "suppressedAgentSessions: activeTabDeclared",
+        ]:
         assert_contains(layout_store, snippet, "src/stores/workspaceLayoutStore.ts")
 
     for snippet in [

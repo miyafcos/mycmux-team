@@ -2,6 +2,7 @@ mod agent_restore;
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::atomic::Ordering;
 use tauri::ipc::{Channel, InvokeResponseBody, Response};
 use tauri::{AppHandle, Emitter, State};
 
@@ -752,6 +753,15 @@ pub fn set_frontend_visible(
     state
         .session_manager
         .set_frontend_visible(&session_id, visible);
+    Ok(())
+}
+
+#[tauri::command(async)]
+pub async fn set_app_frontend_visible(
+    state: State<'_, AppState>,
+    visible: bool,
+) -> Result<(), String> {
+    state.frontend_visible.store(visible, Ordering::Release);
     Ok(())
 }
 

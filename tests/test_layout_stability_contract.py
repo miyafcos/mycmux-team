@@ -79,10 +79,11 @@ def test_pane_layout_metrics_survive_split_structure_changes() -> None:
 
 def test_terminal_grid_fits_every_split_inside_the_viewport_without_outer_scrollbars() -> None:
     workspace_view = read_repo_text("src/components/workspace/WorkspaceView.tsx")
+    layout_metrics = read_repo_text("src/lib/layoutMetrics.ts")
     global_css = read_repo_text("src/global.css")
 
     for snippet in [
-        "function fitLayoutSizes(",
+        'import { fitLayoutSizes } from "../../lib/layoutMetrics";',
         "const layoutWidth = viewportSize.width;",
         "const layoutHeight = viewportSize.height;",
         "const columnWidths = fitLayoutSizes(workspace?.columnWidths, layoutWidth, cols.length);",
@@ -109,6 +110,8 @@ def test_terminal_grid_fits_every_split_inside_the_viewport_without_outer_scroll
         "const rafId = window.requestAnimationFrame(notifyTerminals);",
     ]:
         assert_contains(workspace_view, snippet, "src/components/workspace/WorkspaceView.tsx")
+
+    assert_contains(layout_metrics, "export function fitLayoutSizes(", "src/lib/layoutMetrics.ts")
 
     assert "key={`cols-${layoutSignature}`}" not in workspace_view
     assert "key={`rows-${colSignature}`}" not in workspace_view
@@ -661,11 +664,22 @@ def test_pty_reader_does_not_block_when_frontend_queue_is_full() -> None:
 
 def test_terminal_batches_keep_backend_flowing_while_layout_is_unwritable() -> None:
     xterm_wrapper = read_repo_text("src/components/terminal/XTermWrapper.tsx")
+    terminal_visibility_tracker = read_repo_text("src/lib/terminalVisibilityTracker.ts")
     terminal_sources = read_terminal_sources()
     ipc = read_repo_text("src/lib/ipc.ts")
     terminal_commands = read_repo_text("src-tauri/src/commands/terminal.rs")
     manager = read_repo_text("src-tauri/src/pty/manager.rs")
     lib_rs = read_repo_text("src-tauri/src/lib.rs")
+
+    for snippet in [
+        'window.addEventListener("mycmux:workspace-visibility-change", notifyVisibility);',
+        'window.addEventListener("mycmux:terminal-layout-change", notifyLayout);',
+    ]:
+        assert_contains(
+            terminal_visibility_tracker,
+            snippet,
+            "src/lib/terminalVisibilityTracker.ts",
+        )
 
     for snippet in [
         "interface PendingFrontendBatch {",
@@ -738,10 +752,10 @@ def test_terminal_batches_keep_backend_flowing_while_layout_is_unwritable() -> N
         "refreshFrontendVisible();",
         "void resizeSession(sessionId, cols, rows).catch((error) => {",
         "const handleTerminalLayoutSignal = (event: Event): void => {",
-        'window.addEventListener("mycmux:workspace-visibility-change", handleFrontendVisibilitySignal);',
-        'window.addEventListener("mycmux:terminal-layout-change", handleTerminalLayoutSignal);',
-        'window.removeEventListener("mycmux:workspace-visibility-change", handleFrontendVisibilitySignal);',
-        'window.removeEventListener("mycmux:terminal-layout-change", handleTerminalLayoutSignal);',
+            'import { observeTerminalVisibility } from "../../lib/terminalVisibilityTracker";',
+            "stopVisibilityTracking = observeTerminalVisibility(",
+            "workspaceId,",
+            "stopVisibilityTracking?.();",
         "clearRefreshTimers();",
         "scheduleFullRefresh(replayTerm, [0, 48, 160]);",
     ]:
@@ -827,7 +841,10 @@ def test_streaming_last_log_updates_do_not_rearm_workspace_autosave() -> None:
     metadata_store = read_repo_text("src/stores/paneMetadataStore.ts")
 
     assert "const unsubMeta = usePaneMetadataStore.subscribe((state, previousState) => {" in socket_listener
-    assert "if (state.metadata !== previousState.metadata) markDirty();" in socket_listener
+    assert """if (state.metadata !== previousState.metadata) {
+        markDirty();
+        agentMappingsDirty = true;
+      }""" in socket_listener
     assert "const { lastLogLine, ...metadataFields } = filtered;" in metadata_store
     assert (
         "return changed ? { metadata: nextMetadata, lastLog: nextLastLog, "

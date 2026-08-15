@@ -25,6 +25,9 @@ import {
 import { onlineStrings } from "../components/online/onlineStrings";
 import { usePaneMetadataStore } from "../stores/paneMetadataStore";
 import { useToastStore } from "../stores/toastStore";
+import { applyLayoutMutation, layoutStructureRevision } from "../lib/layoutMutation";
+import { resolveMinimapDropZone } from "../components/dashboard/minimapModel";
+import { moveMinimapItemToNewWorkspace } from "../components/dashboard/minimapWorkspaceActions";
 
 const DRAG_THRESHOLD_PX = 9;
 const WORKSPACE_HOVER_DELAY_MS = 350;
@@ -119,6 +122,31 @@ function canDropTarget(item: PaneDragItem, target: PaneDropTarget): boolean {
 
 function resolveDropTargetAtPoint(x: number, y: number, item: PaneDragItem): PaneDropTarget | null {
   const element = document.elementFromPoint(x, y);
+  if (item.surface === "minimap") {
+    if (element?.closest("[data-minimap-new-workspace-target='true']")) {
+      const target = { kind: "new-workspace" as const, surface: "minimap" as const };
+      return canDropTarget(item, target) ? target : null;
+    }
+    const paneElement = element?.closest<HTMLElement>("[data-minimap-dnd-workspace-id][data-minimap-dnd-pane-id]");
+    const workspaceId = paneElement?.getAttribute("data-minimap-dnd-workspace-id");
+    const paneId = paneElement?.getAttribute("data-minimap-dnd-pane-id");
+    if (!paneElement || !workspaceId || !paneId) return null;
+    const prior = usePaneDragStore.getState().target;
+    const previousZone = prior?.kind === "pane"
+      && prior.surface === "minimap"
+      && prior.workspaceId === workspaceId
+      && prior.paneId === paneId
+      ? prior.zone
+      : "center";
+    const target = {
+      kind: "pane" as const,
+      workspaceId,
+      paneId,
+      zone: resolveMinimapDropZone(paneElement.getBoundingClientRect(), x, y, previousZone),
+      surface: "minimap" as const,
+    };
+    return canDropTarget(item, target) ? target : null;
+  }
   const handoffElement = element?.closest<HTMLElement>("[data-dnd-handoff-target='true']");
   const handoffPaneElement = handoffElement?.closest<HTMLElement>(
     "[data-dnd-workspace-id][data-dnd-pane-id]",
@@ -181,6 +209,27 @@ function resolveDropTargetAtPoint(x: number, y: number, item: PaneDragItem): Pan
   return prioritizePaneHandoffDropTarget(Boolean(handoffElement), handoffTarget, fallbackTarget);
 }
 
+function commitMinimapTabDrop(item: Extract<PaneDragItem, { kind: "tab" }>, target: PaneDropTarget | null): void {
+  if (!target || target.kind !== "pane" || target.surface !== "minimap" || !canDropTarget(item, target)) return;
+  const listStore = useWorkspaceListStore.getState();
+  const before = listStore.workspaces;
+  const currentRevision = layoutStructureRevision(before);
+  const mutation = {
+    kind: "move-tabs" as const,
+    operationId: crypto.randomUUID(),
+    tabIds: [item.tabId],
+    anchorTabId: item.tabId,
+    to: target.zone === "center"
+      ? { workspaceId: target.workspaceId, paneId: target.paneId }
+      : { workspaceId: target.workspaceId, split: { paneId: target.paneId, zone: target.zone } },
+    sourceLayoutRevision: item.sourceLayoutRevision ?? currentRevision,
+  };
+  const { workspaces, summary } = applyLayoutMutation(before, mutation, currentRevision);
+  if (!summary.staleRevision && summary.moved.length > 0) {
+    listStore._replaceWorkspaces(workspaces);
+  }
+}
+
 async function commitPaneHandoff(
   item: PaneDragItem,
   target: Extract<PaneDropTarget, { kind: "handoff" }>,
@@ -214,6 +263,12 @@ async function commitPaneHandoff(
 
 function commitPaneDragDrop(item: PaneDragItem, target: PaneDropTarget | null): void {
   if (!target || !canDropTarget(item, target)) return;
+
+  if (item.surface === "minimap") {
+    if (target.kind === "pane" && item.kind === "tab") commitMinimapTabDrop(item, target);
+    else if (target.kind === "new-workspace") moveMinimapItemToNewWorkspace(item);
+    return;
+  }
 
   if (target.kind === "handoff") {
     void commitPaneHandoff(item, target);
@@ -324,6 +379,10 @@ export function usePaneDragSource() {
   }, []);
 
   const updateWorkspaceHover = useCallback((x: number, y: number) => {
+    if (usePaneDragStore.getState().item?.surface === "minimap") {
+      clearHoverTimer();
+      return;
+    }
     const element = document.elementFromPoint(x, y);
     if (element?.closest("[data-dnd-new-workspace-target='true']")) {
       clearHoverTimer();
@@ -362,18 +421,24 @@ export function usePaneDragSource() {
     if (event.button !== 0) return;
     if (useSavepointDragStore.getState().item) return;
     const targetElement = event.target as HTMLElement;
-    if (targetElement.closest("button, input, textarea, select, [data-dnd-ignore='true']")) return;
+    const interactiveAncestor = targetElement.closest("button, input, textarea, select, [data-dnd-ignore='true']");
+    if (interactiveAncestor && !(item.surface === "minimap" && interactiveAncestor === event.currentTarget)) return;
 
     const sourceElement = event.currentTarget;
     const pointerId = event.pointerId;
     const startX = event.clientX;
     const startY = event.clientY;
+    const dragItem: PaneDragItem = item.surface === "minimap" && item.kind === "tab"
+      ? { ...item, sourceLayoutRevision: layoutStructureRevision(useWorkspaceListStore.getState().workspaces) }
+      : item;
     let dragging = false;
 
     const cleanup = () => {
       window.removeEventListener("pointermove", handlePointerMove);
       window.removeEventListener("pointerup", handlePointerUp);
       window.removeEventListener("pointercancel", handlePointerCancel);
+      window.removeEventListener("keydown", handleKeyDown, true);
+      window.removeEventListener("blur", handleWindowBlur);
       clearHoverTimer();
       try {
         if (sourceElement.hasPointerCapture(pointerId)) {
@@ -385,14 +450,14 @@ export function usePaneDragSource() {
       document.body.style.cursor = "";
     };
 
-    const finishDrag = (nativeEvent: PointerEvent, shouldCommit: boolean) => {
+    const finishDrag = (nativeEvent: PointerEvent | null, shouldCommit: boolean) => {
       cleanup();
       if (!dragging) return;
-      nativeEvent.preventDefault();
+      nativeEvent?.preventDefault();
       suppressClickRef.current = true;
       const dragState = usePaneDragStore.getState();
       if (shouldCommit) {
-        commitPaneDragDrop(item, dragState.target);
+        commitPaneDragDrop(dragItem, dragState.target);
       }
       usePaneDragStore.getState().clearDrag();
       window.setTimeout(() => {
@@ -400,12 +465,15 @@ export function usePaneDragSource() {
       }, 0);
     };
 
+    const cancelDrag = () => finishDrag(null, false);
+
     function handlePointerMove(nativeEvent: PointerEvent) {
       if (nativeEvent.pointerId !== pointerId) return;
       const dx = nativeEvent.clientX - startX;
       const dy = nativeEvent.clientY - startY;
       if (!dragging) {
-        if (Math.hypot(dx, dy) < DRAG_THRESHOLD_PX) return;
+        const threshold = dragItem.surface === "minimap" ? 5 : DRAG_THRESHOLD_PX;
+        if (Math.hypot(dx, dy) < threshold) return;
         if (useSavepointDragStore.getState().item) {
           cleanup();
           return;
@@ -418,13 +486,13 @@ export function usePaneDragSource() {
           // Non-critical; window listeners still carry the drag.
         }
         document.body.style.cursor = "grabbing";
-        usePaneDragStore.getState().beginDrag(item, { x: nativeEvent.clientX, y: nativeEvent.clientY });
+        usePaneDragStore.getState().beginDrag(dragItem, { x: nativeEvent.clientX, y: nativeEvent.clientY });
       }
 
       nativeEvent.preventDefault();
       const dragStore = usePaneDragStore.getState();
       dragStore.moveDrag({ x: nativeEvent.clientX, y: nativeEvent.clientY });
-      let target = resolveDropTargetAtPoint(nativeEvent.clientX, nativeEvent.clientY, item);
+      let target = resolveDropTargetAtPoint(nativeEvent.clientX, nativeEvent.clientY, dragItem);
       if (
         !target &&
         isOutsideWindowViewport(
@@ -439,7 +507,7 @@ export function usePaneDragSource() {
           screenX: nativeEvent.screenX,
           screenY: nativeEvent.screenY,
         };
-        target = canDropTarget(item, candidate) ? candidate : null;
+        target = canDropTarget(dragItem, candidate) ? candidate : null;
       }
       dragStore.setTarget(target);
       updateWorkspaceHover(nativeEvent.clientX, nativeEvent.clientY);
@@ -455,9 +523,22 @@ export function usePaneDragSource() {
       finishDrag(nativeEvent, false);
     }
 
+    function handleKeyDown(nativeEvent: KeyboardEvent) {
+      if (nativeEvent.key !== "Escape") return;
+      nativeEvent.preventDefault();
+      nativeEvent.stopPropagation();
+      cancelDrag();
+    }
+
+    function handleWindowBlur() {
+      cancelDrag();
+    }
+
     window.addEventListener("pointermove", handlePointerMove, { passive: false });
     window.addEventListener("pointerup", handlePointerUp);
     window.addEventListener("pointercancel", handlePointerCancel);
+    window.addEventListener("keydown", handleKeyDown, true);
+    window.addEventListener("blur", handleWindowBlur);
   }, [clearHoverTimer, updateWorkspaceHover]);
 
   useEffect(() => {

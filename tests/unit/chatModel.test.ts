@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { toChatMessages } from "../../src/components/dashboard/chatModel";
+import { toChatMessages, toChatTranscriptRows } from "../../src/components/dashboard/chatModel";
 import type { SemanticEvent, SemanticEventEnvelope } from "../../src/lib/livebrief";
 
 let sequence = 0;
@@ -35,5 +35,37 @@ describe("toChatMessages", () => {
       envelope({ type: "fileChange", path: "a", change: "modified" }),
       envelope({ type: "questionResolved", prompt_event_id: "p", provider_call_id: "c" }),
     ])).toEqual([]);
+  });
+
+  it("folds consecutive tool executions into one group keyed by the first event", () => {
+    const first = envelope({ type: "toolStart", call_id: "one", tool: "Read", target: "a.ts" });
+    const firstEnd = envelope({ type: "toolEnd", call_id: "one", tool: "Read", target: "a.ts", ok: true, summary: "first" });
+    const second = envelope({ type: "toolStart", call_id: "two", tool: "Search", target: "b.ts" });
+    const secondEnd = envelope({ type: "toolEnd", call_id: "two", tool: "Search", target: "b.ts", ok: false, summary: "second" });
+    expect(toChatTranscriptRows([first, firstEnd, second, secondEnd])).toEqual([
+      { kind: "toolGroup", id: first.eventId, tools: [
+        { id: first.eventId, tool: "Read", target: "a.ts", ok: true, summary: "first" },
+        { id: second.eventId, tool: "Search", target: "b.ts", ok: false, summary: "second" },
+      ] },
+    ]);
+  });
+
+  it("keeps user messages and questions as visible row boundaries", () => {
+    const first = envelope({ type: "toolStart", call_id: "one", tool: "Read", target: null });
+    const user = envelope({ type: "userMessage", kind: "answer", text: "continue", digest: "d" });
+    const second = envelope({ type: "toolStart", call_id: "two", tool: "Search", target: null });
+    const question = envelope({ type: "question", prompt_event_id: "p", provider_call_id: "c", prompt: "Continue?", kind: "choice", options: [] });
+    expect(toChatTranscriptRows([first, user, second, question]).map((row) => row.kind === "message" ? [row.kind, row.message.role] : [row.kind, row.tools.length])).toEqual([
+      ["toolGroup", 1], ["message", "user"], ["toolGroup", 1], ["message", "question"],
+    ]);
+  });
+
+  it("retains stable event-id disclosure keys when later events arrive", () => {
+    const first = envelope({ type: "toolStart", call_id: "one", tool: "Read", target: null });
+    const second = envelope({ type: "toolStart", call_id: "two", tool: "Search", target: null });
+    const before = toChatTranscriptRows([first]);
+    const after = toChatTranscriptRows([first, second]);
+    expect(before[0]).toMatchObject({ kind: "toolGroup", id: first.eventId });
+    expect(after[0]).toMatchObject({ kind: "toolGroup", id: first.eventId, tools: [{ id: first.eventId }, { id: second.eventId }] });
   });
 });

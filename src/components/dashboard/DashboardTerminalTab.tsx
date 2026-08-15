@@ -9,8 +9,8 @@ const TAIL_LINES = 40;
 const POLL_MS = 2_000;
 
 /**
- * 生端末の末尾を出すだけのタブ。会話の正本は livebrief 側なので、ここは
- * 「[端末] タブを開いている間だけ」ポーリングする (旧 DashboardDetailPane からの移送)。
+ * 生端末の末尾を出す telemetry-unavailable 用のフォールバック部品。
+ * 会話の正本は livebrief 側なので、通常のチャット導線では表示しない。
  */
 export function DashboardTerminalTab({ sessionId }: { sessionId: string }) {
   const [lines, setLines] = useState<string[]>([]);
@@ -35,15 +35,24 @@ export function DashboardTerminalTab({ sessionId }: { sessionId: string }) {
   }, [sessionId]);
 
   useEffect(() => {
+    let disposed = false;
+    let timeoutId: number | undefined;
     writeCounterRef.current = null;
     linesLengthRef.current = 0;
     setLines([]);
     setUnreadable(false);
     void refresh();
-    const interval = window.setInterval(() => {
-      if (hasTerminalBuffer(sessionId)) void refresh();
-    }, POLL_MS);
-    return () => window.clearInterval(interval);
+    const scheduleRefresh = () => {
+      timeoutId = window.setTimeout(async () => {
+        if (hasTerminalBuffer(sessionId)) await refresh();
+        if (!disposed) scheduleRefresh();
+      }, POLL_MS);
+    };
+    scheduleRefresh();
+    return () => {
+      disposed = true;
+      if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+    };
   }, [refresh, sessionId]);
 
   return <div style={wrapStyle}>
@@ -69,6 +78,6 @@ const preStyle: CSSProperties = {
   background: "var(--cmux-bg)",
   color: "var(--cmux-text)",
   fontSize: "var(--cmux-font-size-xs)",
-  fontFamily: "var(--cmux-font-mono)",
+  fontFamily: "var(--cmux-dash-body-font)",
   whiteSpace: "pre-wrap",
 };

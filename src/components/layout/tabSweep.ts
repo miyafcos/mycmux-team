@@ -15,6 +15,7 @@ export const TAB_SWEEP_TAIL_LINES = 8;
 export const TAB_NAMING_TAIL_LINES = 14;
 export const TAB_NAMING_LABEL_MAX = 20;
 export const TAB_SWEEP_OPEN_EVENT = "mycmux:tab-sweep-open";
+export const TAB_RESTORE_CLOSED_EVENT = "mycmux:restore-closed-tab";
 
 export type SweepCategory = "DEAD" | "LOCKED" | "CANDIDATE";
 export type SweepLockReason =
@@ -753,11 +754,12 @@ export async function applySweep(
   }
   for (const rename of plan.renames ?? []) {
     const current = await currentTab(rename.id);
-    const label = normalizeSuggestedLabel(
-      rename.label,
-      rename.overwrite === true ? TAB_NAMING_LABEL_MAX : 12,
-    );
-    if (!current || current.category === "DEAD" || (!rename.overwrite && !current.unnamed) || !label) {
+    // An overwrite is also the undo path. Unlike an AI proposal, it may need
+    // to restore an originally blank label.
+    const label = rename.overwrite === true && rename.label.trim().length === 0
+      ? ""
+      : normalizeSuggestedLabel(rename.label, rename.overwrite === true ? TAB_NAMING_LABEL_MAX : 12);
+    if (!current || current.category === "DEAD" || (!rename.overwrite && !current.unnamed) || label === undefined) {
       result.skipped.push(rename.id);
       continue;
     }

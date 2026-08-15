@@ -5,6 +5,8 @@ import {
   getLiveBriefs,
   getLiveEvents,
   onLiveBriefUpdate,
+  subscribeLiveBriefs,
+  unsubscribeLiveBriefs,
   LIVE_EVENT_DETAIL_LIMIT,
   LIVE_EVENT_LIST_LIMIT,
   type LiveSessionBrief,
@@ -92,6 +94,44 @@ export const useLiveBriefStore = create<LiveBriefStoreState>((set) => ({
 let subscriberCount = 0;
 let unlisten: UnlistenFn | undefined;
 let unlistenPending: Promise<UnlistenFn> | undefined;
+let backendSubscribed = false;
+let backendSubscriptionQueue: Promise<void> = Promise.resolve();
+let briefVisibilityHooked = false;
+
+function updateBackendSubscription(): void {
+  const shouldSubscribe = subscriberCount > 0 && !isHidden();
+  if (backendSubscribed === shouldSubscribe) return;
+  backendSubscribed = shouldSubscribe;
+  backendSubscriptionQueue = backendSubscriptionQueue
+    .then(() => shouldSubscribe ? subscribeLiveBriefs() : unsubscribeLiveBriefs())
+    .catch(() => {});
+}
+
+function onBriefVisibilityChange(): void {
+  updateBackendSubscription();
+  if (subscriberCount > 0 && !isHidden()) {
+    void refreshLiveBriefs();
+  }
+}
+
+function refreshLiveBriefs(): Promise<void> {
+  return backendSubscriptionQueue
+    .then(() => getLiveBriefs())
+    .then((snapshot) => useLiveBriefStore.getState().applyBriefs(snapshot))
+    .catch(() => {});
+}
+
+function attachBriefVisibilityListener(): void {
+  if (briefVisibilityHooked || typeof document === "undefined") return;
+  briefVisibilityHooked = true;
+  document.addEventListener("visibilitychange", onBriefVisibilityChange);
+}
+
+function detachBriefVisibilityListener(): void {
+  if (!briefVisibilityHooked || typeof document === "undefined") return;
+  briefVisibilityHooked = false;
+  document.removeEventListener("visibilitychange", onBriefVisibilityChange);
+}
 
 /**
  * brief の購読を開始し、購読解除関数を返す。何個の画面から呼ばれても実際の
@@ -100,14 +140,14 @@ let unlistenPending: Promise<UnlistenFn> | undefined;
 export function connectLiveBriefStore(): () => void {
   subscriberCount += 1;
   if (subscriberCount === 1) {
+    attachBriefVisibilityListener();
+    updateBackendSubscription();
     unlistenPending = onLiveBriefUpdate((brief) => useLiveBriefStore.getState().applyBrief(brief));
     void unlistenPending.then((dispose) => {
       if (subscriberCount === 0) dispose();
       else unlisten = dispose;
     }).catch(() => {});
-    void getLiveBriefs()
-      .then((snapshot) => useLiveBriefStore.getState().applyBriefs(snapshot))
-      .catch(() => {});
+    if (!isHidden()) void refreshLiveBriefs();
   }
   let released = false;
   return () => {
@@ -115,6 +155,8 @@ export function connectLiveBriefStore(): () => void {
     released = true;
     subscriberCount = Math.max(0, subscriberCount - 1);
     if (subscriberCount > 0) return;
+    updateBackendSubscription();
+    detachBriefVisibilityListener();
     unlisten?.();
     unlisten = undefined;
     unlistenPending = undefined;
@@ -301,6 +343,9 @@ export function __resetLiveBriefStoreForTests(): void {
   listInFlight = false;
   detailInFlight = false;
   subscriberCount = 0;
+  backendSubscribed = false;
+  backendSubscriptionQueue = Promise.resolve();
+  detachBriefVisibilityListener();
   unlisten = undefined;
   unlistenPending = undefined;
   useLiveBriefStore.getState().reset();

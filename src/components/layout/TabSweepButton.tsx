@@ -3,19 +3,24 @@ import { OVERLAY_EXIT_MS, useDeferredUnmount } from "../../hooks/useDeferredUnmo
 import { SweepIcon } from "../icons/ChromeIcons";
 import { TAB_SWEEP_OPEN_EVENT } from "./tabSweep";
 import { TabSweepPanel } from "./TabSweepPanel";
+import { runAutoSweep } from "./tabSweepAuto";
 
 /**
- * Plain toggle for the sweep panel. It deliberately does no background
- * scanning and carries no badge: the scan is expensive (a tail read per tab)
- * and a permanent counter turned housekeeping into a nag. Tabs are scanned
- * only when the panel is open.
+ * The primary path sweeps in the background. The panel remains available from
+ * TAB_SWEEP_OPEN_EVENT as the detail view and recovery path.
  */
 export function TabSweepButton() {
   const [open, setOpen] = useState(false);
+  const [running, setRunning] = useState(false);
   const { mounted, closing } = useDeferredUnmount(open, OVERLAY_EXIT_MS);
 
   const openPanel = useCallback(() => setOpen(true), []);
   const closePanel = useCallback(() => setOpen(false), []);
+  const startAutoSweep = useCallback(() => {
+    if (running) return;
+    setRunning(true);
+    void runAutoSweep().finally(() => setRunning(false));
+  }, [running]);
 
   useEffect(() => {
     const handleOpen = () => openPanel();
@@ -28,12 +33,12 @@ export function TabSweepButton() {
       <button
         type="button"
         className="cmux-title-btn"
-        title="タブ掃除"
+        title={running ? "タブ掃除中…" : "タブ掃除"}
         aria-label="タブ掃除"
-        aria-haspopup="dialog"
+        aria-busy={running}
         aria-expanded={open}
         aria-controls="tab-sweep-panel"
-        onClick={() => open ? closePanel() : openPanel()}
+        onClick={startAutoSweep}
         style={{
           background: "none",
           border: "none",
@@ -43,6 +48,7 @@ export function TabSweepButton() {
           borderRadius: 3,
           display: "flex",
           alignItems: "center",
+          animation: running ? "cmux-usage-pulse 1.2s ease-in-out infinite" : undefined,
         }}
       >
         <SweepIcon />

@@ -1,8 +1,10 @@
 import { create } from "zustand";
 import { v4 as uuid } from "uuid";
 import type { ArtifactSourceKind, Pane, PaneTab, GridTemplateId, SuppressedAgentSession, Workspace } from "../types";
+import { isDeclaredTab, partitionTabsForRestore, type RestorablePaneTab } from "../lib/tabLifecycle";
 import type { PaneConfig } from "../lib/ipc";
 import { declaredAgentKind, declaredAgentSessionId } from "../lib/agentSessionConfig";
+import { agentIdForSessionKind } from "../lib/agentSessionConfig";
 import { getGridTemplate } from "../lib/gridTemplates";
 import { getDefaultAgent } from "../lib/agents";
 import { makeSessionId } from "../lib/constants";
@@ -14,6 +16,14 @@ import { rewriteTabAgentSession, type TabAgentSessionRewrite } from "../lib/tabA
 import { applyStructuralActivation } from "../lib/focusController";
 import { onlineStrings } from "../components/online/onlineStrings";
 import { bump as bumpPaintStat } from "../lib/paintStats";
+import {
+  applyActiveTabFields,
+  clearPinIfMissing,
+  resolveMergeActiveTabId,
+  withPinnedTabFirst,
+} from "../lib/paneTabState";
+
+export { clearPinIfMissing, resolveMergeActiveTabId, withPinnedTabFirst } from "../lib/paneTabState";
 
 /**
  * Workspace Layout Store - Manages panes within workspaces
@@ -25,7 +35,7 @@ function makeTab(
   paneId: string,
   agentId: string,
   type: PaneTab["type"] = "terminal",
-  options?: Partial<Pick<PaneTab, "id" | "label" | "cwd" | "lastProcess" | "claudeSessionId" | "agentKind" | "agentSessionId" | "suppressedAgentSessions" | "launchEnv" | "initialPrompt" | "commandArgv" | "ephemeral" | "terminalSnapshot" | "htmlPath" | "sourcePath" | "sourceKind" | "previewPath" | "isDirty" | "reloadCounter">>,
+  options?: Partial<Pick<PaneTab, "id" | "label" | "cwd" | "lastProcess" | "claudeSessionId" | "agentKind" | "agentSessionId" | "suppressedAgentSessions" | "launchEnv" | "initialPrompt" | "commandArgv" | "ephemeral" | "terminalSnapshot" | "htmlPath" | "sourcePath" | "sourceKind" | "previewPath" | "isDirty" | "reloadCounter" | "lifecycle" | "origin" | "declaredPrompt" | "declaredTarget">>,
 ): PaneTab {
   const tabId = options?.id ?? uuid();
   return {
@@ -51,6 +61,10 @@ function makeTab(
     previewPath: options?.previewPath,
     isDirty: options?.isDirty,
     reloadCounter: options?.reloadCounter,
+    lifecycle: options?.lifecycle,
+    origin: options?.origin,
+    declaredPrompt: options?.declaredPrompt,
+    declaredTarget: options?.declaredTarget,
   };
 }
 
@@ -178,53 +192,6 @@ function activeSessionIdForPane(pane: Pane | undefined): string | null {
   if (!pane) return null;
   const activeTab = pane.tabs.find((tab) => tab.id === pane.activeTabId) ?? pane.tabs[0];
   return activeTab?.sessionId ?? pane.sessionId ?? null;
-}
-
-function applyActiveTabFields(pane: Pane, activeTab: PaneTab): Pane {
-  return {
-    ...pane,
-    agentId: activeTab.agentId,
-    activeTabId: activeTab.id,
-    sessionId: activeTab.sessionId,
-    cwd: activeTab.cwd ?? pane.cwd,
-    lastProcess: activeTab.lastProcess ?? pane.lastProcess,
-    claudeSessionId: activeTab.claudeSessionId,
-    agentKind: activeTab.agentKind,
-    agentSessionId: activeTab.agentSessionId,
-    suppressedAgentSessions: activeTab.suppressedAgentSessions,
-    launchEnv: activeTab.launchEnv ?? pane.launchEnv,
-  };
-}
-
-/**
- * Ordering invariant: when `pinnedTabId` is set, that tab is `tabs[0]`. The
- * array itself is reordered (never sorted at render) so keyboard cycling,
- * formatTabPosition and persistence all agree on the same order.
- */
-export function withPinnedTabFirst(pane: Pane): Pane {
-  if (!pane.pinnedTabId) return pane;
-  const index = pane.tabs.findIndex((tab) => tab.id === pane.pinnedTabId);
-  if (index <= 0) return pane;
-  const pinnedTab = pane.tabs[index];
-  return {
-    ...pane,
-    tabs: [pinnedTab, ...pane.tabs.filter((tab) => tab.id !== pinnedTab.id)],
-  };
-}
-
-/** Self-heal (like `zoomedPaneId`): a pin never survives its tab leaving the pane. */
-export function clearPinIfMissing(pane: Pane): Pane {
-  if (!pane.pinnedTabId) return pane;
-  if (pane.tabs.some((tab) => tab.id === pane.pinnedTabId)) return pane;
-  return { ...pane, pinnedTabId: undefined };
-}
-
-/** Drag-merge guard: a live pin keeps display ownership over the incoming tab. */
-export function resolveMergeActiveTabId(pane: Pane, incomingActiveTabId: string): string {
-  if (pane.pinnedTabId && pane.tabs.some((tab) => tab.id === pane.pinnedTabId)) {
-    return pane.pinnedTabId;
-  }
-  return incomingActiveTabId;
 }
 
 function removeTabFromPane(pane: Pane, tabId: string): Pane | null {
@@ -379,6 +346,13 @@ interface TerminalLaunchOptions {
   activate?: boolean;
 }
 
+interface DeclaredTabOptions {
+  label: string;
+  declaredPrompt?: string;
+  declaredTarget?: string;
+  origin?: PaneTab["origin"];
+}
+
 interface WorkspaceLayoutState {
   // Pane operations
   removePaneFromWorkspace: (workspaceId: string, paneId: string) => void;
@@ -402,6 +376,8 @@ interface WorkspaceLayoutState {
     paneId: string,
     options: TerminalLaunchOptions,
   ) => void;
+  declareTab: (workspaceId: string, paneId: string, options: DeclaredTabOptions) => PaneTab | null;
+  launchDeclaredTab: (workspaceId: string, paneId: string, tabId: string) => RestorablePaneTab | null;
   /**
    * Open a browser tab rendering the given local HTML file in a right-side
    * preview pane. Reuse the workspace preview pane and reload existing tabs.
@@ -502,12 +478,14 @@ interface WorkspaceLayoutState {
     tabId: string,
     targetWorkspaceId: string,
     workspaceName: string,
+    options?: { activate?: boolean },
   ) => boolean;
   movePaneToNewWorkspace: (
     sourceWorkspaceId: string,
     sourcePaneId: string,
     targetWorkspaceId: string,
     workspaceName: string,
+    options?: { activate?: boolean },
   ) => boolean;
   
   // Helper to build initial panes for new workspace
@@ -532,24 +510,29 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
 
   restorePanes: (workspaceId, configs, savedSplitColumns, gridTemplateId) => {
     const defaultAgentId = getDefaultAgent().id;
-    const panes: Pane[] = configs.map((pc) => {
+    const paneByConfigIndex = new Map<number, Pane>();
+    const panes = configs.map((pc, configIndex): Pane | null => {
       const paneId = pc.pane_id ?? uuid();
       const activeTabConfigId = pc.active_tab_id ?? pc.tabs?.[0]?.tab_id ?? null;
       const tabs = pc.tabs && pc.tabs.length > 0
           ? pc.tabs.map((tabConfig) => {
             const restoredTabType = tabConfig.type as PaneTab["type"] | null | undefined;
             const isActiveRestoredTab = tabConfig.tab_id === activeTabConfigId;
-            const tabClaudeSessionId =
-              tabConfig.claude_session_id
-              ?? (isActiveRestoredTab ? pc.claude_session_id ?? undefined : undefined);
-            const tabAgentKind =
-              tabConfig.agent_kind
-              ?? (tabClaudeSessionId ? "claude" : undefined)
-              ?? (isActiveRestoredTab ? pc.agent_kind ?? undefined : undefined);
-            const tabAgentSessionId =
-              tabConfig.agent_session_id
-              ?? tabClaudeSessionId
-              ?? (isActiveRestoredTab ? pc.agent_session_id ?? pc.claude_session_id ?? undefined : undefined);
+            const isDeclaredRestoredTab = tabConfig.lifecycle === "declared";
+            const tabClaudeSessionId = isDeclaredRestoredTab
+              ? undefined
+              : tabConfig.claude_session_id
+                ?? (isActiveRestoredTab ? pc.claude_session_id ?? undefined : undefined);
+            const tabAgentKind = isDeclaredRestoredTab
+              ? undefined
+              : tabConfig.agent_kind
+                ?? (tabClaudeSessionId ? "claude" : undefined)
+                ?? (isActiveRestoredTab ? pc.agent_kind ?? undefined : undefined);
+            const tabAgentSessionId = isDeclaredRestoredTab
+              ? undefined
+              : tabConfig.agent_session_id
+                ?? tabClaudeSessionId
+                ?? (isActiveRestoredTab ? pc.agent_session_id ?? pc.claude_session_id ?? undefined : undefined);
             const tabAgentId = normalizeRestoredAgentId(
               tabConfig.agent_id || pc.agent_id,
             ) || defaultAgentId;
@@ -567,12 +550,20 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
                 claudeSessionId: tabClaudeSessionId,
                 agentKind: tabAgentKind,
                 agentSessionId: tabAgentSessionId,
-                suppressedAgentSessions: restoreSuppressedAgentSessions(tabConfig.suppressed_agent_sessions)
-                  ?? (isActiveRestoredTab
-                    ? restoreSuppressedAgentSessions(pc.suppressed_agent_sessions)
-                    : undefined),
+                suppressedAgentSessions: isDeclaredRestoredTab
+                  ? undefined
+                  : restoreSuppressedAgentSessions(tabConfig.suppressed_agent_sessions)
+                    ?? (isActiveRestoredTab
+                      ? restoreSuppressedAgentSessions(pc.suppressed_agent_sessions)
+                      : undefined),
                 launchEnv: tabConfig.launch_env ?? pc.launch_env ?? undefined,
-                terminalSnapshot: tabConfig.terminal_snapshot ?? undefined,
+                terminalSnapshot: isDeclaredRestoredTab ? undefined : tabConfig.terminal_snapshot ?? undefined,
+                lifecycle: tabConfig.lifecycle ?? undefined,
+                origin: tabConfig.origin
+                  ? { kind: tabConfig.origin.kind, parentTabId: tabConfig.origin.parent_tab_id ?? undefined }
+                  : undefined,
+                declaredPrompt: tabConfig.declared_prompt ?? undefined,
+                declaredTarget: tabConfig.declared_target ?? undefined,
               },
             );
           })
@@ -585,32 +576,52 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
             suppressedAgentSessions: restoreSuppressedAgentSessions(pc.suppressed_agent_sessions),
             launchEnv: pc.launch_env ?? undefined,
           })];
-      const activeTab = tabs.find((tab) => tab.id === pc.active_tab_id) ?? tabs[0];
+      const partition = partitionTabsForRestore(tabs);
+      if (partition.quarantined.length > 0) {
+        console.warn(`[restore] quarantined ${partition.quarantined.length} tab(s) with an unknown lifecycle`);
+      }
+      const quarantinedIds = new Set(partition.quarantined.map((tab) => tab.id));
+      const hydratedTabs = tabs.filter((tab) => !quarantinedIds.has(tab.id));
+      const activeTab = hydratedTabs.find((tab) => tab.id === pc.active_tab_id) ?? hydratedTabs[0];
+      if (!activeTab) return null;
+      const activeTabDeclared = isDeclaredTab(activeTab);
       const agentId = activeTab?.agentId || normalizeRestoredAgentId(pc.agent_id) || defaultAgentId;
-      return withPinnedTabFirst({
+      const pane = withPinnedTabFirst({
         id: paneId,
         agentId,
         sessionId: activeTab.sessionId,
-        tabs,
+        tabs: hydratedTabs,
         activeTabId: activeTab.id,
         label: pc.label ?? undefined,
         cwd: activeTab.cwd ?? pc.cwd ?? undefined,
-        claudeSessionId: activeTab.claudeSessionId ?? pc.claude_session_id ?? undefined,
-        agentKind: activeTab.agentKind ?? pc.agent_kind ?? undefined,
-        agentSessionId: activeTab.agentSessionId ?? pc.agent_session_id ?? undefined,
-        suppressedAgentSessions: activeTab.suppressedAgentSessions
-          ?? restoreSuppressedAgentSessions(pc.suppressed_agent_sessions),
+        claudeSessionId: activeTabDeclared
+          ? undefined
+          : activeTab.claudeSessionId ?? pc.claude_session_id ?? undefined,
+        agentKind: activeTabDeclared
+          ? undefined
+          : activeTab.agentKind ?? pc.agent_kind ?? undefined,
+        agentSessionId: activeTabDeclared
+          ? undefined
+          : activeTab.agentSessionId ?? pc.agent_session_id ?? undefined,
+        suppressedAgentSessions: activeTabDeclared
+          ? undefined
+          : activeTab.suppressedAgentSessions
+            ?? restoreSuppressedAgentSessions(pc.suppressed_agent_sessions),
         launchEnv: activeTab.launchEnv ?? pc.launch_env ?? undefined,
-        pinnedTabId: tabs.some((tab) => tab.id === pc.pinned_tab_id)
+        pinnedTabId: hydratedTabs.some((tab) => tab.id === pc.pinned_tab_id)
           ? pc.pinned_tab_id ?? undefined
           : undefined,
       });
-    });
+      paneByConfigIndex.set(configIndex, pane);
+      return pane;
+    }).filter((pane): pane is Pane => pane !== null);
 
     let splitColumns: string[][];
     if (savedSplitColumns && savedSplitColumns.length > 0) {
       splitColumns = savedSplitColumns
-        .map((col) => col.map((idx) => panes[idx]?.id).filter(Boolean) as string[])
+        .map((col) => col
+          .map((idx) => paneByConfigIndex.get(idx)?.id)
+          .filter((id): id is string => id !== undefined))
         .filter((col) => col.length > 0);
     } else {
       // Column-major fallback from grid template
@@ -856,6 +867,55 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
     if (options.activate !== false) {
       applyStructuralActivation(tab.sessionId);
     }
+  },
+
+  declareTab: (workspaceId, paneId, options) => {
+    const workspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
+    const pane = workspace?.panes.find((candidate) => candidate.id === paneId);
+    if (!workspace || !pane || !options.label.trim()) return null;
+    const tab = makeTab(workspaceId, paneId, pane.agentId, "terminal", {
+      label: options.label.trim(),
+      claudeSessionId: undefined,
+      agentKind: undefined,
+      agentSessionId: undefined,
+      suppressedAgentSessions: undefined,
+      terminalSnapshot: undefined,
+      lifecycle: "declared",
+      declaredPrompt: options.declaredPrompt,
+      declaredTarget: options.declaredTarget,
+      origin: options.origin,
+    });
+    useWorkspaceListStore.getState()._updateWorkspacePanes(workspaceId, workspace.panes.map((candidate) => (
+      candidate.id === paneId ? { ...candidate, tabs: [...candidate.tabs, tab] } : candidate
+    )));
+    return tab;
+  },
+
+  launchDeclaredTab: (workspaceId, paneId, tabId) => {
+    const workspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
+    const pane = workspace?.panes.find((candidate) => candidate.id === paneId);
+    const declared = pane?.tabs.find((candidate) => candidate.id === tabId);
+    if (!workspace || !pane || !declared || !isDeclaredTab(declared)) return null;
+    const target = declared.declaredTarget === "claude" || declared.declaredTarget === "codex"
+      ? declared.declaredTarget
+      : undefined;
+    const launched: RestorablePaneTab = {
+      id: declared.id,
+      sessionId: declared.sessionId,
+      agentId: target ? agentIdForSessionKind(target) ?? declared.agentId : declared.agentId,
+      label: declared.label,
+      type: "terminal",
+      cwd: declared.cwd,
+      agentKind: target,
+      origin: declared.origin,
+      initialPrompt: declared.declaredPrompt,
+    };
+    useWorkspaceListStore.getState()._updateWorkspacePanes(workspaceId, workspace.panes.map((candidate) => (
+      candidate.id === paneId
+        ? applyActiveTabFields({ ...candidate, tabs: candidate.tabs.map((tab) => tab.id === tabId ? launched : tab) }, launched)
+        : candidate
+    )));
+    return launched;
   },
 
   openOrReloadHtmlPreviewPane: (workspaceId, sourcePaneId, previewInfo) => {
@@ -1321,7 +1381,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
     removeWorkspaceIfEmpty(listStore, sourceWorkspaceId, sourcePanes);
   },
 
-  moveTabToNewWorkspace: (sourceWorkspaceId, sourcePaneId, tabId, targetWorkspaceId, workspaceName) => {
+  moveTabToNewWorkspace: (sourceWorkspaceId, sourcePaneId, tabId, targetWorkspaceId, workspaceName, options) => {
     const listStore = useWorkspaceListStore.getState();
     const sourceWorkspace = listStore.getWorkspace(sourceWorkspaceId);
     if (!sourceWorkspace) return false;
@@ -1351,13 +1411,13 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
       "1x1",
       [newPane],
       [[newPane.id]],
-      { id: targetWorkspaceId },
+      { id: targetWorkspaceId, activate: options?.activate },
     );
     removeWorkspaceIfEmpty(listStore, sourceWorkspaceId, sourcePanes);
     return true;
   },
 
-  movePaneToNewWorkspace: (sourceWorkspaceId, sourcePaneId, targetWorkspaceId, workspaceName) => {
+  movePaneToNewWorkspace: (sourceWorkspaceId, sourcePaneId, targetWorkspaceId, workspaceName, options) => {
     const listStore = useWorkspaceListStore.getState();
     const sourceWorkspace = listStore.getWorkspace(sourceWorkspaceId);
     if (!sourceWorkspace) return false;
@@ -1379,7 +1439,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
       "1x1",
       [sourcePane],
       [[sourcePane.id]],
-      { id: targetWorkspaceId },
+      { id: targetWorkspaceId, activate: options?.activate },
     );
     removeWorkspaceIfEmpty(listStore, sourceWorkspaceId, sourcePanes);
     return true;

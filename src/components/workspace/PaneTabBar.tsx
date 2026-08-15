@@ -29,6 +29,7 @@ import { useSavepointDragStore } from "../../stores/savepointDragStore";
 import { focusController } from "../../lib/focusController";
 import { useWorkspaceLayoutStore } from "../../stores/workspaceLayoutStore";
 import { useSettingsStore } from "../../stores/settingsStore";
+import { isDeclaredTab } from "../../lib/tabLifecycle";
 import { useToastStore } from "../../stores/toastStore";
 import { useOnlineSavepointStore } from "../../stores/onlineSavepointStore";
 import { onlineStrings } from "../online/onlineStrings";
@@ -707,6 +708,7 @@ function PaneTabListMenu({
   onSelectTab,
   onRemoveTab,
   onTogglePin,
+  onLaunchDeclaredTab,
   onCloseMenu,
 }: {
   pane: Pane;
@@ -718,6 +720,7 @@ function PaneTabListMenu({
   onSelectTab?: (tabId: string) => void;
   onRemoveTab?: (tabId: string) => void;
   onTogglePin: (tabId: string) => void;
+  onLaunchDeclaredTab: (tabId: string) => void;
   onCloseMenu: () => void;
 }) {
   // Fixed positioning + viewport clamping, matching the tab context menu.
@@ -750,6 +753,7 @@ function PaneTabListMenu({
   const topGroupCount = menuRows.filter((row) => row.hoisted || row.isPinned).length;
   const renderTabRow = ({ tab, category, hoisted, isPinned }: PaneTabMenuRow, isLastHoisted: boolean) => {
     const isTabActive = tab.id === pane.activeTabId;
+    const declared = isDeclaredTab(tab);
     const tabMeta = metadataBySession[tab.sessionId];
     const rowAgentKind = resolveDisplayAgentKind(
       tabMeta?.agentKind ?? tab.agentKind,
@@ -786,12 +790,14 @@ function PaneTabListMenu({
         ].filter(Boolean).join(": ")}
         onClick={() => {
           onSelectTab?.(tab.id);
+          if (declared) onLaunchDeclaredTab(tab.id);
           onCloseMenu();
         }}
         onKeyDown={(event) => {
           if (event.currentTarget !== event.target || !isTabActivationKey(event.key)) return;
           event.preventDefault();
           onSelectTab?.(tab.id);
+          if (declared) onLaunchDeclaredTab(tab.id);
           onCloseMenu();
         }}
         style={{
@@ -847,7 +853,7 @@ function PaneTabListMenu({
         )}
         <span style={{ flex: 1, minWidth: 0 }}>
           <span style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12 }}>
-            {label}
+            {declared ? `＋ ${label}（まだ）` : label}
           </span>
           {hoisted && detail && (
             <span style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 11, color: "var(--cmux-text-secondary)" }}>
@@ -964,6 +970,7 @@ export default memo(function PaneTabBar({
 }: PaneTabBarProps) {
   const showSplitDownButton = useSettingsStore((s) => s.showSplitDownButton);
   const showSplitRightButton = useSettingsStore((s) => s.showSplitRightButton);
+  const declaredLaunchEnabled = useSettingsStore((s) => s.declaredLaunchEnabled);
   const tabMetadata = usePaneMetadataStore(useShallow((s) =>
     pane.tabs.map((tab) => s.metadata[tab.sessionId]),
   ));
@@ -1004,6 +1011,7 @@ export default memo(function PaneTabBar({
   );
   const setTabLabel = useWorkspaceLayoutStore((s) => s.setTabLabel);
   const togglePaneTabPin = useWorkspaceLayoutStore((s) => s.togglePaneTabPin);
+  const launchDeclaredTab = useWorkspaceLayoutStore((s) => s.launchDeclaredTab);
   const addPaneToWorkspaceWithOptions = useWorkspaceLayoutStore(
     (s) => s.addPaneToWorkspaceWithOptions,
   );
@@ -1033,6 +1041,7 @@ export default memo(function PaneTabBar({
 
   // Derive active tab's agent status for the status bar
   const activeTab = pane.tabs.find((t) => t.id === pane.activeTabId);
+  const activeTabDeclared = Boolean(activeTab && isDeclaredTab(activeTab));
   const activeMeta = activeTab ? metadataBySession[activeTab.sessionId] : undefined;
   const activeAttention = activeTab ? attentionBySession[activeTab.sessionId] : undefined;
   const showPublishButton = shouldShowPublishButton(activeTab, activeMeta);
@@ -1338,6 +1347,11 @@ export default memo(function PaneTabBar({
     togglePaneTabPin(workspaceId, pane.id, tabId);
   }, [pane.id, togglePaneTabPin, workspaceId]);
 
+  const handleLaunchDeclaredTab = useCallback((tabId: string) => {
+    if (!declaredLaunchEnabled) return;
+    launchDeclaredTab(workspaceId, pane.id, tabId);
+  }, [declaredLaunchEnabled, launchDeclaredTab, pane.id, workspaceId]);
+
   const handleTogglePinContextTab = useCallback(() => {
     if (!contextMenu) return;
     togglePaneTabPin(workspaceId, pane.id, contextMenu.tabId);
@@ -1623,6 +1637,7 @@ export default memo(function PaneTabBar({
       >
         {pane.tabs.map((tab, tabIndex) => {
           const isTabActive = tab.id === pane.activeTabId;
+          const declared = isDeclaredTab(tab);
           const tabMeta = metadataBySession[tab.sessionId];
           const tabAgentKind = resolveDisplayAgentKind(
             tabMeta?.agentKind ?? tab.agentKind,
@@ -1670,7 +1685,9 @@ export default memo(function PaneTabBar({
             isTabActive,
             hasTerminalBuffer(tab.sessionId),
           );
-          const tabTitle = canonicalDetail
+          const tabTitle = declared
+            ? declaredLaunchEnabled ? `${label} — まだ起動していません。クリックで起動` : `${label} — 起動は無効化中`
+            : canonicalDetail
             ? `${label} — ${canonicalDetail}`
             : showDeferredRestore
             ? `${label} — 未復元、クリックで再開`
@@ -1739,6 +1756,7 @@ export default memo(function PaneTabBar({
               onContextMenu={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
+                if (declared) return;
                 setContextMenu({ tabId: tab.id, x: e.clientX, y: e.clientY });
               }}
               onClick={(event) => {
@@ -1757,11 +1775,13 @@ export default memo(function PaneTabBar({
                   return;
                 }
                 onSelectTab?.(tab.id);
+                if (declared) handleLaunchDeclaredTab(tab.id);
               }}
               onKeyDown={(event) => {
                 if (event.currentTarget !== event.target || !isTabActivationKey(event.key)) return;
                 event.preventDefault();
                 onSelectTab?.(tab.id);
+                if (declared) handleLaunchDeclaredTab(tab.id);
               }}
               role="tab"
               aria-selected={isTabActive}
@@ -1800,7 +1820,7 @@ export default memo(function PaneTabBar({
                 minWidth: isTabActive || canDuplicateSession ? 120 : 76,
                 cursor: isEditingTab ? "text" : "pointer",
                 background: isTabActive ? "var(--cmux-selected)" : "transparent",
-                borderRight: "1px solid var(--cmux-border-hairline)",
+                borderRight: declared ? "1px dashed var(--cmux-border)" : "1px solid var(--cmux-border-hairline)",
                 borderBottom: "2px solid transparent",
                 flexShrink: 1,
                 transition: "background 0.1s",
@@ -1889,7 +1909,7 @@ export default memo(function PaneTabBar({
                     minWidth: 0,
                   }}
                 >
-                  {label}
+                  {declared ? `＋ ${label}（まだ）` : label}
                 </span>
               )}
               {/* Always mounted (opacity-hidden until hover/focus/pinned/active)
@@ -1977,6 +1997,7 @@ export default memo(function PaneTabBar({
               onSelectTab={onSelectTab}
               onRemoveTab={onRemoveTab}
               onTogglePin={handleToggleTabPin}
+              onLaunchDeclaredTab={handleLaunchDeclaredTab}
               onCloseMenu={() => setAllTabsOpen(false)}
             />
           )}
@@ -2029,7 +2050,11 @@ export default memo(function PaneTabBar({
             onContextMenu={(e) => {
               e.preventDefault();
               e.stopPropagation();
+              if (activeTabDeclared) return;
               setContextMenu({ tabId: activeTab.id, x: e.clientX, y: e.clientY });
+            }}
+            onClick={() => {
+              if (activeTabDeclared) handleLaunchDeclaredTab(activeTab.id);
             }}
             title={attentionDetail(activeAttention) ?? activeTabLabel}
             aria-label={[
@@ -2045,8 +2070,8 @@ export default memo(function PaneTabBar({
               padding: "0 5px 0 7px",
               flex: 1,
               minWidth: 0,
-              cursor: isEditingActiveTab ? "text" : "default",
-              borderBottom: "2px solid transparent",
+              cursor: isEditingActiveTab ? "text" : activeTabDeclared ? "pointer" : "default",
+              borderBottom: activeTabDeclared ? "2px dashed var(--cmux-border)" : "2px solid transparent",
               "--agent-kind-color": activeKindColor?.fg,
             } as AgentKindStyle}
           >
@@ -2113,7 +2138,7 @@ export default memo(function PaneTabBar({
                   minWidth: 0,
                 }}
               >
-                {activeTabLabel}
+                {activeTabDeclared ? `＋ ${activeTabLabel}（まだ）` : activeTabLabel}
               </span>
             )}
             {showsInlinePinControl && (
@@ -2180,6 +2205,7 @@ export default memo(function PaneTabBar({
                 onSelectTab={onSelectTab}
                 onRemoveTab={onRemoveTab}
                 onTogglePin={handleToggleTabPin}
+                onLaunchDeclaredTab={handleLaunchDeclaredTab}
                 onCloseMenu={() => setAllTabsOpen(false)}
               />
             )}

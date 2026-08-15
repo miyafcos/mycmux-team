@@ -25,7 +25,7 @@ import { dashboardStrings } from "./dashboardStrings";
 import { unresolvedQuestion } from "./liveTimelineModel";
 
 /** 送信できない理由。文言は dashboardStrings 側に持つ。 */
-export type ComposerDisabledReason = "running" | "notStarted";
+export type ComposerDisabledReason = "notStarted";
 
 export type ComposerRoute =
   | { kind: "intervention" }
@@ -43,7 +43,8 @@ export function resolveComposerRoute(
 ): ComposerRoute {
   if (brief && brief.telemetryHealth === "live") {
     if (brief.operationalState === "needsHuman") return { kind: "intervention" };
-    if (brief.operationalState === "running") return { kind: "disabled", reason: "running" };
+    // 作業中でも打てる: Claude Code / codex の TUI は稼働中の入力をキューに積む。
+    // 送達は pane 側の検証つき送信が担保する (入力欄ごと殺すと「入力できない」体験になる)。
     return { kind: "paneSendText" };
   }
   if (!hasPty) return { kind: "disabled", reason: "notStarted" };

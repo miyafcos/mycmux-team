@@ -16,6 +16,7 @@ import {
   formatTokens,
   type RhythmSlot,
   type SeriesBucket,
+  type SeriesGroupBy,
   type SeriesGroup,
 } from "../../lib/ailog";
 import { MODEL_COLORS, NEUTRAL_COLOR } from "./palette";
@@ -135,8 +136,18 @@ export const UNKNOWN_GROUP = "(unknown)";
 export const UNKNOWN_LABEL = "モデル不明";
 
 /** `(unknown)` comes from turns whose transcript recorded no model name. */
-export function groupLabel(group: string): string {
+export function groupLabel(group: string, groupBy?: SeriesGroupBy): string {
   if (group === UNKNOWN_GROUP) return UNKNOWN_LABEL;
+  if (groupBy === "provider") {
+    const providerLabels: Record<string, string> = {
+      anthropic: "Anthropic",
+      openai: "OpenAI",
+      google: "Google",
+      local: "ローカル",
+      other: "その他",
+    };
+    return providerLabels[group] ?? group;
+  }
   return group;
 }
 

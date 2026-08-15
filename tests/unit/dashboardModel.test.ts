@@ -3,9 +3,6 @@ import { describe, expect, it } from "vitest";
 import {
   applyDashboardFilters,
   buildDashboardCards,
-  countByDisplayState,
-  countVisibility,
-  countWorkspaceStructure,
   groupDashboardCard,
   matchesDashboardStateFilter,
   needsHumanCards,
@@ -244,18 +241,28 @@ describe("dashboard model", () => {
       // 一度も動いていないタブを「更新なし」と言い切らない。
       expect(resolveDisplayState(card({ group: "idle", lastActivityAt: 0 }))).toBe("idle");
     });
+
+    it("reports a process exit as stopped unless attention evidence has priority", () => {
+      expect(resolveDisplayState(card({ telemetryHealth: "ended", attentionCategory: null }))).toBe("stopped");
+      expect(resolveDisplayState(card({
+        stall: { sessionId: "s", reason: "pty_dead", since: 0 },
+        attentionCategory: null,
+      }))).toBe("stopped");
+      expect(resolveDisplayState(card({ telemetryHealth: "ended", attentionCategory: "done" }))).toBe("done");
+    });
   });
 
-  it("orders every session into the single needsHuman > error > running > noUpdate > idle > done list", () => {
+  it("orders every session into the single needsHuman > error > running > noUpdate > idle > done > stopped list", () => {
     const done = distinct({ attentionCategory: "done", group: "done" }, "t-done");
     const idle = distinct({ group: "idle", lastActivityAt: 0 }, "t-idle");
     const noUpdate = distinct({ group: "idle", lastActivityAt: now - 600_000, noUpdateMinutes: 10 }, "t-noupdate");
     const running = distinct({ group: "working", lastActivityAt: now - 1 }, "t-running");
     const error = distinct({ attentionCategory: "error", group: "waiting" }, "t-error");
     const needsHuman = distinct({ attentionCategory: "waiting", group: "waiting" }, "t-needs");
-    const ordered = orderDashboardCards([done, idle, noUpdate, running, error, needsHuman], "attention");
+    const stopped = distinct({ telemetryHealth: "ended", attentionCategory: null }, "t-stopped");
+    const ordered = orderDashboardCards([stopped, done, idle, noUpdate, running, error, needsHuman], "attention");
     expect(ordered.map((item) => item.tab.id)).toEqual([
-      "t-needs", "t-error", "t-running", "t-noupdate", "t-idle", "t-done",
+      "t-needs", "t-error", "t-running", "t-noupdate", "t-idle", "t-done", "t-stopped",
     ]);
   });
 
@@ -276,45 +283,6 @@ describe("dashboard model", () => {
     const second = { ...distinct({ attentionCategory: "waiting", group: "waiting" }, "t-b"), workspaceIndex: 1 };
     expect(orderDashboardCards([second, first], "workspace").map((item) => item.tab.id)).toEqual(["t-a", "t-b"]);
     expect(orderDashboardCards([second, first], "attention").map((item) => item.tab.id)).toEqual(["t-b", "t-a"]);
-  });
-
-  it("counts every session under exactly one display state", () => {
-    const counts = countByDisplayState([
-      distinct({ attentionCategory: "waiting", group: "waiting" }, "t-1"),
-      distinct({ attentionCategory: "error", group: "waiting" }, "t-2"),
-      distinct({ group: "working", lastActivityAt: now - 1 }, "t-3"),
-      distinct({ attentionCategory: "done", group: "done" }, "t-4"),
-    ]);
-    expect(counts).toEqual({ needsHuman: 1, error: 1, running: 1, noUpdate: 0, idle: 0, done: 1 });
-  });
-
-  it("counts the header structure as panes, tabs and workspaces", () => {
-    const base = workspace();
-    const second: Workspace = {
-      ...base,
-      id: "ws-2",
-      name: "Workspace B",
-      panes: [
-        { id: "pane-2", sessionId: "s-2", activeTabId: "tab-2", tabs: [
-          { id: "tab-2", sessionId: "s-2", agentId: "claude", label: "Beta", type: "terminal" },
-          { id: "tab-3", sessionId: "s-3", agentId: "codex", label: "Gamma", type: "terminal" },
-        ] },
-        { id: "pane-3", sessionId: "s-4", activeTabId: "tab-4", tabs: [
-          { id: "tab-4", sessionId: "s-4", agentId: "codex", label: "Delta", type: "terminal" },
-        ] },
-      ],
-    } as Workspace;
-    expect(countWorkspaceStructure([base, second])).toEqual({ panes: 3, tabs: 4, workspaces: 2 });
-    expect(countWorkspaceStructure([])).toEqual({ panes: 0, tabs: 0, workspaces: 0 });
-  });
-
-  it("splits visible from background by the terminal buffer, not by the state", () => {
-    expect(countVisibility([
-      distinct({ unobserved: false }, "t-1"),
-      distinct({ unobserved: true }, "t-2"),
-      distinct({ unobserved: true }, "t-3"),
-    ])).toEqual({ visible: 1, background: 2 });
-    expect(countVisibility([])).toEqual({ visible: 0, background: 0 });
   });
 
   it("applies every filter as an intersection", () => {

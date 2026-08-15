@@ -12,6 +12,7 @@ import { open } from "@tauri-apps/plugin-shell";
 import { invoke } from "@tauri-apps/api/core";
 import ErrorBoundary from "../common/ErrorBoundary";
 import type { AgentSessionKind, Pane, PaneTab } from "../../types";
+import { isDeclaredTab, isRestorableTab } from "../../lib/tabLifecycle";
 import PaneTabBar from "./PaneTabBar";
 import { paneDndStrings } from "./paneDndStrings";
 import XTermWrapper, { evictTerminalCache, hasTerminalBuffer } from "../terminal/XTermWrapper";
@@ -37,6 +38,7 @@ import { pushClosedTab } from "../../stores/closedPaneStore";
 import { onlineStrings } from "../online/onlineStrings";
 import { useSettingsStore } from "../../stores/settingsStore";
 import { PaneComposer } from "../composer/PaneComposer";
+import { isStartupSessionPending, subscribeStartupSessionGate } from "../../lib/startupSessionGate";
 
 interface TerminalPaneProps {
   pane: Pane;
@@ -78,7 +80,7 @@ function isTerminalTab(tab: PaneTab | undefined): tab is PaneTab {
   return Boolean(tab && (tab.type === undefined || tab.type === "terminal"));
 }
 
-function buildLaunchArgs(
+export function buildLaunchArgs(
   command: string,
   args: string[],
   agentId: string | undefined,
@@ -87,6 +89,7 @@ function buildLaunchArgs(
   cwd: string | undefined,
   initialPrompt: string | undefined,
 ): string[] {
+  if (isShellLauncher(agentId, command)) return args;
   if (!savedSession) {
     if (agentId === "claude-code" && newSessionId) {
       const launchArgs = [
@@ -99,9 +102,8 @@ function buildLaunchArgs(
       ];
       return initialPrompt ? [...launchArgs, initialPrompt] : launchArgs;
     }
-    return args;
+    return initialPrompt ? [...args, initialPrompt] : args;
   }
-  if (isShellLauncher(agentId, command)) return args;
   switch (savedSession.kind) {
     case "claude":
       return [
@@ -311,6 +313,16 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
   );
   const savepointDragItem = useSavepointDragStore((state) => state.item);
   const activeTab = pane.tabs.find((t) => t.id === pane.activeTabId) ?? pane.tabs[0];
+  const [startupSessionPending, setStartupSessionPending] = useState(() =>
+    activeTab ? isStartupSessionPending(activeTab.sessionId) : false,
+  );
+  useEffect(() => {
+    const update = () => setStartupSessionPending(
+      activeTab ? isStartupSessionPending(activeTab.sessionId) : false,
+    );
+    update();
+    return subscribeStartupSessionGate(update);
+  }, [activeTab?.sessionId]);
   const activeTabMetadata = usePaneMetadataStore((s) =>
     activeTab ? s.metadata[activeTab.sessionId] : undefined,
   );
@@ -845,6 +857,13 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
               }}
             />
           </ErrorBoundary>
+        ) : activeTab && isDeclaredTab(activeTab) ? (
+          <div
+            data-declared-tab-placeholder="true"
+            style={{ display: "grid", placeItems: "center", height: "100%", color: "var(--cmux-text-secondary)", fontSize: 12 }}
+          >
+            まだ起動していません
+          </div>
         ) : activeTab && agent ? (
           <div
             style={{
@@ -854,7 +873,7 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
               flexDirection: "column",
             }}
           >
-            <ErrorBoundary>
+            {isRestorableTab(activeTab) && <ErrorBoundary>
               <XTermWrapper
                 workspaceId={workspaceId}
                 sessionId={activeTab.sessionId}
@@ -870,7 +889,24 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
                 launchEnv={launchEnv}
                 restoreFallbackSessionIds={restoreFallbackSessionIds}
               />
-            </ErrorBoundary>
+            </ErrorBoundary>}
+            {startupSessionPending && (
+              <div
+                style={{
+                  position: "absolute",
+                  inset: 0,
+                  display: "grid",
+                  placeItems: "center",
+                  background: "var(--cmux-bg)",
+                  border: "1px solid var(--cmux-border)",
+                  color: "var(--cmux-text-secondary)",
+                  pointerEvents: "none",
+                  zIndex: 1,
+                }}
+              >
+                接続中…
+              </div>
+            )}
           </div>
         ) : null}
         {paneHandoffEligibility && (
@@ -894,7 +930,7 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
           </div>
         )}
       </div>
-      {showComposer && activeTab && agent && (
+      {showComposer && activeTab && isRestorableTab(activeTab) && agent && (
         <ErrorBoundary>
           <PaneComposer
             sessionId={activeTab.sessionId}

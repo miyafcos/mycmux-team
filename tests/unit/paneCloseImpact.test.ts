@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Pane } from "../../src/types";
-import { collectPaneCloseVictims, paneCloseImpactMessage } from "../../src/lib/paneCloseImpact";
+import { collectLiveAgentTabs, collectPaneCloseVictims, paneCloseImpactMessage } from "../../src/lib/paneCloseImpact";
 
 function pane(tabs: Pane["tabs"], activeTabId = tabs[0]?.id ?? ""): Pane {
   return { id: "pane-1", agentId: "shell", sessionId: tabs[0]?.sessionId ?? "", tabs, activeTabId };
@@ -39,5 +39,17 @@ describe("collectPaneCloseVictims", () => {
   it("caps the displayed labels at five", () => {
     const victims = collectPaneCloseVictims([pane(["1", "2", "3", "4", "5", "6"].map((id) => tab(id, { agentKind: "codex" })))] , {});
     expect(paneCloseImpactMessage(victims)).toContain("ほか 1 件");
+  });
+
+  it("counts active and background live agent tabs for a pane close", () => {
+    const tabs = [tab("active", { agentKind: "claude" }), tab("codex", { agentKind: "codex" }), tab("shell")];
+    expect(collectLiveAgentTabs([pane(tabs, "active")], {
+      "session-active": { agentKind: "claude", processIsShell: false },
+      "session-codex": { agentKind: "codex", processIsShell: false },
+      "session-shell": { processIsShell: false },
+    })).toEqual([
+      { sessionId: "session-active", label: "active", reason: "agent" },
+      { sessionId: "session-codex", label: "codex", reason: "agent" },
+    ]);
   });
 });

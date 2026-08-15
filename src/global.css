@@ -47,6 +47,10 @@
   /* UI chrome line-height, driven by the density setting (AppShell overrides
      per uiDensity). "normal" keeps the historical look for "standard". */
   --cmux-line-height-ui: normal;
+  --cmux-dash-ui-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --cmux-dash-body-font: var(--cmux-font-mono);
+  --cmux-dash-font-size: var(--cmux-font-size-sm);
+  --cmux-dash-line-height: var(--cmux-line-height-ui);
   --cmux-font-mono: "UDEV Gothic NF", "UDEV Gothic", "JetBrains Mono", Consolas, monospace;
   --cmux-focus-ring: color-mix(in srgb, var(--cmux-accent) 45%, transparent);
   --cmux-dnd-tab: #38bdf8;
@@ -184,7 +188,7 @@ body,
   background: var(--cmux-bg);
   color: var(--cmux-text);
   line-height: var(--cmux-line-height-ui);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-family: var(--cmux-dash-ui-font);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;

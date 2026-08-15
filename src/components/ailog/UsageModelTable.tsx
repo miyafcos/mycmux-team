@@ -2,8 +2,8 @@
  * Per-model breakdown for the usage tab.
  *
  * Ordered by the selected metric, not by cost — the whole point of the tab is
- * that those two orders disagree. Models with no published rate show 未設定
- * rather than $0.00, which would read as "this was free".
+ * that those two orders disagree. Model classes keep an unknown price visibly
+ * distinct from a local or flat-rate $0.
  */
 
 import { formatCount, formatTokens, formatUsd, type SeriesReport } from "../../lib/ailog";
@@ -79,12 +79,21 @@ export function UsageModelTable({
 }) {
   const rows = buildModelRows(report, metric);
   const total = rows.reduce((sum, row) => sum + row.metric, 0);
-  const unpriced = new Set(report.unpricedModels);
-  // The backend reports unpriced models by their raw name. When the table is
-  // grouped by family, a family counts as unpriced if any of its variants is:
-  // `gpt-5.6` is priced through sol/terra/luna, but a new variant would not be.
-  const isUnpricedGroup = (group: string) =>
-    unpriced.has(group) || report.unpricedModels.some((model) => model.startsWith(`${group}-`));
+  const groupingLabel = report.groupBy === "provider" ? "会社" : report.groupBy === "model" ? "系統" : "モデル";
+  const classForGroup = (group: string) => {
+    if (report.groupBy === "provider") {
+      return group === "local" ? "local" : group === "google" || group === "other" ? "unknown" : "priced";
+    }
+    const matches = (models: string[]) => models.some((model) => model === group || model.startsWith(`${group}-`));
+    if (matches(report.priceCoverage.unknown.models)) return "unknown";
+    if (matches(report.priceCoverage.local.models)) return "local";
+    if (matches(report.priceCoverage.flat.models)) return "flat";
+    if (matches(report.priceCoverage.internal.models)) return "internal";
+    return "priced";
+  };
+  const costLabel = report.priceCoverage.coveredTokenRatio < 1
+    ? `コスト相当 (単価既知の ${Math.round(report.priceCoverage.coveredTokenRatio * 100)}% 分)`
+    : "コスト相当";
 
   if (rows.length === 0) {
     return <div style={noteStyle}>この期間に記録がありません。期間を広げるか、再インデックスしてください。</div>;
@@ -96,7 +105,7 @@ export function UsageModelTable({
         <table style={tableStyle}>
           <thead>
             <tr>
-              <th style={thLeftStyle}>モデル</th>
+              <th style={thLeftStyle}>{groupingLabel}</th>
               <th style={thStyle}>選択中の指標</th>
               <th style={thStyle}>シェア</th>
               <th style={thStyle}>入力</th>
@@ -106,27 +115,29 @@ export function UsageModelTable({
               <th style={thStyle}>ターン</th>
               <th style={thStyle}>セッション</th>
               <th style={thStyle}>使用日数</th>
-              <th style={thStyle}>コスト相当</th>
+              <th style={thStyle}>{costLabel}</th>
             </tr>
           </thead>
           <tbody>
             {rows.map((row) => {
               const share = total > 0 ? (row.metric / total) * 100 : 0;
               const isUnknown = row.group === UNKNOWN_GROUP;
-              const isUnpriced = isUnpricedGroup(row.group);
+              const modelClass = classForGroup(row.group);
+              const cost = modelClass === "unknown" || isUnknown
+                ? { value: "—", title: "単価未公表のため除外" }
+                : modelClass === "local"
+                  ? { value: formatUsd(0), title: "ローカル実行 — 費用なし" }
+                  : modelClass === "flat"
+                    ? { value: formatUsd(0), title: "定額プラン — 従量費用なし" }
+                    : { value: formatUsd(row.costUsd), title: undefined };
               return (
                 <tr key={row.group}>
                   <td style={tdLeftStyle}>
                     <span style={{ display: "inline-flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
-                      {groupLabel(row.group)}
+                      {groupLabel(row.group, report.groupBy)}
                       {isUnknown ? (
-                        <Chip tone="warn" title="Codex の token_count イベントにモデル名が無い記録です">
-                          モデル名なし
-                        </Chip>
-                      ) : null}
-                      {isUnpriced ? (
-                        <Chip tone="warn" title="公表料率が登録されていないため、コスト相当に一切含まれていません">
-                          単価未設定
+                        <Chip tone="warn" title="Codex の token_count イベントにモデルが無い記録です">
+                          モデルなし
                         </Chip>
                       ) : null}
                     </span>
@@ -143,9 +154,7 @@ export function UsageModelTable({
                   <td style={tdStyle}>{formatCount(row.turns)}</td>
                   <td style={tdStyle}>{formatCount(row.sessions)}</td>
                   <td style={tdStyle}>{formatCount(row.days)}</td>
-                  <td style={{ ...tdStyle, color: isUnknown || isUnpriced ? "var(--cmux-text-tertiary)" : undefined }}>
-                    {isUnknown ? "算出不可" : isUnpriced ? "未設定" : formatUsd(row.costUsd)}
-                  </td>
+                  <td style={{ ...tdStyle, color: cost.value === "—" ? "var(--cmux-text-tertiary)" : undefined }} title={cost.title}>{cost.value}</td>
                 </tr>
               );
             })}
@@ -153,7 +162,7 @@ export function UsageModelTable({
         </table>
       </ScrollBox>
       <div style={noteStyle}>
-        セッション数はモデルごとに数えているため、合計は実際のセッション本数より多くなります (1 本が複数モデルを使うため)。
+        セッション数は{groupingLabel}ごとに数えているため、合計は実際のセッション本数より多くなります (1 本が複数{groupingLabel}を使うため)。
       </div>
     </div>
   );

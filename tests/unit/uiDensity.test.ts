@@ -102,7 +102,7 @@ describe("uiFontScale store", () => {
 });
 
 describe("ui_density persistence wiring", () => {
-  // The classic bug is updating only one of the two hydrate sites (main
+  // A hydrate regression can update only one of the two sites (main
   // window vs child window). Guard all three touchpoints at source level.
   it("SocketListener saves and hydrates ui_density on both paths", () => {
     const source = readFileSync(

@@ -3,10 +3,10 @@
  * reports the panel draws from.
  *
  * Loading rules that matter:
- * - Every report for one refresh is fetched together and committed together,
- *   so the screen never mixes two different ranges.
- * - A stale response (the user changed the range mid-flight) is dropped by the
- *   sequence guard rather than overwriting newer data.
+ * - SQL reports are cached per resolved period and effective filters. The
+ *   visible segment loads first; the remaining SQL reports warm afterwards.
+ * - A stale response (the user changed the range mid-flight) is dropped by its
+ *   resource generation and cache-key guard rather than overwriting newer data.
  * - Errors are surfaced, never swallowed into an empty table.
  */
 
@@ -17,10 +17,8 @@ import {
   ailogBreakdown,
   ailogEfficiency,
   ailogFindings,
-  ailogGetPrices,
   ailogReworkRankings,
   ailogRuleCheck,
-  ailogSetPrice,
   ailogDigestGenerate,
   ailogDigestGet,
   ailogIndexCancel,
@@ -41,6 +39,7 @@ import {
   parseDayInput,
   shiftDayInput,
   type AilogRange,
+  type AilogGranularity,
   type BreakdownReport,
   type EfficiencyReport,
   type DigestReport,
@@ -59,11 +58,11 @@ import {
   type RangePreset,
   type SummaryRangePreset,
   type ReworkRankingsReport,
-  type PriceEntry,
   type RuleCheckReport,
   type UsageRhythmReport,
 } from "../lib/ailog";
 import type { LeafDimension } from "../components/ailog/sankeyModel";
+import type { PanelSegment } from "../components/ailog/panelModel";
 import type { UsageMetric } from "../components/ailog/usageModel";
 
 /**
@@ -123,12 +122,14 @@ interface AilogState {
   preset: RangePreset;
   customFrom: string;
   customTo: string;
+  /** Stable instant used to turn a relative preset into a cacheable from/to pair. */
+  rangeAnchor: number;
   summaryPreset: SummaryRangePreset;
   excludeSynthetic: boolean;
   includeSidechain: boolean;
   leafDimension: LeafDimension;
   topN: TopNSetting;
-  granularity: "family" | "raw";
+  granularity: AilogGranularity;
   sessionSort: SessionSort;
   sessionPage: number;
   selection: AilogSelection | null;
@@ -144,6 +145,7 @@ interface AilogState {
   breakdown: BreakdownReport | null;
   /** Scoped to the breakdown section; see `refreshBreakdown`. */
   breakdownError: string | null;
+  breakdownLoading: boolean;
   sessions: SessionsReport | null;
   detail: SessionDetail | null;
   detailKey: { kind: string; sessionId: string } | null;
@@ -186,10 +188,6 @@ interface AilogState {
   usageRhythm: UsageRhythmReport | null;
   usageLoading: boolean;
   usageError: string | null;
-  prices: PriceEntry[] | null;
-  pricesLoading: boolean;
-  pricesError: string | null;
-  repricedSessions: number | null;
 
   // --- actions ---
   setPreset: (preset: RangePreset) => void;
@@ -197,24 +195,26 @@ interface AilogState {
   setUsageMetric: (metric: UsageMetric) => void;
   setUsageStack: (stack: "absolute" | "share") => void;
   setUsageBucket: (bucket: "day" | "week" | "month") => void;
-  refreshUsage: () => Promise<void>;
+  refreshUsage: (options?: { force?: boolean }) => Promise<void>;
+  /** Fetches one segment from the period cache, never starting LLM work. */
+  loadSegment: (segment: PanelSegment, options?: { force?: boolean }) => Promise<void>;
+  /** Starts the remaining SQL-only segment requests after the visible one settles. */
+  preloadSegments: (visible: PanelSegment) => Promise<void>;
   setSummaryPreset: (preset: SummaryRangePreset) => void;
   setExcludeSynthetic: (value: boolean) => void;
   setIncludeSidechain: (value: boolean) => void;
   setLeafDimension: (value: LeafDimension) => void;
   setTopN: (layer: keyof TopNSetting, value: number) => void;
-  setGranularity: (value: "family" | "raw") => void;
+  setGranularity: (value: AilogGranularity) => void;
   setSessionSort: (value: SessionSort) => void;
   setSessionPage: (value: number) => void;
   setSelection: (selection: AilogSelection | null) => void;
   setDrillProject: (value: string | null) => void;
   setBreakdownDimension: (value: BreakdownDimension) => void;
   currentRange: () => AilogRange | null;
-  refresh: () => Promise<void>;
-  refreshBreakdown: () => Promise<void>;
-  refreshExperiment: () => Promise<void>;
-  refreshPrices: () => Promise<void>;
-  savePrice: (entry: PriceEntry) => Promise<boolean>;
+  refresh: (options?: { force?: boolean }) => Promise<void>;
+  refreshBreakdown: (options?: { force?: boolean }) => Promise<void>;
+  refreshExperiment: (options?: { force?: boolean }) => Promise<void>;
   openDetail: (kind: string, sessionId: string) => Promise<void>;
   loadTranscript: (kind: string, sessionId: string) => Promise<void>;
   summarizeSession: (kind: string, sessionId: string) => Promise<void>;
@@ -233,11 +233,11 @@ interface AilogState {
   cancelSummarize: () => Promise<void>;
   setDigestDate: (date: string) => void;
   stepDigestDate: (days: number) => void;
-  refreshDigest: (date?: string) => Promise<void>;
+  refreshDigest: (date?: string, options?: { force?: boolean }) => Promise<void>;
   generateDigest: (force?: boolean) => Promise<void>;
   setFindingKind: (kind: FindingKind | null) => void;
   setFindingQuery: (query: string) => void;
-  refreshLearning: (options?: { append?: boolean; kinds?: FindingKind[]; includeRankings?: boolean }) => Promise<void>;
+  refreshLearning: (options?: { append?: boolean; kinds?: FindingKind[]; includeRankings?: boolean; force?: boolean }) => Promise<void>;
 }
 
 let refreshSeq = 0;
@@ -247,8 +247,152 @@ let digestSeq = 0;
 let learningSeq = 0;
 let breakdownSeq = 0;
 let experimentSeq = 0;
-let priceSeq = 0;
 let usageSeq = 0;
+
+type DashboardData = {
+  overview: Overview;
+  series: SeriesReport;
+  models: ModelsReport;
+  projects: BreakdownReport;
+  sessions: SessionsReport;
+};
+
+type UsageData = { series: SeriesReport; rhythm: UsageRhythmReport };
+type ExperimentData = { efficiency: EfficiencyReport; ruleCheck: RuleCheckReport };
+type LearningData = { findings: FindingsReport };
+
+interface CachedResource<T> {
+  value?: T;
+  pending?: Promise<T>;
+  generation: number;
+}
+
+interface PeriodCache {
+  dashboard: CachedResource<DashboardData>;
+  usage: Map<string, CachedResource<UsageData>>;
+  breakdown: Map<BreakdownDimension, CachedResource<BreakdownReport>>;
+  experiment: CachedResource<ExperimentData>;
+  learning: Map<string, CachedResource<LearningData>>;
+  rankings: CachedResource<ReworkRankingsReport>;
+}
+
+interface CacheContext {
+  key: string;
+  range: AilogRange;
+  filters: ReturnType<typeof emptyFilters>;
+  granularity: AilogGranularity;
+}
+
+const periodCache = new Map<string, PeriodCache>();
+const digestCache = new Map<string, CachedResource<DigestReport>>();
+
+function resource<T>(): CachedResource<T> {
+  return { generation: 0 };
+}
+
+function periodEntry(key: string): PeriodCache {
+  let entry = periodCache.get(key);
+  if (!entry) {
+    entry = {
+      dashboard: resource<DashboardData>(),
+      usage: new Map(),
+      breakdown: new Map(),
+      experiment: resource<ExperimentData>(),
+      learning: new Map(),
+      rankings: resource<ReworkRankingsReport>(),
+    };
+    periodCache.set(key, entry);
+  }
+  return entry;
+}
+
+function mapResource<K, T>(map: Map<K, CachedResource<T>>, key: K): CachedResource<T> {
+  let entry = map.get(key);
+  if (!entry) {
+    entry = resource<T>();
+    map.set(key, entry);
+  }
+  return entry;
+}
+
+/**
+ * Requests one resource at most once per cache key. A forced refresh advances
+ * the per-resource generation, so an older response cannot replace it.
+ */
+function fetchOnce<T>(entry: CachedResource<T>, load: () => Promise<T>, force = false): { promise: Promise<T>; pending: boolean } {
+  if (!force && entry.value !== undefined) return { promise: Promise.resolve(entry.value), pending: false };
+  if (!force && entry.pending) return { promise: entry.pending, pending: true };
+  const generation = ++entry.generation;
+  const pending = load().then(
+    (value) => {
+      if (entry.generation === generation) entry.value = value;
+      return value;
+    },
+    (error) => {
+      throw error;
+    },
+  ).finally(() => {
+    if (entry.generation === generation) entry.pending = undefined;
+  });
+  entry.pending = pending;
+  return { promise: pending, pending: true };
+}
+
+function resolvedRangeForKey(
+  preset: RangePreset,
+  customFrom: string,
+  customTo: string,
+  anchor: number,
+): { from: number; to: number } | null {
+  const custom = buildRange(preset, customFrom, customTo);
+  if (!custom) return null;
+  if (preset === "custom") return { from: custom.from!, to: custom.to! };
+  const day = 86_400_000;
+  const from = preset === "7d" ? anchor - 7 * day
+    : preset === "30d" ? anchor - 30 * day
+      : preset === "90d" ? anchor - 90 * day
+        : preset === "ytd" ? Date.UTC(new Date(anchor).getUTCFullYear(), 0, 1)
+          : Number.MIN_SAFE_INTEGER;
+  return { from, to: anchor };
+}
+
+function cacheContext(state: Pick<AilogState, "preset" | "customFrom" | "customTo" | "rangeAnchor" | "excludeSynthetic" | "includeSidechain" | "selection" | "leafDimension" | "granularity">): CacheContext | null {
+  const range = buildRange(state.preset, state.customFrom, state.customTo);
+  const resolvedRange = resolvedRangeForKey(state.preset, state.customFrom, state.customTo, state.rangeAnchor);
+  if (!range || !resolvedRange) return null;
+  const filters = selectionFilters(
+    { ...emptyFilters(), includeSidechain: state.includeSidechain },
+    state.selection,
+    state.leafDimension,
+  );
+  const key = JSON.stringify({
+    from: resolvedRange.from,
+    to: resolvedRange.to,
+    excludeSynthetic: state.excludeSynthetic,
+    includeSidechain: state.includeSidechain,
+    granularity: state.granularity,
+    filters: {
+      kinds: [...filters.kinds].sort(),
+      models: [...filters.models].sort(),
+      projects: [...filters.projects].sort(),
+      branches: [...filters.branches].sort(),
+      efforts: [...filters.efforts].sort(),
+      origins: [...filters.origins].sort(),
+      minCost: filters.minCost ?? null,
+      query: filters.query ?? null,
+    },
+  });
+  return { key, range, filters, granularity: state.granularity };
+}
+
+function isCurrentContext(get: () => AilogState, key: string): boolean {
+  return cacheContext(get())?.key === key;
+}
+
+function invalidateAilogCaches(): void {
+  periodCache.clear();
+  digestCache.clear();
+}
 
 /**
  * Digest dates name a local day, matching the day buckets every other ailog
@@ -292,6 +436,7 @@ const initialState = {
   preset: "30d" as RangePreset,
   customFrom: "",
   customTo: "",
+  rangeAnchor: Date.now(),
   summaryPreset: "7d" as SummaryRangePreset,
   excludeSynthetic: true,
   includeSidechain: false,
@@ -309,6 +454,7 @@ const initialState = {
   projects: null,
   breakdown: null,
   breakdownError: null,
+  breakdownLoading: false,
   sessions: null,
   detail: null,
   detailKey: null,
@@ -351,21 +497,17 @@ const initialState = {
   usageRhythm: null,
   usageLoading: false,
   usageError: null,
-  prices: null,
-  pricesLoading: false,
-  pricesError: null,
-  repricedSessions: null,
 };
 
 export const useAilogStore = create<AilogState>((set, get) => ({
   ...initialState,
 
   setPreset: (preset) => {
-    set({ preset, sessionPage: 0, selection: null, drillProject: null });
+    set({ preset, rangeAnchor: Date.now(), sessionPage: 0, selection: null, drillProject: null });
   },
 
   setCustomRange: (customFrom, customTo) => {
-    set({ customFrom, customTo, preset: "custom", sessionPage: 0 });
+    set({ customFrom, customTo, preset: "custom", rangeAnchor: Date.now(), sessionPage: 0 });
   },
 
   setSummaryPreset: (summaryPreset) => {
@@ -397,24 +539,22 @@ export const useAilogStore = create<AilogState>((set, get) => ({
     return buildRange(preset, customFrom, customTo);
   },
 
-  refresh: async () => {
-    const range = get().currentRange();
-    if (!range) return;
-    const filters = selectionFilters(
-      { ...emptyFilters(), includeSidechain: get().includeSidechain },
-      get().selection,
-      get().leafDimension,
-    );
-    const granularity = get().granularity;
+  refresh: async (options = {}) => {
+    const context = cacheContext(get());
+    if (!context) return;
     const mySeq = ++refreshSeq;
-    set({ loading: true, dashboardError: null });
-    try {
+    const cached = fetchOnce(periodEntry(context.key).dashboard, async (): Promise<DashboardData> => {
       const { overview, series, models, projects, sessions } = await ailogDashboard(
-        range,
-        filters,
-        granularity,
+        context.range,
+        context.filters,
+        context.granularity,
       );
-      if (mySeq !== refreshSeq) return;
+      return { overview, series, models, projects, sessions };
+    }, options.force);
+    if (cached.pending) set({ loading: true, dashboardError: null });
+    try {
+      const { overview, series, models, projects, sessions } = await cached.promise;
+      if (mySeq !== refreshSeq || !isCurrentContext(get, context.key)) return;
       set({
         overview,
         series,
@@ -427,7 +567,7 @@ export const useAilogStore = create<AilogState>((set, get) => ({
         dashboardError: null,
       });
     } catch (error) {
-      if (mySeq !== refreshSeq) return;
+      if (mySeq !== refreshSeq || !isCurrentContext(get, context.key)) return;
       // The whole range failed, so the previous range's numbers would be a lie:
       // the reports are cleared and the reason is shown instead.
       set({
@@ -443,75 +583,78 @@ export const useAilogStore = create<AilogState>((set, get) => ({
     }
   },
 
-  refreshBreakdown: async () => {
-    const range = get().currentRange();
-    if (!range) return;
+  refreshBreakdown: async (options = {}) => {
+    const context = cacheContext(get());
+    if (!context) return;
     const dimension = get().breakdownDimension;
-    const filters = selectionFilters(
-      { ...emptyFilters(), includeSidechain: get().includeSidechain },
-      get().selection,
-      get().leafDimension,
-    );
     const mySeq = ++breakdownSeq;
+    const cached = fetchOnce(
+      mapResource(periodEntry(context.key).breakdown, dimension),
+      () => ailogBreakdown(context.range, context.filters, dimension),
+      options.force,
+    );
+    if (cached.pending) set({ breakdownLoading: true, breakdownError: null });
     try {
-      const breakdown = await ailogBreakdown(range, filters, dimension);
-      if (mySeq !== breakdownSeq || get().breakdownDimension !== dimension) return;
-      set({ breakdown, breakdownError: null });
+      const breakdown = await cached.promise;
+      if (mySeq !== breakdownSeq || get().breakdownDimension !== dimension || !isCurrentContext(get, context.key)) return;
+      set({ breakdown, breakdownLoading: false, breakdownError: null });
     } catch (error) {
-      if (mySeq !== breakdownSeq) return;
+      if (mySeq !== breakdownSeq || !isCurrentContext(get, context.key)) return;
       // Scoped to the breakdown section. The global `error` is reserved for
       // `refresh()`, which fetches every report at once: setting it here
       // replaced the whole dashboard with a failure screen even though the
       // overview, series and model tables had all loaded fine.
-      set({ breakdownError: errorMessage(error), breakdown: null });
+      set({ breakdownLoading: false, breakdownError: errorMessage(error), breakdown: null });
     }
   },
 
-  refreshExperiment: async () => {
-    const range = get().currentRange();
-    if (!range) return;
-    const filters = selectionFilters(
-      { ...emptyFilters(), includeSidechain: get().includeSidechain },
-      get().selection,
-      get().leafDimension,
-    );
+  refreshExperiment: async (options = {}) => {
+    const context = cacheContext(get());
+    if (!context) return;
     const mySeq = ++experimentSeq;
-    set({ experimentLoading: true, experimentError: null });
-    try {
+    const cached = fetchOnce(periodEntry(context.key).experiment, async (): Promise<ExperimentData> => {
       const [efficiency, ruleCheck] = await Promise.all([
-        ailogEfficiency(range, filters),
-        ailogRuleCheck(range, filters),
+        ailogEfficiency(context.range, context.filters),
+        ailogRuleCheck(context.range, context.filters),
       ]);
-      if (mySeq !== experimentSeq) return;
+      return { efficiency, ruleCheck };
+    }, options.force);
+    if (cached.pending) set({ experimentLoading: true, experimentError: null });
+    try {
+      const { efficiency, ruleCheck } = await cached.promise;
+      if (mySeq !== experimentSeq || !isCurrentContext(get, context.key)) return;
       set({ efficiency, ruleCheck, experimentLoading: false });
     } catch (error) {
-      if (mySeq !== experimentSeq) return;
+      if (mySeq !== experimentSeq || !isCurrentContext(get, context.key)) return;
       set({ experimentLoading: false, experimentError: errorMessage(error), efficiency: null, ruleCheck: null });
     }
   },
 
-  refreshPrices: async () => {
-    const mySeq = ++priceSeq;
-    set({ pricesLoading: true, pricesError: null });
-    try {
-      const prices = await ailogGetPrices();
-      if (mySeq !== priceSeq) return;
-      set({ prices, pricesLoading: false });
-    } catch (error) {
-      if (mySeq !== priceSeq) return;
-      set({ pricesLoading: false, pricesError: errorMessage(error) });
+  loadSegment: async (segment, options = {}) => {
+    if (segment === "when") return get().refreshUsage(options);
+    if (segment === "what") {
+      await Promise.all([get().refresh(options), get().refreshBreakdown(options)]);
+      return;
     }
+    if (segment === "how") return get().refreshExperiment(options);
+    if (segment === "daily") return get().refreshDigest(undefined, options);
+    return get().refreshLearning({
+      kinds: segment === "recurring" ? ["gotcha", "cause"] : ["decision", "constraint", "verified"],
+      includeRankings: segment === "recurring",
+      force: options.force,
+    });
   },
 
-  savePrice: async (entry) => {
-    set({ pricesError: null, repricedSessions: null });
-    try {
-      const result = await ailogSetPrice(entry);
-      set({ repricedSessions: result.repricedSessions });
-      return true;
-    } catch (error) {
-      set({ pricesError: errorMessage(error) });
-      return false;
+  preloadSegments: async (visible) => {
+    // Keep this serial. The foreground `loadSegment` does not await the queue,
+    // so a newly selected segment can still start immediately and share an
+    // already-running resource request without a second invoke.
+    const context = cacheContext(get());
+    if (!context) return;
+    const segments: PanelSegment[] = ["when", "what", "how", "recurring"];
+    for (const segment of segments) {
+      if (!isCurrentContext(get, context.key)) return;
+      if (segment !== visible) await get().loadSegment(segment);
     }
   },
 
@@ -585,7 +728,10 @@ export const useAilogStore = create<AilogState>((set, get) => ({
 
   applyIndexProgress: (indexProgress) => {
     set((state) => ({ index: { ...state.index, progress: indexProgress } }));
-    if (indexProgress.phase === "done") void get().refreshIndexStatus();
+    if (indexProgress.phase === "done") {
+      invalidateAilogCaches();
+      void get().refreshIndexStatus();
+    }
   },
 
   startIndex: async (full) => {
@@ -621,7 +767,10 @@ export const useAilogStore = create<AilogState>((set, get) => ({
 
   applySummarizeProgress: (summarizeProgress) => {
     set((state) => ({ summarize: { ...state.summarize, progress: summarizeProgress } }));
-    if (summarizeProgress.phase === "done") void get().refreshSummarizeStatus();
+    if (summarizeProgress.phase === "done") {
+      invalidateAilogCaches();
+      void get().refreshSummarizeStatus();
+    }
   },
 
   startSummarize: async (force = false) => {
@@ -651,15 +800,20 @@ export const useAilogStore = create<AilogState>((set, get) => ({
 
   stepDigestDate: (days) => get().setDigestDate(shiftLocalDay(get().digestDate, days)),
 
-  refreshDigest: async (date = get().digestDate) => {
+  refreshDigest: async (date = get().digestDate, options = {}) => {
     const mySeq = ++digestSeq;
-    set({ digestLoading: true, digestError: null });
+    const cached = fetchOnce(
+      mapResource(digestCache, date),
+      () => ailogDigestGet(date),
+      options.force,
+    );
+    if (cached.pending) set({ digestLoading: true, digestError: null });
     try {
-      const digestReport = await ailogDigestGet(date);
-      if (mySeq !== digestSeq) return;
+      const digestReport = await cached.promise;
+      if (mySeq !== digestSeq || get().digestDate !== date) return;
       set({ digestReport, digestLoading: false, digestError: null });
     } catch (error) {
-      if (mySeq !== digestSeq) return;
+      if (mySeq !== digestSeq || get().digestDate !== date) return;
       set({ digestReport: null, digestLoading: false, digestError: errorMessage(error) });
     }
   },
@@ -671,6 +825,10 @@ export const useAilogStore = create<AilogState>((set, get) => ({
     try {
       const digestReport = await ailogDigestGenerate(date, force);
       if (mySeq !== digestSeq) return;
+      const cached = mapResource(digestCache, date);
+      cached.generation += 1;
+      cached.pending = undefined;
+      cached.value = digestReport;
       set({ digestReport, digestLoading: false, digestError: null });
     } catch (error) {
       if (mySeq !== digestSeq) return;
@@ -682,12 +840,12 @@ export const useAilogStore = create<AilogState>((set, get) => ({
 
   setFindingKind: (findingKind) => {
     learningSeq += 1;
-    set({ findingKind, findings: null, learningRawOffset: 0, learningHasMore: false });
+    set({ findingKind, learningRawOffset: 0, learningHasMore: false });
   },
 
   setFindingQuery: (findingQuery) => {
     learningSeq += 1;
-    set({ findingQuery, findings: null, learningRawOffset: 0, learningHasMore: false });
+    set({ findingQuery, learningRawOffset: 0, learningHasMore: false });
   },
 
   setUsageMetric: (usageMetric) => set({ usageMetric }),
@@ -699,52 +857,63 @@ export const useAilogStore = create<AilogState>((set, get) => ({
    * from SQL aggregates alone, so a failure in any other report cannot blank
    * it, and its own failure is scoped to `usageError`.
    */
-  refreshUsage: async () => {
-    const range = get().currentRange();
-    if (!range) return;
-    const filters = selectionFilters(
-      { ...emptyFilters(), includeSidechain: get().includeSidechain },
-      get().selection,
-      get().leafDimension,
-    );
+  refreshUsage: async (options = {}) => {
+    const context = cacheContext(get());
+    if (!context) return;
     const mySeq = ++usageSeq;
-    set({ usageLoading: true, usageError: null });
+    const bucket = get().usageBucket;
+    const groupBy = context.granularity === "provider"
+      ? "provider"
+      : context.granularity === "raw"
+        ? "model_raw"
+        : "model";
+    const cached = fetchOnce(
+      mapResource(periodEntry(context.key).usage, `${bucket}:${groupBy}`),
+      async (): Promise<UsageData> => {
+        const [series, rhythm] = await Promise.all([
+          ailogSeries(context.range, context.filters, { bucket, groupBy }),
+          ailogUsageRhythm(context.range, context.filters),
+        ]);
+        return { series, rhythm };
+      },
+      options.force,
+    );
+    if (cached.pending) set({ usageLoading: true, usageError: null });
     try {
-      const [usageSeries, usageRhythm] = await Promise.all([
-        ailogSeries(range, filters, {
-          bucket: get().usageBucket,
-          // `model` is the family; `model_raw` keeps sol / terra / luna apart.
-          groupBy: get().granularity === "raw" ? "model_raw" : "model",
-        }),
-        ailogUsageRhythm(range, filters),
-      ]);
-      if (mySeq !== usageSeq) return;
+      const { series: usageSeries, rhythm: usageRhythm } = await cached.promise;
+      if (mySeq !== usageSeq || !isCurrentContext(get, context.key)) return;
       set({ usageSeries, usageRhythm, usageLoading: false, usageError: null });
     } catch (error) {
-      if (mySeq !== usageSeq) return;
+      if (mySeq !== usageSeq || !isCurrentContext(get, context.key)) return;
       set({ usageLoading: false, usageError: errorMessage(error) });
     }
   },
 
   refreshLearning: async (options = {}) => {
-    const { append = false, kinds, includeRankings = true } = options;
-    const range = get().currentRange();
-    if (!range) return;
-    const filters = selectionFilters(
-      { ...emptyFilters(), includeSidechain: get().includeSidechain },
-      get().selection,
-      get().leafDimension,
-    );
+    const { append = false, kinds, includeRankings = true, force = false } = options;
+    const context = cacheContext(get());
+    if (!context) return;
     const previous = get().findings;
     const offset = append ? get().learningRawOffset : 0;
     const mySeq = ++learningSeq;
-    set({ learningLoading: true, learningError: null });
+    const findingKind = get().findingKind;
+    const findingQuery = get().findingQuery;
+    const entry = periodEntry(context.key);
+    const cacheKey = JSON.stringify({ findingKind, findingQuery, offset });
+    const cached = fetchOnce(
+      mapResource(entry.learning, cacheKey),
+      async (): Promise<LearningData> => ({
+        findings: await ailogFindings(context.range, context.filters, { kind: findingKind, query: findingQuery, limit: FINDINGS_PAGE_SIZE, offset }),
+      }),
+      force,
+    );
+    const ranking = includeRankings
+      ? fetchOnce(entry.rankings, () => ailogReworkRankings(context.range, context.filters), force)
+      : { promise: Promise.resolve(null), pending: false };
+    if (cached.pending || ranking.pending) set({ learningLoading: true, learningError: null });
     try {
-      const [findings, rankings] = await Promise.all([
-        ailogFindings(range, filters, { kind: get().findingKind, query: get().findingQuery, limit: FINDINGS_PAGE_SIZE, offset }),
-        includeRankings ? (append && get().rankings ? Promise.resolve(get().rankings) : ailogReworkRankings(range, filters)) : Promise.resolve(null),
-      ]);
-      if (mySeq !== learningSeq) return;
+      const [{ findings }, rankings] = await Promise.all([cached.promise, ranking.promise]);
+      if (mySeq !== learningSeq || !isCurrentContext(get, context.key)) return;
       const filteredRows = kinds ? findings.rows.filter((row) => kinds.includes(row.kind)) : findings.rows;
       const mergedRows = append && previous
         ? [...previous.rows, ...filteredRows].filter((row, index, rows) => rows.findIndex((candidate) => candidate.sessionKind === row.sessionKind && candidate.sessionId === row.sessionId && candidate.kind === row.kind && candidate.date === row.date && candidate.text === row.text) === index)
@@ -759,7 +928,7 @@ export const useAilogStore = create<AilogState>((set, get) => ({
         learningError: null,
       });
     } catch (error) {
-      if (mySeq !== learningSeq) return;
+      if (mySeq !== learningSeq || !isCurrentContext(get, context.key)) return;
       set({ learningLoading: false, learningError: errorMessage(error) });
     }
   },
@@ -773,7 +942,7 @@ export function __resetAilogStoreForTests(): void {
   learningSeq = 0;
   breakdownSeq = 0;
   experimentSeq = 0;
-  priceSeq = 0;
   usageSeq = 0;
+  invalidateAilogCaches();
   useAilogStore.setState({ ...initialState });
 }

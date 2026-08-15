@@ -13,15 +13,27 @@ export interface Toast {
   kind: ToastKind;
   createdAt: number;
   action?: ToastAction;
+  actions?: ToastAction[];
 }
 
 interface ToastState {
   toasts: Toast[];
-  pushToast: (message: string, kind?: ToastKind, action?: ToastAction) => string;
+  pushToast: (
+    message: string,
+    kind?: ToastKind,
+    action?: ToastAction,
+    actions?: ToastAction[],
+    durationMs?: number,
+  ) => string;
   dismissToast: (id: string) => void;
 }
 
 const TOAST_AUTO_DISMISS_MS = 8000;
+/**
+ * Undo is the only safety net for actions that already happened, so its toast
+ * outlives the informational default.
+ */
+export const TOAST_UNDO_DISMISS_MS = 20000;
 const TOAST_LIMIT = 3;
 const toastDismissTimers = new Map<string, ReturnType<typeof globalThis.setTimeout>>();
 
@@ -39,7 +51,7 @@ function clearToastTimer(id: string): void {
 
 export const useToastStore = create<ToastState>((set, get) => ({
   toasts: [],
-  pushToast: (message, kind = "error", action) => {
+  pushToast: (message, kind = "error", action, actions, durationMs) => {
     const id = createToastId();
     const toast: Toast = {
       id,
@@ -47,6 +59,7 @@ export const useToastStore = create<ToastState>((set, get) => ({
       kind,
       createdAt: Date.now(),
       action,
+      actions: actions?.slice(0, 2),
     };
 
     set((state) => {
@@ -62,7 +75,7 @@ export const useToastStore = create<ToastState>((set, get) => ({
 
     const timer = globalThis.setTimeout(() => {
       get().dismissToast(id);
-    }, TOAST_AUTO_DISMISS_MS);
+    }, durationMs ?? TOAST_AUTO_DISMISS_MS);
     toastDismissTimers.set(id, timer);
 
     return id;

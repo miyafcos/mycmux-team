@@ -25,6 +25,7 @@ import {
   isDirectoryLikeUri,
   mergeResolvedPathLinkMatches,
   registerArtifactLinkProvider,
+  resolveTextLocalPathLinks,
 } from "../../src/components/terminal/terminalLinkProvider";
 
 const mockedResolveLocalPathLinks = vi.mocked(resolveLocalPathLinks);
@@ -263,6 +264,44 @@ describe("terminal local file path links", () => {
     expect(isDirectoryLikeUri(" C:\\ ")).toBe(true);
     expect(isDirectoryLikeUri("C:\\Users\\miyaz\\report.pdf")).toBe(false);
     expect(isDirectoryLikeUri("file:///C:/Users/miyaz/report.pdf")).toBe(false);
+  });
+
+  it("resolves Japanese Dropbox paths through the provider cache for dashboard text", async () => {
+    const path = "C:\\Users\\miyaz\\エデュ・プラニング合同会社 Dropbox\\算数\\下書き_260814.md";
+    mockedResolveLocalPathLinks.mockImplementation(async (candidates) => candidates.map((candidate) =>
+      candidate === path ? { existingPrefix: path, isDir: false } : null,
+    ));
+
+    const first = await resolveTextLocalPathLinks(`確認: ${path}`);
+    const second = await resolveTextLocalPathLinks(`再確認: ${path}`);
+
+    expect(first).toEqual([expect.objectContaining({ text: path, activationUri: path })]);
+    expect(second).toEqual([expect.objectContaining({ text: path, activationUri: path })]);
+    expect(mockedResolveLocalPathLinks).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps resolved directory and file activation branches distinct", async () => {
+    const directory = "C:\\Users\\miyaz\\Dropbox\\成果物\\";
+    const file = "C:\\Users\\miyaz\\Dropbox\\成果物\\report.pdf";
+    mockedResolveLocalPathLinks.mockImplementation(async (candidates) => candidates.map((candidate) => {
+      if (candidate.startsWith(file)) return { existingPrefix: file, isDir: false };
+      if (candidate.startsWith(directory)) return { existingPrefix: directory, isDir: true };
+      return null;
+    }));
+
+    const directoryLinks = await resolveTextLocalPathLinks(directory);
+    const fileLinks = await resolveTextLocalPathLinks(file);
+
+    expect(directoryLinks).toEqual([expect.objectContaining({ text: directory, activationUri: directory })]);
+    expect(fileLinks).toEqual([expect.objectContaining({ text: file, activationUri: file })]);
+    expect(isDirectoryLikeUri(directoryLinks[0].activationUri)).toBe(true);
+    expect(isDirectoryLikeUri(fileLinks[0].activationUri)).toBe(false);
+  });
+
+  it("does not link paths that the shared resolver cannot find", async () => {
+    mockedResolveLocalPathLinks.mockImplementation(async (candidates) => candidates.map(() => null));
+
+    await expect(resolveTextLocalPathLinks("C:\\missing\\not-real.pdf")).resolves.toEqual([]);
   });
 
   it("extracts bare extension-less candidates with original spans", () => {

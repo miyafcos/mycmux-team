@@ -17,7 +17,7 @@ export function findingKindsForSegment(segment: InsightSegment): FindingKind[] {
 export function loadersForSegment(surface: AilogSurface, segment: PanelSegment): string[] {
   if (surface === "record") {
     if (segment === "when") return ["usage"];
-    if (segment === "what") return ["breakdown", "prices"];
+    if (segment === "what") return ["breakdown"];
     return ["experiment"];
   }
   if (segment === "daily") return ["digest"];

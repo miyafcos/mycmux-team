@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { getRemoteBindAll, getRemoteInfo, rotateRemoteToken, setRemoteBindAll, type RemoteInfo } from "../../../lib/ipc";
+import { getRemoteBindAll, getRemoteEnabled, getRemoteInfo, rotateRemoteToken, setRemoteBindAll, setRemoteEnabled, type RemoteInfo } from "../../../lib/ipc";
 import { settingsStrings } from "../settingsStrings";
 import { dialogButtonStyle, sectionHeadingStyle } from "../tabStyles";
 
@@ -14,6 +14,8 @@ export function RemoteTab() {
   const [remoteMsg, setRemoteMsg] = useState<string>("");
   const [remoteBindAll, setRemoteBindAllValue] = useState(false);
   const [remoteBindAllLoading, setRemoteBindAllLoading] = useState(false);
+  const [remoteEnabled, setRemoteEnabledValue] = useState(false);
+  const [remoteEnabledLoading, setRemoteEnabledLoading] = useState(false);
 
   const loadRemoteInfo = async () => {
     setRemoteLoading(true);
@@ -29,13 +31,39 @@ export function RemoteTab() {
   };
 
   useEffect(() => {
-    void loadRemoteInfo();
+    getRemoteEnabled()
+      .then((enabled) => {
+        setRemoteEnabledValue(enabled);
+        if (enabled) void loadRemoteInfo();
+      })
+      .catch((e) => console.error("Failed to load remote enabled setting", e));
     getRemoteBindAll()
       .then(setRemoteBindAllValue)
       .catch((e) => console.error("Failed to load remote bind-all setting", e));
     // Load once when this tab becomes active (mount-triggered).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const handleToggleRemoteEnabled = async (checked: boolean) => {
+    setRemoteEnabledLoading(true);
+    setRemoteMsg("");
+    try {
+      const applied = await setRemoteEnabled(checked);
+      setRemoteEnabledValue(applied);
+      if (applied) {
+        await loadRemoteInfo();
+        setRemoteMsg("リモート接続を開始しました");
+      } else {
+        setRemoteInfo(null);
+        setRemoteMsg("リモート接続を停止しました");
+      }
+    } catch (e) {
+      console.error("Failed to toggle remote server", e);
+      setRemoteMsg("リモート接続の切り替えに失敗しました");
+    } finally {
+      setRemoteEnabledLoading(false);
+    }
+  };
 
   const handleToggleRemoteBindAll = async (checked: boolean) => {
     setRemoteBindAllLoading(true);
@@ -44,8 +72,8 @@ export function RemoteTab() {
       setRemoteBindAllValue(applied);
       setRemoteMsg(
         applied
-          ? "LAN公開をONにしました。次回アプリ再起動後に反映されます。"
-          : "LAN公開をOFFにしました。次回アプリ再起動後に反映されます。"
+          ? "LAN公開をONにしました。次回の有効化時に反映されます。"
+          : "LAN公開をOFFにしました。次回の有効化時に反映されます。"
       );
     } catch (e) {
       console.error("Failed to save remote bind-all setting", e);
@@ -94,6 +122,11 @@ export function RemoteTab() {
         token末尾: {remoteInfo?.token_suffix ?? "----"}
       </div>
 
+      <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "var(--cmux-text)", cursor: remoteEnabledLoading ? "wait" : "pointer", marginBottom: 12 }}>
+        <input type="checkbox" checked={remoteEnabled} disabled={remoteEnabledLoading} onChange={(e) => handleToggleRemoteEnabled(e.target.checked)} />
+        <span>リモート接続を有効にする</span>
+      </label>
+
       <label
         style={{
           display: "flex",
@@ -108,14 +141,14 @@ export function RemoteTab() {
         <input
           type="checkbox"
           checked={remoteBindAll}
-          disabled={remoteBindAllLoading}
+          disabled={remoteBindAllLoading || !remoteEnabled}
           onChange={(e) => handleToggleRemoteBindAll(e.target.checked)}
         />
         <span>リモートを LAN に公開する（0.0.0.0 で待受）</span>
       </label>
       <div style={{ fontSize: 11, color: "var(--cmux-text-dim)", marginBottom: 14 }}>
         OFF（既定）では 127.0.0.1 のみで待受し、同一PCからしか接続できません。ON にすると同じ
-        LAN / Tailscale 上の iPhone から接続できます。変更は次回アプリ再起動後に反映されます。
+        LAN / Tailscale 上の iPhone から接続できます。有効化時に反映されます。
       </div>
 
       {remoteLoading && <div style={{ fontSize: 12, color: "var(--cmux-text-dim)", marginBottom: 10 }}>読み込み中…</div>}
@@ -125,7 +158,7 @@ export function RemoteTab() {
         </div>
       )}
 
-      {remoteInfo && (
+      {remoteEnabled && remoteInfo && (
         <>
           <div
             style={{
