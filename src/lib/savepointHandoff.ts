@@ -25,10 +25,11 @@ const TARGET_LABELS: Record<AgentSessionKind, string> = {
   claude: "Claude Code",
   codex: "Codex",
   "claude-codex": "Claude + Codex",
+  grok: "Grok Build",
 };
 
 function normalizeTargetKind(value: string | undefined): AgentSessionKind | null {
-  if (value === "claude" || value === "codex" || value === "claude-codex") return value;
+  if (value === "claude" || value === "codex" || value === "claude-codex" || value === "grok") return value;
   return null;
 }
 

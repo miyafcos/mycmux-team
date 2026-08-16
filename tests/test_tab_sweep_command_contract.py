@@ -124,10 +124,12 @@ def test_tab_sweep_ui_contract_covers_all_entry_points_and_safety_copy() -> None
     assert 'action: "tab.sweep"' in keybindings
     assert 'defaultShortcut: "ctrl+shift+k"' in keybindings
     assert 'case "tab.sweep":' in app_shell
-    assert "window.dispatchEvent(new Event(TAB_SWEEP_OPEN_EVENT))" in app_shell
+    assert "openTabSweepInDashboard();" in app_shell
     assert "matchesTabSweepCommand(query)" in palette
     assert "タブ掃除を開く" in palette
-    assert "window.dispatchEvent(new Event(TAB_SWEEP_OPEN_EVENT))" in palette
+    assert "openTabSweepInDashboard" in palette
+    assert "useDashboardViewStore.getState().openView()" in sweep
+    assert "window.setTimeout(() => window.dispatchEvent(new Event(TAB_SWEEP_OPEN_EVENT)), 0)" in sweep
 
 
 def test_naming_mode_is_wired_to_the_fixed_sonnet_model() -> None:

@@ -253,7 +253,16 @@ def test_env_and_no_placement_options_routes_to_same_pane_tab(
     assert args["activate"] is False
 
 
-def test_activate_flag_focuses_same_pane_tab(
+def test_grok_target_routes_to_same_pane_tab(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MYCMUX_PANE_SESSION_ID", PANE_SESSION_ID)
+    cmd, args = request_for_spawn(["--target", "grok"])
+    assert cmd == "pane.spawn_tab"
+    assert args["target"] == "grok"
+
+
+def test_activate_flag_requests_same_pane_tab_activation_without_foreground_switch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("MYCMUX_PANE_SESSION_ID", PANE_SESSION_ID)
@@ -269,7 +278,7 @@ def test_split_flag_forces_split_pane(monkeypatch: pytest.MonkeyPatch) -> None:
     assert args["activate"] is False
 
 
-def test_split_activate_explicitly_switches_focus(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_split_activate_requests_activation_without_foreground_switch(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("MYCMUX_PANE_SESSION_ID", PANE_SESSION_ID)
     cmd, args = request_for_spawn(["--target", "claude", "--split", "--activate"])
     assert cmd == "pane.spawn"
@@ -344,7 +353,7 @@ def test_spawn_tab_defaults_to_background() -> None:
     assert args["activate"] is False
 
 
-def test_spawn_tab_activate_flag_switches_focus() -> None:
+def test_spawn_tab_activate_flag_requests_activation_without_foreground_switch() -> None:
     cmd, args = request_for_spawn_tab(["--activate", "--", "cmd.exe", "/c", "echo ok"])
     assert cmd == "pane.spawn_tab"
     assert args["commandArgv"] == ["cmd.exe", "/c", "echo ok"]

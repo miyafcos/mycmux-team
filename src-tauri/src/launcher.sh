@@ -295,6 +295,9 @@ __track_command_session() {
       *" --session-id "*|*" --session-id="*) return ;;
     esac
     __track_claude_session "$pane_id" &
+  elif [[ "$cmd" == grok || "$cmd" == grok\ * ]]; then
+    # Grok receives an explicit id before launch; its log format is not tracked here.
+    return
   elif [[ "$cmd" == *"codex"* ]]; then
     __track_codex_session "$pane_id" &
   fi
@@ -340,6 +343,54 @@ __claude_needs_new_session_id() {
 
   case " $cmd " in
     *" --resume "*|*" --resume="*|*" --continue "*|*" --continue="*|*" --session-id "*|*" --session-id="*|*" -r "*|*" -r="*)
+      return 1
+      ;;
+  esac
+
+  return 0
+}
+
+# Grok stores one directory per conversation under a percent-encoded cwd bucket:
+# ~/.grok/sessions/C%3A%5CUsers%5C.../<session-id>/. Reusing an id that already
+# has a directory makes grok exit immediately with "Session ID is already in
+# use", so an id has to be checked against every bucket before it is handed over.
+__grok_session_id_taken() {
+  local id="$1" bucket
+  local root="$HOME/.grok/sessions"
+  [ -n "$id" ] || return 0
+  [ -d "$root" ] || return 1
+  for bucket in "$root"/*; do
+    [ -d "$bucket/$id" ] && return 0
+  done
+  return 1
+}
+
+# MYCMUX_TAB_ID is stable for the lifetime of a tab, so relaunching grok in the
+# same tab would collide with the first launch. Fall back to fresh UUIDs then.
+__grok_new_session_id() {
+  local candidate
+  if [ -n "${MYCMUX_TAB_ID:-}" ] && ! __grok_session_id_taken "$MYCMUX_TAB_ID"; then
+    echo "$MYCMUX_TAB_ID"
+    return
+  fi
+  while true; do
+    candidate="$(__make_uuid)" || return
+    [ -z "$candidate" ] && return
+    __grok_session_id_taken "$candidate" && continue
+    echo "$candidate"
+    return
+  done
+}
+
+__grok_needs_new_session_id() {
+  local cmd="$1"
+  case "$cmd" in
+    grok|grok\ *) ;;
+    *) return 1 ;;
+  esac
+
+  case " $cmd " in
+    *" --resume "*|*" --resume="*|*" --continue "*|*" --continue="*|*" --session-id "*|*" --session-id="*|*" -r "*|*" -r="*|*" -c "*|*" -c="*|*" -s "*|*" -s="*)
       return 1
       ;;
   esac
@@ -397,11 +448,16 @@ __open_menu_fd() {
   if [ -n "${__CMUX_MENU_FD:-}" ]; then
     return
   fi
-  if exec {__CMUX_MENU_FD}<>/dev/tty 2>/dev/null; then
-    :
-  else
-    __CMUX_MENU_FD=0
-  fi
+  # Opening /dev/tty as a second descriptor breaks Grok Build's TUI: after the
+  # menu has done it, grok starts and runs normally (MCP up, session created,
+  # slash commands advertised) but never paints a single frame, and the pane
+  # sits on "Starting..." forever. Closing the descriptor again before launching
+  # does not undo it — under MSYS the damage is done by the open itself, and it
+  # outlives the menu, so even typing `grok` at the shell afterwards stays blank.
+  # Claude and Codex are unaffected, which is why this went unnoticed until Grok
+  # was added. stdin is the pane's console in every mycmux pane, so read it
+  # directly and keep /dev/tty out of the picture.
+  __CMUX_MENU_FD=0
 }
 
 # メニュー用の1入力イベント読み取り (キーボード専用)。
@@ -484,6 +540,15 @@ if [ -n "$MYCMUX_HANDOFF" ]; then
       __track_codex_session "$MYCMUX_PANE_SESSION_ID" &
       codex --no-alt-screen "$__bootstrap"
       ;;
+    grok)
+      __handoff_sid="$(__grok_new_session_id)"
+      if [ -n "$__handoff_sid" ]; then
+        __write_session_mapping "$MYCMUX_PANE_SESSION_ID" "grok" "$__handoff_sid"
+        grok --no-alt-screen --session-id "$__handoff_sid" --permission-mode bypassPermissions "$__bootstrap"
+      else
+        grok --no-alt-screen --permission-mode bypassPermissions "$__bootstrap"
+      fi
+      ;;
     claude-codex)
       __track_claude_codex_session "$MYCMUX_PANE_SESSION_ID" &
       claude-codex "$__bootstrap"
@@ -539,6 +604,18 @@ if [ -n "$MYCMUX_RESUME" ]; then
         eval "codex resume --no-alt-screen --last"
       fi
       ;;
+    grok*)
+      if [ -n "$MYCMUX_SESSION_ID" ]; then
+        if [ "${MYCMUX_RESUME_FORK:-}" = "1" ]; then
+          grok --no-alt-screen --resume "$MYCMUX_SESSION_ID" --fork-session
+        else
+          __write_session_mapping "$MYCMUX_PANE_SESSION_ID" "grok" "$MYCMUX_SESSION_ID"
+          grok --no-alt-screen --resume "$MYCMUX_SESSION_ID"
+        fi
+      else
+        grok --no-alt-screen --continue
+      fi
+      ;;
   esac
   return 0 2>/dev/null || exit 0
 fi
@@ -551,26 +628,23 @@ if [ -n "$MYCMUX_LAUNCH_TARGET" ]; then
     claude-resume)
       cmd="claude --allow-dangerously-skip-permissions --permission-mode auto --resume"
       ;;
-    claude-dangerous)
-      cmd="claude --dangerously-skip-permissions --permission-mode bypassPermissions"
-      ;;
     codex)
       cmd="codex --no-alt-screen"
       ;;
     codex-resume)
       cmd="codex resume --no-alt-screen"
       ;;
-    codex-dangerous)
-      cmd="codex --no-alt-screen --dangerously-bypass-approvals-and-sandbox"
+    grok)
+      cmd="grok --no-alt-screen --permission-mode auto"
+      ;;
+    grok-resume)
+      cmd="grok --no-alt-screen --resume"
       ;;
     claude-codex)
       cmd="claude-codex --backend gpt"
       ;;
     claude-codex-resume)
       cmd="claude-codex --resume"
-      ;;
-    claude-codex-dangerous)
-      cmd="claude-codex --dangerously-skip-permissions --permission-mode bypassPermissions"
       ;;
     codex-fugu-ultra)
       cmd="codex --no-alt-screen --profile fugu-ultra"
@@ -1025,16 +1099,15 @@ if [ -z "$cmd" ]; then
     "Claude Code"
     "Codex"
     "claude-codex (Codex Models)"
+    "Grok Build"
     "Codex (Fugu Ultra)"
     "claude-codex (Fugu)"
     "claude-codex (Open Models)"
     "Antigravity (agy)"
-    "Claude Code (dangerous)"
-    "Codex (dangerous)"
-    "claude-codex (dangerous)"
     "Claude Code (resume)"
     "Codex (resume)"
     "claude-codex (resume)"
+    "Grok Build (resume)"
     "Custom..."
     "Change directory (開発)..."
     "Change directory (案件)..."
@@ -1045,16 +1118,15 @@ if [ -z "$cmd" ]; then
     "claude --allow-dangerously-skip-permissions --permission-mode auto"
     "codex --no-alt-screen"
     "claude-codex --backend gpt"
+    "grok --no-alt-screen --permission-mode auto"
     "codex --no-alt-screen --profile fugu-ultra"
     "claude-codex --backend fugu"
     "claude-codex --backend fcc"
     "agy"
-    "claude --dangerously-skip-permissions --permission-mode bypassPermissions"
-    "codex --no-alt-screen --dangerously-bypass-approvals-and-sandbox"
-    "claude-codex --dangerously-skip-permissions --permission-mode bypassPermissions"
     "claude --allow-dangerously-skip-permissions --permission-mode auto --resume"
     "codex resume --no-alt-screen"
     "claude-codex --resume"
+    "grok --no-alt-screen --resume"
     "__custom__"
     "__dir_dev__"
     "__dir_anken__"
@@ -1123,7 +1195,7 @@ if [ -z "$cmd" ]; then
         fi
         break
         ;;
-      slash) selected=13; break ;;
+      slash) selected=12; break ;;
       dirkey) __launch_dir_menu dev ;;
       ankenkey) __launch_dir_menu anken ;;
       digit)
@@ -1138,7 +1210,6 @@ if [ -z "$cmd" ]; then
                 4) selected=13 ;;
                 5) selected=14 ;;
                 6) selected=15 ;;
-                7) selected=16 ;;
                 *) selected=0 ;;
               esac
             else
@@ -1208,6 +1279,13 @@ if [ -n "$cmd" ]; then
     if [ -n "$__sid" ]; then
       __write_session_mapping "$MYCMUX_PANE_SESSION_ID" "claude" "$__sid"
       cmd="claude --session-id $__sid${cmd#claude}"
+    fi
+  fi
+  if __grok_needs_new_session_id "$cmd"; then
+    __sid="$(__grok_new_session_id)"
+    if [ -n "$__sid" ]; then
+      __write_session_mapping "$MYCMUX_PANE_SESSION_ID" "grok" "$__sid"
+      cmd="grok --session-id $__sid${cmd#grok}"
     fi
   fi
   __track_command_session "$cmd" "$MYCMUX_PANE_SESSION_ID"

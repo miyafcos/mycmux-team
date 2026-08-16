@@ -2,6 +2,9 @@
 // 用語は「ワークスペース > タブ > ペイン」(2026-08-11 確定)。
 // 表示方針: 会話の正本は livebrief の意味イベント。生端末は小さな切替で確認し、
 // 「裏」「観測外」のような断定表示は置かない (2026-08-12 段3)。
+type PrimaryActionLabel = "openSession" | "answerQuestion" | "retryWorkItem" | "reviewConflict" | "raiseBudget" | "acknowledgeGoalReached";
+type AttentionKindLabel = "agentAsked" | "workStopped" | "reportsComplete" | "completionWithoutTests" | "budgetReached" | "outOfScopeWrite" | "conflictDetected" | "goalReached" | "nextItemReady" | "workOrderStalled";
+
 export const dashboardStrings = {
   buttonTitle: "ダッシュボード",
   panelAriaLabel: "ダッシュボード — 全ペイン一覧",
@@ -11,7 +14,7 @@ export const dashboardStrings = {
   stateNeedsReview: "要確認",
   stateError: "エラー",
   stateRunning: "作業中",
-  stateNoUpdate: "停滞",
+  stateNoUpdate: "出力なし",
   stateDone: "完了",
   stateIdle: "待機",
   stateStopped: "停止",
@@ -27,7 +30,7 @@ export const dashboardStrings = {
   breadcrumb: (ws: string, tab: number | string, pane: number | string): string => `${ws} › タブ${tab} › P${pane}`,
   elapsed: (min: number): string => (min < 60 ? `${min}分` : `${Math.floor(min / 60)}時間${min % 60}分`),
   // 停滞理由 (P5: 常時検知の3分類)
-  stallNoOutput: "5分以上 出力なし",
+  stallNoOutput: "5分 出力なし",
   stallQueuedInput: "未送信の指示が残っている",
   stallPtyDead: "プロセスが終了している",
   stallSince: (min: number): string => `${min}分 無反応`,
@@ -45,18 +48,21 @@ export const dashboardStrings = {
   askStripTitle: "質問",
   askStripAriaLabel: "未解決の質問",
   askStripEmpty: "なし — 全員動いています",
-  watchTitle: "監視",
+  watchTitle: "委譲の見守り",
   watchUnmeasured: "計測なし",
   watchRunning: "動作中",
   watchStopped: "停止",
   watchHidden: "ウィンドウ非表示のため停止",
   watchNotMain: "子ウィンドウのため停止",
-  watchDisabled: "監視設定がオフ",
-  watchNotifyOff: "通知オフ",
+  watchDisabled: "見守りがオフ",
+  watchNotifyOff: "見守りの通知オフ",
   layoutMinimapTitle: "配置図",
   layoutMinimapAriaLabel: "ワークスペースの読取専用配置図",
   watchLastTick: (value: string): string => `最終チェック ${value}`,
   watchNextTick: (value: string): string => `次回 ${value}`,
+  watchDueIn: (minutes: number): string => `${minutes}分後`,
+  watchJustNow: "たった今",
+  watchAgo: (minutes: number): string => `${minutes}分前`,
   backToSession: "セッションへ戻る",
   agentFilterTitle: "エージェント",
   allWorkspaces: "全て",
@@ -112,8 +118,10 @@ export const dashboardStrings = {
   composerSend: "送信 ⏎",
   composerAriaLabel: "選択中のペインへの指示入力",
   composerNotStarted: "まだ開いていないタブなので送信できません",
-  sendConfirmedOnScreen: "送信を画面で確認しました",
-  sendUnverified: "送信しましたが画面で確認できませんでした",
+  sendConfirmedOnScreen: "入力後の画面更新を確認しました",
+  sendUnverified: "入力をキューに追加しましたが、画面で確認できませんでした",
+  sendUnverifiedTargetUnmounted: "入力をキューに追加しましたが、対象タブが未マウントのため画面で確認できませんでした",
+  sendSubmitUnconfirmed: "入力をキューに追加しましたが、Enter 後の画面更新を確認できませんでした（自動再送しません）",
   sendFailedBeforeWrite: "送信できませんでした (実行前にエラー)",
   // 段6b: 構造化 @メンションによる決定的な宛先指定。
   mentionTokensAriaLabel: "指定した宛先",
@@ -135,24 +143,140 @@ export const dashboardStrings = {
   dispatchResults: (count: number): string => `${count}件の送達結果`,
   dispatchRetryFailed: (count: number): string => `失敗した ${count}件だけ再送`,
   questionGuardConflict: "質問が更新されたため送信していません。もう一度「その他」を選んでください",
-  dispatchMode: (kind: "plain" | "status-request" | "answer-forward"): string => {
+  dispatchMode: (kind: "plain" | "status-request" | "answer-forward" | "continue"): string => {
     if (kind === "status-request") return "定型質問";
     if (kind === "answer-forward") return "質問への回答";
+    if (kind === "continue") return "次の一手";
     return "通常の指示";
   },
-  // 段6a: 機械信号のみ。batch集約とAI後追いは後段で接続する。
+  // 「機械信号」「機械」は実装都合の語なので画面には出さない (2026-08-15 FB)。
   reportInboxTitle: "報告インボックス",
-  reportInboxHint: "機械信号はすぐ記録",
-  reportInboxEmpty: "記録された機械信号はありません",
-  reportMachineTag: "機械",
+  reportInboxHint: "届いた順に記録します",
+  reportInboxEmpty: "まだ記録はありません",
   reportReceiveModeLabel: "受け方",
   reportModeImmediate: "すぐ言って",
   reportModeBatch: "区切りでまとめて",
   reportModeQuiet: "黙って記録",
-  reportSummaryUnlinked: (count: number): string => `まとめは未接続 ${count}件`,
+  reportReceiveModeForSession: (mode: "immediate" | "batch" | "quiet"): string => {
+    if (mode === "immediate") return "このセッションの受け方: すぐ言って";
+    if (mode === "quiet") return "このセッションの受け方: 黙って記録";
+    return "このセッションの受け方: 区切りでまとめて";
+  },
+  reportReceiveModeDescription: (mode: "immediate" | "batch" | "quiet"): string => {
+    if (mode === "immediate") return "届いたらすぐカードで表示します";
+    if (mode === "quiet") return "このセッションのカードを畳み、「進捗 N件を記録」として残します";
+    return "このセッションの報告を1枚にまとめます";
+  },
+  reportSummaryUnlinked: (count: number): string => `まとめ待ち ${count}件`,
   reportQuietRecorded: (count: number): string => `進捗 ${count}件を記録`,
   reportStateWaiting: "待機中",
   reportStateStopped: "停止",
   reportStateNeedsReview: "要確認",
   reportSourceButton: "原文",
+  reportSourceUnavailable: "このタブは閉じています。閉じた後の記録も残していますが、原文へは移動できません",
+  attentionTitle: "気づき",
+  attentionWhyNow: "今知らせる理由",
+  attentionImpact: "影響",
+  attentionEvidence: "根拠",
+  attentionReplyRoute: "返す先",
+  attentionResolution: "解消の条件",
+  attentionNoReplyRoute: "返答は不要です",
+  attentionReplyToSession: "このセッションへ返します",
+  attentionReplyToContract: "この実行契約へ返します",
+  attentionResolveByAcknowledgement: "確認したときに解消します",
+  attentionResolveWhenFinished: "実行が終わると解消します",
+  attentionResolveWhenChanged: "状態が変わると解消します",
+  attentionActionUnavailable: "この画面では安全に開始できません",
+  attentionActionLabel: (kind: PrimaryActionLabel): string => {
+    if (kind === "answerQuestion") return "回答する";
+    if (kind === "retryWorkItem") return "やり直す";
+    if (kind === "reviewConflict") return "確認する";
+    if (kind === "raiseBudget") return "判断する";
+    if (kind === "acknowledgeGoalReached") return "完了を確認";
+    return "開く";
+  },
+  attentionKindLabel: (kind: AttentionKindLabel): string => {
+    if (kind === "agentAsked") return "回答待ち";
+    if (kind === "workStopped") return "停止を検知";
+    if (kind === "reportsComplete") return "報告がそろいました";
+    if (kind === "completionWithoutTests") return "確認が残っています";
+    if (kind === "budgetReached") return "使える枠に達しました";
+    if (kind === "outOfScopeWrite") return "作業先を確認してください";
+    if (kind === "conflictDetected") return "食い違いを検知";
+    if (kind === "goalReached") return "完了条件を満たしました";
+    if (kind === "nextItemReady") return "次の作業を始められます";
+    return "対応をまとめました";
+  },
+  // 段1: 実行契約カード
+  contractTitle: "実行契約",
+  contractAriaLabel: "実行契約",
+  contractAfterGoAriaLabel: "GO 後の実行契約",
+  contractAiPlan: "計画=AI案",
+  contractMachineNumbers: "数字=機械",
+  contractBeforeGo: "GO 前 · 副作用なし",
+  contractPurpose: "目的",
+  contractMaterials: "素材",
+  contractExecution: "実行",
+  contractReferenceLabel: "参照位置",
+  contractWrite: "書込み",
+  contractCompletion: "完了条件",
+  contractCoverage: "取得状況",
+  contractRoleMaterial: "素材",
+  contractRoleWork: "作業",
+  contractRoleIntegrator: "統合役",
+  contractRoleReview: "レビュー",
+  contractRoleCaret: "▾",
+  contractRoleMenuFor: (label: string): string => `@${label} の役割を選ぶ`,
+  contractNewSession: "新規セッション 1",
+  contractExecutionDetail: (agent: string): string => `${agent} で起動します`,
+  contractReference: (label: string, eventId: string): string => `${label}:#${eventId}`,
+  contractReferenceSeparator: " ｜ ",
+  contractReferencePending: "確認中",
+  contractReferenceRefreshing: "役割変更後の参照位置を取り直しています",
+  contractWriteTarget: "この実行契約専用の作業フォルダ",
+  contractWriteUnavailable: "この場所では専用の作業フォルダを用意できません",
+  contractWritePending: "作業先を確認中",
+  contractWriteRefreshing: "役割変更後の作業先を取り直しています",
+  contractBranchProtection: "(本ブランチには触りません)",
+  contractCoverageSummary: (target: number, acquired: number, missing: number, failed: number): string => `対象${target} ｜ 取得${acquired} ｜ 未取得${missing}${failed ? ` ｜ 失敗${failed}` : ""}`,
+  contractPromptSummary: "統合役に実際に渡す内容",
+  contractPromptPending: "確認中",
+  contractNoSourceSend: "素材セッションには何も送りません",
+  contractFix: "直す",
+  contractCancel: "やめる",
+  contractGo: "GO — 1セッション起動",
+  contractMissingIntegrator: "まとめ役が決まっていません。どれか1つを統合役にしてください",
+  contractMultipleIntegrators: "まとめ役が複数です。統合役を1つにしてください",
+  contractMissingSources: "未取得の素材があるため、GO は実行できません",
+  contractWorkingDirectoryUnavailable: "選択中のセッションの作業ディレクトリを確認できません",
+  contractPreparing: "計画を確認中です",
+  contractRefreshing: "役割の変更を反映して、計画を取り直しています",
+  contractOperationFailed: "計画を確認できませんでした",
+  contractRepositoryUnavailable: "選択中の作業フォルダはリポジトリではありません",
+  contractSourceAcquisitionFailed: "素材を取得できていません",
+  contractAlreadyStarted: "すでに開始済みのため、新しいセッションは起動していません",
+  contractCorrectionHint: "役割チップを押して内容を直してください",
+  contractPlanSealed: "計画v1 · 確定済み",
+  contractRunSources: "素材の取り込み",
+  contractRunSourcesAcquired: (count: number): string => `${count}件を取得済み`,
+  contractRunSourcesPartial: "一部を取得できていません",
+  contractRunSession: "統合用セッション",
+  contractLaunchPending: "起動要求はまだ処理されていません",
+  contractLaunchChecking: "起動結果を確認中です",
+  contractLaunchDelivered: "起動済み",
+  contractLaunchFailed: "起動失敗",
+  contractLaunchUnknown: "まだ分かりません",
+  contractLaunchFailureUnknown: "起動処理から理由を取得できませんでした",
+  contractLaunchFailureFrontend: "画面側でセッションを起動できませんでした",
+  contractRetryLaunch: "もう一度起動する",
+  contractDismissRunning: "表示を閉じる",
+  contractHiddenPath: "非表示の場所",
+  contractSourceNameUnknown: "名前を確認できない素材",
+  contractPromptSnapshotUnavailable: "素材の記録を取得できませんでした",
+  contractPromptTelemetryUnavailable: "セッションの状況を取得できませんでした",
+  contractPromptStatusUnavailable: "状況を取得できませんでした",
+  contractRunTests: "統合テスト",
+  contractRunUnknown: "まだ分かりません",
+  contractRunMerge: "本ブランチへの反映",
+  contractHumanApprovalRequired: "人の承認が必要",
 } as const;

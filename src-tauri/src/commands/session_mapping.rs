@@ -12,7 +12,7 @@ pub struct AgentSessionMapping {
 }
 
 pub(crate) fn is_agent_session_kind(value: &str) -> bool {
-    matches!(value, "claude" | "codex" | "claude-codex")
+    matches!(value, "claude" | "codex" | "claude-codex" | "grok")
 }
 
 /// Fail closed: only `<known kind>:<id>` counts as a mapping.
@@ -222,7 +222,7 @@ mod tests {
 
     #[test]
     fn parse_agent_session_mapping_accepts_every_known_kind() {
-        for kind in ["claude", "codex", "claude-codex"] {
+        for kind in ["claude", "codex", "claude-codex", "grok"] {
             let mapping = parse_agent_session_mapping(&format!("{kind}:abc-123\n")).unwrap();
             assert_eq!(mapping.agent_kind.as_deref(), Some(kind));
             assert_eq!(mapping.session_id, "abc-123");

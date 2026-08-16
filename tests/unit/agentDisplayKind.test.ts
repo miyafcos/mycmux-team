@@ -11,8 +11,8 @@ describe("resolveDisplayAgentKind", () => {
     }
   });
 
-  it("maps direct Claude and Codex commands before backend metadata arrives", () => {
-    for (const [command, expected] of [["claude.exe", "claude"], ["C:\\tools\\codex.exe", "codex"]] as const) {
+  it("maps direct Claude, Codex, and Grok commands before backend metadata arrives", () => {
+    for (const [command, expected] of [["claude.exe", "claude"], ["C:\\tools\\codex.exe", "codex"], ["grok.exe", "grok"]] as const) {
       expect(resolveDisplayAgentKind(undefined, [command])).toBe(expected);
     }
   });
@@ -22,7 +22,7 @@ describe("resolveDisplayAgentKind", () => {
   });
 
   it("prefers persisted agent kinds", () => {
-    for (const kind of ["claude", "codex", "claude-codex"] as const) {
+    for (const kind of ["claude", "codex", "claude-codex", "grok"] as const) {
       expect(resolveDisplayAgentKind(kind, ["agy"])).toBe(kind);
     }
   });
@@ -37,6 +37,6 @@ describe("resolveDisplayAgentKind", () => {
 
 describe("COMMAND_DISPLAY_KINDS", () => {
   it("declares the display-only command mapping", () => {
-    expect(COMMAND_DISPLAY_KINDS).toEqual({ agy: "antigravity", claude: "claude", codex: "codex" });
+    expect(COMMAND_DISPLAY_KINDS).toEqual({ agy: "antigravity", claude: "claude", codex: "codex", grok: "grok" });
   });
 });

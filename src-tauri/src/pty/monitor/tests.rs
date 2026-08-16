@@ -39,6 +39,15 @@
     }
 
     #[test]
+    fn grok_mapping_matches_the_detected_grok_process() {
+        let mapping = AgentSessionMapping {
+            agent_kind: Some("grok".to_string()),
+            session_id: "grok-session".to_string(),
+        };
+        assert!(mapping_matches_detected_agent_kind(&mapping, DetectedAgentKind::Grok));
+    }
+
+    #[test]
     fn process_status_timestamp_uses_the_stable_os_process_start_time() {
         let (status, status_at) =
             process_status_from_observation(Some("codex.exe"), Some(100));

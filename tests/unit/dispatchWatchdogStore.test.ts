@@ -52,6 +52,7 @@ beforeEach(() => {
   mocks.scan.mockReset().mockResolvedValue([]);
   useDispatchWatchdogStore.getState().clear();
   useSettingsStore.setState({
+    notificationsEnabled: true,
     dispatchWatchdogEnabled: true,
     dispatchWatchdogIntervalMinutes: 5,
     dispatchStallMinutes: 45,
@@ -114,6 +115,34 @@ describe("connectDispatchWatchdog telemetry", () => {
       notifySuppressed: false,
     });
     disconnect();
+  });
+
+  it("suppresses delegation-watch notifications when the global notification master is off", async () => {
+    useSettingsStore.setState({ notificationsEnabled: false, dispatchWatchdogNotify: true });
+
+    const disconnect = connectDispatchWatchdog();
+    await settle();
+
+    expect(useDispatchWatchdogStore.getState().telemetry.notifySuppressed).toBe(true);
+    disconnect();
+  });
+
+  it("allows a resolved occurrence to notify again when the same condition recurs", () => {
+    const item: WatchdogItem = {
+      key: "child:ask",
+      kind: "ask",
+      slug: "child",
+      since: NOW,
+      confirmations: 2,
+    };
+    const store = useDispatchWatchdogStore.getState();
+    store.replaceQueue([item]);
+    store.markNotified([item.key]);
+    store.replaceQueue([item]);
+    expect(useDispatchWatchdogStore.getState().notifiedKeys.has(item.key)).toBe(true);
+
+    store.replaceQueue([]);
+    expect(useDispatchWatchdogStore.getState().notifiedKeys.has(item.key)).toBe(false);
   });
 
   it("contains telemetry subscriber errors inside the settings restart path", () => {

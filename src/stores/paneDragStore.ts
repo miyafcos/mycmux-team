@@ -3,6 +3,17 @@ import { create } from "zustand";
 export type PaneDropZone = "center" | "left" | "right" | "up" | "down";
 export type PaneDragSurface = "workspace" | "minimap";
 
+/**
+ * Presentation-only feedback for a tab dragged over Dashboard's chat columns.
+ * This is deliberately separate from PaneDropTarget: Dashboard columns are view
+ * state, not a workspace-layout mutation target.
+ */
+export type DashboardChatDropPreview =
+  | { kind: "insert"; index: number; offsetX: number }
+  | { kind: "existing"; tabId: string; index: number }
+  | { kind: "full" }
+  | null;
+
 export type PaneDragItem =
   | {
       kind: "tab";
@@ -15,16 +26,31 @@ export type PaneDragItem =
       sourceLayoutRevision?: string;
     }
   | {
+      /**
+       * A minimap-only tab bundle. The anchor remains the tab the user grabbed;
+       * tabIds are frozen together with the structural revision at drag start.
+       */
+      kind: "tab-bundle";
+      workspaceId: string;
+      paneId: string;
+      tabIds: string[];
+      anchorTabId: string;
+      label: string;
+      surface: "minimap";
+      sourceLayoutRevision?: string;
+    }
+  | {
       kind: "pane";
       workspaceId: string;
       paneId: string;
       label: string;
       tabCount: number;
       surface?: PaneDragSurface;
+      sourceLayoutRevision?: string;
     };
 
 export type PaneDropTarget =
-  | {
+  {
       kind: "pane";
       workspaceId: string;
       paneId: string;
@@ -69,6 +95,15 @@ interface PointerPosition {
   y: number;
 }
 
+/**
+ * The dashboard owns its receipt/commit path because its columns are view
+ * state, not workspace layout. Keeping this selector here makes the semantic
+ * target explicit without extending the layout drag core.
+ */
+export function isDashboardChatDropTarget(element: Element | null): boolean {
+  return Boolean(element?.closest("[data-dashboard-chat-drop-target='true']"));
+}
+
 /** Only the horizontal span of a tab pill matters for insertion hit-testing. */
 export interface TabPillSpan {
   left: number;
@@ -95,10 +130,12 @@ interface PaneDragState {
   pointer: PointerPosition | null;
   target: PaneDropTarget | null;
   hoverWorkspaceId: string | null;
+  dashboardChatDropPreview: DashboardChatDropPreview;
   beginDrag: (item: PaneDragItem, pointer: PointerPosition) => void;
   moveDrag: (pointer: PointerPosition) => void;
   setTarget: (target: PaneDropTarget | null) => void;
   setHoverWorkspaceId: (workspaceId: string | null) => void;
+  setDashboardChatDropPreview: (preview: DashboardChatDropPreview) => void;
   clearDrag: () => void;
 }
 
@@ -107,19 +144,23 @@ export const usePaneDragStore = create<PaneDragState>((set) => ({
   pointer: null,
   target: null,
   hoverWorkspaceId: null,
+  dashboardChatDropPreview: null,
   beginDrag: (item, pointer) => set({
     item,
     pointer,
     target: null,
     hoverWorkspaceId: null,
+    dashboardChatDropPreview: null,
   }),
   moveDrag: (pointer) => set({ pointer }),
   setTarget: (target) => set({ target }),
   setHoverWorkspaceId: (hoverWorkspaceId) => set({ hoverWorkspaceId }),
+  setDashboardChatDropPreview: (dashboardChatDropPreview) => set({ dashboardChatDropPreview }),
   clearDrag: () => set({
     item: null,
     pointer: null,
     target: null,
     hoverWorkspaceId: null,
+    dashboardChatDropPreview: null,
   }),
 }));

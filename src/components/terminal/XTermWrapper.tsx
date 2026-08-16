@@ -150,7 +150,7 @@ interface XTermWrapperProps {
   command: string;
   args?: string[];
   agentId?: string;
-  agentKind?: "claude" | "codex" | "claude-codex";
+  agentKind?: "claude" | "codex" | "claude-codex" | "grok";
   onExit?: () => void;
   theme?: ITheme;
   fontSize?: number;

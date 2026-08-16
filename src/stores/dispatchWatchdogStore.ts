@@ -6,6 +6,7 @@ import { type StallEntry, useStallStore } from "./stallStore";
 import { usePaneMetadataStore, useWorkspaceListStore } from "./workspaceStore";
 import { useSessionAttentionStore } from "./sessionAttentionStore";
 import { useToastStore } from "./toastStore";
+import { delegationWatchStrings } from "../components/settings/settingsStrings";
 
 const MINUTE_MS = 60_000;
 const SPAWN_GRACE_MS = 5 * MINUTE_MS;
@@ -94,17 +95,15 @@ function parseTimestamp(value: string | null | undefined): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function minuteStamp(timestamp: number): number {
-  return Math.floor(timestamp / MINUTE_MS);
-}
-
 function withConfirmation(item: Omit<WatchdogItem, "confirmations">, previous: ReadonlyMap<string, WatchdogItem>): WatchdogItem {
   return { ...item, confirmations: (previous.get(item.key)?.confirmations ?? 0) + 1 };
 }
 
-function ledgerItem(entry: DispatchEntry, kind: WatchdogKind, since: number, evidenceStamp: string | number): Omit<WatchdogItem, "confirmations"> {
+function ledgerItem(entry: DispatchEntry, kind: WatchdogKind, since: number, occurrenceKey?: string): Omit<WatchdogItem, "confirmations"> {
   return {
-    key: `${entry.slug}:${kind}:${evidenceStamp}`,
+    // Evidence files change while the same outstanding task is being worked.
+    // Their mtimes must not turn that continuing state into a new occurrence.
+    key: occurrenceKey ? `${entry.slug}:${kind}:${occurrenceKey}` : `${entry.slug}:${kind}`,
     kind,
     slug: entry.slug,
     sessionId: entry.tabSessionId ?? undefined,
@@ -134,11 +133,11 @@ export function buildWatchdogQueue(input: BuildWatchdogQueueInput): { queue: Wat
     // broader five-minute spawn grace first would make this documented state
     // unreachable.
     if (entry.sessionLogAgeMinutes < 0 && elapsed >= NO_LOG_MIN_MS && elapsed < SPAWN_GRACE_MS) {
-      item = ledgerItem(entry, "no_log", spawnedAt, minuteStamp(spawnedAt));
+      item = ledgerItem(entry, "no_log", spawnedAt);
     } else if (elapsed < SPAWN_GRACE_MS) {
       continue;
     } else if (entry.hasAsk) {
-      item = ledgerItem(entry, "ask", entry.askMtimeMs ?? spawnedAt, entry.askMtimeMs ?? spawnedAt);
+      item = ledgerItem(entry, "ask", entry.askMtimeMs ?? spawnedAt);
     } else if (entry.liveState === "RATE_LIMITED") {
       // Ranked above the stalled checks on purpose. A rate-limited session stops
       // writing its transcript, so it looks identical to a hang by log age alone.
@@ -147,15 +146,15 @@ export function buildWatchdogQueue(input: BuildWatchdogQueueInput): { queue: Wat
       const attentionId = attention?.attentionId ?? "unknown";
       item = ledgerItem(entry, "rate_limited", stateSince, `${attentionId}:${stateSince}`);
     } else if (entry.hasDone && !entry.hasVerdict) {
-      item = ledgerItem(entry, "done_unverified", entry.doneMtimeMs ?? spawnedAt, entry.doneMtimeMs ?? spawnedAt);
+      item = ledgerItem(entry, "done_unverified", entry.doneMtimeMs ?? spawnedAt);
     } else if (entry.hasVerdict && entry.verify === "auto-fail") {
-      item = ledgerItem(entry, "done_needs_review", entry.verdictMtimeMs ?? entry.doneMtimeMs ?? spawnedAt, entry.verdictMtimeMs ?? entry.doneMtimeMs ?? spawnedAt);
+      item = ledgerItem(entry, "done_needs_review", entry.verdictMtimeMs ?? entry.doneMtimeMs ?? spawnedAt);
     } else {
       if (entry.sessionLogAgeMinutes >= input.stallMinutes && input.attentionBySession?.[entry.tabSessionId ?? ""]?.uiState !== "working") {
         const since = input.now - logAgeMs;
-        item = ledgerItem(entry, "stalled", since, minuteStamp(since));
+        item = ledgerItem(entry, "stalled", since);
       } else if (elapsed >= TIMEOUT_MS) {
-        item = ledgerItem(entry, "timeout", spawnedAt, minuteStamp(spawnedAt));
+        item = ledgerItem(entry, "timeout", spawnedAt);
       }
     }
     if (item) queue.push(withConfirmation(item, previous));
@@ -193,7 +192,13 @@ export const useDispatchWatchdogStore = create<DispatchWatchdogState>((set) => (
   queue: [],
   notifiedKeys: new Set(),
   telemetry: INITIAL_TELEMETRY,
-  replaceQueue: (queue) => set({ queue }),
+  replaceQueue: (queue) => set((state) => {
+    const activeKeys = new Set(queue.map((item) => item.key));
+    return {
+      queue,
+      notifiedKeys: new Set([...state.notifiedKeys].filter((key) => activeKeys.has(key))),
+    };
+  }),
   markNotified: (keys) => set((state) => {
     const notifiedKeys = new Set(state.notifiedKeys);
     for (const key of keys) notifiedKeys.add(key);
@@ -215,14 +220,11 @@ function knownSessionIds(): Set<string> {
 }
 
 export const WATCHDOG_KIND_LABELS: Record<WatchdogKind, string> = {
-  ask: "判断待ち", rate_limited: "レート制限で待機中",
-  done_unverified: "完了・未確認", done_needs_review: "確認が必要な完了",
-  no_log: "ログ未作成", stalled: "停止", timeout: "タイムアウト",
-  tab_no_output: "出力停止", tab_queued_input: "未送信の入力", tab_silent: "無応答で停止",
+  ...delegationWatchStrings.kindLabels,
 };
 
 function describe(item: WatchdogItem): string {
-  const subject = item.label ?? item.slug ?? item.sessionId ?? "セッション";
+  const subject = item.label ?? item.slug ?? item.sessionId ?? delegationWatchStrings.queueUnknownSubject;
   return `${subject}: ${WATCHDOG_KIND_LABELS[item.kind]}`;
 }
 
@@ -257,7 +259,8 @@ export function connectDispatchWatchdog(): () => void {
       const ownsNotificationLease = await dispatchClaimWatchdog(settings.dispatchWatchdogIntervalMinutes * MINUTE_MS * 3);
       const entries = await dispatchScan();
       if (disposed) return;
-      setTelemetrySafely(telemetryForTick(checkedAt, settings.dispatchWatchdogIntervalMinutes, settings.dispatchWatchdogNotify));
+      const notificationsAllowed = settings.notificationsEnabled && settings.dispatchWatchdogNotify;
+      setTelemetrySafely(telemetryForTick(checkedAt, settings.dispatchWatchdogIntervalMinutes, notificationsAllowed));
       const queue = buildWatchdogQueue({
         entries,
         stallEntries: useStallStore.getState().entries,
@@ -268,7 +271,7 @@ export function connectDispatchWatchdog(): () => void {
         attentionBySession: useSessionAttentionStore.getState().attentionBySession,
       }).queue;
       useDispatchWatchdogStore.getState().replaceQueue(queue);
-      if (!ownsNotificationLease || !settings.dispatchWatchdogNotify) return;
+      if (!ownsNotificationLease || !notificationsAllowed) return;
 
       const state = useDispatchWatchdogStore.getState();
       const pending = queue.filter((item) => item.confirmations >= 2 && !state.notifiedKeys.has(item.key));
@@ -282,7 +285,7 @@ export function connectDispatchWatchdog(): () => void {
       // its unseen state so the next tick surfaces it individually instead of
       // collapsing it into a count the user can never expand.
       if (pending.length > MAX_TOASTS_PER_TICK) {
-        useToastStore.getState().pushToast(`ほか ${pending.length - MAX_TOASTS_PER_TICK} 件の要確認があります`, "warning");
+        useToastStore.getState().pushToast(delegationWatchStrings.additionalQueueItems(pending.length - MAX_TOASTS_PER_TICK), "warning");
       }
       if (notified.length > 0) useDispatchWatchdogStore.getState().markNotified(notified);
     } catch (error) {
@@ -309,7 +312,9 @@ export function connectDispatchWatchdog(): () => void {
   const onVisibilityChange = (): void => startInterval();
   const unsubscribeSettings = useSettingsStore.subscribe((state, previous) => {
     if (state.dispatchWatchdogEnabled !== previous.dispatchWatchdogEnabled
-      || state.dispatchWatchdogIntervalMinutes !== previous.dispatchWatchdogIntervalMinutes) startInterval();
+      || state.dispatchWatchdogIntervalMinutes !== previous.dispatchWatchdogIntervalMinutes
+      || state.dispatchWatchdogNotify !== previous.dispatchWatchdogNotify
+      || state.notificationsEnabled !== previous.notificationsEnabled) startInterval();
   });
   document.addEventListener("visibilitychange", onVisibilityChange);
   startInterval();

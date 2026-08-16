@@ -28,12 +28,16 @@ export default memo(function PaneDragOverlay() {
 
   if (!item || !pointer) return null;
 
+  const isTabBundle = item.kind === "tab-bundle";
+  const isTabDrag = item.kind === "tab" || isTabBundle;
   const meta = item.kind === "pane"
     ? paneDndStrings.paneGhostMeta(item.tabCount)
-    : paneDndStrings.tabGhostMeta;
+    : isTabBundle
+      ? `${item.tabIds.length}本`
+      : paneDndStrings.tabGhostMeta;
   const className = [
     "pane-drag-ghost",
-    `pane-drag-ghost--${item.kind}`,
+    `pane-drag-ghost--${isTabBundle ? "tab-bundle" : item.kind}`,
     target ? "is-droppable" : "",
   ].filter(Boolean).join(" ");
 
@@ -52,7 +56,7 @@ export default memo(function PaneDragOverlay() {
         transform: `translate3d(${pointer.x + offset.x}px, ${pointer.y + offset.y}px, 0)`,
       }}
     >
-      {item.kind === "tab" ? (
+      {isTabDrag ? (
         <span className="pane-drag-ghost-tab-mark" />
       ) : (
         <span className="pane-drag-ghost-pane-mark">
@@ -61,6 +65,7 @@ export default memo(function PaneDragOverlay() {
         </span>
       )}
       <span className="pane-drag-ghost-label">{item.label}</span>
+      {isTabBundle ? <span className="pane-drag-ghost-count" aria-label={`${item.tabIds.length}本を移動`}>{item.tabIds.length}</span> : null}
       <span className="pane-drag-ghost-meta">{meta}</span>
     </div>
   );

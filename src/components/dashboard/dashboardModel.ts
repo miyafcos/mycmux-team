@@ -14,7 +14,7 @@ import { noUpdateMinutes } from "./liveTimelineModel";
 
 export type DashboardGroup = "waiting" | "stalled" | "done" | "working" | "idle";
 export type DashboardStatus = DashboardGroup | "error" | "unobserved";
-export type DashboardAgentKind = "claude" | "codex" | "claude-codex" | "none";
+export type DashboardAgentKind = "claude" | "codex" | "claude-codex" | "grok" | "none";
 
 /**
  * 画面に出す1本化した状態。カードのグリッド時代の group/section を置き換える。
@@ -102,7 +102,7 @@ function tieBreak(left: DashboardCardModel, right: DashboardCardModel): number {
 }
 
 function normalizeAgentKind(kind: string | undefined): DashboardAgentKind {
-  return kind === "claude" || kind === "codex" || kind === "claude-codex" ? kind : "none";
+  return kind === "claude" || kind === "codex" || kind === "claude-codex" || kind === "grok" ? kind : "none";
 }
 
 export function groupDashboardCard(

@@ -412,6 +412,9 @@ fn apply_agent_restore_fallback_args(command: &str, args: &mut Vec<String>, kind
         ("claude-codex", "claude-codex") => {
             *args = vec!["--continue".to_string()];
         }
+        ("grok", "grok") => {
+            *args = vec!["--no-alt-screen".to_string(), "--continue".to_string()];
+        }
         _ => {}
     }
 }
@@ -432,7 +435,7 @@ fn apply_agent_restore_resume_args(
 ) {
     let leaf = command_leaf(command).to_ascii_lowercase();
     match (leaf.as_str(), kind) {
-        ("claude", "claude") | ("claude-codex", "claude-codex") => {
+        ("claude", "claude") | ("claude-codex", "claude-codex") | ("grok", "grok") => {
             if let Some(resume_index) = args.iter().position(|arg| arg == "--resume") {
                 if args.get(resume_index + 1).map(String::as_str) == Some(requested_session_id) {
                     args[resume_index + 1] = fallback_session_id.to_string();
@@ -597,7 +600,7 @@ pub(crate) fn sanitize_launch_env(env: &mut HashMap<String, String>) {
         .or_else(|| env.get("MYCMUX_AGENT_KIND"))
         .map(|v| v.as_str());
     let has_kind = resume_kind.map(is_agent_session_kind).unwrap_or(false);
-    let supports_resume_fork = matches!(resume_kind, Some("claude" | "claude-codex"));
+    let supports_resume_fork = matches!(resume_kind, Some("claude" | "claude-codex" | "grok"));
     let legitimate_resume = has_session && has_kind;
 
     let has_handoff = env
@@ -642,7 +645,7 @@ fn write_launch_session_mapping(session_id: &str, env: &HashMap<String, String>)
     else {
         return;
     };
-    if matches!(agent_kind, "claude" | "claude-codex")
+    if matches!(agent_kind, "claude" | "claude-codex" | "grok")
         && env
             .get("MYCMUX_RESUME_FORK")
             .map(|value| value == "1")

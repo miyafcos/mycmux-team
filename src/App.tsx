@@ -72,6 +72,7 @@ function waitForSettingsHydration(): Promise<void> {
 function inferAgentKindFromProcessTitle(processTitle?: string): AgentSessionKind | null {
   const lowerTitle = processTitle?.toLowerCase() ?? "";
   if (lowerTitle.includes("claude-codex")) return "claude-codex";
+  if (lowerTitle.includes("grok")) return "grok";
   if (lowerTitle.includes("claude")) return "claude";
   if (lowerTitle.includes("codex")) return "codex";
   return null;
@@ -86,6 +87,7 @@ function inferAgentKindFromTab(sessionId: string): AgentSessionKind | null {
         if (tab.agentKind) return tab.agentKind;
         if (tab.agentId === "claude-code") return "claude";
         if (tab.agentId === "codex") return "codex";
+        if (tab.agentId === "grok") return "grok";
         if (tab.agentId === "claude-codex") return "claude-codex";
       }
     }

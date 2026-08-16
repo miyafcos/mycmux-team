@@ -1,5 +1,6 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import {
+  AGENT_DORMANCY_SETTINGS_EVENT,
   AGENT_DORMANT_SWEEP_INTERVAL_MS,
   DORMANCY_HISTORY_SCAN_LINES,
   clearSessionFrontendActivity,
@@ -146,10 +147,21 @@ async function observeRuntimeTarget(
 }
 
 export function useAgentDormancy(enabled: boolean): void {
+  const [thresholdMs, setThresholdMs] = useState(readDormantThresholdMs);
+
+  useEffect(() => {
+    const refreshThreshold = (): void => setThresholdMs(readDormantThresholdMs());
+    window.addEventListener(AGENT_DORMANCY_SETTINGS_EVENT, refreshThreshold);
+    window.addEventListener("storage", refreshThreshold);
+    return () => {
+      window.removeEventListener(AGENT_DORMANCY_SETTINGS_EVENT, refreshThreshold);
+      window.removeEventListener("storage", refreshThreshold);
+    };
+  }, []);
+
   useEffect(() => {
     if (!enabled) return;
 
-    const thresholdMs = readDormantThresholdMs();
     if (thresholdMs === 0) return;
 
     const observations = new Map<string, DormancyObservation>();
@@ -403,5 +415,5 @@ export function useAgentDormancy(enabled: boolean): void {
       cancelled = true;
       window.clearInterval(intervalId);
     };
-  }, [enabled]);
+  }, [enabled, thresholdMs]);
 }

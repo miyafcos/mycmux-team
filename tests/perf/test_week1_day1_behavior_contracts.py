@@ -11,16 +11,15 @@ EXPECTED_LAUNCHER_OPTIONS = [
     "Claude Code",
     "Codex",
     "claude-codex (Codex Models)",
+    "Grok Build",
     "Codex (Fugu Ultra)",
     "claude-codex (Fugu)",
     "claude-codex (Open Models)",
     "Antigravity (agy)",
-    "Claude Code (dangerous)",
-    "Codex (dangerous)",
-    "claude-codex (dangerous)",
     "Claude Code (resume)",
     "Codex (resume)",
     "claude-codex (resume)",
+    "Grok Build (resume)",
     "Custom...",
     "Change directory (開発)...",
     "Change directory (案件)...",
@@ -31,16 +30,15 @@ EXPECTED_LAUNCHER_COMMANDS = [
     "claude --allow-dangerously-skip-permissions --permission-mode auto",
     "codex --no-alt-screen",
     "claude-codex --backend gpt",
+    "grok --no-alt-screen --permission-mode auto",
     "codex --no-alt-screen --profile fugu-ultra",
     "claude-codex --backend fugu",
     "claude-codex --backend fcc",
     "agy",
-    "claude --dangerously-skip-permissions --permission-mode bypassPermissions",
-    "codex --no-alt-screen --dangerously-bypass-approvals-and-sandbox",
-    "claude-codex --dangerously-skip-permissions --permission-mode bypassPermissions",
     "claude --allow-dangerously-skip-permissions --permission-mode auto --resume",
     "codex resume --no-alt-screen",
     "claude-codex --resume",
+    "grok --no-alt-screen --resume",
     "__custom__",
     "__dir_dev__",
     "__dir_anken__",
@@ -83,8 +81,16 @@ def test_launcher_order_matches_current_contract() -> None:
         "claude-codex --backend fcc",
     ):
         assert command in EXPECTED_LAUNCHER_COMMANDS
-    assert_contains(launcher, "slash) selected=13", "src-tauri/src/launcher.sh")
-    assert_contains(launcher, "7) selected=16", "src-tauri/src/launcher.sh")
+    assert_contains(launcher, "slash) selected=12", "src-tauri/src/launcher.sh")
+    assert_contains(launcher, "6) selected=15", "src-tauri/src/launcher.sh")
+    # The (dangerous) entries were retired on 2026-08-15; they must not come back
+    # into the menu, and no launch target may point at them.
+    for retired in ("Claude Code (dangerous)", "Codex (dangerous)", "claude-codex (dangerous)"):
+        assert_not_contains(launcher, retired, "src-tauri/src/launcher.sh")
+        assert_not_contains(launcher_ps1, retired, "src-tauri/src/launcher.ps1")
+    for retired_target in ("claude-dangerous", "codex-dangerous", "grok-dangerous"):
+        assert_not_contains(launcher, retired_target, "src-tauri/src/launcher.sh")
+        assert_not_contains(launcher_ps1, retired_target, "src-tauri/src/launcher.ps1")
 
 
 def test_integrated_model_profiles_match_powershell_launcher() -> None:

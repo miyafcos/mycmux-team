@@ -19,7 +19,7 @@ describe("stateLabels", () => {
     ["needsAnswer", "error", "needsAnswer", "要回答"],
     ["needsReview", "error", "needsReview", "要確認"],
     [null, "error", "error", "エラー"],
-    [null, "stalled", "stalled", "停滞"],
+    [null, "stalled", "stalled", "出力なし"],
     [null, "working", "working", "作業中"],
     [null, "done", "done", "完了"],
     [null, "waiting", "waiting", "待機"],

@@ -50,6 +50,7 @@ pub(super) enum DetectedAgentKind {
     Codex = 1,
     Claude = 2,
     ClaudeCodex = 3,
+    Grok = 4,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -91,6 +92,7 @@ pub(super) fn mapping_matches_detected_agent_kind(
             | (Some("claude"), DetectedAgentKind::Claude)
             | (Some("claude-codex"), DetectedAgentKind::Claude)
             | (Some("claude-codex"), DetectedAgentKind::ClaudeCodex)
+            | (Some("grok"), DetectedAgentKind::Grok)
             // Prefix-less mapping files predate agent_kind and were Claude-only.
             | (None, DetectedAgentKind::Claude)
     )
@@ -140,6 +142,7 @@ pub(super) fn mapped_agent_session_attribution_for_pane(
             let agent_kind = match mapping.agent_kind.as_deref() {
                 Some("claude-codex") => "claude-codex",
                 Some("codex") => "codex",
+                Some("grok") => "grok",
                 Some("claude") | None => "claude",
                 Some(_) => unreachable!("incompatible mapping kind was already filtered"),
             };
@@ -401,6 +404,9 @@ fn agent_kind_from_executable_name(name: &str) -> Option<DetectedAgentKind> {
     if lower_name.contains("codex") {
         return Some(DetectedAgentKind::Codex);
     }
+    if lower_name.contains("grok") {
+        return Some(DetectedAgentKind::Grok);
+    }
     None
 }
 
@@ -467,6 +473,7 @@ pub(super) fn mapping_kind_is_grounded_in_detected_process(
         ("codex", DetectedAgentKind::Codex)
             | ("claude", DetectedAgentKind::Claude)
             | ("claude-codex", DetectedAgentKind::ClaudeCodex)
+            | ("grok", DetectedAgentKind::Grok)
     )
 }
 
@@ -690,6 +697,10 @@ mod tests {
         assert!(!mapping_kind_is_grounded_in_detected_process(
             "claude-codex",
             DetectedAgentKind::Claude
+        ));
+        assert!(mapping_kind_is_grounded_in_detected_process(
+            "grok",
+            DetectedAgentKind::Grok
         ));
     }
 }

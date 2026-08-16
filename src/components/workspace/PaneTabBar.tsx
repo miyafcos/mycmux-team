@@ -466,6 +466,7 @@ const AGENT_KIND_LABELS: Record<string, string> = {
   "claude": "Claude Code",
   "codex": "Codex",
   "claude-codex": "Claude＋Codex",
+  "grok": "Grok Build",
   "antigravity": "Antigravity",
 };
 
@@ -473,6 +474,7 @@ const AGENT_KIND_BADGE_LABELS: Record<string, string> = {
   "claude": "Claude",
   "codex": "Codex",
   "claude-codex": "Hybrid",
+  "grok": "Grok",
   "antigravity": "Antigravity",
 };
 

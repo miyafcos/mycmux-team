@@ -1,0 +1,23 @@
+.cmux-attention-card {
+  border: 1px solid var(--cmux-border, #667085);
+  border-left: 3px solid var(--status-warning, #d97706);
+  border-radius: 8px;
+  padding: 10px;
+  margin: 8px 0;
+  background: var(--cmux-surface, rgba(255, 255, 255, 0.04));
+}
+
+.cmux-attention-card-head,
+.cmux-attention-card-action,
+.cmux-attention-card-evidence {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.cmux-attention-card-head { justify-content: space-between; }
+.cmux-attention-card dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 8px; margin: 8px 0; }
+.cmux-attention-card dt { color: var(--cmux-text-tertiary, #98a2b3); }
+.cmux-attention-card dd { margin: 0; }
+.cmux-attention-card-evidence { font-size: 0.9em; }
+.cmux-attention-card-unavailable { color: var(--cmux-text-tertiary, #98a2b3); font-size: 0.9em; }

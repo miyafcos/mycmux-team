@@ -4,6 +4,7 @@ import {
   buildComposerPayload,
   composerKeyIntent,
   normalizeComposerText,
+  resolveComposerAgentLabelKind,
   resolveComposerTarget,
   shiftEnterSequence,
   startsAsAgentTui,
@@ -115,5 +116,26 @@ describe("composerKeyIntent", () => {
     expect(composerKeyIntent({ key: "Escape" })).toBe("close");
     expect(composerKeyIntent({ key: "a" })).toBe("none");
     expect(composerKeyIntent({ key: "Enter", ctrlKey: true })).toBe("none");
+  });
+});
+
+describe("resolveComposerAgentLabelKind", () => {
+  it("names the agent even when it borrows another agent's input shape", () => {
+    // Grok Build takes Claude's bracketed paste, but the composer must not
+    // tell the operator they are typing at Claude.
+    expect(resolveComposerTarget({ command: "pwsh.exe", agentKind: "grok" })).toBe("claude");
+    expect(resolveComposerAgentLabelKind({ command: "pwsh.exe", agentKind: "grok" })).toBe("grok");
+    expect(resolveComposerAgentLabelKind({ command: "pwsh.exe", agentKind: "claude-codex" })).toBe("claude-codex");
+  });
+
+  it("recognises grok from the launch command and resume env too", () => {
+    expect(resolveComposerAgentLabelKind({ command: "C:/Users/x/.grok/bin/grok.exe" })).toBe("grok");
+    expect(resolveComposerAgentLabelKind({ command: "pwsh.exe", launchEnv: { MYCMUX_RESUME: "grok" } })).toBe("grok");
+  });
+
+  it("falls back to the input shape for everything else", () => {
+    expect(resolveComposerAgentLabelKind({ command: "pwsh.exe", agentKind: "claude" })).toBe("claude");
+    expect(resolveComposerAgentLabelKind({ command: "pwsh.exe", agentKind: "codex" })).toBe("codex");
+    expect(resolveComposerAgentLabelKind({ command: "pwsh.exe" })).toBe("shell");
   });
 });

@@ -84,6 +84,8 @@ export function resolvePaneHandoffEligibility(
   const sourceAgentSessionId = source.metadata?.agentSessionId;
   const sourceCwd = source.metadata?.cwd;
   if (!sourceAgentKind || !sourceAgentSessionId || !sourceCwd) return null;
+  // Grok is intentionally outside the CRSM/savepoint handoff pipeline for now.
+  if (sourceAgentKind === "grok") return null;
 
   const targetAgentKind = resolveLiveSavepointTargetKind(
     target.tab,

@@ -12,7 +12,8 @@ Tauri v2 (Rust) + React 19 + xterm.js のターミナルワークスペースア
 - 設定保存: `%APPDATA%/com.miyazaki.mycmux/data.json` / ソケット: `~/.mycmux/mycmux.port` (+ 認証トークン `~/.mycmux/mycmux.token` — 全リクエストに `"token"` 必須。逃げ道 `MYCMUX_SOCKET_AUTH=off`)
 - 稼働中 exe: `~/mycmux-app/mycmux.exe` (updater 対象外・deploy スクリプトで差し替え)
 - ランチャー: `~/.mycmux/bin/launcher.sh` (新規ペインの起動メニュー。`~/bin/launcher.sh` は旧世代)
-- エージェント委譲規約: `docs/agent-integration.md` — mycmux 内の Codex/Claude 委譲は `scripts/mycmux_agent_cli.py spawn` で可視タブを立てるのが正 (各エージェント側ルールの所在もここに記載)
+- エージェント委譲規約: `docs/agent-integration.md` — mycmux 内の Codex/Claude/Grok 委譲は `scripts/mycmux_agent_cli.py spawn` で可視タブを立てるのが正 (各エージェント側ルールの所在・新エージェント登録チェックリストもここに記載)
+- 対応エージェント種別は `claude` / `codex` / `claude-codex` / `grok` の4種。文字列リテラルが型・ランチャー・検出・契約テストに散っているので、追加時は上記チェックリストを通す
 
 ## 検証コマンド (変更後は必ず全部)
 

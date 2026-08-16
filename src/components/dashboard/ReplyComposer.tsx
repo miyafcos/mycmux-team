@@ -5,6 +5,9 @@ import { handleSocketCommand } from "../layout/socketCommands";
 import { useLiveBriefStore } from "../../stores/liveBriefStore";
 import { useComposerStore, type ComposerCommandKind } from "../../stores/composerStore";
 import { usePaneDragStore } from "../../stores/paneDragStore";
+import { useReportInboxStore, type ReportDispatchDelivery } from "../../stores/reportInboxStore";
+import { createBatch, sealBatch, type DispatchBatch as SealedDispatchBatch } from "../../lib/dispatchBatch";
+import { buildComposerPayload, resolveComposerTarget } from "../../lib/composerSend";
 import type { DashboardCardModel } from "./dashboardModel";
 import { resolveDisplayState } from "./dashboardModel";
 import { stateLabels } from "./stateLabels";
@@ -29,6 +32,7 @@ import {
   resolveComposerRoute,
   runIntervention,
 } from "./interventionRouting";
+import { NextActionSuggestions, type NextAction } from "./NextActionSuggestions";
 
 /** pane.send_text (送達確認つき送信) の戻り。確認できたときだけ confirmed が true。 */
 interface PaneSendTextOutcome {
@@ -41,16 +45,13 @@ interface ComposerNote {
   error: boolean;
 }
 
-type DeliveryState = "pending" | "confirmed" | "unconfirmed" | "failed" | "blocked";
+type DeliveryState = ReportDispatchDelivery["state"];
+type DispatchDelivery = ReportDispatchDelivery & { recipient: MentionRecipient };
 
-interface DispatchDelivery {
-  recipient: MentionRecipient;
-  state: DeliveryState;
-  detail: string;
-}
-
-interface DispatchBatch {
+interface ComposerDispatchBatch {
   batchId: string;
+  /** Canonical membership/receipt contract; it is sealed before the first write. */
+  sealedBatch: SealedDispatchBatch;
   commandKind: ComposerCommandKind;
   text: string;
   /** Membership is sealed at GO. Retry never expands @動いてる全員 again. */
@@ -77,15 +78,35 @@ function deliveryLabel(state: DeliveryState): string {
   return dashboardStrings.dispatchFailed;
 }
 
+function dashboardSendBody(card: DashboardCardModel, text: string): string {
+  const commandArgv = card.tab.commandArgv;
+  const target = resolveComposerTarget({
+    command: commandArgv?.[0] ?? card.tab.lastProcess ?? card.pane.lastProcess ?? "",
+    args: commandArgv?.slice(1),
+    agentId: card.tab.agentId ?? card.pane.agentId,
+    agentKind: card.tab.agentKind ?? card.pane.agentKind,
+    launchEnv: card.tab.launchEnv ?? card.pane.launchEnv,
+  });
+  return buildComposerPayload({ text, target }).body;
+}
+
+function unconfirmedSendText(reason: string | undefined): string {
+  if (reason === "target_unmounted") return dashboardStrings.sendUnverifiedTargetUnmounted;
+  if (reason === "submit_unconfirmed") return dashboardStrings.sendSubmitUnconfirmed;
+  return dashboardStrings.sendUnverified;
+}
+
 /**
  * Dashboard command composer. Direct reply remains exactly one selected session;
  * one or more structured @ nodes switch the route into a sealed batch.
  */
-export function ReplyComposer({ card, inputRef, mentionTargets }: {
+export function ReplyComposer({ card, inputRef, mentionTargets, questionActive = false }: {
   card: DashboardCardModel | null;
   inputRef: RefObject<HTMLTextAreaElement | null>;
   /** Always all workspace cards, never a search-filtered subset. */
   mentionTargets: readonly DashboardCardModel[];
+  /** QuestionCard owns active questions, so suggestions never duplicate it. */
+  questionActive?: boolean;
 }) {
   const sessionId = card?.tab.sessionId ?? null;
   const brief = useLiveBriefStore((state) => (sessionId ? state.briefsBySession[sessionId] : undefined));
@@ -108,7 +129,7 @@ export function ReplyComposer({ card, inputRef, mentionTargets }: {
   const [menuQuery, setMenuQuery] = useState("");
   const [mentionRange, setMentionRange] = useState<{ start: number; end: number } | null>(null);
   const [activeMenuIndex, setActiveMenuIndex] = useState(0);
-  const [batch, setBatch] = useState<DispatchBatch | null>(null);
+  const [batch, setBatch] = useState<ComposerDispatchBatch | null>(null);
   const dragItem = usePaneDragStore((state) => state.item);
   const dragPointer = usePaneDragStore((state) => state.pointer);
   const [dropOver, setDropOver] = useState(false);
@@ -195,6 +216,7 @@ export function ReplyComposer({ card, inputRef, mentionTargets }: {
 
   const updateBatchDelivery = (batchId: string, member: MentionRecipient, update: Omit<DispatchDelivery, "recipient">) => {
     const key = memberKey(member);
+    useReportInboxStore.getState().updateDispatchDelivery(batchId, member.sessionId, update);
     setBatch((current) => {
       if (!current || current.batchId !== batchId || !current.deliveries[key]) return current;
       return {
@@ -221,22 +243,23 @@ export function ReplyComposer({ card, inputRef, mentionTargets }: {
         if (result.type === "conflict") return { state: "blocked", detail: interventionResultText(result) };
         return { state: "failed", detail: interventionResultText(result) };
       }
+      const body = dashboardSendBody(target, text);
       const outcome = await handleSocketCommand("pane.send_text", {
         sessionId: recipient.sessionId,
-        text,
+        text: body,
         enter: true,
       }) as PaneSendTextOutcome | null;
       if (outcome?.confirmed === true) return { state: "confirmed", detail: dashboardStrings.sendConfirmedOnScreen };
       return {
         state: "unconfirmed",
-        detail: `${dashboardStrings.sendUnverified}${outcome?.reason ? ` (${outcome.reason})` : ""}`,
+        detail: unconfirmedSendText(outcome?.reason),
       };
     } catch (error) {
       return { state: "failed", detail: `${dashboardStrings.sendFailedBeforeWrite} (${errorText(error)})` };
     }
   };
 
-  const deliverBatchMembers = async (currentBatch: DispatchBatch, requested: readonly MentionRecipient[]) => {
+  const deliverBatchMembers = async (currentBatch: ComposerDispatchBatch, requested: readonly MentionRecipient[]) => {
     const resolution = resolveSealedMentionRecipients(requested, mentionCandidates);
     const resolvedKeys = new Set(resolution.recipients.map(memberKey));
     for (const member of requested) {
@@ -251,13 +274,13 @@ export function ReplyComposer({ card, inputRef, mentionTargets }: {
     }));
   };
 
-  const submitDirect = async () => {
+  const submitDirect = async (text = draft, clearDraftAfterSend = true) => {
     if (!card || !sessionId || !route || route.kind === "disabled") return;
     if (route.kind === "intervention") {
-      const result = await runIntervention(brief, { type: "replyText", text: draft });
+      const result = await runIntervention(brief, { type: "replyText", text });
       setNote({ text: interventionResultText(result), error: isInterventionConflict(result) });
       // conflict / busy / 未確認では下書きを消さない (自動再送もしない)。
-      if (isInterventionAccepted(result)) {
+      if (isInterventionAccepted(result) && clearDraftAfterSend) {
         clearDraft(sessionId);
         setCommandKind(sessionId, "plain");
         setQuestionGuard(sessionId, null);
@@ -265,9 +288,10 @@ export function ReplyComposer({ card, inputRef, mentionTargets }: {
       return;
     }
     try {
+      const body = dashboardSendBody(card, text);
       const outcome = await handleSocketCommand("pane.send_text", {
         sessionId,
-        text: draft,
+        text: body,
         enter: true,
       }) as PaneSendTextOutcome | null;
       const confirmed = outcome?.confirmed === true;
@@ -275,11 +299,11 @@ export function ReplyComposer({ card, inputRef, mentionTargets }: {
       setNote({
         text: confirmed
           ? dashboardStrings.sendConfirmedOnScreen
-          : `${dashboardStrings.sendUnverified}${reason ? ` (${reason})` : ""}`,
+          : unconfirmedSendText(reason),
         error: false,
       });
       // 端末へは書けているので下書きは残さない (再送は人間の判断で)。
-      clearDraft(sessionId);
+      if (clearDraftAfterSend) clearDraft(sessionId);
     } catch (error) {
       // handleSocketCommand が throw したときは書き込み自体が走っていない。
       setNote({ text: `${dashboardStrings.sendFailedBeforeWrite} (${errorText(error)})`, error: true });
@@ -310,17 +334,34 @@ export function ReplyComposer({ card, inputRef, mentionTargets }: {
     }
     const members = resolution.recipients;
     const batchId = `mention-batch-${Date.now()}-${nextBatchSequence++}`;
-    const currentBatch: DispatchBatch = {
+    const deliveries = Object.fromEntries(members.map((recipient) => [memberKey(recipient), {
+      recipient,
+      state: "pending" as const,
+      detail: dashboardStrings.dispatchPending,
+    }])) as Record<string, DispatchDelivery>;
+    const sealedBatch = sealBatch(createBatch(members.map((recipient) => ({
+      logicalSessionId: recipient.logicalSessionId,
+      instructionRef: recipient.sessionId,
+      label: recipient.label,
+    })), { batchId }));
+    const currentBatch: ComposerDispatchBatch = {
       batchId,
+      sealedBatch,
       commandKind,
       text: draft,
       members,
-      deliveries: Object.fromEntries(members.map((recipient) => [memberKey(recipient), {
-        recipient,
-        state: "pending" as const,
-        detail: dashboardStrings.dispatchPending,
-      }])),
+      deliveries,
     };
+    useReportInboxStore.getState().registerSealedDispatchBatch({
+      batch: sealedBatch,
+      commandKind,
+      members: members.map((recipient) => ({
+        logicalSessionId: recipient.logicalSessionId,
+        ptySessionId: recipient.sessionId,
+        label: recipient.label,
+        delivery: deliveries[memberKey(recipient)],
+      })),
+    });
     setNote(null);
     setBatch(currentBatch);
     setSending(true);
@@ -333,6 +374,21 @@ export function ReplyComposer({ card, inputRef, mentionTargets }: {
       setCommandKind(sessionId, "plain");
       setQuestionGuard(sessionId, null);
     } finally {
+      setSending(false);
+    }
+  };
+
+  const submitSuggestion = async (action: NextAction): Promise<void> => {
+    if (!card || !sessionId || sending || !route || route.kind === "disabled") return;
+    setSending(true);
+    setCommandKind(sessionId, "continue");
+    setQuestionGuard(sessionId, null);
+    try {
+      // Keep the regular draft intact: a confirmed suggestion uses the very
+      // same direct/intervention route without overwriting typed work.
+      await submitDirect(action.prompt, false);
+    } finally {
+      setCommandKind(sessionId, "plain");
       setSending(false);
     }
   };
@@ -356,12 +412,17 @@ export function ReplyComposer({ card, inputRef, mentionTargets }: {
     const receiveMinimapDrop = (event: PointerEvent) => {
       if (!sessionId) return;
       const item = usePaneDragStore.getState().item;
-      if (!item || item.kind !== "tab" || item.surface !== "minimap") return;
+      if (!item || item.surface !== "minimap") return;
+      // 束ドラッグ (M1) でも @ を刺せること。選択が1件でも束として飛んでくる。
+      const droppedTabIds = item.kind === "tab" ? [item.tabId] : item.kind === "tab-bundle" ? item.tabIds : [];
+      if (!droppedTabIds.length) return;
       const root = rootRef.current;
       const target = document.elementFromPoint(event.clientX, event.clientY);
       if (!root || !target || !root.contains(target)) return;
-      const candidate = mentionCandidates.find((entry) => entry.kind === "session" && entry.logicalSessionId === item.tabId);
-      if (candidate && candidate.kind === "session") addMentionToken(sessionId, mentionTokenFromCandidate(candidate));
+      for (const tabId of droppedTabIds) {
+        const candidate = mentionCandidates.find((entry) => entry.kind === "session" && entry.logicalSessionId === tabId);
+        if (candidate && candidate.kind === "session") addMentionToken(sessionId, mentionTokenFromCandidate(candidate));
+      }
     };
     window.addEventListener("pointerup", receiveMinimapDrop, true);
     return () => window.removeEventListener("pointerup", receiveMinimapDrop, true);
@@ -411,7 +472,7 @@ export function ReplyComposer({ card, inputRef, mentionTargets }: {
       removeMentionToken(sessionId, tokens[tokens.length - 1]);
       return;
     }
-    if (event.key !== "Enter" || event.shiftKey) return;
+    if (event.key !== "Enter" || event.shiftKey || event.ctrlKey || event.altKey || event.metaKey) return;
     event.preventDefault();
     void submit();
   };
@@ -428,6 +489,13 @@ export function ReplyComposer({ card, inputRef, mentionTargets }: {
     data-command-kind={commandKind}
     className={`cmux-dashboard-composer${dropOver ? " is-mention-drop-over" : ""}`}
   >
+    <NextActionSuggestions
+      sessionId={sessionId}
+      displayState={card ? resolveDisplayState(card) : "idle"}
+      questionActive={questionActive}
+      sending={sending}
+      onConfirm={submitSuggestion}
+    />
     {tokens.length ? <div className="cmux-dashboard-mention-tokens" aria-label={dashboardStrings.mentionTokensAriaLabel}>
       {!invalidPreview ? <span className="cmux-dashboard-dispatch-preview">{dashboardStrings.dispatchPreview(preview.recipients.length)}:</span> : null}
       {tokenDescriptions.map(({ token, label, valid, statusLabel }) => <span key={`${token.kind}:${token.kind === "session" ? token.logicalSessionId : token.labelSnapshot}`} className={`cmux-dashboard-mention-token${valid ? "" : " is-invalid"}`} title={valid ? statusLabel ?? undefined : dashboardStrings.dispatchTargetMissing}>
@@ -488,7 +556,7 @@ export function ReplyComposer({ card, inputRef, mentionTargets }: {
       {retryCount ? <button type="button" disabled={sending} onClick={() => void retryFailed()}>{dashboardStrings.dispatchRetryFailed(retryCount)}</button> : null}
     </div> : null}
     {noteText
-      ? <div className={`cmux-dashboard-composer-note${noteIsError ? " is-error" : ""}`}>{noteText}</div>
+      ? <div role={noteIsError ? "alert" : "status"} aria-live={noteIsError ? "assertive" : "polite"} className={`cmux-dashboard-composer-note${noteIsError ? " is-error" : ""}`}>{noteText}</div>
       : null}
   </div>;
 }

@@ -431,6 +431,45 @@ pub fn start_monitor(
                                     previous_claude_session_id.clone(),
                                 )
                             }
+                            DetectedAgentKind::Grok => {
+                                // Grok always launches with an explicit --session-id, so the
+                                // pane mapping is authoritative. There is no per-session log
+                                // format to scan, hence no detection fallback here.
+                                let exact = session_id_from_agent_args(&sys, agent_pid, false);
+                                let detected = preferred_known_agent_session_id(
+                                    exact,
+                                    &agent_mappings,
+                                    &detected_agent_sessions,
+                                    &session_id,
+                                    agent_pid,
+                                    kind,
+                                    &excluded_agent_session_ids,
+                                );
+                                remember_detected_agent_session_id(
+                                    &mut detected_agent_sessions,
+                                    &session_id,
+                                    agent_pid,
+                                    kind,
+                                    &detected,
+                                );
+                                let previous_same_kind_session =
+                                    if previous_agent_kind.as_deref() == Some("grok") {
+                                        previous_agent_session_id.clone()
+                                    } else {
+                                        None
+                                    }
+                                    .filter(|candidate| {
+                                        !excluded_agent_session_ids.contains(candidate)
+                                    });
+                                let agent_session_id = detected.or(previous_same_kind_session);
+                                if let Some(candidate) = agent_session_id.as_ref() {
+                                    claimed_agent_session_ids.insert(candidate.clone());
+                                }
+                                grok_agent_metadata_fields(
+                                    agent_session_id,
+                                    previous_claude_session_id.clone(),
+                                )
+                            }
                         },
                         None => (
                             previous_agent_kind.clone(),

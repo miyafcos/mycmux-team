@@ -352,6 +352,7 @@
   function normalizeAgentKind(value) {
     var lower = String(value || "").toLowerCase();
     if (lower.includes("claude-codex")) return "claude-codex";
+    if (lower.includes("grok")) return "grok";
     if (lower.includes("claude")) return "claude";
     if (lower.includes("codex")) return "codex";
     return "";

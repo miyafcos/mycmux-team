@@ -14,6 +14,12 @@ def assert_contains(text: str, snippet: str, source: str) -> None:
     assert snippet in text, f"Missing snippet in {source}: {snippet}"
 
 
+def function_slice(text: str, start: str, end: str) -> str:
+    start_offset = text.index(start)
+    end_offset = text.index(end, start_offset)
+    return text[start_offset:end_offset]
+
+
 def test_socket_api_has_frontend_response_bridge() -> None:
     socket_listener = read_repo_text("src/components/layout/SocketListener.tsx")
     socket_commands = read_repo_text("src/components/layout/socketCommands.ts")
@@ -51,6 +57,7 @@ def test_socket_api_has_frontend_response_bridge() -> None:
         'case "pane.move":',
     ]:
         assert_contains(socket_commands, snippet, "src/components/layout/socketCommands.ts")
+    assert_contains(socket_commands, 'value === "grok"', "src/components/layout/socketCommands.ts")
 
 
 def test_local_socket_requires_a_token_from_every_caller() -> None:
@@ -98,3 +105,66 @@ def test_one_shot_tab_command_is_not_persisted() -> None:
     to_config_end = socket_listener.index("\nlet _resolveLoaded", to_config_start)
     to_config = socket_listener[to_config_start:to_config_end]
     assert "commandArgv" not in to_config
+
+
+def test_socket_activation_preserves_the_operator_foreground() -> None:
+    socket_commands = read_repo_text("src/components/layout/socketCommands.ts")
+    layout_store = read_repo_text("src/stores/workspaceLayoutStore.ts")
+
+    socket_scopes = [
+        function_slice(socket_commands, "function activateLocation(", "export function serializeWorkspaceLayoutForSocket"),
+        function_slice(socket_commands, "async function spawnPane(", "async function spawnTab("),
+        function_slice(socket_commands, "async function spawnTab(", "type DeclaredLaunchResult"),
+        function_slice(socket_commands, "async function launchDeclared(", "async function activateTab("),
+        function_slice(socket_commands, "async function activateTab(", "async function restoreActivation("),
+        function_slice(socket_commands, "async function restoreActivation(", "async function closeTab("),
+    ]
+    for scope in socket_scopes:
+        assert "setActiveWorkspace(" not in scope
+        assert "focusController.request(" not in scope
+        assert "focus: true" not in scope
+
+    assert 'activationSource: "socket"' in socket_scopes[1]
+    assert 'activationSource: "socket"' in socket_scopes[2]
+    assert "foregroundChanged: false" in socket_scopes[1]
+    assert "foregroundChanged: false" in socket_scopes[2]
+    assert 'activationSource: "socket"' in socket_scopes[3]
+    assert "foreground_changed: false" in socket_scopes[4]
+    assert "foreground_changed: false" in socket_scopes[5]
+    assert "foreground_preserved" in socket_scopes[5]
+    assert "setActiveWorkspace(" not in socket_commands
+    assert "focusController." not in socket_commands
+    assert "force_focus" not in socket_commands
+    assert "forceFocus" not in socket_commands
+    assert "activationSource?: \"human\" | \"socket\";" in layout_store
+    assert "options.activationSource !== \"socket\"" in layout_store
+
+
+def test_human_activation_paths_remain_explicit() -> None:
+    app_shell = read_repo_text("src/components/layout/AppShell.tsx")
+    terminal_pane = read_repo_text("src/components/workspace/TerminalPane.tsx")
+    dashboard = read_repo_text("src/components/dashboard/DashboardView.tsx")
+
+    workspace_jump = function_slice(app_shell, 'case "workspace.jump.1":', 'case "workspace.jump.9":')
+    assert 'if (ws[num - 1]) setActiveWorkspace(ws[num - 1].id);' in workspace_jump
+    assert_contains(
+        app_shell,
+        'focusController.request("keyboard", { sessionId: targetSessionId, focus: true });',
+        "src/components/layout/AppShell.tsx",
+    )
+    assert_contains(
+        terminal_pane,
+        'focusController.request("tab-click", { sessionId: tab.sessionId, focus: true });',
+        "src/components/workspace/TerminalPane.tsx",
+    )
+    dashboard_jump = function_slice(dashboard, "const jumpToCard = useCallback(", "  useEffect(() => {")
+    assert_contains(
+        dashboard_jump,
+        "useWorkspaceListStore.getState().setActiveWorkspace(card.workspaceId);",
+        "src/components/dashboard/DashboardView.tsx",
+    )
+    assert_contains(
+        dashboard_jump,
+        'focusController.request("programmatic", { sessionId: card.tab.sessionId, focus: true });',
+        "src/components/dashboard/DashboardView.tsx",
+    )

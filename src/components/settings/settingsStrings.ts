@@ -3,6 +3,62 @@ export const settingsStrings = {
   remoteDescription: "スマホや別のブラウザから、今このPCで開いている端末を操作します。セーブポイントとは別の機能です。",
 } as const;
 
+// 委譲を見守る機能の画面語。内部の dispatchWatchdog* 識別子とは分ける。
+export const delegationWatchStrings = {
+  heading: "委譲の見守り",
+  description: "バックグラウンドで動かしている AI タブを定期的に確認し、質問待ち・完了未確認・見守りの停滞を通知します。",
+  enabledLabel: "見守りを有効にする",
+  sensitivityTitle: "通知の敏感さ",
+  sensitivityAriaLabel: "見守り通知の敏感さ",
+  sensitivityPresetLabel: (id: "relaxed" | "standard" | "eager"): string => {
+    if (id === "relaxed") return "控えめ";
+    if (id === "eager") return "敏感";
+    return "標準";
+  },
+  sensitivityDescription: (intervalMinutes: number, stallMinutes: number): string => `${intervalMinutes}分ごとにチェック・見守りの停滞が${stallMinutes}分続くと通知`,
+  customSensitivity: "カスタム",
+  currentSensitivity: (intervalMinutes: number, stallMinutes: number): string => `現在の設定: ${intervalMinutes}分ごとにチェック・見守りの停滞が${stallMinutes}分続くと通知`,
+  notifyTitle: "見守りの通知",
+  notifyLabel: "見守りの通知を出す",
+  notifyHint: "「通知とレイアウト」の通知をオフにしている間は、ここをオンにしてもトーストとバッジは出ません。",
+  queueTitle: (count: number): string => `いま気になっているタブ (${count}件)`,
+  queueEmpty: "問題は見つかっていません。",
+  queueUnknownSubject: "セッション",
+  queueContinuing: (elapsed: string, confirmations: number): string => `${elapsed}継続・連続確認 ${confirmations} 回`,
+  additionalQueueItems: (count: number): string => `ほか ${count} 件の要確認があります`,
+  kindLabels: {
+    ask: "判断待ち",
+    rate_limited: "レート制限で待機中",
+    done_unverified: "完了・未確認",
+    done_needs_review: "確認が必要な完了",
+    no_log: "ログ未作成",
+    stalled: "見守りの停滞",
+    timeout: "タイムアウト",
+    tab_no_output: "出力停止",
+    tab_queued_input: "未送信の入力",
+    tab_silent: "無応答で停止",
+  },
+  dormancyTitle: "休眠セッションの整理",
+  dormancyDescription: "非表示で休眠した Claude / Codex セッションを終了するまでの時間です。0分は自動整理を止めます。",
+  dormancyAriaLabel: "休眠セッションを整理するまでの時間",
+  dormancyPreset: (minutes: number): string => minutes === 0 ? "自動整理しない" : `${minutes}分後`,
+} as const;
+
+export const notificationSettingsStrings = {
+  title: "通知",
+  enabledLabel: "通知",
+  soundLabel: "通知サウンド",
+  delegationWatchTitle: delegationWatchStrings.notifyTitle,
+  delegationWatchLabel: delegationWatchStrings.notifyLabel,
+  delegationWatchHint: "この通知は全体の「通知」がオンで、かつ見守りの通知もオンのときだけ出ます。",
+  layoutTitle: "レイアウト",
+  splitRightLabel: "「右に分割」ボタンを表示",
+  splitDownLabel: "「下に分割」ボタンを表示",
+  terminalInputTitle: "ターミナル入力",
+  paneComposerLabel: "ペインの下に入力欄を出す",
+  paneComposerHint: "文字を選んで消す・書き直すといった編集ができる入力欄です。Enter で送信、Shift+Enter で改行。ペインが低いときは自動的に隠れます。",
+} as const;
+
 // バックグラウンドで動く AI (タブ掃除の判定・命名 / AIログの要約・ダイジェスト) の文言。
 export const aiSettingsStrings = {
   tabLabel: "AI とおまかせ",

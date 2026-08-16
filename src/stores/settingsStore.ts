@@ -35,6 +35,8 @@ interface SettingsState {
   paneComposerEnabled: boolean;
   /** Deliberately off until an operator explicitly enables declared-tab launch. */
   declaredLaunchEnabled: boolean;
+  /** AI-generated next-action drafts are opt-in; machine suggestions stay available. */
+  replyDraftSuggestionsEnabled: boolean;
   setNotificationsEnabled: (v: boolean) => void;
   setNotificationSoundEnabled: (v: boolean) => void;
   setTerminalRenderer: (v: TerminalRenderer) => void;
@@ -51,6 +53,7 @@ interface SettingsState {
   setDispatchWatchdogNotify: (v: boolean) => void;
   setPaneComposerEnabled: (v: boolean) => void;
   setDeclaredLaunchEnabled: (v: boolean) => void;
+  setReplyDraftSuggestionsEnabled: (v: boolean) => void;
 }
 
 export const useSettingsStore = create<SettingsState>()(
@@ -72,6 +75,7 @@ export const useSettingsStore = create<SettingsState>()(
       dispatchWatchdogNotify: true,
       paneComposerEnabled: true,
       declaredLaunchEnabled: false,
+      replyDraftSuggestionsEnabled: false,
       setNotificationsEnabled: (v) => set({ notificationsEnabled: v }),
       setNotificationSoundEnabled: (v) => set({ notificationSoundEnabled: v }),
       setTerminalRenderer: (v) => set({ terminalRenderer: v }),
@@ -88,6 +92,7 @@ export const useSettingsStore = create<SettingsState>()(
       setDispatchWatchdogNotify: (v) => set({ dispatchWatchdogNotify: v }),
       setPaneComposerEnabled: (v) => set({ paneComposerEnabled: v }),
       setDeclaredLaunchEnabled: (v) => set({ declaredLaunchEnabled: v }),
+      setReplyDraftSuggestionsEnabled: (v) => set({ replyDraftSuggestionsEnabled: v }),
     }),
     {
       name: "mycmux-settings",

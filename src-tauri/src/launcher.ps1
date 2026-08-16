@@ -257,6 +257,9 @@ function Start-MycmuxCommandSessionTracking {
     Start-MycmuxSessionTracking $PaneId "claude-codex" (Get-MycmuxClaudeCodexProjectDir)
   } elseif (($CommandText -eq "claude" -or $CommandText.StartsWith("claude ")) -and $CommandText -notmatch "(^|\s)--session-id(=|\s)") {
     Start-MycmuxSessionTracking $PaneId "claude" (Get-MycmuxClaudeProjectDir)
+  } elseif ($CommandText -eq "grok" -or $CommandText.StartsWith("grok ")) {
+    # Grok receives an explicit id before launch; its log format is not tracked here.
+    return
   } elseif ($CommandText -like "*codex*") {
     Start-MycmuxSessionTracking $PaneId "codex" $null
   }
@@ -268,7 +271,10 @@ function Test-MycmuxClaudeNeedsNewSessionId {
   if (-not ($trimmed -eq "claude" -or $trimmed.StartsWith("claude "))) {
     return $false
   }
-  return $trimmed -notmatch "(^|\s)(--resume(=|\s)|--continue(=|\s)|--session-id(=|\s)|-r(=|\s|$))"
+  # Every alternative needs the `$` anchor: menu entries end with a bare `--resume`,
+  # and without it the guard missed them and injected a fresh --session-id into a
+  # resume launch.
+  return $trimmed -notmatch "(^|\s)(--resume(=|\s|$)|--continue(=|\s|$)|--session-id(=|\s|$)|-r(=|\s|$))"
 }
 
 function Add-MycmuxClaudeSessionIdToCommandText {
@@ -301,6 +307,80 @@ function Add-MycmuxClaudeSessionIdToCommandArray {
     return @("claude", "--session-id", $sid) + $Command[1..($Command.Count - 1)]
   }
   return @("claude", "--session-id", $sid)
+}
+
+# Grok stores one directory per conversation under a percent-encoded cwd bucket:
+# ~/.grok/sessions/C%3A%5CUsers%5C.../<session-id>/. Handing it an id that already
+# has a directory makes it exit at once with "Session ID is already in use", so
+# every candidate is checked against all buckets first.
+function Test-MycmuxGrokSessionIdTaken {
+  param([Parameter(Mandatory = $true)][string]$SessionId)
+  if ([string]::IsNullOrWhiteSpace($SessionId)) {
+    return $true
+  }
+  $root = Join-Path $HOME ".grok\sessions"
+  if (-not (Test-Path -LiteralPath $root)) {
+    return $false
+  }
+  foreach ($bucket in Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue) {
+    if (Test-Path -LiteralPath (Join-Path $bucket.FullName $SessionId)) {
+      return $true
+    }
+  }
+  return $false
+}
+
+# MYCMUX_TAB_ID stays the same for the life of a tab, so a second grok launch in
+# that tab would collide with the first one. Fall back to fresh UUIDs then.
+function Get-MycmuxGrokSessionId {
+  if ($env:MYCMUX_TAB_ID -and -not (Test-MycmuxGrokSessionIdTaken $env:MYCMUX_TAB_ID)) {
+    return $env:MYCMUX_TAB_ID
+  }
+  while ($true) {
+    $candidate = ([guid]::NewGuid()).ToString().ToLowerInvariant()
+    if (-not (Test-MycmuxGrokSessionIdTaken $candidate)) {
+      return $candidate
+    }
+  }
+}
+
+function Test-MycmuxGrokNeedsNewSessionId {
+  param([Parameter(Mandatory = $true)][string]$CommandText)
+  $trimmed = $CommandText.Trim()
+  if (-not ($trimmed -eq "grok" -or $trimmed.StartsWith("grok "))) {
+    return $false
+  }
+  return $trimmed -notmatch "(^|\s)(--resume(=|\s|$)|--continue(=|\s|$)|--session-id(=|\s|$)|-r(=|\s|$)|-c(=|\s|$)|-s(=|\s|$))"
+}
+
+function Add-MycmuxGrokSessionIdToCommandText {
+  param([Parameter(Mandatory = $true)][string]$CommandText)
+  if (-not (Test-MycmuxGrokNeedsNewSessionId $CommandText)) {
+    return $CommandText
+  }
+  $sid = Get-MycmuxGrokSessionId
+  if ([string]::IsNullOrWhiteSpace($sid)) {
+    return $CommandText
+  }
+  Write-MycmuxSessionMapping $env:MYCMUX_PANE_SESSION_ID "grok" $sid
+  return "grok --session-id $sid$($CommandText.Substring(4))"
+}
+
+function Add-MycmuxGrokSessionIdToCommandArray {
+  param([Parameter(Mandatory = $true)][string[]]$Command)
+  $commandText = $Command -join " "
+  if (-not (Test-MycmuxGrokNeedsNewSessionId $commandText)) {
+    return $Command
+  }
+  $sid = Get-MycmuxGrokSessionId
+  if ([string]::IsNullOrWhiteSpace($sid)) {
+    return $Command
+  }
+  Write-MycmuxSessionMapping $env:MYCMUX_PANE_SESSION_ID "grok" $sid
+  if ($Command.Count -gt 1) {
+    return @("grok", "--session-id", $sid) + $Command[1..($Command.Count - 1)]
+  }
+  return @("grok", "--session-id", $sid)
 }
 
 function Test-MycmuxColorSensitiveAgentLeaf {
@@ -383,6 +463,16 @@ function Invoke-MycmuxHandoffFromEnv {
       Invoke-MycmuxCommandArray -Command @("codex", "--no-alt-screen", $bootstrap)
       return $true
     }
+    "grok" {
+      $sid = Get-MycmuxGrokSessionId
+      if ([string]::IsNullOrWhiteSpace($sid)) {
+        Invoke-MycmuxCommandArray -Command @("grok", "--no-alt-screen", "--permission-mode", "bypassPermissions", $bootstrap)
+      } else {
+        Write-MycmuxSessionMapping $env:MYCMUX_PANE_SESSION_ID "grok" $sid
+        Invoke-MycmuxCommandArray -Command @("grok", "--no-alt-screen", "--session-id", $sid, "--permission-mode", "bypassPermissions", $bootstrap)
+      }
+      return $true
+    }
     "claude-codex" {
       Start-MycmuxSessionTracking $env:MYCMUX_PANE_SESSION_ID "claude-codex" (Get-MycmuxClaudeCodexProjectDir)
       Invoke-MycmuxCommandArray -Command @("claude-codex", $bootstrap)
@@ -442,6 +532,19 @@ function Invoke-MycmuxResumeFromEnv {
       }
       return $true
     }
+    "grok*" {
+      if ($env:MYCMUX_SESSION_ID) {
+        if ($env:MYCMUX_RESUME_FORK -eq "1") {
+          Invoke-MycmuxCommandArray -Command @("grok", "--no-alt-screen", "--resume", $env:MYCMUX_SESSION_ID, "--fork-session")
+        } else {
+          Write-MycmuxSessionMapping $env:MYCMUX_PANE_SESSION_ID "grok" $env:MYCMUX_SESSION_ID
+          Invoke-MycmuxCommandArray -Command @("grok", "--no-alt-screen", "--resume", $env:MYCMUX_SESSION_ID)
+        }
+      } else {
+        Invoke-MycmuxCommandArray -Command @("grok", "--no-alt-screen", "--continue")
+      }
+      return $true
+    }
   }
   return $true
 }
@@ -450,17 +553,16 @@ $Options = @(
   New-MycmuxOption "Claude Code" @("claude", "--allow-dangerously-skip-permissions", "--permission-mode", "auto") "claude"
   New-MycmuxOption "Codex" @("codex", "--no-alt-screen") "codex"
   New-MycmuxOption "claude-codex (Codex Models)" @("claude-codex", "--backend", "gpt") "claude-codex"
+  New-MycmuxOption "Grok Build" @("grok", "--no-alt-screen", "--permission-mode", "auto") "grok"
   New-MycmuxOption "Codex (Fugu Ultra)" @("codex", "--no-alt-screen", "--profile", "fugu-ultra") "codex"
   New-MycmuxOption "claude-codex (Fugu)" @("claude-codex", "--backend", "fugu") "claude-codex"
   New-MycmuxOption "claude-codex (Open Models)" @("claude-codex", "--backend", "fcc") "claude-codex"
   # Gemini CLI was sunset for individual accounts on 2026-06-18; agy (Antigravity CLI) replaces it
   New-MycmuxOption "Antigravity (agy)" @("agy") $null
-  New-MycmuxOption "Claude Code (dangerous)" @("claude", "--dangerously-skip-permissions", "--permission-mode", "bypassPermissions") "claude"
-  New-MycmuxOption "Codex (dangerous)" @("codex", "--no-alt-screen", "--dangerously-bypass-approvals-and-sandbox") "codex"
-  New-MycmuxOption "claude-codex (dangerous)" @("claude-codex", "--dangerously-skip-permissions", "--permission-mode", "bypassPermissions") "claude-codex"
   New-MycmuxOption "Claude Code (resume)" @("claude", "--allow-dangerously-skip-permissions", "--permission-mode", "auto", "--resume") "claude"
   New-MycmuxOption "Codex (resume)" @("codex", "resume", "--no-alt-screen") "codex"
   New-MycmuxOption "claude-codex (resume)" @("claude-codex", "--resume") "claude-codex"
+  New-MycmuxOption "Grok Build (resume)" @("grok", "--no-alt-screen", "--resume") "grok"
   New-MycmuxOption "Custom..." @("__custom__") $null
 )
 
@@ -468,21 +570,20 @@ $LaunchTargets = @{
   "claude" = $Options[0]
   "codex" = $Options[1]
   "claude-codex" = $Options[2]
-  "codex-fugu-ultra" = $Options[3]
-  "claude-codex-fugu" = $Options[4]
-  "claude-codex-open" = $Options[5]
-  "fcc" = $Options[5]
-  "fcc-claude" = $Options[5]
-  "agy" = $Options[6]
-  "gemini" = $Options[6]
-  "antigravity" = $Options[6]
-  "claude-dangerous" = $Options[7]
-  "codex-dangerous" = $Options[8]
-  "claude-codex-dangerous" = $Options[9]
-  "claude-resume" = $Options[10]
-  "codex-resume" = $Options[11]
-  "claude-codex-resume" = $Options[12]
-  "custom" = $Options[13]
+  "grok" = $Options[3]
+  "codex-fugu-ultra" = $Options[4]
+  "claude-codex-fugu" = $Options[5]
+  "claude-codex-open" = $Options[6]
+  "fcc" = $Options[6]
+  "fcc-claude" = $Options[6]
+  "agy" = $Options[7]
+  "gemini" = $Options[7]
+  "antigravity" = $Options[7]
+  "claude-resume" = $Options[8]
+  "codex-resume" = $Options[9]
+  "claude-codex-resume" = $Options[10]
+  "grok-resume" = $Options[11]
+  "custom" = $Options[12]
 }
 
 function Invoke-MycmuxCustomCommand {
@@ -494,6 +595,7 @@ function Invoke-MycmuxCustomCommand {
     return
   }
   $cmd = Add-MycmuxClaudeSessionIdToCommandText $cmd
+  $cmd = Add-MycmuxGrokSessionIdToCommandText $cmd
   Start-MycmuxCommandSessionTracking $cmd $env:MYCMUX_PANE_SESSION_ID
   $leaf = ($cmd -split '\s+', 2)[0]
   Invoke-MycmuxWithNoColorGuard -Leaf $leaf -Action { Invoke-Expression $cmd }
@@ -527,6 +629,7 @@ function Invoke-MycmuxOption {
     Import-MycmuxUserEnvIfMissing "FUGU_API_KEY"
   }
   $command = Add-MycmuxClaudeSessionIdToCommandArray $Option.Command
+  $command = Add-MycmuxGrokSessionIdToCommandArray $command
   $exe = $command[0]
   $args = @()
   if ($command.Count -gt 1) {

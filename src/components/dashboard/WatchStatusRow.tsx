@@ -20,5 +20,9 @@ export function WatchStatusRow({ now }: { now: number }) {
 
 function age(at: number, now: number): string {
   const minutes = Math.max(0, Math.floor(Math.abs(now - at) / 60_000));
-  return at > now ? `${minutes}分後` : minutes === 0 ? "たった今" : `${minutes}分前`;
+  return at > now
+    ? dashboardStrings.watchDueIn(minutes)
+    : minutes === 0
+      ? dashboardStrings.watchJustNow
+      : dashboardStrings.watchAgo(minutes);
 }

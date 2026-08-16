@@ -1,5 +1,6 @@
 pub mod ailog;
 mod agent_transcript;
+mod attention;
 mod ai;
 mod cli_accounts;
 mod commands;
@@ -7,6 +8,7 @@ mod db;
 mod diag;
 mod dispatch;
 mod events;
+mod history;
 mod livebrief;
 mod pty;
 mod remote;
@@ -18,6 +20,7 @@ mod test_profile;
 pub mod terminal_config;
 pub mod usage;
 mod util;
+mod workorder;
 pub mod window_registry;
 
 use pty::manager::SessionManager;
@@ -317,11 +320,28 @@ pub fn run() {
             commands::shell::get_default_shell,
             commands::tab_sweep::run_tab_sweep_judge,
             commands::tab_sweep::abort_tab_sweep_judge,
+            commands::next_action::run_next_action_judge,
+            commands::next_action::abort_next_action_judge,
             commands::dispatch::dispatch_scan,
             commands::dispatch::dispatch_claim_watchdog,
             commands::session_mapping::read_agent_session_mappings,
             commands::crsm::crsm_list_sessions,
             commands::crsm::crsm_create_handoff,
+            commands::workorder::workorder_create_draft,
+            commands::workorder::workorder_refresh_sources,
+            commands::workorder::workorder_preview,
+            commands::workorder::workorder_go,
+            commands::workorder::workorder_spawn_result,
+            commands::workorder::workorder_advance,
+            commands::workorder::workorder_record_report,
+            commands::workorder::workorder_record_gate_result,
+            commands::workorder::workorder_retry_spawn,
+            commands::workorder::workorder_cancel,
+            commands::workorder::workorder_activate_version,
+            commands::attention::attention_list_cards,
+            commands::attention::attention_resolve_card,
+            commands::attention::attention_set_tracked,
+            commands::attention::attention_list_tracked,
             commands::workspace::load_persistent_data,
             commands::workspace::save_persistent_data,
             commands::pets::list_pets,
@@ -401,6 +421,7 @@ pub fn run() {
             let state = app.state::<AppState>();
             state.status_feed.set_app_handle(app_handle.clone());
             state.livebrief_service.start(app_handle.clone());
+            attention::start(app_handle.clone(), state.status_feed.clone(), state.livebrief_service.clone());
             if let Err(err) = install_launcher_script() {
                 crate::diag_warn!("launcher", "failed to install launcher scripts: {err}");
             }

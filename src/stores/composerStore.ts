@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { mentionTokenKey, type MentionToken } from "../lib/mentionModel";
 
-export type ComposerCommandKind = "plain" | "status-request" | "answer-forward";
+export type ComposerCommandKind = "plain" | "status-request" | "answer-forward" | "continue";
 
 /** Captured only by the QuestionCard UI path; free text never creates one. */
 export interface ComposerQuestionGuard {

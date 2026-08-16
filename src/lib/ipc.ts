@@ -119,6 +119,182 @@ export async function dispatchClaimWatchdog(ttlMs: number): Promise<boolean> {
   return invoke<boolean>("dispatch_claim_watchdog", { ttlMs });
 }
 
+export interface WorkOrderSpawnResult {
+  sessionId?: string;
+  error?: string;
+}
+
+export type WorkOrderSessionRole = "source" | "worker" | "integrator" | "reviewer";
+export type WorkOrderState = "draft" | "awaiting_go" | "running" | "needs_decision" | "integrating" | "verifying" | "done" | "failed" | "cancelled";
+export type WorkOrderItemState = "pending" | "ready" | "dispatched" | "running" | "reported" | "verified" | "failed" | "cancelled";
+
+export interface WorkOrderCriterion {
+  id: string;
+  description: string;
+}
+
+export interface WorkOrderSessionBinding {
+  logicalSessionId: string;
+  roles: WorkOrderSessionRole[];
+  labelSnapshot: string | null;
+  snapshotEventId: string | null;
+}
+
+export interface WorkOrderArtifactSpec {
+  path: string;
+  description: string;
+}
+
+export interface WorkOrderPathScope {
+  pathPrefix: string;
+  worktree: string | null;
+  branch: string | null;
+}
+
+export interface WorkOrderGate {
+  id: string;
+  description: string;
+}
+
+export interface WorkOrderItem {
+  id: string;
+  objective: string;
+  assignee: string | null;
+  dependencies: string[];
+  expectedArtifacts: WorkOrderArtifactSpec[];
+  writeScope: WorkOrderPathScope[];
+  gates: WorkOrderGate[];
+  required: boolean;
+  state: WorkOrderItemState;
+}
+
+export interface WorkOrderBudget {
+  maxNewPty: number;
+  maxWorkItems: number;
+  maxReplans: number;
+  maxPackets: number;
+  maxRoundtripsPerEdge: number;
+}
+
+export interface WorkOrderPlanDraft {
+  goal: string;
+  acceptanceCriteria: WorkOrderCriterion[];
+  bindings: WorkOrderSessionBinding[];
+  workItems: WorkOrderItem[];
+  budgets: WorkOrderBudget;
+}
+
+export interface WorkOrderPlanSnapshot extends WorkOrderPlanDraft {
+  id: string;
+  planVersion: number;
+  sealedAt: number | null;
+}
+
+export interface WorkOrderSourceDigest {
+  logicalSessionId: string;
+  label: string | null;
+  snapshotEventId: string | null;
+  currentTask: string | null;
+  latestInstruction: string | null;
+  activity: string | null;
+  openQuestions: string[];
+  acquired: boolean;
+  failureReason: string | null;
+}
+
+export interface WorkOrderCoverage {
+  target: number;
+  acquired: number;
+  missing: number;
+  failed: number;
+}
+
+export interface WorkOrderOutboxStatus {
+  workItemId: string;
+  intentKind: "spawn" | "send";
+  status: "pending" | "in_flight" | "delivered" | "failed";
+  reason: string | null;
+}
+
+export type WorkOrderWriteTarget = { branch: string; path: string } | { unavailable: string } | null;
+
+export interface WorkOrderPreview {
+  plan: WorkOrderPlanSnapshot;
+  coverage: WorkOrderCoverage;
+  outbox: WorkOrderOutboxStatus[];
+  sources: WorkOrderSourceDigest[];
+  integratorPrompt: string;
+  writeTarget: WorkOrderWriteTarget;
+}
+
+export interface WorkOrderGoOptions {
+  cwd: string;
+  overrideMissingSources?: boolean;
+  agentKind?: AgentSessionKind;
+}
+
+export interface WorkOrderIdResponse {
+  workOrderId: string;
+}
+
+export interface WorkOrderSourcesResponse {
+  coverage: WorkOrderCoverage;
+  sources: WorkOrderSourceDigest[];
+}
+
+export interface WorkOrderGoResponse {
+  sealed: "sealed" | "alreadySealed";
+  spawnRequestId: string | null;
+  coverage: WorkOrderCoverage;
+}
+
+export interface WorkOrderCancelResponse {
+  deletedDraft: boolean;
+  stopTargets: string[];
+}
+
+export interface WorkOrderRetrySpawnResponse {
+  spawnRequestId: string;
+}
+
+export async function workorderSpawnResult(
+  requestId: string,
+  result: WorkOrderSpawnResult,
+): Promise<void> {
+  return invoke<void>("workorder_spawn_result", { requestId, result });
+}
+
+export async function workorderCreateDraft(plan: WorkOrderPlanDraft): Promise<WorkOrderIdResponse> {
+  return invoke<WorkOrderIdResponse>("workorder_create_draft", { plan });
+}
+
+export async function workorderRefreshSources(id: string): Promise<WorkOrderSourcesResponse> {
+  return invoke<WorkOrderSourcesResponse>("workorder_refresh_sources", { id });
+}
+
+export async function workorderPreview(id: string, cwd: string): Promise<WorkOrderPreview> {
+  return invoke<WorkOrderPreview>("workorder_preview", { id, cwd });
+}
+
+export async function workorderGo(
+  id: string,
+  options: WorkOrderGoOptions,
+): Promise<WorkOrderGoResponse> {
+  return invoke<WorkOrderGoResponse>("workorder_go", { id, options });
+}
+
+export async function workorderCancel(id: string): Promise<WorkOrderCancelResponse> {
+  return invoke<WorkOrderCancelResponse>("workorder_cancel", { id });
+}
+
+export async function workorderActivateVersion(id: string, planVersion: number): Promise<void> {
+  return invoke<void>("workorder_activate_version", { id, planVersion });
+}
+
+export async function workorderRetrySpawn(workOrderId: string): Promise<WorkOrderRetrySpawnResponse> {
+  return invoke<WorkOrderRetrySpawnResponse>("workorder_retry_spawn", { workOrderId });
+}
+
 export async function createSession(
   sessionId: string,
   command: string,
@@ -607,7 +783,7 @@ export async function finalizeSavepoint(options: {
 // ─── CRSM commands ─────────────────────────────────────────────────────────
 
 export interface CrsmSessionEntry {
-  kind: "claude" | "codex" | "claude-codex";
+  kind: "claude" | "codex" | "claude-codex" | "grok";
   id: string;
   cwd: string;
   label: string;
@@ -626,8 +802,8 @@ export interface CrsmSessionEntry {
 export interface CrsmHandoffResult {
   path: string;
   bootstrap_prompt: string;
-  from_kind: "claude" | "codex" | "claude-codex";
-  target_kind: "claude" | "codex" | "claude-codex";
+  from_kind: "claude" | "codex" | "claude-codex" | "grok";
+  target_kind: "claude" | "codex" | "claude-codex" | "grok";
   from_session_id: string;
   cwd: string;
 }

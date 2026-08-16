@@ -66,12 +66,13 @@ describe("buildWatchdogQueue", () => {
     expect(noLog.queue.map((item) => item.kind)).toEqual(["no_log"]);
   });
 
-  it("increments confirmations for the same evidence and resets when mtime changes", () => {
+  it("keeps one confirmation chain when an evidence mtime changes", () => {
     const first = queue([entry({ hasAsk: true, askMtimeMs: 10 })]).queue;
     const second = queue([entry({ hasAsk: true, askMtimeMs: 10 })], first).queue;
     const third = queue([entry({ hasAsk: true, askMtimeMs: 10 })], second).queue;
     const changed = queue([entry({ hasAsk: true, askMtimeMs: 11 })], third).queue;
-    expect([first[0].confirmations, second[0].confirmations, third[0].confirmations, changed[0].confirmations]).toEqual([1, 2, 3, 1]);
+    expect(first[0].key).toBe(changed[0].key);
+    expect([first[0].confirmations, second[0].confirmations, third[0].confirmations, changed[0].confirmations]).toEqual([1, 2, 3, 4]);
   });
 
   it("excludes closed and abandoned entries and returns manually closed slugs", () => {

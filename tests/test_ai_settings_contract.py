@@ -44,14 +44,13 @@ def test_ai_tab_combines_ai_watch_and_reply_draft_sections() -> None:
     text = read_repo_text("src/components/settings/tabs/AiTab.tsx")
     for snippet in (
         '<AutomationTab />',
-        '返信案の先回り (準備中)',
+        '返信案の先回り',
         "data-ai-reply-draft-placeholder",
-        "L3: place reply-draft suggestion controls in this section.",
+        "replyDraftSuggestionsEnabled",
+        "setReplyDraftSuggestionsEnabled",
     ):
         assert snippet in text, f"Missing combined settings section: {snippet}"
-    assert "<input" not in text.split("data-ai-reply-draft-placeholder", 1)[1], (
-        "reply-draft placeholder must not add an inactive control"
-    )
+    assert 'checked={replyDraftSuggestionsEnabled}' in text
     assert 'title: "バックグラウンド AI"' in read_repo_text(
         "src/components/settings/settingsStrings.ts"
     )
@@ -69,6 +68,16 @@ def test_watchdog_settings_keep_the_existing_store_keys_and_setters() -> None:
         "setDispatchWatchdogNotify",
     ):
         assert snippet in text, f"Watchdog store contract changed: {snippet}"
+
+
+def test_reply_draft_setting_is_frontend_opt_in() -> None:
+    text = read_repo_text("src/stores/settingsStore.ts")
+    for snippet in (
+        "replyDraftSuggestionsEnabled: boolean",
+        "replyDraftSuggestionsEnabled: false",
+        "setReplyDraftSuggestionsEnabled",
+    ):
+        assert snippet in text, f"Missing reply-draft opt-in setting: {snippet}"
 
 
 def test_ai_tab_uses_a_free_entry_combobox() -> None:

@@ -29,29 +29,19 @@ export function TabSweepButton() {
   }, [openPanel]);
 
   return (
-    <div style={{ position: "relative", height: 24, display: "flex", alignItems: "center" }}>
+    <div className="cmux-minimap-tab-sweep">
       <button
         type="button"
-        className="cmux-title-btn"
+        className="cmux-minimap-tab-sweep-button"
         title={running ? "タブ掃除中…" : "タブ掃除"}
         aria-label="タブ掃除"
         aria-busy={running}
         aria-expanded={open}
         aria-controls="tab-sweep-panel"
         onClick={startAutoSweep}
-        style={{
-          background: "none",
-          border: "none",
-          color: "var(--cmux-text-secondary)",
-          cursor: "pointer",
-          padding: "3px 6px",
-          borderRadius: 3,
-          display: "flex",
-          alignItems: "center",
-          animation: running ? "cmux-usage-pulse 1.2s ease-in-out infinite" : undefined,
-        }}
       >
         <SweepIcon />
+        <span>タブ掃除</span>
       </button>
       <TabSweepPanel
         open={open}

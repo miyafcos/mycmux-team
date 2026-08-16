@@ -9,10 +9,13 @@ import {
   isEffectivelyWorking,
   observeDormancyActivity,
   readDormantThresholdMs,
+  readDormantMinutes,
+  resolveDormantMinutes,
   resolveDormantAction,
   resolveDormantResumeIdentity,
   resolveDormantThresholdMs,
   resolveRenderedTabId,
+  writeDormantMinutes,
   shouldDormantSession,
   type DormantSessionCandidate,
 } from "../../src/lib/agentDormancy";
@@ -47,6 +50,7 @@ function candidate(overrides: Partial<DormantSessionCandidate> = {}): DormantSes
 
 describe("agent dormancy threshold", () => {
   it("uses the default minutes and disables at zero", () => {
+    expect(resolveDormantMinutes(undefined)).toBe(DEFAULT_AGENT_DORMANT_MINUTES);
     expect(resolveDormantThresholdMs(undefined)).toBe(DEFAULT_AGENT_DORMANT_MINUTES * 60 * 1_000);
     expect(resolveDormantThresholdMs("0")).toBe(0);
   });
@@ -79,6 +83,18 @@ describe("agent dormancy threshold", () => {
     });
 
     expect(readDormantThresholdMs()).toBe(THRESHOLD_MS);
+  });
+
+  it("persists a UI-selected timeout through the existing storage key", () => {
+    const setItem = vi.fn();
+    const getItem = vi.fn(() => "30");
+    const dispatchEvent = vi.fn();
+    vi.stubGlobal("window", { localStorage: { getItem, setItem }, dispatchEvent });
+
+    expect(writeDormantMinutes(30)).toBe(30);
+    expect(setItem).toHaveBeenCalledWith(AGENT_DORMANT_MINUTES_STORAGE_KEY, "30");
+    expect(readDormantMinutes()).toBe(30);
+    expect(dispatchEvent).toHaveBeenCalledOnce();
   });
 });
 

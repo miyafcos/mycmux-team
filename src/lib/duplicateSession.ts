@@ -27,7 +27,7 @@ export interface DuplicateSessionPaneOptions {
 }
 
 export interface ClonedDuplicateSessionPaneOptions {
-  agentId: "claude-code" | "codex" | "shell-starter";
+  agentId: "claude-code" | "codex" | "grok" | "shell-starter";
   label: string;
   cwd: string;
   agentKind: AgentSessionKind;

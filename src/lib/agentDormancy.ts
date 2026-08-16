@@ -6,6 +6,7 @@ import type { AgentSessionKind, Pane, PaneTab } from "../types";
 export const DEFAULT_AGENT_DORMANT_MINUTES = 60;
 export const AGENT_DORMANT_SWEEP_INTERVAL_MS = 10 * 60 * 1_000;
 export const AGENT_DORMANT_MINUTES_STORAGE_KEY = "mycmux:agent-dormant-minutes";
+export const AGENT_DORMANCY_SETTINGS_EVENT = "mycmux:agent-dormancy-settings";
 export const DORMANCY_HISTORY_SCAN_LINES = 400;
 export const DORMANCY_SCREEN_TAIL_LINES = 24;
 
@@ -59,25 +60,43 @@ export function resolveDormantResumeIdentity(tab: PaneTab): DormantResumeIdentit
   return null;
 }
 
-export function resolveDormantThresholdMs(rawMinutes: string | null | undefined): number {
+export function resolveDormantMinutes(rawMinutes: string | null | undefined): number {
   const trimmed = rawMinutes?.trim();
-  if (!trimmed) return DEFAULT_AGENT_DORMANT_MINUTES * 60 * 1_000;
+  if (!trimmed) return DEFAULT_AGENT_DORMANT_MINUTES;
   const minutes = Number(trimmed);
   if (!Number.isFinite(minutes) || minutes < 0) {
-    return DEFAULT_AGENT_DORMANT_MINUTES * 60 * 1_000;
+    return DEFAULT_AGENT_DORMANT_MINUTES;
   }
-  return minutes * 60 * 1_000;
+  return minutes;
+}
+
+export function resolveDormantThresholdMs(rawMinutes: string | null | undefined): number {
+  return resolveDormantMinutes(rawMinutes) * 60 * 1_000;
+}
+
+export function readDormantMinutes(): number {
+  try {
+    return resolveDormantMinutes(window.localStorage.getItem(AGENT_DORMANT_MINUTES_STORAGE_KEY));
+  } catch {
+    return DEFAULT_AGENT_DORMANT_MINUTES;
+  }
 }
 
 export function readDormantThresholdMs(): number {
+  return readDormantMinutes() * 60 * 1_000;
+}
+
+/** Persist a UI-selected timeout and notify the active dormancy sweep immediately. */
+export function writeDormantMinutes(minutes: number): number {
+  const normalized = resolveDormantMinutes(String(minutes));
   try {
-    // DevTools: setItem with this key, then restart the app to apply the override.
-    return resolveDormantThresholdMs(
-      window.localStorage.getItem(AGENT_DORMANT_MINUTES_STORAGE_KEY),
-    );
+    window.localStorage.setItem(AGENT_DORMANT_MINUTES_STORAGE_KEY, String(normalized));
+    window.dispatchEvent(new Event(AGENT_DORMANCY_SETTINGS_EVENT));
   } catch {
-    return resolveDormantThresholdMs(undefined);
+    // Storage can be unavailable in restricted WebViews. Keep the caller's UI
+    // deterministic by returning the normalized value even when persistence fails.
   }
+  return normalized;
 }
 
 export function isAgentRestProcess(name: string | null | undefined): boolean {

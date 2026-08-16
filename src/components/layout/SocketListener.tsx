@@ -64,6 +64,7 @@ import {
   resolvePersistedSelection,
 } from "../../lib/sessionRestoreSafety";
 import { handleSocketCommand } from "./socketCommands";
+import { handleWorkOrderSpawnRequest, type SpawnRequest } from "../../lib/workOrderBridge";
 import { isMainWindow, windowLabel, MAIN_WINDOW_LABEL } from "../../lib/windowContext";
 import { mergeWindowFragmentWorkspaces } from "../../lib/windowFragments";
 import {
@@ -190,6 +191,7 @@ function normalizeRowHeightsPerCol(
 function inferAgentKindFromAgentId(agentId?: string | null): AgentSessionKind | null {
   if (agentId === "claude-code") return "claude";
   if (agentId === "codex") return "codex";
+  if (agentId === "grok") return "grok";
   if (agentId === "claude-codex") return "claude-codex";
   return null;
 }
@@ -1124,6 +1126,24 @@ export function useWorkspacePersist() {
     reportVisibility();
     document.addEventListener("visibilitychange", reportVisibility);
     return () => document.removeEventListener("visibilitychange", reportVisibility);
+  }, []);
+
+  useEffect(() => {
+    // `claimLeader` is a one-shot bootstrap operation. The existing ref is
+    // therefore the authoritative leader state for this event, rather than
+    // attempting a second claim for every WorkOrder spawn request.
+    if (!isMainWindow()) return;
+
+    const unlisten = listen<SpawnRequest>("workorder://spawn-request", (event) => {
+      if (!isLeader.current) {
+        return;
+      }
+      void handleWorkOrderSpawnRequest(event.payload);
+    });
+
+    return () => {
+      unlisten.then((f) => f()).catch(() => {});
+    };
   }, []);
 
   // Load on mount — only leader bootstraps

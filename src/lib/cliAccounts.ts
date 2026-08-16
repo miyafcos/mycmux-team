@@ -1,4 +1,5 @@
 import { CLI_LOGIN_TIMEOUT_MS, type CliAccountProfile, type CliLiveLogin, type CliLoginMode, type CliProvider } from "./ipc";
+import type { AgentSessionKind } from "../types";
 
 export const CLI_ACCOUNT_POLL_INTERVAL_MS = 60_000;
 
@@ -188,7 +189,7 @@ export function cliAccountProfileActivity(
 }
 
 export interface AgentPaneMetadataLike {
-  agentKind?: "claude" | "codex" | "claude-codex";
+  agentKind?: AgentSessionKind;
   processIsShell?: boolean;
   cwd?: string;
   processTitle?: string;

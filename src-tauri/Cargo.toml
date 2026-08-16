@@ -1,6 +1,6 @@
 [package]
 name = "mycmux"
-version = "0.39.0"
+version = "0.42.0"
 description = "mycmux - AI agent terminal workspace"
 authors = ["miyafcos"]
 edition = "2021"

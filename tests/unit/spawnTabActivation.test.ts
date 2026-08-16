@@ -82,6 +82,32 @@ describe("addTabToPaneWithOptions activation", () => {
     expect(pane.sessionId).toBe(appended.sessionId);
     expect(useUiStore.getState().activePaneId).toBe(appended.sessionId);
   });
+
+  it("allows socket activation only inside a background workspace", () => {
+    const background = workspace();
+    background.id = "workspace-background";
+    background.panes = background.panes.map((pane) => ({
+      ...pane,
+      id: "pane-background",
+      sessionId: "session-background-original",
+      activeTabId: "tab-background-original",
+      tabs: [{ ...pane.tabs[0], id: "tab-background-original", sessionId: "session-background-original" }],
+    }));
+    background.splitColumns = [["pane-background"]];
+    useWorkspaceListStore.setState((state) => ({ workspaces: [...state.workspaces, background] }));
+
+    useWorkspaceLayoutStore.getState().addTabToPaneWithOptions(background.id, "pane-background", {
+      commandArgv: ["cmd.exe"],
+      activate: true,
+      activationSource: "socket",
+    });
+
+    const pane = useWorkspaceListStore.getState().getWorkspace(background.id)!.panes[0];
+    expect(pane.activeTabId).toBe(pane.tabs[1].id);
+    expect(useWorkspaceListStore.getState().activeWorkspaceId).toBe(workspaceId);
+    expect(useUiStore.getState().activePaneId).toBe(originalSessionId);
+    expect(useUiStore.getState().focusRevision).toBe(0);
+  });
 });
 
 describe("pane.spawn_tab activation", () => {
@@ -122,19 +148,70 @@ describe("pane.spawn_tab activation", () => {
     expect(ipcMocks.ackFrontendData).toHaveBeenCalledWith(result.sessionId, 2, 3, 4);
   });
 
-  it("switches to the appended tab when activate is true", async () => {
+  it("keeps the displayed tab and reports that activate did not move the foreground", async () => {
     const result = await handleSocketCommand("pane.spawn_tab", {
       anchorSessionId: originalSessionId,
       commandArgv: ["cmd.exe"],
       activate: true,
-    }) as { tabId: string; sessionId: string };
+    }) as {
+      tabId: string;
+      sessionId: string;
+      foregroundChanged: boolean;
+      activationRequested: boolean;
+      activationApplied: boolean;
+    };
 
     const pane = currentPane();
-    expect(pane.activeTabId).toBe(result.tabId);
-    expect(pane.sessionId).toBe(result.sessionId);
-    expect(useUiStore.getState().activePaneId).toBe(result.sessionId);
-    expect(useUiStore.getState().focusRevision).toBeGreaterThan(0);
-    expect(ipcMocks.createSession).not.toHaveBeenCalled();
+    expect(pane.activeTabId).toBe(originalTabId);
+    expect(pane.sessionId).toBe(originalSessionId);
+    expect(useUiStore.getState().activePaneId).toBe(originalSessionId);
+    expect(useUiStore.getState().focusRevision).toBe(0);
+    expect(result).toMatchObject({
+      foregroundChanged: false,
+      activationRequested: true,
+      activationApplied: false,
+    });
+    expect(ipcMocks.createSession).toHaveBeenCalledTimes(1);
+  });
+
+  it("activates a tab inside a background workspace without moving the foreground", async () => {
+    const background = workspace();
+    background.id = "workspace-background";
+    background.panes = background.panes.map((pane) => ({
+      ...pane,
+      id: "pane-background",
+      sessionId: "session-background-original",
+      activeTabId: "tab-background-original",
+      tabs: [{ ...pane.tabs[0], id: "tab-background-original", sessionId: "session-background-original" }],
+    }));
+    background.splitColumns = [["pane-background"]];
+    useWorkspaceListStore.setState((state) => ({ workspaces: [...state.workspaces, background] }));
+
+    const result = await handleSocketCommand("pane.spawn_tab", {
+      anchorSessionId: "session-background-original",
+      commandArgv: ["cmd.exe"],
+      activate: true,
+    }) as {
+      tabId: string;
+      sessionId: string;
+      foregroundChanged: boolean;
+      activationRequested: boolean;
+      activationApplied: boolean;
+    };
+
+    const backgroundPane = useWorkspaceListStore.getState()
+      .getWorkspace(background.id)!
+      .panes[0];
+    expect(backgroundPane.activeTabId).toBe(result.tabId);
+    expect(backgroundPane.sessionId).toBe(result.sessionId);
+    expect(result).toMatchObject({
+      foregroundChanged: false,
+      activationRequested: true,
+      activationApplied: true,
+    });
+    expect(useWorkspaceListStore.getState().activeWorkspaceId).toBe(workspaceId);
+    expect(useUiStore.getState().activePaneId).toBe(originalSessionId);
+    expect(useUiStore.getState().focusRevision).toBe(0);
   });
 
   it("starts an agent target through the shell launcher without a renderer", async () => {
@@ -171,16 +248,39 @@ describe("pane.spawn activation", () => {
     expect(useUiStore.getState().focusRevision).toBe(0);
   });
 
-  it("activates and requests focus when explicitly requested", async () => {
+  it("accepts activate without changing the active pane or keyboard target", async () => {
     const result = await handleSocketCommand("pane.spawn", {
       target: "shell",
       activate: true,
     }) as {
       sessionId: string;
+      foregroundChanged: boolean;
+      activationRequested: boolean;
     };
 
     expect(useWorkspaceListStore.getState().activeWorkspaceId).toBe(workspaceId);
-    expect(useUiStore.getState().activePaneId).toBe(result.sessionId);
-    expect(useUiStore.getState().focusRevision).toBeGreaterThan(0);
+    expect(useUiStore.getState().activePaneId).toBe(originalSessionId);
+    expect(useUiStore.getState().focusRevision).toBe(0);
+    expect(result).toMatchObject({ foregroundChanged: false, activationRequested: true });
+  });
+
+  it("does not switch into a background workspace when activate is true", async () => {
+    const background = workspace();
+    background.id = "workspace-background";
+    background.panes = background.panes.map((pane) => ({ ...pane, id: "pane-background" }));
+    background.splitColumns = [["pane-background"]];
+    useWorkspaceListStore.setState((state) => ({ workspaces: [...state.workspaces, background] }));
+
+    const result = await handleSocketCommand("pane.spawn", {
+      target: "shell",
+      workspaceId: background.id,
+      anchorPaneId: "pane-background",
+      activate: true,
+    }) as { foregroundChanged: boolean; activationRequested: boolean };
+
+    expect(result).toMatchObject({ foregroundChanged: false, activationRequested: true });
+    expect(useWorkspaceListStore.getState().activeWorkspaceId).toBe(workspaceId);
+    expect(useUiStore.getState().activePaneId).toBe(originalSessionId);
+    expect(useUiStore.getState().focusRevision).toBe(0);
   });
 });

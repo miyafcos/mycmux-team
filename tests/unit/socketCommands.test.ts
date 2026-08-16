@@ -328,6 +328,12 @@ describe("pane socket responses", () => {
     useSettingsStore.setState({ declaredLaunchEnabled: false });
   });
 
+  it("routes Grok through the normal launcher environment", () => {
+    const plan = resolveSpawnPlan({ target: "grok" });
+    expect(plan.mode).toBe("launch");
+    expect(plan.launchEnv).toEqual({ MYCMUX_LAUNCH_TARGET: "grok" });
+  });
+
   it("fails closed when declared launch is disabled without mutating its tab", async () => {
     const declared: PaneTab = { id: "declared", sessionId: "declared-session", agentId: "shell-starter", type: "terminal", lifecycle: "declared" };
     const workspace = socketWorkspace("workspace-a", "Workspace A", "pane-a", [declared]);

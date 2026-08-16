@@ -2,9 +2,18 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import type { LiveSessionBrief, SemanticEventEnvelope } from "../../src/lib/livebrief";
 import type { SessionStatusChangedPayload } from "../../src/lib/ipc";
-import { __resetReportInboxStoreForTests, machineStateForActivity, useReportInboxStore } from "../../src/stores/reportInboxStore";
+import { createBatch, sealBatch } from "../../src/lib/dispatchBatch";
+import { logicalSessionId } from "../../src/lib/logicalSessionId";
+import {
+  __resetReportInboxStoreForTests,
+  machineStateForActivity,
+  reportBatchAiContext,
+  reportBatchCoverage,
+  useReportInboxStore,
+} from "../../src/stores/reportInboxStore";
 
 const SESSION = "pty-1";
+const NOW = Date.parse("2026-08-15T12:00:00.000Z");
 
 function event(eventId: string, kind: SemanticEventEnvelope["kind"]): SemanticEventEnvelope {
   return { eventId, sourceRevision: 1, occurredAt: 1_000, sourceByteStart: 10, sourceByteEnd: 20, kind };
@@ -61,6 +70,25 @@ function status(overrides: Partial<SessionStatusChangedPayload> = {}): SessionSt
     },
     ...overrides,
   };
+}
+
+function registerBatch(batchId: string, recipients = [{ logicalSessionId: "tab-1", ptySessionId: SESSION, label: "対象1" }]) {
+  const batch = sealBatch(createBatch(recipients.map((recipient) => ({
+    logicalSessionId: logicalSessionId(recipient.logicalSessionId),
+    instructionRef: recipient.ptySessionId,
+    label: recipient.label,
+  })), { batchId }));
+  useReportInboxStore.getState().registerSealedDispatchBatch({
+    batch,
+    commandKind: "plain",
+    members: recipients.map((recipient) => ({
+      logicalSessionId: logicalSessionId(recipient.logicalSessionId),
+      ptySessionId: recipient.ptySessionId,
+      label: recipient.label,
+      delivery: { state: "confirmed", detail: "送達確認済み" },
+    })),
+  });
+  return batch;
 }
 
 afterEach(() => __resetReportInboxStoreForTests());
@@ -128,5 +156,106 @@ describe("reportInboxStore", () => {
     expect(useReportInboxStore.getState().receiveModeBySession[SESSION] ?? "batch").toBe("batch");
     useReportInboxStore.getState().setReceiveMode(SESSION, "quiet");
     expect(useReportInboxStore.getState().receiveModeBySession[SESSION]).toBe("quiet");
+  });
+
+  it("projects every coverage number from the sealed batch, never from delivery confirmation", () => {
+    registerBatch("batch-coverage", [
+      { logicalSessionId: "tab-1", ptySessionId: "pty-1", label: "対象1" },
+      { logicalSessionId: "tab-2", ptySessionId: "pty-2", label: "対象2" },
+    ]);
+    const before = useReportInboxStore.getState().dispatchBatchesById["batch-coverage"]!;
+    expect(reportBatchCoverage(before, NOW)).toMatchObject({
+      target: 2, received: 0, reflected: 0, missing: 2, needsJudgment: 0,
+    });
+
+    useReportInboxStore.getState().ingestLiveBriefs([brief({ operationalState: "ended" })]);
+    const after = useReportInboxStore.getState().dispatchBatchesById["batch-coverage"]!;
+    expect(reportBatchCoverage(after, NOW)).toMatchObject({
+      target: 2, received: 1, reflected: 1, missing: 1, needsJudgment: 0,
+    });
+    expect(after.batch.publishedSummaryRevision).toBe(1);
+    expect(after.membersByAssignmentId[after.batch.assignments[0].id].classification.activity).toBe("waiting");
+    expect(reportBatchAiContext(after)).toContain("エージェントのターン終了を検知しました。待機中です");
+  });
+
+  it("increments the summary revision for a late receipt without changing sealed membership", () => {
+    registerBatch("batch-late", [
+      { logicalSessionId: "tab-1", ptySessionId: "pty-1", label: "対象1" },
+      { logicalSessionId: "tab-2", ptySessionId: "pty-2", label: "対象2" },
+    ]);
+    useReportInboxStore.getState().ingestBatchCompletionEvidence("batch-late", "pty-1", {
+      source: "livebrief", kind: "turn-ended", observedAt: NOW, sourceRef: "turn-1",
+    });
+    useReportInboxStore.getState().ingestBatchCompletionEvidence("batch-late", "pty-2", {
+      source: "status", kind: "process-exit", observedAt: NOW + 1, sourceRef: "exit-2",
+    });
+    const report = useReportInboxStore.getState().dispatchBatchesById["batch-late"]!;
+    expect(report.batch.assignments).toHaveLength(2);
+    expect(report.batch.publishedSummaryRevision).toBe(2);
+    expect(reportBatchCoverage(report, NOW)).toMatchObject({ received: 2, reflected: 2, missing: 0 });
+  });
+
+  it("updates a uniquely routed batch when a later machine failure contradicts an earlier receipt", () => {
+    registerBatch("batch-follow-up");
+    useReportInboxStore.getState().ingestLiveBriefs([brief({ operationalState: "ended" })]);
+    useReportInboxStore.getState().ingestSemanticEvents(SESSION, [
+      event("test-fail-after-receipt", { type: "testResult", pass: 4, fail: 1 }),
+    ]);
+    const report = useReportInboxStore.getState().dispatchBatchesById["batch-follow-up"]!;
+    const member = report.membersByAssignmentId[report.batch.assignments[0].id];
+    expect(report.batch.publishedSummaryRevision).toBe(2);
+    expect(member.classification.activity).toBe("error");
+    expect(reportBatchCoverage(report, NOW).needsJudgment).toBe(1);
+  });
+
+  it("rejects a sealed registration with ambiguous duplicate PTY recipients", () => {
+    const batch = sealBatch(createBatch([
+      { logicalSessionId: logicalSessionId("tab-1"), instructionRef: SESSION, label: "対象1" },
+      { logicalSessionId: logicalSessionId("tab-2"), instructionRef: SESSION, label: "対象2" },
+    ], { batchId: "batch-ambiguous" }));
+    useReportInboxStore.getState().registerSealedDispatchBatch({
+      batch,
+      commandKind: "plain",
+      members: [
+        { logicalSessionId: logicalSessionId("tab-1"), ptySessionId: SESSION, label: "対象1", delivery: { state: "pending", detail: "待機" } },
+        { logicalSessionId: logicalSessionId("tab-2"), ptySessionId: SESSION, label: "対象2", delivery: { state: "pending", detail: "待機" } },
+      ],
+    });
+    expect(useReportInboxStore.getState().dispatchBatchesById["batch-ambiguous"]).toBeUndefined();
+  });
+
+  it("keeps ambiguous cross-batch evidence out of receipts and records the visible review count", () => {
+    registerBatch("batch-old");
+    useReportInboxStore.getState().ingestLiveBriefs([brief({ operationalState: "ended" })]);
+    registerBatch("batch-new");
+    useReportInboxStore.getState().ingestSemanticEvents(SESSION, [
+      event("ambiguous-evidence", { type: "testResult", pass: 1, fail: 1 }),
+    ]);
+    const oldReport = useReportInboxStore.getState().dispatchBatchesById["batch-old"]!;
+    const newReport = useReportInboxStore.getState().dispatchBatchesById["batch-new"]!;
+    expect(oldReport.unattributedEvidenceRefs).toEqual([]);
+    expect(newReport.unattributedEvidenceRefs).toEqual(["ambiguous-evidence"]);
+    expect(reportBatchCoverage(newReport, NOW)).toMatchObject({ received: 0, missing: 1, needsJudgment: 1 });
+  });
+
+  it("keeps test-pass and turn-ended out of task-complete wording and surfaces evidence conflicts", () => {
+    registerBatch("batch-evidence");
+    useReportInboxStore.getState().ingestBatchCompletionEvidence("batch-evidence", SESSION, {
+      source: "status", kind: "test-pass", observedAt: NOW, sourceRef: "test-pass",
+    });
+    let report = useReportInboxStore.getState().dispatchBatchesById["batch-evidence"]!;
+    let member = report.membersByAssignmentId[report.batch.assignments[0].id];
+    expect(member.classification.activity).toBe("waiting");
+
+    useReportInboxStore.getState().ingestBatchCompletionEvidence("batch-evidence", SESSION, {
+      source: "ledger", kind: "done-marker", observedAt: NOW + 1, sourceRef: "done",
+    });
+    useReportInboxStore.getState().ingestBatchCompletionEvidence("batch-evidence", SESSION, {
+      source: "livebrief", kind: "turn-ended", observedAt: NOW + 2, sourceRef: "turn-ended",
+    });
+    report = useReportInboxStore.getState().dispatchBatchesById["batch-evidence"]!;
+    member = report.membersByAssignmentId[report.batch.assignments[0].id];
+    expect(member.classification.conflicts).toContain("ledger completion conflicts with livebrief non-terminal evidence");
+    expect(reportBatchCoverage(report, NOW).needsJudgment).toBe(1);
   });
 });

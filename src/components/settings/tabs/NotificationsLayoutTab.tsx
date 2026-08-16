@@ -1,4 +1,5 @@
 import { useSettingsStore } from "../../../stores/settingsStore";
+import { notificationSettingsStrings } from "../settingsStrings";
 import { checkboxLabelStyle, checkboxLabelStyleFor, sectionHeadingStyle } from "../tabStyles";
 
 // Ported from SettingsMenu.tsx: notification checkboxes (with the exact
@@ -9,6 +10,8 @@ export function NotificationsLayoutTab() {
   const setNotificationsEnabled = useSettingsStore((s) => s.setNotificationsEnabled);
   const notificationSoundEnabled = useSettingsStore((s) => s.notificationSoundEnabled);
   const setNotificationSoundEnabled = useSettingsStore((s) => s.setNotificationSoundEnabled);
+  const dispatchWatchdogNotify = useSettingsStore((s) => s.dispatchWatchdogNotify);
+  const setDispatchWatchdogNotify = useSettingsStore((s) => s.setDispatchWatchdogNotify);
   const showSplitRightButton = useSettingsStore((s) => s.showSplitRightButton);
   const setShowSplitRightButton = useSettingsStore((s) => s.setShowSplitRightButton);
   const showSplitDownButton = useSettingsStore((s) => s.showSplitDownButton);
@@ -18,14 +21,14 @@ export function NotificationsLayoutTab() {
 
   return (
     <div>
-      <div style={sectionHeadingStyle}>通知</div>
+      <div style={sectionHeadingStyle}>{notificationSettingsStrings.title}</div>
       <label style={checkboxLabelStyle}>
         <input
           type="checkbox"
           checked={notificationsEnabled}
           onChange={(e) => setNotificationsEnabled(e.target.checked)}
         />
-        <span>通知</span>
+        <span>{notificationSettingsStrings.enabledLabel}</span>
       </label>
       <label style={checkboxLabelStyleFor(notificationsEnabled)}>
         <input
@@ -34,17 +37,31 @@ export function NotificationsLayoutTab() {
           disabled={!notificationsEnabled}
           onChange={(e) => setNotificationSoundEnabled(e.target.checked)}
         />
-        <span>通知サウンド</span>
+        <span>{notificationSettingsStrings.soundLabel}</span>
       </label>
 
-      <div style={{ ...sectionHeadingStyle, marginTop: 20 }}>レイアウト</div>
+      <div style={{ ...sectionHeadingStyle, marginTop: 20 }}>{notificationSettingsStrings.delegationWatchTitle}</div>
+      <label style={checkboxLabelStyleFor(notificationsEnabled)}>
+        <input
+          type="checkbox"
+          checked={dispatchWatchdogNotify}
+          disabled={!notificationsEnabled}
+          onChange={(e) => setDispatchWatchdogNotify(e.target.checked)}
+        />
+        <span>{notificationSettingsStrings.delegationWatchLabel}</span>
+      </label>
+      <div style={{ color: "var(--cmux-text-dim)", fontSize: 12, marginTop: 4 }}>
+        {notificationSettingsStrings.delegationWatchHint}
+      </div>
+
+      <div style={{ ...sectionHeadingStyle, marginTop: 20 }}>{notificationSettingsStrings.layoutTitle}</div>
       <label style={checkboxLabelStyle}>
         <input
           type="checkbox"
           checked={showSplitRightButton}
           onChange={(e) => setShowSplitRightButton(e.target.checked)}
         />
-        <span>「右に分割」ボタンを表示</span>
+        <span>{notificationSettingsStrings.splitRightLabel}</span>
       </label>
       <label style={checkboxLabelStyle}>
         <input
@@ -52,21 +69,20 @@ export function NotificationsLayoutTab() {
           checked={showSplitDownButton}
           onChange={(e) => setShowSplitDownButton(e.target.checked)}
         />
-        <span>「下に分割」ボタンを表示</span>
+        <span>{notificationSettingsStrings.splitDownLabel}</span>
       </label>
 
-      <div style={{ ...sectionHeadingStyle, marginTop: 20 }}>ターミナル入力</div>
+      <div style={{ ...sectionHeadingStyle, marginTop: 20 }}>{notificationSettingsStrings.terminalInputTitle}</div>
       <label style={checkboxLabelStyle}>
         <input
           type="checkbox"
           checked={paneComposerEnabled}
           onChange={(e) => setPaneComposerEnabled(e.target.checked)}
         />
-        <span>ペインの下に入力欄を出す</span>
+        <span>{notificationSettingsStrings.paneComposerLabel}</span>
       </label>
       <div style={{ color: "var(--cmux-text-dim)", fontSize: 12, marginTop: 4 }}>
-        文字を選んで消す・書き直すといった編集ができる入力欄です。Enter で送信、Shift+Enter で改行。
-        ペインが低いときは自動的に隠れます。
+        {notificationSettingsStrings.paneComposerHint}
       </div>
     </div>
   );

@@ -5,14 +5,19 @@ import type { Pane, PaneTab, Workspace } from "../../src/types";
 
 const ipcMocks = vi.hoisted(() => ({
   writeToSession: vi.fn(),
+  getSessionScrollback: vi.fn(),
 }));
 const terminalBufferMocks = vi.hoisted(() => ({
   getTerminalBufferLines: vi.fn(),
   hasTerminalBuffer: vi.fn(),
 }));
+const headlessBufferMocks = vi.hoisted(() => ({
+  getHeadlessBufferLines: vi.fn(),
+}));
 
 vi.mock("../../src/lib/ipc", () => ipcMocks);
 vi.mock("../../src/components/terminal/XTermWrapper", () => terminalBufferMocks);
+vi.mock("../../src/components/terminal/headlessBuffer", () => headlessBufferMocks);
 
 const sessionId = "send-session";
 const observed995JapaneseText = "送信確認".repeat(248) + "確認";
@@ -235,6 +240,29 @@ describe("pane.send_text confirmed enter", () => {
       confirmed: false,
       attempts: 1,
       reason: "verification_unavailable",
+    });
+    expect(ipcMocks.writeToSession.mock.calls).toEqual([
+      [sessionId, "short"],
+      [sessionId, "\r"],
+    ]);
+  });
+
+  it("bounds a stalled unmounted snapshot and reports why confirmation is unavailable", async () => {
+    terminalBufferMocks.hasTerminalBuffer.mockReturnValue(false);
+    ipcMocks.getSessionScrollback.mockImplementation(() => new Promise(() => {}));
+
+    const pending = handleSocketCommand("pane.send_text", {
+      sessionId,
+      text: "short",
+      enter: true,
+    });
+    await flushSendTimers();
+
+    await expect(pending).resolves.toMatchObject({
+      ok: false,
+      confirmed: false,
+      attempts: 1,
+      reason: "target_unmounted",
     });
     expect(ipcMocks.writeToSession.mock.calls).toEqual([
       [sessionId, "short"],

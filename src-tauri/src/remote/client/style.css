@@ -390,6 +390,11 @@ html, body {
   color: #bb9af7;
 }
 
+.agent-badge.grok {
+  background: rgba(243, 139, 168, 0.16);
+  color: #f38ba8;
+}
+
 .pane-time {
   margin-left: auto;
   background: rgba(86, 95, 137, 0.16);

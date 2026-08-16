@@ -60,12 +60,19 @@ export interface ActivationSessionIdentity {
   tab_id: string;
 }
 
-export interface ActivationToken {
+interface ActivationTokenInput {
   previous_session_id: string | null;
   target_session_id: string;
   focus_revision: number;
   previous_session_identity: ActivationSessionIdentity | null;
   target_session_identity: ActivationSessionIdentity;
+}
+
+export interface ActivationToken extends ActivationTokenInput {
+  /** Socket activation never moves the operator's foreground selection. */
+  foreground_changed: false;
+  /** True only when a tab was activated inside a non-visible workspace. */
+  activation_applied: boolean;
 }
 
 function socketArgString(args: SocketArgs, ...keys: string[]): string | undefined {
@@ -82,7 +89,7 @@ function socketArgBoolean(args: SocketArgs, key: string, fallback: boolean): boo
 }
 
 function isAgentKind(value: string): value is AgentSessionKind {
-  return value === "claude" || value === "codex" || value === "claude-codex";
+  return value === "claude" || value === "codex" || value === "claude-codex" || value === "grok";
 }
 
 function spawnTarget(args: SocketArgs): SpawnTarget {
@@ -386,7 +393,7 @@ function parseActivationIdentity(value: unknown, name: string): ActivationSessio
   };
 }
 
-function parseActivationToken(args: SocketArgs): ActivationToken {
+function parseActivationToken(args: SocketArgs): ActivationTokenInput {
   const previousSessionIdValue = args?.previous_session_id;
   const targetSessionId = socketArgString(args, "target_session_id");
   const focusRevision = socketArgInteger(args, "focus_revision");
@@ -421,53 +428,23 @@ function parseActivationToken(args: SocketArgs): ActivationToken {
   };
 }
 
-function sameActivationIdentity(
-  expected: ActivationSessionIdentity,
-  actual: ActivationSessionIdentity,
-): boolean {
-  return expected.server_epoch === actual.server_epoch
-    && expected.session_epoch === actual.session_epoch
-    && expected.pane_id === actual.pane_id
-    && expected.tab_id === actual.tab_id;
-}
-
-function isLocationActive(
-  location: ActivationLocation,
-  workspaces: Workspace[],
-  activeWorkspaceId: string | null,
-  activeSessionId: string | null,
-): boolean {
-  const active = findActiveTabLocation(workspaces, activeWorkspaceId, activeSessionId);
-  return active?.workspace.id === location.workspace.id
-    && active.pane.id === location.pane.id
-    && active.tab.id === location.tab.id
-    && active.tab.sessionId === location.tab.sessionId;
-}
-
 function activateLocation(
   location: ActivationLocation,
   stores: typeof import("../../stores/workspaceStore"),
-  focus: typeof import("../../lib/focusController"),
-): void {
-  const { useUiStore, useWorkspaceLayoutStore, useWorkspaceListStore } = stores;
-  if (isLocationActive(
-    location,
-    useWorkspaceListStore.getState().workspaces,
-    useWorkspaceListStore.getState().activeWorkspaceId,
-    useUiStore.getState().activePaneId,
-  )) {
-    return;
+): { activationApplied: boolean } {
+  const { useWorkspaceLayoutStore, useWorkspaceListStore } = stores;
+  const workspaceState = useWorkspaceListStore.getState();
+  // A socket request must never replace the tab the operator is looking at.
+  // Background workspaces may still keep their own active tab for later use.
+  if (workspaceState.activeWorkspaceId === location.workspace.id) {
+    return { activationApplied: false };
   }
-  useWorkspaceListStore.getState().setActiveWorkspace(location.workspace.id);
   useWorkspaceLayoutStore.getState().setActivePaneTab(
     location.workspace.id,
     location.pane.id,
     location.tab.id,
   );
-  focus.focusController.request("programmatic", {
-    sessionId: location.tab.sessionId,
-    focus: true,
-  });
+  return { activationApplied: true };
 }
 
 export function serializeWorkspaceLayoutForSocket(workspace: Workspace) {
@@ -718,7 +695,7 @@ async function spawnPane(args: SocketArgs) {
     workspaceId,
     anchorPane.id,
     directionArg,
-    { ...plan.paneOptions, activate },
+    { ...plan.paneOptions, activate, activationSource: "socket" },
   );
   const updatedWorkspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
   const newPanes = updatedWorkspace?.panes.filter((pane) => !beforePaneIds.has(pane.id)) ?? [];
@@ -736,17 +713,14 @@ async function spawnPane(args: SocketArgs) {
   }
   const newPane = newPanes[0];
 
-  try {
-    if (activate) {
-      useWorkspaceListStore.getState().setActiveWorkspace(workspaceId);
-      const { focusController } = await import("../../lib/focusController");
-      focusController.request("programmatic", { sessionId: newPane.sessionId, focus: true });
-    }
-  } catch (error) {
-    rollbackNewPanes();
-    throw error;
-  }
-  return { workspaceId, paneId: newPane.id, sessionId: newPane.sessionId, mode: plan.mode };
+  return {
+    workspaceId,
+    paneId: newPane.id,
+    sessionId: newPane.sessionId,
+    mode: plan.mode,
+    foregroundChanged: false,
+    activationRequested: activate,
+  };
 }
 
 async function spawnTab(args: SocketArgs) {
@@ -782,6 +756,7 @@ async function spawnTab(args: SocketArgs) {
     {
       ...plan.paneOptions,
       activate,
+      activationSource: "socket",
     },
   );
   const updatedPane = useWorkspaceListStore.getState()
@@ -805,7 +780,7 @@ async function spawnTab(args: SocketArgs) {
     rollbackNewTabs();
     throw new Error("pane.spawn_tab created a non-restorable tab");
   }
-  if (!activate && updatedPane) {
+  if (updatedPane) {
     try {
       await startBackgroundTabSession(newTab, updatedPane);
     } catch (error) {
@@ -819,6 +794,9 @@ async function spawnTab(args: SocketArgs) {
     tabId: newTab.id,
     sessionId: newTab.sessionId,
     mode: plan.mode,
+    foregroundChanged: false,
+    activationRequested: activate,
+    activationApplied: activate && useWorkspaceListStore.getState().activeWorkspaceId !== workspace.id,
   };
 }
 
@@ -872,7 +850,7 @@ async function declareTab(args: SocketArgs) {
   return { tabId: tab.id, workspaceId: match.workspace.id, paneId: match.pane.id };
 }
 
-/** Inactive-workspace launches only convert state and remain pending until that workspace is activated. */
+/** Socket-declared launches never replace the operator's active tab. */
 async function launchDeclared(args: SocketArgs): Promise<DeclaredLaunchResult> {
   const tabId = socketArgString(args, "tabId", "tab_id");
   const requestId = socketArgString(args, "requestId", "request_id");
@@ -886,10 +864,22 @@ async function launchDeclared(args: SocketArgs): Promise<DeclaredLaunchResult> {
     const owner = findTabById(useWorkspaceListStore.getState().workspaces, tabId);
     if (!owner) return { ok: false, reason: "not-found" };
     if (!isDeclaredTab(owner.tab)) return { ok: false, reason: "not-declared" };
-    const pending = useWorkspaceListStore.getState().activeWorkspaceId !== owner.workspace.id;
-    const launched = useWorkspaceLayoutStore.getState().launchDeclaredTab(owner.workspace.id, owner.pane.id, tabId);
+    const backgroundWorkspace = useWorkspaceListStore.getState().activeWorkspaceId !== owner.workspace.id;
+    const launched = useWorkspaceLayoutStore.getState().launchDeclaredTab(
+      owner.workspace.id,
+      owner.pane.id,
+      tabId,
+      { activationSource: "socket" },
+    );
     if (!launched) return { ok: false, reason: "not-declared" };
-    return { ok: true, tabId: launched.id, sessionId: launched.sessionId, pending };
+    return {
+      ok: true,
+      tabId: launched.id,
+      sessionId: launched.sessionId,
+      // A background workspace can record its active tab for later. In the
+      // displayed workspace the operator must choose the newly launched tab.
+      pending: backgroundWorkspace,
+    };
   })();
   retainDeclaredLaunchRequest(requestId, run);
   void run.then(
@@ -910,9 +900,8 @@ async function launchDeclared(args: SocketArgs): Promise<DeclaredLaunchResult> {
 async function activateTab(args: SocketArgs): Promise<ActivationToken> {
   const sessionId = socketArgString(args, "sessionId", "session_id");
   if (!sessionId) throw new Error("pane.activate_tab requires sessionId");
-  const [stores, focus, { getSessionStatusSnapshot }] = await Promise.all([
+  const [stores, { getSessionStatusSnapshot }] = await Promise.all([
     import("../../stores/workspaceStore"),
-    import("../../lib/focusController"),
     import("../../lib/ipc"),
   ]);
   const initialSnapshot = await getSessionStatusSnapshot();
@@ -928,7 +917,7 @@ async function activateTab(args: SocketArgs): Promise<ActivationToken> {
     uiState.activePaneId,
   );
   const previousSessionId = previous?.tab.sessionId ?? null;
-  activateLocation(target, stores, focus);
+  const activation = activateLocation(target, stores);
   const focusRevision = useUiStore.getState().focusRevision;
   const snapshot = await activationSnapshot(target, getSessionStatusSnapshot, initialSnapshot);
   return {
@@ -937,80 +926,17 @@ async function activateTab(args: SocketArgs): Promise<ActivationToken> {
     focus_revision: focusRevision,
     previous_session_identity: previous ? activationIdentity(previous, initialSnapshot) : null,
     target_session_identity: activationIdentity(target, snapshot),
+    foreground_changed: false,
+    activation_applied: activation.activationApplied,
   };
 }
 
 async function restoreActivation(args: SocketArgs) {
-  const token = parseActivationToken(args);
-  const [stores, focus, { getSessionStatusSnapshot }] = await Promise.all([
-    import("../../stores/workspaceStore"),
-    import("../../lib/focusController"),
-    import("../../lib/ipc"),
-  ]);
-  const snapshot = await getSessionStatusSnapshot();
-  const { useUiStore, useWorkspaceListStore } = stores;
-  const uiState = useUiStore.getState();
-  const workspaceState = useWorkspaceListStore.getState();
-
-  if (uiState.activePaneId !== token.target_session_id) {
-    return { restored: false, reason: "target_not_active" };
-  }
-  if (uiState.focusRevision !== token.focus_revision) {
-    return { restored: false, reason: "focus_revision_changed" };
-  }
-
-  const target = findTabBySessionId(workspaceState.workspaces, token.target_session_id);
-  if (!target) {
-    return { restored: false, reason: "target_session_missing" };
-  }
-  const targetStatus = snapshotSession(snapshot, token.target_session_id)?.status;
-  if (isTerminalLocation(target) && targetStatus?.lifecycle !== "alive") {
-    return { restored: false, reason: "target_session_not_alive" };
-  }
-  if (isTerminalLocation(target) && token.target_session_identity.session_epoch === null) {
-    return { restored: false, reason: "target_session_identity_unavailable" };
-  }
-  if (!sameActivationIdentity(
-    token.target_session_identity,
-    activationIdentity(target, snapshot),
-  )) {
-    return { restored: false, reason: "target_session_replaced" };
-  }
-  if (!isLocationActive(
-    target,
-    workspaceState.workspaces,
-    workspaceState.activeWorkspaceId,
-    uiState.activePaneId,
-  )) {
-    return { restored: false, reason: "target_not_active" };
-  }
-
-  if (!token.previous_session_id || !token.previous_session_identity) {
-    return { restored: false, reason: "previous_session_missing" };
-  }
-  const previous = findTabBySessionId(workspaceState.workspaces, token.previous_session_id);
-  if (!previous) {
-    return { restored: false, reason: "previous_session_missing" };
-  }
-  const previousStatus = snapshotSession(snapshot, token.previous_session_id)?.status;
-  if (isTerminalLocation(previous) && previousStatus?.lifecycle !== "alive") {
-    return { restored: false, reason: "previous_session_not_alive" };
-  }
-  if (isTerminalLocation(previous) && token.previous_session_identity.session_epoch === null) {
-    return { restored: false, reason: "previous_session_identity_unavailable" };
-  }
-  if (!sameActivationIdentity(
-    token.previous_session_identity,
-    activationIdentity(previous, snapshot),
-  )) {
-    return { restored: false, reason: "previous_session_replaced" };
-  }
-
-  activateLocation(previous, stores, focus);
+  parseActivationToken(args);
   return {
-    restored: true,
-    session_id: previous.tab.sessionId,
-    focus_revision: useUiStore.getState().focusRevision,
+    restored: false,
+    reason: "foreground_preserved",
+    foreground_changed: false,
   };
 }
 
@@ -1153,6 +1079,7 @@ const SEND_CONFIRM_POLL_MS = 50;
 const SEND_TEXT_SETTLE_TIMEOUT_MS = 2_000;
 const SEND_ENTER_CONFIRM_TIMEOUT_MS = 1_200;
 const SEND_ENTER_MAX_ATTEMPTS = 3;
+const SEND_SNAPSHOT_TIMEOUT_MS = 250;
 const SEND_UNVERIFIED_NOTE = "no delivery verification; use --enter or --key to get confirmation";
 
 const SEND_KEY_BYTES = {
@@ -1182,54 +1109,77 @@ function waitForSendConfirmationPoll(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, SEND_CONFIRM_POLL_MS));
 }
 
-async function readPaneSnapshot(sessionId: string): Promise<string | null> {
+interface PaneSnapshot {
+  text: string | null;
+  targetMounted: boolean;
+}
+
+async function readPaneSnapshot(sessionId: string): Promise<PaneSnapshot> {
+  const { hasTerminalBuffer } = await import("../terminal/XTermWrapper");
+  const targetMounted = hasTerminalBuffer(sessionId);
+  let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
-    return JSON.stringify(await readPaneTail(sessionId, SEND_CONFIRM_LINES));
+    const read = readPaneTail(sessionId, SEND_CONFIRM_LINES);
+    const deadline = new Promise<never>((_, reject) => {
+      timeout = setTimeout(() => reject(new Error("pane snapshot timed out")), SEND_SNAPSHOT_TIMEOUT_MS);
+    });
+    return { text: JSON.stringify(await Promise.race([read, deadline])), targetMounted };
   } catch {
-    return null;
+    return { text: null, targetMounted };
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
   }
 }
 
 async function waitForTypedTextToSettle(
   sessionId: string,
-  beforeText: string | null,
-): Promise<{ snapshot: string | null; settled: boolean }> {
-  if (beforeText === null) return { snapshot: null, settled: false };
+  before: PaneSnapshot,
+): Promise<{ snapshot: string | null; settled: boolean; targetMounted: boolean }> {
+  if (before.text === null) return { snapshot: null, settled: false, targetMounted: before.targetMounted };
 
-  let last = beforeText;
+  let last = before.text;
+  let targetMounted = before.targetMounted;
   let observedEcho = false;
   let stableSamples = 0;
   const polls = Math.ceil(SEND_TEXT_SETTLE_TIMEOUT_MS / SEND_CONFIRM_POLL_MS);
   for (let poll = 0; poll < polls; poll += 1) {
     await waitForSendConfirmationPoll();
     const current = await readPaneSnapshot(sessionId);
-    if (current === null) continue;
-    if (current !== beforeText) observedEcho = true;
-    stableSamples = observedEcho && current === last ? stableSamples + 1 : 0;
-    last = current;
-    if (stableSamples >= 1) return { snapshot: current, settled: true };
+    targetMounted = current.targetMounted;
+    if (current.text === null) continue;
+    if (current.text !== before.text) observedEcho = true;
+    stableSamples = observedEcho && current.text === last ? stableSamples + 1 : 0;
+    last = current.text;
+    if (stableSamples >= 1) return { snapshot: current.text, settled: true, targetMounted };
   }
-  return { snapshot: last, settled: false };
+  return { snapshot: last, settled: false, targetMounted };
 }
 
 async function waitForPaneToAdvance(
   sessionId: string,
   beforeEnter: string,
-): Promise<"advanced" | "unchanged" | "unavailable"> {
+  targetMountedAtStart: boolean,
+): Promise<{ outcome: "advanced" | "unchanged" | "unavailable"; targetMounted: boolean }> {
   let readable = false;
   let unavailable = false;
+  let targetMounted = targetMountedAtStart;
   const polls = Math.ceil(SEND_ENTER_CONFIRM_TIMEOUT_MS / SEND_CONFIRM_POLL_MS);
   for (let poll = 0; poll < polls; poll += 1) {
     await waitForSendConfirmationPoll();
     const current = await readPaneSnapshot(sessionId);
-    if (current === null) {
+    targetMounted = current.targetMounted;
+    if (current.text === null) {
       unavailable = true;
       continue;
     }
     readable = true;
-    if (current !== beforeEnter) return "advanced";
+    if (current.text !== beforeEnter) return { outcome: "advanced", targetMounted };
   }
-  return readable && !unavailable ? "unchanged" : "unavailable";
+  return { outcome: readable && !unavailable ? "unchanged" : "unavailable", targetMounted };
+}
+
+function unavailableSendReason(targetMounted: boolean): "target_unmounted" | "verification_unavailable" {
+  return targetMounted ? "verification_unavailable" : "target_unmounted";
 }
 
 const paneSendTails = new Map<string, Promise<unknown>>();
@@ -1285,13 +1235,15 @@ async function sendPaneText(args: SocketArgs) {
     }
 
     const beforeText = await readPaneSnapshot(sessionId);
-    let beforeEnter = beforeText;
+    let beforeEnter = beforeText.text;
     let canConfirm = beforeEnter !== null;
+    let targetMounted = beforeText.targetMounted;
     if (textValue) {
       await writeToSession(sessionId, textValue);
       const settled = await waitForTypedTextToSettle(sessionId, beforeText);
       beforeEnter = settled.snapshot;
       canConfirm = settled.settled && beforeEnter !== null;
+      targetMounted = settled.targetMounted;
     }
 
     if (!canConfirm || beforeEnter === null) {
@@ -1303,7 +1255,7 @@ async function sendPaneText(args: SocketArgs) {
         ok: false,
         confirmed: false,
         attempts: 1,
-        reason: "verification_unavailable",
+        reason: unavailableSendReason(targetMounted),
       };
     }
 
@@ -1311,18 +1263,19 @@ async function sendPaneText(args: SocketArgs) {
     for (let attempts = 1; attempts <= maxAttempts; attempts += 1) {
       await writeToSession(sessionId, keyBytes);
       if (attempts === 1 && textValue) recordRecentInputText(sessionId, textValue);
-      const outcome = await waitForPaneToAdvance(sessionId, beforeEnter);
-      if (outcome === "advanced") {
+      const advance = await waitForPaneToAdvance(sessionId, beforeEnter, targetMounted);
+      targetMounted = advance.targetMounted;
+      if (advance.outcome === "advanced") {
         return { sessionId, bytes, ok: true, confirmed: true, attempts };
       }
-      if (outcome === "unavailable") {
+      if (advance.outcome === "unavailable") {
         return {
           sessionId,
           bytes,
           ok: false,
           confirmed: false,
           attempts,
-          reason: "verification_unavailable",
+          reason: unavailableSendReason(targetMounted),
         };
       }
     }
@@ -1444,8 +1397,11 @@ export async function handleSocketCommand(cmd: string, args: SocketArgs): Promis
       if (!workspaceId) throw new Error("workspace.select requires workspaceId");
       const workspace = workspaceState.getWorkspace(workspaceId);
       if (!workspace) throw new Error(`workspace not found: ${workspaceId}`);
-      workspaceState.setActiveWorkspace(workspaceId);
-      return { activeWorkspaceId: workspaceId };
+      return {
+        activeWorkspaceId: workspaceState.activeWorkspaceId,
+        requestedWorkspaceId: workspaceId,
+        foregroundChanged: false,
+      };
     }
 
     case "workspace.rename":

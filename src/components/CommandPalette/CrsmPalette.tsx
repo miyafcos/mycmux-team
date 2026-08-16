@@ -17,7 +17,7 @@ import { useSettingsStore } from "../../stores/settingsStore";
 import { OVERLAY_EXIT_MS, useDeferredUnmount } from "../../hooks/useDeferredUnmount";
 import { KIND_COLORS } from "../../lib/agentKindColors";
 import { DocumentIcon, PencilIcon, TaskIcon } from "../icons/ChromeIcons";
-import { TAB_SWEEP_OPEN_EVENT } from "../layout/tabSweep";
+import { openTabSweepInDashboard } from "../layout/tabSweep";
 import "./CrsmPalette.css";
 
 interface CrsmPaletteProps {
@@ -25,11 +25,16 @@ interface CrsmPaletteProps {
   onClose: () => void;
 }
 
-type TargetKind = CrsmSessionEntry["kind"];
+// Grok has no CRSM transcript support yet and is deliberately excluded here.
+type TargetKind = Exclude<CrsmSessionEntry["kind"], "grok">;
 type OpenTargetKind = TargetKind;
 type SessionFilterKind = "all" | TargetKind;
 
 const OPEN_TARGETS: OpenTargetKind[] = ["claude", "codex", "claude-codex"];
+
+function isTargetKind(kind: CrsmSessionEntry["kind"]): kind is TargetKind {
+  return OPEN_TARGETS.includes(kind as TargetKind);
+}
 const SESSION_FETCH_LIMIT_INITIAL = 1000;
 const SESSION_FETCH_LIMIT_DEEP = 10000;
 const MAX_LISTED_SESSIONS_INITIAL = 1000;
@@ -166,7 +171,7 @@ function agentBadge(kind: TargetKind): string {
   return "Hybrid";
 }
 
-function agentSubtitle(session: CrsmSessionEntry | undefined, target: OpenTargetKind): string {
+function agentSubtitle(session: (CrsmSessionEntry & { kind: TargetKind }) | undefined, target: OpenTargetKind): string {
   if (!session) return `${agentBadge(target)}で開く`;
   if (session.kind === target) return `${agentBadge(target)}履歴を復帰`;
   return `${agentBadge(session.kind)}履歴を引き継ぎ`;
@@ -623,7 +628,9 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
   }, [activePaneId, activePaneMetadataCwd, activeWorkspace]);
 
   const filteredByAgent = useMemo(() => {
-    const visible = sessions.filter((session) => enabledKinds.has(session.kind));
+    const visible = sessions.filter((session): session is CrsmSessionEntry & { kind: TargetKind } => (
+      isTargetKind(session.kind) && enabledKinds.has(session.kind)
+    ));
     if (sessionFilter === "all") return visible;
     return visible.filter((session) => session.kind === sessionFilter);
   }, [sessionFilter, sessions, enabledKinds]);
@@ -785,7 +792,7 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
 
   function openTabSweepCommand(): void {
     onClose();
-    window.setTimeout(() => window.dispatchEvent(new Event(TAB_SWEEP_OPEN_EVENT)), OVERLAY_EXIT_MS);
+    window.setTimeout(openTabSweepInDashboard, OVERLAY_EXIT_MS);
   }
 
   useEffect(() => {
@@ -894,13 +901,17 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
           const exact = canFastDirectResume(selected)
             ? selected
             : await resolveDirectResumeSession(selected);
-          launchSession = exact;
+          if (!isTargetKind(exact.kind)) {
+            throw new Error("CRSM returned an unsupported session kind");
+          }
+          const supportedExact = { ...exact, kind: exact.kind };
+          launchSession = supportedExact;
           if (exact !== selected) {
-            setSessions((prev) => upsertCrsmSession(prev, exact));
+            setSessions((prev) => upsertCrsmSession(prev, supportedExact));
           }
           launchEnv.MYCMUX_RESUME = targetKind;
-          launchEnv.MYCMUX_SESSION_ID = exact.id;
-          agentSessionId = exact.id;
+          launchEnv.MYCMUX_SESSION_ID = supportedExact.id;
+          agentSessionId = supportedExact.id;
         }
       } else {
         const result = await withTimeout(

@@ -22,6 +22,7 @@ use tauri::{AppHandle, Emitter, State};
 use uuid::Uuid;
 
 use crate::commands::session_mapping::{agent_mappings_for_ids, AgentSessionMapping};
+use crate::history::{IngestInput, JournalEvent};
 use crate::pty::manager::SessionManager;
 use crate::pty::monitor::MetadataStore;
 use crate::AppState;
@@ -289,7 +290,19 @@ impl LiveBriefService {
         if let Ok(metadata) = std::fs::metadata(&path) {
             if reuses_prior_snapshot(prior, &path, &metadata, &binding) { return None; }
         }
-        Some(match bootstrap_transcript(&path, kind, &binding, &self.service_epoch) {
+        let (history_cwd, history_branch) = self
+            .metadata
+            .get(pty_session_id)
+            .map(|metadata| (Some(metadata.cwd.clone()), metadata.git_branch.clone()))
+            .unwrap_or((None, None));
+        Some(match bootstrap_transcript_with_history(
+            &path,
+            kind,
+            &binding,
+            &self.service_epoch,
+            history_cwd.as_deref(),
+            history_branch.as_deref(),
+        ) {
             Ok(snapshot) => snapshot,
             Err(_) => unavailable_snapshot(binding, "unavailable", &self.service_epoch),
         })
@@ -433,7 +446,23 @@ fn locate_transcript(kind: &str, session_id: &str) -> Option<PathBuf> {
     glob::glob(&pattern).ok()?.filter_map(Result::ok).find(|path| path.is_file())
 }
 
-fn bootstrap_transcript(path: &Path, kind: &str, binding: &LiveBinding, service_epoch: &str) -> Result<SessionSnapshot, String> {
+fn bootstrap_transcript(
+    path: &Path,
+    kind: &str,
+    binding: &LiveBinding,
+    service_epoch: &str,
+) -> Result<SessionSnapshot, String> {
+    bootstrap_transcript_with_history(path, kind, binding, service_epoch, None, None)
+}
+
+fn bootstrap_transcript_with_history(
+    path: &Path,
+    kind: &str,
+    binding: &LiveBinding,
+    service_epoch: &str,
+    history_cwd: Option<&str>,
+    history_branch: Option<&str>,
+) -> Result<SessionSnapshot, String> {
     let metadata = std::fs::metadata(path).map_err(|error| format!("stat transcript: {error}"))?;
     if metadata.len() > MAX_BOOTSTRAP_BYTES { return Err("transcript exceeds live bootstrap limit".to_string()); }
     let bytes = std::fs::read(path).map_err(|error| format!("read transcript: {error}"))?;
@@ -441,6 +470,7 @@ fn bootstrap_transcript(path: &Path, kind: &str, binding: &LiveBinding, service_
     let mut adapter = AgentAdapter::new(kind)?;
     let mut reducer = LiveBriefReducer::new();
     let mut events = VecDeque::new();
+    let mut history_events = Vec::new();
     let mut source_revision = 0_u64;
     let mut offset = 0_u64;
     for raw in complete_lines(&bytes)? {
@@ -449,10 +479,26 @@ fn bootstrap_transcript(path: &Path, kind: &str, binding: &LiveBinding, service_
         source_revision = source_revision.saturating_add(1);
         for event in adapter.decode_record(raw, ByteRange { start, end: offset }, source_revision)? {
             reducer.apply(&event);
+            history_events.push(JournalEvent::from_raw_line(event.clone(), raw));
             events.push_back(event);
             if events.len() > RING_CAPACITY { events.pop_front(); }
         }
     }
+    // History is best-effort only: a corrupt or locked history.db must never
+    // stop livebrief's transcript poll or prevent its snapshot from updating.
+    crate::history::try_ingest(&IngestInput {
+        // amend-1 defines the current logical-session value as this stable
+        // agent session identifier, not the restart-scoped PTY pane ID.
+        logical_session_id: &binding.agent_session_id,
+        agent_session_id: &binding.agent_session_id,
+        agent_kind: &binding.agent_kind,
+        pty_session_id: &binding.pty_session_id,
+        repo_id: None,
+        cwd: history_cwd,
+        branch: history_branch,
+        source_log: path,
+        events: &history_events,
+    });
     let mut binding = binding.clone();
     binding.source_revision = source_revision;
     let now = unix_ms();
@@ -700,5 +746,8 @@ mod tests {
             serde_json::to_string(&question).unwrap(),
             r#"{"type":"question","prompt_event_id":"p1","provider_call_id":"c2","prompt":"ok?","kind":"choice","options":[{"id":"option-0","label":"Yes"}]}"#
         );
+        assert_eq!(serde_json::to_string(&SemanticEventKind::FileChange { path: "src/live.rs".to_string(), change: "modified".to_string() }).unwrap(), r#"{"type":"fileChange","path":"src/live.rs","change":"modified"}"#);
+        assert_eq!(serde_json::to_string(&SemanticEventKind::TestResult { pass: 12, fail: 1 }).unwrap(), r#"{"type":"testResult","pass":12,"fail":1}"#);
+        assert_eq!(serde_json::to_string(&SemanticEventKind::Error { fingerprint: "f".to_string(), text: "Bash: failed".to_string() }).unwrap(), r#"{"type":"error","fingerprint":"f","text":"Bash: failed"}"#);
     }
 }

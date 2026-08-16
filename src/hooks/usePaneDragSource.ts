@@ -39,6 +39,9 @@ function getFocusSessionId(item: PaneDragItem): string | null {
   if (item.kind === "tab") {
     return pane.tabs.find((tab) => tab.id === item.tabId)?.sessionId ?? null;
   }
+  if (item.kind === "tab-bundle") {
+    return pane.tabs.find((tab) => tab.id === item.anchorTabId)?.sessionId ?? null;
+  }
   const activeTab = pane.tabs.find((tab) => tab.id === pane.activeTabId) ?? pane.tabs[0];
   return activeTab?.sessionId ?? pane.sessionId;
 }
@@ -48,6 +51,7 @@ function resolvePaneHandoffContext(
   targetWorkspaceId: string,
   targetPaneId: string,
 ) {
+  if (item.kind === "tab-bundle") return null;
   const listState = useWorkspaceListStore.getState();
   const sourceWorkspace = listState.getWorkspace(item.workspaceId);
   const sourcePane = sourceWorkspace?.panes.find((pane) => pane.id === item.paneId);
@@ -90,10 +94,11 @@ function canDropTarget(item: PaneDragItem, target: PaneDropTarget): boolean {
   if (!sourcePane) return false;
 
   if (target.kind === "new-workspace" || target.kind === "new-window") {
-    return item.kind === "pane" || sourcePane.tabs.some((tab) => tab.id === item.tabId);
+    return item.kind === "pane" || (item.kind === "tab" && sourcePane.tabs.some((tab) => tab.id === item.tabId));
   }
 
   if (target.kind === "handoff") {
+    if (item.kind === "tab-bundle") return false;
     return resolvePaneHandoffContext(item, target.workspaceId, target.paneId) !== null;
   }
 
@@ -117,7 +122,18 @@ function canDropTarget(item: PaneDragItem, target: PaneDropTarget): boolean {
   if (item.kind === "tab" && !sourcePane.tabs.some((tab) => tab.id === item.tabId)) {
     return false;
   }
-  return isPaneDropTargetEligible(item, target, sourcePane.tabs.length);
+  if (item.kind === "tab-bundle") {
+    const selectedInSource = new Set(item.tabIds);
+    const isSourcePane = item.workspaceId === target.workspaceId && item.paneId === target.paneId;
+    if (isSourcePane && target.zone !== "center" && sourcePane.tabs.every((tab) => selectedInSource.has(tab.id))) {
+      return false;
+    }
+  }
+  return isPaneDropTargetEligible({
+    kind: item.kind === "pane" ? "pane" : "tab",
+    workspaceId: item.workspaceId,
+    paneId: item.paneId,
+  }, target, sourcePane.tabs.length);
 }
 
 function resolveDropTargetAtPoint(x: number, y: number, item: PaneDragItem): PaneDropTarget | null {
@@ -209,16 +225,50 @@ function resolveDropTargetAtPoint(x: number, y: number, item: PaneDragItem): Pan
   return prioritizePaneHandoffDropTarget(Boolean(handoffElement), handoffTarget, fallbackTarget);
 }
 
-function commitMinimapTabDrop(item: Extract<PaneDragItem, { kind: "tab" }>, target: PaneDropTarget | null): void {
+function commitMinimapTabDrop(
+  item: Extract<PaneDragItem, { kind: "tab" | "tab-bundle" }>,
+  target: PaneDropTarget | null,
+): void {
   if (!target || target.kind !== "pane" || target.surface !== "minimap" || !canDropTarget(item, target)) return;
   const listStore = useWorkspaceListStore.getState();
   const before = listStore.workspaces;
   const currentRevision = layoutStructureRevision(before);
+  const tabIds = item.kind === "tab" ? [item.tabId] : item.tabIds;
+  const anchorTabId = item.kind === "tab" ? item.tabId : item.anchorTabId;
   const mutation = {
     kind: "move-tabs" as const,
     operationId: crypto.randomUUID(),
-    tabIds: [item.tabId],
-    anchorTabId: item.tabId,
+    tabIds,
+    anchorTabId,
+    to: target.zone === "center"
+      ? { workspaceId: target.workspaceId, paneId: target.paneId }
+      : { workspaceId: target.workspaceId, split: { paneId: target.paneId, zone: target.zone } },
+    sourceLayoutRevision: item.sourceLayoutRevision ?? currentRevision,
+  };
+  const { workspaces, summary } = applyLayoutMutation(before, mutation, currentRevision);
+  if (!summary.staleRevision && summary.moved.length > 0) {
+    listStore._replaceWorkspaces(workspaces);
+  }
+}
+
+function commitMinimapPaneDrop(
+  item: Extract<PaneDragItem, { kind: "pane" }>,
+  target: PaneDropTarget | null,
+): void {
+  if (!target || target.kind !== "pane" || target.surface !== "minimap" || !canDropTarget(item, target)) return;
+  const listStore = useWorkspaceListStore.getState();
+  const sourcePane = listStore.getWorkspace(item.workspaceId)?.panes.find((pane) => pane.id === item.paneId);
+  if (!sourcePane || sourcePane.tabs.length === 0) return;
+  const before = listStore.workspaces;
+  const currentRevision = layoutStructureRevision(before);
+  const anchorTabId = sourcePane.tabs.some((tab) => tab.id === sourcePane.activeTabId)
+    ? sourcePane.activeTabId
+    : sourcePane.tabs[0].id;
+  const mutation = {
+    kind: "move-tabs" as const,
+    operationId: crypto.randomUUID(),
+    tabIds: sourcePane.tabs.map((tab) => tab.id),
+    anchorTabId,
     to: target.zone === "center"
       ? { workspaceId: target.workspaceId, paneId: target.paneId }
       : { workspaceId: target.workspaceId, split: { paneId: target.paneId, zone: target.zone } },
@@ -265,8 +315,9 @@ function commitPaneDragDrop(item: PaneDragItem, target: PaneDropTarget | null): 
   if (!target || !canDropTarget(item, target)) return;
 
   if (item.surface === "minimap") {
-    if (target.kind === "pane" && item.kind === "tab") commitMinimapTabDrop(item, target);
-    else if (target.kind === "new-workspace") moveMinimapItemToNewWorkspace(item);
+    if (target.kind === "pane" && (item.kind === "tab" || item.kind === "tab-bundle")) commitMinimapTabDrop(item, target);
+    else if (target.kind === "pane" && item.kind === "pane") commitMinimapPaneDrop(item, target);
+    else if (target.kind === "new-workspace" && item.kind !== "tab-bundle") moveMinimapItemToNewWorkspace(item);
     return;
   }
 
@@ -343,14 +394,14 @@ function commitPaneDragDrop(item: PaneDragItem, target: PaneDropTarget | null): 
         target.zone,
       );
     }
-  } else if (target.zone === "center") {
+  } else if (item.kind === "pane" && target.zone === "center") {
     layoutStore.movePaneToPane(
       item.workspaceId,
       item.paneId,
       target.workspaceId,
       target.paneId,
     );
-  } else {
+  } else if (item.kind === "pane" && target.zone !== "center") {
     layoutStore.movePaneToSplit(
       item.workspaceId,
       item.paneId,
@@ -428,7 +479,7 @@ export function usePaneDragSource() {
     const pointerId = event.pointerId;
     const startX = event.clientX;
     const startY = event.clientY;
-    const dragItem: PaneDragItem = item.surface === "minimap" && item.kind === "tab"
+    const dragItem: PaneDragItem = item.surface === "minimap"
       ? { ...item, sourceLayoutRevision: layoutStructureRevision(useWorkspaceListStore.getState().workspaces) }
       : item;
     let dragging = false;

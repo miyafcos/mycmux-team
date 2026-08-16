@@ -120,6 +120,8 @@ export function buildLaunchArgs(
         ...(cwd ? ["-C", cwd] : []),
         savedSession.sessionId,
       ];
+    case "grok":
+      return ["--no-alt-screen", "--resume", savedSession.sessionId];
     case "claude-codex":
       return ["--resume", savedSession.sessionId];
   }

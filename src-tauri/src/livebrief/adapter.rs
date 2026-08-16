@@ -159,7 +159,7 @@ impl AgentAdapter {
         }
         let (tool, target) = self.open_tools.remove(&call_id).unwrap_or_else(|| ("unknown".to_string(), None));
         let output = collect_text(payload.get("output")).unwrap_or_default();
-        vec![SemanticEventKind::ToolEnd { call_id, tool, target, ok: !output.contains("Exit code: 1"), summary: short(&output) }]
+        terminal_events(call_id, tool, target, !has_nonzero_exit_code(&output), &output)
     }
 
     fn claude_assistant(&mut self, message: &Value) -> Vec<SemanticEventKind> {
@@ -194,7 +194,7 @@ impl AgentAdapter {
         if let Some(prompt_event_id) = self.open_questions.remove(&call_id) { return vec![SemanticEventKind::QuestionResolved { prompt_event_id, provider_call_id: call_id }]; }
         let (tool, target) = self.open_tools.remove(&call_id).unwrap_or_else(|| ("unknown".to_string(), None));
         let output = collect_text(value.get("content")).unwrap_or_default();
-        vec![SemanticEventKind::ToolEnd { call_id, tool, target, ok: !value.get("is_error").and_then(Value::as_bool).unwrap_or(false), summary: short(&output) }]
+        terminal_events(call_id, tool, target, !value.get("is_error").and_then(Value::as_bool).unwrap_or(false), &output)
     }
 
     fn user_message(&mut self, text: &str) -> SemanticEventKind {
@@ -222,7 +222,115 @@ fn collect_text(value: Option<&Value>) -> Option<String> {
     match value? { Value::String(text) if !text.trim().is_empty() => Some(text.to_string()), Value::Array(items) => { let text = items.iter().filter_map(|item| item.get("text").and_then(Value::as_str)).collect::<Vec<_>>().join("\n"); (!text.trim().is_empty()).then_some(text) }, Value::Object(map) => map.get("text").and_then(Value::as_str).map(str::to_string), _ => None }
 }
 
-fn extract_target(raw: &str) -> Option<String> { serde_json::from_str::<Value>(raw).ok().and_then(|value| value.get("path").or_else(|| value.get("command")).or_else(|| value.get("query")).and_then(Value::as_str).map(str::to_string)) }
+fn extract_target(raw: &str) -> Option<String> { serde_json::from_str::<Value>(raw).ok().and_then(|value| value.get("file_path").or_else(|| value.get("path")).or_else(|| value.get("notebook_path")).or_else(|| value.get("command")).or_else(|| value.get("query")).and_then(Value::as_str).map(str::to_string)) }
+
+fn terminal_events(call_id: String, tool: String, target: Option<String>, ok: bool, output: &str) -> Vec<SemanticEventKind> {
+    let summary = short(output);
+    let mut events = vec![SemanticEventKind::ToolEnd {
+        call_id,
+        tool: tool.clone(),
+        target: target.clone(),
+        ok,
+        summary: summary.clone(),
+    }];
+    if ok {
+        if let Some((path, change)) = file_change(&tool, target.as_deref()) {
+            events.push(SemanticEventKind::FileChange { path, change });
+        }
+    }
+    if is_test_command_tool(&tool) {
+        for (pass, fail) in explicit_test_results(output) {
+            events.push(SemanticEventKind::TestResult { pass, fail });
+        }
+    }
+    if !ok {
+        let detail = clear_error_line(output)
+            .map(str::to_string)
+            .or(summary)
+            .unwrap_or_else(|| "failed".to_string());
+        let text = format!("{tool}: {detail}");
+        events.push(SemanticEventKind::Error {
+            fingerprint: sha256_hex(normalize(&text).as_bytes()),
+            text,
+        });
+    }
+    events
+}
+
+/// Only tool names observed in the pre-change real-log measurement are
+/// admitted. A success does not imply a write for any other tool name.
+fn file_change(tool: &str, target: Option<&str>) -> Option<(String, String)> {
+    let path = target?.trim();
+    if path.is_empty() {
+        return None;
+    }
+    match tool {
+        "Edit" => Some((path.to_string(), "modified".to_string())),
+        "Write" => Some((path.to_string(), "written".to_string())),
+        _ => None,
+    }
+}
+
+/// Only command runner names observed in the pre-change real-log measurement
+/// are considered. TestResult never follows a tool name alone; a recognised
+/// explicit result line is also required.
+fn is_test_command_tool(tool: &str) -> bool {
+    matches!(tool, "Bash" | "PowerShell" | "exec")
+}
+
+fn explicit_test_results(output: &str) -> Vec<(u32, u32)> {
+    output.lines().filter_map(parse_explicit_test_result).collect()
+}
+
+/// Accept only complete summary forms seen in real logs: cargo's `test
+/// result`, Vitest's `Tests N passed (N)`, and pytest's `= N passed in ... =`.
+fn parse_explicit_test_result(line: &str) -> Option<(u32, u32)> {
+    let line = line.trim();
+    if let Some(rest) = line.strip_prefix("test result: ") {
+        let pass = count_before_marker(rest, " passed;")?;
+        let fail = count_before_marker(rest, " failed;").unwrap_or(0);
+        return Some((pass, fail));
+    }
+    if let Some(rest) = line.strip_prefix("Tests") {
+        let pass = first_number(rest)?;
+        if rest.contains(" passed (") {
+            return Some((pass, 0));
+        }
+    }
+    if line.starts_with('=') && line.ends_with('=') && line.contains(" passed in ") {
+        let pass = count_before_marker(line, " passed in")?;
+        let fail = count_before_marker(line, " failed,").unwrap_or(0);
+        return Some((pass, fail));
+    }
+    None
+}
+
+fn count_before_marker(text: &str, marker: &str) -> Option<u32> {
+    let prefix = text.split_once(marker)?.0;
+    prefix.split_whitespace().last()?.parse::<u32>().ok()
+}
+
+fn first_number(text: &str) -> Option<u32> {
+    text.split_whitespace().find_map(|word| word.parse::<u32>().ok())
+}
+
+fn has_nonzero_exit_code(output: &str) -> bool {
+    output.lines().any(|line| {
+        line.trim()
+            .strip_prefix("Exit code:")
+            .and_then(|code| code.trim().parse::<i32>().ok())
+            .is_some_and(|code| code != 0)
+    })
+}
+
+fn clear_error_line(output: &str) -> Option<&str> {
+    output.lines().map(str::trim).find(|line| {
+        line.starts_with("error:")
+            || line.starts_with("error[")
+            || line.starts_with("FAILED")
+            || line.starts_with("Traceback")
+    })
+}
 
 fn parse_question(raw: &str) -> (String, PendingInputKind, Vec<PendingOption>) {
     let value = serde_json::from_str::<Value>(raw).unwrap_or(Value::Null);
@@ -291,6 +399,63 @@ mod tests {
         let mut adapter = AgentAdapter::new("claude").unwrap();
         let events = decode(&mut adapter, r#"{"type":"user","uuid":"u3","message":{"role":"user","content":[{"tool_use_id":"toolu_y","type":"tool_result","is_error":true,"content":"boom"}]}}"#);
         assert!(matches!(&events[0], SemanticEventKind::ToolEnd { ok: false, .. }));
+    }
+
+    #[test]
+    fn successful_edit_with_file_path_emits_file_change_after_tool_end() {
+        let mut adapter = AgentAdapter::new("claude").unwrap();
+        let started = decode(&mut adapter, r#"{"type":"assistant","uuid":"e1","message":{"role":"assistant","content":[{"type":"tool_use","id":"edit-1","name":"Edit","input":{"file_path":"src/live.rs","old_string":"old","new_string":"new"}}]}}"#);
+        assert!(matches!(&started[0], SemanticEventKind::ToolStart { target, .. } if target.as_deref() == Some("src/live.rs")));
+        let ended = decode(&mut adapter, r#"{"type":"user","uuid":"e2","message":{"role":"user","content":[{"tool_use_id":"edit-1","type":"tool_result","content":"Done"}]}}"#);
+        assert!(matches!(&ended[0], SemanticEventKind::ToolEnd { ok: true, .. }));
+        assert!(matches!(&ended[1], SemanticEventKind::FileChange { path, change } if path == "src/live.rs" && change == "modified"));
+    }
+
+    #[test]
+    fn failed_edit_emits_error_but_not_file_change() {
+        let mut adapter = AgentAdapter::new("claude").unwrap();
+        decode(&mut adapter, r#"{"type":"assistant","uuid":"f1","message":{"role":"assistant","content":[{"type":"tool_use","id":"edit-2","name":"Edit","input":{"file_path":"src/live.rs"}}]}}"#);
+        let ended = decode(&mut adapter, r#"{"type":"user","uuid":"f2","message":{"role":"user","content":[{"tool_use_id":"edit-2","type":"tool_result","is_error":true,"content":"permission denied"}]}}"#);
+        assert!(matches!(&ended[0], SemanticEventKind::ToolEnd { ok: false, .. }));
+        assert!(matches!(&ended[1], SemanticEventKind::Error { text, .. } if text == "Edit: permission denied"));
+        assert!(!ended.iter().any(|event| matches!(event, SemanticEventKind::FileChange { .. })));
+    }
+
+    #[test]
+    fn explicit_cargo_result_emits_test_result_after_tool_end() {
+        let mut adapter = AgentAdapter::new("claude").unwrap();
+        decode(&mut adapter, r#"{"type":"assistant","uuid":"t1","message":{"role":"assistant","content":[{"type":"tool_use","id":"bash-1","name":"Bash","input":{"command":"cargo test"}}]}}"#);
+        let ended = decode(&mut adapter, r#"{"type":"user","uuid":"t2","message":{"role":"user","content":[{"tool_use_id":"bash-1","type":"tool_result","content":"test result: ok. 12 passed; 0 failed; 0 ignored;"}]}}"#);
+        assert!(matches!(&ended[0], SemanticEventKind::ToolEnd { ok: true, .. }));
+        assert!(matches!(&ended[1], SemanticEventKind::TestResult { pass: 12, fail: 0 }));
+    }
+
+    #[test]
+    fn test_named_command_without_explicit_counts_emits_no_test_result() {
+        let mut adapter = AgentAdapter::new("claude").unwrap();
+        decode(&mut adapter, r#"{"type":"assistant","uuid":"nt1","message":{"role":"assistant","content":[{"type":"tool_use","id":"bash-2","name":"Bash","input":{"command":"cargo test"}}]}}"#);
+        let ended = decode(&mut adapter, r#"{"type":"user","uuid":"nt2","message":{"role":"user","content":[{"tool_use_id":"bash-2","type":"tool_result","content":"tests are running"}]}}"#);
+        assert_eq!(ended.len(), 1);
+        assert!(matches!(&ended[0], SemanticEventKind::ToolEnd { .. }));
+    }
+
+    #[test]
+    fn successful_error_lookalike_emits_no_error() {
+        let mut adapter = AgentAdapter::new("claude").unwrap();
+        decode(&mut adapter, r#"{"type":"assistant","uuid":"se1","message":{"role":"assistant","content":[{"type":"tool_use","id":"bash-3","name":"Bash","input":{"command":"printf error"}}]}}"#);
+        let ended = decode(&mut adapter, r#"{"type":"user","uuid":"se2","message":{"role":"user","content":[{"tool_use_id":"bash-3","type":"tool_result","content":"error: this string is expected output"}]}}"#);
+        assert_eq!(ended.len(), 1);
+        assert!(matches!(&ended[0], SemanticEventKind::ToolEnd { ok: true, .. }));
+    }
+
+    #[test]
+    fn codex_nonzero_exit_code_emits_error() {
+        let mut adapter = AgentAdapter::new("codex").unwrap();
+        let started = adapter.decode_record(r#"{"type":"response_item","payload":{"type":"function_call","call_id":"exec-1","name":"exec","arguments":"{\"command\":\"cargo test\"}"}}"#, ByteRange { start: 0, end: 1 }, 1).unwrap();
+        assert!(matches!(started[0].kind, SemanticEventKind::ToolStart { .. }));
+        let ended = adapter.decode_record(r#"{"type":"response_item","payload":{"type":"function_call_output","call_id":"exec-1","output":"Exit code: 2\nerror: failed"}}"#, ByteRange { start: 1, end: 2 }, 2).unwrap();
+        assert!(matches!(&ended[0].kind, SemanticEventKind::ToolEnd { ok: false, .. }));
+        assert!(matches!(&ended[1].kind, SemanticEventKind::Error { text, .. } if text == "exec: error: failed"));
     }
 
     #[test]

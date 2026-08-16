@@ -51,6 +51,7 @@ function agentLabel(kind: DashboardAgentKind): string {
   if (kind === "claude") return "Claude Code";
   if (kind === "codex") return "Codex";
   if (kind === "claude-codex") return "Claude Code / Codex";
+  if (kind === "grok") return "Grok Build";
   return "セッション";
 }
 

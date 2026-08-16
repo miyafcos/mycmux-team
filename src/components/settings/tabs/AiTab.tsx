@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useAiSettingsStore } from "../../../stores/aiSettingsStore";
+import { useSettingsStore } from "../../../stores/settingsStore";
 import { AI_PROVIDERS, aiProviderDef, classifyModelForProvider } from "../../../lib/aiModels";
 import { aiSettingsStrings } from "../settingsStrings";
 import { AutomationTab } from "./AutomationTab";
@@ -23,6 +24,8 @@ export function AiTab() {
   const setModel = useAiSettingsStore((s) => s.setAiModel);
   const setEnabled = useAiSettingsStore((s) => s.setAiEnabled);
   const reset = useAiSettingsStore((s) => s.resetAiSettings);
+  const replyDraftSuggestionsEnabled = useSettingsStore((s) => s.replyDraftSuggestionsEnabled);
+  const setReplyDraftSuggestionsEnabled = useSettingsStore((s) => s.setReplyDraftSuggestionsEnabled);
 
   // The text field is uncontrolled between commits: normalising on every
   // keystroke would snap a half-typed (or momentarily empty) model back to the
@@ -107,11 +110,20 @@ export function AiTab() {
       <div style={dividerStyle} />
 
       <section aria-labelledby="cmux-reply-draft-heading" data-ai-reply-draft-placeholder>
-        <div id="cmux-reply-draft-heading" style={sectionHeadingStyle}>返信案の先回り (準備中)</div>
+        <div id="cmux-reply-draft-heading" style={sectionHeadingStyle}>返信案の先回り</div>
         <div style={hintStyle}>
-          返信が必要そうな内容を先回りして、選べる候補として準備します。
+          機械的な次の一手は常に表示し、完了や待機などの新しい状態イベントを受けた時だけ、AI が具体的な候補を準備します。
         </div>
-        {/* L3: place reply-draft suggestion controls in this section. */}
+        <label style={{ ...checkboxLabelStyleFor(enabled), marginTop: 8 }}>
+          <input
+            type="checkbox"
+            checked={replyDraftSuggestionsEnabled}
+            disabled={!enabled}
+            onChange={(event) => setReplyDraftSuggestionsEnabled(event.target.checked)}
+          />
+          <span>AI に具体案を準備させる</span>
+        </label>
+        <div style={hintStyle}>画面を開いただけでは実行しません。設定をオフにすると、新しい AI 呼び出しは行いません。</div>
       </section>
     </div>
   );

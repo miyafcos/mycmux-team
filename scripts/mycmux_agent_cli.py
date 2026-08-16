@@ -33,8 +33,8 @@ def token_file() -> Path:
 
 def prompt_dir() -> Path:
     return runtime_dir() / "agent-prompts"
-AGENT_TARGETS = ("claude", "codex", "claude-codex", "shell")
-AGENT_KINDS = ("claude", "codex", "claude-codex")
+AGENT_TARGETS = ("claude", "codex", "claude-codex", "grok", "shell")
+AGENT_KINDS = ("claude", "codex", "claude-codex", "grok")
 
 
 def read_port(path: Path | None = None) -> int:
@@ -150,7 +150,11 @@ def add_spawn_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--anchor-pane")
     parser.add_argument("--direction")
     activation = parser.add_mutually_exclusive_group()
-    activation.add_argument("--activate", action="store_true")
+    activation.add_argument(
+        "--activate",
+        action="store_true",
+        help="Request internal activation without changing the operator foreground",
+    )
     activation.add_argument("--no-activate", action="store_true")
 
 
@@ -174,8 +178,9 @@ def build_parser() -> argparse.ArgumentParser:
         "spawn",
         help=(
             "Spawn an agent. Defaults to a background tab in the calling pane "
-            "(MYCMUX_PANE_SESSION_ID); use --activate to switch to it or --split "
-            "for a new split pane"
+            "(MYCMUX_PANE_SESSION_ID); --activate permits internal activation only "
+            "in a background workspace and never changes the operator foreground; "
+            "use --split for a new split pane"
         ),
     )
     add_spawn_arguments(spawn)
@@ -190,7 +195,11 @@ def build_parser() -> argparse.ArgumentParser:
     spawn_tab.add_argument("--cwd", default=os.getcwd())
     spawn_tab.add_argument("--label")
     spawn_tab_activation = spawn_tab.add_mutually_exclusive_group()
-    spawn_tab_activation.add_argument("--activate", action="store_true")
+    spawn_tab_activation.add_argument(
+        "--activate",
+        action="store_true",
+        help="Request internal activation without changing the operator foreground",
+    )
     spawn_tab_activation.add_argument("--no-activate", action="store_true")
     add_interactive_launch_arguments(spawn_tab, target_required=False)
     spawn_tab.add_argument("command_argv", nargs=argparse.REMAINDER)
@@ -199,7 +208,7 @@ def build_parser() -> argparse.ArgumentParser:
     declare_tab.add_argument("--session", required=True)
     declare_tab.add_argument("--label", required=True)
     declare_tab.add_argument("--prompt")
-    declare_tab.add_argument("--target", choices=("claude", "codex"))
+    declare_tab.add_argument("--target", choices=("claude", "codex", "grok"))
     declare_tab.add_argument(
         "--origin",
         choices=("agent", "human"),
@@ -207,12 +216,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Declaration origin (default: agent)",
     )
 
-    activate_tab = subparsers.add_parser("activate-tab", help="Activate a terminal tab")
+    activate_tab = subparsers.add_parser(
+        "activate-tab",
+        help="Activate a terminal tab internally without changing the operator foreground",
+    )
     activate_tab.add_argument("--session", required=True)
 
     restore_activation = subparsers.add_parser(
         "restore-activation",
-        help="Restore a prior activation when its token is still current",
+        help="Validate a prior activation token without changing the operator foreground",
     )
     restore_activation.add_argument("--token", required=True, type=parse_json_object)
 

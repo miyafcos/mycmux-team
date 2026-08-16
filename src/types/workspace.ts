@@ -95,7 +95,7 @@ export interface Pane {
   pinnedTabId?: string;
 }
 
-export type AgentSessionKind = "claude" | "codex" | "claude-codex";
+export type AgentSessionKind = "claude" | "codex" | "claude-codex" | "grok";
 
 export type ArtifactSourceKind = "html" | "markdown" | "office";
 

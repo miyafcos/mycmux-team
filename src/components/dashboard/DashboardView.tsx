@@ -1,8 +1,15 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 import { focusController } from "../../lib/focusController";
-import { useDashboardViewStore } from "../../stores/dashboardViewStore";
+import {
+  clampDashboardMinimapWidth,
+  dashboardMinimapMaxWidth,
+  DASHBOARD_CHAT_COLUMN_LIMIT,
+  DASHBOARD_MINIMAP_MIN_WIDTH,
+  useDashboardViewStore,
+} from "../../stores/dashboardViewStore";
+import { isDashboardChatDropTarget, type PaneDragItem, usePaneDragStore } from "../../stores/paneDragStore";
 import { useComposerStore } from "../../stores/composerStore";
 import {
   connectLiveBriefStore,
@@ -16,13 +23,10 @@ import { useSessionAttentionStore } from "../../stores/sessionAttentionStore";
 import { useStallStore } from "../../stores/stallStore";
 import { connectReportInboxStatusFeed, useReportInboxStore, type MachineReportCard } from "../../stores/reportInboxStore";
 import { hasTerminalBuffer } from "../terminal/XTermWrapper";
-import { DashboardTelemetryFallback } from "./DashboardSessionDetail";
 import { DashboardSessionList, useFrozenCardOrder } from "./DashboardSessionList";
 import { AskStrip } from "./AskStrip";
 import { buildAskStripItems } from "./askStripModel";
 import { WatchStatusRow } from "./WatchStatusRow";
-import { ChatTranscript } from "./ChatTranscript";
-import { QuestionCard } from "./QuestionCard";
 import {
   applyDashboardFilters,
   buildDashboardCards,
@@ -40,30 +44,69 @@ import {
   useInterventionFeedbackStore,
 } from "./interventionRouting";
 import { ReplyComposer } from "./ReplyComposer";
+import { WorkOrderContract } from "./WorkOrderContract";
 import { targetKey } from "../../lib/livebrief";
 import { LayoutMinimapPanel } from "./LayoutMinimapPanel";
 import { resolveDisplayState } from "./dashboardModel";
-import { displayStateColor, displayStateLabel, stallLabel, statePillStyle } from "./DashboardCardRow";
-import { stateLabels } from "./stateLabels";
 import { ReportInbox } from "./ReportInbox";
+import { ChatColumn } from "./ChatColumn";
 import "./DashboardView.css";
 
 /** 番号キーで撃てる選択肢。ここを増やすなら dashboardStrings.numberKeyHint も直す。 */
 const NUMBER_KEYS = ["1", "2", "3"];
+const DASHBOARD_LIST_DRAG_THRESHOLD_PX = 9;
+const DASHBOARD_CHAT_COLUMN_MOTION_MS = 180;
+const DASHBOARD_CHAT_DROP_INDICATOR_WIDTH = 3;
+
+export function clampDashboardChatDropIndicatorOffset(offsetX: number, rootWidth: number, indicatorWidth = DASHBOARD_CHAT_DROP_INDICATOR_WIDTH): number {
+  const safeRootWidth = Number.isFinite(rootWidth) ? Math.max(0, rootWidth) : 0;
+  const safeOffsetX = Number.isFinite(offsetX) ? offsetX : 0;
+  const halfWidth = Math.min(Math.max(0, indicatorWidth / 2), safeRootWidth / 2);
+  return Math.min(safeRootWidth - halfWidth, Math.max(halfWidth, safeOffsetX));
+}
+
+function useReducedMotion(): boolean {
+  const [reducedMotion, setReducedMotion] = useState(() => (
+    typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches
+  ));
+
+  useEffect(() => {
+    const media = window.matchMedia?.("(prefers-reduced-motion: reduce)");
+    if (!media) return;
+    const update = () => setReducedMotion(media.matches);
+    update();
+    media.addEventListener?.("change", update);
+    return () => media.removeEventListener?.("change", update);
+  }, []);
+
+  return reducedMotion;
+}
 
 export function DashboardView({ onClose }: { onClose: () => void }) {
   const rootRef = useRef<HTMLDivElement>(null);
+  const chatColumnsRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
+  const resizeRef = useRef<{ pointerId: number; startX: number; startWidth: number } | null>(null);
+  const suppressDashboardListClickRef = useRef(false);
   const now = Date.now();
   const [listHovered, setListHovered] = useState(false);
   const [searchFocused, setSearchFocused] = useState(false);
+  const [resizingMinimap, setResizingMinimap] = useState(false);
+  const [viewportWidth, setViewportWidth] = useState(() => typeof window === "undefined" ? 0 : window.innerWidth);
+  const [columnMotion, setColumnMotion] = useState<{ tabId: string; kind: "add" } | null>(null);
+  const [closingColumn, setClosingColumn] = useState<{ card: DashboardCardModel; openIndex: number } | null>(null);
+  const [draggedChatColumnTabId, setDraggedChatColumnTabId] = useState<string | null>(null);
+  const previousOpenColumnTabIdsRef = useRef<string[] | null>(null);
+  const reducedMotion = useReducedMotion();
   const viewState = useDashboardViewStore(useShallow((state) => ({
     query: state.query,
     workspaceFilter: state.workspaceFilter,
     agentFilter: state.agentFilter,
     stateFilter: state.stateFilter,
     selectedTabId: state.selectedTabId,
+    chatColumnTabIds: state.chatColumnTabIds,
+    activeChatColumn: state.activeChatColumn,
     reportInboxOpen: state.reportInboxOpen,
     highlightedEventId: state.highlightedEventId,
     highlightedEventRequest: state.highlightedEventRequest,
@@ -72,11 +115,23 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
     setAgentFilter: state.setAgentFilter,
     setStateFilter: state.setStateFilter,
     setSelectedTabId: state.setSelectedTabId,
+    addChatColumn: state.addChatColumn,
+    moveChatColumn: state.moveChatColumn,
+    insertChatColumn: state.insertChatColumn,
+    setActiveChatColumn: state.setActiveChatColumn,
+    removeChatColumn: state.removeChatColumn,
     openReportInbox: state.openReportInbox,
     closeReportInbox: state.closeReportInbox,
     setHighlightedEventId: state.setHighlightedEventId,
+    minimapWidth: state.minimapWidth,
+    setMinimapWidth: state.setMinimapWidth,
   })));
+  const minimapMaxWidth = dashboardMinimapMaxWidth(viewportWidth);
+  const minimapWidth = clampDashboardMinimapWidth(viewState.minimapWidth, viewportWidth);
   const workspaces = useWorkspaceListStore((state) => state.workspaces);
+  const dragItem = usePaneDragStore((state) => state.item);
+  const dragPointer = usePaneDragStore((state) => state.pointer);
+  const dashboardChatDropPreview = usePaneDragStore((state) => state.dashboardChatDropPreview);
   const activePaneSessionId = useUiStore((state) => state.activePaneId);
   const metadataState = usePaneMetadataStore(useShallow((state) => ({
     metadata: state.metadata,
@@ -89,6 +144,7 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
     seenAttentionByTab: state.seenAttentionByTab,
   })));
   const briefsBySession = useLiveBriefStore((state) => state.briefsBySession);
+  const eventsBySession = useLiveBriefStore((state) => state.eventsBySession);
   const listEventsBySession = useLiveBriefStore((state) => state.listEventsBySession);
   const reportInboxState = useReportInboxStore(useShallow((state) => ({
     cardIds: state.cardIds,
@@ -112,6 +168,7 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
     now,
     hasTerminalBuffer,
   }), [attentionState, briefsBySession, metadataState, now, stallsBySession, workspaces]);
+  const reportSourceSessionIds = useMemo(() => new Set(cards.map((card) => card.tab.sessionId)), [cards]);
   const minimapDisplayStateByTabId = useMemo(() => new Map(cards.map((card) => [card.tab.id, resolveDisplayState(card)] as const)), [cards]);
   const filteredCards = useMemo(() => applyDashboardFilters(cards, {
     query: viewState.query,
@@ -133,32 +190,118 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
       ...partitions.active,
       ...partitions.deferred,
     ]), [partitions, urgentCards]);
-  const selectedCard = visibleCards.find((card) => card.tab.id === viewState.selectedTabId) ?? visibleCards[0] ?? null;
+  // selectedTabId remains the single highlight authority. The ordered column
+  // state only decides which conversations stay open beside that active tab.
+  const selectedCard = cards.find((card) => card.tab.id === viewState.selectedTabId) ?? visibleCards[0] ?? null;
+  const chatColumnTabIds = viewState.chatColumnTabIds.length
+    ? viewState.chatColumnTabIds
+    : selectedCard ? [selectedCard.tab.id] : [];
+  const activeChatColumn = Math.max(0, Math.min(chatColumnTabIds.length - 1, viewState.activeChatColumn));
+  const chatColumnCards = chatColumnTabIds.flatMap((tabId) => {
+    const card = cards.find((candidate) => candidate.tab.id === tabId);
+    return card ? [card] : [];
+  });
+  const activeColumnTabId = chatColumnTabIds[activeChatColumn] ?? null;
+  // Direct composer routing must use the same column the user sees as active.
+  // Do not fall back to another card if a stale layout id disappears.
+  const activeColumnCard = activeColumnTabId
+    ? cards.find((candidate) => candidate.tab.id === activeColumnTabId) ?? null
+    : null;
   const selectedSessionId = selectedCard?.tab.sessionId ?? null;
   const highlightedReport = useMemo(() => reportCards.find((card) => (
     card.ptySessionId === selectedSessionId && card.sourceEventId === viewState.highlightedEventId
   )) ?? null, [reportCards, selectedSessionId, viewState.highlightedEventId]);
-  const selectedEvents = useLiveBriefStore((state) => (
-    selectedSessionId ? state.eventsBySession[selectedSessionId] : undefined
-  ));
-  const transcriptEvents = selectedEvents?.length
-    ? selectedEvents
-    : selectedSessionId ? listEventsBySession[selectedSessionId] ?? [] : [];
-  const selectedDisplayState = selectedCard ? resolveDisplayState(selectedCard) : "idle";
-  const selectedEventOutputAt = (selectedEvents ?? []).reduce((latest, event) => (
-    event.kind.type === "agentMessage" || event.kind.type === "toolEnd" || event.kind.type === "error"
-      ? Math.max(latest, event.occurredAt)
-      : latest
-  ), 0);
-  const selectedLastOutputAt = selectedCard?.metadata?.backendLastOutputAt
-    ?? (selectedEventOutputAt || null);
-  const selectedElapsedMinutes = selectedCard?.noUpdateMinutes
-    ?? (selectedCard?.lastActivityAt ? Math.max(0, Math.floor((now - selectedCard.lastActivityAt) / 60_000)) : null);
-  const selectedElapsedText = selectedElapsedMinutes === null
-    ? ""
-    : selectedDisplayState === "noUpdate"
-      ? dashboardStrings.noUpdateFor(selectedElapsedMinutes)
-      : dashboardStrings.elapsed(selectedElapsedMinutes);
+  const activeColumnSessionId = activeColumnCard?.tab.sessionId ?? null;
+  const activeColumnEvents = activeColumnSessionId ? eventsBySession[activeColumnSessionId] : undefined;
+  const activeColumnTranscriptEvents = activeColumnEvents?.length
+    ? activeColumnEvents
+    : activeColumnSessionId ? listEventsBySession[activeColumnSessionId] ?? [] : [];
+  const activeColumnQuestion = questionModel(activeColumnCard?.brief, activeColumnTranscriptEvents);
+  const openChatColumns = chatColumnCards;
+  const openChatColumnTabIds = useMemo(
+    () => openChatColumns.map((card) => card.tab.id),
+    [openChatColumns],
+  );
+  const renderedChatColumns = useMemo(() => {
+    if (!closingColumn) return openChatColumns;
+    const columns = openChatColumns.filter((card) => card.tab.id !== closingColumn.card.tab.id);
+    columns.splice(Math.min(closingColumn.openIndex, columns.length), 0, closingColumn.card);
+    return columns;
+  }, [closingColumn, openChatColumns]);
+
+  const refreshDashboardChatDropPreview = useCallback((item: PaneDragItem | null, pointer: { x: number; y: number } | null, columnDrag = false) => {
+    const setPreview = usePaneDragStore.getState().setDashboardChatDropPreview;
+    if (!item || item.kind !== "tab" || !pointer) {
+      setPreview(null);
+      return;
+    }
+    const columnsRoot = chatColumnsRef.current;
+    const hit = document.elementFromPoint(pointer.x, pointer.y);
+    if (!columnsRoot || !hit || !columnsRoot.contains(hit)) {
+      setPreview(null);
+      return;
+    }
+    const existingIndex = chatColumnTabIds.indexOf(item.tabId);
+    if (existingIndex >= 0 && !columnDrag) {
+      setPreview({ kind: "existing", tabId: item.tabId, index: existingIndex });
+      return;
+    }
+    if (!columnDrag && chatColumnTabIds.length >= DASHBOARD_CHAT_COLUMN_LIMIT) {
+      setPreview({ kind: "full" });
+      return;
+    }
+    const rootRect = columnsRoot.getBoundingClientRect();
+    const boundaries = Array.from(columnsRoot.querySelectorAll<HTMLElement>("[data-dashboard-chat-column]"))
+      .flatMap((column) => {
+        const tabId = column.dataset.dashboardChatColumn;
+        const index = tabId ? chatColumnTabIds.indexOf(tabId) : -1;
+        if (index < 0) return [];
+        const rect = column.getBoundingClientRect();
+        return [
+          { index, x: rect.left },
+          { index: index + 1, x: rect.right },
+        ];
+      });
+    if (!boundaries.length) {
+      setPreview(null);
+      return;
+    }
+    const nearest = boundaries.reduce((best, boundary) => (
+      Math.abs(boundary.x - pointer.x) < Math.abs(best.x - pointer.x) ? boundary : best
+    ));
+    setPreview({
+      kind: "insert",
+      index: nearest.index,
+      offsetX: clampDashboardChatDropIndicatorOffset(nearest.x - rootRect.left, rootRect.width),
+    });
+  }, [chatColumnTabIds]);
+
+  useLayoutEffect(() => {
+    if (dragItem?.surface !== "minimap") return;
+    refreshDashboardChatDropPreview(dragItem, dragPointer);
+  }, [dragItem, dragPointer, refreshDashboardChatDropPreview]);
+
+  useLayoutEffect(() => {
+    const previous = previousOpenColumnTabIdsRef.current;
+    previousOpenColumnTabIdsRef.current = openChatColumnTabIds;
+    if (!previous || reducedMotion || closingColumn) return;
+    const addedTabIds = openChatColumnTabIds.filter((tabId) => !previous.includes(tabId));
+    if (openChatColumnTabIds.length === previous.length + 1 && addedTabIds.length === 1) {
+      setColumnMotion({ tabId: addedTabIds[0], kind: "add" });
+    }
+  }, [closingColumn, openChatColumnTabIds, reducedMotion]);
+
+  useEffect(() => {
+    if (!columnMotion) return;
+    const timer = window.setTimeout(() => setColumnMotion(null), DASHBOARD_CHAT_COLUMN_MOTION_MS);
+    return () => window.clearTimeout(timer);
+  }, [columnMotion]);
+
+  useEffect(() => {
+    if (!closingColumn) return;
+    const timer = window.setTimeout(() => setClosingColumn(null), DASHBOARD_CHAT_COLUMN_MOTION_MS);
+    return () => window.clearTimeout(timer);
+  }, [closingColumn]);
   const askItems = useMemo(() => buildAskStripItems(filteredCards.map((card) => ({
     tabId: card.tab.id,
     sessionId: card.tab.sessionId,
@@ -178,6 +321,23 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
     window.setTimeout(() => rootRef.current?.focus(), 0);
   }, []);
 
+  useEffect(() => {
+    const updateViewportWidth = () => {
+      const measured = rootRef.current?.getBoundingClientRect().width ?? 0;
+      setViewportWidth(measured || window.innerWidth);
+    };
+    updateViewportWidth();
+    window.addEventListener("resize", updateViewportWidth);
+    const observer = typeof ResizeObserver === "undefined" || !rootRef.current
+      ? null
+      : new ResizeObserver(updateViewportWidth);
+    if (observer && rootRef.current) observer.observe(rootRef.current);
+    return () => {
+      window.removeEventListener("resize", updateViewportWidth);
+      observer?.disconnect();
+    };
+  }, []);
+
   // brief の購読はビュー1枚につき1本 (store 側が参照数で束ねる)。
   useEffect(() => connectLiveBriefStore(), []);
   useEffect(() => connectReportInboxStatusFeed(), []);
@@ -191,16 +351,16 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
     }
   }, [listEventsBySession, reportInboxState]);
 
-  // 意味イベントの取得は「表示中の全セッション (浅く)」+「選択中1本 (深く)」。
+  // 意味イベントの取得は「表示中の全セッション (浅く)」+「開いている列 (深く)」。
   // 要対応 → 選択中 → 表示順、の優先で上限まで詰める。
   const visibleKey = useMemo(() => {
     const ids: string[] = [];
     const push = (id: string | null) => { if (id && !ids.includes(id)) ids.push(id); };
     for (const card of urgentCards) push(card.tab.sessionId);
-    push(selectedSessionId);
+    for (const card of chatColumnCards) push(card.tab.sessionId);
     for (const card of visibleCards) push(card.tab.sessionId);
     return ids.slice(0, LIVE_EVENT_VISIBLE_LIMIT).join(",");
-  }, [selectedSessionId, urgentCards, visibleCards]);
+  }, [chatColumnCards, urgentCards, visibleCards]);
   useEffect(() => {
     syncDashboardEvents({
       selectedId: selectedSessionId,
@@ -215,7 +375,12 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
 
   useEffect(() => {
     if (!viewState.selectedTabId && selectedCard) viewState.setSelectedTabId(selectedCard.tab.id);
-  }, [selectedCard, viewState]);
+    if (viewState.selectedTabId && (!viewState.chatColumnTabIds.length
+      || viewState.chatColumnTabIds[activeChatColumn] !== viewState.selectedTabId)) {
+      // External selection still means click-to-replace for the active column.
+      viewState.setSelectedTabId(viewState.selectedTabId);
+    }
+  }, [activeChatColumn, selectedCard, viewState]);
 
   // 介入が通ったら次の要対応へ送る。ただし打ちかけの下書きがあるうちは動かさない。
   const selectedDraft = useComposerStore((state) => (selectedSessionId ? state.draftBySession[selectedSessionId] ?? "" : ""));
@@ -232,18 +397,241 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
 
   // This entry point belongs to QuestionCard, so command kind is determined by
   // the UI action rather than inferred from whatever the user later types.
-  const focusComposer = useCallback((questionBrief: typeof selectedCard.brief) => {
-    if (selectedSessionId) {
+  const focusComposerForColumn = useCallback((columnIndex: number, sessionId: string) => (questionBrief: typeof selectedCard.brief) => {
+    viewState.setActiveChatColumn(columnIndex);
+    if (sessionId) {
       const composer = useComposerStore.getState();
-      composer.setCommandKind(selectedSessionId, "answer-forward");
-      composer.setQuestionGuard(selectedSessionId, questionBrief?.promptEventId
+      composer.setCommandKind(sessionId, "answer-forward");
+      composer.setQuestionGuard(sessionId, questionBrief?.promptEventId
         ? { questionId: questionBrief.promptEventId, revision: questionBrief.ptyInputRevision }
         : null);
     }
     composerRef.current?.focus();
-  }, [selectedSessionId]);
+  }, [viewState]);
+  const closeChatColumn = useCallback((index: number, card: DashboardCardModel) => {
+    if (closingColumn || chatColumnTabIds.length <= 1 || reducedMotion) {
+      viewState.removeChatColumn(index);
+      return;
+    }
+    const openIndex = openChatColumnTabIds.indexOf(card.tab.id);
+    if (openIndex < 0) {
+      viewState.removeChatColumn(index);
+      return;
+    }
+    setClosingColumn({ card, openIndex });
+    viewState.removeChatColumn(index);
+  }, [chatColumnTabIds.length, closingColumn, openChatColumnTabIds, reducedMotion, viewState]);
+  const isChatColumnDropAtPoint = useCallback((x: number, y: number) => (
+    isDashboardChatDropTarget(document.elementFromPoint(x, y))
+  ), []);
+  const insertChatColumnAtDropPreview = useCallback((tabId: string) => {
+    const preview = usePaneDragStore.getState().dashboardChatDropPreview;
+    const state = useDashboardViewStore.getState();
+    const existingIndex = state.chatColumnTabIds.indexOf(tabId);
+    const index = existingIndex >= 0
+      ? existingIndex
+      : preview?.kind === "insert" ? preview.index : state.chatColumnTabIds.length;
+    state.insertChatColumn(tabId, index);
+  }, []);
+  // Minimap drags keep pointer capture on their source. Receive only the
+  // dashboard's semantic target in capture phase; layout D&D and composer @
+  // drops continue through their existing receivers.
+  useEffect(() => {
+    const receiveMinimapChatDrop = (event: PointerEvent) => {
+      const item = usePaneDragStore.getState().item;
+      if (!item || item.surface !== "minimap" || item.kind !== "tab") return;
+      if (!isChatColumnDropAtPoint(event.clientX, event.clientY)) return;
+      insertChatColumnAtDropPreview(item.tabId);
+    };
+    window.addEventListener("pointerup", receiveMinimapChatDrop, true);
+    return () => window.removeEventListener("pointerup", receiveMinimapChatDrop, true);
+  }, [insertChatColumnAtDropPreview, isChatColumnDropAtPoint]);
+  const beginDashboardListDrag = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0 || !event.isPrimary || usePaneDragStore.getState().item) return;
+    const target = event.target as HTMLElement;
+    const row = target.closest<HTMLElement>("[data-dashboard-row]");
+    const tabId = row?.getAttribute("data-dashboard-row");
+    const card = tabId ? cards.find((candidate) => candidate.tab.id === tabId) : undefined;
+    if (!row || !card) return;
+    const pointerId = event.pointerId;
+    const startX = event.clientX;
+    const startY = event.clientY;
+    let dragging = false;
+    let dashboardTarget = false;
+    const item = {
+      kind: "tab" as const,
+      workspaceId: card.workspaceId,
+      paneId: card.paneId,
+      tabId: card.tab.id,
+      label: card.label,
+    };
+    const cleanup = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", finish);
+      window.removeEventListener("pointercancel", cancel);
+      window.removeEventListener("keydown", onKeyDown, true);
+      window.removeEventListener("blur", cancel);
+      try {
+        if (row.hasPointerCapture(pointerId)) row.releasePointerCapture(pointerId);
+      } catch {
+        // Pointer capture is optional in embedded WebViews.
+      }
+      document.body.style.cursor = "";
+    };
+    const clear = () => {
+      usePaneDragStore.getState().clearDrag();
+      window.setTimeout(() => { suppressDashboardListClickRef.current = false; }, 0);
+    };
+    const move = (nativeEvent: PointerEvent) => {
+      if (nativeEvent.pointerId !== pointerId) return;
+      if (!dragging) {
+        if (Math.hypot(nativeEvent.clientX - startX, nativeEvent.clientY - startY) < DASHBOARD_LIST_DRAG_THRESHOLD_PX) return;
+        dragging = true;
+        suppressDashboardListClickRef.current = true;
+        try { row.setPointerCapture(pointerId); } catch { /* Window listeners remain authoritative. */ }
+        document.body.style.cursor = "grabbing";
+        usePaneDragStore.getState().beginDrag(item, { x: nativeEvent.clientX, y: nativeEvent.clientY });
+      }
+      nativeEvent.preventDefault();
+      const dragStore = usePaneDragStore.getState();
+      dragStore.moveDrag({ x: nativeEvent.clientX, y: nativeEvent.clientY });
+      dashboardTarget = isChatColumnDropAtPoint(nativeEvent.clientX, nativeEvent.clientY);
+      refreshDashboardChatDropPreview(item, { x: nativeEvent.clientX, y: nativeEvent.clientY });
+      dragStore.setTarget(null);
+    };
+    const finish = (nativeEvent: PointerEvent) => {
+      if (nativeEvent.pointerId !== pointerId) return;
+      cleanup();
+      if (!dragging) return;
+      nativeEvent.preventDefault();
+      if (dashboardTarget) insertChatColumnAtDropPreview(item.tabId);
+      clear();
+    };
+    const cancel = () => {
+      cleanup();
+      if (dragging) clear();
+    };
+    const onKeyDown = (nativeEvent: KeyboardEvent) => {
+      if (nativeEvent.key !== "Escape") return;
+      nativeEvent.preventDefault();
+      nativeEvent.stopPropagation();
+      cancel();
+    };
+    window.addEventListener("pointermove", move, { passive: false });
+    window.addEventListener("pointerup", finish);
+    window.addEventListener("pointercancel", cancel);
+    window.addEventListener("keydown", onKeyDown, true);
+    window.addEventListener("blur", cancel);
+  }, [cards, insertChatColumnAtDropPreview, isChatColumnDropAtPoint, refreshDashboardChatDropPreview]);
+  const beginDashboardChatColumnDrag = useCallback((event: ReactPointerEvent<HTMLDivElement>): boolean => {
+    if (event.button !== 0 || !event.isPrimary || usePaneDragStore.getState().item) return false;
+    const target = event.target as HTMLElement;
+    if (target.closest("button, input, textarea, select, [data-dnd-ignore='true']")) return false;
+    const handle = target.closest<HTMLElement>("[data-dashboard-column-drag-handle='true']");
+    const tabId = handle?.closest<HTMLElement>("[data-dashboard-chat-column]")?.dataset.dashboardChatColumn;
+    const from = tabId ? chatColumnTabIds.indexOf(tabId) : -1;
+    const card = tabId ? cards.find((candidate) => candidate.tab.id === tabId) : undefined;
+    if (!handle || !tabId || !card || from < 0) return false;
+
+    // Let a click reach the header, but keep article's pointer activation from
+    // firing before we know whether the gesture passes the drag threshold.
+    event.stopPropagation();
+    const pointerId = event.pointerId;
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const item: PaneDragItem = {
+      kind: "tab",
+      workspaceId: card.workspaceId,
+      paneId: card.paneId,
+      tabId,
+      label: card.label,
+    };
+    let dragging = false;
+    let dashboardTarget = false;
+    const cleanup = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", finish);
+      window.removeEventListener("pointercancel", cancel);
+      window.removeEventListener("keydown", onKeyDown, true);
+      window.removeEventListener("blur", cancel);
+      try {
+        if (handle.hasPointerCapture(pointerId)) handle.releasePointerCapture(pointerId);
+      } catch {
+        // Pointer capture is optional in embedded WebViews.
+      }
+      document.body.style.cursor = "";
+    };
+    const clear = () => {
+      usePaneDragStore.getState().setDashboardChatDropPreview(null);
+      setDraggedChatColumnTabId(null);
+      window.setTimeout(() => { suppressDashboardListClickRef.current = false; }, 0);
+    };
+    const move = (nativeEvent: PointerEvent) => {
+      if (nativeEvent.pointerId !== pointerId) return;
+      if (!dragging) {
+        if (Math.hypot(nativeEvent.clientX - startX, nativeEvent.clientY - startY) < DASHBOARD_LIST_DRAG_THRESHOLD_PX) return;
+        dragging = true;
+        suppressDashboardListClickRef.current = true;
+        setDraggedChatColumnTabId(tabId);
+        try { handle.setPointerCapture(pointerId); } catch { /* Window listeners remain authoritative. */ }
+        document.body.style.cursor = "grabbing";
+      }
+      nativeEvent.preventDefault();
+      dashboardTarget = isChatColumnDropAtPoint(nativeEvent.clientX, nativeEvent.clientY);
+      refreshDashboardChatDropPreview(item, { x: nativeEvent.clientX, y: nativeEvent.clientY }, true);
+    };
+    const finish = (nativeEvent: PointerEvent) => {
+      if (nativeEvent.pointerId !== pointerId) return;
+      cleanup();
+      if (!dragging) return;
+      nativeEvent.preventDefault();
+      const preview = usePaneDragStore.getState().dashboardChatDropPreview;
+      if (dashboardTarget && preview?.kind === "insert") viewState.moveChatColumn(from, preview.index);
+      clear();
+    };
+    const cancel = () => {
+      cleanup();
+      if (dragging) clear();
+    };
+    const onKeyDown = (nativeEvent: KeyboardEvent) => {
+      if (nativeEvent.key !== "Escape") return;
+      nativeEvent.preventDefault();
+      nativeEvent.stopPropagation();
+      cancel();
+    };
+    window.addEventListener("pointermove", move, { passive: false });
+    window.addEventListener("pointerup", finish);
+    window.addEventListener("pointercancel", cancel);
+    window.addEventListener("keydown", onKeyDown, true);
+    window.addEventListener("blur", cancel);
+    return true;
+  }, [cards, chatColumnTabIds, isChatColumnDropAtPoint, refreshDashboardChatDropPreview, viewState]);
+  const beginDashboardPointerDrag = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (beginDashboardChatColumnDrag(event)) return;
+    beginDashboardListDrag(event);
+  }, [beginDashboardChatColumnDrag, beginDashboardListDrag]);
+  const suppressDashboardListClick = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
+    if (!suppressDashboardListClickRef.current) return;
+    if (!(event.target as HTMLElement).closest("[data-dashboard-row], [data-dashboard-column-drag-handle='true']")) return;
+    event.preventDefault();
+    event.stopPropagation();
+  }, []);
+  const reorderChatColumnFromHeader = useCallback((index: number, event: ReactKeyboardEvent<HTMLElement>) => {
+    if (event.target !== event.currentTarget || !event.altKey) return;
+    if (event.key === "ArrowLeft" && index > 0) {
+      event.preventDefault();
+      event.stopPropagation();
+      viewState.moveChatColumn(index, index - 1);
+    } else if (event.key === "ArrowRight" && index < chatColumnTabIds.length - 1) {
+      event.preventDefault();
+      event.stopPropagation();
+      viewState.moveChatColumn(index, index + 2);
+    }
+  }, [chatColumnTabIds.length, viewState]);
   const selectFromMinimap = useCallback((tabId: string) => {
     if (viewState.query) viewState.setQuery("");
+    // 配置図で選んだのに中央がインボックスのままだと「切り替わっていない」と読まれる。
+    if (viewState.reportInboxOpen) viewState.closeReportInbox();
     viewState.setSelectedTabId(tabId);
   }, [viewState]);
   const openReportSource = useCallback((report: MachineReportCard) => {
@@ -256,6 +644,48 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
     viewState.setSelectedTabId(tabId);
     window.requestAnimationFrame(() => document.getElementById(`dashboard-question-${sessionId}`)?.scrollIntoView({ block: "nearest" }));
   }, [viewState]);
+  const resizeMinimap = useCallback((width: number) => {
+    viewState.setMinimapWidth(clampDashboardMinimapWidth(width, viewportWidth));
+  }, [viewState, viewportWidth]);
+  const beginMinimapResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0 || !event.isPrimary) return;
+    event.preventDefault();
+    resizeRef.current = { pointerId: event.pointerId, startX: event.clientX, startWidth: minimapWidth };
+    setResizingMinimap(true);
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    } catch {
+      // Pointer capture is unavailable in a few embedded WebViews; pointer
+      // events still reach the separator while it remains under the pointer.
+    }
+  }, [minimapWidth]);
+  const moveMinimapResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = resizeRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    resizeMinimap(drag.startWidth + drag.startX - event.clientX);
+  }, [resizeMinimap]);
+  const endMinimapResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (resizeRef.current?.pointerId !== event.pointerId) return;
+    resizeRef.current = null;
+    setResizingMinimap(false);
+    try {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    } catch {
+      // The browser can release capture before pointerup/cancel is delivered.
+    }
+  }, []);
+  const resizeMinimapByKeyboard = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
+    const step = event.shiftKey ? 32 : 16;
+    const next = event.key === "ArrowLeft" ? minimapWidth + step
+      : event.key === "ArrowRight" ? minimapWidth - step
+        : event.key === "Home" ? DASHBOARD_MINIMAP_MIN_WIDTH
+          : event.key === "End" ? minimapMaxWidth
+            : null;
+    if (next === null) return;
+    event.preventDefault();
+    event.stopPropagation();
+    resizeMinimap(next);
+  }, [minimapMaxWidth, minimapWidth, resizeMinimap]);
 
   const close = useCallback(() => {
     onClose();
@@ -369,10 +799,10 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
     onOpenReportInbox: viewState.openReportInbox,
   } as const;
 
-  return <div ref={rootRef} tabIndex={-1} role="region" aria-label={dashboardStrings.viewAriaLabel} className="cmux-dashboard-view">
+  return <div ref={rootRef} tabIndex={-1} role="region" aria-label={dashboardStrings.viewAriaLabel} className="cmux-dashboard-view" onPointerDownCapture={beginDashboardPointerDrag} onClickCapture={suppressDashboardListClick}>
     <AskStrip items={askItems} onSelect={(item) => selectQuestion(item.tabId, item.sessionId)} />
     <WatchStatusRow now={now} />
-    <div className="cmux-dashboard-shell">
+    <div className="cmux-dashboard-shell" style={{ "--dashboard-minimap-width": `${minimapWidth}px` } as CSSProperties}>
       <DashboardSessionList
         {...listControls}
         needsHuman={urgentCards}
@@ -386,53 +816,84 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
         onHoverChange={setListHovered}
       />
       <section data-dashboard-center="true" className="cmux-dashboard-chat-pane">
-        <header className="cmux-dashboard-chat-header">
-          <strong>{viewState.reportInboxOpen ? dashboardStrings.reportInboxTitle : selectedCard?.label ?? dashboardStrings.detailEmpty}</strong>
-          {!viewState.reportInboxOpen && selectedCard ? <div className="cmux-dashboard-chat-header-meta">
-            {selectedCard.neverStarted
-              ? <span style={statePillStyle("var(--cmux-text-tertiary)")}>{dashboardStrings.stateNotStarted}</span>
-              : <span title={stateLabels(selectedDisplayState).tooltip} aria-label={stateLabels(selectedDisplayState).tooltip} style={statePillStyle(displayStateColor(selectedDisplayState))}>{displayStateLabel(selectedDisplayState)}</span>}
-            {selectedCard.telemetryHealth === "ended" ? <span style={statePillStyle("var(--cmux-text-tertiary)")}>{dashboardStrings.telemetryEnded}</span> : null}
-            {selectedElapsedText ? <span>{selectedElapsedText}</span> : null}
-            {selectedCard.stall ? <span className="cmux-dashboard-chat-header-stall">{stallLabel(selectedCard.stall.reason)}</span> : null}
-          </div> : null}
-          {!viewState.reportInboxOpen && selectedCard ? <span>{dashboardStrings.breadcrumb(selectedCard.workspace.name, selectedCard.tabIndex + 1, selectedCard.paneIndex + 1)}</span> : null}
-          {!viewState.reportInboxOpen && selectedCard?.attentionCategory === "done" && selectedCard.attention?.attentionId
-            ? <button type="button" className="cmux-dashboard-chat-header-action" onClick={() => useSessionAttentionStore.getState().markSeen(selectedCard.tab.id, selectedCard.attention?.attentionId ?? "")}>{dashboardStrings.markReadButton}</button>
-            : null}
-          {!viewState.reportInboxOpen && selectedCard ? <button type="button" className="cmux-dashboard-chat-header-action" title={dashboardStrings.jumpButtonTitle} onClick={() => jumpToCard(selectedCard)}>{dashboardStrings.jumpButtonTitle}</button> : null}
-        </header>
-        {viewState.reportInboxOpen ? <ReportInbox
-          cards={reportCards}
-          receiveModeBySession={reportInboxState.receiveModeBySession}
-          onReceiveModeChange={reportInboxState.setReceiveMode}
-          onOpenSource={openReportSource}
-        /> : <>
-          {selectedCard && selectedCard.telemetryHealth !== "live" && selectedCard.telemetryHealth !== "ended" ? <DashboardTelemetryFallback card={selectedCard} now={now} /> : null}
-          <ChatTranscript
-            events={transcriptEvents}
-            sessionId={selectedSessionId}
-            displayState={selectedDisplayState}
-            agentKind={selectedCard?.agentKind ?? "none"}
-            lastOutputAt={selectedLastOutputAt}
-            targetEventId={viewState.highlightedEventId}
-            targetEventRequest={viewState.highlightedEventRequest}
-            syntheticSource={highlightedReport?.syntheticSource ? {
-              eventId: highlightedReport.sourceEventId,
-              text: highlightedReport.detail,
-              at: highlightedReport.observedAt,
-            } : null}
-            linkContext={selectedCard ? {
-              workspaceId: selectedCard.workspaceId,
-              paneId: selectedCard.paneId,
-              sessionId: selectedCard.tab.sessionId,
-              canPreviewInternally: selectedCard.tab.type === undefined || selectedCard.tab.type === "terminal",
-            } : null}
-          />
-          {selectedCard && selectedCard.telemetryHealth !== "ended" ? <QuestionCard brief={selectedCard.brief} events={transcriptEvents} targetLabel={`${selectedCard.workspace.name} › ${selectedCard.label}`} onFocusComposer={focusComposer} /> : null}
-          <ReplyComposer card={selectedCard} inputRef={composerRef} mentionTargets={cards} />
-        </>}
+        {viewState.reportInboxOpen ? <>
+          <header className="cmux-dashboard-chat-header"><strong>{dashboardStrings.reportInboxTitle}</strong></header>
+          <div className="cmux-dashboard-report-drop" data-dashboard-chat-drop-target="true">
+            <ReportInbox
+              cards={reportCards}
+              receiveModeBySession={reportInboxState.receiveModeBySession}
+              sourceAvailableSessionIds={reportSourceSessionIds}
+              onReceiveModeChange={reportInboxState.setReceiveMode}
+              onOpenSource={openReportSource}
+            />
+          </div>
+        </> : <div className="cmux-dashboard-chat-columns-shell">
+          <div ref={chatColumnsRef} className="cmux-dashboard-chat-columns" data-dashboard-chat-drop-target="true" data-visible-columns={openChatColumns.length} data-dashboard-chat-drop-preview={dashboardChatDropPreview?.kind}>
+            {renderedChatColumns.map((card) => {
+              const index = chatColumnTabIds.indexOf(card.tab.id);
+              const events = eventsBySession[card.tab.sessionId];
+              const columnEvents = events?.length ? events : listEventsBySession[card.tab.sessionId] ?? [];
+              const syntheticSource = index === activeChatColumn && highlightedReport?.syntheticSource ? {
+                eventId: highlightedReport.sourceEventId,
+                text: highlightedReport.detail,
+                at: highlightedReport.observedAt,
+              } : null;
+              return <ChatColumn
+                key={card.tab.id}
+                card={card}
+                events={columnEvents}
+                now={now}
+                active={index === activeChatColumn}
+                dragging={card.tab.id === draggedChatColumnTabId}
+                dropPreview={dashboardChatDropPreview?.kind === "existing" && dashboardChatDropPreview.tabId === card.tab.id}
+                motion={closingColumn?.card.tab.id === card.tab.id
+                  ? "exit"
+                  : closingColumn
+                    ? "expand"
+                    : columnMotion
+                      ? card.tab.id === columnMotion.tabId ? "enter" : "resize"
+                      : null}
+                targetEventId={viewState.highlightedEventId}
+                targetEventRequest={viewState.highlightedEventRequest}
+                syntheticSource={syntheticSource}
+                onActivate={() => viewState.setActiveChatColumn(index)}
+                onClose={() => closeChatColumn(index, card)}
+                onFocusComposer={focusComposerForColumn(index, card.tab.sessionId)}
+                onJump={() => jumpToCard(card)}
+                onReorderKeyDown={(event) => reorderChatColumnFromHeader(index, event)}
+              />;
+            })}
+            {dashboardChatDropPreview?.kind === "insert" ? <span className="cmux-dashboard-chat-drop-indicator" aria-hidden="true" data-dashboard-chat-insert-index={dashboardChatDropPreview.index} style={{ left: dashboardChatDropPreview.offsetX }} /> : null}
+            {dashboardChatDropPreview?.kind === "full" ? <span className="cmux-dashboard-chat-drop-capped" aria-hidden="true">3列まで</span> : null}
+          </div>
+        </div>}
+        {!viewState.reportInboxOpen ? <div className="cmux-dashboard-composer-destination" aria-live="polite">{activeColumnCard ? `入力先: ${activeColumnCard.label}（${activeChatColumn + 1}/${chatColumnTabIds.length}列）` : dashboardStrings.detailEmpty}</div> : null}
+        <WorkOrderContract
+          card={activeColumnCard}
+          mentionTargets={cards}
+          reportInboxOpen={viewState.reportInboxOpen}
+          onFix={() => composerRef.current?.focus()}
+        />
+        {/* インボックスは @ で配る場所なので、入力欄はここでこそ必要になる。 */}
+        <ReplyComposer card={activeColumnCard} inputRef={composerRef} mentionTargets={cards} questionActive={Boolean(activeColumnQuestion)} />
       </section>
+      <div
+        data-dashboard-resizer="true"
+        className={`cmux-dashboard-minimap-resizer${resizingMinimap ? " is-resizing" : ""}`}
+        role="separator"
+        tabIndex={0}
+        aria-label="配置図の幅を変更"
+        aria-orientation="vertical"
+        aria-valuemin={DASHBOARD_MINIMAP_MIN_WIDTH}
+        aria-valuemax={minimapMaxWidth}
+        aria-valuenow={minimapWidth}
+        onPointerDown={beginMinimapResize}
+        onPointerMove={moveMinimapResize}
+        onPointerUp={endMinimapResize}
+        onPointerCancel={endMinimapResize}
+        onLostPointerCapture={endMinimapResize}
+        onKeyDown={resizeMinimapByKeyboard}
+      />
       <aside className="cmux-dashboard-right-pane">
         <LayoutMinimapPanel workspaces={workspaces} displayStateByTabId={minimapDisplayStateByTabId} selectedTabId={viewState.selectedTabId} activePaneSessionId={activePaneSessionId} onSelect={selectFromMinimap} />
       </aside>

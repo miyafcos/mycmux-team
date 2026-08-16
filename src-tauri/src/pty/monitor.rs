@@ -86,6 +86,17 @@ fn codex_agent_metadata_fields(
     )
 }
 
+fn grok_agent_metadata_fields(
+    agent_session_id: Option<String>,
+    claude_session_id: Option<String>,
+) -> (Option<String>, Option<String>, Option<String>) {
+    (
+        Some("grok".to_string()),
+        agent_session_id,
+        claude_session_id,
+    )
+}
+
 fn write_detected_agent_session_mapping(
     session_id: &str,
     agent_kind: &str,

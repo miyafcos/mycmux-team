@@ -344,6 +344,9 @@ interface TerminalLaunchOptions {
   /** Keep the tab out of layout persistence (see `PaneTab.ephemeral`). */
   ephemeral?: boolean;
   activate?: boolean;
+  /** Socket callers may activate a background workspace internally, but never
+   * replace the tab currently visible to the operator or retarget the keyboard. */
+  activationSource?: "human" | "socket";
 }
 
 interface DeclaredTabOptions {
@@ -351,6 +354,11 @@ interface DeclaredTabOptions {
   declaredPrompt?: string;
   declaredTarget?: string;
   origin?: PaneTab["origin"];
+}
+
+interface DeclaredLaunchOptions {
+  /** Socket callers must not replace the tab currently visible to the operator. */
+  activationSource?: "human" | "socket";
 }
 
 interface WorkspaceLayoutState {
@@ -377,7 +385,12 @@ interface WorkspaceLayoutState {
     options: TerminalLaunchOptions,
   ) => void;
   declareTab: (workspaceId: string, paneId: string, options: DeclaredTabOptions) => PaneTab | null;
-  launchDeclaredTab: (workspaceId: string, paneId: string, tabId: string) => RestorablePaneTab | null;
+  launchDeclaredTab: (
+    workspaceId: string,
+    paneId: string,
+    tabId: string,
+    options?: DeclaredLaunchOptions,
+  ) => RestorablePaneTab | null;
   /**
    * Open a browser tab rendering the given local HTML file in a right-side
    * preview pane. Reuse the workspace preview pane and reload existing tabs.
@@ -751,7 +764,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
       normalizeWorkspaceSplitColumns(newSplitColumns),
       true,
     );
-    if (options.activate !== false) {
+    if (options.activate !== false && options.activationSource !== "socket") {
       applyStructuralActivation(newPane.sessionId);
     }
   },
@@ -845,12 +858,15 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
       commandArgv: options.commandArgv,
       ephemeral: options.ephemeral,
     });
+    const isVisibleWorkspace = useWorkspaceListStore.getState().activeWorkspaceId === workspaceId;
+    const shouldActivateTab = options.activate !== false
+      && (options.activationSource !== "socket" || !isVisibleWorkspace);
     const newPanes = workspace.panes.map((pane) => {
       if (pane.id !== paneId) return pane;
       const nextPane = appendTabsToPane(
         pane,
         [tab],
-        options.activate === false ? pane.activeTabId : tab.id,
+        shouldActivateTab ? tab.id : pane.activeTabId,
       );
       // The handoff environment and cwd belong to the new tab only. Keeping
       // the pane fallback unchanged prevents an older sibling tab from
@@ -864,7 +880,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
     });
 
     useWorkspaceListStore.getState()._updateWorkspacePanes(workspaceId, newPanes);
-    if (options.activate !== false) {
+    if (shouldActivateTab && options.activationSource !== "socket") {
       applyStructuralActivation(tab.sessionId);
     }
   },
@@ -891,7 +907,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
     return tab;
   },
 
-  launchDeclaredTab: (workspaceId, paneId, tabId) => {
+  launchDeclaredTab: (workspaceId, paneId, tabId, options = {}) => {
     const workspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
     const pane = workspace?.panes.find((candidate) => candidate.id === paneId);
     const declared = pane?.tabs.find((candidate) => candidate.id === tabId);
@@ -910,11 +926,13 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
       origin: declared.origin,
       initialPrompt: declared.declaredPrompt,
     };
-    useWorkspaceListStore.getState()._updateWorkspacePanes(workspaceId, workspace.panes.map((candidate) => (
-      candidate.id === paneId
-        ? applyActiveTabFields({ ...candidate, tabs: candidate.tabs.map((tab) => tab.id === tabId ? launched : tab) }, launched)
-        : candidate
-    )));
+    const shouldActivateTab = options.activationSource !== "socket"
+      || useWorkspaceListStore.getState().activeWorkspaceId !== workspaceId;
+    useWorkspaceListStore.getState()._updateWorkspacePanes(workspaceId, workspace.panes.map((candidate) => {
+      if (candidate.id !== paneId) return candidate;
+      const nextPane = { ...candidate, tabs: candidate.tabs.map((tab) => tab.id === tabId ? launched : tab) };
+      return shouldActivateTab ? applyActiveTabFields(nextPane, launched) : nextPane;
+    }));
     return launched;
   },
 

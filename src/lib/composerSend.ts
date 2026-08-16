@@ -43,13 +43,44 @@ export function resolveComposerTarget(input: ComposerTargetInput): ComposerTarge
 
   if (declared.includes("codex")) return "codex";
   // claude-codex drives the Claude Code TUI, so it takes Claude's input shape.
-  if (declared.some((value) => value === "claude" || value === "claude-codex")) return "claude";
+  if (declared.some((value) => value === "claude" || value === "claude-codex" || value === "grok")) return "claude";
 
   const names = [baseName(command), ...args.map(baseName)];
   if (processTitle) names.push(baseName(processTitle));
   if (names.includes("codex")) return "codex";
   if (names.includes("claude")) return "claude";
+  if (names.includes("grok")) return "claude";
   return "shell";
+}
+
+/**
+ * What the composer should call the program it is typing into.
+ *
+ * This is deliberately separate from ComposerTarget: that one is the *input
+ * shape*, and several agents share one shape. Grok Build and claude-codex both
+ * take Claude's bracketed paste, but labelling their composer "Claude" tells the
+ * operator they are talking to the wrong agent.
+ */
+export type ComposerAgentLabelKind = ComposerTarget | "grok" | "claude-codex";
+
+export function resolveComposerAgentLabelKind(input: ComposerTargetInput): ComposerAgentLabelKind {
+  const { command, args = [], agentId, agentKind, launchEnv, processTitle } = input;
+  const declared = [
+    agentKind,
+    agentId,
+    launchEnv?.MYCMUX_AGENT_KIND,
+    launchEnv?.MYCMUX_RESUME,
+  ].filter((value): value is string => typeof value === "string" && value.length > 0);
+
+  if (declared.includes("grok")) return "grok";
+  if (declared.includes("claude-codex")) return "claude-codex";
+
+  const names = [baseName(command), ...args.map(baseName)];
+  if (processTitle) names.push(baseName(processTitle));
+  if (names.includes("grok")) return "grok";
+  if (names.includes("claude-codex")) return "claude-codex";
+
+  return resolveComposerTarget(input);
 }
 
 /** True when the pane runs an agent TUI rather than a plain shell. */

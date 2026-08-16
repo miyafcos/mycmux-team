@@ -25,7 +25,7 @@ import KeybindingsModal from "./KeybindingsModal";
 import CrsmPalette, { preloadCrsmSessions } from "../CommandPalette/CrsmPalette";
 import { useKeybindingStore } from "../../stores/keybindingStore";
 import { isEditableTarget } from "../../lib/keybindings";
-import { TAB_RESTORE_CLOSED_EVENT, TAB_SWEEP_OPEN_EVENT } from "./tabSweep";
+import { TAB_RESTORE_CLOSED_EVENT, openTabSweepInDashboard } from "./tabSweep";
 import { DashboardView } from "../dashboard/DashboardView";
 import { UI_DENSITY_TOKENS, useThemeStore } from "../../stores/themeStore";
 import ErrorBoundary from "../common/ErrorBoundary";
@@ -819,7 +819,7 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
           break;
 
         case "tab.sweep":
-          window.dispatchEvent(new Event(TAB_SWEEP_OPEN_EVENT));
+          openTabSweepInDashboard();
           break;
 
         case "dashboard.open":

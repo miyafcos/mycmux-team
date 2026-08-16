@@ -70,15 +70,67 @@ python scripts/mycmux_agent_cli.py spawn-tab --label agy -- env NO_COLOR=1 agy -
   端末の背景色を一度も問い合わせない (ConPTY キャプチャで OSC 11 の送出ゼロ) ため mycmux 側から
   「暗いテーマだ」と伝える経路が無く、テーマ切替の env も持たない (`AGY_CLI_*` は 9 個あるが色関連はゼロ)。
   色を落とすのが唯一の対処 (agy 1.1.11 で `--theme`/`--no-color` 等の代替フラグが無いことも確認済み)。
-  **launcher メニュー側も 2026-08-11 に実装** (それ以前はこの節の記述と実装が食い違っていた —
-  `launcher.sh`/`launcher.ps1` の `gemini|agy|antigravity` 分岐は `cmd` を `agy` にするだけで env は
-  一切足していなかった)。実装は `eval`/`& $exe` 直前の1点で、対象コマンドのときだけ**その1回の
+  **launcher メニュー側は 2026-08-11 に PowerShell 側だけ実装された** (2026-08-15 実測: `launcher.ps1`
+  に `NO_COLOR` 7件 / **`launcher.sh` は 0件で未実装のまま**。Windows 運用では launcher.ps1 しか
+  使わないため実害は出ていない)。実装は `eval`/`& $exe` 直前の1点で、対象コマンドのときだけ**その1回の
   呼び出しにだけスコープして** `NO_COLOR=1` を前置する — `launcher.sh` は `.bashrc` から source され
   末尾で `exec bash -i` により同一プロセスへ戻るため `export` すると agy 終了後も `ls`/`git diff` 等の
   色が消えたまま残るリークになる。`launcher.ps1` は `-NoExit` の同一プロセスがそのまま生き続けるため
   try/finally で必ず元の値へ復元する。加えて `terminal.rs::inject_no_color_for_agy` が、launcher を
   経由せず `command="gemini"` 等を直接 spawn するビルトインエージェント経路
   (`src/lib/agents.ts`) 向けの防御として同じ処理を担う
+
+### Grok Build (grok) の可視 spawn (2026-08-15 追加)
+
+xAI の Grok Build CLI。**claude / codex と同格の `--target` 対応**なので、agy のような argv 経路は不要:
+
+```
+python scripts/mycmux_agent_cli.py spawn --target grok --prompt-file <spec.md>
+```
+
+- 実体は `~/.grok/bin/grok.exe` (PATH 済み)。`.cmd` シムではないので launcher の shim 関数は不要
+- **初期プロンプトを位置引数で受ける**ため、codex のような「send しても submit されない」問題が無い。
+  spawn 時に確実に投入される
+- `--session-id <UUID>` を受けるので、launcher が起動前に採番して pane マッピングを直接書く
+  (codex のようなログ推測は行わない)。resume は `--resume <id>` / `--continue` / `--fork-session`
+- ランチャーの手動起動項目は「Grok Build」と「Grok Build (resume)」の2つ。
+  `MYCMUX_LAUNCH_TARGET` は `grok` / `grok-resume`
+- **(dangerous) 系のメニュー項目は 2026-08-15 に全廃**した (claude / codex / claude-codex / grok とも。
+  実運用で使われていなかったうえ、メニューが 20 項目まで伸びて番号が押しづらくなっていた)。
+  権限を開けた起動が要るときは Custom... から手で打つ。spawn の handoff 経路が内部で使う
+  `bypassPermissions` は別経路なので影響しない
+- セッションの実体は `~/.grok/sessions/<percent-encoded cwd>/<session-id>/` に1会話1ディレクトリ
+  (`chat_history.jsonl` / `summary.json` / `events.jsonl` など。2026-08-15 実測)。
+  cwd キーは `C%3A%5CUsers%5C...` 形式なので、復元判定は cwd バケットを走査して
+  session-id のディレクトリを探す方式にしてある (`agent_restore.rs::grok_session_exists`)
+- **未対応 (2026-08-15 時点)**: ailog の使用量集計、livebrief の会話取り込み (ダッシュボードの
+  介入・要約)、CRSM パレットのフィルタ。grok タブはこれらの機能では見えない。
+  `chat_history.jsonl` の形式は判明したので、必要になれば livebrief アダプタは書ける
+- 認証は SuperGrok / X Premium Plus のブラウザログイン (`grok login`)。未認証だと TUI が
+  サインイン画面で止まる
+
+### 新エージェントを登録するときのチェックリスト
+
+`grok` 追加 (2026-08-15) で踏んだ全経路。エージェント種別は文字列リテラルで各層に散っているので、
+**まず `rg -n '"claude-codex"' src src-tauri/src scripts tests` で全数抽出してから潰す**。
+
+1. **型の正本**: `src/types/workspace.ts` の `AgentSessionKind`
+2. **委譲の関門**: `src/components/layout/socketCommands.ts` の `isAgentKind()` —
+   ここを通さないと `pane.spawn` が `unsupported pane.spawn target` で弾かれる
+3. **CLI**: `scripts/mycmux_agent_cli.py` の `AGENT_TARGETS` / `AGENT_KINDS`、および
+   `declare-tab --target` (**別ハードコードなので忘れやすい**)
+4. **ランチャー**: `src-tauri/src/launcher.ps1` (Windows 本命) と `launcher.sh`。
+   メニュー項目・`$LaunchTargets` / `MYCMUX_LAUNCH_TARGET` の case・handoff 分岐・resume 分岐・
+   セッションID注入。**両ファイルともインデックス直書きがあるので既存項目の番号を全部振り直す**
+5. **表示**: `agentDisplayKind.ts` / `agentKindColors.ts` / `AgentIcons.tsx` / `PaneTabBar.tsx`
+6. **Rust**: `pty/monitor/detection.rs` の `DetectedAgentKind`、`pty/monitor/runner.rs` の
+   match アーム (**非網羅だとコンパイルエラー**)、`commands/session_mapping.rs` の allowlist、
+   `commands/terminal.rs` の resume 可否、`commands/terminal/agent_restore.rs` の存在確認
+7. **契約テスト**: `tests/perf/test_week1_day1_behavior_contracts.py` が launcher のメニュー配列と
+   数字キー割当を**行文字列レベルで固定**している。`tests/unit/agentDisplayKind.test.ts` は
+   `COMMAND_DISPLAY_KINDS` を `toEqual` で丸ごと固定。`tests/test_no_agent_kind_in_stall_path.py` の
+   `FORBIDDEN` にも名前を足す (停滞判定はエージェント非依存が契約なので、`promptShape.ts` /
+   `stallVerdict.ts` にはエージェント名を書かない)
 
 ### 完了検知の規約
 

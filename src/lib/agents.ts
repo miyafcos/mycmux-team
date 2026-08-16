@@ -34,7 +34,7 @@ export const BUILT_IN_AGENTS: AgentDefinition[] = [
   {
     id: "shell-starter",
     name: "Launch Menu",
-    description: "Choose Claude, Codex, claude-codex, or a shell",
+    description: "Choose Claude, Codex, Grok, claude-codex, or a shell",
     get command() { return _detectedShell.command; },
     get args() {
       if (isBashLikeShell(_detectedShell.command)) {
@@ -89,6 +89,15 @@ export const BUILT_IN_AGENTS: AgentDefinition[] = [
     args: ["--no-alt-screen"],
     icon: "X",
     color: "#f5c2e7",
+  },
+  {
+    id: "grok",
+    name: "Grok Build",
+    description: "xAI coding agent",
+    command: "grok",
+    args: ["--no-alt-screen"],
+    icon: "K",
+    color: "#f38ba8",
   },
   {
     id: "gemini",

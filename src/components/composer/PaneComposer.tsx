@@ -4,8 +4,9 @@ import type { CSSProperties } from "react";
 import {
   buildComposerPayload,
   composerKeyIntent,
+  resolveComposerAgentLabelKind,
   resolveComposerTarget,
-  type ComposerTarget,
+  type ComposerAgentLabelKind,
   type ComposerTargetInput,
 } from "../../lib/composerSend";
 import { chunkedWrite, enqueueSessionWrite } from "../terminal/terminalCache";
@@ -20,9 +21,11 @@ const MAX_SEND_CHARS = 100_000;
 const LINE_HEIGHT = 20;
 const MAX_ROWS = 6;
 
-const TARGET_LABEL: Record<ComposerTarget, string> = {
+const TARGET_LABEL: Record<ComposerAgentLabelKind, string> = {
   claude: "Claude",
+  "claude-codex": "claude-codex",
   codex: "Codex",
+  grok: "Grok",
   shell: "シェル",
 };
 
@@ -47,6 +50,8 @@ export function PaneComposer({ sessionId, target, active }: PaneComposerProps) {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   const resolved = resolveComposerTarget(target);
+  // The badge names the agent; the payload follows the input shape it shares.
+  const label = TARGET_LABEL[resolveComposerAgentLabelKind(target)];
   const payload = buildComposerPayload({ text: draft, target: resolved });
   const canSend = payload.body.length > 0;
 
@@ -116,12 +121,12 @@ export function PaneComposer({ sessionId, target, active }: PaneComposerProps) {
       }}
     >
       <div style={{ ...shellStyle, ...(focused ? shellFocusedStyle : null) }}>
-        <span style={badgeStyle}>{TARGET_LABEL[resolved]}</span>
+        <span style={badgeStyle}>{label}</span>
         <textarea
           ref={textareaRef}
           rows={1}
           value={draft}
-          aria-label={`${TARGET_LABEL[resolved]} へ送るメッセージ`}
+          aria-label={`${label} へ送るメッセージ`}
           placeholder="メッセージを入力"
           onChange={(event) => setDraft(sessionId, event.target.value)}
           onFocus={() => { setFocused(true); adoptPendingLine(); }}

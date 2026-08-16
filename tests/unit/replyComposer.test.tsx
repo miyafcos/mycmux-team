@@ -17,6 +17,7 @@ import { mentionTokenFromCandidate, buildMentionCandidates } from "../../src/lib
 import { useComposerStore } from "../../src/stores/composerStore";
 import { useLiveBriefStore } from "../../src/stores/liveBriefStore";
 import { usePaneDragStore } from "../../src/stores/paneDragStore";
+import { __resetReportInboxStoreForTests, useReportInboxStore } from "../../src/stores/reportInboxStore";
 import type { LiveSessionBrief } from "../../src/lib/livebrief";
 
 const NOW = Date.parse("2026-08-15T00:00:00.000Z");
@@ -76,6 +77,7 @@ beforeEach(() => {
   useComposerStore.setState({ draftBySession: {}, mentionTokensBySession: {}, commandKindBySession: {} });
   useLiveBriefStore.getState().reset();
   usePaneDragStore.getState().clearDrag();
+  __resetReportInboxStoreForTests();
 });
 
 afterEach(async () => {
@@ -84,6 +86,7 @@ afterEach(async () => {
   useComposerStore.setState({ draftBySession: {}, mentionTokensBySession: {}, commandKindBySession: {} });
   useLiveBriefStore.getState().reset();
   usePaneDragStore.getState().clearDrag();
+  __resetReportInboxStoreForTests();
   vi.unstubAllGlobals();
 });
 
@@ -150,6 +153,56 @@ describe("ReplyComposer mentions", () => {
       text: "直接送信",
       enter: true,
     });
+  });
+
+  it("uses the shared Codex multiline input shape before sending", async () => {
+    mocks.handleSocketCommand.mockResolvedValue({ confirmed: true });
+    const textarea = await renderComposer();
+    await input(textarea, "first\nsecond");
+    await key(textarea, "Enter");
+    expect(mocks.handleSocketCommand).toHaveBeenCalledWith("pane.send_text", {
+      sessionId: "session-a",
+      text: "first\x1b[13;2usecond",
+      enter: true,
+    });
+  });
+
+  it("uses the shared Claude bracketed-paste input shape before sending", async () => {
+    const claudeCard: DashboardCardModel = {
+      ...first,
+      tab: { ...first.tab, agentId: "claude-code", agentKind: "claude" },
+    };
+    mocks.handleSocketCommand.mockResolvedValue({ confirmed: true });
+    await act(async () => {
+      root.render(<ReplyComposer card={claudeCard} inputRef={createRef<HTMLTextAreaElement>()} mentionTargets={[claudeCard, second]} />);
+    });
+    const textarea = container.querySelector<HTMLTextAreaElement>("textarea")!;
+    await input(textarea, "first\nsecond");
+    await key(textarea, "Enter");
+    expect(mocks.handleSocketCommand).toHaveBeenCalledWith("pane.send_text", {
+      sessionId: "session-a",
+      text: "\x1b[200~first\nsecond\x1b[201~",
+      enter: true,
+    });
+  });
+
+  it("identifies an unmounted target instead of claiming screen confirmation", async () => {
+    mocks.handleSocketCommand.mockResolvedValue({ confirmed: false, reason: "target_unmounted" });
+    const textarea = await renderComposer();
+    await input(textarea, "確認できない送信");
+    await key(textarea, "Enter");
+    const note = container.querySelector<HTMLElement>(".cmux-dashboard-composer-note");
+    expect(note?.getAttribute("role")).toBe("status");
+    expect(note?.textContent).toBe("入力をキューに追加しましたが、対象タブが未マウントのため画面で確認できませんでした");
+    expect(note?.textContent).not.toContain("送信を画面で確認しました");
+  });
+
+  it("does not submit on modified Enter", async () => {
+    const textarea = await renderComposer();
+    await input(textarea, "残す下書き");
+    await key(textarea, "Enter", { ctrlKey: true });
+    expect(mocks.handleSocketCommand).not.toHaveBeenCalled();
+    expect(textarea.value).toBe("残す下書き");
   });
 
   it("rejects a QuestionCard reply after its questionId and revision no longer match", async () => {
@@ -219,11 +272,18 @@ describe("ReplyComposer mentions", () => {
     expect(container.querySelectorAll(".cmux-dashboard-dispatch-recipient")).toHaveLength(0);
     await key(textarea, "Enter");
     expect(mocks.handleSocketCommand).toHaveBeenCalledTimes(2);
+    const [report] = Object.values(useReportInboxStore.getState().dispatchBatchesById);
+    expect(report?.batch.status).toBe("sealed");
+    expect(report?.batch.assignments.map((assignment) => assignment.instructionRef)).toEqual(["session-a", "session-b"]);
+    expect(report?.batch.assignments).toHaveLength(2);
+    expect(Object.values(report?.membersByAssignmentId ?? {}).map((member) => member.delivery.state).sort())
+      .toEqual(["confirmed", "failed"]);
     expect(container.textContent).toContain("失敗した 1件だけ再送");
     const retry = [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("失敗した 1件だけ再送"));
     await act(async () => { retry?.click(); await Promise.resolve(); });
     expect(mocks.handleSocketCommand.mock.calls.filter(([, input]) => input.sessionId === "session-a")).toHaveLength(1);
     expect(mocks.handleSocketCommand.mock.calls.filter(([, input]) => input.sessionId === "session-b")).toHaveLength(2);
+    expect(Object.values(useReportInboxStore.getState().dispatchBatchesById)[0]?.batch.assignments).toHaveLength(2);
   });
 
   it("never retries an unconfirmed payload that may already have been written", async () => {
@@ -260,6 +320,29 @@ describe("ReplyComposer mentions", () => {
     });
     expect(useComposerStore.getState().mentionTokensBySession["session-a"]?.[0]).toMatchObject({ logicalSessionId: "tab-b", sessionId: "session-b" });
     expect(usePaneDragStore.getState().item?.tabId).toBe("tab-b");
+    expect(textarea.disabled).toBe(false);
+  });
+
+  it("accepts a minimap tab-bundle drop as ordered mentions without changing the layout drag store", async () => {
+    const textarea = await renderComposer();
+    const target = container.querySelector<HTMLElement>("[data-composer-pane-drop-target='true']")!;
+    Object.defineProperty(document, "elementFromPoint", { configurable: true, value: () => target });
+    usePaneDragStore.getState().beginDrag({
+      kind: "tab-bundle",
+      surface: "minimap",
+      workspaceId: "ws-tab-a",
+      paneId: "pane-tab-a",
+      tabIds: ["tab-a", "tab-b"],
+      anchorTabId: "tab-a",
+      label: "設計",
+    }, { x: 1, y: 1 });
+    await act(async () => {
+      const event = new Event("pointerup", { bubbles: true });
+      Object.defineProperties(event, { clientX: { value: 1 }, clientY: { value: 1 } });
+      window.dispatchEvent(event);
+    });
+    expect(useComposerStore.getState().mentionTokensBySession["session-a"]?.map((token) => token.logicalSessionId)).toEqual(["tab-a", "tab-b"]);
+    expect(usePaneDragStore.getState().item).toMatchObject({ kind: "tab-bundle", tabIds: ["tab-a", "tab-b"] });
     expect(textarea.disabled).toBe(false);
   });
 });

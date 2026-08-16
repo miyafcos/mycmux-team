@@ -49,6 +49,7 @@ fn infer_agent_kind(
     match agent_id {
         "claude-code" => Some("claude".to_string()),
         "codex" => Some("codex".to_string()),
+        "grok" => Some("grok".to_string()),
         _ => None,
     }
 }
@@ -57,6 +58,7 @@ fn agent_id_for_kind(kind: Option<&str>) -> Option<&'static str> {
     match kind {
         Some("claude") => Some("claude-code"),
         Some("codex") => Some("codex"),
+        Some("grok") => Some("grok"),
         Some("claude-codex") => Some("shell-starter"),
         _ => None,
     }

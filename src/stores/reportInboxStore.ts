@@ -2,7 +2,22 @@ import { create } from "zustand";
 
 import type { LiveSessionBrief, SemanticEventEnvelope } from "../lib/livebrief";
 import { onSessionStatusChanged, type SessionStatusChangedPayload } from "../lib/ipc";
-import type { CompletionClassification } from "../lib/completionEvidence";
+import {
+  classify,
+  startCycle,
+  type CompletionClassification,
+  type CompletionEvidence,
+  type WorkCycle,
+} from "../lib/completionEvidence";
+import {
+  coverage,
+  publishSummary,
+  recordCompletionEvidence,
+  type DispatchBatch,
+  type DispatchCoverage,
+} from "../lib/dispatchBatch";
+import type { LogicalSessionId } from "../lib/logicalSessionId";
+import type { ComposerCommandKind } from "./composerStore";
 
 export type ReportReceiveMode = "immediate" | "batch" | "quiet";
 export type MachineReportState = "waiting" | "stopped" | "needsReview";
@@ -31,30 +46,209 @@ export interface MachineReportCard {
   state: MachineReportState;
   detail: string;
   source: "livebrief" | "status";
-  /** Reserved for a future sealed DispatchBatch connection; no batch logic exists here. */
-  batchId?: string;
+}
+
+/** Delivery confirmation is diagnostic only; it is never a report receipt. */
+export type ReportDispatchDeliveryState = "pending" | "confirmed" | "unconfirmed" | "failed" | "blocked";
+
+export interface ReportDispatchDelivery {
+  state: ReportDispatchDeliveryState;
+  detail: string;
+}
+
+export interface ReportBatchRecipient {
+  logicalSessionId: LogicalSessionId;
+  ptySessionId: string;
+  label: string;
+  delivery: ReportDispatchDelivery;
+}
+
+export interface ReportBatchMember extends ReportBatchRecipient {
+  assignmentId: string;
+  cycle: WorkCycle;
+  evidences: readonly CompletionEvidence[];
+  evidenceNotes: readonly { sourceRef: string; detail: string }[];
+  classification: CompletionClassification;
+}
+
+/** Runtime bindings sit beside, never inside, the sealed DispatchBatch contract. */
+export interface ReportDispatchBatch {
+  batch: DispatchBatch;
+  commandKind: ComposerCommandKind;
+  membersByAssignmentId: Record<string, ReportBatchMember>;
+  /** Machine evidence that matched multiple batch cycles and was not guessed. */
+  unattributedEvidenceRefs: readonly string[];
+}
+
+export interface ReportDispatchBatchRegistration {
+  batch: DispatchBatch;
+  commandKind: ComposerCommandKind;
+  members: readonly ReportBatchRecipient[];
 }
 
 interface ReportInboxState {
   cardsById: Record<string, MachineReportCard>;
   cardIds: string[];
+  dispatchBatchesById: Record<string, ReportDispatchBatch | undefined>;
   receiveModeBySession: Record<string, ReportReceiveMode | undefined>;
   ingestLiveBriefs: (briefs: readonly LiveSessionBrief[]) => void;
   ingestSemanticEvents: (ptySessionId: string, events: readonly SemanticEventEnvelope[]) => void;
   ingestStatusEvent: (payload: SessionStatusChangedPayload) => void;
+  registerSealedDispatchBatch: (registration: ReportDispatchBatchRegistration) => void;
+  updateDispatchDelivery: (batchId: string, ptySessionId: string, delivery: ReportDispatchDelivery) => void;
+  ingestBatchCompletionEvidence: (
+    batchId: string,
+    ptySessionId: string,
+    evidence: Omit<CompletionEvidence, "logicalSessionId" | "cycleId">,
+  ) => void;
   setReceiveMode: (ptySessionId: string, mode: ReportReceiveMode) => void;
   reset: () => void;
 }
 
+type ReportInboxData = Pick<ReportInboxState, "cardsById" | "cardIds" | "dispatchBatchesById">;
+
 function putCard(
-  state: Pick<ReportInboxState, "cardsById" | "cardIds">,
+  state: ReportInboxData,
   card: MachineReportCard,
-): Pick<ReportInboxState, "cardsById" | "cardIds"> {
+): ReportInboxData {
   if (state.cardsById[card.id]) return state;
-  return {
+  return applyCardEvidence({
     cardsById: { ...state.cardsById, [card.id]: card },
     cardIds: [card.id, ...state.cardIds],
+    dispatchBatchesById: state.dispatchBatchesById,
+  }, card);
+}
+
+function completionEvidenceForCard(card: MachineReportCard): Omit<CompletionEvidence, "logicalSessionId" | "cycleId"> | null {
+  if (card.state === "waiting") {
+    return { source: card.source, kind: "turn-ended", observedAt: card.observedAt, sourceRef: card.sourceEventId };
+  }
+  if (card.state === "stopped") {
+    return { source: card.source, kind: "process-exit", observedAt: card.observedAt, sourceRef: card.sourceEventId };
+  }
+  if (card.state === "needsReview" && card.detail.startsWith("テスト結果:")) {
+    return { source: card.source, kind: "test-fail", observedAt: card.observedAt, sourceRef: card.sourceEventId };
+  }
+  return null;
+}
+
+function updateReportWithEvidence(
+  report: ReportDispatchBatch,
+  assignmentId: string,
+  evidence: Omit<CompletionEvidence, "logicalSessionId" | "cycleId">,
+  detail = "",
+): ReportDispatchBatch {
+  const member = report.membersByAssignmentId[assignmentId];
+  if (!member) return report;
+  const completeEvidence: CompletionEvidence = {
+    ...evidence,
+    logicalSessionId: member.logicalSessionId,
+    cycleId: member.cycle.cycleId,
   };
+  if (member.evidences.some((item) => item.sourceRef === completeEvidence.sourceRef)) return report;
+  const evidences = [...member.evidences, completeEvidence];
+  const evidenceNotes = [...member.evidenceNotes, { sourceRef: completeEvidence.sourceRef, detail }];
+  const classification = classify(evidences, member.cycle);
+  const route = { assignmentId, instructionRef: member.ptySessionId };
+  const transition = recordCompletionEvidence(
+    report.batch,
+    route,
+    completeEvidence.sourceRef,
+    { needsJudgment: classification.needsJudgment || classification.activity === "error" },
+  );
+  if (!transition.applied) return report;
+  return {
+    ...report,
+    batch: publishSummary(transition.batch),
+    membersByAssignmentId: {
+      ...report.membersByAssignmentId,
+      [assignmentId]: { ...member, evidences, evidenceNotes, classification },
+    },
+  };
+}
+
+function applyCardEvidence(state: ReportInboxData, card: MachineReportCard): ReportInboxData {
+  const evidence = completionEvidenceForCard(card);
+  if (!evidence) return state;
+  const matches = Object.values(state.dispatchBatchesById)
+    .filter((report): report is ReportDispatchBatch => report !== undefined)
+    .flatMap((report) => Object.values(report.membersByAssignmentId)
+      .filter((member) => member.ptySessionId === card.ptySessionId)
+      .map((member) => ({ report, assignmentId: member.assignmentId })));
+  // A runtime event cannot safely be attributed when multiple batch assignments
+  // target the same session. Leave it uncovered and surface that fact instead
+  // of guessing which command cycle owns the evidence.
+  if (matches.length !== 1) {
+    if (matches.length === 0) return state;
+    const currentCandidates = matches.filter(({ report, assignmentId }) =>
+      report.batch.assignments.some((assignment) => assignment.id === assignmentId && assignment.state === "open"));
+    const reportsToMark = currentCandidates.length > 0 ? currentCandidates : matches;
+    const dispatchBatchesById = { ...state.dispatchBatchesById };
+    let changed = false;
+    for (const { report } of reportsToMark) {
+      if (report.unattributedEvidenceRefs.includes(card.sourceEventId)) continue;
+      dispatchBatchesById[report.batch.id] = {
+        ...report,
+        unattributedEvidenceRefs: [...report.unattributedEvidenceRefs, card.sourceEventId],
+      };
+      changed = true;
+    }
+    return changed ? { ...state, dispatchBatchesById } : state;
+  }
+  const [{ report, assignmentId }] = matches;
+  const updated = updateReportWithEvidence(report, assignmentId, evidence, card.detail);
+  if (updated === report) return state;
+  return {
+    ...state,
+    dispatchBatchesById: { ...state.dispatchBatchesById, [updated.batch.id]: updated },
+  };
+}
+
+function reportFromRegistration(registration: ReportDispatchBatchRegistration): ReportDispatchBatch | null {
+  if (registration.batch.status !== "sealed") return null;
+  const membersByAssignmentId: Record<string, ReportBatchMember> = {};
+  const ptySessionIds = new Set<string>();
+  for (const [index, assignment] of registration.batch.assignments.entries()) {
+    const recipient = registration.members[index];
+    if (!recipient
+      || recipient.logicalSessionId !== assignment.logicalSessionId
+      || recipient.ptySessionId !== assignment.instructionRef
+      || ptySessionIds.has(recipient.ptySessionId)) return null;
+    ptySessionIds.add(recipient.ptySessionId);
+    const cycle = startCycle(recipient.logicalSessionId, Date.now(), index + 1);
+    membersByAssignmentId[assignment.id] = {
+      ...recipient,
+      assignmentId: assignment.id,
+      cycle,
+      evidences: [],
+      evidenceNotes: [],
+      classification: classify([], cycle),
+    };
+  }
+  return registration.members.length === registration.batch.assignments.length
+    ? { batch: registration.batch, commandKind: registration.commandKind, membersByAssignmentId, unattributedEvidenceRefs: [] }
+    : null;
+}
+
+export function reportBatchCoverage(report: ReportDispatchBatch, now = Date.now()): DispatchCoverage {
+  const current = coverage(report.batch, now);
+  return { ...current, needsJudgment: current.needsJudgment + report.unattributedEvidenceRefs.length };
+}
+
+/** The count line is assembled mechanically before this text reaches the AI. */
+export function reportBatchAiContext(report: ReportDispatchBatch): string {
+  const current = reportBatchCoverage(report);
+  const deliveryLines = Object.values(report.membersByAssignmentId)
+    .flatMap((member) => [
+      `${member.label}: delivery=${member.delivery.state}; evidence=${member.evidences.length}`,
+      ...member.evidences.map((evidence, index) => `${member.label}: ${member.evidenceNotes[index]?.detail || `${evidence.source}/${evidence.kind}`}`),
+    ]);
+  return [
+    `dispatch batch ${report.batch.id}`,
+    `command kind ${report.commandKind}`,
+    `coverage target=${current.target} received=${current.received} reflected=${current.reflected} missing=${current.missing} needsJudgment=${current.needsJudgment}`,
+    ...deliveryLines,
+  ].join("\n");
 }
 
 function semanticCard(
@@ -132,9 +326,10 @@ function statusCard(payload: SessionStatusChangedPayload): MachineReportCard | n
 export const useReportInboxStore = create<ReportInboxState>((set) => ({
   cardsById: {},
   cardIds: [],
+  dispatchBatchesById: {},
   receiveModeBySession: {},
   ingestLiveBriefs: (briefs) => set((state) => {
-    let next: Pick<ReportInboxState, "cardsById" | "cardIds"> = state;
+    let next: ReportInboxData = state;
     for (const brief of briefs) {
       if (brief.operationalState !== "ended") continue;
       next = putCard(next, {
@@ -151,7 +346,7 @@ export const useReportInboxStore = create<ReportInboxState>((set) => ({
     return next === state ? state : next;
   }),
   ingestSemanticEvents: (ptySessionId, events) => set((state) => {
-    let next: Pick<ReportInboxState, "cardsById" | "cardIds"> = state;
+    let next: ReportInboxData = state;
     for (const event of events) {
       const card = semanticCard(ptySessionId, event);
       if (card) next = putCard(next, card);
@@ -162,11 +357,46 @@ export const useReportInboxStore = create<ReportInboxState>((set) => ({
     const card = statusCard(payload);
     return card ? putCard(state, card) : state;
   }),
+  registerSealedDispatchBatch: (registration) => set((state) => {
+    if (state.dispatchBatchesById[registration.batch.id]) return state;
+    const report = reportFromRegistration(registration);
+    if (!report) return state;
+    return { dispatchBatchesById: { ...state.dispatchBatchesById, [report.batch.id]: report } };
+  }),
+  updateDispatchDelivery: (batchId, ptySessionId, delivery) => set((state) => {
+    const report = state.dispatchBatchesById[batchId];
+    if (!report) return state;
+    const matches = Object.values(report.membersByAssignmentId)
+      .filter((candidate) => candidate.ptySessionId === ptySessionId);
+    if (matches.length !== 1) return state;
+    const [member] = matches;
+    if (!member || (member.delivery.state === delivery.state && member.delivery.detail === delivery.detail)) return state;
+    const updated: ReportDispatchBatch = {
+      ...report,
+      membersByAssignmentId: {
+        ...report.membersByAssignmentId,
+        [member.assignmentId]: { ...member, delivery },
+      },
+    };
+    return { dispatchBatchesById: { ...state.dispatchBatchesById, [batchId]: updated } };
+  }),
+  ingestBatchCompletionEvidence: (batchId, ptySessionId, evidence) => set((state) => {
+    const report = state.dispatchBatchesById[batchId];
+    if (!report) return state;
+    const matches = Object.values(report.membersByAssignmentId)
+      .filter((candidate) => candidate.ptySessionId === ptySessionId);
+    if (matches.length !== 1) return state;
+    const [member] = matches;
+    if (!member) return state;
+    const updated = updateReportWithEvidence(report, member.assignmentId, evidence);
+    if (updated === report) return state;
+    return { dispatchBatchesById: { ...state.dispatchBatchesById, [batchId]: updated } };
+  }),
   setReceiveMode: (ptySessionId, mode) => set((state) => {
     if (state.receiveModeBySession[ptySessionId] === mode) return state;
     return { receiveModeBySession: { ...state.receiveModeBySession, [ptySessionId]: mode } };
   }),
-  reset: () => set({ cardsById: {}, cardIds: [], receiveModeBySession: {} }),
+  reset: () => set({ cardsById: {}, cardIds: [], dispatchBatchesById: {}, receiveModeBySession: {} }),
 }));
 
 let statusSubscriberCount = 0;

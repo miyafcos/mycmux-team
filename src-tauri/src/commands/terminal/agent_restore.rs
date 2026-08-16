@@ -215,6 +215,25 @@ fn claude_session_exists_in_projects_dir(
     })
 }
 
+/// Grok stores one directory per session under a percent-encoded cwd key:
+/// `~/.grok/sessions/C%3A%5CUsers%5C.../<session-id>/chat_history.jsonl`.
+/// The cwd key is not worth reproducing byte for byte (encoding of drive letters
+/// and separators is Grok's business), so this scans the cwd buckets instead and
+/// accepts the session as soon as one of them holds a directory with that id.
+fn grok_session_exists(session_id: &str) -> bool {
+    let Some(home) = dirs::home_dir() else {
+        return false;
+    };
+    let sessions_dir = home.join(".grok").join("sessions");
+    let Ok(entries) = std::fs::read_dir(sessions_dir) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        let bucket = entry.path();
+        bucket.is_dir() && bucket.join(session_id).is_dir()
+    })
+}
+
 fn claude_session_exists(cwd: Option<&str>, session_id: &str) -> bool {
     let Some(home) = dirs::home_dir() else {
         return false;
@@ -228,6 +247,7 @@ pub(crate) fn can_restore_agent_session(kind: &str, session_id: &str, cwd: Optio
         "codex" => codex_session_exists(session_id),
         // claude-codex is an optional external wrapper; do not block it here.
         "claude-codex" => true,
+        "grok" => grok_session_exists(session_id),
         _ => false,
     }
 }
@@ -245,6 +265,7 @@ fn agent_restore_error(kind: &str, session_id: &str, cwd: Option<&str>) -> Optio
             .map(|path| path.to_string_lossy().to_string())
             .unwrap_or_else(|| "<unknown>".to_string()),
         "codex" => format!("CWD {}", normalize_cwd_key(&cwd)),
+        "grok" => format!("~/.grok/sessions/*/{session_id}"),
         _ => cwd.clone(),
     };
     Some(format!(

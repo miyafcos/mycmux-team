@@ -11,11 +11,20 @@ import {
 } from "./socketCommands";
 
 export const TAB_SWEEP_IDLE_MS = 5 * 60 * 1000;
+import { useDashboardViewStore } from "../../stores/dashboardViewStore";
+
 export const TAB_SWEEP_TAIL_LINES = 8;
 export const TAB_NAMING_TAIL_LINES = 14;
 export const TAB_NAMING_LABEL_MAX = 20;
 export const TAB_SWEEP_OPEN_EVENT = "mycmux:tab-sweep-open";
 export const TAB_RESTORE_CLOSED_EVENT = "mycmux:restore-closed-tab";
+
+/** Opens the only sweep surface, then waits for its dashboard-local listener. */
+export function openTabSweepInDashboard(): void {
+  if (typeof window === "undefined") return;
+  useDashboardViewStore.getState().openView();
+  window.setTimeout(() => window.dispatchEvent(new Event(TAB_SWEEP_OPEN_EVENT)), 0);
+}
 
 export type SweepCategory = "DEAD" | "LOCKED" | "CANDIDATE";
 export type SweepLockReason =

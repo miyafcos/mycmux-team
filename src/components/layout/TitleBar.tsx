@@ -9,7 +9,6 @@ import SettingsDialog from "../settings/SettingsDialog";
 import { AiLogButton } from "../ailog/AiLogButton";
 import { DashboardButton } from "../dashboard/DashboardButton";
 import { AccountsButton } from "./AccountsButton";
-import { TabSweepButton } from "./TabSweepButton";
 import { onlineStrings } from "../online/onlineStrings";
 import { resolveWorkspaceColor } from "../../lib/workspaceColors";
 import { OVERLAY_EXIT_MS, useDeferredUnmount } from "../../hooks/useDeferredUnmount";
@@ -323,7 +322,6 @@ export default function TitleBar({
             setIsSettingsOpen(true);
           }}
         />
-        <TabSweepButton />
         <AiLogButton />
         <DashboardButton />
         <div style={{ position: "relative" }}>
