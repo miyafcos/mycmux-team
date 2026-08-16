@@ -4,6 +4,7 @@ import {
   applyDashboardFilters,
   buildDashboardCards,
   groupDashboardCard,
+  isManualDoneMarkValid,
   matchesDashboardStateFilter,
   needsHumanCards,
   orderDashboardCards,
@@ -11,6 +12,7 @@ import {
   resolveDisplayState,
   type DashboardCardModel,
 } from "../../src/components/dashboard/dashboardModel";
+import { groupCardsByAttentionSection } from "../../src/components/dashboard/dashboardAttentionOrder";
 import type { LiveSessionBrief } from "../../src/lib/livebrief";
 import type { Workspace } from "../../src/types";
 
@@ -69,10 +71,12 @@ function brief(overrides: Partial<LiveSessionBrief> = {}): LiveSessionBrief {
 function cards(input: Partial<Parameters<typeof buildDashboardCards>[1]> = {}) {
   return buildDashboardCards([workspace()], {
     metadataBySession: {},
+    volatileMetadataBySession: {},
     lastLogBySession: {},
     lastLogAtBySession: {},
     attentionBySession: {},
     seenAttentionByTab: new Map(),
+    doneMarkByTab: new Map(),
     stallsBySession: {},
     now,
     hasTerminalBuffer: () => true,
@@ -164,6 +168,82 @@ describe("dashboard model", () => {
   });
 
   describe("resolveDisplayState", () => {
+    it("keeps a manual done mark until later activity and then restores the source state", () => {
+      const markedAt = now - 600_000;
+      const [marked] = cards({ doneMarkByTab: new Map([["tab-1", markedAt]]) });
+      expect(marked.manualDoneAt).toBe(markedAt);
+      expect(resolveDisplayState(marked)).toBe("acknowledged");
+
+      const errorAttention = {
+        sessionId: "s-1",
+        attentionId: "attention-error",
+        kind: "error",
+        detail: null,
+        sessionRevision: 1,
+        uiState: "waiting",
+        stateSince: markedAt + 1,
+        occurrenceOrder: 1,
+      } as const;
+      const [error] = cards({
+        doneMarkByTab: new Map([["tab-1", markedAt]]),
+        attentionBySession: { "s-1": errorAttention },
+      });
+      expect(error.manualDoneAt).toBeUndefined();
+      expect(resolveDisplayState(error)).toBe("error");
+
+      const [noUpdate] = cards({
+        doneMarkByTab: new Map([["tab-1", markedAt]]),
+        lastLogAtBySession: { "s-1": markedAt + 1 },
+      });
+      expect(noUpdate.manualDoneAt).toBeUndefined();
+      expect(resolveDisplayState(noUpdate)).toBe("noUpdate");
+
+      const [needsHuman] = cards({
+        doneMarkByTab: new Map([["tab-1", markedAt]]),
+        attentionBySession: {
+          "s-1": { ...errorAttention, attentionId: "attention-input", kind: "input", stateSince: markedAt + 1 },
+        },
+      });
+      expect(needsHuman.manualDoneAt).toBeUndefined();
+      expect(resolveDisplayState(needsHuman)).toBe("needsHuman");
+    });
+
+    it("keeps a valid manual done card out of needsReview and restores it after newer activity", () => {
+      const markedAt = now - 600_000;
+      const [marked] = cards({ doneMarkByTab: new Map([["tab-1", markedAt]]) });
+      const markedSections = groupCardsByAttentionSection([marked]);
+      expect(markedSections.needsReview).toEqual([]);
+      expect(markedSections.other).toEqual([marked]);
+
+      const updatedAttention = {
+        sessionId: "s-1",
+        attentionId: "attention-error",
+        kind: "error",
+        detail: null,
+        sessionRevision: 1,
+        uiState: "waiting",
+        stateSince: markedAt + 1,
+        occurrenceOrder: 1,
+      } as const;
+      const [updated] = cards({
+        doneMarkByTab: new Map([["tab-1", markedAt]]),
+        attentionBySession: { "s-1": updatedAttention },
+      });
+      const updatedSections = groupCardsByAttentionSection([updated]);
+      expect(updated.manualDoneAt).toBeUndefined();
+      expect(updatedSections.needsReview).toEqual([updated]);
+    });
+
+    it("invalidates a manual done mark when a livebrief timestamp is newer", () => {
+      const markedAt = now - 600_000;
+      const [updated] = cards({
+        doneMarkByTab: new Map([["tab-1", markedAt]]),
+        briefsBySession: { "s-1": brief({ updatedAt: markedAt + 1, lastEventAt: markedAt - 1, lastSuccessfulReadAt: markedAt - 1 }) },
+      });
+      expect(updated.manualDoneAt).toBeUndefined();
+      expect(isManualDoneMarkValid({ ...updated, brief: undefined }, markedAt)).toBe(true);
+    });
+
     it("lets a live livebrief win over the attention feed", () => {
       expect(resolveDisplayState(card({
         telemetryHealth: "live",
@@ -252,17 +332,18 @@ describe("dashboard model", () => {
     });
   });
 
-  it("orders every session into the single needsHuman > error > running > noUpdate > idle > done > stopped list", () => {
+  it("orders every session into the single needsHuman > error > running > noUpdate > idle > done > acknowledged > stopped list", () => {
     const done = distinct({ attentionCategory: "done", group: "done" }, "t-done");
+    const acknowledged = distinct({ manualDoneAt: now - 1 }, "t-acknowledged");
     const idle = distinct({ group: "idle", lastActivityAt: 0 }, "t-idle");
     const noUpdate = distinct({ group: "idle", lastActivityAt: now - 600_000, noUpdateMinutes: 10 }, "t-noupdate");
     const running = distinct({ group: "working", lastActivityAt: now - 1 }, "t-running");
     const error = distinct({ attentionCategory: "error", group: "waiting" }, "t-error");
     const needsHuman = distinct({ attentionCategory: "waiting", group: "waiting" }, "t-needs");
     const stopped = distinct({ telemetryHealth: "ended", attentionCategory: null }, "t-stopped");
-    const ordered = orderDashboardCards([stopped, done, idle, noUpdate, running, error, needsHuman], "attention");
+    const ordered = orderDashboardCards([stopped, acknowledged, done, idle, noUpdate, running, error, needsHuman], "attention");
     expect(ordered.map((item) => item.tab.id)).toEqual([
-      "t-needs", "t-error", "t-running", "t-noupdate", "t-idle", "t-done", "t-stopped",
+      "t-needs", "t-error", "t-running", "t-noupdate", "t-idle", "t-done", "t-acknowledged", "t-stopped",
     ]);
   });
 
@@ -325,6 +406,12 @@ describe("dashboard model", () => {
       stateFilter: "needsHuman",
     }).map((item) => item.tab.id)).toEqual(["t-waiting", "t-error"]);
     expect(matchesDashboardStateFilter(running, "needsHuman")).toBe(false);
+  });
+
+  it("includes manually acknowledged cards in the done filter", () => {
+    const acknowledged = distinct({ manualDoneAt: now - 1 }, "t-acknowledged");
+    expect(resolveDisplayState(acknowledged)).toBe("acknowledged");
+    expect(matchesDashboardStateFilter(acknowledged, "done")).toBe(true);
   });
 
   it("partitions completed, idle, and never-started cards behind the disclosure", () => {

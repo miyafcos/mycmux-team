@@ -1031,6 +1031,7 @@ export interface PaneTabConfig {
   tab_id?: string | null;
   agent_id: string;
   label?: string | null;
+  label_source?: "user" | "ai" | null;
   type?: "terminal" | null;
   cwd?: string | null;
   last_process?: string | null;

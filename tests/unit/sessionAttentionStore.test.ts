@@ -16,7 +16,9 @@ vi.mock("../../src/lib/ipc", () => ipcMocks);
 import {
   connectSessionAttentionStore,
   attentionDetail,
+  DONE_MARK_STORAGE_KEY,
   isAttentionUnseen,
+  readDoneMarks,
   readSeenAttention,
   resolveAttentionTabs,
   resolveNextAttentionTarget,
@@ -290,6 +292,29 @@ describe("seen attention persistence", () => {
       SEEN_ATTENTION_STORAGE_KEY,
       JSON.stringify([["tab-a", "attention-1"]]),
     );
+  });
+
+  it("persists and clears manual done marks", () => {
+    const setItem = vi.fn();
+    vi.stubGlobal("window", { localStorage: { getItem: vi.fn(() => null), setItem } });
+    const store = useSessionAttentionStore.getState();
+
+    store.markDone("tab-a", 123);
+    expect(useSessionAttentionStore.getState().doneMarkByTab.get("tab-a")).toBe(123);
+    expect(setItem).toHaveBeenLastCalledWith(DONE_MARK_STORAGE_KEY, JSON.stringify([["tab-a", 123]]));
+
+    store.clearDoneMark("tab-a");
+    expect(useSessionAttentionStore.getState().doneMarkByTab.has("tab-a")).toBe(false);
+    expect(setItem).toHaveBeenLastCalledWith(DONE_MARK_STORAGE_KEY, "[]");
+  });
+
+  it("reads only finite tab/timestamp pairs for manual done marks", () => {
+    const storage = {
+      getItem: vi.fn(() => JSON.stringify([["tab-a", 123], ["tab-b", "bad"], [4, 456], ["tab-c", null]])),
+      setItem: vi.fn(),
+    };
+    expect([...readDoneMarks(storage)]).toEqual([["tab-a", 123]]);
+    expect(storage.getItem).toHaveBeenCalledWith(DONE_MARK_STORAGE_KEY);
   });
 });
 

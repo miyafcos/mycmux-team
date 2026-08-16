@@ -224,6 +224,8 @@ fn totals_exclude_reasoning_and_split_io_from_the_grand_total() {
     assert_eq!(report.totals.io, 180);
     assert_eq!(report.totals.total, 150 + 30 + 14 + 8);
     assert_eq!(report.day_offset_minutes, JST_MIN);
+    assert_eq!(report.timings.path, "raw");
+    assert_eq!(report.timings.rows_scanned, 2);
 }
 
 #[test]

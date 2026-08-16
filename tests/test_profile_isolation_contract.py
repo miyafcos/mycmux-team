@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 
@@ -8,6 +9,20 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 def read_repo_text(relative_path: str) -> str:
     return (REPO_ROOT / relative_path).read_text(encoding="utf-8")
+
+
+def contains_ignoring_layout(haystack: str, needle: str) -> bool:
+    """Match a Rust snippet without pinning rustfmt's line breaks.
+
+    These assertions care that a construct exists, not where the formatter chose
+    to wrap it. Comparing with every whitespace run removed keeps the intent and
+    stops a reformat from turning a passing contract into a red one.
+    """
+    return _squeeze(needle) in _squeeze(haystack)
+
+
+def _squeeze(text: str) -> str:
+    return re.sub(r"\s+", "", text)
 
 
 def test_rust_profile_isolation_uses_the_runtime_directory() -> None:
@@ -81,10 +96,10 @@ def test_profile_remote_binds_ephemeral_port_and_persists_the_bound_value() -> N
     remote = read_repo_text("src-tauri/src/remote/mod.rs")
     script = read_repo_text("scripts/test-profile.ps1")
 
-    assert "unwrap_or(if profile_active { 0 } else { 7682 })" in remote
-    assert "listener.local_addr()" in remote
-    assert "control.set_port(port);" in remote
-    assert 'path.push("remote.port")' in remote
+    assert contains_ignoring_layout(remote, "unwrap_or(if profile_active { 0 } else { 7682 })")
+    assert contains_ignoring_layout(remote, "listener.local_addr()")
+    assert contains_ignoring_layout(remote, "control.set_port(port);")
+    assert contains_ignoring_layout(remote, 'path.push("remote.port")')
     assert "MYCMUX_REMOTE_PORT" in script
 
 

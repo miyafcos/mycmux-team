@@ -9,6 +9,7 @@ interface PetSpriteProps {
   state: PetSpriteState;
   height: number;
   rows?: number;
+  animate?: boolean;
 }
 
 interface PetAnimation {
@@ -52,7 +53,7 @@ export function spriteAtlasStyle(height: number, rows: number, row: number): Pic
   };
 }
 
-export default function PetSprite({ atlasUrl, state, height, rows = 9 }: PetSpriteProps) {
+export default function PetSprite({ atlasUrl, state, height, rows = 9, animate = true }: PetSpriteProps) {
   const [displayedState, setDisplayedState] = useState(state);
   const [failedToLoad, setFailedToLoad] = useState(false);
   const [atlasRows, setAtlasRows] = useState(rows);
@@ -89,7 +90,7 @@ export default function PetSprite({ atlasUrl, state, height, rows = 9 }: PetSpri
   };
 
   return (
-    <span className="cmux-pet-sprite" style={style} aria-hidden="true">
+    <span className={`cmux-pet-sprite${animate ? "" : " cmux-pet-sprite--static"}`} style={style} aria-hidden="true">
       <img
         className="cmux-pet-sprite__probe"
         src={atlasUrl}

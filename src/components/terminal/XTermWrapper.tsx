@@ -45,7 +45,6 @@ import {
   chunkedWrite,
   enqueueSessionWrite,
   getTerminalOutputDecoder,
-  getTerminalWriteCounter as terminalWriteCounter,
   liveTerms,
   planTerminalScrollbackRecovery,
   registerTerminalCacheEvictionCleanup,
@@ -640,7 +639,7 @@ export default memo(function XTermWrapper({
   const colorAdaptCommands = useSettingsStore((s) => s.colorAdaptCommands);
   const colorAdaptCommandsRef = useRef(colorAdaptCommands);
   colorAdaptCommandsRef.current = colorAdaptCommands;
-  const processTitle = usePaneMetadataStore((s) => s.metadata[sessionId]?.processTitle);
+  const processTitle = usePaneMetadataStore((s) => s.volatileMetadata[sessionId]?.processTitle);
   const processTitleRef = useRef(processTitle);
   processTitleRef.current = processTitle;
   const colorAdapterRef = useRef(new LightDarkColorAdaptController());
@@ -742,7 +741,6 @@ export default memo(function XTermWrapper({
     let removeWheelFocusGuard: (() => void) | null = null;
     let removeWheelScrollGuard: (() => void) | null = null;
     let removePtyReplayTarget: (() => void) | null = null;
-    let logThrottle: ReturnType<typeof setTimeout> | null = null;
     let idleFlush: ReturnType<typeof setTimeout> | null = null;
     let backgroundScanThrottle: ReturnType<typeof setTimeout> | null = null;
     let outputActivityTimer: ReturnType<typeof setTimeout> | null = null;
@@ -813,10 +811,6 @@ export default memo(function XTermWrapper({
         clearTimeout(startupSettleTimeout);
         startupSettleTimeout = null;
       }
-      if (logThrottle) {
-        clearTimeout(logThrottle);
-        logThrottle = null;
-      }
       if (idleFlush) {
         clearTimeout(idleFlush);
         idleFlush = null;
@@ -828,9 +822,9 @@ export default memo(function XTermWrapper({
     };
 
     const setOutputActive = (active: boolean): void => {
-      const current = usePaneMetadataStore.getState().metadata[sessionId]?.outputActive === true;
+      const current = usePaneMetadataStore.getState().volatileMetadata[sessionId]?.outputActive === true;
       if (current === active) return;
-      usePaneMetadataStore.getState().setMetadata(sessionId, { outputActive: active });
+      usePaneMetadataStore.getState().setVolatileMetadata(sessionId, { outputActive: active });
     };
 
     const noteOutputActivity = (): void => {
@@ -1066,7 +1060,7 @@ export default memo(function XTermWrapper({
 
         if (e.key === "Enter" && e.shiftKey && !e.ctrlKey && !e.altKey) {
           if (!shouldAcceptTerminalInput(sessionId)) return false;
-          const processTitle = usePaneMetadataStore.getState().metadata[sessionId]?.processTitle;
+          const processTitle = usePaneMetadataStore.getState().volatileMetadata[sessionId]?.processTitle;
           enqueueSessionWrite(
             sessionId,
             getShiftEnterSequence(launchParamsRef.current.command, processTitle),
@@ -1147,9 +1141,6 @@ export default memo(function XTermWrapper({
       }
 
       const bottom = buf.length - 1;
-      const scanSignature = `${terminalWriteCounter(sessionId)}:${buf.length}:${buf.baseY}:${buf.cursorY}:${buf.cursorX}`;
-      if (scanSignature === lastScanSignature && approvalAbsentStreak === 0 && rateLimitAbsentStreak === 0) return;
-      lastScanSignature = scanSignature;
       const top = Math.max(0, bottom - 15);
       const scanLines: string[] = [];
       let lastNonEmpty = "";
@@ -1165,13 +1156,16 @@ export default memo(function XTermWrapper({
           lastNonEmpty = text;
         }
       }
+      const scanSignature = scanLines.join("\n");
+      if (scanSignature === lastScanSignature && approvalAbsentStreak === 0 && rateLimitAbsentStreak === 0) return;
+      lastScanSignature = scanSignature;
       const workingPatternVisible = scanLines.some((line) => (
         WORKING_INDICATOR_PATTERNS.some((pattern) => pattern.test(line))
       ));
       const previousWorkingPatternVisible =
-        usePaneMetadataStore.getState().metadata[sessionId]?.workingPatternVisible === true;
+        usePaneMetadataStore.getState().volatileMetadata[sessionId]?.workingPatternVisible === true;
       if (workingPatternVisible !== previousWorkingPatternVisible) {
-        usePaneMetadataStore.getState().setMetadata(sessionId, { workingPatternVisible });
+        usePaneMetadataStore.getState().setVolatileMetadata(sessionId, { workingPatternVisible });
       }
       const isNoiseLine =
         /\d+k?\s+tokens/i.test(lastNonEmpty) ||
@@ -1254,13 +1248,19 @@ export default memo(function XTermWrapper({
     const scheduleBackgroundScan = (resync = false): void => {
       if (!term) return;
       backgroundScanResync ||= resync;
-      if (backgroundScanThrottle) return;
-      backgroundScanThrottle = setTimeout(() => {
-        backgroundScanThrottle = null;
-        const scanWasResync = backgroundScanResync;
-        backgroundScanResync = false;
-        runScan(true, scanWasResync);
-      }, 150);
+      if (!backgroundScanThrottle) {
+        backgroundScanThrottle = setTimeout(() => {
+          backgroundScanThrottle = null;
+          const scanWasResync = backgroundScanResync;
+          backgroundScanResync = false;
+          runScan(true, scanWasResync);
+        }, 300);
+      }
+      if (idleFlush) clearTimeout(idleFlush);
+      idleFlush = setTimeout(() => {
+        idleFlush = null;
+        runScan(true, backgroundScanResync);
+      }, 200);
     };
 
     const batchDataToBytes = (data: FrontendDataBatch["data"]): Uint8Array => {
@@ -1558,6 +1558,7 @@ export default memo(function XTermWrapper({
         const replayText = outputDecoder.decode(scrollback, { stream: true });
         bumpPaintStat("resync", sessionId);
         const resyncStartedAt = import.meta.env.DEV ? performance.now() : null;
+        backgroundScanResync = true;
         await writeTerminalOutput(stripTerminalMouseModeControlSequences(replayText), 8000);
         if (resyncStartedAt !== null) {
           recordResync(scrollback.byteLength, performance.now() - resyncStartedAt, sessionId);
@@ -1630,6 +1631,7 @@ export default memo(function XTermWrapper({
       try {
         bumpPaintStat("resync", sessionId);
         const resyncStartedAt = import.meta.env.DEV ? performance.now() : null;
+        backgroundScanResync = true;
         await writeTerminalOutput(
           stripTerminalMouseModeControlSequences(replayText),
           replacesVisibleBuffer ? 8000 : 2000,
@@ -1649,7 +1651,6 @@ export default memo(function XTermWrapper({
       markTerminalHasLiveOutput(sessionId);
       bumpTerminalWriteCounter(sessionId);
       scheduleFullRefresh(term, [0, 48, 160]);
-      scheduleBackgroundScan(true);
       return true;
     };
 
@@ -1746,9 +1747,6 @@ export default memo(function XTermWrapper({
               lastSynchronizedScrollbackEnd,
               batch.scrollbackEnd,
             );
-            if (!disposed && !termDisposed) {
-              scheduleBackgroundScan();
-            }
           } finally {
             ackPendingBatch(pending);
             if (currentPendingBatch === pending) currentPendingBatch = null;
@@ -1891,19 +1889,7 @@ export default memo(function XTermWrapper({
       writeParsedDisposable = currentTerm.onWriteParsed(() => {
         if (disposed) return;
         recordWriteParsed(sessionId);
-        if (idleFlush) {
-          clearTimeout(idleFlush);
-          idleFlush = null;
-        }
-        idleFlush = setTimeout(() => {
-          idleFlush = null;
-          runScan();
-        }, 200);
-        if (logThrottle) return;
-        logThrottle = setTimeout(() => {
-          logThrottle = null;
-          runScan();
-        }, 150);
+        scheduleBackgroundScan();
       });
     };
 
@@ -1965,7 +1951,7 @@ export default memo(function XTermWrapper({
 
       titleDisposable = currentTerm.onTitleChange((title) => {
         if (termDisposed || !title) return;
-        usePaneMetadataStore.getState().setMetadata(sessionId, { processTitle: title });
+        usePaneMetadataStore.getState().setVolatileMetadata(sessionId, { processTitle: title });
       });
     };
 

@@ -61,7 +61,6 @@ import {
   type RuleCheckReport,
   type UsageRhythmReport,
 } from "../lib/ailog";
-import type { LeafDimension } from "../components/ailog/sankeyModel";
 import type { PanelSegment } from "../components/ailog/panelModel";
 import type { UsageMetric } from "../components/ailog/usageModel";
 
@@ -75,7 +74,7 @@ export const SESSION_FETCH_LIMIT = 5_000;
 export const SESSION_PAGE_SIZE = 100;
 export const FINDINGS_PAGE_SIZE = 50;
 
-export type SessionSort = "cost" | "rework" | "recent";
+export type SessionSort = "cost" | "rework" | "recent" | "turns";
 export type BreakdownDimension = "project" | "branch" | "effort" | "origin" | "title" | "agent";
 
 export interface Async<T> {
@@ -103,18 +102,12 @@ export function jobDisplayError<S extends { running: boolean; lastError: string 
   return job.actionError ?? job.statusError ?? jobBackgroundError(job);
 }
 
-export type SelectionType = "model" | "tag" | "topic" | "leaf" | "project";
+export type SelectionType = "model" | "project";
 
 export interface AilogSelection {
   type: SelectionType;
   key: string;
   label: string;
-}
-
-export interface TopNSetting {
-  model: number;
-  tag: number;
-  leaf: number;
 }
 
 interface AilogState {
@@ -127,14 +120,10 @@ interface AilogState {
   summaryPreset: SummaryRangePreset;
   excludeSynthetic: boolean;
   includeSidechain: boolean;
-  leafDimension: LeafDimension;
-  topN: TopNSetting;
   granularity: AilogGranularity;
   sessionSort: SessionSort;
   sessionPage: number;
   selection: AilogSelection | null;
-  /** Project whose titles are expanded under the diagram. */
-  drillProject: string | null;
   breakdownDimension: BreakdownDimension;
 
   // --- data ---
@@ -188,6 +177,8 @@ interface AilogState {
   usageRhythm: UsageRhythmReport | null;
   usageLoading: boolean;
   usageError: string | null;
+  /** Latest visible-segment load duration, measured in the renderer. */
+  lastLoadMs: Partial<Record<PanelSegment, number>>;
 
   // --- actions ---
   setPreset: (preset: RangePreset) => void;
@@ -203,13 +194,10 @@ interface AilogState {
   setSummaryPreset: (preset: SummaryRangePreset) => void;
   setExcludeSynthetic: (value: boolean) => void;
   setIncludeSidechain: (value: boolean) => void;
-  setLeafDimension: (value: LeafDimension) => void;
-  setTopN: (layer: keyof TopNSetting, value: number) => void;
   setGranularity: (value: AilogGranularity) => void;
   setSessionSort: (value: SessionSort) => void;
   setSessionPage: (value: number) => void;
   setSelection: (selection: AilogSelection | null) => void;
-  setDrillProject: (value: string | null) => void;
   setBreakdownDimension: (value: BreakdownDimension) => void;
   currentRange: () => AilogRange | null;
   refresh: (options?: { force?: boolean }) => Promise<void>;
@@ -347,28 +335,27 @@ function resolvedRangeForKey(
   const custom = buildRange(preset, customFrom, customTo);
   if (!custom) return null;
   if (preset === "custom") return { from: custom.from!, to: custom.to! };
+  const quantizedAnchor = Math.floor(anchor / 300_000) * 300_000;
   const day = 86_400_000;
-  const from = preset === "7d" ? anchor - 7 * day
-    : preset === "30d" ? anchor - 30 * day
-      : preset === "90d" ? anchor - 90 * day
-        : preset === "ytd" ? Date.UTC(new Date(anchor).getUTCFullYear(), 0, 1)
+  const from = preset === "7d" ? quantizedAnchor - 7 * day
+    : preset === "30d" ? quantizedAnchor - 30 * day
+      : preset === "90d" ? quantizedAnchor - 90 * day
+        : preset === "ytd" ? Date.UTC(new Date(quantizedAnchor).getUTCFullYear(), 0, 1)
           : Number.MIN_SAFE_INTEGER;
-  return { from, to: anchor };
+  return { from, to: quantizedAnchor };
 }
 
-function cacheContext(state: Pick<AilogState, "preset" | "customFrom" | "customTo" | "rangeAnchor" | "excludeSynthetic" | "includeSidechain" | "selection" | "leafDimension" | "granularity">): CacheContext | null {
+function cacheContext(state: Pick<AilogState, "preset" | "customFrom" | "customTo" | "rangeAnchor" | "includeSidechain" | "selection" | "granularity">): CacheContext | null {
   const range = buildRange(state.preset, state.customFrom, state.customTo);
   const resolvedRange = resolvedRangeForKey(state.preset, state.customFrom, state.customTo, state.rangeAnchor);
   if (!range || !resolvedRange) return null;
   const filters = selectionFilters(
     { ...emptyFilters(), includeSidechain: state.includeSidechain },
     state.selection,
-    state.leafDimension,
   );
   const key = JSON.stringify({
     from: resolvedRange.from,
     to: resolvedRange.to,
-    excludeSynthetic: state.excludeSynthetic,
     includeSidechain: state.includeSidechain,
     granularity: state.granularity,
     filters: {
@@ -389,7 +376,7 @@ function isCurrentContext(get: () => AilogState, key: string): boolean {
   return cacheContext(get())?.key === key;
 }
 
-function invalidateAilogCaches(): void {
+export function invalidateAilogCaches(): void {
   periodCache.clear();
   digestCache.clear();
 }
@@ -415,19 +402,15 @@ function shiftLocalDay(date: string, days: number): string {
  */
 export function isServerFilterable(
   selection: AilogSelection | null,
-  leafDimension: LeafDimension,
 ): boolean {
-  if (!selection) return false;
-  if (selection.type === "model" || selection.type === "project") return true;
-  return selection.type === "leaf" && leafDimension === "project";
+  return selection !== null;
 }
 
 export function selectionFilters<T extends { models: string[]; projects: string[] }>(
   filters: T,
   selection: AilogSelection | null,
-  leafDimension: LeafDimension,
 ): T {
-  if (!isServerFilterable(selection, leafDimension) || !selection) return filters;
+  if (!isServerFilterable(selection) || !selection) return filters;
   if (selection.type === "model") return { ...filters, models: [selection.key] };
   return { ...filters, projects: [selection.key] };
 }
@@ -440,13 +423,10 @@ const initialState = {
   summaryPreset: "7d" as SummaryRangePreset,
   excludeSynthetic: true,
   includeSidechain: false,
-  leafDimension: "project" as LeafDimension,
-  topN: { model: 8, tag: 8, leaf: 8 },
   granularity: "family" as const,
-  sessionSort: "cost" as SessionSort,
+  sessionSort: "rework" as SessionSort,
   sessionPage: 0,
   selection: null,
-  drillProject: null,
   breakdownDimension: "project" as BreakdownDimension,
   overview: null,
   series: null,
@@ -497,17 +477,18 @@ const initialState = {
   usageRhythm: null,
   usageLoading: false,
   usageError: null,
+  lastLoadMs: {},
 };
 
 export const useAilogStore = create<AilogState>((set, get) => ({
   ...initialState,
 
   setPreset: (preset) => {
-    set({ preset, rangeAnchor: Date.now(), sessionPage: 0, selection: null, drillProject: null });
+    set({ preset, sessionPage: 0, selection: null });
   },
 
   setCustomRange: (customFrom, customTo) => {
-    set({ customFrom, customTo, preset: "custom", rangeAnchor: Date.now(), sessionPage: 0 });
+    set({ customFrom, customTo, preset: "custom", sessionPage: 0 });
   },
 
   setSummaryPreset: (summaryPreset) => {
@@ -519,8 +500,6 @@ export const useAilogStore = create<AilogState>((set, get) => ({
   setIncludeSidechain: (includeSidechain) => {
     set({ includeSidechain, sessionPage: 0 });
   },
-  setLeafDimension: (leafDimension) => set({ leafDimension, drillProject: null }),
-  setTopN: (layer, value) => set((state) => ({ topN: { ...state.topN, [layer]: value } })),
   setGranularity: (granularity) => {
     set({ granularity });
   },
@@ -529,7 +508,6 @@ export const useAilogStore = create<AilogState>((set, get) => ({
   setSelection: (selection) => {
     set({ selection, sessionPage: 0 });
   },
-  setDrillProject: (drillProject) => set({ drillProject }),
   setBreakdownDimension: (breakdownDimension) => {
     set({ breakdownDimension });
   },
@@ -631,30 +609,43 @@ export const useAilogStore = create<AilogState>((set, get) => ({
   },
 
   loadSegment: async (segment, options = {}) => {
-    if (segment === "when") return get().refreshUsage(options);
-    if (segment === "what") {
-      await Promise.all([get().refresh(options), get().refreshBreakdown(options)]);
-      return;
+    const startedAt = performance.now();
+    try {
+      if (segment === "change") {
+        // Change is deliberately cache-only: it never starts a report request.
+      } else if (segment === "record") {
+        await Promise.all([get().refreshUsage(options), get().refresh(options), get().refreshBreakdown(options)]);
+      } else if (segment === "how") {
+        await get().refreshExperiment(options);
+      } else if (segment === "daily") {
+        await get().refreshDigest(undefined, options);
+      } else {
+        await get().refreshLearning({ kinds: ["gotcha", "cause", "decision", "constraint", "verified"], includeRankings: true, force: options.force });
+      }
+    } finally {
+      set((state) => ({ lastLoadMs: { ...state.lastLoadMs, [segment]: performance.now() - startedAt } }));
     }
-    if (segment === "how") return get().refreshExperiment(options);
-    if (segment === "daily") return get().refreshDigest(undefined, options);
-    return get().refreshLearning({
-      kinds: segment === "recurring" ? ["gotcha", "cause"] : ["decision", "constraint", "verified"],
-      includeRankings: segment === "recurring",
-      force: options.force,
-    });
   },
 
   preloadSegments: async (visible) => {
     // Keep this serial. The foreground `loadSegment` does not await the queue,
     // so a newly selected segment can still start immediately and share an
     // already-running resource request without a second invoke.
+    if (visible === "change") return;
     const context = cacheContext(get());
     if (!context) return;
-    const segments: PanelSegment[] = ["when", "what", "how", "recurring"];
+    const segments: PanelSegment[] = ["record", "how", "learning"];
     for (const segment of segments) {
       if (!isCurrentContext(get, context.key)) return;
-      if (segment !== visible) await get().loadSegment(segment);
+      if (segment !== visible) {
+        await new Promise<void>((resolve) => {
+          const idle = (globalThis as typeof globalThis & { requestIdleCallback?: (callback: () => void) => number }).requestIdleCallback;
+          if (idle) idle(resolve);
+          else setTimeout(resolve, 200);
+        });
+        if (!isCurrentContext(get, context.key)) return;
+        await get().loadSegment(segment);
+      }
     }
   },
 

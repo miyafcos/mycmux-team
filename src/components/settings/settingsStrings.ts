@@ -44,6 +44,14 @@ export const delegationWatchStrings = {
   dormancyPreset: (minutes: number): string => minutes === 0 ? "自動整理しない" : `${minutes}分後`,
 } as const;
 
+export const autonomySettingsStrings = {
+  heading: "自律モード",
+  autoAdvanceLabel: "実行契約の次の作業を自動で始める",
+  autoAdvanceHint: "オフにすると、次の作業はカードでお知らせし、開始はあなたが押します。",
+  attentionCardsLabel: "先回りカード (気づき)",
+  attentionCardsHint: "オフにすると、新しいお知らせカードを作りません (表示済みのカードは残ります)。",
+} as const;
+
 export const notificationSettingsStrings = {
   title: "通知",
   enabledLabel: "通知",
@@ -59,11 +67,11 @@ export const notificationSettingsStrings = {
   paneComposerHint: "文字を選んで消す・書き直すといった編集ができる入力欄です。Enter で送信、Shift+Enter で改行。ペインが低いときは自動的に隠れます。",
 } as const;
 
-// バックグラウンドで動く AI (タブ掃除の判定・命名 / AIログの要約・ダイジェスト) の文言。
+// バックグラウンドで動く AI (タブ掃除の判定 / タブ名の自動命名 / AIログの要約・ダイジェスト) の文言。
 export const aiSettingsStrings = {
   tabLabel: "AI とおまかせ",
   title: "バックグラウンド AI",
-  description: "アプリが自動で AI を呼ぶ場面すべてで、ここの設定が使われます。対象は「タブ掃除の AI判定・AI命名」と「AIログのセッション要約・日次ダイジェスト」の4つです。",
+  description: "アプリが自動で AI を呼ぶ場面すべてで、ここの設定が使われます。対象は「タブ掃除の AI判定」「タブ名の自動命名」「AIログのセッション要約」「日次ダイジェスト」の4つです。",
   enableLabel: "AI機能を有効にする",
   enableHint: "オフにすると4つの機能すべてが止まります。AIログのパネルを開いたときの自動要約・自動ダイジェストも実行されません (集計や使用量の表示はそのまま見られます)。",
   providerTitle: "使用する AI",
@@ -77,6 +85,17 @@ export const aiSettingsStrings = {
   runningNote: "実行中の処理には反映されません。次に実行するぶんから切り替わります。",
   resetButton: "既定に戻す",
   disabledReason: "設定 > AI とおまかせ で「AI機能を有効にする」がオフになっています",
+} as const;
+
+// タブ名の自動命名 (AI が無名タブに名前を付ける定期ジョブ) の文言。
+export const autoPaneNamingStrings = {
+  title: "タブ名の自動命名",
+  label: "名前のないタブに AI が名前を付ける",
+  hint: "作業内容から短い名前を自動で付けます。あなたが自分で付けた名前は書き換えません (名前をリセットすると、また自動命名の対象に戻ります)。",
+  disabledByAiHint: "「AI機能を有効にする」がオフの間は動きません。",
+  toastApplied: (count: number): string => `タブ名を${count}件つけました`,
+  toastUndo: "元に戻す",
+  toastUndone: "タブ名を元に戻しました",
 } as const;
 
 // キャラ (pet) 設定タブの文言。用語は「ワークスペース > タブ > ペイン」(2026-08-11 確定)。

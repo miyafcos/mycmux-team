@@ -35,7 +35,7 @@ function makeTab(
   paneId: string,
   agentId: string,
   type: PaneTab["type"] = "terminal",
-  options?: Partial<Pick<PaneTab, "id" | "label" | "cwd" | "lastProcess" | "claudeSessionId" | "agentKind" | "agentSessionId" | "suppressedAgentSessions" | "launchEnv" | "initialPrompt" | "commandArgv" | "ephemeral" | "terminalSnapshot" | "htmlPath" | "sourcePath" | "sourceKind" | "previewPath" | "isDirty" | "reloadCounter" | "lifecycle" | "origin" | "declaredPrompt" | "declaredTarget">>,
+  options?: Partial<Pick<PaneTab, "id" | "label" | "labelSource" | "cwd" | "lastProcess" | "claudeSessionId" | "agentKind" | "agentSessionId" | "suppressedAgentSessions" | "launchEnv" | "initialPrompt" | "commandArgv" | "ephemeral" | "terminalSnapshot" | "htmlPath" | "sourcePath" | "sourceKind" | "previewPath" | "isDirty" | "reloadCounter" | "lifecycle" | "origin" | "declaredPrompt" | "declaredTarget">>,
 ): PaneTab {
   const tabId = options?.id ?? uuid();
   return {
@@ -43,6 +43,7 @@ function makeTab(
     sessionId: makeSessionId(workspaceId, `${paneId}-${tabId}`),
     agentId,
     label: options?.label,
+    labelSource: options?.labelSource,
     type,
     cwd: options?.cwd,
     lastProcess: options?.lastProcess,
@@ -335,6 +336,7 @@ function bumpBrowserTabReloadCounter(tab: PaneTab, info?: Required<BrowserPrevie
 interface TerminalLaunchOptions {
   agentId?: string;
   label?: string;
+  labelSource?: PaneTab["labelSource"];
   cwd?: string;
   agentKind?: PaneTab["agentKind"];
   agentSessionId?: string;
@@ -401,7 +403,13 @@ interface WorkspaceLayoutState {
   refreshBrowserTabPreview: (workspaceId: string, paneId: string, tabId: string, info: BrowserPreviewInfo) => void;
   removeTabFromPane: (workspaceId: string, paneId: string, tabId: string) => void;
   setActivePaneTab: (workspaceId: string, paneId: string, tabId: string) => void;
-  setTabLabel: (workspaceId: string, paneId: string, tabId: string, label: string | undefined) => void;
+  setTabLabel: (
+    workspaceId: string,
+    paneId: string,
+    tabId: string,
+    label: string | undefined,
+    source?: "user" | "ai",
+  ) => void;
   /**
    * Toggle the pane's single pinned tab. Pinning never changes `activeTabId`
    * (pinning must not steal focus); it only moves the tab to index 0 and makes
@@ -559,6 +567,9 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
                 label: restoredTabType === "online"
                   ? onlineStrings.panelTitle
                   : tabConfig.label ?? undefined,
+                labelSource: restoredTabType === "online"
+                  ? undefined
+                  : tabConfig.label_source ?? undefined,
                 cwd: tabConfig.cwd ?? pc.cwd ?? undefined,
                 claudeSessionId: tabClaudeSessionId,
                 agentKind: tabAgentKind,
@@ -733,6 +744,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
     const paneId = uuid();
     const tab = makeTab(workspaceId, paneId, agId, "terminal", {
       label: options.label,
+      labelSource: options.labelSource,
       cwd: options.cwd,
       agentKind: options.agentKind,
       agentSessionId: options.agentSessionId,
@@ -850,6 +862,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
     const agentId = options.agentId ?? targetPane.agentId;
     const tab = makeTab(workspaceId, paneId, agentId, "terminal", {
       label: options.label,
+      labelSource: options.labelSource,
       cwd: options.cwd,
       agentKind: options.agentKind,
       agentSessionId: options.agentSessionId,
@@ -1496,21 +1509,23 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
     }
   },
 
-  setTabLabel: (workspaceId, paneId, tabId, label) => {
+  setTabLabel: (workspaceId, paneId, tabId, label, source = "user") => {
     const workspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
     if (!workspace) return;
 
     const normalizedLabel = label?.trim() === "" || label === undefined ? undefined : label.trim();
+    const nextLabelSource = normalizedLabel === undefined ? undefined : source;
     let didChange = false;
     const newPanes = workspace.panes.map((pane) => {
       if (pane.id !== paneId) return pane;
       const tabs = pane.tabs.map((tab) => {
         if (tab.id !== tabId) return tab;
-        if (tab.label === normalizedLabel) return tab;
+        if (tab.label === normalizedLabel && tab.labelSource === nextLabelSource) return tab;
         didChange = true;
         return {
           ...tab,
           label: normalizedLabel,
+          labelSource: nextLabelSource,
         };
       });
       return {

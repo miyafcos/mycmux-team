@@ -761,6 +761,7 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
     addPaneToWorkspaceWithOptions(targetWs.id, anchorPane.id, "right", {
       agentId: "shell-starter",
       label: closedPane.label ?? undefined,
+      labelSource: closedPane.labelSource,
       cwd: closedPane.cwd ?? undefined,
       agentKind: closedPane.agentKind ?? undefined,
       agentSessionId: closedPane.agentSessionId ?? undefined,

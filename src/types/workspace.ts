@@ -30,6 +30,8 @@ export interface PaneTab {
   sessionId: string;
   agentId: string;
   label?: string;
+  /** Who set `label`. Absent means user-set (pre-migration data is treated as user-set). */
+  labelSource?: "user" | "ai";
   type?: "terminal" | "browser" | "online";
   cwd?: string;
   lastProcess?: string;

@@ -2,6 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use rusqlite::Connection;
 
+use crate::livebrief::{semantic_question_excerpt, PendingInputKind, SemanticEventEnvelope, SemanticEventKind};
+
 use super::model::{
     AttentionCard, AttentionKind, CardState, EvidenceRef, PrimaryAction, ReplyRoute,
     ResolutionPredicate, SessionRef,
@@ -181,7 +183,7 @@ fn stopped_session_revision_updates_the_existing_cause_card() {
     first.evidence[0].ref_id = "pty-a:1".into();
     let mut first_input = input(first);
     first_input.now = 100;
-    store::apply_with_connection(&conn, &first_input).unwrap();
+    store::apply_with_connection(&conn, &first_input, true).unwrap();
     let first_card = store::list_open_cards(&conn).unwrap().pop().unwrap();
 
     let mut second = observation(AttentionKind::WorkStopped);
@@ -194,7 +196,7 @@ fn stopped_session_revision_updates_the_existing_cause_card() {
     let mut second_input = input(second);
     second_input.existing_cards = store::list_all_cards(&conn).unwrap();
     second_input.now = 200;
-    store::apply_with_connection(&conn, &second_input).unwrap();
+    store::apply_with_connection(&conn, &second_input, true).unwrap();
 
     let cards = store::list_open_cards(&conn).unwrap();
     assert_eq!(cards.len(), 1);
@@ -243,7 +245,7 @@ fn four_open_cards_bundle_to_one_stalled_card() {
         tracked_pty_sessions: BTreeSet::new(),
         now: 100,
     };
-    store::apply_with_connection(&conn, &empty).unwrap();
+    store::apply_with_connection(&conn, &empty, true).unwrap();
     let cards = store::list_all_cards(&conn).unwrap();
     assert_eq!(
         cards
@@ -287,10 +289,90 @@ fn unavailable_primary_action_never_becomes_a_card() {
 }
 
 #[test]
+fn disabled_cards_do_not_create_or_update_until_reenabled() {
+    let conn = Connection::open_in_memory().unwrap();
+    let item = observation(AttentionKind::AgentAsked);
+    let input = input(item);
+
+    let disabled = store::apply_with_connection(&conn, &input, false).unwrap();
+    assert!(!disabled.changed);
+    assert!(disabled.cards.is_empty());
+    assert!(store::list_all_cards(&conn).unwrap().is_empty());
+
+    let enabled = store::apply_with_connection(&conn, &input, true).unwrap();
+    assert!(enabled.changed);
+    assert_eq!(enabled.cards.len(), 1);
+}
+
+#[test]
 fn untracked_session_is_silent_until_tracking_is_enabled() {
     let item = observation(AttentionKind::AgentAsked);
     let mut untracked = input(item.clone());
     untracked.tracked_pty_sessions.clear();
     assert!(evaluate(&untracked).is_empty());
     assert_eq!(evaluate(&input(item)).len(), 1);
+}
+
+#[test]
+fn detailed_evidence_keeps_the_same_fingerprint_and_card_id() {
+    let mut item = observation(AttentionKind::AgentAsked);
+    item.evidence[0].detail = "質問本文: どの方法で進めますか".into();
+    let first = evaluate(&input(item.clone())).pop().unwrap().card;
+    item.evidence[0].detail = "質問本文: 先に検証してから進めますか".into();
+    let second = evaluate(&input(item)).pop().unwrap().card;
+    assert_eq!(first.fingerprint, second.fingerprint);
+    assert_eq!(first.id, second.id);
+    assert_ne!(first.evidence[0].detail, second.evidence[0].detail);
+}
+
+#[test]
+fn stopped_evidence_states_unavailable_exit_reason_and_last_output() {
+    let evidence = super::stopped_evidence("pty-a", "pty-a:1", "Exited", "最後の出力".into());
+    assert_eq!(evidence.len(), 3);
+    assert!(evidence.iter().any(|item| item.detail.contains("終了コード・終了理由: 取得できず")));
+    assert!(evidence.iter().any(|item| item.detail.contains("最終出力: 最後の出力")));
+}
+
+#[test]
+fn next_item_evidence_keeps_the_objective_and_contract_goal() {
+    let observation = store::workorder_observation(
+        AttentionKind::NextItemReady,
+        "workorder-a",
+        "next:item-a",
+        "次の作業を始められる状態になりました",
+        "開始には人の判断が必要です",
+        PrimaryAction::RetryWorkItem {
+            workorder_id: "workorder-a".into(),
+            work_item_id: "item-a".into(),
+        },
+        Some(SessionRef::Logical { logical_session_id: "agent-a".into() }),
+        "提出物を確認する",
+        vec![EvidenceRef {
+            source: "workorder".into(),
+            kind: "workItemObjective".into(),
+            ref_id: "objective".into(),
+            detail: "作業: 検証する".into(),
+        }],
+    );
+    assert!(observation.evidence.iter().any(|item| item.detail == "作業: 検証する"));
+    assert!(observation.evidence.iter().any(|item| item.kind == "contractGoal" && item.detail.contains("提出物を確認する")));
+}
+
+#[test]
+fn semantic_question_fixture_preserves_agent_asked_text() {
+    let events = vec![SemanticEventEnvelope {
+        event_id: "question-1".into(),
+        source_revision: 1,
+        occurred_at: 1,
+        source_byte_start: 0,
+        source_byte_end: 1,
+        kind: SemanticEventKind::Question {
+            prompt_event_id: "prompt-1".into(),
+            provider_call_id: "call-1".into(),
+            prompt: "先に検証しますか".into(),
+            kind: PendingInputKind::Choice,
+            options: Vec::new(),
+        },
+    }];
+    assert_eq!(semantic_question_excerpt(&events, "prompt-1").as_deref(), Some("先に検証しますか"));
 }

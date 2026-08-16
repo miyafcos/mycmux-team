@@ -23,6 +23,7 @@ export interface ClosedPaneOrigin {
 export interface ClosedPaneEntry {
   cwd: string | null;
   label: string | null;
+  labelSource?: "user" | "ai";
   agentKind: AgentSessionKind | null;
   agentSessionId: string | null;
   /** Source workspace id; absent when it could not be resolved at close time. */
@@ -116,6 +117,7 @@ export function pushClosedPane(pane: Pane, origin?: ClosedPaneOrigin): void {
   pushClosedEntry({
     cwd: firstNonEmpty(activeMetadata?.cwd, paneMetadata?.cwd, activeTab?.cwd, pane.cwd),
     label: firstNonEmpty(activeTab?.label, pane.label),
+    ...(activeTab?.labelSource ? { labelSource: activeTab.labelSource } : {}),
     ...agentSession,
     ...resolveOrigin(pane, origin),
   });
@@ -132,6 +134,7 @@ export function pushClosedTab(pane: Pane, tab: PaneTab, origin?: ClosedPaneOrigi
       metadata[pane.sessionId]?.cwd,
     ),
     label: tab.label ?? pane.label ?? null,
+    ...(tab.labelSource ? { labelSource: tab.labelSource } : {}),
     ...agentSession,
     ...resolveOrigin(pane, origin),
   });

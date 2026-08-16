@@ -17,10 +17,9 @@ import {
   type PriceCoverage,
   type SessionsReport,
 } from "../../lib/ailog";
-import type { AilogSelection, SessionSort } from "../../stores/ailogStore";
+import type { SessionSort } from "../../stores/ailogStore";
 import { useThemeStore } from "../../stores/themeStore";
-import type { LeafDimension } from "./sankeyModel";
-import { filterSessions, pageSessions, sortSessions } from "./sessionFilter";
+import { pageSessions, sortSessions } from "./sessionFilter";
 import { getSessionTableRowMetrics } from "./sessionTableRowHeight";
 import { ButtonGroup, Chip, noteStyle, subtleButtonStyle, tableStyle, tdLeftStyle, tdStyle, thLeftStyle, thStyle } from "./ui";
 
@@ -31,8 +30,6 @@ export function SessionTable({
   page,
   onPage,
   pageSize,
-  selection,
-  leafDimension,
   onOpenDetail,
   activeKey,
   priceCoverage,
@@ -43,16 +40,13 @@ export function SessionTable({
   page: number;
   onPage: (value: number) => void;
   pageSize: number;
-  selection: AilogSelection | null;
-  leafDimension: LeafDimension;
   onOpenDetail: (kind: string, sessionId: string) => void;
   activeKey: { kind: string; sessionId: string } | null;
   priceCoverage?: PriceCoverage;
 }) {
   const view = useMemo(() => {
-    const filtered = filterSessions(report.rows, selection, leafDimension);
-    return pageSessions(sortSessions(filtered, sort), page, pageSize);
-  }, [report.rows, selection, leafDimension, sort, page, pageSize]);
+    return pageSessions(sortSessions(report.rows, sort), page, pageSize);
+  }, [report.rows, sort, page, pageSize]);
   const uiDensity = useThemeStore((state) => state.uiDensity);
   const uiFontScale = useThemeStore((state) => state.uiFontScale);
   const rowMetrics = useMemo(
@@ -78,6 +72,7 @@ export function SessionTable({
             { value: "cost" as SessionSort, label: "コスト相当降順" },
             { value: "rework" as SessionSort, label: "手戻り降順" },
             { value: "recent" as SessionSort, label: "新しい順" },
+            { value: "turns" as SessionSort, label: "ターン数降順" },
           ]}
         />
       </div>
@@ -178,9 +173,6 @@ export function SessionTable({
       <div style={{ ...noteStyle, display: "flex", flexDirection: "column", gap: 2 }}>
         {truncated > 0 ? (
           <div>{`取得は上位 ${formatCount(report.rows.length)} 件までです（全 ${formatCount(report.total)} 件・残り ${formatCount(truncated)} 件は未取得）。`}</div>
-        ) : null}
-        {selection?.type === "tag" ? (
-          <div>{`作業種別「${selection.label}」で絞り込み中です。作業種別の絞り込みはこの一覧にだけ効きます（上の集計は期間全体のままです）。`}</div>
         ) : null}
         <div>行をクリックすると詳細を開きます。</div>
       </div>

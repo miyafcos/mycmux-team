@@ -12,6 +12,7 @@ import { readSessionStatusSignals, type SessionStatusSignals } from "../lib/sess
 import type { PaneTab, Workspace } from "../types";
 
 export const SEEN_ATTENTION_STORAGE_KEY = "mycmux:seen-attention-by-tab";
+export const DONE_MARK_STORAGE_KEY = "mycmux:done-mark-by-tab";
 
 interface StorageLike {
   getItem: (key: string) => string | null;
@@ -53,12 +54,15 @@ interface SessionAttentionState {
   attentionBySession: Record<string, SessionAttention>;
   statusSignalsBySession: Record<string, SessionStatusSignals>;
   seenAttentionByTab: Map<string, string>;
+  doneMarkByTab: Map<string, number>;
   nextOccurrenceOrder: number;
   serverEpoch: string | null;
   lastSeq: number;
   applySnapshot: (payload: SessionStatusSnapshotPayload) => void;
   applyChanged: (payload: SessionStatusChangedPayload) => void;
   markSeen: (tabId: string, attentionId: string) => void;
+  markDone: (tabId: string, at: number) => void;
+  clearDoneMark: (tabId: string) => void;
   hydrateSeen: () => void;
   resetForTests: () => void;
 }
@@ -94,6 +98,35 @@ function persistSeenAttention(seen: Map<string, string>): void {
   if (!storage) return;
   try {
     storage.setItem(SEEN_ATTENTION_STORAGE_KEY, JSON.stringify([...seen.entries()]));
+  } catch {
+    // Client-local read state is best-effort when storage is unavailable.
+  }
+}
+
+export function readDoneMarks(storage: StorageLike | null = browserStorage()): Map<string, number> {
+  if (!storage) return new Map();
+  try {
+    const raw = storage.getItem(DONE_MARK_STORAGE_KEY);
+    if (!raw) return new Map();
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return new Map();
+    return new Map(parsed.filter(
+      (entry): entry is [string, number] => Array.isArray(entry)
+        && entry.length === 2
+        && typeof entry[0] === "string"
+        && typeof entry[1] === "number"
+        && Number.isFinite(entry[1]),
+    ));
+  } catch {
+    return new Map();
+  }
+}
+
+function persistDoneMarks(doneMarkByTab: Map<string, number>): void {
+  const storage = browserStorage();
+  if (!storage) return;
+  try {
+    storage.setItem(DONE_MARK_STORAGE_KEY, JSON.stringify([...doneMarkByTab.entries()]));
   } catch {
     // Client-local read state is best-effort when storage is unavailable.
   }
@@ -285,6 +318,7 @@ export const useSessionAttentionStore = create<SessionAttentionState>((set) => (
   attentionBySession: {},
   statusSignalsBySession: {},
   seenAttentionByTab: readSeenAttention(),
+  doneMarkByTab: readDoneMarks(),
   nextOccurrenceOrder: 1,
   serverEpoch: null,
   lastSeq: 0,
@@ -325,12 +359,29 @@ export const useSessionAttentionStore = create<SessionAttentionState>((set) => (
     return { seenAttentionByTab };
   }),
 
-  hydrateSeen: () => set({ seenAttentionByTab: readSeenAttention() }),
+  markDone: (tabId, at) => set((state) => {
+    if (!Number.isFinite(at) || state.doneMarkByTab.get(tabId) === at) return state;
+    const doneMarkByTab = new Map(state.doneMarkByTab);
+    doneMarkByTab.set(tabId, at);
+    persistDoneMarks(doneMarkByTab);
+    return { doneMarkByTab };
+  }),
+
+  clearDoneMark: (tabId) => set((state) => {
+    if (!state.doneMarkByTab.has(tabId)) return state;
+    const doneMarkByTab = new Map(state.doneMarkByTab);
+    doneMarkByTab.delete(tabId);
+    persistDoneMarks(doneMarkByTab);
+    return { doneMarkByTab };
+  }),
+
+  hydrateSeen: () => set({ seenAttentionByTab: readSeenAttention(), doneMarkByTab: readDoneMarks() }),
 
   resetForTests: () => set({
     attentionBySession: {},
     statusSignalsBySession: {},
     seenAttentionByTab: new Map(),
+    doneMarkByTab: new Map(),
     nextOccurrenceOrder: 1,
     serverEpoch: null,
     lastSeq: 0,

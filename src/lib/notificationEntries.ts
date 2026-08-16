@@ -1,5 +1,5 @@
 import { getAgent } from "./agents";
-import type { PaneMetadata } from "../stores/paneMetadataStore";
+import type { PaneMetadata, PaneVolatileMetadata } from "../stores/paneMetadataStore";
 import type { Workspace } from "../types";
 
 export interface NotificationEntry {
@@ -24,6 +24,7 @@ export interface NotificationEntry {
 export function collectNotificationEntries(
   workspaces: readonly Workspace[],
   metadata: Record<string, PaneMetadata>,
+  volatileMetadata: Record<string, PaneVolatileMetadata> = {},
 ): NotificationEntry[] {
   const entries: NotificationEntry[] = [];
   for (const workspace of workspaces) {
@@ -41,7 +42,7 @@ export function collectNotificationEntries(
           count,
           kind: "waiting",
           label: tab.label
-            ?? meta.processTitle
+            ?? volatileMetadata[tab.sessionId]?.processTitle
             ?? meta.cwd?.split("/").pop()
             ?? getAgent(tab.agentId)?.name
             ?? "Shell",

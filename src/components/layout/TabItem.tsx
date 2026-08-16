@@ -153,7 +153,14 @@ export default memo(function TabItem({ uiVariant = "default", name, tabCount, ac
         marginTop: "2px",
       } as React.CSSProperties & Record<string, string | number>}
     >
-      {showPet && petAtlasUrl && <PetSprite atlasUrl={petAtlasUrl} state={petState} height={40} />}
+      {showPet && petAtlasUrl && (
+        <PetSprite
+          atlasUrl={petAtlasUrl}
+          state={petState}
+          height={40}
+          animate={active || petState !== "idle" || Boolean(notificationCount) || hasUnseenAttention}
+        />
+      )}
       <div style={{ display: "flex", flexDirection: "column", gap: 5, minWidth: 0, overflow: "hidden", flex: 1 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
           {notificationCount ? (

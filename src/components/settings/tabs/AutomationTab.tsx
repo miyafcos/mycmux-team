@@ -1,9 +1,10 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { formatElapsedSince } from "../../../lib/duration";
 import { readDormantMinutes, writeDormantMinutes } from "../../../lib/agentDormancy";
+import { autonomyGetSettings, autonomySetSettings, type AutonomySettings } from "../../../lib/autonomyBridge";
 import { useDispatchWatchdogStore, WATCHDOG_KIND_LABELS } from "../../../stores/dispatchWatchdogStore";
 import { useSettingsStore } from "../../../stores/settingsStore";
-import { delegationWatchStrings } from "../settingsStrings";
+import { autonomySettingsStrings, delegationWatchStrings } from "../settingsStrings";
 import { checkboxLabelStyle, checkboxLabelStyleFor, sectionHeadingStyle } from "../tabStyles";
 
 interface SensitivityPreset {
@@ -22,6 +23,7 @@ const SENSITIVITY_PRESETS: readonly SensitivityPreset[] = [
 ];
 
 const DORMANCY_PRESETS = [0, 30, 60, 120] as const;
+const DEFAULT_AUTONOMY_SETTINGS: AutonomySettings = { autoAdvance: true, attentionCards: true };
 
 function presetDescription(preset: SensitivityPreset): string {
   return delegationWatchStrings.sensitivityDescription(preset.intervalMinutes, preset.stallMinutes);
@@ -38,7 +40,12 @@ export function AutomationTab() {
   const setNotify = useSettingsStore((state) => state.setDispatchWatchdogNotify);
   const queue = useDispatchWatchdogStore((state) => state.queue);
   const [dormantMinutes, setDormantMinutes] = useState(readDormantMinutes);
+  const [autonomySettings, setAutonomySettings] = useState<AutonomySettings>(DEFAULT_AUTONOMY_SETTINGS);
   const now = Date.now();
+
+  useEffect(() => {
+    void autonomyGetSettings().then(setAutonomySettings).catch(() => undefined);
+  }, []);
 
   const activePreset = SENSITIVITY_PRESETS.find(
     (preset) => preset.intervalMinutes === intervalMinutes && preset.stallMinutes === stallMinutes,
@@ -53,6 +60,10 @@ export function AutomationTab() {
     setStallMinutes(preset.stallMinutes);
   };
 
+  const updateAutonomySettings = (input: Partial<AutonomySettings>): void => {
+    void autonomySetSettings(input).then(setAutonomySettings).catch(() => undefined);
+  };
+
   return (
     <div>
       <div id="cmux-delegation-watch-heading" style={sectionHeadingStyle}>{delegationWatchStrings.heading}</div>
@@ -63,6 +74,28 @@ export function AutomationTab() {
         <input type="checkbox" checked={enabled} onChange={(event) => enableWatchdog(event.target.checked)} />
         <span>{delegationWatchStrings.enabledLabel}</span>
       </label>
+
+      <div id="cmux-autonomy-heading" style={{ ...sectionHeadingStyle, marginTop: 24 }}>{autonomySettingsStrings.heading}</div>
+      <label style={checkboxLabelStyle}>
+        <input
+          data-autonomy-toggle="autoAdvance"
+          type="checkbox"
+          checked={autonomySettings.autoAdvance}
+          onChange={(event) => updateAutonomySettings({ autoAdvance: event.target.checked })}
+        />
+        <span>{autonomySettingsStrings.autoAdvanceLabel}</span>
+      </label>
+      <div style={{ color: "var(--cmux-text-dim)", fontSize: 12, marginTop: 4 }}>{autonomySettingsStrings.autoAdvanceHint}</div>
+      <label style={{ ...checkboxLabelStyle, marginTop: 10 }}>
+        <input
+          data-autonomy-toggle="attentionCards"
+          type="checkbox"
+          checked={autonomySettings.attentionCards}
+          onChange={(event) => updateAutonomySettings({ attentionCards: event.target.checked })}
+        />
+        <span>{autonomySettingsStrings.attentionCardsLabel}</span>
+      </label>
+      <div style={{ color: "var(--cmux-text-dim)", fontSize: 12, marginTop: 4 }}>{autonomySettingsStrings.attentionCardsHint}</div>
 
       <div style={{ ...sectionHeadingStyle, marginTop: 16 }}>{delegationWatchStrings.sensitivityTitle}</div>
       <div role="radiogroup" aria-label={delegationWatchStrings.sensitivityAriaLabel}>

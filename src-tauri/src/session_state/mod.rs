@@ -510,7 +510,14 @@ pub fn reduce(previous: &SessionView, evidence: &Evidence) -> SessionView {
         }
     }
 
-    if view != before {
+    let state_changed = if matches!(&evidence.signal, EvidenceSignal::LastOutput { .. }) {
+            let mut without_last_output_at = view.clone();
+            without_last_output_at.last_output_at = before.last_output_at;
+            without_last_output_at != before
+    } else {
+        view != before
+    };
+    if state_changed {
         view.session_revision = previous.session_revision.saturating_add(1);
         view.last_evidence_at = view.last_evidence_at.max(evidence.observed_at);
     }

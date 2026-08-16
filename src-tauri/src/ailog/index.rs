@@ -21,9 +21,10 @@ use serde::Serialize;
 
 use crate::ailog::metrics::{self, ToolClass};
 use crate::ailog::price::{self, PriceTable};
+use crate::ailog::rollup;
 use crate::ailog::{
-    parse_claude, parse_codex, project_rules, ChunkData, SessionChunk, ToolRow, KIND_CLAUDE,
-    KIND_CODEX,
+    parse_claude, parse_codex, parse_grok, project_rules, ChunkData, SessionChunk, ToolRow,
+    KIND_CLAUDE, KIND_CODEX, KIND_GROK,
 };
 
 /// Minimum gap between progress events, per spec §5.
@@ -123,16 +124,24 @@ enum WriteMsg {
 }
 
 /// Walk a directory tree collecting `*.jsonl` files.
-fn collect_jsonl(root: &Path, out: &mut Vec<PathBuf>) {
+///
+/// Grok keeps several telemetry JSONL files beside `updates.jsonl`; callers
+/// pass `Some("updates.jsonl")` for that root so telemetry never becomes a
+/// second transcript source.
+fn collect_jsonl(root: &Path, out: &mut Vec<PathBuf>, file_name: Option<&str>) {
     let Ok(entries) = std::fs::read_dir(root) else {
         return;
     };
     for entry in entries.flatten() {
         let path = entry.path();
         match entry.file_type() {
-            Ok(file_type) if file_type.is_dir() => collect_jsonl(&path, out),
+            Ok(file_type) if file_type.is_dir() => collect_jsonl(&path, out, file_name),
             Ok(file_type) if file_type.is_file() => {
-                if path.extension().and_then(|ext| ext.to_str()) == Some("jsonl") {
+                if path.extension().and_then(|ext| ext.to_str()) == Some("jsonl")
+                    && file_name.map_or(true, |name| {
+                        path.file_name().and_then(|v| v.to_str()) == Some(name)
+                    })
+                {
                     out.push(path);
                 }
             }
@@ -156,6 +165,9 @@ fn default_roots() -> Vec<(&'static str, PathBuf)> {
     }
     if let Some(path) = crate::ailog::codex_root() {
         roots.push((KIND_CODEX, path));
+    }
+    if let Some(path) = crate::ailog::grok_root() {
+        roots.push((KIND_GROK, path));
     }
     roots
 }
@@ -207,7 +219,11 @@ pub async fn run_index(
     let mut bytes_total = 0u64;
     for (kind, root) in &roots {
         let mut files = Vec::new();
-        collect_jsonl(root, &mut files);
+        collect_jsonl(
+            root,
+            &mut files,
+            (*kind == KIND_GROK).then_some("updates.jsonl"),
+        );
         for path in files {
             let Ok(meta) = std::fs::metadata(&path) else {
                 continue;
@@ -230,7 +246,15 @@ pub async fn run_index(
                         skipped += 1;
                         continue;
                     }
-                    (parsed, false)
+                    if *kind == KIND_GROK {
+                        // ACP user/tool chunks are stateful across lines. A
+                        // periodic index pass may cut a turn between files, so
+                        // reparse and replace the Grok session rather than
+                        // losing the prefix or double-counting its metrics.
+                        (0, true)
+                    } else {
+                        (parsed, false)
+                    }
                 }
             };
             bytes_total += size.saturating_sub(start);
@@ -251,23 +275,25 @@ pub async fn run_index(
 
     // --- writer ----------------------------------------------------------
     let db_path = options.db_path.clone();
-    let writer = tokio::task::spawn_blocking(move || -> Result<(usize, Vec<String>, u64, u64), String> {
-        let mut conn = crate::ailog::open_db(&db_path)?;
-        let prices = PriceTable::load(&conn)?;
-        let mut touched: HashSet<(String, String)> = HashSet::new();
-        let mut errors = Vec::new();
-        let mut db_write_ms = 0u64;
+    let writer_progress = progress.clone();
+    let writer =
+        tokio::task::spawn_blocking(move || -> Result<(usize, Vec<String>, u64, u64), String> {
+            let mut conn = crate::ailog::open_db(&db_path)?;
+            let prices = PriceTable::load(&conn)?;
+            let mut touched: HashSet<(String, String)> = HashSet::new();
+            let mut errors = Vec::new();
+            let mut db_write_ms = 0u64;
 
-        // Keep the index pass atomic. The prior file-at-a-time transaction
-        // made a full initial import pay a journal sync for every JSONL file.
-        // The writer remains single-threaded, so readers can still parse in
-        // parallel without retaining completed chunks in memory.
-        let tx = conn
-            .transaction()
-            .map_err(|err| format!("begin index transaction: {err}"))?;
-        let mut source_file_upsert = tx
-            .prepare_cached(
-                "INSERT INTO source_file (path, kind, size_bytes, mtime_ns, parsed_bytes, \
+            // Keep the index pass atomic. The prior file-at-a-time transaction
+            // made a full initial import pay a journal sync for every JSONL file.
+            // The writer remains single-threaded, so readers can still parse in
+            // parallel without retaining completed chunks in memory.
+            let tx = conn
+                .transaction()
+                .map_err(|err| format!("begin index transaction: {err}"))?;
+            let mut source_file_upsert = tx
+                .prepare_cached(
+                    "INSERT INTO source_file (path, kind, size_bytes, mtime_ns, parsed_bytes, \
                  parsed_lines, session_id, last_indexed, parse_error) \
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL) \
                  ON CONFLICT(path) DO UPDATE SET kind=excluded.kind, \
@@ -277,102 +303,117 @@ pub async fn run_index(
                    ELSE source_file.parsed_lines + excluded.parsed_lines END, \
                  session_id=COALESCE(excluded.session_id, source_file.session_id), \
                  last_indexed=excluded.last_indexed, parse_error=NULL",
-            )
-            .map_err(|err| format!("prepare source_file upsert: {err}"))?;
-        let mut source_file_error = tx
-            .prepare_cached(
-                "INSERT INTO source_file (path, kind, size_bytes, mtime_ns, parsed_bytes, \
+                )
+                .map_err(|err| format!("prepare source_file upsert: {err}"))?;
+            let mut source_file_error = tx
+                .prepare_cached(
+                    "INSERT INTO source_file (path, kind, size_bytes, mtime_ns, parsed_bytes, \
                  parsed_lines, session_id, last_indexed, parse_error) \
                  VALUES (?1, ?2, ?3, ?4, 0, 0, NULL, ?5, ?6) \
                  ON CONFLICT(path) DO UPDATE SET parse_error=excluded.parse_error, \
                  last_indexed=excluded.last_indexed",
-            )
-            .map_err(|err| format!("prepare source_file error: {err}"))?;
+                )
+                .map_err(|err| format!("prepare source_file error: {err}"))?;
 
-        while let Ok(message) = rx.recv() {
-            let write_started = Instant::now();
-            match message {
-                WriteMsg::Chunk {
-                    job_path,
-                    kind,
-                    size,
-                    mtime_ns,
-                    start,
-                    reset,
-                    data,
-                } => {
-                    if reset {
-                        for session_id in data.sessions.keys() {
-                            delete_session(&tx, kind, session_id)?;
+            while let Ok(message) = rx.recv() {
+                let write_started = Instant::now();
+                match message {
+                    WriteMsg::Chunk {
+                        job_path,
+                        kind,
+                        size,
+                        mtime_ns,
+                        start,
+                        reset,
+                        data,
+                    } => {
+                        if reset {
+                            for session_id in data.sessions.keys() {
+                                rollup::mark_session_dirty(&tx, kind, session_id)?;
+                                delete_session(&tx, kind, session_id)?;
+                            }
                         }
+                        for chunk in data.sessions.values() {
+                            apply_chunk(&tx, chunk)?;
+                            touched.insert((kind.to_string(), chunk.session_id.clone()));
+                        }
+                        let session_id = data.sessions.keys().next().cloned();
+                        source_file_upsert
+                            .execute(params![
+                                job_path,
+                                kind,
+                                size as i64,
+                                mtime_ns,
+                                (start + data.consumed_bytes) as i64,
+                                data.lines as i64,
+                                session_id,
+                                chrono::Utc::now().timestamp_millis(),
+                                reset,
+                            ])
+                            .map_err(|err| format!("write source_file: {err}"))?;
                     }
-                    for chunk in data.sessions.values() {
-                        apply_chunk(&tx, chunk)?;
-                        touched.insert((kind.to_string(), chunk.session_id.clone()));
+                    WriteMsg::Failed {
+                        job_path,
+                        kind,
+                        size,
+                        mtime_ns,
+                        message,
+                    } => {
+                        errors.push(format!("{job_path}: {message}"));
+                        source_file_error
+                            .execute(params![
+                                job_path,
+                                kind,
+                                size as i64,
+                                mtime_ns,
+                                chrono::Utc::now().timestamp_millis(),
+                                message,
+                            ])
+                            .map_err(|err| format!("write source_file error: {err}"))?;
                     }
-                    let session_id = data.sessions.keys().next().cloned();
-                    source_file_upsert.execute(
-                        params![
-                            job_path,
-                            kind,
-                            size as i64,
-                            mtime_ns,
-                            (start + data.consumed_bytes) as i64,
-                            data.lines as i64,
-                            session_id,
-                            chrono::Utc::now().timestamp_millis(),
-                            reset,
-                        ],
-                    )
-                    .map_err(|err| format!("write source_file: {err}"))?;
                 }
-                WriteMsg::Failed {
-                    job_path,
-                    kind,
-                    size,
-                    mtime_ns,
-                    message,
-                } => {
-                    errors.push(format!("{job_path}: {message}"));
-                    source_file_error.execute(
-                        params![
-                            job_path,
-                            kind,
-                            size as i64,
-                            mtime_ns,
-                            chrono::Utc::now().timestamp_millis(),
-                            message,
-                        ],
-                    )
-                    .map_err(|err| format!("write source_file error: {err}"))?;
-                }
+                db_write_ms += write_started.elapsed().as_millis() as u64;
             }
-            db_write_ms += write_started.elapsed().as_millis() as u64;
-        }
 
-        let post_process_started = Instant::now();
-        let count = touched.len();
-        drop(source_file_error);
-        drop(source_file_upsert);
-        for (kind, session_id) in &touched {
-            recompute_session(&tx, kind, session_id, &prices)?;
-        }
-        rederive_projects_and_tags_if_needed(&tx, &prices)?;
-        tx.execute(
-            "INSERT INTO index_state (key, value) VALUES ('last_finished_at', ?1) \
+            let post_process_started = Instant::now();
+            let count = touched.len();
+            drop(source_file_error);
+            drop(source_file_upsert);
+            for (kind, session_id) in &touched {
+                recompute_session(&tx, kind, session_id, &prices)?;
+                rollup::mark_session_dirty(&tx, kind, session_id)?;
+            }
+            let rederived = rederive_projects_and_tags_if_needed(&tx, &prices)?;
+            if rederived || !rollup::version_matches(&tx)? {
+                rollup::mark_all_dirty(&tx)?;
+            }
+            if let Some(sink) = &writer_progress {
+                sink(IndexProgress {
+                    phase: "rollup".to_string(),
+                    files_done: files_total,
+                    files_total,
+                    sessions: count,
+                    bytes_done: bytes_total,
+                    bytes_total,
+                    elapsed_ms: started.elapsed().as_millis() as u64,
+                });
+            }
+            let _rollup_rows = rollup::rebuild_dirty(&tx)?;
+            tx.execute(
+                "INSERT INTO index_state (key, value) VALUES ('last_finished_at', ?1) \
              ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-            params![chrono::Utc::now().timestamp_millis().to_string()],
-        )
-        .map_err(|err| format!("write index_state: {err}"))?;
-        tx.commit()
-            .map_err(|err| format!("commit finalize: {err}"))?;
-        Ok((
-            count,
-            errors,
-            db_write_ms,
-            post_process_started.elapsed().as_millis() as u64,
-        ))
-    });
+                params![chrono::Utc::now().timestamp_millis().to_string()],
+            )
+            .map_err(|err| format!("write index_state: {err}"))?;
+            tx.commit()
+                .map_err(|err| format!("commit finalize: {err}"))?;
+            Ok((
+                count,
+                errors,
+                db_write_ms,
+                post_process_started.elapsed().as_millis() as u64,
+            ))
+        });
 
     // --- readers ---------------------------------------------------------
     let workers = std::thread::available_parallelism()
@@ -491,7 +532,7 @@ pub async fn run_index(
 fn rederive_projects_and_tags_if_needed(
     tx: &Transaction<'_>,
     prices: &PriceTable,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let current: Option<String> = tx
         .query_row(
             "SELECT value FROM index_state WHERE key = 'derivation_version'",
@@ -501,7 +542,7 @@ fn rederive_projects_and_tags_if_needed(
         .optional()
         .map_err(|err| format!("read derivation_version: {err}"))?;
     if current.as_deref() == Some(DERIVATION_VERSION) {
-        return Ok(());
+        return Ok(false);
     }
 
     let sessions = {
@@ -549,7 +590,7 @@ fn rederive_projects_and_tags_if_needed(
         params![DERIVATION_VERSION],
     )
     .map_err(|err| format!("write derivation_version: {err}"))?;
-    Ok(())
+    Ok(true)
 }
 
 /// Read the requested byte range and hand it to the format's parser.
@@ -585,17 +626,124 @@ fn read_and_parse(job: &FileJob) -> Result<ChunkData, String> {
         stem.rsplit_once('-')
             .map(|_| stem.splitn(3, '-').nth(2).unwrap_or(stem))
             .unwrap_or(stem)
+    } else if job.kind == KIND_GROK {
+        job.path
+            .parent()
+            .and_then(|parent| parent.file_name())
+            .and_then(|name| name.to_str())
+            .unwrap_or(stem)
     } else {
         stem
     };
 
-    let mut data = if job.kind == KIND_CLAUDE {
-        parse_claude::parse_chunk(&text, fallback)
-    } else {
-        parse_codex::parse_chunk(&text, fallback)
+    let mut data = match job.kind {
+        KIND_CLAUDE => parse_claude::parse_chunk(&text, fallback),
+        KIND_CODEX => parse_codex::parse_chunk(&text, fallback),
+        KIND_GROK => parse_grok::parse_chunk(&text, fallback),
+        other => return Err(format!("unsupported ailog kind: {other}")),
+    };
+    if job.kind == KIND_GROK {
+        let (cwd, model) = grok_supplemental_metadata(&job.path);
+        for session in data.sessions.values_mut() {
+            if session.cwd.is_none() {
+                session.cwd = cwd.clone();
+            }
+            for turn in &mut session.turns {
+                if turn.model.is_none() {
+                    turn.model = model.clone();
+                }
+            }
+        }
     };
     data.consumed_bytes = complete as u64;
     Ok(data)
+}
+
+/// Read Grok metadata that lives beside `updates.jsonl` without indexing the
+/// sibling telemetry files themselves.
+fn grok_supplemental_metadata(path: &Path) -> (Option<String>, Option<String>) {
+    let Some(parent) = path.parent() else {
+        return (None, None);
+    };
+    let mut cwd = None;
+    let mut model = None;
+
+    if let Ok(text) = std::fs::read_to_string(parent.join("summary.json")) {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
+            cwd = value
+                .get("info")
+                .and_then(|info| info.get("cwd"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string);
+            model = value
+                .get("current_model_id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string);
+        }
+    }
+
+    if model.is_none() {
+        if let Ok(file) = std::fs::File::open(parent.join("events.jsonl")) {
+            use std::io::BufRead;
+            for line in std::io::BufReader::new(file).lines().map_while(Result::ok) {
+                let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {
+                    continue;
+                };
+                if value.get("type").and_then(serde_json::Value::as_str)
+                    == Some("turn_started")
+                {
+                    model = value
+                        .get("model_id")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string);
+                    if model.is_some() {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    if cwd.is_none() {
+        cwd = path
+            .parent()
+            .and_then(Path::parent)
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str())
+            .and_then(percent_decode_path_segment);
+    }
+
+    (cwd, model)
+}
+
+fn percent_decode_path_segment(segment: &str) -> Option<String> {
+    let bytes = segment.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            if index + 2 >= bytes.len() {
+                return None;
+            }
+            let high = hex_digit(bytes[index + 1])?;
+            let low = hex_digit(bytes[index + 2])?;
+            decoded.push((high << 4) | low);
+            index += 3;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(decoded).ok()
+}
+
+fn hex_digit(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
 }
 
 fn clear_all(conn: &mut Connection) -> Result<(), String> {
@@ -609,6 +757,8 @@ fn clear_all(conn: &mut Connection) -> Result<(), String> {
         "tool_event",
         "file_touch",
         "rework",
+        "rollup_turn_session_day",
+        "rollup_dirty",
     ] {
         tx.execute(&format!("DELETE FROM {table}"), [])
             .map_err(|err| format!("clear {table}: {err}"))?;
@@ -719,17 +869,42 @@ fn apply_chunk(tx: &Transaction<'_>, chunk: &SessionChunk) -> Result<(), String>
 
     for turn in &chunk.turns {
         let normalized = turn.model.as_deref().map(price::normalize);
+        // Grok reports one aggregate cost for a completed turn. The existing
+        // schema exposes input/output cost columns, so keep the exact total
+        // while allocating the aggregate by token volume for those views. The
+        // split is storage-compatible presentation, not a claim about the
+        // provider's component rates.
+        let reported_ingest = turn.reported_cost_usd.map(|cost| {
+            let input = (turn.input_tokens
+                + turn.cache_read_tokens
+                + turn.cache_write_5m_tokens
+                + turn.cache_write_1h_tokens) as f64;
+            let output = turn.output_tokens as f64;
+            let total = input + output;
+            if total > 0.0 {
+                cost * input / total
+            } else {
+                0.0
+            }
+        });
+        let reported_generate = turn
+            .reported_cost_usd
+            .map(|cost| cost - reported_ingest.unwrap_or(0.0));
         tx.execute(
             "INSERT INTO turn (kind, session_id, seq, request_id, ts, model, model_family, \
              model_variant, effort, service_tier, input_tokens, output_tokens, \
              cache_read_tokens, cache_write_5m_tokens, cache_write_1h_tokens, \
-             reasoning_tokens, duration_ms, tool_calls, tool_errors) \
+             reasoning_tokens, duration_ms, tool_calls, tool_errors, cost_usd, \
+             ingest_cost_usd, generate_cost_usd) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, \
-             ?17, ?18, 0) \
+             ?17, ?18, 0, COALESCE(?19, 0), COALESCE(?20, 0), COALESCE(?21, 0)) \
              ON CONFLICT(kind, session_id, request_id) DO UPDATE SET \
                tool_calls = turn.tool_calls + excluded.tool_calls, \
                duration_ms = COALESCE(excluded.duration_ms, turn.duration_ms), \
-               model = COALESCE(turn.model, excluded.model)",
+               model = COALESCE(turn.model, excluded.model), \
+               cost_usd = CASE WHEN ?19 IS NULL THEN turn.cost_usd ELSE excluded.cost_usd END, \
+               ingest_cost_usd = CASE WHEN ?20 IS NULL THEN turn.ingest_cost_usd ELSE excluded.ingest_cost_usd END, \
+               generate_cost_usd = CASE WHEN ?21 IS NULL THEN turn.generate_cost_usd ELSE excluded.generate_cost_usd END",
             params![
                 chunk.kind,
                 chunk.session_id,
@@ -749,6 +924,9 @@ fn apply_chunk(tx: &Transaction<'_>, chunk: &SessionChunk) -> Result<(), String>
                 turn.reasoning_tokens,
                 turn.duration_ms,
                 turn.tool_calls,
+                turn.reported_cost_usd,
+                reported_ingest,
+                reported_generate,
             ],
         )
         .map_err(|err| format!("upsert turn: {err}"))?;
@@ -913,6 +1091,9 @@ pub fn recompute_session(
         cache_read: i64,
         write_5m: i64,
         write_1h: i64,
+        stored_cost: f64,
+        stored_ingest: f64,
+        stored_generate: f64,
     }
 
     let mut turns = Vec::new();
@@ -920,7 +1101,8 @@ pub fn recompute_session(
         let mut stmt = tx
             .prepare(
                 "SELECT seq, model, model_family, input_tokens, output_tokens, \
-                 cache_read_tokens, cache_write_5m_tokens, cache_write_1h_tokens \
+                 cache_read_tokens, cache_write_5m_tokens, cache_write_1h_tokens, \
+                 cost_usd, ingest_cost_usd, generate_cost_usd \
                  FROM turn WHERE kind = ?1 AND session_id = ?2",
             )
             .map_err(|err| format!("prepare turn scan: {err}"))?;
@@ -935,6 +1117,9 @@ pub fn recompute_session(
                     cache_read: row.get(5)?,
                     write_5m: row.get(6)?,
                     write_1h: row.get(7)?,
+                    stored_cost: row.get(8)?,
+                    stored_ingest: row.get(9)?,
+                    stored_generate: row.get(10)?,
                 })
             })
             .map_err(|err| format!("scan turns: {err}"))?;
@@ -947,19 +1132,37 @@ pub fn recompute_session(
     let mut per_family: BTreeMap<String, f64> = BTreeMap::new();
     let mut families: HashSet<String> = HashSet::new();
     for turn in &turns {
-        let price = turn
-            .model
-            .as_deref()
-            .and_then(|model| prices.lookup(model))
-            .map(|row| row.price);
-        let split = price::cost_for_turn(
-            price.as_ref(),
-            turn.input,
-            turn.output,
-            turn.cache_read,
-            turn.write_5m,
-            turn.write_1h,
-        );
+        let split = if kind == KIND_GROK {
+            // Grok's provider-reported aggregate is already authoritative. It
+            // was stored by apply_chunk; do not replace it with the local
+            // token-price table, which has no Grok row.
+            let stored_total = turn.stored_ingest + turn.stored_generate;
+            if stored_total.abs() > f64::EPSILON || turn.stored_cost.abs() <= f64::EPSILON {
+                price::CostSplit {
+                    ingest: turn.stored_ingest,
+                    generate: turn.stored_generate,
+                }
+            } else {
+                price::CostSplit {
+                    ingest: 0.0,
+                    generate: turn.stored_cost,
+                }
+            }
+        } else {
+            let price = turn
+                .model
+                .as_deref()
+                .and_then(|model| prices.lookup(model))
+                .map(|row| row.price);
+            price::cost_for_turn(
+                price.as_ref(),
+                turn.input,
+                turn.output,
+                turn.cache_read,
+                turn.write_5m,
+                turn.write_1h,
+            )
+        };
         total_cost += split.total();
         if let Some(family) = &turn.family {
             families.insert(family.clone());
@@ -1195,10 +1398,26 @@ pub fn recompute_session(
 
 /// Re-price every session in the database. Used after a price edit.
 pub fn reprice_all(conn: &mut Connection) -> Result<usize, String> {
-    let prices = PriceTable::load(conn)?;
+    let tx = conn
+        .transaction()
+        .map_err(|err| format!("begin reprice: {err}"))?;
+    let prices = PriceTable::load(&tx)?;
+    let count = reprice_all_in_transaction(&tx, &prices)?;
+    tx.commit()
+        .map_err(|err| format!("commit reprice: {err}"))?;
+    Ok(count)
+}
+
+/// Re-price and rebuild rollups under a transaction already owned by the
+/// caller. Price table updates use this so a new price cannot commit while a
+/// stale ready rollup remains visible.
+pub fn reprice_all_in_transaction(
+    tx: &Transaction<'_>,
+    prices: &PriceTable,
+) -> Result<usize, String> {
     let mut sessions = Vec::new();
     {
-        let mut stmt = conn
+        let mut stmt = tx
             .prepare("SELECT kind, session_id FROM session")
             .map_err(|err| format!("prepare session list: {err}"))?;
         let rows = stmt
@@ -1210,13 +1429,10 @@ pub fn reprice_all(conn: &mut Connection) -> Result<usize, String> {
             sessions.push(row.map_err(|err| format!("session row: {err}"))?);
         }
     }
-    let tx = conn
-        .transaction()
-        .map_err(|err| format!("begin reprice: {err}"))?;
     for (kind, session_id) in &sessions {
-        recompute_session(&tx, kind, session_id, &prices)?;
+        recompute_session(tx, kind, session_id, prices)?;
     }
-    tx.commit()
-        .map_err(|err| format!("commit reprice: {err}"))?;
+    rollup::mark_all_dirty(tx)?;
+    rollup::rebuild_dirty(tx)?;
     Ok(sessions.len())
 }

@@ -132,9 +132,17 @@ def test_tab_sweep_ui_contract_covers_all_entry_points_and_safety_copy() -> None
     assert "window.setTimeout(() => window.dispatchEvent(new Event(TAB_SWEEP_OPEN_EVENT)), 0)" in sweep
 
 
-def test_naming_mode_is_wired_to_the_fixed_sonnet_model() -> None:
+def test_naming_mode_is_wired_to_the_auto_pane_naming_job() -> None:
+    """Naming left the sweep panel: it is a background job now, not a button.
+
+    The sweep button must stay a pure tidy-up (judge + close). Naming runs on
+    its own schedule from src/lib/autoPaneNaming.ts and still shares the one
+    Rust command via mode: "naming".
+    """
     rust = read("src-tauri/src/commands/tab_sweep.rs")
     panel = read("src/components/layout/TabSweepPanel.tsx")
+    auto = read("src/lib/autoPaneNaming.ts")
+    sweep_auto = read("src/components/layout/tabSweepAuto.ts")
 
     signature = re.search(
         r"pub async fn run_tab_sweep_judge\((?P<body>.*?)\) -> Result<String, TabSweepJudgeError>",
@@ -147,31 +155,53 @@ def test_naming_mode_is_wired_to_the_fixed_sonnet_model() -> None:
     assert "const JUDGE_MODEL" not in rust
     assert "ai_disabled" in rust
 
-    naming = re.search(
-        r"const runNaming = async \(\) => \{(?P<body>.*?)\n  \};\n\n  const cancelNaming",
-        panel,
-        re.DOTALL,
-    )
-    assert naming is not None
-    body = naming.group("body")
-    assert 'invoke<string>("run_tab_sweep_judge"' in body
-    assert 'mode: "naming"' in body
+    # The naming call now lives in the scheduler.
+    assert 'invoke<string>("run_tab_sweep_judge"' in auto
+    assert 'mode: "naming"' in auto
+    assert 'invoke<boolean>("abort_tab_sweep_judge"' in auto
+
+    # ...and must not come back to either sweep entry point.
+    assert "runNaming" not in panel
+    assert 'mode: "naming"' not in panel
+    assert "buildNamingPrompt" not in panel
+    assert 'mode: "naming"' not in sweep_auto
+    assert "buildNamingPrompt" not in sweep_auto
+    assert "renames" not in sweep_auto
 
 
-def test_naming_judge_only_proposes_names_and_ui_copy_is_present() -> None:
-    panel = read("src/components/layout/TabSweepPanel.tsx")
-    naming = re.search(
-        r"const runNaming = async \(\) => \{(?P<body>.*?)\n  \};\n\n  const cancelNaming",
-        panel,
-        re.DOTALL,
-    )
-    assert naming is not None
-    body = naming.group("body")
-    assert "applySweep" not in body
-    assert "pane.close_tab" not in body
-    assert "closeCandidateTabIds" not in body
-    assert "名前の提案" in panel
-    assert "名前を元に戻す" in panel
+def test_auto_pane_naming_never_closes_tabs_or_overwrites_human_labels() -> None:
+    """The unattended job may only add names, and only to tabs nobody named."""
+    auto = read("src/lib/autoPaneNaming.ts")
     sweep_source = read("src/components/layout/tabSweep.ts")
-    assert "名前整理は全タブの画面末尾${TAB_NAMING_TAIL_LINES}行・作業フォルダ・ペイン構成を ${target} に送ります（適用は手動）" in sweep_source
-    assert 'formatSweepAiNote("naming"' in panel
+    settings_store = read("src/stores/settingsStore.ts")
+    ai_tab = read("src/components/settings/tabs/AiTab.tsx")
+
+    # Naming never closes anything.
+    assert "applySweep" not in auto
+    assert "pane.close_tab" not in auto
+    assert "closeCandidateTabIds" not in auto
+
+    # A label a human set is off limits, and an empty label makes a tab eligible
+    # again (that is what "reset the name" has to mean).
+    assert 'labelSource === "ai"' in auto
+    assert 'labelSource !== "ai"' in auto
+    assert '"ai"' in auto
+
+    # No candidates must mean no CLI call at all.
+    assert "targets.length === 0" in auto
+
+    # Both gates, and the visibility check on the recovery sweep.
+    assert "aiEnabled" in auto
+    assert "autoPaneNamingEnabled" in auto
+    assert 'getVisibility() !== "visible"' in auto
+
+    # The disclosure has to match what actually happens now: it applies by
+    # itself, and only to unnamed tabs.
+    assert "名前のないタブの画面末尾${TAB_NAMING_TAIL_LINES}行・作業フォルダ・ペイン構成を ${target} に送って名前を付けます（自動で適用・元に戻せます）" in sweep_source
+    # There is no panel to open first, so the disclosure sits by the switch.
+    assert 'formatSweepAiNote("naming"' in ai_tab
+
+    # The switch itself is persisted and defaults on.
+    assert "autoPaneNamingEnabled" in settings_store
+    assert "setAutoPaneNamingEnabled" in settings_store
+    assert "autoPaneNamingStrings" in ai_tab

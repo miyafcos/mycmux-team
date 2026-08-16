@@ -160,6 +160,9 @@ pub fn advance(
     handoff_dir: &Path,
     now_ms: i64,
 ) -> Result<AdvanceOutcome, ExecutorError> {
+    if !super::autonomy_settings(conn)?.auto_advance {
+        return Ok(AdvanceOutcome::default());
+    }
     let plan_version = current_plan_version(conn, work_order_id)?;
     let order_state: String = conn.query_row(
         "SELECT state FROM work_orders WHERE id=?1",
@@ -342,10 +345,10 @@ mod tests {
 
     use super::*;
     use crate::workorder::{
-        create_draft, record_gate_result, record_report, schema, seal_plan, Criterion, Gate,
-        GateId, GateStatus, LogicalSessionId, PathScope, PlanDraft, ReportEnvelope,
-        ReportEnvelopeId, ReportOutcome, SessionBinding, SessionRole, SpawnResult, WorkItem,
-        WorkOrderId,
+        autonomy_settings, create_draft, record_gate_result, record_report, schema, seal_plan,
+        set_autonomy_settings, AutonomySettings, AutonomySettingsPatch, Criterion, Gate, GateId,
+        GateStatus, LogicalSessionId, PathScope, PlanDraft, ReportEnvelope, ReportEnvelopeId,
+        ReportOutcome, SessionBinding, SessionRole, SpawnResult, WorkItem, WorkOrderId,
     };
 
     fn order_id() -> WorkOrderId {
@@ -546,6 +549,119 @@ mod tests {
         assert_eq!(outcome.spawn_requests.len(), 1);
         assert_eq!(spawn_outbox_count(&conn, &id, "b"), 1);
         assert_eq!(item_state(&conn, &id, "b"), "dispatched");
+    }
+
+    #[test]
+    fn empty_autonomy_settings_default_to_enabled_for_advance() {
+        let mut conn = memory_connection();
+        let id = seal(&mut conn, &plan(4, false, "src/b", "src/c"));
+        complete_a(&mut conn, &id);
+
+        assert_eq!(autonomy_settings(&conn).unwrap().auto_advance, true);
+        let outcome = advance(&mut conn, &id, tempdir().unwrap().path(), 6).unwrap();
+        assert_eq!(outcome.dispatched, vec![item_id("b")]);
+    }
+
+    #[test]
+    fn disabled_auto_advance_leaves_items_outbox_and_audit_unchanged_until_reenabled() {
+        let mut conn = memory_connection();
+        let id = seal(&mut conn, &plan(4, false, "src/b", "src/c"));
+        complete_a(&mut conn, &id);
+        set_autonomy_settings(
+            &mut conn,
+            AutonomySettingsPatch {
+                auto_advance: Some(false),
+                attention_cards: None,
+            },
+            6,
+        )
+        .unwrap();
+        let audit_before: i64 = conn
+            .query_row("SELECT COUNT(*) FROM workorder_audit", [], |row| row.get(0))
+            .unwrap();
+
+        let disabled = advance(&mut conn, &id, tempdir().unwrap().path(), 7).unwrap();
+        assert_eq!(disabled, AdvanceOutcome::default());
+        assert_eq!(item_state(&conn, &id, "b"), "pending");
+        assert_eq!(spawn_outbox_count(&conn, &id, "b"), 0);
+        let audit_after: i64 = conn
+            .query_row("SELECT COUNT(*) FROM workorder_audit", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(audit_after, audit_before);
+
+        set_autonomy_settings(
+            &mut conn,
+            AutonomySettingsPatch {
+                auto_advance: Some(true),
+                attention_cards: None,
+            },
+            8,
+        )
+        .unwrap();
+        let enabled = advance(&mut conn, &id, tempdir().unwrap().path(), 9).unwrap();
+        assert_eq!(enabled.dispatched, vec![item_id("b")]);
+    }
+
+    #[test]
+    fn autonomy_settings_round_trip_and_audit_only_real_changes() {
+        let mut conn = memory_connection();
+        assert_eq!(autonomy_settings(&conn).unwrap(), Default::default());
+
+        let first = set_autonomy_settings(
+            &mut conn,
+            AutonomySettingsPatch {
+                auto_advance: Some(false),
+                attention_cards: None,
+            },
+            1,
+        )
+        .unwrap();
+        assert!(!first.auto_advance);
+        assert!(first.attention_cards);
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM workorder_audit WHERE actor='user' AND action='autonomy_toggle'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            1
+        );
+
+        set_autonomy_settings(
+            &mut conn,
+            AutonomySettingsPatch {
+                auto_advance: Some(false),
+                attention_cards: None,
+            },
+            2,
+        )
+        .unwrap();
+        let final_settings = set_autonomy_settings(
+            &mut conn,
+            AutonomySettingsPatch {
+                auto_advance: None,
+                attention_cards: Some(false),
+            },
+            3,
+        )
+        .unwrap();
+        assert_eq!(
+            final_settings,
+            AutonomySettings {
+                auto_advance: false,
+                attention_cards: false,
+            }
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM workorder_audit WHERE actor='user' AND action='autonomy_toggle'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            2
+        );
     }
 
     #[test]

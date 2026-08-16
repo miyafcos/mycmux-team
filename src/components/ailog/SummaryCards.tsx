@@ -1,5 +1,5 @@
 /**
- * Six headline numbers with their change against the previous window.
+ * Three action-oriented headline numbers with their change against the previous window.
  *
  * The comparison is suppressed for the "全期間" preset: the window before "all
  * time" is empty, so every metric would read +100%. Showing "前期間データなし"
@@ -8,9 +8,7 @@
 
 import {
   deltaDirection,
-  formatCount,
   formatDelta,
-  formatHours,
   formatRatio,
   formatScore,
   formatUsd,
@@ -26,48 +24,27 @@ export function SummaryCards({ overview, preset }: { overview: Overview; preset:
   const costLabel = overview.priceCoverage.coveredTokenRatio < 1
     ? `コスト相当 (単価既知の ${Math.round(overview.priceCoverage.coveredTokenRatio * 100)}% 分)`
     : "コスト相当";
-  const cards: { kind: "default" | "cost" | "rework"; label: string; value: string; delta: number | null; hint: string }[] = [
-    {
-      kind: "default",
-      label: "セッション",
-      value: formatCount(totals.sessions),
-      delta: comparePrevious.sessionsPct,
-      hint: "期間内に 1 ターン以上あったセッション数",
-    },
-    {
-      kind: "default",
-      label: "ターン",
-      value: formatCount(totals.turns),
-      delta: null,
-      hint: "課金対象のやり取り 1 往復を 1 ターンとして数えた数",
-    },
+  const cards: { kind: "cost" | "rework"; label: string; value: string; delta: number; subtitle: string }[] = [
     {
       kind: "cost",
       label: costLabel,
       value: formatUsd(totals.costUsd),
       delta: comparePrevious.costPct,
-      hint: "従量課金だった場合の金額。請求額ではありません",
-    },
-    {
-      kind: "default",
-      label: "キャッシュ率",
-      value: formatRatio(overview.cacheHitRate),
-      delta: null,
-      hint: "取り込み側トークンのうちキャッシュ読み出しが占める割合",
-    },
-    {
-      kind: "default",
-      label: "実稼働時間",
-      value: formatHours(totals.activeMs),
-      delta: null,
-      hint: "無操作の空白を除いた実働時間",
+      subtitle: "従量課金だった場合の金額。請求額ではありません",
     },
     {
       kind: "rework",
       label: "手戻り平均",
       value: formatScore(rework.avgScore),
       delta: comparePrevious.reworkPct,
-      hint: "ツール失敗・再編集・やり直し指示から算出したスコア（低いほど良い）",
+      subtitle: "低いほど指示が一発で通っている",
+    },
+    {
+      kind: "rework",
+      label: "中断率",
+      value: formatRatio(totals.sessions === 0 ? 0 : rework.abandonedSessions / totals.sessions),
+      delta: 0,
+      subtitle: "ツール実行のまま終わったセッションの割合",
     },
   ];
 
@@ -80,7 +57,7 @@ export function SummaryCards({ overview, preset }: { overview: Overview; preset:
       }}
     >
       {cards.map((card) => (
-        <div key={card.label} style={{ ...cardStyle, padding: "10px 12px 11px" }} title={card.hint}>
+        <div key={card.label} style={{ ...cardStyle, padding: "10px 12px 11px" }}>
           <div style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-tertiary)" }}>{card.label}</div>
           <div style={{ fontSize: 18, fontWeight: 700, letterSpacing: "-0.01em", marginTop: 2 }}>{card.value}</div>
           <div style={{ marginTop: 3, fontSize: "var(--cmux-font-size-xs)", minHeight: 14 }}>
@@ -94,6 +71,7 @@ export function SummaryCards({ overview, preset }: { overview: Overview; preset:
               <span style={{ color: "var(--cmux-text-tertiary)" }}>前期間データなし</span>
             )}
           </div>
+          <div style={{ marginTop: 5, fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-secondary)", lineHeight: 1.4 }}>{card.subtitle}</div>
         </div>
       ))}
     </div>

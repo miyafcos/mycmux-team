@@ -1,4 +1,4 @@
-import type { PaneMetadata } from "../stores/paneMetadataStore";
+import type { PaneMetadata, PaneVolatileMetadata } from "../stores/paneMetadataStore";
 import type { DispatchEntry } from "./ipc";
 
 export type EffectiveStatus = "waiting" | "working" | "idle";
@@ -29,12 +29,15 @@ export function deriveEffectiveStatus(meta?: PaneMetadata): EffectiveStatus {
   return "idle";
 }
 
-export function deriveDisplayStatus(meta?: PaneMetadata): EffectiveStatus {
+export function deriveDisplayStatus(meta?: PaneMetadata, volatile?: PaneVolatileMetadata): EffectiveStatus {
   if (meta?.agentStatus === "waiting") return "waiting";
-  const backendOutputRecent = meta?.backendLastOutputAt !== undefined
-    && Date.now() - meta.backendLastOutputAt <= BACKEND_OUTPUT_ACTIVE_WINDOW_MS;
+  // The metadata fallback keeps pure callers and persisted historical test
+  // fixtures compatible while live renderers read the separate volatile slice.
+  const display = volatile ?? meta;
+  const backendOutputRecent = display?.backendLastOutputAt !== undefined
+    && Date.now() - display.backendLastOutputAt <= BACKEND_OUTPUT_ACTIVE_WINDOW_MS;
   if (meta?.processIsShell === false
-    && (meta.outputActive || meta.workingPatternVisible || backendOutputRecent)) {
+    && (display?.outputActive || display?.workingPatternVisible || backendOutputRecent)) {
     return "working";
   }
   return "idle";

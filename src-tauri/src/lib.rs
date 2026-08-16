@@ -327,6 +327,8 @@ pub fn run() {
             commands::session_mapping::read_agent_session_mappings,
             commands::crsm::crsm_list_sessions,
             commands::crsm::crsm_create_handoff,
+            commands::autonomy::autonomy_get_settings,
+            commands::autonomy::autonomy_set_settings,
             commands::workorder::workorder_create_draft,
             commands::workorder::workorder_refresh_sources,
             commands::workorder::workorder_preview,

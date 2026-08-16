@@ -44,6 +44,7 @@ vi.mock("../../src/components/dashboard/WatchStatusRow", () => ({
 }));
 
 import { clampDashboardChatDropIndicatorOffset, DashboardView } from "../../src/components/dashboard/DashboardView";
+import { dashboardStrings } from "../../src/components/dashboard/dashboardStrings";
 import { useInterventionFeedbackStore } from "../../src/components/dashboard/interventionRouting";
 import { createBatch, sealBatch } from "../../src/lib/dispatchBatch";
 import { logicalSessionId } from "../../src/lib/logicalSessionId";
@@ -294,6 +295,32 @@ describe("clampDashboardChatDropIndicatorOffset", () => {
 });
 
 describe("DashboardView split3 selection", () => {
+  it("toggles the per-card manual done mark and clears the attention seen state together", async () => {
+    const target = tab("tab-manual-done", "s-manual-done", "Manual done target");
+    const attention = inputAttention(target.sessionId, 1);
+    seedDashboard({
+      workspace: workspace([target]),
+      selectedTabId: target.id,
+      attention: { [target.sessionId]: attention },
+    });
+    await renderDashboard();
+
+    const markButton = container.querySelector<HTMLButtonElement>(`[data-dashboard-manual-done-toggle='${target.id}']`);
+    expect(markButton?.textContent).toBe(dashboardStrings.markDoneButton);
+    await act(async () => markButton?.click());
+
+    expect(useSessionAttentionStore.getState().doneMarkByTab.get(target.id)).toBe(NOW);
+    expect(useSessionAttentionStore.getState().seenAttentionByTab.get(target.id)).toBe(attention.attentionId);
+    expect(container.querySelector(`[data-dashboard-manual-done='${target.id}']`)?.textContent)
+      .toBe(dashboardStrings.manualDoneBadge);
+    expect(container.querySelector<HTMLButtonElement>(`[data-dashboard-manual-done-toggle='${target.id}']`)?.textContent)
+      .toBe(dashboardStrings.unmarkDoneButton);
+
+    await act(async () => container.querySelector<HTMLButtonElement>(`[data-dashboard-manual-done-toggle='${target.id}']`)?.click());
+    expect(useSessionAttentionStore.getState().doneMarkByTab.has(target.id)).toBe(false);
+    expect(container.querySelector(`[data-dashboard-manual-done='${target.id}']`)).toBeNull();
+  });
+
   it("opens an immediate machine card's source event in the matching chat row", async () => {
     const target = tab("tab-report", "s-report", "Report target");
     const source: SemanticEventEnvelope = {
@@ -355,7 +382,7 @@ describe("DashboardView split3 selection", () => {
     expect(container.querySelector<HTMLElement>("[data-dashboard-event='error-source-report']")?.classList.contains("is-source-highlighted")).toBe(true);
   });
 
-  it("disables a closed tab's source button and explains that the recorded signal stays readable", async () => {
+  it("does not render an unusable source button for a closed tab and explains that the recorded signal stays readable", async () => {
     const active = tab("tab-active", "s-active", "Active target");
     const closedSessionId = "s-closed";
     seedDashboard({ workspace: workspace([active]), selectedTabId: active.id });
@@ -376,9 +403,10 @@ describe("DashboardView split3 selection", () => {
     const inbox = container.querySelector<HTMLButtonElement>("[data-report-inbox-nav='true']");
     await act(async () => inbox?.click());
     const closedCard = container.querySelector<HTMLElement>("[data-report-inbox-card='livebrief:s-closed:closed-source-1']");
-    const sourceButton = closedCard?.querySelector<HTMLButtonElement>("button");
+    const sourceButton = Array.from(closedCard?.querySelectorAll<HTMLButtonElement>("button") ?? [])
+      .find((button) => button.textContent === "原文");
     expect(closedCard?.dataset.reportSourceAvailable).toBe("false");
-    expect(sourceButton?.disabled).toBe(true);
+    expect(sourceButton).toBeUndefined();
     expect(closedCard?.querySelector("[data-report-source-unavailable]")?.textContent).toContain("このタブは閉じています");
     expect(closedCard?.textContent).toContain("閉じたタブからの記録");
   });

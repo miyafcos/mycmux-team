@@ -15,7 +15,7 @@ const rankings: ReworkRankingsReport = {
 };
 
 function render(overrides: Partial<ComponentProps<typeof LearningView>> = {}) {
-  return renderToStaticMarkup(<LearningView findings={findings} rankings={rankings} kind={null} query="" loading={false} error={null} onKindChange={() => {}} onQueryChange={() => {}} onLoadMore={() => {}} onOpenDetail={() => {}} {...overrides} />);
+  return renderToStaticMarkup(<LearningView findings={findings} rankings={rankings} rules={null} kind={null} query="" loading={false} error={null} onKindChange={() => {}} onQueryChange={() => {}} onLoadMore={() => {}} onOpenDetail={() => {}} onOpenRecord={() => {}} onCopyRule={() => {}} {...overrides} />);
 }
 
 describe("LearningView", () => {
@@ -43,9 +43,14 @@ describe("LearningView", () => {
     expect(render()).toContain("数えた");
   });
 
-  it("offers a same-day breakdown only for a dated recurring gotcha", () => {
-    expect(render({ onOpenBreakdown: () => {} })).toContain("その日の内訳へ");
-    expect(render({ findings: { total: 1, rows: [{ ...findings.rows[0], repeatCount: 1 }] }, onOpenBreakdown: () => {} })).not.toContain("その日の内訳へ");
+  it("offers a same-day record only for a dated recurring gotcha", () => {
+    expect(render()).toContain("その日の記録へ");
+    expect(render({ findings: { total: 1, rows: [{ ...findings.rows[0], repeatCount: 1 }] } })).not.toContain("その日の記録へ");
+  });
+
+  it("offers rule copy only in the trap section", () => {
+    expect(render()).toContain("ルール文をコピー");
+    expect(render({ findings: { total: 1, rows: [{ ...findings.rows[0], kind: "decision" }] } })).not.toContain("ルール文をコピー");
   });
 
   it("marks the selected kind filter", () => {

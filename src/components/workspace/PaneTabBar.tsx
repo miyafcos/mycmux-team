@@ -19,7 +19,7 @@ import {
   resolveDuplicateSessionSource,
 } from "../../lib/duplicateSession";
 import { usePaneMetadataStore, useWorkspaceListStore } from "../../stores/workspaceStore";
-import type { PaneMetadata } from "../../stores/paneMetadataStore";
+import type { PaneMetadata, PaneVolatileMetadata } from "../../stores/paneMetadataStore";
 import { deriveDisplayStatus, type EffectiveStatus } from "../../lib/notificationStatus";
 import { useDismissOnOutside } from "../../hooks/useDismissOnOutside";
 import { usePaneDragSource } from "../../hooks/usePaneDragSource";
@@ -703,6 +703,7 @@ export function shouldMarkAttentionSeen(
 function PaneTabListMenu({
   pane,
   metadataBySession,
+  volatileMetadataBySession,
   attentionBySession,
   seenAttentionByTab,
   getTabDisplayLabel,
@@ -715,6 +716,7 @@ function PaneTabListMenu({
 }: {
   pane: Pane;
   metadataBySession: Record<string, PaneMetadata | undefined>;
+  volatileMetadataBySession: Record<string, PaneVolatileMetadata | undefined>;
   attentionBySession: Record<string, SessionAttention | undefined>;
   seenAttentionByTab: Map<string, string>;
   getTabDisplayLabel: (tab: PaneTab, isTabActive: boolean) => string;
@@ -762,7 +764,7 @@ function PaneTabListMenu({
       tab.commandArgv,
     );
     const rowKindColor = agentKindColor(rowAgentKind);
-    const status = deriveDisplayStatus(tabMeta);
+    const status = deriveDisplayStatus(tabMeta, volatileMetadataBySession[tab.sessionId]);
     const label = getTabDisplayLabel(tab, isTabActive);
     const attention = attentionBySession[tab.sessionId];
     const unreadCategory = isAttentionUnseen(tab.id, attention, seenAttentionByTab)
@@ -976,6 +978,9 @@ export default memo(function PaneTabBar({
   const tabMetadata = usePaneMetadataStore(useShallow((s) =>
     pane.tabs.map((tab) => s.metadata[tab.sessionId]),
   ));
+  const tabVolatileMetadata = usePaneMetadataStore(useShallow((s) =>
+    pane.tabs.map((tab) => s.volatileMetadata[tab.sessionId]),
+  ));
   const tabAttention = useSessionAttentionStore(useShallow((s) =>
     pane.tabs.map((tab) => s.attentionBySession[tab.sessionId]),
   ));
@@ -987,6 +992,13 @@ export default memo(function PaneTabBar({
     });
     return next;
   }, [pane.tabs, tabMetadata]);
+  const volatileMetadataBySession = useMemo(() => {
+    const next: Record<string, typeof tabVolatileMetadata[number]> = {};
+    pane.tabs.forEach((tab, index) => {
+      next[tab.sessionId] = tabVolatileMetadata[index];
+    });
+    return next;
+  }, [pane.tabs, tabVolatileMetadata]);
   const attentionBySession = useMemo(() => {
     const next: Record<string, typeof tabAttention[number]> = {};
     pane.tabs.forEach((tab, index) => {
@@ -1045,6 +1057,7 @@ export default memo(function PaneTabBar({
   const activeTab = pane.tabs.find((t) => t.id === pane.activeTabId);
   const activeTabDeclared = Boolean(activeTab && isDeclaredTab(activeTab));
   const activeMeta = activeTab ? metadataBySession[activeTab.sessionId] : undefined;
+  const activeVolatileMeta = activeTab ? volatileMetadataBySession[activeTab.sessionId] : undefined;
   const activeAttention = activeTab ? attentionBySession[activeTab.sessionId] : undefined;
   const showPublishButton = shouldShowPublishButton(activeTab, activeMeta);
   const renderMode: PaneTabBarMode = !activeTab && barMode !== "full" && barMode !== "slim"
@@ -1067,7 +1080,7 @@ export default memo(function PaneTabBar({
   const published = useOnlineSavepointStore((state) =>
     publishIdentityKey ? state.publishedSessionIds[publishIdentityKey] === true : false,
   );
-  const activeStatus: EffectiveStatus = deriveDisplayStatus(activeMeta);
+  const activeStatus: EffectiveStatus = deriveDisplayStatus(activeMeta, activeVolatileMeta);
   const activeAgentKind = resolveDisplayAgentKind(
     activeMeta?.agentKind ?? activeTab?.agentKind,
     activeTab?.commandArgv,
@@ -1080,7 +1093,7 @@ export default memo(function PaneTabBar({
         getAgent(activeTab.agentId)?.name,
       )
     : "シェル";
-  const paneDragLabel = activeMeta?.processTitle ?? activeTab?.label ?? activeAgentLabel;
+  const paneDragLabel = activeVolatileMeta?.processTitle ?? activeTab?.label ?? activeAgentLabel;
 
   useEffect(() => {
     if (!activeTab || !activeAttention?.attentionId) return;
@@ -1089,8 +1102,13 @@ export default memo(function PaneTabBar({
   }, [activeAttention?.attentionId, activeTab?.id, isVisible]);
 
   const displayTabLabel = useCallback(
-    (tab: PaneTab, isTabActive: boolean) => getTabDisplayLabel(tab, isTabActive, metadataBySession),
-    [metadataBySession],
+    (tab: PaneTab, isTabActive: boolean) => getTabDisplayLabel(
+      tab,
+      isTabActive,
+      metadataBySession,
+      volatileMetadataBySession,
+    ),
+    [metadataBySession, volatileMetadataBySession],
   );
 
   const clearChipPreviewTimer = useCallback(() => {
@@ -1254,7 +1272,7 @@ export default memo(function PaneTabBar({
       window.cancelAnimationFrame(frame);
       observer.disconnect();
     };
-  }, [editingTabId, metadataBySession, pane.tabs, barMode]);
+  }, [editingTabId, pane.tabs, barMode]);
 
   useEffect(() => {
     const strip = tabStripRef.current;
@@ -1641,13 +1659,14 @@ export default memo(function PaneTabBar({
           const isTabActive = tab.id === pane.activeTabId;
           const declared = isDeclaredTab(tab);
           const tabMeta = metadataBySession[tab.sessionId];
+          const tabVolatileMeta = volatileMetadataBySession[tab.sessionId];
           const tabAgentKind = resolveDisplayAgentKind(
             tabMeta?.agentKind ?? tab.agentKind,
             tab.commandArgv,
           );
           const tabKindColor = agentKindColor(tabAgentKind);
           const tabNotificationCount = tabMeta?.notificationCount ?? 0;
-          const tabEffectiveStatus = deriveDisplayStatus(tabMeta);
+          const tabEffectiveStatus = deriveDisplayStatus(tabMeta, tabVolatileMeta);
           const canonicalAttention = attentionBySession[tab.sessionId];
           const canonicalUnreadCategory = isAttentionUnseen(
             tab.id,
@@ -1992,6 +2011,7 @@ export default memo(function PaneTabBar({
             <PaneTabListMenu
               pane={pane}
               metadataBySession={metadataBySession}
+              volatileMetadataBySession={volatileMetadataBySession}
               attentionBySession={attentionBySession}
               seenAttentionByTab={seenAttentionByTab}
               getTabDisplayLabel={displayTabLabel}
@@ -2200,6 +2220,7 @@ export default memo(function PaneTabBar({
               <PaneTabListMenu
                 pane={pane}
                 metadataBySession={metadataBySession}
+                volatileMetadataBySession={volatileMetadataBySession}
                 attentionBySession={attentionBySession}
                 seenAttentionByTab={seenAttentionByTab}
                 getTabDisplayLabel={displayTabLabel}

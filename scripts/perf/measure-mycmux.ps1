@@ -16,7 +16,9 @@ param(
     [ValidateRange(20, 5000)]
     [int]$ScrollIntervalMs = 120,
     [string]$OutputPath = "",
-    [switch]$NoOutputFile
+    [switch]$NoOutputFile,
+    [switch]$Ailog,
+    [string]$AilogDbPath = ""
 )
 
 Set-StrictMode -Version Latest
@@ -324,7 +326,77 @@ function Measure-ScrollProbe {
     }
 }
 
+function Invoke-AilogMeasurement {
+    param(
+        [string]$Root,
+        [string]$DatabasePath
+    )
+
+    if ([string]::IsNullOrWhiteSpace($DatabasePath)) {
+        $DatabasePath = Join-Path $env:USERPROFILE ".mycmux\ailog.db"
+    }
+    $resolvedDatabase = (Resolve-Path -LiteralPath $DatabasePath -ErrorAction Stop).Path
+    if (-not (Test-Path -LiteralPath $resolvedDatabase -PathType Leaf)) {
+        throw "AILog database is not a file: $resolvedDatabase"
+    }
+
+    $wrapper = Join-Path $Root "scripts\run_windows_tests.py"
+    $env:AILOG_PERF_DB = $resolvedDatabase
+    $wrapperOutput = @(& python $wrapper)
+    if ($LASTEXITCODE -ne 0) {
+        throw "Windows Rust test wrapper failed with exit code ${LASTEXITCODE}: $($wrapperOutput -join [Environment]::NewLine)"
+    }
+    $testExe = Get-ChildItem -LiteralPath (Join-Path $Root "src-tauri\target\release\deps") -Filter "mycmux_lib-*.exe" -File |
+        Sort-Object LastWriteTimeUtc -Descending |
+        Select-Object -First 1
+    if ($null -eq $testExe) {
+        throw "Could not find the manifest-patched mycmux test binary."
+    }
+    $testOutput = @(& $testExe.FullName --exact ailog::tests::perf_tests::measure_live_database_reports_read_only --ignored --nocapture 2>&1)
+    if ($LASTEXITCODE -ne 0) {
+        throw "AILog measurement test failed with exit code ${LASTEXITCODE}: $($testOutput -join [Environment]::NewLine)"
+    }
+    $resultLine = $testOutput | Where-Object { $_ -like "AILOG_PERF_JSON=*" } | Select-Object -Last 1
+    if ([string]::IsNullOrWhiteSpace($resultLine)) {
+        throw "AILog measurement returned no AILOG_PERF_JSON line."
+    }
+    return ($resultLine.Substring("AILOG_PERF_JSON=".Length) | ConvertFrom-Json)
+}
+
 $root = Resolve-RepoRoot -InputPath $RepoRoot
+
+if ($Ailog) {
+    $ailogMeasurement = Invoke-AilogMeasurement -Root $root -DatabasePath $AilogDbPath
+    $report = [ordered]@{
+        schema_version = 1
+        generated_at = (Get-Date).ToString("o")
+        repo_root = $root
+        repo_git = (Get-GitInfo -Root $root)
+        ailog = $ailogMeasurement
+        notes = @(
+            "AILog measurements use SQLITE_OPEN_READ_ONLY and PRAGMA query_only=ON.",
+            "This scenario does not activate a UI window or send input."
+        )
+    }
+    $json = $report | ConvertTo-Json -Depth 12
+    if ($NoOutputFile) {
+        Write-Output $json
+        return
+    }
+    if ([string]::IsNullOrWhiteSpace($OutputPath)) {
+        $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
+        $OutputPath = Join-Path $PSScriptRoot "results\ailog-$timestamp.json"
+    }
+    $outputDir = Split-Path -Parent $OutputPath
+    if (-not [string]::IsNullOrWhiteSpace($outputDir)) {
+        New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
+    }
+    Set-Content -LiteralPath $OutputPath -Value $json -Encoding UTF8
+    Write-Output $json
+    Write-Host "Wrote AILog performance report: $OutputPath"
+    return
+}
+
 $app = Get-AppConfig -Root $root
 $process = Resolve-TargetProcess -RequestedPid $TargetPid -RequestedProcessName $ProcessName -RequestedExecutablePath $ExecutablePath -DefaultProcessName $app.product_name
 

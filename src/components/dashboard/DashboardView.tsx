@@ -2,6 +2,8 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { useShallow } from "zustand/react/shallow";
 
 import { focusController } from "../../lib/focusController";
+import type { AttentionCard, SessionRef } from "../../lib/attentionBridge";
+import { workorderRetrySpawn } from "../../lib/workOrderCommands";
 import {
   clampDashboardMinimapWidth,
   dashboardMinimapMaxWidth,
@@ -21,6 +23,7 @@ import {
 import { usePaneMetadataStore, useUiStore, useWorkspaceLayoutStore, useWorkspaceListStore } from "../../stores/workspaceStore";
 import { useSessionAttentionStore } from "../../stores/sessionAttentionStore";
 import { useStallStore } from "../../stores/stallStore";
+import { useWorkOrderStore } from "../../stores/workOrderStore";
 import { connectReportInboxStatusFeed, useReportInboxStore, type MachineReportCard } from "../../stores/reportInboxStore";
 import { hasTerminalBuffer } from "../terminal/XTermWrapper";
 import { DashboardSessionList, useFrozenCardOrder } from "./DashboardSessionList";
@@ -89,8 +92,12 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const resizeRef = useRef<{ pointerId: number; startX: number; startWidth: number } | null>(null);
   const suppressDashboardListClickRef = useRef(false);
-  const now = Date.now();
+  const [now, setNow] = useState(() => Date.now());
   const [listHovered, setListHovered] = useState(false);
+  useEffect(() => {
+    const intervalId = window.setInterval(() => setNow(Date.now()), 15_000);
+    return () => window.clearInterval(intervalId);
+  }, []);
   const [searchFocused, setSearchFocused] = useState(false);
   const [resizingMinimap, setResizingMinimap] = useState(false);
   const [viewportWidth, setViewportWidth] = useState(() => typeof window === "undefined" ? 0 : window.innerWidth);
@@ -99,6 +106,7 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
   const [draggedChatColumnTabId, setDraggedChatColumnTabId] = useState<string | null>(null);
   const previousOpenColumnTabIdsRef = useRef<string[] | null>(null);
   const reducedMotion = useReducedMotion();
+  const contractsBySession = useWorkOrderStore((state) => state.contractDraftBySession);
   const viewState = useDashboardViewStore(useShallow((state) => ({
     query: state.query,
     workspaceFilter: state.workspaceFilter,
@@ -135,6 +143,7 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
   const activePaneSessionId = useUiStore((state) => state.activePaneId);
   const metadataState = usePaneMetadataStore(useShallow((state) => ({
     metadata: state.metadata,
+    volatileMetadata: state.volatileMetadata,
     lastLog: state.lastLog,
     lastLogAt: state.lastLogAt,
   })));
@@ -142,6 +151,7 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
   const attentionState = useSessionAttentionStore(useShallow((state) => ({
     attentionBySession: state.attentionBySession,
     seenAttentionByTab: state.seenAttentionByTab,
+    doneMarkByTab: state.doneMarkByTab,
   })));
   const briefsBySession = useLiveBriefStore((state) => state.briefsBySession);
   const eventsBySession = useLiveBriefStore((state) => state.eventsBySession);
@@ -159,10 +169,12 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
     .filter((card): card is MachineReportCard => card !== undefined), [reportInboxState.cardIds, reportInboxState.cardsById]);
   const cards = useMemo(() => buildDashboardCards(workspaces, {
     metadataBySession: metadataState.metadata,
+    volatileMetadataBySession: metadataState.volatileMetadata,
     lastLogBySession: metadataState.lastLog,
     lastLogAtBySession: metadataState.lastLogAt,
     attentionBySession: attentionState.attentionBySession,
     seenAttentionByTab: attentionState.seenAttentionByTab,
+    doneMarkByTab: attentionState.doneMarkByTab,
     stallsBySession,
     briefsBySession,
     now,
@@ -640,6 +652,66 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
     viewState.setSelectedTabId(target.tab.id);
     viewState.setHighlightedEventId(report.sourceEventId);
   }, [cards, viewState]);
+  const cardForAttentionSession = useCallback((session: SessionRef) => cards.find((card) => (
+    session.type === "pty"
+      ? card.tab.sessionId === session.pty_session_id
+      : card.metadata?.agentSessionId === session.logical_session_id || card.tab.agentSessionId === session.logical_session_id
+  )), [cards]);
+  const sessionForAttentionCard = useCallback((card: AttentionCard): SessionRef | null => {
+    if (card.session) return card.session;
+    if (card.primaryAction.type === "openSession" || card.primaryAction.type === "answerQuestion") return card.primaryAction.session;
+    if (!card.workorderId) return null;
+    const entry = Object.entries(contractsBySession).find(([, value]) => value?.workOrderId === card.workorderId);
+    return entry ? { type: "pty", pty_session_id: entry[0] } : null;
+  }, [contractsBySession]);
+  const openAttentionSession = useCallback((session: SessionRef) => {
+    const target = cardForAttentionSession(session);
+    if (!target) throw new Error("attention session is unavailable");
+    viewState.setSelectedTabId(target.tab.id);
+  }, [cardForAttentionSession, viewState]);
+  const answerAttentionQuestion = useCallback((session: SessionRef) => {
+    const target = cardForAttentionSession(session);
+    if (!target) throw new Error("attention session is unavailable");
+    viewState.setSelectedTabId(target.tab.id);
+    const composer = useComposerStore.getState();
+    composer.setCommandKind(target.tab.sessionId, "answer-forward");
+    composer.setQuestionGuard(target.tab.sessionId, target.brief?.promptEventId
+      ? { questionId: target.brief.promptEventId, revision: target.brief.ptyInputRevision }
+      : null);
+    window.requestAnimationFrame(() => composerRef.current?.focus());
+  }, [cardForAttentionSession, viewState]);
+  const openAttentionWorkOrder = useCallback((workOrderId: string) => {
+    const entry = Object.entries(contractsBySession).find(([, value]) => value?.workOrderId === workOrderId);
+    if (!entry) throw new Error("work order card is unavailable");
+    const target = cards.find((card) => card.tab.sessionId === entry[0]);
+    if (!target) throw new Error("work order session is unavailable");
+    viewState.setSelectedTabId(target.tab.id);
+  }, [cards, contractsBySession, viewState]);
+  const attentionActions = useMemo(() => ({
+    sessionLabel: (card: AttentionCard) => {
+      const session = sessionForAttentionCard(card);
+      const target = session ? cardForAttentionSession(session) : undefined;
+      if (target) return target.label;
+      const fallback = session?.type === "pty" ? session.pty_session_id
+        : session?.type === "logical" ? session.logical_session_id
+          : card.workorderId ?? card.id;
+      return fallback.length > 12 ? `${fallback.slice(0, 8)}…${fallback.slice(-3)}` : fallback;
+    },
+    openCardSession: (card: AttentionCard) => {
+      const session = sessionForAttentionCard(card);
+      if (!session) throw new Error("attention session is unavailable");
+      return openAttentionSession(session);
+    },
+    openSession: openAttentionSession,
+    answerQuestion: answerAttentionQuestion,
+    retryWorkItem: (workOrderId: string) => workorderRetrySpawn(workOrderId).then(() => undefined),
+    openWorkOrder: openAttentionWorkOrder,
+  }), [answerAttentionQuestion, cardForAttentionSession, openAttentionSession, openAttentionWorkOrder, sessionForAttentionCard]);
+  const reportSessionLabel = useCallback((ptySessionId: string) => {
+    const target = cards.find((card) => card.tab.sessionId === ptySessionId);
+    if (target) return target.label;
+    return ptySessionId.length > 12 ? `${ptySessionId.slice(0, 8)}…${ptySessionId.slice(-3)}` : ptySessionId;
+  }, [cards]);
   const selectQuestion = useCallback((tabId: string, sessionId: string) => {
     viewState.setSelectedTabId(tabId);
     window.requestAnimationFrame(() => document.getElementById(`dashboard-question-${sessionId}`)?.scrollIntoView({ block: "nearest" }));
@@ -825,6 +897,8 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
               sourceAvailableSessionIds={reportSourceSessionIds}
               onReceiveModeChange={reportInboxState.setReceiveMode}
               onOpenSource={openReportSource}
+              attentionActions={attentionActions}
+              sessionLabel={reportSessionLabel}
             />
           </div>
         </> : <div className="cmux-dashboard-chat-columns-shell">

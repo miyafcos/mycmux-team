@@ -1,8 +1,9 @@
 //! AI session log analytics (F1: incremental indexer + aggregation queries).
 //!
-//! Reads Claude Code (`~/.claude/projects/*/*.jsonl`) and Codex
-//! (`~/.codex/sessions/**/*.jsonl`) transcripts into a local SQLite database at
-//! `~/.mycmux/ailog.db`, then answers volume / cost / rework / model questions
+//! Reads Claude Code (`~/.claude/projects/*/*.jsonl`), Codex
+//! (`~/.codex/sessions/**/*.jsonl`), and Grok Build
+//! (`~/.grok/sessions/**/updates.jsonl`) transcripts into a local SQLite database
+//! at `~/.mycmux/ailog.db`, then answers volume / cost / rework / model questions
 //! over arbitrary time ranges.
 //!
 //! Scope note: this module only produces the data layer and the Tauri command
@@ -12,17 +13,19 @@
 //! metered pricing", not a bill. See [`price`] for how the default table is
 //! sourced and why unknown models stay at zero instead of being guessed.
 
-pub mod digest;
 pub mod db;
+pub mod digest;
 pub mod index;
 pub mod jsonl;
-pub mod migrate;
 pub mod metrics;
+pub mod migrate;
 pub mod parse_claude;
 pub mod parse_codex;
+pub mod parse_grok;
 pub mod price;
 pub mod project_rules;
 pub mod query;
+pub mod rollup;
 pub mod schema;
 pub mod summarize;
 pub mod transcript;
@@ -38,6 +41,7 @@ use serde::{Deserialize, Serialize};
 
 pub const KIND_CLAUDE: &str = "claude";
 pub const KIND_CODEX: &str = "codex";
+pub const KIND_GROK: &str = "grok";
 
 /// `origin` values stored on `session`.
 ///
@@ -69,6 +73,11 @@ pub fn claude_codex_root() -> Option<PathBuf> {
 /// Default Codex transcript root (`~/.codex/sessions`).
 pub fn codex_root() -> Option<PathBuf> {
     dirs::home_dir().map(|home| home.join(".codex").join("sessions"))
+}
+
+/// Default Grok Build transcript root (`~/.grok/sessions`).
+pub fn grok_root() -> Option<PathBuf> {
+    dirs::home_dir().map(|home| home.join(".grok").join("sessions"))
 }
 
 pub fn open_db(path: &std::path::Path) -> Result<rusqlite::Connection, String> {
@@ -194,6 +203,12 @@ pub struct TurnRow {
     /// Informational only. On Codex this is a *subset* of `output_tokens`, so
     /// it is never added to the priced total.
     pub reasoning_tokens: i64,
+    /// Provider-reported aggregate cost, when the transcript carries one.
+    ///
+    /// Claude and Codex leave this unset and use the local reference price
+    /// table. Grok reports an exact aggregate in `costUsdTicks`, so its parser
+    /// carries the converted USD value through the existing cost columns.
+    pub reported_cost_usd: Option<f64>,
     pub duration_ms: Option<i64>,
     pub tool_calls: i64,
     pub tool_errors: i64,

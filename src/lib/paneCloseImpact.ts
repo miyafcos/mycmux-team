@@ -1,5 +1,5 @@
 import type { Pane, PaneTab } from "../types";
-import type { PaneMetadata } from "../stores/paneMetadataStore";
+import type { PaneMetadata, PaneVolatileMetadata } from "../stores/paneMetadataStore";
 import { getTabDisplayLabel } from "./tabDisplayLabel";
 import { deriveDisplayStatus } from "./notificationStatus";
 
@@ -12,14 +12,16 @@ export interface PaneCloseVictim {
 export function collectPaneCloseVictims(
   panes: readonly Pane[],
   metadataBySession: Record<string, PaneMetadata | undefined>,
+  volatileMetadataBySession: Record<string, PaneVolatileMetadata | undefined> = {},
 ): PaneCloseVictim[] {
   return panes.flatMap((pane) => pane.tabs.flatMap((tab) => {
     const metadata = metadataBySession[tab.sessionId];
-    const reason = deriveVictimReason(tab, metadata);
+    const volatileMetadata = volatileMetadataBySession[tab.sessionId];
+    const reason = deriveVictimReason(tab, metadata, volatileMetadata);
     if (!reason) return [];
     return [{
       sessionId: tab.sessionId,
-      label: getTabDisplayLabel(tab, tab.id === pane.activeTabId, metadataBySession),
+      label: getTabDisplayLabel(tab, tab.id === pane.activeTabId, metadataBySession, volatileMetadataBySession),
       reason,
     }];
   }));
@@ -29,6 +31,7 @@ export function collectPaneCloseVictims(
 export function collectLiveAgentTabs(
   panes: readonly Pane[],
   metadataBySession: Record<string, PaneMetadata | undefined>,
+  volatileMetadataBySession: Record<string, PaneVolatileMetadata | undefined> = {},
 ): PaneCloseVictim[] {
   return panes.flatMap((pane) => pane.tabs.flatMap((tab) => {
     const metadata = metadataBySession[tab.sessionId];
@@ -36,7 +39,7 @@ export function collectLiveAgentTabs(
     if (!agentKind || metadata?.processIsShell === true) return [];
     return [{
       sessionId: tab.sessionId,
-      label: getTabDisplayLabel(tab, tab.id === pane.activeTabId, metadataBySession),
+      label: getTabDisplayLabel(tab, tab.id === pane.activeTabId, metadataBySession, volatileMetadataBySession),
       reason: "agent" as const,
     }];
   }));
@@ -45,8 +48,9 @@ export function collectLiveAgentTabs(
 function deriveVictimReason(
   tab: PaneTab,
   metadata: PaneMetadata | undefined,
+  volatileMetadata: PaneVolatileMetadata | undefined,
 ): PaneCloseVictim["reason"] | null {
-  if (deriveDisplayStatus(metadata) === "working") return "working";
+  if (deriveDisplayStatus(metadata, volatileMetadata) === "working") return "working";
   if (tab.agentKind || metadata?.agentKind || metadata?.processIsShell === false) return "agent";
   return null;
 }

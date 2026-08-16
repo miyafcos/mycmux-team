@@ -17,22 +17,22 @@ pub fn save_persistent_data(app_handle: AppHandle, mut data: PersistentData) -> 
 }
 
 fn merge_persistent_data(disk: &mut PersistentData, data: PersistentData) {
-        disk.schema_version = data.schema_version;
-        disk.workspaces = data.workspaces;
-        // These settings have no frontend store or setter, so the frontend's
-        // persistence payload omits them; preserve their Rust-owned values.
-        let remote_bind_all = disk.settings.remote_bind_all;
-        let remote_enabled = disk.settings.remote_enabled;
-        let dirty_save_mode = disk.settings.dirty_save_mode;
-        let osc7_tracking_enabled = disk.settings.osc7_tracking_enabled;
-        disk.settings = data.settings;
-        disk.settings.remote_bind_all = remote_bind_all;
-        disk.settings.remote_enabled = remote_enabled;
-        disk.settings.dirty_save_mode = dirty_save_mode;
-        disk.settings.osc7_tracking_enabled = osc7_tracking_enabled;
-        disk.active_workspace_id = data.active_workspace_id;
-        disk.active_pane_id = data.active_pane_id;
-        disk.active_tab_id = data.active_tab_id;
+    disk.schema_version = data.schema_version;
+    disk.workspaces = data.workspaces;
+    // These settings have no frontend store or setter, so the frontend's
+    // persistence payload omits them; preserve their Rust-owned values.
+    let remote_bind_all = disk.settings.remote_bind_all;
+    let remote_enabled = disk.settings.remote_enabled;
+    let dirty_save_mode = disk.settings.dirty_save_mode;
+    let osc7_tracking_enabled = disk.settings.osc7_tracking_enabled;
+    disk.settings = data.settings;
+    disk.settings.remote_bind_all = remote_bind_all;
+    disk.settings.remote_enabled = remote_enabled;
+    disk.settings.dirty_save_mode = dirty_save_mode;
+    disk.settings.osc7_tracking_enabled = osc7_tracking_enabled;
+    disk.active_workspace_id = data.active_workspace_id;
+    disk.active_pane_id = data.active_pane_id;
+    disk.active_tab_id = data.active_tab_id;
 }
 
 fn infer_agent_kind(
@@ -201,6 +201,7 @@ mod tests {
             tab_id: Some("tab-1".to_string()),
             agent_id: "codex".to_string(),
             label: Some("Codex".to_string()),
+            label_source: None,
             r#type: None,
             cwd: None,
             last_process: None,

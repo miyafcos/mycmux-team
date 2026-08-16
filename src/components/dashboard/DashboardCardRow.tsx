@@ -19,7 +19,7 @@ export function displayStateColor(state: DashboardDisplayState): string {
   if (state === "error") return "var(--status-error)";
   if (state === "running") return "var(--status-working)";
   if (state === "noUpdate") return "var(--cmux-status-stall)";
-  if (state === "done") return "var(--status-done)";
+  if (state === "done" || state === "acknowledged") return "var(--status-done)";
   return "var(--cmux-text-tertiary)";
 }
 

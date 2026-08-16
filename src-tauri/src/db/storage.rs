@@ -82,6 +82,10 @@ pub struct PaneTabConfig {
     pub tab_id: Option<String>,
     pub agent_id: String,
     pub label: Option<String>,
+    /// Who set `label`: "user" or "ai". Absent means user-set, so a name that
+    /// predates auto naming (or was typed by hand) is never overwritten.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label_source: Option<String>,
     #[serde(default)]
     pub r#type: Option<String>,
     #[serde(default)]
@@ -191,8 +195,15 @@ fn default_ui_density() -> String {
     "standard".to_string()
 }
 
-fn default_ai_provider() -> String { crate::ai::AiConfig::default().provider.as_storage().to_string() }
-fn default_ai_model() -> String { crate::ai::AiConfig::default().model }
+fn default_ai_provider() -> String {
+    crate::ai::AiConfig::default()
+        .provider
+        .as_storage()
+        .to_string()
+}
+fn default_ai_model() -> String {
+    crate::ai::AiConfig::default().model
+}
 
 fn default_ui_font_scale() -> f32 {
     1.0
@@ -418,7 +429,10 @@ fn read_data_file(path: &Path) -> Result<String, String> {
         .map_err(|error| format!("Failed to open {}: {error}", path.display()))?
         .read_to_string(&mut contents)
         .map_err(|error| format!("Failed to read {}: {error}", path.display()))?;
-    Ok(contents.strip_prefix('\u{feff}').unwrap_or(&contents).to_string())
+    Ok(contents
+        .strip_prefix('\u{feff}')
+        .unwrap_or(&contents)
+        .to_string())
 }
 
 fn parse_persistent_data(path: &Path) -> Result<PersistentData, String> {
@@ -610,8 +624,12 @@ mod tests {
 
     #[test]
     fn app_settings_missing_ai_settings_use_defaults() {
-        let settings: AppSettings = serde_json::from_str(r#"{"font_size":14,"theme_id":"yoru-cafe"}"#).unwrap();
-        assert_eq!(settings.ai_provider, crate::ai::AiConfig::default().provider.as_storage());
+        let settings: AppSettings =
+            serde_json::from_str(r#"{"font_size":14,"theme_id":"yoru-cafe"}"#).unwrap();
+        assert_eq!(
+            settings.ai_provider,
+            crate::ai::AiConfig::default().provider.as_storage()
+        );
         assert_eq!(settings.ai_model, crate::ai::AiConfig::default().model);
         assert!(settings.ai_enabled);
     }

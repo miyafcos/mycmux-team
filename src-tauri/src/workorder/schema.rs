@@ -8,6 +8,12 @@ CREATE TABLE IF NOT EXISTS workorder_meta (
   value TEXT
 );
 
+CREATE TABLE IF NOT EXISTS autonomy_settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS work_orders (
   id TEXT PRIMARY KEY,
   goal TEXT NOT NULL,

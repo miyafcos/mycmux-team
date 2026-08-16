@@ -39,7 +39,7 @@ export function AiLogButton() {
       >
         <AiLogIcon />
       </button>
-      <AiLogPanel open={open} visible={mounted} closing={closing} onClose={closePanel} />
+      {mounted && <AiLogPanel open={open} visible={mounted} closing={closing} onClose={closePanel} />}
     </div>
   );
 }

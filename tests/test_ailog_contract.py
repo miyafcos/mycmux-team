@@ -22,6 +22,20 @@ AILOG_COMMANDS = RUST_SRC_ROOT / "commands" / "ailog.rs"
 AILOG_MODULE = RUST_SRC_ROOT / "ailog"
 LIB_RS = RUST_SRC_ROOT / "lib.rs"
 
+def contains_ignoring_layout(haystack: str, needle: str) -> bool:
+    """Match a Rust snippet without pinning rustfmt's line breaks.
+
+    These assertions care that a construct exists, not where the formatter chose
+    to wrap it. Comparing with every whitespace run removed keeps the intent and
+    stops a reformat from turning a passing contract into a red one.
+    """
+    return _squeeze(needle) in _squeeze(haystack)
+
+
+def _squeeze(text: str) -> str:
+    return re.sub(r"\s+", "", text)
+
+
 COMMAND_ATTR_RE = re.compile(r"#\s*\[\s*tauri::command(?:\((?P<args>[^\]]*)\))?\s*\]")
 FN_RE = re.compile(r"(?m)^\s*pub\s+(?P<async>async\s+)?fn\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\(")
 
@@ -177,7 +191,7 @@ def test_summarizer_cancellation_tracks_every_parallel_child() -> None:
     text = read(AILOG_COMMANDS)
     summary_text = read(AILOG_MODULE / "summarize.rs")
     assert "children: summarize::ChildRegistry" in text
-    assert "std::mem::take(&mut *state\n        .children" in text
-    assert "for (_, child) in children" in text
-    assert "let worker_children = children.clone();" in summary_text
+    assert contains_ignoring_layout(text, "std::mem::take(&mut *state.children")
+    assert contains_ignoring_layout(text, "for (_, child) in children")
+    assert contains_ignoring_layout(summary_text, "let worker_children = children.clone();")
     assert "let local_child" not in summary_text

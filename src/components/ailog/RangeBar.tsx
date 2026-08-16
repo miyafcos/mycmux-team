@@ -2,22 +2,23 @@
  * Header row: range picker, re-index control, and index freshness.
  */
 
+import { useEffect } from "react";
 import {
   RANGE_PRESETS,
   formatAgo,
   formatBytes,
   formatCount,
   formatDuration,
-  type IndexProgress,
-  type IndexStatus,
-  type SummarizeProgress,
-  type SummarizeStatus,
   type Overview,
   type RangePreset,
   type SummaryRangePreset,
   SUMMARY_RANGE_PRESETS,
   type UsageRhythmReport,
+  listenIndexProgress,
+  listenSummarizeProgress,
 } from "../../lib/ailog";
+import { useAilogPolling } from "../../hooks/useAilogPolling";
+import { jobDisplayError, useAilogJobStore } from "../../stores/useAilogJobStore";
 import { ButtonGroup, Chip, subtleButtonStyle } from "./ui";
 
 export function RangeBar({
@@ -28,21 +29,12 @@ export function RangeBar({
   onCustomRange,
   summaryPreset,
   onSummaryPreset,
+  open,
+  onJobsSettled,
+  onStartSummarize,
   overview,
   usageRhythm,
-  indexStatus,
-  indexProgress,
-  indexError,
-  onDismissIndexError,
-  onStartIndex,
-  onCancelIndex,
-  summarizeStatus,
-  summarizeProgress,
-  summarizeError,
-  onDismissSummarizeError,
-  onStartSummarize,
   aiDisabledReason,
-  onCancelSummarize,
   onRefresh,
   loading,
   excludeSynthetic,
@@ -57,23 +49,15 @@ export function RangeBar({
   onCustomRange: (from: string, to: string) => void;
   summaryPreset: SummaryRangePreset;
   onSummaryPreset: (preset: SummaryRangePreset) => void;
+  open: boolean;
+  onJobsSettled: () => void;
+  /** Explicit-LLM gate owned by the panel; progress state remains local here. */
+  onStartSummarize?: () => void;
   overview: Overview | null;
   /** Usage is the default segment, so it supplies freshness before dashboard prefetch settles. */
   usageRhythm: UsageRhythmReport | null;
-  indexStatus: IndexStatus | null;
-  indexProgress: IndexProgress | null;
-  indexError: string | null;
-  onDismissIndexError: () => void;
-  onStartIndex: () => void;
-  onCancelIndex: () => void;
-  summarizeStatus: SummarizeStatus | null;
-  summarizeProgress: SummarizeProgress | null;
-  summarizeError: string | null;
-  onDismissSummarizeError: () => void;
-  onStartSummarize: () => void;
   /** Set when the AI setting is off; also used as the button's tooltip. */
   aiDisabledReason?: string;
-  onCancelSummarize: () => void;
   onRefresh: () => void;
   loading: boolean;
   excludeSynthetic: boolean;
@@ -81,12 +65,52 @@ export function RangeBar({
   includeSidechain: boolean;
   onIncludeSidechain: (value: boolean) => void;
 }) {
-  const running = indexStatus?.running ?? false;
+  const index = useAilogJobStore((state) => state.index);
+  const summarize = useAilogJobStore((state) => state.summarize);
+  const setIndexEventsAvailable = useAilogJobStore((state) => state.setIndexEventsAvailable);
+  const setSummarizeEventsAvailable = useAilogJobStore((state) => state.setSummarizeEventsAvailable);
+  const applyIndexProgress = useAilogJobStore((state) => state.applyIndexProgress);
+  const applySummarizeProgress = useAilogJobStore((state) => state.applySummarizeProgress);
+  const refreshIndexStatus = useAilogJobStore((state) => state.refreshIndexStatus);
+  const refreshSummarizeStatus = useAilogJobStore((state) => state.refreshSummarizeStatus);
+  const startIndex = useAilogJobStore((state) => state.startIndex);
+  const cancelIndex = useAilogJobStore((state) => state.cancelIndex);
+  const startSummarize = useAilogJobStore((state) => state.startSummarize);
+  const cancelSummarize = useAilogJobStore((state) => state.cancelSummarize);
+  const dismissIndexError = useAilogJobStore((state) => state.dismissIndexError);
+  const dismissSummarizeError = useAilogJobStore((state) => state.dismissSummarizeError);
+  useEffect(() => {
+    if (!open) return;
+    void refreshIndexStatus();
+    void refreshSummarizeStatus(summaryPreset);
+  }, [open, refreshIndexStatus, refreshSummarizeStatus, summaryPreset]);
+  useEffect(() => {
+    if (!open) return;
+    let unlisten: (() => void) | undefined; let cancelled = false;
+    setIndexEventsAvailable(true);
+    void listenIndexProgress(applyIndexProgress).then((fn) => { if (cancelled) fn(); else unlisten = fn; }).catch(() => { if (!cancelled) setIndexEventsAvailable(false); });
+    return () => { cancelled = true; unlisten?.(); };
+  }, [applyIndexProgress, open, setIndexEventsAvailable]);
+  useEffect(() => {
+    if (!open) return;
+    let unlisten: (() => void) | undefined; let cancelled = false;
+    setSummarizeEventsAvailable(true);
+    void listenSummarizeProgress(applySummarizeProgress).then((fn) => { if (cancelled) fn(); else unlisten = fn; }).catch(() => { if (!cancelled) setSummarizeEventsAvailable(false); });
+    return () => { cancelled = true; unlisten?.(); };
+  }, [applySummarizeProgress, open, setSummarizeEventsAvailable]);
+  const running = index.status?.running ?? false;
+  const summarizing = summarize.status?.running ?? false;
+  useAilogPolling({ open, indexRunning: running, summarizeRunning: summarizing, eventsHealthy: (!running || index.eventsAvailable) && (!summarizing || summarize.eventsAvailable), refreshIndexStatus: async () => { if (await refreshIndexStatus()) onJobsSettled(); }, refreshSummarizeStatus: async () => { if (await refreshSummarizeStatus(summaryPreset)) onJobsSettled(); }, refreshReports: async () => { onJobsSettled(); } });
+  const indexStatus = index.status;
+  const indexProgress = index.progress;
+  const summarizeStatus = summarize.status;
+  const summarizeProgress = summarize.progress;
+  const indexError = jobDisplayError(index);
+  const summarizeError = jobDisplayError(summarize);
   const done = indexProgress?.filesDone ?? indexStatus?.filesDone ?? 0;
   const total = indexProgress?.filesTotal ?? indexStatus?.filesTotal ?? 0;
   const pct = total > 0 ? Math.min(100, (done / total) * 100) : 0;
   const freshness = overview?.indexFreshness ?? usageRhythm?.indexFreshness;
-  const summarizing = summarizeStatus?.running ?? false;
   const summaryDone = summarizeProgress?.sessionsDone ?? summarizeStatus?.sessionsDone ?? 0;
   const summaryTotal = summarizeProgress?.sessionsTotal ?? summarizeStatus?.sessionsTotal ?? 0;
   const customIncomplete = preset === "custom" && (!customFrom || !customTo);
@@ -135,22 +159,22 @@ export function RangeBar({
           {loading ? "集計を更新中…" : "再読込"}
         </button>
         {running ? (
-          <button type="button" onClick={onCancelIndex} style={{ ...subtleButtonStyle, color: "var(--cmux-red)" }}>
+          <button type="button" onClick={() => void cancelIndex()} style={{ ...subtleButtonStyle, color: "var(--cmux-red)" }}>
             インデックスを中断
           </button>
         ) : (
-          <button type="button" onClick={onStartIndex} disabled={summarizing} style={{ ...subtleButtonStyle, opacity: summarizing ? 0.5 : 1 }}>
+          <button type="button" onClick={() => void startIndex(false)} disabled={summarizing} style={{ ...subtleButtonStyle, opacity: summarizing ? 0.5 : 1 }}>
             再インデックス
           </button>
         )}
         {summarizing ? (
-          <button type="button" onClick={onCancelSummarize} style={{ ...subtleButtonStyle, color: "var(--cmux-red)" }}>
+          <button type="button" onClick={() => void cancelSummarize(summaryPreset)} style={{ ...subtleButtonStyle, color: "var(--cmux-red)" }}>
             要約を中断
           </button>
         ) : (
           <button
             type="button"
-            onClick={onStartSummarize}
+            onClick={onStartSummarize ?? (() => void startSummarize(summaryPreset))}
             disabled={running || aiDisabledReason !== undefined}
             title={aiDisabledReason}
             style={{ ...subtleButtonStyle, opacity: running || aiDisabledReason !== undefined ? 0.5 : 1 }}
@@ -206,7 +230,7 @@ export function RangeBar({
           {`処理済み ${formatCount(summaryDone)} / 全 ${formatCount(summaryTotal)} · 経過 ${formatDuration(summarizeProgress?.elapsedMs ?? 0)}`}
         </div>
       ) : null}
-      {summarizeError ? <div style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-red)" }}>{summarizeError} <button type="button" onClick={onDismissSummarizeError} style={subtleButtonStyle}>閉じる</button></div> : null}
+      {summarizeError ? <div style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-red)" }}>{summarizeError} <button type="button" onClick={dismissSummarizeError} style={subtleButtonStyle}>閉じる</button></div> : null}
       {overview && overview.excludedInternal.sessions > 0 ? (
         <div style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-secondary)" }}>
           {`内部処理 ${formatCount(overview.excludedInternal.sessions)} 件 ($${overview.excludedInternal.costUsd.toFixed(2)}) を除外`}
@@ -243,7 +267,7 @@ export function RangeBar({
       </div>
 
       {indexError ? (
-        <div style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-red)", overflowWrap: "anywhere" }}>{indexError} <button type="button" onClick={onDismissIndexError} style={subtleButtonStyle}>閉じる</button></div>
+        <div style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-red)", overflowWrap: "anywhere" }}>{indexError} <button type="button" onClick={dismissIndexError} style={subtleButtonStyle}>閉じる</button></div>
       ) : null}
 
       {overview ? (

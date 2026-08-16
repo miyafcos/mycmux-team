@@ -146,3 +146,25 @@ pub const CODEX_HANDOFF: &[&str] = &[
     r#"{"timestamp":"2026-08-05T00:00:05.000Z","type":"turn_context","payload":{"turn_id":"t3","model":"gpt-5.6-terra","effort":"high"}}"#,
     r#"{"timestamp":"2026-08-05T00:00:06.000Z","ordinal":3,"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":400,"cached_input_tokens":0,"output_tokens":40,"total_tokens":440},"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":10,"total_tokens":110}}}}"#,
 ];
+
+// ---------------------------------------------------------------------------
+// Grok fixtures
+// ---------------------------------------------------------------------------
+
+/// Minimal ACP updates fixture: a split user message, one tool lifecycle, and
+/// one completed turn with provider-reported usage/cost.
+pub const GROK_UPDATES: &[&str] = &[
+    r#"{"timestamp":1786900000,"method":"session/update","params":{"sessionId":"G1","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"hello "},"_meta":{"modelId":"grok-4.6","promptIndex":0}},"_meta":{"eventId":"G1-1","agentTimestampMs":1786900000000}}}"#,
+    r#"{"timestamp":1786900001,"method":"session/update","params":{"sessionId":"G1","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"world"},"_meta":{"modelId":"grok-4.6","promptIndex":0}},"_meta":{"eventId":"G1-2","agentTimestampMs":1786900001000}}}"#,
+    r#"{"timestamp":1786900002,"method":"session/update","params":{"sessionId":"G1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"I will read it."}},"_meta":{"eventId":"G1-3","agentTimestampMs":1786900002000,"promptId":"P1"}}}"#,
+    r#"{"timestamp":1786900003,"method":"session/update","params":{"sessionId":"G1","update":{"sessionUpdate":"tool_call","toolCallId":"call-1","title":"read_file","kind":"read","status":"in_progress","rawInput":{"path":"C:\\proj\\a.rs"}},"_meta":{"eventId":"G1-4","agentTimestampMs":1786900003000,"promptId":"P1"}}}"#,
+    r#"{"timestamp":1786900004,"method":"session/update","params":{"sessionId":"G1","update":{"sessionUpdate":"tool_call_update","toolCallId":"call-1","status":"completed","rawOutput":{"output":"ok"}},"_meta":{"eventId":"G1-5","agentTimestampMs":1786900004000,"promptId":"P1"}}}"#,
+    r#"{"timestamp":1786900005,"method":"_x.ai/session/update","params":{"sessionId":"G1","update":{"sessionUpdate":"turn_completed","prompt_id":"P1","stop_reason":"end_turn","usage":{"inputTokens":1000,"outputTokens":100,"totalTokens":1100,"cachedReadTokens":400,"cacheCreationTokens":25,"reasoningTokens":40,"modelCalls":1,"apiDurationMs":55,"costUsdTicks":1234500000,"modelUsage":{"grok-4.6-build":{"inputTokens":1000,"outputTokens":100,"totalTokens":1100,"cachedReadTokens":400,"cacheCreationTokens":25,"reasoningTokens":40,"modelCalls":1,"apiDurationMs":55,"costUsdTicks":1234500000}},"numTurns":1}},"_meta":{"eventId":"G1-6","agentTimestampMs":1786900005000}}}"#,
+];
+
+/// This file must exist beside the fixture but must not become an indexed
+/// source. Its content is deliberately Grok-shaped to catch extension-only
+/// collection regressions.
+pub const GROK_EVENTS: &[&str] = &[
+    r#"{"ts":"2026-08-17T00:00:00.000Z","type":"turn_started","session_id":"G1","model_id":"grok-4.6"}"#,
+];

@@ -3,7 +3,7 @@
 
 use super::fixtures::*;
 use crate::ailog::metrics::{self, WorkTagStats};
-use crate::ailog::{parse_claude, parse_codex};
+use crate::ailog::{parse_claude, parse_codex, parse_grok};
 
 // ---------------------------------------------------------------------------
 // Claude
@@ -137,6 +137,36 @@ fn codex_attributes_each_turn_to_the_current_turn_context_model() {
             Some("gpt-5.6-terra".to_string()),
         ]
     );
+}
+
+// ---------------------------------------------------------------------------
+// Grok
+// ---------------------------------------------------------------------------
+
+#[test]
+fn grok_joins_user_chunks_and_preserves_reported_usage() {
+    let text = GROK_UPDATES.join("\n");
+    let data = parse_grok::parse_chunk(&text, "G1");
+    let session = data.sessions.get("G1").expect("session G1");
+
+    assert_eq!(session.user_msg_count, 1);
+    assert_eq!(session.first_prompt.as_deref(), Some("hello world"));
+    assert_eq!(session.turns.len(), 1);
+    let turn = &session.turns[0];
+    assert_eq!(turn.input_tokens, 600);
+    assert_eq!(turn.output_tokens, 100);
+    assert_eq!(turn.cache_read_tokens, 400);
+    assert_eq!(turn.cache_write_5m_tokens, 25);
+    assert_eq!(turn.reasoning_tokens, 40);
+    assert_eq!(turn.model.as_deref(), Some("grok-4.6-build"));
+    assert_eq!(turn.tool_calls, 1);
+    assert_eq!(turn.duration_ms, Some(55));
+    assert!((turn.reported_cost_usd.unwrap() - 0.12345).abs() < 1e-12);
+    assert_eq!(session.tools.len(), 1);
+    assert_eq!(session.tools[0].name, "read_file");
+    assert_eq!(session.tools[0].target.as_deref(), Some("C:\\proj\\a.rs"));
+    assert_eq!(session.results.len(), 1);
+    assert!(!session.results[0].is_error);
 }
 
 #[test]

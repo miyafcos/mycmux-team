@@ -20,6 +20,7 @@ export function stateLabels(state: DashboardDisplayState): StateLabels {
   if (state === "noUpdate") return stateLabelsForAxes("needsReview", "stalled");
   if (state === "running") return stateLabelsForAxes(null, "working");
   if (state === "done") return stateLabelsForAxes("needsReview", "done");
+  if (state === "acknowledged") return stateLabelsForAxes(null, "done");
   if (state === "stopped") return stateLabelsForAxes(null, "stopped");
   return stateLabelsForAxes(null, "waiting");
 }

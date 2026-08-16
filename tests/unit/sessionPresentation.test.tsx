@@ -27,7 +27,7 @@ describe("session presentation", () => {
 
   it("marks a list row with no goal summary as unsummarized", () => {
     const report: SessionsReport = { range: { from: 0, to: 1, label: "test" }, rows: [{ ...detail.session, goalSummary: null }], total: 1, priceSource: "", costNote: "" };
-    const html = renderToStaticMarkup(<SessionTable report={report} sort="recent" onSort={() => {}} page={0} onPage={() => {}} pageSize={100} selection={null} leafDimension="model" onOpenDetail={() => {}} activeKey={null} />);
+    const html = renderToStaticMarkup(<SessionTable report={report} sort="recent" onSort={() => {}} page={0} onPage={() => {}} pageSize={100} onOpenDetail={() => {}} activeKey={null} />);
     expect(html).toContain("未要約");
     expect(html).not.toContain("最初の依頼。二文目");
   });

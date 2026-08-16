@@ -25,4 +25,12 @@ describe("SummaryCards price coverage", () => {
     expect(html).toContain("コスト相当");
     expect(html).not.toContain("単価既知の");
   });
+
+  it("keeps only the three action-oriented cards with visible decision subtitles", () => {
+    const html = renderToStaticMarkup(<SummaryCards overview={{ ...overview, totals: { ...overview.totals, sessions: 4 }, rework: { ...overview.rework, abandonedSessions: 1 } }} preset="week" />);
+    for (const label of ["コスト相当", "手戻り平均", "中断率", "低いほど指示が一発で通っている", "ツール実行のまま終わったセッションの割合", "25.0%"])
+      expect(html).toContain(label);
+    for (const removed of [">セッション<", ">ターン<", ">キャッシュ率<", ">実稼働時間<"])
+      expect(html).not.toContain(removed);
+  });
 });

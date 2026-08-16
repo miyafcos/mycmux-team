@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useEffect, useRef } from "react";
 import type { CSSProperties } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
@@ -78,10 +78,8 @@ export default function TitleBar({
   // Counted off live tabs, not the raw metadata map: the badge must never
   // claim notifications the panel cannot list (see collectNotificationEntries).
   const workspacesForNotifications = useWorkspaceListStore((s) => s.workspaces);
-  const paneMetadata = usePaneMetadataStore((s) => s.metadata);
-  const totalNotifications = useMemo(
-    () => countNotifications(workspacesForNotifications, paneMetadata),
-    [workspacesForNotifications, paneMetadata],
+  const totalNotifications = usePaneMetadataStore((state) =>
+    countNotifications(workspacesForNotifications, state.metadata),
   );
   const [notificationPanelOpen, setNotificationPanelOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);

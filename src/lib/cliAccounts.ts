@@ -203,11 +203,14 @@ function paneMatchesProvider(meta: AgentPaneMetadataLike, provider: CliProvider)
 export function runningAgentPaneDetails(
   metadata: Record<string, AgentPaneMetadataLike>,
   provider: CliProvider,
+  volatileMetadata: Record<string, Pick<AgentPaneMetadataLike, "processTitle">> = {},
 ): string[] {
   return Object.entries(metadata)
     .filter(([, meta]) => paneMatchesProvider(meta, provider))
     .map(([sessionId, meta]) => {
-      const process = meta.processTitle?.trim() || PROVIDER_TITLE[provider];
+      const process = volatileMetadata[sessionId]?.processTitle?.trim()
+        || meta.processTitle?.trim()
+        || PROVIDER_TITLE[provider];
       const location = meta.cwd?.trim() || "作業フォルダー不明";
       return `${process} / ${location} / セッション ${sessionId.slice(0, 8)}`;
     });

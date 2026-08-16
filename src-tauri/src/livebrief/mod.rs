@@ -9,6 +9,8 @@ mod intervene;
 mod reducer;
 
 use std::collections::{HashMap, VecDeque};
+use std::fs::File;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -27,7 +29,7 @@ use crate::pty::manager::SessionManager;
 use crate::pty::monitor::MetadataStore;
 use crate::AppState;
 
-pub use adapter::{AgentAdapter, ByteRange, SemanticEventEnvelope};
+pub use adapter::{AgentAdapter, ByteRange, SemanticEventEnvelope, SemanticEventKind};
 pub use intervene::{InterventionAction, InterventionExpectation, InterventionResult};
 pub use reducer::{LiveBriefReducer, PendingInputKind, PendingOption};
 
@@ -96,18 +98,7 @@ pub struct LiveSessionEvents {
     pub events: Vec<SemanticEventEnvelope>,
 }
 
-/// What a cached snapshot must still match for its transcript to be reusable
-/// without a full re-read.
 #[derive(Clone, Debug)]
-struct SnapshotIdentity {
-    path: PathBuf,
-    file_identity: String,
-    binding: LiveBinding,
-    telemetry_health: String,
-}
-
-#[derive(Clone, Debug)]
-#[allow(dead_code)]
 struct TailCursor {
     path: PathBuf,
     file_identity: String,
@@ -119,29 +110,20 @@ struct TailCursor {
 }
 
 #[derive(Clone, Debug)]
-#[allow(dead_code)]
 pub(crate) struct SessionSnapshot {
     brief: LiveSessionBrief,
     cursor: TailCursor,
+    adapter: AgentAdapter,
     reducer: LiveBriefReducer,
     events: VecDeque<SemanticEventEnvelope>,
-}
-
-impl SessionSnapshot {
-    fn identity(&self) -> SnapshotIdentity {
-        SnapshotIdentity {
-            path: self.cursor.path.clone(),
-            file_identity: self.cursor.file_identity.clone(),
-            binding: self.brief.binding.clone(),
-            telemetry_health: self.brief.telemetry_health.clone(),
-        }
-    }
 }
 
 #[derive(Default)]
 struct ServiceState {
     sessions: HashMap<String, SessionSnapshot>,
     brief_revision: u64,
+    refresh_in_progress: bool,
+    last_refresh_finished_at: Option<std::time::Instant>,
 }
 
 #[derive(Clone)]
@@ -201,11 +183,20 @@ impl LiveBriefService {
     }
 
     fn refresh_all(&self) {
+        {
+            let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            if state.refresh_in_progress
+                || state.last_refresh_finished_at.is_some_and(|at| at.elapsed() <= Duration::from_millis(500))
+            {
+                return;
+            }
+            state.refresh_in_progress = true;
+        }
         let session_ids: Vec<String> = self.manager.iter_pids().into_iter().map(|(id, _)| id).collect();
         let mappings = agent_mappings_for_ids(session_ids.iter().map(String::as_str));
-        let priors: HashMap<String, SnapshotIdentity> = {
+        let priors: HashMap<String, SessionSnapshot> = {
             let state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            state.sessions.iter().map(|(session_id, snapshot)| (session_id.clone(), snapshot.identity())).collect()
+            state.sessions.clone()
         };
         let mut next = HashMap::new();
         let mut reused: Vec<String> = Vec::new();
@@ -244,6 +235,8 @@ impl LiveBriefService {
             state.sessions.insert(session_id, snapshot);
         }
         state.sessions.retain(|session_id, _| session_ids.contains(session_id));
+        state.refresh_in_progress = false;
+        state.last_refresh_finished_at = Some(std::time::Instant::now());
     }
 
     /// Rebuild one session. `None` means the cached snapshot is still exact —
@@ -254,12 +247,12 @@ impl LiveBriefService {
         pty_session_id: &str,
         mapping: Option<&AgentSessionMapping>,
         all_mappings: &HashMap<String, AgentSessionMapping>,
-        prior: Option<&SnapshotIdentity>,
+        prior: Option<&SessionSnapshot>,
     ) -> Option<SessionSnapshot> {
         let (pty_generation, pty_input_revision, _) = self.manager
             .intervention_observation(pty_session_id)
             .unwrap_or((0, 0, None));
-        let mapping = mapping.filter(|mapping| matches!(mapping.agent_kind.as_deref(), Some("claude") | Some("codex") | Some("claude-codex")));
+        let mapping = mapping.filter(|mapping| matches!(mapping.agent_kind.as_deref(), Some("claude") | Some("codex") | Some("claude-codex") | Some("grok")));
         let Some(mapping) = mapping else {
             return Some(unavailable_snapshot(
                 self.base_binding(pty_session_id, "", "", pty_generation, pty_input_revision),
@@ -279,22 +272,34 @@ impl LiveBriefService {
         // The cached path is checked first: a live snapshot whose transcript has
         // not moved is reusable without the recursive glob, which otherwise ran
         // once a second per pane.
-        if let Some(prior) = prior.filter(|prior| prior.telemetry_health == "live") {
-            if let Ok(metadata) = std::fs::metadata(&prior.path) {
-                if reuses_prior_snapshot(Some(prior), &prior.path, &metadata, &binding) { return None; }
+        if let Some(prior) = prior.filter(|prior| prior.brief.telemetry_health == "live") {
+            if let Ok(metadata) = std::fs::metadata(&prior.cursor.path) {
+                if reuses_prior_snapshot(Some(prior), &prior.cursor.path, &metadata, &binding) { return None; }
             }
         }
         let Some(path) = locate_transcript(kind, &mapping.session_id) else {
             return Some(unavailable_snapshot(binding, "unavailable", &self.service_epoch));
         };
-        if let Ok(metadata) = std::fs::metadata(&path) {
-            if reuses_prior_snapshot(prior, &path, &metadata, &binding) { return None; }
-        }
         let (history_cwd, history_branch) = self
             .metadata
             .get(pty_session_id)
             .map(|metadata| (Some(metadata.cwd.clone()), metadata.git_branch.clone()))
             .unwrap_or((None, None));
+        if let Ok(metadata) = std::fs::metadata(&path) {
+            if reuses_prior_snapshot(prior, &path, &metadata, &binding) { return None; }
+            if let Some(prior) = prior.filter(|prior| can_advance_prior(prior, &path, &binding)) {
+                if let Ok(snapshot) = advance_transcript_with_history(
+                    prior.clone(),
+                    &metadata,
+                    &binding,
+                    &self.service_epoch,
+                    history_cwd.as_deref(),
+                    history_branch.as_deref(),
+                ) {
+                    return Some(snapshot);
+                }
+            }
+        }
         Some(match bootstrap_transcript_with_history(
             &path,
             kind,
@@ -339,6 +344,17 @@ impl LiveBriefService {
             .collect()
     }
 
+    /// Reads the already-cached semantic question for attention evidence.
+    /// It deliberately does not refresh transcripts or touch the PTY.
+    pub(crate) fn agent_asked_excerpt(&self, pty_session_id: &str, prompt_event_id: &str) -> Option<String> {
+        let state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let snapshot = state.sessions.get(pty_session_id)?;
+        let events = snapshot.events.iter().cloned().collect::<Vec<_>>();
+        semantic_question_excerpt(&events, prompt_event_id)
+            .or_else(|| snapshot.brief.pending_prompt.clone())
+            .or_else(|| snapshot.brief.activity_text.clone())
+    }
+
     pub(crate) fn current(&self, pty_session_id: &str) -> Option<SessionSnapshot> {
         self.refresh_all();
         self.state.lock().ok()?.sessions.get(pty_session_id).cloned()
@@ -353,6 +369,16 @@ impl LiveBriefService {
 
     pub(crate) fn manager(&self) -> &Arc<SessionManager> { &self.manager }
     pub(crate) fn metadata(&self) -> &MetadataStore { &self.metadata }
+}
+
+pub(crate) fn semantic_question_excerpt(
+    events: &[SemanticEventEnvelope],
+    prompt_event_id: &str,
+) -> Option<String> {
+    events.iter().rev().find_map(|event| match &event.kind {
+        SemanticEventKind::Question { prompt_event_id: id, prompt, .. } if id == prompt_event_id => Some(prompt.clone()),
+        _ => None,
+    })
 }
 
 /// Keep the last meaningful picture of a pane whose agent has gone away.
@@ -419,12 +445,18 @@ fn binding_matches(prior: &LiveBinding, next: &LiveBinding) -> bool {
         && prior.pty_input_revision == next.pty_input_revision
 }
 
-fn reuses_prior_snapshot(prior: Option<&SnapshotIdentity>, path: &Path, metadata: &std::fs::Metadata, binding: &LiveBinding) -> bool {
+fn reuses_prior_snapshot(prior: Option<&SessionSnapshot>, path: &Path, metadata: &std::fs::Metadata, binding: &LiveBinding) -> bool {
     let Some(prior) = prior else { return false };
-    prior.telemetry_health == "live"
-        && !prior.file_identity.is_empty()
-        && prior.file_identity == file_identity(path, metadata)
-        && binding_matches(&prior.binding, binding)
+    prior.brief.telemetry_health == "live"
+        && !prior.cursor.file_identity.is_empty()
+        && prior.cursor.file_identity == file_identity(path, metadata)
+        && binding_matches(&prior.brief.binding, binding)
+}
+
+fn can_advance_prior(prior: &SessionSnapshot, path: &Path, binding: &LiveBinding) -> bool {
+    prior.brief.telemetry_health == "live"
+        && prior.cursor.path == path
+        && binding_matches(&prior.brief.binding, binding)
 }
 
 fn clamp_event_limit(limit: Option<usize>) -> usize {
@@ -436,14 +468,20 @@ fn locate_transcript(kind: &str, session_id: &str) -> Option<PathBuf> {
         "claude" => crate::ailog::claude_root()?,
         "claude-codex" => crate::ailog::claude_codex_root()?,
         "codex" => crate::ailog::codex_root()?,
+        "grok" => grok_root()?,
         _ => return None,
     };
     let pattern = match kind {
         "claude" | "claude-codex" => format!("{}/**/{}.jsonl", root.display(), session_id),
         "codex" => format!("{}/**/*{}.jsonl", root.display(), session_id),
+        "grok" => format!("{}/**/{}/updates.jsonl", root.display(), session_id),
         _ => unreachable!(),
     };
     glob::glob(&pattern).ok()?.filter_map(Result::ok).find(|path| path.is_file())
+}
+
+fn grok_root() -> Option<PathBuf> {
+    dirs::home_dir().map(|home| home.join(".grok").join("sessions"))
 }
 
 fn bootstrap_transcript(
@@ -473,11 +511,11 @@ fn bootstrap_transcript_with_history(
     let mut history_events = Vec::new();
     let mut source_revision = 0_u64;
     let mut offset = 0_u64;
-    for raw in complete_lines(&bytes)? {
-        let start = offset;
-        offset = offset.saturating_add(raw.len() as u64 + 1);
+    let (records, pending_bytes) = complete_line_records(&bytes, 0)?;
+    for (raw, range) in records {
+        offset = range.end;
         source_revision = source_revision.saturating_add(1);
-        for event in adapter.decode_record(raw, ByteRange { start, end: offset }, source_revision)? {
+        for event in adapter.decode_record(raw, range, source_revision)? {
             reducer.apply(&event);
             history_events.push(JournalEvent::from_raw_line(event.clone(), raw));
             events.push_back(event);
@@ -486,9 +524,75 @@ fn bootstrap_transcript_with_history(
     }
     // History is best-effort only: a corrupt or locked history.db must never
     // stop livebrief's transcript poll or prevent its snapshot from updating.
+    ingest_history_events(path, binding, history_cwd, history_branch, &history_events);
+    let mut binding = binding.clone();
+    binding.source_revision = source_revision;
+    let now = unix_ms();
+    let mut brief = reducer.to_brief(binding.clone(), "live", service_epoch, now);
+    brief.brief_revision = source_revision;
+    let cursor = TailCursor {
+        path: path.to_path_buf(), file_identity,
+        stream_generation: 1, read_offset: bytes.len() as u64, committed_offset: offset,
+        pending_bytes, committed_anchor: anchor_for_bytes(&bytes, offset),
+    };
+    Ok(SessionSnapshot { brief, cursor, adapter, reducer, events })
+}
+
+fn advance_transcript_with_history(
+    mut snapshot: SessionSnapshot,
+    metadata: &std::fs::Metadata,
+    binding: &LiveBinding,
+    service_epoch: &str,
+    history_cwd: Option<&str>,
+    history_branch: Option<&str>,
+) -> Result<SessionSnapshot, String> {
+    if metadata.len() < snapshot.cursor.read_offset
+        || transcript_anchor(&snapshot.cursor.path, snapshot.cursor.committed_offset)? != snapshot.cursor.committed_anchor
+    {
+        return Err("transcript tail cursor no longer matches source".to_string());
+    }
+    let mut file = File::open(&snapshot.cursor.path).map_err(|error| format!("open transcript tail: {error}"))?;
+    file.seek(SeekFrom::Start(snapshot.cursor.read_offset)).map_err(|error| format!("seek transcript tail: {error}"))?;
+    let mut appended = Vec::new();
+    file.read_to_end(&mut appended).map_err(|error| format!("read transcript tail: {error}"))?;
+    let mut bytes = std::mem::take(&mut snapshot.cursor.pending_bytes);
+    bytes.extend_from_slice(&appended);
+    let (records, pending_bytes) = complete_line_records(&bytes, snapshot.cursor.committed_offset)?;
+    let mut history_events = Vec::new();
+    let mut source_revision = snapshot.brief.binding.source_revision;
+    let mut committed_offset = snapshot.cursor.committed_offset;
+    for (raw, range) in records {
+        committed_offset = range.end;
+        source_revision = source_revision.saturating_add(1);
+        for event in snapshot.adapter.decode_record(raw, range, source_revision)? {
+            snapshot.reducer.apply(&event);
+            history_events.push(JournalEvent::from_raw_line(event.clone(), raw));
+            snapshot.events.push_back(event);
+            if snapshot.events.len() > RING_CAPACITY { snapshot.events.pop_front(); }
+        }
+    }
+    ingest_history_events(&snapshot.cursor.path, binding, history_cwd, history_branch, &history_events);
+    let mut binding = binding.clone();
+    binding.source_revision = source_revision;
+    let now = unix_ms();
+    snapshot.brief = snapshot.reducer.to_brief(binding, "live", service_epoch, now);
+    snapshot.cursor.file_identity = file_identity(&snapshot.cursor.path, metadata);
+    snapshot.cursor.read_offset = metadata.len();
+    snapshot.cursor.committed_offset = committed_offset;
+    snapshot.cursor.pending_bytes = pending_bytes;
+    snapshot.cursor.committed_anchor = transcript_anchor(&snapshot.cursor.path, committed_offset)?;
+    Ok(snapshot)
+}
+
+fn ingest_history_events(
+    path: &Path,
+    binding: &LiveBinding,
+    history_cwd: Option<&str>,
+    history_branch: Option<&str>,
+    events: &[JournalEvent],
+) {
+    if events.is_empty() { return; }
     crate::history::try_ingest(&IngestInput {
-        // amend-1 defines the current logical-session value as this stable
-        // agent session identifier, not the restart-scoped PTY pane ID.
         logical_session_id: &binding.agent_session_id,
         agent_session_id: &binding.agent_session_id,
         agent_kind: &binding.agent_kind,
@@ -497,19 +601,39 @@ fn bootstrap_transcript_with_history(
         cwd: history_cwd,
         branch: history_branch,
         source_log: path,
-        events: &history_events,
+        events,
     });
-    let mut binding = binding.clone();
-    binding.source_revision = source_revision;
-    let now = unix_ms();
-    let mut brief = reducer.to_brief(binding.clone(), "live", service_epoch, now);
-    brief.brief_revision = source_revision;
-    let cursor = TailCursor {
-        path: path.to_path_buf(), file_identity,
-        stream_generation: 1, read_offset: offset, committed_offset: offset,
-        pending_bytes: Vec::new(), committed_anchor: sha256_hex(&bytes[bytes.len().saturating_sub(256)..]),
-    };
-    Ok(SessionSnapshot { brief, cursor, reducer, events })
+}
+
+fn complete_line_records(bytes: &[u8], base_offset: u64) -> Result<(Vec<(&str, ByteRange)>, Vec<u8>), String> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    while let Some(relative_end) = bytes[start..].iter().position(|byte| *byte == b'\n') {
+        let end = start + relative_end + 1;
+        let line = bytes[start..end - 1].strip_suffix(b"\r").unwrap_or(&bytes[start..end - 1]);
+        if line.len() > MAX_LINE_BYTES { return Err("live JSONL line exceeds limit".to_string()); }
+        if !line.is_empty() {
+            out.push((std::str::from_utf8(line).map_err(|_| "live JSONL is not valid UTF-8")?, ByteRange {
+                start: base_offset.saturating_add(start as u64), end: base_offset.saturating_add(end as u64),
+            }));
+        }
+        start = end;
+    }
+    Ok((out, bytes[start..].to_vec()))
+}
+
+fn anchor_for_bytes(bytes: &[u8], committed_offset: u64) -> String {
+    let end = usize::try_from(committed_offset).unwrap_or(bytes.len()).min(bytes.len());
+    sha256_hex(&bytes[end.saturating_sub(256)..end])
+}
+
+fn transcript_anchor(path: &Path, committed_offset: u64) -> Result<String, String> {
+    let start = committed_offset.saturating_sub(256);
+    let mut file = File::open(path).map_err(|error| format!("open transcript anchor: {error}"))?;
+    file.seek(SeekFrom::Start(start)).map_err(|error| format!("seek transcript anchor: {error}"))?;
+    let mut bytes = Vec::new();
+    file.take(committed_offset.saturating_sub(start)).read_to_end(&mut bytes).map_err(|error| format!("read transcript anchor: {error}"))?;
+    Ok(sha256_hex(&bytes))
 }
 
 fn complete_lines(bytes: &[u8]) -> Result<Vec<&str>, String> {
@@ -534,7 +658,7 @@ fn unavailable_snapshot(binding: LiveBinding, health: &str, service_epoch: &str)
         prompt_hash: None, event_seq: 0, operational_state: "running".to_string(), telemetry_health: health.to_string(),
         last_event_at: None, last_successful_read_at: None, updated_at: now, service_epoch: service_epoch.to_string(), brief_revision: 0,
     };
-    SessionSnapshot { brief, cursor: TailCursor { path: PathBuf::new(), file_identity: String::new(), stream_generation: 0, read_offset: 0, committed_offset: 0, pending_bytes: Vec::new(), committed_anchor: String::new() }, reducer: LiveBriefReducer::new(), events: VecDeque::new() }
+    SessionSnapshot { brief, cursor: TailCursor { path: PathBuf::new(), file_identity: String::new(), stream_generation: 0, read_offset: 0, committed_offset: 0, pending_bytes: Vec::new(), committed_anchor: String::new() }, adapter: AgentAdapter::new("codex").expect("supported adapter"), reducer: LiveBriefReducer::new(), events: VecDeque::new() }
 }
 
 fn file_identity(path: &Path, metadata: &std::fs::Metadata) -> String {
@@ -582,6 +706,7 @@ pub async fn send_intervention(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
 
     #[test]
     fn complete_lines_keeps_an_unterminated_utf8_tail_pending() {
@@ -617,6 +742,23 @@ mod tests {
         let snapshot = bootstrap_transcript(&path, "codex", &test_binding(), "epoch").expect("bootstrap");
         assert_eq!(snapshot.events.len(), RING_CAPACITY);
         assert_eq!(snapshot.brief.event_seq, (RING_CAPACITY * 2) as u64);
+    }
+
+    #[test]
+    fn transcript_append_advances_only_the_tail() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("rollout.jsonl");
+        let first = "{\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"message\":\"first\"}}\n";
+        let second = "{\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"message\":\"second\"}}\n";
+        std::fs::write(&path, first).expect("write first record");
+        let snapshot = bootstrap_transcript(&path, "codex", &test_binding(), "epoch").expect("bootstrap");
+        std::fs::OpenOptions::new().append(true).open(&path).expect("open append").write_all(second.as_bytes()).expect("append record");
+        let metadata = std::fs::metadata(&path).expect("stat appended transcript");
+        let advanced = advance_transcript_with_history(snapshot, &metadata, &test_binding(), "epoch", None, None).expect("advance tail");
+        assert_eq!(advanced.cursor.read_offset, metadata.len());
+        assert_eq!(advanced.cursor.committed_offset, metadata.len());
+        assert_eq!(advanced.brief.binding.source_revision, 2);
+        assert_eq!(advanced.brief.event_seq, 2);
     }
 
     #[test]

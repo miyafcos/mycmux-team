@@ -197,6 +197,7 @@ function AccountRow({
   const switchTo = useCliAccountStore((state) => state.switchTo);
   const capture = useCliAccountStore((state) => state.capture);
   const paneMetadata = usePaneMetadataStore((state) => state.metadata);
+  const volatilePaneMetadata = usePaneMetadataStore((state) => state.volatileMetadata);
   const providerBusy = busyProfileId !== null;
   const isBusy = busyProfileId === row.profile_id;
 
@@ -217,7 +218,7 @@ function AccountRow({
     if (!canSwitchCliAccount(row.is_active, providerBusy, row.needs_relogin))
       return;
     const count = runningAgentCounts(paneMetadata)[row.provider];
-    const paneDetails = runningAgentPaneDetails(paneMetadata, row.provider);
+    const paneDetails = runningAgentPaneDetails(paneMetadata, row.provider, volatilePaneMetadata);
     const warning = switchWarningText(
       count,
       row.provider,

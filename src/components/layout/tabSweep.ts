@@ -93,6 +93,7 @@ export interface NamingTab {
   id: string;
   sessionId: string;
   label: string;
+  labelSource?: PaneTab["labelSource"];
   cwd: string;
   agentKind: string;
   isPaneHead: boolean;
@@ -352,7 +353,7 @@ export function formatSweepAiNote(
   const target = `${aiProviderDef(provider).label} (${model})`;
   return kind === "judge"
     ? `各タブの画面末尾${TAB_SWEEP_TAIL_LINES}行と作業フォルダを ${target} に送って判定します（チェックの提案のみ）`
-    : `名前整理は全タブの画面末尾${TAB_NAMING_TAIL_LINES}行・作業フォルダ・ペイン構成を ${target} に送ります（適用は手動）`;
+    : `名前のないタブの画面末尾${TAB_NAMING_TAIL_LINES}行・作業フォルダ・ペイン構成を ${target} に送って名前を付けます（自動で適用・元に戻せます）`;
 }
 
 export function formatJudgeError(error: unknown, provider: AiProviderId): JudgeErrorPresentation {
@@ -559,6 +560,7 @@ export async function scanNamingContext(): Promise<NamingPaneGroup[]> {
           id: tab.id,
           sessionId: tab.sessionId,
           label: tab.label ?? "",
+          labelSource: tab.labelSource,
           cwd: tab.cwd ?? pane.cwd ?? metadata?.cwd ?? "",
           agentKind: tab.agentKind ?? pane.agentKind ?? metadata?.agentKind ?? "",
           isPaneHead: tab.id === displayedTabId,

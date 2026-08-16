@@ -53,8 +53,7 @@ export function ProjectTable({
           </thead>
           <tbody>
             {report.rows.map((row) => {
-              const selected = projectMode &&
-                (selection?.type === "project" || selection?.type === "leaf") && selection.key === row.key;
+              const selected = projectMode && selection?.type === "project" && selection.key === row.key;
               return (
                 <tr
                   key={row.key}

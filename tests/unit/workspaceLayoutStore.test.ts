@@ -670,3 +670,19 @@ describe("workspaceLayoutStore tab reorder", () => {
     expect(panes[0].activeTabId).toBe("t1");
   });
 });
+
+describe("workspaceLayoutStore tab labels", () => {
+  it("uses user as the default label source", () => {
+    setWorkspaces([
+      workspace("source", [pane("pane-a", ["tab-a"])], [["pane-a"]]),
+    ]);
+
+    useWorkspaceLayoutStore.getState().setTabLabel("source", "pane-a", "tab-a", "手動ラベル");
+
+    expect(getPane("source", "pane-a").tabs[0]).toMatchObject({
+      id: "tab-a",
+      label: "手動ラベル",
+      labelSource: "user",
+    });
+  });
+});

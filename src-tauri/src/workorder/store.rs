@@ -112,6 +112,29 @@ pub enum RecordReportOutcome {
     Duplicate,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AutonomySettings {
+    pub auto_advance: bool,
+    pub attention_cards: bool,
+}
+
+impl Default for AutonomySettings {
+    fn default() -> Self {
+        Self {
+            auto_advance: true,
+            attention_cards: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AutonomySettingsPatch {
+    pub auto_advance: Option<bool>,
+    pub attention_cards: Option<bool>,
+}
+
+const AUTONOMY_SETTINGS_AUDIT_WORK_ORDER_ID: &str = "autonomy-settings";
+
 fn initialized_paths() -> &'static Mutex<HashSet<PathBuf>> {
     static PATHS: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
     PATHS.get_or_init(|| Mutex::new(HashSet::new()))
@@ -165,6 +188,83 @@ fn configure_connection(conn: &Connection) -> Result<(), StoreError> {
     conn.busy_timeout(std::time::Duration::from_secs(5))?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
     Ok(())
+}
+
+pub fn autonomy_settings(conn: &Connection) -> Result<AutonomySettings, StoreError> {
+    Ok(AutonomySettings {
+        auto_advance: read_autonomy_setting(conn, "auto_advance")?.unwrap_or(true),
+        attention_cards: read_autonomy_setting(conn, "attention_cards")?.unwrap_or(true),
+    })
+}
+
+pub fn set_autonomy_settings(
+    conn: &mut Connection,
+    patch: AutonomySettingsPatch,
+    now_ms: i64,
+) -> Result<AutonomySettings, StoreError> {
+    let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let current = autonomy_settings(&transaction)?;
+    let next = AutonomySettings {
+        auto_advance: patch.auto_advance.unwrap_or(current.auto_advance),
+        attention_cards: patch.attention_cards.unwrap_or(current.attention_cards),
+    };
+
+    for (key, before, after) in [
+        ("auto_advance", current.auto_advance, next.auto_advance),
+        (
+            "attention_cards",
+            current.attention_cards,
+            next.attention_cards,
+        ),
+    ] {
+        if before == after {
+            continue;
+        }
+        let value = autonomy_setting_value(after);
+        transaction.execute(
+            "INSERT INTO autonomy_settings(key, value, updated_at) VALUES (?1, ?2, ?3) \
+             ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+            params![key, value, now_ms],
+        )?;
+        transaction.execute(
+            "INSERT INTO workorder_audit(work_order_id, plan_version, at, actor, action, detail_json) \
+             VALUES (?1, NULL, ?2, 'user', 'autonomy_toggle', ?3)",
+            params![
+                AUTONOMY_SETTINGS_AUDIT_WORK_ORDER_ID,
+                now_ms,
+                to_json(&serde_json::json!({ "key": key, "value": value }))?,
+            ],
+        )?;
+    }
+    transaction.commit()?;
+    Ok(next)
+}
+
+fn read_autonomy_setting(conn: &Connection, key: &str) -> Result<Option<bool>, StoreError> {
+    let value: Option<String> = conn
+        .query_row(
+            "SELECT value FROM autonomy_settings WHERE key=?1",
+            [key],
+            |row| row.get(0),
+        )
+        .optional()?;
+    value
+        .map(|value| match value.as_str() {
+            "on" => Ok(true),
+            "off" => Ok(false),
+            _ => Err(StoreError::Database(format!(
+                "invalid autonomy setting {key}: {value}"
+            ))),
+        })
+        .transpose()
+}
+
+fn autonomy_setting_value(enabled: bool) -> &'static str {
+    if enabled {
+        "on"
+    } else {
+        "off"
+    }
 }
 
 pub fn create_draft(

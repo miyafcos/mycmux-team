@@ -154,13 +154,14 @@ function closeLoginTab(sessionId: string): void {
 }
 
 async function offerSwitch(provider: CliProvider, profile: CliAccountProfile): Promise<void> {
-  const metadata = usePaneMetadataStore.getState().metadata;
+  const paneMetadataState = usePaneMetadataStore.getState();
+  const metadata = paneMetadataState.metadata;
   const accepted = await confirm(
     switchWarningText(
       runningAgentCounts(metadata)[provider],
       provider,
       profile.label,
-      runningAgentPaneDetails(metadata, provider),
+      runningAgentPaneDetails(metadata, provider, paneMetadataState.volatileMetadata),
     ),
     {
       title: "このアカウントに今すぐ切り替えますか？",

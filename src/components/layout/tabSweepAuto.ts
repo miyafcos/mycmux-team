@@ -4,16 +4,12 @@ import { useAiSettingsStore } from "../../stores/aiSettingsStore";
 import {
   applySweep,
   buildJudgePrompt,
-  buildNamingPrompt,
   buildSweepRows,
   formatJudgeError,
   parseJudgeOutputResult,
-  parseNamingOutput,
-  scanNamingContext,
   scanTabs,
   TAB_RESTORE_CLOSED_EVENT,
   TAB_SWEEP_OPEN_EVENT,
-  type NamingPaneGroup,
   type SweepApplyResult,
   type SweepPlan,
   type SweepReport,
@@ -23,9 +19,8 @@ type AutoSweepSettings = { aiEnabled: boolean; aiProvider: Parameters<typeof for
 
 export interface AutoSweepDependencies {
   settings: () => AutoSweepSettings;
-  scanNamingContext: () => Promise<NamingPaneGroup[]>;
   scanTabs: () => Promise<SweepReport>;
-  invokeJudge: (prompt: string, requestId: string, mode?: "naming") => Promise<string>;
+  invokeJudge: (prompt: string, requestId: string) => Promise<string>;
   applySweep: (plan: SweepPlan) => Promise<SweepApplyResult>;
   pushToast: (message: string, kind: ToastKind, actions?: ToastAction[], durationMs?: number) => void;
   restoreClosedTabs: (count: number) => void;
@@ -47,9 +42,8 @@ function defaultRequestId(): string {
 
 const defaultDependencies: AutoSweepDependencies = {
   settings: () => useAiSettingsStore.getState(),
-  scanNamingContext,
   scanTabs,
-  invokeJudge: (prompt, requestId, mode) => invoke<string>("run_tab_sweep_judge", { prompt, requestId, ...(mode ? { mode } : {}) }),
+  invokeJudge: (prompt, requestId) => invoke<string>("run_tab_sweep_judge", { prompt, requestId }),
   applySweep,
   pushToast: (message, kind, actions, durationMs) =>
     useToastStore.getState().pushToast(message, kind, undefined, actions, durationMs),
@@ -62,9 +56,8 @@ const defaultDependencies: AutoSweepDependencies = {
   requestId: defaultRequestId,
 };
 
-function completionMessage(renamed: number, closed: number): string {
-  const parts = [renamed > 0 ? `${renamed}件に名前を付け` : "", closed > 0 ? `${closed}件のタブを閉じました` : ""].filter(Boolean);
-  return parts.length > 0 ? parts.join("、") : "掃除するタブはありませんでした";
+function completionMessage(closed: number): string {
+  return closed > 0 ? `${closed}件のタブを閉じました` : "掃除するタブはありませんでした";
 }
 
 export function createAutoSweepRunner(dependencies: AutoSweepDependencies = defaultDependencies) {
@@ -92,15 +85,6 @@ export function createAutoSweepRunner(dependencies: AutoSweepDependencies = defa
     if (!settings.aiEnabled) return fallback({ code: "ai_disabled" }, settings.aiProvider);
 
     try {
-      const groups = await dependencies.scanNamingContext();
-      const namingTabs = groups.flatMap((group) => group.tabs);
-      const namingIds = namingTabs.map((tab) => tab.id);
-      const namingRaw = namingIds.length > 0
-        ? await dependencies.invokeJudge(buildNamingPrompt(groups), dependencies.requestId(), "naming")
-        : "[]";
-      const naming = parseNamingOutput(namingRaw, namingIds);
-      if (!naming.valid) throw { code: "parse_failed", detail: "naming output was not a complete valid JSON array" };
-
       const report = await dependencies.scanTabs();
       const rows = buildSweepRows(report);
       const candidates = rows.filter((row) => row.kind === "CANDIDATE").map((row) => row.tab);
@@ -110,13 +94,6 @@ export function createAutoSweepRunner(dependencies: AutoSweepDependencies = defa
       const judged = parseJudgeOutputResult(judgeRaw, candidates.map((tab) => tab.id));
       if (!judged.valid) throw { code: "parse_failed", detail: "judge output was not a complete valid JSON array" };
 
-      const originalLabels = new Map(namingTabs.map((tab) => [tab.id, tab.label]));
-      const renames = naming.proposals
-        .filter((proposal) => originalLabels.get(proposal.id) !== proposal.label)
-        .map((proposal) => ({ ...proposal, overwrite: true }));
-      const renameResult = renames.length > 0
-        ? await dependencies.applySweep({ renames })
-        : { closed: 0, renamed: 0, skipped: [], errors: [] };
       const closeResult = await dependencies.applySweep({
         closeDeadTabIds: rows.filter((row) => row.kind === "DEAD").map((row) => row.tab.id),
         closeCandidateTabIds: judged.verdicts
@@ -124,28 +101,24 @@ export function createAutoSweepRunner(dependencies: AutoSweepDependencies = defa
           .map((verdict) => verdict.id),
         verdicts: judged.verdicts,
       });
-      const renamed = renameResult.renamed;
       const closed = closeResult.closed;
-      const undoRenames = renames.map((rename) => ({ id: rename.id, label: originalLabels.get(rename.id) ?? "", overwrite: true }));
-      const undoable = closed > 0 || undoRenames.length > 0;
+      const undoable = closed > 0;
       const actions: ToastAction[] = undoable
         ? [{
             label: "取り消し",
             run: () => {
-              void dependencies.applySweep({ renames: undoRenames }).finally(() => {
-                dependencies.restoreClosedTabs(closed);
-                dependencies.pushToast("元に戻しました", "info");
-              });
+              dependencies.restoreClosedTabs(closed);
+              dependencies.pushToast("元に戻しました", "info");
             },
           }, showDetails()]
         : [showDetails()];
       dependencies.pushToast(
-        completionMessage(renamed, closed),
+        completionMessage(closed),
         "info",
         actions,
         undoable ? TOAST_UNDO_DISMISS_MS : undefined,
       );
-      return { renamed, closed, fallback: false };
+      return { renamed: 0, closed, fallback: false };
     } catch (error) {
       try {
         return await fallback(error, settings.aiProvider);

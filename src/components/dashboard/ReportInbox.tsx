@@ -7,7 +7,7 @@ import {
 } from "../../stores/reportInboxStore";
 import { useBackgroundAiReportSummary } from "../../lib/backgroundAiScheduler";
 import { dashboardStrings } from "./dashboardStrings";
-import { AttentionCards } from "./AttentionCards";
+import { AttentionCards, type AttentionCardActions } from "./AttentionCards";
 
 export function ReportInbox({
   cards,
@@ -15,12 +15,16 @@ export function ReportInbox({
   sourceAvailableSessionIds,
   onReceiveModeChange,
   onOpenSource,
+  attentionActions,
+  sessionLabel,
 }: {
   cards: readonly MachineReportCard[];
   receiveModeBySession: Record<string, ReportReceiveMode | undefined>;
   sourceAvailableSessionIds: ReadonlySet<string>;
   onReceiveModeChange: (ptySessionId: string, mode: ReportReceiveMode) => void;
   onOpenSource: (card: MachineReportCard) => void;
+  attentionActions: AttentionCardActions;
+  sessionLabel: (ptySessionId: string) => string;
 }) {
   const dispatchBatchesById = useReportInboxStore((state) => state.dispatchBatchesById);
   const dispatchBatches = Object.values(dispatchBatchesById)
@@ -33,16 +37,16 @@ export function ReportInbox({
       <strong>{dashboardStrings.reportInboxTitle}</strong>
       <span>{dashboardStrings.reportInboxHint}</span>
     </div>
-    <AttentionCards />
+    <AttentionCards {...attentionActions} />
     {dispatchBatches.map((batch) => <BatchSummary key={batch.batch.id} batch={batch} />)}
-    {immediate.map((card) => <MachineCard key={card.id} card={card} mode={receiveModeBySession[card.ptySessionId] ?? "batch"} sourceAvailable={sourceAvailableSessionIds.has(card.ptySessionId)} onReceiveModeChange={onReceiveModeChange} onOpenSource={onOpenSource} />)}
+    {immediate.map((card) => <MachineCard key={card.id} card={card} mode={receiveModeBySession[card.ptySessionId] ?? "batch"} sourceAvailable={sourceAvailableSessionIds.has(card.ptySessionId)} onReceiveModeChange={onReceiveModeChange} onOpenSource={onOpenSource} sessionLabel={sessionLabel} />)}
     {batched.length ? <details className="cmux-report-inbox-fold" data-report-batch-fold>
       <summary>{`${dashboardStrings.reportModeBatch} · ${batched.length}件`}</summary>
-      {batched.map((card) => <MachineCard key={card.id} card={card} mode="batch" sourceAvailable={sourceAvailableSessionIds.has(card.ptySessionId)} onReceiveModeChange={onReceiveModeChange} onOpenSource={onOpenSource} />)}
+      {batched.map((card) => <MachineCard key={card.id} card={card} mode="batch" sourceAvailable={sourceAvailableSessionIds.has(card.ptySessionId)} onReceiveModeChange={onReceiveModeChange} onOpenSource={onOpenSource} sessionLabel={sessionLabel} />)}
     </details> : null}
     {quiet.length ? <details className="cmux-report-inbox-fold" data-report-quiet-fold>
       <summary>{`${dashboardStrings.reportModeQuiet} · ${dashboardStrings.reportQuietRecorded(quiet.length)}`}</summary>
-      {quiet.map((card) => <MachineCard key={card.id} card={card} mode="quiet" sourceAvailable={sourceAvailableSessionIds.has(card.ptySessionId)} onReceiveModeChange={onReceiveModeChange} onOpenSource={onOpenSource} />)}
+      {quiet.map((card) => <MachineCard key={card.id} card={card} mode="quiet" sourceAvailable={sourceAvailableSessionIds.has(card.ptySessionId)} onReceiveModeChange={onReceiveModeChange} onOpenSource={onOpenSource} sessionLabel={sessionLabel} />)}
     </details> : null}
     {!cards.length && !dispatchBatches.length ? <div className="cmux-report-inbox-empty">{dashboardStrings.reportInboxEmpty}</div> : null}
   </div>;
@@ -101,15 +105,18 @@ function MachineCard({
   sourceAvailable,
   onReceiveModeChange,
   onOpenSource,
+  sessionLabel,
 }: {
   card: MachineReportCard;
   mode: ReportReceiveMode;
   sourceAvailable: boolean;
   onReceiveModeChange: (ptySessionId: string, mode: ReportReceiveMode) => void;
   onOpenSource: (card: MachineReportCard) => void;
+  sessionLabel: (ptySessionId: string) => string;
 }) {
   return <article className={`cmux-report-machine-card is-${card.state}`} data-report-inbox-card={card.id} data-report-source-available={sourceAvailable ? "true" : "false"}>
     <div className="cmux-report-machine-card-head">
+      <button type="button" className="cmux-attention-card-session-chip" onClick={() => onOpenSource(card)}>{sessionLabel(card.ptySessionId)}</button>
       <span>{machineStateLabel(card.state)}</span>
       <time>{clockLabel(card.observedAt)}</time>
     </div>
@@ -127,9 +134,7 @@ function MachineCard({
           <option value="quiet">{dashboardStrings.reportModeQuiet}</option>
         </select>
       </label>
-      <button type="button" disabled={!sourceAvailable} title={sourceAvailable ? undefined : dashboardStrings.reportSourceUnavailable} onClick={() => {
-        if (sourceAvailable) onOpenSource(card);
-      }}>{dashboardStrings.reportSourceButton}</button>
+      {sourceAvailable ? <button type="button" onClick={() => onOpenSource(card)}>{dashboardStrings.reportSourceButton}</button> : null}
     </div>
     {!sourceAvailable ? <div className="cmux-report-machine-detail" role="status" data-report-source-unavailable>{dashboardStrings.reportSourceUnavailable}</div> : null}
   </article>;

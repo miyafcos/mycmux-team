@@ -210,6 +210,7 @@ fn handle_assistant(
                 // report it separately, so this stays zero rather than being
                 // guessed from the thinking block length.
                 reasoning_tokens: 0,
+                reported_cost_usd: None,
                 duration_ms: None,
                 tool_calls: 0,
                 tool_errors: 0,

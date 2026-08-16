@@ -1,7 +1,7 @@
 import type { LiveSessionBrief } from "../../lib/livebrief";
 import { deriveDisplayStatus } from "../../lib/notificationStatus";
 import { getTabDisplayLabel } from "../../lib/tabDisplayLabel";
-import type { PaneMetadata } from "../../stores/paneMetadataStore";
+import type { PaneMetadata, PaneVolatileMetadata } from "../../stores/paneMetadataStore";
 import type { StallEntry } from "../../stores/stallStore";
 import {
   attentionCategory,
@@ -20,7 +20,7 @@ export type DashboardAgentKind = "claude" | "codex" | "claude-codex" | "grok" | 
  * 画面に出す1本化した状態。カードのグリッド時代の group/section を置き換える。
  * livebrief が生きている間はそちらが正、そうでなければ attention/stall/metadata へ落ちる。
  */
-export type DashboardDisplayState = "needsHuman" | "error" | "running" | "noUpdate" | "done" | "idle" | "stopped";
+export type DashboardDisplayState = "needsHuman" | "error" | "running" | "noUpdate" | "done" | "acknowledged" | "idle" | "stopped";
 export type DashboardStateFilter = "needsHuman" | "running" | "noUpdate" | "done";
 
 /** 「更新なし」と言い切るまでの猶予 (分)。 */
@@ -39,10 +39,13 @@ export interface DashboardCardModel {
   background: boolean;
   attention?: SessionAttention;
   attentionCategory: AttentionCategory | null;
+  /** 手動の完了マーク。新しい活動が確認できたカードには載せない。 */
+  manualDoneAt?: number;
   group: DashboardGroup;
   status: DashboardStatus;
   stall?: StallEntry;
   metadata?: PaneMetadata;
+  volatileMetadata?: PaneVolatileMetadata;
   lastLog?: string;
   lastActivityAt: number;
   label: string;
@@ -66,10 +69,12 @@ export interface DashboardCardModel {
 
 export interface DashboardModelInput {
   metadataBySession: Record<string, PaneMetadata | undefined>;
+  volatileMetadataBySession: Record<string, PaneVolatileMetadata | undefined>;
   lastLogBySession: Record<string, string | undefined>;
   lastLogAtBySession: Record<string, number | undefined>;
   attentionBySession: Record<string, SessionAttention | undefined>;
   seenAttentionByTab: Map<string, string>;
+  doneMarkByTab: Map<string, number>;
   stallsBySession: Record<string, StallEntry | undefined>;
   briefsBySession?: Record<string, LiveSessionBrief | undefined>;
   now: number;
@@ -84,7 +89,7 @@ export interface DashboardFilters {
   stateFilter?: DashboardStateFilter | null;
 }
 
-/** 一本化した並び順: 人間入力待ち > エラー > 実行中 > 更新なし > 待機 > 完了。 */
+/** 一本化した並び順: 人間入力待ち > エラー > 実行中 > 更新なし > 待機 > 完了 > 確認済み。 */
 const STATE_ORDER: Record<DashboardDisplayState, number> = {
   needsHuman: 0,
   error: 1,
@@ -92,7 +97,8 @@ const STATE_ORDER: Record<DashboardDisplayState, number> = {
   noUpdate: 3,
   idle: 4,
   done: 5,
-  stopped: 6,
+  acknowledged: 6,
+  stopped: 7,
 };
 
 function tieBreak(left: DashboardCardModel, right: DashboardCardModel): number {
@@ -118,11 +124,32 @@ export function groupDashboardCard(
   return "idle";
 }
 
+function finiteTimestamp(value: number | null | undefined): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+/**
+ * 手動完了マーク後に届いた活動だけを無効化の根拠にする。
+ * brief の各時刻は noUpdateMinutes の基準になり得るため、どれも比較対象にする。
+ */
+export function isManualDoneMarkValid(card: DashboardCardModel, markedAt: number): boolean {
+  if (!Number.isFinite(markedAt)) return false;
+  const activityTimes = [
+    finiteTimestamp(card.lastActivityAt),
+    finiteTimestamp(card.attention?.stateSince),
+    finiteTimestamp(card.brief?.lastEventAt),
+    finiteTimestamp(card.brief?.lastSuccessfulReadAt),
+    finiteTimestamp(card.brief?.updatedAt),
+  ].filter((value): value is number => value !== null);
+  return !activityTimes.some((activityAt) => activityAt > markedAt);
+}
+
 /**
  * livebrief が「生きている」と言える間はそれを正とし、そうでなければ
  * 従来の attention / stall / metadata 判定へ落とす。断定できないものは idle。
  */
 export function resolveDisplayState(card: DashboardCardModel): DashboardDisplayState {
+  if (card.manualDoneAt !== undefined) return "acknowledged";
   if (card.telemetryHealth === "live") {
     if (card.operationalState === "needsHuman") return "needsHuman";
     if (card.attentionCategory === "error") return "error";
@@ -149,6 +176,7 @@ export function buildDashboardCards(workspaces: readonly Workspace[], input: Das
     for (const [paneIndex, pane] of workspace.panes.entries()) {
       for (const [tabIndex, tab] of pane.tabs.entries()) {
         const metadata = input.metadataBySession[tab.sessionId];
+        const volatileMetadata = input.volatileMetadataBySession[tab.sessionId];
         const attention = input.attentionBySession[tab.sessionId];
         const category = attentionCategory(tab.id, attention, input.seenAttentionByTab);
         const stall = input.stallsBySession[tab.sessionId];
@@ -162,11 +190,11 @@ export function buildDashboardCards(workspaces: readonly Workspace[], input: Das
         const group = groupDashboardCard(category, stall, lastActivityAt, input.now);
         const status: DashboardStatus = category === "error"
           ? "error"
-          : category ?? (stall ? "stalled" : (unobserved ? "unobserved" : deriveDisplayStatus(metadata)));
+          : category ?? (stall ? "stalled" : (unobserved ? "unobserved" : deriveDisplayStatus(metadata, volatileMetadata)));
         const activityMinutes = lastActivityAt
           ? Math.max(0, Math.floor((input.now - lastActivityAt) / 60_000))
           : null;
-        cards.push({
+        const card: DashboardCardModel = {
           workspace,
           workspaceId: workspace.id,
           workspaceIndex,
@@ -182,9 +210,15 @@ export function buildDashboardCards(workspaces: readonly Workspace[], input: Das
           status,
           stall,
           metadata,
+          volatileMetadata,
           lastLog: input.lastLogBySession[tab.sessionId],
           lastActivityAt,
-          label: getTabDisplayLabel(tab, tab.id === pane.activeTabId, input.metadataBySession),
+          label: getTabDisplayLabel(
+            tab,
+            tab.id === pane.activeTabId,
+            input.metadataBySession,
+            input.volatileMetadataBySession,
+          ),
           agentKind: normalizeAgentKind(metadata?.agentKind ?? tab.agentKind),
           unobserved,
           neverStarted: !brief && unobserved && !lastActivityAt,
@@ -196,7 +230,12 @@ export function buildDashboardCards(workspaces: readonly Workspace[], input: Das
           activityText: brief?.activityText ?? null,
           checkpoint: brief?.checkpoint ?? null,
           noUpdateMinutes: noUpdateMinutes(brief, input.now) ?? activityMinutes,
-        });
+        };
+        const markedAt = input.doneMarkByTab.get(tab.id);
+        if (markedAt !== undefined && isManualDoneMarkValid(card, markedAt)) {
+          card.manualDoneAt = markedAt;
+        }
+        cards.push(card);
       }
     }
   }
@@ -217,7 +256,7 @@ function compareWithinState(
   if (state === "noUpdate") {
     return (right.noUpdateMinutes ?? 0) - (left.noUpdateMinutes ?? 0) || tieBreak(left, right);
   }
-  if (state === "done") {
+  if (state === "done" || state === "acknowledged") {
     return (right.attention?.occurrenceOrder ?? 0) - (left.attention?.occurrenceOrder ?? 0) || tieBreak(left, right);
   }
   return right.lastActivityAt - left.lastActivityAt || tieBreak(left, right);
@@ -258,7 +297,9 @@ export function matchesDashboardStateFilter(card: DashboardCardModel, stateFilte
   const state = resolveDisplayState(card);
   return stateFilter === "needsHuman"
     ? state === "needsHuman" || state === "error"
-    : state === stateFilter;
+    : stateFilter === "done"
+      ? state === "done" || state === "acknowledged"
+      : state === stateFilter;
 }
 
 /** The primary list stays focused; completed, idle, and never-started cards live behind one disclosure. */

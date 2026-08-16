@@ -44,6 +44,7 @@ import { useAgentDormancy } from "./hooks/useAgentDormancy";
 import { connectSessionAttentionStore } from "./stores/sessionAttentionStore";
 import { connectStallStore } from "./stores/stallStore";
 import { connectDispatchWatchdog } from "./stores/dispatchWatchdogStore";
+import { startAutoPaneNaming, stopAutoPaneNaming } from "./lib/autoPaneNaming";
 
 // Kick off config fetch immediately — will be cached by the time terminals mount
 preloadTerminalConfig();
@@ -101,11 +102,12 @@ async function applyAgentSessionMappings(): Promise<void> {
   );
   const mappings = await readAgentSessionMappings(sessionIds);
   for (const [sessionId, mapping] of Object.entries(mappings)) {
-    const current = usePaneMetadataStore.getState().metadata[sessionId];
+    const metadataState = usePaneMetadataStore.getState();
+    const current = metadataState.metadata[sessionId];
     if (current?.processIsShell) {
       continue;
     }
-    const processKind = inferAgentKindFromProcessTitle(current?.processTitle);
+    const processKind = inferAgentKindFromProcessTitle(metadataState.volatileMetadata[sessionId]?.processTitle);
     const tabKind = inferAgentKindFromTab(sessionId);
     const kind = mapping.agent_kind ?? processKind ?? tabKind;
     if (!kind) {
@@ -160,6 +162,12 @@ function App() {
   useEffect(() => {
     if (!ready || !isMain) return;
     return connectDispatchWatchdog();
+  }, [ready, isMain]);
+
+  useEffect(() => {
+    if (!ready || !isMain) return;
+    startAutoPaneNaming();
+    return stopAutoPaneNaming;
   }, [ready, isMain]);
 
   useEffect(() => {
@@ -246,13 +254,15 @@ function App() {
       paneMetadataStore.setMetadata(meta.session_id, {
         cwd: meta.cwd,
         gitBranch: meta.git_branch,
-        processTitle: meta.process_name ?? undefined,
         processIsShell,
-        backendLastOutputAt: meta.last_output_at,
         backendProcessStatus: meta.process_status,
         claudeSessionId: sessionClaimAccepted && agentActive ? meta.claude_session_id ?? undefined : undefined,
         agentKind: sessionClaimAccepted && agentActive ? meta.agent_kind ?? undefined : undefined,
         agentSessionId: sessionClaimAccepted && agentActive ? meta.agent_session_id ?? undefined : undefined,
+      });
+      paneMetadataStore.setVolatileMetadata(meta.session_id, {
+        processTitle: meta.process_name ?? undefined,
+        backendLastOutputAt: meta.last_output_at,
       });
       // The workspace claim is intentionally applied before pane metadata.
       // Otherwise a rejected duplicate can re-enter persistence via toConfig's

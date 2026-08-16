@@ -173,6 +173,9 @@ const WorkspaceTabEntry = memo(function WorkspaceTabEntry({
   const tabMetadata = usePaneMetadataStore(useShallow((s) =>
     sessionIds.map((sessionId) => s.metadata[sessionId]),
   ));
+  const tabVolatileMetadata = usePaneMetadataStore(useShallow((s) =>
+    sessionIds.map((sessionId) => s.volatileMetadata[sessionId]),
+  ));
   const tabAttention = useSessionAttentionStore(useShallow((s) =>
     sessionIds.map((sessionId) => s.attentionBySession[sessionId]),
   ));
@@ -187,11 +190,12 @@ const WorkspaceTabEntry = memo(function WorkspaceTabEntry({
   const attentionBySession: Record<string, SessionAttention | undefined> = {};
   sessionIds.forEach((sessionId, index) => {
     const m = tabMetadata[index];
+    const volatile = tabVolatileMetadata[index];
     attentionBySession[sessionId] = tabAttention[index];
     if (tabAttention[index]?.kind === "error") hasWorkspaceError = true;
     if (m) {
       totalWsNotifications += m.notificationCount ?? 0;
-      const eff = deriveDisplayStatus(m);
+      const eff = deriveDisplayStatus(m, volatile);
       if (eff === "working" || eff === "waiting") {
         statusCounts[eff]++;
       }

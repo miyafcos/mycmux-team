@@ -2,7 +2,8 @@ import { useEffect, useState } from "react";
 import { useAiSettingsStore } from "../../../stores/aiSettingsStore";
 import { useSettingsStore } from "../../../stores/settingsStore";
 import { AI_PROVIDERS, aiProviderDef, classifyModelForProvider } from "../../../lib/aiModels";
-import { aiSettingsStrings } from "../settingsStrings";
+import { formatSweepAiNote } from "../../layout/tabSweep";
+import { aiSettingsStrings, autoPaneNamingStrings } from "../settingsStrings";
 import { AutomationTab } from "./AutomationTab";
 import {
   checkboxLabelStyle,
@@ -26,6 +27,8 @@ export function AiTab() {
   const reset = useAiSettingsStore((s) => s.resetAiSettings);
   const replyDraftSuggestionsEnabled = useSettingsStore((s) => s.replyDraftSuggestionsEnabled);
   const setReplyDraftSuggestionsEnabled = useSettingsStore((s) => s.setReplyDraftSuggestionsEnabled);
+  const autoPaneNamingEnabled = useSettingsStore((s) => s.autoPaneNamingEnabled);
+  const setAutoPaneNamingEnabled = useSettingsStore((s) => s.setAutoPaneNamingEnabled);
 
   // The text field is uncontrolled between commits: normalising on every
   // keystroke would snap a half-typed (or momentarily empty) model back to the
@@ -124,6 +127,28 @@ export function AiTab() {
           <span>AI に具体案を準備させる</span>
         </label>
         <div style={hintStyle}>画面を開いただけでは実行しません。設定をオフにすると、新しい AI 呼び出しは行いません。</div>
+      </section>
+
+      <div style={dividerStyle} />
+
+      <section aria-labelledby="cmux-auto-pane-naming-heading">
+        <div id="cmux-auto-pane-naming-heading" style={sectionHeadingStyle}>{autoPaneNamingStrings.title}</div>
+        <div style={hintStyle}>{autoPaneNamingStrings.hint}</div>
+        <label style={{ ...checkboxLabelStyleFor(enabled), marginTop: 8 }}>
+          <input
+            type="checkbox"
+            checked={autoPaneNamingEnabled}
+            disabled={!enabled}
+            onChange={(event) => setAutoPaneNamingEnabled(event.target.checked)}
+          />
+          <span>{autoPaneNamingStrings.label}</span>
+        </label>
+        {!enabled ? <div style={hintStyle}>{autoPaneNamingStrings.disabledByAiHint}</div> : null}
+        {/* This job runs unattended, so the "what leaves the machine" disclosure
+            lives next to its switch — there is no panel the user opens first. */}
+        {enabled && autoPaneNamingEnabled ? (
+          <div style={hintStyle}>{formatSweepAiNote("naming", provider, model, enabled)}</div>
+        ) : null}
       </section>
     </div>
   );

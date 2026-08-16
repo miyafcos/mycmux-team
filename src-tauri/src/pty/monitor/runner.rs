@@ -656,7 +656,7 @@ pub fn start_monitor(
 }
 
 fn monitor_refresh_interval(frontend_visible: bool) -> Duration {
-    Duration::from_secs(if frontend_visible { 5 } else { 20 })
+    Duration::from_secs(if frontend_visible { 10 } else { 20 })
 }
 
 #[cfg(test)]
@@ -666,7 +666,7 @@ mod tests {
 
     #[test]
     fn refresh_interval_slows_only_when_frontend_is_hidden() {
-        assert_eq!(monitor_refresh_interval(true), Duration::from_secs(5));
+        assert_eq!(monitor_refresh_interval(true), Duration::from_secs(10));
         assert_eq!(monitor_refresh_interval(false), Duration::from_secs(20));
     }
 }

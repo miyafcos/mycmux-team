@@ -15,8 +15,9 @@ export async function confirmPaneClose(
   options: PaneCloseConfirmOptions = {},
 ): Promise<boolean> {
   const metadata = usePaneMetadataStore.getState().metadata;
-  const victims = collectPaneCloseVictims(panes, metadata);
-  const liveAgentTabs = scope === "pane" ? collectLiveAgentTabs(panes, metadata) : [];
+  const volatileMetadata = usePaneMetadataStore.getState().volatileMetadata;
+  const victims = collectPaneCloseVictims(panes, metadata, volatileMetadata);
+  const liveAgentTabs = scope === "pane" ? collectLiveAgentTabs(panes, metadata, volatileMetadata) : [];
   // A pane holding nothing live closes unprompted, the way it always has.
   // A workspace never did: it asked every time, and it keeps asking even when
   // no tab looks busy, because the close takes every pane in it.

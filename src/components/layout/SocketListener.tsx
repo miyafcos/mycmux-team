@@ -827,11 +827,13 @@ function mirrorPtyMetadataForPersistence(meta: PtyMetadata): void {
   paneMetadataStore.setMetadata(meta.session_id, {
     cwd: meta.cwd,
     gitBranch: meta.git_branch,
-    processTitle: meta.process_name ?? undefined,
     processIsShell,
     claudeSessionId: sessionClaimAccepted && agentActive ? meta.claude_session_id ?? undefined : undefined,
     agentKind: sessionClaimAccepted && agentActive ? meta.agent_kind ?? undefined : undefined,
     agentSessionId: sessionClaimAccepted && agentActive ? meta.agent_session_id ?? undefined : undefined,
+  });
+  paneMetadataStore.setVolatileMetadata(meta.session_id, {
+    processTitle: meta.process_name ?? undefined,
   });
 }
 
@@ -969,6 +971,7 @@ export function toConfig(ws: Workspace, _agentMappings: Record<string, AgentSess
             tab_id: tab.id,
             agent_id: tab.agentId,
             label: tab.label ?? null,
+            label_source: tab.labelSource ?? null,
             type: "terminal" as const,
             cwd: tabMeta?.cwd ?? tab.cwd ?? paneCwd,
             last_process: null,

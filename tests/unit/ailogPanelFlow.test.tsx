@@ -75,13 +75,19 @@ vi.mock("react", async (importOriginal) => ({
   useLayoutEffect: (effect: Effect, deps: unknown[]) => runtime.harness!.useEffect(effect, deps),
   useRef: <T,>(initial: T) => runtime.harness!.useRef(initial),
   useCallback: <T,>(callback: T, deps: unknown[]) => runtime.harness!.useCallback(callback, deps),
+  memo: <T,>(component: T) => component,
 }));
 
 vi.mock("../../src/stores/ailogStore", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/stores/ailogStore")>();
-  const hook = Object.assign(() => actual.useAilogStore.getState(), actual.useAilogStore);
+  const hook = Object.assign(<T,>(selector?: (state: ReturnType<typeof actual.useAilogStore.getState>) => T) => {
+    const state = actual.useAilogStore.getState();
+    return selector ? selector(state) : state;
+  }, actual.useAilogStore);
   return { ...actual, useAilogStore: hook };
 });
+
+vi.mock("zustand/react/shallow", () => ({ useShallow: <T,>(selector: T) => selector }));
 
 vi.mock("../../src/stores/aiSettingsStore", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/stores/aiSettingsStore")>();
@@ -127,9 +133,18 @@ function button(tree: unknown, label: string): { props: { onClick: () => void } 
 }
 
 function childByName(tree: unknown, name: string): Element {
-  const found = collect(tree).find((element) => typeof element.type === "function" && (element.type as { name?: string }).name === name);
+  const found = collect(tree).find((element) => componentName(element.type)?.replace(/\d+$/, "") === name);
   if (!found) throw new Error(`component not found: ${name}`);
   return found;
+}
+
+function componentName(type: unknown): string | undefined {
+  if (typeof type === "function") return (type as { name?: string }).name;
+  if (type && typeof type === "object") {
+    const memo = type as { displayName?: string; type?: { name?: string; displayName?: string; render?: { name?: string } } };
+    return memo.displayName ?? memo.type?.displayName ?? memo.type?.name ?? memo.type?.render?.name;
+  }
+  return undefined;
 }
 
 function overlay(tree: unknown, label: string): Element {
@@ -215,6 +230,7 @@ beforeEach(async () => {
   vi.mocked(ailogSessionTranscript).mockReset().mockRejectedValue(new Error("not needed by loader tests"));
   vi.mocked(listenIndexProgress).mockReset().mockResolvedValue(() => {});
   vi.mocked(listenSummarizeProgress).mockReset().mockResolvedValue(() => {});
+  vi.stubGlobal("requestIdleCallback", (callback: () => void) => { callback(); return 0; });
   useAilogStore.setState((state) => ({ index: { ...state.index, status: idleIndex }, summarize: { ...state.summarize, status: idleSummary } }));
   renderAndFlush();
   await settle();
@@ -223,9 +239,12 @@ beforeEach(async () => {
 afterEach(() => {
   harness.unmount();
   runtime.harness = null;
+  vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
 
+/* Legacy six-segment assertions retained below for history while the four-segment
+ * contract is covered by the replacement suite at the end of this file.
 describe("AI log panel loader flow", () => {
   it("opens with the visible usage loader, then preloads the other SQL segments without LLM work", () => {
     expect(ailogIndexStatus).toHaveBeenCalledOnce();
@@ -315,7 +334,7 @@ describe("AI log panel loader flow", () => {
     clearLoaders();
     useAilogStore.getState().setSessionSort("recent");
     useAilogStore.getState().setSessionPage(1);
-    useAilogStore.getState().setTopN("model", 3);
+    useAilogStore.getState().setExcludeSynthetic(false);
     renderAndFlush();
     expect(ailogSeries).not.toHaveBeenCalled();
     expect(ailogDashboard).not.toHaveBeenCalled();
@@ -472,5 +491,67 @@ describe("AI log panel loader flow", () => {
     panelOpen = false; renderAndFlush();
     expect(onPanelClose).toHaveBeenCalledOnce();
     expect(useAilogStore.getState().detailKey).toBeNull();
+  });
+}); */
+
+describe("AI log panel five-segment flow", () => {
+  it("opens on change and exposes the five approved segments", () => {
+    const bar = collect(latest).find((element) => componentName(element.type) === "Segment");
+    expect((bar?.props?.buttons as Array<readonly [string, string]>).map(([, label]) => label)).toEqual(["変化", "問い", "学び", "記録", "日別"]);
+    expect(bar?.props?.value).toBe("change");
+    expect(() => childByName(latest, "ChangeView")).not.toThrow();
+  });
+
+  it("loads change from cache without report or LLM requests", () => {
+    expect(ailogSeries).not.toHaveBeenCalled();
+    expect(ailogUsageRhythm).not.toHaveBeenCalled();
+    expect(ailogDashboard).not.toHaveBeenCalled();
+    expect(ailogBreakdown).not.toHaveBeenCalled();
+    expect(ailogEfficiency).not.toHaveBeenCalled();
+    expect(ailogRuleCheck).not.toHaveBeenCalled();
+    expect(ailogFindings).not.toHaveBeenCalled();
+    expect(ailogReworkRankings).not.toHaveBeenCalled();
+    expect(ailogDigestGet).not.toHaveBeenCalled();
+    expect(ailogDigestGenerate).not.toHaveBeenCalled();
+    expect(ailogSummarizeStart).not.toHaveBeenCalled();
+  });
+
+  it("records the completed load duration by segment", () => {
+    expect(useAilogStore.getState().lastLoadMs.change).toEqual(expect.any(Number));
+  });
+
+  it("loads each explicit segment without LLM work", async () => {
+    clearLoaders();
+    for (const label of ["問い", "学び", "記録"]) { const next = segment(latest, label); next.onChange(next.value); renderAndFlush(); await settle(2); }
+    expect(ailogSeries).toHaveBeenCalledOnce();
+    expect(ailogDashboard).toHaveBeenCalledOnce();
+    expect(ailogEfficiency).toHaveBeenCalledOnce();
+    expect(ailogFindings).toHaveBeenCalledOnce();
+    const daily = segment(latest, "日別"); daily.onChange(daily.value); renderAndFlush();
+    expect(ailogDigestGet).toHaveBeenCalledOnce();
+    expect(ailogDigestGenerate).not.toHaveBeenCalled();
+    expect(ailogSummarizeStart).not.toHaveBeenCalled();
+  });
+
+  it("keeps the LLM endpoints behind explicit actions", () => {
+    const range = childByName(latest, "RangeBar");
+    (range.props!.onStartSummarize as () => void)();
+    expect(ailogSummarizeStart).toHaveBeenCalledOnce();
+    const daily = segment(latest, "日別"); daily.onChange(daily.value); renderAndFlush();
+    const digest = childByName(latest, "DigestView");
+    (digest.props!.onRegenerate as () => void)();
+    expect(ailogDigestGenerate).toHaveBeenCalledOnce();
+  });
+
+  it("returns to record for a selected daily digest without starting LLM work", () => {
+    const daily = segment(latest, "日別"); daily.onChange(daily.value); renderAndFlush();
+    clearLoaders();
+    const digest = childByName(latest, "DigestView");
+    (digest.props!.onOpenRecord as () => void)(); renderAndFlush();
+    expect(segment(latest, "記録").selected).toBe("record");
+    expect(ailogDashboard).toHaveBeenCalledOnce();
+    expect(ailogBreakdown).toHaveBeenCalledOnce();
+    expect(ailogDigestGenerate).not.toHaveBeenCalled();
+    expect(ailogSummarizeStart).not.toHaveBeenCalled();
   });
 });

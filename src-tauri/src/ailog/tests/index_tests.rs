@@ -2,7 +2,7 @@
 //! aggregation APIs.
 
 use super::fixtures::*;
-use crate::ailog::{query, Filters, Range, KIND_CLAUDE, KIND_CODEX};
+use crate::ailog::{query, Filters, Range, KIND_CLAUDE, KIND_CODEX, KIND_GROK};
 
 const NOW: i64 = 1_800_000_000_000;
 
@@ -333,7 +333,10 @@ fn an_unknown_model_is_reported_rather_than_guessed() {
 
     let overview = query::overview(&conn, &all_time(), &Filters::default(), NOW).unwrap();
     assert_eq!(overview.totals.cost_usd, 0.0);
-    assert_eq!(overview.price_coverage.unknown.models, vec!["totally-unknown-model-x".to_string()]);
+    assert_eq!(
+        overview.price_coverage.unknown.models,
+        vec!["totally-unknown-model-x".to_string()]
+    );
     assert_eq!(overview.price_coverage.covered_token_ratio, 0.0);
     assert_eq!(overview.price_source, "default");
 
@@ -553,6 +556,118 @@ fn codex_sessions_index_and_aggregate() {
     let detail = query::session_detail(&conn, KIND_CODEX, "CX1").unwrap();
     assert_eq!(detail.plan_type.as_deref(), Some("pro"));
     assert_eq!(detail.session.origin.as_deref(), Some("unknown"));
+}
+
+#[test]
+fn grok_indexes_updates_only_and_uses_provider_cost() {
+    let fixture = Fixture::new();
+    fixture.write("G1/updates.jsonl", GROK_UPDATES);
+    fixture.write("G1/events.jsonl", GROK_EVENTS);
+    fixture.write(
+        "G1/summary.json",
+        &[r#"{"info":{"id":"G1","cwd":"C:\\proj\\grok"},"current_model_id":"grok-4.6"}"#],
+    );
+
+    let report = fixture.index(KIND_GROK, false);
+    assert_eq!(report.files_total, 1, "events.jsonl must be excluded");
+    assert_eq!(report.files_done, 1);
+    let conn = fixture.conn();
+
+    let session: (String, String, String, i64, String, i64, String, f64) = conn
+        .query_row(
+            "SELECT kind, session_id, cwd, user_msg_count, first_prompt, turn_count, primary_model, cost_usd FROM session",
+            [],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(session.0, KIND_GROK);
+    assert_eq!(session.1, "G1");
+    assert_eq!(session.2, r"C:\proj\grok");
+    assert_eq!(session.3, 1);
+    assert_eq!(session.4, "hello world");
+    assert_eq!(session.5, 1);
+    assert_eq!(session.6, "grok-4.6-build");
+    assert!((session.7 - 0.12345).abs() < 1e-12);
+
+    let turn: (i64, i64, i64, i64, i64, f64) = conn
+        .query_row(
+            "SELECT input_tokens, output_tokens, cache_read_tokens, cache_write_5m_tokens, reasoning_tokens, cost_usd FROM turn",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
+        )
+        .unwrap();
+    assert_eq!(turn.0, 600);
+    assert_eq!(turn.1, 100);
+    assert_eq!(turn.2, 400);
+    assert_eq!(turn.3, 25);
+    assert_eq!(turn.4, 40);
+    assert!((turn.5 - 0.12345).abs() < 1e-12);
+
+    let tool: (String, String, String, String) = conn
+        .query_row(
+            "SELECT name, call_id, target, turn_key FROM tool_event",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(tool, ("read_file".to_string(), "call-1".to_string(), r"C:\proj\a.rs".to_string(), "P1".to_string()));
+    assert_eq!(fixture.count("source_file"), 1);
+    assert_eq!(
+        conn.query_row(
+            "SELECT COUNT(*) FROM source_file WHERE path LIKE '%events.jsonl'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap(),
+        0
+    );
+}
+
+#[test]
+fn grok_decodes_cwd_from_the_encoded_session_parent() {
+    let fixture = Fixture::new();
+    fixture.write("C%3A%5Cproj/G1/updates.jsonl", GROK_UPDATES);
+
+    fixture.index(KIND_GROK, false);
+    let conn = fixture.conn();
+    let cwd: String = conn
+        .query_row(
+            "SELECT cwd FROM session WHERE kind=?1 AND session_id=?2",
+            [KIND_GROK, "G1"],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(cwd, r"C:\proj");
+}
+
+#[test]
+fn grok_reparses_an_appended_file_without_duplicate_session_metrics() {
+    let fixture = Fixture::new();
+    fixture.write("G1/updates.jsonl", &GROK_UPDATES[..2]);
+    fixture.index(KIND_GROK, false);
+    fixture.append("G1/updates.jsonl", &GROK_UPDATES[2..]);
+    fixture.index(KIND_GROK, false);
+
+    let conn = fixture.conn();
+    let counts: (i64, i64, i64) = conn
+        .query_row(
+            "SELECT user_msg_count, turn_count, (SELECT COUNT(*) FROM tool_event) FROM session WHERE kind=?1 AND session_id=?2",
+            [KIND_GROK, "G1"],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(counts, (1, 1, 1));
 }
 
 #[test]

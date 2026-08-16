@@ -8,6 +8,7 @@
 }
 
 .cmux-attention-card-head,
+.cmux-attention-card-head-main,
 .cmux-attention-card-action,
 .cmux-attention-card-evidence {
   display: flex;
@@ -16,8 +17,15 @@
 }
 
 .cmux-attention-card-head { justify-content: space-between; }
+.cmux-attention-card-head-main { min-width: 0; }
+.cmux-attention-card-session-chip { max-width: 180px; overflow: hidden; border: 1px solid var(--cmux-border, #667085); border-radius: 999px; padding: 2px 7px; background: var(--cmux-surface-raised, rgba(255, 255, 255, 0.08)); color: var(--cmux-text, #f8fafc); font: inherit; font-size: 0.85em; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+.cmux-attention-card-session-chip:hover { background: var(--cmux-hover, rgba(255, 255, 255, 0.14)); }
+.cmux-attention-card-subject { margin: 7px 0 0; color: var(--cmux-text-secondary, #cbd5e1); font-size: 0.9em; overflow-wrap: anywhere; }
 .cmux-attention-card dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 8px; margin: 8px 0; }
 .cmux-attention-card dt { color: var(--cmux-text-tertiary, #98a2b3); }
 .cmux-attention-card dd { margin: 0; }
 .cmux-attention-card-evidence { font-size: 0.9em; }
-.cmux-attention-card-unavailable { color: var(--cmux-text-tertiary, #98a2b3); font-size: 0.9em; }
+.cmux-attention-card-evidence span { white-space: pre-wrap; overflow-wrap: anywhere; }
+.cmux-attention-card-action-result { font-size: 0.9em; }
+.cmux-attention-card-action-result.is-success { color: var(--status-done, #22c55e); }
+.cmux-attention-card-action-result.is-error { color: var(--status-error, #ef4444); }

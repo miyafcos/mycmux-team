@@ -13,11 +13,14 @@
 //! excluded because both providers already count them inside `output`
 //! (see [`super::price::cost_for_turn`]).
 
+use std::time::Instant;
+
 use rusqlite::{params_from_iter, Connection};
 use serde::Serialize;
 
 use crate::ailog::query::{
-    index_freshness, shared_where, IndexFreshness, RangeOut, DAY_BOUNDARY_OFFSET_MIN,
+    index_freshness, log_report_timings, shared_where, IndexFreshness, RangeOut, ReportTimings,
+    DAY_BOUNDARY_OFFSET_MIN,
 };
 use crate::ailog::{Filters, Range};
 
@@ -102,6 +105,7 @@ pub struct UsageRhythmReport {
     pub busiest_total: Option<RhythmDay>,
     pub busiest_io: Option<RhythmDay>,
     pub index_freshness: IndexFreshness,
+    pub timings: ReportTimings,
 }
 
 pub fn rhythm(
@@ -110,6 +114,7 @@ pub fn rhythm(
     filters: &Filters,
     now_ms: i64,
 ) -> Result<UsageRhythmReport, String> {
+    let started = Instant::now();
     let (resolved, label) = range.resolve(now_ms);
     let (where_sql, params) = shared_where(&resolved, filters);
     let shift = DAY_BOUNDARY_OFFSET_MIN * 60_000;
@@ -198,6 +203,9 @@ pub fn rhythm(
         "usage weekdays",
     )?;
 
+    let index_freshness = index_freshness(conn);
+    let sql_ms = started.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
+
     let streak = streaks(&indices, shift);
     let active_days = days.len() as i64;
     let span_days = match (indices.first(), indices.last()) {
@@ -214,6 +222,19 @@ pub fn rhythm(
         .max_by_key(|day| day.io)
         .filter(|day| day.io > 0)
         .cloned();
+
+    let timings = ReportTimings {
+        sql_ms,
+        rows_scanned: totals.turns.max(0) as u64,
+        build_ms: started
+            .elapsed()
+            .as_millis()
+            .try_into()
+            .unwrap_or(u64::MAX)
+            .saturating_sub(sql_ms),
+        path: "raw",
+    };
+    log_report_timings("usage_rhythm", timings);
 
     Ok(UsageRhythmReport {
         range: RangeOut {
@@ -233,7 +254,8 @@ pub fn rhythm(
         streak,
         busiest_total,
         busiest_io,
-        index_freshness: index_freshness(conn),
+        index_freshness,
+        timings,
     })
 }
 

@@ -3,7 +3,7 @@ import { usePaneMetadataStore } from "../../src/stores/paneMetadataStore";
 
 describe("paneMetadataStore notification clearing", () => {
   beforeEach(() => {
-    usePaneMetadataStore.setState({ metadata: {}, lastLog: {} });
+    usePaneMetadataStore.setState({ metadata: {}, volatileMetadata: {}, lastLog: {}, lastLogAt: {} });
   });
 
   afterEach(() => {
@@ -111,5 +111,32 @@ describe("paneMetadataStore notification clearing", () => {
 
     expect(usePaneMetadataStore.getState().metadata.first).not.toHaveProperty("processStatusAt");
     expect(usePaneMetadataStore.getState().metadata.second).not.toHaveProperty("processStatusAt");
+  });
+
+  it("keeps persistent metadata stable across volatile terminal updates", () => {
+    const store = usePaneMetadataStore.getState();
+    store.setMetadata("session", { cwd: "C:\\work", processIsShell: false });
+    const before = usePaneMetadataStore.getState();
+
+    before.setVolatileMetadata("session", {
+      processTitle: "codex",
+      outputActive: true,
+      workingPatternVisible: true,
+      backendLastOutputAt: 1_234,
+    });
+
+    const after = usePaneMetadataStore.getState();
+    expect(after.metadata).toBe(before.metadata);
+    expect(after.metadata.session).not.toMatchObject({ processTitle: "codex" });
+    expect(after.volatileMetadata).not.toBe(before.volatileMetadata);
+    expect(after.volatileMetadata.session).toEqual({
+      processTitle: "codex",
+      outputActive: true,
+      workingPatternVisible: true,
+      backendLastOutputAt: 1_234,
+    });
+
+    after.removeMetadata("session");
+    expect(usePaneMetadataStore.getState().volatileMetadata.session).toBeUndefined();
   });
 });

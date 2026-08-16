@@ -2,6 +2,28 @@ import { create } from "zustand";
 import { mentionTokenKey, type MentionToken } from "../lib/mentionModel";
 
 export type ComposerCommandKind = "plain" | "status-request" | "answer-forward" | "continue";
+export type DashboardOptimisticMessageState = "sending" | "sent" | "failed";
+
+/**
+ * A dashboard-only visual receipt. It intentionally lives next to the shared
+ * draft rather than the transcript: the transcript is still the source of
+ * truth and removes this receipt once it catches up.
+ */
+export interface DashboardOptimisticMessage {
+  id: string;
+  text: string;
+  createdAt: number;
+  state: DashboardOptimisticMessageState;
+  error: string | null;
+}
+
+interface DashboardRetryRequest {
+  messageId: string;
+  requestId: number;
+}
+
+let nextDashboardOptimisticMessageId = 1;
+let nextDashboardRetryRequestId = 1;
 
 /** Captured only by the QuestionCard UI path; free text never creates one. */
 export interface ComposerQuestionGuard {
@@ -23,6 +45,8 @@ interface ComposerState {
   mentionTokensBySession: Record<string, MentionToken[]>;
   commandKindBySession: Record<string, ComposerCommandKind>;
   questionGuardBySession: Record<string, ComposerQuestionGuard | undefined>;
+  dashboardOptimisticMessagesBySession: Record<string, DashboardOptimisticMessage[]>;
+  dashboardRetryBySession: Record<string, DashboardRetryRequest | undefined>;
   setDraft: (sessionId: string, text: string) => void;
   clearDraft: (sessionId: string) => void;
   addMentionToken: (sessionId: string, token: MentionToken) => void;
@@ -30,6 +54,11 @@ interface ComposerState {
   clearMentionTokens: (sessionId: string) => void;
   setCommandKind: (sessionId: string, kind: ComposerCommandKind) => void;
   setQuestionGuard: (sessionId: string, guard: ComposerQuestionGuard | null) => void;
+  addDashboardOptimisticMessage: (sessionId: string, text: string) => string;
+  setDashboardOptimisticMessageState: (sessionId: string, messageId: string, state: DashboardOptimisticMessageState, error?: string | null) => void;
+  collapseDashboardOptimisticMessages: (sessionId: string, transcriptMessages: readonly { text: string; occurredAt: number }[]) => void;
+  requestDashboardOptimisticRetry: (sessionId: string, messageId: string) => void;
+  consumeDashboardOptimisticRetry: (sessionId: string, requestId: number) => void;
 }
 
 export const useComposerStore = create<ComposerState>((set) => ({
@@ -37,6 +66,8 @@ export const useComposerStore = create<ComposerState>((set) => ({
   mentionTokensBySession: {},
   commandKindBySession: {},
   questionGuardBySession: {},
+  dashboardOptimisticMessagesBySession: {},
+  dashboardRetryBySession: {},
   setDraft: (sessionId, text) => set((state) => ({
     draftBySession: { ...state.draftBySession, [sessionId]: text },
   })),
@@ -71,6 +102,67 @@ export const useComposerStore = create<ComposerState>((set) => ({
     if (guard) questionGuardBySession[sessionId] = guard;
     else delete questionGuardBySession[sessionId];
     return { questionGuardBySession };
+  }),
+  addDashboardOptimisticMessage: (sessionId, text) => {
+    const id = `dashboard-optimistic-${Date.now()}-${nextDashboardOptimisticMessageId++}`;
+    const message: DashboardOptimisticMessage = {
+      id,
+      text,
+      createdAt: Date.now(),
+      state: "sending",
+      error: null,
+    };
+    set((state) => ({
+      dashboardOptimisticMessagesBySession: {
+        ...state.dashboardOptimisticMessagesBySession,
+        [sessionId]: [...(state.dashboardOptimisticMessagesBySession[sessionId] ?? []), message],
+      },
+    }));
+    return id;
+  },
+  setDashboardOptimisticMessageState: (sessionId, messageId, nextState, error = null) => set((state) => {
+    const current = state.dashboardOptimisticMessagesBySession[sessionId] ?? [];
+    const index = current.findIndex((message) => message.id === messageId);
+    if (index < 0) return state;
+    const dashboardOptimisticMessagesBySession = { ...state.dashboardOptimisticMessagesBySession };
+    dashboardOptimisticMessagesBySession[sessionId] = current.map((message) => (
+      message.id === messageId ? { ...message, state: nextState, error } : message
+    ));
+    return { dashboardOptimisticMessagesBySession };
+  }),
+  collapseDashboardOptimisticMessages: (sessionId, transcriptMessages) => set((state) => {
+    const current = state.dashboardOptimisticMessagesBySession[sessionId] ?? [];
+    const remaining = current.filter((message) => !transcriptMessages.some((transcript) => (
+      transcript.occurredAt >= message.createdAt && transcript.text.trim() === message.text.trim()
+    )));
+    if (remaining.length === current.length) return state;
+    const dashboardOptimisticMessagesBySession = { ...state.dashboardOptimisticMessagesBySession };
+    if (remaining.length) dashboardOptimisticMessagesBySession[sessionId] = remaining;
+    else delete dashboardOptimisticMessagesBySession[sessionId];
+    return { dashboardOptimisticMessagesBySession };
+  }),
+  requestDashboardOptimisticRetry: (sessionId, messageId) => set((state) => {
+    const current = state.dashboardOptimisticMessagesBySession[sessionId] ?? [];
+    const message = current.find((item) => item.id === messageId);
+    if (!message || message.state !== "failed") return state;
+    const dashboardOptimisticMessagesBySession = {
+      ...state.dashboardOptimisticMessagesBySession,
+      [sessionId]: current.map((item) => item.id === messageId ? { ...item, state: "sending" as const, error: null } : item),
+    };
+    return {
+      dashboardOptimisticMessagesBySession,
+      dashboardRetryBySession: {
+        ...state.dashboardRetryBySession,
+        [sessionId]: { messageId, requestId: nextDashboardRetryRequestId++ },
+      },
+    };
+  }),
+  consumeDashboardOptimisticRetry: (sessionId, requestId) => set((state) => {
+    const current = state.dashboardRetryBySession[sessionId];
+    if (!current || current.requestId !== requestId) return state;
+    const dashboardRetryBySession = { ...state.dashboardRetryBySession };
+    delete dashboardRetryBySession[sessionId];
+    return { dashboardRetryBySession };
   }),
 }));
 

@@ -13,6 +13,11 @@
   display: none;
 }
 
+.cmux-pet-sprite--static {
+  animation: none;
+  background-position: 0 var(--pet-row-offset);
+}
+
 @keyframes cmux-pet-sprite-4 {
   from { background-position: 0 var(--pet-row-offset); }
   to { background-position: calc(var(--pet-frame-width) * -4) var(--pet-row-offset); }

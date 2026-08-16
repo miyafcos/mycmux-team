@@ -102,6 +102,14 @@
 .cmux-dashboard-msg.is-user { align-self: flex-end; border-bottom-right-radius: 3px; background: color-mix(in srgb, var(--cmux-accent) 18%, var(--cmux-surface)); color: var(--cmux-text); }
 .cmux-dashboard-msg.is-agent { align-self: flex-start; border-bottom-left-radius: 3px; background: var(--cmux-popover); }
 .cmux-dashboard-msg.is-error { align-self: flex-start; border: 1px solid color-mix(in srgb, var(--status-error) 55%, transparent); color: var(--status-error); }
+.cmux-dashboard-optimistic-messages { display: grid; flex: 0 0 auto; gap: 8px; padding: 0 12px 12px; }
+.cmux-dashboard-msg.is-optimistic { max-width: calc(84% - 12px); justify-self: end; opacity: .82; }
+.cmux-dashboard-msg.is-optimistic.is-sent { opacity: 1; }
+.cmux-dashboard-msg.is-optimistic.is-failed { border: 1px solid color-mix(in srgb, var(--status-error) 55%, var(--cmux-border)); background: color-mix(in srgb, var(--status-error) 9%, var(--cmux-surface)); }
+.cmux-dashboard-msg.is-optimistic-motion { animation: cmux-dashboard-optimistic-in 160ms var(--cmux-ease) both; transition: opacity 160ms var(--cmux-ease); }
+.cmux-dashboard-optimistic-retry { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--status-error); font-family: var(--cmux-dash-ui-font); font-size: var(--cmux-font-size-xs); line-height: 1.45; }
+.cmux-dashboard-optimistic-retry button { flex: 0 0 auto; border: 1px solid color-mix(in srgb, var(--status-error) 55%, var(--cmux-border)); border-radius: 5px; padding: 3px 7px; background: transparent; color: inherit; font: inherit; cursor: pointer; }
+.cmux-dashboard-optimistic-retry button:hover { background: color-mix(in srgb, var(--status-error) 12%, transparent); }
 .cmux-dashboard-msg.is-source-highlighted { outline: 2px solid color-mix(in srgb, var(--cmux-accent) 65%, transparent); outline-offset: 2px; background: color-mix(in srgb, var(--cmux-accent) 12%, var(--cmux-popover)); }
 .cmux-dashboard-msg-who { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 3px; color: var(--cmux-text-tertiary); font-family: var(--cmux-dash-ui-font); font-size: var(--cmux-font-size-xs); line-height: normal; }
 .cmux-dashboard-msg-plain { white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -276,6 +284,11 @@
   50% { opacity: .28; }
 }
 
+@keyframes cmux-dashboard-optimistic-in {
+  from { opacity: .58; }
+  to { opacity: .82; }
+}
+
 @keyframes cmux-dashboard-activity-pulse {
   0%, 100% { opacity: .35; }
   50% { opacity: 1; }
@@ -284,6 +297,7 @@
 @media (prefers-reduced-motion: reduce) {
   .cmux-dashboard-askchip,
   .cmux-dashboard-msg,
+  .cmux-dashboard-msg.is-optimistic-motion,
   .cmux-dashboard-chat-column,
   .cmux-dashboard-composer-input,
   .cmux-dashboard-chat-activity.is-working .cmux-dashboard-chat-activity-glyph { animation: none; transition: none; }

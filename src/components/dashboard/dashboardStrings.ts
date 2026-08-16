@@ -68,6 +68,12 @@ export const dashboardStrings = {
   allWorkspaces: "全て",
   keyboardHint: "j/k 選択 · Enter 移動 · Tab 次の要対応 · / 検索 · Esc 戻る",
   markReadButton: "完了を既読",
+  // 手動の完了マーク (状態を問わず個別カードを完了扱いにする。新しい動きがあれば自動で解除)
+  markDoneButton: "完了にする",
+  unmarkDoneButton: "完了を戻す",
+  markDoneTitle: "このセッションを確認済み・完了として扱う (新しい動きがあれば要確認に戻ります)",
+  unmarkDoneTitle: "手動の完了マークを外す",
+  manualDoneBadge: "確認済み",
   totalSummary: (panes: number, ws: number): string => `全${panes}ペイン / ${ws}ワークスペース`,
   filteredSummary: (n: number, m: number): string => `絞り込み ${n} / 全 ${m}`,
   detailEmpty: "セッションを選ぶと詳細が出ます",
@@ -123,6 +129,11 @@ export const dashboardStrings = {
   sendUnverifiedTargetUnmounted: "入力をキューに追加しましたが、対象タブが未マウントのため画面で確認できませんでした",
   sendSubmitUnconfirmed: "入力をキューに追加しましたが、Enter 後の画面更新を確認できませんでした（自動再送しません）",
   sendFailedBeforeWrite: "送信できませんでした (実行前にエラー)",
+  composerMessageSending: "送信中",
+  composerMessageSent: "送信済み",
+  composerMessageFailed: "送信に失敗しました",
+  composerRetry: "再送",
+  composerRetryRouteChanged: "送信先の状態が変わったため再送できません",
   // 段6b: 構造化 @メンションによる決定的な宛先指定。
   mentionTokensAriaLabel: "指定した宛先",
   mentionMenuAriaLabel: "メンション候補",
@@ -186,12 +197,13 @@ export const dashboardStrings = {
   attentionResolveByAcknowledgement: "確認したときに解消します",
   attentionResolveWhenFinished: "実行が終わると解消します",
   attentionResolveWhenChanged: "状態が変わると解消します",
-  attentionActionUnavailable: "この画面では安全に開始できません",
+  attentionActionSucceeded: "操作しました",
+  attentionActionFailed: "操作できませんでした",
   attentionActionLabel: (kind: PrimaryActionLabel): string => {
-    if (kind === "answerQuestion") return "回答する";
-    if (kind === "retryWorkItem") return "やり直す";
-    if (kind === "reviewConflict") return "確認する";
-    if (kind === "raiseBudget") return "判断する";
+    if (kind === "answerQuestion") return "開いて答える";
+    if (kind === "retryWorkItem") return "再試行";
+    if (kind === "reviewConflict") return "契約を見る";
+    if (kind === "raiseBudget") return "契約を見る";
     if (kind === "acknowledgeGoalReached") return "完了を確認";
     return "開く";
   },

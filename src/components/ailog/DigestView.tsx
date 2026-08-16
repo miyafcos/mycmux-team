@@ -1,7 +1,8 @@
+import { memo } from "react";
 import { formatCount, formatDelta, formatUsd, type DigestReport, type SummarizeStatus } from "../../lib/ailog";
 import { cardStyle, Chip, DeferredDetails, noteStyle, SkeletonBlock, subtleButtonStyle } from "./ui";
 
-export function DigestView({
+export const DigestView = memo(function DigestView({
   report,
   loading,
   generating,
@@ -14,6 +15,8 @@ export function DigestView({
   aiDisabledReason,
   error,
   onRetry,
+  onOpenRecord,
+  onCopySuggestion,
 }: {
   report: DigestReport | null;
   loading: boolean;
@@ -29,6 +32,8 @@ export function DigestView({
   /** A saved-digest GET failed; retrying never starts LLM work. */
   error?: string | null;
   onRetry?: () => void;
+  onOpenRecord?: () => void;
+  onCopySuggestion?: (text: string) => void;
 }) {
   const aiOff = aiDisabledReason !== undefined;
   const content = report?.digest?.content;
@@ -93,6 +98,10 @@ export function DigestView({
           <section style={{ ...cardStyle, borderColor: "var(--cmux-accent)", background: "color-mix(in srgb, var(--cmux-accent) 8%, var(--cmux-surface))" }}>
             <h3 style={{ margin: 0, fontSize: "var(--cmux-font-size-sm)" }}>今日の提案</h3>
             <p style={{ margin: "8px 0 0", lineHeight: 1.6 }}>{content.suggestion}</p>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
+              {onCopySuggestion ? <button type="button" onClick={() => onCopySuggestion(content.suggestion)} style={subtleButtonStyle}>提案をコピー</button> : null}
+              {onOpenRecord ? <button type="button" onClick={onOpenRecord} style={subtleButtonStyle}>この日の記録へ</button> : null}
+            </div>
           </section>
 
           {content.confidence === "low" ? <div style={noteStyle}>低確度 (素材が少ない日)</div> : null}
@@ -100,4 +109,6 @@ export function DigestView({
       ) : null}
     </div>
   );
-}
+});
+
+DigestView.displayName = "DigestView";

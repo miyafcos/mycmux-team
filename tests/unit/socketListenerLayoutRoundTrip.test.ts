@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { toConfig } from "../../src/components/layout/SocketListener";
+import { usePaneMetadataStore } from "../../src/stores/paneMetadataStore";
 import type { Pane, PaneTab, Workspace } from "../../src/types";
 
 function tab(id: string, type: PaneTab["type"] = "terminal"): PaneTab {
@@ -37,6 +38,23 @@ function workspace(
 }
 
 describe("SocketListener layout persistence", () => {
+  it("does not serialize volatile terminal metadata", () => {
+    const source = pane("volatile");
+    const input = workspace([source], [[source.id]], [1], [[1]]);
+    usePaneMetadataStore.setState({
+      metadata: { [source.sessionId]: { cwd: "C:\\work", processIsShell: false } },
+      volatileMetadata: {},
+    });
+    const before = toConfig(input);
+    usePaneMetadataStore.getState().setVolatileMetadata(source.sessionId, {
+      processTitle: "codex",
+      outputActive: true,
+      workingPatternVisible: true,
+      backendLastOutputAt: 1_234,
+    });
+    expect(toConfig(input)).toEqual(before);
+  });
+
   it("keeps valid metrics when a browser-only pane is omitted", () => {
     const saved = toConfig(workspace(
       [pane("left"), pane("browser", "browser"), pane("right")],

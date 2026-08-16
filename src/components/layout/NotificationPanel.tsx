@@ -70,12 +70,13 @@ export default function NotificationPanel({ closing = false, onClose }: Notifica
   const setActive = useWorkspaceListStore((s) => s.setActiveWorkspace);
   const setActivePaneTab = useWorkspaceLayoutStore((s) => s.setActivePaneTab);
   const paneMetadata = usePaneMetadataStore((s) => s.metadata);
+  const volatilePaneMetadata = usePaneMetadataStore((s) => s.volatileMetadata);
   const clearNotification = usePaneMetadataStore((s) => s.clearNotification);
   const panelRef = useRef<HTMLDivElement>(null);
 
   const notifications = useMemo(
-    () => collectNotificationEntries(workspaces, paneMetadata),
-    [workspaces, paneMetadata],
+    () => collectNotificationEntries(workspaces, paneMetadata, volatilePaneMetadata),
+    [workspaces, paneMetadata, volatilePaneMetadata],
   );
 
   useDismissOnOutside(!closing, panelRef, onClose);

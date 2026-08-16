@@ -27,8 +27,15 @@ export interface PaneMetadata {
   agentSessionId?: string;
 }
 
+export type PaneVolatileMetadata = Pick<
+  PaneMetadata,
+  "processTitle" | "backendLastOutputAt" | "outputActive" | "workingPatternVisible"
+>;
+
 export interface PaneMetadataState {
   metadata: Record<string, PaneMetadata>;
+  /** High-frequency display-only terminal state. Never participates in persistence. */
+  volatileMetadata: Record<string, PaneVolatileMetadata>;
   lastLog: Record<string, string>;
   /**
    * Epoch milliseconds when each session's `lastLog` entry last changed.
@@ -40,6 +47,7 @@ export interface PaneMetadataState {
    */
   lastLogAt: Record<string, number>;
   setMetadata: (sessionId: string, data: Partial<PaneMetadata>) => void;
+  setVolatileMetadata: (sessionId: string, data: Partial<PaneVolatileMetadata>) => void;
   clearAgentStatus: (sessionId: string) => void;
   clearClaudeSessionId: (sessionId: string) => void;
   clearAgentSessionId: (sessionId: string) => void;
@@ -68,18 +76,34 @@ function effectiveAgentStatus(metadata?: PaneMetadata): AgentStatus {
 
 export const usePaneMetadataStore = create<PaneMetadataState>((set) => ({
   metadata: {},
+  volatileMetadata: {},
   lastLog: {},
   lastLogAt: {},
 
   setMetadata: (sessionId, data) => set((state) => {
     const filtered = dropUndefined(data);
     if (Object.keys(filtered).length === 0) return state;
-    const { lastLogLine, ...metadataFields } = filtered;
+    const {
+      lastLogLine,
+      processTitle,
+      backendLastOutputAt,
+      outputActive,
+      workingPatternVisible,
+      ...metadataFields
+    } = filtered;
+    const volatileFields: Partial<PaneVolatileMetadata> = {
+      processTitle,
+      backendLastOutputAt,
+      outputActive,
+      workingPatternVisible,
+    };
+    const filteredVolatileFields = dropUndefined(volatileFields);
     const hasLastLogLine = Object.prototype.hasOwnProperty.call(filtered, "lastLogLine");
     const hasMetadataFields = Object.keys(metadataFields).length > 0;
     let nextLastLog = state.lastLog;
     let nextLastLogAt = state.lastLogAt;
     let nextMetadata = state.metadata;
+    let nextVolatileMetadata = state.volatileMetadata;
     let changed = false;
     if (hasLastLogLine && lastLogLine !== undefined && state.lastLog[sessionId] !== lastLogLine) {
       nextLastLog = {
@@ -102,8 +126,27 @@ export const usePaneMetadataStore = create<PaneMetadataState>((set) => ({
       }
       changed = true;
     }
+    if (Object.keys(filteredVolatileFields).length > 0) {
+      const previousVolatile = state.volatileMetadata[sessionId];
+      const volatileChanged = (Object.keys(filteredVolatileFields) as (keyof PaneVolatileMetadata)[])
+        .some((key) => previousVolatile?.[key] !== filteredVolatileFields[key]);
+      if (volatileChanged) {
+        nextVolatileMetadata = {
+          ...state.volatileMetadata,
+          [sessionId]: { ...previousVolatile, ...filteredVolatileFields },
+        };
+        changed = true;
+      }
+    }
     if (!hasMetadataFields) {
-      return changed ? { metadata: nextMetadata, lastLog: nextLastLog, lastLogAt: nextLastLogAt } : state;
+      return changed
+        ? {
+            metadata: nextMetadata,
+            volatileMetadata: nextVolatileMetadata,
+            lastLog: nextLastLog,
+            lastLogAt: nextLastLogAt,
+          }
+        : state;
     }
     const prev = nextMetadata[sessionId];
     // Reset the approval-notification dedupe key when the agent leaves waiting.
@@ -139,8 +182,24 @@ export const usePaneMetadataStore = create<PaneMetadataState>((set) => ({
     };
     return {
       metadata: nextMetadata,
+      volatileMetadata: nextVolatileMetadata,
       lastLog: nextLastLog,
       lastLogAt: nextLastLogAt,
+    };
+  }),
+
+  setVolatileMetadata: (sessionId, data) => set((state) => {
+    const filtered = dropUndefined(data);
+    if (Object.keys(filtered).length === 0) return state;
+    const previous = state.volatileMetadata[sessionId];
+    const changed = (Object.keys(filtered) as (keyof PaneVolatileMetadata)[])
+      .some((key) => previous?.[key] !== filtered[key]);
+    if (!changed) return state;
+    return {
+      volatileMetadata: {
+        ...state.volatileMetadata,
+        [sessionId]: { ...previous, ...filtered },
+      },
     };
   }),
 
@@ -276,8 +335,14 @@ export const usePaneMetadataStore = create<PaneMetadataState>((set) => ({
 
   removeMetadata: (sessionId) => set((state) => {
     const { [sessionId]: _, ...rest } = state.metadata;
+    const { [sessionId]: _volatile, ...volatileRest } = state.volatileMetadata;
     const { [sessionId]: _lastLog, ...lastLogRest } = state.lastLog;
     const { [sessionId]: _lastLogAt, ...lastLogAtRest } = state.lastLogAt;
-    return { metadata: rest, lastLog: lastLogRest, lastLogAt: lastLogAtRest };
+    return {
+      metadata: rest,
+      volatileMetadata: volatileRest,
+      lastLog: lastLogRest,
+      lastLogAt: lastLogAtRest,
+    };
   }),
 }));

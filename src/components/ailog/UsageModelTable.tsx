@@ -6,7 +6,7 @@
  * distinct from a local or flat-rate $0.
  */
 
-import { formatCount, formatTokens, formatUsd, type SeriesReport } from "../../lib/ailog";
+import { formatCount, formatTokens, formatUsd, SYNTHETIC_MODEL, type SeriesReport } from "../../lib/ailog";
 import {
   UNKNOWN_GROUP,
   formatMetric,
@@ -73,11 +73,13 @@ export function buildModelRows(report: SeriesReport, metric: UsageMetric): Row[]
 export function UsageModelTable({
   report,
   metric,
+  excludeSynthetic = true,
 }: {
   report: SeriesReport;
   metric: UsageMetric;
+  excludeSynthetic?: boolean;
 }) {
-  const rows = buildModelRows(report, metric);
+  const rows = buildModelRows(report, metric).filter((row) => !excludeSynthetic || row.group !== SYNTHETIC_MODEL);
   const total = rows.reduce((sum, row) => sum + row.metric, 0);
   const groupingLabel = report.groupBy === "provider" ? "会社" : report.groupBy === "model" ? "系統" : "モデル";
   const classForGroup = (group: string) => {

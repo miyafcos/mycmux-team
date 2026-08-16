@@ -122,6 +122,15 @@ export function ReplyComposer({ card, inputRef, mentionTargets, questionActive =
   const clearMentionTokens = useComposerStore((state) => state.clearMentionTokens);
   const setCommandKind = useComposerStore((state) => state.setCommandKind);
   const setQuestionGuard = useComposerStore((state) => state.setQuestionGuard);
+  const dashboardRetryRequest = useComposerStore((state) => (sessionId ? state.dashboardRetryBySession[sessionId] : undefined));
+  const dashboardRetryMessage = useComposerStore((state) => {
+    if (!sessionId) return undefined;
+    const request = state.dashboardRetryBySession[sessionId];
+    return request ? state.dashboardOptimisticMessagesBySession[sessionId]?.find((message) => message.id === request.messageId) : undefined;
+  });
+  const addDashboardOptimisticMessage = useComposerStore((state) => state.addDashboardOptimisticMessage);
+  const setDashboardOptimisticMessageState = useComposerStore((state) => state.setDashboardOptimisticMessageState);
+  const consumeDashboardOptimisticRetry = useComposerStore((state) => state.consumeDashboardOptimisticRetry);
   const rootRef = useRef<HTMLDivElement>(null);
   const [sending, setSending] = useState(false);
   const [note, setNote] = useState<ComposerNote | null>(null);
@@ -274,9 +283,16 @@ export function ReplyComposer({ card, inputRef, mentionTargets, questionActive =
     }));
   };
 
-  const submitDirect = async (text = draft, clearDraftAfterSend = true) => {
-    if (!card || !sessionId || !route || route.kind === "disabled") return;
+  const submitDirect = async (text = draft, clearDraftAfterSend = true, optimisticMessageId?: string) => {
+    if (!card || !sessionId || !route || route.kind === "disabled") {
+      if (sessionId && optimisticMessageId) setDashboardOptimisticMessageState(sessionId, optimisticMessageId, "failed", dashboardStrings.dispatchTargetMissing);
+      return;
+    }
     if (route.kind === "intervention") {
+      if (optimisticMessageId) {
+        setDashboardOptimisticMessageState(sessionId, optimisticMessageId, "failed", dashboardStrings.composerRetryRouteChanged);
+        return;
+      }
       const result = await runIntervention(brief, { type: "replyText", text });
       setNote({ text: interventionResultText(result), error: isInterventionConflict(result) });
       // conflict / busy / 未確認では下書きを消さない (自動再送もしない)。
@@ -287,6 +303,10 @@ export function ReplyComposer({ card, inputRef, mentionTargets, questionActive =
       }
       return;
     }
+    const messageId = optimisticMessageId ?? addDashboardOptimisticMessage(sessionId, text);
+    // The visual receipt and cleared editor happen before waiting for the PTY
+    // acknowledgement, which is the slow part of this path.
+    if (clearDraftAfterSend) clearDraft(sessionId);
     try {
       const body = dashboardSendBody(card, text);
       const outcome = await handleSocketCommand("pane.send_text", {
@@ -302,13 +322,22 @@ export function ReplyComposer({ card, inputRef, mentionTargets, questionActive =
           : unconfirmedSendText(reason),
         error: false,
       });
-      // 端末へは書けているので下書きは残さない (再送は人間の判断で)。
-      if (clearDraftAfterSend) clearDraft(sessionId);
+      setDashboardOptimisticMessageState(sessionId, messageId, "sent");
     } catch (error) {
       // handleSocketCommand が throw したときは書き込み自体が走っていない。
-      setNote({ text: `${dashboardStrings.sendFailedBeforeWrite} (${errorText(error)})`, error: true });
+      const detail = `${dashboardStrings.sendFailedBeforeWrite} (${errorText(error)})`;
+      setNote({ text: detail, error: true });
+      setDashboardOptimisticMessageState(sessionId, messageId, "failed", detail);
     }
   };
+
+  useEffect(() => {
+    if (!sessionId || !dashboardRetryRequest) return;
+    consumeDashboardOptimisticRetry(sessionId, dashboardRetryRequest.requestId);
+    if (!dashboardRetryMessage) return;
+    setSending(true);
+    void submitDirect(dashboardRetryMessage.text, true, dashboardRetryMessage.id).finally(() => setSending(false));
+  }, [consumeDashboardOptimisticRetry, dashboardRetryMessage, dashboardRetryRequest, sessionId, submitDirect]);
 
   const submit = async () => {
     if (!sessionId || sending || !draft.trim()) return;

@@ -19,4 +19,5 @@ pub mod window_registry;
 pub mod workspace;
 pub mod cli_accounts;
 pub mod attention;
+pub mod autonomy;
 pub mod workorder;

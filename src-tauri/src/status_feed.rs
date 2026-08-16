@@ -542,7 +542,7 @@ impl Drop for StatusSubscription {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session_state::{Evidence, MonitorStatus};
+    use crate::session_state::{Evidence, MonitorStatus, OutputOrigin};
 
     fn store_and_feed(capacity: usize) -> (SessionStateStore, StatusFeed) {
         let store = SessionStateStore::new();
@@ -612,6 +612,24 @@ mod tests {
             panic!("expected status.changed");
         };
         assert_eq!(delta.seq, 1);
+    }
+
+    #[tokio::test]
+    async fn output_timestamp_without_state_transition_does_not_publish() {
+        let (store, feed) = store_and_feed(4);
+        let (subscription, _) = feed.subscribe();
+        ingest_status(&store, "session-a", 1, MonitorStatus::Working);
+        let _ = subscription.recv().await.expect("monitor delta");
+        store.ingest("session-a", Evidence::last_output(2, 1, OutputOrigin::Pty));
+        let _ = subscription.recv().await.expect("streaming delta");
+        let revision = store.current_view("session-a").expect("view").session_revision;
+
+        store.ingest("session-a", Evidence::last_output(3, 1, OutputOrigin::Pty));
+
+        let view = store.current_view("session-a").expect("view");
+        assert_eq!(view.last_output_at, 3);
+        assert_eq!(view.session_revision, revision);
+        assert_eq!(subscription.pending_len(), 0);
     }
 
     #[tokio::test]

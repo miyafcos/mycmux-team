@@ -272,6 +272,7 @@ function ProfileRow({
   const rename = useCliAccountStore((state) => state.rename);
   const startLogin = useCliLoginStore((state) => state.start);
   const paneMetadata = usePaneMetadataStore((state) => state.metadata);
+  const volatilePaneMetadata = usePaneMetadataStore((state) => state.volatileMetadata);
   const [editing, setEditing] = useState(false);
   const [labelDraft, setLabelDraft] = useState(profile.label);
   const providerBusy = busyProfileId !== null;
@@ -279,7 +280,7 @@ function ProfileRow({
   const handleSwitch = async () => {
     if (!canSwitchCliAccount(active, providerBusy, profile.needs_relogin)) return;
     const count = runningAgentCounts(paneMetadata)[profile.provider];
-    const paneDetails = runningAgentPaneDetails(paneMetadata, profile.provider);
+    const paneDetails = runningAgentPaneDetails(paneMetadata, profile.provider, volatilePaneMetadata);
     const warning = switchWarningText(count, profile.provider, profile.label, paneDetails);
     await executeCliAccountSwitch(
       active,

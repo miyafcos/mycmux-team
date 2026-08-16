@@ -245,16 +245,9 @@ fn parse_rollout(text: &str, fallback_session: &str) -> (ChunkData, RolloutMater
     (data, material)
 }
 
-fn record_material_user(
-    material: &mut RolloutMaterial,
-    seen: &mut HashSet<String>,
-    text: &str,
-) {
+fn record_material_user(material: &mut RolloutMaterial, seen: &mut HashSet<String>, text: &str) {
     let text = text.trim().to_string();
-    if !text.is_empty()
-        && !text.starts_with(AILOG_SUMMARIZER_MARKER)
-        && seen.insert(text.clone())
-    {
+    if !text.is_empty() && !text.starts_with(AILOG_SUMMARIZER_MARKER) && seen.insert(text.clone()) {
         material.user.push(text);
     }
 }
@@ -373,6 +366,7 @@ fn handle_token_count(
         cache_write_5m_tokens: num(&last, "cache_write_input_tokens"),
         cache_write_1h_tokens: 0,
         reasoning_tokens: num(&last, "reasoning_output_tokens"),
+        reported_cost_usd: None,
         duration_ms: None,
         tool_calls: 0,
         tool_errors: 0,

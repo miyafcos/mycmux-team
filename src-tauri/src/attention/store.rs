@@ -6,7 +6,7 @@ use crate::workorder;
 
 use super::model::{
     card_id, AttentionCard, AttentionKind, CardState, EvidenceRef, PrimaryAction, ReplyRoute,
-    ResolutionPredicate,
+    ResolutionPredicate, SessionRef,
 };
 use super::rules::{
     evaluate, evaluate_resolutions, AttentionInput, AttentionObservation, ObservationKind,
@@ -171,8 +171,16 @@ pub fn resolve_card(conn: &Connection, id: &str, now: i64) -> Result<bool, Strin
 pub(crate) fn apply_with_connection(
     conn: &Connection,
     input: &AttentionInput,
+    attention_cards_enabled: bool,
 ) -> Result<EvaluationResult, String> {
+    #[cfg(test)]
     init_for_test(conn)?;
+    if !attention_cards_enabled {
+        return Ok(EvaluationResult {
+            changed: false,
+            cards: list_open_cards(conn)?,
+        });
+    }
     let candidates = evaluate(input);
     let refreshed_fingerprints = candidates
         .iter()
@@ -200,6 +208,7 @@ pub(crate) fn apply_with_connection(
 }
 
 pub(crate) fn upsert(conn: &Connection, card: &AttentionCard) -> Result<bool, String> {
+    #[cfg(test)]
     init_for_test(conn)?;
     let existing: Option<(String, u32)> = conn
         .query_row(
@@ -322,6 +331,13 @@ pub fn workorder_observations(
 ) -> Result<(Vec<AttentionObservation>, BTreeSet<String>), String> {
     let path = workorder::db_path().map_err(|error| error.to_string())?;
     let conn = workorder::reader(&path).map_err(|error| error.to_string())?;
+    workorder_observations_with_connection(&conn, file_changes)
+}
+
+pub(crate) fn workorder_observations_with_connection(
+    conn: &Connection,
+    file_changes: &BTreeMap<String, Vec<(String, String)>>,
+) -> Result<(Vec<AttentionObservation>, BTreeSet<String>), String> {
     let mut statement = conn.prepare(
         "SELECT wo.id, wo.plan_version FROM work_orders wo JOIN work_order_versions v ON v.work_order_id=wo.id AND v.plan_version=wo.plan_version WHERE v.sealed_at IS NOT NULL AND wo.state NOT IN ('done','failed','cancelled')",
     ).map_err(|error| error.to_string())?;
@@ -340,6 +356,9 @@ pub fn workorder_observations(
         let id =
             workorder::WorkOrderId::try_new(&workorder_id).map_err(|error| error.to_string())?;
         let plan = workorder::load_plan(&conn, &id, version).map_err(|error| error.to_string())?;
+        let contract_session = plan.bindings.first().map(|binding| SessionRef::Logical {
+            logical_session_id: binding.logical_session_id.as_str().to_owned(),
+        });
         let coverage =
             workorder::source_coverage(&conn, &id, version).map_err(|error| error.to_string())?;
         if coverage.target > 0 && coverage.acquired == coverage.target && coverage.failed == 0 {
@@ -352,6 +371,9 @@ pub fn workorder_observations(
                 PrimaryAction::ReviewConflict {
                     workorder_id: workorder_id.clone(),
                 },
+                contract_session.clone(),
+                &plan.goal,
+                vec![workorder_evidence("state", "必要な報告がそろいました")],
             ));
         }
         let done =
@@ -364,6 +386,15 @@ pub fn workorder_observations(
                     .iter()
                     .any(|gate| gate.status != workorder::GateStatus::Pass)
             {
+                let missing_gates = plan
+                    .work_items
+                    .iter()
+                    .find(|candidate| candidate.id == item.work_item_id)
+                    .map(|candidate| candidate.gates.iter().zip(&item.gates)
+                        .filter(|(_, gate)| gate.status != workorder::GateStatus::Pass)
+                        .map(|(gate, _)| gate.description.clone())
+                        .collect::<Vec<_>>())
+                    .unwrap_or_default();
                 observations.push(workorder_observation(
                     AttentionKind::CompletionWithoutTests,
                     &workorder_id,
@@ -374,12 +405,29 @@ pub fn workorder_observations(
                         workorder_id: workorder_id.clone(),
                         work_item_id: item.work_item_id.as_str().to_owned(),
                     },
+                    contract_session.clone(),
+                    &plan.goal,
+                    vec![workorder_evidence(
+                        "missingGates",
+                        if missing_gates.is_empty() {
+                            "未通過ゲート: 取得できず".to_owned()
+                        } else {
+                            format!("未通過ゲート: {}", missing_gates.join(" / "))
+                        },
+                    )],
                 ));
             }
         }
         let spawn_count: u32 = conn.query_row("SELECT COUNT(*) FROM dispatch_outbox WHERE work_order_id=?1 AND plan_version=?2 AND intent_kind='spawn' AND status='delivered'", params![workorder_id, version], |row| row.get(0)).map_err(|error| error.to_string())?;
         let replan_count = version.saturating_sub(1);
         if spawn_count >= plan.budgets.max_new_pty || replan_count >= plan.budgets.max_replans {
+            let mut reached = Vec::new();
+            if spawn_count >= plan.budgets.max_new_pty {
+                reached.push(format!("新規セッション: {spawn_count}/{}", plan.budgets.max_new_pty));
+            }
+            if replan_count >= plan.budgets.max_replans {
+                reached.push(format!("再計画: {replan_count}/{}", plan.budgets.max_replans));
+            }
             observations.push(workorder_observation(
                 AttentionKind::BudgetReached,
                 &workorder_id,
@@ -389,6 +437,9 @@ pub fn workorder_observations(
                 PrimaryAction::RaiseBudget {
                     workorder_id: workorder_id.clone(),
                 },
+                contract_session.clone(),
+                &plan.goal,
+                vec![workorder_evidence("budget", format!("上限到達: {}", reached.join(" / ")))],
             ));
         }
         for decision in
@@ -404,6 +455,9 @@ pub fn workorder_observations(
                     PrimaryAction::ReviewConflict {
                         workorder_id: workorder_id.clone(),
                     },
+                    contract_session.clone(),
+                    &plan.goal,
+                    vec![workorder_evidence("conflict", "作業どうしの食い違いを検知しました")],
                 ));
             }
         }
@@ -417,6 +471,16 @@ pub fn workorder_observations(
                 PrimaryAction::AcknowledgeGoalReached {
                     workorder_id: workorder_id.clone(),
                 },
+                contract_session.clone(),
+                &plan.goal,
+                vec![workorder_evidence(
+                    "passedGates",
+                    format!("通過ゲート: {}", plan.work_items.iter()
+                        .filter(|item| item.required)
+                        .flat_map(|item| item.gates.iter().map(|gate| gate.description.as_str()))
+                        .collect::<Vec<_>>()
+                        .join(" / ")),
+                )],
             ));
         }
         for item in &plan.work_items {
@@ -440,6 +504,14 @@ pub fn workorder_observations(
                         workorder_id: workorder_id.clone(),
                         work_item_id: item.id.as_str().to_owned(),
                     },
+                    item.assignee.as_ref().map(|assignee| SessionRef::Logical {
+                        logical_session_id: assignee.as_str().to_owned(),
+                    }).or_else(|| contract_session.clone()),
+                    &plan.goal,
+                    vec![
+                        workorder_evidence("workItemObjective", format!("作業: {}", item.objective)),
+                        workorder_evidence("contractGoal", format!("契約ゴール: {}", plan.goal)),
+                    ],
                 ));
             }
         }
@@ -466,6 +538,20 @@ pub fn workorder_observations(
                         PrimaryAction::ReviewConflict {
                             workorder_id: workorder_id.clone(),
                         },
+                        item.assignee.as_ref().map(|assignee| SessionRef::Logical {
+                            logical_session_id: assignee.as_str().to_owned(),
+                        }).or_else(|| contract_session.clone()),
+                        &plan.goal,
+                        vec![
+                            workorder_evidence("outOfScopePath", format!("変更先: {changed_path}")),
+                            workorder_evidence(
+                                "declaredScope",
+                                format!("宣言範囲: {}", item.write_scope.iter()
+                                    .map(|scope| scope.path_prefix.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join(" / ")),
+                            ),
+                        ],
                     ));
                 }
             }
@@ -474,29 +560,30 @@ pub fn workorder_observations(
     Ok((observations, active))
 }
 
-fn workorder_observation(
+pub(crate) fn workorder_observation(
     kind: AttentionKind,
     workorder_id: &str,
     suffix: &str,
     why_now: &str,
     impact: &str,
     primary_action: PrimaryAction,
+    session: Option<SessionRef>,
+    goal: &str,
+    mut evidence: Vec<EvidenceRef>,
 ) -> AttentionObservation {
     let key = format!("{}:{workorder_id}:{suffix}", kind.as_str());
+    if !evidence.iter().any(|item| item.kind == "contractGoal") {
+        evidence.push(workorder_evidence("contractGoal", format!("契約ゴール: {goal}")));
+    }
     AttentionObservation {
         fingerprint: key.clone(),
         key: key.clone(),
         kind: ObservationKind::Attention(kind),
         workorder_id: Some(workorder_id.to_owned()),
-        session: None,
+        session,
         why_now: why_now.into(),
         impact: impact.into(),
-        evidence: vec![EvidenceRef {
-            source: "workorder".into(),
-            kind: "state".into(),
-            ref_id: key.clone(),
-            detail: why_now.into(),
-        }],
+        evidence,
         primary_action: Some(primary_action),
         reply_route: ReplyRoute::WorkOrder {
             workorder_id: workorder_id.to_owned(),
@@ -505,6 +592,28 @@ fn workorder_observation(
             workorder_id: workorder_id.to_owned(),
         },
     }
+}
+
+fn workorder_evidence(kind: &str, detail: impl Into<String>) -> EvidenceRef {
+    EvidenceRef {
+        source: "workorder".into(),
+        kind: kind.into(),
+        ref_id: kind.into(),
+        detail: compact_detail(detail.into()),
+    }
+}
+
+fn compact_detail(detail: String) -> String {
+    let mut value = detail
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .take(3)
+        .collect::<Vec<_>>()
+        .join("\n");
+    if value.chars().count() > 200 {
+        value = format!("{}…", value.chars().take(199).collect::<String>());
+    }
+    value
 }
 
 fn to_json<T: serde::Serialize>(value: &T) -> Result<String, String> {

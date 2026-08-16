@@ -328,8 +328,11 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
   const activeTabMetadata = usePaneMetadataStore((s) =>
     activeTab ? s.metadata[activeTab.sessionId] : undefined,
   );
+  const activeTabVolatileMetadata = usePaneMetadataStore((s) =>
+    activeTab ? s.volatileMetadata[activeTab.sessionId] : undefined,
+  );
   const activeTabMetadataAgentKind = activeTabMetadata?.agentKind;
-  const activeTabMetadataProcessTitle = activeTabMetadata?.processTitle;
+  const activeTabMetadataProcessTitle = activeTabVolatileMetadata?.processTitle;
   const savepointPaneTargetKind = savepointDragItem
     ? resolveLiveSavepointTargetKind(activeTab, activeTabMetadataAgentKind)
     : null;

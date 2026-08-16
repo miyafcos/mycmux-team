@@ -33,7 +33,6 @@ function report(...tabs: SweepTab[]): SweepReport {
 function dependencies(overrides: Partial<AutoSweepDependencies> = {}): AutoSweepDependencies {
   return {
     settings: () => ({ aiEnabled: true, aiProvider: "codex" }),
-    scanNamingContext: vi.fn(async () => []),
     scanTabs: vi.fn(async () => report()),
     invokeJudge: vi.fn(async () => "[]"),
     applySweep: vi.fn(async () => ({ closed: 0, renamed: 0, skipped: [], errors: [] })),
@@ -81,23 +80,18 @@ describe("tab sweep auto", () => {
     }));
   });
 
-  it("undo restores names and each closed tab", async () => {
+  it("undo restores each closed tab without renaming", async () => {
     const applySweep = vi.fn(async (plan) => ({
       closed: plan.closeDeadTabIds?.length ?? 0,
-      renamed: plan.renames?.length ?? 0,
+      renamed: 0,
       skipped: [],
       errors: [],
     }));
     const pushToast = vi.fn();
     const restoreClosedTabs = vi.fn();
     const deps = dependencies({
-      scanNamingContext: vi.fn(async () => [{ paneId: "pane", column: 1, tabs: [{
-        id: "named", sessionId: "session-named", label: "元の名前", cwd: "", agentKind: "", isPaneHead: true, tail: [],
-      }] }]),
       scanTabs: vi.fn(async () => report(tab("dead", "DEAD"))),
-      invokeJudge: vi.fn(async (_prompt, _requestId, mode) => mode === "naming"
-        ? JSON.stringify([{ id: "named", label: "新しい名前" }])
-        : "[]"),
+      invokeJudge: vi.fn(async () => "[]"),
       applySweep,
       pushToast,
       restoreClosedTabs,
@@ -108,7 +102,8 @@ describe("tab sweep auto", () => {
     actions[0].run();
     await vi.waitFor(() => expect(restoreClosedTabs).toHaveBeenCalledWith(1));
 
-    expect(applySweep).toHaveBeenLastCalledWith({ renames: [{ id: "named", label: "元の名前", overwrite: true }] });
+    expect(applySweep).toHaveBeenCalledTimes(1);
+    expect(restoreClosedTabs).toHaveBeenCalledWith(1);
     // Undo is the only safety net here, so its toast must outlive the default.
     expect(pushToast.mock.calls[0][3]).toBe(TOAST_UNDO_DISMISS_MS);
   });
@@ -125,7 +120,7 @@ describe("tab sweep auto", () => {
     let release: (() => void) | undefined;
     const gate = new Promise<void>((resolve) => { release = resolve; });
     const runner = createAutoSweepRunner(dependencies({
-      scanNamingContext: vi.fn(async () => { await gate; return []; }),
+      scanTabs: vi.fn(async () => { await gate; return report(); }),
     }));
 
     const first = runner.run();

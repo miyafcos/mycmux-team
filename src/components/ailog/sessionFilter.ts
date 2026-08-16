@@ -8,9 +8,12 @@
  */
 
 import type { SessionRow } from "../../lib/ailog";
-import type { AilogSelection, SessionSort } from "../../stores/ailogStore";
-import { UNKNOWN_PROJECT, UNTITLED, type LeafDimension } from "./sankeyModel";
-import { UNSUMMARIZED_KEY } from "./sankeyModel";
+import type { SessionSort } from "../../stores/ailogStore";
+
+export type LeafDimension = "project" | "title";
+export const UNKNOWN_PROJECT = "(unknown)";
+export const UNTITLED = "(untitled)";
+export const UNSUMMARIZED_KEY = "__unsummarized__";
 
 export function sortSessions(rows: SessionRow[], sort: SessionSort): SessionRow[] {
   const copy = [...rows];
@@ -21,36 +24,13 @@ export function sortSessions(rows: SessionRow[], sort: SessionSort): SessionRow[
     case "recent":
       copy.sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0));
       break;
+    case "turns":
+      copy.sort((a, b) => b.turnCount - a.turnCount || b.costUsd - a.costUsd);
+      break;
     default:
       copy.sort((a, b) => b.costUsd - a.costUsd);
   }
   return copy;
-}
-
-/**
- * Apply the clicked node to the list. Model and project selections have already
- * narrowed the backend query, so re-filtering them here would be a no-op; only
- * the selections the backend cannot express are applied.
- */
-export function filterSessions(
-  rows: SessionRow[],
-  selection: AilogSelection | null,
-  leafDimension: LeafDimension,
-): SessionRow[] {
-  if (!selection) return rows;
-  if (selection.type === "tag") {
-    return rows.filter((row) => row.workTags.includes(selection.key));
-  }
-  if (selection.type === "topic") {
-    return rows.filter((row) => (row.goalCluster?.trim() || UNSUMMARIZED_KEY) === selection.key);
-  }
-  if (selection.type === "leaf" && leafDimension === "title") {
-    return rows.filter((row) => (row.title?.trim() || UNTITLED) === selection.key);
-  }
-  if (selection.type === "leaf" || selection.type === "project") {
-    return rows.filter((row) => (row.projectLabel?.trim() || UNKNOWN_PROJECT) === selection.key);
-  }
-  return rows;
 }
 
 export interface SessionPage {
