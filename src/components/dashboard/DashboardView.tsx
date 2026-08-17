@@ -104,6 +104,9 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
   const [columnMotion, setColumnMotion] = useState<{ tabId: string; kind: "add" } | null>(null);
   const [closingColumn, setClosingColumn] = useState<{ card: DashboardCardModel; openIndex: number } | null>(null);
   const [draggedChatColumnTabId, setDraggedChatColumnTabId] = useState<string | null>(null);
+  // Counter, not a boolean: repeated drops on a full chat area must restart the
+  // pulse instead of being swallowed as "already true".
+  const [chatColumnCapPulse, setChatColumnCapPulse] = useState(0);
   const previousOpenColumnTabIdsRef = useRef<string[] | null>(null);
   const reducedMotion = useReducedMotion();
   const contractsBySession = useWorkOrderStore((state) => state.contractDraftBySession);
@@ -314,6 +317,12 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
     const timer = window.setTimeout(() => setClosingColumn(null), DASHBOARD_CHAT_COLUMN_MOTION_MS);
     return () => window.clearTimeout(timer);
   }, [closingColumn]);
+
+  useEffect(() => {
+    if (chatColumnCapPulse === 0) return;
+    const timer = window.setTimeout(() => setChatColumnCapPulse(0), DASHBOARD_CHAT_COLUMN_MOTION_MS);
+    return () => window.clearTimeout(timer);
+  }, [chatColumnCapPulse]);
   const askItems = useMemo(() => buildAskStripItems(filteredCards.map((card) => ({
     tabId: card.tab.id,
     sessionId: card.tab.sessionId,
@@ -440,6 +449,13 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
     const preview = usePaneDragStore.getState().dashboardChatDropPreview;
     const state = useDashboardViewStore.getState();
     const existingIndex = state.chatColumnTabIds.indexOf(tabId);
+    // The store drops the insert silently when the column cap is reached, so the
+    // drop reads as "nothing happened". Flag it here and let the whole chat
+    // surface answer once (the corner pill alone was too easy to miss).
+    if (existingIndex < 0 && state.chatColumnTabIds.length >= DASHBOARD_CHAT_COLUMN_LIMIT) {
+      setChatColumnCapPulse((pulse) => pulse + 1);
+      return;
+    }
     const index = existingIndex >= 0
       ? existingIndex
       : preview?.kind === "insert" ? preview.index : state.chatColumnTabIds.length;
@@ -902,7 +918,7 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
             />
           </div>
         </> : <div className="cmux-dashboard-chat-columns-shell">
-          <div ref={chatColumnsRef} className="cmux-dashboard-chat-columns" data-dashboard-chat-drop-target="true" data-visible-columns={openChatColumns.length} data-dashboard-chat-drop-preview={dashboardChatDropPreview?.kind}>
+          <div ref={chatColumnsRef} className="cmux-dashboard-chat-columns" data-dashboard-chat-drop-target="true" data-visible-columns={openChatColumns.length} data-dashboard-chat-drop-preview={dashboardChatDropPreview?.kind} data-dashboard-chat-cap-pulse={chatColumnCapPulse > 0 && !reducedMotion ? chatColumnCapPulse : undefined}>
             {renderedChatColumns.map((card) => {
               const index = chatColumnTabIds.indexOf(card.tab.id);
               const events = eventsBySession[card.tab.sessionId];

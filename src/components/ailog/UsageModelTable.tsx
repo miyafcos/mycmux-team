@@ -9,7 +9,9 @@
 import { formatCount, formatTokens, formatUsd, SYNTHETIC_MODEL, type SeriesReport } from "../../lib/ailog";
 import {
   UNKNOWN_GROUP,
+  costCoverageLabel,
   formatMetric,
+  groupByLabel,
   groupLabel,
   metricValue,
   type UsageMetric,
@@ -81,7 +83,7 @@ export function UsageModelTable({
 }) {
   const rows = buildModelRows(report, metric).filter((row) => !excludeSynthetic || row.group !== SYNTHETIC_MODEL);
   const total = rows.reduce((sum, row) => sum + row.metric, 0);
-  const groupingLabel = report.groupBy === "provider" ? "会社" : report.groupBy === "model" ? "系統" : "モデル";
+  const groupingLabel = groupByLabel(report.groupBy);
   const classForGroup = (group: string) => {
     if (report.groupBy === "provider") {
       return group === "local" ? "local" : group === "google" || group === "other" ? "unknown" : "priced";
@@ -93,9 +95,7 @@ export function UsageModelTable({
     if (matches(report.priceCoverage.internal.models)) return "internal";
     return "priced";
   };
-  const costLabel = report.priceCoverage.coveredTokenRatio < 1
-    ? `コスト相当 (単価既知の ${Math.round(report.priceCoverage.coveredTokenRatio * 100)}% 分)`
-    : "コスト相当";
+  const costLabel = costCoverageLabel(report.priceCoverage);
 
   if (rows.length === 0) {
     return <div style={noteStyle}>この期間に記録がありません。期間を広げるか、再インデックスしてください。</div>;

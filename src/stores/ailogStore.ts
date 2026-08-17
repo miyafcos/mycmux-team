@@ -1,10 +1,9 @@
 /**
- * State for the AI log dashboard: the selected range, the filters, and the five
- * reports the panel draws from.
+ * State for the AI log dashboard: the selected range, the filters, and the
+ * usage reports the panel draws from.
  *
  * Loading rules that matter:
- * - SQL reports are cached per resolved period and effective filters. The
- *   visible segment loads first; the remaining SQL reports warm afterwards.
+ * - SQL reports are cached per resolved period and effective filters.
  * - A stale response (the user changed the range mid-flight) is dropped by its
  *   resource generation and cache-key guard rather than overwriting newer data.
  * - Errors are surfaced, never swallowed into an empty table.
@@ -15,12 +14,7 @@ import { create } from "zustand";
 import {
   ailogDashboard,
   ailogBreakdown,
-  ailogEfficiency,
-  ailogFindings,
-  ailogReworkRankings,
-  ailogRuleCheck,
-  ailogDigestGenerate,
-  ailogDigestGet,
+  ailogPivot,
   ailogIndexCancel,
   ailogIndexStart,
   ailogIndexStatus,
@@ -33,18 +27,11 @@ import {
   ailogSessionTranscript,
   ailogUsageRhythm,
   buildRange,
-  dayOffsetInput,
   emptyFilters,
   errorMessage,
-  parseDayInput,
-  shiftDayInput,
   type AilogRange,
   type AilogGranularity,
   type BreakdownReport,
-  type EfficiencyReport,
-  type DigestReport,
-  type FindingKind,
-  type FindingsReport,
   type IndexProgress,
   type IndexStatus,
   type SummarizeProgress,
@@ -56,13 +43,16 @@ import {
   type TranscriptReport,
   type SessionsReport,
   type RangePreset,
+  type SeriesGroupBy,
   type SummaryRangePreset,
-  type ReworkRankingsReport,
-  type RuleCheckReport,
+  type UsageBucket,
   type UsageRhythmReport,
+  type PivotAxis,
+  type PivotReport,
+  granularityFromSeriesAxis,
 } from "../lib/ailog";
-import type { PanelSegment } from "../components/ailog/panelModel";
 import type { UsageMetric } from "../components/ailog/usageModel";
+import { nextPivotAxes } from "../components/ailog/crossTableModel";
 
 /**
  * Ceiling on the session list fetch. The whole 6.4GB corpus is 995 sessions, so
@@ -72,7 +62,6 @@ import type { UsageMetric } from "../components/ailog/usageModel";
 export const SESSION_FETCH_LIMIT = 5_000;
 
 export const SESSION_PAGE_SIZE = 100;
-export const FINDINGS_PAGE_SIZE = 50;
 
 export type SessionSort = "cost" | "rework" | "recent" | "turns";
 export type BreakdownDimension = "project" | "branch" | "effort" | "origin" | "title" | "agent";
@@ -121,6 +110,9 @@ interface AilogState {
   excludeSynthetic: boolean;
   includeSidechain: boolean;
   granularity: AilogGranularity;
+  usageSeriesAxis: SeriesGroupBy;
+  pivotRowBy: PivotAxis;
+  pivotColBy: PivotAxis;
   sessionSort: SessionSort;
   sessionPage: number;
   selection: AilogSelection | null;
@@ -143,13 +135,6 @@ interface AilogState {
   transcriptError: string | null;
   sessionSummarizing: boolean;
   sessionSummarizeError: string | null;
-  findings: FindingsReport | null;
-  rankings: ReworkRankingsReport | null;
-  /** Backend findings consumed before the segment-specific client filter. */
-  learningRawOffset: number;
-  learningHasMore: boolean;
-  findingKind: FindingKind | null;
-  findingQuery: string;
 
   // --- status ---
   loading: boolean;
@@ -159,38 +144,32 @@ interface AilogState {
   detailError: string | null;
   index: JobState<IndexStatus, IndexProgress>;
   summarize: JobState<SummarizeStatus, SummarizeProgress>;
-  digestDate: string;
-  digestReport: DigestReport | null;
-  digestLoading: boolean;
-  digestGenerating: boolean;
-  digestError: string | null;
-  learningLoading: boolean;
-  learningError: string | null;
-  efficiency: EfficiencyReport | null;
-  ruleCheck: RuleCheckReport | null;
-  experimentLoading: boolean;
-  experimentError: string | null;
   usageMetric: UsageMetric;
   usageStack: "absolute" | "share";
-  usageBucket: "day" | "week" | "month";
+  usageBucket: UsageBucket;
   usageSeries: SeriesReport | null;
   usageRhythm: UsageRhythmReport | null;
   usageLoading: boolean;
   usageError: string | null;
-  /** Latest visible-segment load duration, measured in the renderer. */
-  lastLoadMs: Partial<Record<PanelSegment, number>>;
+  pivot: PivotReport | null;
+  pivotLoading: boolean;
+  pivotError: string | null;
+  /** Latest usage-surface load duration, measured in the renderer. */
+  lastLoadMs: number | null;
 
   // --- actions ---
   setPreset: (preset: RangePreset) => void;
   setCustomRange: (from: string, to: string) => void;
   setUsageMetric: (metric: UsageMetric) => void;
   setUsageStack: (stack: "absolute" | "share") => void;
-  setUsageBucket: (bucket: "day" | "week" | "month") => void;
+  setUsageBucket: (bucket: UsageBucket) => void;
+  setUsageSeriesAxis: (axis: SeriesGroupBy) => void;
+  setPivotRowBy: (axis: PivotAxis) => void;
+  setPivotColBy: (axis: PivotAxis) => void;
   refreshUsage: (options?: { force?: boolean }) => Promise<void>;
-  /** Fetches one segment from the period cache, never starting LLM work. */
-  loadSegment: (segment: PanelSegment, options?: { force?: boolean }) => Promise<void>;
-  /** Starts the remaining SQL-only segment requests after the visible one settles. */
-  preloadSegments: (visible: PanelSegment) => Promise<void>;
+  refreshPivot: (options?: { force?: boolean }) => Promise<void>;
+  /** Fetches the usage surface (series, dashboard, breakdown, pivot). Never starts LLM work. */
+  loadUsage: (options?: { force?: boolean }) => Promise<void>;
   setSummaryPreset: (preset: SummaryRangePreset) => void;
   setExcludeSynthetic: (value: boolean) => void;
   setIncludeSidechain: (value: boolean) => void;
@@ -202,7 +181,6 @@ interface AilogState {
   currentRange: () => AilogRange | null;
   refresh: (options?: { force?: boolean }) => Promise<void>;
   refreshBreakdown: (options?: { force?: boolean }) => Promise<void>;
-  refreshExperiment: (options?: { force?: boolean }) => Promise<void>;
   openDetail: (kind: string, sessionId: string) => Promise<void>;
   loadTranscript: (kind: string, sessionId: string) => Promise<void>;
   summarizeSession: (kind: string, sessionId: string) => Promise<void>;
@@ -219,23 +197,14 @@ interface AilogState {
   applySummarizeProgress: (progress: SummarizeProgress) => void;
   startSummarize: (force?: boolean) => Promise<void>;
   cancelSummarize: () => Promise<void>;
-  setDigestDate: (date: string) => void;
-  stepDigestDate: (days: number) => void;
-  refreshDigest: (date?: string, options?: { force?: boolean }) => Promise<void>;
-  generateDigest: (force?: boolean) => Promise<void>;
-  setFindingKind: (kind: FindingKind | null) => void;
-  setFindingQuery: (query: string) => void;
-  refreshLearning: (options?: { append?: boolean; kinds?: FindingKind[]; includeRankings?: boolean; force?: boolean }) => Promise<void>;
 }
 
 let refreshSeq = 0;
 let detailSeq = 0;
 let transcriptSeq = 0;
-let digestSeq = 0;
-let learningSeq = 0;
 let breakdownSeq = 0;
-let experimentSeq = 0;
 let usageSeq = 0;
+let pivotSeq = 0;
 
 type DashboardData = {
   overview: Overview;
@@ -246,8 +215,6 @@ type DashboardData = {
 };
 
 type UsageData = { series: SeriesReport; rhythm: UsageRhythmReport };
-type ExperimentData = { efficiency: EfficiencyReport; ruleCheck: RuleCheckReport };
-type LearningData = { findings: FindingsReport };
 
 interface CachedResource<T> {
   value?: T;
@@ -259,9 +226,7 @@ interface PeriodCache {
   dashboard: CachedResource<DashboardData>;
   usage: Map<string, CachedResource<UsageData>>;
   breakdown: Map<BreakdownDimension, CachedResource<BreakdownReport>>;
-  experiment: CachedResource<ExperimentData>;
-  learning: Map<string, CachedResource<LearningData>>;
-  rankings: CachedResource<ReworkRankingsReport>;
+  pivot: Map<string, CachedResource<PivotReport>>;
 }
 
 interface CacheContext {
@@ -272,7 +237,6 @@ interface CacheContext {
 }
 
 const periodCache = new Map<string, PeriodCache>();
-const digestCache = new Map<string, CachedResource<DigestReport>>();
 
 function resource<T>(): CachedResource<T> {
   return { generation: 0 };
@@ -285,9 +249,7 @@ function periodEntry(key: string): PeriodCache {
       dashboard: resource<DashboardData>(),
       usage: new Map(),
       breakdown: new Map(),
-      experiment: resource<ExperimentData>(),
-      learning: new Map(),
-      rankings: resource<ReworkRankingsReport>(),
+      pivot: new Map(),
     };
     periodCache.set(key, entry);
   }
@@ -345,7 +307,7 @@ function resolvedRangeForKey(
   return { from, to: quantizedAnchor };
 }
 
-function cacheContext(state: Pick<AilogState, "preset" | "customFrom" | "customTo" | "rangeAnchor" | "includeSidechain" | "selection" | "granularity">): CacheContext | null {
+function cacheContext(state: Pick<AilogState, "preset" | "customFrom" | "customTo" | "rangeAnchor" | "includeSidechain" | "selection" | "granularity" | "usageSeriesAxis">): CacheContext | null {
   const range = buildRange(state.preset, state.customFrom, state.customTo);
   const resolvedRange = resolvedRangeForKey(state.preset, state.customFrom, state.customTo, state.rangeAnchor);
   if (!range || !resolvedRange) return null;
@@ -358,6 +320,7 @@ function cacheContext(state: Pick<AilogState, "preset" | "customFrom" | "customT
     to: resolvedRange.to,
     includeSidechain: state.includeSidechain,
     granularity: state.granularity,
+    usageSeriesAxis: state.usageSeriesAxis,
     filters: {
       kinds: [...filters.kinds].sort(),
       models: [...filters.models].sort(),
@@ -378,21 +341,6 @@ function isCurrentContext(get: () => AilogState, key: string): boolean {
 
 export function invalidateAilogCaches(): void {
   periodCache.clear();
-  digestCache.clear();
-}
-
-/**
- * Digest dates name a local day, matching the day buckets every other ailog
- * surface reports. Deriving them in UTC would ask for yesterday's digest for
- * nine hours of every local day.
- */
-function localDayOffset(days: number): string {
-  return dayOffsetInput(days);
-}
-
-function shiftLocalDay(date: string, days: number): string {
-  const shifted = shiftDayInput(date, days);
-  return shifted === date && parseDayInput(date) === null ? localDayOffset(days) : shifted;
 }
 
 /**
@@ -424,6 +372,9 @@ const initialState = {
   excludeSynthetic: true,
   includeSidechain: false,
   granularity: "family" as const,
+  usageSeriesAxis: "model" as SeriesGroupBy,
+  pivotRowBy: "project" as PivotAxis,
+  pivotColBy: "model" as PivotAxis,
   sessionSort: "rework" as SessionSort,
   sessionPage: 0,
   selection: null,
@@ -443,12 +394,6 @@ const initialState = {
   transcriptError: null,
   sessionSummarizing: false,
   sessionSummarizeError: null,
-  findings: null,
-  rankings: null,
-  learningRawOffset: 0,
-  learningHasMore: false,
-  findingKind: null,
-  findingQuery: "",
   loading: false,
   loadedAt: null,
   dashboardError: null,
@@ -456,28 +401,20 @@ const initialState = {
   detailError: null,
   index: { status: null, progress: null, statusError: null, actionError: null, dismissedError: null, eventsAvailable: true },
   summarize: { status: null, progress: null, statusError: null, actionError: null, dismissedError: null, eventsAvailable: true },
-  digestDate: localDayOffset(-1),
-  digestReport: null,
-  digestLoading: false,
-  digestGenerating: false,
-  digestError: null,
-  learningLoading: false,
-  learningError: null,
-  efficiency: null,
-  ruleCheck: null,
-  experimentLoading: false,
-  experimentError: null,
   // Fresh input/output is the default: measured in total tokens the picture is
   // 95% cache reads, which answers a different question than "how much did I
   // actually put through a model".
   usageMetric: "ioTokens" as UsageMetric,
   usageStack: "absolute" as "absolute" | "share",
-  usageBucket: "day" as "day" | "week" | "month",
+  usageBucket: "day" as UsageBucket,
   usageSeries: null,
   usageRhythm: null,
   usageLoading: false,
   usageError: null,
-  lastLoadMs: {},
+  pivot: null,
+  pivotLoading: false,
+  pivotError: null,
+  lastLoadMs: null,
 };
 
 export const useAilogStore = create<AilogState>((set, get) => ({
@@ -502,6 +439,19 @@ export const useAilogStore = create<AilogState>((set, get) => ({
   },
   setGranularity: (granularity) => {
     set({ granularity });
+  },
+  setUsageSeriesAxis: (usageSeriesAxis) => {
+    set({ usageSeriesAxis, granularity: granularityFromSeriesAxis(usageSeriesAxis) });
+  },
+  setPivotRowBy: (rowBy) => {
+    const next = nextPivotAxes({ rowBy: get().pivotRowBy, colBy: get().pivotColBy }, { rowBy });
+    set({ pivotRowBy: next.rowBy, pivotColBy: next.colBy });
+    void get().refreshPivot();
+  },
+  setPivotColBy: (colBy) => {
+    const next = nextPivotAxes({ rowBy: get().pivotRowBy, colBy: get().pivotColBy }, { colBy });
+    set({ pivotRowBy: next.rowBy, pivotColBy: next.colBy });
+    void get().refreshPivot();
   },
   setSessionSort: (sessionSort) => set({ sessionSort, sessionPage: 0 }),
   setSessionPage: (sessionPage) => set({ sessionPage: Math.max(0, sessionPage) }),
@@ -586,66 +536,17 @@ export const useAilogStore = create<AilogState>((set, get) => ({
     }
   },
 
-  refreshExperiment: async (options = {}) => {
-    const context = cacheContext(get());
-    if (!context) return;
-    const mySeq = ++experimentSeq;
-    const cached = fetchOnce(periodEntry(context.key).experiment, async (): Promise<ExperimentData> => {
-      const [efficiency, ruleCheck] = await Promise.all([
-        ailogEfficiency(context.range, context.filters),
-        ailogRuleCheck(context.range, context.filters),
-      ]);
-      return { efficiency, ruleCheck };
-    }, options.force);
-    if (cached.pending) set({ experimentLoading: true, experimentError: null });
-    try {
-      const { efficiency, ruleCheck } = await cached.promise;
-      if (mySeq !== experimentSeq || !isCurrentContext(get, context.key)) return;
-      set({ efficiency, ruleCheck, experimentLoading: false });
-    } catch (error) {
-      if (mySeq !== experimentSeq || !isCurrentContext(get, context.key)) return;
-      set({ experimentLoading: false, experimentError: errorMessage(error), efficiency: null, ruleCheck: null });
-    }
-  },
-
-  loadSegment: async (segment, options = {}) => {
+  loadUsage: async (options = {}) => {
     const startedAt = performance.now();
     try {
-      if (segment === "change") {
-        // Change is deliberately cache-only: it never starts a report request.
-      } else if (segment === "record") {
-        await Promise.all([get().refreshUsage(options), get().refresh(options), get().refreshBreakdown(options)]);
-      } else if (segment === "how") {
-        await get().refreshExperiment(options);
-      } else if (segment === "daily") {
-        await get().refreshDigest(undefined, options);
-      } else {
-        await get().refreshLearning({ kinds: ["gotcha", "cause", "decision", "constraint", "verified"], includeRankings: true, force: options.force });
-      }
+      await Promise.all([
+        get().refreshUsage(options),
+        get().refresh(options),
+        get().refreshBreakdown(options),
+        get().refreshPivot(options),
+      ]);
     } finally {
-      set((state) => ({ lastLoadMs: { ...state.lastLoadMs, [segment]: performance.now() - startedAt } }));
-    }
-  },
-
-  preloadSegments: async (visible) => {
-    // Keep this serial. The foreground `loadSegment` does not await the queue,
-    // so a newly selected segment can still start immediately and share an
-    // already-running resource request without a second invoke.
-    if (visible === "change") return;
-    const context = cacheContext(get());
-    if (!context) return;
-    const segments: PanelSegment[] = ["record", "how", "learning"];
-    for (const segment of segments) {
-      if (!isCurrentContext(get, context.key)) return;
-      if (segment !== visible) {
-        await new Promise<void>((resolve) => {
-          const idle = (globalThis as typeof globalThis & { requestIdleCallback?: (callback: () => void) => number }).requestIdleCallback;
-          if (idle) idle(resolve);
-          else setTimeout(resolve, 200);
-        });
-        if (!isCurrentContext(get, context.key)) return;
-        await get().loadSegment(segment);
-      }
+      set({ lastLoadMs: performance.now() - startedAt });
     }
   },
 
@@ -784,64 +685,31 @@ export const useAilogStore = create<AilogState>((set, get) => ({
     }
   },
 
-  setDigestDate: (digestDate) => {
-    digestSeq += 1;
-    set({ digestDate, digestGenerating: false });
-  },
-
-  stepDigestDate: (days) => get().setDigestDate(shiftLocalDay(get().digestDate, days)),
-
-  refreshDigest: async (date = get().digestDate, options = {}) => {
-    const mySeq = ++digestSeq;
-    const cached = fetchOnce(
-      mapResource(digestCache, date),
-      () => ailogDigestGet(date),
-      options.force,
-    );
-    if (cached.pending) set({ digestLoading: true, digestError: null });
-    try {
-      const digestReport = await cached.promise;
-      if (mySeq !== digestSeq || get().digestDate !== date) return;
-      set({ digestReport, digestLoading: false, digestError: null });
-    } catch (error) {
-      if (mySeq !== digestSeq || get().digestDate !== date) return;
-      set({ digestReport: null, digestLoading: false, digestError: errorMessage(error) });
-    }
-  },
-
-  generateDigest: async (force = false) => {
-    const date = get().digestDate;
-    const mySeq = ++digestSeq;
-    set({ digestGenerating: true, digestError: null });
-    try {
-      const digestReport = await ailogDigestGenerate(date, force);
-      if (mySeq !== digestSeq) return;
-      const cached = mapResource(digestCache, date);
-      cached.generation += 1;
-      cached.pending = undefined;
-      cached.value = digestReport;
-      set({ digestReport, digestLoading: false, digestError: null });
-    } catch (error) {
-      if (mySeq !== digestSeq) return;
-      set({ digestError: errorMessage(error) });
-    } finally {
-      if (mySeq === digestSeq) set({ digestGenerating: false });
-    }
-  },
-
-  setFindingKind: (findingKind) => {
-    learningSeq += 1;
-    set({ findingKind, learningRawOffset: 0, learningHasMore: false });
-  },
-
-  setFindingQuery: (findingQuery) => {
-    learningSeq += 1;
-    set({ findingQuery, learningRawOffset: 0, learningHasMore: false });
-  },
-
   setUsageMetric: (usageMetric) => set({ usageMetric }),
   setUsageStack: (usageStack) => set({ usageStack }),
   setUsageBucket: (usageBucket) => set({ usageBucket }),
+
+  refreshPivot: async (options = {}) => {
+    const context = cacheContext(get());
+    if (!context) return;
+    const mySeq = ++pivotSeq;
+    const rowBy = get().pivotRowBy;
+    const colBy = get().pivotColBy;
+    const cached = fetchOnce(
+      mapResource(periodEntry(context.key).pivot, `${rowBy}:${colBy}`),
+      () => ailogPivot(context.range, context.filters, { rowBy, colBy }),
+      options.force,
+    );
+    if (cached.pending) set({ pivotLoading: true, pivotError: null });
+    try {
+      const pivot = await cached.promise;
+      if (mySeq !== pivotSeq || get().pivotRowBy !== rowBy || get().pivotColBy !== colBy || !isCurrentContext(get, context.key)) return;
+      set({ pivot, pivotLoading: false, pivotError: null });
+    } catch (error) {
+      if (mySeq !== pivotSeq || !isCurrentContext(get, context.key)) return;
+      set({ pivotLoading: false, pivotError: errorMessage(error), pivot: null });
+    }
+  },
 
   /**
    * The usage tab is deliberately independent of `refresh()`: it must render
@@ -853,11 +721,7 @@ export const useAilogStore = create<AilogState>((set, get) => ({
     if (!context) return;
     const mySeq = ++usageSeq;
     const bucket = get().usageBucket;
-    const groupBy = context.granularity === "provider"
-      ? "provider"
-      : context.granularity === "raw"
-        ? "model_raw"
-        : "model";
+    const groupBy = get().usageSeriesAxis;
     const cached = fetchOnce(
       mapResource(periodEntry(context.key).usage, `${bucket}:${groupBy}`),
       async (): Promise<UsageData> => {
@@ -879,61 +743,15 @@ export const useAilogStore = create<AilogState>((set, get) => ({
       set({ usageLoading: false, usageError: errorMessage(error) });
     }
   },
-
-  refreshLearning: async (options = {}) => {
-    const { append = false, kinds, includeRankings = true, force = false } = options;
-    const context = cacheContext(get());
-    if (!context) return;
-    const previous = get().findings;
-    const offset = append ? get().learningRawOffset : 0;
-    const mySeq = ++learningSeq;
-    const findingKind = get().findingKind;
-    const findingQuery = get().findingQuery;
-    const entry = periodEntry(context.key);
-    const cacheKey = JSON.stringify({ findingKind, findingQuery, offset });
-    const cached = fetchOnce(
-      mapResource(entry.learning, cacheKey),
-      async (): Promise<LearningData> => ({
-        findings: await ailogFindings(context.range, context.filters, { kind: findingKind, query: findingQuery, limit: FINDINGS_PAGE_SIZE, offset }),
-      }),
-      force,
-    );
-    const ranking = includeRankings
-      ? fetchOnce(entry.rankings, () => ailogReworkRankings(context.range, context.filters), force)
-      : { promise: Promise.resolve(null), pending: false };
-    if (cached.pending || ranking.pending) set({ learningLoading: true, learningError: null });
-    try {
-      const [{ findings }, rankings] = await Promise.all([cached.promise, ranking.promise]);
-      if (mySeq !== learningSeq || !isCurrentContext(get, context.key)) return;
-      const filteredRows = kinds ? findings.rows.filter((row) => kinds.includes(row.kind)) : findings.rows;
-      const mergedRows = append && previous
-        ? [...previous.rows, ...filteredRows].filter((row, index, rows) => rows.findIndex((candidate) => candidate.sessionKind === row.sessionKind && candidate.sessionId === row.sessionId && candidate.kind === row.kind && candidate.date === row.date && candidate.text === row.text) === index)
-        : filteredRows;
-      const nextRawOffset = offset + findings.rows.length;
-      set({
-        findings: { ...findings, rows: mergedRows },
-        rankings: includeRankings ? rankings : null,
-        learningRawOffset: nextRawOffset,
-        learningHasMore: findings.rows.length > 0 && nextRawOffset < findings.total,
-        learningLoading: false,
-        learningError: null,
-      });
-    } catch (error) {
-      if (mySeq !== learningSeq || !isCurrentContext(get, context.key)) return;
-      set({ learningLoading: false, learningError: errorMessage(error) });
-    }
-  },
 }));
 
 export function __resetAilogStoreForTests(): void {
   refreshSeq = 0;
   detailSeq = 0;
   transcriptSeq = 0;
-  digestSeq = 0;
-  learningSeq = 0;
   breakdownSeq = 0;
-  experimentSeq = 0;
   usageSeq = 0;
+  pivotSeq = 0;
   invalidateAilogCaches();
   useAilogStore.setState({ ...initialState });
 }

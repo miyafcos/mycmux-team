@@ -18,16 +18,19 @@ import { invalidateAilogCaches, type JobState } from "./ailogStore";
 
 export { jobBackgroundError, jobDisplayError } from "./ailogStore";
 
+type IndexJobState = JobState<IndexStatus, IndexProgress> & { autoStarted: boolean };
+
 type AilogJobState = {
-  index: JobState<IndexStatus, IndexProgress>;
+  index: IndexJobState;
   summarize: JobState<SummarizeStatus, SummarizeProgress>;
+  lastAutoStartedAt: number;
   setIndexEventsAvailable: (available: boolean) => void;
   setSummarizeEventsAvailable: (available: boolean) => void;
   applyIndexProgress: (progress: IndexProgress) => void;
   applySummarizeProgress: (progress: SummarizeProgress) => void;
   refreshIndexStatus: () => Promise<boolean>;
   refreshSummarizeStatus: (preset: SummaryRangePreset) => Promise<boolean>;
-  startIndex: (full: boolean) => Promise<void>;
+  startIndex: (full: boolean, opts?: { silent?: boolean }) => Promise<void>;
   cancelIndex: () => Promise<void>;
   startSummarize: (preset: SummaryRangePreset, force?: boolean) => Promise<void>;
   cancelSummarize: (preset: SummaryRangePreset) => Promise<void>;
@@ -38,8 +41,9 @@ type AilogJobState = {
 const emptyJob = { status: null, progress: null, statusError: null, actionError: null, dismissedError: null, eventsAvailable: true };
 
 export const useAilogJobStore = create<AilogJobState>((set, get) => ({
-  index: { ...emptyJob },
+  index: { ...emptyJob, autoStarted: false },
   summarize: { ...emptyJob },
+  lastAutoStartedAt: 0,
   setIndexEventsAvailable: (eventsAvailable) => set((state) => ({ index: { ...state.index, eventsAvailable } })),
   setSummarizeEventsAvailable: (eventsAvailable) => set((state) => ({ summarize: { ...state.summarize, eventsAvailable } })),
   dismissIndexError: () => set((state) => ({ index: { ...state.index, dismissedError: state.index.status?.lastError ?? null, actionError: null, statusError: null } })),
@@ -81,11 +85,15 @@ export const useAilogJobStore = create<AilogJobState>((set, get) => ({
       return false;
     }
   },
-  startIndex: async (full) => {
-    set((state) => ({ index: { ...state.index, actionError: null, dismissedError: null, progress: null } }));
+  startIndex: async (full, opts) => {
+    const silent = opts?.silent === true;
+    set((state) => ({
+      lastAutoStartedAt: silent ? Date.now() : state.lastAutoStartedAt,
+      index: { ...state.index, actionError: null, dismissedError: null, progress: null, autoStarted: silent },
+    }));
     try {
       const result = await ailogIndexStart(full);
-      if (result.alreadyRunning) set((state) => ({ index: { ...state.index, actionError: "インデックス処理はすでに実行中です" } }));
+      if (result.alreadyRunning && !silent) set((state) => ({ index: { ...state.index, actionError: "インデックス処理はすでに実行中です" } }));
       await get().refreshIndexStatus();
     } catch (error) {
       set((state) => ({ index: { ...state.index, actionError: errorMessage(error) } }));
@@ -110,3 +118,11 @@ export const useAilogJobStore = create<AilogJobState>((set, get) => ({
     catch (error) { set((state) => ({ summarize: { ...state.summarize, actionError: errorMessage(error) } })); }
   },
 }));
+
+export function __resetAilogJobStoreForTests(): void {
+  useAilogJobStore.setState({
+    index: { ...emptyJob, autoStarted: false },
+    summarize: { ...emptyJob },
+    lastAutoStartedAt: 0,
+  });
+}

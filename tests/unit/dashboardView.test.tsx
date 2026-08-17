@@ -689,6 +689,39 @@ describe("DashboardView split3 selection", () => {
     expect(Array.from(container.querySelectorAll("button")).some((button) => button.textContent === "端末" || button.textContent === "チャット")).toBe(false);
   });
 
+  it("tells a transcript it could not read apart from one that is genuinely empty", async () => {
+    const unreadable = tab("tab-unreadable", "s-unreadable", "Unreadable");
+    seedDashboard({
+      workspace: workspace([unreadable]),
+      selectedTabId: unreadable.id,
+      briefs: [brief({ ptySessionId: unreadable.sessionId, telemetryHealth: "unavailable", pendingInputKind: null, pendingPrompt: null, pendingOptions: [], operationalState: "running" })],
+    });
+    await renderDashboard();
+
+    const empty = container.querySelector<HTMLElement>(".cmux-dashboard-chat-empty")!;
+    expect(empty.dataset.dashboardChatEmpty).toBe("unavailable");
+    expect(empty.textContent).toContain("会話の記録を読み込めていません");
+    expect(empty.textContent).toContain("履歴を読めません");
+    expect(empty.textContent).not.toContain("まだ会話の記録がありません");
+
+    await act(async () => root.unmount());
+    container.remove();
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    const live = tab("tab-live", "s-live", "Live");
+    seedDashboard({
+      workspace: workspace([live]),
+      selectedTabId: live.id,
+      briefs: [brief({ ptySessionId: live.sessionId, telemetryHealth: "live", pendingInputKind: null, pendingPrompt: null, pendingOptions: [], operationalState: "running" })],
+    });
+    await renderDashboard();
+
+    const liveEmpty = container.querySelector<HTMLElement>(".cmux-dashboard-chat-empty")!;
+    expect(liveEmpty.dataset.dashboardChatEmpty).toBe("empty");
+    expect(liveEmpty.textContent).toContain("まだ会話の記録がありません");
+  });
+
   it("keeps status, elapsed time, and controls on the single chat header without the old detail band", async () => {
     const asking = tab("tab-header", "s-header", "Header session");
     seedDashboard({ workspace: workspace([asking]), selectedTabId: asking.id, briefs: [brief({ ptySessionId: asking.sessionId })] });
@@ -826,6 +859,40 @@ describe("DashboardView Q1 chat columns", () => {
     expect(container.querySelector(".cmux-dashboard-chat-drop-indicator")).toBeNull();
     expect(container.querySelector<HTMLElement>(".cmux-dashboard-chat-drop-capped")?.textContent).toBe("3列まで");
     expect(useDashboardViewStore.getState().chatColumnTabIds).toEqual([first.id, second.id, third.id]);
+  });
+
+  it("answers a capped chat drop across the whole chat surface", async () => {
+    const first = tab("tab-first", "s-first", "First");
+    const second = tab("tab-second", "s-second", "Second");
+    const third = tab("tab-third", "s-third", "Third");
+    const fourth = tab("tab-fourth", "s-fourth", "Fourth");
+    seedDashboard({ workspace: workspace([first, second, third, fourth]), selectedTabId: first.id });
+    await renderDashboard();
+    await act(async () => {
+      useDashboardViewStore.setState({ chatColumnTabIds: [first.id, second.id, third.id], activeChatColumn: 0, selectedTabId: first.id });
+      await Promise.resolve();
+    });
+    const columnsRoot = stubChatColumnGeometry([{ left: 0, right: 33 }, { left: 33, right: 66 }, { left: 66, right: 100 }]);
+    const source = container.querySelector<HTMLElement>(`[data-minimap-tab='${fourth.id}']`)!;
+
+    await act(async () => {
+      source.dispatchEvent(pointer("pointerdown", 77, 10, 10));
+      window.dispatchEvent(pointer("pointermove", 77, 50, 20));
+    });
+    expect(columnsRoot.dataset.dashboardChatDropPreview).toBe("full");
+    // ピルと文言はそのまま維持する (面全体の演出はその上乗せ)。
+    expect(container.querySelector<HTMLElement>(".cmux-dashboard-chat-drop-capped")?.textContent).toBe("3列まで");
+    expect(columnsRoot.dataset.dashboardChatCapPulse).toBeUndefined();
+
+    await act(async () => window.dispatchEvent(pointer("pointerup", 77, 50, 20)));
+    expect(columnsRoot.dataset.dashboardChatCapPulse).toBe("1");
+    expect(useDashboardViewStore.getState().chatColumnTabIds).toEqual([first.id, second.id, third.id]);
+
+    await act(async () => {
+      vi.advanceTimersByTime(200);
+      await Promise.resolve();
+    });
+    expect(columnsRoot.dataset.dashboardChatCapPulse).toBeUndefined();
   });
 
   it("shows the same central insert feedback for a left-list session drag", async () => {

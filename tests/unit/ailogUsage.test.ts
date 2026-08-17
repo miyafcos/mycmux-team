@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { DAY_OFFSET_MIN, type RhythmSlot, type SeriesBucket, type SeriesGroup } from "../../src/lib/ailog";
+import { DAY_OFFSET_MIN, formatBucketLabel, type RhythmSlot, type SeriesBucket, type SeriesGroup } from "../../src/lib/ailog";
 import { MODEL_COLORS, NEUTRAL_COLOR } from "../../src/components/ailog/palette";
 import {
   DAY_MS,
@@ -8,6 +8,8 @@ import {
   UNKNOWN_GROUP,
   activeDayRatio,
   buildUsageModel,
+  formatMetric,
+  groupByLabel,
   groupLabel,
   isStackable,
   layoutStack,
@@ -79,6 +81,13 @@ describe("usage metrics", () => {
     expect(isStackable("turns")).toBe(true);
     expect(isStackable("ioTokens")).toBe(true);
     expect(isStackable("totalTokens")).toBe(true);
+    expect(isStackable("costUsd")).toBe(true);
+  });
+
+  it("reads costUsd off the group and formats it as USD", () => {
+    expect(metricValue(row, "costUsd")).toBe(0);
+    expect(metricValue(group("priced", { costUsd: 12.3 }), "costUsd")).toBe(12.3);
+    expect(formatMetric(12.3, "costUsd")).toBe("$12.30");
   });
 });
 
@@ -94,9 +103,9 @@ describe("daily stack", () => {
     );
 
     expect(model.days.map((day) => day.label)).toEqual([
-      "2026-08-13",
-      "2026-08-14",
-      "2026-08-15",
+      "8/13",
+      "8/14",
+      "8/15",
     ]);
     expect(model.days.map((day) => day.present)).toEqual([true, false, true]);
     expect(model.days[1].total).toBe(0);
@@ -105,7 +114,7 @@ describe("daily stack", () => {
 
   it("labels day buckets in the bucketing timezone", () => {
     const model = buildUsageModel([bucket(AUG13, [group("a", { input: 1 })])], "ioTokens");
-    expect(model.days[0].label).toBe("2026-08-13");
+    expect(model.days[0].label).toBe("8/13");
     // The same instant is still the 12th in UTC, which is what the old
     // bucketing displayed.
     expect(new Date(AUG13).getUTCDate()).toBe(12);
@@ -184,7 +193,7 @@ describe("daily stack", () => {
     expect(model.legend).toEqual([]);
     expect(model.max).toBe(0);
     expect(model.periodTotal).toBe(0);
-    expect(layoutStack({ day: 0, label: "", total: 0, sessions: 0, costUsd: 0, slices: [], present: false }, 0, "absolute")).toEqual([]);
+    expect(layoutStack({ bucket: 0, label: "", total: 0, sessions: 0, costUsd: 0, slices: [], present: false }, 0, "absolute")).toEqual([]);
   });
 
   it("carries the day-level session count, not the sum of its groups", () => {
@@ -231,5 +240,90 @@ describe("rhythm", () => {
   it("never divides by a zero span", () => {
     expect(activeDayRatio(155, 161)).toBeCloseTo(0.9627, 4);
     expect(activeDayRatio(0, 0)).toBe(0);
+  });
+});
+
+describe("week and month buckets", () => {
+  const week1 = AUG13;
+  const week2 = AUG13 + 7 * DAY_MS;
+  const week3 = AUG13 + 14 * DAY_MS;
+
+  it("emits one row per week, not a day tick for each calendar day", () => {
+    const model = buildUsageModel(
+      [
+        bucket(week1, [group("a", { input: 10 })]),
+        bucket(week2, [group("a", { input: 20 })]),
+        bucket(week3, [group("a", { input: 30 })]),
+      ],
+      "ioTokens",
+      undefined,
+      "week",
+    );
+    expect(model.days).toHaveLength(3);
+    expect(model.days.map((row) => row.present)).toEqual([true, true, true]);
+    expect(model.days.map((row) => row.bucket)).toEqual([week1, week2, week3]);
+  });
+
+  it("zero-fills a missing middle week", () => {
+    const model = buildUsageModel(
+      [
+        bucket(week1, [group("a", { input: 10 })]),
+        bucket(week3, [group("a", { input: 30 })]),
+      ],
+      "ioTokens",
+      undefined,
+      "week",
+    );
+    expect(model.days).toHaveLength(3);
+    expect(model.days.map((row) => row.present)).toEqual([true, false, true]);
+    expect(model.days[1].bucket).toBe(week2);
+    expect(model.days[1].total).toBe(0);
+    expect(model.days[1].slices).toEqual([]);
+  });
+
+  it("keeps 31 January and 1 February on separate month rows", () => {
+    const jan31 = Date.UTC(2026, 0, 31) - OFFSET_MS;
+    const feb1 = Date.UTC(2026, 1, 1) - OFFSET_MS;
+    const model = buildUsageModel(
+      [
+        bucket(jan31, [group("a", { input: 4 })]),
+        bucket(feb1, [group("a", { input: 5 })]),
+      ],
+      "ioTokens",
+      undefined,
+      "month",
+    );
+    expect(model.days).toHaveLength(2);
+    expect(model.days.map((row) => row.label)).toEqual(["2026-01", "2026-02"]);
+    expect(model.days.map((row) => row.present)).toEqual([true, true]);
+    expect(model.days[0].total).toBe(4);
+    expect(model.days[1].total).toBe(5);
+  });
+});
+
+describe("formatBucketLabel", () => {
+  it("formats day, week, and month starts", () => {
+    expect(formatBucketLabel(AUG13, "day")).toBe("8/13");
+    expect(formatBucketLabel(AUG13, "week")).toBe("8/13週");
+    expect(formatBucketLabel(AUG13, "month")).toBe("2026-08");
+  });
+});
+
+describe("groupByLabel", () => {
+  it("names every series axis the UI can send", () => {
+    expect(groupByLabel("provider")).toBe("会社");
+    expect(groupByLabel("model")).toBe("系統");
+    expect(groupByLabel("model_raw")).toBe("モデル");
+    expect(groupByLabel("project")).toBe("案件");
+    expect(groupByLabel("kind")).toBe("CLI");
+    expect(groupByLabel("effort")).toBe("effort");
+  });
+
+  it("applies kind and effort display rules", () => {
+    expect(groupLabel("claude", "kind")).toBe("Claude");
+    expect(groupLabel("codex", "kind")).toBe("Codex");
+    expect(groupLabel("(none)", "effort")).toBe("未指定");
+    expect(groupLabel("xhigh", "effort")).toBe("xhigh");
+    expect(groupLabel("mycmux", "project")).toBe("mycmux");
   });
 });

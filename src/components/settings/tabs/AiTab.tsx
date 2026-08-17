@@ -126,6 +126,12 @@ export function AiTab() {
           />
           <span>AI に具体案を準備させる</span>
         </label>
+        {!enabled ? <div style={hintStyle}>「AI機能を有効にする」をオンにすると設定できます</div> : null}
+        {enabled && !replyDraftSuggestionsEnabled ? (
+          <div style={{ ...hintStyle, color: "var(--cmux-usage-warn)" }}>
+            オフのため、ダッシュボードの AI 案は作られません
+          </div>
+        ) : null}
         <div style={hintStyle}>画面を開いただけでは実行しません。設定をオフにすると、新しい AI 呼び出しは行いません。</div>
       </section>
 

@@ -1266,6 +1266,7 @@ fn overview_raw(
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
+#[serde(rename_all = "camelCase")]
 pub struct SeriesOptions {
     pub bucket: String,
     pub group_by: String,
@@ -1277,6 +1278,38 @@ impl Default for SeriesOptions {
             bucket: "day".to_string(),
             group_by: "none".to_string(),
         }
+    }
+}
+
+#[cfg(test)]
+mod camel_case_ipc_tests {
+    use super::SeriesOptions;
+    use crate::ailog::Filters;
+    use serde_json::json;
+
+    #[test]
+    fn series_options_reads_camel_case_group_by() {
+        let options: SeriesOptions =
+            serde_json::from_value(json!({"groupBy": "model_raw"})).expect("SeriesOptions");
+        assert_eq!(options.group_by, "model_raw");
+    }
+
+    #[test]
+    fn filters_reads_camel_case_include_sidechain() {
+        let filters: Filters =
+            serde_json::from_value(json!({"includeSidechain": true})).expect("Filters");
+        assert!(filters.include_sidechain);
+    }
+
+    #[test]
+    fn pivot_options_reads_camel_case_axes() {
+        let options: super::PivotOptions = serde_json::from_value(json!({
+            "rowBy": "project",
+            "colBy": "model_raw"
+        }))
+        .expect("PivotOptions");
+        assert_eq!(options.row_by, "project");
+        assert_eq!(options.col_by, "model_raw");
     }
 }
 
@@ -1395,6 +1428,8 @@ fn group_value(turn: &TurnRecord, group_by: &str, prices: &PriceTable) -> String
             .clone()
             .unwrap_or_else(|| "(unknown)".to_string()),
         "effort" => turn.effort.clone().unwrap_or_else(|| "(none)".to_string()),
+        "origin" => turn.origin.clone().unwrap_or_else(|| "unknown".to_string()),
+        "branch" => turn.branch.clone().unwrap_or_else(|| "(none)".to_string()),
         _ => "all".to_string(),
     }
 }
@@ -2192,6 +2227,8 @@ fn aggregate_group_value(row: &AggregateRow, group_by: &str, prices: &PriceTable
             .clone()
             .unwrap_or_else(|| "(unknown)".to_string()),
         "effort" => row.effort.clone().unwrap_or_else(|| "(none)".to_string()),
+        "origin" => row.origin.clone().unwrap_or_else(|| "unknown".to_string()),
+        "branch" => row.branch.clone().unwrap_or_else(|| "(none)".to_string()),
         _ => "all".to_string(),
     }
 }
@@ -2671,6 +2708,298 @@ pub fn breakdown(
         cost_note: COST_NOTE.to_string(),
         timings,
     })
+}
+
+// ---------------------------------------------------------------------------
+// ailog_pivot
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct PivotOptions {
+    pub row_by: String,
+    pub col_by: String,
+}
+
+impl Default for PivotOptions {
+    fn default() -> Self {
+        Self {
+            row_by: "project".to_string(),
+            col_by: "model".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PivotRow {
+    pub key: String,
+    pub total: SeriesGroup,
+    pub cells: Vec<SeriesGroup>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PivotReport {
+    pub range: RangeOut,
+    pub row_by: String,
+    pub col_by: String,
+    pub cols: Vec<String>,
+    pub rows: Vec<PivotRow>,
+    pub col_totals: Vec<SeriesGroup>,
+    pub grand_total: SeriesGroup,
+    pub price_source: String,
+    pub price_coverage: PriceCoverage,
+    pub cost_note: String,
+    pub timings: ReportTimings,
+}
+
+fn axis_needs_session(axis: &str) -> bool {
+    matches!(axis, "project" | "branch")
+}
+
+fn series_group_from(label: String, acc: Option<&TokenAcc>, sessions: i64) -> SeriesGroup {
+    match acc {
+        Some(acc) => SeriesGroup {
+            group: label,
+            turns: acc.turns,
+            sessions,
+            input: acc.input,
+            output: acc.output,
+            cache_read: acc.cache_read,
+            cache_write: acc.cache_write,
+            cost_usd: report_cost(acc.cost),
+        },
+        None => SeriesGroup {
+            group: label,
+            turns: 0,
+            sessions: 0,
+            input: 0,
+            output: 0,
+            cache_read: 0,
+            cache_write: 0,
+            cost_usd: 0.0,
+        },
+    }
+}
+
+fn sort_cost_then_key(left_cost: f64, left_key: &str, right_cost: f64, right_key: &str) -> std::cmp::Ordering {
+    right_cost
+        .partial_cmp(&left_cost)
+        .unwrap_or(std::cmp::Ordering::Equal)
+        .then_with(|| left_key.cmp(right_key))
+}
+
+struct PivotAcc {
+    cells: BTreeMap<(String, String), TokenAcc>,
+    cell_sessions: HashMap<(String, String), HashSet<SessionKey>>,
+    rows: BTreeMap<String, TokenAcc>,
+    row_sessions: HashMap<String, HashSet<SessionKey>>,
+    cols: BTreeMap<String, TokenAcc>,
+    col_sessions: HashMap<String, HashSet<SessionKey>>,
+    grand: TokenAcc,
+    grand_sessions: HashSet<SessionKey>,
+}
+
+impl PivotAcc {
+    fn new() -> Self {
+        Self {
+            cells: BTreeMap::new(),
+            cell_sessions: HashMap::new(),
+            rows: BTreeMap::new(),
+            row_sessions: HashMap::new(),
+            cols: BTreeMap::new(),
+            col_sessions: HashMap::new(),
+            grand: TokenAcc::default(),
+            grand_sessions: HashSet::new(),
+        }
+    }
+
+    fn add_turn(&mut self, turn: &TurnRecord, row_key: String, col_key: String) {
+        let session = (turn.kind.clone(), turn.session_id.clone());
+        self.cells
+            .entry((row_key.clone(), col_key.clone()))
+            .or_default()
+            .add(turn);
+        self.cell_sessions
+            .entry((row_key.clone(), col_key.clone()))
+            .or_default()
+            .insert(session.clone());
+        self.rows.entry(row_key.clone()).or_default().add(turn);
+        self.row_sessions
+            .entry(row_key)
+            .or_default()
+            .insert(session.clone());
+        self.cols.entry(col_key.clone()).or_default().add(turn);
+        self.col_sessions
+            .entry(col_key)
+            .or_default()
+            .insert(session.clone());
+        self.grand.add(turn);
+        self.grand_sessions.insert(session);
+    }
+
+    fn add_row(&mut self, row: &AggregateRow, row_key: String, col_key: String) {
+        let session = (row.kind.clone(), row.session_id.clone());
+        self.cells
+            .entry((row_key.clone(), col_key.clone()))
+            .or_default()
+            .add_aggregate(row);
+        self.cell_sessions
+            .entry((row_key.clone(), col_key.clone()))
+            .or_default()
+            .insert(session.clone());
+        self.rows.entry(row_key.clone()).or_default().add_aggregate(row);
+        self.row_sessions
+            .entry(row_key)
+            .or_default()
+            .insert(session.clone());
+        self.cols.entry(col_key.clone()).or_default().add_aggregate(row);
+        self.col_sessions
+            .entry(col_key)
+            .or_default()
+            .insert(session.clone());
+        self.grand.add_aggregate(row);
+        self.grand_sessions.insert(session);
+    }
+
+    fn into_report(
+        self,
+        range: RangeOut,
+        options: &PivotOptions,
+        prices: &PriceTable,
+        price_coverage: PriceCoverage,
+        timings: ReportTimings,
+    ) -> PivotReport {
+        let mut col_keys: Vec<String> = self.cols.keys().cloned().collect();
+        col_keys.sort_by(|left, right| {
+            let left_cost = self.cols.get(left).map(|acc| report_cost(acc.cost)).unwrap_or(0.0);
+            let right_cost = self.cols.get(right).map(|acc| report_cost(acc.cost)).unwrap_or(0.0);
+            sort_cost_then_key(left_cost, left, right_cost, right)
+        });
+        let mut row_keys: Vec<String> = self.rows.keys().cloned().collect();
+        row_keys.sort_by(|left, right| {
+            let left_cost = self.rows.get(left).map(|acc| report_cost(acc.cost)).unwrap_or(0.0);
+            let right_cost = self.rows.get(right).map(|acc| report_cost(acc.cost)).unwrap_or(0.0);
+            sort_cost_then_key(left_cost, left, right_cost, right)
+        });
+
+        let rows = row_keys
+            .into_iter()
+            .map(|key| {
+                let cells = col_keys
+                    .iter()
+                    .map(|col| {
+                        let pair = (key.clone(), col.clone());
+                        series_group_from(
+                            col.clone(),
+                            self.cells.get(&pair),
+                            self.cell_sessions
+                                .get(&pair)
+                                .map(|set| set.len() as i64)
+                                .unwrap_or(0),
+                        )
+                    })
+                    .collect();
+                let total = series_group_from(
+                    key.clone(),
+                    self.rows.get(&key),
+                    self.row_sessions
+                        .get(&key)
+                        .map(|set| set.len() as i64)
+                        .unwrap_or(0),
+                );
+                PivotRow { key, total, cells }
+            })
+            .collect();
+        let col_totals = col_keys
+            .iter()
+            .map(|col| {
+                series_group_from(
+                    col.clone(),
+                    self.cols.get(col),
+                    self.col_sessions
+                        .get(col)
+                        .map(|set| set.len() as i64)
+                        .unwrap_or(0),
+                )
+            })
+            .collect();
+        PivotReport {
+            range,
+            row_by: options.row_by.clone(),
+            col_by: options.col_by.clone(),
+            cols: col_keys,
+            rows,
+            col_totals,
+            grand_total: series_group_from(
+                "total".to_string(),
+                Some(&self.grand),
+                self.grand_sessions.len() as i64,
+            ),
+            price_source: prices.source_summary(),
+            price_coverage,
+            cost_note: COST_NOTE.to_string(),
+            timings,
+        }
+    }
+}
+
+pub fn pivot(
+    conn: &Connection,
+    range: &Range,
+    filters: &Filters,
+    options: &PivotOptions,
+    now_ms: i64,
+) -> Result<PivotReport, String> {
+    let started = Instant::now();
+    let mut timings = ReportTimings::default();
+    let (resolved, label) = range.resolve(now_ms);
+    let prices = cached_prices(conn)?;
+    let include_session = rollup_needs_session(
+        filters,
+        axis_needs_session(&options.row_by) || axis_needs_session(&options.col_by),
+    );
+    let range_out = RangeOut {
+        from: resolved.from,
+        to: resolved.to,
+        label,
+    };
+    if let Some(rows) = measured_hybrid_rows(
+        conn,
+        &resolved,
+        filters,
+        &mut timings,
+        include_session,
+        false,
+    )? {
+        let mut acc = PivotAcc::new();
+        for row in &rows {
+            acc.add_row(
+                row,
+                aggregate_group_value(row, &options.row_by, &prices),
+                aggregate_group_value(row, &options.col_by, &prices),
+            );
+        }
+        let coverage = aggregate_price_coverage(&rows, &prices);
+        let timings = finish_timings(timings, started);
+        log_report_timings("pivot", timings);
+        return Ok(acc.into_report(range_out, options, &prices, coverage, timings));
+    }
+
+    let turns = measured_turns(conn, &resolved, filters, false, &mut timings)?;
+    let mut acc = PivotAcc::new();
+    for turn in turns.iter() {
+        acc.add_turn(
+            turn,
+            group_value(turn, &options.row_by, &prices),
+            group_value(turn, &options.col_by, &prices),
+        );
+    }
+    let coverage = price_coverage(&turns, &prices);
+    let timings = finish_timings(timings, started);
+    log_report_timings("pivot", timings);
+    Ok(acc.into_report(range_out, options, &prices, coverage, timings))
 }
 
 // ---------------------------------------------------------------------------

@@ -140,6 +140,7 @@ export function ChatColumn({
         displayState={displayState}
         agentKind={card.agentKind ?? "none"}
         lastOutputAt={lastOutputAt}
+        telemetryHealth={card.telemetryHealth}
         targetEventId={active ? targetEventId : null}
         targetEventRequest={active ? targetEventRequest : 0}
         syntheticSource={active ? syntheticSource : null}

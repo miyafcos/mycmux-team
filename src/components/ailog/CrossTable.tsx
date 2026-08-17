@@ -1,0 +1,150 @@
+import { useMemo } from "react";
+
+import type { PivotAxis, PivotReport } from "../../lib/ailog";
+import type { AilogSelection } from "../../stores/ailogStore";
+import {
+  foldNote,
+  foldPivot,
+  heatMixPercent,
+  isFilterablePivotAxis,
+  OTHER_KEY,
+  PIVOT_AXES,
+  pivotAxisLabel,
+  selectionFromPivotCell,
+} from "./crossTableModel";
+import { formatMetric, groupLabel, type UsageMetric } from "./usageModel";
+import { ButtonGroup, EmptyState, ScrollBox, noteStyle, tableStyle, tdLeftStyle, tdStyle, thLeftStyle, thStyle } from "./ui";
+
+function axisLabel(value: string, axis: PivotAxis): string {
+  if (value === OTHER_KEY) return OTHER_KEY;
+  if (axis === "origin") return value === "unknown" ? "不明" : value;
+  return groupLabel(value, axis);
+}
+
+export function CrossTable({
+  report,
+  metric,
+  rowBy,
+  colBy,
+  loading,
+  error,
+  selection,
+  onRetry,
+  onRowBy,
+  onColBy,
+  onSelect,
+}: {
+  report: PivotReport | null;
+  metric: UsageMetric;
+  rowBy: PivotAxis;
+  colBy: PivotAxis;
+  loading: boolean;
+  error: string | null;
+  selection: AilogSelection | null;
+  onRetry: () => void;
+  onRowBy: (value: PivotAxis) => void;
+  onColBy: (value: PivotAxis) => void;
+  onSelect: (selection: AilogSelection | null) => void;
+}) {
+  const folded = useMemo(() => (report ? foldPivot(report, metric) : null), [report, metric]);
+  const note = folded ? foldNote(folded) : null;
+  const max = folded ? Math.max(0, ...folded.rows.flatMap((row) => row.cells)) : 0;
+  const stackable = folded?.stackable ?? true;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 10, minWidth: 0 }}>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        <ButtonGroup ariaLabel="行軸" roleLabel="行" value={rowBy} onChange={onRowBy} options={PIVOT_AXES} />
+        <ButtonGroup ariaLabel="列軸" roleLabel="列" value={colBy} onChange={onColBy} options={PIVOT_AXES} />
+      </div>
+      {error ? (
+        <EmptyState kind="error" message={error} onPrimary={onRetry} />
+      ) : !report || !folded ? (
+        loading ? null : <EmptyState kind="no-data" />
+      ) : folded.rows.length === 0 ? (
+        <EmptyState kind="no-data" />
+      ) : (
+        <>
+          <ScrollBox maxHeight={360}>
+            <table style={tableStyle}>
+              <caption style={{ ...noteStyle, captionSide: "bottom", textAlign: "left", paddingTop: 8 }}>
+                {`${pivotAxisLabel(rowBy)} × ${pivotAxisLabel(colBy)}`}
+              </caption>
+              <thead>
+                <tr>
+                  <th style={thLeftStyle}>{pivotAxisLabel(rowBy)}</th>
+                  {folded.cols.map((col) => (
+                    <th key={col} style={thStyle} title={axisLabel(col, colBy)}>
+                      {axisLabel(col, colBy)}
+                    </th>
+                  ))}
+                  <th style={thStyle}>合計</th>
+                </tr>
+              </thead>
+              <tbody>
+                {folded.rows.map((row) => (
+                  <tr key={row.key}>
+                    <td style={tdLeftStyle} title={axisLabel(row.key, rowBy)}>
+                      {axisLabel(row.key, rowBy)}
+                    </td>
+                    {row.cells.map((value, index) => {
+                      const colKey = folded.cols[index];
+                      const next = selectionFromPivotCell(rowBy, colBy, row.key, colKey);
+                      const selected = Boolean(
+                        next && selection && selection.type === next.type && selection.key === next.key,
+                      );
+                      const mix = heatMixPercent(value, max);
+                      const clickable = next !== null;
+                      return (
+                        <td
+                          key={colKey}
+                          style={{
+                            ...tdStyle,
+                            cursor: clickable ? "pointer" : undefined,
+                            background: selected
+                              ? "var(--cmux-selected)"
+                              : mix > 0
+                                ? `color-mix(in srgb, var(--cmux-accent) ${mix}%, transparent)`
+                                : undefined,
+                          }}
+                          aria-selected={selected || undefined}
+                          onClick={() => {
+                            if (!next) return;
+                            onSelect(selected ? null : next);
+                          }}
+                        >
+                          {formatMetric(value, metric)}
+                        </td>
+                      );
+                    })}
+                    <td style={{ ...tdStyle, fontWeight: 600 }}>
+                      {stackable ? formatMetric(row.total, metric) : "—"}
+                    </td>
+                  </tr>
+                ))}
+                <tr>
+                  <td style={{ ...tdLeftStyle, fontWeight: 600 }}>合計</td>
+                  {folded.colTotals.map((value, index) => (
+                    <td key={folded.cols[index]} style={{ ...tdStyle, fontWeight: 600 }}>
+                      {stackable ? formatMetric(value, metric) : "—"}
+                    </td>
+                  ))}
+                  <td style={{ ...tdStyle, fontWeight: 700 }}>
+                    {stackable ? formatMetric(folded.grandTotal, metric) : "—"}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </ScrollBox>
+          {note ? <div style={noteStyle}>{note}</div> : null}
+          {!stackable ? (
+            <div style={noteStyle}>1セッションが複数モデルに跨るため合計できません</div>
+          ) : null}
+          {isFilterablePivotAxis(rowBy) || isFilterablePivotAxis(colBy) ? (
+            <div style={noteStyle}>セルをクリックすると下のセッション一覧が連動します。</div>
+          ) : null}
+        </>
+      )}
+    </div>
+  );
+}

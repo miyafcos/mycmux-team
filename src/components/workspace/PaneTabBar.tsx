@@ -52,6 +52,7 @@ import {
   savepointPublishErrorMessage,
   type SavepointAgentKind,
 } from "../online/onlineSavepoints";
+import { openDashboardForTab } from "../layout/openDashboardForTab";
 
 interface PaneTabBarProps {
   pane: Pane;
@@ -147,6 +148,13 @@ const PinIcon = ({ size = 12, filled = false }: { size?: number; filled?: boolea
        aria-hidden="true" focusable="false">
     <path d="M9 3h6l-1 5 3 3v2H7v-2l3-3-1-5Z" />
     <line x1="12" y1="13" x2="12" y2="21" />
+  </svg>
+);
+
+const EyeIcon = () => (
+  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+    <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" />
+    <circle cx="12" cy="12" r="3" />
   </svg>
 );
 
@@ -298,6 +306,7 @@ export type PaneTabBarActionId =
   | "split-right"
   | "split-down"
   | "zoom"
+  | "dashboard"
   | "close";
 
 export const PANE_TABBAR_SLIM_ENTER = 560;
@@ -338,11 +347,13 @@ const PANE_TABBAR_ACTION_ORDER: readonly PaneTabBarActionId[] = [
   "split-right",
   "split-down",
   "zoom",
+  "dashboard",
   "close",
 ];
 
 const PANE_TABBAR_PRIORITY_ACTIONS: readonly PaneTabBarActionId[] = [
   "split-right",
+  "dashboard",
   "zoom",
   "close",
   "publish",
@@ -1494,6 +1505,20 @@ export default memo(function PaneTabBar({
               {isZoomed ? <MinimizeIcon /> : <MaximizeIcon />}
             </button>
           )}
+          {visibleActions.includes("dashboard") && activeTab && (
+            <button
+              className="pane-action-btn pane-tabbar-dashboard"
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                openDashboardForTab(activeTab.id);
+              }}
+              title="Open in dashboard"
+              aria-label="Open in dashboard"
+            >
+              <EyeIcon />
+            </button>
+          )}
           {visibleActions.includes("close") && onClose && (
             <button className="pane-action-btn" onClick={onClose} title="Close pane">
               <CloseIcon size={11} />
@@ -1584,6 +1609,16 @@ export default memo(function PaneTabBar({
                       }}
                     >
                       {isZoomed ? "Restore pane" : "Zoom pane"}
+                    </PaneTabContextMenuItem>
+                  )}
+                  {overflowActions.includes("dashboard") && activeTab && (
+                    <PaneTabContextMenuItem
+                      onClick={() => {
+                        setKebabOpen(false);
+                        openDashboardForTab(activeTab.id);
+                      }}
+                    >
+                      Open in dashboard
                     </PaneTabContextMenuItem>
                   )}
                   {overflowActions.includes("close") && onClose && (

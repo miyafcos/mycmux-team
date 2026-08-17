@@ -75,7 +75,11 @@
 .cmux-dashboard-chat-column.is-active::after { position: absolute; z-index: 2; inset: 0; border: 2px solid var(--cmux-accent); content: ""; pointer-events: none; }
 .cmux-dashboard-chat-column.is-drop-existing { box-shadow: inset 0 0 0 2px var(--cmux-accent); }
 .cmux-dashboard-chat-drop-indicator { position: absolute; z-index: 4; top: 8px; bottom: 8px; width: 0; border-left: 3px dashed var(--cmux-dnd-tab); transform: translateX(-1.5px); box-shadow: 0 0 8px color-mix(in srgb, var(--cmux-dnd-tab) 78%, transparent); animation: cmux-dashboard-chat-drop-indicator 1.2s ease-in-out infinite; pointer-events: none; }
-.cmux-dashboard-chat-drop-capped { position: absolute; z-index: 4; top: 8px; right: 8px; border: 1px solid var(--cmux-dnd-tab); border-radius: 999px; padding: 3px 6px; background: color-mix(in srgb, var(--cmux-dnd-tab) 12%, var(--cmux-surface)); box-shadow: 0 0 8px color-mix(in srgb, var(--cmux-dnd-tab) 48%, transparent); color: var(--cmux-dnd-tab); font-size: var(--cmux-font-size-xs); font-weight: 700; pointer-events: none; }
+/* 上限は「入らない」の合図なので、許可時の水色 (--cmux-dnd-tab) と意味色を分ける。 */
+.cmux-dashboard-chat-drop-capped { position: absolute; z-index: 4; top: 8px; right: 8px; border: 1px solid var(--cmux-usage-warn); border-radius: 999px; padding: 3px 6px; background: color-mix(in srgb, var(--cmux-usage-warn) 12%, var(--cmux-surface)); box-shadow: 0 0 8px color-mix(in srgb, var(--cmux-usage-warn) 48%, transparent); color: var(--cmux-usage-warn); font-size: var(--cmux-font-size-xs); font-weight: 700; pointer-events: none; }
+.cmux-dashboard-chat-columns[data-dashboard-chat-drop-preview="full"] .cmux-dashboard-chat-column { box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--cmux-usage-warn) 58%, transparent); animation: cmux-dashboard-chat-cap-enter 180ms cubic-bezier(.16,1,.3,1); }
+.cmux-dashboard-chat-columns[data-dashboard-chat-cap-pulse] .cmux-dashboard-chat-column { box-shadow: inset 0 0 0 2px var(--cmux-usage-warn); animation: cmux-dashboard-chat-cap-pulse 180ms cubic-bezier(.16,1,.3,1); }
+.cmux-dashboard-chat-columns[data-dashboard-chat-cap-pulse] .cmux-dashboard-chat-drop-capped { animation: cmux-dashboard-chat-cap-pulse 180ms cubic-bezier(.16,1,.3,1); }
 .cmux-dashboard-chat-column-body { display: flex; min-width: 0; min-height: 0; flex: 1 1 0; flex-direction: column; overflow: hidden; }
 .cmux-dashboard-chat-column .cmux-dashboard-telemetry-fallback { margin-inline: 12px; }
 .cmux-dashboard-chat-column .cmux-dashboard-chat, .cmux-dashboard-chat-column .cmux-dashboard-chat-empty { padding-inline: 8px; }
@@ -98,6 +102,7 @@
 .cmux-dashboard-telemetry-fallback-log { overflow: hidden; color: var(--cmux-text-tertiary); font-family: var(--cmux-dash-body-font); font-size: var(--cmux-font-size-xs); text-overflow: ellipsis; white-space: nowrap; }
 .cmux-dashboard-chat { display: flex; min-height: 0; flex: 1; flex-direction: column; gap: 10px; overflow-y: auto; padding: 12px; }
 .cmux-dashboard-chat-empty { flex: 1; padding: 16px 22px; color: var(--cmux-text-secondary); font-size: var(--cmux-font-size-sm); }
+.cmux-dashboard-chat-empty-reason { margin-top: 4px; color: var(--cmux-text-tertiary); font-size: var(--cmux-font-size-xs); }
 .cmux-dashboard-msg { display: grid; min-width: 0; max-width: 84%; gap: 4px; border-radius: 10px; padding: 9px 13px; font-family: var(--cmux-dash-body-font); font-size: var(--cmux-font-size-md); line-height: 1.8; overflow-wrap: anywhere; animation: cmux-dashboard-msg-in 180ms var(--cmux-ease) both; }
 .cmux-dashboard-msg.is-user { align-self: flex-end; border-bottom-right-radius: 3px; background: color-mix(in srgb, var(--cmux-accent) 18%, var(--cmux-surface)); color: var(--cmux-text); }
 .cmux-dashboard-msg.is-agent { align-self: flex-start; border-bottom-left-radius: 3px; background: var(--cmux-popover); }
@@ -284,6 +289,17 @@
   50% { opacity: .28; }
 }
 
+/* 配置図の cmux-minimap-group-select と同質: グッと出て静かに止まる一発 enter。 */
+@keyframes cmux-dashboard-chat-cap-enter {
+  from { opacity: .72; transform: scale(.988); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+@keyframes cmux-dashboard-chat-cap-pulse {
+  from { opacity: .62; transform: scale(.972); }
+  to { opacity: 1; transform: scale(1); }
+}
+
 @keyframes cmux-dashboard-optimistic-in {
   from { opacity: .58; }
   to { opacity: .82; }
@@ -302,4 +318,7 @@
   .cmux-dashboard-composer-input,
   .cmux-dashboard-chat-activity.is-working .cmux-dashboard-chat-activity-glyph { animation: none; transition: none; }
   .cmux-dashboard-chat-drop-indicator { border-left-style: solid; animation: none; }
+  .cmux-dashboard-chat-columns[data-dashboard-chat-drop-preview="full"] .cmux-dashboard-chat-column,
+  .cmux-dashboard-chat-columns[data-dashboard-chat-cap-pulse] .cmux-dashboard-chat-column,
+  .cmux-dashboard-chat-columns[data-dashboard-chat-cap-pulse] .cmux-dashboard-chat-drop-capped { animation: none; transform: none; }
 }

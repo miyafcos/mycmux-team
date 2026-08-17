@@ -115,6 +115,44 @@ describe("backgroundAiScheduler", () => {
     expect(useBackgroundAiSuggestionStore.getState().bySession["session-a"]?.status).toBe("failed");
   });
 
+  it("blocks a likely provider/model mismatch before it reaches the CLI", async () => {
+    useSettingsStore.setState({ replyDraftSuggestionsEnabled: true });
+    useAiSettingsStore.setState({ aiEnabled: true, aiProvider: "codex", aiModel: "claude-haiku-4-5" });
+    mocks.invoke.mockResolvedValue(judgeResult());
+    useReportInboxStore.getState().ingestStatusEvent(status(1));
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(mocks.invoke.mock.calls.filter(([name]) => name === "run_next_action_judge")).toHaveLength(0);
+    const suggestion = useBackgroundAiSuggestionStore.getState().bySession["session-a"];
+    expect(suggestion?.status).toBe("failed");
+    expect(suggestion?.failureCode).toBe("provider_model_mismatch");
+  });
+
+  it("keeps the rejected error code so the failure can name its own reason", async () => {
+    useSettingsStore.setState({ replyDraftSuggestionsEnabled: true });
+    mocks.invoke.mockImplementation((name: string) => (
+      name === "run_next_action_judge"
+        ? Promise.reject({ code: "cli_not_found", detail: "codex not on PATH" })
+        : Promise.resolve(false)
+    ));
+    useReportInboxStore.getState().ingestStatusEvent(status(1));
+    await vi.advanceTimersByTimeAsync(1_500);
+    await Promise.resolve();
+    const suggestion = useBackgroundAiSuggestionStore.getState().bySession["session-a"];
+    expect(suggestion?.status).toBe("failed");
+    expect(suggestion?.failureCode).toBe("cli_not_found");
+  });
+
+  it("falls back to internal when the rejection carries no recoverable code", async () => {
+    useSettingsStore.setState({ replyDraftSuggestionsEnabled: true });
+    mocks.invoke.mockImplementation((name: string) => (
+      name === "run_next_action_judge" ? Promise.reject(new Error("offline")) : Promise.resolve(false)
+    ));
+    useReportInboxStore.getState().ingestStatusEvent(status(1));
+    await vi.advanceTimersByTimeAsync(1_500);
+    await Promise.resolve();
+    expect(useBackgroundAiSuggestionStore.getState().bySession["session-a"]?.failureCode).toBe("internal");
+  });
+
   it("uses the existing scheduler for a report-summary purpose after a mechanical revision", async () => {
     useSettingsStore.setState({ replyDraftSuggestionsEnabled: true });
     mocks.invoke.mockResolvedValue(judgeResult("report"));

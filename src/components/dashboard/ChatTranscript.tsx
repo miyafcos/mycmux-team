@@ -116,6 +116,7 @@ export function ChatTranscript({
   targetEventId = null,
   targetEventRequest = 0,
   syntheticSource = null,
+  telemetryHealth,
 }: {
   events: readonly SemanticEventEnvelope[];
   sessionId?: string | null;
@@ -126,6 +127,8 @@ export function ChatTranscript({
   targetEventId?: string | null;
   targetEventRequest?: number;
   syntheticSource?: { eventId: string; text: string; at: number } | null;
+  /** livebrief の telemetry_health ("live" / "ended" / "unlinked" / "unavailable")。 */
+  telemetryHealth?: string;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const followRef = useRef(true);
@@ -161,7 +164,21 @@ export function ChatTranscript({
   }, []);
 
   const footer = <ChatActivityFooter displayState={displayState} agentKind={agentKind} lastOutputAt={lastOutputAt} />;
-  if (!rows.length && !syntheticSource) return <><div className="cmux-dashboard-chat-empty">{dashboardStrings.chatEmpty}</div>{footer}</>;
+  // 0行の理由は2種類ある。読めていないだけなのに「記録がありません」と言うと
+  // 会話が消えたように読めるので、取得できていない側は別文言+理由を出す。
+  if (!rows.length && !syntheticSource) {
+    const unreadable = telemetryHealth === "unlinked" || telemetryHealth === "unavailable";
+    return <><div className="cmux-dashboard-chat-empty" data-dashboard-chat-empty={unreadable ? "unavailable" : "empty"}>
+      {unreadable
+        ? <>
+          <div>{dashboardStrings.chatUnavailable}</div>
+          <div className="cmux-dashboard-chat-empty-reason">
+            {telemetryHealth === "unavailable" ? dashboardStrings.telemetryUnavailable : dashboardStrings.telemetryUnlinked}
+          </div>
+        </>
+        : dashboardStrings.chatEmpty}
+    </div>{footer}</>;
+  }
   return <div ref={scrollRef} onScroll={onScroll} role="log" aria-label={dashboardStrings.chatAriaLabel} className="cmux-dashboard-chat">
     {syntheticSource ? <div id={`dashboard-event-${syntheticSource.eventId}`} data-dashboard-event={syntheticSource.eventId} className={`cmux-dashboard-msg is-agent is-status-source${syntheticSource.eventId === targetEventId ? " is-source-highlighted" : ""}`}>
       <div className="cmux-dashboard-msg-who"><span>状態イベント</span><span>{clockLabel(syntheticSource.at)}</span></div>

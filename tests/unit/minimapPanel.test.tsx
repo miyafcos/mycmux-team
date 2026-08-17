@@ -116,6 +116,33 @@ describe("LayoutMinimapPanel", () => {
     expect(workspace.querySelectorAll(".cmux-minimap-cell.is-list-row")).toHaveLength(0);
   });
 
+  it("fits the map height to the row count instead of a fixed box", async () => {
+    const shallow: Workspace = { id: "ws-shallow", name: "浅い", gridTemplateId: "1x1", status: "running", createdAt: 1,
+      panes: [pane("s0", [tab("s0")]), pane("s1", [tab("s1")])], splitColumns: [["s0"], ["s1"]] };
+    const deep: Workspace = { id: "ws-deep", name: "深い", gridTemplateId: "1x1", status: "running", createdAt: 1,
+      panes: [pane("d0", [tab("d0")]), pane("d1", [tab("d1")]), pane("d2", [tab("d2")])], splitColumns: [["d0", "d1", "d2"]] };
+    await act(async () => root.render(<LayoutMinimapPanel workspaces={[shallow, deep]} displayStateByTabId={new Map()} selectedTabId={null} activePaneSessionId={null} onSelect={vi.fn()} />));
+
+    const mapOf = (workspaceId: string) => container
+      .querySelector<HTMLElement>(`[data-minimap-workspace='${workspaceId}'] .cmux-minimap-map`)!;
+    const heightOf = (workspaceId: string) => Number.parseInt(
+      mapOf(workspaceId).style.getPropertyValue("--minimap-map-height"),
+      10,
+    );
+
+    expect(mapOf("ws-shallow").dataset.minimapRowCount).toBe("1");
+    expect(mapOf("ws-deep").dataset.minimapRowCount).toBe("3");
+    expect(heightOf("ws-shallow")).toBeGreaterThan(0);
+    expect(heightOf("ws-shallow")).toBeLessThan(heightOf("ws-deep"));
+
+    // 上限 clamp: 行数が増え続けても展開時の箱は現行 248px を超えない。
+    const wide: Workspace = { id: "ws-wide", name: "広い", gridTemplateId: "1x1", status: "running", createdAt: 1,
+      panes: Array.from({ length: 8 }, (_, index) => pane(`w${index}`, [tab(`w${index}`)])),
+      splitColumns: [Array.from({ length: 8 }, (_, index) => `w${index}`)] };
+    await act(async () => root.render(<LayoutMinimapPanel workspaces={[wide]} displayStateByTabId={new Map()} selectedTabId={null} activePaneSessionId={null} onSelect={vi.fn()} />));
+    expect(heightOf("ws-wide")).toBeLessThanOrEqual(248);
+  });
+
   it("selects chips without launching declared tabs and toggles workspace expansion", async () => {
     const declared = tab("declared", "declared");
     const wsA: Workspace = { id: "ws-a", name: "A", gridTemplateId: "1x1", status: "running", createdAt: 1, panes: [pane("a", [tab("a"), declared])], splitColumns: [["a"]] };

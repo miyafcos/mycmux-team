@@ -45,6 +45,10 @@ const functionSamples: Partial<Record<DashboardStringKey, readonly unknown[][]>>
   contractReference: [["source", "event"]],
   contractCoverageSummary: [[1, 1, 0, 0], [1, 1, 0, 1]],
   contractRunSourcesAcquired: [[1]],
+  aiSuggestionFailureReason: [
+    ["ai_disabled"], ["cli_not_found"], ["cli_failed"], ["invalid_output"],
+    ["timeout"], ["provider_model_mismatch"], ["internal"], ["duplicate_request"],
+  ],
 };
 
 function stringLeaves(value: unknown): string[] {

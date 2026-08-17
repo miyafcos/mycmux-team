@@ -207,7 +207,19 @@ export interface SeriesGroup {
 
 /** The one UI choice used by both the daily series and model breakdown. */
 export type AilogGranularity = "provider" | "family" | "raw";
-export type SeriesGroupBy = "provider" | "model" | "model_raw";
+export type SeriesGroupBy = "provider" | "model" | "model_raw" | "project" | "kind" | "effort";
+export type PivotAxis = SeriesGroupBy | "origin";
+export type UsageBucket = "day" | "week" | "month";
+
+/**
+ * Dashboard / models still speak provider|family|raw. A usage-only axis
+ * (project, kind, effort) is sent as family so those commands stay valid.
+ */
+export function granularityFromSeriesAxis(axis: SeriesGroupBy): AilogGranularity {
+  if (axis === "provider") return "provider";
+  if (axis === "model_raw") return "raw";
+  return "family";
+}
 
 export interface SeriesBucket {
   bucket: number;
@@ -307,6 +319,25 @@ export interface BreakdownReport {
   dimension: string;
   rows: BreakdownRow[];
   overlapping: boolean;
+  priceSource: string;
+  priceCoverage: PriceCoverage;
+  costNote: string;
+}
+
+export interface PivotRow {
+  key: string;
+  total: SeriesGroup;
+  cells: SeriesGroup[];
+}
+
+export interface PivotReport {
+  range: RangeOut;
+  rowBy: PivotAxis;
+  colBy: PivotAxis;
+  cols: string[];
+  rows: PivotRow[];
+  colTotals: SeriesGroup[];
+  grandTotal: SeriesGroup;
   priceSource: string;
   priceCoverage: PriceCoverage;
   costNote: string;
@@ -821,6 +852,14 @@ export async function ailogBreakdown(
   });
 }
 
+export async function ailogPivot(
+  range: AilogRange,
+  filters: AilogFilters,
+  options: { rowBy: PivotAxis; colBy: PivotAxis },
+): Promise<PivotReport> {
+  return invoke<PivotReport>("ailog_pivot", { range, filters, options });
+}
+
 export async function ailogEfficiency(
   range: AilogRange,
   filters: AilogFilters,
@@ -1122,6 +1161,20 @@ export function formatDayBucket(ms: number): string {
   const month = `${date.getUTCMonth() + 1}`.padStart(2, "0");
   const day = `${date.getUTCDate()}`.padStart(2, "0");
   return `${date.getUTCFullYear()}-${month}-${day}`;
+}
+
+/**
+ * Chart-axis label for a bucket start. Date inputs keep `formatDayBucket`
+ * (`YYYY-MM-DD`); this one is the shorter unit-aware form.
+ */
+export function formatBucketLabel(ms: number, bucket: UsageBucket): string {
+  const date = new Date(ms + DAY_OFFSET_MS);
+  const year = date.getUTCFullYear();
+  const month = date.getUTCMonth() + 1;
+  const day = date.getUTCDate();
+  if (bucket === "month") return `${year}-${`${month}`.padStart(2, "0")}`;
+  const md = `${month}/${day}`;
+  return bucket === "week" ? `${md}週` : md;
 }
 
 /** Weekday of a day bucket, 0 = Sunday, in the bucketing timezone. */

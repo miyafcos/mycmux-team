@@ -53,6 +53,7 @@ EXPECTED_COMMANDS = {
     "ailog_overview",
     "ailog_series",
     "ailog_breakdown",
+    "ailog_pivot",
     "ailog_sessions",
     "ailog_session_detail",
     "ailog_session_transcript",
@@ -195,3 +196,197 @@ def test_summarizer_cancellation_tracks_every_parallel_child() -> None:
     assert contains_ignoring_layout(text, "for (_, child) in children")
     assert contains_ignoring_layout(summary_text, "let worker_children = children.clone();")
     assert "let local_child" not in summary_text
+
+
+_IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_PUB_FIELD_RE = re.compile(
+    r"(?P<attrs>(?:#\s*\[[\s\S]*?\]\s*)*)pub(?:\s*\([^)]*\))?\s+"
+    r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*:"
+)
+
+
+def _ailog_deserialize_sources() -> list[Path]:
+    return sorted(AILOG_MODULE.glob("*.rs")) + [AILOG_COMMANDS]
+
+
+def _skip_ws_and_comments(text: str, index: int) -> int:
+    length = len(text)
+    while index < length:
+        if text[index] in " \t\r\n":
+            index += 1
+            continue
+        if text.startswith("//", index):
+            newline = text.find("\n", index)
+            index = length if newline == -1 else newline + 1
+            continue
+        if text.startswith("/*", index):
+            end = text.find("*/", index + 2)
+            index = length if end == -1 else end + 2
+            continue
+        break
+    return index
+
+
+def _parse_bracket_attr(text: str, start: int) -> tuple[str, int] | None:
+    """Parse `# [ ... ]` starting at `#`. Returns (inner, next_index)."""
+    index = _skip_ws_and_comments(text, start)
+    if not text.startswith("#", index):
+        return None
+    index = _skip_ws_and_comments(text, index + 1)
+    if index >= len(text) or text[index] != "[":
+        return None
+    depth = 0
+    for cursor in range(index, len(text)):
+        char = text[cursor]
+        if char == "[":
+            depth += 1
+        elif char == "]":
+            depth -= 1
+            if depth == 0:
+                return text[index + 1 : cursor], cursor + 1
+    return None
+
+
+def _parse_paren_list(text: str, open_paren: int) -> tuple[str, int] | None:
+    if open_paren >= len(text) or text[open_paren] != "(":
+        return None
+    depth = 0
+    for cursor in range(open_paren, len(text)):
+        char = text[cursor]
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return text[open_paren + 1 : cursor], cursor + 1
+    return None
+
+
+def _struct_body(text: str, after_name: int) -> str | None:
+    index = _skip_ws_and_comments(text, after_name)
+    if index < len(text) and text[index] == "<":
+        depth = 0
+        for cursor in range(index, len(text)):
+            if text[cursor] == "<":
+                depth += 1
+            elif text[cursor] == ">":
+                depth -= 1
+                if depth == 0:
+                    index = _skip_ws_and_comments(text, cursor + 1)
+                    break
+        else:
+            return None
+    if text.startswith("where", index):
+        brace = text.find("{", index)
+        if brace == -1:
+            return None
+        index = brace
+    if index >= len(text) or text[index] != "{":
+        return None
+    depth = 0
+    for cursor in range(index, len(text)):
+        char = text[cursor]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[index + 1 : cursor]
+    return None
+
+
+def _iter_deserialize_structs(text: str) -> list[tuple[str, str, str]]:
+    """Return `(name, attr_blob, body)` for each Deserialize struct."""
+    found: list[tuple[str, str, str]] = []
+    index = 0
+    while True:
+        start = text.find("#[", index)
+        if start == -1:
+            return found
+        parsed = _parse_bracket_attr(text, start)
+        if parsed is None:
+            index = start + 2
+            continue
+        inner, after_attr = parsed
+        squeezed = _squeeze(inner)
+        if not squeezed.startswith("derive(") or "Deserialize" not in squeezed:
+            index = after_attr
+            continue
+
+        attrs = [inner]
+        cursor = after_attr
+        while True:
+            cursor = _skip_ws_and_comments(text, cursor)
+            nxt = _parse_bracket_attr(text, cursor)
+            if nxt is None:
+                break
+            more, cursor = nxt
+            attrs.append(more)
+
+        cursor = _skip_ws_and_comments(text, cursor)
+        if text.startswith("pub", cursor):
+            after_vis = _skip_ws_and_comments(text, cursor + 3)
+            if after_vis < len(text) and text[after_vis] == "(":
+                listed = _parse_paren_list(text, after_vis)
+                if listed is None:
+                    index = after_attr
+                    continue
+                cursor = _skip_ws_and_comments(text, listed[1])
+            else:
+                cursor = after_vis
+        if not text.startswith("struct", cursor):
+            index = after_attr
+            continue
+        cursor = _skip_ws_and_comments(text, cursor + len("struct"))
+        name_match = _IDENT_RE.match(text, cursor)
+        if name_match is None:
+            index = after_attr
+            continue
+        name = name_match.group(0)
+        body = _struct_body(text, name_match.end())
+        if body is None:
+            index = after_attr
+            continue
+        found.append((name, "\n".join(attrs), body))
+        index = after_attr
+    return found
+
+
+def _field_has_serde_rename_or_alias(field_attrs: str) -> bool:
+    squeezed = _squeeze(field_attrs)
+    return "rename=" in squeezed or "alias=" in squeezed
+
+
+def _underscore_pub_fields_missing_rename(body: str) -> list[str]:
+    missing: list[str] = []
+    for match in _PUB_FIELD_RE.finditer(body):
+        name = match.group("name")
+        if "_" not in name:
+            continue
+        if _field_has_serde_rename_or_alias(match.group("attrs")):
+            continue
+        missing.append(name)
+    return missing
+
+
+def test_deserialized_structs_use_camel_case() -> None:
+    """Frontend IPC payloads are camelCase; snake_case-only structs drop them.
+
+    A Deserialize struct with a multi-word `pub` field and no `rename_all =
+    "camelCase"` (and no per-field rename/alias) will silently default that
+    field. rustfmt wrapping of attributes must not hide or invent offenders.
+    """
+    offenders: list[str] = []
+    for path in _ailog_deserialize_sources():
+        for name, attr_blob, body in _iter_deserialize_structs(read(path)):
+            missing = _underscore_pub_fields_missing_rename(body)
+            if not missing:
+                continue
+            if contains_ignoring_layout(attr_blob, 'rename_all = "camelCase"'):
+                continue
+            offenders.append(f"{path.name}::{name} ({', '.join(missing)})")
+    assert not offenders, (
+        "Deserialize structs with multi-word pub fields must use "
+        'rename_all = "camelCase" or a per-field serde rename/alias. '
+        "Offenders: " + "; ".join(offenders)
+    )

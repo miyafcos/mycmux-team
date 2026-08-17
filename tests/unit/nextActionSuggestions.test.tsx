@@ -4,6 +4,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { dashboardStrings } from "../../src/components/dashboard/dashboardStrings";
 import { NextActionSuggestions, machineNextActions } from "../../src/components/dashboard/NextActionSuggestions";
 import { useBackgroundAiSuggestionStore } from "../../src/lib/backgroundAiScheduler";
 
@@ -46,6 +47,43 @@ describe("machineNextActions", () => {
         sessionId="s-question"
         displayState="needsHuman"
         questionActive
+        sending={false}
+        onConfirm={vi.fn(async () => {})}
+      />);
+    });
+    expect(container.querySelector("[data-next-action-suggestions]")).toBeNull();
+  });
+
+  it("names the failure instead of hiding the section when the AI leg failed", async () => {
+    useBackgroundAiSuggestionStore.getState().set("s-failed", {
+      status: "failed",
+      requestKey: "key",
+      oneLine: "",
+      completionAssessment: "",
+      nextActions: [],
+      failureCode: "provider_model_mismatch",
+    });
+    await act(async () => {
+      root.render(<NextActionSuggestions
+        sessionId="s-failed"
+        displayState="running"
+        questionActive={false}
+        sending={false}
+        onConfirm={vi.fn(async () => {})}
+      />);
+    });
+    expect(container.querySelector("[data-next-action-suggestions]")).not.toBeNull();
+    const chip = container.querySelector("[data-next-action-ai-failed]");
+    expect(chip?.textContent).toContain(dashboardStrings.aiSuggestionFailed);
+    expect(chip?.textContent).toContain(dashboardStrings.aiSuggestionFailureReason("provider_model_mismatch"));
+  });
+
+  it("still hides the section when there is nothing to show at all", async () => {
+    await act(async () => {
+      root.render(<NextActionSuggestions
+        sessionId="s-running"
+        displayState="running"
+        questionActive={false}
         sending={false}
         onConfirm={vi.fn(async () => {})}
       />);

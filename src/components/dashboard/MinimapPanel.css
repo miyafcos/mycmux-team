@@ -11,8 +11,8 @@
 .cmux-minimap-workspace-name { min-width: 0; flex: 1 1 auto; overflow: hidden; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
 .cmux-minimap-workspace-summary { display: flex; margin-left: auto; flex: 0 0 auto; gap: 6px; color: var(--cmux-text-tertiary); font-size: var(--cmux-font-size-xs); }
 .cmux-minimap-workspace-question { color: var(--status-waiting); font-weight: 700; }
-.cmux-minimap-map { display: flex; box-sizing: border-box; height: 58px; gap: 4px; padding: 8px; opacity: .72; transition: height 180ms var(--cmux-ease), opacity 180ms var(--cmux-ease); }
-.cmux-minimap-map.is-expanded { height: 248px; opacity: 1; }
+.cmux-minimap-map { display: flex; box-sizing: border-box; height: var(--minimap-map-height, 58px); gap: 4px; padding: 8px; opacity: .72; transition: height 180ms var(--cmux-ease), opacity 180ms var(--cmux-ease); }
+.cmux-minimap-map.is-expanded { height: var(--minimap-map-height, 248px); opacity: 1; }
 .cmux-minimap-footer { display: flex; flex: 0 0 auto; gap: 8px; margin: 0 12px 10px; }
 .cmux-minimap-new-workspace-zone { min-width: 0; flex: 1 1 auto; border: 1px dashed var(--cmux-border); border-radius: var(--cmux-radius-sm); color: var(--cmux-text-tertiary); background: var(--cmux-surface-raised); transition: border-color 180ms var(--cmux-ease), background 180ms var(--cmux-ease), color 180ms var(--cmux-ease); }
 .cmux-minimap-new-workspace-zone.is-minimap-drop-target { border-color: var(--cmux-accent); color: var(--cmux-accent); background: var(--cmux-selected); }

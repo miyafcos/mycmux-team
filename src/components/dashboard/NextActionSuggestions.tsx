@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { useBackgroundAiSuggestion } from "../../lib/backgroundAiScheduler";
 import type { DashboardDisplayState } from "./dashboardModel";
+import { dashboardStrings } from "./dashboardStrings";
 import { stateLabels } from "./stateLabels";
 
 export type NextActionSource = "machine" | "ai";
@@ -69,7 +70,8 @@ export function NextActionSuggestions({
 
   useEffect(() => setPending(null), [sessionId, questionActive]);
 
-  if (questionActive || (!machineActions.length && !aiActions.length && aiSuggestion?.status !== "loading")) {
+  const aiFailed = aiSuggestion?.status === "failed";
+  if (questionActive || (!machineActions.length && !aiActions.length && aiSuggestion?.status !== "loading" && !aiFailed)) {
     return null;
   }
 
@@ -93,6 +95,28 @@ export function NextActionSuggestions({
         <span>{action.label}</span>
       </button>)}
     </div>
+    {aiFailed ? <div
+      data-next-action-ai-failed="true"
+      style={{
+        display: "flex",
+        alignItems: "center",
+        flexWrap: "wrap",
+        gap: 6,
+        color: "var(--cmux-usage-warn)",
+        fontSize: "var(--cmux-font-size-xs)",
+      }}
+    >
+      <span
+        className="cmux-dashboard-next-actions-machine-tag"
+        style={{
+          background: "color-mix(in srgb, var(--cmux-usage-warn) 22%, var(--cmux-surface))",
+          color: "var(--cmux-usage-warn)",
+        }}
+      >
+        {dashboardStrings.aiSuggestionFailed}
+      </span>
+      <span>{dashboardStrings.aiSuggestionFailureReason(aiSuggestion.failureCode ?? "internal")}</span>
+    </div> : null}
     {pending ? <div className="cmux-dashboard-next-action-confirm" data-next-action-confirm="true">
       <div>送る全文</div>
       <pre>{pending.prompt}</pre>

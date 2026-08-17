@@ -11,10 +11,11 @@ describe("AI log polling plan", () => {
     expect(ailogPollPlan({ open: true, indexRunning: false, summarizeRunning: true, eventsHealthy: false })).toEqual({ pollIndex: false, pollSummarize: true, nextDelayMs: 1_500 });
   });
 
-  it("keeps timing in the hook and confines job polling to the range bar", () => {
+  it("keeps timing in the hook and confines job polling to auto-index", () => {
     const hook = readFileSync(join(process.cwd(), "src/hooks/useAilogPolling.ts"), "utf8");
     const panel = readFileSync(join(process.cwd(), "src/components/ailog/AiLogPanel.tsx"), "utf8");
     const rangeBar = readFileSync(join(process.cwd(), "src/components/ailog/RangeBar.tsx"), "utf8");
+    const autoIndex = readFileSync(join(process.cwd(), "src/hooks/useAilogAutoIndex.ts"), "utf8");
     expect(hook).toContain("indexInFlight.current");
     expect(hook).toContain("summarizeInFlight.current");
     expect(hook).toContain("window.setTimeout");
@@ -22,6 +23,8 @@ describe("AI log polling plan", () => {
     expect(hook).toContain("refreshReports");
     expect(panel).not.toContain("setInterval");
     expect(panel).not.toContain("useAilogPolling");
-    expect(rangeBar).toContain("useAilogPolling");
+    expect(rangeBar).not.toContain("useAilogPolling");
+    expect(rangeBar).not.toContain("useAilogJobStore");
+    expect(autoIndex).toContain("useAilogPolling");
   });
 });

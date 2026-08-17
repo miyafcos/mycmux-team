@@ -8,7 +8,7 @@
  */
 
 import { formatUsd, type PriceCoverage, type SeriesReport } from "../../lib/ailog";
-import { formatMetric, metricValue, usageMetricInfo, type UsageMetric } from "./usageModel";
+import { costCoverageLabel, formatMetric, metricValue, usageMetricInfo, type UsageMetric } from "./usageModel";
 import { Chip, cardStyle, noteStyle } from "./ui";
 
 export interface UsageTotalsData {
@@ -109,16 +109,22 @@ export function UsageTotals({
           </div>
         </Card>
 
-        <Card label={data.priceCoverage.coveredTokenRatio < 1 ? `コスト相当 (単価既知の ${Math.round(data.priceCoverage.coveredTokenRatio * 100)}% 分)` : "コスト相当 (副次)"}>
-          <div style={{ fontSize: "var(--cmux-font-size-md)", fontWeight: 700, marginTop: 3, color: "var(--cmux-text-secondary)" }}>
-            {formatUsd(data.costUsd)}
-          </div>
-          <div style={{ ...noteStyle, marginTop: 3 }}>
-            請求額ではありません。この指標の順位とは一致しません。
-          </div>
-        </Card>
+        {metric === "costUsd" ? null : (
+          <Card label={data.priceCoverage.coveredTokenRatio < 1 ? `コスト相当 (単価既知の ${Math.round(data.priceCoverage.coveredTokenRatio * 100)}% 分)` : "コスト相当 (副次)"}>
+            <div style={{ fontSize: "var(--cmux-font-size-md)", fontWeight: 700, marginTop: 3, color: "var(--cmux-text-secondary)" }}>
+              {formatUsd(data.costUsd)}
+            </div>
+            <div style={{ ...noteStyle, marginTop: 3 }}>
+              請求額ではありません。この指標の順位とは一致しません。
+            </div>
+          </Card>
+        )}
 
       </div>
+
+      {metric === "costUsd" ? (
+        <div style={noteStyle}>{`${costCoverageLabel(data.priceCoverage)}。請求額ではありません。`}</div>
+      ) : null}
 
       {metric === "totalTokens" && data.cacheShare > 0 ? (
         <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>

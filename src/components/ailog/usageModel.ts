@@ -11,26 +11,35 @@
 
 import {
   DAY_OFFSET_MIN,
+  formatBucketLabel,
   formatCount,
-  formatDayBucket,
   formatTokens,
+  formatUsd,
+  kindLabel,
+  type PriceCoverage,
   type RhythmSlot,
   type SeriesBucket,
   type SeriesGroupBy,
   type SeriesGroup,
+  type UsageBucket,
 } from "../../lib/ailog";
 import { MODEL_COLORS, NEUTRAL_COLOR } from "./palette";
 
 export const DAY_MS = 86_400_000;
+const WEEK_MS = 7 * DAY_MS;
+const DAY_OFFSET_MS = DAY_OFFSET_MIN * 60_000;
 
-export type UsageMetric = "ioTokens" | "totalTokens" | "turns" | "sessions";
+export type { UsageBucket };
+export type UsageMetric = "ioTokens" | "totalTokens" | "turns" | "sessions" | "costUsd";
+/** RhythmSlot has no cost; the rhythm view never follows the cost metric. */
+export type RhythmMetric = "ioTokens" | "totalTokens" | "turns";
 
 export interface UsageMetricInfo {
   id: UsageMetric;
   label: string;
   /** Shown under the headline number, stating what was counted. */
   hint: string;
-  unit: "tokens" | "count";
+  unit: "tokens" | "count" | "usd";
 }
 
 export const USAGE_METRICS: UsageMetricInfo[] = [
@@ -52,6 +61,12 @@ export const USAGE_METRICS: UsageMetricInfo[] = [
     label: "セッション数",
     hint: "会話の本数。1 本が複数モデルに跨るため積み上げできません",
     unit: "count",
+  },
+  {
+    id: "costUsd",
+    label: "コスト相当",
+    hint: "単価既知分のみの推計",
+    unit: "usd",
   },
 ];
 
@@ -77,6 +92,8 @@ export function metricValue(group: SeriesGroup, metric: UsageMetric): number {
       return group.turns;
     case "sessions":
       return group.sessions;
+    case "costUsd":
+      return group.costUsd;
   }
 }
 
@@ -93,9 +110,54 @@ export function isStackable(metric: UsageMetric): boolean {
 }
 
 export function formatMetric(value: number, metric: UsageMetric): string {
-  return usageMetricInfo(metric).unit === "tokens"
-    ? formatTokens(value)
-    : formatCount(value);
+  const unit = usageMetricInfo(metric).unit;
+  if (unit === "usd") return formatUsd(value);
+  return unit === "tokens" ? formatTokens(value) : formatCount(value);
+}
+
+export function groupByLabel(groupBy: SeriesGroupBy): string {
+  switch (groupBy) {
+    case "provider":
+      return "会社";
+    case "model":
+      return "系統";
+    case "model_raw":
+      return "モデル";
+    case "project":
+      return "案件";
+    case "kind":
+      return "CLI";
+    case "effort":
+      return "effort";
+  }
+}
+
+export function bucketNoun(bucket: UsageBucket): string {
+  return bucket === "week" ? "週" : bucket === "month" ? "月" : "日";
+}
+
+/** Same wording as the model table cost column. */
+export function costCoverageLabel(coverage: PriceCoverage): string {
+  return coverage.coveredTokenRatio < 1
+    ? `コスト相当 (単価既知の ${Math.round(coverage.coveredTokenRatio * 100)}% 分)`
+    : "コスト相当";
+}
+
+/**
+ * Advance one bucket in the same JST calendar the backend uses
+ * (`query.rs` `bucket_start_at`: +9h, ISO Monday weeks, month = 1st).
+ */
+export function nextBucketStart(ms: number, bucket: UsageBucket): number {
+  if (bucket === "day") return ms + DAY_MS;
+  if (bucket === "week") return ms + WEEK_MS;
+  const local = new Date(ms + DAY_OFFSET_MS);
+  return Date.UTC(local.getUTCFullYear(), local.getUTCMonth() + 1, 1) - DAY_OFFSET_MS;
+}
+
+export function rhythmMetricOf(metric: UsageMetric): RhythmMetric {
+  return metric === "ioTokens" || metric === "totalTokens" || metric === "turns"
+    ? metric
+    : "ioTokens";
 }
 
 // ---------------------------------------------------------------------------
@@ -108,21 +170,21 @@ export interface UsageSlice {
   color: string;
 }
 
-export interface UsageDay {
-  /** Start of the local day; also the map key coming from the backend. */
-  day: number;
+export interface UsageBucketRow {
+  /** Start of the bucket; also the map key coming from the backend. */
+  bucket: number;
   label: string;
   total: number;
-  /** Day-level session count, which is de-duplicated across models. */
+  /** Bucket-level session count, which is de-duplicated across models. */
   sessions: number;
   costUsd: number;
   slices: UsageSlice[];
-  /** False for days filled in to keep the axis continuous. */
+  /** False for buckets filled in to keep the axis continuous. */
   present: boolean;
 }
 
 export interface UsageModel {
-  days: UsageDay[];
+  days: UsageBucketRow[];
   /** Groups in descending order of their period total, after folding. */
   legend: UsageSlice[];
   max: number;
@@ -148,6 +210,8 @@ export function groupLabel(group: string, groupBy?: SeriesGroupBy): string {
     };
     return providerLabels[group] ?? group;
   }
+  if (groupBy === "kind") return kindLabel(group);
+  if (groupBy === "effort") return group === "(none)" ? "未指定" : group;
   return group;
 }
 
@@ -167,6 +231,7 @@ export function buildUsageModel(
   buckets: SeriesBucket[],
   metric: UsageMetric,
   topN = MODEL_COLORS.length,
+  bucketKind: UsageBucket = "day",
 ): UsageModel {
   const totals = new Map<string, number>();
   for (const bucket of buckets) {
@@ -183,14 +248,15 @@ export function buildUsageModel(
   const colors = new Map<string, string>();
   kept.forEach((group, index) => colors.set(group, colorFor(group, index)));
 
-  const byDay = new Map<number, SeriesBucket>();
-  for (const bucket of buckets) byDay.set(bucket.bucket, bucket);
-  const present = [...byDay.keys()].sort((a, b) => a - b);
+  const byBucket = new Map<number, SeriesBucket>();
+  for (const bucket of buckets) byBucket.set(bucket.bucket, bucket);
+  const present = [...byBucket.keys()].sort((a, b) => a - b);
 
-  const days: UsageDay[] = [];
+  const days: UsageBucketRow[] = [];
   if (present.length > 0) {
-    for (let day = present[0]; day <= present[present.length - 1]; day += DAY_MS) {
-      const bucket = byDay.get(day);
+    const last = present[present.length - 1];
+    for (let start = present[0]; start <= last; ) {
+      const bucket = byBucket.get(start);
       const slices: UsageSlice[] = [];
       let otherValue = 0;
       for (const group of bucket?.groups ?? []) {
@@ -209,14 +275,17 @@ export function buildUsageModel(
         (a, b) => kept.indexOf(a.group) - kept.indexOf(b.group) || a.group.localeCompare(b.group),
       );
       days.push({
-        day,
-        label: formatDayBucket(day),
+        bucket: start,
+        label: formatBucketLabel(start, bucketKind),
         total: slices.reduce((sum, slice) => sum + slice.value, 0),
         sessions: bucket?.sessions ?? 0,
         costUsd: bucket?.costUsd ?? 0,
         slices,
         present: bucket !== undefined,
       });
+      const next = nextBucketStart(start, bucketKind);
+      if (next <= start) break;
+      start = next;
     }
   }
 
@@ -258,7 +327,7 @@ export interface StackRect {
  * that day" rather than "how much was that day". A day with no activity stays
  * empty in both modes instead of being drawn as an even split of nothing.
  */
-export function layoutStack(day: UsageDay, max: number, mode: "absolute" | "share"): StackRect[] {
+export function layoutStack(day: UsageBucketRow, max: number, mode: "absolute" | "share"): StackRect[] {
   const denominator = mode === "share" ? day.total : max;
   if (denominator <= 0) return [];
   const rects: StackRect[] = [];
@@ -294,7 +363,7 @@ export interface SlotBar {
 
 export function slotBars(
   slots: RhythmSlot[],
-  metric: UsageMetric,
+  metric: RhythmMetric,
   kind: "hour" | "weekday",
 ): SlotBar[] {
   const valueOf = (slot: RhythmSlot) => {
@@ -303,7 +372,7 @@ export function slotBars(
         return slot.io;
       case "totalTokens":
         return slot.total;
-      default:
+      case "turns":
         return slot.turns;
     }
   };

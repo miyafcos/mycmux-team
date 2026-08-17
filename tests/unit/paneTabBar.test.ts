@@ -317,6 +317,7 @@ describe("resolvePaneTabBarActions", () => {
     "split-right",
     "split-down",
     "zoom",
+    "dashboard",
     "close",
   ];
   const modes: PaneTabBarMode[] = [
@@ -324,8 +325,8 @@ describe("resolvePaneTabBarActions", () => {
   ];
   const visibleByMode: Record<PaneTabBarMode, PaneTabBarActionId[]> = {
     full: allActions,
-    slim: ["publish", "split-right", "zoom", "close"],
-    compact: ["publish", "split-right", "zoom", "close"],
+    slim: ["publish", "split-right", "zoom", "dashboard", "close"],
+    compact: ["publish", "split-right", "zoom", "dashboard", "close"],
     compact3: ["publish", "zoom", "close"],
     compact2: ["publish", "close"],
     compact1: ["publish"],
@@ -359,7 +360,7 @@ describe("resolvePaneTabBarActions", () => {
     },
   );
 
-  it("folds priority actions one at a time in the requested order", () => {
+  it("folds priority actions in the requested order", () => {
     const visibleSets = modes.map(
       (mode) => resolvePaneTabBarActions(mode, { showPublish: true }).visible,
     );
@@ -370,7 +371,7 @@ describe("resolvePaneTabBarActions", () => {
     expect(removedPerTier).toEqual([
       ["new-tab", "split-down"],
       [],
-      ["split-right"],
+      ["split-right", "dashboard"],
       ["zoom"],
       ["close"],
       ["publish"],

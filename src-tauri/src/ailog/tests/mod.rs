@@ -6,6 +6,7 @@ mod index_tests;
 mod learning_tests;
 mod parse_tests;
 mod perf_tests;
+mod pivot_tests;
 mod price_tests;
 mod query_compat_tests;
 mod rule_check_tests;

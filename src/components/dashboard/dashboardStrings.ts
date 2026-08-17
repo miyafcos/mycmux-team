@@ -107,6 +107,8 @@ export const dashboardStrings = {
   numberKeyHint: "1 / 2 / 3 キーでも選択",
   // チャット (ChatTranscript)
   chatEmpty: "まだ会話の記録がありません",
+  // 読み込み失敗と「本当に空」を区別する (2026-08-17 FB)。理由の詳細は telemetryUnlinked / telemetryUnavailable を併記
+  chatUnavailable: "会話の記録を読み込めていません",
   chatAriaLabel: "会話ログ (整形表示)",
   chatRoleUser: "私",
   chatRoleAgent: "エージェント",
@@ -159,6 +161,18 @@ export const dashboardStrings = {
     if (kind === "answer-forward") return "質問への回答";
     if (kind === "continue") return "次の一手";
     return "通常の指示";
+  },
+  // AI案 (NextActionSuggestions) の失敗表示 — 無言で消さない (2026-08-17 FB)
+  aiSuggestionFailed: "AI案を作れませんでした",
+  aiSuggestionFailureReason: (code: string): string => {
+    if (code === "ai_disabled") return "AI機能がオフです";
+    if (code === "cli_not_found") return "AI CLI が見つかりません";
+    if (code === "cli_failed") return "AI CLI の実行に失敗しました";
+    if (code === "invalid_output") return "AI の応答を解釈できませんでした";
+    if (code === "timeout") return "応答が時間内に返りませんでした";
+    if (code === "provider_model_mismatch") return "モデルとプロバイダの組み合わせが合っていません (設定 > AI とおまかせ)";
+    if (code === "duplicate_request") return "同じ依頼が処理中です";
+    return "原因を特定できませんでした";
   },
   // 「機械信号」「機械」は実装都合の語なので画面には出さない (2026-08-15 FB)。
   reportInboxTitle: "報告インボックス",

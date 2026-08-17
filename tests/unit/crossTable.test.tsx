@@ -1,0 +1,143 @@
+import { describe, expect, it } from "vitest";
+import { renderToStaticMarkup } from "react-dom/server";
+
+import { CrossTable } from "../../src/components/ailog/CrossTable";
+import {
+  OTHER_KEY,
+  foldNote,
+  foldPivot,
+  nextPivotAxes,
+} from "../../src/components/ailog/crossTableModel";
+import type { PivotReport, SeriesGroup } from "../../src/lib/ailog";
+
+function group(name: string, over: Partial<SeriesGroup> = {}): SeriesGroup {
+  return {
+    group: name,
+    turns: 1,
+    sessions: 1,
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    costUsd: 0,
+    ...over,
+  };
+}
+
+function report(rowKeys: string[], colKeys: string[], cell: (row: string, col: string) => SeriesGroup): PivotReport {
+  return {
+    range: { from: 0, to: 1, label: "test" },
+    rowBy: "project",
+    colBy: "model",
+    cols: colKeys,
+    rows: rowKeys.map((key) => ({
+      key,
+      total: group(key),
+      cells: colKeys.map((col) => cell(key, col)),
+    })),
+    colTotals: colKeys.map((col) => group(col)),
+    grandTotal: group("total"),
+    priceSource: "test",
+    priceCoverage: {
+      priced: { models: [], tokens: 0 },
+      local: { models: [], tokens: 0 },
+      internal: { models: [], tokens: 0 },
+      flat: { models: [], tokens: 0 },
+      unknown: { models: [], tokens: 0 },
+      coveredTokenRatio: 1,
+    },
+    costNote: "",
+  };
+}
+
+describe("nextPivotAxes", () => {
+  it("switches the other axis when the same one is chosen", () => {
+    expect(nextPivotAxes({ rowBy: "project", colBy: "model" }, { rowBy: "model" })).toEqual({
+      rowBy: "model",
+      colBy: "project",
+    });
+    expect(nextPivotAxes({ rowBy: "project", colBy: "model" }, { colBy: "project" })).toEqual({
+      rowBy: "model",
+      colBy: "project",
+    });
+  });
+
+  it("keeps a valid pair unchanged", () => {
+    expect(nextPivotAxes({ rowBy: "project", colBy: "model" }, { colBy: "kind" })).toEqual({
+      rowBy: "project",
+      colBy: "kind",
+    });
+  });
+});
+
+describe("foldPivot", () => {
+  it("keeps the top N rows and columns and folds the rest into その他", () => {
+    const rowKeys = ["r1", "r2", "r3", "r4"];
+    const colKeys = ["c1", "c2", "c3"];
+    const scores: Record<string, number> = { r1: 40, r2: 30, r3: 20, r4: 10, c1: 50, c2: 30, c3: 10 };
+    const source = report(rowKeys, colKeys, (row, col) =>
+      group(col, { turns: row === "r1" && col === "c1" ? 40 : 1, costUsd: scores[row] + scores[col] }),
+    );
+    source.rows.forEach((row) => {
+      row.total = group(row.key, { costUsd: scores[row.key] });
+    });
+    source.colTotals = colKeys.map((col) => group(col, { costUsd: scores[col] }));
+
+    const folded = foldPivot(source, "costUsd", 2, 2);
+    expect(folded.rows.map((row) => row.key)).toEqual(["r1", "r2", OTHER_KEY]);
+    expect(folded.cols).toEqual(["c1", "c2", OTHER_KEY]);
+    expect(folded.foldedRows).toBe(2);
+    expect(folded.foldedCols).toBe(1);
+    expect(foldNote(folded)).toBe("行 2 件・列 1 件を「その他」にまとめました");
+  });
+});
+
+describe("CrossTable", () => {
+  const source = report(
+    ["alpha", "beta"],
+    ["opus", "haiku"],
+    (row, col) => group(col, { sessions: 1, costUsd: row === "alpha" && col === "opus" ? 2 : 1 }),
+  );
+
+  it("shows an em dash for session totals and explains why", () => {
+    const html = renderToStaticMarkup(
+      <CrossTable
+        report={source}
+        metric="sessions"
+        rowBy="project"
+        colBy="model"
+        loading={false}
+        error={null}
+        selection={null}
+        onRetry={() => {}}
+        onRowBy={() => {}}
+        onColBy={() => {}}
+        onSelect={() => {}}
+      />,
+    );
+    expect(html).toContain("—");
+    expect(html).toContain("1セッションが複数モデルに跨るため合計できません");
+    expect(html).not.toMatch(/>合計<\/th>[\s\S]*?>3</);
+  });
+
+  it("paints cells with a theme token mix instead of a raw hex", () => {
+    const html = renderToStaticMarkup(
+      <CrossTable
+        report={source}
+        metric="costUsd"
+        rowBy="project"
+        colBy="model"
+        loading={false}
+        error={null}
+        selection={null}
+        onRetry={() => {}}
+        onRowBy={() => {}}
+        onColBy={() => {}}
+        onSelect={() => {}}
+      />,
+    );
+    expect(html).toContain("color-mix(in srgb, var(--cmux-accent)");
+    expect(html).not.toMatch(/#[0-9a-fA-F]{3,8}/);
+    expect(html).toContain("$2.00");
+  });
+});

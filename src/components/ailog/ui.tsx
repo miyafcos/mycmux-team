@@ -232,17 +232,17 @@ export function EmptyState({
 }) {
   const copy: Record<EmptyStateKind, { title: string; body: string; action: string }> = {
     "not-indexed": {
-      title: "まだインデックスを作っていません",
+      title: "インデックス未作成",
       body: "Claude と Codex の記録を読み込むと、ここに集計が出ます。初回は数十秒かかります。",
       action: "インデックスを作成",
     },
     "no-data": {
-      title: "この期間に記録がありません",
+      title: "この期間の記録なし",
       body: "期間を広げるか、再インデックスで最新の記録を取り込んでください。",
       action: "再インデックス",
     },
     error: {
-      title: "読み込みに失敗しました",
+      title: "読み込み失敗",
       body: "取得できた範囲でも表を作らず、原因をそのまま出しています。",
       action: "再試行",
     },

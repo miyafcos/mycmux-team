@@ -150,6 +150,7 @@ fn start_of_year_ms(now_ms: i64) -> i64 {
 /// Post-range filters. Empty vectors mean "no restriction".
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
+#[serde(rename_all = "camelCase")]
 pub struct Filters {
     pub kinds: Vec<String>,
     pub models: Vec<String>,

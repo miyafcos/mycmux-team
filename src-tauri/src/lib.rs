@@ -381,6 +381,7 @@ pub fn run() {
             commands::ailog::ailog_overview,
             commands::ailog::ailog_series,
             commands::ailog::ailog_breakdown,
+            commands::ailog::ailog_pivot,
             commands::ailog::ailog_sessions,
             commands::ailog::ailog_session_detail,
             commands::ailog::ailog_session_transcript,

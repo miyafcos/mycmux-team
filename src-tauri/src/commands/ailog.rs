@@ -672,6 +672,18 @@ pub async fn ailog_breakdown(
 }
 
 #[tauri::command(async)]
+pub async fn ailog_pivot(
+    range: Option<Range>,
+    filters: Option<Filters>,
+    options: Option<query::PivotOptions>,
+) -> Result<query::PivotReport, String> {
+    let range = range.unwrap_or_default();
+    let filters = filters.unwrap_or_default();
+    let options = options.unwrap_or_default();
+    blocking_report(move |conn| query::pivot(conn, &range, &filters, &options, now_ms())).await
+}
+
+#[tauri::command(async)]
 pub async fn ailog_sessions(
     range: Option<Range>,
     filters: Option<Filters>,

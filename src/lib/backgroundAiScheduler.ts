@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
 
+import { classifyModelForProvider } from "./aiModels";
 import type { SemanticEventEnvelope } from "./livebrief";
 import { useAiSettingsStore } from "../stores/aiSettingsStore";
 import { useLiveBriefStore } from "../stores/liveBriefStore";
@@ -30,6 +31,7 @@ export interface BackgroundAiSuggestion {
   oneLine: string;
   completionAssessment: string;
   nextActions: BackgroundAiAction[];
+  failureCode?: string;
 }
 
 interface BackgroundAiState {
@@ -88,6 +90,60 @@ function isEnabled(): boolean {
 function modelHash(): string {
   const ai = useAiSettingsStore.getState();
   return `${ai.aiProvider}:${ai.aiModel.trim()}`;
+}
+
+function isProviderModelMismatch(): boolean {
+  const ai = useAiSettingsStore.getState();
+  return classifyModelForProvider(ai.aiProvider, ai.aiModel) === "likely-mismatch";
+}
+
+function emptySuggestion(status: BackgroundAiSuggestion["status"], requestKey: string, failureCode?: string): BackgroundAiSuggestion {
+  return {
+    status,
+    requestKey,
+    oneLine: "",
+    completionAssessment: "",
+    nextActions: [],
+    ...(failureCode ? { failureCode } : {}),
+  };
+}
+
+function tryParseJson(value: string): unknown {
+  const trimmed = value.trim();
+  if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return null;
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return null;
+  }
+}
+
+function codeFromUnknown(value: unknown): string | null {
+  if (!value || typeof value !== "object") return null;
+  const code = (value as Record<string, unknown>).code;
+  if (typeof code !== "string") return null;
+  const trimmed = code.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+export function parseNextActionFailureCode(error: unknown): string {
+  const candidates: unknown[] = [error];
+  if (typeof error === "string") {
+    candidates.push(tryParseJson(error));
+  }
+  if (error instanceof Error) {
+    candidates.push(tryParseJson(error.message));
+  }
+  if (error && typeof error === "object") {
+    const record = error as Record<string, unknown>;
+    candidates.push(record.error, record.payload, record.data);
+    if (typeof record.message === "string") candidates.push(tryParseJson(record.message));
+  }
+  for (const candidate of candidates) {
+    const code = codeFromUnknown(candidate);
+    if (code) return code;
+  }
+  return "internal";
 }
 
 function eventText(event: SemanticEventEnvelope): string | null {
@@ -152,19 +208,22 @@ function scheduleFromStatusCard(card: MachineReportCard): void {
   const current = pendingByTarget.get(sessionId);
   if (current?.requestKey === requestKey) return;
   cancelPending(sessionId);
+  if (isProviderModelMismatch()) {
+    useBackgroundAiSuggestionStore.getState().set(sessionId, emptySuggestion("failed", requestKey, "provider_model_mismatch"));
+    return;
+  }
   const requestId = `next-action-${Date.now()}-${requestSequence++}`;
   const pending: PendingRequest = { requestId, requestKey, timer: null };
   pendingByTarget.set(sessionId, pending);
-  useBackgroundAiSuggestionStore.getState().set(sessionId, {
-    status: "loading",
-    requestKey,
-    oneLine: "",
-    completionAssessment: "",
-    nextActions: [],
-  });
+  useBackgroundAiSuggestionStore.getState().set(sessionId, emptySuggestion("loading", requestKey));
   pending.timer = setTimeout(() => {
     pending.timer = null;
     if (pendingByTarget.get(sessionId)?.requestKey !== requestKey || !isEnabled()) return;
+    if (isProviderModelMismatch()) {
+      pendingByTarget.delete(sessionId);
+      useBackgroundAiSuggestionStore.getState().set(sessionId, emptySuggestion("failed", requestKey, "provider_model_mismatch"));
+      return;
+    }
     const excerpt = conversationExcerpt(sessionId);
     void invoke<unknown>("run_next_action_judge", {
       requestId,
@@ -177,18 +236,15 @@ function scheduleFromStatusCard(card: MachineReportCard): void {
       if (pendingByTarget.get(sessionId)?.requestKey !== requestKey || !isEnabled()) return;
       pendingByTarget.delete(sessionId);
       const result = normalizeResult(value);
-      if (!result) throw new Error("invalid next-action response");
+      if (!result) {
+        useBackgroundAiSuggestionStore.getState().set(sessionId, emptySuggestion("failed", requestKey, "invalid_output"));
+        return;
+      }
       useBackgroundAiSuggestionStore.getState().set(sessionId, { status: "ready", requestKey, ...result });
-    }).catch(() => {
+    }).catch((error) => {
       if (pendingByTarget.get(sessionId)?.requestKey !== requestKey) return;
       pendingByTarget.delete(sessionId);
-      useBackgroundAiSuggestionStore.getState().set(sessionId, {
-        status: "failed",
-        requestKey,
-        oneLine: "",
-        completionAssessment: "",
-        nextActions: [],
-      });
+      useBackgroundAiSuggestionStore.getState().set(sessionId, emptySuggestion("failed", requestKey, parseNextActionFailureCode(error)));
     });
   }, DEBOUNCE_MS);
 }
@@ -207,19 +263,22 @@ function scheduleReportSummary(report: ReportDispatchBatch): void {
   const current = pendingByTarget.get(targetKey);
   if (current?.requestKey === requestKey) return;
   cancelPending(targetKey);
+  if (isProviderModelMismatch()) {
+    useBackgroundAiSuggestionStore.getState().setReportSummary(batchId, emptySuggestion("failed", requestKey, "provider_model_mismatch"));
+    return;
+  }
   const requestId = `report-summary-${Date.now()}-${requestSequence++}`;
   const pending: PendingRequest = { requestId, requestKey, timer: null };
   pendingByTarget.set(targetKey, pending);
-  useBackgroundAiSuggestionStore.getState().setReportSummary(batchId, {
-    status: "loading",
-    requestKey,
-    oneLine: "",
-    completionAssessment: "",
-    nextActions: [],
-  });
+  useBackgroundAiSuggestionStore.getState().setReportSummary(batchId, emptySuggestion("loading", requestKey));
   pending.timer = setTimeout(() => {
     pending.timer = null;
     if (pendingByTarget.get(targetKey)?.requestKey !== requestKey || !isEnabled()) return;
+    if (isProviderModelMismatch()) {
+      pendingByTarget.delete(targetKey);
+      useBackgroundAiSuggestionStore.getState().setReportSummary(batchId, emptySuggestion("failed", requestKey, "provider_model_mismatch"));
+      return;
+    }
     void invoke<unknown>("run_next_action_judge", {
       requestId,
       sessionId: batchId,
@@ -231,18 +290,15 @@ function scheduleReportSummary(report: ReportDispatchBatch): void {
       if (pendingByTarget.get(targetKey)?.requestKey !== requestKey || !isEnabled()) return;
       pendingByTarget.delete(targetKey);
       const result = normalizeResult(value);
-      if (!result) throw new Error("invalid report-summary response");
+      if (!result) {
+        useBackgroundAiSuggestionStore.getState().setReportSummary(batchId, emptySuggestion("failed", requestKey, "invalid_output"));
+        return;
+      }
       useBackgroundAiSuggestionStore.getState().setReportSummary(batchId, { status: "ready", requestKey, ...result });
-    }).catch(() => {
+    }).catch((error) => {
       if (pendingByTarget.get(targetKey)?.requestKey !== requestKey) return;
       pendingByTarget.delete(targetKey);
-      useBackgroundAiSuggestionStore.getState().setReportSummary(batchId, {
-        status: "failed",
-        requestKey,
-        oneLine: "",
-        completionAssessment: "",
-        nextActions: [],
-      });
+      useBackgroundAiSuggestionStore.getState().setReportSummary(batchId, emptySuggestion("failed", requestKey, parseNextActionFailureCode(error)));
     });
   }, DEBOUNCE_MS);
 }

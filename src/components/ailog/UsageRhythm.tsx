@@ -14,7 +14,7 @@ import {
   offsetLabel,
   peakSlot,
   slotBars,
-  type UsageMetric,
+  type RhythmMetric,
 } from "./usageModel";
 import { noteStyle } from "./ui";
 
@@ -91,7 +91,7 @@ export function UsageRhythm({
   metric,
 }: {
   report: UsageRhythmReport;
-  metric: UsageMetric;
+  metric: RhythmMetric;
 }) {
   const hours = slotBars(report.byHour, metric, "hour");
   const weekdays = slotBars(report.byWeekday, metric, "weekday");

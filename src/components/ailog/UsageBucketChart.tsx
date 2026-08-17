@@ -1,17 +1,20 @@
 /**
- * Daily volume, stacked by model.
+ * Volume stacked by group, one bar per day / week / month bucket.
  *
  * Plain SVG rectangles driven by `usageModel.layoutStack`, so the geometry is
- * testable without a renderer. Days with no activity are drawn as empty slots
+ * testable without a renderer. Buckets with no activity are drawn as empty slots
  * rather than skipped: a quiet week has to look like a quiet week.
  */
 
 import { useState } from "react";
 
-import { formatUsd, type SeriesGroupBy } from "../../lib/ailog";
+import { formatUsd, type PriceCoverage, type SeriesGroupBy, type UsageBucket } from "../../lib/ailog";
 import {
   USAGE_METRICS,
+  bucketNoun,
+  costCoverageLabel,
   formatMetric,
+  groupByLabel,
   groupLabel,
   layoutStack,
   type UsageMetric,
@@ -23,7 +26,7 @@ const HEIGHT = 168;
 const MIN_BAR = 6;
 const GAP = 2;
 
-export function UsageDailyChart({
+export function UsageBucketChart({
   model,
   metric,
   mode,
@@ -33,6 +36,8 @@ export function UsageDailyChart({
   onOpenDigest,
   digestLinkLabel = "日別まとめへ",
   groupBy,
+  bucket,
+  priceCoverage,
 }: {
   model: UsageModel;
   metric: UsageMetric;
@@ -43,14 +48,19 @@ export function UsageDailyChart({
   onOpenDigest?: (day: number) => void;
   digestLinkLabel?: string;
   groupBy: SeriesGroupBy;
+  bucket: UsageBucket;
+  priceCoverage?: PriceCoverage;
 }) {
-  const [selectedDay, setSelectedDay] = useState<number | null>(null);
+  const [selectedBucket, setSelectedBucket] = useState<number | null>(null);
   if (model.days.length === 0) {
     return <div style={noteStyle}>この期間に記録がありません。期間を広げるか、再インデックスしてください。</div>;
   }
 
   const barWidth = Math.max(MIN_BAR, Math.min(28, Math.floor(760 / model.days.length)));
   const width = model.days.length * (barWidth + GAP);
+  const unit = bucketNoun(bucket);
+  const presentCount = model.days.filter((row) => row.present).length;
+  const costNote = metric === "costUsd" && priceCoverage ? costCoverageLabel(priceCoverage) : null;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}>
@@ -60,21 +70,21 @@ export function UsageDailyChart({
           height={HEIGHT}
           viewBox={`0 0 ${width} ${HEIGHT}`}
           role="img"
-          aria-label={`日別の${USAGE_METRICS.find((entry) => entry.id === metric)?.label ?? "集計"}`}
+          aria-label={`${unit}別の${USAGE_METRICS.find((entry) => entry.id === metric)?.label ?? "集計"}`}
           style={{ display: "block" }}
         >
-          {model.days.map((day, index) => {
+          {model.days.map((row, index) => {
             const x = index * (barWidth + GAP);
-            const rects = layoutStack(day, model.max, mode);
+            const rects = layoutStack(row, model.max, mode);
             const tooltip = [
-              day.label,
-              `合計 ${formatMetric(day.total, metric)}`,
+              row.label,
+              `合計 ${formatMetric(row.total, metric)}`,
               ...rects.map((rect) => `${groupLabel(rect.group, groupBy)} ${formatMetric(rect.value, metric)}`),
-              `セッション ${day.sessions}`,
-              `コスト相当 ${formatUsd(day.costUsd)}`,
+              `セッション ${row.sessions}`,
+              `コスト相当 ${formatUsd(row.costUsd)}`,
             ].join("\n");
             return (
-              <g key={day.day}>
+              <g key={row.bucket}>
                 <rect
                   x={x}
                   y={0}
@@ -82,7 +92,7 @@ export function UsageDailyChart({
                   height={HEIGHT}
                   fill="transparent"
                   style={{ cursor: onPickDay ? "pointer" : "default" }}
-                  onClick={() => { setSelectedDay(day.day); onPickDay?.(day.day); }}
+                  onClick={() => { setSelectedBucket(row.bucket); onPickDay?.(row.bucket); }}
                 >
                   <title>{tooltip}</title>
                 </rect>
@@ -92,7 +102,7 @@ export function UsageDailyChart({
                   const dimmed = highlight !== null && highlight !== rect.group;
                   return (
                     <rect
-                      key={`${day.day}:${rect.group}`}
+                      key={`${row.bucket}:${rect.group}`}
                       x={x}
                       y={y}
                       width={barWidth}
@@ -109,7 +119,7 @@ export function UsageDailyChart({
         </svg>
       </ScrollBox>
 
-      {selectedDay !== null && onOpenDigest ? <button type="button" onClick={() => onOpenDigest(selectedDay)} style={{ alignSelf: "flex-start", border: "1px solid var(--cmux-border)", borderRadius: 5, background: "var(--cmux-hover)", color: "var(--cmux-text)", padding: "3px 9px", fontSize: "var(--cmux-font-size-xs)", cursor: "pointer" }}>{digestLinkLabel}</button> : null}
+      {selectedBucket !== null && onOpenDigest ? <button type="button" onClick={() => onOpenDigest(selectedBucket)} style={{ alignSelf: "flex-start", border: "1px solid var(--cmux-border)", borderRadius: 5, background: "var(--cmux-hover)", color: "var(--cmux-text)", padding: "3px 9px", fontSize: "var(--cmux-font-size-xs)", cursor: "pointer" }}>{digestLinkLabel}</button> : null}
 
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
         {model.legend.map((entry) => {
@@ -145,8 +155,9 @@ export function UsageDailyChart({
       </div>
 
       <div style={noteStyle}>
-        {`${model.days[0].label} 〜 ${model.days[model.days.length - 1].label}・記録のある日 ${model.days.filter((day) => day.present).length} 日`}
-        {model.foldedCount > 0 ? `・下位 ${model.foldedCount} ${groupBy === "provider" ? "会社" : groupBy === "model" ? "系統" : "モデル"}は「その他」にまとめています` : ""}
+        {`${model.days[0].label} 〜 ${model.days[model.days.length - 1].label}・記録のある${unit} ${presentCount} ${unit}`}
+        {model.foldedCount > 0 ? `・下位 ${model.foldedCount} ${groupByLabel(groupBy)}は「その他」にまとめています` : ""}
+        {costNote ? `・${costNote}` : ""}
       </div>
     </div>
   );

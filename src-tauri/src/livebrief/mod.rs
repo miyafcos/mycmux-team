@@ -261,12 +261,22 @@ impl LiveBriefService {
             ));
         };
         let kind = mapping.agent_kind.as_deref().unwrap_or_default();
-        if all_mappings.values().filter(|candidate| candidate.agent_kind.as_deref() == Some(kind) && candidate.session_id == mapping.session_id).count() != 1 {
-            return Some(unavailable_snapshot(
-                self.base_binding(pty_session_id, kind, &mapping.session_id, pty_generation, pty_input_revision),
-                "unavailable",
-                &self.service_epoch,
-            ));
+        let same_session: Vec<&str> = all_mappings
+            .iter()
+            .filter(|(_, candidate)| {
+                candidate.agent_kind.as_deref() == Some(kind) && candidate.session_id == mapping.session_id
+            })
+            .map(|(id, _)| id.as_str())
+            .collect();
+        if same_session.len() != 1 {
+            let newest = mapping_dir().and_then(|dir| newest_pane_by_mapping_mtime(&dir, &same_session));
+            if newest.as_deref() != Some(pty_session_id) {
+                return Some(unavailable_snapshot(
+                    self.base_binding(pty_session_id, kind, &mapping.session_id, pty_generation, pty_input_revision),
+                    "unavailable",
+                    &self.service_epoch,
+                ));
+            }
         }
         let binding = self.base_binding(pty_session_id, kind, &mapping.session_id, pty_generation, pty_input_revision);
         // The cached path is checked first: a live snapshot whose transcript has
@@ -477,7 +487,40 @@ fn locate_transcript(kind: &str, session_id: &str) -> Option<PathBuf> {
         "grok" => format!("{}/**/{}/updates.jsonl", root.display(), session_id),
         _ => unreachable!(),
     };
-    glob::glob(&pattern).ok()?.filter_map(Result::ok).find(|path| path.is_file())
+    newest_path_by_mtime(glob::glob(&pattern).ok()?.filter_map(Result::ok))
+}
+
+fn newest_path_by_mtime(paths: impl IntoIterator<Item = PathBuf>) -> Option<PathBuf> {
+    paths
+        .into_iter()
+        .filter(|path| path.is_file())
+        .max_by(|left, right| file_mtime(left).cmp(&file_mtime(right)))
+}
+
+fn file_mtime(path: &Path) -> Option<SystemTime> {
+    std::fs::metadata(path).and_then(|metadata| metadata.modified()).ok()
+}
+
+fn mapping_dir() -> Option<PathBuf> {
+    crate::test_profile::runtime_dir()
+        .ok()
+        .map(|runtime_dir| runtime_dir.join("pane-sessions"))
+}
+
+/// Newest pane among duplicates of the same (kind, session_id). Any missing
+/// mapping-file mtime fails closed to "all unavailable".
+fn newest_pane_by_mapping_mtime(map_dir: &Path, pane_ids: &[&str]) -> Option<String> {
+    let mut best: Option<(SystemTime, &str)> = None;
+    for id in pane_ids {
+        let mtime = std::fs::metadata(map_dir.join(format!("{id}.txt")))
+            .and_then(|metadata| metadata.modified())
+            .ok()?;
+        match best {
+            Some((best_time, _)) if mtime <= best_time => {}
+            _ => best = Some((mtime, *id)),
+        }
+    }
+    best.map(|(_, id)| id.to_string())
 }
 
 fn grok_root() -> Option<PathBuf> {
@@ -501,27 +544,43 @@ fn bootstrap_transcript_with_history(
     history_cwd: Option<&str>,
     history_branch: Option<&str>,
 ) -> Result<SessionSnapshot, String> {
+    bootstrap_transcript_windowed(
+        path,
+        kind,
+        binding,
+        service_epoch,
+        history_cwd,
+        history_branch,
+        MAX_BOOTSTRAP_BYTES,
+    )
+}
+
+fn bootstrap_transcript_windowed(
+    path: &Path,
+    kind: &str,
+    binding: &LiveBinding,
+    service_epoch: &str,
+    history_cwd: Option<&str>,
+    history_branch: Option<&str>,
+    max_bootstrap_bytes: u64,
+) -> Result<SessionSnapshot, String> {
     let metadata = std::fs::metadata(path).map_err(|error| format!("stat transcript: {error}"))?;
-    if metadata.len() > MAX_BOOTSTRAP_BYTES { return Err("transcript exceeds live bootstrap limit".to_string()); }
-    let bytes = std::fs::read(path).map_err(|error| format!("read transcript: {error}"))?;
+    let (bytes, base_offset) = read_bootstrap_window_limited(path, metadata.len(), max_bootstrap_bytes)?;
     let file_identity = file_identity(path, &metadata);
     let mut adapter = AgentAdapter::new(kind)?;
     let mut reducer = LiveBriefReducer::new();
     let mut events = VecDeque::new();
     let mut history_events = Vec::new();
-    let mut source_revision = 0_u64;
-    let mut offset = 0_u64;
-    let (records, pending_bytes) = complete_line_records(&bytes, 0)?;
-    for (raw, range) in records {
-        offset = range.end;
-        source_revision = source_revision.saturating_add(1);
-        for event in adapter.decode_record(raw, range, source_revision)? {
-            reducer.apply(&event);
-            history_events.push(JournalEvent::from_raw_line(event.clone(), raw));
-            events.push_back(event);
-            if events.len() > RING_CAPACITY { events.pop_front(); }
-        }
-    }
+    let parsed = complete_line_records(&bytes, base_offset);
+    let (source_revision, decode_skipped) = apply_decoded_records(
+        &mut adapter,
+        &mut reducer,
+        &mut events,
+        &mut history_events,
+        parsed.records,
+        0,
+    );
+    warn_skipped_lines(path, parsed.skipped.saturating_add(decode_skipped));
     // History is best-effort only: a corrupt or locked history.db must never
     // stop livebrief's transcript poll or prevent its snapshot from updating.
     ingest_history_events(path, binding, history_cwd, history_branch, &history_events);
@@ -531,11 +590,87 @@ fn bootstrap_transcript_with_history(
     let mut brief = reducer.to_brief(binding.clone(), "live", service_epoch, now);
     brief.brief_revision = source_revision;
     let cursor = TailCursor {
-        path: path.to_path_buf(), file_identity,
-        stream_generation: 1, read_offset: bytes.len() as u64, committed_offset: offset,
-        pending_bytes, committed_anchor: anchor_for_bytes(&bytes, offset),
+        path: path.to_path_buf(),
+        file_identity,
+        stream_generation: 1,
+        // Absolute end of what was actually read, which can exceed the stat'd
+        // length if the transcript grew between the stat and the read.
+        read_offset: base_offset.saturating_add(bytes.len() as u64),
+        committed_offset: parsed.committed_end,
+        pending_bytes: parsed.pending_bytes,
+        committed_anchor: transcript_anchor(path, parsed.committed_end)?,
     };
     Ok(SessionSnapshot { brief, cursor, adapter, reducer, events })
+}
+
+/// Read at most `max_bytes` from the end of the file. If the window starts
+/// mid-line, decoding begins after the first newline so byte offsets stay
+/// aligned with the real file for later incremental tail reads.
+fn read_bootstrap_window_limited(
+    path: &Path,
+    file_len: u64,
+    max_bytes: u64,
+) -> Result<(Vec<u8>, u64), String> {
+    if file_len <= max_bytes {
+        let bytes = std::fs::read(path).map_err(|error| format!("read transcript: {error}"))?;
+        return Ok((bytes, 0));
+    }
+    let window_start = file_len.saturating_sub(max_bytes);
+    let mut file = File::open(path).map_err(|error| format!("open transcript: {error}"))?;
+    file.seek(SeekFrom::Start(window_start))
+        .map_err(|error| format!("seek transcript: {error}"))?;
+    let mut bytes = Vec::new();
+    file.take(max_bytes)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("read transcript: {error}"))?;
+    match bytes.iter().position(|byte| *byte == b'\n') {
+        Some(newline) => {
+            let skip = newline + 1;
+            let decode_start = window_start.saturating_add(skip as u64);
+            bytes.drain(..skip);
+            Ok((bytes, decode_start))
+        }
+        None => Ok((bytes, window_start)),
+    }
+}
+
+fn apply_decoded_records(
+    adapter: &mut AgentAdapter,
+    reducer: &mut LiveBriefReducer,
+    events: &mut VecDeque<SemanticEventEnvelope>,
+    history_events: &mut Vec<JournalEvent>,
+    records: Vec<(&str, ByteRange)>,
+    mut source_revision: u64,
+) -> (u64, usize) {
+    let mut skipped = 0;
+    for (raw, range) in records {
+        source_revision = source_revision.saturating_add(1);
+        match adapter.decode_record(raw, range, source_revision) {
+            Ok(decoded) => {
+                for event in decoded {
+                    reducer.apply(&event);
+                    history_events.push(JournalEvent::from_raw_line(event.clone(), raw));
+                    events.push_back(event);
+                    if events.len() > RING_CAPACITY {
+                        events.pop_front();
+                    }
+                }
+            }
+            Err(_) => skipped += 1,
+        }
+    }
+    (source_revision, skipped)
+}
+
+fn warn_skipped_lines(path: &Path, skipped: usize) {
+    if skipped == 0 {
+        return;
+    }
+    crate::diag_warn!(
+        "livebrief",
+        "skipped {skipped} malformed transcript line(s) in {}",
+        path.display()
+    );
 }
 
 fn advance_transcript_with_history(
@@ -557,20 +692,19 @@ fn advance_transcript_with_history(
     file.read_to_end(&mut appended).map_err(|error| format!("read transcript tail: {error}"))?;
     let mut bytes = std::mem::take(&mut snapshot.cursor.pending_bytes);
     bytes.extend_from_slice(&appended);
-    let (records, pending_bytes) = complete_line_records(&bytes, snapshot.cursor.committed_offset)?;
+    let parsed = complete_line_records(&bytes, snapshot.cursor.committed_offset);
     let mut history_events = Vec::new();
-    let mut source_revision = snapshot.brief.binding.source_revision;
-    let mut committed_offset = snapshot.cursor.committed_offset;
-    for (raw, range) in records {
-        committed_offset = range.end;
-        source_revision = source_revision.saturating_add(1);
-        for event in snapshot.adapter.decode_record(raw, range, source_revision)? {
-            snapshot.reducer.apply(&event);
-            history_events.push(JournalEvent::from_raw_line(event.clone(), raw));
-            snapshot.events.push_back(event);
-            if snapshot.events.len() > RING_CAPACITY { snapshot.events.pop_front(); }
-        }
-    }
+    let committed_offset = parsed.committed_end;
+    let (source_revision, decode_skipped) = apply_decoded_records(
+        &mut snapshot.adapter,
+        &mut snapshot.reducer,
+        &mut snapshot.events,
+        &mut history_events,
+        parsed.records,
+        snapshot.brief.binding.source_revision,
+    );
+    warn_skipped_lines(&snapshot.cursor.path, parsed.skipped.saturating_add(decode_skipped));
+    let pending_bytes = parsed.pending_bytes;
     ingest_history_events(&snapshot.cursor.path, binding, history_cwd, history_branch, &history_events);
     let mut binding = binding.clone();
     binding.source_revision = source_revision;
@@ -605,26 +739,65 @@ fn ingest_history_events(
     });
 }
 
-fn complete_line_records(bytes: &[u8], base_offset: u64) -> Result<(Vec<(&str, ByteRange)>, Vec<u8>), String> {
-    let mut out = Vec::new();
-    let mut start = 0;
-    while let Some(relative_end) = bytes[start..].iter().position(|byte| *byte == b'\n') {
-        let end = start + relative_end + 1;
-        let line = bytes[start..end - 1].strip_suffix(b"\r").unwrap_or(&bytes[start..end - 1]);
-        if line.len() > MAX_LINE_BYTES { return Err("live JSONL line exceeds limit".to_string()); }
-        if !line.is_empty() {
-            out.push((std::str::from_utf8(line).map_err(|_| "live JSONL is not valid UTF-8")?, ByteRange {
-                start: base_offset.saturating_add(start as u64), end: base_offset.saturating_add(end as u64),
-            }));
-        }
-        start = end;
-    }
-    Ok((out, bytes[start..].to_vec()))
+/// Complete JSONL lines carved out of `bytes`, which start at absolute file
+/// offset `base_offset`.
+struct ParsedRecords<'a> {
+    records: Vec<(&'a str, ByteRange)>,
+    /// Trailing bytes after the last newline; not yet a complete line.
+    pending_bytes: Vec<u8>,
+    /// Absolute offset just past the last complete line (including bad ones).
+    committed_end: u64,
+    /// Lines dropped because they were oversized or not valid UTF-8.
+    skipped: usize,
 }
 
-fn anchor_for_bytes(bytes: &[u8], committed_offset: u64) -> String {
-    let end = usize::try_from(committed_offset).unwrap_or(bytes.len()).min(bytes.len());
-    sha256_hex(&bytes[end.saturating_sub(256)..end])
+/// Never fails: an oversized or non-UTF-8 line is dropped and counted instead
+/// of poisoning the whole read. One bad line must not blank a whole session.
+fn complete_line_records(bytes: &[u8], base_offset: u64) -> ParsedRecords<'_> {
+    let mut records = Vec::new();
+    let mut skipped = 0usize;
+    let mut start = 0usize;
+    let mut committed_end = base_offset;
+    while let Some(relative_end) = bytes[start..].iter().position(|byte| *byte == b'\n') {
+        let end = start + relative_end + 1;
+        committed_end = base_offset.saturating_add(end as u64);
+        let line = bytes[start..end - 1].strip_suffix(b"\r").unwrap_or(&bytes[start..end - 1]);
+        let range = ByteRange {
+            start: base_offset.saturating_add(start as u64),
+            end: base_offset.saturating_add(end as u64),
+        };
+        start = end;
+        if line.is_empty() {
+            continue;
+        }
+        if line.len() > MAX_LINE_BYTES {
+            skipped += 1;
+            continue;
+        }
+        match std::str::from_utf8(line) {
+            Ok(text) => records.push((text, range)),
+            Err(_) => skipped += 1,
+        }
+    }
+    let mut parsed =
+        ParsedRecords { records, pending_bytes: bytes[start..].to_vec(), committed_end, skipped };
+    parsed.discard_overlong_pending();
+    parsed
+}
+
+impl ParsedRecords<'_> {
+    /// An unterminated fragment longer than `MAX_LINE_BYTES` can never become a
+    /// line we would accept, so it is dropped instead of being carried (and
+    /// grown) in the tail cursor forever. The committed offset skips past it so
+    /// the cursor stays aligned with the file.
+    fn discard_overlong_pending(&mut self) {
+        if self.pending_bytes.len() <= MAX_LINE_BYTES {
+            return;
+        }
+        self.committed_end = self.committed_end.saturating_add(self.pending_bytes.len() as u64);
+        self.pending_bytes = Vec::new();
+        self.skipped = self.skipped.saturating_add(1);
+    }
 }
 
 fn transcript_anchor(path: &Path, committed_offset: u64) -> Result<String, String> {
@@ -634,19 +807,6 @@ fn transcript_anchor(path: &Path, committed_offset: u64) -> Result<String, Strin
     let mut bytes = Vec::new();
     file.take(committed_offset.saturating_sub(start)).read_to_end(&mut bytes).map_err(|error| format!("read transcript anchor: {error}"))?;
     Ok(sha256_hex(&bytes))
-}
-
-fn complete_lines(bytes: &[u8]) -> Result<Vec<&str>, String> {
-    let mut out = Vec::new();
-    for line in bytes.split_inclusive(|byte| *byte == b'\n') {
-        if !line.ends_with(b"\n") { break; }
-        let line = line.strip_suffix(b"\n").unwrap_or(line);
-        let line = line.strip_suffix(b"\r").unwrap_or(line);
-        if line.len() > MAX_LINE_BYTES { return Err("live JSONL line exceeds limit".to_string()); }
-        if line.is_empty() { continue; }
-        out.push(std::str::from_utf8(line).map_err(|_| "live JSONL is not valid UTF-8")?);
-    }
-    Ok(out)
 }
 
 fn unavailable_snapshot(binding: LiveBinding, health: &str, service_epoch: &str) -> SessionSnapshot {
@@ -709,14 +869,14 @@ mod tests {
     use std::io::Write;
 
     #[test]
-    fn complete_lines_keeps_an_unterminated_utf8_tail_pending() {
-        let lines = complete_lines(b"{\"x\":1}\n{\"x\":\"\xe3\x81").unwrap();
-        assert_eq!(lines, vec!["{\"x\":1}"]);
-    }
-
-    #[test]
-    fn complete_lines_rejects_invalid_completed_utf8() {
-        assert!(complete_lines(b"\xff\n").is_err());
+    fn a_multibyte_character_split_by_the_read_boundary_stays_pending() {
+        // The tail is a truncated UTF-8 sequence, not a complete line: it must
+        // wait for the rest of the character instead of being decoded or dropped.
+        let parsed = complete_line_records(b"{\"x\":1}\n{\"x\":\"\xe3\x81", 0);
+        assert_eq!(parsed.records.len(), 1);
+        assert_eq!(parsed.records[0].0, "{\"x\":1}");
+        assert_eq!(parsed.skipped, 0);
+        assert_eq!(parsed.pending_bytes, b"{\"x\":\"\xe3\x81".to_vec());
     }
 
     fn test_binding() -> LiveBinding {
@@ -759,6 +919,171 @@ mod tests {
         assert_eq!(advanced.cursor.committed_offset, metadata.len());
         assert_eq!(advanced.brief.binding.source_revision, 2);
         assert_eq!(advanced.brief.event_seq, 2);
+    }
+
+    fn codex_user_line(message: &str) -> String {
+        format!("{{\"type\":\"event_msg\",\"payload\":{{\"type\":\"user_message\",\"message\":\"{message}\"}}}}\n")
+    }
+
+    fn user_message_texts(snapshot: &SessionSnapshot) -> Vec<String> {
+        snapshot
+            .events
+            .iter()
+            .filter_map(|event| match &event.kind {
+                adapter::SemanticEventKind::UserMessage { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn set_mtime(path: &Path, seconds_since_epoch: u64) {
+        let file = std::fs::OpenOptions::new().write(true).open(path).expect("open for set_modified");
+        file.set_modified(UNIX_EPOCH + Duration::from_secs(seconds_since_epoch))
+            .expect("set_modified");
+    }
+
+    /// A-1: a transcript over the bootstrap limit must still produce a live
+    /// brief built from its tail instead of failing the whole session.
+    #[test]
+    fn an_oversized_transcript_bootstraps_from_its_tail_window() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("rollout.jsonl");
+        let body: String = (0..200).map(|index| codex_user_line(&format!("m{index}"))).collect();
+        std::fs::write(&path, &body).expect("write transcript");
+        let file_len = std::fs::metadata(&path).expect("stat").len();
+
+        let snapshot =
+            bootstrap_transcript_windowed(&path, "codex", &test_binding(), "epoch", None, None, 512)
+                .expect("windowed bootstrap");
+
+        let texts = user_message_texts(&snapshot);
+        assert!(!texts.is_empty(), "tail window must still yield events");
+        assert!(texts.len() < 200, "only the tail window is decoded");
+        assert_eq!(texts.last().map(String::as_str), Some("m199"));
+        // Offsets stay absolute so the incremental tail read keeps working.
+        assert_eq!(snapshot.cursor.read_offset, file_len);
+        assert_eq!(snapshot.cursor.committed_offset, file_len);
+        assert!(snapshot.cursor.pending_bytes.is_empty());
+        assert_eq!(snapshot.brief.telemetry_health, "live");
+    }
+
+    /// A-1 follow-up: the tail cursor of a windowed bootstrap must advance.
+    #[test]
+    fn a_windowed_bootstrap_still_advances_on_append() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("rollout.jsonl");
+        let body: String = (0..200).map(|index| codex_user_line(&format!("m{index}"))).collect();
+        std::fs::write(&path, &body).expect("write transcript");
+        let snapshot =
+            bootstrap_transcript_windowed(&path, "codex", &test_binding(), "epoch", None, None, 512)
+                .expect("windowed bootstrap");
+
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .expect("open append")
+            .write_all(codex_user_line("tail").as_bytes())
+            .expect("append record");
+        let metadata = std::fs::metadata(&path).expect("stat appended transcript");
+        let advanced =
+            advance_transcript_with_history(snapshot, &metadata, &test_binding(), "epoch", None, None)
+                .expect("advance tail");
+
+        assert_eq!(advanced.cursor.read_offset, metadata.len());
+        assert_eq!(advanced.cursor.committed_offset, metadata.len());
+        assert_eq!(user_message_texts(&advanced).last().map(String::as_str), Some("tail"));
+    }
+
+    /// A-2: one giant, non-UTF-8 or unparsable line must not blank the session.
+    #[test]
+    fn malformed_lines_are_skipped_without_losing_the_good_ones() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("rollout.jsonl");
+        let mut body: Vec<u8> = Vec::new();
+        body.extend_from_slice(codex_user_line("first").as_bytes());
+        // Oversized single line (base64 attachment shaped).
+        body.extend_from_slice(b"{\"blob\":\"");
+        body.extend(std::iter::repeat(b'A').take(MAX_LINE_BYTES + 16));
+        body.extend_from_slice(b"\"}\n");
+        // Invalid UTF-8 line.
+        body.extend_from_slice(&[0xff, 0xfe, b'\n']);
+        // Complete but unparsable JSON line.
+        body.extend_from_slice(b"this is not json\n");
+        body.extend_from_slice(codex_user_line("second").as_bytes());
+        std::fs::write(&path, &body).expect("write transcript");
+        let file_len = std::fs::metadata(&path).expect("stat").len();
+
+        let snapshot = bootstrap_transcript(&path, "codex", &test_binding(), "epoch").expect("bootstrap");
+
+        assert_eq!(user_message_texts(&snapshot), vec!["first".to_string(), "second".to_string()]);
+        assert_eq!(snapshot.brief.telemetry_health, "live");
+        assert_eq!(snapshot.cursor.committed_offset, file_len);
+    }
+
+    #[test]
+    fn complete_line_records_counts_skips_and_keeps_offsets_absolute() {
+        let mut bytes: Vec<u8> = Vec::new();
+        bytes.extend_from_slice(b"{\"a\":1}\n");
+        bytes.extend_from_slice(&[0xff, b'\n']);
+        bytes.extend_from_slice(b"{\"b\":2}\n");
+        bytes.extend_from_slice(b"partial");
+        let parsed = complete_line_records(&bytes, 1_000);
+        assert_eq!(parsed.skipped, 1);
+        assert_eq!(parsed.records.len(), 2);
+        assert_eq!(parsed.records[0].1.start, 1_000);
+        assert_eq!(parsed.records[1].1.start, 1_010);
+        assert_eq!(parsed.committed_end, 1_018);
+        assert_eq!(parsed.pending_bytes, b"partial".to_vec());
+    }
+
+    #[test]
+    fn an_overlong_unterminated_fragment_is_not_carried_in_the_cursor() {
+        let mut bytes: Vec<u8> = Vec::new();
+        bytes.extend_from_slice(b"{\"a\":1}\n");
+        bytes.extend(std::iter::repeat(b'A').take(MAX_LINE_BYTES + 1));
+        let parsed = complete_line_records(&bytes, 0);
+        assert_eq!(parsed.records.len(), 1);
+        assert!(parsed.pending_bytes.is_empty());
+        assert_eq!(parsed.skipped, 1);
+        assert_eq!(parsed.committed_end, bytes.len() as u64);
+    }
+
+    /// A-3: duplicated transcripts for one session id resolve to the newest.
+    #[test]
+    fn newest_path_by_mtime_prefers_the_most_recent_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let stale = dir.path().join("stale.jsonl");
+        let fresh = dir.path().join("fresh.jsonl");
+        let missing = dir.path().join("missing.jsonl");
+        std::fs::write(&stale, b"{}\n").expect("write stale");
+        std::fs::write(&fresh, b"{}\n").expect("write fresh");
+        set_mtime(&stale, 1_700_000_000);
+        set_mtime(&fresh, 1_700_000_600);
+
+        let picked = newest_path_by_mtime(vec![missing, stale.clone(), fresh.clone()]);
+        assert_eq!(picked, Some(fresh));
+
+        let only_stale = newest_path_by_mtime(vec![stale.clone()]);
+        assert_eq!(only_stale, Some(stale));
+        assert_eq!(newest_path_by_mtime(Vec::new()), None);
+    }
+
+    /// A-4: duplicated (kind, session id) mappings keep the newest pane live.
+    #[test]
+    fn newest_pane_by_mapping_mtime_picks_the_latest_and_fails_closed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("pane-a.txt"), b"codex:s1").expect("write pane-a");
+        std::fs::write(dir.path().join("pane-b.txt"), b"codex:s1").expect("write pane-b");
+        set_mtime(&dir.path().join("pane-a.txt"), 1_700_000_000);
+        set_mtime(&dir.path().join("pane-b.txt"), 1_700_000_600);
+
+        assert_eq!(
+            newest_pane_by_mapping_mtime(dir.path(), &["pane-a", "pane-b"]),
+            Some("pane-b".to_string())
+        );
+        // A missing mapping file falls back to the old "all unavailable" rule.
+        assert_eq!(newest_pane_by_mapping_mtime(dir.path(), &["pane-a", "pane-gone"]), None);
+        assert_eq!(newest_pane_by_mapping_mtime(dir.path(), &[]), None);
     }
 
     #[test]

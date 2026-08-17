@@ -138,3 +138,29 @@ describe("dashboard chat columns", () => {
     expect(useDashboardViewStore.getState().chatColumnTabIds).toBe(beforeFull);
   });
 });
+
+describe("openDashboardForTab", () => {
+  it("clears filters and selects the tab before opening the view", async () => {
+    const { useDashboardViewStore } = await loadStore();
+    const { openDashboardForTab } = await import("../../src/components/layout/openDashboardForTab");
+    const store = useDashboardViewStore.getState();
+    store.setQuery("codex");
+    store.setStateFilter("needsHuman");
+    store.setWorkspaceFilter("ws-other");
+    store.setAgentFilter("claude");
+
+    openDashboardForTab("tab-target");
+
+    // フィルタが残っていると対象カードが消えて別セッションに落ちるので、
+    // 選択より先に全部落としてから開く。
+    expect(useDashboardViewStore.getState()).toMatchObject({
+      open: true,
+      query: "",
+      stateFilter: null,
+      workspaceFilter: null,
+      agentFilter: null,
+      selectedTabId: "tab-target",
+    });
+    expect(useDashboardViewStore.getState().chatColumnTabIds).toContain("tab-target");
+  });
+});
