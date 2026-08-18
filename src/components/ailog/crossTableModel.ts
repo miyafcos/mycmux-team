@@ -4,28 +4,22 @@
  */
 
 import type { PivotAxis, PivotReport, SeriesGroup } from "../../lib/ailog";
-import { isStackable, metricValue, type UsageMetric } from "./usageModel";
+import type { AilogSelection } from "../../stores/ailogStore";
+import { axisLabel, isStackable, metricValue, USAGE_AXES, type UsageMetric } from "./usageModel";
 
-export const PIVOT_AXES: { value: PivotAxis; label: string }[] = [
-  { value: "project", label: "案件" },
-  { value: "model", label: "系統" },
-  { value: "model_raw", label: "モデル" },
-  { value: "provider", label: "会社" },
-  { value: "origin", label: "起動元" },
-  { value: "effort", label: "effort" },
-  { value: "kind", label: "CLI" },
-];
+export const PIVOT_AXES = USAGE_AXES.map((axis) => ({ value: axis.value, label: axis.label, title: axis.hint }));
 
 export const PIVOT_TOP_ROWS = 12;
-export const PIVOT_TOP_COLS = 8;
+export const PIVOT_TOP_COLS = 10;
 export const OTHER_KEY = "その他";
 
 export function pivotAxisLabel(axis: PivotAxis): string {
-  return PIVOT_AXES.find((entry) => entry.value === axis)?.label ?? axis;
+  return axisLabel(axis);
 }
 
+const AXIS_FALLBACK_ORDER: PivotAxis[] = ["project", "model_raw", "model", "provider", "kind", "effort", "origin"];
 export function firstOtherAxis(axis: PivotAxis): PivotAxis {
-  return PIVOT_AXES.find((entry) => entry.value !== axis)?.value ?? "model";
+  return AXIS_FALLBACK_ORDER.find((value) => value !== axis) ?? "model_raw";
 }
 
 export function nextPivotAxes(
@@ -50,13 +44,14 @@ export function selectionFromPivotCell(
   colBy: PivotAxis,
   rowKey: string,
   colKey: string,
-): { type: "project" | "model"; key: string; label: string } | null {
+): AilogSelection | null {
   if (rowKey === OTHER_KEY || colKey === OTHER_KEY) return null;
-  if (rowBy === "project") return { type: "project", key: rowKey, label: rowKey };
-  if (colBy === "project") return { type: "project", key: colKey, label: colKey };
-  if (rowBy === "model" || rowBy === "model_raw") return { type: "model", key: rowKey, label: rowKey };
-  if (colBy === "model" || colBy === "model_raw") return { type: "model", key: colKey, label: colKey };
-  return null;
+  const pick = (axis: PivotAxis, key: string): AilogSelection | null =>
+    axis === "project" ? { project: { key, label: key } }
+    : (axis === "model" || axis === "model_raw") ? { model: { key, label: key } }
+    : null;
+  const merged = { ...pick(rowBy, rowKey), ...pick(colBy, colKey) };
+  return Object.keys(merged).length > 0 ? merged : null;
 }
 
 export interface FoldedPivotRow {
@@ -72,6 +67,13 @@ export interface FoldedPivot {
   grandTotal: number;
   foldedRows: number;
   foldedCols: number;
+  /**
+   * The keys behind those counts, so the note can say what went into the band.
+   * A tier such as gpt-5.6-luna drops out of the top N over a long range, and an
+   * anonymous "その他" hides that it was ever measured.
+   */
+  foldedRowKeys: string[];
+  foldedColKeys: string[];
   stackable: boolean;
 }
 
@@ -130,15 +132,29 @@ export function foldPivot(
     grandTotal: rows.reduce((sum, row) => sum + row.total, 0),
     foldedRows: foldedRowKeys.length,
     foldedCols: foldedColKeys.length,
+    foldedRowKeys,
+    foldedColKeys,
     stackable: isStackable(metric),
   };
+}
+
+/** Past this many the note is longer than the table it annotates. */
+const MAX_NAMED_FOLDED = 4;
+
+function namedList(keys: string[]): string {
+  if (keys.length <= MAX_NAMED_FOLDED) return keys.join(" / ");
+  return `${keys.slice(0, MAX_NAMED_FOLDED).join(" / ")} ほか ${keys.length - MAX_NAMED_FOLDED} 件`;
 }
 
 export function foldNote(folded: FoldedPivot): string | null {
   if (folded.foldedRows === 0 && folded.foldedCols === 0) return null;
   const parts: string[] = [];
-  if (folded.foldedRows > 0) parts.push(`行 ${folded.foldedRows} 件`);
-  if (folded.foldedCols > 0) parts.push(`列 ${folded.foldedCols} 件`);
+  if (folded.foldedRows > 0) {
+    parts.push(`行 ${folded.foldedRows} 件 (${namedList(folded.foldedRowKeys)})`);
+  }
+  if (folded.foldedCols > 0) {
+    parts.push(`列 ${folded.foldedCols} 件 (${namedList(folded.foldedColKeys)})`);
+  }
   return `${parts.join("・")}を「その他」にまとめました`;
 }
 

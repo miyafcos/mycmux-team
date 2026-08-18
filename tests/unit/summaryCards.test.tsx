@@ -11,7 +11,7 @@ const overview = {
   topModels: [], mixedModelSessions: 0, topProjects: [], topTitles: [],
   rework: { avgScore: 0, toolErrorRate: 0, correctionHits: 0, churnFiles: 0, abandonedSessions: 0 },
   excludedInternal: { sessions: 0, costUsd: 0 }, cacheHitRate: 0, priceSource: "default",
-  priceCoverage: { priced: { models: ["gpt-5.6-terra"], tokens: 75 }, local: { models: [], tokens: 0 }, internal: { models: [], tokens: 0 }, flat: { models: [], tokens: 0 }, unknown: { models: ["gpt-5.5"], tokens: 25 }, coveredTokenRatio: 0.75 },
+  priceCoverage: { priced: { models: ["gpt-5.6-terra"], tokens: 75 }, local: { models: [], tokens: 0 }, internal: { models: [], tokens: 0 }, flat: { models: [], tokens: 0 }, reported: { models: [], tokens: 0 }, unknown: { models: ["gpt-5.5"], tokens: 25 }, coveredTokenRatio: 0.75 },
   indexFreshness: { lastIndexedAt: 0, staleFiles: 0 }, costNote: "",
 } satisfies Overview;
 

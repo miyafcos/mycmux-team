@@ -4,10 +4,14 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { CrossTable } from "../../src/components/ailog/CrossTable";
 import {
   OTHER_KEY,
+  PIVOT_AXES,
+  firstOtherAxis,
   foldNote,
   foldPivot,
   nextPivotAxes,
+  selectionFromPivotCell,
 } from "../../src/components/ailog/crossTableModel";
+import { SERIES_AXES } from "../../src/components/ailog/usageModel";
 import type { PivotReport, SeriesGroup } from "../../src/lib/ailog";
 
 function group(name: string, over: Partial<SeriesGroup> = {}): SeriesGroup {
@@ -43,6 +47,7 @@ function report(rowKeys: string[], colKeys: string[], cell: (row: string, col: s
       local: { models: [], tokens: 0 },
       internal: { models: [], tokens: 0 },
       flat: { models: [], tokens: 0 },
+      reported: { models: [], tokens: 0 },
       unknown: { models: [], tokens: 0 },
       coveredTokenRatio: 1,
     },
@@ -57,7 +62,7 @@ describe("nextPivotAxes", () => {
       colBy: "project",
     });
     expect(nextPivotAxes({ rowBy: "project", colBy: "model" }, { colBy: "project" })).toEqual({
-      rowBy: "model",
+      rowBy: "model_raw",
       colBy: "project",
     });
   });
@@ -88,7 +93,45 @@ describe("foldPivot", () => {
     expect(folded.cols).toEqual(["c1", "c2", OTHER_KEY]);
     expect(folded.foldedRows).toBe(2);
     expect(folded.foldedCols).toBe(1);
-    expect(foldNote(folded)).toBe("行 2 件・列 1 件を「その他」にまとめました");
+    expect(folded.foldedRowKeys).toEqual(["r3", "r4"]);
+    expect(folded.foldedColKeys).toEqual(["c3"]);
+    expect(foldNote(folded)).toBe("行 2 件 (r3 / r4)・列 1 件 (c3)を「その他」にまとめました");
+  });
+
+  it("names what went into その他 so a folded tier is still visible", () => {
+    const rowKeys = ["only"];
+    const colKeys = ["gpt-5.6-sol", "claude-opus-5", "gpt-5.6-terra", "gpt-5.5", "gpt-5.6-luna", "gpt-5.4"];
+    const scores: Record<string, number> = {
+      "gpt-5.6-sol": 60,
+      "claude-opus-5": 50,
+      "gpt-5.6-terra": 40,
+      "gpt-5.5": 30,
+      "gpt-5.6-luna": 20,
+      "gpt-5.4": 10,
+    };
+    const source = report(rowKeys, colKeys, (row, col) => group(col, { costUsd: scores[col] }));
+    source.rows.forEach((row) => {
+      row.total = group(row.key, { costUsd: 210 });
+    });
+    source.colTotals = colKeys.map((col) => group(col, { costUsd: scores[col] }));
+
+    const folded = foldPivot(source, "costUsd", 12, 4);
+    expect(folded.foldedColKeys).toEqual(["gpt-5.6-luna", "gpt-5.4"]);
+    expect(foldNote(folded)).toBe("列 2 件 (gpt-5.6-luna / gpt-5.4)を「その他」にまとめました");
+  });
+
+  it("caps the named list so the note stays shorter than the table", () => {
+    const rowKeys = ["only"];
+    const colKeys = ["c1", "c2", "c3", "c4", "c5", "c6", "c7"];
+    const scores = Object.fromEntries(colKeys.map((col, index) => [col, 100 - index]));
+    const source = report(rowKeys, colKeys, (row, col) => group(col, { costUsd: scores[col] }));
+    source.rows.forEach((row) => {
+      row.total = group(row.key, { costUsd: 1 });
+    });
+    source.colTotals = colKeys.map((col) => group(col, { costUsd: scores[col] }));
+
+    const folded = foldPivot(source, "costUsd", 12, 1);
+    expect(foldNote(folded)).toBe("列 6 件 (c2 / c3 / c4 / c5 ほか 2 件)を「その他」にまとめました");
   });
 });
 
@@ -139,5 +182,33 @@ describe("CrossTable", () => {
     expect(html).toContain("color-mix(in srgb, var(--cmux-accent)");
     expect(html).not.toMatch(/#[0-9a-fA-F]{3,8}/);
     expect(html).toContain("$2.00");
+  });
+});
+
+describe("axis catalog", () => {
+  it("keeps SERIES_AXES a subset of PIVOT_AXES", () => {
+    const pivot = new Set(PIVOT_AXES.map((axis) => axis.value));
+    for (const axis of SERIES_AXES) {
+      expect(pivot.has(axis.value)).toBe(true);
+    }
+  });
+
+  it("falls back to project from model_raw and the other way", () => {
+    expect(firstOtherAxis("project")).toBe("model_raw");
+    expect(firstOtherAxis("model_raw")).toBe("project");
+  });
+});
+
+describe("selectionFromPivotCell", () => {
+  it("returns both project and model from a project × model_raw cell", () => {
+    expect(selectionFromPivotCell("project", "model_raw", "案件A", "gpt-5.6-sol")).toEqual({
+      project: { key: "案件A", label: "案件A" },
+      model: { key: "gpt-5.6-sol", label: "gpt-5.6-sol" },
+    });
+  });
+
+  it("returns null when either axis is その他", () => {
+    expect(selectionFromPivotCell("project", "model_raw", OTHER_KEY, "gpt-5.6-sol")).toBeNull();
+    expect(selectionFromPivotCell("project", "model_raw", "案件A", OTHER_KEY)).toBeNull();
   });
 });

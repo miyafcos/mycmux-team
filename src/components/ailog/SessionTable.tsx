@@ -15,13 +15,42 @@ import {
   workTagHint,
   workTagLabel,
   type PriceCoverage,
+  type SessionRow,
   type SessionsReport,
 } from "../../lib/ailog";
 import type { SessionSort } from "../../stores/ailogStore";
 import { useThemeStore } from "../../stores/themeStore";
 import { pageSessions, sortSessions } from "./sessionFilter";
 import { getSessionTableRowMetrics } from "./sessionTableRowHeight";
-import { ButtonGroup, Chip, noteStyle, subtleButtonStyle, tableStyle, tdLeftStyle, tdStyle, thLeftStyle, thStyle } from "./ui";
+import { ButtonGroup, Chip, noteStyle, subtleButtonStyle, tableStyle, tdClipStyle, tdStyle, thLeftStyle, thStyle } from "./ui";
+import { groupLabel } from "./usageModel";
+
+function rangeModelName(name: string): string {
+  return groupLabel(name);
+}
+
+export function sessionModelLabel(row: SessionRow): string {
+  const rangeModels = row.rangeModels ?? [];
+  if (rangeModels.length === 0) {
+    return `${kindLabel(row.kind)} · ${row.primaryModel ?? "—"}${
+      row.modelCount > 1 ? `（${formatCount(row.modelCount)} モデル）` : ""
+    }`;
+  }
+  const names = rangeModels.map(rangeModelName).join(" + ");
+  const extra =
+    row.rangeModelCount > rangeModels.length
+      ? ` ほか ${row.rangeModelCount - rangeModels.length}`
+      : "";
+  return `${kindLabel(row.kind)} · ${names}${extra}`;
+}
+
+export function sessionModelTitle(row: SessionRow): string | undefined {
+  const rangeModels = row.rangeModels ?? [];
+  if (rangeModels.length === 0) {
+    return row.primaryModel ?? undefined;
+  }
+  return rangeModels.map(rangeModelName).join(" / ");
+}
 
 export function SessionTable({
   report,
@@ -77,8 +106,19 @@ export function SessionTable({
         />
       </div>
 
-      <div ref={virtual.ref} onScroll={virtual.onScroll} style={{ maxHeight: 420, overflow: "auto", border: "1px solid var(--cmux-border)", borderRadius: 6 }}>
+      <div ref={virtual.ref} onScroll={virtual.onScroll} style={{ maxHeight: 420, overflowY: "auto", overflowX: "hidden", border: "1px solid var(--cmux-border)", borderRadius: 6 }}>
         <table style={tableStyle}>
+          <colgroup>
+            <col style={{ width: "10%" }} />
+            <col style={{ width: "16%" }} />
+            <col style={{ width: "22%" }} />
+            <col style={{ width: "11%" }} />
+            <col style={{ width: "15%" }} />
+            <col style={{ width: "5%" }} />
+            <col style={{ width: "8%" }} />
+            <col style={{ width: "5%" }} />
+            <col style={{ width: "8%" }} />
+          </colgroup>
           <thead>
             <tr>
               <th style={thLeftStyle}>日時</th>
@@ -109,23 +149,22 @@ export function SessionTable({
                   onClick={() => onOpenDetail(row.kind, row.sessionId)}
                 >
                   <td style={tdStyle}>{formatLocalDateTime(row.startedAt)}</td>
-                  <td style={tdLeftStyle} title={row.title ?? undefined}>
+                  <td style={tdClipStyle} title={row.title ?? undefined}>
                     {row.title?.trim() || "（無題）"}
                   </td>
-                  <td style={{ ...tdLeftStyle, maxWidth: 260 }} title={row.goalSummary?.trim() || undefined}>
+                  <td style={tdClipStyle} title={row.goalSummary?.trim() || undefined}>
                     {row.goalSummary?.trim() ? row.goalSummary.trim() : <Chip tone="warn">未要約</Chip>}
                   </td>
-                  <td style={tdLeftStyle} title={row.projectLabel ?? undefined}>
+                  <td style={tdClipStyle} title={row.projectLabel ?? undefined}>
                     {row.projectLabel ?? "—"}
                   </td>
-                  <td style={tdLeftStyle} title={row.primaryModel ?? undefined}>
-                    {`${kindLabel(row.kind)} · ${row.primaryModel ?? "—"}`}
-                    {row.modelCount > 1 ? `（${formatCount(row.modelCount)} モデル）` : ""}
+                  <td style={tdClipStyle} title={sessionModelTitle(row)}>
+                    {sessionModelLabel(row)}
                   </td>
                   <td style={tdStyle}>{formatCount(row.turnCount)}</td>
                   <td style={tdStyle}>{formatUsd(row.costUsd)}</td>
                   <td style={tdStyle}>{formatScore(row.reworkScore)}</td>
-                  <td style={{ ...tdLeftStyle, maxWidth: 220 }}>
+                  <td style={tdClipStyle}>
                     <span style={{ display: "inline-flex", gap: 3, maxWidth: "100%", overflow: "hidden", flexWrap: "nowrap" }}>
                       {row.workTags.length === 0 ? (
                         <span style={{ color: "var(--cmux-text-tertiary)" }}>—</span>

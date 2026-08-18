@@ -8,22 +8,24 @@
 
 import { useState } from "react";
 
+import { useElementWidth } from "../../hooks/useElementWidth";
 import { formatUsd, type PriceCoverage, type SeriesGroupBy, type UsageBucket } from "../../lib/ailog";
 import {
+  OTHER_GROUP,
   USAGE_METRICS,
   bucketNoun,
   costCoverageLabel,
-  formatMetric,
+  formatMetricFull,
   groupByLabel,
   groupLabel,
   layoutStack,
+  metricUnit,
   type UsageMetric,
   type UsageModel,
 } from "./usageModel";
-import { noteStyle, ScrollBox } from "./ui";
+import { Num, noteStyle } from "./ui";
 
 const HEIGHT = 168;
-const MIN_BAR = 6;
 const GAP = 2;
 
 export function UsageBucketChart({
@@ -51,35 +53,35 @@ export function UsageBucketChart({
   bucket: UsageBucket;
   priceCoverage?: PriceCoverage;
 }) {
+  const { ref: widthRef, width: measured } = useElementWidth();
   const [selectedBucket, setSelectedBucket] = useState<number | null>(null);
   if (model.days.length === 0) {
     return <div style={noteStyle}>この期間に記録がありません。期間を広げるか、再インデックスしてください。</div>;
   }
 
-  const barWidth = Math.max(MIN_BAR, Math.min(28, Math.floor(760 / model.days.length)));
-  const width = model.days.length * (barWidth + GAP);
+  const width = measured > 0 ? measured : 760;
+  const slot = width / model.days.length;
+  const barWidth = Math.max(1, Math.min(28, slot - GAP));
   const unit = bucketNoun(bucket);
   const presentCount = model.days.filter((row) => row.present).length;
   const costNote = metric === "costUsd" && priceCoverage ? costCoverageLabel(priceCoverage) : null;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}>
-      <ScrollBox>
+      <div ref={widthRef} style={{ minWidth: 0 }}>
         <svg
-          width={width}
-          height={HEIGHT}
           viewBox={`0 0 ${width} ${HEIGHT}`}
           role="img"
           aria-label={`${unit}別の${USAGE_METRICS.find((entry) => entry.id === metric)?.label ?? "集計"}`}
-          style={{ display: "block" }}
+          style={{ display: "block", width: "100%", height: HEIGHT }}
         >
           {model.days.map((row, index) => {
-            const x = index * (barWidth + GAP);
+            const x = index * slot;
             const rects = layoutStack(row, model.max, mode);
             const tooltip = [
               row.label,
-              `合計 ${formatMetric(row.total, metric)}`,
-              ...rects.map((rect) => `${groupLabel(rect.group, groupBy)} ${formatMetric(rect.value, metric)}`),
+              `合計 ${formatMetricFull(row.total, metric)}`,
+              ...rects.map((rect) => `${groupLabel(rect.group, groupBy)} ${formatMetricFull(rect.value, metric)}`),
               `セッション ${row.sessions}`,
               `コスト相当 ${formatUsd(row.costUsd)}`,
             ].join("\n");
@@ -117,7 +119,7 @@ export function UsageBucketChart({
             );
           })}
         </svg>
-      </ScrollBox>
+      </div>
 
       {selectedBucket !== null && onOpenDigest ? <button type="button" onClick={() => onOpenDigest(selectedBucket)} style={{ alignSelf: "flex-start", border: "1px solid var(--cmux-border)", borderRadius: 5, background: "var(--cmux-hover)", color: "var(--cmux-text)", padding: "3px 9px", fontSize: "var(--cmux-font-size-xs)", cursor: "pointer" }}>{digestLinkLabel}</button> : null}
 
@@ -130,6 +132,7 @@ export function UsageBucketChart({
               type="button"
               onClick={() => onHighlight(active ? null : entry.group)}
               aria-pressed={active}
+              title={entry.group === OTHER_GROUP && model.foldedGroups.length > 0 ? model.foldedGroups.join(" / ") : undefined}
               style={{
                 display: "inline-flex",
                 alignItems: "center",
@@ -148,7 +151,7 @@ export function UsageBucketChart({
                 style={{ width: 9, height: 9, borderRadius: 2, background: entry.color, display: "inline-block" }}
               />
               {groupLabel(entry.group, groupBy)}
-              <span style={{ color: "var(--cmux-text-tertiary)" }}>{formatMetric(entry.value, metric)}</span>
+              <span style={{ color: "var(--cmux-text-tertiary)" }}><Num value={entry.value} kind={metricUnit(metric)} /></span>
             </button>
           );
         })}
@@ -158,6 +161,7 @@ export function UsageBucketChart({
         {`${model.days[0].label} 〜 ${model.days[model.days.length - 1].label}・記録のある${unit} ${presentCount} ${unit}`}
         {model.foldedCount > 0 ? `・下位 ${model.foldedCount} ${groupByLabel(groupBy)}は「その他」にまとめています` : ""}
         {costNote ? `・${costNote}` : ""}
+        {slot < 3 ? "・1日1本では細すぎます。単位を「週」にすると読めます。" : ""}
       </div>
     </div>
   );

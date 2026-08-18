@@ -63,7 +63,7 @@ fn price_lookup_walks_raw_then_variant_then_family() {
     let sol = table.lookup("gpt-5.6-sol").expect("sol priced");
     let terra = table.lookup("gpt-5.6-terra").expect("terra priced");
     assert_eq!(sol.price.input, 5.0);
-    assert_eq!(terra.price.input, 2.5);
+    assert_eq!(terra.price.input, 2.0);
     assert!(sol.price.input > terra.price.input);
 
     // A dated Claude snapshot falls back to its family rate.
@@ -156,7 +156,7 @@ fn reasoning_tokens_are_not_priced_twice() {
     let table = PriceTable::from_defaults();
     let price = table.lookup("gpt-5.6-terra").unwrap().price;
     let split = price::cost_for_turn(Some(&price), 0, 1_000, 0, 0, 0);
-    assert!((split.generate - 1_000.0 * 15.0 / 1_000_000.0).abs() < 1e-12);
+    assert!((split.generate - 1_000.0 * 12.0 / 1_000_000.0).abs() < 1e-12);
 }
 
 // ---------------------------------------------------------------------------

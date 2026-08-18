@@ -1,6 +1,98 @@
 // mycmux Remote Terminal — Dashboard + Terminal SPA
+var RemoteTransport = {
+  applyControlMessage: function (state, msg) {
+    var lastEnd = state && state.lastEnd;
+    var epoch = state && state.epoch;
+    var dropLastEnd = false;
+    if (msg && typeof msg.session_epoch === "number") {
+      if (epoch != null && Number(epoch) !== Number(msg.session_epoch)) {
+        lastEnd = undefined;
+        dropLastEnd = true;
+      }
+      epoch = msg.session_epoch;
+    }
+    var shouldReset = !!(msg && msg.resync);
+    // A wiped display cannot keep a receive cursor: the next since= would
+    // append a delta onto an empty screen.
+    if (shouldReset) {
+      lastEnd = undefined;
+      dropLastEnd = true;
+    }
+    return {
+      lastEnd: lastEnd,
+      epoch: epoch,
+      dropLastEnd: dropLastEnd,
+      shouldReset: shouldReset,
+      acceptsResize: !!(msg && msg.accepts_resize),
+      hasAcceptsResize: !!(msg && typeof msg.accepts_resize === "boolean"),
+      mode: msg && (msg.mode === "control" || msg.mode === "view") ? msg.mode : undefined,
+      cols: msg && msg.cols ? msg.cols : undefined,
+      rows: msg && msg.rows ? msg.rows : undefined
+    };
+  },
+  applyBinaryFrame: function (state, frameEnd) {
+    return {
+      lastEnd: frameEnd,
+      epoch: state && state.epoch
+    };
+  },
+  sinceForReconnect: function (lastEnd, epoch) {
+    var out = {};
+    if (typeof lastEnd === "number") out.since = lastEnd;
+    if (typeof epoch === "number") out.epoch = epoch;
+    return out;
+  },
+  // Pair "discard the local display" with "forget the receive cursor".
+  // Callers must apply both fields; a clear that keeps lastEnd is N-1.
+  discardDisplay: function (state) {
+    return {
+      lastEnd: undefined,
+      dropLastEnd: true,
+      shouldClear: true,
+      epoch: state && state.epoch
+    };
+  },
+  defaultFontSize: function (isTouch) {
+    return isTouch ? 13 : 16;
+  },
+  // FitAddon must never run at a view-mode shrink (down to 6px) or it
+  // invents a huge cols/rows and resizes the remote PTY.
+  fontSizeForFit: function (isTouch) {
+    return RemoteTransport.defaultFontSize(isTouch);
+  },
+  freshSessionSurface: function () {
+    return {
+      acceptsResize: false,
+      serverCols: 0,
+      serverRows: 0
+    };
+  },
+  fontSizeToFit: function (containerW, containerH, cols, rows, cellW, cellH, sampleSize, minSize, maxSize) {
+    minSize = minSize == null ? 6 : minSize;
+    maxSize = maxSize == null ? 20 : maxSize;
+    sampleSize = sampleSize == null ? 16 : sampleSize;
+    if (!containerW || !containerH || !cols || !rows || !cellW || !cellH || !sampleSize) {
+      return minSize;
+    }
+    var size = Math.min(
+      containerW / (cols * (cellW / sampleSize)),
+      containerH / (rows * (cellH / sampleSize)),
+      maxSize
+    );
+    return Math.max(minSize, size);
+  }
+};
+
+if (typeof globalThis !== "undefined") {
+  globalThis.RemoteTransport = RemoteTransport;
+}
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = RemoteTransport;
+}
+
 (function () {
   "use strict";
+  if (typeof document === "undefined") return;
 
   // --- Token management ---
   function getToken() {
@@ -44,6 +136,12 @@
   var pendingWrites = 0;
   var flowPaused = false;
   var promptComposing = false;
+  var lastEndBySession = {};
+  var epochBySession = {};
+  var currentMode = "view";
+  var acceptsResize = false;
+  var serverCols = 0;
+  var serverRows = 0;
 
   // --- DOM refs ---
   var dashboardView = document.getElementById("dashboard-view");
@@ -382,7 +480,7 @@
 
     term = new Terminal({
       cursorBlink: true,
-      fontSize: isTouchDevice() ? 13 : 16,
+      fontSize: RemoteTransport.defaultFontSize(isTouchDevice()),
       fontFamily: "'Menlo', 'Consolas', 'Courier New', monospace",
       scrollback: 1200,
       theme: {
@@ -423,6 +521,7 @@
     });
 
     term.onResize(function (size) {
+      if (!acceptsResize) return;
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: "resize", cols: size.cols, rows: size.rows }));
       }
@@ -446,7 +545,19 @@
     showStatus("Connecting to " + location.host + "...");
 
     var proto = location.protocol === "https:" ? "wss:" : "ws:";
-    var url = proto + "//" + location.host + "/ws?token=" + encodeURIComponent(token) + "&session=" + encodeURIComponent(sessionId);
+    var url = proto + "//" + location.host + "/ws?token=" + encodeURIComponent(token)
+      + "&session=" + encodeURIComponent(sessionId)
+      + "&mode=" + encodeURIComponent(currentMode || "view");
+    var resumeQuery = RemoteTransport.sinceForReconnect(
+      lastEndBySession[sessionId],
+      epochBySession[sessionId]
+    );
+    if (typeof resumeQuery.since === "number") {
+      url += "&since=" + String(resumeQuery.since);
+    }
+    if (typeof resumeQuery.epoch === "number") {
+      url += "&epoch=" + String(resumeQuery.epoch);
+    }
     var opened = false;
     var connectTimer = null;
 
@@ -484,16 +595,18 @@
       pendingWrites = 0;
       flowPaused = false;
 
-      // Fit terminal and send resize at multiple timings
-      function fitAndResize() {
-        if (fitAddon) fitAddon.fit();
-        if (term && ws && ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+      function fitOrScale() {
+        if (fitIfAccepted()) {
+          if (term && ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+          }
+        } else if (serverCols && serverRows) {
+          applyServerGeometry(serverCols, serverRows);
         }
       }
-      setTimeout(fitAndResize, 50);
-      setTimeout(fitAndResize, 300);
-      setTimeout(fitAndResize, 800);
+      setTimeout(fitOrScale, 50);
+      setTimeout(fitOrScale, 300);
+      setTimeout(fitOrScale, 800);
 
       // Focus terminal after scrollback replay
       setTimeout(function () { if (term && !isTouchDevice()) term.focus(); }, 200);
@@ -505,14 +618,16 @@
     ws.onmessage = function (event) {
       if (!term) return;
       if (event.data instanceof ArrayBuffer) {
+        var payload = decodeFramedOutput(event.data, sessionId);
+        if (!payload) return;
         // Detect agent status from output
         try {
-          var chunk = new TextDecoder().decode(event.data);
+          var chunk = new TextDecoder().decode(payload);
           detectAgentStatus(chunk);
         } catch(e) {}
         // Flow control: track pending writes
         pendingWrites++;
-        term.write(new Uint8Array(event.data), function () {
+        term.write(payload, function () {
           pendingWrites--;
           // Low water mark: resume if we were paused
           if (flowPaused && pendingWrites < 2) {
@@ -532,8 +647,8 @@
       } else {
         try {
           var msg = JSON.parse(event.data);
-          if (msg.type === "connected") {
-            sessionInfo.textContent = shortenSessionId(msg.session_id || sessionId);
+          if (msg.type === "connected" || msg.type === "resync") {
+            handleServerGeometry(msg, sessionId);
           } else if (msg.type === "pong") {
             lastPongTime = Date.now();
           } else if (msg.type === "token_rotated") {
@@ -666,31 +781,43 @@
     if (!initTerminal()) return;
     sessionInfo.textContent = label || shortenSessionId(sessionId);
 
-    // Only clear when switching to a DIFFERENT session
-    if (switchingSession && term) {
-      term.clear();
+    if (switchingSession) {
+      var discarded = RemoteTransport.discardDisplay({
+        lastEnd: lastEndBySession[sessionId],
+        epoch: epochBySession[sessionId]
+      });
+      if (discarded.shouldClear && term) {
+        term.clear();
+      }
+      if (discarded.dropLastEnd) {
+        delete lastEndBySession[sessionId];
+      }
+      var surface = RemoteTransport.freshSessionSurface();
+      acceptsResize = surface.acceptsResize;
+      serverCols = surface.serverCols;
+      serverRows = surface.serverRows;
     }
 
     connectWs(sessionId);
 
-    // Fit at multiple timings to ensure layout is correct
-    function doFit() {
-      if (fitAddon) {
-        fitAddon.fit();
-        // Send resize to server after fit
+    function doFitOrScale() {
+      if (fitIfAccepted()) {
         if (term && ws && ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
         }
+      } else if (serverCols && serverRows) {
+        applyServerGeometry(serverCols, serverRows);
       }
     }
-    setTimeout(function () { doFit(); if (term && !isTouchDevice()) term.focus(); }, 100);
-    setTimeout(doFit, 500);
-    setTimeout(doFit, 1000);
+    setTimeout(function () { doFitOrScale(); if (term && !isTouchDevice()) term.focus(); }, 100);
+    setTimeout(doFitOrScale, 500);
+    setTimeout(doFitOrScale, 1000);
   }
 
   function showDashboard() {
     currentView = "dashboard";
-    currentSessionId = null;
+    // Keep currentSessionId. Nulling it makes a return to the same session
+    // look like a switch, which clears the screen while lastEnd survives.
 
     disconnectWs();
     hideStatus();
@@ -707,11 +834,106 @@
   var resizeDebounceTimer = null;
   function handleResize() {
     updateAppHeight();
-    if (currentView === "terminal" && fitAddon) {
-      if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
-      resizeDebounceTimer = setTimeout(function () {
-        fitAddon.fit();
-      }, 150);
+    if (currentView !== "terminal") return;
+    if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
+    resizeDebounceTimer = setTimeout(function () {
+      if (!fitIfAccepted() && serverCols && serverRows) {
+        applyServerGeometry(serverCols, serverRows);
+      }
+    }, 150);
+  }
+
+  function readEndOffset(buf) {
+    if (!buf || buf.byteLength < 8) return null;
+    var view = new DataView(buf);
+    var lo = view.getUint32(0, true);
+    var hi = view.getUint32(4, true);
+    return hi * 0x100000000 + lo;
+  }
+
+  function decodeFramedOutput(buf, sessionId) {
+    var end = readEndOffset(buf);
+    if (end == null) return null;
+    var next = RemoteTransport.applyBinaryFrame({
+      lastEnd: lastEndBySession[sessionId],
+      epoch: epochBySession[sessionId]
+    }, end);
+    lastEndBySession[sessionId] = next.lastEnd;
+    return new Uint8Array(buf, 8);
+  }
+
+  function handleServerGeometry(msg, sessionId) {
+    var next = RemoteTransport.applyControlMessage({
+      lastEnd: lastEndBySession[sessionId],
+      epoch: epochBySession[sessionId]
+    }, msg);
+    if (next.dropLastEnd) {
+      delete lastEndBySession[sessionId];
+    }
+    if (typeof next.epoch === "number") {
+      epochBySession[sessionId] = next.epoch;
+    }
+    if (next.mode) currentMode = next.mode;
+    if (next.hasAcceptsResize) acceptsResize = next.acceptsResize;
+    if (next.shouldReset && term) {
+      term.reset();
+    }
+    if (msg.type === "connected") {
+      sessionInfo.textContent = shortenSessionId(msg.session_id || sessionId);
+    }
+    if (next.cols && next.rows) {
+      serverCols = next.cols;
+      serverRows = next.rows;
+      if (!fitIfAccepted()) {
+        applyServerGeometry(next.cols, next.rows);
+      }
+    }
+  }
+
+  function applyDefaultFitFontSize() {
+    if (!term) return;
+    var size = RemoteTransport.fontSizeForFit(isTouchDevice());
+    if (Math.abs((term.options.fontSize || 0) - size) > 0.15) {
+      term.options.fontSize = size;
+    }
+  }
+
+  function fitIfAccepted() {
+    if (!acceptsResize) return false;
+    applyDefaultFitFontSize();
+    if (fitAddon) fitAddon.fit();
+    return true;
+  }
+
+  function measureCellAt(fontSize) {
+    var canvas = measureCellAt._c || (measureCellAt._c = document.createElement("canvas"));
+    var ctx = canvas.getContext("2d");
+    var family = (term && term.options && term.options.fontFamily) || "Menlo, Consolas, monospace";
+    ctx.font = fontSize + "px " + family;
+    return {
+      width: ctx.measureText("W").width,
+      height: fontSize * 1.2
+    };
+  }
+
+  function applyServerGeometry(cols, rows) {
+    if (!term || !cols || !rows) return;
+    var container = document.getElementById("terminal-container");
+    if (!container) return;
+    var cw = container.clientWidth;
+    var ch = container.clientHeight;
+    var sample = 16;
+    var cell = measureCellAt(sample);
+    var size = RemoteTransport.fontSizeToFit(cw, ch, cols, rows, cell.width, cell.height, sample, 6, 20);
+    if (Math.abs((term.options.fontSize || 0) - size) > 0.15) {
+      term.options.fontSize = size;
+    }
+    if (term.cols !== cols || term.rows !== rows) {
+      term.resize(cols, rows);
+    }
+    if (term.element) {
+      term.element.style.transform = "";
+      term.element.style.position = "";
     }
   }
 

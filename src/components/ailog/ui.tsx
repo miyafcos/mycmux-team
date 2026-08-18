@@ -6,7 +6,9 @@
  * has no context menu — right click is not a supported input in this app.
  */
 
-import { useState, type CSSProperties, type ReactNode } from "react";
+import { useState, type CSSProperties, type JSX, type ReactNode } from "react";
+
+import { formatCount, formatTokens, formatTokensFull, formatUsd } from "../../lib/ailog";
 
 export const cardStyle: CSSProperties = {
   background: "var(--cmux-surface)",
@@ -145,10 +147,10 @@ export function ButtonGroup<T extends string | number>({
   );
 }
 
-/** Wide content scrolls inside its own box; the page body never scrolls sideways. */
-export function ScrollBox({ children, maxHeight }: { children: ReactNode; maxHeight?: number }) {
+/** Vertical-only scroll. Height cap stays; horizontal overflow is not scrolled. */
+export function VScrollBox({ children, maxHeight }: { children: ReactNode; maxHeight?: number }) {
   return (
-    <div style={{ overflowX: "auto", overflowY: maxHeight ? "auto" : undefined, maxHeight, minWidth: 0 }}>
+    <div style={{ overflowY: maxHeight ? "auto" : undefined, maxHeight, minWidth: 0 }}>
       {children}
     </div>
   );
@@ -159,6 +161,7 @@ export const tableStyle: CSSProperties = {
   width: "100%",
   fontSize: "var(--cmux-font-size-xs)",
   fontVariantNumeric: "tabular-nums",
+  tableLayout: "fixed",
 };
 
 export const thStyle: CSSProperties = {
@@ -168,7 +171,10 @@ export const thStyle: CSSProperties = {
   fontWeight: 600,
   fontSize: "var(--cmux-font-size-xs)",
   borderBottom: "1px solid var(--cmux-border)",
-  whiteSpace: "nowrap",
+  whiteSpace: "normal",
+  overflowWrap: "anywhere",
+  lineHeight: 1.25,
+  verticalAlign: "bottom",
 };
 
 export const thLeftStyle: CSSProperties = { ...thStyle, textAlign: "left" };
@@ -179,15 +185,66 @@ export const tdStyle: CSSProperties = {
   color: "var(--cmux-text)",
   borderBottom: "1px solid var(--cmux-border-hairline)",
   whiteSpace: "nowrap",
+  overflow: "hidden",
 };
 
 export const tdLeftStyle: CSSProperties = {
   ...tdStyle,
   textAlign: "left",
-  maxWidth: 280,
+  whiteSpace: "normal",
+  overflowWrap: "anywhere",
+};
+
+/**
+ * SessionTable only. Rows are virtualized at a fixed height
+ * (`useVirtualRows` + tests/unit/sessionTableRowHeight.test.ts pins 31 / 39 / 50px).
+ * Wrapping would change row height and break the virtual window. Full text stays on `title`.
+ */
+export const tdClipStyle: CSSProperties = {
+  ...tdStyle,
+  textAlign: "left",
   overflow: "hidden",
   textOverflow: "ellipsis",
 };
+
+export function ThCell({ main, sub, title }: { main: string; sub?: string; title?: string }) {
+  return (
+    <th style={thStyle} title={title ?? (sub ? `${main} ${sub}` : main)}>
+      <div>{main}</div>
+      {sub ? (
+        <div style={{ color: "var(--cmux-text-tertiary)", fontSize: "var(--cmux-font-size-xs)" }}>{sub}</div>
+      ) : null}
+    </th>
+  );
+}
+
+export type NumKind = "tokens" | "count" | "usd";
+
+export function Num({
+  value,
+  kind = "tokens",
+  bare = false,
+  title,
+}: {
+  value: number;
+  kind?: NumKind;
+  bare?: boolean;
+  title?: string;
+}): JSX.Element {
+  let text: string;
+  if (kind === "usd") text = formatUsd(value);
+  else if (kind === "count") text = formatCount(value);
+  else {
+    text = formatTokens(value);
+    if (bare) text = text.replace(/ tok$/, "");
+  }
+  const tooltip = title ?? (kind === "tokens" ? formatTokensFull(value) : undefined);
+  return (
+    <span title={tooltip} style={{ fontVariantNumeric: "tabular-nums" }}>
+      {text}
+    </span>
+  );
+}
 
 export function ShareBar({ pct, title }: { pct: number; title?: string }) {
   const width = Math.max(0, Math.min(100, Number.isFinite(pct) ? pct : 0));

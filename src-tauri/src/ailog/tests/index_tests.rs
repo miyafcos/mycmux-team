@@ -258,7 +258,10 @@ fn handoffs_count_each_model_switch() {
         &fixture.conn(),
         &all_time(),
         &Filters::default(),
-        &query::ModelsOptions::default(),
+        &query::ModelsOptions {
+            granularity: "family".to_string(),
+            bucket: "day".to_string(),
+        },
         NOW,
     )
     .unwrap();
@@ -292,7 +295,10 @@ fn raw_granularity_exposes_switches_inside_one_family() {
         &conn,
         &all_time(),
         &Filters::default(),
-        &query::ModelsOptions::default(),
+        &query::ModelsOptions {
+            granularity: "family".to_string(),
+            bucket: "day".to_string(),
+        },
         NOW,
     )
     .unwrap();
@@ -544,8 +550,8 @@ fn codex_sessions_index_and_aggregate() {
     assert_eq!(overview.totals.cache_read, 1_400);
     assert_eq!(overview.totals.reasoning, 90);
 
-    // gpt-5.6-terra: input 2.5, output 15, cache read 0.20 per MTok.
-    let expected = (1_600.0 * 2.5 + 1_400.0 * 0.20 + 300.0 * 15.0) / 1_000_000.0;
+    // gpt-5.6-terra: input 2.0, output 12, cache read 0.20 per MTok.
+    let expected = (1_600.0 * 2.0 + 1_400.0 * 0.20 + 300.0 * 12.0) / 1_000_000.0;
     assert!(
         (overview.totals.cost_usd - expected).abs() < 1e-12,
         "cost was {} expected {expected}",

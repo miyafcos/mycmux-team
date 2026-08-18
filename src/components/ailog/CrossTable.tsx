@@ -12,8 +12,8 @@ import {
   pivotAxisLabel,
   selectionFromPivotCell,
 } from "./crossTableModel";
-import { formatMetric, groupLabel, type UsageMetric } from "./usageModel";
-import { ButtonGroup, EmptyState, ScrollBox, noteStyle, tableStyle, tdLeftStyle, tdStyle, thLeftStyle, thStyle } from "./ui";
+import { groupLabel, metricUnit, type UsageMetric } from "./usageModel";
+import { ButtonGroup, EmptyState, Num, VScrollBox, noteStyle, tableStyle, tdLeftStyle, tdStyle, thLeftStyle, thStyle } from "./ui";
 
 function axisLabel(value: string, axis: PivotAxis): string {
   if (value === OTHER_KEY) return OTHER_KEY;
@@ -65,8 +65,15 @@ export function CrossTable({
         <EmptyState kind="no-data" />
       ) : (
         <>
-          <ScrollBox maxHeight={360}>
+          <VScrollBox maxHeight={360}>
             <table style={tableStyle}>
+              <colgroup>
+                <col style={{ width: "22%" }} />
+                {folded.cols.map((col) => (
+                  <col key={col} style={{ width: `${folded.cols.length > 0 ? 68 / folded.cols.length : 68}%` }} />
+                ))}
+                <col style={{ width: "10%" }} />
+              </colgroup>
               <caption style={{ ...noteStyle, captionSide: "bottom", textAlign: "left", paddingTop: 8 }}>
                 {`${pivotAxisLabel(rowBy)} × ${pivotAxisLabel(colBy)}`}
               </caption>
@@ -91,7 +98,10 @@ export function CrossTable({
                       const colKey = folded.cols[index];
                       const next = selectionFromPivotCell(rowBy, colBy, row.key, colKey);
                       const selected = Boolean(
-                        next && selection && selection.type === next.type && selection.key === next.key,
+                        next
+                        && selection
+                        && (!next.model || selection.model?.key === next.model.key)
+                        && (!next.project || selection.project?.key === next.project.key),
                       );
                       const mix = heatMixPercent(value, max);
                       const clickable = next !== null;
@@ -110,15 +120,22 @@ export function CrossTable({
                           aria-selected={selected || undefined}
                           onClick={() => {
                             if (!next) return;
-                            onSelect(selected ? null : next);
+                            if (!selected) {
+                              onSelect(next);
+                              return;
+                            }
+                            const remaining = { ...selection };
+                            if (next.model) delete remaining.model;
+                            if (next.project) delete remaining.project;
+                            onSelect(remaining.model || remaining.project ? remaining : null);
                           }}
                         >
-                          {formatMetric(value, metric)}
+                          <Num value={value} kind={metricUnit(metric)} bare />
                         </td>
                       );
                     })}
                     <td style={{ ...tdStyle, fontWeight: 600 }}>
-                      {stackable ? formatMetric(row.total, metric) : "—"}
+                      {stackable ? <Num value={row.total} kind={metricUnit(metric)} bare /> : "—"}
                     </td>
                   </tr>
                 ))}
@@ -126,16 +143,16 @@ export function CrossTable({
                   <td style={{ ...tdLeftStyle, fontWeight: 600 }}>合計</td>
                   {folded.colTotals.map((value, index) => (
                     <td key={folded.cols[index]} style={{ ...tdStyle, fontWeight: 600 }}>
-                      {stackable ? formatMetric(value, metric) : "—"}
+                      {stackable ? <Num value={value} kind={metricUnit(metric)} bare /> : "—"}
                     </td>
                   ))}
                   <td style={{ ...tdStyle, fontWeight: 700 }}>
-                    {stackable ? formatMetric(folded.grandTotal, metric) : "—"}
+                    {stackable ? <Num value={folded.grandTotal} kind={metricUnit(metric)} bare /> : "—"}
                   </td>
                 </tr>
               </tbody>
             </table>
-          </ScrollBox>
+          </VScrollBox>
           {note ? <div style={noteStyle}>{note}</div> : null}
           {!stackable ? (
             <div style={noteStyle}>1セッションが複数モデルに跨るため合計できません</div>

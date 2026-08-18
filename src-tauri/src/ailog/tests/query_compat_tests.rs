@@ -3,7 +3,7 @@
 use std::time::Instant;
 
 use super::fixtures::*;
-use crate::ailog::{query, Filters, Range, KIND_CLAUDE, KIND_CODEX};
+use crate::ailog::{query, rollup, Filters, Range, KIND_CLAUDE, KIND_CODEX};
 
 const NOW: i64 = 1_800_000_000_000;
 
@@ -408,4 +408,226 @@ fn dashboard_refresh_is_faster_than_five_individual_reports() {
         dashboard_elapsed.as_millis(),
     );
     assert!(dashboard_elapsed < legacy_elapsed);
+}
+
+#[test]
+fn models_and_pivot_defaults_keep_raw_tiers_apart() {
+    assert_eq!(query::ModelsOptions::default().granularity, "raw");
+    assert_eq!(query::PivotOptions::default().col_by, "model_raw");
+}
+
+const DAY: i64 = 86_400_000;
+
+fn range_all() -> Range {
+    Range {
+        from: Some(0),
+        to: Some(NOW),
+        preset: None,
+    }
+}
+
+fn session_options() -> query::SessionsOptions {
+    query::SessionsOptions {
+        sort: "cost".to_string(),
+        limit: 50,
+        offset: 0,
+    }
+}
+
+fn insert_session(conn: &rusqlite::Connection, session_id: &str) {
+    conn.execute(
+        "INSERT INTO session (kind, session_id, project_label, started_at, cost_usd) \
+         VALUES (?1, ?2, 'range-models', ?3, 0)",
+        rusqlite::params![KIND_CLAUDE, session_id, NOW - 20 * DAY],
+    )
+    .unwrap();
+}
+
+fn insert_turn(
+    conn: &rusqlite::Connection,
+    session_id: &str,
+    seq: i64,
+    ts: i64,
+    model: Option<&str>,
+    input: i64,
+    output: i64,
+    cost: f64,
+) {
+    conn.execute(
+        "INSERT INTO turn (kind, session_id, seq, ts, model, model_family, \
+         input_tokens, output_tokens, cost_usd) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        rusqlite::params![
+            KIND_CLAUDE,
+            session_id,
+            seq,
+            ts,
+            model,
+            model.map(|name| name.rsplit_once('-').map(|(family, _)| family).unwrap_or(name)),
+            input,
+            output,
+            cost,
+        ],
+    )
+    .unwrap();
+}
+
+fn rebuild_rollup(conn: &rusqlite::Connection) {
+    rollup::mark_all_dirty(conn).unwrap();
+    rollup::rebuild_dirty(conn).unwrap();
+}
+
+fn sessions_on(conn: &rusqlite::Connection, filters: &Filters) -> query::SessionsReport {
+    query::sessions(conn, &range_all(), filters, &session_options(), NOW).unwrap()
+}
+
+fn find_session<'a>(
+    report: &'a query::SessionsReport,
+    session_id: &str,
+) -> &'a query::SessionRow {
+    report
+        .rows
+        .iter()
+        .find(|row| row.session_id == session_id)
+        .unwrap_or_else(|| panic!("missing session {session_id}"))
+}
+
+#[test]
+fn range_models_merge_sol_and_terra_across_two_days() {
+    let fixture = Fixture::new();
+    let conn = fixture.conn();
+    insert_session(&conn, "two-day");
+    insert_turn(
+        &conn,
+        "two-day",
+        1,
+        NOW - 10 * DAY,
+        Some("gpt-5.6-sol"),
+        800,
+        200,
+        1.0,
+    );
+    insert_turn(
+        &conn,
+        "two-day",
+        2,
+        NOW - 5 * DAY,
+        Some("gpt-5.6-terra"),
+        80,
+        20,
+        0.1,
+    );
+    rebuild_rollup(&conn);
+
+    let report = sessions_on(&conn, &Filters::default());
+    assert_eq!(report.timings.path, "rollup");
+    let row = find_session(&report, "two-day");
+    assert_eq!(
+        row.range_models,
+        vec!["gpt-5.6-sol".to_string(), "gpt-5.6-terra".to_string()]
+    );
+    assert_eq!(row.range_model_count, 2);
+}
+
+#[test]
+fn range_models_keep_the_top_three_and_the_full_count() {
+    let fixture = Fixture::new();
+    let conn = fixture.conn();
+    insert_session(&conn, "four-models");
+    insert_turn(&conn, "four-models", 1, NOW - 10 * DAY, Some("gpt-5.6-sol"), 400, 0, 0.4);
+    insert_turn(&conn, "four-models", 2, NOW - 10 * DAY, Some("gpt-5.6-terra"), 300, 0, 0.3);
+    insert_turn(&conn, "four-models", 3, NOW - 10 * DAY, Some("gpt-5.6-luna"), 200, 0, 0.2);
+    insert_turn(&conn, "four-models", 4, NOW - 10 * DAY, Some("claude-opus-5"), 100, 0, 0.1);
+    rebuild_rollup(&conn);
+
+    let sessions = sessions_on(&conn, &Filters::default());
+    let row = find_session(&sessions, "four-models");
+    assert_eq!(
+        row.range_models,
+        vec![
+            "gpt-5.6-sol".to_string(),
+            "gpt-5.6-terra".to_string(),
+            "gpt-5.6-luna".to_string()
+        ]
+    );
+    assert_eq!(row.range_model_count, 4);
+}
+
+#[test]
+fn range_models_rank_by_tokens_not_cost() {
+    let fixture = Fixture::new();
+    let conn = fixture.conn();
+    insert_session(&conn, "token-rank");
+    insert_turn(
+        &conn,
+        "token-rank",
+        1,
+        NOW - 10 * DAY,
+        Some("high-cost-low-tokens"),
+        10,
+        10,
+        99.0,
+    );
+    insert_turn(
+        &conn,
+        "token-rank",
+        2,
+        NOW - 10 * DAY,
+        Some("zero-cost-high-tokens"),
+        10_000,
+        10_000,
+        0.0,
+    );
+    rebuild_rollup(&conn);
+
+    let sessions = sessions_on(&conn, &Filters::default());
+    let row = find_session(&sessions, "token-rank");
+    assert_eq!(row.range_models[0], "zero-cost-high-tokens");
+    assert_eq!(
+        row.range_models,
+        vec![
+            "zero-cost-high-tokens".to_string(),
+            "high-cost-low-tokens".to_string()
+        ]
+    );
+}
+
+#[test]
+fn range_models_use_unknown_when_every_turn_model_is_null() {
+    let fixture = Fixture::new();
+    let conn = fixture.conn();
+    insert_session(&conn, "null-model");
+    insert_turn(&conn, "null-model", 1, NOW - 10 * DAY, None, 100, 50, 0.0);
+    rebuild_rollup(&conn);
+
+    let sessions = sessions_on(&conn, &Filters::default());
+    let row = find_session(&sessions, "null-model");
+    assert_eq!(row.range_models, vec!["(unknown)".to_string()]);
+    assert_eq!(row.range_model_count, 1);
+}
+
+#[test]
+fn range_models_match_between_rollup_and_raw_paths() {
+    let fixture = Fixture::new();
+    let conn = fixture.conn();
+    insert_session(&conn, "compat");
+    insert_turn(&conn, "compat", 1, NOW - 10 * DAY, Some("gpt-5.6-sol"), 800, 200, 1.0);
+    insert_turn(&conn, "compat", 2, NOW - 5 * DAY, Some("gpt-5.6-terra"), 80, 20, 0.1);
+    insert_turn(&conn, "compat", 3, NOW - 5 * DAY, Some("gpt-5.6-luna"), 40, 10, 0.05);
+    insert_turn(&conn, "compat", 4, NOW - 5 * DAY, Some("claude-opus-5"), 10, 5, 0.01);
+    rebuild_rollup(&conn);
+
+    let rollup_report = sessions_on(&conn, &Filters::default());
+    assert_eq!(rollup_report.timings.path, "rollup");
+    let mut raw_filters = Filters::default();
+    raw_filters.min_cost = Some(0.0);
+    let raw_report = sessions_on(&conn, &raw_filters);
+    assert_eq!(raw_report.timings.path, "raw");
+
+    let rollup_row = find_session(&rollup_report, "compat");
+    let raw_row = find_session(&raw_report, "compat");
+    assert_eq!(rollup_row.range_models, raw_row.range_models);
+    assert_eq!(rollup_row.range_model_count, raw_row.range_model_count);
+    assert_eq!(rollup_row.range_model_count, 4);
+    assert_eq!(rollup_row.range_models.len(), 3);
 }

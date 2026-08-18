@@ -1,8 +1,11 @@
 //! Additive schema extensions for the AI log cache.
 
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
+
+use crate::ailog::price::{PriceTable, DEFAULT_PRICES};
 
 const VERSION: i64 = 2;
+const PRICE_CATALOG_VERSION: &str = "2";
 
 pub fn apply(conn: &Connection) -> Result<(), String> {
     let current = conn
@@ -14,17 +17,15 @@ pub fn apply(conn: &Connection) -> Result<(), String> {
         .ok()
         .and_then(|value| value.parse::<i64>().ok())
         .unwrap_or(0);
-    if current >= VERSION {
-        return Ok(());
-    }
-    conn.execute_batch(
+    if current < VERSION {
+        conn.execute_batch(
         "CREATE INDEX IF NOT EXISTS ix_tool_event_ts ON tool_event(ts);
          CREATE INDEX IF NOT EXISTS ix_file_touch_last_ts ON file_touch(last_ts);
          CREATE INDEX IF NOT EXISTS ix_source_file_session ON source_file(kind, session_id);
          CREATE INDEX IF NOT EXISTS ix_turn_session_ts ON turn(kind, session_id, ts);",
     )
     .map_err(|err| format!("apply ailog indexes: {err}"))?;
-    if current < 2 {
+        if current < 2 {
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS rollup_turn_session_day (
                day INTEGER NOT NULL,
@@ -57,13 +58,67 @@ pub fn apply(conn: &Connection) -> Result<(), String> {
              CREATE TABLE IF NOT EXISTS rollup_dirty (day INTEGER PRIMARY KEY);",
         )
         .map_err(|err| format!("apply ailog rollup schema: {err}"))?;
-    }
-    conn.execute(
+        }
+        conn.execute(
         "INSERT INTO index_state(key,value) VALUES ('schema_ext_version',?1) \
          ON CONFLICT(key) DO UPDATE SET value=excluded.value",
         params![VERSION.to_string()],
     )
     .map_err(|err| format!("record ailog schema extension: {err}"))?;
+    }
+    apply_price_catalog(conn)?;
+    Ok(())
+}
+
+fn apply_price_catalog(conn: &Connection) -> Result<(), String> {
+    let current: Option<String> = conn
+        .query_row(
+            "SELECT value FROM index_state WHERE key = 'price_catalog_version'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|err| format!("read price_catalog_version: {err}"))?;
+    if current.as_deref() == Some(PRICE_CATALOG_VERSION) {
+        return Ok(());
+    }
+
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|err| format!("begin price catalog: {err}"))?;
+    for (model, price) in DEFAULT_PRICES {
+        tx.execute(
+            "UPDATE price SET input_per_mtok = ?2, output_per_mtok = ?3, \
+             cache_read_per_mtok = ?4, cache_write_5m_per_mtok = ?5, \
+             cache_write_1h_per_mtok = ?6 \
+             WHERE model = ?1 AND source = 'default'",
+            params![
+                model,
+                price.input,
+                price.output,
+                price.cache_read,
+                price.cache_write_5m,
+                price.cache_write_1h,
+            ],
+        )
+        .map_err(|err| format!("update default price {model}: {err}"))?;
+    }
+    tx.execute(
+        "INSERT INTO index_state (key, value) VALUES ('price_generation', '1') \
+         ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + 1",
+        [],
+    )
+    .map_err(|err| format!("bump price generation: {err}"))?;
+    let prices = PriceTable::load(&tx)?;
+    crate::ailog::index::reprice_all_in_transaction(&tx, &prices)?;
+    tx.execute(
+        "INSERT INTO index_state(key,value) VALUES ('price_catalog_version', ?1) \
+         ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        params![PRICE_CATALOG_VERSION],
+    )
+    .map_err(|err| format!("write price_catalog_version: {err}"))?;
+    tx.commit()
+        .map_err(|err| format!("commit price catalog: {err}"))?;
     Ok(())
 }
 

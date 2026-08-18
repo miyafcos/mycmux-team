@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 
 import { DAY_OFFSET_MIN, formatBucketLabel, type RhythmSlot, type SeriesBucket, type SeriesGroup } from "../../src/lib/ailog";
+import type { PivotAxis } from "../../src/lib/ailog";
 import { MODEL_COLORS, NEUTRAL_COLOR } from "../../src/components/ailog/palette";
 import {
   DAY_MS,
   OTHER_GROUP,
   UNKNOWN_GROUP,
+  USAGE_AXES,
   activeDayRatio,
   buildUsageModel,
   formatMetric,
@@ -312,7 +314,7 @@ describe("formatBucketLabel", () => {
 describe("groupByLabel", () => {
   it("names every series axis the UI can send", () => {
     expect(groupByLabel("provider")).toBe("会社");
-    expect(groupByLabel("model")).toBe("系統");
+    expect(groupByLabel("model")).toBe("シリーズ");
     expect(groupByLabel("model_raw")).toBe("モデル");
     expect(groupByLabel("project")).toBe("案件");
     expect(groupByLabel("kind")).toBe("CLI");
@@ -325,5 +327,43 @@ describe("groupByLabel", () => {
     expect(groupLabel("(none)", "effort")).toBe("未指定");
     expect(groupLabel("xhigh", "effort")).toBe("xhigh");
     expect(groupLabel("mycmux", "project")).toBe("mycmux");
+  });
+
+  it("covers every PivotAxis value", () => {
+    const expected: PivotAxis[] = ["provider", "model", "model_raw", "project", "kind", "effort", "origin"];
+    expect(new Set(USAGE_AXES.map((axis) => axis.value))).toEqual(new Set(expected));
+  });
+});
+
+describe("palette and folding", () => {
+  it("keeps ten series colours", () => {
+    expect(MODEL_COLORS).toHaveLength(10);
+  });
+
+  it("records the 11th series name in foldedGroups", () => {
+    const groups = Array.from({ length: 11 }, (_, index) =>
+      group(`m${index}`, { input: 110 - index }),
+    );
+    const model = buildUsageModel([bucket(AUG13, groups)], "ioTokens");
+    expect(model.foldedGroups).toContain("m10");
+  });
+
+  it("keeps gpt-5.6-luna in the legend when it is 10th by total tokens", () => {
+    const names = [
+      "gpt-5.6-sol",
+      "claude-fable-5",
+      "claude-opus-5",
+      "gpt-5.5",
+      "claude-opus-4-7",
+      "claude-opus-4-6",
+      "gpt-5.6-terra",
+      "claude-opus-4-8",
+      "gpt-5.4",
+      "gpt-5.6-luna",
+    ];
+    const groups = names.map((name, index) => group(name, { input: 1000 - index * 10 }));
+    const model = buildUsageModel([bucket(AUG13, groups)], "totalTokens");
+    expect(model.legend.map((entry) => entry.group)).toContain("gpt-5.6-luna");
+    expect(model.foldedGroups).not.toContain("gpt-5.6-luna");
   });
 });

@@ -129,6 +129,16 @@ pub struct ScrollbackSnapshot {
     pub end_offset: u64,
 }
 
+/// PTY output published to remote WebSocket subscribers.
+/// Offsets are absolute byte positions in the session's output stream
+/// (the same space as `ScrollbackSnapshot::{start,end}_offset`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OutputChunk {
+    pub data: Vec<u8>,
+    pub start: u64,
+    pub end: u64,
+}
+
 impl ScrollbackSnapshot {
     pub(crate) fn into_wire(self) -> Vec<u8> {
         let mut frame = Vec::with_capacity(SCROLLBACK_FRAME_HEADER_BYTES + self.data.len());
@@ -413,7 +423,7 @@ pub struct PtySession {
     writer_failed: Arc<AtomicBool>,
     input_gate: Mutex<()>,
     input_revision: AtomicU64,
-    pub broadcast: broadcast::Sender<Vec<u8>>,
+    pub broadcast: broadcast::Sender<OutputChunk>,
     scrollback: Arc<Mutex<VecDeque<u8>>>,
     scrollback_end: Arc<AtomicU64>,
     last_output_at: Arc<AtomicU64>,
@@ -538,7 +548,7 @@ impl PtySession {
         });
 
         // Create broadcast channel and scrollback for remote clients
-        let (broadcast_tx, _) = broadcast::channel::<Vec<u8>>(256);
+        let (broadcast_tx, _) = broadcast::channel::<OutputChunk>(256);
         let scrollback = Arc::new(Mutex::new(VecDeque::with_capacity(SCROLLBACK_CAP)));
         let scrollback_end = Arc::new(AtomicU64::new(0));
         let last_output_at = Arc::new(AtomicU64::new(0));
@@ -801,9 +811,14 @@ impl PtySession {
                         #[cfg(debug_assertions)]
                         let send_micros = send_start.elapsed().as_micros();
 
-                        // Also send to broadcast for remote clients.
+                        // Also send to broadcast for remote clients, keeping
+                        // the absolute offsets the desktop path already has.
                         if broadcast_tx_clone.receiver_count() > 0 {
-                            let _ = broadcast_tx_clone.send(chunk.clone());
+                            let _ = broadcast_tx_clone.send(OutputChunk {
+                                data: chunk,
+                                start: scrollback_start,
+                                end: scrollback_end,
+                            });
                         }
                         #[cfg(debug_assertions)]
                         {
@@ -955,6 +970,17 @@ impl PtySession {
                 pixel_height: 0,
             })
             .map_err(|e| format!("Resize failed: {e}"))
+    }
+
+    pub fn size(&self) -> Result<(u16, u16), String> {
+        let master = self
+            .master
+            .lock()
+            .map_err(|e| format!("Lock failed: {e}"))?;
+        let size = master
+            .get_size()
+            .map_err(|e| format!("Get size failed: {e}"))?;
+        Ok((size.cols, size.rows))
     }
 
     pub fn kill(&self) -> Result<(), String> {

@@ -26,6 +26,7 @@ pub const MODEL_CLASS_RULES: ModelClassRules = ModelClassRules {
     internal_exact: &["<synthetic>"],
     local_markers: &["ollama/"],
     flat_markers: &["fugu"],
+    reported_markers: &["grok"],
     provider_prefixes: &[
         ("claude-", ModelProvider::Anthropic),
         ("gpt-", ModelProvider::Openai),
@@ -37,6 +38,7 @@ pub struct ModelClassRules {
     pub internal_exact: &'static [&'static str],
     pub local_markers: &'static [&'static str],
     pub flat_markers: &'static [&'static str],
+    pub reported_markers: &'static [&'static str],
     pub provider_prefixes: &'static [(&'static str, ModelProvider)],
 }
 
@@ -47,6 +49,7 @@ pub enum ModelClass {
     Local,
     Internal,
     Flat,
+    Reported,
     Unknown,
 }
 
@@ -77,7 +80,10 @@ impl ModelProvider {
 
 impl ModelClass {
     pub const fn is_covered(self) -> bool {
-        matches!(self, Self::Priced | Self::Local | Self::Flat)
+        matches!(
+            self,
+            Self::Priced | Self::Local | Self::Flat | Self::Reported
+        )
     }
 }
 
@@ -120,7 +126,9 @@ impl Price {
 /// Reference rates, keyed by the most specific name that has its own price.
 ///
 /// Anthropic rows: model list cached 2026-06-24 (Claude API reference).
-/// OpenAI rows: GPT-5.6 Sol/Terra/Luna lineup recorded 2026-08-10.
+/// OpenAI rows: GPT-5.6 Sol/Terra/Luna lineup recorded 2026-08-10;
+/// terra/luna corrected and gpt-5.5 / gpt-5.4 added 2026-08-18
+/// (independent aggregator cross-check + cache-read = 10% of input).
 pub const DEFAULT_PRICES: &[(&str, Price)] = &[
     // --- Anthropic -------------------------------------------------------
     ("fable-5", Price::anthropic(10.0, 50.0)),
@@ -134,8 +142,10 @@ pub const DEFAULT_PRICES: &[(&str, Price)] = &[
     ("haiku-4.5", Price::anthropic(1.0, 5.0)),
     // --- OpenAI (Codex) --------------------------------------------------
     ("gpt-5.6-sol", Price::openai(5.0, 30.0, 0.50)),
-    ("gpt-5.6-terra", Price::openai(2.5, 15.0, 0.20)),
-    ("gpt-5.6-luna", Price::openai(1.0, 6.0, 0.02)),
+    ("gpt-5.6-terra", Price::openai(2.0, 12.0, 0.20)),
+    ("gpt-5.6-luna", Price::openai(0.20, 1.20, 0.02)),
+    ("gpt-5.5", Price::openai(5.0, 30.0, 0.50)),
+    ("gpt-5.4", Price::openai(2.50, 15.00, 0.25)),
 ];
 
 /// Stem -> display family. Longest matching stem wins; a raw string that
@@ -305,6 +315,13 @@ impl PriceTable {
             .any(|marker| normalized.contains(marker))
         {
             return ModelClass::Flat;
+        }
+        if MODEL_CLASS_RULES
+            .reported_markers
+            .iter()
+            .any(|marker| normalized.contains(marker))
+        {
+            return ModelClass::Reported;
         }
         if self.lookup_catalog(raw).is_some() {
             ModelClass::Priced

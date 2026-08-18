@@ -9,8 +9,8 @@ vi.mock("../../src/lib/ailog", async (importOriginal) => ({
   ailogSessionDetail: vi.fn(), ailogSessionSummarize: vi.fn(), ailogSummarizeStatus: vi.fn(),
 }));
 
-import { ailogIndexStart, ailogIndexStatus, ailogSessionDetail, ailogSessionSummarize, ailogSummarizeStatus } from "../../src/lib/ailog";
-import { __resetAilogStoreForTests, jobDisplayError, useAilogStore } from "../../src/stores/ailogStore";
+import { ailogIndexStart, ailogIndexStatus, ailogSessionDetail, ailogSessionSummarize, ailogSummarizeStatus, emptyFilters } from "../../src/lib/ailog";
+import { __resetAilogStoreForTests, jobDisplayError, selectionFilters, useAilogStore } from "../../src/stores/ailogStore";
 
 const indexStatus = (lastError: string | null, running = false) => ({ running, filesDone: 0, filesTotal: 0, sessions: 0, lastFinishedAt: 1, lastError });
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>((res) => { resolve = res; }); return { promise, resolve }; }
@@ -82,12 +82,12 @@ describe("AI log store U0", () => {
   });
 
   it("sends pivot rowBy/colBy and auto-switches a duplicate axis", async () => {
-    useAilogStore.getState().setPivotRowBy("model");
-    expect(useAilogStore.getState().pivotRowBy).toBe("model");
+    useAilogStore.getState().setPivotRowBy("model_raw");
+    expect(useAilogStore.getState().pivotRowBy).toBe("model_raw");
     expect(useAilogStore.getState().pivotColBy).toBe("project");
     await Promise.resolve();
     const pivotCall = invokeMock.mock.calls.find((call) => call[0] === "ailog_pivot");
-    expect(pivotCall?.[1]).toMatchObject({ options: { rowBy: "model", colBy: "project" } });
+    expect(pivotCall?.[1]).toMatchObject({ options: { rowBy: "model_raw", colBy: "project" } });
   });
 
   it("sends filters.includeSidechain rather than snake_case", async () => {
@@ -97,5 +97,37 @@ describe("AI log store U0", () => {
     const filters = (seriesCall?.[1] as { filters: Record<string, unknown> } | undefined)?.filters;
     expect(filters).toMatchObject({ includeSidechain: true });
     expect(filters).not.toHaveProperty("include_sidechain");
+  });
+});
+
+describe("selectionFilters", () => {
+  it("puts model and project on the filters together", () => {
+    const filters = selectionFilters(emptyFilters(), {
+      model: { key: "gpt-5.6-sol", label: "gpt-5.6-sol" },
+      project: { key: "mycmux", label: "mycmux" },
+    });
+    expect(filters.models).toEqual(["gpt-5.6-sol"]);
+    expect(filters.projects).toEqual(["mycmux"]);
+  });
+
+  it("puts a model-only selection on models", () => {
+    const filters = selectionFilters(emptyFilters(), {
+      model: { key: "gpt-5.6-sol", label: "gpt-5.6-sol" },
+    });
+    expect(filters.models).toEqual(["gpt-5.6-sol"]);
+    expect(filters.projects).toEqual([]);
+  });
+
+  it("puts a project-only selection on projects", () => {
+    const filters = selectionFilters(emptyFilters(), {
+      project: { key: "mycmux", label: "mycmux" },
+    });
+    expect(filters.models).toEqual([]);
+    expect(filters.projects).toEqual(["mycmux"]);
+  });
+
+  it("passes filters through when selection is null", () => {
+    const base = emptyFilters();
+    expect(selectionFilters(base, null)).toBe(base);
   });
 });

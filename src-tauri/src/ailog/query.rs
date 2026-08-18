@@ -376,6 +376,7 @@ pub struct PriceCoverage {
     pub local: PriceClassCoverage,
     pub internal: PriceClassCoverage,
     pub flat: PriceClassCoverage,
+    pub reported: PriceClassCoverage,
     pub unknown: PriceClassCoverage,
     pub covered_token_ratio: f64,
 }
@@ -386,6 +387,7 @@ pub(crate) struct PriceCoverageAcc {
     local: (BTreeSet<String>, i64),
     internal: (BTreeSet<String>, i64),
     flat: (BTreeSet<String>, i64),
+    reported: (BTreeSet<String>, i64),
     unknown: (BTreeSet<String>, i64),
 }
 
@@ -408,6 +410,7 @@ impl PriceCoverageAcc {
             ModelClass::Local => &mut self.local,
             ModelClass::Internal => &mut self.internal,
             ModelClass::Flat => &mut self.flat,
+            ModelClass::Reported => &mut self.reported,
             ModelClass::Unknown => &mut self.unknown,
         };
         if let Some(model) = model {
@@ -424,13 +427,14 @@ impl PriceCoverageAcc {
         // Internal rows (<synthetic>) have no cost concept at all, so they sit
         // outside the ratio: the label answers "of the tokens that could carry
         // a cost, how many are priced?"
-        let total = self.priced.1 + self.local.1 + self.flat.1 + self.unknown.1;
-        let covered = self.priced.1 + self.local.1 + self.flat.1;
+        let total = self.priced.1 + self.local.1 + self.flat.1 + self.reported.1 + self.unknown.1;
+        let covered = self.priced.1 + self.local.1 + self.flat.1 + self.reported.1;
         PriceCoverage {
             priced: as_coverage(&self.priced),
             local: as_coverage(&self.local),
             internal: as_coverage(&self.internal),
             flat: as_coverage(&self.flat),
+            reported: as_coverage(&self.reported),
             unknown: as_coverage(&self.unknown),
             covered_token_ratio: if total > 0 {
                 covered as f64 / total as f64
@@ -2725,7 +2729,7 @@ impl Default for PivotOptions {
     fn default() -> Self {
         Self {
             row_by: "project".to_string(),
-            col_by: "model".to_string(),
+            col_by: "model_raw".to_string(),
         }
     }
 }
@@ -3016,7 +3020,7 @@ pub struct ModelsOptions {
 impl Default for ModelsOptions {
     fn default() -> Self {
         Self {
-            granularity: "family".to_string(),
+            granularity: "raw".to_string(),
             bucket: "day".to_string(),
         }
     }
@@ -3266,6 +3270,10 @@ pub struct SessionRow {
     pub origin: Option<String>,
     pub primary_model: Option<String>,
     pub model_count: i64,
+    /// 期間内に使われた生モデル名。入出力トークンの多い順、最大3件。
+    pub range_models: Vec<String>,
+    /// 期間内の distinct 生モデル数。
+    pub range_model_count: i64,
     pub is_sidechain: bool,
     pub work_tags: Vec<String>,
     pub started_at: Option<i64>,
@@ -3312,6 +3320,101 @@ fn first_sentence(value: String) -> Option<String> {
     non_blank(value[..end].to_string())
 }
 
+const UNKNOWN_RANGE_MODEL: &str = "(unknown)";
+const RANGE_MODEL_LIMIT: usize = 3;
+
+fn range_model_key(model: Option<&str>) -> String {
+    match model {
+        Some(name) if !name.is_empty() => name.to_string(),
+        _ => UNKNOWN_RANGE_MODEL.to_string(),
+    }
+}
+
+/// Rank models by in+out tokens (desc), then raw name (asc). Returns the top
+/// three names and the distinct count. Shared by the rollup and raw session
+/// list so the two paths cannot drift.
+fn top_range_models(tokens_by_model: &BTreeMap<String, i64>) -> (Vec<String>, i64) {
+    let mut ranked: Vec<(&str, i64)> = tokens_by_model
+        .iter()
+        .map(|(name, tokens)| (name.as_str(), *tokens))
+        .collect();
+    ranked.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(right.0)));
+    let models = ranked
+        .into_iter()
+        .take(RANGE_MODEL_LIMIT)
+        .map(|(name, _)| name.to_string())
+        .collect();
+    (models, tokens_by_model.len() as i64)
+}
+
+fn apply_range_models(
+    row: &mut SessionRow,
+    tokens_by_model: Option<&BTreeMap<String, i64>>,
+) {
+    let empty = BTreeMap::new();
+    let (models, count) = top_range_models(tokens_by_model.unwrap_or(&empty));
+    row.range_models = models;
+    row.range_model_count = count;
+}
+
+fn fill_raw_range_models(
+    conn: &Connection,
+    rows: &mut [SessionRow],
+    from: i64,
+    to: i64,
+) -> Result<(), String> {
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let requested = std::iter::repeat("(?, ?)")
+        .take(rows.len())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "WITH requested(kind, session_id) AS (VALUES {requested}) \
+         SELECT t.kind, t.session_id, COALESCE(t.model, ''), \
+                SUM(t.input_tokens + t.output_tokens) \
+           FROM turn t JOIN requested q ON q.kind = t.kind AND q.session_id = t.session_id \
+          WHERE t.ts >= ? AND t.ts <= ? \
+          GROUP BY 1, 2, 3"
+    );
+    let mut params = Vec::with_capacity(rows.len() * 2 + 2);
+    for row in rows.iter() {
+        params.push(SqlValue::Text(row.kind.clone()));
+        params.push(SqlValue::Text(row.session_id.clone()));
+    }
+    params.push(SqlValue::Integer(from));
+    params.push(SqlValue::Integer(to));
+    let mut tokens: BTreeMap<SessionKey, BTreeMap<String, i64>> = BTreeMap::new();
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|err| format!("prepare session range models: {err}"))?;
+    let result = stmt
+        .query_map(params_from_iter(params.iter()), |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, Option<i64>>(3)?.unwrap_or(0),
+            ))
+        })
+        .map_err(|err| format!("query session range models: {err}"))?;
+    for row in result {
+        let (kind, session_id, model, tokens_sum) =
+            row.map_err(|err| format!("read session range model: {err}"))?;
+        *tokens
+            .entry((kind, session_id))
+            .or_default()
+            .entry(range_model_key(Some(&model)))
+            .or_default() += tokens_sum;
+    }
+    for row in rows.iter_mut() {
+        let key = (row.kind.clone(), row.session_id.clone());
+        apply_range_models(row, tokens.get(&key));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod display_title_tests {
     use super::display_title;
@@ -3342,6 +3445,36 @@ mod display_title_tests {
             ),
             Some("first sentence。".to_string()),
         );
+    }
+}
+
+#[cfg(test)]
+mod range_model_tests {
+    use super::{top_range_models, UNKNOWN_RANGE_MODEL};
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn ranks_by_tokens_then_name_and_caps_at_three() {
+        let mut tokens = BTreeMap::new();
+        tokens.insert("high-cost-low-tokens".to_string(), 20);
+        tokens.insert("zero-cost-high-tokens".to_string(), 20_000);
+        tokens.insert("mid-b".to_string(), 100);
+        tokens.insert("mid-a".to_string(), 100);
+        let (models, count) = top_range_models(&tokens);
+        assert_eq!(
+            models,
+            vec![
+                "zero-cost-high-tokens".to_string(),
+                "mid-a".to_string(),
+                "mid-b".to_string()
+            ]
+        );
+        assert_eq!(count, 4);
+    }
+
+    #[test]
+    fn unknown_sentinel_is_the_usage_group_key() {
+        assert_eq!(UNKNOWN_RANGE_MODEL, "(unknown)");
     }
 }
 
@@ -3429,6 +3562,8 @@ fn sessions_raw(
                 origin: row.get(6)?,
                 primary_model: row.get(7)?,
                 model_count: row.get(8)?,
+                range_models: Vec::new(),
+                range_model_count: 0,
                 is_sidechain: row.get::<_, i64>(9)? != 0,
                 work_tags: parse_json_array(row.get::<_, Option<String>>(10)?.as_deref()),
                 started_at: row.get(11)?,
@@ -3445,9 +3580,10 @@ fn sessions_raw(
             })
         })
         .map_err(|err| format!("run session page: {err}"))?;
-    let rows = result_rows
+    let mut rows = result_rows
         .collect::<Result<Vec<_>, _>>()
         .map_err(|err| format!("read session row: {err}"))?;
+    fill_raw_range_models(conn, &mut rows, resolved.from, resolved.to)?;
 
     let timings = ReportTimings {
         sql_ms: elapsed_ms(started),
@@ -3484,13 +3620,18 @@ fn aggregate_session_page(
     options: &SessionsOptions,
 ) -> Result<(Vec<SessionRow>, i64), String> {
     let mut eligible: BTreeMap<SessionKey, SessionSortAcc> = BTreeMap::new();
+    let mut model_tokens: BTreeMap<SessionKey, BTreeMap<String, i64>> = BTreeMap::new();
     for row in source_rows {
-        let entry = eligible
-            .entry((row.kind.clone(), row.session_id.clone()))
-            .or_default();
+        let key = (row.kind.clone(), row.session_id.clone());
+        let entry = eligible.entry(key.clone()).or_default();
         entry.cost += row.cost;
         entry.turns += row.turns;
         entry.recent = entry.recent.max(row.last_ts);
+        *model_tokens
+            .entry(key)
+            .or_default()
+            .entry(range_model_key(row.model.as_deref()))
+            .or_default() += row.input + row.output;
     }
     let total = eligible.len() as i64;
     let mut ranked: Vec<(SessionKey, SessionSortAcc)> = eligible.into_iter().collect();
@@ -3599,6 +3740,8 @@ fn aggregate_session_page(
                 origin: row.get(6)?,
                 primary_model: row.get(7)?,
                 model_count: row.get(8)?,
+                range_models: Vec::new(),
+                range_model_count: 0,
                 is_sidechain: row.get::<_, i64>(9)? != 0,
                 work_tags: parse_json_array(row.get::<_, Option<String>>(10)?.as_deref()),
                 started_at: row.get(11)?,
@@ -3617,7 +3760,8 @@ fn aggregate_session_page(
         })
         .map_err(|err| format!("query rollup session page: {err}"))?;
     for row in result {
-        let (key, value) = row.map_err(|err| format!("read rollup session page: {err}"))?;
+        let (key, mut value) = row.map_err(|err| format!("read rollup session page: {err}"))?;
+        apply_range_models(&mut value, model_tokens.get(&key));
         by_key.insert(key, value);
     }
     Ok((
@@ -4661,6 +4805,8 @@ pub fn session_detail(
             origin,
             primary_model,
             model_count,
+            range_models: Vec::new(),
+            range_model_count: 0,
             is_sidechain,
             work_tags: parse_json_array(work_tags.as_deref()),
             started_at,

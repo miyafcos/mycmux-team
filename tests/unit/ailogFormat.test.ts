@@ -13,6 +13,7 @@ import {
   formatPct,
   formatRatio,
   formatTokens,
+  formatTokensFull,
   formatUsd,
   formatUsdShort,
   parseDayInput,
@@ -32,8 +33,8 @@ describe("number formatting", () => {
     expect(formatUsd(0)).toBe("$0.00");
     expect(formatUsdShort(27_350.4)).toBe("$27,350");
     expect(formatCount(76_105)).toBe("76,105");
-    expect(formatTokens(12_345_678)).toBe("12.3M tok");
-    expect(formatTokens(4_512)).toBe("4.5k tok");
+    expect(formatTokens(12_345_678)).toBe("1,234.6万 tok");
+    expect(formatTokens(4_512)).toBe("4,512 tok");
     expect(formatTokens(938)).toBe("938 tok");
     expect(formatRatio(0.9783)).toBe("97.8%");
     expect(formatPct(59.12)).toBe("59.1%");
@@ -44,6 +45,24 @@ describe("number formatting", () => {
     expect(formatUsd(Number.NaN)).toBe("$0.00");
     expect(formatTokens(Number.POSITIVE_INFINITY)).toBe("0 tok");
     expect(formatRatio(Number.NaN)).toBe("0.0%");
+  });
+
+  it("uses 万・億・兆 with carry and grouped mantissa", () => {
+    expect(formatTokens(0)).toBe("0 tok");
+    expect(formatTokens(9_999)).toBe("9,999 tok");
+    expect(formatTokens(10_000)).toBe("1.0万 tok");
+    expect(formatTokens(12_345_678)).toBe("1,234.6万 tok");
+    expect(formatTokens(99_995_000)).toBe("9,999.5万 tok");
+    expect(formatTokens(99_999_500)).toBe("1.0億 tok");
+    expect(formatTokens(100_000_000)).toBe("1.0億 tok");
+    expect(formatTokens(1_234_567_890)).toBe("12.3億 tok");
+    expect(formatTokens(999_999_950_000)).toBe("1.0兆 tok");
+    expect(formatTokens(1_500_000_000_000)).toBe("1.5兆 tok");
+    expect(formatTokens(-12_345_678)).toBe("-1,234.6万 tok");
+    expect(formatTokens(-99_999_500)).toBe("-1.0億 tok");
+    expect(formatTokens(Number.POSITIVE_INFINITY)).toBe("0 tok");
+    expect(formatTokens(Number.NaN)).toBe("0 tok");
+    expect(formatTokensFull(12_345_678)).toBe("12,345,678 tok");
   });
 
   it("marks direction on the compare-previous delta", () => {

@@ -91,12 +91,10 @@ export function jobDisplayError<S extends { running: boolean; lastError: string 
   return job.actionError ?? job.statusError ?? jobBackgroundError(job);
 }
 
-export type SelectionType = "model" | "project";
-
+export interface AilogSelectionPart { key: string; label: string; }
 export interface AilogSelection {
-  type: SelectionType;
-  key: string;
-  label: string;
+  model?: AilogSelectionPart;
+  project?: AilogSelectionPart;
 }
 
 interface AilogState {
@@ -351,7 +349,7 @@ export function invalidateAilogCaches(): void {
 export function isServerFilterable(
   selection: AilogSelection | null,
 ): boolean {
-  return selection !== null;
+  return Boolean(selection?.model || selection?.project);
 }
 
 export function selectionFilters<T extends { models: string[]; projects: string[] }>(
@@ -359,8 +357,10 @@ export function selectionFilters<T extends { models: string[]; projects: string[
   selection: AilogSelection | null,
 ): T {
   if (!isServerFilterable(selection) || !selection) return filters;
-  if (selection.type === "model") return { ...filters, models: [selection.key] };
-  return { ...filters, projects: [selection.key] };
+  let out = filters;
+  if (selection.model) out = { ...out, models: [selection.model.key] };
+  if (selection.project) out = { ...out, projects: [selection.project.key] };
+  return out;
 }
 
 const initialState = {
@@ -371,10 +371,10 @@ const initialState = {
   summaryPreset: "7d" as SummaryRangePreset,
   excludeSynthetic: true,
   includeSidechain: false,
-  granularity: "family" as const,
-  usageSeriesAxis: "model" as SeriesGroupBy,
+  granularity: "raw" as const,
+  usageSeriesAxis: "model_raw" as SeriesGroupBy,
   pivotRowBy: "project" as PivotAxis,
-  pivotColBy: "model" as PivotAxis,
+  pivotColBy: "model_raw" as PivotAxis,
   sessionSort: "rework" as SessionSort,
   sessionPage: 0,
   selection: null,
@@ -456,7 +456,8 @@ export const useAilogStore = create<AilogState>((set, get) => ({
   setSessionSort: (sessionSort) => set({ sessionSort, sessionPage: 0 }),
   setSessionPage: (sessionPage) => set({ sessionPage: Math.max(0, sessionPage) }),
   setSelection: (selection) => {
-    set({ selection, sessionPage: 0 });
+    const next = selection && (selection.model || selection.project) ? selection : null;
+    set({ selection: next, sessionPage: 0 });
   },
   setBreakdownDimension: (breakdownDimension) => {
     set({ breakdownDimension });

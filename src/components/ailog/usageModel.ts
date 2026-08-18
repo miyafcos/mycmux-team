@@ -14,8 +14,10 @@ import {
   formatBucketLabel,
   formatCount,
   formatTokens,
+  formatTokensFull,
   formatUsd,
   kindLabel,
+  type PivotAxis,
   type PriceCoverage,
   type RhythmSlot,
   type SeriesBucket,
@@ -115,22 +117,73 @@ export function formatMetric(value: number, metric: UsageMetric): string {
   return unit === "tokens" ? formatTokens(value) : formatCount(value);
 }
 
-export function groupByLabel(groupBy: SeriesGroupBy): string {
-  switch (groupBy) {
-    case "provider":
-      return "会社";
-    case "model":
-      return "系統";
-    case "model_raw":
-      return "モデル";
-    case "project":
-      return "案件";
-    case "kind":
-      return "CLI";
-    case "effort":
-      return "effort";
-  }
+export function formatMetricFull(value: number, metric: UsageMetric): string {
+  const unit = usageMetricInfo(metric).unit;
+  if (unit === "usd") return formatUsd(value);
+  return unit === "tokens" ? formatTokensFull(value) : formatCount(value);
 }
+
+export function metricUnit(metric: UsageMetric): "tokens" | "count" | "usd" {
+  return usageMetricInfo(metric).unit;
+}
+
+/**
+ * The one catalog of grouping axes.
+ *
+ * Both the bar chart's grouping control and the cross-table's row/column
+ * controls read from here. They used to keep separate lists, which let one grow
+ * an axis the other never showed.
+ *
+ * `model_raw` leads and is the default because it is the only axis that keeps
+ * gpt-5.6's sol / terra / luna apart; `model` folds them into the family.
+ * Naming them "モデル" and "シリーズ" makes the label match what the values
+ * actually look like on screen, which "系統" did not.
+ */
+export interface UsageAxis {
+  value: PivotAxis;
+  label: string;
+  /** Shown as the control's tooltip. */
+  hint: string;
+  /** Whether the bar chart may group a series by this axis. */
+  series: boolean;
+}
+
+export const USAGE_AXES: UsageAxis[] = [
+  {
+    value: "model_raw",
+    label: "モデル",
+    hint: "実際に選んだモデル。gpt-5.6 の sol / terra / luna を分けて見ます",
+    series: true,
+  },
+  {
+    value: "model",
+    label: "シリーズ",
+    hint: "sol / terra / luna をまとめた括り (gpt-5.6, opus-5)",
+    series: true,
+  },
+  { value: "provider", label: "会社", hint: "Anthropic / OpenAI / Google / ローカル", series: true },
+  {
+    value: "project",
+    label: "案件",
+    hint: "作業パスと編集・参照ファイルから決めた案件名",
+    series: true,
+  },
+  { value: "effort", label: "effort", hint: "Codex の reasoning effort", series: true },
+  { value: "kind", label: "CLI", hint: "Claude Code / Codex / Grok", series: true },
+  { value: "origin", label: "起動元", hint: "セッションを起こした経路", series: false },
+];
+
+/** The subset the bar chart may group by, narrowed to the series axis type. */
+export const SERIES_AXES = USAGE_AXES.filter(
+  (axis): axis is UsageAxis & { value: SeriesGroupBy } => axis.series,
+);
+
+export function axisLabel(axis: PivotAxis): string {
+  return USAGE_AXES.find((entry) => entry.value === axis)?.label ?? axis;
+}
+
+/** Long-standing name for the same lookup, kept for the series call sites. */
+export const groupByLabel = axisLabel;
 
 export function bucketNoun(bucket: UsageBucket): string {
   return bucket === "week" ? "週" : bucket === "month" ? "月" : "日";
@@ -191,6 +244,12 @@ export interface UsageModel {
   periodTotal: number;
   /** Groups folded into the "その他" band, if any. */
   foldedCount: number;
+  /**
+   * Names of those groups, ranked highest first, so the band can say what is
+   * inside it. A tier such as gpt-5.6-luna falls out of the top N over a long
+   * range, and an anonymous "その他" hides that it was ever measured.
+   */
+  foldedGroups: string[];
 }
 
 export const OTHER_GROUP = "その他";
@@ -308,6 +367,7 @@ export function buildUsageModel(
     max: days.reduce((max, day) => Math.max(max, day.total), 0),
     periodTotal: legend.reduce((sum, entry) => sum + entry.value, 0),
     foldedCount: folded.length,
+    foldedGroups: folded,
   };
 }
 

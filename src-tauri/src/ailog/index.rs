@@ -30,6 +30,7 @@ use crate::ailog::{
 /// Minimum gap between progress events, per spec §5.
 pub const PROGRESS_THROTTLE_MS: u128 = 250;
 const DERIVATION_VERSION: &str = "project-work-v2";
+const MODEL_CARRY_VERSION: &str = "1";
 
 #[derive(Debug, Clone)]
 pub struct IndexOptions {
@@ -384,6 +385,7 @@ pub async fn run_index(
                 rollup::mark_session_dirty(&tx, kind, session_id)?;
             }
             let rederived = rederive_projects_and_tags_if_needed(&tx, &prices)?;
+            let _carried = carry_forward_missing_models_if_needed(&tx, &prices)?;
             if rederived || !rollup::version_matches(&tx)? {
                 rollup::mark_all_dirty(&tx)?;
             }
@@ -590,6 +592,97 @@ fn rederive_projects_and_tags_if_needed(
         params![DERIVATION_VERSION],
     )
     .map_err(|err| format!("write derivation_version: {err}"))?;
+    Ok(true)
+}
+
+/// Fill `turn.model IS NULL` from the nearest non-null model in the same
+/// session. Transcript files are never reread.
+pub(crate) fn carry_forward_missing_models_if_needed(
+    tx: &Transaction<'_>,
+    prices: &PriceTable,
+) -> Result<bool, String> {
+    let current: Option<String> = tx
+        .query_row(
+            "SELECT value FROM index_state WHERE key = 'model_carry_version'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|err| format!("read model_carry_version: {err}"))?;
+    if current.as_deref() == Some(MODEL_CARRY_VERSION) {
+        return Ok(false);
+    }
+
+    let rows = {
+        let mut stmt = tx
+            .prepare(
+                "WITH nulls AS (
+                     SELECT kind, session_id, seq
+                     FROM turn
+                     WHERE model IS NULL
+                 ),
+                 knowns AS (
+                     SELECT kind, session_id, seq, model
+                     FROM turn
+                     WHERE model IS NOT NULL
+                 )
+                 SELECT n.kind, n.session_id, n.seq,
+                        COALESCE(
+                            (SELECT k.model FROM knowns k
+                             WHERE k.kind = n.kind
+                               AND k.session_id = n.session_id
+                               AND k.seq < n.seq
+                             ORDER BY k.seq DESC LIMIT 1),
+                            (SELECT k.model FROM knowns k
+                             WHERE k.kind = n.kind
+                               AND k.session_id = n.session_id
+                               AND k.seq > n.seq
+                             ORDER BY k.seq ASC LIMIT 1)
+                        ) AS carried
+                 FROM nulls n",
+            )
+            .map_err(|err| format!("prepare model carry: {err}"))?;
+        let mapped = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            })
+            .map_err(|err| format!("scan model carry: {err}"))?;
+        mapped
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|err| format!("read model carry: {err}"))?
+    };
+
+    let mut touched: HashSet<(String, String)> = HashSet::new();
+    for (kind, session_id, seq, carried) in rows {
+        let Some(carried) = carried.filter(|value| !value.is_empty()) else {
+            continue;
+        };
+        let id = price::normalize(&carried);
+        tx.execute(
+            "UPDATE turn SET model = ?3, model_family = ?4, model_variant = ?5 \
+             WHERE kind = ?1 AND session_id = ?2 AND seq = ?6",
+            params![kind, session_id, id.raw, id.family, id.variant, seq],
+        )
+        .map_err(|err| format!("update carried model: {err}"))?;
+        touched.insert((kind, session_id));
+    }
+
+    for (kind, session_id) in &touched {
+        recompute_session(tx, kind, session_id, prices)?;
+        rollup::mark_session_dirty(tx, kind, session_id)?;
+    }
+
+    tx.execute(
+        "INSERT INTO index_state (key, value) VALUES ('model_carry_version', ?1) \
+         ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        params![MODEL_CARRY_VERSION],
+    )
+    .map_err(|err| format!("write model_carry_version: {err}"))?;
     Ok(true)
 }
 

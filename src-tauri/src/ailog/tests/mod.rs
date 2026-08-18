@@ -1,6 +1,7 @@
 //! Unit tests for the AI log indexer. Populated in `fixtures.rs` /
 //! `parse_tests.rs` once the module compiles.
 
+mod ben3a_tests;
 mod fixtures;
 mod index_tests;
 mod learning_tests;

@@ -6,26 +6,28 @@
  * distinct from a local or flat-rate $0.
  */
 
-import { formatCount, formatTokens, formatUsd, SYNTHETIC_MODEL, type SeriesReport } from "../../lib/ailog";
+import { SYNTHETIC_MODEL, type SeriesReport } from "../../lib/ailog";
+import type { AilogSelection } from "../../stores/ailogStore";
 import {
   UNKNOWN_GROUP,
   costCoverageLabel,
-  formatMetric,
   groupByLabel,
   groupLabel,
+  metricUnit,
   metricValue,
+  usageMetricInfo,
   type UsageMetric,
 } from "./usageModel";
 import {
   Chip,
-  ScrollBox,
+  Num,
   ShareBar,
+  ThCell,
   noteStyle,
   tableStyle,
   tdLeftStyle,
   tdStyle,
   thLeftStyle,
-  thStyle,
 } from "./ui";
 
 interface Row {
@@ -76,10 +78,14 @@ export function UsageModelTable({
   report,
   metric,
   excludeSynthetic = true,
+  selection,
+  onSelect,
 }: {
   report: SeriesReport;
   metric: UsageMetric;
   excludeSynthetic?: boolean;
+  selection: AilogSelection | null;
+  onSelect: (selection: AilogSelection | null) => void;
 }) {
   const rows = buildModelRows(report, metric).filter((row) => !excludeSynthetic || row.group !== SYNTHETIC_MODEL);
   const total = rows.reduce((sum, row) => sum + row.metric, 0);
@@ -101,39 +107,75 @@ export function UsageModelTable({
     return <div style={noteStyle}>この期間に記録がありません。期間を広げるか、再インデックスしてください。</div>;
   }
 
+  const metricKind = metricUnit(metric);
+  const costSub = report.priceCoverage.coveredTokenRatio < 1
+    ? `単価既知の ${Math.round(report.priceCoverage.coveredTokenRatio * 100)}% 分`
+    : undefined;
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}>
-      <ScrollBox>
         <table style={tableStyle}>
+          <colgroup>
+            <col style={{ width: "18%" }} />
+            <col style={{ width: "9%" }} />
+            <col style={{ width: "12%" }} />
+            <col style={{ width: "8%" }} />
+            <col style={{ width: "8%" }} />
+            <col style={{ width: "8%" }} />
+            <col style={{ width: "8%" }} />
+            <col style={{ width: "6%" }} />
+            <col style={{ width: "7%" }} />
+            <col style={{ width: "6%" }} />
+            <col style={{ width: "10%" }} />
+          </colgroup>
           <thead>
             <tr>
               <th style={thLeftStyle}>{groupingLabel}</th>
-              <th style={thStyle}>選択中の指標</th>
-              <th style={thStyle}>シェア</th>
-              <th style={thStyle}>入力</th>
-              <th style={thStyle}>出力</th>
-              <th style={thStyle}>キャッシュ読み</th>
-              <th style={thStyle}>キャッシュ書き</th>
-              <th style={thStyle}>ターン</th>
-              <th style={thStyle}>セッション</th>
-              <th style={thStyle}>使用日数</th>
-              <th style={thStyle}>{costLabel}</th>
+              <ThCell main={usageMetricInfo(metric).label} />
+              <ThCell main="シェア" />
+              <ThCell main="入力" />
+              <ThCell main="出力" />
+              <ThCell main="キャッシュ" sub="読み" />
+              <ThCell main="キャッシュ" sub="書き" />
+              <ThCell main="ターン" />
+              <ThCell main="セッション" />
+              <ThCell main="使用" sub="日数" />
+              <ThCell main="コスト相当" sub={costSub} title={costLabel} />
             </tr>
           </thead>
           <tbody>
             {rows.map((row) => {
               const share = total > 0 ? (row.metric / total) * 100 : 0;
               const isUnknown = row.group === UNKNOWN_GROUP;
+              const clickable = (report.groupBy === "model" || report.groupBy === "model_raw")
+                && row.group !== UNKNOWN_GROUP
+                && row.group !== SYNTHETIC_MODEL;
+              const selected = Boolean(clickable && selection?.model?.key === row.group);
               const modelClass = classForGroup(row.group);
               const cost = modelClass === "unknown" || isUnknown
                 ? { value: "—", title: "単価未公表のため除外" }
                 : modelClass === "local"
-                  ? { value: formatUsd(0), title: "ローカル実行 — 費用なし" }
+                  ? { value: "usd", title: "ローカル実行 — 費用なし" }
                   : modelClass === "flat"
-                    ? { value: formatUsd(0), title: "定額プラン — 従量費用なし" }
-                    : { value: formatUsd(row.costUsd), title: undefined };
+                    ? { value: "usd", title: "定額プラン — 従量費用なし" }
+                    : { value: "usd", title: undefined };
               return (
-                <tr key={row.group}>
+                <tr
+                  key={row.group}
+                  aria-selected={selected || undefined}
+                  style={{
+                    background: selected ? "var(--cmux-selected)" : undefined,
+                    cursor: clickable ? "pointer" : undefined,
+                  }}
+                  onClick={() => {
+                    if (!clickable) return;
+                    if (selected) {
+                      onSelect(selection?.project ? { project: selection.project } : null);
+                    } else {
+                      onSelect({ ...selection, model: { key: row.group, label: groupLabel(row.group, report.groupBy) } });
+                    }
+                  }}
+                >
                   <td style={tdLeftStyle}>
                     <span style={{ display: "inline-flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
                       {groupLabel(row.group, report.groupBy)}
@@ -144,27 +186,28 @@ export function UsageModelTable({
                       ) : null}
                     </span>
                   </td>
-                  <td style={tdStyle}>{formatMetric(row.metric, metric)}</td>
+                  <td style={tdStyle}><Num value={row.metric} kind={metricKind} bare={metricKind === "tokens"} /></td>
                   <td style={tdStyle}>
                     <ShareBar pct={share} title={`${share.toFixed(1)}%`} />
                     <span style={{ marginLeft: 6 }}>{`${share.toFixed(1)}%`}</span>
                   </td>
-                  <td style={tdStyle}>{formatTokens(row.input)}</td>
-                  <td style={tdStyle}>{formatTokens(row.output)}</td>
-                  <td style={tdStyle}>{formatTokens(row.cacheRead)}</td>
-                  <td style={tdStyle}>{formatTokens(row.cacheWrite)}</td>
-                  <td style={tdStyle}>{formatCount(row.turns)}</td>
-                  <td style={tdStyle}>{formatCount(row.sessions)}</td>
-                  <td style={tdStyle}>{formatCount(row.days)}</td>
-                  <td style={{ ...tdStyle, color: cost.value === "—" ? "var(--cmux-text-tertiary)" : undefined }} title={cost.title}>{cost.value}</td>
+                  <td style={tdStyle}><Num value={row.input} kind="tokens" bare /></td>
+                  <td style={tdStyle}><Num value={row.output} kind="tokens" bare /></td>
+                  <td style={tdStyle}><Num value={row.cacheRead} kind="tokens" bare /></td>
+                  <td style={tdStyle}><Num value={row.cacheWrite} kind="tokens" bare /></td>
+                  <td style={tdStyle}><Num value={row.turns} kind="count" /></td>
+                  <td style={tdStyle}><Num value={row.sessions} kind="count" /></td>
+                  <td style={tdStyle}><Num value={row.days} kind="count" /></td>
+                  <td style={{ ...tdStyle, color: cost.value === "—" ? "var(--cmux-text-tertiary)" : undefined }}>
+                    {cost.value === "—" ? "—" : <Num value={row.costUsd} kind="usd" title={cost.title} />}
+                  </td>
                 </tr>
               );
             })}
           </tbody>
         </table>
-      </ScrollBox>
       <div style={noteStyle}>
-        セッション数は{groupingLabel}ごとに数えているため、合計は実際のセッション本数より多くなります (1 本が複数{groupingLabel}を使うため)。
+        セッション数は{groupingLabel}ごとに数えているため、合計は実際のセッション本数より多くなります (1 本が複数{groupingLabel}を使うため)。行をクリックするとそのモデルで全体を絞り込みます。
       </div>
     </div>
   );

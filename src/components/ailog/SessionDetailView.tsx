@@ -14,7 +14,6 @@ import {
   formatLocalDateTime,
   formatRatio,
   formatScore,
-  formatTokens,
   formatUsd,
   kindLabel,
   workTagHint,
@@ -24,7 +23,7 @@ import {
   type TranscriptReport,
 } from "../../lib/ailog";
 import { hashedColor } from "./palette";
-import { Chip, ScrollBox, noteStyle, subtleButtonStyle, tableStyle, tdLeftStyle, tdStyle, thLeftStyle, thStyle } from "./ui";
+import { Chip, Num, noteStyle, subtleButtonStyle, tableStyle, tdLeftStyle, tdStyle, thLeftStyle, thStyle } from "./ui";
 
 /** Above this many turns the bars are grouped so the chart stays readable. */
 const MAX_BARS = 240;
@@ -58,7 +57,7 @@ export function bucketTurns(turns: TurnDetail[], maxBars = MAX_BARS): { bars: Tu
         fromSeq: turn.seq,
         toSeq: turn.seq,
         costUsd: turn.costUsd,
-        model: turn.modelFamily ?? turn.model ?? "(unknown)",
+        model: turn.model ?? turn.modelFamily ?? "(unknown)",
         turns: 1,
       })),
       grouped: false,
@@ -71,7 +70,7 @@ export function bucketTurns(turns: TurnDetail[], maxBars = MAX_BARS): { bars: Tu
     // The group is coloured by the model that cost the most inside it.
     const perModel = new Map<string, number>();
     for (const turn of slice) {
-      const key = turn.modelFamily ?? turn.model ?? "(unknown)";
+      const key = turn.model ?? turn.modelFamily ?? "(unknown)";
       perModel.set(key, (perModel.get(key) ?? 0) + turn.costUsd);
     }
     const model = [...perModel.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? "(unknown)";
@@ -139,12 +138,12 @@ export function SessionDetailView({ detail, transcript, transcriptLoading, trans
         <div style={{ fontSize: "var(--cmux-font-size-xs)", fontWeight: 700, marginBottom: 4 }}>会話</div>
         {transcriptLoading ? <div style={noteStyle}>会話を読み込み中…</div> : null}
         {transcriptError ? <div style={{ ...noteStyle, color: "var(--cmux-red)" }}>{transcriptError}</div> : null}
-        {transcript ? <ScrollBox maxHeight={360}><div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        {transcript ? <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
           {transcript.messages.map((message, index) => message.role === "tool" ? (
             <details key={index} style={{ ...noteStyle, border: "1px solid var(--cmux-border)", borderRadius: 4, padding: "4px 6px" }}><summary>{`${message.toolName ?? "tool"}${message.toolTarget ? ` · ${message.toolTarget}` : ""}`}</summary>{message.text ? <pre style={{ margin: "6px 0 0", whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontFamily: "var(--cmux-font-mono, monospace)" }}>{message.text}</pre> : null}</details>
           ) : <div key={index} style={{ borderLeft: `3px solid ${message.role === "user" ? "var(--cmux-accent)" : "var(--cmux-border)"}`, paddingLeft: 8 }}><div style={{ ...noteStyle, fontWeight: 700 }}>{message.role === "user" ? "依頼" : "応答"}</div><div style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", lineHeight: 1.55, ...(expanded.has(index) ? {} : { display: "-webkit-box", WebkitLineClamp: 8, WebkitBoxOrient: "vertical", overflow: "hidden" }) }}>{message.text}</div>{message.text.split("\n").length > 8 ? <button type="button" style={subtleButtonStyle} onClick={() => setExpanded((old) => { const next = new Set(old); if (next.has(index)) next.delete(index); else next.add(index); return next; })}>{expanded.has(index) ? "折りたたむ" : "展開"}</button> : null}</div>)}
           {transcript.truncated ? <div style={noteStyle}>{`表示上限のため ${transcript.omittedCount} 件を省略しています`}</div> : null}
-        </div></ScrollBox> : null}
+        </div> : null}
       </div>
 
       <div>
@@ -152,8 +151,7 @@ export function SessionDetailView({ detail, transcript, transcriptLoading, trans
         {bars.length === 0 ? (
           <div style={noteStyle}>ターンの記録がありません。再インデックスすると取り込まれることがあります。</div>
         ) : (
-          <ScrollBox>
-            <div style={{ display: "grid", gridTemplateColumns: "minmax(420px, 1fr)" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr)" }}>
               <svg
                 viewBox={`0 0 ${chartWidth} ${chartHeight}`}
                 role="img"
@@ -179,7 +177,6 @@ export function SessionDetailView({ detail, transcript, transcriptLoading, trans
               })}
               </svg>
             </div>
-          </ScrollBox>
         )}
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 4, ...noteStyle }}>
           {models.map((model) => (
@@ -198,14 +195,16 @@ export function SessionDetailView({ detail, transcript, transcriptLoading, trans
           <div style={{ fontSize: "var(--cmux-font-size-xs)", fontWeight: 700, marginBottom: 4 }}>取り込み側（読み）</div>
           <div style={{ fontSize: 16, fontWeight: 700 }}>{formatUsd(breakdown.ingest.costUsd)}</div>
           <div style={noteStyle}>
-            {`${formatTokens(breakdown.ingest.tokens)}（入力 ${formatTokens(breakdown.ingest.input)} / キャッシュ読み ${formatTokens(breakdown.ingest.cacheRead)} / キャッシュ書き ${formatTokens(breakdown.ingest.cacheWrite)}）`}
+            <Num value={breakdown.ingest.tokens} kind="tokens" />
+            （入力 <Num value={breakdown.ingest.input} kind="tokens" /> / キャッシュ読み <Num value={breakdown.ingest.cacheRead} kind="tokens" /> / キャッシュ書き <Num value={breakdown.ingest.cacheWrite} kind="tokens" />）
           </div>
         </div>
         <div>
           <div style={{ fontSize: "var(--cmux-font-size-xs)", fontWeight: 700, marginBottom: 4 }}>生成側（書き）</div>
           <div style={{ fontSize: 16, fontWeight: 700 }}>{formatUsd(breakdown.generate.costUsd)}</div>
           <div style={noteStyle}>
-            {`${formatTokens(breakdown.generate.tokens)}（出力 ${formatTokens(breakdown.generate.output)} / 推論 ${formatTokens(breakdown.generate.reasoning)}）`}
+            <Num value={breakdown.generate.tokens} kind="tokens" />
+            （出力 <Num value={breakdown.generate.output} kind="tokens" /> / 推論 <Num value={breakdown.generate.reasoning} kind="tokens" />）
           </div>
         </div>
         <div>
@@ -228,8 +227,13 @@ export function SessionDetailView({ detail, transcript, transcriptLoading, trans
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 12 }}>
         <div style={{ minWidth: 0 }}>
           <div style={{ fontSize: "var(--cmux-font-size-xs)", fontWeight: 700, marginBottom: 4 }}>ツール別</div>
-          <ScrollBox maxHeight={200}>
-            <table style={tableStyle}>
+          <table style={tableStyle}>
+              <colgroup>
+                <col style={{ width: "40%" }} />
+                <col style={{ width: "20%" }} />
+                <col style={{ width: "20%" }} />
+                <col style={{ width: "20%" }} />
+              </colgroup>
               <thead>
                 <tr>
                   <th style={thLeftStyle}>ツール</th>
@@ -256,12 +260,15 @@ export function SessionDetailView({ detail, transcript, transcriptLoading, trans
                 ) : null}
               </tbody>
             </table>
-          </ScrollBox>
         </div>
 
         <div style={{ minWidth: 0 }}>
           <div style={{ fontSize: "var(--cmux-font-size-xs)", fontWeight: 700, marginBottom: 4 }}>手戻り</div>
           <table style={tableStyle}>
+            <colgroup>
+              <col style={{ width: "40%" }} />
+              <col style={{ width: "60%" }} />
+            </colgroup>
             <tbody>
               <tr>
                 <td style={tdLeftStyle}>スコア</td>

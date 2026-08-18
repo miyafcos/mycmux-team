@@ -14,6 +14,8 @@ export const MODEL_COLORS = [
   "#c2a3f2",
   "#e07a7a",
   "#9fb85a",
+  "#e8c547",
+  "#e07098",
 ];
 
 export const TAG_COLORS = [

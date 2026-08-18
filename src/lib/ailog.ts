@@ -121,7 +121,7 @@ export interface ModelRow {
   modelClass: ModelPriceClass;
 }
 
-export type ModelPriceClass = "priced" | "local" | "internal" | "flat" | "unknown";
+export type ModelPriceClass = "priced" | "local" | "internal" | "flat" | "reported" | "unknown";
 
 export interface PriceClassCoverage {
   models: string[];
@@ -133,6 +133,7 @@ export interface PriceCoverage {
   local: PriceClassCoverage;
   internal: PriceClassCoverage;
   flat: PriceClassCoverage;
+  reported: PriceClassCoverage;
   unknown: PriceClassCoverage;
   coveredTokenRatio: number;
 }
@@ -470,6 +471,8 @@ export interface SessionRow {
   origin: string | null;
   primaryModel: string | null;
   modelCount: number;
+  rangeModels: string[];
+  rangeModelCount: number;
   isSidechain: boolean;
   workTags: string[];
   startedAt: number | null;
@@ -1109,14 +1112,33 @@ export function formatCount(value: number): string {
   return Math.round(safe(value)).toLocaleString("en-US");
 }
 
-/** `12.3M tok` */
+const TOKEN_UNITS: [number, string][] = [[1e4, "万"], [1e8, "億"], [1e12, "兆"]];
+
+/** `1,234.6万 tok` */
 export function formatTokens(value: number): string {
   const tokens = safe(value);
   const abs = Math.abs(tokens);
-  if (abs >= 1_000_000_000) return `${(tokens / 1_000_000_000).toFixed(1)}B tok`;
-  if (abs >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M tok`;
-  if (abs >= 1_000) return `${(tokens / 1_000).toFixed(1)}k tok`;
-  return `${Math.round(tokens).toLocaleString("en-US")} tok`;
+  if (abs < TOKEN_UNITS[0][0]) return `${formatCount(tokens)} tok`;
+  let index = 0;
+  for (let i = TOKEN_UNITS.length - 1; i >= 0; i -= 1) {
+    if (abs >= TOKEN_UNITS[i][0]) { index = i; break; }
+  }
+  let mantissa = Number((tokens / TOKEN_UNITS[index][0]).toFixed(1));
+  // 9,999.95万 rounds to 10,000.0万; carry it into the next unit instead.
+  if (Math.abs(mantissa) >= 10_000 && index < TOKEN_UNITS.length - 1) {
+    index += 1;
+    mantissa = Number((tokens / TOKEN_UNITS[index][0]).toFixed(1));
+  }
+  const shown = mantissa.toLocaleString("en-US", {
+    minimumFractionDigits: 1,
+    maximumFractionDigits: 1,
+  });
+  return `${shown}${TOKEN_UNITS[index][1]} tok`;
+}
+
+/** Full digits, for the tooltip behind the rounded display. */
+export function formatTokensFull(value: number): string {
+  return `${formatCount(value)} tok`;
 }
 
 /** Takes a 0..1 ratio. `97.8%` */

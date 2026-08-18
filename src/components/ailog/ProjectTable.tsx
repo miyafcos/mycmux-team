@@ -13,7 +13,7 @@ import {
   type Overview,
 } from "../../lib/ailog";
 import type { AilogSelection } from "../../stores/ailogStore";
-import { ScrollBox, ShareBar, noteStyle, tableStyle, tdLeftStyle, tdStyle, thLeftStyle, thStyle } from "./ui";
+import { ShareBar, VScrollBox, noteStyle, tableStyle, tdLeftStyle, tdStyle, thLeftStyle, thStyle } from "./ui";
 
 export function ProjectTable({
   report,
@@ -39,8 +39,28 @@ export function ProjectTable({
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}>
-      <ScrollBox maxHeight={320}>
+      <VScrollBox maxHeight={320}>
         <table style={tableStyle}>
+          <colgroup>
+            {projectMode ? (
+              <>
+                <col style={{ width: "26%" }} />
+                <col style={{ width: "10%" }} />
+                <col style={{ width: "14%" }} />
+                <col style={{ width: "16%" }} />
+                <col style={{ width: "24%" }} />
+                <col style={{ width: "10%" }} />
+              </>
+            ) : (
+              <>
+                <col style={{ width: "50%" }} />
+                <col style={{ width: "10%" }} />
+                <col style={{ width: "14%" }} />
+                <col style={{ width: "16%" }} />
+                <col style={{ width: "10%" }} />
+              </>
+            )}
+          </colgroup>
           <thead>
             <tr>
               <th style={thLeftStyle}>{dimensionLabel}</th>
@@ -53,13 +73,20 @@ export function ProjectTable({
           </thead>
           <tbody>
             {report.rows.map((row) => {
-              const selected = projectMode && selection?.type === "project" && selection.key === row.key;
+              const selected = projectMode && selection?.project?.key === row.key;
               return (
                 <tr
                   key={row.key}
                   aria-selected={selected}
                   style={{ background: selected ? "var(--cmux-selected)" : undefined, cursor: projectMode ? "pointer" : undefined }}
-                  onClick={() => projectMode && onSelect(selected ? null : { type: "project", key: row.key, label: row.key })}
+                  onClick={() => {
+                    if (!projectMode) return;
+                    if (selected) {
+                      onSelect(selection?.model ? { model: selection.model } : null);
+                    } else {
+                      onSelect({ ...selection, project: { key: row.key, label: row.key } });
+                    }
+                  }}
                 >
                   <td style={tdLeftStyle} title={row.key}>
                     {row.key}
@@ -79,7 +106,7 @@ export function ProjectTable({
             })}
           </tbody>
         </table>
-      </ScrollBox>
+      </VScrollBox>
       <div style={noteStyle}>
         {projectMode ? `${formatCount(report.rows.length)} 案件。行をクリックするとその案件で全体を絞り込みます。案件名は作業パスと編集・参照ファイルから決定します。` : formatCount(report.rows.length)}
       </div>
