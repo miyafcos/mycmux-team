@@ -19,10 +19,10 @@ describe("TerminalTurnChip", () => {
     expect(html).toContain("ターン 3/12");
     expect(html).toContain("実装して確認して");
     expect(html).toContain('aria-label="前のターン"');
-    expect(html).toContain('aria-label="次のターン"');
+    expect(html).toContain('aria-label="次のターン / 最新に戻る"');
   });
 
-  it("disables both jump buttons when total is 1", () => {
+  it("keeps the down arrow pressable on the only turn so it can return to the tail", () => {
     const html = renderToStaticMarkup(
       <TerminalTurnChip
         index={0}
@@ -31,11 +31,12 @@ describe("TerminalTurnChip", () => {
         onPrev={vi.fn()}
         onNext={vi.fn()}
         canPrev={false}
-        canNext={false}
+        canNext
       />,
     );
     expect(html).toContain("ターン 1/1");
-    expect(html.match(/disabled/g)?.length).toBeGreaterThanOrEqual(2);
+    expect(html.match(/disabled/g)?.length).toBe(1);
+    expect(html).toContain('title="次のターン / 最新に戻る"');
   });
 
   it("exposes Japanese aria-labels on the chip and buttons", () => {
@@ -52,7 +53,7 @@ describe("TerminalTurnChip", () => {
     );
     expect(html).toContain('aria-label="ターン 1/3"');
     expect(html).toContain('aria-label="前のターン"');
-    expect(html).toContain('aria-label="次のターン"');
+    expect(html).toContain('aria-label="次のターン / 最新に戻る"');
   });
 
   it("keeps a long label as a single DOM element", () => {

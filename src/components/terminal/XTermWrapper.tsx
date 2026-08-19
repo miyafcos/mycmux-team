@@ -705,7 +705,12 @@ export default memo(function XTermWrapper({
     const currentIndex = lastTurnChipRef.current?.index
       ?? findTurnIndexForViewport(marks, currentTerm.buffer.active.viewportY);
     const target = pickJumpTarget(marks, currentIndex, direction);
-    if (!target) return;
+    if (!target) {
+      // Past the last turn there is no next mark; down means back to the live tail.
+      if (direction === 1) currentTerm.scrollToBottom();
+      refreshTurnChip();
+      return;
+    }
     currentTerm.scrollToLine(target.line);
     refreshTurnChip();
   }, [refreshTurnChip, sessionId]);
@@ -2468,7 +2473,8 @@ export default memo(function XTermWrapper({
           total={turnChip.total}
           label={turnChip.label}
           canPrev={turnChip.index > 0}
-          canNext={turnChip.index < turnChip.total - 1}
+          canNext
+
           onPrev={() => jumpTurn(-1)}
           onNext={() => jumpTurn(1)}
         />

@@ -1062,14 +1062,21 @@ div:hover>.tab-close-btn {
 }
 
 .terminal-turn-chip__nav button {
+  min-width: 22px;
+  height: 22px;
   margin: 0;
   padding: 0 var(--cmux-space-2);
-  border: 0;
-  background: transparent;
+  border: 1px solid var(--cmux-border);
+  border-radius: 4px;
+  background: var(--cmux-bg);
   color: var(--cmux-text);
   font-size: var(--cmux-font-size-xs);
   line-height: 1.2;
   cursor: pointer;
+}
+
+.terminal-turn-chip__nav button:hover:not(:disabled) {
+  background: var(--cmux-hover);
 }
 
 .terminal-turn-chip__nav button:disabled {

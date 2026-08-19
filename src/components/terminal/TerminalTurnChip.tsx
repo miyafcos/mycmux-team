@@ -34,6 +34,7 @@ export const TerminalTurnChip = memo(function TerminalTurnChip({
         <button
           type="button"
           aria-label="前のターン"
+          title="前のターン"
           disabled={!canPrev}
           onMouseDown={keepTerminalFocus}
           onClick={onPrev}
@@ -42,7 +43,8 @@ export const TerminalTurnChip = memo(function TerminalTurnChip({
         </button>
         <button
           type="button"
-          aria-label="次のターン"
+          aria-label="次のターン / 最新に戻る"
+          title="次のターン / 最新に戻る"
           disabled={!canNext}
           onMouseDown={keepTerminalFocus}
           onClick={onNext}
