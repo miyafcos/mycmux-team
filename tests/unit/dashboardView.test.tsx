@@ -43,6 +43,10 @@ vi.mock("../../src/components/dashboard/WatchStatusRow", () => ({
   WatchStatusRow: () => <div data-watch-status="true" />,
 }));
 
+vi.mock("../../src/components/workspace/BrowserPane", () => ({
+  default: () => <div data-dashboard-preview-pane="true" />,
+}));
+
 import { clampDashboardChatDropIndicatorOffset, DashboardView } from "../../src/components/dashboard/DashboardView";
 import { dashboardStrings } from "../../src/components/dashboard/dashboardStrings";
 import { useInterventionFeedbackStore } from "../../src/components/dashboard/interventionRouting";
@@ -51,9 +55,12 @@ import { logicalSessionId } from "../../src/lib/logicalSessionId";
 import type { LiveSessionBrief } from "../../src/lib/livebrief";
 import type { SemanticEventEnvelope } from "../../src/lib/livebrief";
 import {
+  DASHBOARD_CHAT_COLUMN_LIMIT_DEFAULT,
+  DASHBOARD_INBOX_COLUMN_ID,
   DASHBOARD_MINIMAP_DEFAULT_WIDTH,
   DASHBOARD_MINIMAP_MIN_WIDTH,
   DASHBOARD_MINIMAP_STORAGE_KEY,
+  DASHBOARD_SESSION_LIST_COLLAPSED_STORAGE_KEY,
   dashboardMinimapMaxWidth,
   useDashboardViewStore,
 } from "../../src/stores/dashboardViewStore";
@@ -172,9 +179,12 @@ function seedDashboard(input: {
     selectedTabId: input.selectedTabId,
     chatColumnTabIds: input.chatColumnTabIds ?? [input.selectedTabId],
     activeChatColumn: input.activeChatColumn ?? 0,
-    reportInboxOpen: false,
+    chatColumnLimit: DASHBOARD_CHAT_COLUMN_LIMIT_DEFAULT,
+    pinnedChatColumnTabIds: [],
+    previewColumn: null,
     highlightedEventId: null,
     highlightedEventRequest: 0,
+    sessionListCollapsed: false,
   });
 }
 
@@ -262,7 +272,11 @@ afterEach(async () => {
     selectedTabId: null,
     chatColumnTabIds: [],
     activeChatColumn: 0,
+    chatColumnLimit: DASHBOARD_CHAT_COLUMN_LIMIT_DEFAULT,
+    pinnedChatColumnTabIds: [],
+    previewColumn: null,
     minimapWidth: DASHBOARD_MINIMAP_DEFAULT_WIDTH,
+    sessionListCollapsed: false,
   });
   useWorkspaceListStore.setState({ workspaces: [], activeWorkspaceId: null });
   usePaneMetadataStore.setState({ metadata: {}, lastLog: {}, lastLogAt: {} });
@@ -346,7 +360,7 @@ describe("DashboardView split3 selection", () => {
     await act(async () => sourceButton?.click());
 
     expect(useDashboardViewStore.getState().selectedTabId).toBe(target.id);
-    expect(useDashboardViewStore.getState().reportInboxOpen).toBe(false);
+    expect(useDashboardViewStore.getState().chatColumnTabIds).toContain(target.id);
     const sourceRow = container.querySelector<HTMLElement>("[data-dashboard-event='error-source-1']");
     expect(sourceRow?.classList.contains("is-source-highlighted")).toBe(true);
     expect(Element.prototype.scrollIntoView).toHaveBeenCalledWith({ block: "nearest" });
@@ -731,7 +745,8 @@ describe("DashboardView split3 selection", () => {
     expect(header?.textContent).toContain("Header session");
     expect(header?.textContent).toContain("要回答");
     expect(header?.textContent).toContain("0分");
-    expect(header?.querySelector("button[aria-pressed]")).toBeNull();
+    expect(header?.querySelector("button[aria-pressed]:not([data-dashboard-chat-column-pin])")).toBeNull();
+    expect(header?.querySelector("[data-dashboard-chat-column-pin]")).not.toBeNull();
     expect(container.querySelector(".cmux-dashboard-detail-drawer")).toBeNull();
     expect(container.querySelector("[data-dashboard-center='true'] nav")).toBeNull();
   });
@@ -743,7 +758,7 @@ vi.mock("../../src/components/layout/socketCommands", async () => {
 });
 
 describe("DashboardView Q1 chat columns", () => {
-  it("replaces the active column on a list click without adding a column", async () => {
+  it("adds a column on a list click instead of replacing the active one", async () => {
     const first = tab("tab-first", "s-first", "First");
     const second = tab("tab-second", "s-second", "Second");
     seedDashboard({ workspace: workspace([first, second]), selectedTabId: first.id });
@@ -752,17 +767,18 @@ describe("DashboardView Q1 chat columns", () => {
     await act(async () => container.querySelector<HTMLElement>(`[data-dashboard-row='${second.id}']`)?.click());
 
     const state = useDashboardViewStore.getState();
-    expect(state.chatColumnTabIds).toEqual([second.id]);
-    expect(state.activeChatColumn).toBe(0);
+    expect(state.chatColumnTabIds).toEqual([first.id, second.id]);
+    expect(state.activeChatColumn).toBe(1);
     expect(state.selectedTabId).toBe(second.id);
   });
 
-  it("adds a column for a minimap drop, de-duplicates it, and closes the report inbox", async () => {
+  it("adds a column for a minimap drop, de-duplicates it, and keeps the report inbox column", async () => {
+    const { DASHBOARD_INBOX_COLUMN_ID } = await import("../../src/stores/dashboardViewStore");
     const first = tab("tab-first", "s-first", "First");
     const second = tab("tab-second", "s-second", "Second");
     seedDashboard({ workspace: workspace([first, second]), selectedTabId: first.id });
     await renderDashboard();
-    useDashboardViewStore.getState().openReportInbox();
+    await act(async () => useDashboardViewStore.getState().toggleChatColumn(DASHBOARD_INBOX_COLUMN_ID));
     const source = container.querySelector<HTMLElement>(`[data-minimap-tab='${second.id}']`)!;
     const dropTarget = container.querySelector<HTMLElement>("[data-dashboard-chat-drop-target='true']")!;
     stubElementFromPoint(dropTarget);
@@ -773,10 +789,9 @@ describe("DashboardView Q1 chat columns", () => {
       window.dispatchEvent(pointer("pointerup", 71, 20, 20));
     });
     expect(useDashboardViewStore.getState()).toMatchObject({
-      chatColumnTabIds: [first.id, second.id],
-      activeChatColumn: 1,
+      chatColumnTabIds: [first.id, DASHBOARD_INBOX_COLUMN_ID, second.id],
+      activeChatColumn: 2,
       selectedTabId: second.id,
-      reportInboxOpen: false,
     });
 
     await act(async () => {
@@ -784,8 +799,8 @@ describe("DashboardView Q1 chat columns", () => {
       window.dispatchEvent(pointer("pointermove", 72, 20, 20));
       window.dispatchEvent(pointer("pointerup", 72, 20, 20));
     });
-    expect(useDashboardViewStore.getState().chatColumnTabIds).toEqual([first.id, second.id]);
-    expect(useDashboardViewStore.getState().activeChatColumn).toBe(1);
+    expect(useDashboardViewStore.getState().chatColumnTabIds).toEqual([first.id, DASHBOARD_INBOX_COLUMN_ID, second.id]);
+    expect(useDashboardViewStore.getState().activeChatColumn).toBe(2);
   });
 
   it("adds a column from a left-list drag without changing workspace layout", async () => {
@@ -848,7 +863,12 @@ describe("DashboardView Q1 chat columns", () => {
     expect(container.querySelector<HTMLElement>(`[data-dashboard-chat-column='${first.id}']`)?.classList.contains("is-drop-existing")).toBe(true);
 
     await act(async () => {
-      useDashboardViewStore.setState({ chatColumnTabIds: [first.id, second.id, third.id], activeChatColumn: 0, selectedTabId: first.id });
+      useDashboardViewStore.setState({
+        chatColumnTabIds: [first.id, second.id, third.id],
+        activeChatColumn: 0,
+        selectedTabId: first.id,
+        pinnedChatColumnTabIds: [first.id, second.id, third.id],
+      });
       await Promise.resolve();
     });
     stubChatColumnGeometry([{ left: 0, right: 33 }, { left: 33, right: 66 }, { left: 66, right: 100 }]);
@@ -869,7 +889,12 @@ describe("DashboardView Q1 chat columns", () => {
     seedDashboard({ workspace: workspace([first, second, third, fourth]), selectedTabId: first.id });
     await renderDashboard();
     await act(async () => {
-      useDashboardViewStore.setState({ chatColumnTabIds: [first.id, second.id, third.id], activeChatColumn: 0, selectedTabId: first.id });
+      useDashboardViewStore.setState({
+        chatColumnTabIds: [first.id, second.id, third.id],
+        activeChatColumn: 0,
+        selectedTabId: first.id,
+        pinnedChatColumnTabIds: [first.id, second.id, third.id],
+      });
       await Promise.resolve();
     });
     const columnsRoot = stubChatColumnGeometry([{ left: 0, right: 33 }, { left: 33, right: 66 }, { left: 66, right: 100 }]);
@@ -1041,7 +1066,7 @@ describe("DashboardView Q1 chat columns", () => {
     expect(container.querySelector(".cmux-dashboard-mention-token")?.textContent).toContain(`@${second.label}`);
   });
 
-  it("closes one column but keeps the final column open", async () => {
+  it("closes one column and allows the last remaining column to close", async () => {
     const first = tab("tab-first", "s-first", "First");
     const second = tab("tab-second", "s-second", "Second");
     seedDashboard({
@@ -1055,7 +1080,11 @@ describe("DashboardView Q1 chat columns", () => {
     await act(async () => container.querySelector<HTMLButtonElement>(`[data-dashboard-chat-column-close='${second.id}']`)?.click());
     expect(useDashboardViewStore.getState()).toMatchObject({ chatColumnTabIds: [first.id], activeChatColumn: 0, selectedTabId: first.id });
     await act(async () => container.querySelector<HTMLButtonElement>(`[data-dashboard-chat-column-close='${first.id}']`)?.click());
-    expect(useDashboardViewStore.getState().chatColumnTabIds).toEqual([first.id]);
+    expect(useDashboardViewStore.getState()).toMatchObject({
+      chatColumnTabIds: [],
+      activeChatColumn: 0,
+      selectedTabId: null,
+    });
   });
 
   it("animates existing and new columns together for one-to-two and two-to-three splits without remounting survivors", async () => {
@@ -1185,7 +1214,7 @@ describe("DashboardView Q1 chat columns", () => {
     });
   });
 
-  it("keeps three columns at the cap when a fourth session is dropped", async () => {
+  it("evicts the oldest inactive column when a fourth session is dropped at the cap", async () => {
     const first = tab("tab-first", "s-first", "First");
     const second = tab("tab-second", "s-second", "Second");
     const third = tab("tab-third", "s-third", "Third");
@@ -1197,18 +1226,18 @@ describe("DashboardView Q1 chat columns", () => {
       activeChatColumn: 0,
     });
     await renderDashboard();
+    stubChatColumnGeometry([{ left: 0, right: 33 }, { left: 33, right: 66 }, { left: 66, right: 100 }]);
     const source = container.querySelector<HTMLElement>(`[data-minimap-tab='${fourth.id}']`)!;
-    stubElementFromPoint(container.querySelector<HTMLElement>("[data-dashboard-chat-drop-target='true']"));
 
     await act(async () => {
       source.dispatchEvent(pointer("pointerdown", 74, 10, 10));
-      window.dispatchEvent(pointer("pointermove", 74, 20, 20));
-      window.dispatchEvent(pointer("pointerup", 74, 20, 20));
+      window.dispatchEvent(pointer("pointermove", 74, 95, 20));
+      window.dispatchEvent(pointer("pointerup", 74, 95, 20));
     });
     expect(useDashboardViewStore.getState()).toMatchObject({
-      chatColumnTabIds: [first.id, second.id, third.id],
-      activeChatColumn: 0,
-      selectedTabId: first.id,
+      chatColumnTabIds: [first.id, third.id, fourth.id],
+      activeChatColumn: 2,
+      selectedTabId: fourth.id,
     });
   });
 
@@ -1235,6 +1264,58 @@ describe("DashboardView Q1 chat columns", () => {
     expect(container.querySelector(".cmux-dashboard-chat-hidden-columns")).toBeNull();
     expect(container.querySelector("[data-dashboard-hidden-chat-column]")).toBeNull();
     expect(useDashboardViewStore.getState().chatColumnTabIds).toEqual([first.id, second.id, third.id]);
+  });
+
+  it("toggles a column pin from the header button next to close", async () => {
+    const first = tab("tab-pin-first", "s-pin-first", "First");
+    const second = tab("tab-pin-second", "s-pin-second", "Second");
+    seedDashboard({
+      workspace: workspace([first, second]),
+      selectedTabId: first.id,
+      chatColumnTabIds: [first.id, second.id],
+    });
+    await renderDashboard();
+    const pin = container.querySelector<HTMLButtonElement>(`[data-dashboard-chat-column-pin='${first.id}']`)!;
+    expect(pin.getAttribute("aria-pressed")).toBe("false");
+    expect(pin.getAttribute("aria-label")).toBe("この列を固定");
+    await act(async () => pin.click());
+    expect(useDashboardViewStore.getState().pinnedChatColumnTabIds).toEqual([first.id]);
+    expect(pin.getAttribute("aria-pressed")).toBe("true");
+    expect(pin.getAttribute("aria-label")).toBe("この列の固定を解除");
+    await act(async () => pin.click());
+    expect(useDashboardViewStore.getState().pinnedChatColumnTabIds).toEqual([]);
+  });
+
+  it("moves, pins, and closes the active column from dashboard-only shortcuts", async () => {
+    const first = tab("tab-keycol-first", "s-keycol-first", "First");
+    const second = tab("tab-keycol-second", "s-keycol-second", "Second");
+    seedDashboard({
+      workspace: workspace([first, second]),
+      selectedTabId: first.id,
+      chatColumnTabIds: [first.id, second.id],
+      activeChatColumn: 0,
+    });
+    await renderDashboard();
+
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", ctrlKey: true, shiftKey: true, bubbles: true, cancelable: true }));
+    });
+    expect(useDashboardViewStore.getState()).toMatchObject({ activeChatColumn: 1, selectedTabId: second.id });
+
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "p", ctrlKey: true, shiftKey: true, bubbles: true, cancelable: true }));
+    });
+    expect(useDashboardViewStore.getState().pinnedChatColumnTabIds).toEqual([second.id]);
+
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Backspace", ctrlKey: true, shiftKey: true, bubbles: true, cancelable: true }));
+    });
+    expect(useDashboardViewStore.getState()).toMatchObject({
+      chatColumnTabIds: [first.id],
+      activeChatColumn: 0,
+      selectedTabId: first.id,
+      pinnedChatColumnTabIds: [],
+    });
   });
 });
 
@@ -1300,5 +1381,142 @@ describe("DashboardView minimap resize", () => {
     expect(shell.querySelector("[data-dashboard-center='true']")).not.toBeNull();
     expect(shell.querySelector(".cmux-dashboard-right-pane")).not.toBeNull();
     expect(shell.querySelector(`[data-minimap-tab='${item.id}']`)).not.toBeNull();
+  });
+});
+
+describe("DashboardView multi-open columns", () => {
+  it("focuses the same tab from the list after the minimap opened it, without closing the column", async () => {
+    const first = tab("tab-first", "s-first", "First");
+    const second = tab("tab-second", "s-second", "Second");
+    seedDashboard({ workspace: workspace([first, second]), selectedTabId: first.id });
+    await renderDashboard();
+
+    await act(async () => container.querySelector<HTMLElement>(`[data-minimap-tab='${second.id}']`)?.click());
+    expect(useDashboardViewStore.getState()).toMatchObject({
+      chatColumnTabIds: [first.id, second.id],
+      activeChatColumn: 1,
+      selectedTabId: second.id,
+    });
+
+    await act(async () => container.querySelector<HTMLElement>(`[data-dashboard-chat-column='${first.id}'] > header`)?.click());
+    expect(useDashboardViewStore.getState().activeChatColumn).toBe(0);
+
+    await act(async () => container.querySelector<HTMLElement>(`[data-dashboard-row='${second.id}']`)?.click());
+    expect(useDashboardViewStore.getState()).toMatchObject({
+      chatColumnTabIds: [first.id, second.id],
+      activeChatColumn: 1,
+      selectedTabId: second.id,
+    });
+    expect(container.querySelector(`[data-dashboard-chat-column='${first.id}']`)).not.toBeNull();
+    expect(container.querySelector(`[data-dashboard-chat-column='${second.id}']`)).not.toBeNull();
+    expect(container.querySelector<HTMLElement>(`[data-dashboard-row='${second.id}']`)?.dataset.dashboardActive).toBe("true");
+    expect(container.querySelector<HTMLElement>(`[data-dashboard-row='${first.id}']`)?.dataset.dashboardOpen).toBe("true");
+  });
+
+  it("renders the report inbox as a column beside a chat column", async () => {
+    const { DASHBOARD_INBOX_COLUMN_ID } = await import("../../src/stores/dashboardViewStore");
+    const first = tab("tab-first", "s-first", "First");
+    seedDashboard({ workspace: workspace([first]), selectedTabId: first.id });
+    await renderDashboard();
+
+    await act(async () => container.querySelector<HTMLButtonElement>("[data-report-inbox-nav='true']")?.click());
+
+    expect(useDashboardViewStore.getState().chatColumnTabIds).toEqual([first.id, DASHBOARD_INBOX_COLUMN_ID]);
+    expect(container.querySelector(`[data-dashboard-chat-column='${first.id}']`)).not.toBeNull();
+    expect(container.querySelector(`[data-dashboard-chat-column='${DASHBOARD_INBOX_COLUMN_ID}']`)).not.toBeNull();
+    expect(container.querySelector("[data-dashboard-inbox-column='true']")).not.toBeNull();
+    expect(container.querySelector("[aria-label='報告インボックス']")).not.toBeNull();
+  });
+
+  it("passes an equal-width column count for 4 and 5 visible columns", async () => {
+    const tabs = [1, 2, 3, 4, 5].map((index) => tab(`tab-${index}`, `s-${index}`, `Session ${index}`));
+    seedDashboard({
+      workspace: workspace(tabs),
+      selectedTabId: tabs[0].id,
+      chatColumnTabIds: tabs.slice(0, 4).map((item) => item.id),
+      activeChatColumn: 0,
+    });
+    await act(async () => useDashboardViewStore.getState().setChatColumnLimit(5));
+    await renderDashboard();
+
+    const four = container.querySelector<HTMLElement>(".cmux-dashboard-chat-columns");
+    expect(four?.dataset.visibleColumns).toBe("4");
+    expect(four?.style.getPropertyValue("--dashboard-chat-columns")).toBe("4");
+
+    await act(async () => useDashboardViewStore.getState().toggleChatColumn(tabs[4].id));
+    const five = container.querySelector<HTMLElement>(".cmux-dashboard-chat-columns");
+    expect(five?.dataset.visibleColumns).toBe("5");
+    expect(five?.style.getPropertyValue("--dashboard-chat-columns")).toBe("5");
+  });
+});
+
+describe("DashboardView session list collapse", () => {
+  it("toggles data-list-collapsed and persists the rail state", async () => {
+    const item = tab("tab-collapse", "s-collapse", "Collapse target");
+    seedDashboard({ workspace: workspace([item]), selectedTabId: item.id });
+    await renderDashboard();
+
+    const shell = () => container.querySelector<HTMLElement>(".cmux-dashboard-shell")!;
+    expect(shell().getAttribute("data-list-collapsed")).toBe("false");
+    expect(shell().style.getPropertyValue("--dashboard-session-list-width")).toBe("256px");
+    expect(container.querySelector(".cmux-dash-list")).not.toBeNull();
+
+    await act(async () => container.querySelector<HTMLButtonElement>("[data-session-list-toggle='true']")?.click());
+    expect(shell().getAttribute("data-list-collapsed")).toBe("true");
+    expect(shell().style.getPropertyValue("--dashboard-session-list-width")).toBe("32px");
+    expect(window.localStorage.getItem(DASHBOARD_SESSION_LIST_COLLAPSED_STORAGE_KEY)).toBe("true");
+    expect(useDashboardViewStore.getState().sessionListCollapsed).toBe(true);
+    expect(container.querySelector(".cmux-dash-list")?.getAttribute("data-collapsed")).toBe("true");
+
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await renderDashboard();
+    expect(container.querySelector<HTMLElement>(".cmux-dashboard-shell")?.getAttribute("data-list-collapsed")).toBe("true");
+    expect(window.localStorage.getItem(DASHBOARD_SESSION_LIST_COLLAPSED_STORAGE_KEY)).toBe("true");
+  });
+
+  it("keeps the report inbox nav and unread badge while collapsed", async () => {
+    const target = tab("tab-report-rail", "s-report-rail", "Report rail");
+    const source: SemanticEventEnvelope = {
+      eventId: "error-source-rail",
+      sourceRevision: 1,
+      occurredAt: NOW,
+      sourceByteStart: 0,
+      sourceByteEnd: 24,
+      kind: { type: "error", fingerprint: "report-error", text: "検証に失敗しました" },
+    };
+    seedDashboard({ workspace: workspace([target]), selectedTabId: target.id });
+    useLiveBriefStore.setState({ listEventsBySession: { [target.sessionId]: [source] } });
+    useReportInboxStore.getState().setReceiveMode(target.sessionId, "immediate");
+    await renderDashboard();
+    await act(async () => { await Promise.resolve(); });
+
+    const badgeBefore = container.querySelector("[data-report-inbox-nav='true'] b")?.textContent;
+    expect(Number(badgeBefore)).toBeGreaterThan(0);
+
+    await act(async () => container.querySelector<HTMLButtonElement>("[data-session-list-toggle='true']")?.click());
+    const inbox = container.querySelector<HTMLButtonElement>("[data-report-inbox-nav='true']");
+    expect(inbox).not.toBeNull();
+    expect(inbox?.querySelector("b")?.textContent).toBe(badgeBefore);
+
+    await act(async () => inbox?.click());
+    expect(useDashboardViewStore.getState().chatColumnTabIds).toContain(DASHBOARD_INBOX_COLUMN_ID);
+  });
+
+  it("expands the list and focuses search when / is pressed while collapsed", async () => {
+    const item = tab("tab-slash", "s-slash", "Slash target");
+    seedDashboard({ workspace: workspace([item]), selectedTabId: item.id });
+    useDashboardViewStore.setState({ sessionListCollapsed: true });
+    await renderDashboard();
+
+    expect(container.querySelector(".cmux-dashboard-shell")?.getAttribute("data-list-collapsed")).toBe("true");
+    const region = container.querySelector<HTMLElement>("[role='region']");
+    await act(async () => {
+      region?.dispatchEvent(new KeyboardEvent("keydown", { key: "/", bubbles: true, cancelable: true }));
+    });
+
+    expect(useDashboardViewStore.getState().sessionListCollapsed).toBe(false);
+    expect(container.querySelector(".cmux-dashboard-shell")?.getAttribute("data-list-collapsed")).toBe("false");
+    expect(container.querySelector<HTMLInputElement>(".cmux-dash-list-search input")).toBe(document.activeElement);
   });
 });

@@ -13,7 +13,7 @@ interface RecentInputState {
 const MAX_RECENT_INPUT_LENGTH = 500;
 const draftsBySession = new Map<string, string>();
 
-function printableText(value: string): string {
+export function printableText(value: string): string {
   return value.replace(/[\x00-\x08\x0B-\x1F\x7F-\x9F]/g, "");
 }
 

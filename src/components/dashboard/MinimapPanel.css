@@ -25,6 +25,9 @@
 .cmux-minimap-column { display: flex; min-width: 0; flex-basis: 0; flex-direction: column; gap: 4px; }
 .cmux-minimap-cell { position: relative; display: flex; min-height: 0; min-width: 0; flex-basis: 0; flex-direction: column; gap: 4px; overflow: hidden; border: 1px solid var(--cmux-border-hairline); border-radius: 6px; padding: 4px; background: var(--cmux-bg); }
 .cmux-minimap-cell.is-expanded { gap: 5px; padding: 5px; }
+.cmux-minimap-pane-grip { flex: none; height: 7px; border-radius: 3px; background: transparent; cursor: grab; }
+.cmux-minimap-pane-grip:hover { background: color-mix(in srgb, var(--cmux-accent) 18%, transparent); }
+.cmux-minimap-pane-grip:active { cursor: grabbing; }
 .cmux-minimap-cell.is-active-pane { border-color: var(--cmux-accent); }
 .cmux-minimap-cell.is-drag-source { opacity: .35; transition: none; }
 .cmux-minimap-cell.is-minimap-drop-target { border-color: var(--cmux-accent); outline: 2px solid var(--cmux-accent); outline-offset: -2px; }
@@ -35,7 +38,12 @@
 .cmux-minimap-cell.is-minimap-drop-up::after { top: 3px; right: 3px; left: 3px; height: calc(50% - 4px); content: "上に分割"; }
 .cmux-minimap-cell.is-minimap-drop-down::after { right: 3px; bottom: 3px; left: 3px; height: calc(50% - 4px); content: "下に分割"; }
 .cmux-minimap-chip { position: relative; z-index: 2; display: flex; min-width: 0; min-height: 26px; flex: none; align-items: center; gap: 5px; overflow: hidden; border: 1px solid var(--cmux-border); border-left-width: 3px; border-radius: 5px; padding: 4px 7px; color: var(--cmux-text); background: var(--cmux-popover); font-size: var(--cmux-font-size-xs); text-align: left; cursor: grab; transition: outline-color 180ms var(--cmux-ease), background 180ms var(--cmux-ease), opacity 180ms var(--cmux-ease), transform 180ms var(--cmux-ease); }
-.cmux-minimap-chip:hover, .cmux-minimap-chip.is-selected { outline: 2px solid var(--cmux-accent); outline-offset: -1px; }
+.cmux-minimap-chip.is-selected { outline: 2px solid var(--cmux-accent); outline-offset: -1px; }
+.cmux-minimap-chip.is-open:not(.is-selected) { outline-width: 1px; outline-style: solid; outline-offset: -1px; }
+.cmux-minimap-chip:hover:not(.is-open):not(.is-selected) { outline: 2px solid var(--cmux-accent); outline-offset: -1px; }
+.cmux-minimap-chip:hover { background: color-mix(in srgb, var(--cmux-accent) 16%, var(--cmux-popover)); }
+.cmux-minimap-chip.is-open { background: color-mix(in srgb, var(--cmux-accent) 10%, var(--cmux-popover)); }
+.cmux-minimap-chip.is-open:hover { background: color-mix(in srgb, var(--cmux-accent) 18%, var(--cmux-popover)); }
 .cmux-minimap-chip:active { cursor: grabbing; }
 .cmux-minimap-chip.is-bundle-selected { background: color-mix(in srgb, var(--cmux-selected) 74%, var(--cmux-popover)); animation: cmux-minimap-selection-in 180ms cubic-bezier(.16,1,.3,1); }
 .cmux-minimap-chip.is-group-pulse { z-index: 3; animation: cmux-minimap-group-select 180ms cubic-bezier(.16,1,.3,1); }

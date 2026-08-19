@@ -1,3 +1,4 @@
+import type { PreviewArtifactInfo } from "../../lib/ipc";
 import type { LiveSessionBrief, SemanticEventEnvelope } from "../../lib/livebrief";
 import { useEffect, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { useSessionAttentionStore } from "../../stores/sessionAttentionStore";
@@ -33,6 +34,8 @@ export function ChatColumn({
   events,
   now,
   active,
+  columnColor,
+  pinned,
   dragging,
   dropPreview,
   motion,
@@ -40,15 +43,19 @@ export function ChatColumn({
   targetEventRequest,
   syntheticSource,
   onActivate,
+  onTogglePin,
   onClose,
   onFocusComposer,
   onJump,
   onReorderKeyDown,
+  onPreviewArtifact,
 }: {
   card: DashboardCardModel;
   events: readonly SemanticEventEnvelope[];
   now: number;
   active: boolean;
+  columnColor?: string;
+  pinned: boolean;
   dragging: boolean;
   dropPreview: boolean;
   motion: "enter" | "resize" | "exit" | "expand" | null;
@@ -56,10 +63,12 @@ export function ChatColumn({
   targetEventRequest: number;
   syntheticSource: { eventId: string; text: string; at: number } | null;
   onActivate: () => void;
+  onTogglePin: () => void;
   onClose: () => void;
   onFocusComposer: (brief: LiveSessionBrief | undefined) => void;
   onJump: () => void;
   onReorderKeyDown: (event: ReactKeyboardEvent<HTMLElement>) => void;
+  onPreviewArtifact?: (info: PreviewArtifactInfo) => void;
 }) {
   const sessionId = card.tab.sessionId;
   const optimisticMessages = useComposerStore((state) => state.dashboardOptimisticMessagesBySession[sessionId] ?? EMPTY_OPTIMISTIC_MESSAGES);
@@ -102,6 +111,7 @@ export function ChatColumn({
       tabIndex={0}
       role="group"
       aria-label={`${card.label} のチャット列。Alt+左矢印またはAlt+右矢印で並べ替え`}
+      style={columnColor ? { borderLeftColor: columnColor } : undefined}
       onClick={onActivate}
       onKeyDown={onReorderKeyDown}
     >
@@ -130,6 +140,15 @@ export function ChatColumn({
           useSessionAttentionStore.getState().clearDoneMark(card.tab.id);
         }}>{dashboardStrings.unmarkDoneButton}</button>}
       <button type="button" className="cmux-dashboard-chat-header-action" title={dashboardStrings.jumpButtonTitle} onClick={(event) => { event.stopPropagation(); onJump(); }}>{dashboardStrings.jumpButtonTitle}</button>
+      <button
+        type="button"
+        data-dashboard-chat-column-pin={card.tab.id}
+        className="cmux-dashboard-chat-header-action"
+        aria-pressed={pinned}
+        aria-label={pinned ? dashboardStrings.chatColumnUnpinAriaLabel : dashboardStrings.chatColumnPinAriaLabel}
+        title={pinned ? dashboardStrings.chatColumnUnpinAriaLabel : dashboardStrings.chatColumnPinAriaLabel}
+        onClick={(event) => { event.stopPropagation(); onTogglePin(); }}
+      >{dashboardStrings.chatColumnPin}</button>
       <button type="button" data-dashboard-chat-column-close={card.tab.id} className="cmux-dashboard-chat-column-close" aria-label={`${card.label} を閉じる`} onClick={(event) => { event.stopPropagation(); onClose(); }}>×</button>
     </header>
     <div className="cmux-dashboard-chat-column-body">
@@ -149,6 +168,7 @@ export function ChatColumn({
           paneId: card.paneId,
           sessionId: card.tab.sessionId,
           canPreviewInternally: card.tab.type === undefined || card.tab.type === "terminal",
+          openInDashboardPreview: onPreviewArtifact,
         }}
       />
       {optimisticMessages.length ? <div className="cmux-dashboard-optimistic-messages" aria-live="polite">

@@ -9,6 +9,15 @@ import {
   type SaveEditableArtifactResult,
 } from "../../lib/ipc";
 import { useKeybindingStore } from "../../stores/keybindingStore";
+import {
+  createReadonlyHtmlBlob,
+  htmlBlobPreviewUrl,
+  initialHtmlBlobPreview,
+  objectUrlToRevoke,
+  resolveBrowserIframeSources,
+  shouldLoadHtmlAsBlobPreview,
+  type HtmlBlobPreviewState,
+} from "../../lib/browserPanePreview";
 import ArtifactEditorToolbar, {
   type ArtifactEditorCommand,
   type ArtifactEditorCommandValue,
@@ -439,6 +448,7 @@ function BrowserPaneImpl({
   const lastSavedSourcePathRef = useRef<string | null>(null);
   const saveCurrentArtifactRef = useRef<() => void>(() => {});
   const editLoadRequestRef = useRef(0);
+  const readOnlyBlobUrlRef = useRef<string | null>(null);
   const onDirtyChangeRef = useRef(onDirtyChange);
   const onSavedRef = useRef(onSaved);
   const [isEditing, setIsEditing] = useState(false);
@@ -448,6 +458,9 @@ function BrowserPaneImpl({
   const [markdownDraft, setMarkdownDraft] = useState("");
   const [editableSrcDoc, setEditableSrcDoc] = useState<string>("");
   const [readOnlySrcDoc, setReadOnlySrcDoc] = useState<string>("");
+  const [htmlBlobPreview, setHtmlBlobPreview] = useState<HtmlBlobPreviewState>(() =>
+    initialHtmlBlobPreview(sourceKind),
+  );
   const [localReloadKey, setLocalReloadKey] = useState(0);
   const resolvedPreviewPath = previewPath ?? htmlPath;
   const src = useMemo(() => convertFileSrc(resolvedPreviewPath), [resolvedPreviewPath]);
@@ -467,6 +480,14 @@ function BrowserPaneImpl({
   const updateDirty = useCallback((nextDirty: boolean) => {
     setDirty(nextDirty);
     onDirtyChangeRef.current(nextDirty);
+  }, []);
+
+  const adoptHtmlBlobPreview = useCallback((next: HtmlBlobPreviewState) => {
+    const nextUrl = htmlBlobPreviewUrl(next);
+    const revoke = objectUrlToRevoke(readOnlyBlobUrlRef.current, nextUrl);
+    if (revoke) URL.revokeObjectURL(revoke);
+    readOnlyBlobUrlRef.current = nextUrl;
+    setHtmlBlobPreview(next);
   }, []);
 
   useEffect(() => {
@@ -492,13 +513,21 @@ function BrowserPaneImpl({
     setMarkdownDraft("");
     setEditableSrcDoc("");
     setReadOnlySrcDoc("");
+    adoptHtmlBlobPreview(initialHtmlBlobPreview(sourceKind));
     selectionRangeRef.current = null;
     setError(null);
     updateDirty(false);
-  }, [htmlPath, resolvedPreviewPath, reloadKey, sourceKind, sourcePath, updateDirty]);
+  }, [htmlPath, resolvedPreviewPath, reloadKey, sourceKind, sourcePath, updateDirty, adoptHtmlBlobPreview]);
 
   useEffect(() => {
-    return () => inputCleanupRef.current?.();
+    return () => {
+      inputCleanupRef.current?.();
+      const leftover = readOnlyBlobUrlRef.current;
+      if (leftover) {
+        URL.revokeObjectURL(leftover);
+        readOnlyBlobUrlRef.current = null;
+      }
+    };
   }, []);
 
   useEffect(() => {
@@ -541,6 +570,41 @@ function BrowserPaneImpl({
   }, [canUseInAppEditor, sourcePath, updateDirty]);
 
   useEffect(() => {
+    if (shouldLoadHtmlAsBlobPreview(sourceKind, isEditing)) {
+      let cancelled = false;
+      const controller = new AbortController();
+
+      const loadBlob = async () => {
+        try {
+          const url = convertFileSrc(resolvedPreviewPath);
+          const res = await fetch(url, { signal: controller.signal });
+          if (!res.ok) throw new Error(`asset fetch failed: ${res.status}`);
+          const buf = await res.arrayBuffer();
+          if (cancelled) return;
+          const objectUrl = URL.createObjectURL(createReadonlyHtmlBlob(buf));
+          if (cancelled) {
+            URL.revokeObjectURL(objectUrl);
+            return;
+          }
+          adoptHtmlBlobPreview({ status: "ready", url: objectUrl });
+          setReadOnlySrcDoc("");
+        } catch (caught) {
+          if (cancelled) return;
+          adoptHtmlBlobPreview({ status: "error" });
+          console.warn("[artifactEditor] read-only blob load failed", caught);
+        }
+      };
+
+      void loadBlob();
+      return () => {
+        cancelled = true;
+        controller.abort();
+        adoptHtmlBlobPreview({ status: "loading" });
+      };
+    }
+
+    adoptHtmlBlobPreview({ status: "idle" });
+
     if (isEditing || !sourcePath || !canUseInAppEditor) {
       return;
     }
@@ -560,7 +624,16 @@ function BrowserPaneImpl({
     return () => {
       cancelled = true;
     };
-  }, [canUseInAppEditor, isEditing, localReloadKey, reloadKey, sourcePath]);
+  }, [
+    adoptHtmlBlobPreview,
+    canUseInAppEditor,
+    isEditing,
+    localReloadKey,
+    reloadKey,
+    resolvedPreviewPath,
+    sourceKind,
+    sourcePath,
+  ]);
 
   const handleFrameLoad = useCallback(() => {
     inputCleanupRef.current?.();
@@ -829,6 +902,14 @@ function BrowserPaneImpl({
     });
   }, [resolvedPreviewPath, sourcePath]);
 
+  const iframeSources = resolveBrowserIframeSources({
+    isEditing,
+    editableSrcDoc,
+    htmlBlobPreview,
+    readOnlySrcDoc,
+    assetSrc: src,
+  });
+
   return (
     <div
       style={{
@@ -914,8 +995,8 @@ function BrowserPaneImpl({
             ? `${sourcePath ?? htmlPath}#edit#${reloadKey}`
             : `${resolvedPreviewPath}#${reloadKey}#${localReloadKey}`
         }
-        src={isEditing || readOnlySrcDoc ? undefined : src}
-        srcDoc={isEditing ? editableSrcDoc : readOnlySrcDoc || undefined}
+        src={iframeSources.src}
+        srcDoc={iframeSources.srcDoc}
         sandbox={isEditing ? "allow-popups allow-same-origin" : "allow-popups allow-same-origin"}
         title={sourcePath ?? htmlPath}
         onLoad={handleFrameLoad}

@@ -1,8 +1,15 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import type { SemanticEventEnvelope } from "../../lib/livebrief";
 import { DashboardLinkedText, type DashboardLinkContext } from "./DashboardLinkedText";
 import { MarkdownView } from "./MarkdownView";
-import { toChatTranscriptRows, type ChatMessage, type ToolTranscriptItem } from "./chatModel";
+import {
+  toChatTranscriptRows,
+  userTurnIndexFromTops,
+  userTurnLabelFrom,
+  userTurnsFromRows,
+  type ChatMessage,
+  type ToolTranscriptItem,
+} from "./chatModel";
 import type { DashboardAgentKind, DashboardDisplayState } from "./dashboardModel";
 import { dashboardStrings } from "./dashboardStrings";
 import { stateLabels } from "./stateLabels";
@@ -24,6 +31,55 @@ const ChatBubble = memo(function ChatBubble({ message, context, highlighted }: {
 function MessageLabel({ message }: { message: ChatMessage }) {
   const label = message.role === "user" ? dashboardStrings.chatRoleUser : dashboardStrings.chatRoleAgent;
   return <div className="cmux-dashboard-msg-who"><span>{label}</span><span>{clockLabel(message.at)}</span></div>;
+}
+
+function keepComposerFocus(event: ReactMouseEvent): void {
+  event.preventDefault();
+}
+
+type UserTurnNavState = { index: number; total: number; label: string; followingBottom: boolean };
+
+function UserTurnNavBar({
+  index,
+  total,
+  label,
+  followingBottom,
+  onPrev,
+  onNext,
+}: {
+  index: number;
+  total: number;
+  label: string;
+  followingBottom: boolean;
+  onPrev: () => void;
+  onNext: () => void;
+}) {
+  return <div
+    className="cmux-dashboard-user-turn-nav"
+    data-dashboard-user-turn-nav=""
+    aria-label={dashboardStrings.userTurnNavAriaLabel(index + 1, total)}
+  >
+    <span className="cmux-dashboard-user-turn-nav-buttons">
+      <button
+        type="button"
+        aria-label={dashboardStrings.userTurnPrevAriaLabel}
+        title={dashboardStrings.userTurnPrevAriaLabel}
+        disabled={index <= 0}
+        onMouseDown={keepComposerFocus}
+        onClick={onPrev}
+      >▲</button>
+      <button
+        type="button"
+        aria-label={dashboardStrings.userTurnNextAriaLabel}
+        title={dashboardStrings.userTurnNextAriaLabel}
+        disabled={followingBottom}
+        onMouseDown={keepComposerFocus}
+        onClick={onNext}
+      >▼</button>
+    </span>
+    <span className="cmux-dashboard-user-turn-nav-count" data-dashboard-user-turn-count={`${index + 1}/${total}`}>{`${index + 1}/${total}`}</span>
+    <span className="cmux-dashboard-user-turn-nav-label">{label}</span>
+  </div>;
 }
 
 function toolStatus(item: ToolTranscriptItem): string {
@@ -132,22 +188,85 @@ export function ChatTranscript({
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const followRef = useRef(true);
+  const navRafRef = useRef<number | null>(null);
+  const lastNavRef = useRef<UserTurnNavState | null>(null);
   const [expandedToolGroups, setExpandedToolGroups] = useState<ReadonlySet<string>>(() => new Set());
   const rows = useMemo(() => toChatTranscriptRows(events), [events]);
+  const userTurns = useMemo(() => userTurnsFromRows(rows), [rows]);
   const lastRow = rows.length ? rows[rows.length - 1] : undefined;
   const lastId = lastRow?.kind === "message" ? lastRow.message.id : lastRow?.id;
+  const [userTurnNav, setUserTurnNav] = useState<UserTurnNavState | null>(() => {
+    if (!userTurns.length) return null;
+    const index = userTurns.length - 1;
+    const next = {
+      index,
+      total: userTurns.length,
+      label: userTurnLabelFrom(userTurns[index]?.text ?? ""),
+      followingBottom: true,
+    };
+    lastNavRef.current = next;
+    return next;
+  });
+
+  const refreshUserTurnNav = useCallback(() => {
+    if (navRafRef.current != null) return;
+    navRafRef.current = requestAnimationFrame(() => {
+      navRafRef.current = null;
+      if (!userTurns.length) {
+        if (lastNavRef.current !== null) {
+          lastNavRef.current = null;
+          setUserTurnNav(null);
+        }
+        return;
+      }
+      const node = scrollRef.current;
+      const containerTop = node?.getBoundingClientRect().top ?? 0;
+      const followingBottom = !node || followRef.current;
+      const tops = userTurns.map((turn) => {
+        const element = document.getElementById(`dashboard-event-${turn.id}`);
+        return element?.getBoundingClientRect().top ?? Number.POSITIVE_INFINITY;
+      });
+      const index = userTurnIndexFromTops(tops, containerTop, followingBottom);
+      const safeIndex = index < 0 ? 0 : index;
+      const next = {
+        index: safeIndex,
+        total: userTurns.length,
+        label: userTurnLabelFrom(userTurns[safeIndex]?.text ?? ""),
+        followingBottom,
+      };
+      const prev = lastNavRef.current;
+      if (
+        prev
+        && prev.index === next.index
+        && prev.total === next.total
+        && prev.label === next.label
+        && prev.followingBottom === next.followingBottom
+      ) return;
+      lastNavRef.current = next;
+      setUserTurnNav(next);
+    });
+  }, [userTurns]);
 
   const onScroll = useCallback(() => {
     const node = scrollRef.current;
     if (!node) return;
     followRef.current = node.scrollHeight - node.scrollTop - node.clientHeight <= FOLLOW_SLACK_PX;
-  }, []);
+    refreshUserTurnNav();
+  }, [refreshUserTurnNav]);
 
   useEffect(() => {
     const node = scrollRef.current;
-    if (!node || !followRef.current) return;
+    if (!node || !followRef.current) {
+      refreshUserTurnNav();
+      return;
+    }
     node.scrollTop = node.scrollHeight;
-  }, [lastId, rows.length]);
+    refreshUserTurnNav();
+  }, [lastId, refreshUserTurnNav, rows.length]);
+
+  useEffect(() => () => {
+    if (navRafRef.current != null) cancelAnimationFrame(navRafRef.current);
+  }, []);
 
   useEffect(() => {
     if (!targetEventId) return;
@@ -162,6 +281,24 @@ export function ChatTranscript({
       return next;
     });
   }, []);
+
+  const jumpUserTurn = useCallback((direction: -1 | 1) => {
+    const currentIndex = lastNavRef.current?.index ?? userTurnNav?.index ?? 0;
+    if (direction === 1 && currentIndex >= userTurns.length - 1) {
+      const node = scrollRef.current;
+      if (node) {
+        followRef.current = true;
+        node.scrollTop = node.scrollHeight;
+      }
+      refreshUserTurnNav();
+      return;
+    }
+    const nextIndex = currentIndex + direction;
+    const target = userTurns[nextIndex];
+    if (!target) return;
+    document.getElementById(`dashboard-event-${target.id}`)?.scrollIntoView({ block: "start" });
+    refreshUserTurnNav();
+  }, [refreshUserTurnNav, userTurnNav?.index, userTurns]);
 
   const footer = <ChatActivityFooter displayState={displayState} agentKind={agentKind} lastOutputAt={lastOutputAt} />;
   // 0行の理由は2種類ある。読めていないだけなのに「記録がありません」と言うと
@@ -179,7 +316,16 @@ export function ChatTranscript({
         : dashboardStrings.chatEmpty}
     </div>{footer}</>;
   }
-  return <div ref={scrollRef} onScroll={onScroll} role="log" aria-label={dashboardStrings.chatAriaLabel} className="cmux-dashboard-chat">
+  return <div className="cmux-dashboard-chat-transcript">
+    {userTurnNav && userTurns.length ? <UserTurnNavBar
+      index={userTurnNav.index}
+      total={userTurnNav.total}
+      label={userTurnNav.label}
+      followingBottom={userTurnNav.followingBottom}
+      onPrev={() => jumpUserTurn(-1)}
+      onNext={() => jumpUserTurn(1)}
+    /> : null}
+    <div ref={scrollRef} onScroll={onScroll} role="log" aria-label={dashboardStrings.chatAriaLabel} className="cmux-dashboard-chat">
     {syntheticSource ? <div id={`dashboard-event-${syntheticSource.eventId}`} data-dashboard-event={syntheticSource.eventId} className={`cmux-dashboard-msg is-agent is-status-source${syntheticSource.eventId === targetEventId ? " is-source-highlighted" : ""}`}>
       <div className="cmux-dashboard-msg-who"><span>状態イベント</span><span>{clockLabel(syntheticSource.at)}</span></div>
       <div className="cmux-dashboard-msg-plain">{syntheticSource.text}</div>
@@ -191,5 +337,6 @@ export function ChatTranscript({
         {row.tools.map((tool) => <ToolDetails key={tool.id} tool={tool} context={linkContext} />)}
       </details>)}
     {footer}
+  </div>
   </div>;
 }

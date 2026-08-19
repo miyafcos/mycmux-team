@@ -1,19 +1,23 @@
 import type { MouseEvent as ReactMouseEvent } from "react";
+import { chatColumnColor } from "../../lib/chatColumnColors";
 import type { DashboardDisplayState } from "./dashboardModel";
 import type { MinimapCell } from "./minimapModel";
 import { MinimapTabChip } from "./MinimapTabChip";
 import { usePaneDragStore } from "../../stores/paneDragStore";
 
-export function MinimapPaneCell({ cell, workspaceId, selectedTabId, selectedTabIds, groupPulseTabIds, displayStateByTabId, expanded, onSelect, onSelectGroup }: {
+export function MinimapPaneCell({ cell, workspaceId, selectedTabId, selectedTabIds, openTabIds, groupPulseTabIds, displayStateByTabId, expanded, minHeight, onSelect, onSelectGroup, onJump }: {
   cell: MinimapCell;
   workspaceId: string;
   selectedTabId: string | null;
   selectedTabIds: ReadonlySet<string>;
+  openTabIds: readonly string[];
   groupPulseTabIds: ReadonlySet<string>;
   displayStateByTabId: ReadonlyMap<string, DashboardDisplayState>;
   expanded: boolean;
+  minHeight: number;
   onSelect: (tabId: string, event: ReactMouseEvent<HTMLButtonElement>) => void;
   onSelectGroup: (tabId: string) => void;
+  onJump?: (workspaceId: string, paneId: string, tabId: string) => void;
 }) {
   const target = usePaneDragStore((state) => state.target);
   const dragItem = usePaneDragStore((state) => state.item);
@@ -34,8 +38,17 @@ export function MinimapPaneCell({ cell, workspaceId, selectedTabId, selectedTabI
     data-minimap-dnd-pane-id={cell.paneId}
     data-minimap-drop-zone={dropZone ?? undefined}
     title={cellLabel || undefined}
-    style={{ flexGrow: cell.heightShare }}
+    style={{ flexGrow: cell.heightShare, minHeight }}
   >
-    {cell.chips.map((chip) => <MinimapTabChip key={chip.tabId} chip={chip} workspaceId={workspaceId} paneId={cell.paneId} selected={!isDragSource && chip.tabId === selectedTabId} selectedTabIds={selectedTabIds} groupPulseTabIds={groupPulseTabIds} displayState={displayStateByTabId.get(chip.tabId) ?? "idle"} collapsed={!expanded} onSelect={onSelect} onSelectGroup={onSelectGroup} />)}
+    <div
+      className="cmux-minimap-pane-grip"
+      data-minimap-pane-grip=""
+      title="ペインを移動"
+      aria-hidden="true"
+    />
+    {cell.chips.map((chip) => {
+      const open = openTabIds.includes(chip.tabId);
+      return <MinimapTabChip key={chip.tabId} chip={chip} workspaceId={workspaceId} paneId={cell.paneId} selected={!isDragSource && chip.tabId === selectedTabId} open={open} columnColor={open ? chatColumnColor(openTabIds.indexOf(chip.tabId)) : undefined} selectedTabIds={selectedTabIds} groupPulseTabIds={groupPulseTabIds} displayState={displayStateByTabId.get(chip.tabId) ?? "idle"} collapsed={!expanded} onSelect={onSelect} onSelectGroup={onSelectGroup} onJump={onJump} />;
+    })}
   </div>;
 }

@@ -79,8 +79,10 @@ interface LayoutMinimapPanelProps {
   workspaces: readonly Workspace[];
   displayStateByTabId: ReadonlyMap<string, DashboardDisplayState>;
   selectedTabId: string | null;
+  openTabIds?: readonly string[];
   activePaneSessionId: string | null;
   onSelect: (tabId: string) => void;
+  onJump?: (workspaceId: string, paneId: string, tabId: string) => void;
 }
 
 function contentPointFor(root: HTMLElement, clientX: number, clientY: number): ContentPoint {
@@ -104,7 +106,7 @@ function intersects(left: number, top: number, right: number, bottom: number, ca
   return right >= candidate.left && left <= candidate.right && bottom >= candidate.top && top <= candidate.bottom;
 }
 
-export const LayoutMinimapPanel = memo(function LayoutMinimapPanel({ workspaces, displayStateByTabId, selectedTabId, activePaneSessionId, onSelect }: LayoutMinimapPanelProps) {
+export const LayoutMinimapPanel = memo(function LayoutMinimapPanel({ workspaces, displayStateByTabId, selectedTabId, openTabIds = [], activePaneSessionId, onSelect, onJump }: LayoutMinimapPanelProps) {
   const stackRef = useRef<HTMLDivElement>(null);
   const pointerStateRef = useRef<MinimapPointerState>({ phase: "idle" });
   const selectedTabIdRef = useRef(selectedTabId);
@@ -165,13 +167,18 @@ export const LayoutMinimapPanel = memo(function LayoutMinimapPanel({ workspaces,
     setSelectedTabIds((current) => {
       const next = new Set([...current].filter((tabId) => knownTabIds.has(tabId)));
       if (selectionChangedOutsideMinimap && !selectionCameFromMinimap) {
-        return selectedTabId && knownTabIds.has(selectedTabId) ? new Set([selectedTabId]) : new Set();
+        // Inbox focus and empty chat columns pass null. Do not wipe a marquee.
+        if (selectedTabId && knownTabIds.has(selectedTabId)) return new Set([selectedTabId]);
+        return next;
       }
       if (selectedTabId && !next.has(selectedTabId)) next.add(selectedTabId);
       return next;
     });
     setSelectionAnchorTabId((current) => {
-      if (selectionChangedOutsideMinimap && !selectionCameFromMinimap) return selectedTabId;
+      if (selectionChangedOutsideMinimap && !selectionCameFromMinimap) {
+        if (selectedTabId && knownTabIds.has(selectedTabId)) return selectedTabId;
+        return current && knownTabIds.has(current) ? current : selectedTabId;
+      }
       return current && knownTabIds.has(current) ? current : selectedTabId;
     });
   }, [knownTabIds, selectedTabId]);
@@ -282,7 +289,8 @@ export const LayoutMinimapPanel = memo(function LayoutMinimapPanel({ workspaces,
       setPointerMachine({ phase: "armed-chip", pointerId: event.pointerId, startClientX: event.clientX, startClientY: event.clientY });
       return;
     }
-    const paneElement = target.closest<HTMLElement>("[data-minimap-dnd-workspace-id][data-minimap-dnd-pane-id]");
+    const paneGrip = target.closest<HTMLElement>("[data-minimap-pane-grip]");
+    const paneElement = paneGrip?.closest<HTMLElement>("[data-minimap-dnd-workspace-id][data-minimap-dnd-pane-id]");
     const workspaceId = paneElement?.getAttribute("data-minimap-dnd-workspace-id");
     const paneId = paneElement?.getAttribute("data-minimap-dnd-pane-id");
     const sourceWorkspace = workspaceId ? workspaces.find((workspace) => workspace.id === workspaceId) : null;
@@ -299,7 +307,7 @@ export const LayoutMinimapPanel = memo(function LayoutMinimapPanel({ workspaces,
       });
       return;
     }
-    if (paneElement || target.closest("[data-minimap-workspace], button, input, textarea, select, [data-dnd-ignore='true']")) return;
+    if (target.closest("button, input, textarea, select, [data-dnd-ignore='true']")) return;
     const root = event.currentTarget;
     const start = contentPointFor(root, event.clientX, event.clientY);
     const armed: MinimapPointerState = {
@@ -434,13 +442,13 @@ export const LayoutMinimapPanel = memo(function LayoutMinimapPanel({ workspaces,
     <div ref={stackRef} className={`cmux-minimap-stack${isMinimapDragging ? " is-minimap-dragging" : ""}`} onPointerDownCapture={handlePointerDown} onPointerMoveCapture={handlePointerMove} onPointerUpCapture={finishPointer} onPointerCancelCapture={cancelMarquee} onScroll={handleStackScroll}>
       {workspaces.map((workspace) => {
         const activePaneId = workspace.panes.find((pane) => paneContainsSession(pane, activePaneSessionId))?.id ?? null;
-        return <MinimapWorkspaceBlock key={workspace.id} workspace={workspace} selectedTabId={selectedTabId} selectedTabIds={selectedTabIds} groupPulseTabIds={groupPulseTabIds} displayStateByTabId={displayStateByTabId} expanded={!collapsedWorkspaceIds.has(workspace.id)} activePaneId={activePaneId} onToggle={() => setCollapsedWorkspaceIds((current) => {
+        return <MinimapWorkspaceBlock key={workspace.id} workspace={workspace} selectedTabId={selectedTabId} selectedTabIds={selectedTabIds} openTabIds={openTabIds} groupPulseTabIds={groupPulseTabIds} displayStateByTabId={displayStateByTabId} expanded={!collapsedWorkspaceIds.has(workspace.id)} activePaneId={activePaneId} onToggle={() => setCollapsedWorkspaceIds((current) => {
           const next = new Set(current);
           if (next.has(workspace.id)) next.delete(workspace.id);
           else next.add(workspace.id);
           persistCollapsedWorkspaceIds(next);
           return next;
-        })} onSelect={selectTab} onSelectGroup={selectGroup} />;
+        })} onSelect={selectTab} onSelectGroup={selectGroup} onJump={onJump} />;
       })}
       {marquee ? <div className="cmux-minimap-selection-marquee" aria-hidden="true" style={{ left: marquee.left, top: marquee.top, width: marquee.right - marquee.left, height: marquee.bottom - marquee.top }} /> : null}
     </div>
@@ -469,7 +477,14 @@ function areMinimapPropsEqual(previous: Readonly<LayoutMinimapPanelProps>, next:
     && previous.selectedTabId === next.selectedTabId
     && previous.activePaneSessionId === next.activePaneSessionId
     && previous.onSelect === next.onSelect
+    && previous.onJump === next.onJump
+    && arraysEqual(previous.openTabIds ?? [], next.openTabIds ?? [])
     && mapsEqual(previous.displayStateByTabId, next.displayStateByTabId);
+}
+
+function arraysEqual(left: readonly string[], right: readonly string[]): boolean {
+  if (left.length !== right.length) return false;
+  return left.every((value, index) => value === right[index]);
 }
 
 function mapsEqual<T>(left: ReadonlyMap<string, T>, right: ReadonlyMap<string, T>): boolean {

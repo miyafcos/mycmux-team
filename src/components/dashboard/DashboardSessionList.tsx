@@ -70,6 +70,9 @@ export function DashboardSessionList({
   reportInboxCount,
   reportInboxOpen,
   onOpenReportInbox,
+  openTabIds,
+  collapsed,
+  onToggleCollapsed,
 }: {
   needsHuman: readonly DashboardCardModel[];
   all: readonly DashboardCardModel[];
@@ -91,7 +94,11 @@ export function DashboardSessionList({
   reportInboxCount: number;
   reportInboxOpen: boolean;
   onOpenReportInbox: () => void;
+  openTabIds?: readonly string[];
+  collapsed: boolean;
+  onToggleCollapsed: () => void;
 }) {
+  const openIds = openTabIds ?? [];
   const scrollRef = useRef<HTMLDivElement>(null);
   const hoveredRef = useRef(false);
 
@@ -112,6 +119,7 @@ export function DashboardSessionList({
     key={key}
     card={card}
     selected={card.tab.id === selectedTabId}
+    open={openIds.includes(card.tab.id)}
     now={now}
     hideWorkspaceBadge={hideWorkspaceBadge}
     onSelect={onSelect}
@@ -122,29 +130,47 @@ export function DashboardSessionList({
     ref={scrollRef}
     role="group"
     aria-label={dashboardStrings.sessionListAriaLabel}
+    aria-expanded={!collapsed}
+    data-collapsed={collapsed ? "true" : "false"}
     onPointerEnter={() => { hoveredRef.current = true; onHoverChange(true); }}
     onPointerLeave={() => { hoveredRef.current = false; onHoverChange(false); }}
     className="cmux-dash-list is-attention"
   >
-    <div className="cmux-dash-list-search">
-      <input
-        ref={searchInputRef}
-        value={query}
-        aria-label={dashboardStrings.searchPlaceholder}
-        placeholder={dashboardStrings.searchPlaceholder}
-        onChange={(event) => onQueryChange(event.target.value)}
-        onFocus={() => onSearchFocusChange(true)}
-        onBlur={() => onSearchFocusChange(false)}
-      />
-      {filteredSummary ? <span>{filteredSummary}</span> : null}
+    <div className="cmux-dash-list-toolbar">
+      <button
+        type="button"
+        data-session-list-toggle="true"
+        className="cmux-dash-list-toggle"
+        aria-pressed={collapsed}
+        aria-label={collapsed ? dashboardStrings.sessionListExpandTitle : dashboardStrings.sessionListCollapseTitle}
+        title={collapsed ? dashboardStrings.sessionListExpandTitle : dashboardStrings.sessionListCollapseTitle}
+        onClick={onToggleCollapsed}
+      >
+        {collapsed ? dashboardStrings.sessionListExpand : dashboardStrings.sessionListCollapse}
+      </button>
+      <div className="cmux-dash-list-search">
+        <input
+          ref={searchInputRef}
+          value={query}
+          aria-label={dashboardStrings.searchPlaceholder}
+          placeholder={dashboardStrings.searchPlaceholder}
+          onChange={(event) => onQueryChange(event.target.value)}
+          onFocus={() => onSearchFocusChange(true)}
+          onBlur={() => onSearchFocusChange(false)}
+        />
+        {filteredSummary ? <span>{filteredSummary}</span> : null}
+      </div>
     </div>
     <button
       type="button"
       data-report-inbox-nav="true"
       className={`cmux-dash-report-nav${reportInboxOpen ? " is-selected" : ""}`}
       aria-pressed={reportInboxOpen}
+      aria-label={dashboardStrings.reportInboxTitle}
+      title={dashboardStrings.reportInboxTitle}
       onClick={onOpenReportInbox}
     >
+      <span className="cmux-dash-report-nav-icon" aria-hidden="true">{dashboardStrings.reportInboxRailIcon}</span>
       <span>{dashboardStrings.reportInboxTitle}</span>
       <small>{dashboardStrings.reportInboxHint}</small>
       {reportInboxCount ? <b>{reportInboxCount}</b> : null}

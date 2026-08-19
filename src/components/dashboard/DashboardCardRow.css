@@ -31,6 +31,9 @@
   border-color: var(--cmux-border);
   background: var(--cmux-selected);
 }
+.cmux-dash-row.is-open {
+  background: color-mix(in srgb, var(--cmux-accent) 8%, var(--cmux-surface));
+}
 .cmux-dash-row-agent { width: 3px; flex: 0 0 3px; border-radius: 2px; }
 .cmux-dash-row-body { display: block; flex: 1; min-width: 0; }
 .cmux-dash-row-title { display: flex; align-items: center; gap: 6px; min-width: 0; }

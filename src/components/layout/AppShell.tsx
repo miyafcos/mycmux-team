@@ -26,6 +26,7 @@ import CrsmPalette, { preloadCrsmSessions } from "../CommandPalette/CrsmPalette"
 import { useKeybindingStore } from "../../stores/keybindingStore";
 import { isEditableTarget } from "../../lib/keybindings";
 import { TAB_RESTORE_CLOSED_EVENT, openTabSweepInDashboard } from "./tabSweep";
+import { openDashboardForActiveSession } from "./openDashboardForTab";
 import { DashboardView } from "../dashboard/DashboardView";
 import { UI_DENSITY_TOKENS, useThemeStore } from "../../stores/themeStore";
 import ErrorBoundary from "../common/ErrorBoundary";
@@ -796,6 +797,9 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
       
       // No match → let event pass through to focused element (terminal, input, etc.)
       if (actions.length === 0) return;
+      // Column shortcuts belong to DashboardView. AppShell already returns
+      // early while the dashboard is open; do not steal them when it is closed.
+      if (actions[0].startsWith("dashboard.column.")) return;
 
       // Match found → prevent default behavior and execute action
       e.preventDefault();
@@ -824,7 +828,11 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
           break;
 
         case "dashboard.open":
-          toggleDashboard();
+          if (stateRef.current.dashboardOpen) {
+            toggleDashboard();
+          } else {
+            openDashboardForActiveSession();
+          }
           break;
 
         case "composer.focus":

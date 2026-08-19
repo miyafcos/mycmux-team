@@ -13,6 +13,8 @@ import { chunkedWrite, enqueueSessionWrite } from "../terminal/terminalCache";
 import { eraseSequenceFor, resetSessionDraft, restorableText, sessionDraft } from "../../lib/inputLineDraft";
 import { focusController } from "../../lib/focusController";
 import { recordRecentInputText } from "../../stores/recentInputStore";
+import { noteTurnSubmit } from "../terminal/terminalTurnMarkers";
+import { turnLabelFrom } from "../terminal/terminalTurnModel";
 import { useComposerStore } from "../../stores/composerStore";
 import { useToastStore } from "../../stores/toastStore";
 
@@ -107,6 +109,7 @@ export function PaneComposer({ sessionId, target, active }: PaneComposerProps) {
     enqueueSessionWrite(sessionId, payload.submitKey);
     resetSessionDraft(sessionId);
     recordRecentInputText(sessionId, draft);
+    noteTurnSubmit(sessionId, turnLabelFrom(draft));
     clearDraft(sessionId);
     returnToTerminal();
   };

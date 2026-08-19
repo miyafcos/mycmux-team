@@ -30,7 +30,30 @@ export const terminalDeferredBatches = new Map<string, PendingFrontendBatch[]>()
 export const terminalRawTailBySession = new Map<string, Uint8Array>();
 export const terminalScrollbackResyncNeeded = new Set<string>();
 export const terminalInitialReplayMarkers = new Map<string, IMarker>();
+
+export interface SessionTurnMark {
+  marker: IMarker;
+  label: string;
+  at: number;
+}
+
+export const terminalTurnMarks = new Map<string, SessionTurnMark[]>();
+export const MAX_TURN_MARKS_PER_SESSION = 200;
 export const MAX_CACHED_TERMINALS = 12;
+
+export function pruneTurnMarks(sessionId: string): SessionTurnMark[] {
+  const marks = terminalTurnMarks.get(sessionId);
+  if (!marks || marks.length === 0) return [];
+  const kept = marks.filter((mark) => !mark.marker.isDisposed && mark.marker.line >= 0);
+  if (kept.length === 0) {
+    terminalTurnMarks.delete(sessionId);
+    return [];
+  }
+  if (kept.length !== marks.length) {
+    terminalTurnMarks.set(sessionId, kept);
+  }
+  return kept;
+}
 const terminalOutputDecoders = new Map<string, TextDecoder>();
 
 const PASTE_CHUNK = 1024;
@@ -423,6 +446,13 @@ export function evictTerminalCache(
   terminalScrollbackResyncNeeded.delete(sessionId);
   terminalInitialReplayMarkers.get(sessionId)?.dispose();
   terminalInitialReplayMarkers.delete(sessionId);
+  const evictedTurnMarks = terminalTurnMarks.get(sessionId);
+  if (evictedTurnMarks) {
+    terminalTurnMarks.delete(sessionId);
+    for (const mark of evictedTurnMarks) {
+      mark.marker.dispose();
+    }
+  }
   terminalOutputDecoders.delete(sessionId);
   for (const cleanup of terminalEvictionCleanups) {
     cleanup(sessionId);

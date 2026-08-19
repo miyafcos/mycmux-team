@@ -1,3 +1,4 @@
+import { printableText } from "../../stores/recentInputStore";
 import type { SemanticEventEnvelope } from "../../lib/livebrief";
 
 export interface ChatMessage {
@@ -84,4 +85,30 @@ export function toChatTranscriptRows(events: readonly SemanticEventEnvelope[]): 
   }
   flushTools();
   return rows;
+}
+
+export function userTurnLabelFrom(text: string): string {
+  return printableText(text).replace(/\s+/g, " ").trim();
+}
+
+export function userTurnsFromRows(rows: readonly ChatTranscriptRow[]): ChatMessage[] {
+  return rows.flatMap((row) => (
+    row.kind === "message" && row.message.role === "user" ? [row.message] : []
+  ));
+}
+
+/** 0-based index of the current user turn. Empty input returns -1. */
+export function userTurnIndexFromTops(
+  tops: readonly number[],
+  containerTop: number,
+  followingBottom: boolean,
+): number {
+  if (!tops.length) return -1;
+  if (followingBottom) return tops.length - 1;
+  let index = 0;
+  for (let i = 0; i < tops.length; i += 1) {
+    if (tops[i] <= containerTop) index = i;
+    else break;
+  }
+  return index;
 }

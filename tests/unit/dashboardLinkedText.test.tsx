@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   reveal: vi.fn(),
   resolve: vi.fn(),
   openPreviewPane: vi.fn(),
+  openInDashboardPreview: vi.fn(),
 }));
 
 vi.mock("@tauri-apps/plugin-shell", () => ({ open: mocks.open }));
@@ -41,6 +42,7 @@ beforeEach(() => {
   mocks.reveal.mockReset();
   mocks.resolve.mockReset();
   mocks.openPreviewPane.mockReset();
+  mocks.openInDashboardPreview.mockReset();
 });
 
 afterEach(() => {
@@ -98,6 +100,71 @@ describe("DashboardLinkedText", () => {
     await renderText(path);
     await act(async () => { (container.querySelector("a") as HTMLAnchorElement).click(); });
 
+    expect([...container.querySelectorAll("button")].map((button) => button.textContent)).toEqual([
+      "既定のアプリで開く",
+      "エクスプローラーで表示",
+    ]);
+    expect(mocks.openInDashboardPreview).not.toHaveBeenCalled();
+    expect(mocks.preview).not.toHaveBeenCalled();
+    expect(mocks.openPreviewPane).not.toHaveBeenCalled();
+  });
+
+  it("opens an artifact preview in the dashboard column when the context asks for it", async () => {
+    const path = "C:\\Users\\miyaz\\Dropbox\\成果物\\report.html";
+    mocks.resolve.mockResolvedValue([{ text: path, index: 0, endIndex: path.length, activationUri: path }]);
+    mocks.preview.mockResolvedValue({
+      previewPath: path,
+      sourcePath: path,
+      sourceKind: "html",
+    });
+
+    await act(async () => {
+      root.render(<DashboardLinkedText
+        text={path}
+        context={{
+          workspaceId: "ws-a",
+          paneId: "pane-a",
+          sessionId: "session-a",
+          canPreviewInternally: true,
+          openInDashboardPreview: mocks.openInDashboardPreview,
+        }}
+      />);
+      await Promise.resolve();
+    });
+    await act(async () => { (container.querySelector("a") as HTMLAnchorElement).click(); });
+    await act(async () => { await Promise.resolve(); });
+
+    expect(mocks.preview).toHaveBeenCalledWith("session-a", path);
+    expect(mocks.openInDashboardPreview).toHaveBeenCalledWith({
+      previewPath: path,
+      sourcePath: path,
+      sourceKind: "html",
+    });
+    expect(mocks.openPreviewPane).not.toHaveBeenCalled();
+  });
+
+  it("does not open a dashboard preview column for a URI that is not an artifact preview", async () => {
+    const path = "C:\\Users\\miyaz\\Dropbox\\成果物\\report.pdf";
+    mocks.resolve.mockResolvedValue([{ text: path, index: 0, endIndex: path.length, activationUri: path }]);
+
+    await act(async () => {
+      root.render(<DashboardLinkedText
+        text={path}
+        context={{
+          workspaceId: "ws-a",
+          paneId: "pane-a",
+          sessionId: "session-a",
+          canPreviewInternally: true,
+          openInDashboardPreview: mocks.openInDashboardPreview,
+        }}
+      />);
+      await Promise.resolve();
+    });
+    await act(async () => { (container.querySelector("a") as HTMLAnchorElement).click(); });
+
+    expect(mocks.openInDashboardPreview).not.toHaveBeenCalled();
+    expect(mocks.preview).not.toHaveBeenCalled();
+    expect(mocks.openPreviewPane).not.toHaveBeenCalled();
     expect([...container.querySelectorAll("button")].map((button) => button.textContent)).toEqual([
       "既定のアプリで開く",
       "エクスプローラーで表示",

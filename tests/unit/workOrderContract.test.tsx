@@ -145,7 +145,7 @@ beforeEach(() => {
   mocks.cancel.mockResolvedValue({ deletedDraft: true, stopTargets: [] });
   mocks.retry.mockResolvedValue({ spawnRequestId: "retry-1" });
   seed();
-  useDashboardViewStore.setState({ selectedTabId: first.tab.id, chatColumnTabIds: [first.tab.id], activeChatColumn: 0, reportInboxOpen: false });
+  useDashboardViewStore.setState({ selectedTabId: first.tab.id, chatColumnTabIds: [first.tab.id], activeChatColumn: 0 });
 });
 
 afterEach(async () => {
@@ -154,7 +154,7 @@ afterEach(async () => {
   vi.clearAllMocks();
   useComposerStore.setState({ draftBySession: {}, mentionTokensBySession: {}, commandKindBySession: {}, questionGuardBySession: {} });
   useWorkOrderStore.setState({ contractDraftBySession: {}, dismissedSignatureBySession: {} });
-  useDashboardViewStore.setState({ selectedTabId: null, chatColumnTabIds: [], activeChatColumn: 0, reportInboxOpen: false });
+  useDashboardViewStore.setState({ selectedTabId: null, chatColumnTabIds: [], activeChatColumn: 0 });
   vi.unstubAllGlobals();
   vi.useRealTimers();
 });

@@ -2,7 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import type { KeyboardEvent, MouseEvent, ReactNode } from "react";
 import { open } from "@tauri-apps/plugin-shell";
 
-import { previewArtifactUriForSessionV2, revealPathInExplorer } from "../../lib/ipc";
+import { previewArtifactUriForSessionV2, revealPathInExplorer, type PreviewArtifactInfo } from "../../lib/ipc";
 import { useWorkspaceLayoutStore } from "../../stores/workspaceStore";
 import {
   HTTP_LINK_REGEX,
@@ -17,6 +17,7 @@ export type DashboardLinkContext = {
   paneId: string;
   sessionId: string;
   canPreviewInternally: boolean;
+  openInDashboardPreview?: (info: PreviewArtifactInfo) => void;
 };
 
 type TextLinkMatch = {
@@ -130,8 +131,14 @@ export function DashboardLinkedText({
       void open(uri);
       return;
     }
+    const openInDashboard = context.openInDashboardPreview && isArtifactPreviewUri(uri)
+      ? context.openInDashboardPreview
+      : null;
     void previewArtifactUriForSessionV2(context.sessionId, uri)
-      .then((info) => openOrReloadHtmlPreviewPane(context.workspaceId, context.paneId, info))
+      .then((info) => {
+        if (openInDashboard) openInDashboard(info);
+        else openOrReloadHtmlPreviewPane(context.workspaceId, context.paneId, info);
+      })
       .catch(() => { void open(uri); });
   }, [context, openOrReloadHtmlPreviewPane]);
 
@@ -188,8 +195,14 @@ export function DashboardUrlLink({
       void open(url);
       return;
     }
+    const openInDashboard = context.openInDashboardPreview && isArtifactPreviewUri(url)
+      ? context.openInDashboardPreview
+      : null;
     void previewArtifactUriForSessionV2(context.sessionId, url)
-      .then((info) => openOrReloadHtmlPreviewPane(context.workspaceId, context.paneId, info))
+      .then((info) => {
+        if (openInDashboard) openInDashboard(info);
+        else openOrReloadHtmlPreviewPane(context.workspaceId, context.paneId, info);
+      })
       .catch(() => { void open(url); });
   }, [context, openOrReloadHtmlPreviewPane, url]);
   return <LinkButton onActivate={activate}>{children}</LinkButton>;

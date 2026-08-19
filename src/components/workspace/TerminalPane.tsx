@@ -25,7 +25,7 @@ import {
 } from "../../stores/workspaceStore";
 import { useWorkspaceListStore } from "../../stores/workspaceListStore";
 import { getAgent, getDefaultAgent } from "../../lib/agents";
-import { killSession, previewArtifactUriForSessionV2 } from "../../lib/ipc";
+import { killSession, previewArtifactUriForSessionV2, type SaveEditableArtifactResult } from "../../lib/ipc";
 import { revealPathInExplorer } from "../../lib/ipc";
 import { isArtifactPreviewUri, isDirectoryLikeUri } from "../terminal/terminalLinkProvider";
 import { focusController } from "../../lib/focusController";
@@ -599,6 +599,23 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
     focusController.focusPaneSoon(pane.id);
   }, [pane.id, setZoomedPaneId]);
 
+  const activeTabId = activeTab?.id;
+  const activeTabSourceKind = activeTab?.sourceKind;
+
+  const handleBrowserDirtyChange = useCallback((isDirty: boolean) => {
+    if (!activeTabId) return;
+    setBrowserTabDirty(workspaceId, pane.id, activeTabId, isDirty);
+  }, [workspaceId, pane.id, activeTabId, setBrowserTabDirty]);
+
+  const handleBrowserSaved = useCallback((result: SaveEditableArtifactResult) => {
+    if (!activeTabId) return;
+    refreshBrowserTabPreview(workspaceId, pane.id, activeTabId, {
+      previewPath: result.previewPath,
+      sourcePath: result.sourcePath,
+      sourceKind: activeTabSourceKind ?? "html",
+    });
+  }, [workspaceId, pane.id, activeTabId, activeTabSourceKind, refreshBrowserTabPreview]);
+
   const handleUrlClick = useCallback((uri: string) => {
     if (pendingPreviewUriRef.current) return;
     setArtifactLinkPopover(null);
@@ -851,15 +868,9 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
               previewPath={activeTab.previewPath ?? activeTab.htmlPath}
               reloadKey={activeTab.reloadCounter ?? 0}
               isDirty={activeTab.isDirty ?? false}
-              onDirtyChange={(isDirty) => setBrowserTabDirty(workspaceId, pane.id, activeTab.id, isDirty)}
+              onDirtyChange={handleBrowserDirtyChange}
               onZoomToggle={handleZoomToggle}
-              onSaved={(result) => {
-                refreshBrowserTabPreview(workspaceId, pane.id, activeTab.id, {
-                  previewPath: result.previewPath,
-                  sourcePath: result.sourcePath,
-                  sourceKind: activeTab.sourceKind ?? "html",
-                });
-              }}
+              onSaved={handleBrowserSaved}
             />
           </ErrorBoundary>
         ) : activeTab && isDeclaredTab(activeTab) ? (

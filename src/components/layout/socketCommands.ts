@@ -1198,6 +1198,8 @@ async function serializePaneSend<T>(sessionId: string, operation: () => Promise<
 async function sendPaneText(args: SocketArgs) {
   const { useWorkspaceListStore } = await import("../../stores/workspaceStore");
   const { recordRecentInputText } = await import("../../stores/recentInputStore");
+  const { noteTurnSubmit } = await import("../terminal/terminalTurnMarkers");
+  const { turnLabelFrom } = await import("../terminal/terminalTurnModel");
   const sessionId = socketArgString(args, "sessionId", "session_id");
   if (!sessionId) throw new Error("pane.send_text requires sessionId");
   const textValue = args?.text;
@@ -1248,7 +1250,10 @@ async function sendPaneText(args: SocketArgs) {
 
     if (!canConfirm || beforeEnter === null) {
       await writeToSession(sessionId, keyBytes);
-      if (textValue) recordRecentInputText(sessionId, textValue);
+      if (textValue) {
+        recordRecentInputText(sessionId, textValue);
+        noteTurnSubmit(sessionId, turnLabelFrom(textValue));
+      }
       return {
         sessionId,
         bytes,
@@ -1262,7 +1267,10 @@ async function sendPaneText(args: SocketArgs) {
     const maxAttempts = key === null ? SEND_ENTER_MAX_ATTEMPTS : 1;
     for (let attempts = 1; attempts <= maxAttempts; attempts += 1) {
       await writeToSession(sessionId, keyBytes);
-      if (attempts === 1 && textValue) recordRecentInputText(sessionId, textValue);
+      if (attempts === 1 && textValue) {
+        recordRecentInputText(sessionId, textValue);
+        noteTurnSubmit(sessionId, turnLabelFrom(textValue));
+      }
       const advance = await waitForPaneToAdvance(sessionId, beforeEnter, targetMounted);
       targetMounted = advance.targetMounted;
       if (advance.outcome === "advanced") {

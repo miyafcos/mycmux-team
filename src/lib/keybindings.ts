@@ -28,6 +28,10 @@ export type KeybindingActionId =
   | "settings.keybindings"
   | "tab.sweep"
   | "dashboard.open"
+  | "dashboard.column.prev"
+  | "dashboard.column.next"
+  | "dashboard.column.close"
+  | "dashboard.column.pin"
   | "pane.zoom.toggle"
   | "terminal.search"
   | "composer.focus"
@@ -46,6 +50,10 @@ export const KEYBINDING_DEFINITIONS: KeybindingDefinition[] = [
   { action: "crsm.palette", title: "Open Resume", category: "Global", defaultShortcut: "ctrl+p" },
   { action: "tab.sweep", title: "タブ掃除を開く", category: "Global", defaultShortcut: "ctrl+shift+k" },
   { action: "dashboard.open", title: "Open dashboard", category: "Global", defaultShortcut: "ctrl+shift+g" },
+  { action: "dashboard.column.prev", title: "ダッシュボードの左の列へ", category: "Global", defaultShortcut: "ctrl+shift+arrowleft" },
+  { action: "dashboard.column.next", title: "ダッシュボードの右の列へ", category: "Global", defaultShortcut: "ctrl+shift+arrowright" },
+  { action: "dashboard.column.close", title: "ダッシュボードの列を閉じる", category: "Global", defaultShortcut: "ctrl+shift+backspace" },
+  { action: "dashboard.column.pin", title: "ダッシュボードの列を固定", category: "Global", defaultShortcut: "ctrl+shift+p" },
 
   { action: "workspace.new", title: "New workspace", category: "Workspace", defaultShortcut: "ctrl+shift+n" },
   { action: "workspace.next", title: "Next workspace", category: "Workspace", defaultShortcut: "ctrl+tab" },
@@ -173,7 +181,7 @@ export function getActionDefinition(action: KeybindingActionId): KeybindingDefin
 
 export function isEditableTarget(target: EventTarget | null): boolean {
   const el = target as HTMLElement | null;
-  if (!el) return false;
+  if (!el || typeof el.tagName !== "string") return false;
   if (el.isContentEditable) return true;
   const tag = el.tagName.toLowerCase();
   return tag === "input" || tag === "textarea" || tag === "select";

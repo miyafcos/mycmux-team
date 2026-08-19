@@ -6,6 +6,7 @@ import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { LayoutMinimapPanel, MINIMAP_COLLAPSED_WORKSPACE_IDS_STORAGE_KEY } from "../../src/components/dashboard/LayoutMinimapPanel";
+import { minimapCellHeightPx, minimapMapHeightPx } from "../../src/components/dashboard/MinimapWorkspaceBlock";
 import PaneDragOverlay from "../../src/components/workspace/PaneDragOverlay";
 import type { DashboardDisplayState } from "../../src/components/dashboard/dashboardModel";
 import { buildMinimapModel } from "../../src/components/dashboard/minimapModel";
@@ -89,6 +90,24 @@ async function renderDndPanel(workspaces: Workspace[], onSelect = vi.fn()): Prom
   await act(async () => root.render(<LayoutMinimapPanel workspaces={workspaces} displayStateByTabId={states} selectedTabId="a" activePaneSessionId={null} onSelect={onSelect} />));
 }
 
+describe("minimapMapHeightPx", () => {
+  it("uses chip counts per cell and does not clamp", () => {
+    // expanded: pad 5*2 + border 2 + grip 7 + gap 5 + chips * 53 + (chips-1)*5
+    expect(minimapCellHeightPx(1, true)).toBe(77);
+    expect(minimapCellHeightPx(6, true)).toBe(367);
+    expect(minimapMapHeightPx([[1]], true)).toBe(93);
+    expect(minimapMapHeightPx([[6]], true)).toBe(383);
+    expect(minimapMapHeightPx([[3, 3, 3, 3]], true)).toBe(800);
+    expect(minimapMapHeightPx([[1], [1]], true)).toBe(93);
+    expect(minimapMapHeightPx([[1, 1, 1]], true)).toBe(255);
+    expect(minimapMapHeightPx([Array.from({ length: 8 }, () => 1)], true)).toBe(660);
+    expect(minimapMapHeightPx([Array.from({ length: 8 }, () => 1)], true)).toBeGreaterThan(248);
+    // collapsed: pad 4*2 + border 2 + grip 7 + gap 4 + chips * 26 + (chips-1)*4
+    expect(minimapCellHeightPx(1, false)).toBe(47);
+    expect(minimapMapHeightPx([[1]], false)).toBe(63);
+  });
+});
+
 describe("LayoutMinimapPanel", () => {
   it("projects buildMinimapModel shares for an uneven two-workspace layout", async () => {
     const wsA: Workspace = { id: "ws-a", name: "A", gridTemplateId: "1x1", status: "running", createdAt: 1,
@@ -132,15 +151,28 @@ describe("LayoutMinimapPanel", () => {
 
     expect(mapOf("ws-shallow").dataset.minimapRowCount).toBe("1");
     expect(mapOf("ws-deep").dataset.minimapRowCount).toBe("3");
-    expect(heightOf("ws-shallow")).toBeGreaterThan(0);
+    expect(heightOf("ws-shallow")).toBe(minimapMapHeightPx([[1], [1]], true));
+    expect(heightOf("ws-deep")).toBe(minimapMapHeightPx([[1, 1, 1]], true));
     expect(heightOf("ws-shallow")).toBeLessThan(heightOf("ws-deep"));
 
-    // 上限 clamp: 行数が増え続けても展開時の箱は現行 248px を超えない。
     const wide: Workspace = { id: "ws-wide", name: "広い", gridTemplateId: "1x1", status: "running", createdAt: 1,
       panes: Array.from({ length: 8 }, (_, index) => pane(`w${index}`, [tab(`w${index}`)])),
       splitColumns: [Array.from({ length: 8 }, (_, index) => `w${index}`)] };
     await act(async () => root.render(<LayoutMinimapPanel workspaces={[wide]} displayStateByTabId={new Map()} selectedTabId={null} activePaneSessionId={null} onSelect={vi.fn()} />));
-    expect(heightOf("ws-wide")).toBeLessThanOrEqual(248);
+    expect(heightOf("ws-wide")).toBe(minimapMapHeightPx([Array.from({ length: 8 }, () => 1)], true));
+    expect(heightOf("ws-wide")).toBeGreaterThan(248);
+  });
+
+  it("sizes the map from each cell's chip count so six stacked chips stay unclipped", async () => {
+    const crowded: Workspace = { id: "ws-crowded", name: "密集", gridTemplateId: "1x1", status: "running", createdAt: 1,
+      panes: [pane("p", [tab("t0"), tab("t1"), tab("t2"), tab("t3"), tab("t4"), tab("t5")])], splitColumns: [["p"]] };
+    await act(async () => root.render(<LayoutMinimapPanel workspaces={[crowded]} displayStateByTabId={new Map()} selectedTabId={null} activePaneSessionId={null} onSelect={vi.fn()} />));
+    const map = container.querySelector<HTMLElement>("[data-minimap-workspace='ws-crowded'] .cmux-minimap-map")!;
+    const cell = container.querySelector<HTMLElement>("[data-minimap-pane='p']")!;
+    const mapHeight = Number.parseInt(map.style.getPropertyValue("--minimap-map-height"), 10);
+    expect(mapHeight).toBe(minimapMapHeightPx([[6]], true));
+    expect(cell.style.minHeight).toBe(`${minimapCellHeightPx(6, true)}px`);
+    expect(container.querySelectorAll("[data-minimap-tab]")).toHaveLength(6);
   });
 
   it("selects chips without launching declared tabs and toggles workspace expansion", async () => {
@@ -173,6 +205,9 @@ describe("LayoutMinimapPanel", () => {
     const name = container.querySelector<HTMLElement>(".cmux-minimap-workspace-name")!;
     expect(chip.querySelector(".cmux-minimap-label")?.textContent).toBe(longLabel);
     expect(chip.title).toBe(longLabel);
+    expect(chip.getAttribute("aria-label")).toContain(`${longLabel} — `);
+    expect(chip.getAttribute("aria-label")).toContain("ダブルクリックで元の画面に戻る");
+    expect(chip.getAttribute("aria-label")).toContain("Alt+クリックでグループ選択");
     expect(name.textContent).toBe(longName);
     expect(name.title).toBe(longName);
     expect(chip.classList.contains("is-expanded")).toBe(true);
@@ -242,8 +277,9 @@ describe("LayoutMinimapPanel", () => {
     const workspaces = dndWorkspaces();
     await renderDndPanel(workspaces);
     const stack = container.querySelector<HTMLElement>(".cmux-minimap-stack")!;
-    const source = container.querySelector<HTMLElement>("[data-minimap-dnd-pane-id='a']")!;
-    const target = container.querySelector<HTMLElement>("[data-minimap-dnd-pane-id='b']")!;
+    const source = container.querySelector<HTMLElement>("[data-minimap-pane='a'] [data-minimap-pane-grip]")!;
+    const sourceCell = container.querySelector<HTMLElement>(".cmux-minimap-cell[data-minimap-dnd-pane-id='a']")!;
+    const target = container.querySelector<HTMLElement>(".cmux-minimap-cell[data-minimap-dnd-pane-id='b']")!;
     stubMinimapTarget(target);
     const mutationSpy = vi.spyOn(layoutMutation, "applyLayoutMutation");
     const replaceSpy = vi.spyOn(useWorkspaceListStore.getState(), "_replaceWorkspaces");
@@ -258,8 +294,8 @@ describe("LayoutMinimapPanel", () => {
     });
 
     expect(usePaneDragStore.getState().item).toMatchObject({ kind: "pane", surface: "minimap", workspaceId: "ws-a", paneId: "a" });
-    expect(source.classList.contains("is-drag-source")).toBe(true);
-    expect(source.classList.contains("is-minimap-drop-target")).toBe(false);
+    expect(sourceCell.classList.contains("is-drag-source")).toBe(true);
+    expect(sourceCell.classList.contains("is-minimap-drop-target")).toBe(false);
     expect(target.classList.contains("is-minimap-drop-target")).toBe(true);
     expect(stack.classList.contains("is-minimap-dragging")).toBe(true);
     expect(target.dataset.minimapDropZone).toBe("center");
@@ -279,7 +315,8 @@ describe("LayoutMinimapPanel", () => {
     const states = new Map<string, DashboardDisplayState>([["a", "working"], ["b", "working"]]);
     useWorkspaceListStore.setState({ workspaces, activeWorkspaceId: "ws-a" });
     await act(async () => root.render(<><LayoutMinimapPanel workspaces={workspaces} displayStateByTabId={states} selectedTabId="a" activePaneSessionId={null} onSelect={vi.fn()} /><PaneDragOverlay /></>));
-    const source = container.querySelector<HTMLElement>("[data-minimap-dnd-pane-id='a']")!;
+    const source = container.querySelector<HTMLElement>("[data-minimap-pane='a'] [data-minimap-pane-grip]")!;
+    const sourceCell = container.querySelector<HTMLElement>(".cmux-minimap-cell[data-minimap-dnd-pane-id='a']")!;
     Object.defineProperty(document, "elementFromPoint", { configurable: true, value: vi.fn(() => source) });
     const mutationSpy = vi.spyOn(layoutMutation, "applyLayoutMutation");
     const focusSpy = vi.spyOn(focusController, "request");
@@ -294,18 +331,18 @@ describe("LayoutMinimapPanel", () => {
     const ghost = container.querySelector<HTMLElement>(".pane-drag-ghost--pane");
     expect(ghost).not.toBeNull();
     expect(ghost?.style.transform).toContain("translate3d");
-    expect(source.classList.contains("is-drag-source")).toBe(true);
-    expect(source.classList.contains("is-active-pane")).toBe(false);
-    expect(source.classList.contains("is-minimap-drop-target")).toBe(false);
-    expect(source.dataset.minimapDropZone).toBeUndefined();
-    expect(source.querySelector<HTMLElement>("[data-minimap-tab='a']")?.classList.contains("is-selected")).toBe(false);
+    expect(sourceCell.classList.contains("is-drag-source")).toBe(true);
+    expect(sourceCell.classList.contains("is-active-pane")).toBe(false);
+    expect(sourceCell.classList.contains("is-minimap-drop-target")).toBe(false);
+    expect(sourceCell.dataset.minimapDropZone).toBeUndefined();
+    expect(sourceCell.querySelector<HTMLElement>("[data-minimap-tab='a']")?.classList.contains("is-selected")).toBe(false);
     expect(usePaneDragStore.getState().target).toBeNull();
     await act(async () => window.dispatchEvent(pointer("pointerup", 60, 30)));
     expect(mutationSpy).not.toHaveBeenCalled();
     expect(focusSpy).not.toHaveBeenCalled();
   });
 
-  it("arms the marquee only in stack whitespace outside workspace blocks", async () => {
+  it("arms the marquee from pane empty space and workspace padding, not from chips, grips, or headers", async () => {
     const workspace: Workspace = { id: "ws", name: "Marquee boundary", gridTemplateId: "1x1", status: "running", createdAt: 1,
       panes: [pane("a", [tab("a")]), pane("b", [tab("b")])], splitColumns: [["a"], ["b"]] };
     await act(async () => root.render(<LayoutMinimapPanel workspaces={[workspace]} displayStateByTabId={new Map()} selectedTabId="a" activePaneSessionId={null} onSelect={vi.fn()} />));
@@ -315,7 +352,8 @@ describe("LayoutMinimapPanel", () => {
     const workspaceBlock = container.querySelector<HTMLElement>("[data-minimap-workspace='ws']")!;
     const map = workspaceBlock.querySelector<HTMLElement>(".cmux-minimap-map")!;
     const column = workspaceBlock.querySelector<HTMLElement>(".cmux-minimap-column")!;
-    const cell = workspaceBlock.querySelector<HTMLElement>("[data-minimap-dnd-pane-id='a']")!;
+    const cell = workspaceBlock.querySelector<HTMLElement>(".cmux-minimap-cell[data-minimap-dnd-pane-id='a']")!;
+    const grip = workspaceBlock.querySelector<HTMLElement>("[data-minimap-pane='a'] [data-minimap-pane-grip]")!;
     const chip = workspaceBlock.querySelector<HTMLElement>("[data-minimap-tab='a']")!;
     const header = workspaceBlock.querySelector<HTMLElement>(".cmux-minimap-workspace-header")!;
 
@@ -327,19 +365,28 @@ describe("LayoutMinimapPanel", () => {
       expect(container.querySelector(".cmux-minimap-selection-marquee")).toBeNull();
       await act(async () => window.dispatchEvent(pointer("pointerup", 30, 20, pointerId)));
     };
+    const expectMarquee = async (target: HTMLElement, pointerId: number) => {
+      await act(async () => {
+        target.dispatchEvent(pointer("pointerdown", 20, 20, pointerId));
+        target.dispatchEvent(pointer("pointermove", 30, 20, pointerId));
+      });
+      expect(container.querySelector(".cmux-minimap-selection-marquee")).not.toBeNull();
+      await act(async () => window.dispatchEvent(pointer("pointerup", 30, 20, pointerId)));
+    };
 
     await expectNoMarquee(chip, 81);
-    await expectNoMarquee(cell, 82);
-    await expectNoMarquee(column, 83);
-    await expectNoMarquee(map, 84);
-    await expectNoMarquee(header, 85);
+    await expectNoMarquee(grip, 82);
+    await expectNoMarquee(header, 83);
+    await expectMarquee(cell, 84);
+    await expectMarquee(column, 85);
+    await expectMarquee(map, 86);
 
     await act(async () => {
-      stack.dispatchEvent(pointer("pointerdown", 0, 0, 86));
-      stack.dispatchEvent(pointer("pointermove", 10, 10, 86));
+      stack.dispatchEvent(pointer("pointerdown", 0, 0, 87));
+      stack.dispatchEvent(pointer("pointermove", 10, 10, 87));
     });
     expect(container.querySelector(".cmux-minimap-selection-marquee")).not.toBeNull();
-    await act(async () => stack.dispatchEvent(pointer("pointerup", 10, 10, 86)));
+    await act(async () => stack.dispatchEvent(pointer("pointerup", 10, 10, 87)));
   });
 
   it("never grows a marquee out of a chip that is already being dragged", async () => {
@@ -474,8 +521,8 @@ describe("LayoutMinimapPanel", () => {
   ] as const)("commits one atomic pane $zone-edge split without changing active workspace", async ({ zone, x, y }) => {
     const workspaces = dndWorkspaces();
     await renderDndPanel(workspaces);
-    const source = container.querySelector<HTMLElement>("[data-minimap-dnd-pane-id='a']")!;
-    const target = container.querySelector<HTMLElement>("[data-minimap-dnd-pane-id='b']")!;
+    const source = container.querySelector<HTMLElement>("[data-minimap-pane='a'] [data-minimap-pane-grip]")!;
+    const target = container.querySelector<HTMLElement>(".cmux-minimap-cell[data-minimap-dnd-pane-id='b']")!;
     stubMinimapTarget(target);
     const mutationSpy = vi.spyOn(layoutMutation, "applyLayoutMutation");
     mutationSpy.mockClear();
@@ -642,7 +689,7 @@ describe("LayoutMinimapPanel", () => {
     expect(readFileSync("src/components/layout/TitleBar.tsx", "utf8")).not.toContain("TabSweepButton");
   });
 
-  it("selects the exact cross-workspace group on double click", async () => {
+  it("selects the exact cross-workspace group on Alt+click", async () => {
     const wsA: Workspace = { id: "ws-a", name: "A", gridTemplateId: "1x1", status: "running", createdAt: 1,
       panes: [{ ...pane("a", [tab("a")]), cwd: "C:\\Work\\M1" }], splitColumns: [["a"]] };
     const wsB: Workspace = { id: "ws-b", name: "B", gridTemplateId: "1x1", status: "running", createdAt: 1,
@@ -651,11 +698,24 @@ describe("LayoutMinimapPanel", () => {
       panes: [{ ...pane("c", [tab("c")]), cwd: "C:/Other" }], splitColumns: [["c"]] };
     await act(async () => root.render(<LayoutMinimapPanel workspaces={[wsA, wsB, wsC]} displayStateByTabId={new Map()} selectedTabId="a" activePaneSessionId={null} onSelect={vi.fn()} />));
     const chipA = container.querySelector<HTMLElement>("[data-minimap-tab='a']")!;
-    await act(async () => chipA.dispatchEvent(new MouseEvent("dblclick", { bubbles: true })));
+    await act(async () => chipA.dispatchEvent(new MouseEvent("click", { bubbles: true, altKey: true })));
     expect(chipA.classList.contains("is-bundle-selected")).toBe(true);
     expect(container.querySelector<HTMLElement>("[data-minimap-tab='b']")!.classList.contains("is-bundle-selected")).toBe(true);
     expect(container.querySelector<HTMLElement>("[data-minimap-tab='c']")!.classList.contains("is-bundle-selected")).toBe(false);
     expect(container.querySelector(".cmux-minimap-selection-summary")?.textContent).toContain("2本");
+  });
+
+  it("jumps from a chip double-click without selecting the group", async () => {
+    const onJump = vi.fn();
+    const workspace: Workspace = { id: "ws", name: "Jump", gridTemplateId: "1x1", status: "running", createdAt: 1,
+      panes: [pane("p", [tab("a"), tab("b")])], splitColumns: [["p"]] };
+    await act(async () => root.render(<LayoutMinimapPanel workspaces={[workspace]} displayStateByTabId={new Map()} selectedTabId="a" activePaneSessionId={null} onSelect={vi.fn()} onJump={onJump} />));
+    const chipB = container.querySelector<HTMLElement>("[data-minimap-tab='b']")!;
+    await act(async () => chipB.dispatchEvent(new MouseEvent("dblclick", { bubbles: true })));
+    expect(onJump).toHaveBeenCalledTimes(1);
+    expect(onJump).toHaveBeenCalledWith("ws", "p", "b");
+    expect(container.querySelector<HTMLElement>("[data-minimap-tab='a']")!.classList.contains("is-bundle-selected")).toBe(true);
+    expect(chipB.classList.contains("is-bundle-selected")).toBe(false);
   });
 
   it("commits a selected bundle in one atomic layout mutation", async () => {

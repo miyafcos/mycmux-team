@@ -30,6 +30,13 @@ import { resolveEffectiveTerminalRenderer } from "../../stores/settingsMigration
 import { DEFAULT_TERMINAL_FONT_FAMILY, useThemeStore } from "../../stores/themeStore";
 import { useToastStore } from "../../stores/toastStore";
 import { observeSessionInput } from "../../lib/inputLineDraft";
+import { TerminalTurnChip } from "./TerminalTurnChip";
+import {
+  getTurnMarkData,
+  noteTurnInput,
+  TURN_MARKS_EVENT,
+} from "./terminalTurnMarkers";
+import { findTurnIndexForViewport, pickJumpTarget } from "./terminalTurnModel";
 import type { IDisposable, ITheme } from "@xterm/xterm";
 import type { ThemeBackgroundSettings } from "../../types";
 import { markStartupSessionSettled } from "../../lib/startupSessionGate";
@@ -628,7 +635,96 @@ export default memo(function XTermWrapper({
 
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const [turnChip, setTurnChip] = useState<{
+    index: number;
+    total: number;
+    label: string;
+  } | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const turnChipRafRef = useRef<number | null>(null);
+  const lastTurnChipRef = useRef<typeof turnChip>(null);
+  const refreshTurnChipRef = useRef<() => void>(() => {});
+
+  const refreshTurnChip = useCallback(() => {
+    if (turnChipRafRef.current != null) return;
+    turnChipRafRef.current = requestAnimationFrame(() => {
+      turnChipRafRef.current = null;
+      const currentTerm = termRef.current;
+      if (!currentTerm) {
+        if (lastTurnChipRef.current !== null) {
+          lastTurnChipRef.current = null;
+          setTurnChip(null);
+        }
+        return;
+      }
+      const buf = currentTerm.buffer.active;
+      const marks = getTurnMarkData(sessionId);
+      const visible =
+        !isAtBottomRef.current &&
+        marks.length > 0 &&
+        buf.type === "normal";
+      if (!visible) {
+        if (lastTurnChipRef.current !== null) {
+          lastTurnChipRef.current = null;
+          setTurnChip(null);
+        }
+        return;
+      }
+      const index = findTurnIndexForViewport(marks, buf.viewportY);
+      if (index < 0) {
+        if (lastTurnChipRef.current !== null) {
+          lastTurnChipRef.current = null;
+          setTurnChip(null);
+        }
+        return;
+      }
+      const next = {
+        index,
+        total: marks.length,
+        label: marks[index]?.label ?? "",
+      };
+      const prev = lastTurnChipRef.current;
+      if (
+        prev &&
+        prev.index === next.index &&
+        prev.total === next.total &&
+        prev.label === next.label
+      ) {
+        return;
+      }
+      lastTurnChipRef.current = next;
+      setTurnChip(next);
+    });
+  }, [sessionId]);
+  refreshTurnChipRef.current = refreshTurnChip;
+
+  const jumpTurn = useCallback((direction: -1 | 1) => {
+    const currentTerm = termRef.current;
+    if (!currentTerm) return;
+    const marks = getTurnMarkData(sessionId);
+    const currentIndex = lastTurnChipRef.current?.index
+      ?? findTurnIndexForViewport(marks, currentTerm.buffer.active.viewportY);
+    const target = pickJumpTarget(marks, currentIndex, direction);
+    if (!target) return;
+    currentTerm.scrollToLine(target.line);
+    refreshTurnChip();
+  }, [refreshTurnChip, sessionId]);
+
+  useEffect(() => {
+    const onTurnMarks = (event: Event): void => {
+      const markedSession = (event as CustomEvent<{ sessionId?: string }>).detail?.sessionId;
+      if (markedSession && markedSession !== sessionId) return;
+      refreshTurnChipRef.current();
+    };
+    window.addEventListener(TURN_MARKS_EVENT, onTurnMarks);
+    return () => {
+      window.removeEventListener(TURN_MARKS_EVENT, onTurnMarks);
+      if (turnChipRafRef.current != null) {
+        cancelAnimationFrame(turnChipRafRef.current);
+        turnChipRafRef.current = null;
+      }
+    };
+  }, [sessionId]);
 
   const storeTheme = useThemeStore((s) => s.theme);
   const storeFontSize = useThemeStore((s) => s.fontSize);
@@ -982,6 +1078,7 @@ export default memo(function XTermWrapper({
         if (termDisposed) return;
         const buf = currentTerm.buffer.active;
         isAtBottomRef.current = buf.viewportY >= buf.baseY;
+        refreshTurnChipRef.current();
       });
     };
 
@@ -1922,6 +2019,7 @@ export default memo(function XTermWrapper({
           clearActiveTerminalNotification(sessionId);
           focusTerminalIfNeeded(currentTerm, sessionId);
         }
+        noteTurnInput(sessionId, inputData);
         observeSessionInput(sessionId, inputData);
         chunkedWrite(sessionId, inputData);
         if (hasNonWheelInput) {
@@ -1946,6 +2044,7 @@ export default memo(function XTermWrapper({
           clearActiveTerminalNotification(sessionId);
           focusTerminalIfNeeded(currentTerm, sessionId);
         }
+        noteTurnInput(sessionId, inputData);
         enqueueSessionWrite(sessionId, inputData);
       });
 
@@ -2363,6 +2462,17 @@ export default memo(function XTermWrapper({
 
   return (
     <div style={{ position: "relative", width: "100%", height: "100%" }}>
+      {turnChip && (
+        <TerminalTurnChip
+          index={turnChip.index}
+          total={turnChip.total}
+          label={turnChip.label}
+          canPrev={turnChip.index > 0}
+          canNext={turnChip.index < turnChip.total - 1}
+          onPrev={() => jumpTurn(-1)}
+          onNext={() => jumpTurn(1)}
+        />
+      )}
       {isSearchOpen && (
         <div style={{
           position: "absolute",

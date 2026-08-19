@@ -47,9 +47,10 @@ export const instructionBlockStyle: CSSProperties = {
   padding: "var(--cmux-space-2) var(--cmux-space-5)",
 };
 
-function CardRow({ card, selected, now, hideWorkspaceBadge, onSelect, onJump }: {
+function CardRow({ card, selected, open, now, hideWorkspaceBadge, onSelect, onJump }: {
   card: DashboardCardModel;
   selected: boolean;
+  open: boolean;
   now: number;
   hideWorkspaceBadge: boolean;
   onSelect: (tabId: string) => void;
@@ -80,8 +81,10 @@ function CardRow({ card, selected, now, hideWorkspaceBadge, onSelect, onJump }: 
 
   return <button
     type="button"
-    className={`cmux-dash-row${tone}${selected ? " is-selected" : ""}`}
+    className={`cmux-dash-row${tone}${selected ? " is-selected" : ""}${open && !selected ? " is-open" : ""}`}
     data-dashboard-row={card.tab.id}
+    data-dashboard-open={open || undefined}
+    data-dashboard-active={selected || undefined}
     data-dashboard-state={state}
     aria-pressed={selected}
     onClick={() => onSelect(card.tab.id)}

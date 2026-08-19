@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { toChatMessages, toChatTranscriptRows } from "../../src/components/dashboard/chatModel";
+import {
+  toChatMessages,
+  toChatTranscriptRows,
+  userTurnIndexFromTops,
+  userTurnLabelFrom,
+  userTurnsFromRows,
+} from "../../src/components/dashboard/chatModel";
 import type { SemanticEvent, SemanticEventEnvelope } from "../../src/lib/livebrief";
 
 let sequence = 0;
@@ -67,5 +73,26 @@ describe("toChatMessages", () => {
     const after = toChatTranscriptRows([first, second]);
     expect(before[0]).toMatchObject({ kind: "toolGroup", id: first.eventId });
     expect(after[0]).toMatchObject({ kind: "toolGroup", id: first.eventId, tools: [{ id: first.eventId }, { id: second.eventId }] });
+  });
+});
+
+describe("user turn helpers", () => {
+  it("normalizes newlines and control characters the same way as terminal labels", () => {
+    expect(userTurnLabelFrom("実装して\n確認して\t今すぐ")).toBe("実装して 確認して 今すぐ");
+  });
+
+  it("collects only user messages in source order", () => {
+    const userA = envelope({ type: "userMessage", kind: "answer", text: "one", digest: "d1" });
+    const agent = envelope({ type: "agentMessage", text: "reply" });
+    const userB = envelope({ type: "userMessage", kind: "taskStart", text: "two", digest: "d2" });
+    const turns = userTurnsFromRows(toChatTranscriptRows([userA, agent, userB]));
+    expect(turns.map((turn) => turn.text)).toEqual(["one", "two"]);
+  });
+
+  it("points at the last turn when following the bottom, otherwise the last top at or above the container", () => {
+    expect(userTurnIndexFromTops([10, 40, 80], 0, true)).toBe(2);
+    expect(userTurnIndexFromTops([10, 40, 80], 40, false)).toBe(1);
+    expect(userTurnIndexFromTops([10, 40, 80], 5, false)).toBe(0);
+    expect(userTurnIndexFromTops([], 0, false)).toBe(-1);
   });
 });

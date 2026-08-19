@@ -92,6 +92,7 @@ function FeelHarness({ events = [] }: { events?: readonly SemanticEventEnvelope[
       events={events}
       now={NOW}
       active
+      pinned={false}
       dragging={false}
       dropPreview={false}
       motion={null}
@@ -99,6 +100,7 @@ function FeelHarness({ events = [] }: { events?: readonly SemanticEventEnvelope[
       targetEventRequest={0}
       syntheticSource={null}
       onActivate={vi.fn()}
+      onTogglePin={vi.fn()}
       onClose={vi.fn()}
       onFocusComposer={vi.fn()}
       onJump={vi.fn()}
