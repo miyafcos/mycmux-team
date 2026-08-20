@@ -70,7 +70,7 @@ const profile: CliAccountProfile = {
 const snapshot: CliAccountsSnapshot = {
   profiles: [profile],
   live: [],
-  active: { claude: null, codex: null },
+  active: { claude: null, codex: null, grok: null },
   orphans: [],
   backup_root: "backups",
   generated_at: "2026-01-01T00:00:00Z",

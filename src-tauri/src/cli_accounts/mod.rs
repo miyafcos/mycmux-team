@@ -1,6 +1,7 @@
 mod atomic;
 pub(crate) mod claude;
 pub(crate) mod codex;
+pub(crate) mod grok;
 pub(crate) mod json_splice;
 pub(crate) mod live_sync;
 pub(crate) mod login_watch;
@@ -40,6 +41,9 @@ pub const ERR_CLAUDE_IDENTITY_UNREADABLE: &str = "cli_account.error.claude_ident
 pub const ERR_CLAUDE_IDENTITY_INVALID: &str = "cli_account.error.claude_identity_invalid";
 pub const ERR_CODEX_IDENTITY_UNREADABLE: &str = "cli_account.error.codex_identity_unreadable";
 pub const ERR_CODEX_IDENTITY_INVALID: &str = "cli_account.error.codex_identity_invalid";
+pub const ERR_GROK_IDENTITY_UNREADABLE: &str = "cli_account.error.grok_identity_unreadable";
+pub const ERR_GROK_IDENTITY_INVALID: &str = "cli_account.error.grok_identity_invalid";
+pub const ERR_GROK_AUTH_LOCK_TIMEOUT: &str = "cli_account.error.grok_auth_lock_timeout";
 pub const ERR_LOGIN_STAGING_FAILED: &str = "cli_account.error.login_staging_failed";
 pub const ERR_LOGIN_IDENTITY_MISMATCH: &str = "cli_account.error.login_identity_mismatch";
 pub const ERR_LOGIN_TIMEOUT: &str = "cli_account.error.login_timeout";
@@ -57,6 +61,7 @@ pub const WARN_SWITCH_METADATA_NOT_SAVED: &str = "cli_account.warning.switch_met
 pub enum CliProvider {
     Claude,
     Codex,
+    Grok,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -145,6 +150,7 @@ fn paths_for<'a>(
     provider: CliProvider,
     claude_paths: &'a claude::ClaudePaths,
     codex_paths: &'a codex::CodexPaths,
+    grok_paths: Option<&'a grok::GrokPaths>,
 ) -> Vec<&'a Path> {
     match provider {
         CliProvider::Claude => vec![
@@ -152,6 +158,7 @@ fn paths_for<'a>(
             claude_paths.claude_json.as_path(),
         ],
         CliProvider::Codex => vec![codex_paths.auth.as_path()],
+        CliProvider::Grok => vec![grok_paths.expect("grok path required").auth.as_path()],
     }
 }
 
@@ -209,10 +216,46 @@ pub fn list(
     })
 }
 
+fn list_with_grok(
+    base: &Path,
+    claude_paths: &claude::ClaudePaths,
+    codex_paths: &codex::CodexPaths,
+    grok_paths: &grok::GrokPaths,
+) -> Result<CliAccountsSnapshot, String> {
+    let file = registry::load(base).map_err(|_| ERR_ACCOUNTS_UNAVAILABLE.to_string())?;
+    let profiles = refreshed_profiles(base, &file.profiles);
+    let live = vec![
+        match_live(claude::read_live_identity(claude_paths), &profiles),
+        match_live(codex::read_live_identity(codex_paths), &profiles),
+        match_live(grok::read_live_identity(grok_paths), &profiles),
+    ];
+    let orphans = snapshot::list_orphans(base, &file.profiles)
+        .map_err(|_| ERR_ACCOUNTS_UNAVAILABLE.to_string())?;
+    Ok(CliAccountsSnapshot {
+        profiles,
+        live,
+        active: file.active,
+        orphans,
+        backup_root: snapshot::backup_root(base).display().to_string(),
+        generated_at: Utc::now().to_rfc3339(),
+    })
+}
+
 pub fn capture_account(
     base: &Path,
     claude_paths: &claude::ClaudePaths,
     codex_paths: &codex::CodexPaths,
+    provider: CliProvider,
+    label: Option<String>,
+) -> Result<CliAccountProfile, String> {
+    capture_account_with_grok(base, claude_paths, codex_paths, None, provider, label)
+}
+
+pub(crate) fn capture_account_with_grok(
+    base: &Path,
+    claude_paths: &claude::ClaudePaths,
+    codex_paths: &codex::CodexPaths,
+    grok_paths: Option<&grok::GrokPaths>,
     provider: CliProvider,
     label: Option<String>,
 ) -> Result<CliAccountProfile, String> {
@@ -224,6 +267,10 @@ pub fn capture_account(
         CliProvider::Codex => {
             let (stored, live) = codex::capture(codex_paths)?;
             (snapshot::StoredSnapshot::Codex(stored), live)
+        }
+        CliProvider::Grok => {
+            let (stored, live) = grok::capture(grok_paths.ok_or_else(|| ERR_LIVE_LOGIN_UNAVAILABLE.to_string())?)?;
+            (snapshot::StoredSnapshot::Grok(stored), live)
         }
     };
     let identity = live
@@ -245,6 +292,7 @@ pub fn capture_account(
                 match provider {
                     CliProvider::Claude => "claude",
                     CliProvider::Codex => "codex",
+                    CliProvider::Grok => "grok",
                 },
                 &Uuid::new_v4().simple().to_string()[..8]
             )
@@ -270,6 +318,7 @@ pub fn capture_account(
                 claude::needs_relogin(&stored.credentials_text)
             }
             snapshot::StoredSnapshot::Codex(_) => false,
+            snapshot::StoredSnapshot::Grok(_) => false,
         },
         refresh_rejected_at: None,
     };
@@ -286,6 +335,17 @@ pub fn switch_account(
     provider: CliProvider,
     profile_id: &str,
 ) -> Result<CliSwitchResult, String> {
+    switch_account_with_grok(base, claude_paths, codex_paths, None, provider, profile_id)
+}
+
+pub(crate) fn switch_account_with_grok(
+    base: &Path,
+    claude_paths: &claude::ClaudePaths,
+    codex_paths: &codex::CodexPaths,
+    grok_paths: Option<&grok::GrokPaths>,
+    provider: CliProvider,
+    profile_id: &str,
+) -> Result<CliSwitchResult, String> {
     let mut file = registry::load(base).map_err(|_| ERR_ACCOUNTS_UNAVAILABLE.to_string())?;
     let target = file
         .profiles
@@ -296,6 +356,7 @@ pub fn switch_account(
     let live = match provider {
         CliProvider::Claude => claude::read_live_identity(claude_paths),
         CliProvider::Codex => codex::read_live_identity(codex_paths),
+        CliProvider::Grok => grok::read_live_identity(grok_paths.expect("grok path required")),
     };
     let mut warnings = Vec::new();
     let mut wrote_back_to = None;
@@ -315,6 +376,10 @@ pub fn switch_account(
                     snapshot::StoredSnapshot::Codex(stored),
                     live.identity_key.clone(),
                 )
+            }
+            CliProvider::Grok => {
+                let (stored, _) = grok::capture(grok_paths.expect("grok path required"))?;
+                (snapshot::StoredSnapshot::Grok(stored), live.identity_key.clone())
             }
         };
         if let Some(identity) = identity {
@@ -362,18 +427,26 @@ pub fn switch_account(
                 return Err(ERR_SNAPSHOT_INVALID.to_string());
             }
         }
+        (snapshot::StoredSnapshot::Grok(stored), CliProvider::Grok)
+            if stored.provider == CliProvider::Grok =>
+        {
+            serde_json::from_str::<serde_json::Value>(&stored.grok_auth_text)
+                .map_err(|_| ERR_SNAPSHOT_INVALID.to_string())?;
+        }
         _ => return Err(ERR_SNAPSHOT_PROVIDER_MISMATCH.to_string()),
     }
 
-    let backup = snapshot::backup_live_files(base, &paths_for(provider, claude_paths, codex_paths))
+    let backup = snapshot::backup_live_files(base, &paths_for(provider, claude_paths, codex_paths, grok_paths))
         .map_err(|_| ERR_BACKUP_FAILED.to_string())?;
     match stored {
         snapshot::StoredSnapshot::Claude(stored) => claude::restore(claude_paths, &stored)?,
         snapshot::StoredSnapshot::Codex(stored) => codex::restore(codex_paths, &stored)?,
+        snapshot::StoredSnapshot::Grok(stored) => grok::restore(grok_paths.expect("grok path required"), &stored)?,
     }
     let verified = match provider {
         CliProvider::Claude => claude::read_live_identity(claude_paths),
         CliProvider::Codex => codex::read_live_identity(codex_paths),
+        CliProvider::Grok => grok::read_live_identity(grok_paths.expect("grok path required")),
     };
     if verified.identity_key.as_deref() != Some(target.identity_key.as_str()) {
         warnings.push(WARN_RESTORED_IDENTITY_MISMATCH.to_string());
@@ -457,6 +530,13 @@ pub fn update_snapshot_tokens(
             }
             &mut stored.auth_text
         }
+        (snapshot::StoredSnapshot::Grok(stored), CliProvider::Grok) => {
+            let tokens = crate::usage::credentials::grok_tokens(&stored.grok_auth_text)?;
+            if tokens.refresh_token != expected_refresh_token {
+                return Ok(SnapshotUpdate::Conflict);
+            }
+            &mut stored.grok_auth_text
+        }
         _ => return Err(ERR_SNAPSHOT_PROVIDER_MISMATCH.to_string()),
     };
     *text = rewrite(text)?;
@@ -483,7 +563,8 @@ pub(crate) fn record_refresh_rejection(
 pub fn list_resolved(base: &Path) -> Result<CliAccountsSnapshot, String> {
     let claude_paths = claude::ClaudePaths::resolve()?;
     let codex_paths = codex::CodexPaths::resolve()?;
-    list(base, &claude_paths, &codex_paths)
+    let grok_paths = grok::GrokPaths::resolve()?;
+    list_with_grok(base, &claude_paths, &codex_paths, &grok_paths)
 }
 
 pub fn capture_resolved(
@@ -494,7 +575,8 @@ pub fn capture_resolved(
     let _guard = mutation_guard()?;
     let claude_paths = claude::ClaudePaths::resolve()?;
     let codex_paths = codex::CodexPaths::resolve()?;
-    capture_account(base, &claude_paths, &codex_paths, provider, label)
+    let grok_paths = grok::GrokPaths::resolve()?;
+    capture_account_with_grok(base, &claude_paths, &codex_paths, Some(&grok_paths), provider, label)
 }
 
 pub fn switch_resolved(
@@ -505,7 +587,8 @@ pub fn switch_resolved(
     let _guard = mutation_guard()?;
     let claude_paths = claude::ClaudePaths::resolve()?;
     let codex_paths = codex::CodexPaths::resolve()?;
-    switch_account(base, &claude_paths, &codex_paths, provider, profile_id)
+    let grok_paths = grok::GrokPaths::resolve()?;
+    switch_account_with_grok(base, &claude_paths, &codex_paths, Some(&grok_paths), provider, profile_id)
 }
 
 pub fn remove_resolved(base: &Path, profile_id: &str) -> Result<(), String> {

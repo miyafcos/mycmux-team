@@ -245,7 +245,7 @@ def test_file_preview_agent_usage_and_fault_surfaces_remain_wired() -> None:
         [
             "const pendingPreviewUriRef = useRef<string | null>(null);",
             "if (pendingPreviewUriRef.current) return;",
-            "reportOpenFailure(\"Preview failed and fallback open failed\", openError)",
+            "reportOpenFailure(terminalPaneStrings.previewFallbackFailed, openError)",
             "{previewActionError && (",
         ],
     )

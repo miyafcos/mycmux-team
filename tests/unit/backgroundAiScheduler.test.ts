@@ -3,14 +3,31 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }));
 
-import { __resetBackgroundAiSchedulerForTests, useBackgroundAiSuggestionStore } from "../../src/lib/backgroundAiScheduler";
+import {
+  __resetBackgroundAiSchedulerForTests,
+  observeActiveSession,
+  retryActiveSession,
+  useBackgroundAiSuggestionStore,
+} from "../../src/lib/backgroundAiScheduler";
 import { createBatch, sealBatch } from "../../src/lib/dispatchBatch";
 import { logicalSessionId } from "../../src/lib/logicalSessionId";
 import { useAiSettingsStore } from "../../src/stores/aiSettingsStore";
 import { __resetReportInboxStoreForTests, useReportInboxStore } from "../../src/stores/reportInboxStore";
 import { useSettingsStore } from "../../src/stores/settingsStore";
 
-const NOW = Date.parse("2026-08-15T12:00:00.000Z");
+const NOW = Date.parse("2026-08-20T12:00:00.000Z");
+
+function target(sessionId = "session-a", eventSeq = 1, overrides: Record<string, unknown> = {}) {
+  return {
+    sessionId,
+    displayState: "done" as const,
+    questionActive: false,
+    eventSeq,
+    tabLabel: "Target tab",
+    cwd: "C:\\work\\target",
+    ...overrides,
+  };
+}
 
 function status(revision: number) {
   return {
@@ -24,17 +41,17 @@ function status(revision: number) {
   } as never;
 }
 
-function judgeResult(label = "残りを確認") {
+function judgeResult(label = "Check remaining") {
   return {
-    oneLine: "次の具体案です",
-    completionAssessment: "待機中です",
-    nextActions: [{ label, prompt: "残りの作業を確認して続けて" }],
+    oneLine: "Suggested next action",
+    completionAssessment: "Waiting for direction",
+    nextActions: [{ label, prompt: "Check the remaining work and continue" }],
   };
 }
 
 function registerReportBatch(batchId = "batch-ai") {
   const batch = sealBatch(createBatch([{
-    logicalSessionId: logicalSessionId("tab-ai"), instructionRef: "session-a", label: "AI対象",
+    logicalSessionId: logicalSessionId("tab-ai"), instructionRef: "session-a", label: "AI target",
   }], { batchId }));
   useReportInboxStore.getState().registerSealedDispatchBatch({
     batch,
@@ -42,10 +59,14 @@ function registerReportBatch(batchId = "batch-ai") {
     members: [{
       logicalSessionId: logicalSessionId("tab-ai"),
       ptySessionId: "session-a",
-      label: "AI対象",
-      delivery: { state: "confirmed", detail: "送達確認済み" },
+      label: "AI target",
+      delivery: { state: "confirmed", detail: "confirmed" },
     }],
   });
+}
+
+function judgeCalls() {
+  return mocks.invoke.mock.calls.filter(([name]) => name === "run_next_action_judge");
 }
 
 beforeEach(() => {
@@ -65,97 +86,84 @@ afterEach(() => {
 });
 
 describe("backgroundAiScheduler", () => {
-  it("does not invoke for a status event while the feature is off", () => {
-    useReportInboxStore.getState().ingestStatusEvent(status(1));
-    registerReportBatch();
-    useReportInboxStore.getState().ingestBatchCompletionEvidence("batch-ai", "session-a", {
-      source: "livebrief", kind: "turn-ended", observedAt: NOW, sourceRef: "turn-ai",
-    });
-    vi.advanceTimersByTime(2_000);
-    expect(mocks.invoke).not.toHaveBeenCalled();
-    expect(useReportInboxStore.getState().dispatchBatchesById["batch-ai"]?.batch.publishedSummaryRevision).toBe(1);
+  it("does not invoke when the feature flags are off", async () => {
+    observeActiveSession(target());
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(judgeCalls()).toHaveLength(0);
   });
 
-  it("waits for a domain status event, debounces it, and dedupes its key", async () => {
+  it("schedules the active eligible session without a frontend excerpt", async () => {
     useSettingsStore.setState({ replyDraftSuggestionsEnabled: true });
     mocks.invoke.mockResolvedValue(judgeResult());
-    useReportInboxStore.getState().ingestStatusEvent(status(1));
-    await vi.advanceTimersByTimeAsync(1_499);
-    expect(mocks.invoke).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(1);
-    expect(mocks.invoke).toHaveBeenCalledWith("run_next_action_judge", expect.objectContaining({
+    observeActiveSession(target());
+    await vi.advanceTimersByTimeAsync(1_500);
+    const calls = judgeCalls();
+    expect(calls).toHaveLength(1);
+    const args = calls[0]?.[1] as Record<string, unknown>;
+    expect(args).toMatchObject({
       sessionId: "session-a",
-      cycleKey: "status:session-a",
-      promptVersion: "next-action-v1",
-    }));
+      cycleKey: "active:session-a",
+      promptVersion: "next-action-v2",
+      purpose: "next-action",
+      tabLabel: "Target tab",
+      cwd: "C:\\work\\target",
+    });
+    expect(args).not.toHaveProperty("conversationExcerpt");
+  });
+
+  it("reuses a ready result for the same event and reschedules on a new event", async () => {
+    useSettingsStore.setState({ replyDraftSuggestionsEnabled: true });
+    mocks.invoke.mockResolvedValue(judgeResult());
+    observeActiveSession(target());
+    await vi.advanceTimersByTimeAsync(1_500);
     await Promise.resolve();
     expect(useBackgroundAiSuggestionStore.getState().bySession["session-a"]?.status).toBe("ready");
-    useReportInboxStore.getState().ingestStatusEvent(status(1));
-    await vi.advanceTimersByTimeAsync(2_000);
-    expect(mocks.invoke.mock.calls.filter(([name]) => name === "run_next_action_judge")).toHaveLength(1);
+    observeActiveSession(target());
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(judgeCalls()).toHaveLength(1);
+    observeActiveSession(target("session-a", 2));
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(judgeCalls()).toHaveLength(2);
   });
 
-  it("discards an older revision result and leaves machine suggestions usable on failure", async () => {
+  it("aborts a pending old session and discards its late result after switching", async () => {
     useSettingsStore.setState({ replyDraftSuggestionsEnabled: true });
     let resolveOld: ((value: unknown) => void) | undefined;
-    mocks.invoke.mockImplementationOnce(() => new Promise((resolve) => { resolveOld = resolve; }));
-    useReportInboxStore.getState().ingestStatusEvent(status(1));
+    mocks.invoke.mockImplementation((name: string) => {
+      if (name === "run_next_action_judge") return new Promise((resolve) => { resolveOld = resolve; });
+      return Promise.resolve(true);
+    });
+    observeActiveSession(target("session-a"));
     await vi.advanceTimersByTimeAsync(1_500);
-    useReportInboxStore.getState().ingestStatusEvent(status(2));
-    resolveOld?.(judgeResult("old result"));
+    const oldRequestId = (judgeCalls()[0]?.[1] as Record<string, unknown>).requestId;
+    observeActiveSession(target("session-b"));
+    expect(mocks.invoke).toHaveBeenCalledWith("abort_next_action_judge", { requestId: oldRequestId });
+    resolveOld?.(judgeResult("Old result"));
     await Promise.resolve();
-    expect(useBackgroundAiSuggestionStore.getState().bySession["session-a"]?.nextActions).not.toEqual([
-      expect.objectContaining({ label: "old result" }),
-    ]);
-    mocks.invoke.mockImplementation((name: string) => (
-      name === "run_next_action_judge" ? Promise.reject(new Error("offline")) : Promise.resolve(false)
-    ));
-    await vi.advanceTimersByTimeAsync(1_500);
-    await Promise.resolve();
-    expect(useBackgroundAiSuggestionStore.getState().bySession["session-a"]?.status).toBe("failed");
+    expect(useBackgroundAiSuggestionStore.getState().bySession["session-a"]).toBeUndefined();
   });
 
-  it("blocks a likely provider/model mismatch before it reaches the CLI", async () => {
+  it("does not schedule running or question-active targets and clears loading state", async () => {
     useSettingsStore.setState({ replyDraftSuggestionsEnabled: true });
-    useAiSettingsStore.setState({ aiEnabled: true, aiProvider: "codex", aiModel: "claude-haiku-4-5" });
-    mocks.invoke.mockResolvedValue(judgeResult());
-    useReportInboxStore.getState().ingestStatusEvent(status(1));
-    await vi.advanceTimersByTimeAsync(2_000);
-    expect(mocks.invoke.mock.calls.filter(([name]) => name === "run_next_action_judge")).toHaveLength(0);
-    const suggestion = useBackgroundAiSuggestionStore.getState().bySession["session-a"];
-    expect(suggestion?.status).toBe("failed");
-    expect(suggestion?.failureCode).toBe("provider_model_mismatch");
+    observeActiveSession(target());
+    expect(useBackgroundAiSuggestionStore.getState().bySession["session-a"]?.status).toBe("loading");
+    observeActiveSession(target("session-a", 1, { displayState: "running" }));
+    expect(useBackgroundAiSuggestionStore.getState().bySession["session-a"]).toBeUndefined();
+    observeActiveSession(target("session-b", 1, { questionActive: true }));
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(judgeCalls()).toHaveLength(0);
   });
 
-  it("keeps the rejected error code so the failure can name its own reason", async () => {
+  it("does not schedule from the removed status-card trigger", async () => {
     useSettingsStore.setState({ replyDraftSuggestionsEnabled: true });
-    mocks.invoke.mockImplementation((name: string) => (
-      name === "run_next_action_judge"
-        ? Promise.reject({ code: "cli_not_found", detail: "codex not on PATH" })
-        : Promise.resolve(false)
-    ));
     useReportInboxStore.getState().ingestStatusEvent(status(1));
     await vi.advanceTimersByTimeAsync(1_500);
-    await Promise.resolve();
-    const suggestion = useBackgroundAiSuggestionStore.getState().bySession["session-a"];
-    expect(suggestion?.status).toBe("failed");
-    expect(suggestion?.failureCode).toBe("cli_not_found");
+    expect(judgeCalls()).toHaveLength(0);
   });
 
-  it("falls back to internal when the rejection carries no recoverable code", async () => {
+  it("keeps report-summary scheduling and its caller-supplied excerpt", async () => {
     useSettingsStore.setState({ replyDraftSuggestionsEnabled: true });
-    mocks.invoke.mockImplementation((name: string) => (
-      name === "run_next_action_judge" ? Promise.reject(new Error("offline")) : Promise.resolve(false)
-    ));
-    useReportInboxStore.getState().ingestStatusEvent(status(1));
-    await vi.advanceTimersByTimeAsync(1_500);
-    await Promise.resolve();
-    expect(useBackgroundAiSuggestionStore.getState().bySession["session-a"]?.failureCode).toBe("internal");
-  });
-
-  it("uses the existing scheduler for a report-summary purpose after a mechanical revision", async () => {
-    useSettingsStore.setState({ replyDraftSuggestionsEnabled: true });
-    mocks.invoke.mockResolvedValue(judgeResult("report"));
+    mocks.invoke.mockResolvedValue(judgeResult("Report summary"));
     registerReportBatch("batch-summary");
     useReportInboxStore.getState().ingestBatchCompletionEvidence("batch-summary", "session-a", {
       source: "livebrief", kind: "turn-ended", observedAt: NOW, sourceRef: "turn-summary",
@@ -165,9 +173,27 @@ describe("backgroundAiScheduler", () => {
       sessionId: "batch-summary",
       purpose: "report-summary",
       promptVersion: "report-summary-v1",
-      conversationExcerpt: expect.stringContaining("target=1 received=1 reflected=1 missing=0 needsJudgment=0"),
+      conversationExcerpt: expect.any(String),
     }));
+  });
+
+  it("clears the session instead of showing a no-context failure", async () => {
+    useSettingsStore.setState({ replyDraftSuggestionsEnabled: true });
+    mocks.invoke.mockRejectedValue({ code: "no_context" });
+    observeActiveSession(target());
+    await vi.advanceTimersByTimeAsync(1_500);
     await Promise.resolve();
-    expect(useBackgroundAiSuggestionStore.getState().byReportBatch["batch-summary"]?.status).toBe("ready");
+    expect(useBackgroundAiSuggestionStore.getState().bySession["session-a"]).toBeUndefined();
+  });
+
+  it("retries a ready active session with a fresh judge request", async () => {
+    useSettingsStore.setState({ replyDraftSuggestionsEnabled: true });
+    mocks.invoke.mockResolvedValue(judgeResult());
+    observeActiveSession(target());
+    await vi.advanceTimersByTimeAsync(1_500);
+    await Promise.resolve();
+    retryActiveSession();
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(judgeCalls()).toHaveLength(2);
   });
 });

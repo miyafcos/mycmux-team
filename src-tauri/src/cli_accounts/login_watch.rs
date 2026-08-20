@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 
 use super::{
-    claude, codex, live_sync::FileStamps, staging, CliAccountProfile, CliProvider,
+    claude, codex, grok, live_sync::FileStamps, staging, CliAccountProfile, CliProvider,
     ERR_LOGIN_CANCELLED, ERR_LOGIN_TIMEOUT,
 };
 
@@ -205,6 +205,7 @@ fn watched_paths(provider: CliProvider, dir: &Path) -> Vec<PathBuf> {
             vec![paths.credentials, paths.claude_json]
         }
         CliProvider::Codex => vec![staging::codex_staging_paths(dir).auth],
+        CliProvider::Grok => vec![staging::grok_staging_paths(dir).auth],
     }
 }
 
@@ -215,6 +216,7 @@ fn credentials_len(provider: CliProvider, dir: &Path) -> Option<u64> {
     let path = match provider {
         CliProvider::Claude => staging::claude_staging_paths(dir).credentials,
         CliProvider::Codex => staging::codex_staging_paths(dir).auth,
+        CliProvider::Grok => staging::grok_staging_paths(dir).auth,
     };
     let len = std::fs::metadata(path).ok()?.len();
     (len > 0).then_some(len)
@@ -243,11 +245,16 @@ pub fn poll_once(
     let live = match provider {
         CliProvider::Claude => claude::read_live_identity(&staging::claude_staging_paths(dir)),
         CliProvider::Codex => codex::read_live_identity(&staging::codex_staging_paths(dir)),
+        CliProvider::Grok => grok::read_live_identity(&staging::grok_staging_paths(dir)),
     };
     let Some(identity) = live.identity_key else {
         state.candidate = None;
         return TickOutcome::Idle;
     };
+    if provider == CliProvider::Grok && live.email.is_none() {
+        state.candidate = None;
+        return TickOutcome::Idle;
+    }
     if mode
         .expected_identity()
         .is_some_and(|expected| expected != identity)

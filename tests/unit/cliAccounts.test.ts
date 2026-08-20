@@ -53,10 +53,11 @@ describe("runningAgentCounts", () => {
       b: { agentKind: "claude", processIsShell: true },
       c: { agentKind: "codex", processIsShell: false },
       d: { agentKind: "claude-codex", processIsShell: false },
+      g: { agentKind: "grok", processIsShell: false },
       e: { processIsShell: false },
       f: { agentKind: "codex" },
     });
-    expect(counts).toEqual({ claude: 2, codex: 2 });
+    expect(counts).toEqual({ claude: 2, codex: 2, grok: 1 });
   });
 });
 

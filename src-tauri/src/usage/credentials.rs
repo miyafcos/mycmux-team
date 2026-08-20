@@ -26,6 +26,13 @@ pub struct CodexTokens {
     pub access_expires_at_ms: Option<i64>,
 }
 
+#[derive(Clone)]
+pub struct GrokTokens {
+    pub access_token: String,
+    pub refresh_token: String,
+    pub client_id: String,
+}
+
 impl fmt::Debug for ClaudeTokens {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -51,6 +58,17 @@ impl fmt::Debug for CodexTokens {
             .field("account_id", &self.account_id)
             .field("id_token", &self.id_token.as_deref().map(redacted))
             .field("access_expires_at_ms", &self.access_expires_at_ms)
+            .finish()
+    }
+}
+
+impl fmt::Debug for GrokTokens {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("GrokTokens")
+            .field("access_token", &redacted(&self.access_token))
+            .field("refresh_token", &redacted(&self.refresh_token))
+            .field("client_id", &redacted(&self.client_id))
             .finish()
     }
 }
@@ -156,6 +174,32 @@ pub fn codex_tokens(auth_text: &str) -> Result<CodexTokens, String> {
         id_token: optional_string(&tokens, &["id_token", "idToken"]),
         access_expires_at_ms,
     })
+}
+
+pub fn grok_tokens(auth_text: &str) -> Result<GrokTokens, String> {
+    let value: Value = serde_json::from_str(auth_text).map_err(|error| error.to_string())?;
+    let entry = value
+        .as_object()
+        .and_then(|entries| entries.values().find(|entry| entry.is_object()))
+        .ok_or_else(|| "Missing Grok auth identity".to_string())?;
+    Ok(GrokTokens {
+        access_token: required_string(entry, "key")?,
+        refresh_token: required_string(entry, "refresh_token")?,
+        client_id: required_string(entry, "oidc_client_id")?,
+    })
+}
+
+pub fn grok_auth_with(auth_text: &str, access_token: &str, refresh_token: Option<&str>) -> Result<String, String> {
+    let mut value: Value = serde_json::from_str(auth_text).map_err(|error| error.to_string())?;
+    let entry = value
+        .as_object_mut()
+        .and_then(|entries| entries.values_mut().find_map(Value::as_object_mut))
+        .ok_or_else(|| "Missing Grok auth identity".to_string())?;
+    entry.insert("key".to_string(), Value::String(access_token.to_string()));
+    if let Some(refresh_token) = refresh_token {
+        entry.insert("refresh_token".to_string(), Value::String(refresh_token.to_string()));
+    }
+    serde_json::to_string(&value).map_err(|error| error.to_string())
 }
 
 /// Best-effort expiry for a Codex access token. Reuses the identity decoder, so
@@ -417,6 +461,19 @@ mod tests {
             codex_tokens(source).unwrap().access_token,
             "synthetic-id-token"
         );
+    }
+
+    #[test]
+    fn grok_tokens_parse_fixture_and_redact_debug() {
+        let tokens = grok_tokens(include_str!("../cli_accounts/fixtures/grok_auth_sample.json")).unwrap();
+        assert_eq!(tokens.client_id, "fixture-client-id");
+        assert!(format!("{tokens:?}").contains("<redacted"));
+        let updated = grok_auth_with(
+            include_str!("../cli_accounts/fixtures/grok_auth_sample.json"),
+            "next-access",
+            Some("next-refresh"),
+        ).unwrap();
+        assert_eq!(grok_tokens(&updated).unwrap().access_token, "next-access");
     }
 
     #[test]

@@ -79,39 +79,39 @@ describe("buildChipLabels", () => {
 
 describe("resolveMeterMode", () => {
   it("is hidden at or below 700px regardless of other flags", () => {
-    expect(resolveMeterMode({ max700: true, max900: true, max1100: true }, true)).toBe("hidden");
-    expect(resolveMeterMode({ max700: true, max900: false, max1100: false }, false)).toBe("hidden");
+    expect(resolveMeterMode({ max700: true, max1000: true, max1300: true }, true)).toBe("hidden");
+    expect(resolveMeterMode({ max700: true, max1000: false, max1300: false }, false)).toBe("hidden");
   });
 
-  it("is compact at or below 900px", () => {
-    expect(resolveMeterMode({ max700: false, max900: true, max1100: true }, false)).toBe("compact");
+  it("is compact at or below 1000px", () => {
+    expect(resolveMeterMode({ max700: false, max1000: true, max1300: true }, false)).toBe("compact");
   });
 
-  it("is full above 900px with no account chips, even under 1100px", () => {
-    expect(resolveMeterMode({ max700: false, max900: false, max1100: true }, false)).toBe("full");
+  it("is full above 1000px with no account chips, even under 1300px", () => {
+    expect(resolveMeterMode({ max700: false, max1000: false, max1300: true }, false)).toBe("full");
   });
 
-  it("is compact between 900px and 1100px when account chips are present", () => {
-    expect(resolveMeterMode({ max700: false, max900: false, max1100: true }, true)).toBe("compact");
+  it("is compact between 1000px and 1300px when account chips are present", () => {
+    expect(resolveMeterMode({ max700: false, max1000: false, max1300: true }, true)).toBe("compact");
   });
 
-  it("is full above 1100px regardless of account chips", () => {
-    expect(resolveMeterMode({ max700: false, max900: false, max1100: false }, true)).toBe("full");
-    expect(resolveMeterMode({ max700: false, max900: false, max1100: false }, false)).toBe("full");
+  it("is full above 1300px regardless of account chips", () => {
+    expect(resolveMeterMode({ max700: false, max1000: false, max1300: false }, true)).toBe("full");
+    expect(resolveMeterMode({ max700: false, max1000: false, max1300: false }, false)).toBe("full");
   });
 
   it("matches the legacy two-breakpoint behavior when there are zero accounts", () => {
-    // hasAccountChips=false must reproduce the original 700/900-only logic
+    // hasAccountChips=false follows the 700/1000 layout thresholds.
     // exactly, across the full flag matrix, since zero-account behavior must
     // be a pure regression-free match.
-    const matrix: Array<{ max700: boolean; max900: boolean; max1100: boolean }> = [
-      { max700: false, max900: false, max1100: false },
-      { max700: false, max900: false, max1100: true },
-      { max700: false, max900: true, max1100: true },
-      { max700: true, max900: true, max1100: true },
+    const matrix: Array<{ max700: boolean; max1000: boolean; max1300: boolean }> = [
+      { max700: false, max1000: false, max1300: false },
+      { max700: false, max1000: false, max1300: true },
+      { max700: false, max1000: true, max1300: true },
+      { max700: true, max1000: true, max1300: true },
     ];
     for (const flags of matrix) {
-      const legacy = flags.max700 ? "hidden" : flags.max900 ? "compact" : "full";
+      const legacy = flags.max700 ? "hidden" : flags.max1000 ? "compact" : "full";
       expect(resolveMeterMode(flags, false)).toBe(legacy);
     }
   });

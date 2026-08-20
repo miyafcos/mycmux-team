@@ -30,6 +30,7 @@ const LEGACY_CONSOLAS_FONT_FAMILY = "Consolas, 'BIZ UDGothic', 'MS Gothic', mono
 const LEGACY_MEIRYO_FONT_FAMILY = "'Meiryo', 'Meiryo UI', 'BIZ UDGothic', 'Cascadia Mono', monospace";
 const LEGACY_YU_GOTHIC_FONT_FAMILY = "'Yu Gothic UI', 'Yu Gothic', 'BIZ UDGothic', 'Cascadia Mono', monospace";
 const HG_GOTHIC_FONT_FAMILY = "'HGｺﾞｼｯｸM', 'HGPｺﾞｼｯｸM', 'BIZ UDGothic', 'MS Gothic', monospace";
+const BIZ_READABLE_FONT_FAMILY = "'BIZ UDGothic', 'Cascadia Mono', 'JetBrains Mono', 'MS Gothic', monospace";
 const BIZ_UDMINCHO_FONT_FAMILY =
   "'BIZ UDMincho', 'BIZ UDPMincho', 'Yu Mincho', 'MS Mincho', 'BIZ UDGothic', monospace";
 const MAC_STYLE_FONT_FAMILY =
@@ -88,19 +89,10 @@ export const TERMINAL_FONT_PRESETS: TerminalFontPreset[] = [
   {
     id: "biz-readable",
     label: "BIZ UDゴシック",
-    value: "'BIZ UDGothic', 'Cascadia Mono', 'JetBrains Mono', 'MS Gothic', monospace",
+    value: BIZ_READABLE_FONT_FAMILY,
     sample: "Aa 0123 日本語",
     description: "日本語重視。太めで表と説明文を追いやすい",
     tags: ["日本語", "表"],
-    recommendedLineHeight: 1.4,
-  },
-  {
-    id: "hg-gothic-m",
-    label: "HGゴシックM",
-    value: HG_GOTHIC_FONT_FAMILY,
-    sample: "Aa 0123 日本語",
-    description: "太め。教材やログの日本語が見やすい",
-    tags: ["日本語", "太め"],
     recommendedLineHeight: 1.4,
   },
   {
@@ -110,15 +102,6 @@ export const TERMINAL_FONT_PRESETS: TerminalFontPreset[] = [
     sample: "Aa 0123 日本語",
     description: "等幅。日本語表の列が揃いやすい",
     tags: ["等幅", "表", "日本語"],
-    recommendedLineHeight: 1.35,
-  },
-  {
-    id: "mac-style",
-    label: "Mac風 SF/ヒラギノ",
-    value: MAC_STYLE_FONT_FAMILY,
-    sample: "Aa 0123 日本語",
-    description: "Mac風。細めで画面の印象がすっきりする",
-    tags: ["Mac風", "印象変更"],
     recommendedLineHeight: 1.35,
   },
   {
@@ -192,6 +175,7 @@ interface ThemeState {
   restoreThemeSnapshot: () => void;
   setUiDensity: (density: UiDensity) => void;
   setUiFontScale: (scale: number) => void;
+  applyQuickSize: (size: "small" | "medium" | "large") => void;
   setFontSize: (size: number) => void;
   adjustFontSize: (delta: number) => void;
   setFontFamily: (fontFamily: string) => void;
@@ -254,10 +238,16 @@ function normalizeFontFamily(value: unknown): string {
     trimmed === LEGACY_MEIRYO_FONT_FAMILY ||
     trimmed === LEGACY_YU_GOTHIC_FONT_FAMILY
   ) {
-    return HG_GOTHIC_FONT_FAMILY;
+    return BIZ_READABLE_FONT_FAMILY;
   }
   if (trimmed === LEGACY_CONSOLAS_FONT_FAMILY) {
     return BIZ_UDMINCHO_FONT_FAMILY;
+  }
+  if (trimmed === MAC_STYLE_FONT_FAMILY) {
+    return DEFAULT_TERMINAL_FONT_FAMILY;
+  }
+  if (trimmed === HG_GOTHIC_FONT_FAMILY) {
+    return BIZ_READABLE_FONT_FAMILY;
   }
   return trimmed;
 }
@@ -294,6 +284,22 @@ export const useThemeStore = create<ThemeState>((set) => ({
 
   setUiFontScale: (scale) => {
     set({ uiFontScale: normalizeUiFontScale(scale) });
+  },
+
+  applyQuickSize: (size) => {
+    const next =
+      size === "small"
+        ? { fontSize: 12, uiFontScale: 0.95, uiDensity: "compact" as const }
+        : size === "large"
+          ? { fontSize: 16, uiFontScale: 1.15, uiDensity: "relaxed" as const }
+          : { fontSize: 14, uiFontScale: 1, uiDensity: "standard" as const };
+    set((state) => (
+      state.fontSize === next.fontSize
+      && state.uiFontScale === next.uiFontScale
+      && state.uiDensity === next.uiDensity
+        ? state
+        : next
+    ));
   },
 
   setTheme: (id) => {

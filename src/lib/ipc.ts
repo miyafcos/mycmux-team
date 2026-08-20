@@ -1104,6 +1104,7 @@ export interface AppSettings {
   keybindings?: Record<string, string>;
   ui_density?: string;
   ui_font_scale?: number;
+  sidebar_width?: number;
   pet_display_mode?: "ws" | "both" | "none";
   pet_new_ws_mode?: "random" | "choose" | "fixed";
   pet_disabled?: string[];
@@ -1216,6 +1217,10 @@ export async function revealPathInExplorer(uri: string): Promise<void> {
   return invoke<void>("reveal_path_in_explorer", { uri } satisfies UriArgs);
 }
 
+export async function openPathWithDefaultApp(uri: string): Promise<void> {
+  return invoke<void>("open_path_with_default_app", { uri } satisfies UriArgs);
+}
+
 export async function openWithDefault(path: string): Promise<void> {
   return invoke<void>("open_with_default", { path } satisfies PathArgs);
 }
@@ -1264,7 +1269,7 @@ export async function getAccountUsage(): Promise<AccountUsageReport> {
   return invoke<AccountUsageReport>("get_account_usage");
 }
 
-export type CliProvider = "claude" | "codex";
+export type CliProvider = "claude" | "codex" | "grok";
 
 export interface CliAccountProfile {
   id: string;
@@ -1293,6 +1298,7 @@ export interface CliLiveLogin {
 export interface CliAccountActivePointers {
   claude: string | null;
   codex: string | null;
+  grok: string | null;
 }
 
 export interface CliOrphanSnapshot {

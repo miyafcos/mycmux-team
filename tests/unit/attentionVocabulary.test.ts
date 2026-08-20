@@ -51,7 +51,10 @@ const functionSamples: Partial<Record<DashboardStringKey, readonly unknown[][]>>
   aiSuggestionFailureReason: [
     ["ai_disabled"], ["cli_not_found"], ["cli_failed"], ["invalid_output"],
     ["timeout"], ["provider_model_mismatch"], ["internal"], ["duplicate_request"],
+    ["no_context"],
   ],
+  nextActionFailed: [["reason"]],
+  pathActionFailed: [["reason"]],
 };
 
 function stringLeaves(value: unknown): string[] {

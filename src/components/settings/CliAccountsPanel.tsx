@@ -70,7 +70,7 @@ export function CliAccountsPanel() {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14, fontSize: 12 }}>
       <div style={{ color: "var(--cmux-text-dim)", fontSize: 11 }}>
-        CLI (claude / codex コマンド) が今どのアカウントでログインしているかを表示し、
+        CLI (claude / codex / grok コマンド) が今どのアカウントでログインしているかを表示し、
         登録済みアカウントへ切り替えます。切り替えは PC 全体に効きます (新しく起動する
         セッションから反映)。切り替え前には認証ファイルを自動バックアップします。
       </div>
@@ -127,8 +127,9 @@ export function CliAccountsPanel() {
           paddingTop: 10,
         }}
       >
-        補足: 「現在のログインを登録/更新」は、すでに <code>claude /login</code> または{" "}
-        <code>codex login</code> でログイン済みのアカウントを取り込むためのボタンです。
+        補足: 「現在のログインを登録/更新」は、すでに <code>claude /login</code> /{" "}
+        <code>codex login</code> / <code>grok login</code> でログイン済みのアカウントを
+        取り込むためのボタンです。
         Codex の切り替えは auth.json 全体を入れ替えるため、OPENAI_API_KEY を手動設定して
         いる場合はそれも切り替わります (切り替え前の内容はバックアップに残ります)。
       </div>

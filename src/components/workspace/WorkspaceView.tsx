@@ -421,8 +421,8 @@ export default memo(function WorkspaceView() {
               style={{
                 position: "absolute",
                 inset: 0,
-                visibility: isActive ? "visible" : "hidden",
-                pointerEvents: isActive ? "auto" : "none",
+                visibility: isActive ? "inherit" : "hidden",
+                pointerEvents: isActive ? "inherit" : "none",
                 zIndex: isActive ? 1 : 0,
               }}
             >

@@ -19,6 +19,7 @@ const RATCHET_EPSILON = 0.01;
 type ThemeCase = readonly [string, ThemeDefinition];
 
 const THEME_CASES: ThemeCase[] = THEMES.map((theme) => [theme.id, theme] as const);
+const LIGHT_THEME_CASES = THEME_CASES.filter(([, theme]) => theme.colorScheme === "light");
 
 // ---------------------------------------------------------------------------
 // AppShell's on-color derivation, replicated
@@ -124,6 +125,11 @@ const ANSI_KEYS = [
 ] as const satisfies ReadonlyArray<keyof TerminalColors>;
 
 type AnsiKey = (typeof ANSI_KEYS)[number];
+
+const LIGHT_NORMAL_ANSI_KEYS = ["red", "green", "yellow", "blue", "magenta", "cyan", "white"] as const satisfies ReadonlyArray<AnsiKey>;
+const LIGHT_BRIGHT_ANSI_KEYS = ["brightBlack", "brightRed", "brightGreen", "brightYellow", "brightBlue", "brightMagenta", "brightCyan", "brightWhite"] as const;
+const LIGHT_STATUS_KEYS = ["working", "waiting", "done", "error", "stall"] as const;
+const LIGHT_CONTRAST_PAIRS_PER_THEME = LIGHT_NORMAL_ANSI_KEYS.length + LIGHT_BRIGHT_ANSI_KEYS.length + 1 + (LIGHT_STATUS_KEYS.length * 2) + 2 + 2 + 1;
 
 const ANSI_BASELINE: Record<string, Partial<Record<AnsiKey, number>>> = {
   "mayonaka": {
@@ -447,131 +453,131 @@ const ANSI_BASELINE: Record<string, Partial<Record<AnsiKey, number>>> = {
     brightWhite: 18.8458,
   },
   "asanagi": {
-    red: 3.9877,
-    green: 3.6513,
-    yellow: 3.0369,
-    blue: 4.2326,
-    magenta: 4.5396,
-    cyan: 4.5322,
-    white: 2.4412,
-    brightRed: 3.0313,
-    brightGreen: 2.9079,
-    brightYellow: 2.3497,
-    brightBlue: 2.9114,
-    brightMagenta: 3.1360,
-    brightCyan: 3.0904,
+    red: 4.5651,
+    green: 4.5904,
+    yellow: 4.5559,
+    blue: 4.5730,
+    magenta: 4.5738,
+    cyan: 4.5919,
+    white: 4.5569,
+    brightRed: 4.5673,
+    brightGreen: 4.5505,
+    brightYellow: 4.5810,
+    brightBlue: 4.5607,
+    brightMagenta: 4.5798,
+    brightCyan: 4.5770,
     brightWhite: 5.2377,
   },
   "kinari": {
-    red: 4.0771,
-    green: 3.3454,
-    yellow: 3.3007,
-    blue: 3.8144,
-    magenta: 4.1724,
-    cyan: 3.4649,
-    white: 2.7624,
-    brightRed: 3.0455,
-    brightGreen: 2.4325,
-    brightYellow: 2.2613,
-    brightBlue: 2.7290,
-    brightMagenta: 2.8784,
-    brightCyan: 2.4655,
+    red: 4.5501,
+    green: 4.5750,
+    yellow: 4.5840,
+    blue: 4.5597,
+    magenta: 4.5546,
+    cyan: 4.5952,
+    white: 4.5632,
+    brightRed: 4.5709,
+    brightGreen: 4.5835,
+    brightYellow: 4.5753,
+    brightBlue: 4.5588,
+    brightMagenta: 4.5661,
+    brightCyan: 4.6007,
     brightWhite: 5.9439,
   },
   "wakaba": {
-    red: 3.8885,
-    green: 3.3532,
-    yellow: 2.8477,
-    blue: 3.4915,
-    magenta: 3.8169,
-    cyan: 3.0915,
-    white: 2.4635,
-    brightRed: 2.9691,
-    brightGreen: 2.4525,
-    brightYellow: 2.2150,
-    brightBlue: 2.5475,
-    brightMagenta: 2.6737,
-    brightCyan: 2.2746,
+    red: 4.5504,
+    green: 4.5624,
+    yellow: 4.5675,
+    blue: 4.5851,
+    magenta: 4.5517,
+    cyan: 4.5583,
+    white: 4.5526,
+    brightRed: 4.5766,
+    brightGreen: 4.5724,
+    brightYellow: 4.5569,
+    brightBlue: 4.5559,
+    brightMagenta: 4.5794,
+    brightCyan: 4.5988,
     brightWhite: 4.6981,
   },
   "geppaku": {
-    red: 4.0685,
-    green: 3.4875,
-    yellow: 3.1069,
-    blue: 4.2402,
-    magenta: 4.2360,
-    cyan: 3.6853,
-    white: 2.5701,
-    brightRed: 3.0114,
-    brightGreen: 2.5777,
-    brightYellow: 2.3728,
-    brightBlue: 2.9127,
-    brightMagenta: 2.9264,
-    brightCyan: 2.6816,
+    red: 4.5714,
+    green: 4.6018,
+    yellow: 4.5923,
+    blue: 4.5976,
+    magenta: 4.5565,
+    cyan: 4.5872,
+    white: 4.5562,
+    brightRed: 4.5522,
+    brightGreen: 4.5718,
+    brightYellow: 4.5910,
+    brightBlue: 4.5967,
+    brightMagenta: 4.5696,
+    brightCyan: 4.5544,
     brightWhite: 4.7010,
   },
   "sakura": {
     red: 4.5804,
-    green: 2.9344,
-    yellow: 2.7698,
-    blue: 3.1213,
-    magenta: 3.5835,
-    cyan: 2.6826,
-    white: 2.8397,
-    brightRed: 3.0702,
-    brightGreen: 2.2214,
-    brightYellow: 2.1232,
-    brightBlue: 2.3313,
-    brightMagenta: 2.4194,
-    brightCyan: 2.0464,
+    green: 4.5862,
+    yellow: 4.5559,
+    blue: 4.5528,
+    magenta: 4.5594,
+    cyan: 4.5677,
+    white: 4.5705,
+    brightRed: 4.5730,
+    brightGreen: 4.5587,
+    brightYellow: 4.5506,
+    brightBlue: 4.5647,
+    brightMagenta: 4.5652,
+    brightCyan: 4.5920,
     brightWhite: 5.9886,
   },
   "paper": {
     red: 4.6365,
-    green: 4.1872,
-    yellow: 3.6839,
+    green: 4.5771,
+    yellow: 4.5591,
     blue: 4.8452,
-    magenta: 4.5085,
-    cyan: 4.2839,
-    white: 3.1254,
-    brightRed: 3.4421,
-    brightGreen: 3.0190,
-    brightYellow: 2.7421,
-    brightBlue: 3.5366,
-    brightMagenta: 3.2492,
-    brightCyan: 3.0878,
+    magenta: 4.5631,
+    cyan: 4.5740,
+    white: 4.5815,
+    brightRed: 4.5543,
+    brightGreen: 4.5943,
+    brightYellow: 4.5560,
+    brightBlue: 4.5892,
+    brightMagenta: 4.5689,
+    brightCyan: 4.5702,
     brightWhite: 7.8193,
   },
   "hakuchuumu": {
-    red: 3.9039,
-    green: 2.8726,
-    yellow: 3.0058,
-    blue: 3.5751,
-    magenta: 3.7264,
-    cyan: 2.5726,
-    white: 2.7053,
-    brightRed: 3.0589,
-    brightGreen: 2.1696,
-    brightYellow: 2.3142,
-    brightBlue: 2.6397,
-    brightMagenta: 2.3206,
-    brightCyan: 1.9742,
+    red: 4.5601,
+    green: 4.5897,
+    yellow: 4.5563,
+    blue: 4.5588,
+    magenta: 4.5620,
+    cyan: 4.5774,
+    white: 4.5642,
+    brightRed: 4.5604,
+    brightGreen: 4.5986,
+    brightYellow: 4.5578,
+    brightBlue: 4.5770,
+    brightMagenta: 4.5626,
+    brightCyan: 4.5556,
     brightWhite: 5.8385,
   },
   "mist": {
-    red: 4.0805,
-    green: 3.8244,
-    yellow: 3.2988,
-    blue: 4.1436,
-    magenta: 4.1417,
-    cyan: 3.6905,
-    white: 2.8436,
-    brightRed: 3.0778,
-    brightGreen: 2.7742,
-    brightYellow: 2.4568,
-    brightBlue: 3.0340,
-    brightMagenta: 3.0222,
-    brightCyan: 2.6666,
+    red: 4.5722,
+    green: 4.5742,
+    yellow: 4.5524,
+    blue: 4.5587,
+    magenta: 4.5512,
+    cyan: 4.6002,
+    white: 4.5707,
+    brightRed: 4.5516,
+    brightGreen: 4.5547,
+    brightYellow: 4.5669,
+    brightBlue: 4.5606,
+    brightMagenta: 4.5830,
+    brightCyan: 4.5516,
     brightWhite: 6.6708,
   },
   "ink-day": {
@@ -581,13 +587,13 @@ const ANSI_BASELINE: Record<string, Partial<Record<AnsiKey, number>>> = {
     blue: 5.0017,
     magenta: 6.5402,
     cyan: 5.0427,
-    white: 4.2632,
+    white: 4.5623,
     brightRed: 4.7914,
-    brightGreen: 4.3210,
-    brightYellow: 3.7195,
-    brightBlue: 3.8194,
+    brightGreen: 4.6030,
+    brightYellow: 4.5548,
+    brightBlue: 4.5904,
     brightMagenta: 4.6438,
-    brightCyan: 3.6686,
+    brightCyan: 4.5536,
     brightWhite: 11.4760,
   },
   "ginga": {
@@ -641,6 +647,51 @@ describe("terminal viewport contrast", () => {
   it.each(THEME_CASES)("%s: terminal.foreground meets the AAA floor against terminal.background", (id, theme) => {
     const required = ratchetFloor(TERMINAL_FOREGROUND_TARGET, TERMINAL_FOREGROUND_DEBT[id]);
     assertContrast(id, "terminal.foreground / terminal.background", contrastRatio(theme.terminal.foreground, theme.terminal.background), required);
+  });
+});
+
+describe("light-theme contrast floors", () => {
+  it("covers the expected number of required light-theme pairs", () => {
+    expect(LIGHT_THEME_CASES).toHaveLength(9);
+    expect(LIGHT_CONTRAST_PAIRS_PER_THEME).toBe(31);
+    expect(LIGHT_THEME_CASES.length * LIGHT_CONTRAST_PAIRS_PER_THEME).toBe(279);
+  });
+
+  it.each(LIGHT_THEME_CASES)("%s: normal ANSI colors meet the terminal floor", (id, theme) => {
+    for (const key of LIGHT_NORMAL_ANSI_KEYS) {
+      assertContrast(id, `terminal.${key} / terminal.background`, contrastRatio(theme.terminal[key], theme.terminal.background), CONTRAST_TARGET);
+    }
+  });
+
+  it.each(LIGHT_THEME_CASES)("%s: bright ANSI colors meet the terminal floor", (id, theme) => {
+    for (const key of LIGHT_BRIGHT_ANSI_KEYS) {
+      assertContrast(id, `terminal.${key} / terminal.background`, contrastRatio(theme.terminal[key], theme.terminal.background), CONTRAST_TARGET);
+    }
+  });
+
+  it.each(LIGHT_THEME_CASES)("%s: cursor meets the terminal floor", (id, theme) => {
+    assertContrast(id, "terminal.cursor / terminal.background", contrastRatio(theme.terminal.cursor, theme.terminal.background), CONTRAST_TARGET);
+  });
+
+  it.each(LIGHT_THEME_CASES)("%s: status colors meet both chrome surfaces", (id, theme) => {
+    for (const key of LIGHT_STATUS_KEYS) {
+      assertContrast(id, `status.${key} / chrome.background`, contrastRatio(theme.status[key], theme.chrome.background), CONTRAST_TARGET);
+      assertContrast(id, `status.${key} / chrome.surface`, contrastRatio(theme.status[key], theme.chrome.surface), CONTRAST_TARGET);
+    }
+  });
+
+  it.each(LIGHT_THEME_CASES)("%s: border meets both chrome surfaces", (id, theme) => {
+    assertContrast(id, "chrome.border / chrome.background", contrastRatio(theme.chrome.border, theme.chrome.background), 1.6);
+    assertContrast(id, "chrome.border / chrome.surface", contrastRatio(theme.chrome.border, theme.chrome.surface), 1.6);
+  });
+
+  it.each(LIGHT_THEME_CASES)("%s: accent meets both chrome surfaces", (id, theme) => {
+    assertContrast(id, "chrome.accent / chrome.background", contrastRatio(theme.chrome.accent, theme.chrome.background), 3);
+    assertContrast(id, "chrome.accent / chrome.surface", contrastRatio(theme.chrome.accent, theme.chrome.surface), 3);
+  });
+
+  it.each(LIGHT_THEME_CASES)("%s: chrome background and surface stay distinct", (id, theme) => {
+    assertContrast(id, "chrome.surface / chrome.background", contrastRatio(theme.chrome.surface, theme.chrome.background), 1.15);
   });
 });
 

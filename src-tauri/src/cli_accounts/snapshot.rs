@@ -9,7 +9,7 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use super::{
-    atomic::write_atomic, claude, codex, CliAccountProfile, CliOrphanSnapshot, CliProvider,
+    atomic::write_atomic, claude, codex, grok, CliAccountProfile, CliOrphanSnapshot, CliProvider,
     ERR_ORPHAN_INVALID, ERR_ORPHAN_MANAGE_FAILED, ERR_ORPHAN_NOT_FOUND, ERR_SNAPSHOT_INVALID,
 };
 
@@ -31,10 +31,19 @@ pub struct CodexSnapshot {
 }
 
 #[derive(Serialize, Deserialize, Clone)]
+pub struct GrokSnapshot {
+    pub version: u32,
+    pub provider: CliProvider,
+    pub captured_at: String,
+    pub grok_auth_text: String,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(untagged)]
 pub enum StoredSnapshot {
     Claude(ClaudeSnapshot),
     Codex(CodexSnapshot),
+    Grok(GrokSnapshot),
 }
 
 pub fn snapshot_dir(base: &Path) -> PathBuf {
@@ -53,8 +62,10 @@ fn safe_snapshot_id(id: &str) -> bool {
         && id.len() <= 160
         && (id.starts_with("claude-")
             || id.starts_with("codex-")
+            || id.starts_with("grok-")
             || id.starts_with("unregistered-claude-")
-            || id.starts_with("unregistered-codex-"))
+            || id.starts_with("unregistered-codex-")
+            || id.starts_with("unregistered-grok-"))
         && id
             .chars()
             .all(|character| character.is_ascii_alphanumeric() || "-_.+".contains(character))
@@ -101,6 +112,7 @@ pub fn save_orphan(
             match provider {
                 CliProvider::Claude => "claude",
                 CliProvider::Codex => "codex",
+                CliProvider::Grok => "grok",
             }
         ),
         snapshot,
@@ -110,7 +122,9 @@ pub fn save_orphan(
 fn safe_orphan_id(id: &str) -> bool {
     safe_snapshot_id(id)
         && !id.contains(".rejected-")
-        && (id.starts_with("unregistered-claude-") || id.starts_with("unregistered-codex-"))
+        && (id.starts_with("unregistered-claude-")
+            || id.starts_with("unregistered-codex-")
+            || id.starts_with("unregistered-grok-"))
 }
 
 pub fn load_orphan(base: &Path, id: &str) -> Result<StoredSnapshot, String> {
@@ -207,6 +221,29 @@ pub(crate) fn metadata_from_stored(
                 error: None,
             })
         }
+        StoredSnapshot::Grok(stored) => {
+            if stored.provider != CliProvider::Grok
+                || (require_orphan_prefix && !id.starts_with("unregistered-grok-"))
+            {
+                return Err(ERR_ORPHAN_INVALID.to_string());
+            }
+            let value: Value = serde_json::from_str(&stored.grok_auth_text)
+                .map_err(|_| ERR_ORPHAN_INVALID.to_string())?;
+            let live = grok::live_identity_from_value(&value)
+                .map_err(|_| ERR_ORPHAN_INVALID.to_string())?;
+            let identity_key = live.identity_key.ok_or_else(|| ERR_ORPHAN_INVALID.to_string())?;
+            Ok(CliOrphanSnapshot {
+                id: id.to_string(),
+                provider: Some(CliProvider::Grok),
+                captured_at: Some(stored.captured_at.clone()),
+                email: live.email,
+                identity_key: Some(identity_key),
+                plan: live.plan,
+                org_name: None,
+                needs_relogin: false,
+                error: None,
+            })
+        }
     }
 }
 
@@ -242,7 +279,9 @@ pub fn list_rejected(base: &Path) -> Result<Vec<(String, PathBuf)>, String> {
         else {
             continue;
         };
-        if !safe_snapshot_id(id) || !(id.starts_with("claude-") || id.starts_with("codex-")) {
+        if !safe_snapshot_id(id)
+            || !(id.starts_with("claude-") || id.starts_with("codex-") || id.starts_with("grok-"))
+        {
             continue;
         }
         let modified = entry.metadata().and_then(|metadata| metadata.modified());
@@ -298,6 +337,8 @@ pub fn list_orphans(
                     Some(CliProvider::Claude)
                 } else if id.starts_with("unregistered-codex-") {
                     Some(CliProvider::Codex)
+                } else if id.starts_with("unregistered-grok-") {
+                    Some(CliProvider::Grok)
                 } else {
                     None
                 },

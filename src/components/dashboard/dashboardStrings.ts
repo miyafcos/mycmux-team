@@ -183,8 +183,23 @@ export const dashboardStrings = {
     if (code === "timeout") return "応答が時間内に返りませんでした";
     if (code === "provider_model_mismatch") return "モデルとプロバイダの組み合わせが合っていません (設定 > AI とおまかせ)";
     if (code === "duplicate_request") return "同じ依頼が処理中です";
+    if (code === "no_context") return "会話の記録がまだ無いため案を作れません";
     return "原因を特定できませんでした";
   },
+  // 次の一手 v2 — 選択中チャット専用の AI 提案 (2026-08-20)。
+  // 文言はここに集約し、NextActionSuggestions 側は非 ASCII を持たない (委譲先の文字化け防止)。
+  nextActionAriaLabel: "次の一手",
+  nextActionLoading: "次の一手を用意中… (会話を読んでいます)",
+  nextActionRetry: "作り直す",
+  nextActionRecommended: "推奨",
+  nextActionSendPreviewTitle: "送る全文",
+  nextActionSendConfirm: "この内容を送る",
+  nextActionSendCancel: "戻る",
+  nextActionFailed: (reason: string): string => `AI案を作れませんでした: ${reason}`,
+  // パスリンクの操作 (DashboardLinkedText) — 失敗は無言にせず日本語で見える化 (2026-08-20)
+  pathActionOpenDefault: "既定のアプリで開く",
+  pathActionReveal: "エクスプローラーで表示",
+  pathActionFailed: (reason: string): string => `開けませんでした: ${reason}`,
   // 「機械信号」「機械」は実装都合の語なので画面には出さない (2026-08-15 FB)。
   previewColumnTitle: "プレビュー",
   previewColumnEmpty: "ファイルのリンクを開くと、ここに表示します",

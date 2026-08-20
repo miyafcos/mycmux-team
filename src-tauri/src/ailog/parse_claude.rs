@@ -27,6 +27,7 @@ use crate::ailog::{
 
 const FIRST_PROMPT_CHARS: usize = 300;
 const AILOG_SUMMARIZER_MARKER: &str = "[mycmux-ailog-summarizer]";
+const NEXT_ACTION_MARKER: &str = "[mycmux-next-action]";
 
 /// Parse a run of complete JSONL lines.
 ///
@@ -331,7 +332,7 @@ fn record_user_text(session: &mut SessionChunk, text: &str) {
     session.user_msg_count += 1;
     session.prompt_chars += trimmed.chars().count() as i64;
     if session.first_prompt.is_none() {
-        if trimmed.starts_with(AILOG_SUMMARIZER_MARKER) {
+        if is_internal_marker(trimmed) {
             session.origin = ORIGIN_AILOG_INTERNAL.to_string();
         }
         session.first_prompt = Some(truncate_chars(trimmed, FIRST_PROMPT_CHARS));
@@ -339,6 +340,10 @@ fn record_user_text(session: &mut SessionChunk, text: &str) {
     if metrics::is_correction(trimmed) {
         session.correction_hits += 1;
     }
+}
+
+fn is_internal_marker(text: &str) -> bool {
+    text.starts_with(AILOG_SUMMARIZER_MARKER) || text.starts_with(NEXT_ACTION_MARKER)
 }
 
 fn handle_system(
@@ -445,6 +450,15 @@ mod tests {
     fn summarizer_marker_classifies_the_session_as_internal() {
         let data = parse_chunk(
             r#"{"type":"user","sessionId":"s","entrypoint":"cli","message":{"content":"[mycmux-ailog-summarizer]\nsummary input"}}"#,
+            "fallback",
+        );
+        assert_eq!(data.sessions["s"].origin, ORIGIN_AILOG_INTERNAL);
+    }
+
+    #[test]
+    fn next_action_marker_classifies_the_session_as_internal() {
+        let data = parse_chunk(
+            r#"{"type":"user","sessionId":"s","entrypoint":"cli","message":{"content":"[mycmux-next-action]\ninput"}}"#,
             "fallback",
         );
         assert_eq!(data.sessions["s"].origin, ORIGIN_AILOG_INTERNAL);

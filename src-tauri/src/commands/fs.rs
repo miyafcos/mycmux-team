@@ -26,38 +26,7 @@ pub fn reveal_in_explorer(path: String) -> Result<(), String> {
 /// Windows delegates to Explorer so local files use the registered default app.
 #[tauri::command(async)]
 pub fn open_with_default(path: String) -> Result<(), String> {
-    let pb = PathBuf::from(&path);
-    if !pb.exists() {
-        return Err(format!("path does not exist: {path}"));
-    }
-    let canonical = pb.canonicalize().unwrap_or(pb);
-    #[cfg(target_os = "windows")]
-    {
-        let target = windows_display_path(&canonical);
-        std::process::Command::new("explorer.exe")
-            .arg(target)
-            .spawn()
-            .map_err(|e| format!("failed to launch default app: {e}"))?;
-        return Ok(());
-    }
-    #[cfg(target_os = "macos")]
-    {
-        std::process::Command::new("open")
-            .arg(&canonical)
-            .spawn()
-            .map_err(|e| format!("failed to launch open: {e}"))?;
-        return Ok(());
-    }
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        std::process::Command::new("xdg-open")
-            .arg(&canonical)
-            .spawn()
-            .map_err(|e| format!("failed to launch xdg-open: {e}"))?;
-        return Ok(());
-    }
-    #[allow(unreachable_code)]
-    Err("unsupported platform".into())
+    open_path_with_default_app_impl(Path::new(&path))
 }
 
 #[tauri::command(async)]
@@ -220,23 +189,53 @@ pub async fn reveal_path_in_explorer(uri: String) -> Result<(), String> {
     .await
 }
 
+#[tauri::command(async)]
+pub async fn open_path_with_default_app(uri: String) -> Result<(), String> {
+    crate::util::task::run_blocking("open_path_with_default_app", move || {
+        let path = artifact_path_from_uri(&uri)?;
+        open_path_with_default_app_impl(&path)
+    })
+    .await
+}
+
 /// Single implementation behind both reveal commands. Files are "revealed"
 /// (parent opened with the file selected); directories are opened directly.
 /// Cross-platform; mycmux ships on Windows so that path is the one exercised
 /// in production.
 fn reveal_path_in_os_file_manager(path: &Path) -> Result<(), String> {
+    let uri = path.to_string_lossy().into_owned();
     if !path.exists() {
-        return Err(format!("path does not exist: {}", path.to_string_lossy()));
+        let message = format!("path does not exist: {uri}");
+        crate::diag::warn("reveal", &format!("uri={uri} error={message}"));
+        return Err(message);
     }
     let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     let is_dir = canonical.is_dir();
     #[cfg(target_os = "windows")]
     {
-        std::process::Command::new("explorer.exe")
-            .args(windows_explorer_reveal_args(&canonical, is_dir))
-            .spawn()
-            .map_err(|e| format!("failed to launch explorer.exe: {e}"))?;
-        return Ok(());
+        let command_line = windows_explorer_command_line(&canonical, is_dir);
+        let mut cmd = std::process::Command::new("explorer.exe");
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.raw_arg(&command_line);
+        }
+        match cmd.spawn() {
+            Ok(_) => {
+                crate::diag::warn(
+                    "reveal",
+                    &format!(
+                        "uri={uri} path={} cmdline={command_line}",
+                        canonical.display()
+                    ),
+                );
+                return Ok(());
+            }
+            Err(e) => {
+                let message = format!("failed to launch explorer.exe: {e}");
+                crate::diag::warn("reveal", &format!("uri={uri} error={message}"));
+                return Err(message);
+            }
+        }
     }
     #[cfg(target_os = "macos")]
     {
@@ -244,10 +243,28 @@ fn reveal_path_in_os_file_manager(path: &Path) -> Result<(), String> {
         if !is_dir {
             cmd.arg("-R");
         }
-        cmd.arg(&canonical)
-            .spawn()
-            .map_err(|e| format!("failed to launch open: {e}"))?;
-        return Ok(());
+        let cmdline = if is_dir {
+            format!("open {}", canonical.display())
+        } else {
+            format!("open -R {}", canonical.display())
+        };
+        match cmd.arg(&canonical).spawn() {
+            Ok(_) => {
+                crate::diag::warn(
+                    "reveal",
+                    &format!(
+                        "uri={uri} path={} cmdline={cmdline}",
+                        canonical.display()
+                    ),
+                );
+                return Ok(());
+            }
+            Err(e) => {
+                let message = format!("failed to launch open: {e}");
+                crate::diag::warn("reveal", &format!("uri={uri} error={message}"));
+                return Err(message);
+            }
+        }
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
@@ -259,36 +276,175 @@ fn reveal_path_in_os_file_manager(path: &Path) -> Result<(), String> {
                 .map(|x| x.to_path_buf())
                 .unwrap_or_else(|| canonical.to_path_buf())
         };
-        std::process::Command::new("xdg-open")
-            .arg(target)
-            .spawn()
-            .map_err(|e| format!("failed to launch xdg-open: {e}"))?;
-        return Ok(());
+        let cmdline = format!("xdg-open {}", target.display());
+        match std::process::Command::new("xdg-open").arg(&target).spawn() {
+            Ok(_) => {
+                crate::diag::warn(
+                    "reveal",
+                    &format!(
+                        "uri={uri} path={} cmdline={cmdline}",
+                        canonical.display()
+                    ),
+                );
+                return Ok(());
+            }
+            Err(e) => {
+                let message = format!("failed to launch xdg-open: {e}");
+                crate::diag::warn("reveal", &format!("uri={uri} error={message}"));
+                return Err(message);
+            }
+        }
     }
     #[allow(unreachable_code)]
-    Err("unsupported platform".into())
+    {
+        let message = "unsupported platform".to_string();
+        crate::diag::warn("reveal", &format!("uri={uri} error={message}"));
+        Err(message)
+    }
+}
+
+fn open_path_with_default_app_impl(path: &Path) -> Result<(), String> {
+    let uri = path.to_string_lossy().into_owned();
+    if !path.exists() {
+        let message = format!("path does not exist: {uri}");
+        crate::diag::warn("open", &format!("uri={uri} error={message}"));
+        return Err(message);
+    }
+    let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    #[cfg(target_os = "windows")]
+    {
+        let target = windows_shell_path(&canonical);
+        match std::process::Command::new("explorer.exe")
+            .arg(&target)
+            .spawn()
+        {
+            Ok(_) => {
+                crate::diag::warn(
+                    "open",
+                    &format!(
+                        "uri={uri} path={} cmdline={target}",
+                        canonical.display()
+                    ),
+                );
+                return Ok(());
+            }
+            Err(e) => {
+                let message = format!("failed to launch default app: {e}");
+                crate::diag::warn("open", &format!("uri={uri} error={message}"));
+                return Err(message);
+            }
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let cmdline = format!("open {}", canonical.display());
+        match std::process::Command::new("open")
+            .arg(&canonical)
+            .spawn()
+        {
+            Ok(_) => {
+                crate::diag::warn(
+                    "open",
+                    &format!(
+                        "uri={uri} path={} cmdline={cmdline}",
+                        canonical.display()
+                    ),
+                );
+                return Ok(());
+            }
+            Err(e) => {
+                let message = format!("failed to launch open: {e}");
+                crate::diag::warn("open", &format!("uri={uri} error={message}"));
+                return Err(message);
+            }
+        }
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let cmdline = format!("xdg-open {}", canonical.display());
+        match std::process::Command::new("xdg-open")
+            .arg(&canonical)
+            .spawn()
+        {
+            Ok(_) => {
+                crate::diag::warn(
+                    "open",
+                    &format!(
+                        "uri={uri} path={} cmdline={cmdline}",
+                        canonical.display()
+                    ),
+                );
+                return Ok(());
+            }
+            Err(e) => {
+                let message = format!("failed to launch xdg-open: {e}");
+                crate::diag::warn("open", &format!("uri={uri} error={message}"));
+                return Err(message);
+            }
+        }
+    }
+    #[allow(unreachable_code)]
+    {
+        let message = "unsupported platform".to_string();
+        crate::diag::warn("open", &format!("uri={uri} error={message}"));
+        Err(message)
+    }
+}
+
+/// Preprocess a Windows path for handing to explorer.exe (open or reveal).
+/// Strips the `\\?\` long-path prefix (including UNC), normalizes separators,
+/// and drops trailing backslashes except for a drive root (`C:\`).
+#[cfg(target_os = "windows")]
+fn windows_shell_path(path: &Path) -> String {
+    let mut value = path.to_string_lossy().into_owned();
+    const UNC_PREFIX: &str = r"\\?\UNC\";
+    const LONG_PREFIX: &str = r"\\?\";
+    if let Some(rest) = value.strip_prefix(UNC_PREFIX) {
+        value = format!(r"\\{rest}");
+    } else if let Some(rest) = value.strip_prefix(LONG_PREFIX) {
+        value = rest.to_string();
+    }
+    value = value.replace('/', r"\");
+    while value.ends_with('\\') {
+        let without = &value[..value.len() - 1];
+        if is_windows_drive_letter_colon(without) {
+            break;
+        }
+        value.truncate(value.len() - 1);
+        if value.is_empty() {
+            break;
+        }
+    }
+    value
 }
 
 #[cfg(target_os = "windows")]
-fn windows_display_path(path: &std::path::Path) -> String {
-    let value = path.to_string_lossy();
-    value.strip_prefix(r"\\?\").unwrap_or(&value).to_string()
+fn is_windows_drive_letter_colon(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() == 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
 }
 
 #[cfg(target_os = "windows")]
-fn windows_explorer_select_arg(path: &std::path::Path) -> String {
-    format!("/select,{}", windows_display_path(path))
+fn is_windows_drive_root(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() == 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && bytes[2] == b'\\'
 }
 
-/// Explorer wants the select switch and the path in ONE argument
-/// (`/select,C:\dir\file`). Splitting them into two arguments makes Explorer
-/// ignore the selection and open the wrong folder for paths with spaces.
+/// Returns the COMPLETE command line to hand to explorer.exe via raw_arg.
+/// file -> `/select,"C:\dir\file"` ; directory -> `"C:\dir"` ; drive root -> `C:\` (unquoted)
 #[cfg(target_os = "windows")]
-fn windows_explorer_reveal_args(path: &std::path::Path, is_dir: bool) -> Vec<String> {
+fn windows_explorer_command_line(path: &Path, is_dir: bool) -> String {
+    let shell_path = windows_shell_path(path);
+    if is_windows_drive_root(&shell_path) {
+        return shell_path;
+    }
     if is_dir {
-        vec![windows_display_path(path)]
+        format!("\"{shell_path}\"")
     } else {
-        vec![windows_explorer_select_arg(path)]
+        format!("/select,\"{shell_path}\"")
     }
 }
 
@@ -382,54 +538,64 @@ mod tests {
     }
 
     #[test]
-    fn explorer_reveal_file_keeps_select_switch_and_path_in_one_argument() {
-        let args = windows_explorer_reveal_args(
-            std::path::Path::new(r"C:\Users\miyaz\Desktop\sample doc.html"),
+    fn explorer_command_line_file_with_spaces() {
+        let line = windows_explorer_command_line(
+            Path::new(r"C:\Users\miyaz\Desktop\sample doc.pdf"),
             false,
         );
         assert_eq!(
-            args,
-            vec![r"/select,C:\Users\miyaz\Desktop\sample doc.html".to_string()]
+            line,
+            r#"/select,"C:\Users\miyaz\Desktop\sample doc.pdf""#
         );
     }
 
     #[test]
-    fn explorer_reveal_directory_opens_directory_directly() {
-        let args =
-            windows_explorer_reveal_args(std::path::Path::new(r"C:\Users\miyaz\Desktop"), true);
-        assert_eq!(args, vec![r"C:\Users\miyaz\Desktop".to_string()]);
+    fn explorer_command_line_directory() {
+        let line = windows_explorer_command_line(Path::new(r"C:\Users\miyaz\Desktop"), true);
+        assert_eq!(line, r#""C:\Users\miyaz\Desktop""#);
     }
 
     #[test]
-    fn explorer_select_arg_keeps_switch_and_path_in_one_argument() {
-        let arg = windows_explorer_select_arg(std::path::Path::new(
-            r"C:\Users\miyaz\Desktop\sample doc.pdf",
-        ));
-        assert_eq!(arg, r"/select,C:\Users\miyaz\Desktop\sample doc.pdf");
+    fn explorer_command_line_japanese_space_and_forward_slashes() {
+        let input = format!(
+            "C:/Users/miyaz/Dropbox/\u{4e00}\u{6b21}\u{539f}\u{7a3f} v2/a b.md"
+        );
+        let line = windows_explorer_command_line(Path::new(&input), false);
+        let expected = format!(
+            "/select,\"C:\\Users\\miyaz\\Dropbox\\\u{4e00}\u{6b21}\u{539f}\u{7a3f} v2\\a b.md\""
+        );
+        assert_eq!(line, expected);
     }
 
     #[test]
-    fn artifact_explorer_args_open_directory_without_select() {
-        let args = windows_explorer_reveal_args(
-            std::path::Path::new(r"C:\Users\miyaz\Desktop\sample folder"),
-            true,
+    fn explorer_command_line_strips_trailing_separator() {
+        assert_eq!(
+            windows_explorer_command_line(Path::new(r#"C:\a b\"#), true),
+            r#""C:\a b""#
         );
         assert_eq!(
-            args,
-            vec![r"C:\Users\miyaz\Desktop\sample folder".to_string()]
+            windows_explorer_command_line(Path::new(r"C:\a b/"), true),
+            r#""C:\a b""#
         );
     }
 
     #[test]
-    fn artifact_explorer_args_select_file_with_existing_select_form() {
-        let args = windows_explorer_reveal_args(
-            std::path::Path::new(r"C:\Users\miyaz\Desktop\sample doc.pdf"),
-            false,
-        );
-        assert_eq!(
-            args,
-            vec![r"/select,C:\Users\miyaz\Desktop\sample doc.pdf".to_string()]
-        );
+    fn explorer_command_line_unc_long_path() {
+        let line =
+            windows_explorer_command_line(Path::new(r"\\?\UNC\server\share\dir"), true);
+        assert_eq!(line, r#""\\server\share\dir""#);
+    }
+
+    #[test]
+    fn explorer_command_line_strips_verbatim_prefix_for_file() {
+        let line = windows_explorer_command_line(Path::new(r"\\?\C:\x\y.txt"), false);
+        assert_eq!(line, r#"/select,"C:\x\y.txt""#);
+    }
+
+    #[test]
+    fn explorer_command_line_drive_root_unquoted() {
+        let line = windows_explorer_command_line(Path::new(r"C:\"), true);
+        assert_eq!(line, r"C:\");
     }
 
     #[test]

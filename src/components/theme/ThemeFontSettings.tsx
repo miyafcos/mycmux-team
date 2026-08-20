@@ -24,6 +24,7 @@ interface ThemeFontSettingsProps {
   setFontSize: (size: number) => void;
   setFontFamily: (fontFamily: string) => void;
   setLineHeight: (lineHeight: number) => void;
+  mode?: "all" | "controls" | "presets";
 }
 
 interface FontPresetGroup {
@@ -44,13 +45,13 @@ const FONT_PRESET_GROUPS: FontPresetGroup[] = [
     id: "ja-readable",
     title: "日本語・表の読みやすさ",
     detail: "教材・表・ログ確認向き",
-    presetIds: ["biz-readable", "hg-gothic-m", "ms-gothic"],
+    presetIds: ["biz-readable", "ms-gothic"],
   },
   {
     id: "tone-shift",
     title: "印象を変える",
     detail: "雰囲気を変えたいとき",
-    presetIds: ["mac-style", "ud-kyokasho", "biz-udmincho"],
+    presetIds: ["ud-kyokasho", "biz-udmincho"],
   },
 ];
 
@@ -300,8 +301,11 @@ export function ThemeFontSettings({
   setFontSize,
   setFontFamily,
   setLineHeight,
+  mode = "all",
 }: ThemeFontSettingsProps) {
   const usesKnownPreset = TERMINAL_FONT_PRESETS.some((preset) => preset.value === fontFamily);
+  const showControls = mode !== "presets";
+  const showPresets = mode !== "controls";
 
   return (
     <section
@@ -316,6 +320,8 @@ export function ThemeFontSettings({
         gap: 12,
       }}
     >
+{showControls && (
+        <>
       <UiDensityPicker />
 
       <div>
@@ -346,6 +352,10 @@ export function ThemeFontSettings({
           style={{ width: "100%" }}
         />
       </div>
+        </>
+      )}
+
+      {showPresets && (
 
       <div>
         <div style={{ display: "flex", justifyContent: "space-between", gap: 10, marginBottom: 8 }}>
@@ -418,6 +428,11 @@ export function ThemeFontSettings({
           ))}
         </div>
       </div>
+      )}
     </section>
   );
+}
+
+export function ThemeFontPresetPicker(props: Omit<ThemeFontSettingsProps, "mode">) {
+  return <ThemeFontSettings {...props} mode="presets" />;
 }

@@ -53,8 +53,9 @@ AA-safe accent text).
 
 ## Picker UI
 
-`src/components/theme/ThemePicker.tsx`, mounted at the top of the appearance
-tab (`AppearanceTab` → `ThemeTweakPanel topSlot`). Recommended cards are
+`src/components/theme/ThemePicker.tsx`, mounted directly inside the quick
+settings section at the top of `AppearanceTab` (the advanced disclosure below
+it hosts `ThemeTweakPanel` without a topSlot). Recommended cards are
 always visible; the full 30-theme list expands per group. It is a
 `radiogroup` with roving focus (arrow keys / Home / End).
 
@@ -102,6 +103,11 @@ theme it.
 
 ## Contrast Contracts
 
+- Every bundled light theme keeps terminal foreground at 7:1 against the
+  terminal background. Its non-black ANSI colors and cursor meet 4.5:1.
+- Light-theme status colors meet 4.5:1 against both `chrome.background` and
+  `chrome.surface`; borders meet 1.6:1, accents meet 3:1, and the two chrome
+  surfaces remain at least 1.15:1 apart.
 - `tests/unit/themeContrast.test.ts` — WCAG floors across all 30 themes
   (text/muted/dim/accent-text vs chrome bg; terminal fg/bg ≥ 7; on-colors;
   ANSI ratchet).

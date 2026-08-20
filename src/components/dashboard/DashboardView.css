@@ -7,9 +7,13 @@
 .cmux-dashboard-view {
   --cmux-bg: var(--cmux-bg-solid);
   --cmux-surface: var(--cmux-surface-solid);
-  position: absolute;
-  inset: 0;
-  z-index: 40;
+  /* Keep this in sync with the 36px TitleBar height in TitleBar.tsx. */
+  position: fixed;
+  top: 36px;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 200;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -176,16 +180,20 @@
 .cmux-dashboard-qcard-hint { margin-left: auto; color: var(--cmux-text-tertiary); font-size: var(--cmux-font-size-xs); }
 .cmux-dashboard-qcard-result { color: var(--cmux-text-secondary); font-size: var(--cmux-font-size-xs); overflow-wrap: anywhere; }
 .cmux-dashboard-qcard-result.is-error { color: var(--status-error); }
-.cmux-dashboard-next-actions { display: grid; flex: 0 0 auto; gap: 7px; margin: 0 22px 10px; border: 1px solid color-mix(in srgb, var(--status-done) 48%, var(--cmux-border)); border-left: 3px solid var(--status-done); border-radius: var(--cmux-radius-sm); padding: 8px 10px; background: color-mix(in srgb, var(--status-done) 7%, var(--cmux-surface)); }
-.cmux-dashboard-next-actions-head, .cmux-dashboard-next-actions-list { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.cmux-dashboard-next-actions { display: grid; flex: 0 0 auto; gap: 4px; margin: 0 22px 10px; border: 1px solid color-mix(in srgb, var(--status-done) 48%, var(--cmux-border)); border-left: 3px solid var(--status-done); border-radius: var(--cmux-radius-sm); padding: 6px 10px; background: color-mix(in srgb, var(--status-done) 7%, var(--cmux-surface)); }
 .cmux-dashboard-next-actions-head { color: var(--cmux-text-secondary); font-size: var(--cmux-font-size-xs); }
 .cmux-dashboard-next-actions-head strong { color: var(--status-done); }
-.cmux-dashboard-next-actions-loading, .cmux-dashboard-next-actions-summary { color: var(--cmux-text-tertiary); font-size: var(--cmux-font-size-xs); }
 .cmux-dashboard-next-actions-machine-tag { display: inline-flex; border-radius: 4px; padding: 1px 5px; background: color-mix(in srgb, var(--status-done) 22%, var(--cmux-surface)); color: var(--status-done); font-size: 10px; line-height: 1.25; }
 .cmux-dashboard-next-actions-ai-tag { display: inline-flex; border-radius: 4px; padding: 1px 5px; background: color-mix(in srgb, var(--cmux-accent) 48%, var(--status-error)); color: var(--cmux-on-accent); font-size: 10px; line-height: 1.25; }
 .cmux-dashboard-next-action { display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--cmux-border); border-radius: 6px; padding: 4px 8px; background: var(--cmux-surface-raised); color: var(--cmux-text); font: inherit; font-size: var(--cmux-font-size-xs); cursor: pointer; }
-.cmux-dashboard-next-action.is-machine { border-color: color-mix(in srgb, var(--status-done) 46%, var(--cmux-border)); }
-.cmux-dashboard-next-action.is-ai { border-color: color-mix(in srgb, var(--cmux-accent) 48%, var(--status-error)); }
+.cmux-dashboard-next-actions-row { display: flex; align-items: center; gap: 6px; }
+.cmux-dashboard-next-actions-list { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.cmux-dashboard-next-actions-summary { min-width: 0; flex: 1; overflow: hidden; color: var(--cmux-text); font-size: 13px; line-height: 18px; text-overflow: ellipsis; white-space: nowrap; }
+.cmux-dashboard-next-actions-loading { height: 20px; color: var(--cmux-text-tertiary); font-size: var(--cmux-font-size-xs); line-height: 20px; }
+.cmux-dashboard-next-action.is-recommended { border-color: var(--cmux-accent); }
+.cmux-dashboard-next-action-star { color: var(--cmux-accent); }
+.cmux-dashboard-next-actions-retry { border: 0; padding: 0 4px; background: transparent; color: var(--cmux-text-secondary); font: inherit; cursor: pointer; }
+.cmux-dashboard-next-actions-failed { min-width: 0; flex: 1; color: var(--status-error); font-size: var(--cmux-font-size-xs); }
 .cmux-dashboard-next-action:hover:not(:disabled) { background: var(--cmux-hover); }
 .cmux-dashboard-next-action-confirm { display: grid; gap: 6px; border-top: 1px solid var(--cmux-border-hairline); padding-top: 7px; color: var(--cmux-text-secondary); font-size: var(--cmux-font-size-xs); }
 .cmux-dashboard-next-action-confirm pre { max-height: 120px; margin: 0; overflow: auto; border: 1px solid var(--cmux-border-hairline); border-radius: 5px; padding: 6px; background: var(--cmux-bg-solid); color: var(--cmux-text); font-family: var(--cmux-dash-body-font); font-size: inherit; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }

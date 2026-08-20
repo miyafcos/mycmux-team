@@ -6,6 +6,7 @@ use tempfile::tempdir;
 const CLAUDE_JSON: &str = include_str!("fixtures/claude_json_sample.json");
 const CREDS: &str = include_str!("fixtures/claude_credentials_sample.json");
 const CODEX: &str = include_str!("fixtures/codex_auth_sample.json");
+const GROK: &str = include_str!("fixtures/grok_auth_sample.json");
 #[test]
 fn splice_replaces_only_target_member() {
     let (s, e) = find_top_level_member(CLAUDE_JSON, "oauthAccount")
@@ -75,6 +76,16 @@ fn codex_identity_rejects_malformed_jwt() {
     for s in ["one", "a.!.c", "a.e30.c.d"] {
         assert!(codex::decode_id_token_claims(s).is_err());
     }
+}
+#[test]
+fn grok_identity_reads_fixture_and_tier() {
+    let d = tempdir().unwrap();
+    let paths = grok::GrokPaths { auth: d.path().join("auth.json"), lock: d.path().join("auth.json.lock") };
+    fs::write(&paths.auth, GROK).unwrap();
+    let live = grok::read_live_identity(&paths);
+    assert_eq!(live.email.as_deref(), Some("grok@example.test"));
+    assert_eq!(live.identity_key.as_deref(), Some("grok-user-a"));
+    assert_eq!(live.plan.as_deref(), Some("supergrok"));
 }
 #[test]
 fn claude_identity_and_relogin() {
@@ -184,6 +195,36 @@ fn snapshot_round_trip_is_byte_identical() {
         snapshot::StoredSnapshot::Codex(x) => assert_eq!(x.auth_text, CODEX),
         _ => panic!(),
     }
+}
+
+#[test]
+fn grok_snapshot_round_trip_is_distinct_from_codex() {
+    let d = tempdir().unwrap();
+    let stored = snapshot::StoredSnapshot::Grok(snapshot::GrokSnapshot {
+        version: 1,
+        provider: CliProvider::Grok,
+        captured_at: "x".into(),
+        grok_auth_text: GROK.into(),
+    });
+    let wire = serde_json::to_string(&stored).unwrap();
+    assert!(wire.contains("grok_auth_text"));
+    assert!(!wire.contains("\"auth_text\""));
+    let decoded: snapshot::StoredSnapshot = serde_json::from_str(&wire).unwrap();
+    match decoded {
+        snapshot::StoredSnapshot::Grok(value) => assert_eq!(value.grok_auth_text, GROK),
+        _ => panic!("grok snapshot must not deserialize as codex"),
+    }
+    snapshot::save(d.path(), "grok-12345678", &stored).unwrap();
+    assert!(matches!(snapshot::load(d.path(), "grok-12345678").unwrap(), snapshot::StoredSnapshot::Grok(_)));
+}
+
+#[test]
+fn legacy_registry_without_grok_pointer_loads() {
+    let d = tempdir().unwrap();
+    fs::write(d.path().join("cli_accounts.json"), r#"{"active":{"claude":"claude-a","codex":null}}"#).unwrap();
+    let file = registry::load(d.path()).unwrap();
+    assert_eq!(file.active.claude.as_deref(), Some("claude-a"));
+    assert!(file.active.grok.is_none());
 }
 
 #[test]

@@ -2,6 +2,7 @@ pub mod credentials;
 pub mod legacy;
 pub mod oauth_claude;
 pub mod oauth_codex;
+pub mod oauth_grok;
 pub mod refresh;
 mod util;
 
@@ -213,7 +214,16 @@ mod tests {
             refresh_token: Some(synthetic_refresh.into()),
             id_token: None,
         };
-        let debug = format!("{refreshed:?} {codex:?}");
+        let grok = crate::usage::credentials::GrokTokens {
+            access_token: synthetic_access.into(),
+            refresh_token: synthetic_refresh.into(),
+            client_id: "synthetic-client".into(),
+        };
+        let grok_refreshed = crate::usage::refresh::RefreshedGrok {
+            access_token: synthetic_access.into(),
+            refresh_token: Some(synthetic_refresh.into()),
+        };
+        let debug = format!("{refreshed:?} {codex:?} {grok:?} {grok_refreshed:?}");
         assert!(!debug.contains(synthetic_access));
         assert!(!debug.contains(synthetic_refresh));
     }

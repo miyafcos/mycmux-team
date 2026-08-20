@@ -2,7 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import type { KeyboardEvent, MouseEvent, ReactNode } from "react";
 import { open } from "@tauri-apps/plugin-shell";
 
-import { previewArtifactUriForSessionV2, revealPathInExplorer, type PreviewArtifactInfo } from "../../lib/ipc";
+import { openPathWithDefaultApp, previewArtifactUriForSessionV2, revealPathInExplorer, type PreviewArtifactInfo } from "../../lib/ipc";
 import { useWorkspaceLayoutStore } from "../../stores/workspaceStore";
 import {
   HTTP_LINK_REGEX,
@@ -11,6 +11,7 @@ import {
   resolveTextLocalPathLinks,
   type ResolvedLocalPathLinkMatch,
 } from "../terminal/terminalLinkProvider";
+import { dashboardStrings } from "./dashboardStrings";
 
 export type DashboardLinkContext = {
   workspaceId: string;
@@ -31,14 +32,6 @@ type TextLinkMatch = {
 function hasTextSelection(): boolean {
   const selection = window.getSelection?.();
   return Boolean(selection && !selection.isCollapsed && selection.toString().trim());
-}
-
-function normalizeMsysPath(uri: string): string {
-  const trimmed = uri.trim();
-  if (/^\/[A-Za-z]\//.test(trimmed)) {
-    return `${trimmed[1].toUpperCase()}:${trimmed.slice(2).replace(/\//g, "\\")}`;
-  }
-  return uri;
 }
 
 function findHttpLinks(text: string): TextLinkMatch[] {
@@ -110,7 +103,12 @@ export function DashboardLinkedText({
 }) {
   const [paths, setPaths] = useState<readonly ResolvedLocalPathLinkMatch[]>([]);
   const [fileActionUri, setFileActionUri] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const openOrReloadHtmlPreviewPane = useWorkspaceLayoutStore((state) => state.openOrReloadHtmlPreviewPane);
+
+  useEffect(() => {
+    setActionError(null);
+  }, [fileActionUri]);
 
   useEffect(() => {
     if (!linksEnabled) {
@@ -174,8 +172,19 @@ export function DashboardLinkedText({
   return <>
     {content}
     {fileActionUri ? <span className="cmux-dashboard-path-actions" data-livebrief-interactive="true">
-      <button type="button" onClick={() => { void open(normalizeMsysPath(fileActionUri)); setFileActionUri(null); }}>既定のアプリで開く</button>
-      <button type="button" onClick={() => { void revealPathInExplorer(fileActionUri); setFileActionUri(null); }}>エクスプローラーで表示</button>
+      <button type="button" onClick={() => {
+        setActionError(null);
+        void openPathWithDefaultApp(fileActionUri)
+          .then(() => setFileActionUri(null))
+          .catch((error) => setActionError(dashboardStrings.pathActionFailed(String(error))));
+      }}>{dashboardStrings.pathActionOpenDefault}</button>
+      <button type="button" onClick={() => {
+        setActionError(null);
+        void revealPathInExplorer(fileActionUri)
+          .then(() => setFileActionUri(null))
+          .catch((error) => setActionError(dashboardStrings.pathActionFailed(String(error))));
+      }}>{dashboardStrings.pathActionReveal}</button>
+      {actionError ? <span className="cmux-dashboard-path-action-error" role="alert" style={{ color: "var(--status-error)" }}>{actionError}</span> : null}
     </span> : null}
   </>;
 }

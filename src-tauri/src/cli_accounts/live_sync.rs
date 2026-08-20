@@ -23,7 +23,7 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use super::{claude, codex, registry, snapshot, CliAccountProfile, CliProvider};
+use super::{claude, codex, grok, registry, snapshot, CliAccountProfile, CliProvider};
 
 /// Rotation is driven by token lifetime (hours), not by user actions, so a
 /// coarse poll is enough. Short enough that a switch right after a rotation
@@ -126,6 +126,10 @@ fn codex_watched(paths: &codex::CodexPaths) -> Vec<&Path> {
     vec![paths.auth.as_path()]
 }
 
+fn grok_watched(paths: &grok::GrokPaths) -> Vec<&Path> {
+    vec![paths.auth.as_path()]
+}
+
 /// One provider's tick: re-capture when the live files moved and the login
 /// belongs to a registered profile.
 pub fn sync_provider(
@@ -135,9 +139,21 @@ pub fn sync_provider(
     codex_paths: &codex::CodexPaths,
     stamps: &mut FileStamps,
 ) -> SyncOutcome {
+    sync_provider_with_grok(base, provider, claude_paths, codex_paths, None, stamps)
+}
+
+fn sync_provider_with_grok(
+    base: &Path,
+    provider: CliProvider,
+    claude_paths: &claude::ClaudePaths,
+    codex_paths: &codex::CodexPaths,
+    grok_paths: Option<&grok::GrokPaths>,
+    stamps: &mut FileStamps,
+) -> SyncOutcome {
     let watched = match provider {
         CliProvider::Claude => claude_watched(claude_paths),
         CliProvider::Codex => codex_watched(codex_paths),
+        CliProvider::Grok => grok_watched(grok_paths.expect("grok path required")),
     };
     if !stamps.changed(&watched) {
         return SyncOutcome::Unchanged;
@@ -146,6 +162,7 @@ pub fn sync_provider(
     let live = match provider {
         CliProvider::Claude => claude::read_live_identity(claude_paths),
         CliProvider::Codex => codex::read_live_identity(codex_paths),
+        CliProvider::Grok => grok::read_live_identity(grok_paths.expect("grok path required")),
     };
     if !live.present {
         return SyncOutcome::NoLiveLogin;
@@ -166,7 +183,7 @@ pub fn sync_provider(
         // A live login with no matching profile: register it in place. Must go
         // through `capture_account` (not `capture_resolved`) — the caller of
         // this tick already holds the non-reentrant mutation guard.
-        return match super::capture_account(base, claude_paths, codex_paths, provider, None) {
+        return match super::capture_account_with_grok(base, claude_paths, codex_paths, grok_paths, provider, None) {
             Ok(profile) => SyncOutcome::Registered(profile.id),
             Err(error) => {
                 stamps.forget(&watched);
@@ -182,6 +199,8 @@ pub fn sync_provider(
         CliProvider::Codex => {
             codex::capture(codex_paths).map(|(stored, _)| snapshot::StoredSnapshot::Codex(stored))
         }
+        CliProvider::Grok => grok::capture(grok_paths.expect("grok path required"))
+            .map(|(stored, _)| snapshot::StoredSnapshot::Grok(stored)),
     };
     let stored = match stored {
         Ok(stored) => stored,
@@ -222,9 +241,9 @@ pub fn start_live_sync(base: PathBuf) {
         let mut stamps = FileStamps::new();
         loop {
             thread::sleep(POLL_INTERVAL);
-            let (claude_paths, codex_paths) =
-                match (claude::ClaudePaths::resolve(), codex::CodexPaths::resolve()) {
-                    (Ok(claude_paths), Ok(codex_paths)) => (claude_paths, codex_paths),
+            let (claude_paths, codex_paths, grok_paths) =
+                match (claude::ClaudePaths::resolve(), codex::CodexPaths::resolve(), grok::GrokPaths::resolve()) {
+                    (Ok(claude_paths), Ok(codex_paths), Ok(grok_paths)) => (claude_paths, codex_paths, grok_paths),
                     _ => continue,
                 };
             // A switch is mid-flight: its own capture already covers this
@@ -233,8 +252,8 @@ pub fn start_live_sync(base: PathBuf) {
             let Some(_guard) = super::try_mutation_guard() else {
                 continue;
             };
-            for provider in [CliProvider::Claude, CliProvider::Codex] {
-                match sync_provider(&base, provider, &claude_paths, &codex_paths, &mut stamps) {
+            for provider in [CliProvider::Claude, CliProvider::Codex, CliProvider::Grok] {
+                match sync_provider_with_grok(&base, provider, &claude_paths, &codex_paths, Some(&grok_paths), &mut stamps) {
                     SyncOutcome::Failed(error) => {
                         crate::diag_warn!(
                             "cli-accounts",

@@ -363,6 +363,7 @@ pub fn run() {
             commands::fs::reveal_in_explorer,
             commands::fs::reveal_path_in_explorer,
             commands::fs::open_with_default,
+            commands::fs::open_path_with_default_app,
             commands::window::claim_leader,
             commands::window::reveal_main_window,
             commands::window::open_child_window,

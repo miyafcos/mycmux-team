@@ -2,6 +2,7 @@
 
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -9,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   stopEventPolling: vi.fn(),
   onSessionStatusChanged: vi.fn(() => Promise.resolve(() => {})),
   handleSocketCommand: vi.fn(),
+  observeActiveSession: vi.fn(),
 }));
 
 vi.mock("../../src/stores/liveBriefStore", async () => {
@@ -32,6 +34,11 @@ vi.mock("../../src/lib/focusController", async () => {
 vi.mock("../../src/lib/ipc", async () => {
   const actual = await vi.importActual<typeof import("../../src/lib/ipc")>("../../src/lib/ipc");
   return { ...actual, onSessionStatusChanged: mocks.onSessionStatusChanged };
+});
+
+vi.mock("../../src/lib/backgroundAiScheduler", async () => {
+  const actual = await vi.importActual<typeof import("../../src/lib/backgroundAiScheduler")>("../../src/lib/backgroundAiScheduler");
+  return { ...actual, observeActiveSession: mocks.observeActiveSession };
 });
 
 vi.mock("../../src/components/terminal/XTermWrapper", () => ({
@@ -259,6 +266,7 @@ beforeEach(() => {
   mocks.syncDashboardEvents.mockClear();
   mocks.stopEventPolling.mockClear();
   mocks.onSessionStatusChanged.mockClear();
+  mocks.observeActiveSession.mockClear();
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -305,6 +313,31 @@ describe("clampDashboardChatDropIndicatorOffset", () => {
     expect(clampDashboardChatDropIndicatorOffset(50, 100)).toBe(50);
     expect(clampDashboardChatDropIndicatorOffset(100, 100)).toBe(98.5);
     expect(clampDashboardChatDropIndicatorOffset(0, 0)).toBe(0);
+  });
+});
+
+describe("DashboardView page layout contract", () => {
+  it("keeps the workspace hidden and covers every area below the title bar", () => {
+    const workspaceView = readFileSync("src/components/workspace/WorkspaceView.tsx", "utf8");
+    const dashboardCss = readFileSync("src/components/dashboard/DashboardView.css", "utf8");
+
+    expect(workspaceView).toContain('visibility: isActive ? "inherit" : "hidden",');
+    expect(workspaceView).toContain('pointerEvents: isActive ? "inherit" : "none",');
+    expect(dashboardCss).toContain("position: fixed;");
+    expect(dashboardCss).toContain("top: 36px;");
+    expect(dashboardCss).toContain("right: 0;");
+    expect(dashboardCss).toContain("bottom: 0;");
+    expect(dashboardCss).toContain("left: 0;");
+    expect(dashboardCss).toContain("z-index: 200;");
+  });
+});
+
+describe("DashboardView active AI target", () => {
+  it("observes the open active chat column", async () => {
+    const item = tab("tab-active-ai", "s-active-ai", "Active AI target");
+    seedDashboard({ workspace: workspace([item]), selectedTabId: item.id });
+    await renderDashboard();
+    expect(mocks.observeActiveSession).toHaveBeenCalledWith(expect.objectContaining({ sessionId: item.sessionId }));
   });
 });
 

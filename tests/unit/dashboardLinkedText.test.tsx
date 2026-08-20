@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   open: vi.fn(),
   preview: vi.fn(),
   reveal: vi.fn(),
+  openPath: vi.fn(),
   resolve: vi.fn(),
   openPreviewPane: vi.fn(),
   openInDashboardPreview: vi.fn(),
@@ -17,6 +18,7 @@ vi.mock("@tauri-apps/plugin-shell", () => ({ open: mocks.open }));
 vi.mock("../../src/lib/ipc", () => ({
   previewArtifactUriForSessionV2: mocks.preview,
   revealPathInExplorer: mocks.reveal,
+  openPathWithDefaultApp: mocks.openPath,
 }));
 vi.mock("../../src/stores/workspaceStore", () => ({
   useWorkspaceLayoutStore: (selector: (state: { openOrReloadHtmlPreviewPane: typeof mocks.openPreviewPane }) => unknown) => selector({ openOrReloadHtmlPreviewPane: mocks.openPreviewPane }),
@@ -29,6 +31,7 @@ vi.mock("../../src/components/terminal/terminalLinkProvider", () => ({
 }));
 
 import { DashboardLinkedText } from "../../src/components/dashboard/DashboardLinkedText";
+import { dashboardStrings } from "../../src/components/dashboard/dashboardStrings";
 
 let container: HTMLDivElement;
 let root: Root;
@@ -40,6 +43,7 @@ beforeEach(() => {
   mocks.open.mockReset();
   mocks.preview.mockReset();
   mocks.reveal.mockReset();
+  mocks.openPath.mockReset();
   mocks.resolve.mockReset();
   mocks.openPreviewPane.mockReset();
   mocks.openInDashboardPreview.mockReset();
@@ -169,5 +173,40 @@ describe("DashboardLinkedText", () => {
       "既定のアプリで開く",
       "エクスプローラーで表示",
     ]);
+  });
+
+  it("opens a resolved file with the default app through IPC, not plugin-shell", async () => {
+    const path = "C:\\Users\\miyaz\\Dropbox\\report.pdf";
+    mocks.resolve.mockResolvedValue([{ text: path, index: 0, endIndex: path.length, activationUri: path }]);
+    mocks.openPath.mockResolvedValue(undefined);
+
+    await renderText(path);
+    await act(async () => { (container.querySelector("a") as HTMLAnchorElement).click(); });
+    const openButton = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent === dashboardStrings.pathActionOpenDefault,
+    );
+    expect(openButton).toBeTruthy();
+    await act(async () => { openButton!.click(); });
+
+    expect(mocks.openPath).toHaveBeenCalledWith(path);
+    expect(mocks.open).not.toHaveBeenCalled();
+  });
+
+  it("shows a failure label when opening with the default app rejects", async () => {
+    const path = "C:\\Users\\miyaz\\Dropbox\\report.pdf";
+    mocks.resolve.mockResolvedValue([{ text: path, index: 0, endIndex: path.length, activationUri: path }]);
+    mocks.openPath.mockRejectedValue("access denied");
+
+    await renderText(path);
+    await act(async () => { (container.querySelector("a") as HTMLAnchorElement).click(); });
+    const openButton = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent === dashboardStrings.pathActionOpenDefault,
+    );
+    await act(async () => {
+      openButton!.click();
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain(dashboardStrings.pathActionFailed("access denied"));
   });
 });

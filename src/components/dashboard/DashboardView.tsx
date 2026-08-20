@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { useShallow } from "zustand/react/shallow";
 
 import { focusController } from "../../lib/focusController";
+import { observeActiveSession } from "../../lib/backgroundAiScheduler";
 import { isEditableTarget } from "../../lib/keybindings";
 import { useKeybindingStore } from "../../stores/keybindingStore";
 import type { AttentionCard, SessionRef } from "../../lib/attentionBridge";
@@ -274,6 +275,22 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
     ? activeColumnEvents
     : activeColumnSessionId ? listEventsBySession[activeColumnSessionId] ?? [] : [];
   const activeColumnQuestion = questionModel(activeColumnCard?.brief, activeColumnTranscriptEvents);
+  const activeColumnCwd = activeColumnSessionId ? metadataState.metadata[activeColumnSessionId]?.cwd ?? null : null;
+  useEffect(() => {
+    if (!activeColumnCard || !activeColumnSessionId) {
+      observeActiveSession(null);
+      return;
+    }
+    observeActiveSession({
+      sessionId: activeColumnSessionId,
+      displayState: resolveDisplayState(activeColumnCard),
+      questionActive: Boolean(activeColumnQuestion),
+      eventSeq: briefsBySession[activeColumnSessionId]?.eventSeq ?? 0,
+      tabLabel: activeColumnCard.label ?? null,
+      cwd: activeColumnCwd,
+    });
+  }, [activeColumnCard, activeColumnSessionId, activeColumnQuestion, briefsBySession, activeColumnCwd]);
+  useEffect(() => () => observeActiveSession(null), []);
   const reportInboxOpen = dashboardReportInboxOpen(chatColumnTabIds);
   const openChatColumnTabIds = useMemo(
     () => chatColumnSlots.map(chatSlotId),

@@ -25,10 +25,10 @@ use uuid::Uuid;
 
 use super::{
     atomic::write_atomic,
-    capture_account,
     claude::{self, ClaudePaths},
     codex::{self, CodexPaths},
-    mutation_guard, registry, CliAccountProfile, CliProvider, ERR_ACCOUNTS_UNAVAILABLE,
+    grok::{self, GrokPaths},
+    capture_account_with_grok, mutation_guard, registry, CliAccountProfile, CliProvider, ERR_ACCOUNTS_UNAVAILABLE,
     ERR_LIVE_IDENTITY_MISSING, ERR_LOGIN_IDENTITY_MISMATCH, ERR_LOGIN_STAGING_FAILED,
 };
 
@@ -83,6 +83,13 @@ pub fn codex_staging_paths(dir: &Path) -> CodexPaths {
     }
 }
 
+pub fn grok_staging_paths(dir: &Path) -> GrokPaths {
+    GrokPaths {
+        auth: dir.join("auth.json"),
+        lock: dir.join("auth.json.lock"),
+    }
+}
+
 /// Best-effort onboarding skip. A failure here costs the user a few wizard
 /// clicks and nothing else, so it never turns into an error: the login itself
 /// works on a completely empty staging directory.
@@ -127,9 +134,11 @@ pub fn capture_staged(
 ) -> Result<(CliAccountProfile, bool), String> {
     let claude_paths = claude_staging_paths(dir);
     let codex_paths = codex_staging_paths(dir);
+    let grok_paths = grok_staging_paths(dir);
     let live = match provider {
         CliProvider::Claude => claude::read_live_identity(&claude_paths),
         CliProvider::Codex => codex::read_live_identity(&codex_paths),
+        CliProvider::Grok => grok::read_live_identity(&grok_paths),
     };
     let identity = live
         .identity_key
@@ -144,7 +153,14 @@ pub fn capture_staged(
         .profiles
         .iter()
         .any(|profile| profile.provider == provider && profile.identity_key == identity);
-    let profile = capture_account(base, &claude_paths, &codex_paths, provider, label)?;
+    let profile = capture_account_with_grok(
+        base,
+        &claude_paths,
+        &codex_paths,
+        Some(&grok_paths),
+        provider,
+        label,
+    )?;
     Ok((profile, updated_existing))
 }
 

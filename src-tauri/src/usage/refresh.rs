@@ -10,6 +10,7 @@ pub const CLAUDE_CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 pub const REFRESH_UA: &str = concat!("mycmux/", env!("CARGO_PKG_VERSION"));
 pub const CODEX_TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
 pub const CODEX_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
+pub const GROK_TOKEN_URL: &str = "https://auth.x.ai/oauth2/token";
 
 static CODEX_REFRESH_DISABLED: AtomicBool = AtomicBool::new(false);
 
@@ -47,6 +48,11 @@ pub struct RefreshedCodex {
     pub id_token: Option<String>,
 }
 
+pub struct RefreshedGrok {
+    pub access_token: String,
+    pub refresh_token: Option<String>,
+}
+
 impl fmt::Debug for RefreshedClaude {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -76,6 +82,16 @@ impl fmt::Debug for RefreshedCodex {
     }
 }
 
+impl fmt::Debug for RefreshedGrok {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RefreshedGrok")
+            .field("access_token", &redacted(&self.access_token))
+            .field("refresh_token", &self.refresh_token.as_deref().map(redacted))
+            .finish()
+    }
+}
+
 #[derive(Deserialize)]
 struct ClaudeRefreshResponse {
     access_token: String,
@@ -93,6 +109,13 @@ struct CodexRefreshResponse {
     refresh_token: Option<String>,
     #[serde(default)]
     id_token: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct GrokRefreshResponse {
+    access_token: String,
+    #[serde(default)]
+    refresh_token: Option<String>,
 }
 
 pub fn codex_refresh_disabled() -> bool {
@@ -167,6 +190,28 @@ pub async fn refresh_codex(
         access_token: response.access_token,
         refresh_token: response.refresh_token,
         id_token: response.id_token,
+    })
+}
+
+pub async fn refresh_grok(
+    client: &Client,
+    refresh_token: &str,
+    client_id: &str,
+) -> Result<RefreshedGrok, RefreshError> {
+    let (status, body, retry_after) = post_refresh(
+        client,
+        GROK_TOKEN_URL,
+        serde_json::json!({"grant_type":"refresh_token","refresh_token":refresh_token,"client_id":client_id}),
+        false,
+    ).await?;
+    if !status.is_success() {
+        return Err(classify_with_retry(status, &body, retry_after));
+    }
+    let response: GrokRefreshResponse =
+        serde_json::from_str(&body).map_err(|_| RefreshError::Transient(status.as_u16()))?;
+    Ok(RefreshedGrok {
+        access_token: response.access_token,
+        refresh_token: response.refresh_token,
     })
 }
 

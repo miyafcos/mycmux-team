@@ -1,21 +1,18 @@
 import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
 
+import type { DashboardDisplayState } from "../components/dashboard/dashboardModel";
 import { classifyModelForProvider } from "./aiModels";
-import type { SemanticEventEnvelope } from "./livebrief";
 import { useAiSettingsStore } from "../stores/aiSettingsStore";
-import { useLiveBriefStore } from "../stores/liveBriefStore";
 import {
   reportBatchAiContext,
-  type MachineReportCard,
   type ReportDispatchBatch,
   useReportInboxStore,
 } from "../stores/reportInboxStore";
 import { useSettingsStore } from "../stores/settingsStore";
 
 const DEBOUNCE_MS = 1_500;
-const EXCERPT_LIMIT = 8_000;
-const NEXT_ACTION_PROMPT_VERSION = "next-action-v1";
+const NEXT_ACTION_PROMPT_VERSION = "next-action-v2";
 const REPORT_SUMMARY_PROMPT_VERSION = "report-summary-v1";
 const NEXT_ACTION_PURPOSE = "next-action";
 const REPORT_SUMMARY_PURPOSE = "report-summary";
@@ -32,6 +29,15 @@ export interface BackgroundAiSuggestion {
   completionAssessment: string;
   nextActions: BackgroundAiAction[];
   failureCode?: string;
+}
+
+export interface ActiveSessionTarget {
+  sessionId: string;
+  displayState: DashboardDisplayState;
+  questionActive: boolean;
+  eventSeq: number;
+  tabLabel: string | null;
+  cwd: string | null;
 }
 
 interface BackgroundAiState {
@@ -82,6 +88,7 @@ interface PendingRequest {
 
 const pendingByTarget = new Map<string, PendingRequest>();
 let requestSequence = 1;
+let active: ActiveSessionTarget | null = null;
 
 function isEnabled(): boolean {
   return useSettingsStore.getState().replyDraftSuggestionsEnabled && useAiSettingsStore.getState().aiEnabled;
@@ -146,27 +153,11 @@ export function parseNextActionFailureCode(error: unknown): string {
   return "internal";
 }
 
-function eventText(event: SemanticEventEnvelope): string | null {
-  if (event.kind.type === "agentMessage") return event.kind.text;
-  if (event.kind.type === "userMessage") return event.kind.text;
-  if (event.kind.type === "error") return event.kind.text;
-  if (event.kind.type === "toolEnd") return event.kind.summary ?? event.kind.tool;
-  return null;
-}
-
-function conversationExcerpt(sessionId: string): string {
-  const liveBrief = useLiveBriefStore.getState();
-  const events = liveBrief.eventsBySession[sessionId] ?? liveBrief.listEventsBySession[sessionId] ?? [];
-  const lines = events.map(eventText).filter((text): text is string => Boolean(text?.trim()));
-  const joined = lines.join("\n\n");
-  return joined.length <= EXCERPT_LIMIT ? joined : joined.slice(-EXCERPT_LIMIT);
-}
-
 function normalizeAction(value: unknown): BackgroundAiAction | null {
   if (!value || typeof value !== "object") return null;
   const record = value as Record<string, unknown>;
   const label = typeof record.label === "string" ? record.label.trim().slice(0, 160) : "";
-  const prompt = typeof record.prompt === "string" ? record.prompt.trim().slice(0, 2_000) : "";
+  const prompt = typeof record.prompt === "string" ? record.prompt.trim().slice(0, 400) : "";
   return label && prompt ? { label, prompt } : null;
 }
 
@@ -191,20 +182,25 @@ function cancelPending(targetKey: string): void {
   void Promise.resolve(invoke<boolean>("abort_next_action_judge", { requestId: pending.requestId })).catch(() => {});
 }
 
-function scheduleFromStatusCard(card: MachineReportCard): void {
-  if (card.source !== "status") return;
-  const sessionId = card.ptySessionId;
+function isActiveSessionEligible(target: ActiveSessionTarget): boolean {
+  return !target.questionActive && ["done", "acknowledged", "idle", "noUpdate", "error"].includes(target.displayState);
+}
+
+function scheduleActiveSession(target: ActiveSessionTarget, { force = false }: { force?: boolean } = {}): void {
+  const { sessionId } = target;
   if (!isEnabled()) {
     cancelPending(sessionId);
     useBackgroundAiSuggestionStore.getState().clear(sessionId);
     return;
   }
-  // reportInbox does not own a logical WorkCycle yet. Keep the status source
-  // and runtime session stable as the available cycle identity; the source
-  // event remains the revision that invalidates a prior draft.
-  const cycleKey = `${card.source}:${sessionId}`;
-  const revision = card.id;
-  const requestKey = [sessionId, cycleKey, revision, NEXT_ACTION_PURPOSE, NEXT_ACTION_PROMPT_VERSION, modelHash()].join(":");
+  if (!isActiveSessionEligible(target)) {
+    cancelPending(sessionId);
+    useBackgroundAiSuggestionStore.getState().clear(sessionId);
+    return;
+  }
+  const requestKey = [sessionId, String(target.eventSeq), target.displayState, NEXT_ACTION_PROMPT_VERSION, modelHash()].join(":");
+  const existing = useBackgroundAiSuggestionStore.getState().bySession[sessionId];
+  if (!force && existing?.status === "ready" && existing.requestKey === requestKey) return;
   const current = pendingByTarget.get(sessionId);
   if (current?.requestKey === requestKey) return;
   cancelPending(sessionId);
@@ -224,14 +220,14 @@ function scheduleFromStatusCard(card: MachineReportCard): void {
       useBackgroundAiSuggestionStore.getState().set(sessionId, emptySuggestion("failed", requestKey, "provider_model_mismatch"));
       return;
     }
-    const excerpt = conversationExcerpt(sessionId);
     void invoke<unknown>("run_next_action_judge", {
       requestId,
       sessionId,
-      cycleKey,
+      cycleKey: `active:${sessionId}`,
       promptVersion: NEXT_ACTION_PROMPT_VERSION,
       purpose: NEXT_ACTION_PURPOSE,
-      conversationExcerpt: excerpt,
+      tabLabel: target.tabLabel,
+      cwd: target.cwd,
     }).then((value) => {
       if (pendingByTarget.get(sessionId)?.requestKey !== requestKey || !isEnabled()) return;
       pendingByTarget.delete(sessionId);
@@ -244,9 +240,38 @@ function scheduleFromStatusCard(card: MachineReportCard): void {
     }).catch((error) => {
       if (pendingByTarget.get(sessionId)?.requestKey !== requestKey) return;
       pendingByTarget.delete(sessionId);
-      useBackgroundAiSuggestionStore.getState().set(sessionId, emptySuggestion("failed", requestKey, parseNextActionFailureCode(error)));
+      const failureCode = parseNextActionFailureCode(error);
+      if (failureCode === "no_context") {
+        useBackgroundAiSuggestionStore.getState().clear(sessionId);
+        return;
+      }
+      useBackgroundAiSuggestionStore.getState().set(sessionId, emptySuggestion("failed", requestKey, failureCode));
     });
   }, DEBOUNCE_MS);
+}
+
+export function observeActiveSession(target: ActiveSessionTarget | null): void {
+  const previous = active;
+  if (!target || target.sessionId !== previous?.sessionId) {
+    if (previous) {
+      cancelPending(previous.sessionId);
+      if (useBackgroundAiSuggestionStore.getState().bySession[previous.sessionId]?.status === "loading") {
+        useBackgroundAiSuggestionStore.getState().clear(previous.sessionId);
+      }
+    }
+    active = target;
+    if (!target) return;
+  } else {
+    active = target;
+  }
+  scheduleActiveSession(target);
+}
+
+export function retryActiveSession(): void {
+  if (!active || !isEnabled() || !isActiveSessionEligible(active)) return;
+  cancelPending(active.sessionId);
+  useBackgroundAiSuggestionStore.getState().clear(active.sessionId);
+  scheduleActiveSession(active, { force: true });
 }
 
 function scheduleReportSummary(report: ReportDispatchBatch): void {
@@ -303,10 +328,6 @@ function scheduleReportSummary(report: ReportDispatchBatch): void {
   }, DEBOUNCE_MS);
 }
 
-let knownStatusCardIds = new Set<string>(
-  useReportInboxStore.getState().cardIds
-    .filter((id) => useReportInboxStore.getState().cardsById[id]?.source === "status"),
-);
 let knownReportSummaryRevisions = new Map<string, number>(
   Object.values(useReportInboxStore.getState().dispatchBatchesById)
     .filter((report): report is ReportDispatchBatch => report !== undefined)
@@ -314,14 +335,7 @@ let knownReportSummaryRevisions = new Map<string, number>(
 );
 
 useReportInboxStore.subscribe((state) => {
-  const statusCards = state.cardIds
-    .map((id) => state.cardsById[id])
-    .filter((card): card is MachineReportCard => card?.source === "status");
-  for (const card of statusCards) {
-    if (knownStatusCardIds.has(card.id)) continue;
-    knownStatusCardIds.add(card.id);
-    scheduleFromStatusCard(card);
-  }
+  // card.source !== "status": status cards no longer schedule next-action judges.
   for (const report of Object.values(state.dispatchBatchesById)) {
     if (!report) continue;
     const revision = report.batch.publishedSummaryRevision;
@@ -345,15 +359,12 @@ useAiSettingsStore.subscribe((state, previous) => {
 
 export function __resetBackgroundAiSchedulerForTests(): void {
   for (const targetKey of [...pendingByTarget.keys()]) cancelPending(targetKey);
-  knownStatusCardIds = new Set(
-    useReportInboxStore.getState().cardIds
-      .filter((id) => useReportInboxStore.getState().cardsById[id]?.source === "status"),
-  );
   knownReportSummaryRevisions = new Map(
     Object.values(useReportInboxStore.getState().dispatchBatchesById)
       .filter((report): report is ReportDispatchBatch => report !== undefined)
       .map((report) => [report.batch.id, report.batch.publishedSummaryRevision]),
   );
   requestSequence = 1;
+  active = null;
   useBackgroundAiSuggestionStore.getState().reset();
 }

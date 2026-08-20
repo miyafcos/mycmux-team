@@ -5,6 +5,8 @@
 //! its source, binding and PTY input revision all still match.
 
 mod adapter;
+mod excerpt;
+pub(crate) mod excerpt_ja;
 mod intervene;
 mod reducer;
 
@@ -30,6 +32,7 @@ use crate::pty::monitor::MetadataStore;
 use crate::AppState;
 
 pub use adapter::{AgentAdapter, ByteRange, SemanticEventEnvelope, SemanticEventKind};
+pub(crate) use excerpt::ContextExcerpt;
 pub use intervene::{InterventionAction, InterventionExpectation, InterventionResult};
 pub use reducer::{LiveBriefReducer, PendingInputKind, PendingOption};
 
@@ -352,6 +355,14 @@ impl LiveBriefService {
                 })
             })
             .collect()
+    }
+
+    /// Builds an excerpt from already-cached data without refreshing transcripts.
+    pub(crate) fn context_excerpt(&self, pty_session_id: &str, max_chars: usize) -> Option<ContextExcerpt> {
+        let state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let snapshot = state.sessions.get(pty_session_id)?;
+        let events = snapshot.events.iter().cloned().collect::<Vec<_>>();
+        excerpt::build_context_excerpt(&snapshot.brief, &events, max_chars)
     }
 
     /// Reads the already-cached semantic question for attention evidence.

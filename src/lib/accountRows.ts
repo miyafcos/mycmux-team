@@ -1,5 +1,6 @@
 import type { ProfileUsage, UsageRowState, WindowStat } from "./ipc";
 import { PROVIDER_ORDER } from "./cliAccounts";
+import { grokAccountStrings } from "./grokAccountStrings";
 
 export { PROVIDER_SHORT } from "./cliAccounts";
 
@@ -194,6 +195,7 @@ const USAGE_ERROR_MESSAGE: Record<string, string> = {
   "usage.error.token_expired_active":
     "使用量を取得できませんでした。CLI 側でトークンが更新されると表示されます。",
   "usage.error.codex_unsupported": "切り替えると表示されます。",
+  "usage.error.grok_unsupported": grokAccountStrings.usageUnsupported,
   "usage.error.network":
     "使用量を取得できませんでした。ネットワークを確認してください。",
   "usage.error.upstream":

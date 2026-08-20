@@ -28,6 +28,7 @@ use crate::ailog::{
 
 const FIRST_PROMPT_CHARS: usize = 300;
 const AILOG_SUMMARIZER_MARKER: &str = "[mycmux-ailog-summarizer]";
+const NEXT_ACTION_MARKER: &str = "[mycmux-next-action]";
 
 /// Human-readable rollout evidence shared with the summary pipeline.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -174,7 +175,7 @@ fn parse_rollout(text: &str, fallback_session: &str) -> (ChunkData, RolloutMater
             }
             ("event_msg", "user_message") => {
                 if let Some(message) = payload.get("message").and_then(Value::as_str) {
-                    if message.trim_start().starts_with(AILOG_SUMMARIZER_MARKER) {
+                    if is_internal_marker(message.trim_start()) {
                         session.origin = ORIGIN_AILOG_INTERNAL.to_string();
                     }
                     record_user_text(&mut session, message, &mut seen_prompts);
@@ -186,7 +187,7 @@ fn parse_rollout(text: &str, fallback_session: &str) -> (ChunkData, RolloutMater
             ("response_item", "message") => {
                 if payload.get("role").and_then(Value::as_str) == Some("user") {
                     let text = collect_text(payload.get("content"));
-                    if text.trim_start().starts_with(AILOG_SUMMARIZER_MARKER) {
+                    if is_internal_marker(text.trim_start()) {
                         session.origin = ORIGIN_AILOG_INTERNAL.to_string();
                     }
                     record_user_text(&mut session, &text, &mut seen_prompts);
@@ -247,9 +248,13 @@ fn parse_rollout(text: &str, fallback_session: &str) -> (ChunkData, RolloutMater
 
 fn record_material_user(material: &mut RolloutMaterial, seen: &mut HashSet<String>, text: &str) {
     let text = text.trim().to_string();
-    if !text.is_empty() && !text.starts_with(AILOG_SUMMARIZER_MARKER) && seen.insert(text.clone()) {
+    if !text.is_empty() && !is_internal_marker(&text) && seen.insert(text.clone()) {
         material.user.push(text);
     }
+}
+
+fn is_internal_marker(text: &str) -> bool {
+    text.starts_with(AILOG_SUMMARIZER_MARKER) || text.starts_with(NEXT_ACTION_MARKER)
 }
 
 fn record_material_error(
@@ -650,5 +655,25 @@ mod tests {
             data.sessions.get("fallback").expect("session").origin,
             ORIGIN_AILOG_INTERNAL
         );
+    }
+
+    #[test]
+    fn next_action_event_marker_is_internal_and_excluded_from_material() {
+        let (data, material) = parse_rollout(
+            r#"{"type":"event_msg","payload":{"type":"user_message","message":"[mycmux-next-action] input"}}"#,
+            "fallback",
+        );
+        assert_eq!(data.sessions["fallback"].origin, ORIGIN_AILOG_INTERNAL);
+        assert!(material.user.is_empty());
+    }
+
+    #[test]
+    fn next_action_response_marker_is_internal_and_excluded_from_material() {
+        let (data, material) = parse_rollout(
+            r#"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"text":"[mycmux-next-action] input"}]}}"#,
+            "fallback",
+        );
+        assert_eq!(data.sessions["fallback"].origin, ORIGIN_AILOG_INTERNAL);
+        assert!(material.user.is_empty());
     }
 }

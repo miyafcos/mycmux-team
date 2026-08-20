@@ -106,7 +106,7 @@ export function AccountsButton({ onOpenUsageSettings }: { onOpenUsageSettings: (
           alignItems: "center",
           gap: "var(--cmux-space-3)",
           minWidth: 0,
-          maxWidth: mode === "full" ? 520 : mode === "medium" ? 360 : 220,
+          maxWidth: mode === "full" ? 840 : mode === "medium" ? 540 : 360,
           padding: "3px var(--cmux-space-2)",
           border: 0,
           borderRadius: "var(--cmux-radius-sm)",
@@ -161,7 +161,7 @@ function AccountsButtonLabel({
   chipLabels: Map<string, string>;
 }) {
   if (mode === "extreme") {
-    return <span>{`${PROVIDER_SHORT.claude}·${PROVIDER_SHORT.codex}`}</span>;
+    return <span>{[PROVIDER_SHORT.claude, PROVIDER_SHORT.codex, PROVIDER_SHORT.grok].join("\u00b7")}</span>;
   }
 
   return (
@@ -179,9 +179,16 @@ function AccountsButtonLabel({
         chipLabels={chipLabels}
         mode={mode}
       />
-      <span aria-hidden="true">·</span>
+      <span aria-hidden="true">{String.fromCharCode(183)}</span>
       <ProviderSummary
         provider="codex"
+        rows={rows}
+        chipLabels={chipLabels}
+        mode={mode}
+      />
+      <span aria-hidden="true">{String.fromCharCode(183)}</span>
+      <ProviderSummary
+        provider="grok"
         rows={rows}
         chipLabels={chipLabels}
         mode={mode}
@@ -324,8 +331,8 @@ function useAccountsButtonMode(hasAccountChips: boolean): AccountsButtonMode {
   useEffect(() => {
     const queries = [
       window.matchMedia("(max-width: 700px)"),
-      window.matchMedia("(max-width: 900px)"),
-      window.matchMedia("(max-width: 1100px)"),
+      window.matchMedia("(max-width: 1000px)"),
+      window.matchMedia("(max-width: 1300px)"),
     ];
     const update = () => setMode(readAccountsButtonMode(hasAccountChips));
     queries.forEach((query) => query.addEventListener("change", update));
@@ -341,12 +348,12 @@ function readAccountsButtonMode(hasAccountChips: boolean): AccountsButtonMode {
   if (typeof window === "undefined") return "full";
   const flags = {
     max700: window.matchMedia("(max-width: 700px)").matches,
-    max900: window.matchMedia("(max-width: 900px)").matches,
-    max1100: window.matchMedia("(max-width: 1100px)").matches,
+    max1000: window.matchMedia("(max-width: 1000px)").matches,
+    max1300: window.matchMedia("(max-width: 1300px)").matches,
   };
   const resolved = resolveMeterMode(flags, hasAccountChips);
   if (resolved === "hidden") return "extreme";
-  if (resolved === "compact" && flags.max900) return "compact";
+  if (resolved === "compact" && flags.max1000) return "compact";
   if (resolved === "compact") return "medium";
   return "full";
 }

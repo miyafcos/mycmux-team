@@ -54,8 +54,8 @@ export interface CliAccountStoreState {
   dismissSwitchWarnings(): void;
 }
 
-const EMPTY_ACTIVE: CliAccountActivePointers = { claude: null, codex: null };
-const EMPTY_BUSY: BusyByProvider = { claude: null, codex: null };
+const EMPTY_ACTIVE: CliAccountActivePointers = { claude: null, codex: null, grok: null };
+const EMPTY_BUSY: BusyByProvider = { claude: null, codex: null, grok: null };
 
 let fetchSeq = 0;
 let mutationTail: Promise<void> = Promise.resolve();

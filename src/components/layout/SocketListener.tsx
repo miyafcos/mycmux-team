@@ -1121,6 +1121,7 @@ async function hydrateChildWindow(): Promise<void> {
     uiDensity: settings.ui_density,
     uiFontScale: settings.ui_font_scale,
   });
+  useUiStore.getState().setSidebarWidth(settings.sidebar_width ?? Number.NaN);
   useKeybindingStore.getState().hydrateOverrides(settings.keybindings ?? {});
   usePetSettingsStore.getState().hydratePetSettings({
     petDisplayMode: settings.pet_display_mode,
@@ -1248,6 +1249,7 @@ export function useWorkspacePersist() {
             uiDensity: data.settings.ui_density,
             uiFontScale: data.settings.ui_font_scale,
           });
+          useUiStore.getState().setSidebarWidth(data.settings.sidebar_width ?? Number.NaN);
           useKeybindingStore.getState().hydrateOverrides(data.settings.keybindings ?? {});
           usePetSettingsStore.getState().hydratePetSettings({
             petDisplayMode: data.settings.pet_display_mode,
@@ -1449,6 +1451,7 @@ export function useWorkspacePersist() {
           keybindings: keybindingState.overrides,
           ui_density: themeState.uiDensity,
           ui_font_scale: themeState.uiFontScale,
+          sidebar_width: uiState.sidebarWidth,
           pet_display_mode: petSettings.petDisplayMode,
           pet_new_ws_mode: petSettings.petNewWorkspaceMode,
           pet_disabled: petSettings.petDisabled,
@@ -1645,7 +1648,10 @@ export function useWorkspacePersist() {
           lastActivePaneSessionId.current = state.activePaneId;
         }
       }
-      if (state.activePaneId !== prevState.activePaneId) markDirty();
+      if (
+        state.activePaneId !== prevState.activePaneId
+        || state.sidebarWidth !== prevState.sidebarWidth
+      ) markDirty();
     });
 
     const handleBeforeUnload = () => {
@@ -1799,7 +1805,10 @@ export function useWorkspacePersist() {
       if (state.metadata !== previousState.metadata) markDirty();
     });
     const unsubUi = useUiStore.subscribe((state, previousState) => {
-      if (state.activePaneId !== previousState.activePaneId) markDirty();
+      if (
+        state.activePaneId !== previousState.activePaneId
+        || state.sidebarWidth !== previousState.sidebarWidth
+      ) markDirty();
     });
 
     // Merge-back. Closing a child window must not take its workspaces (or

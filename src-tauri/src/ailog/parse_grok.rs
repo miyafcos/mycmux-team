@@ -20,6 +20,7 @@ pub const GROK_USD_PER_TICK: f64 = 1e-10;
 
 const FIRST_PROMPT_CHARS: usize = 300;
 const AILOG_SUMMARIZER_MARKER: &str = "[mycmux-ailog-summarizer]";
+const NEXT_ACTION_MARKER: &str = "[mycmux-next-action]";
 
 /// Parse a run of complete Grok `updates.jsonl` records.
 pub fn parse_chunk(text: &str, fallback_session: &str) -> ChunkData {
@@ -306,8 +307,8 @@ fn record_tool_side_effects(
 
 fn record_user_text(session: &mut SessionChunk, text: &str) {
     let trimmed = text.trim();
-    if trimmed.is_empty() || trimmed.starts_with(AILOG_SUMMARIZER_MARKER) {
-        if trimmed.starts_with(AILOG_SUMMARIZER_MARKER) {
+    if trimmed.is_empty() || is_internal_marker(trimmed) {
+        if is_internal_marker(trimmed) {
             session.origin = crate::ailog::ORIGIN_AILOG_INTERNAL.to_string();
         }
         return;
@@ -320,6 +321,10 @@ fn record_user_text(session: &mut SessionChunk, text: &str) {
     if metrics::is_correction(trimmed) {
         session.correction_hits += 1;
     }
+}
+
+fn is_internal_marker(text: &str) -> bool {
+    text.starts_with(AILOG_SUMMARIZER_MARKER) || text.starts_with(NEXT_ACTION_MARKER)
 }
 
 fn event_timestamp(value: &Value) -> i64 {

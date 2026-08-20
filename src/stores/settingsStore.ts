@@ -39,6 +39,7 @@ interface SettingsState {
   replyDraftSuggestionsEnabled: boolean;
   /** Automatic AI naming only touches unnamed or AI-named tabs. */
   autoPaneNamingEnabled: boolean;
+  appearanceAdvancedOpen: boolean;
   setNotificationsEnabled: (v: boolean) => void;
   setNotificationSoundEnabled: (v: boolean) => void;
   setTerminalRenderer: (v: TerminalRenderer) => void;
@@ -57,6 +58,7 @@ interface SettingsState {
   setDeclaredLaunchEnabled: (v: boolean) => void;
   setReplyDraftSuggestionsEnabled: (v: boolean) => void;
   setAutoPaneNamingEnabled: (v: boolean) => void;
+  setAppearanceAdvancedOpen: (v: boolean) => void;
 }
 
 export const useSettingsStore = create<SettingsState>()(
@@ -80,6 +82,7 @@ export const useSettingsStore = create<SettingsState>()(
       declaredLaunchEnabled: false,
       replyDraftSuggestionsEnabled: false,
       autoPaneNamingEnabled: true,
+      appearanceAdvancedOpen: false,
       setNotificationsEnabled: (v) => set({ notificationsEnabled: v }),
       setNotificationSoundEnabled: (v) => set({ notificationSoundEnabled: v }),
       setTerminalRenderer: (v) => set({ terminalRenderer: v }),
@@ -98,6 +101,7 @@ export const useSettingsStore = create<SettingsState>()(
       setDeclaredLaunchEnabled: (v) => set({ declaredLaunchEnabled: v }),
       setReplyDraftSuggestionsEnabled: (v) => set({ replyDraftSuggestionsEnabled: v }),
       setAutoPaneNamingEnabled: (v) => set({ autoPaneNamingEnabled: v }),
+      setAppearanceAdvancedOpen: (v) => set({ appearanceAdvancedOpen: v }),
     }),
     {
       name: "mycmux-settings",

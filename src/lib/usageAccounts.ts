@@ -66,8 +66,8 @@ export function buildChipLabels(accounts: ProfileUsage[]): Map<string, string> {
 
 export interface MeterModeFlags {
   max700: boolean;
-  max900: boolean;
-  max1100: boolean;
+  max1000: boolean;
+  max1300: boolean;
 }
 
 /**
@@ -80,10 +80,10 @@ export function resolveMeterMode(flags: MeterModeFlags, hasAccountChips: boolean
   if (flags.max700) {
     return "hidden";
   }
-  if (flags.max900) {
+  if (flags.max1000) {
     return "compact";
   }
-  if (hasAccountChips && flags.max1100) {
+  if (hasAccountChips && flags.max1300) {
     return "compact";
   }
   return "full";

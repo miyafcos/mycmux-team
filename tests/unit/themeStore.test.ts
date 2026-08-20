@@ -127,10 +127,45 @@ describe("setTheme / restoreThemeSnapshot", () => {
 });
 
 describe("terminal font presets", () => {
+  it("keeps only the approved nine presets", () => {
+    expect(TERMINAL_FONT_PRESETS).toHaveLength(9);
+    expect(TERMINAL_FONT_PRESETS.map((preset) => preset.id)).not.toContain(["mac", "style"].join("-"));
+    expect(TERMINAL_FONT_PRESETS.map((preset) => preset.id)).not.toContain(["hg", "gothic", "m"].join("-"));
+  });
+
   it.each([
     ["udev-gothic", "'UDEV Gothic NF', 'UDEV Gothic', 'BIZ UDGothic', 'MS Gothic', monospace"],
     ["udev-gothic-35", "'UDEV Gothic 35NF', 'UDEV Gothic 35', 'BIZ UDGothic', 'MS Gothic', monospace"],
   ])("includes %s with its fallback stack", (id, value) => {
     expect(TERMINAL_FONT_PRESETS.find((preset) => preset.id === id)?.value).toBe(value);
+  });
+
+  it("migrates removed font families during hydration", () => {
+    const jetbrains = TERMINAL_FONT_PRESETS.find((preset) => preset.id === "jetbrains-ja")?.value;
+    const bizReadable = TERMINAL_FONT_PRESETS.find((preset) => preset.id === "biz-readable")?.value;
+
+    useThemeStore.getState().hydrateSettings({
+      fontFamily: "'SF Mono', 'Menlo', 'Monaco', 'Hiragino Sans', 'Hiragino Kaku Gothic ProN', 'BIZ UDGothic', 'Yu Gothic UI', monospace",
+    });
+    expect(useThemeStore.getState().fontFamily).toBe(jetbrains);
+
+    useThemeStore.getState().hydrateSettings({
+      fontFamily: "'HG\uFF7A\uFF9E\uFF7C\uFF6F\uFF78M', 'HGP\uFF7A\uFF9E\uFF7C\uFF6F\uFF78M', 'BIZ UDGothic', 'MS Gothic', monospace",
+    });
+    expect(useThemeStore.getState().fontFamily).toBe(bizReadable);
+  });
+});
+
+describe("quick size presets", () => {
+  it.each([
+    ["small", 12, 0.95, "compact"],
+    ["medium", 14, 1, "standard"],
+    ["large", 16, 1.15, "relaxed"],
+  ] as const)("applies the %s tuple atomically", (size, fontSize, uiFontScale, uiDensity) => {
+    useThemeStore.setState({ fontSize: 19, uiFontScale: 1.35, uiDensity: "relaxed" });
+
+    useThemeStore.getState().applyQuickSize(size);
+
+    expect(useThemeStore.getState()).toMatchObject({ fontSize, uiFontScale, uiDensity });
   });
 });

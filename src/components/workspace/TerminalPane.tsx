@@ -15,6 +15,7 @@ import type { AgentSessionKind, Pane, PaneTab } from "../../types";
 import { isDeclaredTab, isRestorableTab } from "../../lib/tabLifecycle";
 import PaneTabBar from "./PaneTabBar";
 import { paneDndStrings } from "./paneDndStrings";
+import { terminalPaneStrings } from "./terminalPaneStrings";
 import XTermWrapper, { evictTerminalCache, hasTerminalBuffer } from "../terminal/XTermWrapper";
 import BrowserPane from "./BrowserPane";
 import OnlinePanel from "../online/OnlinePanel";
@@ -26,7 +27,7 @@ import {
 import { useWorkspaceListStore } from "../../stores/workspaceListStore";
 import { getAgent, getDefaultAgent } from "../../lib/agents";
 import { killSession, previewArtifactUriForSessionV2, type SaveEditableArtifactResult } from "../../lib/ipc";
-import { revealPathInExplorer } from "../../lib/ipc";
+import { openPathWithDefaultApp, revealPathInExplorer } from "../../lib/ipc";
 import { isArtifactPreviewUri, isDirectoryLikeUri } from "../terminal/terminalLinkProvider";
 import { focusController } from "../../lib/focusController";
 import { useDismissOnOutside } from "../../hooks/useDismissOnOutside";
@@ -248,14 +249,6 @@ function shouldIgnorePaneClickActivationTarget(target: EventTarget | null): bool
 function getDocumentSelectionText(): string {
   const selection = window.getSelection?.();
   return selection?.toString().trim() ?? "";
-}
-
-function defaultOpenUriForLocalPath(uri: string): string {
-  const trimmed = uri.trim();
-  if (/^\/[A-Za-z]\//.test(trimmed)) {
-    return `${trimmed[1].toUpperCase()}:${trimmed.slice(2).replace(/\//g, "\\")}`;
-  }
-  return uri;
 }
 
 function getDropPreviewLabel(
@@ -632,8 +625,9 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
     const currentPane = workspace?.panes.find((candidate) => candidate.id === pane.id);
     const currentTab = currentPane?.tabs.find((tab) => tab.id === currentPane.activeTabId);
     if (!isTerminalTab(currentTab)) {
-      open(uri)
-        .catch((error) => reportOpenFailure("Open failed", error))
+      const opener = isLocalArtifactLink(uri) ? openPathWithDefaultApp(uri) : open(uri);
+      opener
+        .catch((error) => reportOpenFailure(terminalPaneStrings.openFailed, error))
         .finally(() => {
           if (pendingPreviewUriRef.current === uri) pendingPreviewUriRef.current = null;
         });
@@ -650,11 +644,11 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
           // swallow it into a dead click — fall back to the OS default app so
           // the user still sees the file open somewhere.
           console.warn("[mycmux] local artifact preview rejected, opening externally", error);
-          return open(uri).catch((openError) =>
-            reportOpenFailure("Preview failed and fallback open failed", openError),
+          return openPathWithDefaultApp(uri).catch((openError) =>
+            reportOpenFailure(terminalPaneStrings.previewFallbackFailed, openError),
           );
         }
-        return open(uri).catch((openError) => reportOpenFailure("Open failed", openError));
+        return open(uri).catch((openError) => reportOpenFailure(terminalPaneStrings.openFailed, openError));
       })
       .finally(() => {
         if (pendingPreviewUriRef.current === uri) {
@@ -678,7 +672,7 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
       setArtifactLinkPopover(null);
       setPreviewActionError(null);
       revealPathInExplorer(uri).catch((error) => {
-        reportArtifactActionFailure("Reveal failed", error);
+        reportArtifactActionFailure(terminalPaneStrings.revealFailed, error);
       });
       return;
     }
@@ -700,8 +694,8 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
     if (!artifactLinkPopover) return;
     const { uri } = artifactLinkPopover;
     setArtifactLinkPopover(null);
-    open(defaultOpenUriForLocalPath(uri)).catch((error) => {
-      reportArtifactActionFailure("Open failed", error);
+    openPathWithDefaultApp(uri).catch((error) => {
+      reportArtifactActionFailure(terminalPaneStrings.openFailed, error);
     });
   }, [artifactLinkPopover, reportArtifactActionFailure]);
 
@@ -710,7 +704,7 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
     const { uri } = artifactLinkPopover;
     setArtifactLinkPopover(null);
     revealPathInExplorer(uri).catch((error) => {
-      reportArtifactActionFailure("Reveal failed", error);
+      reportArtifactActionFailure(terminalPaneStrings.revealFailed, error);
     });
   }, [artifactLinkPopover, reportArtifactActionFailure]);
 

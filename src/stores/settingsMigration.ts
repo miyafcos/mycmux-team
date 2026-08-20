@@ -1,4 +1,5 @@
-export const SETTINGS_STORE_VERSION = 5;
+// Migration baseline: export const SETTINGS_STORE_VERSION = 5;
+export const SETTINGS_STORE_VERSION = 6;
 
 export type TerminalRenderer = "auto" | "webgl" | "dom";
 
@@ -100,6 +101,9 @@ export function migratePersistedSettings(
       migrated.dispatchStallMinutes = 45;
     }
     if (typeof migrated.dispatchWatchdogNotify !== "boolean") migrated.dispatchWatchdogNotify = true;
+  }
+  if (persistedVersion < 6 && typeof migrated.appearanceAdvancedOpen !== "boolean") {
+    migrated.appearanceAdvancedOpen = false;
   }
   return migrated;
 }

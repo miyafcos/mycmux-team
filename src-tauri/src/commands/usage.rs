@@ -3,10 +3,11 @@ use chrono::Utc;
 use crate::cli_accounts::{
     claude::{self, ClaudePaths},
     codex::{self, CodexPaths},
+    grok::{self, GrokPaths},
     CliAccountProfile, CliLiveLogin, CliProvider, SnapshotUpdate,
 };
 use crate::usage::{
-    credentials, oauth_claude, oauth_codex, refresh, AccountUsageReport, CachedWindows, Cooldown,
+    credentials, oauth_claude, oauth_codex, oauth_grok, refresh, AccountUsageReport, CachedWindows, Cooldown,
     ProfileUsage, UsageRowState, UsageState, USAGE_CACHE_TTL_MS,
 };
 use tauri::Manager;
@@ -24,6 +25,7 @@ const ERROR_RATE_LIMITED: &str = "usage.error.rate_limited";
 const ERROR_NEEDS_RELOGIN: &str = "usage.error.needs_relogin";
 const ERROR_TOKEN_EXPIRED_ACTIVE: &str = "usage.error.token_expired_active";
 const ERROR_CODEX_UNSUPPORTED: &str = "usage.error.codex_unsupported";
+const ERROR_GROK_UNSUPPORTED: &str = "usage.error.grok_unsupported";
 const ERROR_NETWORK: &str = "usage.error.network";
 const ERROR_UPSTREAM: &str = "usage.error.upstream";
 const ERROR_SNAPSHOT_UNAVAILABLE: &str = "usage.error.snapshot_unavailable";
@@ -44,6 +46,7 @@ fn provider_cooldown_key(provider: CliProvider) -> String {
     match provider {
         CliProvider::Claude => "provider:claude".to_string(),
         CliProvider::Codex => "provider:codex".to_string(),
+        CliProvider::Grok => "provider:grok".to_string(),
     }
 }
 
@@ -87,6 +90,7 @@ fn planned_rows(profiles: &[CliAccountProfile], live: &[CliLiveLogin]) -> Vec<Pl
             profile_id: match login.provider {
                 CliProvider::Claude => "live:claude",
                 CliProvider::Codex => "live:codex",
+                CliProvider::Grok => "live:grok",
             }
             .into(),
             provider: login.provider,
@@ -94,6 +98,7 @@ fn planned_rows(profiles: &[CliAccountProfile], live: &[CliLiveLogin]) -> Vec<Pl
                 match login.provider {
                     CliProvider::Claude => "Claude live login",
                     CliProvider::Codex => "Codex live login",
+                    CliProvider::Grok => "Grok live login",
                 }
                 .into()
             }),
@@ -119,6 +124,7 @@ fn provider_rank(provider: CliProvider) -> u8 {
     match provider {
         CliProvider::Claude => 0,
         CliProvider::Codex => 1,
+        CliProvider::Grok => 2,
     }
 }
 
@@ -222,6 +228,7 @@ fn snapshot_text(
             .get("credentials_text")
             .and_then(serde_json::Value::as_str),
         CliProvider::Codex => value.get("auth_text").and_then(serde_json::Value::as_str),
+        CliProvider::Grok => value.get("grok_auth_text").and_then(serde_json::Value::as_str),
     }
     .map(str::to_string)
     .ok_or_else(|| ERROR_SNAPSHOT_UNAVAILABLE.to_string())
@@ -309,6 +316,9 @@ pub async fn get_account_usage(
                 CliProvider::Codex => CodexPaths::resolve()
                     .ok()
                     .and_then(|paths| std::fs::read_to_string(paths.auth).ok()),
+                CliProvider::Grok => GrokPaths::resolve()
+                    .ok()
+                    .and_then(|paths| std::fs::read_to_string(paths.auth).ok()),
             }
             .ok_or_else(|| ERROR_SNAPSHOT_UNAVAILABLE.to_string())
         } else if row.registered {
@@ -319,6 +329,9 @@ pub async fn get_account_usage(
                     .ok()
                     .and_then(|paths| std::fs::read_to_string(paths.credentials).ok()),
                 CliProvider::Codex => CodexPaths::resolve()
+                    .ok()
+                    .and_then(|paths| std::fs::read_to_string(paths.auth).ok()),
+                CliProvider::Grok => GrokPaths::resolve()
                     .ok()
                     .and_then(|paths| std::fs::read_to_string(paths.auth).ok()),
             }
@@ -351,6 +364,18 @@ pub async fn get_account_usage(
             }
             CliProvider::Codex => {
                 fetch_codex_profile(
+                    &app,
+                    &state,
+                    &base,
+                    &row,
+                    &source,
+                    &cooldown_key,
+                    &mut fetch_count,
+                )
+                .await
+            }
+            CliProvider::Grok => {
+                fetch_grok_profile(
                     &app,
                     &state,
                     &base,
@@ -757,6 +782,80 @@ fn should_retry_codex_after_unauthorized(
         && !refresh_disabled
 }
 
+async fn fetch_grok_profile(
+    app: &tauri::AppHandle,
+    state: &UsageState,
+    base: &std::path::Path,
+    row: &PlannedRow,
+    source: &str,
+    cooldown_key: &str,
+    fetch_count: &mut usize,
+) -> FetchResult {
+    let tokens = match credentials::grok_tokens(source) {
+        Ok(tokens) => tokens,
+        Err(_) => return FetchResult { usage: profile_usage(row, UsageRowState::Error, Some(ERROR_SNAPSHOT_UNAVAILABLE), None) },
+    };
+    let mut refreshed = false;
+    let mut access_token = tokens.access_token.clone();
+    loop {
+        stagger_before_fetch(fetch_count).await;
+        match oauth_grok::fetch_with_token(&state.http, &access_token).await {
+            Ok(usage) => return successful_fetch(
+                state,
+                row,
+                None,
+                usage.seven_day,
+                None,
+                None,
+                usage.model_windows,
+                cooldown_key,
+            ).await,
+            Err((status, detail)) => {
+                if !matches!(status, Some(401) | Some(403)) || row.is_active || refreshed {
+                    return usage_fetch_failure(app, state, row, cooldown_key, status, &detail).await;
+                }
+                refreshed = true;
+                access_token = match refresh_grok_snapshot(
+                    app, state, base, row, &tokens, cooldown_key, fetch_count,
+                ).await {
+                    Ok(token) => token,
+                    Err(result) => return result,
+                };
+            }
+        }
+    }
+}
+
+async fn refresh_grok_snapshot(
+    app: &tauri::AppHandle,
+    state: &UsageState,
+    base: &std::path::Path,
+    row: &PlannedRow,
+    tokens: &credentials::GrokTokens,
+    cooldown_key: &str,
+    fetch_count: &mut usize,
+) -> Result<String, FetchResult> {
+    match live_identity_check(row) {
+        LiveIdentityCheck::Active => return Err(FetchResult { usage: profile_usage(row, UsageRowState::WaitForCli, Some(ERROR_TOKEN_EXPIRED_ACTIVE), None) }),
+        LiveIdentityCheck::Unknown => return Err(FetchResult { usage: profile_usage(row, UsageRowState::Error, Some(ERROR_SNAPSHOT_UNAVAILABLE), None) }),
+        LiveIdentityCheck::Inactive => {}
+    }
+    stagger_before_fetch(fetch_count).await;
+    let refreshed = match refresh::refresh_grok(&state.http, &tokens.refresh_token, &tokens.client_id).await {
+        Ok(value) => value,
+        Err(error) => return Err(refresh_failure(app, state, row, cooldown_key, error).await),
+    };
+    let next_access = refreshed.access_token.clone();
+    let next_refresh = refreshed.refresh_token.clone();
+    match write_snapshot(base, row, &tokens.refresh_token, move |text| {
+        credentials::grok_auth_with(text, &next_access, next_refresh.as_deref())
+    }).await {
+        SnapshotWrite::Applied => Ok(refreshed.access_token),
+        SnapshotWrite::Conflict => Err(FetchResult { usage: profile_usage(row, UsageRowState::Error, Some(ERROR_SNAPSHOT_CONFLICT), None) }),
+        SnapshotWrite::Unavailable => Err(FetchResult { usage: profile_usage(row, UsageRowState::Error, Some(ERROR_SNAPSHOT_UNAVAILABLE), None) }),
+    }
+}
+
 /// Refresh an inactive Codex snapshot and persist the new tokens before using
 /// them. Returns the fresh access token, or the FetchResult the caller should
 /// return as-is.
@@ -859,6 +958,7 @@ fn live_identity_check(row: &PlannedRow) -> LiveIdentityCheck {
             ClaudePaths::resolve().map(|paths| claude::read_live_identity(&paths))
         }
         CliProvider::Codex => CodexPaths::resolve().map(|paths| codex::read_live_identity(&paths)),
+        CliProvider::Grok => GrokPaths::resolve().map(|paths| grok::read_live_identity(&paths)),
     };
     classify_live_identity(live.as_ref().ok(), row.identity_key.as_deref())
 }
@@ -1106,7 +1206,11 @@ async fn refresh_failure(
             usage: profile_usage(
                 row,
                 UsageRowState::Unsupported,
-                Some(ERROR_CODEX_UNSUPPORTED),
+                Some(if row.provider == CliProvider::Grok {
+                    ERROR_GROK_UNSUPPORTED
+                } else {
+                    ERROR_CODEX_UNSUPPORTED
+                }),
                 None,
             ),
         },

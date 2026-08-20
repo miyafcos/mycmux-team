@@ -4,7 +4,6 @@ import { useShallow } from "zustand/react/shallow";
 import { useWorkspaceListStore, usePaneMetadataStore } from "../../stores/workspaceStore";
 import { usePaneDragStore } from "../../stores/paneDragStore";
 import { useSavepointDragStore } from "../../stores/savepointDragStore";
-import { SIDEBAR_WIDTH } from "../../lib/constants";
 import { deriveDisplayStatus } from "../../lib/notificationStatus";
 import { clampMenuPosition } from "../../lib/menuPosition";
 import { workspaceTabCount, workspaceTabPreview } from "../../lib/workspaceRow";
@@ -420,7 +419,7 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
     <div
       data-tauri-drag-region
       style={{
-        width: SIDEBAR_WIDTH,
+        width: "100%",
         height: "100%",
         display: "flex",
         flexDirection: "column",

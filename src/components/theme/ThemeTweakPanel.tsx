@@ -18,6 +18,7 @@ import { ThemeFontSettings } from "./ThemeFontSettings";
 
 interface ThemeTweakPanelProps {
   topSlot?: React.ReactNode;
+  embedded?: boolean;
   baseTheme: ThemeDefinition;
   themeTweaks: ThemeTweaks;
   changedCount: number;
@@ -308,6 +309,7 @@ function AdvancedColorRow({
 
 export function ThemeTweakPanel({
   topSlot,
+  embedded = false,
   baseTheme,
   themeTweaks,
   changedCount,
@@ -338,7 +340,7 @@ export function ThemeTweakPanel({
     changedCount === 0 && isDefaultThemeBackground(themeTweaks.background);
 
   return (
-    <div style={{ height: "100%", overflowY: "auto", padding: 18 }}>
+    <div style={embedded ? undefined : { height: "100%", overflowY: "auto", padding: 18 }}>
       {topSlot}
       <ThemeFontSettings
         fontSize={fontSize}
@@ -347,6 +349,7 @@ export function ThemeTweakPanel({
         setFontSize={setFontSize}
         setFontFamily={setFontFamily}
         setLineHeight={setLineHeight}
+        mode="controls"
       />
 
       <section style={{ marginBottom: 14 }}>

@@ -103,9 +103,8 @@ python scripts/mycmux_agent_cli.py spawn --target grok --prompt-file <spec.md>
   (`chat_history.jsonl` / `summary.json` / `events.jsonl` など。2026-08-15 実測)。
   cwd キーは `C%3A%5CUsers%5C...` 形式なので、復元判定は cwd バケットを走査して
   session-id のディレクトリを探す方式にしてある (`agent_restore.rs::grok_session_exists`)
-- **未対応 (2026-08-15 時点)**: ailog の使用量集計、livebrief の会話取り込み (ダッシュボードの
-  介入・要約)、CRSM パレットのフィルタ。grok タブはこれらの機能では見えない。
-  `chat_history.jsonl` の形式は判明したので、必要になれば livebrief アダプタは書ける
+- ailog の使用量集計、livebrief の会話取り込み (ダッシュボードの介入・要約)、およびアカウント
+  切替と週間使用量表示は対応済み。CRSM パレットのフィルタは未対応で、grok タブはここでは見えない。
 - 認証は SuperGrok / X Premium Plus のブラウザログイン (`grok login`)。未認証だと TUI が
   サインイン画面で止まる
 
@@ -131,6 +130,8 @@ python scripts/mycmux_agent_cli.py spawn --target grok --prompt-file <spec.md>
    `COMMAND_DISPLAY_KINDS` を `toEqual` で丸ごと固定。`tests/test_no_agent_kind_in_stall_path.py` の
    `FORBIDDEN` にも名前を足す (停滞判定はエージェント非依存が契約なので、`promptShape.ts` /
    `stallVerdict.ts` にはエージェント名を書かない)
+8. **アカウント/使用量**: `CliProvider` / `cli_accounts/` / `usage/` / `PROVIDER_ORDER` を同時に追加し、
+   登録・切替・使用量とログイン staging の全経路を確認する
 
 ### 完了検知の規約
 

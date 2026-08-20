@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { clampSidebarWidth, SIDEBAR_DEFAULT_WIDTH } from "../lib/constants";
 
 /**
  * UI Store - Manages UI-only state (sidebar, keybindings, zoom)
@@ -6,6 +7,7 @@ import { create } from "zustand";
  */
 interface UiState {
   sidebarCollapsed: boolean;
+  sidebarWidth: number;
   isKeybindingsOpen: boolean;
   activePaneId: string | null;
   lastActivePaneId: string | null;
@@ -13,6 +15,7 @@ interface UiState {
   zoomedPaneId: string | null;
 
   toggleSidebar: () => void;
+  setSidebarWidth: (width: number) => void;
   setIsKeybindingsOpen: (open: boolean) => void;
   setActivePaneId: (id: string | null) => void;
   bumpFocusRevision: () => void;
@@ -21,6 +24,7 @@ interface UiState {
 
 export const useUiStore = create<UiState>((set) => ({
   sidebarCollapsed: false,
+  sidebarWidth: SIDEBAR_DEFAULT_WIDTH,
   isKeybindingsOpen: false,
   activePaneId: null,
   lastActivePaneId: null,
@@ -28,6 +32,7 @@ export const useUiStore = create<UiState>((set) => ({
   zoomedPaneId: null,
 
   toggleSidebar: () => set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed })),
+  setSidebarWidth: (width) => set({ sidebarWidth: clampSidebarWidth(width) }),
   setIsKeybindingsOpen: (open) => set({ isKeybindingsOpen: open }),
   setActivePaneId: (id) =>
     set((state) => {

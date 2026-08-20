@@ -208,6 +208,10 @@ fn default_ui_density() -> String {
     "standard".to_string()
 }
 
+fn default_sidebar_width() -> u32 {
+    280
+}
+
 fn default_ai_provider() -> String {
     crate::ai::AiConfig::default()
         .provider
@@ -244,6 +248,8 @@ pub struct AppSettings {
     /// the frontend (normalizeUiDensity); stored as an opaque string here.
     #[serde(default = "default_ui_density")]
     pub ui_density: String,
+    #[serde(default = "default_sidebar_width")]
+    pub sidebar_width: u32,
     #[serde(default = "default_ui_font_scale")]
     pub ui_font_scale: f32,
     #[serde(default)]
@@ -289,6 +295,7 @@ impl Default for AppSettings {
             theme_id: "yoru-cafe".to_string(),
             theme_tweaks: default_theme_tweaks(),
             ui_density: default_ui_density(),
+            sidebar_width: default_sidebar_width(),
             ui_font_scale: default_ui_font_scale(),
             keybindings: HashMap::new(),
             ai_provider: default_ai_provider(),
@@ -661,6 +668,14 @@ mod tests {
             serde_json::from_str(r#"{"font_size":14,"theme_id":"yoru-cafe"}"#).unwrap();
 
         assert_eq!(settings.ui_density, "standard");
+    }
+
+    #[test]
+    fn app_settings_missing_sidebar_width_uses_default() {
+        let settings: AppSettings =
+            serde_json::from_str(r#"{"font_size":14,"theme_id":"yoru-cafe"}"#).unwrap();
+
+        assert_eq!(settings.sidebar_width, 280);
     }
 
     #[test]

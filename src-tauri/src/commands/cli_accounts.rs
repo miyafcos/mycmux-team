@@ -146,6 +146,7 @@ pub async fn begin_cli_login(
     let (command, args, env_key) = match provider {
         CliProvider::Claude => ("claude", Vec::new(), "CLAUDE_CONFIG_DIR"),
         CliProvider::Codex => ("codex", vec!["login".to_string()], "CODEX_HOME"),
+        CliProvider::Grok => ("grok", vec!["login".to_string()], "GROK_HOME"),
     };
     Ok(CliLoginSession {
         login_id,

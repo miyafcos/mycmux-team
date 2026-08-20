@@ -2,14 +2,26 @@
 
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import type { ComponentProps } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { dashboardStrings } from "../../src/components/dashboard/dashboardStrings";
-import { NextActionSuggestions, machineNextActions } from "../../src/components/dashboard/NextActionSuggestions";
+import { NextActionSuggestions } from "../../src/components/dashboard/NextActionSuggestions";
 import { useBackgroundAiSuggestionStore } from "../../src/lib/backgroundAiScheduler";
 
 let container: HTMLDivElement;
 let root: Root;
+
+function render(sessionId: string, overrides: Partial<ComponentProps<typeof NextActionSuggestions>> = {}) {
+  return <NextActionSuggestions
+    sessionId={sessionId}
+    displayState="done"
+    questionActive={false}
+    sending={false}
+    onConfirm={vi.fn(async () => {})}
+    {...overrides}
+  />;
+}
 
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
@@ -25,91 +37,67 @@ afterEach(async () => {
   vi.unstubAllGlobals();
 });
 
-describe("machineNextActions", () => {
-  it("maps only the established display-state vocabulary", () => {
-    expect(machineNextActions("done", false).map((action) => action.label)).toEqual(["続きをお願い", "詳しく報告"]);
-    expect(machineNextActions("noUpdate", false).map((action) => action.label)).toEqual(["再開して", "状況を教えて"]);
-    expect(machineNextActions("idle", false).map((action) => action.label)).toEqual(["続けて", "ゴールと残りは？"]);
-    expect(machineNextActions("running", false)).toEqual([]);
-    expect(machineNextActions("needsHuman", true)).toEqual([]);
+describe("NextActionSuggestions", () => {
+  it("renders nothing when there is no suggestion", async () => {
+    await act(async () => root.render(render("s-empty")));
+    expect(container.querySelector("[data-next-action-suggestions]")).toBeNull();
   });
 
-  it("suppresses both layers while QuestionCard owns an answer", async () => {
+  it("renders the loading line", async () => {
+    useBackgroundAiSuggestionStore.getState().set("s-loading", {
+      status: "loading", requestKey: "loading-key", oneLine: "", completionAssessment: "", nextActions: [],
+    });
+    await act(async () => root.render(render("s-loading")));
+    expect(container.querySelector("[data-next-action-status]")?.getAttribute("data-next-action-status")).toBe("loading");
+    expect(container.textContent).toContain(dashboardStrings.nextActionLoading);
+  });
+
+  it("renders three ready chips, highlights the first, and confirms the selected action", async () => {
+    const actions = [
+      { label: "First action", prompt: "First prompt" },
+      { label: "Second action", prompt: "Second prompt" },
+      { label: "Third action", prompt: "Third prompt" },
+      { label: "Fourth action", prompt: "Fourth prompt" },
+    ];
+    const onConfirm = vi.fn(async () => {});
+    useBackgroundAiSuggestionStore.getState().set("s-ready", {
+      status: "ready",
+      requestKey: "ready-key",
+      oneLine: "Ready summary",
+      completionAssessment: "Ready assessment",
+      nextActions: actions,
+    });
+    await act(async () => root.render(render("s-ready", { onConfirm })));
+    const chips = container.querySelectorAll<HTMLButtonElement>(".cmux-dashboard-next-action");
+    expect(chips).toHaveLength(3);
+    expect(chips[0]?.dataset.nextActionRecommended).toBe("true");
+    expect(chips[0]?.querySelector(".cmux-dashboard-next-action-star")).not.toBeNull();
+    await act(async () => chips[1]?.click());
+    expect(container.querySelector("[data-next-action-confirm]")?.textContent).toContain(actions[1]?.prompt);
+    const confirm = [...container.querySelectorAll<HTMLButtonElement>("[data-next-action-confirm] button")]
+      .find((button) => button.textContent === dashboardStrings.nextActionSendConfirm);
+    await act(async () => confirm?.click());
+    expect(onConfirm).toHaveBeenCalledWith(actions[1]);
+  });
+
+  it("shows the failed reason and a retry button", async () => {
+    useBackgroundAiSuggestionStore.getState().set("s-failed", {
+      status: "failed", requestKey: "failed-key", oneLine: "", completionAssessment: "", nextActions: [], failureCode: "cli_not_found",
+    });
+    await act(async () => root.render(render("s-failed")));
+    expect(container.textContent).toContain(dashboardStrings.nextActionFailed(dashboardStrings.aiSuggestionFailureReason("cli_not_found")));
+    expect(container.querySelector<HTMLButtonElement>(`button[aria-label="${dashboardStrings.nextActionRetry}"]`)).not.toBeNull();
+  });
+
+  it("renders nothing while a question is active", async () => {
     useBackgroundAiSuggestionStore.getState().set("s-question", {
       status: "ready",
-      requestKey: "key",
-      oneLine: "AI candidate",
-      completionAssessment: "waiting",
-      nextActions: [{ label: "AI action", prompt: "do it" }],
+      requestKey: "question-key",
+      oneLine: "Ready summary",
+      completionAssessment: "Ready assessment",
+      nextActions: [{ label: "Action", prompt: "Prompt" }],
     });
-    await act(async () => {
-      root.render(<NextActionSuggestions
-        sessionId="s-question"
-        displayState="needsHuman"
-        questionActive
-        sending={false}
-        onConfirm={vi.fn(async () => {})}
-      />);
-    });
+    await act(async () => root.render(render("s-question", { questionActive: true, displayState: "needsHuman" })));
     expect(container.querySelector("[data-next-action-suggestions]")).toBeNull();
-  });
-
-  it("names the failure instead of hiding the section when the AI leg failed", async () => {
-    useBackgroundAiSuggestionStore.getState().set("s-failed", {
-      status: "failed",
-      requestKey: "key",
-      oneLine: "",
-      completionAssessment: "",
-      nextActions: [],
-      failureCode: "provider_model_mismatch",
-    });
-    await act(async () => {
-      root.render(<NextActionSuggestions
-        sessionId="s-failed"
-        displayState="running"
-        questionActive={false}
-        sending={false}
-        onConfirm={vi.fn(async () => {})}
-      />);
-    });
-    expect(container.querySelector("[data-next-action-suggestions]")).not.toBeNull();
-    const chip = container.querySelector("[data-next-action-ai-failed]");
-    expect(chip?.textContent).toContain(dashboardStrings.aiSuggestionFailed);
-    expect(chip?.textContent).toContain(dashboardStrings.aiSuggestionFailureReason("provider_model_mismatch"));
-  });
-
-  it("still hides the section when there is nothing to show at all", async () => {
-    await act(async () => {
-      root.render(<NextActionSuggestions
-        sessionId="s-running"
-        displayState="running"
-        questionActive={false}
-        sending={false}
-        onConfirm={vi.fn(async () => {})}
-      />);
-    });
-    expect(container.querySelector("[data-next-action-suggestions]")).toBeNull();
-  });
-
-  it("shows the complete prompt before it invokes the existing composer callback", async () => {
-    const onConfirm = vi.fn(async () => {});
-    await act(async () => {
-      root.render(<NextActionSuggestions
-        sessionId="s-idle"
-        displayState="idle"
-        questionActive={false}
-        sending={false}
-        onConfirm={onConfirm}
-      />);
-    });
-    const action = [...container.querySelectorAll<HTMLButtonElement>(".cmux-dashboard-next-action")]
-      .find((button) => button.textContent === "続けて");
-    await act(async () => action?.click());
-    expect(container.querySelector("[data-next-action-confirm]")?.textContent).toContain("続けて");
-    expect(onConfirm).not.toHaveBeenCalled();
-    const confirm = [...container.querySelectorAll<HTMLButtonElement>("[data-next-action-confirm] button")]
-      .find((button) => button.textContent === "この内容を送る");
-    await act(async () => confirm?.click());
-    expect(onConfirm).toHaveBeenCalledWith(expect.objectContaining({ source: "machine", prompt: "続けて" }));
   });
 });

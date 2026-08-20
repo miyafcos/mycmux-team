@@ -32,7 +32,7 @@ describe("titlebar button", () => {
   it("keeps a compact form at narrow widths and exposes the warning reason", () => {
     expect(buttonSource).not.toContain('return "hidden"');
     expect(buttonSource).toContain('return "compact"');
-    expect(buttonSource).toContain("${PROVIDER_SHORT.claude}·${PROVIDER_SHORT.codex}");
+    expect(buttonSource).toContain("PROVIDER_SHORT.grok");
     expect(buttonSource).toContain('role="img"');
     expect(buttonSource).toContain("aria-label={attention}");
   });
@@ -51,7 +51,7 @@ describe("titlebar button", () => {
       'type AccountsButtonMode = "full" | "medium" | "compact" | "extreme"',
     );
     expect(buttonSource).toContain('if (resolved === "hidden") return "extreme";');
-    expect(buttonSource).toContain('if (resolved === "compact" && flags.max900) return "compact";');
+    expect(buttonSource).toContain('if (resolved === "compact" && flags.max1000) return "compact";');
     expect(buttonSource).toContain('if (resolved === "compact") return "medium";');
     expect(buttonSource).toContain('return "full";');
     expect(buttonSource).toContain("resolveMeterMode(flags, hasAccountChips)");

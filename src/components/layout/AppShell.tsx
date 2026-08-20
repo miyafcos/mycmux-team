@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useEffect, useRef, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import type { GridTemplateId, ThemeBackgroundSettings } from "../../types";
 import {
@@ -11,7 +11,8 @@ import { killSession, removeWorkspaceScrollback } from "../../lib/ipc";
 import { isMainWindow } from "../../lib/windowContext";
 import { evictTerminalCache } from "../terminal/XTermWrapper";
 import { attachGlobalFontZoom } from "../terminal/terminalMouseInputFilter";
-import { SIDEBAR_WIDTH } from "../../lib/constants";
+import { SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH } from "../../lib/constants";
+import { sidebarStrings } from "../../lib/sidebarStrings";
 import TabBar from "./TabBar";
 import TitleBar from "./TitleBar";
 import WorkspaceView from "../workspace/WorkspaceView";
@@ -381,6 +382,96 @@ interface AppShellProps {
   uiVariant?: "default" | "cmux";
 }
 
+interface SidebarResizerProps {
+  sidebarCollapsed: boolean;
+  sidebarWidth: number;
+  setSidebarWidth: (width: number) => void;
+  onResizingChange: (resizing: boolean) => void;
+}
+
+export function SidebarResizer({
+  sidebarCollapsed,
+  sidebarWidth,
+  setSidebarWidth,
+  onResizingChange,
+}: SidebarResizerProps) {
+  const resizeRef = useRef<{ pointerId: number; startX: number; startWidth: number } | null>(null);
+  const [resizing, setResizing] = useState(false);
+  const finishResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (resizeRef.current?.pointerId !== event.pointerId) return;
+    resizeRef.current = null;
+    setResizing(false);
+    onResizingChange(false);
+    try {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    } catch {
+      // The browser can release capture before pointerup/cancel is delivered.
+    }
+  }, [onResizingChange]);
+  const beginResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0 || !event.isPrimary) return;
+    event.preventDefault();
+    resizeRef.current = { pointerId: event.pointerId, startX: event.clientX, startWidth: sidebarWidth };
+    setResizing(true);
+    onResizingChange(true);
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    } catch {
+      // Pointer capture is unavailable in a few embedded WebViews.
+    }
+  }, [onResizingChange, sidebarWidth]);
+  const moveResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = resizeRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    setSidebarWidth(drag.startWidth + (event.clientX - drag.startX));
+  }, [setSidebarWidth]);
+  const resizeByKeyboard = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
+    const step = event.shiftKey ? 32 : 16;
+    const next = event.key === "ArrowLeft" ? sidebarWidth - step
+      : event.key === "ArrowRight" ? sidebarWidth + step
+        : event.key === "Home" ? SIDEBAR_MIN_WIDTH
+          : event.key === "End" ? SIDEBAR_MAX_WIDTH
+            : null;
+    if (next === null) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setSidebarWidth(next);
+  }, [setSidebarWidth, sidebarWidth]);
+
+  if (sidebarCollapsed) return null;
+
+  return (
+    <div
+      data-sidebar-resizer="true"
+      className={resizing ? "is-resizing" : undefined}
+      role="separator"
+      tabIndex={0}
+      aria-label={sidebarStrings.resizerLabel}
+      aria-orientation="vertical"
+      aria-valuemin={SIDEBAR_MIN_WIDTH}
+      aria-valuemax={SIDEBAR_MAX_WIDTH}
+      aria-valuenow={sidebarWidth}
+      style={{
+        position: "relative",
+        zIndex: 1,
+        width: 8,
+        minHeight: 0,
+        flex: "0 0 8px",
+        borderLeft: `1px solid ${resizing ? "var(--cmux-accent)" : "var(--cmux-border-hairline)"}`,
+        cursor: "col-resize",
+        touchAction: "none",
+        outline: "none",
+      }}
+      onPointerDown={beginResize}
+      onPointerMove={moveResize}
+      onPointerUp={finishResize}
+      onPointerCancel={finishResize}
+      onLostPointerCapture={finishResize}
+      onKeyDown={resizeByKeyboard}
+    />
+  );
+}
+
 export default function AppShell({ uiVariant = "default" }: AppShellProps) {
   const [showSetup, setShowSetup] = useState(false);
   // Sticky once this session has held a workspace — drives first-run vs
@@ -393,6 +484,9 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
   const closeDashboard = useDashboardViewStore((s) => s.close);
   const activeId = useWorkspaceListStore((s) => s.activeWorkspaceId);
   const sidebarCollapsed = useUiStore((s) => s.sidebarCollapsed);
+  const sidebarWidth = useUiStore((s) => s.sidebarWidth);
+  const setSidebarWidth = useUiStore((s) => s.setSidebarWidth);
+  const [isResizingSidebar, setIsResizingSidebar] = useState(false);
   const setActiveWorkspace = useWorkspaceListStore((s) => s.setActiveWorkspace);
   const removeWorkspace = useWorkspaceListStore((s) => s.removeWorkspace);
   const toggleSidebar = useUiStore((s) => s.toggleSidebar);
@@ -1086,7 +1180,7 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
   return (
     <div
       className={uiVariant === "cmux" ? "ui-cmux" : undefined}
-      data-cmux-zoom-active={zoomedPaneId ? "true" : undefined}
+      data-cmux-zoom-active={zoomedPaneId && !dashboardOpen ? "true" : undefined}
       style={{
         ...themeVars,
         width: "100vw",
@@ -1131,10 +1225,10 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
         <div
           data-cmux-hide-during-pane-zoom={zoomedPaneId ? "true" : undefined}
           style={{
-            width: sidebarCollapsed ? 0 : SIDEBAR_WIDTH,
+            width: sidebarCollapsed ? 0 : sidebarWidth,
             overflow: "hidden",
             flexShrink: 0,
-            transition: "width 0.2s ease",
+            transition: isResizingSidebar ? "none" : "width 0.2s ease",
           }}
         >
           <ErrorBoundary fallback={chromeCrashFallback("ワークスペース一覧")}>
@@ -1145,6 +1239,12 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
             />
           </ErrorBoundary>
         </div>
+        <SidebarResizer
+          sidebarCollapsed={sidebarCollapsed}
+          sidebarWidth={sidebarWidth}
+          setSidebarWidth={setSidebarWidth}
+          onResizingChange={setIsResizingSidebar}
+        />
 
         {/* Main content — WorkspaceView always mounted to keep terminals alive */}
         <div

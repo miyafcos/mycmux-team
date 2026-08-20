@@ -18,6 +18,7 @@ import {
   resizeSession,
   onPtyExit,
   getTerminalConfig,
+  openPathWithDefaultApp,
 } from "../../lib/ipc";
 import type { FrontendDataBatch } from "../../lib/ipc";
 import {
@@ -253,8 +254,8 @@ function resolveTerminalTheme(theme: ITheme, opacity: number, mediaActive: boole
 // foreground against a phantom black background and washes out dark text.
 const TERMINAL_MIN_CONTRAST = 7;
 
-function minContrastFor(mediaActive: boolean): number {
-  return mediaActive ? 1 : TERMINAL_MIN_CONTRAST;
+function minContrastFor(mediaActive: boolean, isLight: boolean): number {
+  return mediaActive ? 1 : (isLight ? 4.5 : TERMINAL_MIN_CONTRAST);
 }
 
 function resolveTerminalBackgroundState(background: ThemeBackgroundSettings): {
@@ -766,7 +767,7 @@ export default memo(function XTermWrapper({
     if (!termRef.current) return;
     bumpPaintStat("settings", sessionId);
     termRef.current.options.theme = resolveTerminalTheme(storeTheme.terminal, terminalOpacity, mediaBackgroundActive);
-    termRef.current.options.minimumContrastRatio = minContrastFor(mediaBackgroundActive);
+    termRef.current.options.minimumContrastRatio = minContrastFor(mediaBackgroundActive, storeTheme.colorScheme === "light");
     termRef.current.options.fontSize = storeFontSize;
     termRef.current.options.fontFamily = storeFontFamily;
     termRef.current.options.lineHeight = storeLineHeight;
@@ -2133,7 +2134,7 @@ export default memo(function XTermWrapper({
         } else if (onUrlClick) {
           onUrlClick(uri);
         } else {
-          open(uri).catch(err => console.error("Failed to open local artifact:", err));
+          openPathWithDefaultApp(uri).catch(err => console.error("Failed to open local artifact:", err));
         }
       }, () => usePaneMetadataStore.getState().metadata[sessionId]?.cwd ?? launchParamsRef.current.cwd);
     };
@@ -2236,7 +2237,7 @@ export default memo(function XTermWrapper({
       searchAddonRef.current = cached.searchAddon;
       lastSynchronizedScrollbackEnd = cached.scrollbackEnd ?? 0;
       cached.term.options.theme = resolveTerminalTheme(storeTheme.terminal, terminalOpacity, mediaBackgroundActive);
-      cached.term.options.minimumContrastRatio = minContrastFor(mediaBackgroundActive);
+      cached.term.options.minimumContrastRatio = minContrastFor(mediaBackgroundActive, storeTheme.colorScheme === "light");
       cached.term.options.fontSize = storeFontSize;
       cached.term.options.fontFamily = storeFontFamily;
       cached.term.options.lineHeight = storeLineHeight;
@@ -2334,7 +2335,7 @@ export default memo(function XTermWrapper({
         scrollback: 5000,
         smoothScrollDuration: 0,
         rightClickSelectsWord: true,
-        minimumContrastRatio: minContrastFor(mediaBackgroundActive),
+        minimumContrastRatio: minContrastFor(mediaBackgroundActive, storeTheme.colorScheme === "light"),
         ...(windowsBuildNumber !== undefined
           ? { windowsPty: { backend: "conpty", buildNumber: windowsBuildNumber } }
           : {}),

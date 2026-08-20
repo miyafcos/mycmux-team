@@ -47,7 +47,7 @@ function deferred<T>() {
 }
 
 const profile: CliAccountProfile = { id: "claude-a", provider: "claude", label: "A", email: "a@example.test", identity_key: "a", plan: "pro", org_name: null, captured_at: "2026-01-01T00:00:00Z", last_switched_at: null, needs_relogin: false };
-const snapshot = (profiles: CliAccountProfile[]): CliAccountsSnapshot => ({ profiles, live: [{ provider: "claude", present: true, email: profile.email, identity_key: profile.identity_key, plan: profile.plan, org_name: null, matched_profile_id: profile.id, error: null }, { provider: "codex", present: false, email: null, identity_key: null, plan: null, org_name: null, matched_profile_id: null, error: null }], active: { claude: profile.id, codex: null }, orphans: [], backup_root: "backups", generated_at: "2026-01-01T00:00:00Z" });
+const snapshot = (profiles: CliAccountProfile[]): CliAccountsSnapshot => ({ profiles, live: [{ provider: "claude", present: true, email: profile.email, identity_key: profile.identity_key, plan: profile.plan, org_name: null, matched_profile_id: profile.id, error: null }, { provider: "codex", present: false, email: null, identity_key: null, plan: null, org_name: null, matched_profile_id: null, error: null }, { provider: "grok", present: false, email: null, identity_key: null, plan: null, org_name: null, matched_profile_id: null, error: null }], active: { claude: profile.id, codex: null, grok: null }, orphans: [], backup_root: "backups", generated_at: "2026-01-01T00:00:00Z" });
 const switchResult: CliSwitchResult = { profile, wrote_back_to: null, backup_dir: "backup", warnings: [] };
 
 describe("cliAccountStore", () => {
@@ -61,7 +61,7 @@ describe("cliAccountStore", () => {
     mockedList.mockResolvedValue(snapshot([profile]));
     await useCliAccountStore.getState().fetch();
     expect(useCliAccountStore.getState().profiles).toEqual([profile]);
-    expect(useCliAccountStore.getState().live).toHaveLength(2);
+    expect(useCliAccountStore.getState().live).toHaveLength(3);
     expect(useCliAccountStore.getState().fetchError).toBeNull();
     expect(useCliAccountStore.getState().active.claude).toBe(profile.id);
   });
@@ -182,7 +182,7 @@ describe("cliAccountStore", () => {
 
     const first = useCliAccountStore.getState().switchTo("claude", profile.id);
     const second = useCliAccountStore.getState().switchTo("codex", codexProfile.id);
-    expect(useCliAccountStore.getState().busyByProvider).toEqual({ claude: profile.id, codex: codexProfile.id });
+    expect(useCliAccountStore.getState().busyByProvider).toEqual({ claude: profile.id, codex: codexProfile.id, grok: null });
     await Promise.resolve();
     expect(mockedSwitch).toHaveBeenCalledTimes(1);
 
@@ -190,6 +190,6 @@ describe("cliAccountStore", () => {
     await first;
     await second;
     expect(mockedSwitch).toHaveBeenCalledTimes(2);
-    expect(useCliAccountStore.getState().busyByProvider).toEqual({ claude: null, codex: null });
+    expect(useCliAccountStore.getState().busyByProvider).toEqual({ claude: null, codex: null, grok: null });
   });
 });

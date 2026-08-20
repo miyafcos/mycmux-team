@@ -115,7 +115,7 @@ export function AiTab() {
       <section aria-labelledby="cmux-reply-draft-heading" data-ai-reply-draft-placeholder>
         <div id="cmux-reply-draft-heading" style={sectionHeadingStyle}>返信案の先回り</div>
         <div style={hintStyle}>
-          機械的な次の一手は常に表示し、完了や待機などの新しい状態イベントを受けた時だけ、AI が具体的な候補を準備します。
+          選択中のチャットだけが対象です。チャットを選んだ時と、そのチャットのターンが終わった時 (完了・待機・停滞・エラー) に、AI が会話の記録を読んで具体的な次の一手を3つ用意します。会話が変わっていなければ再利用し、開いただけでは実行しません。
         </div>
         <label style={{ ...checkboxLabelStyleFor(enabled), marginTop: 8 }}>
           <input

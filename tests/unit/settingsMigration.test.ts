@@ -124,9 +124,18 @@ describe("settings persistence migration", () => {
     });
   });
 
-  it.each([5, 6])("does not migrate settings at version %i", (version) => {
+  it.each([6, 7])("does not migrate settings at version %i", (version) => {
     const persisted = { terminalRenderer: "dom", notificationsEnabled: true };
     expect(migratePersistedSettings(persisted, version)).toBe(persisted);
+  });
+
+  it("adds the closed appearance disclosure default in version 6", () => {
+    expect(migratePersistedSettings({ appearanceAdvancedOpen: "invalid" }, 5)).toMatchObject({
+      appearanceAdvancedOpen: false,
+    });
+    expect(migratePersistedSettings({ appearanceAdvancedOpen: true }, 5)).toMatchObject({
+      appearanceAdvancedOpen: true,
+    });
   });
 
   it("adds valid watchdog defaults in version 5", () => {

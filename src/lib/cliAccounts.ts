@@ -1,18 +1,21 @@
 import { CLI_LOGIN_TIMEOUT_MS, type CliAccountProfile, type CliLiveLogin, type CliLoginMode, type CliProvider } from "./ipc";
 import type { AgentSessionKind } from "../types";
+import { grokAccountStrings } from "./grokAccountStrings";
 
 export const CLI_ACCOUNT_POLL_INTERVAL_MS = 60_000;
 
-export const PROVIDER_ORDER: readonly CliProvider[] = ["claude", "codex"];
+export const PROVIDER_ORDER: readonly CliProvider[] = ["claude", "codex", "grok"];
 
 export const PROVIDER_SHORT: Record<CliProvider, string> = {
   claude: "CC",
   codex: "CX",
+  grok: "GK",
 };
 
 export const PROVIDER_TITLE: Record<CliProvider, string> = {
   claude: "Claude Code",
   codex: "Codex",
+  grok: "Grok Build",
 };
 
 const CLI_ACCOUNT_MESSAGES: Record<string, string> = {
@@ -58,6 +61,9 @@ const CLI_ACCOUNT_MESSAGES: Record<string, string> = {
     "原因: Codexのログイン情報を読み取れませんでした。次にすること: Codexでログイン状態を確認してください。",
   "cli_account.error.codex_identity_invalid":
     "原因: Codexのログイン情報を解析できませんでした。次にすること: Codexで再ログインしてください。",
+  "cli_account.error.grok_identity_unreadable": grokAccountStrings.identityUnreadable,
+  "cli_account.error.grok_identity_invalid": grokAccountStrings.identityInvalid,
+  "cli_account.error.grok_auth_lock_timeout": grokAccountStrings.authLockTimeout,
   "cli_account.error.login_staging_failed":
     "原因: ログイン用の一時フォルダーを作成できませんでした。次にすること: 保存先の空き容量とアクセス権を確認して、もう一度お試しください。",
   "cli_account.error.login_identity_mismatch":
@@ -197,7 +203,9 @@ export interface AgentPaneMetadataLike {
 
 function paneMatchesProvider(meta: AgentPaneMetadataLike, provider: CliProvider): boolean {
   if (!meta.agentKind || meta.processIsShell !== false) return false;
-  return meta.agentKind === provider || meta.agentKind === "claude-codex";
+  return meta.agentKind === provider || (
+    meta.agentKind === "claude-codex" && (provider === "claude" || provider === "codex")
+  );
 }
 
 export function runningAgentPaneDetails(
@@ -225,12 +233,13 @@ export function runningAgentPaneDetails(
 export function runningAgentCounts(
   metadata: Record<string, AgentPaneMetadataLike>,
 ): Record<CliProvider, number> {
-  const counts: Record<CliProvider, number> = { claude: 0, codex: 0 };
+  const counts: Record<CliProvider, number> = { claude: 0, codex: 0, grok: 0 };
   for (const meta of Object.values(metadata)) {
     if (!meta.agentKind || meta.processIsShell !== false) continue;
     if (meta.agentKind === "claude") counts.claude += 1;
     else if (meta.agentKind === "codex") counts.codex += 1;
-    else {
+    else if (meta.agentKind === "grok") counts.grok += 1;
+    else if (meta.agentKind === "claude-codex") {
       counts.claude += 1;
       counts.codex += 1;
     }

@@ -8,6 +8,7 @@ import {
   orderAccountRows,
   rowMessage,
 } from "../../../lib/accountRows";
+import { grokAccountStrings } from "../../../lib/grokAccountStrings";
 import { useUsageStore } from "../../../stores/usageStore";
 
 // The panel in the titlebar answers "how much is left"; this tab is where the
@@ -16,6 +17,7 @@ export function UsageTab() {
   const accounts = useUsageStore((state) => state.accounts);
   const lastError = useUsageStore((state) => state.lastError);
   const rows = useMemo(() => orderAccountRows(accounts), [accounts]);
+  const hasGrokRows = rows.some((row) => row.provider === "grok");
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
@@ -47,7 +49,7 @@ export function UsageTab() {
               <tr style={{ background: "var(--cmux-hover)" }}>
                 <TableHeader>アカウント</TableHeader>
                 <TableHeader>5h</TableHeader>
-                <TableHeader>7d</TableHeader>
+                <TableHeader>{hasGrokRows ? grokAccountStrings.weeklyWindowLabel : "7d"}</TableHeader>
                 <TableHeader>7d Sonnet</TableHeader>
                 <TableHeader>7d Opus</TableHeader>
                 <TableHeader>取得時刻</TableHeader>
@@ -123,7 +125,7 @@ function UsageDetailRow({ row }: { row: ProfileUsage }) {
             <div style={{ display: "flex", flexWrap: "wrap", gap: "6px 14px" }}>
               {row.model_windows.map((named) => (
                 <span key={named.key} style={{ whiteSpace: "nowrap" }}>
-                  {named.key} {formatPct(named.window.pct)}
+                  {row.provider === "grok" ? `${grokAccountStrings.breakdownLabel} ${named.key}` : named.key} {formatPct(named.window.pct)}
                   {named.window.resets_at && (
                     <span> ・リセット {formatUpdatedAt(named.window.resets_at)}</span>
                   )}
@@ -162,7 +164,7 @@ function PctCell({ stat }: { stat: WindowStat | null }) {
   );
 }
 
-function TableHeader({ children }: { children: string }) {
+function TableHeader({ children }: { children: React.ReactNode }) {
   return (
     <th style={{ padding: "7px 8px", textAlign: "left", fontWeight: 700, whiteSpace: "nowrap" }}>
       {children}
