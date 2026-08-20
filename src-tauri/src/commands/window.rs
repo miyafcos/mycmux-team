@@ -305,6 +305,11 @@ pub fn quit_app(
     state: State<'_, AppState>,
     remote_sessions: State<'_, Arc<crate::remote::session::RemoteSessionManager>>,
 ) -> Result<(), String> {
+    if let Some(dir) = state.scrollback_dir.get() {
+        if let Err(error) = state.session_manager.flush_all_scrollbacks(dir) {
+            crate::diag_warn!("scrollback", "shutdown flush failed: {error}");
+        }
+    }
     state.session_manager.kill_all();
     remote_sessions.kill_all();
     app.exit(0);

@@ -214,6 +214,7 @@ mod tests {
                 "tab-session".to_string(),
             )])),
             terminal_snapshot: None,
+            turn_marks: None,
             lifecycle: None,
             origin: None,
             declared_prompt: None,

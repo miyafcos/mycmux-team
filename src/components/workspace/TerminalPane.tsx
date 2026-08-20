@@ -901,7 +901,7 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
                 onUrlClick={handleUrlClick}
                 onArtifactLinkClick={handleArtifactLinkClick}
                 cwd={activeTab.cwd ?? paneCwd}
-                initialReplay={savedAgentSession ? undefined : activeTab.terminalSnapshot}
+                initialReplay={activeTab.terminalSnapshot}
                 launchEnv={launchEnv}
                 restoreFallbackSessionIds={restoreFallbackSessionIds}
               />

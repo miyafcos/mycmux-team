@@ -37,11 +37,13 @@ vi.mock("../../src/components/terminal/XTermWrapper", async () => {
     cwd?: string;
     launchEnv?: Record<string, string>;
     restoreFallbackSessionIds?: string[];
+    initialReplay?: string[];
+    agentKind?: string;
   };
   const MockXTermWrapper = (props: MockProps) => {
     React.useEffect(() => {
       mocks.xtermMount(props);
-    }, [props.args, props.command, props.cwd, props.launchEnv, props.restoreFallbackSessionIds, props.sessionId]);
+    }, [props.agentKind, props.args, props.command, props.cwd, props.initialReplay, props.launchEnv, props.restoreFallbackSessionIds, props.sessionId]);
     return <div data-xterm-session={props.sessionId} />;
   };
   return {
@@ -208,5 +210,25 @@ describe("TerminalPane declared restore boundary", () => {
       undefined,
       "must-not-enter-shell-argv",
     )).toEqual(["-NoLogo"]);
+  });
+
+  it("passes a saved agent snapshot to XTermWrapper for its restore policy", async () => {
+    const agentTab: PaneTab = {
+      id: "saved-agent",
+      sessionId: "saved-agent-session",
+      agentId: "claude-code",
+      type: "terminal",
+      agentKind: "claude",
+      agentSessionId: "saved-agent-session",
+      terminalSnapshot: ["saved plain snapshot"],
+    };
+
+    await renderPanes(workspaceWith([paneWith(agentTab)]));
+
+    expect(mocks.xtermMount).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: "saved-agent-session",
+      agentKind: "claude",
+      initialReplay: ["saved plain snapshot"],
+    }));
   });
 });

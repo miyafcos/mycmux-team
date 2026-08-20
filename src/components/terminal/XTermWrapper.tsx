@@ -12,6 +12,8 @@ import {
   createSession,
   ackFrontendData,
   getSessionScrollback,
+  hasPersistedScrollback,
+  isSessionAlive,
   setFrontendVisible,
   resizeSession,
   onPtyExit,
@@ -36,6 +38,7 @@ import {
   noteRestoreBoundaryTurn,
   noteTurnInput,
   reanchorTurnMarks,
+  seedTurnMarkSnapshots,
   snapshotTurnMarksForReset,
   TURN_MARKS_EVENT,
 } from "./terminalTurnMarkers";
@@ -70,6 +73,10 @@ import {
   terminalScrollbackResyncNeeded,
   terminalSizeCache,
 } from "./terminalCache";
+import {
+  resolveScrollbackRestorePolicy,
+  shouldFinalizePersistedInitialReplay,
+} from "./scrollbackRestorePolicy";
 import {
   clearActiveTerminalNotification,
   focusTerminalIfNeeded,
@@ -852,6 +859,7 @@ export default memo(function XTermWrapper({
     let startupSettleTimeout: ReturnType<typeof setTimeout> | null = null;
     let startupSettled = false;
     let sessionStarted = false;
+    let coldPersistedRestore = false;
     let lastLogLine = "";
     let approvalAbsentStreak = 0;
     let rateLimitAbsentStreak = 0;
@@ -1746,7 +1754,24 @@ export default memo(function XTermWrapper({
           stripTerminalMouseModeControlSequences(replayText),
           replacesVisibleBuffer ? 8000 : 2000,
         );
+        const finalizePersistedReplay = shouldFinalizePersistedInitialReplay(
+          coldPersistedRestore,
+          recoveryPlan.action,
+        );
+        if (finalizePersistedReplay) {
+          if (replayTerm.buffer.active.type === "alternate") {
+            await writeTerminalOutput("\x1b[?1049l\x1b[?25h\x1b[0m\r\n", 2000);
+          }
+          terminalInitialReplayMarkers.get(sessionId)?.dispose();
+          const replayMarker = replayTerm.registerMarker(0);
+          if (replayMarker) {
+            terminalInitialReplayMarkers.set(sessionId, replayMarker);
+          }
+        }
         reanchorTurnMarks(sessionId, replayTerm);
+        if (finalizePersistedReplay && getTurnMarkData(sessionId).length === 0) {
+          noteRestoreBoundaryTurn(sessionId);
+        }
         if (resyncStartedAt !== null) {
           recordResync(replay.byteLength, performance.now() - resyncStartedAt, sessionId);
         }
@@ -2258,6 +2283,29 @@ export default memo(function XTermWrapper({
 
     async function init(): Promise<void> {
       if (disposed) return;
+      let sessionAlive = true;
+      let persistedScrollback = false;
+      try {
+        sessionAlive = await isSessionAlive(sessionId);
+        if (!sessionAlive) {
+          persistedScrollback = await hasPersistedScrollback(sessionId);
+        }
+      } catch {
+        persistedScrollback = false;
+      }
+      const restorePolicy = resolveScrollbackRestorePolicy({
+        isSessionAlive: sessionAlive,
+        hasPersistedScrollback: persistedScrollback,
+        isAgentTab: agentKind !== undefined,
+        initialReplay,
+      });
+      coldPersistedRestore = restorePolicy.usePersistedScrollback;
+      if (!restorePolicy.usePersistedScrollback) {
+        // Persist snapshots are bottom-relative to the raw ring. The 160-line
+        // fallback and a fresh PTY cannot place them, so drop the seed rather
+        // than reanchor against the wrong buffer later.
+        seedTurnMarkSnapshots(sessionId, []);
+      }
       const cfg = cachedConfig;
       const initTheme = resolveTerminalTheme(theme ?? storeTheme.terminal, terminalOpacity, mediaBackgroundActive);
       const baseFontSize = fontSize ?? storeFontSize ?? cfg?.fontSize ?? 14;
@@ -2319,15 +2367,15 @@ export default memo(function XTermWrapper({
       recordXtermMounted(sessionId);
       recordCursorBlink(sessionId, term.options.cursorBlink === true);
       applyTerminalRenderer(sessionId, term, resolveEffectiveTerminalRendererFromStores());
-      if (initialReplay && initialReplay.length > 0) {
-        const replayText = initialReplay.join("\r\n");
+      if (restorePolicy.initialReplay && restorePolicy.initialReplay.length > 0) {
+        const replayText = restorePolicy.initialReplay.join("\r\n");
         const displayReplay = replayText;
         const replayBytes = new Blob([displayReplay]).size;
         diagStats.replays += 1;
-        diagStats.replayLines += initialReplay.length;
+        diagStats.replayLines += restorePolicy.initialReplay.length;
         if (import.meta.env.DEV) {
           console.log(
-            `[mycmux-diag xterm:${sessionId}] initial_replay lines=${initialReplay.length} bytes=${replayBytes} source=initialReplay`,
+            `[mycmux-diag xterm:${sessionId}] initial_replay lines=${restorePolicy.initialReplay.length} bytes=${replayBytes} source=initialReplay`,
           );
         }
         const replayTerm = term;

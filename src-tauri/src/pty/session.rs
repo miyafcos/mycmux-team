@@ -1,5 +1,6 @@
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use std::io::{Read, Write};
+use std::path::Path;
 use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -413,6 +414,7 @@ impl FrontendFlow {
 }
 
 pub struct PtySession {
+    id: String,
     child: Mutex<Box<dyn Child + Send + Sync>>,
     master: Mutex<Box<dyn MasterPty + Send>>,
     // Input is enqueued here and drained in FIFO order by a dedicated writer
@@ -426,12 +428,20 @@ pub struct PtySession {
     pub broadcast: broadcast::Sender<OutputChunk>,
     scrollback: Arc<Mutex<VecDeque<u8>>>,
     scrollback_end: Arc<AtomicU64>,
+    scrollback_dirty: Arc<AtomicBool>,
+    scrollback_flush_gate: Mutex<()>,
     last_output_at: Arc<AtomicU64>,
     session_epoch: u64,
     frontend_flow: Arc<FrontendFlow>,
     pub created_at: Instant,
     #[allow(dead_code)]
     pub(crate) metrics: Arc<PtyMetrics>,
+}
+
+fn initialize_scrollback(preload: &[u8]) -> (VecDeque<u8>, u64) {
+    let mut scrollback = VecDeque::with_capacity(SCROLLBACK_CAP);
+    scrollback.extend(preload.iter().copied());
+    (scrollback, preload.len() as u64)
 }
 
 // Safety: child/master/scrollback/data_channel are behind Mutex and write_tx is
@@ -452,6 +462,7 @@ impl PtySession {
         env: Option<std::collections::HashMap<String, String>>,
         metadata_store: MetadataStore,
         created_at: Instant,
+        preload: Vec<u8>,
     ) -> Result<Self, String> {
         let pty_system = native_pty_system();
 
@@ -549,13 +560,16 @@ impl PtySession {
 
         // Create broadcast channel and scrollback for remote clients
         let (broadcast_tx, _) = broadcast::channel::<OutputChunk>(256);
-        let scrollback = Arc::new(Mutex::new(VecDeque::with_capacity(SCROLLBACK_CAP)));
-        let scrollback_end = Arc::new(AtomicU64::new(0));
+        let (initial_scrollback, initial_scrollback_end) = initialize_scrollback(&preload);
+        let scrollback = Arc::new(Mutex::new(initial_scrollback));
+        let scrollback_end = Arc::new(AtomicU64::new(initial_scrollback_end));
+        let scrollback_dirty = Arc::new(AtomicBool::new(false));
         let last_output_at = Arc::new(AtomicU64::new(0));
         let session_epoch = next_session_epoch();
         let broadcast_tx_clone = broadcast_tx.clone();
         let sb_clone = scrollback.clone();
         let sb_end_clone = scrollback_end.clone();
+        let sb_dirty_clone = scrollback_dirty.clone();
         let last_output_at_reader = last_output_at.clone();
         let (frontend_tx, mut frontend_rx) = mpsc::channel::<FrontendChunk>(FRONTEND_QUEUE_CAP);
         let frontend_flow = Arc::new(FrontendFlow::new(data_channel));
@@ -779,6 +793,7 @@ impl PtySession {
                                 drop(sb.drain(..overflow));
                             }
                             sb_end_clone.store(scrollback_end, Ordering::Relaxed);
+                            sb_dirty_clone.store(true, Ordering::Release);
                         }
                         if frontend_open {
                             match frontend_tx.try_send(FrontendChunk {
@@ -839,6 +854,7 @@ impl PtySession {
         });
 
         Ok(Self {
+            id: session_id,
             child: Mutex::new(child),
             master: Mutex::new(pair.master),
             write_tx,
@@ -849,6 +865,8 @@ impl PtySession {
             broadcast: broadcast_tx,
             scrollback,
             scrollback_end,
+            scrollback_dirty,
+            scrollback_flush_gate: Mutex::new(()),
             last_output_at,
             session_epoch,
             frontend_flow,
@@ -1024,6 +1042,34 @@ impl PtySession {
         }
     }
 
+    pub fn flush_scrollback(&self, dir: &Path, force: bool) -> Result<bool, String> {
+        let _flush_guard = self
+            .scrollback_flush_gate
+            .lock()
+            .map_err(|error| format!("Failed to lock scrollback flusher: {error}"))?;
+        let was_dirty = self.scrollback_dirty.swap(false, Ordering::AcqRel);
+        if !force && !was_dirty {
+            return Ok(false);
+        }
+
+        let snapshot = self.get_scrollback_snapshot();
+        let (start_offset, data) =
+            super::scrollback_store::sanitize_ring_head(snapshot.start_offset, &snapshot.data);
+        match super::scrollback_store::save(
+            dir,
+            &self.id,
+            start_offset,
+            snapshot.end_offset,
+            data,
+        ) {
+            Ok(()) => Ok(true),
+            Err(error) => {
+                self.scrollback_dirty.store(true, Ordering::Release);
+                Err(format!("Failed to persist scrollback for {}: {error}", self.id))
+            }
+        }
+    }
+
     pub fn last_output_at(&self) -> Option<u64> {
         read_last_output_at(&self.last_output_at)
     }
@@ -1043,6 +1089,25 @@ impl Drop for PtySession {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preload_scrollback_rebases_offsets_at_zero() {
+        let preload = b"\x1b[31mrestored\x1b[0m\r\nnext line";
+        let (scrollback, end_offset) = initialize_scrollback(preload);
+        let data: Vec<u8> = scrollback.into_iter().collect();
+
+        assert_eq!(data, preload);
+        assert_eq!(end_offset, preload.len() as u64);
+        assert_eq!(end_offset.saturating_sub(data.len() as u64), 0);
+    }
+
+    #[test]
+    fn empty_preload_preserves_fresh_spawn_scrollback_state() {
+        let (scrollback, end_offset) = initialize_scrollback(&[]);
+
+        assert!(scrollback.is_empty());
+        assert_eq!(end_offset, 0);
+    }
 
     #[test]
     fn last_output_at_starts_empty_and_tracks_latest_output() {

@@ -161,6 +161,7 @@ describe("SocketListener layout persistence", () => {
       agent_session_id: null,
       suppressed_agent_sessions: null,
       terminal_snapshot: null,
+      turn_marks: null,
     });
   });
 });

@@ -69,6 +69,17 @@ pub struct SuppressedAgentSessionConfig {
     pub claude_session_id: Option<String>,
 }
 
+fn skip_turn_marks(value: &Option<Vec<TurnMarkPersistConfig>>) -> bool {
+    value.as_ref().map_or(true, |marks| marks.is_empty())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TurnMarkPersistConfig {
+    pub label: String,
+    pub at: u64,
+    pub lines_from_bottom: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PaneTabOriginConfig {
     pub kind: String,
@@ -104,6 +115,8 @@ pub struct PaneTabConfig {
     pub launch_env: Option<HashMap<String, String>>,
     #[serde(default)]
     pub terminal_snapshot: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "skip_turn_marks")]
+    pub turn_marks: Option<Vec<TurnMarkPersistConfig>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lifecycle: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -338,6 +351,14 @@ fn data_path(app_handle: &tauri::AppHandle) -> Result<PathBuf, String> {
     let dir = crate::test_profile::app_data_dir_from(default_dir);
     fs::create_dir_all(&dir).map_err(|e| format!("Failed to create app data dir: {e}"))?;
     Ok(dir.join("data.json"))
+}
+
+pub(crate) fn scrollback_dir(app_handle: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let path = data_path(app_handle)?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("data path has no parent: {}", path.display()))?;
+    Ok(parent.join("scrollback"))
 }
 
 fn backup_path_for(path: &Path, reason: &str) -> PathBuf {
@@ -977,5 +998,33 @@ mod tests {
                 .map(|value| value.agent_session_id.as_str()),
             Some("parked-tab")
         );
+    }
+
+    #[test]
+    fn pane_tab_turn_marks_default_when_absent() {
+        let tab: PaneTabConfig = serde_json::from_str(r#"{"agent_id":"shell-starter"}"#).unwrap();
+        assert!(tab.turn_marks.is_none());
+
+        let serialized = serde_json::to_string(&tab).unwrap();
+        assert!(
+            !serialized.contains("turn_marks"),
+            "empty turn_marks must stay omitted: {serialized}"
+        );
+    }
+
+    #[test]
+    fn pane_tab_turn_marks_round_trip() {
+        let tab: PaneTabConfig = serde_json::from_str(
+            r#"{"agent_id":"shell-starter","turn_marks":[{"label":"hello","at":1700000000000,"lines_from_bottom":4}]}"#,
+        )
+        .unwrap();
+        let marks = tab.turn_marks.as_ref().unwrap();
+        assert_eq!(marks.len(), 1);
+        assert_eq!(marks[0].label, "hello");
+        assert_eq!(marks[0].at, 1_700_000_000_000);
+        assert_eq!(marks[0].lines_from_bottom, 4_i64);
+
+        let restored: PaneTabConfig = serde_json::from_str(&serde_json::to_string(&tab).unwrap()).unwrap();
+        assert_eq!(restored.turn_marks, tab.turn_marks);
     }
 }

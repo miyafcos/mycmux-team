@@ -25,6 +25,13 @@ export interface SuppressedAgentSession {
   claudeSessionId?: string;
 }
 
+/** Bottom-relative turn-chip snapshot persisted on PaneTabConfig. */
+export interface TurnMarkPersistSnapshot {
+  label: string;
+  at: number;
+  lines_from_bottom: number;
+}
+
 export interface PaneTab {
   id: string;
   sessionId: string;
@@ -52,6 +59,8 @@ export interface PaneTab {
    */
   ephemeral?: boolean;
   terminalSnapshot?: string[];
+  /** Restored turn chips; seed → reanchor after persisted scrollback replay. */
+  turnMarks?: TurnMarkPersistSnapshot[];
   /** Browser tabs: local file path (already normalized, no file:// prefix). */
   htmlPath?: string;
   /** Browser tabs: original editable artifact path. */

@@ -13,6 +13,7 @@ import { useWorkspaceListStore } from "./workspaceListStore";
 import { usePaneMetadataStore } from "./paneMetadataStore";
 import { useUiStore } from "./uiStore";
 import { rewriteTabAgentSession, type TabAgentSessionRewrite } from "../lib/tabAgentSessionRewrite";
+import { seedTurnMarkSnapshots } from "../components/terminal/terminalTurnMarkers";
 import { applyStructuralActivation } from "../lib/focusController";
 import { onlineStrings } from "../components/online/onlineStrings";
 import { bump as bumpPaintStat } from "../lib/paintStats";
@@ -35,7 +36,7 @@ function makeTab(
   paneId: string,
   agentId: string,
   type: PaneTab["type"] = "terminal",
-  options?: Partial<Pick<PaneTab, "id" | "label" | "labelSource" | "cwd" | "lastProcess" | "claudeSessionId" | "agentKind" | "agentSessionId" | "suppressedAgentSessions" | "launchEnv" | "initialPrompt" | "commandArgv" | "ephemeral" | "terminalSnapshot" | "htmlPath" | "sourcePath" | "sourceKind" | "previewPath" | "isDirty" | "reloadCounter" | "lifecycle" | "origin" | "declaredPrompt" | "declaredTarget">>,
+  options?: Partial<Pick<PaneTab, "id" | "label" | "labelSource" | "cwd" | "lastProcess" | "claudeSessionId" | "agentKind" | "agentSessionId" | "suppressedAgentSessions" | "launchEnv" | "initialPrompt" | "commandArgv" | "ephemeral" | "terminalSnapshot" | "turnMarks" | "htmlPath" | "sourcePath" | "sourceKind" | "previewPath" | "isDirty" | "reloadCounter" | "lifecycle" | "origin" | "declaredPrompt" | "declaredTarget">>,
 ): PaneTab {
   const tabId = options?.id ?? uuid();
   return {
@@ -56,6 +57,7 @@ function makeTab(
     commandArgv: options?.commandArgv,
     ephemeral: options?.ephemeral,
     terminalSnapshot: options?.terminalSnapshot,
+    turnMarks: options?.turnMarks,
     htmlPath: options?.htmlPath,
     sourcePath: options?.sourcePath,
     sourceKind: options?.sourceKind,
@@ -557,7 +559,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
             const tabAgentId = normalizeRestoredAgentId(
               tabConfig.agent_id || pc.agent_id,
             ) || defaultAgentId;
-            return makeTab(
+            const tab = makeTab(
               workspaceId,
               paneId,
               tabAgentId,
@@ -582,6 +584,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
                       : undefined),
                 launchEnv: tabConfig.launch_env ?? pc.launch_env ?? undefined,
                 terminalSnapshot: isDeclaredRestoredTab ? undefined : tabConfig.terminal_snapshot ?? undefined,
+                turnMarks: isDeclaredRestoredTab ? undefined : tabConfig.turn_marks ?? undefined,
                 lifecycle: tabConfig.lifecycle ?? undefined,
                 origin: tabConfig.origin
                   ? { kind: tabConfig.origin.kind, parentTabId: tabConfig.origin.parent_tab_id ?? undefined }
@@ -590,6 +593,10 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
                 declaredTarget: tabConfig.declared_target ?? undefined,
               },
             );
+            if (!isDeclaredRestoredTab && tab.turnMarks && tab.turnMarks.length > 0) {
+              seedTurnMarkSnapshots(tab.sessionId, tab.turnMarks);
+            }
+            return tab;
           })
         : [makeTab(workspaceId, paneId, normalizeRestoredAgentId(pc.agent_id) || defaultAgentId, "terminal", {
             label: pc.label ?? undefined,

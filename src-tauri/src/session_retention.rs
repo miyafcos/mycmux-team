@@ -53,6 +53,11 @@ struct RetentionSummary {
     skipped: usize,
 }
 
+struct LiveSessions {
+    all_ids: HashSet<String>,
+    scrollback_keep_sets: Vec<(PathBuf, HashSet<String>)>,
+}
+
 pub fn run_startup_retention(app_data_parent: Option<PathBuf>, mycmux_dir: Option<PathBuf>) {
     let _retention_task = tauri::async_runtime::spawn_blocking(move || {
         let Some(app_data_parent) = app_data_parent else {
@@ -79,7 +84,11 @@ pub fn run_startup_retention(app_data_parent: Option<PathBuf>, mycmux_dir: Optio
 }
 
 fn run_retention_once(roots: &RetentionRoots, now: SystemTime) -> Result<RetentionSummary, String> {
-    let live_ids = collect_live_session_ids(&roots.app_data_parent)?;
+    let live_sessions = collect_live_sessions(&roots.app_data_parent)?;
+    for (scrollback_dir, keep) in &live_sessions.scrollback_keep_sets {
+        crate::pty::scrollback_store::gc(scrollback_dir, keep)
+            .map_err(|error| format!("sweep scrollback {} failed: {error}", scrollback_dir.display()))?;
+    }
     let trash_month = trash_month(now);
     let max_age = Duration::from_secs(RETENTION_DAYS * DAY_SECS);
     let mut summary = RetentionSummary::default();
@@ -91,7 +100,7 @@ fn run_retention_once(roots: &RetentionRoots, now: SystemTime) -> Result<Retenti
             .join(TRASH_DIR)
             .join(&trash_month)
             .join(SESSIONS_DIR),
-        &live_ids,
+        &live_sessions.all_ids,
         now,
         max_age,
         &mut summary,
@@ -103,7 +112,7 @@ fn run_retention_once(roots: &RetentionRoots, now: SystemTime) -> Result<Retenti
             .join(TRASH_DIR)
             .join(&trash_month)
             .join(PANE_SESSIONS_DIR),
-        &live_ids,
+        &live_sessions.all_ids,
         now,
         max_age,
         &mut summary,
@@ -112,14 +121,17 @@ fn run_retention_once(roots: &RetentionRoots, now: SystemTime) -> Result<Retenti
     Ok(summary)
 }
 
-fn collect_live_session_ids(app_data_parent: &Path) -> Result<HashSet<String>, String> {
+fn collect_live_sessions(app_data_parent: &Path) -> Result<LiveSessions, String> {
     let entries = fs::read_dir(app_data_parent).map_err(|error| {
         format!(
             "read app data parent {} failed: {error}",
             app_data_parent.display()
         )
     })?;
-    let mut live_ids = HashSet::new();
+    let mut live_sessions = LiveSessions {
+        all_ids: HashSet::new(),
+        scrollback_keep_sets: Vec::new(),
+    };
     let mut parsed_data_files = 0usize;
 
     for entry in entries {
@@ -145,22 +157,48 @@ fn collect_live_session_ids(app_data_parent: &Path) -> Result<HashSet<String>, S
             continue;
         }
 
-        let data_path = entry.path().join("data.json");
-        match fs::metadata(&data_path) {
-            Ok(metadata) if metadata.is_file() => {
-                let contents = fs::read_to_string(&data_path).map_err(|error| {
-                    format!("read {} failed: {error}", data_path.display())
-                })?;
-                let data: RetentionData = serde_json::from_str(&contents).map_err(|error| {
-                    format!("parse {} failed: {error}", data_path.display())
-                })?;
-                insert_live_session_ids(&data, &mut live_ids);
-                parsed_data_files += 1;
+        let mut data_paths = vec![entry.path().join("data.json")];
+        let profiles_dir = entry.path().join("profiles");
+        match fs::read_dir(&profiles_dir) {
+            Ok(profile_entries) => {
+                for profile_entry in profile_entries {
+                    let profile_entry = profile_entry.map_err(|error| {
+                        format!("read profile under {} failed: {error}", profiles_dir.display())
+                    })?;
+                    if profile_entry.file_type().map_err(|error| {
+                        format!("read profile type {} failed: {error}", profile_entry.path().display())
+                    })?.is_dir() {
+                        data_paths.push(profile_entry.path().join("data.json"));
+                    }
+                }
             }
-            Ok(_) => continue,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(error) => {
-                return Err(format!("metadata {} failed: {error}", data_path.display()));
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("read {} failed: {error}", profiles_dir.display())),
+        }
+
+        for data_path in data_paths {
+            match fs::metadata(&data_path) {
+                Ok(metadata) if metadata.is_file() => {
+                    let contents = fs::read_to_string(&data_path).map_err(|error| {
+                        format!("read {} failed: {error}", data_path.display())
+                    })?;
+                    let data: RetentionData = serde_json::from_str(&contents).map_err(|error| {
+                        format!("parse {} failed: {error}", data_path.display())
+                    })?;
+                    let mut local_ids = HashSet::new();
+                    insert_live_session_ids(&data, &mut local_ids);
+                    live_sessions.all_ids.extend(local_ids.iter().cloned());
+                    let scrollback_dir = data_path.parent()
+                        .ok_or_else(|| format!("data path has no parent: {}", data_path.display()))?
+                        .join("scrollback");
+                    live_sessions.scrollback_keep_sets.push((scrollback_dir, local_ids));
+                    parsed_data_files += 1;
+                }
+                Ok(_) => continue,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => {
+                    return Err(format!("metadata {} failed: {error}", data_path.display()));
+                }
             }
         }
     }
@@ -172,7 +210,7 @@ fn collect_live_session_ids(app_data_parent: &Path) -> Result<HashSet<String>, S
         ));
     }
 
-    Ok(live_ids)
+    Ok(live_sessions)
 }
 
 fn insert_live_session_ids(data: &RetentionData, live_ids: &mut HashSet<String>) {
@@ -409,6 +447,10 @@ mod tests {
         .unwrap();
     }
 
+    fn scrollback_path(roots: &RetentionRoots, app_name: &str, session_id: &str) -> PathBuf {
+        roots.app_data_parent.join(app_name).join("scrollback").join(format!("{session_id}.bin"))
+    }
+
     fn future_old_now() -> SystemTime {
         SystemTime::now() + Duration::from_secs((RETENTION_DAYS + 1) * DAY_SECS)
     }
@@ -507,6 +549,23 @@ mod tests {
     }
 
     #[test]
+    fn startup_sweep_keeps_live_scrollback_and_removes_orphans() {
+        let temp = tempfile::tempdir().unwrap();
+        let roots = roots(&temp);
+        let live_id = make_session_id("ws-live", "pane-live", "tab-live");
+        let orphan_id = make_session_id("ws-old", "pane-old", "tab-old");
+        write_data_json(&roots, "com.miyazaki.mycmux", &[("ws-live", "pane-live", "tab-live")]);
+        let scrollback_dir = roots.app_data_parent.join("com.miyazaki.mycmux").join("scrollback");
+        crate::pty::scrollback_store::save(&scrollback_dir, &live_id, 0, 1, b"a").unwrap();
+        crate::pty::scrollback_store::save(&scrollback_dir, &orphan_id, 0, 1, b"b").unwrap();
+
+        run_retention_once(&roots, SystemTime::now()).unwrap();
+
+        assert!(scrollback_path(&roots, "com.miyazaki.mycmux", &live_id).exists());
+        assert!(!scrollback_path(&roots, "com.miyazaki.mycmux", &orphan_id).exists());
+    }
+
+    #[test]
     fn malformed_data_json_aborts_without_moving_anything() {
         let temp = tempfile::tempdir().unwrap();
         let roots = roots(&temp);
@@ -515,6 +574,8 @@ mod tests {
         write_data_json(&roots, "com.miyazaki.mycmux", &[]);
         write_raw_data_json(&roots, "com.miyazaki.mycmux-lite", "{not valid json");
         create_records(&roots, &orphan_id);
+        let scrollback_dir = roots.app_data_parent.join("com.miyazaki.mycmux").join("scrollback");
+        crate::pty::scrollback_store::save(&scrollback_dir, &orphan_id, 0, 1, b"a").unwrap();
 
         let error = run_retention_once(&roots, now).unwrap_err();
 
@@ -523,5 +584,6 @@ mod tests {
         assert!(pane_session_path(&roots, &orphan_id).exists());
         assert!(!trash_session_path(&roots, now, &orphan_id).exists());
         assert!(!trash_pane_session_path(&roots, now, &orphan_id).exists());
+        assert!(scrollback_path(&roots, "com.miyazaki.mycmux", &orphan_id).exists());
     }
 }

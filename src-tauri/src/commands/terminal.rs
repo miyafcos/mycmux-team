@@ -1,7 +1,7 @@
 mod agent_restore;
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use tauri::ipc::{Channel, InvokeResponseBody, Response};
 use tauri::{AppHandle, Emitter, State};
@@ -266,6 +266,7 @@ pub fn create_session(
         launch_cwd,
         Some(env_map),
         state.metadata_store.clone(),
+        state.scrollback_dir.get().map(PathBuf::as_path),
     )?;
     if let Some((session_epoch, _)) = state.session_manager.session_observation(&session_id) {
         state.session_state_store.ingest(
@@ -780,12 +781,55 @@ pub fn get_session_scrollback(
 }
 
 #[tauri::command(async)]
+pub async fn has_persisted_scrollback(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<bool, String> {
+    Ok(state
+        .scrollback_dir
+        .get()
+        .is_some_and(|dir| crate::pty::scrollback_store::load(dir, &session_id).is_some()))
+}
+
+#[tauri::command(async)]
+pub async fn remove_workspace_scrollback(
+    state: State<'_, AppState>,
+    workspace_id: String,
+) -> Result<(), String> {
+    let Some(dir) = state.scrollback_dir.get() else {
+        return Ok(());
+    };
+    crate::pty::scrollback_store::remove_prefix(dir, &format!("pty-{workspace_id}-"))
+        .map_err(|error| format!("Failed to remove scrollback for workspace {workspace_id}: {error}"))
+}
+
+#[tauri::command(async)]
+pub async fn discard_session_scrollback(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<(), String> {
+    let Some(dir) = state.scrollback_dir.get() else {
+        return Ok(());
+    };
+    crate::pty::scrollback_store::remove(dir, &session_id)
+        .map_err(|error| format!("Failed to discard scrollback for {session_id}: {error}"))
+}
+
+#[tauri::command(async)]
 pub fn kill_session(state: State<'_, AppState>, session_id: String) -> Result<(), String> {
     let session_epoch = state
         .session_manager
         .session_observation(&session_id)
         .map(|(session_epoch, _)| session_epoch);
-    state.session_manager.kill(&session_id)?;
+    let kill_result = state.session_manager.kill(&session_id);
+    let remove_result = if let Some(dir) = state.scrollback_dir.get() {
+        crate::pty::scrollback_store::remove(dir, &session_id)
+            .map_err(|error| format!("Failed to remove scrollback for {session_id}: {error}"))
+    } else {
+        Ok(())
+    };
+    kill_result?;
+    remove_result?;
     if let Some(session_epoch) = session_epoch {
         state.session_state_store.ingest(
             session_id,

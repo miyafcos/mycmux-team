@@ -9,7 +9,7 @@ import {
   decodeFrontendDataBatch,
   decodeScrollbackSnapshot,
 } from "./terminalWire";
-import type { AgentSessionKind, ArtifactSourceKind, ThemeTweaks } from "../types";
+import type { AgentSessionKind, ArtifactSourceKind, ThemeTweaks, TurnMarkPersistSnapshot } from "../types";
 import type { OnlineSavepointEntry } from "../components/online/onlineSavepoints";
 import { markSessionFrontendActivity } from "./agentDormancy";
 import { windowLabel } from "./windowContext";
@@ -17,6 +17,7 @@ import { windowLabel } from "./windowContext";
 export { getCurrentSessionEpoch, type FrontendDataBatch };
 
 interface SessionIdArgs { sessionId: string }
+interface WorkspaceIdArgs { workspaceId: string }
 interface PathArgs { path: string }
 interface SourcePathArgs { sourcePath: string }
 interface BundleDirArgs { bundleDir: string }
@@ -397,6 +398,10 @@ export async function getSessionScrollback(sessionId: string): Promise<Scrollbac
   return decodeScrollbackSnapshot(frame);
 }
 
+export async function hasPersistedScrollback(sessionId: string): Promise<boolean> {
+  return invoke<boolean>("has_persisted_scrollback", { sessionId } satisfies SessionIdArgs);
+}
+
 export async function writeToSession(
   sessionId: string,
   data: string,
@@ -419,6 +424,14 @@ export async function resizeSession(
 
 export async function killSession(sessionId: string): Promise<void> {
   return invoke<void>("kill_session", { sessionId } satisfies SessionIdArgs);
+}
+
+export async function removeWorkspaceScrollback(workspaceId: string): Promise<void> {
+  return invoke<void>("remove_workspace_scrollback", { workspaceId } satisfies WorkspaceIdArgs);
+}
+
+export async function discardSessionScrollback(sessionId: string): Promise<void> {
+  return invoke<void>("discard_session_scrollback", { sessionId } satisfies SessionIdArgs);
 }
 
 export interface PreviewArtifactInfo {
@@ -1041,6 +1054,7 @@ export interface PaneTabConfig {
   suppressed_agent_sessions?: SuppressedAgentSessionConfig[] | null;
   launch_env?: Record<string, string> | null;
   terminal_snapshot?: string[] | null;
+  turn_marks?: TurnMarkPersistSnapshot[] | null;
   lifecycle?: "declared" | null;
   origin?: { kind: "human" | "agent"; parent_tab_id?: string | null } | null;
   declared_prompt?: string | null;

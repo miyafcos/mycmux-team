@@ -4,6 +4,7 @@ export type {
   AgentSessionKind,
   ArtifactSourceKind,
   SuppressedAgentSession,
+  TurnMarkPersistSnapshot,
   PaneTab,
   Pane,
   WorkspaceStatus,

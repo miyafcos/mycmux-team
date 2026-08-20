@@ -22,6 +22,7 @@ import {
   publishWindowFragment,
   releaseWorkspaces,
   takePendingAdoption,
+  discardSessionScrollback,
   WINDOW_ADOPT_EVENT,
   type AgentSessionMapping,
   type PtyMetadata,
@@ -33,7 +34,7 @@ import {
   listPets,
 } from "../../lib/ipc";
 import { candidatesFromListedPets } from "../../lib/pets";
-import type { AgentSessionKind, SuppressedAgentSession, Workspace } from "../../types";
+import type { AgentSessionKind, SuppressedAgentSession, TurnMarkPersistSnapshot, Workspace } from "../../types";
 import { useThemeStore } from "../../stores/themeStore";
 import { useKeybindingStore } from "../../stores/keybindingStore";
 import { usePetSettingsStore } from "../../stores/petSettingsStore";
@@ -72,6 +73,10 @@ import {
   restoreWorkspaceConfigs,
 } from "../../lib/workspaceRestore";
 import { isDeclaredTab, isRestorableTab } from "../../lib/tabLifecycle";
+import {
+  capTurnMarkPersistSnapshots,
+  getTurnMarkPersistSnapshot,
+} from "../terminal/terminalTurnMarkers";
 
 // Socket dispatch lives in socketCommands.ts. Keep these command markers here
 // for the frontend bridge contract: case "workspace.list":, case "pane.list":,
@@ -116,6 +121,7 @@ export interface AgentSessionDedupeConflict {
 export interface AgentSessionDedupeResult {
   configs: WorkspaceConfig[];
   conflicts: AgentSessionDedupeConflict[];
+  discardScrollbackSessionIds: string[];
 }
 
 let reportedAgentSessionDedupeConflicts = new Set<string>();
@@ -202,6 +208,44 @@ type TerminalSnapshotCacheEntry = {
 };
 
 const terminalSnapshotCache = new Map<string, TerminalSnapshotCacheEntry>();
+
+function persistTurnMarksForTab(
+  sessionId: string,
+  stored: TurnMarkPersistSnapshot[] | undefined,
+): TurnMarkPersistSnapshot[] | null {
+  const live = getTurnMarkPersistSnapshot(sessionId);
+  if (live !== null) {
+    return live.length > 0 ? live : null;
+  }
+  if (!stored || stored.length === 0) return null;
+  return capTurnMarkPersistSnapshots(stored);
+}
+
+function ptySessionIdForDedupeLocation(location: AgentSessionLocation): string | null {
+  if (!location.paneId) return null;
+  return location.tabId
+    ? makeSessionId(location.workspaceId, `${location.paneId}-${location.tabId}`)
+    : makeSessionId(location.workspaceId, location.paneId);
+}
+
+function collectDiscardScrollbackSessionIds(
+  conflicts: AgentSessionDedupeConflict[],
+): string[] {
+  const sessionIds = new Set<string>();
+  for (const conflict of conflicts) {
+    const sessionId = ptySessionIdForDedupeLocation(conflict.loser);
+    if (sessionId) sessionIds.add(sessionId);
+  }
+  return [...sessionIds];
+}
+
+function discardDedupeLoserScrollbacks(sessionIds: string[]): void {
+  for (const sessionId of sessionIds) {
+    void discardSessionScrollback(sessionId).catch((error) => {
+      console.warn("[persist] Failed to discard loser scrollback:", sessionId, error);
+    });
+  }
+}
 
 function getTerminalSnapshot(sessionId: string): string[] | undefined {
   if (!hasTerminalBuffer(sessionId)) {
@@ -472,6 +516,7 @@ function clearDuplicateTabAgentSession(tab: PaneTabConfig): PaneTabConfig {
     agent_kind: null,
     agent_session_id: null,
     terminal_snapshot: null,
+    turn_marks: null,
   };
 }
 
@@ -549,6 +594,7 @@ function tabConfigWithPaneAgentSessionFallback(tab: PaneTabConfig, pane: PaneCon
       agent_session_id: null,
       suppressed_agent_sessions: null,
       terminal_snapshot: null,
+      turn_marks: null,
     };
   }
   if (!isRestorableTab(tab)) return tab;
@@ -721,7 +767,11 @@ export function dedupeAgentSessionsInConfigs(
       return syncPaneAgentSessionFromActiveTab(pane, tabs);
     }),
   }));
-  return { configs: dedupedConfigs, conflicts };
+  return {
+    configs: dedupedConfigs,
+    conflicts,
+    discardScrollbackSessionIds: collectDiscardScrollbackSessionIds(conflicts),
+  };
 }
 
 function dropEmptyTabPanesFromConfig(cfg: WorkspaceConfig): WorkspaceConfig {
@@ -985,6 +1035,7 @@ export function toConfig(ws: Workspace, _agentMappings: Record<string, AgentSess
             terminal_snapshot: declared
               ? null
               : getTerminalSnapshot(tab.sessionId) ?? tab.terminalSnapshot ?? null,
+            turn_marks: declared ? null : persistTurnMarksForTab(tab.sessionId, tab.turnMarks),
             lifecycle: tab.lifecycle ?? null,
             origin: tab.origin
               ? { kind: tab.origin.kind, parent_tab_id: tab.origin.parentTabId ?? null }
@@ -1230,6 +1281,7 @@ export function useWorkspacePersist() {
             );
             const restoredConfigs = restoredDedupe.configs;
             reportAgentSessionDedupeConflicts(restoredDedupe.conflicts);
+            discardDedupeLoserScrollbacks(restoredDedupe.discardScrollbackSessionIds);
             const startupRestoreTargetWorkspaceCount = restoredConfigs.filter(workspaceConfigHasRestorableAgentSession).length;
             const startupRestoreTargetPaneCount = restoredConfigs.reduce(
               (count, cfg) => count + workspaceConfigRestorableAgentSessionCount(cfg),
@@ -1382,6 +1434,7 @@ export function useWorkspacePersist() {
       );
       const workspaces = dedupeResult.configs;
       reportAgentSessionDedupeConflicts(dedupeResult.conflicts);
+      discardDedupeLoserScrollbacks(dedupeResult.discardScrollbackSessionIds);
       const finalSelection = resolvePersistedSelection(workspaces, persistedSelection);
 
       return {

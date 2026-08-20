@@ -24,8 +24,9 @@ mod workorder;
 pub mod window_registry;
 
 use pty::manager::SessionManager;
+use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 #[cfg(target_os = "windows")]
 mod single_instance {
@@ -70,6 +71,7 @@ mod single_instance {
 
 pub struct AppState {
     pub session_manager: Arc<SessionManager>,
+    pub scrollback_dir: OnceLock<PathBuf>,
     pub session_state_store: session_state::SessionStateStore,
     pub status_feed: status_feed::StatusFeed,
     pub bootstrapped: AtomicBool,
@@ -244,6 +246,7 @@ pub fn run() {
     let session_manager = Arc::new(SessionManager::new());
     let state = AppState {
         session_manager: session_manager.clone(),
+        scrollback_dir: OnceLock::new(),
         session_state_store,
         status_feed,
         bootstrapped: AtomicBool::new(false),
@@ -288,6 +291,9 @@ pub fn run() {
             commands::terminal::set_frontend_visible,
             commands::terminal::set_app_frontend_visible,
             commands::terminal::get_session_scrollback,
+            commands::terminal::has_persisted_scrollback,
+            commands::terminal::remove_workspace_scrollback,
+            commands::terminal::discard_session_scrollback,
             commands::terminal::kill_session,
             commands::artifact::preview_artifact_uri_for_session_v2,
             commands::artifact::read_editable_artifact,
@@ -422,6 +428,35 @@ pub fn run() {
                 }
             }
             let state = app.state::<AppState>();
+            let scrollback_dir = match db::storage::scrollback_dir(&app_handle) {
+                Ok(dir) => {
+                    if state.scrollback_dir.set(dir.clone()).is_err() {
+                        crate::diag_warn!("scrollback", "scrollback directory was already initialized");
+                    }
+                    Some(dir)
+                }
+                Err(error) => {
+                    crate::diag_warn!("scrollback", "failed to resolve scrollback directory: {error}");
+                    None
+                }
+            };
+            if let Some(dir) = scrollback_dir.clone() {
+                let manager = state.session_manager.clone();
+                tauri::async_runtime::spawn(async move {
+                    let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
+                    interval.tick().await;
+                    loop {
+                        interval.tick().await;
+                        let manager = manager.clone();
+                        let dir = dir.clone();
+                        match tokio::task::spawn_blocking(move || manager.flush_dirty_scrollbacks(&dir)).await {
+                            Ok(Ok(())) => {}
+                            Ok(Err(error)) => crate::diag_warn!("scrollback", "periodic flush failed: {error}"),
+                            Err(error) => crate::diag_warn!("scrollback", "periodic flush task failed: {error}"),
+                        }
+                    }
+                });
+            }
             state.status_feed.set_app_handle(app_handle.clone());
             state.livebrief_service.start(app_handle.clone());
             attention::start(app_handle.clone(), state.status_feed.clone(), state.livebrief_service.clone());
@@ -513,6 +548,7 @@ pub fn run() {
             }
             // Kill all PTY sessions when the main window closes
             let mgr = state.session_manager.clone();
+            let scrollback_dir_for_close = scrollback_dir.clone();
             if let Some(main_window) = app.get_webview_window("main") {
                 if let Some(icon) = app.default_window_icon().cloned() {
                     let _ = main_window.set_icon(icon);
@@ -536,6 +572,11 @@ pub fn run() {
                 let remote_sessions_for_close = remote_sessions.clone();
                 main_window.on_window_event(move |event| {
                     if let tauri::WindowEvent::Destroyed = event {
+                        if let Some(dir) = &scrollback_dir_for_close {
+                            if let Err(error) = mgr.flush_all_scrollbacks(dir) {
+                                crate::diag_warn!("scrollback", "shutdown flush failed: {error}");
+                            }
+                        }
                         mgr.kill_all();
                         remote_sessions_for_close.kill_all();
                     }

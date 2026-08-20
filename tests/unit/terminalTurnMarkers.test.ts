@@ -12,14 +12,20 @@ import {
   terminalTurnMarks,
 } from "../../src/components/terminal/terminalCache";
 import {
+  __resetTurnMarkSnapshotsForTests,
+  capTurnMarkPersistSnapshots,
   clearTurnMarks,
   getTurnMarkData,
+  getTurnMarkPersistSnapshot,
   noteRestoreBoundaryTurn,
   noteTurnInput,
   noteTurnSubmit,
   reanchorTurnMarks,
   RESTORE_BOUNDARY_LABEL,
+  seedTurnMarkSnapshots,
   snapshotTurnMarksForReset,
+  TURN_MARK_PERSIST_LABEL_MAX,
+  TURN_MARK_PERSIST_MAX,
 } from "../../src/components/terminal/terminalTurnMarkers";
 
 type HeadlessTerminalConstructor = typeof import("@xterm/headless").Terminal;
@@ -53,6 +59,7 @@ afterEach(() => {
   }
   liveTerms.clear();
   termCache.clear();
+  __resetTurnMarkSnapshotsForTests();
 });
 
 describe("terminal turn markers", () => {
@@ -228,5 +235,46 @@ describe("terminal turn markers", () => {
     const marks = getTurnMarkData(sessionId);
     expect(marks).toHaveLength(1);
     expect(marks[0]?.label).toBe(RESTORE_BOUNDARY_LABEL);
+  });
+
+  it("round-trips persist snapshots through seed and reanchor", async () => {
+    const sessionId = "persist-roundtrip";
+    const term = attach(sessionId, { cols: 20, rows: 8, scrollback: 50 });
+    await write(term, "line-a\r\n");
+    noteTurnSubmit(sessionId, "turn-a", 1_000);
+    await write(term, "line-b\r\n");
+    noteTurnSubmit(sessionId, "turn-b", 2_000);
+    await write(term, "line-c\r\n");
+    noteTurnSubmit(sessionId, "turn-c", 3_000);
+    const before = getTurnMarkData(sessionId);
+    const persist = getTurnMarkPersistSnapshot(sessionId);
+    expect(persist).toHaveLength(3);
+    expect(persist?.map((mark) => mark.label)).toEqual(["turn-a", "turn-b", "turn-c"]);
+
+    clearTurnMarks(sessionId);
+    const asTerm = term as unknown as Terminal;
+    term.reset();
+    await write(term, "line-a\r\n");
+    await write(term, "line-b\r\n");
+    await write(term, "line-c\r\n");
+    seedTurnMarkSnapshots(sessionId, persist);
+    reanchorTurnMarks(sessionId, asTerm);
+
+    const after = getTurnMarkData(sessionId);
+    expect(after.map((mark) => mark.label)).toEqual(before.map((mark) => mark.label));
+    expect(after.map((mark) => mark.line)).toEqual(before.map((mark) => mark.line));
+  });
+
+  it("caps persist snapshots to 100 marks and 80-character labels", () => {
+    const snapshots = Array.from({ length: TURN_MARK_PERSIST_MAX + 5 }, (_, index) => ({
+      label: `mark-${index}-${"x".repeat(TURN_MARK_PERSIST_LABEL_MAX)}`,
+      at: index + 1,
+      lines_from_bottom: index,
+    }));
+    const capped = capTurnMarkPersistSnapshots(snapshots);
+    expect(capped).toHaveLength(TURN_MARK_PERSIST_MAX);
+    expect(capped[0]?.label.startsWith("mark-5-")).toBe(true);
+    expect(capped.every((mark) => mark.label.length <= TURN_MARK_PERSIST_LABEL_MAX)).toBe(true);
+    expect(capped[capped.length - 1]?.lines_from_bottom).toBe(TURN_MARK_PERSIST_MAX + 4);
   });
 });

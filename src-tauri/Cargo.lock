@@ -2307,12 +2307,13 @@ dependencies = [
 
 [[package]]
 name = "mycmux"
-version = "0.48.0"
+version = "0.49.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
  "chrono",
  "cocoa",
+ "crc32fast",
  "dashmap",
  "dirs",
  "futures-util",

@@ -1,11 +1,13 @@
 use dashmap::DashMap;
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tauri::ipc::{Channel, InvokeResponseBody};
 use tauri::AppHandle;
 
 use super::monitor::MetadataStore;
+use super::scrollback_store;
 use super::session::{PtySession, ScrollbackSnapshot};
 
 #[derive(Debug, PartialEq, Eq)]
@@ -81,6 +83,7 @@ impl SessionManager {
         cwd: Option<String>,
         env: Option<std::collections::HashMap<String, String>>,
         metadata_store: MetadataStore,
+        scrollback_dir: Option<&Path>,
     ) -> Result<(), String> {
         #[cfg(debug_assertions)]
         let new_channel_id = data_channel.id().to_string();
@@ -111,6 +114,16 @@ impl SessionManager {
                 return Ok(());
             },
             |data_channel| {
+                let preload = scrollback_dir
+                    .and_then(|dir| scrollback_store::load(dir, &session_id))
+                    .map(|persisted| {
+                        let (_, data) = scrollback_store::sanitize_ring_head(
+                            persisted.start_offset,
+                            &persisted.data,
+                        );
+                        data.to_vec()
+                    })
+                    .unwrap_or_default();
                 #[cfg(debug_assertions)]
                 eprintln!(
                     "[mycmux-diag manager] create_session id={} kind=new channel_id={}",
@@ -128,6 +141,7 @@ impl SessionManager {
                     env,
                     metadata_store,
                     Instant::now(),
+                    preload,
                 )
             },
         )
@@ -195,6 +209,28 @@ impl SessionManager {
             .get(session_id)
             .ok_or_else(|| format!("Session not found: {session_id}"))?;
         Ok(session.get_scrollback_snapshot())
+    }
+
+    pub fn flush_dirty_scrollbacks(&self, dir: &Path) -> Result<(), String> {
+        self.flush_scrollbacks(dir, false)
+    }
+
+    pub fn flush_all_scrollbacks(&self, dir: &Path) -> Result<(), String> {
+        self.flush_scrollbacks(dir, true)
+    }
+
+    fn flush_scrollbacks(&self, dir: &Path, force: bool) -> Result<(), String> {
+        let mut errors = Vec::new();
+        for session in &self.sessions {
+            if let Err(error) = session.flush_scrollback(dir, force) {
+                errors.push(error);
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors.join("; "))
+        }
     }
 
     pub fn kill(&self, session_id: &str) -> Result<(), String> {

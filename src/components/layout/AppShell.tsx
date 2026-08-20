@@ -7,7 +7,7 @@ import {
   useUiStore,
   usePaneMetadataStore,
 } from "../../stores/workspaceStore";
-import { killSession } from "../../lib/ipc";
+import { killSession, removeWorkspaceScrollback } from "../../lib/ipc";
 import { isMainWindow } from "../../lib/windowContext";
 import { evictTerminalCache } from "../terminal/XTermWrapper";
 import { attachGlobalFontZoom } from "../terminal/terminalMouseInputFilter";
@@ -688,6 +688,9 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
           }
         }
       }
+      await removeWorkspaceScrollback(id).catch((err) =>
+        console.warn("[mycmux] removeWorkspaceScrollback failed", id, err),
+      );
       removeWorkspace(id);
     },
     [workspaces, removeWorkspace],

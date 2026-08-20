@@ -1,5 +1,6 @@
 import type { Terminal } from "@xterm/xterm";
 import { applyInputToDraft, EMPTY_DRAFT, type InputLineDraft } from "../../lib/inputLineDraft";
+import type { TurnMarkPersistSnapshot } from "../../types";
 import { scanVtInput, type VtInputScanState } from "../../lib/vtInputScan";
 import {
   liveTerms,
@@ -19,6 +20,10 @@ import {
 
 export const TURN_MARKS_EVENT = "mycmux:turn-marks";
 export const RESTORE_BOUNDARY_LABEL = "復元前の履歴";
+export const TURN_MARK_PERSIST_MAX = 100;
+export const TURN_MARK_PERSIST_LABEL_MAX = 80;
+
+export type { TurnMarkPersistSnapshot };
 
 const turnDrafts = new Map<string, InputLineDraft>();
 
@@ -115,6 +120,58 @@ export function noteRestoreBoundaryTurn(sessionId: string, now = Date.now()): vo
   const buf = term.buffer.active;
   if (buf.type !== "normal") return;
   placeTurnMark(sessionId, term, RESTORE_BOUNDARY_LABEL, now);
+}
+
+export function capTurnMarkPersistSnapshots(
+  snapshots: readonly TurnMarkPersistSnapshot[],
+): TurnMarkPersistSnapshot[] {
+  const capped = snapshots.length > TURN_MARK_PERSIST_MAX
+    ? snapshots.slice(snapshots.length - TURN_MARK_PERSIST_MAX)
+    : snapshots;
+  return capped.map((entry) => ({
+    label: entry.label.slice(0, TURN_MARK_PERSIST_LABEL_MAX),
+    at: entry.at,
+    lines_from_bottom: entry.lines_from_bottom,
+  }));
+}
+
+/** Live marks → persist DTO. Null when this session has no terminal to measure against. */
+export function getTurnMarkPersistSnapshot(sessionId: string): TurnMarkPersistSnapshot[] | null {
+  const term = resolveTurnTerminal(sessionId);
+  if (!term) return null;
+  const kept = pruneTurnMarks(sessionId);
+  if (kept.length === 0) return [];
+  const bottom = term.buffer.active.length - 1;
+  return capTurnMarkPersistSnapshots(
+    kept.map((mark) => ({
+      label: mark.label,
+      at: mark.at,
+      lines_from_bottom: Math.max(0, bottom - mark.marker.line),
+    })),
+  );
+}
+
+/** Persist DTO → in-memory seed consumed by reanchorTurnMarks after replay. */
+export function seedTurnMarkSnapshots(
+  sessionId: string,
+  snapshots: readonly TurnMarkPersistSnapshot[] | null | undefined,
+): void {
+  if (!snapshots || snapshots.length === 0) {
+    turnMarkSnapshots.delete(sessionId);
+    return;
+  }
+  turnMarkSnapshots.set(
+    sessionId,
+    capTurnMarkPersistSnapshots(snapshots).map((entry) => ({
+      label: entry.label,
+      at: entry.at,
+      linesFromBottom: entry.lines_from_bottom,
+    })),
+  );
+}
+
+export function __resetTurnMarkSnapshotsForTests(): void {
+  turnMarkSnapshots.clear();
 }
 
 /** Call immediately before term.reset(). Live marks are saved bottom-relative. */

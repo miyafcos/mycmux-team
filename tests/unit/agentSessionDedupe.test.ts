@@ -37,6 +37,7 @@ function paneConfig(
       agent_session_id: sessionId,
       claude_session_id: kind === "claude" ? sessionId : null,
       terminal_snapshot: ["saved output"],
+      turn_marks: [{ label: "saved-turn", at: 1, lines_from_bottom: 2 }],
     }],
   };
 }
@@ -140,6 +141,7 @@ describe("dedupeAgentSessionsInConfigs", () => {
       claude_session_id: null,
       suppressed_agent_sessions: null,
       terminal_snapshot: null,
+      turn_marks: null,
     });
 
     const result = dedupeAgentSessionsInConfigs(
@@ -156,6 +158,7 @@ describe("dedupeAgentSessionsInConfigs", () => {
       claude_session_id: null,
       suppressed_agent_sessions: null,
       terminal_snapshot: null,
+      turn_marks: null,
     });
     expect(pane.agent_kind).toBeNull();
     expect(pane.agent_session_id).toBeNull();
@@ -211,6 +214,22 @@ describe("dedupeAgentSessionsInConfigs", () => {
       .toEqual([agentId, agentKind, cloned.agentSessionId]);
   });
 
+  it("restores turn_marks onto the tab", () => {
+    const pane = paneConfig("pane-marks", "tab-marks");
+    pane.tabs![0].turn_marks = [
+      { label: "hello", at: 42, lines_from_bottom: 3 },
+    ];
+    const restored = useWorkspaceLayoutStore.getState().restorePanes(
+      "workspace",
+      [pane],
+      [[0]],
+      "1x1",
+    );
+    expect(restored.panes[0].tabs[0].turnMarks).toEqual([
+      { label: "hello", at: 42, lines_from_bottom: 3 },
+    ]);
+  });
+
   it("keeps the active owner and parks the losing restore identity", () => {
     const firstPane = paneConfig("pane-first", "tab-first");
     firstPane.tabs![0].suppressed_agent_sessions = [{
@@ -233,6 +252,9 @@ describe("dedupeAgentSessionsInConfigs", () => {
     expect(first.agent_session_id).toBeNull();
     expect(first.claude_session_id).toBeNull();
     expect(first.terminal_snapshot).toBeNull();
+    expect(first.turn_marks).toBeNull();
+    expect(active.turn_marks).toEqual([{ label: "saved-turn", at: 1, lines_from_bottom: 2 }]);
+    expect(result.discardScrollbackSessionIds).toEqual(["pty-workspace-pane-first-tab-first"]);
     expect(first.suppressed_agent_sessions).toEqual([
       {
         agent_kind: "codex",
