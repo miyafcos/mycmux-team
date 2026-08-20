@@ -33,7 +33,10 @@ import { observeSessionInput } from "../../lib/inputLineDraft";
 import { TerminalTurnChip } from "./TerminalTurnChip";
 import {
   getTurnMarkData,
+  noteRestoreBoundaryTurn,
   noteTurnInput,
+  reanchorTurnMarks,
+  snapshotTurnMarksForReset,
   TURN_MARKS_EVENT,
 } from "./terminalTurnMarkers";
 import { findTurnIndexForViewport, pickJumpTarget } from "./terminalTurnModel";
@@ -1655,6 +1658,8 @@ export default memo(function XTermWrapper({
       if (terminalElement) terminalElement.style.opacity = "0";
       try {
         colorAdapterRef.current.reset();
+        const replayTerm = term;
+        snapshotTurnMarksForReset(sessionId, replayTerm);
         term.reset();
         outputDecoder = resetTerminalOutputDecoder(sessionId);
         const replayText = outputDecoder.decode(scrollback, { stream: true });
@@ -1662,6 +1667,7 @@ export default memo(function XTermWrapper({
         const resyncStartedAt = import.meta.env.DEV ? performance.now() : null;
         backgroundScanResync = true;
         await writeTerminalOutput(stripTerminalMouseModeControlSequences(replayText), 8000);
+        reanchorTurnMarks(sessionId, replayTerm);
         if (resyncStartedAt !== null) {
           recordResync(scrollback.byteLength, performance.now() - resyncStartedAt, sessionId);
         }
@@ -1726,9 +1732,11 @@ export default memo(function XTermWrapper({
       if (replacesVisibleBuffer) {
         if (terminalElement) terminalElement.style.opacity = "0";
         colorAdapterRef.current.reset();
+        snapshotTurnMarksForReset(sessionId, term);
         term.reset();
         outputDecoder = resetTerminalOutputDecoder(sessionId);
       }
+      const replayTerm = term;
       const replayText = outputDecoder.decode(replay, { stream: true });
       try {
         bumpPaintStat("resync", sessionId);
@@ -1738,6 +1746,7 @@ export default memo(function XTermWrapper({
           stripTerminalMouseModeControlSequences(replayText),
           replacesVisibleBuffer ? 8000 : 2000,
         );
+        reanchorTurnMarks(sessionId, replayTerm);
         if (resyncStartedAt !== null) {
           recordResync(replay.byteLength, performance.now() - resyncStartedAt, sessionId);
         }
@@ -2024,7 +2033,7 @@ export default memo(function XTermWrapper({
           clearActiveTerminalNotification(sessionId);
           focusTerminalIfNeeded(currentTerm, sessionId);
         }
-        noteTurnInput(sessionId, inputData);
+        noteTurnInput(sessionId, inputData, lastSynchronizedScrollbackEnd);
         observeSessionInput(sessionId, inputData);
         chunkedWrite(sessionId, inputData);
         if (hasNonWheelInput) {
@@ -2049,7 +2058,7 @@ export default memo(function XTermWrapper({
           clearActiveTerminalNotification(sessionId);
           focusTerminalIfNeeded(currentTerm, sessionId);
         }
-        noteTurnInput(sessionId, inputData);
+        noteTurnInput(sessionId, inputData, lastSynchronizedScrollbackEnd);
         enqueueSessionWrite(sessionId, inputData);
       });
 
@@ -2345,6 +2354,7 @@ export default memo(function XTermWrapper({
         if (replayMarker) {
           terminalInitialReplayMarkers.set(sessionId, replayMarker);
         }
+        noteRestoreBoundaryTurn(sessionId);
       }
       registerScrollListener(term);
       registerCompositionGuard(term, fitAddon);

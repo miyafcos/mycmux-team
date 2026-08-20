@@ -35,6 +35,8 @@ export interface SessionTurnMark {
   marker: IMarker;
   label: string;
   at: number;
+  /** Submit-time scrollback end. Stored for a future exact reanchor; unread. */
+  scrollbackOffset?: number;
 }
 
 export const terminalTurnMarks = new Map<string, SessionTurnMark[]>();

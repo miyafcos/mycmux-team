@@ -1,5 +1,7 @@
 import { create } from "zustand";
 
+import { stripVtSequences } from "../lib/vtInputScan";
+
 export interface RecentInput {
   text: string;
   at: number;
@@ -14,7 +16,7 @@ const MAX_RECENT_INPUT_LENGTH = 500;
 const draftsBySession = new Map<string, string>();
 
 export function printableText(value: string): string {
-  return value.replace(/[\x00-\x08\x0B-\x1F\x7F-\x9F]/g, "");
+  return stripVtSequences(value).replace(/[\x00-\x08\x0B-\x1F\x7F-\x9F]/g, "");
 }
 
 function lastCommittedLine(value: string): string | null {

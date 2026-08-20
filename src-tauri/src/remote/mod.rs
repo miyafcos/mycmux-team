@@ -102,10 +102,11 @@ impl RemoteControl {
         self.clients.remove(&id);
     }
 
-    pub async fn info(&self) -> RemoteInfo {
+    pub async fn info(&self, bind_all: bool) -> RemoteInfo {
         let token = self.current_token().await;
-        let ip = qr::local_ip().await.unwrap_or_else(|| "localhost".to_string());
-        let url = qr::connection_url(&ip, self.port(), &token);
+        let url = qr::reachable_connection_url(self.port(), &token, bind_all)
+            .await
+            .unwrap_or_default();
         let mut connected_clients: Vec<RemoteClientSnapshot> = self
             .clients
             .iter()
@@ -119,14 +120,18 @@ impl RemoteControl {
         connected_clients.sort_by_key(|client| client.connected_at);
 
         RemoteInfo {
-            qr_svg: qr::svg_qr(&url),
+            qr_svg: if url.is_empty() {
+                String::new()
+            } else {
+                qr::svg_qr(&url)
+            },
             url,
             token_suffix: token_suffix(&token),
             connected_clients,
         }
     }
 
-    pub async fn rotate_token(&self) -> Result<RemoteInfo, String> {
+    pub async fn rotate_token(&self, bind_all: bool) -> Result<RemoteInfo, String> {
         let new_token = auth::rotate_token()?;
         let suffix = token_suffix(&new_token);
         {
@@ -135,7 +140,7 @@ impl RemoteControl {
         }
         let _ = self.disconnect_tx.send(());
         crate::diag_warn!("remote", "token rotated; new suffix={suffix}");
-        Ok(self.info().await)
+        Ok(self.info(bind_all).await)
     }
 
     fn disconnect_all(&self) {
@@ -159,6 +164,13 @@ fn current_time_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis().try_into().unwrap_or(u64::MAX))
         .unwrap_or(0)
+}
+
+fn remote_bind_all(app_handle: &tauri::AppHandle) -> bool {
+    crate::db::storage::load(app_handle)
+        .ok()
+        .map(|data| data.settings.remote_bind_all)
+        .unwrap_or(false)
 }
 
 fn token_suffix(token: &str) -> String {
@@ -278,9 +290,10 @@ fn write_remote_port_file(port: u16) {
 
 #[tauri::command]
 pub async fn get_remote_info(
+    app_handle: tauri::AppHandle,
     control: tauri::State<'_, Arc<RemoteControl>>,
 ) -> Result<RemoteInfo, String> {
-    Ok(control.info().await)
+    Ok(control.info(remote_bind_all(&app_handle)).await)
 }
 
 #[tauri::command(async)]
@@ -335,9 +348,10 @@ pub fn set_remote_bind_all(app_handle: tauri::AppHandle, enabled: bool) -> Resul
 
 #[tauri::command]
 pub async fn rotate_remote_token(
+    app_handle: tauri::AppHandle,
     control: tauri::State<'_, Arc<RemoteControl>>,
 ) -> Result<RemoteInfo, String> {
-    control.rotate_token().await
+    control.rotate_token(remote_bind_all(&app_handle)).await
 }
 
 /// Extract workspace ID from session ID: "pty-{wsId}-{paneId}-{tabId}"
@@ -601,9 +615,15 @@ async fn serve_qr(
 
     let port = state.control.port();
     let token = state.control.current_token().await;
-    let ip = qr::local_ip().await.unwrap_or_else(|| "localhost".to_string());
-    let url = qr::connection_url(&ip, port, &token);
-    let svg = qr::svg_qr(&url);
+    let bind_all = remote_bind_all(&state.app_handle);
+    let url = qr::reachable_connection_url(port, &token, bind_all)
+        .await
+        .unwrap_or_default();
+    let svg = if url.is_empty() {
+        String::from("<svg/>")
+    } else {
+        qr::svg_qr(&url)
+    };
 
     (
         [(axum::http::header::CONTENT_TYPE, "image/svg+xml")],

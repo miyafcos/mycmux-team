@@ -10,10 +10,16 @@
  * than replaying text that may not match the screen.
  */
 
+import { scanVtInput, type VtInputScanState } from "./vtInputScan";
+
 export interface InputLineDraft {
   text: string;
   /** False once an unmodelled edit means `text` may no longer match the line. */
   clean: boolean;
+  /** Incomplete ESC sequence held across chunks. */
+  pending: string;
+  /** True between bracketed-paste start and end markers. */
+  inPaste: boolean;
 }
 
 /** Longer than any prompt a person types by hand; past this we stop mirroring. */
@@ -21,12 +27,10 @@ const MAX_DRAFT_LENGTH = 4000;
 /** Erase budget when the draft is unusable. Backspace at column 0 is a no-op. */
 export const BLIND_ERASE_COUNT = 500;
 
-const PASTE_START = "\x1b[200~";
-const PASTE_END = "\x1b[201~";
 const DELETE = "\x7f";
 const KILL_LINE = "\x15";
 
-export const EMPTY_DRAFT: InputLineDraft = { text: "", clean: true };
+export const EMPTY_DRAFT: InputLineDraft = { text: "", clean: true, pending: "", inPaste: false };
 
 function isPrintable(character: string): boolean {
   const code = character.codePointAt(0) ?? 0;
@@ -34,34 +38,43 @@ function isPrintable(character: string): boolean {
 }
 
 export function applyInputToDraft(draft: InputLineDraft, data: string): InputLineDraft {
-  // Bracketed paste markers wrap ordinary text; keeping the payload is what
-  // makes the gesture useful for the case it exists for (a long pasted prompt).
-  const input = data.split(PASTE_START).join("").split(PASTE_END).join("");
+  const state: VtInputScanState = { pending: draft.pending, inPaste: draft.inPaste };
+  const tokens = scanVtInput(data, state);
   let { text, clean } = draft;
+  let inPaste = draft.inPaste;
 
-  for (const character of input) {
-    if (character === "\r" || character === "\n") {
-      text = "";
-      clean = true;
+  for (const token of tokens) {
+    if (token.kind === "sequence") {
+      if (token.value === "\x1b[200~") inPaste = true;
+      else if (token.value === "\x1b[201~") inPaste = false;
+      if (token.effect === "unmodelled") clean = false;
       continue;
     }
-    if (character === DELETE || character === "\b") {
-      text = text.slice(0, -1);
-      continue;
+    for (const character of token.value) {
+      if (character === "\r" || character === "\n") {
+        text = "";
+        clean = true;
+        inPaste = false;
+        continue;
+      }
+      if (character === DELETE || character === "\b") {
+        text = [...text].slice(0, -1).join("");
+        continue;
+      }
+      if (character === KILL_LINE) {
+        // Ctrl+U kills the line in every editor we drive, so the mirror stays exact.
+        text = "";
+        continue;
+      }
+      if (isPrintable(character)) {
+        text += character;
+        if (text.length > MAX_DRAFT_LENGTH) clean = false;
+        continue;
+      }
+      clean = false;
     }
-    if (character === KILL_LINE) {
-      // Ctrl+U kills the line in every editor we drive, so the mirror stays exact.
-      text = "";
-      continue;
-    }
-    if (isPrintable(character)) {
-      text += character;
-      if (text.length > MAX_DRAFT_LENGTH) clean = false;
-      continue;
-    }
-    clean = false;
   }
-  return { text, clean };
+  return { text, clean, pending: state.pending, inPaste };
 }
 
 /** Keystrokes that erase the line described by `draft`. */

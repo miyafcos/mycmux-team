@@ -5,6 +5,7 @@ import {
   shouldAdaptLightColors,
   shouldAdaptLightColorsForPane,
 } from "../../src/lib/lightDarkColorAdapt";
+import { VT_SCAN_VECTORS } from "./vtScanVectors";
 
 describe("LightDarkColorAdapt", () => {
   it("inverts truecolor lightness while retaining hue and saturation", () => {
@@ -82,6 +83,21 @@ describe("shouldAdaptLightColors", () => {
     expect(shouldAdaptLightColorsForPane("bash", "agy", ["agy"])).toBe(true);
     expect(shouldAdaptLightColorsForPane("bash", "bash", ["agy"])).toBe(false);
     expect(shouldAdaptLightColorsForPane("agy", "bash", ["agy"])).toBe(true);
+  });
+});
+
+describe("sequence boundary agreement with vtScanVectors", () => {
+  it("holds each shared-vector sequence until its terminator", () => {
+    for (const vector of VT_SCAN_VECTORS) {
+      for (const [start, end] of vector.sequences) {
+        const adapter = new LightDarkColorAdapt();
+        const held = adapter.transform(vector.input.slice(0, end - 1));
+        expect(held, vector.name).toBe(vector.input.slice(0, start));
+        const rest = adapter.transform(vector.input.slice(end - 1));
+        const full = new LightDarkColorAdapt().transform(vector.input);
+        expect(held + rest, vector.name).toBe(full);
+      }
+    }
   });
 });
 

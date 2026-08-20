@@ -45,10 +45,10 @@ export function shouldMarkTurn({
   last,
 }: ShouldMarkTurnInput): boolean {
   if (!label) return false;
-  if ([...label].length <= 1) return false;
   if (last) {
     if (last.line === currentLine) return false;
-    if (now - last.at < 250) return false;
+    const minGapMs = [...label].length <= 1 ? 1000 : 250;
+    if (now - last.at < minGapMs) return false;
   }
   return true;
 }

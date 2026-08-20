@@ -43,19 +43,53 @@ describe("turnLabelFrom", () => {
   it("keeps a Japanese prompt after slice at the requested max", () => {
     expect(turnLabelFrom("実装して確認して", 4)).toBe("実装して");
   });
+
+  it("strips a DA reply that arrived before the typed text", () => {
+    expect(turnLabelFrom("\x1b[?1;2cこんにちは")).toBe("こんにちは");
+  });
+
+  it("strips focus reports to an empty label", () => {
+    expect(turnLabelFrom("\x1b[O\x1b[I")).toBe("");
+  });
+
+  it("strips an OSC 11 reply before the typed text", () => {
+    expect(turnLabelFrom("\x1b]11;rgb:00/00/00\x07ok")).toBe("ok");
+  });
 });
 
 describe("shouldMarkTurn", () => {
-  it("rejects empty, single-character, same-line, and 250ms bursts", () => {
-    expect(shouldMarkTurn({ label: "", currentLine: 3, now: 1000 })).toBe(false);
-    expect(shouldMarkTurn({ label: "y", currentLine: 3, now: 1000 })).toBe(false);
-    expect(shouldMarkTurn({ label: "ん", currentLine: 3, now: 1000 })).toBe(false);
+  it("marks a single-character label after a 1000ms gap", () => {
     expect(shouldMarkTurn({
-      label: "実装して",
-      currentLine: 4,
-      now: 1100,
+      label: "y",
+      currentLine: 5,
+      now: 2000,
+      last: { line: 4, at: 1000 },
+    })).toBe(true);
+    expect(shouldMarkTurn({
+      label: "ん",
+      currentLine: 5,
+      now: 2000,
+      last: { line: 4, at: 1000 },
+    })).toBe(true);
+    expect(shouldMarkTurn({ label: "1", currentLine: 3, now: 1000 })).toBe(true);
+  });
+
+  it("rejects a 1-char label at 500ms while a longer label still passes", () => {
+    expect(shouldMarkTurn({
+      label: "y",
+      currentLine: 5,
+      now: 1500,
       last: { line: 4, at: 1000 },
     })).toBe(false);
+    expect(shouldMarkTurn({
+      label: "実装して",
+      currentLine: 5,
+      now: 1500,
+      last: { line: 4, at: 1000 },
+    })).toBe(true);
+  });
+
+  it("keeps the 250ms burst window for labels of two or more characters", () => {
     expect(shouldMarkTurn({
       label: "実装して",
       currentLine: 5,
@@ -65,9 +99,40 @@ describe("shouldMarkTurn", () => {
     expect(shouldMarkTurn({
       label: "実装して",
       currentLine: 5,
-      now: 1300,
+      now: 1249,
+      last: { line: 4, at: 1000 },
+    })).toBe(false);
+    expect(shouldMarkTurn({
+      label: "実装して",
+      currentLine: 5,
+      now: 1250,
       last: { line: 4, at: 1000 },
     })).toBe(true);
+  });
+
+  it("rejects empty labels even with no previous turn", () => {
+    expect(shouldMarkTurn({ label: "", currentLine: 3, now: 1000 })).toBe(false);
+    expect(shouldMarkTurn({
+      label: "",
+      currentLine: 5,
+      now: 5000,
+      last: { line: 4, at: 1000 },
+    })).toBe(false);
+  });
+
+  it("rejects same-line submits regardless of elapsed time", () => {
+    expect(shouldMarkTurn({
+      label: "実装して",
+      currentLine: 4,
+      now: 1100,
+      last: { line: 4, at: 1000 },
+    })).toBe(false);
+    expect(shouldMarkTurn({
+      label: "y",
+      currentLine: 4,
+      now: 5000,
+      last: { line: 4, at: 1000 },
+    })).toBe(false);
   });
 });
 

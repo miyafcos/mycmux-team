@@ -160,42 +160,88 @@ export function RemoteTab() {
 
       {remoteEnabled && remoteInfo && (
         <>
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "center",
-              background: "#fff",
-              borderRadius: 6,
-              padding: 12,
-              marginBottom: 12,
-              maxWidth: 260,
-            }}
-            dangerouslySetInnerHTML={{ __html: remoteInfo.qr_svg }}
-          />
-          <div
-            style={{
-              fontFamily: "Menlo, Consolas, monospace",
-              fontSize: 11,
-              lineHeight: 1.45,
-              wordBreak: "break-all",
-              color: "var(--cmux-text)",
-              background: "color-mix(in srgb, var(--cmux-text) 10%, transparent)",
-              border: "1px solid var(--cmux-border)",
-              borderRadius: 6,
-              padding: 10,
-              marginBottom: 10,
-            }}
-          >
-            {remoteInfo.url}
-          </div>
-          <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
-            <button onClick={copyRemoteUrl} style={dialogButtonStyle}>
-              URLをコピー
-            </button>
-            <button onClick={loadRemoteInfo} style={dialogButtonStyle}>
-              更新
-            </button>
-          </div>
+          {remoteInfo.url ? (
+            <>
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "center",
+                  background: "#fff",
+                  borderRadius: 6,
+                  padding: 12,
+                  marginBottom: 12,
+                  maxWidth: 260,
+                }}
+                dangerouslySetInnerHTML={{ __html: remoteInfo.qr_svg }}
+              />
+              <div
+                style={{
+                  fontFamily: "Menlo, Consolas, monospace",
+                  fontSize: 11,
+                  lineHeight: 1.45,
+                  wordBreak: "break-all",
+                  color: "var(--cmux-text)",
+                  background: "color-mix(in srgb, var(--cmux-text) 10%, transparent)",
+                  border: "1px solid var(--cmux-border)",
+                  borderRadius: 6,
+                  padding: 10,
+                  marginBottom: 10,
+                }}
+              >
+                {remoteInfo.url}
+              </div>
+              <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
+                <button onClick={copyRemoteUrl} style={dialogButtonStyle}>
+                  URLをコピー
+                </button>
+                <button onClick={loadRemoteInfo} style={dialogButtonStyle}>
+                  更新
+                </button>
+              </div>
+            </>
+          ) : (
+            <div
+              style={{
+                border: "1px solid var(--cmux-border)",
+                borderRadius: 6,
+                padding: 12,
+                marginBottom: 16,
+                fontSize: 12,
+                lineHeight: 1.65,
+                color: "var(--cmux-text)",
+              }}
+            >
+              <div style={{ marginBottom: 8 }}>
+                いまの設定では iPhone からこの PC に届きません。つながる入口がないので QR は出していません。
+              </div>
+              <div style={{ color: "var(--cmux-text-dim)", marginBottom: 6 }}>次のどちらかを行ってください。</div>
+              <div style={{ color: "var(--cmux-text-dim)", marginBottom: 4 }}>
+                ・この PC で <code>tailscale serve</code> を張る
+              </div>
+              <div style={{ color: "var(--cmux-text-dim)", marginBottom: 10 }}>
+                ・上の「リモートを LAN に公開する」をオンにする
+              </div>
+              <div
+                style={{
+                  fontFamily: "Menlo, Consolas, monospace",
+                  fontSize: 11,
+                  lineHeight: 1.45,
+                  wordBreak: "break-all",
+                  color: "var(--cmux-text)",
+                  background: "color-mix(in srgb, var(--cmux-text) 10%, transparent)",
+                  border: "1px solid var(--cmux-border)",
+                  borderRadius: 6,
+                  padding: 10,
+                  marginBottom: 10,
+                }}
+              >
+                tailscale serve --bg --http=7683 http://127.0.0.1:7682
+              </div>
+              <button onClick={loadRemoteInfo} style={dialogButtonStyle}>
+                更新
+              </button>
+            </div>
+          )}
           <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>接続中クライアント</div>
           {remoteInfo.connected_clients.length === 0 ? (
             <div style={{ fontSize: 12, color: "var(--cmux-text-dim)" }}>接続中の iPhone はありません</div>
