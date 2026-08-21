@@ -500,6 +500,9 @@ export function SidebarResizer({
         width: 8,
         minHeight: 0,
         flex: "0 0 8px",
+        // Paint the same backdrop the panes sit on; left bare the strip shows
+        // the raw wallpaper as a bright seam between sidebar and terminals.
+        background: "var(--cmux-bg)",
         borderLeft: `1px solid ${resizing ? "var(--cmux-accent)" : "var(--cmux-border-hairline)"}`,
         cursor: "col-resize",
         touchAction: "none",

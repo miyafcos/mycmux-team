@@ -582,8 +582,10 @@ div:hover>.tab-close-btn {
 
 
 /* Keep a thin visible divider and accent it on hover */
+/* The sash paints the pane backdrop, not the raw wallpaper: a bare gap reads
+   as a bright seam between panes on every wallpaper lighter than the theme. */
 [class*="sash"] {
-  background: transparent !important;
+  background: var(--cmux-bg) !important;
 }
 
 [class*="sash"]::before {
