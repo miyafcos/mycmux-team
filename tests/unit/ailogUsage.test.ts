@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import { DAY_OFFSET_MIN, formatBucketLabel, type RhythmSlot, type SeriesBucket, type SeriesGroup } from "../../src/lib/ailog";
 import type { PivotAxis } from "../../src/lib/ailog";
-import { MODEL_COLORS, NEUTRAL_COLOR } from "../../src/components/ailog/palette";
+import { NEUTRAL_COLOR, SERIES_TOP_N, modelPaint } from "../../src/components/ailog/modelColors";
+import { modelTablePaint } from "../../src/components/ailog/UsageModelTable";
 import {
   DAY_MS,
   OTHER_GROUP,
@@ -10,6 +11,7 @@ import {
   USAGE_AXES,
   activeDayRatio,
   buildUsageModel,
+  decomposeCostChange,
   formatMetric,
   groupByLabel,
   groupLabel,
@@ -19,6 +21,7 @@ import {
   offsetLabel,
   peakSlot,
   slotBars,
+  valueAxisTicks,
 } from "../../src/components/ailog/usageModel";
 
 const OFFSET_MS = DAY_OFFSET_MIN * 60_000;
@@ -93,6 +96,33 @@ describe("usage metrics", () => {
   });
 });
 
+describe("cost-change decomposition", () => {
+  it.each([
+    [30, 20, 10, 10],
+    [10, 10, 30, 20],
+    [20, 20, 10, 10],
+    [20, 10, 10, 10],
+  ])("adds the three effects back to the exact cost change", (costNow, requestsNow, costPrev, requestsPrev) => {
+    const result = decomposeCostChange(costNow, requestsNow, costPrev, requestsPrev);
+    expect(result).not.toBeNull();
+    expect(result!.volumeEffect + result!.rateEffect + result!.interaction).toBeCloseTo(result!.totalDelta, 12);
+  });
+
+  it("refuses a prior period without requests", () => {
+    expect(decomposeCostChange(20, 10, 0, 0)).toBeNull();
+  });
+});
+
+describe("value axis ticks", () => {
+  it("is zero-safe, monotonic, bounded, and rounded to readable values", () => {
+    expect(valueAxisTicks(0)).toEqual([0]);
+    const ticks = valueAxisTicks(1_234_567);
+    expect(ticks).toEqual([0, 600_000, 1_200_000]);
+    expect(ticks.every((tick, index) => index === 0 || tick > ticks[index - 1])).toBe(true);
+    expect(ticks.at(-1)).toBeLessThanOrEqual(1_234_567);
+  });
+});
+
 describe("daily stack", () => {
   it("keeps a day per calendar slot, including quiet ones", () => {
     const model = buildUsageModel(
@@ -139,19 +169,87 @@ describe("daily stack", () => {
   it("gives a model the same colour on every day, and greys the unknown band", () => {
     const model = buildUsageModel(
       [
-        bucket(AUG13, [group("a", { input: 50 }), group(UNKNOWN_GROUP, { input: 5 })]),
-        bucket(AUG13 + DAY_MS, [group("b", { input: 40 }), group("a", { input: 10 })]),
+        bucket(AUG13, [group("claude-opus-5", { input: 50 }), group(UNKNOWN_GROUP, { input: 5 })]),
+        bucket(AUG13 + DAY_MS, [group("gpt-5.6-terra", { input: 40 }), group("claude-opus-5", { input: 10 })]),
       ],
       "ioTokens",
     );
 
     const colourOf = (dayIndex: number, name: string) =>
       model.days[dayIndex].slices.find((slice) => slice.group === name)?.color;
-    expect(colourOf(0, "a")).toBe(colourOf(1, "a"));
-    expect(colourOf(0, "a")).toBe(MODEL_COLORS[0]);
+    expect(colourOf(0, "claude-opus-5")).toBe(colourOf(1, "claude-opus-5"));
     expect(colourOf(0, UNKNOWN_GROUP)).toBe(NEUTRAL_COLOR);
     expect(groupLabel(UNKNOWN_GROUP)).toBe("モデル不明");
+    expect(groupLabel(OTHER_GROUP)).toBe("下位まとめ");
     expect(groupLabel("opus-5")).toBe("opus-5");
+  });
+
+  it("keeps a model colour when its period rank changes", () => {
+    const highest = buildUsageModel(
+      [bucket(AUG13, [group("claude-opus-5", { input: 300 }), group("gpt-5.6-terra", { input: 200 }), group("gpt-5.6-luna", { input: 100 })])],
+      "ioTokens",
+      3,
+    );
+    const lowest = buildUsageModel(
+      [bucket(AUG13, [group("claude-opus-5", { input: 100 }), group("gpt-5.6-terra", { input: 200 }), group("gpt-5.6-luna", { input: 300 })])],
+      "ioTokens",
+      3,
+    );
+    const legendColor = (model: ReturnType<typeof buildUsageModel>, name: string) =>
+      model.legend.find((entry) => entry.group === name)?.color;
+
+    expect(legendColor(highest, "claude-opus-5")).toBe(legendColor(lowest, "claude-opus-5"));
+  });
+
+  it("keeps a model colour across ranges, metrics, and bucket input order", () => {
+    const buckets = [
+      bucket(AUG13, [group("claude-opus-5", { input: 100, costUsd: 1 }), group("gpt-5.6-terra", { input: 200, costUsd: 5 })]),
+      bucket(AUG13 + DAY_MS, [group("claude-opus-5", { input: 10, costUsd: 9 }), group("gpt-5.6-terra", { input: 300, costUsd: 1 })]),
+    ];
+    const legendColor = (model: ReturnType<typeof buildUsageModel>) =>
+      model.legend.find((entry) => entry.group === "claude-opus-5")?.color;
+
+    const fullRange = buildUsageModel(buckets, "ioTokens", 2);
+    const shortRange = buildUsageModel([buckets[0]], "ioTokens", 2);
+    const cost = buildUsageModel(buckets, "costUsd", 2);
+    const reversed = buildUsageModel([...buckets].reverse(), "ioTokens", 2);
+    expect(legendColor(fullRange)).toBe(legendColor(shortRange));
+    expect(legendColor(fullRange)).toBe(legendColor(cost));
+    expect(legendColor(fullRange)).toBe(legendColor(reversed));
+  });
+
+  it("uses the same colour for raw and family model axes", () => {
+    const raw = buildUsageModel(
+      [bucket(AUG13, [group("claude-opus-5", { input: 1 })])],
+      "ioTokens",
+      undefined,
+      "day",
+      "model_raw",
+    );
+    const family = buildUsageModel(
+      [bucket(AUG13, [group("opus-5", { input: 1 })])],
+      "ioTokens",
+      undefined,
+      "day",
+      "model",
+    );
+
+    expect(raw.legend.find((entry) => entry.group === "claude-opus-5")?.color)
+      .toBe(family.legend.find((entry) => entry.group === "opus-5")?.color);
+  });
+
+  it("shares a model paint across the detail, chart legend, and model table", () => {
+    const model = buildUsageModel(
+      [bucket(AUG13, [group("claude-opus-5", { input: 1 })])],
+      "ioTokens",
+      undefined,
+      "day",
+      "model_raw",
+    );
+    const paint = modelPaint("claude-opus-5");
+
+    expect(model.legend.find((entry) => entry.group === "claude-opus-5")).toMatchObject(paint);
+    expect(modelTablePaint("claude-opus-5", "model_raw")).toEqual(paint);
   });
 
   it("stacks a day's slices to the height of the busiest day", () => {
@@ -170,6 +268,17 @@ describe("daily stack", () => {
 
     const short = layoutStack(model.days[1], model.max, "absolute");
     expect(short[0].height).toBeCloseTo(0.5, 10);
+  });
+
+  it("propagates tone from a slice to its stack rect", () => {
+    const model = buildUsageModel(
+      [bucket(AUG13, [group("claude-opus-5", { input: 1 })])],
+      "ioTokens",
+    );
+    const [rect] = layoutStack(model.days[0], model.max, "absolute");
+
+    expect(rect.tone).toBe(model.days[0].slices[0].tone);
+    expect(rect.tone).toBe("solid");
   });
 
   it("fills the height in share mode and stays empty on a silent day", () => {
@@ -327,6 +436,8 @@ describe("groupByLabel", () => {
     expect(groupLabel("(none)", "effort")).toBe("未指定");
     expect(groupLabel("xhigh", "effort")).toBe("xhigh");
     expect(groupLabel("mycmux", "project")).toBe("mycmux");
+    expect(groupLabel("xai", "provider")).toBe("xAI");
+    expect(groupLabel("other", "provider")).toBe("その他の会社");
   });
 
   it("covers every PivotAxis value", () => {
@@ -335,9 +446,9 @@ describe("groupByLabel", () => {
   });
 });
 
-describe("palette and folding", () => {
-  it("keeps ten series colours", () => {
-    expect(MODEL_COLORS).toHaveLength(10);
+describe("series paint and folding", () => {
+  it("keeps the configured top-series limit", () => {
+    expect(SERIES_TOP_N).toBe(10);
   });
 
   it("records the 11th series name in foldedGroups", () => {

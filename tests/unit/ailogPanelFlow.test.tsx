@@ -107,15 +107,19 @@ vi.mock("../../src/stores/useAilogJobStore", async (importOriginal) => {
 vi.mock("../../src/lib/ailog", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../src/lib/ailog")>()),
   ailogIndexStart: vi.fn(), ailogIndexStatus: vi.fn(), ailogSummarizeStatus: vi.fn(), ailogSeries: vi.fn(), ailogUsageRhythm: vi.fn(),
-  ailogDashboard: vi.fn(), ailogBreakdown: vi.fn(), ailogPivot: vi.fn(),
+  ailogDashboard: vi.fn(), ailogBreakdown: vi.fn(), ailogPivot: vi.fn(), ailogReworkRankings: vi.fn(),
   ailogDigestGenerate: vi.fn(), ailogSummarizeStart: vi.fn(), ailogSessionSummarize: vi.fn(),
   ailogSessionDetail: vi.fn(), ailogSessionTranscript: vi.fn(),
   listenIndexProgress: vi.fn(), listenSummarizeProgress: vi.fn(),
 }));
 
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { AiLogPanel as renderPanel } from "../../src/components/ailog/AiLogPanel";
+import { WorkTagTable } from "../../src/components/ailog/WorkTagTable";
+import type { ModelsReport } from "../../src/lib/ailog";
 import {
-  ailogBreakdown, ailogDashboard, ailogDigestGenerate, ailogPivot,
+  ailogBreakdown, ailogDashboard, ailogDigestGenerate, ailogPivot, ailogReworkRankings,
   ailogIndexStart, ailogIndexStatus, ailogSeries, ailogSessionSummarize,
   ailogSessionDetail, ailogSessionTranscript, ailogSummarizeStart, ailogSummarizeStatus, ailogUsageRhythm, listenIndexProgress, listenSummarizeProgress,
   type IndexProgress,
@@ -208,6 +212,7 @@ beforeEach(async () => {
   vi.mocked(ailogDashboard).mockReset().mockResolvedValue({} as any);
   vi.mocked(ailogBreakdown).mockReset().mockResolvedValue({} as any);
   vi.mocked(ailogPivot).mockReset().mockResolvedValue({} as any);
+  vi.mocked(ailogReworkRankings).mockReset().mockResolvedValue({ failedCommands: [], rewrittenFiles: [] } as any);
   vi.mocked(ailogDigestGenerate).mockReset().mockResolvedValue({} as any);
   vi.mocked(ailogSummarizeStart).mockReset().mockResolvedValue({ started: true, alreadyRunning: false, targetCount: 0, estimatedInputChars: 0 });
   vi.mocked(ailogSessionSummarize).mockReset().mockResolvedValue();
@@ -273,6 +278,7 @@ describe("AI log panel single-view flow", () => {
     expect(ailogDashboard).toHaveBeenCalled();
     expect(ailogBreakdown).toHaveBeenCalled();
     expect(ailogPivot).toHaveBeenCalled();
+    expect(ailogReworkRankings).not.toHaveBeenCalled();
     expect(ailogSummarizeStart).not.toHaveBeenCalled();
     expect(ailogDigestGenerate).not.toHaveBeenCalled();
     expect(ailogSessionSummarize).not.toHaveBeenCalled();
@@ -284,6 +290,7 @@ describe("AI log panel single-view flow", () => {
     expect(ailogDashboard).toHaveBeenCalledOnce();
     expect(ailogBreakdown).toHaveBeenCalledOnce();
     expect(ailogPivot).toHaveBeenCalledOnce();
+    expect(ailogReworkRankings).not.toHaveBeenCalled();
     const menu = childByName(latest, "PanelMenu");
     (menu.props!.onStartSummarize as () => void)();
     expect(ailogSummarizeStart).toHaveBeenCalledOnce();
@@ -352,5 +359,43 @@ describe("AI log panel single-view flow", () => {
     panelOpen = false; renderAndFlush();
     expect(onPanelClose).toHaveBeenCalledOnce();
     expect(useAilogStore.getState().detailKey).toBeNull();
+  });
+
+  it("forwards store.models to UsageView so the work-tag table can render them", () => {
+    const sentinel = {
+      range: { from: 0, to: 1, label: "sentinel" },
+      granularity: "raw",
+      rows: [],
+      series: [],
+      mixedSessions: 0,
+      handoffs: [],
+      byWorkTag: [
+        {
+          workTag: "sentinel-models-wire",
+          sessionCount: 3,
+          perModel: [{ model: "gpt-5.6-terra", sessions: 3, turns: 6, costUsd: 1.5, ingestCost: 0, generateCost: 1.5, avgRework: 0 }],
+        },
+      ],
+      overlapping: false,
+      totalSessions: 3,
+      priceSource: "test",
+      priceCoverage: {
+        priced: { models: [], tokens: 0 },
+        local: { models: [], tokens: 0 },
+        internal: { models: [], tokens: 0 },
+        flat: { models: [], tokens: 0 },
+        reported: { models: [], tokens: 0 },
+        unknown: { models: [], tokens: 0 },
+        coveredTokenRatio: 1,
+      },
+      costNote: "",
+    };
+    useAilogStore.setState({ models: sentinel as any, loading: false, dashboardError: null });
+    latest = harness.render();
+    const usage = childByName(latest, "UsageView");
+    expect(usage.props?.models).toBe(sentinel);
+    const html = renderToStaticMarkup(createElement(WorkTagTable, { report: usage.props!.models as ModelsReport }));
+    expect(html).toContain("sentinel-models-wire");
+    expect(html).toContain("work-tag-row");
   });
 });

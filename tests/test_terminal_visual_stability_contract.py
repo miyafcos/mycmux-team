@@ -6,14 +6,18 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_chrome_and_active_pane_use_flat_focus_indicators() -> None:
     css = (ROOT / "src" / "global.css").read_text(encoding="utf-8")
-    app_shell = (
-        ROOT / "src" / "components" / "layout" / "AppShell.tsx"
+    # The colour half of AppShell's themeVars moved into the pure theme
+    # resolver; the flat-shadow contract follows the values, not the file.
+    resolver = (
+        ROOT / "src" / "lib" / "theme" / "resolveTheme.ts"
     ).read_text(encoding="utf-8")
 
     assert "--cmux-chrome-icon-shadow: none;" in css
     assert "--cmux-chrome-text-shadow: none;" in css
-    assert '"--cmux-chrome-icon-shadow": "none"' in app_shell
-    assert '"--cmux-chrome-text-shadow": "none"' in app_shell
+    assert 'cssVar: "--cmux-chrome-icon-shadow"' in resolver
+    assert 'cssVar: "--cmux-chrome-text-shadow"' in resolver
+    assert 'chromeIconShadow: "none"' in resolver
+    assert 'chromeTextShadow: "none"' in resolver
     assert '.terminal-pane-border[data-active-pane="true"]::after' not in css
 
 

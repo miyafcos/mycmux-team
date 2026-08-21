@@ -1,7 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { contrastRatio, isHexColor, resolveAccentTextColor } from "../../src/components/theme/colorContrast";
+import { contrastRatio, isHexColor, relativeLuminance, resolveAccentTextColor } from "../../src/components/theme/colorContrast";
 import { THEMES } from "../../src/components/theme/themeDefinitions";
-import type { TerminalColors, ThemeDefinition } from "../../src/types/theme";
+import { compositeOver } from "../../src/lib/theme/oklab";
+import {
+  flattenOnto,
+  resolveCompositionPolicy,
+  resolveSurfaceLadder,
+  resolveTheme,
+  worstCaseBackdrop,
+} from "../../src/lib/theme/resolveTheme";
+import type { TerminalColors, ThemeBackgroundSettings, ThemeDefinition } from "../../src/types/theme";
 
 // WCAG AA body-text floor. chrome.textDim/chrome.textMuted back real
 // readable content (ErrorBoundary crash messages, notification/log lines)
@@ -22,11 +30,11 @@ const THEME_CASES: ThemeCase[] = THEMES.map((theme) => [theme.id, theme] as cons
 const LIGHT_THEME_CASES = THEME_CASES.filter(([, theme]) => theme.colorScheme === "light");
 
 // ---------------------------------------------------------------------------
-// AppShell's on-color derivation, replicated
+// The resolver's on-color derivation, replicated
 // ---------------------------------------------------------------------------
-// AppShell.tsx derives --cmux-on-accent / --cmux-on-{working,waiting,done,error}
-// with a module-private textOnColor(); it is not exported, so the rule is
-// mirrored here. Keep this in sync with src/components/layout/AppShell.tsx:
+// resolveTheme() derives --cmux-on-accent / --cmux-on-{working,waiting,done,error}
+// with textOnColor(); the rule is mirrored here so this ratchet keeps measuring
+// it independently. Keep in sync with src/lib/theme/resolveTheme.ts:
 // keep white while it clears the 4.5 floor (preserves white-on-blue), switch
 // to pure black otherwise, with white as the fallback for unmeasurable
 // (non-hex) input.
@@ -80,7 +88,7 @@ function ratchetFloor(floor: number, baseline: number | undefined): number {
 // masking a now-passing pair.
 //
 // The on-color pairs used to be listed here too (25 of them, as low as
-// 3.16:1). They were fixed for real instead: AppShell's textOnColor() now
+// 3.16:1). They were fixed for real instead: the resolver's textOnColor() now
 // picks the higher-contrast of pure black/white, so they clear the hard 4.5
 // floor without repainting a single theme preset.
 const TERMINAL_FOREGROUND_DEBT: Record<string, number> = {
@@ -765,5 +773,278 @@ describe("contrast table integrity", () => {
       }
     }
     expect(stale).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Composited light-theme floors (design memo sections 4 and 8)
+// ---------------------------------------------------------------------------
+// Everything above measures opaque authored hexes. That is exactly the gap the
+// design memo opened with: the checked colours were not the painted colours,
+// because the panels are painted over a wallpaper at partial alpha.
+//
+// Two things are measured below, and they are not the same thing.
+//
+// THE FLOOR is stated against the surfaces the theme authors - canvas,
+// surface-low, surface, the terminal background, and the state washes
+// flattened onto the band they tint. Every informational glyph clears 4.5:1
+// there, on all nine light themes. That is what the app guarantees.
+//
+// THE COMPOSITED NUMBERS are what those same pairs measure once a panel is
+// painted at 0.68 over a wallpaper, with pure black standing in for the
+// wallpaper. They are reported and pinned, and deliberately NOT floored - see
+// the comment on "records the composited ratios" for what was withdrawn and
+// why.
+
+const WALLPAPER_ON: ThemeBackgroundSettings = {
+  mode: "preset",
+  presetId: "macos_monterey",
+  imagePath: "",
+  imageOpacity: 1,
+  imageBlur: 0,
+  wallpaperTone: -0.08,
+  panelOpacity: 0.68,
+  terminalOpacity: 0.62,
+};
+
+interface CompositedSurfaces {
+  /** Title bar, sidebar, pane tab strip. */
+  surfaceLow: string;
+  /** Main panels and the selected pane tab. */
+  surface: string;
+  /** App ground, and the full-screen setup/empty views painted on it. */
+  canvas: string;
+  /** Terminal viewport. */
+  terminal: string;
+  /** Inline raised surfaces, as translucent as the panel around them. */
+  raised: string;
+  /** A hovered row inside a chrome band. */
+  hover: string;
+  /** A selected row inside a chrome band - the darkest surface in the app. */
+  selected: string;
+}
+
+function compositedSurfaces(theme: ThemeDefinition): CompositedSurfaces {
+  const ladder = resolveSurfaceLadder(theme);
+  const policy = resolveCompositionPolicy(theme, WALLPAPER_ON, true);
+  const { resolved } = resolveTheme({ theme, background: WALLPAPER_ON, mediaActive: true });
+  const backdrop = worstCaseBackdrop(policy);
+  const chrome = (color: string) => compositeOver(color, policy.chromeBackdropAlpha, backdrop);
+  const surfaceLow = chrome(ladder.surfaceLow);
+  return {
+    surfaceLow,
+    surface: chrome(ladder.surface),
+    canvas: chrome(ladder.canvas),
+    terminal: compositeOver(theme.terminal.background, policy.terminalBackdropAlpha, backdrop),
+    raised: compositeOver(ladder.surfaceRaised, policy.raisedAlpha, backdrop),
+    // State washes are painted inside a band, so they tint the composited band
+    // rather than the wallpaper.
+    hover: flattenOnto(resolved.hover, surfaceLow),
+    selected: flattenOnto(resolved.selected, surfaceLow),
+  };
+}
+
+/** The five roles reported over the composited surfaces, per theme. */
+function compositedRoleMinima(theme: ThemeDefinition): Record<string, number> {
+  const panels = compositedSurfaces(theme);
+  const { resolved } = resolveTheme({ theme, background: WALLPAPER_ON, mediaActive: true });
+  // Every chrome surface a UI glyph can land on, including the state fills.
+  const chromeHosts = [
+    panels.canvas,
+    panels.surfaceLow,
+    panels.surface,
+    panels.terminal,
+    panels.raised,
+    panels.hover,
+    panels.selected,
+  ];
+  const worst = (colour: string) =>
+    Math.min(...chromeHosts.map((host) => contrastRatio(colour, host)));
+  return {
+    text: worst(resolved.text),
+    "text-secondary": worst(resolved.textSecondary),
+    "text-tertiary": worst(resolved.textTertiary),
+    "text-dim": worst(resolved.textDim),
+    "terminal.foreground": contrastRatio(theme.terminal.foreground, panels.terminal),
+  };
+}
+
+/** The surfaces a light theme authors, as text lands on them. */
+function authoredHosts(theme: ThemeDefinition): Record<string, string> {
+  const ladder = resolveSurfaceLadder(theme);
+  const { resolved } = resolveTheme({ theme, background: WALLPAPER_ON, mediaActive: true });
+  return {
+    canvas: ladder.canvas,
+    "surface-low": ladder.surfaceLow,
+    surface: ladder.surface,
+    raised: ladder.surfaceRaised,
+    popover: ladder.popover,
+    "terminal background": theme.terminal.background,
+    "hover on surface-low": flattenOnto(resolved.hover, ladder.surfaceLow),
+    "selected on surface-low": flattenOnto(resolved.selected, ladder.surfaceLow),
+  };
+}
+
+/** The four derived levels, per theme. */
+function textRoles(theme: ThemeDefinition): Record<string, string> {
+  const { resolved } = resolveTheme({ theme, background: WALLPAPER_ON, mediaActive: true });
+  return {
+    text: resolved.text,
+    "text-secondary": resolved.textSecondary,
+    "text-tertiary": resolved.textTertiary,
+    "text-dim": resolved.textDim,
+  };
+}
+
+describe("light chrome contrast on the surfaces the theme authors", () => {
+  // This is the floor the app guarantees, and it is stated where a guarantee
+  // can hold: against the theme's own surfaces.
+  it.each(LIGHT_THEME_CASES)(
+    "%s: all four text levels clear the floor on every authored surface",
+    (id, theme) => {
+      const hosts = authoredHosts(theme);
+      for (const [role, colour] of Object.entries(textRoles(theme))) {
+        for (const [hostName, host] of Object.entries(hosts)) {
+          assertContrast(
+            id,
+            `${role} (${colour}) / ${hostName} (${host})`,
+            contrastRatio(colour, host),
+            CONTRAST_TARGET,
+          );
+        }
+      }
+    },
+  );
+
+  it.each(LIGHT_THEME_CASES)(
+    "%s: terminal body text clears the floor on the authored terminal background",
+    (id, theme) => {
+      assertContrast(
+        id,
+        `terminal.foreground (${theme.terminal.foreground}) / terminal.background (${theme.terminal.background})`,
+        contrastRatio(theme.terminal.foreground, theme.terminal.background),
+        CONTRAST_TARGET,
+      );
+    },
+  );
+
+  // The measured failure that started the light work: hover/selected stack a
+  // second alpha on the band they tint, and with the pre-stage-2 text levels a
+  // selected sidebar row dropped tertiary text to 2.15:1. The washes are the
+  // authored ones again, so what fixes this is the derived ladder measuring
+  // the flattened fill as a host - which is this test.
+  it.each(LIGHT_THEME_CASES)(
+    "%s: text clears the floor on the hover and selected fills",
+    (id, theme) => {
+      const ladder = resolveSurfaceLadder(theme);
+      const { resolved } = resolveTheme({ theme, background: WALLPAPER_ON, mediaActive: true });
+      const states = {
+        hover: flattenOnto(resolved.hover, ladder.surfaceLow),
+        selected: flattenOnto(resolved.selected, ladder.surfaceLow),
+      };
+      for (const [stateName, host] of Object.entries(states)) {
+        for (const [role, colour] of Object.entries(textRoles(theme))) {
+          assertContrast(
+            id,
+            `${role} / ${stateName} (${host})`,
+            contrastRatio(colour, host),
+            CONTRAST_TARGET,
+          );
+        }
+      }
+    },
+  );
+});
+
+describe("light chrome contrast after wallpaper compositing", () => {
+  // ---------------------------------------------------------------------
+  // READ THIS BEFORE ADDING A FLOOR HERE.
+  // ---------------------------------------------------------------------
+  // These numbers are a MEASUREMENT, not a guarantee, and the guarantee was
+  // removed on purpose.
+  //
+  // Stage 2 asserted 4.5:1 on these pairs and paid for it by raising the light
+  // panels to 0.80 / 0.86, which hid the wallpaper. Stage 2b asserted it again
+  // and paid with a +0.25 wash toward the theme's near-white paper, which
+  // bleached the wallpaper instead: on the shipped asanagi/oppenheimer pairing
+  // the image's mean luminance went from 58.6 to 109.6 and the picture went
+  // flat. Both were rejected on sight by the person the app is built for.
+  //
+  // The bound itself is the problem. Pure black is a true upper bound on how
+  // dark a wallpaper can be and a useless target: no shipped wallpaper is
+  // anywhere near it, and users pick images they can read against. Holding a
+  // palette to it costs either the wallpaper's visibility or its colour.
+  //
+  // SO: WHAT IS NO LONGER PROMISED is that light text clears 4.5:1 over an
+  // arbitrarily dark wallpaper. Against a pure-black one, text-dim measures
+  // about 2.2:1. The floor that IS promised is the one in the describe block
+  // above, against the surfaces the theme authors.
+  //
+  // Restoring a real guarantee without paying in looks needs the wallpaper's
+  // actual luminance - adaptive sampling, design memo section 12. Until that
+  // exists, measure and report; do not assert.
+  it("records the composited ratios over a pure-black wallpaper", () => {
+    const FROZEN: Record<string, Record<string, number>> = {
+      asanagi: { text: 4.37, "text-secondary": 3.54, "text-tertiary": 2.81, "text-dim": 2.19, "terminal.foreground": 4.68 },
+      kinari: { text: 3.44, "text-secondary": 2.94, "text-tertiary": 2.51, "text-dim": 2.13, "terminal.foreground": 3.7 },
+      wakaba: { text: 3.67, "text-secondary": 3.09, "text-tertiary": 2.56, "text-dim": 2.12, "terminal.foreground": 3.99 },
+      geppaku: { text: 4.04, "text-secondary": 3.32, "text-tertiary": 2.67, "text-dim": 2.14, "terminal.foreground": 4.42 },
+      sakura: { text: 3.94, "text-secondary": 3.26, "text-tertiary": 2.66, "text-dim": 2.13, "terminal.foreground": 4.26 },
+      paper: { text: 4.36, "text-secondary": 3.53, "text-tertiary": 2.78, "text-dim": 2.17, "terminal.foreground": 4.71 },
+      hakuchuumu: { text: 3.51, "text-secondary": 3.01, "text-tertiary": 2.55, "text-dim": 2.16, "terminal.foreground": 3.76 },
+      mist: { text: 4.28, "text-secondary": 3.48, "text-tertiary": 2.75, "text-dim": 2.17, "terminal.foreground": 4.63 },
+      "ink-day": { text: 6.04, "text-secondary": 4.66, "text-tertiary": 3.24, "text-dim": 2.18, "terminal.foreground": 6.52 },
+    };
+
+    const measured: Record<string, Record<string, number>> = {};
+    for (const [id, theme] of LIGHT_THEME_CASES) {
+      const minima = compositedRoleMinima(theme);
+      measured[id] = Object.fromEntries(
+        Object.entries(minima).map(([role, value]) => [role, Number(value.toFixed(2))]),
+      );
+
+      // The one thing that IS asserted: the hierarchy survives compositing.
+      // A wallpaper erodes every level, but it must not reorder them - if it
+      // did, the ladder would stop meaning anything the moment one is on.
+      const order = ["text", "text-secondary", "text-tertiary", "text-dim"];
+      for (let index = 1; index < order.length; index += 1) {
+        expect(
+          minima[order[index]],
+          `${id}: composited ${order[index]} (${minima[order[index]].toFixed(2)}:1) outranks ${order[index - 1]} (${minima[order[index - 1]].toFixed(2)}:1)`,
+        ).toBeLessThan(minima[order[index - 1]]);
+      }
+    }
+    expect(measured).toEqual(FROZEN);
+  });
+
+  // The polarity condition from the memo. It still matters without a floor:
+  // it is what makes "a darker wallpaper is worse, never better" true rather
+  // than a guess, and so what lets the numbers recorded above be read as a
+  // worst case at all. A light-on-light pair would reverse the direction.
+  it.each(LIGHT_THEME_CASES)("%s: every light foreground is darker than its panel", (id, theme) => {
+    const panels = compositedSurfaces(theme);
+    const { resolved } = resolveTheme({ theme, background: WALLPAPER_ON, mediaActive: true });
+    const darkest = Math.min(
+      relativeLuminance(panels.surfaceLow),
+      relativeLuminance(panels.surface),
+      relativeLuminance(panels.canvas),
+      relativeLuminance(panels.terminal),
+      relativeLuminance(panels.raised),
+      relativeLuminance(panels.hover),
+      relativeLuminance(panels.selected),
+    );
+    const roles = {
+      text: resolved.text,
+      "text-secondary": resolved.textSecondary,
+      "text-tertiary": resolved.textTertiary,
+      "text-dim": resolved.textDim,
+      "terminal.foreground": theme.terminal.foreground,
+    };
+    for (const [role, colour] of Object.entries(roles)) {
+      expect(
+        relativeLuminance(colour),
+        `${id}: ${role} (${colour}) is not darker than the darkest composited panel`,
+      ).toBeLessThan(darkest);
+    }
   });
 });

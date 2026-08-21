@@ -1,6 +1,19 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { describe, expect, it, vi } from "vitest";
+import { AccountsPanel } from "../../src/components/layout/AccountsPanel";
+import {
+  SHARED_RESET_TITLE,
+  formatResetShort,
+} from "../../src/lib/accountRows";
+import type { ProfileUsage, WindowStat } from "../../src/lib/ipc";
+
+vi.mock("@tauri-apps/plugin-dialog", () => ({ confirm: vi.fn() }));
+vi.mock("@tauri-apps/api/path", () => ({ homeDir: vi.fn() }));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(), Channel: class {} }));
+vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn() }));
 
 const read = (relative: string) =>
   readFileSync(fileURLToPath(new URL(relative, import.meta.url)), "utf8");
@@ -186,3 +199,158 @@ describe("add account entry points", () => {
     expect(cliPanelSource).toContain("codex login");
   });
 });
+
+function stat(pct: number, resets_at: string): WindowStat {
+  return { pct, resets_at };
+}
+
+function usageRow(overrides: Partial<ProfileUsage> = {}): ProfileUsage {
+  return {
+    profile_id: "row-1",
+    provider: "claude",
+    label: "one",
+    email: "anna@example.com",
+    plan: null,
+    registered: true,
+    is_active: false,
+    needs_relogin: false,
+    state: "ok",
+    five_hour: null,
+    seven_day: null,
+    seven_day_sonnet: null,
+    seven_day_opus: null,
+    model_windows: [],
+    error_code: null,
+    retry_at: null,
+    fetched_at: "2026-08-21T12:00:00Z",
+    ...overrides,
+  };
+}
+
+function renderPanel(row: ProfileUsage): string {
+  return renderToStaticMarkup(
+    createElement(AccountsPanel, {
+      rows: [row],
+      onClose: () => {},
+      onOpenUsageSettings: () => {},
+    }),
+  );
+}
+
+function countResetMarks(html: string): number {
+  return (html.match(/↻/g) ?? []).length;
+}
+
+describe("shared reset mark (render)", () => {
+  const sharedIso = "2026-08-27T00:00:00Z";
+
+  it("T2: draws exactly one ↻ with the short date on a Grok-shaped shared row", () => {
+    const html = renderPanel(
+      usageRow({
+        provider: "grok",
+        email: "tari@kywa.uk",
+        seven_day: stat(65, sharedIso),
+        model_windows: [
+          { key: "GrokBuild", window: stat(59, sharedIso) },
+          { key: "GrokHeavy", window: stat(4, sharedIso) },
+          { key: "GrokFast", window: stat(2, sharedIso) },
+        ],
+      }),
+    );
+    const label = formatResetShort(sharedIso);
+    expect(countResetMarks(html)).toBe(1);
+    expect(html).toContain(`↻${label}`);
+    expect(html).toContain(SHARED_RESET_TITLE);
+  });
+
+  it("T3: draws one ↻ per window when the dates differ, and no shared mark", () => {
+    const html = renderPanel(
+      usageRow({
+        five_hour: stat(12, "2026-07-20T00:00:00Z"),
+        seven_day: stat(22, "2026-08-26T00:00:00Z"),
+        model_windows: [
+          { key: "seven_day_fable", window: stat(26, "2026-08-28T00:00:00Z") },
+        ],
+      }),
+    );
+    expect(countResetMarks(html)).toBe(3);
+    expect(html).toContain(`↻${formatResetShort("2026-07-20T00:00:00Z")}`);
+    expect(html).toContain(`↻${formatResetShort("2026-08-26T00:00:00Z")}`);
+    expect(html).toContain(`↻${formatResetShort("2026-08-28T00:00:00Z")}`);
+    expect(html).not.toContain(SHARED_RESET_TITLE);
+  });
+
+  it("T4: keeps one shared ↻ in tight rows and draws none when tight dates differ", () => {
+    const sharedHtml = renderPanel(
+      usageRow({
+        provider: "grok",
+        seven_day: stat(65, sharedIso),
+        model_windows: [
+          { key: "a", window: stat(59, sharedIso) },
+          { key: "b", window: stat(4, sharedIso) },
+          { key: "c", window: stat(2, sharedIso) },
+        ],
+      }),
+    );
+    expect(countResetMarks(sharedHtml)).toBe(1);
+    expect(sharedHtml).toContain(`↻${formatResetShort(sharedIso)}`);
+    expect(sharedHtml).toContain(SHARED_RESET_TITLE);
+
+    const mixedHtml = renderPanel(
+      usageRow({
+        seven_day: stat(10, "2026-08-22T00:00:00Z"),
+        model_windows: [
+          { key: "a", window: stat(20, "2026-08-23T00:00:00Z") },
+          { key: "b", window: stat(30, "2026-08-24T00:00:00Z") },
+          { key: "c", window: stat(40, "2026-08-25T00:00:00Z") },
+        ],
+      }),
+    );
+    expect(countResetMarks(mixedHtml)).toBe(0);
+    expect(mixedHtml).not.toContain(SHARED_RESET_TITLE);
+  });
+
+  it("T2-claude: draws exactly one ↻ on a Claude snug row whose windows share a date", () => {
+    const html = renderPanel(
+      usageRow({
+        provider: "claude",
+        five_hour: stat(12, sharedIso),
+        seven_day: stat(22, sharedIso),
+        seven_day_sonnet: stat(26, sharedIso),
+      }),
+    );
+    expect(countResetMarks(html)).toBe(1);
+    expect(html).toContain(`↻${formatResetShort(sharedIso)}`);
+    expect(html).toContain(SHARED_RESET_TITLE);
+  });
+
+  it("T2-claude-roomy: draws exactly one ↻ on a Claude two-window row with a shared date", () => {
+    const html = renderPanel(
+      usageRow({
+        provider: "claude",
+        five_hour: stat(12, sharedIso),
+        seven_day: stat(22, sharedIso),
+      }),
+    );
+    expect(countResetMarks(html)).toBe(1);
+    expect(html).toContain(`↻${formatResetShort(sharedIso)}`);
+    expect(html).toContain(SHARED_RESET_TITLE);
+  });
+
+  it("T2-claude-stale: keeps one shared ↻ on a Claude cooldown row with last-known windows", () => {
+    const html = renderPanel(
+      usageRow({
+        provider: "claude",
+        state: "cooldown",
+        retry_at: "2026-08-21T13:00:00Z",
+        five_hour: stat(12, sharedIso),
+        seven_day: stat(22, sharedIso),
+        seven_day_sonnet: stat(26, sharedIso),
+      }),
+    );
+    expect(countResetMarks(html)).toBe(1);
+    expect(html).toContain(`↻${formatResetShort(sharedIso)}`);
+    expect(html).toContain(SHARED_RESET_TITLE);
+  });
+});
+

@@ -9,6 +9,49 @@
 import { useState, type CSSProperties, type JSX, type ReactNode } from "react";
 
 import { formatCount, formatTokens, formatTokensFull, formatUsd } from "../../lib/ailog";
+import type { SeriesPaint } from "./modelColors";
+
+function hatchId(color: string): string {
+  return `ailog-hatch-${color.replace(/^#/, "").toLowerCase()}`;
+}
+
+function hatchStroke(color: string): string {
+  const match = /^#([0-9a-f]{6})$/i.exec(color);
+  if (!match) return color;
+  const channels = [0, 2, 4].map((index) => Math.round(parseInt(match[1].slice(index, index + 2), 16) * 0.65));
+  return `#${channels.map((channel) => channel.toString(16).padStart(2, "0")).join("")}`;
+}
+
+/** SVG fill: muted paints use a colour-derived diagonal hatch pattern. */
+export function paintFill(paint: SeriesPaint): string {
+  return paint.tone === "muted" ? `url(#${hatchId(paint.color)})` : paint.color;
+}
+
+/** HTML swatch background; CSS cannot reference an SVG pattern by document ID. */
+export function paintSwatchBackground(paint: SeriesPaint): string {
+  return paint.tone === "muted"
+    ? `repeating-linear-gradient(135deg, ${paint.color} 0 4px, ${hatchStroke(paint.color)} 4px 5px)`
+    : paint.color;
+}
+
+/** SVG defs for the distinct muted paints used by one chart. */
+export function ChartHatchDefs({ paints }: { paints: SeriesPaint[] }): JSX.Element | null {
+  const muted = new Map<string, SeriesPaint>();
+  for (const paint of paints) {
+    if (paint.tone === "muted") muted.set(hatchId(paint.color), paint);
+  }
+  if (muted.size === 0) return null;
+  return (
+    <defs>
+      {[...muted.entries()].map(([id, paint]) => (
+        <pattern key={id} id={id} width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+          <rect width="6" height="6" fill={paint.color} />
+          <line x1="0" y1="0" x2="0" y2="6" stroke={hatchStroke(paint.color)} strokeWidth="1" />
+        </pattern>
+      ))}
+    </defs>
+  );
+}
 
 export const cardStyle: CSSProperties = {
   background: "var(--cmux-surface)",

@@ -22,8 +22,8 @@ import {
   type TurnDetail,
   type TranscriptReport,
 } from "../../lib/ailog";
-import { hashedColor } from "./palette";
-import { Chip, Num, noteStyle, subtleButtonStyle, tableStyle, tdLeftStyle, tdStyle, thLeftStyle, thStyle } from "./ui";
+import { modelPaint } from "./modelColors";
+import { ChartHatchDefs, Chip, Num, noteStyle, paintFill, paintSwatchBackground, subtleButtonStyle, tableStyle, tdLeftStyle, tdStyle, thLeftStyle, thStyle } from "./ui";
 
 /** Above this many turns the bars are grouped so the chart stays readable. */
 const MAX_BARS = 240;
@@ -93,10 +93,14 @@ export function SessionDetailView({ detail, transcript, transcriptLoading, trans
     const set = new Set(bars.map((bar) => bar.model));
     return [...set];
   }, [bars]);
+  const paints = models.map((model) => modelPaint(model));
 
   const chartWidth = 900;
   const chartHeight = 120;
-  const barWidth = bars.length > 0 ? chartWidth / bars.length : 0;
+  const axisWidth = 58;
+  const plotHeight = chartHeight - 8;
+  const barWidth = bars.length > 0 ? (chartWidth - axisWidth) / bars.length : 0;
+  const ticks = peak > 0 ? [0, peak] : [0];
   const breakdown = detail.costBreakdown;
   const chars = breakdown.ioChars;
   const charTotal = chars.read + chars.exec + chars.write + chars.fetch + chars.prompt + chars.other;
@@ -158,16 +162,21 @@ export function SessionDetailView({ detail, transcript, transcriptLoading, trans
                 aria-label="ターンごとのコスト相当"
                 style={{ width: "100%", minWidth: 0, height: chartHeight, display: "block" }}
               >
+              <ChartHatchDefs paints={paints} />
+              {ticks.map((tick) => {
+                const y = peak > 0 ? chartHeight - (tick / peak) * plotHeight : chartHeight;
+                return <g key={tick} pointerEvents="none"><line x1={axisWidth} x2={chartWidth} y1={y} y2={y} stroke="var(--cmux-border-hairline)" /><text x={axisWidth - 4} y={y} textAnchor="end" dominantBaseline="middle" fill="var(--cmux-text-tertiary)" fontSize="var(--cmux-font-size-xs)">{formatUsd(tick)}</text></g>;
+              })}
               {bars.map((bar, index) => {
-                const height = peak > 0 ? (bar.costUsd / peak) * (chartHeight - 8) : 0;
+                const height = peak > 0 ? (bar.costUsd / peak) * plotHeight : 0;
                 return (
                   <rect
                     key={`${bar.fromSeq}-${index}`}
-                    x={index * barWidth}
+                    x={axisWidth + index * barWidth}
                     y={chartHeight - height}
                     width={Math.max(1, barWidth - 0.6)}
                     height={height}
-                    style={{ fill: hashedColor(bar.model) }}
+                    style={{ fill: paintFill(modelPaint(bar.model)) }}
                   >
                     <title>
                       {`${bar.fromSeq === bar.toSeq ? `ターン ${bar.fromSeq}` : `ターン ${bar.fromSeq}–${bar.toSeq}（${bar.turns} 件）`}\n${bar.model}\n${formatUsd(bar.costUsd)}`}
@@ -181,7 +190,7 @@ export function SessionDetailView({ detail, transcript, transcriptLoading, trans
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 4, ...noteStyle }}>
           {models.map((model) => (
             <span key={model} style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-              <span style={{ width: 8, height: 8, borderRadius: 2, background: hashedColor(model) }} />
+              <span style={{ width: 8, height: 8, borderRadius: 2, background: paintSwatchBackground(modelPaint(model)) }} />
               {model}
             </span>
           ))}

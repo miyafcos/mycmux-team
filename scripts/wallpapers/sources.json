@@ -1,0 +1,241 @@
+{
+  "packTag": "wallpapers-v1",
+  "wallpapers": [
+    {
+      "id": "macos_monterey",
+      "source": "src/assets/macos-wallpapers/monterey_dark.webp"
+    },
+    {
+      "id": "macos_ventura",
+      "source": "src/assets/macos-wallpapers/ventura_dark.webp"
+    },
+    {
+      "id": "macos_big_sur",
+      "source": "src/assets/macos-wallpapers/big_sur_night.webp"
+    },
+    {
+      "id": "macos_mojave",
+      "source": "src/assets/macos-wallpapers/mojave_night.webp"
+    },
+    {
+      "id": "earth_and_moon",
+      "source": "src/assets/macos-wallpapers/earth_and_moon.webp"
+    },
+    {
+      "id": "milky_way",
+      "source": "src/assets/macos-wallpapers/milky_way.webp"
+    },
+    {
+      "id": "win11_default_dark",
+      "source": "src/assets/windows-wallpapers/win11_default_dark.webp"
+    },
+    {
+      "id": "dark_city",
+      "source": "src/assets/warp-themes/dark_city_bg.webp"
+    },
+    {
+      "id": "catppuccin_black_hole",
+      "source": "src/assets/catppuccin-wallpapers/catppuccin_black_hole.webp"
+    },
+    {
+      "id": "catppuccin_atlantis",
+      "source": "src/assets/catppuccin-wallpapers/catppuccin_atlantis.webp"
+    },
+    {
+      "id": "catppuccin_blueprint",
+      "source": "src/assets/catppuccin-wallpapers/catppuccin_blueprint.webp"
+    },
+    {
+      "id": "catppuccin_bsod",
+      "source": "src/assets/catppuccin-wallpapers/catppuccin_bsod.webp"
+    },
+    {
+      "id": "catppuccin_abandoned_station",
+      "source": "src/assets/catppuccin-wallpapers/catppuccin_abandoned_station.webp"
+    },
+    {
+      "id": "catppuccin_abstract_swirls",
+      "source": "src/assets/catppuccin-wallpapers/catppuccin_abstract_swirls.webp"
+    },
+    {
+      "id": "oppenheimer",
+      "source": "src/assets/warp-themes/oppenheimer_bg.webp"
+    },
+    {
+      "id": "jellyfish",
+      "source": "src/assets/warp-themes/jellyfish_bg.webp"
+    },
+    {
+      "id": "koi",
+      "source": "src/assets/warp-themes/koi_bg.webp"
+    },
+    {
+      "id": "leafy",
+      "source": "src/assets/warp-themes/leafy_bg.webp"
+    },
+    {
+      "id": "macos_sonoma",
+      "source": "src/assets/macos-wallpapers/sonoma_dark.webp"
+    },
+    {
+      "id": "macos_high_sierra",
+      "source": "src/assets/macos-wallpapers/high_sierra.webp"
+    },
+    {
+      "id": "macos_sierra",
+      "source": "src/assets/macos-wallpapers/sierra.webp"
+    },
+    {
+      "id": "macos_el_capitan",
+      "source": "src/assets/macos-wallpapers/el_capitan.webp"
+    },
+    {
+      "id": "macos_yosemite",
+      "source": "src/assets/macos-wallpapers/yosemite.webp"
+    },
+    {
+      "id": "antelope_canyon",
+      "source": "src/assets/macos-wallpapers/antelope_canyon.webp"
+    },
+    {
+      "id": "red_rock",
+      "source": "src/assets/warp-themes/red_rock_bg.webp"
+    },
+    {
+      "id": "asteroid_city",
+      "source": "src/assets/warp-themes/asteroid_city_wallpaper.webp"
+    },
+    {
+      "id": "thanksgiving",
+      "source": "src/assets/warp-themes/thanksgiving_bg.webp"
+    },
+    {
+      "id": "warp",
+      "source": "src/assets/warp-themes/warp.webp"
+    },
+    {
+      "id": "grafbase",
+      "source": "src/assets/warp-themes/grafbase_bg.webp"
+    },
+    {
+      "id": "win11_motion_01",
+      "source": "src/assets/windows-wallpapers/win11_motion_01.webp"
+    },
+    {
+      "id": "win11_motion_02",
+      "source": "src/assets/windows-wallpapers/win11_motion_02.webp"
+    },
+    {
+      "id": "win11_motion_03",
+      "source": "src/assets/windows-wallpapers/win11_motion_03.webp"
+    },
+    {
+      "id": "win11_motion_04",
+      "source": "src/assets/windows-wallpapers/win11_motion_04.webp"
+    },
+    {
+      "id": "win11_spectrum_01",
+      "source": "src/assets/windows-wallpapers/win11_spectrum_01.webp"
+    },
+    {
+      "id": "win11_spectrum_02",
+      "source": "src/assets/windows-wallpapers/win11_spectrum_02.webp"
+    },
+    {
+      "id": "win11_spectrum_03",
+      "source": "src/assets/windows-wallpapers/win11_spectrum_03.webp"
+    },
+    {
+      "id": "win11_spectrum_04",
+      "source": "src/assets/windows-wallpapers/win11_spectrum_04.webp"
+    },
+    {
+      "id": "win11_flow_01",
+      "source": "src/assets/windows-wallpapers/win11_flow_01.webp"
+    },
+    {
+      "id": "win11_flow_02",
+      "source": "src/assets/windows-wallpapers/win11_flow_02.webp"
+    },
+    {
+      "id": "win11_flow_03",
+      "source": "src/assets/windows-wallpapers/win11_flow_03.webp"
+    },
+    {
+      "id": "win11_flow_04",
+      "source": "src/assets/windows-wallpapers/win11_flow_04.webp"
+    },
+    {
+      "id": "catppuccin_bluehour",
+      "source": "src/assets/catppuccin-wallpapers/catppuccin_bluehour.webp"
+    },
+    {
+      "id": "catppuccin_artificial_valley",
+      "source": "src/assets/catppuccin-wallpapers/catppuccin_artificial_valley.webp"
+    },
+    {
+      "id": "catppuccin_blue_landscape",
+      "source": "src/assets/catppuccin-wallpapers/catppuccin_blue_landscape.webp"
+    },
+    {
+      "id": "catppuccin_3d_model",
+      "source": "src/assets/catppuccin-wallpapers/catppuccin_3d_model.webp"
+    },
+    {
+      "id": "catppuccin_cabin",
+      "source": "src/assets/catppuccin-wallpapers/catppuccin_cabin.webp"
+    },
+    {
+      "id": "catppuccin_aesthetic",
+      "source": "src/assets/catppuccin-wallpapers/catppuccin_aesthetic.webp"
+    },
+    {
+      "id": "marble",
+      "source": "src/assets/warp-themes/marble_bg.webp"
+    },
+    {
+      "id": "pink_city",
+      "source": "src/assets/warp-themes/pink_city_bg.webp"
+    },
+    {
+      "id": "snowy",
+      "source": "src/assets/warp-themes/snowy_bg.webp"
+    },
+    {
+      "id": "winter",
+      "source": "src/assets/warp-themes/winter_bg.webp"
+    },
+    {
+      "id": "barbie",
+      "source": "src/assets/warp-themes/barbie_bg.webp"
+    },
+    {
+      "id": "pride",
+      "source": "src/assets/warp-themes/pride_bg.webp"
+    },
+    {
+      "id": "lumon",
+      "source": "src/assets/warp-themes/lumon.webp"
+    },
+    {
+      "id": "win11_bloom_01",
+      "source": "src/assets/windows-wallpapers/win11_bloom_01.webp"
+    },
+    {
+      "id": "win11_bloom_02",
+      "source": "src/assets/windows-wallpapers/win11_bloom_02.webp"
+    },
+    {
+      "id": "win11_bloom_03",
+      "source": "src/assets/windows-wallpapers/win11_bloom_03.webp"
+    },
+    {
+      "id": "win11_bloom_04",
+      "source": "src/assets/windows-wallpapers/win11_bloom_04.webp"
+    },
+    {
+      "id": "win11_default_bloom",
+      "source": "src/assets/windows-wallpapers/win11_default_bloom.webp"
+    }
+  ]
+}

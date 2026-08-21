@@ -107,6 +107,8 @@ fn model_providers_follow_the_shared_classification_rules() {
         // A price-table miss must not erase the company classification.
         ("gpt-5.55", ModelProvider::Openai),
         ("gemini-2.5-pro", ModelProvider::Google),
+        ("grok-4.6", ModelProvider::Xai),
+        ("grok-4.6-build", ModelProvider::Xai),
         ("ollama/llama3", ModelProvider::Local),
         ("fugu/ultra", ModelProvider::Local),
         ("<synthetic>", ModelProvider::Other),

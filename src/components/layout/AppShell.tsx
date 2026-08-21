@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, useRef, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import type { GridTemplateId, ThemeBackgroundSettings } from "../../types";
+import type { GridTemplateId, ThemeBackgroundSettings, ThemeDefinition } from "../../types";
 import {
   useWorkspaceListStore,
   useWorkspaceLayoutStore,
@@ -29,10 +29,21 @@ import { isEditableTarget } from "../../lib/keybindings";
 import { TAB_RESTORE_CLOSED_EVENT, openTabSweepInDashboard } from "./tabSweep";
 import { openDashboardForActiveSession } from "./openDashboardForTab";
 import { DashboardView } from "../dashboard/DashboardView";
-import { UI_DENSITY_TOKENS, useThemeStore } from "../../stores/themeStore";
+import { UI_DENSITY_TOKENS, useThemeStore, type UiDensity } from "../../stores/themeStore";
 import ErrorBoundary from "../common/ErrorBoundary";
-import { THEME_BACKGROUND_PRESETS } from "../../lib/themeTweaks";
-import { contrastRatio, isHexColor, resolveAccentTextColor } from "../theme/colorContrast";
+import {
+  isMediaBackgroundActive,
+  resolveCompositionPolicy,
+  resolveTheme,
+  resolvedThemeToCssVars,
+} from "../../lib/theme/resolveTheme";
+import {
+  cachedWallpaperPath,
+  downloadWallpaper,
+  isWallpaperPaintable,
+  refreshWallpaperCache,
+  useWallpaperCache,
+} from "../../lib/wallpaperCache";
 import { focusController } from "../../lib/focusController";
 import { OVERLAY_EXIT_MS, useDeferredUnmount } from "../../hooks/useDeferredUnmount";
 import { message } from "@tauri-apps/plugin-dialog";
@@ -75,60 +86,12 @@ const TERMINAL_PLAIN_INPUT_KEYS = new Set([
 // so a light theme no longer flashes the dark default ground on every launch.
 const BOOT_CHROME_STORAGE_KEY = "mycmux-boot-chrome";
 
-function colorWithOpacity(color: string, opacity: number): string {
-  if (opacity >= 0.995) {
-    return color;
-  }
-
-  const shortHex = /^#([0-9a-f]{3})$/i.exec(color);
-  const fullHex = /^#([0-9a-f]{6})$/i.exec(color);
-  const hex = fullHex?.[1] ?? shortHex?.[1].split("").map((char) => `${char}${char}`).join("");
-  if (!hex) {
-    return color;
-  }
-
-  const red = parseInt(hex.slice(0, 2), 16);
-  const green = parseInt(hex.slice(2, 4), 16);
-  const blue = parseInt(hex.slice(4, 6), 16);
-  return `rgba(${red}, ${green}, ${blue}, ${opacity})`;
-}
-
-const LIGHT_COLOR_LUMINANCE_THRESHOLD = 140;
-
-// Whether a hex color reads as "light". Used to pick chrome shadows from the
-// effective chrome background — which includes user color overrides — rather
-// than the theme's declared colorScheme. The threshold is BT.601 luma on a
-// 0-255 scale; 140 keeps mid amber/blue accents on the safer contrast side.
-// Non-hex input falls back to dark.
-function isLightColor(color: string): boolean {
-  const shortHex = /^#([0-9a-f]{3})$/i.exec(color);
-  const fullHex = /^#([0-9a-f]{6})$/i.exec(color);
-  const hex = fullHex?.[1] ?? shortHex?.[1].split("").map((char) => `${char}${char}`).join("");
-  if (!hex) {
-    return false;
-  }
-  const red = parseInt(hex.slice(0, 2), 16);
-  const green = parseInt(hex.slice(2, 4), 16);
-  const blue = parseInt(hex.slice(4, 6), 16);
-  // Perceived luminance (ITU-R BT.601).
-  return (red * 299 + green * 587 + blue * 114) / 1000 > LIGHT_COLOR_LUMINANCE_THRESHOLD;
-}
-
-// Glyph color for text painted on top of a filled swatch (accent buttons,
-// status badges, notification counters) — i.e. every --cmux-on-* token.
-// White is kept whenever it clears the WCAG AA floor (preserves the
-// conventional white-on-blue look); otherwise pure black takes over, which is
-// mathematically safe: any fill where white measures < 4.5:1 is light enough
-// that black measures >= ~4.67:1. The previous luma-140 threshold paired with
-// #0a0a0a carried no such guarantee — mid-tone light fills (the light themes'
-// status.done/error, several light accents) landed as low as 3.16:1. Non-hex
-// input (a user color tweak may store rgba()) keeps the white fallback.
-function textOnColor(color: string): string {
-  if (!isHexColor(color)) {
-    return "#ffffff";
-  }
-  return contrastRatio("#ffffff", color) >= 4.5 ? "#ffffff" : "#000000";
-}
+// Colour derivation no longer lives here. `resolveTheme()` in
+// src/lib/theme/resolveTheme.ts owns every colour-mix, wallpaper alpha and
+// light/dark branch that used to be inlined below, so the palette can be tested
+// without rendering the app. This file only assembles the CSS custom property
+// bag: typography and spacing from the density tokens, colours from the
+// resolver.
 
 export function dashboardTypographyVars(
   fontFamily: string,
@@ -143,12 +106,90 @@ export function dashboardTypographyVars(
   };
 }
 
-function AppBackgroundLayer({ background }: { background: ThemeBackgroundSettings }) {
-  const preset = THEME_BACKGROUND_PRESETS.find((item) => item.id === background.presetId) ?? THEME_BACKGROUND_PRESETS[0];
+export interface ThemeVarsInput {
+  theme: ThemeDefinition;
+  background: ThemeBackgroundSettings;
+  uiDensity: UiDensity;
+  fontFamily: string;
+  fontSize: number;
+  lineHeight: number;
+  uiFontScale: number;
+  /**
+   * Whether a wallpaper is really being painted. Defaults to what the settings
+   * ask for; the app passes the narrower answer, because a preset that has not
+   * been downloaded yet must composite as if there were no wallpaper at all.
+   */
+  mediaActive?: boolean;
+}
+
+/**
+ * The CSS custom property bag painted on the app root.
+ *
+ * Typography and spacing are derived here from the density tokens; every colour
+ * comes from `resolveTheme()`. Exported (and pure) so the resolver's output can
+ * be diffed against the pre-refactor derivation in tests — see
+ * tests/unit/resolveTheme.test.ts.
+ */
+export function buildThemeVars(input: ThemeVarsInput): React.CSSProperties {
+  const { theme, background, uiDensity, fontFamily, fontSize, lineHeight, uiFontScale } = input;
+  const mediaActive = input.mediaActive ?? isMediaBackgroundActive(background);
+
+  const densityTokens = UI_DENSITY_TOKENS[uiDensity];
+  const densitySpace = (base: number) => `${Math.round(base * densityTokens.spaceScale)}px`;
+  const scalePx = (value: string) => {
+    if (uiFontScale === 1) return value;
+    return `${Math.max(11, Math.round(Number.parseFloat(value) * uiFontScale))}px`;
+  };
+
+  const { resolved } = resolveTheme({ theme, background, mediaActive });
+
+  return {
+    "--cmux-font-size-xs": scalePx(densityTokens.fontXs),
+    "--cmux-font-size-sm": scalePx(densityTokens.fontSm),
+    "--cmux-font-size-md": scalePx(densityTokens.fontMd),
+    "--cmux-line-height-ui": densityTokens.lineHeightUi,
+    ...dashboardTypographyVars(fontFamily, fontSize, lineHeight, uiFontScale),
+    "--cmux-space-1": densitySpace(2),
+    "--cmux-space-2": densitySpace(4),
+    "--cmux-space-3": densitySpace(6),
+    "--cmux-space-4": densitySpace(8),
+    "--cmux-space-5": densitySpace(10),
+    "--cmux-space-6": densitySpace(12),
+    "--cmux-space-7": densitySpace(16),
+    ...resolvedThemeToCssVars(resolved),
+    colorScheme: resolved.colorScheme,
+  } as React.CSSProperties;
+}
+
+/**
+ * Paints the wallpaper and the tone layer over it.
+ *
+ * `toneColor` is what a positive `wallpaperTone` moves the wallpaper toward —
+ * the active theme's paper, so a warm theme stays warm instead of silting up
+ * with grey. A negative tone is the old black scrim, which is what dark themes
+ * keep using (design memo section 4).
+ */
+function AppBackgroundLayer({
+  background,
+  presetImagePath,
+  tone,
+  toneColor,
+}: {
+  background: ThemeBackgroundSettings;
+  /** Cached full-resolution file for the selected preset; "" until it lands. */
+  presetImagePath: string;
+  tone: number;
+  toneColor: string;
+}) {
   const userImageUrl = background.mode === "image" && background.imagePath
     ? convertFileSrc(background.imagePath)
     : "";
-  const presetImageUrl = background.mode === "preset" ? preset.imageUrl : "";
+  // No path means the wallpaper has not been downloaded yet. Painting nothing
+  // leaves the theme's own colour showing, which is what the settings already
+  // fall back to, and the fetch is running in the background.
+  const presetImageUrl = background.mode === "preset" && presetImagePath
+    ? convertFileSrc(presetImagePath)
+    : "";
   const finalImageUrl = userImageUrl || presetImageUrl;
   const [currentImageUrl, setCurrentImageUrl] = useState(finalImageUrl);
   const [previousImageUrl, setPreviousImageUrl] = useState("");
@@ -178,10 +219,11 @@ function AppBackgroundLayer({ background }: { background: ThemeBackgroundSetting
   }, [finalImageUrl]);
 
   const hasVisualBackground = Boolean(currentImageUrl || previousImageUrl);
-  const dimOpacity = currentImageUrl
-    ? background.imageDim
+  const toneStrength = Math.abs(tone);
+  const toneOpacity = currentImageUrl
+    ? toneStrength
     : previousImageUrl && !fadeStarted
-      ? background.imageDim
+      ? toneStrength
       : 0;
 
   const renderImageLayer = (imageUrl: string, opacity: number) => {
@@ -221,8 +263,9 @@ function AppBackgroundLayer({ background }: { background: ThemeBackgroundSetting
             style={{
               position: "absolute",
               inset: 0,
-              background: `rgba(0, 0, 0, ${dimOpacity})`,
-              transition: "background 0.4s ease",
+              background: toneColor,
+              opacity: toneOpacity,
+              transition: "opacity 0.4s ease, background 0.4s ease",
             }}
           />
         </>
@@ -540,117 +583,58 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
       setZoomedPaneId(null);
     }
   }, [zoomedPaneId, activeId, workspaces, setZoomedPaneId]);
-  // Chrome shadows key off the effective chrome background (color overrides
-  // included), not colorScheme — a dark theme recolored light needs this too.
-  const isLightChrome = isLightColor(currentTheme.chrome.background);
-  const mediaBackgroundActive = themeBackground.mode === "preset" || (
-    themeBackground.mode === "image" && themeBackground.imagePath.length > 0
+
+  const wallpaperCache = useWallpaperCache();
+  const presetImagePath =
+    themeBackground.mode === "preset"
+      ? cachedWallpaperPath(themeBackground.presetId, wallpaperCache)
+      : "";
+  // Composite as if there were no wallpaper until the file actually exists,
+  // otherwise the panels sit translucent over nothing while a download runs.
+  const wallpaperPainted = isWallpaperPaintable(themeBackground, wallpaperCache);
+
+  const themeVars = buildThemeVars({
+    theme: currentTheme,
+    background: themeBackground,
+    uiDensity,
+    fontFamily,
+    fontSize,
+    lineHeight,
+    uiFontScale,
+    mediaActive: wallpaperPainted,
+  });
+  // The wallpaper layer needs the *resolved* tone, not the stored one: a
+  // light theme sitting on the stored default paints toward its own paper
+  // rather than toward black.
+  const backgroundComposition = resolveCompositionPolicy(
+    currentTheme,
+    themeBackground,
+    wallpaperPainted,
   );
-  const panelOpacity = mediaBackgroundActive ? themeBackground.panelOpacity : 1;
-  // Ladder steps derived with color-mix() cannot be fed back through
-  // colorWithOpacity() (which only parses hex), so translucency is applied as a
-  // second color-mix toward transparent. Without this the pane tab bar renders
-  // as an opaque slab over a media background instead of letting it through.
-  const withPanelOpacity = (color: string) =>
-    panelOpacity >= 0.995
-      ? color
-      : `color-mix(in srgb, ${color} ${(panelOpacity * 100).toFixed(2)}%, transparent)`;
 
-  const densityTokens = UI_DENSITY_TOKENS[uiDensity];
-  const densitySpace = (base: number) => `${Math.round(base * densityTokens.spaceScale)}px`;
-  const scalePx = (value: string) => {
-    if (uiFontScale === 1) return value;
-    return `${Math.max(11, Math.round(Number.parseFloat(value) * uiFontScale))}px`;
-  };
+  useEffect(() => {
+    void refreshWallpaperCache();
+  }, []);
 
-  const themeVars = {
-    "--cmux-font-size-xs": scalePx(densityTokens.fontXs),
-    "--cmux-font-size-sm": scalePx(densityTokens.fontSm),
-    "--cmux-font-size-md": scalePx(densityTokens.fontMd),
-    "--cmux-line-height-ui": densityTokens.lineHeightUi,
-    ...dashboardTypographyVars(fontFamily, fontSize, lineHeight, uiFontScale),
-    "--cmux-space-1": densitySpace(2),
-    "--cmux-space-2": densitySpace(4),
-    "--cmux-space-3": densitySpace(6),
-    "--cmux-space-4": densitySpace(8),
-    "--cmux-space-5": densitySpace(10),
-    "--cmux-space-6": densitySpace(12),
-    "--cmux-space-7": densitySpace(16),
-    "--cmux-bg-solid": currentTheme.chrome.background,
-    "--cmux-surface-solid": currentTheme.chrome.surface,
-    "--cmux-bg": colorWithOpacity(currentTheme.chrome.background, panelOpacity),
-    "--cmux-sidebar": colorWithOpacity(currentTheme.chrome.surface, panelOpacity),
-    "--cmux-surface-raised": withPanelOpacity(
-      isLightChrome
-        ? `color-mix(in srgb, ${currentTheme.chrome.surface} 97%, black)`
-        : `color-mix(in srgb, ${currentTheme.chrome.surface} 96%, white)`,
-    ),
-    "--cmux-popover": isLightChrome
-      ? `color-mix(in srgb, ${currentTheme.chrome.surface} 95%, black)`
-      : `color-mix(in srgb, ${currentTheme.chrome.surface} 93%, white)`,
-    "--cmux-title-bg": colorWithOpacity(currentTheme.chrome.background, panelOpacity),
-    "--cmux-surface": colorWithOpacity(currentTheme.chrome.surface, panelOpacity),
-    "--cmux-terminal-bg": colorWithOpacity(
-      currentTheme.terminal.background,
-      mediaBackgroundActive ? themeBackground.terminalOpacity : 1,
-    ),
-    "--cmux-accent": currentTheme.chrome.accent,
-    "--cmux-accent-text": resolveAccentTextColor(
-      currentTheme.chrome.accent,
-      currentTheme.chrome.text,
-      currentTheme.chrome.background,
-    ),
-    "--cmux-border": currentTheme.chrome.border,
-    "--cmux-border-hairline": isLightChrome
-      ? `color-mix(in srgb, ${currentTheme.chrome.border} 70%, transparent)`
-      : "rgba(255, 255, 255, 0.07)",
-    "--cmux-text": currentTheme.chrome.text,
-    "--cmux-text-secondary": currentTheme.chrome.textMuted,
-    "--cmux-text-tertiary": currentTheme.chrome.textDim,
-    "--cmux-text-dim": currentTheme.chrome.textDim,
-    "--cmux-hover": currentTheme.chrome.hover,
-    "--cmux-selected": currentTheme.chrome.selected,
-    "--cmux-red": currentTheme.chrome.danger,
-    "--cmux-yellow": currentTheme.status.waiting,
-    "--cmux-on-accent": textOnColor(currentTheme.chrome.accent),
-    "--cmux-on-working": textOnColor(currentTheme.status.working),
-    "--cmux-on-waiting": textOnColor(currentTheme.status.waiting),
-    "--cmux-on-done": textOnColor(currentTheme.status.done),
-    "--cmux-on-error": textOnColor(currentTheme.status.error),
-    "--cmux-status-stall": currentTheme.status.stall,
-    "--cmux-on-stall": textOnColor(currentTheme.status.stall),
-    "--cmux-backdrop": isLightChrome ? "rgba(15, 23, 42, 0.22)" : "rgba(0, 0, 0, 0.55)",
-    "--cmux-edge-highlight": isLightChrome
-      ? "inset 0 1px 0 rgba(255, 255, 255, 0.6)"
-      : "inset 0 1px 0 rgba(255, 255, 255, 0.05)",
-    "--cmux-focus-ring": "color-mix(in srgb, var(--cmux-accent) 45%, transparent)",
-    "--cmux-dnd-tab": isLightChrome ? currentTheme.status.working : "#38bdf8",
-    "--cmux-dnd-pane": isLightChrome ? currentTheme.status.waiting : "#f59e0b",
-    "--cmux-usage-ok": isLightChrome ? currentTheme.status.done : "#3eb86b",
-    "--cmux-usage-warn": isLightChrome ? currentTheme.status.waiting : "#f5a623",
-    "--cmux-usage-danger": isLightChrome ? currentTheme.status.error : "#ff3b30",
-    "--cmux-shadow-menu": isLightChrome ? "var(--cmux-edge-highlight), 0 8px 20px rgba(15, 23, 42, 0.16)" : "var(--cmux-edge-highlight), 0 4px 12px rgba(0, 0, 0, 0.5)",
-    "--cmux-shadow-popover": isLightChrome ? "var(--cmux-edge-highlight), 0 8px 26px rgba(15, 23, 42, 0.16)" : "var(--cmux-edge-highlight), 0 4px 16px rgba(0,0,0,0.4)",
-    "--cmux-shadow-dropdown": isLightChrome ? "var(--cmux-edge-highlight), 0 12px 28px rgba(15, 23, 42, 0.16)" : "var(--cmux-edge-highlight), 0 10px 24px rgba(0, 0, 0, 0.32)",
-    "--cmux-shadow-dialog": isLightChrome ? "var(--cmux-edge-highlight), 0 20px 60px rgba(15, 23, 42, 0.18)" : "var(--cmux-edge-highlight), 0 18px 60px rgba(0,0,0,0.45)",
-    "--cmux-shadow-palette": isLightChrome ? "var(--cmux-edge-highlight), 0 24px 70px rgba(15, 23, 42, 0.18)" : "var(--cmux-edge-highlight), 0 24px 70px rgba(0,0,0,0.45)",
-    "--cmux-shadow-pane-menu": isLightChrome ? "var(--cmux-edge-highlight), 0 8px 18px rgba(15, 23, 42, 0.14)" : "var(--cmux-edge-highlight), 0 4px 12px rgba(0,0,0,0.2)",
-    "--cmux-shadow-dnd": isLightChrome
-      ? "0 14px 34px rgba(15, 23, 42, 0.18), inset 0 0 0 1px color-mix(in srgb, var(--cmux-text) 8%, transparent)"
-      : "0 14px 34px rgba(0, 0, 0, 0.36), inset 0 0 0 1px rgba(255, 255, 255, 0.05)",
-    "--cmux-shadow-dnd-strong": isLightChrome
-      ? "0 16px 38px rgba(15, 23, 42, 0.22), 0 0 24px color-mix(in srgb, var(--pane-dnd-color) 18%, transparent)"
-      : "0 16px 38px rgba(0, 0, 0, 0.42), 0 0 24px color-mix(in srgb, var(--pane-dnd-color) 22%, transparent)",
-    "--cmux-shadow-dnd-label": isLightChrome ? "0 8px 20px rgba(15, 23, 42, 0.16)" : "0 6px 18px rgba(0, 0, 0, 0.34)",
-    "--status-working": currentTheme.status.working,
-    "--status-waiting": currentTheme.status.waiting,
-    "--status-done": currentTheme.status.done,
-    "--status-error": currentTheme.status.error,
-    "--notification-color": currentTheme.notification,
-    "--cmux-chrome-text-shadow": "none",
-    "--cmux-chrome-icon-shadow": "none",
-    colorScheme: currentTheme.colorScheme,
-  } as React.CSSProperties;
+  // An install that picked a wallpaper before it became a download still has
+  // that choice; fetch it quietly rather than changing the setting. One attempt
+  // per failure — a machine that is offline must not loop, and the settings
+  // panel offers the retry.
+  const selectedPresetId = themeBackground.mode === "preset" ? themeBackground.presetId : "";
+  const selectedIsCached = Boolean(presetImagePath);
+  const selectedFailed = Boolean(wallpaperCache.errors[selectedPresetId]);
+  const selectedIsDownloading = typeof wallpaperCache.progress[selectedPresetId] === "number";
+  useEffect(() => {
+    if (!selectedPresetId || wallpaperCache.status !== "ready") return;
+    if (selectedIsCached || selectedFailed || selectedIsDownloading) return;
+    void downloadWallpaper(selectedPresetId);
+  }, [
+    selectedPresetId,
+    selectedIsCached,
+    selectedFailed,
+    selectedIsDownloading,
+    wallpaperCache.status,
+  ]);
 
   useEffect(() => {
     try {
@@ -1192,7 +1176,12 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
         background: "var(--cmux-bg-solid)",
       }}
     >
-      <AppBackgroundLayer background={themeBackground} />
+      <AppBackgroundLayer
+        background={themeBackground}
+        presetImagePath={presetImagePath}
+        tone={backgroundComposition.wallpaperTone}
+        toneColor={backgroundComposition.wallpaperToneColor}
+      />
       <div style={{ position: "relative", zIndex: 1, width: "100%", height: "100%", display: "flex", flexDirection: "column" }}>
         <SocketListener />
         <div data-cmux-hide-during-pane-zoom={zoomedPaneId ? "true" : undefined}>

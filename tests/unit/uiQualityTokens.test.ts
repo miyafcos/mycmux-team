@@ -6,6 +6,10 @@ const read = (path: string) =>
 
 const globalCss = read("src/global.css");
 const appShell = read("src/components/layout/AppShell.tsx");
+// The chrome ladder is derived in the pure theme resolver now, not inline in
+// AppShell. The contract is about the formulas, not about which file holds
+// them, so the assertions read both.
+const themeResolver = read("src/lib/theme/resolveTheme.ts");
 const crsmPalette = read("src/components/CommandPalette/CrsmPalette.tsx");
 const paneTabBar = read("src/components/workspace/PaneTabBar.tsx");
 const chromeIcons = read("src/components/icons/ChromeIcons.tsx");
@@ -53,20 +57,27 @@ describe("UI quality Phase A contracts", () => {
     );
   });
 
-  it("derives every dynamic chrome ladder token in AppShell", () => {
+  it("derives every dynamic chrome ladder token in the theme resolver", () => {
     for (const token of [
       '"--cmux-surface-raised"',
       '"--cmux-popover"',
       '"--cmux-edge-highlight"',
       '"--cmux-border-hairline"',
     ]) {
-      expect(appShell).toContain(token);
+      expect(themeResolver).toContain(token);
     }
-    expect(appShell).toContain("isLightChrome");
-    expect(appShell).toContain("currentTheme.chrome.surface} 97%, black");
-    expect(appShell).toContain("currentTheme.chrome.surface} 96%, white");
-    expect(appShell).toContain("currentTheme.chrome.surface} 95%, black");
-    expect(appShell).toContain("currentTheme.chrome.surface} 93%, white");
+    expect(themeResolver).toContain("isLightChrome");
+    // Dark keeps the two lighten-toward-white steps it has always had.
+    expect(themeResolver).toContain("${paper} 96%, white");
+    expect(themeResolver).toContain("${paper} 93%, white");
+    // Light no longer darkens as it rises: stage 2 puts raised and popover
+    // on the paper anchor and lets the hairline and shadows carry the step
+    // (design memo section 3). The matching "97%, black" / "95%, black"
+    // expressions are gone on purpose.
+    expect(themeResolver).not.toContain("97%, black");
+    expect(themeResolver).not.toContain("95%, black");
+    expect(themeResolver).toContain("surfaceRaised: paper");
+    expect(themeResolver).toContain("popover: paper");
     expect(globalCss).toContain("--cmux-surface-raised: #1f1f1f;");
     expect(globalCss).toContain("--cmux-popover: #262626;");
     expect(globalCss).toContain("--cmux-shadow-popover: var(--cmux-edge-highlight),");
@@ -78,11 +89,16 @@ describe("UI quality Phase A contracts", () => {
   // Regression: Phase A moved the pane tab bar from --cmux-surface (which went
   // through colorWithOpacity) to --cmux-surface-raised, which was opaque. Over
   // a media background the bar rendered as a solid dark slab.
-  it("keeps the raised surface translucent under a media background", () => {
-    expect(appShell).toContain('"--cmux-surface-raised": withPanelOpacity(');
-    expect(appShell).toContain("const withPanelOpacity = (color: string) =>");
-    expect(appShell).toContain("panelOpacity >= 0.995");
-    expect(appShell).toContain("%, transparent)`");
+  // Stage 2 splits this by scheme. Dark keeps the translucent raised surface
+  // verbatim; light makes raised opaque on purpose (the memo puts the pane
+  // tab strip on surface-low via --pane-tabbar-bg instead, so nothing turns
+  // into a solid slab over the wallpaper).
+  it("keeps the raised surface translucent under a media background on dark", () => {
+    expect(themeResolver).toContain("const surfaceRaised = withPanelOpacity(surfaces.surfaceRaised);");
+    expect(themeResolver).toContain("const withPanelOpacity = (color: string) =>");
+    expect(themeResolver).toContain("panelOpacity >= 0.995");
+    expect(themeResolver).toContain("%, transparent)`");
+    expect(themeResolver).toContain("paneTabBarBg: colorWithOpacity(surfaces.surfaceLow, chromeAlpha)");
   });
 
   it("elevates the all-tabs dropdown above the pane borders it overlaps", () => {

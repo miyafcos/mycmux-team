@@ -1,3 +1,5 @@
+import { Fragment } from "react";
+
 import {
   FONT_SIZE_MAX,
   FONT_SIZE_MIN,
@@ -367,8 +369,18 @@ export function ThemeFontSettings({
           </div>
         </div>
 
+        {/* The saved-custom card sits above the groups, outside their grid, so it
+            needs the same track sizing - otherwise it renders at panel width while
+            every grouped card is one 215px track, and reads as a different control. */}
         {!usesKnownPreset && (
-          <div style={{ marginBottom: 10 }}>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fill, minmax(215px, 1fr))",
+              gap: 8,
+              marginBottom: 10,
+            }}
+          >
             <FontPresetOption
               preset={{
                 id: "custom",
@@ -384,47 +396,54 @@ export function ThemeFontSettings({
           </div>
         )}
 
-        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          {FONT_PRESET_GROUPS.map((group) => (
-            <section key={group.id}>
+        {/* One grid for every group, not one grid per group. `auto-fit` collapsed
+            the empty tracks of the two-card groups and stretched their cards to
+            roughly double the width of the five-card group; `auto-fill` keeps the
+            empty tracks so every card is the same width. Group headings span the
+            full row via `gridColumn: "1 / -1"`. */}
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fill, minmax(215px, 1fr))",
+            gap: 8,
+          }}
+        >
+          {FONT_PRESET_GROUPS.map((group, groupIndex) => (
+            <Fragment key={group.id}>
               <div
                 style={{
+                  gridColumn: "1 / -1",
                   display: "flex",
                   justifyContent: "space-between",
                   alignItems: "baseline",
                   gap: 10,
-                  marginBottom: 6,
+                  // The 8px row gap already sits above the heading; the extra
+                  // margin restores the wider break that separated the groups
+                  // when each one was its own section.
+                  marginTop: groupIndex === 0 ? 0 : 6,
                 }}
               >
                 <div style={{ fontSize: 12, fontWeight: 700 }}>{group.title}</div>
                 <div style={{ fontSize: 11, color: "var(--cmux-text-tertiary)" }}>{group.detail}</div>
               </div>
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "repeat(auto-fit, minmax(215px, 1fr))",
-                  gap: 8,
-                }}
-              >
-                {group.presetIds.map((presetId) => {
-                  const preset = findPresetById(presetId);
-                  if (!preset) return null;
-                  return (
-                    <FontPresetOption
-                      key={preset.id}
-                      preset={preset}
-                      active={preset.value === fontFamily}
-                      onSelect={() => {
-                        setFontFamily(preset.value);
-                        if (preset.recommendedLineHeight !== undefined) {
-                          setLineHeight(preset.recommendedLineHeight);
-                        }
-                      }}
-                    />
-                  );
-                })}
-              </div>
-            </section>
+              {group.presetIds.map((presetId) => {
+                const preset = findPresetById(presetId);
+                if (!preset) return null;
+                return (
+                  <FontPresetOption
+                    key={preset.id}
+                    preset={preset}
+                    active={preset.value === fontFamily}
+                    onSelect={() => {
+                      setFontFamily(preset.value);
+                      if (preset.recommendedLineHeight !== undefined) {
+                        setLineHeight(preset.recommendedLineHeight);
+                      }
+                    }}
+                  />
+                );
+              })}
+            </Fragment>
           ))}
         </div>
       </div>

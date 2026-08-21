@@ -83,7 +83,13 @@ export interface ThemeBackgroundSettings {
   imagePath: string;
   imageOpacity: number;
   imageBlur: number;
-  imageDim: number;
+  /**
+   * Signed wallpaper tone. Negative moves the wallpaper toward black, positive
+   * moves it toward the active theme's paper colour, 0 leaves it alone. It
+   * replaces the black-only `imageDim`; settings persisted with `imageDim` are
+   * migrated by `normalizeThemeBackground()`.
+   */
+  wallpaperTone: number;
   panelOpacity: number;
   terminalOpacity: number;
 }

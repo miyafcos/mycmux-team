@@ -16,7 +16,7 @@ import { groupLabel, metricUnit, type UsageMetric } from "./usageModel";
 import { ButtonGroup, EmptyState, Num, VScrollBox, noteStyle, tableStyle, tdLeftStyle, tdStyle, thLeftStyle, thStyle } from "./ui";
 
 function axisLabel(value: string, axis: PivotAxis): string {
-  if (value === OTHER_KEY) return OTHER_KEY;
+  if (value === OTHER_KEY) return "下位まとめ";
   if (axis === "origin") return value === "unknown" ? "不明" : value;
   return groupLabel(value, axis);
 }

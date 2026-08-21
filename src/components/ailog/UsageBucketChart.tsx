@@ -20,13 +20,16 @@ import {
   groupLabel,
   layoutStack,
   metricUnit,
+  formatMetric,
   type UsageMetric,
   type UsageModel,
+  valueAxisTicks,
 } from "./usageModel";
-import { Num, noteStyle } from "./ui";
+import { ChartHatchDefs, Num, noteStyle, paintFill, paintSwatchBackground } from "./ui";
 
 const HEIGHT = 168;
 const GAP = 2;
+const AXIS_WIDTH = 52;
 
 export function UsageBucketChart({
   model,
@@ -60,11 +63,13 @@ export function UsageBucketChart({
   }
 
   const width = measured > 0 ? measured : 760;
-  const slot = width / model.days.length;
+  const plotWidth = Math.max(1, width - AXIS_WIDTH);
+  const slot = plotWidth / model.days.length;
   const barWidth = Math.max(1, Math.min(28, slot - GAP));
   const unit = bucketNoun(bucket);
   const presentCount = model.days.filter((row) => row.present).length;
   const costNote = metric === "costUsd" && priceCoverage ? costCoverageLabel(priceCoverage) : null;
+  const ticks = mode === "share" ? [0, 0.5, 1] : valueAxisTicks(model.max);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}>
@@ -75,8 +80,14 @@ export function UsageBucketChart({
           aria-label={`${unit}別の${USAGE_METRICS.find((entry) => entry.id === metric)?.label ?? "集計"}`}
           style={{ display: "block", width: "100%", height: HEIGHT }}
         >
+          <ChartHatchDefs paints={[...model.legend, ...model.days.flatMap((row) => row.slices)]} />
+          {ticks.map((tick) => {
+            const y = mode === "share" ? HEIGHT - tick * HEIGHT : (model.max > 0 ? HEIGHT - (tick / model.max) * HEIGHT : HEIGHT);
+            const label = mode === "share" ? `${Math.round(tick * 100)}%` : formatMetric(tick, metric);
+            return <g key={tick} pointerEvents="none"><line x1={AXIS_WIDTH} x2={width} y1={y} y2={y} stroke="var(--cmux-border-hairline)" /><text x={AXIS_WIDTH - 4} y={y} textAnchor="end" dominantBaseline="middle" fill="var(--cmux-text-tertiary)" fontSize="var(--cmux-font-size-xs)">{label}</text></g>;
+          })}
           {model.days.map((row, index) => {
-            const x = index * slot;
+            const x = AXIS_WIDTH + index * slot;
             const rects = layoutStack(row, model.max, mode);
             const tooltip = [
               row.label,
@@ -109,7 +120,7 @@ export function UsageBucketChart({
                       y={y}
                       width={barWidth}
                       height={Math.max(height, height > 0 ? 1 : 0)}
-                      fill={rect.color}
+                      fill={paintFill(rect)}
                       opacity={dimmed ? 0.22 : 1}
                       pointerEvents="none"
                     />
@@ -148,7 +159,7 @@ export function UsageBucketChart({
             >
               <span
                 aria-hidden="true"
-                style={{ width: 9, height: 9, borderRadius: 2, background: entry.color, display: "inline-block" }}
+                style={{ width: 9, height: 9, borderRadius: 2, background: paintSwatchBackground(entry), display: "inline-block" }}
               />
               {groupLabel(entry.group, groupBy)}
               <span style={{ color: "var(--cmux-text-tertiary)" }}><Num value={entry.value} kind={metricUnit(metric)} /></span>
@@ -158,8 +169,8 @@ export function UsageBucketChart({
       </div>
 
       <div style={noteStyle}>
-        {`${model.days[0].label} 〜 ${model.days[model.days.length - 1].label}・記録のある${unit} ${presentCount} ${unit}`}
-        {model.foldedCount > 0 ? `・下位 ${model.foldedCount} ${groupByLabel(groupBy)}は「その他」にまとめています` : ""}
+        {`${model.days[0].label} 〜 ${model.days[model.days.length - 1].label}・記録のある${unit} ${presentCount} / ${model.days.length} ${unit}`}
+        {model.foldedCount > 0 ? `・下位 ${model.foldedCount} ${groupByLabel(groupBy)}は「下位まとめ」にまとめています` : ""}
         {costNote ? `・${costNote}` : ""}
         {slot < 3 ? "・1日1本では細すぎます。単位を「週」にすると読めます。" : ""}
       </div>

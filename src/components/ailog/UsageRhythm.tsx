@@ -7,7 +7,7 @@
  * is always answerable.
  */
 
-import { formatCount, formatDayBucket, formatTokens, type UsageRhythmReport } from "../../lib/ailog";
+import { formatCount, formatDayBucket, formatTokens, formatTokensFull, type UsageRhythmReport } from "../../lib/ailog";
 import {
   activeDayRatio,
   formatMetric,
@@ -15,14 +15,15 @@ import {
   peakSlot,
   slotBars,
   type RhythmMetric,
+  valueAxisTicks,
 } from "./usageModel";
 import { noteStyle } from "./ui";
 
-function Stat({ label, value, hint }: { label: string; value: string; hint?: string }) {
+function Stat({ label, value, hint, valueTitle }: { label: string; value: string; hint?: string; valueTitle?: string }) {
   return (
     <div style={{ minWidth: 0 }}>
       <div style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-tertiary)" }}>{label}</div>
-      <div style={{ fontSize: "var(--cmux-font-size-md)", fontWeight: 700, color: "var(--cmux-text)", marginTop: 2 }}>
+      <div title={valueTitle} style={{ fontSize: "var(--cmux-font-size-md)", fontWeight: 700, color: "var(--cmux-text)", marginTop: 2 }}>
         {value}
       </div>
       {hint ? <div style={{ ...noteStyle, marginTop: 2 }}>{hint}</div> : null}
@@ -34,11 +35,16 @@ function Bars({
   title,
   bars,
   peakLabel,
+  metric,
 }: {
   title: string;
   bars: { slot: number; label: string; value: number; ratio: number }[];
   peakLabel: string;
+  metric: RhythmMetric;
 }) {
+  const max = bars.reduce((peak, bar) => Math.max(peak, bar.value), 0);
+  const ticks = valueAxisTicks(max);
+  const tickBottom = (tick: number) => `${max > 0 ? (tick / max) * 100 : 0}%`;
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 0 }}>
       <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
@@ -47,26 +53,34 @@ function Bars({
         </span>
         <span style={noteStyle}>{peakLabel}</span>
       </div>
-      <div style={{ display: "flex", alignItems: "flex-end", gap: 2, height: 56 }}>
-        {bars.map((bar) => (
-          <div
-            key={bar.slot}
-            title={`${bar.label} ${formatCount(bar.value)}`}
-            style={{ flex: 1, display: "flex", flexDirection: "column", justifyContent: "flex-end", height: "100%", minWidth: 0 }}
-          >
+      <div style={{ display: "grid", gridTemplateColumns: "52px minmax(0, 1fr)", gap: 4, minWidth: 0 }}>
+        <div style={{ position: "relative", height: 56 }}>
+          {ticks.map((tick) => <span key={tick} style={{ position: "absolute", right: 0, bottom: tickBottom(tick), transform: "translateY(50%)", color: "var(--cmux-text-tertiary)", fontSize: "var(--cmux-font-size-xs)", whiteSpace: "nowrap" }}>{formatMetric(tick, metric)}</span>)}
+        </div>
+        <div style={{ position: "relative", display: "flex", alignItems: "flex-end", gap: 2, height: 56, minWidth: 0 }}>
+          {ticks.map((tick) => <span key={tick} aria-hidden="true" style={{ position: "absolute", left: 0, right: 0, bottom: tickBottom(tick), borderTop: "1px solid var(--cmux-border-hairline)", pointerEvents: "none" }} />)}
+          {bars.map((bar) => (
             <div
-              style={{
-                height: `${Math.max(bar.ratio * 100, bar.value > 0 ? 3 : 0)}%`,
-                background: "var(--cmux-accent)",
-                opacity: bar.value > 0 ? 0.45 + bar.ratio * 0.55 : 0.15,
-                borderRadius: 2,
-              }}
-            />
-          </div>
-        ))}
+              key={bar.slot}
+              title={`${bar.label} ${formatMetric(bar.value, metric)}`}
+              style={{ flex: 1, display: "flex", flexDirection: "column", justifyContent: "flex-end", height: "100%", minWidth: 0 }}
+            >
+              <div
+                style={{
+                  height: `${Math.max(bar.ratio * 100, bar.value > 0 ? 3 : 0)}%`,
+                  background: "var(--cmux-accent)",
+                  opacity: bar.value > 0 ? 0.45 + bar.ratio * 0.55 : 0.15,
+                  borderRadius: 2,
+                }}
+              />
+            </div>
+          ))}
+        </div>
       </div>
-      <div style={{ display: "flex", gap: 2 }}>
-        {bars.map((bar, index) => (
+      <div style={{ display: "grid", gridTemplateColumns: "52px minmax(0, 1fr)", gap: 4 }}>
+        <div />
+        <div style={{ display: "flex", gap: 2 }}>
+          {bars.map((bar, index) => (
           <div
             key={bar.slot}
             style={{
@@ -80,7 +94,8 @@ function Bars({
           >
             {bars.length > 12 ? (index % 3 === 0 ? bar.slot : "") : bar.label}
           </div>
-        ))}
+          ))}
+        </div>
       </div>
     </div>
   );
@@ -116,6 +131,7 @@ export function UsageRhythm({
           label="総トークン"
           value={formatTokens(report.totals.total)}
           hint={`うち入出力 ${formatTokens(report.totals.io)}`}
+          valueTitle={formatTokensFull(report.totals.total)}
         />
         <Stat
           label="稼働日"
@@ -141,11 +157,13 @@ export function UsageRhythm({
           title={`時間帯 (${offset})`}
           bars={hours}
           peakLabel={peakHour ? `最多 ${peakHour.label}` : "記録なし"}
+          metric={metric}
         />
         <Bars
           title="曜日"
           bars={weekdays}
           peakLabel={peakWeekday ? `最多 ${peakWeekday.label}曜` : "記録なし"}
+          metric={metric}
         />
       </div>
 

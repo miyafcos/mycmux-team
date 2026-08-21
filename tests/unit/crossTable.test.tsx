@@ -76,7 +76,7 @@ describe("nextPivotAxes", () => {
 });
 
 describe("foldPivot", () => {
-  it("keeps the top N rows and columns and folds the rest into その他", () => {
+  it("keeps the top N rows and columns and folds the rest into 下位まとめ", () => {
     const rowKeys = ["r1", "r2", "r3", "r4"];
     const colKeys = ["c1", "c2", "c3"];
     const scores: Record<string, number> = { r1: 40, r2: 30, r3: 20, r4: 10, c1: 50, c2: 30, c3: 10 };
@@ -95,10 +95,10 @@ describe("foldPivot", () => {
     expect(folded.foldedCols).toBe(1);
     expect(folded.foldedRowKeys).toEqual(["r3", "r4"]);
     expect(folded.foldedColKeys).toEqual(["c3"]);
-    expect(foldNote(folded)).toBe("行 2 件 (r3 / r4)・列 1 件 (c3)を「その他」にまとめました");
+    expect(foldNote(folded)).toBe("行 2 件 (r3 / r4)・列 1 件 (c3)を「下位まとめ」にまとめました");
   });
 
-  it("names what went into その他 so a folded tier is still visible", () => {
+  it("names what went into 下位まとめ so a folded tier is still visible", () => {
     const rowKeys = ["only"];
     const colKeys = ["gpt-5.6-sol", "claude-opus-5", "gpt-5.6-terra", "gpt-5.5", "gpt-5.6-luna", "gpt-5.4"];
     const scores: Record<string, number> = {
@@ -117,7 +117,7 @@ describe("foldPivot", () => {
 
     const folded = foldPivot(source, "costUsd", 12, 4);
     expect(folded.foldedColKeys).toEqual(["gpt-5.6-luna", "gpt-5.4"]);
-    expect(foldNote(folded)).toBe("列 2 件 (gpt-5.6-luna / gpt-5.4)を「その他」にまとめました");
+    expect(foldNote(folded)).toBe("列 2 件 (gpt-5.6-luna / gpt-5.4)を「下位まとめ」にまとめました");
   });
 
   it("caps the named list so the note stays shorter than the table", () => {
@@ -131,7 +131,7 @@ describe("foldPivot", () => {
     source.colTotals = colKeys.map((col) => group(col, { costUsd: scores[col] }));
 
     const folded = foldPivot(source, "costUsd", 12, 1);
-    expect(foldNote(folded)).toBe("列 6 件 (c2 / c3 / c4 / c5 ほか 2 件)を「その他」にまとめました");
+    expect(foldNote(folded)).toBe("列 6 件 (c2 / c3 / c4 / c5 ほか 2 件)を「下位まとめ」にまとめました");
   });
 });
 
@@ -207,7 +207,7 @@ describe("selectionFromPivotCell", () => {
     });
   });
 
-  it("returns null when either axis is その他", () => {
+  it("returns null when either axis is 下位まとめ", () => {
     expect(selectionFromPivotCell("project", "model_raw", OTHER_KEY, "gpt-5.6-sol")).toBeNull();
     expect(selectionFromPivotCell("project", "model_raw", "案件A", OTHER_KEY)).toBeNull();
   });

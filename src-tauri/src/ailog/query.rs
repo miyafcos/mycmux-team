@@ -10,9 +10,9 @@
 //! * **Model figures are accumulated per turn, never per session.** A session
 //!   that used two models contributes to both, so per-model session counts can
 //!   sum to more than the session total. That overlap is reported, not hidden.
-//! * **Nothing is pro-rated.** Work tags overlap and cost per tag therefore
-//!   exceeds the grand total; the response sets `overlapping` instead of
-//!   inventing a split.
+//! * **Nothing is pro-rated.** Work-tag costs are non-additive when sessions
+//!   carry several tags. The response reports whether that overlap actually
+//!   exists in the filtered population instead of inventing a split.
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -679,6 +679,47 @@ fn measured_turns(
     timings.sql_ms = timings.sql_ms.saturating_add(elapsed_ms(started));
     timings.rows_scanned = timings.rows_scanned.saturating_add(turns.len() as u64);
     Ok(turns)
+}
+
+fn work_tag_session_counts(
+    conn: &Connection,
+    range: &ResolvedRange,
+    filters: &Filters,
+    timings: &mut ReportTimings,
+) -> Result<BTreeMap<String, i64>, String> {
+    let started = Instant::now();
+    let filter = build_where(range, filters, false);
+    let sql = format!(
+        "SELECT tagged.work_tag, COUNT(*) \
+         FROM ( \
+           SELECT DISTINCT CAST(tag.value AS TEXT) AS work_tag, t.kind, t.session_id \
+           FROM turn t \
+           JOIN session s ON s.kind = t.kind AND s.session_id = t.session_id \
+           CROSS JOIN json_each( \
+             CASE WHEN json_valid(s.work_tags) \
+                  THEN CASE WHEN json_type(s.work_tags) = 'array' THEN s.work_tags ELSE '[]' END \
+                  ELSE '[]' END \
+           ) tag \
+           WHERE {} AND t.model_family IS NOT NULL AND tag.type = 'text' \
+         ) tagged \
+         GROUP BY tagged.work_tag",
+        filter.sql
+    );
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|err| format!("prepare work-tag session counts: {err}"))?;
+    let rows = stmt
+        .query_map(params_from_iter(filter.params.iter()), |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })
+        .map_err(|err| format!("query work-tag session counts: {err}"))?;
+    let mut counts = BTreeMap::new();
+    for row in rows {
+        let (tag, count) = row.map_err(|err| format!("read work-tag session count: {err}"))?;
+        counts.insert(tag, count);
+    }
+    timings.sql_ms = timings.sql_ms.saturating_add(elapsed_ms(started));
+    Ok(counts)
 }
 
 fn finish_timings(mut timings: ReportTimings, started: Instant) -> ReportTimings {
@@ -3067,6 +3108,7 @@ pub struct TagModelEntry {
 pub struct WorkTagRow {
     pub work_tag: String,
     pub per_model: Vec<TagModelEntry>,
+    pub session_count: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -3079,8 +3121,8 @@ pub struct ModelsReport {
     pub mixed_sessions: i64,
     pub handoffs: Vec<Handoff>,
     pub by_work_tag: Vec<WorkTagRow>,
-    /// Work tags are not exclusive: one session can carry several, so costs
-    /// summed across tags exceed the total. Never pro-rated.
+    /// True when at least one included session has two or more distinct work
+    /// tags. Tagged costs are never pro-rated.
     pub overlapping: bool,
     pub total_sessions: i64,
     pub price_source: String,
@@ -3102,6 +3144,7 @@ pub fn models(
     let prices = cached_prices(conn)?;
     let turns = measured_turns(conn, &resolved, filters, false, &mut timings)?;
     let pass = run_pass(&turns, &prices);
+    let tag_session_counts = work_tag_session_counts(conn, &resolved, filters, &mut timings)?;
     let rows = build_model_rows(&pass, &options.granularity, &prices);
 
     let mut series_map: BTreeMap<i64, BTreeMap<String, TokenAcc>> = BTreeMap::new();
@@ -3203,12 +3246,23 @@ pub fn models(
                     .partial_cmp(&a.cost_usd)
                     .unwrap_or(std::cmp::Ordering::Equal)
             });
+            let session_count = tag_session_counts.get(&work_tag).copied().unwrap_or(0);
             WorkTagRow {
                 work_tag,
                 per_model,
+                session_count,
             }
         })
         .collect();
+    let overlapping = pass.sessions.values().any(|session| {
+        session
+            .tags
+            .iter()
+            .filter(|tag| !tag.is_empty())
+            .collect::<HashSet<_>>()
+            .len()
+            >= 2
+    });
 
     let timings = finish_timings(timings, started);
     log_report_timings("models", timings);
@@ -3228,7 +3282,7 @@ pub fn models(
             .count() as i64,
         handoffs,
         by_work_tag,
-        overlapping: true,
+        overlapping,
         total_sessions: pass.sessions.len() as i64,
         price_source: prices.source_summary(),
         price_coverage: pass.price_coverage.finish(),
@@ -4217,9 +4271,38 @@ pub fn rework_rankings(
     }
     let direct_sql_started = Instant::now();
     let mut tools: BTreeMap<(String, Option<String>), (i64, i64)> = BTreeMap::new();
-    let mut tool_stmt = conn.prepare("SELECT te.kind, te.session_id, te.name, NULLIF(TRIM(te.target), ''), COALESCE(te.is_error, 0) FROM tool_event te JOIN session s ON s.kind=te.kind AND s.session_id=te.session_id WHERE te.ts >= ? AND te.ts <= ? AND COALESCE(s.origin, 'unknown') <> 'ailog-internal'").map_err(|err| format!("prepare tool rankings: {err}"))?;
+    let mut tool_params = vec![
+        SqlValue::Integer(resolved.from),
+        SqlValue::Integer(resolved.to),
+    ];
+    let (turn_join, model_clause) = if filters.models.is_empty() {
+        (String::new(), String::new())
+    } else {
+        let holes = vec!["?"; filters.models.len()].join(",");
+        for _ in 0..2 {
+            for model in &filters.models {
+                tool_params.push(SqlValue::Text(model.clone()));
+            }
+        }
+        (
+            "JOIN turn t ON t.kind = te.kind AND t.session_id = te.session_id AND t.request_id = te.turn_key".to_string(),
+            format!("AND (t.model_family IN ({holes}) OR t.model IN ({holes}))"),
+        )
+    };
+    let tool_sql = format!(
+        "SELECT te.kind, te.session_id, te.name, NULLIF(TRIM(te.target), ''), COALESCE(te.is_error, 0) \
+         FROM tool_event te \
+         JOIN session s ON s.kind = te.kind AND s.session_id = te.session_id \
+         {turn_join} \
+         WHERE te.ts >= ? AND te.ts <= ? \
+           AND COALESCE(s.origin, 'unknown') <> 'ailog-internal' \
+           {model_clause}"
+    );
+    let mut tool_stmt = conn
+        .prepare(&tool_sql)
+        .map_err(|err| format!("prepare tool rankings: {err}"))?;
     let tool_rows = tool_stmt
-        .query_map([resolved.from, resolved.to], |row| {
+        .query_map(params_from_iter(tool_params.iter()), |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,

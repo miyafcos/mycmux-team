@@ -111,6 +111,26 @@ export function resetHint(stat: WindowStat | null): string | undefined {
   return stat ? `リセット ${formatUpdatedAt(stat.resets_at)}` : undefined;
 }
 
+/** Hover copy when a row collapses every window's reset onto one mark. */
+export const SHARED_RESET_TITLE =
+  "この行のすべての枠が同じ日にリセットされます";
+
+/**
+ * All windows in a row share one reset instant, so it can be shown once.
+ * Empty strings are missing data, not a value that can match.
+ */
+export function sharedResetAt(
+  stats: Array<{ resets_at?: string }>,
+): string | null {
+  if (stats.length === 0) return null;
+  const first = stats[0]?.resets_at;
+  if (!first) return null;
+  for (const stat of stats) {
+    if (!stat.resets_at || stat.resets_at !== first) return null;
+  }
+  return first;
+}
+
 export function displayWindows(
   row: ProfileUsage,
 ): { key: string; label: string; stat: WindowStat; hint: string }[] {

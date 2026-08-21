@@ -31,6 +31,7 @@ pub const MODEL_CLASS_RULES: ModelClassRules = ModelClassRules {
         ("claude-", ModelProvider::Anthropic),
         ("gpt-", ModelProvider::Openai),
         ("gemini-", ModelProvider::Google),
+        ("grok-", ModelProvider::Xai),
     ],
 };
 
@@ -62,6 +63,7 @@ pub enum ModelProvider {
     Anthropic,
     Openai,
     Google,
+    Xai,
     Local,
     Other,
 }
@@ -72,6 +74,7 @@ impl ModelProvider {
             Self::Anthropic => "anthropic",
             Self::Openai => "openai",
             Self::Google => "google",
+            Self::Xai => "xai",
             Self::Local => "local",
             Self::Other => "other",
         }

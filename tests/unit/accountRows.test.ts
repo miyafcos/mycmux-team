@@ -13,6 +13,7 @@ import {
   rowHasWindows,
   rowMessage,
   rowNeedsAttention,
+  sharedResetAt,
   staleWindowsNote,
   usageBarColor,
   usageColor,
@@ -203,6 +204,50 @@ describe("displayWindows", () => {
       }),
     );
     expect(windows.map(({ key }) => key)).toEqual(["model:Fable", "model:Falcon"]);
+  });
+});
+
+describe("sharedResetAt", () => {
+  it("returns the value when every window shares it", () => {
+    const iso = "2026-08-27T00:00:00Z";
+    expect(
+      sharedResetAt([{ resets_at: iso }, { resets_at: iso }, { resets_at: iso }]),
+    ).toBe(iso);
+  });
+
+  it("is null when any window differs", () => {
+    expect(
+      sharedResetAt([
+        { resets_at: "2026-08-26T00:00:00Z" },
+        { resets_at: "2026-08-27T00:00:00Z" },
+      ]),
+    ).toBeNull();
+  });
+
+  it("is null when a window has no resets_at", () => {
+    expect(
+      sharedResetAt([{ resets_at: "2026-08-27T00:00:00Z" }, {}]),
+    ).toBeNull();
+  });
+
+  it("does not treat an empty string as a shared value", () => {
+    expect(sharedResetAt([{ resets_at: "" }, { resets_at: "" }])).toBeNull();
+    expect(
+      sharedResetAt([
+        { resets_at: "2026-08-27T00:00:00Z" },
+        { resets_at: "" },
+      ]),
+    ).toBeNull();
+  });
+
+  it("is null when there are no windows", () => {
+    expect(sharedResetAt([])).toBeNull();
+  });
+
+  it("returns the value of a single window", () => {
+    expect(sharedResetAt([{ resets_at: "2026-08-22T00:00:00Z" }])).toBe(
+      "2026-08-22T00:00:00Z",
+    );
   });
 });
 

@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
-import { Num, RefreshingBlock, tableStyle } from "../../src/components/ailog/ui";
+import { ChartHatchDefs, Num, RefreshingBlock, paintFill, paintSwatchBackground, tableStyle } from "../../src/components/ailog/ui";
 
 describe("RefreshingBlock", () => {
   it("keeps the previous data visible but dimmed while a range refresh is busy", () => {
@@ -64,5 +64,26 @@ describe("Num", () => {
     const html = renderToStaticMarkup(<Num value={1234} kind="count" />);
     expect(html).toContain("1,234");
     expect(html).not.toContain("title=");
+  });
+});
+
+describe("ailog chart paint helpers", () => {
+  const solid = { color: "#123456", tone: "solid" } as const;
+  const muted = { color: "#123456", tone: "muted" } as const;
+
+  it("deduplicates colour-derived hatch pattern IDs and omits solid-only defs", () => {
+    const html = renderToStaticMarkup(<svg><ChartHatchDefs paints={[muted, muted]} /></svg>);
+    const ids = [...html.matchAll(/<pattern id="([^"]+)"/g)].map((match) => match[1]);
+
+    expect(ids).toEqual(["ailog-hatch-123456"]);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(ChartHatchDefs({ paints: [solid] })).toBeNull();
+  });
+
+  it("uses SVG patterns only for muted paint and CSS gradients only for muted swatches", () => {
+    expect(paintFill(solid)).toBe("#123456");
+    expect(paintFill(muted)).toMatch(/^url\(#ailog-hatch-/);
+    expect(paintSwatchBackground(muted)).toContain("repeating-linear-gradient");
+    expect(paintSwatchBackground(muted)).not.toContain("url(#");
   });
 });

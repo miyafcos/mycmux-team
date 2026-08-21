@@ -172,6 +172,72 @@ fn rankings_sum_rewritten_files_across_sessions() {
     assert_eq!(report.rewritten_files[0].session_count, 2);
 }
 
+#[test]
+fn model_filter_applies_to_each_tool_event_turn() {
+    let fixture = Fixture::new();
+    let conn = fixture.conn();
+    conn.execute(
+        "INSERT INTO session (kind,session_id,origin,started_at) VALUES ('claude','mixed','unknown',1000)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO turn (kind,session_id,seq,request_id,ts,model,model_family) VALUES \
+         ('claude','mixed',1,'turn-a',1200,'model-a','family-a'), \
+         ('claude','mixed',2,'turn-b',1300,'model-b','family-b')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO tool_event (kind,session_id,seq,ts,name,is_error,target,turn_key) VALUES \
+         ('claude','mixed',1,1201,'Bash',1,'selected-command','turn-a'), \
+         ('claude','mixed',2,1301,'Bash',1,'excluded-command','turn-b')",
+        [],
+    )
+    .unwrap();
+
+    let filters = Filters {
+        models: vec!["model-a".to_string()],
+        ..Filters::default()
+    };
+    let report = query::rework_rankings(&conn, &Range::default(), &filters, NOW).unwrap();
+    assert_eq!(
+        report.failed_commands.len(),
+        1,
+        "R2 a model filter must exclude other-model events in the same session"
+    );
+    assert_eq!(
+        report.failed_commands[0].target.as_deref(),
+        Some("selected-command")
+    );
+}
+
+#[test]
+fn file_ranking_documents_cumulative_count_when_period_count_is_unavailable() {
+    let fixture = Fixture::new();
+    let conn = fixture.conn();
+    seed(&conn, "one", 1_500, "unknown", "[]");
+    conn.execute(
+        "INSERT INTO file_touch (kind,session_id,path,edit_count,first_ts,last_ts) \
+         VALUES ('claude','one','src/outside.rs',4,500,900)",
+        [],
+    )
+    .unwrap();
+    let range = Range {
+        from: Some(1_000),
+        to: Some(2_000),
+        preset: None,
+    };
+    let report = query::rework_rankings(&conn, &range, &Filters::default(), NOW).unwrap();
+    assert_eq!(
+        report.rewritten_files.len(),
+        1,
+        "R3 documents the current session-cumulative fallback"
+    );
+    assert_eq!(report.rewritten_files[0].path, "src/outside.rs");
+    assert_eq!(report.rewritten_files[0].edit_count, 4);
+}
+
 /// Reads the operator's database without mutation so release verification can
 /// prove both Phase 2 reports against live indexed data rather than fixtures.
 #[test]

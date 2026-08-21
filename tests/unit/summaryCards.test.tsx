@@ -28,9 +28,16 @@ describe("SummaryCards price coverage", () => {
 
   it("keeps only the three action-oriented cards with visible decision subtitles", () => {
     const html = renderToStaticMarkup(<SummaryCards overview={{ ...overview, totals: { ...overview.totals, sessions: 4 }, rework: { ...overview.rework, abandonedSessions: 1 } }} preset="week" />);
-    for (const label of ["コスト相当", "手戻り平均", "中断率", "低いほど指示が一発で通っている", "ツール実行のまま終わったセッションの割合", "25.0%"])
+    for (const label of ["コスト相当", "手戻り平均", "中断率", "0〜100の相対指標", "ツール実行のまま終わったセッションの割合", "25.0%"])
       expect(html).toContain(label);
     for (const removed of [">セッション<", ">ターン<", ">キャッシュ率<", ">実稼働時間<"])
       expect(html).not.toContain(removed);
+  });
+
+  it("does not render a fabricated zero previous-period comparison for the interruption rate", () => {
+    const html = renderToStaticMarkup(<SummaryCards overview={{ ...overview, comparePrevious: { ...overview.comparePrevious, costPct: 12.3, reworkPct: -4.5 }, totals: { ...overview.totals, sessions: 4 }, rework: { ...overview.rework, abandonedSessions: 1 } }} preset="7d" />);
+    expect(html).not.toContain("±0.0% 前期間比");
+    expect(html).toContain("▲12.3% 前期間比");
+    expect(html).toContain("▼4.5% 前期間比");
   });
 });

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import type { CSSProperties } from "react";
-import { Search } from "lucide-react";
+import { ArrowDownToLine, Search, TriangleAlert } from "lucide-react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import type { ThemeBackgroundSettings } from "../../types";
 import {
@@ -9,6 +9,15 @@ import {
   isDefaultThemeBackground,
 } from "../../lib/themeTweaks";
 import type { ThemeBackgroundCategory, ThemeBackgroundTone } from "../../lib/themeTweaks";
+import type { WallpaperCardState } from "../../lib/wallpaperCache";
+import {
+  clearWallpaperCache,
+  downloadWallpaper,
+  formatCacheSize,
+  refreshWallpaperCache,
+  useWallpaperCache,
+  wallpaperCardState,
+} from "../../lib/wallpaperCache";
 
 interface ThemeBackgroundPanelProps {
   background: ThemeBackgroundSettings;
@@ -36,13 +45,23 @@ const TONE_FILTERS: { value: ToneFilter; label: string }[] = [
 const VISUAL_BACKGROUND_DEFAULTS = {
   imageOpacity: DEFAULT_THEME_BACKGROUND.imageOpacity,
   imageBlur: DEFAULT_THEME_BACKGROUND.imageBlur,
-  imageDim: DEFAULT_THEME_BACKGROUND.imageDim,
+  wallpaperTone: DEFAULT_THEME_BACKGROUND.wallpaperTone,
   panelOpacity: DEFAULT_THEME_BACKGROUND.panelOpacity,
   terminalOpacity: DEFAULT_THEME_BACKGROUND.terminalOpacity,
 };
 
 function percentLabel(value: number): string {
   return `${Math.round(value * 100)}%`;
+}
+
+// The tone slider is signed: left darkens the wallpaper, right washes it
+// toward the theme's paper colour, centre leaves it alone.
+function toneLabel(value: number): string {
+  const percent = Math.round(Math.abs(value) * 100);
+  if (percent === 0) {
+    return "そのまま";
+  }
+  return value < 0 ? `暗く ${percent}%` : `明るく ${percent}%`;
 }
 
 function chipStyle(active: boolean): CSSProperties {
@@ -58,6 +77,52 @@ function chipStyle(active: boolean): CSSProperties {
     fontWeight: active ? 700 : 500,
     whiteSpace: "nowrap",
   };
+}
+
+/**
+ * The state of a wallpaper drawn onto its own card.
+ *
+ * The grey arrow doubles as the "not downloaded yet" marker, which is why it
+ * is not a button: the whole card is the target, and a 16px arrow would be a
+ * miserable one.
+ */
+function WallpaperStateBadge({ state, percent }: { state: WallpaperCardState; percent: number }) {
+  if (state === "downloaded") {
+    return null;
+  }
+
+  const isFailure = state === "failed";
+  return (
+    <span
+      aria-hidden="true"
+      style={{
+        position: "absolute",
+        top: 5,
+        right: 5,
+        zIndex: 2,
+        minWidth: 22,
+        height: 22,
+        padding: state === "downloading" ? "0 5px" : 0,
+        borderRadius: 11,
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        background: "rgba(0, 0, 0, 0.55)",
+        color: isFailure ? "var(--cmux-red)" : "rgba(255, 255, 255, 0.72)",
+        fontSize: 10,
+        fontWeight: 700,
+        fontVariantNumeric: "tabular-nums",
+      }}
+    >
+      {state === "downloading" ? (
+        `${percent}%`
+      ) : isFailure ? (
+        <TriangleAlert size={13} />
+      ) : (
+        <ArrowDownToLine size={13} />
+      )}
+    </span>
+  );
 }
 
 function RangeControl({
@@ -104,6 +169,9 @@ export function ThemeBackgroundPanel({
   const [toneFilter, setToneFilter] = useState<ToneFilter>("all");
   const [searchInput, setSearchInput] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
+  const [isClearingCache, setIsClearingCache] = useState(false);
+  const [cacheNotice, setCacheNotice] = useState("");
+  const wallpaperCache = useWallpaperCache();
   const backgroundChanged = !isDefaultThemeBackground(background);
   const showVisualControls = background.mode !== "solid";
   const modeLabel =
@@ -121,6 +189,10 @@ export function ThemeBackgroundPanel({
     return () => window.clearTimeout(timeoutId);
   }, [searchInput]);
 
+  useEffect(() => {
+    void refreshWallpaperCache();
+  }, []);
+
   const filteredPresets = useMemo(() => {
     return THEME_BACKGROUND_PRESETS.filter((preset) => {
       if (categoryFilter !== "all" && preset.category !== categoryFilter) {
@@ -136,17 +208,67 @@ export function ThemeBackgroundPanel({
     });
   }, [categoryFilter, searchQuery, toneFilter]);
 
+  const failedDownloads = useMemo(
+    () => THEME_BACKGROUND_PRESETS.filter((preset) => wallpaperCache.errors[preset.id]),
+    [wallpaperCache.errors],
+  );
+  const downloadedCount = Object.keys(wallpaperCache.paths).length;
+  const selectedPreset = THEME_BACKGROUND_PRESETS.find((preset) => preset.id === background.presetId);
+  // A wallpaper chosen on an older build is still chosen; it is just being
+  // fetched. Saying so beats leaving the user staring at a flat colour.
+  const selectedIsPending =
+    background.mode === "preset" &&
+    selectedPreset !== undefined &&
+    !wallpaperCache.paths[background.presetId] &&
+    !wallpaperCache.errors[background.presetId];
+
   const applySolid = () => {
     setThemeBackground({ mode: "solid", imagePath: "" });
   };
 
-  const applyPreset = (presetId: string) => {
+  // Downloaded wallpapers apply instantly; the rest are fetched first and
+  // applied only once they are really on disk, so the app never switches to a
+  // wallpaper it cannot paint. A failure leaves the current choice alone and
+  // says why on the card and in the list below the grid.
+  const applyPreset = async (presetId: string) => {
+    if (!wallpaperCache.paths[presetId]) {
+      const path = await downloadWallpaper(presetId);
+      if (!path) {
+        return;
+      }
+    }
     setThemeBackground({
       mode: "preset",
       presetId,
       imagePath: "",
       ...VISUAL_BACKGROUND_DEFAULTS,
     });
+  };
+
+  // Deleting the files while a preset is still applied would just download it
+  // again, so the background drops to solid. `presetId` is kept, which means
+  // one click on the same card brings it back.
+  const removeDownloads = async () => {
+    setIsClearingCache(true);
+    setCacheNotice("");
+    try {
+      const freed = await clearWallpaperCache();
+      const wasUsingPreset = background.mode === "preset";
+      if (wasUsingPreset) {
+        setThemeBackground({ mode: "solid", imagePath: "" });
+      }
+      setCacheNotice(
+        wasUsingPreset
+          ? `${formatCacheSize(freed)} 分を削除し、背景を単色に戻しました。カードを押すと再取得できます。`
+          : `${formatCacheSize(freed)} 分を削除しました。`,
+      );
+    } catch (error) {
+      setCacheNotice(
+        `削除できませんでした: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    } finally {
+      setIsClearingCache(false);
+    }
   };
 
   const applyImagePath = (imagePath: string) => {
@@ -313,6 +435,47 @@ export function ThemeBackgroundPanel({
           {filteredPresets.length} / {THEME_BACKGROUND_PRESETS.length} 件のプリセット
         </div>
 
+        {selectedIsPending && (
+          <div
+            style={{
+              border: "1px solid var(--cmux-border)",
+              borderRadius: 8,
+              padding: "8px 10px",
+              fontSize: 11,
+              color: "var(--cmux-text-secondary)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 8,
+            }}
+          >
+            <span>
+              選択中の「{selectedPreset?.label}」はまだダウンロードされていません。
+              {typeof wallpaperCache.progress[background.presetId] === "number"
+                ? `ダウンロード中 ${wallpaperCache.progress[background.presetId]}%`
+                : "取得できるまで単色で表示します。"}
+            </span>
+            <button
+              type="button"
+              onClick={() => void downloadWallpaper(background.presetId)}
+              disabled={typeof wallpaperCache.progress[background.presetId] === "number"}
+              style={{
+                height: 26,
+                border: "1px solid var(--cmux-border)",
+                borderRadius: 6,
+                background: "transparent",
+                color: "var(--cmux-text-secondary)",
+                cursor: "pointer",
+                padding: "0 10px",
+                fontSize: 11,
+                whiteSpace: "nowrap",
+              }}
+            >
+              今すぐ取得
+            </button>
+          </div>
+        )}
+
         <div
           style={{
             display: "grid",
@@ -322,12 +485,23 @@ export function ThemeBackgroundPanel({
         >
           {filteredPresets.map((preset) => {
             const active = background.mode === "preset" && background.presetId === preset.id;
+            const cardState = wallpaperCardState(preset.id, wallpaperCache);
+            const percent = wallpaperCache.progress[preset.id] ?? 0;
+            const failure = wallpaperCache.errors[preset.id] ?? "";
+            const title = failure
+              ? `${preset.label} - ダウンロードに失敗しました: ${failure}`
+              : cardState === "notDownloaded"
+                ? `${preset.label} - ${preset.description} (クリックでダウンロード)`
+                : `${preset.label} - ${preset.description}`;
             return (
               <button
                 key={preset.id}
                 type="button"
-                onClick={() => applyPreset(preset.id)}
-                title={`${preset.label} - ${preset.description}`}
+                onClick={() => void applyPreset(preset.id)}
+                disabled={cardState === "downloading"}
+                data-wallpaper-id={preset.id}
+                data-wallpaper-state={cardState}
+                title={title}
                 style={{
                   minHeight: 66,
                   border: active ? "2px solid var(--cmux-accent)" : "1px solid var(--cmux-border)",
@@ -344,7 +518,7 @@ export function ThemeBackgroundPanel({
                 }}
               >
                 <img
-                  src={preset.imageUrl}
+                  src={preset.thumbnailUrl}
                   alt=""
                   loading="lazy"
                   decoding="async"
@@ -358,6 +532,7 @@ export function ThemeBackgroundPanel({
                     objectPosition: "center",
                   }}
                 />
+                <WallpaperStateBadge state={cardState} percent={percent} />
                 <span
                   style={{
                     position: "absolute",
@@ -402,6 +577,58 @@ export function ThemeBackgroundPanel({
             }}
           >
             条件に一致するプリセットがありません。
+          </div>
+        )}
+
+        {/* A download that fails must say so and stay retryable. */}
+        {failedDownloads.length > 0 && (
+          <div
+            style={{
+              border: "1px solid var(--cmux-red)",
+              borderRadius: 8,
+              padding: "8px 10px",
+              display: "flex",
+              flexDirection: "column",
+              gap: 6,
+            }}
+          >
+            {failedDownloads.map((preset) => (
+              <div
+                key={preset.id}
+                style={{
+                  display: "flex",
+                  alignItems: "flex-start",
+                  justifyContent: "space-between",
+                  gap: 8,
+                  fontSize: 11,
+                }}
+              >
+                <span style={{ color: "var(--cmux-text-secondary)", minWidth: 0 }}>
+                  <span style={{ color: "var(--cmux-red)", fontWeight: 700 }}>
+                    「{preset.label}」のダウンロードに失敗しました
+                  </span>
+                  <br />
+                  {wallpaperCache.errors[preset.id]}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => void downloadWallpaper(preset.id)}
+                  style={{
+                    height: 26,
+                    border: "1px solid var(--cmux-border)",
+                    borderRadius: 6,
+                    background: "transparent",
+                    color: "var(--cmux-text-secondary)",
+                    cursor: "pointer",
+                    padding: "0 10px",
+                    fontSize: 11,
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  再試行
+                </button>
+              </div>
+            ))}
           </div>
         )}
 
@@ -468,13 +695,13 @@ export function ThemeBackgroundPanel({
               onChange={(value) => setThemeBackground({ imageBlur: value })}
             />
             <RangeControl
-              label="暗さ"
-              value={background.imageDim}
-              min={0}
+              label="壁紙の色調"
+              value={background.wallpaperTone}
+              min={-0.85}
               max={0.85}
               step={0.01}
-              displayValue={percentLabel(background.imageDim)}
-              onChange={(value) => setThemeBackground({ imageDim: value })}
+              displayValue={toneLabel(background.wallpaperTone)}
+              onChange={(value) => setThemeBackground({ wallpaperTone: value })}
             />
             <RangeControl
               label="パネル"
@@ -496,6 +723,54 @@ export function ThemeBackgroundPanel({
             />
           </div>
         )}
+
+        <div
+          style={{
+            borderTop: "1px solid var(--cmux-border)",
+            paddingTop: 10,
+            display: "flex",
+            flexDirection: "column",
+            gap: 6,
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 8,
+            }}
+          >
+            <span style={{ fontSize: 11, color: "var(--cmux-text-tertiary)", minWidth: 0 }}>
+              壁紙は選んだときにダウンロードされます。{downloadedCount} 件 (
+              {formatCacheSize(wallpaperCache.totalBytes)}) を保存中。
+            </span>
+            <button
+              type="button"
+              onClick={() => void removeDownloads()}
+              disabled={isClearingCache || downloadedCount === 0}
+              style={{
+                height: 28,
+                border: "1px solid var(--cmux-border)",
+                borderRadius: 7,
+                background: "transparent",
+                color:
+                  isClearingCache || downloadedCount === 0
+                    ? "var(--cmux-text-dim)"
+                    : "var(--cmux-text-secondary)",
+                cursor: isClearingCache || downloadedCount === 0 ? "default" : "pointer",
+                padding: "0 10px",
+                fontSize: 11,
+                whiteSpace: "nowrap",
+              }}
+            >
+              {isClearingCache ? "削除中..." : "ダウンロード済みの壁紙を削除"}
+            </button>
+          </div>
+          {cacheNotice && (
+            <div style={{ fontSize: 11, color: "var(--cmux-text-secondary)" }}>{cacheNotice}</div>
+          )}
+        </div>
       </div>
     </section>
   );

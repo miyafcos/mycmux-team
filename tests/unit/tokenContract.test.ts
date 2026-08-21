@@ -27,6 +27,12 @@ const appShell = readFileSync(
   path.join(srcDir, "components", "layout", "AppShell.tsx"),
   "utf8",
 );
+// The colour half of themeVars moved into the pure resolver; AppShell still
+// owns the typography and spacing half. The contract covers both halves.
+const themeResolver = readFileSync(
+  path.join(srcDir, "lib", "theme", "resolveTheme.ts"),
+  "utf8",
+);
 
 const rootBlockStart = globalCss.indexOf(":root");
 const rootBlock = globalCss.slice(rootBlockStart, globalCss.indexOf("}", rootBlockStart));
@@ -48,10 +54,11 @@ describe("cmux design token contract", () => {
     expect([...new Set(undefinedReferences)].sort()).toEqual([]);
   });
 
-  it("keeps AppShell's themeVars keys inside the global.css token set", () => {
-    const themeVarKeys = [...appShell.matchAll(/"(--cmux-[a-z0-9-]+)":/g)].map(
-      (match) => match[1],
-    );
+  it("keeps the themeVars keys inside the global.css token set", () => {
+    const themeVarKeys = [
+      ...[...appShell.matchAll(/"(--cmux-[a-z0-9-]+)":/g)].map((match) => match[1]),
+      ...[...themeResolver.matchAll(/cssVar: "(--cmux-[a-z0-9-]+)"/g)].map((match) => match[1]),
+    ];
     expect(themeVarKeys.length).toBeGreaterThan(0);
     expect(themeVarKeys.filter((key) => !definedTokens.has(key)).sort()).toEqual([]);
   });

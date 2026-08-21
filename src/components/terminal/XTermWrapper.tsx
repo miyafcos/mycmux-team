@@ -29,6 +29,7 @@ import { usePaneMetadataStore, useUiStore } from "../../stores/workspaceStore";
 import { useKeybindingStore } from "../../stores/keybindingStore";
 import { useSettingsStore } from "../../stores/settingsStore";
 import { LightDarkColorAdaptController, shouldAdaptLightColorsForPane } from "../../lib/lightDarkColorAdapt";
+import { colorWithOpacity } from "../../lib/theme/colorPrimitives";
 import { resolveEffectiveTerminalRenderer } from "../../stores/settingsMigration";
 import { DEFAULT_TERMINAL_FONT_FAMILY, useThemeStore } from "../../stores/themeStore";
 import { useToastStore } from "../../stores/toastStore";
@@ -214,24 +215,6 @@ function buildThemeFromConfig(
     (theme as Record<string, string>)[ANSI_KEYS[i] as string] = cfg.ansi[i];
   }
   return theme;
-}
-
-function colorWithOpacity(color: string | undefined, opacity: number): string | undefined {
-  if (!color || opacity >= 0.995) {
-    return color;
-  }
-
-  const shortHex = /^#([0-9a-f]{3})$/i.exec(color);
-  const fullHex = /^#([0-9a-f]{6})$/i.exec(color);
-  const hex = fullHex?.[1] ?? shortHex?.[1].split("").map((char) => `${char}${char}`).join("");
-  if (!hex) {
-    return color;
-  }
-
-  const red = parseInt(hex.slice(0, 2), 16);
-  const green = parseInt(hex.slice(2, 4), 16);
-  const blue = parseInt(hex.slice(4, 6), 16);
-  return `rgba(${red}, ${green}, ${blue}, ${opacity})`;
 }
 
 function withTerminalOpacity(theme: ITheme, opacity: number, mediaActive: boolean): ITheme {

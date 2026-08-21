@@ -236,16 +236,84 @@ fn a_mixed_model_session_is_split_per_turn() {
     assert_eq!(haiku.turns, 1);
 
     // Per-model session counts sum above the session total, because the one
-    // session used both. That overlap is reported, never pro-rated away.
+    // session used both. This is model overlap, not work-tag overlap.
     let summed: i64 = report.rows.iter().map(|row| row.sessions).sum();
     assert_eq!(summed, 2);
     assert!(summed > report.total_sessions);
-    assert!(report.overlapping);
+    assert!(!report.overlapping);
 
     // Share percentages are computed against the true total, so they still
     // add up to 100 even though the session counts overlap.
     let share: f64 = report.rows.iter().map(|row| row.share_pct).sum();
     assert!((share - 100.0).abs() < 1e-6, "share was {share}");
+}
+
+#[test]
+fn work_tag_session_count_unions_sessions_across_models() {
+    let fixture = Fixture::new();
+    fixture.write("S3.jsonl", CLAUDE_MIXED_MODELS);
+    fixture.index(KIND_CLAUDE, false);
+
+    let report = query::models(
+        &fixture.conn(),
+        &all_time(),
+        &Filters::default(),
+        &query::ModelsOptions::default(),
+        NOW,
+    )
+    .unwrap();
+    let row = report
+        .by_work_tag
+        .iter()
+        .find(|row| row.work_tag == "explore")
+        .expect("mixed-model fixture should have the explore tag");
+    assert_eq!(
+        row.per_model
+            .iter()
+            .map(|entry| entry.sessions)
+            .sum::<i64>(),
+        2,
+        "R1 fixture must exercise the old per-model overcount"
+    );
+    assert_eq!(
+        row.session_count, 1,
+        "R1 work-tag sessions must be a union across model buckets"
+    );
+}
+
+#[test]
+fn work_tag_overlapping_reflects_actual_multi_tag_sessions() {
+    let single_tag = Fixture::new();
+    single_tag.write("S3.jsonl", CLAUDE_MIXED_MODELS);
+    single_tag.index(KIND_CLAUDE, false);
+    let single_report = query::models(
+        &single_tag.conn(),
+        &all_time(),
+        &Filters::default(),
+        &query::ModelsOptions::default(),
+        NOW,
+    )
+    .unwrap();
+    assert!(
+        !single_report.overlapping,
+        "R4 a population whose sessions each have one tag must not overlap"
+    );
+
+    let multi_tag = Fixture::new();
+    multi_tag.write("S2.jsonl", CLAUDE_IO_SESSION);
+    multi_tag.index(KIND_CLAUDE, false);
+    let multi_report = query::models(
+        &multi_tag.conn(),
+        &all_time(),
+        &Filters::default(),
+        &query::ModelsOptions::default(),
+        NOW,
+    )
+    .unwrap();
+    assert!(
+        multi_report.overlapping,
+        "R4 a session with multiple tags must report overlap"
+    );
 }
 
 #[test]

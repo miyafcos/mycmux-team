@@ -14,6 +14,7 @@ pub mod shell;
 pub mod tab_sweep;
 pub mod terminal;
 pub mod usage;
+pub mod wallpapers;
 pub mod window;
 pub mod window_registry;
 pub mod workspace;

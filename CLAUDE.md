@@ -83,6 +83,8 @@ python -m pytest tests/               # sync-command allowlist 契約テスト�
 - data.json への `agent_session_id` / `agent_kind` / `claude_session_id` 保存は v0.5.6 で多層安全弁とセットに再導入済み (保存自体は現行仕様)。ただし安全弁 (`sanitize_launch_env` / `EPHEMERAL_LAUNCH_ENV_KEYS` / `lib.rs` の `remove_var` / `dedupeAgentSessionsInConfigs` / `tests/test_ephemeral_env_keys_contract.py`) を壊す・迂回する変更は禁止
 - sync `#[tauri::command]` を増やす変更は `tests/test_command_sync_contract.py` の allowlist と整合させる
 - テーマ・トークン・タイポを触るときの契約 = `tests/unit/tokenContract.test.ts` (未定義 `var(--cmux-*)` 禁止) / `themeContrast.test.ts` (WCAG床+ANSIラチェット) / `uiDensity.test.ts` (standard=現行同値固定) / `uiQualityTokens.test.ts` (日本語9px禁止)。詳細は `docs/design/theme-system.md`
+- **壁紙は同梱していない (オンデマンドDL)**。`src/assets/**` の59枚は配布パックの原本で、ビルドに入るのはサムネイル (`src/assets/wallpaper-thumbs/`) だけ。**原本を足す・差し替えるときは同じ操作で `scripts/wallpapers/make_thumbnails.py` → `build_manifest.py` → `publish_pack.ps1 -Execute` (公開は要承認) まで通す**。1つでも欠けると「ピッカーに出ない/押すと必ず失敗する/404」になる。契約 = `tests/test_wallpaper_pack_contract.py`。詳細は `docs/design/wallpaper-on-demand.md`
+- **ailog の系列色は別系統** (テーマ変数を使わない固定色相・塗り専用)。契約 = `tests/unit/ailogPalette.test.ts` (会社=色相/ティア=明度・L安全帯[0.500,0.656]・色覚ΔE床・`price.rs` との parity)。詳細は `docs/design/ailog-series-colours.md`。**`price.rs` に会社やモデルを足すと parity が落ちる — テストを緩めず辞書側を更新する**
 
 ## 詳細情報
 

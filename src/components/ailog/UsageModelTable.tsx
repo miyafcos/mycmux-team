@@ -6,8 +6,9 @@
  * distinct from a local or flat-rate $0.
  */
 
-import { SYNTHETIC_MODEL, type SeriesReport } from "../../lib/ailog";
+import { SYNTHETIC_MODEL, type SeriesGroupBy, type SeriesReport } from "../../lib/ailog";
 import type { AilogSelection } from "../../stores/ailogStore";
+import { seriesPaint, type SeriesPaint } from "./modelColors";
 import {
   UNKNOWN_GROUP,
   costCoverageLabel,
@@ -28,6 +29,7 @@ import {
   tdLeftStyle,
   tdStyle,
   thLeftStyle,
+  paintSwatchBackground,
 } from "./ui";
 
 interface Row {
@@ -41,6 +43,10 @@ interface Row {
   costUsd: number;
   days: number;
   metric: number;
+}
+
+export function modelTablePaint(group: string, groupBy: SeriesGroupBy): SeriesPaint {
+  return seriesPaint(group, groupBy);
 }
 
 export function buildModelRows(report: SeriesReport, metric: UsageMetric): Row[] {
@@ -152,13 +158,16 @@ export function UsageModelTable({
                 && row.group !== SYNTHETIC_MODEL;
               const selected = Boolean(clickable && selection?.model?.key === row.group);
               const modelClass = classForGroup(row.group);
+              const paint = modelTablePaint(row.group, report.groupBy);
               const cost = modelClass === "unknown" || isUnknown
                 ? { value: "—", title: "単価未公表のため除外" }
                 : modelClass === "local"
                   ? { value: "usd", title: "ローカル実行 — 費用なし" }
                   : modelClass === "flat"
                     ? { value: "usd", title: "定額プラン — 従量費用なし" }
-                    : { value: "usd", title: undefined };
+                    : report.groupBy === "provider" && row.group === "xai"
+                      ? { value: "usd", title: "Grok の自己申告コスト" }
+                      : { value: "usd", title: undefined };
               return (
                 <tr
                   key={row.group}
@@ -178,6 +187,7 @@ export function UsageModelTable({
                 >
                   <td style={tdLeftStyle}>
                     <span style={{ display: "inline-flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                      <span aria-hidden="true" style={{ width: 9, height: 9, borderRadius: 2, background: paintSwatchBackground(paint), display: "inline-block" }} />
                       {groupLabel(row.group, report.groupBy)}
                       {isUnknown ? (
                         <Chip tone="warn" title="Codex の token_count イベントにモデルが無い記録です">

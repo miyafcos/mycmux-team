@@ -14,11 +14,13 @@ import {
 } from "../../lib/cliAccounts";
 import {
   PROVIDER_SHORT,
+  SHARED_RESET_TITLE,
   displayWindows,
   formatPct,
   formatResetShort,
   formatUpdatedAt,
   rowMessage,
+  sharedResetAt,
   staleWindowsNote,
   usageBarColor,
   usageColor,
@@ -250,6 +252,9 @@ function AccountRow({
   // and pushed the "使用中" label of the line above out of view.
   const dense = windows.length >= 4 ? "tight" : windows.length >= 3 ? "snug" : "roomy";
   const cells = dense === "tight" ? 3 : dense === "snug" ? 5 : 10;
+  const sharedReset = sharedResetAt(windows.map((window) => window.stat));
+  const sharedResetLabel = sharedReset ? formatResetShort(sharedReset) : "";
+  const collapseReset = Boolean(sharedResetLabel);
   const action = row.is_active
     ? "使用中"
     : isBusy
@@ -352,8 +357,15 @@ function AccountRow({
             }}
           >
             {windows.map(({ key, ...window }) => (
-              <UsageBar key={key} {...window} cells={cells} dense={dense} />
+              <UsageBar
+                key={key}
+                {...window}
+                cells={cells}
+                dense={dense}
+                showReset={!collapseReset}
+              />
             ))}
+            {collapseReset && <SharedResetMark label={sharedResetLabel} />}
           </span>
           <span
             style={{
@@ -387,11 +399,18 @@ function AccountRow({
         >
           {windows.length > 0 ? (
             windows.map(({ key, ...window }) => (
-              <UsageBar key={key} {...window} cells={cells} dense={dense} />
+              <UsageBar
+                key={key}
+                {...window}
+                cells={cells}
+                dense={dense}
+                showReset={!collapseReset}
+              />
             ))
           ) : (
             <span style={{ color: "var(--cmux-text-tertiary)" }}>—</span>
           )}
+          {collapseReset && <SharedResetMark label={sharedResetLabel} />}
           <span
             title={`取得 ${formatUpdatedAt(row.fetched_at)}`}
             style={{
@@ -412,18 +431,35 @@ function AccountRow({
   );
 }
 
+function SharedResetMark({ label }: { label: string }) {
+  return (
+    <span
+      title={SHARED_RESET_TITLE}
+      style={{
+        color: "var(--cmux-text-dim)",
+        whiteSpace: "nowrap",
+        flexShrink: 0,
+      }}
+    >
+      ↻{label}
+    </span>
+  );
+}
+
 function UsageBar({
   label,
   stat,
   hint,
   cells,
   dense = "roomy",
+  showReset = true,
 }: {
   label: string;
   stat: WindowStat;
   hint: string;
   cells: number;
   dense?: "roomy" | "snug" | "tight";
+  showReset?: boolean;
 }) {
   return (
     <span
@@ -473,9 +509,11 @@ function UsageBar({
         >
           {formatPct(stat.pct)}
         </span>
-        {/* The reset countdown is the first thing to go when a row carries
-            per-model windows; `title` still spells it out on hover. */}
-        {dense !== "tight" &&
+        {/* Per-window reset is the first thing to go when a row is tight and
+            the dates differ; `title` still spells it out on hover. A shared
+            date is rendered once after the meters instead, even in tight. */}
+        {showReset &&
+          dense !== "tight" &&
           stat.resets_at &&
           formatResetShort(stat.resets_at) && (
             <span

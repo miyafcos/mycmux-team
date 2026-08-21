@@ -1,6 +1,6 @@
 /**
  * Pure helpers for the usage cross-table: axis pairing, folding into
- * "その他", and which click can become a session-list filter.
+ * a folded band, and which click can become a session-list filter.
  */
 
 import type { PivotAxis, PivotReport, SeriesGroup } from "../../lib/ailog";
@@ -11,7 +11,7 @@ export const PIVOT_AXES = USAGE_AXES.map((axis) => ({ value: axis.value, label: 
 
 export const PIVOT_TOP_ROWS = 12;
 export const PIVOT_TOP_COLS = 10;
-export const OTHER_KEY = "その他";
+export const OTHER_KEY = "(folded)";
 
 export function pivotAxisLabel(axis: PivotAxis): string {
   return axisLabel(axis);
@@ -70,7 +70,7 @@ export interface FoldedPivot {
   /**
    * The keys behind those counts, so the note can say what went into the band.
    * A tier such as gpt-5.6-luna drops out of the top N over a long range, and an
-   * anonymous "その他" hides that it was ever measured.
+   * anonymous folded band hides that it was ever measured.
    */
   foldedRowKeys: string[];
   foldedColKeys: string[];
@@ -155,7 +155,7 @@ export function foldNote(folded: FoldedPivot): string | null {
   if (folded.foldedCols > 0) {
     parts.push(`列 ${folded.foldedCols} 件 (${namedList(folded.foldedColKeys)})`);
   }
-  return `${parts.join("・")}を「その他」にまとめました`;
+  return `${parts.join("・")}を「下位まとめ」にまとめました`;
 }
 
 export function heatMixPercent(value: number, max: number): number {

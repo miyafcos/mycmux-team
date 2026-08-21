@@ -25,7 +25,7 @@ import {
   type SeriesGroup,
   type UsageBucket,
 } from "../../lib/ailog";
-import { MODEL_COLORS, NEUTRAL_COLOR } from "./palette";
+import { NEUTRAL_COLOR, SERIES_TOP_N, seriesPaint, type SeriesTone } from "./modelColors";
 
 export const DAY_MS = 86_400_000;
 const WEEK_MS = 7 * DAY_MS;
@@ -123,6 +123,21 @@ export function formatMetricFull(value: number, metric: UsageMetric): string {
   return unit === "tokens" ? formatTokensFull(value) : formatCount(value);
 }
 
+/**
+ * Up to three readable value-axis ticks, never exceeding the measured peak.
+ * The step is rounded down at the leading digit so a 1,234,567 peak reads
+ * 0 / 600,000 / 1,200,000 instead of arbitrary decimals.
+ */
+export function valueAxisTicks(max: number): number[] {
+  if (!Number.isFinite(max) || max <= 0) return [0];
+  const half = max / 2;
+  const magnitude = 10 ** Math.floor(Math.log10(half));
+  const step = Math.floor(half / magnitude) * magnitude;
+  if (!Number.isFinite(step) || step <= 0) return [0, max];
+  const ticks = [0, step, step * 2].filter((value) => value <= max);
+  return ticks.length >= 2 ? ticks : [0, max];
+}
+
 export function metricUnit(metric: UsageMetric): "tokens" | "count" | "usd" {
   return usageMetricInfo(metric).unit;
 }
@@ -161,7 +176,7 @@ export const USAGE_AXES: UsageAxis[] = [
     hint: "sol / terra / luna をまとめた括り (gpt-5.6, opus-5)",
     series: true,
   },
-  { value: "provider", label: "会社", hint: "Anthropic / OpenAI / Google / ローカル", series: true },
+  { value: "provider", label: "会社", hint: "Anthropic / OpenAI / xAI / Google / ローカル", series: true },
   {
     value: "project",
     label: "案件",
@@ -196,6 +211,40 @@ export function costCoverageLabel(coverage: PriceCoverage): string {
     : "コスト相当";
 }
 
+export interface ChangeBreakdown {
+  totalDelta: number;
+  volumeEffect: number;
+  rateEffect: number;
+  interaction: number;
+}
+
+/**
+ * Split a cost change into request volume, cost per request, and their
+ * interaction. A prior period with no requests has no meaningful unit cost,
+ * so it is intentionally not decomposed.
+ */
+export function decomposeCostChange(
+  costNow: number,
+  requestsNow: number,
+  costPrev: number,
+  requestsPrev: number,
+): ChangeBreakdown | null {
+  if (requestsPrev <= 0 || requestsNow < 0 || costNow < 0 || costPrev < 0) return null;
+  if (requestsNow === 0 && costNow !== 0) return null;
+
+  const previousRate = costPrev / requestsPrev;
+  const currentRate = requestsNow === 0 ? 0 : costNow / requestsNow;
+  const requestDelta = requestsNow - requestsPrev;
+  const rateDelta = currentRate - previousRate;
+
+  return {
+    totalDelta: costNow - costPrev,
+    volumeEffect: requestDelta * previousRate,
+    rateEffect: requestsPrev * rateDelta,
+    interaction: requestDelta * rateDelta,
+  };
+}
+
 /**
  * Advance one bucket in the same JST calendar the backend uses
  * (`query.rs` `bucket_start_at`: +9h, ISO Monday weeks, month = 1st).
@@ -221,6 +270,7 @@ export interface UsageSlice {
   group: string;
   value: number;
   color: string;
+  tone: SeriesTone;
 }
 
 export interface UsageBucketRow {
@@ -242,41 +292,38 @@ export interface UsageModel {
   legend: UsageSlice[];
   max: number;
   periodTotal: number;
-  /** Groups folded into the "その他" band, if any. */
+  /** Groups folded into the "下位まとめ" band, if any. */
   foldedCount: number;
   /**
    * Names of those groups, ranked highest first, so the band can say what is
    * inside it. A tier such as gpt-5.6-luna falls out of the top N over a long
-   * range, and an anonymous "その他" hides that it was ever measured.
+   * range, and an anonymous folded band hides that it was ever measured.
    */
   foldedGroups: string[];
 }
 
-export const OTHER_GROUP = "その他";
+export const OTHER_GROUP = "(folded)";
 export const UNKNOWN_GROUP = "(unknown)";
 export const UNKNOWN_LABEL = "モデル不明";
 
 /** `(unknown)` comes from turns whose transcript recorded no model name. */
 export function groupLabel(group: string, groupBy?: SeriesGroupBy): string {
+  if (group === OTHER_GROUP) return "下位まとめ";
   if (group === UNKNOWN_GROUP) return UNKNOWN_LABEL;
   if (groupBy === "provider") {
     const providerLabels: Record<string, string> = {
       anthropic: "Anthropic",
       openai: "OpenAI",
+      xai: "xAI",
       google: "Google",
       local: "ローカル",
-      other: "その他",
+      other: "その他の会社",
     };
     return providerLabels[group] ?? group;
   }
   if (groupBy === "kind") return kindLabel(group);
   if (groupBy === "effort") return group === "(none)" ? "未指定" : group;
   return group;
-}
-
-function colorFor(group: string, index: number): string {
-  if (group === UNKNOWN_GROUP || group === OTHER_GROUP) return NEUTRAL_COLOR;
-  return MODEL_COLORS[index % MODEL_COLORS.length];
 }
 
 /**
@@ -289,8 +336,9 @@ function colorFor(group: string, index: number): string {
 export function buildUsageModel(
   buckets: SeriesBucket[],
   metric: UsageMetric,
-  topN = MODEL_COLORS.length,
+  topN = SERIES_TOP_N,
   bucketKind: UsageBucket = "day",
+  groupBy: SeriesGroupBy = "model_raw",
 ): UsageModel {
   const totals = new Map<string, number>();
   for (const bucket of buckets) {
@@ -304,8 +352,8 @@ export function buildUsageModel(
     .map(([group]) => group);
   const kept = ranked.slice(0, Math.max(0, topN));
   const folded = ranked.slice(kept.length);
-  const colors = new Map<string, string>();
-  kept.forEach((group, index) => colors.set(group, colorFor(group, index)));
+  const paints = new Map<string, { color: string; tone: SeriesTone }>();
+  kept.forEach((group) => paints.set(group, seriesPaint(group, groupBy)));
 
   const byBucket = new Map<number, SeriesBucket>();
   for (const bucket of buckets) byBucket.set(bucket.bucket, bucket);
@@ -321,14 +369,15 @@ export function buildUsageModel(
       for (const group of bucket?.groups ?? []) {
         const value = metricValue(group, metric);
         if (value <= 0) continue;
-        if (colors.has(group.group)) {
-          slices.push({ group: group.group, value, color: colors.get(group.group) as string });
+        const paint = paints.get(group.group);
+        if (paint) {
+          slices.push({ group: group.group, value, ...paint });
         } else {
           otherValue += value;
         }
       }
       if (otherValue > 0) {
-        slices.push({ group: OTHER_GROUP, value: otherValue, color: NEUTRAL_COLOR });
+        slices.push({ group: OTHER_GROUP, value: otherValue, color: NEUTRAL_COLOR, tone: "neutral" });
       }
       slices.sort(
         (a, b) => kept.indexOf(a.group) - kept.indexOf(b.group) || a.group.localeCompare(b.group),
@@ -348,16 +397,17 @@ export function buildUsageModel(
     }
   }
 
-  const legend: UsageSlice[] = kept.map((group, index) => ({
+  const legend: UsageSlice[] = kept.map((group) => ({
     group,
     value: totals.get(group) ?? 0,
-    color: colorFor(group, index),
+    ...(paints.get(group) as { color: string; tone: SeriesTone }),
   }));
   if (folded.length > 0) {
     legend.push({
       group: OTHER_GROUP,
       value: folded.reduce((sum, group) => sum + (totals.get(group) ?? 0), 0),
       color: NEUTRAL_COLOR,
+      tone: "neutral",
     });
   }
 
@@ -374,6 +424,7 @@ export function buildUsageModel(
 export interface StackRect {
   group: string;
   color: string;
+  tone: SeriesTone;
   value: number;
   /** Fraction of the tallest day, 0..1, measured from the baseline. */
   offset: number;
@@ -394,7 +445,7 @@ export function layoutStack(day: UsageBucketRow, max: number, mode: "absolute" |
   let offset = 0;
   for (const slice of day.slices) {
     const height = slice.value / denominator;
-    rects.push({ group: slice.group, color: slice.color, value: slice.value, offset, height });
+    rects.push({ group: slice.group, color: slice.color, tone: slice.tone, value: slice.value, offset, height });
     offset += height;
   }
   return rects;

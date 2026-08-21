@@ -445,6 +445,7 @@ export interface TagModelEntry {
 export interface WorkTagRow {
   workTag: string;
   perModel: TagModelEntry[];
+  sessionCount: number;
 }
 
 export interface ModelsReport {

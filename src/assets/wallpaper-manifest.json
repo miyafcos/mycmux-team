@@ -1,0 +1,477 @@
+{
+  "packTag": "wallpapers-v1",
+  "wallpapers": [
+    {
+      "id": "macos_monterey",
+      "filename": "macos_monterey.webp",
+      "bytes": 126190,
+      "sha256": "c56b071a92fc22123be767effc35218524fd158f041a728181c0e88beabffeb1",
+      "width": 3840,
+      "height": 3840
+    },
+    {
+      "id": "macos_ventura",
+      "filename": "macos_ventura.webp",
+      "bytes": 182204,
+      "sha256": "41d48389a24815a334bc7b6bc85221cc177026855446fb094503f29c5506fdd1",
+      "width": 3840,
+      "height": 3840
+    },
+    {
+      "id": "macos_big_sur",
+      "filename": "macos_big_sur.webp",
+      "bytes": 1118298,
+      "sha256": "7b99eb2f9caa865558170d099d53c2868f2d1c8c132f88a34b90a790f844c331",
+      "width": 3840,
+      "height": 3840
+    },
+    {
+      "id": "macos_mojave",
+      "filename": "macos_mojave.webp",
+      "bytes": 577876,
+      "sha256": "b50ce20c044bdd9398d9a9cdc1a1e1f71e14fcbecaa9146bc1b09931b158d218",
+      "width": 3840,
+      "height": 2160
+    },
+    {
+      "id": "earth_and_moon",
+      "filename": "earth_and_moon.webp",
+      "bytes": 186874,
+      "sha256": "072a4c0b612f2326209b6e1cadea647e26b72398ad648881da5b05b70335de4a",
+      "width": 3840,
+      "height": 2160
+    },
+    {
+      "id": "milky_way",
+      "filename": "milky_way.webp",
+      "bytes": 501740,
+      "sha256": "91d9b4984473111b7fe13c44a7ff588efb439ceffd371a75ccc3b788cfb5dc2d",
+      "width": 3840,
+      "height": 2160
+    },
+    {
+      "id": "win11_default_dark",
+      "filename": "win11_default_dark.webp",
+      "bytes": 735648,
+      "sha256": "2e9ba882f603f44b413ff535c3ad775f500e612f2760bbc3b67aad1e8afd3da2",
+      "width": 2560,
+      "height": 2048
+    },
+    {
+      "id": "dark_city",
+      "filename": "dark_city.webp",
+      "bytes": 361836,
+      "sha256": "1e404573029885490c46d88e55528e37415f86b86349e037149c51dfd58371e5",
+      "width": 2278,
+      "height": 1556
+    },
+    {
+      "id": "catppuccin_black_hole",
+      "filename": "catppuccin_black_hole.webp",
+      "bytes": 183396,
+      "sha256": "622e223f51194ac0f3c9d79e8c908fa0eb9e6ee1dad0198eb5f20c03753a9714",
+      "width": 3840,
+      "height": 2160
+    },
+    {
+      "id": "catppuccin_atlantis",
+      "filename": "catppuccin_atlantis.webp",
+      "bytes": 318682,
+      "sha256": "9737bc3a8e51f139d5e5e1d7f98b0139b10f7a1f667a24fcd36d1e816ed2b291",
+      "width": 1920,
+      "height": 967
+    },
+    {
+      "id": "catppuccin_blueprint",
+      "filename": "catppuccin_blueprint.webp",
+      "bytes": 410478,
+      "sha256": "e82ff4eda04d2e833ae5adf7f131eeba8d4e5e1aa8ec3d6e4a608fd991882703",
+      "width": 1920,
+      "height": 1170
+    },
+    {
+      "id": "catppuccin_bsod",
+      "filename": "catppuccin_bsod.webp",
+      "bytes": 44044,
+      "sha256": "6170f2bdb2aa97d29a8b29a1da6e5357c1adb7fbb18316c038406d1f7a70c4e7",
+      "width": 1920,
+      "height": 1080
+    },
+    {
+      "id": "catppuccin_abandoned_station",
+      "filename": "catppuccin_abandoned_station.webp",
+      "bytes": 1262984,
+      "sha256": "3c74e9182e27c07ab7e77ca95f8590df97d3372b85a2c86e6a78927206cf5d20",
+      "width": 2339,
+      "height": 1654
+    },
+    {
+      "id": "catppuccin_abstract_swirls",
+      "filename": "catppuccin_abstract_swirls.webp",
+      "bytes": 408794,
+      "sha256": "eabf163e4ecf4338af81c054c4a90419e52e583b895f0a3fcd593ee8e56e4be6",
+      "width": 2560,
+      "height": 1440
+    },
+    {
+      "id": "oppenheimer",
+      "filename": "oppenheimer.webp",
+      "bytes": 419646,
+      "sha256": "6cbf790cff49b2cb1040ed98dd5eb2ec6ec3fbeb7bbed40ae988c8c0bd5ab158",
+      "width": 4096,
+      "height": 3254
+    },
+    {
+      "id": "jellyfish",
+      "filename": "jellyfish.webp",
+      "bytes": 409998,
+      "sha256": "1180f90552c344c94032fdddd6a5a9c1560539be74283318713eabe453d0fa05",
+      "width": 2048,
+      "height": 1536
+    },
+    {
+      "id": "koi",
+      "filename": "koi.webp",
+      "bytes": 248140,
+      "sha256": "77f65fe28dbf897201b993b0b254ed511608be9684027c3e162ef0136dbc1de4",
+      "width": 2048,
+      "height": 1536
+    },
+    {
+      "id": "leafy",
+      "filename": "leafy.webp",
+      "bytes": 349572,
+      "sha256": "aafc47e2f5c80997f77e7e2412bca0d3567a06d1a5d5b44b60174e569b822010",
+      "width": 2048,
+      "height": 1536
+    },
+    {
+      "id": "macos_sonoma",
+      "filename": "macos_sonoma.webp",
+      "bytes": 178584,
+      "sha256": "1d2d3fb0bef6492f21a369fcc1a347bae85b80f695e48deed39c4e5e1112249f",
+      "width": 3840,
+      "height": 3840
+    },
+    {
+      "id": "macos_high_sierra",
+      "filename": "macos_high_sierra.webp",
+      "bytes": 2556254,
+      "sha256": "71ea6c8abe60d7584f1d2b0a726d17ceb571dd51d2006789066476dcc903a8e4",
+      "width": 3840,
+      "height": 2160
+    },
+    {
+      "id": "macos_sierra",
+      "filename": "macos_sierra.webp",
+      "bytes": 2142436,
+      "sha256": "f0a466a7f4645bf05dd8777003178c414d147843988af52be17742d3c52e3f77",
+      "width": 3840,
+      "height": 2160
+    },
+    {
+      "id": "macos_el_capitan",
+      "filename": "macos_el_capitan.webp",
+      "bytes": 2225042,
+      "sha256": "ab9e1b82b3f2454d2863a40fc4897b38e73cd9aa3899d7339e09728338257ed8",
+      "width": 3840,
+      "height": 2400
+    },
+    {
+      "id": "macos_yosemite",
+      "filename": "macos_yosemite.webp",
+      "bytes": 1616092,
+      "sha256": "34af1dc731b4a04b0474539b00cb25fdebb35f71b868043cf0f1776936c1faf4",
+      "width": 3840,
+      "height": 2160
+    },
+    {
+      "id": "antelope_canyon",
+      "filename": "antelope_canyon.webp",
+      "bytes": 1301412,
+      "sha256": "388c9036414199c8810f7176b1702ed325246336e3c1321add4b9b89ba65a8a3",
+      "width": 3840,
+      "height": 2160
+    },
+    {
+      "id": "red_rock",
+      "filename": "red_rock.webp",
+      "bytes": 504430,
+      "sha256": "bd855455b07f0ac1757bd8927bfaa456cfd1a66ed6ab7fd3945738b0e6a1bc77",
+      "width": 2048,
+      "height": 1536
+    },
+    {
+      "id": "asteroid_city",
+      "filename": "asteroid_city.webp",
+      "bytes": 2317936,
+      "sha256": "3d98fe0e0f86e30b2274c4310e958fb06a7cdbf7b511e280427cdc46a32a182b",
+      "width": 3517,
+      "height": 1978
+    },
+    {
+      "id": "thanksgiving",
+      "filename": "thanksgiving.webp",
+      "bytes": 791714,
+      "sha256": "125f49ffc78db66559a70e5854f06a16450f272a031e774329d3ed3f844c591a",
+      "width": 2048,
+      "height": 1536
+    },
+    {
+      "id": "warp",
+      "filename": "warp.webp",
+      "bytes": 50482,
+      "sha256": "0d13256a42492dfb8c47a9a99bd9aa7ee0f074f8b040a48776304c2d758cbccb",
+      "width": 3840,
+      "height": 2160
+    },
+    {
+      "id": "grafbase",
+      "filename": "grafbase.webp",
+      "bytes": 20506,
+      "sha256": "2e320d31b0835cb9a37c1092ac79339fade9fc48cfb5cbfd15de0cbf199264c0",
+      "width": 2400,
+      "height": 1260
+    },
+    {
+      "id": "win11_motion_01",
+      "filename": "win11_motion_01.webp",
+      "bytes": 600828,
+      "sha256": "2c110a4974062cf569c8c5df2d39fd38195e512b7699a19121dba25eae454feb",
+      "width": 3840,
+      "height": 2401
+    },
+    {
+      "id": "win11_motion_02",
+      "filename": "win11_motion_02.webp",
+      "bytes": 668610,
+      "sha256": "4ec9a15ce1351a834c2c8209035a45a28874570334d54bac959971ffc93a728a",
+      "width": 3840,
+      "height": 2400
+    },
+    {
+      "id": "win11_motion_03",
+      "filename": "win11_motion_03.webp",
+      "bytes": 529514,
+      "sha256": "f416fde98ab2ae1e1ee3e555c573ec7ec85a09301614b8d8d818609b0ee55f8a",
+      "width": 3840,
+      "height": 2399
+    },
+    {
+      "id": "win11_motion_04",
+      "filename": "win11_motion_04.webp",
+      "bytes": 408368,
+      "sha256": "d99b5680b76e23bc558be08b250bed96ea607b7a2e0e905e8a2f06bd7647ad93",
+      "width": 3840,
+      "height": 2400
+    },
+    {
+      "id": "win11_spectrum_01",
+      "filename": "win11_spectrum_01.webp",
+      "bytes": 713676,
+      "sha256": "5f4b07e79ee82a426da77baa6140ac54ca232553f88aaf660c6a5a0481f55723",
+      "width": 3840,
+      "height": 2400
+    },
+    {
+      "id": "win11_spectrum_02",
+      "filename": "win11_spectrum_02.webp",
+      "bytes": 1136222,
+      "sha256": "1e4524b6ae5a1e00744455fe90618bcd17da981479b86a01465c2337d3485651",
+      "width": 3840,
+      "height": 2400
+    },
+    {
+      "id": "win11_spectrum_03",
+      "filename": "win11_spectrum_03.webp",
+      "bytes": 444936,
+      "sha256": "11b3ccab657528a6c7336a122ef87c582ef52c7817229ce2b961a86f56e5c2c3",
+      "width": 3840,
+      "height": 2400
+    },
+    {
+      "id": "win11_spectrum_04",
+      "filename": "win11_spectrum_04.webp",
+      "bytes": 606796,
+      "sha256": "98a6cd2ca24f8deafc226923621befd0cf13456e849b917bb36aa79a44b81342",
+      "width": 3840,
+      "height": 2400
+    },
+    {
+      "id": "win11_flow_01",
+      "filename": "win11_flow_01.webp",
+      "bytes": 164268,
+      "sha256": "e3b776b4daefe3933203904a391db197f1f3fb15608026769f725d92f34f7321",
+      "width": 3840,
+      "height": 2399
+    },
+    {
+      "id": "win11_flow_02",
+      "filename": "win11_flow_02.webp",
+      "bytes": 131532,
+      "sha256": "5d801d741de6fffaf8cc347928da5c4de5467abd9f8530ab99b3ebb920ca5584",
+      "width": 3840,
+      "height": 2399
+    },
+    {
+      "id": "win11_flow_03",
+      "filename": "win11_flow_03.webp",
+      "bytes": 124994,
+      "sha256": "be3b334a858c29dc744ab41556949a42cf8f862e5379440562efd4dba29f66f4",
+      "width": 3840,
+      "height": 2400
+    },
+    {
+      "id": "win11_flow_04",
+      "filename": "win11_flow_04.webp",
+      "bytes": 124270,
+      "sha256": "3b0f0a83d5a0e39f529f463df6f290f4d8df3218f7f61b9cf919981f842cc9e6",
+      "width": 3840,
+      "height": 2400
+    },
+    {
+      "id": "catppuccin_bluehour",
+      "filename": "catppuccin_bluehour.webp",
+      "bytes": 274814,
+      "sha256": "a0642126fd532757692be1e4a83a6fc43cddd1a196a65c770e2cbaf96e923093",
+      "width": 1920,
+      "height": 1080
+    },
+    {
+      "id": "catppuccin_artificial_valley",
+      "filename": "catppuccin_artificial_valley.webp",
+      "bytes": 256606,
+      "sha256": "b9f1e3bf1824d38f53c8417b604e08d0885fedb3154efe471f397d55b05910b1",
+      "width": 1920,
+      "height": 1030
+    },
+    {
+      "id": "catppuccin_blue_landscape",
+      "filename": "catppuccin_blue_landscape.webp",
+      "bytes": 952728,
+      "sha256": "098db16f0802cfe9df26d858b15d1515e833c50cfc673dffe698ec8fda9e5bf2",
+      "width": 2912,
+      "height": 1632
+    },
+    {
+      "id": "catppuccin_3d_model",
+      "filename": "catppuccin_3d_model.webp",
+      "bytes": 115426,
+      "sha256": "f10834af852bf09bbdfff320e0e4f1c54d1db63d9d7e771554aec675f467fbb2",
+      "width": 3840,
+      "height": 2160
+    },
+    {
+      "id": "catppuccin_cabin",
+      "filename": "catppuccin_cabin.webp",
+      "bytes": 153990,
+      "sha256": "6114461ec419f7cf348a128838a1aae9b7bd4a64c8d890b02c800ccfe77cf2bc",
+      "width": 1920,
+      "height": 1080
+    },
+    {
+      "id": "catppuccin_aesthetic",
+      "filename": "catppuccin_aesthetic.webp",
+      "bytes": 224982,
+      "sha256": "1f497bfea39cd7cd941afb320bd0003e9159dea9a4425e544a83e0cdd218bd00",
+      "width": 1920,
+      "height": 1080
+    },
+    {
+      "id": "marble",
+      "filename": "marble.webp",
+      "bytes": 167844,
+      "sha256": "d28e9ae1acf4c89cfbcde2377d61802e497ccbd4cd7bbcfd7ebf334a91e1e192",
+      "width": 2356,
+      "height": 1538
+    },
+    {
+      "id": "pink_city",
+      "filename": "pink_city.webp",
+      "bytes": 102572,
+      "sha256": "f56b57e848d8ee85145aab660a56252fb0af967b257ff784a881dac93ac03397",
+      "width": 2356,
+      "height": 1538
+    },
+    {
+      "id": "snowy",
+      "filename": "snowy.webp",
+      "bytes": 413870,
+      "sha256": "053ed5ba9b27bac73e3544d5a2678e64efaffd2f5c41b62eafb8db314f8193b1",
+      "width": 2356,
+      "height": 1538
+    },
+    {
+      "id": "winter",
+      "filename": "winter.webp",
+      "bytes": 2505820,
+      "sha256": "f3f2926984b86d455eabc7668d0d4d94f522451374e90e9fec0da5c73e26a76d",
+      "width": 4549,
+      "height": 3252
+    },
+    {
+      "id": "barbie",
+      "filename": "barbie.webp",
+      "bytes": 198866,
+      "sha256": "a230f8b3a8caa9ff71cadd6b294524e075ff4db06dc60264baa2b48542f14559",
+      "width": 4097,
+      "height": 2732
+    },
+    {
+      "id": "pride",
+      "filename": "pride.webp",
+      "bytes": 73406,
+      "sha256": "7c48646e02ce30c4e75bf146afe135553147c6f6e9b778048fe5d28b169581e6",
+      "width": 3072,
+      "height": 2304
+    },
+    {
+      "id": "lumon",
+      "filename": "lumon.webp",
+      "bytes": 15238,
+      "sha256": "861f6ef03a1497aec0204c9efcca02f953ebab700caf83aa27c1c4f5142160bf",
+      "width": 2560,
+      "height": 1440
+    },
+    {
+      "id": "win11_bloom_01",
+      "filename": "win11_bloom_01.webp",
+      "bytes": 114006,
+      "sha256": "090e6708dcff1d45c46bbf6d3e353c9f96780ea0acd073edfdf9236a339af600",
+      "width": 3840,
+      "height": 2400
+    },
+    {
+      "id": "win11_bloom_02",
+      "filename": "win11_bloom_02.webp",
+      "bytes": 136468,
+      "sha256": "be5b7ed723c4f3867d5e38fe3ff979798c3120ec81e58d8307d7767e2e9456a6",
+      "width": 3840,
+      "height": 2400
+    },
+    {
+      "id": "win11_bloom_03",
+      "filename": "win11_bloom_03.webp",
+      "bytes": 143144,
+      "sha256": "b6c06c4ecee799014cd4508ed1d629034486714793363fbae59c26b7abef5ac3",
+      "width": 3840,
+      "height": 2400
+    },
+    {
+      "id": "win11_bloom_04",
+      "filename": "win11_bloom_04.webp",
+      "bytes": 140960,
+      "sha256": "a2b568d55a9f7a5a95d5175fc72a59060831fcdca9951077be3813a5e9fadb7e",
+      "width": 3840,
+      "height": 2400
+    },
+    {
+      "id": "win11_default_bloom",
+      "filename": "win11_default_bloom.webp",
+      "bytes": 291630,
+      "sha256": "b95162bf3657745bea855630fbad9581c121a3724eacba896b9292019577f611",
+      "width": 3840,
+      "height": 2400
+    }
+  ]
+}

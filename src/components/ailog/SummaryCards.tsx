@@ -24,7 +24,7 @@ export function SummaryCards({ overview, preset }: { overview: Overview; preset:
   const costLabel = overview.priceCoverage.coveredTokenRatio < 1
     ? `コスト相当 (単価既知の ${Math.round(overview.priceCoverage.coveredTokenRatio * 100)}% 分)`
     : "コスト相当";
-  const cards: { kind: "cost" | "rework"; label: string; value: string; delta: number; subtitle: string }[] = [
+  const cards: { kind: "cost" | "rework"; label: string; value: string; delta: number | null; subtitle: string }[] = [
     {
       kind: "cost",
       label: costLabel,
@@ -37,13 +37,13 @@ export function SummaryCards({ overview, preset }: { overview: Overview; preset:
       label: "手戻り平均",
       value: formatScore(rework.avgScore),
       delta: comparePrevious.reworkPct,
-      subtitle: "低いほど指示が一発で通っている",
+      subtitle: "0〜100の相対指標。低いほど機械的な手戻りの兆候が少ない",
     },
     {
       kind: "rework",
       label: "中断率",
       value: formatRatio(totals.sessions === 0 ? 0 : rework.abandonedSessions / totals.sessions),
-      delta: 0,
+      delta: null,
       subtitle: "ツール実行のまま終わったセッションの割合",
     },
   ];
@@ -61,15 +61,13 @@ export function SummaryCards({ overview, preset }: { overview: Overview; preset:
           <div style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-tertiary)" }}>{card.label}</div>
           <div style={{ fontSize: 18, fontWeight: 700, letterSpacing: "-0.01em", marginTop: 2 }}>{card.value}</div>
           <div style={{ marginTop: 3, fontSize: "var(--cmux-font-size-xs)", minHeight: 14 }}>
-            {card.delta === null ? (
-              <span style={{ color: "var(--cmux-text-tertiary)" }}>—</span>
-            ) : showCompare ? (
+            {card.delta !== null && showCompare ? (
               <span style={{ color: deltaColor(card.kind, card.delta) }}>
                 {`${formatDelta(card.delta)} 前期間比`}
               </span>
-            ) : (
+            ) : card.delta !== null ? (
               <span style={{ color: "var(--cmux-text-tertiary)" }}>前期間データなし</span>
-            )}
+            ) : null}
           </div>
           <div style={{ marginTop: 5, fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-secondary)", lineHeight: 1.4 }}>{card.subtitle}</div>
         </div>
