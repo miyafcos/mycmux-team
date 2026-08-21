@@ -81,7 +81,7 @@ python scripts/mycmux_agent_cli.py send --session <sessionId> --text "続けて"
 
 ### CLI `spawn` の配置既定 (2026-07-15 変更)
 
-`spawn` はペイン内から呼ぶと (`MYCMUX_PANE_SESSION_ID` 検出) **既定で `pane.spawn_tab`** に送り、呼び出し元ペインの新タブとして、アクティブなタブを移動せずに立ち上がります (呼び出し元との親子関係がタブ並びで見える)。`--activate` で新しいタブへ切り替えます。従来のペイン分割にするのは次のいずれか: `--split` 明示 / `--direction` / `--anchor-pane` / `--workspace` の指定 / ペイン外 (env なし) からの実行。`pane.spawn` の `activate` 既定値は true のままです。
+`spawn` はペイン内から呼ぶと (`MYCMUX_PANE_SESSION_ID` 検出) **既定で `pane.spawn_tab`** に送り、呼び出し元ペインの新タブとして、アクティブなタブを移動せずに立ち上がります (呼び出し元との親子関係がタブ並びで見える)。`--activate` で新しいタブへ切り替えます。従来のペイン分割にするのは `--split` 明示のみ (2026-08-21 以降)。`--direction` / `--anchor-pane` / `--workspace` は `--split` と併用必須で、単独指定はエラー。ペイン外 (env なし) からの実行もエラーになり、暗黙に新ペインへ落ちることはありません (`--split` を付ければ可)。応答 JSON に `placement` (`tab` / `pane`) が付きます。`pane.spawn` の `activate` 既定値は true のままです。
 
 ### 運用ノート (2026-07-15 実機検証より)
 

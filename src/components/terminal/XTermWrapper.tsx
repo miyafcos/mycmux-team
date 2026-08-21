@@ -34,6 +34,7 @@ import { resolveEffectiveTerminalRenderer } from "../../stores/settingsMigration
 import { DEFAULT_TERMINAL_FONT_FAMILY, useThemeStore } from "../../stores/themeStore";
 import { useToastStore } from "../../stores/toastStore";
 import { observeSessionInput } from "../../lib/inputLineDraft";
+import { getTranscriptUserPrompts, type TranscriptPrompt } from "../../lib/livebrief";
 import { TerminalTurnChip } from "./TerminalTurnChip";
 import {
   getTurnMarkData,
@@ -45,6 +46,11 @@ import {
   TURN_MARKS_EVENT,
 } from "./terminalTurnMarkers";
 import { findTurnIndexForViewport, pickJumpTarget } from "./terminalTurnModel";
+import {
+  buildTurnListRows,
+  resolveTurnChipState,
+  type TurnListRow,
+} from "./terminalTurnChipState";
 import { restoreTurnMarksFromTranscript } from "./turnMarkRestore";
 import type { IDisposable, ITheme } from "@xterm/xterm";
 import type { ThemeBackgroundSettings } from "../../types";
@@ -184,6 +190,8 @@ interface XTermWrapperProps {
 }
 
 const terminalVisibilityUpdates = new Map<string, Promise<void>>();
+const TURN_LIST_PROMPT_CACHE_MS = 30_000;
+const turnListPromptCache = new Map<string, { fetchedAt: number; prompts: TranscriptPrompt[] }>();
 
 function queueTerminalVisibilityUpdate(sessionId: string, visible: boolean): void {
   const previous = terminalVisibilityUpdates.get(sessionId) ?? Promise.resolve();
@@ -634,11 +642,15 @@ export default memo(function XTermWrapper({
     index: number;
     total: number;
     label: string;
+    canPrev: boolean;
+    canNext: boolean;
   } | null>(null);
+  const [turnListRows, setTurnListRows] = useState<TurnListRow[]>([]);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const turnChipRafRef = useRef<number | null>(null);
   const lastTurnChipRef = useRef<typeof turnChip>(null);
   const refreshTurnChipRef = useRef<() => void>(() => {});
+  const turnListRequestRef = useRef(0);
 
   const refreshTurnChip = useCallback(() => {
     if (turnChipRafRef.current != null) return;
@@ -654,19 +666,13 @@ export default memo(function XTermWrapper({
       }
       const buf = currentTerm.buffer.active;
       const marks = getTurnMarkData(sessionId);
-      const visible =
-        !isAtBottomRef.current &&
-        marks.length > 0 &&
-        buf.type === "normal";
-      if (!visible) {
-        if (lastTurnChipRef.current !== null) {
-          lastTurnChipRef.current = null;
-          setTurnChip(null);
-        }
-        return;
-      }
-      const index = findTurnIndexForViewport(marks, buf.viewportY);
-      if (index < 0) {
+      const state = resolveTurnChipState({
+        marks,
+        viewportY: buf.viewportY,
+        isAtBottom: isAtBottomRef.current,
+        bufferType: buf.type,
+      });
+      if (!state) {
         if (lastTurnChipRef.current !== null) {
           lastTurnChipRef.current = null;
           setTurnChip(null);
@@ -674,16 +680,17 @@ export default memo(function XTermWrapper({
         return;
       }
       const next = {
-        index,
-        total: marks.length,
-        label: marks[index]?.label ?? "",
+        ...state,
+        label: marks[state.index]?.label ?? "",
       };
       const prev = lastTurnChipRef.current;
       if (
         prev &&
         prev.index === next.index &&
         prev.total === next.total &&
-        prev.label === next.label
+        prev.label === next.label &&
+        prev.canPrev === next.canPrev &&
+        prev.canNext === next.canNext
       ) {
         return;
       }
@@ -710,6 +717,35 @@ export default memo(function XTermWrapper({
     refreshTurnChip();
   }, [refreshTurnChip, sessionId]);
 
+  const jumpTurnToMark = useCallback((markIndex: number) => {
+    const currentTerm = termRef.current;
+    const target = getTurnMarkData(sessionId)[markIndex];
+    if (!currentTerm || !target) return;
+    currentTerm.scrollToLine(target.line);
+    refreshTurnChip();
+  }, [refreshTurnChip, sessionId]);
+
+  const openTurnList = useCallback(() => {
+    const marks = getTurnMarkData(sessionId);
+    const cached = turnListPromptCache.get(sessionId);
+    const now = Date.now();
+    if (cached && now - cached.fetchedAt < TURN_LIST_PROMPT_CACHE_MS) {
+      setTurnListRows(buildTurnListRows(marks, cached.prompts));
+      return;
+    }
+
+    setTurnListRows(buildTurnListRows(marks, []));
+    const request = turnListRequestRef.current + 1;
+    turnListRequestRef.current = request;
+    void getTranscriptUserPrompts(sessionId, 200)
+      .catch((): TranscriptPrompt[] => [])
+      .then((prompts) => {
+        turnListPromptCache.set(sessionId, { fetchedAt: Date.now(), prompts });
+        if (turnListRequestRef.current !== request) return;
+        setTurnListRows(buildTurnListRows(getTurnMarkData(sessionId), prompts));
+      });
+  }, [sessionId]);
+
   useEffect(() => {
     const onTurnMarks = (event: Event): void => {
       const markedSession = (event as CustomEvent<{ sessionId?: string }>).detail?.sessionId;
@@ -718,6 +754,7 @@ export default memo(function XTermWrapper({
     };
     window.addEventListener(TURN_MARKS_EVENT, onTurnMarks);
     return () => {
+      turnListRequestRef.current += 1;
       window.removeEventListener(TURN_MARKS_EVENT, onTurnMarks);
       if (turnChipRafRef.current != null) {
         cancelAnimationFrame(turnChipRafRef.current);
@@ -788,6 +825,7 @@ export default memo(function XTermWrapper({
         if (isAtBottomRef.current) {
           termRef.current?.scrollToBottom();
         }
+        refreshTurnChipRef.current();
       }, 50);
     }
   }, [isActivePane]);
@@ -824,6 +862,7 @@ export default memo(function XTermWrapper({
     let unlistenExit: (() => void) | null = null;
     let writeParsedDisposable: { dispose: () => void } | null = null;
     let renderDisposable: { dispose: () => void } | null = null;
+    let turnChipFirstRenderDisposable: IDisposable | null = null;
     let scrollDisposable: { dispose: () => void } | null = null;
     let dataDisposable: { dispose: () => void } | null = null;
     let binaryDisposable: { dispose: () => void } | null = null;
@@ -1112,6 +1151,19 @@ export default memo(function XTermWrapper({
       renderDisposable = currentTerm.onRender(({ start, end }) => {
         recordRender(start, end, currentTerm.rows, sessionId);
       });
+    };
+
+    const refreshTurnChipAfterFirstRender = (currentTerm: Terminal): void => {
+      turnChipFirstRenderDisposable?.dispose();
+      let disposable: IDisposable | null = null;
+      disposable = currentTerm.onRender(() => {
+        disposable?.dispose();
+        if (turnChipFirstRenderDisposable === disposable) {
+          turnChipFirstRenderDisposable = null;
+        }
+        refreshTurnChipRef.current();
+      });
+      turnChipFirstRenderDisposable = disposable;
     };
 
     const registerCompositionGuard = (currentTerm: Terminal, currentFitAddon: FitAddon): void => {
@@ -2154,6 +2206,8 @@ export default memo(function XTermWrapper({
       writeParsedDisposable = null;
       renderDisposable?.dispose();
       renderDisposable = null;
+      turnChipFirstRenderDisposable?.dispose();
+      turnChipFirstRenderDisposable = null;
       scrollDisposable?.dispose();
       scrollDisposable = null;
       dataDisposable?.dispose();
@@ -2247,6 +2301,7 @@ export default memo(function XTermWrapper({
         if (disposed || termDisposed) return;
         fitAndSyncResize(cached.term, cached.fitAddon, true);
         scheduleFrontendResync();
+        refreshTurnChipRef.current();
       }, 30);
       registerResizeObserver(cached.term, cached.fitAddon);
       startVisibilityObserver();
@@ -2350,6 +2405,7 @@ export default memo(function XTermWrapper({
 
       registerRenderListener(term);
       term.open(container!);
+      refreshTurnChipAfterFirstRender(term);
       invalidateContainerVisibilityMemo();
       liveTerms.set(sessionId, term);
       recordXtermMounted(sessionId);
@@ -2519,11 +2575,13 @@ export default memo(function XTermWrapper({
           index={turnChip.index}
           total={turnChip.total}
           label={turnChip.label}
-          canPrev={turnChip.index > 0}
-          canNext
-
+          canPrev={turnChip.canPrev}
+          canNext={turnChip.canNext}
+          rows={turnListRows}
           onPrev={() => jumpTurn(-1)}
           onNext={() => jumpTurn(1)}
+          onJump={jumpTurnToMark}
+          onListOpen={openTurnList}
         />
       )}
       {isSearchOpen && (

@@ -1,4 +1,7 @@
-import { memo, type MouseEvent } from "react";
+import { memo, type MouseEvent, useEffect, useRef, useState } from "react";
+
+import { TerminalTurnList, type TurnListRow } from "./TerminalTurnList";
+import { terminalTurnStrings } from "./terminalTurnStrings";
 
 export interface TerminalTurnChipProps {
   index: number;
@@ -8,6 +11,9 @@ export interface TerminalTurnChipProps {
   onNext: () => void;
   canPrev: boolean;
   canNext: boolean;
+  rows: readonly TurnListRow[];
+  onJump: (markIndex: number) => void;
+  onListOpen: () => void;
 }
 
 function keepTerminalFocus(event: MouseEvent): void {
@@ -22,36 +28,81 @@ export const TerminalTurnChip = memo(function TerminalTurnChip({
   onNext,
   canPrev,
   canNext,
+  rows,
+  onJump,
+  onListOpen,
 }: TerminalTurnChipProps) {
+  const [isListOpen, setIsListOpen] = useState(false);
+  const chipRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!isListOpen) return;
+    const closeList = (): void => setIsListOpen(false);
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === "Escape") closeList();
+    };
+    const onMouseDown = (event: globalThis.MouseEvent): void => {
+      if (!chipRef.current?.contains(event.target as Node)) closeList();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    document.addEventListener("mousedown", onMouseDown);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      document.removeEventListener("mousedown", onMouseDown);
+    };
+  }, [isListOpen]);
+
+  const toggleList = (): void => {
+    setIsListOpen((wasOpen) => {
+      if (wasOpen) return false;
+      onListOpen();
+      return true;
+    });
+  };
+
   return (
     <div
+      ref={chipRef}
       className="terminal-turn-chip"
-      aria-label={`ターン ${index + 1}/${total}`}
+      aria-label={terminalTurnStrings.position(index, total)}
+      onMouseDown={keepTerminalFocus}
     >
-      <span className="terminal-turn-chip__meta">{`ターン ${index + 1}/${total}`}</span>
-      <span className="terminal-turn-chip__label">{label}</span>
+      <span className="terminal-turn-chip__meta">{terminalTurnStrings.position(index, total)}</span>
+      <button
+        type="button"
+        className="terminal-turn-chip__label"
+        aria-expanded={isListOpen}
+        title={isListOpen ? terminalTurnStrings.closeList : terminalTurnStrings.openList}
+        onClick={toggleList}
+      >
+        {label}
+      </button>
       <span className="terminal-turn-chip__nav">
         <button
           type="button"
-          aria-label="前のターン"
-          title="前のターン"
+          aria-label={terminalTurnStrings.prevTurn}
+          title={terminalTurnStrings.prevTurn}
           disabled={!canPrev}
-          onMouseDown={keepTerminalFocus}
           onClick={onPrev}
         >
           ▲
         </button>
         <button
           type="button"
-          aria-label="次のターン / 最新に戻る"
-          title="次のターン / 最新に戻る"
+          aria-label={terminalTurnStrings.nextTurnOrTail}
+          title={terminalTurnStrings.nextTurnOrTail}
           disabled={!canNext}
-          onMouseDown={keepTerminalFocus}
           onClick={onNext}
         >
           ▼
         </button>
       </span>
+      {isListOpen ? <TerminalTurnList
+        rows={rows}
+        currentIndex={index}
+        onJump={onJump}
+        onClose={() => setIsListOpen(false)}
+      /> : null}
     </div>
   );
 });

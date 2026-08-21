@@ -33,7 +33,7 @@ python scripts/mycmux_agent_cli.py spawn --target <claude|codex> --prompt-file <
 ```
 
 - 同ペインに新しいタブを開き、純正の対話 TUI (Claude Code / Codex) を起動して spec を流し込む
-  (内部 RPC: `pane.spawn_tab`。`--split` 指定時のみ `pane.spawn`)
+  (内部 RPC: `pane.spawn_tab`。`--split` または `spawn-tab --detach` 指定時のみ `pane.spawn` = 新ペイン。`--workspace` / `--anchor-pane` / `--direction` は `--split` 必須。`MYCMUX_PANE_SESSION_ID` 欠落時はエラー終了 — 新ペインへのフォールバックはしない (2026-08-21 裁定)。応答 JSON の `placement` が `tab` / `pane` を示す)
 - effort やモデル指定は CLI フラグでは渡らない — **spec 本文に日本語で明記**する
 - 割り込みは send_text → 数秒後に素の Enter 後追い (ペースト扱いで Enter が飲まれるため)
 

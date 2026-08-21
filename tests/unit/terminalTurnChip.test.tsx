@@ -1,75 +1,112 @@
+// @vitest-environment jsdom
+
+import { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { TerminalTurnChip } from "../../src/components/terminal/TerminalTurnChip";
+import { terminalTurnStrings } from "../../src/components/terminal/terminalTurnStrings";
+
+const rows = [
+  { key: "mark-1", label: "current prompt", markIndex: 1, at: 200 },
+  { key: "mark-0", label: "older prompt", markIndex: 0, at: 100 },
+];
+
+function chipProps() {
+  return {
+    index: 1,
+    total: 2,
+    label: "current prompt",
+    onPrev: vi.fn(),
+    onNext: vi.fn(),
+    canPrev: true,
+    canNext: false,
+    rows,
+    onJump: vi.fn(),
+    onListOpen: vi.fn(),
+  };
+}
 
 describe("TerminalTurnChip", () => {
-  it("renders the Japanese turn count and label", () => {
-    const html = renderToStaticMarkup(
-      <TerminalTurnChip
-        index={2}
-        total={12}
-        label="実装して確認して"
-        onPrev={vi.fn()}
-        onNext={vi.fn()}
-        canPrev
-        canNext
-      />,
-    );
-    expect(html).toContain("ターン 3/12");
-    expect(html).toContain("実装して確認して");
-    expect(html).toContain('aria-label="前のターン"');
-    expect(html).toContain('aria-label="次のターン / 最新に戻る"');
+  it("renders the position, label, and localized controls", () => {
+    const html = renderToStaticMarkup(<TerminalTurnChip {...chipProps()} />);
+    expect(html).toContain(terminalTurnStrings.position(1, 2));
+    expect(html).toContain("current prompt");
+    expect(html).toContain(`aria-label="${terminalTurnStrings.prevTurn}"`);
+    expect(html).toContain(`aria-label="${terminalTurnStrings.nextTurnOrTail}"`);
+    expect(html).toContain(`title="${terminalTurnStrings.openList}"`);
   });
 
-  it("keeps the down arrow pressable on the only turn so it can return to the tail", () => {
-    const html = renderToStaticMarkup(
-      <TerminalTurnChip
-        index={0}
-        total={1}
-        label="only"
-        onPrev={vi.fn()}
-        onNext={vi.fn()}
-        canPrev={false}
-        canNext
-      />,
-    );
-    expect(html).toContain("ターン 1/1");
-    expect(html.match(/disabled/g)?.length).toBe(1);
-    expect(html).toContain('title="次のターン / 最新に戻る"');
+  let host: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
   });
 
-  it("exposes Japanese aria-labels on the chip and buttons", () => {
-    const html = renderToStaticMarkup(
-      <TerminalTurnChip
-        index={0}
-        total={3}
-        label="hello"
-        onPrev={vi.fn()}
-        onNext={vi.fn()}
-        canPrev={false}
-        canNext
-      />,
-    );
-    expect(html).toContain('aria-label="ターン 1/3"');
-    expect(html).toContain('aria-label="前のターン"');
-    expect(html).toContain('aria-label="次のターン / 最新に戻る"');
+  afterEach(() => {
+    act(() => root.unmount());
+    host.remove();
   });
 
-  it("keeps a long label as a single DOM element", () => {
-    const label = "あ".repeat(80);
-    const html = renderToStaticMarkup(
-      <TerminalTurnChip
-        index={0}
-        total={2}
-        label={label}
-        onPrev={vi.fn()}
-        onNext={vi.fn()}
-        canPrev={false}
-        canNext
-      />,
-    );
-    expect(html.split("terminal-turn-chip__label").length - 1).toBe(1);
-    expect(html).toContain(label);
+  function renderChip(props = chipProps()): ReturnType<typeof chipProps> {
+    act(() => root.render(<TerminalTurnChip {...props} />));
+    return props;
+  }
+
+  function clickLabel(): HTMLButtonElement {
+    const button = host.querySelector<HTMLButtonElement>(".terminal-turn-chip__label");
+    if (!button) throw new Error("label button missing");
+    act(() => button.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    return button;
+  }
+
+  it("toggles the history list with aria-expanded", () => {
+    const props = renderChip();
+    const label = clickLabel();
+    expect(label.getAttribute("aria-expanded")).toBe("true");
+    expect(host.querySelector(".terminal-turn-list")).not.toBeNull();
+    expect(props.onListOpen).toHaveBeenCalledTimes(1);
+
+    clickLabel();
+    expect(label.getAttribute("aria-expanded")).toBe("false");
+    expect(host.querySelector(".terminal-turn-list")).toBeNull();
+  });
+
+  it("closes the history list with Escape", () => {
+    renderChip();
+    const label = clickLabel();
+    act(() => document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    expect(label.getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("jumps to a reachable row and closes the list", () => {
+    const props = renderChip();
+    const label = clickLabel();
+    const row = [...host.querySelectorAll<HTMLButtonElement>(".terminal-turn-list__row")]
+      .find((button) => button.textContent === "older prompt");
+    if (!row) throw new Error("reachable row missing");
+
+    act(() => row.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(props.onJump).toHaveBeenCalledWith(0);
+    expect(label.getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("does not jump for an unreachable row", () => {
+    const props = renderChip({
+      ...chipProps(),
+      rows: [{ key: "trimmed", label: "trimmed prompt", markIndex: null }],
+    });
+    clickLabel();
+    const row = host.querySelector<HTMLButtonElement>(".terminal-turn-list__row");
+    if (!row) throw new Error("unreachable row missing");
+
+    act(() => row.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(row.disabled).toBe(true);
+    expect(props.onJump).not.toHaveBeenCalled();
   });
 });

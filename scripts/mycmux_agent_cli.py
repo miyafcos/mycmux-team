@@ -190,7 +190,11 @@ def build_parser() -> argparse.ArgumentParser:
     spawn_tab.add_argument(
         "--detach",
         action="store_true",
-        help="Put the new tab in its own pane, so closing the caller's pane cannot take it down.",
+        help=(
+            "Opt-in: open a NEW PANE (same as spawn --split) instead of the default "
+            "background tab in the caller's pane. Not recommended; the pane-close "
+            "confirmation dialog already protects long-running tabs."
+        ),
     )
     spawn_tab.add_argument("--cwd", default=os.getcwd())
     spawn_tab.add_argument("--label")
@@ -285,12 +289,25 @@ def add_launch_mode_request_args(
 
 
 def spawn_wants_split(namespace: argparse.Namespace) -> bool:
-    """Decide between a split pane and the default same-pane tab."""
+    """Decide between a split pane and the default same-pane tab.
+
+    Only an explicit ``--split`` opens a new pane. Placement options without
+    ``--split`` are an error, and a missing caller pane id is an error too:
+    there is no silent fallback to a split pane (2026-08-21 ruling).
+    """
     if namespace.split:
         return True
     if namespace.workspace or namespace.anchor_pane or namespace.direction:
-        return True
-    return not os.environ.get("MYCMUX_PANE_SESSION_ID")
+        raise RuntimeError(
+            "--workspace/--anchor-pane/--direction require --split "
+            "(spawn defaults to a background tab in the calling pane)"
+        )
+    if not os.environ.get("MYCMUX_PANE_SESSION_ID"):
+        raise RuntimeError(
+            "spawn requires MYCMUX_PANE_SESSION_ID (run from inside a mycmux pane); "
+            "pass --split to open a new pane instead"
+        )
+    return False
 
 
 def build_spawn_as_tab_request(namespace: argparse.Namespace) -> dict[str, Any]:
@@ -409,6 +426,11 @@ def request_for(namespace: argparse.Namespace) -> tuple[str, dict[str, Any]]:
         if namespace.detach:
             if namespace.anchor_session:
                 raise RuntimeError("spawn-tab --detach cannot be used with --anchor-session")
+            print(
+                "[mycmux] --detach opens a NEW PANE (opt-in, same as spawn --split); "
+                "the default is a background tab in the caller's pane",
+                file=sys.stderr,
+            )
             return "pane.spawn", build_detached_spawn_request(namespace)
         return "pane.spawn_tab", build_spawn_tab_request(namespace)
     if namespace.subcommand == "declare-tab":
@@ -505,6 +527,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "warning: input was queued without delivery verification; use --enter or --key",
                 file=sys.stderr,
             )
+    if namespace.subcommand in ("spawn", "spawn-tab") and isinstance(result, dict):
+        # Record where the agent landed so ledgers can audit placement.
+        result = {**result, "placement": "pane" if cmd == "pane.spawn" else "tab"}
     print(json.dumps(result, ensure_ascii=False))
     if failed:
         return 1

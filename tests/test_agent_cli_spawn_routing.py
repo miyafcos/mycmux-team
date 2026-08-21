@@ -2,9 +2,10 @@
 
 commit 57b4da3 routed the CLI `spawn` subcommand: with the caller's pane
 session id (MYCMUX_PANE_SESSION_ID) and no placement options it must become
-a `pane.spawn_tab` request anchored to that pane; any explicit placement
-option (--split / --workspace / --anchor-pane / --direction) or a missing
-env falls back to `pane.spawn`.
+a `pane.spawn_tab` request anchored to that pane. Only an explicit --split
+opens a new pane (`pane.spawn`). Since 2026-08-21 there is no implicit split:
+--workspace / --anchor-pane / --direction without --split and a missing env
+are errors instead of a silent fallback to a new pane.
 """
 
 from __future__ import annotations
@@ -312,26 +313,51 @@ def test_split_no_activate_remains_supported(monkeypatch: pytest.MonkeyPatch) ->
     assert args["activate"] is False
 
 
-def test_direction_forces_split_pane(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_direction_with_split_routes_split_pane(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("MYCMUX_PANE_SESSION_ID", PANE_SESSION_ID)
-    cmd, args = request_for_spawn(["--target", "claude", "--direction", "down"])
+    cmd, args = request_for_spawn(["--target", "claude", "--split", "--direction", "down"])
     assert cmd == "pane.spawn"
     assert args["direction"] == "down"
 
 
-def test_anchor_pane_forces_split_pane(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_anchor_pane_with_split_routes_split_pane(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("MYCMUX_PANE_SESSION_ID", PANE_SESSION_ID)
-    cmd, args = request_for_spawn(["--target", "claude", "--anchor-pane", "pane-42"])
+    cmd, args = request_for_spawn(["--target", "claude", "--split", "--anchor-pane", "pane-42"])
     assert cmd == "pane.spawn"
     assert args["anchorPaneId"] == "pane-42"
 
 
-def test_missing_env_falls_back_to_split_pane(
+@pytest.mark.parametrize(
+    "placement",
+    [["--workspace", "ws-1"], ["--anchor-pane", "pane-42"], ["--direction", "down"]],
+)
+def test_placement_option_without_split_is_an_error(
+    monkeypatch: pytest.MonkeyPatch, placement: list[str]
+) -> None:
+    """No implicit split: placement options must be paired with --split."""
+    monkeypatch.setenv("MYCMUX_PANE_SESSION_ID", PANE_SESSION_ID)
+    with pytest.raises(RuntimeError, match="--split"):
+        request_for_spawn(["--target", "claude", *placement])
+
+
+def test_missing_env_is_an_error_not_a_split_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("MYCMUX_PANE_SESSION_ID", raising=False)
-    cmd, _ = request_for_spawn(["--target", "claude"])
+    with pytest.raises(RuntimeError, match="MYCMUX_PANE_SESSION_ID"):
+        request_for_spawn(["--target", "claude"])
+
+
+def test_spawn_tab_detach_routes_split_pane_with_warning(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("MYCMUX_PANE_SESSION_ID", PANE_SESSION_ID)
+    namespace = cli.build_parser().parse_args(
+        ["spawn-tab", "--target", "claude", "--detach", "--prompt", "x"]
+    )
+    cmd, _ = cli.request_for(namespace)
     assert cmd == "pane.spawn"
+    assert "NEW PANE" in capsys.readouterr().err
 
 
 def test_prompt_writes_prompt_file_and_records_from_session(
