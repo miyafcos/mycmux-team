@@ -35,8 +35,6 @@ export interface PaneComposerProps {
   sessionId: string;
   /** Enough of the pane's launch parameters to tell which program reads the input. */
   target: ComposerTargetInput;
-  /** Dimmed and non-urgent while another pane holds the keyboard. */
-  active: boolean;
 }
 
 /**
@@ -44,7 +42,7 @@ export interface PaneComposerProps {
  * over it works the way it does everywhere else. The pane's program only ever
  * sees the finished text, sent as the keystrokes that program understands.
  */
-export function PaneComposer({ sessionId, target, active }: PaneComposerProps) {
+export function PaneComposer({ sessionId, target }: PaneComposerProps) {
   const draft = useComposerStore((state) => state.draftBySession[sessionId] ?? "");
   const setDraft = useComposerStore((state) => state.setDraft);
   const clearDraft = useComposerStore((state) => state.clearDraft);
@@ -119,10 +117,7 @@ export function PaneComposer({ sessionId, target, active }: PaneComposerProps) {
     <div
       data-livebrief-interactive="true"
       data-composer-session={sessionId}
-      style={{
-        ...rootStyle,
-        opacity: active ? 1 : 0.55,
-      }}
+      style={rootStyle}
     >
       <div style={{ ...shellStyle, ...(focused ? shellFocusedStyle : null) }}>
         <span style={badgeStyle}>{label}</span>
@@ -182,7 +177,6 @@ const rootStyle: CSSProperties = {
   padding: "4px 8px 6px",
   borderTop: "1px solid var(--cmux-border)",
   background: "var(--cmux-bg)",
-  transition: "opacity 120ms ease-out",
 };
 const shellStyle: CSSProperties = {
   display: "flex",

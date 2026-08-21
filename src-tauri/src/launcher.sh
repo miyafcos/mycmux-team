@@ -234,6 +234,44 @@ if len(candidates) == 1:
 PY
 }
 
+# Wait for the log of the pane that was just launched, bounded.
+#
+# A single fixed 4s wait was wrong in both directions: it expired while the user
+# was still choosing in the `--resume` picker (the session file did not exist
+# yet, so no mapping was ever written and the pane's chat column stayed empty),
+# and it waited the full 4s even when the log had already appeared. Poll
+# instead: stop at the first tick where exactly one unclaimed candidate exists,
+# and give up at the timeout so a backgrounded tracker can never linger. The
+# "exactly one" rule is not relaxed — a wrong mapping is worse than none — and
+# `$since` still rejects every log that predates the launch.
+#
+# Overridable through the environment so the contract test can drive the loop
+# without waiting minutes; the launcher itself never sets them.
+__poll_single_unclaimed_session() {
+  local dir="$1" pattern="$2" since="$3" depth="$4" pane_id="$5" kind="$6" launch_cwd="$7"
+  local interval="${__MYCMUX_TRACK_INTERVAL:-2}"
+  local timeout="${__MYCMUX_TRACK_TIMEOUT:-120}"
+  # The launcher inherits the pane's environment, so both values are validated
+  # here: a non-numeric override would make the bound test below error out and
+  # turn this into the unbounded wait it exists to prevent.
+  case "$interval" in ''|*[!0-9]*) interval=2 ;; esac
+  [ "$interval" -lt 1 ] && interval=1
+  case "$timeout" in ''|*[!0-9]*) timeout=120 ;; esac
+  local waited=0 session_id=""
+  while :; do
+    sleep "$interval"
+    waited=$((waited + interval))
+    session_id=$(__single_unclaimed_session_since "$dir" "$pattern" "$since" "$depth" "$pane_id" "$kind" "$launch_cwd")
+    if [ -n "$session_id" ]; then
+      printf '%s\n' "$session_id"
+      return 0
+    fi
+    if [ "$waited" -ge "$timeout" ]; then
+      return 1
+    fi
+  done
+}
+
 __track_latest_jsonl_in_dir() {
   local pane_id="$1"
   local project_dir="$2"
@@ -245,9 +283,8 @@ __track_latest_jsonl_in_dir() {
   started_at=$(date +%s.%N)
   local launch_cwd
   launch_cwd="$(pwd)"
-  sleep 4
   local session_id
-  session_id=$(__single_unclaimed_session_since "$project_dir" '*.jsonl' "$started_at" 1 "$pane_id" "$kind" "$launch_cwd")
+  session_id=$(__poll_single_unclaimed_session "$project_dir" '*.jsonl' "$started_at" 1 "$pane_id" "$kind" "$launch_cwd")
   if [ -n "$session_id" ]; then
     __write_session_mapping "$pane_id" "$kind" "$session_id"
   fi
@@ -272,9 +309,8 @@ __track_codex_session() {
   started_at=$(date +%s.%N)
   local launch_cwd
   launch_cwd="$(pwd)"
-  sleep 4
   local session_id
-  session_id=$(__single_unclaimed_session_since "$sessions_dir" 'rollout-*.jsonl' "$started_at" "" "$pane_id" "codex" "$launch_cwd")
+  session_id=$(__poll_single_unclaimed_session "$sessions_dir" 'rollout-*.jsonl' "$started_at" "" "$pane_id" "codex" "$launch_cwd")
   if [ -n "$session_id" ]; then
     __write_session_mapping "$pane_id" "codex" "$session_id"
   fi

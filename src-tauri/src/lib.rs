@@ -307,6 +307,7 @@ pub fn run() {
             livebrief::subscribe_live_briefs,
             livebrief::unsubscribe_live_briefs,
             livebrief::get_live_events,
+            livebrief::get_transcript_user_prompts,
             livebrief::send_intervention,
             commands::online::list_online_savepoints,
             commands::online::list_trashed_online_savepoints,

@@ -45,6 +45,7 @@ import {
   TURN_MARKS_EVENT,
 } from "./terminalTurnMarkers";
 import { findTurnIndexForViewport, pickJumpTarget } from "./terminalTurnModel";
+import { restoreTurnMarksFromTranscript } from "./turnMarkRestore";
 import type { IDisposable, ITheme } from "@xterm/xterm";
 import type { ThemeBackgroundSettings } from "../../types";
 import { markStartupSessionSettled } from "../../lib/startupSessionGate";
@@ -1755,6 +1756,9 @@ export default memo(function XTermWrapper({
         reanchorTurnMarks(sessionId, replayTerm);
         if (finalizePersistedReplay && getTurnMarkData(sessionId).length === 0) {
           noteRestoreBoundaryTurn(sessionId);
+          // Everything above the boundary was drawn, not typed here. Put the
+          // turns back by matching the transcript once the redraw settles.
+          void restoreTurnMarksFromTranscript(sessionId);
         }
         if (resyncStartedAt !== null) {
           recordResync(replay.byteLength, performance.now() - resyncStartedAt, sessionId);
@@ -2387,6 +2391,7 @@ export default memo(function XTermWrapper({
           terminalInitialReplayMarkers.set(sessionId, replayMarker);
         }
         noteRestoreBoundaryTurn(sessionId);
+        void restoreTurnMarksFromTranscript(sessionId);
       }
       registerScrollListener(term);
       registerCompositionGuard(term, fitAddon);

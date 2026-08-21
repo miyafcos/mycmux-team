@@ -42,6 +42,12 @@ const MAX_LINE_BYTES: usize = 1024 * 1024;
 const RING_CAPACITY: usize = 200;
 const DEFAULT_EVENT_LIMIT: usize = 50;
 const MIN_EVENT_LIMIT: usize = 8;
+/// Turn-mark restore only ever needs the prompts that can still be on screen,
+/// so it reads a much smaller tail than a full livebrief bootstrap.
+const MAX_PROMPT_SCAN_BYTES: u64 = 8 * 1024 * 1024;
+/// Matches `MAX_TURN_MARKS_PER_SESSION` on the frontend: more prompts than
+/// that could never all hold a mark anyway.
+const MAX_RESTORED_PROMPTS: usize = 200;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -99,6 +105,17 @@ pub struct LiveSessionEvents {
     pub brief_revision: u64,
     pub telemetry_health: String,
     pub events: Vec<SemanticEventEnvelope>,
+}
+
+/// One prompt the operator typed, as recorded in the transcript.
+///
+/// Turn-mark restore matches these against the terminal buffer an agent
+/// redrew, so the payload is the raw prompt text and nothing else.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TranscriptPrompt {
+    pub text: String,
+    pub occurred_at: i64,
 }
 
 #[derive(Clone, Debug)]
@@ -614,6 +631,65 @@ fn bootstrap_transcript_windowed(
     Ok(SessionSnapshot { brief, cursor, adapter, reducer, events })
 }
 
+/// Operator prompts in `path`, oldest first, capped to the newest `max`.
+///
+/// This deliberately reuses the livebrief decode path (`AgentAdapter` plus
+/// `complete_line_records`) rather than reading the JSONL a second way: the
+/// adapter already knows which `user` records are something a person typed,
+/// dropping meta records, tool results and injected reminders.
+fn transcript_user_prompts(
+    path: &Path,
+    kind: &str,
+    max: usize,
+) -> Result<Vec<TranscriptPrompt>, String> {
+    let metadata = std::fs::metadata(path).map_err(|error| format!("stat transcript: {error}"))?;
+    let (bytes, base_offset) =
+        read_bootstrap_window_limited(path, metadata.len(), MAX_PROMPT_SCAN_BYTES)?;
+    let mut adapter = AgentAdapter::new(kind)?;
+    let parsed = complete_line_records(&bytes, base_offset);
+    let mut prompts: VecDeque<TranscriptPrompt> = VecDeque::new();
+    let mut source_revision = 0u64;
+    for (raw, range) in parsed.records {
+        source_revision = source_revision.saturating_add(1);
+        let Ok(decoded) = adapter.decode_record(raw, range, source_revision) else {
+            continue;
+        };
+        for event in decoded {
+            let occurred_at = event.occurred_at;
+            let SemanticEventKind::UserMessage { text, .. } = event.kind else {
+                continue;
+            };
+            if text.trim().is_empty() {
+                continue;
+            }
+            prompts.push_back(TranscriptPrompt { text, occurred_at });
+            if prompts.len() > max {
+                prompts.pop_front();
+            }
+        }
+    }
+    Ok(prompts.into())
+}
+
+/// Prompts for whichever agent session the pane is mapped to right now.
+///
+/// Every failure — no mapping, an unsupported kind, no transcript on disk —
+/// returns an empty list on purpose. Restoring nothing is always better than
+/// restoring another pane's conversation onto this one's scrollback.
+fn pane_transcript_user_prompts(pty_session_id: &str, max: usize) -> Vec<TranscriptPrompt> {
+    let mappings = agent_mappings_for_ids([pty_session_id]);
+    let Some(mapping) = mappings.get(pty_session_id) else {
+        return Vec::new();
+    };
+    let Some(kind) = mapping.agent_kind.as_deref() else {
+        return Vec::new();
+    };
+    let Some(path) = locate_transcript(kind, &mapping.session_id) else {
+        return Vec::new();
+    };
+    transcript_user_prompts(&path, kind, max).unwrap_or_default()
+}
+
 /// Read at most `max_bytes` from the end of the file. If the window starts
 /// mid-line, decoding begins after the first newline so byte offsets stay
 /// aligned with the real file for later incremental tail reads.
@@ -864,6 +940,23 @@ pub async fn get_live_events(
     Ok(state.livebrief_service.events(&pty_session_ids, clamp_event_limit(limit)))
 }
 
+/// Prompts a pane's agent recorded before mycmux was watching it type.
+///
+/// Used only by turn-mark restore after a replayed pane finishes redrawing.
+#[tauri::command(async)]
+pub async fn get_transcript_user_prompts(
+    pty_session_id: String,
+    limit: Option<usize>,
+) -> Result<Vec<TranscriptPrompt>, String> {
+    let max = limit
+        .unwrap_or(MAX_RESTORED_PROMPTS)
+        .clamp(1, MAX_RESTORED_PROMPTS);
+    crate::util::task::run_blocking("get_transcript_user_prompts", move || {
+        Ok(pane_transcript_user_prompts(&pty_session_id, max))
+    })
+    .await
+}
+
 #[tauri::command(async)]
 pub async fn send_intervention(
     state: State<'_, AppState>,
@@ -945,6 +1038,69 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    fn claude_user_line(text: &str) -> String {
+        format!(
+            "{{\"type\":\"user\",\"timestamp\":\"2026-08-20T12:00:00.000Z\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"text\",\"text\":{}}}]}}}}\n",
+            serde_json::to_string(text).expect("encode text")
+        )
+    }
+
+    #[test]
+    fn transcript_prompts_keep_transcript_order() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("session.jsonl");
+        let body: String = ["first prompt", "Go", "second prompt", "Go"]
+            .iter()
+            .map(|text| claude_user_line(text))
+            .collect();
+        std::fs::write(&path, body).expect("write transcript");
+
+        let prompts = transcript_user_prompts(&path, "claude", MAX_RESTORED_PROMPTS)
+            .expect("read prompts");
+
+        let texts: Vec<&str> = prompts.iter().map(|prompt| prompt.text.as_str()).collect();
+        assert_eq!(texts, vec!["first prompt", "Go", "second prompt", "Go"]);
+    }
+
+    /// Injected scaffolding reaches the transcript as `user` records but was
+    /// never typed, so it must not become a turn mark.
+    #[test]
+    fn transcript_prompts_drop_injected_and_meta_records() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("session.jsonl");
+        let mut body = claude_user_line("real prompt");
+        body.push_str(&claude_user_line("<system-reminder>not typed</system-reminder>"));
+        body.push_str(&claude_user_line("<command-name>/clear</command-name>"));
+        body.push_str("{\"type\":\"user\",\"isMeta\":true,\"message\":{\"role\":\"user\",\"content\":\"meta\"}}\n");
+        body.push_str("{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"reply\"}]}}\n");
+        std::fs::write(&path, body).expect("write transcript");
+
+        let prompts = transcript_user_prompts(&path, "claude", MAX_RESTORED_PROMPTS)
+            .expect("read prompts");
+
+        let texts: Vec<&str> = prompts.iter().map(|prompt| prompt.text.as_str()).collect();
+        assert_eq!(texts, vec!["real prompt"]);
+    }
+
+    #[test]
+    fn transcript_prompts_keep_only_the_newest_when_capped() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("session.jsonl");
+        let body: String = (0..10).map(|index| claude_user_line(&format!("p{index}"))).collect();
+        std::fs::write(&path, body).expect("write transcript");
+
+        let prompts = transcript_user_prompts(&path, "claude", 3).expect("read prompts");
+
+        let texts: Vec<&str> = prompts.iter().map(|prompt| prompt.text.as_str()).collect();
+        assert_eq!(texts, vec!["p7", "p8", "p9"]);
+    }
+
+    /// An unmapped pane must yield nothing rather than guessing a transcript.
+    #[test]
+    fn pane_prompts_are_empty_without_a_mapping() {
+        assert!(pane_transcript_user_prompts("pane-that-has-no-mapping-file", 10).is_empty());
     }
 
     fn set_mtime(path: &Path, seconds_since_epoch: u64) {

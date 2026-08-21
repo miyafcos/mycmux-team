@@ -122,6 +122,57 @@ export function noteRestoreBoundaryTurn(sessionId: string, now = Date.now()): vo
   placeTurnMark(sessionId, term, RESTORE_BOUNDARY_LABEL, now);
 }
 
+export interface RestoredTurnMark {
+  /** Absolute buffer line the prompt was found on. */
+  line: number;
+  label: string;
+  at: number;
+}
+
+/**
+ * Place marks for prompts that were typed before mycmux was watching.
+ *
+ * Unlike `noteTurnSubmit` these are not live submits: the line comes from
+ * matching the transcript against the redrawn buffer, so `shouldMarkTurn`
+ * (which reasons about the cursor and submit timing) does not apply. Marks are
+ * merged with whatever is already there — the restore boundary in particular —
+ * and the list is kept sorted by line so the chip still walks it in order.
+ *
+ * Returns how many marks were actually registered.
+ */
+export function restoreTurnMarksAtLines(
+  sessionId: string,
+  term: Terminal,
+  entries: readonly RestoredTurnMark[],
+): number {
+  const buf = term.buffer.active;
+  if (buf.type !== "normal") return 0;
+  const cursorLine = buf.baseY + buf.cursorY;
+  const next = [...pruneTurnMarks(sessionId)];
+  let placed = 0;
+  for (const entry of entries) {
+    if (!entry.label) continue;
+    if (entry.line < 0 || entry.line >= buf.length) continue;
+    const marker = term.registerMarker(entry.line - cursorLine);
+    if (!marker || marker.isDisposed || marker.line < 0) continue;
+    next.push({ marker, label: entry.label, at: entry.at });
+    bindMarkerDispose(sessionId, marker);
+    placed += 1;
+  }
+  if (placed === 0) return 0;
+
+  next.sort((left, right) => left.marker.line - right.marker.line);
+  // Publish the capped list before disposing the overflow: marker disposal
+  // rewrites whatever `terminalTurnMarks` currently holds for this session.
+  const excess = Math.max(0, next.length - MAX_TURN_MARKS_PER_SESSION);
+  terminalTurnMarks.set(sessionId, next.slice(excess));
+  for (let index = 0; index < excess; index += 1) {
+    next[index]?.marker.dispose();
+  }
+  emitTurnMarks(sessionId);
+  return placed;
+}
+
 export function capTurnMarkPersistSnapshots(
   snapshots: readonly TurnMarkPersistSnapshot[],
 ): TurnMarkPersistSnapshot[] {

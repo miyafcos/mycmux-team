@@ -13,6 +13,11 @@ pub fn start_monitor(
         let mut detected_agent_sessions: HashMap<String, DetectedAgentCacheEntry> = HashMap::new();
         let mut failed_detected_agent_sessions: HashMap<String, FailedDetectedAgentCacheEntry> =
             HashMap::new();
+        // Rollover proposals awaiting a second identical observation before a
+        // pane is allowed off its pinned session id — see
+        // `confirm_agent_session_switch`.
+        let mut pending_agent_session_switches: HashMap<String, PendingSessionSwitch> =
+            HashMap::new();
         let mut last_output_evidence_at: HashMap<String, u64> = HashMap::new();
         let mut session_epochs: HashMap<String, u64> = HashMap::new();
         let mut codex_rollout_detector = CodexRolloutDetector::new();
@@ -221,6 +226,7 @@ pub fn start_monitor(
                         None => {
                             detected_agent_sessions.remove(&session_id);
                             failed_detected_agent_sessions.remove(&session_id);
+                            pending_agent_session_switches.remove(&session_id);
                         }
                     }
                     let previous_metadata = last_metadata.get(&session_id);
@@ -326,6 +332,38 @@ pub fn start_monitor(
                                     &excluded_agent_session_ids,
                                     exact.as_deref(),
                                 );
+                                let observed_now = std::time::SystemTime::now();
+                                let transcript_last_write = |agent_kind: &str, id: &str| {
+                                    claude_family_transcript_last_write(agent_kind, &cwd, id)
+                                };
+                                // The identity this pane was pinned to before
+                                // any re-detection ran: the launcher mapping,
+                                // otherwise the id frozen into the agent's argv.
+                                let pinned_attribution = mapped.clone().or_else(|| {
+                                    exact.clone().map(|id| {
+                                        let pinned_kind = claude_family_kind_for(
+                                            previous_agent_kind.as_deref(),
+                                            previous_session_id.as_deref().filter(|candidate| {
+                                                !excluded_agent_session_ids.contains(*candidate)
+                                            }),
+                                            &id,
+                                        );
+                                        AgentSessionAttribution::new(pinned_kind, id)
+                                    })
+                                });
+                                // Only a transcript created after the pinned one
+                                // fell silent can be its continuation; anything
+                                // older was alive alongside it and belongs to
+                                // another lane.
+                                let successor_min_created = successor_scan_floor(
+                                    agent_min_created,
+                                    pinned_attribution.as_ref().and_then(|value| {
+                                        transcript_last_write(
+                                            value.agent_kind,
+                                            &value.session_id,
+                                        )
+                                    }),
+                                );
                                 let attribution = select_claude_process_attribution(
                                     mapped,
                                     exact,
@@ -333,6 +371,12 @@ pub fn start_monitor(
                                     previous_agent_kind.as_deref(),
                                     previous_session_id,
                                     &excluded_agent_session_ids,
+                                    |agent_kind, id| {
+                                        transcript_is_silent(
+                                            transcript_last_write(agent_kind, id),
+                                            observed_now,
+                                        )
+                                    },
                                     || {
                                         detect_agent_session_id_with_negative_ttl(
                                             &mut failed_detected_agent_sessions,
@@ -342,13 +386,32 @@ pub fn start_monitor(
                                             || {
                                                 detect_claude_family_session_id(
                                                     &cwd,
-                                                    agent_min_created,
+                                                    successor_min_created,
                                                     &detection_exclusions,
                                                 )
                                             },
                                         )
                                     },
                                 );
+                                let selection = confirm_agent_session_switch(
+                                    &mut pending_agent_session_switches,
+                                    &session_id,
+                                    agent_pid,
+                                    pinned_attribution.as_ref(),
+                                    attribution,
+                                );
+                                if let (Some(from), Some(to)) = (
+                                    selection.switched_from.as_deref(),
+                                    selection.attribution.as_ref(),
+                                ) {
+                                    let diagnostic = format!(
+                                        "[mycmux-diag monitor] agent session rollover pane={session_id} from={from} to={}",
+                                        to.session_id
+                                    );
+                                    eprintln!("{diagnostic}");
+                                    crate::diag::log(&diagnostic);
+                                }
+                                let attribution = selection.attribution;
                                 let agent_session_id =
                                     attribution.as_ref().map(|value| value.session_id.clone());
                                 remember_detected_agent_session_id(
@@ -641,6 +704,7 @@ pub fn start_monitor(
             last_metadata.retain(|k, _| active_keys.contains(k));
             detected_agent_sessions.retain(|k, _| active_keys.contains(k));
             failed_detected_agent_sessions.retain(|k, _| active_keys.contains(k));
+            pending_agent_session_switches.retain(|k, _| active_keys.contains(k));
             last_output_evidence_at.retain(|k, _| active_keys.contains(k));
             session_epochs.retain(|k, _| active_keys.contains(k));
             codex_rollout_detector.retain_active(&active_keys);

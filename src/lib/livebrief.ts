@@ -126,6 +126,26 @@ export function getLiveEvents(ptySessionIds: string[], limit: number = LIVE_EVEN
   return invoke<LiveSessionEvents[]>("get_live_events", { ptySessionIds, limit });
 }
 
+/** One prompt the operator typed, straight out of the transcript. */
+export interface TranscriptPrompt {
+  text: string;
+  occurredAt: number;
+}
+
+/** Matches `MAX_RESTORED_PROMPTS` in src-tauri/src/livebrief/mod.rs. */
+export const TRANSCRIPT_PROMPT_LIMIT = 200;
+
+/**
+ * 復元されたペインのターンマークを組み直すためだけの経路。
+ * transcript を読むのはこの1本で、パーサは livebrief と同じものを使う。
+ */
+export function getTranscriptUserPrompts(
+  ptySessionId: string,
+  limit: number = TRANSCRIPT_PROMPT_LIMIT,
+): Promise<TranscriptPrompt[]> {
+  return invoke<TranscriptPrompt[]>("get_transcript_user_prompts", { ptySessionId, limit });
+}
+
 export function sendIntervention(expectation: InterventionExpectation, action: InterventionAction): Promise<InterventionResult> {
   return invoke<InterventionResult>("send_intervention", { expectation, action });
 }

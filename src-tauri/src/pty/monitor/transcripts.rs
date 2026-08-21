@@ -213,6 +213,99 @@ pub(super) fn detect_claude_family_session_id_in_dirs(
     )
 }
 
+/// How long a pane's pinned transcript must stay silent before the pane is
+/// allowed to look for a successor session.
+///
+/// Claude Code rolls its session id over mid-run (`/clear`, a resume, a
+/// compaction boundary): the old `<id>.jsonl` stops at the instant the new one
+/// is created, while the pane mapping — written once at launch — keeps pointing
+/// at the file that never grows again. mtime is the signal rather than the last
+/// line's timestamp because it moves on every append and costs one stat instead
+/// of a parse of a multi-megabyte transcript.
+///
+/// The grace period only decides *when* the successor scan runs. A live
+/// conversation that happens to be quiet (one long tool call) has no successor
+/// file, so the scan returns nothing and the pin stays exactly where it was.
+pub(super) const AGENT_TRANSCRIPT_SILENCE_GRACE: Duration = Duration::from_secs(60);
+
+/// A rollover creates the successor at the same instant the predecessor stops,
+/// so the successor scan floors "created at or after" at that instant. The
+/// slack absorbs flush ordering and filesystem timestamp granularity while
+/// still rejecting a transcript that was already being written *while* the
+/// pinned conversation was alive — that one belongs to another pane's lane.
+pub(super) const SUCCESSOR_CREATION_SLACK: Duration = Duration::from_secs(5);
+
+/// Path of the transcript a Claude-family session id maps to, or `None` when
+/// the id is not a session id we could have written (defensive: mapping files
+/// are plain text and must never be able to point outside the project dir).
+pub(super) fn claude_family_transcript_path(
+    agent_kind: &str,
+    cwd: &str,
+    session_id: &str,
+) -> Option<std::path::PathBuf> {
+    if !is_uuid_like(session_id) {
+        return None;
+    }
+    let home = dirs::home_dir()?;
+    let mangled = super::super::path_norm::claude_project_key(cwd);
+    let project_dir = match agent_kind {
+        "claude" => home.join(".claude").join("projects").join(mangled),
+        "claude-codex" => home
+            .join(".claude-codex")
+            .join("config")
+            .join("projects")
+            .join(mangled),
+        _ => return None,
+    };
+    Some(project_dir.join(format!("{session_id}.jsonl")))
+}
+
+pub(super) fn claude_family_transcript_last_write(
+    agent_kind: &str,
+    cwd: &str,
+    session_id: &str,
+) -> Option<std::time::SystemTime> {
+    if crate::test_profile::is_active() {
+        return None;
+    }
+    let path = claude_family_transcript_path(agent_kind, cwd, session_id)?;
+    std::fs::metadata(path).ok()?.modified().ok()
+}
+
+/// `None` (no transcript on disk) is deliberately *not* silent: an agent that
+/// has not written its first line yet proves nothing about a rollover, and
+/// calling it silent would let a brand-new pane go hunting for a session and
+/// adopt a neighbour's freshly created one.
+pub(super) fn transcript_is_silent(
+    last_write: Option<std::time::SystemTime>,
+    now: std::time::SystemTime,
+) -> bool {
+    let Some(last_write) = last_write else {
+        return false;
+    };
+    now.duration_since(last_write)
+        .is_ok_and(|elapsed| elapsed >= AGENT_TRANSCRIPT_SILENCE_GRACE)
+}
+
+/// Raise the successor scan's "created at or after" floor to the moment the
+/// pinned transcript went silent, so the scan can only ever return a file that
+/// did not exist while the pinned conversation was still being written.
+pub(super) fn successor_scan_floor(
+    agent_min_created: Option<std::time::SystemTime>,
+    pinned_last_write: Option<std::time::SystemTime>,
+) -> Option<std::time::SystemTime> {
+    let Some(pinned_last_write) = pinned_last_write else {
+        return agent_min_created;
+    };
+    let floor = pinned_last_write
+        .checked_sub(SUCCESSOR_CREATION_SLACK)
+        .unwrap_or(pinned_last_write);
+    Some(match agent_min_created {
+        Some(agent_min_created) => agent_min_created.max(floor),
+        None => floor,
+    })
+}
+
 pub(super) use super::super::path_norm::normalize_cwd_key;
 
 pub(super) fn codex_session_meta(path: &std::path::Path) -> Option<(String, String)> {

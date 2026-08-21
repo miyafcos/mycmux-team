@@ -161,66 +161,125 @@ pub(super) fn detection_exclusions_for_exact_session(
     detection_exclusions
 }
 
-pub(super) fn select_claude_process_attribution<F>(
+/// Claude and claude-codex are the same process identity, so the kind of a bare
+/// session id is decided by what this pane reported on the previous tick.
+pub(super) fn claude_family_kind_for(
+    previous_agent_kind: Option<&str>,
+    previous_session_id: Option<&str>,
+    candidate: &str,
+) -> &'static str {
+    if previous_agent_kind == Some("claude-codex") && previous_session_id == Some(candidate) {
+        "claude-codex"
+    } else {
+        "claude"
+    }
+}
+
+/// Pick the session id a Claude pane is showing.
+///
+/// A pane is normally pinned to the id captured at launch — the launcher's
+/// mapping file, or `--session-id` / `--resume` in the agent's argv. Both are
+/// frozen at launch, so when the CLI rolls its session id over mid-run the pane
+/// stays bolted to a transcript that never grows again and its chat column
+/// freezes at the moment of the rollover.
+///
+/// `transcript_is_stale(agent_kind, session_id)` answers "that transcript has
+/// gone silent" (see `transcript_is_silent`). Only then is the pin allowed to
+/// move, and only onto whatever `detect` returns — a scan the caller floors at
+/// the pinned transcript's last write and filters through the exclusion set, so
+/// it cannot reach a conversation that was alive alongside the pinned one or
+/// that another pane already owns. A silent pin is still returned as the last
+/// resort when the scan finds nothing: a frozen transcript beats none.
+pub(super) fn select_claude_process_attribution<F, S>(
     mapped: Option<AgentSessionAttribution>,
     exact_session_id: Option<String>,
     cached_session_id: Option<String>,
     previous_agent_kind: Option<&str>,
     previous_session_id: Option<String>,
     excluded_session_ids: &HashSet<String>,
+    transcript_is_stale: S,
     detect: F,
 ) -> Option<AgentSessionAttribution>
 where
     F: FnOnce() -> Option<AgentSessionAttribution>,
+    S: Fn(&str, &str) -> bool,
 {
-    if mapped.as_ref().is_some_and(|value| {
-        value.agent_kind == "claude-codex"
-            || exact_session_id.as_deref() == Some(value.session_id.as_str())
-    }) {
-        return mapped;
-    }
+    let is_stale =
+        |value: &AgentSessionAttribution| transcript_is_stale(value.agent_kind, &value.session_id);
+    let mapped_is_stale = mapped.as_ref().is_some_and(|value| is_stale(value));
 
-    let previous_is_claude_codex = previous_agent_kind == Some("claude-codex");
     let previous_session_id =
         previous_session_id.filter(|candidate| !excluded_session_ids.contains(candidate));
     let cached_session_id =
         cached_session_id.filter(|candidate| !excluded_session_ids.contains(candidate));
+    let family_kind = |candidate: &str| {
+        claude_family_kind_for(
+            previous_agent_kind,
+            previous_session_id.as_deref(),
+            candidate,
+        )
+    };
+    let exact_attribution = exact_session_id
+        .map(|session_id| AgentSessionAttribution::new(family_kind(&session_id), session_id));
+    let exact_is_stale = exact_attribution.as_ref().is_some_and(|value| is_stale(value));
 
-    if exact_session_id.is_none() {
-        if let Some(mapped) = mapped {
+    // A live mapping wins outright when it is the claude-codex identity, when
+    // argv confirms it, or when argv is the frozen half of a rollover.
+    if !mapped_is_stale
+        && mapped.as_ref().is_some_and(|value| {
+            value.agent_kind == "claude-codex"
+                || exact_attribution
+                    .as_ref()
+                    .is_some_and(|exact| exact.session_id == value.session_id)
+                || exact_is_stale
+        })
+    {
+        return mapped;
+    }
+
+    let cached_attribution = cached_session_id
+        .map(|session_id| AgentSessionAttribution::new(family_kind(&session_id), session_id));
+    let cached_is_stale = cached_attribution
+        .as_ref()
+        .is_some_and(|value| is_stale(value));
+
+    if exact_attribution.is_none() {
+        if let Some(mapped) = mapped.clone().filter(|_| !mapped_is_stale) {
             return Some(mapped);
         }
-        if let Some(cached_session_id) = cached_session_id {
-            let cached_kind = if previous_is_claude_codex
-                && previous_session_id.as_deref() == Some(cached_session_id.as_str())
-            {
-                "claude-codex"
-            } else {
-                "claude"
-            };
-            return Some(AgentSessionAttribution::new(cached_kind, cached_session_id));
+        if let Some(cached) = cached_attribution.clone().filter(|_| !cached_is_stale) {
+            return Some(cached);
         }
     }
 
     let detected = detect();
-    if let Some(exact_session_id) = exact_session_id {
+    if let Some(exact) = exact_attribution {
         if detected
             .as_ref()
-            .is_some_and(|value| value.session_id == exact_session_id)
+            .is_some_and(|value| value.session_id == exact.session_id)
         {
             return detected;
         }
-        let exact_kind = if previous_is_claude_codex
-            && previous_session_id.as_deref() == Some(exact_session_id.as_str())
-        {
-            "claude-codex"
-        } else {
-            "claude"
-        };
-        return Some(AgentSessionAttribution::new(exact_kind, exact_session_id));
+        if !exact_is_stale {
+            return Some(exact);
+        }
+        if let Some(detected) = detected {
+            return Some(detected);
+        }
+        if let Some(mapped) = mapped.filter(|_| !mapped_is_stale) {
+            return Some(mapped);
+        }
+        return Some(exact);
     }
     if let Some(detected) = detected {
         return Some(detected);
+    }
+    // No successor was found: keep the silent pin rather than blanking the pane.
+    if let Some(mapped) = mapped {
+        return Some(mapped);
+    }
+    if let Some(cached) = cached_attribution {
+        return Some(cached);
     }
 
     let previous_kind = match previous_agent_kind {
@@ -229,6 +288,82 @@ where
         _ => return None,
     };
     previous_session_id.map(|session_id| AgentSessionAttribution::new(previous_kind, session_id))
+}
+
+/// One tick of "hold" recorded before a pane's pinned session id may move.
+pub(super) struct PendingSessionSwitch {
+    pub(super) agent_pid: Pid,
+    pub(super) from_session_id: String,
+    pub(super) to_session_id: String,
+}
+
+pub(super) struct AgentSessionSelection {
+    pub(super) attribution: Option<AgentSessionAttribution>,
+    /// `Some(previous id)` only on the tick a confirmed rollover moves the pane.
+    pub(super) switched_from: Option<String>,
+}
+
+/// Require the same successor twice before a pane leaves its pinned session id.
+///
+/// The exclusion set already reserves every id another pane owns through argv,
+/// a mapping file, or last tick's detection cache. The remaining gap is an id
+/// nobody has claimed *yet*: a lane whose own mapping failed to be written
+/// starts its transcript, and for exactly one tick that file is unclaimed and
+/// newer than a silent neighbour's. Demanding a second, identical observation
+/// closes it — by then the owning pane has claimed the id through the detection
+/// cache, so it is excluded here and the proposal never returns.
+pub(super) fn confirm_agent_session_switch(
+    pending: &mut HashMap<String, PendingSessionSwitch>,
+    pty_session_key: &str,
+    agent_pid: Pid,
+    pinned: Option<&AgentSessionAttribution>,
+    proposed: Option<AgentSessionAttribution>,
+) -> AgentSessionSelection {
+    let Some(pinned) = pinned else {
+        pending.remove(pty_session_key);
+        return AgentSessionSelection {
+            attribution: proposed,
+            switched_from: None,
+        };
+    };
+    let Some(proposed) = proposed else {
+        pending.remove(pty_session_key);
+        return AgentSessionSelection {
+            attribution: None,
+            switched_from: None,
+        };
+    };
+    if proposed.session_id == pinned.session_id {
+        pending.remove(pty_session_key);
+        return AgentSessionSelection {
+            attribution: Some(proposed),
+            switched_from: None,
+        };
+    }
+    let confirmed = pending.get(pty_session_key).is_some_and(|entry| {
+        entry.agent_pid == agent_pid
+            && entry.from_session_id == pinned.session_id
+            && entry.to_session_id == proposed.session_id
+    });
+    if confirmed {
+        pending.remove(pty_session_key);
+        return AgentSessionSelection {
+            switched_from: Some(pinned.session_id.clone()),
+            attribution: Some(proposed),
+        };
+    }
+    pending.insert(
+        pty_session_key.to_string(),
+        PendingSessionSwitch {
+            agent_pid,
+            from_session_id: pinned.session_id.clone(),
+            to_session_id: proposed.session_id,
+        },
+    );
+    AgentSessionSelection {
+        attribution: Some(pinned.clone()),
+        switched_from: None,
+    }
 }
 
 pub(super) fn mapping_matches_agent_session(

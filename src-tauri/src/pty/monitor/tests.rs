@@ -109,6 +109,12 @@
         std::thread::sleep(Duration::from_millis(25));
     }
 
+    /// Default for the cases that predate rollover handling: every transcript
+    /// the pane is pinned to is still being written, so nothing may move.
+    fn never_stale(_agent_kind: &str, _session_id: &str) -> bool {
+        false
+    }
+
     #[test]
     fn detect_claude_session_id_in_dir_uses_matching_cwd_not_newest() {
         let dir = tempfile::tempdir().unwrap();
@@ -237,6 +243,7 @@
             None,
             None,
             &excluded,
+            never_stale,
             || {
                 detect_claude_family_session_id_in_dirs(
                     &claude_dir,
@@ -279,6 +286,7 @@
             None,
             None,
             &excluded,
+            never_stale,
             || {
                 detect_claude_family_session_id_in_dirs(
                     &claude_dir,
@@ -315,6 +323,7 @@
             Some("claude-codex"),
             Some("previous-codex-session".to_string()),
             &excluded,
+            never_stale,
             || {
                 detect_claude_family_session_id_in_dirs(
                     &claude_dir,
@@ -360,6 +369,7 @@
             None,
             None,
             &excluded,
+            never_stale,
             || {
                 detect_claude_family_session_id_in_dirs(
                     &claude_dir,
@@ -417,6 +427,7 @@
             None,
             None,
             &excluded,
+            never_stale,
             || {
                 detect_claude_family_session_id_in_dirs(
                     &claude_dir,
@@ -660,4 +671,488 @@
         ];
 
         assert_eq!(session_id_from_args(&args, false).as_deref(), Some(session));
+    }
+
+    fn claude_family_dirs() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
+        let root = tempfile::tempdir().unwrap();
+        let claude_dir = root.path().join("claude");
+        let claude_codex_dir = root.path().join("claude-codex");
+        std::fs::create_dir_all(&claude_dir).unwrap();
+        std::fs::create_dir_all(&claude_codex_dir).unwrap();
+        (root, claude_dir, claude_codex_dir)
+    }
+
+    #[test]
+    fn rollover_moves_the_pane_when_the_pinned_transcript_stopped_growing() {
+        // The live defect: the pane was launched with `--session-id <pinned>`,
+        // the CLI rolled over to a new id mid-run, and both the mapping file and
+        // argv kept pointing at the transcript that stopped being written.
+        let (_root, claude_dir, claude_codex_dir) = claude_family_dirs();
+        write_claude_jsonl(&claude_dir.join("pinned-session.jsonl"), r"C:\Users\miyaz\work");
+        wait_for_distinct_mtime();
+        write_claude_jsonl(
+            &claude_dir.join("successor-session.jsonl"),
+            r"C:\Users\miyaz\work",
+        );
+        let mappings = HashMap::from([(
+            "pane-a".to_string(),
+            AgentSessionMapping {
+                agent_kind: Some("claude".to_string()),
+                session_id: "pinned-session".to_string(),
+            },
+        )]);
+        let excluded = HashSet::new();
+        let exact = Some("pinned-session".to_string());
+        let mapped = mapped_agent_session_attribution_for_pane(
+            &mappings,
+            "pane-a",
+            DetectedAgentKind::Claude,
+            &excluded,
+            exact.as_deref(),
+        );
+
+        let attribution = select_claude_process_attribution(
+            mapped,
+            exact,
+            None,
+            None,
+            None,
+            &excluded,
+            |_kind, session_id| session_id == "pinned-session",
+            || {
+                detect_claude_family_session_id_in_dirs(
+                    &claude_dir,
+                    &claude_codex_dir,
+                    r"C:\Users\miyaz\work",
+                    None,
+                    &excluded,
+                )
+            },
+        );
+
+        assert_eq!(
+            attribution,
+            Some(AgentSessionAttribution::new(
+                "claude",
+                "successor-session".to_string(),
+            ))
+        );
+    }
+
+    #[test]
+    fn a_live_pinned_transcript_is_never_re_detected() {
+        // Negative case for the rollover path: while the mapped transcript is
+        // still being written the pane must keep its id and the successor scan
+        // must not even run.
+        let (_root, claude_dir, claude_codex_dir) = claude_family_dirs();
+        write_claude_jsonl(&claude_dir.join("pinned-session.jsonl"), r"C:\Users\miyaz\work");
+        wait_for_distinct_mtime();
+        write_claude_jsonl(
+            &claude_dir.join("newer-session.jsonl"),
+            r"C:\Users\miyaz\work",
+        );
+        let mappings = HashMap::from([(
+            "pane-a".to_string(),
+            AgentSessionMapping {
+                agent_kind: Some("claude".to_string()),
+                session_id: "pinned-session".to_string(),
+            },
+        )]);
+        let excluded = HashSet::new();
+        let exact = Some("pinned-session".to_string());
+        let mapped = mapped_agent_session_attribution_for_pane(
+            &mappings,
+            "pane-a",
+            DetectedAgentKind::Claude,
+            &excluded,
+            exact.as_deref(),
+        );
+        let detected_ran = std::cell::Cell::new(false);
+
+        let attribution = select_claude_process_attribution(
+            mapped,
+            exact,
+            None,
+            None,
+            None,
+            &excluded,
+            never_stale,
+            || {
+                detected_ran.set(true);
+                detect_claude_family_session_id_in_dirs(
+                    &claude_dir,
+                    &claude_codex_dir,
+                    r"C:\Users\miyaz\work",
+                    None,
+                    &excluded,
+                )
+            },
+        );
+
+        assert!(!detected_ran.get());
+        assert_eq!(
+            attribution,
+            Some(AgentSessionAttribution::new(
+                "claude",
+                "pinned-session".to_string(),
+            ))
+        );
+    }
+
+    #[test]
+    fn rollover_never_adopts_a_session_another_pane_owns() {
+        // Same cwd, two panes. Pane A's transcript is silent and pane B's is the
+        // newest file in the directory, but B's id is mapped to B, so the
+        // successor scan must not hand it to A.
+        let (_root, claude_dir, claude_codex_dir) = claude_family_dirs();
+        write_claude_jsonl(&claude_dir.join("pane-a-session.jsonl"), r"C:\Users\miyaz\work");
+        wait_for_distinct_mtime();
+        write_claude_jsonl(&claude_dir.join("pane-b-session.jsonl"), r"C:\Users\miyaz\work");
+        let mappings = HashMap::from([
+            (
+                "pane-a".to_string(),
+                AgentSessionMapping {
+                    agent_kind: Some("claude".to_string()),
+                    session_id: "pane-a-session".to_string(),
+                },
+            ),
+            (
+                "pane-b".to_string(),
+                AgentSessionMapping {
+                    agent_kind: Some("claude".to_string()),
+                    session_id: "pane-b-session".to_string(),
+                },
+            ),
+        ]);
+        let mapped_owners = mapped_agent_session_owners(&mappings);
+        let excluded = agent_session_id_exclusions_for_pane(
+            &HashSet::new(),
+            &HashMap::new(),
+            &mapped_owners,
+            "pane-a",
+        );
+        assert!(excluded.contains("pane-b-session"));
+        let exact = Some("pane-a-session".to_string());
+        let detection_exclusions =
+            detection_exclusions_for_exact_session(&excluded, exact.as_deref());
+        let mapped = mapped_agent_session_attribution_for_pane(
+            &mappings,
+            "pane-a",
+            DetectedAgentKind::Claude,
+            &excluded,
+            exact.as_deref(),
+        );
+
+        let attribution = select_claude_process_attribution(
+            mapped,
+            exact,
+            None,
+            None,
+            None,
+            &excluded,
+            |_kind, _session_id| true,
+            || {
+                detect_claude_family_session_id_in_dirs(
+                    &claude_dir,
+                    &claude_codex_dir,
+                    r"C:\Users\miyaz\work",
+                    None,
+                    &detection_exclusions,
+                )
+            },
+        );
+
+        let attribution = attribution.unwrap();
+        assert_ne!(attribution.session_id, "pane-b-session");
+        assert_eq!(attribution.session_id, "pane-a-session");
+    }
+
+    #[test]
+    fn a_silent_pin_survives_when_no_successor_exists() {
+        // Giving up on the id would blank the pane's chat column; a frozen
+        // transcript is still better than none.
+        let (_root, claude_dir, claude_codex_dir) = claude_family_dirs();
+        let excluded = HashSet::new();
+        let mappings = HashMap::from([(
+            "pane-a".to_string(),
+            AgentSessionMapping {
+                agent_kind: Some("claude".to_string()),
+                session_id: "pinned-session".to_string(),
+            },
+        )]);
+        let mapped = mapped_agent_session_attribution_for_pane(
+            &mappings,
+            "pane-a",
+            DetectedAgentKind::Claude,
+            &excluded,
+            None,
+        );
+
+        let attribution = select_claude_process_attribution(
+            mapped,
+            None,
+            None,
+            None,
+            None,
+            &excluded,
+            |_kind, _session_id| true,
+            || {
+                detect_claude_family_session_id_in_dirs(
+                    &claude_dir,
+                    &claude_codex_dir,
+                    r"C:\Users\miyaz\work",
+                    None,
+                    &excluded,
+                )
+            },
+        );
+
+        assert_eq!(
+            attribution,
+            Some(AgentSessionAttribution::new(
+                "claude",
+                "pinned-session".to_string(),
+            ))
+        );
+    }
+
+    #[test]
+    fn a_confirmed_mapping_survives_a_frozen_argv_id() {
+        // The tick after a rollover was applied: argv still carries the old id
+        // forever, so it must not drag the pane back to the frozen transcript.
+        let excluded = HashSet::new();
+        let mappings = HashMap::from([(
+            "pane-a".to_string(),
+            AgentSessionMapping {
+                agent_kind: Some("claude".to_string()),
+                session_id: "successor-session".to_string(),
+            },
+        )]);
+        let exact = Some("pinned-session".to_string());
+        let mapped = mapped_agent_session_attribution_for_pane(
+            &mappings,
+            "pane-a",
+            DetectedAgentKind::Claude,
+            &excluded,
+            exact.as_deref(),
+        );
+
+        let attribution = select_claude_process_attribution(
+            mapped,
+            exact,
+            None,
+            None,
+            None,
+            &excluded,
+            |_kind, session_id| session_id == "pinned-session",
+            || -> Option<AgentSessionAttribution> {
+                panic!("a live mapping must not trigger a successor scan")
+            },
+        );
+
+        assert_eq!(
+            attribution,
+            Some(AgentSessionAttribution::new(
+                "claude",
+                "successor-session".to_string(),
+            ))
+        );
+    }
+
+    #[test]
+    fn a_session_switch_needs_two_identical_observations() {
+        let mut pending = HashMap::new();
+        let agent_pid = Pid::from_u32(404);
+        let pinned = AgentSessionAttribution::new("claude", "pinned-session".to_string());
+        let successor = AgentSessionAttribution::new("claude", "successor-session".to_string());
+
+        let first = confirm_agent_session_switch(
+            &mut pending,
+            "pane-a",
+            agent_pid,
+            Some(&pinned),
+            Some(successor.clone()),
+        );
+        assert_eq!(first.attribution, Some(pinned.clone()));
+        assert_eq!(first.switched_from, None);
+        assert!(pending.contains_key("pane-a"));
+
+        let second = confirm_agent_session_switch(
+            &mut pending,
+            "pane-a",
+            agent_pid,
+            Some(&pinned),
+            Some(successor.clone()),
+        );
+        assert_eq!(second.attribution, Some(successor));
+        assert_eq!(second.switched_from.as_deref(), Some("pinned-session"));
+        assert!(!pending.contains_key("pane-a"));
+    }
+
+    #[test]
+    fn an_unclaimed_neighbour_session_is_dropped_before_the_switch_lands() {
+        // Tick 1 sees another lane's brand-new transcript before that lane has
+        // claimed it. Tick 2 the owner has claimed it, so the proposal reverts
+        // to the pinned id and the pane never moves.
+        let mut pending = HashMap::new();
+        let agent_pid = Pid::from_u32(404);
+        let pinned = AgentSessionAttribution::new("claude", "pinned-session".to_string());
+        let neighbour = AgentSessionAttribution::new("claude", "neighbour-session".to_string());
+
+        let first = confirm_agent_session_switch(
+            &mut pending,
+            "pane-a",
+            agent_pid,
+            Some(&pinned),
+            Some(neighbour),
+        );
+        assert_eq!(first.attribution, Some(pinned.clone()));
+
+        let second = confirm_agent_session_switch(
+            &mut pending,
+            "pane-a",
+            agent_pid,
+            Some(&pinned),
+            Some(pinned.clone()),
+        );
+        assert_eq!(second.attribution, Some(pinned));
+        assert_eq!(second.switched_from, None);
+        assert!(!pending.contains_key("pane-a"));
+    }
+
+    #[test]
+    fn a_restarted_agent_process_does_not_confirm_an_older_proposal() {
+        let mut pending = HashMap::new();
+        let pinned = AgentSessionAttribution::new("claude", "pinned-session".to_string());
+        let successor = AgentSessionAttribution::new("claude", "successor-session".to_string());
+
+        confirm_agent_session_switch(
+            &mut pending,
+            "pane-a",
+            Pid::from_u32(404),
+            Some(&pinned),
+            Some(successor.clone()),
+        );
+        let after_restart = confirm_agent_session_switch(
+            &mut pending,
+            "pane-a",
+            Pid::from_u32(505),
+            Some(&pinned),
+            Some(successor),
+        );
+
+        assert_eq!(after_restart.attribution, Some(pinned));
+        assert_eq!(after_restart.switched_from, None);
+    }
+
+    #[test]
+    fn a_pane_without_a_pin_switches_without_confirmation() {
+        let mut pending = HashMap::new();
+        let detected = AgentSessionAttribution::new("claude", "detected-session".to_string());
+
+        let selection = confirm_agent_session_switch(
+            &mut pending,
+            "pane-a",
+            Pid::from_u32(404),
+            None,
+            Some(detected.clone()),
+        );
+
+        assert_eq!(selection.attribution, Some(detected));
+        assert_eq!(selection.switched_from, None);
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn a_transcript_is_silent_only_after_the_grace_period() {
+        let now = std::time::SystemTime::now();
+        assert!(!transcript_is_silent(None, now));
+        assert!(!transcript_is_silent(Some(now), now));
+        assert!(!transcript_is_silent(
+            now.checked_sub(AGENT_TRANSCRIPT_SILENCE_GRACE / 2),
+            now
+        ));
+        assert!(transcript_is_silent(
+            now.checked_sub(AGENT_TRANSCRIPT_SILENCE_GRACE),
+            now
+        ));
+        assert!(transcript_is_silent(
+            now.checked_sub(AGENT_TRANSCRIPT_SILENCE_GRACE * 10),
+            now
+        ));
+    }
+
+    #[test]
+    fn the_successor_scan_floor_never_drops_below_the_agent_start() {
+        let now = std::time::SystemTime::now();
+        let agent_started = now.checked_sub(Duration::from_secs(3_600)).unwrap();
+        let pinned_last_write = now.checked_sub(Duration::from_secs(600)).unwrap();
+
+        assert_eq!(successor_scan_floor(Some(agent_started), None), Some(agent_started));
+        assert_eq!(successor_scan_floor(None, None), None);
+        assert_eq!(
+            successor_scan_floor(None, Some(pinned_last_write)),
+            pinned_last_write.checked_sub(SUCCESSOR_CREATION_SLACK)
+        );
+        // The pinned transcript went silent long after the agent started, so the
+        // floor rises to that moment: a file created while the pinned
+        // conversation was alive cannot be its continuation.
+        assert_eq!(
+            successor_scan_floor(Some(agent_started), Some(pinned_last_write)),
+            pinned_last_write.checked_sub(SUCCESSOR_CREATION_SLACK)
+        );
+        // A transcript that fell silent before the process started (a resume
+        // handing over yesterday's id) must not lower the floor.
+        let stale_last_write = now.checked_sub(Duration::from_secs(86_400)).unwrap();
+        assert_eq!(
+            successor_scan_floor(Some(agent_started), Some(stale_last_write)),
+            Some(agent_started)
+        );
+    }
+
+    #[test]
+    fn the_successor_scan_floor_excludes_older_transcripts_from_the_scan() {
+        let (_root, claude_dir, claude_codex_dir) = claude_family_dirs();
+        write_claude_jsonl(&claude_dir.join("older-session.jsonl"), r"C:\Users\miyaz\work");
+        let floor = std::time::SystemTime::now()
+            .checked_add(Duration::from_secs(60))
+            .unwrap();
+
+        assert_eq!(
+            detect_claude_family_session_id_in_dirs(
+                &claude_dir,
+                &claude_codex_dir,
+                r"C:\Users\miyaz\work",
+                Some(floor),
+                &HashSet::new(),
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn transcript_paths_reject_ids_that_could_escape_the_project_dir() {
+        assert!(claude_family_transcript_path("claude", r"C:\work", "..\\..\\etc").is_none());
+        assert!(claude_family_transcript_path("claude", r"C:\work", "not-a-uuid").is_none());
+        assert!(claude_family_transcript_path(
+            "codex",
+            r"C:\work",
+            "401caf0d-c8d1-4c12-b0d4-ed291d41d356"
+        )
+        .is_none());
+        let claude = claude_family_transcript_path(
+            "claude",
+            r"C:\work",
+            "401caf0d-c8d1-4c12-b0d4-ed291d41d356",
+        )
+        .unwrap();
+        assert!(claude.ends_with("401caf0d-c8d1-4c12-b0d4-ed291d41d356.jsonl"));
+        assert!(claude.to_string_lossy().contains("C--work"));
+        let claude_codex = claude_family_transcript_path(
+            "claude-codex",
+            r"C:\work",
+            "401caf0d-c8d1-4c12-b0d4-ed291d41d356",
+        )
+        .unwrap();
+        assert!(claude_codex.to_string_lossy().contains("claude-codex"));
     }

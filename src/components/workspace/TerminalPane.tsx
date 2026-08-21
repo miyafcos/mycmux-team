@@ -944,7 +944,6 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
         <ErrorBoundary>
           <PaneComposer
             sessionId={activeTab.sessionId}
-            active={isActive}
             target={{
               command: launchCommand,
               args: launchArgs,
