@@ -96,6 +96,14 @@ describe("setTheme / restoreThemeSnapshot", () => {
     expect(state.themeTweaks.background.panelOpacity).toBe(0.5);
   });
 
+  it("keeps solidSurfaces across a theme switch and hydrates missing values as glass", () => {
+    cleanState();
+    expect(useThemeStore.getState().themeTweaks.background.solidSurfaces).toBe(false);
+    useThemeStore.getState().setThemeBackground({ solidSurfaces: true });
+    useThemeStore.getState().setTheme("geppaku");
+    expect(useThemeStore.getState().themeTweaks.background.solidSurfaces).toBe(true);
+  });
+
   it("round-trips the pre-switch theme and tweaks via the snapshot", () => {
     cleanState();
     useThemeStore.getState().setThemeTweakColor("chrome.accent", "#ff0000");
@@ -123,6 +131,74 @@ describe("setTheme / restoreThemeSnapshot", () => {
     cleanState();
     useThemeStore.getState().setTheme("no-such-theme");
     expect(useThemeStore.getState().themeId).toBe("mayonaka");
+  });
+});
+
+// solidSurfaces was added to a settings object that installs already have on
+// disk. The two failures worth pinning are opposite: a stored background from
+// before the field existed must not read as "fill with theme colour", and a
+// user who ticked the box must still find it ticked after a restart.
+describe("solidSurfaces survives the load -> edit -> save -> load round trip", () => {
+  /** A background written by a build that had never heard of solidSurfaces. */
+  const LEGACY_BACKGROUND = {
+    mode: "preset",
+    presetId: "catppuccin_black_hole",
+    imagePath: "",
+    imageOpacity: 0.9,
+    imageBlur: 4,
+    wallpaperTone: -0.3,
+    panelOpacity: 0.5,
+    terminalOpacity: 0.45,
+  };
+
+  /** What SocketListener persists: `theme_tweaks: themeState.themeTweaks`. */
+  const saveAndReload = () => {
+    const saved = JSON.parse(
+      JSON.stringify({
+        themeId: useThemeStore.getState().themeId,
+        themeTweaks: useThemeStore.getState().themeTweaks,
+      }),
+    );
+    useThemeStore.getState().hydrateSettings({ themeId: "mayonaka", themeTweaks: undefined });
+    useThemeStore.getState().hydrateSettings(saved);
+  };
+
+  it("reads a legacy background as glass rather than as a solid fill", () => {
+    useThemeStore.getState().hydrateSettings({
+      themeId: "mayonaka",
+      themeTweaks: { enabled: true, colors: {}, background: LEGACY_BACKGROUND },
+    });
+    const background = useThemeStore.getState().themeTweaks.background;
+    expect(background.solidSurfaces).toBe(false);
+    // The rest of the legacy object is preserved, not reset by the new field.
+    expect(background.terminalOpacity).toBe(0.45);
+    expect(background.panelOpacity).toBe(0.5);
+  });
+
+  it("keeps a ticked box ticked across save and reload", () => {
+    useThemeStore.getState().hydrateSettings({
+      themeId: "mayonaka",
+      themeTweaks: { enabled: true, colors: {}, background: LEGACY_BACKGROUND },
+    });
+    useThemeStore.getState().setThemeBackground({ solidSurfaces: true });
+
+    saveAndReload();
+
+    expect(useThemeStore.getState().themeTweaks.background.solidSurfaces).toBe(true);
+    expect(useThemeStore.getState().themeTweaks.background.terminalOpacity).toBe(0.45);
+  });
+
+  it("keeps an unticked box unticked across save and reload", () => {
+    useThemeStore.getState().hydrateSettings({
+      themeId: "mayonaka",
+      themeTweaks: { enabled: true, colors: {}, background: { ...LEGACY_BACKGROUND, solidSurfaces: true } },
+    });
+    expect(useThemeStore.getState().themeTweaks.background.solidSurfaces).toBe(true);
+
+    useThemeStore.getState().setThemeBackground({ solidSurfaces: false });
+    saveAndReload();
+
+    expect(useThemeStore.getState().themeTweaks.background.solidSurfaces).toBe(false);
   });
 });
 

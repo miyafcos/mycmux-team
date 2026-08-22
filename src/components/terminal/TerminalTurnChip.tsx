@@ -14,6 +14,7 @@ export interface TerminalTurnChipProps {
   rows: readonly TurnListRow[];
   onJump: (markIndex: number) => void;
   onListOpen: () => void;
+  leaving?: boolean;
 }
 
 function keepTerminalFocus(event: MouseEvent): void {
@@ -31,6 +32,7 @@ export const TerminalTurnChip = memo(function TerminalTurnChip({
   rows,
   onJump,
   onListOpen,
+  leaving = false,
 }: TerminalTurnChipProps) {
   const [isListOpen, setIsListOpen] = useState(false);
   const chipRef = useRef<HTMLDivElement>(null);
@@ -52,6 +54,10 @@ export const TerminalTurnChip = memo(function TerminalTurnChip({
     };
   }, [isListOpen]);
 
+  useEffect(() => {
+    if (leaving) setIsListOpen(false);
+  }, [leaving]);
+
   const toggleList = (): void => {
     setIsListOpen((wasOpen) => {
       if (wasOpen) return false;
@@ -63,8 +69,11 @@ export const TerminalTurnChip = memo(function TerminalTurnChip({
   return (
     <div
       ref={chipRef}
-      className="terminal-turn-chip"
+      className={leaving ? "terminal-turn-chip is-leaving" : "terminal-turn-chip"}
       aria-label={terminalTurnStrings.position(index, total)}
+      aria-hidden={leaving || undefined}
+      // @ts-expect-error React 19 types still declare inert as a string attribute.
+      inert={leaving ? "" : undefined}
       onMouseDown={keepTerminalFocus}
     >
       <span className="terminal-turn-chip__meta">{terminalTurnStrings.position(index, total)}</span>

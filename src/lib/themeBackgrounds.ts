@@ -95,7 +95,11 @@ export const DEFAULT_THEME_BACKGROUND: ThemeBackgroundSettings = {
   wallpaperTone: -0.08,
   panelOpacity: 0.68,
   terminalOpacity: 0.62,
+  solidSurfaces: false,
 };
+
+/** Floor for panel/terminal glass sliders. Clear preset lands at 0.15. */
+export const SURFACE_OPACITY_MIN = 0.1;
 
 export const THEME_BACKGROUND_PRESETS: ThemeBackgroundPreset[] = [
   { id: "macos_monterey", label: "macOS Monterey", description: "Monterey Dark", thumbnailUrl: thumbMacosMonterey, category: "macos", tone: "dark" },
@@ -192,8 +196,14 @@ export function normalizeThemeBackground(input: unknown): ThemeBackgroundSetting
     imageOpacity: normalizeNumber(record.imageOpacity, 0, 1, DEFAULT_THEME_BACKGROUND.imageOpacity),
     imageBlur: normalizeNumber(record.imageBlur, 0, 32, DEFAULT_THEME_BACKGROUND.imageBlur),
     wallpaperTone: normalizeWallpaperTone(record),
-    panelOpacity: normalizeNumber(record.panelOpacity, 0.2, 1, DEFAULT_THEME_BACKGROUND.panelOpacity),
-    terminalOpacity: normalizeNumber(record.terminalOpacity, 0.2, 1, DEFAULT_THEME_BACKGROUND.terminalOpacity),
+    panelOpacity: normalizeNumber(record.panelOpacity, SURFACE_OPACITY_MIN, 1, DEFAULT_THEME_BACKGROUND.panelOpacity),
+    terminalOpacity: normalizeNumber(
+      record.terminalOpacity,
+      SURFACE_OPACITY_MIN,
+      1,
+      DEFAULT_THEME_BACKGROUND.terminalOpacity,
+    ),
+    solidSurfaces: record.solidSurfaces === true,
   };
 }
 
@@ -206,7 +216,8 @@ export function isDefaultThemeBackground(background: ThemeBackgroundSettings): b
     background.imageBlur === DEFAULT_THEME_BACKGROUND.imageBlur &&
     background.wallpaperTone === DEFAULT_THEME_BACKGROUND.wallpaperTone &&
     background.panelOpacity === DEFAULT_THEME_BACKGROUND.panelOpacity &&
-    background.terminalOpacity === DEFAULT_THEME_BACKGROUND.terminalOpacity
+    background.terminalOpacity === DEFAULT_THEME_BACKGROUND.terminalOpacity &&
+    background.solidSurfaces === DEFAULT_THEME_BACKGROUND.solidSurfaces
   );
 }
 

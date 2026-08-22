@@ -244,6 +244,23 @@ export function formatLastOutputAge(lastOutputAt: number | null, now: number): s
   return `最終出力から${Math.floor(elapsedHours / 24)}日`;
 }
 
+/**
+ * The same elapsed value without the shared sentence stem, for surfaces that
+ * only have room for the number (the minimap chip's meta row). Kept as its own
+ * branch rather than a substring of formatLastOutputAge so rewording the
+ * sentence can never silently blank the compact form.
+ */
+export function formatLastOutputAgeCompact(lastOutputAt: number | null, now: number): string | null {
+  if (lastOutputAt === null) return null;
+  const elapsedSeconds = Math.max(0, Math.floor((now - lastOutputAt) / 1000));
+  if (elapsedSeconds < 60) return `${elapsedSeconds}秒`;
+  const elapsedMinutes = Math.floor(elapsedSeconds / 60);
+  if (elapsedMinutes < 60) return `${elapsedMinutes}分`;
+  const elapsedHours = Math.floor(elapsedMinutes / 60);
+  if (elapsedHours < 24) return `${elapsedHours}時間`;
+  return `${Math.floor(elapsedHours / 24)}日`;
+}
+
 export function shortenCwdFromStart(cwd: string, maxLength = 56): string {
   const characters = Array.from(cwd);
   if (characters.length <= maxLength) return cwd;

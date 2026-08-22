@@ -1038,6 +1038,21 @@ div:hover>.tab-close-btn {
   font-size: var(--cmux-font-size-xs);
   line-height: 1.35;
   pointer-events: auto;
+  opacity: 1;
+  transform: translateY(0);
+  transition: opacity 180ms var(--cmux-ease), transform 180ms var(--cmux-ease);
+}
+
+.terminal-turn-chip.is-leaving {
+  opacity: 0;
+  transform: translateY(-4px);
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .terminal-turn-chip {
+    transition: none;
+  }
 }
 
 .terminal-turn-chip__meta {

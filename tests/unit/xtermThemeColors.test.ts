@@ -4,6 +4,13 @@ import type { ITheme } from "@xterm/xterm";
 import { describe, expect, it } from "vitest";
 import { contrastRatio } from "../../src/components/theme/colorContrast";
 import { ANSI_KEYS, withAnsiContrastFloor } from "../../src/components/terminal/terminalThemeColors";
+import {
+  readLiveTerminalAppearance,
+  resolveMinimumContrastRatio,
+  resolveTerminalAppearance,
+  setEffectiveMediaActive,
+} from "../../src/stores/compositionStore";
+import { useThemeStore } from "../../src/stores/themeStore";
 
 const CONTRAST_TARGET = 4.5;
 
@@ -77,5 +84,49 @@ describe("terminal ANSI contrast floor", () => {
     }
     expect(xtermWrapper).toContain("resolveTerminalTheme(");
     expect(xtermWrapper).not.toContain("options.theme = withTerminalOpacity(");
+  });
+
+});
+
+// The policy, not the spelling of the function that carries it. Glass means
+// xterm's own correction is off (the background it would correct against is
+// transparent); opaque means the AA floor for light and the stricter dark
+// floor. Live theme updates, cached reattach and cold init all read this.
+describe("terminal minimum contrast policy", () => {
+  it.each([
+    ["glass, dark", { mediaActive: true, isLight: false }, 1],
+    ["glass, light", { mediaActive: true, isLight: true }, 1],
+    ["opaque, light", { mediaActive: false, isLight: true }, 4.5],
+    ["opaque, dark", { mediaActive: false, isLight: false }, 7],
+  ] as const)("%s -> %d", (_label, input, expected) => {
+    expect(resolveMinimumContrastRatio(input)).toBe(expected);
+  });
+
+  it("hands the terminal a full-opacity background whenever it is not glass", () => {
+    expect(
+      resolveTerminalAppearance({ mediaActive: false, isLight: false, terminalOpacity: 0.45 }),
+    ).toEqual({ mediaActive: false, isLight: false, terminalOpacity: 1, minimumContrastRatio: 7 });
+    expect(
+      resolveTerminalAppearance({ mediaActive: true, isLight: false, terminalOpacity: 0.45 }),
+    ).toEqual({ mediaActive: true, isLight: false, terminalOpacity: 0.45, minimumContrastRatio: 1 });
+  });
+
+  it("resolves from the live stores, so an async terminal open cannot use a stale value", () => {
+    useThemeStore.getState().hydrateSettings({ themeId: "mayonaka", themeTweaks: undefined });
+    useThemeStore.getState().setThemeBackground({ terminalOpacity: 0.5 });
+
+    setEffectiveMediaActive(false);
+    expect(readLiveTerminalAppearance()).toMatchObject({
+      mediaActive: false,
+      terminalOpacity: 1,
+      minimumContrastRatio: 7,
+    });
+
+    setEffectiveMediaActive(true);
+    expect(readLiveTerminalAppearance()).toMatchObject({
+      mediaActive: true,
+      terminalOpacity: 0.5,
+      minimumContrastRatio: 1,
+    });
   });
 });

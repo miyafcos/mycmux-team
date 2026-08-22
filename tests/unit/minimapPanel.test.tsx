@@ -9,7 +9,8 @@ import { LayoutMinimapPanel, MINIMAP_COLLAPSED_WORKSPACE_IDS_STORAGE_KEY } from 
 import { minimapCellHeightPx, minimapMapHeightPx } from "../../src/components/dashboard/MinimapWorkspaceBlock";
 import PaneDragOverlay from "../../src/components/workspace/PaneDragOverlay";
 import type { DashboardDisplayState } from "../../src/components/dashboard/dashboardModel";
-import { buildMinimapModel } from "../../src/components/dashboard/minimapModel";
+import { buildMinimapModel, resolveMinimapDropZone } from "../../src/components/dashboard/minimapModel";
+import { usePaneMetadataStore } from "../../src/stores/paneMetadataStore";
 import * as layoutMutation from "../../src/lib/layoutMutation";
 import * as socketCommands from "../../src/components/layout/socketCommands";
 import { focusController } from "../../src/lib/focusController";
@@ -39,6 +40,7 @@ beforeEach(() => {
 
 afterEach(async () => {
   await act(async () => root.unmount());
+  usePaneMetadataStore.setState({ volatileMetadata: {} });
   container.remove();
   usePaneDragStore.getState().clearDrag();
   useWorkspaceListStore.setState({ workspaces: [], activeWorkspaceId: null });
@@ -86,7 +88,7 @@ function stubMinimapTarget(target: HTMLElement): void {
 
 async function renderDndPanel(workspaces: Workspace[], onSelect = vi.fn()): Promise<void> {
   useWorkspaceListStore.setState({ workspaces, activeWorkspaceId: "ws-a" });
-  const states = new Map<string, DashboardDisplayState>([["a", "working"], ["b", "working"]]);
+  const states = new Map<string, DashboardDisplayState>([["a", "running"], ["b", "running"]]);
   await act(async () => root.render(<LayoutMinimapPanel workspaces={workspaces} displayStateByTabId={states} selectedTabId="a" activePaneSessionId={null} onSelect={onSelect} />));
 }
 
@@ -113,7 +115,7 @@ describe("LayoutMinimapPanel", () => {
     const wsA: Workspace = { id: "ws-a", name: "A", gridTemplateId: "1x1", status: "running", createdAt: 1,
       panes: [pane("a", [tab("a")]), pane("b", [tab("b")]), pane("c", [tab("c")])], splitColumns: [["a", "b"], ["c"]], columnWidths: [1, 3], rowHeightsPerCol: [[1, 3], [1]] };
     const wsB: Workspace = { id: "ws-b", name: "B", gridTemplateId: "1x1", status: "running", createdAt: 1, panes: [pane("d", [tab("d")])], splitColumns: [["d"]] };
-    const displayStateByTabId = new Map<string, DashboardDisplayState>([["a", "working"], ["b", "working"], ["c", "working"], ["d", "working"]]);
+    const displayStateByTabId = new Map<string, DashboardDisplayState>([["a", "running"], ["b", "running"], ["c", "running"], ["d", "running"]]);
     await act(async () => root.render(<LayoutMinimapPanel workspaces={[wsA, wsB]} displayStateByTabId={displayStateByTabId} selectedTabId="d" activePaneSessionId="session-b" onSelect={vi.fn()} />));
     const workspace = container.querySelector<HTMLElement>("[data-minimap-workspace='ws-a']")!;
     const model = buildMinimapModel(wsA, { activePaneId: "b" });
@@ -180,12 +182,18 @@ describe("LayoutMinimapPanel", () => {
     const wsA: Workspace = { id: "ws-a", name: "A", gridTemplateId: "1x1", status: "running", createdAt: 1, panes: [pane("a", [tab("a"), declared])], splitColumns: [["a"]] };
     const wsB: Workspace = { id: "ws-b", name: "B", gridTemplateId: "1x1", status: "running", createdAt: 1, panes: [pane("b", [tab("b")])], splitColumns: [["b"]] };
     const onSelect = vi.fn();
-    const displayStateByTabId = new Map<string, DashboardDisplayState>([["a", "working"], ["declared", "needsHuman"], ["b", "idle"]]);
+    const displayStateByTabId = new Map<string, DashboardDisplayState>([["a", "running"], ["declared", "needsHuman"], ["b", "idle"]]);
     await act(async () => root.render(<LayoutMinimapPanel workspaces={[wsA, wsB]} displayStateByTabId={displayStateByTabId} selectedTabId="a" activePaneSessionId={null} onSelect={onSelect} />));
     const chip = container.querySelector<HTMLElement>("[data-minimap-tab='declared']")!;
     expect(chip.dataset.declared).toBe("true");
     expect(chip.classList.contains("is-declared")).toBe(true);
-    expect(chip.textContent).toContain("＋");
+    // The declared chip carries "宣言のみ" in the meta row and a plain title: no
+    // "＋ …（まだ）" decoration, no status dot, no elapsed value.
+    expect(chip.querySelector(".cmux-minimap-agent")?.textContent).toBe("宣言のみ");
+    expect(chip.querySelector(".cmux-minimap-label")?.textContent).toBe("declared");
+    expect(chip.textContent).not.toContain("＋");
+    expect(chip.querySelector(".cmux-minimap-meta .cmux-minimap-status")).toBeNull();
+    expect(chip.querySelector(".cmux-minimap-age")).toBeNull();
     expect(chip.querySelector(".cmux-minimap-question")).not.toBeNull();
     await act(async () => chip.click());
     expect(onSelect).toHaveBeenCalledWith("declared");
@@ -195,12 +203,12 @@ describe("LayoutMinimapPanel", () => {
     expect(header.getAttribute("aria-expanded")).toBe("false");
   });
 
-  it("keeps an expanded label in its layout cell with a three-line readable limit", async () => {
+  it("keeps an expanded label in its layout cell with a two-line readable limit", async () => {
     const longName = "とても長い日本語のワークスペース名でも途中で固定文字数に切られないこと";
     const longLabel = "とても長い日本語のセッションラベルでも途中で固定文字数に切られないこと";
     const ws: Workspace = { id: "ws", name: longName, gridTemplateId: "1x1", status: "running", createdAt: 1,
       panes: [pane("p", [{ ...tab("tab"), label: longLabel }])], splitColumns: [["p"]] };
-    await act(async () => root.render(<LayoutMinimapPanel workspaces={[ws]} displayStateByTabId={new Map([["tab", "working"]])} selectedTabId="tab" activePaneSessionId={null} onSelect={vi.fn()} />));
+    await act(async () => root.render(<LayoutMinimapPanel workspaces={[ws]} displayStateByTabId={new Map([["tab", "running"]])} selectedTabId="tab" activePaneSessionId={null} onSelect={vi.fn()} />));
     const chip = container.querySelector<HTMLElement>("[data-minimap-tab='tab']")!;
     const name = container.querySelector<HTMLElement>(".cmux-minimap-workspace-name")!;
     expect(chip.querySelector(".cmux-minimap-label")?.textContent).toBe(longLabel);
@@ -212,10 +220,20 @@ describe("LayoutMinimapPanel", () => {
     expect(name.title).toBe(longName);
     expect(chip.classList.contains("is-expanded")).toBe(true);
     expect(chip.closest("[data-minimap-expanded='true']")).not.toBeNull();
+    expect(chip.querySelector(".cmux-minimap-meta")).not.toBeNull();
     const minimapCss = readFileSync("src/components/dashboard/MinimapPanel.css", "utf8");
     expect(minimapCss).toContain(".cmux-minimap-map.is-expanded .cmux-minimap-label");
-    expect(minimapCss).toContain("max-block-size: 4.05em");
+    // Two lines, not three: the chip is capped at the same 53px the height
+    // budget hands it, and the label may not out-grow what is left over.
+    expect(minimapCss).toContain("max-block-size: 2.7em");
+    expect(minimapCss).toContain("max-block-size: 53px");
+    expect(minimapCss).not.toContain("max-block-size: 4.05em");
     expect(minimapCss).not.toContain("-webkit-line-clamp");
+    // padding 4+5, meta row 11 (the Japanese state word floor), gap 3, and two
+    // 11px lines at 1.35 have to fit inside the 53px row.
+    const chipBudget = 4 + 11 + 3 + Math.ceil(11 * 1.35 * 2) + 5;
+    expect(chipBudget).toBeLessThanOrEqual(53);
+    expect(4 + 11 + 3 + Math.ceil(11 * 1.35 * 3) + 5).toBeGreaterThan(53);
   });
 
   it("keeps four equal columns in their screen geometry without horizontal scrolling when expanded", async () => {
@@ -312,7 +330,7 @@ describe("LayoutMinimapPanel", () => {
 
   it("lifts a minimap pane with the existing ghost while dimming its source", async () => {
     const workspaces = dndWorkspaces();
-    const states = new Map<string, DashboardDisplayState>([["a", "working"], ["b", "working"]]);
+    const states = new Map<string, DashboardDisplayState>([["a", "running"], ["b", "running"]]);
     useWorkspaceListStore.setState({ workspaces, activeWorkspaceId: "ws-a" });
     await act(async () => root.render(<><LayoutMinimapPanel workspaces={workspaces} displayStateByTabId={states} selectedTabId="a" activePaneSessionId={null} onSelect={vi.fn()} /><PaneDragOverlay /></>));
     const source = container.querySelector<HTMLElement>("[data-minimap-pane='a'] [data-minimap-pane-grip]")!;
@@ -431,7 +449,7 @@ describe("LayoutMinimapPanel", () => {
   it("keeps the new-workspace button disabled without a selected tab and uses the passive action when selected", async () => {
     const workspaces = newWorkspaceDndWorkspaces();
     useWorkspaceListStore.setState({ workspaces, activeWorkspaceId: "ws-a" });
-    const states = new Map<string, DashboardDisplayState>([["a", "working"], ["b", "working"]]);
+    const states = new Map<string, DashboardDisplayState>([["a", "running"], ["b", "running"]]);
     await act(async () => root.render(<LayoutMinimapPanel workspaces={workspaces} displayStateByTabId={states} selectedTabId={null} activePaneSessionId={null} onSelect={vi.fn()} />));
     const button = container.querySelector<HTMLButtonElement>("[data-minimap-new-workspace-button='true']")!;
     expect(button.disabled).toBe(true);
@@ -622,7 +640,7 @@ describe("LayoutMinimapPanel", () => {
       panes: [pane("a", [tab("a"), tab("b")])], splitColumns: [["a"]] };
     const wsB: Workspace = { id: "ws-b", name: "B", gridTemplateId: "1x1", status: "running", createdAt: 1,
       panes: [pane("c", [tab("c")])], splitColumns: [["c"]] };
-    const states = new Map<string, DashboardDisplayState>([["a", "working"], ["b", "working"], ["c", "working"]]);
+    const states = new Map<string, DashboardDisplayState>([["a", "running"], ["b", "running"], ["c", "running"]]);
     await act(async () => root.render(<LayoutMinimapPanel workspaces={[wsA, wsB]} displayStateByTabId={states} selectedTabId="a" activePaneSessionId={null} onSelect={vi.fn()} />));
     const chipA = container.querySelector<HTMLElement>("[data-minimap-tab='a']")!;
     const chipB = container.querySelector<HTMLElement>("[data-minimap-tab='b']")!;
@@ -644,7 +662,7 @@ describe("LayoutMinimapPanel", () => {
 
   it("keeps collapsed workspaces collapsed while scrolling the selected workspace into view", async () => {
     const workspaces = dndWorkspaces();
-    const states = new Map<string, DashboardDisplayState>([["a", "working"], ["b", "working"]]);
+    const states = new Map<string, DashboardDisplayState>([["a", "running"], ["b", "running"]]);
     await act(async () => root.render(<LayoutMinimapPanel workspaces={workspaces} displayStateByTabId={states} selectedTabId="a" activePaneSessionId={null} onSelect={vi.fn()} />));
     const stack = container.querySelector<HTMLElement>(".cmux-minimap-stack")!;
     const workspaceB = container.querySelector<HTMLElement>("[data-minimap-workspace='ws-b']")!;
@@ -665,7 +683,7 @@ describe("LayoutMinimapPanel", () => {
 
   it("persists manually collapsed workspaces without collapsing the others", async () => {
     const workspaces = dndWorkspaces();
-    const states = new Map<string, DashboardDisplayState>([["a", "working"], ["b", "working"]]);
+    const states = new Map<string, DashboardDisplayState>([["a", "running"], ["b", "running"]]);
     await act(async () => root.render(<LayoutMinimapPanel workspaces={workspaces} displayStateByTabId={states} selectedTabId="a" activePaneSessionId={null} onSelect={vi.fn()} />));
     const workspaceA = container.querySelector<HTMLElement>("[data-minimap-workspace='ws-a']")!;
     const workspaceB = container.querySelector<HTMLElement>("[data-minimap-workspace='ws-b']")!;
@@ -805,6 +823,190 @@ describe("LayoutMinimapPanel", () => {
     await act(async () => confirmation.querySelector<HTMLButtonElement>(".cmux-minimap-bundle-confirm-actions button")!.click());
     expect(closeSpy).toHaveBeenCalledTimes(1);
     expect(closeSpy).toHaveBeenCalledWith("pane.close_tabs", { tabIds: ["a", "b"] });
+  });
+
+  it("gives a tab-less pane a full row of budget so all five drop zones stay reachable", async () => {
+    const workspace: Workspace = { id: "ws", name: "空き", gridTemplateId: "1x1", status: "running", createdAt: 1,
+      panes: [pane("empty", []), pane("full", [tab("a")])], splitColumns: [["empty"], ["full"]] };
+    await act(async () => root.render(<LayoutMinimapPanel workspaces={[workspace]} displayStateByTabId={new Map()} selectedTabId={null} activePaneSessionId={null} onSelect={vi.fn()} />));
+    const cell = container.querySelector<HTMLElement>("[data-minimap-pane='empty']")!;
+
+    expect(cell.querySelector(".cmux-minimap-pane-empty")?.textContent).toBe("空きペイン");
+    expect(container.querySelectorAll("[data-minimap-pane='empty'] [data-minimap-tab]")).toHaveLength(0);
+    // A 0-tab pane is budgeted as one row, exactly like a 1-tab pane.
+    expect(minimapCellHeightPx(0, true)).toBe(minimapCellHeightPx(1, true));
+    expect(minimapCellHeightPx(0, true)).toBe(77);
+    expect(minimapCellHeightPx(0, false)).toBe(47);
+    expect(cell.style.minHeight).toBe(`${minimapCellHeightPx(0, true)}px`);
+
+    // At that real height the five zones are all distinct; at the pre-fix 19px
+    // the top and bottom edges covered the whole cell and the centre vanished.
+    const height = minimapCellHeightPx(0, true);
+    const rect = { left: 0, right: 100, top: 0, bottom: height, width: 100, height };
+    expect(resolveMinimapDropZone(rect, 50, height / 2)).toBe("center");
+    expect(resolveMinimapDropZone(rect, 1, height / 2)).toBe("left");
+    expect(resolveMinimapDropZone(rect, 99, height / 2)).toBe("right");
+    expect(resolveMinimapDropZone(rect, 50, 1)).toBe("up");
+    expect(resolveMinimapDropZone(rect, 50, height - 1)).toBe("down");
+  });
+
+  it("orders chip states so the waiting face wins and the selection ring always survives", async () => {
+    const workspace: Workspace = { id: "ws", name: "状態", gridTemplateId: "1x1", status: "running", createdAt: 1,
+      panes: [pane("p", [tab("wait"), tab("open"), tab("plain"), tab("decl", "declared"), tab("waitopen"), tab("waitdecl", "declared")])], splitColumns: [["p"]] };
+    const states = new Map<string, DashboardDisplayState>([["wait", "needsHuman"], ["open", "running"], ["plain", "idle"], ["decl", "idle"], ["waitopen", "needsHuman"], ["waitdecl", "needsHuman"]]);
+    await act(async () => root.render(<LayoutMinimapPanel workspaces={[workspace]} displayStateByTabId={states} openTabIds={["open", "waitopen"]} selectedTabId="wait" activePaneSessionId={null} onSelect={vi.fn()} />));
+    const chipOf = (id: string) => container.querySelector<HTMLElement>(`[data-minimap-tab='${id}']`)!;
+
+    // The waiting chip is also the primary selection: both classes coexist.
+    expect(chipOf("wait").classList.contains("is-waiting")).toBe(true);
+    expect(chipOf("wait").classList.contains("is-selected")).toBe(true);
+    expect(chipOf("wait").classList.contains("is-bundle-selected")).toBe(true);
+    expect(chipOf("wait").querySelector(".cmux-minimap-question")?.textContent).toBe("返答待ち");
+    expect(chipOf("open").classList.contains("is-open")).toBe(true);
+    expect(chipOf("open").classList.contains("is-waiting")).toBe(false);
+    expect(chipOf("plain").className).not.toMatch(/is-(waiting|open|selected)/);
+    expect(chipOf("decl").classList.contains("is-declared")).toBe(true);
+    // wait x open: both classes ride together, and the column-colour outline the
+    // parent chose to keep is still supplied inline.
+    expect(chipOf("waitopen").classList.contains("is-waiting")).toBe(true);
+    expect(chipOf("waitopen").classList.contains("is-open")).toBe(true);
+    expect(chipOf("waitopen").style.outlineColor).not.toBe("");
+    // wait x declared: the declared meta wins the label, the waiting face wins
+    // the background, and neither drops a status dot into the meta row.
+    expect(chipOf("waitdecl").classList.contains("is-waiting")).toBe(true);
+    expect(chipOf("waitdecl").classList.contains("is-declared")).toBe(true);
+    expect(chipOf("waitdecl").querySelector(".cmux-minimap-agent")?.textContent).toBe("宣言のみ");
+    expect(chipOf("waitdecl").querySelector(".cmux-minimap-question")?.textContent).toBe("返答待ち");
+    expect(chipOf("waitdecl").querySelector(".cmux-minimap-status")).toBeNull();
+
+    // Cascade order is the contract: the later rule wins the background, so the
+    // ladder has to read declared < hover < open < bundle-selected < selected < waiting.
+    const css = readFileSync("src/components/dashboard/MinimapPanel.css", "utf8");
+    const at = (needle: string) => {
+      const index = css.indexOf(needle);
+      expect(index, needle).toBeGreaterThan(-1);
+      return index;
+    };
+    expect(at(".cmux-minimap-chip.is-declared {")).toBeLessThan(at(".cmux-minimap-chip:hover:not(.is-open)"));
+    expect(at(".cmux-minimap-chip:hover:not(.is-open)")).toBeLessThan(at(".cmux-minimap-chip.is-open {"));
+    expect(at(".cmux-minimap-chip.is-open {")).toBeLessThan(at(".cmux-minimap-chip.is-bundle-selected {"));
+    expect(at(".cmux-minimap-chip.is-bundle-selected {")).toBeLessThan(at(".cmux-minimap-chip.is-selected {"));
+    expect(at(".cmux-minimap-chip.is-selected {")).toBeLessThan(at(".cmux-minimap-chip.is-waiting {"));
+    // Hover may not take the face back off a selected or waiting chip.
+    expect(css).toContain(".cmux-minimap-chip:hover:not(.is-open):not(.is-selected):not(.is-bundle-selected):not(.is-waiting)");
+    // The amber band is a pseudo-element, so it never overwrites the 2px ring.
+    expect(css).toContain(".cmux-minimap-chip.is-waiting::before");
+    // Light themes resolve surface === popover, so the chip's own edge ring is
+    // the only thing separating it from the map. Every later box-shadow has to
+    // compose it rather than replace it.
+    expect(css).toContain("--minimap-chip-ring: inset 0 0 0 1px");
+    for (const rule of css.split(String.fromCharCode(10))) {
+      if (!rule.includes(".cmux-minimap-chip") || !rule.includes("box-shadow:")) continue;
+      expect(rule, rule.trim().slice(0, 60)).toContain("box-shadow: var(--minimap-chip-ring)");
+    }
+    const waitingFaceRule = css.slice(at(".cmux-minimap-chip.is-waiting {"));
+    expect(waitingFaceRule.slice(0, waitingFaceRule.indexOf("}"))).not.toContain("box-shadow");
+  });
+
+  it("collapses a chip to its title and status dot only", async () => {
+    const workspace: Workspace = { id: "ws", name: "畳み", gridTemplateId: "1x1", status: "running", createdAt: 1,
+      panes: [pane("p", [tab("a")])], splitColumns: [["p"]] };
+    const states = new Map<string, DashboardDisplayState>([["a", "needsHuman"]]);
+    await act(async () => root.render(<LayoutMinimapPanel workspaces={[workspace]} displayStateByTabId={states} selectedTabId="a" activePaneSessionId={null} onSelect={vi.fn()} />));
+    const chip = () => container.querySelector<HTMLElement>("[data-minimap-tab='a']")!;
+    expect(chip().querySelector(".cmux-minimap-meta")).not.toBeNull();
+
+    await act(async () => container.querySelector<HTMLElement>(".cmux-minimap-workspace-header")!.click());
+
+    expect(chip().classList.contains("is-collapsed")).toBe(true);
+    expect(chip().querySelector(".cmux-minimap-meta")).toBeNull();
+    expect(chip().querySelector(".cmux-minimap-question")).toBeNull();
+    expect(chip().querySelector(".cmux-minimap-glyph")).toBeNull();
+    expect(chip().querySelector(".cmux-minimap-label")?.textContent).toBe("a");
+    expect(chip().querySelector(".cmux-minimap-status")).not.toBeNull();
+    // Waiting still reads at a glance through the amber band.
+    expect(chip().classList.contains("is-waiting")).toBe(true);
+    expect(readFileSync("src/components/dashboard/MinimapPanel.css", "utf8")).toContain(".cmux-minimap-chip.is-collapsed.is-waiting");
+  });
+
+  it("keeps a declared chip free of a status dot in both modes", async () => {
+    const workspace: Workspace = { id: "ws", name: "宣言", gridTemplateId: "1x1", status: "running", createdAt: 1,
+      panes: [pane("p", [tab("d", "declared")])], splitColumns: [["p"]] };
+    const states = new Map<string, DashboardDisplayState>([["d", "idle"]]);
+    await act(async () => root.render(<LayoutMinimapPanel workspaces={[workspace]} displayStateByTabId={states} selectedTabId={null} activePaneSessionId={null} onSelect={vi.fn()} />));
+    const chip = () => container.querySelector<HTMLElement>("[data-minimap-tab='d']")!;
+
+    expect(chip().classList.contains("is-expanded")).toBe(true);
+    expect(chip().querySelector(".cmux-minimap-status")).toBeNull();
+
+    await act(async () => container.querySelector<HTMLElement>(".cmux-minimap-workspace-header")!.click());
+
+    expect(chip().classList.contains("is-collapsed")).toBe(true);
+    expect(chip().querySelector(".cmux-minimap-status")).toBeNull();
+    // The "宣言のみ" meta is tertiary and 11px, not the 10px mono the ASCII
+    // agent name uses.
+    const css = readFileSync("src/components/dashboard/MinimapPanel.css", "utf8");
+    expect(css).toContain(".cmux-minimap-chip.is-declared .cmux-minimap-meta { color: var(--cmux-text-tertiary); }");
+    expect(css).toContain(".cmux-minimap-chip.is-declared .cmux-minimap-agent { color: var(--cmux-text-tertiary); font-family: var(--cmux-dash-ui-font); font-size: var(--cmux-font-size-xs); }");
+    // Japanese in the meta row never sits at 10px.
+    expect(css).toContain(".cmux-minimap-age { margin-left: auto; flex: 0 0 auto; color: var(--cmux-text-tertiary); font-family: var(--cmux-dash-ui-font); font-size: var(--cmux-font-size-xs); }");
+  });
+
+  it("summarises the header with a swatch, caps at 12 ticks, and shows +N", async () => {
+    const tabs = Array.from({ length: 13 }, (_, index) => tab(`t${index}`));
+    const workspace: Workspace = { id: "ws", name: "十三本", gridTemplateId: "1x1", status: "running", createdAt: 1,
+      panes: [pane("p", tabs)], splitColumns: [["p"]] };
+    const states = new Map<string, DashboardDisplayState>([["t0", "needsHuman"], ["t1", "running"]]);
+    await act(async () => root.render(<LayoutMinimapPanel workspaces={[workspace]} displayStateByTabId={states} selectedTabId={null} activePaneSessionId={null} onSelect={vi.fn()} />));
+    const header = container.querySelector<HTMLElement>(".cmux-minimap-workspace-header")!;
+
+    // The swatch renders even without an authored workspace colour (CSS falls
+    // back to tertiary), so the three-column header grid never shifts.
+    expect(header.querySelector(".cmux-minimap-workspace-swatch")).not.toBeNull();
+    expect(header.querySelectorAll(".cmux-minimap-strip-tick")).toHaveLength(12);
+    expect(header.querySelector(".cmux-minimap-strip-overflow")?.textContent).toBe("+1");
+    expect(header.querySelector(".cmux-minimap-workspace-count")?.textContent).toBe("13");
+    expect(header.querySelector(".cmux-minimap-strip-tick.is-waiting")).not.toBeNull();
+    expect(header.querySelector(".cmux-minimap-strip-tick.is-working")).not.toBeNull();
+    // The old glyph summary is gone; the waiting count moved into the aria label.
+    expect(header.textContent).not.toContain("❓");
+    expect(header.textContent).not.toContain("●");
+    expect(header.getAttribute("aria-label")).toBe("十三本 — 13本、返答待ち1本");
+  });
+
+  it("re-evaluates the elapsed value on the panel clock without subscribing to PTY output", async () => {
+    vi.useFakeTimers();
+    try {
+      const start = new Date("2026-08-21T09:00:00Z").getTime();
+      vi.setSystemTime(start);
+      usePaneMetadataStore.setState({ volatileMetadata: { "session-a": { backendLastOutputAt: start - 10_000 } } });
+      const workspace: Workspace = { id: "ws", name: "経過", gridTemplateId: "1x1", status: "running", createdAt: 1,
+        panes: [pane("p", [tab("a")])], splitColumns: [["p"]] };
+      await act(async () => root.render(<LayoutMinimapPanel workspaces={[workspace]} displayStateByTabId={new Map()} selectedTabId={null} activePaneSessionId={null} onSelect={vi.fn()} />));
+      const chip = () => container.querySelector<HTMLElement>("[data-minimap-tab='a']")!;
+
+      expect(chip().querySelector(".cmux-minimap-age")?.textContent).toBe("10秒");
+      expect(chip().title).toContain("最終出力から10秒");
+      expect(chip().getAttribute("aria-label")).toContain("最終出力から10秒");
+
+      await act(async () => { vi.advanceTimersByTime(30_000); });
+      expect(chip().querySelector(".cmux-minimap-age")?.textContent).toBe("40秒");
+
+      await act(async () => { vi.advanceTimersByTime(60_000); });
+      expect(chip().querySelector(".cmux-minimap-age")?.textContent).toBe("1分");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("omits the elapsed value when the session has never reported output", async () => {
+    const workspace: Workspace = { id: "ws", name: "未出力", gridTemplateId: "1x1", status: "running", createdAt: 1,
+      panes: [pane("p", [tab("a")])], splitColumns: [["p"]] };
+    await act(async () => root.render(<LayoutMinimapPanel workspaces={[workspace]} displayStateByTabId={new Map()} selectedTabId={null} activePaneSessionId={null} onSelect={vi.fn()} />));
+    const chip = container.querySelector<HTMLElement>("[data-minimap-tab='a']")!;
+    expect(chip.querySelector(".cmux-minimap-age")).toBeNull();
+    expect(chip.title).toBe("a");
+    expect(chip.getAttribute("aria-label")).toContain("a — codex・");
   });
 
   it("hides the bulk-close entry point when no tabs are selected", async () => {

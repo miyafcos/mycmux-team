@@ -288,7 +288,7 @@ def test_terminal_renderer_auto_default_keeps_transparency_safety() -> None:
     # settings-change effect re-runs when the background state flips.
     for snippet in [
         'import { resolveEffectiveTerminalRenderer } from "../../stores/settingsMigration";',
-        "function resolveTerminalBackgroundState(background: ThemeBackgroundSettings): {",
+        "const mediaBackgroundActive = useCompositionStore((s) => s.mediaActive);",
         "function resolveEffectiveTerminalRendererFromStores(): \"webgl\" | \"dom\" {",
         "}, [sessionId, terminalRenderer, mediaBackgroundActive, terminalOpacity]);",
     ]:

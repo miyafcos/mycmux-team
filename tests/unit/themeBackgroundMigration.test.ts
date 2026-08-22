@@ -103,6 +103,24 @@ describe("normalizeThemeBackground migrates imageDim", () => {
     }
   });
 
+  it("defaults a missing solidSurfaces flag to glass", () => {
+    const migrated = normalizeThemeBackground(legacySettings(0.08));
+    expect(migrated.solidSurfaces).toBe(false);
+    expect(normalizeThemeBackground({ ...migrated, solidSurfaces: true }).solidSurfaces).toBe(true);
+    expect(normalizeThemeBackground({ solidSurfaces: "yes" }).solidSurfaces).toBe(false);
+  });
+
+  it("clamps panel and terminal opacity down to 0.1", () => {
+    const normalized = normalizeThemeBackground({
+      ...legacySettings(0.08),
+      panelOpacity: 0,
+      terminalOpacity: 0.05,
+    });
+    expect(normalized.panelOpacity).toBe(0.1);
+    expect(normalized.terminalOpacity).toBe(0.1);
+    expect(normalizeThemeBackground({ ...legacySettings(0.08), terminalOpacity: 0.15 }).terminalOpacity).toBe(0.15);
+  });
+
   it("still recognises a migrated default install as untouched", () => {
     // The shipped default is now solid (wallpapers are downloaded on demand),
     // so "untouched" is measured against that. The migrated *tone* still has

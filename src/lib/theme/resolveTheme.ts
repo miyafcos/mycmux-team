@@ -345,7 +345,9 @@ export function resolveCompositionPolicy(
   // only reported when the user has actually asked for a paper wash.
   const wallpaperToneColor = wallpaperTone > 0 ? theme.chrome.surface : WORST_CASE_BACKDROP;
 
-  if (!mediaActive) {
+  // No wallpaper on disk, or the user asked to fill with the theme colour:
+  // every surface is opaque. Glass opacities only apply when both are false.
+  if (!mediaActive || background.solidSurfaces) {
     return {
       chromeBackdropAlpha: 1,
       terminalBackdropAlpha: 1,

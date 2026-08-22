@@ -3,6 +3,7 @@ import type { ThemeDefinition } from "../../types";
 import { RECOMMENDED_THEMES, THEMES, THEME_GROUPS } from "./themeDefinitions";
 import { useThemeStore } from "../../stores/themeStore";
 import { useToastStore } from "../../stores/toastStore";
+import { BackgroundPresetSegment } from "./BackgroundPresetSegment";
 
 interface ThemeCardEntry {
   cardKey: string;
@@ -115,10 +116,17 @@ const GRID_STYLE: React.CSSProperties = {
   gap: 8,
 };
 
+const RECOMMENDED_GRID_STYLE: React.CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+  gap: 8,
+};
+
 export function ThemePicker() {
   const themeId = useThemeStore((s) => s.themeId);
   const themeTweaks = useThemeStore((s) => s.themeTweaks);
   const setTheme = useThemeStore((s) => s.setTheme);
+  const setThemeBackground = useThemeStore((s) => s.setThemeBackground);
   const restoreThemeSnapshot = useThemeStore((s) => s.restoreThemeSnapshot);
   const pushToast = useToastStore((s) => s.pushToast);
   const [showAll, setShowAll] = useState(false);
@@ -233,9 +241,18 @@ export function ThemePicker() {
           justifyContent: "space-between",
           alignItems: "center",
           gap: 10,
+          flexWrap: "wrap",
         }}
       >
-        <div style={{ fontSize: 12, fontWeight: 700 }}>テーマ</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0, flexWrap: "wrap", flex: 1 }}>
+          <div style={{ fontSize: 12, fontWeight: 700 }}>テーマ</div>
+          <div style={{ flex: 1, minWidth: 220, maxWidth: 420 }}>
+            <BackgroundPresetSegment
+              background={themeTweaks.background}
+              onChange={setThemeBackground}
+            />
+          </div>
+        </div>
         <button
           type="button"
           onClick={() => setShowAll((value) => !value)}
@@ -248,13 +265,14 @@ export function ThemePicker() {
             color: "var(--cmux-text-secondary)",
             cursor: "pointer",
             fontSize: 11,
+            alignSelf: "flex-start",
           }}
         >
           {showAll ? "おすすめだけ表示" : `すべてのテーマを表示（${THEMES.length}）`}
         </button>
       </div>
       <div role="radiogroup" aria-label="テーマ" onKeyDown={handleKeyDown}>
-        <div style={GRID_STYLE}>{recommendedEntries.map(renderEntry)}</div>
+        <div style={RECOMMENDED_GRID_STYLE}>{recommendedEntries.map(renderEntry)}</div>
         {showAll
           ? groupSections.map(({ group, entries }) => (
               <div key={group.id} style={{ marginTop: 12 }}>

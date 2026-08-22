@@ -40,10 +40,10 @@ import {
 import {
   cachedWallpaperPath,
   downloadWallpaper,
-  isWallpaperPaintable,
   refreshWallpaperCache,
   useWallpaperCache,
 } from "../../lib/wallpaperCache";
+import { useEffectiveMediaActive } from "../../stores/compositionStore";
 import { focusController } from "../../lib/focusController";
 import { OVERLAY_EXIT_MS, useDeferredUnmount } from "../../hooks/useDeferredUnmount";
 import { message } from "@tauri-apps/plugin-dialog";
@@ -592,9 +592,14 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
     themeBackground.mode === "preset"
       ? cachedWallpaperPath(themeBackground.presetId, wallpaperCache)
       : "";
-  // Composite as if there were no wallpaper until the file actually exists,
-  // otherwise the panels sit translucent over nothing while a download runs.
-  const wallpaperPainted = isWallpaperPaintable(themeBackground, wallpaperCache);
+  // The one place the glass answer is computed — a wallpaper on disk that the
+  // user has not asked to paint over. Composite as if there were no wallpaper
+  // until the file actually exists, otherwise the panels sit translucent over
+  // nothing while a download runs. Everything downstream, terminals included,
+  // reads the published boolean rather than re-deriving it from the cache, so
+  // one surface cannot end up translucent while another stays opaque — and a
+  // download's percent ticks cannot re-render every mounted terminal.
+  const mediaActive = useEffectiveMediaActive(themeBackground, wallpaperCache);
 
   const themeVars = buildThemeVars({
     theme: currentTheme,
@@ -604,7 +609,7 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
     fontSize,
     lineHeight,
     uiFontScale,
-    mediaActive: wallpaperPainted,
+    mediaActive,
   });
   // The wallpaper layer needs the *resolved* tone, not the stored one: a
   // light theme sitting on the stored default paints toward its own paper
@@ -612,7 +617,7 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
   const backgroundComposition = resolveCompositionPolicy(
     currentTheme,
     themeBackground,
-    wallpaperPainted,
+    mediaActive,
   );
 
   useEffect(() => {
@@ -1170,6 +1175,11 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
       data-cmux-zoom-active={zoomedPaneId && !dashboardOpen ? "true" : undefined}
       style={{
         ...themeVars,
+        // Inherit the themed text colour from here, not from #root: global.css
+        // paints #root with the :root default of --cmux-text (white), and the
+        // theme vars only start at this element. Light themes showed white
+        // headings wherever a component left colour to inheritance.
+        color: "var(--cmux-text)",
         width: "100vw",
         height: "100vh",
         display: "flex",

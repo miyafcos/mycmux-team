@@ -261,6 +261,7 @@ const WALLPAPER_ON: ThemeBackgroundSettings = {
   wallpaperTone: -0.08,
   panelOpacity: 0.68,
   terminalOpacity: 0.62,
+  solidSurfaces: false,
 };
 
 /** The light chrome alpha the app actually ships with. */
@@ -501,6 +502,8 @@ describe("composition policy", () => {
     expect(WALLPAPER_ON.terminalOpacity).toBe(DEFAULT_THEME_BACKGROUND.terminalOpacity);
     expect(WALLPAPER_ON.wallpaperTone).toBe(DEFAULT_THEME_BACKGROUND.wallpaperTone);
     expect(WALLPAPER_ON.imageOpacity).toBe(DEFAULT_THEME_BACKGROUND.imageOpacity);
+    expect(WALLPAPER_ON.solidSurfaces).toBe(false);
+    expect(DEFAULT_THEME_BACKGROUND.solidSurfaces).toBe(false);
     expect(DEFAULT_THEME_BACKGROUND.panelOpacity).toBe(SHIPPED_CHROME_ALPHA);
     expect(DEFAULT_THEME_BACKGROUND.terminalOpacity).toBe(SHIPPED_TERMINAL_ALPHA);
   });
@@ -560,6 +563,25 @@ describe("composition policy", () => {
       expect(policy.raisedAlpha, theme.id).toBe(1);
       expect(policy.popoverAlpha, theme.id).toBe(1);
     }
+  });
+
+  it("fills every surface when solidSurfaces is on, even with a wallpaper", () => {
+    const solid = { ...WALLPAPER_ON, solidSurfaces: true };
+    for (const theme of THEMES) {
+      const policy = resolveCompositionPolicy(theme, solid, true);
+      expect(policy.chromeBackdropAlpha, theme.id).toBe(1);
+      expect(policy.terminalBackdropAlpha, theme.id).toBe(1);
+      expect(policy.raisedAlpha, theme.id).toBe(1);
+      expect(policy.popoverAlpha, theme.id).toBe(1);
+    }
+  });
+
+  it("keeps glass opacities when solidSurfaces is off and media is active", () => {
+    const theme = THEMES[0];
+    const policy = resolveCompositionPolicy(theme, WALLPAPER_ON, true);
+    expect(policy.chromeBackdropAlpha).toBe(WALLPAPER_ON.panelOpacity);
+    expect(policy.terminalBackdropAlpha).toBe(WALLPAPER_ON.terminalOpacity);
+    expect(policy.raisedAlpha).toBe(WALLPAPER_ON.panelOpacity);
   });
 
   it("uses the stored wallpaper tone on both schemes", () => {

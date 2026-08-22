@@ -5,16 +5,18 @@ import type { MinimapCell } from "./minimapModel";
 import { MinimapTabChip } from "./MinimapTabChip";
 import { usePaneDragStore } from "../../stores/paneDragStore";
 
-export function MinimapPaneCell({ cell, workspaceId, selectedTabId, selectedTabIds, openTabIds, groupPulseTabIds, displayStateByTabId, expanded, minHeight, onSelect, onSelectGroup, onJump }: {
+export function MinimapPaneCell({ cell, workspaceId, selectedTabId, selectedTabIds, openColumnByTabId, groupPulseTabIds, displayStateByTabId, expanded, minHeight, now, onSelect, onSelectGroup, onJump }: {
   cell: MinimapCell;
   workspaceId: string;
   selectedTabId: string | null;
   selectedTabIds: ReadonlySet<string>;
-  openTabIds: readonly string[];
+  /** tabId -> chat column index. A map, so a crowded workspace stays O(T). */
+  openColumnByTabId: ReadonlyMap<string, number>;
   groupPulseTabIds: ReadonlySet<string>;
   displayStateByTabId: ReadonlyMap<string, DashboardDisplayState>;
   expanded: boolean;
   minHeight: number;
+  now: number;
   onSelect: (tabId: string, event: ReactMouseEvent<HTMLButtonElement>) => void;
   onSelectGroup: (tabId: string) => void;
   onJump?: (workspaceId: string, paneId: string, tabId: string) => void;
@@ -46,9 +48,10 @@ export function MinimapPaneCell({ cell, workspaceId, selectedTabId, selectedTabI
       title="ペインを移動"
       aria-hidden="true"
     />
+    {cell.chips.length === 0 ? <span className="cmux-minimap-pane-empty">空きペイン</span> : null}
     {cell.chips.map((chip) => {
-      const open = openTabIds.includes(chip.tabId);
-      return <MinimapTabChip key={chip.tabId} chip={chip} workspaceId={workspaceId} paneId={cell.paneId} selected={!isDragSource && chip.tabId === selectedTabId} open={open} columnColor={open ? chatColumnColor(openTabIds.indexOf(chip.tabId)) : undefined} selectedTabIds={selectedTabIds} groupPulseTabIds={groupPulseTabIds} displayState={displayStateByTabId.get(chip.tabId) ?? "idle"} collapsed={!expanded} onSelect={onSelect} onSelectGroup={onSelectGroup} onJump={onJump} />;
+      const openColumn = openColumnByTabId.get(chip.tabId);
+      return <MinimapTabChip key={chip.tabId} chip={chip} workspaceId={workspaceId} paneId={cell.paneId} selected={!isDragSource && chip.tabId === selectedTabId} open={openColumn !== undefined} columnColor={openColumn === undefined ? undefined : chatColumnColor(openColumn)} selectedTabIds={selectedTabIds} groupPulseTabIds={groupPulseTabIds} displayState={displayStateByTabId.get(chip.tabId) ?? "idle"} collapsed={!expanded} now={now} onSelect={onSelect} onSelectGroup={onSelectGroup} onJump={onJump} />;
     })}
   </div>;
 }

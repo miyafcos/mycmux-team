@@ -244,7 +244,7 @@ function FontPresetOption({
         style={{
           border: "1px solid var(--cmux-border)",
           borderRadius: 6,
-          background: "color-mix(in srgb, var(--cmux-bg) 88%, var(--cmux-text))",
+          background: "color-mix(in srgb, var(--cmux-bg-solid, var(--cmux-bg)) 88%, var(--cmux-text))",
           padding: "7px 8px",
           fontFamily: preset.value,
           letterSpacing: 0,

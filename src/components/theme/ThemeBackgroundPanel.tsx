@@ -3,11 +3,14 @@ import type { CSSProperties } from "react";
 import { ArrowDownToLine, Search, TriangleAlert } from "lucide-react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import type { ThemeBackgroundSettings } from "../../types";
+import { appearanceStrings } from "../../lib/appearanceStrings";
+import { SURFACE_OPACITY_MIN } from "../../lib/themeBackgrounds";
 import {
   DEFAULT_THEME_BACKGROUND,
   THEME_BACKGROUND_PRESETS,
   isDefaultThemeBackground,
 } from "../../lib/themeTweaks";
+import { BackgroundPresetSegment } from "./BackgroundPresetSegment";
 import type { ThemeBackgroundCategory, ThemeBackgroundTone } from "../../lib/themeTweaks";
 import type { WallpaperCardState } from "../../lib/wallpaperCache";
 import {
@@ -133,6 +136,8 @@ function RangeControl({
   step,
   displayValue,
   onChange,
+  disabled = false,
+  disabledHint,
 }: {
   label: string;
   value: number;
@@ -141,12 +146,14 @@ function RangeControl({
   step: number;
   displayValue: string;
   onChange: (value: number) => void;
+  disabled?: boolean;
+  disabledHint?: string;
 }) {
   return (
-    <label style={{ display: "flex", flexDirection: "column", gap: 5, minWidth: 0 }}>
+    <label style={{ display: "flex", flexDirection: "column", gap: 5, minWidth: 0, opacity: disabled ? 0.55 : 1 }} title={disabled ? disabledHint : undefined}>
       <span style={{ display: "flex", justifyContent: "space-between", gap: 10, fontSize: 11 }}>
         <span style={{ color: "var(--cmux-text-secondary)" }}>{label}</span>
-        <span style={{ color: "var(--cmux-text-tertiary)" }}>{displayValue}</span>
+        <span style={{ color: "var(--cmux-text-tertiary)" }}>{disabled && disabledHint ? disabledHint : displayValue}</span>
       </span>
       <input
         type="range"
@@ -154,6 +161,7 @@ function RangeControl({
         max={max}
         step={step}
         value={value}
+        disabled={disabled}
         onChange={(event) => onChange(Number(event.target.value))}
       />
     </label>
@@ -371,6 +379,8 @@ export function ThemeBackgroundPanel({
           </button>
         </div>
 
+        <BackgroundPresetSegment background={background} onChange={setThemeBackground} />
+
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
             {CATEGORY_FILTERS.map((filter) => (
@@ -507,8 +517,8 @@ export function ThemeBackgroundPanel({
                   border: active ? "2px solid var(--cmux-accent)" : "1px solid var(--cmux-border)",
                   borderRadius: 8,
                   padding: 6,
-                  background: "color-mix(in srgb, var(--cmux-bg) 82%, transparent)",
-                  color: "#fff",
+                  background: "var(--cmux-surface)",
+                  color: "var(--cmux-text)",
                   cursor: "pointer",
                   textAlign: "left",
                   overflow: "hidden",
@@ -548,7 +558,7 @@ export function ThemeBackgroundPanel({
                     maxWidth: "100%",
                     padding: "2px 6px",
                     borderRadius: 4,
-                    background: active ? "rgba(0, 0, 0, 0.6)" : "rgba(0, 0, 0, 0.42)",
+                    background: "rgba(0, 0, 0, 0.6)",
                     fontSize: 10,
                     fontWeight: 600,
                     color: "#fff",
@@ -669,58 +679,67 @@ export function ThemeBackgroundPanel({
         </div>
 
         {showVisualControls && (
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(auto-fit, minmax(145px, 1fr))",
-              gap: 10,
-            }}
-          >
-            <RangeControl
-              label="画像の不透明度"
-              value={background.imageOpacity}
-              min={0.1}
-              max={1}
-              step={0.01}
-              displayValue={percentLabel(background.imageOpacity)}
-              onChange={(value) => setThemeBackground({ imageOpacity: value })}
-            />
-            <RangeControl
-              label="ぼかし"
-              value={background.imageBlur}
-              min={0}
-              max={32}
-              step={1}
-              displayValue={`${Math.round(background.imageBlur)}px`}
-              onChange={(value) => setThemeBackground({ imageBlur: value })}
-            />
-            <RangeControl
-              label="壁紙の色調"
-              value={background.wallpaperTone}
-              min={-0.85}
-              max={0.85}
-              step={0.01}
-              displayValue={toneLabel(background.wallpaperTone)}
-              onChange={(value) => setThemeBackground({ wallpaperTone: value })}
-            />
-            <RangeControl
-              label="パネル"
-              value={background.panelOpacity}
-              min={0.2}
-              max={1}
-              step={0.01}
-              displayValue={percentLabel(background.panelOpacity)}
-              onChange={(value) => setThemeBackground({ panelOpacity: value })}
-            />
-            <RangeControl
-              label="ターミナル"
-              value={background.terminalOpacity}
-              min={0.2}
-              max={1}
-              step={0.01}
-              displayValue={percentLabel(background.terminalOpacity)}
-              onChange={(value) => setThemeBackground({ terminalOpacity: value })}
-            />
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <div style={{ fontSize: 11, color: "var(--cmux-text-tertiary)" }}>
+              {appearanceStrings.backgroundOpacityHint}
+            </div>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit, minmax(145px, 1fr))",
+                gap: 10,
+              }}
+            >
+              <RangeControl
+                label="画像の不透明度"
+                value={background.imageOpacity}
+                min={0.1}
+                max={1}
+                step={0.01}
+                displayValue={percentLabel(background.imageOpacity)}
+                onChange={(value) => setThemeBackground({ imageOpacity: value })}
+              />
+              <RangeControl
+                label="ぼかし"
+                value={background.imageBlur}
+                min={0}
+                max={32}
+                step={1}
+                displayValue={`${Math.round(background.imageBlur)}px`}
+                onChange={(value) => setThemeBackground({ imageBlur: value })}
+              />
+              <RangeControl
+                label="壁紙の色調"
+                value={background.wallpaperTone}
+                min={-0.85}
+                max={0.85}
+                step={0.01}
+                displayValue={toneLabel(background.wallpaperTone)}
+                onChange={(value) => setThemeBackground({ wallpaperTone: value })}
+              />
+              <RangeControl
+                label="パネル"
+                value={background.panelOpacity}
+                min={SURFACE_OPACITY_MIN}
+                max={1}
+                step={0.01}
+                displayValue={percentLabel(background.panelOpacity)}
+                onChange={(value) => setThemeBackground({ panelOpacity: value })}
+                disabled={background.solidSurfaces}
+                disabledHint={appearanceStrings.solidSurfacesSlidersDisabled}
+              />
+              <RangeControl
+                label="ターミナル"
+                value={background.terminalOpacity}
+                min={SURFACE_OPACITY_MIN}
+                max={1}
+                step={0.01}
+                displayValue={percentLabel(background.terminalOpacity)}
+                onChange={(value) => setThemeBackground({ terminalOpacity: value })}
+                disabled={background.solidSurfaces}
+                disabledHint={appearanceStrings.solidSurfacesSlidersDisabled}
+              />
+            </div>
           </div>
         )}
 

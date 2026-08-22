@@ -18,6 +18,12 @@ export interface MinimapChip {
   declared: boolean;
   declaredPrompt?: string;
   originParentTabId?: string;
+  /**
+   * Backend PTY output timestamp, read the same way ChatColumn reads it
+   * (`volatileMetadata.backendLastOutputAt`). Undefined when the session has
+   * never reported output, which the chip renders as "no elapsed time".
+   */
+  lastOutputAt?: number;
 }
 
 export interface MinimapCell {
@@ -111,7 +117,56 @@ function typeGlyph(type: PaneTab["type"]): string {
   return "⌘";
 }
 
+/** Activity axis of the workspace header strip. Folded from the existing
+ * displayState vocabulary only — the strip never invents a new state word. */
+export type MinimapStripActivity = "working" | "waiting" | "idle";
+
+export interface MinimapStripEntry {
+  tabId: string;
+  agentKind?: PaneTab["agentKind"];
+  activity: MinimapStripActivity;
+}
+
+export interface MinimapStripSummary {
+  /** One tick per tab, in visual order. */
+  ticks: MinimapStripEntry[];
+  tabCount: number;
+  waitingCount: number;
+}
+
+function stripActivity(state: string | undefined): MinimapStripActivity {
+  // `needsHuman` is the dashboard's 返答待ち state (stateLabels maps it to the
+  // needsAnswer/waiting pair); `running` is the working state.
+  if (state === "needsHuman") return "waiting";
+  if (state === "running") return "working";
+  return "idle";
+}
+
+/**
+ * Flatten a workspace model into the header strip in a single pass: the tick
+ * list, the tab count, and the 返答待ち count all come from one walk so the
+ * header never re-traverses the model per summary field.
+ */
+export function minimapWorkspaceStrip(
+  model: MinimapModel,
+  displayStateByTabId?: ReadonlyMap<string, string>,
+): MinimapStripSummary {
+  const ticks: MinimapStripEntry[] = [];
+  let waitingCount = 0;
+  for (const column of model.columns) {
+    for (const cell of column.cells) {
+      for (const chip of cell.chips) {
+        const activity = stripActivity(displayStateByTabId?.get(chip.tabId) ?? chip.displayState);
+        if (activity === "waiting") waitingCount += 1;
+        ticks.push({ tabId: chip.tabId, agentKind: chip.agentKind, activity });
+      }
+    }
+  }
+  return { ticks, tabCount: ticks.length, waitingCount };
+}
+
 function chip(tab: PaneTab, pane: Pane, index: number, ctx: MinimapModelContext): MinimapChip {
+  const metadata = ((ctx.metadataBySession ?? {}) as Record<string, PaneMetadata | undefined>)[tab.sessionId];
   return {
     tabId: tab.id,
     sessionId: tab.sessionId,
@@ -121,6 +176,7 @@ function chip(tab: PaneTab, pane: Pane, index: number, ctx: MinimapModelContext)
       tab.id === pane.activeTabId,
       (ctx.metadataBySession ?? {}) as Record<string, PaneMetadata | undefined>,
     ),
+    lastOutputAt: metadata?.backendLastOutputAt,
     typeGlyph: typeGlyph(tab.type),
     agentKind: tab.agentKind,
     displayState: ctx.displayStateByTabId?.[tab.id],

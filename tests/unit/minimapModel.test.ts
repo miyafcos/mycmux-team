@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildMinimapModel } from "../../src/components/dashboard/minimapModel";
+import { buildMinimapModel, minimapWorkspaceStrip } from "../../src/components/dashboard/minimapModel";
 import type { Pane, PaneTab, Workspace } from "../../src/types";
 
 function tab(id: string): PaneTab {
@@ -71,6 +71,42 @@ describe("buildMinimapModel", () => {
       { tabId: "declared", declared: true, declaredPrompt: "start", originParentTabId: "root", isPinned: true },
       { tabId: "active", declared: false, displayState: "running", isActiveTab: true },
     ]);
+  });
+
+  it("reads the elapsed source the chat column uses", () => {
+    const model = buildMinimapModel(workspace(), {
+      metadataBySession: {
+        "session-tab-a": { backendLastOutputAt: 1_700_000_000_000 },
+        "session-tab-c": {},
+      },
+    });
+
+    expect(model.columns[0].cells[0].chips.map((chip) => chip.lastOutputAt)).toEqual([1_700_000_000_000, undefined]);
+    expect(model.columns[1].cells[0].chips[0].lastOutputAt).toBeUndefined();
+  });
+
+  it("flattens the workspace strip in visual order and folds only existing display states", () => {
+    const model = buildMinimapModel(workspace(), {
+      displayStateByTabId: { "tab-a": "running", "tab-b": "needsHuman", "tab-c": "done" },
+    });
+
+    expect(minimapWorkspaceStrip(model)).toEqual({
+      ticks: [
+        { tabId: "tab-a", agentKind: undefined, activity: "working" },
+        { tabId: "tab-b", agentKind: undefined, activity: "waiting" },
+        { tabId: "tab-c", agentKind: undefined, activity: "idle" },
+      ],
+      tabCount: 3,
+      waitingCount: 1,
+    });
+    // An explicit map wins over the state baked into the model, and the counts
+    // come from the same single pass as the ticks.
+    const overridden = minimapWorkspaceStrip(model, new Map([["tab-a", "needsHuman"], ["tab-b", "idle"]]));
+    expect(overridden.ticks.map((entry) => entry.activity)).toEqual(["waiting", "idle", "idle"]);
+    expect(overridden.waitingCount).toBe(1);
+    expect(overridden.tabCount).toBe(3);
+    expect(minimapWorkspaceStrip(buildMinimapModel(workspace({ panes: [], splitColumns: undefined }))))
+      .toEqual({ ticks: [], tabCount: 0, waitingCount: 0 });
   });
 
   it("keeps width and height shares normalized", () => {

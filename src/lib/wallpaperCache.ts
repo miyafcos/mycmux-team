@@ -110,6 +110,21 @@ export function isWallpaperPaintable(
   return background.mode !== "preset" || isWallpaperDownloaded(background.presetId, cache);
 }
 
+/**
+ * Whether chrome and the terminal should composite as glass.
+ *
+ * The whole rule, in one expression: a wallpaper that can actually be painted,
+ * and a user who has not asked to fill surfaces with the theme colour. Nothing
+ * else may re-derive this — AppShell computes it once per render and publishes
+ * it through `compositionStore`, and every other surface reads that boolean.
+ */
+export function resolveEffectiveMediaActive(
+  background: ThemeBackgroundSettings,
+  cache: WallpaperCache,
+): boolean {
+  return !background.solidSurfaces && isWallpaperPaintable(background, cache);
+}
+
 export function applyCacheState(cache: WallpaperCache, dto: WallpaperCacheStateDto): WallpaperCache {
   const paths: Record<string, string> = {};
   for (const entry of dto.entries) {

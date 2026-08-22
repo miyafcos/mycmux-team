@@ -36,6 +36,14 @@ describe("TerminalTurnChip", () => {
     expect(html).toContain(`aria-label="${terminalTurnStrings.prevTurn}"`);
     expect(html).toContain(`aria-label="${terminalTurnStrings.nextTurnOrTail}"`);
     expect(html).toContain(`title="${terminalTurnStrings.openList}"`);
+    expect(html).not.toContain("is-leaving");
+    expect(html).not.toContain("aria-hidden");
+  });
+
+  it("applies the leaving class and hides the chip from assistive tech", () => {
+    const html = renderToStaticMarkup(<TerminalTurnChip {...chipProps()} leaving />);
+    expect(html).toContain("terminal-turn-chip is-leaving");
+    expect(html).toContain("aria-hidden=\"true\"");
   });
 
   let host: HTMLDivElement;

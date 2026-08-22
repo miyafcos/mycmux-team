@@ -11,4 +11,13 @@ export const appearanceStrings = {
   sizeCustom: "カスタム",
   advancedToggle: "詳しく調整",
   advancedNote: "描画方式・微調整プリセット・壁紙・色の個別変更",
+  backgroundPresetAriaLabel: "背景の見え方",
+  backgroundPresetSolid: "塗りつぶし",
+  backgroundPresetFrosted: "すりガラス",
+  backgroundPresetClear: "クリア",
+  backgroundPresetCustom: "カスタム",
+  backgroundPresetHint: "塗りつぶし: 壁紙を隠す ／ すりガラス: 壁紙をうっすら ／ クリア: 壁紙が素通し (文字が読みにくければすりガラスへ)",
+  backgroundPresetCustomHint: "スライダーで調整中 (詳しく調整)",
+  backgroundOpacityHint: "低いほど壁紙が見え、文字は読みにくくなります",
+  solidSurfacesSlidersDisabled: "塗りつぶし中は効きません",
 } as const;

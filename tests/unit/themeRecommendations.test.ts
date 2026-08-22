@@ -19,15 +19,18 @@ describe("RECOMMENDED_THEMES", () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
-  it("stays a curated shortlist (6-8 entries)", () => {
-    expect(RECOMMENDED_THEMES.length).toBeGreaterThanOrEqual(6);
-    expect(RECOMMENDED_THEMES.length).toBeLessThanOrEqual(8);
+  it("is exactly graphite, kyokuya, geppaku in that order", () => {
+    expect(RECOMMENDED_THEMES.map((entry) => entry.id)).toEqual([
+      "graphite",
+      "kyokuya",
+      "geppaku",
+    ]);
   });
 
-  it("covers both dark and light schemes", () => {
-    const schemes = new Set(RECOMMENDED_THEMES.map((entry) => getTheme(entry.id).colorScheme));
-    expect(schemes.has("dark")).toBe(true);
-    expect(schemes.has("light")).toBe(true);
+  it("is two dark themes and one light theme", () => {
+    const schemes = RECOMMENDED_THEMES.map((entry) => getTheme(entry.id).colorScheme);
+    expect(schemes.filter((scheme) => scheme === "dark")).toHaveLength(2);
+    expect(schemes.filter((scheme) => scheme === "light")).toHaveLength(1);
   });
 
   it("every recommended theme has AA-safe accent text", () => {
@@ -62,5 +65,14 @@ describe("theme picker wiring", () => {
     );
     expect(source).toMatch(/setTheme/);
     expect(source).toMatch(/restoreThemeSnapshot/);
+  });
+
+  it("ThemePicker uses the shared background-preset segment and keeps recommended cards on one row", () => {
+    const source = readFileSync(
+      join(__dirname, "../../src/components/theme/ThemePicker.tsx"),
+      "utf8",
+    );
+    expect(source).toMatch(/BackgroundPresetSegment/);
+    expect(source).toMatch(/repeat\(3, minmax\(0, 1fr\)\)/);
   });
 });

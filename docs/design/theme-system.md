@@ -46,9 +46,10 @@ Themes are authored as `ThemeDraft`s (a subset) and completed by
 Legacy ids (e.g. `yoru-cafe`, `midnight`-era names) are mapped by
 `THEME_ALIASES` in `resolveThemeId()`.
 
-`RECOMMENDED_THEMES` is a curated shortlist (6 entries, both schemes) shown
-first in the picker; entries carry a use-case reason and are guarded by
-`tests/unit/themeRecommendations.test.ts` (existence, dark+light coverage,
+`RECOMMENDED_THEMES` is a curated shortlist of 3 entries (石墨 / 極夜 / 月白:
+two dark, one light) shown first in the picker; the rest stay behind
+「すべてのテーマを表示」. Entries carry a use-case reason and are guarded by
+`tests/unit/themeRecommendations.test.ts` (id lock, 2 dark + 1 light,
 AA-safe accent text).
 
 ## Picker UI
@@ -82,6 +83,34 @@ on the root element: chrome colors, derived tokens (`--cmux-accent-text`,
 `XTermWrapper` consumes `theme.terminal` via `resolveTerminalTheme()`
 (`terminalThemeColors.ts`), which pre-applies an ANSI contrast floor when a
 wallpaper background disables xterm's own `minimumContrastRatio` guard.
+
+### Solid fill vs glass
+
+`ThemeBackgroundSettings.solidSurfaces` (default `false`) is the quick-settings
+checkbox 「背景をテーマ色で塗りつぶす」. Composition lives in
+`resolveCompositionPolicy`:
+
+- glass (`solidSurfaces: false`) and a wallpaper actually on disk
+  (`isWallpaperPaintable`): chrome / terminal / raised alphas follow
+  `panelOpacity` / `terminalOpacity`.
+- solid fill, no wallpaper, or a preset that has not downloaded yet: every
+  alpha is 1. The wallpaper layer may still be painted underneath; it is fully
+  covered.
+
+The answer has one producer. AppShell computes
+`resolveEffectiveMediaActive(background, cache)` once per render — a wallpaper
+on disk that the user has not asked to paint over — and publishes it through
+`stores/compositionStore.ts`; every other surface reads the boolean. Terminals
+subscribe with a primitive selector (`useCompositionStore(s => s.mediaActive)`)
+rather than to the wallpaper cache, so a download's percent ticks cannot
+re-render them, and they re-read it immediately before `new Terminal()` because
+cold init awaits IPC first. The contrast policy travels the same way:
+`resolveMinimumContrastRatio` (glass 1 / opaque light 4.5 / opaque dark 7) is
+the single rule for live updates, cached reattach and cold init.
+Wiring is guarded by `tests/unit/compositionWiring.test.tsx`.
+
+The dashboard is still painted solid (`--cmux-bg-solid`); glass there is a
+separate decision, not covered by this checkbox.
 
 Persistence: `settings.theme_id` + `settings.theme_tweaks` in `data.json`
 (save + two hydrate sites in `SocketListener.tsx` — main window and child

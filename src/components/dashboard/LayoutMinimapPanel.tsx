@@ -24,6 +24,12 @@ import "./MinimapPanel.css";
 
 const MARQUEE_THRESHOLD_PX = 5;
 const GROUP_PULSE_MS = 180;
+// The chip's elapsed value is formatted by formatLastOutputAgeCompact as seconds /
+// minutes / hours / days. A 30s tick is not aligned to unit boundaries, so any
+// reading can lag by up to one tick; that is acceptable for an at-a-glance age.
+// It replaces subscribing to volatileMetadata, which would re-render the whole
+// minimap on every PTY write.
+const MINIMAP_CLOCK_MS = 30_000;
 export const MINIMAP_COLLAPSED_WORKSPACE_IDS_STORAGE_KEY = "mycmux:layoutMinimapPanel:collapsedWorkspaceIds";
 
 interface ContentPoint {
@@ -75,6 +81,42 @@ function persistCollapsedWorkspaceIds(collapsedWorkspaceIds: ReadonlySet<string>
   }
 }
 
+/**
+ * Panel-local clock. It lives inside the memo boundary on purpose: as component
+ * state it re-renders the panel (and so re-reads backendLastOutputAt) even
+ * though areMinimapPropsEqual would gate an equivalent prop. Paused while the
+ * document is hidden so a background window does not tick.
+ */
+function useMinimapClock(): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    let timer: ReturnType<typeof window.setInterval> | null = null;
+    const stop = () => {
+      if (timer !== null) window.clearInterval(timer);
+      timer = null;
+    };
+    const start = () => {
+      stop();
+      timer = window.setInterval(() => setNow(Date.now()), MINIMAP_CLOCK_MS);
+    };
+    const sync = () => {
+      if (typeof document !== "undefined" && document.hidden) {
+        stop();
+        return;
+      }
+      setNow(Date.now());
+      start();
+    };
+    sync();
+    document.addEventListener("visibilitychange", sync);
+    return () => {
+      stop();
+      document.removeEventListener("visibilitychange", sync);
+    };
+  }, []);
+  return now;
+}
+
 interface LayoutMinimapPanelProps {
   workspaces: readonly Workspace[];
   displayStateByTabId: ReadonlyMap<string, DashboardDisplayState>;
@@ -122,6 +164,9 @@ export const LayoutMinimapPanel = memo(function LayoutMinimapPanel({ workspaces,
   const [closeError, setCloseError] = useState<string | null>(null);
   const [closing, setClosing] = useState(false);
   const { beginPointerDrag } = usePaneDragSource();
+  const now = useMinimapClock();
+  // One map for the whole panel: every chip used to scan openTabIds twice.
+  const openColumnByTabId = useMemo(() => new Map(openTabIds.map((tabId, index) => [tabId, index] as const)), [openTabIds]);
 
   const setPointerMachine = useCallback((next: MinimapPointerState) => {
     pointerStateRef.current = next;
@@ -436,13 +481,13 @@ export const LayoutMinimapPanel = memo(function LayoutMinimapPanel({ workspaces,
   return <section className="cmux-minimap-panel" aria-label={dashboardStrings.layoutMinimapAriaLabel}>
     <div className="cmux-minimap-title">{dashboardStrings.layoutMinimapTitle}</div>
     {selectedTabIds.size > 0 ? <div className="cmux-minimap-selection-summary" aria-live="polite">
-      <span key={selectedTabIds.size} className="cmux-minimap-selection-count">{`選択中 ${selectedTabIds.size}本`}</span>
+      <span key={selectedTabIds.size} className="cmux-minimap-selection-count">選択<b className="cmux-minimap-selection-n">{selectedTabIds.size}</b>本</span>
       <button type="button" data-minimap-close-selection="true" onClick={openCloseConfirmation}>選択を閉じる</button>
     </div> : null}
     <div ref={stackRef} className={`cmux-minimap-stack${isMinimapDragging ? " is-minimap-dragging" : ""}`} onPointerDownCapture={handlePointerDown} onPointerMoveCapture={handlePointerMove} onPointerUpCapture={finishPointer} onPointerCancelCapture={cancelMarquee} onScroll={handleStackScroll}>
       {workspaces.map((workspace) => {
         const activePaneId = workspace.panes.find((pane) => paneContainsSession(pane, activePaneSessionId))?.id ?? null;
-        return <MinimapWorkspaceBlock key={workspace.id} workspace={workspace} selectedTabId={selectedTabId} selectedTabIds={selectedTabIds} openTabIds={openTabIds} groupPulseTabIds={groupPulseTabIds} displayStateByTabId={displayStateByTabId} expanded={!collapsedWorkspaceIds.has(workspace.id)} activePaneId={activePaneId} onToggle={() => setCollapsedWorkspaceIds((current) => {
+        return <MinimapWorkspaceBlock key={workspace.id} workspace={workspace} selectedTabId={selectedTabId} selectedTabIds={selectedTabIds} openColumnByTabId={openColumnByTabId} groupPulseTabIds={groupPulseTabIds} displayStateByTabId={displayStateByTabId} expanded={!collapsedWorkspaceIds.has(workspace.id)} activePaneId={activePaneId} now={now} onToggle={() => setCollapsedWorkspaceIds((current) => {
           const next = new Set(current);
           if (next.has(workspace.id)) next.delete(workspace.id);
           else next.add(workspace.id);

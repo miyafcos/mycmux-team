@@ -92,6 +92,11 @@ export interface ThemeBackgroundSettings {
   wallpaperTone: number;
   panelOpacity: number;
   terminalOpacity: number;
+  /**
+   * When true, chrome and terminal surfaces paint fully opaque with the theme
+   * colour even if a wallpaper is present. False keeps the glass default.
+   */
+  solidSurfaces: boolean;
 }
 
 export interface ThemeDefinition {

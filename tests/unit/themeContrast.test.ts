@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { contrastRatio, isHexColor, relativeLuminance, resolveAccentTextColor } from "../../src/components/theme/colorContrast";
 import { THEMES } from "../../src/components/theme/themeDefinitions";
@@ -137,6 +138,9 @@ type AnsiKey = (typeof ANSI_KEYS)[number];
 const LIGHT_NORMAL_ANSI_KEYS = ["red", "green", "yellow", "blue", "magenta", "cyan", "white"] as const satisfies ReadonlyArray<AnsiKey>;
 const LIGHT_BRIGHT_ANSI_KEYS = ["brightBlack", "brightRed", "brightGreen", "brightYellow", "brightBlue", "brightMagenta", "brightCyan", "brightWhite"] as const;
 const LIGHT_STATUS_KEYS = ["working", "waiting", "done", "error", "stall"] as const;
+// The minimap adds four chip-text pairs, the chip edge ring, and the two
+// marker-ring hosts, all per light theme.
+const MINIMAP_CONTRAST_PAIRS_PER_THEME = 7;
 const LIGHT_CONTRAST_PAIRS_PER_THEME = LIGHT_NORMAL_ANSI_KEYS.length + LIGHT_BRIGHT_ANSI_KEYS.length + 1 + (LIGHT_STATUS_KEYS.length * 2) + 2 + 2 + 1;
 
 const ANSI_BASELINE: Record<string, Partial<Record<AnsiKey, number>>> = {
@@ -651,6 +655,79 @@ describe("theme chrome text contrast", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Minimap chip surfaces
+// ---------------------------------------------------------------------------
+// The 配置図 chip derives two faces the resolver never sees: the 返答待ち wash
+// (status.waiting at 12% over the popover) and the meta row, which sits on
+// --cmux-text-secondary. Both carry small text, so both are measured on the
+// real composited fill for every light theme.
+describe("minimap chip contrast", () => {
+  const WAIT_FACE_ALPHA = 0.12;
+  // Kept in step with MinimapPanel.css by the assertions below: a drift in
+  // either direction would otherwise leave this measuring a colour the app
+  // never paints.
+  const CHIP_RING_ALPHA = 0.18;
+  const MARKER_RING_ALPHA = 0.64;
+  // Non-text identification marks (the agent dot and the strip tick) are held
+  // to the WCAG 3:1 UI-component floor, not the body-text floor.
+  const MARKER_TARGET = 3;
+  // The chip has to stay distinguishable from the map it sits on even where the
+  // resolver gives surface and popover the same value (every light theme).
+  const CHIP_EDGE_TARGET = 1.3;
+  const minimapCss = readFileSync("src/components/dashboard/MinimapPanel.css", "utf8");
+
+  it("measures the alpha values MinimapPanel.css actually paints", () => {
+    expect(minimapCss).toContain("--minimap-chip-ring: inset 0 0 0 1px color-mix(in srgb, var(--cmux-text) 18%, transparent)");
+    expect(minimapCss).toContain("--minimap-marker-ring: color-mix(in srgb, var(--cmux-text) 64%, transparent)");
+    expect(minimapCss).toContain("color-mix(in srgb, var(--status-waiting) 12%, var(--cmux-popover))");
+  });
+
+  it.each(LIGHT_THEME_CASES)(
+    "%s: chip text clears the floor on the waiting face and on the plain popover",
+    (id, theme) => {
+      const ladder = resolveSurfaceLadder(theme);
+      const { resolved } = resolveTheme({ theme, background: WALLPAPER_ON, mediaActive: true });
+      const waitFace = compositeOver(theme.status.waiting, WAIT_FACE_ALPHA, ladder.popover);
+      const hosts: Record<string, string> = { popover: ladder.popover, "wait 12% face": waitFace };
+      // The meta row is deliberately not tinted by the agent hue any more: the
+      // agent colour rides a 6px dot, and the text stays on a token that the
+      // resolver already holds to the floor.
+      const roles: Record<string, string> = { "chip title": resolved.text, "chip meta": resolved.textSecondary };
+      for (const [hostName, host] of Object.entries(hosts)) {
+        for (const [role, colour] of Object.entries(roles)) {
+          assertContrast(id, `${role} (${colour}) / ${hostName} (${host})`, contrastRatio(colour, host), CONTRAST_TARGET);
+        }
+      }
+    },
+  );
+
+  // resolveSurfaceLadder gives every light theme surface === popover, so the
+  // chip face and the map face are literally the same colour and the three-tier
+  // hierarchy can only come from the chip's edge ring.
+  it.each(LIGHT_THEME_CASES)(
+    "%s: the chip edge ring separates the chip from the map face",
+    (id, theme) => {
+      const ladder = resolveSurfaceLadder(theme);
+      const { resolved } = resolveTheme({ theme, background: WALLPAPER_ON, mediaActive: true });
+      const ring = compositeOver(resolved.text, CHIP_RING_ALPHA, ladder.popover);
+      assertContrast(id, `chip edge ring (${ring}) / map face (${ladder.surface})`, contrastRatio(ring, ladder.surface), CHIP_EDGE_TARGET);
+    },
+  );
+
+  it.each(LIGHT_THEME_CASES)(
+    "%s: the agent marker ring stays identifiable on both chrome faces",
+    (id, theme) => {
+      const ladder = resolveSurfaceLadder(theme);
+      const { resolved } = resolveTheme({ theme, background: WALLPAPER_ON, mediaActive: true });
+      for (const [hostName, host] of Object.entries({ popover: ladder.popover, surface: ladder.surface })) {
+        const ring = compositeOver(resolved.text, MARKER_RING_ALPHA, host);
+        assertContrast(id, `agent marker ring (${ring}) / ${hostName} (${host})`, contrastRatio(ring, host), MARKER_TARGET);
+      }
+    },
+  );
+});
+
 describe("terminal viewport contrast", () => {
   it.each(THEME_CASES)("%s: terminal.foreground meets the AAA floor against terminal.background", (id, theme) => {
     const required = ratchetFloor(TERMINAL_FOREGROUND_TARGET, TERMINAL_FOREGROUND_DEBT[id]);
@@ -662,7 +739,9 @@ describe("light-theme contrast floors", () => {
   it("covers the expected number of required light-theme pairs", () => {
     expect(LIGHT_THEME_CASES).toHaveLength(9);
     expect(LIGHT_CONTRAST_PAIRS_PER_THEME).toBe(31);
-    expect(LIGHT_THEME_CASES.length * LIGHT_CONTRAST_PAIRS_PER_THEME).toBe(279);
+    expect(MINIMAP_CONTRAST_PAIRS_PER_THEME).toBe(7);
+    expect(LIGHT_CONTRAST_PAIRS_PER_THEME + MINIMAP_CONTRAST_PAIRS_PER_THEME).toBe(38);
+    expect(LIGHT_THEME_CASES.length * (LIGHT_CONTRAST_PAIRS_PER_THEME + MINIMAP_CONTRAST_PAIRS_PER_THEME)).toBe(342);
   });
 
   it.each(LIGHT_THEME_CASES)("%s: normal ANSI colors meet the terminal floor", (id, theme) => {
@@ -805,6 +884,7 @@ const WALLPAPER_ON: ThemeBackgroundSettings = {
   wallpaperTone: -0.08,
   panelOpacity: 0.68,
   terminalOpacity: 0.62,
+  solidSurfaces: false,
 };
 
 interface CompositedSurfaces {

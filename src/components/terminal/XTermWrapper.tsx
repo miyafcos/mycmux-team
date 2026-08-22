@@ -33,6 +33,7 @@ import { colorWithOpacity } from "../../lib/theme/colorPrimitives";
 import { resolveEffectiveTerminalRenderer } from "../../stores/settingsMigration";
 import { DEFAULT_TERMINAL_FONT_FAMILY, useThemeStore } from "../../stores/themeStore";
 import { useToastStore } from "../../stores/toastStore";
+import { useDeferredUnmount } from "../../hooks/useDeferredUnmount";
 import { observeSessionInput } from "../../lib/inputLineDraft";
 import { getTranscriptUserPrompts, type TranscriptPrompt } from "../../lib/livebrief";
 import { TerminalTurnChip } from "./TerminalTurnChip";
@@ -48,12 +49,19 @@ import {
 import { findTurnIndexForViewport, pickJumpTarget } from "./terminalTurnModel";
 import {
   buildTurnListRows,
+  createTurnChipVisibilityController,
   resolveTurnChipState,
+  TURN_CHIP_EXIT_MS,
+  type TurnChipVisibilityController,
   type TurnListRow,
 } from "./terminalTurnChipState";
 import { restoreTurnMarksFromTranscript } from "./turnMarkRestore";
 import type { IDisposable, ITheme } from "@xterm/xterm";
-import type { ThemeBackgroundSettings } from "../../types";
+import {
+  readLiveTerminalAppearance,
+  resolveTerminalAppearance,
+  useCompositionStore,
+} from "../../stores/compositionStore";
 import { markStartupSessionSettled } from "../../lib/startupSessionGate";
 import {
   TERMINAL_BATCH_RETAINED_MAX_BYTES,
@@ -240,34 +248,14 @@ function resolveTerminalTheme(theme: ITheme, opacity: number, mediaActive: boole
   return withTerminalOpacity(withAnsiContrastFloor(theme, mediaActive), opacity, mediaActive);
 }
 
-// xterm's minimumContrastRatio only works against an opaque, known background.
-// With a media background the terminal background is transparent (the wallpaper
-// is composited in CSS), so it must be disabled — otherwise xterm corrects the
-// foreground against a phantom black background and washes out dark text.
-const TERMINAL_MIN_CONTRAST = 7;
-
-function minContrastFor(mediaActive: boolean, isLight: boolean): number {
-  return mediaActive ? 1 : (isLight ? 4.5 : TERMINAL_MIN_CONTRAST);
-}
-
-function resolveTerminalBackgroundState(background: ThemeBackgroundSettings): {
-  mediaBackgroundActive: boolean;
-  terminalOpacity: number;
-} {
-  const mediaBackgroundActive = background.mode === "preset" || (
-    background.mode === "image" && background.imagePath.length > 0
-  );
-  return {
-    mediaBackgroundActive,
-    terminalOpacity: mediaBackgroundActive ? background.terminalOpacity : 1,
-  };
-}
+// The contrast policy itself lives in compositionStore so live updates, cached
+// reattach and cold init cannot drift apart. See the note there for why a media
+// background has to disable xterm's own correction.
 
 function resolveEffectiveTerminalRendererFromStores(): "webgl" | "dom" {
   const setting = useSettingsStore.getState().terminalRenderer;
-  const background = useThemeStore.getState().themeTweaks.background;
-  const { mediaBackgroundActive, terminalOpacity } = resolveTerminalBackgroundState(background);
-  return resolveEffectiveTerminalRenderer(setting, mediaBackgroundActive, terminalOpacity);
+  const { mediaActive, terminalOpacity } = readLiveTerminalAppearance();
+  return resolveEffectiveTerminalRenderer(setting, mediaActive, terminalOpacity);
 }
 
 // Cache terminal config globally - fetched once, reused across all panes
@@ -645,26 +633,52 @@ export default memo(function XTermWrapper({
     canPrev: boolean;
     canNext: boolean;
   } | null>(null);
+  const [chipWanted, setChipWanted] = useState(false);
   const [turnListRows, setTurnListRows] = useState<TurnListRow[]>([]);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const turnChipRafRef = useRef<number | null>(null);
   const lastTurnChipRef = useRef<typeof turnChip>(null);
   const refreshTurnChipRef = useRef<() => void>(() => {});
   const turnListRequestRef = useRef(0);
+  const turnChipVisibilityRef = useRef<TurnChipVisibilityController | null>(null);
+  const chipWantedRef = useRef(false);
+  const turnChipExitMsRef = useRef<number | null>(null);
+  if (turnChipExitMsRef.current == null) {
+    turnChipExitMsRef.current =
+      typeof window !== "undefined"
+        && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches
+        ? 0
+        : TURN_CHIP_EXIT_MS;
+  }
+  const { mounted: turnChipMounted, closing: turnChipLeaving } = useDeferredUnmount(
+    chipWanted,
+    turnChipExitMsRef.current,
+  );
 
   const refreshTurnChip = useCallback(() => {
     if (turnChipRafRef.current != null) return;
     turnChipRafRef.current = requestAnimationFrame(() => {
       turnChipRafRef.current = null;
-      const currentTerm = termRef.current;
-      if (!currentTerm) {
-        if (lastTurnChipRef.current !== null) {
+      const hideChip = (immediate: boolean): void => {
+        if (immediate && lastTurnChipRef.current !== null) {
           lastTurnChipRef.current = null;
           setTurnChip(null);
         }
+        if (chipWantedRef.current) {
+          chipWantedRef.current = false;
+          setChipWanted(false);
+        }
+      };
+      const currentTerm = termRef.current;
+      if (!currentTerm) {
+        hideChip(true);
         return;
       }
       const buf = currentTerm.buffer.active;
+      // Read the real position here rather than trusting the last onScroll: a
+      // cached terminal re-attached while scrolled up never fires onScroll, and
+      // the visibility timers must not depend on event ordering with the rAF.
+      isAtBottomRef.current = buf.viewportY >= buf.baseY;
       const marks = getTurnMarkData(sessionId);
       const state = resolveTurnChipState({
         marks,
@@ -672,11 +686,9 @@ export default memo(function XTermWrapper({
         isAtBottom: isAtBottomRef.current,
         bufferType: buf.type,
       });
+      const visible = turnChipVisibilityRef.current?.setAtBottom(isAtBottomRef.current) ?? false;
       if (!state) {
-        if (lastTurnChipRef.current !== null) {
-          lastTurnChipRef.current = null;
-          setTurnChip(null);
-        }
+        hideChip(true);
         return;
       }
       const next = {
@@ -684,17 +696,26 @@ export default memo(function XTermWrapper({
         label: marks[state.index]?.label ?? "",
       };
       const prev = lastTurnChipRef.current;
-      if (
+      const same = Boolean(
         prev &&
         prev.index === next.index &&
         prev.total === next.total &&
         prev.label === next.label &&
         prev.canPrev === next.canPrev &&
-        prev.canNext === next.canNext
-      ) {
+        prev.canNext === next.canNext,
+      );
+      lastTurnChipRef.current = next;
+      if (!visible) {
+        hideChip(false);
         return;
       }
-      lastTurnChipRef.current = next;
+      if (!chipWantedRef.current) {
+        chipWantedRef.current = true;
+        setChipWanted(true);
+        setTurnChip(next);
+        return;
+      }
+      if (same) return;
       setTurnChip(next);
     });
   }, [sessionId]);
@@ -747,6 +768,15 @@ export default memo(function XTermWrapper({
   }, [sessionId]);
 
   useEffect(() => {
+    isAtBottomRef.current = true;
+    chipWantedRef.current = false;
+    lastTurnChipRef.current = null;
+    setChipWanted(false);
+    setTurnChip(null);
+    const controller = createTurnChipVisibilityController({
+      onChange: () => refreshTurnChipRef.current(),
+    });
+    turnChipVisibilityRef.current = controller;
     const onTurnMarks = (event: Event): void => {
       const markedSession = (event as CustomEvent<{ sessionId?: string }>).detail?.sessionId;
       if (markedSession && markedSession !== sessionId) return;
@@ -756,6 +786,10 @@ export default memo(function XTermWrapper({
     return () => {
       turnListRequestRef.current += 1;
       window.removeEventListener(TURN_MARKS_EVENT, onTurnMarks);
+      controller.dispose();
+      if (turnChipVisibilityRef.current === controller) {
+        turnChipVisibilityRef.current = null;
+      }
       if (turnChipRafRef.current != null) {
         cancelAnimationFrame(turnChipRafRef.current);
         turnChipRafRef.current = null;
@@ -767,7 +801,7 @@ export default memo(function XTermWrapper({
   const storeFontSize = useThemeStore((s) => s.fontSize);
   const storeFontFamily = useThemeStore((s) => s.fontFamily);
   const storeLineHeight = useThemeStore((s) => s.lineHeight);
-  const storeBackground = useThemeStore((s) => s.themeTweaks.background);
+  const storeTerminalOpacity = useThemeStore((s) => s.themeTweaks.background.terminalOpacity);
   const terminalRenderer = useSettingsStore((s) => s.terminalRenderer);
   const colorAdaptCommands = useSettingsStore((s) => s.colorAdaptCommands);
   const colorAdaptCommandsRef = useRef(colorAdaptCommands);
@@ -777,7 +811,15 @@ export default memo(function XTermWrapper({
   processTitleRef.current = processTitle;
   const colorAdapterRef = useRef(new LightDarkColorAdaptController());
   const previousTerminalRendererRef = useRef(terminalRenderer);
-  const { mediaBackgroundActive, terminalOpacity } = resolveTerminalBackgroundState(storeBackground);
+  // Primitive selectors only. Subscribing to the wallpaper cache object here
+  // meant every percent of a download re-rendered every mounted terminal;
+  // AppShell publishes the single boolean instead.
+  const mediaBackgroundActive = useCompositionStore((s) => s.mediaActive);
+  const { terminalOpacity, minimumContrastRatio } = resolveTerminalAppearance({
+    mediaActive: mediaBackgroundActive,
+    isLight: storeTheme.colorScheme === "light",
+    terminalOpacity: storeTerminalOpacity,
+  });
   // Single source of truth: is this tab the currently-focused terminal?
   // Used for scroll-to-bottom-on-activate.
   const isActivePane = useUiStore((s) => s.activePaneId === sessionId);
@@ -788,7 +830,7 @@ export default memo(function XTermWrapper({
     if (!termRef.current) return;
     bumpPaintStat("settings", sessionId);
     termRef.current.options.theme = resolveTerminalTheme(storeTheme.terminal, terminalOpacity, mediaBackgroundActive);
-    termRef.current.options.minimumContrastRatio = minContrastFor(mediaBackgroundActive, storeTheme.colorScheme === "light");
+    termRef.current.options.minimumContrastRatio = minimumContrastRatio;
     termRef.current.options.fontSize = storeFontSize;
     termRef.current.options.fontFamily = storeFontFamily;
     termRef.current.options.lineHeight = storeLineHeight;
@@ -805,7 +847,7 @@ export default memo(function XTermWrapper({
         settingsResizeTimerRef.current = null;
       }
     };
-  }, [storeTheme, storeFontSize, storeFontFamily, storeLineHeight, terminalOpacity, mediaBackgroundActive]);
+  }, [storeTheme, storeFontSize, storeFontFamily, storeLineHeight, terminalOpacity, mediaBackgroundActive, minimumContrastRatio]);
 
   // Scroll to bottom when this tab becomes active only if the user was already at bottom.
   useEffect(() => {
@@ -2277,8 +2319,15 @@ export default memo(function XTermWrapper({
       fitAddonRef.current = cached.fitAddon;
       searchAddonRef.current = cached.searchAddon;
       lastSynchronizedScrollbackEnd = cached.scrollbackEnd ?? 0;
-      cached.term.options.theme = resolveTerminalTheme(storeTheme.terminal, terminalOpacity, mediaBackgroundActive);
-      cached.term.options.minimumContrastRatio = minContrastFor(mediaBackgroundActive, storeTheme.colorScheme === "light");
+      // Same resolver as the live-update effect and cold init, read fresh:
+      // a reattach can land after the wallpaper or the solid toggle moved.
+      const attachAppearance = readLiveTerminalAppearance();
+      cached.term.options.theme = resolveTerminalTheme(
+        useThemeStore.getState().theme.terminal,
+        attachAppearance.terminalOpacity,
+        attachAppearance.mediaActive,
+      );
+      cached.term.options.minimumContrastRatio = attachAppearance.minimumContrastRatio;
       cached.term.options.fontSize = storeFontSize;
       cached.term.options.fontFamily = storeFontFamily;
       cached.term.options.lineHeight = storeLineHeight;
@@ -2350,7 +2399,17 @@ export default memo(function XTermWrapper({
         seedTurnMarkSnapshots(sessionId, []);
       }
       const cfg = cachedConfig;
-      const initTheme = resolveTerminalTheme(theme ?? storeTheme.terminal, terminalOpacity, mediaBackgroundActive);
+      // Everything above this line awaited IPC. Re-resolve from the live stores
+      // rather than from the values this effect closed over at mount, or a
+      // wallpaper that finished downloading (or a solid/glass toggle) during
+      // the wait would be baked out of the terminal being created.
+      const liveThemeState = useThemeStore.getState();
+      const initAppearance = readLiveTerminalAppearance();
+      const initTheme = resolveTerminalTheme(
+        theme ?? liveThemeState.theme.terminal,
+        initAppearance.terminalOpacity,
+        initAppearance.mediaActive,
+      );
       const baseFontSize = fontSize ?? storeFontSize ?? cfg?.fontSize ?? 14;
       const baseFontFamily = fontFamily ?? storeFontFamily ?? cfg?.fontFamily ?? DEFAULT_TERMINAL_FONT_FAMILY;
       const initFontSize = baseFontSize;
@@ -2377,7 +2436,7 @@ export default memo(function XTermWrapper({
         scrollback: 5000,
         smoothScrollDuration: 0,
         rightClickSelectsWord: true,
-        minimumContrastRatio: minContrastFor(mediaBackgroundActive, storeTheme.colorScheme === "light"),
+        minimumContrastRatio: initAppearance.minimumContrastRatio,
         ...(windowsBuildNumber !== undefined
           ? { windowsPty: { backend: "conpty", buildNumber: windowsBuildNumber } }
           : {}),
@@ -2570,7 +2629,7 @@ export default memo(function XTermWrapper({
 
   return (
     <div style={{ position: "relative", width: "100%", height: "100%" }}>
-      {turnChip && (
+      {turnChipMounted && turnChip && (
         <TerminalTurnChip
           index={turnChip.index}
           total={turnChip.total}
@@ -2582,6 +2641,7 @@ export default memo(function XTermWrapper({
           onNext={() => jumpTurn(1)}
           onJump={jumpTurnToMark}
           onListOpen={openTurnList}
+          leaving={turnChipLeaving}
         />
       )}
       {isSearchOpen && (
