@@ -1161,6 +1161,30 @@ div:hover>.tab-close-btn {
   opacity: 0.4;
 }
 
+.terminal-turn-chip.is-transcript {
+  flex-wrap: wrap;
+}
+
+.terminal-turn-chip__hint {
+  flex: 1 0 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--cmux-text-tertiary);
+  font: inherit;
+  font-size: var(--cmux-font-size-xs);
+  line-height: 1.35;
+  min-height: 24px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.terminal-turn-chip__hint:hover {
+  text-decoration: underline;
+  background: var(--cmux-hover);
+}
+
 @keyframes savepointWriteTargetIn {
   from { opacity: 0; transform: translateY(6px) scale(0.99); }
   to { opacity: 1; transform: translateY(0) scale(1); }

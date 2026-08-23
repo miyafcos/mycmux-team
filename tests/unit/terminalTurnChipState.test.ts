@@ -3,10 +3,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildTurnListRows,
   createTurnChipVisibilityController,
+  labelsMatch,
   nextTurnChipVisibilityAt,
+  resolveTranscriptTurnAction,
   resolveTurnChipState,
   resolveTurnChipVisibility,
   TURN_CHIP_HIDE_DELAY_MS,
+  TURN_CHIP_INTENT_HOLD_MS,
   TURN_CHIP_SHOW_DEBOUNCE_MS,
 } from "../../src/components/terminal/terminalTurnChipState";
 import type { TurnMarkData } from "../../src/components/terminal/terminalTurnModel";
@@ -24,7 +27,7 @@ describe("resolveTurnChipState", () => {
       viewportY: 20,
       isAtBottom: true,
       bufferType: "normal",
-    })).toEqual({ index: 2, total: 3, canPrev: true, canNext: false });
+    })).toEqual({ index: 2, total: 3, canPrev: true, canNext: false, mode: "scroll" });
   });
 
   it("clamps the viewport above the oldest mark to the first turn", () => {
@@ -33,7 +36,7 @@ describe("resolveTurnChipState", () => {
       viewportY: 0,
       isAtBottom: false,
       bufferType: "normal",
-    })).toEqual({ index: 0, total: 3, canPrev: false, canNext: true });
+    })).toEqual({ index: 0, total: 3, canPrev: false, canNext: true, mode: "scroll" });
   });
 
   it("finds the turn at the current viewport in normal scrollback", () => {
@@ -42,22 +45,83 @@ describe("resolveTurnChipState", () => {
       viewportY: 25,
       isAtBottom: false,
       bufferType: "normal",
-    })).toEqual({ index: 1, total: 3, canPrev: true, canNext: true });
+    })).toEqual({ index: 1, total: 3, canPrev: true, canNext: true, mode: "scroll" });
   });
 
-  it("returns null for the alternate buffer or an empty mark list", () => {
-    expect(resolveTurnChipState({
-      marks,
-      viewportY: 20,
-      isAtBottom: false,
-      bufferType: "alternate",
-    })).toBeNull();
+  it("returns null for an empty mark list", () => {
     expect(resolveTurnChipState({
       marks: [],
       viewportY: 20,
       isAtBottom: false,
       bufferType: "normal",
     })).toBeNull();
+    expect(resolveTurnChipState({
+      marks: [],
+      viewportY: 20,
+      isAtBottom: false,
+      bufferType: "alternate",
+    })).toBeNull();
+  });
+
+  it("walks the transcript for an agent pane in either buffer", () => {
+    // claude draws on the alternate screen, codex and grok in the normal one.
+    // The chip must mean the same thing in both.
+    expect(resolveTurnChipState({
+      marks,
+      viewportY: 20,
+      isAtBottom: true,
+      bufferType: "alternate",
+      hasTranscript: true,
+    })).toEqual({ index: 2, total: 3, canPrev: true, canNext: true, mode: "transcript" });
+    expect(resolveTurnChipState({
+      marks,
+      viewportY: 20,
+      isAtBottom: true,
+      bufferType: "normal",
+      hasTranscript: true,
+    })).toEqual({ index: 2, total: 3, canPrev: true, canNext: true, mode: "transcript" });
+    expect(resolveTurnChipState({
+      marks: [mark(10)],
+      viewportY: 20,
+      isAtBottom: true,
+      bufferType: "normal",
+      hasTranscript: true,
+    })).toEqual({ index: 0, total: 1, canPrev: true, canNext: true, mode: "transcript" });
+  });
+
+  it("gives a plain shell no chip in an alternate buffer, marks or not", () => {
+    // A shell running vim has marks on lines the dashboard knows nothing about,
+    // so a transcript chip there would open an empty column.
+    expect(resolveTurnChipState({
+      marks,
+      viewportY: 20,
+      isAtBottom: true,
+      bufferType: "alternate",
+    })).toBeNull();
+  });
+});
+
+describe("resolveTranscriptTurnAction", () => {
+  it.each([
+    [{ kind: "prev" as const }, { tabId: "tab-a" }, { kind: "step", delta: -1 }],
+    [{ kind: "next" as const }, { tabId: "tab-a" }, { kind: "step", delta: 1 }],
+    [{ kind: "hint" as const }, { tabId: "tab-a" }, { kind: "latest" }],
+    [{ kind: "row" as const, label: "  open the file  " }, { tabId: "tab-a" }, { kind: "label", label: "open the file" }],
+    [{ kind: "prev" as const }, { tabId: null }, null],
+    [{ kind: "next" as const }, { tabId: "" }, null],
+    [{ kind: "row" as const, label: "   " }, { tabId: "tab-a" }, null],
+    [{ kind: "hint" as const }, { tabId: null }, null],
+  ])("%j with %j → %j", (intent, context, expected) => {
+    expect(resolveTranscriptTurnAction(intent, context)).toEqual(expected);
+  });
+});
+
+describe("labelsMatch", () => {
+  it("matches an 80-character prefix ignoring surrounding whitespace", () => {
+    const prefix = "x".repeat(80);
+    expect(labelsMatch(`  ${prefix} trailing`, `${prefix} extra\nsecond`)).toBe(true);
+    expect(labelsMatch("hello", "world")).toBe(false);
+    expect(labelsMatch("", "hello")).toBe(false);
   });
 });
 
@@ -144,6 +208,22 @@ describe("resolveTurnChipVisibility", () => {
   });
 });
 
+describe("resolveTurnChipState with no marks at all", () => {
+  it("stays eligible for an agent pane after the TUI cleared every mark", () => {
+    // grok starts at zero marks in the normal buffer; claude reaches zero when
+    // its alternate screen is redrawn. Neither should lose the chip.
+    for (const bufferType of ["alternate", "normal"]) {
+      const state = resolveTurnChipState({ marks: [], viewportY: 0, isAtBottom: true, bufferType, hasTranscript: true });
+      expect(state).toEqual({ index: 0, total: 0, canPrev: true, canNext: true, mode: "transcript" });
+    }
+  });
+
+  it("returns null for a plain shell with no marks", () => {
+    expect(resolveTurnChipState({ marks: [], viewportY: 0, isAtBottom: true, bufferType: "alternate" })).toBeNull();
+    expect(resolveTurnChipState({ marks: [], viewportY: 0, isAtBottom: true, bufferType: "normal" })).toBeNull();
+  });
+});
+
 describe("createTurnChipVisibilityController", () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -199,6 +279,58 @@ describe("createTurnChipVisibilityController", () => {
     expect(vi.getTimerCount()).toBeGreaterThan(0);
     controller.dispose();
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("shows immediately on a look-back intent even while the viewport stays at the bottom, then holds", () => {
+    // Claude Code / codex own the mouse: wheel-up never moves the viewport.
+    const seen: boolean[] = [];
+    const controller = createTurnChipVisibilityController({
+      onChange: (visible) => seen.push(visible),
+    });
+    expect(controller.noteLookBackIntent()).toBe(true);
+    expect(seen).toEqual([true]);
+
+    vi.advanceTimersByTime(TURN_CHIP_INTENT_HOLD_MS - 1);
+    expect(controller.isVisible()).toBe(true);
+    // Hovering the chip (another intent) restarts the hold.
+    controller.noteLookBackIntent();
+    vi.advanceTimersByTime(TURN_CHIP_INTENT_HOLD_MS - 1);
+    expect(controller.isVisible()).toBe(true);
+    vi.advanceTimersByTime(1);
+    expect(controller.isVisible()).toBe(false);
+    expect(seen).toEqual([true, false]);
+    controller.dispose();
+  });
+
+  it("keeps the scroll rules in charge once the intent hold expires while scrolled back", () => {
+    const controller = createTurnChipVisibilityController();
+    controller.setAtBottom(false);
+    controller.noteLookBackIntent();
+    vi.advanceTimersByTime(TURN_CHIP_INTENT_HOLD_MS);
+    // Still scrolled back, so still visible after the hold.
+    expect(controller.isVisible()).toBe(true);
+    controller.setAtBottom(true);
+    vi.advanceTimersByTime(TURN_CHIP_HIDE_DELAY_MS);
+    expect(controller.isVisible()).toBe(false);
+    controller.dispose();
+  });
+
+  it("reset drops leave/return/intent history so the next buffer starts hidden", () => {
+    const controller = createTurnChipVisibilityController();
+    controller.setAtBottom(false);
+    vi.advanceTimersByTime(TURN_CHIP_SHOW_DEBOUNCE_MS);
+    expect(controller.isVisible()).toBe(true);
+    controller.noteLookBackIntent();
+    expect(vi.getTimerCount()).toBeGreaterThan(0);
+
+    controller.reset();
+    expect(controller.isVisible()).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+    controller.setAtBottom(true);
+    expect(controller.isVisible()).toBe(false);
+    vi.advanceTimersByTime(TURN_CHIP_INTENT_HOLD_MS + TURN_CHIP_HIDE_DELAY_MS);
+    expect(controller.isVisible()).toBe(false);
+    controller.dispose();
   });
 
   it("stays hidden and arms no timer once disposed", () => {

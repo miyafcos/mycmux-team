@@ -196,6 +196,7 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
   })));
   const briefsBySession = useLiveBriefStore((state) => state.briefsBySession);
   const eventsBySession = useLiveBriefStore((state) => state.eventsBySession);
+  const eventsFetchedAtBySession = useLiveBriefStore((state) => state.eventsFetchedAtBySession);
   const listEventsBySession = useLiveBriefStore((state) => state.listEventsBySession);
   const reportInboxState = useReportInboxStore(useShallow((state) => ({
     cardIds: state.cardIds,
@@ -1189,6 +1190,7 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
                 onJump={() => jumpToCard(card)}
                 onReorderKeyDown={(event) => reorderChatColumnFromHeader(index, event)}
                 onPreviewArtifact={viewState.openOrReloadPreviewColumn}
+                detailLoaded={eventsFetchedAtBySession[card.tab.sessionId] != null}
               />;
             })}
             {!chatColumnSlots.length && !closingColumn ? <div className="cmux-dashboard-chat-columns-empty" data-dashboard-chat-columns-empty="true">{dashboardStrings.chatColumnsEmpty}</div> : null}

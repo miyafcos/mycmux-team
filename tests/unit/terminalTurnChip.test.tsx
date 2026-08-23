@@ -24,6 +24,7 @@ function chipProps() {
     canNext: false,
     rows,
     onJump: vi.fn(),
+    onJumpLabel: vi.fn(),
     onListOpen: vi.fn(),
   };
 }
@@ -116,5 +117,48 @@ describe("TerminalTurnChip", () => {
     act(() => row.dispatchEvent(new MouseEvent("click", { bubbles: true })));
     expect(row.disabled).toBe(true);
     expect(props.onJump).not.toHaveBeenCalled();
+  });
+
+  it("shows the dashboard hint only in transcript mode", () => {
+    const scroll = renderToStaticMarkup(<TerminalTurnChip {...chipProps()} />);
+    expect(scroll).not.toContain(terminalTurnStrings.openInDashboard);
+    const transcript = renderToStaticMarkup(
+      <TerminalTurnChip {...chipProps()} mode="transcript" onOpenDashboard={() => undefined} />,
+    );
+    expect(transcript).toContain(terminalTurnStrings.openInDashboard);
+    expect(transcript).toContain("is-transcript");
+    expect(transcript).toContain(terminalTurnStrings.conversationHistory);
+    expect(transcript).not.toContain(terminalTurnStrings.position(1, 2));
+  });
+
+  it("keeps prev and next enabled in transcript mode even at the latest mark", () => {
+    const html = renderToStaticMarkup(
+      <TerminalTurnChip
+        {...chipProps()}
+        canPrev={false}
+        canNext={false}
+        mode="transcript"
+        onOpenDashboard={() => undefined}
+      />,
+    );
+    expect(html).not.toMatch(new RegExp(`aria-label="${terminalTurnStrings.prevTurn}"[^>]*disabled`));
+    expect(html).not.toMatch(new RegExp(`aria-label="${terminalTurnStrings.nextTurnOrTail}"[^>]*disabled`));
+  });
+
+  it("jumps unmatched transcript rows by label instead of disabling them", () => {
+    const props = renderChip({
+      ...chipProps(),
+      mode: "transcript",
+      onJumpLabel: vi.fn(),
+      rows: [{ key: "trimmed", label: "trimmed prompt", markIndex: null }],
+    });
+    clickLabel();
+    const row = host.querySelector<HTMLButtonElement>(".terminal-turn-list__row");
+    if (!row) throw new Error("transcript row missing");
+
+    act(() => row.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(row.disabled).toBe(false);
+    expect(props.onJump).not.toHaveBeenCalled();
+    expect(props.onJumpLabel).toHaveBeenCalledWith("trimmed prompt");
   });
 });

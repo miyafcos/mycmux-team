@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
+import { act, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -181,5 +181,230 @@ describe("ChatTranscript next-to-latest", () => {
     await mountThreeTurns();
     const next = host.querySelector(`[aria-label="${NEXT_LABEL}"]`) as HTMLButtonElement;
     expect(next.disabled).toBe(true);
+  });
+});
+
+describe("ChatTranscript user-turn requests", () => {
+  let host: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
+    const { useDashboardViewStore } = await import("../../src/stores/dashboardViewStore");
+    useDashboardViewStore.setState({ userTurnRequests: {}, userTurnRequestSeq: 0 });
+  });
+
+  afterEach(async () => {
+    act(() => root.unmount());
+    host.remove();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    const { useDashboardViewStore } = await import("../../src/stores/dashboardViewStore");
+    useDashboardViewStore.setState({ userTurnRequests: {}, userTurnRequestSeq: 0 });
+  });
+
+  function threeTurnEvents() {
+    return [
+      userMessage("最初の命令"),
+      envelope({ type: "agentMessage", text: "了解" }),
+      userMessage("二番目の命令"),
+      userMessage("最後の命令"),
+    ];
+  }
+
+  function spyScroll(id: string): ReturnType<typeof vi.fn> {
+    const node = document.getElementById(`dashboard-event-${id}`);
+    if (!node) throw new Error(`turn ${id} missing`);
+    const scrollIntoView = vi.fn();
+    node.scrollIntoView = scrollIntoView;
+    return scrollIntoView;
+  }
+
+  it("consumes a relative step against the current nav index", async () => {
+    const { useDashboardViewStore } = await import("../../src/stores/dashboardViewStore");
+    const events = threeTurnEvents();
+    const firstId = events[0]?.eventId;
+    const secondId = events[2]?.eventId;
+    if (!firstId || !secondId) throw new Error("event ids missing");
+
+    await act(async () => {
+      root.render(<ChatTranscript tabId="tab-claude" events={events} detailLoaded />);
+    });
+    const firstScroll = spyScroll(firstId);
+    const secondScroll = spyScroll(secondId);
+    const log = host.querySelector('[role="log"]') as HTMLElement;
+    stubScrollMetrics(log, { scrollHeight: 1000, clientHeight: 200, scrollTop: 800 });
+    pinTurnRects(log);
+
+    await act(async () => {
+      useDashboardViewStore.getState().requestUserTurnStep("tab-claude", -1);
+    });
+
+    expect(useDashboardViewStore.getState().userTurnRequests["tab-claude"]).toBeUndefined();
+    expect(secondScroll).toHaveBeenCalledTimes(1);
+    expect(firstScroll).not.toHaveBeenCalled();
+  });
+
+  it("scrolls the newest user message whose label matches", async () => {
+    const { useDashboardViewStore } = await import("../../src/stores/dashboardViewStore");
+    const events = threeTurnEvents();
+    const secondId = events[2]?.eventId;
+    if (!secondId) throw new Error("event ids missing");
+
+    await act(async () => {
+      root.render(<ChatTranscript tabId="tab-claude" events={events} detailLoaded />);
+    });
+    const secondScroll = spyScroll(secondId);
+
+    await act(async () => {
+      useDashboardViewStore.getState().requestUserTurnByLabel("tab-claude", "二番目の命令");
+    });
+
+    expect(secondScroll).toHaveBeenCalledTimes(1);
+    expect(useDashboardViewStore.getState().userTurnRequests["tab-claude"]).toBeUndefined();
+  });
+
+  it("holds the request until detailLoaded becomes true", async () => {
+    const { useDashboardViewStore } = await import("../../src/stores/dashboardViewStore");
+    const shallow = [
+      userMessage("浅い12件の末尾"),
+      envelope({ type: "agentMessage", text: "了解" }),
+    ];
+    const detail = [
+      userMessage("詳細の古い命令"),
+      envelope({ type: "agentMessage", text: "old" }),
+      ...shallow,
+    ];
+    const oldId = detail[0]?.eventId;
+    if (!oldId) throw new Error("event ids missing");
+
+    await act(async () => {
+      root.render(<ChatTranscript tabId="tab-claude" events={detail} detailLoaded={false} />);
+    });
+    const oldScroll = spyScroll(oldId);
+    await act(async () => {
+      useDashboardViewStore.getState().requestUserTurnByLabel("tab-claude", "詳細の古い命令");
+    });
+    expect(oldScroll).not.toHaveBeenCalled();
+    expect(useDashboardViewStore.getState().userTurnRequests["tab-claude"]).toMatchObject({
+      kind: "label",
+      label: "詳細の古い命令",
+    });
+
+    await act(async () => {
+      root.render(<ChatTranscript tabId="tab-claude" events={detail} detailLoaded />);
+    });
+    expect(oldScroll).toHaveBeenCalledTimes(1);
+    expect(useDashboardViewStore.getState().userTurnRequests["tab-claude"]).toBeUndefined();
+  });
+
+  it("consumes a request that arrived before mount once detail is loaded", async () => {
+    const { useDashboardViewStore } = await import("../../src/stores/dashboardViewStore");
+    const events = threeTurnEvents();
+    const secondId = events[2]?.eventId;
+    if (!secondId) throw new Error("event ids missing");
+    useDashboardViewStore.getState().requestUserTurnStep("tab-claude", -1);
+    const scrollIntoView = vi.fn();
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = scrollIntoView;
+    try {
+      await act(async () => {
+        root.render(<ChatTranscript tabId="tab-claude" events={events} detailLoaded />);
+      });
+      expect(useDashboardViewStore.getState().userTurnRequests["tab-claude"]).toBeUndefined();
+      expect(scrollIntoView).toHaveBeenCalled();
+      expect(document.getElementById(`dashboard-event-${secondId}`)).not.toBeNull();
+    } finally {
+      Element.prototype.scrollIntoView = original;
+    }
+  });
+
+  it("claims a request once under StrictMode so scroll runs a single time", async () => {
+    const { useDashboardViewStore } = await import("../../src/stores/dashboardViewStore");
+    const events = threeTurnEvents();
+    const secondId = events[2]?.eventId;
+    if (!secondId) throw new Error("event ids missing");
+
+    await act(async () => {
+      root.render(
+        <StrictMode>
+          <ChatTranscript tabId="tab-claude" events={events} detailLoaded />
+        </StrictMode>,
+      );
+    });
+    const secondScroll = spyScroll(secondId);
+    await act(async () => {
+      useDashboardViewStore.getState().requestUserTurnStep("tab-claude", -1);
+    });
+    expect(secondScroll).toHaveBeenCalledTimes(1);
+    expect(useDashboardViewStore.getState().userTurnRequests["tab-claude"]).toBeUndefined();
+  });
+
+  it("scrolls the latest user message instead of the transcript tail", async () => {
+    const { useDashboardViewStore } = await import("../../src/stores/dashboardViewStore");
+    const events = [
+      userMessage("最後の命令"),
+      envelope({ type: "agentMessage", text: "長い応答" }),
+    ];
+    const userId = events[0]?.eventId;
+    if (!userId) throw new Error("event ids missing");
+
+    await act(async () => {
+      root.render(<ChatTranscript tabId="tab-claude" events={events} detailLoaded />);
+    });
+    const userScroll = spyScroll(userId);
+    const log = host.querySelector('[role="log"]') as HTMLElement;
+    const metrics = { scrollHeight: 1000, clientHeight: 200, scrollTop: 0 };
+    stubScrollMetrics(log, metrics);
+
+    await act(async () => {
+      useDashboardViewStore.getState().requestUserTurnLatest("tab-claude");
+    });
+
+    expect(userScroll).toHaveBeenCalledTimes(1);
+    expect(metrics.scrollTop).toBe(0);
+  });
+
+  it("no-ops a step past the last user turn without sending the log to the tail", async () => {
+    const { useDashboardViewStore } = await import("../../src/stores/dashboardViewStore");
+    const events = threeTurnEvents();
+    await act(async () => {
+      root.render(<ChatTranscript tabId="tab-claude" events={events} detailLoaded />);
+    });
+    const log = host.querySelector('[role="log"]') as HTMLElement;
+    const metrics = { scrollHeight: 1000, clientHeight: 200, scrollTop: 400 };
+    stubScrollMetrics(log, metrics);
+    const latestId = events[3]?.eventId;
+    if (!latestId) throw new Error("event ids missing");
+    const latestScroll = spyScroll(latestId);
+
+    await act(async () => {
+      useDashboardViewStore.getState().requestUserTurnStep("tab-claude", 1);
+    });
+
+    expect(useDashboardViewStore.getState().userTurnRequests["tab-claude"]).toBeUndefined();
+    expect(latestScroll).not.toHaveBeenCalled();
+    expect(metrics.scrollTop).toBe(400);
+  });
+
+  it("ignores a request for a different tab", async () => {
+    const { useDashboardViewStore } = await import("../../src/stores/dashboardViewStore");
+    useDashboardViewStore.getState().requestUserTurnStep("tab-other", -1);
+    await act(async () => {
+      root.render(
+        <ChatTranscript
+          tabId="tab-claude"
+          events={[userMessage("最初の命令"), userMessage("最後の命令")]}
+          detailLoaded
+        />,
+      );
+    });
+    expect(useDashboardViewStore.getState().userTurnRequests["tab-other"]).toMatchObject({
+      kind: "step",
+      delta: -1,
+    });
   });
 });

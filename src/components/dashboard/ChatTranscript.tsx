@@ -1,5 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import type { SemanticEventEnvelope } from "../../lib/livebrief";
+import { labelsMatch } from "../terminal/terminalTurnChipState";
+import { useDashboardViewStore } from "../../stores/dashboardViewStore";
 import { DashboardLinkedText, type DashboardLinkContext } from "./DashboardLinkedText";
 import { MarkdownView } from "./MarkdownView";
 import {
@@ -165,6 +167,7 @@ function ChatActivityFooter({ displayState, agentKind, lastOutputAt }: {
 export function ChatTranscript({
   events,
   sessionId = null,
+  tabId = null,
   displayState = "idle",
   agentKind = "none",
   lastOutputAt = null,
@@ -173,9 +176,11 @@ export function ChatTranscript({
   targetEventRequest = 0,
   syntheticSource = null,
   telemetryHealth,
+  detailLoaded = false,
 }: {
   events: readonly SemanticEventEnvelope[];
   sessionId?: string | null;
+  tabId?: string | null;
   displayState?: DashboardDisplayState;
   agentKind?: DashboardAgentKind;
   lastOutputAt?: number | null;
@@ -185,6 +190,8 @@ export function ChatTranscript({
   syntheticSource?: { eventId: string; text: string; at: number } | null;
   /** livebrief の telemetry_health ("live" / "ended" / "unlinked" / "unavailable")。 */
   telemetryHealth?: string;
+  /** True only after the detail (max 200) event slice has been fetched. */
+  detailLoaded?: boolean;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const followRef = useRef(true);
@@ -282,6 +289,12 @@ export function ChatTranscript({
     });
   }, []);
 
+  const scrollToUserTurn = useCallback((target: ChatMessage) => {
+    followRef.current = false;
+    document.getElementById(`dashboard-event-${target.id}`)?.scrollIntoView({ block: "start" });
+    refreshUserTurnNav();
+  }, [refreshUserTurnNav]);
+
   const jumpUserTurn = useCallback((direction: -1 | 1) => {
     const currentIndex = lastNavRef.current?.index ?? userTurnNav?.index ?? 0;
     if (direction === 1 && currentIndex >= userTurns.length - 1) {
@@ -299,6 +312,41 @@ export function ChatTranscript({
     document.getElementById(`dashboard-event-${target.id}`)?.scrollIntoView({ block: "start" });
     refreshUserTurnNav();
   }, [refreshUserTurnNav, userTurnNav?.index, userTurns]);
+
+  const userTurnRequest = useDashboardViewStore((state) => (
+    tabId ? state.userTurnRequests[tabId] ?? null : null
+  ));
+  useEffect(() => {
+    if (!tabId || !userTurnRequest || !detailLoaded) return;
+    // Resolve the target before claiming: if the list we have cannot satisfy the
+    // request (the shallow 12-event slice, or detail still on its way), leave it
+    // queued and let the next list change retry instead of consuming it for nothing.
+    const request = userTurnRequest;
+    let target: (typeof userTurns)[number] | undefined;
+    if (request.kind === "step") {
+      // The nav index only means something against the list it was computed on;
+      // after a shallow->detail swap, step from the latest turn instead.
+      const nav = lastNavRef.current;
+      const currentIndex = nav && nav.total === userTurns.length ? nav.index : userTurns.length - 1;
+      target = userTurns[currentIndex + request.delta];
+    } else if (request.kind === "label") {
+      for (let index = userTurns.length - 1; index >= 0; index -= 1) {
+        const candidate = userTurns[index];
+        if (candidate && labelsMatch(request.label, candidate.text)) {
+          target = candidate;
+          break;
+        }
+      }
+    } else {
+      target = userTurns[userTurns.length - 1];
+    }
+    // A step past either end is a legitimate no-op and is consumed; a label that
+    // is not in the list yet may still arrive with the detail, so it stays queued.
+    if (!target && request.kind !== "step") return;
+    const claimed = useDashboardViewStore.getState().claimUserTurnRequest(tabId, request.seq);
+    if (!claimed || !target) return;
+    scrollToUserTurn(target);
+  }, [detailLoaded, scrollToUserTurn, tabId, userTurnRequest, userTurns]);
 
   const footer = <ChatActivityFooter displayState={displayState} agentKind={agentKind} lastOutputAt={lastOutputAt} />;
   // 0行の理由は2種類ある。読めていないだけなのに「記録がありません」と言うと

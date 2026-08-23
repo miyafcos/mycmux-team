@@ -39,6 +39,23 @@ export type DashboardPreviewColumn = {
   label: string;
 };
 
+export type DashboardUserTurnRequestPayload =
+  | { kind: "step"; delta: -1 | 1 }
+  | { kind: "label"; label: string }
+  | { kind: "latest" };
+
+/** One-shot request: ChatTranscript claims it on mount/update and scrolls. */
+export type DashboardUserTurnRequest = DashboardUserTurnRequestPayload & {
+  tabId: string;
+  seq: number;
+};
+
+function isValidUserTurnPayload(payload: DashboardUserTurnRequestPayload): boolean {
+  if (payload.kind === "step") return payload.delta === -1 || payload.delta === 1;
+  if (payload.kind === "label") return payload.label.trim().length > 0;
+  return payload.kind === "latest";
+}
+
 function viewportWidth(): number {
   return typeof window === "undefined" ? 0 : window.innerWidth;
 }
@@ -455,6 +472,13 @@ interface DashboardViewState {
   setHighlightedEventId: (eventId: string | null) => void;
   setMinimapWidth: (width: number) => void;
   toggleSessionListCollapsed: () => void;
+  userTurnRequests: Record<string, DashboardUserTurnRequest>;
+  userTurnRequestSeq: number;
+  requestUserTurnStep: (tabId: string, delta: -1 | 1) => void;
+  requestUserTurnByLabel: (tabId: string, label: string) => void;
+  requestUserTurnLatest: (tabId: string) => void;
+  claimUserTurnRequest: (tabId: string, seq: number) => DashboardUserTurnRequest | null;
+  openTranscriptTurnRequest: (tabId: string, payload: DashboardUserTurnRequestPayload) => boolean;
 }
 
 export const useDashboardViewStore = create<DashboardViewState>((set, get) => ({
@@ -473,6 +497,8 @@ export const useDashboardViewStore = create<DashboardViewState>((set, get) => ({
   highlightedEventRequest: 0,
   minimapWidth: readStoredMinimapWidth(),
   sessionListCollapsed: readStoredSessionListCollapsed(),
+  userTurnRequests: {},
+  userTurnRequestSeq: 0,
   toggle: () => set((state) => ({ open: !state.open })),
   openView: () => set({ open: true }),
   close: () => set({ open: false }),
@@ -659,4 +685,59 @@ export const useDashboardViewStore = create<DashboardViewState>((set, get) => ({
     persistSessionListCollapsed(sessionListCollapsed);
     set({ sessionListCollapsed });
   },
+  requestUserTurnStep: (tabId, delta) => set((state) => queueUserTurnRequest(state, tabId, { kind: "step", delta })),
+  requestUserTurnByLabel: (tabId, label) => set((state) => queueUserTurnRequest(state, tabId, { kind: "label", label })),
+  requestUserTurnLatest: (tabId) => set((state) => queueUserTurnRequest(state, tabId, { kind: "latest" })),
+  claimUserTurnRequest: (tabId, seq) => {
+    const request = get().userTurnRequests[tabId];
+    if (!request || request.seq !== seq) return null;
+    set((state) => {
+      if (state.userTurnRequests[tabId]?.seq !== seq) return state;
+      const { [tabId]: _claimed, ...rest } = state.userTurnRequests;
+      return { userTurnRequests: rest };
+    });
+    return request;
+  },
+  openTranscriptTurnRequest: (tabId, payload) => {
+    let opened = false;
+    set((state) => {
+      if (!tabId || !isValidUserTurnPayload(payload)) return state;
+      const focused = applyFocusChatColumn(state, tabId, false);
+      const next = applyPreviewColumnDrop(state, focused);
+      if (!next) return state;
+      if (!next.chatColumnTabIds.includes(tabId)) {
+        notifyChatColumnOpenBlocked();
+        return state;
+      }
+      opened = true;
+      return {
+        ...state,
+        ...next,
+        open: true,
+        ...queueUserTurnRequest(state, tabId, payload),
+      };
+    });
+    return opened;
+  },
 }));
+
+function queueUserTurnRequest(
+  state: Pick<DashboardViewState, "userTurnRequests" | "userTurnRequestSeq">,
+  tabId: string,
+  payload: DashboardUserTurnRequestPayload,
+): Partial<Pick<DashboardViewState, "userTurnRequests" | "userTurnRequestSeq">> {
+  if (!tabId || !isValidUserTurnPayload(payload)) return {};
+  const seq = state.userTurnRequestSeq + 1;
+  const request: DashboardUserTurnRequest = payload.kind === "label"
+    ? { tabId, seq, kind: "label", label: payload.label.trim() }
+    : payload.kind === "step"
+      ? { tabId, seq, kind: "step", delta: payload.delta }
+      : { tabId, seq, kind: "latest" };
+  return {
+    userTurnRequestSeq: seq,
+    userTurnRequests: {
+      ...state.userTurnRequests,
+      [tabId]: request,
+    },
+  };
+}

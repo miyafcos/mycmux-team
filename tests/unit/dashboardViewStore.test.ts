@@ -565,3 +565,81 @@ describe("dashboard preview column", () => {
     confirm.mockRestore();
   });
 });
+
+describe("dashboard transcript user-turn request", () => {
+  it("openTranscriptTurnRequest opens the column and queues a one-shot request", async () => {
+    const { useDashboardViewStore } = await loadStore();
+    const opened = useDashboardViewStore.getState().openTranscriptTurnRequest("tab-claude", {
+      kind: "step",
+      delta: -1,
+    });
+    expect(opened).toBe(true);
+    expect(useDashboardViewStore.getState()).toMatchObject({
+      open: true,
+      selectedTabId: "tab-claude",
+      chatColumnTabIds: ["tab-claude"],
+      userTurnRequestSeq: 1,
+      userTurnRequests: {
+        "tab-claude": { tabId: "tab-claude", kind: "step", delta: -1, seq: 1 },
+      },
+    });
+    expect(useDashboardViewStore.getState().claimUserTurnRequest("tab-claude", 1)).toMatchObject({
+      kind: "step",
+      delta: -1,
+      seq: 1,
+    });
+    expect(useDashboardViewStore.getState().userTurnRequests["tab-claude"]).toBeUndefined();
+    expect(useDashboardViewStore.getState().claimUserTurnRequest("tab-claude", 1)).toBeNull();
+  });
+
+  it("keeps a monotonic seq after claim so a stale claim cannot drop the next request", async () => {
+    const { useDashboardViewStore } = await loadStore();
+    useDashboardViewStore.getState().requestUserTurnStep("tab-a", -1);
+    expect(useDashboardViewStore.getState().claimUserTurnRequest("tab-a", 1)).toMatchObject({ seq: 1 });
+    useDashboardViewStore.getState().requestUserTurnByLabel("tab-a", "later prompt");
+    expect(useDashboardViewStore.getState().userTurnRequests["tab-a"]).toMatchObject({
+      kind: "label",
+      label: "later prompt",
+      seq: 2,
+    });
+    expect(useDashboardViewStore.getState().claimUserTurnRequest("tab-a", 1)).toBeNull();
+    expect(useDashboardViewStore.getState().userTurnRequests["tab-a"]).toMatchObject({ seq: 2 });
+    expect(useDashboardViewStore.getState().claimUserTurnRequest("tab-a", 2)).toMatchObject({ seq: 2 });
+    expect(useDashboardViewStore.getState().userTurnRequests["tab-a"]).toBeUndefined();
+  });
+
+  it("stores requests per tab instead of overwriting a single slot", async () => {
+    const { useDashboardViewStore } = await loadStore();
+    useDashboardViewStore.getState().requestUserTurnLatest("tab-a");
+    useDashboardViewStore.getState().requestUserTurnStep("tab-b", 1);
+    expect(useDashboardViewStore.getState().userTurnRequests).toMatchObject({
+      "tab-a": { kind: "latest", seq: 1 },
+      "tab-b": { kind: "step", delta: 1, seq: 2 },
+    });
+    expect(useDashboardViewStore.getState().claimUserTurnRequest("tab-a", 1)).toMatchObject({ kind: "latest" });
+    expect(useDashboardViewStore.getState().userTurnRequests["tab-b"]).toMatchObject({ seq: 2 });
+  });
+
+  it("returns false and queues nothing when every open column is pinned", async () => {
+    const { useDashboardViewStore } = await loadStore();
+    const { useToastStore } = await import("../../src/stores/toastStore");
+    const store = useDashboardViewStore.getState();
+    store.setChatColumnLimit(2);
+    store.toggleChatColumn("tab-a");
+    store.toggleChatColumn("tab-b");
+    store.toggleChatColumnPin("tab-a");
+    store.toggleChatColumnPin("tab-b");
+    const before = useDashboardViewStore.getState();
+    const opened = store.openTranscriptTurnRequest("tab-c", { kind: "latest" });
+    expect(opened).toBe(false);
+    expect(useDashboardViewStore.getState()).toMatchObject({
+      open: before.open,
+      chatColumnTabIds: ["tab-a", "tab-b"],
+      userTurnRequestSeq: 0,
+      userTurnRequests: {},
+    });
+    expect(useToastStore.getState().toasts.map((toast) => toast.message)).toContain(
+      "全ての列が固定されています。固定を外すか上限を上げてください",
+    );
+  });
+});

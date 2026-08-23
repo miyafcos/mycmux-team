@@ -25,6 +25,8 @@ import {
   TERMINAL_SNAPSHOT_MAX_WRAPPED_LINES,
   TERMINAL_SNAPSHOT_SCAN_MULTIPLIER,
 } from "./terminalBufferConstants";
+import { useDashboardViewStore } from "../../stores/dashboardViewStore";
+import { useWorkspaceListStore } from "../../stores/workspaceListStore";
 import { usePaneMetadataStore, useUiStore } from "../../stores/workspaceStore";
 import { useKeybindingStore } from "../../stores/keybindingStore";
 import { useSettingsStore } from "../../stores/settingsStore";
@@ -47,11 +49,15 @@ import {
   TURN_MARKS_EVENT,
 } from "./terminalTurnMarkers";
 import { findTurnIndexForViewport, pickJumpTarget } from "./terminalTurnModel";
+import { startsAsAgentTui } from "./agentTuiDetection";
 import {
   buildTurnListRows,
   createTurnChipVisibilityController,
+  resolveTranscriptTurnAction,
   resolveTurnChipState,
   TURN_CHIP_EXIT_MS,
+  type TranscriptTurnIntent,
+  type TurnChipMode,
   type TurnChipVisibilityController,
   type TurnListRow,
 } from "./terminalTurnChipState";
@@ -200,6 +206,23 @@ interface XTermWrapperProps {
 const terminalVisibilityUpdates = new Map<string, Promise<void>>();
 const TURN_LIST_PROMPT_CACHE_MS = 30_000;
 const turnListPromptCache = new Map<string, { fetchedAt: number; prompts: TranscriptPrompt[] }>();
+
+function tabIdForSession(sessionId: string): string | null {
+  for (const workspace of useWorkspaceListStore.getState().workspaces) {
+    for (const pane of workspace.panes) {
+      const tab = pane.tabs.find((candidate) => candidate.sessionId === sessionId);
+      if (tab) return tab.id;
+    }
+  }
+  return null;
+}
+
+function applyTranscriptTurn(sessionId: string, intent: TranscriptTurnIntent): boolean {
+  const tabId = tabIdForSession(sessionId);
+  const payload = resolveTranscriptTurnAction(intent, { tabId });
+  if (!tabId || !payload) return false;
+  return useDashboardViewStore.getState().openTranscriptTurnRequest(tabId, payload);
+}
 
 function queueTerminalVisibilityUpdate(sessionId: string, visible: boolean): void {
   const previous = terminalVisibilityUpdates.get(sessionId) ?? Promise.resolve();
@@ -515,41 +538,6 @@ function getShiftEnterSequence(command: string, processTitle?: string): string {
   return "\x1b[200~\n\x1b[201~";
 }
 
-function getCommandName(command: string): string {
-  return command
-    .split(/[\\/]/)
-    .pop()
-    ?.replace(/\.(exe|cmd|bat|com)$/i, "")
-    .toLowerCase() ?? "";
-}
-
-function startsAsAgentTui(
-  command: string,
-  args: string[],
-  agentId?: string,
-  agentKind?: string,
-  launchEnv?: Record<string, string>,
-): boolean {
-  if (agentKind === "claude" || agentKind === "codex" || agentKind === "claude-codex") return true;
-  if (agentId === "claude" || agentId === "codex" || agentId === "claude-codex") return true;
-  if (
-    launchEnv?.MYCMUX_AGENT_KIND === "claude"
-    || launchEnv?.MYCMUX_AGENT_KIND === "codex"
-    || launchEnv?.MYCMUX_AGENT_KIND === "claude-codex"
-    || launchEnv?.MYCMUX_RESUME === "claude"
-    || launchEnv?.MYCMUX_RESUME === "codex"
-    || launchEnv?.MYCMUX_RESUME === "claude-codex"
-  ) {
-    return true;
-  }
-  const commandName = getCommandName(command);
-  if (commandName === "claude" || commandName === "codex") return true;
-  return args.some((arg) => {
-    const argName = getCommandName(arg);
-    return argName === "claude" || argName === "codex";
-  });
-}
-
 function ensureConfigLoaded(): Promise<void> {
   if (cachedConfig) return Promise.resolve();
   if (configPromise) return configPromise;
@@ -632,8 +620,12 @@ export default memo(function XTermWrapper({
     label: string;
     canPrev: boolean;
     canNext: boolean;
+    mode: TurnChipMode;
   } | null>(null);
   const [chipWanted, setChipWanted] = useState(false);
+  // Observable from outside (E2E / CDP): why the chip is or is not eligible.
+  const [turnChipDiag, setTurnChipDiag] = useState<{ marks: number; buffer: string; mode: string }>({ marks: 0, buffer: "", mode: "" });
+  const lastBufferTypeRef = useRef<string | null>(null);
   const [turnListRows, setTurnListRows] = useState<TurnListRow[]>([]);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const turnChipRafRef = useRef<number | null>(null);
@@ -672,6 +664,12 @@ export default memo(function XTermWrapper({
       const currentTerm = termRef.current;
       if (!currentTerm) {
         hideChip(true);
+        setTurnChipDiag((prev) => (
+          prev.marks === 0 && prev.buffer === "" && prev.mode === ""
+            ? prev
+            : { marks: 0, buffer: "", mode: "" }
+        ));
+        lastBufferTypeRef.current = null;
         return;
       }
       const buf = currentTerm.buffer.active;
@@ -679,13 +677,28 @@ export default memo(function XTermWrapper({
       // cached terminal re-attached while scrolled up never fires onScroll, and
       // the visibility timers must not depend on event ordering with the rAF.
       isAtBottomRef.current = buf.viewportY >= buf.baseY;
+      // Only a real normal<->alternate flip discards the look-back history. The
+      // first refresh after mount / session switch must not, or it would eat the
+      // wheel intent that triggered it.
+      const previousBufferType = lastBufferTypeRef.current;
+      lastBufferTypeRef.current = buf.type;
+      if (previousBufferType !== null && previousBufferType !== buf.type) {
+        turnChipVisibilityRef.current?.reset();
+      }
       const marks = getTurnMarkData(sessionId);
       const state = resolveTurnChipState({
         marks,
         viewportY: buf.viewportY,
         isAtBottom: isAtBottomRef.current,
         bufferType: buf.type,
+        hasTranscript: agentKind !== undefined,
       });
+      const mode = state?.mode ?? "";
+      setTurnChipDiag((prev) => (
+        prev.marks === marks.length && prev.buffer === buf.type && prev.mode === mode
+          ? prev
+          : { marks: marks.length, buffer: buf.type, mode }
+      ));
       const visible = turnChipVisibilityRef.current?.setAtBottom(isAtBottomRef.current) ?? false;
       if (!state) {
         hideChip(true);
@@ -693,7 +706,9 @@ export default memo(function XTermWrapper({
       }
       const next = {
         ...state,
-        label: marks[state.index]?.label ?? "",
+        label: state.mode === "transcript"
+          ? (marks[marks.length - 1]?.label ?? "")
+          : (marks[state.index]?.label ?? ""),
       };
       const prev = lastTurnChipRef.current;
       const same = Boolean(
@@ -702,7 +717,8 @@ export default memo(function XTermWrapper({
         prev.total === next.total &&
         prev.label === next.label &&
         prev.canPrev === next.canPrev &&
-        prev.canNext === next.canNext,
+        prev.canNext === next.canNext &&
+        prev.mode === next.mode,
       );
       lastTurnChipRef.current = next;
       if (!visible) {
@@ -718,10 +734,14 @@ export default memo(function XTermWrapper({
       if (same) return;
       setTurnChip(next);
     });
-  }, [sessionId]);
+  }, [sessionId, agentKind]);
   refreshTurnChipRef.current = refreshTurnChip;
 
   const jumpTurn = useCallback((direction: -1 | 1) => {
+    if (lastTurnChipRef.current?.mode === "transcript") {
+      applyTranscriptTurn(sessionId, { kind: direction === -1 ? "prev" : "next" });
+      return;
+    }
     const currentTerm = termRef.current;
     if (!currentTerm) return;
     const marks = getTurnMarkData(sessionId);
@@ -739,12 +759,21 @@ export default memo(function XTermWrapper({
   }, [refreshTurnChip, sessionId]);
 
   const jumpTurnToMark = useCallback((markIndex: number) => {
+    if (lastTurnChipRef.current?.mode === "transcript") return;
     const currentTerm = termRef.current;
     const target = getTurnMarkData(sessionId)[markIndex];
     if (!currentTerm || !target) return;
     currentTerm.scrollToLine(target.line);
     refreshTurnChip();
   }, [refreshTurnChip, sessionId]);
+
+  const jumpTurnByLabel = useCallback((label: string) => {
+    applyTranscriptTurn(sessionId, { kind: "row", label });
+  }, [sessionId]);
+
+  const openTranscriptDashboard = useCallback(() => {
+    applyTranscriptTurn(sessionId, { kind: "hint" });
+  }, [sessionId]);
 
   const openTurnList = useCallback(() => {
     const marks = getTurnMarkData(sessionId);
@@ -771,8 +800,10 @@ export default memo(function XTermWrapper({
     isAtBottomRef.current = true;
     chipWantedRef.current = false;
     lastTurnChipRef.current = null;
+    lastBufferTypeRef.current = null;
     setChipWanted(false);
     setTurnChip(null);
+    setTurnChipDiag({ marks: 0, buffer: "", mode: "" });
     const controller = createTurnChipVisibilityController({
       onChange: () => refreshTurnChipRef.current(),
     });
@@ -2627,8 +2658,23 @@ export default memo(function XTermWrapper({
     containerRef.current?.querySelector<HTMLTextAreaElement>(".xterm-helper-textarea")?.focus();
   }, []);
 
+  const noteLookBackIntent = useCallback(() => {
+    turnChipVisibilityRef.current?.noteLookBackIntent();
+    refreshTurnChipRef.current();
+  }, []);
+
   return (
-    <div style={{ position: "relative", width: "100%", height: "100%" }}>
+    <div
+      style={{ position: "relative", width: "100%", height: "100%" }}
+      data-turn-marks={turnChipDiag.marks}
+      data-turn-buffer={turnChipDiag.buffer || undefined}
+      data-turn-mode={turnChipDiag.mode || undefined}
+      // Wheel-up is the look-back intent even when the app owns the mouse and
+      // the viewport cannot move (Claude Code, codex); see TURN_CHIP_INTENT_HOLD_MS.
+      onWheelCapture={(event) => {
+        if (event.deltaY < 0) noteLookBackIntent();
+      }}
+    >
       {turnChipMounted && turnChip && (
         <TerminalTurnChip
           index={turnChip.index}
@@ -2640,8 +2686,12 @@ export default memo(function XTermWrapper({
           onPrev={() => jumpTurn(-1)}
           onNext={() => jumpTurn(1)}
           onJump={jumpTurnToMark}
+          onJumpLabel={jumpTurnByLabel}
           onListOpen={openTurnList}
+          onHover={noteLookBackIntent}
           leaving={turnChipLeaving}
+          mode={turnChip.mode}
+          onOpenDashboard={turnChip.mode === "transcript" ? openTranscriptDashboard : undefined}
         />
       )}
       {isSearchOpen && (

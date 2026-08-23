@@ -49,6 +49,7 @@ export function ChatColumn({
   onJump,
   onReorderKeyDown,
   onPreviewArtifact,
+  detailLoaded = false,
 }: {
   card: DashboardCardModel;
   events: readonly SemanticEventEnvelope[];
@@ -69,6 +70,7 @@ export function ChatColumn({
   onJump: () => void;
   onReorderKeyDown: (event: ReactKeyboardEvent<HTMLElement>) => void;
   onPreviewArtifact?: (info: PreviewArtifactInfo) => void;
+  detailLoaded?: boolean;
 }) {
   const sessionId = card.tab.sessionId;
   const optimisticMessages = useComposerStore((state) => state.dashboardOptimisticMessagesBySession[sessionId] ?? EMPTY_OPTIMISTIC_MESSAGES);
@@ -156,6 +158,7 @@ export function ChatColumn({
       <ChatTranscript
         events={events}
         sessionId={card.tab.sessionId}
+        tabId={card.tab.id}
         displayState={displayState}
         agentKind={card.agentKind ?? "none"}
         lastOutputAt={lastOutputAt}
@@ -163,6 +166,7 @@ export function ChatColumn({
         targetEventId={active ? targetEventId : null}
         targetEventRequest={active ? targetEventRequest : 0}
         syntheticSource={active ? syntheticSource : null}
+        detailLoaded={detailLoaded}
         linkContext={{
           workspaceId: card.workspaceId,
           paneId: card.paneId,

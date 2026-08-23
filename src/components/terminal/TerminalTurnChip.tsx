@@ -1,6 +1,7 @@
 import { memo, type MouseEvent, useEffect, useRef, useState } from "react";
 
 import { TerminalTurnList, type TurnListRow } from "./TerminalTurnList";
+import type { TurnChipMode } from "./terminalTurnChipState";
 import { terminalTurnStrings } from "./terminalTurnStrings";
 
 export interface TerminalTurnChipProps {
@@ -13,8 +14,13 @@ export interface TerminalTurnChipProps {
   canNext: boolean;
   rows: readonly TurnListRow[];
   onJump: (markIndex: number) => void;
+  onJumpLabel?: (label: string) => void;
   onListOpen: () => void;
+  /** Pointer entered the chip; keeps it from auto-hiding while in use. */
+  onHover?: () => void;
   leaving?: boolean;
+  mode?: TurnChipMode;
+  onOpenDashboard?: () => void;
 }
 
 function keepTerminalFocus(event: MouseEvent): void {
@@ -31,8 +37,12 @@ export const TerminalTurnChip = memo(function TerminalTurnChip({
   canNext,
   rows,
   onJump,
+  onJumpLabel,
   onListOpen,
+  onHover,
   leaving = false,
+  mode = "scroll",
+  onOpenDashboard,
 }: TerminalTurnChipProps) {
   const [isListOpen, setIsListOpen] = useState(false);
   const chipRef = useRef<HTMLDivElement>(null);
@@ -66,17 +76,28 @@ export const TerminalTurnChip = memo(function TerminalTurnChip({
     });
   };
 
+  const className = [
+    "terminal-turn-chip",
+    mode === "transcript" ? "is-transcript" : "",
+    leaving ? "is-leaving" : "",
+  ].filter(Boolean).join(" ");
+  const transcript = mode === "transcript";
+  const meta = transcript ? terminalTurnStrings.conversationHistory : terminalTurnStrings.position(index, total);
+  const prevEnabled = transcript || canPrev;
+  const nextEnabled = transcript || canNext;
+
   return (
     <div
       ref={chipRef}
-      className={leaving ? "terminal-turn-chip is-leaving" : "terminal-turn-chip"}
-      aria-label={terminalTurnStrings.position(index, total)}
+      className={className}
+      aria-label={meta}
       aria-hidden={leaving || undefined}
       // @ts-expect-error React 19 types still declare inert as a string attribute.
       inert={leaving ? "" : undefined}
       onMouseDown={keepTerminalFocus}
+      onMouseEnter={onHover}
     >
-      <span className="terminal-turn-chip__meta">{terminalTurnStrings.position(index, total)}</span>
+      <span className="terminal-turn-chip__meta">{meta}</span>
       <button
         type="button"
         className="terminal-turn-chip__label"
@@ -84,14 +105,14 @@ export const TerminalTurnChip = memo(function TerminalTurnChip({
         title={isListOpen ? terminalTurnStrings.closeList : terminalTurnStrings.openList}
         onClick={toggleList}
       >
-        {label}
+        {label || terminalTurnStrings.openList}
       </button>
       <span className="terminal-turn-chip__nav">
         <button
           type="button"
           aria-label={terminalTurnStrings.prevTurn}
           title={terminalTurnStrings.prevTurn}
-          disabled={!canPrev}
+          disabled={!prevEnabled}
           onClick={onPrev}
         >
           ▲
@@ -100,16 +121,27 @@ export const TerminalTurnChip = memo(function TerminalTurnChip({
           type="button"
           aria-label={terminalTurnStrings.nextTurnOrTail}
           title={terminalTurnStrings.nextTurnOrTail}
-          disabled={!canNext}
+          disabled={!nextEnabled}
           onClick={onNext}
         >
           ▼
         </button>
       </span>
+      {mode === "transcript" && onOpenDashboard ? (
+        <button
+          type="button"
+          className="terminal-turn-chip__hint"
+          onClick={onOpenDashboard}
+        >
+          {terminalTurnStrings.openInDashboard}
+        </button>
+      ) : null}
       {isListOpen ? <TerminalTurnList
         rows={rows}
         currentIndex={index}
+        mode={mode}
         onJump={onJump}
+        onJumpLabel={onJumpLabel}
         onClose={() => setIsListOpen(false)}
       /> : null}
     </div>
