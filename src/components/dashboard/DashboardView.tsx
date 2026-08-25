@@ -37,10 +37,21 @@ import { useSessionAttentionStore } from "../../stores/sessionAttentionStore";
 import { useStallStore } from "../../stores/stallStore";
 import { useWorkOrderStore } from "../../stores/workOrderStore";
 import { connectReportInboxStatusFeed, useReportInboxStore, type MachineReportCard } from "../../stores/reportInboxStore";
-import { hasTerminalBuffer } from "../terminal/XTermWrapper";
+import { hasMountedTerminal, hasTerminalBuffer } from "../terminal/XTermWrapper";
+import {
+  ASK_QUESTION_POLL_MS,
+  refreshAskQuestionFromTail,
+  useAskQuestionStore,
+} from "../../stores/askQuestionStore";
 import { DashboardSessionList, useFrozenCardOrder } from "./DashboardSessionList";
 import { AskStrip } from "./AskStrip";
 import { buildAskStripItems } from "./askStripModel";
+import {
+  isAskQuestionBusy,
+  submitAskQuestionChoice,
+  submitAskQuestionReview,
+  toggleAskQuestionDraft,
+} from "./askQuestionRouting";
 import { WatchStatusRow } from "./WatchStatusRow";
 import {
   applyDashboardFilters,
@@ -275,7 +286,9 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
   const activeColumnTranscriptEvents = activeColumnEvents?.length
     ? activeColumnEvents
     : activeColumnSessionId ? listEventsBySession[activeColumnSessionId] ?? [] : [];
-  const activeColumnQuestion = questionModel(activeColumnCard?.brief, activeColumnTranscriptEvents);
+  const askBySession = useAskQuestionStore((state) => state.bySession);
+  const activeColumnAsk = activeColumnSessionId ? askBySession[activeColumnSessionId]?.screen : undefined;
+  const activeColumnQuestion = activeColumnAsk ?? questionModel(activeColumnCard?.brief, activeColumnTranscriptEvents);
   const activeColumnCwd = activeColumnSessionId ? metadataState.metadata[activeColumnSessionId]?.cwd ?? null : null;
   useEffect(() => {
     if (!activeColumnCard || !activeColumnSessionId) {
@@ -400,7 +413,8 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
     label: card.label,
     brief: card.brief,
     events: listEventsBySession?.[card.tab.sessionId],
-  }))), [filteredCards, listEventsBySession]);
+    ask: askBySession[card.tab.sessionId],
+  }))), [askBySession, filteredCards, listEventsBySession]);
   // 「既読にする」対象は未読の done 通知そのもの。表示状態 (done) とは一致しないことがある。
   const clearableCards = useMemo(
     () => cards.filter((card) => card.attentionCategory === "done" && card.attention?.attentionId),
@@ -433,6 +447,40 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
   // brief の購読はビュー1枚につき1本 (store 側が参照数で束ねる)。
   useEffect(() => connectLiveBriefStore(), []);
   useEffect(() => connectReportInboxStatusFeed(), []);
+
+  const displayedAskSessionKey = [...new Set([
+    ...chatColumnCards.filter((card) => card.tab.agentKind === "claude" || card.tab.agentKind === "claude-codex").map((card) => card.tab.sessionId),
+    ...visibleCards.filter((card) => card.tab.agentKind === "claude" || card.tab.agentKind === "claude-codex").map((card) => card.tab.sessionId),
+  ])].join(",");
+  const liveAskSessionKey = cards
+    .filter((card) => card.tab.agentKind === "claude" || card.tab.agentKind === "claude-codex")
+    .map((card) => card.tab.sessionId)
+    .join(",");
+  useEffect(() => {
+    useAskQuestionStore.getState().pruneSessions(liveAskSessionKey ? liveAskSessionKey.split(",") : []);
+    const sessionIds = displayedAskSessionKey ? displayedAskSessionKey.split(",") : [];
+    let cancelled = false;
+    let running = false;
+    const tick = async () => {
+      if (running || cancelled) return;
+      running = true;
+      try {
+      for (const sessionId of sessionIds) {
+        if (cancelled) return;
+        if (hasMountedTerminal(sessionId)) continue;
+        await refreshAskQuestionFromTail(sessionId);
+      }
+      } finally {
+        running = false;
+      }
+    };
+    void tick();
+    const timer = window.setInterval(() => { void tick(); }, ASK_QUESTION_POLL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [displayedAskSessionKey, liveAskSessionKey]);
 
   // Reuse the dashboard's existing LiveBrief data. This only derives cards
   // from already-fetched events and never starts a separate poller.
@@ -921,6 +969,47 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
       }
       const interactive = target instanceof HTMLButtonElement || target instanceof HTMLSelectElement || Boolean(typeof target?.closest === "function" && target.closest("[data-livebrief-interactive='true']"));
       const editable = target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || Boolean(target?.isContentEditable) || interactive;
+      const askQuestionTarget = typeof target?.closest === "function"
+        ? target.closest<HTMLElement>("[data-ask-question-session]")
+        : null;
+      const numberKey = /^[1-9]$/.test(event.key) ? Number(event.key) : 0;
+      const askShortcutSessionId = askQuestionTarget?.dataset.askQuestionSession;
+      const askShortcutCard = askShortcutSessionId
+        ? cards.find((card) => card.tab.sessionId === askShortcutSessionId)
+        : undefined;
+      const allowAskQuestionShortcut = Boolean(
+        askShortcutCard
+        && askQuestionTarget
+        && (!editable || askQuestionTarget.contains(target)),
+      );
+      if (numberKey > 0 && askShortcutCard && allowAskQuestionShortcut) {
+        const askSessionId = askShortcutCard.tab.sessionId;
+        const screen = useAskQuestionStore.getState().bySession[askSessionId]?.screen;
+        if (screen) {
+          event.preventDefault();
+          event.stopPropagation();
+          if (screen.kind === "review") {
+            const submit = screen.options.find((item) => (
+              item.index === numberKey && item.index === 1 && item.role === "submit"
+            ));
+            if (submit) {
+              if (isAskQuestionBusy(askSessionId)) return;
+              void submitAskQuestionReview(askSessionId);
+            }
+            return;
+          }
+          const option = screen.options.find((item) => item.index === numberKey && item.role === "option");
+          if (option && option.index !== null) {
+            if (isAskQuestionBusy(askSessionId)) return;
+            if (screen.multiSelect && option.checked !== undefined) {
+              toggleAskQuestionDraft(askSessionId, option.index);
+            } else {
+              void submitAskQuestionChoice(askSessionId, option.index);
+            }
+          }
+          return;
+        }
+      }
       if (editable) {
         if (event.isComposing) return;
         if (event.key === "Escape" && viewState.query) {
@@ -962,8 +1051,6 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
         viewState.setSelectedTabId(urgentCards[(index + 1 + urgentCards.length) % urgentCards.length].tab.id);
         return;
       }
-      // 1/2/3: 選択中カードの選択肢をそのまま撃つ (カードのボタンと同じ経路)。
-      // 選択肢が 4 個以上あるときは番号で撃たない (取り違えが起きる)。
       const numberIndex = NUMBER_KEYS.indexOf(event.key);
       if (numberIndex >= 0 && selectedCard) {
         const store = useLiveBriefStore.getState();
@@ -990,8 +1077,8 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
         viewState.setSelectedTabId(visibleCards[(index + delta + visibleCards.length) % visibleCards.length].tab.id);
       }
     };
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
+    document.addEventListener("keydown", onKeyDown, true);
+    return () => document.removeEventListener("keydown", onKeyDown, true);
   }, [cards, close, closeChatColumn, focusActiveChatColumnHeader, jumpToCard, selectedCard, urgentCards, viewState, visibleCards]);
 
   const clearDone = () => {

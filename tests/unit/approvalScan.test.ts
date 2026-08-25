@@ -99,7 +99,9 @@ describe("approvalScan source", () => {
     );
 
     expect(source).toContain('emit("mycmux:session-state-evidence"');
-    expect(source).toContain('if (prevStatus !== "waiting")');
+    expect(source).toContain('if (prevStatus !== "waiting" && !askScreen)');
     expect(source).toContain('publishScreenScanEvidence("none", null, null, resync)');
+    expect(source).toMatch(/publishAskQuestionEvidence\(\s*sessionId,\s*askScreen,\s*observedAt,/);
+    expect(source).toContain("clearAskQuestionEvidence(sessionId, observedAt)");
   });
 });

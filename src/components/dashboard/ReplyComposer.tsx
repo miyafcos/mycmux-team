@@ -33,6 +33,7 @@ import {
   runIntervention,
 } from "./interventionRouting";
 import { NextActionSuggestions, type NextAction } from "./NextActionSuggestions";
+import { useAskQuestionStore } from "../../stores/askQuestionStore";
 
 /** pane.send_text (送達確認つき送信) の戻り。確認できたときだけ confirmed が true。 */
 interface PaneSendTextOutcome {
@@ -128,6 +129,7 @@ export function ReplyComposer({ card, inputRef, mentionTargets, questionActive =
     const request = state.dashboardRetryBySession[sessionId];
     return request ? state.dashboardOptimisticMessagesBySession[sessionId]?.find((message) => message.id === request.messageId) : undefined;
   });
+  const askBySession = useAskQuestionStore((state) => state.bySession);
   const addDashboardOptimisticMessage = useComposerStore((state) => state.addDashboardOptimisticMessage);
   const setDashboardOptimisticMessageState = useComposerStore((state) => state.setDashboardOptimisticMessageState);
   const consumeDashboardOptimisticRetry = useComposerStore((state) => state.consumeDashboardOptimisticRetry);
@@ -173,8 +175,13 @@ export function ReplyComposer({ card, inputRef, mentionTargets, questionActive =
   const route = card ? resolveComposerRoute(brief, !card.neverStarted) : null;
   const hasMentions = tokens.length > 0;
   // A mention batch does not depend on the selected card being sendable.
-  const blocked = !sessionId || (!hasMentions && (!card || !route || route.kind === "disabled"));
-  const disabledNote = !hasMentions && route?.kind === "disabled" ? dashboardStrings.composerNotStarted : null;
+  const selectedAskActive = Boolean(sessionId && askBySession[sessionId]?.screen);
+  const mentionedAskActive = preview.recipients.some((recipient) => Boolean(askBySession[recipient.sessionId]?.screen));
+  const askBlocksSend = selectedAskActive || mentionedAskActive;
+  const blocked = askBlocksSend || !sessionId || (!hasMentions && (!card || !route || route.kind === "disabled"));
+  const disabledNote = askBlocksSend
+    ? dashboardStrings.composerBlockedByAskQuestion
+    : !hasMentions && route?.kind === "disabled" ? dashboardStrings.composerNotStarted : null;
   const canSubmit = !blocked && !sending && Boolean(draft.trim());
 
   const hasCurrentQuestionGuard = () => commandKind !== "answer-forward" || Boolean(
@@ -238,6 +245,9 @@ export function ReplyComposer({ card, inputRef, mentionTargets, questionActive =
   const sendRecipient = async (recipient: MentionRecipient, text: string): Promise<Omit<DispatchDelivery, "recipient">> => {
     const target = cardByMember.get(memberKey(recipient));
     if (!target) return { state: "blocked", detail: dashboardStrings.dispatchTargetMissing };
+    if (useAskQuestionStore.getState().bySession[recipient.sessionId]?.screen) {
+      return { state: "blocked", detail: dashboardStrings.composerBlockedByAskQuestion };
+    }
     const targetRoute = resolveComposerRoute(target.brief, !target.neverStarted);
     if (targetRoute.kind === "disabled") return { state: "failed", detail: dashboardStrings.composerNotStarted };
     try {
@@ -286,6 +296,12 @@ export function ReplyComposer({ card, inputRef, mentionTargets, questionActive =
   const submitDirect = async (text = draft, clearDraftAfterSend = true, optimisticMessageId?: string) => {
     if (!card || !sessionId || !route || route.kind === "disabled") {
       if (sessionId && optimisticMessageId) setDashboardOptimisticMessageState(sessionId, optimisticMessageId, "failed", dashboardStrings.dispatchTargetMissing);
+      return;
+    }
+    if (useAskQuestionStore.getState().bySession[sessionId]?.screen) {
+      const detail = dashboardStrings.composerBlockedByAskQuestion;
+      setNote({ text: detail, error: true });
+      if (optimisticMessageId) setDashboardOptimisticMessageState(sessionId, optimisticMessageId, "failed", detail);
       return;
     }
     if (route.kind === "intervention") {

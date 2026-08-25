@@ -224,9 +224,9 @@ describe("work-tag cost coverage copy", () => {
         coveredTokenRatio: 0.6,
       },
     } satisfies ModelsReport;
-    expect(workTagCostLabel(partial.priceCoverage)).toBe("コスト相当 (単価既知 600 / 1,000 tok)");
+    expect(workTagCostLabel(partial.priceCoverage)).toBe("コスト相当 (価格情報あり 600 / 1,000 tok)");
     const html = renderToStaticMarkup(<WorkTagTable report={partial} />);
-    expect(html).toContain("単価既知 600 / 1,000 tok");
+    expect(html).toContain("価格情報あり 600 / 1,000 tok");
     expect(html).not.toContain("% 分");
     expect(html).not.toContain("全体の");
     expect(html).not.toContain("割合");

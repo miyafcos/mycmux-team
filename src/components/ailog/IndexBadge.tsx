@@ -19,8 +19,8 @@ export function IndexBadge() {
 
   if (error && index.autoStarted) {
     return (
-      <Chip tone="warn" title={error}>
-        取り込みに失敗 (詳細)
+      <Chip tone="warn">
+        自動取り込みに失敗 · メニューから再実行
       </Chip>
     );
   }

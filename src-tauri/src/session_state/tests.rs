@@ -372,6 +372,42 @@ fn evidence_ledger_is_bounded_and_sorted_by_session() {
     let snapshot = store.snapshot(None);
     assert_eq!(snapshot.sessions[0].session_id, "session-a");
     assert_eq!(snapshot.sessions[1].session_id, "session-b");
+    assert_eq!(snapshot.sessions[0].input_revision, None);
     assert_eq!(snapshot.sessions[1].recent_evidence.len(), LEDGER_CAPACITY);
     assert_eq!(snapshot.sessions[1].recent_evidence[0].observed_at, 9);
+}
+
+#[test]
+fn snapshot_can_bind_each_session_to_its_pty_input_revision() {
+    let store = SessionStateStore::new();
+    store.ingest("session-a", lifecycle(1, EPOCH, Lifecycle::Alive));
+    store.ingest("session-b", lifecycle(1, EPOCH, Lifecycle::Alive));
+
+    let snapshot = store.snapshot_with_input_revisions(None, |session_id| match session_id {
+        "session-a" => Some(5),
+        "session-b" => Some(8),
+        _ => None,
+    });
+
+    assert_eq!(snapshot.sessions[0].input_revision, Some(5));
+    assert_eq!(snapshot.sessions[1].input_revision, Some(8));
+}
+
+#[test]
+fn current_view_guard_blocks_same_session_updates_until_operation_finishes() {
+    let store = SessionStateStore::new();
+    store.ingest("session-a", lifecycle(1, EPOCH, Lifecycle::Alive));
+    let updating_store = store.clone();
+
+    store.with_current_view("session-a", |_| {
+        assert!(matches!(
+            updating_store.sessions.try_get_mut("session-a"),
+            dashmap::try_result::TryResult::Locked
+        ));
+    });
+
+    assert!(matches!(
+        store.sessions.try_get_mut("session-a"),
+        dashmap::try_result::TryResult::Present(_)
+    ));
 }

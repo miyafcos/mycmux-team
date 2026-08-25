@@ -2,6 +2,7 @@
 //! `parse_tests.rs` once the module compiles.
 
 mod ben3a_tests;
+mod codex_attribution_tests;
 mod fixtures;
 mod index_tests;
 mod learning_tests;

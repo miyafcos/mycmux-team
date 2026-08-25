@@ -8,6 +8,7 @@ import { ChatTranscript } from "./ChatTranscript";
 import { displayStateColor, displayStateLabel, stallLabel, statePillStyle } from "./DashboardCardRow";
 import { type DashboardCardModel, resolveDisplayState } from "./dashboardModel";
 import { dashboardStrings } from "./dashboardStrings";
+import { instrumentLineFromTelemetry } from "./instrumentLine";
 import { QuestionCard } from "./QuestionCard";
 import { stateLabels } from "./stateLabels";
 
@@ -91,6 +92,10 @@ export function ChatColumn({
     : displayState === "noUpdate"
       ? dashboardStrings.noUpdateFor(elapsedMinutes)
       : dashboardStrings.elapsed(elapsedMinutes);
+  const instrument = instrumentLineFromTelemetry(
+    card.telemetry,
+    card.metadata?.agentSessionId ?? card.brief?.agentSessionId ?? card.tab.agentSessionId,
+  );
 
   useEffect(() => {
     const transcriptMessages = events.flatMap((event) => (
@@ -128,6 +133,7 @@ export function ChatColumn({
         {card.telemetryHealth === "ended" ? <span style={statePillStyle("var(--cmux-text-tertiary)")}>{dashboardStrings.telemetryEnded}</span> : null}
         {elapsedText ? <span>{elapsedText}</span> : null}
         {card.stall ? <span className="cmux-dashboard-chat-header-stall">{stallLabel(card.stall.reason)}</span> : null}
+        {instrument ? <span className="cmux-dashboard-chat-header-instrument" data-dashboard-instrument={card.tab.id} title={instrument}>{instrument}</span> : null}
       </div>
       <span>{dashboardStrings.breadcrumb(card.workspace.name, card.tabIndex + 1, card.paneIndex + 1)}</span>
       {card.manualDoneAt === undefined
@@ -188,7 +194,14 @@ export function ChatColumn({
           {message.state === "failed" ? <div className="cmux-dashboard-optimistic-retry"><span>{message.error ?? dashboardStrings.composerMessageFailed}</span><button type="button" onClick={() => requestOptimisticRetry(sessionId, message.id)}>{dashboardStrings.composerRetry}</button></div> : null}
         </div>)}
       </div> : null}
-      {card.telemetryHealth !== "ended" ? <QuestionCard brief={card.brief} events={events} targetLabel={`${card.workspace.name} › ${card.label}`} onFocusComposer={onFocusComposer} /> : null}
+      {card.telemetryHealth !== "ended" ? <QuestionCard
+        brief={card.brief}
+        events={events}
+        targetLabel={`${card.workspace.name} › ${card.label}`}
+        onFocusComposer={onFocusComposer}
+        sessionId={card.tab.sessionId}
+        attention={card.attention}
+      /> : null}
     </div>
   </article>;
 }

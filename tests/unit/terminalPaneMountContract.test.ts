@@ -13,6 +13,10 @@ const socketCommandsSource = readFileSync(
   new URL("../../src/components/layout/socketCommands.ts", import.meta.url),
   "utf8",
 );
+const askQuestionRoutingSource = readFileSync(
+  new URL("../../src/components/dashboard/askQuestionRouting.ts", import.meta.url),
+  "utf8",
+);
 const paneTabBarSource = readFileSync(
   new URL("../../src/components/workspace/PaneTabBar.tsx", import.meta.url),
   "utf8",
@@ -35,6 +39,20 @@ describe("terminal tab mount contract", () => {
     expect(xtermWrapperSource).toContain("getSessionScrollback(sessionId)");
     expect(xtermWrapperSource).toContain("terminalScrollbackResyncNeeded.add(sessionId)");
     expect(xtermWrapperSource).toContain("await syncDroppedBatchScrollbackIfNeeded()");
+  });
+
+  it("captures input revision before scanning AskUserQuestion independently from approval detection", () => {
+    const revisionIndex = xtermWrapperSource.indexOf("await getSessionInputRevision(sessionId)");
+    const scanIndex = xtermWrapperSource.indexOf("ingestAskQuestionLines(", revisionIndex);
+
+    expect(revisionIndex).toBeGreaterThan(-1);
+    expect(scanIndex).toBeGreaterThan(revisionIndex);
+    expect(xtermWrapperSource).toContain("{ excludeInitialReplay: true }");
+    expect(xtermWrapperSource).not.toContain("if (approvalPatternId > 0 || storedAsk)");
+  });
+
+  it("bypasses cached renderers for AskUserQuestion send preflight reads", () => {
+    expect(askQuestionRoutingSource).toContain("readPaneTail(sessionId, lines, true)");
   });
 
   it("rebinds artifact links when a cached terminal is attached", () => {

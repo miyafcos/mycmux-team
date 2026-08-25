@@ -527,6 +527,7 @@ pub fn reduce(previous: &SessionView, evidence: &Evidence) -> SessionView {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionStateRecordSnapshot {
     pub session_id: String,
+    pub input_revision: Option<u64>,
     pub view: SessionView,
     pub ui_state: UiSessionState,
     pub recent_evidence: Vec<Evidence>,
@@ -611,13 +612,32 @@ impl SessionStateStore {
             .map(|record| record.view.clone())
     }
 
+    pub fn with_current_view<T>(
+        &self,
+        session_id: &str,
+        operation: impl FnOnce(&SessionView) -> T,
+    ) -> Option<T> {
+        self.sessions
+            .get(session_id)
+            .map(|record| operation(&record.view))
+    }
+
     pub fn snapshot(&self, session_id: Option<&str>) -> SessionStateSnapshot {
+        self.snapshot_with_input_revisions(session_id, |_| None)
+    }
+
+    pub fn snapshot_with_input_revisions(
+        &self,
+        session_id: Option<&str>,
+        input_revision_for: impl Fn(&str) -> Option<u64>,
+    ) -> SessionStateSnapshot {
         let mut sessions: Vec<_> = self
             .sessions
             .iter()
             .filter(|record| session_id.is_none_or(|id| record.key() == id))
             .map(|record| SessionStateRecordSnapshot {
                 session_id: record.key().clone(),
+                input_revision: input_revision_for(record.key()),
                 view: record.view.clone(),
                 ui_state: derive_ui_state(&record.view),
                 recent_evidence: record.recent_evidence.iter().cloned().collect(),

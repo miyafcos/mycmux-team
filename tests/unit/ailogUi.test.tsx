@@ -33,15 +33,18 @@ describe("ailog table layout", () => {
     expect(tableStyle.tableLayout).toBe("fixed");
   });
 
-  it("forbids overflowX except SessionTable and the existing panel clip", () => {
+  it("allows horizontal overflow only inside named wide-data regions", () => {
     const root = join(__dirname, "../../src/components/ailog");
-    const allowed = new Set(["SessionTable.tsx", "AiLogPanel.tsx"]);
+    const allowed = new Map([
+      ["AiLogPanel.tsx", /overflowX:\s*"hidden"/],
+      ["SessionDetailView.tsx", /overflowX:\s*"auto"/],
+    ]);
     for (const file of listFiles(root)) {
       const text = readFileSync(file, "utf8");
       if (!text.includes("overflowX")) continue;
       const name = file.split(/[/\\]/).pop() ?? file;
       expect(allowed.has(name), `${name} contains overflowX`).toBe(true);
-      expect(text).toMatch(/overflowX:\s*"hidden"/);
+      expect(text).toMatch(allowed.get(name)!);
     }
   });
 });

@@ -755,6 +755,18 @@ pub async fn ailog_models(
 }
 
 #[tauri::command(async)]
+pub async fn ailog_model_handoffs(
+    range: Option<Range>,
+    filters: Option<Filters>,
+    options: Option<query::ModelsOptions>,
+) -> Result<query::HandoffsReport, String> {
+    let range = range.unwrap_or_default();
+    let filters = filters.unwrap_or_default();
+    let options = options.unwrap_or_default();
+    blocking_report(move |conn| query::model_handoffs(conn, &range, &filters, &options, now_ms())).await
+}
+
+#[tauri::command(async)]
 pub async fn ailog_efficiency(
     range: Option<Range>,
     filters: Option<Filters>,
@@ -843,6 +855,27 @@ pub async fn ailog_set_price(entry: query::PriceEntry) -> Result<SetPriceResult,
         model: entry.model,
         repriced_sessions: repriced,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Display FX rate (USD -> JPY). Unit prices stay in USD.
+// ---------------------------------------------------------------------------
+
+#[tauri::command(async)]
+pub fn ailog_get_usd_jpy_rate(app_handle: AppHandle) -> Result<f64, String> {
+    let data = crate::db::storage::load(&app_handle)?;
+    Ok(crate::db::storage::sanitize_ailog_usd_jpy_rate(
+        data.settings.ailog_usd_jpy_rate,
+    ))
+}
+
+#[tauri::command(async)]
+pub fn ailog_set_usd_jpy_rate(app_handle: AppHandle, rate: f64) -> Result<f64, String> {
+    let sanitized = crate::db::storage::sanitize_ailog_usd_jpy_rate(rate);
+    crate::db::storage::update(&app_handle, |data| {
+        data.settings.ailog_usd_jpy_rate = sanitized;
+    })?;
+    Ok(sanitized)
 }
 
 #[cfg(test)]

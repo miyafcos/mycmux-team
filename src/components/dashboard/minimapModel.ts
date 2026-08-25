@@ -24,6 +24,8 @@ export interface MinimapChip {
    * never reported output, which the chip renders as "no elapsed time".
    */
   lastOutputAt?: number;
+  /** CTX occupancy percent from livebrief telemetry. Chip shows this number only. */
+  contextPct?: number;
 }
 
 export interface MinimapCell {
@@ -101,6 +103,7 @@ export interface MinimapModelContext {
   displayStateByTabId?: Record<string, string>;
   metadataBySession?: Record<string, unknown>;
   activePaneId?: string | null;
+  contextPctBySession?: Record<string, number | undefined>;
 }
 
 function shareValues(sizes: number[] | undefined, count: number): number[] {
@@ -177,6 +180,7 @@ function chip(tab: PaneTab, pane: Pane, index: number, ctx: MinimapModelContext)
       (ctx.metadataBySession ?? {}) as Record<string, PaneMetadata | undefined>,
     ),
     lastOutputAt: metadata?.backendLastOutputAt,
+    contextPct: ctx.contextPctBySession?.[tab.sessionId],
     typeGlyph: typeGlyph(tab.type),
     agentKind: tab.agentKind,
     displayState: ctx.displayStateByTabId?.[tab.id],

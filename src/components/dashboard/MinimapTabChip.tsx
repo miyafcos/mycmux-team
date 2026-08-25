@@ -61,7 +61,7 @@ export function MinimapTabChip({ chip, workspaceId, paneId, selected, open, colu
     data-dashboard-active={selected || undefined}
     data-declared={chip.declared || undefined}
     title={ageSentence ? `${label}\n${ageSentence}` : label}
-    aria-label={`${label} — ${agentSegment ? `${agentSegment}・` : ""}${labels.tooltip}${ageSentence ? `・${ageSentence}` : ""}。${jumpHint}。${groupHint}`}
+    aria-label={`${label} — ${agentSegment ? `${agentSegment}・` : ""}${labels.tooltip}${chip.contextPct == null ? "" : `・CTX ${Math.round(chip.contextPct)}%`}${ageSentence ? `・${ageSentence}` : ""}。${jumpHint}。${groupHint}`}
     aria-pressed={isBundleSelected}
     onPointerDown={beginChipDrag}
     onClick={(event) => {
@@ -80,9 +80,11 @@ export function MinimapTabChip({ chip, workspaceId, paneId, selected, open, colu
       {agentSegment ? <span className="cmux-minimap-agent">{agentSegment}</span> : null}
       {chip.declared ? null : statusDot}
       {needsAnswer ? <span className="cmux-minimap-question">返答待ち</span> : null}
+      {chip.contextPct == null ? null : <span className="cmux-minimap-ctx" data-minimap-ctx={chip.tabId}>{Math.round(chip.contextPct)}%</span>}
       {age ? <span className="cmux-minimap-age">{age}</span> : null}
     </span>}
     <span className="cmux-minimap-label">{label}</span>
+    {collapsed && chip.contextPct != null ? <span className="cmux-minimap-ctx" data-minimap-ctx={chip.tabId}>{Math.round(chip.contextPct)}%</span> : null}
     {collapsed && !chip.declared ? statusDot : null}
   </button>;
 }

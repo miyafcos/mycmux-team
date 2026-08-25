@@ -89,10 +89,10 @@ describe("usage metrics", () => {
     expect(isStackable("costUsd")).toBe(true);
   });
 
-  it("reads costUsd off the group and formats it as USD", () => {
+  it("reads costUsd off the group and formats it as yen", () => {
     expect(metricValue(row, "costUsd")).toBe(0);
     expect(metricValue(group("priced", { costUsd: 12.3 }), "costUsd")).toBe(12.3);
-    expect(formatMetric(12.3, "costUsd")).toBe("$12.30");
+    expect(formatMetric(12.3, "costUsd")).toBe("¥1,845");
   });
 });
 
@@ -179,7 +179,7 @@ describe("daily stack", () => {
       model.days[dayIndex].slices.find((slice) => slice.group === name)?.color;
     expect(colourOf(0, "claude-opus-5")).toBe(colourOf(1, "claude-opus-5"));
     expect(colourOf(0, UNKNOWN_GROUP)).toBe(NEUTRAL_COLOR);
-    expect(groupLabel(UNKNOWN_GROUP)).toBe("モデル不明");
+    expect(groupLabel(UNKNOWN_GROUP)).toBe("ログにモデル名なし");
     expect(groupLabel(OTHER_GROUP)).toBe("下位まとめ");
     expect(groupLabel("opus-5")).toBe("opus-5");
   });
@@ -427,7 +427,7 @@ describe("groupByLabel", () => {
     expect(groupByLabel("model_raw")).toBe("モデル");
     expect(groupByLabel("project")).toBe("案件");
     expect(groupByLabel("kind")).toBe("CLI");
-    expect(groupByLabel("effort")).toBe("effort");
+    expect(groupByLabel("effort")).toBe("推論の深さ");
   });
 
   it("applies kind and effort display rules", () => {

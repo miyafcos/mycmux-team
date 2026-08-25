@@ -15,7 +15,7 @@ import {
   formatCount,
   formatTokens,
   formatTokensFull,
-  formatUsd,
+  formatMoney,
   kindLabel,
   type PivotAxis,
   type PriceCoverage,
@@ -41,7 +41,7 @@ export interface UsageMetricInfo {
   label: string;
   /** Shown under the headline number, stating what was counted. */
   hint: string;
-  unit: "tokens" | "count" | "usd";
+  unit: "tokens" | "count" | "money";
 }
 
 export const USAGE_METRICS: UsageMetricInfo[] = [
@@ -57,7 +57,7 @@ export const USAGE_METRICS: UsageMetricInfo[] = [
     hint: "キャッシュ読み書きを含む、モデルが処理した総量",
     unit: "tokens",
   },
-  { id: "turns", label: "ターン数", hint: "API 呼び出しの回数", unit: "count" },
+  { id: "turns", label: "ターン数", hint: "AIの処理単位の回数。1つの依頼で複数ターンになる場合があります", unit: "count" },
   {
     id: "sessions",
     label: "セッション数",
@@ -67,8 +67,8 @@ export const USAGE_METRICS: UsageMetricInfo[] = [
   {
     id: "costUsd",
     label: "コスト相当",
-    hint: "単価既知分のみの推計",
-    unit: "usd",
+    hint: "公表価格・ログ報告額・定額・ローカル情報から計算した参考値",
+    unit: "money",
   },
 ];
 
@@ -113,13 +113,13 @@ export function isStackable(metric: UsageMetric): boolean {
 
 export function formatMetric(value: number, metric: UsageMetric): string {
   const unit = usageMetricInfo(metric).unit;
-  if (unit === "usd") return formatUsd(value);
+  if (unit === "money") return formatMoney(value);
   return unit === "tokens" ? formatTokens(value) : formatCount(value);
 }
 
 export function formatMetricFull(value: number, metric: UsageMetric): string {
   const unit = usageMetricInfo(metric).unit;
-  if (unit === "usd") return formatUsd(value);
+  if (unit === "money") return formatMoney(value);
   return unit === "tokens" ? formatTokensFull(value) : formatCount(value);
 }
 
@@ -138,7 +138,7 @@ export function valueAxisTicks(max: number): number[] {
   return ticks.length >= 2 ? ticks : [0, max];
 }
 
-export function metricUnit(metric: UsageMetric): "tokens" | "count" | "usd" {
+export function metricUnit(metric: UsageMetric): "tokens" | "count" | "money" {
   return usageMetricInfo(metric).unit;
 }
 
@@ -183,7 +183,7 @@ export const USAGE_AXES: UsageAxis[] = [
     hint: "作業パスと編集・参照ファイルから決めた案件名",
     series: true,
   },
-  { value: "effort", label: "effort", hint: "Codex の reasoning effort", series: true },
+  { value: "effort", label: "推論の深さ", hint: "Codex が記録した reasoning effort 設定。品質・難易度・作業量の評価ではありません", series: true },
   { value: "kind", label: "CLI", hint: "Claude Code / Codex / Grok", series: true },
   { value: "origin", label: "起動元", hint: "セッションを起こした経路", series: false },
 ];
@@ -207,7 +207,7 @@ export function bucketNoun(bucket: UsageBucket): string {
 /** Same wording as the model table cost column. */
 export function costCoverageLabel(coverage: PriceCoverage): string {
   return coverage.coveredTokenRatio < 1
-    ? `コスト相当 (単価既知の ${Math.round(coverage.coveredTokenRatio * 100)}% 分)`
+    ? `コスト相当 (対象トークンのうち価格情報あり ${Math.round(coverage.coveredTokenRatio * 100)}%)`
     : "コスト相当";
 }
 
@@ -304,7 +304,7 @@ export interface UsageModel {
 
 export const OTHER_GROUP = "(folded)";
 export const UNKNOWN_GROUP = "(unknown)";
-export const UNKNOWN_LABEL = "モデル不明";
+export const UNKNOWN_LABEL = "ログにモデル名なし";
 
 /** `(unknown)` comes from turns whose transcript recorded no model name. */
 export function groupLabel(group: string, groupBy?: SeriesGroupBy): string {

@@ -139,6 +139,20 @@ describe("dashboard model", () => {
     expect(built.noUpdateMinutes).toBe(0);
   });
 
+  it("copies livebrief telemetry onto the card", () => {
+    const telemetry = {
+      model: { name: "opus-5", effort: "high" },
+      context: { pct: 34, tokens: 68_000 },
+      cost: { usd: 1.23, source: "computed" as const },
+      turns: { count: 4, compacts: 1 },
+    };
+    const [built] = cards({
+      briefsBySession: { "s-1": brief({ telemetry }) },
+    });
+    expect(built.telemetry).toEqual(telemetry);
+    expect(cards({ briefsBySession: { "s-1": brief({ telemetry: null }) } })[0].telemetry).toBeNull();
+  });
+
   it("marks a tab that has no brief, no buffer and no activity as never started", () => {
     const [built] = cards({ hasTerminalBuffer: () => false });
     expect(built.neverStarted).toBe(true);

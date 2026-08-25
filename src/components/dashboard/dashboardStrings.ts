@@ -113,6 +113,24 @@ export const dashboardStrings = {
   recommendedBadge: "推奨",
   otherFreeText: "その他 (自由入力)…",
   numberKeyHint: "1 / 2 / 3 キーでも選択",
+  askQuestionSubmit: "送信",
+  askQuestionSending: "送信中",
+  askQuestionTabProgress: (done: number, total: number): string => `${done}/${total}`,
+  askQuestionStopReason: (code: string): string => {
+    if (code === "busy") return "この質問への送信は処理中です";
+    if (code === "stale_question") return "質問が変わったため送っていません";
+    if (code === "null_scan") return "画面の質問を読めなかったため送っていません";
+    if (code === "attention_mismatch") return "対象が変わったため送っていません";
+    if (code === "session_revision_mismatch") return "対象が変わったため送っていません";
+    if (code === "target_disappeared") return "質問の対象が消えたため送っていません";
+    if (code === "unchanged_screen") return "画面が変わらなかったため、続きは送っていません";
+    if (code === "read_failure") return "画面を読めなかったため送っていません";
+    if (code === "transport") return "内部通信に失敗したため送っていません";
+    if (code === "ambiguous") return "画面の状態が確定できないため送っていません";
+    if (code === "undiscovered_tab") return "未表示の質問には送っていません";
+    if (code === "needs_confirmation") return "新しい質問が現れました。確認してから続けてください";
+    return code;
+  },
   // チャット (ChatTranscript)
   chatEmpty: "まだ会話の記録がありません",
   // 読み込み失敗と「本当に空」を区別する (2026-08-17 FB)。理由の詳細は telemetryUnlinked / telemetryUnavailable を併記
@@ -137,6 +155,7 @@ export const dashboardStrings = {
   composerSend: "送信 ⏎",
   composerAriaLabel: "選択中のペインへの指示入力",
   composerNotStarted: "まだ開いていないタブなので送信できません",
+  composerBlockedByAskQuestion: "質問カードで回答するまで通常の指示は送信できません",
   sendConfirmedOnScreen: "入力後の画面更新を確認しました",
   sendUnverified: "入力をキューに追加しましたが、画面で確認できませんでした",
   sendUnverifiedTargetUnmounted: "入力をキューに追加しましたが、対象タブが未マウントのため画面で確認できませんでした",
@@ -338,4 +357,65 @@ export const dashboardStrings = {
   contractRunUnknown: "まだ分かりません",
   contractRunMerge: "本ブランチへの反映",
   contractHumanApprovalRequired: "人の承認が必要",
+} as const;
+
+export const tabGroupingStrings = {
+  buttonLabel: "タブ再配置",
+  buttonBusy: "再配置を分析中…",
+  panelAriaLabel: "タブ再配置",
+  title: "タブ再配置",
+  stepCompare: "1 案を比較",
+  stepEdit: "2 内容を編集",
+  stepConfirm: "3 適用前確認",
+  analyzing: "全ワークスペースを分析しています…",
+  analyzeAgain: "再分析する",
+  analyzed: "分析完了",
+  unassignedTitle: "未分類",
+  moveToUnassigned: "未分類へ",
+  applyZeroMoves: "動かすタブがありません",
+  warningsTitle: "警告",
+  close: "閉じる",
+  empty: "再配置できる生きたターミナルがありません",
+  comparisonInsufficient: "比較できる案が1件しかありません",
+  strategyProject: "案件",
+  strategyRole: "役割",
+  strategyMinimal: "移動最小",
+  strategyMixed: "複合",
+  movedCount: (n: number): string => `移動 ${n}`,
+  newWorkspaceCount: (n: number): string => `新規WS ${n}`,
+  keptCount: (n: number): string => `現状維持 ${n}`,
+  warningCount: (n: number): string => `警告 ${n}`,
+  showCurrent: "現在を表示",
+  showAfter: "適用後を表示",
+  adopt: "採用",
+  defer: "保留",
+  deferredHint: "現状位置に残します",
+  changeDestination: "変更",
+  destinationCurrent: "現状位置に残す",
+  destinationExisting: "既存ワークスペースへ合流",
+  destinationNew: "新しいワークスペース",
+  newGroup: "＋新しいグループ",
+  moveSelected: "移動先…",
+  selectedTabs: (n: number): string => `${n}件を選択中`,
+  paneRoleMother: "母艦",
+  paneRoleWorker: "作業",
+  paneRoleReview: "レビュー",
+  paneRoleMixed: "混在",
+  paneRoleUnspecified: "未指定",
+  confirmCurrent: "現在",
+  confirmAfter: "適用後",
+  confirmDiff: "差分",
+  apply: "適用",
+  applying: "適用しています…",
+  applyBlocked: "状態が変わったため適用できません。差分を確認して編集に戻ってください。",
+  emptyWorkspaces: (n: number): string => `${n}個のWSが空になりました`,
+  inspectEmpty: "確認する",
+  notDeleted: "削除されません",
+  newBadge: "新規",
+  undoApplied: (n: number): string => `再配置を適用しました — ${n}タブ移動`,
+  undo: "元に戻す",
+  undoReview: "変更内容を見る",
+  undoExpired: "その後レイアウトが変更されたため元に戻せません",
+  recallUndo: "直前の再配置",
+  unnamedTab: "無名タブ",
 } as const;

@@ -11,6 +11,7 @@ vi.mock("../../src/lib/ailog", async (importOriginal) => ({
 }));
 
 import { UsageView } from "../../src/components/ailog/UsageView";
+import { UsageRhythm } from "../../src/components/ailog/UsageRhythm";
 import { WORK_TAG_OVERLAP_NOTE } from "../../src/components/ailog/WorkTagTable";
 import { ailogReworkRankings, type ModelsReport, type Overview, type UsageRhythmReport } from "../../src/lib/ailog";
 import { __resetAilogStoreForTests, useAilogStore } from "../../src/stores/ailogStore";
@@ -72,6 +73,7 @@ const models = {
 
 const viewProps = {
   overview: null,
+  previousTotalsStatus: "idle" as const,
   models: null,
   sessions: null,
   series: null,
@@ -102,6 +104,12 @@ const viewProps = {
   pivotError: null,
   sessionSort: "rework" as const,
   sessionPage: 0,
+  sessionQuery: "",
+  sessionAppliedQuery: "",
+  sessionAppliedSort: "rework" as const,
+  sessionAppliedPage: 0,
+  sessionLoading: false,
+  sessionError: null,
   detailKey: null,
   onRefresh: () => {},
   onRetryUsage: () => {},
@@ -119,18 +127,41 @@ const viewProps = {
   onRetryPivot: () => {},
   onSessionSort: () => {},
   onSessionPage: () => {},
+  onSessionQuery: () => {},
+  onRetrySessions: () => {},
   onOpenDetail: () => {},
 };
 
 describe("UsageView", () => {
+  it("states the actual denominator of the active-day ratio", () => {
+    const html = renderToStaticMarkup(<UsageRhythm report={emptyRhythm} metric="ioTokens" />);
+    expect(html).toContain("記録がある区間の稼働日");
+    expect(html).toContain("最初の記録日〜最後の記録日を分母");
+  });
+
+  it("keeps the active filter visible when it matches no sessions", () => {
+    const emptyOverview = { ...overview, totals: { ...overview.totals, sessions: 0 } };
+    const html = renderToStaticMarkup(
+      <UsageView
+        {...viewProps}
+        overview={emptyOverview}
+        noData
+        selection={{ model: { key: "gpt-5.6-sol", label: "gpt-5.6-sol" } }}
+      />,
+    );
+    expect(html).toContain("モデル: gpt-5.6-sol ×");
+    expect(html).toContain("絞り込みに一致する記録なし");
+    expect(html).toContain("絞り込みを解除");
+  });
+
   it("keeps the usage information architecture and defers supporting detail", () => {
     const html = renderToStaticMarkup(<UsageView {...viewProps} />);
     expect(html).toContain("この期間");
     expect(html).toContain("何に使ったか");
     expect(html).toContain("つまずいた場所");
     expect(html).toContain("推移");
-    expect(html).toContain("モデル別");
-    expect(html).toContain("クロス集計");
+    expect(html).toContain("シリーズ別");
+    expect(html).toContain("2つの切り口で比較");
     expect(html).toContain("案件別");
     expect(html).toContain("セッション一覧");
     expect(html).toContain("稼働リズム");
@@ -153,13 +184,41 @@ describe("UsageView", () => {
     expect(html).toContain(WORK_TAG_OVERLAP_NOTE);
     expect(html).toContain("デバッグ");
     expect(html).toContain("コード探索");
-    expect(html).toContain("$12.40");
+    expect(html).toContain("¥1,860");
     expect(html).not.toContain("全体の");
     expect(html).not.toContain("合計は全体を超えます");
     expect(html).not.toContain("期間指定に追随");
     expect(html).not.toContain("--cmux-usage-warn");
     expect(html).not.toContain("--cmux-usage-danger");
     expect(html).not.toContain("--cmux-usage-ok");
+  });
+
+  it("discloses agent overlap and the sidechain override next to that breakdown", () => {
+    const breakdown = {
+      range: overview.range,
+      dimension: "agent",
+      rows: [{ key: "worker", sessions: 1, turns: 2, input: 1, output: 1, cacheRead: 0, cacheWrite: 0, costUsd: 1, sharePct: 100, cacheHitRate: 0, avgRework: 0 }],
+      overlapping: true,
+      priceSource: "test",
+      priceCoverage,
+      costNote: "",
+    };
+    const html = renderToStaticMarkup(<UsageView {...viewProps} overview={overview} breakdownDimension="agent" breakdown={breakdown} />);
+    expect(html).toContain("同じターンを計上");
+    expect(html).toContain("サブエージェントのターンも含める");
+    expect(html).toContain("合計できません");
+  });
+
+  it("shows the three-second orientation and page index from real report values", () => {
+    const sessions = { range: overview.range, rows: [], total: 0, priceSource: "test", costNote: "" };
+    const html = renderToStaticMarkup(<UsageView {...viewProps} overview={overview} sessions={sessions} />);
+    expect(html).toContain("3秒で分かる現在地");
+    expect(html).toContain("現在");
+    expect(html).toContain("変化");
+    expect(html).toContain("次に見る");
+    expect(html).toContain("AIログ分析のページ内索引");
+    expect(html).toContain("主題・最初の依頼・案件を検索");
+    expect(html).toContain("href=\"#ailog-sessions\"");
   });
 
   it("does not mount rework rankings while the section stays collapsed", () => {

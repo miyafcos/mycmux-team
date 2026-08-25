@@ -8,12 +8,21 @@ import {
   formatCount,
   formatPct,
   formatScore,
-  formatUsd,
+  formatMoney,
   type BreakdownReport,
   type Overview,
 } from "../../lib/ailog";
 import type { AilogSelection } from "../../stores/ailogStore";
-import { ShareBar, VScrollBox, noteStyle, tableStyle, tdLeftStyle, tdStyle, thLeftStyle, thStyle } from "./ui";
+import { ShareBar, VScrollBox, noteStyle, tableActionButtonStyle, tableStyle, tdLeftStyle, tdStyle, thLeftStyle, thStyle } from "./ui";
+
+function breakdownValueLabel(value: string, dimensionLabel: string): string {
+  if (!value || value === "(none)") return "未指定";
+  if (value === "(unknown)") return dimensionLabel === "案件" ? "案件未指定" : "不明";
+  if (value === "(untitled)") return "主題なし";
+  if (value === "(main)") return "母艦";
+  if (value === "unknown") return "不明";
+  return value;
+}
 
 export function ProjectTable({
   report,
@@ -34,13 +43,16 @@ export function ProjectTable({
     (overview?.topProjects ?? []).map((project) => [project.projectLabel, project.topTitle]),
   );
   const costLabel = report.priceCoverage.coveredTokenRatio < 1
-    ? `コスト相当 (単価既知の ${Math.round(report.priceCoverage.coveredTokenRatio * 100)}% 分)`
+    ? `コスト相当 (対象トークンのうち価格情報あり ${Math.round(report.priceCoverage.coveredTokenRatio * 100)}%)`
     : "コスト相当";
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}>
-      <VScrollBox maxHeight={320}>
-        <table style={tableStyle}>
+      {report.dimension === "agent" ? (
+        <div role="note" style={noteStyle}>この内訳だけは「サブエージェントのターンも含める」がオフでもサブエージェントを含みます。{report.overlapping ? "関係するエージェントそれぞれに同じターンを計上するため、行同士が重複し合計できません。" : "この期間の行同士に重複はありません。"}</div>
+      ) : null}
+      <VScrollBox maxHeight={320} label={`${dimensionLabel}別の内訳`}>
+        <table style={{ ...tableStyle, minWidth: projectMode ? 760 : 600 }}>
           <colgroup>
             {projectMode ? (
               <>
@@ -63,36 +75,40 @@ export function ProjectTable({
           </colgroup>
           <thead>
             <tr>
-              <th style={thLeftStyle}>{dimensionLabel}</th>
-              <th style={thStyle}>セッション</th>
-              <th style={thStyle}>{costLabel}</th>
-              <th style={thStyle}>シェア</th>
-              {projectMode ? <th style={thLeftStyle}>主な主題</th> : null}
-              <th style={thStyle}>平均手戻り</th>
+              <th scope="col" style={thLeftStyle}>{dimensionLabel}</th>
+              <th scope="col" style={thStyle}>セッション</th>
+              <th scope="col" style={thStyle}>{costLabel}</th>
+              <th scope="col" style={thStyle}>シェア</th>
+              {projectMode ? <th scope="col" style={thLeftStyle}>主な主題</th> : null}
+              <th scope="col" style={thStyle}>平均手戻り</th>
             </tr>
           </thead>
           <tbody>
             {report.rows.map((row) => {
-              const selected = projectMode && selection?.project?.key === row.key;
+              const filterableProject = projectMode && row.key !== "(unknown)" && row.key !== "unknown";
+              const selected = filterableProject && selection?.project?.key === row.key;
               return (
                 <tr
                   key={row.key}
                   aria-selected={selected}
-                  style={{ background: selected ? "var(--cmux-selected)" : undefined, cursor: projectMode ? "pointer" : undefined }}
-                  onClick={() => {
-                    if (!projectMode) return;
-                    if (selected) {
-                      onSelect(selection?.model ? { model: selection.model } : null);
-                    } else {
-                      onSelect({ ...selection, project: { key: row.key, label: row.key } });
-                    }
-                  }}
+                  style={{ background: selected ? "var(--cmux-selected)" : undefined }}
                 >
-                  <td style={tdLeftStyle} title={row.key}>
-                    {row.key}
-                  </td>
+                  <th scope="row" style={{ ...tdLeftStyle, fontWeight: 400 }} title={row.key}>
+                    {filterableProject ? <button
+                      type="button"
+                      aria-pressed={selected}
+                      onClick={() => {
+                        if (selected) {
+                          onSelect(selection?.model ? { model: selection.model } : null);
+                        } else {
+                          onSelect({ ...selection, project: { key: row.key, label: breakdownValueLabel(row.key, dimensionLabel) } });
+                        }
+                      }}
+                      style={tableActionButtonStyle}
+                    >{breakdownValueLabel(row.key, dimensionLabel)}</button> : breakdownValueLabel(row.key, dimensionLabel)}
+                  </th>
                   <td style={tdStyle}>{formatCount(row.sessions)}</td>
-                  <td style={tdStyle}>{formatUsd(row.costUsd)}</td>
+                  <td style={tdStyle}>{formatMoney(row.costUsd)}</td>
                   <td style={tdStyle}>
                     <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
                       <ShareBar pct={row.sharePct} />
@@ -108,7 +124,7 @@ export function ProjectTable({
         </table>
       </VScrollBox>
       <div style={noteStyle}>
-        {projectMode ? `${formatCount(report.rows.length)} 案件。行をクリックするとその案件で全体を絞り込みます。案件名は作業パスと編集・参照ファイルから決定します。` : formatCount(report.rows.length)}
+        {projectMode ? `${formatCount(report.rows.length)} 案件。案件名を選ぶと全体を絞り込みます。案件名は作業パスと編集・参照ファイルから決定します。` : `${formatCount(report.rows.length)} 件`}
       </div>
     </div>
   );

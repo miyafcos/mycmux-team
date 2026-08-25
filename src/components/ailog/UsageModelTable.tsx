@@ -3,7 +3,7 @@
  *
  * Ordered by the selected metric, not by cost — the whole point of the tab is
  * that those two orders disagree. Model classes keep an unknown price visibly
- * distinct from a local or flat-rate $0.
+ * distinct from a local or flat-rate zero.
  */
 
 import { SYNTHETIC_MODEL, type SeriesGroupBy, type SeriesReport } from "../../lib/ailog";
@@ -24,8 +24,10 @@ import {
   Num,
   ShareBar,
   ThCell,
+  VScrollBox,
   noteStyle,
   tableStyle,
+  tableActionButtonStyle,
   tdLeftStyle,
   tdStyle,
   thLeftStyle,
@@ -115,12 +117,13 @@ export function UsageModelTable({
 
   const metricKind = metricUnit(metric);
   const costSub = report.priceCoverage.coveredTokenRatio < 1
-    ? `単価既知の ${Math.round(report.priceCoverage.coveredTokenRatio * 100)}% 分`
+    ? `対象トークンのうち価格情報あり ${Math.round(report.priceCoverage.coveredTokenRatio * 100)}%`
     : undefined;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}>
-        <table style={tableStyle}>
+      <VScrollBox label={`${groupingLabel}別の利用内訳`}>
+        <table style={{ ...tableStyle, minWidth: 1120 }}>
           <colgroup>
             <col style={{ width: "18%" }} />
             <col style={{ width: "9%" }} />
@@ -136,7 +139,7 @@ export function UsageModelTable({
           </colgroup>
           <thead>
             <tr>
-              <th style={thLeftStyle}>{groupingLabel}</th>
+              <th scope="col" style={thLeftStyle}>{groupingLabel}</th>
               <ThCell main={usageMetricInfo(metric).label} />
               <ThCell main="シェア" />
               <ThCell main="入力" />
@@ -144,7 +147,7 @@ export function UsageModelTable({
               <ThCell main="キャッシュ" sub="読み" />
               <ThCell main="キャッシュ" sub="書き" />
               <ThCell main="ターン" />
-              <ThCell main="セッション" />
+              <ThCell main="延べ" sub="セッション" title="日別のセッション数を合計。日をまたぐ同一セッションは重複します" />
               <ThCell main="使用" sub="日数" />
               <ThCell main="コスト相当" sub={costSub} title={costLabel} />
             </tr>
@@ -160,42 +163,45 @@ export function UsageModelTable({
               const modelClass = classForGroup(row.group);
               const paint = modelTablePaint(row.group, report.groupBy);
               const cost = modelClass === "unknown" || isUnknown
-                ? { value: "—", title: "単価未公表のため除外" }
+                ? { value: "—", title: "価格情報がないため除外" }
                 : modelClass === "local"
-                  ? { value: "usd", title: "ローカル実行 — 費用なし" }
+                  ? { value: "money", title: "ローカル実行 — 費用なし" }
                   : modelClass === "flat"
-                    ? { value: "usd", title: "定額プラン — 従量費用なし" }
+                    ? { value: "money", title: "定額プラン — 従量費用なし" }
                     : report.groupBy === "provider" && row.group === "xai"
-                      ? { value: "usd", title: "Grok の自己申告コスト" }
-                      : { value: "usd", title: undefined };
+                      ? { value: "money", title: "Grok の自己申告コスト" }
+                      : { value: "money", title: undefined };
               return (
                 <tr
                   key={row.group}
                   aria-selected={selected || undefined}
-                  style={{
-                    background: selected ? "var(--cmux-selected)" : undefined,
-                    cursor: clickable ? "pointer" : undefined,
-                  }}
-                  onClick={() => {
-                    if (!clickable) return;
-                    if (selected) {
-                      onSelect(selection?.project ? { project: selection.project } : null);
-                    } else {
-                      onSelect({ ...selection, model: { key: row.group, label: groupLabel(row.group, report.groupBy) } });
-                    }
-                  }}
+                  style={{ background: selected ? "var(--cmux-selected)" : undefined }}
                 >
-                  <td style={tdLeftStyle}>
-                    <span style={{ display: "inline-flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                  <th scope="row" style={{ ...tdLeftStyle, fontWeight: 400 }}>
+                    {clickable ? <button
+                      type="button"
+                      aria-pressed={selected}
+                      onClick={() => {
+                        if (selected) {
+                          onSelect(selection?.project ? { project: selection.project } : null);
+                        } else {
+                          onSelect({ ...selection, model: { key: row.group, label: groupLabel(row.group, report.groupBy) } });
+                        }
+                      }}
+                      style={tableActionButtonStyle}
+                    ><span style={{ display: "inline-flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                      <span aria-hidden="true" style={{ width: 9, height: 9, borderRadius: 2, background: paintSwatchBackground(paint), display: "inline-block" }} />
+                      {groupLabel(row.group, report.groupBy)}
+                    </span></button> : <span style={{ display: "inline-flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
                       <span aria-hidden="true" style={{ width: 9, height: 9, borderRadius: 2, background: paintSwatchBackground(paint), display: "inline-block" }} />
                       {groupLabel(row.group, report.groupBy)}
                       {isUnknown ? (
                         <Chip tone="warn" title="Codex の token_count イベントにモデルが無い記録です">
-                          モデルなし
+                          ログにモデル名なし
                         </Chip>
                       ) : null}
-                    </span>
-                  </td>
+                    </span>}
+                  </th>
                   <td style={tdStyle}><Num value={row.metric} kind={metricKind} bare={metricKind === "tokens"} /></td>
                   <td style={tdStyle}>
                     <ShareBar pct={share} title={`${share.toFixed(1)}%`} />
@@ -209,15 +215,16 @@ export function UsageModelTable({
                   <td style={tdStyle}><Num value={row.sessions} kind="count" /></td>
                   <td style={tdStyle}><Num value={row.days} kind="count" /></td>
                   <td style={{ ...tdStyle, color: cost.value === "—" ? "var(--cmux-text-tertiary)" : undefined }}>
-                    {cost.value === "—" ? "—" : <Num value={row.costUsd} kind="usd" title={cost.title} />}
+                    {cost.value === "—" ? "—" : <Num value={row.costUsd} kind="money" title={cost.title} />}
                   </td>
                 </tr>
               );
             })}
           </tbody>
         </table>
+      </VScrollBox>
       <div style={noteStyle}>
-        セッション数は{groupingLabel}ごとに数えているため、合計は実際のセッション本数より多くなります (1 本が複数{groupingLabel}を使うため)。行をクリックするとそのモデルで全体を絞り込みます。
+        延べセッションは日別・{groupingLabel}別の値を合計しているため、日をまたぐ同一セッションや複数{groupingLabel}を使う1本は重複します。実セッション数は上の概要で確認してください。{report.groupBy === "model" || report.groupBy === "model_raw" ? `${groupingLabel}名を選ぶと全体を絞り込みます。` : "この内訳では行の絞り込みは行いません。"}
       </div>
     </div>
   );

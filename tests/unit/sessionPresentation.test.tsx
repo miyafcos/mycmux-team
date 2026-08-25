@@ -98,18 +98,18 @@ describe("session presentation", () => {
     expect(html).toContain("ほか 2");
   });
 
-  it("renders (unknown) as モデル不明", () => {
+  it("renders (unknown) as ログにモデル名なし", () => {
     const row: SessionRow = {
       ...baseSession,
       rangeModels: ["(unknown)", "gpt-5.6-sol"],
       rangeModelCount: 2,
     };
-    expect(sessionModelLabel(row)).toBe("Codex · モデル不明 + gpt-5.6-sol");
-    expect(sessionModelTitle(row)).toBe("モデル不明 / gpt-5.6-sol");
+    expect(sessionModelLabel(row)).toBe("Codex · ログにモデル名なし + gpt-5.6-sol");
+    expect(sessionModelTitle(row)).toBe("ログにモデル名なし / gpt-5.6-sol");
     const html = renderToStaticMarkup(
       <SessionTable report={{ range: { from: 0, to: 1, label: "test" }, rows: [row], total: 1, priceSource: "", costNote: "" }} sort="recent" onSort={() => {}} page={0} onPage={() => {}} pageSize={100} onOpenDetail={() => {}} activeKey={null} />,
     );
-    expect(html).toContain("モデル不明");
+    expect(html).toContain("ログにモデル名なし");
     expect(html).not.toContain("(unknown)");
   });
 });

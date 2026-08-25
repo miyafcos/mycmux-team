@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { handleSocketCommand } from "../../src/components/layout/socketCommands";
+import { handleSocketCommand, readPaneTail } from "../../src/components/layout/socketCommands";
 import { useWorkspaceListStore } from "../../src/stores/workspaceListStore";
 import type { Pane, PaneTab, Workspace } from "../../src/types";
 
@@ -107,6 +107,22 @@ describe("pane.read background fallback", () => {
     });
     expect(headlessBufferMocks.getHeadlessBufferLines).toHaveBeenCalledWith(sessionId, snapshot, 3);
     expect(terminalBufferMocks.getTerminalBufferLines).not.toHaveBeenCalled();
+  });
+
+  it("can bypass a cached renderer and read current PTY scrollback", async () => {
+    const snapshot = {
+      data: new Uint8Array([99, 117, 114, 114, 101, 110, 116]),
+      startOffset: 20,
+      endOffset: 27,
+    };
+    terminalBufferMocks.hasTerminalBuffer.mockReturnValue(true);
+    ipcMocks.getSessionScrollback.mockResolvedValue(snapshot);
+    headlessBufferMocks.getHeadlessBufferLines.mockResolvedValue(["current"]);
+
+    await expect(readPaneTail(sessionId, 60, true)).resolves.toEqual(["current"]);
+    expect(terminalBufferMocks.getTerminalBufferLines).not.toHaveBeenCalled();
+    expect(ipcMocks.getSessionScrollback).toHaveBeenCalledWith(sessionId);
+    expect(headlessBufferMocks.getHeadlessBufferLines).toHaveBeenCalledWith(sessionId, snapshot, 60);
   });
 
   it("keeps the existing error when backend scrollback is empty", async () => {

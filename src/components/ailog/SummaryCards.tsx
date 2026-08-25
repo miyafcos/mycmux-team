@@ -11,7 +11,7 @@ import {
   formatDelta,
   formatRatio,
   formatScore,
-  formatUsd,
+  formatMoney,
   type Overview,
   type RangePreset,
 } from "../../lib/ailog";
@@ -22,28 +22,31 @@ export function SummaryCards({ overview, preset }: { overview: Overview; preset:
   const { totals, comparePrevious, rework } = overview;
 
   const costLabel = overview.priceCoverage.coveredTokenRatio < 1
-    ? `コスト相当 (単価既知の ${Math.round(overview.priceCoverage.coveredTokenRatio * 100)}% 分)`
+    ? `コスト相当 (対象トークンのうち価格情報あり ${Math.round(overview.priceCoverage.coveredTokenRatio * 100)}%)`
     : "コスト相当";
-  const cards: { kind: "cost" | "rework"; label: string; value: string; delta: number | null; subtitle: string }[] = [
+  const cards: { kind: "cost" | "rework"; label: string; value: string; delta: number | null; comparable: boolean; subtitle: string }[] = [
     {
       kind: "cost",
       label: costLabel,
-      value: formatUsd(totals.costUsd),
+      value: formatMoney(totals.costUsd),
       delta: comparePrevious.costPct,
-      subtitle: "従量課金だった場合の金額。請求額ではありません",
+      comparable: true,
+      subtitle: "公表価格・ログ報告額・定額・ローカル情報から計算した参考値。請求額ではありません。円額は設定レートでの換算",
     },
     {
       kind: "rework",
       label: "手戻り平均",
       value: formatScore(rework.avgScore),
       delta: comparePrevious.reworkPct,
+      comparable: true,
       subtitle: "0〜100の相対指標。低いほど機械的な手戻りの兆候が少ない",
     },
     {
       kind: "rework",
-      label: "中断率",
+      label: "ツール実行のまま終了した割合",
       value: formatRatio(totals.sessions === 0 ? 0 : rework.abandonedSessions / totals.sessions),
       delta: null,
+      comparable: false,
       subtitle: "ツール実行のまま終わったセッションの割合",
     },
   ];
@@ -61,12 +64,12 @@ export function SummaryCards({ overview, preset }: { overview: Overview; preset:
           <div style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-tertiary)" }}>{card.label}</div>
           <div style={{ fontSize: 18, fontWeight: 700, letterSpacing: "-0.01em", marginTop: 2 }}>{card.value}</div>
           <div style={{ marginTop: 3, fontSize: "var(--cmux-font-size-xs)", minHeight: 14 }}>
-            {card.delta !== null && showCompare ? (
+            {card.comparable && card.delta !== null && showCompare ? (
               <span style={{ color: deltaColor(card.kind, card.delta) }}>
                 {`${formatDelta(card.delta)} 前期間比`}
               </span>
-            ) : card.delta !== null ? (
-              <span style={{ color: "var(--cmux-text-tertiary)" }}>前期間データなし</span>
+            ) : card.comparable ? (
+              <span style={{ color: "var(--cmux-text-tertiary)" }}>{showCompare ? "前期間 0 のため比率なし" : "全期間表示のため前期間比較なし"}</span>
             ) : null}
           </div>
           <div style={{ marginTop: 5, fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-secondary)", lineHeight: 1.4 }}>{card.subtitle}</div>

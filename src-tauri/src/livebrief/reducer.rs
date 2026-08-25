@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::adapter::{SemanticEventEnvelope, SemanticEventKind, UserMessageKind};
+use super::telemetry::{TelemetryAccumulator, TelemetryDelta};
 use super::{sha256_hex, LiveBinding, LiveSessionBrief};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -29,10 +30,19 @@ pub struct LiveBriefReducer {
     pending: Option<(String, String, String, PendingInputKind, Vec<PendingOption>)>,
     event_seq: u64,
     last_event_at: Option<i64>,
+    telemetry: TelemetryAccumulator,
 }
 
 impl LiveBriefReducer {
-    pub fn new() -> Self { Self { task: None, latest_instruction: None, task_source_event_ids: Vec::new(), open_tools: Vec::new(), activity: None, checkpoint: None, pending: None, event_seq: 0, last_event_at: None } }
+    pub fn new() -> Self { Self { task: None, latest_instruction: None, task_source_event_ids: Vec::new(), open_tools: Vec::new(), activity: None, checkpoint: None, pending: None, event_seq: 0, last_event_at: None, telemetry: TelemetryAccumulator::default() } }
+
+    pub fn apply_telemetry(&mut self, delta: TelemetryDelta) {
+        self.telemetry.apply(delta);
+    }
+
+    pub fn reset_telemetry(&mut self) {
+        self.telemetry.reset();
+    }
 
     pub fn apply(&mut self, event: &SemanticEventEnvelope) {
         self.event_seq = self.event_seq.saturating_add(1);
@@ -81,6 +91,7 @@ impl LiveBriefReducer {
             prompt_event_id: pending.as_ref().map(|pending| pending.0.clone()), prompt_hash,
             event_seq: self.event_seq, operational_state: if pending.is_some() { "needsHuman".to_string() } else if activity.is_some() { "running".to_string() } else { "ready".to_string() }, telemetry_health: health.to_string(),
             last_event_at: self.last_event_at, last_successful_read_at: Some(now), updated_at: now, service_epoch: service_epoch.to_string(), brief_revision: 0,
+            telemetry: self.telemetry.to_telemetry(),
         }
     }
 }
@@ -126,5 +137,47 @@ mod tests {
         assert!(reducer.pending.is_some());
         reducer.apply(&event("r2", SemanticEventKind::QuestionResolved { prompt_event_id: "p1".to_string(), provider_call_id: "c1".to_string() }));
         assert!(reducer.pending.is_none());
+    }
+
+    #[test]
+    fn telemetry_accumulates_into_the_brief() {
+        use crate::livebrief::telemetry::{BillableTokens, TelemetryDelta};
+        let mut reducer = LiveBriefReducer::new();
+        reducer.apply_telemetry(TelemetryDelta {
+            model: Some("claude-sonnet-4-6".to_string()),
+            effort: Some("high".to_string()),
+            occupancy_tokens: Some(40_000),
+            billable: Some(BillableTokens {
+                input: 1_000_000,
+                output: 0,
+                model: Some("claude-sonnet-4-6".to_string()),
+                ..BillableTokens::default()
+            }),
+            turn_inc: 1,
+            compact_inc: 2,
+            real_turn: true,
+            ..TelemetryDelta::default()
+        });
+        let brief = reducer.to_brief(
+            LiveBinding {
+                pty_session_id: "pty".into(),
+                agent_session_id: "agent".into(),
+                agent_kind: "claude".into(),
+                pty_instance_id: "instance".into(),
+                pty_generation: 1,
+                source_revision: 1,
+                pty_input_revision: 1,
+            },
+            "live",
+            "epoch",
+            1,
+        );
+        let telemetry = brief.telemetry.expect("telemetry");
+        assert_eq!(telemetry.model.as_ref().unwrap().name, "sonnet-4.6");
+        assert_eq!(telemetry.model.as_ref().unwrap().effort.as_deref(), Some("high"));
+        assert_eq!(telemetry.context.as_ref().unwrap().pct, Some(4));
+        assert_eq!(telemetry.turns.as_ref().unwrap().count, 1);
+        assert_eq!(telemetry.turns.as_ref().unwrap().compacts, 2);
+        assert!((telemetry.cost.as_ref().unwrap().usd - 3.0).abs() < 1e-9);
     }
 }

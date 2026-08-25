@@ -16,6 +16,7 @@ import { moveMinimapItemToNewWorkspace } from "./minimapWorkspaceActions";
 import { buildGroups } from "../../lib/groupMembership";
 import { handleSocketCommand } from "../layout/socketCommands";
 import { TabSweepButton } from "../layout/TabSweepButton";
+import { TAB_GROUPING_ENTRY_ENABLED, TabGroupingButton } from "../layout/TabGroupingButton";
 import type { Workspace } from "../../types";
 import { paneContainsSession } from "../../stores/workspaceListStore";
 import { usePaneDragStore, type PaneDragItem } from "../../stores/paneDragStore";
@@ -503,6 +504,7 @@ export const LayoutMinimapPanel = memo(function LayoutMinimapPanel({ workspaces,
           ＋ 新しいワークスペース
         </button>
       </div>
+      {TAB_GROUPING_ENTRY_ENABLED ? <TabGroupingButton /> : null}
       <TabSweepButton />
     </div>
     {closeConfirmation ? <section className="cmux-minimap-bundle-confirm" role="dialog" aria-modal="true" aria-label="選択したタブを閉じる確認" data-minimap-close-confirm="true">

@@ -32,6 +32,23 @@ const sizeStyles: Record<OverlaySize, Pick<CSSProperties, "width" | "height">> =
   },
 };
 
+const FOCUSABLE_SELECTOR = [
+  "a[href]",
+  "button:not([disabled])",
+  "input:not([disabled])",
+  "select:not([disabled])",
+  "textarea:not([disabled])",
+  "summary",
+  "[contenteditable='true']",
+  "[tabindex]:not([tabindex='-1'])",
+].join(",");
+
+function isVisibleDisclosureTarget(element: HTMLElement): boolean {
+  const closedDetails = element.closest("details:not([open])");
+  if (!closedDetails) return true;
+  return element.tagName === "SUMMARY" && element.parentElement === closedDetails;
+}
+
 function backdropStyle(layer: OverlayLayer): CSSProperties {
   return {
     position: "fixed",
@@ -89,12 +106,45 @@ export function OverlayShell({
   }, []);
 
   useEffect(() => {
-    if (!open || closing || !closeOnEscape) return;
+    if (!open || closing) return;
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      if (onEscape?.()) return;
-      onClose();
+      const panel = panelRef.current;
+      if (!panel) return;
+      const dialogs = [...document.querySelectorAll<HTMLElement>(".cmux-overlay-panel[role='dialog']")]
+        .filter((dialog) => !dialog.closest("[inert]"));
+      if (dialogs[dialogs.length - 1] !== panel) return;
+      if (event.key === "Tab") {
+        const focusable = [...panel.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)]
+          .filter((element) => (
+            element.getAttribute("aria-hidden") !== "true"
+            && !element.closest("[inert], [hidden]")
+            && isVisibleDisclosureTarget(element)
+          ));
+        if (focusable.length === 0) {
+          event.preventDefault();
+          panel.focus();
+          return;
+        }
+        const active = document.activeElement as HTMLElement | null;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (active === panel || !active || !panel.contains(active)) {
+          event.preventDefault();
+          (event.shiftKey ? last : first).focus();
+        } else if (event.shiftKey && active === first) {
+          event.preventDefault();
+          last.focus();
+        } else if (!event.shiftKey && active === last) {
+          event.preventDefault();
+          first.focus();
+        }
+        return;
+      }
+      if (event.key === "Escape" && closeOnEscape) {
+        event.preventDefault();
+        if (onEscape?.()) return;
+        onClose();
+      }
     };
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);

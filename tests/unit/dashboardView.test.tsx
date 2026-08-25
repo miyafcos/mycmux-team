@@ -3,6 +3,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -11,6 +12,9 @@ const mocks = vi.hoisted(() => ({
   onSessionStatusChanged: vi.fn(() => Promise.resolve(() => {})),
   handleSocketCommand: vi.fn(),
   observeActiveSession: vi.fn(),
+  submitAskQuestionChoice: vi.fn(async () => ({ ok: true, stopReason: null, keysSent: [] })),
+  submitAskQuestionReview: vi.fn(async () => ({ ok: true, stopReason: null, keysSent: [] })),
+  isAskQuestionBusy: vi.fn(() => false),
 }));
 
 vi.mock("../../src/stores/liveBriefStore", async () => {
@@ -43,6 +47,7 @@ vi.mock("../../src/lib/backgroundAiScheduler", async () => {
 
 vi.mock("../../src/components/terminal/XTermWrapper", () => ({
   getTerminalWriteCounter: () => 0,
+  hasMountedTerminal: () => true,
   hasTerminalBuffer: () => true,
 }));
 
@@ -53,6 +58,18 @@ vi.mock("../../src/components/dashboard/WatchStatusRow", () => ({
 vi.mock("../../src/components/workspace/BrowserPane", () => ({
   default: () => <div data-dashboard-preview-pane="true" />,
 }));
+
+vi.mock("../../src/components/dashboard/askQuestionRouting", async () => {
+  const actual = await vi.importActual<typeof import("../../src/components/dashboard/askQuestionRouting")>(
+    "../../src/components/dashboard/askQuestionRouting",
+  );
+  return {
+    ...actual,
+    submitAskQuestionChoice: mocks.submitAskQuestionChoice,
+    submitAskQuestionReview: mocks.submitAskQuestionReview,
+    isAskQuestionBusy: mocks.isAskQuestionBusy,
+  };
+});
 
 import { clampDashboardChatDropIndicatorOffset, DashboardView } from "../../src/components/dashboard/DashboardView";
 import { dashboardStrings } from "../../src/components/dashboard/dashboardStrings";
@@ -77,6 +94,7 @@ import { usePaneMetadataStore } from "../../src/stores/paneMetadataStore";
 import { useRecentInputStore } from "../../src/stores/recentInputStore";
 import { usePaneDragStore } from "../../src/stores/paneDragStore";
 import { useSessionAttentionStore, type SessionAttention } from "../../src/stores/sessionAttentionStore";
+import { ingestAskQuestionLines, useAskQuestionStore } from "../../src/stores/askQuestionStore";
 import { useStallStore } from "../../src/stores/stallStore";
 import { useWorkspaceListStore } from "../../src/stores/workspaceListStore";
 import type { PaneTab, Workspace } from "../../src/types";
@@ -289,6 +307,7 @@ afterEach(async () => {
   useWorkspaceListStore.setState({ workspaces: [], activeWorkspaceId: null });
   usePaneMetadataStore.setState({ metadata: {}, lastLog: {}, lastLogAt: {} });
   useSessionAttentionStore.getState().resetForTests();
+  useAskQuestionStore.getState().resetForTests();
   useStallStore.getState().replaceEntries({});
   useLiveBriefStore.getState().reset();
   __resetReportInboxStoreForTests();
@@ -1551,5 +1570,130 @@ describe("DashboardView session list collapse", () => {
     expect(useDashboardViewStore.getState().sessionListCollapsed).toBe(false);
     expect(container.querySelector(".cmux-dashboard-shell")?.getAttribute("data-list-collapsed")).toBe("false");
     expect(container.querySelector<HTMLInputElement>(".cmux-dash-list-search input")).toBe(document.activeElement);
+  });
+});
+
+describe("DashboardView AskUserQuestion screen questions", () => {
+  const askTab = (id: string, sessionId: string, label: string): PaneTab => ({
+    ...tab(id, sessionId, label),
+    agentId: "claude",
+    agentKind: "claude",
+  });
+  const fixtures = JSON.parse(
+    readFileSync(resolve(import.meta.dirname, "../fixtures/askQuestionScreens.json"), "utf8"),
+  ) as Record<"single" | "review", string[]>;
+
+  beforeEach(() => {
+    mocks.submitAskQuestionChoice.mockClear();
+    mocks.submitAskQuestionReview.mockClear();
+    mocks.isAskQuestionBusy.mockReturnValue(false);
+  });
+
+  it("shows an AskStrip chip from the screen store when transcript data is empty", async () => {
+    const asking = askTab("tab-screen", "s-screen", "Screen session");
+    seedDashboard({ workspace: workspace([asking]), selectedTabId: asking.id, briefs: [] });
+    ingestAskQuestionLines(asking.sessionId, fixtures.single, NOW);
+    await renderDashboard();
+    const chip = container.querySelector(".cmux-dashboard-askchip");
+    expect(chip?.textContent).toContain("Screen session");
+    expect(chip?.textContent).toContain("Which layout do you prefer?");
+  });
+
+  it("does not route a global number key without focus inside the Ask card", async () => {
+    const asking = askTab("tab-keys", "s-keys", "Key session");
+    seedDashboard({
+      workspace: workspace([asking]),
+      selectedTabId: asking.id,
+      attention: { [asking.sessionId]: inputAttention(asking.sessionId, 1) },
+    });
+    ingestAskQuestionLines(asking.sessionId, fixtures.single, NOW);
+    await renderDashboard();
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "2", bubbles: true, cancelable: true }));
+    });
+    expect(mocks.submitAskQuestionChoice).not.toHaveBeenCalled();
+  });
+
+  it("does not capture AskUserQuestion digits from the cached xterm textarea", async () => {
+    const asking = askTab("tab-xterm", "s-xterm", "XTerm focus session");
+    seedDashboard({ workspace: workspace([asking]), selectedTabId: asking.id });
+    ingestAskQuestionLines(asking.sessionId, fixtures.single, NOW);
+    await renderDashboard();
+    const textarea = document.createElement("textarea");
+    textarea.className = "xterm-helper-textarea";
+    container.appendChild(textarea);
+    textarea.focus();
+
+    await act(async () => {
+      textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "2", bubbles: true, cancelable: true }));
+    });
+
+    expect(mocks.submitAskQuestionChoice).not.toHaveBeenCalled();
+  });
+
+  it("captures AskUserQuestion digits from the selected Ask card", async () => {
+    const asking = askTab("tab-card-focus", "s-card-focus", "Card focus session");
+    seedDashboard({ workspace: workspace([asking]), selectedTabId: asking.id });
+    ingestAskQuestionLines(asking.sessionId, fixtures.single, NOW);
+    await renderDashboard();
+    const card = document.createElement("section");
+    card.dataset.askQuestionSession = asking.sessionId;
+    const button = document.createElement("button");
+    card.appendChild(button);
+    container.appendChild(card);
+    button.focus();
+
+    await act(async () => {
+      button.dispatchEvent(new KeyboardEvent("keydown", { key: "2", bubbles: true, cancelable: true }));
+    });
+
+    expect(mocks.submitAskQuestionChoice).toHaveBeenCalledWith(asking.sessionId, 2);
+  });
+
+  it("leaves digits in the Dashboard search input untouched", async () => {
+    const asking = askTab("tab-search-focus", "s-search-focus", "Search focus session");
+    seedDashboard({ workspace: workspace([asking]), selectedTabId: asking.id });
+    ingestAskQuestionLines(asking.sessionId, fixtures.single, NOW);
+    await renderDashboard();
+    const search = container.querySelector<HTMLInputElement>(".cmux-dash-list-search input");
+    search?.focus();
+
+    await act(async () => {
+      search?.dispatchEvent(new KeyboardEvent("keydown", { key: "2", bubbles: true, cancelable: true }));
+    });
+
+    expect(mocks.submitAskQuestionChoice).not.toHaveBeenCalled();
+  });
+
+  it("does not send a second number key while the shared guard is in flight", async () => {
+    const asking = askTab("tab-busy", "s-busy", "Busy session");
+    seedDashboard({ workspace: workspace([asking]), selectedTabId: asking.id });
+    ingestAskQuestionLines(asking.sessionId, fixtures.single, NOW);
+    mocks.isAskQuestionBusy.mockReturnValue(true);
+    await renderDashboard();
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "1", bubbles: true, cancelable: true }));
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "1", bubbles: true, cancelable: true }));
+    });
+    expect(mocks.submitAskQuestionChoice).not.toHaveBeenCalled();
+  });
+
+  it("does not route review keys unless focus is inside the Ask card", async () => {
+    const asking = askTab("tab-review", "s-review", "Review session");
+    seedDashboard({ workspace: workspace([asking]), selectedTabId: asking.id });
+    ingestAskQuestionLines(asking.sessionId, fixtures.review, NOW);
+    await renderDashboard();
+
+    const cancel = new KeyboardEvent("keydown", { key: "2", bubbles: true, cancelable: true });
+    const submit = new KeyboardEvent("keydown", { key: "1", bubbles: true, cancelable: true });
+    await act(async () => {
+      document.dispatchEvent(cancel);
+      document.dispatchEvent(submit);
+    });
+
+    expect(cancel.defaultPrevented).toBe(false);
+    expect(submit.defaultPrevented).toBe(false);
+    expect(mocks.submitAskQuestionReview).not.toHaveBeenCalled();
+    expect(mocks.submitAskQuestionChoice).not.toHaveBeenCalled();
   });
 });

@@ -78,10 +78,10 @@ export interface Totals {
 }
 
 export interface ComparePrevious {
-  sessionsPct: number;
-  costPct: number;
-  tokensPct: number;
-  reworkPct: number;
+  sessionsPct: number | null;
+  costPct: number | null;
+  tokensPct: number | null;
+  reworkPct: number | null;
 }
 
 export interface EffortRow {
@@ -461,6 +461,12 @@ export interface ModelsReport {
   priceSource: string;
   priceCoverage: PriceCoverage;
   costNote: string;
+}
+
+export interface HandoffsReport {
+  range: RangeOut;
+  granularity: AilogGranularity;
+  handoffs: Handoff[];
 }
 
 export interface SessionRow {
@@ -886,6 +892,32 @@ export async function ailogSetPrice(entry: PriceEntry): Promise<SetPriceResult> 
   return invoke<SetPriceResult>("ailog_set_price", { entry });
 }
 
+export const DEFAULT_USD_JPY_RATE = 150;
+
+let usdJpyRate = DEFAULT_USD_JPY_RATE;
+
+export function sanitizeUsdJpyRate(rate: number): number {
+  return Number.isFinite(rate) && rate > 0 ? rate : DEFAULT_USD_JPY_RATE;
+}
+
+export function getUsdJpyRate(): number {
+  return usdJpyRate;
+}
+
+/** Process-local rate used by formatMoney. Does not persist. */
+export function configureUsdJpyRate(rate: number): number {
+  usdJpyRate = sanitizeUsdJpyRate(rate);
+  return usdJpyRate;
+}
+
+export async function ailogGetUsdJpyRate(): Promise<number> {
+  return invoke<number>("ailog_get_usd_jpy_rate");
+}
+
+export async function ailogSetUsdJpyRate(rate: number): Promise<number> {
+  return invoke<number>("ailog_set_usd_jpy_rate", { rate });
+}
+
 export async function ailogSessions(
   range: AilogRange,
   filters: AilogFilters,
@@ -917,6 +949,14 @@ export async function ailogModels(
   options: { granularity?: AilogGranularity; bucket?: string } = {},
 ): Promise<ModelsReport> {
   return invoke<ModelsReport>("ailog_models", { range, filters, options });
+}
+
+export async function ailogModelHandoffs(
+  range: AilogRange,
+  filters: AilogFilters,
+  options: { granularity?: AilogGranularity; bucket?: string } = {},
+): Promise<HandoffsReport> {
+  return invoke<HandoffsReport>("ailog_model_handoffs", { range, filters, options });
 }
 
 export async function ailogFindings(
@@ -1082,6 +1122,7 @@ export const SYNTHETIC_MODEL = "<synthetic>";
 export const KIND_LABELS: Record<string, string> = {
   claude: "Claude",
   codex: "Codex",
+  grok: "Grok",
 };
 
 export function kindLabel(kind: string): string {
@@ -1096,24 +1137,56 @@ function safe(value: number): number {
   return Number.isFinite(value) ? value : 0;
 }
 
-/** `$1,470.24` — the canonical money format. */
-export function formatUsd(value: number): string {
-  return `$${safe(value).toLocaleString("en-US", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })}`;
+const TOKEN_UNITS: [number, string][] = [[1e4, "万"], [1e8, "億"], [1e12, "兆"]];
+
+function formatScaledJapanese(value: number, fractionDigits: number): string {
+  const abs = Math.abs(value);
+  let index = 0;
+  for (let i = TOKEN_UNITS.length - 1; i >= 0; i -= 1) {
+    if (abs >= TOKEN_UNITS[i][0]) {
+      index = i;
+      break;
+    }
+  }
+  let mantissa = Number((value / TOKEN_UNITS[index][0]).toFixed(fractionDigits));
+  if (Math.abs(mantissa) >= 10_000 && index < TOKEN_UNITS.length - 1) {
+    index += 1;
+    mantissa = Number((value / TOKEN_UNITS[index][0]).toFixed(fractionDigits));
+  }
+  const shown = mantissa.toLocaleString("en-US", {
+    minimumFractionDigits: fractionDigits,
+    maximumFractionDigits: fractionDigits,
+  });
+  return `${shown}${TOKEN_UNITS[index][1]}`;
 }
 
-/** `$1,470` — same number, no cents, for chart labels where space is tight. */
-export function formatUsdShort(value: number): string {
-  return `$${Math.round(safe(value)).toLocaleString("en-US")}`;
+function formatYen(yen: number, short: boolean): string {
+  const amount = safe(yen);
+  const abs = Math.abs(amount);
+  const sign = amount < 0 ? "-" : "";
+  if (abs < 100) {
+    const body = short ? Math.round(abs).toLocaleString("en-US") : abs.toFixed(1);
+    return `${sign}¥${body}`;
+  }
+  if (abs < 10_000) {
+    return `${sign}¥${Math.round(abs).toLocaleString("en-US")}`;
+  }
+  return `${sign}¥${formatScaledJapanese(abs, short ? 0 : 1)}`;
+}
+
+/** `¥22.1万` — USD input converted at the configured USD/JPY rate. */
+export function formatMoney(value: number): string {
+  return formatYen(safe(value) * usdJpyRate, false);
+}
+
+/** Chart-label form: same buckets, fewer fraction digits. */
+export function formatMoneyShort(value: number): string {
+  return formatYen(safe(value) * usdJpyRate, true);
 }
 
 export function formatCount(value: number): string {
   return Math.round(safe(value)).toLocaleString("en-US");
 }
-
-const TOKEN_UNITS: [number, string][] = [[1e4, "万"], [1e8, "億"], [1e12, "兆"]];
 
 /** `1,234.6万 tok` */
 export function formatTokens(value: number): string {

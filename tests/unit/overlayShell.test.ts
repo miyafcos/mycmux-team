@@ -109,6 +109,7 @@ beforeEach(() => {
       addEventListener: () => undefined,
       removeEventListener: () => undefined,
       contains: () => true,
+      querySelectorAll: () => [],
     },
   });
   addEventListener = vi.spyOn(document, "addEventListener").mockImplementation((type, listener) => {
@@ -131,8 +132,9 @@ describe("OverlayShell", () => {
     const element = harness.render({ open: true, onClose, ariaLabel: "テスト", children: "body" }, false);
     const backdrop = element as unknown as { props: Record<string, unknown> };
     const panel = backdrop.props.children as { props: Record<string, unknown> };
-    const panelNode = { focus: vi.fn() };
+    const panelNode = { focus: vi.fn(), querySelectorAll: () => [], contains: () => false, closest: () => null };
     (panel.props.ref as { current: unknown }).current = panelNode;
+    vi.spyOn(document, "querySelectorAll").mockReturnValue([panelNode] as unknown as NodeListOf<Element>);
     harness.flushEffects();
     expect(panelNode.focus).toHaveBeenCalled();
 
@@ -169,10 +171,120 @@ describe("OverlayShell", () => {
 
   it("honors close opt-outs", () => {
     const { onClose, backdrop } = render({ closeOnEscape: false, closeOnBackdrop: false });
-    expect(keydown).toBeUndefined();
+    expect(keydown).toEqual(expect.any(Function));
+    keydown?.({ key: "Escape", preventDefault: vi.fn() } as unknown as KeyboardEvent);
+    expect(onClose).not.toHaveBeenCalled();
     const target = {} as EventTarget;
     (backdrop.props.onMouseDown as (event: unknown) => void)({ target, currentTarget: target });
     expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("cycles Tab focus inside the topmost dialog", () => {
+    const element = harness.render({ open: true, onClose: vi.fn(), ariaLabel: "テスト", children: "body" }, false);
+    const backdrop = element as unknown as { props: Record<string, unknown> };
+    const panel = backdrop.props.children as { props: Record<string, unknown> };
+    const first = { focus: vi.fn(), getAttribute: () => null, closest: () => null } as unknown as HTMLElement;
+    const last = { focus: vi.fn(), getAttribute: () => null, closest: () => null } as unknown as HTMLElement;
+    const panelNode = {
+      focus: vi.fn(),
+      querySelectorAll: () => [first, last],
+      contains: (node: unknown) => node === first || node === last,
+      closest: () => null,
+    } as unknown as HTMLElement;
+    (panel.props.ref as { current: unknown }).current = panelNode;
+    vi.spyOn(document, "querySelectorAll").mockReturnValue([panelNode] as unknown as NodeListOf<Element>);
+    harness.flushEffects();
+
+    activeElement = last;
+    const forward = vi.fn();
+    keydown?.({ key: "Tab", shiftKey: false, preventDefault: forward } as unknown as KeyboardEvent);
+    expect(forward).toHaveBeenCalledOnce();
+    expect(first.focus).toHaveBeenCalledOnce();
+
+    activeElement = first;
+    const backward = vi.fn();
+    keydown?.({ key: "Tab", shiftKey: true, preventDefault: backward } as unknown as KeyboardEvent);
+    expect(backward).toHaveBeenCalledOnce();
+    expect(last.focus).toHaveBeenCalledOnce();
+  });
+
+  it("routes Tab from the initially focused panel and includes summary disclosures", () => {
+    const element = harness.render({ open: true, onClose: vi.fn(), ariaLabel: "テスト", children: "body" }, false);
+    const backdrop = element as unknown as { props: Record<string, unknown> };
+    const panel = backdrop.props.children as { props: Record<string, unknown> };
+    const summary = { focus: vi.fn(), getAttribute: () => null, closest: () => null } as unknown as HTMLElement;
+    const last = { focus: vi.fn(), getAttribute: () => null, closest: () => null } as unknown as HTMLElement;
+    const querySelectorAll = vi.fn((selector: string) => {
+      expect(selector).toContain("summary");
+      return [summary, last];
+    });
+    const panelNode = {
+      focus: vi.fn(),
+      querySelectorAll,
+      contains: (node: unknown) => node === summary || node === last,
+      closest: () => null,
+    } as unknown as HTMLElement;
+    (panel.props.ref as { current: unknown }).current = panelNode;
+    vi.spyOn(document, "querySelectorAll").mockReturnValue([panelNode] as unknown as NodeListOf<Element>);
+    harness.flushEffects();
+
+    activeElement = panelNode;
+    const forward = vi.fn();
+    keydown?.({ key: "Tab", shiftKey: false, preventDefault: forward } as unknown as KeyboardEvent);
+    expect(forward).toHaveBeenCalledOnce();
+    expect(summary.focus).toHaveBeenCalledOnce();
+
+    activeElement = panelNode;
+    const backward = vi.fn();
+    keydown?.({ key: "Tab", shiftKey: true, preventDefault: backward } as unknown as KeyboardEvent);
+    expect(backward).toHaveBeenCalledOnce();
+    expect(last.focus).toHaveBeenCalledOnce();
+  });
+
+  it("ignores focus targets hidden inside a closed disclosure", () => {
+    const element = harness.render({ open: true, onClose: vi.fn(), ariaLabel: "テスト", children: "body" }, false);
+    const backdrop = element as unknown as { props: Record<string, unknown> };
+    const panel = backdrop.props.children as { props: Record<string, unknown> };
+    const closedDetails = {} as HTMLElement;
+    const first = { focus: vi.fn(), getAttribute: () => null, closest: () => null } as unknown as HTMLElement;
+    const outerSummary = {
+      focus: vi.fn(),
+      getAttribute: () => null,
+      closest: (selector: string) => selector === "details:not([open])" ? closedDetails : null,
+      tagName: "SUMMARY",
+      parentElement: closedDetails,
+    } as unknown as HTMLElement;
+    const innerSummary = {
+      focus: vi.fn(),
+      getAttribute: () => null,
+      closest: (selector: string) => selector === "details:not([open])" ? closedDetails : null,
+      tagName: "SUMMARY",
+      parentElement: {},
+    } as unknown as HTMLElement;
+    const hiddenButton = {
+      focus: vi.fn(),
+      getAttribute: () => null,
+      closest: (selector: string) => selector === "details:not([open])" ? closedDetails : null,
+      tagName: "BUTTON",
+      parentElement: closedDetails,
+    } as unknown as HTMLElement;
+    const panelNode = {
+      focus: vi.fn(),
+      querySelectorAll: () => [first, outerSummary, innerSummary, hiddenButton],
+      contains: (node: unknown) => [first, outerSummary, innerSummary, hiddenButton].includes(node as HTMLElement),
+      closest: () => null,
+    } as unknown as HTMLElement;
+    (panel.props.ref as { current: unknown }).current = panelNode;
+    vi.spyOn(document, "querySelectorAll").mockReturnValue([panelNode] as unknown as NodeListOf<Element>);
+    harness.flushEffects();
+
+    activeElement = outerSummary;
+    const preventDefault = vi.fn();
+    keydown?.({ key: "Tab", shiftKey: false, preventDefault } as unknown as KeyboardEvent);
+    expect(preventDefault).toHaveBeenCalledOnce();
+    expect(first.focus).toHaveBeenCalledOnce();
+    expect(innerSummary.focus).not.toHaveBeenCalled();
+    expect(hiddenButton.focus).not.toHaveBeenCalled();
   });
 
   it.each([

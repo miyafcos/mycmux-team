@@ -1,5 +1,6 @@
 import {
   writeToSession,
+  writeToSessionGuarded,
   type PtyMetadataSnapshot,
   type SessionOutputSnapshot,
   type SessionStatusSnapshotPayload,
@@ -1030,12 +1031,13 @@ async function closeTabs(args: SocketArgs) {
   ));
   useWorkspaceListStore.getState()._replaceWorkspaces(workspaces);
   if (killedFocusedSession) useUiStore.getState().bumpFocusRevision();
+  const liveOwners = closedOwners.filter(({ tab }) => tab.type === "terminal" && !isDeclaredTab(tab));
+  if (liveOwners.length === 0) return { ...summary, victims };
   const [{ evictTerminalCache }, { killSession }] = await Promise.all([
-    import("../terminal/XTermWrapper"),
+    import("../terminal/terminalCache"),
     import("../../lib/ipc"),
   ]);
-  for (const { tab } of closedOwners) {
-    if (tab.type !== "terminal" || isDeclaredTab(tab)) continue;
+  for (const { tab } of liveOwners) {
     evictTerminalCache(tab.sessionId);
     usePaneMetadataStore.getState().removeMetadata(tab.sessionId);
     void killSession(tab.sessionId).catch((error) => console.warn("[mycmux] killSession failed", tab.sessionId, error));
@@ -1115,11 +1117,11 @@ interface PaneSnapshot {
 }
 
 async function readPaneSnapshot(sessionId: string): Promise<PaneSnapshot> {
-  const { hasTerminalBuffer } = await import("../terminal/XTermWrapper");
-  const targetMounted = hasTerminalBuffer(sessionId);
+  const { hasMountedTerminal } = await import("../terminal/XTermWrapper");
+  const targetMounted = hasMountedTerminal(sessionId);
   let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
-    const read = readPaneTail(sessionId, SEND_CONFIRM_LINES);
+    const read = readPaneTail(sessionId, SEND_CONFIRM_LINES, !targetMounted);
     const deadline = new Promise<never>((_, reject) => {
       timeout = setTimeout(() => reject(new Error("pane snapshot timed out")), SEND_SNAPSHOT_TIMEOUT_MS);
     });
@@ -1195,11 +1197,155 @@ async function serializePaneSend<T>(sessionId: string, operation: () => Promise<
   }
 }
 
+function optionalExpectationString(
+  args: SocketArgs,
+  snake: string,
+  camel: string,
+): string | null | undefined {
+  const hasSnake = hasSocketArg(args, snake);
+  const hasCamel = hasSocketArg(args, camel);
+  if (hasSnake && hasCamel && args?.[snake] !== args?.[camel]) {
+    throw new Error(`pane.send_text ${snake} and ${camel} must match`);
+  }
+  const value = hasCamel ? args?.[camel] : hasSnake ? args?.[snake] : undefined;
+  if (value === undefined) return undefined;
+  if (value !== null && typeof value !== "string") {
+    throw new Error(`pane.send_text ${snake} must be a string or null`);
+  }
+  return value;
+}
+
+function optionalExpectationInteger(args: SocketArgs, snake: string, camel: string): number | undefined {
+  const hasSnake = hasSocketArg(args, snake);
+  const hasCamel = hasSocketArg(args, camel);
+  if (hasSnake && hasCamel && args?.[snake] !== args?.[camel]) {
+    throw new Error(`pane.send_text ${snake} and ${camel} must match`);
+  }
+  const value = hasCamel ? args?.[camel] : hasSnake ? args?.[snake] : undefined;
+  if (value === undefined) return undefined;
+  if (typeof value !== "number" || !Number.isFinite(value) || !Number.isInteger(value) || value < 0) {
+    throw new Error(`pane.send_text ${snake} must be a non-negative integer`);
+  }
+  return value;
+}
+
+function guardedWriteExpectations(args: SocketArgs): {
+  expectedAttentionId?: string | null;
+  expectedSessionEpoch?: number;
+  expectedSessionRevision?: number;
+  expectedInputRevision?: number;
+} {
+  return {
+    expectedAttentionId: optionalExpectationString(
+      args,
+      "expected_attention_id",
+      "expectedAttentionId",
+    ),
+    expectedSessionEpoch: optionalExpectationInteger(
+      args,
+      "expected_session_epoch",
+      "expectedSessionEpoch",
+    ),
+    expectedSessionRevision: optionalExpectationInteger(
+      args,
+      "expected_session_revision",
+      "expectedSessionRevision",
+    ),
+    expectedInputRevision: optionalExpectationInteger(
+      args,
+      "expected_input_revision",
+      "expectedInputRevision",
+    ),
+  };
+}
+
+function guardedWriteIsPartial(args: SocketArgs): boolean {
+  const values = Object.values(guardedWriteExpectations(args));
+  const provided = values.filter((value) => value !== undefined).length;
+  return provided > 0 && provided < values.length;
+}
+
+/**
+ * Frontend bridge for the native atomic optimistic lock. Any guarded send must
+ * carry the complete screen-bound expectation tuple; partial locks fail closed.
+ */
+function staleSendTextFromFrontend(
+  args: SocketArgs,
+  attention: { attentionId: string | null; kind: string; sessionEpoch: number | null; sessionRevision: number } | undefined,
+): { sent: false; reason: string; current: unknown } | null {
+  const {
+    expectedAttentionId,
+    expectedSessionEpoch,
+    expectedSessionRevision,
+    expectedInputRevision,
+  } = guardedWriteExpectations(args);
+  if (
+    expectedAttentionId === undefined
+    && expectedSessionEpoch === undefined
+    && expectedSessionRevision === undefined
+    && expectedInputRevision === undefined
+  ) {
+    return null;
+  }
+  if (guardedWriteIsPartial(args)) {
+    return { sent: false, reason: "incomplete_expectations", current: null };
+  }
+  if (!attention) {
+    return { sent: false, reason: "unknown_session", current: null };
+  }
+  if (attention.attentionId !== expectedAttentionId) {
+    return { sent: false, reason: "attention_id", current: null };
+  }
+  if (attention.sessionEpoch !== expectedSessionEpoch) {
+    return { sent: false, reason: "session_epoch", current: null };
+  }
+  if (attention.sessionRevision !== expectedSessionRevision) {
+    return { sent: false, reason: "session_revision", current: null };
+  }
+  return null;
+}
+
+async function writePaneBytes(
+  sessionId: string,
+  data: string,
+  args: SocketArgs,
+  expectedInputRevision?: number,
+): Promise<{ sent: false; reason: string } | null> {
+  const { expectedAttentionId, expectedSessionEpoch, expectedSessionRevision } = guardedWriteExpectations(args);
+  if (
+    expectedAttentionId === undefined
+    && expectedSessionEpoch === undefined
+    && expectedSessionRevision === undefined
+    && expectedInputRevision === undefined
+  ) {
+    await writeToSession(sessionId, data);
+    return null;
+  }
+  if (
+    expectedAttentionId === undefined
+    || expectedSessionEpoch === undefined
+    || expectedSessionRevision === undefined
+    || expectedInputRevision === undefined
+  ) {
+    return { sent: false, reason: "incomplete_expectations" };
+  }
+  const result = await writeToSessionGuarded(
+    sessionId,
+    data,
+    expectedAttentionId,
+    expectedSessionEpoch,
+    expectedSessionRevision,
+    expectedInputRevision,
+  );
+  return result.sent ? null : { sent: false, reason: result.reason ?? "ambiguous" };
+}
+
 async function sendPaneText(args: SocketArgs) {
   const { useWorkspaceListStore } = await import("../../stores/workspaceStore");
   const { recordRecentInputText } = await import("../../stores/recentInputStore");
   const { clearTurnDraft, noteTurnSubmit } = await import("../terminal/terminalTurnMarkers");
   const { turnLabelFrom } = await import("../terminal/terminalTurnModel");
+  const { useSessionAttentionStore } = await import("../../stores/sessionAttentionStore");
   const sessionId = socketArgString(args, "sessionId", "session_id");
   if (!sessionId) throw new Error("pane.send_text requires sessionId");
   const textValue = args?.text;
@@ -1224,10 +1370,26 @@ async function sendPaneText(args: SocketArgs) {
     throw new Error("pane.send_text session is not a known pane");
   }
   return serializePaneSend(sessionId, async () => {
+    const {
+      expectedAttentionId,
+      expectedSessionEpoch,
+      expectedSessionRevision,
+      expectedInputRevision,
+    } = guardedWriteExpectations(args);
+    const guarded = expectedAttentionId !== undefined
+      || expectedSessionEpoch !== undefined
+      || expectedSessionRevision !== undefined
+      || expectedInputRevision !== undefined;
+    const stale = staleSendTextFromFrontend(
+      args,
+      useSessionAttentionStore.getState().attentionBySession[sessionId],
+    );
+    if (stale) return stale;
     const keyBytes = key === null ? "\r" : SEND_KEY_BYTES[key];
     const bytes = textValue.length + (enter || key !== null ? keyBytes.length : 0);
     if (!enter && key === null) {
-      await writeToSession(sessionId, textValue);
+      const rejected = await writePaneBytes(sessionId, textValue, args, expectedInputRevision);
+      if (rejected) return rejected;
       return {
         sessionId,
         queuedBytes: new TextEncoder().encode(textValue).byteLength,
@@ -1241,15 +1403,20 @@ async function sendPaneText(args: SocketArgs) {
     let canConfirm = beforeEnter !== null;
     let targetMounted = beforeText.targetMounted;
     if (textValue) {
-      await writeToSession(sessionId, textValue);
+      const rejected = await writePaneBytes(sessionId, textValue, args, expectedInputRevision);
+      if (rejected) return rejected;
       const settled = await waitForTypedTextToSettle(sessionId, beforeText);
       beforeEnter = settled.snapshot;
       canConfirm = settled.settled && beforeEnter !== null;
       targetMounted = settled.targetMounted;
     }
 
+    let inputRevision = expectedInputRevision;
+    if (guarded && textValue) inputRevision = inputRevision === undefined ? undefined : inputRevision + 1;
+
     if (!canConfirm || beforeEnter === null) {
-      await writeToSession(sessionId, keyBytes);
+      const rejected = await writePaneBytes(sessionId, keyBytes, args, inputRevision);
+      if (rejected) return rejected;
       if (textValue) {
         recordRecentInputText(sessionId, textValue);
         noteTurnSubmit(sessionId, turnLabelFrom(textValue));
@@ -1267,7 +1434,9 @@ async function sendPaneText(args: SocketArgs) {
 
     const maxAttempts = key === null ? SEND_ENTER_MAX_ATTEMPTS : 1;
     for (let attempts = 1; attempts <= maxAttempts; attempts += 1) {
-      await writeToSession(sessionId, keyBytes);
+      const rejected = await writePaneBytes(sessionId, keyBytes, args, inputRevision);
+      if (rejected) return rejected;
+      if (guarded && inputRevision !== undefined) inputRevision += 1;
       if (attempts === 1 && textValue) {
         recordRecentInputText(sessionId, textValue);
         noteTurnSubmit(sessionId, turnLabelFrom(textValue));
@@ -1316,9 +1485,13 @@ async function readPane(args: SocketArgs) {
   return { sessionId, lines: await readPaneTail(sessionId, args?.lines) };
 }
 
-export async function readPaneTail(sessionId: string, lines: unknown): Promise<string[]> {
+export async function readPaneTail(
+  sessionId: string,
+  lines: unknown,
+  preferHeadless = false,
+): Promise<string[]> {
   const { getTerminalBufferLines, hasTerminalBuffer } = await import("../terminal/XTermWrapper");
-  if (hasTerminalBuffer(sessionId)) {
+  if (!preferHeadless && hasTerminalBuffer(sessionId)) {
     return getTerminalBufferLines(sessionId, clampPaneReadLines(lines));
   }
 

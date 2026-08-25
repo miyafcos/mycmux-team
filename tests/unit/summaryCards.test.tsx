@@ -17,18 +17,18 @@ const overview = {
 
 describe("SummaryCards price coverage", () => {
   it("qualifies the cost label below 100%", () => {
-    expect(renderToStaticMarkup(<SummaryCards overview={overview} preset="week" />)).toContain("コスト相当 (単価既知の 75% 分)");
+    expect(renderToStaticMarkup(<SummaryCards overview={overview} preset="week" />)).toContain("コスト相当 (対象トークンのうち価格情報あり 75%)");
   });
 
   it("omits the qualifier at 100%", () => {
     const html = renderToStaticMarkup(<SummaryCards overview={{ ...overview, priceCoverage: { ...overview.priceCoverage, unknown: { models: [], tokens: 0 }, coveredTokenRatio: 1 } }} preset="week" />);
     expect(html).toContain("コスト相当");
-    expect(html).not.toContain("単価既知の");
+    expect(html).not.toContain("価格情報あり");
   });
 
   it("keeps only the three action-oriented cards with visible decision subtitles", () => {
     const html = renderToStaticMarkup(<SummaryCards overview={{ ...overview, totals: { ...overview.totals, sessions: 4 }, rework: { ...overview.rework, abandonedSessions: 1 } }} preset="week" />);
-    for (const label of ["コスト相当", "手戻り平均", "中断率", "0〜100の相対指標", "ツール実行のまま終わったセッションの割合", "25.0%"])
+    for (const label of ["コスト相当", "手戻り平均", "ツール実行のまま終了した割合", "0〜100の相対指標", "ツール実行のまま終わったセッションの割合", "25.0%"])
       expect(html).toContain(label);
     for (const removed of [">セッション<", ">ターン<", ">キャッシュ率<", ">実稼働時間<"])
       expect(html).not.toContain(removed);
@@ -39,5 +39,11 @@ describe("SummaryCards price coverage", () => {
     expect(html).not.toContain("±0.0% 前期間比");
     expect(html).toContain("▲12.3% 前期間比");
     expect(html).toContain("▼4.5% 前期間比");
+  });
+
+  it("does not invent a percentage when the prior value is zero", () => {
+    const html = renderToStaticMarkup(<SummaryCards overview={{ ...overview, comparePrevious: { ...overview.comparePrevious, costPct: null, reworkPct: null } }} preset="7d" />);
+    expect(html).toContain("前期間 0 のため比率なし");
+    expect(html).not.toContain("▲100.0% 前期間比");
   });
 });

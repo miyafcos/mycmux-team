@@ -9,7 +9,7 @@
 import { useState } from "react";
 
 import { useElementWidth } from "../../hooks/useElementWidth";
-import { formatUsd, type PriceCoverage, type SeriesGroupBy, type UsageBucket } from "../../lib/ailog";
+import { formatMoney, type PriceCoverage, type SeriesGroupBy, type UsageBucket } from "../../lib/ailog";
 import {
   OTHER_GROUP,
   USAGE_METRICS,
@@ -76,8 +76,8 @@ export function UsageBucketChart({
       <div ref={widthRef} style={{ minWidth: 0 }}>
         <svg
           viewBox={`0 0 ${width} ${HEIGHT}`}
-          role="img"
-          aria-label={`${unit}別の${USAGE_METRICS.find((entry) => entry.id === metric)?.label ?? "集計"}`}
+          role="group"
+          aria-label={`${unit}別の${USAGE_METRICS.find((entry) => entry.id === metric)?.label ?? "集計"}。各棒はボタンとして選べます。`}
           style={{ display: "block", width: "100%", height: HEIGHT }}
         >
           <ChartHatchDefs paints={[...model.legend, ...model.days.flatMap((row) => row.slices)]} />
@@ -94,7 +94,7 @@ export function UsageBucketChart({
               `合計 ${formatMetricFull(row.total, metric)}`,
               ...rects.map((rect) => `${groupLabel(rect.group, groupBy)} ${formatMetricFull(rect.value, metric)}`),
               `セッション ${row.sessions}`,
-              `コスト相当 ${formatUsd(row.costUsd)}`,
+              `コスト相当 ${formatMoney(row.costUsd)}`,
             ].join("\n");
             return (
               <g key={row.bucket}>
@@ -104,8 +104,7 @@ export function UsageBucketChart({
                   width={barWidth}
                   height={HEIGHT}
                   fill="transparent"
-                  style={{ cursor: onPickDay ? "pointer" : "default" }}
-                  onClick={() => { setSelectedBucket(row.bucket); onPickDay?.(row.bucket); }}
+                  pointerEvents="none"
                 >
                   <title>{tooltip}</title>
                 </rect>
@@ -126,6 +125,18 @@ export function UsageBucketChart({
                     />
                   );
                 })}
+                {onPickDay ? (
+                  <foreignObject x={x} y={0} width={barWidth} height={HEIGHT}>
+                    <button
+                      type="button"
+                      aria-label={`${row.label}を選ぶ。${tooltip.replaceAll("\n", "、")}`}
+                      aria-pressed={selectedBucket === row.bucket}
+                      title={tooltip}
+                      onClick={() => { setSelectedBucket(row.bucket); onPickDay(row.bucket); }}
+                      style={{ width: "100%", height: "100%", padding: 0, border: 0, background: "transparent", color: "transparent", cursor: "pointer" }}
+                    >{row.label}</button>
+                  </foreignObject>
+                ) : null}
               </g>
             );
           })}

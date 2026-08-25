@@ -41,7 +41,6 @@ export function useAilogAutoIndex(open: boolean, onJobsSettled: () => void): voi
     setIndexEventsAvailable(true);
     void listenIndexProgress((progress) => {
       applyIndexProgress(progress);
-      if (progress.phase === "done") onJobsSettled();
     }).then((fn) => {
       if (cancelled) fn();
       else unlisten = fn;
@@ -52,7 +51,7 @@ export function useAilogAutoIndex(open: boolean, onJobsSettled: () => void): voi
       cancelled = true;
       unlisten?.();
     };
-  }, [applyIndexProgress, onJobsSettled, open, setIndexEventsAvailable]);
+  }, [applyIndexProgress, open, setIndexEventsAvailable]);
 
   useEffect(() => {
     if (!open) return;
@@ -77,10 +76,10 @@ export function useAilogAutoIndex(open: boolean, onJobsSettled: () => void): voi
     summarizeRunning,
     eventsHealthy: (!indexRunning || indexEventsAvailable) && (!summarizeRunning || summarizeEventsAvailable),
     refreshIndexStatus: async () => {
-      if (await refreshIndexStatus()) onJobsSettled();
+      await refreshIndexStatus();
     },
     refreshSummarizeStatus: async () => {
-      if (await refreshSummarizeStatus(summaryPreset)) onJobsSettled();
+      await refreshSummarizeStatus(summaryPreset);
     },
     refreshReports: async () => {
       onJobsSettled();

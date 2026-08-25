@@ -27,6 +27,8 @@ const functionSamples: Partial<Record<DashboardStringKey, readonly unknown[][]>>
   filteredSummary: [[1, 2]],
   chatColumnLimitButtonLabel: [[1], [5]],
   chatColumnCapLabel: [[3], [5]],
+  askQuestionTabProgress: [[1, 3]],
+  askQuestionStopReason: [["busy"], ["stale_question"], ["other"]],
   userTurnNavAriaLabel: [[3, 12]],
   interventionRejected: [["reason"]],
   interventionReason: [["target_missing"], ["transport"], ["other"]],

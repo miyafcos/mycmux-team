@@ -5,6 +5,7 @@ node_modules/
 dist/
 dist-cmux-ui/
 src-tauri/target/
+src-tauri/target-*/
 
 # Environment files
 .env

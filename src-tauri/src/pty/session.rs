@@ -954,6 +954,7 @@ impl PtySession {
     /// when the dedicated PTY writer has written and flushed the whole frame.
     pub fn write_intervention_if_revision(
         &self,
+        expected_session_epoch: Option<u64>,
         expected_revision: u64,
         data: &[u8],
     ) -> Result<std_mpsc::Receiver<Result<(), String>>, String> {
@@ -961,6 +962,9 @@ impl PtySession {
             .input_gate
             .lock()
             .map_err(|_| "PTY_INPUT_WRITER_FAILED: input gate is poisoned".to_string())?;
+        if expected_session_epoch.is_some_and(|expected| expected != self.session_epoch) {
+            return Err(format!("PTY_SESSION_EPOCH_CONFLICT:{}", self.session_epoch));
+        }
         let actual = self.input_revision.load(Ordering::Acquire);
         if actual != expected_revision {
             return Err(format!("PTY_INPUT_REVISION_CONFLICT:{actual}"));

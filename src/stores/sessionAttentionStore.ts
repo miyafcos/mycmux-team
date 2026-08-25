@@ -21,6 +21,7 @@ interface StorageLike {
 
 export interface SessionAttention {
   sessionId: string;
+  sessionEpoch: number | null;
   attentionId: string | null;
   kind: SessionAttentionKind;
   detail: string | null;
@@ -138,6 +139,7 @@ function toSessionAttention(
 ): SessionAttention {
   return {
     sessionId: payload.session_id,
+    sessionEpoch: payload.status.session_epoch,
     attentionId: payload.status.attention.attention_id,
     kind: payload.status.attention.kind,
     detail: payload.status.attention.detail,
@@ -165,6 +167,7 @@ function applyPayload(
   if (
     previous
     && previous.attentionId === next.attentionId
+    && previous.sessionEpoch === next.sessionEpoch
     && previous.kind === next.kind
     && previous.detail === next.detail
     && previous.sessionRevision === next.sessionRevision

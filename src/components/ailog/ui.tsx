@@ -8,7 +8,7 @@
 
 import { useState, type CSSProperties, type JSX, type ReactNode } from "react";
 
-import { formatCount, formatTokens, formatTokensFull, formatUsd } from "../../lib/ailog";
+import { formatCount, formatMoney, formatTokens, formatTokensFull } from "../../lib/ailog";
 import type { SeriesPaint } from "./modelColors";
 
 function hatchId(color: string): string {
@@ -77,6 +77,20 @@ export const subtleButtonStyle: CSSProperties = {
   whiteSpace: "nowrap",
 };
 
+export const tableActionButtonStyle: CSSProperties = {
+  width: "100%",
+  minWidth: 0,
+  padding: 0,
+  border: 0,
+  background: "transparent",
+  color: "var(--cmux-accent)",
+  font: "inherit",
+  textAlign: "left",
+  textDecoration: "underline",
+  textUnderlineOffset: 2,
+  cursor: "pointer",
+};
+
 export function Section({
   title,
   subtitle,
@@ -91,7 +105,7 @@ export function Section({
   id?: string;
 }) {
   return (
-    <section id={id} style={{ ...cardStyle, minWidth: 0 }}>
+    <section id={id} style={{ ...cardStyle, minWidth: 0, scrollMarginTop: 12 }}>
       <div
         style={{
           display: "flex",
@@ -190,10 +204,10 @@ export function ButtonGroup<T extends string | number>({
   );
 }
 
-/** Vertical-only scroll. Height cap stays; horizontal overflow is not scrolled. */
-export function VScrollBox({ children, maxHeight }: { children: ReactNode; maxHeight?: number }) {
+/** A locally named table scroller; the page itself never gains horizontal overflow. */
+export function VScrollBox({ children, maxHeight, label }: { children: ReactNode; maxHeight?: number; label?: string }) {
   return (
-    <div style={{ overflowY: maxHeight ? "auto" : undefined, maxHeight, minWidth: 0 }}>
+    <div role={label ? "region" : undefined} aria-label={label} tabIndex={label ? 0 : undefined} style={{ overflow: "auto", maxHeight, minWidth: 0 }}>
       {children}
     </div>
   );
@@ -252,7 +266,7 @@ export const tdClipStyle: CSSProperties = {
 
 export function ThCell({ main, sub, title }: { main: string; sub?: string; title?: string }) {
   return (
-    <th style={thStyle} title={title ?? (sub ? `${main} ${sub}` : main)}>
+    <th scope="col" style={thStyle} title={title ?? (sub ? `${main} ${sub}` : main)}>
       <div>{main}</div>
       {sub ? (
         <div style={{ color: "var(--cmux-text-tertiary)", fontSize: "var(--cmux-font-size-xs)" }}>{sub}</div>
@@ -261,7 +275,7 @@ export function ThCell({ main, sub, title }: { main: string; sub?: string; title
   );
 }
 
-export type NumKind = "tokens" | "count" | "usd";
+export type NumKind = "tokens" | "count" | "money";
 
 export function Num({
   value,
@@ -275,7 +289,7 @@ export function Num({
   title?: string;
 }): JSX.Element {
   let text: string;
-  if (kind === "usd") text = formatUsd(value);
+  if (kind === "money") text = formatMoney(value);
   else if (kind === "count") text = formatCount(value);
   else {
     text = formatTokens(value);
@@ -319,12 +333,14 @@ export type EmptyStateKind = "not-indexed" | "no-data" | "error";
  */
 export function EmptyState({
   kind,
+  title,
   message,
   onPrimary,
   primaryLabel,
   busy = false,
 }: {
   kind: EmptyStateKind;
+  title?: string;
   message?: string | null;
   onPrimary?: () => void;
   primaryLabel?: string;
@@ -332,9 +348,9 @@ export function EmptyState({
 }) {
   const copy: Record<EmptyStateKind, { title: string; body: string; action: string }> = {
     "not-indexed": {
-      title: "インデックス未作成",
-      body: "Claude と Codex の記録を読み込むと、ここに集計が出ます。初回は数十秒かかります。",
-      action: "インデックスを作成",
+      title: "記録をまだ取り込んでいません",
+      body: "Claude、Codex、Grok の記録を取り込むと、ここに集計が出ます。初回は数十秒かかります。",
+      action: "記録を取り込む",
     },
     "no-data": {
       title: "この期間の記録なし",
@@ -343,7 +359,7 @@ export function EmptyState({
     },
     error: {
       title: "読み込み失敗",
-      body: "取得できた範囲でも表を作らず、原因をそのまま出しています。",
+      body: "この表示を更新できませんでした。技術情報を確認して再試行してください。",
       action: "再試行",
     },
   };
@@ -362,27 +378,30 @@ export function EmptyState({
       }}
     >
       <div style={{ fontSize: "var(--cmux-font-size-sm)", fontWeight: 700, color: kind === "error" ? "var(--cmux-red)" : "var(--cmux-text)" }}>
-        {entry.title}
+        {title ?? entry.title}
       </div>
       <div style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-secondary)", lineHeight: 1.6 }}>{entry.body}</div>
       {message ? (
-        <pre
-          style={{
-            margin: 0,
-            maxWidth: "100%",
-            maxHeight: 140,
-            overflow: "auto",
-            whiteSpace: "pre-wrap",
-            overflowWrap: "anywhere",
-            fontSize: "var(--cmux-font-size-xs)",
-            color: "var(--cmux-text-secondary)",
-            background: "var(--cmux-hover)",
-            borderRadius: 6,
-            padding: "6px 8px",
-          }}
-        >
-          {message}
-        </pre>
+        <details style={{ maxWidth: "100%" }}>
+          <summary style={{ cursor: "pointer", fontSize: "var(--cmux-font-size-xs)" }}>技術情報</summary>
+          <pre
+            style={{
+              margin: "6px 0 0",
+              maxWidth: "100%",
+              maxHeight: 140,
+              overflow: "auto",
+              whiteSpace: "pre-wrap",
+              overflowWrap: "anywhere",
+              fontSize: "var(--cmux-font-size-xs)",
+              color: "var(--cmux-text-secondary)",
+              background: "var(--cmux-hover)",
+              borderRadius: 6,
+              padding: "6px 8px",
+            }}
+          >
+            {message}
+          </pre>
+        </details>
       ) : null}
       {onPrimary ? (
         <button type="button" disabled={busy} onClick={onPrimary} style={{ ...subtleButtonStyle, opacity: busy ? 0.5 : 1 }}>
@@ -424,10 +443,10 @@ export function RefreshingBlock({ busy, children }: { busy: boolean; children: R
 }
 
 /** A closed details block that does not mount its contents until opened. */
-export function DeferredDetails({ summary, subtitle, children }: { summary: string; subtitle?: ReactNode; children: ReactNode }) {
+export function DeferredDetails({ id, summary, subtitle, children }: { id?: string; summary: string; subtitle?: ReactNode; children: ReactNode }) {
   const [open, setOpen] = useState(false);
   return (
-    <details onToggle={(event) => setOpen(event.currentTarget.open)} style={{ ...cardStyle, padding: 0 }}>
+    <details id={id} onToggle={(event) => setOpen(event.currentTarget.open)} style={{ ...cardStyle, padding: 0 }}>
       <summary style={{ cursor: "pointer", padding: "14px 16px", color: "var(--cmux-text)", fontSize: "var(--cmux-font-size-md)", fontWeight: 700 }}>{summary}</summary>
       {open ? <div style={{ padding: "0 16px 16px" }}>{subtitle ? <div style={{ ...noteStyle, marginBottom: 10 }}>{subtitle}</div> : null}{children}</div> : null}
     </details>

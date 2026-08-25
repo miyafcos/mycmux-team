@@ -1,22 +1,25 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 import {
   DAY_OFFSET_MIN,
+  DEFAULT_USD_JPY_RATE,
   RANGE_PRESETS,
   WORK_TAG_LABELS,
   buildRange,
+  configureUsdJpyRate,
   dayOffsetInput,
   formatCount,
   formatDayBucket,
   formatDelta,
   formatHours,
+  formatMoney,
+  formatMoneyShort,
   formatPct,
   formatRatio,
   formatTokens,
   formatTokensFull,
-  formatUsd,
-  formatUsdShort,
   parseDayInput,
+  sanitizeUsdJpyRate,
   shiftDayInput,
   toDayInput,
   workTagHint,
@@ -28,10 +31,14 @@ const DAY_MS = 86_400_000;
 const OFFSET_MS = DAY_OFFSET_MIN * 60_000;
 
 describe("number formatting", () => {
+  afterEach(() => {
+    configureUsdJpyRate(DEFAULT_USD_JPY_RATE);
+  });
+
   it("uses locale grouping for money, tokens, counts, percentages and hours", () => {
-    expect(formatUsd(1470.239)).toBe("$1,470.24");
-    expect(formatUsd(0)).toBe("$0.00");
-    expect(formatUsdShort(27_350.4)).toBe("$27,350");
+    expect(formatMoney(1470.239)).toBe("¥22.1万");
+    expect(formatMoney(0)).toBe("¥0.0");
+    expect(formatMoneyShort(27_350.4)).toBe("¥410万");
     expect(formatCount(76_105)).toBe("76,105");
     expect(formatTokens(12_345_678)).toBe("1,234.6万 tok");
     expect(formatTokens(4_512)).toBe("4,512 tok");
@@ -42,9 +49,30 @@ describe("number formatting", () => {
   });
 
   it("never emits NaN for missing numbers", () => {
-    expect(formatUsd(Number.NaN)).toBe("$0.00");
+    expect(formatMoney(Number.NaN)).toBe("¥0.0");
     expect(formatTokens(Number.POSITIVE_INFINITY)).toBe("0 tok");
     expect(formatRatio(Number.NaN)).toBe("0.0%");
+  });
+
+  it("converts USD at the configured rate into yen buckets", () => {
+    expect(formatMoney(0.082)).toBe("¥12.3");
+    expect(formatMoney(8.2266666667)).toBe("¥1,234");
+    expect(formatMoney(1470.239)).toBe("¥22.1万");
+    expect(formatMoneyShort(0.082)).toBe("¥12");
+    expect(formatMoneyShort(8.2266666667)).toBe("¥1,234");
+    expect(formatMoneyShort(1470.239)).toBe("¥22万");
+  });
+
+  it("falls back to 150 for non-positive or non-finite rates", () => {
+    expect(sanitizeUsdJpyRate(0)).toBe(150);
+    expect(sanitizeUsdJpyRate(-3)).toBe(150);
+    expect(sanitizeUsdJpyRate(Number.NaN)).toBe(150);
+    expect(sanitizeUsdJpyRate(Number.POSITIVE_INFINITY)).toBe(150);
+    expect(sanitizeUsdJpyRate(155)).toBe(155);
+    configureUsdJpyRate(0);
+    expect(formatMoney(1)).toBe("¥150");
+    configureUsdJpyRate(100);
+    expect(formatMoney(10)).toBe("¥1,000");
   });
 
   it("uses 万・億・兆 with carry and grouped mantissa", () => {

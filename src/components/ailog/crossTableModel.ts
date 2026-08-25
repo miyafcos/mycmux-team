@@ -47,10 +47,16 @@ export function selectionFromPivotCell(
 ): AilogSelection | null {
   if (rowKey === OTHER_KEY || colKey === OTHER_KEY) return null;
   const pick = (axis: PivotAxis, key: string): AilogSelection | null =>
-    axis === "project" ? { project: { key, label: key } }
+    key === "(unknown)" || key === "unknown" ? null
+    : axis === "project" ? { project: { key, label: key } }
     : (axis === "model" || axis === "model_raw") ? { model: { key, label: key } }
     : null;
-  const merged = { ...pick(rowBy, rowKey), ...pick(colBy, colKey) };
+  const rowSelection = pick(rowBy, rowKey);
+  const colSelection = pick(colBy, colKey);
+  if ((isFilterablePivotAxis(rowBy) && !rowSelection) || (isFilterablePivotAxis(colBy) && !colSelection)) {
+    return null;
+  }
+  const merged = { ...rowSelection, ...colSelection };
   return Object.keys(merged).length > 0 ? merged : null;
 }
 

@@ -15,6 +15,35 @@ export interface LiveBinding {
   ptyInputRevision: number;
 }
 
+export interface AgentTelemetryModel {
+  name: string;
+  effort?: string;
+}
+
+export interface AgentTelemetryContext {
+  pct?: number;
+  tokens?: number;
+}
+
+export interface AgentTelemetryCost {
+  usd: number;
+  source: "computed";
+  partial?: boolean;
+}
+
+export interface AgentTelemetryTurns {
+  count: number;
+  compacts: number;
+}
+
+/** Mirrors `AgentTelemetry` in src-tauri/src/livebrief/telemetry.rs. */
+export interface AgentTelemetry {
+  model?: AgentTelemetryModel;
+  context?: AgentTelemetryContext;
+  cost?: AgentTelemetryCost;
+  turns?: AgentTelemetryTurns;
+}
+
 export interface LiveSessionBrief extends LiveBinding {
   task: string | null;
   /** 直近の「私の指示」原文。answer / ack では上書きされない (reducer.rs と同じ約束)。 */
@@ -38,6 +67,7 @@ export interface LiveSessionBrief extends LiveBinding {
   updatedAt: number;
   serviceEpoch: string;
   briefRevision: number;
+  telemetry?: AgentTelemetry | null;
 }
 
 export type UserMessageKind = "taskStart" | "taskChange" | "correction" | "answer" | "ack";

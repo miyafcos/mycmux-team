@@ -165,6 +165,7 @@ impl SessionManager {
     pub fn write_intervention_if_revision(
         &self,
         session_id: &str,
+        expected_session_epoch: Option<u64>,
         expected_revision: u64,
         data: &[u8],
     ) -> Result<std::sync::mpsc::Receiver<Result<(), String>>, String> {
@@ -172,7 +173,15 @@ impl SessionManager {
             .sessions
             .get(session_id)
             .ok_or_else(|| format!("Session not found: {session_id}"))?;
-        session.write_intervention_if_revision(expected_revision, data)
+        session.write_intervention_if_revision(expected_session_epoch, expected_revision, data)
+    }
+
+    pub fn input_revision(&self, session_id: &str) -> Result<u64, String> {
+        let session = self
+            .sessions
+            .get(session_id)
+            .ok_or_else(|| format!("Session not found: {session_id}"))?;
+        Ok(session.input_revision())
     }
 
     pub fn resize(&self, session_id: &str, cols: u16, rows: u16) -> Result<(), String> {

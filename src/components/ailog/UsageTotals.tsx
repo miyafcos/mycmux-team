@@ -7,7 +7,7 @@
  * it an undercount by construction.
  */
 
-import { formatDelta, formatDuration, formatPct, formatUsd, type ComparePrevious, type PriceCoverage, type RangePreset, type SeriesReport, type Totals } from "../../lib/ailog";
+import { formatDelta, formatDuration, formatPct, formatMoney, type ComparePrevious, type PriceCoverage, type RangePreset, type SeriesReport, type Totals } from "../../lib/ailog";
 import { costCoverageLabel, decomposeCostChange, formatMetric, formatMetricFull, metricValue, usageMetricInfo, type UsageMetric } from "./usageModel";
 import { Chip, cardStyle, noteStyle } from "./ui";
 
@@ -27,7 +27,7 @@ export function periodDeltaForMetric(metric: UsageMetric, comparePrevious: Compa
   switch (metric) {
     case "ioTokens":
     case "totalTokens":
-      return comparePrevious.tokensPct;
+      return null;
     case "sessions":
       return comparePrevious.sessionsPct;
     case "costUsd":
@@ -35,6 +35,23 @@ export function periodDeltaForMetric(metric: UsageMetric, comparePrevious: Compa
     case "turns":
       return null;
   }
+}
+
+export function metricFromTotals(totals: Totals, metric: UsageMetric): number {
+  switch (metric) {
+    case "ioTokens": return totals.input + totals.output;
+    case "totalTokens": return totals.input + totals.output + totals.cacheRead + totals.cacheWrite;
+    case "sessions": return totals.sessions;
+    case "turns": return totals.turns;
+    case "costUsd": return totals.costUsd;
+  }
+}
+
+export function periodDeltaFromTotals(metric: UsageMetric, current: Totals, previous: Totals | null, preset: RangePreset): number | null {
+  if (preset === "all" || previous === null) return null;
+  const before = metricFromTotals(previous, metric);
+  if (before === 0) return null;
+  return ((metricFromTotals(current, metric) - before) / Math.abs(before)) * 100;
 }
 
 /**
@@ -45,8 +62,8 @@ export function periodDeltaForMetric(metric: UsageMetric, comparePrevious: Compa
  * more certainty than the transcript gave.
  */
 function providerOf(group: string): "claude" | "gpt" | "other" {
-  if (group.startsWith("claude") || /^(opus|sonnet|haiku|fable|mythos)/.test(group)) return "claude";
-  if (group.startsWith("gpt") || group.startsWith("codex")) return "gpt";
+  if (group === "anthropic" || group.startsWith("claude") || /^(opus|sonnet|haiku|fable|mythos)/.test(group)) return "claude";
+  if (group === "openai" || group.startsWith("gpt") || group.startsWith("codex")) return "gpt";
   return "other";
 }
 
@@ -98,9 +115,9 @@ function percentChange(current: number, previous: number): string | null {
   return formatDelta(((current - previous) / Math.abs(previous)) * 100);
 }
 
-function signedUsd(value: number): string {
-  if (Math.abs(value) < 0.005) return `±${formatUsd(0)}`;
-  return `${value > 0 ? "+" : "-"}${formatUsd(Math.abs(value))}`;
+function signedMoney(value: number): string {
+  if (Math.abs(value) < 0.005) return `±${formatMoney(0)}`;
+  return `${value > 0 ? "+" : "-"}${formatMoney(Math.abs(value))}`;
 }
 
 function effectPercent(value: number, previousCost: number): string {
@@ -115,7 +132,7 @@ function ChangeLine({ label, value, previousCost, warn, testId }: { label: strin
     <div style={{ display: "flex", justifyContent: "space-between", gap: 12, fontSize: "var(--cmux-font-size-xs)" }}>
       <span style={{ color: "var(--cmux-text-secondary)" }}>{label}</span>
       <span data-testid={testId} style={warn ? { color: "var(--cmux-usage-warn)", fontVariantNumeric: "tabular-nums" } : { fontVariantNumeric: "tabular-nums" }}>
-        {`${signedUsd(value)} (${effectPercent(value, previousCost)})`}
+        {`${signedMoney(value)} (${effectPercent(value, previousCost)})`}
       </span>
     </div>
   );
@@ -124,23 +141,24 @@ function ChangeLine({ label, value, previousCost, warn, testId }: { label: strin
 export function UsageTotals({
   report,
   metric,
-  comparePrevious,
   preset,
   totals,
   previousTotals,
+  turnFilterActive = false,
 }: {
   report: SeriesReport;
   metric: UsageMetric;
-  comparePrevious: ComparePrevious | null;
   preset: RangePreset;
   totals: Totals;
   previousTotals: Totals | null;
+  turnFilterActive?: boolean;
 }) {
   const data = summarizeUsage(report, metric);
   const info = usageMetricInfo(metric);
+  const headlineTotal = metric === "sessions" ? totals.sessions : data.metricTotal;
   const pct = (value: number) =>
     data.metricTotal > 0 ? `${((value / data.metricTotal) * 100).toFixed(1)}%` : "—";
-  const periodDelta = periodDeltaForMetric(metric, comparePrevious, preset);
+  const periodDelta = periodDeltaFromTotals(metric, totals, previousTotals, preset);
   const requestDelta = previousTotals ? percentChange(totals.userMessages, previousTotals.userMessages) : null;
   const currentCostPerRequest = totals.userMessages > 0 ? totals.costUsd / totals.userMessages : null;
   const previousCostPerRequest = previousTotals && previousTotals.userMessages > 0
@@ -151,22 +169,23 @@ export function UsageTotals({
     : null;
   const waitMs = totals.wallMs - totals.activeMs;
   const waitPct = totals.wallMs > 0 ? formatPct((waitMs / totals.wallMs) * 100) : "—";
-  const costChange = previousTotals && preset !== "all"
+  const costChange = !turnFilterActive && previousTotals && preset !== "all"
     ? decomposeCostChange(totals.costUsd, totals.userMessages, previousTotals.costUsd, previousTotals.userMessages)
     : null;
+  const showProviderSplit = metric !== "sessions" && (report.groupBy === "provider" || report.groupBy === "model" || report.groupBy === "model_raw");
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 10, minWidth: 0 }}>
-      <div style={{ display: "grid", gap: 10, gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))" }}>
+      <div style={{ display: "grid", gap: 10, gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 190px), 1fr))" }}>
         <Card label={`${info.label} (期間合計)`}>
-          <div title={formatMetricFull(data.metricTotal, metric)} style={{ fontSize: "var(--cmux-font-size-md)", fontWeight: 700, marginTop: 3 }}>
-            {formatMetric(data.metricTotal, metric)}
+          <div title={formatMetricFull(headlineTotal, metric)} style={{ fontSize: "var(--cmux-font-size-md)", fontWeight: 700, marginTop: 3 }}>
+            {formatMetric(headlineTotal, metric)}
           </div>
           {periodDelta !== null ? <div style={{ ...noteStyle, marginTop: 3 }}>{`${formatDelta(periodDelta)} 前期間比`}</div> : null}
           <div style={{ ...noteStyle, marginTop: 3 }}>{info.hint}</div>
         </Card>
 
-        <Card label="Claude / GPT の内訳">
+        {showProviderSplit ? <Card label="Claude / GPT の内訳">
           <div style={{ fontSize: "var(--cmux-font-size-md)", fontWeight: 700, marginTop: 3 }}>
             {`${pct(data.claude)} / ${pct(data.gpt)}`}
           </div>
@@ -174,54 +193,57 @@ export function UsageTotals({
             {`Claude ${formatMetric(data.claude, metric)}・GPT ${formatMetric(data.gpt, metric)}`}
             {data.other > 0 ? `・その他 ${formatMetric(data.other, metric)}` : ""}
           </div>
-        </Card>
+        </Card> : null}
 
         {metric === "costUsd" ? null : (
-          <Card label={data.priceCoverage.coveredTokenRatio < 1 ? `コスト相当 (単価既知の ${Math.round(data.priceCoverage.coveredTokenRatio * 100)}% 分)` : "コスト相当 (副次)"}>
+          <Card label={data.priceCoverage.coveredTokenRatio < 1 ? `コスト相当 (対象トークンのうち価格情報あり ${Math.round(data.priceCoverage.coveredTokenRatio * 100)}%)` : "コスト相当 (副次)"}>
             <div style={{ fontSize: "var(--cmux-font-size-md)", fontWeight: 700, marginTop: 3, color: "var(--cmux-text-secondary)" }}>
-              {formatUsd(data.costUsd)}
+              {formatMoney(data.costUsd)}
             </div>
             <div style={{ ...noteStyle, marginTop: 3 }}>
-              請求額ではありません。この指標の順位とは一致しません。
+              請求額ではありません。円額は設定レートでの換算です。この指標の順位とは一致しません。
             </div>
           </Card>
         )}
 
-        <Card label="依頼した回数">
+        {!turnFilterActive ? <Card label="対象セッションの依頼数">
           <div style={{ fontSize: "var(--cmux-font-size-md)", fontWeight: 700, marginTop: 3 }}>{totals.userMessages.toLocaleString("ja-JP")}</div>
           {requestDelta !== null ? <div style={{ ...noteStyle, marginTop: 3 }}>{`${requestDelta} 前期間比`}</div> : null}
-          <div style={{ ...noteStyle, marginTop: 3 }}>セッション数ではなく、実際に依頼した発話の回数です。</div>
-        </Card>
+          <div style={{ ...noteStyle, marginTop: 3 }}>選んだ期間に記録のあるセッションについて、セッション全体の依頼発話を数えます。</div>
+        </Card> : null}
 
-        <Card label="1依頼あたりのコスト">
+        {!turnFilterActive ? <Card label="1依頼あたりのコスト相当">
           <div style={{ fontSize: "var(--cmux-font-size-md)", fontWeight: 700, marginTop: 3, color: costPerRequestDelta !== null && costPerRequestDelta.startsWith("▲") ? "var(--cmux-usage-warn)" : undefined }}>
-            {currentCostPerRequest === null ? "—" : formatUsd(currentCostPerRequest)}
+            {currentCostPerRequest === null ? "—" : formatMoney(currentCostPerRequest)}
           </div>
           {costPerRequestDelta !== null ? <div style={{ ...noteStyle, marginTop: 3, color: costPerRequestDelta.startsWith("▲") ? "var(--cmux-usage-warn)" : undefined }}>{`${costPerRequestDelta} 前期間比`}</div> : null}
-          <div style={{ ...noteStyle, marginTop: 3 }}>同じ1回の依頼にかかったコスト相当です。</div>
-        </Card>
+          <div style={{ ...noteStyle, marginTop: 3 }}>期間内のコスト相当を、対象セッション全体の依頼数で割った値です。</div>
+        </Card> : null}
 
-        <Card label="待ち時間">
+        {!turnFilterActive ? <Card label="対象セッションの未帰属時間">
           <div style={{ fontSize: "var(--cmux-font-size-md)", fontWeight: 700, marginTop: 3 }}>{`${formatDuration(waitMs)} (実時間の ${waitPct})`}</div>
-          <div style={{ ...noteStyle, marginTop: 3 }}>開始から終了までの実時間から、ターン所要時間の合計を引いた残りです。AIの思考と人が離席していた時間のどちらかには断定しません。</div>
-        </Card>
+          <div style={{ ...noteStyle, marginTop: 3 }}>対象セッション全体の開始から終了までの実時間から、ターン所要時間の合計を引いた残りです。AIの思考と人が離席していた時間のどちらかには断定しません。</div>
+        </Card> : null}
 
       </div>
 
       {costChange ? (
         <div data-testid="cost-change-breakdown" style={{ ...cardStyle, padding: "10px 12px 12px" }}>
           <div style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-tertiary)" }}>コスト相当の変化</div>
-          <div style={{ fontSize: "var(--cmux-font-size-sm)", fontWeight: 700, marginTop: 3 }}>{`前期間より ${signedUsd(costChange.totalDelta)} (${effectPercent(costChange.totalDelta, previousTotals!.costUsd)})`}</div>
+          <div style={{ fontSize: "var(--cmux-font-size-sm)", fontWeight: 700, marginTop: 3 }}>{`前期間より ${signedMoney(costChange.totalDelta)} (${effectPercent(costChange.totalDelta, previousTotals!.costUsd)})`}</div>
           <div style={{ display: "flex", flexDirection: "column", gap: 5, marginTop: 8 }}>
-            <ChangeLine label="依頼が増えた分" value={costChange.volumeEffect} previousCost={previousTotals!.costUsd} warn={false} testId="cost-volume-effect" />
-            <ChangeLine label="1依頼あたりの上昇" value={costChange.rateEffect} previousCost={previousTotals!.costUsd} warn={costChange.rateEffect > 0} testId="cost-rate-effect" />
-            <ChangeLine label="掛け合わせ" value={costChange.interaction} previousCost={previousTotals!.costUsd} warn={false} testId="cost-interaction-effect" />
+            <ChangeLine label="依頼回数の変化分" value={costChange.volumeEffect} previousCost={previousTotals!.costUsd} warn={false} testId="cost-volume-effect" />
+            <ChangeLine label="1依頼あたり平均の変化分" value={costChange.rateEffect} previousCost={previousTotals!.costUsd} warn={costChange.rateEffect > 0} testId="cost-rate-effect" />
+            <ChangeLine label="両方の変化が重なる分" value={costChange.interaction} previousCost={previousTotals!.costUsd} warn={false} testId="cost-interaction-effect" />
           </div>
+          <div style={{ ...noteStyle, marginTop: 7 }}>差を数式上で分解した目安です。原因を特定するものではありません。</div>
         </div>
       ) : null}
 
+      {turnFilterActive ? <div style={noteStyle}>モデルで絞り込み中は、トークンとコスト相当が該当モデルのターン、依頼回数と実時間がセッション全体になります。母数が混ざる指標は表示していません。</div> : null}
+
       {metric === "costUsd" ? (
-        <div style={noteStyle}>{`${costCoverageLabel(data.priceCoverage)}。請求額ではありません。`}</div>
+        <div style={noteStyle}>{`${costCoverageLabel(data.priceCoverage)}。請求額ではありません。円額は設定レートでの換算です。`}</div>
       ) : null}
 
       {metric === "totalTokens" && data.cacheShare > 0 ? (

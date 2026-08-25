@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::reducer::{PendingInputKind, PendingOption};
+use super::telemetry::{extract_claude, extract_codex, BillableTokens, CodexTotals, TelemetryDelta};
 use super::{sha256_hex, unix_ms};
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -89,6 +90,11 @@ pub struct AgentAdapter {
     open_tools: HashMap<String, (String, Option<String>)>,
     seen_native_ids: HashSet<String>,
     seen_operator_message: bool,
+    claude_billed: HashMap<String, BillableTokens>,
+    codex_model: Option<String>,
+    codex_effort: Option<String>,
+    last_codex_total: Option<CodexTotals>,
+    last_telemetry_delta: Option<TelemetryDelta>,
 }
 
 impl AgentAdapter {
@@ -107,7 +113,16 @@ impl AgentAdapter {
             open_tools: HashMap::new(),
             seen_native_ids: HashSet::new(),
             seen_operator_message: false,
+            claude_billed: HashMap::new(),
+            codex_model: None,
+            codex_effort: None,
+            last_codex_total: None,
+            last_telemetry_delta: None,
         })
+    }
+
+    pub fn take_telemetry_delta(&mut self) -> Option<TelemetryDelta> {
+        self.last_telemetry_delta.take()
     }
 
     /// Decode one complete JSONL record. Callers must never pass a partial
@@ -126,8 +141,10 @@ impl AgentAdapter {
             native_id(&value, byte_range)
         };
         if !self.seen_native_ids.insert(native_id.clone()) {
+            self.last_telemetry_delta = None;
             return Ok(Vec::new());
         }
+        self.last_telemetry_delta = self.extract_telemetry(&value);
         let occurred_at = if self.kind == "grok" {
             grok_timestamp(&value).unwrap_or_else(unix_ms)
         } else {
@@ -154,6 +171,19 @@ impl AgentAdapter {
                 kind,
             })
             .collect())
+    }
+
+    fn extract_telemetry(&mut self, value: &Value) -> Option<TelemetryDelta> {
+        match self.kind.as_str() {
+            "claude" => extract_claude(value, &mut self.claude_billed),
+            "codex" => extract_codex(
+                value,
+                &mut self.codex_model,
+                &mut self.codex_effort,
+                &mut self.last_codex_total,
+            ),
+            _ => None,
+        }
     }
 
     fn decode_codex(&mut self, value: &Value) -> Vec<SemanticEventKind> {
@@ -1417,5 +1447,44 @@ mod tests {
             end[0].kind,
             SemanticEventKind::QuestionResolved { .. }
         ));
+    }
+
+    #[test]
+    fn claude_assistant_usage_is_exposed_as_telemetry() {
+        let mut adapter = AgentAdapter::new("claude").unwrap();
+        let _ = decode(
+            &mut adapter,
+            r#"{"type":"assistant","requestId":"req_1","effort":"high","uuid":"u1","message":{"id":"m1","model":"claude-sonnet-4-6","role":"assistant","content":[{"type":"text","text":"hi"}],"usage":{"input_tokens":2,"output_tokens":10,"cache_read_input_tokens":1000,"cache_creation_input_tokens":500}}}"#,
+        );
+        let delta = adapter.take_telemetry_delta().expect("telemetry");
+        assert_eq!(delta.model.as_deref(), Some("claude-sonnet-4-6"));
+        assert_eq!(delta.effort.as_deref(), Some("high"));
+        assert_eq!(delta.occupancy_tokens, Some(1502));
+        assert_eq!(delta.turn_inc, 1);
+    }
+
+    #[test]
+    fn codex_token_count_is_exposed_as_telemetry_without_a_chat_event() {
+        let mut adapter = AgentAdapter::new("codex").unwrap();
+        let _ = adapter
+            .decode_record(
+                r#"{"type":"turn_context","payload":{"model":"gpt-5.5","effort":"high"}}"#,
+                ByteRange { start: 0, end: 80 },
+                1,
+            )
+            .unwrap();
+        let _ = adapter.take_telemetry_delta();
+        let events = adapter
+            .decode_record(
+                r#"{"timestamp":"2026-08-04T00:00:02.000Z","ordinal":1,"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"cached_input_tokens":400,"output_tokens":100,"total_tokens":1100},"last_token_usage":{"input_tokens":1000,"cached_input_tokens":400,"cache_write_input_tokens":0,"output_tokens":100,"total_tokens":1100}}}}"#,
+                ByteRange { start: 81, end: 400 },
+                2,
+            )
+            .unwrap();
+        assert!(events.is_empty());
+        let delta = adapter.take_telemetry_delta().expect("telemetry");
+        assert_eq!(delta.occupancy_tokens, Some(1100));
+        assert_eq!(delta.turn_inc, 1);
+        assert_eq!(delta.model.as_deref(), Some("gpt-5.5"));
     }
 }

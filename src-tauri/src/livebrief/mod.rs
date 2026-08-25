@@ -9,6 +9,7 @@ mod excerpt;
 pub(crate) mod excerpt_ja;
 mod intervene;
 mod reducer;
+mod telemetry;
 
 use std::collections::{HashMap, VecDeque};
 use std::fs::File;
@@ -35,6 +36,7 @@ pub use adapter::{AgentAdapter, ByteRange, SemanticEventEnvelope, SemanticEventK
 pub(crate) use excerpt::ContextExcerpt;
 pub use intervene::{InterventionAction, InterventionExpectation, InterventionResult};
 pub use reducer::{LiveBriefReducer, PendingInputKind, PendingOption};
+pub use telemetry::AgentTelemetry;
 
 const EVENT_NAME: &str = "livebrief://update";
 const MAX_BOOTSTRAP_BYTES: u64 = 32 * 1024 * 1024;
@@ -88,6 +90,8 @@ pub struct LiveSessionBrief {
     pub updated_at: i64,
     pub service_epoch: String,
     pub brief_revision: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub telemetry: Option<AgentTelemetry>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -299,48 +303,21 @@ impl LiveBriefService {
             }
         }
         let binding = self.base_binding(pty_session_id, kind, &mapping.session_id, pty_generation, pty_input_revision);
-        // The cached path is checked first: a live snapshot whose transcript has
-        // not moved is reusable without the recursive glob, which otherwise ran
-        // once a second per pane.
-        if let Some(prior) = prior.filter(|prior| prior.brief.telemetry_health == "live") {
-            if let Ok(metadata) = std::fs::metadata(&prior.cursor.path) {
-                if reuses_prior_snapshot(Some(prior), &prior.cursor.path, &metadata, &binding) { return None; }
-            }
-        }
-        let Some(path) = locate_transcript(kind, &mapping.session_id) else {
-            return Some(unavailable_snapshot(binding, "unavailable", &self.service_epoch));
-        };
         let (history_cwd, history_branch) = self
             .metadata
             .get(pty_session_id)
             .map(|metadata| (Some(metadata.cwd.clone()), metadata.git_branch.clone()))
             .unwrap_or((None, None));
-        if let Ok(metadata) = std::fs::metadata(&path) {
-            if reuses_prior_snapshot(prior, &path, &metadata, &binding) { return None; }
-            if let Some(prior) = prior.filter(|prior| can_advance_prior(prior, &path, &binding)) {
-                if let Ok(snapshot) = advance_transcript_with_history(
-                    prior.clone(),
-                    &metadata,
-                    &binding,
-                    &self.service_epoch,
-                    history_cwd.as_deref(),
-                    history_branch.as_deref(),
-                ) {
-                    return Some(snapshot);
-                }
-            }
-        }
-        Some(match bootstrap_transcript_with_history(
-            &path,
-            kind,
+        refresh_bound_transcript(
+            prior,
             &binding,
+            kind,
+            &mapping.session_id,
             &self.service_epoch,
             history_cwd.as_deref(),
             history_branch.as_deref(),
-        ) {
-            Ok(snapshot) => snapshot,
-            Err(_) => unavailable_snapshot(binding, "unavailable", &self.service_epoch),
-        })
+            locate_transcript,
+        )
     }
 
     fn base_binding(&self, pty_session_id: &str, agent_kind: &str, agent_session_id: &str, pty_generation: u64, pty_input_revision: u64) -> LiveBinding {
@@ -427,13 +404,28 @@ pub(crate) fn semantic_question_excerpt(
 /// `ended` instead. Everything actionable — the pending question and its hashes
 /// — is dropped on purpose: intervening against a prompt whose agent no longer
 /// exists would type into whatever now owns the PTY.
+fn session_identity_changed(previous: &LiveBinding, next: &LiveBinding) -> bool {
+    previous.agent_session_id != next.agent_session_id
+        || previous.pty_instance_id != next.pty_instance_id
+        || previous.pty_generation != next.pty_generation
+}
+
 fn keep_last_picture(previous: Option<&SessionSnapshot>, next: SessionSnapshot) -> SessionSnapshot {
     if next.brief.telemetry_health == "live" || !next.events.is_empty() { return next; }
     let Some(previous) = previous else { return next };
-    if previous.brief.telemetry_health == "ended" { return previous.clone(); }
-    if previous.brief.telemetry_health != "live" { return next; }
+    let session_changed = session_identity_changed(&previous.brief.binding, &next.brief.binding);
+    if previous.brief.telemetry_health == "ended" && !session_changed {
+        return previous.clone();
+    }
+    if previous.brief.telemetry_health != "live" && previous.brief.telemetry_health != "ended" {
+        return next;
+    }
     let mut merged = previous.clone();
     merged.brief.binding = next.brief.binding;
+    if session_changed {
+        merged.brief.telemetry = None;
+        merged.reducer.reset_telemetry();
+    }
     merged.brief.telemetry_health = "ended".to_string();
     merged.brief.operational_state = "ended".to_string();
     merged.brief.pending_input_kind = None;
@@ -470,6 +462,7 @@ fn brief_changed(old: &LiveSessionBrief, new: &LiveSessionBrief) -> bool {
         || old.telemetry_health != new.telemetry_health
         || old.last_event_at != new.last_event_at
         || old.service_epoch != new.service_epoch
+        || old.telemetry != new.telemetry
 }
 
 /// Bindings match when everything except `source_revision` is equal;
@@ -495,6 +488,169 @@ fn can_advance_prior(prior: &SessionSnapshot, path: &Path, binding: &LiveBinding
     prior.brief.telemetry_health == "live"
         && prior.cursor.path == path
         && binding_matches(&prior.brief.binding, binding)
+}
+
+/// Recursive discovery is reserved for first bind and recovery. A live
+/// snapshot whose transcript is still at the bound path must not glob the
+/// session tree on every append.
+enum TranscriptPathDecision {
+    Unchanged,
+    Cached(PathBuf),
+    NeedsDiscovery,
+}
+
+enum AdvanceFailAction {
+    Rediscover,
+    Bootstrap,
+}
+
+enum PathApply {
+    Unchanged,
+    Ready(SessionSnapshot),
+    Rediscover,
+    Unavailable,
+}
+
+fn transcript_path_decision(prior: Option<&SessionSnapshot>, binding: &LiveBinding) -> TranscriptPathDecision {
+    let Some(prior) = prior.filter(|prior| prior.brief.telemetry_health == "live") else {
+        return TranscriptPathDecision::NeedsDiscovery;
+    };
+    if prior.cursor.path.as_os_str().is_empty() || !binding_matches(&prior.brief.binding, binding) {
+        return TranscriptPathDecision::NeedsDiscovery;
+    }
+    match std::fs::metadata(&prior.cursor.path) {
+        Ok(metadata) if reuses_prior_snapshot(Some(prior), &prior.cursor.path, &metadata, binding) => {
+            TranscriptPathDecision::Unchanged
+        }
+        Ok(_) => TranscriptPathDecision::Cached(prior.cursor.path.clone()),
+        Err(_) => TranscriptPathDecision::NeedsDiscovery,
+    }
+}
+
+fn refresh_bound_transcript(
+    prior: Option<&SessionSnapshot>,
+    binding: &LiveBinding,
+    kind: &str,
+    session_id: &str,
+    service_epoch: &str,
+    history_cwd: Option<&str>,
+    history_branch: Option<&str>,
+    mut locate: impl FnMut(&str, &str) -> Option<PathBuf>,
+) -> Option<SessionSnapshot> {
+    match transcript_path_decision(prior, binding) {
+        TranscriptPathDecision::Unchanged => None,
+        TranscriptPathDecision::Cached(path) => {
+            match apply_known_transcript_path(
+                prior,
+                &path,
+                binding,
+                kind,
+                service_epoch,
+                history_cwd,
+                history_branch,
+                AdvanceFailAction::Rediscover,
+            ) {
+                PathApply::Unchanged => None,
+                PathApply::Ready(snapshot) => Some(snapshot),
+                PathApply::Unavailable => {
+                    Some(unavailable_snapshot(binding.clone(), "unavailable", service_epoch))
+                }
+                PathApply::Rediscover => refresh_discovered_transcript(
+                    prior,
+                    binding,
+                    kind,
+                    session_id,
+                    service_epoch,
+                    history_cwd,
+                    history_branch,
+                    &mut locate,
+                ),
+            }
+        }
+        TranscriptPathDecision::NeedsDiscovery => refresh_discovered_transcript(
+            prior,
+            binding,
+            kind,
+            session_id,
+            service_epoch,
+            history_cwd,
+            history_branch,
+            &mut locate,
+        ),
+    }
+}
+
+fn refresh_discovered_transcript(
+    prior: Option<&SessionSnapshot>,
+    binding: &LiveBinding,
+    kind: &str,
+    session_id: &str,
+    service_epoch: &str,
+    history_cwd: Option<&str>,
+    history_branch: Option<&str>,
+    locate: &mut impl FnMut(&str, &str) -> Option<PathBuf>,
+) -> Option<SessionSnapshot> {
+    let Some(path) = locate(kind, session_id) else {
+        return Some(unavailable_snapshot(binding.clone(), "unavailable", service_epoch));
+    };
+    match apply_known_transcript_path(
+        prior,
+        &path,
+        binding,
+        kind,
+        service_epoch,
+        history_cwd,
+        history_branch,
+        AdvanceFailAction::Bootstrap,
+    ) {
+        PathApply::Unchanged => None,
+        PathApply::Ready(snapshot) => Some(snapshot),
+        PathApply::Unavailable | PathApply::Rediscover => {
+            Some(unavailable_snapshot(binding.clone(), "unavailable", service_epoch))
+        }
+    }
+}
+
+fn apply_known_transcript_path(
+    prior: Option<&SessionSnapshot>,
+    path: &Path,
+    binding: &LiveBinding,
+    kind: &str,
+    service_epoch: &str,
+    history_cwd: Option<&str>,
+    history_branch: Option<&str>,
+    on_advance_fail: AdvanceFailAction,
+) -> PathApply {
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return match on_advance_fail {
+            AdvanceFailAction::Rediscover => PathApply::Rediscover,
+            AdvanceFailAction::Bootstrap => PathApply::Unavailable,
+        };
+    };
+    if reuses_prior_snapshot(prior, path, &metadata, binding) {
+        return PathApply::Unchanged;
+    }
+    if let Some(prior) = prior.filter(|prior| can_advance_prior(prior, path, binding)) {
+        match advance_transcript_with_history(
+            prior.clone(),
+            &metadata,
+            binding,
+            service_epoch,
+            history_cwd,
+            history_branch,
+        ) {
+            Ok(snapshot) => return PathApply::Ready(snapshot),
+            Err(_) => {
+                if matches!(on_advance_fail, AdvanceFailAction::Rediscover) {
+                    return PathApply::Rediscover;
+                }
+            }
+        }
+    }
+    match bootstrap_transcript_with_history(path, kind, binding, service_epoch, history_cwd, history_branch) {
+        Ok(snapshot) => PathApply::Ready(snapshot),
+        Err(_) => PathApply::Unavailable,
+    }
 }
 
 fn clamp_event_limit(limit: Option<usize>) -> usize {
@@ -734,6 +890,9 @@ fn apply_decoded_records(
         source_revision = source_revision.saturating_add(1);
         match adapter.decode_record(raw, range, source_revision) {
             Ok(decoded) => {
+                if let Some(delta) = adapter.take_telemetry_delta() {
+                    reducer.apply_telemetry(delta);
+                }
                 for event in decoded {
                     reducer.apply(&event);
                     history_events.push(JournalEvent::from_raw_line(event.clone(), raw));
@@ -904,6 +1063,7 @@ fn unavailable_snapshot(binding: LiveBinding, health: &str, service_epoch: &str)
         pending_input_kind: None, pending_prompt: None, pending_options: Vec::new(), prompt_event_id: None,
         prompt_hash: None, event_seq: 0, operational_state: "running".to_string(), telemetry_health: health.to_string(),
         last_event_at: None, last_successful_read_at: None, updated_at: now, service_epoch: service_epoch.to_string(), brief_revision: 0,
+        telemetry: None,
     };
     SessionSnapshot { brief, cursor: TailCursor { path: PathBuf::new(), file_identity: String::new(), stream_generation: 0, read_offset: 0, committed_offset: 0, pending_bytes: Vec::new(), committed_anchor: String::new() }, adapter: AgentAdapter::new("codex").expect("supported adapter"), reducer: LiveBriefReducer::new(), events: VecDeque::new() }
 }
@@ -970,6 +1130,7 @@ pub async fn send_intervention(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
     use std::io::Write;
 
     #[test]
@@ -1343,6 +1504,65 @@ mod tests {
     }
 
     #[test]
+    fn keep_last_picture_drops_telemetry_when_agent_session_changes() {
+        use super::telemetry::{TelemetryContext, TelemetryModel};
+        let mut previous = unavailable_snapshot(test_binding(), "live", "epoch");
+        previous.brief.telemetry = Some(AgentTelemetry {
+            model: Some(TelemetryModel { name: "sonnet-4.6".to_string(), effort: Some("high".to_string()) }),
+            context: Some(TelemetryContext { pct: Some(34), tokens: Some(68_000) }),
+            cost: None,
+            turns: None,
+        });
+        let mut next_binding = test_binding();
+        next_binding.agent_session_id = "agent-2".to_string();
+        let merged = keep_last_picture(Some(&previous), unavailable_snapshot(next_binding.clone(), "unlinked", "epoch"));
+        assert_eq!(merged.brief.binding.agent_session_id, "agent-2");
+        assert!(merged.brief.telemetry.is_none());
+
+        let mut revision_only = test_binding();
+        revision_only.pty_input_revision += 1;
+        let kept = keep_last_picture(Some(&previous), unavailable_snapshot(revision_only, "unlinked", "epoch"));
+        assert!(kept.brief.telemetry.is_some());
+        assert_eq!(kept.brief.telemetry.as_ref().unwrap().model.as_ref().unwrap().name, "sonnet-4.6");
+    }
+
+    #[test]
+    fn keep_last_picture_drops_telemetry_after_ended_then_session_change() {
+        use super::telemetry::{TelemetryContext, TelemetryModel};
+        let sample = AgentTelemetry {
+            model: Some(TelemetryModel { name: "sonnet-4.6".to_string(), effort: Some("high".to_string()) }),
+            context: Some(TelemetryContext { pct: Some(34), tokens: Some(68_000) }),
+            cost: None,
+            turns: None,
+        };
+        let mut live_a = unavailable_snapshot(test_binding(), "live", "epoch");
+        live_a.brief.telemetry = Some(sample.clone());
+
+        let ended_a = keep_last_picture(Some(&live_a), unavailable_snapshot(test_binding(), "unlinked", "epoch"));
+        assert_eq!(ended_a.brief.telemetry_health, "ended");
+        assert!(ended_a.brief.telemetry.is_some());
+
+        let mut sid_b = test_binding();
+        sid_b.agent_session_id = "agent-2".to_string();
+        let after_sid = keep_last_picture(Some(&ended_a), unavailable_snapshot(sid_b, "unlinked", "epoch"));
+        assert_eq!(after_sid.brief.binding.agent_session_id, "agent-2");
+        assert!(after_sid.brief.telemetry.is_none());
+
+        let mut revision_only = test_binding();
+        revision_only.pty_input_revision += 1;
+        let kept = keep_last_picture(Some(&ended_a), unavailable_snapshot(revision_only, "unlinked", "epoch"));
+        assert!(kept.brief.telemetry.is_some());
+        assert_eq!(kept.brief.binding.agent_session_id, "agent-1");
+
+        let mut generation_changed = test_binding();
+        generation_changed.pty_generation += 1;
+        generation_changed.pty_instance_id = "pty-4".to_string();
+        let after_pty = keep_last_picture(Some(&ended_a), unavailable_snapshot(generation_changed, "unlinked", "epoch"));
+        assert!(after_pty.brief.telemetry.is_none());
+        assert_eq!(after_pty.brief.binding.pty_generation, 4);
+    }
+
+    #[test]
     fn event_limit_is_clamped_to_the_supported_window() {
         assert_eq!(clamp_event_limit(None), DEFAULT_EVENT_LIMIT);
         assert_eq!(clamp_event_limit(Some(0)), MIN_EVENT_LIMIT);
@@ -1383,5 +1603,313 @@ mod tests {
         assert_eq!(serde_json::to_string(&SemanticEventKind::FileChange { path: "src/live.rs".to_string(), change: "modified".to_string() }).unwrap(), r#"{"type":"fileChange","path":"src/live.rs","change":"modified"}"#);
         assert_eq!(serde_json::to_string(&SemanticEventKind::TestResult { pass: 12, fail: 1 }).unwrap(), r#"{"type":"testResult","pass":12,"fail":1}"#);
         assert_eq!(serde_json::to_string(&SemanticEventKind::Error { fingerprint: "f".to_string(), text: "Bash: failed".to_string() }).unwrap(), r#"{"type":"error","fingerprint":"f","text":"Bash: failed"}"#);
+    }
+
+    fn collect_jsonl(root: &Path, out: &mut Vec<PathBuf>, files_visited: &Cell<usize>) {
+        let Ok(entries) = std::fs::read_dir(root) else { return };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                collect_jsonl(&path, out, files_visited);
+            } else if path.extension().and_then(|ext| ext.to_str()) == Some("jsonl") {
+                files_visited.set(files_visited.get() + 1);
+                out.push(path);
+            }
+        }
+    }
+
+    fn glob_locate(
+        root: &Path,
+        kind: &str,
+        session_id: &str,
+        calls: &Cell<usize>,
+        files_visited: &Cell<usize>,
+    ) -> Option<PathBuf> {
+        calls.set(calls.get() + 1);
+        let mut all = Vec::new();
+        collect_jsonl(root, &mut all, files_visited);
+        let matches = all.into_iter().filter(|path| match kind {
+            "claude" | "claude-codex" => {
+                path.file_name().and_then(|name| name.to_str()) == Some(&format!("{session_id}.jsonl"))
+            }
+            "codex" => path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.contains(session_id) && name.ends_with(".jsonl")),
+            _ => false,
+        });
+        newest_path_by_mtime(matches)
+    }
+
+    fn poll_transcript(
+        prior: Option<&SessionSnapshot>,
+        binding: &LiveBinding,
+        kind: &str,
+        session_id: &str,
+        root: &Path,
+        calls: &Cell<usize>,
+        files_visited: &Cell<usize>,
+    ) -> Option<SessionSnapshot> {
+        refresh_bound_transcript(
+            prior,
+            binding,
+            kind,
+            session_id,
+            "epoch",
+            None,
+            None,
+            |kind, session_id| glob_locate(root, kind, session_id, calls, files_visited),
+        )
+    }
+
+    fn append_codex_line(path: &Path, message: &str) {
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(path)
+            .expect("open append")
+            .write_all(codex_user_line(message).as_bytes())
+            .expect("append record");
+    }
+
+    /// Growth of a bound Codex transcript must not walk the session tree again.
+    #[test]
+    fn cached_codex_growth_discovers_only_on_initial_bind() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let session_id = "agent-1";
+        let path = root.join(format!("rollout-{session_id}.jsonl"));
+        std::fs::write(&path, codex_user_line("seed")).expect("write seed");
+
+        let calls = Cell::new(0usize);
+        let visited = Cell::new(0usize);
+        let binding = test_binding();
+
+        let mut snapshot = poll_transcript(None, &binding, "codex", session_id, root, &calls, &visited)
+            .expect("initial bind");
+        assert_eq!(calls.get(), 1);
+        assert_eq!(user_message_texts(&snapshot), vec!["seed".to_string()]);
+        assert_eq!(snapshot.brief.binding.source_revision, 1);
+        assert_eq!(snapshot.cursor.path, path);
+
+        for index in 0..10 {
+            append_codex_line(&path, &format!("m{index}"));
+            snapshot = poll_transcript(Some(&snapshot), &binding, "codex", session_id, root, &calls, &visited)
+                .expect("growth should advance the cached path");
+        }
+        assert_eq!(calls.get(), 1, "append must not re-run discovery");
+        assert_eq!(snapshot.brief.binding.source_revision, 11);
+        assert_eq!(snapshot.brief.event_seq, 11);
+        assert_eq!(snapshot.cursor.read_offset, std::fs::metadata(&path).expect("stat").len());
+        assert_eq!(user_message_texts(&snapshot).last().map(String::as_str), Some("m9"));
+    }
+
+    #[test]
+    fn unchanged_cached_transcript_is_a_metadata_fast_path() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let session_id = "agent-1";
+        let path = root.join(format!("rollout-{session_id}.jsonl"));
+        std::fs::write(&path, codex_user_line("only")).expect("write");
+
+        let calls = Cell::new(0usize);
+        let visited = Cell::new(0usize);
+        let binding = test_binding();
+        let snapshot = poll_transcript(None, &binding, "codex", session_id, root, &calls, &visited)
+            .expect("initial bind");
+        assert_eq!(calls.get(), 1);
+
+        let again = poll_transcript(Some(&snapshot), &binding, "codex", session_id, root, &calls, &visited);
+        assert!(again.is_none(), "unchanged file must reuse the snapshot");
+        assert_eq!(calls.get(), 1);
+        assert_eq!(snapshot.brief.telemetry_health, "live");
+        assert_eq!(user_message_texts(&snapshot), vec!["only".to_string()]);
+    }
+
+    #[test]
+    fn truncated_cached_transcript_recovers_via_discovery() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let session_id = "agent-1";
+        let path = root.join(format!("rollout-{session_id}.jsonl"));
+        let mut body = codex_user_line("first");
+        body.push_str(&codex_user_line("second"));
+        std::fs::write(&path, &body).expect("write");
+
+        let calls = Cell::new(0usize);
+        let visited = Cell::new(0usize);
+        let binding = test_binding();
+        let snapshot = poll_transcript(None, &binding, "codex", session_id, root, &calls, &visited)
+            .expect("initial bind");
+        assert_eq!(user_message_texts(&snapshot), vec!["first".to_string(), "second".to_string()]);
+
+        std::fs::write(&path, codex_user_line("rewritten")).expect("truncate");
+        let recovered = poll_transcript(Some(&snapshot), &binding, "codex", session_id, root, &calls, &visited)
+            .expect("truncate recovers");
+        assert_eq!(calls.get(), 2, "truncate must rediscover rather than keep a stale cursor");
+        assert_eq!(user_message_texts(&recovered), vec!["rewritten".to_string()]);
+        assert_eq!(recovered.brief.binding.source_revision, 1);
+        assert_eq!(recovered.cursor.path, path);
+        assert_eq!(recovered.brief.telemetry_health, "live");
+    }
+
+    #[test]
+    fn replaced_transcript_at_a_new_path_recovers_via_discovery() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let session_id = "agent-1";
+        let original = root.join(format!("old-{session_id}.jsonl"));
+        std::fs::write(&original, codex_user_line("old")).expect("write original");
+
+        let calls = Cell::new(0usize);
+        let visited = Cell::new(0usize);
+        let binding = test_binding();
+        let snapshot = poll_transcript(None, &binding, "codex", session_id, root, &calls, &visited)
+            .expect("initial bind");
+        assert_eq!(snapshot.cursor.path, original);
+
+        std::fs::remove_file(&original).expect("remove original");
+        let replacement = root.join(format!("new-{session_id}.jsonl"));
+        std::fs::write(&replacement, codex_user_line("fresh")).expect("write replacement");
+
+        let recovered = poll_transcript(Some(&snapshot), &binding, "codex", session_id, root, &calls, &visited)
+            .expect("missing cached path falls back to discovery");
+        assert_eq!(calls.get(), 2);
+        assert_eq!(recovered.cursor.path, replacement);
+        assert_eq!(user_message_texts(&recovered), vec!["fresh".to_string()]);
+        assert_eq!(recovered.brief.event_seq, 1);
+    }
+
+    #[test]
+    fn missing_cached_path_without_a_replacement_is_unavailable() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let session_id = "agent-1";
+        let path = root.join(format!("rollout-{session_id}.jsonl"));
+        std::fs::write(&path, codex_user_line("gone")).expect("write");
+
+        let calls = Cell::new(0usize);
+        let visited = Cell::new(0usize);
+        let binding = test_binding();
+        let snapshot = poll_transcript(None, &binding, "codex", session_id, root, &calls, &visited)
+            .expect("initial bind");
+        std::fs::remove_file(&path).expect("remove");
+
+        let missing = poll_transcript(Some(&snapshot), &binding, "codex", session_id, root, &calls, &visited)
+            .expect("missing path yields a snapshot");
+        assert_eq!(calls.get(), 2);
+        assert_eq!(missing.brief.telemetry_health, "unavailable");
+        assert!(user_message_texts(&missing).is_empty());
+    }
+
+    #[test]
+    fn binding_change_does_not_reuse_the_old_path() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let first_id = "agent-1";
+        let second_id = "agent-2";
+        let first_path = root.join(format!("rollout-{first_id}.jsonl"));
+        let second_path = root.join(format!("rollout-{second_id}.jsonl"));
+        std::fs::write(&first_path, codex_user_line("one")).expect("write first");
+        std::fs::write(&second_path, codex_user_line("two")).expect("write second");
+
+        let calls = Cell::new(0usize);
+        let visited = Cell::new(0usize);
+        let first_binding = test_binding();
+        let snapshot = poll_transcript(None, &first_binding, "codex", first_id, root, &calls, &visited)
+            .expect("bind first session");
+        assert_eq!(snapshot.cursor.path, first_path);
+        append_codex_line(&first_path, "one-more");
+
+        let mut second_binding = test_binding();
+        second_binding.agent_session_id = second_id.to_string();
+        let switched = poll_transcript(Some(&snapshot), &second_binding, "codex", second_id, root, &calls, &visited)
+            .expect("session change rediscovers");
+        assert_eq!(calls.get(), 2);
+        assert_eq!(switched.cursor.path, second_path);
+        assert_eq!(user_message_texts(&switched), vec!["two".to_string()]);
+        assert_eq!(switched.brief.binding.agent_session_id, second_id);
+        assert_ne!(switched.cursor.path, first_path);
+    }
+
+    #[test]
+    fn claude_cached_append_keeps_events_and_cursor() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let session_id = "claude-sess";
+        let path = root.join(format!("{session_id}.jsonl"));
+        std::fs::write(&path, claude_user_line("ask")).expect("write");
+
+        let calls = Cell::new(0usize);
+        let visited = Cell::new(0usize);
+        let mut binding = test_binding();
+        binding.agent_session_id = session_id.to_string();
+        binding.agent_kind = "claude".to_string();
+
+        let snapshot = poll_transcript(None, &binding, "claude", session_id, root, &calls, &visited)
+            .expect("claude bind");
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .expect("open append")
+            .write_all(claude_user_line("follow-up").as_bytes())
+            .expect("append");
+        let advanced = poll_transcript(Some(&snapshot), &binding, "claude", session_id, root, &calls, &visited)
+            .expect("claude append uses cache");
+        assert_eq!(calls.get(), 1);
+        assert_eq!(user_message_texts(&advanced), vec!["ask".to_string(), "follow-up".to_string()]);
+        assert_eq!(advanced.cursor.committed_offset, std::fs::metadata(&path).expect("stat").len());
+        assert_eq!(advanced.brief.service_epoch, "epoch");
+    }
+
+    /// Synthetic Codex tree: after the first glob, ten appends must not walk again.
+    #[test]
+    fn growing_codex_tree_is_not_reenumerated_after_bind() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().join("sessions");
+        const NOISE_FILES: usize = 400;
+        for index in 0..NOISE_FILES {
+            let sub = root.join(format!("2026/{:02}/{:02}", (index % 12) + 1, (index % 28) + 1));
+            std::fs::create_dir_all(&sub).expect("mkdir noise");
+            std::fs::write(sub.join(format!("noise-{index:04}.jsonl")), b"{}\n").expect("write noise");
+        }
+        let session_id = "targetSESSIONid";
+        let target_dir = root.join("2026").join("08").join("24");
+        std::fs::create_dir_all(&target_dir).expect("mkdir target");
+        let target = target_dir.join(format!("rollout-{session_id}.jsonl"));
+        std::fs::write(&target, codex_user_line("seed")).expect("write target");
+
+        let calls = Cell::new(0usize);
+        let visited = Cell::new(0usize);
+        let mut binding = test_binding();
+        binding.agent_session_id = session_id.to_string();
+
+        let discover_started = std::time::Instant::now();
+        let mut snapshot = poll_transcript(None, &binding, "codex", session_id, &root, &calls, &visited)
+            .expect("initial discover");
+        let discover_ms = discover_started.elapsed().as_secs_f64() * 1000.0;
+        let visited_on_bind = visited.get();
+        assert_eq!(calls.get(), 1);
+        assert!(
+            visited_on_bind > NOISE_FILES,
+            "initial bind must glob the synthetic tree, visited={visited_on_bind}"
+        );
+        assert_eq!(snapshot.cursor.path, target);
+
+        visited.set(0);
+        let grow_started = std::time::Instant::now();
+        for index in 0..10 {
+            append_codex_line(&target, &format!("g{index}"));
+            snapshot = poll_transcript(Some(&snapshot), &binding, "codex", session_id, &root, &calls, &visited)
+                .expect("cached growth");
+        }
+        let grow_ms = grow_started.elapsed().as_secs_f64() * 1000.0;
+        assert_eq!(calls.get(), 1, "ten appends must not re-enumerate");
+        assert_eq!(visited.get(), 0, "cached growth must visit zero glob matches");
+        assert_eq!(snapshot.brief.binding.source_revision, 11);
+        assert_eq!(user_message_texts(&snapshot).last().map(String::as_str), Some("g9"));
+        eprintln!(
+            "codex cached-path perf: discover={discover_ms:.2}ms visited={visited_on_bind} grow10={grow_ms:.2}ms locate_calls={}",
+            calls.get()
+        );
     }
 }

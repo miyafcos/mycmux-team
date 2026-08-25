@@ -79,6 +79,8 @@
 .cmux-minimap-agent-dot { width: 6px; height: 6px; flex: 0 0 auto; border-radius: 999px; background: var(--minimap-agent, var(--cmux-text-tertiary)); box-shadow: 0 0 0 1px var(--minimap-marker-ring); }
 .cmux-minimap-agent { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cmux-minimap-age { margin-left: auto; flex: 0 0 auto; color: var(--cmux-text-tertiary); font-family: var(--cmux-dash-ui-font); font-size: var(--cmux-font-size-xs); }
+.cmux-minimap-ctx { flex: 0 0 auto; color: var(--cmux-text-tertiary); font-variant-numeric: tabular-nums; }
+.cmux-minimap-chip.is-collapsed .cmux-minimap-ctx { font-family: var(--cmux-font-mono); font-size: 10px; }
 /* 日本語の状態語だけは 10px に落とさない (Windows の日本語グリフの下限)。 */
 .cmux-minimap-question { flex: 0 0 auto; color: var(--status-waiting); font-family: var(--cmux-dash-ui-font); font-size: var(--cmux-font-size-xs); font-weight: 700; }
 .cmux-minimap-chip.is-declared .cmux-minimap-meta { color: var(--cmux-text-tertiary); }

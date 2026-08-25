@@ -11,6 +11,7 @@ import { emit } from "@tauri-apps/api/event";
 import {
   createSession,
   ackFrontendData,
+  getSessionInputRevision,
   getSessionScrollback,
   hasPersistedScrollback,
   isSessionAlive,
@@ -26,6 +27,7 @@ import {
   TERMINAL_SNAPSHOT_SCAN_MULTIPLIER,
 } from "./terminalBufferConstants";
 import { useDashboardViewStore } from "../../stores/dashboardViewStore";
+import { useSessionAttentionStore } from "../../stores/sessionAttentionStore";
 import { useWorkspaceListStore } from "../../stores/workspaceListStore";
 import { usePaneMetadataStore, useUiStore } from "../../stores/workspaceStore";
 import { useKeybindingStore } from "../../stores/keybindingStore";
@@ -128,6 +130,19 @@ import {
   resolveWaitingTransition,
   scanForApproval,
 } from "../../lib/approvalScan";
+import {
+  ASK_QUESTION_TAIL_LINES,
+  ingestAskQuestionLines,
+  useAskQuestionStore,
+} from "../../stores/askQuestionStore";
+import {
+  askQuestionAttentionId,
+  clearAskQuestionEvidence,
+  hasPublishedAskQuestionEvidence,
+  publishAskQuestionEvidence,
+  publishedAskQuestionAttentionId,
+  releaseAskQuestionEvidence,
+} from "../../lib/askQuestionEvidence";
 import { scanRateLimit } from "../../lib/rateLimitScan";
 import { observeTerminalVisibility } from "../../lib/terminalVisibilityTracker";
 import {
@@ -452,6 +467,10 @@ type TerminalBufferLineOptions = {
 
 export function hasTerminalBuffer(sessionId: string): boolean {
   return liveTerms.has(sessionId) || termCache.has(sessionId);
+}
+
+export function hasMountedTerminal(sessionId: string): boolean {
+  return liveTerms.has(sessionId);
 }
 
 /** Read the last N non-empty logical lines of a pane's xterm buffer, ANSI/control-char stripped. */
@@ -953,6 +972,8 @@ export default memo(function XTermWrapper({
     let backgroundScanThrottle: ReturnType<typeof setTimeout> | null = null;
     let outputActivityTimer: ReturnType<typeof setTimeout> | null = null;
     let backgroundScanResync = false;
+    let scanInFlight = false;
+    let scanPending = false;
     let startupSettleTimeout: ReturnType<typeof setTimeout> | null = null;
     let startupSettled = false;
     let sessionStarted = false;
@@ -961,6 +982,7 @@ export default memo(function XTermWrapper({
     let approvalAbsentStreak = 0;
     let rateLimitAbsentStreak = 0;
     let rateLimitVisible = false;
+    let visibleAskAttentionId: string | null = null;
     let lastScanSignature: string | null = null;
     let isImeComposing = false;
     let resizePendingDuringComposition = false;
@@ -1353,7 +1375,7 @@ export default memo(function XTermWrapper({
       });
     };
 
-    const runScan = (allowDetached = false, resync = false): void => {
+    const runScan = async (allowDetached = false, resync = false): Promise<void> => {
       if (!term || termDisposed || (!allowDetached && disposed)) return;
       const scanStartedAt = import.meta.env.DEV ? performance.now() : null;
       let buf;
@@ -1379,9 +1401,49 @@ export default memo(function XTermWrapper({
           lastNonEmpty = text;
         }
       }
+      const observedAt = Date.now();
+      let askScreen: ReturnType<typeof ingestAskQuestionLines> = null;
+      if (agentKind === "claude" || agentKind === "claude-codex") {
+        try {
+          const observedInputRevision = await getSessionInputRevision(sessionId);
+          askScreen = ingestAskQuestionLines(
+            sessionId,
+            getTerminalBufferLines(
+              sessionId,
+              ASK_QUESTION_TAIL_LINES,
+              { excludeInitialReplay: true },
+            ),
+            observedAt,
+            observedInputRevision,
+          );
+        } catch {
+          useAskQuestionStore.getState().clearScreen(sessionId, "read_failure", observedAt);
+        }
+      } else {
+        useAskQuestionStore.getState().clearScreen(sessionId, null, observedAt);
+      }
+      const nextAskAttentionId = askScreen
+        ? askQuestionAttentionId(sessionId, askScreen)
+        : null;
+      const publishedAskAttentionId = publishedAskQuestionAttentionId(sessionId);
+      if (visibleAskAttentionId === null && publishedAskAttentionId !== null) {
+        visibleAskAttentionId = publishedAskAttentionId;
+      }
+      const canonicalAttention = useSessionAttentionStore.getState().attentionBySession[sessionId];
+      const canonicalAskMismatch = nextAskAttentionId !== null && canonicalAttention
+        ? canonicalAttention.attentionId !== nextAskAttentionId || canonicalAttention.kind !== "input"
+        : false;
+      const askAttentionChanged = nextAskAttentionId !== visibleAskAttentionId
+        || canonicalAskMismatch;
       const scanSignature = scanLines.join("\n");
-      if (scanSignature === lastScanSignature && approvalAbsentStreak === 0 && rateLimitAbsentStreak === 0) return;
+      const scanUnchanged = (
+        scanSignature === lastScanSignature
+        && !askAttentionChanged
+        && approvalAbsentStreak === 0
+        && rateLimitAbsentStreak === 0
+      );
       lastScanSignature = scanSignature;
+      if (scanUnchanged) return;
       const workingPatternVisible = scanLines.some((line) => (
         WORKING_INDICATOR_PATTERNS.some((pattern) => pattern.test(line))
       ));
@@ -1409,8 +1471,14 @@ export default memo(function XTermWrapper({
       bumpPaintStat("scan", sessionId);
       const rateLimit = scanRateLimit(scanLines.join("\n"));
       const approvalPatternId = scanForApproval(scanLines);
+      const askWasPublished = nextAskAttentionId !== null
+        && hasPublishedAskQuestionEvidence(sessionId, nextAskAttentionId);
       const prevStatus = usePaneMetadataStore.getState().metadata[sessionId]?.agentStatus;
       if (rateLimit.kind === "limit-reached") {
+        if (visibleAskAttentionId !== null) {
+          releaseAskQuestionEvidence(sessionId);
+          visibleAskAttentionId = null;
+        }
         const newlyVisible = !rateLimitVisible;
         rateLimitVisible = true;
         rateLimitAbsentStreak = 0;
@@ -1434,14 +1502,47 @@ export default memo(function XTermWrapper({
         if (scanStartedAt !== null) recordApprovalScan(performance.now() - scanStartedAt, sessionId);
         return;
       }
+      if (askScreen) {
+        const published = await publishAskQuestionEvidence(
+          sessionId,
+          askScreen,
+          observedAt,
+          canonicalAttention
+            ? { attentionId: canonicalAttention.attentionId, kind: canonicalAttention.kind }
+            : undefined,
+        );
+        if (published || askWasPublished) {
+          visibleAskAttentionId = nextAskAttentionId;
+        }
+      } else if (visibleAskAttentionId !== null) {
+        if (approvalPatternId > 0) {
+          publishScreenScanEvidence(
+            "approval",
+            findApprovalPromptDetail(scanLines, approvalPatternId),
+            `screen:${sessionId}:${approvalPatternId}:${observedAt}`,
+            resync,
+          );
+          releaseAskQuestionEvidence(sessionId);
+          visibleAskAttentionId = null;
+        } else {
+          const cleared = await clearAskQuestionEvidence(sessionId, observedAt);
+          if (cleared || !hasPublishedAskQuestionEvidence(sessionId, visibleAskAttentionId)) {
+            visibleAskAttentionId = null;
+          }
+        }
+      }
+      const waitingPatternId = approvalPatternId > 0
+        ? approvalPatternId
+        : askScreen
+          ? 5
+          : 0;
       const transition = resolveWaitingTransition(
         { waiting: prevStatus === "waiting", absentStreak: approvalAbsentStreak },
-        approvalPatternId,
+        waitingPatternId,
       );
       approvalAbsentStreak = transition.absentStreak;
-      if (approvalPatternId > 0) {
-        if (prevStatus !== "waiting") {
-          const observedAt = Date.now();
+      if (waitingPatternId > 0) {
+        if (prevStatus !== "waiting" && !askScreen) {
           publishScreenScanEvidence(
             "approval",
             findApprovalPromptDetail(scanLines, approvalPatternId),
@@ -1454,7 +1555,7 @@ export default memo(function XTermWrapper({
         });
         const activePaneId = useUiStore.getState().activePaneId;
         if (activePaneId !== sessionId && useSettingsStore.getState().notificationsEnabled) {
-          const didNotify = usePaneMetadataStore.getState().notifyWaiting(sessionId, approvalPatternId);
+          const didNotify = usePaneMetadataStore.getState().notifyWaiting(sessionId, waitingPatternId);
           if (didNotify && useSettingsStore.getState().notificationSoundEnabled) {
             playNotificationSound();
           }
@@ -1468,21 +1569,37 @@ export default memo(function XTermWrapper({
       if (scanStartedAt !== null) recordApprovalScan(performance.now() - scanStartedAt, sessionId);
     };
 
+    const requestBackgroundScan = (resync = false): void => {
+      backgroundScanResync ||= resync;
+      if (scanInFlight) {
+        scanPending = true;
+        return;
+      }
+      scanInFlight = true;
+      const scanWasResync = backgroundScanResync;
+      backgroundScanResync = false;
+      void runScan(true, scanWasResync).finally(() => {
+        scanInFlight = false;
+        if (scanPending && !disposed) {
+          scanPending = false;
+          requestBackgroundScan();
+        }
+      });
+    };
+
     const scheduleBackgroundScan = (resync = false): void => {
       if (!term) return;
       backgroundScanResync ||= resync;
       if (!backgroundScanThrottle) {
         backgroundScanThrottle = setTimeout(() => {
           backgroundScanThrottle = null;
-          const scanWasResync = backgroundScanResync;
-          backgroundScanResync = false;
-          runScan(true, scanWasResync);
+          requestBackgroundScan();
         }, 300);
       }
       if (idleFlush) clearTimeout(idleFlush);
       idleFlush = setTimeout(() => {
         idleFlush = null;
-        runScan(true, backgroundScanResync);
+        requestBackgroundScan();
       }, 200);
     };
 

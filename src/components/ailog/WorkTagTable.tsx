@@ -5,7 +5,7 @@
 
 import {
   formatCount,
-  formatUsd,
+  formatMoney,
   workTagHint,
   workTagLabel,
   type ModelsReport,
@@ -45,7 +45,7 @@ export function coverageCostTokens(coverage: PriceCoverage): { covered: number; 
 export function workTagCostLabel(coverage: PriceCoverage): string {
   if (coverage.coveredTokenRatio >= 1) return "コスト相当";
   const { covered, total } = coverageCostTokens(coverage);
-  return `コスト相当 (単価既知 ${formatCount(covered)} / ${formatCount(total)} tok)`;
+  return `コスト相当 (価格情報あり ${formatCount(covered)} / ${formatCount(total)} tok)`;
 }
 
 export function WorkTagTable({
@@ -60,6 +60,7 @@ export function WorkTagTable({
     <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}>
       <VScrollBox maxHeight={320}>
         <table style={tableStyle}>
+          <caption style={{ textAlign: "left", padding: "6px 8px", color: "var(--cmux-text-tertiary)", fontSize: "var(--cmux-font-size-xs)" }}>作業種別ごとのセッション数とコスト相当</caption>
           <colgroup>
             <col style={{ width: "36%" }} />
             <col style={{ width: "28%" }} />
@@ -67,19 +68,19 @@ export function WorkTagTable({
           </colgroup>
           <thead>
             <tr>
-              <th style={thLeftStyle}>作業種別</th>
-              <th style={thStyle}>セッション</th>
-              <th style={thStyle}>{costLabel}</th>
+              <th scope="col" style={thLeftStyle}>作業種別</th>
+              <th scope="col" style={thStyle}>セッション</th>
+              <th scope="col" style={thStyle}>{costLabel}</th>
             </tr>
           </thead>
           <tbody>
             {rows.map((row) => (
               <tr key={row.workTag} data-testid="work-tag-row">
-                <td style={tdLeftStyle} title={workTagHint(row.workTag)}>
+                <th scope="row" style={{ ...tdLeftStyle, fontWeight: 400 }} title={workTagHint(row.workTag)}>
                   {workTagLabel(row.workTag)}
-                </td>
+                </th>
                 <td style={tdStyle}>{formatCount(row.sessions)}</td>
-                <td style={tdStyle}>{formatUsd(row.costUsd)}</td>
+                <td style={tdStyle}>{formatMoney(row.costUsd)}</td>
               </tr>
             ))}
           </tbody>

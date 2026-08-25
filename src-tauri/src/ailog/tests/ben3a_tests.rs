@@ -1,9 +1,7 @@
-//! T1–T12 for ailog 便3a: default price corrections, catalog migration,
-//! grok Reported class, and NULL-model carry-forward.
+//! Ailog 便3a: default price corrections, catalog migration, and Grok class.
 
 use rusqlite::{params, Connection};
 
-use crate::ailog::index;
 use crate::ailog::price::{self, ModelClass, PriceTable, DEFAULT_PRICES};
 
 fn memory_db() -> Connection {
@@ -31,22 +29,6 @@ fn generation(conn: &Connection) -> u64 {
     .ok()
     .and_then(|value| value.parse().ok())
     .unwrap_or(0)
-}
-
-fn insert_session(conn: &Connection, kind: &str, session_id: &str) {
-    conn.execute(
-        "INSERT INTO session (kind, session_id) VALUES (?1, ?2)",
-        params![kind, session_id],
-    )
-    .unwrap();
-}
-
-fn insert_turn(conn: &Connection, kind: &str, session_id: &str, seq: i64, model: Option<&str>) {
-    conn.execute(
-        "INSERT INTO turn (kind, session_id, seq, ts, model) VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![kind, session_id, seq, seq * 1_000, model],
-    )
-    .unwrap();
 }
 
 fn default_by_name(name: &str) -> price::Price {
@@ -243,97 +225,6 @@ fn t6_migrate_is_idempotent() {
     };
     assert_eq!(gen_once, gen_twice);
     assert_eq!(rows_once, rows_twice);
-}
-
-fn run_carry(conn: &mut Connection) -> bool {
-    crate::ailog::migrate::apply(conn).unwrap();
-    let prices = PriceTable::from_defaults();
-    let tx = conn.transaction().unwrap();
-    let changed = index::carry_forward_missing_models_if_needed(&tx, &prices).unwrap();
-    tx.commit().unwrap();
-    changed
-}
-
-fn turn_model(
-    conn: &Connection,
-    kind: &str,
-    session_id: &str,
-    seq: i64,
-) -> (Option<String>, Option<String>, Option<String>) {
-    conn.query_row(
-        "SELECT model, model_family, model_variant FROM turn \
-         WHERE kind = ?1 AND session_id = ?2 AND seq = ?3",
-        params![kind, session_id, seq],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-    )
-    .unwrap()
-}
-
-// T7
-#[test]
-fn t7_carry_uses_previous_non_null() {
-    let mut conn = memory_db();
-    insert_session(&conn, "codex", "s-prev");
-    insert_turn(&conn, "codex", "s-prev", 1, Some("gpt-5.6-sol"));
-    insert_turn(&conn, "codex", "s-prev", 2, None);
-    assert!(run_carry(&mut conn));
-    let (model, _, _) = turn_model(&conn, "codex", "s-prev", 2);
-    assert_eq!(model.as_deref(), Some("gpt-5.6-sol"));
-}
-
-// T8
-#[test]
-fn t8_carry_falls_back_to_next_non_null() {
-    let mut conn = memory_db();
-    insert_session(&conn, "codex", "s-next");
-    insert_turn(&conn, "codex", "s-next", 1, None);
-    insert_turn(&conn, "codex", "s-next", 2, Some("gpt-5.6-sol"));
-    assert!(run_carry(&mut conn));
-    let (model, _, _) = turn_model(&conn, "codex", "s-next", 1);
-    assert_eq!(model.as_deref(), Some("gpt-5.6-sol"));
-}
-
-// T9
-#[test]
-fn t9_carry_leaves_all_null_session_alone() {
-    let mut conn = memory_db();
-    insert_session(&conn, "codex", "s-empty");
-    insert_turn(&conn, "codex", "s-empty", 1, None);
-    insert_turn(&conn, "codex", "s-empty", 2, None);
-    assert!(run_carry(&mut conn));
-    assert_eq!(
-        turn_model(&conn, "codex", "s-empty", 1),
-        (None, None, None)
-    );
-    assert_eq!(
-        turn_model(&conn, "codex", "s-empty", 2),
-        (None, None, None)
-    );
-}
-
-// T10
-#[test]
-fn t10_carry_fills_family_and_variant() {
-    let mut conn = memory_db();
-    insert_session(&conn, "codex", "s-family");
-    insert_turn(&conn, "codex", "s-family", 1, Some("gpt-5.6-sol"));
-    insert_turn(&conn, "codex", "s-family", 2, None);
-    assert!(run_carry(&mut conn));
-    let (model, family, variant) = turn_model(&conn, "codex", "s-family", 2);
-    assert_eq!(model.as_deref(), Some("gpt-5.6-sol"));
-    assert_eq!(family.as_deref(), Some("gpt-5.6"));
-    assert_eq!(variant.as_deref(), Some("sol"));
-}
-
-// T11
-#[test]
-fn t11_carry_is_idempotent() {
-    let mut conn = memory_db();
-    insert_session(&conn, "codex", "s-once");
-    insert_turn(&conn, "codex", "s-once", 1, Some("gpt-5.6-sol"));
-    insert_turn(&conn, "codex", "s-once", 2, None);
-    assert!(run_carry(&mut conn));
-    assert!(!run_carry(&mut conn));
 }
 
 // T12

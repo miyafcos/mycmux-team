@@ -47,28 +47,29 @@ function CommandTable({ rows }: { rows: ToolRankingRow[] }) {
   }
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}>
-      <div style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-secondary)", fontWeight: 600 }}>
+      <h3 style={{ margin: 0, fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-secondary)", fontWeight: 600 }}>
         失敗の多いコマンド
-      </div>
+      </h3>
       <div style={noteStyle}>{REWORK_COMMAND_SCOPE_NOTE}</div>
       <VScrollBox maxHeight={240}>
         <table style={tableStyle}>
+          <caption style={{ textAlign: "left", padding: "6px 8px", color: "var(--cmux-text-tertiary)", fontSize: "var(--cmux-font-size-xs)" }}>失敗回数の多いコマンド</caption>
           <colgroup>
             <col style={{ width: "70%" }} />
             <col style={{ width: "30%" }} />
           </colgroup>
           <thead>
             <tr>
-              <th style={thLeftStyle}>コマンド</th>
-              <th style={thStyle}>失敗 / 実行</th>
+              <th scope="col" style={thLeftStyle}>コマンド</th>
+              <th scope="col" style={thStyle}>失敗 / 実行</th>
             </tr>
           </thead>
           <tbody>
             {shown.map((row) => (
               <tr key={commandRowKey(row)} data-testid="rework-command-row">
-                <td style={tdLeftStyle} title={commandLabel(row)} data-testid="rework-command-label">
+                <th scope="row" style={{ ...tdLeftStyle, fontWeight: 400 }} title={commandLabel(row)} data-testid="rework-command-label">
                   {commandLabel(row)}
-                </td>
+                </th>
                 <td style={tdStyle} data-testid="rework-command-counts">
                   {`${formatCount(row.failures)} / ${formatCount(row.executions)}`}
                 </td>
@@ -89,12 +90,13 @@ function FileTable({ rows }: { rows: FileRankingRow[] }) {
   }
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}>
-      <div style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-secondary)", fontWeight: 600 }}>
+      <h3 style={{ margin: 0, fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-secondary)", fontWeight: 600 }}>
         書き直しの多いファイル
-      </div>
+      </h3>
       <div style={noteStyle}>{REWORK_FILE_SCOPE_NOTE}</div>
       <VScrollBox maxHeight={240}>
         <table style={tableStyle}>
+          <caption style={{ textAlign: "left", padding: "6px 8px", color: "var(--cmux-text-tertiary)", fontSize: "var(--cmux-font-size-xs)" }}>繰り返し編集されたファイル</caption>
           <colgroup>
             <col style={{ width: "58%" }} />
             <col style={{ width: "21%" }} />
@@ -102,17 +104,17 @@ function FileTable({ rows }: { rows: FileRankingRow[] }) {
           </colgroup>
           <thead>
             <tr>
-              <th style={thLeftStyle}>ファイル</th>
-              <th style={thStyle}>編集回数</th>
-              <th style={thStyle}>セッション</th>
+              <th scope="col" style={thLeftStyle}>ファイル</th>
+              <th scope="col" style={thStyle}>編集回数</th>
+              <th scope="col" style={thStyle}>セッション</th>
             </tr>
           </thead>
           <tbody>
             {shown.map((row) => (
               <tr key={row.path} data-testid="rework-file-row">
-                <td style={tdLeftStyle} title={row.path} data-testid="rework-file-path">
+                <th scope="row" style={{ ...tdLeftStyle, fontWeight: 400 }} title={row.path} data-testid="rework-file-path">
                   {truncateTailPath(row.path)}
-                </td>
+                </th>
                 <td style={tdStyle}>{formatCount(row.editCount)}</td>
                 <td style={tdStyle}>{formatCount(row.sessionCount)}</td>
               </tr>

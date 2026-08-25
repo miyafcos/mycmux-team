@@ -45,6 +45,19 @@
 .cmux-dash-row-elapsed { overflow: hidden; color: var(--cmux-text-tertiary); font-size: var(--cmux-font-size-xs); text-overflow: ellipsis; white-space: nowrap; }
 .cmux-dash-row-activity,
 .cmux-dash-row-elapsed { display: none; }
+.cmux-dash-row-instrument {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 8px;
+  margin-top: 2px;
+  overflow: visible;
+  color: var(--cmux-text-tertiary);
+  font-family: var(--cmux-font-mono);
+  font-size: var(--cmux-font-size-xs);
+  white-space: normal;
+}
+.cmux-dash-row-instrument-slot { flex: 0 0 auto; white-space: nowrap; }
 
 @keyframes cmux-dash-row-in {
   from { opacity: 0; transform: translateY(4px); }

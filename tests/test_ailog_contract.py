@@ -59,6 +59,7 @@ EXPECTED_COMMANDS = {
     "ailog_session_transcript",
     "ailog_session_summarize",
     "ailog_models",
+    "ailog_model_handoffs",
     "ailog_efficiency",
     "ailog_rule_check",
     "ailog_findings",
@@ -66,6 +67,8 @@ EXPECTED_COMMANDS = {
     "ailog_usage_rhythm",
     "ailog_get_prices",
     "ailog_set_price",
+    "ailog_get_usd_jpy_rate",
+    "ailog_set_usd_jpy_rate",
 }
 
 

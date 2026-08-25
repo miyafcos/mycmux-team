@@ -70,7 +70,7 @@ pub(crate) fn send(service: &LiveBriefService, expectation: InterventionExpectat
     coordinator.in_flight_prompt = Some((expectation.prompt_event_id.clone(), expectation.source_revision));
     let mut frame = payload.into_bytes();
     frame.push(b'\r');
-    let receiver = match service.manager().write_intervention_if_revision(&expectation.pty_session_id, expectation.pty_input_revision, &frame) {
+    let receiver = match service.manager().write_intervention_if_revision(&expectation.pty_session_id, None, expectation.pty_input_revision, &frame) {
         Ok(receiver) => receiver,
         Err(error) if error.starts_with("PTY_INPUT_REVISION_CONFLICT") => {
             coordinator.in_flight_prompt = None;

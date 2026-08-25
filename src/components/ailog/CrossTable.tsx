@@ -13,10 +13,16 @@ import {
   selectionFromPivotCell,
 } from "./crossTableModel";
 import { groupLabel, metricUnit, type UsageMetric } from "./usageModel";
-import { ButtonGroup, EmptyState, Num, VScrollBox, noteStyle, tableStyle, tdLeftStyle, tdStyle, thLeftStyle, thStyle } from "./ui";
+import { ButtonGroup, EmptyState, Num, VScrollBox, noteStyle, tableActionButtonStyle, tableStyle, tdLeftStyle, tdStyle, thLeftStyle, thStyle } from "./ui";
 
 function axisLabel(value: string, axis: PivotAxis): string {
   if (value === OTHER_KEY) return "下位まとめ";
+  if (value === "(unknown)") {
+    if (axis === "project") return "案件未指定";
+    if (axis === "model" || axis === "model_raw") return "ログにモデル名なし";
+    return "不明";
+  }
+  if (value === "(none)") return "未指定";
   if (axis === "origin") return value === "unknown" ? "不明" : value;
   return groupLabel(value, axis);
 }
@@ -65,8 +71,8 @@ export function CrossTable({
         <EmptyState kind="no-data" />
       ) : (
         <>
-          <VScrollBox maxHeight={360}>
-            <table style={tableStyle}>
+          <VScrollBox maxHeight={360} label={`${pivotAxisLabel(rowBy)}と${pivotAxisLabel(colBy)}のクロス集計`}>
+            <table style={{ ...tableStyle, minWidth: Math.max(640, 190 + folded.cols.length * 112) }}>
               <colgroup>
                 <col style={{ width: "22%" }} />
                 {folded.cols.map((col) => (
@@ -79,21 +85,21 @@ export function CrossTable({
               </caption>
               <thead>
                 <tr>
-                  <th style={thLeftStyle}>{pivotAxisLabel(rowBy)}</th>
+                  <th scope="col" style={thLeftStyle}>{pivotAxisLabel(rowBy)}</th>
                   {folded.cols.map((col) => (
-                    <th key={col} style={thStyle} title={axisLabel(col, colBy)}>
+                    <th scope="col" key={col} style={thStyle} title={axisLabel(col, colBy)}>
                       {axisLabel(col, colBy)}
                     </th>
                   ))}
-                  <th style={thStyle}>合計</th>
+                  <th scope="col" style={thStyle}>合計</th>
                 </tr>
               </thead>
               <tbody>
                 {folded.rows.map((row) => (
                   <tr key={row.key}>
-                    <td style={tdLeftStyle} title={axisLabel(row.key, rowBy)}>
+                    <th scope="row" style={{ ...tdLeftStyle, fontWeight: 400 }} title={axisLabel(row.key, rowBy)}>
                       {axisLabel(row.key, rowBy)}
-                    </td>
+                    </th>
                     {row.cells.map((value, index) => {
                       const colKey = folded.cols[index];
                       const next = selectionFromPivotCell(rowBy, colBy, row.key, colKey);
@@ -117,20 +123,23 @@ export function CrossTable({
                                 ? `color-mix(in srgb, var(--cmux-accent) ${mix}%, transparent)`
                                 : undefined,
                           }}
-                          aria-selected={selected || undefined}
-                          onClick={() => {
-                            if (!next) return;
-                            if (!selected) {
-                              onSelect(next);
-                              return;
-                            }
-                            const remaining = { ...selection };
-                            if (next.model) delete remaining.model;
-                            if (next.project) delete remaining.project;
-                            onSelect(remaining.model || remaining.project ? remaining : null);
-                          }}
                         >
-                          <Num value={value} kind={metricUnit(metric)} bare />
+                          {next ? <button
+                            type="button"
+                            aria-pressed={selected}
+                            aria-label={`${axisLabel(row.key, rowBy)}、${axisLabel(colKey, colBy)}、${value}`}
+                            onClick={() => {
+                              if (!selected) {
+                                onSelect(next);
+                                return;
+                              }
+                              const remaining = { ...selection };
+                              if (next.model) delete remaining.model;
+                              if (next.project) delete remaining.project;
+                              onSelect(remaining.model || remaining.project ? remaining : null);
+                            }}
+                            style={{ ...tableActionButtonStyle, color: "inherit", textAlign: "right", textDecoration: "none" }}
+                          ><Num value={value} kind={metricUnit(metric)} bare /></button> : <Num value={value} kind={metricUnit(metric)} bare />}
                         </td>
                       );
                     })}
@@ -140,7 +149,7 @@ export function CrossTable({
                   </tr>
                 ))}
                 <tr>
-                  <td style={{ ...tdLeftStyle, fontWeight: 600 }}>合計</td>
+                  <th scope="row" style={{ ...tdLeftStyle, fontWeight: 600 }}>合計</th>
                   {folded.colTotals.map((value, index) => (
                     <td key={folded.cols[index]} style={{ ...tdStyle, fontWeight: 600 }}>
                       {stackable ? <Num value={value} kind={metricUnit(metric)} bare /> : "—"}
@@ -158,7 +167,7 @@ export function CrossTable({
             <div style={noteStyle}>1セッションが複数モデルに跨るため合計できません</div>
           ) : null}
           {isFilterablePivotAxis(rowBy) || isFilterablePivotAxis(colBy) ? (
-            <div style={noteStyle}>セルをクリックすると下のセッション一覧が連動します。</div>
+            <div style={noteStyle}>セルの値を選ぶと下のセッション一覧が連動します。</div>
           ) : null}
         </>
       )}

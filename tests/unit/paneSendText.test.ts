@@ -1,15 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { handleSocketCommand } from "../../src/components/layout/socketCommands";
 import { useWorkspaceListStore } from "../../src/stores/workspaceListStore";
+import { useSessionAttentionStore } from "../../src/stores/sessionAttentionStore";
 import type { Pane, PaneTab, Workspace } from "../../src/types";
 
 const ipcMocks = vi.hoisted(() => ({
+  getSessionInputRevision: vi.fn(),
   writeToSession: vi.fn(),
+  writeToSessionGuarded: vi.fn(),
   getSessionScrollback: vi.fn(),
 }));
 const terminalBufferMocks = vi.hoisted(() => ({
   getTerminalBufferLines: vi.fn(),
   hasTerminalBuffer: vi.fn(),
+  hasMountedTerminal: vi.fn(),
 }));
 const headlessBufferMocks = vi.hoisted(() => ({
   getHeadlessBufferLines: vi.fn(),
@@ -50,8 +54,11 @@ function workspace(): Workspace {
 beforeEach(() => {
   vi.useFakeTimers();
   vi.clearAllMocks();
+  ipcMocks.getSessionInputRevision.mockResolvedValue(7);
   ipcMocks.writeToSession.mockResolvedValue(undefined);
+  ipcMocks.writeToSessionGuarded.mockResolvedValue({ sent: true, reason: null });
   terminalBufferMocks.hasTerminalBuffer.mockReturnValue(true);
+  terminalBufferMocks.hasMountedTerminal.mockReturnValue(true);
   useWorkspaceListStore.setState({
     workspaces: [workspace()],
     activeWorkspaceId: "send-workspace",
@@ -61,6 +68,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers();
+  useSessionAttentionStore.getState().resetForTests();
 });
 
 async function flushSendTimers(): Promise<void> {
@@ -85,6 +93,7 @@ describe("pane.send_text confirmed enter", () => {
     })).rejects.toThrow("pane.send_text cannot target a declared tab");
     expect(ipcMocks.writeToSession).not.toHaveBeenCalled();
     expect(terminalBufferMocks.hasTerminalBuffer).not.toHaveBeenCalled();
+    expect(terminalBufferMocks.hasMountedTerminal).not.toHaveBeenCalled();
     expect(terminalBufferMocks.getTerminalBufferLines).not.toHaveBeenCalled();
   });
 
@@ -248,6 +257,7 @@ describe("pane.send_text confirmed enter", () => {
   });
 
   it("bounds a stalled unmounted snapshot and reports why confirmation is unavailable", async () => {
+    terminalBufferMocks.hasMountedTerminal.mockReturnValue(false);
     terminalBufferMocks.hasTerminalBuffer.mockReturnValue(false);
     ipcMocks.getSessionScrollback.mockImplementation(() => new Promise(() => {}));
 
@@ -268,6 +278,35 @@ describe("pane.send_text confirmed enter", () => {
       [sessionId, "short"],
       [sessionId, "\r"],
     ]);
+  });
+
+  it("uses backend scrollback instead of a cached xterm for unmounted confirmation", async () => {
+    terminalBufferMocks.hasMountedTerminal.mockReturnValue(false);
+    terminalBufferMocks.hasTerminalBuffer.mockReturnValue(true);
+    const before = { data: new Uint8Array([1]), startOffset: 0, endOffset: 1 };
+    const after = { data: new Uint8Array([2]), startOffset: 0, endOffset: 1 };
+    ipcMocks.getSessionScrollback
+      .mockResolvedValueOnce(before)
+      .mockResolvedValue(after);
+    headlessBufferMocks.getHeadlessBufferLines.mockImplementation((
+      _targetSessionId: string,
+      snapshot: { data: Uint8Array },
+    ) => snapshot.data[0] === 1 ? ["before"] : ["after"]);
+
+    const pending = handleSocketCommand("pane.send_text", { sessionId, text: "", key: "down" });
+    await flushSendTimers();
+
+    await expect(pending).resolves.toMatchObject({
+      sessionId,
+      ok: true,
+      confirmed: true,
+      attempts: 1,
+    });
+    expect(terminalBufferMocks.getTerminalBufferLines).not.toHaveBeenCalled();
+    expect(terminalBufferMocks.hasTerminalBuffer).not.toHaveBeenCalled();
+    expect(ipcMocks.getSessionScrollback).toHaveBeenCalledTimes(2);
+    expect(headlessBufferMocks.getHeadlessBufferLines).toHaveBeenCalledWith(sessionId, before, 24);
+    expect(headlessBufferMocks.getHeadlessBufferLines).toHaveBeenCalledWith(sessionId, after, 24);
   });
 
   it("sends an empty follow-up Enter only once when verification disappears", async () => {
@@ -408,5 +447,182 @@ describe("pane.send_text confirmed enter", () => {
 
     await expect(pending).resolves.toMatchObject({ confirmed: true });
     expect(ipcMocks.writeToSession).toHaveBeenCalledWith(sessionId, expected);
+  });
+});
+
+describe("pane.send_text optimistic lock from the frontend", () => {
+  function seedAttention(attentionId: string | null, sessionRevision: number) {
+    useSessionAttentionStore.setState({
+      attentionBySession: {
+        [sessionId]: {
+          sessionId,
+          sessionEpoch: 5,
+          attentionId,
+          kind: attentionId ? "input" : "none",
+          detail: null,
+          sessionRevision,
+          uiState: "waiting",
+          stateSince: 1,
+          occurrenceOrder: 1,
+        },
+      },
+    });
+  }
+
+  it("writes through the guarded backend when all expectations match", async () => {
+    seedAttention("attention-a", 11);
+    await expect(handleSocketCommand("pane.send_text", {
+      sessionId,
+      text: "2",
+      expectedAttentionId: "attention-a",
+      expectedSessionEpoch: 5,
+      expectedSessionRevision: 11,
+      expectedInputRevision: 7,
+    })).resolves.toMatchObject({ sessionId, unverified: true });
+    expect(ipcMocks.writeToSession).not.toHaveBeenCalled();
+    expect(ipcMocks.writeToSessionGuarded).toHaveBeenCalledOnce();
+    expect(ipcMocks.writeToSessionGuarded).toHaveBeenCalledWith(
+      sessionId,
+      "2",
+      "attention-a",
+      5,
+      11,
+      7,
+    );
+  });
+
+  it("writes through the guarded backend when null attention matches none", async () => {
+    seedAttention(null, 11);
+    await expect(handleSocketCommand("pane.send_text", {
+      sessionId,
+      text: "hello",
+      expectedAttentionId: null,
+      expectedSessionEpoch: 5,
+      expectedSessionRevision: 11,
+      expectedInputRevision: 7,
+    })).resolves.toMatchObject({ sessionId, unverified: true });
+    expect(ipcMocks.writeToSession).not.toHaveBeenCalled();
+    expect(ipcMocks.writeToSessionGuarded).toHaveBeenCalledWith(
+      sessionId,
+      "hello",
+      null,
+      5,
+      11,
+      7,
+    );
+  });
+
+  it("rejects partial expectations before any write", async () => {
+    seedAttention("attention-a", 11);
+    await expect(handleSocketCommand("pane.send_text", {
+      sessionId,
+      text: "2",
+      expectedAttentionId: "attention-a",
+      expectedSessionEpoch: 5,
+      expectedSessionRevision: 11,
+    })).resolves.toEqual({
+      sent: false,
+      reason: "incomplete_expectations",
+      current: null,
+    });
+    expect(ipcMocks.writeToSession).not.toHaveBeenCalled();
+    expect(ipcMocks.writeToSessionGuarded).not.toHaveBeenCalled();
+  });
+
+  it("rejects a mismatched expectedAttentionId before any write", async () => {
+    seedAttention("attention-b", 11);
+    await expect(handleSocketCommand("pane.send_text", {
+      sessionId,
+      text: "2",
+      expectedAttentionId: "attention-a",
+      expectedSessionEpoch: 5,
+      expectedSessionRevision: 11,
+      expectedInputRevision: 7,
+    })).resolves.toMatchObject({
+      sent: false,
+      reason: "attention_id",
+    });
+    expect(ipcMocks.writeToSession).not.toHaveBeenCalled();
+    expect(ipcMocks.writeToSessionGuarded).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["future", 12],
+    ["older", 10],
+  ])("rejects a %s expectedSessionRevision before any write", async (_label, expectedSessionRevision) => {
+    seedAttention("attention-a", 11);
+    await expect(handleSocketCommand("pane.send_text", {
+      sessionId,
+      text: "2",
+      expectedAttentionId: "attention-a",
+      expectedSessionEpoch: 5,
+      expectedSessionRevision,
+      expectedInputRevision: 7,
+    })).resolves.toMatchObject({
+      sent: false,
+      reason: "session_revision",
+    });
+    expect(ipcMocks.writeToSession).not.toHaveBeenCalled();
+    expect(ipcMocks.writeToSessionGuarded).not.toHaveBeenCalled();
+  });
+
+  it("accepts camelCase and snake_case expectation aliases on the same validated path", async () => {
+    seedAttention("attention-a", 11);
+    await expect(handleSocketCommand("pane.send_text", {
+      session_id: sessionId,
+      text: "2",
+      expected_attention_id: "attention-a",
+      expected_session_epoch: 5,
+      expected_session_revision: 11,
+      expected_input_revision: 7,
+    })).resolves.toMatchObject({ unverified: true });
+    expect(ipcMocks.writeToSession).not.toHaveBeenCalled();
+    expect(ipcMocks.writeToSessionGuarded).toHaveBeenCalledWith(
+      sessionId,
+      "2",
+      "attention-a",
+      5,
+      11,
+      7,
+    );
+  });
+
+  it("uses the supplied input revision without re-reading it at send time", async () => {
+    seedAttention("attention-a", 11);
+    await expect(handleSocketCommand("pane.send_text", {
+      sessionId,
+      text: "2",
+      expectedAttentionId: "attention-a",
+      expectedSessionEpoch: 5,
+      expectedSessionRevision: 11,
+      expectedInputRevision: 6,
+    })).resolves.toMatchObject({ unverified: true });
+
+    expect(ipcMocks.getSessionInputRevision).not.toHaveBeenCalled();
+    expect(ipcMocks.writeToSessionGuarded).toHaveBeenCalledWith(
+      sessionId,
+      "2",
+      "attention-a",
+      5,
+      11,
+      6,
+    );
+  });
+
+  it("returns a backend lock rejection without claiming that a key was queued", async () => {
+    seedAttention("attention-a", 11);
+    ipcMocks.writeToSessionGuarded.mockResolvedValueOnce({
+      sent: false,
+      reason: "attention_id",
+    });
+    await expect(handleSocketCommand("pane.send_text", {
+      sessionId,
+      text: "2",
+      expectedAttentionId: "attention-a",
+      expectedSessionEpoch: 5,
+      expectedSessionRevision: 11,
+      expectedInputRevision: 7,
+    })).resolves.toEqual({ sent: false, reason: "attention_id" });
+    expect(ipcMocks.writeToSession).not.toHaveBeenCalled();
   });
 });

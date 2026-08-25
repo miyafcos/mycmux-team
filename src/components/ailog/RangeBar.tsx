@@ -3,10 +3,13 @@
  * Job controls live in the panel menu / auto-index hook.
  */
 
+import { useEffect, useState } from "react";
+
 import {
   RANGE_PRESETS,
   formatAgo,
   formatCount,
+  formatMoney,
   type Overview,
   type RangePreset,
   type UsageRhythmReport,
@@ -27,6 +30,8 @@ export function RangeBar({
   onExcludeSynthetic,
   includeSidechain,
   onIncludeSidechain,
+  usdJpyRate,
+  onUsdJpyRate,
 }: {
   preset: RangePreset;
   customFrom: string;
@@ -41,6 +46,8 @@ export function RangeBar({
   onExcludeSynthetic: (value: boolean) => void;
   includeSidechain: boolean;
   onIncludeSidechain: (value: boolean) => void;
+  usdJpyRate: number;
+  onUsdJpyRate: (rate: number) => void;
 }) {
   const freshness = overview?.indexFreshness ?? usageRhythm?.indexFreshness;
   const customIncomplete = preset === "custom" && (!customFrom || !customTo);
@@ -56,7 +63,7 @@ export function RangeBar({
         />
 
         {preset === "custom" ? (
-          <span style={{ display: "flex", alignItems: "center", gap: 5 }}>
+          <span style={{ display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap", minWidth: 0 }}>
             <input
               type="date"
               aria-label="開始日"
@@ -97,7 +104,7 @@ export function RangeBar({
 
       {overview && overview.excludedInternal.sessions > 0 ? (
         <div style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-secondary)" }}>
-          {`内部処理 ${formatCount(overview.excludedInternal.sessions)} 件 ($${overview.excludedInternal.costUsd.toFixed(2)}) を除外`}
+          {`内部処理 ${formatCount(overview.excludedInternal.sessions)} 件 (${formatMoney(overview.excludedInternal.costUsd)}) を除外`}
         </div>
       ) : null}
 
@@ -108,7 +115,7 @@ export function RangeBar({
             checked={excludeSynthetic}
             onChange={(event) => onExcludeSynthetic(event.target.checked)}
           />
-          {"<synthetic> を図と表から除外"}
+          {"<synthetic> をシリーズ別の表から除外"}
         </label>
         <label style={checkboxLabelStyle}>
           <input
@@ -118,6 +125,7 @@ export function RangeBar({
           />
           サブエージェントのターンも含める
         </label>
+        <UsdJpyRateField value={usdJpyRate} onChange={onUsdJpyRate} />
         {freshness ? (
           <Chip title="最後にインデックスが完了した時刻">
             {`記録は ${formatAgo(freshness.lastIndexedAt)}まで`}
@@ -158,3 +166,36 @@ const checkboxLabelStyle = {
   color: "var(--cmux-text-secondary)",
   cursor: "pointer",
 };
+
+function UsdJpyRateField({
+  value,
+  onChange,
+}: {
+  value: number;
+  onChange: (rate: number) => void;
+}) {
+  const [draft, setDraft] = useState(String(value));
+  useEffect(() => {
+    setDraft(String(value));
+  }, [value]);
+  return (
+    <label style={checkboxLabelStyle}>
+      <span>為替レート</span>
+      <input
+        type="text"
+        inputMode="decimal"
+        aria-label="為替レート (1ドルあたりの円)"
+        value={draft}
+        onChange={(event) => {
+          const text = event.target.value;
+          setDraft(text);
+          const next = Number(text);
+          if (Number.isFinite(next) && next > 0) onChange(next);
+        }}
+        onBlur={() => setDraft(String(value))}
+        style={{ ...dateInputStyle, width: 72 }}
+      />
+      <span>円/ドル</span>
+    </label>
+  );
+}

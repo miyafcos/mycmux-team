@@ -710,6 +710,13 @@ fn inject_no_color_for_agy(command: &str, env: &mut HashMap<String, String>) {
     }
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuardedWriteResult {
+    sent: bool,
+    reason: Option<&'static str>,
+}
+
 #[tauri::command]
 pub fn write_to_session(
     state: State<'_, AppState>,
@@ -717,6 +724,87 @@ pub fn write_to_session(
     data: String,
 ) -> Result<(), String> {
     state.session_manager.write(&session_id, data.as_bytes())
+}
+
+#[tauri::command(async)]
+pub async fn get_session_input_revision(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<u64, String> {
+    state.session_manager.input_revision(&session_id)
+}
+
+#[tauri::command(async)]
+pub async fn write_to_session_guarded(
+    state: State<'_, AppState>,
+    session_id: String,
+    data: String,
+    expected_attention_id: Option<String>,
+    expected_session_epoch: u64,
+    expected_session_revision: u64,
+    expected_input_revision: u64,
+) -> Result<GuardedWriteResult, String> {
+    let guarded_write = state
+        .session_state_store
+        .with_current_view(&session_id, |current| {
+            if current.attention.attention_id.as_ref() != expected_attention_id.as_ref() {
+                return Ok(Err("attention_id"));
+            }
+            if current.session_epoch != Some(expected_session_epoch) {
+                return Ok(Err("session_epoch"));
+            }
+            if current.session_revision != expected_session_revision {
+                return Ok(Err("session_revision"));
+            }
+            state
+                .session_manager
+                .write_intervention_if_revision(
+                    &session_id,
+                    Some(expected_session_epoch),
+                    expected_input_revision,
+                    data.as_bytes(),
+                )
+                .map(Ok)
+        });
+    let receiver = match guarded_write {
+        None => {
+            return Ok(GuardedWriteResult {
+                sent: false,
+                reason: Some("unknown_session"),
+            });
+        }
+        Some(Ok(Err(reason))) => {
+            return Ok(GuardedWriteResult {
+                sent: false,
+                reason: Some(reason),
+            });
+        }
+        Some(Ok(Ok(receiver))) => receiver,
+        Some(Err(error)) if error.starts_with("PTY_INPUT_REVISION_CONFLICT:") => {
+            return Ok(GuardedWriteResult {
+                sent: false,
+                reason: Some("input_revision"),
+            });
+        }
+        Some(Err(error)) if error.starts_with("PTY_SESSION_EPOCH_CONFLICT:") => {
+            return Ok(GuardedWriteResult {
+                sent: false,
+                reason: Some("session_epoch"),
+            });
+        }
+        Some(Err(error)) => return Err(error),
+    };
+    let write_result = tauri::async_runtime::spawn_blocking(move || {
+        receiver.recv_timeout(std::time::Duration::from_secs(10))
+    })
+        .await
+        .map_err(|error| format!("PTY_INPUT_WRITER_FAILED: {error}"))?
+        .map_err(|error| format!("PTY_INPUT_WRITER_FAILED: writer completion unavailable: {error}"))?;
+    write_result?;
+    Ok(GuardedWriteResult {
+        sent: true,
+        reason: None,
+    })
 }
 
 #[tauri::command(async)]

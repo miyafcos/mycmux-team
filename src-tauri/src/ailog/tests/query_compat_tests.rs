@@ -46,11 +46,9 @@ fn migrated_reports_expose_rollup_timings_and_other_reports_stay_raw() {
         query::sessions(&conn, &range, &filters, &options, NOW)
             .unwrap()
             .timings,
-    ];
-    assert!(migrated_timings
-        .iter()
-        .all(|timing| timing.path == "rollup"));
-    let raw_timings = [
+        // `models` joined the rollup path once hand-off counting moved out to
+        // `model_handoffs`; the row/series aggregates it keeps are all
+        // buildable from the daily rollup.
         query::models(
             &conn,
             &range,
@@ -60,6 +58,11 @@ fn migrated_reports_expose_rollup_timings_and_other_reports_stay_raw() {
         )
         .unwrap()
         .timings,
+    ];
+    assert!(migrated_timings
+        .iter()
+        .all(|timing| timing.path == "rollup"));
+    let raw_timings = [
         query::efficiency(&conn, &range, &filters, NOW)
             .unwrap()
             .timings,
@@ -142,8 +145,8 @@ fn dashboard_matches_the_individual_report_contracts() {
         &range,
         &filters,
         &query::SessionsOptions {
-            sort: "cost".to_string(),
-            limit: 5000,
+            sort: "rework".to_string(),
+            limit: 100,
             offset: 0,
         },
         NOW,
@@ -251,7 +254,7 @@ fn reports_are_deterministic_when_turn_storage_order_changes() {
     assert_eq!(reports(&ordered), reports(&shuffled));
 
     let conn = ordered.conn();
-    let models = query::models(
+    let models = query::model_handoffs(
         &conn,
         &Range {
             from: Some(0),
@@ -490,6 +493,54 @@ fn find_session<'a>(
         .iter()
         .find(|row| row.session_id == session_id)
         .unwrap_or_else(|| panic!("missing session {session_id}"))
+}
+
+#[test]
+fn session_text_search_keeps_total_across_pages() {
+    let fixture = Fixture::new();
+    let conn = fixture.conn();
+    for session_id in ["title-hit", "project-hit", "miss"] {
+        insert_session(&conn, session_id);
+        insert_turn(
+            &conn,
+            session_id,
+            1,
+            NOW - DAY,
+            Some("gpt-5.6-sol"),
+            100,
+            10,
+            1.0,
+        );
+    }
+    conn.execute(
+        "UPDATE session SET ai_title = 'Needle in title' WHERE session_id = 'title-hit'",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE session SET project_label = 'needle-project' WHERE session_id = 'project-hit'",
+        [],
+    )
+    .unwrap();
+
+    let mut filters = Filters::default();
+    filters.query = Some("needle".to_string());
+    for (offset, expected_rows) in [(0, 1), (1, 1), (5, 0)] {
+        let report = query::sessions(
+            &conn,
+            &range_all(),
+            &filters,
+            &query::SessionsOptions {
+                sort: "cost".to_string(),
+                limit: 1,
+                offset,
+            },
+            NOW,
+        )
+        .unwrap();
+        assert_eq!(report.total, 2);
+        assert_eq!(report.rows.len(), expected_rows);
+    }
 }
 
 #[test]

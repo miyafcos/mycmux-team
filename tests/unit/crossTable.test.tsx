@@ -181,7 +181,7 @@ describe("CrossTable", () => {
     );
     expect(html).toContain("color-mix(in srgb, var(--cmux-accent)");
     expect(html).not.toMatch(/#[0-9a-fA-F]{3,8}/);
-    expect(html).toContain("$2.00");
+    expect(html).toContain("¥300");
   });
 });
 

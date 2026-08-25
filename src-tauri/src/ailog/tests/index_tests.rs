@@ -322,7 +322,20 @@ fn handoffs_count_each_model_switch() {
     fixture.write("S3.jsonl", CLAUDE_MIXED_MODELS);
     fixture.index(KIND_CLAUDE, false);
 
-    let report = query::models(
+    let models = query::models(
+        &fixture.conn(),
+        &all_time(),
+        &Filters::default(),
+        &query::ModelsOptions {
+            granularity: "family".to_string(),
+            bucket: "day".to_string(),
+        },
+        NOW,
+    )
+    .unwrap();
+    assert!(models.handoffs.is_empty());
+
+    let report = query::model_handoffs(
         &fixture.conn(),
         &all_time(),
         &Filters::default(),
@@ -372,6 +385,18 @@ fn raw_granularity_exposes_switches_inside_one_family() {
     .unwrap();
     assert!(family.handoffs.is_empty());
     assert_eq!(family.rows.len(), 1);
+    let family_handoffs = query::model_handoffs(
+        &conn,
+        &all_time(),
+        &Filters::default(),
+        &query::ModelsOptions {
+            granularity: "family".to_string(),
+            bucket: "day".to_string(),
+        },
+        NOW,
+    )
+    .unwrap();
+    assert!(family_handoffs.handoffs.is_empty());
 
     // ...but the tier change is exactly what the operator cares about.
     let raw = query::models(
@@ -386,8 +411,20 @@ fn raw_granularity_exposes_switches_inside_one_family() {
     )
     .unwrap();
     assert_eq!(raw.rows.len(), 2);
-    assert_eq!(raw.handoffs.len(), 2);
-    assert!(raw
+    assert!(raw.handoffs.is_empty());
+    let raw_handoffs = query::model_handoffs(
+        &conn,
+        &all_time(),
+        &Filters::default(),
+        &query::ModelsOptions {
+            granularity: "raw".to_string(),
+            bucket: "day".to_string(),
+        },
+        NOW,
+    )
+    .unwrap();
+    assert_eq!(raw_handoffs.handoffs.len(), 2);
+    assert!(raw_handoffs
         .handoffs
         .iter()
         .any(|h| h.from == "gpt-5.6-terra" && h.to == "gpt-5.6-sol" && h.count == 1));

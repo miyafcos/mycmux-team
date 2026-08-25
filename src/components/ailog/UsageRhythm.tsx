@@ -126,7 +126,7 @@ export function UsageRhythm({
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14, minWidth: 0 }}>
-      <div style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))" }}>
+      <div style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 150px), 1fr))" }}>
         <Stat
           label="総トークン"
           value={formatTokens(report.totals.total)}
@@ -134,9 +134,9 @@ export function UsageRhythm({
           valueTitle={formatTokensFull(report.totals.total)}
         />
         <Stat
-          label="稼働日"
+          label="記録がある区間の稼働日"
           value={`${formatCount(report.activeDays)} / ${formatCount(report.spanDays)} 日`}
-          hint={report.spanDays > 0 ? `${(ratio * 100).toFixed(0)}%` : undefined}
+          hint={report.spanDays > 0 ? `最初の記録日〜最後の記録日を分母 · ${(ratio * 100).toFixed(0)}%` : undefined}
         />
         <Stat label="連続日数" value={`${formatCount(report.streak.current)} 日`} hint={streakHint} />
         <Stat label="最長連続" value={`${formatCount(report.streak.longest)} 日`} hint={longestHint} />
@@ -152,7 +152,7 @@ export function UsageRhythm({
         />
       </div>
 
-      <div style={{ display: "grid", gap: 16, gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))" }}>
+      <div style={{ display: "grid", gap: 16, gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 260px), 1fr))" }}>
         <Bars
           title={`時間帯 (${offset})`}
           bars={hours}

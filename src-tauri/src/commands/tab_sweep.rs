@@ -12,6 +12,7 @@ use tokio::time::Instant;
 
 const JUDGE_TIMEOUT: Duration = Duration::from_secs(90);
 const NAMING_TIMEOUT: Duration = Duration::from_secs(180);
+const GROUPING_TIMEOUT: Duration = Duration::from_secs(180);
 
 type JudgeAbortRegistry = Mutex<HashMap<String, oneshot::Sender<()>>>;
 
@@ -147,6 +148,7 @@ pub async fn run_tab_sweep_judge(
     let timeout = match mode.as_deref() {
         None | Some("judge") => JUDGE_TIMEOUT,
         Some("naming") => NAMING_TIMEOUT,
+        Some("grouping") => GROUPING_TIMEOUT,
         Some(value) => {
             return Err(TabSweepJudgeError::new(
                 "invalid_mode",

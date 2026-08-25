@@ -107,21 +107,21 @@ vi.mock("../../src/stores/useAilogJobStore", async (importOriginal) => {
 vi.mock("../../src/lib/ailog", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../src/lib/ailog")>()),
   ailogIndexStart: vi.fn(), ailogIndexStatus: vi.fn(), ailogSummarizeStatus: vi.fn(), ailogSeries: vi.fn(), ailogUsageRhythm: vi.fn(),
-  ailogDashboard: vi.fn(), ailogBreakdown: vi.fn(), ailogPivot: vi.fn(), ailogReworkRankings: vi.fn(),
+  ailogOverview: vi.fn(), ailogModels: vi.fn(), ailogBreakdown: vi.fn(), ailogPivot: vi.fn(), ailogReworkRankings: vi.fn(),
   ailogDigestGenerate: vi.fn(), ailogSummarizeStart: vi.fn(), ailogSessionSummarize: vi.fn(),
-  ailogSessionDetail: vi.fn(), ailogSessionTranscript: vi.fn(),
+  ailogSessionDetail: vi.fn(), ailogSessionTranscript: vi.fn(), ailogSessions: vi.fn(),
   listenIndexProgress: vi.fn(), listenSummarizeProgress: vi.fn(),
 }));
 
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { AiLogPanel as renderPanel } from "../../src/components/ailog/AiLogPanel";
+import { AiLogPanel as renderPanel, bucketInputRange } from "../../src/components/ailog/AiLogPanel";
 import { WorkTagTable } from "../../src/components/ailog/WorkTagTable";
 import type { ModelsReport } from "../../src/lib/ailog";
 import {
-  ailogBreakdown, ailogDashboard, ailogDigestGenerate, ailogPivot, ailogReworkRankings,
+  ailogBreakdown, ailogOverview, ailogModels, ailogDigestGenerate, ailogPivot, ailogReworkRankings,
   ailogIndexStart, ailogIndexStatus, ailogSeries, ailogSessionSummarize,
-  ailogSessionDetail, ailogSessionTranscript, ailogSummarizeStart, ailogSummarizeStatus, ailogUsageRhythm, listenIndexProgress, listenSummarizeProgress,
+  ailogSessionDetail, ailogSessionTranscript, ailogSessions, ailogSummarizeStart, ailogSummarizeStatus, ailogUsageRhythm, listenIndexProgress, listenSummarizeProgress,
   type IndexProgress,
 } from "../../src/lib/ailog";
 import { __resetAilogStoreForTests, useAilogStore } from "../../src/stores/ailogStore";
@@ -171,6 +171,16 @@ function headerStatus(tree: unknown): string {
 const idleIndex = { running: false, filesDone: 0, filesTotal: 0, sessions: 0, lastFinishedAt: 1, lastError: null };
 const idleSummary = { running: false, sessionsDone: 0, sessionsTotal: 0, sessionsRemaining: 0, lastFinishedAt: 1, lastError: null, elapsedMs: 0, estimatedInputChars: 0, inputTokens: 0, outputTokens: 0 };
 const doneProgress: IndexProgress = { phase: "done", filesDone: 12, filesTotal: 340, sessions: 4, bytesDone: 0, bytesTotal: 0, elapsedMs: 10 };
+const emptyOverview = {
+  range: { from: 0, to: 1, label: "test" },
+  totals: { sessions: 0, turns: 0, userMessages: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0, costUsd: 0, wallMs: 0, activeMs: 0, projects: 0, models: 0 },
+  comparePrevious: { sessionsPct: null, costPct: null, tokensPct: null, reworkPct: null },
+  topModels: [], mixedModelSessions: 0, topProjects: [], topTitles: [],
+  rework: { avgScore: 0, toolErrorRate: 0, correctionHits: 0, churnFiles: 0, abandonedSessions: 0 },
+  excludedInternal: { sessions: 0, costUsd: 0 }, cacheHitRate: 0, priceSource: "test",
+  priceCoverage: { priced: { models: [], tokens: 0 }, local: { models: [], tokens: 0 }, internal: { models: [], tokens: 0 }, flat: { models: [], tokens: 0 }, reported: { models: [], tokens: 0 }, unknown: { models: [], tokens: 0 }, coveredTokenRatio: 1 },
+  indexFreshness: { lastIndexedAt: 1, staleFiles: 0 }, timings: { sqlMs: 0, rowsScanned: 0, buildMs: 0, path: "rollup" }, costNote: "",
+};
 
 let harness: Harness;
 let latest: unknown;
@@ -192,7 +202,7 @@ async function settle(rounds = 40) {
 }
 
 function clearLoaders() {
-  [ailogSeries, ailogUsageRhythm, ailogDashboard, ailogBreakdown, ailogPivot].forEach((mock) => vi.mocked(mock).mockClear());
+  [ailogSeries, ailogUsageRhythm, ailogOverview, ailogModels, ailogBreakdown, ailogPivot].forEach((mock) => vi.mocked(mock).mockClear());
 }
 
 beforeEach(async () => {
@@ -209,7 +219,8 @@ beforeEach(async () => {
   vi.mocked(ailogSummarizeStatus).mockReset().mockResolvedValue(idleSummary);
   vi.mocked(ailogSeries).mockReset().mockResolvedValue({} as any);
   vi.mocked(ailogUsageRhythm).mockReset().mockResolvedValue({} as any);
-  vi.mocked(ailogDashboard).mockReset().mockResolvedValue({} as any);
+  vi.mocked(ailogOverview).mockReset().mockResolvedValue(emptyOverview as any);
+  vi.mocked(ailogModels).mockReset().mockResolvedValue({ byWorkTag: [] } as any);
   vi.mocked(ailogBreakdown).mockReset().mockResolvedValue({} as any);
   vi.mocked(ailogPivot).mockReset().mockResolvedValue({} as any);
   vi.mocked(ailogReworkRankings).mockReset().mockResolvedValue({ failedCommands: [], rewrittenFiles: [] } as any);
@@ -218,11 +229,13 @@ beforeEach(async () => {
   vi.mocked(ailogSessionSummarize).mockReset().mockResolvedValue();
   vi.mocked(ailogSessionDetail).mockReset().mockRejectedValue(new Error("not needed by loader tests"));
   vi.mocked(ailogSessionTranscript).mockReset().mockRejectedValue(new Error("not needed by loader tests"));
+  vi.mocked(ailogSessions).mockReset().mockResolvedValue({ range: { from: 0, to: 1, label: "test" }, rows: [], total: 0, priceSource: "test", costNote: "" });
   vi.mocked(listenIndexProgress).mockReset().mockImplementation(async (handler) => {
     indexProgressHandler = handler;
     return () => {};
   });
   vi.mocked(listenSummarizeProgress).mockReset().mockResolvedValue(() => {});
+  vi.stubGlobal("window", { setTimeout: () => 0, clearTimeout: () => {} });
   vi.stubGlobal("requestIdleCallback", (callback: () => void) => { callback(); return 0; });
   renderAndFlush();
   await settle();
@@ -236,6 +249,13 @@ afterEach(() => {
 });
 
 describe("AI log panel single-view flow", () => {
+  it("turns a selected chart bucket into its full day, week, or month range", () => {
+    const augustThirdJst = Date.UTC(2026, 7, 3) - 9 * 60 * 60 * 1000;
+    expect(bucketInputRange(augustThirdJst, "day")).toEqual({ from: "2026-08-03", to: "2026-08-03" });
+    expect(bucketInputRange(augustThirdJst, "week")).toEqual({ from: "2026-08-03", to: "2026-08-09" });
+    expect(bucketInputRange(augustThirdJst, "month")).toEqual({ from: "2026-08-03", to: "2026-08-31" });
+  });
+
   it("opens onto the usage surface with no segment bar", () => {
     expect(() => childByName(latest, "UsageView")).not.toThrow();
     expect(() => childByName(latest, "RangeBar")).not.toThrow();
@@ -270,12 +290,15 @@ describe("AI log panel single-view flow", () => {
 
   it("reloads aggregates when index-progress reports done", async () => {
     expect(indexProgressHandler).toEqual(expect.any(Function));
+    useAilogJobStore.setState((state) => ({ index: { ...state.index, status: { ...idleIndex, running: true } } }));
+    renderAndFlush();
     clearLoaders();
     indexProgressHandler!(doneProgress);
     await settle();
     expect(ailogSeries).toHaveBeenCalled();
     expect(ailogUsageRhythm).toHaveBeenCalled();
-    expect(ailogDashboard).toHaveBeenCalled();
+    expect(ailogOverview).toHaveBeenCalled();
+    expect(ailogModels).toHaveBeenCalled();
     expect(ailogBreakdown).toHaveBeenCalled();
     expect(ailogPivot).toHaveBeenCalled();
     expect(ailogReworkRankings).not.toHaveBeenCalled();
@@ -287,7 +310,8 @@ describe("AI log panel single-view flow", () => {
   it("loads usage reports on open and keeps LLM endpoints behind explicit actions", () => {
     expect(ailogSeries).toHaveBeenCalledOnce();
     expect(ailogUsageRhythm).toHaveBeenCalledOnce();
-    expect(ailogDashboard).toHaveBeenCalledOnce();
+    expect(ailogOverview).toHaveBeenCalled();
+    expect(ailogModels).toHaveBeenCalledOnce();
     expect(ailogBreakdown).toHaveBeenCalledOnce();
     expect(ailogPivot).toHaveBeenCalledOnce();
     expect(ailogReworkRankings).not.toHaveBeenCalled();
@@ -297,9 +321,10 @@ describe("AI log panel single-view flow", () => {
     expect(ailogDigestGenerate).not.toHaveBeenCalled();
   });
 
-  it("uses one request for bucket changes, but none for client-only session controls", () => {
+  it("uses one request for bucket changes, but none for client-only session controls", async () => {
     clearLoaders();
     useAilogStore.getState().setUsageBucket("week"); renderAndFlush();
+    await settle();
     expect(ailogSeries).toHaveBeenCalledOnce();
     expect(ailogUsageRhythm).toHaveBeenCalledOnce();
     clearLoaders();
@@ -308,41 +333,58 @@ describe("AI log panel single-view flow", () => {
     useAilogStore.getState().setExcludeSynthetic(false);
     renderAndFlush();
     expect(ailogSeries).not.toHaveBeenCalled();
-    expect(ailogDashboard).not.toHaveBeenCalled();
+    expect(ailogOverview).not.toHaveBeenCalled();
   });
 
   it("requests provider aggregates when the company grouping is selected", async () => {
     clearLoaders();
     useAilogStore.getState().setUsageSeriesAxis("provider");
     renderAndFlush();
-    await settle(2);
+    await settle();
     expect(ailogSeries).toHaveBeenCalledOnce();
     expect(ailogSeries).toHaveBeenCalledWith(expect.anything(), expect.anything(), { bucket: "day", groupBy: "provider" });
   });
 
-  it("dims the previous usage data and announces the refresh after a range change", () => {
+  it("keeps the previous usage data readable during a section refresh", async () => {
     useAilogStore.setState({ usageSeries: {} as any, usageRhythm: {} as any, usageLoading: false });
+    vi.mocked(ailogSeries).mockImplementationOnce(() => new Promise(() => {}));
     latest = harness.render();
     useAilogStore.getState().setUsageBucket("week");
-    latest = harness.render();
-    harness.flushEffects();
-    latest = harness.render();
+    renderAndFlush();
+    await settle(4);
 
-    const refreshing = childByName(latest, "RefreshingBlock");
-    expect(refreshing.props?.busy).toBe(true);
-    const rendered = (refreshing.type as (props: Record<string, unknown>) => unknown)(refreshing.props ?? {});
-    expect(collect(rendered).some((element) => element.props?.children === "更新中…")).toBe(true);
-    expect(collect(rendered).some((element) => (element.props?.style as { opacity?: number } | undefined)?.opacity === 0.55)).toBe(true);
+    const usage = childByName(latest, "UsageView");
+    expect(usage.props?.usageLoading).toBe(true);
+    expect(collect(latest).some((element) => (element.props?.style as { opacity?: number } | undefined)?.opacity === 0.55)).toBe(false);
+  });
+
+  it("lets the overview finish before starting below-the-fold reports", async () => {
+    clearLoaders();
+    let finishOverview: ((value: any) => void) | undefined;
+    vi.mocked(ailogOverview).mockImplementationOnce(() => new Promise((resolve) => { finishOverview = resolve; }));
+
+    const load = useAilogStore.getState().loadUsage({ force: true });
+    await Promise.resolve();
+    expect(ailogOverview).toHaveBeenCalledOnce();
+    expect(ailogSeries).not.toHaveBeenCalled();
+    expect(ailogBreakdown).not.toHaveBeenCalled();
+    expect(ailogPivot).not.toHaveBeenCalled();
+
+    finishOverview!(emptyOverview);
+    await load;
+    expect(ailogSeries).toHaveBeenCalledOnce();
+    expect(ailogBreakdown).toHaveBeenCalledOnce();
+    expect(ailogPivot).toHaveBeenCalledOnce();
   });
 
   it("shows the header refresh state while usage reports reload", () => {
     useAilogStore.setState({ usageLoading: false, loading: false, breakdownLoading: false });
     latest = harness.render();
-    expect(headerStatus(latest)).not.toContain("集計を更新中…");
+    expect(headerStatus(latest)).not.toContain("集計を読み込み中…");
 
     useAilogStore.setState({ usageLoading: true });
     latest = harness.render();
-    expect(headerStatus(latest)).toContain("集計を更新中…");
+    expect(headerStatus(latest)).toContain("直前の集計を表示したまま更新中…");
   });
 
   it("keeps detail as a top overlay and clears it before the panel closes", () => {
@@ -359,6 +401,30 @@ describe("AI log panel single-view flow", () => {
     panelOpen = false; renderAndFlush();
     expect(onPanelClose).toHaveBeenCalledOnce();
     expect(useAilogStore.getState().detailKey).toBeNull();
+  });
+
+  it("loads numeric detail before the conversation transcript", async () => {
+    vi.mocked(ailogSessionDetail).mockResolvedValue({} as any);
+    vi.mocked(ailogSessionTranscript).mockResolvedValue({ messages: [], truncated: false, omittedCount: 0 });
+    await useAilogStore.getState().openDetail("codex", "s-lazy");
+    expect(ailogSessionDetail).toHaveBeenCalledOnce();
+    expect(ailogSessionTranscript).not.toHaveBeenCalled();
+
+    await useAilogStore.getState().loadTranscript("codex", "s-lazy");
+    expect(ailogSessionTranscript).toHaveBeenCalledOnce();
+  });
+
+  it("refreshes session search without reloading the overview", async () => {
+    clearLoaders();
+    vi.mocked(ailogSessions).mockClear();
+    useAilogStore.getState().setSessionQuery("品質ループ");
+    await useAilogStore.getState().refreshSessions();
+    expect(ailogSessions).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ query: "品質ループ" }),
+      expect.objectContaining({ limit: 100, offset: 0 }),
+    );
+    expect(ailogOverview).not.toHaveBeenCalled();
   });
 
   it("forwards store.models to UsageView so the work-tag table can render them", () => {

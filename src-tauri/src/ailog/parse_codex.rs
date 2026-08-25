@@ -39,7 +39,7 @@ pub struct RolloutMaterial {
 }
 
 pub fn extract_material(text: &str) -> RolloutMaterial {
-    parse_rollout(text, "material-only").1
+    parse_rollout(text, "material-only", CodexParseState::default()).1
 }
 
 /// Leading markers that identify a `role: "user"` record as harness-injected
@@ -54,23 +54,316 @@ const INJECTED_PREFIXES: &[&str] = &[
     "# Codex CLI",
 ];
 
+/// How a Codex source binds records to a session id.
+///
+/// `CanonicalFilename` is for a newly discovered standard rollout.
+/// `LegacyCompat` keeps writing to a stored mismatched id without migrating it.
+/// `InFileIdentity` is the nonstandard fixture path (`rollout-CX1`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionBehavior {
+    CanonicalFilename,
+    LegacyCompat,
+    InFileIdentity,
+}
+
+impl SessionBehavior {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::CanonicalFilename => "canonical_filename",
+            Self::LegacyCompat => "legacy_compat",
+            Self::InFileIdentity => "in_file_identity",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "canonical_filename" => Some(Self::CanonicalFilename),
+            "legacy_compat" => Some(Self::LegacyCompat),
+            "in_file_identity" => Some(Self::InFileIdentity),
+            _ => None,
+        }
+    }
+}
+
+impl Default for SessionBehavior {
+    fn default() -> Self {
+        Self::InFileIdentity
+    }
+}
+
+/// Parser state carried across incremental chunks of one rollout.
+///
+/// Codex transcripts are append-only. A later byte range often starts after
+/// `session_meta` / `turn_context`, so the indexer seeds the next parse from
+/// the already-consumed prefix instead of resetting model/effort to None.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct CodexParseState {
+    pub session_id: Option<String>,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    /// When true, later `session_meta.id` values cannot replace `session_id`.
+    /// Set for legacy-compat sources whose stored id is not a filename UUID.
+    pub session_locked: bool,
+    pub session_behavior: SessionBehavior,
+}
+
+/// Extract the rollout UUID from a Codex file stem.
+///
+/// The documented grammar is `rollout-<timestamp>-<uuid>` where `<uuid>` is
+/// the trailing 8-4-4-4-12 token. The ISO timestamp itself contains hyphens
+/// (`2026-08-24T13-03-20`), so splitting on the first few `-` tokens yields a
+/// composite `08-24T...-UUID` rather than the authoritative id.
+///
+/// Stems that do not match the grammar — including test fixtures such as
+/// `rollout-CX1` and non-rollout names like `notes-<uuid>` — return unchanged
+/// so in-file `session_meta.id` can still be adopted.
+pub fn session_id_from_filename(stem: &str) -> &str {
+    standard_rollout_filename_uuid(stem).unwrap_or(stem)
+}
+
+/// Trailing UUID of a standard `rollout-<timestamp>-<uuid>` stem.
+///
+/// Authoritative grammar is `rollout-YYYY-MM-DDTHH-MM-SS-<uuid>`. Stems such
+/// as `rollout-x-<uuid>` or `rollout-backup-<uuid>` are not standard.
+pub fn standard_rollout_filename_uuid(stem: &str) -> Option<&str> {
+    let rest = stem.strip_prefix("rollout-")?;
+    let uuid = trailing_uuid(stem)?;
+    let ts_len = rest.len().checked_sub(uuid.len() + 1)?;
+    if ts_len == 0 {
+        return None;
+    }
+    let timestamp = &rest[..ts_len];
+    if !is_standard_rollout_timestamp(timestamp) {
+        return None;
+    }
+    Some(uuid)
+}
+
+fn is_standard_rollout_timestamp(timestamp: &str) -> bool {
+    let bytes = timestamp.as_bytes();
+    if bytes.len() != 19 {
+        return false;
+    }
+    fn digits(slice: &[u8]) -> bool {
+        slice.iter().all(u8::is_ascii_digit)
+    }
+    digits(&bytes[0..4])
+        && bytes[4] == b'-'
+        && digits(&bytes[5..7])
+        && bytes[7] == b'-'
+        && digits(&bytes[8..10])
+        && bytes[10] == b'T'
+        && digits(&bytes[11..13])
+        && bytes[13] == b'-'
+        && digits(&bytes[14..16])
+        && bytes[16] == b'-'
+        && digits(&bytes[17..19])
+}
+
+/// True when `stored` is the pre-fix composite fallback for `filename_id`.
+///
+/// Old indexer code used `stem.splitn(3, '-')` and stored values like
+/// `08-24T13-03-20-<uuid>` as the session id of an incremental chunk.
+pub fn is_legacy_filename_session(stored: &str, filename_id: &str) -> bool {
+    stored != filename_id
+        && is_rollout_uuid(filename_id)
+        && stored.ends_with(filename_id)
+        && stored.contains('T')
+}
+
+/// True when an existing source should keep its stored session id.
+///
+/// Standard filename UUID is still authoritative for *new* sources. This
+/// detector only marks the 0.57.1 compatibility path: append to the stored
+/// id, never split/migrate it.
+pub fn is_legacy_compat_source(stored: &str, filename_id: &str) -> bool {
+    is_rollout_uuid(filename_id) && stored != filename_id
+}
+
+pub fn is_rollout_uuid(value: &str) -> bool {
+    trailing_uuid(value).is_some() && value.len() == 36
+}
+
+fn trailing_uuid(stem: &str) -> Option<&str> {
+    const UUID_LEN: usize = 36;
+    if stem.len() < UUID_LEN {
+        return None;
+    }
+    let start = stem.len() - UUID_LEN;
+    if start > 0 && stem.as_bytes()[start - 1] != b'-' {
+        return None;
+    }
+    let candidate = &stem[start..];
+    if is_uuid_shape(candidate) {
+        Some(candidate)
+    } else {
+        None
+    }
+}
+
+fn is_uuid_shape(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.len() != 36 {
+        return false;
+    }
+    for (index, byte) in bytes.iter().enumerate() {
+        match index {
+            8 | 13 | 18 | 23 => {
+                if *byte != b'-' {
+                    return false;
+                }
+            }
+            _ => {
+                if !byte.is_ascii_hexdigit() {
+                    return false;
+                }
+            }
+        }
+    }
+    true
+}
+
+/// Do not let a later `session_meta` (the parent thread id) replace a
+/// filename-derived rollout UUID, and do not let it escape a legacy-compat
+/// stored id. Test fixtures that are not UUIDs still adopt `payload.id`.
+fn should_adopt_session_id(current: &str, incoming: &str, locked: bool) -> bool {
+    if locked {
+        return current.is_empty() || current == incoming;
+    }
+    true
+}
+
+/// Replay prefix records that affect parser state without emitting turns.
+pub fn parse_state_from_text(text: &str) -> CodexParseState {
+    let mut state = CodexParseState::default();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if !(line.contains("\"session_meta\"")
+            || line.contains("\"turn_context\"")
+            || line.contains("thread_settings_applied"))
+        {
+            continue;
+        }
+        let value: Value = match serde_json::from_str(line) {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        let payload = value.get("payload").cloned().unwrap_or(Value::Null);
+        let outer = value.get("type").and_then(Value::as_str).unwrap_or("");
+        let inner = payload.get("type").and_then(Value::as_str).unwrap_or("");
+        match (outer, inner) {
+            ("session_meta", _) => {
+                if let Some(id) = payload.get("id").and_then(Value::as_str) {
+                    if should_adopt_session_id(
+                        state.session_id.as_deref().unwrap_or(""),
+                        id,
+                        state.session_locked,
+                    ) {
+                        state.session_id = Some(id.to_string());
+                    }
+                }
+            }
+            ("turn_context", _) => {
+                if let Some(model) = payload.get("model").and_then(Value::as_str) {
+                    state.model = Some(model.to_string());
+                }
+                if let Some(effort) = payload.get("effort").and_then(Value::as_str) {
+                    state.effort = Some(effort.to_string());
+                }
+            }
+            ("event_msg", "thread_settings_applied") => {
+                let settings = payload
+                    .get("thread_settings")
+                    .cloned()
+                    .unwrap_or(Value::Null);
+                if state.model.is_none() {
+                    state.model = settings
+                        .get("model")
+                        .and_then(Value::as_str)
+                        .map(str::to_string);
+                }
+                if state.effort.is_none() {
+                    state.effort = settings
+                        .get("reasoning_effort")
+                        .and_then(Value::as_str)
+                        .map(str::to_string);
+                }
+            }
+            _ => {}
+        }
+    }
+    state
+}
+
 /// Parse a run of complete JSONL lines from one rollout file.
 ///
-/// `fallback_session` should be the rollout id embedded in the file name; it
-/// is used until a `session_meta` record supplies the authoritative id.
+/// `fallback_session` should be the rollout id embedded in the file name. For
+/// a standard `rollout-<timestamp>-<uuid>` file that UUID is sticky: later
+/// `session_meta` records (including a parent thread id) never replace it.
 pub fn parse_chunk(text: &str, fallback_session: &str) -> ChunkData {
-    parse_rollout(text, fallback_session).0
+    let mut seed = CodexParseState::default();
+    if is_rollout_uuid(fallback_session) {
+        // This convenience API receives an already-extracted standard rollout
+        // UUID. The indexer uses parse_chunk_with_state and carries the stricter
+        // filename classification explicitly.
+        seed.session_id = Some(fallback_session.to_string());
+        seed.session_locked = true;
+        seed.session_behavior = SessionBehavior::CanonicalFilename;
+    }
+    parse_chunk_with_state(text, fallback_session, seed)
+}
+
+/// Parse a chunk starting from previously observed model/effort.
+///
+/// `seed.session_id` is ignored when `fallback_session` is a standard rollout
+/// UUID so a parent-only prefix cannot merge the child into the parent.
+pub fn parse_chunk_with_state(
+    text: &str,
+    fallback_session: &str,
+    seed: CodexParseState,
+) -> ChunkData {
+    parse_rollout(text, fallback_session, seed).0
+}
+
+/// Last model/effort recorded in `text`. Session identity is not taken from
+/// suffix `session_meta` records; callers that need an id use the filename.
+pub fn parse_model_state_from_text(text: &str) -> CodexParseState {
+    let mut state = parse_state_from_text(text);
+    state.session_id = None;
+    state
 }
 
 /// Parse indexing data and summary evidence in one JSONL traversal so both
 /// consumers agree on user messages, final assistant text, and errors.
-fn parse_rollout(text: &str, fallback_session: &str) -> (ChunkData, RolloutMaterial) {
+fn parse_rollout(
+    text: &str,
+    fallback_session: &str,
+    seed: CodexParseState,
+) -> (ChunkData, RolloutMaterial) {
     let mut data = ChunkData::default();
-    let mut session = SessionChunk::new(KIND_CODEX, fallback_session.to_string());
+    let lock_session = seed.session_locked;
+    let session_id = if lock_session {
+        seed.session_id
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .filter(|_| seed.session_locked)
+            .unwrap_or(fallback_session)
+            .to_string()
+    } else {
+        seed.session_id
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .unwrap_or(fallback_session)
+            .to_string()
+    };
+    let mut session = SessionChunk::new(KIND_CODEX, session_id);
     let mut material = RolloutMaterial::default();
 
-    let mut current_model: Option<String> = None;
-    let mut current_effort: Option<String> = None;
+    let mut current_model: Option<String> = seed.model;
+    let mut current_effort: Option<String> = seed.effort;
     let mut call_names: HashMap<String, String> = HashMap::new();
     let mut turn_starts: HashMap<String, i64> = HashMap::new();
     let mut seen_prompts: HashSet<String> = HashSet::new();
@@ -99,7 +392,7 @@ fn parse_rollout(text: &str, fallback_session: &str) -> (ChunkData, RolloutMater
         let inner = payload.get("type").and_then(Value::as_str).unwrap_or("");
 
         match (outer, inner) {
-            ("session_meta", _) => apply_session_meta(&mut session, &payload),
+            ("session_meta", _) => apply_session_meta(&mut session, &payload, lock_session),
             ("turn_context", _) => {
                 if let Some(model) = payload.get("model").and_then(Value::as_str) {
                     current_model = Some(model.to_string());
@@ -268,11 +561,13 @@ fn record_material_error(
     }
 }
 
-fn apply_session_meta(session: &mut SessionChunk, payload: &Value) {
+fn apply_session_meta(session: &mut SessionChunk, payload: &Value, locked: bool) {
     // `payload.id` is the rollout's own id and matches the file name;
     // `payload.session_id` names the root thread a subagent belongs to.
     if let Some(id) = payload.get("id").and_then(Value::as_str) {
-        session.session_id = id.to_string();
+        if should_adopt_session_id(&session.session_id, id, locked) {
+            session.session_id = id.to_string();
+        }
     }
     if let Some(cwd) = payload.get("cwd").and_then(Value::as_str) {
         session.cwd = Some(cwd.to_string());
@@ -625,6 +920,7 @@ mod tests {
                 r#"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"text":"same prompt"}]}}"#,
             ),
             "fallback",
+            CodexParseState::default(),
         );
         let session = data.sessions.get("fallback").expect("session");
         assert_eq!(data.lines, 2);
@@ -662,6 +958,7 @@ mod tests {
         let (data, material) = parse_rollout(
             r#"{"type":"event_msg","payload":{"type":"user_message","message":"[mycmux-next-action] input"}}"#,
             "fallback",
+            CodexParseState::default(),
         );
         assert_eq!(data.sessions["fallback"].origin, ORIGIN_AILOG_INTERNAL);
         assert!(material.user.is_empty());
@@ -672,8 +969,173 @@ mod tests {
         let (data, material) = parse_rollout(
             r#"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"text":"[mycmux-next-action] input"}]}}"#,
             "fallback",
+            CodexParseState::default(),
         );
         assert_eq!(data.sessions["fallback"].origin, ORIGIN_AILOG_INTERNAL);
         assert!(material.user.is_empty());
+    }
+
+    #[test]
+    fn filename_fallback_extracts_only_the_trailing_uuid() {
+        let stem = "rollout-2026-08-24T13-03-20-01a031ef-e449-74a0-b12c-d69ae559cc9e";
+        assert_eq!(
+            session_id_from_filename(stem),
+            "01a031ef-e449-74a0-b12c-d69ae559cc9e"
+        );
+        assert_eq!(
+            session_id_from_filename("rollout-CX1"),
+            "rollout-CX1",
+            "non-UUID fixtures keep the stem"
+        );
+        assert_eq!(
+            session_id_from_filename("notes-01a031ef-e449-74a0-b12c-d69ae559cc9e"),
+            "notes-01a031ef-e449-74a0-b12c-d69ae559cc9e",
+            "non-rollout UUID stems are not sticky filename identities"
+        );
+        assert!(is_legacy_filename_session(
+            "08-24T13-03-20-01a031ef-e449-74a0-b12c-d69ae559cc9e",
+            "01a031ef-e449-74a0-b12c-d69ae559cc9e"
+        ));
+        assert!(!is_legacy_filename_session(
+            "01a031ef-e449-74a0-b12c-d69ae559cc9e",
+            "01a031ef-e449-74a0-b12c-d69ae559cc9e"
+        ));
+        assert!(is_legacy_compat_source(
+            "01a031ee-64b1-7b50-a51a-cd56a2abc586",
+            "01a031ef-e449-74a0-b12c-d69ae559cc9e"
+        ));
+        assert!(!is_legacy_compat_source(
+            "01a031ef-e449-74a0-b12c-d69ae559cc9e",
+            "01a031ef-e449-74a0-b12c-d69ae559cc9e"
+        ));
+    }
+
+    #[test]
+    fn parent_session_meta_does_not_replace_rollout_uuid() {
+        let uuid = "01a031ef-e449-74a0-b12c-d69ae559cc9e";
+        let parent = "01a031ee-64b1-7b50-a51a-cd56a2abc586";
+        let text = format!(
+            "{}\n{}\n",
+            r#"{"type":"session_meta","payload":{"id":"01a031ef-e449-74a0-b12c-d69ae559cc9e"}}"#,
+            format!(r#"{{"type":"session_meta","payload":{{"id":"{parent}"}}}}"#)
+        );
+        let data = parse_chunk(&text, uuid);
+        assert_eq!(data.sessions.len(), 1);
+        assert!(data.sessions.contains_key(uuid));
+        assert!(!data.sessions.contains_key(parent));
+    }
+
+    #[test]
+    fn canonical_seed_keeps_filename_uuid() {
+        let uuid = "01a031ef-e449-74a0-b12c-d69ae559cc9e";
+        let line = r#"{"timestamp":"2026-08-24T13:03:21.000Z","ordinal":2,"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":200,"cached_input_tokens":0,"output_tokens":20,"total_tokens":220},"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":20,"total_tokens":120}}}}"#;
+        let data = parse_chunk_with_state(
+            line,
+            uuid,
+            CodexParseState {
+                session_id: Some(uuid.to_string()),
+                model: Some("test-model-b".to_string()),
+                effort: Some("high".to_string()),
+                session_locked: true,
+                session_behavior: SessionBehavior::CanonicalFilename,
+                ..CodexParseState::default()
+            },
+        );
+        assert!(data.sessions.contains_key(uuid));
+    }
+
+    #[test]
+    fn seeded_token_count_keeps_previous_model_and_effort() {
+        let uuid = "01a031ef-e449-74a0-b12c-d69ae559cc9e";
+        let line = r#"{"timestamp":"2026-08-24T13:03:21.000Z","ordinal":2,"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":200,"cached_input_tokens":0,"output_tokens":20,"total_tokens":220},"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":20,"total_tokens":120}}}}"#;
+        let data = parse_chunk_with_state(
+            line,
+            uuid,
+            CodexParseState {
+                session_id: Some(uuid.to_string()),
+                model: Some("test-model-b".to_string()),
+                effort: Some("high".to_string()),
+                ..CodexParseState::default()
+            },
+        );
+        let session = data.sessions.get(uuid).expect("session");
+        assert_eq!(session.turns.len(), 1);
+        assert_eq!(session.turns[0].model.as_deref(), Some("test-model-b"));
+        assert_eq!(session.turns[0].effort.as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn model_less_token_count_stays_unknown() {
+        let line = r#"{"timestamp":"2026-08-24T13:03:21.000Z","ordinal":1,"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":10,"cached_input_tokens":0,"output_tokens":1,"total_tokens":11},"last_token_usage":{"input_tokens":10,"cached_input_tokens":0,"output_tokens":1,"total_tokens":11}}}}"#;
+        let data = parse_chunk(line, "no-model");
+        let session = data.sessions.get("no-model").expect("session");
+        assert_eq!(session.turns.len(), 1);
+        assert_eq!(session.turns[0].model, None);
+        assert_eq!(session.turns[0].effort, None);
+    }
+
+    #[test]
+    fn prefix_state_uses_last_turn_context() {
+        let text = concat!(
+            r#"{"type":"session_meta","payload":{"id":"01a031ef-e449-74a0-b12c-d69ae559cc9e"}}"#,
+            "\n",
+            r#"{"type":"turn_context","payload":{"model":"test-model-a","effort":"high"}}"#,
+            "\n",
+            r#"{"type":"turn_context","payload":{"model":"test-model-b","effort":"xhigh"}}"#,
+            "\n",
+        );
+        let state = parse_state_from_text(text);
+        assert_eq!(
+            state.session_id.as_deref(),
+            Some("01a031ef-e449-74a0-b12c-d69ae559cc9e")
+        );
+        assert_eq!(state.model.as_deref(), Some("test-model-b"));
+        assert_eq!(state.effort.as_deref(), Some("xhigh"));
+    }
+
+    #[test]
+    fn standard_filename_rejects_non_timestamp_stems() {
+        let uuid = "01a031ef-e449-74a0-b12c-d69ae559cc9e";
+        assert_eq!(
+            standard_rollout_filename_uuid(&format!("rollout-x-{uuid}")),
+            None
+        );
+        assert_eq!(
+            session_id_from_filename(&format!("rollout-x-{uuid}")),
+            format!("rollout-x-{uuid}")
+        );
+        assert_eq!(
+            standard_rollout_filename_uuid(&format!("rollout-backup-{uuid}")),
+            None
+        );
+        assert_eq!(standard_rollout_filename_uuid("rollout-CX1"), None);
+        assert_eq!(
+            standard_rollout_filename_uuid(
+                "rollout-2026-08-24T13-03-20-01a031ef-e449-74a0-b12c-d69ae559cc9e"
+            ),
+            Some(uuid)
+        );
+    }
+
+    #[test]
+    fn legacy_compat_lock_keeps_stored_composite_id() {
+        let stored = "08-24T13-03-20-01a031ef-e449-74a0-b12c-d69ae559cc9e";
+        let uuid = "01a031ef-e449-74a0-b12c-d69ae559cc9e";
+        let text = format!(
+            "{}\n",
+            format!(r#"{{"type":"session_meta","payload":{{"id":"{uuid}"}}}}"#)
+        );
+        let data = parse_chunk_with_state(
+            &text,
+            stored,
+            CodexParseState {
+                session_id: Some(stored.to_string()),
+                session_locked: true,
+                session_behavior: SessionBehavior::LegacyCompat,
+                ..CodexParseState::default()
+            },
+        );
+        assert!(data.sessions.contains_key(stored));
+        assert!(!data.sessions.contains_key(uuid));
     }
 }

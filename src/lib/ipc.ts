@@ -410,6 +410,34 @@ export async function writeToSession(
   return invoke<void>("write_to_session", { sessionId, data } satisfies WriteToSessionArgs);
 }
 
+export interface GuardedWriteResult {
+  sent: boolean;
+  reason: "attention_id" | "session_epoch" | "session_revision" | "input_revision" | "unknown_session" | null;
+}
+
+export async function getSessionInputRevision(sessionId: string): Promise<number> {
+  return invoke<number>("get_session_input_revision", { sessionId } satisfies SessionIdArgs);
+}
+
+export async function writeToSessionGuarded(
+  sessionId: string,
+  data: string,
+  expectedAttentionId: string | null,
+  expectedSessionEpoch: number,
+  expectedSessionRevision: number,
+  expectedInputRevision: number,
+): Promise<GuardedWriteResult> {
+  markSessionFrontendActivity(sessionId);
+  return invoke<GuardedWriteResult>("write_to_session_guarded", {
+    sessionId,
+    data,
+    expectedAttentionId,
+    expectedSessionEpoch,
+    expectedSessionRevision,
+    expectedInputRevision,
+  });
+}
+
 export async function isSessionAlive(sessionId: string): Promise<boolean> {
   return invoke<boolean>("is_session_alive", { sessionId } satisfies SessionIdArgs);
 }
@@ -1112,6 +1140,7 @@ export interface AppSettings {
   ai_provider?: string;
   ai_model?: string;
   ai_enabled?: boolean;
+  ailog_usd_jpy_rate?: number;
 }
 
 export interface PersistentData {

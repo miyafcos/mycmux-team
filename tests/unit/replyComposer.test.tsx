@@ -3,6 +3,8 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { createRef } from "react";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({ handleSocketCommand: vi.fn() }));
@@ -19,8 +21,12 @@ import { useLiveBriefStore } from "../../src/stores/liveBriefStore";
 import { usePaneDragStore } from "../../src/stores/paneDragStore";
 import { __resetReportInboxStoreForTests, useReportInboxStore } from "../../src/stores/reportInboxStore";
 import type { LiveSessionBrief } from "../../src/lib/livebrief";
+import { ingestAskQuestionLines, useAskQuestionStore } from "../../src/stores/askQuestionStore";
 
 const NOW = Date.parse("2026-08-15T00:00:00.000Z");
+const askFixture = (JSON.parse(
+  readFileSync(resolve(import.meta.dirname, "../fixtures/askQuestionScreens.json"), "utf8"),
+) as { single: string[] }).single;
 
 function card(id: string, sessionId: string, label: string, running = true): DashboardCardModel {
   const workspace = {
@@ -78,6 +84,7 @@ beforeEach(() => {
   useLiveBriefStore.getState().reset();
   usePaneDragStore.getState().clearDrag();
   __resetReportInboxStoreForTests();
+  useAskQuestionStore.getState().resetForTests();
 });
 
 afterEach(async () => {
@@ -87,6 +94,7 @@ afterEach(async () => {
   useLiveBriefStore.getState().reset();
   usePaneDragStore.getState().clearDrag();
   __resetReportInboxStoreForTests();
+  useAskQuestionStore.getState().resetForTests();
   vi.unstubAllGlobals();
 });
 
@@ -153,6 +161,15 @@ describe("ReplyComposer mentions", () => {
       text: "直接送信",
       enter: true,
     });
+  });
+
+  it("blocks a direct composer send while the target has an active AskUserQuestion", async () => {
+    ingestAskQuestionLines(first.tab.sessionId, askFixture, NOW, 1);
+    const textarea = await renderComposer();
+    await input(textarea, "質問カードを迂回する指示");
+    await key(textarea, "Enter");
+    expect(mocks.handleSocketCommand).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("質問カードで回答するまで通常の指示は送信できません");
   });
 
   it("uses the shared Codex multiline input shape before sending", async () => {

@@ -201,7 +201,7 @@ mod tests {
             task: Some("task".to_string()), latest_instruction: None, task_source_event_ids: Vec::new(), activity_kind: None, activity_text: None, activity_source_event_id: None,
             checkpoint: None, checkpoint_evidence_event_ids: Vec::new(), pending_input_kind: None, pending_prompt: None, pending_options: Vec::new(), prompt_event_id: None,
             prompt_hash: None, event_seq: 0, operational_state: "running".to_string(), telemetry_health: "ok".to_string(), last_event_at: None, last_successful_read_at: None,
-            updated_at: 0, service_epoch: "epoch".to_string(), brief_revision: 0,
+            updated_at: 0, service_epoch: "epoch".to_string(), brief_revision: 0, telemetry: None,
         }
     }
 

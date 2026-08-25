@@ -5,6 +5,7 @@ import { MinimapPaneCell } from "./MinimapPaneCell";
 import type { Workspace } from "../../types";
 import { agentKindColor } from "../../lib/agentKindColors";
 import { usePaneMetadataStore } from "../../stores/paneMetadataStore";
+import { useLiveBriefStore } from "../../stores/liveBriefStore";
 import { resolveWorkspaceColor } from "../../lib/workspaceColors";
 
 // The strip stays one line: past this many ticks the overflow is written as a
@@ -81,11 +82,19 @@ export function MinimapWorkspaceBlock({ workspace, selectedTabId, selectedTabIds
   // panel clock re-renders us instead, and the snapshot reference is a memo
   // dependency so a genuinely new snapshot still rebuilds the model.
   const volatileMetadata = usePaneMetadataStore.getState().volatileMetadata;
-  // The structural model does not depend on `now`: only the chip's age
-  // formatting reads the clock, so a 30s tick must not rebuild the model.
+  // CTX% is snapshotted on the panel clock (same 30s tick as elapsed age) so
+  // livebrief updates do not re-render the whole minimap every second.
   const model = useMemo(
-    () => buildMinimapModel(workspace, { activePaneId, metadataBySession: volatileMetadata }),
-    [activePaneId, volatileMetadata, workspace],
+    () => {
+      const briefs = useLiveBriefStore.getState().briefsBySession;
+      const contextPctBySession: Record<string, number | undefined> = {};
+      for (const [sessionId, brief] of Object.entries(briefs)) {
+        const pct = brief?.telemetry?.context?.pct;
+        if (pct != null) contextPctBySession[sessionId] = pct;
+      }
+      return buildMinimapModel(workspace, { activePaneId, metadataBySession: volatileMetadata, contextPctBySession });
+    },
+    [activePaneId, volatileMetadata, workspace, now],
   );
   const strip = useMemo(() => minimapWorkspaceStrip(model, displayStateByTabId), [displayStateByTabId, model]);
   const hiddenTicks = strip.tabCount - MINIMAP_STRIP_MAX_TICKS;

@@ -85,6 +85,14 @@ describe("buildMinimapModel", () => {
     expect(model.columns[1].cells[0].chips[0].lastOutputAt).toBeUndefined();
   });
 
+  it("projects CTX% onto chips and omits the slot when missing", () => {
+    const model = buildMinimapModel(workspace(), {
+      contextPctBySession: { "session-tab-a": 34, "session-tab-c": 80 },
+    });
+    expect(model.columns[0].cells[0].chips.map((chip) => chip.contextPct)).toEqual([34, undefined]);
+    expect(model.columns[1].cells[0].chips[0].contextPct).toBe(80);
+  });
+
   it("flattens the workspace strip in visual order and folds only existing display states", () => {
     const model = buildMinimapModel(workspace(), {
       displayStateByTabId: { "tab-a": "running", "tab-b": "needsHuman", "tab-c": "done" },

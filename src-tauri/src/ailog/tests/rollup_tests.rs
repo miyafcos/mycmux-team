@@ -177,6 +177,39 @@ fn overview_and_sessions_match_raw_with_partial_days() {
 }
 
 #[test]
+fn models_match_raw_with_partial_days() {
+    let fixture = populate();
+    let conn = fixture.conn();
+    let range = corpus_range();
+    let filters = Filters::default();
+    let options = query::ModelsOptions {
+        granularity: "raw".to_string(),
+        bucket: "day".to_string(),
+    };
+
+    let rolled = query::models(&conn, &range, &filters, &options, NOW).unwrap();
+    assert_eq!(rolled.timings.path, "rollup");
+    assert!(rolled.handoffs.is_empty());
+    force_raw(&conn);
+    let raw = query::models(&conn, &range, &filters, &options, NOW).unwrap();
+    assert_eq!(raw.timings.path, "raw");
+    assert!(raw.handoffs.is_empty());
+    restore_rollup(&conn);
+    assert_eq!(report_value(rolled), report_value(raw));
+
+    let family_options = query::ModelsOptions {
+        granularity: "family".to_string(),
+        bucket: "day".to_string(),
+    };
+    let rolled = query::models(&conn, &range, &filters, &family_options, NOW).unwrap();
+    assert_eq!(rolled.timings.path, "rollup");
+    force_raw(&conn);
+    let raw = query::models(&conn, &range, &filters, &family_options, NOW).unwrap();
+    restore_rollup(&conn);
+    assert_eq!(report_value(rolled), report_value(raw));
+}
+
+#[test]
 fn incremental_index_refreshes_the_rollup() {
     let fixture = Fixture::new();
     fixture.write("S4.jsonl", CLAUDE_UNKNOWN_MODEL);

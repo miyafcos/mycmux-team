@@ -51,7 +51,6 @@ export const useAilogJobStore = create<AilogJobState>((set, get) => ({
   applyIndexProgress: (progress) => {
     set((state) => ({ index: { ...state.index, progress } }));
     if (progress.phase === "done") {
-      invalidateAilogCaches();
       void get().refreshIndexStatus();
     }
   },
@@ -62,9 +61,9 @@ export const useAilogJobStore = create<AilogJobState>((set, get) => ({
     }
   },
   refreshIndexStatus: async () => {
-    const wasRunning = get().index.status?.running ?? false;
     try {
       const status = await ailogIndexStatus();
+      const wasRunning = get().index.status?.running ?? false;
       set((state) => ({ index: { ...state.index, status, statusError: null } }));
       if (wasRunning && !status.running) invalidateAilogCaches();
       return wasRunning && !status.running;
@@ -74,9 +73,9 @@ export const useAilogJobStore = create<AilogJobState>((set, get) => ({
     }
   },
   refreshSummarizeStatus: async (preset) => {
-    const wasRunning = get().summarize.status?.running ?? false;
     try {
       const status = await ailogSummarizeStatus({ preset });
+      const wasRunning = get().summarize.status?.running ?? false;
       set((state) => ({ summarize: { ...state.summarize, status, statusError: null } }));
       if (wasRunning && !status.running) invalidateAilogCaches();
       return wasRunning && !status.running;

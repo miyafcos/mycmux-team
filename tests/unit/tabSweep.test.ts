@@ -292,6 +292,9 @@ describe("naming prompt and output", () => {
     expect(prompt).toContain("20文字");
     expect(prompt).toContain("先頭語");
     expect(prompt).toContain("JSON 配列のみ");
+    expect(prompt).toContain("日本語を基本");
+    expect(prompt).toContain("固有名詞はアルファベットのまま");
+    expect(prompt).toContain("目安は12文字");
   });
 
   it("parses complete output while dropping unknown ids and keeping the first duplicate", () => {

@@ -234,6 +234,22 @@ fn default_pet_new_ws_mode() -> String {
     "random".to_string()
 }
 
+pub const DEFAULT_AILOG_USD_JPY_RATE: f64 = 150.0;
+
+fn default_ailog_usd_jpy_rate() -> f64 {
+    DEFAULT_AILOG_USD_JPY_RATE
+}
+
+/// Invalid stored rates (non-finite or not strictly positive) fall back to
+/// the default rather than breaking the money display.
+pub fn sanitize_ailog_usd_jpy_rate(rate: f64) -> f64 {
+    if rate.is_finite() && rate > 0.0 {
+        rate
+    } else {
+        DEFAULT_AILOG_USD_JPY_RATE
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
     pub font_size: u16,
@@ -284,6 +300,10 @@ pub struct AppSettings {
     pub pet_disabled: Vec<String>,
     #[serde(default)]
     pub pet_fixed_id: Option<String>,
+    /// Yen per US dollar used by the AI log money display. Unit prices stay
+    /// in USD; the renderer multiplies at format time.
+    #[serde(default = "default_ailog_usd_jpy_rate")]
+    pub ailog_usd_jpy_rate: f64,
 }
 
 impl Default for AppSettings {
@@ -309,6 +329,7 @@ impl Default for AppSettings {
             pet_new_ws_mode: default_pet_new_ws_mode(),
             pet_disabled: Vec::new(),
             pet_fixed_id: None,
+            ailog_usd_jpy_rate: default_ailog_usd_jpy_rate(),
         }
     }
 }
@@ -695,6 +716,35 @@ mod tests {
         assert_eq!(settings.pet_new_ws_mode, "random");
         assert!(settings.pet_disabled.is_empty());
         assert!(settings.pet_fixed_id.is_none());
+    }
+
+    #[test]
+    fn app_settings_missing_ailog_usd_jpy_rate_uses_default() {
+        let settings: AppSettings =
+            serde_json::from_str(r#"{"font_size":14,"theme_id":"yoru-cafe"}"#).unwrap();
+
+        assert_eq!(settings.ailog_usd_jpy_rate, DEFAULT_AILOG_USD_JPY_RATE);
+    }
+
+    #[test]
+    fn sanitize_ailog_usd_jpy_rate_rejects_non_positive_and_non_finite() {
+        assert_eq!(sanitize_ailog_usd_jpy_rate(155.5), 155.5);
+        assert_eq!(
+            sanitize_ailog_usd_jpy_rate(0.0),
+            DEFAULT_AILOG_USD_JPY_RATE
+        );
+        assert_eq!(
+            sanitize_ailog_usd_jpy_rate(-1.0),
+            DEFAULT_AILOG_USD_JPY_RATE
+        );
+        assert_eq!(
+            sanitize_ailog_usd_jpy_rate(f64::NAN),
+            DEFAULT_AILOG_USD_JPY_RATE
+        );
+        assert_eq!(
+            sanitize_ailog_usd_jpy_rate(f64::INFINITY),
+            DEFAULT_AILOG_USD_JPY_RATE
+        );
     }
 
     #[test]

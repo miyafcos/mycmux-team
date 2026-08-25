@@ -105,24 +105,26 @@ describe("AI log store U0", () => {
 
   it("loads the strictly adjacent prior range once and reuses it while range and filters stay unchanged", async () => {
     invokeMock.mockImplementation((command: string, args: { range: { preset?: string; from?: number; to?: number } }) => {
-      if (command !== "ailog_dashboard") return {};
-      if (args.range.preset === "30d") return dashboard(100, 199, 30, 20);
-      expect(args.range).toEqual({ from: 0, to: 99 });
-      return dashboard(0, 99, 10, 10);
+      if (command === "ailog_overview") {
+        if (args.range.from === 0) return dashboard(0, 99, 10, 10).overview;
+        return dashboard(100, 199, 30, 20).overview;
+      }
+      return {};
     });
 
     await useAilogStore.getState().refresh();
     await useAilogStore.getState().refresh();
 
-    const dashboardCalls = invokeMock.mock.calls.filter(([command]) => command === "ailog_dashboard");
-    expect(dashboardCalls).toHaveLength(2);
+    const overviewCalls = invokeMock.mock.calls.filter(([command]) => command === "ailog_overview");
+    expect(overviewCalls).toHaveLength(2);
+    expect(overviewCalls[1]?.[1]).toMatchObject({ range: { from: 0, to: 99 } });
     expect(useAilogStore.getState().previousTotals).toEqual(totals(10, 10));
   });
 
   it("does not fetch rework rankings from loadUsage and caches a later open", async () => {
     invokeMock.mockImplementation((command: string) => {
       if (command === "ailog_rework_rankings") return { failedCommands: [], rewrittenFiles: [] };
-      if (command === "ailog_dashboard") return dashboard(100, 199, 30, 20);
+      if (command === "ailog_overview") return dashboard(100, 199, 30, 20).overview;
       return {};
     });
 
@@ -149,16 +151,17 @@ describe("AI log store U0", () => {
 
   it("hides change data for all time and when the non-fatal prior request fails", async () => {
     invokeMock.mockImplementation((command: string, args: { range: { preset?: string; from?: number } }) => {
-      if (command !== "ailog_dashboard") return {};
-      if (args.range.preset === "all") return dashboard(100, 199, 30, 20);
-      if (args.range.preset === "30d") return dashboard(100, 199, 30, 20);
-      return Promise.reject(new Error("prior unavailable"));
+      if (command === "ailog_overview") {
+        if (args.range.from !== undefined) return Promise.reject(new Error("prior unavailable"));
+        return dashboard(100, 199, 30, 20).overview;
+      }
+      return {};
     });
 
     useAilogStore.getState().setPreset("all");
     await useAilogStore.getState().refresh();
     expect(useAilogStore.getState().previousTotals).toBeNull();
-    expect(invokeMock.mock.calls.filter(([command]) => command === "ailog_dashboard")).toHaveLength(1);
+    expect(invokeMock.mock.calls.filter(([command]) => command === "ailog_overview")).toHaveLength(1);
 
     useAilogStore.getState().setPreset("30d");
     await useAilogStore.getState().refresh();
@@ -199,10 +202,52 @@ describe("AI log store U0", () => {
     expect(useAilogStore.getState().reworkRankings).toBeNull();
   });
 
+  it("does not fetch model handoffs from loadUsage and caches a later open", async () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "ailog_model_handoffs") return { range: { from: 0, to: 1, label: "test" }, granularity: "raw", handoffs: [{ from: "a", to: "b", count: 1 }] };
+      if (command === "ailog_overview") return dashboard(100, 199, 30, 20).overview;
+      return {};
+    });
+
+    await useAilogStore.getState().loadUsage();
+    expect(invokeMock.mock.calls.filter(([command]) => command === "ailog_model_handoffs")).toHaveLength(0);
+
+    await useAilogStore.getState().refreshModelHandoffs();
+    await useAilogStore.getState().refreshModelHandoffs();
+    expect(invokeMock.mock.calls.filter(([command]) => command === "ailog_model_handoffs")).toHaveLength(1);
+    expect(useAilogStore.getState().handoffs?.handoffs).toEqual([{ from: "a", to: "b", count: 1 }]);
+  });
+
+  it("scopes a model-handoffs failure to that section", async () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "ailog_model_handoffs") return Promise.reject(new Error("handoffs down"));
+      return {};
+    });
+    await useAilogStore.getState().refreshModelHandoffs();
+    expect(useAilogStore.getState().handoffs).toBeNull();
+    expect(useAilogStore.getState().handoffsError).toContain("handoffs down");
+    expect(useAilogStore.getState().dashboardError).toBeNull();
+    expect(useAilogStore.getState().usageError).toBeNull();
+  });
+
+  it("force-refreshes open handoffs from loadUsage and does not fetch while closed", async () => {
+    invokeMock.mockImplementation((command: string) => {
+      if (command === "ailog_model_handoffs") return { range: { from: 0, to: 1, label: "test" }, granularity: "raw", handoffs: [] };
+      if (command === "ailog_overview") return dashboard(100, 199, 30, 20).overview;
+      return {};
+    });
+    await useAilogStore.getState().loadUsage({ force: true });
+    expect(invokeMock.mock.calls.filter(([command]) => command === "ailog_model_handoffs")).toHaveLength(0);
+
+    useAilogStore.getState().setHandoffsOpen(true);
+    await useAilogStore.getState().loadUsage({ force: true });
+    expect(invokeMock.mock.calls.filter(([command]) => command === "ailog_model_handoffs")).toHaveLength(1);
+  });
+
   it("force-refreshes open rankings from loadUsage and does not fetch while closed", async () => {
     invokeMock.mockImplementation((command: string) => {
       if (command === "ailog_rework_rankings") return { failedCommands: [], rewrittenFiles: [] };
-      if (command === "ailog_dashboard") return dashboard(100, 199, 30, 20);
+      if (command === "ailog_overview") return dashboard(100, 199, 30, 20).overview;
       return {};
     });
     await useAilogStore.getState().loadUsage({ force: true });
@@ -211,6 +256,52 @@ describe("AI log store U0", () => {
     useAilogStore.getState().setReworkRankingsOpen(true);
     await useAilogStore.getState().loadUsage({ force: true });
     expect(invokeMock.mock.calls.filter(([command]) => command === "ailog_rework_rankings")).toHaveLength(1);
+  });
+
+  it("resets prior-period status when the filter context changes", () => {
+    invokeMock.mockImplementation(() => new Promise(() => {}));
+    useAilogStore.setState({ previousTotals: totals(10, 5), previousTotalsStatus: "ready" });
+
+    useAilogStore.getState().setSelection({ model: { key: "gpt-5.6-sol", label: "gpt-5.6-sol" } });
+
+    expect(useAilogStore.getState().previousTotals).toBeNull();
+    expect(useAilogStore.getState().previousTotalsStatus).toBe("loading");
+  });
+
+  it("keeps failed session conditions so retry repeats the requested page and sort", async () => {
+    invokeMock.mockImplementation((command: string) => command === "ailog_sessions"
+      ? Promise.reject(new Error("sessions unavailable"))
+      : {});
+    useAilogStore.setState({
+      sessionSort: "cost",
+      sessionPage: 2,
+      sessionQuery: "needle",
+      sessionAppliedSort: "rework",
+      sessionAppliedPage: 0,
+      sessionAppliedQuery: "",
+    });
+
+    await useAilogStore.getState().refreshSessions();
+
+    expect(useAilogStore.getState().sessionSort).toBe("cost");
+    expect(useAilogStore.getState().sessionPage).toBe(2);
+    expect(useAilogStore.getState().sessionQuery).toBe("needle");
+    expect(useAilogStore.getState().sessionAppliedSort).toBe("rework");
+    expect(useAilogStore.getState().sessionAppliedPage).toBe(0);
+    expect(useAilogStore.getState().sessionError).toContain("sessions unavailable");
+  });
+
+  it("clears stale usage reports when their refresh fails", async () => {
+    invokeMock.mockImplementation((command: string) => command === "ailog_series"
+      ? Promise.reject(new Error("usage unavailable"))
+      : {});
+    useAilogStore.setState({ usageSeries: { old: true } as any, usageRhythm: { old: true } as any });
+
+    await useAilogStore.getState().refreshUsage({ force: true });
+
+    expect(useAilogStore.getState().usageSeries).toBeNull();
+    expect(useAilogStore.getState().usageRhythm).toBeNull();
+    expect(useAilogStore.getState().usageError).toContain("usage unavailable");
   });
 });
 

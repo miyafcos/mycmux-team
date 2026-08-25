@@ -26,11 +26,22 @@ use crate::ailog::{
     parse_claude, parse_codex, parse_grok, project_rules, ChunkData, SessionChunk, ToolRow,
     KIND_CLAUDE, KIND_CODEX, KIND_GROK,
 };
+use parse_codex::SessionBehavior;
 
 /// Minimum gap between progress events, per spec §5.
 pub const PROGRESS_THROTTLE_MS: u128 = 250;
 const DERIVATION_VERSION: &str = "project-work-v2";
-const MODEL_CARRY_VERSION: &str = "1";
+const CODEX_PARSE_STATE_PREFIX: &str = "codex_ps:";
+const PREFIX_FINGERPRINT_LEN: usize = 4096;
+const FINGERPRINT_READ_CHUNK: usize = 64 * 1024;
+const REVERSE_WINDOW: u64 = 1024 * 1024;
+const HISTORICAL_REPAIR_PENDING: &str =
+    "historical repair pending: shared Codex source requires a destructive reset";
+
+#[cfg(test)]
+pub(crate) fn default_roots_for_test() -> Vec<(&'static str, PathBuf)> {
+    default_roots()
+}
 
 #[derive(Debug, Clone)]
 pub struct IndexOptions {
@@ -94,7 +105,7 @@ pub struct IndexReport {
 
 pub type ProgressSink = Arc<dyn Fn(IndexProgress) + Send + Sync>;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct FileJob {
     path: PathBuf,
     kind: &'static str,
@@ -103,9 +114,30 @@ struct FileJob {
     /// Byte offset to resume from; 0 for a full read.
     start: u64,
     reset: bool,
+    /// True when a `source_file` row already exists for this path.
+    had_previous: bool,
+    /// Stored session id, used for legacy-compat identity and unshared reset.
+    stored_session_id: Option<String>,
+    /// Persisted Codex model/effort at `start`, when the fingerprint matches.
+    codex_seed: Option<parse_codex::CodexParseState>,
+    /// Rolling fingerprint of the already-consumed Codex prefix.
+    codex_content_fp: Option<String>,
+    /// True when the parser state came from a fingerprint-verified checkpoint.
+    /// A missing model/effort in trusted state is an observed absence, not a
+    /// reason to rescan the complete prefix on every append.
+    codex_seed_trusted: bool,
+    /// Refresh only source metadata after a same-size content match.
+    metadata_only: bool,
+    /// Skip parse/write of session rows and record this source error instead.
+    block_reason: Option<String>,
 }
 
 enum WriteMsg {
+    Metadata {
+        job_path: String,
+        size: u64,
+        mtime_ns: i64,
+    },
     Chunk {
         job_path: String,
         kind: &'static str,
@@ -113,7 +145,11 @@ enum WriteMsg {
         mtime_ns: i64,
         start: u64,
         reset: bool,
+        had_previous: bool,
+        stored_session_id: Option<String>,
         data: ChunkData,
+        codex_end_state: Option<parse_codex::CodexParseState>,
+        content_fp: Option<String>,
     },
     Failed {
         job_path: String,
@@ -122,6 +158,22 @@ enum WriteMsg {
         mtime_ns: i64,
         message: String,
     },
+}
+
+#[derive(Debug, Clone)]
+struct PersistedCodex {
+    at: u64,
+    state: parse_codex::CodexParseState,
+    prefix_fp: Option<String>,
+    boundary_fp: Option<String>,
+    content_fp: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FingerprintStatus {
+    Match,
+    Mismatch,
+    Unknown,
 }
 
 /// Walk a directory tree collecting `*.jsonl` files.
@@ -189,29 +241,42 @@ pub async fn run_index(
     };
 
     // --- discovery -------------------------------------------------------
-    let mut known: HashMap<String, (u64, i64, u64)> = HashMap::new();
+    let mut known: HashMap<String, (u64, i64, u64, Option<String>)> = HashMap::new();
+    let mut persisted_codex: HashMap<String, PersistedCodex> = HashMap::new();
+    let mut session_sources: HashMap<(String, String), usize> = HashMap::new();
     {
         let mut conn = crate::ailog::open_db(&options.db_path)?;
         if options.full {
             clear_all(&mut conn)?;
         } else {
             let mut stmt = conn
-                .prepare("SELECT path, size_bytes, mtime_ns, parsed_bytes FROM source_file")
+                .prepare(
+                    "SELECT path, kind, size_bytes, mtime_ns, parsed_bytes, session_id FROM source_file",
+                )
                 .map_err(|err| format!("prepare source_file: {err}"))?;
             let rows = stmt
                 .query_map([], |row| {
                     Ok((
                         row.get::<_, String>(0)?,
-                        row.get::<_, i64>(1)? as u64,
-                        row.get::<_, i64>(2)?,
-                        row.get::<_, i64>(3)? as u64,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)? as u64,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, i64>(4)? as u64,
+                        row.get::<_, Option<String>>(5)?,
                     ))
                 })
                 .map_err(|err| format!("query source_file: {err}"))?;
             for row in rows {
-                let (path, size, mtime, parsed) = row.map_err(|err| format!("row: {err}"))?;
-                known.insert(path, (size, mtime, parsed));
+                let (path, kind, size, mtime, parsed, session_id) =
+                    row.map_err(|err| format!("row: {err}"))?;
+                if let Some(session_id) = &session_id {
+                    *session_sources
+                        .entry((kind, session_id.clone()))
+                        .or_default() += 1;
+                }
+                known.insert(path, (size, mtime, parsed, session_id));
             }
+            persisted_codex = load_persisted_codex_states(&conn)?;
         }
     }
 
@@ -232,41 +297,25 @@ pub async fn run_index(
             let size = meta.len();
             let mtime_ns = mtime_nanos(&meta);
             let key = path.to_string_lossy().to_string();
-            let previous = known.get(&key).copied();
-
-            let (start, reset) = match previous {
-                None => (0, true),
-                Some((_, _, parsed)) if size < parsed => (0, true),
-                Some((prev_size, prev_mtime, parsed)) => {
-                    if size == parsed && size == prev_size && mtime_ns == prev_mtime {
-                        skipped += 1;
-                        continue;
-                    }
-                    if size == parsed {
-                        // Nothing new to read even though the mtime moved.
-                        skipped += 1;
-                        continue;
-                    }
-                    if *kind == KIND_GROK {
-                        // ACP user/tool chunks are stateful across lines. A
-                        // periodic index pass may cut a turn between files, so
-                        // reparse and replace the Grok session rather than
-                        // losing the prefix or double-counting its metrics.
-                        (0, true)
-                    } else {
-                        (parsed, false)
-                    }
-                }
-            };
-            bytes_total += size.saturating_sub(start);
-            jobs.push(FileJob {
+            let previous = known.get(&key).cloned();
+            let job = plan_file_job(
+                *kind,
                 path,
-                kind,
                 size,
                 mtime_ns,
-                start,
-                reset,
-            });
+                previous,
+                persisted_codex.get(&key),
+                &session_sources,
+            );
+            match job {
+                PlannedJob::Skip => {
+                    skipped += 1;
+                }
+                PlannedJob::Run(file_job) => {
+                    bytes_total += file_job.size.saturating_sub(file_job.start);
+                    jobs.push(file_job);
+                }
+            }
         }
     }
 
@@ -303,7 +352,8 @@ pub async fn run_index(
                  parsed_lines=CASE WHEN ?9 THEN excluded.parsed_lines \
                    ELSE source_file.parsed_lines + excluded.parsed_lines END, \
                  session_id=COALESCE(excluded.session_id, source_file.session_id), \
-                 last_indexed=excluded.last_indexed, parse_error=NULL",
+                 last_indexed=excluded.last_indexed, \
+                 parse_error=CASE WHEN ?9 THEN NULL ELSE source_file.parse_error END",
                 )
                 .map_err(|err| format!("prepare source_file upsert: {err}"))?;
             let mut source_file_error = tx
@@ -315,10 +365,30 @@ pub async fn run_index(
                  last_indexed=excluded.last_indexed",
                 )
                 .map_err(|err| format!("prepare source_file error: {err}"))?;
+            let mut source_file_metadata = tx
+                .prepare_cached(
+                    "UPDATE source_file SET size_bytes = ?2, mtime_ns = ?3, last_indexed = ?4 \
+                     WHERE path = ?1",
+                )
+                .map_err(|err| format!("prepare source_file metadata: {err}"))?;
 
             while let Ok(message) = rx.recv() {
                 let write_started = Instant::now();
                 match message {
+                    WriteMsg::Metadata {
+                        job_path,
+                        size,
+                        mtime_ns,
+                    } => {
+                        source_file_metadata
+                            .execute(params![
+                                job_path,
+                                size as i64,
+                                mtime_ns,
+                                chrono::Utc::now().timestamp_millis(),
+                            ])
+                            .map_err(|err| format!("write source_file metadata: {err}"))?;
+                    }
                     WriteMsg::Chunk {
                         job_path,
                         kind,
@@ -326,32 +396,58 @@ pub async fn run_index(
                         mtime_ns,
                         start,
                         reset,
+                        had_previous,
+                        stored_session_id,
                         data,
+                        codex_end_state,
+                        content_fp,
                     } => {
-                        if reset {
-                            for session_id in data.sessions.keys() {
-                                rollup::mark_session_dirty(&tx, kind, session_id)?;
-                                delete_session(&tx, kind, session_id)?;
-                            }
-                        }
-                        for chunk in data.sessions.values() {
-                            apply_chunk(&tx, chunk)?;
-                            touched.insert((kind.to_string(), chunk.session_id.clone()));
-                        }
-                        let session_id = data.sessions.keys().next().cloned();
-                        source_file_upsert
-                            .execute(params![
+                        let destructive_blocked = reset
+                            && had_previous
+                            && (data.parse_errors > 0
+                                || shared_session_blocked(
+                                    &tx,
+                                    kind,
+                                    stored_session_id.as_deref(),
+                                    &job_path,
+                                )?);
+                        if destructive_blocked {
+                            let message = if data.parse_errors > 0 {
+                                format!(
+                                    "complete invalid JSON/UTF-8; refusing destructive reset ({} parse errors)",
+                                    data.parse_errors
+                                )
+                            } else {
+                                HISTORICAL_REPAIR_PENDING.to_string()
+                            };
+                            errors.push(format!("{job_path}: {message}"));
+                            source_file_error
+                                .execute(params![
+                                    job_path,
+                                    kind,
+                                    size as i64,
+                                    mtime_ns,
+                                    chrono::Utc::now().timestamp_millis(),
+                                    message,
+                                ])
+                                .map_err(|err| format!("write source_file error: {err}"))?;
+                        } else {
+                            apply_plain_chunk(
+                                &tx,
+                                &mut source_file_upsert,
+                                &mut touched,
                                 job_path,
                                 kind,
-                                size as i64,
+                                size,
                                 mtime_ns,
-                                (start + data.consumed_bytes) as i64,
-                                data.lines as i64,
-                                session_id,
-                                chrono::Utc::now().timestamp_millis(),
+                                start,
                                 reset,
-                            ])
-                            .map_err(|err| format!("write source_file: {err}"))?;
+                                stored_session_id,
+                                data,
+                                codex_end_state,
+                                content_fp,
+                            )?;
+                        }
                     }
                     WriteMsg::Failed {
                         job_path,
@@ -378,6 +474,7 @@ pub async fn run_index(
 
             let post_process_started = Instant::now();
             let count = touched.len();
+            drop(source_file_metadata);
             drop(source_file_error);
             drop(source_file_upsert);
             for (kind, session_id) in &touched {
@@ -385,7 +482,6 @@ pub async fn run_index(
                 rollup::mark_session_dirty(&tx, kind, session_id)?;
             }
             let rederived = rederive_projects_and_tags_if_needed(&tx, &prices)?;
-            let _carried = carry_forward_missing_models_if_needed(&tx, &prices)?;
             if rederived || !rollup::version_matches(&tx)? {
                 rollup::mark_all_dirty(&tx)?;
             }
@@ -441,23 +537,43 @@ pub async fn run_index(
         handles.push(tokio::task::spawn_blocking(move || {
             let _permit = permit;
             let job_path = job.path.to_string_lossy().to_string();
-            let message = match read_and_parse(&job) {
-                Ok(data) => WriteMsg::Chunk {
+            let message = if job.metadata_only {
+                WriteMsg::Metadata {
                     job_path,
-                    kind: job.kind,
                     size: job.size,
                     mtime_ns: job.mtime_ns,
-                    start: job.start,
-                    reset: job.reset,
-                    data,
-                },
-                Err(message) => WriteMsg::Failed {
+                }
+            } else if let Some(message) = job.block_reason.clone() {
+                WriteMsg::Failed {
                     job_path,
                     kind: job.kind,
                     size: job.size,
                     mtime_ns: job.mtime_ns,
                     message,
-                },
+                }
+            } else {
+                match read_and_parse(&job) {
+                    Ok((data, end_state, actual_start, actual_reset, content_fp)) => WriteMsg::Chunk {
+                        job_path,
+                        kind: job.kind,
+                        size: job.size,
+                        mtime_ns: job.mtime_ns,
+                        start: actual_start,
+                        reset: actual_reset,
+                        had_previous: job.had_previous,
+                        stored_session_id: job.stored_session_id.clone(),
+                        data,
+                        codex_end_state: end_state,
+                        content_fp,
+                    },
+                    Err(message) => WriteMsg::Failed {
+                        job_path,
+                        kind: job.kind,
+                        size: job.size,
+                        mtime_ns: job.mtime_ns,
+                        message,
+                    },
+                }
             };
             let bytes = job.size.saturating_sub(job.start);
             let _ = tx.send(message);
@@ -595,108 +711,530 @@ fn rederive_projects_and_tags_if_needed(
     Ok(true)
 }
 
-/// Fill `turn.model IS NULL` from the nearest non-null model in the same
-/// session. Transcript files are never reread.
-pub(crate) fn carry_forward_missing_models_if_needed(
-    tx: &Transaction<'_>,
-    prices: &PriceTable,
-) -> Result<bool, String> {
-    let current: Option<String> = tx
-        .query_row(
-            "SELECT value FROM index_state WHERE key = 'model_carry_version'",
-            [],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(|err| format!("read model_carry_version: {err}"))?;
-    if current.as_deref() == Some(MODEL_CARRY_VERSION) {
-        return Ok(false);
-    }
+enum PlannedJob {
+    Skip,
+    Run(FileJob),
+}
 
-    let rows = {
-        let mut stmt = tx
-            .prepare(
-                "WITH nulls AS (
-                     SELECT kind, session_id, seq
-                     FROM turn
-                     WHERE model IS NULL
-                 ),
-                 knowns AS (
-                     SELECT kind, session_id, seq, model
-                     FROM turn
-                     WHERE model IS NOT NULL
-                 )
-                 SELECT n.kind, n.session_id, n.seq,
-                        COALESCE(
-                            (SELECT k.model FROM knowns k
-                             WHERE k.kind = n.kind
-                               AND k.session_id = n.session_id
-                               AND k.seq < n.seq
-                             ORDER BY k.seq DESC LIMIT 1),
-                            (SELECT k.model FROM knowns k
-                             WHERE k.kind = n.kind
-                               AND k.session_id = n.session_id
-                               AND k.seq > n.seq
-                             ORDER BY k.seq ASC LIMIT 1)
-                        ) AS carried
-                 FROM nulls n",
-            )
-            .map_err(|err| format!("prepare model carry: {err}"))?;
-        let mapped = stmt
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, i64>(2)?,
-                    row.get::<_, Option<String>>(3)?,
-                ))
-            })
-            .map_err(|err| format!("scan model carry: {err}"))?;
-        mapped
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|err| format!("read model carry: {err}"))?
+fn plan_file_job(
+    kind: &'static str,
+    path: PathBuf,
+    size: u64,
+    mtime_ns: i64,
+    previous: Option<(u64, i64, u64, Option<String>)>,
+    persisted: Option<&PersistedCodex>,
+    session_sources: &HashMap<(String, String), usize>,
+) -> PlannedJob {
+    let stored_session_id = previous.as_ref().and_then(|prev| prev.3.clone());
+    let had_previous = previous.is_some();
+    let shared = stored_session_id
+        .as_ref()
+        .is_some_and(|sid| {
+            session_sources
+                .get(&(kind.to_string(), sid.clone()))
+                .copied()
+                .unwrap_or(0)
+                > 1
+        });
+
+    let (start, reset, block_reason, trust_persist, metadata_only) = match previous {
+        None => (0, true, None, false, false),
+        Some((_, _, parsed, _)) if size < parsed => {
+            if kind == KIND_CODEX && shared {
+                (
+                    0,
+                    true,
+                    Some(HISTORICAL_REPAIR_PENDING.to_string()),
+                    false,
+                    false,
+                )
+            } else {
+                (0, true, None, false, false)
+            }
+        }
+        Some((prev_size, prev_mtime, parsed, _)) => {
+            let same_size = size == parsed && size == prev_size;
+            let mtime_ok = mtime_ns == prev_mtime;
+            if kind == KIND_GROK {
+                if same_size && mtime_ok {
+                    return PlannedJob::Skip;
+                }
+                (0, true, None, false, false)
+            } else if kind != KIND_CODEX {
+                // Claude: size==parsed means there is no new record to consume.
+                if same_size {
+                    return PlannedJob::Skip;
+                }
+                (parsed, false, None, false, false)
+            } else {
+                if same_size {
+                    // A truly unchanged source is the hot path. Do not read
+                    // transcript bytes merely to prove that nothing changed.
+                    if mtime_ok {
+                        return PlannedJob::Skip;
+                    }
+                    let fp = fingerprint_status(&path, parsed, persisted, true);
+                    match fp {
+                        FingerprintStatus::Match => (parsed, false, None, true, true),
+                        FingerprintStatus::Mismatch | FingerprintStatus::Unknown if shared => (
+                            0,
+                            true,
+                            Some(HISTORICAL_REPAIR_PENDING.to_string()),
+                            false,
+                            false,
+                        ),
+                        FingerprintStatus::Mismatch | FingerprintStatus::Unknown => {
+                            (0, true, None, false, false)
+                        }
+                    }
+                } else {
+                    let fp = fingerprint_status(&path, parsed, persisted, false);
+                    match fp {
+                        FingerprintStatus::Match => (parsed, false, None, true, false),
+                        FingerprintStatus::Mismatch if shared => (
+                            0,
+                            true,
+                            Some(HISTORICAL_REPAIR_PENDING.to_string()),
+                            false,
+                            false,
+                        ),
+                        FingerprintStatus::Mismatch => (0, true, None, false, false),
+                        FingerprintStatus::Unknown => (parsed, false, None, false, false),
+                    }
+                }
+            }
+        }
     };
 
-    let mut touched: HashSet<(String, String)> = HashSet::new();
-    for (kind, session_id, seq, carried) in rows {
-        let Some(carried) = carried.filter(|value| !value.is_empty()) else {
+    let codex_seed = if kind == KIND_CODEX {
+        Some(codex_seed_for_job(
+            &path,
+            start,
+            reset,
+            stored_session_id.as_deref(),
+            persisted
+                .filter(|_| trust_persist)
+                .filter(|item| item.at == start)
+                .map(|item| &item.state),
+        ))
+    } else {
+        None
+    };
+    let codex_content_fp = if kind == KIND_CODEX && trust_persist {
+        persisted
+            .filter(|item| item.at == start)
+            .and_then(|item| item.content_fp.clone())
+    } else {
+        None
+    };
+
+    PlannedJob::Run(FileJob {
+        path,
+        kind,
+        size,
+        mtime_ns,
+        start,
+        reset,
+        had_previous,
+        stored_session_id,
+        codex_seed,
+        codex_content_fp,
+        codex_seed_trusted: trust_persist,
+        metadata_only,
+        block_reason,
+    })
+}
+
+fn codex_seed_for_job(
+    path: &Path,
+    start: u64,
+    reset: bool,
+    stored: Option<&str>,
+    persisted: Option<&parse_codex::CodexParseState>,
+) -> parse_codex::CodexParseState {
+    let stem = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("unknown");
+    let standard = parse_codex::standard_rollout_filename_uuid(stem);
+    let legacy = stored.is_some_and(|sid| {
+        standard.is_some_and(|uuid| parse_codex::is_legacy_compat_source(sid, uuid))
+    });
+
+    let mut state = if reset {
+        parse_codex::CodexParseState::default()
+    } else if let Some(persisted) = persisted {
+        persisted.clone()
+    } else {
+        parse_codex::CodexParseState::default()
+    };
+
+    if legacy {
+        state.session_id = stored.map(str::to_string);
+        state.session_locked = true;
+        state.session_behavior = SessionBehavior::LegacyCompat;
+    } else if let Some(filename_id) = standard {
+        state.session_id = Some(filename_id.to_string());
+        state.session_locked = true;
+        state.session_behavior = SessionBehavior::CanonicalFilename;
+    } else {
+        state.session_behavior = SessionBehavior::InFileIdentity;
+        if reset || start == 0 {
+            state.session_id = None;
+            state.session_locked = false;
+        } else if !state.session_locked {
+            // A source mapping is not proof that a nonstandard filename has
+            // established an in-file identity. Keep the checkpoint unlocked
+            // until a valid session_meta.id has actually been observed.
+            state.session_id = None;
+        }
+    }
+    state
+}
+
+fn fingerprint_status(
+    path: &Path,
+    parsed_bytes: u64,
+    persisted: Option<&PersistedCodex>,
+    verify_full_content: bool,
+) -> FingerprintStatus {
+    let Some(item) = persisted else {
+        return FingerprintStatus::Unknown;
+    };
+    if item.at != parsed_bytes {
+        return FingerprintStatus::Unknown;
+    }
+    let Some(stored_prefix) = item.prefix_fp.as_deref() else {
+        return FingerprintStatus::Unknown;
+    };
+    let Ok(prefix) = prefix_fingerprint(path, parsed_bytes) else {
+        return FingerprintStatus::Mismatch;
+    };
+    if prefix != stored_prefix {
+        return FingerprintStatus::Mismatch;
+    }
+    let boundary_matches = match item.boundary_fp.as_deref() {
+        Some(stored_boundary) => match boundary_fingerprint(path, parsed_bytes) {
+            Ok(boundary) if boundary == stored_boundary => true,
+            _ => return FingerprintStatus::Mismatch,
+        },
+        None if parsed_bytes <= PREFIX_FINGERPRINT_LEN as u64 => true,
+        None => return FingerprintStatus::Unknown,
+    };
+    if !boundary_matches {
+        return FingerprintStatus::Mismatch;
+    }
+    if verify_full_content {
+        let Some(stored_content) = item.content_fp.as_deref() else {
+            return FingerprintStatus::Unknown;
+        };
+        return match content_fingerprint(path, parsed_bytes) {
+            Ok(content) if content == stored_content => FingerprintStatus::Match,
+            _ => FingerprintStatus::Mismatch,
+        };
+    }
+    FingerprintStatus::Match
+}
+
+fn prefix_fingerprint(path: &Path, parsed_bytes: u64) -> Result<String, String> {
+    let take = parsed_bytes.min(PREFIX_FINGERPRINT_LEN as u64);
+    range_fingerprint(path, 0, take)
+}
+
+fn boundary_fingerprint(path: &Path, parsed_bytes: u64) -> Result<String, String> {
+    let take = parsed_bytes.min(PREFIX_FINGERPRINT_LEN as u64);
+    range_fingerprint(path, parsed_bytes.saturating_sub(take), take)
+}
+
+fn content_fingerprint(path: &Path, parsed_bytes: u64) -> Result<String, String> {
+    range_fingerprint(path, 0, parsed_bytes)
+}
+
+fn range_fingerprint(path: &Path, start: u64, len: u64) -> Result<String, String> {
+    use std::io::{Read, Seek, SeekFrom};
+    if len == 0 {
+        return Ok(fingerprint(&[]));
+    }
+    let mut file = std::fs::File::open(path).map_err(|err| format!("open fingerprint: {err}"))?;
+    file.seek(SeekFrom::Start(start))
+        .map_err(|err| format!("seek fingerprint: {err}"))?;
+    let mut hash: u64 = 0xcbf_29ce4_8422_2325;
+    let mut read_total = 0u64;
+    let mut buffer = [0u8; FINGERPRINT_READ_CHUNK];
+    while read_total < len {
+        let wanted = (len - read_total).min(buffer.len() as u64) as usize;
+        match file.read(&mut buffer[..wanted]) {
+            Ok(0) => break,
+            Ok(n) => {
+                for byte in &buffer[..n] {
+                    hash ^= u64::from(*byte);
+                    hash = hash.wrapping_mul(0x1000_0000_01b3);
+                }
+                read_total += n as u64;
+            }
+            Err(err) => return Err(format!("read fingerprint: {err}")),
+        }
+    }
+    Ok(format!("{hash:016x}:{read_total}"))
+}
+
+fn fingerprint(bytes: &[u8]) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x1000_0000_01b3);
+    }
+    format!("{hash:016x}:{}", bytes.len())
+}
+
+fn extend_fingerprint(existing: &str, bytes: &[u8]) -> Option<String> {
+    let (raw_hash, raw_len) = existing.split_once(':')?;
+    let mut hash = u64::from_str_radix(raw_hash, 16).ok()?;
+    let old_len = raw_len.parse::<u64>().ok()?;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x1000_0000_01b3);
+    }
+    Some(format!("{hash:016x}:{}", old_len + bytes.len() as u64))
+}
+
+fn load_persisted_codex_states(
+    conn: &Connection,
+) -> Result<HashMap<String, PersistedCodex>, String> {
+    let mut stmt = conn
+        .prepare("SELECT key, value FROM index_state WHERE key LIKE ?1")
+        .map_err(|err| format!("prepare persisted codex state: {err}"))?;
+    let rows = stmt
+        .query_map(params![format!("{CODEX_PARSE_STATE_PREFIX}%")], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|err| format!("scan persisted codex state: {err}"))?;
+    let mut out = HashMap::new();
+    for row in rows {
+        let (key, value) = row.map_err(|err| format!("read persisted codex state: {err}"))?;
+        let Some(path) = key.strip_prefix(CODEX_PARSE_STATE_PREFIX) else {
             continue;
         };
-        let id = price::normalize(&carried);
-        tx.execute(
-            "UPDATE turn SET model = ?3, model_family = ?4, model_variant = ?5 \
-             WHERE kind = ?1 AND session_id = ?2 AND seq = ?6",
-            params![kind, session_id, id.raw, id.family, id.variant, seq],
-        )
-        .map_err(|err| format!("update carried model: {err}"))?;
-        touched.insert((kind, session_id));
+        let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&value) else {
+            continue;
+        };
+        let Some(at) = parsed.get("parsed_bytes").and_then(|v| v.as_u64()) else {
+            continue;
+        };
+        let behavior = parsed
+            .get("session_behavior")
+            .and_then(|v| v.as_str())
+            .and_then(SessionBehavior::parse)
+            .unwrap_or(SessionBehavior::InFileIdentity);
+        let state = parse_codex::CodexParseState {
+            session_id: parsed
+                .get("session_id")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+            model: parsed
+                .get("model")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+            effort: parsed
+                .get("effort")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+            session_locked: parsed
+                .get("session_locked")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+            session_behavior: behavior,
+        };
+        out.insert(
+            path.to_string(),
+            PersistedCodex {
+                at,
+                state,
+                prefix_fp: parsed
+                    .get("prefix_fp")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string),
+                boundary_fp: parsed
+                    .get("boundary_fp")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string),
+                content_fp: parsed
+                    .get("content_fp")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string),
+            },
+        );
     }
+    Ok(out)
+}
 
-    for (kind, session_id) in &touched {
-        recompute_session(tx, kind, session_id, prices)?;
-        rollup::mark_session_dirty(tx, kind, session_id)?;
-    }
-
+fn persist_codex_state(
+    tx: &Transaction<'_>,
+    path: &str,
+    parsed_bytes: u64,
+    state: &parse_codex::CodexParseState,
+    content_fp: Option<&str>,
+) -> Result<(), String> {
+    let file_path = Path::new(path);
+    let prefix_fp = prefix_fingerprint(file_path, parsed_bytes).ok();
+    let boundary_fp = boundary_fingerprint(file_path, parsed_bytes).ok();
+    let value = serde_json::json!({
+        "parsed_bytes": parsed_bytes,
+        "model": state.model,
+        "effort": state.effort,
+        "session_id": state.session_id,
+        "session_locked": state.session_locked,
+        "session_behavior": state.session_behavior.as_str(),
+        "prefix_fp": prefix_fp,
+        "boundary_fp": boundary_fp,
+        "content_fp": content_fp,
+    });
     tx.execute(
-        "INSERT INTO index_state (key, value) VALUES ('model_carry_version', ?1) \
+        "INSERT INTO index_state (key, value) VALUES (?1, ?2) \
          ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-        params![MODEL_CARRY_VERSION],
+        params![
+            format!("{CODEX_PARSE_STATE_PREFIX}{path}"),
+            value.to_string()
+        ],
     )
-    .map_err(|err| format!("write model_carry_version: {err}"))?;
-    Ok(true)
+    .map_err(|err| format!("write persisted codex state: {err}"))?;
+    Ok(())
+}
+
+fn source_count_for_session(
+    tx: &Transaction<'_>,
+    kind: &str,
+    session_id: &str,
+    except_path: Option<&str>,
+) -> Result<i64, String> {
+    let count: i64 = if let Some(path) = except_path {
+        tx.query_row(
+            "SELECT COUNT(*) FROM source_file WHERE kind = ?1 AND session_id = ?2 AND path != ?3",
+            params![kind, session_id, path],
+            |row| row.get(0),
+        )
+    } else {
+        tx.query_row(
+            "SELECT COUNT(*) FROM source_file WHERE kind = ?1 AND session_id = ?2",
+            params![kind, session_id],
+            |row| row.get(0),
+        )
+    }
+    .map_err(|err| format!("count source_file session: {err}"))?;
+    Ok(count)
+}
+
+fn shared_session_blocked(
+    tx: &Transaction<'_>,
+    kind: &str,
+    stored: Option<&str>,
+    path: &str,
+) -> Result<bool, String> {
+    let Some(session_id) = stored else {
+        return Ok(false);
+    };
+    Ok(source_count_for_session(tx, kind, session_id, Some(path))? > 0)
+}
+
+fn apply_plain_chunk(
+    tx: &Transaction<'_>,
+    source_file_upsert: &mut rusqlite::CachedStatement<'_>,
+    touched: &mut HashSet<(String, String)>,
+    job_path: String,
+    kind: &'static str,
+    size: u64,
+    mtime_ns: i64,
+    start: u64,
+    reset: bool,
+    stored_session_id: Option<String>,
+    data: ChunkData,
+    codex_end_state: Option<parse_codex::CodexParseState>,
+    content_fp: Option<String>,
+) -> Result<(), String> {
+    if reset {
+        let mut ids: HashSet<String> = data.sessions.keys().cloned().collect();
+        if let Some(stored) = stored_session_id.clone() {
+            ids.insert(stored);
+        }
+        for session_id in ids {
+            if source_count_for_session(tx, kind, &session_id, Some(&job_path))? > 0 {
+                continue;
+            }
+            rollup::mark_session_dirty(tx, kind, &session_id)?;
+            delete_session(tx, kind, &session_id)?;
+        }
+    }
+    for chunk in data.sessions.values() {
+        apply_chunk(tx, chunk)?;
+        touched.insert((kind.to_string(), chunk.session_id.clone()));
+    }
+    let session_id = data
+        .sessions
+        .keys()
+        .next()
+        .cloned()
+        .or(stored_session_id);
+    let parsed_bytes = start + data.consumed_bytes;
+    source_file_upsert
+        .execute(params![
+            job_path,
+            kind,
+            size as i64,
+            mtime_ns,
+            parsed_bytes as i64,
+            data.lines as i64,
+            session_id,
+            chrono::Utc::now().timestamp_millis(),
+            reset,
+        ])
+        .map_err(|err| format!("write source_file: {err}"))?;
+    if data.parse_errors > 0 {
+        let message = format!(
+            "complete invalid JSON/UTF-8 records skipped ({})",
+            data.parse_errors
+        );
+        tx.execute(
+            "UPDATE source_file SET parse_error = ?1 WHERE path = ?2",
+            params![message, job_path],
+        )
+        .map_err(|err| format!("write source_file parse_error: {err}"))?;
+    }
+    if let Some(state) = codex_end_state {
+        persist_codex_state(tx, &job_path, parsed_bytes, &state, content_fp.as_deref())?;
+    }
+    Ok(())
 }
 
 /// Read the requested byte range and hand it to the format's parser.
 ///
 /// Only whole newline-terminated lines are consumed, so a transcript that is
 /// mid-write when the indexer reaches it resumes cleanly next time instead of
-/// swallowing a half-written record.
-fn read_and_parse(job: &FileJob) -> Result<ChunkData, String> {
+/// swallowing a half-written record. A mid-line offset rewinds to the previous
+/// record start so a valid record is never discarded while progress advances.
+fn read_and_parse(
+    job: &FileJob,
+) -> Result<
+    (
+        ChunkData,
+        Option<parse_codex::CodexParseState>,
+        u64,
+        bool,
+        Option<String>,
+    ),
+    String,
+> {
     use std::io::{Read, Seek, SeekFrom};
 
+    let mut start = job.start;
     let mut file = std::fs::File::open(&job.path).map_err(|err| format!("open: {err}"))?;
-    if job.start > 0 {
-        file.seek(SeekFrom::Start(job.start))
+    if start > 0 && !byte_before_is_newline(&mut file, start)? {
+        start = previous_newline_end(&mut file, start)?;
+    }
+    if start > 0 {
+        file.seek(SeekFrom::Start(start))
+            .map_err(|err| format!("seek: {err}"))?;
+    } else {
+        file.seek(SeekFrom::Start(0))
             .map_err(|err| format!("seek: {err}"))?;
     }
     let mut buffer = Vec::new();
@@ -707,18 +1245,58 @@ fn read_and_parse(job: &FileJob) -> Result<ChunkData, String> {
         Some(pos) => pos + 1,
         None => 0,
     };
-    let text = String::from_utf8_lossy(&buffer[..complete]).into_owned();
+    if complete == 0 {
+        let end_state = if job.kind == KIND_CODEX && (job.codex_seed_trusted || start == 0) {
+            job.codex_seed.clone()
+        } else {
+            None
+        };
+        return Ok((
+            ChunkData::default(),
+            end_state,
+            start,
+            job.reset,
+            job.codex_content_fp.clone(),
+        ));
+    }
+    let (text, utf8_errors) = decode_complete_records(&buffer[..complete]);
+    let observed_codex_state = (job.kind == KIND_CODEX)
+        .then(|| parse_codex::parse_state_from_text(&text));
+
+    // A nonstandard source may be indexed before its first valid
+    // session_meta. Once the identity appears in a later chunk, re-read this
+    // one unshared source from zero so earlier fallback rows cannot be split
+    // from the now-established in-file identity.
+    if job.kind == KIND_CODEX
+        && start > 0
+        && job
+            .codex_seed
+            .as_ref()
+            .is_some_and(|state| {
+                state.session_behavior == SessionBehavior::InFileIdentity
+                    && !state.session_locked
+            })
+        && observed_codex_state
+            .as_ref()
+            .and_then(|state| state.session_id.as_deref())
+            .is_some()
+    {
+        let mut replay = job.clone();
+        replay.start = 0;
+        replay.reset = true;
+        replay.codex_seed = Some(parse_codex::CodexParseState::default());
+        replay.codex_content_fp = None;
+        replay.codex_seed_trusted = false;
+        return read_and_parse(&replay);
+    }
 
     let stem = job
         .path
         .file_stem()
         .and_then(|stem| stem.to_str())
         .unwrap_or("unknown");
-    let fallback = if job.kind == KIND_CODEX {
-        // rollout-<iso>-<uuid> -> <uuid>
-        stem.rsplit_once('-')
-            .map(|_| stem.splitn(3, '-').nth(2).unwrap_or(stem))
-            .unwrap_or(stem)
+    let filename_fallback = if job.kind == KIND_CODEX {
+        parse_codex::session_id_from_filename(stem)
     } else if job.kind == KIND_GROK {
         job.path
             .parent()
@@ -729,9 +1307,45 @@ fn read_and_parse(job: &FileJob) -> Result<ChunkData, String> {
         stem
     };
 
+    let mut seed = if job.kind == KIND_CODEX {
+        job.codex_seed
+            .clone()
+            .unwrap_or_else(parse_codex::CodexParseState::default)
+    } else {
+        parse_codex::CodexParseState::default()
+    };
+    if job.kind == KIND_CODEX && start > 0 {
+        let rewound = start != job.start;
+        if rewound
+            || (!job.codex_seed_trusted && (seed.model.is_none() || seed.effort.is_none()))
+        {
+            let recovered = recover_codex_state(&job.path, start)?;
+            if rewound {
+                seed.model = recovered.model;
+                seed.effort = recovered.effort;
+            } else {
+                if seed.model.is_none() {
+                    seed.model = recovered.model;
+                }
+                if seed.effort.is_none() {
+                    seed.effort = recovered.effort;
+                }
+            }
+        }
+    }
+
+    let fallback = if job.kind == KIND_CODEX && seed.session_locked {
+        seed.session_id
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .unwrap_or(filename_fallback)
+    } else {
+        filename_fallback
+    };
+
     let mut data = match job.kind {
         KIND_CLAUDE => parse_claude::parse_chunk(&text, fallback),
-        KIND_CODEX => parse_codex::parse_chunk(&text, fallback),
+        KIND_CODEX => parse_codex::parse_chunk_with_state(&text, fallback, seed.clone()),
         KIND_GROK => parse_grok::parse_chunk(&text, fallback),
         other => return Err(format!("unsupported ailog kind: {other}")),
     };
@@ -749,7 +1363,183 @@ fn read_and_parse(job: &FileJob) -> Result<ChunkData, String> {
         }
     };
     data.consumed_bytes = complete as u64;
-    Ok(data)
+    data.parse_errors += utf8_errors;
+    let end_state = if job.kind == KIND_CODEX {
+        let delta = observed_codex_state.unwrap_or_default();
+        if delta.model.is_some() {
+            seed.model = delta.model;
+        }
+        if delta.effort.is_some() {
+            seed.effort = delta.effort;
+        }
+        if seed.session_behavior == SessionBehavior::InFileIdentity && !seed.session_locked {
+            if let Some(session_id) = delta.session_id {
+                seed.session_id = Some(session_id);
+                seed.session_locked = true;
+            }
+        }
+        Some(seed)
+    } else {
+        None
+    };
+    let content_fp = if job.kind == KIND_CODEX {
+        let parsed_bytes = start + data.consumed_bytes;
+        if start == 0 {
+            Some(fingerprint(&buffer[..complete]))
+        } else if start == job.start {
+            job.codex_content_fp
+                .as_deref()
+                .and_then(|existing| extend_fingerprint(existing, &buffer[..complete]))
+                .filter(|value| value.ends_with(&format!(":{parsed_bytes}")))
+        } else {
+            content_fingerprint(&job.path, parsed_bytes).ok()
+        }
+    } else {
+        None
+    };
+    Ok((data, end_state, start, job.reset, content_fp))
+}
+
+fn byte_before_is_newline(file: &mut std::fs::File, pos: u64) -> Result<bool, String> {
+    use std::io::{Read, Seek, SeekFrom};
+    if pos == 0 {
+        return Ok(true);
+    }
+    file.seek(SeekFrom::Start(pos - 1))
+        .map_err(|err| format!("seek boundary: {err}"))?;
+    let mut prev = [0u8; 1];
+    file.read_exact(&mut prev)
+        .map_err(|err| format!("read boundary: {err}"))?;
+    Ok(prev[0] == b'\n')
+}
+
+fn previous_newline_end(file: &mut std::fs::File, pos: u64) -> Result<u64, String> {
+    use std::io::{Seek, SeekFrom};
+    const CHUNK: u64 = 64 * 1024;
+    let mut cursor = pos;
+    while cursor > 0 {
+        let begin = cursor.saturating_sub(CHUNK);
+        file.seek(SeekFrom::Start(begin))
+            .map_err(|err| format!("seek prev nl: {err}"))?;
+        let mut buffer = vec![0u8; (cursor - begin) as usize];
+        read_exact_or_short(file, &mut buffer).map_err(|err| format!("read prev nl: {err}"))?;
+        if let Some(rel) = buffer.iter().rposition(|byte| *byte == b'\n') {
+            return Ok(begin + rel as u64 + 1);
+        }
+        cursor = begin;
+    }
+    Ok(0)
+}
+
+fn read_exact_or_short(file: &mut std::fs::File, buffer: &mut [u8]) -> Result<(), std::io::Error> {
+    use std::io::Read;
+    let mut filled = 0usize;
+    while filled < buffer.len() {
+        match file.read(&mut buffer[filled..]) {
+            Ok(0) => {
+                buffer[filled..].fill(0);
+                break;
+            }
+            Ok(n) => filled += n,
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(())
+}
+
+/// Fragment-aware reverse record reader. Windows carry incomplete prefixes
+/// so a `turn_context` that spans a 1 MiB boundary or exceeds 1 MiB is still
+/// decoded as one record.
+fn recover_codex_state(path: &Path, start: u64) -> Result<parse_codex::CodexParseState, String> {
+    use std::io::{Seek, SeekFrom};
+
+    if start == 0 {
+        return Ok(parse_codex::CodexParseState::default());
+    }
+    let mut file = std::fs::File::open(path).map_err(|err| format!("open prefix: {err}"))?;
+    let mut end = start;
+    if !byte_before_is_newline(&mut file, end)? {
+        end = previous_newline_end(&mut file, end)?;
+    }
+    let mut pos = end;
+    let mut carry: Vec<u8> = Vec::new();
+    let mut recovered = parse_codex::CodexParseState::default();
+    while pos > 0 {
+        let begin = pos.saturating_sub(REVERSE_WINDOW);
+        file.seek(SeekFrom::Start(begin))
+            .map_err(|err| format!("seek prefix: {err}"))?;
+        let mut data = vec![0u8; (pos - begin) as usize];
+        read_exact_or_short(&mut file, &mut data).map_err(|err| format!("read prefix: {err}"))?;
+        data.extend_from_slice(&carry);
+
+        let starts_mid_record = begin > 0 && !byte_before_is_newline(&mut file, begin)?;
+        let (complete_start, next_carry) = if starts_mid_record {
+            match data.iter().position(|byte| *byte == b'\n') {
+                Some(first_newline) => (first_newline + 1, data[..=first_newline].to_vec()),
+                None => (data.len(), data.clone()),
+            }
+        } else {
+            (0, Vec::new())
+        };
+        for record in data[complete_start..]
+            .split(|byte| *byte == b'\n')
+            .rev()
+        {
+            let record = strip_cr(record);
+            if record.is_empty() {
+                continue;
+            }
+            let Ok(text) = std::str::from_utf8(record) else {
+                continue;
+            };
+            let state = parse_codex::parse_model_state_from_text(text);
+            if recovered.model.is_none() {
+                recovered.model = state.model;
+            }
+            if recovered.effort.is_none() {
+                recovered.effort = state.effort;
+            }
+            if recovered.model.is_some() && recovered.effort.is_some() {
+                return Ok(recovered);
+            }
+        }
+        if begin == 0 {
+            break;
+        }
+        carry = next_carry;
+        pos = begin;
+    }
+    Ok(recovered)
+}
+
+fn strip_cr(bytes: &[u8]) -> &[u8] {
+    match bytes.last() {
+        Some(b'\r') => &bytes[..bytes.len() - 1],
+        _ => bytes,
+    }
+}
+
+/// Decode newline-terminated records one at a time so a single invalid UTF-8
+/// line cannot hide later valid records or force a whole-file failure.
+fn decode_complete_records(bytes: &[u8]) -> (String, u64) {
+    let mut text = String::new();
+    let mut errors = 0u64;
+    let mut start = 0usize;
+    for (index, byte) in bytes.iter().enumerate() {
+        if *byte != b'\n' {
+            continue;
+        }
+        let line = strip_cr(&bytes[start..index]);
+        match std::str::from_utf8(line) {
+            Ok(line) => {
+                text.push_str(line);
+                text.push('\n');
+            }
+            Err(_) => errors += 1,
+        }
+        start = index + 1;
+    }
+    (text, errors)
 }
 
 /// Read Grok metadata that lives beside `updates.jsonl` without indexing the

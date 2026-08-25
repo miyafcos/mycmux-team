@@ -1,4 +1,4 @@
-import type { LiveSessionBrief } from "../../lib/livebrief";
+import type { AgentTelemetry, LiveSessionBrief } from "../../lib/livebrief";
 import { deriveDisplayStatus } from "../../lib/notificationStatus";
 import { getTabDisplayLabel } from "../../lib/tabDisplayLabel";
 import type { PaneMetadata, PaneVolatileMetadata } from "../../stores/paneMetadataStore";
@@ -65,6 +65,8 @@ export interface DashboardCardModel {
   checkpoint?: string | null;
   /** 最後に何かが起きてからの経過分。基準が取れなければ null。 */
   noUpdateMinutes: number | null;
+  /** livebrief が組み立てた計器情報。無いときは計器行を出さない。 */
+  telemetry?: AgentTelemetry | null;
 }
 
 export interface DashboardModelInput {
@@ -230,6 +232,7 @@ export function buildDashboardCards(workspaces: readonly Workspace[], input: Das
           activityText: brief?.activityText ?? null,
           checkpoint: brief?.checkpoint ?? null,
           noUpdateMinutes: noUpdateMinutes(brief, input.now) ?? activityMinutes,
+          telemetry: brief?.telemetry ?? null,
         };
         const markedAt = input.doneMarkByTab.get(tab.id);
         if (markedAt !== undefined && isManualDoneMarkValid(card, markedAt)) {

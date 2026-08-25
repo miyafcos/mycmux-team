@@ -5,6 +5,7 @@ import { agentKindColor } from "../../lib/agentKindColors";
 import { useLiveBriefStore } from "../../stores/liveBriefStore";
 import { useRecentInputStore } from "../../stores/recentInputStore";
 import { dashboardStrings } from "./dashboardStrings";
+import { instrumentLineFromTelemetry, instrumentSlotsFromTelemetry } from "./instrumentLine";
 import { resolveDisplayState, type DashboardCardModel, type DashboardDisplayState } from "./dashboardModel";
 import { latestInstruction as latestInstructionFromEvents } from "./liveTimelineModel";
 import { stateLabels } from "./stateLabels";
@@ -78,6 +79,9 @@ function CardRow({ card, selected, open, now, hideWorkspaceBadge, onSelect, onJu
   const agentColor = agentKindColor(card.agentKind === "none" ? undefined : card.agentKind)?.fg
     ?? "var(--cmux-text-tertiary)";
   const tone = state === "needsHuman" ? " is-ask" : state === "error" || state === "noUpdate" ? " is-error" : "";
+  const instrumentSid = card.metadata?.agentSessionId ?? card.brief?.agentSessionId ?? card.tab.agentSessionId;
+  const instrumentSlots = instrumentSlotsFromTelemetry(card.telemetry, instrumentSid, { compactContext: true });
+  const instrumentTitle = instrumentLineFromTelemetry(card.telemetry, instrumentSid);
 
   return <button
     type="button"
@@ -103,6 +107,11 @@ function CardRow({ card, selected, open, now, hideWorkspaceBadge, onSelect, onJu
         <span className="cmux-dash-row-activity">{labels.activityLabel}</span>
         {elapsedMinutes === null ? null : <span className="cmux-dash-row-elapsed">{dashboardStrings.elapsed(elapsedMinutes)}</span>}
       </span>
+      {instrumentSlots.length ? <span className="cmux-dash-row-instrument" data-dashboard-instrument={card.tab.id} title={instrumentTitle}>
+        {instrumentSlots.map((slot) => (
+          <span key={slot.kind} className="cmux-dash-row-instrument-slot" data-instrument-slot={slot.kind}>{slot.text}</span>
+        ))}
+      </span> : null}
     </span>
   </button>;
 }

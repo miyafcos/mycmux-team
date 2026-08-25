@@ -301,6 +301,7 @@ mod tests {
             updated_at: 0,
             service_epoch: "epoch".into(),
             brief_revision: 0,
+            telemetry: None,
         };
         let digests = build_source_digests_from(&[brief], &[], &[session("source-1")]);
         assert!(digests[0].acquired);

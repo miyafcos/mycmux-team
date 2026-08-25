@@ -205,3 +205,27 @@ def test_auto_pane_naming_never_closes_tabs_or_overwrites_human_labels() -> None
     assert "autoPaneNamingEnabled" in settings_store
     assert "setAutoPaneNamingEnabled" in settings_store
     assert "autoPaneNamingStrings" in ai_tab
+
+
+def test_grouping_mode_is_wired_without_closing_tabs() -> None:
+    rust = read("src-tauri/src/commands/tab_sweep.rs")
+    panel = read("src/components/layout/TabGroupingPanel.tsx")
+    grouping = read("src/components/layout/tabGrouping.ts")
+    button = read("src/components/layout/TabGroupingButton.tsx")
+    minimap = read("src/components/dashboard/LayoutMinimapPanel.tsx")
+
+    assert "const GROUPING_TIMEOUT: Duration = Duration::from_secs(180)" in rust
+    assert 'Some("grouping") => GROUPING_TIMEOUT' in rust
+    assert 'mode: "grouping"' in panel
+    assert 'invoke<string>("run_tab_sweep_judge"' in panel
+    assert 'invoke<boolean>("abort_tab_sweep_judge"' in panel
+    assert "pane.close_tab" not in grouping
+    assert "pane.close_tab" not in panel
+    strings = read("src/components/dashboard/dashboardStrings.ts")
+    assert "TabGroupingButton" in minimap
+    assert "TAB_GROUPING_OPEN_EVENT" in button
+    assert "TAB_GROUPING_ENTRY_ENABLED = false" in button
+    assert "tabGroupingStrings.buttonLabel" in button
+    assert 'buttonLabel: "タブ再配置"' in strings
+    assert "_replaceWorkspaces" in grouping
+    assert "moveTabToPane" not in grouping
