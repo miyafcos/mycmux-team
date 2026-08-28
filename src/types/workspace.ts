@@ -129,3 +129,12 @@ export interface Workspace {
   /** Saved row heights within each column (inner vertical Allotment per column) */
   rowHeightsPerCol?: number[][];
 }
+
+/** Raw fields excluded from persistent layout state. Keep this list explicit. */
+export type WorkspaceNonPersistentKey = never;
+export type PaneNonPersistentKey = never;
+export type PaneTabNonPersistentKey = never;
+
+export type PersistentWorkspaceKey = Exclude<keyof Workspace, WorkspaceNonPersistentKey>;
+export type PersistentPaneKey = Exclude<keyof Pane, PaneNonPersistentKey>;
+export type PersistentPaneTabKey = Exclude<keyof PaneTab, PaneTabNonPersistentKey>;

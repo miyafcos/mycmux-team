@@ -1,5 +1,6 @@
 use chrono::{DateTime, Local};
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -13,6 +14,16 @@ const APP_DATA_DIR_PREFIX: &str = "com.miyazaki.mycmux";
 const SESSIONS_DIR: &str = "sessions";
 const PANE_SESSIONS_DIR: &str = "pane-sessions";
 const TRASH_DIR: &str = "sessions-trash";
+
+fn current_schema_version() -> u32 {
+    crate::db::storage::CURRENT_SCHEMA_VERSION
+}
+
+#[derive(Debug, Deserialize)]
+struct RetentionSchemaProbe {
+    #[serde(default = "current_schema_version")]
+    schema_version: u32,
+}
 
 #[derive(Debug, Deserialize)]
 struct RetentionData {
@@ -55,7 +66,15 @@ struct RetentionSummary {
 
 struct LiveSessions {
     all_ids: HashSet<String>,
+    tab_ids: HashSet<String>,
     scrollback_keep_sets: Vec<(PathBuf, HashSet<String>)>,
+    data_json_fingerprints: Vec<DataJsonFingerprint>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DataJsonFingerprint {
+    path: PathBuf,
+    sha256: [u8; 32],
 }
 
 pub fn run_startup_retention(app_data_parent: Option<PathBuf>, mycmux_dir: Option<PathBuf>) {
@@ -78,15 +97,53 @@ pub fn run_startup_retention(app_data_parent: Option<PathBuf>, mycmux_dir: Optio
                 "[session_retention] moved {} old orphan records, skipped {} records",
                 summary.moved, summary.skipped
             ),
-            Err(error) => eprintln!("[session_retention] skipped: {error}"),
+            Err(error) => crate::diag_warn!(
+                "session_retention",
+                "retention stopped: {error}"
+            ),
         }
     });
 }
 
 fn run_retention_once(roots: &RetentionRoots, now: SystemTime) -> Result<RetentionSummary, String> {
+    run_retention_once_with_reprobe_hooks(roots, now, || Ok(()), || Ok(()))
+}
+
+fn run_retention_once_with_before_reprobe<F>(
+    roots: &RetentionRoots,
+    now: SystemTime,
+    before_reprobe: F,
+) -> Result<RetentionSummary, String>
+where
+    F: FnOnce() -> Result<(), String>,
+{
+    run_retention_once_with_reprobe_hooks(roots, now, before_reprobe, || Ok(()))
+}
+
+fn run_retention_once_with_reprobe_hooks<F, G>(
+    roots: &RetentionRoots,
+    now: SystemTime,
+    before_reprobe: F,
+    after_reprobe: G,
+) -> Result<RetentionSummary, String>
+where
+    F: FnOnce() -> Result<(), String>,
+    G: FnOnce() -> Result<(), String>,
+{
+    let _initial_live_sessions = collect_live_sessions(&roots.app_data_parent)?;
+    before_reprobe()?;
+    // Fail closed on a profile created, removed, or replaced after the first
+    // probe. No scrollback GC or record move may happen before this re-probe.
     let live_sessions = collect_live_sessions(&roots.app_data_parent)?;
+    after_reprobe()?;
+    let expected_fingerprints = live_sessions.data_json_fingerprints.clone();
+    let mut ensure_unchanged = || {
+        ensure_retention_inputs_unchanged(&roots.app_data_parent, &expected_fingerprints)
+    };
     for (scrollback_dir, keep) in &live_sessions.scrollback_keep_sets {
-        crate::pty::scrollback_store::gc(scrollback_dir, keep)
+        crate::pty::scrollback_store::gc_guarded(scrollback_dir, keep, || {
+            ensure_unchanged().map_err(std::io::Error::other)
+        })
             .map_err(|error| format!("sweep scrollback {} failed: {error}", scrollback_dir.display()))?;
     }
     let trash_month = trash_month(now);
@@ -104,7 +161,8 @@ fn run_retention_once(roots: &RetentionRoots, now: SystemTime) -> Result<Retenti
         now,
         max_age,
         &mut summary,
-    );
+        &mut ensure_unchanged,
+    )?;
     retain_pane_session_files(
         &roots.mycmux_dir.join(PANE_SESSIONS_DIR),
         &roots
@@ -113,10 +171,12 @@ fn run_retention_once(roots: &RetentionRoots, now: SystemTime) -> Result<Retenti
             .join(&trash_month)
             .join(PANE_SESSIONS_DIR),
         &live_sessions.all_ids,
+        &live_sessions.tab_ids,
         now,
         max_age,
         &mut summary,
-    );
+        &mut ensure_unchanged,
+    )?;
 
     Ok(summary)
 }
@@ -130,7 +190,9 @@ fn collect_live_sessions(app_data_parent: &Path) -> Result<LiveSessions, String>
     })?;
     let mut live_sessions = LiveSessions {
         all_ids: HashSet::new(),
+        tab_ids: HashSet::new(),
         scrollback_keep_sets: Vec::new(),
+        data_json_fingerprints: Vec::new(),
     };
     let mut parsed_data_files = 0usize;
 
@@ -179,19 +241,36 @@ fn collect_live_sessions(app_data_parent: &Path) -> Result<LiveSessions, String>
         for data_path in data_paths {
             match fs::metadata(&data_path) {
                 Ok(metadata) if metadata.is_file() => {
-                    let contents = fs::read_to_string(&data_path).map_err(|error| {
+                    let contents = fs::read(&data_path).map_err(|error| {
                         format!("read {} failed: {error}", data_path.display())
                     })?;
-                    let data: RetentionData = serde_json::from_str(&contents).map_err(|error| {
+                    let probe: RetentionSchemaProbe =
+                        serde_json::from_slice(&contents).map_err(|error| {
+                            format!("parse {} failed: {error}", data_path.display())
+                        })?;
+                    if probe.schema_version != crate::db::storage::CURRENT_SCHEMA_VERSION {
+                        return Err(format!(
+                            "skip retention: {} uses unsupported schema version {}",
+                            data_path.display(),
+                            probe.schema_version
+                        ));
+                    }
+                    let data: RetentionData = serde_json::from_slice(&contents).map_err(|error| {
                         format!("parse {} failed: {error}", data_path.display())
                     })?;
+                    live_sessions.data_json_fingerprints.push(DataJsonFingerprint {
+                        path: data_path.clone(),
+                        sha256: Sha256::digest(&contents).into(),
+                    });
                     let mut local_ids = HashSet::new();
-                    insert_live_session_ids(&data, &mut local_ids);
+                    let mut local_tab_ids = HashSet::new();
+                    insert_live_session_ids(&data, &mut local_ids, &mut local_tab_ids);
                     live_sessions.all_ids.extend(local_ids.iter().cloned());
+                    live_sessions.tab_ids.extend(local_tab_ids.iter().cloned());
                     let scrollback_dir = data_path.parent()
                         .ok_or_else(|| format!("data path has no parent: {}", data_path.display()))?
                         .join("scrollback");
-                    live_sessions.scrollback_keep_sets.push((scrollback_dir, local_ids));
+                    live_sessions.scrollback_keep_sets.push((scrollback_dir, local_tab_ids));
                     parsed_data_files += 1;
                 }
                 Ok(_) => continue,
@@ -210,10 +289,37 @@ fn collect_live_sessions(app_data_parent: &Path) -> Result<LiveSessions, String>
         ));
     }
 
+    live_sessions
+        .data_json_fingerprints
+        .sort_by(|left, right| left.path.cmp(&right.path));
     Ok(live_sessions)
 }
 
-fn insert_live_session_ids(data: &RetentionData, live_ids: &mut HashSet<String>) {
+fn ensure_retention_inputs_unchanged(
+    app_data_parent: &Path,
+    expected: &[DataJsonFingerprint],
+) -> Result<(), String> {
+    let actual = collect_live_sessions(app_data_parent)?.data_json_fingerprints;
+    if actual == expected {
+        return Ok(());
+    }
+    let changed_path = expected
+        .iter()
+        .zip(actual.iter())
+        .find_map(|(before, after)| (before != after).then_some(&after.path))
+        .or_else(|| actual.get(expected.len()).map(|fingerprint| &fingerprint.path))
+        .or_else(|| expected.get(actual.len()).map(|fingerprint| &fingerprint.path));
+    Err(format!(
+        "{} changed after the final retention scan; aborting before destructive action",
+        changed_path.map_or(app_data_parent, PathBuf::as_path).display()
+    ))
+}
+
+fn insert_live_session_ids(
+    data: &RetentionData,
+    live_ids: &mut HashSet<String>,
+    tab_ids: &mut HashSet<String>,
+) {
     for workspace in &data.workspaces {
         for pane in &workspace.panes {
             let Some(pane_id) = pane.pane_id.as_deref().filter(|value| !value.is_empty()) else {
@@ -224,6 +330,7 @@ fn insert_live_session_ids(data: &RetentionData, live_ids: &mut HashSet<String>)
                     continue;
                 };
                 live_ids.insert(make_session_id(&workspace.id, pane_id, tab_id));
+                tab_ids.insert(tab_id.to_string());
             }
         }
     }
@@ -240,17 +347,18 @@ fn retain_directory_records(
     now: SystemTime,
     max_age: Duration,
     summary: &mut RetentionSummary,
-) {
+    before_move: &mut impl FnMut() -> Result<(), String>,
+) -> Result<(), String> {
     let entries = match fs::read_dir(source_dir) {
         Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => {
             summary.skipped += 1;
             eprintln!(
                 "[session_retention] skipped {}: read_dir failed: {error}",
                 source_dir.display()
             );
-            return;
+            return Ok(());
         }
     };
 
@@ -277,28 +385,31 @@ fn retain_directory_records(
         if live_ids.contains(&session_id) || !is_older_than(&path, now, max_age) {
             continue;
         }
-        move_record(&path, trash_dir, &entry.file_name(), summary);
+        move_record(&path, trash_dir, &entry.file_name(), summary, before_move)?;
     }
+    Ok(())
 }
 
 fn retain_pane_session_files(
     source_dir: &Path,
     trash_dir: &Path,
     live_ids: &HashSet<String>,
+    live_tab_ids: &HashSet<String>,
     now: SystemTime,
     max_age: Duration,
     summary: &mut RetentionSummary,
-) {
+    before_move: &mut impl FnMut() -> Result<(), String>,
+) -> Result<(), String> {
     let entries = match fs::read_dir(source_dir) {
         Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => {
             summary.skipped += 1;
             eprintln!(
                 "[session_retention] skipped {}: read_dir failed: {error}",
                 source_dir.display()
             );
-            return;
+            return Ok(());
         }
     };
 
@@ -320,14 +431,17 @@ fn retain_pane_session_files(
             summary.skipped += 1;
             continue;
         };
-        if !is_safe_session_record_id(session_id) {
+        if !is_safe_pane_mapping_id(session_id) {
             continue;
         }
-        if live_ids.contains(session_id) || !is_older_than(&path, now, max_age) {
+        if is_live_pane_mapping(session_id, live_ids, live_tab_ids)
+            || !is_older_than(&path, now, max_age)
+        {
             continue;
         }
-        move_record(&path, trash_dir, &entry.file_name(), summary);
+        move_record(&path, trash_dir, &entry.file_name(), summary, before_move)?;
     }
+    Ok(())
 }
 
 fn is_older_than(path: &Path, now: SystemTime, max_age: Duration) -> bool {
@@ -356,7 +470,8 @@ fn move_record(
     trash_dir: &Path,
     file_name: &std::ffi::OsStr,
     summary: &mut RetentionSummary,
-) {
+    before_move: &mut impl FnMut() -> Result<(), String>,
+) -> Result<(), String> {
     let target_path = trash_dir.join(file_name);
     if target_path.exists() {
         summary.skipped += 1;
@@ -365,7 +480,7 @@ fn move_record(
             source_path.display(),
             target_path.display()
         );
-        return;
+        return Ok(());
     }
     if let Err(error) = fs::create_dir_all(trash_dir) {
         summary.skipped += 1;
@@ -374,8 +489,9 @@ fn move_record(
             source_path.display(),
             trash_dir.display()
         );
-        return;
+        return Ok(());
     }
+    before_move()?;
     match fs::rename(source_path, &target_path) {
         Ok(()) => summary.moved += 1,
         Err(error) => {
@@ -387,6 +503,7 @@ fn move_record(
             );
         }
     }
+    Ok(())
 }
 
 fn trash_month(now: SystemTime) -> String {
@@ -449,6 +566,26 @@ mod tests {
 
     fn scrollback_path(roots: &RetentionRoots, app_name: &str, session_id: &str) -> PathBuf {
         roots.app_data_parent.join(app_name).join("scrollback").join(format!("{session_id}.bin"))
+    }
+
+    fn write_legacy_scrollback(
+        roots: &RetentionRoots,
+        app_name: &str,
+        session_id: &str,
+        data: &[u8],
+    ) {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"MSBK");
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&0u16.to_le_bytes());
+        bytes.extend_from_slice(&0u64.to_le_bytes());
+        bytes.extend_from_slice(&(data.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&crc32fast::hash(data).to_le_bytes());
+        bytes.extend_from_slice(data);
+        let path = scrollback_path(roots, app_name, session_id);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, bytes).unwrap();
     }
 
     fn future_old_now() -> SystemTime {
@@ -566,6 +703,159 @@ mod tests {
     }
 
     #[test]
+    fn startup_sweep_keeps_five_moved_tab_legacy_scrollback_files_for_migration() {
+        let temp = tempfile::tempdir().unwrap();
+        let roots = roots(&temp);
+        let old_workspace = "5231da42-1111-4111-8111-111111111111";
+        let current_workspace = "c30892d0-2222-4222-8222-222222222222";
+        let pane_id = "bb391b49-3333-4333-8333-333333333333";
+        let tab_ids = [
+            "11111111-aaaa-4aaa-8aaa-aaaaaaaaaaa1",
+            "22222222-bbbb-4bbb-8bbb-bbbbbbbbbbb2",
+            "33333333-cccc-4ccc-8ccc-ccccccccccc3",
+            "44444444-dddd-4ddd-8ddd-ddddddddddd4",
+            "55555555-eeee-4eee-8eee-eeeeeeeeeee5",
+        ];
+        let live_ids = tab_ids.map(|tab_id| (current_workspace, pane_id, tab_id));
+        write_data_json(&roots, "com.miyazaki.mycmux", &live_ids);
+
+        for (index, tab_id) in tab_ids.iter().enumerate() {
+            let legacy_id = make_session_id(old_workspace, pane_id, tab_id);
+            write_legacy_scrollback(
+                &roots,
+                "com.miyazaki.mycmux",
+                &legacy_id,
+                &[index as u8],
+            );
+        }
+
+        run_retention_once(&roots, SystemTime::now()).unwrap();
+
+        for tab_id in tab_ids {
+            let legacy_id = make_session_id(old_workspace, pane_id, tab_id);
+            assert!(scrollback_path(&roots, "com.miyazaki.mycmux", &legacy_id).exists());
+        }
+    }
+
+    #[test]
+    fn future_schema_profile_aborts_before_any_retention_deletion() {
+        let temp = tempfile::tempdir().unwrap();
+        let roots = roots(&temp);
+        let now = future_old_now();
+        let future_id = make_session_id("ws-future", "pane-future", "tab-future");
+        write_data_json(&roots, "com.miyazaki.mycmux", &[]);
+        create_records(&roots, &future_id);
+        let profile_dir = roots
+            .app_data_parent
+            .join("com.miyazaki.mycmux")
+            .join("profiles")
+            .join("future");
+        fs::create_dir_all(profile_dir.join("scrollback")).unwrap();
+        fs::write(
+            profile_dir.join("data.json"),
+            r#"{"schema_version":999,"future_workspaces":[{"canary":"keep-me"}]}"#,
+        )
+        .unwrap();
+        crate::pty::scrollback_store::save(
+            &profile_dir.join("scrollback"),
+            "tab-future",
+            0,
+            1,
+            b"canary",
+        )
+        .unwrap();
+
+        let error = run_retention_once(&roots, now).unwrap_err();
+
+        assert!(error.contains("schema version 999"));
+        assert!(session_path(&roots, &future_id).exists());
+        assert!(pane_session_path(&roots, &future_id).exists());
+        assert!(profile_dir.join("scrollback").join("tab-future.bin").exists());
+        assert!(!trash_session_path(&roots, now, &future_id).exists());
+        assert!(!trash_pane_session_path(&roots, now, &future_id).exists());
+    }
+
+    #[test]
+    fn schema_is_reprobed_immediately_before_retention_gc() {
+        let temp = tempfile::tempdir().unwrap();
+        let roots = roots(&temp);
+        let now = future_old_now();
+        let orphan_id = make_session_id("ws-race", "pane-race", "tab-race");
+        write_data_json(&roots, "com.miyazaki.mycmux", &[]);
+        create_records(&roots, &orphan_id);
+        let scrollback_dir = roots
+            .app_data_parent
+            .join("com.miyazaki.mycmux")
+            .join("scrollback");
+        crate::pty::scrollback_store::save(&scrollback_dir, &orphan_id, 0, 1, b"canary")
+            .unwrap();
+
+        let data_path = roots
+            .app_data_parent
+            .join("com.miyazaki.mycmux")
+            .join("data.json");
+        let error = run_retention_once_with_before_reprobe(&roots, now, || {
+            fs::write(
+                &data_path,
+                r#"{"schema_version":999,"future_workspaces":[{"canary":"keep"}]}"#,
+            )
+            .map_err(|error| error.to_string())
+        })
+        .unwrap_err();
+
+        assert!(error.contains(&data_path.display().to_string()));
+        assert!(error.contains("schema version 999"));
+        assert!(session_path(&roots, &orphan_id).exists());
+        assert!(pane_session_path(&roots, &orphan_id).exists());
+        assert!(scrollback_path(&roots, "com.miyazaki.mycmux", &orphan_id).exists());
+        assert!(!trash_session_path(&roots, now, &orphan_id).exists());
+        assert!(!trash_pane_session_path(&roots, now, &orphan_id).exists());
+    }
+
+    #[test]
+    fn mutation_after_second_scan_aborts_before_any_retention_action() {
+        let temp = tempfile::tempdir().unwrap();
+        let roots = roots(&temp);
+        let now = future_old_now();
+        let orphan_id = make_session_id("ws-race", "pane-race", "tab-race");
+        write_data_json(&roots, "com.miyazaki.mycmux", &[]);
+        create_records(&roots, &orphan_id);
+        let scrollback_dir = roots
+            .app_data_parent
+            .join("com.miyazaki.mycmux")
+            .join("scrollback");
+        crate::pty::scrollback_store::save(&scrollback_dir, &orphan_id, 0, 1, b"canary")
+            .unwrap();
+
+        let data_path = roots
+            .app_data_parent
+            .join("com.miyazaki.mycmux")
+            .join("data.json");
+        let error = run_retention_once_with_reprobe_hooks(
+            &roots,
+            now,
+            || Ok(()),
+            || {
+                write_data_json(
+                    &roots,
+                    "com.miyazaki.mycmux",
+                    &[("ws-race", "pane-race", "tab-race")],
+                );
+                Ok(())
+            },
+        )
+        .unwrap_err();
+
+        assert!(error.contains(&data_path.display().to_string()));
+        assert!(error.contains("changed after the final retention scan"));
+        assert!(session_path(&roots, &orphan_id).exists());
+        assert!(pane_session_path(&roots, &orphan_id).exists());
+        assert!(scrollback_path(&roots, "com.miyazaki.mycmux", &orphan_id).exists());
+        assert!(!trash_session_path(&roots, now, &orphan_id).exists());
+        assert!(!trash_pane_session_path(&roots, now, &orphan_id).exists());
+    }
+
+    #[test]
     fn malformed_data_json_aborts_without_moving_anything() {
         let temp = tempfile::tempdir().unwrap();
         let roots = roots(&temp);
@@ -586,4 +876,26 @@ mod tests {
         assert!(!trash_pane_session_path(&roots, now, &orphan_id).exists());
         assert!(scrollback_path(&roots, "com.miyazaki.mycmux", &orphan_id).exists());
     }
+}
+
+fn is_safe_pane_mapping_id(mapping_id: &str) -> bool {
+    is_safe_session_record_id(mapping_id)
+        || (!mapping_id.is_empty()
+            && mapping_id.len() <= 240
+            && mapping_id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-'))
+}
+
+fn is_live_pane_mapping(
+    mapping_id: &str,
+    live_ids: &HashSet<String>,
+    live_tab_ids: &HashSet<String>,
+) -> bool {
+    live_ids.contains(mapping_id)
+        || live_tab_ids.contains(mapping_id)
+        || (mapping_id.starts_with("pty-")
+            && live_tab_ids
+                .iter()
+                .any(|tab_id| mapping_id.ends_with(&format!("-{tab_id}"))))
 }

@@ -6,6 +6,49 @@ import {
   SETTINGS_STORE_VERSION,
   type TerminalRenderer,
 } from "./settingsMigration";
+import { useAiSettingsStore } from "./aiSettingsStore";
+
+export interface LegacyAiFeatureSettings {
+  autoPaneNamingEnabled?: boolean;
+  replyDraftSuggestionsEnabled?: boolean;
+}
+
+export function parseLegacyAiFeatureSettings(raw: string | null): LegacyAiFeatureSettings {
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw) as { state?: unknown };
+    if (parsed.state === null || typeof parsed.state !== "object" || Array.isArray(parsed.state)) {
+      return {};
+    }
+    const state = parsed.state as Record<string, unknown>;
+    if (state.aiFeatureSettingsDataJsonMigrationComplete === true) return {};
+    const legacy: LegacyAiFeatureSettings = {};
+    if (
+      Object.prototype.hasOwnProperty.call(state, "autoPaneNamingEnabled")
+      && typeof state.autoPaneNamingEnabled === "boolean"
+    ) {
+      legacy.autoPaneNamingEnabled = state.autoPaneNamingEnabled;
+    }
+    if (
+      Object.prototype.hasOwnProperty.call(state, "replyDraftSuggestionsEnabled")
+      && typeof state.replyDraftSuggestionsEnabled === "boolean"
+    ) {
+      legacy.replyDraftSuggestionsEnabled = state.replyDraftSuggestionsEnabled;
+    }
+    return legacy;
+  } catch {
+    return {};
+  }
+}
+
+export function readLegacyAiFeatureSettings(): LegacyAiFeatureSettings {
+  if (typeof localStorage === "undefined") return {};
+  try {
+    return parseLegacyAiFeatureSettings(localStorage.getItem("mycmux-settings"));
+  } catch {
+    return {};
+  }
+}
 
 interface SettingsState {
   notificationsEnabled: boolean;
@@ -39,6 +82,8 @@ interface SettingsState {
   replyDraftSuggestionsEnabled: boolean;
   /** Automatic AI naming only touches unnamed or AI-named tabs. */
   autoPaneNamingEnabled: boolean;
+  /** Provenance marker: compatibility booleans below are no longer legacy input. */
+  aiFeatureSettingsDataJsonMigrationComplete: boolean;
   appearanceAdvancedOpen: boolean;
   setNotificationsEnabled: (v: boolean) => void;
   setNotificationSoundEnabled: (v: boolean) => void;
@@ -82,6 +127,7 @@ export const useSettingsStore = create<SettingsState>()(
       declaredLaunchEnabled: false,
       replyDraftSuggestionsEnabled: false,
       autoPaneNamingEnabled: true,
+      aiFeatureSettingsDataJsonMigrationComplete: false,
       appearanceAdvancedOpen: false,
       setNotificationsEnabled: (v) => set({ notificationsEnabled: v }),
       setNotificationSoundEnabled: (v) => set({ notificationSoundEnabled: v }),
@@ -99,8 +145,14 @@ export const useSettingsStore = create<SettingsState>()(
       setDispatchWatchdogNotify: (v) => set({ dispatchWatchdogNotify: v }),
       setPaneComposerEnabled: (v) => set({ paneComposerEnabled: v }),
       setDeclaredLaunchEnabled: (v) => set({ declaredLaunchEnabled: v }),
-      setReplyDraftSuggestionsEnabled: (v) => set({ replyDraftSuggestionsEnabled: v }),
-      setAutoPaneNamingEnabled: (v) => set({ autoPaneNamingEnabled: v }),
+      setReplyDraftSuggestionsEnabled: (v) => {
+        useAiSettingsStore.getState().setPersistedReplyDraftSuggestionsEnabled(v);
+        set({ replyDraftSuggestionsEnabled: v });
+      },
+      setAutoPaneNamingEnabled: (v) => {
+        useAiSettingsStore.getState().setPersistedAutoPaneNamingEnabled(v);
+        set({ autoPaneNamingEnabled: v });
+      },
       setAppearanceAdvancedOpen: (v) => set({ appearanceAdvancedOpen: v }),
     }),
     {
@@ -112,3 +164,7 @@ export const useSettingsStore = create<SettingsState>()(
     },
   ),
 );
+
+export function markAiFeatureSettingsDataJsonMigrationComplete(): void {
+  useSettingsStore.setState({ aiFeatureSettingsDataJsonMigrationComplete: true });
+}

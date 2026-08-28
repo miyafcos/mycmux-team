@@ -31,6 +31,11 @@ import {
   type WindowAdoptPayload,
   type WindowFragment,
   type WorkspaceConfig,
+  type PersistentData,
+  type AppSettings,
+  nonRetryablePersistentStorageError,
+  persistentStorageErrorMessage,
+  unsupportedPersistentSchemaVersion,
   listPets,
 } from "../../lib/ipc";
 import { candidatesFromListedPets } from "../../lib/pets";
@@ -38,7 +43,15 @@ import type { AgentSessionKind, SuppressedAgentSession, TurnMarkPersistSnapshot,
 import { useThemeStore } from "../../stores/themeStore";
 import { useKeybindingStore } from "../../stores/keybindingStore";
 import { usePetSettingsStore } from "../../stores/petSettingsStore";
-import { useAiSettingsStore } from "../../stores/aiSettingsStore";
+import {
+  resolveDataJsonAiFeatureSettings,
+  useAiSettingsStore,
+} from "../../stores/aiSettingsStore";
+import {
+  markAiFeatureSettingsDataJsonMigrationComplete,
+  readLegacyAiFeatureSettings,
+  useSettingsStore,
+} from "../../stores/settingsStore";
 import { normalizeAiProvider } from "../../lib/aiModels";
 import { isShellProcess } from "../../lib/notificationStatus";
 import { confirmAgentSessionClear } from "../../lib/agentSessionClearGuard";
@@ -49,6 +62,7 @@ import { reconcileColumnWidths, reconcileRowHeightsPerCol } from "../../lib/layo
 import { focusController } from "../../lib/focusController";
 import { getTerminalBufferLines, getTerminalWriteCounter, hasTerminalBuffer } from "../terminal/XTermWrapper";
 import { useToastStore } from "../../stores/toastStore";
+import { dashboardStrings } from "../dashboard/dashboardStrings";
 import {
   agentSessionIdentityKey,
   paneContainsSession,
@@ -77,6 +91,32 @@ import {
   capTurnMarkPersistSnapshots,
   getTurnMarkPersistSnapshot,
 } from "../terminal/terminalTurnMarkers";
+import {
+  createPersistenceLeaderPersist,
+  createTransitionAwareAutosaveGate,
+  getPersistentSchemaState,
+  isPersistenceWriteAllowed,
+  markPersistentSchemaSupported,
+  quarantinePersistentSchema,
+  quarantinePersistentWrites,
+  registerPersistenceLeader,
+  subscribePersistentSchemaState,
+  type PersistAck,
+  type PersistRequest,
+} from "../../lib/workspacePersistenceCoordinator";
+import {
+  assertSideEffectAllowed,
+  CURRENT_PERSISTENT_SCHEMA_VERSION,
+  recordPersistentSchemaState,
+  recordPersistenceRetrySuperseded,
+  recordPersistenceRetrySuccess,
+  useGroupingRuntimeStore,
+} from "../../stores/groupingRuntimeStore";
+import {
+  hashCanonical,
+  persistentLayoutProjection,
+  type PersistentLayoutProjection,
+} from "../../lib/persistentLayoutProjection";
 
 // Socket dispatch lives in socketCommands.ts. Keep these command markers here
 // for the frontend bridge contract: case "workspace.list":, case "pane.list":,
@@ -98,6 +138,67 @@ let lastSaveFailureToastAt = 0;
  * store mutation — which may never come on an idle workspace.
  */
 export const SAVE_RETRY_DELAYS_MS = [5000, 15000, 30000] as const;
+
+export interface PersistenceRetryRecord<TRequest> {
+  generation: number;
+  request: TRequest;
+}
+
+export interface PersistenceRetryQueue<TRequest> {
+  schedule(record: PersistenceRetryRecord<TRequest>): void;
+  clear(generation?: number): void;
+  active(): PersistenceRetryRecord<TRequest> | null;
+  hasScheduledTimer(): boolean;
+  dispose(): void;
+}
+
+export function createPersistenceRetryQueue<TRequest>(options: {
+  delayMs: () => number;
+  canSchedule: () => boolean;
+  run: (record: PersistenceRetryRecord<TRequest>) => Promise<boolean>;
+  onUnexpectedError?: (error: unknown) => void;
+}): PersistenceRetryQueue<TRequest> {
+  let active: PersistenceRetryRecord<TRequest> | null = null;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let disposed = false;
+
+  const arm = () => {
+    if (timer || !active || disposed || !options.canSchedule()) return;
+    timer = setTimeout(() => {
+      timer = null;
+      const attempt = active;
+      if (!attempt || disposed) return;
+      void options.run(attempt).then((completed) => {
+        if (!completed && active?.generation === attempt.generation) arm();
+      }).catch((error) => {
+        options.onUnexpectedError?.(error);
+        if (active?.generation === attempt.generation) arm();
+      });
+    }, options.delayMs());
+  };
+
+  return {
+    schedule: (record) => {
+      if (disposed || !options.canSchedule()) return;
+      active = record;
+      arm();
+    },
+    clear: (generation) => {
+      if (generation !== undefined && active?.generation !== generation) return;
+      if (timer) clearTimeout(timer);
+      timer = null;
+      active = null;
+    },
+    active: () => active,
+    hasScheduledTimer: () => timer !== null,
+    dispose: () => {
+      disposed = true;
+      if (timer) clearTimeout(timer);
+      timer = null;
+      active = null;
+    },
+  };
+}
 
 /** `failureCount` is the number of consecutive failures already seen (0-based). */
 export function saveRetryDelayMs(failureCount: number): number {
@@ -158,7 +259,10 @@ export function __resetAgentSessionDedupeReporterForTests(): void {
   reportedAgentSessionDedupeConflicts = new Set<string>();
 }
 
-function normalizeSplitColumns(ws: Workspace): string[][] | null {
+type PersistentWorkspaceSource = PersistentLayoutProjection["workspaces"][number];
+type WorkspaceSerializationSource = Workspace | PersistentWorkspaceSource;
+
+function normalizeSplitColumns(ws: WorkspaceSerializationSource): string[][] | null {
   const sourceColumns = ws.splitColumns ?? [ws.panes.map((pane) => pane.id)];
   const columns = sourceColumns
     ?.map((col) => col.filter((id) => ws.panes.some((pane) => pane.id === id)))
@@ -321,6 +425,10 @@ function getMappingKind(
   return mapping.agent_kind ?? existingKind ?? "claude";
 }
 
+function isRestorableTabConfig(tab: PaneTabConfig): boolean {
+  return isRestorableTab(tab);
+}
+
 function getTabConfigKind(
   tabConfig: PaneTabConfig,
   fallbackAgentId?: string | null,
@@ -363,27 +471,6 @@ function applyMappingToTabConfig(
   };
 }
 
-function applyMappingToPaneConfig(
-  paneConfig: PaneConfig,
-  mapping: AgentSessionMapping | undefined,
-): PaneConfig {
-  const existingKind = getPaneConfigKind(paneConfig);
-  const existingSessionId = getPaneConfigSessionId(paneConfig);
-  const mappingKind = getMappingKind(mapping, existingKind);
-  if (!mapping?.session_id || !mappingKind) return paneConfig;
-  if (existingSessionId && existingSessionId !== mapping.session_id) return paneConfig;
-  if (existingKind && existingKind !== mappingKind) return paneConfig;
-
-  return {
-    ...paneConfig,
-    agent_kind: paneConfig.agent_kind ?? mappingKind,
-    agent_session_id: paneConfig.agent_session_id ?? mapping.session_id,
-    claude_session_id: mappingKind === "claude"
-      ? paneConfig.claude_session_id ?? mapping.session_id
-      : paneConfig.claude_session_id,
-  };
-}
-
 export function applyMappingsToConfig(
   cfg: WorkspaceConfig,
   agentMappings: Record<string, AgentSessionMapping>,
@@ -391,52 +478,140 @@ export function applyMappingsToConfig(
   return {
     ...cfg,
     panes: cfg.panes.map((paneConfig) => {
-      const paneId = paneConfig.pane_id;
-      if (!paneId) return paneConfig;
-
-      const paneSessionId = makeSessionId(cfg.id, paneId);
-      const paneMapping = agentMappings[paneSessionId];
-      const tabs = paneConfig.tabs?.map((tabConfig, index) => {
-        if (!isRestorableTab(tabConfig)) return tabConfig;
+      const tabs = paneConfig.tabs?.map((tabConfig) => {
+        if (!isRestorableTabConfig(tabConfig)) return tabConfig;
         const tabId = tabConfig.tab_id;
         if (!tabId) return tabConfig;
-        const tabSessionId = makeSessionId(cfg.id, `${paneId}-${tabId}`);
-        const tabMapping = agentMappings[tabSessionId];
-        const isActiveTab = paneConfig.active_tab_id
-          ? tabId === paneConfig.active_tab_id
-          : index === 0;
         return applyMappingToTabConfig(
           tabConfig,
-          tabMapping ?? (isActiveTab ? paneMapping : undefined),
+          agentMappings[tabId],
           paneConfig.agent_id,
         );
       });
 
-      const mappedPane = applyMappingToPaneConfig(paneConfig, paneMapping);
-      return tabs ? { ...mappedPane, tabs } : mappedPane;
+      return tabs ? { ...paneConfig, tabs } : paneConfig;
     }),
   };
 }
 
+interface SerializePersistentWorkspaceSetOptions {
+  sourceWorkspaces: readonly WorkspaceSerializationSource[];
+  agentMappings?: Record<string, AgentSessionMapping>;
+  windowFragments?: readonly WindowFragment[];
+  preferredSelection: {
+    workspaceId?: string | null;
+    paneId?: string | null;
+    tabId?: string | null;
+  };
+  fallbackSelection?: {
+    workspaceId?: string | null;
+    paneId?: string | null;
+    tabId?: string | null;
+  };
+}
+
+export function serializePersistentWorkspaceSet(
+  options: SerializePersistentWorkspaceSetOptions,
+): AgentSessionDedupeResult & {
+  selection: { workspaceId: string | null; paneId: string | null; tabId: string | null };
+} {
+  const rawConfigs = mergeWindowFragmentWorkspaces(
+    options.sourceWorkspaces
+      .map((workspace) => toConfig(workspace))
+      .filter((config) => config.panes.length > 0),
+    options.windowFragments ?? [],
+  );
+  const safeMappings = filterConflictingAgentMappings(rawConfigs, options.agentMappings ?? {});
+  const mappedConfigs = rawConfigs.map((config) => applyMappingsToConfig(config, safeMappings));
+  const persistedSelection = resolvePersistedSelection(
+    mappedConfigs,
+    options.preferredSelection,
+    options.fallbackSelection,
+  );
+  const dedupeResult = dedupeAgentSessionsInConfigs(
+    mappedConfigs,
+    persistedSelection.workspaceId,
+    persistedSelection.paneId,
+    persistedSelection.tabId,
+  );
+  return {
+    ...dedupeResult,
+    selection: resolvePersistedSelection(dedupeResult.configs, persistedSelection),
+  };
+}
+
+export function bindPersistRequestData(
+  envelope: PersistentData,
+  request: PersistRequest,
+  agentMappings: Record<string, AgentSessionMapping> = {},
+): PersistentData {
+  const requestWorkspaceIds = new Set(request.snapshot.workspaces.map((workspace) => workspace.id));
+  const foreignWorkspaces = envelope.workspaces.filter((workspace) => !requestWorkspaceIds.has(workspace.id));
+  const serialized = serializePersistentWorkspaceSet({
+    sourceWorkspaces: request.snapshot.workspaces,
+    agentMappings,
+    windowFragments: foreignWorkspaces.length > 0
+      ? [{ window_label: "request-envelope", pending: true, workspaces: foreignWorkspaces }]
+      : [],
+    preferredSelection: {
+      workspaceId: envelope.active_workspace_id,
+      paneId: envelope.active_pane_id,
+      tabId: envelope.active_tab_id,
+    },
+  });
+  return {
+    ...envelope,
+    workspaces: serialized.configs,
+    active_workspace_id: serialized.selection.workspaceId,
+    active_pane_id: serialized.selection.paneId,
+    active_tab_id: serialized.selection.tabId,
+  };
+}
+
+export interface WorkspacePersistenceAutosaveController {
+  request(): void;
+  dispose(): void;
+}
+
+export function installWorkspacePersistenceAutosaveController(options: {
+  schedule: () => void;
+  markDirty: () => void;
+}): WorkspacePersistenceAutosaveController {
+  const gate = createTransitionAwareAutosaveGate(options.schedule);
+  const request = () => {
+    options.markDirty();
+    gate.request();
+  };
+  const unsubscribers = [
+    useWorkspaceListStore.subscribe(request),
+    useWorkspaceLayoutStore.subscribe(request),
+  ];
+  return {
+    request,
+    dispose: () => {
+      for (const unsubscribe of unsubscribers) unsubscribe();
+      gate.dispose();
+    },
+  };
+}
+
 export function collectWorkspaceConfigSessionIds(configs: WorkspaceConfig[]): string[] {
-  const sessionIds = new Set<string>();
+  const tabIds = new Set<string>();
   for (const config of configs) {
     for (const pane of config.panes) {
-      if (!pane.pane_id) continue;
-      sessionIds.add(makeSessionId(config.id, pane.pane_id));
       for (const tab of pane.tabs ?? []) {
-        if (isRestorableTab(tab) && tab.tab_id) {
-          sessionIds.add(makeSessionId(config.id, `${pane.pane_id}-${tab.tab_id}`));
+        if (isRestorableTabConfig(tab) && tab.tab_id) {
+          tabIds.add(tab.tab_id);
         }
       }
     }
   }
-  return Array.from(sessionIds);
+  return Array.from(tabIds);
 }
 
-export function collectLiveTerminalSessionIds(): string[] {
+function collectTerminalSessionIds(workspaces: readonly WorkspaceSerializationSource[]): string[] {
   const sessionIds = new Set<string>();
-  for (const workspace of useWorkspaceListStore.getState().workspaces) {
+  for (const workspace of workspaces) {
     for (const pane of workspace.panes) {
       const activeTab = pane.tabs.find((tab) => tab.id === pane.activeTabId) ?? pane.tabs[0];
       if (!activeTab || !isDeclaredTab(activeTab)) sessionIds.add(pane.sessionId);
@@ -448,8 +623,12 @@ export function collectLiveTerminalSessionIds(): string[] {
   return Array.from(sessionIds);
 }
 
+export function collectLiveTerminalSessionIds(): string[] {
+  return collectTerminalSessionIds(useWorkspaceListStore.getState().workspaces);
+}
+
 function tabConfigHasRestorableAgentSession(tab: PaneTabConfig): boolean {
-  return isRestorableTab(tab) && Boolean((tab.agent_kind && tab.agent_session_id) || tab.claude_session_id);
+  return isRestorableTabConfig(tab) && Boolean((tab.agent_kind && tab.agent_session_id) || tab.claude_session_id);
 }
 
 type SocketRequestPayload = {
@@ -492,7 +671,7 @@ function getConfigAgentSessionKey(
 }
 
 function getTabAgentSessionKey(tab: PaneTabConfig): string | null {
-  if (!isRestorableTab(tab)) return null;
+  if (!isRestorableTabConfig(tab)) return null;
   return getConfigAgentSessionKey(declaredAgentKind(tab), declaredAgentSessionId(tab));
 }
 
@@ -585,33 +764,6 @@ function syncPaneAgentSessionFromActiveTab(pane: PaneConfig, tabs: PaneTabConfig
   };
 }
 
-function tabConfigWithPaneAgentSessionFallback(tab: PaneTabConfig, pane: PaneConfig): PaneTabConfig {
-  if (tab.lifecycle === "declared") {
-    return {
-      ...tab,
-      claude_session_id: null,
-      agent_kind: null,
-      agent_session_id: null,
-      suppressed_agent_sessions: null,
-      terminal_snapshot: null,
-      turn_marks: null,
-    };
-  }
-  if (!isRestorableTab(tab)) return tab;
-  if (getTabAgentSessionKey(tab)) return tab;
-  const paneKind = getPaneConfigKind(pane);
-  const paneSessionId = getPaneConfigSessionId(pane);
-  if (!paneKind || !paneSessionId) return tab;
-  return {
-    ...tab,
-    agent_kind: tab.agent_kind ?? paneKind,
-    agent_session_id: tab.agent_session_id ?? paneSessionId,
-    claude_session_id: paneKind === "claude"
-      ? tab.claude_session_id ?? paneSessionId
-      : tab.claude_session_id,
-  };
-}
-
 /**
  * Drop agent-session ids that cannot be real (see isJunkAgentSessionId). Runs on
  * both the load and the save path, so a config already poisoned by the pre-fix
@@ -682,11 +834,7 @@ export function dedupeAgentSessionsInConfigs(
         });
         return;
       }
-      const activeTabConfigId = pane.active_tab_id ?? tabs[0]?.tab_id ?? null;
-      const tabsWithPaneFallback = tabs.map((tab) =>
-        tab.tab_id === activeTabConfigId ? tabConfigWithPaneAgentSessionFallback(tab, pane) : tab,
-      );
-      tabsWithPaneFallback.forEach((tab, tabIndex) => {
+      tabs.forEach((tab, tabIndex) => {
         const key = getTabAgentSessionKey(tab);
         if (!key) return;
         const isActivePane = isActiveWorkspace && pane.pane_id === activePaneId;
@@ -749,11 +897,7 @@ export function dedupeAgentSessionsInConfigs(
         recordConflict(candidateId, key);
         return clearDuplicatePaneAgentSession(pane);
       }
-      const activeTabConfigId = pane.active_tab_id ?? pane.tabs[0]?.tab_id ?? null;
-      const sourceTabs = pane.tabs.map((tab) =>
-        tab.tab_id === activeTabConfigId ? tabConfigWithPaneAgentSessionFallback(tab, pane) : tab,
-      );
-      const tabs = sourceTabs.map((tab, tabIndex) => {
+      const tabs = pane.tabs.map((tab, tabIndex) => {
         const cleanedTab = clearStaleAgentErrorSnapshot(tab);
         const key = getTabAgentSessionKey(cleanedTab);
         if (!key) return cleanedTab;
@@ -894,7 +1038,10 @@ async function flushPtyMetadataSnapshotForPersistence(): Promise<void> {
   }
 }
 
-export function toConfig(ws: Workspace, _agentMappings: Record<string, AgentSessionMapping> = {}): WorkspaceConfig {
+export function toConfig(
+  ws: WorkspaceSerializationSource,
+  _agentMappings: Record<string, AgentSessionMapping> = {},
+): WorkspaceConfig {
   const metaState = usePaneMetadataStore.getState().metadata;
   const paneEntries = ws.panes
     .map((pane) => {
@@ -1036,7 +1183,7 @@ export function toConfig(ws: Workspace, _agentMappings: Record<string, AgentSess
               ? null
               : getTerminalSnapshot(tab.sessionId) ?? tab.terminalSnapshot ?? null,
             turn_marks: declared ? null : persistTurnMarksForTab(tab.sessionId, tab.turnMarks),
-            lifecycle: tab.lifecycle ?? null,
+            lifecycle: tab.lifecycle,
             origin: tab.origin
               ? { kind: tab.origin.kind, parent_tab_id: tab.origin.parentTabId ?? null }
               : null,
@@ -1105,6 +1252,129 @@ async function loadPetCatalog(): Promise<void> {
   }
 }
 
+export async function publishPersistentSchemaAfterHydration(
+  schemaVersion: number,
+  hydrate: () => Promise<void>,
+): Promise<void> {
+  try {
+    await hydrate();
+    markPersistentSchemaSupported(schemaVersion);
+    const schemaState = getPersistentSchemaState();
+    if (schemaState.status === "supported" && schemaState.schemaVersion === schemaVersion) {
+      recordPersistentSchemaState({
+        loadedSchemaVersion: schemaVersion,
+        migrationComplete: schemaVersion === CURRENT_PERSISTENT_SCHEMA_VERSION,
+      });
+    }
+  } catch (error) {
+    reportPersistentHydrationFailure();
+    throw error;
+  }
+}
+
+function unsupportedSchemaDiagnostic(schemaVersion: number): string {
+  return `対応していない保存データ（schema ${schemaVersion}）を検出したため、この起動中は保存を停止しました。元の data.json は変更していません。`;
+}
+
+function reportUnsupportedPersistentSchema(schemaVersion: number): string {
+  const diagnostic = unsupportedSchemaDiagnostic(schemaVersion);
+  if (quarantinePersistentSchema(schemaVersion, diagnostic)) {
+    useToastStore.getState().pushToast(diagnostic, "error");
+  }
+  console.warn(
+    `[persist] Unsupported data.json schema ${schemaVersion}; persistence quarantined`,
+  );
+  return diagnostic;
+}
+
+function reportUnsupportedPersistentSchemaAfterSaveFailure(schemaVersion: number): string {
+  const diagnostic = unsupportedSchemaDiagnostic(schemaVersion);
+  if (quarantinePersistentWrites({
+    reason: "unsupportedSchema",
+    schemaVersion,
+    diagnostic,
+    requiresUnsavedConfirmation: true,
+  })) {
+    useToastStore.getState().pushToast(diagnostic, "error");
+  }
+  console.warn(
+    `[persist] Unsupported data.json schema ${schemaVersion}; persistence quarantined after save failure`,
+  );
+  return diagnostic;
+}
+
+function reportPersistentHydrationFailure(): string {
+  const diagnostic = "保存データの読み込みに失敗したため、この起動中は保存を停止しました。ワークスペースは保存できていません。";
+  if (quarantinePersistentWrites({
+    reason: "hydrationFailed",
+    diagnostic,
+    requiresUnsavedConfirmation: true,
+  })) {
+    useToastStore.getState().pushToast(diagnostic, "error");
+  }
+  console.warn("[persist] Hydration failed; persistence quarantined");
+  return diagnostic;
+}
+
+function reportTerminalPersistentStorageError(
+  error: Exclude<ReturnType<typeof nonRetryablePersistentStorageError>, null>,
+): string {
+  if (error.kind === "unsupportedSchema") {
+    return reportUnsupportedPersistentSchema(error.schemaVersion);
+  }
+  const diagnostic = error.kind === "unsupportedPlatform"
+    ? "この環境では data.json を安全に保存できないため、この起動中は保存を停止しました。元の data.json は変更していません。"
+    : `保存しようとした data.json の schema ${error.schemaVersion} が現在の形式と一致しないため、この起動中は保存を停止しました。元の data.json は変更していません。`;
+  if (quarantinePersistentWrites({
+    reason: error.kind,
+    schemaVersion: error.kind === "invalidPayloadSchema" ? error.schemaVersion : undefined,
+    diagnostic,
+    requiresUnsavedConfirmation: true,
+  })) {
+    useToastStore.getState().pushToast(diagnostic, "error");
+  }
+  console.warn(`[persist] ${error.kind}; persistence quarantined`);
+  return diagnostic;
+}
+
+export function hydrateAiSettingsFromDataJson(settings: Pick<
+  AppSettings,
+  | "ai_provider"
+  | "ai_model"
+  | "ai_enabled"
+  | "auto_pane_naming_enabled"
+  | "reply_draft_suggestions_enabled"
+>): void {
+  const resolved = resolveDataJsonAiFeatureSettings({
+    autoPaneNamingEnabled: settings.auto_pane_naming_enabled,
+    replyDraftSuggestionsEnabled: settings.reply_draft_suggestions_enabled,
+  }, readLegacyAiFeatureSettings());
+  useAiSettingsStore.getState().hydrateAiSettings({
+    aiProvider: normalizeAiProvider(settings.ai_provider),
+    aiModel: settings.ai_model,
+    aiEnabled: settings.ai_enabled,
+    persistedAutoPaneNamingEnabled: resolved.persistedAutoPaneNamingEnabled,
+    persistedReplyDraftSuggestionsEnabled: resolved.persistedReplyDraftSuggestionsEnabled,
+    legacyAiFeatureSettingsMigrationPending: resolved.migrationNeeded,
+  });
+  // These runtime compatibility keys are still consumed by existing UI and
+  // automation code, but data.json is now the source of truth.
+  useSettingsStore.setState({
+    autoPaneNamingEnabled: resolved.autoPaneNamingEnabled,
+    replyDraftSuggestionsEnabled: resolved.replyDraftSuggestionsEnabled,
+    ...(!resolved.migrationNeeded
+      ? { aiFeatureSettingsDataJsonMigrationComplete: true }
+      : {}),
+  });
+}
+
+export function completeAiFeatureSettingsMigrationAfterSave(): void {
+  const aiSettings = useAiSettingsStore.getState();
+  if (!aiSettings.legacyAiFeatureSettingsMigrationPending) return;
+  markAiFeatureSettingsDataJsonMigrationComplete();
+  aiSettings.completeLegacyAiFeatureSettingsMigration();
+}
+
 /**
  * Child-window boot. No `data.json` read (that stays main's), no leadership
  * claim: settings/theme/keybindings come from `get_app_settings`, workspaces
@@ -1129,11 +1399,7 @@ async function hydrateChildWindow(): Promise<void> {
     petDisabled: settings.pet_disabled,
     petFixedId: settings.pet_fixed_id ?? undefined,
   });
-  useAiSettingsStore.getState().hydrateAiSettings({
-    aiProvider: normalizeAiProvider(settings.ai_provider),
-    aiModel: settings.ai_model,
-    aiEnabled: settings.ai_enabled,
-  });
+  hydrateAiSettingsFromDataJson(settings);
   void loadPetCatalog();
 
   const adopted = await takePendingAdoption(windowLabel());
@@ -1215,6 +1481,11 @@ export function useWorkspacePersist() {
       isLeader.current = false;
       hydrateChildWindow()
         .catch((err) => {
+          const unsupportedSchema = unsupportedPersistentSchemaVersion(err);
+          if (unsupportedSchema !== null) {
+            reportUnsupportedPersistentSchema(unsupportedSchema);
+            return;
+          }
           console.warn("[persist] Failed to hydrate child window:", err);
         })
         .finally(() => {
@@ -1231,8 +1502,15 @@ export function useWorkspacePersist() {
           return;
         }
         // Leader: load persisted data
-        return loadPersistentData().then(async (data) => {
-          let startupAgentMappings: Record<string, AgentSessionMapping> = {};
+        return loadPersistentData().then(async (envelope) => {
+          if (!envelope.supported || !envelope.data) {
+            reportUnsupportedPersistentSchema(envelope.schemaVersion);
+            _resolveLoaded();
+            return;
+          }
+          const data = envelope.data;
+          await publishPersistentSchemaAfterHydration(envelope.schemaVersion, async () => {
+            let startupAgentMappings: Record<string, AgentSessionMapping> = {};
           try {
             startupAgentMappings = await readAgentSessionMappings(
               collectWorkspaceConfigSessionIds(data.workspaces),
@@ -1257,11 +1535,7 @@ export function useWorkspacePersist() {
             petDisabled: data.settings.pet_disabled,
             petFixedId: data.settings.pet_fixed_id ?? undefined,
           });
-          useAiSettingsStore.getState().hydrateAiSettings({
-            aiProvider: normalizeAiProvider(data.settings.ai_provider),
-            aiModel: data.settings.ai_model,
-            aiEnabled: data.settings.ai_enabled,
-          });
+          hydrateAiSettingsFromDataJson(data.settings);
           void loadPetCatalog();
 
           if (data.workspaces.length > 0) {
@@ -1333,10 +1607,24 @@ export function useWorkspacePersist() {
               });
             }
           }
+          });
           _resolveLoaded();
         });
       })
       .catch((err) => {
+        if (getPersistentSchemaState().status === "pending") {
+          const unsupportedSchema = unsupportedPersistentSchemaVersion(err);
+          if (unsupportedSchema !== null) {
+            reportUnsupportedPersistentSchema(unsupportedSchema);
+          } else {
+            const terminalError = nonRetryablePersistentStorageError(err);
+            if (terminalError !== null) {
+              reportTerminalPersistentStorageError(terminalError);
+            } else {
+              reportPersistentHydrationFailure();
+            }
+          }
+        }
         console.warn("[persist] Failed to load:", err);
         _resolveLoaded();
       });
@@ -1353,20 +1641,26 @@ export function useWorkspacePersist() {
     if (!isMainWindow()) return;
 
     let dirty = false;
+    let disposed = false;
     let debounceTimer: ReturnType<typeof setTimeout> | null = null;
-    let syncInFlight: Promise<boolean> | null = null;
+    let syncInFlight: Promise<boolean | PersistAck | null> | null = null;
     let closing = false;
     let closePromptOpen = false;
     let saveFailureStreak = 0;
-    let saveRetryTimer: ReturnType<typeof setTimeout> | null = null;
     let cachedAgentMappings: Record<string, AgentSessionMapping> = {};
     let cachedMappingSessionIds = "";
     let agentMappingsDirty = true;
     let lastWrittenSnapshot: string | null = null;
+    let lastSaveError: string | null = null;
+    let saveFailureGeneration = 0;
+    let lastSaveFailureGeneration = 0;
+    let retryQueue: PersistenceRetryQueue<PersistRequest | null>;
+    let autosaveController: WorkspacePersistenceAutosaveController;
 
     const buildSnapshot = (
       agentMappings: Record<string, AgentSessionMapping> = {},
       windowFragments: WindowFragment[] = [],
+      sourceWorkspaces?: readonly WorkspaceSerializationSource[],
     ) => {
       const state = useWorkspaceListStore.getState();
       const uiState = useUiStore.getState();
@@ -1407,41 +1701,27 @@ export function useWorkspacePersist() {
       // after a tear-out it no longer holds every workspace. Appending the
       // other windows' published fragments keeps data.json (and the phone
       // remote, which reads it for workspace names) complete.
-      const rawConfigs = mergeWindowFragmentWorkspaces(
-        state.workspaces
-          .map((workspace) => toConfig(workspace))
-          .filter((config) => config.panes.length > 0),
+      const serialized = serializePersistentWorkspaceSet({
+        sourceWorkspaces: sourceWorkspaces ?? state.workspaces,
+        agentMappings,
         windowFragments,
-      );
-      const safeMappings = filterConflictingAgentMappings(rawConfigs, agentMappings);
-      const mappedConfigs = rawConfigs.map((config) => applyMappingsToConfig(config, safeMappings));
-      const persistedSelection = resolvePersistedSelection(
-        mappedConfigs,
-        {
+        preferredSelection: {
           workspaceId: activeWorkspaceId,
           paneId: activePane?.id,
           tabId: activeTab?.id,
         },
-        {
+        fallbackSelection: {
           workspaceId: fallbackWorkspace?.id,
           paneId: fallbackPane?.id,
           tabId: fallbackTab?.id,
         },
-      );
-      const dedupeResult = dedupeAgentSessionsInConfigs(
-        mappedConfigs,
-        persistedSelection.workspaceId,
-        persistedSelection.paneId,
-        persistedSelection.tabId,
-      );
-      const workspaces = dedupeResult.configs;
-      reportAgentSessionDedupeConflicts(dedupeResult.conflicts);
-      discardDedupeLoserScrollbacks(dedupeResult.discardScrollbackSessionIds);
-      const finalSelection = resolvePersistedSelection(workspaces, persistedSelection);
+      });
+      reportAgentSessionDedupeConflicts(serialized.conflicts);
+      discardDedupeLoserScrollbacks(serialized.discardScrollbackSessionIds);
 
       return {
-        schema_version: 1,
-        workspaces,
+        schema_version: CURRENT_PERSISTENT_SCHEMA_VERSION,
+        workspaces: serialized.configs,
         settings: {
           theme_id: themeState.themeId,
           font_size: themeState.fontSize,
@@ -1459,115 +1739,263 @@ export function useWorkspacePersist() {
           ai_provider: aiSettings.aiProvider,
           ai_model: aiSettings.aiModel,
           ai_enabled: aiSettings.aiEnabled,
+          auto_pane_naming_enabled: aiSettings.persistedAutoPaneNamingEnabled,
+          reply_draft_suggestions_enabled: aiSettings.persistedReplyDraftSuggestionsEnabled,
         },
-        active_workspace_id: finalSelection.workspaceId,
-        active_pane_id: finalSelection.paneId,
-        active_tab_id: finalSelection.tabId,
+        active_workspace_id: serialized.selection.workspaceId,
+        active_pane_id: serialized.selection.paneId,
+        active_tab_id: serialized.selection.tabId,
       };
     };
 
-    const sync = async (force = false): Promise<boolean> => {
-      if (!isLeader.current) return true;
-      if (syncInFlight) {
-        await syncInFlight.catch(() => {});
-      }
-      if (!dirty && !force) return true;
-      const startupHoldRemainingMs = startupAutosaveHoldUntil.current - Date.now();
-      if (!force && startupHoldRemainingMs > 0) {
-        dirty = true;
-        scheduleSync(startupHoldRemainingMs + 100);
-        return true;
-      }
-      const mappingSessionIds = [...collectLiveTerminalSessionIds()].sort();
-      const mappingSessionKey = mappingSessionIds.join("\0");
-      if (agentMappingsDirty || cachedMappingSessionIds !== mappingSessionKey) {
-        try {
-          cachedAgentMappings = await readAgentSessionMappings(mappingSessionIds);
-          cachedMappingSessionIds = mappingSessionKey;
-          agentMappingsDirty = false;
-        } catch (err) {
-          agentMappingsDirty = true;
-          console.warn("[persist] Failed to read agent session mappings:", err);
-        }
-      }
-      const agentMappings = cachedAgentMappings;
-      let windowFragments: WindowFragment[] = [];
-      try {
-        windowFragments = await getWindowFragments();
-      } catch (err) {
-        console.warn("[persist] Failed to read other windows' workspaces:", err);
-      }
-      const snapshot = buildSnapshot(agentMappings, windowFragments);
-      const serializedSnapshot = JSON.stringify(snapshot);
-      if (serializedSnapshot === lastWrittenSnapshot) {
-        dirty = false;
-        return true;
-      }
-      dirty = false;
-      const run = savePersistentData(snapshot)
-        .then(() => {
-          lastWrittenSnapshot = serializedSnapshot;
-          // Streak broken: drop the pending retry and reset the ladder.
-          clearSaveRetry();
-          saveFailureStreak = 0;
-          return true;
-        })
-        .catch((err) => {
-          dirty = true; // allow next trigger to retry
-          console.warn("[persist] Failed to save:", err);
-          const now = Date.now();
-          const firstOfStreak = saveFailureStreak === 0;
-          if (firstOfStreak && now - lastSaveFailureToastAt >= SAVE_FAILURE_TOAST_DEBOUNCE_MS) {
-            lastSaveFailureToastAt = now;
-            useToastStore.getState().pushToast("Workspace save failed — check before restarting", "error");
+    function syncBound(force?: boolean): Promise<boolean>;
+    function syncBound(force: boolean, request: PersistRequest, retryGeneration?: number): Promise<PersistAck | null>;
+    function syncBound(force: boolean, request: undefined, retryGeneration: number): Promise<boolean>;
+    async function syncBound(
+      force = false,
+      request?: PersistRequest,
+      retryGeneration?: number,
+    ): Promise<boolean | PersistAck | null> {
+      const ticket = (syncInFlight ?? Promise.resolve())
+        .catch(() => {})
+        .then(async (): Promise<boolean | PersistAck | null> => {
+          if (!isPersistenceWriteAllowed()) {
+            return request ? null : false;
           }
-          scheduleSaveRetry();
-          saveFailureStreak += 1;
-          return false;
+          if (request && hashCanonical(request.snapshot) !== request.snapshotDigest) return null;
+          if (disposed) return request ? null : false;
+          if (!isLeader.current) return request ? null : true;
+          if (useGroupingRuntimeStore.getState().transitionDepth > 0) {
+            dirty = true;
+            autosaveController.request();
+            if (!force) return request ? null : true;
+            assertSideEffectAllowed("autosave");
+          }
+          if (!dirty && !force) return request ? null : true;
+          const startupHoldRemainingMs = startupAutosaveHoldUntil.current - Date.now();
+          if (!force && startupHoldRemainingMs > 0) {
+            dirty = true;
+            scheduleSync(startupHoldRemainingMs + 100);
+            return request ? null : true;
+          }
+          const mappingSource = request?.snapshot.workspaces ?? useWorkspaceListStore.getState().workspaces;
+          const mappingSessionIds = collectTerminalSessionIds(mappingSource).sort();
+          const mappingSessionKey = mappingSessionIds.join("\0");
+          if (agentMappingsDirty || cachedMappingSessionIds !== mappingSessionKey) {
+            try {
+              cachedAgentMappings = await readAgentSessionMappings(mappingSessionIds);
+              if (disposed) return false;
+              cachedMappingSessionIds = mappingSessionKey;
+              agentMappingsDirty = false;
+            } catch (err) {
+              agentMappingsDirty = true;
+              console.warn("[persist] Failed to read agent session mappings:", err);
+            }
+          }
+          let windowFragments: WindowFragment[] = [];
+          try {
+            windowFragments = await getWindowFragments();
+            if (disposed) return request ? null : false;
+          } catch (err) {
+            console.warn("[persist] Failed to read other windows' workspaces:", err);
+          }
+          const agentMappings = cachedAgentMappings;
+          const buildCurrentSnapshot = () => {
+            const snapshot = buildSnapshot(agentMappings, windowFragments);
+            return snapshot;
+          };
+          const snapshotToSave = request
+            ? buildSnapshot(agentMappings, windowFragments, request.snapshot.workspaces)
+            : buildCurrentSnapshot();
+          if (!isPersistenceWriteAllowed()) {
+            return request ? null : false;
+          }
+          const snapshot = snapshotToSave;
+          const serializedSnapshot = JSON.stringify(snapshot);
+          if (!request && serializedSnapshot === lastWrittenSnapshot) {
+            dirty = false;
+            if (debounceTimer) {
+              clearTimeout(debounceTimer);
+              debounceTimer = null;
+            }
+            resolveSuccessfulRetry(request, retryGeneration);
+            return true;
+          }
+          if (!request) dirty = false;
+          if (disposed) return request ? null : false;
+          if (!isPersistenceWriteAllowed()) {
+            return request ? null : false;
+          }
+          assertSideEffectAllowed("autosave");
+          const run = savePersistentData(snapshot)
+            .then(() => {
+              completeAiFeatureSettingsMigrationAfterSave();
+              if (disposed) return request ? null : false;
+              if (!isLeader.current) return request ? null : true;
+              lastWrittenSnapshot = serializedSnapshot;
+              if (request && hashCanonical(persistentLayoutProjection(
+                useWorkspaceListStore.getState().workspaces,
+              )) !== request.snapshotDigest) {
+                dirty = true;
+                scheduleSync();
+              }
+              if (!request && !dirty && debounceTimer) {
+                clearTimeout(debounceTimer);
+                debounceTimer = null;
+              }
+              resolveSuccessfulRetry(request, retryGeneration);
+              if (!request) return true;
+              const ack: PersistAck = {
+                requestId: request.requestId,
+                savedRevision: request.revision,
+                savedSignature: request.signature,
+                savedDigest: hashCanonical(request.snapshot),
+                leaderGeneration: request.leaderGeneration,
+              };
+              if (retryGeneration !== undefined && request) {
+                recordPersistenceRetrySuccess({ failureGeneration: retryGeneration, ...ack });
+              }
+              return ack;
+            })
+            .catch((err) => {
+              if (disposed) return request ? null : false;
+              const unsupportedSchema = unsupportedPersistentSchemaVersion(err);
+              if (unsupportedSchema !== null) {
+                lastSaveError = reportUnsupportedPersistentSchemaAfterSaveFailure(unsupportedSchema);
+                lastSaveFailureGeneration = 0;
+                dirty = false;
+                return request ? null : false;
+              }
+              const terminalError = nonRetryablePersistentStorageError(err);
+              if (terminalError !== null) {
+                lastSaveError = reportTerminalPersistentStorageError(terminalError);
+                lastSaveFailureGeneration = 0;
+                dirty = false;
+                return request ? null : false;
+              }
+              dirty = true; // allow next trigger to retry
+              lastSaveError = persistentStorageErrorMessage(err);
+              console.warn("[persist] Failed to save:", err);
+              const now = Date.now();
+              const firstOfStreak = saveFailureStreak === 0;
+              if (firstOfStreak && now - lastSaveFailureToastAt >= SAVE_FAILURE_TOAST_DEBOUNCE_MS) {
+                lastSaveFailureToastAt = now;
+                useToastStore.getState().pushToast("Workspace save failed — check before restarting", "error");
+              }
+              const generation = retryGeneration ?? ++saveFailureGeneration;
+              lastSaveFailureGeneration = generation;
+              if (retryGeneration === undefined) {
+                scheduleSaveRetry(generation, request ?? null);
+              }
+              saveFailureStreak += 1;
+              return request ? null : false;
+            });
+          return await run;
         });
-      syncInFlight = run;
+      syncInFlight = ticket;
       try {
-        return await run;
+        return await ticket;
       } finally {
-        if (syncInFlight === run) {
+        if (syncInFlight === ticket) {
           syncInFlight = null;
         }
       }
     };
 
+    const sync = async (force = false): Promise<boolean> => {
+      return syncBound(force);
+    };
+
     function scheduleSync(delayMs = 500): void {
+      if (disposed || !isPersistenceWriteAllowed()) return;
       if (debounceTimer) clearTimeout(debounceTimer);
       debounceTimer = setTimeout(() => {
+        debounceTimer = null;
+        if (disposed || !isPersistenceWriteAllowed()) return;
+        if (useGroupingRuntimeStore.getState().transitionDepth > 0) {
+          autosaveController.request();
+          return;
+        }
+        assertSideEffectAllowed("autosave");
         void sync();
       }, delayMs);
     }
 
     function clearSaveRetry(): void {
-      if (saveRetryTimer) {
-        clearTimeout(saveRetryTimer);
-        saveRetryTimer = null;
-      }
+      retryQueue.clear();
+    }
+
+    function resolveSuccessfulRetry(
+      request: PersistRequest | undefined,
+      retryGeneration: number | undefined,
+    ): void {
+      const activeRetry = retryQueue.active();
+      const completed = !request && retryGeneration === undefined
+        ? activeRetry
+        : retryGeneration !== undefined && activeRetry?.generation === retryGeneration
+          ? activeRetry
+          : null;
+      if (!completed) return;
+      lastSaveError = null;
+      retryQueue.clear(completed.generation);
+      saveFailureStreak = 0;
+      recordPersistenceRetrySuperseded(completed.generation);
     }
 
     // A failed save leaves `dirty = true` but nothing scheduled, so an idle
     // workspace would never write again. Keep at most one retry pending and let
     // `sync()` re-check leadership / in-flight coalescing when it fires.
-    function scheduleSaveRetry(): void {
-      if (saveRetryTimer || closing) return;
-      saveRetryTimer = setTimeout(() => {
-        saveRetryTimer = null;
-        void sync();
-      }, saveRetryDelayMs(saveFailureStreak));
+    function scheduleSaveRetry(generation: number, request: PersistRequest | null): void {
+      retryQueue.schedule({ generation, request });
     }
 
-    const debouncedSync = () => {
-      scheduleSync(500);
-    };
+    retryQueue = createPersistenceRetryQueue({
+      delayMs: () => saveRetryDelayMs(saveFailureStreak),
+      canSchedule: () => !closing && !disposed && isPersistenceWriteAllowed(),
+      run: async (pending) => {
+        if (useGroupingRuntimeStore.getState().transitionDepth > 0) {
+          throw new Error("workspace persistence retry deferred during layout transition");
+        }
+        return Boolean(await syncBound(true, undefined, pending.generation));
+      },
+      onUnexpectedError: (error) => {
+        if (disposed) return;
+        dirty = true;
+        console.warn("[persist] Retry deferred after an unexpected failure:", error);
+      },
+    });
 
-    const markDirty = () => {
-      dirty = true;
-      debouncedSync();
-    };
+    autosaveController = installWorkspacePersistenceAutosaveController({
+      schedule: () => scheduleSync(500),
+      markDirty: () => { dirty = true; },
+    });
+    const unsubscribeSchema = subscribePersistentSchemaState((state) => {
+      if (state.status !== "quarantined") return;
+      const groupingSchema = useGroupingRuntimeStore.getState().persistentSchema;
+      recordPersistentSchemaState({
+        loadedSchemaVersion: state.schemaVersion ?? groupingSchema.loadedSchemaVersion,
+        migrationComplete: false,
+      });
+      dirty = false;
+      if (debounceTimer) {
+        clearTimeout(debounceTimer);
+        debounceTimer = null;
+      }
+      clearSaveRetry();
+    });
+
+    const unregisterPersistenceLeader = registerPersistenceLeader({
+      windowId: windowLabel(),
+      persist: createPersistenceLeaderPersist({
+        isLeader: () => !disposed && isLeader.current,
+        sync: (request) => syncBound(true, request),
+        failure: () => ({
+          error: lastSaveError ?? "workspace persistence failed",
+          retryScheduled: retryQueue.hasScheduledTimer(),
+          failureGeneration: retryQueue.active()?.generation ?? lastSaveFailureGeneration,
+        }),
+      }),
+    });
 
     const countLiveAgentSessions = () => {
       const { workspaces } = useWorkspaceListStore.getState();
@@ -1609,8 +2037,21 @@ export function useWorkspacePersist() {
       return retry ? "retry" : "quit-anyway";
     };
 
-    const unsubList = useWorkspaceListStore.subscribe(markDirty);
-    const unsubLayout = useWorkspaceLayoutStore.subscribe(markDirty);
+    const confirmUnsavedQuarantineQuit = (
+      state: ReturnType<typeof getPersistentSchemaState>,
+    ): Promise<boolean> => confirm(
+      state.status === "quarantined" && state.reason === "unsupportedSchema"
+        ? dashboardStrings.futureSchemaUnsavedQuitPrompt
+        : "ワークスペースを保存できていません。保存せずに終了しますか？",
+      {
+        title: "mycmux 保存停止",
+        kind: "warning",
+        okLabel: "保存せずに終了",
+        cancelLabel: "戻る",
+      },
+    );
+
+    const markDirty = autosaveController.request;
     const unsubMeta = usePaneMetadataStore.subscribe((state, previousState) => {
       // lastLog is a high-frequency UI-only slice. It is intentionally absent
       // from buildSnapshot, so terminal streaming must not keep resetting the
@@ -1635,6 +2076,9 @@ export function useWorkspacePersist() {
         state.aiProvider !== previousState.aiProvider
         || state.aiModel !== previousState.aiModel
         || state.aiEnabled !== previousState.aiEnabled
+        || state.persistedAutoPaneNamingEnabled !== previousState.persistedAutoPaneNamingEnabled
+        || state.persistedReplyDraftSuggestionsEnabled
+          !== previousState.persistedReplyDraftSuggestionsEnabled
       ) markDirty();
     });
     const unsubUi = useUiStore.subscribe((state, prevState) => {
@@ -1644,9 +2088,7 @@ export function useWorkspacePersist() {
             tab.sessionId === state.activePaneId && tab.type === "terminal",
           )),
         );
-        if (activeTerminalExists) {
-          lastActivePaneSessionId.current = state.activePaneId;
-        }
+        if (activeTerminalExists) lastActivePaneSessionId.current = state.activePaneId;
       }
       if (
         state.activePaneId !== prevState.activePaneId
@@ -1655,7 +2097,7 @@ export function useWorkspacePersist() {
     });
 
     const handleBeforeUnload = () => {
-      if (dirty) {
+      if (dirty && isPersistenceWriteAllowed()) {
         // Flush synchronously on unload — debounce timer won't fire in time.
         if (debounceTimer) {
           clearTimeout(debounceTimer);
@@ -1711,8 +2153,52 @@ export function useWorkspacePersist() {
           } catch (err) {
             console.warn("[persist] Failed to flush pty metadata snapshot:", err);
           }
+          const schemaStateBeforeSave = getPersistentSchemaState();
+          if (schemaStateBeforeSave.status === "pending"
+            || (schemaStateBeforeSave.status === "quarantined"
+              && schemaStateBeforeSave.requiresUnsavedConfirmation)) {
+            closePromptOpen = true;
+            try {
+              if (await confirmUnsavedQuarantineQuit(schemaStateBeforeSave)) {
+                shouldQuitAfterSave = true;
+                break;
+              }
+              return;
+            } catch (err) {
+              console.warn("[persist] Failed to show unsaved workspace prompt:", err);
+              return;
+            } finally {
+              closePromptOpen = false;
+            }
+          }
+          if (schemaStateBeforeSave.status === "quarantined") {
+            shouldQuitAfterSave = true;
+            break;
+          }
           const saved = await sync(true);
           if (saved) {
+            shouldQuitAfterSave = true;
+            break;
+          }
+
+          const schemaState = getPersistentSchemaState();
+          if (schemaState.status === "pending"
+            || (schemaState.status === "quarantined" && schemaState.requiresUnsavedConfirmation)) {
+            closePromptOpen = true;
+            try {
+              if (await confirmUnsavedQuarantineQuit(schemaState)) {
+                shouldQuitAfterSave = true;
+                break;
+              }
+              return;
+            } catch (err) {
+              console.warn("[persist] Failed to show unsaved workspace prompt:", err);
+              return;
+            } finally {
+              closePromptOpen = false;
+            }
+          }
+          if (schemaState.status === "quarantined") {
             shouldQuitAfterSave = true;
             break;
           }
@@ -1742,14 +2228,16 @@ export function useWorkspacePersist() {
     });
 
     return () => {
-      unsubList();
-      unsubLayout();
+      disposed = true;
+      autosaveController.dispose();
       unsubMeta();
       unsubTheme();
       unsubKeys();
       unsubPets();
       unsubAi();
       unsubUi();
+      unsubscribeSchema();
+      unregisterPersistenceLeader();
       if (debounceTimer) clearTimeout(debounceTimer);
       clearSaveRetry();
       window.removeEventListener("beforeunload", handleBeforeUnload);
@@ -1906,8 +2394,8 @@ export function useWorkspacePersist() {
     };
   }, []);
 
-  // Surface recovery from a broken agent-restore request (session jsonl missing),
-  // whether via a suppressed fallback id or `--continue` / `resume --last`.
+  // Surface an invalid agent-restore request (session jsonl missing). The
+  // backend starts a fresh session and never adopts another saved conversation.
   useEffect(() => {
     // Multi-window (Phase 3a): another broadcast emit. Child windows own no
     // sessions yet, so the store rewrite below would be a no-op there while the
@@ -1918,39 +2406,17 @@ export function useWorkspacePersist() {
       session_id: string;
       kind: string;
       reason: string;
-      fallback_session_id?: string;
     }>(
       "agent-restore-downgraded",
       (event) => {
-        console.warn("[mycmux] agent restore recovered:", event.payload);
-        const fallbackId = event.payload.fallback_session_id;
-        let staleIdCleared = false;
-        if (!fallbackId) {
-          // Full downgrade (no fallback id to resume instead): the saved
-          // session id was invalid, so clear it now — otherwise every future
-          // launch of this pane (including reattach-triggered remounts)
-          // would keep pointing at the same dead id and re-emit this warning.
-          staleIdCleared = useWorkspaceLayoutStore
-            .getState()
-            .clearTabAgentSessionBySessionId(event.payload.session_id);
-        } else {
-          // A fallback conversation WAS resumed: repoint the persisted
-          // markers at it, or the tab keeps referencing the dead original id
-          // and every future launch downgrades (and warns) all over again.
-          useWorkspaceLayoutStore
-            .getState()
-            .repointTabAgentSessionBySessionId(
-              event.payload.session_id,
-              event.payload.kind,
-              fallbackId,
-            );
-        }
+        console.warn("[mycmux] agent restore started fresh:", event.payload);
+        const staleIdCleared = useWorkspaceLayoutStore
+          .getState()
+          .clearTabAgentSessionBySessionId(event.payload.session_id);
         useToastStore
           .getState()
           .pushToast(
-            fallbackId
-              ? `セッション復元: 保存されていたIDが無効だったため、退避されていた会話 (${fallbackId.slice(0, 8)}) で再開しました`
-              : `セッション復元: 前回の ${event.payload.kind} セッションが見つからなかったため、直近の会話で再開しました${staleIdCleared ? " (無効になった保存IDはリセット済み)" : ""}`,
+            `セッション復元: 前回の ${event.payload.kind} セッションが見つからなかったため、新しいセッションを開始しました${staleIdCleared ? " (無効になった保存IDはリセット済み)" : ""}`,
             "warning",
           );
       },

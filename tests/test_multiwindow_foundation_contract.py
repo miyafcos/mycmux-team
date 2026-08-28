@@ -142,7 +142,7 @@ def test_persistence_engine_is_main_window_only() -> None:
     # The load effect has to unblock `persistLoaded` before returning, so its
     # guard is a block, not the one-line early return used elsewhere.
     guard_index = socket_listener.rindex("if (!isMainWindow()) {", 0, claim_index)
-    load_index = socket_listener.index("return loadPersistentData().then(async (data) => {")
+    load_index = socket_listener.index("return loadPersistentData().then(async (envelope) => {")
 
     assert_contains(socket_listener, "      isLeader.current = false;", SOCKET_LISTENER)
     assert_contains(socket_listener, "      _resolveLoaded();", SOCKET_LISTENER)

@@ -1,0 +1,9 @@
+import { useWorkspaceListStore } from "../stores/workspaceListStore";
+
+const store = useWorkspaceListStore;
+const restore = store((state) => state._restoreGroupingLayout);
+restore([], null, "restore");
+
+const get = store.getState;
+const replace = get()._replaceWorkspaces;
+replace([]);

@@ -79,6 +79,8 @@ import { ChatColumn } from "./ChatColumn";
 import { chatColumnColor } from "../../lib/chatColumnColors";
 import ErrorBoundary from "../common/ErrorBoundary";
 import BrowserPane from "../workspace/BrowserPane";
+import { TAB_GROUPING_ENTRY_ENABLED } from "../layout/TabGroupingButton";
+import { GroupingStatusBar } from "./GroupingStatusBar";
 import "./DashboardView.css";
 
 /** 番号キーで撃てる選択肢。ここを増やすなら dashboardStrings.numberKeyHint も直す。 */
@@ -1334,5 +1336,6 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
         <LayoutMinimapPanel workspaces={workspaces} displayStateByTabId={minimapDisplayStateByTabId} selectedTabId={isDashboardSpecialColumn(viewState.selectedTabId) ? null : viewState.selectedTabId} openTabIds={chatColumnTabIds} activePaneSessionId={activePaneSessionId} onSelect={selectFromMinimap} onJump={jumpToTabId} />
       </aside>
     </div>
+    {TAB_GROUPING_ENTRY_ENABLED ? <GroupingStatusBar /> : null}
   </div>;
 }

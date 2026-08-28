@@ -1,19 +1,10 @@
 import { v4 as uuid } from "uuid";
 
 import type { PtyMetadataSnapshot, SessionOutputSnapshot } from "../../lib/ipc";
-import { getDefaultAgent } from "../../lib/agents";
-import { DEFAULT_LAYOUT_SIZE } from "../../lib/layoutMetrics";
-import {
-  normalizeReadableSplitColumns,
-  reconcileSplitColumnsForPanes,
-} from "../../lib/layoutColumns";
-import { applyActiveTabFields, clearPinIfMissing } from "../../lib/paneTabState";
-import { applyStructuralActivation } from "../../lib/focusController";
+import { reconcileSplitColumnsForPanes } from "../../lib/layoutColumns";
 import type { PaneMetadata } from "../../stores/paneMetadataStore";
 import { usePetSettingsStore } from "../../stores/petSettingsStore";
-import { useUiStore } from "../../stores/uiStore";
-import { useWorkspaceListStore } from "../../stores/workspaceListStore";
-import type { GridTemplateId, Pane, PaneTab, Workspace } from "../../types";
+import type { Pane, PaneTab, Workspace } from "../../types";
 import { aiProviderDef, type AiProviderId } from "../../lib/aiModels";
 import { aiSettingsStrings } from "../settings/settingsStrings";
 import {
@@ -23,7 +14,7 @@ import {
 import { processStatusReasonForTab, readPaneTail } from "./socketCommands";
 
 export const TAB_GROUPING_TAIL_LINES = TAB_NAMING_TAIL_LINES;
-export const TAB_GROUPING_OPEN_EVENT = "mycmux:tab-grouping-open";
+export const TAB_GROUPING_OPEN_EVENT = "mycmux:tab-grouping-open" as const;
 export const TAB_GROUPING_NAME_MAX = 20;
 export const TAB_GROUPING_MAX_COLUMNS = 4;
 export const TAB_GROUPING_MAX_PANES_PER_COLUMN = 4;
@@ -197,42 +188,6 @@ export interface GroupingApplyReport {
   emptyWorkspaceNames: string[];
 }
 
-export interface GroupingSnapshot {
-  workspaces: Workspace[];
-  activeWorkspaceId: string | null;
-  lastActivePaneByWorkspace: Record<string, string>;
-  activeSessionId: string | null;
-  layoutSignature: string;
-  sessionIds: string[];
-}
-
-export interface GroupingUndoMemory {
-  snapshot: GroupingSnapshot;
-  expectedSignature: string;
-  report: GroupingApplyReport;
-  appliedWorkspaces: Workspace[];
-  hidden: boolean;
-  expired: boolean;
-  expireReason: string | null;
-}
-
-export interface GroupingCompileOptions {
-  now?: () => number;
-  uuid?: () => string;
-  choosePet?: () => string | undefined;
-}
-
-export interface GroupingCommitDependencies extends GroupingCompileOptions {
-  getWorkspaces: () => Workspace[];
-  getActiveWorkspaceId: () => string | null;
-  getActiveSessionId: () => string | null;
-  getLastActivePaneByWorkspace: () => Record<string, string>;
-  replaceWorkspaces: (workspaces: Workspace[]) => void;
-  setActiveWorkspace: (id: string) => void;
-  applyActivation: (sessionId: string | null) => void;
-  restoreSelection?: (snapshot: GroupingSnapshot) => void;
-  subscribeLayout?: (listener: () => void) => () => void;
-}
 
 export type TabPreviewKind = "moved" | "kept" | "unassigned" | "untouched";
 
@@ -280,28 +235,6 @@ function cleanedTail(lines: readonly string[]): string[] {
     .slice(-TAB_GROUPING_TAIL_LINES);
 }
 
-function normalizeSplit(columns: string[][], paneIds: string[]): string[][] {
-  return reconcileSplitColumnsForPanes(normalizeReadableSplitColumns(columns), paneIds);
-}
-
-function equalLayoutSizes(count: number): number[] {
-  return Array.from({ length: count }, () => DEFAULT_LAYOUT_SIZE);
-}
-
-function gridTemplateFor(columns: number, maxPanesInColumn: number): GridTemplateId {
-  const cols = Math.max(1, Math.min(4, columns));
-  const rows = Math.max(1, Math.min(4, maxPanesInColumn));
-  if (cols === 1 && rows === 1) return "1x1";
-  if (cols === 1 && rows === 2) return "1x2";
-  if (cols === 2 && rows === 1) return "2x1";
-  if (cols === 2 && rows === 2) return "2x2";
-  if (cols === 3 && rows === 1) return "3x1";
-  if (cols === 3 && rows === 2) return "3x2";
-  if (cols === 2 && rows === 3) return "2x3";
-  if (cols === 3 && rows === 3) return "3x3";
-  if (cols === 4 && rows === 1) return "4x1";
-  return "4x4";
-}
 
 export function choosePetForNewWorkspace(): string | undefined {
   const petSettings = usePetSettingsStore.getState();
@@ -316,28 +249,6 @@ export function choosePetForNewWorkspace(): string | undefined {
   return enabledPets[Math.floor(Math.random() * enabledPets.length)]?.id ?? fallbackPet;
 }
 
-function buildWorkspaceObject(
-  name: string,
-  panes: Pane[],
-  splitColumns: string[][],
-  options: { id?: string; createdAt?: number; pet?: string | undefined },
-): Workspace {
-  const paneIds = panes.map((pane) => pane.id);
-  const normalized = normalizeSplit(splitColumns, paneIds);
-  const maxPanes = normalized.reduce((max, column) => Math.max(max, column.length), 1);
-  return {
-    id: options.id ?? uuid(),
-    name,
-    gridTemplateId: gridTemplateFor(normalized.length, maxPanes),
-    panes,
-    splitColumns: normalized,
-    status: "running",
-    createdAt: options.createdAt ?? Date.now(),
-    pet: options.pet,
-    columnWidths: equalLayoutSizes(normalized.length),
-    rowHeightsPerCol: normalized.map((column) => equalLayoutSizes(column.length)),
-  };
-}
 
 export function layoutSignature(workspaces: readonly Workspace[]): string {
   return JSON.stringify(workspaces.map((workspace) => ({
@@ -357,11 +268,6 @@ export function layoutSignature(workspaces: readonly Workspace[]): string {
   })));
 }
 
-export function sessionIdSet(workspaces: readonly Workspace[]): string[] {
-  return workspaces
-    .flatMap((workspace) => workspace.panes.flatMap((pane) => pane.tabs.map((tab) => tab.sessionId)))
-    .sort();
-}
 
 function tabIndex(workspaces: readonly Workspace[]): Map<string, { workspace: Workspace; pane: Pane; tab: PaneTab }> {
   const result = new Map<string, { workspace: Workspace; pane: Pane; tab: PaneTab }>();
@@ -387,24 +293,6 @@ export function findTabLocation(workspaces: readonly Workspace[], tabId: string)
   return null;
 }
 
-function displayedTabId(
-  workspaces: readonly Workspace[],
-  activeWorkspaceId: string | null,
-  activeSessionId: string | null,
-): string | null {
-  const workspace = workspaces.find((item) => item.id === activeWorkspaceId);
-  if (!workspace) return null;
-  const pane = activeSessionId
-    ? workspace.panes.find((candidate) => (
-      candidate.sessionId === activeSessionId
-      || candidate.tabs.some((tab) => tab.sessionId === activeSessionId)
-    ))
-    : workspace.panes[0];
-  if (!pane) return null;
-  return pane.tabs.find((tab) => tab.id === pane.activeTabId)?.id
-    ?? pane.tabs[0]?.id
-    ?? null;
-}
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -689,6 +577,21 @@ function parseWarnings(value: unknown, allowedTabIds: ReadonlySet<string>): Grou
   return warnings;
 }
 
+function isWellFormedUnicode(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+      if (index + 1 >= value.length) return false;
+      const next = value.charCodeAt(index + 1);
+      if (next < 0xdc00 || next > 0xdfff) return false;
+      index += 1;
+    } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function parseGroup(
   value: unknown,
   allowedTabIds: ReadonlySet<string>,
@@ -698,6 +601,7 @@ function parseGroup(
   const groupId = asString(value.groupId)?.trim() ?? "";
   const title = asString(value.title)?.trim() ?? "";
   if (!groupId) return "groupId が空です";
+  if (!isWellFormedUnicode(groupId)) return "groupId の Unicode が不正です";
   if (!isJapaneseGroupingName(title)) return "グループ名が不正です";
   if (value.disposition !== "reorganize" && value.disposition !== "keep") return "disposition が不正です";
   const destination = parseDestination(value.destination);
@@ -1072,110 +976,6 @@ export function validateEditedPlan(
   return errors;
 }
 
-function paneFromTabs(paneId: string, tabs: PaneTab[], title?: string, preferredTabId?: string | null): Pane {
-  const active = tabs.find((tab) => tab.id === preferredTabId) ?? tabs[0];
-  if (!active) {
-    return blankEmptyPane({
-      id: paneId,
-      agentId: getDefaultAgent().id,
-      sessionId: "",
-      tabs: [],
-      activeTabId: "",
-      label: title,
-    });
-  }
-  const pane: Pane = {
-    id: paneId,
-    agentId: active.agentId,
-    sessionId: active.sessionId,
-    tabs,
-    activeTabId: active.id,
-    label: title,
-    cwd: active.cwd,
-  };
-  return clearPinIfMissing(applyActiveTabFields(pane, active));
-}
-
-function blankEmptyPane(pane: Pane): Pane {
-  return {
-    ...pane,
-    tabs: [],
-    sessionId: "",
-    activeTabId: "",
-    agentId: getDefaultAgent().id,
-    agentKind: undefined,
-    agentSessionId: undefined,
-    claudeSessionId: undefined,
-    suppressedAgentSessions: undefined,
-    launchEnv: undefined,
-    pinnedTabId: undefined,
-  };
-}
-
-function pruneWorkspacePanes(workspace: Workspace): Workspace {
-  const remaining = workspace.panes.filter((pane) => pane.tabs.length > 0);
-  const panes = remaining.length > 0
-    ? remaining
-    : workspace.panes.slice(0, 1).map(blankEmptyPane);
-  const splitColumns = normalizeSplit(
-    (workspace.splitColumns ?? []).map((column) => column.filter((paneId) => panes.some((pane) => pane.id === paneId))),
-    panes.map((pane) => pane.id),
-  );
-  return {
-    ...workspace,
-    panes: panes.map((pane) => {
-      if (pane.tabs.length === 0) return blankEmptyPane(pane);
-      const active = pane.tabs.find((tab) => tab.id === pane.activeTabId) ?? pane.tabs[0];
-      return clearPinIfMissing(applyActiveTabFields({ ...pane, tabs: pane.tabs }, active));
-    }),
-    splitColumns,
-  };
-}
-
-function workspaceIsEmpty(workspace: Workspace): boolean {
-  return workspace.panes.every((pane) => pane.tabs.length === 0);
-}
-
-function applyEqualMetrics(workspace: Workspace): Workspace {
-  const splitColumns = normalizeSplit(workspace.splitColumns ?? [], workspace.panes.map((pane) => pane.id));
-  return {
-    ...workspace,
-    splitColumns,
-    gridTemplateId: gridTemplateFor(
-      splitColumns.length,
-      splitColumns.reduce((max, column) => Math.max(max, column.length), 1),
-    ),
-    columnWidths: equalLayoutSizes(splitColumns.length),
-    rowHeightsPerCol: splitColumns.map((column) => equalLayoutSizes(column.length)),
-  };
-}
-
-function extendMetrics(previous: Workspace, next: Workspace): Workspace {
-  const prevColumns = previous.splitColumns ?? [];
-  const nextColumns = normalizeSplit(next.splitColumns ?? [], next.panes.map((pane) => pane.id));
-  const prevWidths = previous.columnWidths && previous.columnWidths.length === prevColumns.length
-    ? previous.columnWidths
-    : equalLayoutSizes(prevColumns.length);
-  const columnWidths = nextColumns.map((_, index) => prevWidths[index] ?? DEFAULT_LAYOUT_SIZE);
-  const prevRows = previous.rowHeightsPerCol && previous.rowHeightsPerCol.length === prevColumns.length
-    ? previous.rowHeightsPerCol
-    : prevColumns.map((column) => equalLayoutSizes(column.length));
-  const rowHeightsPerCol = nextColumns.map((column, index) => {
-    const previousRow = prevRows[index];
-    if (previousRow && previousRow.length === column.length) return previousRow;
-    return equalLayoutSizes(column.length);
-  });
-  return {
-    ...next,
-    splitColumns: nextColumns,
-    gridTemplateId: gridTemplateFor(
-      nextColumns.length,
-      nextColumns.reduce((max, column) => Math.max(max, column.length), 1),
-    ),
-    columnWidths,
-    rowHeightsPerCol,
-  };
-}
 
 export function classifyStale(
   baseline: readonly AnalysisBaselineEntry[],
@@ -1226,203 +1026,6 @@ export function classifyStale(
   return issues;
 }
 
-export function compileGroupingPlan(
-  plan: GroupingPlan,
-  workspaces: readonly Workspace[],
-  options: GroupingCompileOptions & {
-    baseline: readonly AnalysisBaselineEntry[];
-    activeWorkspaceId: string | null;
-    activeSessionId: string | null;
-  },
-): { ok: true; transaction: LayoutTransaction } | { ok: false; errors: string[]; stale: StaleIssue[] } {
-  let compileSeq = 0;
-  const idFactory = options.uuid ?? (() => `compile-${++compileSeq}`);
-  const now = options.now ?? (() => 0);
-  const choosePet = options.choosePet ?? (() => undefined);
-  const current = structuredClone(workspaces) as Workspace[];
-  const allowedTabIds = new Set(options.baseline.map((entry) => entry.tabId));
-  const adoptedGroups = plan.groups.filter((group) => (
-    group.adopted
-    && group.disposition === "reorganize"
-    && group.layout
-    && group.destination.kind !== "current_locations"
-  ));
-  const targetTabIds = new Set(adoptedGroups.flatMap((group) => flattenLayoutTabIds(group.layout!)));
-  const destinationWorkspaceIds = new Set(
-    adoptedGroups.flatMap((group) => group.destination.kind === "existing_workspace" ? [group.destination.workspaceId] : []),
-  );
-  const stale = classifyStale(options.baseline, current, targetTabIds, destinationWorkspaceIds);
-  if (stale.length > 0) return { ok: false, errors: [], stale };
-
-  const editErrors = validateEditedPlan(
-    plan,
-    allowedTabIds,
-    current.map((workspace) => workspace.id),
-    current.map((workspace) => workspace.name),
-  );
-  if (editErrors.length > 0) return { ok: false, errors: editErrors, stale: [] };
-
-  const index = tabIndex(current);
-  const moved = new Map<string, PaneTab>();
-  for (const tabId of targetTabIds) {
-    const found = index.get(tabId);
-    if (!found) return { ok: false, errors: [`タブ ${tabId} が見つかりません`], stale: [] };
-    moved.set(tabId, { ...found.tab });
-  }
-  const focusTabId = displayedTabId(workspaces, options.activeWorkspaceId, options.activeSessionId);
-
-  const next = current.map((workspace) => ({
-    ...workspace,
-    panes: workspace.panes.map((pane) => ({
-      ...pane,
-      tabs: pane.tabs.filter((tab) => !moved.has(tab.id)),
-    })),
-  })).map(pruneWorkspacePanes);
-
-  const newWorkspaces: Workspace[] = [];
-  const modifiedIds = new Set<string>();
-
-  for (const group of adoptedGroups) {
-    const layout = group.layout!;
-    const columns: string[][] = [];
-    const panes: Pane[] = [];
-    for (const column of layout.columns) {
-      const columnIds: string[] = [];
-      for (const paneSpec of column.panes) {
-        const paneId = idFactory();
-        const tabs: PaneTab[] = [];
-        for (const tabId of paneSpec.tabIds) {
-          const tab = moved.get(tabId);
-          if (!tab) return { ok: false, errors: [`タブ ${tabId} が見つかりません`], stale: [] };
-          tabs.push(tab);
-        }
-        panes.push(paneFromTabs(paneId, tabs, paneSpec.title, focusTabId));
-        columnIds.push(paneId);
-      }
-      columns.push(columnIds);
-    }
-
-    const destination = group.destination;
-    if (destination.kind === "new_workspace") {
-      newWorkspaces.push(buildWorkspaceObject(destination.proposedName, panes, columns, {
-        id: idFactory(),
-        createdAt: now(),
-        pet: choosePet(),
-      }));
-    } else if (destination.kind === "existing_workspace") {
-      const targetIndex = next.findIndex((workspace) => workspace.id === destination.workspaceId);
-      if (targetIndex < 0) return { ok: false, errors: [], stale: classifyStale(options.baseline, current, targetTabIds, destinationWorkspaceIds) };
-      const target = next[targetIndex];
-      const merged = pruneWorkspacePanes({
-        ...target,
-        panes: [...target.panes, ...panes],
-        splitColumns: [...(target.splitColumns ?? []), ...columns],
-      });
-      next[targetIndex] = merged;
-      modifiedIds.add(merged.id);
-    }
-  }
-
-  const nextById = new Map(next.map((workspace) => [workspace.id, workspace]));
-  for (const workspace of current) {
-    const updated = nextById.get(workspace.id);
-    if (!updated) continue;
-    const beforeTabs = workspace.panes.flatMap((pane) => pane.tabs.map((tab) => tab.id)).join("\0");
-    const afterTabs = updated.panes.flatMap((pane) => pane.tabs.map((tab) => tab.id)).join("\0");
-    if (beforeTabs !== afterTabs) modifiedIds.add(workspace.id);
-  }
-
-  const previousById = new Map(current.map((workspace) => [workspace.id, workspace]));
-  const resultWorkspaces = [
-    ...next.map((workspace) => {
-      if (!modifiedIds.has(workspace.id)) return workspace;
-      const previous = previousById.get(workspace.id);
-      return previous ? extendMetrics(previous, workspace) : applyEqualMetrics(workspace);
-    }),
-    ...newWorkspaces,
-  ];
-
-  const expectedTabs: Record<string, TabLocation> = {};
-  for (const workspace of resultWorkspaces) {
-    for (const pane of workspace.panes) {
-      for (const tab of pane.tabs) {
-        expectedTabs[tab.id] = { workspaceId: workspace.id, paneId: pane.id, sessionId: tab.sessionId };
-      }
-    }
-  }
-
-  const deferredTabIds = new Set(
-    plan.groups
-      .filter((group) => !group.adopted || group.disposition === "keep")
-      .flatMap((group) => group.tabIds),
-  );
-  const keptTabIds = [...allowedTabIds].filter((id) => !targetTabIds.has(id) && !plan.unassignedTabIds.includes(id));
-  const focusLocation = focusTabId ? expectedTabs[focusTabId] ?? null : null;
-  const splitColumns: Record<string, string[][]> = {};
-  const activeTabs: GroupingExpectedResult["activeTabs"] = {};
-  for (const workspace of resultWorkspaces) {
-    splitColumns[workspace.id] = workspace.splitColumns ?? [];
-    for (const pane of workspace.panes) {
-      const active = pane.tabs.find((tab) => tab.id === pane.activeTabId) ?? pane.tabs[0];
-      if (active) {
-        activeTabs[pane.id] = { paneId: pane.id, tabId: active.id, sessionId: active.sessionId };
-      }
-    }
-  }
-
-  return {
-    ok: true,
-    transaction: {
-      workspaces: resultWorkspaces,
-      expected: {
-        tabs: expectedTabs,
-        movedTabIds: [...targetTabIds],
-        keptTabIds: [...new Set([...keptTabIds, ...deferredTabIds])].filter((id) => !targetTabIds.has(id)),
-        unassignedTabIds: [...plan.unassignedTabIds],
-        emptyWorkspaceIds: resultWorkspaces.filter(workspaceIsEmpty).map((workspace) => workspace.id),
-        newWorkspaceIds: newWorkspaces.map((workspace) => workspace.id),
-        focusWorkspaceId: focusLocation && focusTabId && targetTabIds.has(focusTabId)
-          ? focusLocation.workspaceId
-          : options.activeWorkspaceId,
-        focusSessionId: focusLocation && focusTabId && targetTabIds.has(focusTabId)
-          ? focusLocation.sessionId
-          : options.activeSessionId,
-        focusTabId: focusTabId && targetTabIds.has(focusTabId) ? focusTabId : null,
-        splitColumns,
-        activeTabs,
-      },
-    },
-  };
-}
-
-export function collectExpectedLocations(workspaces: readonly Workspace[]): Record<string, TabLocation> {
-  const result: Record<string, TabLocation> = {};
-  for (const workspace of workspaces) {
-    for (const pane of workspace.panes) {
-      for (const tab of pane.tabs) {
-        result[tab.id] = { workspaceId: workspace.id, paneId: pane.id, sessionId: tab.sessionId };
-      }
-    }
-  }
-  return result;
-}
-
-function sameLocationMap(left: Record<string, TabLocation>, right: Record<string, TabLocation>): string[] {
-  const errors: string[] = [];
-  const ids = new Set([...Object.keys(left), ...Object.keys(right)]);
-  for (const id of ids) {
-    const a = left[id];
-    const b = right[id];
-    if (!a || !b) {
-      errors.push(`タブ ${id} の所在が一致しません`);
-      continue;
-    }
-    if (a.workspaceId !== b.workspaceId || a.paneId !== b.paneId || a.sessionId !== b.sessionId) {
-      errors.push(`タブ ${id} の最終位置が expectedResult と違います`);
-    }
-  }
-  return errors;
-}
 
 function tabLabel(workspaces: readonly Workspace[], tabId: string): string {
   const found = tabIndex(workspaces).get(tabId);
@@ -1458,29 +1061,6 @@ export function buildApplyReport(
   };
 }
 
-export function captureGroupingSnapshot(deps: GroupingCommitDependencies): GroupingSnapshot {
-  const workspaces = structuredClone(deps.getWorkspaces()) as Workspace[];
-  return {
-    workspaces,
-    activeWorkspaceId: deps.getActiveWorkspaceId(),
-    lastActivePaneByWorkspace: { ...deps.getLastActivePaneByWorkspace() },
-    activeSessionId: deps.getActiveSessionId(),
-    layoutSignature: layoutSignature(workspaces),
-    sessionIds: sessionIdSet(workspaces),
-  };
-}
-
-function restoreSnapshot(snapshot: GroupingSnapshot, deps: GroupingCommitDependencies): string[] {
-  try {
-    deps.replaceWorkspaces(structuredClone(snapshot.workspaces) as Workspace[]);
-    deps.restoreSelection?.(snapshot);
-    if (snapshot.activeWorkspaceId) deps.setActiveWorkspace(snapshot.activeWorkspaceId);
-    deps.applyActivation(snapshot.activeSessionId);
-    return sameLocationMap(collectExpectedLocations(snapshot.workspaces), collectExpectedLocations(deps.getWorkspaces()));
-  } catch (error) {
-    return [error instanceof Error ? error.message : String(error)];
-  }
-}
 
 export function previewKindForTab(plan: GroupingPlan, tabId: string): TabPreviewKind {
   if (plan.unassignedTabIds.includes(tabId)) return "unassigned";
@@ -1505,216 +1085,6 @@ export function planCardStats(plan: GroupingPlan, baseline: readonly AnalysisBas
   };
 }
 
-let undoMemory: GroupingUndoMemory | null = null;
-let undoUnsubscribe: (() => void) | null = null;
-const undoListeners = new Set<() => void>();
-
-function notifyUndoListeners(): void {
-  for (const listener of undoListeners) listener();
-}
-
-function stopUndoWatch(): void {
-  undoUnsubscribe?.();
-  undoUnsubscribe = null;
-}
-
-function watchUndoLayout(deps: GroupingCommitDependencies): void {
-  stopUndoWatch();
-  if (!deps.subscribeLayout || !undoMemory) return;
-  undoUnsubscribe = deps.subscribeLayout(() => {
-    if (!undoMemory || undoMemory.expired) return;
-    const current = layoutSignature(deps.getWorkspaces());
-    if (current !== undoMemory.expectedSignature) {
-      undoMemory = {
-        ...undoMemory,
-        expired: true,
-        expireReason: "その後レイアウトが変更されたため元に戻せません",
-      };
-      stopUndoWatch();
-      notifyUndoListeners();
-    }
-  });
-}
-
-export function getGroupingUndoMemory(): GroupingUndoMemory | null {
-  return undoMemory;
-}
-
-export function subscribeGroupingUndo(listener: () => void): () => void {
-  undoListeners.add(listener);
-  return () => undoListeners.delete(listener);
-}
-
-export function dismissGroupingUndo(): void {
-  if (!undoMemory) return;
-  undoMemory = { ...undoMemory, hidden: true };
-  notifyUndoListeners();
-}
-
-export function recallGroupingUndo(): void {
-  if (!undoMemory) return;
-  undoMemory = { ...undoMemory, hidden: false };
-  notifyUndoListeners();
-}
-
-export function clearGroupingUndo(): void {
-  stopUndoWatch();
-  undoMemory = null;
-  notifyUndoListeners();
-}
-
-export function expireGroupingUndo(reason: string): void {
-  if (!undoMemory) return;
-  undoMemory = { ...undoMemory, expired: true, expireReason: reason };
-  stopUndoWatch();
-  notifyUndoListeners();
-}
-
-export function restoreGroupingUndo(
-  deps: GroupingCommitDependencies = defaultCommitDependencies(),
-): { ok: true } | { ok: false; reason: string } {
-  if (!undoMemory) return { ok: false, reason: "戻せる再配置がありません" };
-  if (undoMemory.expired) return { ok: false, reason: undoMemory.expireReason ?? "元に戻せません" };
-  const currentIds = sessionIdSet(deps.getWorkspaces());
-  const snapshotIds = undoMemory.snapshot.sessionIds;
-  if (currentIds.join("\0") !== snapshotIds.join("\0")) {
-    expireGroupingUndo("タブの構成が変わったため元に戻せません");
-    return { ok: false, reason: "タブの構成が変わったため元に戻せません" };
-  }
-  const restored = restoreSnapshot(undoMemory.snapshot, deps);
-  if (restored.length > 0) return { ok: false, reason: restored.join(" / ") };
-  clearGroupingUndo();
-  return { ok: true };
-}
-
-export function defaultCommitDependencies(): GroupingCommitDependencies {
-  return {
-    getWorkspaces: () => useWorkspaceListStore.getState().workspaces,
-    getActiveWorkspaceId: () => useWorkspaceListStore.getState().activeWorkspaceId,
-    getActiveSessionId: () => useUiStore.getState().activePaneId ?? useUiStore.getState().lastActivePaneId,
-    getLastActivePaneByWorkspace: () => useWorkspaceListStore.getState().lastActivePaneByWorkspace,
-    replaceWorkspaces: (workspaces) => useWorkspaceListStore.getState()._replaceWorkspaces(workspaces),
-    setActiveWorkspace: (id) => useWorkspaceListStore.getState().setActiveWorkspace(id),
-    applyActivation: (sessionId) => applyStructuralActivation(sessionId),
-    restoreSelection: (snapshot) => {
-      useWorkspaceListStore.setState({ lastActivePaneByWorkspace: snapshot.lastActivePaneByWorkspace });
-    },
-    subscribeLayout: (listener) => useWorkspaceListStore.subscribe(listener),
-    choosePet: choosePetForNewWorkspace,
-  };
-}
-
-function verifyTransaction(actual: readonly Workspace[], expected: GroupingExpectedResult): string[] {
-  const errors = sameLocationMap(expected.tabs, collectExpectedLocations(actual));
-  const actualSessions = sessionIdSet(actual);
-  const expectedSessions = Object.values(expected.tabs).map((location) => location.sessionId).sort();
-  if (actualSessions.join("\0") !== expectedSessions.join("\0")) {
-    errors.push("sessionId 集合が expectedResult と違います");
-  }
-  for (const workspace of actual) {
-    const columns = expected.splitColumns[workspace.id];
-    if (columns && JSON.stringify(workspace.splitColumns ?? []) !== JSON.stringify(columns)) {
-      errors.push(`splitColumns が expectedResult と違います: ${workspace.id}`);
-    }
-    for (const pane of workspace.panes) {
-      if (pane.tabs.length === 0 && pane.sessionId) {
-        errors.push(`空ペイン ${pane.id} が移動済み session を残しています`);
-      }
-      const active = expected.activeTabs[pane.id];
-      if (active && (pane.activeTabId !== active.tabId || pane.sessionId !== active.sessionId)) {
-        errors.push(`pane ${pane.id} の activeTab が expectedResult と違います`);
-      }
-    }
-  }
-  for (const id of expected.emptyWorkspaceIds) {
-    if (!actual.some((workspace) => workspace.id === id && workspaceIsEmpty(workspace))) {
-      errors.push(`空ワークスペース ${id} が残っていません`);
-    }
-  }
-  for (const id of expected.newWorkspaceIds) {
-    if (!actual.some((workspace) => workspace.id === id)) {
-      errors.push(`新規ワークスペース ${id} がありません`);
-    }
-  }
-  return errors;
-}
-
-export function commitGroupingPlan(
-  plan: GroupingPlan,
-  baseline: readonly AnalysisBaselineEntry[],
-  deps: GroupingCommitDependencies = defaultCommitDependencies(),
-  precompiled?: LayoutTransaction,
-): { ok: true; report: GroupingApplyReport; transaction: LayoutTransaction } | { ok: false; stale?: StaleIssue[]; errors: string[]; report?: GroupingApplyReport } {
-  const before = structuredClone(deps.getWorkspaces()) as Workspace[];
-  const compiled = precompiled
-    ? { ok: true as const, transaction: precompiled }
-    : compileGroupingPlan(plan, before, {
-      baseline,
-      activeWorkspaceId: deps.getActiveWorkspaceId(),
-      activeSessionId: deps.getActiveSessionId(),
-      now: deps.now,
-      uuid: deps.uuid,
-      choosePet: deps.choosePet,
-    });
-  if (!compiled.ok) {
-    return {
-      ok: false,
-      stale: compiled.stale,
-      errors: compiled.errors,
-      report: {
-        moved: [],
-        kept: [],
-        unassigned: [],
-        blocked: compiled.stale,
-        errors: compiled.errors,
-        emptyWorkspaceIds: [],
-        emptyWorkspaceNames: [],
-      },
-    };
-  }
-
-  const snapshot = captureGroupingSnapshot(deps);
-  const rollback = (errors: string[]) => {
-    const restoreErrors = restoreSnapshot(snapshot, deps);
-    return {
-      ok: false as const,
-      errors: [...errors, ...restoreErrors.map((item) => `rollback: ${item}`)],
-    };
-  };
-  try {
-    deps.replaceWorkspaces(compiled.transaction.workspaces);
-    const mismatch = verifyTransaction(deps.getWorkspaces(), compiled.transaction.expected);
-    if (mismatch.length > 0) return rollback(mismatch);
-    const expectedFocus = compiled.transaction.expected.focusWorkspaceId;
-    if (expectedFocus && expectedFocus !== deps.getActiveWorkspaceId()) {
-      deps.setActiveWorkspace(expectedFocus);
-    }
-    deps.applyActivation(compiled.transaction.expected.focusSessionId);
-    if (compiled.transaction.expected.focusWorkspaceId
-      && deps.getActiveWorkspaceId() !== compiled.transaction.expected.focusWorkspaceId) {
-      return rollback(["focusWorkspaceId が expectedResult と違います"]);
-    }
-    if (compiled.transaction.expected.focusSessionId
-      && deps.getActiveSessionId() !== compiled.transaction.expected.focusSessionId) {
-      return rollback(["focusSessionId が expectedResult と違います"]);
-    }
-    const report = buildApplyReport(before, compiled.transaction.expected);
-    undoMemory = {
-      snapshot,
-      expectedSignature: layoutSignature(deps.getWorkspaces()),
-      report,
-      appliedWorkspaces: structuredClone(compiled.transaction.workspaces) as Workspace[],
-      hidden: false,
-      expired: false,
-      expireReason: null,
-    };
-    watchUndoLayout(deps);
-    notifyUndoListeners();
-    return { ok: true, report, transaction: compiled.transaction };
-  } catch (error) {
-    return rollback([error instanceof Error ? error.message : String(error)]);
-  }
-}
 
 export interface GroupingAnalysisDependencies {
   scan: () => Promise<GroupingScan>;

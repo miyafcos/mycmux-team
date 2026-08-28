@@ -1,0 +1,5 @@
+import { useWorkspaceListStore } from "../stores/workspaceListStore";
+
+const workspaceState = useWorkspaceListStore.getState();
+const mutate = workspaceState._restoreGroupingLayout;
+mutate(next, selection, "grouping-rollback", capability);

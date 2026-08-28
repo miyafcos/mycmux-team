@@ -231,4 +231,25 @@ describe("TerminalPane declared restore boundary", () => {
       initialReplay: ["saved plain snapshot"],
     }));
   });
+
+  it("never offers suppressed agent sessions as restore fallback candidates", async () => {
+    const agentTab: PaneTab = {
+      id: "saved-agent",
+      sessionId: "saved-agent-session",
+      agentId: "claude-code",
+      type: "terminal",
+      agentKind: "claude",
+      agentSessionId: "saved-agent-session",
+      suppressedAgentSessions: [{
+        agentKind: "claude",
+        agentSessionId: "another-tabs-session",
+        claudeSessionId: "another-tabs-session",
+      }],
+    };
+
+    await renderPanes(workspaceWith([paneWith(agentTab)]));
+
+    const props = mocks.xtermMount.mock.calls.at(-1)?.[0];
+    expect(props).not.toHaveProperty("restoreFallbackSessionIds");
+  });
 });

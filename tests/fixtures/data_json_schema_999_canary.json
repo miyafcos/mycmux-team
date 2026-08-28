@@ -1,0 +1,13 @@
+{
+  "schema_version": 999,
+  "workspaces": [],
+  "settings": {
+    "font_size": 14,
+    "theme_id": "yoru-cafe",
+    "future_setting_canary": {
+      "preserve": true,
+      "bytes": "SCHEMAGUARD-CANARY"
+    }
+  },
+  "future_top_level_canary": ["alpha", 42, false]
+}

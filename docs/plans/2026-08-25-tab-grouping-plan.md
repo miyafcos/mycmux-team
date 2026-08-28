@@ -88,6 +88,7 @@ type GroupingResponse = {
       groupId: string;
       title: string;                   // 日本語 (新WS名の候補を兼ねる)
       disposition: "reorganize" | "keep";
+      tabIds: string[];                  // keep でも必須 (layout=null のタブ列挙先。2026-08-25 改訂)
       destination:
         | { kind: "new_workspace"; proposedName: string }   // 日本語名
         | { kind: "existing_workspace"; workspaceId: string }
@@ -112,6 +113,8 @@ type GroupingResponse = {
 - **検証単位はプラン**: トップレベル破損 = 全体 invalid / プラン単体の破損 = 当該プランのみ
   破棄 / 有効プランが2件未満 → 自動で1回だけ再生成 → それでも1件なら1案として表示
   (比較不足を明記) → 0件なら分析失敗 (raw 表示つきエラー)
+- パーサは 1〜3 件の plans を受理する (プロンプトは初回2〜3案を要求するが、再生成後の
+  1案表示を成立させるため受理側は1件を拒否しない。2026-08-25 改訂)
 - v1 制約: 列は等幅・ペイン既定比率 (AI に比率を返させない)。既存WSへの合流は
   「新規ペインを末尾列に追加」のみ (既存タブの再編はしない)
 - プロンプトの配置目標 (確定仕様 #6): 1WS=1案件に固定せず、WSあたりタブ数 3〜8枚目安。
@@ -207,6 +210,38 @@ type GroupingResponse = {
 5. tokenContract / themeContrast / uiDensity / uiQualityTokens 契約を新CSSが破らない
 6. 境界照合: git status 全量 (untracked 含む) で指定ファイル外の変更ゼロ
 7. 実機スモーク (宮崎さん or Fable): 分析→複数案→編集→適用→undo の一巡
+
+## 8.5 封印解除 (enable) 条件 — 2026-08-25 Oracle round3 裁定で v2 に改訂
+
+経過: Grok実装 → Sol監査 round1 REJECT → Grok修正 `f99d78b` → Sol round2 再REJECT
+(新規Critical 2) で canary 打ち切り → Oracle 設計裁定 (詳細設計の正本 =
+**2026-08-25-tab-grouping-oracle-round3.md**・実装者は必ず直読)。
+監査記録 = 同フォルダ sol-audit-r1 / grok-fix-r1 / sol-audit-r2。
+
+体制 (round3 以降): **エンジン実装 = Codex gpt-5.6-sol / 監査 = Opus 5 / 裁定 = Fable**。
+Grok は本レーンの中核実装から外す (2ラウンド連続で新規回帰を混入した実測による。
+ラダー「fail 後の再委譲 = sol」準拠)。
+
+Gate 進行 (oracle-round3 §F。次 Gate へ進む条件を満たすまで先へ行かない):
+- **Gate 0 (完了)**: 本節+oracle-round3 で仕様と不変条件を確定
+- **Gate 1**: エンジンを UI から切り離して実装 — CommitTicket (OCC・入力/出力署名・
+  完全一致 fail-closed) / allocationSeed 決定的ID+identity validator /
+  PersistentLayoutProjection による commit・rollback・undo の canonical 照合。
+  破壊試験を先に赤で書く (NEW-01/02 再現・連続適用・並行変更・duplicate 全種・
+  commit/rollback 破損・selection 退避つき undo)
+- **Gate 2**: store 境界 — pure workspace factory 共有 (B-11) / アトミック復元 action /
+  commit mutex / global undo 導線 (C-16) / layout revision 購読
+- **Gate 3**: Panel を prepare/commit の新 API へ接続 (transaction 直渡し廃止)
+- **Gate 4**: UI 実操作テスト (RTL+user-event) と Tauri adapter integration (E-06/E-07・C-03/C-13)
+- **Gate 5**: 実機 smoke (実PTY 継続・remount・focus/fit・入力) + 性能実測
+  (100tab 確認画面 p95≤100ms / 編集 p95≤50ms / tail 100tab p95≤2s・8〜16並列)
+- **Gate 6**: Opus 独立監査 (新規欠陥探索を明示・対応表は補助資料)
+
+追加必須条件 (oracle-round3 §E「不足していた enable 条件」):
+commit mutex / ticket 単回使用 / 永続型変更の schema gate / _replaceWorkspaces 後の
+永続化確認 / rollback_failed 後の再Apply 禁止+診断導線。
+
+最終解除 = Gate 6 ACCEPT (Blocker/Critical/High=0) + 宮崎さんの実機触ってGO。
 
 ## 9. v1 で削るもの (後便)
 

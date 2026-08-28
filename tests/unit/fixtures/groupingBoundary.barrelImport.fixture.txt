@@ -1,0 +1,3 @@
+import { useWorkspaceListStore } from "../stores/workspaceStore";
+
+useWorkspaceListStore.getState()._replaceWorkspaces([]);

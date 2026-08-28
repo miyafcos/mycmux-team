@@ -1,8 +1,6 @@
 import { useEffect, useState } from "react";
-import { formatElapsedSince } from "../../../lib/duration";
 import { readDormantMinutes, writeDormantMinutes } from "../../../lib/agentDormancy";
 import { autonomyGetSettings, autonomySetSettings, type AutonomySettings } from "../../../lib/autonomyBridge";
-import { useDispatchWatchdogStore, WATCHDOG_KIND_LABELS } from "../../../stores/dispatchWatchdogStore";
 import { useSettingsStore } from "../../../stores/settingsStore";
 import { autonomySettingsStrings, delegationWatchStrings } from "../settingsStrings";
 import { checkboxLabelStyle, checkboxLabelStyleFor, sectionHeadingStyle } from "../tabStyles";
@@ -38,10 +36,8 @@ export function AutomationTab() {
   const setStallMinutes = useSettingsStore((state) => state.setDispatchStallMinutes);
   const notify = useSettingsStore((state) => state.dispatchWatchdogNotify);
   const setNotify = useSettingsStore((state) => state.setDispatchWatchdogNotify);
-  const queue = useDispatchWatchdogStore((state) => state.queue);
   const [dormantMinutes, setDormantMinutes] = useState(readDormantMinutes);
   const [autonomySettings, setAutonomySettings] = useState<AutonomySettings>(DEFAULT_AUTONOMY_SETTINGS);
-  const now = Date.now();
 
   useEffect(() => {
     void autonomyGetSettings().then(setAutonomySettings).catch(() => undefined);
@@ -150,22 +146,6 @@ export function AutomationTab() {
           </label>
         ))}
       </div>
-
-      <div style={{ ...sectionHeadingStyle, marginTop: 24 }}>{delegationWatchStrings.queueTitle(queue.length)}</div>
-      {queue.length === 0 ? (
-        <div style={{ color: "var(--cmux-text-dim)", fontSize: 12 }}>{delegationWatchStrings.queueEmpty}</div>
-      ) : (
-        <div style={{ display: "grid", gap: 8 }}>
-          {queue.map((item) => (
-            <div key={item.key} style={{ border: "1px solid var(--cmux-border)", borderRadius: 6, padding: "8px 10px", fontSize: 12 }}>
-              <div style={{ fontWeight: 600 }}>{WATCHDOG_KIND_LABELS[item.kind]} — {item.label ?? item.slug ?? item.sessionId ?? delegationWatchStrings.queueUnknownSubject}</div>
-              <div style={{ color: "var(--cmux-text-dim)", marginTop: 3 }}>
-                {delegationWatchStrings.queueContinuing(formatElapsedSince(now, item.since), item.confirmations)}
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
     </div>
   );
 }

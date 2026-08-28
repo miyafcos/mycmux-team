@@ -18,6 +18,7 @@ export { getCurrentSessionEpoch, type FrontendDataBatch };
 
 interface SessionIdArgs { sessionId: string }
 interface WorkspaceIdArgs { workspaceId: string }
+interface WorkspaceScrollbackArgs extends WorkspaceIdArgs { sessionIds: string[] }
 interface PathArgs { path: string }
 interface SourcePathArgs { sourcePath: string }
 interface BundleDirArgs { bundleDir: string }
@@ -36,7 +37,6 @@ interface CreateSessionArgs {
   onData: Channel<ArrayBuffer>;
   cwd: string | null;
   env: Record<string, string> | null;
-  restoreFallbackSessionIds: string[];
 }
 interface AckFrontendDataArgs extends SessionIdArgs { generation: number; seq: number; bytes: number }
 interface SetFrontendVisibleArgs extends SessionIdArgs { visible: boolean }
@@ -305,7 +305,6 @@ export async function createSession(
   onData: (batch: FrontendDataBatch) => void,
   cwd?: string,
   env?: Record<string, string>,
-  restoreFallbackSessionIds?: string[],
 ): Promise<void> {
   const previous = sessionCreateTails.get(sessionId) ?? Promise.resolve();
   const operation = previous.catch(() => {}).then(async () => {
@@ -352,7 +351,6 @@ export async function createSession(
         onData: channel,
         cwd: cwd ?? null,
         env: env ?? null,
-        restoreFallbackSessionIds: restoreFallbackSessionIds ?? [],
       } satisfies CreateSessionArgs);
       attach.commit();
     } catch (err) {
@@ -454,8 +452,8 @@ export async function killSession(sessionId: string): Promise<void> {
   return invoke<void>("kill_session", { sessionId } satisfies SessionIdArgs);
 }
 
-export async function removeWorkspaceScrollback(workspaceId: string): Promise<void> {
-  return invoke<void>("remove_workspace_scrollback", { workspaceId } satisfies WorkspaceIdArgs);
+export async function removeWorkspaceScrollback(workspaceId: string, sessionIds: string[]): Promise<void> {
+  return invoke<void>("remove_workspace_scrollback", { workspaceId, sessionIds } satisfies WorkspaceScrollbackArgs);
 }
 
 export async function discardSessionScrollback(sessionId: string): Promise<void> {
@@ -1140,6 +1138,8 @@ export interface AppSettings {
   ai_provider?: string;
   ai_model?: string;
   ai_enabled?: boolean;
+  auto_pane_naming_enabled?: boolean | null;
+  reply_draft_suggestions_enabled?: boolean | null;
   ailog_usd_jpy_rate?: number;
 }
 
@@ -1152,8 +1152,84 @@ export interface PersistentData {
   active_tab_id?: string | null;
 }
 
-export async function loadPersistentData(): Promise<PersistentData> {
-  return invoke<PersistentData>("load_persistent_data");
+export interface PersistentDataEnvelope {
+  schemaVersion: number;
+  data: PersistentData | null;
+  supported: boolean;
+}
+
+export interface PersistentStorageCommandError {
+  kind: "unsupportedSchema" | "unsupportedPlatform" | "invalidPayloadSchema" | "storage";
+  schemaVersion?: number;
+  message: string;
+}
+
+export type NonRetryablePersistentStorageError =
+  | { kind: "unsupportedSchema"; schemaVersion: number; message: string }
+  | { kind: "invalidPayloadSchema"; schemaVersion: number; message: string }
+  | { kind: "unsupportedPlatform"; message: string };
+
+export function nonRetryablePersistentStorageError(
+  error: unknown,
+): NonRetryablePersistentStorageError | null {
+  if (error === null || typeof error !== "object" || Array.isArray(error)) return null;
+  const candidate = error as Record<string, unknown>;
+  if (typeof candidate.message !== "string") return null;
+  if (candidate.kind === "unsupportedPlatform") {
+    return { kind: candidate.kind, message: candidate.message };
+  }
+  if (
+    (candidate.kind === "unsupportedSchema" || candidate.kind === "invalidPayloadSchema")
+    && typeof candidate.schemaVersion === "number"
+    && Number.isInteger(candidate.schemaVersion)
+    && candidate.schemaVersion >= 0
+  ) {
+    return {
+      kind: candidate.kind,
+      schemaVersion: candidate.schemaVersion,
+      message: candidate.message,
+    };
+  }
+  return null;
+}
+
+export function unsupportedPersistentSchemaVersion(error: unknown): number | null {
+  if (error !== null && typeof error === "object" && !Array.isArray(error)) {
+    const candidate = error as Record<string, unknown>;
+    if (
+      candidate.kind === "unsupportedSchema"
+      && typeof candidate.schemaVersion === "number"
+      && Number.isInteger(candidate.schemaVersion)
+      && candidate.schemaVersion >= 0
+    ) {
+      return candidate.schemaVersion;
+    }
+  }
+  if (typeof error === "string") {
+    const match = /^data\.json schema version (\d+) is not supported by this mycmux build$/.exec(error);
+    if (match) return Number(match[1]);
+  }
+  return null;
+}
+
+export function persistentStorageErrorMessage(error: unknown): string {
+  if (error !== null && typeof error === "object" && !Array.isArray(error)) {
+    const candidate = error as Record<string, unknown>;
+    if (
+      (candidate.kind === "unsupportedSchema"
+        || candidate.kind === "unsupportedPlatform"
+        || candidate.kind === "invalidPayloadSchema"
+        || candidate.kind === "storage")
+      && typeof candidate.message === "string"
+    ) {
+      return candidate.message;
+    }
+  }
+  return error instanceof Error ? error.message : String(error);
+}
+
+export async function loadPersistentData(): Promise<PersistentDataEnvelope> {
+  return invoke<PersistentDataEnvelope>("load_persistent_data");
 }
 
 export async function savePersistentData(data: PersistentData): Promise<void> {

@@ -7,6 +7,16 @@ import {
 const TURN_LIST_MAX_ROWS = 200;
 const MATCH_PREFIX_LENGTH = 80;
 
+/**
+ * The viewport is sitting at the live end of the buffer, so new output keeps
+ * scrolling into view. A refit reflows the wrapped lines and moves `viewportY`
+ * out from under the reader, which is why callers record this *before* fitting
+ * and restore it afterwards.
+ */
+export function viewportIsAtBottom(buffer: { viewportY: number; baseY: number }): boolean {
+  return buffer.viewportY >= buffer.baseY;
+}
+
 export type TurnChipMode = "scroll" | "transcript";
 
 export interface TurnChipState {

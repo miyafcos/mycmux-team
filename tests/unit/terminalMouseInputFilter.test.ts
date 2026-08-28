@@ -47,11 +47,13 @@ function wheelEvent(overrides: Partial<WheelEvent> = {}): WheelEvent {
 }
 
 beforeEach(() => {
+  vi.stubGlobal("document", { documentElement: { dataset: {} } });
   resetFontZoomQueueForTests();
   useThemeStore.setState({ fontSize: 14 });
 });
 
 afterEach(() => {
+  delete document.documentElement.dataset.cmuxGroupingDrag;
   resetFontZoomQueueForTests();
   vi.unstubAllGlobals();
 });
@@ -158,6 +160,21 @@ describe("attachGlobalFontZoom", () => {
 
     expect(requestFrame).not.toHaveBeenCalled();
     expect(useThemeStore.getState().fontSize).toBe(14);
+  });
+
+  it("does not reserve font zoom while a grouping drag is active", () => {
+    const requestFrame = vi.fn();
+    vi.stubGlobal("requestAnimationFrame", requestFrame);
+    const { target, getHandler } = stubWindow();
+    attachGlobalFontZoom(target);
+    document.documentElement.dataset.cmuxGroupingDrag = "1";
+    const event = wheelEvent({ ctrlKey: true });
+
+    getHandler()(event);
+
+    expect(requestFrame).not.toHaveBeenCalled();
+    expect(event.preventDefault).not.toHaveBeenCalled();
+    expect(event.stopPropagation).not.toHaveBeenCalled();
   });
 
   it("detaches the listener it registered", () => {

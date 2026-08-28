@@ -32,9 +32,45 @@ fn session_path(dir: &Path, session_id: &str) -> io::Result<std::path::PathBuf> 
     Ok(dir.join(session_file_name(session_id)?))
 }
 
-pub fn load(dir: &Path, session_id: &str) -> Option<PersistedScrollback> {
-    let path = session_path(dir, session_id).ok()?;
-    let bytes = fs::read(path).ok()?;
+fn is_canonical_uuid(value: &str) -> bool {
+    value.len() == 36
+        && value.bytes().enumerate().all(|(index, byte)| match index {
+            8 | 13 | 18 | 23 => byte == b'-',
+            _ => byte.is_ascii_hexdigit(),
+        })
+}
+
+fn stable_tab_id_from_session_id(session_id: &str) -> Option<&str> {
+    let tab_id_start = session_id.len().checked_sub(36)?;
+    let tab_id = session_id.get(tab_id_start..)?;
+    (session_id.starts_with("pty-")
+        && tab_id_start > 0
+        && session_id.as_bytes().get(tab_id_start - 1) == Some(&b'-')
+        && is_canonical_uuid(tab_id))
+    .then_some(tab_id)
+}
+
+fn scrollback_storage_id(session_id: &str) -> &str {
+    stable_tab_id_from_session_id(session_id).unwrap_or(session_id)
+}
+
+fn unique_legacy_scrollback_path(dir: &Path, tab_id: &str) -> Option<std::path::PathBuf> {
+    let suffix = format!("-{tab_id}.bin");
+    let candidates = fs::read_dir(dir)
+        .ok()?
+        .filter_map(Result::ok)
+        .filter_map(|entry| entry.file_type().ok()?.is_file().then_some(entry))
+        .filter(|entry| {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            name.starts_with("pty-") && name.ends_with(&suffix)
+        })
+        .map(|entry| entry.path())
+        .collect::<Vec<_>>();
+    (candidates.len() == 1).then(|| candidates.into_iter().next()).flatten()
+}
+
+fn parse_persisted_scrollback(bytes: &[u8]) -> Option<PersistedScrollback> {
     if bytes.len() < HEADER_LEN || &bytes[..4] != MAGIC {
         return None;
     }
@@ -66,6 +102,20 @@ pub fn load(dir: &Path, session_id: &str) -> Option<PersistedScrollback> {
     })
 }
 
+pub fn load(dir: &Path, session_id: &str) -> Option<PersistedScrollback> {
+    let storage_id = scrollback_storage_id(session_id);
+    let path = session_path(dir, storage_id).ok()?;
+    if path.exists() {
+        return parse_persisted_scrollback(&fs::read(path).ok()?);
+    }
+
+    let tab_id = stable_tab_id_from_session_id(session_id)?;
+    let legacy_path = unique_legacy_scrollback_path(dir, tab_id)?;
+    let persisted = parse_persisted_scrollback(&fs::read(&legacy_path).ok()?)?;
+    fs::rename(legacy_path, path).ok()?;
+    Some(persisted)
+}
+
 pub fn save(
     dir: &Path,
     session_id: &str,
@@ -73,7 +123,7 @@ pub fn save(
     end_offset: u64,
     data: &[u8],
 ) -> io::Result<()> {
-    let file_name = session_file_name(session_id)?;
+    let file_name = session_file_name(scrollback_storage_id(session_id))?;
     let data_len = u32::try_from(data.len()).map_err(|_| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -113,12 +163,33 @@ pub fn save(
 }
 
 pub fn remove(dir: &Path, session_id: &str) -> io::Result<()> {
-    let path = session_path(dir, session_id)?;
-    match fs::remove_file(path) {
+    let path = session_path(dir, scrollback_storage_id(session_id))?;
+    match fs::remove_file(&path) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error),
+    }?;
+    if path.file_stem().and_then(|stem| stem.to_str()) != Some(session_id) {
+        let legacy_path = session_path(dir, session_id)?;
+        match fs::remove_file(legacy_path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error),
+        }
+    } else {
+        Ok(())
     }
+}
+
+pub fn remove_many<I, S>(dir: &Path, session_ids: I) -> io::Result<()>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    for session_id in session_ids {
+        remove(dir, session_id.as_ref())?;
+    }
+    Ok(())
 }
 
 pub fn remove_prefix(dir: &Path, prefix: &str) -> io::Result<()> {
@@ -142,7 +213,19 @@ pub fn remove_prefix(dir: &Path, prefix: &str) -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
 pub fn gc(dir: &Path, keep: &HashSet<String>) -> io::Result<()> {
+    gc_guarded(dir, keep, || Ok(()))
+}
+
+pub(crate) fn gc_guarded<F>(
+    dir: &Path,
+    keep: &HashSet<String>,
+    mut before_remove: F,
+) -> io::Result<()>
+where
+    F: FnMut() -> io::Result<()>,
+{
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
@@ -159,7 +242,12 @@ pub fn gc(dir: &Path, keep: &HashSet<String>) -> io::Result<()> {
         let Some(session_id) = name.strip_suffix(".bin") else {
             continue;
         };
-        if !keep.contains(session_id) {
+        let is_legacy_live_tab = keep.iter().any(|tab_id| {
+            session_id.starts_with("pty-")
+                && session_id.ends_with(&format!("-{tab_id}"))
+        });
+        if !keep.contains(session_id) && !is_legacy_live_tab {
+            before_remove()?;
             fs::remove_file(entry.path())?;
         }
     }
@@ -184,6 +272,26 @@ pub fn sanitize_ring_head(start_offset: u64, data: &[u8]) -> (u64, &[u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn write_legacy_scrollback_file(
+        dir: &Path,
+        legacy_session_id: &str,
+        start_offset: u64,
+        end_offset: u64,
+        data: &[u8],
+    ) {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(MAGIC);
+        bytes.extend_from_slice(&VERSION.to_le_bytes());
+        bytes.extend_from_slice(&0u16.to_le_bytes());
+        bytes.extend_from_slice(&start_offset.to_le_bytes());
+        bytes.extend_from_slice(&end_offset.to_le_bytes());
+        bytes.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&hash(data).to_le_bytes());
+        bytes.extend_from_slice(data);
+        fs::create_dir_all(dir).unwrap();
+        fs::write(dir.join(session_file_name(legacy_session_id).unwrap()), bytes).unwrap();
+    }
 
     #[test]
     fn round_trip_preserves_offsets_and_data() {
@@ -294,6 +402,32 @@ mod tests {
     }
 
     #[test]
+    fn guarded_gc_checks_immediately_before_every_remove() {
+        let temp = tempfile::tempdir().unwrap();
+        save(temp.path(), "pty-drop-one", 0, 1, b"a").unwrap();
+        save(temp.path(), "pty-drop-two", 0, 1, b"b").unwrap();
+        let mut checks = 0;
+
+        let error = gc_guarded(temp.path(), &HashSet::new(), || {
+            checks += 1;
+            if checks == 2 {
+                return Err(io::Error::other("retention input changed"));
+            }
+            Ok(())
+        })
+        .unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::Other);
+        assert_eq!(checks, 2);
+        let remaining = fs::read_dir(temp.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path().extension().and_then(|value| value.to_str()) == Some("bin"))
+            .count();
+        assert_eq!(remaining, 1);
+    }
+
+    #[test]
     fn remove_prefix_only_removes_matching_scrollback_files() {
         let temp = tempfile::tempdir().unwrap();
         save(temp.path(), "pty-workspace-a", 0, 1, b"a").unwrap();
@@ -305,5 +439,68 @@ mod tests {
         assert!(!temp.path().join("pty-workspace-a.bin").exists());
         assert!(temp.path().join("pty-other-a.bin").exists());
         assert!(temp.path().join("pty-workspace-a.bin.tmp").exists());
+    }
+
+    #[test]
+    fn migrates_five_moved_tab_legacy_files_to_stable_tab_keys() {
+        let temp = tempfile::tempdir().unwrap();
+        let old_workspace = "5231da42-1111-4111-8111-111111111111";
+        let current_workspace = "c30892d0-2222-4222-8222-222222222222";
+        let pane_id = "bb391b49-3333-4333-8333-333333333333";
+        let tab_ids = [
+            "11111111-aaaa-4aaa-8aaa-aaaaaaaaaaa1",
+            "22222222-bbbb-4bbb-8bbb-bbbbbbbbbbb2",
+            "33333333-cccc-4ccc-8ccc-ccccccccccc3",
+            "44444444-dddd-4ddd-8ddd-ddddddddddd4",
+            "55555555-eeee-4eee-8eee-eeeeeeeeeee5",
+        ];
+
+        for (index, tab_id) in tab_ids.iter().enumerate() {
+            let legacy_id = format!("pty-{old_workspace}-{pane_id}-{tab_id}");
+            write_legacy_scrollback_file(
+                temp.path(),
+                &legacy_id,
+                index as u64,
+                index as u64 + 1,
+                &[index as u8],
+            );
+            let current_id = format!("pty-{current_workspace}-{pane_id}-{tab_id}");
+
+            let loaded = load(temp.path(), &current_id).unwrap();
+            assert_eq!(loaded.data, vec![index as u8]);
+            assert!(temp.path().join(format!("{tab_id}.bin")).exists());
+            assert!(!temp.path().join(format!("{legacy_id}.bin")).exists());
+        }
+    }
+
+    #[test]
+    fn save_uses_the_stable_tab_key_for_a_composite_session_id() {
+        let temp = tempfile::tempdir().unwrap();
+        let tab_id = "11111111-aaaa-4aaa-8aaa-aaaaaaaaaaa1";
+        let session_id = format!(
+            "pty-5231da42-1111-4111-8111-111111111111-bb391b49-3333-4333-8333-333333333333-{tab_id}"
+        );
+
+        save(temp.path(), &session_id, 0, 1, b"a").unwrap();
+
+        assert!(temp.path().join(format!("{tab_id}.bin")).exists());
+        assert!(!temp.path().join(format!("{session_id}.bin")).exists());
+    }
+
+    #[test]
+    fn ambiguous_legacy_scrollback_files_do_not_migrate() {
+        let temp = tempfile::tempdir().unwrap();
+        let tab_id = "11111111-aaaa-4aaa-8aaa-aaaaaaaaaaa1";
+        let old_a = format!(
+            "pty-5231da42-1111-4111-8111-111111111111-bb391b49-3333-4333-8333-333333333333-{tab_id}"
+        );
+        let old_b = format!(
+            "pty-c30892d0-2222-4222-8222-222222222222-bb391b49-3333-4333-8333-333333333333-{tab_id}"
+        );
+        write_legacy_scrollback_file(temp.path(), &old_a, 0, 1, b"a");
+        write_legacy_scrollback_file(temp.path(), &old_b, 0, 1, b"b");
+
+        assert!(load(temp.path(), &old_b).is_none());
+        assert!(!temp.path().join(format!("{tab_id}.bin")).exists());
     }
 }

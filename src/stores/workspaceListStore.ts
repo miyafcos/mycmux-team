@@ -9,11 +9,22 @@ import {
   rowHeightsMatch,
 } from "../lib/layoutMetrics";
 import { normalizeWorkspaceColor } from "../lib/workspaceColors";
+import {
+  PersistentLayoutValidationError,
+  persistentLayoutEquals,
+} from "../lib/persistentLayoutProjection";
 import { useUiStore } from "./uiStore";
 import { applyStructuralActivation } from "../lib/focusController";
 import { useToastStore } from "./toastStore";
 import { bump as bumpPaintStat } from "../lib/paintStats";
 import { usePetSettingsStore } from "./petSettingsStore";
+import { buildWorkspaceRecord } from "./workspaceFactory";
+import {
+  assertExternalLayoutMutationAllowed,
+  type LayoutMutationSource,
+} from "./groupingRuntimeStore";
+import { workspaceGroupingMutationCapability } from "./workspaceGroupingMutationCapability.internal";
+import type { GroupingSelectionState } from "../components/layout/tabGroupingEngine";
 
 function workspaceContainsPane(workspace: Workspace | undefined, paneId: string | null): boolean {
   return Boolean(paneId && workspace?.panes.some((pane) => pane.id === paneId));
@@ -193,12 +204,66 @@ interface CreateWorkspaceOptions {
   pet?: string;
 }
 
+function resolveNewWorkspacePet(options?: CreateWorkspaceOptions): string | undefined {
+  const petSettings = usePetSettingsStore.getState();
+  const enabledPets = petSettings.pets.filter((pet) => !petSettings.petDisabled.includes(pet.id));
+  const fallbackPet = enabledPets[0]?.id ?? "clawd";
+  const generatedPet = petSettings.petNewWorkspaceMode === "choose"
+    ? undefined
+    : petSettings.petNewWorkspaceMode === "fixed"
+      ? (petSettings.petFixedId && enabledPets.some((pet) => pet.id === petSettings.petFixedId)
+        ? petSettings.petFixedId
+        : fallbackPet)
+      : enabledPets[Math.floor(Math.random() * enabledPets.length)]?.id ?? fallbackPet;
+  return options && Object.prototype.hasOwnProperty.call(options, "pet") ? options.pet : generatedPet;
+}
+
+type WorkspaceListSet = (
+  partial: WorkspaceListState | Partial<WorkspaceListState> | ((
+    state: WorkspaceListState,
+  ) => WorkspaceListState | Partial<WorkspaceListState>),
+) => void;
+
+function persistentLayoutsEqualAtStoreBoundary(
+  current: readonly Workspace[],
+  next: readonly Workspace[],
+): boolean {
+  try {
+    return persistentLayoutEquals(current, next);
+  } catch (error) {
+    if (!(error instanceof PersistentLayoutValidationError)) throw error;
+    console.warn(`[workspaceListStore] ${error.message}`);
+    return false;
+  }
+}
+
+function commitLayoutMutation(
+  set: WorkspaceListSet,
+  mutate: (state: WorkspaceListState) => Partial<WorkspaceListState>,
+  source: LayoutMutationSource = "workspace-action",
+  authorizedInternalMutation = false,
+): void {
+  assertExternalLayoutMutationAllowed(source, authorizedInternalMutation);
+  set((state) => {
+    const patch = mutate(state);
+    if (patch === state) return state;
+    const nextWorkspaces = patch.workspaces ?? state.workspaces;
+    if (nextWorkspaces === state.workspaces) return patch;
+    if (persistentLayoutsEqualAtStoreBoundary(state.workspaces, nextWorkspaces)) return patch;
+    return {
+      ...patch,
+      layoutRevision: (state.layoutRevision ?? 0) + 1,
+    };
+  });
+}
+
 /**
  * Workspace List Store - Manages workspace CRUD and active selection
  * Separated from layout/panes to minimize re-renders
  */
 interface WorkspaceListState {
   workspaces: Workspace[];
+  layoutRevision: number;
   activeWorkspaceId: string | null;
   lastActivePaneByWorkspace: Record<string, string>;
 
@@ -236,7 +301,17 @@ interface WorkspaceListState {
     resetLayoutMetrics?: boolean,
   ) => void;
   /** Atomic whole-layout replacement for a single layout mutation transaction. */
-  _replaceWorkspaces: (workspaces: Workspace[]) => void;
+  _replaceWorkspaces: (
+    workspaces: Workspace[],
+    source?: LayoutMutationSource,
+    capability?: unknown,
+  ) => void;
+  _restoreGroupingLayout: (
+    workspaces: Workspace[],
+    selection: GroupingSelectionState,
+    source: LayoutMutationSource,
+    capability?: unknown,
+  ) => void;
 
   /**
    * Sync live agent session metadata (from Rust pty_metadata event) into
@@ -252,6 +327,7 @@ interface WorkspaceListState {
 
 export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
   workspaces: [],
+  layoutRevision: 0,
   activeWorkspaceId: null,
   lastActivePaneByWorkspace: {},
 
@@ -268,18 +344,7 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
     const previousActiveWorkspaceId = get().activeWorkspaceId;
     const id = options?.id ?? uuid();
     const normalizedSplitColumns = normalizeSplitColumns(splitColumns, panes.map((pane) => pane.id));
-    const petSettings = usePetSettingsStore.getState();
-    const enabledPets = petSettings.pets.filter((pet) => !petSettings.petDisabled.includes(pet.id));
-    const fallbackPet = enabledPets[0]?.id ?? "clawd";
-    const generatedPet = petSettings.petNewWorkspaceMode === "choose"
-      ? undefined
-      : petSettings.petNewWorkspaceMode === "fixed"
-        ? (petSettings.petFixedId && enabledPets.some((pet) => pet.id === petSettings.petFixedId)
-          ? petSettings.petFixedId
-          : fallbackPet)
-        : enabledPets[Math.floor(Math.random() * enabledPets.length)]?.id ?? fallbackPet;
-
-    const workspace: Workspace = {
+    const workspace = buildWorkspaceRecord({
       id,
       name,
       gridTemplateId,
@@ -287,17 +352,13 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
       splitColumns: normalizedSplitColumns,
       status: "running",
       createdAt: options?.createdAt ?? Date.now(),
-      color: normalizeWorkspaceColor(options?.color),
-      pet: options && Object.prototype.hasOwnProperty.call(options, "pet") ? options.pet : generatedPet,
-      columnWidths: columnWidthsMatch(normalizedSplitColumns, options?.columnWidths)
-        ? options?.columnWidths
-        : undefined,
-      rowHeightsPerCol: rowHeightsMatch(normalizedSplitColumns, options?.rowHeightsPerCol)
-        ? options?.rowHeightsPerCol
-        : undefined,
-    };
+      color: options?.color,
+      pet: resolveNewWorkspacePet(options),
+      columnWidths: options?.columnWidths,
+      rowHeightsPerCol: options?.rowHeightsPerCol,
+    });
 
-    set((state) => ({
+    commitLayoutMutation(set, (state) => ({
       workspaces: [...state.workspaces, workspace],
       activeWorkspaceId: options?.activate === false ? state.activeWorkspaceId : id,
     }));
@@ -315,7 +376,7 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
 
   removeWorkspace: (id) => {
     const previousActiveWorkspaceId = get().activeWorkspaceId;
-    set((state) => {
+    commitLayoutMutation(set, (state) => {
       const remaining = state.workspaces.filter((w) => w.id !== id);
       const newActiveId =
         state.activeWorkspaceId === id
@@ -332,6 +393,7 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
   },
 
   setActiveWorkspace: (id) => {
+    assertExternalLayoutMutationAllowed("workspace-action");
     const state = get();
     const workspace = state.workspaces.find((w) => w.id === id);
     if (workspace && state.activeWorkspaceId !== id) {
@@ -367,7 +429,7 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
   },
 
   renameWorkspace: (id, name) => {
-    set((state) => ({
+    commitLayoutMutation(set, (state) => ({
       workspaces: state.workspaces.map((w) =>
         w.id === id ? { ...w, name } : w
       ),
@@ -378,7 +440,7 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
     // Normalized on the way in so an unknown hex (hand-edited data.json, a
     // retired palette entry) can never reach the chrome.
     const normalized = normalizeWorkspaceColor(color);
-    set((state) => ({
+    commitLayoutMutation(set, (state) => ({
       workspaces: state.workspaces.map((w) =>
         w.id === id ? { ...w, color: normalized } : w
       ),
@@ -386,13 +448,13 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
   },
 
   setWorkspacePet: (id, pet) => {
-    set((state) => ({
+    commitLayoutMutation(set, (state) => ({
       workspaces: state.workspaces.map((workspace) => workspace.id === id ? { ...workspace, pet } : workspace),
     }));
   },
 
   setWorkspaceStatus: (id, status) => {
-    set((state) => ({
+    commitLayoutMutation(set, (state) => ({
       workspaces: state.workspaces.map((w) =>
         w.id === id ? { ...w, status } : w
       ),
@@ -400,7 +462,7 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
   },
 
   reorderWorkspaces: (fromIndex, toIndex) => {
-    set((state) => {
+    commitLayoutMutation(set, (state) => {
       if (fromIndex === toIndex) return state;
       const next = [...state.workspaces];
       const [moved] = next.splice(fromIndex, 1);
@@ -410,7 +472,7 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
   },
 
   setWorkspaceLayoutMetrics: (id, columnWidths, rowHeightsPerCol) => {
-    set((state) => ({
+    commitLayoutMutation(set, (state) => ({
       workspaces: state.workspaces.map((w) => {
         if (w.id !== id) return w;
         const columns = fallbackColumns(w.splitColumns, w.panes.map((pane) => pane.id));
@@ -431,7 +493,7 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
       beforeState.activeWorkspaceId,
       activeSessionId,
     );
-    set((state) => ({
+    commitLayoutMutation(set, (state) => ({
       workspaces: state.workspaces.map((w) => {
         if (w.id !== id) return w;
         const paneIds = panes.map((pane) => pane.id);
@@ -468,13 +530,28 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
     }
   },
 
-  _replaceWorkspaces: (workspaces) => {
-    set({ workspaces });
+  _replaceWorkspaces: (workspaces, source = "workspace-action", capability) => {
+    commitLayoutMutation(
+      set,
+      () => ({ workspaces }),
+      source,
+      capability === workspaceGroupingMutationCapability,
+    );
+  },
+
+  _restoreGroupingLayout: (workspaces, selection, source, capability) => {
+    commitLayoutMutation(set, () => ({
+      workspaces: structuredClone(workspaces),
+      activeWorkspaceId: selection.activeWorkspaceId,
+      lastActivePaneByWorkspace: {
+        ...selection.lastActivePaneByWorkspace,
+      },
+    }), source, capability === workspaceGroupingMutationCapability);
   },
 
   setPaneAgentSessionFromMetadata: (sessionId, payload) => {
     let result: PaneAgentSessionUpdateResult = { accepted: true, applied: false };
-    set((state) => {
+    commitLayoutMutation(set, (state) => {
       if (payload !== null) {
         const target = findAgentSessionTarget(state.workspaces, sessionId);
         const mergedKind = payload.agentKind ?? target?.agentKind;
@@ -560,7 +637,7 @@ export const useWorkspaceListStore = create<WorkspaceListState>((set, get) => ({
       });
       result = { accepted: true, applied: mutated };
       return mutated ? { workspaces } : state;
-    });
+    }, "metadata");
     if (result.conflict) {
       reportLiveAgentSessionConflict(result.conflict);
     } else {

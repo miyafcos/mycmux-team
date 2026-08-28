@@ -199,12 +199,12 @@ def test_auto_pane_naming_never_closes_tabs_or_overwrites_human_labels() -> None
     # itself, and only to unnamed tabs.
     assert "名前のないタブの画面末尾${TAB_NAMING_TAIL_LINES}行・作業フォルダ・ペイン構成を ${target} に送って名前を付けます（自動で適用・元に戻せます）" in sweep_source
     # There is no panel to open first, so the disclosure sits by the switch.
-    assert 'formatSweepAiNote("naming"' in ai_tab
+    assert "aiSettingsStrings.features.autoPaneNaming.disclosure" in ai_tab
 
     # The switch itself is persisted and defaults on.
     assert "autoPaneNamingEnabled" in settings_store
     assert "setAutoPaneNamingEnabled" in settings_store
-    assert "autoPaneNamingStrings" in ai_tab
+    assert "aiSettingsStrings.features.autoPaneNaming" in ai_tab
 
 
 def test_grouping_mode_is_wired_without_closing_tabs() -> None:
@@ -227,5 +227,11 @@ def test_grouping_mode_is_wired_without_closing_tabs() -> None:
     assert "TAB_GROUPING_ENTRY_ENABLED = false" in button
     assert "tabGroupingStrings.buttonLabel" in button
     assert 'buttonLabel: "タブ再配置"' in strings
-    assert "_replaceWorkspaces" in grouping
+    assert "deps.replaceWorkspaces(" in read("src/components/layout/tabGroupingEngine.ts") and "_restoreGroupingLayout(" in read("src/components/layout/groupingStoreAdapter.ts")
     assert "moveTabToPane" not in grouping
+    engine = read("src/components/layout/tabGroupingEngine.ts")
+    adapter = read("src/components/layout/groupingStoreAdapter.ts")
+    assert "pane.close_tab" not in engine
+    assert "pane.close_tab" not in adapter
+    assert "moveTabToPane" not in engine
+    assert "moveTabToPane" not in adapter

@@ -795,7 +795,7 @@ async fn fetch_grok_profile(
         Ok(tokens) => tokens,
         Err(_) => return FetchResult { usage: profile_usage(row, UsageRowState::Error, Some(ERROR_SNAPSHOT_UNAVAILABLE), None) },
     };
-    let mut refreshed = false;
+    let mut refreshed_once = false;
     let mut access_token = tokens.access_token.clone();
     loop {
         stagger_before_fetch(fetch_count).await;
@@ -811,10 +811,10 @@ async fn fetch_grok_profile(
                 cooldown_key,
             ).await,
             Err((status, detail)) => {
-                if !matches!(status, Some(401) | Some(403)) || row.is_active || refreshed {
+                if !should_retry_grok_after_unauthorized(status, refreshed_once) {
                     return usage_fetch_failure(app, state, row, cooldown_key, status, &detail).await;
                 }
-                refreshed = true;
+                refreshed_once = true;
                 access_token = match refresh_grok_snapshot(
                     app, state, base, row, &tokens, cooldown_key, fetch_count,
                 ).await {
@@ -823,6 +823,39 @@ async fn fetch_grok_profile(
                 };
             }
         }
+    }
+}
+
+/// Unlike claude and codex -- whose CLIs are used daily and rotate their own
+/// tokens -- grok's access token expires after a fixed six hours and its single
+/// registered profile always matches the live login. Gating the retry on
+/// `is_active`, as those two do, would mean grok never refreshed at all, so the
+/// flag is deliberately not consulted here.
+fn should_retry_grok_after_unauthorized(status: Option<u16>, already_refreshed: bool) -> bool {
+    matches!(status, Some(401) | Some(403)) && !already_refreshed
+}
+
+fn should_persist_grok_snapshot(new_refresh_token: Option<&str>) -> bool {
+    new_refresh_token.is_some()
+}
+
+/// Where a refreshed grok token pair has to land to be read back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GrokTokenDestination {
+    /// The live `auth.json`: an active row's tokens are read from there, and
+    /// the CLI shares the file.
+    LiveAuth,
+    /// The account snapshot, which is what an inactive registered row reads.
+    Snapshot,
+}
+
+/// Mirrors how `get_account_usage` picks the text it reads the tokens *from*,
+/// so a refreshed pair always lands in the file the next round will read.
+fn grok_token_destination(is_active: bool, registered: bool) -> GrokTokenDestination {
+    if is_active || !registered {
+        GrokTokenDestination::LiveAuth
+    } else {
+        GrokTokenDestination::Snapshot
     }
 }
 
@@ -836,23 +869,62 @@ async fn refresh_grok_snapshot(
     fetch_count: &mut usize,
 ) -> Result<String, FetchResult> {
     match live_identity_check(row) {
-        LiveIdentityCheck::Active => return Err(FetchResult { usage: profile_usage(row, UsageRowState::WaitForCli, Some(ERROR_TOKEN_EXPIRED_ACTIVE), None) }),
+        LiveIdentityCheck::Active | LiveIdentityCheck::Inactive => {}
         LiveIdentityCheck::Unknown => return Err(FetchResult { usage: profile_usage(row, UsageRowState::Error, Some(ERROR_SNAPSHOT_UNAVAILABLE), None) }),
-        LiveIdentityCheck::Inactive => {}
     }
     stagger_before_fetch(fetch_count).await;
     let refreshed = match refresh::refresh_grok(&state.http, &tokens.refresh_token, &tokens.client_id).await {
         Ok(value) => value,
         Err(error) => return Err(refresh_failure(app, state, row, cooldown_key, error).await),
     };
-    let next_access = refreshed.access_token.clone();
+    // Nothing rotated: the token on disk is still the one to refresh from next
+    // time, so there is nothing to write and the fresh access token answers
+    // this round from memory.
+    if !should_persist_grok_snapshot(refreshed.refresh_token.as_deref()) {
+        return Ok(refreshed.access_token);
+    }
+    match grok_token_destination(row.is_active, row.registered) {
+        GrokTokenDestination::LiveAuth => {
+            write_grok_live_tokens(&tokens.refresh_token, &refreshed).await;
+            Ok(refreshed.access_token)
+        }
+        GrokTokenDestination::Snapshot => {
+            let next_access = refreshed.access_token.clone();
+            let next_refresh = refreshed.refresh_token.clone();
+            match write_snapshot(base, row, &tokens.refresh_token, move |text| {
+                credentials::grok_auth_with(text, &next_access, next_refresh.as_deref())
+            }).await {
+                SnapshotWrite::Applied | SnapshotWrite::Conflict => Ok(refreshed.access_token),
+                SnapshotWrite::Unavailable => Err(FetchResult { usage: profile_usage(row, UsageRowState::Error, Some(ERROR_SNAPSHOT_UNAVAILABLE), None) }),
+            }
+        }
+    }
+}
+
+/// Best-effort write of a rotated pair into the CLI's own `auth.json`.
+///
+/// Failure here is not failure of the fetch: the access token is already in
+/// hand and answers this round either way. Losing the write only means the next
+/// round refreshes again, which is what happened before this path existed.
+async fn write_grok_live_tokens(
+    expected_refresh_token: &str,
+    refreshed: &refresh::RefreshedGrok,
+) {
+    let expected = expected_refresh_token.to_string();
+    let access = refreshed.access_token.clone();
     let next_refresh = refreshed.refresh_token.clone();
-    match write_snapshot(base, row, &tokens.refresh_token, move |text| {
-        credentials::grok_auth_with(text, &next_access, next_refresh.as_deref())
-    }).await {
-        SnapshotWrite::Applied => Ok(refreshed.access_token),
-        SnapshotWrite::Conflict => Err(FetchResult { usage: profile_usage(row, UsageRowState::Error, Some(ERROR_SNAPSHOT_CONFLICT), None) }),
-        SnapshotWrite::Unavailable => Err(FetchResult { usage: profile_usage(row, UsageRowState::Error, Some(ERROR_SNAPSHOT_UNAVAILABLE), None) }),
+    let outcome = tokio::task::spawn_blocking(move || {
+        let paths = GrokPaths::resolve()?;
+        grok::update_live_tokens(&paths, &expected, &access, next_refresh.as_deref())
+    })
+    .await;
+    match outcome {
+        Ok(Ok(grok::LiveTokenWrite::Applied)) => {}
+        Ok(Ok(grok::LiveTokenWrite::Conflict)) => {
+            eprintln!("[usage] grok auth.json rotated by the CLI first; keeping its tokens");
+        }
+        Ok(Err(error)) => eprintln!("[usage] grok auth.json update skipped: {error}"),
+        Err(error) => eprintln!("[usage] grok auth.json update panicked: {error}"),
     }
 }
 
@@ -1407,6 +1479,50 @@ mod tests {
                 status, false, false, true, false
             ));
         }
+    }
+
+    // grok's single profile is always the live one, so a retry gated on
+    // is_active -- the rule claude and codex use -- would never fire and the
+    // windows would stay empty until the next manual `grok login`.
+    #[test]
+    fn grok_retries_where_claude_and_codex_wait_for_the_cli() {
+        assert!(should_retry_grok_after_unauthorized(Some(401), false));
+        assert!(should_retry_grok_after_unauthorized(Some(403), false));
+        assert!(!should_retry_grok_after_unauthorized(Some(401), true));
+        for status in [None, Some(400), Some(429), Some(500)] {
+            assert!(!should_retry_grok_after_unauthorized(status, false));
+        }
+
+        assert!(!should_retry_claude_after_unauthorized(
+            Some(401),
+            true,
+            false
+        ));
+        assert!(!should_retry_codex_after_unauthorized(
+            Some(401),
+            true,
+            false,
+            true,
+            false
+        ));
+    }
+
+    // An active row reads its tokens from auth.json, so a rotated token written
+    // to the snapshot instead would never be read back -- by mycmux or the CLI.
+    #[test]
+    fn grok_rotated_tokens_follow_the_file_the_row_reads() {
+        // Active, and live-only rows that have no snapshot to read: both take
+        // their tokens from auth.json, so both must write back there.
+        assert_eq!(grok_token_destination(true, true), GrokTokenDestination::LiveAuth);
+        assert_eq!(grok_token_destination(true, false), GrokTokenDestination::LiveAuth);
+        assert_eq!(grok_token_destination(false, false), GrokTokenDestination::LiveAuth);
+        assert_eq!(grok_token_destination(false, true), GrokTokenDestination::Snapshot);
+    }
+
+    #[test]
+    fn grok_snapshot_persistence_requires_rotated_refresh_token() {
+        assert!(!should_persist_grok_snapshot(None));
+        assert!(should_persist_grok_snapshot(Some("rotated-refresh-token")));
     }
 
     #[test]

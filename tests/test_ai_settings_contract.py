@@ -1,12 +1,4 @@
-"""Wiring contract for the background-AI provider/model setting.
-
-The setting lives in data.json because every consumer of it is in Rust
-(commands/tab_sweep.rs, ailog/summarize.rs, ailog/digest.rs). That round trip
-has three links a refactor can silently break without failing a type check:
-the snapshot builder, the two hydrate paths, and the markDirty subscription.
-A missing subscription in particular fails invisibly -- the UI accepts the
-change and the value is gone after a restart.
-"""
+"""Contracts for the background-AI provider/model settings and UI."""
 
 from __future__ import annotations
 
@@ -26,34 +18,53 @@ def assert_snippets(relative_path: str, snippets: list[str]) -> None:
         assert snippet in text, f"Missing snippet in {relative_path}: {snippet}"
 
 
-def test_settings_dialog_exposes_the_ai_tab() -> None:
+def test_settings_dialog_separates_ai_and_automation_tabs() -> None:
     assert_snippets(
         "src/components/settings/SettingsDialog.tsx",
         [
             '| "ai"',
+            '| "automation"',
             '{ id: "ai", label: aiSettingsStrings.tabLabel }',
+            '{ id: "automation", label: aiSettingsStrings.automationTabLabel }',
             'activeTab === "ai" && <AiTab />',
+            'activeTab === "automation" && <AutomationTab />',
         ],
     )
-    dialog = read_repo_text("src/components/settings/SettingsDialog.tsx")
-    assert '"automation"' not in dialog
-    assert "AutomationTab" not in dialog
 
 
-def test_ai_tab_combines_ai_watch_and_reply_draft_sections() -> None:
+def test_ai_tab_lists_the_seven_declared_features() -> None:
     text = read_repo_text("src/components/settings/tabs/AiTab.tsx")
-    for snippet in (
-        '<AutomationTab />',
-        '返信案の先回り',
-        "data-ai-reply-draft-placeholder",
-        "replyDraftSuggestionsEnabled",
-        "setReplyDraftSuggestionsEnabled",
-    ):
-        assert snippet in text, f"Missing combined settings section: {snippet}"
-    assert 'checked={replyDraftSuggestionsEnabled}' in text
-    assert 'title: "バックグラウンド AI"' in read_repo_text(
-        "src/components/settings/settingsStrings.ts"
+    strings = read_repo_text("src/components/settings/settingsStrings.ts")
+    expected_copy = (
+        "AI機能を有効にする",
+        "オフにすると下の機能がすべて止まります",
+        "使用する AI",
+        "モデル",
+        "カスタム…",
+        "この設定で動く機能",
+        "自動",
+        "ボタンで実行",
+        "タブの自動命名",
+        "画面末尾14行・作業フォルダ・ペイン構成を送ります",
+        "返信案の準備",
+        "ダッシュボードの会話末尾を送ります",
+        "報告インボックスの要約",
+        "報告本文を送ります",
+        "タブ整理のAI判定",
+        "各タブの画面末尾8行と作業フォルダを送ります",
+        "ailog セッション要約",
+        "セッションログ全文を送ります（トークン消費が大きい機能です）",
+        "ailog 一括要約",
+        "選択したセッションのログを順に送ります",
+        "タブ再配置（準備中）",
+        "監査完了まで利用できません",
     )
+    for snippet in expected_copy:
+        assert snippet in strings, f"Missing approved copy: {snippet}"
+    assert "AutomationTab" not in text
+    assert 'checked={replyDraftSuggestionsEnabled}' in text
+    assert 'checked={autoPaneNamingEnabled}' in text
+    assert "unavailable" in text
 
 
 def test_watchdog_settings_keep_the_existing_store_keys_and_setters() -> None:
@@ -70,22 +81,31 @@ def test_watchdog_settings_keep_the_existing_store_keys_and_setters() -> None:
         assert snippet in text, f"Watchdog store contract changed: {snippet}"
 
 
-def test_reply_draft_setting_is_frontend_opt_in() -> None:
-    text = read_repo_text("src/stores/settingsStore.ts")
-    for snippet in (
-        "replyDraftSuggestionsEnabled: boolean",
-        "replyDraftSuggestionsEnabled: false",
-        "setReplyDraftSuggestionsEnabled",
-    ):
-        assert snippet in text, f"Missing reply-draft opt-in setting: {snippet}"
+def test_ai_feature_flags_use_option_semantics_with_approved_defaults() -> None:
+    storage = read_repo_text("src-tauri/src/db/storage.rs")
+    ipc = read_repo_text("src/lib/ipc.ts")
+    ai_store = read_repo_text("src/stores/aiSettingsStore.ts")
+
+    for field in ("auto_pane_naming_enabled", "reply_draft_suggestions_enabled"):
+        assert f"pub {field}: Option<bool>" in storage
+        assert f"{field}?: boolean | null" in ipc
+    assert "auto_pane_naming_enabled: None" in storage
+    assert "reply_draft_suggestions_enabled: None" in storage
+    assert "DEFAULT_AUTO_PANE_NAMING_ENABLED = true" in ai_store
+    assert "DEFAULT_REPLY_DRAFT_SUGGESTIONS_ENABLED = false" in ai_store
 
 
-def test_ai_tab_uses_a_free_entry_combobox() -> None:
-    # Preset list plus free entry: a plain <select> would make any model the
-    # catalog has not heard of unreachable.
+def test_ai_tab_uses_provider_bound_selects_with_a_custom_escape() -> None:
     assert_snippets(
         "src/components/settings/tabs/AiTab.tsx",
-        ['list={MODEL_LIST_ID}', "<datalist id={MODEL_LIST_ID}>"],
+        [
+            "<select",
+            "AI_PROVIDERS.map",
+            "def.presets.map",
+            "CUSTOM_MODEL_VALUE",
+            "customModelMode",
+            'aria-label={aiSettingsStrings.customModelLabel}',
+        ],
     )
 
 
@@ -125,17 +145,33 @@ def test_defaults_agree_across_the_rust_typescript_boundary() -> None:
 
 def test_ai_settings_round_trip_through_data_json() -> None:
     text = read_repo_text("src/components/layout/SocketListener.tsx")
-    for snippet in ("ai_provider: aiSettings.aiProvider", "ai_model: aiSettings.aiModel", "ai_enabled: aiSettings.aiEnabled"):
+    for snippet in (
+        "ai_provider: aiSettings.aiProvider",
+        "ai_model: aiSettings.aiModel",
+        "ai_enabled: aiSettings.aiEnabled",
+        "auto_pane_naming_enabled: aiSettings.persistedAutoPaneNamingEnabled",
+        "reply_draft_suggestions_enabled: aiSettings.persistedReplyDraftSuggestionsEnabled",
+    ):
         assert snippet in text, f"buildSnapshot does not persist {snippet}"
 
-    # Leader boot and child-window boot are separate hydrate paths.
-    assert text.count("hydrateAiSettings({") == 2, (
-        "expected hydrateAiSettings on both the leader and the child-window path"
+    # Leader and child-window boot both pass through the shared migration-aware helper.
+    assert text.count("hydrateAiSettingsFromDataJson(") == 3, (
+        "expected one helper definition plus leader and child-window hydrate calls"
     )
 
     # Without this subscription the dialog accepts edits that are never saved.
     assert "useAiSettingsStore.subscribe(" in text, "missing markDirty subscription"
     assert "unsubAi()" in text, "markDirty subscription is never cleaned up"
+
+
+def test_watchdog_notification_control_lives_only_in_automation() -> None:
+    automation = read_repo_text("src/components/settings/tabs/AutomationTab.tsx")
+    notifications = read_repo_text("src/components/settings/tabs/NotificationsLayoutTab.tsx")
+
+    assert "dispatchWatchdogNotify" in automation
+    assert "setDispatchWatchdogNotify" in automation
+    assert "dispatchWatchdogNotify" not in notifications
+    assert "setDispatchWatchdogNotify" not in notifications
 
 
 def test_backend_owned_settings_survive_a_snapshot_save() -> None:

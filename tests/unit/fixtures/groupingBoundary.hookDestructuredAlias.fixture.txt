@@ -1,0 +1,4 @@
+import { useWorkspaceListStore } from "../stores/workspaceListStore";
+
+const { _restoreGroupingLayout } = useWorkspaceListStore();
+_restoreGroupingLayout(undefined as never);

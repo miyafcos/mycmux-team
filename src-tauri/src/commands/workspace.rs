@@ -1,19 +1,37 @@
 use tauri::AppHandle;
 
 use crate::commands::terminal::can_restore_agent_session;
-use crate::db::storage::{self, PaneConfig, PaneTabConfig, PersistentData};
+use crate::db::storage::{self, PaneConfig, PaneTabConfig, PersistentData, PersistentDataEnvelope};
 
 #[tauri::command(async)]
-pub fn load_persistent_data(app_handle: AppHandle) -> Result<PersistentData, String> {
-    let mut data = storage::load(&app_handle)?;
-    sanitize_agent_sessions(&mut data);
-    Ok(data)
+pub fn load_persistent_data(app_handle: AppHandle) -> Result<PersistentDataEnvelope, String> {
+    load_persistent_data_for(&app_handle)
+}
+
+fn load_persistent_data_for<T: storage::PersistentDataTarget + ?Sized>(
+    target: &T,
+) -> Result<PersistentDataEnvelope, String> {
+    let mut envelope = storage::load_envelope(target)?;
+    if let Some(data) = envelope.data.as_mut() {
+        sanitize_agent_sessions(data);
+    }
+    Ok(envelope)
 }
 
 #[tauri::command(async)]
-pub fn save_persistent_data(app_handle: AppHandle, mut data: PersistentData) -> Result<(), String> {
-    data.schema_version = 1;
-    storage::update(&app_handle, move |disk| merge_persistent_data(disk, data))
+pub fn save_persistent_data(
+    app_handle: AppHandle,
+    data: PersistentData,
+) -> Result<(), storage::PersistentStorageError> {
+    save_persistent_data_for(&app_handle, data)
+}
+
+fn save_persistent_data_for<T: storage::PersistentDataTarget + ?Sized>(
+    target: &T,
+    mut data: PersistentData,
+) -> Result<(), storage::PersistentStorageError> {
+    data.schema_version = storage::CURRENT_SCHEMA_VERSION;
+    storage::update(target, move |disk| merge_persistent_data(disk, data))
 }
 
 fn merge_persistent_data(disk: &mut PersistentData, data: PersistentData) {
@@ -28,12 +46,14 @@ fn merge_persistent_data(disk: &mut PersistentData, data: PersistentData) {
     // Frontend settings payload has no store for this; dedicated ailog
     // get/set commands own it. Preserve across workspace saves.
     let ailog_usd_jpy_rate = disk.settings.ailog_usd_jpy_rate;
+    let ailog_mirror_full_text_root = disk.settings.ailog_mirror_full_text_root.clone();
     disk.settings = data.settings;
     disk.settings.remote_bind_all = remote_bind_all;
     disk.settings.remote_enabled = remote_enabled;
     disk.settings.dirty_save_mode = dirty_save_mode;
     disk.settings.osc7_tracking_enabled = osc7_tracking_enabled;
     disk.settings.ailog_usd_jpy_rate = ailog_usd_jpy_rate;
+    disk.settings.ailog_mirror_full_text_root = ailog_mirror_full_text_root;
     disk.active_workspace_id = data.active_workspace_id;
     disk.active_pane_id = data.active_pane_id;
     disk.active_tab_id = data.active_tab_id;
@@ -158,6 +178,67 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
 
+    struct SchemaLatchReset;
+
+    impl Drop for SchemaLatchReset {
+        fn drop(&mut self) {
+            storage::reset_quarantined_schema_for_test();
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn command_save_lifecycle_preserves_future_schema_bytes() {
+        use sha2::{Digest, Sha256};
+
+        let _serial = storage::persistence_test_lock();
+        storage::reset_quarantined_schema_for_test();
+        let _reset = SchemaLatchReset;
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("data.json");
+        let original = include_bytes!("../../../tests/fixtures/data_json_schema_999_canary.json");
+        std::fs::write(&path, original).unwrap();
+        let original_hash = Sha256::digest(original);
+
+        let envelope = load_persistent_data_for(path.as_path()).unwrap();
+        assert!(!envelope.supported);
+        assert_eq!(envelope.schema_version, 999);
+        // Exercise both production rejection layers in one lifecycle: the
+        // first save rediscovers the late-swapped file in storage::update;
+        // the later saves are stopped by the process latch it sets.
+        storage::reset_quarantined_schema_for_test();
+        for (index, phase) in ["debounced autosave", "shutdown flush", "retry"]
+            .into_iter()
+            .enumerate()
+        {
+            let error = save_persistent_data_for(path.as_path(), PersistentData::default())
+                .expect_err(phase);
+            assert_eq!(error.kind(), "unsupportedSchema", "{phase}");
+            assert_eq!(error.schema_version(), Some(999), "{phase}");
+            let bytes = std::fs::read(&path).unwrap();
+            assert_eq!(bytes.as_slice(), original, "{phase}");
+            assert_eq!(Sha256::digest(&bytes), original_hash, "{phase}");
+            let names = std::fs::read_dir(temp.path())
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                names,
+                vec![std::ffi::OsString::from("data.json")],
+                "{phase}"
+            );
+            if index == 0 {
+                let clean_path = temp.path().join("clean-target.json");
+                let latched_error =
+                    save_persistent_data_for(clean_path.as_path(), PersistentData::default())
+                        .expect_err("process latch must reject a different clean target");
+                assert_eq!(latched_error.kind(), "unsupportedSchema");
+                assert_eq!(latched_error.schema_version(), Some(999));
+                assert!(!clean_path.exists());
+            }
+        }
+    }
+
     fn pane_with_session() -> PaneConfig {
         PaneConfig {
             pane_id: Some("pane-1".to_string()),
@@ -244,11 +325,13 @@ mod tests {
         disk.settings.dirty_save_mode = true;
         disk.settings.osc7_tracking_enabled = false;
         disk.settings.ailog_usd_jpy_rate = 155.0;
+        disk.settings.ailog_mirror_full_text_root = Some("X:\\archive".to_string());
         let mut incoming = PersistentData::default();
         incoming.settings.remote_bind_all = false;
         incoming.settings.dirty_save_mode = false;
         incoming.settings.osc7_tracking_enabled = true;
         incoming.settings.ailog_usd_jpy_rate = 150.0;
+        incoming.settings.ailog_mirror_full_text_root = None;
         incoming.settings.font_size = 19;
 
         merge_persistent_data(&mut disk, incoming);
@@ -257,6 +340,10 @@ mod tests {
         assert!(disk.settings.dirty_save_mode);
         assert!(!disk.settings.osc7_tracking_enabled);
         assert_eq!(disk.settings.ailog_usd_jpy_rate, 155.0);
+        assert_eq!(
+            disk.settings.ailog_mirror_full_text_root.as_deref(),
+            Some("X:\\archive")
+        );
         assert_eq!(disk.settings.font_size, 19);
     }
 }

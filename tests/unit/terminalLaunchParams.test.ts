@@ -16,7 +16,6 @@ function freshTabParams(): TerminalLaunchParams {
     args: ["--dangerously-skip-permissions", "--session-id", "new-session"],
     cwd: "C:/repo",
     launchEnv: { MYCMUX_PANE_SESSION_ID: "pane-1", MYCMUX_AGENT_KIND: "claude" },
-    restoreFallbackSessionIds: [],
   };
 }
 
@@ -31,7 +30,6 @@ function resumedTabParams(): TerminalLaunchParams {
       MYCMUX_SESSION_ID: "saved-session",
       MYCMUX_RESUME: "claude",
     },
-    restoreFallbackSessionIds: ["older-session"],
   };
 }
 
@@ -47,7 +45,6 @@ describe("buildLaunchRequest", () => {
         MYCMUX_SESSION_ID: "saved-session",
         MYCMUX_RESUME: "claude",
       },
-      restoreFallbackSessionIds: ["older-session"],
     });
   });
 
@@ -81,7 +78,7 @@ describe("latest-value launch params ref (B-1 stale closure)", () => {
     expect(spawned[0].env?.MYCMUX_RESUME).toBe("claude");
     expect(spawned[0].env?.MYCMUX_SESSION_ID).toBe("saved-session");
     expect(spawned[0].cwd).toBe("C:/repo/worktree");
-    expect(spawned[0].restoreFallbackSessionIds).toEqual(["older-session"]);
+    expect(spawned[0]).not.toHaveProperty("restoreFallbackSessionIds");
   });
 });
 
@@ -94,7 +91,7 @@ describe("XTermWrapper launch-parameter wiring", () => {
 
   it("refreshes the launch params ref on every render", () => {
     expect(xtermWrapperSource).toContain(
-      "launchParamsRef.current = { command, args, cwd, launchEnv, restoreFallbackSessionIds };",
+      "launchParamsRef.current = { command, args, cwd, launchEnv };",
     );
   });
 
@@ -110,7 +107,7 @@ describe("XTermWrapper launch-parameter wiring", () => {
     expect(attachBlock).toContain("launch.args,");
     expect(attachBlock).toContain("launch.cwd,");
     expect(attachBlock).toContain("launch.env,");
-    expect(attachBlock).toContain("launch.restoreFallbackSessionIds,");
+    expect(attachBlock).not.toContain("restoreFallbackSessionIds");
     // No raw prop reads left in the spawn path.
     expect(attachBlock).not.toContain("launchEnv || undefined");
   });

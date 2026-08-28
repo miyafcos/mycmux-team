@@ -103,7 +103,7 @@ def test_window_leader_commands_have_safe_single_instance_semantics() -> None:
         "claimLeader()",
         "isLeader.current = gotLeadership;",
         "if (!gotLeadership) {",
-        "return loadPersistentData().then(async (data) => {",
+        "return loadPersistentData().then(async (envelope) => {",
         "await sync(true);",
         "await quitApp();",
     ]:

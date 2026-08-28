@@ -11,11 +11,13 @@ import {
   type StableLayoutColumnIdentity,
 } from "../../lib/layoutColumns";
 import { fitLayoutSizes } from "../../lib/layoutMetrics";
+import { terminalLayoutSignatureOf } from "../../lib/terminalLayoutSignature";
 import { focusController } from "../../lib/focusController";
 import { evictTerminalCache } from "../terminal/XTermWrapper";
 import { beforePaneClose } from "../../lib/paneCloseLifecycle";
 import { confirmPaneClose } from "../../lib/paneCloseConfirmation";
 import { useSavepointDragStore } from "../../stores/savepointDragStore";
+import { useUiStore } from "../../stores/uiStore";
 import TerminalPane from "./TerminalPane";
 import ErrorBoundary from "../common/ErrorBoundary";
 
@@ -113,13 +115,24 @@ export const TerminalGrid = memo(function TerminalGrid({
     () => layoutColumns.map((col) => col.join(",")).join("|"),
     [layoutColumns],
   );
-  const terminalLayoutSignature = useMemo(() => {
-    const columnSignature = layoutColumns.map((col) => col.join(",")).join("|");
-    const paneSignature = panes
-      .map((pane) => `${pane.id}:${pane.activeTabId}:${pane.tabs.length}`)
-      .join("|");
-    return `${workspaceId}:${Math.round(viewportSize.width)}x${Math.round(viewportSize.height)}:${columnSignature}:${paneSignature}`;
-  }, [layoutColumns, panes, viewportSize.height, viewportSize.width, workspaceId]);
+  // Zooming resizes panes without touching the grid container, the column
+  // layout or the pane list, so leaving it out of the signature meant no
+  // layout-change event fired on zoom or restore. The terminal's own
+  // ResizeObserver drops its pending refit while the container is briefly
+  // unpaintable, and nothing brought it back -- the pane stayed mis-sized
+  // until some unrelated change (dragging the sidebar) moved the viewport and
+  // finally fired the event.
+  const zoomedPaneId = useUiStore((state) => state.zoomedPaneId);
+  const terminalLayoutSignature = useMemo(
+    () => terminalLayoutSignatureOf({
+      workspaceId,
+      viewportSize,
+      layoutColumns,
+      panes,
+      zoomedPaneId,
+    }),
+    [layoutColumns, panes, viewportSize, workspaceId, zoomedPaneId],
+  );
 
   useEffect(() => {
     const container = gridContainerRef.current;

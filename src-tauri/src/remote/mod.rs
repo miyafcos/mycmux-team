@@ -205,11 +205,15 @@ struct RemoteServerTask {
 
 pub struct RemoteServerRuntime {
     task: Mutex<Option<RemoteServerTask>>,
+    settings_transition: Mutex<()>,
 }
 
 impl RemoteServerRuntime {
     pub fn new() -> Self {
-        Self { task: Mutex::new(None) }
+        Self {
+            task: Mutex::new(None),
+            settings_transition: Mutex::new(()),
+        }
     }
 
     pub async fn enable(
@@ -301,6 +305,41 @@ pub fn get_remote_enabled(app_handle: tauri::AppHandle) -> Result<bool, String> 
     Ok(crate::db::storage::load(&app_handle)?.settings.remote_enabled)
 }
 
+async fn apply_remote_enabled_transition<T, Apply, ApplyFuture>(
+    transition: &Mutex<()>,
+    target: &T,
+    enabled: bool,
+    apply_runtime: Apply,
+) -> Result<bool, crate::db::storage::PersistentStorageError>
+where
+    T: crate::db::storage::PersistentDataTarget + ?Sized,
+    Apply: FnOnce(bool) -> ApplyFuture,
+    ApplyFuture: std::future::Future<Output = Result<(), String>>,
+{
+    let _transition_guard = transition.lock().await;
+    let mut previous_enabled = false;
+    let mut bind_all = false;
+    crate::db::storage::update(target, |data| {
+        previous_enabled = data.settings.remote_enabled;
+        bind_all = data.settings.remote_bind_all;
+        data.settings.remote_enabled = enabled;
+    })?;
+
+    if let Err(runtime_error) = apply_runtime(bind_all).await {
+        if let Err(rollback_error) = crate::db::storage::update(target, |data| {
+            data.settings.remote_enabled = previous_enabled;
+        }) {
+            crate::diag_warn!(
+                "remote",
+                "runtime transition failed ({runtime_error}); persisted rollback also failed ({rollback_error})"
+            );
+            return Err(rollback_error);
+        }
+        return Err(runtime_error.into());
+    }
+    Ok(enabled)
+}
+
 #[tauri::command(async)]
 pub async fn set_remote_enabled(
     app_handle: tauri::AppHandle,
@@ -309,22 +348,36 @@ pub async fn set_remote_enabled(
     control: tauri::State<'_, Arc<RemoteControl>>,
     sessions: tauri::State<'_, Arc<RemoteSessionManager>>,
     enabled: bool,
-) -> Result<bool, String> {
-    let bind_all = crate::db::storage::load(&app_handle)?.settings.remote_bind_all;
-    if enabled {
-        runtime.enable(
-            app_handle.clone(),
-            state.session_manager.clone(),
-            state.metadata_store.clone(),
-            control.inner().clone(),
-            sessions.inner().clone(),
-            bind_all,
-        ).await?;
-    } else {
-        runtime.disable(control.inner().as_ref()).await;
-    }
-    crate::db::storage::update(&app_handle, |data| data.settings.remote_enabled = enabled)?;
-    Ok(enabled)
+) -> Result<bool, crate::db::storage::PersistentStorageError> {
+    let runtime_ref = runtime.inner();
+    let runtime_app_handle = app_handle.clone();
+    let session_manager = state.session_manager.clone();
+    let metadata_store = state.metadata_store.clone();
+    let remote_control = control.inner().clone();
+    let remote_sessions = sessions.inner().clone();
+    apply_remote_enabled_transition(
+        &runtime_ref.settings_transition,
+        &app_handle,
+        enabled,
+        move |bind_all| async move {
+            if enabled {
+                runtime_ref
+                    .enable(
+                        runtime_app_handle,
+                        session_manager,
+                        metadata_store,
+                        remote_control,
+                        remote_sessions,
+                        bind_all,
+                    )
+                    .await
+            } else {
+                runtime.disable(remote_control.as_ref()).await;
+                Ok(())
+            }
+        },
+    )
+    .await
 }
 
 /// Read the persisted "bind remote to LAN" preference
@@ -339,7 +392,10 @@ pub fn get_remote_bind_all(app_handle: tauri::AppHandle) -> Result<bool, String>
 /// Persist the "bind remote to LAN" preference through `db::storage`.
 /// Takes effect on the next app restart (the server is already bound).
 #[tauri::command(async)]
-pub fn set_remote_bind_all(app_handle: tauri::AppHandle, enabled: bool) -> Result<bool, String> {
+pub fn set_remote_bind_all(
+    app_handle: tauri::AppHandle,
+    enabled: bool,
+) -> Result<bool, crate::db::storage::PersistentStorageError> {
     crate::db::storage::update(&app_handle, |data| {
         data.settings.remote_bind_all = enabled;
     })?;
@@ -681,8 +737,44 @@ async fn serve_static(uri: axum::http::Uri) -> impl axum::response::IntoResponse
 
 #[cfg(test)]
 mod tests {
+    use super::apply_remote_enabled_transition;
     use super::configured_port_for;
     use super::extract_workspace_id;
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn failed_runtime_enable_rolls_back_the_persisted_setting() {
+        let _serial = crate::db::storage::persistence_test_lock();
+        crate::db::storage::reset_quarantined_schema_for_test();
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("data.json");
+        crate::db::storage::update(path.as_path(), |data| {
+            data.settings.remote_enabled = false;
+            data.settings.font_size = 17;
+        })
+        .unwrap();
+        let transition = tokio::sync::Mutex::new(());
+
+        let error = apply_remote_enabled_transition(
+            &transition,
+            path.as_path(),
+            true,
+            |_| async {
+                let during_enable = crate::db::storage::load(path.as_path()).unwrap();
+                assert!(during_enable.settings.remote_enabled);
+                Err("injected runtime enable failure".to_string())
+            },
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(error.kind(), "storage");
+        assert!(error.to_string().contains("injected runtime enable failure"));
+        let restored = crate::db::storage::load(path.as_path()).unwrap();
+        assert!(!restored.settings.remote_enabled);
+        assert_eq!(restored.settings.font_size, 17);
+        crate::db::storage::reset_quarantined_schema_for_test();
+    }
 
     #[test]
     fn profile_uses_an_ephemeral_remote_port_unless_overridden() {

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { getRemoteBindAll, getRemoteEnabled, getRemoteInfo, rotateRemoteToken, setRemoteBindAll, setRemoteEnabled, type RemoteInfo } from "../../../lib/ipc";
+import { quarantineTerminalPersistentStorageError } from "../../../lib/workspacePersistenceCoordinator";
 import { settingsStrings } from "../settingsStrings";
 import { dialogButtonStyle, sectionHeadingStyle } from "../tabStyles";
 
@@ -59,7 +60,10 @@ export function RemoteTab() {
       }
     } catch (e) {
       console.error("Failed to toggle remote server", e);
-      setRemoteMsg("リモート接続の切り替えに失敗しました");
+      setRemoteMsg(
+        quarantineTerminalPersistentStorageError(e)
+          ?? "リモート接続の切り替えに失敗しました",
+      );
     } finally {
       setRemoteEnabledLoading(false);
     }
@@ -77,7 +81,10 @@ export function RemoteTab() {
       );
     } catch (e) {
       console.error("Failed to save remote bind-all setting", e);
-      setRemoteMsg("設定の保存に失敗しました");
+      setRemoteMsg(
+        quarantineTerminalPersistentStorageError(e)
+          ?? "設定の保存に失敗しました",
+      );
     } finally {
       setRemoteBindAllLoading(false);
     }

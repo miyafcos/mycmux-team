@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -27,8 +28,21 @@ mod interprocess_data_lock {
         }
     }
 
+    pub(super) fn mutex_name() -> String {
+        #[cfg(test)]
+        {
+            return format!(
+                "Local\\miyazaki-{}-data-json-test-{}",
+                env!("CARGO_PKG_NAME"),
+                std::process::id()
+            );
+        }
+        #[cfg(not(test))]
+        format!("Local\\miyazaki-{}-data-json", env!("CARGO_PKG_NAME"))
+    }
+
     pub fn acquire() -> Result<DataLockGuard, String> {
-        let name = format!("Local\\miyazaki-{}-data-json", env!("CARGO_PKG_NAME"));
+        let name = mutex_name();
         let wide_name: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
         let handle = unsafe { CreateMutexW(None, false, PCWSTR(wide_name.as_ptr())) }
             .map_err(|error| format!("Failed to create data-file mutex: {error}"))?;
@@ -186,7 +200,143 @@ fn default_true() -> bool {
 }
 
 fn default_schema_version() -> u32 {
-    1
+    CURRENT_SCHEMA_VERSION
+}
+
+pub const CURRENT_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(tag = "kind")]
+pub enum PersistentStorageError {
+    #[serde(rename = "unsupportedSchema")]
+    UnsupportedSchema {
+        #[serde(rename = "schemaVersion")]
+        schema_version: u32,
+        message: String,
+    },
+    #[serde(rename = "invalidPayloadSchema")]
+    InvalidPayloadSchema {
+        #[serde(rename = "schemaVersion")]
+        schema_version: u32,
+        message: String,
+    },
+    #[serde(rename = "unsupportedPlatform")]
+    UnsupportedPlatform { message: String },
+    #[serde(rename = "storage")]
+    Storage { message: String },
+}
+
+impl PersistentStorageError {
+    pub fn unsupported_schema(schema_version: u32) -> Self {
+        Self::UnsupportedSchema {
+            schema_version,
+            message: unsupported_schema_error(schema_version),
+        }
+    }
+
+    fn invalid_payload_schema(schema_version: u32) -> Self {
+        Self::InvalidPayloadSchema {
+            schema_version,
+            message: format!(
+                "data.json payload schema version {schema_version} does not match current schema {CURRENT_SCHEMA_VERSION}"
+            ),
+        }
+    }
+
+    #[cfg(any(test, not(windows)))]
+    fn unsupported_platform(message: impl Into<String>) -> Self {
+        Self::UnsupportedPlatform {
+            message: message.into(),
+        }
+    }
+
+    fn storage(message: impl Into<String>) -> Self {
+        Self::Storage {
+            message: message.into(),
+        }
+    }
+
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::UnsupportedSchema { .. } => "unsupportedSchema",
+            Self::InvalidPayloadSchema { .. } => "invalidPayloadSchema",
+            Self::UnsupportedPlatform { .. } => "unsupportedPlatform",
+            Self::Storage { .. } => "storage",
+        }
+    }
+
+    pub fn schema_version(&self) -> Option<u32> {
+        match self {
+            Self::UnsupportedSchema { schema_version, .. }
+            | Self::InvalidPayloadSchema { schema_version, .. } => Some(*schema_version),
+            Self::UnsupportedPlatform { .. }
+            | Self::Storage { .. } => None,
+        }
+    }
+
+    fn message(&self) -> &str {
+        match self {
+            Self::UnsupportedSchema { message, .. }
+            | Self::InvalidPayloadSchema { message, .. }
+            | Self::UnsupportedPlatform { message }
+            | Self::Storage { message } => message,
+        }
+    }
+}
+
+impl std::fmt::Display for PersistentStorageError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.message())
+    }
+}
+
+impl std::error::Error for PersistentStorageError {}
+
+impl From<String> for PersistentStorageError {
+    fn from(message: String) -> Self {
+        Self::storage(message)
+    }
+}
+
+impl From<PersistentStorageError> for String {
+    fn from(error: PersistentStorageError) -> Self {
+        error.to_string()
+    }
+}
+
+// Zero means persistence has not seen an unsupported schema. Other values are
+// the schema version plus one, which lets schema version zero remain valid.
+static QUARANTINED_SCHEMA_VERSION: AtomicU64 = AtomicU64::new(0);
+
+fn latch_unsupported_schema(schema_version: u32) {
+    let encoded = u64::from(schema_version) + 1;
+    let _ =
+        QUARANTINED_SCHEMA_VERSION.compare_exchange(0, encoded, Ordering::SeqCst, Ordering::SeqCst);
+}
+
+fn quarantined_schema_version() -> Option<u32> {
+    QUARANTINED_SCHEMA_VERSION
+        .load(Ordering::SeqCst)
+        .checked_sub(1)
+        .and_then(|value| u32::try_from(value).ok())
+}
+
+#[cfg(test)]
+pub(crate) fn reset_quarantined_schema_for_test() {
+    QUARANTINED_SCHEMA_VERSION.store(0, Ordering::SeqCst);
+}
+
+#[cfg(test)]
+pub(crate) fn persistence_test_lock() -> std::sync::MutexGuard<'static, ()> {
+    static TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    TEST_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .expect("persistence test lock poisoned")
+}
+
+fn unsupported_schema_error(schema_version: u32) -> String {
+    format!("data.json schema version {schema_version} is not supported by this mycmux build")
 }
 
 fn default_theme_tweaks() -> serde_json::Value {
@@ -240,6 +390,20 @@ fn default_ailog_usd_jpy_rate() -> f64 {
     DEFAULT_AILOG_USD_JPY_RATE
 }
 
+fn default_ailog_mirror_full_text_root() -> Option<String> {
+    #[cfg(target_os = "windows")]
+    {
+        Some(
+            "G:\\\u{30de}\u{30a4}\u{30c9}\u{30e9}\u{30a4}\u{30d6}\\pc-backup\\mycmux-ailog"
+                .to_string(),
+        )
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        None
+    }
+}
+
 /// Invalid stored rates (non-finite or not strictly positive) fall back to
 /// the default rather than breaking the money display.
 pub fn sanitize_ailog_usd_jpy_rate(rate: f64) -> f64 {
@@ -276,6 +440,13 @@ pub struct AppSettings {
     pub ai_model: String,
     #[serde(default = "default_true")]
     pub ai_enabled: bool,
+    /// `None` means this build has not migrated or explicitly saved the
+    /// setting yet. The frontend supplies the effective UI default.
+    #[serde(default)]
+    pub auto_pane_naming_enabled: Option<bool>,
+    /// `None` is distinct from the explicit opt-out `Some(false)`.
+    #[serde(default)]
+    pub reply_draft_suggestions_enabled: Option<bool>,
     /// When true, persistence is triggered by Zustand subscribers + debounce
     /// instead of a fixed interval. Rollback switch for Phase A.
     #[serde(default = "default_true")]
@@ -304,6 +475,10 @@ pub struct AppSettings {
     /// in USD; the renderer multiplies at format time.
     #[serde(default = "default_ailog_usd_jpy_rate")]
     pub ailog_usd_jpy_rate: f64,
+    /// Optional durable full-text transcript mirror. An explicit null disables
+    /// Tier 2 while the metadata-only local mirror continues.
+    #[serde(default = "default_ailog_mirror_full_text_root")]
+    pub ailog_mirror_full_text_root: Option<String>,
 }
 
 impl Default for AppSettings {
@@ -321,6 +496,8 @@ impl Default for AppSettings {
             ai_provider: default_ai_provider(),
             ai_model: default_ai_model(),
             ai_enabled: true,
+            auto_pane_naming_enabled: None,
+            reply_draft_suggestions_enabled: None,
             dirty_save_mode: true,
             osc7_tracking_enabled: true,
             remote_bind_all: false,
@@ -330,6 +507,7 @@ impl Default for AppSettings {
             pet_disabled: Vec::new(),
             pet_fixed_id: None,
             ailog_usd_jpy_rate: default_ailog_usd_jpy_rate(),
+            ailog_mirror_full_text_root: default_ailog_mirror_full_text_root(),
         }
     }
 }
@@ -355,12 +533,38 @@ pub struct PersistentData {
 impl Default for PersistentData {
     fn default() -> Self {
         Self {
-            schema_version: 1,
+            schema_version: CURRENT_SCHEMA_VERSION,
             workspaces: Vec::new(),
             settings: AppSettings::default(),
             active_workspace_id: None,
             active_pane_id: None,
             active_tab_id: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PersistentDataEnvelope {
+    pub schema_version: u32,
+    pub data: Option<PersistentData>,
+    pub supported: bool,
+}
+
+impl PersistentDataEnvelope {
+    fn supported(data: PersistentData) -> Self {
+        Self {
+            schema_version: data.schema_version,
+            data: Some(data),
+            supported: true,
+        }
+    }
+
+    fn unsupported(schema_version: u32) -> Self {
+        Self {
+            schema_version,
+            data: None,
+            supported: false,
         }
     }
 }
@@ -379,6 +583,23 @@ fn data_path(app_handle: &tauri::AppHandle) -> Result<PathBuf, String> {
     let dir = crate::test_profile::app_data_dir_from(default_dir);
     fs::create_dir_all(&dir).map_err(|e| format!("Failed to create app data dir: {e}"))?;
     Ok(dir.join("data.json"))
+}
+
+pub(crate) trait PersistentDataTarget {
+    fn persistent_data_path(&self) -> Result<PathBuf, String>;
+}
+
+impl PersistentDataTarget for tauri::AppHandle {
+    fn persistent_data_path(&self) -> Result<PathBuf, String> {
+        data_path(self)
+    }
+}
+
+#[cfg(test)]
+impl PersistentDataTarget for Path {
+    fn persistent_data_path(&self) -> Result<PathBuf, String> {
+        Ok(self.to_path_buf())
+    }
 }
 
 pub(crate) fn scrollback_dir(app_handle: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -484,13 +705,48 @@ fn read_data_file(path: &Path) -> Result<String, String> {
         .to_string())
 }
 
-fn parse_persistent_data(path: &Path) -> Result<PersistentData, String> {
+fn schema_version_from_contents(path: &Path, contents: &str) -> Result<u32, String> {
+    let value = serde_json::from_str::<serde_json::Value>(contents)
+        .map_err(|error| format!("Failed to parse {}: {error}", path.display()))?;
+    let Some(schema_version) = value.get("schema_version") else {
+        return Ok(CURRENT_SCHEMA_VERSION);
+    };
+    let version = schema_version.as_u64().ok_or_else(|| {
+        format!(
+            "Failed to parse {}: schema_version must be an unsigned integer",
+            path.display()
+        )
+    })?;
+    u32::try_from(version).map_err(|_| {
+        format!(
+            "Failed to parse {}: schema_version is out of range",
+            path.display()
+        )
+    })
+}
+
+#[cfg(test)]
+fn schema_version_from_path(path: &Path) -> Result<Option<u32>, String> {
+    if !path.exists() {
+        return Ok(None);
+    }
     let contents = read_data_file(path)?;
     if contents.trim().is_empty() {
-        return Err(format!("{} is empty", path.display()));
+        return Ok(None);
     }
-    serde_json::from_str::<PersistentData>(&contents)
-        .map_err(|error| format!("Failed to parse {}: {error}", path.display()))
+    schema_version_from_contents(path, &contents).map(Some)
+}
+
+#[cfg(test)]
+fn ensure_existing_schema_supported(path: &Path) -> Result<(), PersistentStorageError> {
+    if let Some(schema_version) =
+        schema_version_from_path(path).map_err(PersistentStorageError::from)?
+    {
+        if schema_version != CURRENT_SCHEMA_VERSION {
+            return Err(PersistentStorageError::unsupported_schema(schema_version));
+        }
+    }
+    Ok(())
 }
 
 fn sync_file(path: &Path) -> Result<(), String> {
@@ -517,10 +773,21 @@ fn copy_file_and_sync(source: &Path, target: &Path) -> Result<(), String> {
 fn recover_from_pre_replace_backup(
     path: &Path,
     reason: &str,
-) -> Result<Option<PersistentData>, String> {
+) -> Result<Option<PersistentDataEnvelope>, String> {
     for backup_path in pre_replace_backups(path) {
-        let Ok(data) = parse_persistent_data(&backup_path) else {
+        let Ok(contents) = read_data_file(&backup_path) else {
             continue;
+        };
+        let Ok(schema_version) = schema_version_from_contents(&backup_path, &contents) else {
+            continue;
+        };
+        let envelope = if schema_version == CURRENT_SCHEMA_VERSION {
+            let Ok(data) = serde_json::from_str::<PersistentData>(&contents) else {
+                continue;
+            };
+            PersistentDataEnvelope::supported(data)
+        } else {
+            PersistentDataEnvelope::unsupported(schema_version)
         };
         if path.exists() {
             let _backup_path = quarantine_data_file(path, reason)?;
@@ -533,39 +800,64 @@ fn recover_from_pre_replace_backup(
             backup_path.display(),
             reason
         );
-        return Ok(Some(data));
+        return Ok(Some(envelope));
     }
     Ok(None)
 }
 
-fn load_from_path(path: &Path) -> Result<PersistentData, String> {
+fn load_envelope_from_path(path: &Path) -> Result<PersistentDataEnvelope, String> {
     if !path.exists() {
-        if let Some(data) = recover_from_pre_replace_backup(path, "missing")? {
-            return Ok(data);
+        if let Some(envelope) = recover_from_pre_replace_backup(path, "missing")? {
+            return Ok(envelope);
         }
-        return Ok(PersistentData::default());
+        return Ok(PersistentDataEnvelope::supported(PersistentData::default()));
     }
 
     let contents = read_data_file(path)?;
 
     if contents.trim().is_empty() {
-        if let Some(data) = recover_from_pre_replace_backup(path, "empty")? {
-            return Ok(data);
+        if let Some(envelope) = recover_from_pre_replace_backup(path, "empty")? {
+            return Ok(envelope);
         }
         let _backup_path = quarantine_data_file(path, "empty")?;
-        return Ok(PersistentData::default());
+        return Ok(PersistentDataEnvelope::supported(PersistentData::default()));
+    }
+
+    // Probe the schema before deserializing the current struct. A future
+    // schema may be valid JSON while intentionally changing required fields;
+    // it must never fall into the corrupt-file recovery path.
+    match schema_version_from_contents(path, &contents) {
+        Ok(schema_version) if schema_version != CURRENT_SCHEMA_VERSION => {
+            return Ok(PersistentDataEnvelope::unsupported(schema_version));
+        }
+        Ok(_) => {}
+        Err(_) => {
+            if let Some(envelope) = recover_from_pre_replace_backup(path, "corrupt")? {
+                return Ok(envelope);
+            }
+            let _backup_path = quarantine_data_file(path, "corrupt")?;
+            return Ok(PersistentDataEnvelope::supported(PersistentData::default()));
+        }
     }
 
     match serde_json::from_str::<PersistentData>(&contents) {
-        Ok(data) => Ok(data),
+        Ok(data) => Ok(PersistentDataEnvelope::supported(data)),
         Err(_error) => {
-            if let Some(data) = recover_from_pre_replace_backup(path, "corrupt")? {
-                return Ok(data);
+            if let Some(envelope) = recover_from_pre_replace_backup(path, "corrupt")? {
+                return Ok(envelope);
             }
             let _backup_path = quarantine_data_file(path, "corrupt")?;
-            Ok(PersistentData::default())
+            Ok(PersistentDataEnvelope::supported(PersistentData::default()))
         }
     }
+}
+
+#[cfg(test)]
+fn load_from_path(path: &Path) -> Result<PersistentData, String> {
+    let envelope = load_envelope_from_path(path)?;
+    envelope
+        .data
+        .ok_or_else(|| unsupported_schema_error(envelope.schema_version))
 }
 
 /// Write the serialized data file and fsync it.
@@ -601,10 +893,33 @@ fn replace_data_file(path: &Path, tmp_path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn save_to_path(path: &Path, data: &PersistentData) -> Result<(), String> {
+fn ensure_payload_schema_supported(data: &PersistentData) -> Result<(), PersistentStorageError> {
+    if data.schema_version != CURRENT_SCHEMA_VERSION {
+        return Err(PersistentStorageError::invalid_payload_schema(
+            data.schema_version,
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+fn save_to_path(path: &Path, data: &PersistentData) -> Result<(), PersistentStorageError> {
+    ensure_existing_schema_supported(path)?;
+    save_preflighted_to_path(path, data)
+}
+
+fn save_preflighted_to_path(
+    path: &Path,
+    data: &PersistentData,
+) -> Result<(), PersistentStorageError> {
+    ensure_payload_schema_supported(data)?;
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|error| format!("Failed to create {}: {error}", parent.display()))?;
+        fs::create_dir_all(parent).map_err(|error| {
+            PersistentStorageError::storage(format!(
+                "Failed to create {}: {error}",
+                parent.display()
+            ))
+        })?;
     }
 
     let file_name = path
@@ -619,49 +934,208 @@ fn save_to_path(path: &Path, data: &PersistentData) -> Result<(), String> {
         "{file_name}.tmp-{}-{timestamp}",
         std::process::id()
     ));
-    let json = serde_json::to_string(data)
-        .map_err(|error| format!("Failed to serialize data: {error}"))?;
+    let json = serde_json::to_string(data).map_err(|error| {
+        PersistentStorageError::storage(format!("Failed to serialize data: {error}"))
+    })?;
 
-    write_json_file(&tmp_path, &json)?;
-    replace_data_file(path, &tmp_path).inspect_err(|replace_error| {
-        crate::diag_warn!(
-            "storage",
-            "failed to save {}: {replace_error}",
-            path.display()
-        );
-        if let Err(error) = fs::remove_file(&tmp_path) {
+    write_json_file(&tmp_path, &json).map_err(PersistentStorageError::from)?;
+    replace_data_file(path, &tmp_path)
+        .map_err(PersistentStorageError::from)
+        .inspect_err(|replace_error| {
             crate::diag_warn!(
                 "storage",
-                "failed to remove temporary data file {}: {error}",
-                tmp_path.display()
+                "failed to save {}: {replace_error}",
+                path.display()
             );
-        }
-    })
+            if let Err(error) = fs::remove_file(&tmp_path) {
+                crate::diag_warn!(
+                    "storage",
+                    "failed to remove temporary data file {}: {error}",
+                    tmp_path.display()
+                );
+            }
+        })
 }
 
-pub fn load(app_handle: &tauri::AppHandle) -> Result<PersistentData, String> {
+pub(crate) fn load_envelope<T: PersistentDataTarget + ?Sized>(
+    target: &T,
+) -> Result<PersistentDataEnvelope, String> {
     let _process_guard = interprocess_data_lock::acquire()?;
-    let path = data_path(app_handle)?;
-    load_from_path(&path)
+    let path = target.persistent_data_path()?;
+    if let Some(schema_version) = quarantined_schema_version() {
+        return Ok(PersistentDataEnvelope::unsupported(schema_version));
+    }
+    let envelope = load_envelope_from_path(&path)?;
+    if !envelope.supported {
+        latch_unsupported_schema(envelope.schema_version);
+    }
+    Ok(envelope)
 }
 
-pub fn update<F>(app_handle: &tauri::AppHandle, updater: F) -> Result<(), String>
+pub(crate) fn load<T: PersistentDataTarget + ?Sized>(target: &T) -> Result<PersistentData, String> {
+    let envelope = load_envelope(target)?;
+    envelope
+        .data
+        .ok_or_else(|| unsupported_schema_error(envelope.schema_version))
+}
+
+#[cfg(windows)]
+fn ensure_persistence_write_platform_supported() -> Result<(), PersistentStorageError> {
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn ensure_persistence_write_platform_supported() -> Result<(), PersistentStorageError> {
+    Err(PersistentStorageError::unsupported_platform(
+        "data.json writes are disabled on this platform until cross-process locking is supported",
+    ))
+}
+
+pub(crate) fn update<T, F>(target: &T, updater: F) -> Result<(), PersistentStorageError>
 where
+    T: PersistentDataTarget + ?Sized,
     F: FnOnce(&mut PersistentData),
 {
-    let _guard = save_lock()
-        .lock()
-        .map_err(|e| format!("Failed to lock data file: {e}"))?;
-    let _process_guard = interprocess_data_lock::acquire()?;
-    let path = data_path(app_handle)?;
-    let mut data = load_from_path(&path)?;
+    ensure_persistence_write_platform_supported()?;
+    let _guard = save_lock().lock().map_err(|error| {
+        PersistentStorageError::storage(format!("Failed to lock data file: {error}"))
+    })?;
+    let _process_guard = interprocess_data_lock::acquire().map_err(PersistentStorageError::from)?;
+    if let Some(schema_version) = quarantined_schema_version() {
+        return Err(PersistentStorageError::unsupported_schema(schema_version));
+    }
+    let path = target
+        .persistent_data_path()
+        .map_err(PersistentStorageError::from)?;
+    // This locked read is also the writer preflight. Reuse the parsed payload
+    // rather than reopening and reparsing the same bytes in save_to_path.
+    let envelope = load_envelope_from_path(&path).map_err(PersistentStorageError::from)?;
+    if !envelope.supported {
+        latch_unsupported_schema(envelope.schema_version);
+        return Err(PersistentStorageError::unsupported_schema(
+            envelope.schema_version,
+        ));
+    }
+    let mut data = envelope.data.ok_or_else(|| {
+        PersistentStorageError::storage("supported data.json load returned no data")
+    })?;
     updater(&mut data);
-    save_to_path(&path, &data)
+    if let Some(schema_version) = quarantined_schema_version() {
+        return Err(PersistentStorageError::unsupported_schema(schema_version));
+    }
+    save_preflighted_to_path(&path, &data)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unsupported_platform_error_has_a_terminal_wire_kind() {
+        let error = PersistentStorageError::unsupported_platform(
+            "data.json writes require the Windows persistence binding",
+        );
+        assert_eq!(error.kind(), "unsupportedPlatform");
+        assert_eq!(error.schema_version(), None);
+        assert_eq!(
+            serde_json::to_value(error).unwrap(),
+            serde_json::json!({
+                "kind": "unsupportedPlatform",
+                "message": "data.json writes require the Windows persistence binding",
+            })
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_data_mutex_name_is_process_scoped() {
+        let name = interprocess_data_lock::mutex_name();
+        assert!(name.starts_with(&format!(
+            "Local\\miyazaki-{}-data-json-test-",
+            env!("CARGO_PKG_NAME")
+        )));
+        assert!(name.ends_with(&std::process::id().to_string()));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn unsupported_platform_rejects_before_resolving_the_target_or_running_the_updater() {
+        struct PanickingTarget;
+        impl PersistentDataTarget for PanickingTarget {
+            fn persistent_data_path(&self) -> Result<PathBuf, String> {
+                panic!("target path must not be resolved")
+            }
+        }
+        let updater_ran = std::cell::Cell::new(false);
+        let error = update(&PanickingTarget, |_| updater_ran.set(true)).unwrap_err();
+        assert_eq!(error.kind(), "unsupportedPlatform");
+        assert!(!updater_ran.get());
+    }
+
+    fn sha256_hex(bytes: &[u8]) -> String {
+        use sha2::{Digest, Sha256};
+
+        hex::encode(Sha256::digest(bytes))
+    }
+
+    #[test]
+    fn future_schema_load_returns_unsupported_without_corrupt_quarantine() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("data.json");
+        let original = include_bytes!("../../../tests/fixtures/data_json_schema_999_canary.json");
+        fs::write(&path, original).unwrap();
+        let original_hash = sha256_hex(original);
+
+        let envelope = load_envelope_from_path(&path).unwrap();
+
+        assert!(!envelope.supported);
+        assert_eq!(envelope.schema_version, 999);
+        assert!(envelope.data.is_none());
+        let final_bytes = fs::read(&path).unwrap();
+        assert_eq!(sha256_hex(&final_bytes), original_hash);
+        assert_eq!(final_bytes.as_slice(), original);
+        assert_eq!(pre_replace_backups(&path), Vec::<PathBuf>::new());
+        assert!(!fs::read_dir(temp_dir.path()).unwrap().any(|entry| {
+            entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .contains(".tmp-")
+        }));
+    }
+
+    #[test]
+    fn writer_rejects_a_future_schema_payload_before_creating_a_file() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("data.json");
+        let mut payload = PersistentData::default();
+        payload.schema_version = 999;
+
+        let error = save_to_path(&path, &payload).unwrap_err();
+
+        assert_eq!(error.kind(), "invalidPayloadSchema");
+        assert_eq!(error.schema_version(), Some(999));
+        assert_eq!(
+            serde_json::to_value(&error).unwrap()["kind"],
+            "invalidPayloadSchema"
+        );
+        assert!(error.to_string().contains("payload schema version 999"));
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn unsupported_schema_error_serializes_with_kind_and_version() {
+        let error = PersistentStorageError::unsupported_schema(999);
+
+        assert_eq!(
+            serde_json::to_value(error).unwrap(),
+            serde_json::json!({
+                "kind": "unsupportedSchema",
+                "schemaVersion": 999,
+                "message": "data.json schema version 999 is not supported by this mycmux build",
+            }),
+        );
+    }
 
     #[test]
     fn app_settings_missing_line_height_uses_default() {
@@ -899,7 +1373,7 @@ mod tests {
         let backups = pre_replace_backups(&path);
         assert_eq!(backups.len(), 1);
         assert_eq!(
-            parse_persistent_data(&backups[0])
+            load_from_path(&backups[0])
                 .unwrap()
                 .active_workspace_id
                 .as_deref(),

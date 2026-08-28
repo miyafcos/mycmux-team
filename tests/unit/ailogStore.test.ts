@@ -11,6 +11,11 @@ vi.mock("../../src/lib/ailog", async (importOriginal) => ({
 
 import { ailogIndexStart, ailogIndexStatus, ailogSessionDetail, ailogSessionSummarize, ailogSummarizeStatus, emptyFilters } from "../../src/lib/ailog";
 import { __resetAilogStoreForTests, invalidateAilogCaches, jobDisplayError, selectionFilters, useAilogStore } from "../../src/stores/ailogStore";
+import {
+  __resetPersistenceCoordinatorForTests,
+  getPersistentSchemaState,
+  markPersistentSchemaSupported,
+} from "../../src/lib/workspacePersistenceCoordinator";
 
 const indexStatus = (lastError: string | null, running = false) => ({ running, filesDone: 0, filesTotal: 0, sessions: 0, lastFinishedAt: 1, lastError });
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>((res) => { resolve = res; }); return { promise, resolve }; }
@@ -20,8 +25,28 @@ function dashboard(from: number, to: number, costUsd: number, userMessages: numb
 }
 
 describe("AI log store U0", () => {
-  beforeEach(() => { __resetAilogStoreForTests(); invokeMock.mockReset().mockResolvedValue({}); vi.mocked(ailogIndexStart).mockReset(); vi.mocked(ailogIndexStatus).mockReset(); vi.mocked(ailogSessionDetail).mockReset(); vi.mocked(ailogSessionSummarize).mockReset(); vi.mocked(ailogSummarizeStatus).mockReset(); });
-  afterEach(__resetAilogStoreForTests);
+  beforeEach(() => { __resetAilogStoreForTests(); __resetPersistenceCoordinatorForTests(); markPersistentSchemaSupported(1); invokeMock.mockReset().mockResolvedValue({}); vi.mocked(ailogIndexStart).mockReset(); vi.mocked(ailogIndexStatus).mockReset(); vi.mocked(ailogSessionDetail).mockReset(); vi.mocked(ailogSessionSummarize).mockReset(); vi.mocked(ailogSummarizeStatus).mockReset(); });
+  afterEach(() => { __resetAilogStoreForTests(); __resetPersistenceCoordinatorForTests(); });
+
+  it.each([
+    [{ kind: "unsupportedPlatform", message: "unsupported platform" }, "unsupportedPlatform", undefined],
+    [{ kind: "invalidPayloadSchema", schemaVersion: 999, message: "payload mismatch" }, "invalidPayloadSchema", 999],
+    [{ kind: "unsupportedSchema", schemaVersion: 999, message: "future schema" }, "unsupportedSchema", 999],
+  ] as const)("quarantines a terminal USD/JPY persistence failure: %s", async (error, reason, schemaVersion) => {
+    invokeMock.mockImplementation((command: string) => command === "ailog_set_usd_jpy_rate"
+      ? Promise.reject(error)
+      : Promise.resolve({}));
+
+    useAilogStore.getState().setUsdJpyRate(160);
+
+    await vi.waitFor(() => expect(getPersistentSchemaState()).toMatchObject({
+      status: "quarantined",
+      reason,
+      ...(schemaVersion === undefined ? {} : { schemaVersion }),
+      requiresUnsavedConfirmation: true,
+    }));
+    expect(useAilogStore.getState().usdJpyRate).toBe(160);
+  });
 
   it("keeps an action failure when its following status refresh succeeds", async () => {
     vi.mocked(ailogIndexStart).mockRejectedValue(new Error("start failed"));

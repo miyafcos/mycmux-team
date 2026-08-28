@@ -23,6 +23,9 @@ vi.mock("react", () => ({
   useEffect: reactRuntime.useEffect,
   useRef: reactRuntime.useRef,
 }));
+vi.mock("react-dom", () => ({
+  createPortal: (children: unknown) => children,
+}));
 
 import { OverlayShell } from "../../src/components/common/OverlayShell";
 
@@ -109,7 +112,9 @@ beforeEach(() => {
       addEventListener: () => undefined,
       removeEventListener: () => undefined,
       contains: () => true,
+      querySelector: () => null,
       querySelectorAll: () => [],
+      body: { children: [] },
     },
   });
   addEventListener = vi.spyOn(document, "addEventListener").mockImplementation((type, listener) => {

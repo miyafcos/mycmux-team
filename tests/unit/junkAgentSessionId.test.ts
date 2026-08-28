@@ -96,7 +96,7 @@ describe("agent session mapping application", () => {
     const applied = applyMappingsToConfig(
       workspaceConfig([paneWithoutSession("codex")]),
       {
-        "pty-workspace-pane-a-tab-a": { agent_kind: "codex", session_id: CODEX_SESSION_ID },
+        "tab-a": { agent_kind: "codex", session_id: CODEX_SESSION_ID },
       },
     );
 
@@ -110,7 +110,7 @@ describe("agent session mapping application", () => {
     const applied = applyMappingsToConfig(
       workspaceConfig([paneWithoutSession("claude-code")]),
       {
-        "pty-workspace-pane-a-tab-a": { agent_kind: "claude", session_id: CLAUDE_SESSION_ID },
+        "tab-a": { agent_kind: "claude", session_id: CLAUDE_SESSION_ID },
       },
     );
 
@@ -118,6 +118,40 @@ describe("agent session mapping application", () => {
     expect(tab.agent_kind).toBe("claude");
     expect(tab.agent_session_id).toBe(CLAUDE_SESSION_ID);
     expect(tab.claude_session_id).toBe(CLAUDE_SESSION_ID);
+  });
+
+  it("does not graft a pane mapping onto the first tab without an explicit active tab id", () => {
+    const config = workspaceConfig([{
+      ...paneWithoutSession("claude-code"),
+      active_tab_id: null,
+      tabs: [
+        { ...paneWithoutSession("claude-code").tabs![0], tab_id: "tab-a" },
+        { ...paneWithoutSession("claude-code").tabs![0], tab_id: "tab-b" },
+      ],
+    }]);
+
+    const applied = applyMappingsToConfig(config, {
+      "pty-workspace-pane-a": { agent_kind: "claude", session_id: CLAUDE_SESSION_ID },
+    });
+
+    expect(applied.panes[0].tabs?.map((tab) => tab.agent_session_id)).toEqual([null, null]);
+  });
+
+  it("applies a mapping only to the tab with the matching tab id", () => {
+    const config = workspaceConfig([{
+      ...paneWithoutSession("claude-code"),
+      active_tab_id: "tab-a",
+      tabs: [
+        { ...paneWithoutSession("claude-code").tabs![0], tab_id: "tab-a" },
+        { ...paneWithoutSession("claude-code").tabs![0], tab_id: "tab-b" },
+      ],
+    }]);
+
+    const applied = applyMappingsToConfig(config, {
+      "tab-b": { agent_kind: "claude", session_id: CLAUDE_SESSION_ID },
+    });
+
+    expect(applied.panes[0].tabs?.map((tab) => tab.agent_session_id)).toEqual([null, CLAUDE_SESSION_ID]);
   });
 });
 

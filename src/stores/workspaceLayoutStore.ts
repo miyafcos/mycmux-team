@@ -3,7 +3,6 @@ import { v4 as uuid } from "uuid";
 import type { ArtifactSourceKind, Pane, PaneTab, GridTemplateId, SuppressedAgentSession, Workspace } from "../types";
 import { isDeclaredTab, partitionTabsForRestore, type RestorablePaneTab } from "../lib/tabLifecycle";
 import type { PaneConfig } from "../lib/ipc";
-import { declaredAgentKind, declaredAgentSessionId } from "../lib/agentSessionConfig";
 import { agentIdForSessionKind } from "../lib/agentSessionConfig";
 import { getGridTemplate } from "../lib/gridTemplates";
 import { getDefaultAgent } from "../lib/agents";
@@ -343,6 +342,8 @@ interface TerminalLaunchOptions {
   agentKind?: PaneTab["agentKind"];
   agentSessionId?: string;
   launchEnv?: Record<string, string>;
+  /** Ownership metadata for dashboard grouping; socket spawns carry the caller's lineage. */
+  origin?: PaneTab["origin"];
   initialPrompt?: string;
   commandArgv?: string[];
   /** Keep the tab out of layout persistence (see `PaneTab.ephemeral`). */
@@ -536,26 +537,21 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
     const paneByConfigIndex = new Map<number, Pane>();
     const panes = configs.map((pc, configIndex): Pane | null => {
       const paneId = pc.pane_id ?? uuid();
-      const activeTabConfigId = pc.active_tab_id ?? pc.tabs?.[0]?.tab_id ?? null;
       const tabs = pc.tabs && pc.tabs.length > 0
           ? pc.tabs.map((tabConfig) => {
             const restoredTabType = tabConfig.type as PaneTab["type"] | null | undefined;
-            const isActiveRestoredTab = tabConfig.tab_id === activeTabConfigId;
             const isDeclaredRestoredTab = tabConfig.lifecycle === "declared";
             const tabClaudeSessionId = isDeclaredRestoredTab
               ? undefined
-              : tabConfig.claude_session_id
-                ?? (isActiveRestoredTab ? pc.claude_session_id ?? undefined : undefined);
+              : tabConfig.claude_session_id ?? undefined;
             const tabAgentKind = isDeclaredRestoredTab
               ? undefined
               : tabConfig.agent_kind
-                ?? (tabClaudeSessionId ? "claude" : undefined)
-                ?? (isActiveRestoredTab ? pc.agent_kind ?? undefined : undefined);
+                ?? (tabClaudeSessionId ? "claude" : undefined);
             const tabAgentSessionId = isDeclaredRestoredTab
               ? undefined
               : tabConfig.agent_session_id
-                ?? tabClaudeSessionId
-                ?? (isActiveRestoredTab ? pc.agent_session_id ?? pc.claude_session_id ?? undefined : undefined);
+                ?? tabClaudeSessionId;
             const tabAgentId = normalizeRestoredAgentId(
               tabConfig.agent_id || pc.agent_id,
             ) || defaultAgentId;
@@ -578,10 +574,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
                 agentSessionId: tabAgentSessionId,
                 suppressedAgentSessions: isDeclaredRestoredTab
                   ? undefined
-                  : restoreSuppressedAgentSessions(tabConfig.suppressed_agent_sessions)
-                    ?? (isActiveRestoredTab
-                      ? restoreSuppressedAgentSessions(pc.suppressed_agent_sessions)
-                      : undefined),
+                  : restoreSuppressedAgentSessions(tabConfig.suppressed_agent_sessions),
                 launchEnv: tabConfig.launch_env ?? pc.launch_env ?? undefined,
                 terminalSnapshot: isDeclaredRestoredTab ? undefined : tabConfig.terminal_snapshot ?? undefined,
                 turnMarks: isDeclaredRestoredTab ? undefined : tabConfig.turn_marks ?? undefined,
@@ -601,10 +594,6 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
         : [makeTab(workspaceId, paneId, normalizeRestoredAgentId(pc.agent_id) || defaultAgentId, "terminal", {
             label: pc.label ?? undefined,
             cwd: pc.cwd ?? undefined,
-            claudeSessionId: pc.claude_session_id ?? undefined,
-            agentKind: declaredAgentKind(pc) ?? undefined,
-            agentSessionId: declaredAgentSessionId(pc) ?? undefined,
-            suppressedAgentSessions: restoreSuppressedAgentSessions(pc.suppressed_agent_sessions),
             launchEnv: pc.launch_env ?? undefined,
           })];
       const partition = partitionTabsForRestore(tabs);
@@ -627,17 +616,16 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
         cwd: activeTab.cwd ?? pc.cwd ?? undefined,
         claudeSessionId: activeTabDeclared
           ? undefined
-          : activeTab.claudeSessionId ?? pc.claude_session_id ?? undefined,
+          : activeTab.claudeSessionId,
         agentKind: activeTabDeclared
           ? undefined
-          : activeTab.agentKind ?? pc.agent_kind ?? undefined,
+          : activeTab.agentKind,
         agentSessionId: activeTabDeclared
           ? undefined
-          : activeTab.agentSessionId ?? pc.agent_session_id ?? undefined,
+          : activeTab.agentSessionId,
         suppressedAgentSessions: activeTabDeclared
           ? undefined
-          : activeTab.suppressedAgentSessions
-            ?? restoreSuppressedAgentSessions(pc.suppressed_agent_sessions),
+          : activeTab.suppressedAgentSessions,
         launchEnv: activeTab.launchEnv ?? pc.launch_env ?? undefined,
         pinnedTabId: hydratedTabs.some((tab) => tab.id === pc.pinned_tab_id)
           ? pc.pinned_tab_id ?? undefined
@@ -756,6 +744,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
       agentKind: options.agentKind,
       agentSessionId: options.agentSessionId,
       launchEnv: options.launchEnv,
+      origin: options.origin,
       initialPrompt: options.initialPrompt,
       commandArgv: options.commandArgv,
       ephemeral: options.ephemeral,
@@ -874,6 +863,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
       agentKind: options.agentKind,
       agentSessionId: options.agentSessionId,
       launchEnv: options.launchEnv,
+      origin: options.origin,
       initialPrompt: options.initialPrompt,
       commandArgv: options.commandArgv,
       ephemeral: options.ephemeral,

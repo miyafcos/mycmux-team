@@ -243,6 +243,25 @@ export function resolveSpawnTabPlan(
   return { mode: plan.mode, paneOptions: plan.paneOptions };
 }
 
+export function resolveSpawnOrigin(
+  args: SocketArgs,
+  anchorTabId: string | undefined,
+): PaneTab["origin"] | undefined {
+  const explicitParent = socketArgString(args, "parentTabId", "parent_tab_id");
+  const explicitKind = socketArgString(args, "origin");
+  const parentTabId = explicitParent ?? anchorTabId;
+  if (!parentTabId && !explicitKind) return undefined;
+  const kind = explicitKind ? resolveExplicitOriginKind(explicitKind) : "agent";
+  if (!kind) return undefined;
+  return { kind, ...(parentTabId ? { parentTabId } : {}) };
+}
+
+function resolveExplicitOriginKind(value: string): "human" | "agent" | undefined {
+  if (value === "human" || value === "agent") return value;
+  console.warn(`[pane origin] ignoring unsupported origin: ${value}`);
+  return undefined;
+}
+
 export function resolveSpawnPanePlan(
   args: SocketArgs,
   handoffPromptPath?: string,
@@ -678,6 +697,9 @@ async function spawnPane(args: SocketArgs) {
         : undefined)
       ?? workspace.panes[0];
   if (!anchorPane) throw new Error("pane.spawn anchor pane not found");
+  const anchorTabId = callerSessionId
+    ? anchorPane.tabs.find((tab) => tab.sessionId === callerSessionId)?.id
+    : undefined;
 
   const directionArg = socketArgString(args, "direction") ?? "right";
   if (directionArg !== "right" && directionArg !== "down") {
@@ -696,7 +718,7 @@ async function spawnPane(args: SocketArgs) {
     workspaceId,
     anchorPane.id,
     directionArg,
-    { ...plan.paneOptions, activate, activationSource: "socket" },
+    { ...plan.paneOptions, origin: resolveSpawnOrigin(args, anchorTabId), activate, activationSource: "socket" },
   );
   const updatedWorkspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
   const newPanes = updatedWorkspace?.panes.filter((pane) => !beforePaneIds.has(pane.id)) ?? [];
@@ -749,6 +771,7 @@ async function spawnTab(args: SocketArgs) {
     anchorSessionId,
   ) ?? owner;
   const { workspace, pane } = current;
+  const anchorTabId = pane.tabs.find((tab) => tab.sessionId === anchorSessionId)?.id;
   const beforeTabIds = new Set(pane.tabs.map((tab) => tab.id));
   const activate = socketArgBoolean(args, "activate", false);
   useWorkspaceLayoutStore.getState().addTabToPaneWithOptions(
@@ -756,6 +779,7 @@ async function spawnTab(args: SocketArgs) {
     pane.id,
     {
       ...plan.paneOptions,
+      origin: resolveSpawnOrigin(args, anchorTabId),
       activate,
       activationSource: "socket",
     },
@@ -839,13 +863,16 @@ async function declareTab(args: SocketArgs) {
     ? useWorkspaceListStore.getState().workspaces.map((workspace) => ({ workspace, pane: workspace.panes.find((candidate) => candidate.id === paneId) })).find((candidate) => candidate.pane)
     : sessionId ? findPaneBySessionId(useWorkspaceListStore.getState().workspaces, sessionId) : null;
   if (!match?.pane) throw new Error("pane.declare_tab requires paneId or sessionId");
-  const originKind = socketArgString(args, "origin") === "agent" ? "agent" : "human";
+  const explicitOriginKind = socketArgString(args, "origin");
+  const originKind = explicitOriginKind
+    ? resolveExplicitOriginKind(explicitOriginKind)
+    : "human";
   const parentTabId = socketArgString(args, "parentTabId", "parent_tab_id");
   const tab = useWorkspaceLayoutStore.getState().declareTab(match.workspace.id, match.pane.id, {
     label,
     declaredPrompt: socketArgString(args, "declaredPrompt", "declared_prompt"),
     declaredTarget: socketArgString(args, "declaredTarget", "declared_target"),
-    origin: { kind: originKind, parentTabId },
+    origin: originKind ? { kind: originKind, parentTabId } : undefined,
   });
   if (!tab) throw new Error("pane.declare_tab could not add tab");
   return { tabId: tab.id, workspaceId: match.workspace.id, paneId: match.pane.id };

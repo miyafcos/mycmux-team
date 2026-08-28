@@ -1,0 +1,3 @@
+import { workspaceGroupingMutationCapability } from "../stores/workspaceGroupingMutationCapability.internal.ts";
+
+void workspaceGroupingMutationCapability;

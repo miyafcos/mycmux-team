@@ -172,7 +172,8 @@ function queueFontZoom(amount: number): void {
 export function attachGlobalFontZoom(target: Window): () => void {
   const handleWheel = (event: WheelEvent): void => {
     if (event.defaultPrevented || event.metaKey) return;
-    if (!event.ctrlKey || event.shiftKey || event.altKey) return;
+    if (!event.ctrlKey || event.shiftKey || event.altKey
+      || (typeof document !== "undefined" && document.documentElement.dataset.cmuxGroupingDrag === "1")) return;
     event.preventDefault();
     event.stopPropagation();
     queueFontZoom(wheelDeltaToZoomAmount(event));

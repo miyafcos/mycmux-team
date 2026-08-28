@@ -256,29 +256,31 @@ def test_workspace_mount_lru_trim_is_unconditional() -> None:
     assert "releaseStartupRestorePins" not in workspace_view
 
 
-def test_shell_starter_mapping_can_recover_session_identity() -> None:
+def test_shell_starter_mapping_recovers_only_the_matching_tab_identity() -> None:
     socket_listener = read_repo_text("src/components/layout/SocketListener.tsx")
     app = read_repo_text("src/App.tsx")
 
     for snippet in [
         'return mapping.agent_kind ?? existingKind ?? "claude";',
-        "tabMapping ?? (isActiveTab ? paneMapping : undefined)",
+        "agentMappings[tabId]",
         "applyMappingToTabConfig",
-        "applyMappingToPaneConfig",
         "if (!processKind && tabKind && tabKind !== kind)",
     ]:
         source = "src/App.tsx" if snippet.startswith("if (!processKind") else "src/components/layout/SocketListener.tsx"
         assert_contains(app if source == "src/App.tsx" else socket_listener, snippet, source)
+    assert "tabMapping ?? (isActiveTab ? paneMapping : undefined)" not in socket_listener
+    assert "applyMappingToPaneConfig" not in socket_listener
 
 
 def test_existing_session_id_is_not_overwritten_by_mapping() -> None:
     socket_listener = read_repo_text("src/components/layout/SocketListener.tsx")
 
-    for snippet in [
+    assert_contains(
+        socket_listener,
         "if (existingSessionId && existingSessionId !== mapping.session_id) return tabConfig;",
-        "if (existingSessionId && existingSessionId !== mapping.session_id) return paneConfig;",
-    ]:
-        assert_contains(socket_listener, snippet, "src/components/layout/SocketListener.tsx")
+        "src/components/layout/SocketListener.tsx",
+    )
+    assert "return paneConfig;" not in socket_listener[socket_listener.index("function applyMappingToTabConfig"):socket_listener.index("export function applyMappingsToConfig")]
 
 
 def test_startup_restore_autosave_hold_remains_wired() -> None:

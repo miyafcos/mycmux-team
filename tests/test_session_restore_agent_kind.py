@@ -43,10 +43,8 @@ def test_agent_kind_round_trip_contract_remains_wired() -> None:
         "agent_session_id: tabAgentId",
         "suppressed_agent_sessions: declared",
         "terminal_snapshot: declared",
-        "agent_kind: paneConfig.agent_kind ?? mappingKind",
         "agent_kind: tabConfig.agent_kind ?? mappingKind",
-        "function tabConfigWithPaneAgentSessionFallback(",
-        "tabConfigWithPaneAgentSessionFallback(tab, pane)",
+        "agentMappings[tabId]",
         "clearDuplicateTabAgentSession(cleanedTab)",
         "function getPaneAgentSessionKey(pane: PaneConfig): string | null",
         "function clearDuplicatePaneAgentSession(pane: PaneConfig): PaneConfig",
@@ -63,13 +61,12 @@ def test_agent_kind_round_trip_contract_remains_wired() -> None:
     assert_contains(storage, "pub suppressed_agent_sessions: Option<Vec<SuppressedAgentSessionConfig>>", "src-tauri/src/db/storage.rs")
 
     for snippet in [
-        "const activeTabConfigId = pc.active_tab_id ?? pc.tabs?.[0]?.tab_id ?? null;",
-        "const isActiveRestoredTab = tabConfig.tab_id === activeTabConfigId;",
         "const tabAgentKind =",
+        "tabConfig.agent_kind",
         "const tabAgentSessionId =",
         "agentKind: tabAgentKind",
         "agentSessionId: tabAgentSessionId",
-        "suppressedAgentSessions: restoreSuppressedAgentSessions",
+        ": restoreSuppressedAgentSessions(tabConfig.suppressed_agent_sessions)",
         "const activeTabDeclared = isDeclaredTab(activeTab);",
         "agentKind: activeTabDeclared",
         "agentSessionId: activeTabDeclared",
@@ -145,11 +142,14 @@ def test_agent_kind_round_trip_contract_remains_wired() -> None:
         "write_text_file_atomic(",
         "fn read_session_mapping_files_for_ids",
         "fn is_safe_mapping_id(",
+        "fn stable_tab_id_from_legacy_session_id(",
+        "fn unique_legacy_mapping_path(",
+        "candidates.len() == 1",
         "pub fn read_agent_session_mappings(",
         "pub(crate) fn remove_session_mapping_file(",
     ]:
         assert_contains(session_mapping, snippet, "src-tauri/src/commands/session_mapping.rs")
-    assert "std::fs::read_dir(map_dir)" not in session_mapping
+    assert "std::fs::read_dir(map_dir)" in session_mapping
     assert "agent_mappings_snapshot()" not in monitor
 
 

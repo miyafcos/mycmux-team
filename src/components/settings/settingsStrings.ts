@@ -56,9 +56,6 @@ export const notificationSettingsStrings = {
   title: "通知",
   enabledLabel: "通知",
   soundLabel: "通知サウンド",
-  delegationWatchTitle: delegationWatchStrings.notifyTitle,
-  delegationWatchLabel: delegationWatchStrings.notifyLabel,
-  delegationWatchHint: "この通知は全体の「通知」がオンで、かつ見守りの通知もオンのときだけ出ます。",
   layoutTitle: "レイアウト",
   splitRightLabel: "「右に分割」ボタンを表示",
   splitDownLabel: "「下に分割」ボタンを表示",
@@ -67,24 +64,51 @@ export const notificationSettingsStrings = {
   paneComposerHint: "文字を選んで消す・書き直すといった編集ができる入力欄です。Enter で送信、Shift+Enter で改行。ペインが低いときは自動的に隠れます。",
 } as const;
 
-// バックグラウンドで動く AI (タブ掃除の判定 / タブ名の自動命名 / AIログの要約・ダイジェスト) の文言。
 export const aiSettingsStrings = {
-  tabLabel: "AI とおまかせ",
-  title: "バックグラウンド AI",
-  description: "アプリが自動で AI を呼ぶ場面すべてで、ここの設定が使われます。対象は「タブ掃除の AI判定」「タブ名の自動命名」「AIログのセッション要約」「日次ダイジェスト」の4つです。",
+  tabLabel: "AI",
+  automationTabLabel: "自動化",
   enableLabel: "AI機能を有効にする",
-  enableHint: "オフにすると4つの機能すべてが止まります。AIログのパネルを開いたときの自動要約・自動ダイジェストも実行されません (集計や使用量の表示はそのまま見られます)。",
+  enableHint: "オフにすると下の機能がすべて止まります",
   providerTitle: "使用する AI",
-  providerHint: "選んだ側の CLI がこのPCにインストールされている必要があります。",
   modelTitle: "モデル",
-  modelHint: "一覧にないモデルIDも直接入力できます。空にすると既定のモデルに戻ります。",
+  customModelLabel: "カスタム…",
+  featureTitle: "この設定で動く機能",
+  automaticBadge: "自動",
+  manualBadge: "ボタンで実行",
+  features: {
+    autoPaneNaming: {
+      label: "タブの自動命名",
+      disclosure: "画面末尾14行・作業フォルダ・ペイン構成を送ります",
+    },
+    replyDraft: {
+      label: "返信案の準備",
+      disclosure: "ダッシュボードの会話末尾を送ります",
+    },
+    reportInboxSummary: {
+      label: "報告インボックスの要約",
+      disclosure: "報告本文を送ります",
+    },
+    tabSweep: {
+      label: "タブ整理のAI判定",
+      disclosure: "各タブの画面末尾8行と作業フォルダを送ります",
+    },
+    ailogSession: {
+      label: "ailog セッション要約",
+      disclosure: "セッションログ全文を送ります（トークン消費が大きい機能です）",
+    },
+    ailogBatch: {
+      label: "ailog 一括要約",
+      disclosure: "選択したセッションのログを順に送ります",
+    },
+    tabRelayout: {
+      label: "タブ再配置（準備中）",
+      disclosure: "監査完了まで利用できません",
+    },
+  },
   modelMismatch: (providerLabel: string): string =>
     `このモデルIDは ${providerLabel} のものではないようです。このまま使うと実行時に失敗する可能性があります。`,
   modelCustom: "候補一覧にないモデルIDです。そのまま使用します。",
-  costNote: "AIログのセッション要約は一度に多くのセッションを処理します。高コストのモデルを選ぶと、その分の費用と時間が増えます。",
-  runningNote: "実行中の処理には反映されません。次に実行するぶんから切り替わります。",
-  resetButton: "既定に戻す",
-  disabledReason: "設定 > AI とおまかせ で「AI機能を有効にする」がオフになっています",
+  disabledReason: "設定 > AI で「AI機能を有効にする」がオフになっています",
 } as const;
 
 // タブ名の自動命名 (AI が無名タブに名前を付ける定期ジョブ) の文言。

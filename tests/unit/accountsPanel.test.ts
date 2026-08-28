@@ -354,3 +354,44 @@ describe("shared reset mark (render)", () => {
   });
 });
 
+
+// Reported as "the grok limit shows three numbers and I can't tell what any of
+// them are". A grok row carries one meter, so the line reads 65% / a reset date
+// / a fetch time -- three numbers where only the first is a limit, and the
+// reset was marked with a bare arrow. One meter has room to say the word.
+describe("single-meter rows spell out the reset date", () => {
+  const resetIso = "2026-08-29T00:00:00Z";
+
+  it("writes リセット next to a lone meter", () => {
+    const html = renderPanel(usageRow({
+      provider: "grok",
+      seven_day: stat(65, resetIso),
+    }));
+
+    // The hover copy has always said "リセット <full date>"; what changed is
+    // the visible text, which now carries the short date instead of an arrow.
+    expect(html).toContain(`>リセット ${formatResetShort(resetIso)}<`);
+    expect(countResetMarks(html)).toBe(0);
+  });
+
+  // claude's 5h and 7d reset on different days, so they cannot collapse into
+  // one mark. Spelling the word twice would run past the panel's width.
+  it("keeps the arrow once a second meter shares the line", () => {
+    const html = renderPanel(usageRow({
+      five_hour: stat(20, "2026-08-27T00:00:00Z"),
+      seven_day: stat(65, resetIso),
+    }));
+
+    expect(html).not.toContain(`>リセット ${formatResetShort(resetIso)}<`);
+    expect(countResetMarks(html)).toBe(2);
+  });
+
+  it("still labels the fetch time so it is not read as a limit", () => {
+    const html = renderPanel(usageRow({
+      provider: "grok",
+      seven_day: stat(65, resetIso),
+    }));
+
+    expect(html).toContain("取得 ");
+  });
+});

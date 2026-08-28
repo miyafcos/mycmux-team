@@ -205,6 +205,45 @@ describe("displayWindows", () => {
     );
     expect(windows.map(({ key }) => key)).toEqual(["model:Fable", "model:Falcon"]);
   });
+
+  // Every Grok product is named "Grok<Something>", so the initial-letter rule
+  // that reads fine for claude would print the same "G" for all three and the
+  // meter row would stop saying which limit is which.
+  it("gives every Grok product window a label of its own", () => {
+    const windows = displayWindows(
+      row({
+        provider: "grok",
+        seven_day: stat(64),
+        model_windows: [
+          { key: "GrokBuild", window: stat(58) },
+          { key: "GrokChat", window: stat(12) },
+          { key: "GrokImagine", window: stat(3) },
+        ],
+      }),
+    );
+    const labels = windows.map(({ label }) => label);
+    expect(labels).toEqual(["7d", "開発", "対話", "画像"]);
+    expect(new Set(labels).size).toBe(labels.length);
+    // The API's own name stays reachable on hover.
+    expect(windows[1].hint).toContain("GrokBuild");
+  });
+
+  it("falls back to the name without its shared prefix for unknown Grok products", () => {
+    const windows = displayWindows(
+      row({
+        provider: "grok",
+        model_windows: [{ key: "GrokVideo", window: stat(9) }],
+      }),
+    );
+    expect(windows[0].label).toBe("Video");
+  });
+
+  it("leaves non-Grok providers on the initial-letter label", () => {
+    const windows = displayWindows(
+      row({ model_windows: [{ key: "seven_day_fable", window: stat(54) }] }),
+    );
+    expect(windows[0].label).toBe("F");
+  });
 });
 
 describe("sharedResetAt", () => {

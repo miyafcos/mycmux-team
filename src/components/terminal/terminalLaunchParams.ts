@@ -22,7 +22,6 @@ export interface TerminalLaunchParams {
   args: string[];
   cwd?: string;
   launchEnv?: Record<string, string>;
-  restoreFallbackSessionIds?: string[];
 }
 
 export interface TerminalLaunchRequest {
@@ -30,7 +29,6 @@ export interface TerminalLaunchRequest {
   args: string[];
   cwd?: string;
   env?: Record<string, string>;
-  restoreFallbackSessionIds?: string[];
 }
 
 /**
@@ -46,6 +44,5 @@ export function buildLaunchRequest(params: TerminalLaunchParams): TerminalLaunch
     // Historical behavior: an absent env is sent as undefined (backend treats it
     // as "no frontend env"); an empty object is still forwarded as-is.
     env: params.launchEnv || undefined,
-    restoreFallbackSessionIds: params.restoreFallbackSessionIds,
   };
 }

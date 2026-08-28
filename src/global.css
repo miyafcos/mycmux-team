@@ -1127,6 +1127,14 @@ div:hover>.tab-close-btn {
   opacity: 0.5;
 }
 
+/* Still clickable, but the click leaves the terminal for the dashboard: the
+   scrollback no longer holds this turn. Dimmer than a row that scrolls in
+   place, but not as dim as one that cannot be reached at all. */
+.terminal-turn-list__row.is-elsewhere {
+  border-left-color: var(--cmux-border);
+  opacity: 0.75;
+}
+
 .terminal-turn-list__empty {
   padding: var(--cmux-space-2) var(--cmux-space-3);
   color: var(--cmux-text-secondary);

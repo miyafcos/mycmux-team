@@ -8,6 +8,7 @@ import {
   resolveTranscriptTurnAction,
   resolveTurnChipState,
   resolveTurnChipVisibility,
+  viewportIsAtBottom,
   TURN_CHIP_HIDE_DELAY_MS,
   TURN_CHIP_INTENT_HOLD_MS,
   TURN_CHIP_SHOW_DEBOUNCE_MS,
@@ -388,5 +389,28 @@ describe("buildTurnListRows", () => {
     expect(rows).toHaveLength(200);
     expect(rows[0]?.markIndex).toBe(200);
     expect(rows[199]?.markIndex).toBe(1);
+  });
+});
+
+// A refit reflows the wrapped lines and moves viewportY. Whether the reader was
+// following the live end has to be decided *before* the fit, or they get
+// dropped somewhere up the scrollback (reported as "I was at the very bottom
+// and suddenly got thrown up to the top").
+describe("viewportIsAtBottom", () => {
+  it("is true while the viewport follows the live end", () => {
+    expect(viewportIsAtBottom({ viewportY: 400, baseY: 400 })).toBe(true);
+  });
+
+  it("stays true if the viewport ran past the base row", () => {
+    expect(viewportIsAtBottom({ viewportY: 401, baseY: 400 })).toBe(true);
+  });
+
+  it("is false while the reader is scrolled up", () => {
+    expect(viewportIsAtBottom({ viewportY: 399, baseY: 400 })).toBe(false);
+    expect(viewportIsAtBottom({ viewportY: 0, baseY: 400 })).toBe(false);
+  });
+
+  it("is true for a buffer with nothing scrolled off yet", () => {
+    expect(viewportIsAtBottom({ viewportY: 0, baseY: 0 })).toBe(true);
   });
 });

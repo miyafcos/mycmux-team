@@ -1,6 +1,7 @@
 //! Shared helpers for the ailog tests: temporary transcript trees, a scratch
 //! database, and a synchronous wrapper around the async indexer.
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -15,6 +16,7 @@ pub struct Fixture {
     #[allow(dead_code)]
     dir: tempfile::TempDir,
     pub logs: PathBuf,
+    pub archive: PathBuf,
     pub db: PathBuf,
 }
 
@@ -22,9 +24,11 @@ impl Fixture {
     pub fn new() -> Self {
         let dir = tempfile::tempdir().expect("tempdir");
         let logs = dir.path().join("logs");
+        let archive = dir.path().join("archive");
         std::fs::create_dir_all(&logs).expect("create logs dir");
+        std::fs::create_dir_all(&archive).expect("create archive dir");
         let db = dir.path().join("ailog.db");
-        Self { dir, logs, db }
+        Self { dir, logs, archive, db }
     }
 
     pub fn write(&self, name: &str, lines: &[&str]) -> PathBuf {
@@ -51,8 +55,26 @@ impl Fixture {
         }
     }
 
+    pub fn write_gzip(&self, kind: &str, name: &str, lines: &[&str]) -> PathBuf {
+        let path = self.archive.join(kind).join(name);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("create archive parent");
+        }
+        let mut body = lines.join("\n");
+        body.push('\n');
+        let file = std::fs::File::create(&path).expect("create gzip transcript");
+        let mut encoder = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+        encoder.write_all(body.as_bytes()).expect("write gzip transcript");
+        encoder.finish().expect("finish gzip transcript");
+        path
+    }
+
     pub fn index(&self, kind: &'static str, full: bool) -> IndexReport {
         index_dir(kind, &self.logs, &self.db, full)
+    }
+
+    pub fn index_with_archive(&self, kind: &'static str, full: bool) -> IndexReport {
+        index_dir_with_archive(kind, &self.logs, &self.archive, &self.db, full)
     }
 
     pub fn conn(&self) -> Connection {
@@ -69,6 +91,26 @@ impl Fixture {
 }
 
 pub fn index_dir(kind: &'static str, logs: &Path, db: &Path, full: bool) -> IndexReport {
+    index_dir_with_optional_archive(kind, logs, None, db, full)
+}
+
+pub fn index_dir_with_archive(
+    kind: &'static str,
+    logs: &Path,
+    archive: &Path,
+    db: &Path,
+    full: bool,
+) -> IndexReport {
+    index_dir_with_optional_archive(kind, logs, Some(archive), db, full)
+}
+
+fn index_dir_with_optional_archive(
+    kind: &'static str,
+    logs: &Path,
+    archive: Option<&Path>,
+    db: &Path,
+    full: bool,
+) -> IndexReport {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -76,6 +118,7 @@ pub fn index_dir(kind: &'static str, logs: &Path, db: &Path, full: bool) -> Inde
     let mut options = IndexOptions::new(db.to_path_buf());
     options.full = full;
     options.roots = vec![(kind, logs.to_path_buf())];
+    options.archive_root = archive.map(Path::to_path_buf);
     runtime
         .block_on(index::run_index(
             options,

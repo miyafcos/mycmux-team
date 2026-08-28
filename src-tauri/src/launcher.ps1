@@ -38,10 +38,14 @@ function Write-MycmuxSessionMapping {
   if ([string]::IsNullOrWhiteSpace($PaneId) -or [string]::IsNullOrWhiteSpace($SessionId)) {
     return
   }
+  $mappingId = if ($env:MYCMUX_TAB_ID -match "^[0-9a-fA-F-]{36}$") { $env:MYCMUX_TAB_ID } else { $PaneId }
+  if ([string]::IsNullOrWhiteSpace($mappingId)) {
+    return
+  }
   $runtimeDir = if ($env:MYCMUX_RUNTIME_DIR) { $env:MYCMUX_RUNTIME_DIR } else { Join-Path $HOME ".mycmux" }
   $mapDir = Join-Path $runtimeDir "pane-sessions"
   New-Item -ItemType Directory -Force -Path $mapDir | Out-Null
-  $mapPath = Join-Path $mapDir "$PaneId.txt"
+  $mapPath = Join-Path $mapDir "$mappingId.txt"
   $encoding = New-Object System.Text.UTF8Encoding($false)
   if ([string]::IsNullOrWhiteSpace($Kind)) {
     $content = $SessionId

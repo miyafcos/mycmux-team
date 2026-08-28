@@ -1,4 +1,5 @@
 import { useEffect, useRef, type CSSProperties, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 
 type OverlaySize = "full" | "wide" | "dialog";
 type OverlayLayer = "base" | "top";
@@ -42,6 +43,13 @@ const FOCUSABLE_SELECTOR = [
   "[contenteditable='true']",
   "[tabindex]:not([tabindex='-1'])",
 ].join(",");
+
+interface OverlayIsolationState {
+  depth: number;
+  restore: Map<HTMLElement, { inert: boolean; ariaHidden: string | null }>;
+}
+
+const overlayIsolationByRoot = new WeakMap<HTMLElement, OverlayIsolationState>();
 
 function isVisibleDisclosureTarget(element: HTMLElement): boolean {
   const closedDetails = element.closest("details:not([open])");
@@ -91,12 +99,52 @@ export function OverlayShell({
 }: OverlayShellProps) {
   const panelRef = useRef<HTMLDivElement>(null);
   const previouslyFocusedRef = useRef<HTMLElement | null>(null);
+  const isolationWasOpenedRef = useRef(false);
+  const portalTarget = typeof document === "undefined"
+    ? null
+    : document.querySelector<HTMLElement>("[data-cmux-themed-root]") ?? document.body;
 
   useEffect(() => {
     if (!open) return;
     previouslyFocusedRef.current = document.activeElement as HTMLElement | null;
     panelRef.current?.focus();
   }, [open]);
+
+  const backgroundIsolationActive = open || closing;
+  useEffect(() => {
+    if (!backgroundIsolationActive || (closing && !isolationWasOpenedRef.current)) return;
+    isolationWasOpenedRef.current = true;
+    if (!portalTarget) return;
+    const isolation = overlayIsolationByRoot.get(portalTarget) ?? {
+      depth: 0,
+      restore: new Map<HTMLElement, { inert: boolean; ariaHidden: string | null }>(),
+    };
+    if (isolation.depth === 0) overlayIsolationByRoot.set(portalTarget, isolation);
+    isolation.depth += 1;
+    if (isolation.depth === 1) {
+      for (const element of portalTarget.children) {
+        if (!(element instanceof HTMLElement) || element.hasAttribute("data-cmux-overlay-root")) continue;
+        isolation.restore.set(element, {
+          inert: element.hasAttribute("inert"),
+          ariaHidden: element.getAttribute("aria-hidden"),
+        });
+        element.setAttribute("inert", "");
+        element.setAttribute("aria-hidden", "true");
+      }
+    }
+    return () => {
+      isolation.depth -= 1;
+      if (isolation.depth !== 0) return;
+      for (const [element, previous] of isolation.restore) {
+        if (previous.inert) element.setAttribute("inert", "");
+        else element.removeAttribute("inert");
+        if (previous.ariaHidden === null) element.removeAttribute("aria-hidden");
+        else element.setAttribute("aria-hidden", previous.ariaHidden);
+      }
+      isolation.restore.clear();
+      overlayIsolationByRoot.delete(portalTarget);
+    };
+  }, [backgroundIsolationActive, closing, portalTarget]);
 
   useEffect(() => {
     return () => {
@@ -150,14 +198,15 @@ export function OverlayShell({
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [closeOnEscape, closing, onClose, onEscape, open]);
 
-  return (
+  const overlay = (
     <div
+      data-cmux-overlay-root="true"
       className={`cmux-overlay-backdrop${closing ? " is-closing" : ""}`}
       inert={closing ? true : undefined}
       aria-hidden={closing ? true : undefined}
       style={backdropStyle(layer)}
       onMouseDown={(event) => {
-        if (!closing && closeOnBackdrop && event.target === event.currentTarget) onClose();
+        if (!closing && closeOnBackdrop && (event.button ?? 0) === 0 && event.target === event.currentTarget) onClose();
       }}
     >
       <div
@@ -175,4 +224,5 @@ export function OverlayShell({
       </div>
     </div>
   );
+  return portalTarget ? createPortal(overlay, portalTarget) : overlay;
 }

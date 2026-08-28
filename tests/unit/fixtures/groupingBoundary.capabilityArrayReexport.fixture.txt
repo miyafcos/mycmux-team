@@ -1,0 +1,3 @@
+import { workspaceGroupingMutationCapability } from "./workspaceGroupingMutationCapability.internal";
+
+export const caps = [workspaceGroupingMutationCapability];

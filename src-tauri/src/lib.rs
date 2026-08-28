@@ -487,6 +487,9 @@ pub fn run() {
                 .and_then(|path| path.parent().map(std::path::Path::to_path_buf));
             let mycmux_dir = test_profile::runtime_dir().ok();
             session_retention::run_startup_retention(app_data_parent, mycmux_dir);
+            if !test_profile::is_active() {
+                ailog::mirror::start_scheduler(app_handle.clone());
+            }
             let ms = state.metadata_store.clone();
             pty::monitor::start_monitor(
                 app_handle.clone(),

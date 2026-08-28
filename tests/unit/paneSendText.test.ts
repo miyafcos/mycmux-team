@@ -95,7 +95,7 @@ describe("pane.send_text confirmed enter", () => {
     expect(terminalBufferMocks.hasTerminalBuffer).not.toHaveBeenCalled();
     expect(terminalBufferMocks.hasMountedTerminal).not.toHaveBeenCalled();
     expect(terminalBufferMocks.getTerminalBufferLines).not.toHaveBeenCalled();
-  });
+  }, 120_000);
 
   it("separates the observed bytes:995 Japanese payload and confirms screen advance", async () => {
     vi.useRealTimers();

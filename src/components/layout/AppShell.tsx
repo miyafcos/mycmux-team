@@ -774,7 +774,8 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
           }
         }
       }
-      await removeWorkspaceScrollback(id).catch((err) =>
+      const workspaceSessionIds = ws?.panes.flatMap((pane) => pane.tabs.map((tab) => tab.sessionId)) ?? [];
+      await removeWorkspaceScrollback(id, workspaceSessionIds).catch((err) =>
         console.warn("[mycmux] removeWorkspaceScrollback failed", id, err),
       );
       removeWorkspace(id);
@@ -1172,6 +1173,7 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
   return (
     <div
       className={uiVariant === "cmux" ? "ui-cmux" : undefined}
+      data-cmux-themed-root="true"
       data-cmux-zoom-active={zoomedPaneId && !dashboardOpen ? "true" : undefined}
       style={{
         ...themeVars,

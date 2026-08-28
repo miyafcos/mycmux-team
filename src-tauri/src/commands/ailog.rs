@@ -534,6 +534,9 @@ pub struct IndexStatus {
     pub sessions: usize,
     pub last_finished_at: i64,
     pub last_error: Option<String>,
+    /// Set when the durable mirror had to skip the full-text tier -- the
+    /// destination is nearly full, or its free space could not be read.
+    pub mirror_warning_code: Option<String>,
 }
 
 #[tauri::command(async)]
@@ -550,6 +553,7 @@ pub async fn ailog_index_status() -> Result<IndexStatus, String> {
         files_total: state.files_total.load(Ordering::Relaxed),
         sessions: state.sessions.load(Ordering::Relaxed),
         last_finished_at: in_memory,
+        mirror_warning_code: crate::ailog::mirror::last_warning_code(),
         last_error: state
             .last_error
             .lock()
@@ -870,7 +874,10 @@ pub fn ailog_get_usd_jpy_rate(app_handle: AppHandle) -> Result<f64, String> {
 }
 
 #[tauri::command(async)]
-pub fn ailog_set_usd_jpy_rate(app_handle: AppHandle, rate: f64) -> Result<f64, String> {
+pub fn ailog_set_usd_jpy_rate(
+    app_handle: AppHandle,
+    rate: f64,
+) -> Result<f64, crate::db::storage::PersistentStorageError> {
     let sanitized = crate::db::storage::sanitize_ailog_usd_jpy_rate(rate);
     crate::db::storage::update(&app_handle, |data| {
         data.settings.ailog_usd_jpy_rate = sanitized;

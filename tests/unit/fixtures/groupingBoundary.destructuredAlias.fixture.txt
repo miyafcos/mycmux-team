@@ -1,0 +1,4 @@
+import { useWorkspaceListStore } from "../stores/workspaceListStore.ts";
+
+const { _restoreGroupingLayout: mutate } = useWorkspaceListStore.getState();
+mutate(next, selection, "grouping-rollback", capability);

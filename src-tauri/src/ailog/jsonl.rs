@@ -3,6 +3,15 @@ use std::io::{BufRead, BufReader, Read};
 use std::ops::ControlFlow;
 use std::path::Path;
 
+fn reader_for(path: &Path) -> Result<Box<dyn Read>, String> {
+    let file = std::fs::File::open(path).map_err(|err| format!("open transcript {path:?}: {err}"))?;
+    if path.extension().and_then(|ext| ext.to_str()) == Some("gz") {
+        Ok(Box::new(flate2::read::GzDecoder::new(file)))
+    } else {
+        Ok(Box::new(file))
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct Budget { pub max_bytes: u64, pub max_lines: u64 }
 #[derive(Debug, Clone, Copy, Default)]
@@ -10,8 +19,7 @@ pub struct Stats { pub bytes_read: u64, pub file_bytes: u64, pub lines_read: u64
 
 pub fn for_each_line(path: &Path, budget: Budget, mut f: impl FnMut(&str) -> ControlFlow<()>) -> Result<Stats, String> {
     let file_bytes = std::fs::metadata(path).map_err(|err| format!("stat transcript {path:?}: {err}"))?.len();
-    let file = std::fs::File::open(path).map_err(|err| format!("open transcript {path:?}: {err}"))?;
-    let mut reader = BufReader::new(file); let mut buffer = Vec::new(); let mut stats = Stats { file_bytes, ..Stats::default() };
+    let mut reader = BufReader::new(reader_for(path)?); let mut buffer = Vec::new(); let mut stats = Stats { file_bytes, ..Stats::default() };
     const MAX_LINE_BYTES: u64 = 1024 * 1024;
     loop {
         if stats.lines_read >= budget.max_lines || stats.bytes_read >= budget.max_bytes {

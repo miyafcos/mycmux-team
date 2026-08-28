@@ -58,6 +58,7 @@ import {
   resolveTranscriptTurnAction,
   resolveTurnChipState,
   TURN_CHIP_EXIT_MS,
+  viewportIsAtBottom,
   type TranscriptTurnIntent,
   type TurnChipMode,
   type TurnChipVisibilityController,
@@ -214,7 +215,6 @@ interface XTermWrapperProps {
   onArtifactLinkClick?: (uri: string, screenPos: { x: number; y: number }) => void;
   cwd?: string;
   launchEnv?: Record<string, string>;
-  restoreFallbackSessionIds?: string[];
   initialReplay?: string[];
 }
 
@@ -601,7 +601,6 @@ export default memo(function XTermWrapper({
   onArtifactLinkClick,
   cwd,
   launchEnv,
-  restoreFallbackSessionIds,
   initialReplay,
 }: XTermWrapperProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -627,9 +626,8 @@ export default memo(function XTermWrapper({
     args,
     cwd,
     launchEnv,
-    restoreFallbackSessionIds,
   });
-  launchParamsRef.current = { command, args, cwd, launchEnv, restoreFallbackSessionIds };
+  launchParamsRef.current = { command, args, cwd, launchEnv };
 
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
@@ -1127,12 +1125,22 @@ export default memo(function XTermWrapper({
       const containerSizeChanged = rememberContainerSize();
       if (!force && !containerSizeChanged) return;
 
+      // Read the live buffer rather than isAtBottomRef: that ref only moves on
+      // the scroll event, so a resize arriving before the event lands would see
+      // a stale answer and drop the reader somewhere up the scrollback.
+      const wasPinnedToBottom = viewportIsAtBottom(currentTerm.buffer.active);
+
       try {
         currentFitAddon.fit();
         bumpPaintStat("resize", sessionId);
       } catch {
         return;
       }
+
+      // fit() reflows the wrapped lines, which moves viewportY. A viewport that
+      // was following the live end has to be put back; one the reader had
+      // scrolled up to is left exactly where they left it.
+      if (wasPinnedToBottom) currentTerm.scrollToBottom();
 
       if (currentTerm.cols <= 0 || currentTerm.rows <= 0) return;
       const terminalSizeChanged = currentTerm.cols !== lastSentCols || currentTerm.rows !== lastSentRows;
@@ -1211,8 +1219,7 @@ export default memo(function XTermWrapper({
       scrollDisposable?.dispose();
       scrollDisposable = currentTerm.onScroll(() => {
         if (termDisposed) return;
-        const buf = currentTerm.buffer.active;
-        isAtBottomRef.current = buf.viewportY >= buf.baseY;
+        isAtBottomRef.current = viewportIsAtBottom(currentTerm.buffer.active);
         refreshTurnChipRef.current();
       });
     };
@@ -2229,7 +2236,6 @@ export default memo(function XTermWrapper({
         enqueueFrontendBatch,
         launch.cwd,
         launch.env,
-        launch.restoreFallbackSessionIds,
       );
       frontendChannelReady = true;
       if (cols > 0 && rows > 0) {

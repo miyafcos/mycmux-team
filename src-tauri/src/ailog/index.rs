@@ -24,7 +24,7 @@ use crate::ailog::price::{self, PriceTable};
 use crate::ailog::rollup;
 use crate::ailog::{
     parse_claude, parse_codex, parse_grok, project_rules, ChunkData, SessionChunk, ToolRow,
-    KIND_CLAUDE, KIND_CODEX, KIND_GROK,
+    KIND_CLAUDE, KIND_CLAUDE_CODEX, KIND_CODEX, KIND_GROK,
 };
 use parse_codex::SessionBehavior;
 
@@ -49,6 +49,9 @@ pub struct IndexOptions {
     pub full: bool,
     /// `(kind, root)` pairs. Empty means the two default roots.
     pub roots: Vec<(&'static str, PathBuf)>,
+    /// Optional immutable gzip archive root. Defaults to `~/.mycmux/ailog-archive`
+    /// only when indexing the normal default roots.
+    pub archive_root: Option<PathBuf>,
     pub db_path: PathBuf,
 }
 
@@ -57,6 +60,7 @@ impl IndexOptions {
         Self {
             full: false,
             roots: Vec::new(),
+            archive_root: None,
             db_path,
         }
     }
@@ -111,6 +115,8 @@ struct FileJob {
     kind: &'static str,
     size: u64,
     mtime_ns: i64,
+    /// Archives are immutable gzip streams and always parse from byte zero.
+    archive: bool,
     /// Byte offset to resume from; 0 for a full read.
     start: u64,
     reset: bool,
@@ -143,6 +149,7 @@ enum WriteMsg {
         kind: &'static str,
         size: u64,
         mtime_ns: i64,
+        archive: bool,
         start: u64,
         reset: bool,
         had_previous: bool,
@@ -203,6 +210,53 @@ fn collect_jsonl(root: &Path, out: &mut Vec<PathBuf>, file_name: Option<&str>) {
     }
 }
 
+/// Walk an immutable archive kind directory collecting `*.jsonl.gz` files.
+pub(crate) fn collect_archive_jsonl(root: &Path, out: &mut Vec<PathBuf>, file_name: Option<&str>) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        match entry.file_type() {
+            Ok(file_type) if file_type.is_dir() => collect_archive_jsonl(&path, out, file_name),
+            Ok(file_type) if file_type.is_file() => {
+                let is_jsonl_gz = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.ends_with(".jsonl.gz"));
+                if is_jsonl_gz
+                    && file_name.map_or(true, |name| {
+                        path.file_name()
+                            .and_then(|value| value.to_str())
+                            .is_some_and(|value| value == format!("{name}.gz"))
+                    })
+                {
+                    out.push(path);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn live_root_for_kind(kind: &str) -> Option<PathBuf> {
+    match kind {
+        KIND_CLAUDE => crate::ailog::claude_root(),
+        KIND_CLAUDE_CODEX => crate::ailog::claude_codex_root(),
+        KIND_CODEX => crate::ailog::codex_root(),
+        KIND_GROK => crate::ailog::grok_root(),
+        _ => None,
+    }
+}
+
+fn archive_original_path(archive_kind_root: &Path, archive_path: &Path, live_root: &Path) -> Option<PathBuf> {
+    let relative = archive_path.strip_prefix(archive_kind_root).ok()?;
+    let name = relative.file_name()?.to_str()?.strip_suffix(".gz")?;
+    let mut original_relative = relative.to_path_buf();
+    original_relative.set_file_name(name);
+    Some(live_root.join(original_relative))
+}
+
 fn mtime_nanos(meta: &std::fs::Metadata) -> i64 {
     meta.modified()
         .ok()
@@ -234,7 +288,8 @@ pub async fn run_index(
 ) -> Result<IndexReport, String> {
     let started = Instant::now();
     let scan_started = Instant::now();
-    let roots = if options.roots.is_empty() {
+    let using_default_roots = options.roots.is_empty();
+    let roots = if using_default_roots {
         default_roots()
     } else {
         options.roots.clone()
@@ -318,6 +373,54 @@ pub async fn run_index(
             }
         }
     }
+    let configured_archive_root = options.archive_root.clone().or_else(|| {
+        using_default_roots.then(crate::ailog::archive_root).flatten()
+    });
+    if let Some(archive_root) = configured_archive_root.filter(|path| path.is_dir()) {
+        let configured_live_roots: HashMap<&str, &PathBuf> = roots
+            .iter()
+            .map(|(kind, root)| (*kind, root))
+            .collect();
+        for kind in [KIND_CLAUDE, KIND_CLAUDE_CODEX, KIND_CODEX, KIND_GROK] {
+            let Some(live_root) = configured_live_roots
+                .get(kind)
+                .map(|path| (*path).clone())
+                .or_else(|| live_root_for_kind(kind)) else {
+                continue;
+            };
+            let archive_kind_root = archive_root.join(kind);
+            let mut files = Vec::new();
+            collect_archive_jsonl(
+                &archive_kind_root,
+                &mut files,
+                (kind == KIND_GROK).then_some("updates.jsonl"),
+            );
+            for path in files {
+                let Some(original_path) = archive_original_path(&archive_kind_root, &path, &live_root) else {
+                    continue;
+                };
+                if original_path.exists()
+                    || known.contains_key(&original_path.to_string_lossy().to_string())
+                {
+                    skipped += 1;
+                    continue;
+                }
+                let Ok(meta) = std::fs::metadata(&path) else {
+                    continue;
+                };
+                let size = meta.len();
+                let mtime_ns = mtime_nanos(&meta);
+                let key = path.to_string_lossy().to_string();
+                match plan_archive_job(kind, path, size, mtime_ns, known.get(&key).cloned()) {
+                    PlannedJob::Skip => skipped += 1,
+                    PlannedJob::Run(file_job) => {
+                        bytes_total += file_job.size;
+                        jobs.push(file_job);
+                    }
+                }
+            }
+        }
+    }
 
     let files_total = jobs.len();
     let scan_ms = scan_started.elapsed().as_millis() as u64;
@@ -394,6 +497,7 @@ pub async fn run_index(
                         kind,
                         size,
                         mtime_ns,
+                        archive,
                         start,
                         reset,
                         had_previous,
@@ -440,6 +544,7 @@ pub async fn run_index(
                                 kind,
                                 size,
                                 mtime_ns,
+                                archive,
                                 start,
                                 reset,
                                 stored_session_id,
@@ -558,6 +663,7 @@ pub async fn run_index(
                         kind: job.kind,
                         size: job.size,
                         mtime_ns: job.mtime_ns,
+                        archive: job.archive,
                         start: actual_start,
                         reset: actual_reset,
                         had_previous: job.had_previous,
@@ -833,6 +939,7 @@ fn plan_file_job(
         kind,
         size,
         mtime_ns,
+        archive: false,
         start,
         reset,
         had_previous,
@@ -845,6 +952,36 @@ fn plan_file_job(
     })
 }
 
+fn plan_archive_job(
+    kind: &'static str,
+    path: PathBuf,
+    size: u64,
+    mtime_ns: i64,
+    previous: Option<(u64, i64, u64, Option<String>)>,
+) -> PlannedJob {
+    if previous.as_ref().is_some_and(|(previous_size, previous_mtime, _, _)| {
+        *previous_size == size && *previous_mtime == mtime_ns
+    }) {
+        return PlannedJob::Skip;
+    }
+    PlannedJob::Run(FileJob {
+        path,
+        kind,
+        size,
+        mtime_ns,
+        archive: true,
+        start: 0,
+        reset: true,
+        had_previous: previous.is_some(),
+        stored_session_id: previous.and_then(|item| item.3),
+        codex_seed: None,
+        codex_content_fp: None,
+        codex_seed_trusted: false,
+        metadata_only: false,
+        block_reason: None,
+    })
+}
+
 fn codex_seed_for_job(
     path: &Path,
     start: u64,
@@ -852,10 +989,7 @@ fn codex_seed_for_job(
     stored: Option<&str>,
     persisted: Option<&parse_codex::CodexParseState>,
 ) -> parse_codex::CodexParseState {
-    let stem = path
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .unwrap_or("unknown");
+    let stem = transcript_stem(path);
     let standard = parse_codex::standard_rollout_filename_uuid(stem);
     let legacy = stored.is_some_and(|sid| {
         standard.is_some_and(|uuid| parse_codex::is_legacy_compat_source(sid, uuid))
@@ -890,6 +1024,13 @@ fn codex_seed_for_job(
         }
     }
     state
+}
+
+fn transcript_stem(path: &Path) -> &str {
+    let name = path.file_name().and_then(|value| value.to_str()).unwrap_or("unknown");
+    name.strip_suffix(".jsonl.gz")
+        .or_else(|| name.strip_suffix(".jsonl"))
+        .unwrap_or(name)
 }
 
 fn fingerprint_status(
@@ -1144,6 +1285,7 @@ fn apply_plain_chunk(
     kind: &'static str,
     size: u64,
     mtime_ns: i64,
+    archive: bool,
     start: u64,
     reset: bool,
     stored_session_id: Option<String>,
@@ -1174,7 +1316,7 @@ fn apply_plain_chunk(
         .next()
         .cloned()
         .or(stored_session_id);
-    let parsed_bytes = start + data.consumed_bytes;
+    let parsed_bytes = if archive { size } else { start + data.consumed_bytes };
     source_file_upsert
         .execute(params![
             job_path,
@@ -1225,21 +1367,32 @@ fn read_and_parse(
 > {
     use std::io::{Read, Seek, SeekFrom};
 
-    let mut start = job.start;
-    let mut file = std::fs::File::open(&job.path).map_err(|err| format!("open: {err}"))?;
-    if start > 0 && !byte_before_is_newline(&mut file, start)? {
-        start = previous_newline_end(&mut file, start)?;
-    }
-    if start > 0 {
-        file.seek(SeekFrom::Start(start))
-            .map_err(|err| format!("seek: {err}"))?;
+    let (start, buffer) = if job.archive {
+        let file = std::fs::File::open(&job.path).map_err(|err| format!("open archive: {err}"))?;
+        let mut decoder = flate2::read::GzDecoder::new(file);
+        let mut buffer = Vec::new();
+        decoder
+            .read_to_end(&mut buffer)
+            .map_err(|err| format!("read archive: {err}"))?;
+        (0, buffer)
     } else {
-        file.seek(SeekFrom::Start(0))
-            .map_err(|err| format!("seek: {err}"))?;
-    }
-    let mut buffer = Vec::new();
-    file.read_to_end(&mut buffer)
-        .map_err(|err| format!("read: {err}"))?;
+        let mut start = job.start;
+        let mut file = std::fs::File::open(&job.path).map_err(|err| format!("open: {err}"))?;
+        if start > 0 && !byte_before_is_newline(&mut file, start)? {
+            start = previous_newline_end(&mut file, start)?;
+        }
+        if start > 0 {
+            file.seek(SeekFrom::Start(start))
+                .map_err(|err| format!("seek: {err}"))?;
+        } else {
+            file.seek(SeekFrom::Start(0))
+                .map_err(|err| format!("seek: {err}"))?;
+        }
+        let mut buffer = Vec::new();
+        file.read_to_end(&mut buffer)
+            .map_err(|err| format!("read: {err}"))?;
+        (start, buffer)
+    };
 
     let complete = match buffer.iter().rposition(|byte| *byte == b'\n') {
         Some(pos) => pos + 1,
@@ -1296,7 +1449,7 @@ fn read_and_parse(
         .and_then(|stem| stem.to_str())
         .unwrap_or("unknown");
     let filename_fallback = if job.kind == KIND_CODEX {
-        parse_codex::session_id_from_filename(stem)
+        parse_codex::session_id_from_filename(transcript_stem(&job.path))
     } else if job.kind == KIND_GROK {
         job.path
             .parent()
@@ -1344,7 +1497,7 @@ fn read_and_parse(
     };
 
     let mut data = match job.kind {
-        KIND_CLAUDE => parse_claude::parse_chunk(&text, fallback),
+        KIND_CLAUDE | KIND_CLAUDE_CODEX => parse_claude::parse_chunk(&text, fallback),
         KIND_CODEX => parse_codex::parse_chunk_with_state(&text, fallback, seed.clone()),
         KIND_GROK => parse_grok::parse_chunk(&text, fallback),
         other => return Err(format!("unsupported ailog kind: {other}")),

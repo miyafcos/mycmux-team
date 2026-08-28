@@ -1,4 +1,4 @@
-import { formatCount } from "../../lib/ailog";
+import { formatCount, mirrorWarningLabel } from "../../lib/ailog";
 import { jobDisplayError, useAilogJobStore } from "../../stores/useAilogJobStore";
 import { Chip } from "./ui";
 
@@ -8,6 +8,12 @@ export function IndexBadge() {
   const running = index.status?.running ?? false;
   const progress = index.progress;
   const error = jobDisplayError(index);
+  const mirrorWarning = mirrorWarningLabel(index.status?.mirrorWarningCode ?? null);
+
+  // The full-text mirror going quiet is worth saying even mid-run: codex
+  // deletes its own transcripts after a few days, so a tier that stays skipped
+  // is a window closing, not a transient hiccup.
+  if (mirrorWarning) return <Chip tone="warn" title={mirrorWarning}>控えの保存を中断中</Chip>;
 
   if (running) {
     const discovering = !progress || (progress.phase !== "parsing" && progress.phase !== "done");

@@ -65,18 +65,6 @@ function resolveSavedAgentSession(tab: PaneTab): { kind: AgentSessionKind; sessi
   return null;
 }
 
-function resolveRestoreFallbackSessionIds(
-  tab: PaneTab,
-  savedSession: { kind: AgentSessionKind; sessionId: string } | null,
-): string[] {
-  if (!savedSession) return [];
-  return (tab.suppressedAgentSessions ?? [])
-    .filter((session) => session.agentKind === savedSession.kind)
-    .map((session) => session.agentKind === "claude"
-      ? (session.claudeSessionId ?? session.agentSessionId)
-      : session.agentSessionId);
-}
-
 function isTerminalTab(tab: PaneTab | undefined): tab is PaneTab {
   return Boolean(tab && (tab.type === undefined || tab.type === "terminal"));
 }
@@ -716,10 +704,6 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
     () => activeTab ? resolveSavedAgentSession(activeTab) : null,
     [activeTab],
   );
-  const restoreFallbackSessionIds = useMemo(
-    () => activeTab ? resolveRestoreFallbackSessionIds(activeTab, savedAgentSession) : [],
-    [activeTab, savedAgentSession],
-  );
   const launchCommand = activeTab?.commandArgv?.[0] ?? agent?.command ?? "";
   const launchArgs = useMemo(
     () => activeTab?.commandArgv?.length
@@ -897,7 +881,6 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
                 cwd={activeTab.cwd ?? paneCwd}
                 initialReplay={activeTab.terminalSnapshot}
                 launchEnv={launchEnv}
-                restoreFallbackSessionIds={restoreFallbackSessionIds}
               />
             </ErrorBoundary>}
             {startupSessionPending && (

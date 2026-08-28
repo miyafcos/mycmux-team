@@ -3,6 +3,7 @@
 
 use super::fixtures::*;
 use crate::ailog::{query, Filters, Range, KIND_CLAUDE, KIND_CODEX, KIND_GROK};
+use rusqlite::params;
 
 const NOW: i64 = 1_800_000_000_000;
 
@@ -33,6 +34,88 @@ fn indexing_the_same_file_twice_does_not_duplicate_rows() {
     assert_eq!(fixture.count("turn"), turns);
     assert_eq!(fixture.count("tool_event"), tools);
     assert_eq!(fixture.count("session"), sessions);
+}
+
+#[test]
+fn gzip_archive_has_plain_fixture_parity() {
+    let plain = Fixture::new();
+    plain.write("S1.jsonl", CLAUDE_SPLIT_REQUEST);
+    plain.index(KIND_CLAUDE, true);
+
+    let archived = Fixture::new();
+    archived.write_gzip(KIND_CLAUDE, "S1.jsonl.gz", CLAUDE_SPLIT_REQUEST);
+    let report = archived.index_with_archive(KIND_CLAUDE, true);
+
+    assert_eq!(report.files_done, 1);
+    assert_eq!(archived.count("session"), plain.count("session"));
+    assert_eq!(archived.count("turn"), plain.count("turn"));
+    assert_eq!(archived.count("tool_event"), plain.count("tool_event"));
+}
+
+#[test]
+fn gzip_archive_is_skipped_when_live_file_exists() {
+    let fixture = Fixture::new();
+    let live = fixture.write("S1.jsonl", CLAUDE_SPLIT_REQUEST);
+    let archive = fixture.write_gzip(KIND_CLAUDE, "S1.jsonl.gz", CLAUDE_SPLIT_REQUEST);
+
+    let report = fixture.index_with_archive(KIND_CLAUDE, true);
+    assert_eq!(report.files_done, 1);
+    assert_eq!(fixture.count("source_file"), 1);
+    let indexed_path: String = fixture
+        .conn()
+        .query_row("SELECT path FROM source_file", [], |row| row.get(0))
+        .expect("read source path");
+    assert_eq!(indexed_path, live.to_string_lossy());
+    assert_ne!(indexed_path, archive.to_string_lossy());
+}
+
+#[test]
+fn gzip_archive_is_skipped_when_live_path_is_already_indexed() {
+    let fixture = Fixture::new();
+    let live_path = fixture.logs.join("S1.jsonl");
+    let archive = fixture.write_gzip(KIND_CLAUDE, "S1.jsonl.gz", CLAUDE_SPLIT_REQUEST);
+    fixture
+        .conn()
+        .execute(
+            "INSERT INTO source_file (path, kind, size_bytes, mtime_ns, parsed_bytes, parsed_lines, last_indexed) VALUES (?1, ?2, 0, 0, 0, 0, 0)",
+            params![live_path.to_string_lossy(), KIND_CLAUDE],
+        )
+        .expect("seed live source_file row");
+
+    let report = fixture.index_with_archive(KIND_CLAUDE, false);
+    assert_eq!(report.files_done, 0);
+    assert_eq!(report.files_skipped, 1);
+    let archive_rows: i64 = fixture
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM source_file WHERE path = ?1",
+            params![archive.to_string_lossy()],
+            |row| row.get(0),
+        )
+        .expect("count archive source rows");
+    assert_eq!(archive_rows, 0);
+}
+
+#[test]
+fn full_rebuild_indexes_archive_only_once() {
+    let fixture = Fixture::new();
+    let archive = fixture.write_gzip(KIND_CLAUDE, "S1.jsonl.gz", CLAUDE_SPLIT_REQUEST);
+
+    let first = fixture.index_with_archive(KIND_CLAUDE, true);
+    assert_eq!(first.files_done, 1);
+    assert_eq!(fixture.count("session"), 1);
+    assert_eq!(fixture.count("turn"), 1);
+    let indexed_path: String = fixture
+        .conn()
+        .query_row("SELECT path FROM source_file", [], |row| row.get(0))
+        .expect("read archive source path");
+    assert_eq!(indexed_path, archive.to_string_lossy());
+
+    let second = fixture.index_with_archive(KIND_CLAUDE, false);
+    assert_eq!(second.files_done, 0);
+    assert_eq!(second.files_skipped, 1);
+    assert_eq!(fixture.count("session"), 1);
+    assert_eq!(fixture.count("turn"), 1);
 }
 
 #[test]

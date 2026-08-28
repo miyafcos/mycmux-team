@@ -46,10 +46,12 @@ def test_output_silence_and_delegation_stall_use_distinct_words() -> None:
 def test_delegation_notifications_use_the_global_master_and_the_local_setting() -> None:
     watchdog = read_repo_text("src/stores/dispatchWatchdogStore.ts")
     notifications = read_repo_text("src/components/settings/tabs/NotificationsLayoutTab.tsx")
+    automation = read_repo_text("src/components/settings/tabs/AutomationTab.tsx")
 
     assert "settings.notificationsEnabled && settings.dispatchWatchdogNotify" in watchdog
-    assert "dispatchWatchdogNotify" in notifications
-    assert "notificationSettingsStrings.delegationWatchHint" in notifications
+    assert "dispatchWatchdogNotify" in automation
+    assert "setDispatchWatchdogNotify" in automation
+    assert "dispatchWatchdogNotify" not in notifications
 
 
 def test_dormancy_setting_reuses_storage_and_notifies_the_live_sweep() -> None:

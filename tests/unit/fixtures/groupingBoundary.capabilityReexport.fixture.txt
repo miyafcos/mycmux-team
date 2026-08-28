@@ -1,0 +1,3 @@
+import { workspaceGroupingMutationCapability as leaked } from "./workspaceGroupingMutationCapability.internal";
+
+export { leaked };

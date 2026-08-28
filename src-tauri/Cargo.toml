@@ -1,6 +1,6 @@
 [package]
 name = "mycmux"
-version = "0.57.0"
+version = "0.58.0"
 description = "mycmux - AI agent terminal workspace"
 authors = ["miyafcos"]
 edition = "2021"
@@ -22,6 +22,7 @@ crc32fast = "1.5.0"
 kuchikiki = "=0.8.8-speedreader"
 quick-xml = "0.38.4"
 zip = "4.6.1"
+flate2 = "1.1.9"
 imagesize = "0.13"
 portable-pty = "0.8"
 dashmap = "6"

@@ -4,9 +4,9 @@
 //! actually on disk? Claude Code keeps a per-project transcript file; Codex
 //! keeps a rollout log whose first line carries the session id. The launcher
 //! chooses the working directory for a valid Claude session, so this module
-//! only decides whether its saved id may be passed through. Resuming an id that
-//! does not exist leaves the user staring at a fresh agent with no history, so
-//! `create_session` downgrades to `--continue` instead.
+//! only decides whether its saved id may be passed through. When an id does not
+//! exist, `create_session` starts a fresh agent and surfaces a warning instead
+//! of resuming another conversation.
 
 use std::collections::HashMap;
 use std::io::BufRead;

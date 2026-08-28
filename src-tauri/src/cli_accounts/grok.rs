@@ -154,3 +154,108 @@ pub fn restore(paths: &GrokPaths, snapshot: &GrokSnapshot) -> Result<(), String>
     write_atomic(&paths.auth, snapshot.grok_auth_text.as_bytes())
         .map_err(|_| ERR_RESTORE_FAILED.to_string())
 }
+
+/// Outcome of writing a refreshed token pair back to the live `auth.json`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LiveTokenWrite {
+    Applied,
+    /// The file moved on under us -- the CLI refreshed first, and its tokens are
+    /// newer than the ones we set out to write.
+    Conflict,
+}
+
+pub(crate) fn refresh_token_of(auth_text: &str) -> Option<String> {
+    let value: Value = serde_json::from_str(auth_text).ok()?;
+    identity_entry(&value)?
+        .get("refresh_token")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+/// Persist a refreshed token pair into the `auth.json` the grok CLI reads.
+///
+/// The account snapshot cannot stand in for this file when the profile is the
+/// live one: usage fetching reads an active row's tokens straight from
+/// `auth.json`, so a rotated refresh token parked in the snapshot would never
+/// be read again -- not by mycmux, and not by the CLI, whose next refresh would
+/// then present a token the provider has already retired.
+///
+/// Takes the same lock the account switcher does, and re-reads the file under
+/// it: if the refresh token no longer matches the one the caller refreshed
+/// from, the CLI got there first and its tokens win.
+pub fn update_live_tokens(
+    paths: &GrokPaths,
+    expected_refresh_token: &str,
+    access_token: &str,
+    refresh_token: Option<&str>,
+) -> Result<LiveTokenWrite, String> {
+    wait_for_lock(paths)?;
+    let text = fs::read_to_string(&paths.auth).map_err(|_| ERR_GROK_IDENTITY_UNREADABLE.to_string())?;
+    if refresh_token_of(&text).as_deref() != Some(expected_refresh_token) {
+        return Ok(LiveTokenWrite::Conflict);
+    }
+    let next = crate::usage::credentials::grok_auth_with(&text, access_token, refresh_token)
+        .map_err(|_| ERR_GROK_IDENTITY_INVALID.to_string())?;
+    write_atomic(&paths.auth, next.as_bytes()).map_err(|_| ERR_RESTORE_FAILED.to_string())?;
+    Ok(LiveTokenWrite::Applied)
+}
+
+#[cfg(test)]
+mod live_token_tests {
+    use super::*;
+    use std::io::Write;
+
+    fn auth_text(refresh: &str) -> String {
+        format!(
+            r#"{{"https://auth.x.ai::abc":{{"key":"old-access","refresh_token":"{refresh}","user_id":"u1"}}}}"#
+        )
+    }
+
+    fn paths_in(dir: &std::path::Path) -> GrokPaths {
+        GrokPaths { auth: dir.join("auth.json"), lock: dir.join("auth.json.lock") }
+    }
+
+    fn write(path: &std::path::Path, text: &str) {
+        let mut file = fs::File::create(path).expect("create auth.json");
+        file.write_all(text.as_bytes()).expect("write auth.json");
+    }
+
+    #[test]
+    fn reads_the_refresh_token_out_of_an_auth_document() {
+        assert_eq!(refresh_token_of(&auth_text("r1")).as_deref(), Some("r1"));
+        assert_eq!(refresh_token_of("not json"), None);
+        assert_eq!(refresh_token_of("{}"), None);
+    }
+
+    #[test]
+    fn applies_a_rotated_pair_when_the_file_still_holds_the_expected_token() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = paths_in(dir.path());
+        write(&paths.auth, &auth_text("r1"));
+
+        let outcome = update_live_tokens(&paths, "r1", "new-access", Some("r2"))
+            .expect("write should succeed");
+
+        assert_eq!(outcome, LiveTokenWrite::Applied);
+        let after = fs::read_to_string(&paths.auth).expect("read back");
+        assert_eq!(refresh_token_of(&after).as_deref(), Some("r2"));
+        assert!(after.contains("new-access"));
+    }
+
+    // The CLI refreshed first while we were in flight: its tokens are newer, so
+    // ours are dropped rather than written over the top.
+    #[test]
+    fn leaves_the_file_alone_when_the_cli_rotated_first() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = paths_in(dir.path());
+        write(&paths.auth, &auth_text("r9"));
+
+        let outcome = update_live_tokens(&paths, "r1", "new-access", Some("r2"))
+            .expect("conflict is not an error");
+
+        assert_eq!(outcome, LiveTokenWrite::Conflict);
+        let after = fs::read_to_string(&paths.auth).expect("read back");
+        assert_eq!(refresh_token_of(&after).as_deref(), Some("r9"));
+        assert!(after.contains("old-access"));
+    }
+}

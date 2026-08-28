@@ -381,6 +381,18 @@ describe("parseGroupingOutput", () => {
     expect(parsed.comparisonInsufficient).toBe(true);
   });
 
+  it("rejects isolated UTF-16 surrogates in groupId", () => {
+    for (const groupId of ["\ud800", "\udc00"]) {
+      const body = onePlanJson(ids);
+      body.plans[0].groups[0].groupId = groupId;
+      const parsed = parseGroupingOutput(JSON.stringify(body), ids, workspaces);
+      expect(parsed.status).toBe("invalid");
+      if (parsed.status === "invalid") {
+        expect(parsed.issues.some((issue) => issue.reason.includes("groupId") && issue.reason.includes("Unicode"))).toBe(true);
+      }
+    }
+  });
+
   it("drops plans that omit required fields or mix non-string ids", () => {
     const omittedLayout = validPlanJson(ids);
     delete (omittedLayout.plans[0].groups[1] as { layout?: unknown }).layout;

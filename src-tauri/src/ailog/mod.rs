@@ -19,6 +19,7 @@ pub mod index;
 pub mod jsonl;
 pub mod metrics;
 pub mod migrate;
+pub mod mirror;
 pub mod parse_claude;
 pub mod parse_codex;
 pub mod parse_grok;
@@ -40,6 +41,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 pub const KIND_CLAUDE: &str = "claude";
+pub const KIND_CLAUDE_CODEX: &str = "claude-codex";
 pub const KIND_CODEX: &str = "codex";
 pub const KIND_GROK: &str = "grok";
 
@@ -78,6 +80,11 @@ pub fn codex_root() -> Option<PathBuf> {
 /// Default Grok Build transcript root (`~/.grok/sessions`).
 pub fn grok_root() -> Option<PathBuf> {
     dirs::home_dir().map(|home| home.join(".grok").join("sessions"))
+}
+
+/// Optional immutable transcript archive written by the session offloader.
+pub fn archive_root() -> Option<PathBuf> {
+    dirs::home_dir().map(|home| home.join(".mycmux").join("ailog-archive"))
 }
 
 pub fn open_db(path: &std::path::Path) -> Result<rusqlite::Connection, String> {

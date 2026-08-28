@@ -18,14 +18,18 @@ __write_session_mapping() {
   local pane_id="$1"
   local kind="$2"
   local session_id="$3"
-  [ -z "$pane_id" ] || [ -z "$session_id" ] && return
+  local mapping_id="$pane_id"
+  if [[ "${MYCMUX_TAB_ID:-}" =~ ^[0-9a-fA-F-]{36}$ ]]; then
+    mapping_id="$MYCMUX_TAB_ID"
+  fi
+  [ -z "$mapping_id" ] || [ -z "$session_id" ] && return
   local runtime_dir="${MYCMUX_RUNTIME_DIR:-$HOME/.mycmux}"
   local map_dir="$runtime_dir/pane-sessions"
   mkdir -p "$map_dir" 2>/dev/null
   if [ -n "$kind" ]; then
-    echo "$kind:$session_id" > "$map_dir/$pane_id.txt"
+    echo "$kind:$session_id" > "$map_dir/$mapping_id.txt"
   else
-    echo "$session_id" > "$map_dir/$pane_id.txt"
+    echo "$session_id" > "$map_dir/$mapping_id.txt"
   fi
 }
 

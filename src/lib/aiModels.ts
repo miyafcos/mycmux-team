@@ -1,5 +1,4 @@
-// Catalog of CLI providers and model IDs for the background AI features
-// (tab-sweep judge/naming, ailog session summaries, ailog daily digest).
+// Catalog of CLI providers and model IDs for the background AI features.
 //
 // This file is the single source of truth for the *presets*. The Rust side
 // deliberately keeps no catalog: it receives an opaque model string and puts

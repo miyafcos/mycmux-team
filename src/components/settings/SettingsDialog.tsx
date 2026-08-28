@@ -5,6 +5,7 @@ import { useUsageStore } from "../../stores/usageStore";
 import { AppearanceTab } from "./tabs/AppearanceTab";
 import { NotificationsLayoutTab } from "./tabs/NotificationsLayoutTab";
 import { AiTab } from "./tabs/AiTab";
+import { AutomationTab } from "./tabs/AutomationTab";
 import { ResumeTab } from "./tabs/ResumeTab";
 import { SavepointsTab } from "./tabs/SavepointsTab";
 import { RemoteTab } from "./tabs/RemoteTab";
@@ -21,6 +22,7 @@ type SettingsTabId =
   | "pet"
   | "notifications"
   | "ai"
+  | "automation"
   | "resume"
   | "savepoints"
   | "remote"
@@ -55,6 +57,7 @@ const SETTINGS_SECTIONS: SettingsSectionDef[] = [
       { id: "resume", label: "このPCの履歴から再開" },
       { id: "savepoints", label: onlineStrings.settingsTabLabel },
       { id: "ai", label: aiSettingsStrings.tabLabel },
+      { id: "automation", label: aiSettingsStrings.automationTabLabel },
     ],
   },
   {
@@ -221,6 +224,7 @@ export default function SettingsDialog({ closing = false, onClose, onOpenCrsmPal
             {activeTab === "pet" && <PetTab />}
             {activeTab === "notifications" && <NotificationsLayoutTab />}
             {activeTab === "ai" && <AiTab />}
+            {activeTab === "automation" && <AutomationTab />}
             {activeTab === "resume" && <ResumeTab onOpenCrsmPalette={onOpenCrsmPalette} onClose={onClose} />}
             {activeTab === "savepoints" && (
               <SavepointsTab

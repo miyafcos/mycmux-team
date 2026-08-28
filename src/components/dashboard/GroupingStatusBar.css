@@ -1,0 +1,55 @@
+.cmux-grouping-status-bar {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--cmux-space-5);
+  padding: var(--cmux-space-3) var(--cmux-space-5);
+  border-top: 1px solid var(--cmux-border-hairline);
+  background: var(--cmux-surface-raised);
+  color: var(--cmux-text);
+  font-size: var(--cmux-font-size-xs);
+}
+
+.cmux-grouping-status-bar[data-kind="poisoned"] {
+  border-top-color: var(--status-error);
+}
+
+.cmux-grouping-status-copy,
+.cmux-grouping-status-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--cmux-space-3);
+}
+
+.cmux-grouping-status-copy {
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.cmux-grouping-status-warning {
+  color: var(--status-waiting);
+}
+
+.cmux-grouping-status-actions {
+  flex: 0 0 auto;
+}
+
+.cmux-grouping-status-actions button {
+  border: 1px solid var(--cmux-border-hairline);
+  border-radius: var(--cmux-radius-sm);
+  padding: var(--cmux-space-2) var(--cmux-space-3);
+  background: var(--cmux-surface);
+  color: var(--cmux-text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.cmux-grouping-status-actions button:hover:not(:disabled) {
+  background: var(--cmux-hover);
+}
+
+.cmux-grouping-status-actions button:disabled {
+  color: var(--cmux-text-tertiary);
+  cursor: not-allowed;
+}

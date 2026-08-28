@@ -58,21 +58,19 @@ beforeEach(() => {
 });
 
 describe("collectWorkspaceConfigSessionIds", () => {
-  it("returns only deduplicated pane and tab PTY ids", () => {
+  it("returns only deduplicated restorable tab ids", () => {
     const config = workspaceConfig([
       paneConfig("pane-a", "tab-a"),
       paneConfig("pane-b", "tab-b"),
     ]);
 
     expect(collectWorkspaceConfigSessionIds([config])).toEqual([
-      "pty-workspace-pane-a",
-      "pty-workspace-pane-a-tab-a",
-      "pty-workspace-pane-b",
-      "pty-workspace-pane-b-tab-b",
+      "tab-a",
+      "tab-b",
     ]);
   });
 
-  it("excludes declared and explicit-null lifecycle tab PTY ids", () => {
+  it("excludes declared and explicit-null lifecycle tab ids", () => {
     const config = workspaceConfig([paneConfig("pane-a", "normal")]);
     config.panes[0].tabs!.push({
       tab_id: "declared",
@@ -87,8 +85,7 @@ describe("collectWorkspaceConfigSessionIds", () => {
     });
 
     expect(collectWorkspaceConfigSessionIds([config])).toEqual([
-      "pty-workspace-pane-a",
-      "pty-workspace-pane-a-normal",
+      "normal",
     ]);
   });
 
@@ -407,5 +404,29 @@ describe("dedupeAgentSessionsInConfigs", () => {
     const saved = toConfig(workspace);
     expect(saved.panes[0].tabs![0].agent_session_id).toBeNull();
     expect(saved.panes[0].tabs![0].suppressed_agent_sessions?.[0].agent_session_id).toBe("parked-session");
+  });
+
+  it("does not graft pane identity onto the first restored tab when active_tab_id is absent", () => {
+    const restored = useWorkspaceLayoutStore.getState().restorePanes(
+      "workspace",
+      [{
+        pane_id: "pane",
+        agent_id: "claude-code",
+        active_tab_id: null,
+        agent_kind: "claude",
+        agent_session_id: "pane-session",
+        claude_session_id: "pane-session",
+        tabs: [
+          { tab_id: "tab-a", agent_id: "claude-code", type: "terminal" },
+          { tab_id: "tab-b", agent_id: "claude-code", type: "terminal" },
+        ],
+      }],
+      [[0]],
+      "1x1",
+    );
+
+    expect(restored.panes[0].tabs.map((tab) => tab.agentSessionId)).toEqual([undefined, undefined]);
+    expect(restored.panes[0].agentSessionId).toBeUndefined();
+    expect(restored.panes[0].claudeSessionId).toBeUndefined();
   });
 });

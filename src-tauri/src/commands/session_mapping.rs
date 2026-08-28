@@ -66,6 +66,42 @@ fn is_safe_mapping_id(session_id: &str) -> bool {
             && stem.as_bytes()[3] != b'0')
 }
 
+/// A mapping follows the tab through workspace and pane moves. Older
+/// `pty-<workspace>-<pane>-<tab>` identifiers are migration inputs only.
+fn stable_tab_id_from_legacy_session_id(session_id: &str) -> Option<&str> {
+    let tab_id_start = session_id.len().checked_sub(36)?;
+    let tab_id = session_id.get(tab_id_start..)?;
+    (session_id.starts_with("pty-")
+        && tab_id_start > 0
+        && session_id.as_bytes().get(tab_id_start - 1) == Some(&b'-')
+        && crate::util::ids::is_uuid_like(tab_id))
+    .then_some(tab_id)
+}
+
+fn mapping_storage_id(session_id: &str) -> &str {
+    stable_tab_id_from_legacy_session_id(session_id).unwrap_or(session_id)
+}
+
+fn unique_legacy_mapping_path(map_dir: &Path, tab_id: &str) -> Option<PathBuf> {
+    let suffix = format!("-{tab_id}.txt");
+    let candidates = std::fs::read_dir(map_dir)
+        .ok()?
+        .filter_map(Result::ok)
+        .filter_map(|entry| entry.file_type().ok()?.is_file().then_some(entry))
+        .filter(|entry| {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            name.starts_with("pty-") && name.ends_with(&suffix)
+        })
+        .map(|entry| entry.path())
+        .collect::<Vec<_>>();
+    (candidates.len() == 1).then(|| candidates.into_iter().next()).flatten()
+}
+
+fn read_valid_mapping(path: &Path) -> Option<AgentSessionMapping> {
+    parse_agent_session_mapping(&std::fs::read_to_string(path).ok()?)
+}
+
 fn read_session_mapping_files_for_ids<I, S>(
     map_dir: &Path,
     session_ids: I,
@@ -80,11 +116,26 @@ where
         if !is_safe_mapping_id(session_id) || mappings.contains_key(session_id) {
             continue;
         }
-        let path = map_dir.join(format!("{session_id}.txt"));
-        let Ok(contents) = std::fs::read_to_string(path) else {
+        let storage_id = mapping_storage_id(session_id);
+        let path = map_dir.join(format!("{storage_id}.txt"));
+        if path.exists() {
+            if let Some(mapping) = read_valid_mapping(&path) {
+                mappings.insert(session_id.to_string(), mapping);
+            }
+            continue;
+        }
+        let Some(tab_id) = stable_tab_id_from_legacy_session_id(session_id)
+            .or_else(|| crate::util::ids::is_uuid_like(session_id).then_some(session_id))
+        else {
             continue;
         };
-        if let Some(mapping) = parse_agent_session_mapping(&contents) {
+        let Some(legacy_path) = unique_legacy_mapping_path(map_dir, tab_id) else {
+            continue;
+        };
+        let Some(mapping) = read_valid_mapping(&legacy_path) else {
+            continue;
+        };
+        if std::fs::rename(&legacy_path, &path).is_ok() {
             mappings.insert(session_id.to_string(), mapping);
         }
     }
@@ -159,7 +210,7 @@ fn write_session_mapping_file_to_dir(
     {
         return Ok(());
     }
-    let path = map_dir.join(format!("{session_id}.txt"));
+    let path = map_dir.join(format!("{}.txt", mapping_storage_id(session_id)));
     write_text_file_atomic(&path, &format!("{agent_kind}:{agent_session_id}\n"))?;
     Ok(())
 }
@@ -179,7 +230,7 @@ fn remove_session_mapping_file_from_dir(map_dir: &Path, session_id: &str) -> Res
     if !is_safe_mapping_id(session_id) {
         return Ok(());
     }
-    let path = map_dir.join(format!("{session_id}.txt"));
+    let path = map_dir.join(format!("{}.txt", mapping_storage_id(session_id)));
     match std::fs::remove_file(&path) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -335,5 +386,66 @@ mod tests {
         assert!(!dir.path().join("pane-1.txt").exists());
         assert!(dir.path().join("pane-2.txt").exists());
         remove_session_mapping_file_from_dir(dir.path(), "pane-1").unwrap();
+    }
+
+    #[test]
+    fn migrates_five_moved_tab_legacy_mappings_to_stable_tab_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let old_workspace = "5231da42-1111-4111-8111-111111111111";
+        let pane_id = "bb391b49-3333-4333-8333-333333333333";
+        let tab_ids = [
+            "11111111-aaaa-4aaa-8aaa-aaaaaaaaaaa1",
+            "22222222-bbbb-4bbb-8bbb-bbbbbbbbbbb2",
+            "33333333-cccc-4ccc-8ccc-ccccccccccc3",
+            "44444444-dddd-4ddd-8ddd-ddddddddddd4",
+            "55555555-eeee-4eee-8eee-eeeeeeeeeee5",
+        ];
+
+        for (index, tab_id) in tab_ids.iter().enumerate() {
+            let tab_id = *tab_id;
+            let legacy_id = format!("pty-{old_workspace}-{pane_id}-{tab_id}");
+            std::fs::write(
+                dir.path().join(format!("{legacy_id}.txt")),
+                format!("codex:session-{index}\n"),
+            )
+            .unwrap();
+
+            let mappings = read_session_mapping_files_for_ids(dir.path(), [tab_id]);
+            let expected = format!("session-{index}");
+            assert_eq!(mappings.get(tab_id).map(|mapping| mapping.session_id.as_str()), Some(expected.as_str()));
+            assert!(dir.path().join(format!("{tab_id}.txt")).exists());
+            assert!(!dir.path().join(format!("{legacy_id}.txt")).exists());
+        }
+    }
+
+    #[test]
+    fn write_uses_the_stable_tab_key_for_a_composite_session_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let tab_id = "11111111-aaaa-4aaa-8aaa-aaaaaaaaaaa1";
+        let session_id = format!(
+            "pty-5231da42-1111-4111-8111-111111111111-bb391b49-3333-4333-8333-333333333333-{tab_id}"
+        );
+
+        write_session_mapping_file_to_dir(dir.path(), &session_id, "codex", "session-a").unwrap();
+
+        assert!(dir.path().join(format!("{tab_id}.txt")).exists());
+        assert!(!dir.path().join(format!("{session_id}.txt")).exists());
+    }
+
+    #[test]
+    fn ambiguous_legacy_mappings_do_not_migrate() {
+        let dir = tempfile::tempdir().unwrap();
+        let tab_id = "11111111-aaaa-4aaa-8aaa-aaaaaaaaaaa1";
+        let old_a = format!(
+            "pty-5231da42-1111-4111-8111-111111111111-bb391b49-3333-4333-8333-333333333333-{tab_id}"
+        );
+        let old_b = format!(
+            "pty-c30892d0-2222-4222-8222-222222222222-bb391b49-3333-4333-8333-333333333333-{tab_id}"
+        );
+        std::fs::write(dir.path().join(format!("{old_a}.txt")), "codex:session-a\n").unwrap();
+        std::fs::write(dir.path().join(format!("{old_b}.txt")), "codex:session-b\n").unwrap();
+
+        assert!(read_session_mapping_files_for_ids(dir.path(), [tab_id]).is_empty());
+        assert!(!dir.path().join(format!("{tab_id}.txt")).exists());
     }
 }

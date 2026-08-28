@@ -8,7 +8,7 @@ import {
   orderAccountRows,
   rowMessage,
 } from "../../../lib/accountRows";
-import { grokAccountStrings } from "../../../lib/grokAccountStrings";
+import { grokAccountStrings, grokProductName } from "../../../lib/grokAccountStrings";
 import { useUsageStore } from "../../../stores/usageStore";
 
 // The panel in the titlebar answers "how much is left"; this tab is where the
@@ -125,7 +125,7 @@ function UsageDetailRow({ row }: { row: ProfileUsage }) {
             <div style={{ display: "flex", flexWrap: "wrap", gap: "6px 14px" }}>
               {row.model_windows.map((named) => (
                 <span key={named.key} style={{ whiteSpace: "nowrap" }}>
-                  {row.provider === "grok" ? `${grokAccountStrings.breakdownLabel} ${named.key}` : named.key} {formatPct(named.window.pct)}
+                  {row.provider === "grok" ? `${grokAccountStrings.breakdownLabel} ${grokProductName(named.key)}` : named.key} {formatPct(named.window.pct)}
                   {named.window.resets_at && (
                     <span> ・リセット {formatUpdatedAt(named.window.resets_at)}</span>
                   )}

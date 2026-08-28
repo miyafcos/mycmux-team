@@ -363,9 +363,10 @@ function AccountRow({
                 cells={cells}
                 dense={dense}
                 showReset={!collapseReset}
+                spellReset={windows.length === 1}
               />
             ))}
-            {collapseReset && <SharedResetMark label={sharedResetLabel} />}
+            {collapseReset && <SharedResetMark label={sharedResetLabel} spell={windows.length === 1} />}
           </span>
           <span
             style={{
@@ -405,12 +406,13 @@ function AccountRow({
                 cells={cells}
                 dense={dense}
                 showReset={!collapseReset}
+                spellReset={windows.length === 1}
               />
             ))
           ) : (
             <span style={{ color: "var(--cmux-text-tertiary)" }}>—</span>
           )}
-          {collapseReset && <SharedResetMark label={sharedResetLabel} />}
+          {collapseReset && <SharedResetMark label={sharedResetLabel} spell={windows.length === 1} />}
           <span
             title={`取得 ${formatUpdatedAt(row.fetched_at)}`}
             style={{
@@ -431,7 +433,7 @@ function AccountRow({
   );
 }
 
-function SharedResetMark({ label }: { label: string }) {
+function SharedResetMark({ label, spell }: { label: string; spell: boolean }) {
   return (
     <span
       title={SHARED_RESET_TITLE}
@@ -441,7 +443,7 @@ function SharedResetMark({ label }: { label: string }) {
         flexShrink: 0,
       }}
     >
-      ↻{label}
+      {spell ? `リセット ${label}` : `↻${label}`}
     </span>
   );
 }
@@ -453,6 +455,7 @@ function UsageBar({
   cells,
   dense = "roomy",
   showReset = true,
+  spellReset = false,
 }: {
   label: string;
   stat: WindowStat;
@@ -460,6 +463,8 @@ function UsageBar({
   cells: number;
   dense?: "roomy" | "snug" | "tight";
   showReset?: boolean;
+  /** Write out "リセット" rather than the bare arrow. */
+  spellReset?: boolean;
 }) {
   return (
     <span
@@ -519,7 +524,12 @@ function UsageBar({
             <span
               style={{ color: "var(--cmux-text-dim)", whiteSpace: "nowrap" }}
             >
-              ↻{formatResetShort(stat.resets_at)}
+              {/* One meter on the line can afford to say what the date is.
+                  Two or more (claude's 5h and 7d reset on different days, so
+                  they cannot be collapsed) would repeat the word past the
+                  panel's width, and the arrow carries it instead -- `title`
+                  spells it out either way. */}
+              {spellReset ? `リセット ${formatResetShort(stat.resets_at)}` : `↻${formatResetShort(stat.resets_at)}`}
             </span>
           )}
       </>

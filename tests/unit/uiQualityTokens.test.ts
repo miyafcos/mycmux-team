@@ -169,6 +169,8 @@ describe("UI quality Phase A contracts", () => {
       "src/components/dashboard/DashboardSessionDetail.tsx",
       "src/components/dashboard/DashboardTerminalTab.tsx",
       "src/components/dashboard/DashboardView.tsx",
+      "src/components/dashboard/GroupingStatusBar.css",
+      "src/components/layout/TabGroupingPanel.css",
       "src/components/dashboard/QuestionCard.tsx",
       "src/components/dashboard/ReplyComposer.tsx",
     ];

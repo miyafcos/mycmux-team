@@ -1,6 +1,6 @@
-import type { ProfileUsage, UsageRowState, WindowStat } from "./ipc";
+import type { CliProvider, ProfileUsage, UsageRowState, WindowStat } from "./ipc";
 import { PROVIDER_ORDER } from "./cliAccounts";
-import { grokAccountStrings } from "./grokAccountStrings";
+import { GROK_PRODUCT_LABELS, grokAccountStrings } from "./grokAccountStrings";
 
 export { PROVIDER_SHORT } from "./cliAccounts";
 
@@ -167,12 +167,33 @@ export function displayWindows(
     const name = key.replace(/^seven_day_/, "");
     return {
       key: `model:${key}`,
-      label: name.charAt(0).toUpperCase(),
+      label: windowLabel(row.provider, name),
       stat: window,
-      hint: `${name} — ${resetHint(window)}`,
+      hint: `${windowHint(row.provider, name)} — ${resetHint(window)}`,
     };
   });
   return [...fixed, ...models];
+}
+
+/**
+ * A per-model window is labelled by its initial, which reads fine while the
+ * names in a row differ on that letter (claude's "F" for fable). Grok names
+ * every product "Grok<Something>", so the same rule would print "G" three
+ * times over. Grok rows use the short product names instead.
+ */
+function windowLabel(provider: CliProvider, name: string): string {
+  if (provider !== "grok") return name.charAt(0).toUpperCase();
+  const known = GROK_PRODUCT_LABELS[name];
+  if (known) return known;
+  // A product the API adds later: dropping the shared prefix still tells the
+  // products apart, which the initial alone would not.
+  return name.replace(/^Grok/, "") || name;
+}
+
+/** Hover copy keeps the API's own product name so it stays searchable. */
+function windowHint(provider: CliProvider, name: string): string {
+  const label = GROK_PRODUCT_LABELS[name];
+  return provider === "grok" && label ? `${label} (${name})` : name;
 }
 
 // hour12 is pinned: the meter row is laid out to the character, and a 12-hour

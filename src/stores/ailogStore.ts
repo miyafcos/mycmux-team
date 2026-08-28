@@ -10,6 +10,7 @@
  */
 
 import { create } from "zustand";
+import { quarantineTerminalPersistentStorageError } from "../lib/workspacePersistenceCoordinator";
 
 import {
   ailogGetUsdJpyRate,
@@ -618,7 +619,9 @@ export const useAilogStore = create<AilogState>((set, get) => ({
   setUsdJpyRate: (rate) => {
     const next = configureUsdJpyRate(rate);
     set({ usdJpyRate: next });
-    void ailogSetUsdJpyRate(next).catch(() => {});
+    void ailogSetUsdJpyRate(next).catch((error) => {
+      quarantineTerminalPersistentStorageError(error);
+    });
   },
   loadUsdJpyRate: async () => {
     try {

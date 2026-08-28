@@ -45,7 +45,7 @@ def test_session_retention_prefix_matches_frontend_prefix() -> None:
     assert extract_ts_prefix() == extract_rust_prefix() == "pty"
 
 
-def test_session_retention_id_format_matches_frontend_tab_session_ids() -> None:
+def test_session_retention_keeps_terminal_ids_but_mapping_uses_tab_ids() -> None:
     constants = read_repo_text("src/lib/constants.ts")
     layout_store = read_repo_text("src/stores/workspaceLayoutStore.ts")
     socket_listener = read_repo_text("src/components/layout/SocketListener.tsx")
@@ -61,9 +61,6 @@ def test_session_retention_id_format_matches_frontend_tab_session_ids() -> None:
         "sessionId: makeSessionId(workspaceId, `${paneId}-${tabId}`),",
         "src/stores/workspaceLayoutStore.ts",
     )
-    assert_contains(
-        socket_listener,
-        "const tabSessionId = makeSessionId(cfg.id, `${paneId}-${tabId}`);",
-        "src/components/layout/SocketListener.tsx",
-    )
+    assert_contains(socket_listener, "agentMappings[tabId]", "src/components/layout/SocketListener.tsx")
+    assert "const tabSessionId = makeSessionId(cfg.id, `${paneId}-${tabId}`);" not in socket_listener
     assert rust_format == "{SESSION_ID_PREFIX}-{workspace_id}-{pane_id}-{tab_id}"
