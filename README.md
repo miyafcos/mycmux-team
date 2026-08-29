@@ -319,13 +319,13 @@ mycmux は起動時に 127.0.0.1 のランダムポートで待ち受け、ポ�
 
 ### CLI サブコマンド
 
-`python scripts/mycmux_agent_cli.py <subcommand> [options]` の 12 本 (+ 次版で追加予定の `status`) です。全オプションは[付録 C](#付録-c-cli-サブコマンド全一覧)、対応するソケットコマンドは[付録 D](#付録-d-ソケットコマンド全一覧)にあります。
+`python scripts/mycmux_agent_cli.py <subcommand> [options]` の 13 本です。全オプションは[付録 C](#付録-c-cli-サブコマンド全一覧)、対応するソケットコマンドは[付録 D](#付録-d-ソケットコマンド全一覧)にあります。
 
 | サブコマンド | 送るソケットコマンド | 用途 |
 | --- | --- | --- |
 | `workspaces` | `workspace.list` | ワークスペース一覧 |
 | `panes` | `pane.list` / `pane.list_all` | ペイン一覧 (`send` / `read` に使う sessionId の確認用) |
-| `status` | `session.state_view` | canonical なセッション状態を読む (schema を厳格検証)。**v0.58.1 で追加予定** (ソケット側の `session.state_view` は配信済み) |
+| `status` | `session.state_view` | canonical なセッション状態を読む (schema を厳格検証) |
 | `spawn` | `pane.spawn_tab` / `pane.spawn` | エージェントを立ち上げる (既定は呼び出し元ペインの裏タブ) |
 | `spawn-tab` | `pane.spawn_tab` | タブ起動の低レベル版。`--` 以降に任意コマンドの argv を渡せる |
 | `declare-tab` | `pane.declare_tab` | PTY を起こさずタブだけ宣言する |
@@ -981,7 +981,7 @@ bootstrap の文言は `Handoff from previous session. Read "<MYCMUX_HANDOFF_PRO
 | ---: | --- | --- |
 | 1 | `workspaces` | (なし) |
 | 2 | `panes` | `--workspace` \| `--all` |
-| 3 | `status` | `--session` — **v0.58.1 で追加予定** (この版の CLI にはまだありません) |
+| 3 | `status` | `--session` |
 | 4 | `spawn` | `--target` (必須)、`--prompt` \| `--prompt-file` \| `--handoff-from-session` \| `--resume-session` (排他)、`--handoff-from-kind`、`--cwd`、`--label`、`--split`、`--workspace`、`--anchor-pane`、`--direction`、`--activate` \| `--no-activate` |
 | 5 | `spawn-tab` | `--anchor-session`、`--detach`、`--cwd`、`--label`、`--activate` \| `--no-activate`、`--target` ほか spawn と同じ起動モード群、末尾に `-- <command argv>`。制約: `--target` と `-- <command argv>` はちょうど一方が必須 / argv 指定時は `--prompt` `--prompt-file` `--handoff-from-session` `--handoff-from-kind` `--resume-session` を併用できない / `--detach` と `--anchor-session` は併用不可 |
 | 6 | `declare-tab` | `--session` (必須)、`--label` (必須)、`--prompt`、`--target`、`--origin` (`agent` / `human`) |
@@ -990,7 +990,7 @@ bootstrap の文言は `Handoff from previous session. Read "<MYCMUX_HANDOFF_PRO
 | 9 | `close-tab` | `--session` (必須) |
 | 10 | `rename` | `--session` (必須)、`--label` (必須) |
 | 11 | `move` | `--session` (必須)、`--column` (必須)、`--row` (必須) |
-| 12 | `send` | `--session` (必須)、`--text`、`--enter` \| `--key` (`enter`/`esc`/`tab`/`up`/`down`/`left`/`right`/`ctrl-c`/`space`/`backspace`)、`--expect-epoch`、`--expect-attention-id`、`--expect-revision` (`--expect-input-revision` は v0.58.1 で追加予定)。`--text` / `--enter` / `--key` の少なくとも 1 つが必須 |
+| 12 | `send` | `--session` (必須)、`--text`、`--enter` \| `--key` (`enter`/`esc`/`tab`/`up`/`down`/`left`/`right`/`ctrl-c`/`space`/`backspace`)、`--expect-epoch`、`--expect-attention-id`、`--expect-revision`、`--expect-input-revision` (期待値の 3 つ — attention id / session revision / input revision — は全部指定するか全部省く)。`--text` / `--enter` / `--key` の少なくとも 1 つが必須 |
 | 13 | `read` | `--session` (必須)、`--lines` |
 
 `spawn` / `spawn-tab` の `--target` に渡せるのは `claude` / `codex` / `claude-codex` / `grok` / `shell` の 5 種、`declare-tab --target` は `claude` / `codex` / `grok` の 3 種です。`spawn` の起動モード 4 つ (`--prompt` \| `--prompt-file` \| `--handoff-from-session` \| `--resume-session`) は相互排他で、`--handoff-from-kind` は `--handoff-from-session` とセットでだけ使えます。`spawn-tab --detach` は呼び出し元ペインと同居させず新しいペインを開きますが、ペイン閉じの確認ダイアログが既に長時間タブを守っているので推奨はしません。

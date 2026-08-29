@@ -25,6 +25,9 @@ fn codex_args_are_stable() {
             "exec",
             "--model",
             "m",
+            "--ignore-user-config",
+            "-c",
+            "model_reasoning_effort=low",
             "-c",
             "features.fast_mode=false",
             "-"

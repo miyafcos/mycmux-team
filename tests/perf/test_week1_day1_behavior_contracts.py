@@ -12,10 +12,9 @@ EXPECTED_LAUNCHER_OPTIONS = [
     "Codex",
     "claude-codex (Codex Models)",
     "Grok Build",
-    "Codex (Fugu Ultra)",
-    "claude-codex (Fugu)",
     "claude-codex (Open Models)",
     "Antigravity (agy)",
+    "ChatGPT (Web)",
     "Claude Code (resume)",
     "Codex (resume)",
     "claude-codex (resume)",
@@ -31,10 +30,9 @@ EXPECTED_LAUNCHER_COMMANDS = [
     "codex --no-alt-screen",
     "claude-codex --backend gpt",
     "grok --no-alt-screen --permission-mode auto",
-    "codex --no-alt-screen --profile fugu-ultra",
-    "claude-codex --backend fugu",
     "claude-codex --backend fcc",
     "agy",
+    "__web_chatgpt__",
     "claude --allow-dangerously-skip-permissions --permission-mode auto --resume",
     "codex resume --no-alt-screen",
     "claude-codex --resume",
@@ -77,12 +75,13 @@ def test_launcher_order_matches_current_contract() -> None:
     assert_contains(launcher_ps1, "FUGU_API_KEY", "src-tauri/src/launcher.ps1")
     for command in (
         "claude-codex --backend gpt",
-        "claude-codex --backend fugu",
         "claude-codex --backend fcc",
     ):
         assert command in EXPECTED_LAUNCHER_COMMANDS
-    assert_contains(launcher, "slash) selected=12", "src-tauri/src/launcher.sh")
-    assert_contains(launcher, "6) selected=15", "src-tauri/src/launcher.sh")
+    # Two entries were removed on 2026-08-29 and one added, so the menu went
+    # from 16 to 15 and every index after Grok Build shifted by one.
+    assert_contains(launcher, "slash) selected=11", "src-tauri/src/launcher.sh")
+    assert_contains(launcher, "5) selected=14", "src-tauri/src/launcher.sh")
     # The (dangerous) entries were retired on 2026-08-15; they must not come back
     # into the menu, and no launch target may point at them.
     for retired in ("Claude Code (dangerous)", "Codex (dangerous)", "claude-codex (dangerous)"):
@@ -97,7 +96,6 @@ def test_integrated_model_profiles_match_powershell_launcher() -> None:
     launcher_ps1 = read_repo_text("src-tauri/src/launcher.ps1")
     expected = {
         "claude-codex (Codex Models)": "gpt",
-        "claude-codex (Fugu)": "fugu",
         "claude-codex (Open Models)": "fcc",
     }
     for label, backend in expected.items():

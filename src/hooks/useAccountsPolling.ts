@@ -61,6 +61,10 @@ function useLegacyUsageRetirementNotice(): void {
         .pushToast(
           `使用量の登録方式が変わりました。CLI でログインして「現在のログインを登録」を押してください（対象 ${count} 件）。`,
           "info",
+          undefined,
+          undefined,
+          undefined,
+          "system",
         );
     }).then((fn) => {
       if (cancelled) {

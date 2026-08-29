@@ -213,18 +213,24 @@ def test_grouping_mode_is_wired_without_closing_tabs() -> None:
     grouping = read("src/components/layout/tabGrouping.ts")
     button = read("src/components/layout/TabGroupingButton.tsx")
     minimap = read("src/components/dashboard/LayoutMinimapPanel.tsx")
+    # The judge call moved out of the panel when plans started being prepared
+    # ahead of the button press; the wiring itself is unchanged.
+    precompute = read("src/lib/groupingPrecompute.ts")
 
-    assert "const GROUPING_TIMEOUT: Duration = Duration::from_secs(180)" in rust
+    assert "const GROUPING_TIMEOUT: Duration = Duration::from_secs(300)" in rust
     assert 'Some("grouping") => GROUPING_TIMEOUT' in rust
-    assert 'mode: "grouping"' in panel
-    assert 'invoke<string>("run_tab_sweep_judge"' in panel
-    assert 'invoke<boolean>("abort_tab_sweep_judge"' in panel
+    assert 'mode: "grouping"' in precompute
+    assert 'invoke<string>("run_tab_sweep_judge"' in precompute
+    assert 'invoke<boolean>("abort_tab_sweep_judge"' in precompute
     assert "pane.close_tab" not in grouping
     assert "pane.close_tab" not in panel
+    assert "pane.close_tab" not in precompute
     strings = read("src/components/dashboard/dashboardStrings.ts")
     assert "TabGroupingButton" in minimap
     assert "TAB_GROUPING_OPEN_EVENT" in button
-    assert "TAB_GROUPING_ENTRY_ENABLED = false" in button
+    # The entry shipped in v0.58.0; the flag stays as the kill switch, so assert
+    # it is still declared rather than pinning it to the sealed value.
+    assert "export const TAB_GROUPING_ENTRY_ENABLED" in button
     assert "tabGroupingStrings.buttonLabel" in button
     assert 'buttonLabel: "タブ再配置"' in strings
     assert "deps.replaceWorkspaces(" in read("src/components/layout/tabGroupingEngine.ts") and "_restoreGroupingLayout(" in read("src/components/layout/groupingStoreAdapter.ts")

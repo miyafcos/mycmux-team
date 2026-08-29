@@ -1,6 +1,8 @@
 import { create } from "zustand";
+import { useSettingsStore } from "./settingsStore";
 
 export type ToastKind = "error" | "warning" | "info";
+export type ToastCategory = "ai-activity" | "user-action" | "system" | "failure";
 
 export interface ToastAction {
   label: string;
@@ -11,6 +13,7 @@ export interface Toast {
   id: string;
   message: string;
   kind: ToastKind;
+  category: ToastCategory;
   createdAt: number;
   action?: ToastAction;
   actions?: ToastAction[];
@@ -24,6 +27,7 @@ interface ToastState {
     action?: ToastAction,
     actions?: ToastAction[],
     durationMs?: number,
+    category?: ToastCategory,
   ) => string;
   dismissToast: (id: string) => void;
 }
@@ -49,14 +53,32 @@ function clearToastTimer(id: string): void {
   }
 }
 
+function resolveToastCategory(kind: ToastKind, category?: ToastCategory): ToastCategory {
+  if (kind === "error") return "failure";
+  if (category) return category;
+  return kind === "warning" ? "failure" : "user-action";
+}
+
+function isToastCategoryEnabled(category: ToastCategory): boolean {
+  if (category === "failure") return true;
+  const settings = useSettingsStore.getState();
+  if (!settings.notificationsEnabled) return false;
+  if (category === "ai-activity") return settings.toastAiActivityEnabled;
+  if (category === "system") return settings.toastSystemEnabled;
+  return settings.toastUserActionEnabled;
+}
+
 export const useToastStore = create<ToastState>((set, get) => ({
   toasts: [],
-  pushToast: (message, kind = "error", action, actions, durationMs) => {
+  pushToast: (message, kind = "error", action, actions, durationMs, requestedCategory) => {
     const id = createToastId();
+    const category = resolveToastCategory(kind, requestedCategory);
+    if (!isToastCategoryEnabled(category)) return id;
     const toast: Toast = {
       id,
       message,
       kind,
+      category,
       createdAt: Date.now(),
       action,
       actions: actions?.slice(0, 2),

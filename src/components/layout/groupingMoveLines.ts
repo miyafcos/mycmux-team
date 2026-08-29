@@ -118,6 +118,22 @@ export function groupingMoveLines(
     }));
 }
 
+export function groupingWithinWorkspaceMoveLines(
+  before: readonly Workspace[],
+  after: readonly Workspace[],
+): GroupingMoveLine[] {
+  return groupingMoveDiffs(before, after)
+    .filter((diff) => diff.kind === "within-workspace")
+    .map((diff) => ({
+      tabId: diff.tabId,
+      label: diff.label,
+      fromWorkspaceId: diff.fromWorkspaceId,
+      toWorkspaceId: diff.toWorkspaceId,
+      fromRect: null,
+      toRect: null,
+    }));
+}
+
 export function groupingRelativeRect(
   target: GroupingLineRect,
   container: GroupingLineRect,
@@ -596,6 +612,24 @@ export function groupingMoveLinePath(
   const y2 = to.top + to.height / 2;
   const dx = Math.max(24, (x2 - x1) * 0.5);
   return `M ${rounded(x1)} ${rounded(y1)} C ${rounded(x1 + dx)} ${rounded(y1)} ${rounded(x2 - dx)} ${rounded(y2)} ${rounded(x2)} ${rounded(y2)}`;
+}
+
+export interface GroupingMoveLineDrawPaths {
+  mainPath: string;
+  leadInPath: string | null;
+}
+
+export function groupingMoveLineDrawPaths(
+  line: MeasuredGroupingMoveLine,
+  orientation: GroupingMoveLineOrientation,
+): GroupingMoveLineDrawPaths {
+  if (!line.fromRect || !line.toRect) return { mainPath: "", leadInPath: null };
+  return {
+    mainPath: line.routePoints
+      ? groupingMoveLineRoutePath(line.routePoints)
+      : groupingMoveLinePath(line.fromRect, line.toRect, orientation),
+    leadInPath: line.leadIn ? groupingLeadInPath(line.leadIn, orientation) : null,
+  };
 }
 
 export function groupingSideBySideOrientation(width: number): GroupingMoveLineOrientation {

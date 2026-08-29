@@ -84,10 +84,19 @@ impl AiConfig {
                 "--output-format".into(),
                 "text".into(),
             ],
+            // Background judges must not inherit the operator's interactive
+            // codex profile: on 2026-08-30 the grouping judge ran five times
+            // at the profile's `model_reasoning_effort = "max"` with five MCP
+            // servers loaded, spent ~48s starting and never answered inside
+            // the 300s budget. `--ignore-user-config` skips config.toml (auth
+            // still comes from CODEX_HOME) and the effort is pinned low.
             AiProvider::Codex => vec![
                 "exec".into(),
                 "--model".into(),
                 model,
+                "--ignore-user-config".into(),
+                "-c".into(),
+                "model_reasoning_effort=low".into(),
                 "-c".into(),
                 "features.fast_mode=false".into(),
                 "-".into(),

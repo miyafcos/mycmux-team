@@ -426,7 +426,7 @@ function getMappingKind(
 }
 
 function isRestorableTabConfig(tab: PaneTabConfig): boolean {
-  return isRestorableTab(tab);
+  return tab.type !== "web" && isRestorableTab(tab);
 }
 
 function getTabConfigKind(
@@ -454,6 +454,7 @@ function applyMappingToTabConfig(
   mapping: AgentSessionMapping | undefined,
   fallbackAgentId?: string | null,
 ): PaneTabConfig {
+  if (tabConfig.type === "web") return tabConfig;
   const existingKind = getTabConfigKind(tabConfig, fallbackAgentId);
   const existingSessionId = getTabConfigSessionId(tabConfig);
   const mappingKind = getMappingKind(mapping, existingKind);
@@ -600,7 +601,7 @@ export function collectWorkspaceConfigSessionIds(configs: WorkspaceConfig[]): st
   for (const config of configs) {
     for (const pane of config.panes) {
       for (const tab of pane.tabs ?? []) {
-        if (isRestorableTabConfig(tab) && tab.tab_id) {
+        if (tab.type !== "web" && isRestorableTabConfig(tab) && tab.tab_id) {
           tabIds.add(tab.tab_id);
         }
       }
@@ -614,7 +615,11 @@ function collectTerminalSessionIds(workspaces: readonly WorkspaceSerializationSo
   for (const workspace of workspaces) {
     for (const pane of workspace.panes) {
       const activeTab = pane.tabs.find((tab) => tab.id === pane.activeTabId) ?? pane.tabs[0];
-      if (!activeTab || !isDeclaredTab(activeTab)) sessionIds.add(pane.sessionId);
+      if (
+        activeTab
+        && (activeTab.type === undefined || activeTab.type === "terminal")
+        && !isDeclaredTab(activeTab)
+      ) sessionIds.add(pane.sessionId);
       for (const tab of pane.tabs) {
         if (tab.type === "terminal" && isRestorableTab(tab)) sessionIds.add(tab.sessionId);
       }
@@ -1098,28 +1103,32 @@ export function toConfig(
       const paneMeta = metaState[p.sessionId];
       const activeTabMeta = activeTab ? metaState[activeTab.sessionId] : undefined;
       const activeTabDeclared = isDeclaredTab(activeTab);
-      const paneCwd = paneMeta?.cwd ?? activeTab?.cwd ?? p.cwd ?? null;
+      const activeTabIsTerminal = activeTab.type === undefined || activeTab.type === "terminal";
+      const paneCwd = paneMeta?.cwd
+        ?? (activeTabIsTerminal ? activeTab.cwd : undefined)
+        ?? p.cwd
+        ?? null;
       // 4-level fallback so live agent session metadata never disappears even
       // if the workspaceListStore mirror lags one event behind:
       //   1. activeTab.{claudeSessionId,agentKind,agentSessionId}
       //   2. Pane mirror.{...}
       //   3. paneMetadataStore[pane.sessionId]
       //   4. paneMetadataStore[activeTab.sessionId]
-      const liveClaudeId = activeTabDeclared
+      const liveClaudeId = activeTabDeclared || !activeTabIsTerminal
         ? null
         : activeTab.claudeSessionId
           ?? p.claudeSessionId
           ?? paneMeta?.claudeSessionId
           ?? activeTabMeta?.claudeSessionId
           ?? null;
-      const liveKind = activeTabDeclared
+      const liveKind = activeTabDeclared || !activeTabIsTerminal
         ? null
         : activeTab.agentKind
           ?? p.agentKind
           ?? paneMeta?.agentKind
           ?? activeTabMeta?.agentKind
           ?? null;
-      const liveAgentId = activeTabDeclared
+      const liveAgentId = activeTabDeclared || !activeTabIsTerminal
         ? null
         : activeTab.agentSessionId
           ?? p.agentSessionId
@@ -1135,7 +1144,7 @@ export function toConfig(
         claude_session_id: liveClaudeId,
         agent_kind: liveKind,
         agent_session_id: liveAgentId,
-        suppressed_agent_sessions: activeTabDeclared
+        suppressed_agent_sessions: activeTabDeclared || !activeTabIsTerminal
           ? null
           : toSuppressedAgentSessionConfigs(
             activeTab.suppressedAgentSessions ?? p.suppressedAgentSessions,
@@ -1148,18 +1157,19 @@ export function toConfig(
           ? p.pinnedTabId ?? null
           : null,
         tabs: persistedTabs.map((tab) => {
-          const tabMeta = metaState[tab.sessionId];
+          const terminal = tab.type === undefined || tab.type === "terminal";
+          const tabMeta = terminal ? metaState[tab.sessionId] : undefined;
           const declared = isDeclaredTab(tab);
           const isActivePersistedTab = tab.id === activeTab.id;
-          const tabKind = declared
+          const tabKind = declared || !terminal
             ? null
             : tab.agentKind ?? tabMeta?.agentKind ?? (isActivePersistedTab ? liveKind : null);
-          const tabAgentId = declared
+          const tabAgentId = declared || !terminal
             ? null
             : tab.agentSessionId
               ?? tabMeta?.agentSessionId
               ?? (isActivePersistedTab ? liveAgentId ?? liveClaudeId : null);
-          const tabClaudeId = declared
+          const tabClaudeId = declared || !terminal
             ? null
             : tab.claudeSessionId
               ?? tabMeta?.claudeSessionId
@@ -1169,20 +1179,21 @@ export function toConfig(
             agent_id: tab.agentId,
             label: tab.label ?? null,
             label_source: tab.labelSource ?? null,
-            type: "terminal" as const,
-            cwd: tabMeta?.cwd ?? tab.cwd ?? paneCwd,
+            type: tab.type === "web" ? "web" as const : "terminal" as const,
+            preset_id: tab.type === "web" ? tab.presetId ?? null : null,
+            cwd: terminal ? tabMeta?.cwd ?? tab.cwd ?? paneCwd : null,
             last_process: null,
             claude_session_id: tabClaudeId,
             agent_kind: tabKind,
             agent_session_id: tabAgentId,
-            suppressed_agent_sessions: declared
+            suppressed_agent_sessions: declared || !terminal
               ? null
               : toSuppressedAgentSessionConfigs(tab.suppressedAgentSessions),
-            launch_env: stripEphemeralLaunchEnv(tab.launchEnv),
-            terminal_snapshot: declared
+            launch_env: terminal ? stripEphemeralLaunchEnv(tab.launchEnv) : null,
+            terminal_snapshot: declared || !terminal
               ? null
               : getTerminalSnapshot(tab.sessionId) ?? tab.terminalSnapshot ?? null,
-            turn_marks: declared ? null : persistTurnMarksForTab(tab.sessionId, tab.turnMarks),
+            turn_marks: declared || !terminal ? null : persistTurnMarksForTab(tab.sessionId, tab.turnMarks),
             lifecycle: tab.lifecycle,
             origin: tab.origin
               ? { kind: tab.origin.kind, parent_tab_id: tab.origin.parentTabId ?? null }

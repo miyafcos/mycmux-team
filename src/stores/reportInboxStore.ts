@@ -19,7 +19,6 @@ import {
 import type { LogicalSessionId } from "../lib/logicalSessionId";
 import type { ComposerCommandKind } from "./composerStore";
 
-export type ReportReceiveMode = "immediate" | "batch" | "quiet";
 export type MachineReportState = "waiting" | "stopped" | "needsReview";
 
 /**
@@ -90,7 +89,6 @@ interface ReportInboxState {
   cardsById: Record<string, MachineReportCard>;
   cardIds: string[];
   dispatchBatchesById: Record<string, ReportDispatchBatch | undefined>;
-  receiveModeBySession: Record<string, ReportReceiveMode | undefined>;
   ingestLiveBriefs: (briefs: readonly LiveSessionBrief[]) => void;
   ingestSemanticEvents: (ptySessionId: string, events: readonly SemanticEventEnvelope[]) => void;
   ingestStatusEvent: (payload: SessionStatusChangedPayload) => void;
@@ -101,7 +99,6 @@ interface ReportInboxState {
     ptySessionId: string,
     evidence: Omit<CompletionEvidence, "logicalSessionId" | "cycleId">,
   ) => void;
-  setReceiveMode: (ptySessionId: string, mode: ReportReceiveMode) => void;
   reset: () => void;
 }
 
@@ -327,7 +324,6 @@ export const useReportInboxStore = create<ReportInboxState>((set) => ({
   cardsById: {},
   cardIds: [],
   dispatchBatchesById: {},
-  receiveModeBySession: {},
   ingestLiveBriefs: (briefs) => set((state) => {
     let next: ReportInboxData = state;
     for (const brief of briefs) {
@@ -392,11 +388,7 @@ export const useReportInboxStore = create<ReportInboxState>((set) => ({
     if (updated === report) return state;
     return { dispatchBatchesById: { ...state.dispatchBatchesById, [batchId]: updated } };
   }),
-  setReceiveMode: (ptySessionId, mode) => set((state) => {
-    if (state.receiveModeBySession[ptySessionId] === mode) return state;
-    return { receiveModeBySession: { ...state.receiveModeBySession, [ptySessionId]: mode } };
-  }),
-  reset: () => set({ cardsById: {}, cardIds: [], dispatchBatchesById: {}, receiveModeBySession: {} }),
+  reset: () => set({ cardsById: {}, cardIds: [], dispatchBatchesById: {} }),
 }));
 
 let statusSubscriberCount = 0;

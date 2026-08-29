@@ -686,12 +686,6 @@ if [ -n "$MYCMUX_LAUNCH_TARGET" ]; then
     claude-codex-resume)
       cmd="claude-codex --resume"
       ;;
-    codex-fugu-ultra)
-      cmd="codex --no-alt-screen --profile fugu-ultra"
-      ;;
-    claude-codex-fugu)
-      cmd="claude-codex --backend fugu"
-      ;;
     claude-codex-open|fcc|fcc-claude)
       cmd="claude-codex --backend fcc"
       ;;
@@ -1140,10 +1134,9 @@ if [ -z "$cmd" ]; then
     "Codex"
     "claude-codex (Codex Models)"
     "Grok Build"
-    "Codex (Fugu Ultra)"
-    "claude-codex (Fugu)"
     "claude-codex (Open Models)"
     "Antigravity (agy)"
+    "ChatGPT (Web)"
     "Claude Code (resume)"
     "Codex (resume)"
     "claude-codex (resume)"
@@ -1159,10 +1152,9 @@ if [ -z "$cmd" ]; then
     "codex --no-alt-screen"
     "claude-codex --backend gpt"
     "grok --no-alt-screen --permission-mode auto"
-    "codex --no-alt-screen --profile fugu-ultra"
-    "claude-codex --backend fugu"
     "claude-codex --backend fcc"
     "agy"
+    "__web_chatgpt__"
     "claude --allow-dangerously-skip-permissions --permission-mode auto --resume"
     "codex resume --no-alt-screen"
     "claude-codex --resume"
@@ -1199,6 +1191,33 @@ if [ -z "$cmd" ]; then
   # 1 を返したときだけ呼び出し側が break して cmd を eval する。
   __try_selected_menu_command() {
     case "${commands[$selected]}" in
+      __web_chatgpt__)
+        # Web タブはターミナルで動くコマンドではないので eval できない。
+        # ソケット経由で mycmux 本体に「Web タブを開いて」と頼み、ここは畳む。
+        local cli="$HOME/cmux-for-linux-dev-master/scripts/mycmux_agent_cli.py"
+        local web_out="" web_rc=0
+        tput cnorm >&$__CMUX_MENU_FD 2>/dev/null
+        __close_menu_fd 2>/dev/null || true
+        if [ ! -f "$cli" ]; then
+          printf '  mycmux_agent_cli.py が見つかりません:
+    %s
+
+' "$cli"
+        else
+          web_out=$(PYTHONIOENCODING=utf-8 python "$cli" spawn --target web --preset chatgpt 2>&1)
+          web_rc=$?
+          # 失敗を握りつぶすと「押しても何も起きない」に見える。理由は必ず出す。
+          if [ "$web_rc" -ne 0 ]; then
+            printf '  Web タブを開けませんでした (exit %s):
+' "$web_rc"
+            printf '    %s
+' "$web_out"
+            printf '
+'
+          fi
+        fi
+        return 2
+        ;;
       __dir_dev__|__dir_anken__|__dir__)
         # ディレクトリを変えたら選択を先頭 (Claude Code) に戻す
         case "${commands[$selected]}" in
@@ -1235,7 +1254,7 @@ if [ -z "$cmd" ]; then
         fi
         break
         ;;
-      slash) selected=12; break ;;
+      slash) selected=11; break ;;
       dirkey) __launch_dir_menu dev ;;
       ankenkey) __launch_dir_menu anken ;;
       digit)
@@ -1249,7 +1268,6 @@ if [ -z "$cmd" ]; then
                 3) selected=12 ;;
                 4) selected=13 ;;
                 5) selected=14 ;;
-                6) selected=15 ;;
                 *) selected=0 ;;
               esac
             else

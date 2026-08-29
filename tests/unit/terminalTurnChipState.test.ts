@@ -334,6 +334,30 @@ describe("createTurnChipVisibilityController", () => {
     controller.dispose();
   });
 
+  it("preserves the wheel intent when that wheel first discovers a buffer flip", () => {
+    const controller = createTurnChipVisibilityController();
+    controller.noteLookBackIntent();
+
+    controller.reset({ preserveIntent: true });
+
+    expect(controller.setAtBottom(true)).toBe(true);
+    vi.advanceTimersByTime(TURN_CHIP_INTENT_HOLD_MS - 1);
+    expect(controller.isVisible()).toBe(true);
+    controller.dispose();
+  });
+
+  it("does not auto-hide while the history list is pinned open", () => {
+    const controller = createTurnChipVisibilityController();
+    controller.noteLookBackIntent();
+    controller.setPinned(true);
+
+    vi.advanceTimersByTime(TURN_CHIP_INTENT_HOLD_MS + TURN_CHIP_HIDE_DELAY_MS);
+    expect(controller.isVisible()).toBe(true);
+
+    expect(controller.setPinned(false)).toBe(false);
+    controller.dispose();
+  });
+
   it("stays hidden and arms no timer once disposed", () => {
     const seen: boolean[] = [];
     const controller = createTurnChipVisibilityController({

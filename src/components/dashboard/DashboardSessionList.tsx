@@ -67,7 +67,6 @@ export function DashboardSessionList({
   clearDoneCount,
   onClearDone,
   filteredSummary,
-  reportInboxCount,
   reportInboxOpen,
   onOpenReportInbox,
   openTabIds,
@@ -91,7 +90,6 @@ export function DashboardSessionList({
   clearDoneCount: number;
   onClearDone: () => void;
   filteredSummary: string | null;
-  reportInboxCount: number;
   reportInboxOpen: boolean;
   onOpenReportInbox: () => void;
   openTabIds?: readonly string[];
@@ -173,7 +171,6 @@ export function DashboardSessionList({
       <span className="cmux-dash-report-nav-icon" aria-hidden="true">{dashboardStrings.reportInboxRailIcon}</span>
       <span>{dashboardStrings.reportInboxTitle}</span>
       <small>{dashboardStrings.reportInboxHint}</small>
-      {reportInboxCount ? <b>{reportInboxCount}</b> : null}
     </button>
     <div className="cmux-dash-list-scroll">
     <Section title={dashboardStrings.sectionNeedsAnswer} count={attentionSections.needsAnswer.length}>{attentionSections.needsAnswer.map((card) => row(card, `answer-${card.tab.id}`))}</Section>

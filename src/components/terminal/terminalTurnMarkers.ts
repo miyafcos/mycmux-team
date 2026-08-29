@@ -64,8 +64,10 @@ function bindMarkerDispose(sessionId: string, marker: SessionTurnMark["marker"])
     const list = terminalTurnMarks.get(sessionId);
     if (!list) return;
     const remaining = list.filter((mark) => mark.marker !== marker);
+    if (remaining.length === list.length) return;
     if (remaining.length === 0) terminalTurnMarks.delete(sessionId);
     else terminalTurnMarks.set(sessionId, remaining);
+    emitTurnMarks(sessionId);
   });
 }
 

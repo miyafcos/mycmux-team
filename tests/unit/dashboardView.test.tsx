@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   submitAskQuestionChoice: vi.fn(async () => ({ ok: true, stopReason: null, keysSent: [] })),
   submitAskQuestionReview: vi.fn(async () => ({ ok: true, stopReason: null, keysSent: [] })),
   isAskQuestionBusy: vi.fn(() => false),
+  attentionCards: vi.fn(),
 }));
 
 vi.mock("../../src/stores/liveBriefStore", async () => {
@@ -55,6 +56,13 @@ vi.mock("../../src/components/dashboard/WatchStatusRow", () => ({
   WatchStatusRow: () => <div data-watch-status="true" />,
 }));
 
+vi.mock("../../src/components/dashboard/AttentionCards", () => ({
+  AttentionCards: (props: unknown) => {
+    mocks.attentionCards(props);
+    return <div data-attention-cards="true" />;
+  },
+}));
+
 vi.mock("../../src/components/workspace/BrowserPane", () => ({
   default: () => <div data-dashboard-preview-pane="true" />,
 }));
@@ -74,10 +82,7 @@ vi.mock("../../src/components/dashboard/askQuestionRouting", async () => {
 import { clampDashboardChatDropIndicatorOffset, DashboardView } from "../../src/components/dashboard/DashboardView";
 import { dashboardStrings } from "../../src/components/dashboard/dashboardStrings";
 import { useInterventionFeedbackStore } from "../../src/components/dashboard/interventionRouting";
-import { createBatch, sealBatch } from "../../src/lib/dispatchBatch";
-import { logicalSessionId } from "../../src/lib/logicalSessionId";
 import type { LiveSessionBrief } from "../../src/lib/livebrief";
-import type { SemanticEventEnvelope } from "../../src/lib/livebrief";
 import {
   DASHBOARD_CHAT_COLUMN_LIMIT_DEFAULT,
   DASHBOARD_INBOX_COLUMN_ID,
@@ -89,7 +94,7 @@ import {
   useDashboardViewStore,
 } from "../../src/stores/dashboardViewStore";
 import { useLiveBriefStore } from "../../src/stores/liveBriefStore";
-import { __resetReportInboxStoreForTests, useReportInboxStore } from "../../src/stores/reportInboxStore";
+import { __resetReportInboxStoreForTests } from "../../src/stores/reportInboxStore";
 import { usePaneMetadataStore } from "../../src/stores/paneMetadataStore";
 import { useRecentInputStore } from "../../src/stores/recentInputStore";
 import { usePaneDragStore } from "../../src/stores/paneDragStore";
@@ -285,6 +290,7 @@ beforeEach(() => {
   mocks.stopEventPolling.mockClear();
   mocks.onSessionStatusChanged.mockClear();
   mocks.observeActiveSession.mockClear();
+  mocks.attentionCards.mockClear();
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -387,237 +393,6 @@ describe("DashboardView split3 selection", () => {
     await act(async () => container.querySelector<HTMLButtonElement>(`[data-dashboard-manual-done-toggle='${target.id}']`)?.click());
     expect(useSessionAttentionStore.getState().doneMarkByTab.has(target.id)).toBe(false);
     expect(container.querySelector(`[data-dashboard-manual-done='${target.id}']`)).toBeNull();
-  });
-
-  it("opens an immediate machine card's source event in the matching chat row", async () => {
-    const target = tab("tab-report", "s-report", "Report target");
-    const source: SemanticEventEnvelope = {
-      eventId: "error-source-1",
-      sourceRevision: 1,
-      occurredAt: NOW,
-      sourceByteStart: 0,
-      sourceByteEnd: 24,
-      kind: { type: "error", fingerprint: "report-error", text: "検証に失敗しました" },
-    };
-    seedDashboard({ workspace: workspace([target]), selectedTabId: target.id });
-    useLiveBriefStore.setState({ listEventsBySession: { [target.sessionId]: [source] } });
-    useReportInboxStore.getState().setReceiveMode(target.sessionId, "immediate");
-    await renderDashboard();
-    await act(async () => { await Promise.resolve(); });
-
-    const inbox = container.querySelector<HTMLButtonElement>("[data-report-inbox-nav='true']");
-    await act(async () => inbox?.click());
-    const sourceButton = Array.from(container.querySelectorAll<HTMLButtonElement>("[data-report-inbox-card] button"))
-      .find((button) => button.textContent === "原文");
-    expect(sourceButton).toBeDefined();
-    expect(sourceButton?.disabled).toBe(false);
-    await act(async () => sourceButton?.click());
-
-    expect(useDashboardViewStore.getState().selectedTabId).toBe(target.id);
-    expect(useDashboardViewStore.getState().chatColumnTabIds).toContain(target.id);
-    const sourceRow = container.querySelector<HTMLElement>("[data-dashboard-event='error-source-1']");
-    expect(sourceRow?.classList.contains("is-source-highlighted")).toBe(true);
-    expect(Element.prototype.scrollIntoView).toHaveBeenCalledWith({ block: "nearest" });
-  });
-
-  it("keeps the list, chat, and minimap on the report source selected from the inbox", async () => {
-    const current = tab("tab-current", "s-current", "Current target");
-    const report = tab("tab-report", "s-report", "Report target");
-    const source: SemanticEventEnvelope = {
-      eventId: "error-source-report",
-      sourceRevision: 1,
-      occurredAt: NOW,
-      sourceByteStart: 0,
-      sourceByteEnd: 24,
-      kind: { type: "error", fingerprint: "report-error", text: "Report source" },
-    };
-    seedDashboard({ workspace: workspace([current, report], current.id), selectedTabId: current.id });
-    useLiveBriefStore.setState({ listEventsBySession: { [report.sessionId]: [source] } });
-    useReportInboxStore.getState().setReceiveMode(report.sessionId, "immediate");
-    await renderDashboard();
-    await act(async () => { await Promise.resolve(); });
-
-    await act(async () => container.querySelector<HTMLButtonElement>("[data-report-inbox-nav='true']")?.click());
-    const sourceButton = Array.from(container.querySelectorAll<HTMLButtonElement>("[data-report-inbox-card] button"))
-      .find((button) => button.textContent === "原文");
-    await act(async () => sourceButton?.click());
-
-    expect(useDashboardViewStore.getState().selectedTabId).toBe(report.id);
-    expect(centerBreadcrumb(container)).toBe("Workspace A › タブ2 › P1");
-    expect(container.querySelector<HTMLElement>(`[data-dashboard-row="${report.id}"]`)?.style.boxShadow).toContain("var(--cmux-accent)");
-    expect(container.querySelector<HTMLElement>(`[data-minimap-tab="${report.id}"]`)?.classList.contains("is-selected")).toBe(true);
-    expect(container.querySelector<HTMLElement>(`[data-minimap-tab="${current.id}"]`)?.classList.contains("is-bundle-selected")).toBe(false);
-    expect(container.querySelector<HTMLElement>("[data-dashboard-event='error-source-report']")?.classList.contains("is-source-highlighted")).toBe(true);
-  });
-
-  it("does not render an unusable source button for a closed tab and explains that the recorded signal stays readable", async () => {
-    const active = tab("tab-active", "s-active", "Active target");
-    const closedSessionId = "s-closed";
-    seedDashboard({ workspace: workspace([active]), selectedTabId: active.id });
-    useLiveBriefStore.setState({ listEventsBySession: {
-      [closedSessionId]: [{
-        eventId: "closed-source-1",
-        sourceRevision: 1,
-        occurredAt: NOW,
-        sourceByteStart: 0,
-        sourceByteEnd: 24,
-        kind: { type: "error", fingerprint: "closed-report-error", text: "閉じたタブからの記録" },
-      }],
-    } });
-    useReportInboxStore.getState().setReceiveMode(closedSessionId, "immediate");
-    await renderDashboard();
-    await act(async () => { await Promise.resolve(); });
-
-    const inbox = container.querySelector<HTMLButtonElement>("[data-report-inbox-nav='true']");
-    await act(async () => inbox?.click());
-    const closedCard = container.querySelector<HTMLElement>("[data-report-inbox-card='livebrief:s-closed:closed-source-1']");
-    const sourceButton = Array.from(closedCard?.querySelectorAll<HTMLButtonElement>("button") ?? [])
-      .find((button) => button.textContent === "原文");
-    expect(closedCard?.dataset.reportSourceAvailable).toBe("false");
-    expect(sourceButton).toBeUndefined();
-    expect(closedCard?.querySelector("[data-report-source-unavailable]")?.textContent).toContain("このタブは閉じています");
-    expect(closedCard?.textContent).toContain("閉じたタブからの記録");
-  });
-
-  it("shows the session receive mode immediately and folds quiet records", async () => {
-    const target = tab("tab-quiet", "s-quiet", "Quiet target");
-    seedDashboard({ workspace: workspace([target]), selectedTabId: target.id });
-    useLiveBriefStore.setState({ listEventsBySession: {
-      [target.sessionId]: [{
-        eventId: "quiet-source-1",
-        sourceRevision: 1,
-        occurredAt: NOW,
-        sourceByteStart: 0,
-        sourceByteEnd: 24,
-        kind: { type: "error", fingerprint: "quiet-report-error", text: "記録する進捗" },
-      }],
-    } });
-    useReportInboxStore.getState().setReceiveMode(target.sessionId, "immediate");
-    await renderDashboard();
-    await act(async () => { await Promise.resolve(); });
-
-    const inbox = container.querySelector<HTMLButtonElement>("[data-report-inbox-nav='true']");
-    await act(async () => inbox?.click());
-    const card = container.querySelector<HTMLElement>("[data-report-inbox-card='livebrief:s-quiet:quiet-source-1']");
-    expect(card?.querySelector("[data-report-receive-mode='immediate']")?.textContent).toContain("このセッションの受け方: すぐ言って");
-    const select = card?.querySelector<HTMLSelectElement>("select");
-    expect(select).not.toBeNull();
-    await act(async () => {
-      if (!select) return;
-      select.value = "batch";
-      select.dispatchEvent(new Event("change", { bubbles: true }));
-    });
-
-    const batchFold = container.querySelector<HTMLDetailsElement>("[data-report-batch-fold]");
-    expect(batchFold?.open).toBe(false);
-    expect(batchFold?.querySelector("summary")?.textContent).toContain("区切りでまとめて · 1件");
-    const quietSelect = batchFold?.querySelector<HTMLSelectElement>("select");
-    await act(async () => {
-      if (!quietSelect) return;
-      quietSelect.value = "quiet";
-      quietSelect.dispatchEvent(new Event("change", { bubbles: true }));
-    });
-
-    const quietFold = container.querySelector<HTMLDetailsElement>("[data-report-quiet-fold]");
-    expect(quietFold?.open).toBe(false);
-    expect(quietFold?.querySelector("summary")?.textContent).toContain("黙って記録 · 進捗 1件を記録");
-    expect(quietFold?.querySelector("[data-report-receive-mode='quiet']")?.textContent).toContain("このセッションのカードを畳み");
-  });
-
-  it("shows a mechanical partial summary with every coverage count and never calls it all complete", async () => {
-    const target = tab("tab-batch", "s-batch", "Batch target");
-    seedDashboard({ workspace: workspace([target]), selectedTabId: target.id });
-    const batch = sealBatch(createBatch([{
-      logicalSessionId: logicalSessionId(target.id), instructionRef: target.sessionId, label: target.label,
-    }], { batchId: "batch-ui" }));
-    useReportInboxStore.getState().registerSealedDispatchBatch({
-      batch,
-      commandKind: "plain",
-      members: [{
-        logicalSessionId: logicalSessionId(target.id),
-        ptySessionId: target.sessionId,
-        label: target.label,
-        delivery: { state: "confirmed", detail: "送達確認済み" },
-      }],
-    });
-    await renderDashboard();
-    await act(async () => { await Promise.resolve(); });
-
-    const inbox = container.querySelector<HTMLButtonElement>("[data-report-inbox-nav='true']");
-    await act(async () => inbox?.click());
-    const summary = container.querySelector<HTMLElement>("[data-report-summary='batch-ui']");
-    expect(summary?.dataset.reportPartial).toBe("true");
-    expect(summary?.classList.contains("cmux-dashboard-qcard")).toBe(true);
-    expect(summary?.textContent).toContain("対象1｜受領0｜まとめ反映0｜未受領1｜要判断0");
-    expect(summary?.textContent).toContain("部分まとめ");
-    expect(summary?.textContent).not.toContain("全員完了");
-  });
-
-  it("lists both conflicting completion evidences instead of collapsing them into complete", async () => {
-    const target = tab("tab-conflict", "s-conflict", "Conflict target");
-    seedDashboard({ workspace: workspace([target]), selectedTabId: target.id });
-    const batch = sealBatch(createBatch([{
-      logicalSessionId: logicalSessionId(target.id), instructionRef: target.sessionId, label: target.label,
-    }], { batchId: "batch-conflict" }));
-    useReportInboxStore.getState().registerSealedDispatchBatch({
-      batch,
-      commandKind: "plain",
-      members: [{
-        logicalSessionId: logicalSessionId(target.id), ptySessionId: target.sessionId, label: target.label,
-        delivery: { state: "confirmed", detail: "送達確認済み" },
-      }],
-    });
-    useReportInboxStore.getState().ingestBatchCompletionEvidence("batch-conflict", target.sessionId, {
-      source: "ledger", kind: "done-marker", observedAt: NOW, sourceRef: "done-conflict",
-    });
-    useReportInboxStore.getState().ingestBatchCompletionEvidence("batch-conflict", target.sessionId, {
-      source: "livebrief", kind: "turn-ended", observedAt: NOW + 1, sourceRef: "turn-conflict",
-    });
-    await renderDashboard();
-    const inbox = container.querySelector<HTMLButtonElement>("[data-report-inbox-nav='true']");
-    await act(async () => inbox?.click());
-    expect(Array.from(container.querySelectorAll("[data-report-conflict-evidence]")).map((node) => node.textContent))
-      .toEqual(expect.arrayContaining(["Conflict target: ledger/done-marker", "Conflict target: livebrief/turn-ended"]));
-    expect(container.textContent).not.toContain("全員完了");
-  });
-
-  it("shows when repeated commands make a machine evidence unsafe to correlate", async () => {
-    const target = tab("tab-ambiguous", "s-ambiguous", "Ambiguous target");
-    seedDashboard({ workspace: workspace([target]), selectedTabId: target.id });
-    const register = (batchId: string) => {
-      const batch = sealBatch(createBatch([{
-        logicalSessionId: logicalSessionId(target.id), instructionRef: target.sessionId, label: target.label,
-      }], { batchId }));
-      useReportInboxStore.getState().registerSealedDispatchBatch({
-        batch,
-        commandKind: "plain",
-        members: [{
-          logicalSessionId: logicalSessionId(target.id), ptySessionId: target.sessionId, label: target.label,
-          delivery: { state: "confirmed", detail: "送達確認済み" },
-        }],
-      });
-    };
-    register("batch-old-ui");
-    useReportInboxStore.getState().ingestBatchCompletionEvidence("batch-old-ui", target.sessionId, {
-      source: "livebrief", kind: "turn-ended", observedAt: NOW, sourceRef: "old-turn",
-    });
-    register("batch-new-ui");
-    useReportInboxStore.getState().ingestSemanticEvents(target.sessionId, [{
-      eventId: "unsafe-correlation",
-      sourceRevision: 1,
-      occurredAt: NOW + 1,
-      sourceByteStart: 0,
-      sourceByteEnd: 1,
-      kind: { type: "testResult", pass: 0, fail: 1 },
-    }]);
-    await renderDashboard();
-    const inbox = container.querySelector<HTMLButtonElement>("[data-report-inbox-nav='true']");
-    await act(async () => inbox?.click());
-    const summary = container.querySelector<HTMLElement>("[data-report-summary='batch-new-ui']");
-    expect(summary?.dataset.reportPartial).toBe("true");
-    expect(summary?.textContent).toContain("要判断1");
-    expect(summary?.querySelector("[data-report-correlation-warning]")?.textContent)
-      .toContain("受領数に入れていません");
   });
 
   it("keeps j/k navigation in the frozen rendered attention-row order", async () => {
@@ -1478,8 +1253,18 @@ describe("DashboardView multi-open columns", () => {
     expect(useDashboardViewStore.getState().chatColumnTabIds).toEqual([first.id, DASHBOARD_INBOX_COLUMN_ID]);
     expect(container.querySelector(`[data-dashboard-chat-column='${first.id}']`)).not.toBeNull();
     expect(container.querySelector(`[data-dashboard-chat-column='${DASHBOARD_INBOX_COLUMN_ID}']`)).not.toBeNull();
-    expect(container.querySelector("[data-dashboard-inbox-column='true']")).not.toBeNull();
+    const inboxColumn = container.querySelector<HTMLElement>("[data-dashboard-inbox-column='true']");
+    expect(inboxColumn).not.toBeNull();
+    expect(inboxColumn?.querySelector("[data-attention-cards='true']")).not.toBeNull();
     expect(container.querySelector("[aria-label='報告インボックス']")).not.toBeNull();
+    expect(mocks.attentionCards.mock.calls.at(-1)?.[0]).toEqual(expect.objectContaining({
+      sessionLabel: expect.any(Function),
+      openCardSession: expect.any(Function),
+      openSession: expect.any(Function),
+      answerQuestion: expect.any(Function),
+      retryWorkItem: expect.any(Function),
+      openWorkOrder: expect.any(Function),
+    }));
   });
 
   it("passes an equal-width column count for 4 and 5 visible columns", async () => {
@@ -1529,29 +1314,14 @@ describe("DashboardView session list collapse", () => {
     expect(window.localStorage.getItem(DASHBOARD_SESSION_LIST_COLLAPSED_STORAGE_KEY)).toBe("true");
   });
 
-  it("keeps the report inbox nav and unread badge while collapsed", async () => {
+  it("keeps the report inbox nav while collapsed", async () => {
     const target = tab("tab-report-rail", "s-report-rail", "Report rail");
-    const source: SemanticEventEnvelope = {
-      eventId: "error-source-rail",
-      sourceRevision: 1,
-      occurredAt: NOW,
-      sourceByteStart: 0,
-      sourceByteEnd: 24,
-      kind: { type: "error", fingerprint: "report-error", text: "検証に失敗しました" },
-    };
     seedDashboard({ workspace: workspace([target]), selectedTabId: target.id });
-    useLiveBriefStore.setState({ listEventsBySession: { [target.sessionId]: [source] } });
-    useReportInboxStore.getState().setReceiveMode(target.sessionId, "immediate");
     await renderDashboard();
-    await act(async () => { await Promise.resolve(); });
-
-    const badgeBefore = container.querySelector("[data-report-inbox-nav='true'] b")?.textContent;
-    expect(Number(badgeBefore)).toBeGreaterThan(0);
 
     await act(async () => container.querySelector<HTMLButtonElement>("[data-session-list-toggle='true']")?.click());
     const inbox = container.querySelector<HTMLButtonElement>("[data-report-inbox-nav='true']");
     expect(inbox).not.toBeNull();
-    expect(inbox?.querySelector("b")?.textContent).toBe(badgeBefore);
 
     await act(async () => inbox?.click());
     expect(useDashboardViewStore.getState().chatColumnTabIds).toContain(DASHBOARD_INBOX_COLUMN_ID);

@@ -86,6 +86,17 @@ describe("TerminalTurnChip", () => {
     expect(host.querySelector(".terminal-turn-list")).toBeNull();
   });
 
+  it("reports the full list-open lifetime so the parent can pin visibility", () => {
+    const onListVisibilityChange = vi.fn();
+    renderChip({ ...chipProps(), onListVisibilityChange });
+
+    clickLabel();
+    expect(onListVisibilityChange).toHaveBeenLastCalledWith(true);
+
+    clickLabel();
+    expect(onListVisibilityChange).toHaveBeenLastCalledWith(false);
+  });
+
   it("closes the history list with Escape", () => {
     renderChip();
     const label = clickLabel();

@@ -227,6 +227,7 @@ fn file_ranking_documents_cumulative_count_when_period_count_is_unavailable() {
         from: Some(1_000),
         to: Some(2_000),
         preset: None,
+        anchor: None,
     };
     let report = query::rework_rankings(&conn, &range, &Filters::default(), NOW).unwrap();
     assert_eq!(
@@ -253,6 +254,7 @@ fn smoke_real_database_learning_reports() {
             from: None,
             to: None,
             preset: Some("all".to_string()),
+            anchor: None,
         },
         &Filters::default(),
         &query::FindingsOptions::default(),
@@ -265,6 +267,7 @@ fn smoke_real_database_learning_reports() {
             from: None,
             to: None,
             preset: Some("all".to_string()),
+            anchor: None,
         },
         &Filters::default(),
         now,

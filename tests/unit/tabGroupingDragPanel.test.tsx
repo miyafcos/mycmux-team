@@ -63,6 +63,7 @@ import { useGroupingRuntimeStore } from "../../src/stores/groupingRuntimeStore";
 import { usePaneMetadataStore } from "../../src/stores/paneMetadataStore";
 import { useSessionAttentionStore } from "../../src/stores/sessionAttentionStore";
 import { useWorkspaceListStore } from "../../src/stores/workspaceListStore";
+import { __resetGroupingPrecomputeForTests } from "../../src/lib/groupingPrecompute";
 import { mockGroupingAnalysis, mockWorkspaces } from "./fixtures/tabGroupingMockScenario";
 import { hashCanonical } from "./helpers/groupingTestEntrypoint";
 
@@ -232,6 +233,8 @@ function button(label: string): HTMLButtonElement {
 }
 
 beforeEach(() => {
+  __resetGroupingPrecomputeForTests();
+  localStorage.clear();
   analysisHarness.value = mockGroupingAnalysis;
   editHarness.commands = [];
   editHarness.sessions = [];
@@ -256,6 +259,8 @@ afterEach(async () => {
   if (root) await act(async () => root?.unmount());
   root = null;
   document.body.replaceChildren();
+  __resetGroupingPrecomputeForTests();
+  localStorage.clear();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
   resetStores();
@@ -857,6 +862,8 @@ describe("TabGroupingPanel pointer drag", () => {
     if (root) await act(async () => root?.unmount());
     root = null;
     resetStores();
+    __resetGroupingPrecomputeForTests();
+    localStorage.clear();
     editHarness.commands = [];
     await mountEdit();
     if (!dropId) throw new Error("roving drop id missing");

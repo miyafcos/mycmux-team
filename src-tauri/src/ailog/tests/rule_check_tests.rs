@@ -103,6 +103,7 @@ fn smoke_real_database_efficiency_and_rule_check_are_read_only() {
         from: None,
         to: None,
         preset: Some("all".to_string()),
+        anchor: None,
     };
     let now = chrono::Utc::now().timestamp_millis();
     let efficiency =

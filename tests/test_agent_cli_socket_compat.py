@@ -215,6 +215,96 @@ def test_real_cli_preserves_legacy_one_shot_wire_format(tmp_path: Path) -> None:
     assert result.stderr == ""
 
 
+def test_real_cli_status_uses_authenticated_state_view_wire_format(
+    tmp_path: Path,
+) -> None:
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port_dir = tmp_path / ".mycmux"
+    port_dir.mkdir()
+    (port_dir / "mycmux.port").write_text(
+        str(listener.getsockname()[1]), encoding="utf-8"
+    )
+    token = "status-token"
+    (port_dir / "mycmux.token").write_text(token, encoding="utf-8")
+    session_id = "session-status"
+    response = {
+        "id": 8,
+        "result": {
+            "sessions": [
+                {
+                    "session_id": session_id,
+                    "input_revision": 5,
+                    "view": {
+                        "session_id": session_id,
+                        "session_epoch": 7,
+                        "session_revision": 11,
+                        "lifecycle": "alive",
+                        "activity": "idle",
+                        "attention": {"attention_id": None, "kind": "none"},
+                        "health": "fresh",
+                    },
+                    "ui_state": "idle",
+                }
+            ]
+        },
+        "error": None,
+    }
+    received: list[bytes] = []
+    errors: list[BaseException] = []
+    server = _serve_one_request(
+        listener,
+        (json.dumps(response) + "\n").encode("utf-8"),
+        received,
+        errors,
+    )
+
+    result = _run_cli(tmp_path, ["status", "--session", session_id])
+    server.join(timeout=3)
+    assert not server.is_alive()
+    if errors:
+        raise errors[0]
+
+    assert json.loads(received[0]) == {
+        "cmd": "session.state_view",
+        "args": {"session_id": session_id},
+        "token": token,
+    }
+    assert result.returncode == 0
+    assert json.loads(result.stdout) == response["result"]
+    assert result.stderr == ""
+
+
+def test_real_cli_status_rejects_invalid_state_schema(tmp_path: Path) -> None:
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port_dir = tmp_path / ".mycmux"
+    port_dir.mkdir()
+    (port_dir / "mycmux.port").write_text(
+        str(listener.getsockname()[1]), encoding="utf-8"
+    )
+    received: list[bytes] = []
+    errors: list[BaseException] = []
+    server = _serve_one_request(
+        listener,
+        b'{"id":8,"result":{"sessions":"bad"},"error":null}\n',
+        received,
+        errors,
+    )
+
+    result = _run_cli(tmp_path, ["status"])
+    server.join(timeout=3)
+    assert not server.is_alive()
+    if errors:
+        raise errors[0]
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert "invalid session.state_view schema" in result.stderr
+
+
 def test_real_cli_send_without_expectations_preserves_legacy_args(
     tmp_path: Path,
 ) -> None:

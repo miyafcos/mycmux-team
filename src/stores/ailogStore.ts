@@ -384,7 +384,17 @@ function cacheContext(state: Pick<AilogState, "preset" | "customFrom" | "customT
       query: filters.query ?? null,
     },
   });
-  return { key, range, filters, granularity: state.granularity };
+  // Send the anchor a relative preset is measured from, not the instants it
+  // resolves to. Every report resolves the preset against its own clock, so two
+  // calls a millisecond apart used to cover different windows — and the usage
+  // panels, which compare their range against the overview's, could never agree
+  // and showed "no records" over full data. Passing from/to instead would work
+  // too, but an explicit bound outranks a preset by contract and would relabel
+  // the named period as a custom one.
+  const requestRange: AilogRange = state.preset === "custom"
+    ? range
+    : { preset: state.preset, anchor: resolvedRange.to };
+  return { key, range: requestRange, filters, granularity: state.granularity };
 }
 
 function isCurrentContext(get: () => AilogState, key: string): boolean {

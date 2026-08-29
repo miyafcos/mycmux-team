@@ -23,8 +23,8 @@ import { applyLayoutMutation } from "../../lib/layoutMutation";
 import { collectPaneCloseVictims } from "../../lib/paneCloseImpact";
 
 type SocketArgs = Record<string, unknown> | null | undefined;
-type SpawnTarget = AgentSessionKind | "shell";
-export type SpawnMode = "handoff" | "prompt" | "resume" | "shell" | "launch";
+type SpawnTarget = AgentSessionKind | "shell" | "web";
+export type SpawnMode = "handoff" | "prompt" | "resume" | "shell" | "launch" | "web";
 
 export interface SpawnPlan {
   target: SpawnTarget;
@@ -38,6 +38,8 @@ export interface SpawnPlan {
     agentSessionId?: string;
     launchEnv?: Record<string, string>;
     activate?: boolean;
+    /** Web tabs have no PTY; the preset says which site to open. */
+    webPresetId?: string;
   };
 }
 
@@ -96,7 +98,7 @@ function isAgentKind(value: string): value is AgentSessionKind {
 function spawnTarget(args: SocketArgs): SpawnTarget {
   const target = socketArgString(args, "target");
   if (!target) throw new Error("pane.spawn requires target");
-  if (target !== "shell" && !isAgentKind(target)) {
+  if (target !== "shell" && target !== "web" && !isAgentKind(target)) {
     throw new Error(`unsupported pane.spawn target: ${target}`);
   }
   return target;
@@ -113,6 +115,18 @@ export function resolveSpawnPlan(args: SocketArgs, handoffPromptPath?: string): 
   const target = spawnTarget(args);
   const label = socketArgString(args, "label");
   const cwd = socketArgString(args, "cwd");
+
+  // A web tab is not a process: no PTY, no agent kind, no launch env. Decided
+  // before anything that reads an agent kind, because it has none to read.
+  if (target === "web") {
+    const preset = socketArgString(args, "preset", "presetId") ?? "chatgpt";
+    return {
+      target,
+      mode: "web",
+      paneOptions: { agentId: "shell-starter", label, cwd, webPresetId: preset },
+    };
+  }
+
   const handoffFromSessionId = socketArgString(
     args,
     "handoffFromSessionId",
@@ -639,7 +653,11 @@ async function resolveHandoffPromptPath(args: SocketArgs): Promise<string | unde
 
   const { crsmCreateHandoff } = await import("../../lib/ipc");
   const target = spawnTarget(args);
-  if (target === "shell") throw new Error("pane.spawn handoff requires an agent target");
+  // A handoff carries a conversation between agents; a shell has none to carry
+  // and a web tab is not an agent at all.
+  if (target === "shell" || target === "web") {
+    throw new Error("pane.spawn handoff requires an agent target");
+  }
   const handoffFromKind = optionalAgentKind(
     args,
     "handoffFromKind",
@@ -714,6 +732,27 @@ async function spawnPane(args: SocketArgs) {
       .map((pane) => pane.id),
   );
   const activate = socketArgBoolean(args, "activate", false);
+
+  // A web tab has no PTY to launch, so it splits the pane and then gets added
+  // as a web tab rather than going through the terminal launch path.
+  if (plan.mode === "web") {
+    const presetId = plan.paneOptions.webPresetId ?? "chatgpt";
+    const { loadWebPanePresets } = await import("../workspace/webPaneApi");
+    const presets = await loadWebPanePresets().catch(() => []);
+    const preset = presets.find((candidate) => candidate.id === presetId);
+    if (!preset) throw new Error(`unknown web preset: ${presetId}`);
+    const layout = useWorkspaceLayoutStore.getState();
+    layout.addPaneToWorkspace(workspaceId, anchorPane.id, directionArg);
+    const created = useWorkspaceListStore.getState().getWorkspace(workspaceId)?.panes
+      .find((pane) => !beforePaneIds.has(pane.id));
+    if (!created) throw new Error("pane.spawn could not create a pane for the web tab");
+    layout.addWebTabToPane(workspaceId, created.id, {
+      presetId,
+      label: plan.paneOptions.label ?? preset.label,
+    });
+    return { paneId: created.id, presetId };
+  }
+
   useWorkspaceLayoutStore.getState().addPaneToWorkspaceWithOptions(
     workspaceId,
     anchorPane.id,

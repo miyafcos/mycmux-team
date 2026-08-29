@@ -406,6 +406,49 @@ describe("dedupeAgentSessionsInConfigs", () => {
     expect(saved.panes[0].tabs![0].suppressed_agent_sessions?.[0].agent_session_id).toBe("parked-session");
   });
 
+  it("excludes web tabs from terminal and mapping session collections", () => {
+    const terminal: PaneTab = {
+      id: "terminal",
+      sessionId: "terminal-session",
+      agentId: "shell-starter",
+      type: "terminal",
+    };
+    const web: PaneTab = {
+      id: "web",
+      sessionId: "web-session",
+      agentId: "web",
+      type: "web",
+      presetId: "chatgpt",
+    };
+    const workspace: Workspace = {
+      id: "live-web-workspace",
+      name: "Live web",
+      gridTemplateId: "1x1",
+      status: "running",
+      createdAt: 1,
+      panes: [{
+        id: "pane-web",
+        agentId: web.agentId,
+        sessionId: web.sessionId,
+        tabs: [terminal, web],
+        activeTabId: web.id,
+      }],
+    };
+    useWorkspaceListStore.setState({ workspaces: [workspace], activeWorkspaceId: workspace.id });
+    expect(collectLiveTerminalSessionIds()).toEqual([terminal.sessionId]);
+
+    const persisted = workspaceConfig([paneConfig("pane-a", "terminal-tab")]);
+    persisted.panes[0].tabs!.push({
+      tab_id: "web-tab",
+      agent_id: "web",
+      type: "web",
+      preset_id: "chatgpt",
+      agent_kind: "claude",
+      agent_session_id: "must-not-map",
+    });
+    expect(collectWorkspaceConfigSessionIds([persisted])).toEqual(["terminal-tab"]);
+  });
+
   it("does not graft pane identity onto the first restored tab when active_tab_id is absent", () => {
     const restored = useWorkspaceLayoutStore.getState().restorePanes(
       "workspace",

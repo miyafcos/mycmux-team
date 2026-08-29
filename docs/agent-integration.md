@@ -35,7 +35,28 @@ python scripts/mycmux_agent_cli.py spawn --target <claude|codex> --prompt-file <
 - 同ペインに新しいタブを開き、純正の対話 TUI (Claude Code / Codex) を起動して spec を流し込む
   (内部 RPC: `pane.spawn_tab`。`--split` または `spawn-tab --detach` 指定時のみ `pane.spawn` = 新ペイン。`--workspace` / `--anchor-pane` / `--direction` は `--split` 必須。`MYCMUX_PANE_SESSION_ID` 欠落時はエラー終了 — 新ペインへのフォールバックはしない (2026-08-21 裁定)。応答 JSON の `placement` が `tab` / `pane` を示す)
 - effort やモデル指定は CLI フラグでは渡らない — **spec 本文に日本語で明記**する
-- 割り込みは send_text → 数秒後に素の Enter 後追い (ペースト扱いで Enter が飲まれるため)
+- spawn の初期 handoff と、既存タブへの一般入力は別経路。一般入力で生の `send --enter` を自動実行せず、後述の mycmux bridge で画面と canonical state を検証する
+
+### claude-codex 用 mycmux bridge
+
+Claude harness の `ListAgents` は harness registry、mycmux の `pane.list_all` は workspace / pane / tab / PTY registry を返す。片方に存在するセッションがもう片方へ自動登録されることはない。claude-codex で一覧が不足するときは `mycmux-bridge list` を追加実行し、結果を `source` 付きで併記する。同名の agent や tab を暗黙統合しない。
+
+共有 skill の入口:
+
+```
+python C:/Users/miyaz/.claude/skills/mycmux-bridge/scripts/mycmux_bridge.py list
+python C:/Users/miyaz/.claude/skills/mycmux-bridge/scripts/mycmux_bridge.py read --session <PTY-sessionId> --lines 400
+python C:/Users/miyaz/.claude/skills/mycmux-bridge/scripts/mycmux_bridge.py status --session <PTY-sessionId>
+python C:/Users/miyaz/.claude/skills/mycmux-bridge/scripts/mycmux_bridge.py send --session <PTY-sessionId> --text "<message>"
+python C:/Users/miyaz/.claude/skills/mycmux-bridge/scripts/mycmux_bridge.py answer-ask --session <PTY-sessionId> --answers-json '{"<question>": 2}'
+```
+
+- `read` / `status` / `send` / `answer-ask` の ID は、`pane.list_all` の `tabs[].sessionId` にある PTY session ID だけを使う。workspace ID、pane ID、tab ID、agentSessionId、claudeSessionId は別物
+- `status` は一発 socket request に対応する `session.state_view` を使う。指定 session が未検出、重複、schema 不正なら fail closed
+- `read` は mounted tab の renderer buffer、または inactive/background tab の PTY scrollback を headless xterm で再生した logical screen snapshot。transcript ではなく、最大400行
+- 一般送信は alive / fresh / expected attention、session epoch、attention ID、session revision、PTY input revision、screen fingerprint を確認する。attention が `none` の場合も `expectedAttentionId: null` を明示し、attention / session / input の完全3点を atomic lock として送る。text-only write 成功時の input revision に1を足した値を Enter 用に固定し、draft が安定して見えた場合だけ semantic `enter` を1回送る。途中で別入力が入れば native CAS が拒否し、追加 Enter は送らない。成功後は residue 消失と state transition を確認する
+- `SendMessage` は Claude harness session 用、bridge の PTY send は mycmux tab 用。相互互換として扱わない
+- AskUserQuestion は `docs/adr/0003-askuserquestion-input-contract.md` が正本。初回に `input revision → screen` の順で観測し、screen identity にその revision を固定する。送信直前の再観測で revision を上書きせず、自分のwrite成功後だけ固定値を1増やす。単一選択と通常の複数質問は数字キー1バイトだけを送り、Enter を付けない。multiSelect のみ各 toggle 後に画面を再読し、Submit まで Down、Enter 1回、review で `1` の順に処理する
 
 ### ソケット認証 (2026-08-09 追加・自作ツールを書くとき必読)
 
@@ -144,9 +165,10 @@ spawn したタブの完了・生存は画面でなく**実体を3層でポー�
    spec マーカー文字列での特定はロールオーバーで破綻し、「最新ファイル」は並行セッションと混線する (実測)
 3. **repo の編集ファイル mtime** (`git status --porcelain` 対象の stat)
 
-増分が数分止まったらログ末尾の agent_message を読む — 質問待ちなら send_text で回答し、
-素の Enter を数秒後に後追い送信する。以下は使わない:
-- `pane.read` (v0.18.0 以降の裏起動タブはレンダラ非生成で常に空)
+増分が数分止まったらログ末尾の agent_message と canonical state を確認する。質問待ちへの入力は `mycmux-bridge` の safe path を使い、画面解析なしの素の Enter 後追いは行わない。
+
+- `pane.read` は mounted tab の renderer buffer を返す。inactive/background tab は PTY scrollback を headless xterm で再生するため、logical screen snapshot として利用できる。ただし transcript ではない
+- AskUserQuestion への回答は通常メッセージ送信と分け、数字1バイトまたは規定の multiSelect sequence を使う
 - サブエージェントの自己申告 (「保存しました」) を成果と見なさない
 
 ## 配布物: session-dispatch スキル (Claude Code 用)

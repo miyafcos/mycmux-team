@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   invoke: vi.fn(),
   xtermMount: vi.fn(),
   evictTerminalCache: vi.fn(),
+  tabBarProps: null as { onRemoveTab?: (tabId: string) => void } | null,
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -24,7 +25,12 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 
 vi.mock("@tauri-apps/plugin-shell", () => ({ open: vi.fn() }));
-vi.mock("../../src/components/workspace/PaneTabBar", () => ({ default: () => null }));
+vi.mock("../../src/components/workspace/PaneTabBar", () => ({
+  default: (props: { onRemoveTab?: (tabId: string) => void }) => {
+    mocks.tabBarProps = props;
+    return null;
+  },
+}));
 vi.mock("../../src/components/workspace/BrowserPane", () => ({ default: () => null }));
 vi.mock("../../src/components/online/OnlinePanel", () => ({ default: () => null }));
 vi.mock("../../src/components/composer/PaneComposer", () => ({ PaneComposer: () => null }));
@@ -103,6 +109,7 @@ beforeEach(() => {
   document.body.appendChild(container);
   root = createRoot(container);
   vi.clearAllMocks();
+  mocks.tabBarProps = null;
   mocks.invoke.mockResolvedValue(undefined);
   useSettingsStore.setState({ paneComposerEnabled: false, declaredLaunchEnabled: true });
   usePaneMetadataStore.setState({ metadata: {}, lastLog: {} });
@@ -143,6 +150,63 @@ describe("TerminalPane declared restore boundary", () => {
     await renderPanes(workspaceWith([paneWith(normal)]));
     expect(mocks.xtermMount).toHaveBeenCalledTimes(1);
     expect(mocks.xtermMount).toHaveBeenCalledWith(expect.objectContaining({ sessionId: normal.sessionId }));
+  });
+
+  it("closes a web tab without killing or evicting its terminal sibling", async () => {
+    const terminal: PaneTab = {
+      id: "terminal",
+      sessionId: "terminal-session",
+      agentId: "claude-code",
+      type: "terminal",
+      cwd: "C:\\terminal-work",
+      agentKind: "claude",
+      agentSessionId: "terminal-agent-session",
+      terminalSnapshot: ["keep terminal output"],
+    };
+    const originalPane: Pane = {
+      ...paneWith(terminal),
+      cwd: terminal.cwd,
+      agentKind: terminal.agentKind,
+      agentSessionId: terminal.agentSessionId,
+    };
+    const workspace = workspaceWith([originalPane]);
+    usePaneMetadataStore.setState({
+      metadata: { [terminal.sessionId]: { cwd: terminal.cwd } },
+      lastLog: {},
+    });
+    await renderPanes(workspace);
+
+    await act(async () => {
+      useWorkspaceLayoutStore.getState().addWebTabToPane(
+        workspace.id,
+        originalPane.id,
+        { presetId: "chatgpt", label: "ChatGPT" },
+      );
+      await Promise.resolve();
+    });
+    const openedWorkspace = useWorkspaceListStore.getState().getWorkspace(workspace.id)!;
+    const openedPane = openedWorkspace.panes[0];
+    const webTab = openedPane.tabs.find((tab) => tab.type === "web")!;
+    await renderPanes(openedWorkspace);
+
+    await act(async () => {
+      mocks.tabBarProps?.onRemoveTab?.(webTab.id);
+      await Promise.resolve();
+    });
+    const closedWorkspace = useWorkspaceListStore.getState().getWorkspace(workspace.id)!;
+    const closedPane = closedWorkspace.panes[0];
+    await renderPanes(closedWorkspace);
+
+    expect(mocks.invoke.mock.calls.filter(([command]) => command === "kill_session")).toHaveLength(0);
+    expect(mocks.evictTerminalCache).not.toHaveBeenCalled();
+    expect(closedPane.tabs).toEqual([terminal]);
+    expect(closedPane.activeTabId).toBe(terminal.id);
+    expect(closedPane.sessionId).toBe(terminal.sessionId);
+    expect(closedPane.cwd).toBe(terminal.cwd);
+    expect(closedPane.agentKind).toBe(terminal.agentKind);
+    expect(closedPane.agentSessionId).toBe(terminal.agentSessionId);
+    expect(usePaneMetadataStore.getState().metadata[terminal.sessionId]?.cwd).toBe(terminal.cwd);
+    expect(container.querySelector(`[data-xterm-session="${terminal.sessionId}"]`)).not.toBeNull();
   });
 
   it("launches a restored declaration next to a saved Claude tab without resume args or env", async () => {

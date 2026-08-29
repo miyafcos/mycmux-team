@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import type { TearOutMeasurementSnapshot } from "../lib/tearOutDiagnostics";
 
 export type PaneDropZone = "center" | "left" | "right" | "up" | "down";
 export type PaneDragSurface = "workspace" | "minimap";
@@ -131,11 +132,13 @@ interface PaneDragState {
   target: PaneDropTarget | null;
   hoverWorkspaceId: string | null;
   dashboardChatDropPreview: DashboardChatDropPreview;
+  tearOutMeasurement: TearOutMeasurementSnapshot | null;
   beginDrag: (item: PaneDragItem, pointer: PointerPosition) => void;
   moveDrag: (pointer: PointerPosition) => void;
   setTarget: (target: PaneDropTarget | null) => void;
   setHoverWorkspaceId: (workspaceId: string | null) => void;
   setDashboardChatDropPreview: (preview: DashboardChatDropPreview) => void;
+  setTearOutMeasurement: (measurement: TearOutMeasurementSnapshot | null) => void;
   clearDrag: () => void;
 }
 
@@ -145,6 +148,7 @@ export const usePaneDragStore = create<PaneDragState>((set) => ({
   target: null,
   hoverWorkspaceId: null,
   dashboardChatDropPreview: null,
+  tearOutMeasurement: null,
   beginDrag: (item, pointer) => set({
     item,
     pointer,
@@ -156,6 +160,7 @@ export const usePaneDragStore = create<PaneDragState>((set) => ({
   setTarget: (target) => set({ target }),
   setHoverWorkspaceId: (hoverWorkspaceId) => set({ hoverWorkspaceId }),
   setDashboardChatDropPreview: (dashboardChatDropPreview) => set({ dashboardChatDropPreview }),
+  setTearOutMeasurement: (tearOutMeasurement) => set({ tearOutMeasurement }),
   clearDrag: () => set({
     item: null,
     pointer: null,

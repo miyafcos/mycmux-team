@@ -558,11 +558,11 @@ $Options = @(
   New-MycmuxOption "Codex" @("codex", "--no-alt-screen") "codex"
   New-MycmuxOption "claude-codex (Codex Models)" @("claude-codex", "--backend", "gpt") "claude-codex"
   New-MycmuxOption "Grok Build" @("grok", "--no-alt-screen", "--permission-mode", "auto") "grok"
-  New-MycmuxOption "Codex (Fugu Ultra)" @("codex", "--no-alt-screen", "--profile", "fugu-ultra") "codex"
-  New-MycmuxOption "claude-codex (Fugu)" @("claude-codex", "--backend", "fugu") "claude-codex"
   New-MycmuxOption "claude-codex (Open Models)" @("claude-codex", "--backend", "fcc") "claude-codex"
   # Gemini CLI was sunset for individual accounts on 2026-06-18; agy (Antigravity CLI) replaces it
   New-MycmuxOption "Antigravity (agy)" @("agy") $null
+  # Not a process: opens a web tab through the socket, handled before exec.
+  New-MycmuxOption "ChatGPT (Web)" @("__web_chatgpt__") $null
   New-MycmuxOption "Claude Code (resume)" @("claude", "--allow-dangerously-skip-permissions", "--permission-mode", "auto", "--resume") "claude"
   New-MycmuxOption "Codex (resume)" @("codex", "resume", "--no-alt-screen") "codex"
   New-MycmuxOption "claude-codex (resume)" @("claude-codex", "--resume") "claude-codex"
@@ -570,24 +570,26 @@ $Options = @(
   New-MycmuxOption "Custom..." @("__custom__") $null
 )
 
+# Index-based, so removing an option shifts everything after it. The two Fugu
+# entries were dropped on 2026-08-29 and ChatGPT (Web) took a slot after agy.
 $LaunchTargets = @{
   "claude" = $Options[0]
   "codex" = $Options[1]
   "claude-codex" = $Options[2]
   "grok" = $Options[3]
-  "codex-fugu-ultra" = $Options[4]
-  "claude-codex-fugu" = $Options[5]
-  "claude-codex-open" = $Options[6]
-  "fcc" = $Options[6]
-  "fcc-claude" = $Options[6]
-  "agy" = $Options[7]
-  "gemini" = $Options[7]
-  "antigravity" = $Options[7]
-  "claude-resume" = $Options[8]
-  "codex-resume" = $Options[9]
-  "claude-codex-resume" = $Options[10]
-  "grok-resume" = $Options[11]
-  "custom" = $Options[12]
+  "claude-codex-open" = $Options[4]
+  "fcc" = $Options[4]
+  "fcc-claude" = $Options[4]
+  "agy" = $Options[5]
+  "gemini" = $Options[5]
+  "antigravity" = $Options[5]
+  "chatgpt" = $Options[6]
+  "web-chatgpt" = $Options[6]
+  "claude-resume" = $Options[7]
+  "codex-resume" = $Options[8]
+  "claude-codex-resume" = $Options[9]
+  "grok-resume" = $Options[10]
+  "custom" = $Options[11]
 }
 
 function Invoke-MycmuxCustomCommand {
@@ -605,6 +607,43 @@ function Invoke-MycmuxCustomCommand {
   Invoke-MycmuxWithNoColorGuard -Leaf $leaf -Action { Invoke-Expression $cmd }
 }
 
+function Invoke-MycmuxWebTab {
+  param([Parameter(Mandatory = $true)][string]$Preset)
+
+  # A web tab is not a process, so there is nothing to exec here. Ask the
+  # mycmux backend over the socket to open one, then fall through to the shell.
+  Clear-Host
+  $cli = Join-Path $HOME "cmux-for-linux-dev-master\scripts\mycmux_agent_cli.py"
+  if (-not (Test-Path $cli)) {
+    Write-Host "  mycmux_agent_cli.py was not found:"
+    Write-Host "    $cli"
+    Write-Host ""
+    Write-Host "  Press any key to return to the shell."
+    [void][Console]::ReadKey($true)
+    return
+  }
+
+  Write-Host "  Opening the $Preset web tab..."
+  $prevEncoding = $env:PYTHONIOENCODING
+  $env:PYTHONIOENCODING = "utf-8"
+  try {
+    $output = & python $cli spawn --target web --preset $Preset 2>&1
+    $code = $LASTEXITCODE
+  } finally {
+    $env:PYTHONIOENCODING = $prevEncoding
+  }
+
+  if ($code -ne 0) {
+    # Never swallow the reason: a silent no-op reads as "the launcher is broken".
+    Write-Host ""
+    Write-Host "  Could not open the web tab (exit $code):"
+    foreach ($line in @($output)) { Write-Host "    $line" }
+    Write-Host ""
+    Write-Host "  Press any key to return to the shell."
+    [void][Console]::ReadKey($true)
+  }
+}
+
 function Invoke-MycmuxOption {
   param([Parameter(Mandatory = $true)]$Option)
 
@@ -614,6 +653,11 @@ function Invoke-MycmuxOption {
 
   if ($Option.Command[0] -eq "__custom__") {
     Invoke-MycmuxCustomCommand
+    return
+  }
+
+  if ($Option.Command[0] -eq "__web_chatgpt__") {
+    Invoke-MycmuxWebTab "chatgpt"
     return
   }
 

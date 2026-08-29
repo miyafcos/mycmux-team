@@ -1,12 +1,18 @@
-import { invoke } from "@tauri-apps/api/core";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type MutableRefObject, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { OverlayShell } from "../common/OverlayShell";
 import { tabGroupingStrings } from "../dashboard/dashboardStrings";
 import { useAiSettingsStore } from "../../stores/aiSettingsStore";
 import { useGroupingRuntimeStore } from "../../stores/groupingRuntimeStore";
+import { useSettingsStore } from "../../stores/settingsStore";
 import { useUiStore } from "../../stores/uiStore";
 import { useWorkspaceListStore } from "../../stores/workspaceListStore";
 import { layoutStructureRevision } from "../../lib/layoutMutation";
+import {
+  generateForegroundGroupingAnalysis,
+  markGroupingInterest,
+  peekGroupingPrecompute,
+  requestGroupingPrecomputeRefresh,
+} from "../../lib/groupingPrecompute";
 import { attentionCategory, useSessionAttentionStore } from "../../stores/sessionAttentionStore";
 import type { Pane, PaneTab, Workspace } from "../../types";
 import { formatJudgeError, formatLastOutputAgeCompact } from "./tabSweep";
@@ -17,11 +23,11 @@ import {
   formatGroupingAiNote,
   planCardStats,
   previewKindForTab,
-  runGroupingAnalysis,
-  scanGroupingContext,
   TAB_GROUPING_NAME_MAX,
   validateEditedPlan,
   type GroupingPlan,
+  type GroupingAnalysisResult,
+  type GroupingAnalysisStage,
   type GroupingDestination,
   type GroupingScan,
   type LayoutTransaction,
@@ -45,17 +51,27 @@ import {
 import { groupingBoundary } from "./groupingBoundary";
 import {
   groupingMoveLineColor,
-  groupingLeadInPath,
-  groupingMoveLineRoutePath,
+  groupingMoveLineDrawPaths,
   groupingMeasuredMoveLines,
   groupingMoveDiffs,
-  groupingMoveLinePath,
   groupingMoveLines,
   groupingRelativeRect,
   groupingSideBySideOrientation,
+  groupingWithinWorkspaceMoveLines,
   type GroupingLineRect,
   type MeasuredGroupingMoveLine,
 } from "./groupingMoveLines";
+import {
+  sampleGroupingApplyPath,
+  startGroupingApplyAnimation,
+  type GroupingApplyAnimationCallbacks,
+  type GroupingApplyAnimationController,
+  type GroupingApplyAnimationPoint,
+  type GroupingApplyAnimationStarter,
+} from "./groupingApplyAnimation";
+import { requestGroupingLandingFlight } from "./GroupingFlightHost";
+import { groupingExitTangent } from "./groupingLandingFlight";
+import { useDashboardViewStore } from "../../stores/dashboardViewStore";
 import {
   groupingLineageNodes,
   groupingTabLocations,
@@ -70,6 +86,7 @@ import "./TabGroupingPanel.css";
 export type GroupingStepId = "compare" | "edit" | "confirm";
 export type GroupingStepState = "current" | "done" | "todo" | "locked";
 type GroupingMode = GroupingStepId;
+type GroupingAnalysisFreshness = "fresh" | "soft-stale";
 type ConfirmView = "side-by-side" | "current" | "after" | "diff";
 type GroupingNameEditTarget =
   | { kind: "group"; groupId: string }
@@ -82,8 +99,27 @@ type GroupingPreviewFailure = Extract<GroupingPreviewResult, { ok: false }>;
 type GroupingCommitFailure = Extract<ReturnType<typeof groupingBoundary.commit>["commit"], { ok: false }>;
 type GroupingUndoFailure = Extract<ReturnType<typeof groupingBoundary.undo>, { ok: false }>;
 type GroupingTicket = Extract<GroupingPrepareResult, { ok: true }>["ticket"];
+type GroupingCommitAttempt =
+  | { kind: "result"; result: ReturnType<typeof groupingBoundary.commit> }
+  | { kind: "throw"; error: unknown };
 
 const GROUPING_STEPS: readonly GroupingStepId[] = ["compare", "edit", "confirm"];
+
+function usePrefersReducedMotion(): boolean {
+  const [reduced, setReduced] = useState(() => (
+    typeof window !== "undefined"
+      && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true
+  ));
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const media = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const update = () => setReduced(media.matches);
+    update();
+    media.addEventListener?.("change", update);
+    return () => media.removeEventListener?.("change", update);
+  }, []);
+  return reduced;
+}
 const GROUPING_LIVE_CLOCK_MS = 30_000;
 const groupingLiveClockListeners = new Set<() => void>();
 let groupingLiveClockNow = Date.now();
@@ -306,6 +342,24 @@ function requestId(): string {
   return typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
     ? crypto.randomUUID()
     : `tab-grouping-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function groupingPreparedTime(generatedAt: number): string {
+  return new Intl.DateTimeFormat(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(new Date(generatedAt));
+}
+
+function groupingPreparedStatus(
+  freshness: GroupingAnalysisFreshness,
+  generatedAt: number,
+): string {
+  const time = groupingPreparedTime(generatedAt);
+  return freshness === "fresh"
+    ? `現在の状態・${time}に準備済み`
+    : `${time}時点の案（参考表示）`;
 }
 
 function strategyLabel(strategy: GroupingPlan["strategy"]): string {
@@ -889,9 +943,8 @@ const GroupingMoveLineGroup = memo(function GroupingMoveLineGroup({
   });
   if (!line.fromRect || !line.toRect) return null;
   const stateClasses = `${active && focused ? " is-focused" : ""}${pinned ? " is-pinned" : ""}${active && !focused ? " is-dimmed" : ""}${live.status === "working" ? " is-live" : ""}`;
-  const linePath = line.routePoints
-    ? groupingMoveLineRoutePath(line.routePoints)
-    : groupingMoveLinePath(line.fromRect, line.toRect, orientation);
+  const paths = groupingMoveLineDrawPaths(line, orientation);
+  const linePath = paths.mainPath;
   const start = line.routePoints?.[0] ?? (orientation === "horizontal"
     ? { x: line.fromRect.left + line.fromRect.width, y: line.fromRect.top + line.fromRect.height / 2 }
     : { x: line.fromRect.left + line.fromRect.width / 2, y: line.fromRect.top + line.fromRect.height });
@@ -924,13 +977,13 @@ const GroupingMoveLineGroup = memo(function GroupingMoveLineGroup({
           : undefined}
         d={linePath}
       />
-      {line.leadIn ? (
+      {paths.leadInPath ? (
         <>
-          <path className={`cmux-tab-grouping-line-halo is-leadin${stateClasses}`} d={groupingLeadInPath(line.leadIn, orientation)} />
+          <path className={`cmux-tab-grouping-line-halo is-leadin${stateClasses}`} d={paths.leadInPath} />
           <path
             className={`cmux-tab-grouping-leadin${stateClasses}`}
             data-tab-id={line.tabId}
-            d={groupingLeadInPath(line.leadIn, orientation)}
+            d={paths.leadInPath}
           />
         </>
       ) : null}
@@ -944,6 +997,43 @@ const GroupingMoveLineGroup = memo(function GroupingMoveLineGroup({
   );
 });
 
+interface GroupingFlightRenderItem {
+  tabId: string;
+  label: string;
+  width: number;
+  height: number;
+  sourceCenter: { x: number; y: number };
+  destinationCenter: { x: number; y: number };
+  pathSegments: readonly string[];
+  color: string | undefined;
+  sourceElement: HTMLElement;
+  destinationElement: HTMLElement;
+}
+
+interface GroupingFlightRenderState {
+  id: number;
+  items: readonly GroupingFlightRenderItem[];
+}
+
+interface GroupingLandingDraftItem {
+  tabId: string;
+  label: string;
+  color: string | undefined;
+  width: number;
+  height: number;
+  destinationCenter: { x: number; y: number };
+  samples: readonly GroupingApplyAnimationPoint[];
+}
+
+/**
+ * Frozen at diagram-flight start so a successful commit can hand the proxies
+ * over to the resident GroupingFlightHost in viewport coordinates.
+ */
+interface GroupingLandingDraft {
+  items: readonly GroupingLandingDraftItem[];
+  container: HTMLElement | null;
+}
+
 function GroupingSideBySide({
   before,
   after,
@@ -952,6 +1042,9 @@ function GroupingSideBySide({
   attentionCategoryByTabId,
   onLineFocusChange,
   clearFocusRef,
+  applyAnimationEnabled,
+  startApplyAnimationRef,
+  landingDraftRef,
 }: {
   before: Workspace[];
   after: Workspace[];
@@ -960,6 +1053,9 @@ function GroupingSideBySide({
   attentionCategoryByTabId: Readonly<Record<string, "waiting" | "error" | "done" | null | undefined>>;
   onLineFocusChange?: (active: boolean) => void;
   clearFocusRef?: MutableRefObject<(() => void) | null>;
+  applyAnimationEnabled: boolean;
+  startApplyAnimationRef?: MutableRefObject<GroupingApplyAnimationStarter<GroupingCommitAttempt> | null>;
+  landingDraftRef?: MutableRefObject<GroupingLandingDraft | null>;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chipRefs = useRef(new Map<string, HTMLElement>());
@@ -968,6 +1064,12 @@ function GroupingSideBySide({
   const workspaceFocusRefs = useRef(new Map<string, HTMLElement>());
   const [size, setSize] = useState({ width: 0, height: 0 });
   const [measured, setMeasured] = useState<MeasuredGroupingMoveLine[]>([]);
+  const [flightRender, setFlightRender] = useState<GroupingFlightRenderState | null>(null);
+  const flightGenerationRef = useRef(0);
+  const flightActiveRef = useRef(false);
+  const flightProxyRefs = useRef(new Map<string, HTMLElement>());
+  const flightCallbacksRef = useRef<GroupingApplyAnimationCallbacks<GroupingCommitAttempt> | null>(null);
+  const flightControllerRef = useRef<GroupingApplyAnimationController | null>(null);
   const [hoverLineFocus, setHoverLineFocus] = useState<{ tabId: string | null; workspaceId: string | null }>(
     { tabId: null, workspaceId: null },
   );
@@ -981,7 +1083,12 @@ function GroupingSideBySide({
     { before: null, after: null },
   );
   const diffs = useMemo(() => groupingMoveDiffs(before, after), [before, after]);
-  const lines = useMemo(() => groupingMoveLines(before, after), [before, after]);
+  const crossWorkspaceLines = useMemo(() => groupingMoveLines(before, after), [before, after]);
+  const withinWorkspaceLines = useMemo(() => groupingWithinWorkspaceMoveLines(before, after), [before, after]);
+  const lines = useMemo(
+    () => [...crossWorkspaceLines, ...withinWorkspaceLines],
+    [crossWorkspaceLines, withinWorkspaceLines],
+  );
   const lineIds = useMemo(() => new Set(lines.map((line) => line.tabId)), [lines]);
   const movedTabIds = useMemo(() => new Set(diffs.map((diff) => diff.tabId)), [diffs]);
   const tabById = useMemo(() => new Map(
@@ -1084,23 +1191,33 @@ function GroupingSideBySide({
       for (const [key, element] of paneRefs.current) {
         paneRects.set(key, groupingRelativeRect(element.getBoundingClientRect(), containerRect));
       }
-      for (const workspaceId of new Set(lines.map((line) => line.toWorkspaceId))) {
+      for (const workspaceId of new Set(crossWorkspaceLines.map((line) => line.toWorkspaceId))) {
         const workspace = workspaceRefs.current.get(`after:${workspaceId}`);
         if (workspace) {
           workspaceRects.set(workspaceId, groupingRelativeRect(workspace.getBoundingClientRect(), containerRect));
         }
       }
-      const nextMeasured = groupingMeasuredMoveLines({
-        lines,
+      const commonInput = {
         fromRects,
         toRects,
         afterChipRects,
         paneRects,
         sourcePaneIds,
         destinationPaneIds,
-        workspaceRects,
         orientation: currentOrientation,
-      });
+      };
+      const nextMeasured = [
+        ...groupingMeasuredMoveLines({
+          ...commonInput,
+          lines: crossWorkspaceLines,
+          workspaceRects,
+        }),
+        ...groupingMeasuredMoveLines({
+          ...commonInput,
+          lines: withinWorkspaceLines,
+          workspaceRects: new Map(),
+        }),
+      ];
       setMeasured((current) => measuredLinesEqual(current, nextMeasured) ? current : nextMeasured);
     };
 
@@ -1133,17 +1250,27 @@ function GroupingSideBySide({
         }
       }
       if (changedTabIds.size === 0) return;
-      const nextMeasured = groupingMeasuredMoveLines({
-        lines,
+      const commonInput = {
         fromRects,
         toRects,
         afterChipRects,
         paneRects,
         sourcePaneIds,
         destinationPaneIds,
-        workspaceRects,
         orientation: currentOrientation,
-      });
+      };
+      const nextMeasured = [
+        ...groupingMeasuredMoveLines({
+          ...commonInput,
+          lines: crossWorkspaceLines,
+          workspaceRects,
+        }),
+        ...groupingMeasuredMoveLines({
+          ...commonInput,
+          lines: withinWorkspaceLines,
+          workspaceRects: new Map(),
+        }),
+      ];
       setMeasured((current) => measuredLinesEqual(current, nextMeasured) ? current : nextMeasured);
     };
 
@@ -1153,6 +1280,7 @@ function GroupingSideBySide({
     let measureAllPending = false;
     const changedElements = new Set<Element>();
     const scheduleMeasure = (elements?: readonly Element[]) => {
+      if (flightActiveRef.current) return;
       if (!elements || elements.length === 0 || elements.includes(container)) measureAllPending = true;
       else for (const element of elements) changedElements.add(element);
       if (disposed || animationFrame !== null) return;
@@ -1202,7 +1330,7 @@ function GroupingSideBySide({
       resizeObserver?.disconnect();
       scrollContainer?.removeEventListener("scroll", handleScroll);
     };
-  }, [after, lines]);
+  }, [after, crossWorkspaceLines, lines, withinWorkspaceLines]);
 
   const orientation = groupingSideBySideOrientation(size.width);
   const pinActive = pinnedLineFocus.tabId !== null || pinnedLineFocus.workspaceId !== null;
@@ -1258,12 +1386,124 @@ function GroupingSideBySide({
     };
   }, [clearFocusRef, clearWorkspaceFocus]);
 
+  const startFlight = useCallback<GroupingApplyAnimationStarter<GroupingCommitAttempt>>((callbacks) => {
+    if (!applyAnimationEnabled || flightRender || flightControllerRef.current) return false;
+    if (lines.length === 0 || measured.length !== lines.length) return false;
+    const items: GroupingFlightRenderItem[] = [];
+    const draftItems: GroupingLandingDraftItem[] = [];
+    for (const line of measured) {
+      if (!line.fromRect || !line.toRect) return false;
+      const sourceElement = chipRefs.current.get(`before:${line.tabId}`);
+      const destinationElement = chipRefs.current.get(`after:${line.tabId}`);
+      const tab = tabById.get(line.tabId);
+      if (!sourceElement || !destinationElement || !tab) return false;
+      const paths = groupingMoveLineDrawPaths(line, orientation);
+      const pathSegments = [paths.mainPath, paths.leadInPath].filter((path): path is string => Boolean(path));
+      let samples: readonly GroupingApplyAnimationPoint[];
+      try {
+        samples = sampleGroupingApplyPath(pathSegments);
+      } catch {
+        return false;
+      }
+      const label = line.label || tab.label || line.tabId;
+      const width = line.fromRect.width;
+      const height = line.fromRect.height;
+      const destinationCenter = {
+        x: line.destinationRect.left + line.destinationRect.width / 2,
+        y: line.destinationRect.top + line.destinationRect.height / 2,
+      };
+      const color = destinationColors.get(line.toWorkspaceId);
+      items.push({
+        tabId: line.tabId,
+        label,
+        width,
+        height,
+        sourceCenter: {
+          x: line.fromRect.left + line.fromRect.width / 2,
+          y: line.fromRect.top + line.fromRect.height / 2,
+        },
+        destinationCenter,
+        pathSegments,
+        color,
+        sourceElement,
+        destinationElement,
+      });
+      draftItems.push({ tabId: line.tabId, label, color, width, height, destinationCenter, samples });
+    }
+    flightCallbacksRef.current = callbacks;
+    flightActiveRef.current = true;
+    if (landingDraftRef) landingDraftRef.current = { items: draftItems, container: containerRef.current };
+    const id = flightGenerationRef.current + 1;
+    flightGenerationRef.current = id;
+    setFlightRender({ id, items });
+    return true;
+  }, [applyAnimationEnabled, destinationColors, flightRender, landingDraftRef, lines.length, measured, orientation, tabById]);
+
+  useEffect(() => {
+    if (!startApplyAnimationRef) return;
+    startApplyAnimationRef.current = startFlight;
+    return () => {
+      if (startApplyAnimationRef.current === startFlight) startApplyAnimationRef.current = null;
+    };
+  }, [startApplyAnimationRef, startFlight]);
+
+  useLayoutEffect(() => {
+    if (!flightRender || flightControllerRef.current) return;
+    const callbacks = flightCallbacksRef.current;
+    if (!callbacks) {
+      setFlightRender(null);
+      return;
+    }
+    const animationItems = flightRender.items.flatMap((item) => {
+      const proxyElement = flightProxyRefs.current.get(item.tabId);
+      return proxyElement ? [{ ...item, proxyElement }] : [];
+    });
+    const finish = (outcome: GroupingCommitAttempt) => {
+      flightActiveRef.current = false;
+      flightControllerRef.current = null;
+      flightCallbacksRef.current = null;
+      setFlightRender((current) => current?.id === flightRender.id ? null : current);
+      callbacks.onFinished(outcome);
+    };
+    if (animationItems.length !== flightRender.items.length) {
+      if (landingDraftRef) landingDraftRef.current = null;
+      const outcome = callbacks.onCommit();
+      finish(outcome);
+      return;
+    }
+    const controller = startGroupingApplyAnimation({
+      items: animationItems,
+      onCommit: callbacks.onCommit,
+      commitSucceeded: callbacks.commitSucceeded,
+      shouldReverse: callbacks.shouldReverse,
+      onFinished: finish,
+    });
+    if (!controller) {
+      if (landingDraftRef) landingDraftRef.current = null;
+      const outcome = callbacks.onCommit();
+      finish(outcome);
+      return;
+    }
+    flightControllerRef.current = controller;
+  }, [flightRender]);
+
+  useEffect(() => {
+    if (!applyAnimationEnabled) flightControllerRef.current?.settleImmediately();
+  }, [applyAnimationEnabled]);
+
+  useEffect(() => () => {
+    flightActiveRef.current = false;
+    flightControllerRef.current?.cancel();
+    flightControllerRef.current = null;
+    flightCallbacksRef.current = null;
+  }, []);
+
   return (
     <>
       <div className="cmux-tab-grouping-note">{tabGroupingStrings.sideBySideLegend}</div>
       {diffs.length > 0 ? (
         <div className="cmux-tab-grouping-note">
-          {tabGroupingStrings.sideBySideDiffCount(lines.length, diffs.length - lines.length)}
+          {tabGroupingStrings.sideBySideDiffCount(crossWorkspaceLines.length, withinWorkspaceLines.length)}
         </div>
       ) : null}
       <div className="cmux-tab-grouping-note">{tabGroupingStrings.liveLegendWithParentRef}</div>
@@ -1378,13 +1618,36 @@ function GroupingSideBySide({
             })}
           </svg>
         ) : null}
+        {flightRender ? (
+          <div className="cmux-tab-grouping-flight-layer" aria-hidden="true">
+            {flightRender.items.map((item) => (
+              <div
+                key={`${flightRender.id}:${item.tabId}`}
+                ref={(element) => {
+                  if (element) flightProxyRefs.current.set(item.tabId, element);
+                  else flightProxyRefs.current.delete(item.tabId);
+                }}
+                className="cmux-tab-grouping-flight-chip"
+                data-flight-tab-id={item.tabId}
+                data-flight-path={JSON.stringify(item.pathSegments)}
+                style={{
+                  width: item.width,
+                  height: item.height,
+                  transform: `translate3d(${item.sourceCenter.x - item.width / 2}px, ${item.sourceCenter.y - item.height / 2}px, 0)`,
+                  "--grouping-flight-color": item.color,
+                } as CSSProperties}
+              >
+                <span className="cmux-tab-grouping-flight-label">{item.label}</span>
+              </div>
+            ))}
+          </div>
+        ) : null}
       </div>
     </>
   );
 }
 
 export function TabGroupingPanel({ open, visible, closing = false, intent = null, onClose }: TabGroupingPanelProps) {
-  const activeRequestRef = useRef<string | null>(null);
   const analyzeGenerationRef = useRef(0);
   const applyInFlightRef = useRef(false);
   const revisionReprepareRef = useRef(false);
@@ -1394,6 +1657,8 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
   const moveMenuRef = useRef<HTMLDivElement>(null);
   const sideBySideLineFocusRef = useRef(false);
   const clearSideBySideFocusRef = useRef<(() => void) | null>(null);
+  const startApplyAnimationRef = useRef<GroupingApplyAnimationStarter<GroupingCommitAttempt> | null>(null);
+  const landingDraftRef = useRef<GroupingLandingDraft | null>(null);
   const editMapRef = useRef<HTMLDivElement>(null);
   const dropPickerActiveIdRef = useRef<string | null>(null);
   const dropPickerEngagedRef = useRef(false);
@@ -1402,6 +1667,8 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
   const [confirmView, setConfirmView] = useState<ConfirmView>("side-by-side");
   const [showCurrent, setShowCurrent] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
+  const [analysisStage, setAnalysisStage] = useState<GroupingAnalysisStage>("scanning");
+  const [analysisElapsedSeconds, setAnalysisElapsedSeconds] = useState(0);
   const [applying, setApplying] = useState(false);
   const [highlightMoved, setHighlightMoved] = useState(false);
   const [status, setStatus] = useState<string>(tabGroupingStrings.analyzing);
@@ -1412,6 +1679,8 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
   const [comparisonInsufficient, setComparisonInsufficient] = useState(false);
   const [parseError, setParseError] = useState<string | null>(null);
   const [raw, setRaw] = useState("");
+  const [analysisFreshness, setAnalysisFreshness] = useState<GroupingAnalysisFreshness | null>(null);
+  const [analysisGeneratedAt, setAnalysisGeneratedAt] = useState<number | null>(null);
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
   const [selectedTabIds, setSelectedTabIds] = useState<Set<string>>(new Set());
   const [changedOnly, setChangedOnly] = useState(false);
@@ -1440,6 +1709,9 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
   const aiProvider = useAiSettingsStore((state) => state.aiProvider);
   const aiModel = useAiSettingsStore((state) => state.aiModel);
   const aiEnabled = useAiSettingsStore((state) => state.aiEnabled);
+  const groupingApplyAnimationEnabled = useSettingsStore((state) => state.groupingApplyAnimationEnabled);
+  const prefersReducedMotion = usePrefersReducedMotion();
+  const applyMotionEnabled = groupingApplyAnimationEnabled && !prefersReducedMotion;
   const workspaces = useWorkspaceListStore((state) => state.workspaces);
   const layoutRevision = useWorkspaceListStore((state) => state.layoutRevision);
   const dragLayoutRevision = useMemo(() => layoutStructureRevision(workspaces), [workspaces]);
@@ -1468,11 +1740,23 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
     applied: Boolean(applied),
   });
   const currentPlanStats = edited && scan ? planCardStats(edited, scan.baseline) : null;
+  const resultReadOnly = analysisFreshness === "soft-stale";
   // The runtime store expires this record as soon as its structural signature
   // stops matching. The Panel consumes that public state instead of bypassing
   // the groupingBoundary facade to recompute an engine signature.
   const canReviewUndo = undo?.status === "available";
   const canReviewApplied = canReviewUndo;
+  const analysisProgress = tabGroupingStrings.analysisProgress(analysisStage, analysisElapsedSeconds);
+
+  useEffect(() => {
+    if (!analyzing || !open) return;
+    const startedAt = Date.now();
+    setAnalysisElapsedSeconds(0);
+    const timer = window.setInterval(() => {
+      setAnalysisElapsedSeconds(Math.floor((Date.now() - startedAt) / 1000));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [analyzing, open]);
 
   const runEditCommand = useCallback((planId: string, command: EditCommand) => {
     const session = editedByPlan[planId];
@@ -1531,9 +1815,7 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
   );
 
   const cancelJudge = useCallback(() => {
-    const id = activeRequestRef.current;
-    activeRequestRef.current = null;
-    if (id) void invoke<boolean>("abort_tab_sweep_judge", { requestId: id }).catch(() => {});
+    analyzeGenerationRef.current += 1;
   }, []);
 
   const resetTransientUi = useCallback(() => {
@@ -1558,48 +1840,69 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
     setComparisonInsufficient(false);
   }, []);
 
-  const analyze = useCallback(async () => {
-    const generation = ++analyzeGenerationRef.current;
-    cancelJudge();
-    setAnalyzing(true);
-    setParseError(null);
-    setRaw("");
-    setPlans([]);
+  const hydrateAnalysis = useCallback((
+    result: GroupingAnalysisResult,
+    freshness: GroupingAnalysisFreshness,
+    generatedAt: number,
+  ) => {
     setAnalysisIdentity({ allocationSeed: requestId(), createdAt: Date.now() });
     const pet = choosePetForNewWorkspace();
     setNewWorkspaceDefaults(pet === undefined ? null : { pet });
     resetTransientUi();
     setMode("compare");
+    setScan(result.scan);
+    setRaw(result.raw);
+    setAnalysisFreshness(freshness);
+    setAnalysisGeneratedAt(generatedAt);
+    if (result.parsed.status === "invalid") {
+      setParseError(result.parsed.reason);
+      setPlans([]);
+      setStatus(result.parsed.reason);
+      return;
+    }
+    const parsed: ParseGroupingResult = result.parsed;
+    const orderedPlans = orderGroupingPlansForDisplay(parsed.plans);
+    setParseError(null);
+    setPlans(parsed.plans);
+    setEditedByPlan(Object.fromEntries(parsed.plans.map((plan) => [
+      plan.planId,
+      beginGroupingEdit(clonePlanForEdit(plan)),
+    ])));
+    setSelectedPlanId(orderedPlans[0]?.planId ?? null);
+    setSelectedGroupId(orderedPlans[0]?.groups[0]?.groupId ?? null);
+    setComparisonInsufficient(parsed.comparisonInsufficient);
+    setStatus(groupingPreparedStatus(freshness, generatedAt));
+  }, [resetTransientUi]);
+
+  const analyze = useCallback(async (force = true, options?: { keepCurrent?: boolean }) => {
+    cancelJudge();
+    const generation = ++analyzeGenerationRef.current;
+    setAnalyzing(true);
+    setAnalysisStage("scanning");
+    setAnalysisElapsedSeconds(0);
+    // keepCurrent: a structure-stale plan stays on screen (read-only) while
+    // the judge re-derives it, instead of the panel going blank for the
+    // whole judge run.
+    if (!options?.keepCurrent) {
+      setParseError(null);
+      setRaw("");
+      setPlans([]);
+      setAnalysisFreshness(null);
+      setAnalysisGeneratedAt(null);
+      resetTransientUi();
+      setMode("compare");
+    }
     setStatus(tabGroupingStrings.analyzing);
     try {
-      const result = await runGroupingAnalysis({
-        scan: scanGroupingContext,
-        requestId,
-        judge: async (prompt, id) => {
-          activeRequestRef.current = id;
-          return invoke<string>("run_tab_sweep_judge", { prompt, requestId: id, mode: "grouping" });
-        },
+      const produced = await generateForegroundGroupingAnalysis(force, (stage) => {
+        if (generation === analyzeGenerationRef.current) setAnalysisStage(stage);
       });
       if (generation !== analyzeGenerationRef.current) return;
-      setScan(result.scan);
-      setRaw(result.raw);
-      if (result.parsed.status === "invalid") {
-        setParseError(result.parsed.reason);
-        setPlans([]);
-        setStatus(result.parsed.reason);
+      if (produced.kind === "obsolete") {
+        setStatus("状態が変わったため、もう一度分析してください");
         return;
       }
-      const parsed: ParseGroupingResult = result.parsed;
-      const orderedPlans = orderGroupingPlansForDisplay(parsed.plans);
-      setPlans(parsed.plans);
-      setEditedByPlan(Object.fromEntries(parsed.plans.map((plan) => [
-        plan.planId,
-        beginGroupingEdit(clonePlanForEdit(plan)),
-      ])));
-      setSelectedPlanId(orderedPlans[0]?.planId ?? null);
-      setSelectedGroupId(orderedPlans[0]?.groups[0]?.groupId ?? null);
-      setComparisonInsufficient(parsed.comparisonInsufficient);
-      setStatus(parsed.comparisonInsufficient ? tabGroupingStrings.comparisonInsufficient : tabGroupingStrings.analyzed);
+      hydrateAnalysis(produced.analysis, "fresh", produced.generatedAt);
     } catch (error) {
       if (generation !== analyzeGenerationRef.current) return;
       const presented = formatJudgeError(error, aiProvider);
@@ -1608,11 +1911,10 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
       setStatus(presented.summary);
     } finally {
       if (generation === analyzeGenerationRef.current) {
-        activeRequestRef.current = null;
         setAnalyzing(false);
       }
     }
-  }, [aiProvider, cancelJudge, resetTransientUi]);
+  }, [aiProvider, cancelJudge, hydrateAnalysis, resetTransientUi]);
 
   useEffect(() => {
     if (!open) {
@@ -1620,9 +1922,22 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
       return;
     }
     if (intent === "review" && useGroupingRuntimeStore.getState().undo?.status === "available") return;
-    void analyze();
+    markGroupingInterest();
+    const cached = peekGroupingPrecompute();
+    if (cached.kind === "fresh" || cached.kind === "soft-stale") {
+      hydrateAnalysis(cached.analysis, cached.kind, cached.generatedAt);
+      if (cached.kind === "soft-stale") {
+        // Layout moved under the plan: someone is waiting at an open panel, so
+        // re-judge in the foreground while the old plan stays visible. Mere
+        // output drift only needs the background refresh.
+        if (cached.reason === "structure") void analyze(false, { keepCurrent: true });
+        else requestGroupingPrecomputeRefresh();
+      }
+    } else {
+      void analyze(false);
+    }
     return () => cancelJudge();
-  }, [analyze, cancelJudge, intent, open]);
+  }, [analyze, cancelJudge, hydrateAnalysis, intent, open]);
 
   useEffect(() => {
     if (!open
@@ -1740,57 +2055,114 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
     applyInFlightRef.current = true;
     setApplying(true);
     setStatus(tabGroupingStrings.applying);
-    let result: ReturnType<typeof groupingBoundary.commit>;
-    try {
-      result = groupingBoundary.commit(edited, ticket);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+    const commit = (): GroupingCommitAttempt => {
+      try {
+        return { kind: "result", result: groupingBoundary.commit(edited, ticket) };
+      } catch (error) {
+        return { kind: "throw", error };
+      }
+    };
+    const finish = (attempt: GroupingCommitAttempt) => {
+      if (attempt.kind === "throw") {
+        const message = attempt.error instanceof Error ? attempt.error.message : String(attempt.error);
+        setTicket(null);
+        setPreparedPlan(null);
+        setPreparedLayoutRevision(null);
+        setApplyErrors([message]);
+        setMode("edit");
+        setStatus(message);
+        setApplying(false);
+        queueMicrotask(() => {
+          applyInFlightRef.current = false;
+        });
+        return;
+      }
+      const result = attempt.result;
+      setCommitDurability(result.durability);
       setTicket(null);
       setPreparedPlan(null);
       setPreparedLayoutRevision(null);
-      setApplyErrors([message]);
-      setMode("edit");
-      setStatus(message);
-      setApplying(false);
-      queueMicrotask(() => {
-        applyInFlightRef.current = false;
-      });
-      return;
-    }
-    setCommitDurability(result.durability);
-    setTicket(null);
-    setPreparedPlan(null);
-    setPreparedLayoutRevision(null);
-    if (!result.commit.ok) {
-      const message = groupingCommitFailureMessage(result.commit);
-      setStale(result.commit.stale ?? []);
-      setApplyErrors([message, ...result.commit.errors.filter((error) => error !== message)]);
-      setApplying(false);
-      queueMicrotask(() => {
-        applyInFlightRef.current = false;
-      });
-      if (result.commit.kind === "preview_stale") {
-        setMode("confirm");
-        setStatus(tabGroupingStrings.ticketInvalidated);
-      } else {
-        setMode("edit");
-        setStatus(message);
+      if (!result.commit.ok) {
+        const message = groupingCommitFailureMessage(result.commit);
+        setStale(result.commit.stale ?? []);
+        setApplyErrors([message, ...result.commit.errors.filter((error) => error !== message)]);
+        setApplying(false);
+        queueMicrotask(() => {
+          applyInFlightRef.current = false;
+        });
+        if (result.commit.kind === "preview_stale") {
+          setMode("confirm");
+          setStatus(tabGroupingStrings.ticketInvalidated);
+        } else {
+          setMode("edit");
+          setStatus(message);
+        }
+        return;
       }
-      return;
-    }
-    setStale([]);
-    setApplyErrors([]);
-    setApplied(result.commit.transaction);
-    setReviewApplied(true);
-    setUndoDismissed(false);
-    setHighlightMoved(true);
-    setStatus(tabGroupingStrings.undoApplied(result.commit.report.moved.length));
-    window.setTimeout(() => {
-      setHighlightMoved(false);
-      applyInFlightRef.current = false;
-      setApplying(false);
-    }, 0);
-  }, [applied, applying, edited, preparedLayoutRevision, preparedPlan, ticket]);
+      setStale([]);
+      setApplyErrors([]);
+      setApplied(result.commit.transaction);
+      setReviewApplied(true);
+      setUndoDismissed(false);
+      setHighlightMoved(true);
+      setStatus(tabGroupingStrings.undoApplied(result.commit.report.moved.length));
+      const draft = landingDraftRef.current;
+      landingDraftRef.current = null;
+      const expected = result.commit.transaction.expected;
+      const containerRect = draft?.container?.getBoundingClientRect() ?? null;
+      if (applyMotionEnabled && draft && containerRect) {
+        const movedById = new Map(result.commit.report.moved.map((entry) => [entry.tabId, entry]));
+        const items = draft.items.flatMap((item) => {
+          const moved = movedById.get(item.tabId);
+          if (!moved) return [];
+          return [{
+            tabId: item.tabId,
+            label: item.label,
+            color: item.color,
+            width: item.width,
+            height: item.height,
+            exitCenter: {
+              x: containerRect.left + item.destinationCenter.x,
+              y: containerRect.top + item.destinationCenter.y,
+            },
+            exitTangent: groupingExitTangent(item.samples),
+            destination: moved.to.workspaceId === expected.focusWorkspaceId
+              ? { kind: "pane" as const, workspaceId: moved.to.workspaceId, paneId: moved.to.paneId }
+              : { kind: "workspace" as const, workspaceId: moved.to.workspaceId },
+          }];
+        });
+        if (items.length > 0) {
+          requestGroupingLandingFlight({
+            items,
+            movedCount: result.commit.report.moved.length,
+            focusWorkspaceId: expected.focusWorkspaceId,
+          });
+        }
+      }
+      window.setTimeout(() => {
+        setHighlightMoved(false);
+        applyInFlightRef.current = false;
+        setApplying(false);
+      }, 0);
+      // The apply succeeded: the panel and Dashboard retire together so what
+      // the user watches is the landing flight (or, with motion off, the
+      // settled real layout). Undo stays reachable — it lives in the runtime
+      // store and reappears when the panel is reopened.
+      onClose();
+      useDashboardViewStore.getState().close();
+    };
+    const callbacks: GroupingApplyAnimationCallbacks<GroupingCommitAttempt> = {
+      onCommit: commit,
+      commitSucceeded: (attempt) => attempt.kind === "result" && attempt.result.commit.ok,
+      shouldReverse: (attempt) => (
+        attempt.kind === "throw"
+          || (!attempt.result.commit.ok && attempt.result.commit.kind !== "rollback_failed")
+      ),
+      onFinished: finish,
+    };
+    const animationStarted = applyMotionEnabled && (startApplyAnimationRef.current?.(callbacks) ?? false);
+    if (!animationStarted) finish(commit());
+  }, [applied, applying, applyMotionEnabled, edited, onClose, preparedLayoutRevision, preparedPlan, ticket]);
 
   const undoGrouping = useCallback(() => {
     const result = groupingBoundary.undo();
@@ -2114,11 +2486,16 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
           <div className="cmux-tab-grouping-heading">
             <div className="cmux-tab-grouping-title">{tabGroupingStrings.title}</div>
             <div className="cmux-tab-grouping-header-copy">
-              <div className="cmux-tab-grouping-status" role="status">{status}</div>
+              <div className="cmux-tab-grouping-status" role="status">
+                {analyzing ? tabGroupingStrings.analysisStage(analysisStage) : status}
+              </div>
               <div className="cmux-tab-grouping-headmeta">
                 {mode === "edit" && edited
                   ? tabGroupingStrings.planEditing(edited.title)
                   : tabGroupingStrings.headCounts(scan?.tabs.length ?? workspaces.flatMap((item) => item.panes.flatMap((pane) => pane.tabs)).length, workspaces.length)}
+                {analysisGeneratedAt !== null
+                  ? ` / ${groupingPreparedTime(analysisGeneratedAt)}${resultReadOnly ? "時点・参考表示" : "生成"}`
+                  : ""}
               </div>
             </div>
           </div>
@@ -2153,7 +2530,12 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
           {mode === "compare" ? (
             <>
               <div className="cmux-tab-grouping-col">
-                {analyzing ? <div className="cmux-tab-grouping-note">{tabGroupingStrings.analyzing}</div> : null}
+                {analyzing ? (
+                  <div className="cmux-tab-grouping-note">
+                    <div>{analysisProgress}</div>
+                    {analysisElapsedSeconds >= 60 ? <div>{tabGroupingStrings.analysisSlowHint}</div> : null}
+                  </div>
+                ) : null}
                 {comparisonInsufficient ? <div className="cmux-tab-grouping-note">{tabGroupingStrings.comparisonInsufficient}</div> : null}
                 {parseError ? <div className="cmux-tab-grouping-error">{parseError}</div> : null}
                 {raw && parseError ? <pre className="cmux-tab-grouping-raw">{raw}</pre> : null}
@@ -2731,6 +3113,9 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
                   plan={edited}
                   highlightMoved={highlightMoved}
                   attentionCategoryByTabId={attentionCategoryByTabId}
+                  applyAnimationEnabled={applyMotionEnabled}
+                  startApplyAnimationRef={startApplyAnimationRef}
+                  landingDraftRef={landingDraftRef}
                   onLineFocusChange={(active) => {
                     sideBySideLineFocusRef.current = active;
                   }}
@@ -2752,14 +3137,14 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
         </div>
 
         {applying ? (
-          <div className="cmux-tab-grouping-overlay" aria-live="polite">
+          <div className="cmux-tab-grouping-announcer" aria-live="polite">
             {tabGroupingStrings.applying}
           </div>
         ) : null}
 
         <footer className="cmux-tab-grouping-footer">
           <div className="cmux-tab-grouping-footer-left">
-            <button type="button" className="cmux-tab-grouping-button" disabled={analyzing || applying} onClick={() => void analyze()}>
+            <button type="button" className="cmux-tab-grouping-button" disabled={analyzing || applying} onClick={() => void analyze(true)}>
               {tabGroupingStrings.analyzeAgain}
             </button>
             <div className="cmux-tab-grouping-note">
@@ -2795,7 +3180,7 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
                 <button
                   type="button"
                   className="cmux-tab-grouping-button is-primary"
-                  disabled={!edited || analyzing || applying || Boolean(applied) || plans.length === 0 || Boolean(parseError) || editErrors.length > 0 || Boolean(displayedCompiled && !displayedCompiled.ok) || (displayedCompiled?.ok === true && displayedCompiled.transaction.expected.movedTabIds.length === 0)}
+                  disabled={resultReadOnly || !edited || analyzing || applying || Boolean(applied) || plans.length === 0 || Boolean(parseError) || editErrors.length > 0 || Boolean(displayedCompiled && !displayedCompiled.ok) || (displayedCompiled?.ok === true && displayedCompiled.transaction.expected.movedTabIds.length === 0)}
                   onClick={() => enterMode("confirm")}
                 >
                   {tabGroupingStrings.confirmPlan}
@@ -2803,7 +3188,7 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
                 <button
                   type="button"
                   className="cmux-tab-grouping-button"
-                  disabled={!edited || analyzing || applying || Boolean(applied) || plans.length === 0 || Boolean(parseError)}
+                  disabled={resultReadOnly || !edited || analyzing || applying || Boolean(applied) || plans.length === 0 || Boolean(parseError)}
                   onClick={() => enterMode("edit")}
                 >
                   {tabGroupingStrings.editPlan}
@@ -2813,7 +3198,7 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
               <button
                 type="button"
                 className="cmux-tab-grouping-button is-primary"
-                disabled={!edited || analyzing || applying || Boolean(applied) || plans.length === 0 || Boolean(parseError) || editErrors.length > 0 || (mode === "confirm" && (!ticket || preparedPlan !== edited || confirmationInvalidated)) || Boolean(displayedCompiled && !displayedCompiled.ok) || (displayedCompiled?.ok === true && displayedCompiled.transaction.expected.movedTabIds.length === 0)}
+                disabled={resultReadOnly || !edited || analyzing || applying || Boolean(applied) || plans.length === 0 || Boolean(parseError) || editErrors.length > 0 || (mode === "confirm" && (!ticket || preparedPlan !== edited || confirmationInvalidated)) || Boolean(displayedCompiled && !displayedCompiled.ok) || (displayedCompiled?.ok === true && displayedCompiled.transaction.expected.movedTabIds.length === 0)}
                 onClick={() => {
                   if (mode === "confirm") apply();
                   else if (nextStep) enterMode(nextStep);

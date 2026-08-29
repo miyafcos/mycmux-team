@@ -912,6 +912,7 @@ fn explicit_range_bounds_filter_the_result_set() {
             to: Some(base + 15_000),
             // A preset alongside explicit bounds must be ignored.
             preset: Some("7d".to_string()),
+            anchor: None,
         },
         &Filters::default(),
         NOW,

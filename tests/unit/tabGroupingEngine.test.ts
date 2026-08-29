@@ -602,6 +602,37 @@ describe("Gate 1 deterministic allocation and identity", () => {
     ]));
   });
 
+  it("packs every tab of a workspace into four columns of that same workspace", () => {
+    // The columns the tabs leave behind are pruned, so the result is four
+    // columns, not the five the pre-prune count sees.
+    const current = initialLayout();
+    current[0].panes[0].tabs.push(tab("t4"), tab("t5"));
+    const allIds = ["t1", "t2", "t3", "t4", "t5"];
+    // Every tab moves, so the columns they leave behind become empty.
+    const plan = planFor(allIds, allIds, { destinationWorkspaceId: "ws-a" });
+    plan.groups[0].layout = {
+      columns: [
+        { panes: [{ title: "列1", role: "worker" as const, tabIds: ["t1", "t5"] }] },
+        { panes: [{ title: "列2", role: "worker" as const, tabIds: ["t2"] }] },
+        { panes: [{ title: "列3", role: "worker" as const, tabIds: ["t3"] }] },
+        { panes: [{ title: "列4", role: "worker" as const, tabIds: ["t4"] }] },
+      ],
+    };
+
+    const engine = createGroupingEngine();
+    const result = engine.compileGroupingPlan(
+      plan,
+      current,
+      contextFor(current, "seed-same-workspace"),
+    );
+
+    if (!result.ok) {
+      throw new Error(`compile rejected: ${JSON.stringify({ errors: result.errors, stale: result.stale })}`);
+    }
+    const target = result.transaction.workspaces.find((workspace) => workspace.id === "ws-a");
+    expect(target?.splitColumns).toHaveLength(4);
+  });
+
   it("rejects layouts above the four-column and four-pane limits", () => {
     const current = initialLayout();
     current[0].panes[0].tabs.push(tab("t4"), tab("t5"));

@@ -12,7 +12,7 @@ use tokio::time::Instant;
 
 const JUDGE_TIMEOUT: Duration = Duration::from_secs(90);
 const NAMING_TIMEOUT: Duration = Duration::from_secs(180);
-const GROUPING_TIMEOUT: Duration = Duration::from_secs(180);
+const GROUPING_TIMEOUT: Duration = Duration::from_secs(300);
 
 type JudgeAbortRegistry = Mutex<HashMap<String, oneshot::Sender<()>>>;
 

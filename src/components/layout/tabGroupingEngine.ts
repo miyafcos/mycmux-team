@@ -773,14 +773,19 @@ function compileGroupingPlanCore(
       const index = next.findIndex((workspace) => workspace.id === destinationWorkspaceId);
       if (index < 0) return { ok: false, errors: [], stale: classifyStale(context.baseline, current, targetIds, destinations) };
       const mergedColumns = [...(next[index].splitColumns ?? []), ...columns];
-      if (mergedColumns.length > 4) {
-        return { ok: false, errors: [`ワークスペース ${next[index].id} の列数が4を超えます`], stale: [] };
-      }
-      next[index] = pruneWorkspace({
+      // Count columns after pruning, not before. Sending a workspace's own tabs
+      // back into it empties the columns they came from, and pruneWorkspace
+      // drops those; counting first rejected valid four-column layouts because
+      // the soon-to-vanish columns were still in the tally.
+      const merged = pruneWorkspace({
         ...next[index],
         panes: [...next[index].panes, ...panes],
         splitColumns: mergedColumns,
       });
+      if ((merged.splitColumns ?? []).length > 4) {
+        return { ok: false, errors: [`ワークスペース ${next[index].id} の列数が4を超えます`], stale: [] };
+      }
+      next[index] = merged;
       modified.add(next[index].id);
     }
   }

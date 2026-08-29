@@ -6,22 +6,43 @@ import { act, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const analysisHarness = vi.hoisted(() => ({ value: null as unknown }));
+const analysisHarness = vi.hoisted(() => ({
+  value: null as unknown,
+  exerciseJudge: false,
+  onProgress: null as null | ((stage: "scanning" | "judging" | "validating" | "retrying") => void),
+}));
+const tauriHarness = vi.hoisted(() => ({ invoke: vi.fn(async () => true as unknown) }));
 const boundaryHarness = vi.hoisted(() => ({ prepared: null as unknown, committed: null as unknown }));
 const liveRenderHarness = vi.hoisted(() => ({ counts: new Map<string, number>() }));
 const parentRenderHarness = vi.hoisted(() => ({ panel: 0, sideBySide: 0 }));
 
 vi.mock("@tauri-apps/api/core", () => ({
-  invoke: vi.fn(async () => true),
+  invoke: tauriHarness.invoke,
 }));
 
 vi.mock("../../src/components/layout/tabGrouping", async (importActual) => {
   const actual = await importActual<typeof import("../../src/components/layout/tabGrouping")>();
   return {
     ...actual,
-    runGroupingAnalysis: vi.fn(async () => analysisHarness.value),
+    scanGroupingContext: vi.fn(async () => (
+      analysisHarness.value instanceof Promise
+        ? mockGroupingScanFallback()
+        : (analysisHarness.value as typeof mockGroupingAnalysis).scan
+    )),
+    runGroupingAnalysis: vi.fn(async (dependencies: Parameters<typeof actual.runGroupingAnalysis>[0]) => {
+      analysisHarness.onProgress = dependencies.onProgress ?? null;
+      dependencies.onProgress?.("scanning");
+      if (analysisHarness.exerciseJudge) {
+        await dependencies.judge("grouping prompt", "grouping-panel-test-request");
+      }
+      return analysisHarness.value;
+    }),
   };
 });
+
+function mockGroupingScanFallback() {
+  return structuredClone(mockGroupingAnalysis.scan);
+}
 
 vi.mock("../../src/components/layout/groupingBoundary", async (importActual) => {
   const actual = await importActual<typeof import("../../src/components/layout/groupingBoundary")>();
@@ -83,6 +104,7 @@ vi.mock("../../src/components/layout/GroupingLiveChip", async (importActual) => 
 });
 
 import { TabGroupingPanel } from "../../src/components/layout/TabGroupingPanel";
+import { runGroupingAnalysis } from "../../src/components/layout/tabGrouping";
 import { groupingMoveDiffs, groupingMoveLines } from "../../src/components/layout/groupingMoveLines";
 import { groupingLineageNodes } from "../../src/components/layout/groupingLineage";
 import { groupingBoundary } from "../../src/components/layout/groupingBoundary";
@@ -91,9 +113,14 @@ import { getTheme } from "../../src/components/theme/themeDefinitions";
 import { applyActiveTabFields } from "../../src/lib/paneTabState";
 import { DEFAULT_THEME_BACKGROUND } from "../../src/lib/themeBackgrounds";
 import { persistentLayoutSignature } from "../../src/lib/persistentLayoutProjection";
+import {
+  __resetGroupingPrecomputeForTests,
+  rememberGroupingAnalysis,
+} from "../../src/lib/groupingPrecompute";
 import { resolveTheme, resolvedThemeToCssVars, type ResolvedTheme } from "../../src/lib/theme/resolveTheme";
 import { useGroupingRuntimeStore } from "../../src/stores/groupingRuntimeStore";
 import { usePaneMetadataStore } from "../../src/stores/paneMetadataStore";
+import { useSettingsStore } from "../../src/stores/settingsStore";
 import { useSessionAttentionStore } from "../../src/stores/sessionAttentionStore";
 import { useWorkspaceListStore } from "../../src/stores/workspaceListStore";
 import { tabGroupingStrings } from "../../src/components/dashboard/dashboardStrings";
@@ -435,13 +462,20 @@ function writeMockFiles(states: Array<{ baseName: string; caption: string; body:
 }
 
 beforeEach(() => {
+  __resetGroupingPrecomputeForTests();
+  localStorage.clear();
   analysisHarness.value = mockGroupingAnalysis;
+  analysisHarness.exerciseJudge = false;
+  analysisHarness.onProgress = null;
+  tauriHarness.invoke.mockClear();
+  vi.mocked(runGroupingAnalysis).mockClear();
   boundaryHarness.prepared = null;
   boundaryHarness.committed = null;
   liveRenderHarness.counts.clear();
   parentRenderHarness.panel = 0;
   parentRenderHarness.sideBySide = 0;
   resetStores();
+  useSettingsStore.setState({ groupingApplyAnimationEnabled: false });
 });
 
 afterEach(async () => {
@@ -451,6 +485,8 @@ afterEach(async () => {
   root = null;
   container = null;
   document.body.replaceChildren();
+  __resetGroupingPrecomputeForTests();
+  localStorage.clear();
   resetStores();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
@@ -458,6 +494,78 @@ afterEach(async () => {
 });
 
 describe("TabGroupingPanel mounted interaction", () => {
+  it("shows live stages, elapsed seconds, and the slow hint with reduced motion", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-29T17:00:00+09:00"));
+    vi.stubGlobal("matchMedia", vi.fn(() => ({
+      matches: true,
+      media: "(prefers-reduced-motion: reduce)",
+      onchange: null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(() => true),
+    })));
+    let resolveAnalysis!: (value: typeof mockGroupingAnalysis) => void;
+    analysisHarness.value = new Promise<typeof mockGroupingAnalysis>((resolve) => {
+      resolveAnalysis = resolve;
+    });
+
+    await mountPanel();
+    expect(document.body.textContent).toContain(tabGroupingStrings.analysisProgress("scanning", 0));
+
+    await act(async () => vi.advanceTimersByTimeAsync(48_000));
+    expect(document.body.textContent).toContain(tabGroupingStrings.analysisProgress("scanning", 48));
+    expect(document.body.textContent).not.toContain(tabGroupingStrings.analysisSlowHint);
+
+    await act(async () => analysisHarness.onProgress?.("judging"));
+    expect(document.body.textContent).toContain(tabGroupingStrings.analysisProgress("judging", 48));
+    expect(document.body.textContent).not.toContain(tabGroupingStrings.analysisStage("scanning"));
+
+    await act(async () => vi.advanceTimersByTimeAsync(11_000));
+    expect(document.body.textContent).toContain("59秒");
+    expect(document.body.textContent).not.toContain(tabGroupingStrings.analysisSlowHint);
+
+    await act(async () => vi.advanceTimersByTimeAsync(1_000));
+    expect(document.body.textContent).toContain("60秒");
+    expect(document.body.textContent).toContain(tabGroupingStrings.analysisSlowHint);
+
+    await act(async () => resolveAnalysis(structuredClone(mockGroupingAnalysis)));
+    await settle();
+    expect(document.body.textContent).not.toContain(tabGroupingStrings.analysisSlowHint);
+  });
+
+  it("hydrates a prepared current result without starting grouping analysis or AI", async () => {
+    analysisHarness.exerciseJudge = true;
+    rememberGroupingAnalysis(structuredClone(mockGroupingAnalysis));
+
+    await mountPanel();
+
+    expect(vi.mocked(runGroupingAnalysis)).not.toHaveBeenCalled();
+    expect(tauriHarness.invoke.mock.calls.filter(([command]) => command === "run_tab_sweep_judge")).toHaveLength(0);
+    expect(document.body.textContent).toContain(mockGroupingAnalysis.parsed.plans[0].title);
+    expect(document.body.textContent).toContain("準備済み");
+  });
+
+  it("hydrates a structure-stale prepared result read-only while re-judging in the foreground", async () => {
+    // Until 2026-08-30 a layout change discarded the prepared plan and the
+    // panel opened blank for the whole judge run. In a workspace where agents
+    // keep opening tabs that was nearly every open, so the old plan is now
+    // shown as a read-only reference while the foreground judge replaces it.
+    const cachedTitle = mockGroupingAnalysis.parsed.plans[0].title;
+    rememberGroupingAnalysis(structuredClone(mockGroupingAnalysis));
+    useWorkspaceListStore.setState((state) => ({ layoutRevision: state.layoutRevision + 1 }));
+    analysisHarness.value = new Promise(() => {});
+
+    await mountPanel();
+
+    expect(vi.mocked(runGroupingAnalysis)).toHaveBeenCalledTimes(1);
+    expect(document.body.textContent).toContain(cachedTitle);
+    expect(document.body.textContent).toContain("参考表示");
+    expect(button(tabGroupingStrings.editPlan).disabled).toBe(true);
+  });
+
   it("selects the project strategy first", async () => {
     await mountPanel();
     const cards = [...document.querySelectorAll<HTMLElement>('[role="radio"]')];
@@ -628,7 +736,7 @@ describe("TabGroupingPanel mounted interaction", () => {
     expect(nonMovedDescriptions).toHaveLength(0);
   });
 
-  it("renders three cross-workspace lines, two within-workspace badges, and one matching count", async () => {
+  it("renders three cross-workspace and two within-workspace lines, two badges, and one matching count", async () => {
     analysisHarness.value = fiveMoveAnalysis();
     await mountPanel();
     await openConfirm();
@@ -638,7 +746,7 @@ describe("TabGroupingPanel mounted interaction", () => {
     expect(diffs).toHaveLength(5);
     expect(diffs.filter((diff) => diff.kind === "cross-workspace")).toHaveLength(3);
     expect(diffs.filter((diff) => diff.kind === "within-workspace")).toHaveLength(2);
-    expect(document.querySelectorAll("path.cmux-tab-grouping-line")).toHaveLength(3);
+    expect(document.querySelectorAll("path.cmux-tab-grouping-line")).toHaveLength(5);
     const badges = [...document.querySelectorAll<HTMLElement>(".is-after .cmux-tab-grouping-movebadge")];
     expect(badges).toHaveLength(2);
     expect(badges.map((badge) => badge.textContent)).toEqual([
@@ -646,6 +754,80 @@ describe("TabGroupingPanel mounted interaction", () => {
       tabGroupingStrings.moveBadgeColumns(1, 2),
     ]);
     expect(document.body.textContent).toContain(tabGroupingStrings.sideBySideDiffCount(3, 2));
+  });
+
+  it("freezes the exact preview paths and suppresses layout remeasurement during execution", async () => {
+    useSettingsStore.setState({ groupingApplyAnimationEnabled: true });
+    const harness = installMeasurementHarness();
+    await mountPanel();
+    await openConfirm();
+
+    const previewSegments = (tabId: string) => [
+      document.querySelector<SVGPathElement>(`path.cmux-tab-grouping-line[data-tab-id="${tabId}"]`)?.getAttribute("d"),
+      document.querySelector<SVGPathElement>(`path.cmux-tab-grouping-leadin[data-tab-id="${tabId}"]`)?.getAttribute("d"),
+    ].filter((path): path is string => Boolean(path));
+    const previewBefore = new Map(
+      [...document.querySelectorAll<SVGPathElement>("path.cmux-tab-grouping-line[data-tab-id]")]
+        .map((path) => [path.dataset.tabId!, previewSegments(path.dataset.tabId!)] as const),
+    );
+
+    await click(button(tabGroupingStrings.apply));
+    const flights = [...document.querySelectorAll<HTMLElement>(".cmux-tab-grouping-flight-chip[data-flight-tab-id]")];
+    expect(flights).toHaveLength(previewBefore.size);
+    for (const flight of flights) {
+      expect(JSON.parse(flight.dataset.flightPath ?? "[]"))
+        .toEqual(previewBefore.get(flight.dataset.flightTabId!));
+    }
+    expect(boundaryHarness.committed).toBeNull();
+
+    const frozen = new Map(flights.map((flight) => [flight.dataset.flightTabId!, flight.dataset.flightPath!]));
+    harness.rectSpy.mockImplementation(function () {
+      const element = this as HTMLElement;
+      if (element.classList.contains("cmux-tab-grouping-sidebyside")) return domRect(0, 0, 1000, 800);
+      const tabId = element.dataset.tabId;
+      if (tabId) {
+        const index = [...tabId].reduce((sum, character) => sum + character.charCodeAt(0), 0) % 20;
+        return domRect(element.dataset.groupingSide === "after" ? 760 : 30, 90 + index * 31, 150, 24);
+      }
+      if (element.dataset.workspaceId) return domRect(element.closest(".is-after") ? 700 : 10, 10, 280, 760);
+      return domRect(0, 0, 0, 0);
+    });
+    harness.rectSpy.mockClear();
+    harness.resizeCallback?.([], {} as ResizeObserver);
+    const pending = harness.frames.splice(0, harness.frames.length);
+    await act(async () => pending.forEach((callback) => callback(0)));
+    await settle();
+
+    expect(harness.rectSpy).not.toHaveBeenCalled();
+    expect(new Map([...previewBefore].map(([tabId]) => [tabId, previewSegments(tabId)]))).toEqual(previewBefore);
+    for (const flight of document.querySelectorAll<HTMLElement>(".cmux-tab-grouping-flight-chip[data-flight-tab-id]")) {
+      expect(flight.dataset.flightPath).toBe(frozen.get(flight.dataset.flightTabId!));
+    }
+  });
+
+  it.each([
+    ["saved setting is off", false, false],
+    ["OS reduced motion is on", true, true],
+  ] as const)("applies immediately when %s", async (_label, settingEnabled, reducedMotion) => {
+    useSettingsStore.setState({ groupingApplyAnimationEnabled: settingEnabled });
+    vi.stubGlobal("matchMedia", vi.fn(() => ({
+      matches: reducedMotion,
+      media: "(prefers-reduced-motion: reduce)",
+      onchange: null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(() => true),
+    })));
+    await mountPanel();
+    await openConfirm();
+
+    await click(button(tabGroupingStrings.apply));
+
+    const committed = boundaryHarness.committed as ReturnType<typeof groupingBoundary.commit> | null;
+    expect(committed?.commit.ok).toBe(true);
+    expect(document.querySelector(".cmux-tab-grouping-flight-chip")).toBeNull();
   });
 
   it("observes the container, move sources, every chip/pane obstacle, and after workspaces", async () => {
@@ -863,7 +1045,7 @@ describe("TabGroupingPanel mounted interaction", () => {
     );
   });
 
-  it("omits the move-line SVG and shows a badge for a within-workspace-only move", async () => {
+  it("renders the local move-line SVG and badge for a within-workspace-only move", async () => {
     const sameWorkspacePlan = structuredClone(mockGroupingAnalysis.parsed.plans.find((plan) => plan.planId === "p3"));
     if (!sameWorkspacePlan) throw new Error("same-workspace fixture plan is missing");
     sameWorkspacePlan.groups[0].destination = { kind: "existing_workspace", workspaceId: "wsA" };
@@ -873,7 +1055,7 @@ describe("TabGroupingPanel mounted interaction", () => {
     };
     await mountPanel();
     await openConfirm();
-    expect(document.querySelector("svg.cmux-tab-grouping-lines")).toBeNull();
+    expect(document.querySelectorAll("svg.cmux-tab-grouping-lines path.cmux-tab-grouping-line")).toHaveLength(1);
     expect(document.querySelectorAll(".is-after .cmux-tab-grouping-movebadge")).toHaveLength(1);
     expect(document.body.textContent).not.toContain(tabGroupingStrings.sideBySideNoMoves);
   });
@@ -886,7 +1068,7 @@ describe("TabGroupingPanel mounted interaction", () => {
     expect(document.querySelectorAll(".cmux-tab-grouping-movebadge")).toHaveLength(0);
   });
 
-  it("labels a same-column pane move with both pane names and no line", async () => {
+  it("labels a same-column pane move with both pane names and a local line", async () => {
     const before = cloneWorkspaces();
     const beforeWorkspace = before.find((workspace) => workspace.id === "wsA");
     if (!beforeWorkspace) throw new Error("same-column source workspace is missing");
@@ -912,7 +1094,7 @@ describe("TabGroupingPanel mounted interaction", () => {
     const badges = [...document.querySelectorAll<HTMLElement>(".is-after .cmux-tab-grouping-movebadge")];
     expect(badges).toHaveLength(1);
     expect(badges[0].textContent).toBe(tabGroupingStrings.moveBadgePanes("母艦", "作業"));
-    expect(document.querySelector("svg.cmux-tab-grouping-lines")).toBeNull();
+    expect(document.querySelectorAll("svg.cmux-tab-grouping-lines path.cmux-tab-grouping-line")).toHaveLength(1);
   });
 
   it("remeasures move-line paths after leaving and returning to the side-by-side view", async () => {

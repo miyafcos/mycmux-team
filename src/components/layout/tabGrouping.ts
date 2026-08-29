@@ -9,11 +9,16 @@ import { aiProviderDef, type AiProviderId } from "../../lib/aiModels";
 import { aiSettingsStrings } from "../settings/settingsStrings";
 import {
   isIgnoredPromptDecoration,
-  TAB_NAMING_TAIL_LINES,
 } from "./tabSweep";
 import { processStatusReasonForTab, readPaneTail } from "./socketCommands";
 
-export const TAB_GROUPING_TAIL_LINES = TAB_NAMING_TAIL_LINES;
+/**
+ * Benchmarked on 2026-08-29 with the measured 19-tab prompt and luna/medium.
+ * Eight lines (134.43s) lost IDs, and ten (113.16s) still missed one tab in
+ * one plan. Twelve (114.09s) kept all 19 IDs exactly once in all three plans,
+ * preserved every lineage cluster, and retained project/role/minimal variants.
+ */
+export const TAB_GROUPING_TAIL_LINES = 12;
 export const TAB_GROUPING_OPEN_EVENT = "mycmux:tab-grouping-open" as const;
 export const TAB_GROUPING_NAME_MAX = 20;
 export const TAB_GROUPING_MAX_COLUMNS = 4;
@@ -444,8 +449,8 @@ export async function scanGroupingContext(
   };
 }
 
-export function buildGroupingPrompt(scan: GroupingScan): string {
-  const payload = {
+export function groupingPromptPayload(scan: GroupingScan) {
+  return {
     tabs: scan.tabs.map((tab) => ({
       id: tab.id,
       sessionId: tab.sessionId,
@@ -468,14 +473,22 @@ export function buildGroupingPrompt(scan: GroupingScan): string {
     })),
     lineageClusters: scan.lineageClusters,
   };
+}
+
+export function buildGroupingPrompt(scan: GroupingScan): string {
+  const payload = groupingPromptPayload(scan);
   return [
     "次の全ワークスペースの生きているターミナルタブを、案件・役割ごとに再配置するプランを2〜3件作ってください。",
     "切り口の異なる案を並べてください。strategy は project / role / minimal_move / mixed のいずれかです。",
     "タブは閉じません。PTY も殺しません。配置（ワークスペース・ペイン）だけを設計してください。",
     "origin.parentTabId でつながる系譜クラスタは、特別な理由がなければ同じグループに残してください。",
     "ワークスペースは案件の厳密な境界ではなく、見渡す場所です。1案件=1ワークスペースに機械的に割らないでください。",
-    "目安は1ワークスペースあたり3〜8タブです。小さな案件は最大3件まで同じワークスペースにまとめ、列で分け、グループ名は「国語課+雑務」のように両方を書いてください。大きな案件だけ独立したワークスペースにしてください。",
+    "ただし性質の違うタブを同じワークスペースに混ぜないでください。起動失敗・エラー・要対応のタブは、正常に動いているタブとは別のワークスペースへ隔離してください。隔離用のワークスペースは1〜2タブでも構いません。",
+    "目安は1ワークスペースあたり3〜8タブです（隔離用ワークスペースは例外）。小さな案件は最大3件まで同じワークスペースにまとめ、列で分け、グループ名は「国語課+雑務」のように両方を書いてください。大きな案件だけ独立したワークスペースにしてください。",
     "どの strategy の案も、この見やすいサイズを守ってください。",
+    "レイアウトは列で分けるのが基本です。縦積み（1つの列にペインを重ねること）は見づらいので、親子・監視の関係を表すときだけにしてください。迷ったら列を増やすか、裏タブに重ねてください。",
+    "同じ役割で関連の深いタブは、ペインを分けず1つのペインの tabIds にまとめて裏タブとして重ねてください。",
+    "親子関係は階層で表現してください。親（母艦・指揮側）のペインを列の一番上に置き、子（worker）はその下のペインか、親と同じペインの裏タブに入れてください。",
     "名前は日本語が基本です。固有名詞（mycmux / Claude / Codex など）はアルファベットのままで構いません。fix / build / review / server のような一般英単語は日本語にしてください。ツール名をカタカナへ無理に直さないでください。短く（目安20文字以内）。",
     "pane.role は mother / worker / review / mixed / unspecified のみです。warnings は {code, tabIds, message} の配列で、code は LOW_CONFIDENCE / MIXED_PROJECT / UNCLEAR_ROLE / EXISTING_WORKSPACE_CONFLICT のみです。",
     "各プランで、渡した全タブが groups または unassignedTabIds のどこかに正確に1回だけ現れるようにしてください。",
@@ -1090,16 +1103,24 @@ export interface GroupingAnalysisDependencies {
   scan: () => Promise<GroupingScan>;
   judge: (prompt: string, requestId: string) => Promise<string>;
   requestId: () => string;
+  onProgress?: (stage: GroupingAnalysisStage) => void;
 }
 
-export async function runGroupingAnalysis(
-  deps: GroupingAnalysisDependencies,
-): Promise<{
+export type GroupingAnalysisStage = "scanning" | "judging" | "validating" | "retrying";
+
+export const TAB_GROUPING_PROMPT_VERSION = "tab-grouping-v3";
+
+export interface GroupingAnalysisResult {
   scan: GroupingScan;
   parsed: ParseGroupingResult;
   retried: boolean;
   raw: string;
-}> {
+}
+
+export async function runGroupingAnalysis(
+  deps: GroupingAnalysisDependencies,
+): Promise<GroupingAnalysisResult> {
+  deps.onProgress?.("scanning");
   const scan = await deps.scan();
   if (scan.tabs.length === 0) {
     return {
@@ -1119,13 +1140,17 @@ export async function runGroupingAnalysis(
   const workspaceIds = scan.workspaceIds;
   const firstId = deps.requestId();
   const names = scan.workspaces.map((workspace) => workspace.name);
+  deps.onProgress?.("judging");
   const firstRaw = await deps.judge(buildGroupingPrompt(scan), firstId);
+  deps.onProgress?.("validating");
   let parsed = parseGroupingOutput(firstRaw, allowed, workspaceIds, names);
   if (parsed.status === "ok" && !parsed.comparisonInsufficient) {
     return { scan, parsed, retried: false, raw: firstRaw };
   }
   const secondId = deps.requestId();
+  deps.onProgress?.("retrying");
   const secondRaw = await deps.judge(buildGroupingPrompt(scan), secondId);
+  deps.onProgress?.("validating");
   parsed = parseGroupingOutput(secondRaw, allowed, workspaceIds, names);
   return { scan, parsed, retried: true, raw: secondRaw };
 }

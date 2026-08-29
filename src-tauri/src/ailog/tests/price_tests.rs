@@ -174,6 +174,7 @@ fn explicit_bounds_beat_the_preset() {
         from: Some(100),
         to: Some(200),
         preset: Some("7d".to_string()),
+        anchor: None,
     };
     let (resolved, label) = range.resolve(NOW);
     assert_eq!(resolved.from, 100);
@@ -187,6 +188,7 @@ fn a_single_explicit_bound_still_wins_its_side() {
         from: Some(555),
         to: None,
         preset: Some("30d".to_string()),
+        anchor: None,
     };
     let (resolved, label) = range.resolve(NOW);
     assert_eq!(resolved.from, 555);
@@ -197,6 +199,7 @@ fn a_single_explicit_bound_still_wins_its_side() {
         from: None,
         to: Some(777),
         preset: Some("7d".to_string()),
+        anchor: None,
     };
     let (resolved, _) = range.resolve(NOW);
     assert_eq!(resolved.from, NOW - 7 * DAY);
@@ -210,6 +213,7 @@ fn presets_resolve_to_their_windows() {
             from: None,
             to: None,
             preset: Some(preset.to_string()),
+            anchor: None,
         };
         let (resolved, label) = range.resolve(NOW);
         assert_eq!(resolved.from, NOW - days * DAY, "preset {preset}");
@@ -225,6 +229,7 @@ fn all_and_unknown_presets_open_the_window() {
             from: None,
             to: None,
             preset,
+            anchor: None,
         };
         let (resolved, label) = range.resolve(NOW);
         assert!(resolved.from < 0, "expected an open lower bound");
@@ -240,6 +245,7 @@ fn ytd_starts_at_the_first_of_january() {
         from: None,
         to: None,
         preset: Some("ytd".to_string()),
+        anchor: None,
     };
     let (resolved, label) = range.resolve(NOW);
     assert_eq!(label, "ytd");

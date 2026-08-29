@@ -53,6 +53,9 @@ export function readLegacyAiFeatureSettings(): LegacyAiFeatureSettings {
 interface SettingsState {
   notificationsEnabled: boolean;
   notificationSoundEnabled: boolean;
+  toastAiActivityEnabled: boolean;
+  toastUserActionEnabled: boolean;
+  toastSystemEnabled: boolean;
   terminalRenderer: TerminalRenderer;
   colorAdaptCommands: string[];
   // CRSM Palette per-kind visibility (Ctrl+P session list).
@@ -71,6 +74,8 @@ interface SettingsState {
   // column splits are the primary flow, but the button is toggleable
   // for symmetry with the split-down button.
   showSplitRightButton: boolean;
+  /** Diagram-flight animation shown before a grouping layout commit. */
+  groupingApplyAnimationEnabled: boolean;
   dispatchWatchdogEnabled: boolean;
   dispatchWatchdogIntervalMinutes: number;
   dispatchStallMinutes: number;
@@ -87,6 +92,9 @@ interface SettingsState {
   appearanceAdvancedOpen: boolean;
   setNotificationsEnabled: (v: boolean) => void;
   setNotificationSoundEnabled: (v: boolean) => void;
+  setToastAiActivityEnabled: (v: boolean) => void;
+  setToastUserActionEnabled: (v: boolean) => void;
+  setToastSystemEnabled: (v: boolean) => void;
   setTerminalRenderer: (v: TerminalRenderer) => void;
   setColorAdaptCommands: (v: string[]) => void;
   setCrsmShowClaude: (v: boolean) => void;
@@ -95,6 +103,7 @@ interface SettingsState {
   setHideSessionsWithoutUserMessages: (v: boolean) => void;
   setShowSplitDownButton: (v: boolean) => void;
   setShowSplitRightButton: (v: boolean) => void;
+  setGroupingApplyAnimationEnabled: (v: boolean) => void;
   setDispatchWatchdogEnabled: (v: boolean) => void;
   setDispatchWatchdogIntervalMinutes: (v: number) => void;
   setDispatchStallMinutes: (v: number) => void;
@@ -111,6 +120,12 @@ export const useSettingsStore = create<SettingsState>()(
     (set) => ({
       notificationsEnabled: true,
       notificationSoundEnabled: true,
+      // Off by default: the auto-naming and auto-sweep runs announce results
+      // that are already visible on screen, and the owner asked for the quiet
+      // default (2026-08-28). The setting stays, so it can be turned back on.
+      toastAiActivityEnabled: false,
+      toastUserActionEnabled: true,
+      toastSystemEnabled: true,
       terminalRenderer: resolveDefaultTerminalRenderer(),
       colorAdaptCommands: ["agy"],
       crsmShowClaude: true,
@@ -119,6 +134,7 @@ export const useSettingsStore = create<SettingsState>()(
       hideSessionsWithoutUserMessages: true,
       showSplitDownButton: false,
       showSplitRightButton: true,
+      groupingApplyAnimationEnabled: true,
       dispatchWatchdogEnabled: true,
       dispatchWatchdogIntervalMinutes: 10,
       dispatchStallMinutes: 45,
@@ -131,6 +147,9 @@ export const useSettingsStore = create<SettingsState>()(
       appearanceAdvancedOpen: false,
       setNotificationsEnabled: (v) => set({ notificationsEnabled: v }),
       setNotificationSoundEnabled: (v) => set({ notificationSoundEnabled: v }),
+      setToastAiActivityEnabled: (v) => set({ toastAiActivityEnabled: v }),
+      setToastUserActionEnabled: (v) => set({ toastUserActionEnabled: v }),
+      setToastSystemEnabled: (v) => set({ toastSystemEnabled: v }),
       setTerminalRenderer: (v) => set({ terminalRenderer: v }),
       setColorAdaptCommands: (v) => set({ colorAdaptCommands: v }),
       setCrsmShowClaude: (v) => set({ crsmShowClaude: v }),
@@ -139,6 +158,7 @@ export const useSettingsStore = create<SettingsState>()(
       setHideSessionsWithoutUserMessages: (v) => set({ hideSessionsWithoutUserMessages: v }),
       setShowSplitDownButton: (v) => set({ showSplitDownButton: v }),
       setShowSplitRightButton: (v) => set({ showSplitRightButton: v }),
+      setGroupingApplyAnimationEnabled: (v) => set({ groupingApplyAnimationEnabled: v }),
       setDispatchWatchdogEnabled: (v) => set({ dispatchWatchdogEnabled: v }),
       setDispatchWatchdogIntervalMinutes: (v) => set({ dispatchWatchdogIntervalMinutes: v }),
       setDispatchStallMinutes: (v) => set({ dispatchStallMinutes: v }),

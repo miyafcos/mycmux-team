@@ -1,17 +1,20 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { PtyMetadataSnapshot } from "../../src/lib/ipc";
 import type { Workspace } from "../../src/types";
 import {
   buildGroupingPrompt,
   formatGroupingAiNote,
+  groupingPromptPayload,
   isJapaneseGroupingName,
   lineageClustersFromTabs,
   parseGroupingOutput,
   scanGroupingContext,
+  TAB_GROUPING_TAIL_LINES,
   type GroupingScan,
   type GroupingScanSource,
   type GroupingTab,
 } from "../../src/components/layout/tabGrouping";
+import { TAB_NAMING_TAIL_LINES } from "../../src/components/layout/tabSweep";
 
 const NOW = 1_800_000_000_000;
 const liveProcess = { process_status: "claude" } as PtyMetadataSnapshot[string];
@@ -193,6 +196,29 @@ describe("scanGroupingContext", () => {
       { tabId: "child", workspaceId: "ws-b", paneId: "pane-2", sessionId: "session-child" },
     ]);
   });
+
+  it("uses the measured twelve-line grouping tail without changing the naming tail", async () => {
+    const tail = Array.from({ length: 14 }, (_, index) => `line-${index + 1}`);
+    const readTail = vi.fn(async () => tail);
+    const scan = await scanGroupingContext(source({
+      workspaces: [workspace("ws-a", "母艦", [{
+        id: "pane-1",
+        agentId: "shell-starter",
+        sessionId: "session-live",
+        activeTabId: "live",
+        tabs: [tab("live", { origin: { kind: "human" } })],
+      }])],
+      processMetadata: { "session-live": liveProcess },
+      readTail,
+    }));
+
+    expect(TAB_GROUPING_TAIL_LINES).toBe(12);
+    expect(TAB_NAMING_TAIL_LINES).toBe(14);
+    expect(readTail).toHaveBeenCalledWith("session-live", 12);
+    expect(scan.tabs[0]?.tail).toEqual(tail.slice(-12));
+    expect(groupingPromptPayload(scan).tabs[0]?.tail).toEqual(tail.slice(-12));
+    expect(formatGroupingAiNote("codex", "gpt-test", true)).toContain("末尾12行");
+  });
 });
 
 describe("buildGroupingPrompt", () => {
@@ -226,6 +252,10 @@ describe("buildGroupingPrompt", () => {
     expect(prompt).toContain("固有名詞");
     expect(prompt).toContain("3〜8タブ");
     expect(prompt).toContain("1案件=1ワークスペースに機械的に割らない");
+    expect(prompt).toContain("列で分けるのが基本");
+    expect(prompt).toContain("裏タブ");
+    expect(prompt).toContain("別のワークスペースへ隔離");
+    expect(prompt).toContain("親子関係は階層で表現");
     expect(prompt).toContain("コードフェンス");
     expect(prompt).toContain("schemaVersion");
     expect(formatGroupingAiNote("claude", "opus", true)).toContain("再配置案");
@@ -258,9 +288,11 @@ describe("runGroupingAnalysis", () => {
     const { runGroupingAnalysis } = await import("../../src/components/layout/tabGrouping");
     const ids = ["t1", "t2"];
     let calls = 0;
+    const stages: string[] = [];
     const result = await runGroupingAnalysis({
       scan: async () => analysisScan(ids),
       requestId: () => `req-${++calls}`,
+      onProgress: (stage) => stages.push(stage),
       judge: async () => {
         if (calls === 1) return "not-json";
         return JSON.stringify(validPlanJson(ids));
@@ -269,6 +301,26 @@ describe("runGroupingAnalysis", () => {
     expect(calls).toBe(2);
     expect(result.retried).toBe(true);
     expect(result.parsed.status).toBe("ok");
+    expect(stages).toEqual(["scanning", "judging", "validating", "retrying", "validating"]);
+  });
+
+  it("does not retry when the judge rejects with a timeout error", async () => {
+    const { runGroupingAnalysis } = await import("../../src/components/layout/tabGrouping");
+    const timeout = { code: "timeout", detail: "tab sweep judge timed out after 300 seconds" };
+    const judge = vi.fn(async () => Promise.reject(timeout));
+    const requestId = vi.fn(() => "req-timeout");
+    const stages: string[] = [];
+
+    await expect(runGroupingAnalysis({
+      scan: async () => analysisScan(["t1", "t2"]),
+      requestId,
+      judge,
+      onProgress: (stage) => stages.push(stage),
+    })).rejects.toBe(timeout);
+
+    expect(judge).toHaveBeenCalledTimes(1);
+    expect(requestId).toHaveBeenCalledTimes(1);
+    expect(stages).toEqual(["scanning", "judging"]);
   });
 
   it("shows a single valid plan after retry and does not call a third time", async () => {
@@ -307,14 +359,17 @@ describe("runGroupingAnalysis", () => {
     const { runGroupingAnalysis } = await import("../../src/components/layout/tabGrouping");
     const ids = ["t1", "t2"];
     let calls = 0;
+    const stages: string[] = [];
     const result = await runGroupingAnalysis({
       scan: async () => analysisScan(ids),
       requestId: () => `req-${++calls}`,
       judge: async () => JSON.stringify(validPlanJson(ids)),
+      onProgress: (stage) => stages.push(stage),
     });
     expect(calls).toBe(1);
     expect(result.retried).toBe(false);
     expect(result.parsed.status).toBe("ok");
+    expect(stages).toEqual(["scanning", "judging", "validating"]);
   });
 });
 

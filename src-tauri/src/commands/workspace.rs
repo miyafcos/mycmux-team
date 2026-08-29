@@ -288,6 +288,7 @@ mod tests {
             label: Some("Codex".to_string()),
             label_source: None,
             r#type: None,
+            preset_id: None,
             cwd: None,
             last_process: None,
             claude_session_id: None,

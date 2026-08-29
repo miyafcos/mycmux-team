@@ -152,12 +152,6 @@ describe("reportInboxStore", () => {
     expect(cards.map((card) => card.state)).toEqual(["needsReview", "stopped"]);
   });
 
-  it("keeps the receive preference in memory with batch as the UI default", () => {
-    expect(useReportInboxStore.getState().receiveModeBySession[SESSION] ?? "batch").toBe("batch");
-    useReportInboxStore.getState().setReceiveMode(SESSION, "quiet");
-    expect(useReportInboxStore.getState().receiveModeBySession[SESSION]).toBe("quiet");
-  });
-
   it("projects every coverage number from the sealed batch, never from delivery confirmation", () => {
     registerBatch("batch-coverage", [
       { logicalSessionId: "tab-1", ptySessionId: "pty-1", label: "対象1" },

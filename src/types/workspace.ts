@@ -39,7 +39,9 @@ export interface PaneTab {
   label?: string;
   /** Who set `label`. Absent means user-set (pre-migration data is treated as user-set). */
   labelSource?: "user" | "ai";
-  type?: "terminal" | "browser" | "online";
+  type?: "terminal" | "browser" | "online" | "web";
+  /** Native child-webview preset. Present only when type is "web". */
+  presetId?: string;
   cwd?: string;
   lastProcess?: string;
   claudeSessionId?: string;

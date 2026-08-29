@@ -33,7 +33,9 @@ def token_file() -> Path:
 
 def prompt_dir() -> Path:
     return runtime_dir() / "agent-prompts"
-AGENT_TARGETS = ("claude", "codex", "claude-codex", "grok", "shell")
+# "web" is not an agent: it opens a web tab (no PTY, no process). It shares the
+# spawn command because where a tab lands is the same question either way.
+AGENT_TARGETS = ("claude", "codex", "claude-codex", "grok", "shell", "web")
 AGENT_KINDS = ("claude", "codex", "claude-codex", "grok")
 
 
@@ -129,6 +131,7 @@ def add_interactive_launch_arguments(
     parser: argparse.ArgumentParser, *, target_required: bool
 ) -> None:
     parser.add_argument("--target", choices=AGENT_TARGETS, required=target_required)
+    parser.add_argument("--preset", help="web タブのプリセット id (--target web のとき)")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--prompt")
     mode.add_argument("--prompt-file", type=Path)
@@ -173,6 +176,9 @@ def build_parser() -> argparse.ArgumentParser:
     panes_scope.add_argument(
         "--all", action="store_true", help="List panes across all workspaces"
     )
+
+    status = subparsers.add_parser("status", help="Read canonical session state")
+    status.add_argument("--session")
 
     spawn = subparsers.add_parser(
         "spawn",
@@ -256,6 +262,7 @@ def build_parser() -> argparse.ArgumentParser:
     send.add_argument("--expect-epoch", type=int)
     send.add_argument("--expect-attention-id")
     send.add_argument("--expect-revision", type=int)
+    send.add_argument("--expect-input-revision", type=int)
 
     read = subparsers.add_parser("read", help="Read terminal buffer lines")
     read.add_argument("--session", required=True)
@@ -318,6 +325,7 @@ def build_spawn_as_tab_request(namespace: argparse.Namespace) -> dict[str, Any]:
         "activate": namespace.activate,
     }
     optional_arg(args, "label", namespace.label)
+    optional_arg(args, "preset", getattr(namespace, "preset", None))
     add_launch_mode_request_args(args, namespace)
     return args
 
@@ -418,6 +426,10 @@ def request_for(namespace: argparse.Namespace) -> tuple[str, dict[str, Any]]:
         args: dict[str, Any] = {}
         optional_arg(args, "workspaceId", namespace.workspace)
         return "pane.list", args
+    if namespace.subcommand == "status":
+        args: dict[str, Any] = {}
+        optional_arg(args, "session_id", namespace.session)
+        return "session.state_view", args
     if namespace.subcommand == "spawn":
         if spawn_wants_split(namespace):
             return "pane.spawn", build_spawn_request(namespace)
@@ -471,12 +483,71 @@ def request_for(namespace: argparse.Namespace) -> tuple[str, dict[str, Any]]:
         optional_arg(args, "expectedSessionEpoch", namespace.expect_epoch)
         optional_arg(args, "expectedAttentionId", namespace.expect_attention_id)
         optional_arg(args, "expectedSessionRevision", namespace.expect_revision)
+        optional_arg(args, "expectedInputRevision", namespace.expect_input_revision)
         return "pane.send_text", args
     if namespace.subcommand == "read":
         args = {"sessionId": namespace.session}
         optional_arg(args, "lines", namespace.lines)
         return "pane.read", args
     raise RuntimeError(f"unsupported subcommand: {namespace.subcommand}")
+
+
+def validate_status_result(result: Any, expected_session: str | None) -> Any:
+    """Validate the canonical state response and reject ambiguous targeting."""
+    if not isinstance(result, dict) or not isinstance(result.get("sessions"), list):
+        raise RuntimeError("mycmux returned an invalid session.state_view schema")
+    lifecycle_values = {"alive", "exited", "orphaned", "unknown"}
+    activity_values = {"streaming", "running_silent", "idle", "unknown"}
+    attention_values = {"none", "input", "approval", "rate_limited", "error", "done"}
+    health_values = {"fresh", "stale", "degraded"}
+    ui_state_values = {"working", "idle", "waiting", "done", "unknown"}
+
+    def non_negative_int(value: Any) -> bool:
+        return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+    seen: set[str] = set()
+    matches: list[dict[str, Any]] = []
+    for entry in result["sessions"]:
+        if not isinstance(entry, dict):
+            raise RuntimeError("mycmux returned an invalid session.state_view entry")
+        session_id = entry.get("session_id")
+        view = entry.get("view")
+        if not isinstance(session_id, str) or not session_id or not isinstance(view, dict):
+            raise RuntimeError("mycmux returned an invalid session.state_view entry")
+        if view.get("session_id") != session_id:
+            raise RuntimeError("mycmux returned mismatched session.state_view identifiers")
+        epoch = view.get("session_epoch")
+        attention = view.get("attention")
+        if (
+            "session_epoch" not in view
+            or (epoch is not None and not non_negative_int(epoch))
+            or not non_negative_int(view.get("session_revision"))
+            or not non_negative_int(entry.get("input_revision"))
+            or view.get("lifecycle") not in lifecycle_values
+            or view.get("activity") not in activity_values
+            or not isinstance(attention, dict)
+            or attention.get("kind") not in attention_values
+            or "attention_id" not in attention
+            or not (
+                attention.get("attention_id") is None
+                or isinstance(attention.get("attention_id"), str)
+            )
+            or view.get("health") not in health_values
+            or entry.get("ui_state") not in ui_state_values
+        ):
+            raise RuntimeError("mycmux returned an incomplete canonical session state")
+        if session_id in seen:
+            raise RuntimeError(f"mycmux returned duplicate session state: {session_id}")
+        seen.add(session_id)
+        if session_id == expected_session:
+            matches.append(entry)
+    if expected_session is not None:
+        if len(matches) != 1:
+            raise RuntimeError(
+                f"session.state_view did not return exactly one session: {expected_session}"
+            )
+        return {**result, "sessions": matches}
+    return result
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -491,6 +562,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         cmd, args = request_for(namespace)
         result = send_request(cmd, args)
+        if namespace.subcommand == "status":
+            result = validate_status_result(result, namespace.session)
     except RuntimeError as exc:
         print(str(exc), file=sys.stderr)
         return 1

@@ -119,10 +119,13 @@ import {
   tryBeginGroupingOperation,
   useGroupingRuntimeStore,
 } from "../../src/stores/groupingRuntimeStore";
+import { useDashboardViewStore } from "../../src/stores/dashboardViewStore";
 import { usePaneMetadataStore } from "../../src/stores/paneMetadataStore";
+import { useSettingsStore } from "../../src/stores/settingsStore";
 import { useSessionAttentionStore } from "../../src/stores/sessionAttentionStore";
 import { useUiStore } from "../../src/stores/uiStore";
 import { useWorkspaceListStore } from "../../src/stores/workspaceListStore";
+import { __resetGroupingPrecomputeForTests } from "../../src/lib/groupingPrecompute";
 import { useThemeStore } from "../../src/stores/themeStore";
 import { useGroupingDrag } from "../../src/hooks/useGroupingDrag";
 import { runGroupingAnalysis, TAB_GROUPING_OPEN_EVENT } from "../../src/components/layout/tabGrouping";
@@ -527,6 +530,8 @@ function source(relativePath: string): string {
 }
 
 beforeEach(() => {
+  __resetGroupingPrecomputeForTests();
+  localStorage.clear();
   analysisHarness.value = structuredClone(mockGroupingAnalysis);
   boundaryHarness.previews = [];
   boundaryHarness.prepared = [];
@@ -605,6 +610,7 @@ beforeEach(() => {
     return domRect(0, 0, 0, 0);
   });
   resetStores();
+  useSettingsStore.setState({ groupingApplyAnimationEnabled: false });
   installPersistence();
 });
 
@@ -612,6 +618,8 @@ afterEach(async () => {
   if (root) await act(async () => root?.unmount());
   root = null;
   container = null;
+  __resetGroupingPrecomputeForTests();
+  localStorage.clear();
   unregisterPersistence?.();
   unregisterPersistence = null;
   __resetPersistenceCoordinatorForTests();
@@ -854,6 +862,8 @@ describe("C. DnD equals click equals popover", () => {
       if (root) {
         await unmountKeepingStores();
         resetStores();
+        __resetGroupingPrecomputeForTests();
+        localStorage.clear();
       }
       results.push(await captureMovePath(kind));
     }
@@ -1244,21 +1254,35 @@ describe("G. real OverlayShell integration", () => {
     expect(document.activeElement).toBe(document.querySelector("#gate4-first"));
   });
 
-  it("[G4-60] cancels drag, closes the Panel, then consumes popover Escape in order", { timeout: 10_000 }, async () => {
+  it("[G4-60] unwinds drag, then selection, then the Panel, then the popover on Escape", { timeout: 10_000 }, async () => {
     const onClose = await mountPanel();
     await enterEdit();
     const sourceChip = chip("t模試");
+    // Select first: without a live selection the "no selected chips" assertion
+    // below passes whether or not Escape clears anything.
+    await click(sourceChip);
+    await click(chip("t数学"));
+    expect(panel().querySelectorAll("button.cmux-tab-grouping-chip.is-selected")).toHaveLength(2);
+
     hitElement = dropTarget("g2:0:0");
     await act(async () => sourceChip.dispatchEvent(pointer("pointerdown", 91, 10, 10)));
     await act(async () => window.dispatchEvent(pointer("pointermove", 91, 60, 40)));
     await flushFrames();
     expect(document.querySelector(".cmux-tab-grouping-ghost")).not.toBeNull();
 
+    // Escape unwinds one layer at a time. First the drag, and the selection
+    // survives it — re-picking every chip after a mis-drag would be punishing.
     await pressKey("Escape");
     expect(onClose).toHaveBeenCalledTimes(0);
     expect(document.querySelectorAll(".cmux-tab-grouping-ghost, .is-dragging, .is-drop-active")).toHaveLength(0);
+    expect(panel().querySelectorAll("button.cmux-tab-grouping-chip.is-selected")).toHaveLength(2);
+
+    // Then the selection, with the Panel still open.
+    await pressKey("Escape");
+    expect(onClose).toHaveBeenCalledTimes(0);
     expect(panel().querySelectorAll("button.cmux-tab-grouping-chip.is-selected")).toHaveLength(0);
 
+    // Only once nothing is left to undo does Escape close the Panel.
     await pressKey("Escape");
     expect(onClose).toHaveBeenCalledTimes(1);
 
@@ -1721,5 +1745,17 @@ describe("K. carried Gate 4 closure findings", () => {
     expect(Number(start.getAttribute("cy"))).toBeCloseTo(mainValues[1]);
     expect(arrowValues[0]).toBeCloseTo(endpointValues.at(-2)!);
     expect(arrowValues[1]).toBeCloseTo(endpointValues.at(-1)!);
+  });
+});
+
+describe("H. phase-2 retirement", () => {
+  it("[P2-01] retires the panel and the Dashboard together after a successful apply", { timeout: 10_000 }, async () => {
+    useDashboardViewStore.setState({ open: true });
+    const onClose = await mountPanel();
+    await enterConfirm();
+    await applyCurrentPlan();
+    expect(latestCommit().commit.ok).toBe(true);
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(useDashboardViewStore.getState().open).toBe(false);
   });
 });

@@ -352,7 +352,12 @@ function Invoke-AilogMeasurement {
     if ($null -eq $testExe) {
         throw "Could not find the manifest-patched mycmux test binary."
     }
-    $testOutput = @(& $testExe.FullName --exact ailog::tests::perf_tests::measure_live_database_reports_read_only --ignored --nocapture 2>&1)
+    # Windows PowerShell turns a native program's ordinary stderr into a
+    # terminating NativeCommandError under this script's Stop policy. Rust's
+    # test runner writes progress to stderr even on success, so merge the two
+    # streams inside cmd.exe and keep the real process exit code authoritative.
+    $testCommand = '"{0}" --exact ailog::tests::perf_tests::measure_live_database_reports_read_only --ignored --nocapture 2>&1' -f $testExe.FullName
+    $testOutput = @(& $env:COMSPEC /d /s /c $testCommand)
     if ($LASTEXITCODE -ne 0) {
         throw "AILog measurement test failed with exit code ${LASTEXITCODE}: $($testOutput -join [Environment]::NewLine)"
     }

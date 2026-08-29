@@ -28,9 +28,29 @@ import { useToastStore } from "../stores/toastStore";
 import { applyLayoutMutation, layoutStructureRevision } from "../lib/layoutMutation";
 import { resolveMinimapDropZone } from "../components/dashboard/minimapModel";
 import { moveMinimapItemToNewWorkspace } from "../components/dashboard/minimapWorkspaceActions";
+import {
+  TEAR_OUT_DRAG_THRESHOLD_PX,
+  createTearOutDragTrace,
+  type TearOutDragTrace,
+  type TearOutPointerSample,
+} from "../lib/tearOutDiagnostics";
 
-const DRAG_THRESHOLD_PX = 9;
 const WORKSPACE_HOVER_DELAY_MS = 350;
+
+function tearOutPointerSample(event: Pick<PointerEvent, "clientX" | "clientY" | "screenX" | "screenY">): TearOutPointerSample {
+  return {
+    clientX: event.clientX,
+    clientY: event.clientY,
+    screenX: event.screenX,
+    screenY: event.screenY,
+    viewportWidth: window.innerWidth,
+    viewportHeight: window.innerHeight,
+  };
+}
+
+function clearTearOutMeasurementAfterDelay(): void {
+  window.setTimeout(() => usePaneDragStore.getState().setTearOutMeasurement(null), 1_500);
+}
 
 function getFocusSessionId(item: PaneDragItem): string | null {
   const workspace = useWorkspaceListStore.getState().getWorkspace(item.workspaceId);
@@ -311,13 +331,21 @@ async function commitPaneHandoff(
   }
 }
 
-function commitPaneDragDrop(item: PaneDragItem, target: PaneDropTarget | null): void {
+function commitPaneDragDrop(
+  item: PaneDragItem,
+  target: PaneDropTarget | null,
+  trace: TearOutDragTrace | null = null,
+): void {
   if (!target || !canDropTarget(item, target)) return;
 
   if (item.surface === "minimap") {
     if (target.kind === "pane" && (item.kind === "tab" || item.kind === "tab-bundle")) commitMinimapTabDrop(item, target);
     else if (target.kind === "pane" && item.kind === "pane") commitMinimapPaneDrop(item, target);
     else if (target.kind === "new-workspace" && item.kind !== "tab-bundle") moveMinimapItemToNewWorkspace(item);
+    else if (target.kind === "new-window") {
+      trace?.failed("transfer-failed", "minimap new-window target has no commit path");
+      clearTearOutMeasurementAfterDelay();
+    }
     return;
   }
 
@@ -356,18 +384,38 @@ function commitPaneDragDrop(item: PaneDragItem, target: PaneDropTarget | null): 
           workspaceId,
           workspaceName,
         );
-    if (!moved) return;
+    if (!moved) {
+      if (target.kind === "new-window") {
+        trace?.failed("transfer-failed", "source pane/tab could not move into the transfer workspace");
+        clearTearOutMeasurementAfterDelay();
+      }
+      return;
+    }
     if (target.kind === "new-window") {
       // Dropped outside the window: the fresh workspace immediately tears out
       // to a new OS window at the drop point. If opening the window fails the
       // workspace simply stays here — nothing to undo, nothing lost.
+      trace?.commitPending(workspaceId, focusSessionId);
+      trace?.windowCreateRequested();
       void tearOutWorkspaceToNewWindow(workspaceId, {
         x: target.screenX - 40,
         y: target.screenY - 20,
+      }).then((label) => {
+        if (!label) {
+          trace?.failed("transfer-failed", "workspace transfer returned no destination window");
+          clearTearOutMeasurementAfterDelay();
+          return;
+        }
+        trace?.windowLabelAccepted(label);
+        trace?.sourceDetached();
+        trace?.committed();
+        clearTearOutMeasurementAfterDelay();
       }).catch((error) => {
-        console.error("[multiwindow] drag tear-out failed", error);
-        useToastStore.getState().pushToast("新しいウィンドウを開けませんでした", "error");
-      });
+          trace?.failed("create-failed", String(error));
+          clearTearOutMeasurementAfterDelay();
+          console.error("[multiwindow] drag tear-out failed", error);
+          useToastStore.getState().pushToast("新しいウィンドウを開けませんでした", "error");
+        });
       return;
     }
     useWorkspaceListStore.getState().setActiveWorkspace(workspaceId);
@@ -483,6 +531,25 @@ export function usePaneDragSource() {
       ? { ...item, sourceLayoutRevision: layoutStructureRevision(useWorkspaceListStore.getState().workspaces) }
       : item;
     let dragging = false;
+    let finishing = false;
+    const trace = createTearOutDragTrace({
+      itemKind: dragItem.kind === "pane" ? "pane" : "tab",
+      itemId: dragItem.kind === "pane"
+        ? dragItem.paneId
+        : dragItem.kind === "tab"
+          ? dragItem.tabId
+          : dragItem.anchorTabId,
+      pointerId,
+      pointer: tearOutPointerSample(event.nativeEvent),
+    }, {
+      sink: (measurement) => usePaneDragStore.getState().setTearOutMeasurement(measurement),
+    });
+
+    function handleLostPointerCapture(nativeEvent: PointerEvent) {
+      if (nativeEvent.pointerId !== pointerId || finishing) return;
+      trace?.pointerEvent("lostpointercapture", tearOutPointerSample(nativeEvent));
+      trace?.transition("capture-lost", "pointer capture was lost before drag completion");
+    }
 
     const cleanup = () => {
       window.removeEventListener("pointermove", handlePointerMove);
@@ -490,6 +557,7 @@ export function usePaneDragSource() {
       window.removeEventListener("pointercancel", handlePointerCancel);
       window.removeEventListener("keydown", handleKeyDown, true);
       window.removeEventListener("blur", handleWindowBlur);
+      sourceElement.removeEventListener("lostpointercapture", handleLostPointerCapture);
       clearHoverTimer();
       try {
         if (sourceElement.hasPointerCapture(pointerId)) {
@@ -502,13 +570,31 @@ export function usePaneDragSource() {
     };
 
     const finishDrag = (nativeEvent: PointerEvent | null, shouldCommit: boolean) => {
+      finishing = true;
+      if (nativeEvent) {
+        trace?.pointerEvent(
+          shouldCommit ? "pointerup" : "pointercancel",
+          tearOutPointerSample(nativeEvent),
+        );
+      }
       cleanup();
-      if (!dragging) return;
+      if (!dragging) {
+        trace?.transition("cancelled", "drag threshold was not reached");
+        clearTearOutMeasurementAfterDelay();
+        return;
+      }
       nativeEvent?.preventDefault();
       suppressClickRef.current = true;
       const dragState = usePaneDragStore.getState();
       if (shouldCommit) {
-        commitPaneDragDrop(dragItem, dragState.target);
+        if (dragState.target?.kind !== "new-window") {
+          trace?.transition("cancelled", "pointerup did not have a tear-out target");
+          clearTearOutMeasurementAfterDelay();
+        }
+        commitPaneDragDrop(dragItem, dragState.target, trace);
+      } else {
+        trace?.transition("cancelled", "drag cancelled before commit");
+        clearTearOutMeasurementAfterDelay();
       }
       usePaneDragStore.getState().clearDrag();
       window.setTimeout(() => {
@@ -523,7 +609,7 @@ export function usePaneDragSource() {
       const dx = nativeEvent.clientX - startX;
       const dy = nativeEvent.clientY - startY;
       if (!dragging) {
-        const threshold = dragItem.surface === "minimap" ? 5 : DRAG_THRESHOLD_PX;
+        const threshold = dragItem.surface === "minimap" ? 5 : TEAR_OUT_DRAG_THRESHOLD_PX;
         if (Math.hypot(dx, dy) < threshold) return;
         if (useSavepointDragStore.getState().item) {
           cleanup();
@@ -533,8 +619,10 @@ export function usePaneDragSource() {
         suppressClickRef.current = true;
         try {
           sourceElement.setPointerCapture(pointerId);
+          trace?.dragging(sourceElement.hasPointerCapture(pointerId));
         } catch {
           // Non-critical; window listeners still carry the drag.
+          trace?.dragging(false);
         }
         document.body.style.cursor = "grabbing";
         usePaneDragStore.getState().beginDrag(dragItem, { x: nativeEvent.clientX, y: nativeEvent.clientY });
@@ -561,6 +649,13 @@ export function usePaneDragSource() {
         target = canDropTarget(dragItem, candidate) ? candidate : null;
       }
       dragStore.setTarget(target);
+      const pointer = tearOutPointerSample(nativeEvent);
+      if (target?.kind === "new-window") {
+        trace?.arm(pointer);
+      } else {
+        trace?.disarm(pointer, target?.kind ?? null);
+        trace?.updateCandidate(pointer, target?.kind ?? null);
+      }
       updateWorkspaceHover(nativeEvent.clientX, nativeEvent.clientY);
     }
 
@@ -590,6 +685,7 @@ export function usePaneDragSource() {
     window.addEventListener("pointercancel", handlePointerCancel);
     window.addEventListener("keydown", handleKeyDown, true);
     window.addEventListener("blur", handleWindowBlur);
+    sourceElement.addEventListener("lostpointercapture", handleLostPointerCapture);
   }, [clearHoverTimer, updateWorkspaceHover]);
 
   useEffect(() => {

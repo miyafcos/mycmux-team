@@ -220,6 +220,8 @@ interface XTermWrapperProps {
 
 const terminalVisibilityUpdates = new Map<string, Promise<void>>();
 const TURN_LIST_PROMPT_CACHE_MS = 30_000;
+const TURN_LIST_PROMPT_RETRY_MS = 500;
+const TURN_LIST_PROMPT_RETRY_MAX = 5;
 const turnListPromptCache = new Map<string, { fetchedAt: number; prompts: TranscriptPrompt[] }>();
 
 function tabIdForSession(sessionId: string): string | null {
@@ -650,6 +652,8 @@ export default memo(function XTermWrapper({
   const refreshTurnChipRef = useRef<() => void>(() => {});
   const turnListRequestRef = useRef(0);
   const turnChipVisibilityRef = useRef<TurnChipVisibilityController | null>(null);
+  const turnListOpenRef = useRef(false);
+  const turnListRetryTimerRef = useRef<number | null>(null);
   const chipWantedRef = useRef(false);
   const turnChipExitMsRef = useRef<number | null>(null);
   if (turnChipExitMsRef.current == null) {
@@ -663,6 +667,7 @@ export default memo(function XTermWrapper({
     chipWanted,
     turnChipExitMsRef.current,
   );
+  const hasTurnTranscript = startsAsAgentTui(command, args, agentId, agentKind, launchEnv);
 
   const refreshTurnChip = useCallback(() => {
     if (turnChipRafRef.current != null) return;
@@ -700,7 +705,7 @@ export default memo(function XTermWrapper({
       const previousBufferType = lastBufferTypeRef.current;
       lastBufferTypeRef.current = buf.type;
       if (previousBufferType !== null && previousBufferType !== buf.type) {
-        turnChipVisibilityRef.current?.reset();
+        turnChipVisibilityRef.current?.reset({ preserveIntent: true });
       }
       const marks = getTurnMarkData(sessionId);
       const state = resolveTurnChipState({
@@ -708,7 +713,7 @@ export default memo(function XTermWrapper({
         viewportY: buf.viewportY,
         isAtBottom: isAtBottomRef.current,
         bufferType: buf.type,
-        hasTranscript: agentKind !== undefined,
+        hasTranscript: hasTurnTranscript,
       });
       const mode = state?.mode ?? "";
       setTurnChipDiag((prev) => (
@@ -751,7 +756,7 @@ export default memo(function XTermWrapper({
       if (same) return;
       setTurnChip(next);
     });
-  }, [sessionId, agentKind]);
+  }, [hasTurnTranscript, sessionId]);
   refreshTurnChipRef.current = refreshTurnChip;
 
   const jumpTurn = useCallback((direction: -1 | 1) => {
@@ -796,30 +801,62 @@ export default memo(function XTermWrapper({
     const marks = getTurnMarkData(sessionId);
     const cached = turnListPromptCache.get(sessionId);
     const now = Date.now();
-    if (cached && now - cached.fetchedAt < TURN_LIST_PROMPT_CACHE_MS) {
+    if (cached && cached.prompts.length > 0 && now - cached.fetchedAt < TURN_LIST_PROMPT_CACHE_MS) {
       setTurnListRows(buildTurnListRows(marks, cached.prompts));
       return;
     }
+    if (cached?.prompts.length === 0) turnListPromptCache.delete(sessionId);
 
     setTurnListRows(buildTurnListRows(marks, []));
     const request = turnListRequestRef.current + 1;
     turnListRequestRef.current = request;
-    void getTranscriptUserPrompts(sessionId, 200)
-      .catch((): TranscriptPrompt[] => [])
-      .then((prompts) => {
-        turnListPromptCache.set(sessionId, { fetchedAt: Date.now(), prompts });
-        if (turnListRequestRef.current !== request) return;
-        setTurnListRows(buildTurnListRows(getTurnMarkData(sessionId), prompts));
-      });
+    if (turnListRetryTimerRef.current !== null) {
+      window.clearTimeout(turnListRetryTimerRef.current);
+      turnListRetryTimerRef.current = null;
+    }
+    const fetchPrompts = (retryCount: number): void => {
+      void getTranscriptUserPrompts(sessionId, 200)
+        .catch((): TranscriptPrompt[] => [])
+        .then((prompts) => {
+          if (turnListRequestRef.current !== request) return;
+          if (prompts.length > 0) {
+            turnListPromptCache.set(sessionId, { fetchedAt: Date.now(), prompts });
+          } else {
+            turnListPromptCache.delete(sessionId);
+          }
+          const latestMarks = getTurnMarkData(sessionId);
+          const listMarks = latestMarks.length > 0 ? latestMarks : marks;
+          setTurnListRows(buildTurnListRows(listMarks, prompts));
+          if (
+            prompts.length === 0
+            && listMarks.length === 0
+            && turnListOpenRef.current
+            && retryCount < TURN_LIST_PROMPT_RETRY_MAX
+          ) {
+            turnListRetryTimerRef.current = window.setTimeout(() => {
+              turnListRetryTimerRef.current = null;
+              fetchPrompts(retryCount + 1);
+            }, TURN_LIST_PROMPT_RETRY_MS);
+          }
+        });
+    };
+    fetchPrompts(0);
   }, [sessionId]);
 
   useEffect(() => {
     isAtBottomRef.current = true;
+    turnListRequestRef.current += 1;
     chipWantedRef.current = false;
     lastTurnChipRef.current = null;
     lastBufferTypeRef.current = null;
+    turnListOpenRef.current = false;
+    if (turnListRetryTimerRef.current !== null) {
+      window.clearTimeout(turnListRetryTimerRef.current);
+      turnListRetryTimerRef.current = null;
+    }
     setChipWanted(false);
     setTurnChip(null);
+    setTurnListRows([]);
     setTurnChipDiag({ marks: 0, buffer: "", mode: "" });
     const controller = createTurnChipVisibilityController({
       onChange: () => refreshTurnChipRef.current(),
@@ -828,6 +865,10 @@ export default memo(function XTermWrapper({
     const onTurnMarks = (event: Event): void => {
       const markedSession = (event as CustomEvent<{ sessionId?: string }>).detail?.sessionId;
       if (markedSession && markedSession !== sessionId) return;
+      if (turnListOpenRef.current) {
+        const prompts = turnListPromptCache.get(sessionId)?.prompts ?? [];
+        setTurnListRows(buildTurnListRows(getTurnMarkData(sessionId), prompts));
+      }
       refreshTurnChipRef.current();
     };
     window.addEventListener(TURN_MARKS_EVENT, onTurnMarks);
@@ -842,8 +883,16 @@ export default memo(function XTermWrapper({
         cancelAnimationFrame(turnChipRafRef.current);
         turnChipRafRef.current = null;
       }
+      if (turnListRetryTimerRef.current !== null) {
+        window.clearTimeout(turnListRetryTimerRef.current);
+        turnListRetryTimerRef.current = null;
+      }
     };
   }, [sessionId]);
+
+  useEffect(() => {
+    refreshTurnChipRef.current();
+  }, [hasTurnTranscript]);
 
   const storeTheme = useThemeStore((s) => s.theme);
   const storeFontSize = useThemeStore((s) => s.fontSize);
@@ -2542,7 +2591,7 @@ export default memo(function XTermWrapper({
       const restorePolicy = resolveScrollbackRestorePolicy({
         isSessionAlive: sessionAlive,
         hasPersistedScrollback: persistedScrollback,
-        isAgentTab: agentKind !== undefined,
+        isAgentTab: hasTurnTranscript,
         initialReplay,
       });
       coldPersistedRestore = restorePolicy.usePersistedScrollback;
@@ -2786,6 +2835,16 @@ export default memo(function XTermWrapper({
     refreshTurnChipRef.current();
   }, []);
 
+  const setTurnListOpen = useCallback((open: boolean) => {
+    turnListOpenRef.current = open;
+    if (!open && turnListRetryTimerRef.current !== null) {
+      window.clearTimeout(turnListRetryTimerRef.current);
+      turnListRetryTimerRef.current = null;
+    }
+    turnChipVisibilityRef.current?.setPinned(open);
+    refreshTurnChipRef.current();
+  }, []);
+
   return (
     <div
       style={{ position: "relative", width: "100%", height: "100%" }}
@@ -2800,6 +2859,7 @@ export default memo(function XTermWrapper({
     >
       {turnChipMounted && turnChip && (
         <TerminalTurnChip
+          key={sessionId}
           index={turnChip.index}
           total={turnChip.total}
           label={turnChip.label}
@@ -2811,6 +2871,7 @@ export default memo(function XTermWrapper({
           onJump={jumpTurnToMark}
           onJumpLabel={jumpTurnByLabel}
           onListOpen={openTurnList}
+          onListVisibilityChange={setTurnListOpen}
           onHover={noteLookBackIntent}
           leaving={turnChipLeaving}
           mode={turnChip.mode}

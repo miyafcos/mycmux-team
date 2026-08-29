@@ -50,6 +50,7 @@ export function persistentTabProjection(tab: PaneTab) {
     label: tab.label,
     labelSource: tab.labelSource,
     type: tab.type,
+    presetId: tab.presetId,
     cwd: tab.cwd,
     lastProcess: tab.lastProcess,
     claudeSessionId: tab.claudeSessionId,

@@ -50,6 +50,7 @@ import { useGroupingRuntimeStore } from "../../src/stores/groupingRuntimeStore";
 import { usePaneMetadataStore } from "../../src/stores/paneMetadataStore";
 import { useSessionAttentionStore } from "../../src/stores/sessionAttentionStore";
 import { useWorkspaceListStore } from "../../src/stores/workspaceListStore";
+import { __resetGroupingPrecomputeForTests } from "../../src/lib/groupingPrecompute";
 import { mockGroupingAnalysis, mockWorkspaces } from "./fixtures/tabGroupingMockScenario";
 import { hashCanonical } from "./helpers/groupingTestEntrypoint";
 
@@ -146,6 +147,8 @@ async function openEdit(): Promise<void> {
 }
 
 beforeEach(() => {
+  __resetGroupingPrecomputeForTests();
+  localStorage.clear();
   analysisHarness.value = mockGroupingAnalysis;
   boundaryHarness.preparedArgs = null;
   boundaryHarness.prepared = null;
@@ -156,6 +159,8 @@ afterEach(async () => {
   if (root) await act(async () => root?.unmount());
   root = null;
   document.body.replaceChildren();
+  __resetGroupingPrecomputeForTests();
+  localStorage.clear();
   resetStores();
 });
 

@@ -10,7 +10,12 @@ import {
 import { autoPaneNamingStrings } from "../components/settings/settingsStrings";
 import { useAiSettingsStore } from "../stores/aiSettingsStore";
 import { useSettingsStore } from "../stores/settingsStore";
-import { useToastStore, TOAST_UNDO_DISMISS_MS, type ToastAction } from "../stores/toastStore";
+import {
+  useToastStore,
+  TOAST_UNDO_DISMISS_MS,
+  type ToastAction,
+  type ToastCategory,
+} from "../stores/toastStore";
 import { useWorkspaceLayoutStore } from "../stores/workspaceLayoutStore";
 import { useWorkspaceListStore } from "../stores/workspaceListStore";
 import type { PaneTab, Workspace } from "../types";
@@ -53,7 +58,13 @@ export interface AutoPaneNamingDependencies extends AutoPaneNamingTimerDependenc
     label: string | undefined,
     source: "user" | "ai",
   ) => void;
-  pushToast: (message: string, kind: "info" | "error", actions?: ToastAction[], durationMs?: number) => void;
+  pushToast: (
+    message: string,
+    kind: "info" | "error",
+    actions?: ToastAction[],
+    durationMs?: number,
+    category?: ToastCategory,
+  ) => void;
   requestId: () => string;
   getVisibility: () => DocumentVisibilityState | "visible";
 }
@@ -152,8 +163,8 @@ function defaultDependencies(): AutoPaneNamingDependencies {
     setTabLabel: (workspaceId, paneId, tabId, label, source) => {
       useWorkspaceLayoutStore.getState().setTabLabel(workspaceId, paneId, tabId, label, source);
     },
-    pushToast: (message, kind, actions, durationMs) => {
-      useToastStore.getState().pushToast(message, kind, undefined, actions, durationMs);
+    pushToast: (message, kind, actions, durationMs, category) => {
+      useToastStore.getState().pushToast(message, kind, undefined, actions, durationMs, category);
     },
     requestId: defaultRequestId,
     getVisibility: () => (typeof document === "undefined" ? "visible" : document.visibilityState),
@@ -340,7 +351,7 @@ export function createAutoPaneNamingScheduler(
               item.labelSource === "ai" ? "ai" : "user",
             );
           }
-          dependencies.pushToast(autoPaneNamingStrings.toastUndone, "info");
+          dependencies.pushToast(autoPaneNamingStrings.toastUndone, "info", undefined, undefined, "user-action");
         },
       };
       dependencies.pushToast(
@@ -348,6 +359,7 @@ export function createAutoPaneNamingScheduler(
         "info",
         [undo],
         TOAST_UNDO_DISMISS_MS,
+        "ai-activity",
       );
     } catch (error) {
       if (isCurrentRun(token)) {

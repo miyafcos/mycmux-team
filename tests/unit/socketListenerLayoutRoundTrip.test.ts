@@ -28,6 +28,7 @@ import {
 import { capturePersistRequestSnapshot } from "../../src/lib/workspacePersistenceCoordinator";
 import { persistentLayoutProjection, persistentLayoutSignature } from "../../src/lib/persistentLayoutProjection";
 import { usePaneMetadataStore } from "../../src/stores/paneMetadataStore";
+import { useWorkspaceLayoutStore } from "../../src/stores/workspaceLayoutStore";
 import type { Pane, PaneTab, Workspace } from "../../src/types";
 
 function tab(id: string, type: PaneTab["type"] = "terminal"): PaneTab {
@@ -102,6 +103,24 @@ describe("SocketListener layout persistence", () => {
     expect(saved.column_widths).toEqual([2, 5]);
     expect(saved.column_widths).toHaveLength(saved.split_columns!.length);
     expect(saved.row_heights_per_col).toEqual([[4], [6]]);
+  });
+
+  it("omits browser, online, and ephemeral tabs without creating empty terminal panes", () => {
+    const terminalPane = pane("terminal");
+    const browserPane = pane("browser", "browser");
+    const onlinePane = pane("online", "online");
+    const ephemeralPane = pane("ephemeral");
+    ephemeralPane.tabs[0].ephemeral = true;
+
+    const saved = toConfig(workspace(
+      [terminalPane, browserPane, onlinePane, ephemeralPane],
+      [[terminalPane.id], [browserPane.id], [onlinePane.id], [ephemeralPane.id]],
+      [2, 3, 4, 5],
+      [[1], [1], [1], [1]],
+    ));
+
+    expect(saved.panes.map((savedPane) => savedPane.pane_id)).toEqual([terminalPane.id]);
+    expect(saved.panes[0].tabs?.map((savedTab) => savedTab.type)).toEqual(["terminal"]);
   });
 
   it("preserves surviving column proportions when an omitted pane removes a column", () => {
@@ -198,6 +217,81 @@ describe("SocketListener layout persistence", () => {
       terminal_snapshot: null,
       turn_marks: null,
     });
+  });
+
+  it("round-trips a web tab without contaminating its terminal sibling", () => {
+    const source = pane("mixed");
+    const terminal = source.tabs[0];
+    Object.assign(terminal, {
+      cwd: "C:\\terminal-work",
+      terminalSnapshot: ["terminal output"],
+      agentKind: "claude",
+      agentSessionId: "terminal-agent-session",
+    });
+    const web: PaneTab = {
+      id: "web-tab",
+      sessionId: "web-session",
+      agentId: "web",
+      label: "ChatGPT",
+      type: "web",
+      presetId: "chatgpt",
+      cwd: "C:\\must-not-persist",
+      terminalSnapshot: ["must not persist"],
+      agentKind: "claude",
+      agentSessionId: "must-not-persist",
+    };
+    source.tabs.push(web);
+    source.activeTabId = web.id;
+    source.sessionId = web.sessionId;
+
+    const saved = toConfig(workspace([source], [[source.id]], [1], [[1]]));
+    expect(saved.panes[0].active_tab_id).toBe(web.id);
+    expect(saved.panes[0].cwd).toBeNull();
+    expect(saved.panes[0].tabs).toHaveLength(2);
+    expect(saved.panes[0].tabs![0]).toMatchObject({
+      tab_id: terminal.id,
+      type: "terminal",
+      cwd: "C:\\terminal-work",
+      terminal_snapshot: ["terminal output"],
+      agent_kind: "claude",
+      agent_session_id: "terminal-agent-session",
+    });
+    expect(saved.panes[0].tabs![1]).toMatchObject({
+      tab_id: web.id,
+      type: "web",
+      preset_id: "chatgpt",
+      cwd: null,
+      terminal_snapshot: null,
+      turn_marks: null,
+      agent_kind: null,
+      agent_session_id: null,
+      launch_env: null,
+    });
+
+    const restored = useWorkspaceLayoutStore.getState().restorePanes(
+      "workspace",
+      saved.panes,
+      saved.split_columns,
+      "1x1",
+    );
+    const restoredTerminal = restored.panes[0].tabs[0];
+    const restoredWeb = restored.panes[0].tabs[1];
+    expect(restoredTerminal).toMatchObject({
+      id: terminal.id,
+      type: "terminal",
+      cwd: "C:\\terminal-work",
+      terminalSnapshot: ["terminal output"],
+      agentKind: "claude",
+      agentSessionId: "terminal-agent-session",
+    });
+    expect(restoredWeb).toMatchObject({
+      id: web.id,
+      type: "web",
+      presetId: "chatgpt",
+      label: "ChatGPT",
+    });
+    expect(restoredWeb.terminalSnapshot).toBeUndefined();
+    expect(restoredWeb.agentSessionId).toBeUndefined();
   });
 
   it("serializes the request-bound R1 layout after the source advances to R2", () => {

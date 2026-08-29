@@ -20,14 +20,14 @@ def test_cwd_round_trip_contract_remains_wired() -> None:
     terminal_pane = read_repo_text("src/components/workspace/TerminalPane.tsx")
 
     for snippet in [
-        "const paneCwd = paneMeta?.cwd ?? activeTab?.cwd ?? p.cwd ?? null;",
+        "?? (activeTabIsTerminal ? activeTab.cwd : undefined)",
         "cwd: paneCwd",
-        "cwd: tabMeta?.cwd ?? tab.cwd ?? paneCwd",
+        "cwd: terminal ? tabMeta?.cwd ?? tab.cwd ?? paneCwd : null",
     ]:
         assert_contains(socket_listener, snippet, "src/components/layout/SocketListener.tsx")
 
     for snippet in [
-        "cwd: tabConfig.cwd ?? pc.cwd ?? undefined",
+        "cwd: isWebRestoredTab ? undefined : tabConfig.cwd ?? pc.cwd ?? undefined",
         "cwd: activeTab.cwd ?? pc.cwd ?? undefined",
     ]:
         assert_contains(layout_store, snippet, "src/stores/workspaceLayoutStore.ts")
@@ -41,4 +41,3 @@ def test_create_session_uses_same_launch_cwd_for_validation_and_spawn() -> None:
     assert_contains(terminal, "let launch_cwd = resolve_launch_cwd(cwd.as_deref());", "src-tauri/src/commands/terminal.rs")
     assert_contains(terminal, "if let Some(trusted_cwd) = launch_cwd.as_deref() {", "src-tauri/src/commands/terminal.rs")
     assert_contains(terminal, "launch_cwd,\n        Some(env_map),", "src-tauri/src/commands/terminal.rs")
-

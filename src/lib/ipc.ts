@@ -1071,7 +1071,8 @@ export interface PaneTabConfig {
   agent_id: string;
   label?: string | null;
   label_source?: "user" | "ai" | null;
-  type?: "terminal" | null;
+  type?: "terminal" | "web" | null;
+  preset_id?: string | null;
   cwd?: string | null;
   last_process?: string | null;
   claude_session_id?: string | null;

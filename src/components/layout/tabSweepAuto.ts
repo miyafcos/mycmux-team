@@ -1,5 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
-import { TOAST_UNDO_DISMISS_MS, useToastStore, type ToastAction, type ToastKind } from "../../stores/toastStore";
+import {
+  TOAST_UNDO_DISMISS_MS,
+  useToastStore,
+  type ToastAction,
+  type ToastCategory,
+  type ToastKind,
+} from "../../stores/toastStore";
 import { useAiSettingsStore } from "../../stores/aiSettingsStore";
 import {
   applySweep,
@@ -22,7 +28,13 @@ export interface AutoSweepDependencies {
   scanTabs: () => Promise<SweepReport>;
   invokeJudge: (prompt: string, requestId: string) => Promise<string>;
   applySweep: (plan: SweepPlan) => Promise<SweepApplyResult>;
-  pushToast: (message: string, kind: ToastKind, actions?: ToastAction[], durationMs?: number) => void;
+  pushToast: (
+    message: string,
+    kind: ToastKind,
+    actions?: ToastAction[],
+    durationMs?: number,
+    category?: ToastCategory,
+  ) => void;
   restoreClosedTabs: (count: number) => void;
   openDetails: () => void;
   requestId: () => string;
@@ -45,8 +57,8 @@ const defaultDependencies: AutoSweepDependencies = {
   scanTabs,
   invokeJudge: (prompt, requestId) => invoke<string>("run_tab_sweep_judge", { prompt, requestId }),
   applySweep,
-  pushToast: (message, kind, actions, durationMs) =>
-    useToastStore.getState().pushToast(message, kind, undefined, actions, durationMs),
+  pushToast: (message, kind, actions, durationMs, category) =>
+    useToastStore.getState().pushToast(message, kind, undefined, actions, durationMs, category),
   restoreClosedTabs: (count) => {
     for (let index = 0; index < count; index += 1) {
       window.dispatchEvent(new Event(TAB_RESTORE_CLOSED_EVENT));
@@ -76,6 +88,8 @@ export function createAutoSweepRunner(dependencies: AutoSweepDependencies = defa
         : `AI判定を使えなかったため、終了済みのタブだけを対象にしました。${prefix}`,
       "info",
       [showDetails()],
+      undefined,
+      "failure",
     );
     return { renamed: 0, closed: result.closed, fallback: true };
   };
@@ -108,7 +122,7 @@ export function createAutoSweepRunner(dependencies: AutoSweepDependencies = defa
             label: "取り消し",
             run: () => {
               dependencies.restoreClosedTabs(closed);
-              dependencies.pushToast("元に戻しました", "info");
+              dependencies.pushToast("元に戻しました", "info", undefined, undefined, "user-action");
             },
           }, showDetails()]
         : [showDetails()];
@@ -117,13 +131,20 @@ export function createAutoSweepRunner(dependencies: AutoSweepDependencies = defa
         "info",
         actions,
         undoable ? TOAST_UNDO_DISMISS_MS : undefined,
+        "ai-activity",
       );
       return { renamed: 0, closed, fallback: false };
     } catch (error) {
       try {
         return await fallback(error, settings.aiProvider);
       } catch (fallbackError) {
-        dependencies.pushToast(`タブ掃除に失敗しました: ${formatJudgeError(fallbackError, settings.aiProvider).summary}`, "error", [showDetails()]);
+        dependencies.pushToast(
+          `タブ掃除に失敗しました: ${formatJudgeError(fallbackError, settings.aiProvider).summary}`,
+          "error",
+          [showDetails()],
+          undefined,
+          "failure",
+        );
         throw fallbackError;
       }
     }

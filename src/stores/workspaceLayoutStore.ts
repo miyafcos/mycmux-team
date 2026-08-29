@@ -35,7 +35,7 @@ function makeTab(
   paneId: string,
   agentId: string,
   type: PaneTab["type"] = "terminal",
-  options?: Partial<Pick<PaneTab, "id" | "label" | "labelSource" | "cwd" | "lastProcess" | "claudeSessionId" | "agentKind" | "agentSessionId" | "suppressedAgentSessions" | "launchEnv" | "initialPrompt" | "commandArgv" | "ephemeral" | "terminalSnapshot" | "turnMarks" | "htmlPath" | "sourcePath" | "sourceKind" | "previewPath" | "isDirty" | "reloadCounter" | "lifecycle" | "origin" | "declaredPrompt" | "declaredTarget">>,
+  options?: Partial<Pick<PaneTab, "id" | "label" | "labelSource" | "presetId" | "cwd" | "lastProcess" | "claudeSessionId" | "agentKind" | "agentSessionId" | "suppressedAgentSessions" | "launchEnv" | "initialPrompt" | "commandArgv" | "ephemeral" | "terminalSnapshot" | "turnMarks" | "htmlPath" | "sourcePath" | "sourceKind" | "previewPath" | "isDirty" | "reloadCounter" | "lifecycle" | "origin" | "declaredPrompt" | "declaredTarget">>,
 ): PaneTab {
   const tabId = options?.id ?? uuid();
   return {
@@ -45,6 +45,7 @@ function makeTab(
     label: options?.label,
     labelSource: options?.labelSource,
     type,
+    presetId: options?.presetId,
     cwd: options?.cwd,
     lastProcess: options?.lastProcess,
     claudeSessionId: options?.claudeSessionId,
@@ -366,6 +367,11 @@ interface DeclaredLaunchOptions {
   activationSource?: "human" | "socket";
 }
 
+interface WebTabOptions {
+  presetId: string;
+  label: string;
+}
+
 interface WorkspaceLayoutState {
   // Pane operations
   removePaneFromWorkspace: (workspaceId: string, paneId: string) => void;
@@ -389,6 +395,7 @@ interface WorkspaceLayoutState {
     paneId: string,
     options: TerminalLaunchOptions,
   ) => void;
+  addWebTabToPane: (workspaceId: string, paneId: string, options: WebTabOptions) => void;
   declareTab: (workspaceId: string, paneId: string, options: DeclaredTabOptions) => PaneTab | null;
   launchDeclaredTab: (
     workspaceId: string,
@@ -541,14 +548,15 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
           ? pc.tabs.map((tabConfig) => {
             const restoredTabType = tabConfig.type as PaneTab["type"] | null | undefined;
             const isDeclaredRestoredTab = tabConfig.lifecycle === "declared";
-            const tabClaudeSessionId = isDeclaredRestoredTab
+            const isWebRestoredTab = restoredTabType === "web";
+            const tabClaudeSessionId = isDeclaredRestoredTab || isWebRestoredTab
               ? undefined
               : tabConfig.claude_session_id ?? undefined;
-            const tabAgentKind = isDeclaredRestoredTab
+            const tabAgentKind = isDeclaredRestoredTab || isWebRestoredTab
               ? undefined
               : tabConfig.agent_kind
                 ?? (tabClaudeSessionId ? "claude" : undefined);
-            const tabAgentSessionId = isDeclaredRestoredTab
+            const tabAgentSessionId = isDeclaredRestoredTab || isWebRestoredTab
               ? undefined
               : tabConfig.agent_session_id
                 ?? tabClaudeSessionId;
@@ -564,20 +572,21 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
                 id: tabConfig.tab_id ?? undefined,
                 label: restoredTabType === "online"
                   ? onlineStrings.panelTitle
-                  : tabConfig.label ?? undefined,
+                  : tabConfig.label ?? tabConfig.preset_id ?? undefined,
                 labelSource: restoredTabType === "online"
                   ? undefined
                   : tabConfig.label_source ?? undefined,
-                cwd: tabConfig.cwd ?? pc.cwd ?? undefined,
+                presetId: tabConfig.preset_id ?? undefined,
+                cwd: isWebRestoredTab ? undefined : tabConfig.cwd ?? pc.cwd ?? undefined,
                 claudeSessionId: tabClaudeSessionId,
                 agentKind: tabAgentKind,
                 agentSessionId: tabAgentSessionId,
-                suppressedAgentSessions: isDeclaredRestoredTab
+                suppressedAgentSessions: isDeclaredRestoredTab || isWebRestoredTab
                   ? undefined
                   : restoreSuppressedAgentSessions(tabConfig.suppressed_agent_sessions),
-                launchEnv: tabConfig.launch_env ?? pc.launch_env ?? undefined,
-                terminalSnapshot: isDeclaredRestoredTab ? undefined : tabConfig.terminal_snapshot ?? undefined,
-                turnMarks: isDeclaredRestoredTab ? undefined : tabConfig.turn_marks ?? undefined,
+                launchEnv: isWebRestoredTab ? undefined : tabConfig.launch_env ?? pc.launch_env ?? undefined,
+                terminalSnapshot: isDeclaredRestoredTab || isWebRestoredTab ? undefined : tabConfig.terminal_snapshot ?? undefined,
+                turnMarks: isDeclaredRestoredTab || isWebRestoredTab ? undefined : tabConfig.turn_marks ?? undefined,
                 lifecycle: tabConfig.lifecycle ?? undefined,
                 origin: tabConfig.origin
                   ? { kind: tabConfig.origin.kind, parentTabId: tabConfig.origin.parent_tab_id ?? undefined }
@@ -655,12 +664,13 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
         }
         if (col.length > 0) splitColumns.push(col);
       }
-      if (idx < panes.length) {
-        const lastCol = splitColumns[splitColumns.length - 1] ?? [];
-        for (; idx < panes.length; idx++) {
-          lastCol.push(panes[idx].id);
-        }
-        if (splitColumns.length === 0) splitColumns.push(lastCol);
+      // Panes beyond the template get their own column instead of being pushed
+      // into the last one. gridTemplateId only records the template picked when
+      // the workspace was created — splitting panes never updates it — so a
+      // workspace can legitimately be "1x1" with five panes. Appending to the
+      // last column collapsed every one of them into a single stack on restore.
+      for (; idx < panes.length; idx++) {
+        splitColumns.push([panes[idx].id]);
       }
     }
 
@@ -846,6 +856,25 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
     });
 
     useWorkspaceListStore.getState()._updateWorkspacePanes(workspaceId, newPanes);
+  },
+
+  addWebTabToPane: (workspaceId, paneId, options) => {
+    const workspace = useWorkspaceListStore.getState().getWorkspace(workspaceId);
+    if (!workspace) return;
+
+    let activatedSessionId: string | undefined;
+    const newPanes = workspace.panes.map((pane) => {
+      if (pane.id !== paneId) return pane;
+      const tab = makeTab(workspaceId, paneId, "web", "web", {
+        label: options.label,
+        presetId: options.presetId,
+      });
+      activatedSessionId = tab.sessionId;
+      return appendTabsToPane(pane, [tab], tab.id);
+    });
+
+    useWorkspaceListStore.getState()._updateWorkspacePanes(workspaceId, newPanes);
+    applyStructuralActivation(activatedSessionId);
   },
 
   addTabToPaneWithOptions: (workspaceId, paneId, options) => {

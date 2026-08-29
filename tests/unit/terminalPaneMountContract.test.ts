@@ -24,7 +24,7 @@ const paneTabBarSource = readFileSync(
 
 describe("terminal tab mount contract", () => {
   it("mounts one renderer for the active tab instead of every pane tab", () => {
-    const rendererStart = terminalPaneSource.indexOf("activeTab && agent ?");
+    const rendererStart = terminalPaneSource.indexOf("activeTab && isTerminalTab(activeTab) && agent ?");
     const rendererEnd = terminalPaneSource.indexOf(") : null}", rendererStart);
     const rendererBlock = terminalPaneSource.slice(rendererStart, rendererEnd);
 

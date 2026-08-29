@@ -29,6 +29,67 @@ import { useToastStore } from "../../stores/toastStore";
 import type { Workspace } from "../../types";
 import { resolvePet } from "../../lib/pets";
 import { usePetSettingsStore } from "../../stores/petSettingsStore";
+import {
+  WORKSPACE_DRAG_HORIZONTAL_THRESHOLD_PX,
+  WORKSPACE_DRAG_VERTICAL_THRESHOLD_PX,
+  createTearOutDragTrace,
+  observeTearOutDestination,
+  type TearOutDragTrace,
+  type TearOutMeasurementSnapshot,
+  type TearOutPointerSample,
+} from "../../lib/tearOutDiagnostics";
+
+function tearOutPointerSample(event: Pick<PointerEvent, "clientX" | "clientY" | "screenX" | "screenY">): TearOutPointerSample {
+  return {
+    clientX: event.clientX,
+    clientY: event.clientY,
+    screenX: event.screenX,
+    screenY: event.screenY,
+    viewportWidth: window.innerWidth,
+    viewportHeight: window.innerHeight,
+  };
+}
+
+function primaryWorkspaceSessionId(workspace: Workspace): string | null {
+  const pane = workspace.panes[0];
+  if (!pane) return null;
+  return pane.tabs.find((tab) => tab.id === pane.activeTabId)?.sessionId ?? pane.sessionId;
+}
+
+function clearTearOutMeasurementAfterDelay(): void {
+  window.setTimeout(() => usePaneDragStore.getState().setTearOutMeasurement(null), 1_500);
+}
+
+function TearOutDiagnosticsHud({ measurement }: { measurement: TearOutMeasurementSnapshot | null }) {
+  if (!import.meta.env.DEV || !measurement) return null;
+  return (
+    <div
+      data-testid="tearout-diagnostics-hud"
+      role="status"
+      style={{
+        position: "fixed",
+        right: 12,
+        bottom: 12,
+        zIndex: 2_000,
+        pointerEvents: "none",
+        minWidth: 260,
+        padding: "9px 11px",
+        border: "1px solid var(--cmux-border)",
+        borderRadius: 8,
+        background: "color-mix(in srgb, var(--cmux-surface) 94%, black)",
+        color: "var(--cmux-text)",
+        font: "11px/1.45 ui-monospace, SFMono-Regular, Consolas, monospace",
+        boxShadow: "0 8px 24px rgba(0, 0, 0, 0.28)",
+      }}
+    >
+      <div>tear-out {measurement.dragId}</div>
+      <div>state: {measurement.state}</div>
+      <div>outside: {measurement.outsideDistancePx.toFixed(1)}px / dwell: {Math.round(measurement.dwellMs)}ms</div>
+      <div>candidate: {measurement.candidateDropTarget ?? "none"}</div>
+      <div>capture: {measurement.pointerCaptureSucceeded === null ? "pending" : String(measurement.pointerCaptureSucceeded)}</div>
+    </div>
+  );
+}
 
 const PlusIcon = () => (
   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -131,6 +192,8 @@ interface WorkspaceTabEntryProps {
   onPointerDown: (e: React.PointerEvent, index: number) => void;
   onPointerMove: (e: React.PointerEvent) => void;
   onPointerUp: (e: React.PointerEvent) => void;
+  onPointerCancel: (e: React.PointerEvent) => void;
+  onLostPointerCapture: (e: React.PointerEvent) => void;
   onContextMenu: (e: React.MouseEvent, workspaceId: string) => void;
   onMenu: (workspaceId: string, x: number, y: number) => void;
   onClick: (workspaceId: string) => void;
@@ -153,6 +216,8 @@ const WorkspaceTabEntry = memo(function WorkspaceTabEntry({
   onPointerDown,
   onPointerMove,
   onPointerUp,
+  onPointerCancel,
+  onLostPointerCapture,
   onContextMenu,
   onMenu,
   onClick,
@@ -229,6 +294,8 @@ const WorkspaceTabEntry = memo(function WorkspaceTabEntry({
       onPointerDown={(e) => onPointerDown(e, wsIndex)}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
+      onPointerCancel={onPointerCancel}
+      onLostPointerCapture={onLostPointerCapture}
       onContextMenu={(e) => onContextMenu(e, ws.id)}
       style={{
         touchAction: "none",
@@ -277,6 +344,7 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
   const paneDragActive = paneMoveDragActive || savepointDragActive;
   const hoverWorkspaceId = paneMoveHoverWorkspaceId ?? savepointHoverWorkspaceId;
   const newWorkspaceDropActive = usePaneDragStore((s) => s.target?.kind === "new-workspace");
+  const tearOutMeasurement = usePaneDragStore((s) => s.tearOutMeasurement);
 
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [dropIndex, setDropIndex] = useState<number | null>(null);
@@ -293,6 +361,11 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
   const dragging = useRef(false);
   const pointerIdRef = useRef<number | null>(null);
   const dragElRef = useRef<HTMLElement | null>(null);
+  const tearOutTraceRef = useRef<TearOutDragTrace | null>(null);
+
+  useEffect(() => {
+    observeTearOutDestination(workspaces.map((workspace) => workspace.id));
+  }, [workspaces]);
 
   const handlePointerDown = useCallback((e: React.PointerEvent, index: number) => {
     if (paneDragActive) return;
@@ -304,8 +377,16 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
     dragging.current = false;
     pointerIdRef.current = e.pointerId;
     dragElRef.current = e.currentTarget as HTMLElement;
+    tearOutTraceRef.current = createTearOutDragTrace({
+      itemKind: "workspace",
+      itemId: workspaces[index]?.id ?? `workspace-index-${index}`,
+      pointerId: e.pointerId,
+      pointer: tearOutPointerSample(e.nativeEvent),
+    }, {
+      sink: (measurement) => usePaneDragStore.getState().setTearOutMeasurement(measurement),
+    });
     setDragIndex(index);
-  }, [paneDragActive]);
+  }, [paneDragActive, workspaces]);
 
   const handlePointerMove = useCallback((e: React.PointerEvent) => {
     if (paneDragActive) return;
@@ -313,10 +394,14 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
     if (!dragging.current) {
       // Vertical movement starts a reorder; a mostly-horizontal pull (out of
       // the sidebar) starts the same drag so it can leave the window.
-      if (Math.abs(e.clientY - startY.current) < 5 && Math.abs(e.clientX - startX.current) < 24) return;
+      if (
+        Math.abs(e.clientY - startY.current) < WORKSPACE_DRAG_VERTICAL_THRESHOLD_PX
+        && Math.abs(e.clientX - startX.current) < WORKSPACE_DRAG_HORIZONTAL_THRESHOLD_PX
+      ) return;
       dragging.current = true;
       if (dragElRef.current && pointerIdRef.current !== null) {
         dragElRef.current.setPointerCapture(pointerIdRef.current);
+        tearOutTraceRef.current?.dragging(dragElRef.current.hasPointerCapture(pointerIdRef.current));
       }
     }
     // Pointer capture keeps the moves coming after the cursor leaves the
@@ -329,10 +414,14 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
       window.innerHeight,
     );
     setTearOutReady(outside);
+    const pointer = tearOutPointerSample(e.nativeEvent);
     if (outside) {
+      tearOutTraceRef.current?.arm(pointer);
       setDropIndex(null);
       return;
     }
+    tearOutTraceRef.current?.disarm(pointer, "workspace-reorder");
+    tearOutTraceRef.current?.updateCandidate(pointer, "workspace-reorder");
     const y = e.clientY;
     let target = 0;
     for (let i = 0; i < itemRefs.current.length; i++) {
@@ -347,19 +436,42 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
 
   const handlePointerUp = useCallback((e: React.PointerEvent) => {
     if (paneDragActive) return;
+    const trace = tearOutTraceRef.current;
+    trace?.pointerEvent("pointerup", tearOutPointerSample(e.nativeEvent));
     if (dragging.current && tearOutReady && dragIndex !== null) {
       const workspace = workspaces[dragIndex];
       if (workspace) {
+        trace?.commitPending(workspace.id, primaryWorkspaceSessionId(workspace));
+        trace?.windowCreateRequested();
         void tearOutWorkspaceToNewWindow(workspace.id, {
           x: e.screenX - 40,
           y: e.screenY - 20,
+        }).then((label) => {
+          if (!label) {
+            trace?.failed("transfer-failed", "workspace transfer returned no destination window");
+            trace?.rolledBack("source workspace remained in its original window");
+            clearTearOutMeasurementAfterDelay();
+            return;
+          }
+          trace?.windowLabelAccepted(label);
+          trace?.sourceDetached();
+          trace?.committed();
+          clearTearOutMeasurementAfterDelay();
         }).catch((err) => {
-          console.error("[multiwindow] drag tear-out failed", err);
-          useToastStore.getState().pushToast("新しいウィンドウを開けませんでした", "error");
-        });
+            trace?.failed("create-failed", String(err));
+            trace?.rolledBack("source workspace remained in its original window");
+            clearTearOutMeasurementAfterDelay();
+            console.error("[multiwindow] drag tear-out failed", err);
+            useToastStore.getState().pushToast("新しいウィンドウを開けませんでした", "error");
+          });
       }
     } else if (dragIndex !== null && dropIndex !== null && dragging.current) {
+      trace?.transition("cancelled", "workspace was reordered instead of torn out");
+      clearTearOutMeasurementAfterDelay();
       reorder(dragIndex, dropIndex);
+    } else {
+      trace?.transition("cancelled", "pointerup did not have a tear-out target");
+      clearTearOutMeasurementAfterDelay();
     }
     setTearOutReady(false);
     setDragIndex(null);
@@ -367,15 +479,32 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
     dragging.current = false;
     pointerIdRef.current = null;
     dragElRef.current = null;
+    tearOutTraceRef.current = null;
   }, [dragIndex, dropIndex, paneDragActive, reorder, tearOutReady, workspaces]);
 
+  const handlePointerCancel = useCallback((e: React.PointerEvent) => {
+    tearOutTraceRef.current?.pointerEvent("pointercancel", tearOutPointerSample(e.nativeEvent));
+    tearOutTraceRef.current?.transition("cancelled", "workspace pointercancel received");
+    clearTearOutMeasurementAfterDelay();
+  }, []);
+
+  const handleLostPointerCapture = useCallback((e: React.PointerEvent) => {
+    if (!dragging.current) return;
+    tearOutTraceRef.current?.pointerEvent("lostpointercapture", tearOutPointerSample(e.nativeEvent));
+    tearOutTraceRef.current?.transition("capture-lost", "workspace pointer capture was lost");
+  }, []);
+
   useEffect(() => {
-    const up = () => {
+    const up = (event: PointerEvent) => {
       if (dragIndex !== null) {
+        tearOutTraceRef.current?.pointerEvent("pointerup", tearOutPointerSample(event));
+        tearOutTraceRef.current?.transition("cancelled", "window pointerup fallback cleared the drag");
+        clearTearOutMeasurementAfterDelay();
         setDragIndex(null);
         setDropIndex(null);
         setTearOutReady(false);
         dragging.current = false;
+        tearOutTraceRef.current = null;
       }
     };
     window.addEventListener("pointerup", up);
@@ -473,6 +602,8 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
               onPointerDown={handlePointerDown}
               onPointerMove={handlePointerMove}
               onPointerUp={handlePointerUp}
+              onPointerCancel={handlePointerCancel}
+              onLostPointerCapture={handleLostPointerCapture}
               onContextMenu={handleContextMenu}
               onMenu={handleMenuButton}
               onClick={setActive}
@@ -522,6 +653,7 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
       </button>
 
       {tearOutReady && <TearOutBanner label={`⬈ ${paneDndStrings.dropInNewWindow}`} />}
+      <TearOutDiagnosticsHud measurement={tearOutMeasurement} />
 
       {contextMenu && contextWorkspace && (
         <div

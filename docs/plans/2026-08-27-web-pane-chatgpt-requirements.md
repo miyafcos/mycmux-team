@@ -127,6 +127,230 @@
 - **CPU**: アイドル (生成なし) の chatgpt.com は 1 コア換算 1% 未満。生成中のストリーミングで 5〜15%。R18 で背景 throttling を切るので hide 中も同じ (Deep Research を止めないための取捨)
 - **不安定になりうる場所は 3 つだけ** (すべて子 webview の「位置・重なり・フォーカス」): ①分割・リサイズ後の矩形ズレ (Tauri child webview は unstable API) ②オーバーレイの後ろに出る z-order ③webview にフォーカスがある間のショートカット。3 つとも R6/R7 と下の数値基準で潰す。ここが spike で収まらなければ Q4 で却下した「別ウィンドウ」に落とす (機能は同じ・並べられないだけ)
 
+## 3.7 認証と対応サービスの一般化 (2026-08-28 追記 — 宮崎さん「他の認証サービスも Anthropic, Grok, Gemini に拡張していくことを考えると、その認証ぐらいはいける設計にしておきたい」)
+
+### 前提の変化
+
+宮崎さんの ChatGPT ログインは **Google アカウント**と判明した (K2 の該当ケース)。
+Google は OAuth を埋め込み webview から行うことを仕様として拒否する (`disallowed_useragent`)。
+つまり **Web ペインを開いてそのままログイン、は通らない**。
+
+そして拡張先を並べると、これは ChatGPT 固有の問題ではない。
+
+| サービス | 想定ログイン | 埋め込み webview の可否 |
+|---|---|---|
+| ChatGPT | Google | **不可** (Google の仕様) |
+| Claude.ai | Google / メール | Google なら **不可** |
+| Gemini | Google 必須 | **不可** |
+| Grok (x.com) | X アカウント | 可の見込み (要検証) |
+
+4 つのうち 3 つが同じ壁に当たる。**サービスごとに逃げ道を作るのではなく、認証を 1 つの共通経路にする。**
+
+### 採る方式 — 専用プロファイルで一度ログインし、その資格情報を webview が使う
+
+1. mycmux が **専用のユーザーデータフォルダ**を持つ (サービスごとに 1 つ。既存の
+   `~/.oracle/browser-profile` と同じ発想)
+2. 初回ログインは**実ブラウザの窓**をそのフォルダで開いて行う。埋め込みではないので
+   Google も Apple も X もパスキーも通る
+3. 以降、Web ペインの WebView2 は**同じフォルダ**を `data_directory` に指定して起動する。
+   ログイン状態はそこに残っているので、ペインを開いた時点で認証済み
+
+この方式の利点は、サービスが増えても手順が変わらないこと。
+「専用フォルダを 1 つ足し、初回だけ実ブラウザで入る」で Claude も Gemini も Grok も同じ形になる。
+
+### 検証結果 — **A1 で通った** (2026-08-28 実測・spike S1)
+
+| # | 確認したこと | 結果 |
+|---|---|---|
+| A1 | WebView2 の `data_directory` に、実ブラウザ (Edge) が同フォルダで作ったログイン状態が引き継がれるか | **PASS。採用** |
+| A2 | WebView2 を独立窓として開いてログインできるか | 不要 (A1 で足りた) |
+| A3 | パスワード認証の併設 | 不要 |
+
+**手順と実測**:
+
+1. 専用フォルダ `%LOCALAPPDATA%\mycmux-webpane-spike1-edge-seeded` で Edge を起動
+   (`--user-data-dir=<専用フォルダ>`)、宮崎さんが Google ログインを 1 回
+2. Edge を完全終了 (プロセス 0 を実測。通常の Edge 7 プロセスには触れていない)
+3. プロファイルに Cookie が残ることを確認 — 総 104 件 / chatgpt・openai 39 / google 24
+4. 同じフォルダを `data_directory` に渡して WebView2 の独立窓を起動
+   (`src-tauri/examples/webpane_auth_spike.rs`)
+
+**遷移ログ (`SPIKE_PAGE_LOAD`) が決定的だった**:
+
+```
+chatgpt.com → /auth/login_with?connection=google-oauth2 → accounts.google.com
+→ accounts.google.co.jp/accounts/SetSID → auth.openai.com/mfa-challenge → chatgpt.com
+```
+
+Google の認証画面で **一度も入力を求められず**、アカウント選択もパスワードも MFA の手動応答も
+発生せずに ChatGPT へ戻った。引き継いだ Cookie が効いている証拠。
+
+**この結果が意味すること**: Google OAuth が埋め込み webview を拒否するのは *ログイン操作* であって、
+*既にログイン済みのセッション* は WebView2 でそのまま通る。だから「初回だけ実ブラウザ」で足りる。
+
+**実装への影響**:
+
+- WebView2 の `data_directory` に絶対パスを渡すだけ。追加の依存は不要
+  (Tauri の `WebviewWindowBuilder.data_directory()` がそのまま使える)
+- Cookie を自前で移送するコードは**書かない**。プロファイルフォルダを共有するだけ
+- サービスを増やす手順 = 専用フォルダを 1 つ作り、初回だけ実ブラウザでログイン。
+  Claude・Gemini も同じ Google なので同じ手順で通る見込み (要実測)
+
+**注意 (spike で踏んだ罠)**:
+
+- example の exe も `STATUS_ENTRYPOINT_NOT_FOUND (0xc0000139)` で落ちる。
+  テストバイナリと同じ Common Controls v6 manifest 問題なので、`src-tauri/tests.manifest` を
+  mt.exe で埋めてから **cargo を介さず直接実行**する (cargo 経由だと再リンクで manifest が剥がれる)
+- WebView2 は 1 タブで 7 プロセス・約 900 MB (debug ビルド・ログイン直後)。
+  §4.1 の RAM 基準 600 MB は release ビルドでの再計測が要る
+
+### 設計に課す制約
+
+- **サービス固有のコードを認証まわりに書かない**。「プロファイルの場所」と「初回ログインの起動」だけを
+  共通の仕組みにし、サービスは URL と表示名の違いに留める
+- 資格情報を mycmux が読み書きしない。**Cookie を自前で移送する実装はしない** (OS の保護を越える
+  必要があり、壊れやすく、資格情報を扱う責任が増える)。ブラウザのプロファイルに預けたままにする
+- サービスを増やす作業が「設定に 1 行足す」で済む形にする。増えるたびに実装が要る設計にしない
+
+### Phase 1 のスコープへの影響
+
+v1 の対象は **ChatGPT のみ**で変えない。ただし上記の認証経路と、サービスを識別する最小の型
+(表示名・URL・プロファイル位置) は Phase 1 で入れる。**後から一般化するのではなく、
+最初から 2 つ目が刺さる形で作る** — 1 サービス専用に作ってから広げるのは、
+認証まわりでは作り直しになる。
+
+## 3.6 逆方向 — ChatGPT から mycmux を見る (2026-08-28 追記・宮崎さん裁定「両方を統合した設計にしたい」)
+
+Web ペインは「mycmux の中に ChatGPT の画面を持ってくる」向き。これとは逆に、
+**ChatGPT の中から mycmux を見る**実装が 2026-08-24 に別便で作られており
+(`integrations/chatgpt-app/plugins/mycmux-control/`・MCP サーバ 745 行)、
+長らく未追跡のまま残っていた。両者は競合ではなく補完なので、v1 の設計を
+双方向として扱い直す。
+
+### 既にあるもの (mycmux-control プラグイン)
+
+OpenAI の Secure MCP Tunnel でローカルの stdio MCP を ChatGPT Web へ private
+developer app として繋ぐ。mycmux の socket も管理画面も外部公開せず、Windows PC から
+OpenAI への outbound HTTPS だけで接続する。公開ツールは 7 つ:
+
+| ツール | できること |
+|---|---|
+| `get_control_map` | ワークスペース / ペイン / タブ / PTY セッション ID の一覧 |
+| `open_mycmux_dashboard` | 選択用のダッシュボードを開く |
+| `read_session_screen` | 指定 PTY セッションの論理画面を読む (transcript ではない) |
+| `pair_session` | ChatGPT のタスクと mycmux のタブを紐づける |
+| `enqueue_handoff` | 構造化した受け渡しをキューに積む |
+| `list_handoffs` / `acknowledge_handoff` | キューの取り出しと確認 |
+
+**安全境界 (この便の設計者が明示している)**: 接続は `mycmux_agent_cli.py` の
+`panes --all` と `read --session` だけ。`send` / `spawn` / `close` / `move` / focus /
+raw socket は使わない。受け渡しはローカルの state store に置き、PTY へは書かない。
+
+### 双方向にしたときの役割分担
+
+| 向き | 手段 | 何を運ぶか | 書き込み |
+|---|---|---|---|
+| mycmux → ChatGPT | Web ペイン (R11〜R14 の push) | 引き継ぎ書・実ファイル・質問文 | ChatGPT の composer に載せる (送信は人が押す) |
+| ChatGPT → mycmux | mycmux-control (MCP) | セッション一覧・画面の読み取り・handoff のキュー | **PTY へは書かない** (キューに積むだけ) |
+
+この非対称は意図的に保つ。ChatGPT 側から端末へ直接書けるようにすると、
+`pane.send_text` の期待値ガード (attention id / session revision / input revision の
+3 点セット) を迂回する経路ができてしまう。**ChatGPT からの指示は必ず
+handoff キューを経由し、mycmux 側の人間かエージェントが取り出して実行する**。
+
+### Phase 1 に対する追加要件
+
+- R23. `integrations/chatgpt-app/` をリポジトリで管理する (`__pycache__` は除外)。
+  未追跡のままだと失われる
+- R24. Web ペインの push (R13/R14) と mycmux-control の `enqueue_handoff` は
+  **同じ handoff の語彙・同じ保存先** (`~/.mycmux/handoff/<preset>/`) を使う。
+  二重の受け渡し機構を作らない
+- R25. mycmux-control が読む `read_session_screen` は Web ペインのタブ
+  (`type: "web"`) を**対象外**にする。PTY を持たないタブなので `pane.read` が
+  意味を持たない。`get_control_map` の一覧には出すが `kind: "web"` と明示する
+- R26. Phase 1 の受入に mycmux-control の回帰を含める —
+  `integrations/chatgpt-app/plugins/mycmux-control/tests/` が緑であること
+- R27. Web タブを開く経路を 1 本にする (§3.8)。ランチャー・母艦・復元がすべて同じ内部 API を通り、
+  どの入口から開いても復元・操作・破棄の扱いが同じであること。
+  ランチャー (`~/.mycmux/bin/launcher.sh`) に項目を足すだけで人の経路が成立すること
+- R28. Web タブの起動をソケットコマンドとして公開する。母艦・エージェントから
+  「開く」「一覧」「閉じる」が呼べること (Phase 1 は開く・一覧・閉じるまで。
+  プロンプト投入と応答回収は Phase 2)
+- R29. 自動で開いたタブと人が開いたタブを区別できること。母艦が開いたタブに人の会話が
+  混ざらない・逆も起きない (oracle の `--browser-tab` と同じ分離)
+- R30. タブの状態 (読み込み中 / 応答待ち / 完了 / 失敗) を型として持ち、外から観測できること。
+  Phase 2 の応答回収がこの状態に乗る
+
+### 未確定 (着手前に決める)
+
+1. Secure MCP Tunnel の運用 (常時起動か手動か・トークンの置き場) は未検証。
+   `secure_mcp_tunnel.ps1 -Mode Validate` の実行結果を工程 0 で確認する
+2. `pair_session` の `chatTaskKey` は UI 生成の値を使う契約だが、Web ペイン側から
+   同じキーを発行できるかは未確認 (できれば「この Web タブとこの mycmux タブを対にする」
+   が 1 操作になる)
+3. 既存プラグインは `mycmux_agent_cli.py` をサブプロセスで呼ぶ。Web ペインの
+   `web.*` ソケットコマンドを足したあと、プラグイン側もそれを使うべきかは Phase 2 で判断
+
+## 3.8 起動経路と「中で完結させる」構想 (2026-08-28 追記 — 宮崎さん「最初からランチャー起動は前提とした設計に」「oracle でやっていることをこの中で完結したい」)
+
+### 二つの指示
+
+1. **ランチャー起動を最初から前提にする** (ユーザーが自分で開く経路)
+2. **「Pro に聞いて」と言ったらタブが勝手に立ち上がり、oracle が今やっていることが mycmux の中で終わる**
+   (母艦が開く経路)
+
+この二つは別々の機能ではない。**同じ「Web タブを開く」を、人が押すか母艦が呼ぶかの違い**にする。
+
+### 起動経路は 1 本にする
+
+Web タブが立ち上がる入口は 3 つある。
+
+| 入口 | 誰が | 例 |
+|---|---|---|
+| ランチャー | 人 | 新規ペインのメニューから「ChatGPT」を選ぶ |
+| 母艦・エージェント | Claude / Codex | 「Pro に聞いて」で自動起動 |
+| 復元 | アプリ | 再起動時に前回の Web タブを戻す (lazy) |
+
+**3 つとも同じ内部 API を通す。** 入口ごとに別経路を作ると、母艦から開いたタブだけ復元されない、
+ランチャーから開いたタブだけ操作できない、といった食い違いが必ず出る。
+
+ランチャーは `~/.mycmux/bin/launcher.sh` に項目を足すだけで済む形にする
+(現状 Web 系の項目は無い)。
+
+### oracle を「外から繋ぐ」から「中で完結」へ
+
+現行の §3.2 (Phase 2) は **oracle CLI を mycmux のペインに attach させる**設計だった。
+宮崎さんの構想はその先で、**oracle がやっている仕事そのものを mycmux が持つ**。
+
+| | 現行 Phase 2 | 構想 (Phase 2+) |
+|---|---|---|
+| 誰が ChatGPT を操作するか | oracle CLI (外部プロセス) | mycmux 本体 |
+| タブ | oracle が CDP で作る | mycmux が自分で開く |
+| 質問の投入 | oracle の browser 自動化 | mycmux の Web タブ制御 |
+| 応答の回収 | oracle が DOM から取る | 同上 |
+| 人から見えるか | 画面外 Chrome (見えない) | **ペインに出る (見える・触れる)** |
+
+**見えることが本質的な差**。今の oracle は画面外の Chrome で動くので、失敗しても何が起きたか
+分からない (実際 2026-08-28 に 2 回、プロンプト未達と送信タイムアウトで回答を取れなかった)。
+ペインなら人が見て、必要なら手で続きを打てる。
+
+### この構想が Phase 1 に課すこと
+
+v1 の実装範囲は変えない (ChatGPT を 1 枚出すだけ)。ただし**後から刺さる形**にしておく。
+
+- **タブを開く API を最初から公開する**。人の操作専用の内部関数にしない。
+  母艦から呼べる形 (ソケットコマンド) を Phase 1 で用意する
+- **タブに「操作される」余地を残す**。プロンプト投入・応答取得は Phase 2 で作るが、
+  タブの識別子・状態 (読み込み中 / 応答待ち / 完了) は Phase 1 の型に入れておく
+- **人が触っているタブと自動操作のタブを混ぜない**。母艦が開いたタブは区別できるようにする
+  (oracle の `--browser-tab` と同じ考え方)。人の会話に自動投入が割り込むのは事故
+
+### 未確定 (Phase 2 の着手前に決める)
+
+- 応答の完了をどう判定するか (oracle は DOM の streaming 状態を見ている。同じ方法を採るか)
+- 母艦が開いたタブを人に見せるか、隠すか (見せる前提だが、大量に開くと邪魔)
+- oracle CLI を残すか捨てるか (中で完結したら CLI は不要になるが、非 mycmux 環境では必要)
+
 ## 4. 受け入れ基準 (Phase 1)
 
 ### 4.1 性能・安定性 (数値・テスト機で計測)
@@ -175,7 +399,7 @@ python -m pytest tests/
 | # | 項目 | 影響 | 確認方法 |
 |---|---|---|---|
 | K1 | WebView2 の CDP が `Target.createTarget` に非対応の可能性 | oracle が新規タブを作れず attach に失敗 (Phase 2 のみ)。`--browser-tab` 再利用で回避できる可能性 | Phase 1 完成後に P1 を実測 |
-| K2 | Google OAuth が埋め込み webview を拒否する | ログイン方式が Google の場合、初回ログインが通らない | 宮崎さんのログイン方式を確認【要確認】。メール+パスワード / Apple なら影響なし |
+| K2 | Google OAuth が埋め込み webview を拒否する | **該当が確定** (2026-08-28・宮崎さんは Google ログイン)。拡張先の Claude・Gemini も同じ壁 | §3.7 の共通経路で対処。実装前に A1→A2→A3 を spike で確認 |
 | K3 | Cloudflare チャレンジ | ログイン時に弾かれる | Phase 1 の実機検証 1 で確認 |
 | K4 | child webview の位置・サイズ追従の不安定さ (`rich-browser-pane.md` の unstable 注記) | 分割・リサイズ時のズレ | 実機検証 4 |
 | K5 | z-order (native webview が常に前面) | モーダル・ドロップダウンが隠れる | R6 の hide 制御・実機検証 4 |

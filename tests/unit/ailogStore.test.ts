@@ -24,6 +24,38 @@ function dashboard(from: number, to: number, costUsd: number, userMessages: numb
   return { overview: { range: { from, to, label: "test" }, totals: totals(costUsd, userMessages) }, series: {}, models: {}, projects: {}, sessions: {} };
 }
 
+describe("AI log range resolution", () => {
+  beforeEach(() => { __resetAilogStoreForTests(); invokeMock.mockReset().mockResolvedValue({}); });
+  afterEach(() => { __resetAilogStoreForTests(); });
+
+  it("sends one identical window to every report of a preset period", async () => {
+    // Each report used to receive the bare preset and resolve it against its
+    // own clock, so two calls a millisecond apart covered different windows.
+    // The usage panels compare their range with the overview's and would never
+    // agree, reporting "no records" while sitting on full data.
+    const ranges: Array<{ anchor?: number | null; preset?: string | null }> = [];
+    invokeMock.mockImplementation((_cmd: string, payload: Record<string, unknown> | undefined) => {
+      const range = payload?.range as { anchor?: number; preset?: string } | undefined;
+      if (range) ranges.push(range);
+      return Promise.resolve({});
+    });
+
+    useAilogStore.setState({ preset: "90d" });
+    await Promise.allSettled([
+      useAilogStore.getState().refresh({ force: true }),
+      useAilogStore.getState().refreshUsage({ force: true }),
+    ]);
+
+    expect(ranges.length).toBeGreaterThan(1);
+    const [first] = ranges;
+    expect(typeof first.anchor).toBe("number");
+    for (const range of ranges) {
+      expect(range.anchor).toBe(first.anchor);
+      expect(range.preset).toBe("90d");
+    }
+  });
+});
+
 describe("AI log store U0", () => {
   beforeEach(() => { __resetAilogStoreForTests(); __resetPersistenceCoordinatorForTests(); markPersistentSchemaSupported(1); invokeMock.mockReset().mockResolvedValue({}); vi.mocked(ailogIndexStart).mockReset(); vi.mocked(ailogIndexStatus).mockReset(); vi.mocked(ailogSessionDetail).mockReset(); vi.mocked(ailogSessionSummarize).mockReset(); vi.mocked(ailogSummarizeStatus).mockReset(); });
   afterEach(() => { __resetAilogStoreForTests(); __resetPersistenceCoordinatorForTests(); });

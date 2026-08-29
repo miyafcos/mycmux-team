@@ -290,6 +290,10 @@ export function notifySavepointPublished(
   useToastStore.getState().pushToast(
     savepointPublishSuccessMessage(result, recordKind),
     "warning",
+    undefined,
+    undefined,
+    undefined,
+    result.warnings.length > 0 ? "failure" : "user-action",
   );
   void useOnlineSavepointStore.getState().refresh();
   window.dispatchEvent(new CustomEvent(SAVEPOINT_PUBLISHED_EVENT));

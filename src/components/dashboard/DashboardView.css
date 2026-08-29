@@ -285,24 +285,6 @@
 .cmux-dashboard-dispatch-result small { min-width: 0; color: inherit; overflow-wrap: anywhere; }
 
 .cmux-report-inbox { display: flex; min-height: 0; flex: 1; flex-direction: column; gap: 8px; overflow-y: auto; padding: 14px 16px; background: var(--cmux-bg); }
-.cmux-report-inbox-head { display: grid; gap: 3px; padding-bottom: 5px; border-bottom: 1px solid var(--cmux-border-hairline); }
-.cmux-report-inbox-head strong { color: var(--cmux-text); font-size: var(--cmux-font-size-md); }
-.cmux-report-inbox-head span, .cmux-report-inbox-empty { color: var(--cmux-text-secondary); font-size: var(--cmux-font-size-sm); }
-.cmux-report-inbox-fold { border: 1px solid var(--cmux-border); border-radius: var(--cmux-radius-sm); background: var(--cmux-surface); }
-.cmux-report-inbox-fold summary { padding: 7px 10px; color: var(--cmux-text-secondary); font-size: var(--cmux-font-size-sm); cursor: pointer; }
-.cmux-report-inbox-fold[open] { padding-bottom: 7px; }
-.cmux-report-machine-card { display: grid; gap: 7px; margin: 0 0 8px; border: 1px solid var(--cmux-border); border-left: 3px solid var(--status-working); border-radius: var(--cmux-radius-sm); padding: 9px 10px; background: var(--cmux-surface); }
-.cmux-report-machine-card:last-child { margin-bottom: 0; }
-.cmux-report-machine-card.is-needsReview { border-left-color: var(--status-error); }
-.cmux-report-machine-card.is-stopped { border-left-color: var(--cmux-text-tertiary); }
-.cmux-report-machine-card-head { display: flex; align-items: center; gap: 7px; color: var(--cmux-text); font-size: var(--cmux-font-size-sm); font-weight: 700; }
-.cmux-report-machine-card-head time { margin-left: auto; color: var(--cmux-text-tertiary); font-family: var(--cmux-font-mono); font-size: var(--cmux-font-size-xs); font-weight: 400; }
-.cmux-report-machine-tag { border-radius: 4px; padding: 1px 5px; background: color-mix(in srgb, var(--status-working) 22%, var(--cmux-surface)); color: var(--status-working); font-size: 10px; }
-.cmux-report-machine-detail { color: var(--cmux-text-secondary); font-size: var(--cmux-font-size-sm); line-height: 1.55; overflow-wrap: anywhere; }
-.cmux-report-machine-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.cmux-report-machine-actions label { display: inline-flex; align-items: center; gap: 5px; color: var(--cmux-text-tertiary); font-size: var(--cmux-font-size-xs); }
-.cmux-report-machine-actions select, .cmux-report-machine-actions button { border: 1px solid var(--cmux-border); border-radius: 5px; padding: 3px 6px; background: var(--cmux-popover); color: var(--cmux-text); font: inherit; font-size: var(--cmux-font-size-xs); cursor: pointer; }
-.cmux-report-machine-actions button:hover, .cmux-report-machine-actions select:hover { background: var(--cmux-hover); }
 
 .cmux-dashboard-minimap-resizer { position: relative; z-index: 1; width: 8px; min-height: 0; flex: 0 0 8px; cursor: col-resize; touch-action: none; outline: none; transition: none; }
 .cmux-dashboard-minimap-resizer::after { position: absolute; top: 0; bottom: 0; left: 3px; width: 2px; background: var(--cmux-border-hairline); content: ""; transition: none; }

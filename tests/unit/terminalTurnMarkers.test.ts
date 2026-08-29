@@ -1,3 +1,5 @@
+// @vitest-environment jsdom
+
 import { afterEach, describe, expect, it } from "vitest";
 
 // @ts-expect-error @xterm/headless@6.0.0 publishes this ESM file without colocated declarations.
@@ -26,6 +28,7 @@ import {
   snapshotTurnMarksForReset,
   TURN_MARK_PERSIST_LABEL_MAX,
   TURN_MARK_PERSIST_MAX,
+  TURN_MARKS_EVENT,
 } from "../../src/components/terminal/terminalTurnMarkers";
 
 type HeadlessTerminalConstructor = typeof import("@xterm/headless").Terminal;
@@ -76,15 +79,27 @@ describe("terminal turn markers", () => {
 
   it("drops marks whose buffer line was trimmed by scrollback overflow", async () => {
     const sessionId = "overflow";
-    const term = attach(sessionId, { cols: 20, rows: 4, scrollback: 2 });
+    const term = attach(sessionId, { cols: 20, rows: 4, scrollback: 4 });
+    const displayedTotals: number[] = [];
+    const onTurnMarks = (event: Event): void => {
+      if ((event as CustomEvent<{ sessionId?: string }>).detail?.sessionId === sessionId) {
+        displayedTotals.push(getTurnMarkData(sessionId).length);
+      }
+    };
+    window.addEventListener(TURN_MARKS_EVENT, onTurnMarks);
     await write(term, "keep\r\n");
     noteTurnSubmit(sessionId, "oldest-turn", 1_000);
-    expect(getTurnMarkData(sessionId)).toHaveLength(1);
+    await write(term, "second\r\n");
+    noteTurnSubmit(sessionId, "newest-turn", 2_000);
+    expect(getTurnMarkData(sessionId)).toHaveLength(2);
+    expect(displayedTotals.at(-1)).toBe(2);
     for (let index = 0; index < 12; index += 1) {
       await write(term, `overflow-${index}\r\n`);
     }
     expect(pruneTurnMarks(sessionId)).toHaveLength(0);
     expect(getTurnMarkData(sessionId)).toEqual([]);
+    expect(displayedTotals.at(-1)).toBe(0);
+    window.removeEventListener(TURN_MARKS_EVENT, onTurnMarks);
   });
 
   it("disposes the oldest mark when the 201st is recorded", async () => {

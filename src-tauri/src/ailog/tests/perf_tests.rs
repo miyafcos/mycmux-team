@@ -173,6 +173,7 @@ fn days_range(now_ms: i64, days: i64) -> Range {
         from: Some(to - days * day_ms),
         to: Some(to),
         preset: None,
+        anchor: None,
     }
 }
 
@@ -329,6 +330,7 @@ fn measure_live_database_reports_read_only() {
         from: None,
         to: None,
         preset: Some("30d".to_string()),
+        anchor: None,
     };
     let legacy_cost_options = query::SessionsOptions {
         sort: "cost".to_string(),
@@ -673,6 +675,7 @@ fn measure_dashboard_and_search_breakdown_read_only() {
         from: None,
         to: None,
         preset: Some("30d".to_string()),
+        anchor: None,
     };
     let (resolved, _) = current_range.resolve(now_ms);
     let search_options = query::SessionsOptions {
@@ -1020,6 +1023,7 @@ fn measure_models_report_read_only() {
         from: None,
         to: None,
         preset: Some("30d".to_string()),
+        anchor: None,
     };
     let options = query::ModelsOptions {
         granularity: "raw".to_string(),

@@ -103,6 +103,12 @@ pub struct Range {
     pub from: Option<i64>,
     pub to: Option<i64>,
     pub preset: Option<String>,
+    /// Instant a relative preset is measured back from. One screen sends the
+    /// same anchor to every report so they cover an identical window; without
+    /// it each report resolves against its own clock and lands milliseconds
+    /// apart, which the usage panels read as a period mismatch.
+    #[serde(default)]
+    pub anchor: Option<i64>,
 }
 
 /// Resolved window plus a human label describing which input won.
@@ -120,6 +126,7 @@ impl Range {
     /// `all`.
     pub fn resolve(&self, now_ms: i64) -> (ResolvedRange, String) {
         const DAY: i64 = 86_400_000;
+        let now_ms = self.anchor.unwrap_or(now_ms);
         let preset = self.preset.as_deref().unwrap_or("all");
         let (preset_from, preset_label) = match preset {
             "7d" => (Some(now_ms - 7 * DAY), "7d"),

@@ -1,4 +1,4 @@
-import { memo, type MouseEvent, useEffect, useRef, useState } from "react";
+import { memo, type MouseEvent, useCallback, useEffect, useRef, useState } from "react";
 
 import { TerminalTurnList, type TurnListRow } from "./TerminalTurnList";
 import type { TurnChipMode } from "./terminalTurnChipState";
@@ -16,6 +16,7 @@ export interface TerminalTurnChipProps {
   onJump: (markIndex: number) => void;
   onJumpLabel?: (label: string) => void;
   onListOpen: () => void;
+  onListVisibilityChange?: (open: boolean) => void;
   /** Pointer entered the chip; keeps it from auto-hiding while in use. */
   onHover?: () => void;
   leaving?: boolean;
@@ -39,6 +40,7 @@ export const TerminalTurnChip = memo(function TerminalTurnChip({
   onJump,
   onJumpLabel,
   onListOpen,
+  onListVisibilityChange,
   onHover,
   leaving = false,
   mode = "scroll",
@@ -47,9 +49,13 @@ export const TerminalTurnChip = memo(function TerminalTurnChip({
   const [isListOpen, setIsListOpen] = useState(false);
   const chipRef = useRef<HTMLDivElement>(null);
 
+  const closeList = useCallback((): void => {
+    setIsListOpen(false);
+    onListVisibilityChange?.(false);
+  }, [onListVisibilityChange]);
+
   useEffect(() => {
     if (!isListOpen) return;
-    const closeList = (): void => setIsListOpen(false);
     const onKeyDown = (event: KeyboardEvent): void => {
       if (event.key === "Escape") closeList();
     };
@@ -62,18 +68,20 @@ export const TerminalTurnChip = memo(function TerminalTurnChip({
       document.removeEventListener("keydown", onKeyDown);
       document.removeEventListener("mousedown", onMouseDown);
     };
-  }, [isListOpen]);
+  }, [closeList, isListOpen]);
 
   useEffect(() => {
-    if (leaving) setIsListOpen(false);
-  }, [leaving]);
+    if (leaving) closeList();
+  }, [closeList, leaving]);
 
   const toggleList = (): void => {
-    setIsListOpen((wasOpen) => {
-      if (wasOpen) return false;
-      onListOpen();
-      return true;
-    });
+    if (isListOpen) {
+      closeList();
+      return;
+    }
+    onListOpen();
+    onListVisibilityChange?.(true);
+    setIsListOpen(true);
   };
 
   const className = [
@@ -142,7 +150,7 @@ export const TerminalTurnChip = memo(function TerminalTurnChip({
         mode={mode}
         onJump={onJump}
         onJumpLabel={onJumpLabel}
-        onClose={() => setIsListOpen(false)}
+        onClose={closeList}
       /> : null}
     </div>
   );

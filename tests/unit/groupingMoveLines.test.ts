@@ -4,10 +4,12 @@ import {
   groupingMeasuredMoveLines,
   groupingMoveDiffs,
   groupingMoveLineColor,
+  groupingMoveLineDrawPaths,
   groupingMoveLinePath,
   groupingMoveLines,
   groupingRelativeRect,
   groupingSideBySideOrientation,
+  groupingWithinWorkspaceMoveLines,
 } from "../../src/components/layout/groupingMoveLines";
 import { WORKSPACE_COLORS } from "../../src/lib/workspaceColors";
 import type { Pane, PaneTab, Workspace } from "../../src/types/workspace";
@@ -83,6 +85,14 @@ describe("groupingMoveLines", () => {
     const before = [workspace("ws-a", [pane("a-1", [tab("same-ws")]), pane("a-2", [])])];
     const after = [workspace("ws-a", [pane("a-1", []), pane("a-2", [tab("same-ws")])])];
     expect(groupingMoveLines(before, after)).toEqual([]);
+    expect(groupingWithinWorkspaceMoveLines(before, after)).toEqual([{
+      tabId: "same-ws",
+      label: "same-ws",
+      fromWorkspaceId: "ws-a",
+      toWorkspaceId: "ws-a",
+      fromRect: null,
+      toRect: null,
+    }]);
   });
 
   it("classifies cross-workspace and within-workspace moves without reporting reorder-only or new tabs", () => {
@@ -473,6 +483,25 @@ describe("groupingMeasuredMoveLines", () => {
 });
 
 describe("grouping move geometry", () => {
+  it("exposes the exact main and lead-in paths shared by preview and execution", () => {
+    const line = {
+      tabId: "frozen",
+      label: "Frozen",
+      fromWorkspaceId: "ws-a",
+      toWorkspaceId: "ws-b",
+      fromRect: { left: 0, top: 0, width: 100, height: 20 },
+      toRect: { left: 300, top: 100, width: 20, height: 20 },
+      destinationRect: { left: 340, top: 100, width: 100, height: 20 },
+      leadIn: { left: 320, top: 100, width: 20, height: 20 },
+      routePoints: null,
+    };
+
+    expect(groupingMoveLineDrawPaths(line, "horizontal")).toEqual({
+      mainPath: "M 100 10 C 200 10 200 110 300 110",
+      leadInPath: "M 320 100 L 340 100",
+    });
+  });
+
   it("converts a viewport rect to container-relative coordinates", () => {
     expect(groupingRelativeRect(
       { left: 130, top: 70, width: 40, height: 20 },

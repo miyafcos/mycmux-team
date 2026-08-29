@@ -73,6 +73,7 @@ fn corpus_range() -> Range {
         from: Some(timestamp(1, 12)),
         to: Some(timestamp(4, 12)),
         preset: None,
+        anchor: None,
     }
 }
 
@@ -81,6 +82,7 @@ fn full_rollup_range() -> Range {
         from: Some(timestamp(2, 15)),
         to: Some(timestamp(3, 14) + 3_599_999),
         preset: None,
+        anchor: None,
     }
 }
 
@@ -246,6 +248,7 @@ fn ranges_without_a_complete_day_stay_raw() {
         from: Some(timestamp(1, 12)),
         to: Some(timestamp(2, 12)),
         preset: None,
+        anchor: None,
     };
     assert_eq!(
         query::series(

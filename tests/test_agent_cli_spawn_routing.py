@@ -42,6 +42,11 @@ def request_for_panes(argv: list[str]) -> tuple[str, dict[str, Any]]:
     return cli.request_for(namespace)
 
 
+def request_for_status(argv: list[str]) -> tuple[str, dict[str, Any]]:
+    namespace = cli.build_parser().parse_args(["status", *argv])
+    return cli.request_for(namespace)
+
+
 def request_for_move(argv: list[str]) -> tuple[str, dict[str, Any]]:
     namespace = cli.build_parser().parse_args(["move", *argv])
     return cli.request_for(namespace)
@@ -76,6 +81,76 @@ def test_panes_keeps_existing_default_route() -> None:
     assert request_for_panes([]) == ("pane.list", {})
 
 
+def test_status_routes_to_canonical_state_view() -> None:
+    assert request_for_status([]) == ("session.state_view", {})
+    assert request_for_status(["--session", PANE_SESSION_ID]) == (
+        "session.state_view",
+        {"session_id": PANE_SESSION_ID},
+    )
+
+
+def canonical_status_entry() -> dict[str, Any]:
+    return {
+        "session_id": PANE_SESSION_ID,
+        "input_revision": 5,
+        "view": {
+            "session_id": PANE_SESSION_ID,
+            "session_epoch": 7,
+            "session_revision": 11,
+            "lifecycle": "alive",
+            "activity": "idle",
+            "attention": {"attention_id": None, "kind": "none"},
+            "health": "fresh",
+        },
+        "ui_state": "idle",
+    }
+
+
+def test_status_validation_rejects_missing_duplicate_and_bad_schema() -> None:
+    valid = {"sessions": [canonical_status_entry()]}
+    assert cli.validate_status_result(valid, PANE_SESSION_ID) == valid
+    with pytest.raises(RuntimeError):
+        cli.validate_status_result({"sessions": []}, PANE_SESSION_ID)
+    with pytest.raises(RuntimeError):
+        cli.validate_status_result(
+            {"sessions": [valid["sessions"][0], valid["sessions"][0]]},
+            PANE_SESSION_ID,
+        )
+    with pytest.raises(RuntimeError):
+        cli.validate_status_result({"sessions": [{"session_id": PANE_SESSION_ID}]}, None)
+
+
+@pytest.mark.parametrize(
+    ("container", "field"),
+    [
+        ("view", "session_epoch"),
+        ("view", "session_revision"),
+        ("view", "lifecycle"),
+        ("view", "activity"),
+        ("view", "attention"),
+        ("view", "health"),
+        ("entry", "input_revision"),
+        ("entry", "ui_state"),
+    ],
+)
+def test_status_validation_rejects_incomplete_canonical_state(
+    container: str,
+    field: str,
+) -> None:
+    entry = canonical_status_entry()
+    target = entry["view"] if container == "view" else entry
+    del target[field]
+    with pytest.raises(RuntimeError, match="incomplete canonical session state"):
+        cli.validate_status_result({"sessions": [entry]}, PANE_SESSION_ID)
+
+
+def test_status_validation_rejects_incomplete_attention() -> None:
+    entry = canonical_status_entry()
+    del entry["view"]["attention"]["attention_id"]
+    with pytest.raises(RuntimeError, match="incomplete canonical session state"):
+        cli.validate_status_result({"sessions": [entry]}, PANE_SESSION_ID)
+
+
 def test_send_without_expectations_preserves_existing_args() -> None:
     assert request_for_send(
         ["--session", PANE_SESSION_ID, "--text", "yes", "--enter"]
@@ -98,6 +173,8 @@ def test_send_expectation_flags_are_additive() -> None:
             "attention-a",
             "--expect-revision",
             "11",
+            "--expect-input-revision",
+            "5",
         ]
     ) == (
         "pane.send_text",
@@ -108,6 +185,7 @@ def test_send_expectation_flags_are_additive() -> None:
             "expectedSessionEpoch": 7,
             "expectedAttentionId": "attention-a",
             "expectedSessionRevision": 11,
+            "expectedInputRevision": 5,
         },
     )
 

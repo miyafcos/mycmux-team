@@ -211,6 +211,7 @@ fn reports_are_deterministic_when_turn_storage_order_changes() {
             from: Some(0),
             to: Some(NOW),
             preset: None,
+            anchor: None,
         };
         let filters = Filters::default();
         let models = query::ModelsOptions {
@@ -260,6 +261,7 @@ fn reports_are_deterministic_when_turn_storage_order_changes() {
             from: Some(0),
             to: Some(NOW),
             preset: None,
+            anchor: None,
         },
         &Filters::default(),
         &query::ModelsOptions {
@@ -312,6 +314,7 @@ fn rework_summary_keeps_missing_rows_in_the_average_denominator() {
         from: Some(0),
         to: Some(NOW),
         preset: None,
+        anchor: None,
     };
     let overview = query::overview(&conn, &range, &Filters::default(), NOW).unwrap();
     assert_eq!(overview.totals.sessions, 3);
@@ -366,6 +369,7 @@ fn dashboard_refresh_is_faster_than_five_individual_reports() {
         from: Some(0),
         to: Some(NOW),
         preset: None,
+        anchor: None,
     };
     let filters = Filters::default();
     let legacy_started = Instant::now();
@@ -426,6 +430,7 @@ fn range_all() -> Range {
         from: Some(0),
         to: Some(NOW),
         preset: None,
+        anchor: None,
     }
 }
 

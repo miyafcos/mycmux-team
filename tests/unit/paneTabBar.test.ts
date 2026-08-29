@@ -327,9 +327,9 @@ describe("resolvePaneTabBarActions", () => {
     full: allActions,
     slim: ["publish", "split-right", "zoom", "dashboard", "close"],
     compact: ["publish", "split-right", "zoom", "dashboard", "close"],
-    compact3: ["publish", "zoom", "close"],
-    compact2: ["publish", "close"],
-    compact1: ["publish"],
+    compact3: ["split-right", "zoom", "close"],
+    compact2: ["split-right", "close"],
+    compact1: ["close"],
     micro: [],
   };
 
@@ -354,9 +354,18 @@ describe("resolvePaneTabBarActions", () => {
   }
 
   it.each(["compact3", "compact2", "compact1"] as const)(
-    "keeps publish visible in %s mode",
+    "keeps close visible in %s mode",
     (mode) => {
-      expect(resolvePaneTabBarActions(mode, { showPublish: true }).visible).toContain("publish");
+      expect(resolvePaneTabBarActions(mode, { showPublish: true }).visible).toContain("close");
+    },
+  );
+
+  it.each(["compact2", "compact1"] as const)(
+    "moves publish into the overflow before close in %s mode",
+    (mode) => {
+      const { visible, overflow } = resolvePaneTabBarActions(mode, { showPublish: true });
+      expect(overflow).toContain("publish");
+      expect(visible).not.toContain("publish");
     },
   );
 
@@ -371,10 +380,10 @@ describe("resolvePaneTabBarActions", () => {
     expect(removedPerTier).toEqual([
       ["new-tab", "split-down"],
       [],
-      ["split-right", "dashboard"],
+      ["publish", "dashboard"],
       ["zoom"],
+      ["split-right"],
       ["close"],
-      ["publish"],
     ]);
     for (let index = 1; index < visibleSets.length; index += 1) {
       expect(visibleSets[index].every((action) => visibleSets[index - 1].includes(action)))

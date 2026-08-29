@@ -20,6 +20,7 @@ import { useSavepointDragStore } from "../../stores/savepointDragStore";
 import { useUiStore } from "../../stores/uiStore";
 import TerminalPane from "./TerminalPane";
 import ErrorBoundary from "../common/ErrorBoundary";
+import WebPaneController from "./WebPaneController";
 
 const MAX_MOUNTED_WORKSPACES = 1;
 
@@ -73,6 +74,7 @@ export const TerminalGrid = memo(function TerminalGrid({
     {
       beforePaneClose(currentPane);
       for (const tab of currentPane.tabs) {
+        if (tab.type === "web") continue;
         evictTerminalCache(tab.sessionId);
         killSession(tab.sessionId).catch((err) =>
           console.warn("[mycmux] killSession failed", tab.sessionId, err),
@@ -424,6 +426,7 @@ export default memo(function WorkspaceView() {
 
   return (
     <div style={{ position: "relative", width: "100%", height: "100%" }}>
+      <WebPaneController />
       {workspaces
         .filter((ws) => ws.panes.length > 0 && visibleWorkspaceIds.has(ws.id))
         .map((ws) => {

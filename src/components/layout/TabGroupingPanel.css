@@ -747,7 +747,6 @@ button.cmux-tab-grouping-chip {
 
 .cmux-tab-grouping-body.is-locked {
   pointer-events: none;
-  opacity: 0.72;
 }
 
 .cmux-tab-grouping.is-drag-active .cmux-tab-grouping-body {
@@ -756,12 +755,6 @@ button.cmux-tab-grouping-chip {
 
 .cmux-tab-grouping.is-drag-active [data-drop-id] {
   pointer-events: auto;
-}
-
-.cmux-tab-grouping.is-applying .cmux-tab-grouping-body {
-  transform: scale(0.99);
-  opacity: 0.88;
-  transition: opacity 220ms var(--cmux-ease), transform 220ms var(--cmux-ease);
 }
 
 .cmux-tab-grouping-sidebyside {
@@ -798,6 +791,49 @@ button.cmux-tab-grouping-chip {
   inset: 0;
   overflow: visible;
   pointer-events: none;
+}
+
+.cmux-tab-grouping-flight-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  overflow: visible;
+  pointer-events: none;
+}
+
+/* Resident viewport layer for the landing flight (phase 2). Sits above the
+   overlay backdrop (1000) so proxies stay visible while the panel retires,
+   but below the topmost overlay layer (9999). */
+.cmux-grouping-flight-host {
+  position: fixed;
+  inset: 0;
+  z-index: 5000;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.cmux-tab-grouping-flight-chip {
+  position: absolute;
+  left: 0;
+  top: 0;
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  border: 1px solid color-mix(in srgb, var(--grouping-flight-color, var(--cmux-accent)) 72%, var(--cmux-border));
+  border-radius: 3px;
+  padding: 5px 7px;
+  color: var(--cmux-text);
+  background: color-mix(in srgb, var(--grouping-flight-color, var(--cmux-accent)) 22%, var(--cmux-popover));
+  box-shadow: var(--cmux-shadow-dnd-label);
+  font-size: var(--cmux-font-size-xs);
+  pointer-events: none;
+  will-change: transform, opacity;
+}
+
+.cmux-tab-grouping-flight-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .cmux-tab-grouping-line {

@@ -113,6 +113,8 @@ pub struct PaneTabConfig {
     pub label_source: Option<String>,
     #[serde(default)]
     pub r#type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preset_id: Option<String>,
     #[serde(default)]
     pub cwd: Option<String>,
     #[serde(default)]
@@ -1565,5 +1567,23 @@ mod tests {
 
         let restored: PaneTabConfig = serde_json::from_str(&serde_json::to_string(&tab).unwrap()).unwrap();
         assert_eq!(restored.turn_marks, tab.turn_marks);
+    }
+
+    #[test]
+    fn web_pane_tab_type_and_preset_round_trip() {
+        let tab: PaneTabConfig = serde_json::from_str(
+            r#"{"agent_id":"web","label":"ChatGPT","type":"web","preset_id":"chatgpt"}"#,
+        )
+        .unwrap();
+        assert_eq!(tab.r#type.as_deref(), Some("web"));
+        assert_eq!(tab.preset_id.as_deref(), Some("chatgpt"));
+
+        let serialized = serde_json::to_string(&tab).unwrap();
+        let restored: PaneTabConfig = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(restored.r#type.as_deref(), Some("web"));
+        assert_eq!(restored.preset_id.as_deref(), Some("chatgpt"));
+
+        let legacy: PaneTabConfig = serde_json::from_str(r#"{"agent_id":"shell-starter"}"#).unwrap();
+        assert!(legacy.preset_id.is_none());
     }
 }

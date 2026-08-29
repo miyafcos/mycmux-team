@@ -142,11 +142,13 @@ export function nextTurnChipVisibilityAt(input: TurnChipVisibilityInput): number
 
 export interface TurnChipVisibilityController {
   setAtBottom: (isAtBottom: boolean) => boolean;
+  /** Keep the chip visible while the history list is being used. */
+  setPinned: (pinned: boolean) => boolean;
   isVisible: () => boolean;
   /** Wheel-up or chip hover: show now and hold for TURN_CHIP_INTENT_HOLD_MS. */
   noteLookBackIntent: () => boolean;
   /** Drop leave/return/intent history. Used when the active buffer type changes. */
-  reset: () => void;
+  reset: (options?: { preserveIntent?: boolean }) => void;
   dispose: () => void;
 }
 
@@ -167,6 +169,7 @@ export function createTurnChipVisibilityController(options: {
   let lastReturnedBottomAt: number | null = null;
   let lastIntentAt: number | null = null;
   let visible = false;
+  let pinned = false;
   let timer: unknown = null;
   let disposed = false;
 
@@ -187,6 +190,7 @@ export function createTurnChipVisibilityController(options: {
 
   const armTimer = (now: number): void => {
     clearTimer();
+    if (pinned) return;
     const at = nextTurnChipVisibilityAt(snapshot(now));
     if (at == null) return;
     timer = schedule(() => {
@@ -196,7 +200,7 @@ export function createTurnChipVisibilityController(options: {
   };
 
   const sync = (emit: boolean, now = nowFn()): boolean => {
-    const next = resolveTurnChipVisibility(snapshot(now));
+    const next = pinned || resolveTurnChipVisibility(snapshot(now));
     const changed = next !== visible;
     visible = next;
     armTimer(now);
@@ -215,6 +219,11 @@ export function createTurnChipVisibilityController(options: {
       }
       return sync(false, now);
     },
+    setPinned: (nextPinned: boolean): boolean => {
+      if (disposed) return false;
+      pinned = nextPinned;
+      return sync(true);
+    },
     noteLookBackIntent: (): boolean => {
       if (disposed) return false;
       const now = nowFn();
@@ -222,14 +231,15 @@ export function createTurnChipVisibilityController(options: {
       return sync(true, now);
     },
     isVisible: (): boolean => visible,
-    reset: (): void => {
+    reset: (resetOptions = {}): void => {
       if (disposed) return;
       clearTimer();
       isAtBottom = true;
       lastLeftBottomAt = null;
       lastReturnedBottomAt = null;
-      lastIntentAt = null;
-      visible = false;
+      if (!resetOptions.preserveIntent) lastIntentAt = null;
+      visible = pinned;
+      armTimer(nowFn());
     },
     dispose: (): void => {
       disposed = true;

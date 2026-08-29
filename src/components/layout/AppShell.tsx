@@ -29,6 +29,7 @@ import { isEditableTarget } from "../../lib/keybindings";
 import { TAB_RESTORE_CLOSED_EVENT, openTabSweepInDashboard } from "./tabSweep";
 import { openDashboardForActiveSession } from "./openDashboardForTab";
 import { DashboardView } from "../dashboard/DashboardView";
+import { GroupingFlightHost } from "./GroupingFlightHost";
 import { UI_DENSITY_TOKENS, useThemeStore, type UiDensity } from "../../stores/themeStore";
 import ErrorBoundary from "../common/ErrorBoundary";
 import {
@@ -766,6 +767,7 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
         pushClosedWorkspace(ws, focusedSessionId);
         for (const pane of ws.panes) {
           for (const tab of pane.tabs) {
+            if (tab.type === "web") continue;
             evictTerminalCache(tab.sessionId);
             killSession(tab.sessionId).catch((err) =>
               console.warn("[mycmux] killSession failed", tab.sessionId, err),
@@ -774,7 +776,9 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
           }
         }
       }
-      const workspaceSessionIds = ws?.panes.flatMap((pane) => pane.tabs.map((tab) => tab.sessionId)) ?? [];
+      const workspaceSessionIds = ws?.panes.flatMap((pane) => (
+        pane.tabs.filter((tab) => tab.type !== "web").map((tab) => tab.sessionId)
+      )) ?? [];
       await removeWorkspaceScrollback(id, workspaceSessionIds).catch((err) =>
         console.warn("[mycmux] removeWorkspaceScrollback failed", id, err),
       );
@@ -1026,6 +1030,7 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
                 && !await confirmPaneClose([currentPane], "pane")) return;
               beforePaneClose(currentPane);
               for (const tab of currentPane.tabs) {
+                if (tab.type === "web") continue;
                 evictTerminalCache(tab.sessionId);
                 killSession(tab.sessionId).catch((err) =>
                   console.warn("[mycmux] killSession failed", tab.sessionId, err),
@@ -1278,14 +1283,14 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
             <CrsmPalette open={isCrsmPaletteOpen} onClose={() => setIsCrsmPaletteOpen(false)} />
           </ErrorBoundary>
           {emptyStateVariant && (
-            <div style={{ position: "absolute", inset: 0, zIndex: 45, background: "var(--cmux-bg)" }}>
+            <div data-cmux-native-webview-occluder="true" style={{ position: "absolute", inset: 0, zIndex: 45, background: "var(--cmux-bg)" }}>
               <ErrorBoundary fallback={chromeCrashFallback("ワークスペース未作成画面")}>
                 <EmptyWorkspaceState variant={emptyStateVariant} onOpenSetup={handleNewWorkspace} />
               </ErrorBoundary>
             </div>
           )}
           {showSetup && (
-            <div style={{ position: "absolute", inset: 0, zIndex: 50, background: "var(--cmux-bg)" }}>
+            <div data-cmux-native-webview-occluder="true" style={{ position: "absolute", inset: 0, zIndex: 50, background: "var(--cmux-bg)" }}>
               <ErrorBoundary fallback={chromeCrashFallback("ワークスペース作成画面")}>
                 <WorkspaceSetup onLaunch={handleLaunch} onCancel={handleCancelSetup} />
               </ErrorBoundary>
@@ -1295,6 +1300,9 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
 
         </div>
       </div>
+      {/* Resident landing-flight layer: must stay a direct child of the themed
+          root with data-cmux-overlay-root so OverlayShell isolation skips it. */}
+      <GroupingFlightHost />
     </div>
   );
 }

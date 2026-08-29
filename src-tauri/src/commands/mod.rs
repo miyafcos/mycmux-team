@@ -22,3 +22,4 @@ pub mod cli_accounts;
 pub mod attention;
 pub mod autonomy;
 pub mod workorder;
+pub mod webpane;

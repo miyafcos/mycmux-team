@@ -229,28 +229,6 @@ export const dashboardStrings = {
   sessionListExpand: "▶",
   sessionListCollapseTitle: "セッション一覧を畳む",
   sessionListExpandTitle: "セッション一覧を開く",
-  reportInboxEmpty: "まだ記録はありません",
-  reportReceiveModeLabel: "受け方",
-  reportModeImmediate: "すぐ言って",
-  reportModeBatch: "区切りでまとめて",
-  reportModeQuiet: "黙って記録",
-  reportReceiveModeForSession: (mode: "immediate" | "batch" | "quiet"): string => {
-    if (mode === "immediate") return "このセッションの受け方: すぐ言って";
-    if (mode === "quiet") return "このセッションの受け方: 黙って記録";
-    return "このセッションの受け方: 区切りでまとめて";
-  },
-  reportReceiveModeDescription: (mode: "immediate" | "batch" | "quiet"): string => {
-    if (mode === "immediate") return "届いたらすぐカードで表示します";
-    if (mode === "quiet") return "このセッションのカードを畳み、「進捗 N件を記録」として残します";
-    return "このセッションの報告を1枚にまとめます";
-  },
-  reportSummaryUnlinked: (count: number): string => `まとめ待ち ${count}件`,
-  reportQuietRecorded: (count: number): string => `進捗 ${count}件を記録`,
-  reportStateWaiting: "待機中",
-  reportStateStopped: "停止",
-  reportStateNeedsReview: "要確認",
-  reportSourceButton: "原文",
-  reportSourceUnavailable: "このタブは閉じています。閉じた後の記録も残していますが、原文へは移動できません",
   attentionTitle: "気づき",
   attentionWhyNow: "今知らせる理由",
   attentionImpact: "影響",
@@ -369,6 +347,20 @@ export const tabGroupingStrings = {
   stepEdit: "2 内容を編集",
   stepConfirm: "3 適用前確認",
   analyzing: "全ワークスペースを分析しています…",
+  // Each stage names what is happening, so the elapsed seconds read as
+  // "still working on this" rather than "nothing is happening". Repeating
+  // "分析しています" after the stage would just say the same thing twice.
+  analysisStage: (stage: "scanning" | "judging" | "validating" | "retrying"): string => ({
+    scanning: "全ワークスペースを走査中",
+    judging: "配置を判定中",
+    validating: "結果を検証中",
+    retrying: "もう一度判定中",
+  })[stage],
+  analysisProgress: (
+    stage: "scanning" | "judging" | "validating" | "retrying",
+    seconds: number,
+  ): string => `${tabGroupingStrings.analysisStage(stage)}… ${seconds}秒`,
+  analysisSlowHint: "タブが多いと1〜2分かかります",
   analyzeAgain: "再分析する",
   analyzed: "分析完了",
   unassignedTitle: "未分類",

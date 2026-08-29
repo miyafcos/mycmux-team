@@ -201,7 +201,7 @@ fn auth_disabled_by_setting(raw: Option<&str>) -> bool {
 struct SendTextExpectations {
     session_id: String,
     session_epoch: Option<u64>,
-    attention_id: Option<String>,
+    attention_id: Option<Option<String>>,
     session_revision: Option<u64>,
 }
 
@@ -248,6 +248,25 @@ fn optional_string_arg(
         .transpose()
 }
 
+fn nullable_string_arg(
+    object: &serde_json::Map<String, Value>,
+    snake_case: &str,
+    camel_case: &str,
+) -> Result<Option<Option<String>>, String> {
+    aliased_value(object, snake_case, camel_case)?
+        .map(|value| {
+            if value.is_null() {
+                Ok(None)
+            } else {
+                value
+                    .as_str()
+                    .map(|text| Some(text.to_string()))
+                    .ok_or_else(|| format!("pane.send_text {snake_case} must be a string or null"))
+            }
+        })
+        .transpose()
+}
+
 fn send_text_expectations(
     command: &str,
     args: &Value,
@@ -266,6 +285,8 @@ fn send_text_expectations(
         "expectedAttentionId",
         "expected_session_revision",
         "expectedSessionRevision",
+        "expected_input_revision",
+        "expectedInputRevision",
     ];
     if !expectation_keys.iter().any(|key| object.contains_key(*key)) {
         return Ok(None);
@@ -276,15 +297,41 @@ fn send_text_expectations(
         .ok_or_else(|| {
             "pane.send_text requires sessionId when expectations are provided".to_string()
         })?;
+    let attention_id = nullable_string_arg(
+        object,
+        "expected_attention_id",
+        "expectedAttentionId",
+    )?;
+    let session_revision = optional_u64_arg(
+        object,
+        "expected_session_revision",
+        "expectedSessionRevision",
+    )?;
+    let input_revision = optional_u64_arg(
+        object,
+        "expected_input_revision",
+        "expectedInputRevision",
+    )?;
+    let atomic_lock_fields = [
+        attention_id.is_some(),
+        session_revision.is_some(),
+        input_revision.is_some(),
+    ];
+    let atomic_lock_field_count = atomic_lock_fields
+        .iter()
+        .filter(|provided| **provided)
+        .count();
+    if atomic_lock_field_count > 0 && atomic_lock_field_count < atomic_lock_fields.len() {
+        return Err(
+            "pane.send_text requires expected attention, session revision, and input revision together"
+                .to_string(),
+        );
+    }
     Ok(Some(SendTextExpectations {
         session_id,
         session_epoch: optional_u64_arg(object, "expected_session_epoch", "expectedSessionEpoch")?,
-        attention_id: optional_string_arg(object, "expected_attention_id", "expectedAttentionId")?,
-        session_revision: optional_u64_arg(
-            object,
-            "expected_session_revision",
-            "expectedSessionRevision",
-        )?,
+        attention_id,
+        session_revision,
     }))
 }
 
@@ -308,7 +355,7 @@ fn stale_send_text_result(
     } else if expectations
         .attention_id
         .as_ref()
-        .is_some_and(|expected| current_view.attention.attention_id.as_ref() != Some(expected))
+        .is_some_and(|expected| current_view.attention.attention_id.as_ref() != expected.as_ref())
     {
         Some("attention_id")
     } else if expectations
@@ -558,10 +605,13 @@ async fn handle_connection(
                         if cmd == "session.state_view" {
                             let response = match state_view_session_id(&args) {
                                 Ok(session_id) => {
-                                    let snapshot = app
-                                        .state::<crate::AppState>()
+                                    let app_state = app.state::<crate::AppState>();
+                                    let snapshot = app_state
                                         .session_state_store
-                                        .snapshot(session_id.as_deref());
+                                        .snapshot_with_input_revisions(
+                                            session_id.as_deref(),
+                                            |id| app_state.session_manager.input_revision(id).ok(),
+                                        );
                                     SocketResponse {
                                         id,
                                         result: serde_json::to_value(snapshot).ok(),
@@ -1006,6 +1056,7 @@ mod tests {
                 "expected_session_epoch": 7,
                 "expected_attention_id": "attention-a",
                 "expected_session_revision": 11,
+                "expected_input_revision": 5,
             }),
         )
         .unwrap()
@@ -1017,12 +1068,25 @@ mod tests {
                 "expectedSessionEpoch": 7,
                 "expectedAttentionId": "attention-a",
                 "expectedSessionRevision": 11,
+                "expectedInputRevision": 5,
             }),
         )
         .unwrap()
         .unwrap();
 
         assert_eq!(snake, camel);
+        let none_attention = send_text_expectations(
+            "pane.send_text",
+            &serde_json::json!({
+                "sessionId": "session-a",
+                "expectedAttentionId": null,
+                "expectedSessionRevision": 11,
+                "expectedInputRevision": 5,
+            }),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(none_attention.attention_id, Some(None));
         assert!(send_text_expectations(
             "pane.send_text",
             &serde_json::json!({
@@ -1037,6 +1101,15 @@ mod tests {
                 "sessionId": "session-a",
                 "expected_session_epoch": 7,
                 "expectedSessionEpoch": 8,
+            }),
+        )
+        .is_err());
+        assert!(send_text_expectations(
+            "pane.send_text",
+            &serde_json::json!({
+                "sessionId": "session-a",
+                "expectedAttentionId": "attention-a",
+                "expectedSessionRevision": 11,
             }),
         )
         .is_err());
@@ -1107,7 +1180,7 @@ mod tests {
         let expected_a = SendTextExpectations {
             session_id: "session-a".to_string(),
             session_epoch: None,
-            attention_id: Some("attention-a".to_string()),
+            attention_id: Some(Some("attention-a".to_string())),
             session_revision: None,
         };
         assert_eq!(stale_send_text_result(&store, &expected_a), None);
@@ -1128,7 +1201,7 @@ mod tests {
             attention_evidence(40, 7, AttentionKind::None, None),
         );
         let expected_b = SendTextExpectations {
-            attention_id: Some("attention-b".to_string()),
+            attention_id: Some(Some("attention-b".to_string())),
             ..expected_a
         };
         let resolved = stale_send_text_result(&store, &expected_b).unwrap();

@@ -109,6 +109,16 @@
 
 ## 9. 進捗ログ (母艦の確認記録・新しい順)
 
+### 2026-08-28 10:20 — v0.58.0 配信完了 (タブ再配置の封印解除)
+
+- **feed 0.58.0 公開・検証 PASS**: 3 プラットフォーム (windows-x86_64 / -msi / -nsis) すべて 0.58.0 の URL・private URL 残存なし・署名 key-id `CC53077A2D38F2BB` が `tauri.conf.json` の pubkey と一致。稼働 exe はまだ 0.57.0 (宮崎さんが「設定 → アプリ情報 → 更新を確認」を押せば当たる)
+- **封印解除**: `TAB_GROUPING_ENTRY_ENABLED = true` (`774daa9`)。Gate 6 は 3 回かかった — 1 回目 High 2 (オーバーレイのテーマ喪失 / poison レイアウトの保存)・2 回目 High 2 (格上げ: future schema での作業消失 / Undo が tab 名・cwd を巻き戻す)・3 回目 GO。修正は `d47b8a1`
+- **母艦の介入 2 件**: (1) bridge WIP (8/24 の未コミット 7 ファイル) の退避裁定 → クリーンな tree でリリース (2) momosta レーンの Codex が投げた暴走 PowerShell (14KB の JSON を読むだけで CPU 1569 秒・5.4GB) を承認を得て kill → 空き 0.58GB → 5.85GB で Rust テストの RAM ゲートを解除。Rust 964 passed
+- **Gate 6 の収束裁定**: 3 回目の監査範囲を「H-A/H-B/H-C の閉鎖確認 + 4 スイート」に限定し新規探索を禁止。基準を動かしながら回すと収束しないため
+- 同梱: レーン B の 5 件 (#1 保全便 / #2 / #3 / #4 / #6)・data.json schema guard・ailog アーカイブルート・設定の AISET 再構成・配置図の生体化・README 全面改訂
+- **次**: v0.58.1 (bridge WIP の復元+単独監査・レーン B の #5 #7・Gate 6 台帳の Medium 6 + Low 8 + G5P-01) → レーン C (ChatGPT 連携 Phase 1・order 343 行は起草済み) → レーン D (メール 0a)
+
+
 ### 2026-08-28 07:50 — レーン A は Gate 6 監査中 (v0.58.0 の直前)・レーン B は #5/#7 を残して待機
 
 - レーン A: 22:33 UX-5 `cec0040` → 01:23 UX-5b `15e378e` → 02:15 G5-P 性能ベンチ `0d7a56e` → 03:46 **G4 実操作行列 `3b793b1`** (78 tests・production 欠陥 4 件を同便で修正) → 03:50 **G5-R 試触ビルド** (HEAD + 封印フラグ一時 true・`--profile grouping` で並行起動・34.1MB) → 宮崎さん試触 **GO** (「Go してください。ほかの開発ももろもろこめて更新いけるようにしておこう」) → 現在 **Gate 6 独立監査 (sol) 走行中**。受理後 = 封印解除の 1 行差分 (`TAB_GROUPING_ENTRY_ENABLED = true`) → v0.58.0 (レーン B の 5 件同梱) → feed。Gate 6 台帳 9 件持ち込み

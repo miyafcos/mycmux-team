@@ -23,6 +23,10 @@ export interface AilogRange {
   from?: number | null;
   to?: number | null;
   preset?: string | null;
+  /** Instant a relative preset is measured back from. Sending one keeps every
+   *  report on a screen inside the same window; without it each resolves
+   *  against its own clock and they land milliseconds apart. */
+  anchor?: number | null;
 }
 
 export interface AilogFilters {

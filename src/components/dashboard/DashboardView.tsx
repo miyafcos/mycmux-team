@@ -36,7 +36,7 @@ import { usePaneMetadataStore, useUiStore, useWorkspaceLayoutStore, useWorkspace
 import { useSessionAttentionStore } from "../../stores/sessionAttentionStore";
 import { useStallStore } from "../../stores/stallStore";
 import { useWorkOrderStore } from "../../stores/workOrderStore";
-import { connectReportInboxStatusFeed, useReportInboxStore, type MachineReportCard } from "../../stores/reportInboxStore";
+import { connectReportInboxStatusFeed, useReportInboxStore } from "../../stores/reportInboxStore";
 import { hasMountedTerminal, hasTerminalBuffer } from "../terminal/XTermWrapper";
 import {
   ASK_QUESTION_POLL_MS,
@@ -212,16 +212,9 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
   const eventsFetchedAtBySession = useLiveBriefStore((state) => state.eventsFetchedAtBySession);
   const listEventsBySession = useLiveBriefStore((state) => state.listEventsBySession);
   const reportInboxState = useReportInboxStore(useShallow((state) => ({
-    cardIds: state.cardIds,
-    cardsById: state.cardsById,
-    receiveModeBySession: state.receiveModeBySession,
     ingestLiveBriefs: state.ingestLiveBriefs,
     ingestSemanticEvents: state.ingestSemanticEvents,
-    setReceiveMode: state.setReceiveMode,
   })));
-  const reportCards = useMemo(() => reportInboxState.cardIds
-    .map((id) => reportInboxState.cardsById[id])
-    .filter((card): card is MachineReportCard => card !== undefined), [reportInboxState.cardIds, reportInboxState.cardsById]);
   const cards = useMemo(() => buildDashboardCards(workspaces, {
     metadataBySession: metadataState.metadata,
     volatileMetadataBySession: metadataState.volatileMetadata,
@@ -235,7 +228,6 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
     now,
     hasTerminalBuffer,
   }), [attentionState, briefsBySession, metadataState, now, stallsBySession, workspaces]);
-  const reportSourceSessionIds = useMemo(() => new Set(cards.map((card) => card.tab.sessionId)), [cards]);
   const minimapDisplayStateByTabId = useMemo(() => new Map(cards.map((card) => [card.tab.id, resolveDisplayState(card)] as const)), [cards]);
   const filteredCards = useMemo(() => applyDashboardFilters(cards, {
     query: viewState.query,
@@ -280,9 +272,6 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
     ? cards.find((candidate) => candidate.tab.id === activeColumnTabId) ?? null
     : null;
   const selectedSessionId = selectedCard?.tab.sessionId ?? null;
-  const highlightedReport = useMemo(() => reportCards.find((card) => (
-    card.ptySessionId === selectedSessionId && card.sourceEventId === viewState.highlightedEventId
-  )) ?? null, [reportCards, selectedSessionId, viewState.highlightedEventId]);
   const activeColumnSessionId = activeColumnCard?.tab.sessionId ?? null;
   const activeColumnEvents = activeColumnSessionId ? eventsBySession[activeColumnSessionId] : undefined;
   const activeColumnTranscriptEvents = activeColumnEvents?.length
@@ -782,12 +771,6 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
     if (viewState.query) viewState.setQuery("");
     viewState.toggleChatColumn(tabId);
   }, [viewState]);
-  const openReportSource = useCallback((report: MachineReportCard) => {
-    const target = cards.find((card) => card.tab.sessionId === report.ptySessionId);
-    if (!target) return;
-    viewState.focusChatColumn(target.tab.id);
-    viewState.setHighlightedEventId(report.sourceEventId);
-  }, [cards, viewState]);
   const cardForAttentionSession = useCallback((session: SessionRef) => cards.find((card) => (
     session.type === "pty"
       ? card.tab.sessionId === session.pty_session_id
@@ -843,11 +826,6 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
     retryWorkItem: (workOrderId: string) => workorderRetrySpawn(workOrderId).then(() => undefined),
     openWorkOrder: openAttentionWorkOrder,
   }), [answerAttentionQuestion, cardForAttentionSession, openAttentionSession, openAttentionWorkOrder, sessionForAttentionCard]);
-  const reportSessionLabel = useCallback((ptySessionId: string) => {
-    const target = cards.find((card) => card.tab.sessionId === ptySessionId);
-    if (target) return target.label;
-    return ptySessionId.length > 12 ? `${ptySessionId.slice(0, 8)}…${ptySessionId.slice(-3)}` : ptySessionId;
-  }, [cards]);
   const selectQuestion = useCallback((tabId: string, sessionId: string) => {
     viewState.focusChatColumn(tabId);
     window.requestAnimationFrame(() => document.getElementById(`dashboard-question-${sessionId}`)?.scrollIntoView({ block: "nearest" }));
@@ -1099,7 +1077,6 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
     clearDoneCount: clearableCards.length,
     onClearDone: clearDone,
     filteredSummary: filterActive ? dashboardStrings.filteredSummary(filteredCards.length, cards.length) : null,
-    reportInboxCount: reportCards.length,
     reportInboxOpen,
     onOpenReportInbox: () => viewState.toggleChatColumn(DASHBOARD_INBOX_COLUMN_ID),
     openTabIds: openSessionTabIds,
@@ -1238,26 +1215,13 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
                     <button type="button" data-dashboard-chat-column-close={slotId} className="cmux-dashboard-chat-column-close" aria-label={`${dashboardStrings.reportInboxTitle} を閉じる`} onClick={(event) => { event.stopPropagation(); closeChatColumn(index, slot); }}>×</button>
                   </header>
                   <div className="cmux-dashboard-chat-column-body" data-dashboard-inbox-column="true">
-                    <ReportInbox
-                      cards={reportCards}
-                      receiveModeBySession={reportInboxState.receiveModeBySession}
-                      sourceAvailableSessionIds={reportSourceSessionIds}
-                      onReceiveModeChange={reportInboxState.setReceiveMode}
-                      onOpenSource={openReportSource}
-                      attentionActions={attentionActions}
-                      sessionLabel={reportSessionLabel}
-                    />
+                    <ReportInbox attentionActions={attentionActions} />
                   </div>
                 </article>;
               }
               const { card } = slot;
               const events = eventsBySession[card.tab.sessionId];
               const columnEvents = events?.length ? events : listEventsBySession[card.tab.sessionId] ?? [];
-              const syntheticSource = index === activeChatColumn && highlightedReport?.syntheticSource ? {
-                eventId: highlightedReport.sourceEventId,
-                text: highlightedReport.detail,
-                at: highlightedReport.observedAt,
-              } : null;
               return <ChatColumn
                 key={card.tab.id}
                 card={card}
@@ -1271,7 +1235,7 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
                 motion={motion}
                 targetEventId={viewState.highlightedEventId}
                 targetEventRequest={viewState.highlightedEventRequest}
-                syntheticSource={syntheticSource}
+                syntheticSource={null}
                 onActivate={() => viewState.setActiveChatColumn(index)}
                 onTogglePin={() => viewState.toggleChatColumnPin(card.tab.id)}
                 onClose={() => closeChatColumn(index, slot)}

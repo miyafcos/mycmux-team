@@ -5,6 +5,7 @@ import {
   createAutoPaneNamingScheduler,
   type AutoPaneNamingDependencies,
 } from "../../src/lib/autoPaneNaming";
+import { TOAST_UNDO_DISMISS_MS } from "../../src/stores/toastStore";
 import type { NamingPaneGroup, NamingTab } from "../../src/components/layout/tabSweep";
 import type { PaneTab, Workspace } from "../../src/types";
 
@@ -154,6 +155,23 @@ describe("auto pane naming", () => {
 
     expect(deps.invokeJudge).toHaveBeenCalledTimes(1);
     expect(deps.setTabLabel).toHaveBeenCalledWith("workspace", "pane", "unnamed", "名前 unnamed", "ai");
+    expect(deps.pushToast).toHaveBeenCalledWith(
+      "タブ名を1件つけました",
+      "info",
+      expect.any(Array),
+      TOAST_UNDO_DISMISS_MS,
+      "ai-activity",
+    );
+
+    const undo = vi.mocked(deps.pushToast).mock.calls[0][2]?.[0];
+    undo?.run();
+    expect(deps.pushToast).toHaveBeenLastCalledWith(
+      "タブ名を元に戻しました",
+      "info",
+      undefined,
+      undefined,
+      "user-action",
+    );
   });
 
   it("retargets an AI-labelled tab only after its signature changes", async () => {
@@ -243,4 +261,3 @@ describe("auto pane naming", () => {
     await run;
   });
 });
-

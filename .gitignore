@@ -31,6 +31,10 @@ BridgeSpace.deb
 # AI tool directories
 .agent/
 .agents/
+# ...except the plugin marketplace shipped with the ChatGPT integration, which
+# lives under a .agents directory by the plugin format's own convention.
+!integrations/chatgpt-app/.agents/
+!integrations/chatgpt-app/.agents/**
 .claude/
 .factory/
 .kilocode/

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { OVERLAY_EXIT_MS, useDeferredUnmount } from "../../hooks/useDeferredUnmount";
+import { markGroupingInterest, startGroupingPrecomputeIfInterested } from "../../lib/groupingPrecompute";
 import { tabGroupingStrings } from "../dashboard/dashboardStrings";
 import { TAB_GROUPING_OPEN_EVENT } from "./tabGrouping";
 import { TabGroupingPanel } from "./TabGroupingPanel";
@@ -17,10 +18,15 @@ export function TabGroupingButton() {
   const [intent, setIntent] = useState<"review" | null>(null);
   const { mounted, closing } = useDeferredUnmount(open, OVERLAY_EXIT_MS);
   const openPanel = useCallback((nextIntent: "review" | null = null) => {
+    markGroupingInterest();
     setIntent(nextIntent);
     setOpen(true);
   }, []);
   const closePanel = useCallback(() => setOpen(false), []);
+
+  useEffect(() => {
+    startGroupingPrecomputeIfInterested();
+  }, []);
 
   useEffect(() => {
     const handleOpen = (event: Event) => {
