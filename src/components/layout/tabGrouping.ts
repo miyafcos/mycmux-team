@@ -125,6 +125,13 @@ export interface GroupingScanSource {
   lastOutputBySession: SessionOutputSnapshot;
   readTail: (sessionId: string, lines: number) => Promise<string[]>;
   now: number;
+  /**
+   * The local instant plan builds a scan from the stores alone, with no IPC, so
+   * it cannot know which PTYs are alive. It keeps every terminal tab instead of
+   * dropping them all: a dead tab still occupies a pane, and the AI plan that
+   * lands afterwards corrects the picture.
+   */
+  skipLivenessFilter?: boolean;
 }
 
 export interface ParseIssue {
@@ -204,7 +211,8 @@ const WARNING_CODES = new Set<GroupingWarningCode>([
   "UNCLEAR_ROLE",
   "EXISTING_WORKSPACE_CONFLICT",
 ]);
-const GROUPING_NAME = /^[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}A-Za-z0-9０-９ー・々〆〇+\s]+$/u;
+const GROUPING_NAME_CHAR = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}A-Za-z0-9０-９ー・々〆〇+\s]/u;
+const GROUPING_NAME = new RegExp(`^${GROUPING_NAME_CHAR.source}+$`, "u");
 const GENERIC_ENGLISH_WORDS = new Set([
   "fix", "build", "review", "server", "worker", "test", "debug", "update",
   "refactor", "implement", "close", "open", "move", "group", "plan", "mixed",
@@ -232,6 +240,27 @@ export function isJapaneseGroupingName(value: string, maxLength = TAB_GROUPING_N
   return !tokens.some((token) => (
     /^[A-Za-z]+$/.test(token) && GENERIC_ENGLISH_WORDS.has(token.toLowerCase())
   ));
+}
+
+/**
+ * Best-effort conversion of a raw string (a folder name, a tab label) into a
+ * name the grouping rules accept. Returns null when nothing usable survives,
+ * so callers fall back to their own naming instead of shipping a bad name.
+ */
+export function sanitizeGroupingName(value: string, maxLength = TAB_GROUPING_NAME_MAX): string | null {
+  const spaced = value.replace(/[_\-.\/]+/gu, " ");
+  const kept = [...spaced].filter((character) => GROUPING_NAME_CHAR.test(character)).join("");
+  const collapsed = kept.replace(/\s+/gu, " ").trim();
+  // A folder like "work_momosta_rika" is a real name carrying one banned
+  // generic word. Drop that token rather than the whole candidate, which would
+  // otherwise push the caller up to a meaningless parent folder ("miyaz").
+  const tokens = collapsed.split(/\s+/u).filter(Boolean);
+  const specific = tokens.filter((token) => !(
+    /^[A-Za-z]+$/.test(token) && GENERIC_ENGLISH_WORDS.has(token.toLowerCase())
+  ));
+  const candidate = (specific.length > 0 ? specific : tokens).join(" ");
+  const truncated = [...candidate].slice(0, maxLength).join("").trim();
+  return isJapaneseGroupingName(truncated, maxLength) ? truncated : null;
 }
 
 function cleanedTail(lines: readonly string[]): string[] {
@@ -406,7 +435,7 @@ export async function scanGroupingContext(
             source.processMetadata[tab.sessionId],
             source.processMetadataAvailable,
           );
-          if (isDeadReason(reason)) continue;
+          if (!source.skipLivenessFilter && isDeadReason(reason)) continue;
           let tail: string[] = [];
           try {
             tail = cleanedTail(await source.readTail(tab.sessionId, TAB_GROUPING_TAIL_LINES));

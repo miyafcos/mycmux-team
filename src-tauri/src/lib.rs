@@ -1,5 +1,6 @@
 pub mod ailog;
 mod agent_transcript;
+mod agent_state;
 mod attention;
 mod ai;
 mod cli_accounts;

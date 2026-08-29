@@ -126,7 +126,11 @@ describe("backgroundAiScheduler", () => {
     expect(judgeCalls()).toHaveLength(2);
   });
 
-  it("aborts a pending old session and discards its late result after switching", async () => {
+  it("lets a started judge finish after switching so the next visit is instant", async () => {
+    // Until 2026-08-30 switching sessions aborted the running judge: 22 of 27
+    // real runs were cancelled that way and only 5 ever produced anything.
+    // The result is keyed by session, so finishing it is what makes coming
+    // back instant.
     useSettingsStore.setState({ replyDraftSuggestionsEnabled: true });
     let resolveOld: ((value: unknown) => void) | undefined;
     mocks.invoke.mockImplementation((name: string) => {
@@ -135,12 +139,38 @@ describe("backgroundAiScheduler", () => {
     });
     observeActiveSession(target("session-a"));
     await vi.advanceTimersByTimeAsync(1_500);
-    const oldRequestId = (judgeCalls()[0]?.[1] as Record<string, unknown>).requestId;
     observeActiveSession(target("session-b"));
-    expect(mocks.invoke).toHaveBeenCalledWith("abort_next_action_judge", { requestId: oldRequestId });
+    expect(mocks.invoke).not.toHaveBeenCalledWith("abort_next_action_judge", expect.anything());
+    expect(useBackgroundAiSuggestionStore.getState().bySession["session-a"]?.status).toBe("loading");
     resolveOld?.(judgeResult("Old result"));
     await Promise.resolve();
-    expect(useBackgroundAiSuggestionStore.getState().bySession["session-a"]).toBeUndefined();
+    expect(useBackgroundAiSuggestionStore.getState().bySession["session-a"]?.status).toBe("ready");
+  });
+
+  it("runs at most two judges at once and drops the oldest waiting one", async () => {
+    useSettingsStore.setState({ replyDraftSuggestionsEnabled: true });
+    const resolvers: Array<(value: unknown) => void> = [];
+    mocks.invoke.mockImplementation((name: string) => {
+      if (name === "run_next_action_judge") return new Promise((resolve) => { resolvers.push(resolve); });
+      return Promise.resolve(true);
+    });
+    // Seven visited sessions: two run, four wait, and the oldest waiting one
+    // is dropped once the queue is full.
+    for (let index = 0; index < 7; index += 1) {
+      observeActiveSession(target(`session-${index}`, index + 1));
+      await vi.advanceTimersByTimeAsync(1_500);
+    }
+    expect(judgeCalls()).toHaveLength(2);
+    const store = () => useBackgroundAiSuggestionStore.getState().bySession;
+    expect(store()["session-0"]?.status).toBe("loading");
+    expect(store()["session-2"]).toBeUndefined();
+    expect(store()["session-6"]?.status).toBe("loading");
+
+    resolvers[0]?.(judgeResult("first"));
+    await vi.advanceTimersByTimeAsync(0);
+    // A finished judge hands its slot to the next session in the queue.
+    expect(judgeCalls()).toHaveLength(3);
+    expect(store()["session-0"]?.status).toBe("ready");
   });
 
   it("does not schedule running or question-active targets and clears loading state", async () => {

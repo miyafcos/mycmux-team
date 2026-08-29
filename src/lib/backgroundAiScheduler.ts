@@ -84,9 +84,75 @@ interface PendingRequest {
   requestId: string;
   requestKey: string;
   timer: ReturnType<typeof setTimeout> | null;
+  /** Set once the judge process has actually been asked to run. */
+  started: boolean;
 }
 
 const pendingByTarget = new Map<string, PendingRequest>();
+
+/**
+ * Measured on 2026-08-30 from ~/.mycmux/diag.log: of 27 next-action judges,
+ * 5 finished and 22 were cancelled, because switching sessions aborted the
+ * run 2-3 seconds in. A suggestion that is always thrown away is the same as
+ * no suggestion at all, so a started judge now runs to completion and its
+ * result is kept per session -- it is there the moment you come back.
+ *
+ * Letting every visited session start one at once would be the other failure,
+ * so at most two run and a short queue holds the rest; the oldest queued entry
+ * is dropped first because the newest visit is the one the person is on.
+ */
+const MAX_INFLIGHT_JUDGES = 2;
+const MAX_QUEUED_JUDGES = 4;
+
+interface QueuedJudge {
+  targetKey: string;
+  requestKey: string;
+  start: () => void;
+  drop: () => void;
+}
+
+let inflightJudges = 0;
+let judgeQueue: QueuedJudge[] = [];
+
+function isCurrent(entry: { targetKey: string; requestKey: string }): boolean {
+  return pendingByTarget.get(entry.targetKey)?.requestKey === entry.requestKey;
+}
+
+function startJudge(entry: QueuedJudge): void {
+  const pending = pendingByTarget.get(entry.targetKey);
+  if (pending) pending.started = true;
+  inflightJudges += 1;
+  entry.start();
+}
+
+function runOrQueueJudge(entry: QueuedJudge): void {
+  if (inflightJudges < MAX_INFLIGHT_JUDGES) {
+    startJudge(entry);
+    return;
+  }
+  judgeQueue.push(entry);
+  while (judgeQueue.length > MAX_QUEUED_JUDGES) {
+    const dropped = judgeQueue.shift();
+    if (dropped && isCurrent(dropped)) {
+      pendingByTarget.delete(dropped.targetKey);
+      dropped.drop();
+    }
+  }
+}
+
+function releaseJudgeSlot(): void {
+  inflightJudges = Math.max(0, inflightJudges - 1);
+  while (inflightJudges < MAX_INFLIGHT_JUDGES) {
+    const next = judgeQueue.shift();
+    if (!next) return;
+    if (!isCurrent(next)) continue;
+    startJudge(next);
+  }
+}
+
+function dropQueuedJudge(targetKey: string): void {
+  judgeQueue = judgeQueue.filter((entry) => entry.targetKey !== targetKey);
+}
 let requestSequence = 1;
 let active: ActiveSessionTarget | null = null;
 
@@ -179,6 +245,9 @@ function cancelPending(targetKey: string): void {
   if (!pending) return;
   if (pending.timer !== null) clearTimeout(pending.timer);
   pendingByTarget.delete(targetKey);
+  dropQueuedJudge(targetKey);
+  // A judge that never started holds no slot and has nothing to abort.
+  if (!pending.started) return;
   void Promise.resolve(invoke<boolean>("abort_next_action_judge", { requestId: pending.requestId })).catch(() => {});
 }
 
@@ -209,7 +278,7 @@ function scheduleActiveSession(target: ActiveSessionTarget, { force = false }: {
     return;
   }
   const requestId = `next-action-${Date.now()}-${requestSequence++}`;
-  const pending: PendingRequest = { requestId, requestKey, timer: null };
+  const pending: PendingRequest = { requestId, requestKey, timer: null, started: false };
   pendingByTarget.set(sessionId, pending);
   useBackgroundAiSuggestionStore.getState().set(sessionId, emptySuggestion("loading", requestKey));
   pending.timer = setTimeout(() => {
@@ -220,6 +289,11 @@ function scheduleActiveSession(target: ActiveSessionTarget, { force = false }: {
       useBackgroundAiSuggestionStore.getState().set(sessionId, emptySuggestion("failed", requestKey, "provider_model_mismatch"));
       return;
     }
+    runOrQueueJudge({
+      targetKey: sessionId,
+      requestKey,
+      drop: () => useBackgroundAiSuggestionStore.getState().clear(sessionId),
+      start: () => {
     void invoke<unknown>("run_next_action_judge", {
       requestId,
       sessionId,
@@ -246,6 +320,8 @@ function scheduleActiveSession(target: ActiveSessionTarget, { force = false }: {
         return;
       }
       useBackgroundAiSuggestionStore.getState().set(sessionId, emptySuggestion("failed", requestKey, failureCode));
+    }).finally(() => releaseJudgeSlot());
+      },
     });
   }, DEBOUNCE_MS);
 }
@@ -253,12 +329,9 @@ function scheduleActiveSession(target: ActiveSessionTarget, { force = false }: {
 export function observeActiveSession(target: ActiveSessionTarget | null): void {
   const previous = active;
   if (!target || target.sessionId !== previous?.sessionId) {
-    if (previous) {
-      cancelPending(previous.sessionId);
-      if (useBackgroundAiSuggestionStore.getState().bySession[previous.sessionId]?.status === "loading") {
-        useBackgroundAiSuggestionStore.getState().clear(previous.sessionId);
-      }
-    }
+    // Leaving a session no longer cancels its judge. The result is keyed by
+    // session, so finishing it turns the next visit into an instant one; the
+    // in-flight cap, not the switch, is what bounds the work.
     active = target;
     if (!target) return;
   } else {
@@ -293,7 +366,7 @@ function scheduleReportSummary(report: ReportDispatchBatch): void {
     return;
   }
   const requestId = `report-summary-${Date.now()}-${requestSequence++}`;
-  const pending: PendingRequest = { requestId, requestKey, timer: null };
+  const pending: PendingRequest = { requestId, requestKey, timer: null, started: false };
   pendingByTarget.set(targetKey, pending);
   useBackgroundAiSuggestionStore.getState().setReportSummary(batchId, emptySuggestion("loading", requestKey));
   pending.timer = setTimeout(() => {
@@ -304,6 +377,11 @@ function scheduleReportSummary(report: ReportDispatchBatch): void {
       useBackgroundAiSuggestionStore.getState().setReportSummary(batchId, emptySuggestion("failed", requestKey, "provider_model_mismatch"));
       return;
     }
+    runOrQueueJudge({
+      targetKey,
+      requestKey,
+      drop: () => useBackgroundAiSuggestionStore.getState().clearReportSummary(batchId),
+      start: () => {
     void invoke<unknown>("run_next_action_judge", {
       requestId,
       sessionId: batchId,
@@ -324,6 +402,8 @@ function scheduleReportSummary(report: ReportDispatchBatch): void {
       if (pendingByTarget.get(targetKey)?.requestKey !== requestKey) return;
       pendingByTarget.delete(targetKey);
       useBackgroundAiSuggestionStore.getState().setReportSummary(batchId, emptySuggestion("failed", requestKey, parseNextActionFailureCode(error)));
+    }).finally(() => releaseJudgeSlot());
+      },
     });
   }, DEBOUNCE_MS);
 }
@@ -359,6 +439,8 @@ useAiSettingsStore.subscribe((state, previous) => {
 
 export function __resetBackgroundAiSchedulerForTests(): void {
   for (const targetKey of [...pendingByTarget.keys()]) cancelPending(targetKey);
+  judgeQueue = [];
+  inflightJudges = 0;
   knownReportSummaryRevisions = new Map(
     Object.values(useReportInboxStore.getState().dispatchBatchesById)
       .filter((report): report is ReportDispatchBatch => report !== undefined)

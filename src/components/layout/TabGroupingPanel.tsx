@@ -70,6 +70,8 @@ import {
   type GroupingApplyAnimationStarter,
 } from "./groupingApplyAnimation";
 import { requestGroupingLandingFlight } from "./GroupingFlightHost";
+import { buildLocalGroupingAnalysis, buildLocalGroupingScan } from "./groupingLocalPlan";
+import { usePaneMetadataStore } from "../../stores/paneMetadataStore";
 import { groupingExitTangent } from "./groupingLandingFlight";
 import { useDashboardViewStore } from "../../stores/dashboardViewStore";
 import {
@@ -86,7 +88,7 @@ import "./TabGroupingPanel.css";
 export type GroupingStepId = "compare" | "edit" | "confirm";
 export type GroupingStepState = "current" | "done" | "todo" | "locked";
 type GroupingMode = GroupingStepId;
-type GroupingAnalysisFreshness = "fresh" | "soft-stale";
+type GroupingAnalysisFreshness = "fresh" | "soft-stale" | "local";
 type ConfirmView = "side-by-side" | "current" | "after" | "diff";
 type GroupingNameEditTarget =
   | { kind: "group"; groupId: string }
@@ -357,9 +359,11 @@ function groupingPreparedStatus(
   generatedAt: number,
 ): string {
   const time = groupingPreparedTime(generatedAt);
-  return freshness === "fresh"
-    ? `現在の状態・${time}に準備済み`
-    : `${time}時点の案（参考表示）`;
+  if (freshness === "fresh") return `現在の状態・${time}に準備済み`;
+  // The local plan is a real, applicable plan -- it is labelled by how it was
+  // made, not as a weaker version of the AI one.
+  if (freshness === "local") return `作業フォルダから組んだ案・${time}`;
+  return `${time}時点の案（参考表示）`;
 }
 
 function strategyLabel(strategy: GroupingPlan["strategy"]): string {
@@ -1726,10 +1730,14 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
   const edited = editSession?.plan
     ?? (selectedPlanId ? plans.find((plan) => plan.planId === selectedPlanId) ?? null : null);
   const selectedGroup = edited?.groups.find((group) => group.groupId === selectedGroupId) ?? edited?.groups[0] ?? null;
+  // Only block the plan controls while there is nothing to act on. Once a plan
+  // is on screen -- including the local instant plan built before the judge is
+  // asked -- the judge keeps running in the background and the user works.
+  const analyzingWithoutPlan = analyzing && plans.length === 0;
   const stepStates = groupingStepStates({
     mode,
     hasPlans: plans.length > 0 && Boolean(edited),
-    analyzing,
+    analyzing: analyzingWithoutPlan,
     applying,
     applied: Boolean(applied),
   });
@@ -1874,6 +1882,50 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
     setStatus(groupingPreparedStatus(freshness, generatedAt));
   }, [resetTransientUi]);
 
+  // True once the user has done anything with the plan on screen. A judge
+  // result that arrives afterwards must not silently replace their work.
+  const panelTouchedRef = useRef(false);
+  useEffect(() => {
+    panelTouchedRef.current = mode !== "compare"
+      || Boolean(applied)
+      || Object.values(editedByPlan).some(isGroupingEditDirty);
+  }, [applied, editedByPlan, mode]);
+
+  /**
+   * Show a plan derived from the stores alone (no IPC, no model) so a cold
+   * open has something real and applicable on screen immediately. Returns
+   * false when no usable local plan exists, and the caller falls back to the
+   * previous behaviour of waiting on the judge with an empty panel.
+   */
+  const showLocalPlan = useCallback(async (): Promise<boolean> => {
+    try {
+      const attentionState = useSessionAttentionStore.getState();
+      const workspaceState = useWorkspaceListStore.getState();
+      const scan = await buildLocalGroupingScan({
+        workspaces: workspaceState.workspaces,
+        metadata: usePaneMetadataStore.getState().metadata,
+        attentionByTabId: {},
+        now: Date.now(),
+      });
+      const attentionByTabId: Record<string, "waiting" | "error" | "done" | null> = {};
+      for (const tab of scan.tabs) {
+        attentionByTabId[tab.id] = attentionCategory(
+          tab.id,
+          attentionState.attentionBySession[tab.sessionId],
+          attentionState.seenAttentionByTab,
+        );
+      }
+      const analysis = buildLocalGroupingAnalysis(scan, attentionByTabId, {
+        existingWorkspaceNames: workspaceState.workspaces.map((workspace) => workspace.name),
+      });
+      if (!analysis) return false;
+      hydrateAnalysis(analysis, "local", Date.now());
+      return true;
+    } catch {
+      return false;
+    }
+  }, [hydrateAnalysis]);
+
   const analyze = useCallback(async (force = true, options?: { keepCurrent?: boolean }) => {
     cancelJudge();
     const generation = ++analyzeGenerationRef.current;
@@ -1900,6 +1952,12 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
       if (generation !== analyzeGenerationRef.current) return;
       if (produced.kind === "obsolete") {
         setStatus("状態が変わったため、もう一度分析してください");
+        return;
+      }
+      if (options?.keepCurrent && panelTouchedRef.current) {
+        // The plan on screen is the user's now. Announce the AI result instead
+        // of overwriting an edit or a confirmation they are in the middle of.
+        setStatus(tabGroupingStrings.judgeReadyKeepingCurrent);
         return;
       }
       hydrateAnalysis(produced.analysis, "fresh", produced.generatedAt);
@@ -1934,10 +1992,13 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
         else requestGroupingPrecomputeRefresh();
       }
     } else {
-      void analyze(false);
+      void (async () => {
+        const shown = await showLocalPlan();
+        await analyze(false, shown ? { keepCurrent: true } : undefined);
+      })();
     }
     return () => cancelJudge();
-  }, [analyze, cancelJudge, hydrateAnalysis, intent, open]);
+  }, [analyze, cancelJudge, hydrateAnalysis, intent, open, showLocalPlan]);
 
   useEffect(() => {
     if (!open
@@ -2533,6 +2594,7 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
                 {analyzing ? (
                   <div className="cmux-tab-grouping-note">
                     <div>{analysisProgress}</div>
+                    {analysisFreshness === "local" ? <div>{tabGroupingStrings.localPlanWhileJudging}</div> : null}
                     {analysisElapsedSeconds >= 60 ? <div>{tabGroupingStrings.analysisSlowHint}</div> : null}
                   </div>
                 ) : null}
@@ -3180,7 +3242,7 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
                 <button
                   type="button"
                   className="cmux-tab-grouping-button is-primary"
-                  disabled={resultReadOnly || !edited || analyzing || applying || Boolean(applied) || plans.length === 0 || Boolean(parseError) || editErrors.length > 0 || Boolean(displayedCompiled && !displayedCompiled.ok) || (displayedCompiled?.ok === true && displayedCompiled.transaction.expected.movedTabIds.length === 0)}
+                  disabled={resultReadOnly || !edited || analyzingWithoutPlan || applying || Boolean(applied) || plans.length === 0 || Boolean(parseError) || editErrors.length > 0 || Boolean(displayedCompiled && !displayedCompiled.ok) || (displayedCompiled?.ok === true && displayedCompiled.transaction.expected.movedTabIds.length === 0)}
                   onClick={() => enterMode("confirm")}
                 >
                   {tabGroupingStrings.confirmPlan}
@@ -3188,7 +3250,7 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
                 <button
                   type="button"
                   className="cmux-tab-grouping-button"
-                  disabled={resultReadOnly || !edited || analyzing || applying || Boolean(applied) || plans.length === 0 || Boolean(parseError)}
+                  disabled={resultReadOnly || !edited || analyzingWithoutPlan || applying || Boolean(applied) || plans.length === 0 || Boolean(parseError)}
                   onClick={() => enterMode("edit")}
                 >
                   {tabGroupingStrings.editPlan}
@@ -3198,7 +3260,7 @@ export function TabGroupingPanel({ open, visible, closing = false, intent = null
               <button
                 type="button"
                 className="cmux-tab-grouping-button is-primary"
-                disabled={resultReadOnly || !edited || analyzing || applying || Boolean(applied) || plans.length === 0 || Boolean(parseError) || editErrors.length > 0 || (mode === "confirm" && (!ticket || preparedPlan !== edited || confirmationInvalidated)) || Boolean(displayedCompiled && !displayedCompiled.ok) || (displayedCompiled?.ok === true && displayedCompiled.transaction.expected.movedTabIds.length === 0)}
+                disabled={resultReadOnly || !edited || analyzingWithoutPlan || applying || Boolean(applied) || plans.length === 0 || Boolean(parseError) || editErrors.length > 0 || (mode === "confirm" && (!ticket || preparedPlan !== edited || confirmationInvalidated)) || Boolean(displayedCompiled && !displayedCompiled.ok) || (displayedCompiled?.ok === true && displayedCompiled.transaction.expected.movedTabIds.length === 0)}
                 onClick={() => {
                   if (mode === "confirm") apply();
                   else if (nextStep) enterMode(nextStep);

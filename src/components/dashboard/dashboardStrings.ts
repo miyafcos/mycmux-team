@@ -361,6 +361,8 @@ export const tabGroupingStrings = {
     seconds: number,
   ): string => `${tabGroupingStrings.analysisStage(stage)}… ${seconds}秒`,
   analysisSlowHint: "タブが多いと1〜2分かかります",
+  judgeReadyKeepingCurrent: "AI の案ができました。いまの案を編集中なので、切り替えるときは「再分析する」を押してください。",
+  localPlanWhileJudging: "表示中の案は作業フォルダと系譜から組んだものです。このまま編集・適用できます。",
   analyzeAgain: "再分析する",
   analyzed: "分析完了",
   unassignedTitle: "未分類",
