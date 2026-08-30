@@ -170,13 +170,116 @@ Phase 1b の実装が参照する具体値。ここが曖昧なままだと受�
 
 いずれもエージェントは止めない。捨てたことは集約して1度だけ診断に出す (毎回出さない)。
 
-### pane の同一性
+### 身元 (identity) — 2026-08-30 改訂
 
-**`pane_id` はレイアウト上のペイン UUID を指す。PTY のセッション ID ではない。**
+**認証の主体は pane ではない。** 当初 `pane_id` をレイアウトの pane UUID と定めたが、Oracle の設計ゲートで却下された。理由は2つ。
 
-現状 `MYCMUX_PANE_SESSION_ID` に入っているのは `tab.sessionId` (PTY セッション ID) で、これはタブごとに変わる。起動世代はペインの再利用をまたいで判定する必要があるため、**より長寿命なペイン UUID を正とする**。
+1. **pane は配置の単位であって実行の主体ではない。** タブ移動・複数タブ・PTY の作り直しと寿命が一致しない
+2. **Rust の起動経路に pane UUID が届いていない。** 実装が2回、この地点で正しく停止した
 
-capability の発行時に、server がペイン UUID・provider・起動世代を確定して束縛する。helper には capability だけを渡し、**ペイン識別子を env で渡さない** (詐称の余地を作らないため)。
+採用する構成:
+
+```
+app_instance_id      アプリ起動ごとの乱数
+terminal_session_id  PTY の寿命を表す実行コンテナ ID (既存の session_id)
+provider             claude / codex / grok
+launch_id            エージェント1回の起動を表す非秘密 ID
+launch_generation    同じ (terminal_session_id, provider) 内の起動順
+```
+
+- **capability は `launch_id` を証明する推測不能な bearer**。`launch_id` 自体は秘密ではない
+- `pane_id` は**表示と配置のためのメタデータとして持ってよいが、認証・失効・current 判定には使わない**
+- **`pane_id` というフィールド名に session_id を入れることを禁じる。** 意味を変えるならフィールド名ごと変える
+
+### 受理の手順
+
+body に書かれた値をルーティングの根拠にしない。capability からサーバ側のレコードを引く。
+
+```
+record = capability_lookup(token)
+record が無い                                        → unauthorized
+record.app_instance != current_app_instance          → unauthorized
+current_launch[session_id, provider] != record.launch_id → stale_launch
+body を検証 → record.launch_id のイベントとしてだけ記録
+```
+
+### 投影 (projection) の分離 — ここを間違えると事故が残る
+
+古い launch の台帳に「完了」が記録されること自体は問題ではない。**それが現在の表示へ投影されることが問題**である。
+
+```
+イベント → launch_id の台帳を更新
+        → その launch_id が current のときだけ現在の表示へ投影
+```
+
+認証だけ直して投影が pane 単位の上書きなら、元の事故 (古い報告が新しいエージェントを完了扱いにする) は残る。
+
+### 未解決の前提 — Phase 1b の実装前に埋める
+
+**`create_session` はエージェント起動の境界ではない。** これは実測で確認した。
+
+- `create_session` は PTY を1つ作る API (`command` + `args` を受ける)
+- `isShellLauncher()` が示すとおり、シェルタブ (`shell` / `bash`) が存在する
+- **そのシェルの中で `claude` を手で起動し直す経路がある。この起動は Rust から見えない**
+
+したがって PTY 作成時に capability を env へ置くだけでは、同じシェル内の新旧エージェントが**同じ capability を継承する**。台帳上で世代を進めても、新しいプロセスへ新しい capability が渡らなければ意味がない。
+
+**採用: L2 — 起動ラッパー方式** (2026-08-30 宮崎さん裁定)。
+
+ラッパーは provider を exec する直前に backend から capability を取得し、それを環境に置いてから本体を起動する。
+
+```
+ランチャー / spawn
+  → ラッパー起動
+      → backend へ「この session の provider を起動する」と申告
+      → backend が起動世代を1つ進め、新しい capability を発行
+      → 環境に置いて provider を exec
+```
+
+これで**同じシェルの中でエージェントを起動し直しても、起動ごとに別の capability になる**。PTY 作成時に1回だけ置く方式では覆えなかった穴が閉じる。
+
+**差し込み口は既にある。** `src-tauri/src/launcher.sh` の冒頭で、エージェントは shell 関数として定義され `export -f` されている。
+
+```sh
+claude() { "$HOME/bin/claude.cmd" "$@"; }
+claude-codex() { "$HOME/bin/claude-codex.cmd" "$@"; }
+codex() { "$APPDATA/npm/codex.cmd" "$@"; }
+export -f claude claude-codex codex
+```
+
+`export -f` されているため、**この関数は対話シェルにも引き継がれる**。つまり**手打ちの `claude` もこの関数を通る**。ここで capability を取得してから本体を呼べば、ランチャー経由と手打ちの両方を同じ経路で捕捉できる。
+
+当初「手打ち起動は覆えない」と書いたが、実態はより良い。ただし次の条件つき:
+
+| 経路 | 捕捉 | 条件 |
+|---|---|---|
+| ランチャー経由 (bash) | ○ | 関数を通る |
+| 手打ち `claude` (bash) | ○ | `export -f` により関数を通る |
+| **PowerShell 側** | **×** | `launcher.ps1` に同等の関数定義が無い |
+| 絶対パス直叩き (`~/bin/claude.cmd`) | × | 関数を迂回する |
+
+**PowerShell 側は必ず同時に対応する。** 「ランチャーは bash / ps1 の2本あり、片方だけ直すと押せない項目ができる」という既知の教訓がそのまま当てはまる。契約テストは両方を走査すること。
+
+絶対パス直叩きは覆えないが、その場合も環境に残る古い capability のイベントとして記録されるだけで、§4.4「投影の分離」により**現在の表示は書き換えない**。事故は起きない。
+
+却下した案:
+
+| 案 | 却下理由 |
+|---|---|
+| L1 (起動を必ず backend API 経由にする) | 最も厳密だが起動経路の変更が広く及ぶ |
+| L3 (per-PTY-session に弱める) | 「同じシェル内の再起動を分離する」という目的自体を捨てることになる |
+
+### Phase 1b の受理ゲート
+
+次の5件が閉じるまで Phase 1b を PASS にしない。
+
+| ID | 内容 |
+|---|---|
+| P1B-01 | 認証主体を pane から launch/session に変更した本節が確定していること |
+| P1B-02 | `session_id` の生成・寿命・再利用規則を、コードと実機試験で証明すること |
+| P1B-03 | **ラッパー経由の起動すべてで capability が更新されることを証明すること**。同じシェル内で2回起動して別の capability になることを試験する。**bash と PowerShell の両方**で確認する |
+| P1B-04 | 古い launch のイベントが現在状態の投影を変更できないことを試験すること |
+| P1B-05 | body・拒否コード・壊れた JSON の応答を wire contract として固定すること |
 
 ## 4.5 capability の発行と失効の経路
 
@@ -184,11 +287,13 @@ capability の発行時に、server がペイン UUID・provider・起動世代�
 
 | 出来事 | 場所 | すること |
 |---|---|---|
-| ペインでエージェントを起動 | `src-tauri/src/commands/terminal.rs` の起動経路 | 起動世代を1つ進め、capability を発行し、`MYCMUX_HOOK_CAP` として**その子プロセスにだけ**渡す |
+| エージェントを起動 | **未決 (§4.4 の L1/L2/L3 を決めてから確定)** | 起動世代を1つ進め、capability を発行し、`MYCMUX_HOOK_CAP` としてその子プロセスにだけ渡す |
 | ペインを閉じる | 同ファイルの終了経路 | `DRAINING` へ移し、10秒後に `REVOKED` |
 | アプリ終了 | `lib.rs` の終了処理 | すべて `REVOKED` |
 
-**env に入れるのは capability だけ。** ペイン ID・provider・起動世代は入れない (server が capability から解決するため・§4.1)。
+**env に入れるのは capability だけ。** session ID・provider・起動世代は入れない (server が capability から解決するため・§4.4「受理の手順」)。
+
+> 注: `create_session` が起動境界にならないことが実測で判明したため、この表の「場所」は §4.4 の L1/L2/L3 の決着まで確定しない。PTY 作成時に1回置くだけでは、同じシェル内の再起動を分離できない。
 
 `MYCMUX_HOOK_CAP` は §8 の観点では**継承させてよい** (helper は孫プロセスとして起動されるため)。ただし `sanitize_launch_env` の always-strip 一覧に加えて、**新しいペインを作るときに親から漏れ継がないようにする**。既存の3リストと同じく契約テストで固定する。
 

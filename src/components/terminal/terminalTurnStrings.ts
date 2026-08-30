@@ -13,8 +13,11 @@ export const terminalTurnStrings = {
   /** Tooltip on the label button that opens the history list. */
   openList: "送った命令の一覧を開く",
   closeList: "一覧を閉じる",
-  /** Alternate-buffer hint: jumps open the dashboard chat column. */
+  /** Escape hatch from the in-pane reader to the dashboard chat column. */
   openInDashboard: "ダッシュボードで開く",
+  /** In-pane transcript panel. */
+  openPanel: "会話履歴を開く",
+  closePanel: "会話履歴を閉じる",
   listTitle: "送った命令",
   listEmpty: "このセッションで送った命令はまだありません",
   /** Rows whose buffer line was trimmed out of the scrollback. */

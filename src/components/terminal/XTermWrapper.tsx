@@ -50,16 +50,18 @@ import {
   snapshotTurnMarksForReset,
   TURN_MARKS_EVENT,
 } from "./terminalTurnMarkers";
-import { findTurnIndexForViewport, pickJumpTarget } from "./terminalTurnModel";
 import { startsAsAgentTui } from "./agentTuiDetection";
+import { TerminalTranscriptPanel } from "./TerminalTranscriptPanel";
 import {
   buildTurnListRows,
   createTurnChipVisibilityController,
   resolveTranscriptTurnAction,
   resolveTurnChipState,
+  resolveTurnJump,
   TURN_CHIP_EXIT_MS,
   viewportIsAtBottom,
   type TranscriptTurnIntent,
+  type TranscriptTurnRequestPayload,
   type TurnChipMode,
   type TurnChipVisibilityController,
   type TurnListRow,
@@ -234,11 +236,18 @@ function tabIdForSession(sessionId: string): string | null {
   return null;
 }
 
-function applyTranscriptTurn(sessionId: string, intent: TranscriptTurnIntent): boolean {
+function applyTranscriptTurnPayload(sessionId: string, payload: TranscriptTurnRequestPayload): boolean {
   const tabId = tabIdForSession(sessionId);
-  const payload = resolveTranscriptTurnAction(intent, { tabId });
-  if (!tabId || !payload) return false;
-  return useDashboardViewStore.getState().openTranscriptTurnRequest(tabId, payload);
+  if (!tabId) return false;
+  // Queue only: the in-pane transcript answers it. Leaving for the Dashboard is
+  // now something the reader asks for, not something a turn jump does to them.
+  return useDashboardViewStore.getState().queueTranscriptTurnRequest(tabId, payload);
+}
+
+function applyTranscriptTurn(sessionId: string, intent: TranscriptTurnIntent): boolean {
+  const payload = resolveTranscriptTurnAction(intent, { tabId: tabIdForSession(sessionId) });
+  if (!payload) return false;
+  return applyTranscriptTurnPayload(sessionId, payload);
 }
 
 function queueTerminalVisibilityUpdate(sessionId: string, visible: boolean): void {
@@ -653,6 +662,7 @@ export default memo(function XTermWrapper({
   const turnListRequestRef = useRef(0);
   const turnChipVisibilityRef = useRef<TurnChipVisibilityController | null>(null);
   const turnListOpenRef = useRef(false);
+  const [transcriptPanelOpen, setTranscriptPanelOpen] = useState(false);
   const turnListRetryTimerRef = useRef<number | null>(null);
   const chipWantedRef = useRef(false);
   const turnChipExitMsRef = useRef<number | null>(null);
@@ -759,42 +769,49 @@ export default memo(function XTermWrapper({
   }, [hasTurnTranscript, sessionId]);
   refreshTurnChipRef.current = refreshTurnChip;
 
-  const jumpTurn = useCallback((direction: -1 | 1) => {
-    if (lastTurnChipRef.current?.mode === "transcript") {
-      applyTranscriptTurn(sessionId, { kind: direction === -1 ? "prev" : "next" });
-      return;
-    }
+  const runTurnJump = useCallback((
+    intent: { kind: "step"; direction: -1 | 1 } | { kind: "mark"; markIndex: number },
+  ) => {
     const currentTerm = termRef.current;
-    if (!currentTerm) return;
-    const marks = getTurnMarkData(sessionId);
-    const currentIndex = lastTurnChipRef.current?.index
-      ?? findTurnIndexForViewport(marks, currentTerm.buffer.active.viewportY);
-    const target = pickJumpTarget(marks, currentIndex, direction);
-    if (!target) {
-      // Past the last turn there is no next mark; down means back to the live tail.
-      if (direction === 1) currentTerm.scrollToBottom();
-      refreshTurnChip();
+    const action = resolveTurnJump(intent, {
+      marks: getTurnMarkData(sessionId),
+      mode: lastTurnChipRef.current?.mode ?? "scroll",
+      viewportY: currentTerm?.buffer.active.viewportY ?? 0,
+      chipIndex: lastTurnChipRef.current?.index ?? null,
+      tabId: tabIdForSession(sessionId),
+    });
+    if (action.kind === "dashboard") {
+      // Nothing in the buffer to move to: read the turn here rather than
+      // sending the person to the Dashboard for it.
+      if (applyTranscriptTurnPayload(sessionId, action.payload)) setTranscriptPanelOpen(true);
       return;
     }
-    currentTerm.scrollToLine(target.line);
+    if (!currentTerm || action.kind === "none") return;
+    if (action.kind === "scroll-to-line") currentTerm.scrollToLine(action.line);
+    else currentTerm.scrollToBottom();
     refreshTurnChip();
   }, [refreshTurnChip, sessionId]);
+
+  const jumpTurn = useCallback((direction: -1 | 1) => {
+    runTurnJump({ kind: "step", direction });
+  }, [runTurnJump]);
 
   const jumpTurnToMark = useCallback((markIndex: number) => {
-    if (lastTurnChipRef.current?.mode === "transcript") return;
-    const currentTerm = termRef.current;
-    const target = getTurnMarkData(sessionId)[markIndex];
-    if (!currentTerm || !target) return;
-    currentTerm.scrollToLine(target.line);
-    refreshTurnChip();
-  }, [refreshTurnChip, sessionId]);
+    runTurnJump({ kind: "mark", markIndex });
+  }, [runTurnJump]);
 
   const jumpTurnByLabel = useCallback((label: string) => {
-    applyTranscriptTurn(sessionId, { kind: "row", label });
+    if (applyTranscriptTurn(sessionId, { kind: "row", label })) setTranscriptPanelOpen(true);
   }, [sessionId]);
 
+  const openTranscriptPanel = useCallback(() => setTranscriptPanelOpen(true), []);
+  const closeTranscriptPanel = useCallback(() => setTranscriptPanelOpen(false), []);
+
   const openTranscriptDashboard = useCallback(() => {
-    applyTranscriptTurn(sessionId, { kind: "hint" });
+    const tabId = tabIdForSession(sessionId);
+    const payload = resolveTranscriptTurnAction({ kind: "hint" }, { tabId });
+    if (!tabId || !payload) return;
+    useDashboardViewStore.getState().openTranscriptTurnRequest(tabId, payload);
   }, [sessionId]);
 
   const openTurnList = useCallback(() => {
@@ -2835,6 +2852,8 @@ export default memo(function XTermWrapper({
     refreshTurnChipRef.current();
   }, []);
 
+  useEffect(() => setTranscriptPanelOpen(false), [sessionId]);
+
   const setTurnListOpen = useCallback((open: boolean) => {
     turnListOpenRef.current = open;
     if (!open && turnListRetryTimerRef.current !== null) {
@@ -2875,7 +2894,16 @@ export default memo(function XTermWrapper({
           onHover={noteLookBackIntent}
           leaving={turnChipLeaving}
           mode={turnChip.mode}
-          onOpenDashboard={turnChip.mode === "transcript" ? openTranscriptDashboard : undefined}
+          onOpenPanel={turnChip.mode === "transcript" ? openTranscriptPanel : undefined}
+        />
+      )}
+      {transcriptPanelOpen && (
+        <TerminalTranscriptPanel
+          sessionId={sessionId}
+          tabId={tabIdForSession(sessionId)}
+          agentKind={agentKind ?? "none"}
+          onClose={closeTranscriptPanel}
+          onOpenDashboard={openTranscriptDashboard}
         />
       )}
       {isSearchOpen && (

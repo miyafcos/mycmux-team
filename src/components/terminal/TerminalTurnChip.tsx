@@ -21,7 +21,8 @@ export interface TerminalTurnChipProps {
   onHover?: () => void;
   leaving?: boolean;
   mode?: TurnChipMode;
-  onOpenDashboard?: () => void;
+  /** Opens the in-pane transcript reader (agent panes only). */
+  onOpenPanel?: () => void;
 }
 
 function keepTerminalFocus(event: MouseEvent): void {
@@ -44,7 +45,7 @@ export const TerminalTurnChip = memo(function TerminalTurnChip({
   onHover,
   leaving = false,
   mode = "scroll",
-  onOpenDashboard,
+  onOpenPanel,
 }: TerminalTurnChipProps) {
   const [isListOpen, setIsListOpen] = useState(false);
   const chipRef = useRef<HTMLDivElement>(null);
@@ -135,13 +136,14 @@ export const TerminalTurnChip = memo(function TerminalTurnChip({
           ▼
         </button>
       </span>
-      {mode === "transcript" && onOpenDashboard ? (
+      {mode === "transcript" && onOpenPanel ? (
         <button
           type="button"
           className="terminal-turn-chip__hint"
-          onClick={onOpenDashboard}
+          title={terminalTurnStrings.openPanel}
+          onClick={onOpenPanel}
         >
-          {terminalTurnStrings.openInDashboard}
+          {terminalTurnStrings.openPanel}
         </button>
       ) : null}
       {isListOpen ? <TerminalTurnList

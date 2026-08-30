@@ -1,6 +1,7 @@
 import type { TranscriptPrompt } from "../../lib/livebrief";
 import {
   findTurnIndexForViewport,
+  pickJumpTarget,
   type TurnMarkData,
 } from "./terminalTurnModel";
 
@@ -289,6 +290,63 @@ export function resolveTranscriptTurnAction(
   const label = intent.label.trim();
   if (!label) return null;
   return { kind: "label", label };
+}
+
+/**
+ * What a chip jump should actually do.
+ *
+ * The decision used to live inside the terminal component, where an agent pane
+ * ("transcript" mode) refused to scroll at all: rows that the scrollback still
+ * held were routed to the dashboard, and later fixed in the list while the
+ * handler kept returning early, so clicking such a row did nothing. Scrolling
+ * in place is right whenever a mark exists -- the dashboard is the answer only
+ * for a pane whose TUI keeps no scrollback (claude draws on the alternate
+ * screen), or for a turn the scrollback has already dropped.
+ */
+export type TurnJumpAction =
+  | { kind: "scroll-to-line"; line: number }
+  | { kind: "scroll-to-bottom" }
+  | { kind: "dashboard"; payload: TranscriptTurnRequestPayload }
+  | { kind: "none" };
+
+export function resolveTurnJump(
+  intent: { kind: "step"; direction: -1 | 1 } | { kind: "mark"; markIndex: number },
+  context: {
+    marks: readonly TurnMarkData[];
+    mode: TurnChipMode;
+    viewportY: number;
+    chipIndex?: number | null;
+    tabId: string | null;
+  },
+): TurnJumpAction {
+  const { marks, mode, viewportY, tabId } = context;
+  const transcript = mode === "transcript";
+
+  if (intent.kind === "mark") {
+    const target = marks[intent.markIndex];
+    return target ? { kind: "scroll-to-line", line: target.line } : { kind: "none" };
+  }
+
+  // No mark to move to: an agent pane can still walk its transcript in the
+  // dashboard, a plain shell has nowhere to go.
+  if (marks.length === 0) {
+    if (!transcript) return { kind: "none" };
+    const payload = resolveTranscriptTurnAction(
+      { kind: intent.direction === -1 ? "prev" : "next" },
+      { tabId },
+    );
+    return payload ? { kind: "dashboard", payload } : { kind: "none" };
+  }
+
+  // In transcript mode the chip's index is pinned to the newest turn, so the
+  // viewport is the only honest starting point for walking the scrollback.
+  const currentIndex = transcript
+    ? findTurnIndexForViewport(marks, viewportY)
+    : context.chipIndex ?? findTurnIndexForViewport(marks, viewportY);
+  const target = pickJumpTarget(marks, currentIndex, intent.direction);
+  if (target) return { kind: "scroll-to-line", line: target.line };
+  // Past the last turn there is no next mark; down means back to the live tail.
+  return intent.direction === 1 ? { kind: "scroll-to-bottom" } : { kind: "none" };
 }
 
 export function buildTurnListRows(

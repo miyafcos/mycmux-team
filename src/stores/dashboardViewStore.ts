@@ -479,6 +479,11 @@ interface DashboardViewState {
   requestUserTurnLatest: (tabId: string) => void;
   claimUserTurnRequest: (tabId: string, seq: number) => DashboardUserTurnRequest | null;
   openTranscriptTurnRequest: (tabId: string, payload: DashboardUserTurnRequestPayload) => boolean;
+  /**
+   * Queue the same turn request without opening the Dashboard, so a transcript
+   * rendered inside a terminal pane can answer it where the reader already is.
+   */
+  queueTranscriptTurnRequest: (tabId: string, payload: DashboardUserTurnRequestPayload) => boolean;
 }
 
 export const useDashboardViewStore = create<DashboardViewState>((set, get) => ({
@@ -697,6 +702,11 @@ export const useDashboardViewStore = create<DashboardViewState>((set, get) => ({
       return { userTurnRequests: rest };
     });
     return request;
+  },
+  queueTranscriptTurnRequest: (tabId, payload) => {
+    if (!tabId || !isValidUserTurnPayload(payload)) return false;
+    set((state) => queueUserTurnRequest(state, tabId, payload));
+    return true;
   },
   openTranscriptTurnRequest: (tabId, payload) => {
     let opened = false;

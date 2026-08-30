@@ -1019,6 +1019,65 @@ div:hover>.tab-close-btn {
   box-shadow: var(--cmux-shadow-dnd-strong);
 }
 
+/* The conversation history, read over the pane it belongs to. Sits above the
+   turn chip so the chip that opened it stays reachable underneath. */
+.terminal-transcript-panel {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  bottom: 8px;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  width: min(72ch, calc(100% - 32px));
+  box-sizing: border-box;
+  border: 1px solid var(--cmux-border);
+  border-radius: 6px;
+  background: var(--cmux-surface);
+  color: var(--cmux-text);
+  box-shadow: var(--cmux-shadow-menu);
+  overflow: hidden;
+}
+
+.terminal-transcript-panel__head {
+  display: flex;
+  align-items: center;
+  gap: var(--cmux-space-2);
+  padding: var(--cmux-space-2) var(--cmux-space-3);
+  border-bottom: 1px solid var(--cmux-border);
+  font-size: var(--cmux-font-size-xs);
+}
+
+.terminal-transcript-panel__title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.terminal-transcript-panel__link,
+.terminal-transcript-panel__close {
+  border: 0;
+  background: transparent;
+  color: var(--cmux-text-secondary);
+  cursor: pointer;
+  font-size: var(--cmux-font-size-xs);
+}
+
+.terminal-transcript-panel__link:hover,
+.terminal-transcript-panel__close:hover {
+  color: var(--cmux-text);
+}
+
+.terminal-transcript-panel__body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
 .terminal-turn-chip {
   position: absolute;
   top: 8px;

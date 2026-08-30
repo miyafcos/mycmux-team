@@ -130,13 +130,16 @@ describe("TerminalTurnChip", () => {
     expect(props.onJump).not.toHaveBeenCalled();
   });
 
-  it("shows the dashboard hint only in transcript mode", () => {
+  it("offers the in-pane reader, not the dashboard, only in transcript mode", () => {
+    // The chip used to hand agent panes a link out to the Dashboard. The
+    // history is now read here, and the Dashboard link lives in the reader.
     const scroll = renderToStaticMarkup(<TerminalTurnChip {...chipProps()} />);
-    expect(scroll).not.toContain(terminalTurnStrings.openInDashboard);
+    expect(scroll).not.toContain(terminalTurnStrings.openPanel);
     const transcript = renderToStaticMarkup(
-      <TerminalTurnChip {...chipProps()} mode="transcript" onOpenDashboard={() => undefined} />,
+      <TerminalTurnChip {...chipProps()} mode="transcript" onOpenPanel={() => undefined} />,
     );
-    expect(transcript).toContain(terminalTurnStrings.openInDashboard);
+    expect(transcript).toContain(terminalTurnStrings.openPanel);
+    expect(transcript).not.toContain(terminalTurnStrings.openInDashboard);
     expect(transcript).toContain("is-transcript");
     expect(transcript).toContain(terminalTurnStrings.conversationHistory);
     expect(transcript).not.toContain(terminalTurnStrings.position(1, 2));

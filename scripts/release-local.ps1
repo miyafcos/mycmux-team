@@ -242,7 +242,21 @@ function Assert-ReleaseGuards {
 
   $branch = Invoke-NativeCapture -FilePath "git" -Arguments @("rev-parse", "--abbrev-ref", "HEAD") -Label "ブランチ確認"
   if ($branch -ne "master") {
-    throw "master ブランチで実行してください (現在: $branch)。"
+    # A release may also run from a detached worktree that already contains
+    # master. That is how one session ships while another holds the main tree
+    # mid-implementation. The guarantee is unchanged: everything master has is
+    # in what we are about to build, and the clean-tree check below still runs.
+    $containsMaster = $false
+    if ($branch -eq "HEAD") {
+      # A non-zero exit is the answer here, not a failure, so this one asks git
+      # directly instead of going through the throwing helper.
+      & git merge-base --is-ancestor master HEAD 2>$null
+      $containsMaster = $LASTEXITCODE -eq 0
+    }
+    if (-not $containsMaster) {
+      throw "master ブランチ、または master を内包する worktree で実行してください (現在: $branch)。"
+    }
+    Write-Host "master を内包する worktree から実行します。"
   }
 
   $trackedStatus = Invoke-NativeCapture -FilePath "git" -Arguments @("status", "--porcelain", "--untracked-files=no") -Label "追跡ファイル確認"

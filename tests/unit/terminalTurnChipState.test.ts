@@ -8,6 +8,7 @@ import {
   resolveTranscriptTurnAction,
   resolveTurnChipState,
   resolveTurnChipVisibility,
+  resolveTurnJump,
   viewportIsAtBottom,
   TURN_CHIP_HIDE_DELAY_MS,
   TURN_CHIP_INTENT_HOLD_MS,
@@ -436,5 +437,86 @@ describe("viewportIsAtBottom", () => {
 
   it("is true for a buffer with nothing scrolled off yet", () => {
     expect(viewportIsAtBottom({ viewportY: 0, baseY: 0 })).toBe(true);
+  });
+});
+
+describe("resolveTurnJump", () => {
+  const marks = [mark(10), mark(20), mark(30)];
+
+  it("scrolls an agent pane in place instead of sending it to the dashboard", () => {
+    // The bug this pins: agent panes are permanently in transcript mode, and the
+    // handler refused to scroll there, so clicking a turn the scrollback still
+    // held did nothing at all and only the dashboard fallback ever fired.
+    expect(resolveTurnJump({ kind: "mark", markIndex: 1 }, {
+      marks,
+      mode: "transcript",
+      viewportY: 30,
+      tabId: "tab-a",
+    })).toEqual({ kind: "scroll-to-line", line: 20 });
+  });
+
+  it("walks the scrollback from the viewport in transcript mode", () => {
+    // The chip's index is pinned to the newest turn in transcript mode, so the
+    // viewport is the only honest starting point for the arrows.
+    expect(resolveTurnJump({ kind: "step", direction: -1 }, {
+      marks,
+      mode: "transcript",
+      viewportY: 30,
+      chipIndex: marks.length - 1,
+      tabId: "tab-a",
+    })).toEqual({ kind: "scroll-to-line", line: 20 });
+    expect(resolveTurnJump({ kind: "step", direction: -1 }, {
+      marks,
+      mode: "transcript",
+      viewportY: 20,
+      chipIndex: marks.length - 1,
+      tabId: "tab-a",
+    })).toEqual({ kind: "scroll-to-line", line: 10 });
+  });
+
+  it("falls back to the dashboard only when the pane keeps no scrollback", () => {
+    expect(resolveTurnJump({ kind: "step", direction: -1 }, {
+      marks: [],
+      mode: "transcript",
+      viewportY: 0,
+      tabId: "tab-a",
+    })).toEqual({ kind: "dashboard", payload: { kind: "step", delta: -1 } });
+  });
+
+  it("does nothing for a shell pane with no marks, and never opens the dashboard", () => {
+    expect(resolveTurnJump({ kind: "step", direction: 1 }, {
+      marks: [],
+      mode: "scroll",
+      viewportY: 0,
+      tabId: "tab-a",
+    })).toEqual({ kind: "none" });
+  });
+
+  it("returns to the live tail past the last turn", () => {
+    expect(resolveTurnJump({ kind: "step", direction: 1 }, {
+      marks,
+      mode: "scroll",
+      viewportY: 30,
+      chipIndex: 2,
+      tabId: "tab-a",
+    })).toEqual({ kind: "scroll-to-bottom" });
+  });
+
+  it("ignores a mark the scrollback has dropped", () => {
+    expect(resolveTurnJump({ kind: "mark", markIndex: 9 }, {
+      marks,
+      mode: "transcript",
+      viewportY: 30,
+      tabId: "tab-a",
+    })).toEqual({ kind: "none" });
+  });
+
+  it("cannot reach the dashboard without a tab", () => {
+    expect(resolveTurnJump({ kind: "step", direction: 1 }, {
+      marks: [],
+      mode: "transcript",
+      viewportY: 0,
+      tabId: null,
+    })).toEqual({ kind: "none" });
   });
 });
