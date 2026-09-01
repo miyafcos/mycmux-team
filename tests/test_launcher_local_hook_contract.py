@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 
@@ -28,3 +29,16 @@ def test_bundled_launchers_keep_local_hook_escape_hatch() -> None:
         "launcher.local.ps1",
         "src-tauri/src/launcher.ps1",
     )
+
+
+def test_bash_launcher_stays_compatible_with_macos_system_bash() -> None:
+    launcher_sh = read_repo_text("src-tauri/src/launcher.sh")
+
+    assert not re.search(
+        r"\$\{[^}\n]*,,[^}\n]*\}",
+        launcher_sh,
+    ), "src-tauri/src/launcher.sh must not use bash-4-only lowercase expansion"
+    assert not re.search(
+        r"\bread\b[^\n]*\s-t\s*[0-9]+\.[0-9]+",
+        launcher_sh,
+    ), "src-tauri/src/launcher.sh must gate fractional read timeouts behind a helper"

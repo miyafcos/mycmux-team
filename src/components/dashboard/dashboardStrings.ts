@@ -3,7 +3,7 @@
 // 表示方針: 会話の正本は livebrief の意味イベント。生端末は小さな切替で確認し、
 // 「裏」「観測外」のような断定表示は置かない (2026-08-12 段3)。
 type PrimaryActionLabel = "openSession" | "answerQuestion" | "retryWorkItem" | "reviewConflict" | "raiseBudget" | "acknowledgeGoalReached";
-type AttentionKindLabel = "agentAsked" | "workStopped" | "reportsComplete" | "completionWithoutTests" | "budgetReached" | "outOfScopeWrite" | "conflictDetected" | "goalReached" | "nextItemReady" | "workOrderStalled";
+type AttentionKindLabel = "agentAsked" | "workStopped" | "reportsComplete" | "completionWithoutTests" | "budgetReached" | "outOfScopeWrite" | "conflictDetected" | "goalReached" | "nextItemReady" | "workOrderStalled" | "sessionBoardIncident";
 
 export const dashboardStrings = {
   buttonTitle: "ダッシュボード",
@@ -117,6 +117,8 @@ export const dashboardStrings = {
   askQuestionSending: "送信中",
   askQuestionTabProgress: (done: number, total: number): string => `${done}/${total}`,
   askQuestionStopReason: (code: string): string => {
+    if (code === "superseded_launch") return "Prompt belongs to a superseded launch.";
+    if (code === "timed_out") return "Prompt timed out before the screen changed.";
     if (code === "busy") return "この質問への送信は処理中です";
     if (code === "stale_question") return "質問が変わったため送っていません";
     if (code === "null_scan") return "画面の質問を読めなかったため送っていません";
@@ -261,6 +263,7 @@ export const dashboardStrings = {
     if (kind === "conflictDetected") return "食い違いを検知";
     if (kind === "goalReached") return "完了条件を満たしました";
     if (kind === "nextItemReady") return "次の作業を始められます";
+    if (kind === "sessionBoardIncident") return "調整事項";
     return "対応をまとめました";
   },
   // 段1: 実行契約カード

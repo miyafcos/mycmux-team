@@ -492,6 +492,7 @@ pub(crate) fn sanitize_launch_env(env: &mut HashMap<String, String>) {
         "MYCMUX_ARTIFACTS_DIR",
         "MYCMUX_RUNTIME_DIR",
         "MYCMUX_TEST_PROFILE",
+        "MYCMUX_HOOK_CAP",
     ];
     const RESUME_QUARTET: &[&str] = &[
         "MYCMUX_RESUME",
@@ -831,6 +832,7 @@ pub async fn discard_session_scrollback(
 
 #[tauri::command(async)]
 pub fn kill_session(state: State<'_, AppState>, session_id: String) -> Result<(), String> {
+    state.hook_service.drain_session(&session_id);
     let session_epoch = state
         .session_manager
         .session_observation(&session_id)

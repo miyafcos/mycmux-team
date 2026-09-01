@@ -1,7 +1,101 @@
 $ErrorActionPreference = "Continue"
 
+$global:MycmuxGrokExecutable = Get-Command grok -CommandType Application,ExternalScript -ErrorAction SilentlyContinue |
+  Select-Object -First 1 -ExpandProperty Source
+
+function global:Get-MycmuxHookCapability {
+  param([Parameter(Mandatory = $true)][string]$Provider)
+  if ([string]::IsNullOrWhiteSpace($env:MYCMUX_PANE_SESSION_ID)) {
+    return $null
+  }
+  $runtimeDir = if ($env:MYCMUX_RUNTIME_DIR) { $env:MYCMUX_RUNTIME_DIR } else { Join-Path $HOME ".mycmux" }
+  try {
+    $port = [int]([System.IO.File]::ReadAllText((Join-Path $runtimeDir "mycmux.port"))).Trim()
+    $token = ([System.IO.File]::ReadAllText((Join-Path $runtimeDir "mycmux.token"))).Trim()
+    $request = @{
+      token = $token
+      cmd = "launch.issue_hook_cap"
+      args = @{
+        terminal_session_id = $env:MYCMUX_PANE_SESSION_ID
+        provider = $Provider
+      }
+    } | ConvertTo-Json -Compress -Depth 4
+    $client = [System.Net.Sockets.TcpClient]::new()
+    $client.SendTimeout = 400
+    $client.ReceiveTimeout = 400
+    $client.Connect("127.0.0.1", $port)
+    try {
+      $stream = $client.GetStream()
+      $writer = [System.IO.StreamWriter]::new($stream, [System.Text.UTF8Encoding]::new($false), 1024, $true)
+      $reader = [System.IO.StreamReader]::new($stream, [System.Text.Encoding]::UTF8, $false, 1024, $true)
+      $writer.WriteLine($request)
+      $writer.Flush()
+      $response = $reader.ReadLine() | ConvertFrom-Json -ErrorAction Stop
+      $capability = [string]$response.result.hook_cap
+      if ([string]::IsNullOrWhiteSpace($capability)) {
+        return $null
+      }
+      return $capability
+    } finally {
+      $client.Dispose()
+    }
+  } catch {
+    return $null
+  }
+}
+
+function global:Invoke-MycmuxAgentWithHook {
+  param(
+    [Parameter(Mandatory = $true)][string]$Provider,
+    [Parameter(Mandatory = $true)][string]$Executable,
+    [object[]]$AgentArgs
+  )
+  $previous = [Environment]::GetEnvironmentVariable("MYCMUX_HOOK_CAP", "Process")
+  $capability = Get-MycmuxHookCapability $Provider
+  try {
+    if ([string]::IsNullOrWhiteSpace($capability)) {
+      [Environment]::SetEnvironmentVariable("MYCMUX_HOOK_CAP", $null, "Process")
+    } else {
+      [Environment]::SetEnvironmentVariable("MYCMUX_HOOK_CAP", $capability, "Process")
+    }
+    & $Executable @AgentArgs
+  } finally {
+    [Environment]::SetEnvironmentVariable("MYCMUX_HOOK_CAP", $previous, "Process")
+  }
+}
+
+function global:claude {
+  Invoke-MycmuxAgentWithHook "claude" (Join-Path $HOME "bin\claude.cmd") @($args)
+}
+
+function global:claude-codex {
+  Invoke-MycmuxAgentWithHook "claude" (Join-Path $HOME "bin\claude-codex.cmd") @($args)
+}
+
+function global:codex {
+  Invoke-MycmuxAgentWithHook "codex" (Join-Path $env:APPDATA "npm\codex.cmd") @($args)
+}
+
+function global:grok {
+  if ([string]::IsNullOrWhiteSpace($global:MycmuxGrokExecutable)) {
+    Write-Error "grok was not found on PATH."
+    return
+  }
+  Invoke-MycmuxAgentWithHook "grok" $global:MycmuxGrokExecutable @($args)
+}
+
+if ($env:MYCMUX_HOOK_WRAPPERS_ONLY -eq "1") {
+  return
+}
+
 function Test-MycmuxCommand {
   param([Parameter(Mandatory = $true)][string]$Name)
+  switch ($Name) {
+    "claude" { return Test-Path -LiteralPath (Join-Path $HOME "bin\claude.cmd") }
+    "claude-codex" { return Test-Path -LiteralPath (Join-Path $HOME "bin\claude-codex.cmd") }
+    "codex" { return Test-Path -LiteralPath (Join-Path $env:APPDATA "npm\codex.cmd") }
+    "grok" { return -not [string]::IsNullOrWhiteSpace($global:MycmuxGrokExecutable) }
+  }
   return [bool](Get-Command $Name -ErrorAction SilentlyContinue)
 }
 

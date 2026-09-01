@@ -169,4 +169,18 @@ describe("AskUserQuestion QuestionCard", () => {
       dashboardStrings.askQuestionStopReason("read_failure"),
     );
   });
+
+  it.each(["stale_question", "timed_out"] as const)(
+    "P2-05 keeps %s visible instead of removing the card",
+    async (reason) => {
+      ingestAskQuestionLines("s-ask", fixtures.single, 1);
+      useAskQuestionStore.getState().clearScreen("s-ask", reason);
+      await renderCard();
+
+      expect(container.querySelector("[data-ask-question-session='s-ask']")).not.toBeNull();
+      expect(container.querySelector("[aria-label='AskUserQuestion stop reason']")?.textContent).toBe(
+        dashboardStrings.askQuestionStopReason(reason),
+      );
+    },
+  );
 });

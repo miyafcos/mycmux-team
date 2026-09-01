@@ -10,7 +10,7 @@ use std::sync::{
 };
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager};
-use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
@@ -33,6 +33,7 @@ const SOCKET_AUTH_ENV: &str = "MYCMUX_SOCKET_AUTH";
 /// Rejected callers usually retry in a loop and diag.log rotates at 1 MiB, so
 /// report at most one rejection per window and fold the rest into a count.
 const REJECTION_LOG_INTERVAL_MS: u64 = 60_000;
+const SOCKET_FRAME_MAX_BYTES: usize = 1024 * 1024;
 
 pub struct SocketState {
     pub pending_requests: Arc<DashMap<usize, oneshot::Sender<SocketResponse>>>,
@@ -174,6 +175,36 @@ fn take_request_token(parsed: &mut Value) -> Option<String> {
         Value::String(token) => Some(token),
         _ => None,
     }
+}
+
+fn take_hook_cap(parsed: &mut Value) -> Option<String> {
+    match parsed.as_object_mut()?.remove("hook_cap")? {
+        Value::String(capability) => Some(capability),
+        _ => None,
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum CredentialRealm {
+    Both,
+    Hook(Option<String>),
+    Broad(Option<String>),
+}
+
+fn classify_and_strip_credentials(parsed: &mut Value) -> CredentialRealm {
+    let had_token = parsed.get("token").is_some();
+    let had_hook_cap = parsed.get("hook_cap").is_some();
+    let token = take_request_token(parsed);
+    let hook_cap = take_hook_cap(parsed);
+    match (had_token, had_hook_cap) {
+        (true, true) => CredentialRealm::Both,
+        (false, true) => CredentialRealm::Hook(hook_cap),
+        _ => CredentialRealm::Broad(token),
+    }
+}
+
+fn broad_realm_forbids(command: &str) -> bool {
+    command.starts_with("hook.")
 }
 
 /// A struct (not `json!`) so the field order on the wire is the documented one:
@@ -465,6 +496,43 @@ where
     writer.flush().await
 }
 
+enum BoundedLine {
+    Eof,
+    Line(Vec<u8>),
+    TooLarge,
+}
+
+async fn read_bounded_line<R>(reader: &mut R, limit: usize) -> std::io::Result<BoundedLine>
+where
+    R: AsyncBufRead + Unpin,
+{
+    let mut line = Vec::new();
+    loop {
+        let available = reader.fill_buf().await?;
+        if available.is_empty() {
+            return if line.is_empty() {
+                Ok(BoundedLine::Eof)
+            } else {
+                Ok(BoundedLine::Line(line))
+            };
+        }
+        let newline = available.iter().position(|byte| *byte == b'\n');
+        let take = newline.map(|position| position + 1).unwrap_or(available.len());
+        if line.len().saturating_add(take) > limit {
+            reader.consume(take);
+            return Ok(BoundedLine::TooLarge);
+        }
+        line.extend_from_slice(&available[..take]);
+        reader.consume(take);
+        if newline.is_some() {
+            while matches!(line.last(), Some(b'\n' | b'\r')) {
+                line.pop();
+            }
+            return Ok(BoundedLine::Line(line));
+        }
+    }
+}
+
 async fn serve_status_connection(
     reader: BufReader<OwnedReadHalf>,
     mut writer: OwnedWriteHalf,
@@ -541,32 +609,105 @@ async fn handle_connection(
     let state = app.state::<SocketState>();
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
-    let mut line = String::new();
 
     loop {
-        line.clear();
-        match reader.read_line(&mut line).await {
-            Ok(0) => break, // Connection closed
-            Ok(_) => {
-                let trimmed = line.trim();
-                if trimmed.is_empty() {
-                    continue;
-                }
+        let line = match read_bounded_line(&mut reader, SOCKET_FRAME_MAX_BYTES).await {
+            Ok(BoundedLine::Eof) => break,
+            Ok(BoundedLine::TooLarge) => {
+                let response = crate::agent_state::HookWireResponse::rejected(
+                    0,
+                    "too_large",
+                    false,
+                );
+                let _ = write_json_line(&mut writer, &response).await;
+                return;
+            }
+            Ok(BoundedLine::Line(line)) => line,
+            Err(_) => break,
+        };
+        if line.iter().all(u8::is_ascii_whitespace) {
+            continue;
+        }
+        let mut parsed = match serde_json::from_slice::<Value>(&line) {
+            Ok(value) => value,
+            Err(_) => {
+                let response = crate::agent_state::HookWireResponse::rejected(
+                    0,
+                    "malformed",
+                    false,
+                );
+                let _ = write_json_line(&mut writer, &response).await;
+                return;
+            }
+        };
+        let request_id = parsed.get("id").and_then(Value::as_u64).unwrap_or(0);
+        let realm = classify_and_strip_credentials(&mut parsed);
 
-                if let Ok(mut parsed) = serde_json::from_str::<Value>(trimmed) {
-                    // Authenticate before anything else looks at the request,
-                    // and drop the credential from the payload either way.
-                    let provided_token = take_request_token(&mut parsed);
-                    if !auth.authorize(provided_token.as_deref()) {
-                        auth.note_rejection(
-                            peer,
-                            parsed.get("cmd").and_then(Value::as_str),
-                            provided_token.is_some(),
-                        );
-                        let _ = write_json_line(&mut writer, &unauthorized_response()).await;
-                        return;
-                    }
-                    if parsed.get("cmd").and_then(Value::as_str) == Some("status.subscribe") {
+        // The credential fields select disjoint realms. Removing both before
+        // dispatch also guarantees that neither secret reaches the frontend.
+        if realm == CredentialRealm::Both {
+            let response = crate::agent_state::HookWireResponse::rejected(
+                request_id,
+                "malformed",
+                false,
+            );
+            let _ = write_json_line(&mut writer, &response).await;
+            return;
+        }
+        if let CredentialRealm::Hook(hook_cap) = &realm {
+            let Some(hook_cap) = hook_cap.clone() else {
+                let response = crate::agent_state::HookWireResponse::rejected(
+                    request_id,
+                    "unauthorized",
+                    false,
+                );
+                let _ = write_json_line(&mut writer, &response).await;
+                return;
+            };
+            let command = parsed
+                .get("cmd")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let body = parsed
+                .as_object_mut()
+                .and_then(|object| object.remove("body"))
+                .unwrap_or_else(|| serde_json::json!({}));
+            let service = app.state::<crate::AppState>().hook_service.clone();
+            let response = service
+                .handle_hook(request_id, hook_cap, command, body)
+                .await;
+            let _ = write_json_line(&mut writer, &response).await;
+            continue;
+        }
+
+        let provided_token = match realm {
+            CredentialRealm::Broad(token) => token,
+            CredentialRealm::Both | CredentialRealm::Hook(_) => None,
+        };
+        if !auth.authorize(provided_token.as_deref()) {
+            auth.note_rejection(
+                peer,
+                parsed.get("cmd").and_then(Value::as_str),
+                provided_token.is_some(),
+            );
+            let _ = write_json_line(&mut writer, &unauthorized_response()).await;
+            return;
+        }
+        if parsed
+            .get("cmd")
+            .and_then(Value::as_str)
+            .is_some_and(broad_realm_forbids)
+        {
+            let response = crate::agent_state::HookWireResponse::rejected(
+                request_id,
+                "unauthorized",
+                false,
+            );
+            let _ = write_json_line(&mut writer, &response).await;
+            return;
+        }
+        if parsed.get("cmd").and_then(Value::as_str) == Some("status.subscribe") {
                         let request_id = parsed.get("id").and_then(Value::as_u64).unwrap_or(0);
                         let request = serde_json::from_value::<crate::status_feed::FeedRequest>(
                             parsed.clone(),
@@ -592,8 +733,8 @@ async fn handle_connection(
                             }
                         }
                         return;
-                    }
-                    if let Some(obj) = parsed.as_object_mut() {
+        }
+        if let Some(obj) = parsed.as_object_mut() {
                         let cmd = obj
                             .get("cmd")
                             .and_then(|v| v.as_str())
@@ -602,6 +743,11 @@ async fn handle_connection(
                         let args = obj.remove("args").unwrap_or(Value::Null);
 
                         let id = state.next_id.fetch_add(1, Ordering::SeqCst);
+                        if cmd == "launch.issue_hook_cap" {
+                            let response = issue_hook_capability(&app, id, &args).await;
+                            let _ = write_json_line(&mut writer, &response).await;
+                            continue;
+                        }
                         if cmd == "session.state_view" {
                             let response = match state_view_session_id(&args) {
                                 Ok(session_id) => {
@@ -680,12 +826,70 @@ async fn handle_connection(
                             let _ = writer.write_all(b"\n").await;
                             let _ = writer.flush().await;
                         }
-                    }
-                }
-            }
-            Err(_) => break,
         }
     }
+}
+
+async fn issue_hook_capability(app: &AppHandle, id: usize, args: &Value) -> SocketResponse {
+    let terminal_session_id = args
+        .get("terminal_session_id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty());
+    let provider = args
+        .get("provider")
+        .and_then(Value::as_str)
+        .and_then(crate::agent_state::parse_provider);
+    let (Some(terminal_session_id), Some(provider)) = (terminal_session_id, provider) else {
+        return SocketResponse {
+            id,
+            result: None,
+            error: Some("malformed launch.issue_hook_cap request".to_string()),
+        };
+    };
+    let state = app.state::<crate::AppState>();
+    if !state.session_manager.is_alive(terminal_session_id) {
+        return SocketResponse {
+            id,
+            result: None,
+            error: Some("terminal session is not alive".to_string()),
+        };
+    }
+    let pane_id = pane_id_from_terminal_session(terminal_session_id);
+    match state
+        .hook_service
+        .issue_capability(terminal_session_id.to_string(), provider, pane_id)
+        .await
+    {
+        Ok(grant) => SocketResponse {
+            id,
+            result: serde_json::to_value(grant).ok(),
+            error: None,
+        },
+        Err(response) => SocketResponse {
+            id,
+            result: None,
+            error: response.reason.map(str::to_string),
+        },
+    }
+}
+
+fn pane_id_from_terminal_session(session_id: &str) -> Option<String> {
+    let value = session_id.strip_prefix("pty-")?;
+    if value.len() != 36 * 3 + 2 {
+        return None;
+    }
+    let workspace = value.get(0..36)?;
+    let pane = value.get(37..73)?;
+    let tab = value.get(74..110)?;
+    if value.as_bytes().get(36) != Some(&b'-')
+        || value.as_bytes().get(73) != Some(&b'-')
+        || uuid::Uuid::parse_str(workspace).is_err()
+        || uuid::Uuid::parse_str(pane).is_err()
+        || uuid::Uuid::parse_str(tab).is_err()
+    {
+        return None;
+    }
+    Some(pane.to_string())
 }
 
 /// Directory that holds the socket discovery files (`~/.mycmux`).
@@ -1362,5 +1566,68 @@ mod tests {
         drop(lines);
         drop(writer);
         server.await.unwrap();
+    }
+
+    #[test]
+    fn credential_realms_are_exclusive_and_credentials_are_stripped() {
+        let mut both = serde_json::json!({
+            "token": "broad",
+            "hook_cap": "cap",
+            "cmd": "hook.health"
+        });
+        assert_eq!(
+            classify_and_strip_credentials(&mut both),
+            CredentialRealm::Both
+        );
+        assert!(both.get("token").is_none());
+        assert!(both.get("hook_cap").is_none());
+
+        let mut hook = serde_json::json!({
+            "hook_cap": "cap",
+            "cmd": "pane.spawn"
+        });
+        assert_eq!(
+            classify_and_strip_credentials(&mut hook),
+            CredentialRealm::Hook(Some("cap".to_string()))
+        );
+        for command in ["pane.spawn", "pane.send_text", "pane.read", "pane.close_tab"] {
+            assert!(!command.starts_with("hook."));
+        }
+
+        let mut broad = serde_json::json!({
+            "token": "broad",
+            "cmd": "hook.observe"
+        });
+        assert_eq!(
+            classify_and_strip_credentials(&mut broad),
+            CredentialRealm::Broad(Some("broad".to_string()))
+        );
+        assert!(broad_realm_forbids("hook.observe"));
+        assert!(broad_realm_forbids("hook.health"));
+    }
+
+    #[tokio::test]
+    async fn bounded_reader_rejects_two_mib_without_allocating_an_unbounded_line() {
+        let data = vec![b'x'; 2 * 1024 * 1024];
+        let mut reader = BufReader::new(data.as_slice());
+        assert!(matches!(
+            read_bounded_line(&mut reader, SOCKET_FRAME_MAX_BYTES)
+                .await
+                .unwrap(),
+            BoundedLine::TooLarge
+        ));
+    }
+
+    #[tokio::test]
+    async fn bounded_reader_preserves_invalid_utf8_for_malformed_json_rejection() {
+        let data = [0xff, b'\n'];
+        let mut reader = BufReader::new(data.as_slice());
+        let BoundedLine::Line(line) = read_bounded_line(&mut reader, SOCKET_FRAME_MAX_BYTES)
+            .await
+            .unwrap()
+        else {
+            panic!("expected one bounded line");
+        };
+        assert!(serde_json::from_slice::<Value>(&line).is_err());
     }
 }

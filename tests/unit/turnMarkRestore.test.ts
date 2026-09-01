@@ -14,6 +14,7 @@ import {
 } from "../../src/components/terminal/terminalTurnMarkers";
 import {
   __resetTurnMarkRestoreForTests,
+  restoreTurnMarksFromBufferOnJump,
   restoreTurnMarksFromTranscript,
   type TurnMarkRestoreDeps,
 } from "../../src/components/terminal/turnMarkRestore";
@@ -22,7 +23,9 @@ import {
   matchPromptsToBuffer,
   normalizeMatchText,
   promptMatchesLine,
+  scanTurnBoundaries,
 } from "../../src/components/terminal/turnMarkRestoreModel";
+import { resolveTurnJump } from "../../src/components/terminal/terminalTurnChipState";
 
 type HeadlessTerminalConstructor = typeof import("@xterm/headless").Terminal;
 type HeadlessTerminal = InstanceType<HeadlessTerminalConstructor>;
@@ -153,14 +156,84 @@ describe("turn mark restore — matching core", () => {
 });
 
 describe("turn mark restore — buffer scan", () => {
+  it("finds only non-empty user gutter lines and keeps their absolute rows", async () => {
+    const sessionId = "gutter-lines";
+    const term = attach(sessionId);
+    await redraw(term, [
+      "❯ 最初の指示",
+      "⏺ 応答は境界ではない",
+      "❯ 二番目の指示",
+      "普通の出力",
+    ]);
+
+    expect(scanTurnBoundaries(term.buffer.active)).toEqual([
+      { line: 0, label: "最初の指示" },
+      { line: 2, label: "二番目の指示" },
+    ]);
+  });
+
+  it("ignores a user gutter whose body is empty", async () => {
+    const sessionId = "empty-gutter";
+    const term = attach(sessionId);
+    await redraw(term, ["❯", "❯   ", "⏺ 応答"]);
+
+    expect(scanTurnBoundaries(term.buffer.active)).toEqual([]);
+  });
+
+  it("does not mistake Claude choice-cursor rows for user turns", async () => {
+    const sessionId = "choice-gutter";
+    const term = attach(sessionId);
+    await redraw(term, [
+      "質問です",
+      "❯ 1. Compact",
+      "  2. Detailed",
+      "❯ Submit answers",
+      "Enter to select · ↑/↓ to navigate",
+      "❯ 実際のユーザー指示",
+    ]);
+
+    expect(scanTurnBoundaries(term.buffer.active)).toEqual([
+      { line: 5, label: "実際のユーザー指示" },
+    ]);
+  });
+
+  it("does not mistake a vitest failure row for a user turn", async () => {
+    // Taken from live scrollback: running vitest in the pane leaves rows that
+    // open with the same glyph a prompt does.
+    const sessionId = "vitest-failure-row";
+    const term = attach(sessionId);
+    await redraw(term, [
+      "❯ unit tests/unit/tabGroupingLiveMock.test.ts(5tests|2failed) 71ms",
+      "❯ テストを直して",
+    ]);
+
+    // The vitest row wraps to two buffer rows, so the real prompt sits at 2.
+    expect(scanTurnBoundaries(term.buffer.active)).toEqual([
+      { line: 2, label: "テストを直して" },
+    ]);
+  });
+
+  it("keeps a numbered user prompt when no choice UI surrounds it", async () => {
+    const sessionId = "numbered-user-prompt";
+    const term = attach(sessionId);
+    await redraw(term, ["❯ 1. まず調査する", "⏺ 了解"]);
+
+    expect(scanTurnBoundaries(term.buffer.active)).toEqual([
+      { line: 0, label: "1. まず調査する" },
+    ]);
+  });
+
   it("joins xterm-wrapped rows so a long prompt is found at its head row", async () => {
     const sessionId = "wrap-join";
     const term = attach(sessionId, { cols: 12, rows: 6, scrollback: 100 });
-    await write(term, "> 折り返しの起きる長い指示文です\r\n");
+    await write(term, "❯ 折り返しの起きる長い指示文です\r\n");
     const { lines } = collectLogicalLines(term.buffer.active, 0, 1_000);
     const head = lines[0];
     expect(head?.line).toBe(0);
     expect(normalizeMatchText(head?.text ?? "")).toBe("折り返しの起きる長い指示文です");
+    expect(scanTurnBoundaries(term.buffer.active)).toEqual([
+      { line: 0, label: "折り返しの起きる長い指示文です" },
+    ]);
   });
 
   it("resumes the next chunk past a complete logical line", async () => {
@@ -172,6 +245,109 @@ describe("turn mark restore — buffer scan", () => {
     expect(first.nextRow).toBeGreaterThan(1);
     const second = collectLogicalLines(term.buffer.active, first.nextRow, 1_000);
     expect(second.lines.map((entry) => normalizeMatchText(entry.text))).toContain("二行目");
+  });
+});
+
+describe("turn mark restore — jump-time buffer fallback", () => {
+  it("turns a mark-free transcript jump into an in-pane scroll action", async () => {
+    const sessionId = "jump-scan-scroll";
+    const term = attach(sessionId);
+    await redraw(term, ["❯ 唯一の指示", "⏺ 応答"]);
+
+    const restored = restoreTurnMarksFromBufferOnJump(sessionId, term as unknown as Terminal, "transcript", {
+      now: () => 1_000,
+    });
+    const marks = getTurnMarkData(sessionId);
+    const action = resolveTurnJump({ kind: "mark", markIndex: marks.length - 1 }, {
+      marks,
+      mode: "transcript",
+      viewportY: 99,
+      tabId: "tab-jump-scan-scroll",
+    });
+
+    expect(restored).toBe(1);
+    expect(marks.map((mark) => [mark.line, mark.label])).toEqual([
+      [0, "唯一の指示"],
+    ]);
+    expect(action).toEqual({ kind: "scroll-to-line", line: 0 });
+  });
+
+  it("does not scan when the pane already has a mark", async () => {
+    const sessionId = "jump-scan-existing";
+    const term = attach(sessionId);
+    await redraw(term, ["❯ 既存の指示"]);
+    noteTurnSubmit(sessionId, "既存の指示", 1_000);
+    const scan = vi.fn(scanTurnBoundaries);
+
+    expect(restoreTurnMarksFromBufferOnJump(
+      sessionId,
+      term as unknown as Terminal,
+      "transcript",
+      { scan },
+    )).toBe(0);
+    expect(scan).not.toHaveBeenCalled();
+  });
+
+  it("leaves a plain shell jump unchanged and does not scan it", async () => {
+    const sessionId = "jump-scan-shell";
+    const term = attach(sessionId);
+    await redraw(term, ["❯ shell output"]);
+    const scan = vi.fn(scanTurnBoundaries);
+
+    restoreTurnMarksFromBufferOnJump(sessionId, term as unknown as Terminal, "scroll", { scan });
+    const action = resolveTurnJump({ kind: "step", direction: -1 }, {
+      marks: getTurnMarkData(sessionId),
+      mode: "scroll",
+      viewportY: 0,
+      tabId: "tab-jump-scan-shell",
+    });
+
+    expect(scan).not.toHaveBeenCalled();
+    expect(action).toEqual({ kind: "none" });
+  });
+
+  it("falls back to the transcript panel action when no boundary is found", async () => {
+    const sessionId = "jump-scan-panel";
+    const term = attach(sessionId);
+    await redraw(term, ["⏺ 応答だけ", "普通の出力"]);
+
+    expect(restoreTurnMarksFromBufferOnJump(
+      sessionId,
+      term as unknown as Terminal,
+      "transcript",
+    )).toBe(0);
+    expect(resolveTurnJump({ kind: "step", direction: -1 }, {
+      marks: getTurnMarkData(sessionId),
+      mode: "transcript",
+      viewportY: 0,
+      tabId: "tab-jump-scan-panel",
+    })).toEqual({ kind: "dashboard", payload: { kind: "step", delta: -1 } });
+  });
+
+  it("scans a boundary-free pane only once", async () => {
+    const sessionId = "jump-scan-once";
+    const term = attach(sessionId);
+    const scan = vi.fn(() => []);
+
+    restoreTurnMarksFromBufferOnJump(sessionId, term as unknown as Terminal, "transcript", { scan });
+    restoreTurnMarksFromBufferOnJump(sessionId, term as unknown as Terminal, "transcript", { scan });
+
+    expect(scan).toHaveBeenCalledOnce();
+  });
+
+  it("refuses to register marks against a terminal owned by another session", async () => {
+    const sessionId = "jump-scan-owner";
+    const term = attach("different-session");
+    await redraw(term, ["❯ 別セッションの指示"]);
+    const scan = vi.fn(scanTurnBoundaries);
+
+    expect(restoreTurnMarksFromBufferOnJump(
+      sessionId,
+      term as unknown as Terminal,
+      "transcript",
+      { scan },
+    )).toBe(0);
+    expect(scan).not.toHaveBeenCalled();
   });
 });
 
@@ -364,5 +540,29 @@ describe("turn mark restore — guards", () => {
     expect(report.outcome).toBe("buffer-moved");
     expect(report.restored).toBe(0);
     expect(getTurnMarkData(sessionId).map((mark) => mark.label)).toEqual([RESTORE_BOUNDARY_LABEL]);
+  });
+
+  it("does not duplicate a line already marked by the jump-time scan", async () => {
+    const sessionId = "restore-races-jump-scan";
+    const term = attach(sessionId);
+    await redraw(term, ["❯ 競合する指示", "⏺ 応答"]);
+
+    const report = await restoreTurnMarksFromTranscript(sessionId, {
+      hasRestoreBoundary: () => true,
+      fetchPrompts: async () => {
+        restoreTurnMarksFromBufferOnJump(sessionId, term as unknown as Terminal, "transcript", {
+          now: () => 1_000,
+        });
+        return [{ text: "競合する指示", occurredAt: 1 }];
+      },
+      wait: async () => {},
+      report: () => {},
+    });
+
+    expect(report.restored).toBe(0);
+    expect(report.skipped).toBe(0);
+    expect(getTurnMarkData(sessionId).map((mark) => [mark.line, mark.label])).toEqual([
+      [0, "競合する指示"],
+    ]);
   });
 });

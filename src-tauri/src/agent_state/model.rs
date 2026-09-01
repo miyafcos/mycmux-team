@@ -41,6 +41,8 @@ impl std::error::Error for IdentityError {}
 
 opaque_id!(AppInstanceId);
 opaque_id!(PaneId);
+opaque_id!(TerminalSessionId);
+opaque_id!(LaunchId);
 opaque_id!(ProviderSessionId);
 opaque_id!(SourceEventId);
 opaque_id!(PayloadHash);
@@ -192,23 +194,29 @@ impl ProviderTurnId {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct LaunchKey {
     app_instance_id: AppInstanceId,
-    pane_id: PaneId,
+    terminal_session_id: TerminalSessionId,
     provider: Provider,
+    launch_id: LaunchId,
     generation: LaunchGeneration,
+    pane_id: Option<PaneId>,
 }
 
 impl LaunchKey {
     pub fn new(
         app_instance_id: AppInstanceId,
-        pane_id: PaneId,
+        terminal_session_id: TerminalSessionId,
         provider: Provider,
+        launch_id: LaunchId,
         generation: LaunchGeneration,
+        pane_id: Option<PaneId>,
     ) -> Self {
         Self {
             app_instance_id,
-            pane_id,
+            terminal_session_id,
             provider,
+            launch_id,
             generation,
+            pane_id,
         }
     }
 
@@ -216,8 +224,16 @@ impl LaunchKey {
         &self.app_instance_id
     }
 
-    pub fn pane_id(&self) -> &PaneId {
-        &self.pane_id
+    pub fn terminal_session_id(&self) -> &TerminalSessionId {
+        &self.terminal_session_id
+    }
+
+    pub fn launch_id(&self) -> &LaunchId {
+        &self.launch_id
+    }
+
+    pub fn pane_id(&self) -> Option<&PaneId> {
+        self.pane_id.as_ref()
     }
 
     pub const fn provider(&self) -> Provider {
@@ -231,7 +247,7 @@ impl LaunchKey {
     pub(crate) fn slot(&self) -> LaunchSlot {
         LaunchSlot {
             app_instance_id: self.app_instance_id.clone(),
-            pane_id: self.pane_id.clone(),
+            terminal_session_id: self.terminal_session_id.clone(),
             provider: self.provider,
         }
     }
@@ -240,7 +256,7 @@ impl LaunchKey {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct LaunchSlot {
     pub app_instance_id: AppInstanceId,
-    pub pane_id: PaneId,
+    pub terminal_session_id: TerminalSessionId,
     pub provider: Provider,
 }
 
@@ -286,9 +302,9 @@ impl IdentityKey {
     pub fn observation_id(&self) -> String {
         stable_hash(&[
             self.launch.app_instance_id.as_str(),
-            self.launch.pane_id.as_str(),
+            self.launch.terminal_session_id.as_str(),
             self.launch.provider.as_str(),
-            &self.launch.generation.get().to_string(),
+            self.launch.launch_id.as_str(),
             self.provider_session_id.as_str(),
             &self.provider_turn_id.stable_value(),
             self.event_kind.as_str(),
@@ -298,9 +314,9 @@ impl IdentityKey {
     pub fn canonical_event_id(&self) -> String {
         stable_hash(&[
             self.launch.app_instance_id.as_str(),
-            self.launch.pane_id.as_str(),
+            self.launch.terminal_session_id.as_str(),
             self.launch.provider.as_str(),
-            &self.launch.generation.get().to_string(),
+            self.launch.launch_id.as_str(),
             self.provider_session_id.as_str(),
             &self.provider_turn_id.stable_value(),
         ])

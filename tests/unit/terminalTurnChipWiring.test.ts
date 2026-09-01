@@ -26,10 +26,18 @@ describe("XTermWrapper turn-chip lifecycle wiring", () => {
   it("routes both the arrows and the list rows through one jump decision", () => {
     // Both used to decide for themselves, and the mark handler bailed out of
     // transcript mode entirely.
-    expect(source).toContain("const action = resolveTurnJump(intent, {");
+    expect(source).toContain("const action = resolveTurnJump(resolvedIntent, {");
     expect(source).toMatch(/const jumpTurn = useCallback\(\(direction: -1 \| 1\) => \{\s*runTurnJump\(\{ kind: "step", direction \}\);/);
     expect(source).toMatch(/const jumpTurnToMark = useCallback\(\(markIndex: number\) => \{\s*runTurnJump\(\{ kind: "mark", markIndex \}\);/);
     expect(source).not.toContain('if (lastTurnChipRef.current?.mode === "transcript") return;');
+  });
+
+  it("scans a mark-free transcript buffer before resolving the same jump", () => {
+    const scan = source.indexOf("const restored = restoreTurnMarksFromBufferOnJump(sessionId, currentTerm, mode)");
+    expect(scan).toBeGreaterThan(-1);
+    expect(source.indexOf("const action = resolveTurnJump(resolvedIntent, {")).toBeGreaterThan(scan);
+    expect(source).toContain("const marks = getTurnMarkData(sessionId)");
+    expect(source).toContain('restored > 0 && intent.kind === "step" && intent.direction === -1');
   });
 
   it("keeps a turn jump inside the pane and opens the reader for it", () => {

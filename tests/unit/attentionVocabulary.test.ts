@@ -40,7 +40,7 @@ const functionSamples: Partial<Record<DashboardStringKey, readonly unknown[][]>>
   dispatchRetryFailed: [[1]],
   dispatchMode: [["plain"], ["status-request"], ["answer-forward"], ["continue"]],
   attentionActionLabel: [["openSession"], ["answerQuestion"], ["retryWorkItem"], ["reviewConflict"], ["raiseBudget"], ["acknowledgeGoalReached"]],
-  attentionKindLabel: [["agentAsked"], ["workStopped"], ["reportsComplete"], ["completionWithoutTests"], ["budgetReached"], ["outOfScopeWrite"], ["conflictDetected"], ["goalReached"], ["nextItemReady"], ["workOrderStalled"]],
+  attentionKindLabel: [["agentAsked"], ["workStopped"], ["reportsComplete"], ["completionWithoutTests"], ["budgetReached"], ["outOfScopeWrite"], ["conflictDetected"], ["goalReached"], ["nextItemReady"], ["workOrderStalled"], ["sessionBoardIncident"]],
   contractRoleMenuFor: [["agent"]],
   contractExecutionDetail: [["agent"]],
   contractReference: [["source", "event"]],

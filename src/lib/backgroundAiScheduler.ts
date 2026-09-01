@@ -104,6 +104,52 @@ const pendingByTarget = new Map<string, PendingRequest>();
 const MAX_INFLIGHT_JUDGES = 2;
 const MAX_QUEUED_JUDGES = 4;
 
+/**
+ * Not cancelling made a revisited session instant, but the first visit still
+ * waits the 30-80s the judge takes. Sessions already on screen and already
+ * idle are the ones worth having ready before they are opened.
+ *
+ * Each one costs a real judge run, so this is bounded twice: the concurrency
+ * cap above, and a per-day count so an idle machine cannot spend the day
+ * generating suggestions nobody reads. The active session never draws from the
+ * budget -- someone is waiting for that one.
+ */
+const AHEAD_DAILY_LIMIT = 12;
+const AHEAD_STORAGE_KEY = "mycmux.nextAction.aheadBudget.v1";
+
+function localDay(now: number): string {
+  const date = new Date(now);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+let aheadBudget = { day: "", count: 0 };
+
+function readAheadBudget(): { day: string; count: number } {
+  const day = localDay(Date.now());
+  if (aheadBudget.day !== day) aheadBudget = { day, count: 0 };
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(AHEAD_STORAGE_KEY) ?? "null") as { day?: string; count?: number } | null;
+    if (parsed?.day === day && Number.isInteger(parsed.count) && (parsed.count ?? -1) >= 0) {
+      aheadBudget.count = Math.max(aheadBudget.count, parsed.count as number);
+    }
+  } catch {
+    // A malformed record just starts the day over.
+  }
+  return { ...aheadBudget };
+}
+
+function takeAheadBudget(): boolean {
+  const budget = readAheadBudget();
+  if (budget.count >= AHEAD_DAILY_LIMIT) return false;
+  aheadBudget = { day: budget.day, count: budget.count + 1 };
+  try {
+    window.localStorage.setItem(AHEAD_STORAGE_KEY, JSON.stringify(aheadBudget));
+  } catch {
+    // Client-local budgets are best-effort in restricted WebViews.
+  }
+  return true;
+}
+
 interface QueuedJudge {
   targetKey: string;
   requestKey: string;
@@ -255,7 +301,10 @@ function isActiveSessionEligible(target: ActiveSessionTarget): boolean {
   return !target.questionActive && ["done", "acknowledged", "idle", "noUpdate", "error"].includes(target.displayState);
 }
 
-function scheduleActiveSession(target: ActiveSessionTarget, { force = false }: { force?: boolean } = {}): void {
+function scheduleActiveSession(
+  target: ActiveSessionTarget,
+  { force = false, ahead = false }: { force?: boolean; ahead?: boolean } = {},
+): void {
   const { sessionId } = target;
   if (!isEnabled()) {
     cancelPending(sessionId);
@@ -277,6 +326,7 @@ function scheduleActiveSession(target: ActiveSessionTarget, { force = false }: {
     useBackgroundAiSuggestionStore.getState().set(sessionId, emptySuggestion("failed", requestKey, "provider_model_mismatch"));
     return;
   }
+  if (ahead && !takeAheadBudget()) return;
   const requestId = `next-action-${Date.now()}-${requestSequence++}`;
   const pending: PendingRequest = { requestId, requestKey, timer: null, started: false };
   pendingByTarget.set(sessionId, pending);
@@ -338,6 +388,22 @@ export function observeActiveSession(target: ActiveSessionTarget | null): void {
     active = target;
   }
   scheduleActiveSession(target);
+}
+
+/**
+ * Sessions the reader can see but has not opened. Anything already ready,
+ * loading or ineligible is skipped, so this only ever adds work for a session
+ * that would otherwise make them wait on arrival.
+ */
+export function observeAheadSessions(targets: readonly ActiveSessionTarget[]): void {
+  if (!isEnabled()) return;
+  for (const target of targets) {
+    if (target.sessionId === active?.sessionId) continue;
+    if (!isActiveSessionEligible(target)) continue;
+    if (pendingByTarget.has(target.sessionId)) continue;
+    if (useBackgroundAiSuggestionStore.getState().bySession[target.sessionId]) continue;
+    scheduleActiveSession(target, { ahead: true });
+  }
 }
 
 export function retryActiveSession(): void {
@@ -441,6 +507,12 @@ export function __resetBackgroundAiSchedulerForTests(): void {
   for (const targetKey of [...pendingByTarget.keys()]) cancelPending(targetKey);
   judgeQueue = [];
   inflightJudges = 0;
+  aheadBudget = { day: "", count: 0 };
+  try {
+    window.localStorage.removeItem(AHEAD_STORAGE_KEY);
+  } catch {
+    // Nothing to clean up when storage is unavailable.
+  }
   knownReportSummaryRevisions = new Map(
     Object.values(useReportInboxStore.getState().dispatchBatchesById)
       .filter((report): report is ReportDispatchBatch => report !== undefined)

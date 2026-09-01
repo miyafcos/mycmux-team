@@ -10,9 +10,11 @@ use super::*;
 fn launch(pane: &str, generation: u64) -> LaunchKey {
     LaunchKey::new(
         AppInstanceId::try_new("app-a").unwrap(),
-        PaneId::try_new(pane).unwrap(),
+        TerminalSessionId::try_new(format!("terminal-{pane}")).unwrap(),
         Provider::Codex,
+        LaunchId::try_new(format!("launch-{pane}-{generation}")).unwrap(),
         LaunchGeneration::new(generation),
+        Some(PaneId::try_new(pane).unwrap()),
     )
 }
 

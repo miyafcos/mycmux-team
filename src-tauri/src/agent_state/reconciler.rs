@@ -94,7 +94,7 @@ impl Reconciler {
         Some(ProviderTurnId::Synthetic(runtime.next_synthetic_turn))
     }
 
-    pub fn mark_pane_closed(&mut self, launch: &LaunchKey, at: MonotonicTime) -> bool {
+    pub fn mark_session_closed(&mut self, launch: &LaunchKey, at: MonotonicTime) -> bool {
         let Some(runtime) = self.launches.get_mut(&launch.slot()) else {
             return false;
         };
@@ -103,6 +103,10 @@ impl Reconciler {
         }
         runtime.pane_closed_at = Some(at);
         true
+    }
+
+    pub fn mark_pane_closed(&mut self, launch: &LaunchKey, at: MonotonicTime) -> bool {
+        self.mark_session_closed(launch, at)
     }
 
     pub fn canonical_for(&self, launch: &LaunchKey) -> Option<&CanonicalState> {

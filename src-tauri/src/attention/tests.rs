@@ -2,11 +2,13 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use rusqlite::Connection;
 
-use crate::livebrief::{semantic_question_excerpt, PendingInputKind, SemanticEventEnvelope, SemanticEventKind};
+use crate::livebrief::{
+    semantic_question_excerpt, PendingInputKind, SemanticEventEnvelope, SemanticEventKind,
+};
 
 use super::model::{
     AttentionCard, AttentionKind, CardState, EvidenceRef, PrimaryAction, ReplyRoute,
-    ResolutionPredicate, SessionRef,
+    ResolutionPredicate, SessionRef, Severity, Waiting,
 };
 use super::rules::{
     evaluate, evaluate_resolutions, AttentionInput, AttentionObservation, AttentionSnapshot,
@@ -138,7 +140,7 @@ fn eight_silent_conditions_are_explicitly_ignored() {
 }
 
 #[test]
-fn all_ten_attention_kinds_produce_one_candidate() {
+fn all_ten_native_attention_kinds_produce_the_adr_axes() {
     let kinds = [
         AttentionKind::AgentAsked,
         AttentionKind::WorkStopped,
@@ -155,6 +157,12 @@ fn all_ten_attention_kinds_produce_one_candidate() {
         let actual = evaluate(&input(observation(kind)));
         assert_eq!(actual.len(), 1, "{kind:?}");
         assert_eq!(actual[0].card.kind, kind);
+        assert_eq!(
+            (actual[0].card.waiting, actual[0].card.severity),
+            kind.native_axes().unwrap()
+        );
+        assert_eq!(actual[0].card.actor, None);
+        assert_eq!(actual[0].card.freshness, None);
     }
 }
 
@@ -164,11 +172,17 @@ fn repeated_fingerprint_upserts_in_place() {
     let first = card(AttentionKind::AgentAsked, "same-cause", Some("workorder-a"));
     store::upsert(&conn, &first).unwrap();
     let mut second = first.clone();
+    second.source_rank = Some(2);
+    second.why_now = "updated".into();
     second.last_seen_at = 101;
     store::upsert(&conn, &second).unwrap();
     let cards = store::list_all_cards(&conn).unwrap();
     assert_eq!(cards.len(), 1);
     assert_eq!(cards[0].revision, 2);
+    assert_eq!(cards[0].source_rank, Some(2));
+    assert_eq!(cards[0].waiting, Waiting::Human);
+    assert_eq!(cards[0].severity, Severity::Blocking);
+    assert_eq!(cards[0].why_now, "updated");
 }
 
 #[test]
@@ -262,6 +276,12 @@ fn four_open_cards_bundle_to_one_stalled_card() {
             .count(),
         1
     );
+    let stalled = cards
+        .iter()
+        .find(|item| item.state == CardState::Open && item.kind == AttentionKind::WorkOrderStalled)
+        .unwrap();
+    assert_eq!(stalled.waiting, Waiting::Work);
+    assert_eq!(stalled.severity, Severity::Warning);
 }
 
 #[test]
@@ -329,8 +349,12 @@ fn detailed_evidence_keeps_the_same_fingerprint_and_card_id() {
 fn stopped_evidence_states_unavailable_exit_reason_and_last_output() {
     let evidence = super::stopped_evidence("pty-a", "pty-a:1", "Exited", "最後の出力".into());
     assert_eq!(evidence.len(), 3);
-    assert!(evidence.iter().any(|item| item.detail.contains("終了コード・終了理由: 取得できず")));
-    assert!(evidence.iter().any(|item| item.detail.contains("最終出力: 最後の出力")));
+    assert!(evidence
+        .iter()
+        .any(|item| item.detail.contains("終了コード・終了理由: 取得できず")));
+    assert!(evidence
+        .iter()
+        .any(|item| item.detail.contains("最終出力: 最後の出力")));
 }
 
 #[test]
@@ -345,7 +369,9 @@ fn next_item_evidence_keeps_the_objective_and_contract_goal() {
             workorder_id: "workorder-a".into(),
             work_item_id: "item-a".into(),
         },
-        Some(SessionRef::Logical { logical_session_id: "agent-a".into() }),
+        Some(SessionRef::Logical {
+            logical_session_id: "agent-a".into(),
+        }),
         "提出物を確認する",
         vec![EvidenceRef {
             source: "workorder".into(),
@@ -354,8 +380,14 @@ fn next_item_evidence_keeps_the_objective_and_contract_goal() {
             detail: "作業: 検証する".into(),
         }],
     );
-    assert!(observation.evidence.iter().any(|item| item.detail == "作業: 検証する"));
-    assert!(observation.evidence.iter().any(|item| item.kind == "contractGoal" && item.detail.contains("提出物を確認する")));
+    assert!(observation
+        .evidence
+        .iter()
+        .any(|item| item.detail == "作業: 検証する"));
+    assert!(observation
+        .evidence
+        .iter()
+        .any(|item| item.kind == "contractGoal" && item.detail.contains("提出物を確認する")));
 }
 
 #[test]
@@ -374,5 +406,8 @@ fn semantic_question_fixture_preserves_agent_asked_text() {
             options: Vec::new(),
         },
     }];
-    assert_eq!(semantic_question_excerpt(&events, "prompt-1").as_deref(), Some("先に検証しますか"));
+    assert_eq!(
+        semantic_question_excerpt(&events, "prompt-1").as_deref(),
+        Some("先に検証しますか")
+    );
 }

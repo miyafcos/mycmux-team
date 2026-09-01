@@ -36,7 +36,8 @@ describe("resolveSpawnPlan", () => {
       MYCMUX_HANDOFF_FROM: "claude",
     });
     expect(plan.paneOptions).toEqual({
-      agentId: "shell-starter",
+      agentId: "codex",
+      agentKind: "codex",
       cwd: "C:\\repo",
       label: "Handoff",
       launchEnv: plan.launchEnv,
@@ -85,6 +86,7 @@ describe("resolveSpawnPlan", () => {
       MYCMUX_SESSION_ID: "resume-id",
     });
     expect(plan.paneOptions.agentKind).toBe("claude");
+    expect(plan.paneOptions.agentId).toBe("claude-code");
     expect(plan.paneOptions.agentSessionId).toBe("resume-id");
   });
 
@@ -92,6 +94,7 @@ describe("resolveSpawnPlan", () => {
     const plan = resolveSpawnPlan({ target: "codex" });
     expect(plan.mode).toBe("launch");
     expect(plan.launchEnv).toEqual({ MYCMUX_LAUNCH_TARGET: "codex" });
+    expect(plan.paneOptions).toMatchObject({ agentId: "codex", agentKind: "codex" });
   });
 
   it("builds a shell pane without a launch environment", () => {
@@ -207,6 +210,7 @@ describe("resolveSpawnTabPlan", () => {
       MYCMUX_HANDOFF_PROMPT_FILE: "C:\\prompts\\task.md",
       MYCMUX_HANDOFF_FROM_SESSION: "source-tab",
     });
+    expect(plan.paneOptions).toMatchObject({ agentId: "codex", agentKind: "codex" });
   });
 
   it("builds a plain shell tab", () => {
@@ -332,6 +336,7 @@ describe("pane socket responses", () => {
     const plan = resolveSpawnPlan({ target: "grok" });
     expect(plan.mode).toBe("launch");
     expect(plan.launchEnv).toEqual({ MYCMUX_LAUNCH_TARGET: "grok" });
+    expect(plan.paneOptions).toMatchObject({ agentId: "grok", agentKind: "grok" });
   });
 
   it("fails closed when declared launch is disabled without mutating its tab", async () => {

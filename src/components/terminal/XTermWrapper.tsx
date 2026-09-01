@@ -66,7 +66,10 @@ import {
   type TurnChipVisibilityController,
   type TurnListRow,
 } from "./terminalTurnChipState";
-import { restoreTurnMarksFromTranscript } from "./turnMarkRestore";
+import {
+  restoreTurnMarksFromBufferOnJump,
+  restoreTurnMarksFromTranscript,
+} from "./turnMarkRestore";
 import type { IDisposable, ITheme } from "@xterm/xterm";
 import {
   readLiveTerminalAppearance,
@@ -773,9 +776,17 @@ export default memo(function XTermWrapper({
     intent: { kind: "step"; direction: -1 | 1 } | { kind: "mark"; markIndex: number },
   ) => {
     const currentTerm = termRef.current;
-    const action = resolveTurnJump(intent, {
-      marks: getTurnMarkData(sessionId),
-      mode: lastTurnChipRef.current?.mode ?? "scroll",
+    const mode = lastTurnChipRef.current?.mode ?? "scroll";
+    const restored = restoreTurnMarksFromBufferOnJump(sessionId, currentTerm, mode);
+    const marks = getTurnMarkData(sessionId);
+    // From the live tail, the first ▲ should land on the newest newly found
+    // turn instead of asking the step resolver for a mark before index zero.
+    const resolvedIntent = restored > 0 && intent.kind === "step" && intent.direction === -1
+      ? { kind: "mark" as const, markIndex: marks.length - 1 }
+      : intent;
+    const action = resolveTurnJump(resolvedIntent, {
+      marks,
+      mode,
       viewportY: currentTerm?.buffer.active.viewportY ?? 0,
       chipIndex: lastTurnChipRef.current?.index ?? null,
       tabId: tabIdForSession(sessionId),

@@ -30,6 +30,19 @@ def test_child_webview_uses_isolated_profile_and_explicit_lifecycle() -> None:
     assert "Cookie" not in rust
 
 
+def test_webpane_push_command_is_wired_to_dom_acknowledged_evaluation() -> None:
+    rust = read("src-tauri/src/commands/webpane.rs")
+    start = rust.index("pub async fn webpane_push(")
+    body = rust[start : rust.index("\n#[cfg(test)]", start)]
+    assert "composer_push_script(" in body
+    assert "webview.eval(script)" in body
+    assert "tokio::time::timeout(WEB_PANE_PUSH_TIMEOUT" in body
+    assert "web pane does not exist" in body
+    assert 'caller.label() != caller.window().label()' in body
+    assert 'pub async fn webpane_push_result(' in body
+    assert "return Ok(WebPanePushResult" not in body
+
+
 def test_web_tab_never_falls_through_to_terminal_rendering() -> None:
     pane = read("src/components/workspace/TerminalPane.tsx")
     web_branch = pane.index('activeTab?.type === "web"')

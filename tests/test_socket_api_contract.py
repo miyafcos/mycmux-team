@@ -56,6 +56,10 @@ def test_socket_api_has_frontend_response_bridge() -> None:
         'case "pane.close_tabs":',
         'case "pane.rename_tab":',
         'case "pane.move":',
+        'case "web.open":',
+        'case "web.list":',
+        'case "web.focus":',
+        'case "web.push":',
     ]:
         assert_contains(socket_commands, snippet, "src/components/layout/socketCommands.ts")
     assert_contains(socket_commands, 'value === "grok"', "src/components/layout/socketCommands.ts")
@@ -67,8 +71,16 @@ def test_local_socket_requires_a_token_from_every_caller() -> None:
     status_probe = read_repo_text("scripts/status_feed_probe.py")
 
     for snippet in [
-        # Token is taken (and stripped) before anything dispatches the request.
-        "let provided_token = take_request_token(&mut parsed);",
+        # Credentials are classified and stripped before anything dispatches the
+        # request. Since the hook realm arrived this happens inside
+        # classify_and_strip_credentials, which must see both fields at once so a
+        # request carrying both can be refused outright. The guarantee is
+        # unchanged: the credential never reaches the frontend bridge, the
+        # emitted payload, or a log line.
+        "fn classify_and_strip_credentials(parsed: &mut Value) -> CredentialRealm {",
+        "let token = take_request_token(parsed);",
+        "let hook_cap = take_hook_cap(parsed);",
+        "(true, true) => CredentialRealm::Both,",
         "if !auth.authorize(provided_token.as_deref()) {",
         # A rejection is logged with the command name and whether a token was
         # present at all: the peer port is ephemeral and identifies nothing.
@@ -133,7 +145,10 @@ def test_socket_activation_preserves_the_operator_foreground() -> None:
     assert "foreground_changed: false" in socket_scopes[4]
     assert "foreground_changed: false" in socket_scopes[5]
     assert "foreground_preserved" in socket_scopes[5]
-    assert "setActiveWorkspace(" not in socket_commands
+    focus_web = function_slice(socket_commands, "async function focusWebPane(", "async function pushWebPane(")
+    assert "setActiveWorkspace(" in focus_web
+    assert "explicit foreground-changing socket command" in focus_web
+    assert "setActiveWorkspace(" not in socket_commands.replace(focus_web, "")
     assert "focusController." not in socket_commands
     assert "force_focus" not in socket_commands
     assert "forceFocus" not in socket_commands

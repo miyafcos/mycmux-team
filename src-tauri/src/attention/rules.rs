@@ -83,6 +83,7 @@ pub fn evaluate(input: &AttentionInput) -> Vec<AttentionCandidate> {
             let ObservationKind::Attention(kind) = observation.kind else {
                 return None;
             };
+            let (waiting, severity) = kind.native_axes()?;
             let primary_action = observation.primary_action.clone()?;
             Some(AttentionCandidate {
                 observation_key: observation.key.clone(),
@@ -90,6 +91,11 @@ pub fn evaluate(input: &AttentionInput) -> Vec<AttentionCandidate> {
                     id: card_id(&observation.fingerprint),
                     fingerprint: observation.fingerprint.clone(),
                     kind,
+                    waiting,
+                    severity,
+                    actor: None,
+                    freshness: None,
+                    source_rank: None,
                     workorder_id: observation.workorder_id.clone(),
                     session: observation.session.clone(),
                     why_now: observation.why_now.clone(),

@@ -12,11 +12,14 @@ export const ASK_QUESTION_POLL_MS = 2_000;
 
 export type AskStopReason =
   | "busy"
+  | "already_answered"
+  | "superseded_launch"
   | "stale_question"
   | "null_scan"
   | "attention_mismatch"
   | "session_revision_mismatch"
   | "target_disappeared"
+  | "timed_out"
   | "unchanged_screen"
   | "read_failure"
   | "transport"

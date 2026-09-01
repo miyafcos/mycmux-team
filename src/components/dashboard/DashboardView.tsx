@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { useShallow } from "zustand/react/shallow";
 
 import { focusController } from "../../lib/focusController";
-import { observeActiveSession } from "../../lib/backgroundAiScheduler";
+import { observeActiveSession, observeAheadSessions } from "../../lib/backgroundAiScheduler";
 import { isEditableTarget } from "../../lib/keybindings";
 import { useKeybindingStore } from "../../stores/keybindingStore";
 import type { AttentionCard, SessionRef } from "../../lib/attentionBridge";
@@ -296,6 +296,22 @@ export function DashboardView({ onClose }: { onClose: () => void }) {
     });
   }, [activeColumnCard, activeColumnSessionId, activeColumnQuestion, briefsBySession, activeColumnCwd]);
   useEffect(() => () => observeActiveSession(null), []);
+  // Sessions on screen that the reader has not opened yet. Preparing their
+  // suggestion now is what turns a first visit from a 30-80s wait into an
+  // answer that is already there; the scheduler bounds how many actually run.
+  const aheadKey = visibleCards.map((card) => `${card.tab.sessionId}:${resolveDisplayState(card)}`).join(",");
+  useEffect(() => {
+    observeAheadSessions(visibleCards.map((card) => ({
+      sessionId: card.tab.sessionId,
+      displayState: resolveDisplayState(card),
+      questionActive: false,
+      eventSeq: briefsBySession[card.tab.sessionId]?.eventSeq ?? 0,
+      tabLabel: card.label ?? null,
+      cwd: metadataState.metadata[card.tab.sessionId]?.cwd ?? null,
+    })));
+    // visibleCards is rebuilt on every poll; aheadKey keeps this to real changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [aheadKey]);
   const reportInboxOpen = dashboardReportInboxOpen(chatColumnTabIds);
   const openChatColumnTabIds = useMemo(
     () => chatColumnSlots.map(chatSlotId),

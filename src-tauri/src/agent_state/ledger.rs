@@ -153,18 +153,25 @@ impl Ledger {
         let identity = accepted.observation.identity();
         transaction.execute(
             "INSERT INTO agent_state_ledger(
-               canonical_event_id, app_instance_id, pane_id, provider, launch_generation,
+               canonical_event_id, app_instance_id, terminal_session_id, launch_id,
+               pane_id, provider, launch_generation,
                provider_session_id, provider_turn_id, source_event_ids_json, payload_hashes_json,
                current_state, confirmation, state_version
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, '[]', '[]', ?8, ?9, ?10)
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, '[]', '[]', ?10, ?11, ?12)
              ON CONFLICT(canonical_event_id) DO UPDATE SET
                current_state=excluded.current_state,
                confirmation=excluded.confirmation,
-               state_version=?10",
+               state_version=?12",
             params![
                 accepted.canonical.canonical_event_id,
                 identity.launch().app_instance_id().as_str(),
-                identity.launch().pane_id().as_str(),
+                identity.launch().terminal_session_id().as_str(),
+                identity.launch().launch_id().as_str(),
+                identity
+                    .launch()
+                    .pane_id()
+                    .map(PaneId::as_str)
+                    .unwrap_or(""),
                 identity.launch().provider().as_str(),
                 identity.launch().generation().get(),
                 identity.provider_session_id().as_str(),

@@ -7,8 +7,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   invoke: vi.fn(),
   turnMarks: [] as Array<{ line: number; label: string; at: number }>,
+  bufferType: "alternate" as "normal" | "alternate",
+  bufferLines: [] as string[],
   transcriptResponses: [] as Array<Array<{ text: string; occurredAt: number }>>,
-  terminalInstances: [] as Array<{ dispose: ReturnType<typeof vi.fn> }>,
+  terminalInstances: [] as Array<{
+    dispose: ReturnType<typeof vi.fn>;
+    scrollToLine: ReturnType<typeof vi.fn>;
+  }>,
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -37,12 +42,17 @@ vi.mock("@xterm/xterm", () => {
     parser = { registerOscHandler: vi.fn(() => disposable()) };
     buffer = {
       active: {
-        type: "alternate",
-        length: 24,
+        get type(): "normal" | "alternate" { return mocks.bufferType; },
+        get length(): number { return Math.max(24, mocks.bufferLines.length); },
         baseY: 0,
         cursorY: 0,
         viewportY: 0,
-        getLine: () => undefined,
+        getLine: (index: number) => {
+          const text = mocks.bufferLines[index];
+          return text === undefined
+            ? undefined
+            : { isWrapped: false, translateToString: () => text };
+        },
       },
     };
     dispose = vi.fn();
@@ -68,8 +78,8 @@ vi.mock("@xterm/xterm", () => {
     focus(): void { this.textarea?.focus(); }
     refresh(): void {}
     reset(): void {}
-    scrollToBottom(): void {}
-    scrollToLine(): void {}
+    scrollToBottom = vi.fn();
+    scrollToLine = vi.fn();
     write(_data: string | Uint8Array, callback?: () => void): void { callback?.(); }
     writeln(): void {}
     getSelection(): string { return ""; }
@@ -113,14 +123,26 @@ vi.mock("../../src/components/terminal/terminalTurnMarkers", async (importOrigin
   return {
     ...actual,
     getTurnMarkData: vi.fn(() => mocks.turnMarks),
+    restoreTurnMarksAtLines: vi.fn((
+      _sessionId: string,
+      _term: unknown,
+      entries: ReadonlyArray<{ line: number; label: string; at: number }>,
+    ) => {
+      mocks.turnMarks = entries.map((entry) => ({ ...entry }));
+      return entries.length;
+    }),
   };
 });
 
 import XTermWrapper from "../../src/components/terminal/XTermWrapper";
-import { TURN_MARKS_EVENT } from "../../src/components/terminal/terminalTurnMarkers";
+import {
+  restoreTurnMarksAtLines,
+  TURN_MARKS_EVENT,
+} from "../../src/components/terminal/terminalTurnMarkers";
 import { terminalTurnStrings } from "../../src/components/terminal/terminalTurnStrings";
 import { useSettingsStore } from "../../src/stores/settingsStore";
 import { useUiStore } from "../../src/stores/uiStore";
+import { useWorkspaceListStore } from "../../src/stores/workspaceListStore";
 
 let host: HTMLDivElement;
 let root: Root;
@@ -154,9 +176,12 @@ beforeEach(() => {
   });
 
   mocks.turnMarks = [];
+  mocks.bufferType = "alternate";
+  mocks.bufferLines = [];
   mocks.transcriptResponses = [];
   mocks.terminalInstances.length = 0;
   mocks.invoke.mockReset();
+  vi.mocked(restoreTurnMarksAtLines).mockClear();
   mocks.invoke.mockImplementation((command: string) => {
     if (command === "get_terminal_config") {
       return Promise.resolve({
@@ -181,6 +206,7 @@ beforeEach(() => {
     notificationsEnabled: false,
   });
   useUiStore.setState({ activePaneId: null, focusRevision: 0 });
+  useWorkspaceListStore.setState({ workspaces: [], activeWorkspaceId: null });
 
   host = document.createElement("div");
   document.body.appendChild(host);
@@ -194,6 +220,56 @@ afterEach(async () => {
 });
 
 describe("XTermWrapper turn-list row integration", () => {
+  it("scans a lone user turn on ▲, scrolls there, and keeps the panel closed", async () => {
+    const sessionId = "turn-jump-buffer-scan";
+    mocks.bufferType = "normal";
+    mocks.bufferLines = ["❯ 唯一の指示", "⏺ 応答"];
+    useWorkspaceListStore.setState({
+      workspaces: [{
+        id: "workspace",
+        panes: [{ tabs: [{ id: "tab-turn-jump", sessionId }] }],
+      }] as never,
+      activeWorkspaceId: "workspace",
+    });
+
+    await act(async () => {
+      root.render(
+        <XTermWrapper
+          workspaceId="workspace"
+          sessionId={sessionId}
+          command="claude"
+          agentKind="claude"
+        />,
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await vi.waitFor(() => expect(mocks.terminalInstances).toHaveLength(1));
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+
+    const wrapper = host.firstElementChild;
+    expect(wrapper).not.toBeNull();
+    act(() => {
+      wrapper!.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -1 }));
+    });
+    const prev = await vi.waitFor(() => {
+      const button = host.querySelector<HTMLButtonElement>(
+        `button[aria-label="${terminalTurnStrings.prevTurn}"]`,
+      );
+      expect(button).not.toBeNull();
+      return button!;
+    });
+
+    act(() => prev.click());
+
+    const terminal = mocks.terminalInstances[0]!;
+    expect(restoreTurnMarksAtLines).toHaveBeenCalledOnce();
+    expect(terminal.scrollToLine).toHaveBeenCalledWith(0);
+    expect(host.querySelector("[data-terminal-transcript-panel]")).toBeNull();
+  });
+
   it("renders a DOM row when a turn mark arrives while the list is open", async () => {
     const sessionId = "turn-list-live-row";
     await act(async () => {

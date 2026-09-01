@@ -10,7 +10,7 @@ Tauri v2 (Rust) + React 19 + xterm.js のターミナルワークスペースア
 - フロント: `src/` (React + TypeScript + Zustand)
 - バックエンド: `src-tauri/src/` (Rust + Tauri v2)、PTY 管理は `src-tauri/src/pty/`
 - 設定保存: `%APPDATA%/com.miyazaki.mycmux/data.json` / ソケット: `~/.mycmux/mycmux.port` (+ 認証トークン `~/.mycmux/mycmux.token` — 全リクエストに `"token"` 必須。逃げ道 `MYCMUX_SOCKET_AUTH=off`)
-- 稼働中 exe: `~/mycmux-app/mycmux.exe` (updater 対象外・deploy スクリプトで差し替え)
+- 稼働中 exe: `%LOCALAPPDATA%\mycmux\mycmux.exe` (= `~/AppData/Local/mycmux/`)。**updater 管理下**で、宮崎さんが「設定 → アプリ情報 → 更新を確認」を押すとここが入れ替わる。`~/mycmux-app/mycmux.exe` は**ミラー**であって稼働中ではない — `deploy-update.ps1` が `$installed` (前者) と `$mirror` (後者) の両方を差し替えるが、updater 経由の更新では前者しか動かないのでミラーは取り残されて古くなる (2026-08-31 実測: 稼働 8/30・ミラー 8/29)。**どちらが動いているかを確かめずに deploy しない**
 - ランチャー: `~/.mycmux/bin/launcher.sh` (新規ペインの起動メニュー。`~/bin/launcher.sh` は旧世代)
 - エージェント委譲規約: `docs/agent-integration.md` — mycmux 内の Codex/Claude/Grok 委譲は `scripts/mycmux_agent_cli.py spawn` で可視タブを立てるのが正 (各エージェント側ルールの所在・新エージェント登録チェックリストもここに記載)
 - 対応エージェント種別は `claude` / `codex` / `claude-codex` / `grok` の4種。文字列リテラルが型・ランチャー・検出・契約テストに散っているので、追加時は上記チェックリストを通す

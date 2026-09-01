@@ -4,6 +4,8 @@ const DDL: &str = r#"
 CREATE TABLE IF NOT EXISTS agent_state_ledger (
   canonical_event_id TEXT PRIMARY KEY,
   app_instance_id TEXT NOT NULL,
+  terminal_session_id TEXT NOT NULL,
+  launch_id TEXT NOT NULL,
   pane_id TEXT NOT NULL,
   provider TEXT NOT NULL,
   launch_generation INTEGER NOT NULL CHECK (launch_generation >= 0),
@@ -23,7 +25,7 @@ CREATE TABLE IF NOT EXISTS agent_state_ledger (
   native_notification_suppressed_at INTEGER,
   acknowledged_at INTEGER,
   UNIQUE (
-    app_instance_id, pane_id, provider, launch_generation,
+    app_instance_id, terminal_session_id, provider, launch_id,
     provider_session_id, provider_turn_id
   )
 );
@@ -58,5 +60,33 @@ pub fn init(conn: &Connection) -> rusqlite::Result<()> {
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "synchronous", "NORMAL")?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
-    conn.execute_batch(DDL)
+    conn.execute_batch(DDL)?;
+    ensure_identity_column(conn, "terminal_session_id")?;
+    ensure_identity_column(conn, "launch_id")?;
+    conn.execute_batch(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_state_launch_identity
+           ON agent_state_ledger(
+             app_instance_id, terminal_session_id, provider, launch_id,
+             provider_session_id, provider_turn_id
+           );",
+    )
+}
+
+fn ensure_identity_column(conn: &Connection, name: &str) -> rusqlite::Result<()> {
+    let mut statement = conn.prepare("PRAGMA table_info(agent_state_ledger)")?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<Result<Vec<_>, _>>()?;
+    if columns.iter().any(|column| column == name) {
+        return Ok(());
+    }
+    conn.execute(
+        &format!("ALTER TABLE agent_state_ledger ADD COLUMN {name} TEXT NOT NULL DEFAULT ''"),
+        [],
+    )?;
+    conn.execute(
+        &format!("UPDATE agent_state_ledger SET {name}=canonical_event_id WHERE {name}=''"),
+        [],
+    )?;
+    Ok(())
 }

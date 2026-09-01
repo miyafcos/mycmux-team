@@ -26,6 +26,7 @@ import {
 } from "../../stores/workspaceStore";
 import { useWorkspaceListStore } from "../../stores/workspaceListStore";
 import { getAgent, getDefaultAgent } from "../../lib/agents";
+import { requiresLauncherDispatch } from "../../lib/launcherDispatch";
 import { killSession, previewArtifactUriForSessionV2, type SaveEditableArtifactResult } from "../../lib/ipc";
 import { openPathWithDefaultApp, revealPathInExplorer } from "../../lib/ipc";
 import { isArtifactPreviewUri, isDirectoryLikeUri } from "../terminal/terminalLinkProvider";
@@ -718,7 +719,14 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
   // Resolve CWD from pane/tab static data (metadata CWD handled by PTY monitor internally)
   const paneCwd = activeTab?.cwd ?? pane.cwd;
   const resolvedAgentId = activeTab?.agentId;
-  const agent = resolvedAgentId ? (getAgent(resolvedAgentId) ?? getDefaultAgent()) : null;
+  const launchThroughLauncher = Boolean(
+    activeTab
+    && !activeTab.commandArgv?.length
+    && requiresLauncherDispatch(activeTab.launchEnv ?? pane.launchEnv),
+  );
+  const agent = resolvedAgentId
+    ? (launchThroughLauncher ? getDefaultAgent() : getAgent(resolvedAgentId) ?? getDefaultAgent())
+    : null;
   const savedAgentSession = useMemo(
     () => activeTab ? resolveSavedAgentSession(activeTab) : null,
     [activeTab],
@@ -747,7 +755,7 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
       MYCMUX_PANE_SESSION_ID: activeTab.sessionId,
       MYCMUX_TAB_ID: activeTab.id,
     };
-    if (resolvedAgentId === "shell-starter") {
+    if (launchThroughLauncher || resolvedAgentId === "shell-starter") {
       env.__CMUX_LAUNCHER_DONE = "1";
     }
     if (savedAgentSession && !env.MYCMUX_HANDOFF) {
@@ -758,7 +766,7 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
       env.MYCMUX_AGENT_KIND = "claude";
     }
     return env;
-  }, [activeTab, pane.launchEnv, resolvedAgentId, savedAgentSession]);
+  }, [activeTab, launchThroughLauncher, pane.launchEnv, resolvedAgentId, savedAgentSession]);
   const dropPreviewClass = dropTarget && dragItem
     ? [
         "pane-drop-preview",

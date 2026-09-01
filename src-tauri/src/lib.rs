@@ -79,6 +79,7 @@ pub struct AppState {
     pub frontend_visible: Arc<AtomicBool>,
     pub metadata_store: pty::monitor::MetadataStore,
     pub livebrief_service: livebrief::LiveBriefService,
+    pub hook_service: agent_state::HookService,
     /// Multi-window (Phase 3b): who owns which workspace, plus each window's
     /// last published workspace list. In-memory only — on restart every
     /// workspace collapses back into main via `data.json` (window layout
@@ -232,6 +233,7 @@ pub fn run() {
         "MYCMUX_ARTIFACTS_DIR",
         "MYCMUX_RUNTIME_DIR",
         "MYCMUX_TEST_PROFILE",
+        "MYCMUX_HOOK_CAP",
         "__CMUX_LAUNCHER_DONE",
     ] {
         std::env::remove_var(key);
@@ -248,7 +250,7 @@ pub fn run() {
     let state = AppState {
         session_manager: session_manager.clone(),
         scrollback_dir: OnceLock::new(),
-        session_state_store,
+        session_state_store: session_state_store.clone(),
         status_feed,
         bootstrapped: AtomicBool::new(false),
         frontend_visible: Arc::new(AtomicBool::new(true)),
@@ -257,6 +259,7 @@ pub fn run() {
             session_manager,
             metadata_store.clone(),
         ),
+        hook_service: agent_state::HookService::with_session_state(session_state_store),
         window_registry: window_registry::WindowRegistry::new(),
     };
 
@@ -298,6 +301,9 @@ pub fn run() {
             commands::terminal::remove_workspace_scrollback,
             commands::terminal::discard_session_scrollback,
             commands::terminal::kill_session,
+            commands::agent_hooks::agent_hooks_set_enabled,
+            commands::agent_prompts::agent_prompt_try_answer,
+            commands::agent_prompts::agent_prompt_is_current_launch,
             commands::artifact::preview_artifact_uri_for_session_v2,
             commands::artifact::read_editable_artifact,
             commands::artifact::save_editable_artifact,
@@ -360,6 +366,8 @@ pub fn run() {
             commands::webpane::webpane_create,
             commands::webpane::webpane_update,
             commands::webpane::webpane_destroy,
+            commands::webpane::webpane_push,
+            commands::webpane::webpane_push_result,
             commands::wallpapers::get_wallpaper_cache_state,
             commands::wallpapers::download_wallpaper,
             commands::wallpapers::clear_wallpaper_cache,
@@ -478,6 +486,9 @@ pub fn run() {
             if let Err(err) = install_launcher_script() {
                 crate::diag_warn!("launcher", "failed to install launcher scripts: {err}");
             }
+            if !test_profile::is_active() {
+                commands::agent_hooks::install_at_startup(&state.hook_service);
+            }
             warn_if_dual_install(&app_handle);
             if !test_profile::is_active() {
             if let Ok(app_data) = app_handle.path().app_data_dir() {
@@ -566,6 +577,7 @@ pub fn run() {
             }
             // Kill all PTY sessions when the main window closes
             let mgr = state.session_manager.clone();
+            let hook_service_for_close = state.hook_service.clone();
             let scrollback_dir_for_close = scrollback_dir.clone();
             if let Some(main_window) = app.get_webview_window("main") {
                 if let Some(icon) = app.default_window_icon().cloned() {
@@ -596,6 +608,7 @@ pub fn run() {
                             }
                         }
                         mgr.kill_all();
+                        hook_service_for_close.revoke_all();
                         remote_sessions_for_close.kill_all();
                     }
                 });

@@ -2,6 +2,64 @@
 # Terminal launcher - arrow keys, j/k, or number keys
 # Called from .bashrc
 
+__MYCMUX_UNAME="$(uname -s 2>/dev/null || echo "")"
+case "${MSYSTEM:-}:$__MYCMUX_UNAME" in
+  *MINGW*|*MSYS*|*CYGWIN*) __MYCMUX_PLATFORM=windows ;;
+  *:Darwin) __MYCMUX_PLATFORM=macos ;;
+  *:Linux) __MYCMUX_PLATFORM=linux ;;
+  *) __MYCMUX_PLATFORM=other ;;
+esac
+
+__mycmux_is_windows_shell() {
+  [ "$__MYCMUX_PLATFORM" = "windows" ]
+}
+
+__mycmux_lower_ascii_into() {
+  local value="$1"
+  value="${value//A/a}"
+  value="${value//B/b}"
+  value="${value//C/c}"
+  value="${value//D/d}"
+  value="${value//E/e}"
+  value="${value//F/f}"
+  value="${value//G/g}"
+  value="${value//H/h}"
+  value="${value//I/i}"
+  value="${value//J/j}"
+  value="${value//K/k}"
+  value="${value//L/l}"
+  value="${value//M/m}"
+  value="${value//N/n}"
+  value="${value//O/o}"
+  value="${value//P/p}"
+  value="${value//Q/q}"
+  value="${value//R/r}"
+  value="${value//S/s}"
+  value="${value//T/t}"
+  value="${value//U/u}"
+  value="${value//V/v}"
+  value="${value//W/w}"
+  value="${value//X/x}"
+  value="${value//Y/y}"
+  value="${value//Z/z}"
+  __MYCMUX_LOWER_RESULT="$value"
+}
+
+__mycmux_read_key_with_timeout() {
+  local __mycmux_out_var="$1"
+  local __mycmux_timeout="$2"
+  local __mycmux_key
+  local __mycmux_status
+  if [ "${BASH_VERSINFO[0]:-0}" -ge 4 ]; then
+    IFS= read -rsn1 -t "$__mycmux_timeout" -u "$__CMUX_MENU_FD" __mycmux_key
+  else
+    IFS= read -rsn1 -t 1 -u "$__CMUX_MENU_FD" __mycmux_key
+  fi
+  __mycmux_status=$?
+  printf -v "$__mycmux_out_var" '%s' "$__mycmux_key"
+  return "$__mycmux_status"
+}
+
 # MSYS bash severs the Windows process ancestry when it runs a shebang-script
 # wrapper as an external command (the fork copy that execs the interpreter
 # dies), so agents launched via ~/bin/claude etc. are orphaned from the pane
@@ -9,10 +67,91 @@
 # savepoint button, mapping retention). Direct .cmd/.exe children keep an
 # intact chain, so route the agent commands to their .cmd shims and export
 # the functions for the interactive shell that replaces the launcher.
-claude() { "$HOME/bin/claude.cmd" "$@"; }
-claude-codex() { "$HOME/bin/claude-codex.cmd" "$@"; }
-codex() { "$APPDATA/npm/codex.cmd" "$@"; }
-export -f claude claude-codex codex
+__mycmux_issue_hook_cap() {
+  local provider="$1"
+  [ -n "${MYCMUX_PANE_SESSION_ID:-}" ] || return 1
+  MYCMUX_HOOK_PROVIDER="$provider" python - <<'PY' 2>/dev/null
+import json
+import os
+import socket
+from pathlib import Path
+
+runtime = Path(os.environ.get("MYCMUX_RUNTIME_DIR") or (Path.home() / ".mycmux"))
+try:
+    port = int((runtime / "mycmux.port").read_text(encoding="utf-8").strip())
+    token = (runtime / "mycmux.token").read_text(encoding="utf-8").strip()
+    request = {
+        "token": token,
+        "cmd": "launch.issue_hook_cap",
+        "args": {
+            "terminal_session_id": os.environ["MYCMUX_PANE_SESSION_ID"],
+            "provider": os.environ["MYCMUX_HOOK_PROVIDER"],
+        },
+    }
+    with socket.create_connection(("127.0.0.1", port), timeout=0.4) as client:
+        client.sendall(json.dumps(request, separators=(",", ":")).encode("utf-8") + b"\n")
+        client.settimeout(0.4)
+        raw = b""
+        while b"\n" not in raw and len(raw) <= 1048576:
+            chunk = client.recv(4096)
+            if not chunk:
+                break
+            raw += chunk
+    response = json.loads(raw.split(b"\n", 1)[0])
+    capability = response.get("result", {}).get("hook_cap")
+    if not isinstance(capability, str) or not capability:
+        raise ValueError("capability was not issued")
+    print(capability, end="")
+except (OSError, ValueError, KeyError, json.JSONDecodeError):
+    raise SystemExit(1)
+PY
+}
+
+__mycmux_with_hook_cap() {
+  local provider="$1"
+  shift
+  local capability=""
+  capability="$(__mycmux_issue_hook_cap "$provider")" || capability=""
+  if [ -n "$capability" ]; then
+    MYCMUX_HOOK_CAP="$capability" "$@"
+  else
+    env -u MYCMUX_HOOK_CAP "$@"
+  fi
+}
+
+# The .cmd shims keep the Windows process ancestry intact, but they do not
+# exist on macOS or Linux, where the agents live on PATH instead.
+if __mycmux_is_windows_shell; then
+  claude() { __mycmux_with_hook_cap claude "$HOME/bin/claude.cmd" "$@"; }
+  claude-codex() { __mycmux_with_hook_cap claude "$HOME/bin/claude-codex.cmd" "$@"; }
+  codex() { __mycmux_with_hook_cap codex "$APPDATA/npm/codex.cmd" "$@"; }
+else
+  claude() {
+    local executable
+    executable="$(type -P claude 2>/dev/null)" || return 127
+    __mycmux_with_hook_cap claude "$executable" "$@"
+  }
+  claude-codex() {
+    local executable
+    executable="$(type -P claude-codex 2>/dev/null)" || return 127
+    __mycmux_with_hook_cap claude "$executable" "$@"
+  }
+  codex() {
+    local executable
+    executable="$(type -P codex 2>/dev/null)" || return 127
+    __mycmux_with_hook_cap codex "$executable" "$@"
+  }
+fi
+grok() {
+  local executable
+  executable="$(type -P grok 2>/dev/null)" || return 127
+  __mycmux_with_hook_cap grok "$executable" "$@"
+}
+export -f __mycmux_issue_hook_cap __mycmux_with_hook_cap claude claude-codex codex grok
+
+if [ "${MYCMUX_HOOK_WRAPPERS_ONLY:-}" = "1" ]; then
+  return 0 2>/dev/null || exit 0
+fi
 
 __write_session_mapping() {
   local pane_id="$1"
@@ -119,8 +258,10 @@ __prepare_claude_resume() {
   session_file="$(__find_claude_session_file "$session_id")" || return 1
   local session_cwd
   session_cwd="$(__claude_session_cwd "$session_file")"
-  if [[ "$session_cwd" =~ ^([a-zA-Z]):[\\/](.*)$ ]]; then
-    local drive="${BASH_REMATCH[1],,}"
+  if __mycmux_is_windows_shell && [[ "$session_cwd" =~ ^([a-zA-Z]):[\\/](.*)$ ]]; then
+    local drive
+    __mycmux_lower_ascii_into "${BASH_REMATCH[1]}"
+    drive="$__MYCMUX_LOWER_RESULT"
     local rest="${BASH_REMATCH[2]//\\//}"
     session_cwd="/$drive/$rest"
   fi
@@ -512,10 +653,10 @@ __read_menu_event() {
   case "$key" in
     $'\x1b')
       # 続きが 0.1s 来なければ Esc 単押し (矢印キーは ESC [ ... が即続く)
-      if ! read -rsn1 -t 0.1 -u "$__CMUX_MENU_FD" k2; then
+      if ! __mycmux_read_key_with_timeout k2 0.1; then
         __MENU_EVENT=esc; return
       fi
-      read -rsn1 -t 0.1 -u "$__CMUX_MENU_FD" k3 || return
+      __mycmux_read_key_with_timeout k3 0.1 || return
       case "${k2}${k3}" in
         '[A'|'OA') __MENU_EVENT=up ;;
         '[B'|'OB') __MENU_EVENT=down ;;
@@ -743,7 +884,8 @@ __norm_path_into() {
   if [[ "$p" =~ ^/([a-zA-Z])/(.*)$ ]]; then
     p="${BASH_REMATCH[1]}:/${BASH_REMATCH[2]}"
   fi
-  __NORM_RESULT="${p,,}"
+  __mycmux_lower_ascii_into "$p"
+  __NORM_RESULT="$__MYCMUX_LOWER_RESULT"
 }
 
 __norm_path() {
@@ -798,14 +940,14 @@ __read_pick_event() {
   fi
   case "$key" in
     $'\x1b')
-      if ! read -rsn1 -t 0.1 -u "$__CMUX_MENU_FD" k2; then
+      if ! __mycmux_read_key_with_timeout k2 0.1; then
         __PICK_EVENT=esc; return
       fi
       case "$k2" in
         '['|'O') ;;
         *) __PICK_EVENT=esc; return ;;
       esac
-      read -rsn1 -t 0.1 -u "$__CMUX_MENU_FD" k3 || { __PICK_EVENT=esc; return; }
+      __mycmux_read_key_with_timeout k3 0.1 || { __PICK_EVENT=esc; return; }
       case "$k3" in
         A) __PICK_EVENT=up ;;
         B) __PICK_EVENT=down ;;
@@ -813,8 +955,8 @@ __read_pick_event() {
         D) __PICK_EVENT=esc ;;
         H) __PICK_EVENT=home ;;
         F) __PICK_EVENT=end ;;
-        5) read -rsn1 -t 0.1 -u "$__CMUX_MENU_FD" k4; __PICK_EVENT=pgup ;;
-        6) read -rsn1 -t 0.1 -u "$__CMUX_MENU_FD" k4; __PICK_EVENT=pgdn ;;
+        5) __mycmux_read_key_with_timeout k4 0.1; __PICK_EVENT=pgup ;;
+        6) __mycmux_read_key_with_timeout k4 0.1; __PICK_EVENT=pgdn ;;
       esac
       ;;
     '') __PICK_EVENT=enter ;;
@@ -862,14 +1004,20 @@ __pick_list() {
     local prev_idx=-1
     [ ${#p_view[@]} -gt 0 ] && [ $p_sel -lt ${#p_view[@]} ] && prev_idx=${p_view[$p_sel]}
     p_view=()
-    local idx hay
+    local idx hay hay_lower query_lower=""
+    if [ -n "$p_query" ]; then
+      __mycmux_lower_ascii_into "$p_query"
+      query_lower="$__MYCMUX_LOWER_RESULT"
+    fi
     for idx in "${!__PICK_LABELS[@]}"; do
       if [ -z "$p_query" ]; then
         p_view+=("$idx")
         continue
       fi
       hay="${__PICK_LABELS[$idx]} ${__PICK_PATHS[$idx]}"
-      if [[ "${hay,,}" == *"${p_query,,}"* ]]; then
+      __mycmux_lower_ascii_into "$hay"
+      hay_lower="$__MYCMUX_LOWER_RESULT"
+      if [[ "$hay_lower" == *"$query_lower"* ]]; then
         p_view+=("$idx")
       fi
     done
@@ -1260,7 +1408,7 @@ if [ -z "$cmd" ]; then
       digit)
         case "$__MENU_DIGIT" in
           1)
-            if IFS= read -rsn1 -t 0.15 -u "$__CMUX_MENU_FD" k2; then
+            if __mycmux_read_key_with_timeout k2 0.15; then
               case "$k2" in
                 0) selected=9 ;;
                 1) selected=10 ;;

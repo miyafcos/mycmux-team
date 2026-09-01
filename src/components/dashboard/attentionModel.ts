@@ -1,22 +1,14 @@
-import type { AttentionCard, AttentionKind, PrimaryAction } from "../../lib/attentionBridge";
+import type { AttentionCard, PrimaryAction, Severity, Waiting } from "../../lib/attentionBridge";
 
-const KIND_PRIORITY: Record<AttentionKind, number> = {
-  agentAsked: 0,
-  workStopped: 1,
-  outOfScopeWrite: 2,
-  conflictDetected: 3,
-  completionWithoutTests: 4,
-  budgetReached: 5,
-  workOrderStalled: 6,
-  nextItemReady: 7,
-  reportsComplete: 8,
-  goalReached: 9,
-};
+const WAITING_PRIORITY: Record<Waiting, number> = { human: 0, work: 1, none: 2 };
+const SEVERITY_PRIORITY: Record<Severity, number> = { blocking: 0, warning: 1, advisory: 2 };
 
 export function sortAttentionCards(cards: readonly AttentionCard[]): AttentionCard[] {
   return [...cards].sort((left, right) => (
-    KIND_PRIORITY[left.kind] - KIND_PRIORITY[right.kind]
+    WAITING_PRIORITY[left.waiting] - WAITING_PRIORITY[right.waiting]
+    || SEVERITY_PRIORITY[left.severity] - SEVERITY_PRIORITY[right.severity]
     || left.firstSeenAt - right.firstSeenAt
+    || (left.sourceRank ?? Number.MAX_SAFE_INTEGER) - (right.sourceRank ?? Number.MAX_SAFE_INTEGER)
     || left.id.localeCompare(right.id)
   ));
 }

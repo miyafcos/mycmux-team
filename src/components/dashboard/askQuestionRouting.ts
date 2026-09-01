@@ -1,6 +1,12 @@
 import { handleSocketCommand, readPaneTail } from "../layout/socketCommands";
 import { getSessionInputRevision } from "../../lib/ipc";
 import { scanAskQuestion, type AskOption, type AskScreen } from "../../lib/askQuestionScan";
+import {
+  askPromptId,
+  hookLaunchId,
+  isCurrentPromptLaunch,
+  tryAnswerPrompt,
+} from "../../lib/askQuestionPrompt";
 import { useSessionAttentionStore, type SessionAttention } from "../../stores/sessionAttentionStore";
 import {
   ASK_QUESTION_TAIL_LINES,
@@ -31,6 +37,8 @@ export interface AskQuestionDeps {
   send: (args: Record<string, unknown>) => Promise<unknown>;
   attentionFor: (sessionId: string) => SessionAttention | undefined;
   sessionExists: (sessionId: string) => boolean;
+  claimPrompt: (sessionId: string, promptId: string) => Promise<boolean>;
+  isCurrentLaunch: (sessionId: string, launchId: string) => Promise<boolean>;
   now: () => number;
   sleep: (ms: number) => Promise<void>;
   waitTimeoutMs: number;
@@ -49,6 +57,8 @@ function defaultDeps(): AskQuestionDeps {
     sessionExists: (sessionId) => useWorkspaceListStore.getState().workspaces.some((workspace) => (
       workspace.panes.some((pane) => pane.tabs.some((tab) => tab.sessionId === sessionId))
     )),
+    claimPrompt: tryAnswerPrompt,
+    isCurrentLaunch: isCurrentPromptLaunch,
     now: () => Date.now(),
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     waitTimeoutMs: DEFAULT_WAIT_TIMEOUT_MS,
@@ -167,6 +177,7 @@ async function preflight(
     expectedSessionEpoch: number;
     expectedSessionRevision: number;
     expectedInputRevision: number;
+    launchId?: string;
   },
   deps: AskQuestionDeps,
   keysSent: AskSentKey[],
@@ -192,6 +203,18 @@ async function preflight(
   if (expected.expectedSessionRevision !== attention.sessionRevision) {
     useAskQuestionStore.getState().setStopReason(sessionId, "session_revision_mismatch");
     return emptyResult("session_revision_mismatch", keysSent);
+  }
+  if (expected.launchId !== undefined) {
+    let current = false;
+    try {
+      current = await deps.isCurrentLaunch(sessionId, expected.launchId);
+    } catch {
+      current = false;
+    }
+    if (!current) {
+      useAskQuestionStore.getState().setStopReason(sessionId, "superseded_launch");
+      return emptyResult("superseded_launch", keysSent);
+    }
   }
 
   let lines: string[];
@@ -326,16 +349,24 @@ async function waitForScreenChange(
       return { kind: "screen", screen };
     }
   }
-  useAskQuestionStore.getState().setStopReason(sessionId, "unchanged_screen");
-  return { kind: "stop", result: emptyResult("unchanged_screen", keysSent) };
+  useAskQuestionStore.getState().setStopReason(sessionId, "timed_out");
+  return { kind: "stop", result: emptyResult("timed_out", keysSent) };
 }
 
-function beginSubmit(sessionId: string): AskSubmitResult | null {
+async function beginSubmit(
+  sessionId: string,
+  promptId: string,
+  deps: AskQuestionDeps,
+): Promise<AskSubmitResult | null> {
   const store = useAskQuestionStore.getState();
-  if (getAskQuestionSession(sessionId).inFlight) {
-    store.setStopReason(sessionId, "busy");
-    return emptyResult("busy");
+  let claimed = false;
+  try {
+    claimed = await deps.claimPrompt(sessionId, promptId);
+  } catch {
+    store.setStopReason(sessionId, "transport");
+    return emptyResult("transport");
   }
+  if (!claimed) return emptyResult("already_answered");
   store.setInFlight(sessionId, true);
   store.setStopReason(sessionId, null);
   return null;
@@ -349,6 +380,8 @@ function expectedFromStore(sessionId: string, deps: AskQuestionDeps): {
   expectedSessionEpoch: number;
   expectedSessionRevision: number;
   expectedInputRevision: number;
+  promptId: string;
+  launchId?: string;
 } | AskSubmitResult {
   const session = getAskQuestionSession(sessionId);
   if (!session.screen) return emptyResult("null_scan");
@@ -356,6 +389,7 @@ function expectedFromStore(sessionId: string, deps: AskQuestionDeps): {
   const lock = captureLock(deps.attentionFor(sessionId), session.expectedInputRevision);
   if (!lock) return emptyResult("attention_mismatch");
   const activeTab = session.screen.tabs.find((tab) => tab.active)?.label;
+  const launchId = hookLaunchId(lock.expectedAttentionId);
   return {
     contentKey: screenContentKey(session.screen),
     ...(activeTab !== undefined ? { activeTab } : {}),
@@ -364,6 +398,8 @@ function expectedFromStore(sessionId: string, deps: AskQuestionDeps): {
     expectedSessionEpoch: lock.expectedSessionEpoch,
     expectedSessionRevision: lock.expectedSessionRevision,
     expectedInputRevision: lock.expectedInputRevision,
+    promptId: askPromptId(sessionId, lock.expectedAttentionId, session.screen),
+    ...(launchId !== undefined ? { launchId } : {}),
   };
 }
 
@@ -414,29 +450,23 @@ export async function submitAskQuestionChoice(
   overrides?: Partial<AskQuestionDeps>,
 ): Promise<AskSubmitResult> {
   const deps = mergeDeps(overrides);
-  const busy = beginSubmit(sessionId);
-  if (busy) return busy;
   const keysSent: AskSentKey[] = [];
+  const session = getAskQuestionSession(sessionId);
+  if (!session.screen) return emptyResult("null_scan", keysSent);
+  if (session.screen.kind === "review" || !findNumberedOption(session.screen, optionIndex)) {
+    useAskQuestionStore.getState().setStopReason(sessionId, "ambiguous");
+    return emptyResult("ambiguous", keysSent);
+  }
+  const initialExpected = expectedFromStore(sessionId, deps);
+  if ("ok" in initialExpected) return initialExpected;
+  const ready = await preflight(sessionId, initialExpected, deps, keysSent);
+  if ("ok" in ready) return ready;
+  const busy = await beginSubmit(sessionId, initialExpected.promptId, deps);
+  if (busy) return busy;
   try {
-    const session = getAskQuestionSession(sessionId);
-    if (!session.screen) return emptyResult("null_scan", keysSent);
-    if (session.screen.kind === "review") {
-      useAskQuestionStore.getState().setStopReason(sessionId, "ambiguous");
-      return emptyResult("ambiguous", keysSent);
-    }
     const key = questionKey(session.screen);
     useAskQuestionStore.getState().setDraft(sessionId, key, optionIndex);
     useAskQuestionStore.getState().confirmQuestion(sessionId, key);
-
-    const expected = expectedFromStore(sessionId, deps);
-    if ("ok" in expected) return expected;
-    const ready = await preflight(sessionId, expected, deps, keysSent);
-    if ("ok" in ready) return ready;
-
-    if (!findNumberedOption(ready.screen, optionIndex)) {
-      useAskQuestionStore.getState().setStopReason(sessionId, "ambiguous");
-      return emptyResult("ambiguous", keysSent);
-    }
 
     const wait = await sendNumberedKey(sessionId, ready.screen, ready.lock, optionIndex, deps, keysSent);
     if ("ok" in wait) return wait;
@@ -450,7 +480,7 @@ export async function submitAskQuestionChoice(
       useAskQuestionStore.getState().setConfirmedStage(sessionId, "review");
       return okResult(keysSent);
     }
-    if (screenContentKey(wait.screen) === expected.contentKey) {
+    if (screenContentKey(wait.screen) === initialExpected.contentKey) {
       useAskQuestionStore.getState().setStopReason(sessionId, "unchanged_screen");
       return emptyResult("unchanged_screen", keysSent);
     }
@@ -598,27 +628,26 @@ export async function submitAskQuestionMultiSelect(
   overrides?: Partial<AskQuestionDeps>,
 ): Promise<AskSubmitResult> {
   const deps = mergeDeps(overrides);
-  const busy = beginSubmit(sessionId);
-  if (busy) return busy;
   const keysSent: AskSentKey[] = [];
+  const session = getAskQuestionSession(sessionId);
+  if (!session.screen) return emptyResult("null_scan", keysSent);
+  if (!session.screen.multiSelect) {
+    useAskQuestionStore.getState().setStopReason(sessionId, "ambiguous");
+    return emptyResult("ambiguous", keysSent);
+  }
+  const initialExpected = expectedFromStore(sessionId, deps);
+  if ("ok" in initialExpected) return initialExpected;
+  const ready = await preflight(sessionId, {
+    ...initialExpected,
+    checked: checkedOptionIndexes(session.screen),
+  }, deps, keysSent);
+  if ("ok" in ready) return ready;
+  const busy = await beginSubmit(sessionId, initialExpected.promptId, deps);
+  if (busy) return busy;
   try {
-    const session = getAskQuestionSession(sessionId);
-    if (!session.screen) return emptyResult("null_scan", keysSent);
-    if (!session.screen.multiSelect) {
-      useAskQuestionStore.getState().setStopReason(sessionId, "ambiguous");
-      return emptyResult("ambiguous", keysSent);
-    }
     const key = questionKey(session.screen);
     const desired = session.draftChecked[key] ?? checkedOptionIndexes(session.screen);
     useAskQuestionStore.getState().confirmQuestion(sessionId, key);
-
-    const expected = expectedFromStore(sessionId, deps);
-    if ("ok" in expected) return expected;
-    const ready = await preflight(sessionId, {
-      ...expected,
-      checked: checkedOptionIndexes(session.screen),
-    }, deps, keysSent);
-    if ("ok" in ready) return ready;
 
     const toggled = await toggleUntilChecked(sessionId, desired, ready, deps, keysSent);
     if ("ok" in toggled) return toggled;
@@ -667,6 +696,7 @@ async function submitReviewFromScreen(
   screen: AskScreen,
   deps: AskQuestionDeps,
   keysSent: AskSentKey[],
+  preflightReady?: Preflight,
 ): Promise<AskSubmitResult> {
   if (screen.kind !== "review") {
     useAskQuestionStore.getState().setStopReason(sessionId, "ambiguous");
@@ -678,14 +708,20 @@ async function submitReviewFromScreen(
     return emptyResult("ambiguous", keysSent);
   }
 
-  const expected = expectedFromStore(sessionId, deps);
-  if ("ok" in expected) return expected;
-  const ready = await preflight(sessionId, {
-    ...expected,
-    contentKey: screenContentKey(screen),
-    screenRevision: getAskQuestionSession(sessionId).revision,
-  }, deps, keysSent);
-  if ("ok" in ready) return ready;
+  let ready: Preflight;
+  if (preflightReady) {
+    ready = preflightReady;
+  } else {
+    const expected = expectedFromStore(sessionId, deps);
+    if ("ok" in expected) return expected;
+    const checked = await preflight(sessionId, {
+      ...expected,
+      contentKey: screenContentKey(screen),
+      screenRevision: getAskQuestionSession(sessionId).revision,
+    }, deps, keysSent);
+    if ("ok" in checked) return checked;
+    ready = checked;
+  }
   if (ready.screen.kind !== "review") {
     useAskQuestionStore.getState().setStopReason(sessionId, "stale_question");
     return emptyResult("stale_question", keysSent);
@@ -711,14 +747,24 @@ export async function submitAskQuestionReview(
   overrides?: Partial<AskQuestionDeps>,
 ): Promise<AskSubmitResult> {
   const deps = mergeDeps(overrides);
-  const busy = beginSubmit(sessionId);
-  if (busy) return busy;
   const keysSent: AskSentKey[] = [];
+  const session = getAskQuestionSession(sessionId);
+  if (!session.screen || session.screen.kind !== "review") {
+    return emptyResult("null_scan", keysSent);
+  }
+  const initialExpected = expectedFromStore(sessionId, deps);
+  if ("ok" in initialExpected) return initialExpected;
+  const ready = await preflight(sessionId, {
+    ...initialExpected,
+    contentKey: screenContentKey(session.screen),
+    screenRevision: session.revision,
+  }, deps, keysSent);
+  if ("ok" in ready) return ready;
+  const busy = await beginSubmit(sessionId, initialExpected.promptId, deps);
+  if (busy) return busy;
   try {
-    const session = getAskQuestionSession(sessionId);
-    if (!session.screen) return emptyResult("null_scan", keysSent);
     useAskQuestionStore.getState().confirmQuestion(sessionId, "review");
-    return submitReviewFromScreen(sessionId, session.screen, deps, keysSent);
+    return submitReviewFromScreen(sessionId, session.screen, deps, keysSent, ready);
   } finally {
     useAskQuestionStore.getState().setInFlight(sessionId, false);
   }

@@ -1,6 +1,7 @@
 mod model;
 mod rules;
 mod schema;
+pub(crate) mod session_board;
 pub(crate) mod store;
 
 pub use model::*;

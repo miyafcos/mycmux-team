@@ -2,6 +2,8 @@
 
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const bridgeMocks = vi.hoisted(() => ({
@@ -18,8 +20,14 @@ vi.mock("../../src/lib/attentionBridge", async () => ({
 vi.mock("@tauri-apps/api/event", () => eventMocks);
 
 import { AttentionCards, type AttentionCardActions } from "../../src/components/dashboard/AttentionCards";
+import { dashboardStrings } from "../../src/components/dashboard/dashboardStrings";
 import type { AttentionCard, PrimaryAction } from "../../src/lib/attentionBridge";
 import { __resetAttentionStoreForTests } from "../../src/stores/attentionStore";
+import { ingestAskQuestionLines, useAskQuestionStore } from "../../src/stores/askQuestionStore";
+
+const askFixtures = JSON.parse(
+  readFileSync(resolve(import.meta.dirname, "../fixtures/askQuestionScreens.json"), "utf8"),
+) as Record<"single", string[]>;
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -27,7 +35,11 @@ function actionCard(id: string, primaryAction: PrimaryAction): AttentionCard {
   return {
     id,
     fingerprint: id,
-    kind: "agentAsked",
+    kind: "workStopped",
+    waiting: "work",
+    severity: "blocking",
+    actor: null,
+    freshness: null,
     workorderId: "order-a",
     session: { type: "pty", pty_session_id: "pty-a" },
     whyNow: "now",
@@ -52,6 +64,7 @@ let root: Root;
 
 beforeEach(() => {
   __resetAttentionStoreForTests();
+  useAskQuestionStore.getState().resetForTests();
   vi.clearAllMocks();
   eventMocks.listen.mockResolvedValue(vi.fn());
   container = document.createElement("div");
@@ -63,6 +76,7 @@ afterEach(async () => {
   if (root) await act(async () => root.unmount());
   container?.remove();
   __resetAttentionStoreForTests();
+  useAskQuestionStore.getState().resetForTests();
 });
 
 describe("AttentionCards", () => {
@@ -80,6 +94,24 @@ describe("AttentionCards", () => {
     await act(async () => { chip?.click(); await Promise.resolve(); });
     expect(openCardSession).toHaveBeenCalledOnce();
     expect(container.querySelector("[data-attention-contract-goal='open']")?.textContent).toContain("契約ゴール");
+  });
+
+  it("renders a session-board incident through the existing card surface", async () => {
+    const card = {
+      ...actionCard("session-board", {
+        type: "openSession",
+        session: { type: "pty", pty_session_id: "pty-a" },
+      }),
+      kind: "sessionBoardIncident" as const,
+      sourceRank: 1,
+    };
+    bridgeMocks.attentionListCards.mockResolvedValue([card]);
+    await act(async () => {
+      root.render(<AttentionCards {...actionHandlers().actions} />);
+      await Promise.resolve();
+    });
+    expect(container.textContent).toContain(dashboardStrings.attentionKindLabel("sessionBoardIncident"));
+    expect(container.querySelectorAll("[data-attention-card]")).toHaveLength(1);
   });
 
   it("keeps every attention action enabled and routes all six actions once", async () => {
@@ -109,6 +141,46 @@ describe("AttentionCards", () => {
     expect(handlers.retryWorkItem).toHaveBeenCalledWith("order-a", "item-a");
     expect(handlers.openWorkOrder).toHaveBeenCalledTimes(2);
     expect(handlers.resolveCard).toHaveBeenCalledWith("ack");
+  });
+
+  it("renders scanner content inline and suppresses the generic open-and-answer card", async () => {
+    const card = {
+      ...actionCard("ask", {
+        type: "answerQuestion",
+        session: { type: "pty", pty_session_id: "pty-a" },
+      }),
+      kind: "agentAsked" as const,
+    };
+    bridgeMocks.attentionListCards.mockResolvedValue([card]);
+    ingestAskQuestionLines("pty-a", askFixtures.single, 1, 7);
+    const handlers = actionHandlers();
+
+    await act(async () => {
+      root.render(<AttentionCards {...handlers.actions} />);
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector("[data-ask-question-session='pty-a']")).not.toBeNull();
+    expect(container.querySelector("[data-ask-question-option='1']")).not.toBeNull();
+    expect(container.querySelector("[data-attention-card='ask']")).toBeNull();
+    expect(handlers.answerQuestion).not.toHaveBeenCalled();
+  });
+
+  it("does not create a contentless card from an agentAsked signal alone", async () => {
+    bridgeMocks.attentionListCards.mockResolvedValue([{
+      ...actionCard("ask-only", {
+        type: "answerQuestion",
+        session: { type: "pty", pty_session_id: "pty-a" },
+      }),
+      kind: "agentAsked" as const,
+    }]);
+
+    await act(async () => {
+      root.render(<AttentionCards {...actionHandlers().actions} />);
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toBe("");
   });
 });
 

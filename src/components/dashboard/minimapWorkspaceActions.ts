@@ -3,7 +3,6 @@ import { useWorkspaceLayoutStore } from "../../stores/workspaceLayoutStore";
 import { useWorkspaceListStore } from "../../stores/workspaceListStore";
 
 export function moveMinimapItemToNewWorkspace(item: PaneDragItem): boolean {
-  if (item.kind === "tab-bundle") return false;
   const layoutStore = useWorkspaceLayoutStore.getState();
   const listStore = useWorkspaceListStore.getState();
   const workspaceId = crypto.randomUUID();
@@ -18,6 +17,17 @@ export function moveMinimapItemToNewWorkspace(item: PaneDragItem): boolean {
         workspaceName,
         { activate: false },
       );
+  }
+  if (item.kind === "tab-bundle") {
+    return layoutStore.moveTabsToNewWorkspace(
+      item.workspaceId,
+      item.paneId,
+      item.tabIds,
+      item.anchorTabId,
+      workspaceId,
+      workspaceName,
+      { activate: false },
+    );
   }
   return layoutStore.movePaneToNewWorkspace(
     item.workspaceId,

@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 
 import type { AttentionCard, SessionRef } from "../../lib/attentionBridge";
+import { useAskQuestionStore } from "../../stores/askQuestionStore";
 import { connectAttentionStore, useAttentionStore } from "../../stores/attentionStore";
 import { dashboardStrings } from "./dashboardStrings";
 import { primaryActionLabel, sortAttentionCards } from "./attentionModel";
+import { QuestionCard } from "./QuestionCard";
 import "./AttentionCards.css";
 
 export interface AttentionCardActions {
@@ -20,6 +22,7 @@ export function AttentionCards(actions: AttentionCardActions) {
   const cardsById = useAttentionStore((state) => state.cardsById);
   const cardIds = useAttentionStore((state) => state.cardIds);
   const storedResolveCard = useAttentionStore((state) => state.resolveCard);
+  const askBySession = useAskQuestionStore((state) => state.bySession);
   const resolveCard = actions.resolveCard ?? storedResolveCard;
   useEffect(() => {
     let dispose: (() => void) | undefined;
@@ -33,9 +36,28 @@ export function AttentionCards(actions: AttentionCardActions) {
       dispose?.();
     };
   }, []);
-  const cards = useMemo(() => sortAttentionCards(cardIds.flatMap((id) => cardsById[id] ? [cardsById[id]!] : [])), [cardsById, cardIds]);
-  if (cards.length === 0) return null;
+  const allCards = useMemo(() => sortAttentionCards(cardIds.flatMap((id) => cardsById[id] ? [cardsById[id]!] : [])), [cardsById, cardIds]);
+  const cards = useMemo(() => allCards.filter((card) => card.kind !== "agentAsked"), [allCards]);
+  const askSessions = useMemo(() => Object.entries(askBySession).filter(([, state]) => (
+    state.screen !== null || state.stopReason !== null
+  )), [askBySession]);
+  if (cards.length === 0 && askSessions.length === 0) return null;
   return <section aria-label={dashboardStrings.attentionTitle}>
+    {askSessions.map(([sessionId]) => {
+      const sourceCard = allCards.find((card) => (
+        card.kind === "agentAsked"
+        && card.session?.type === "pty"
+        && card.session.pty_session_id === sessionId
+      ));
+      return <QuestionCard
+        key={`ask:${sessionId}`}
+        brief={undefined}
+        events={undefined}
+        sessionId={sessionId}
+        targetLabel={sourceCard ? actions.sessionLabel(sourceCard) : sessionId}
+        onFocusComposer={() => undefined}
+      />;
+    })}
     {cards.map((card) => <AttentionCardItem key={card.id} card={card} actions={actions} onResolve={resolveCard} />)}
   </section>;
 }

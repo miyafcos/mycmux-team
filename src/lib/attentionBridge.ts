@@ -1,7 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
 
 export type AttentionKind = "agentAsked" | "workStopped" | "reportsComplete" | "completionWithoutTests"
-  | "budgetReached" | "outOfScopeWrite" | "conflictDetected" | "goalReached" | "nextItemReady" | "workOrderStalled";
+  | "budgetReached" | "outOfScopeWrite" | "conflictDetected" | "goalReached" | "nextItemReady" | "workOrderStalled"
+  | "sessionBoardIncident";
+export type Waiting = "human" | "work" | "none";
+export type Severity = "blocking" | "warning" | "advisory";
+export type AttentionActor = "human" | "lane" | "system";
+export type AttentionFreshness = "fresh" | "stale";
 export type CardState = "open" | "resolved" | "superseded" | "bundled";
 
 export type SessionRef = { type: "pty"; pty_session_id: string } | { type: "logical"; logical_session_id: string };
@@ -21,6 +26,11 @@ export interface AttentionCard {
   id: string;
   fingerprint: string;
   kind: AttentionKind;
+  waiting: Waiting;
+  severity: Severity;
+  actor: AttentionActor | null;
+  freshness: AttentionFreshness | null;
+  sourceRank?: number | null;
   workorderId: string | null;
   session: SessionRef | null;
   whyNow: string;

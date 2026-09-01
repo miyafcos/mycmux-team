@@ -30,6 +30,7 @@ pub enum AttentionKind {
     GoalReached,
     NextItemReady,
     WorkOrderStalled,
+    SessionBoardIncident,
 }
 
 impl AttentionKind {
@@ -45,8 +46,56 @@ impl AttentionKind {
             Self::GoalReached => "goal_reached",
             Self::NextItemReady => "next_item_ready",
             Self::WorkOrderStalled => "work_order_stalled",
+            Self::SessionBoardIncident => "session_board_incident",
         }
     }
+
+    pub fn native_axes(self) -> Option<(Waiting, Severity)> {
+        match self {
+            Self::AgentAsked => Some((Waiting::Human, Severity::Blocking)),
+            Self::WorkStopped | Self::OutOfScopeWrite | Self::ConflictDetected => {
+                Some((Waiting::Work, Severity::Blocking))
+            }
+            Self::WorkOrderStalled | Self::CompletionWithoutTests | Self::BudgetReached => {
+                Some((Waiting::Work, Severity::Warning))
+            }
+            Self::NextItemReady | Self::ReportsComplete | Self::GoalReached => {
+                Some((Waiting::None, Severity::Advisory))
+            }
+            Self::SessionBoardIncident => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Waiting {
+    Human,
+    Work,
+    None,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Severity {
+    Blocking,
+    Warning,
+    Advisory,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AttentionActor {
+    Human,
+    Lane,
+    System,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AttentionFreshness {
+    Fresh,
+    Stale,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -115,6 +164,11 @@ pub struct AttentionCard {
     pub id: String,
     pub fingerprint: String,
     pub kind: AttentionKind,
+    pub waiting: Waiting,
+    pub severity: Severity,
+    pub actor: Option<AttentionActor>,
+    pub freshness: Option<AttentionFreshness>,
+    pub source_rank: Option<u32>,
     pub workorder_id: Option<String>,
     pub session: Option<SessionRef>,
     pub why_now: String,

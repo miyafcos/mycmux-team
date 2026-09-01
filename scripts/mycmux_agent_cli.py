@@ -11,10 +11,14 @@ from pathlib import Path
 import secrets
 import socket
 import sys
+import time
 from typing import Any, Sequence
 
 
 TIMEOUT_SECONDS = 35.0
+WEB_PUSH_NO_MATCH_ERROR = "web.push found no matching web tab in the target workspace"
+WEB_PUSH_OPEN_WAIT_SECONDS = 15.0
+WEB_PUSH_OPEN_RETRY_SECONDS = 0.2
 
 
 def runtime_dir() -> Path:
@@ -267,12 +271,37 @@ def build_parser() -> argparse.ArgumentParser:
     read = subparsers.add_parser("read", help="Read terminal buffer lines")
     read.add_argument("--session", required=True)
     read.add_argument("--lines", type=int)
+
+    web_open = subparsers.add_parser("web-open", help="Open a web pane tab")
+    web_open.add_argument("--preset", default="chatgpt")
+    web_open.add_argument("--anchor-session")
+    web_open.add_argument("--replace-anchor", action="store_true")
+
+    subparsers.add_parser("web-list", help="List web pane tabs")
+
+    web_push = subparsers.add_parser("web-push", help="Push text into a web pane composer")
+    web_push_text = web_push.add_mutually_exclusive_group()
+    web_push_text.add_argument("--text")
+    web_push_text.add_argument("--text-file", type=Path)
+    web_push_target = web_push.add_mutually_exclusive_group()
+    web_push_target.add_argument("--tab")
+    web_push_target.add_argument("--preset")
+    web_push.add_argument("--send", action="store_true")
     return parser
 
 
 def optional_arg(args: dict[str, Any], name: str, value: Any) -> None:
     if value is not None:
         args[name] = value
+
+
+def read_utf8_text(path: Path) -> str:
+    """Read composer input without inheriting the Windows console encoding."""
+    resolved = path.expanduser().resolve()
+    try:
+        return resolved.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise RuntimeError(f"cannot read UTF-8 text from {resolved}: {exc}") from exc
 
 
 def add_launch_mode_request_args(
@@ -489,7 +518,74 @@ def request_for(namespace: argparse.Namespace) -> tuple[str, dict[str, Any]]:
         args = {"sessionId": namespace.session}
         optional_arg(args, "lines", namespace.lines)
         return "pane.read", args
+    if namespace.subcommand == "web-open":
+        args = {"presetId": namespace.preset}
+        optional_arg(
+            args,
+            "anchorSessionId",
+            namespace.anchor_session or os.environ.get("MYCMUX_PANE_SESSION_ID"),
+        )
+        if namespace.replace_anchor:
+            args["replaceAnchor"] = True
+        return "web.open", args
+    if namespace.subcommand == "web-list":
+        return "web.list", {}
+    if namespace.subcommand == "web-push":
+        if namespace.text is None and namespace.text_file is None and not namespace.send:
+            raise RuntimeError("web-push requires --text, --text-file, or --send")
+        args = {"submit": namespace.send}
+        if namespace.text is not None:
+            args["text"] = namespace.text
+        elif namespace.text_file is not None:
+            args["text"] = read_utf8_text(namespace.text_file)
+        if namespace.tab:
+            args["tabId"] = namespace.tab
+        else:
+            args["presetId"] = namespace.preset or "chatgpt"
+            optional_arg(
+                args,
+                "anchorSessionId",
+                os.environ.get("MYCMUX_PANE_SESSION_ID"),
+            )
+        return "web.push", args
     raise RuntimeError(f"unsupported subcommand: {namespace.subcommand}")
+
+
+def send_web_push_with_open(args: dict[str, Any]) -> Any:
+    """Open a matching preset only when the socket reports the no-tab condition."""
+    try:
+        return send_request("web.push", args)
+    except RuntimeError as exc:
+        if str(exc) != WEB_PUSH_NO_MATCH_ERROR or "tabId" in args:
+            raise
+
+    open_args = {"presetId": args.get("presetId", "chatgpt")}
+    optional_arg(open_args, "anchorSessionId", args.get("anchorSessionId"))
+    opened = send_request("web.open", open_args)
+    tab_id = opened.get("tabId") if isinstance(opened, dict) else None
+    if not isinstance(tab_id, str) or not tab_id:
+        raise RuntimeError("web.open returned an invalid tabId")
+    send_request("web.focus", {"tabId": tab_id})
+    retry_args = {
+        key: value
+        for key, value in args.items()
+        if key not in ("presetId", "anchorSessionId")
+    }
+    retry_args["tabId"] = tab_id
+    deadline = time.monotonic() + WEB_PUSH_OPEN_WAIT_SECONDS
+    while True:
+        try:
+            return send_request("web.push", retry_args)
+        except RuntimeError as exc:
+            message = str(exc)
+            transient = (
+                message.startswith("web pane does not exist:")
+                or message == "ChatGPT composer #prompt-textarea was not found"
+                or message == "web pane push timed out waiting for the composer"
+            )
+            if not transient or time.monotonic() >= deadline:
+                raise
+            time.sleep(WEB_PUSH_OPEN_RETRY_SECONDS)
 
 
 def validate_status_result(result: Any, expected_session: str | None) -> Any:
@@ -561,7 +657,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     namespace = parser.parse_args(argv)
     try:
         cmd, args = request_for(namespace)
-        result = send_request(cmd, args)
+        result = (
+            send_web_push_with_open(args)
+            if namespace.subcommand == "web-push"
+            else send_request(cmd, args)
+        )
         if namespace.subcommand == "status":
             result = validate_status_result(result, namespace.session)
     except RuntimeError as exc:

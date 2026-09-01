@@ -248,6 +248,62 @@ function appendTabsToPane(pane: Pane, tabs: PaneTab[], activeTabId: string): Pan
   return applyActiveTabFields({ ...pane, tabs: nextTabs }, activeTab);
 }
 
+function moveTabsToNewWorkspaceInStore(
+  sourceWorkspaceId: string,
+  sourcePaneId: string,
+  tabIds: readonly string[],
+  anchorTabId: string,
+  targetWorkspaceId: string,
+  workspaceName: string,
+  options?: { activate?: boolean },
+): boolean {
+  const listStore = useWorkspaceListStore.getState();
+  const sourceWorkspace = listStore.getWorkspace(sourceWorkspaceId);
+  if (!sourceWorkspace) return false;
+
+  const sourcePane = sourceWorkspace.panes.find((pane) => pane.id === sourcePaneId);
+  if (!sourcePane) return false;
+
+  const requestedTabIds = new Set(tabIds);
+  const movedTabs = sourcePane.tabs.filter((tab) => requestedTabIds.has(tab.id));
+  if (movedTabs.length === 0) return false;
+
+  let sourcePanes = sourceWorkspace.panes;
+  let removedSourcePane = false;
+  for (const tab of movedTabs) {
+    const detached = detachTabFromPanes(sourcePanes, sourcePaneId, tab.id);
+    sourcePanes = detached.panes;
+    removedSourcePane ||= detached.removedSourcePane;
+  }
+  const sourceSplitColumns = removedSourcePane
+    ? removePaneIdFromColumns(cloneSplitColumns(sourceWorkspace), sourcePaneId)
+    : undefined;
+  const activeTabId = movedTabs.some((tab) => tab.id === anchorTabId)
+    ? anchorTabId
+    : movedTabs[0].id;
+  const newPane = appendTabsToPane(
+    makePaneFromTab(uuid(), movedTabs[0]),
+    movedTabs.slice(1),
+    activeTabId,
+  );
+
+  listStore._updateWorkspacePanes(
+    sourceWorkspaceId,
+    sourcePanes,
+    sourceSplitColumns ? normalizeWorkspaceSplitColumns(sourceSplitColumns) : sourceSplitColumns,
+    removedSourcePane,
+  );
+  listStore.createWorkspace(
+    workspaceName,
+    "1x1",
+    [newPane],
+    [[newPane.id]],
+    { id: targetWorkspaceId, activate: options?.activate },
+  );
+  removeWorkspaceIfEmpty(listStore, sourceWorkspaceId, sourcePanes);
+  return true;
+}
+
 function isBrowserOnlyPane(pane: Pane): boolean {
   return pane.tabs.length > 0 && pane.tabs.every((tab) => tab.type === "browser");
 }
@@ -507,6 +563,15 @@ interface WorkspaceLayoutState {
     sourceWorkspaceId: string,
     sourcePaneId: string,
     tabId: string,
+    targetWorkspaceId: string,
+    workspaceName: string,
+    options?: { activate?: boolean },
+  ) => boolean;
+  moveTabsToNewWorkspace: (
+    sourceWorkspaceId: string,
+    sourcePaneId: string,
+    tabIds: readonly string[],
+    anchorTabId: string,
     targetWorkspaceId: string,
     workspaceName: string,
     options?: { activate?: boolean },
@@ -1439,39 +1504,35 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
   },
 
   moveTabToNewWorkspace: (sourceWorkspaceId, sourcePaneId, tabId, targetWorkspaceId, workspaceName, options) => {
-    const listStore = useWorkspaceListStore.getState();
-    const sourceWorkspace = listStore.getWorkspace(sourceWorkspaceId);
-    if (!sourceWorkspace) return false;
-
-    const sourcePane = sourceWorkspace.panes.find((pane) => pane.id === sourcePaneId);
-    const tab = sourcePane?.tabs.find((candidate) => candidate.id === tabId);
-    if (!sourcePane || !tab) return false;
-
-    const { panes: sourcePanes, removedSourcePane } = detachTabFromPanes(
-      sourceWorkspace.panes,
-      sourcePaneId,
-      tabId,
-    );
-    const sourceSplitColumns = removedSourcePane
-      ? removePaneIdFromColumns(cloneSplitColumns(sourceWorkspace), sourcePaneId)
-      : undefined;
-    const newPane = makePaneFromTab(uuid(), tab);
-
-    listStore._updateWorkspacePanes(
+    return moveTabsToNewWorkspaceInStore(
       sourceWorkspaceId,
-      sourcePanes,
-      sourceSplitColumns ? normalizeWorkspaceSplitColumns(sourceSplitColumns) : sourceSplitColumns,
-      removedSourcePane,
-    );
-    listStore.createWorkspace(
+      sourcePaneId,
+      [tabId],
+      tabId,
+      targetWorkspaceId,
       workspaceName,
-      "1x1",
-      [newPane],
-      [[newPane.id]],
-      { id: targetWorkspaceId, activate: options?.activate },
+      options,
     );
-    removeWorkspaceIfEmpty(listStore, sourceWorkspaceId, sourcePanes);
-    return true;
+  },
+
+  moveTabsToNewWorkspace: (
+    sourceWorkspaceId,
+    sourcePaneId,
+    tabIds,
+    anchorTabId,
+    targetWorkspaceId,
+    workspaceName,
+    options,
+  ) => {
+    return moveTabsToNewWorkspaceInStore(
+      sourceWorkspaceId,
+      sourcePaneId,
+      tabIds,
+      anchorTabId,
+      targetWorkspaceId,
+      workspaceName,
+      options,
+    );
   },
 
   movePaneToNewWorkspace: (sourceWorkspaceId, sourcePaneId, targetWorkspaceId, workspaceName, options) => {

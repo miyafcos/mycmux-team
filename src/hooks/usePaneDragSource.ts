@@ -114,7 +114,9 @@ function canDropTarget(item: PaneDragItem, target: PaneDropTarget): boolean {
   if (!sourcePane) return false;
 
   if (target.kind === "new-workspace" || target.kind === "new-window") {
-    return item.kind === "pane" || (item.kind === "tab" && sourcePane.tabs.some((tab) => tab.id === item.tabId));
+    if (item.kind === "pane") return true;
+    if (item.kind === "tab") return sourcePane.tabs.some((tab) => tab.id === item.tabId);
+    return item.tabIds.some((tabId) => sourcePane.tabs.some((tab) => tab.id === tabId));
   }
 
   if (target.kind === "handoff") {
@@ -331,6 +333,74 @@ async function commitPaneHandoff(
   }
 }
 
+function moveDragItemToNewWorkspace(
+  item: PaneDragItem,
+  workspaceId: string,
+  workspaceName: string,
+  options?: { activate?: boolean },
+): boolean {
+  const layoutStore = useWorkspaceLayoutStore.getState();
+  if (item.kind === "tab") {
+    return layoutStore.moveTabToNewWorkspace(
+      item.workspaceId,
+      item.paneId,
+      item.tabId,
+      workspaceId,
+      workspaceName,
+      options,
+    );
+  }
+  if (item.kind === "tab-bundle") {
+    return layoutStore.moveTabsToNewWorkspace(
+      item.workspaceId,
+      item.paneId,
+      item.tabIds,
+      item.anchorTabId,
+      workspaceId,
+      workspaceName,
+      options,
+    );
+  }
+  return layoutStore.movePaneToNewWorkspace(
+    item.workspaceId,
+    item.paneId,
+    workspaceId,
+    workspaceName,
+    options,
+  );
+}
+
+function tearOutMovedWorkspace(
+  workspaceId: string,
+  focusSessionId: string | null,
+  target: Extract<PaneDropTarget, { kind: "new-window" }>,
+  trace: TearOutDragTrace | null,
+): void {
+  // If opening the window fails the workspace simply stays here — nothing to
+  // undo and no PTY session is lost.
+  trace?.commitPending(workspaceId, focusSessionId);
+  trace?.windowCreateRequested();
+  void tearOutWorkspaceToNewWindow(workspaceId, {
+    x: target.screenX - 40,
+    y: target.screenY - 20,
+  }).then((label) => {
+    if (!label) {
+      trace?.failed("transfer-failed", "workspace transfer returned no destination window");
+      clearTearOutMeasurementAfterDelay();
+      return;
+    }
+    trace?.windowLabelAccepted(label);
+    trace?.sourceDetached();
+    trace?.committed();
+    clearTearOutMeasurementAfterDelay();
+  }).catch((error) => {
+    trace?.failed("create-failed", String(error));
+    clearTearOutMeasurementAfterDelay();
+    console.error("[multiwindow] drag tear-out failed", error);
+    useToastStore.getState().pushToast("新しいウィンドウを開けませんでした", "error");
+  });
+}
+
 function commitPaneDragDrop(
   item: PaneDragItem,
   target: PaneDropTarget | null,
@@ -338,13 +408,28 @@ function commitPaneDragDrop(
 ): void {
   if (!target || !canDropTarget(item, target)) return;
 
+  const focusSessionId = getFocusSessionId(item);
+
   if (item.surface === "minimap") {
     if (target.kind === "pane" && (item.kind === "tab" || item.kind === "tab-bundle")) commitMinimapTabDrop(item, target);
     else if (target.kind === "pane" && item.kind === "pane") commitMinimapPaneDrop(item, target);
-    else if (target.kind === "new-workspace" && item.kind !== "tab-bundle") moveMinimapItemToNewWorkspace(item);
+    else if (target.kind === "new-workspace") moveMinimapItemToNewWorkspace(item);
     else if (target.kind === "new-window") {
-      trace?.failed("transfer-failed", "minimap new-window target has no commit path");
-      clearTearOutMeasurementAfterDelay();
+      const listStore = useWorkspaceListStore.getState();
+      const workspaceId = crypto.randomUUID();
+      const workspaceName = `Workspace ${listStore.workspaces.length + 1}`;
+      const moved = moveDragItemToNewWorkspace(
+        item,
+        workspaceId,
+        workspaceName,
+        { activate: false },
+      );
+      if (!moved) {
+        trace?.failed("transfer-failed", "source pane/tab could not move into the transfer workspace");
+        clearTearOutMeasurementAfterDelay();
+        return;
+      }
+      tearOutMovedWorkspace(workspaceId, focusSessionId, target, trace);
     }
     return;
   }
@@ -354,7 +439,6 @@ function commitPaneDragDrop(
     return;
   }
 
-  const focusSessionId = getFocusSessionId(item);
   const layoutStore = useWorkspaceLayoutStore.getState();
   const listStore = useWorkspaceListStore.getState();
 
@@ -370,20 +454,7 @@ function commitPaneDragDrop(
   if (target.kind === "new-workspace" || target.kind === "new-window") {
     const workspaceId = crypto.randomUUID();
     const workspaceName = `Workspace ${listStore.workspaces.length + 1}`;
-    const moved = item.kind === "tab"
-      ? layoutStore.moveTabToNewWorkspace(
-          item.workspaceId,
-          item.paneId,
-          item.tabId,
-          workspaceId,
-          workspaceName,
-        )
-      : layoutStore.movePaneToNewWorkspace(
-          item.workspaceId,
-          item.paneId,
-          workspaceId,
-          workspaceName,
-        );
+    const moved = moveDragItemToNewWorkspace(item, workspaceId, workspaceName);
     if (!moved) {
       if (target.kind === "new-window") {
         trace?.failed("transfer-failed", "source pane/tab could not move into the transfer workspace");
@@ -393,29 +464,8 @@ function commitPaneDragDrop(
     }
     if (target.kind === "new-window") {
       // Dropped outside the window: the fresh workspace immediately tears out
-      // to a new OS window at the drop point. If opening the window fails the
-      // workspace simply stays here — nothing to undo, nothing lost.
-      trace?.commitPending(workspaceId, focusSessionId);
-      trace?.windowCreateRequested();
-      void tearOutWorkspaceToNewWindow(workspaceId, {
-        x: target.screenX - 40,
-        y: target.screenY - 20,
-      }).then((label) => {
-        if (!label) {
-          trace?.failed("transfer-failed", "workspace transfer returned no destination window");
-          clearTearOutMeasurementAfterDelay();
-          return;
-        }
-        trace?.windowLabelAccepted(label);
-        trace?.sourceDetached();
-        trace?.committed();
-        clearTearOutMeasurementAfterDelay();
-      }).catch((error) => {
-          trace?.failed("create-failed", String(error));
-          clearTearOutMeasurementAfterDelay();
-          console.error("[multiwindow] drag tear-out failed", error);
-          useToastStore.getState().pushToast("新しいウィンドウを開けませんでした", "error");
-        });
+      // to a new OS window at the drop point.
+      tearOutMovedWorkspace(workspaceId, focusSessionId, target, trace);
       return;
     }
     useWorkspaceListStore.getState().setActiveWorkspace(workspaceId);

@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "snapshot_id": "snap-20260830T120000-e0cc1c4d5b5b",
+  "generated_at": "2026-08-30T12:00:00.000Z",
+  "source_watermark": 1,
+  "coverage": {
+    "state": "complete",
+    "expected_sessions": 2,
+    "observed_sessions": 2,
+    "stale_sessions": 0,
+    "failed_probes": 0,
+    "status_untracked_sessions": 0
+  },
+  "items": [
+    {
+      "attention_id": "incident-afb3dc4e5bd02a8f",
+      "incident_group_id": "file-lease-conflict:repo-alpha:src/shared.py",
+      "kind": "file_lease_conflict",
+      "severity": "blocking",
+      "requires_human_action": true,
+      "actor": "human",
+      "summary": "Write leases overlap across 2 lanes",
+      "why_now": "Overlapping write ownership must be resolved before either lane edits.",
+      "next_action": {
+        "type": "open_lease_panel",
+        "label": "Resolve write-lease overlap",
+        "target": "repo-alpha:src/shared.py"
+      },
+      "affected_lane_ids": [
+        "lane-a",
+        "lane-b"
+      ],
+      "evidence_refs": [
+        "event:1"
+      ],
+      "first_seen_at": "2026-08-30T11:55:00.000Z",
+      "last_changed_at": "2026-08-30T11:55:00.000Z",
+      "freshness": "fresh",
+      "rank": 1
+    }
+  ]
+}

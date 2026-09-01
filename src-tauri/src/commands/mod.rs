@@ -1,6 +1,8 @@
 pub mod ailog;
 pub mod artifact;
 pub mod agent_session_clone;
+pub mod agent_hooks;
+pub mod agent_prompts;
 pub mod crsm;
 pub mod dispatch;
 pub mod fs;

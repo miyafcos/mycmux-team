@@ -6,6 +6,7 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }));
 import {
   __resetBackgroundAiSchedulerForTests,
   observeActiveSession,
+  observeAheadSessions,
   retryActiveSession,
   useBackgroundAiSuggestionStore,
 } from "../../src/lib/backgroundAiScheduler";
@@ -225,5 +226,82 @@ describe("backgroundAiScheduler", () => {
     retryActiveSession();
     await vi.advanceTimersByTimeAsync(1_500);
     expect(judgeCalls()).toHaveLength(2);
+  });
+});
+
+describe("preparing a suggestion before the session is opened", () => {
+  beforeEach(() => {
+    useSettingsStore.setState({ replyDraftSuggestionsEnabled: true });
+    mocks.invoke.mockImplementation((name: string) => {
+      if (name === "run_next_action_judge") return new Promise(() => {});
+      return Promise.resolve(true);
+    });
+  });
+
+  it("runs for a visible idle session nobody has opened yet", async () => {
+    observeAheadSessions([target("session-ahead", 1)]);
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(judgeCalls()).toHaveLength(1);
+    expect(useBackgroundAiSuggestionStore.getState().bySession["session-ahead"]?.status).toBe("loading");
+  });
+
+  it("skips a session that is already active, pending or answered", async () => {
+    observeActiveSession(target("session-active"));
+    await vi.advanceTimersByTimeAsync(1_500);
+    const before = judgeCalls().length;
+    observeAheadSessions([target("session-active")]);
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(judgeCalls()).toHaveLength(before);
+
+    observeAheadSessions([target("session-ahead", 1)]);
+    await vi.advanceTimersByTimeAsync(1_500);
+    const afterFirst = judgeCalls().length;
+    observeAheadSessions([target("session-ahead", 1)]);
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(judgeCalls()).toHaveLength(afterFirst);
+  });
+
+  it("never prepares a session that is still working or asking", async () => {
+    observeAheadSessions([
+      target("session-running", 1, { displayState: "running" }),
+      target("session-asking", 1, { questionActive: true }),
+    ]);
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(judgeCalls()).toHaveLength(0);
+  });
+
+  it("lets concurrency, not the burst, decide how many run at once", async () => {
+    // Twenty visible sessions do not become twenty judges: two run, four wait,
+    // and the rest are dropped as they arrive.
+    observeAheadSessions(Array.from({ length: 20 }, (_, index) => target(`session-a${index}`, 1)));
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(judgeCalls()).toHaveLength(2);
+  });
+
+  it("stops for the day once the budget is spent, and the active session still runs", async () => {
+    // Each run costs a real judge, so an idle machine cannot spend the day
+    // generating suggestions nobody reads.
+    mocks.invoke.mockImplementation((name: string) => {
+      if (name === "run_next_action_judge") return Promise.resolve(judgeResult());
+      return Promise.resolve(true);
+    });
+    for (let index = 0; index < 14; index += 1) {
+      observeAheadSessions([target(`session-day${index}`, 1)]);
+      await vi.advanceTimersByTimeAsync(1_500);
+    }
+    expect(judgeCalls()).toHaveLength(12);
+    expect(useBackgroundAiSuggestionStore.getState().bySession["session-day12"]).toBeUndefined();
+
+    // Someone is waiting for the active one: it never draws from the budget.
+    observeActiveSession(target("session-waiting-on-someone"));
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(judgeCalls().some(([, args]) => (args as Record<string, unknown>).sessionId === "session-waiting-on-someone")).toBe(true);
+  });
+
+  it("does nothing while the feature is off", async () => {
+    useSettingsStore.setState({ replyDraftSuggestionsEnabled: false });
+    observeAheadSessions([target("session-ahead", 1)]);
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(judgeCalls()).toHaveLength(0);
   });
 });

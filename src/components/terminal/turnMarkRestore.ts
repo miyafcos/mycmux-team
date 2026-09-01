@@ -24,9 +24,12 @@ import {
 } from "./terminalTurnMarkers";
 import {
   collectLogicalLines,
+  isUserPromptGutterLine,
   matchPromptsToBuffer,
+  scanTurnBoundaries,
   type LogicalBufferLine,
   type PromptPlacement,
+  type UserPromptLinePredicate,
 } from "./turnMarkRestoreModel";
 
 /** How often the settle watcher samples the pane's write counter. */
@@ -67,13 +70,64 @@ export interface TurnMarkRestoreDeps {
 }
 
 const attempted = new Set<string>();
+const jumpBufferScanAttempted = new Set<string>();
 
 registerTerminalCacheEvictionCleanup((sessionId) => {
   attempted.delete(sessionId);
+  jumpBufferScanAttempted.delete(sessionId);
 });
 
 export function __resetTurnMarkRestoreForTests(): void {
   attempted.clear();
+  jumpBufferScanAttempted.clear();
+}
+
+export interface TurnMarkJumpBufferScanDeps {
+  getMarks: typeof getTurnMarkData;
+  resolveTerminal: typeof resolveTurnTerminal;
+  scan: typeof scanTurnBoundaries;
+  place: typeof restoreTurnMarksAtLines;
+  isUserPromptLine: UserPromptLinePredicate;
+  now: () => number;
+}
+
+const defaultJumpBufferScanDeps: TurnMarkJumpBufferScanDeps = {
+  getMarks: getTurnMarkData,
+  resolveTerminal: resolveTurnTerminal,
+  scan: scanTurnBoundaries,
+  place: restoreTurnMarksAtLines,
+  isUserPromptLine: isUserPromptGutterLine,
+  now: () => Date.now(),
+};
+
+/**
+ * Add missing turn marks from the rendered buffer when a transcript jump is
+ * requested. This is intentionally synchronous: xterm caps this scrollback at
+ * 5,000 rows, the scan runs once per session, and the same click must be able
+ * to continue through `resolveTurnJump` with the marks it just created.
+ */
+export function restoreTurnMarksFromBufferOnJump(
+  sessionId: string,
+  term: Terminal | null | undefined,
+  mode: "scroll" | "transcript",
+  overrides: Partial<TurnMarkJumpBufferScanDeps> = {},
+): number {
+  const deps = { ...defaultJumpBufferScanDeps, ...overrides };
+  if (deps.getMarks(sessionId).length > 0) return 0;
+  if (mode !== "transcript" || !term) return 0;
+  if (deps.resolveTerminal(sessionId) !== term) return 0;
+  const buffer = term.buffer.active;
+  if (buffer.type !== "normal" || jumpBufferScanAttempted.has(sessionId)) return 0;
+  jumpBufferScanAttempted.add(sessionId);
+
+  const boundaries = deps.scan(buffer, deps.isUserPromptLine);
+  if (boundaries.length === 0) return 0;
+  const scannedAt = deps.now();
+  return deps.place(
+    sessionId,
+    term,
+    boundaries.map((boundary, index) => ({ ...boundary, at: scannedAt + index })),
+  );
 }
 
 function defaultReport(report: TurnMarkRestoreReport): void {
@@ -194,6 +248,10 @@ export async function restoreTurnMarksFromTranscript(
     prompts.map((prompt) => ({ text: prompt.text, at: prompt.occurredAt })),
     lines,
   );
-  const restored = placements.length > 0 ? deps.place(sessionId, term, placements) : 0;
-  return finish("restored", restored, skipped + (placements.length - restored));
+  // A click-time scan can finish while this async restore is yielding. Keep
+  // whichever mark was registered first instead of duplicating the same row.
+  const markedLines = new Set(getTurnMarkData(sessionId).map((mark) => mark.line));
+  const unmarkedPlacements = placements.filter((placement) => !markedLines.has(placement.line));
+  const restored = unmarkedPlacements.length > 0 ? deps.place(sessionId, term, unmarkedPlacements) : 0;
+  return finish("restored", restored, skipped + (unmarkedPlacements.length - restored));
 }

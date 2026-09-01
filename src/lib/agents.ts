@@ -35,14 +35,18 @@ export const BUILT_IN_AGENTS: AgentDefinition[] = [
     id: "shell-starter",
     name: "Launch Menu",
     description: "Choose Claude, Codex, Grok, claude-codex, or a shell",
-    get command() { return _detectedShell.command; },
+    get command() {
+      return bashLauncherScript() && shouldSourceLauncherWithBash(_detectedShell.command)
+        ? launcherCommand(_detectedShell.command)
+        : _detectedShell.command;
+    },
     get args() {
-      if (isBashLikeShell(_detectedShell.command)) {
+      if (shouldSourceLauncherWithBash(_detectedShell.command)) {
         if (!bashLauncherScript()) return _detectedShell.args;
         return [
           "-i",
           "-c",
-          `if [ -f "${bashLauncherScript()}" ]; then source "${bashLauncherScript()}"; fi; exec "\${SHELL:-/bin/bash}" -i`,
+          `if [ -f "${bashLauncherScript()}" ]; then source "${bashLauncherScript()}"; fi; exec "\${SHELL:-${launcherFallbackShell(_detectedShell.command)}}" -i`,
         ];
       }
       if (isPowerShellLikeShell(_detectedShell.command)) {
@@ -134,6 +138,29 @@ function shellLeaf(command: string): string {
 function isBashLikeShell(command: string): boolean {
   const leaf = shellLeaf(command);
   return leaf === "bash" || leaf === "sh";
+}
+
+function isMacPlatform(): boolean {
+  if (typeof navigator === "undefined") return false;
+  const nav = navigator as Navigator & { userAgentData?: { platform?: string } };
+  const platform = nav.userAgentData?.platform || nav.platform || "";
+  return platform === "macOS" || /Mac/i.test(platform);
+}
+
+function isMacZshShell(command: string): boolean {
+  return isMacPlatform() && shellLeaf(command) === "zsh";
+}
+
+function shouldSourceLauncherWithBash(command: string): boolean {
+  return isBashLikeShell(command) || isMacZshShell(command);
+}
+
+function launcherCommand(command: string): string {
+  return isMacZshShell(command) ? "/bin/bash" : command;
+}
+
+function launcherFallbackShell(command: string): string {
+  return isMacZshShell(command) ? "/bin/zsh" : "/bin/bash";
 }
 
 function isPowerShellLikeShell(command: string): boolean {

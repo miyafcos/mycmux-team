@@ -6,7 +6,7 @@ use crate::workorder;
 
 use super::model::{
     card_id, AttentionCard, AttentionKind, CardState, EvidenceRef, PrimaryAction, ReplyRoute,
-    ResolutionPredicate, SessionRef,
+    ResolutionPredicate, SessionRef, Severity, Waiting,
 };
 use super::rules::{
     evaluate, evaluate_resolutions, AttentionInput, AttentionObservation, ObservationKind,
@@ -50,8 +50,9 @@ pub(crate) fn list_all_cards(conn: &Connection) -> Result<Vec<AttentionCard>, St
 
 fn list_cards_by_state(conn: &Connection, state: CardState) -> Result<Vec<AttentionCard>, String> {
     let mut statement = conn.prepare(
-        "SELECT id, fingerprint, kind, workorder_id, session_json, why_now, impact, primary_action_json, \
-         reply_route_json, resolution_predicate_json, state, first_seen_at, last_seen_at, revision, resolved_at \
+        "SELECT id, fingerprint, kind, waiting, severity, actor, freshness, source_rank, workorder_id, session_json, \
+         why_now, impact, primary_action_json, reply_route_json, resolution_predicate_json, state, first_seen_at, \
+         last_seen_at, revision, resolved_at \
          FROM attention_cards WHERE state=?1 ORDER BY last_seen_at DESC, id ASC",
     ).map_err(|error| error.to_string())?;
     let rows = statement
@@ -60,18 +61,23 @@ fn list_cards_by_state(conn: &Connection, state: CardState) -> Result<Vec<Attent
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
-                row.get::<_, Option<String>>(3)?,
-                row.get::<_, Option<String>>(4)?,
-                row.get::<_, String>(5)?,
-                row.get::<_, String>(6)?,
-                row.get::<_, String>(7)?,
-                row.get::<_, String>(8)?,
-                row.get::<_, String>(9)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, Option<String>>(5)?,
+                row.get::<_, Option<String>>(6)?,
+                row.get::<_, Option<u32>>(7)?,
+                row.get::<_, Option<String>>(8)?,
+                row.get::<_, Option<String>>(9)?,
                 row.get::<_, String>(10)?,
-                row.get::<_, i64>(11)?,
-                row.get::<_, i64>(12)?,
-                row.get::<_, u32>(13)?,
-                row.get::<_, Option<i64>>(14)?,
+                row.get::<_, String>(11)?,
+                row.get::<_, String>(12)?,
+                row.get::<_, String>(13)?,
+                row.get::<_, String>(14)?,
+                row.get::<_, String>(15)?,
+                row.get::<_, i64>(16)?,
+                row.get::<_, i64>(17)?,
+                row.get::<_, u32>(18)?,
+                row.get::<_, Option<i64>>(19)?,
             ))
         })
         .map_err(|error| error.to_string())?;
@@ -81,6 +87,11 @@ fn list_cards_by_state(conn: &Connection, state: CardState) -> Result<Vec<Attent
             id,
             fingerprint,
             kind,
+            waiting,
+            severity,
+            actor,
+            freshness,
+            source_rank,
             workorder_id,
             session_json,
             why_now,
@@ -99,6 +110,11 @@ fn list_cards_by_state(conn: &Connection, state: CardState) -> Result<Vec<Attent
             id,
             fingerprint,
             kind: from_json(&kind)?,
+            waiting: from_json(&waiting)?,
+            severity: from_json(&severity)?,
+            actor: actor.as_deref().map(from_json).transpose()?,
+            freshness: freshness.as_deref().map(from_json).transpose()?,
+            source_rank,
             workorder_id,
             session: session_json.as_deref().map(from_json).transpose()?,
             why_now,
@@ -220,21 +236,47 @@ pub(crate) fn upsert(conn: &Connection, card: &AttentionCard) -> Result<bool, St
         .map_err(|error| error.to_string())?;
     if let Some((id, revision)) = existing {
         conn.execute(
-            "UPDATE attention_cards SET last_seen_at=?2, revision=?3, state='open', resolved_at=NULL WHERE id=?1",
-            params![id, card.last_seen_at, revision.saturating_add(1)],
-        ).map_err(|error| error.to_string())?;
+            "UPDATE attention_cards SET kind=?2, waiting=?3, severity=?4, actor=?5, freshness=?6, \
+             source_rank=?7, workorder_id=?8, session_json=?9, why_now=?10, impact=?11, \
+             primary_action_json=?12, reply_route_json=?13, resolution_predicate_json=?14, \
+             last_seen_at=?15, revision=?16, state='open', \
+             resolved_at=NULL WHERE id=?1",
+            params![
+                id,
+                to_json(&card.kind)?,
+                to_json(&card.waiting)?,
+                to_json(&card.severity)?,
+                card.actor.as_ref().map(to_json).transpose()?,
+                card.freshness.as_ref().map(to_json).transpose()?,
+                card.source_rank,
+                card.workorder_id,
+                card.session.as_ref().map(to_json).transpose()?,
+                card.why_now,
+                card.impact,
+                to_json(&card.primary_action)?,
+                to_json(&card.reply_route)?,
+                to_json(&card.resolution_predicate)?,
+                card.last_seen_at,
+                revision.saturating_add(1),
+            ],
+        )
+        .map_err(|error| error.to_string())?;
         replace_evidence(conn, &id, &card.evidence)?;
         return Ok(true);
     }
     conn.execute(
-        "INSERT INTO attention_cards(id, fingerprint, kind, workorder_id, session_json, why_now, impact, primary_action_json, \
-         reply_route_json, resolution_predicate_json, state, first_seen_at, last_seen_at, revision, resolved_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+        "INSERT INTO attention_cards(id, fingerprint, kind, waiting, severity, actor, freshness, source_rank, \
+         workorder_id, session_json, why_now, impact, primary_action_json, reply_route_json, \
+         resolution_predicate_json, state, first_seen_at, last_seen_at, revision, resolved_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
         params![
-            card.id, card.fingerprint, to_json(&card.kind)?, card.workorder_id,
+            card.id, card.fingerprint, to_json(&card.kind)?, to_json(&card.waiting)?,
+            to_json(&card.severity)?, card.actor.as_ref().map(to_json).transpose()?,
+            card.freshness.as_ref().map(to_json).transpose()?, card.source_rank, card.workorder_id,
             card.session.as_ref().map(to_json).transpose()?, card.why_now, card.impact,
-            to_json(&card.primary_action)?, to_json(&card.reply_route)?, to_json(&card.resolution_predicate)?,
-            card.state.as_str(), card.first_seen_at, card.last_seen_at, card.revision, card.resolved_at,
+            to_json(&card.primary_action)?, to_json(&card.reply_route)?,
+            to_json(&card.resolution_predicate)?, card.state.as_str(), card.first_seen_at,
+            card.last_seen_at, card.revision, card.resolved_at,
         ],
     ).map_err(|error| error.to_string())?;
     replace_evidence(conn, &card.id, &card.evidence)?;
@@ -294,6 +336,11 @@ fn bundle_stalled(conn: &Connection, now: i64) -> Result<bool, String> {
             id: card_id(&fingerprint),
             fingerprint,
             kind: AttentionKind::WorkOrderStalled,
+            waiting: Waiting::Work,
+            severity: Severity::Warning,
+            actor: None,
+            freshness: None,
+            source_rank: None,
             workorder_id: Some(workorder_id.clone()),
             session: None,
             why_now: "同じ実行契約で対応待ちが重なりました".into(),
@@ -390,10 +437,15 @@ pub(crate) fn workorder_observations_with_connection(
                     .work_items
                     .iter()
                     .find(|candidate| candidate.id == item.work_item_id)
-                    .map(|candidate| candidate.gates.iter().zip(&item.gates)
-                        .filter(|(_, gate)| gate.status != workorder::GateStatus::Pass)
-                        .map(|(gate, _)| gate.description.clone())
-                        .collect::<Vec<_>>())
+                    .map(|candidate| {
+                        candidate
+                            .gates
+                            .iter()
+                            .zip(&item.gates)
+                            .filter(|(_, gate)| gate.status != workorder::GateStatus::Pass)
+                            .map(|(gate, _)| gate.description.clone())
+                            .collect::<Vec<_>>()
+                    })
                     .unwrap_or_default();
                 observations.push(workorder_observation(
                     AttentionKind::CompletionWithoutTests,
@@ -423,10 +475,16 @@ pub(crate) fn workorder_observations_with_connection(
         if spawn_count >= plan.budgets.max_new_pty || replan_count >= plan.budgets.max_replans {
             let mut reached = Vec::new();
             if spawn_count >= plan.budgets.max_new_pty {
-                reached.push(format!("新規セッション: {spawn_count}/{}", plan.budgets.max_new_pty));
+                reached.push(format!(
+                    "新規セッション: {spawn_count}/{}",
+                    plan.budgets.max_new_pty
+                ));
             }
             if replan_count >= plan.budgets.max_replans {
-                reached.push(format!("再計画: {replan_count}/{}", plan.budgets.max_replans));
+                reached.push(format!(
+                    "再計画: {replan_count}/{}",
+                    plan.budgets.max_replans
+                ));
             }
             observations.push(workorder_observation(
                 AttentionKind::BudgetReached,
@@ -439,7 +497,10 @@ pub(crate) fn workorder_observations_with_connection(
                 },
                 contract_session.clone(),
                 &plan.goal,
-                vec![workorder_evidence("budget", format!("上限到達: {}", reached.join(" / ")))],
+                vec![workorder_evidence(
+                    "budget",
+                    format!("上限到達: {}", reached.join(" / ")),
+                )],
             ));
         }
         for decision in
@@ -457,7 +518,10 @@ pub(crate) fn workorder_observations_with_connection(
                     },
                     contract_session.clone(),
                     &plan.goal,
-                    vec![workorder_evidence("conflict", "作業どうしの食い違いを検知しました")],
+                    vec![workorder_evidence(
+                        "conflict",
+                        "作業どうしの食い違いを検知しました",
+                    )],
                 ));
             }
         }
@@ -475,11 +539,18 @@ pub(crate) fn workorder_observations_with_connection(
                 &plan.goal,
                 vec![workorder_evidence(
                     "passedGates",
-                    format!("通過ゲート: {}", plan.work_items.iter()
-                        .filter(|item| item.required)
-                        .flat_map(|item| item.gates.iter().map(|gate| gate.description.as_str()))
-                        .collect::<Vec<_>>()
-                        .join(" / ")),
+                    format!(
+                        "通過ゲート: {}",
+                        plan.work_items
+                            .iter()
+                            .filter(|item| item.required)
+                            .flat_map(|item| item
+                                .gates
+                                .iter()
+                                .map(|gate| gate.description.as_str()))
+                            .collect::<Vec<_>>()
+                            .join(" / ")
+                    ),
                 )],
             ));
         }
@@ -504,12 +575,18 @@ pub(crate) fn workorder_observations_with_connection(
                         workorder_id: workorder_id.clone(),
                         work_item_id: item.id.as_str().to_owned(),
                     },
-                    item.assignee.as_ref().map(|assignee| SessionRef::Logical {
-                        logical_session_id: assignee.as_str().to_owned(),
-                    }).or_else(|| contract_session.clone()),
+                    item.assignee
+                        .as_ref()
+                        .map(|assignee| SessionRef::Logical {
+                            logical_session_id: assignee.as_str().to_owned(),
+                        })
+                        .or_else(|| contract_session.clone()),
                     &plan.goal,
                     vec![
-                        workorder_evidence("workItemObjective", format!("作業: {}", item.objective)),
+                        workorder_evidence(
+                            "workItemObjective",
+                            format!("作業: {}", item.objective),
+                        ),
                         workorder_evidence("contractGoal", format!("契約ゴール: {}", plan.goal)),
                     ],
                 ));
@@ -538,18 +615,25 @@ pub(crate) fn workorder_observations_with_connection(
                         PrimaryAction::ReviewConflict {
                             workorder_id: workorder_id.clone(),
                         },
-                        item.assignee.as_ref().map(|assignee| SessionRef::Logical {
-                            logical_session_id: assignee.as_str().to_owned(),
-                        }).or_else(|| contract_session.clone()),
+                        item.assignee
+                            .as_ref()
+                            .map(|assignee| SessionRef::Logical {
+                                logical_session_id: assignee.as_str().to_owned(),
+                            })
+                            .or_else(|| contract_session.clone()),
                         &plan.goal,
                         vec![
                             workorder_evidence("outOfScopePath", format!("変更先: {changed_path}")),
                             workorder_evidence(
                                 "declaredScope",
-                                format!("宣言範囲: {}", item.write_scope.iter()
-                                    .map(|scope| scope.path_prefix.as_str())
-                                    .collect::<Vec<_>>()
-                                    .join(" / ")),
+                                format!(
+                                    "宣言範囲: {}",
+                                    item.write_scope
+                                        .iter()
+                                        .map(|scope| scope.path_prefix.as_str())
+                                        .collect::<Vec<_>>()
+                                        .join(" / ")
+                                ),
                             ),
                         ],
                     ));
@@ -573,7 +657,10 @@ pub(crate) fn workorder_observation(
 ) -> AttentionObservation {
     let key = format!("{}:{workorder_id}:{suffix}", kind.as_str());
     if !evidence.iter().any(|item| item.kind == "contractGoal") {
-        evidence.push(workorder_evidence("contractGoal", format!("契約ゴール: {goal}")));
+        evidence.push(workorder_evidence(
+            "contractGoal",
+            format!("契約ゴール: {goal}"),
+        ));
     }
     AttentionObservation {
         fingerprint: key.clone(),

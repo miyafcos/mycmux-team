@@ -14,7 +14,9 @@ fn now_ms() -> i64 {
 #[tauri::command(async)]
 pub async fn attention_list_cards() -> Result<Vec<AttentionCardView>, String> {
     tauri::async_runtime::spawn_blocking(|| {
-        attention::store::open().and_then(|conn| attention::store::list_open_cards(&conn))
+        let conn = attention::store::open()?;
+        attention::session_board::sync_default(&conn, now_ms())?;
+        attention::store::list_open_cards(&conn)
     })
     .await
     .map_err(|error| error.to_string())?

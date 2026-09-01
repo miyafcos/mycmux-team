@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "snapshot_id": "snap-20260830T120000-96b2bb28742f",
+  "generated_at": "2026-08-30T12:00:00.000Z",
+  "source_watermark": 0,
+  "coverage": {
+    "state": "complete",
+    "expected_sessions": 1,
+    "observed_sessions": 1,
+    "stale_sessions": 0,
+    "failed_probes": 0,
+    "status_untracked_sessions": 0
+  },
+  "items": [
+    {
+      "attention_id": "incident-250ec35996630195",
+      "incident_group_id": "decision-required:issue-1",
+      "kind": "decision_required",
+      "severity": "warning",
+      "requires_human_action": true,
+      "actor": "human",
+      "summary": "Choose the canonical delivery boundary",
+      "why_now": "The assigned decision is required by 2026-08-30T12:30:00.000Z.",
+      "next_action": {
+        "type": "open_issue",
+        "label": "Open decision",
+        "target": "architecture-choice"
+      },
+      "affected_lane_ids": [
+        "lane-supervisor"
+      ],
+      "evidence_refs": [
+        "issue:issue-1",
+        "post:post-17"
+      ],
+      "first_seen_at": "2026-08-30T11:45:00.000Z",
+      "last_changed_at": "2026-08-30T11:58:00.000Z",
+      "freshness": "fresh",
+      "rank": 1
+    }
+  ]
+}

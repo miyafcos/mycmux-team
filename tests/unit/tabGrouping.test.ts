@@ -252,9 +252,15 @@ describe("buildGroupingPrompt", () => {
     expect(prompt).toContain("固有名詞");
     expect(prompt).toContain("3〜8タブ");
     expect(prompt).toContain("1案件=1ワークスペースに機械的に割らない");
-    expect(prompt).toContain("列で分けるのが基本");
+    expect(prompt).toContain("レイアウトは列で分けます");
     expect(prompt).toContain("裏タブ");
     expect(prompt).toContain("別のワークスペースへ隔離");
+    // Each of these earns its place from a measured failure of the answer:
+    // a tab claimed by two groups (v3), a tab quietly dropped (v4/v5), and
+    // half the columns stacked into rows the operator called hard to read.
+    expect(prompt).toContain("2つ以上のグループに入れないでください");
+    expect(prompt).toContain("省略せず unassignedTabIds に入れてください");
+    expect(prompt).toContain("3分の1を超えないように");
     expect(prompt).toContain("親子関係は階層で表現");
     expect(prompt).toContain("コードフェンス");
     expect(prompt).toContain("schemaVersion");
@@ -385,7 +391,25 @@ describe("parseGroupingOutput", () => {
     expect(parsed.comparisonInsufficient).toBe(false);
   });
 
-  it("rejects code fences, duplicate tabs, missing tabs, unknown workspaces, and plan-count overflow", () => {
+  it("parks a tab the judge forgot instead of throwing the plan away", () => {
+    // Measured on 2026-08-30: luna drops a tab or two once the prompt carries
+    // enough shape rules, and every plan in the answer can lose the same one.
+    // Discarding those plans means the operator waited ~110s for nothing, so a
+    // forgotten tab now means what it already meant elsewhere: stay put.
+    const missing = validPlanJson(ids);
+    missing.plans[0].groups[0].layout!.columns[0].panes[0].tabIds = ["t1"];
+    missing.plans[0].groups[0].tabIds = ["t1"];
+    missing.plans[0].groups[1].tabIds = ["t2"];
+    const result = parseGroupingOutput(JSON.stringify(missing), ids, workspaces);
+    expect(result.status).toBe("ok");
+    if (result.status !== "ok") return;
+    const plan = result.plans.find((candidate) => candidate.planId === missing.plans[0].planId);
+    expect(plan).toBeDefined();
+    expect(plan?.unassignedTabIds).toContain("t3");
+    expect(result.droppedPlans.some((issue) => issue.reason.includes("t3"))).toBe(false);
+  });
+
+  it("rejects code fences, duplicate tabs, unknown workspaces, and plan-count overflow", () => {
     expect(parseGroupingOutput("```json\n{}\n```", ids, workspaces).status).toBe("invalid");
 
     const duplicate = validPlanJson(ids);
@@ -397,16 +421,6 @@ describe("parseGroupingOutput", () => {
       expect(duplicateResult.plans.map((plan) => plan.planId)).toEqual(["plan-b"]);
       expect(duplicateResult.droppedPlans.some((issue) => issue.reason.includes("出現回数"))).toBe(true);
       expect(duplicateResult.comparisonInsufficient).toBe(true);
-    }
-
-    const missing = validPlanJson(ids);
-    missing.plans[0].groups[0].layout!.columns[0].panes[0].tabIds = ["t1"];
-    missing.plans[0].groups[0].tabIds = ["t1"];
-    missing.plans[0].groups[1].tabIds = ["t2"];
-    const missingResult = parseGroupingOutput(JSON.stringify(missing), ids, workspaces);
-    expect(missingResult.status).toBe("ok");
-    if (missingResult.status === "ok") {
-      expect(missingResult.droppedPlans.some((issue) => issue.reason.includes("t3"))).toBe(true);
     }
 
     const unknownWs = validPlanJson(ids);

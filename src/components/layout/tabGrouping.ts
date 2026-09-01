@@ -512,15 +512,17 @@ export function buildGroupingPrompt(scan: GroupingScan): string {
     "タブは閉じません。PTY も殺しません。配置（ワークスペース・ペイン）だけを設計してください。",
     "origin.parentTabId でつながる系譜クラスタは、特別な理由がなければ同じグループに残してください。",
     "ワークスペースは案件の厳密な境界ではなく、見渡す場所です。1案件=1ワークスペースに機械的に割らないでください。",
+    "1つのタブを2つ以上のグループに入れないでください。系譜クラスタを分けたくなったときも、どちらか一方のグループにだけ入れてください。",
     "ただし性質の違うタブを同じワークスペースに混ぜないでください。起動失敗・エラー・要対応のタブは、正常に動いているタブとは別のワークスペースへ隔離してください。隔離用のワークスペースは1〜2タブでも構いません。",
-    "目安は1ワークスペースあたり3〜8タブです（隔離用ワークスペースは例外）。小さな案件は最大3件まで同じワークスペースにまとめ、列で分け、グループ名は「国語課+雑務」のように両方を書いてください。大きな案件だけ独立したワークスペースにしてください。",
+    "1ワークスペースは3〜8タブにしてください。3タブ未満のグループを作らないでください（隔離用ワークスペースだけが例外です）。3タブに満たない案件は、性質の近い他の小案件と同じワークスペースへまとめ、列で分け、グループ名は「国語課+雑務」のように両方を書いてください。大きな案件だけ独立したワークスペースにしてください。",
+    "どのグループにも収まらないタブは、省略せず unassignedTabIds に入れてください。サイズを整えるためにタブを落とすことは禁止です。",
     "どの strategy の案も、この見やすいサイズを守ってください。",
-    "レイアウトは列で分けるのが基本です。縦積み（1つの列にペインを重ねること）は見づらいので、親子・監視の関係を表すときだけにしてください。迷ったら列を増やすか、裏タブに重ねてください。",
+    "レイアウトは列で分けます。1つの列にペインを2つ以上重ねてよいのは、上が親（母艦・指揮側）で下がその子（worker）のときだけです。それ以外は必ず列を増やしてください。ペインを重ねた列が、その案の列数の3分の1を超えないようにしてください。",
     "同じ役割で関連の深いタブは、ペインを分けず1つのペインの tabIds にまとめて裏タブとして重ねてください。",
     "親子関係は階層で表現してください。親（母艦・指揮側）のペインを列の一番上に置き、子（worker）はその下のペインか、親と同じペインの裏タブに入れてください。",
     "名前は日本語が基本です。固有名詞（mycmux / Claude / Codex など）はアルファベットのままで構いません。fix / build / review / server のような一般英単語は日本語にしてください。ツール名をカタカナへ無理に直さないでください。短く（目安20文字以内）。",
     "pane.role は mother / worker / review / mixed / unspecified のみです。warnings は {code, tabIds, message} の配列で、code は LOW_CONFIDENCE / MIXED_PROJECT / UNCLEAR_ROLE / EXISTING_WORKSPACE_CONFLICT のみです。",
-    "各プランで、渡した全タブが groups または unassignedTabIds のどこかに正確に1回だけ現れるようにしてください。",
+    "各プランで、渡した全タブが groups または unassignedTabIds のどこかに正確に1回だけ現れるようにしてください。タブを1つでも省略した案は使えません。",
     "disposition=keep のグループは destination.kind を current_locations、layout を null にし、残すタブを tabIds に列挙してください。",
     "disposition=reorganize のグループは layout を必須にし、空の列・空のペインは禁止です。列は最大4、1列あたりペインは最大4です。",
     "既存ワークスペースへの合流は、既存タブを動かさず末尾に新しい列を足す前提で書いてください。",
@@ -739,9 +741,18 @@ function parsePlan(
   const note = (id: string) => appearances.set(id, (appearances.get(id) ?? 0) + 1);
   for (const group of groups) group.tabIds.forEach(note);
   unassignedTabIds.forEach(note);
+  // A tab named twice is unusable: the two groups disagree about where it goes
+  // and nothing here can pick a winner. A tab named *no* times is a different
+  // story -- the answer for it is already "stay where you are", which is what
+  // unassigned means. Judges drop a tab now and then, and throwing the whole
+  // plan away for that costs the operator the entire wait for an answer.
+  const missing: string[] = [];
   for (const id of allowedTabIds) {
-    if ((appearances.get(id) ?? 0) !== 1) return `タブ ${id} の出現回数が1ではありません`;
+    const count = appearances.get(id) ?? 0;
+    if (count > 1) return `タブ ${id} の出現回数が1ではありません`;
+    if (count === 0) missing.push(id);
   }
+  unassignedTabIds.push(...missing);
   for (const id of appearances.keys()) {
     if (!allowedTabIds.has(id)) return `未知のタブ ${id}`;
   }
@@ -1137,7 +1148,7 @@ export interface GroupingAnalysisDependencies {
 
 export type GroupingAnalysisStage = "scanning" | "judging" | "validating" | "retrying";
 
-export const TAB_GROUPING_PROMPT_VERSION = "tab-grouping-v3";
+export const TAB_GROUPING_PROMPT_VERSION = "tab-grouping-v5";
 
 export interface GroupingAnalysisResult {
   scan: GroupingScan;

@@ -23,6 +23,7 @@ EXPECTED_EPHEMERAL_ENV_KEYS = {
     "MYCMUX_ARTIFACTS_DIR",
     "MYCMUX_RUNTIME_DIR",
     "MYCMUX_TEST_PROFILE",
+    "MYCMUX_HOOK_CAP",
     "__CMUX_LAUNCHER_DONE",
 }
 
@@ -121,7 +122,7 @@ def test_ephemeral_env_keys_stay_in_sync_across_all_guards() -> None:
             extract_socket_listener_keys(),
             # This key is injected only by the backend after frontend state is
             # already fixed, so it cannot be persisted by SocketListener.
-            EXPECTED_EPHEMERAL_ENV_KEYS - {"MYCMUX_TEST_PROFILE"},
+            EXPECTED_EPHEMERAL_ENV_KEYS - {"MYCMUX_TEST_PROFILE", "MYCMUX_HOOK_CAP"},
         ),
     }
 

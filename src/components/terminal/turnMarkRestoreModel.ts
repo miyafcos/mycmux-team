@@ -78,6 +78,26 @@ export interface PromptMatchResult {
   skipped: number;
 }
 
+export interface BufferTurnBoundary {
+  /** Absolute buffer row where the user prompt starts. */
+  line: number;
+  label: string;
+}
+
+export type UserPromptLinePredicate = (rawLogicalLine: string) => boolean;
+
+/** The user-input gutter observed in restored agent scrollback. */
+export const isUserPromptGutterLine: UserPromptLinePredicate = (raw) => {
+  if (!/^\s*❯(?=\s|$)/u.test(raw)) return false;
+  const body = stripDecoration(raw).trimEnd();
+  if (body.length === 0) return false;
+  // vitest flags a failing file with the same glyph, and a run in this pane
+  // leaves those rows in the scrollback. Observed in live data as
+  // "❯ unit tests/unit/x.test.ts(5tests|2failed) 71ms" -- a shape no prompt has.
+  if (/\(\d+\s*tests?[^)]*\)\s*\d+\s*ms$/u.test(body)) return false;
+  return true;
+};
+
 function stripDecoration(line: string): string {
   return line
     .replace(LEADING_DECORATION, "")
@@ -152,6 +172,44 @@ export function collectLogicalLines(
     row = next > row ? next : row + 1;
   }
   return { lines, nextRow: row };
+}
+
+/**
+ * Find user-turn boundaries directly in a rendered terminal buffer.
+ *
+ * The predicate owns the user/agent distinction; `stripDecoration` remains the
+ * single source of truth for removing gutter glyphs before a label is made.
+ */
+export function scanTurnBoundaries(
+  buffer: BufferLike,
+  isUserPromptLine: UserPromptLinePredicate = isUserPromptGutterLine,
+): BufferTurnBoundary[] {
+  const boundaries: BufferTurnBoundary[] = [];
+  const seenLines = new Set<number>();
+  let row = 0;
+  while (row < buffer.length) {
+    const chunk = collectLogicalLines(buffer, row, buffer.length);
+    for (let index = 0; index < chunk.lines.length; index += 1) {
+      const entry = chunk.lines[index];
+      if (!entry) continue;
+      if (seenLines.has(entry.line) || !isUserPromptLine(entry.text)) continue;
+      const label = turnLabelFrom(stripDecoration(entry.text));
+      if (label.length === 0) continue;
+      // AskUserQuestion uses `❯` for its choice cursor too. Only exclude a
+      // choice-shaped row when the surrounding rendered block has its UI
+      // footer; a real user prompt may legitimately start with `1.` or Submit.
+      const choiceShaped = /^(?:\d+\.\s|Submit(?: answers)?$|Type something\.?$|Chat about this$)/iu.test(label);
+      const nearby = chunk.lines.slice(Math.max(0, index - 12), index + 13);
+      const hasChoiceFooter = nearby.some((candidate) =>
+        /(?:Enter to select|(?:↑\/↓|Tab\/Arrow keys) to navigate)/iu.test(candidate.text));
+      if (choiceShaped && hasChoiceFooter) continue;
+      seenLines.add(entry.line);
+      boundaries.push({ line: entry.line, label });
+    }
+    if (chunk.nextRow <= row) break;
+    row = chunk.nextRow;
+  }
+  return boundaries;
 }
 
 /**

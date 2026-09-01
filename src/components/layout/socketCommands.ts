@@ -6,6 +6,8 @@ import {
   type SessionStatusSnapshotPayload,
 } from "../../lib/ipc";
 import type { AgentSessionKind, Pane, PaneTab, Workspace } from "../../types";
+import { agentIdForSessionKind } from "../../lib/agentSessionConfig";
+import { requiresLauncherDispatch } from "../../lib/launcherDispatch";
 import { isDeclaredTab, isRestorableTab, type RestorablePaneTab } from "../../lib/tabLifecycle";
 import type { PaneMetadata } from "../../stores/paneMetadataStore";
 import { deriveEffectiveStatus } from "../../lib/notificationStatus";
@@ -21,6 +23,7 @@ import {
 } from "../../lib/layoutColumns";
 import { applyLayoutMutation } from "../../lib/layoutMutation";
 import { collectPaneCloseVictims } from "../../lib/paneCloseImpact";
+import { invoke } from "@tauri-apps/api/core";
 
 type SocketArgs = Record<string, unknown> | null | undefined;
 type SpawnTarget = AgentSessionKind | "shell" | "web";
@@ -31,7 +34,7 @@ export interface SpawnPlan {
   mode: SpawnMode;
   launchEnv?: Record<string, string>;
   paneOptions: {
-    agentId: "shell-starter";
+    agentId: string;
     label?: string;
     cwd?: string;
     agentKind?: AgentSessionKind;
@@ -111,6 +114,10 @@ function optionalAgentKind(args: SocketArgs, ...keys: string[]): AgentSessionKin
   return value;
 }
 
+function agentIdForSpawnTarget(target: SpawnTarget): string {
+  return isAgentKind(target) ? agentIdForSessionKind(target) ?? "shell-starter" : "shell-starter";
+}
+
 export function resolveSpawnPlan(args: SocketArgs, handoffPromptPath?: string): SpawnPlan {
   const target = spawnTarget(args);
   const label = socketArgString(args, "label");
@@ -135,7 +142,7 @@ export function resolveSpawnPlan(args: SocketArgs, handoffPromptPath?: string): 
   const promptFile = socketArgString(args, "promptFile", "prompt_file");
   const resumeSessionId = socketArgString(args, "resumeSessionId", "resume_session_id");
   const paneOptions: SpawnPlan["paneOptions"] = {
-    agentId: "shell-starter",
+    agentId: agentIdForSpawnTarget(target),
     ...(label ? { label } : {}),
     ...(cwd ? { cwd } : {}),
   };
@@ -155,7 +162,12 @@ export function resolveSpawnPlan(args: SocketArgs, handoffPromptPath?: string): 
       MYCMUX_HANDOFF_FROM_SESSION: handoffFromSessionId,
       ...(handoffFromKind ? { MYCMUX_HANDOFF_FROM: handoffFromKind } : {}),
     };
-    return { target, mode: "handoff", launchEnv, paneOptions: { ...paneOptions, launchEnv } };
+    return {
+      target,
+      mode: "handoff",
+      launchEnv,
+      paneOptions: { ...paneOptions, agentKind: target, launchEnv },
+    };
   }
 
   if (promptFile) {
@@ -169,7 +181,12 @@ export function resolveSpawnPlan(args: SocketArgs, handoffPromptPath?: string): 
       MYCMUX_HANDOFF_FROM_SESSION: fromSessionId,
       ...(fromKind ? { MYCMUX_HANDOFF_FROM: fromKind } : {}),
     };
-    return { target, mode: "prompt", launchEnv, paneOptions: { ...paneOptions, launchEnv } };
+    return {
+      target,
+      mode: "prompt",
+      launchEnv,
+      paneOptions: { ...paneOptions, agentKind: target, launchEnv },
+    };
   }
 
   if (resumeSessionId) {
@@ -195,7 +212,12 @@ export function resolveSpawnPlan(args: SocketArgs, handoffPromptPath?: string): 
   if (target === "shell") return { target, mode: "shell", paneOptions };
 
   const launchEnv = { MYCMUX_LAUNCH_TARGET: target };
-  return { target, mode: "launch", launchEnv, paneOptions: { ...paneOptions, launchEnv } };
+  return {
+    target,
+    mode: "launch",
+    launchEnv,
+    paneOptions: { ...paneOptions, agentKind: target, launchEnv },
+  };
 }
 
 function socketArgInteger(args: SocketArgs, ...keys: string[]): number | undefined {
@@ -608,15 +630,18 @@ export async function startBackgroundTabSession(tab: RestorablePaneTab, pane: Pa
     import("../../lib/agents"),
     import("../../lib/ipc"),
   ]);
-  const agent = getAgent(tab.agentId) ?? getDefaultAgent();
-  const command = tab.commandArgv?.[0] ?? agent.command;
-  const commandArgs = tab.commandArgv?.length ? tab.commandArgv.slice(1) : agent.args;
   const launchEnv: Record<string, string> = {
     ...(tab.launchEnv ?? pane.launchEnv ?? {}),
     MYCMUX_PANE_SESSION_ID: tab.sessionId,
     MYCMUX_TAB_ID: tab.id,
   };
-  if (tab.agentId === "shell-starter") {
+  const launchThroughLauncher = !tab.commandArgv?.length && requiresLauncherDispatch(launchEnv);
+  const agent = launchThroughLauncher
+    ? getDefaultAgent()
+    : getAgent(tab.agentId) ?? getDefaultAgent();
+  const command = tab.commandArgv?.[0] ?? agent.command;
+  const commandArgs = tab.commandArgv?.length ? tab.commandArgv.slice(1) : agent.args;
+  if (launchThroughLauncher || tab.agentId === "shell-starter") {
     launchEnv.__CMUX_LAUNCHER_DONE = "1";
   }
 
@@ -890,6 +915,190 @@ function findTabById(workspaces: Workspace[], tabId: string): { workspace: Works
     }
   }
   return null;
+}
+
+const WEB_PUSH_NO_MATCH_ERROR = "web.push found no matching web tab in the target workspace";
+
+function socketOptionalBoolean(args: SocketArgs, key: string): boolean | undefined {
+  const value = args?.[key];
+  if (value === undefined) return undefined;
+  if (typeof value !== "boolean") throw new Error(`${key} must be a boolean`);
+  return value;
+}
+
+function webWorkspaceForArgs(
+  args: SocketArgs,
+  workspaces: Workspace[],
+  activeWorkspaceId: string | null,
+): Workspace | null {
+  const anchorSessionId = socketArgString(args, "anchorSessionId", "anchor_session_id");
+  if (anchorSessionId) {
+    return findTabBySessionId(workspaces, anchorSessionId)?.workspace ?? null;
+  }
+  return workspaces.find((workspace) => workspace.id === activeWorkspaceId) ?? null;
+}
+
+async function openWebPane(args: SocketArgs) {
+  const presetId = socketArgString(args, "presetId", "preset_id");
+  if (!presetId) throw new Error("web.open requires presetId");
+  const replaceAnchor = socketOptionalBoolean(args, "replaceAnchor") ?? false;
+  const { loadWebPanePresets } = await import("../workspace/webPaneApi");
+  const preset = (await loadWebPanePresets()).find((candidate) => candidate.id === presetId);
+  if (!preset) throw new Error(`unknown web preset: ${presetId}`);
+
+  const { useUiStore, useWorkspaceLayoutStore, useWorkspaceListStore } = await import(
+    "../../stores/workspaceStore"
+  );
+  const workspaceState = useWorkspaceListStore.getState();
+  const foregroundWorkspaceId = workspaceState.activeWorkspaceId;
+  const foregroundUi = {
+    activePaneId: useUiStore.getState().activePaneId,
+    lastActivePaneId: useUiStore.getState().lastActivePaneId,
+    focusRevision: useUiStore.getState().focusRevision,
+  };
+  const explicitAnchorSessionId = socketArgString(args, "anchorSessionId", "anchor_session_id");
+  const activeSessionId = useUiStore.getState().activePaneId;
+  const anchor = explicitAnchorSessionId
+    ? findTabBySessionId(workspaceState.workspaces, explicitAnchorSessionId)
+    : activeSessionId
+      ? findTabBySessionId(workspaceState.workspaces, activeSessionId)
+      : null;
+  if (explicitAnchorSessionId && !anchor) throw new Error("web.open anchor session not found");
+
+  const workspace = anchor?.workspace
+    ?? workspaceState.getWorkspace(workspaceState.activeWorkspaceId ?? "");
+  if (!workspace) throw new Error("web.open requires an active workspace or anchorSessionId");
+  const pane = anchor?.pane
+    ?? workspace.panes.find((candidate) => candidate.sessionId === activeSessionId)
+    ?? workspace.panes[0];
+  if (!pane) throw new Error("web.open requires a workspace with panes");
+  const anchorTab = anchor?.tab
+    ?? pane.tabs.find((candidate) => candidate.id === pane.activeTabId)
+    ?? pane.tabs[0];
+  if (replaceAnchor && !anchorTab) throw new Error("web.open replaceAnchor requires an anchor tab");
+  if (replaceAnchor && anchorTab?.type !== "terminal") {
+    throw new Error("web.open replaceAnchor only supports terminal tabs");
+  }
+
+  const beforeTabIds = new Set(pane.tabs.map((tab) => tab.id));
+  const layout = useWorkspaceLayoutStore.getState();
+  layout.addWebTabToPane(workspace.id, pane.id, { presetId, label: preset.label });
+  if (workspace.id === foregroundWorkspaceId) {
+    useUiStore.getState().setActivePaneId(null);
+  } else {
+    // addWebTabToPane is a human-oriented action and activates globally. A
+    // socket open in a background workspace must restore the operator state.
+    useUiStore.setState(foregroundUi);
+  }
+  const updatedPane = useWorkspaceListStore.getState().getWorkspace(workspace.id)?.panes
+    .find((candidate) => candidate.id === pane.id);
+  const created = updatedPane?.tabs.filter((tab) => !beforeTabIds.has(tab.id)) ?? [];
+  if (created.length !== 1 || created[0].type !== "web") {
+    for (const tab of created) layout.removeTabFromPane(workspace.id, pane.id, tab.id);
+    throw new Error("web.open could not identify the new web tab");
+  }
+
+  if (replaceAnchor && anchorTab) {
+    layout.removeTabFromPane(workspace.id, pane.id, anchorTab.id);
+    if (anchorTab.type === "terminal" && !isDeclaredTab(anchorTab)) {
+      const [{ evictTerminalCache }, { killSession }, { usePaneMetadataStore }] = await Promise.all([
+        import("../terminal/terminalCache"),
+        import("../../lib/ipc"),
+        import("../../stores/workspaceStore"),
+      ]);
+      evictTerminalCache(anchorTab.sessionId);
+      usePaneMetadataStore.getState().removeMetadata(anchorTab.sessionId);
+      void killSession(anchorTab.sessionId).catch((error) =>
+        console.warn("[mycmux] killSession failed", anchorTab.sessionId, error),
+      );
+    }
+  }
+  return { tabId: created[0].id };
+}
+
+async function listWebPanes() {
+  const { loadWebPanePresets } = await import("../workspace/webPaneApi");
+  const { useWorkspaceListStore } = await import("../../stores/workspaceStore");
+  const presets = new Map((await loadWebPanePresets()).map((preset) => [preset.id, preset]));
+  return useWorkspaceListStore.getState().workspaces.flatMap((workspace) => (
+    workspace.panes.flatMap((pane) => pane.tabs.flatMap((tab) => {
+      if (tab.type !== "web" || !tab.presetId) return [];
+      const preset = presets.get(tab.presetId);
+      if (!preset) return [];
+      return [{
+        tabId: tab.id,
+        presetId: tab.presetId,
+        url: preset.url,
+        title: tab.label ?? preset.label,
+        workspaceId: workspace.id,
+      }];
+    }))
+  ));
+}
+
+async function focusWebPane(args: SocketArgs) {
+  const tabId = socketArgString(args, "tabId", "tab_id");
+  if (!tabId) throw new Error("web.focus requires tabId");
+  const { useUiStore, useWorkspaceLayoutStore, useWorkspaceListStore } = await import(
+    "../../stores/workspaceStore"
+  );
+  const target = findTabById(useWorkspaceListStore.getState().workspaces, tabId);
+  if (!target || target.tab.type !== "web") throw new Error(`web tab not found: ${tabId}`);
+  // web.focus is the explicit foreground-changing socket command. Other socket
+  // activation paths continue to preserve the operator's visible workspace.
+  useWorkspaceListStore.getState().setActiveWorkspace(target.workspace.id);
+  useWorkspaceLayoutStore.getState().setActivePaneTab(
+    target.workspace.id,
+    target.pane.id,
+    target.tab.id,
+  );
+  useUiStore.getState().setActivePaneId(null);
+  return { tabId, workspaceId: target.workspace.id };
+}
+
+async function pushWebPane(args: SocketArgs) {
+  if (hasSocketArg(args, "files")) {
+    throw new Error("web.push files are not supported in this phase");
+  }
+  const tabId = socketArgString(args, "tabId", "tab_id");
+  const presetId = socketArgString(args, "presetId", "preset_id");
+  if (tabId && presetId) throw new Error("web.push accepts tabId or presetId, not both");
+  const submit = socketOptionalBoolean(args, "submit") ?? false;
+  const hasText = hasSocketArg(args, "text");
+  const text = args?.text;
+  if (hasText && typeof text !== "string") throw new Error("web.push text must be a string");
+  if (!hasText && !submit) throw new Error("web.push requires text or submit=true");
+
+  const { useWorkspaceListStore } = await import("../../stores/workspaceStore");
+  const workspaceState = useWorkspaceListStore.getState();
+  let target = tabId ? findTabById(workspaceState.workspaces, tabId) : null;
+  if (tabId && (!target || target.tab.type !== "web")) {
+    throw new Error(`web tab not found: ${tabId}`);
+  }
+  if (!tabId) {
+    const workspace = webWorkspaceForArgs(
+      args,
+      workspaceState.workspaces,
+      workspaceState.activeWorkspaceId,
+    );
+    if (!workspace) throw new Error(WEB_PUSH_NO_MATCH_ERROR);
+    const matchingPreset = presetId ?? "chatgpt";
+    const candidates = workspace.panes.flatMap((pane) => (
+      pane.tabs
+        .filter((tab) => tab.type === "web" && tab.presetId === matchingPreset)
+        .map((tab) => ({ workspace, pane, tab }))
+    ));
+    // PaneTab has no creation timestamp; append order is the persisted ordering
+    // available in Phase 1, so the last matching tab is the latest candidate.
+    target = candidates[candidates.length - 1] ?? null;
+  }
+  if (!target) throw new Error(WEB_PUSH_NO_MATCH_ERROR);
+
+  return invoke("webpane_push", {
+    tabId: target.tab.id,
+    ...(hasText ? { text } : {}),
+    submit,
+  });
 }
 
 async function declareTab(args: SocketArgs) {
@@ -1757,6 +1966,14 @@ export async function handleSocketCommand(cmd: string, args: SocketArgs): Promis
       return readPane(args);
     case "pane.move":
       return movePane(args);
+    case "web.open":
+      return openWebPane(args);
+    case "web.list":
+      return listWebPanes();
+    case "web.focus":
+      return focusWebPane(args);
+    case "web.push":
+      return pushWebPane(args);
     default:
       throw new Error(`Unknown socket command: ${cmd}`);
   }

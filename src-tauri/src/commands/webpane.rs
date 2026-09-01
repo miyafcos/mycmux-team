@@ -1,7 +1,12 @@
 use std::path::{Component, Path, PathBuf};
+use std::sync::OnceLock;
+use std::time::Duration;
 
+use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, LogicalPosition, LogicalSize, Manager, WebviewBuilder, WebviewUrl, Window};
+use tauri::{
+    AppHandle, LogicalPosition, LogicalSize, Manager, Webview, WebviewBuilder, WebviewUrl, Window,
+};
 
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -21,6 +26,34 @@ const WEB_PANE_PRESETS: &[WebPanePreset] = &[WebPanePreset {
 
 const WEB_PANE_KEYDOWN_EVENT: &str = "mycmux:web-pane-keydown";
 const WEB_PANE_SHORTCUT_STATE: &str = "__MYCMUX_WEB_PANE_SHORTCUT_STATE__";
+const WEB_PANE_PUSH_TIMEOUT: Duration = Duration::from_secs(5);
+const WEB_PANE_MAX_TEXT_BYTES: usize = 256 * 1024;
+const CHATGPT_COMPOSER_HOST: &str = "chatgpt.com";
+static WEB_PANE_PUSH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+static WEB_PANE_PUSH_RESULTS: OnceLock<
+    DashMap<
+        String,
+        (
+            String,
+            tokio::sync::oneshot::Sender<WebPanePushEventPayload>,
+        ),
+    >,
+> = OnceLock::new();
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WebPanePushEventPayload {
+    ok: bool,
+    error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebPanePushResult {
+    tab_id: String,
+    submitted: bool,
+    text_bytes: usize,
+}
 
 #[derive(Clone, Copy, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -163,6 +196,95 @@ fn shortcut_update_script(shortcuts: &[String]) -> Result<String, String> {
     ))
 }
 
+fn composer_push_script(
+    request_id: &str,
+    text: Option<&str>,
+    submit: bool,
+) -> Result<String, String> {
+    if text.is_none() && !submit {
+        return Err("web pane push requires text or submit=true".to_string());
+    }
+    if let Some(text) = text {
+        if text.len() > WEB_PANE_MAX_TEXT_BYTES {
+            return Err(format!(
+                "web pane text exceeds the {WEB_PANE_MAX_TEXT_BYTES}-byte limit"
+            ));
+        }
+    }
+
+    let request_id = serde_json::to_string(request_id)
+        .map_err(|error| format!("failed to serialize web pane push request: {error}"))?;
+    let insert_script = match text {
+        Some(text) => {
+            let text = serde_json::to_string(text)
+                .map_err(|error| format!("failed to serialize web pane text: {error}"))?;
+            format!(
+                r#"const text = {text};
+    composer.focus();
+    if (composer instanceof HTMLTextAreaElement) {{
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+      if (!setter) throw new Error("ChatGPT composer value setter is unavailable");
+      setter.call(composer, text);
+    }} else {{
+      composer.textContent = text;
+    }}
+    composer.dispatchEvent(new InputEvent("input", {{
+      bubbles: true,
+      inputType: "insertText",
+      data: text
+    }}));"#,
+            )
+        }
+        None => "composer.focus();".to_string(),
+    };
+    let submit_script = if submit {
+        r#"window.setTimeout(() => {
+      try {
+        const submitButton = document.querySelector('[data-testid="send-button"]')
+          ?? composer.closest("form")?.querySelector('button[type="submit"]');
+        if (!(submitButton instanceof HTMLButtonElement)) {
+          throw new Error("ChatGPT submit button was not found");
+        }
+        if (submitButton.disabled) throw new Error("ChatGPT submit button is disabled");
+        submitButton.click();
+        finish({ ok: true });
+      } catch (error) {
+        fail(error);
+      }
+    }, 0);"#
+    } else {
+        "finish({ ok: true });"
+    };
+
+    Ok(format!(
+        r##"(() => {{
+  const requestId = {request_id};
+  const finish = (payload) => {{
+    void window.__TAURI_INTERNALS__.invoke("webpane_push_result", {{
+      requestId,
+      ok: payload.ok,
+      error: payload.error ?? null
+    }})
+      .catch(() => undefined);
+  }};
+  const fail = (error) => finish({{
+    ok: false,
+    error: error instanceof Error ? error.message : String(error)
+  }});
+  try {{
+    const composer = document.querySelector("#prompt-textarea");
+    if (!(composer instanceof HTMLElement)) {{
+      throw new Error("ChatGPT composer #prompt-textarea was not found");
+    }}
+    {insert_script}
+    {submit_script}
+  }} catch (error) {{
+    fail(error);
+  }}
+}})();"##,
+    ))
+}
+
 fn set_webview_bounds(webview: &tauri::Webview, bounds: WebPaneBounds) -> Result<(), String> {
     let bounds = bounds.validate()?;
     webview
@@ -288,6 +410,96 @@ pub async fn webpane_destroy(app: AppHandle, tab_id: String) -> Result<(), Strin
     Ok(())
 }
 
+#[tauri::command]
+pub async fn webpane_push(
+    caller: Webview,
+    app: AppHandle,
+    tab_id: String,
+    text: Option<String>,
+    submit: bool,
+) -> Result<WebPanePushResult, String> {
+    if caller.label() != caller.window().label() {
+        return Err("webpane_push is only available to the primary app webview".to_string());
+    }
+    let _push_guard = WEB_PANE_PUSH_LOCK.lock().await;
+    let label = webview_label(&tab_id)?;
+    let webview = app
+        .get_webview(&label)
+        .ok_or_else(|| format!("web pane does not exist: {tab_id}"))?;
+    let current_url = webview
+        .url()
+        .map_err(|error| format!("failed to read web pane URL: {error}"))?;
+    let host = current_url.host_str().unwrap_or_default();
+    if host != CHATGPT_COMPOSER_HOST && !host.ends_with(&format!(".{CHATGPT_COMPOSER_HOST}")) {
+        return Err(format!(
+            "web pane is not on an allowed ChatGPT composer host: {host}"
+        ));
+    }
+    let request_id = uuid::Uuid::new_v4().to_string();
+    let script = composer_push_script(&request_id, text.as_deref(), submit)?;
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    WEB_PANE_PUSH_RESULTS
+        .get_or_init(DashMap::new)
+        .insert(request_id.clone(), (label.clone(), sender));
+
+    if let Err(error) = webview.eval(script) {
+        WEB_PANE_PUSH_RESULTS
+            .get_or_init(DashMap::new)
+            .remove(&request_id);
+        return Err(format!("failed to evaluate web pane push script: {error}"));
+    }
+
+    let payload = match tokio::time::timeout(WEB_PANE_PUSH_TIMEOUT, receiver).await {
+        Ok(Ok(payload)) => payload,
+        Ok(Err(_)) => {
+            WEB_PANE_PUSH_RESULTS
+                .get_or_init(DashMap::new)
+                .remove(&request_id);
+            return Err("web pane push result channel closed".to_string());
+        }
+        Err(_) => {
+            WEB_PANE_PUSH_RESULTS
+                .get_or_init(DashMap::new)
+                .remove(&request_id);
+            return Err("web pane push timed out waiting for the composer".to_string());
+        }
+    };
+    if !payload.ok {
+        return Err(payload
+            .error
+            .unwrap_or_else(|| "web pane push failed".to_string()));
+    }
+
+    Ok(WebPanePushResult {
+        tab_id,
+        submitted: submit,
+        text_bytes: text.as_ref().map_or(0, |value| value.len()),
+    })
+}
+
+#[tauri::command]
+pub async fn webpane_push_result(
+    caller: Webview,
+    request_id: String,
+    ok: bool,
+    error: Option<String>,
+) -> Result<(), String> {
+    let pending = WEB_PANE_PUSH_RESULTS.get_or_init(DashMap::new);
+    let expected_label = pending
+        .get(&request_id)
+        .map(|entry| entry.value().0.clone())
+        .ok_or_else(|| "unknown web pane push request".to_string())?;
+    if caller.label() != expected_label {
+        return Err("web pane push result came from the wrong webview".to_string());
+    }
+    let (_, (_, sender)) = pending
+        .remove(&request_id)
+        .ok_or_else(|| "web pane push request already completed".to_string())?;
+    sender
+        .send(WebPanePushEventPayload { ok, error })
+        .map_err(|_| "web pane push request receiver closed".to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -384,5 +596,48 @@ mod tests {
         assert!(script.contains(WEB_PANE_KEYDOWN_EVENT));
         assert!(script.contains("ctrl+alt+pagedown"));
         assert!(!script.contains("ctrl+c"));
+    }
+
+    #[test]
+    fn composer_push_inserts_without_submitting_by_default() {
+        let script = composer_push_script("push-result", Some("draft only"), false).unwrap();
+        assert!(script.contains("#prompt-textarea"));
+        assert!(script.contains("InputEvent"));
+        assert!(!script.contains("send-button"));
+        assert!(!script.contains("submitButton.click()"));
+    }
+
+    #[test]
+    fn composer_push_submits_only_when_explicitly_requested() {
+        let draft = composer_push_script("push-result", Some("draft"), false).unwrap();
+        let submitted = composer_push_script("push-result", Some("send"), true).unwrap();
+        assert!(!draft.contains("submitButton.click()"));
+        assert!(submitted.contains("submitButton.click()"));
+        assert!(submitted.contains("send-button"));
+    }
+
+    #[test]
+    fn composer_push_json_encodes_quotes_newlines_backslashes_and_script_text() {
+        let text = "quote: \"hello\"\npath: C:\\tmp\\file\n</script>";
+        let encoded = serde_json::to_string(text).unwrap();
+        let script = composer_push_script("push-result", Some(text), false).unwrap();
+        assert!(script.contains(&format!("const text = {encoded};")));
+        assert!(!script.contains("const text = \"quote: \"hello\""));
+    }
+
+    #[test]
+    fn composer_push_rejects_oversized_text_before_building_a_script() {
+        let at_limit = "a".repeat(WEB_PANE_MAX_TEXT_BYTES);
+        assert!(composer_push_script("push-result", Some(&at_limit), false).is_ok());
+        let oversized = "a".repeat(WEB_PANE_MAX_TEXT_BYTES + 1);
+        let error = composer_push_script("push-result", Some(&oversized), false).unwrap_err();
+        assert!(error.contains("exceeds"));
+        assert!(error.contains(&WEB_PANE_MAX_TEXT_BYTES.to_string()));
+    }
+
+    #[test]
+    fn composer_push_requires_text_unless_submit_is_requested() {
+        assert!(composer_push_script("push-result", None, false).is_err());
+        assert!(composer_push_script("push-result", None, true).is_ok());
     }
 }

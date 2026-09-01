@@ -113,6 +113,8 @@ function scriptedDeps(input: {
       return input.attention ?? attention();
     },
     sessionExists: () => input.exists ?? true,
+    claimPrompt: async () => true,
+    isCurrentLaunch: async () => true,
     now: () => 1_000 + read,
     sleep: async () => {},
     waitTimeoutMs: 1,
@@ -133,7 +135,7 @@ beforeEach(() => {
 });
 
 describe("submitAskQuestionChoice", () => {
-  it("sends exactly one numeric byte with no Enter, then confirms disappearance", async () => {
+  it("P2-02 sends exactly one numeric byte through the existing guarded path", async () => {
     ingestAskQuestionLines(sessionId, fixtures.single, 1, 7);
     const { deps, sent } = scriptedDeps({
       reads: [fixtures.single, ["PS C:\\>", "working"]],
@@ -388,7 +390,7 @@ describe("askQuestion fail-closed", () => {
     const { deps, sent } = scriptedDeps({ reads: [fixtures.single, fixtures.single] });
     const result = await submitAskQuestionChoice(sessionId, 2, deps);
     expect(result.keysSent).toEqual([{ kind: "text", text: "2" }]);
-    expect(result.stopReason).toBe("unchanged_screen");
+    expect(result.stopReason).toBe("timed_out");
     expect(sent).toHaveLength(1);
   });
 
@@ -431,25 +433,70 @@ describe("askQuestion fail-closed", () => {
     expect(keyText(sent)).toEqual([{ kind: "key", key: "enter" }]);
   });
 
-  it("rejects a parallel second submit with zero extra keys", async () => {
+  it("P2-03 lets only one window win the prompt CAS and quietly rejects double and late answers", async () => {
     ingestAskQuestionLines(sessionId, fixtures.single, 1, 7);
+    const claimed = new Set<string>();
     let release!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });
     const { deps, sent } = scriptedDeps({
-      reads: [fixtures.single, ["done"]],
+      reads: [fixtures.single, fixtures.single, ["done"]],
       send: async () => {
         await gate;
         return { unverified: true };
       },
     });
+    deps.claimPrompt = async (_session, promptId) => {
+      if (claimed.has(promptId)) return false;
+      claimed.add(promptId);
+      return true;
+    };
     const first = submitAskQuestionChoice(sessionId, 2, deps);
     const second = submitAskQuestionChoice(sessionId, 3, deps);
     const secondResult = await second;
-    expect(secondResult).toEqual({ ok: false, stopReason: "busy", keysSent: [] });
+    expect(secondResult).toEqual({ ok: false, stopReason: "already_answered", keysSent: [] });
+    expect(useAskQuestionStore.getState().bySession[sessionId].stopReason).toBeNull();
     release();
     const firstResult = await first;
     expect(firstResult.keysSent).toEqual([{ kind: "text", text: "2" }]);
     expect(sent).toHaveLength(1);
     expect(sent[0]?.text).toBe("2");
+    useAskQuestionStore.getState().resetForTests();
+    ingestAskQuestionLines(sessionId, fixtures.single, 10_000, 7);
+    deps.readTail = async () => fixtures.single;
+    const late = await submitAskQuestionChoice(sessionId, 3, deps);
+    expect(late.stopReason).toBe("already_answered");
+    expect(sent).toHaveLength(1);
+  });
+
+  it("P2-04 refuses a superseded hook launch before sending", async () => {
+    ingestAskQuestionLines(sessionId, fixtures.single, 1, 7);
+    const hookAttention = attention({ attentionId: "agent-hook:old-launch:event-a" });
+    const { deps, sent } = scriptedDeps({ reads: [fixtures.single], attention: hookAttention });
+    deps.isCurrentLaunch = async (_session, launchId) => {
+      expect(launchId).toBe("old-launch");
+      return false;
+    };
+
+    const result = await submitAskQuestionChoice(sessionId, 2, deps);
+
+    expect(result.stopReason).toBe("superseded_launch");
+    expect(sent).toEqual([]);
+    expect(useAskQuestionStore.getState().bySession[sessionId].stopReason).toBe("superseded_launch");
+  });
+
+  it("P2-06 leaves scanner-only behavior unchanged and skips the launch check", async () => {
+    ingestAskQuestionLines(sessionId, fixtures.single, 1, 7);
+    let launchChecks = 0;
+    const { deps, sent } = scriptedDeps({ reads: [fixtures.single, ["done"]] });
+    deps.isCurrentLaunch = async () => {
+      launchChecks += 1;
+      return false;
+    };
+
+    const result = await submitAskQuestionChoice(sessionId, 2, deps);
+
+    expect(result).toEqual({ ok: true, stopReason: null, keysSent: [{ kind: "text", text: "2" }] });
+    expect(sent).toHaveLength(1);
+    expect(launchChecks).toBe(0);
   });
 });
