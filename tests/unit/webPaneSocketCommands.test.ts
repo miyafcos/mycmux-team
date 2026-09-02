@@ -120,6 +120,44 @@ describe("web socket commands", () => {
     ]);
   });
 
+  it("still builds a web tab when pane.spawn splits for one", async () => {
+    // The split route is the one target: "web" is allowed on, so it has to keep
+    // working after spawn_tab started refusing the same target.
+    const result = await handleSocketCommand("pane.spawn", {
+      target: "web",
+      preset: "chatgpt",
+      anchorSessionId: anchor.sessionId,
+      direction: "right",
+    }) as { paneId: string; presetId: string };
+
+    expect(result.presetId).toBe("chatgpt");
+    const panes = useWorkspaceListStore.getState().getWorkspace("active")!.panes;
+    expect(panes).toHaveLength(2);
+    const created = panes.find((candidate) => candidate.id === result.paneId)!;
+    // The split makes the pane with its own terminal tab first, so the web tab
+    // arrives beside it and takes the foreground. That extra shell tab predates
+    // this change; what has to hold is that the web tab exists and is showing.
+    const web = created.tabs.find((tab) => tab.type === "web")!;
+    expect(web).toMatchObject({ type: "web", presetId: "chatgpt" });
+    expect(created.activeTabId).toBe(web.id);
+  });
+
+  it("refuses a web target on pane.spawn_tab instead of opening a shell", async () => {
+    // pane.spawn_tab adds a background tab via addTabToPaneWithOptions, which
+    // only builds terminal tabs and drops webPresetId. `spawn --target web`
+    // therefore opened a shell, which is what made the launcher's ChatGPT entry
+    // look broken from v0.59.0 until 2026-09-02.
+    await expect(handleSocketCommand("pane.spawn_tab", {
+      anchorSessionId: anchor.sessionId,
+      target: "web",
+      preset: "chatgpt",
+    })).rejects.toThrow("pane.spawn_tab cannot create a web tab");
+
+    const tabs = useWorkspaceListStore.getState().getWorkspace("active")!.panes[0].tabs;
+    expect(tabs).toHaveLength(1);
+    expect(tabs[0].type).toBe("terminal");
+  });
+
   it("focuses the explicitly requested web tab", async () => {
     const backgroundWeb = webTab("background-chat");
     const active = workspace("active", [pane("active-pane", [anchor])]);

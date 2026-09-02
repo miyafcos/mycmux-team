@@ -232,7 +232,7 @@ mod tests {
 
     const SERVE_MATCHING: &str = r#"{
         "Web": {
-            "host.example.ts.net:7683": {
+            "miyazaki.tail3c3d6a.ts.net:7683": {
                 "Handlers": { "/": { "Proxy": "http://127.0.0.1:7682" } }
             }
         }
@@ -240,7 +240,7 @@ mod tests {
 
     const SERVE_OTHER_PORT: &str = r#"{
         "Web": {
-            "host.example.ts.net:7683": {
+            "miyazaki.tail3c3d6a.ts.net:7683": {
                 "Handlers": { "/": { "Proxy": "http://127.0.0.1:3001" } }
             }
         }
@@ -252,10 +252,10 @@ mod tests {
             "7684": { "HTTP": true }
         },
         "Web": {
-            "host.example.ts.net:7683": {
+            "miyazaki.tail3c3d6a.ts.net:7683": {
                 "Handlers": { "/": { "Proxy": "http://127.0.0.1:7682" } }
             },
-            "host.example.ts.net:7684": {
+            "miyazaki.tail3c3d6a.ts.net:7684": {
                 "Handlers": { "/": { "Proxy": "http://127.0.0.1:3001" } }
             }
         }
@@ -265,11 +265,11 @@ mod tests {
     fn serve_json_matching_proxy_selects_public_host() {
         let entry = pick_entry(Some(SERVE_MATCHING), false, 7682, Some("100.103.126.82"))
             .expect("matching serve proxy should be selected");
-        assert_eq!(entry.host, "host.example.ts.net");
+        assert_eq!(entry.host, "miyazaki.tail3c3d6a.ts.net");
         assert_eq!(entry.port, 7683);
         assert_eq!(
             connection_url(&entry.host, entry.port, "tok"),
-            "http://host.example.ts.net:7683/?token=tok"
+            "http://miyazaki.tail3c3d6a.ts.net:7683/?token=tok"
         );
     }
 
@@ -301,7 +301,7 @@ mod tests {
     fn serve_matching_proxy_wins_over_bind_all() {
         let entry = pick_entry(Some(SERVE_MATCHING), true, 7682, Some("100.103.126.82"))
             .expect("serve must beat bind_all");
-        assert_eq!(entry.host, "host.example.ts.net");
+        assert_eq!(entry.host, "miyazaki.tail3c3d6a.ts.net");
         assert_eq!(entry.port, 7683);
     }
 
@@ -309,7 +309,7 @@ mod tests {
     fn two_handlers_selects_only_our_port() {
         let entry = pick_entry(Some(SERVE_TWO_HANDLERS), false, 7682, None)
             .expect("7682 proxy should win over 3001");
-        assert_eq!(entry.host, "host.example.ts.net");
+        assert_eq!(entry.host, "miyazaki.tail3c3d6a.ts.net");
         assert_eq!(entry.port, 7683);
     }
 }

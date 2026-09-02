@@ -41,7 +41,6 @@ import { onlineStrings } from "../online/onlineStrings";
 import { useSettingsStore } from "../../stores/settingsStore";
 import { PaneComposer } from "../composer/PaneComposer";
 import { isStartupSessionPending, subscribeStartupSessionGate } from "../../lib/startupSessionGate";
-import { loadWebPanePresets, type WebPanePreset } from "./webPaneApi";
 
 interface TerminalPaneProps {
   pane: Pane;
@@ -371,25 +370,11 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
   const clearNotification = usePaneMetadataStore((s) => s.clearNotification);
 
   const addTabToPane = useWorkspaceLayoutStore((s) => s.addTabToPane);
-  const addWebTabToPane = useWorkspaceLayoutStore((s) => s.addWebTabToPane);
   const removeTabFromPane = useWorkspaceLayoutStore((s) => s.removeTabFromPane);
   const setActivePaneTab = useWorkspaceLayoutStore((s) => s.setActivePaneTab);
   const openOrReloadHtmlPreviewPane = useWorkspaceLayoutStore((s) => s.openOrReloadHtmlPreviewPane);
   const setBrowserTabDirty = useWorkspaceLayoutStore((s) => s.setBrowserTabDirty);
   const refreshBrowserTabPreview = useWorkspaceLayoutStore((s) => s.refreshBrowserTabPreview);
-  const [webPanePresets, setWebPanePresets] = useState<WebPanePreset[]>([]);
-
-  useEffect(() => {
-    let cancelled = false;
-    void loadWebPanePresets()
-      .then((presets) => {
-        if (!cancelled) setWebPanePresets(presets);
-      })
-      .catch((error) => console.warn("[web-pane] failed to load presets", error));
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   // OSC 9988 from XTermWrapper. Match by pane.tabs membership (not activeTab)
   useEffect(() => {
@@ -545,10 +530,6 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
     addTabToPane(workspaceId, pane.id, agentId, type);
     focusController.focusPaneSoon(pane.id);
   }, [workspaceId, pane.id, addTabToPane]);
-
-  const handleAddWebTab = useCallback((presetId: string, label: string) => {
-    addWebTabToPane(workspaceId, pane.id, { presetId, label });
-  }, [workspaceId, pane.id, addWebTabToPane]);
 
   const handleRemoveTab = useCallback((tabId: string) => {
     const ws = useWorkspaceListStore.getState().getWorkspace(workspaceId);
@@ -837,8 +818,6 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
         } : undefined}
         onZoomToggle={handleZoomToggle}
         onAddTab={handleAddTab}
-        webPanePresets={webPanePresets}
-        onAddWebTab={handleAddWebTab}
         onRemoveTab={handleRemoveTab}
         onSelectTab={handleSelectTab}
         hasTerminalBuffer={hasTerminalBuffer}

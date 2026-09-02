@@ -1342,6 +1342,9 @@ if [ -z "$cmd" ]; then
       __web_chatgpt__)
         # Web タブはターミナルで動くコマンドではないので eval できない。
         # ソケット経由で mycmux 本体に「Web タブを開いて」と頼み、ここは畳む。
+        # web-open --replace-anchor を使う: 他の項目がシェルをそのプログラムに
+        # 置き換えるのと同じで、このタブ自体が ChatGPT タブになる。spawn は
+        # --split なしだと pane.spawn_tab に落ち、web を扱えないので使わない。
         local cli="$HOME/cmux-for-linux-dev-master/scripts/mycmux_agent_cli.py"
         local web_out="" web_rc=0
         tput cnorm >&$__CMUX_MENU_FD 2>/dev/null
@@ -1352,7 +1355,7 @@ if [ -z "$cmd" ]; then
 
 ' "$cli"
         else
-          web_out=$(PYTHONIOENCODING=utf-8 python "$cli" spawn --target web --preset chatgpt 2>&1)
+          web_out=$(PYTHONIOENCODING=utf-8 python "$cli" web-open --preset chatgpt --replace-anchor 2>&1)
           web_rc=$?
           # 失敗を握りつぶすと「押しても何も起きない」に見える。理由は必ず出す。
           if [ "$web_rc" -ne 0 ]; then

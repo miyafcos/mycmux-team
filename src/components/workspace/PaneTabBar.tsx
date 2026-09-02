@@ -53,7 +53,6 @@ import {
   type SavepointAgentKind,
 } from "../online/onlineSavepoints";
 import { openDashboardForTab } from "../layout/openDashboardForTab";
-import type { WebPanePreset } from "./webPaneApi";
 
 interface PaneTabBarProps {
   pane: Pane;
@@ -66,8 +65,6 @@ interface PaneTabBarProps {
   onSplitDown?: () => void;
   onZoomToggle?: () => void;
   onAddTab?: (agentId?: string, type?: PaneTab["type"]) => void;
-  webPanePresets?: readonly WebPanePreset[];
-  onAddWebTab?: (presetId: string, label: string) => void;
   onRemoveTab?: (tabId: string) => void;
   onSelectTab?: (tabId: string) => void;
   hasTerminalBuffer: (sessionId: string) => boolean;
@@ -78,15 +75,6 @@ const SplitRightIcon = () => (
     <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
     <line x1="12" y1="3" x2="12" y2="21"></line>
     <line x1="12" y1="12" x2="21" y2="12"></line>
-  </svg>
-);
-
-const WebPaneIcon = () => (
-  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-    <circle cx="12" cy="12" r="9"></circle>
-    <path d="M3 12h18"></path>
-    <path d="M12 3a15 15 0 0 1 0 18"></path>
-    <path d="M12 3a15 15 0 0 0 0 18"></path>
   </svg>
 );
 
@@ -995,8 +983,6 @@ export default memo(function PaneTabBar({
   onSplitDown,
   onZoomToggle,
   onAddTab,
-  webPanePresets = [],
-  onAddWebTab,
   onRemoveTab,
   onSelectTab,
   hasTerminalBuffer,
@@ -1477,19 +1463,9 @@ export default memo(function PaneTabBar({
           <PlusIcon />
         </button>
       )}
-      {visibleActions.includes("new-tab") && webPanePresets.map((preset) => (
-        <button
-          key={preset.id}
-          type="button"
-          className="pane-action-btn"
-          onClick={() => onAddWebTab?.(preset.id, preset.label)}
-          title={`Open ${preset.label} web tab`}
-          aria-label={`Open ${preset.label} web tab`}
-          style={{ margin: "0 1px", padding: "3px 5px", flexShrink: 0, order: 3 }}
-        >
-          <WebPaneIcon />
-        </button>
-      ))}
+      {/* No web-tab button here: a web tab is opened from the pane launcher's
+          "ChatGPT (Web)" entry (2026-09-02). A globe next to New terminal tab
+          read as a browser the pane did not have. */}
       {(visibleActions.length > 0 || overflowActions.length > 0) && (
         <div style={{ display: "flex", alignItems: "center", gap: 2, paddingRight: 6, flexShrink: 0, order: 4 }}>
           {visibleActions.includes("publish") && showPublishButton && (
@@ -1598,17 +1574,6 @@ export default memo(function PaneTabBar({
                       New terminal tab
                     </PaneTabContextMenuItem>
                   )}
-                  {overflowActions.includes("new-tab") && webPanePresets.map((preset) => (
-                    <PaneTabContextMenuItem
-                      key={preset.id}
-                      onClick={() => {
-                        setKebabOpen(false);
-                        onAddWebTab?.(preset.id, preset.label);
-                      }}
-                    >
-                      Open {preset.label} web tab
-                    </PaneTabContextMenuItem>
-                  ))}
                   {overflowActions.includes("publish") && showPublishButton && (
                     <PaneTabContextMenuItem
                       onClick={() => {

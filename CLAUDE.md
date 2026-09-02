@@ -52,7 +52,7 @@ python -m pytest tests/               # sync-command allowlist 契約テスト�
 
 - **push は既定 ON — ブランチもタグも** (2026-07-12 宮崎さん指示): master へのコミット後はそのまま `git push origin master` まで実施。リリースすべき変更がまとまったらタグも Claude 判断で打って push してよい (検証コマンド全通過が前提)。すべて事後報告。GitHub が常に最新になる設計が基本
 - 複数タグは1個ずつ push (multi-tag push は workflow trigger 漏れあり)
-- **updater の署名鍵は `~/.tauri/mycmux-updater.key` が正 (key-id `bbf2382d7a0753cc` = tauri.conf.json の pubkey)**。
+- **updater の署名鍵は `~/.tauri/mycmux-updater.key` が正**。key-id は 2026-08-31 実測で **`CC53077A2D38F2BB`** (ここは長く `bbf2382d7a0753cc` と書かれていたが、`tauri.conf.json` の pubkey と一致しない古い値だった)。
   パスワードは `~/.tauri/mycmux-updater.pass` に DPAPI で暗号化保存 (`ConvertTo-SecureString` で復号・平文ではない)。
   CI secret (`TAURI_KEY_PERSONAL` / `_PASSWORD`) は 2026-08-05 にこの鍵へ更新済み。
   - 経緯: 7/31 の鍵ローテートで `~/.tauri` と tauri.conf.json は新鍵に揃えたが **secret だけ旧鍵 (`edfd48df84ad2477`)
@@ -63,7 +63,10 @@ python -m pytest tests/               # sync-command allowlist 契約テスト�
     `$OutputEncoding` を BOM なしにしても再発)。**Bash から stdin で渡す**のが正:
     `printf '%s' "$(tr -d '\r\n' < ~/.tauri/mycmux-updater.key)" | gh secret set TAURI_KEY_PERSONAL --repo miyafcos/mycmux`
   - **リリース後の feed 検証は版数だけでは不十分**。latest.json の signature をデコードして key-id が
-    tauri.conf.json の pubkey と一致することまで確認する (一致しないと更新ボタンが検証エラーで失敗する)
+    tauri.conf.json の pubkey と一致することまで確認する (一致しないと更新ボタンが検証エラーで失敗する)。
+    **現行の key-id は `CC53077A2D38F2BB`** (2026-08-31 実測・v0.60.4 で 3 プラットフォームとも一致)。
+    minisign の署名は base64 を 1 段ほどいた 2 行目がさらに base64 で、その `[2:10]` が key ID
+    (little-endian)。先頭のコメント行を眺めても key-id は出てこない
 - **self-hosted runner の起動は `scripts/start-release-runner.ps1` を使う** (手動の env 剥がしをやめる)。
   BASH_FUNC_*/MYCMUX_*/CLAUDE* に加えて **FUGU_API_KEY 等の秘密系ユーザー env も剥がす** —
   剥がさないと runner が継承し、ビルド中の環境ダンプ経由で **CI ログに平文で残る**

@@ -105,7 +105,14 @@ export function normalizeComposerText(text: string): string {
 export interface ComposerPayload {
   /** The text keystrokes, without the submit key. Empty when there is nothing to send. */
   body: string;
-  /** Sent after the body, as its own write, so a failed body never submits alone. */
+  /**
+   * Sent after the body, as its own write, so a failed body never submits alone.
+   *
+   * Every target submits with CR today, which is why the composers hand the body
+   * to `pane.send_text` with `enter: true` and let it own the submit key: that
+   * route waits for the body to echo before pressing it. A target that submits
+   * with anything else cannot use `enter: true` and needs its own path.
+   */
   submitKey: string;
   /** True when newlines were folded away because the target could not take them. */
   foldedNewlines: boolean;

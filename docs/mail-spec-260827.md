@@ -366,7 +366,7 @@ mail-snapshot.json (表示用の確定結果・付録A)
 | `own_addresses` | string[] | 自動検出+手動追加 | 基本。全アカウント共通の本人判定集合 |
 | `urgent_after_days` | number | 3 | 基本 (0.5〜14) |
 | `vip_senders` | string[] | [] | 基本 |
-| `internal_domains` | string[] | ["example.co.jp"] | 詳細 |
+| `internal_domains` | string[] | ["edu-planning.co.jp"] | 詳細 |
 | `external_addresses` | string[] | [] | 詳細。社内ドメインだが社外扱い |
 | `company_bcc_address` | string | edu.math の完全アドレス | 詳細。会社アカウントからの下書きにのみ付与 |
 | `urgent_keywords` | string[] | ["至急","急ぎ","大至急"] | 詳細 |

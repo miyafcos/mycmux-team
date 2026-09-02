@@ -275,6 +275,15 @@ export function resolveSpawnTabPlan(
   if (hasCommandArgv) return resolveCommandArgvPlan(args, "pane.spawn_tab");
 
   if (!target) throw new Error("pane.spawn_tab requires commandArgv or target");
+  // A background tab is created by addTabToPaneWithOptions, which only makes
+  // terminal tabs: a web target would silently drop its preset and open a
+  // shell. Refusing loudly beats shipping a launcher entry that opens the
+  // wrong thing (2026-09-02). web.open is the route that can build a web tab.
+  if (target === "web") {
+    throw new Error(
+      "pane.spawn_tab cannot create a web tab; use web.open (or pane.spawn with a split)",
+    );
+  }
   const plan = resolveSpawnPlan(args, handoffPromptPath);
   return { mode: plan.mode, paneOptions: plan.paneOptions };
 }
@@ -1707,7 +1716,15 @@ async function sendPaneText(args: SocketArgs) {
       };
     }
 
-    const maxAttempts = key === null ? SEND_ENTER_MAX_ATTEMPTS : 1;
+    // Re-pressing Enter rescues a submit an agent would otherwise wait forever
+    // for, and that is worth an occasional stray CR when nobody is watching. A
+    // human at the pane composer is the opposite case: they can see an unsent
+    // line and press Enter themselves, while an invisible extra CR can answer
+    // whatever prompt the pane put up next. So that caller opts out.
+    // Frontend-internal: the CLI and the bridge never send it, so it stays a
+    // silent-fallback boolean rather than a validated part of the socket API.
+    const retrySubmit = socketArgBoolean(args, "retrySubmit", true);
+    const maxAttempts = key === null && retrySubmit ? SEND_ENTER_MAX_ATTEMPTS : 1;
     for (let attempts = 1; attempts <= maxAttempts; attempts += 1) {
       const rejected = await writePaneBytes(sessionId, keyBytes, args, inputRevision);
       if (rejected) return rejected;

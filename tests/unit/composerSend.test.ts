@@ -85,6 +85,16 @@ describe("buildComposerPayload", () => {
     });
   });
 
+  it("submits every target with a bare CR", () => {
+    // The composers do not send submitKey themselves: they hand the body to
+    // pane.send_text with enter:true, and that writes "\r". A target that ever
+    // needs a different submit key has to stop using enter:true, so pin the
+    // assumption here rather than discovering it as a pane that never submits.
+    for (const target of ["claude", "codex", "shell"] as const) {
+      expect(buildComposerPayload({ text: "x", target }).submitKey).toBe("\r");
+    }
+  });
+
   it("does not claim to have folded a single-line shell command", () => {
     expect(buildComposerPayload({ text: "ls", target: "shell" }).foldedNewlines).toBe(false);
   });

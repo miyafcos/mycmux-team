@@ -705,7 +705,10 @@ function Invoke-MycmuxWebTab {
   param([Parameter(Mandatory = $true)][string]$Preset)
 
   # A web tab is not a process, so there is nothing to exec here. Ask the
-  # mycmux backend over the socket to open one, then fall through to the shell.
+  # mycmux backend over the socket to open one in place of this tab: every other
+  # launcher entry replaces the shell with the program picked, and web-open
+  # --replace-anchor is how a tab that cannot host a PTY does the same. spawn
+  # without --split lands on pane.spawn_tab, which has no web branch.
   Clear-Host
   $cli = Join-Path $HOME "cmux-for-linux-dev-master\scripts\mycmux_agent_cli.py"
   if (-not (Test-Path $cli)) {
@@ -721,7 +724,7 @@ function Invoke-MycmuxWebTab {
   $prevEncoding = $env:PYTHONIOENCODING
   $env:PYTHONIOENCODING = "utf-8"
   try {
-    $output = & python $cli spawn --target web --preset $Preset 2>&1
+    $output = & python $cli web-open --preset $Preset --replace-anchor 2>&1
     $code = $LASTEXITCODE
   } finally {
     $env:PYTHONIOENCODING = $prevEncoding

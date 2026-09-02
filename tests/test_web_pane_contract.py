@@ -90,16 +90,42 @@ def test_web_tab_can_be_opened_from_the_launcher() -> None:
     assert '"ChatGPT (Web)"' in launcher, "menu label is missing"
     assert '"__web_chatgpt__"' in launcher, "menu command slot is missing"
     assert "__web_chatgpt__)" in launcher, "the dispatch never handles the web entry"
-    assert "--target web --preset chatgpt" in launcher, "the dispatch does not ask for a web tab"
+    assert "web-open --preset chatgpt --replace-anchor" in launcher, (
+        "the dispatch does not ask for a web tab in place of the launcher tab"
+    )
 
     cli = read("scripts/mycmux_agent_cli.py")
-    assert '"web"' in cli and "AGENT_TARGETS" in cli, "the CLI rejects --target web"
-    assert '"--preset"' in cli, "the CLI cannot pass a preset"
-    assert 'optional_arg(args, "preset"' in cli, "the preset never reaches the request"
+    assert '"web-open"' in cli, "the CLI has no web-open subcommand"
+    assert 'return "web.open"' in cli, "web-open never reaches the socket command"
+    assert '"replaceAnchor"' in cli, "the CLI cannot ask to replace the anchor tab"
 
     socket_commands = read("src/components/layout/socketCommands.ts")
-    assert 'target === "web"' in socket_commands, "pane.spawn has no web branch"
+    assert 'case "web.open"' in socket_commands, "the socket has no web.open branch"
     assert "addWebTabToPane(" in socket_commands, "the web branch never creates a web tab"
+
+
+def test_spawn_tab_refuses_a_web_target_instead_of_opening_a_shell() -> None:
+    """pane.spawn_tab builds terminal tabs only, so a web target must be refused.
+
+    `spawn --target web` (no --split) routes to pane.spawn_tab, whose
+    addTabToPaneWithOptions always calls makeTab(..., "terminal", ...) and drops
+    webPresetId on the floor. Between v0.59.0 and 2026-09-02 that is exactly what
+    the ChatGPT launcher entry did: it opened a background shell tab and looked
+    like the menu item was broken. Silence is the defect here, not the refusal.
+    """
+    socket_commands = read("src/components/layout/socketCommands.ts")
+    plan = socket_commands[socket_commands.index("export function resolveSpawnTabPlan(") :]
+    plan = plan[: plan.index("export function resolveSpawnOrigin(")]
+    assert 'target === "web"' in plan, "spawn_tab does not inspect a web target"
+    assert "pane.spawn_tab cannot create a web tab" in plan, "the refusal has no message"
+    assert "web.open" in plan, "the refusal does not name the route that works"
+
+    store = read("src/stores/workspaceLayoutStore.ts")
+    add_tab = store[store.index("  addTabToPaneWithOptions: (workspaceId, paneId, options) => {") :]
+    add_tab = add_tab[: add_tab.index("  declareTab:")]
+    assert "webPresetId" not in add_tab, (
+        "addTabToPaneWithOptions now understands presets -- revisit the refusal above"
+    )
 
 
 def test_every_pseudo_command_in_a_launcher_has_a_dispatch_arm() -> None:
@@ -145,7 +171,7 @@ def test_the_web_tab_launcher_arms_do_not_swallow_their_failure() -> None:
     shell = read("src-tauri/src/launcher.sh")
     arm = shell[shell.index("__web_chatgpt__)") :]
     arm = arm[: arm.index(";;")]
-    assert "--target web --preset chatgpt" in arm
+    assert "web-open --preset chatgpt --replace-anchor" in arm
     assert ">/dev/null 2>&1" not in arm, "the shell arm throws the failure away"
     assert "web_rc" in arm, "the shell arm never inspects the exit code"
 
@@ -153,7 +179,7 @@ def test_the_web_tab_launcher_arms_do_not_swallow_their_failure() -> None:
     assert "function Invoke-MycmuxWebTab" in ps, "the PowerShell arm has no handler"
     handler = ps[ps.index("function Invoke-MycmuxWebTab") :]
     handler = handler[: handler.index("function Invoke-MycmuxOption")]
-    assert "--target web --preset $Preset" in handler
+    assert "web-open --preset $Preset --replace-anchor" in handler
     assert "$LASTEXITCODE" in handler, "the PowerShell arm never inspects the exit code"
 
 
