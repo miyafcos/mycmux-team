@@ -7,6 +7,7 @@ import { NotificationsLayoutTab } from "./tabs/NotificationsLayoutTab";
 import { AiTab } from "./tabs/AiTab";
 import { AutomationTab } from "./tabs/AutomationTab";
 import { ResumeTab } from "./tabs/ResumeTab";
+import { LauncherTab } from "./tabs/LauncherTab";
 import { SavepointsTab } from "./tabs/SavepointsTab";
 import { RemoteTab } from "./tabs/RemoteTab";
 import { UsageTab } from "./tabs/UsageTab";
@@ -24,6 +25,7 @@ type SettingsTabId =
   | "ai"
   | "automation"
   | "resume"
+  | "launcher"
   | "savepoints"
   | "remote"
   | "usage"
@@ -55,6 +57,7 @@ const SETTINGS_SECTIONS: SettingsSectionDef[] = [
     label: "作業",
     tabs: [
       { id: "resume", label: "このPCの履歴から再開" },
+      { id: "launcher", label: "ランチャー" },
       { id: "savepoints", label: onlineStrings.settingsTabLabel },
       { id: "ai", label: aiSettingsStrings.tabLabel },
       { id: "automation", label: aiSettingsStrings.automationTabLabel },
@@ -225,6 +228,7 @@ export default function SettingsDialog({ closing = false, onClose, onOpenCrsmPal
             {activeTab === "notifications" && <NotificationsLayoutTab />}
             {activeTab === "ai" && <AiTab />}
             {activeTab === "automation" && <AutomationTab />}
+            {activeTab === "launcher" && <LauncherTab />}
             {activeTab === "resume" && <ResumeTab onOpenCrsmPalette={onOpenCrsmPalette} onClose={onClose} />}
             {activeTab === "savepoints" && (
               <SavepointsTab

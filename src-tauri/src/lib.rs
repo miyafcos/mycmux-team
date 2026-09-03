@@ -364,6 +364,7 @@ pub fn run() {
             commands::attention::attention_list_tracked,
             commands::workspace::load_persistent_data,
             commands::workspace::save_persistent_data,
+            commands::launcher::launcher_list_dirs,
             commands::webpane::webpane_list_presets,
             commands::webpane::webpane_create,
             commands::webpane::webpane_update,

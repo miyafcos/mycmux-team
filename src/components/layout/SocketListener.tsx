@@ -86,7 +86,7 @@ import {
   filterAlreadyRestoredConfigs,
   restoreWorkspaceConfigs,
 } from "../../lib/workspaceRestore";
-import { isDeclaredTab, isRestorableTab } from "../../lib/tabLifecycle";
+import { isDeclaredTab, isRestorableTab, tabHasPty } from "../../lib/tabLifecycle";
 import {
   capTurnMarkPersistSnapshots,
   getTurnMarkPersistSnapshot,
@@ -426,7 +426,7 @@ function getMappingKind(
 }
 
 function isRestorableTabConfig(tab: PaneTabConfig): boolean {
-  return tab.type !== "web" && isRestorableTab(tab);
+  return tabHasPty(tab) && isRestorableTab(tab);
 }
 
 function getTabConfigKind(
@@ -601,7 +601,7 @@ export function collectWorkspaceConfigSessionIds(configs: WorkspaceConfig[]): st
   for (const config of configs) {
     for (const pane of config.panes) {
       for (const tab of pane.tabs ?? []) {
-        if (tab.type !== "web" && isRestorableTabConfig(tab) && tab.tab_id) {
+        if (isRestorableTabConfig(tab) && tab.tab_id) {
           tabIds.add(tab.tab_id);
         }
       }
@@ -1181,7 +1181,13 @@ export function toConfig(
             agent_id: tab.agentId,
             label: tab.label ?? null,
             label_source: tab.labelSource ?? null,
-            type: tab.type === "web" ? "web" as const : "terminal" as const,
+            // A launcher tab owns no PTY. Reporting it as a terminal made a
+            // caller's `send` look delivered while landing nowhere.
+            type: tab.type === "web"
+              ? "web" as const
+              : tab.type === "launcher"
+                ? "launcher" as const
+                : "terminal" as const,
             preset_id: tab.type === "web" ? tab.presetId ?? null : null,
             cwd: terminal ? tabMeta?.cwd ?? tab.cwd ?? paneCwd : null,
             last_process: null,

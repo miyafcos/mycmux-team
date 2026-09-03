@@ -1071,7 +1071,12 @@ export interface PaneTabConfig {
   agent_id: string;
   label?: string | null;
   label_source?: "user" | "ai" | null;
-  type?: "terminal" | "web" | null;
+  /**
+   * "launcher" holds no PTY, so a caller that reads this over the socket must
+   * not send keystrokes to it. It used to be reported as "terminal", which made
+   * a delegation script's `send` look like it succeeded while going nowhere.
+   */
+  type?: "terminal" | "web" | "launcher" | null;
   preset_id?: string | null;
   cwd?: string | null;
   last_process?: string | null;
@@ -1537,4 +1542,22 @@ export async function cancelCliLogin(loginId: string): Promise<void> {
 
 export async function listCliLoginSessions(): Promise<CliLoginSessionStatus[]> {
   return invoke<CliLoginSessionStatus[]>("list_cli_login_sessions");
+}
+
+// ─── Launcher commands ─────────────────────────────────────────────
+
+export interface LauncherDirEntry {
+  label: string;
+  path: string;
+}
+
+export interface LauncherDirs {
+  dev: LauncherDirEntry[];
+  anken: LauncherDirEntry[];
+  mru: string[];
+}
+
+/** The same two files launcher.sh reads; absent files come back empty. */
+export async function listLauncherDirs(): Promise<LauncherDirs> {
+  return invoke<LauncherDirs>("launcher_list_dirs");
 }

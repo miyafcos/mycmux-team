@@ -189,7 +189,8 @@ export function shouldShowPublishButton(
   activeTab: PaneTab | undefined,
   activeMeta: Pick<PaneMetadata, "agentKind" | "agentSessionId" | "claudeSessionId"> | undefined,
 ): boolean {
-  if (!activeTab || activeTab.type === "browser" || activeTab.type === "online" || activeTab.type === "web") return false;
+  if (!activeTab || activeTab.type === "browser" || activeTab.type === "online" || activeTab.type === "web"
+    || activeTab.type === "launcher") return false;
   if (activeMeta?.agentKind === "claude-codex" || activeTab.agentKind === "claude-codex") {
     return false;
   }
@@ -1456,7 +1457,7 @@ export default memo(function PaneTabBar({
       {visibleActions.includes("new-tab") && (
         <button
           className="pane-action-btn"
-          onClick={() => onAddTab?.(getDefaultAgent().id, "terminal")}
+          onClick={() => onAddTab?.(getDefaultAgent().id, "launcher")}
           title="New terminal tab"
           style={{ margin: "0 1px", padding: "3px 5px", flexShrink: 0, order: 3 }}
         >
@@ -1568,7 +1569,7 @@ export default memo(function PaneTabBar({
                     <PaneTabContextMenuItem
                       onClick={() => {
                         setKebabOpen(false);
-                        onAddTab?.(getDefaultAgent().id, "terminal");
+                        onAddTab?.(getDefaultAgent().id, "launcher");
                       }}
                     >
                       New terminal tab

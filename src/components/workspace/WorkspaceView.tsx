@@ -14,6 +14,7 @@ import { fitLayoutSizes } from "../../lib/layoutMetrics";
 import { terminalLayoutSignatureOf } from "../../lib/terminalLayoutSignature";
 import { focusController } from "../../lib/focusController";
 import { evictTerminalCache } from "../terminal/XTermWrapper";
+import { tabHasPty } from "../../lib/tabLifecycle";
 import { beforePaneClose } from "../../lib/paneCloseLifecycle";
 import { confirmPaneClose } from "../../lib/paneCloseConfirmation";
 import { useSavepointDragStore } from "../../stores/savepointDragStore";
@@ -74,7 +75,7 @@ export const TerminalGrid = memo(function TerminalGrid({
     {
       beforePaneClose(currentPane);
       for (const tab of currentPane.tabs) {
-        if (tab.type === "web") continue;
+        if (!tabHasPty(tab)) continue;
         evictTerminalCache(tab.sessionId);
         killSession(tab.sessionId).catch((err) =>
           console.warn("[mycmux] killSession failed", tab.sessionId, err),

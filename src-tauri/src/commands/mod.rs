@@ -6,6 +6,7 @@ pub mod agent_prompts;
 pub mod crsm;
 pub mod dispatch;
 pub mod fs;
+pub mod launcher;
 pub mod online;
 pub mod online_publish;
 pub mod next_action;

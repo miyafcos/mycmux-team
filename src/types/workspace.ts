@@ -39,7 +39,14 @@ export interface PaneTab {
   label?: string;
   /** Who set `label`. Absent means user-set (pre-migration data is treated as user-set). */
   labelSource?: "user" | "ai";
-  type?: "terminal" | "browser" | "online" | "web";
+  /**
+   * "launcher" is the React launch picker a fresh tab opens on. It holds no
+   * PTY: picking an entry appends a real terminal tab and closes this one, so
+   * an older build that does not know the value renders an empty pane rather
+   * than losing data (the persisted field is a free-form string on the Rust
+   * side).
+   */
+  type?: "terminal" | "browser" | "online" | "web" | "launcher";
   /** Native child-webview preset. Present only when type is "web". */
   presetId?: string;
   cwd?: string;

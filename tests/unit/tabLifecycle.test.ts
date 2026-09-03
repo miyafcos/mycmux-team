@@ -4,6 +4,7 @@ import {
   isRestorableTab,
   KNOWN_LIFECYCLES,
   partitionTabsForRestore,
+  tabHasPty,
 } from "../../src/lib/tabLifecycle";
 import type { PaneTab } from "../../src/types/workspace";
 
@@ -44,5 +45,28 @@ describe("tabLifecycle", () => {
     // APIs lives in src/lib/tabLifecycle.typecheck.ts (checked by tsc);
     // this test file is not type-checked by the root tsconfig.
     expect(isRestorableTab(tab("existing"))).toBe(true);
+  });
+});
+
+describe("tabHasPty", () => {
+  it("excludes the tab types that own no process", () => {
+    // A web tab is a child webview and a launcher tab is a React picker.
+    // Reporting either as a terminal made a delegation script's `send` look
+    // delivered while landing nowhere.
+    expect(tabHasPty({ type: "web" })).toBe(false);
+    expect(tabHasPty({ type: "launcher" })).toBe(false);
+  });
+
+  it("keeps terminals, including the ones that predate the field", () => {
+    expect(tabHasPty({ type: "terminal" })).toBe(true);
+    expect(tabHasPty({})).toBe(true);
+    expect(tabHasPty({ type: null })).toBe(true);
+  });
+
+  it("leaves browser and online on the true side, as they were", () => {
+    // Not an endorsement: they hold no PTY either, but moving them is a
+    // behaviour change of its own and is deliberately not made here.
+    expect(tabHasPty({ type: "browser" })).toBe(true);
+    expect(tabHasPty({ type: "online" })).toBe(true);
   });
 });

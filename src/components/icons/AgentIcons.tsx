@@ -81,6 +81,50 @@ export function AntigravityAgentIcon({ size = 14 }: { size?: number }) {
   );
 }
 
+// Google's four-point spark. Antigravity ships its own mark (the arch above),
+// so the web Gemini row cannot borrow it — the two products read as one brand
+// otherwise. Drawn on the transparent ground the spark is designed for; its own
+// gradient carries enough contrast for both themes.
+export function GeminiAgentIcon({ size = 12, ...props }: AgentIconProps) {
+  const gradientId = useId();
+  return (
+    <svg {...iconProps(size)} {...props}>
+      <defs>
+        <linearGradient id={gradientId} x1="3" y1="3" x2="21" y2="21" gradientUnits="userSpaceOnUse">
+          <stop stopColor="#4285f4" />
+          <stop offset="50%" stopColor="#9b72cb" />
+          <stop offset="100%" stopColor="#d96570" />
+        </linearGradient>
+      </defs>
+      <path
+        fill={`url(#${gradientId})`}
+        d="M11.04 19.32Q12 21.51 12 24q0-2.49.93-4.68.96-2.19 2.58-3.81t3.81-2.55Q21.51 12 24 12q-2.49 0-4.68-.93a12.3 12.3 0 0 1-3.81-2.58 12.3 12.3 0 0 1-2.58-3.81Q12 2.49 12 0q0 2.49-.96 4.68-.93 2.19-2.55 3.81a12.3 12.3 0 0 1-3.81 2.58Q2.49 12 0 12q2.49 0 4.68.96 2.19.93 3.81 2.55t2.55 3.81"
+      />
+    </svg>
+  );
+}
+
+// NotebookLM on its own plate, the treatment Codex and Grok use, so the mark
+// keeps its contrast whichever theme the pane is painted in. The glyph is a
+// bound notebook with a turned page — approximated from the product mark, which
+// ships no public SVG.
+export function NotebookLmAgentIcon({ size = 12, ...props }: AgentIconProps) {
+  const gradientId = useId();
+  return (
+    <svg {...iconProps(size)} {...props}>
+      <defs>
+        <linearGradient id={gradientId} x1="3" y1="2" x2="21" y2="22" gradientUnits="userSpaceOnUse">
+          <stop stopColor="#4285f4" />
+          <stop offset="100%" stopColor="#9b72cb" />
+        </linearGradient>
+      </defs>
+      <rect width="24" height="24" rx="5" fill={`url(#${gradientId})`} />
+      <path fill="#fff" d="M8.4 5.4h6l3.6 3.6v8.05a1.55 1.55 0 0 1-1.55 1.55H8.4a1.55 1.55 0 0 1-1.55-1.55V6.95A1.55 1.55 0 0 1 8.4 5.4m5.5 1.5v2.75h2.75z" />
+      <rect x="5" y="5.4" width="1.5" height="13.2" rx=".75" fill="#fff" opacity=".55" />
+    </svg>
+  );
+}
+
 export function HybridAgentIcon({ size = 12 }: Pick<AgentIconProps, "size">) {
   const overlapSize = Math.max(1, Math.round(size * 0.68));
   return (
@@ -101,6 +145,8 @@ const chipStyles: Record<string, CSSProperties> = {
   "claude-codex": { background: "rgba(125,204,151,.10)", borderColor: "rgba(125,204,151,.30)" },
   grok: { background: "rgba(243,139,168,.10)", borderColor: "rgba(243,139,168,.30)" },
   antigravity: { background: "rgba(66,133,244,.10)", borderColor: "rgba(66,133,244,.30)" },
+  gemini: { background: "rgba(155,114,203,.12)", borderColor: "rgba(155,114,203,.30)" },
+  notebooklm: { background: "rgba(66,133,244,.10)", borderColor: "rgba(66,133,244,.30)" },
 };
 
 export function AgentKindIcon({ kind, size = 14, chip = true }: AgentKindIconProps) {
@@ -114,6 +160,10 @@ export function AgentKindIcon({ kind, size = 14, chip = true }: AgentKindIconPro
           ? GrokAgentIcon
         : kind === "antigravity"
           ? AntigravityAgentIcon
+        : kind === "gemini"
+          ? GeminiAgentIcon
+        : kind === "notebooklm"
+          ? NotebookLmAgentIcon
           : null;
 
   if (!Icon) return null;

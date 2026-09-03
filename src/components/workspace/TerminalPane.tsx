@@ -19,6 +19,7 @@ import { terminalPaneStrings } from "./terminalPaneStrings";
 import XTermWrapper, { evictTerminalCache, hasTerminalBuffer } from "../terminal/XTermWrapper";
 import BrowserPane from "./BrowserPane";
 import WebPaneStatusBar from "./WebPaneStatusBar";
+import LauncherPane from "./LauncherPane";
 import OnlinePanel from "../online/OnlinePanel";
 import {
   useWorkspaceLayoutStore,
@@ -858,6 +859,17 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
               onDirtyChange={handleBrowserDirtyChange}
               onZoomToggle={handleZoomToggle}
               onSaved={handleBrowserSaved}
+            />
+          </ErrorBoundary>
+        ) : activeTab?.type === "launcher" ? (
+          <ErrorBoundary>
+            <LauncherPane
+              workspaceId={workspaceId}
+              paneId={pane.id}
+              tabId={activeTab.id}
+              sessionId={activeTab.sessionId}
+              isActive={isActive}
+              cwd={activeTab.cwd ?? paneCwd}
             />
           </ErrorBoundary>
         ) : activeTab?.type === "web" ? (

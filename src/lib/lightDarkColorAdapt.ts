@@ -111,6 +111,20 @@ export class LightDarkColorAdapt {
     this.pending = "";
   }
 
+  /**
+   * Hands back the bytes held mid-escape and empties the buffer.
+   *
+   * `pending` is always a verbatim slice of the input, so a caller that stops
+   * adapting can write it straight through and the terminal still receives the
+   * sequence whole. Use this instead of `reset()` whenever the pane keeps
+   * rendering - `reset()` is for the paths that clear the screen anyway.
+   */
+  flushPending(): string {
+    const held = this.pending;
+    this.pending = "";
+    return held;
+  }
+
   transform(chunk: string): string {
     const input = this.pending + chunk;
     this.pending = "";
@@ -206,12 +220,23 @@ export class LightDarkColorAdaptController {
 
   private readonly adapter = new LightDarkColorAdapt();
 
+  /**
+   * Eligibility is re-evaluated per chunk against the pane's process title,
+   * which the Rust monitor polls every 10 seconds, so it flips whenever the
+   * adapted CLI spawns a child. When it flipped off, this used to `reset()` the
+   * adapter and drop whatever it was holding mid-escape: the tail of that
+   * sequence then reached the terminal on its own and rendered as literal text
+   * ("2;33;36m"), which the TUI wiped on its next full repaint. That is what
+   * agy panes showed as an occasional flash-and-reload (2026-09-03).
+   *
+   * Carrying the held bytes across the switch keeps the byte stream intact -
+   * unadapted for that one sequence, which is the honest outcome once the pane
+   * is no longer eligible.
+   */
   transform(chunk: string, enabled: boolean): string {
-    if (this.enabled && !enabled) {
-      this.adapter.reset();
-    }
+    const carried = this.enabled && !enabled ? this.adapter.flushPending() : "";
     this.enabled = enabled;
-    return enabled ? this.adapter.transform(chunk) : chunk;
+    return enabled ? this.adapter.transform(chunk) : carried + chunk;
   }
 
   reset(): void {

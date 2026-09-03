@@ -74,6 +74,13 @@ interface SettingsState {
   // column splits are the primary flow, but the button is toggleable
   // for symmetry with the split-down button.
   showSplitRightButton: boolean;
+  /**
+   * Launcher rows the operator has switched off. Values are catalog targets
+   * ("claude", "web-gemini") and the section keys "dev" / "anken" / "resume".
+   * Hiding only, never removing: a built-in comes back by unchecking it, and
+   * an id that no longer exists is ignored rather than breaking the list.
+   */
+  launcherHiddenIds: string[];
   /** Diagram-flight animation shown before a grouping layout commit. */
   groupingApplyAnimationEnabled: boolean;
   dispatchWatchdogEnabled: boolean;
@@ -103,6 +110,7 @@ interface SettingsState {
   setHideSessionsWithoutUserMessages: (v: boolean) => void;
   setShowSplitDownButton: (v: boolean) => void;
   setShowSplitRightButton: (v: boolean) => void;
+  setLauncherHiddenIds: (v: string[]) => void;
   setGroupingApplyAnimationEnabled: (v: boolean) => void;
   setDispatchWatchdogEnabled: (v: boolean) => void;
   setDispatchWatchdogIntervalMinutes: (v: number) => void;
@@ -134,6 +142,7 @@ export const useSettingsStore = create<SettingsState>()(
       hideSessionsWithoutUserMessages: true,
       showSplitDownButton: false,
       showSplitRightButton: true,
+      launcherHiddenIds: [],
       groupingApplyAnimationEnabled: true,
       dispatchWatchdogEnabled: true,
       dispatchWatchdogIntervalMinutes: 10,
@@ -158,6 +167,7 @@ export const useSettingsStore = create<SettingsState>()(
       setHideSessionsWithoutUserMessages: (v) => set({ hideSessionsWithoutUserMessages: v }),
       setShowSplitDownButton: (v) => set({ showSplitDownButton: v }),
       setShowSplitRightButton: (v) => set({ showSplitRightButton: v }),
+      setLauncherHiddenIds: (v) => set({ launcherHiddenIds: v }),
       setGroupingApplyAnimationEnabled: (v) => set({ groupingApplyAnimationEnabled: v }),
       setDispatchWatchdogEnabled: (v) => set({ dispatchWatchdogEnabled: v }),
       setDispatchWatchdogIntervalMinutes: (v) => set({ dispatchWatchdogIntervalMinutes: v }),

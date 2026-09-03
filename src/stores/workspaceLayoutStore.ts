@@ -123,11 +123,16 @@ function buildPanes(
         // the target out of launchEnv — the same path pane.spawn already uses.
         const agentId = spec?.target === SHELL_TARGET ? SHELL_TARGET : defaultAgentId;
         const launchEnv = buildLaunchSpecEnv(spec);
+        // A pane with nothing picked used to drop into the launcher's own
+        // ANSI menu inside the PTY. It opens the React picker instead; a
+        // chosen target (or a plain shell) still starts its process straight
+        // away, so only the undecided pane changes.
+        const tabType = launchEnv || spec?.target === SHELL_TARGET ? "terminal" : "launcher";
         const tab = makeTab(
           workspaceId,
           paneId,
           agentId,
-          "terminal",
+          tabType,
           launchEnv
             ? { launchEnv, agentKind: getCatalogEntry(spec?.target)?.agentKind }
             : undefined,
@@ -798,7 +803,9 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
     // Always use default agent for new split panes (unless explicitly specified)
     const agId = agentId ?? getDefaultAgent().id;
     const paneId = uuid();
-    const tab = makeTab(workspaceId, paneId, agId);
+    // Nothing was picked for this split, so it opens the launcher rather
+    // than a PTY nobody has told what to run.
+    const tab = makeTab(workspaceId, paneId, agId, "launcher");
     const newPane: Pane = {
       id: paneId,
       agentId: agId,

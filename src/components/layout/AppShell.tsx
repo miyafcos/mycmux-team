@@ -56,6 +56,7 @@ import { focusController } from "../../lib/focusController";
 import { OVERLAY_EXIT_MS, useDeferredUnmount } from "../../hooks/useDeferredUnmount";
 import { message } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
+import { tabHasPty } from "../../lib/tabLifecycle";
 import { beforePaneClose } from "../../lib/paneCloseLifecycle";
 import { confirmPaneClose } from "../../lib/paneCloseConfirmation";
 import {
@@ -772,7 +773,7 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
         pushClosedWorkspace(ws, focusedSessionId);
         for (const pane of ws.panes) {
           for (const tab of pane.tabs) {
-            if (tab.type === "web") continue;
+            if (!tabHasPty(tab)) continue;
             evictTerminalCache(tab.sessionId);
             killSession(tab.sessionId).catch((err) =>
               console.warn("[mycmux] killSession failed", tab.sessionId, err),
@@ -782,7 +783,7 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
         }
       }
       const workspaceSessionIds = ws?.panes.flatMap((pane) => (
-        pane.tabs.filter((tab) => tab.type !== "web").map((tab) => tab.sessionId)
+        pane.tabs.filter(tabHasPty).map((tab) => tab.sessionId)
       )) ?? [];
       await removeWorkspaceScrollback(id, workspaceSessionIds).catch((err) =>
         console.warn("[mycmux] removeWorkspaceScrollback failed", id, err),
@@ -1039,7 +1040,7 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
                 && !await confirmPaneClose([currentPane], "pane")) return;
               beforePaneClose(currentPane);
               for (const tab of currentPane.tabs) {
-                if (tab.type === "web") continue;
+                if (!tabHasPty(tab)) continue;
                 evictTerminalCache(tab.sessionId);
                 killSession(tab.sessionId).catch((err) =>
                   console.warn("[mycmux] killSession failed", tab.sessionId, err),
