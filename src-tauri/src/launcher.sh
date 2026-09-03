@@ -660,6 +660,7 @@ __read_menu_event() {
       case "${k2}${k3}" in
         '[A'|'OA') __MENU_EVENT=up ;;
         '[B'|'OB') __MENU_EVENT=down ;;
+        '[C'|'OC') __MENU_EVENT=right ;;
       esac
       ;;
     k|K) __MENU_EVENT=up ;;
@@ -669,6 +670,7 @@ __read_menu_event() {
     /) __MENU_EVENT=slash ;;
     d|D) __MENU_EVENT=dirkey ;;
     a|A) __MENU_EVENT=ankenkey ;;
+    m|M) __MENU_EVENT=right ;;
     [0-9]) __MENU_EVENT=digit; __MENU_DIGIT="$key" ;;
   esac
 }
@@ -801,6 +803,263 @@ if [ -n "$MYCMUX_RESUME" ]; then
   return 0 2>/dev/null || exit 0
 fi
 
+# Web タブはターミナルで動くコマンドではないので eval できない。ソケット経由で
+# mycmux 本体に「Web タブを開いて」と頼む。--replace-anchor を使うのは、他の項目が
+# シェルをそのプログラムに置き換えるのと同じで、このタブ自体がそのサービスのタブに
+# なるため (spawn は --split なしだと pane.spawn_tab に落ち、web を扱えない)。
+# メニューからも MYCMUX_LAUNCH_TARGET からも同じ経路を通す。
+__open_web_tab() {
+  local preset="$1"
+  local cli="$HOME/cmux-for-linux-dev-master/scripts/mycmux_agent_cli.py"
+  local web_out="" web_rc=0
+  if [ ! -f "$cli" ]; then
+    printf '  mycmux_agent_cli.py が見つかりません:
+    %s
+
+' "$cli"
+    return 1
+  fi
+  web_out=$(PYTHONIOENCODING=utf-8 python "$cli" web-open --preset "$preset" --replace-anchor 2>&1)
+  web_rc=$?
+  # 失敗を握りつぶすと「押しても何も起きない」に見える。理由は必ず出す。
+  if [ "$web_rc" -ne 0 ]; then
+    printf '  Web タブを開けませんでした (exit %s):
+' "$web_rc"
+    printf '    %s
+' "$web_out"
+    printf '
+'
+  fi
+  return $web_rc
+}
+
+# 疑似コマンド __web_<preset>__ から preset id を取り出して開く。
+__open_web_tab_from_pseudo_command() {
+  local preset="$1"
+  preset="${preset#__web_}"
+  preset="${preset%__}"
+  __open_web_tab "$preset"
+}
+
+# --- 起動スペック (model / effort) -------------------------------------------
+# GUI の New Workspace とランチャーのモデル選択が、同じ変換をここに集まる。
+# resume / handoff には掛けない (再開先には既にモデルがあり、launcher.ps1 と
+# 挙動を揃えるため)。
+__MYCMUX_LAUNCH_MODEL=""
+__MYCMUX_LAUNCH_EFFORT=""
+
+# コマンドラインにそのまま載る値なので、フラグと誤認されない形だけ通す。
+# src/lib/agentCatalog.ts の sanitizeLaunchSpecValue と同じ規則。
+__launch_spec_value() {
+  local value="$1"
+  # 前後の空白を落としてから見る (launcher.ps1 の .Trim() と揃える)
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  [ -z "$value" ] && { printf ''; return 0; }
+  [ "${#value}" -gt 64 ] && { printf ''; return 0; }
+  case "$value" in
+    [A-Za-z0-9]*) ;;
+    *) printf ''; return 0 ;;
+  esac
+  case "$value" in
+    *[!A-Za-z0-9._-]*) printf ''; return 0 ;;
+  esac
+  printf '%s' "$value"
+  return 0
+}
+
+# 読んだら env から消す。以降の子プロセスへ漏らさないため。
+__read_launch_spec_from_env() {
+  __MYCMUX_LAUNCH_MODEL="$(__launch_spec_value "${MYCMUX_LAUNCH_MODEL:-}")"
+  __MYCMUX_LAUNCH_EFFORT="$(__launch_spec_value "${MYCMUX_LAUNCH_EFFORT:-}")"
+  unset MYCMUX_LAUNCH_MODEL MYCMUX_LAUNCH_EFFORT
+  return 0
+}
+
+# フラグは実行ファイルの直後に挟む。末尾に足すと `codex resume <id>` の位置引数を
+# 飲み込んでしまう。
+__add_launch_spec_to_cmd() {
+  local cmd="$1"
+  if [ -z "$cmd" ] || { [ -z "$__MYCMUX_LAUNCH_MODEL" ] && [ -z "$__MYCMUX_LAUNCH_EFFORT" ]; }; then
+    printf '%s' "$cmd"
+    return 0
+  fi
+  local head="${cmd%% *}"
+  local rest="${cmd#"$head"}"
+  local leaf="${head##*/}"
+  local extra=""
+  case "$leaf" in
+    claude|claude-codex)
+      [ -n "$__MYCMUX_LAUNCH_MODEL" ] && extra="$extra --model $__MYCMUX_LAUNCH_MODEL"
+      [ -n "$__MYCMUX_LAUNCH_EFFORT" ] && extra="$extra --effort $__MYCMUX_LAUNCH_EFFORT"
+      ;;
+    codex)
+      [ -n "$__MYCMUX_LAUNCH_MODEL" ] && extra="$extra --model $__MYCMUX_LAUNCH_MODEL"
+      # codex に native な effort フラグは無い (config 上書きで渡す)
+      [ -n "$__MYCMUX_LAUNCH_EFFORT" ] && extra="$extra -c model_reasoning_effort=$__MYCMUX_LAUNCH_EFFORT"
+      ;;
+    grok)
+      [ -n "$__MYCMUX_LAUNCH_MODEL" ] && extra="$extra --model $__MYCMUX_LAUNCH_MODEL"
+      [ -n "$__MYCMUX_LAUNCH_EFFORT" ] && extra="$extra --reasoning-effort $__MYCMUX_LAUNCH_EFFORT"
+      ;;
+    agy)
+      [ -n "$__MYCMUX_LAUNCH_MODEL" ] && extra="$extra --model $__MYCMUX_LAUNCH_MODEL"
+      [ -n "$__MYCMUX_LAUNCH_EFFORT" ] && extra="$extra --effort $__MYCMUX_LAUNCH_EFFORT"
+      ;;
+    *)
+      printf '%s' "$cmd"
+      return 0
+      ;;
+  esac
+  printf '%s%s%s' "$head" "$extra" "$rest"
+  return 0
+}
+
+__read_launch_spec_from_env
+
+# --- 起動スペックの選択肢 -----------------------------------------------------
+# src/lib/agentCatalog.ts の AGENT_CATALOG と同じ内容。ズレは
+# tests/test_launcher_catalog_contract.py が機械検出する (GUI 側を台帳化したのは
+# そもそもこの2重管理がズレていたため)。1行 = "表示名|値"。
+__spec_models_for() {
+  case "$1" in
+    claude)
+      printf '%s\n' "Fable (flagship)|fable" "Opus|opus" "Sonnet|sonnet" "Haiku|haiku" ;;
+    codex|claude-codex)
+      printf '%s\n' "Sol (flagship)|gpt-5.6-sol" "Terra (standard)|gpt-5.6-terra" "Luna (light)|gpt-5.6-luna" ;;
+    agy)
+      printf '%s\n' \
+        "Gemini 3.1 Pro (High)|gemini-3.1-pro-high" \
+        "Gemini 3.1 Pro (Low)|gemini-3.1-pro-low" \
+        "Gemini 3.8 Flash (High)|gemini-3.8-flash-high" \
+        "Gemini 3.8 Flash (Medium)|gemini-3.8-flash-medium" \
+        "Gemini 3.8 Flash (Low)|gemini-3.8-flash-low" \
+        "Claude Opus 4.6 (Thinking)|claude-opus-4-6-thinking" \
+        "Claude Sonnet 4.6 (Thinking)|claude-sonnet-4-6" ;;
+    # grok はモデル ID 一覧を公開しておらず、fcc backend はアカウント次第。
+    # 一覧を持たず「入力する」で受ける。
+    grok|claude-codex-open) : ;;
+  esac
+  return 0
+}
+
+__spec_efforts_for() {
+  case "$1" in
+    claude|claude-codex|claude-codex-open) printf '%s\n' low medium high xhigh max ;;
+    codex) printf '%s\n' none low medium high xhigh max ;;
+    grok|agy) printf '%s\n' low medium high ;;
+  esac
+  return 0
+}
+
+__spec_has_target() {
+  case "$1" in
+    claude|codex|claude-codex|claude-codex-open|grok|agy) return 0 ;;
+  esac
+  return 1
+}
+
+# 1画面の選択メニュー。先頭は必ず「(default)」= フラグを付けない。
+# 呼び出し前に __SPEC_LABELS / __SPEC_VALUES を組んでおく。
+# 結果は __SPEC_RESULT、Esc / ← / q なら 1 を返す。
+__spec_menu() {
+  local title="$1" note="${2:-}"
+  local total=${#__SPEC_LABELS[@]}
+  local sel=0 i num marker line
+  __open_menu_fd
+  while true; do
+    printf "\033[H\033[2J" >&$__CMUX_MENU_FD
+    echo "" >&$__CMUX_MENU_FD
+    echo "  $title" >&$__CMUX_MENU_FD
+    [ -n "$note" ] && echo "  $note" >&$__CMUX_MENU_FD
+    echo "" >&$__CMUX_MENU_FD
+    for i in "${!__SPEC_LABELS[@]}"; do
+      num=$((i + 1))
+      if [ "$i" -eq "$sel" ]; then marker=">"; else marker=" "; fi
+      line="${marker} ${num}. ${__SPEC_LABELS[$i]}"
+      if [ -n "${__SPEC_VALUES[$i]}" ] && [ "${__SPEC_VALUES[$i]}" != "__type__" ] \
+        && [ "${__SPEC_LABELS[$i]}" != "${__SPEC_VALUES[$i]}" ]; then
+        line="${line}  (${__SPEC_VALUES[$i]})"
+      fi
+      echo "$line" >&$__CMUX_MENU_FD
+    done
+    echo "" >&$__CMUX_MENU_FD
+    echo "  ^v: move   Enter/number: select   Esc: back" >&$__CMUX_MENU_FD
+
+    __read_menu_event
+    case "$__MENU_EVENT" in
+      eof|quit|esc) return 1 ;;
+      up) ((sel--)); [ $sel -lt 0 ] && sel=$((total - 1)); continue ;;
+      down) ((sel++)); [ $sel -ge $total ] && sel=0; continue ;;
+      digit)
+        i=$((__MENU_DIGIT - 1))
+        [ "$i" -lt 0 ] || [ "$i" -ge "$total" ] && continue
+        sel=$i
+        ;;
+      enter|right) ;;
+      *) continue ;;
+    esac
+
+    if [ "${__SPEC_VALUES[$sel]}" = "__type__" ]; then
+      printf "\033[H\033[2J" >&$__CMUX_MENU_FD
+      echo "" >&$__CMUX_MENU_FD
+      echo "  $title" >&$__CMUX_MENU_FD
+      echo "" >&$__CMUX_MENU_FD
+      printf "  > " >&$__CMUX_MENU_FD
+      local typed="" trimmed=""
+      IFS= read -ru "$__CMUX_MENU_FD" typed
+      # 何も打たずに Enter は「既定でよい」と読む (launcher.ps1 と同じ扱い)
+      trimmed="$(printf '%s' "$typed" | tr -d '[:space:]')"
+      if [ -z "$trimmed" ]; then
+        __SPEC_RESULT=""
+        return 0
+      fi
+      __SPEC_RESULT="$(__launch_spec_value "$typed")"
+      if [ -z "$__SPEC_RESULT" ]; then
+        echo "" >&$__CMUX_MENU_FD
+        echo "  使えない値です (英数字で始まり、英数字と . _ - のみ)" >&$__CMUX_MENU_FD
+        sleep 1.2
+        continue
+      fi
+      return 0
+    fi
+    __SPEC_RESULT="${__SPEC_VALUES[$sel]}"
+    return 0
+  done
+}
+
+# 1項目ぶんの model → effort を順に選ぶ。0 = 起動へ / 1 = メニューへ戻る。
+__launch_spec_menu() {
+  local target="$1" label="$2"
+  __spec_has_target "$target" || return 1
+
+  local entry
+  __SPEC_LABELS=("(default)"); __SPEC_VALUES=("")
+  while IFS= read -r entry; do
+    [ -z "$entry" ] && continue
+    __SPEC_LABELS+=("${entry%%|*}")
+    __SPEC_VALUES+=("${entry#*|}")
+  done < <(__spec_models_for "$target")
+  __SPEC_LABELS+=("入力する..."); __SPEC_VALUES+=("__type__")
+  __spec_menu "$label - model" || return 1
+  local model="$__SPEC_RESULT"
+
+  local note="model: (default)"
+  [ -n "$model" ] && note="model: $model"
+  __SPEC_LABELS=("(default)"); __SPEC_VALUES=("")
+  while IFS= read -r entry; do
+    [ -z "$entry" ] && continue
+    __SPEC_LABELS+=("$entry")
+    __SPEC_VALUES+=("$entry")
+  done < <(__spec_efforts_for "$target")
+  __SPEC_LABELS+=("入力する..."); __SPEC_VALUES+=("__type__")
+  __spec_menu "$label - effort" "$note" || return 1
+
+  __MYCMUX_LAUNCH_MODEL="$model"
+  __MYCMUX_LAUNCH_EFFORT="$__SPEC_RESULT"
+  return 0
+}
+
 if [ -n "$MYCMUX_LAUNCH_TARGET" ]; then
   case "$MYCMUX_LAUNCH_TARGET" in
     claude)
@@ -832,6 +1091,21 @@ if [ -n "$MYCMUX_LAUNCH_TARGET" ]; then
       ;;
     custom)
       cmd="__custom__"
+      ;;
+    chatgpt|web-chatgpt)
+      cmd="__web_chatgpt__"
+      ;;
+    web-gemini|gemini-web)
+      cmd="__web_gemini__"
+      ;;
+    web-grok|grok-web)
+      cmd="__web_grok__"
+      ;;
+    web-claude|claude-web|claude-ai)
+      cmd="__web_claude__"
+      ;;
+    web-notebooklm|notebooklm)
+      cmd="__web_notebooklm__"
       ;;
     gemini|agy|antigravity)
       # Gemini CLI was sunset for individual accounts on 2026-06-18; agy (Antigravity CLI) replaces it
@@ -1285,6 +1559,10 @@ if [ -z "$cmd" ]; then
     "claude-codex (Open Models)"
     "Antigravity (agy)"
     "ChatGPT (Web)"
+    "Gemini (Web)"
+    "Grok (Web)"
+    "Claude.ai (Web)"
+    "NotebookLM (Web)"
     "Claude Code (resume)"
     "Codex (resume)"
     "claude-codex (resume)"
@@ -1295,6 +1573,22 @@ if [ -z "$cmd" ]; then
     "Change directory (最近・フォルダを辿る)..."
   )
 
+  # options / commands と同じ並び。model / effort を取れる行だけ target を持つ
+  # (→ か m で起動スペックのメニューに入れる行)。長さの一致は
+  # tests/test_launcher_catalog_contract.py が検査する。
+  spec_targets=(
+    "claude"
+    "codex"
+    "claude-codex"
+    "grok"
+    "claude-codex-open"
+    "agy"
+    "" "" "" "" ""
+    "" "" "" ""
+    ""
+    "" "" ""
+  )
+
   commands=(
     "claude --allow-dangerously-skip-permissions --permission-mode auto"
     "codex --no-alt-screen"
@@ -1303,6 +1597,10 @@ if [ -z "$cmd" ]; then
     "claude-codex --backend fcc"
     "agy"
     "__web_chatgpt__"
+    "__web_gemini__"
+    "__web_grok__"
+    "__web_claude__"
+    "__web_notebooklm__"
     "claude --allow-dangerously-skip-permissions --permission-mode auto --resume"
     "codex resume --no-alt-screen"
     "claude-codex --resume"
@@ -1332,41 +1630,19 @@ if [ -z "$cmd" ]; then
       fi
     done
     echo "" >&$__CMUX_MENU_FD
-    echo "  ^v: move   Enter/number: select   d: 開発dir   a: 案件dir   /: custom   Esc/q: shell" >&$__CMUX_MENU_FD
+    echo "  ^v: move   Enter/number: select   ->/m: model   d: 開発dir   a: 案件dir   /: custom   Esc/q: shell" >&$__CMUX_MENU_FD
   }
 
   # 選択中の項目がメニュー内で完結するものなら処理して 0 (メニュー継続) か 2 (起動済み) を返す。
   # 1 を返したときだけ呼び出し側が break して cmd を eval する。
   __try_selected_menu_command() {
     case "${commands[$selected]}" in
-      __web_chatgpt__)
-        # Web タブはターミナルで動くコマンドではないので eval できない。
-        # ソケット経由で mycmux 本体に「Web タブを開いて」と頼み、ここは畳む。
-        # web-open --replace-anchor を使う: 他の項目がシェルをそのプログラムに
-        # 置き換えるのと同じで、このタブ自体が ChatGPT タブになる。spawn は
-        # --split なしだと pane.spawn_tab に落ち、web を扱えないので使わない。
-        local cli="$HOME/cmux-for-linux-dev-master/scripts/mycmux_agent_cli.py"
-        local web_out="" web_rc=0
+      __web_chatgpt__|__web_gemini__|__web_grok__|__web_claude__|__web_notebooklm__)
+        # 実処理は __open_web_tab (MYCMUX_LAUNCH_TARGET と共有)。
+        # ここはメニューを畳んで結果を返すだけ。
         tput cnorm >&$__CMUX_MENU_FD 2>/dev/null
         __close_menu_fd 2>/dev/null || true
-        if [ ! -f "$cli" ]; then
-          printf '  mycmux_agent_cli.py が見つかりません:
-    %s
-
-' "$cli"
-        else
-          web_out=$(PYTHONIOENCODING=utf-8 python "$cli" web-open --preset chatgpt --replace-anchor 2>&1)
-          web_rc=$?
-          # 失敗を握りつぶすと「押しても何も起きない」に見える。理由は必ず出す。
-          if [ "$web_rc" -ne 0 ]; then
-            printf '  Web タブを開けませんでした (exit %s):
-' "$web_rc"
-            printf '    %s
-' "$web_out"
-            printf '
-'
-          fi
-        fi
+        __open_web_tab_from_pseudo_command "${commands[$selected]}"
         return 2
         ;;
       __dir_dev__|__dir_anken__|__dir__)
@@ -1406,6 +1682,14 @@ if [ -z "$cmd" ]; then
         break
         ;;
       slash) selected=11; break ;;
+      # → / m はこの行の model と effort を選んでから起動する。Enter と数字キーは
+      # 触っていない — 従来どおり CLI の既定で即起動する。
+      right)
+        if __launch_spec_menu "${spec_targets[$selected]}" "${options[$selected]}"; then
+          break
+        fi
+        draw_menu
+        ;;
       dirkey) __launch_dir_menu dev ;;
       ankenkey) __launch_dir_menu anken ;;
       digit)
@@ -1475,6 +1759,15 @@ if [ "$cmd" = "__custom__" ]; then
   fi
 fi
 
+# MYCMUX_LAUNCH_TARGET=web-* で来た場合。Web タブはプロセスではないので eval せず、
+# ここで開いてシェルに戻る (メニュー経由の場合は既に処理済みでここには来ない)。
+case "$cmd" in
+  __web_chatgpt__|__web_gemini__|__web_grok__|__web_claude__|__web_notebooklm__)
+    __open_web_tab_from_pseudo_command "$cmd"
+    cmd=""
+    ;;
+esac
+
 if [ -n "$cmd" ]; then
   if [[ "$cmd" == *"fugu"* ]]; then
     __ensure_fugu_env
@@ -1497,6 +1790,7 @@ if [ -n "$cmd" ]; then
       cmd="grok --session-id $__sid${cmd#grok}"
     fi
   fi
+  cmd="$(__add_launch_spec_to_cmd "$cmd")"
   __track_command_session "$cmd" "$MYCMUX_PANE_SESSION_ID"
   if [ -n "${__CMUX_MENU_FD:-}" ]; then
     echo "Starting..." >&$__CMUX_MENU_FD

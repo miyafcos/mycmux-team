@@ -9,7 +9,9 @@ import {
   createWebPane,
   destroyWebPane,
   updateWebPane,
+  WEB_PANE_SIGNIN_EVENT,
   type WebPaneBounds,
+  type WebPaneSigninEvent,
 } from "./webPaneApi";
 import {
   deriveWebPaneForwardedShortcuts,
@@ -88,6 +90,9 @@ export default function WebPaneController() {
   const openingRef = useRef(new Set<string>());
   const failedRef = useRef(new Set<string>());
   const lastFrameRef = useRef(new Map<string, string>());
+  // Tabs whose profile folder is currently held by a sign-in browser window.
+  // Recreating a webview then would fight the other process for the folder.
+  const suspendedRef = useRef(new Set<string>());
   const operationsRef = useRef(new Map<string, Promise<void>>());
   const dragBlockedRef = useRef(false);
   const forwardedShortcutsRef = useRef(new Set<string>());
@@ -105,6 +110,34 @@ export default function WebPaneController() {
         forwardedShortcutsRef.current,
         new Set(desiredRef.current.keys()),
       );
+    }).then((cleanup) => {
+      if (cancelled) cleanup();
+      else unlisten = cleanup;
+    });
+    return () => {
+      unlisten?.();
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+    void listen<WebPaneSigninEvent>(WEB_PANE_SIGNIN_EVENT, (event) => {
+      const { tabIds, state } = event.payload;
+      for (const tabId of tabIds) {
+        if (state === "running") {
+          // Rust already closed these webviews to free the profile folder, so
+          // forget they exist -- otherwise the pane stays blank for good.
+          suspendedRef.current.add(tabId);
+          createdRef.current.delete(tabId);
+          openingRef.current.delete(tabId);
+          failedRef.current.delete(tabId);
+          lastFrameRef.current.delete(tabId);
+        } else {
+          suspendedRef.current.delete(tabId);
+        }
+      }
     }).then((cleanup) => {
       if (cancelled) cleanup();
       else unlisten = cleanup;
@@ -157,6 +190,7 @@ export default function WebPaneController() {
       const blocked = dragBlockedRef.current || domOccluded;
 
       for (const [tabId, presetId] of desiredRef.current) {
+        if (suspendedRef.current.has(tabId)) continue;
         const bounds = blocked ? null : webPaneBoundsForHost(findHost(tabId));
         const key = `${frameKey(bounds)}:${shortcutsSignature}`;
 

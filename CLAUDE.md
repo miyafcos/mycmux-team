@@ -72,7 +72,8 @@ python -m pytest tests/               # sync-command allowlist 契約テスト�
   剥がさないと runner が継承し、ビルド中の環境ダンプ経由で **CI ログに平文で残る**
   (run 30975163089 で実害。ログに出た鍵はローテーション推奨)。bash の Git 解決チェックも内蔵
 - タグ push 後の updater feed: CI の mirror ステップは secret 未設定で**成功表示のままスキップされる**。`scripts/mirror-personal-updater-feed.ps1 -SourceTag vX.Y.Z` をローカル実行し latest.json の version を確認
-- **リリース後は公開ミラーも更新**: `git commit-tree "master^{tree}" -p <team masterのHEAD> -m "sync: ..."` で履歴を持ち込まない sync コミットを作り `git push public <sha>:refs/heads/master`。ブランチをそのまま public へ push するのは禁止 (private 履歴が漏れる)
+- **リリース後は公開ミラーも更新**: `git commit-tree "master^{tree}" -p <team masterのHEAD> -m "sync: ..."` で履歴を持ち込まない sync コミットを作り `git push public <sha>:refs/heads/master`。ブランチをそのまま public へ push するのは禁止 (private 履歴が漏れる)。**2026-09-02 から `release-local.ps1` の最終段でこれを自動実行する** (tree が既に一致していれば SKIP)
+- **`miyafcos/mycmux-team` を private にすると更新ボタンが死ぬ**。updater の endpoint は認証ヘッダを持たない匿名 URL (`.../releases/download/mycmux-personal-updater/latest.json`) なので、repo が private だと**全バージョンの資産が匿名 GET で 404** になる。endpoint は exe にビルド時に焼き込まれるため、向け先を変えても**既に配ったビルドは救えない** (次の版から)。2026-09-01 に private 化されて 9/2 まで気づかず、v0.60.4 の更新も落ちていた。feed 検証 (`verify_updater_feed.py`) は匿名で取りに行くので、この状態は必ず FAIL で出る
 
 ## Codex 委譲時の注意
 

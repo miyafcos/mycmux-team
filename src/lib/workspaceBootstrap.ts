@@ -8,7 +8,13 @@
  * free of store access so they can be unit tested in the node environment.
  */
 import type { GridTemplateId, Pane } from "../types";
-import { useWorkspaceLayoutStore, useWorkspaceListStore } from "../stores/workspaceStore";
+import type { PaneLaunchSpec } from "./agentCatalog";
+import {
+  usePaneMetadataStore,
+  useUiStore,
+  useWorkspaceLayoutStore,
+  useWorkspaceListStore,
+} from "../stores/workspaceStore";
 
 export const DEFAULT_WORKSPACE_NAME = "Terminal";
 export const DEFAULT_WORKSPACE_GRID: GridTemplateId = "1x1";
@@ -58,6 +64,60 @@ export function applyCwdToPanes(panes: Pane[], cwd: string): Pane[] {
 export interface CreateWorkspaceAtCwdOptions {
   name?: string;
   gridTemplateId?: GridTemplateId;
+  /** Per-pane agent / model / effort. Absent panes open the launcher menu. */
+  paneSpecs?: Record<number, PaneLaunchSpec>;
+}
+
+/**
+ * Folder names repeat, and the one-click path uses the folder name verbatim, so
+ * a second workspace in the same folder would be indistinguishable in the
+ * sidebar. Numbers the duplicate instead.
+ *
+ * ponytail: gives up after 99 and reuses the base name — past that the sidebar
+ * is the real problem, not the suffix. Switch to a counter on the store if
+ * anyone ever gets there.
+ */
+export function uniqueWorkspaceName(base: string, existing: Iterable<string>): string {
+  const taken = new Set(existing);
+  if (!taken.has(base)) return base;
+  for (let n = 2; n <= 99; n += 1) {
+    const candidate = `${base} ${n}`;
+    if (!taken.has(candidate)) return candidate;
+  }
+  return base;
+}
+
+/**
+ * The folder the user is currently looking at, used to seed a new workspace so
+ * the one-click path lands where they already are instead of in the home
+ * directory. Prefers the live PTY cwd — the monitor keeps it current as the
+ * shell cds — and falls back to the cwd a pane was launched with.
+ */
+export function activeWorkspaceCwd(): string {
+  const listState = useWorkspaceListStore.getState();
+  const workspace = listState.workspaces.find((w) => w.id === listState.activeWorkspaceId);
+  if (!workspace) return "";
+
+  const activeSessionId = useUiStore.getState().activePaneId;
+  if (activeSessionId) {
+    const liveCwd = usePaneMetadataStore.getState().metadata[activeSessionId]?.cwd;
+    if (liveCwd) return liveCwd;
+  }
+
+  for (const pane of workspace.panes) {
+    for (const tab of pane.tabs) {
+      if (tab.sessionId !== activeSessionId) continue;
+      const tabCwd = tab.cwd ?? pane.cwd;
+      if (tabCwd) return tabCwd;
+    }
+  }
+  // The active pane may be a web tab or a pane that never reported a cwd; any
+  // pane of this workspace is still a better guess than the home directory.
+  for (const pane of workspace.panes) {
+    const paneCwd = pane.cwd ?? pane.tabs.find((tab) => tab.cwd)?.cwd;
+    if (paneCwd) return paneCwd;
+  }
+  return "";
 }
 
 /**
@@ -73,7 +133,7 @@ export function createWorkspaceAtCwd(
   const workspaceId = crypto.randomUUID();
   const { panes, splitColumns } = useWorkspaceLayoutStore
     .getState()
-    .buildInitialPanes(workspaceId, gridTemplateId);
+    .buildInitialPanes(workspaceId, gridTemplateId, options.paneSpecs);
 
   if (normalizedCwd) {
     applyCwdToPanes(panes, normalizedCwd);

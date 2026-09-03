@@ -151,3 +151,28 @@ def test_profile_clone_ailog_copies_sqlite_sidecars_and_scrubs_remote_port() -> 
 
     assert "foreach ($suffix in @('', '-wal', '-shm'))" in script
     assert "MYCMUX_REMOTE_PORT" in script
+
+
+def test_profile_gets_its_own_webview2_browser_process() -> None:
+    """WebView2 keys one browser process per user-data folder.
+
+    Without a folder of its own the test machine rides on the live machine's
+    browser process. On 2026-09-03 that test window painted nothing and answered
+    no socket call while its PTYs ran fine underneath -- the launcher menu was
+    in the scrollback and nowhere on screen, which read as "the launcher does
+    not come up" in a build that was in fact fine.
+    """
+    script = read_repo_text("scripts/test-profile.ps1")
+
+    # The assignment, not just the name: every other mention of the variable is
+    # the save/restore around it, so matching the name alone passes even with
+    # the isolation deleted.
+    assert "$env:WEBVIEW2_USER_DATA_FOLDER = $webviewFolder" in script, (
+        "the test machine shares the live WebView2 browser process"
+    )
+    assert 'EBWebView-$Name' in script, "the WebView2 folder is not per-profile"
+    assert "$webviewFolder = Join-Path $env:LOCALAPPDATA" in script
+    # Set for the launch only, like the colour variables above it: this shell
+    # keeps running afterwards.
+    assert "$previousWebviewFolder" in script
+    assert r"Remove-Item -LiteralPath 'Env:\WEBVIEW2_USER_DATA_FOLDER'" in script

@@ -114,12 +114,16 @@ function New-MycmuxOption {
   param(
     [Parameter(Mandatory = $true)][string]$Label,
     [string[]]$Command,
-    [string]$RequiredCommand
+    [string]$RequiredCommand,
+    # MYCMUX_LAUNCH_TARGET this row corresponds to. Only set on rows that can
+    # take a model / effort, which is what the launch-spec menu keys off.
+    [string]$Target
   )
   [pscustomobject]@{
     Label = $Label
     Command = $Command
     RequiredCommand = $RequiredCommand
+    Target = $Target
   }
 }
 
@@ -481,10 +485,14 @@ function Add-MycmuxGrokSessionIdToCommandArray {
   return @("grok", "--session-id", $sid)
 }
 
+function Get-MycmuxCommandLeaf {
+  param([Parameter(Mandatory = $true)][string]$Command)
+  return (Split-Path -Leaf $Command) -replace '\.(exe|cmd|bat|com)$', ''
+}
+
 function Test-MycmuxColorSensitiveAgentLeaf {
   param([Parameter(Mandatory = $true)][string]$Leaf)
-  $bare = (Split-Path -Leaf $Leaf) -replace '\.(exe|cmd|bat|com)$', ''
-  return $bare -in @("agy", "antigravity", "gemini")
+  return (Get-MycmuxCommandLeaf $Leaf) -in @("agy", "antigravity", "gemini")
 }
 
 function Invoke-MycmuxWithNoColorGuard {
@@ -513,6 +521,70 @@ function Invoke-MycmuxWithNoColorGuard {
     if ($hadPrevious) { $env:NO_COLOR = $previous }
     else { Remove-Item Env:\NO_COLOR -ErrorAction SilentlyContinue }
   }
+}
+
+# --- Launch spec (model / effort) --------------------------------------------
+# The GUI's New Workspace dialog and this launcher's own model menu both end up
+# here, so a fresh start (menu pick or MYCMUX_LAUNCH_TARGET) turns a model and an
+# effort into the right flags in one place. Resume and handoff are deliberately
+# left alone: they continue a session that already has a model, and launcher.sh
+# runs those through their own exec paths, so applying it here would make the two
+# launchers behave differently.
+$script:MycmuxLaunchModel = ""
+$script:MycmuxLaunchEffort = ""
+
+function Get-MycmuxLaunchSpecValue {
+  param([string]$Value)
+  if ([string]::IsNullOrWhiteSpace($Value)) { return "" }
+  $trimmed = $Value.Trim()
+  # The value lands on a command line, so it must not be mistakable for a flag.
+  # Mirrors sanitizeLaunchSpecValue in src/lib/agentCatalog.ts.
+  if ($trimmed -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$') { return "" }
+  return $trimmed
+}
+
+# Read once at startup and clear: this host runs -NoExit and outlives the
+# command it starts, so values left in the environment would silently re-apply
+# the first pick to whatever is launched next.
+function Read-MycmuxLaunchSpecFromEnv {
+  $script:MycmuxLaunchModel = Get-MycmuxLaunchSpecValue $env:MYCMUX_LAUNCH_MODEL
+  $script:MycmuxLaunchEffort = Get-MycmuxLaunchSpecValue $env:MYCMUX_LAUNCH_EFFORT
+  Remove-Item Env:\MYCMUX_LAUNCH_MODEL -ErrorAction SilentlyContinue
+  Remove-Item Env:\MYCMUX_LAUNCH_EFFORT -ErrorAction SilentlyContinue
+}
+
+function Add-MycmuxLaunchSpecToCommandArray {
+  param([string[]]$Command)
+  if (-not $Command -or $Command.Count -eq 0) { return $Command }
+  $model = $script:MycmuxLaunchModel
+  $effort = $script:MycmuxLaunchEffort
+  if (-not $model -and -not $effort) { return $Command }
+
+  $leaf = Get-MycmuxCommandLeaf $Command[0]
+  $extra = @()
+  if ($leaf -eq "claude" -or $leaf -eq "claude-codex") {
+    if ($model) { $extra += @("--model", $model) }
+    if ($effort) { $extra += @("--effort", $effort) }
+  } elseif ($leaf -eq "codex") {
+    if ($model) { $extra += @("--model", $model) }
+    # codex has no native effort flag; reasoning effort is a config override.
+    if ($effort) { $extra += @("-c", "model_reasoning_effort=$effort") }
+  } elseif ($leaf -eq "grok") {
+    if ($model) { $extra += @("--model", $model) }
+    if ($effort) { $extra += @("--reasoning-effort", $effort) }
+  } elseif ($leaf -eq "agy") {
+    if ($model) { $extra += @("--model", $model) }
+    if ($effort) { $extra += @("--effort", $effort) }
+  } else {
+    return $Command
+  }
+  if ($extra.Count -eq 0) { return $Command }
+
+  # Flags go right after the executable, never at the end: `codex resume <id>`
+  # takes a positional argument that a trailing flag would swallow.
+  $rest = @()
+  if ($Command.Count -gt 1) { $rest = $Command[1..($Command.Count - 1)] }
+  return @($Command[0]) + $extra + $rest
 }
 
 function Invoke-MycmuxCommandArray {
@@ -648,15 +720,19 @@ function Invoke-MycmuxResumeFromEnv {
 }
 
 $Options = @(
-  New-MycmuxOption "Claude Code" @("claude", "--allow-dangerously-skip-permissions", "--permission-mode", "auto") "claude"
-  New-MycmuxOption "Codex" @("codex", "--no-alt-screen") "codex"
-  New-MycmuxOption "claude-codex (Codex Models)" @("claude-codex", "--backend", "gpt") "claude-codex"
-  New-MycmuxOption "Grok Build" @("grok", "--no-alt-screen", "--permission-mode", "auto") "grok"
-  New-MycmuxOption "claude-codex (Open Models)" @("claude-codex", "--backend", "fcc") "claude-codex"
+  New-MycmuxOption "Claude Code" @("claude", "--allow-dangerously-skip-permissions", "--permission-mode", "auto") "claude" "claude"
+  New-MycmuxOption "Codex" @("codex", "--no-alt-screen") "codex" "codex"
+  New-MycmuxOption "claude-codex (Codex Models)" @("claude-codex", "--backend", "gpt") "claude-codex" "claude-codex"
+  New-MycmuxOption "Grok Build" @("grok", "--no-alt-screen", "--permission-mode", "auto") "grok" "grok"
+  New-MycmuxOption "claude-codex (Open Models)" @("claude-codex", "--backend", "fcc") "claude-codex" "claude-codex-open"
   # Gemini CLI was sunset for individual accounts on 2026-06-18; agy (Antigravity CLI) replaces it
-  New-MycmuxOption "Antigravity (agy)" @("agy") $null
-  # Not a process: opens a web tab through the socket, handled before exec.
+  New-MycmuxOption "Antigravity (agy)" @("agy") $null "agy"
+  # Not processes: these open a web tab through the socket, handled before exec.
   New-MycmuxOption "ChatGPT (Web)" @("__web_chatgpt__") $null
+  New-MycmuxOption "Gemini (Web)" @("__web_gemini__") $null
+  New-MycmuxOption "Grok (Web)" @("__web_grok__") $null
+  New-MycmuxOption "Claude.ai (Web)" @("__web_claude__") $null
+  New-MycmuxOption "NotebookLM (Web)" @("__web_notebooklm__") $null
   New-MycmuxOption "Claude Code (resume)" @("claude", "--allow-dangerously-skip-permissions", "--permission-mode", "auto", "--resume") "claude"
   New-MycmuxOption "Codex (resume)" @("codex", "resume", "--no-alt-screen") "codex"
   New-MycmuxOption "claude-codex (resume)" @("claude-codex", "--resume") "claude-codex"
@@ -664,8 +740,53 @@ $Options = @(
   New-MycmuxOption "Custom..." @("__custom__") $null
 )
 
-# Index-based, so removing an option shifts everything after it. The two Fugu
-# entries were dropped on 2026-08-29 and ChatGPT (Web) took a slot after agy.
+function New-MycmuxModelChoice {
+  param([Parameter(Mandatory = $true)][string]$Label, [Parameter(Mandatory = $true)][string]$Value)
+  [pscustomobject]@{ Label = $Label; Value = $Value }
+}
+
+# What the launch-spec menu offers per target. Mirrors AGENT_CATALOG in
+# src/lib/agentCatalog.ts -- tests/test_launcher_catalog_contract.py fails when
+# the two lists drift, which is the whole reason the GUI list is a catalog now.
+$ClaudeModels = @(
+  New-MycmuxModelChoice "Fable (flagship)" "fable"
+  New-MycmuxModelChoice "Opus" "opus"
+  New-MycmuxModelChoice "Sonnet" "sonnet"
+  New-MycmuxModelChoice "Haiku" "haiku"
+)
+$CodexModels = @(
+  New-MycmuxModelChoice "Sol (flagship)" "gpt-5.6-sol"
+  New-MycmuxModelChoice "Terra (standard)" "gpt-5.6-terra"
+  New-MycmuxModelChoice "Luna (light)" "gpt-5.6-luna"
+)
+$AgyModels = @(
+  New-MycmuxModelChoice "Gemini 3.1 Pro (High)" "gemini-3.1-pro-high"
+  New-MycmuxModelChoice "Gemini 3.1 Pro (Low)" "gemini-3.1-pro-low"
+  New-MycmuxModelChoice "Gemini 3.8 Flash (High)" "gemini-3.8-flash-high"
+  New-MycmuxModelChoice "Gemini 3.8 Flash (Medium)" "gemini-3.8-flash-medium"
+  New-MycmuxModelChoice "Gemini 3.8 Flash (Low)" "gemini-3.8-flash-low"
+  New-MycmuxModelChoice "Claude Opus 4.6 (Thinking)" "claude-opus-4-6-thinking"
+  New-MycmuxModelChoice "Claude Sonnet 4.6 (Thinking)" "claude-sonnet-4-6"
+)
+$ClaudeEfforts = @("low", "medium", "high", "xhigh", "max")
+$CodexEfforts = @("none", "low", "medium", "high", "xhigh", "max")
+$ShortEfforts = @("low", "medium", "high")
+
+$LaunchSpecCatalog = @{
+  "claude" = [pscustomobject]@{ Models = $ClaudeModels; Efforts = $ClaudeEfforts }
+  "codex" = [pscustomobject]@{ Models = $CodexModels; Efforts = $CodexEfforts }
+  "claude-codex" = [pscustomobject]@{ Models = $CodexModels; Efforts = $ClaudeEfforts }
+  # grok publishes no model id list, and the fcc backend serves whatever open
+  # models the account has: type one in rather than picking from a stale list.
+  "grok" = [pscustomobject]@{ Models = @(); Efforts = $ShortEfforts }
+  "claude-codex-open" = [pscustomobject]@{ Models = @(); Efforts = $ClaudeEfforts }
+  "agy" = [pscustomobject]@{ Models = $AgyModels; Efforts = $ShortEfforts }
+}
+
+# Index-based, so inserting an option shifts everything after it. The two Fugu
+# entries were dropped on 2026-08-29, ChatGPT (Web) took a slot after agy, and
+# on 2026-09-03 four more web entries landed next to it -- every index below
+# the web block moved by four.
 $LaunchTargets = @{
   "claude" = $Options[0]
   "codex" = $Options[1]
@@ -675,15 +796,25 @@ $LaunchTargets = @{
   "fcc" = $Options[4]
   "fcc-claude" = $Options[4]
   "agy" = $Options[5]
+  # "gemini" stays on the Antigravity CLI: the web tab is "web-gemini".
   "gemini" = $Options[5]
   "antigravity" = $Options[5]
   "chatgpt" = $Options[6]
   "web-chatgpt" = $Options[6]
-  "claude-resume" = $Options[7]
-  "codex-resume" = $Options[8]
-  "claude-codex-resume" = $Options[9]
-  "grok-resume" = $Options[10]
-  "custom" = $Options[11]
+  "web-gemini" = $Options[7]
+  "gemini-web" = $Options[7]
+  "web-grok" = $Options[8]
+  "grok-web" = $Options[8]
+  "web-claude" = $Options[9]
+  "claude-web" = $Options[9]
+  "claude-ai" = $Options[9]
+  "web-notebooklm" = $Options[10]
+  "notebooklm" = $Options[10]
+  "claude-resume" = $Options[11]
+  "codex-resume" = $Options[12]
+  "claude-codex-resume" = $Options[13]
+  "grok-resume" = $Options[14]
+  "custom" = $Options[15]
 }
 
 function Invoke-MycmuxCustomCommand {
@@ -753,8 +884,26 @@ function Invoke-MycmuxOption {
     return
   }
 
+  # One arm per pseudo command on purpose: a menu entry with no arm is a dead
+  # button, and tests/test_web_pane_contract.py checks these pair up by name.
   if ($Option.Command[0] -eq "__web_chatgpt__") {
     Invoke-MycmuxWebTab "chatgpt"
+    return
+  }
+  if ($Option.Command[0] -eq "__web_gemini__") {
+    Invoke-MycmuxWebTab "gemini"
+    return
+  }
+  if ($Option.Command[0] -eq "__web_grok__") {
+    Invoke-MycmuxWebTab "grok"
+    return
+  }
+  if ($Option.Command[0] -eq "__web_claude__") {
+    Invoke-MycmuxWebTab "claude"
+    return
+  }
+  if ($Option.Command[0] -eq "__web_notebooklm__") {
+    Invoke-MycmuxWebTab "notebooklm"
     return
   }
 
@@ -775,6 +924,7 @@ function Invoke-MycmuxOption {
   }
   $command = Add-MycmuxClaudeSessionIdToCommandArray $Option.Command
   $command = Add-MycmuxGrokSessionIdToCommandArray $command
+  $command = Add-MycmuxLaunchSpecToCommandArray $command
   $exe = $command[0]
   $args = @()
   if ($command.Count -gt 1) {
@@ -799,8 +949,126 @@ function Draw-MycmuxMenu {
     }
   }
   Write-Host ""
-  Write-Host "  Up/Down or j/k move  Enter/number select  / custom  q shell"
+  Write-Host "  Up/Down or j/k move  Enter/number select  -> model  / custom  q shell"
 }
+
+# --- Launch-spec menu (model, then effort) ------------------------------------
+# Reached with Right or m from the main menu, never by Enter or a number: the
+# existing keys must start what they have always started. Each list leads with
+# "(default)", so Enter twice is the same launch as before.
+
+$MYCMUX_SPEC_DEFAULT = "__default__"
+$MYCMUX_SPEC_TYPE_IN = "__type__"
+
+# "" = nothing typed, take the default. $null = refused, go back to the list.
+# launcher.sh's __spec_menu draws the same distinction; keep them in step.
+function Read-MycmuxTypedSpecValue {
+  param([Parameter(Mandatory = $true)][string]$Prompt)
+  Clear-Host
+  Write-Host ""
+  Write-Host ("  {0}" -f $Prompt)
+  Write-Host ""
+  $typed = Read-Host "  >"
+  if (-not $typed -or -not $typed.Trim()) { return "" }
+  $value = Get-MycmuxLaunchSpecValue $typed
+  if (-not $value) {
+    Write-Host ""
+    Write-Host "  Refused: start with a letter or digit, then letters, digits, . _ - only."
+    Start-Sleep -Milliseconds 1200
+    return $null
+  }
+  return $value
+}
+
+# Returns the chosen value ("" for the default), or $null when the user backs
+# out with Esc / Left / q.
+function Show-MycmuxSpecMenu {
+  param(
+    [Parameter(Mandatory = $true)][string]$Title,
+    [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$Choices,
+    [string]$Note
+  )
+  $rows = @(, [pscustomobject]@{ Label = "(default)"; Value = $MYCMUX_SPEC_DEFAULT })
+  foreach ($choice in $Choices) { $rows += $choice }
+  $rows += [pscustomobject]@{ Label = "Type it in..."; Value = $MYCMUX_SPEC_TYPE_IN }
+
+  $selected = 0
+  while ($true) {
+    Clear-Host
+    Write-Host ""
+    Write-Host ("  {0}" -f $Title)
+    if ($Note) { Write-Host ("  {0}" -f $Note) }
+    Write-Host ""
+    for ($i = 0; $i -lt $rows.Count; $i++) {
+      $num = $i + 1
+      $suffix = ""
+      if ($rows[$i].Value -notin @($MYCMUX_SPEC_DEFAULT, $MYCMUX_SPEC_TYPE_IN) -and $rows[$i].Label -ne $rows[$i].Value) {
+        $suffix = "  ($($rows[$i].Value))"
+      }
+      $line = "{0} {1}. {2}{3}" -f $(if ($i -eq $selected) { ">" } else { " " }), $num, $rows[$i].Label, $suffix
+      Write-Host $line
+    }
+    Write-Host ""
+    Write-Host "  Up/Down or j/k move  Enter/number select  Esc back"
+
+    $key = [Console]::ReadKey($true)
+    if ($key.Key -eq [ConsoleKey]::UpArrow -or $key.KeyChar -eq "k") {
+      $selected--
+      if ($selected -lt 0) { $selected = $rows.Count - 1 }
+      continue
+    }
+    if ($key.Key -eq [ConsoleKey]::DownArrow -or $key.KeyChar -eq "j") {
+      $selected++
+      if ($selected -ge $rows.Count) { $selected = 0 }
+      continue
+    }
+    if ($key.Key -eq [ConsoleKey]::Escape -or $key.Key -eq [ConsoleKey]::LeftArrow -or $key.KeyChar -eq "q") {
+      return $null
+    }
+    if ($key.KeyChar -match "^[1-9]$") {
+      $index = [int]::Parse([string]$key.KeyChar) - 1
+      if ($index -lt $rows.Count) { $selected = $index } else { continue }
+    } elseif ($key.Key -ne [ConsoleKey]::Enter -and $key.Key -ne [ConsoleKey]::RightArrow) {
+      continue
+    }
+
+    $value = $rows[$selected].Value
+    if ($value -eq $MYCMUX_SPEC_DEFAULT) { return "" }
+    if ($value -eq $MYCMUX_SPEC_TYPE_IN) {
+      $typed = Read-MycmuxTypedSpecValue $Title
+      if ($null -eq $typed) { continue }
+      return $typed
+    }
+    return $value
+  }
+}
+
+# Fills in the model / effort for one menu row. $false means the user backed out
+# and the main menu should stay open.
+function Invoke-MycmuxLaunchSpecMenu {
+  param([Parameter(Mandatory = $true)]$Option)
+  if (-not $Option.Target -or -not $LaunchSpecCatalog.ContainsKey($Option.Target)) {
+    return $false
+  }
+  $spec = $LaunchSpecCatalog[$Option.Target]
+
+  $model = Show-MycmuxSpecMenu -Title ("{0} - model" -f $Option.Label) -Choices $spec.Models
+  if ($null -eq $model) { return $false }
+
+  $note = if ($model) { "model: $model" } else { "model: (default)" }
+  $effortChoices = @()
+  foreach ($effort in $spec.Efforts) {
+    $effortChoices += [pscustomobject]@{ Label = $effort; Value = $effort }
+  }
+  $effort = Show-MycmuxSpecMenu -Title ("{0} - effort" -f $Option.Label) -Choices $effortChoices -Note $note
+  if ($null -eq $effort) { return $false }
+
+  $script:MycmuxLaunchModel = $model
+  $script:MycmuxLaunchEffort = $effort
+  return $true
+}
+
+Read-MycmuxLaunchSpecFromEnv
 
 if (Invoke-MycmuxHandoffFromEnv) {
   return
@@ -829,6 +1097,14 @@ while ($true) {
   if ($key.Key -eq [ConsoleKey]::DownArrow -or $key.KeyChar -eq "j") {
     $selected++
     if ($selected -ge $Options.Count) { $selected = 0 }
+    continue
+  }
+
+  # Right or m picks a model and an effort for this row before launching it.
+  # Enter and the number keys are deliberately untouched: they have to start
+  # what they have always started, at whatever the CLI defaults to.
+  if ($key.Key -eq [ConsoleKey]::RightArrow -or $key.Key -eq [ConsoleKey]::M) {
+    if (Invoke-MycmuxLaunchSpecMenu $Options[$selected]) { break }
     continue
   }
 

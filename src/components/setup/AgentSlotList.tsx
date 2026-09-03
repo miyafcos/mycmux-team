@@ -1,14 +1,15 @@
 import AgentSelector from "./AgentSelector";
-import { getDefaultAgent } from "../../lib/agents";
+import type { PaneLaunchSpec } from "../../lib/agentCatalog";
 
 interface AgentSlotListProps {
   paneCount: number;
-  assignments: Record<number, string>;
-  onChange: (assignments: Record<number, string>) => void;
+  specs: Record<number, PaneLaunchSpec>;
+  onChange: (specs: Record<number, PaneLaunchSpec>) => void;
 }
 
-export default function AgentSlotList({ paneCount, assignments, onChange }: AgentSlotListProps) {
-  const defaultAgentId = getDefaultAgent().id;
+const EMPTY_SPEC: PaneLaunchSpec = {};
+
+export default function AgentSlotList({ paneCount, specs, onChange }: AgentSlotListProps) {
   return (
     <div>
       <div
@@ -16,7 +17,7 @@ export default function AgentSlotList({ paneCount, assignments, onChange }: Agen
           fontSize: 12,
           color: "var(--cmux-text-tertiary)",
           marginBottom: 8,
-          fontFamily: "'JetBrains Mono', monospace",
+          fontFamily: "var(--cmux-font-mono)",
         }}
       >
         Agents ({paneCount} panes)
@@ -26,8 +27,8 @@ export default function AgentSlotList({ paneCount, assignments, onChange }: Agen
           <AgentSelector
             key={i}
             slotIndex={i}
-            value={assignments[i] ?? defaultAgentId}
-            onChange={(agentId) => onChange({ ...assignments, [i]: agentId })}
+            value={specs[i] ?? EMPTY_SPEC}
+            onChange={(spec) => onChange({ ...specs, [i]: spec })}
           />
         ))}
       </div>

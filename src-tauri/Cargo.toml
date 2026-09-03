@@ -1,6 +1,6 @@
 [package]
 name = "mycmux"
-version = "0.60.5"
+version = "0.61.0"
 description = "mycmux - AI agent terminal workspace"
 authors = ["miyafcos"]
 edition = "2021"
@@ -32,6 +32,10 @@ glob = "0.3"
 chrono = { version = "0.4", features = ["serde"] }
 sysinfo = "0.38.4"
 dirs = "6.0.0"
+# Windows path canonicalisation without the \\?\ prefix. Chromium refuses to
+# create its cookie database under an extended-length user data folder, which
+# is how every web pane login used to be lost on restart.
+dunce = "1"
 tempfile = "3"
 rusqlite = { version = "0.32", features = ["bundled"] }
 

@@ -1,6 +1,7 @@
 export type KeybindingActionId =
   | "sidebar.toggle"
   | "workspace.new"
+  | "workspace.new.advanced"
   | "workspace.next"
   | "workspace.prev"
   | "workspace.close"
@@ -56,6 +57,7 @@ export const KEYBINDING_DEFINITIONS: KeybindingDefinition[] = [
   { action: "dashboard.column.pin", title: "ダッシュボードの列を固定", category: "Global", defaultShortcut: "ctrl+shift+p" },
 
   { action: "workspace.new", title: "New workspace", category: "Workspace", defaultShortcut: "ctrl+shift+n" },
+  { action: "workspace.new.advanced", title: "New workspace (choose agents)", category: "Workspace", defaultShortcut: "ctrl+shift+alt+n" },
   { action: "workspace.next", title: "Next workspace", category: "Workspace", defaultShortcut: "ctrl+tab" },
   { action: "workspace.prev", title: "Previous workspace", category: "Workspace", defaultShortcut: "ctrl+shift+tab" },
   { action: "workspace.close", title: "Close workspace", category: "Workspace", defaultShortcut: "ctrl+shift+w" },

@@ -264,20 +264,22 @@ PTY の生スクロールバックはディスクへ保存されます (`%APPDAT
 
 新しいペインやタブを開くと起動メニュー (ランチャー) が出ます。実体は `~/.mycmux/bin/launcher.sh` / `launcher.ps1` で、アプリが起動時に書き出します。手で編集すると上書きされます。
 
-### 起動メニューの 16 項目
+### 起動メニューの 19 項目
 
-Windows の Git Bash 経路 (launcher.sh) では 16 項目です。PowerShell 経路 (launcher.ps1) では Change directory の 3 項目がなく 13 項目になります。コマンド行を含む全一覧は[付録 B](#付録-b-ランチャー項目全一覧)にあります。
+Windows の Git Bash 経路 (launcher.sh) では 19 項目です。PowerShell 経路 (launcher.ps1) では Change directory の 3 項目がなく 16 項目になります。コマンド行を含む全一覧は[付録 B](#付録-b-ランチャー項目全一覧)にあります。
 
 | # | 項目 | # | 項目 |
 | ---: | --- | ---: | --- |
-| 1 | `Claude Code` | 9 | `Claude Code (resume)` |
-| 2 | `Codex` | 10 | `Codex (resume)` |
-| 3 | `claude-codex (Codex Models)` | 11 | `claude-codex (resume)` |
-| 4 | `Grok Build` | 12 | `Grok Build (resume)` |
-| 5 | `Codex (Fugu Ultra)` | 13 | `Custom...` |
-| 6 | `claude-codex (Fugu)` | 14 | `Change directory (開発)...` |
-| 7 | `claude-codex (Open Models)` | 15 | `Change directory (案件)...` |
-| 8 | `Antigravity (agy)` | 16 | `Change directory (最近・フォルダを辿る)...` |
+| 1 | `Claude Code` | 11 | `NotebookLM (Web)` |
+| 2 | `Codex` | 12 | `Claude Code (resume)` |
+| 3 | `claude-codex (Codex Models)` | 13 | `Codex (resume)` |
+| 4 | `Grok Build` | 14 | `claude-codex (resume)` |
+| 5 | `claude-codex (Open Models)` | 15 | `Grok Build (resume)` |
+| 6 | `Antigravity (agy)` | 16 | `Custom...` |
+| 7 | `ChatGPT (Web)` | 17 | `Change directory (開発)...` |
+| 8 | `Gemini (Web)` | 18 | `Change directory (案件)...` |
+| 9 | `Grok (Web)` | 19 | `Change directory (最近・フォルダを辿る)...` |
+| 10 | `Claude.ai (Web)` | | |
 
 Codex を `--no-alt-screen` で起動しているのは、ターミナルのスクロール履歴を残し、入力欄表示のちらつきや復元時の表示崩れを抑えるためです。
 
@@ -285,7 +287,23 @@ Codex を `--no-alt-screen` で起動しているのは、ターミナルのス�
 
 ### キー操作
 
-操作はキーボード専用です。フッタの表示はそのまま `^v: move   Enter/number: select   d: 開発dir   a: 案件dir   /: custom   Esc/q: shell` です。`↑` `↓` (または `k` / `j`) で移動、`Enter` か数字キーで決定、`/` で `Custom...` へ飛びます (ここまでは launcher.sh / launcher.ps1 共通)。launcher.sh だけの操作が 3 つあります — `1` を押して 0.15 秒以内にもう 1 打すると `10`〜`16` の 2 桁指定、`d` で開発ディレクトリ、`a` で案件ディレクトリ。メニューを抜けて素のシェルに入るのは launcher.sh では `Esc` / `q`、launcher.ps1 では `q` だけです (`Esc` は無視されます)。
+操作はキーボード専用です。フッタの表示はそのまま `^v: move   Enter/number: select   ->/m: model   d: 開発dir   a: 案件dir   /: custom   Esc/q: shell` です。`↑` `↓` (または `k` / `j`) で移動、`Enter` か数字キーで決定、`/` で `Custom...` へ飛びます (ここまでは launcher.sh / launcher.ps1 共通)。launcher.sh だけの操作が 3 つあります — `1` を押して 0.15 秒以内にもう 1 打すると `10`〜`19` の 2 桁指定、`d` で開発ディレクトリ、`a` で案件ディレクトリ。メニューを抜けて素のシェルに入るのは launcher.sh では `Esc` / `q`、launcher.ps1 では `q` だけです (`Esc` は無視されます)。
+
+### モデルと effort を選んで起動する → `→` / `m`
+
+項目 1〜6 (Claude Code / Codex / claude-codex 2 種 / Grok Build / Antigravity) を選んだ状態で `→` か `m` を押すと、**モデル → effort** の順に 1 画面ずつ出ます。どちらのリストも先頭が `(default)` なので、`Enter` を 2 回押せば従来どおり CLI の既定で起動します。`Esc` か `←` で 1 つ前に戻り、モデル画面で戻るとメインメニューへ帰ります。末尾の「入力する...」を選ぶと ID を直接打てます (grok と claude-codex (Open Models) は公開されたモデル一覧が無いため、この行だけになります)。
+
+**`Enter` と数字キーの挙動は変えていません** — 従来どおり CLI の既定で即起動します。指定した値は CLI ごとのフラグへ翻訳されます (`claude` は `--effort`、`codex` は native フラグが無いので `-c model_reasoning_effort=…`、`grok` は `--reasoning-effort`)。同じ選択は GUI の New Workspace ダイアログからもできて、そちらは `MYCMUX_LAUNCH_MODEL` / `MYCMUX_LAUNCH_EFFORT` で同じ経路に入ります。選択肢の一覧は GUI 側の `src/lib/agentCatalog.ts` と両ランチャーの 3 箇所にありますが、`tests/test_launcher_catalog_contract.py` が一致を機械検査します。
+
+### Web タブ — ChatGPT / Gemini / Grok / Claude.ai / NotebookLM
+
+項目 7〜11 はプロセスではありません。選ぶとそのタブ自体が指定サービスの Web 画面になります (他の項目がシェルをそのプログラムに置き換えるのと同じ挙動です)。中身は Tauri の子 webview で、ペインの矩形に追従し、mycmux のグローバルショートカットは webview にフォーカスがあっても効きます。
+
+ログイン状態は `%LOCALAPPDATA%\com.miyazaki.mycmux\web-profiles\<プロファイル>\` に残ります。**ChatGPT・Gemini・Claude.ai・NotebookLM は `google` プロファイルを共有**するので、Google に 1 回入れば 4 つとも通ります。Grok は X アカウントなので `grok` プロファイルを別に持ちます。
+
+Google は埋め込み webview からの OAuth を仕様として拒むことがあります。その画面を掴むとタブ上部に「ログインしていません」と**別の窓でログイン**ボタンが出ます。押すと、そのプロファイルフォルダを直接使って実 Edge の窓が開きます (WebView2 は Edge そのものなので、プロファイル形式も Cookie の暗号鍵も共通です)。ログインしてその窓を閉じると、ペインが自動で開き直ります。**この操作は 1 回だけ**で、以降はログイン済みで開きます。バーはログイン済みのときは出ません。
+
+> v0.60.5 まで、Cookie の永続 DB がそもそも作られておらず、アプリを閉じるたびにログインが消えていました。原因は WebView2 に渡していたプロファイルパスが `\\?\` 拡張長形式だったことです (Chromium のネットワークサービスがこの形式の下に `Cookies` を作らない)。履歴とローカルストレージは残るため、症状は「毎回ログインし直し」だけに見えていました。
 
 ### 別のフォルダで立てたい → Change directory
 
@@ -381,7 +399,7 @@ python scripts/mycmux_agent_cli.py send --session <sessionId> --text "テスト�
 
 `MYCMUX_TERM_PROGRAM=mycmux` が「mycmux 内にいるか」の判定キーです。`MYCMUX_TAB_ID` / `MYCMUX_PANE_SESSION_ID` が自タブ・自ペインの識別、`MYCMUX_MARKDOWN_OUT` / `MYCMUX_HTML_OUT` / `MYCMUX_ARTIFACTS_DIR` がセッション成果物の出力先です。全一覧は[付録 F](#付録-f-環境変数-mycmux_)にあります。
 
-立ち上げに使う一時的な環境変数 (`MYCMUX_LAUNCH_TARGET` や `MYCMUX_HANDOFF_*` など) は保存データに残らないようフィルタされます。アプリを再起動しても、過去の spawn が原因でエージェントが勝手に立ち上がることはありません。この防御は Rust の起動時 `remove_var`、`sanitize_launch_env`、フロントエンドの `EPHEMERAL_LAUNCH_ENV_KEYS` の 3 層で、契約テスト `tests/test_ephemeral_env_keys_contract.py` が同期を固定しています。
+立ち上げに使う一時的な環境変数 (`MYCMUX_LAUNCH_TARGET` / `MYCMUX_LAUNCH_MODEL` / `MYCMUX_LAUNCH_EFFORT` や `MYCMUX_HANDOFF_*` など) は保存データに残らないようフィルタされます。アプリを再起動しても、過去の spawn が原因でエージェントが勝手に立ち上がることはありません。この防御は Rust の起動時 `remove_var`、`sanitize_launch_env`、フロントエンドの `EPHEMERAL_LAUNCH_ENV_KEYS` の 3 層で、契約テスト `tests/test_ephemeral_env_keys_contract.py` が同期を固定しています。
 
 ---
 
@@ -755,7 +773,7 @@ Google Drive へ退避して削除したローカル transcript の gzip ミラ�
 
 | 機能 | 概要 | 状態 |
 | --- | --- | --- |
-| Web ペイン (ChatGPT Pro) | ランチャー項目「ChatGPT Pro (Web)」でタブを ChatGPT の Web 画面にする。brief.md と実ファイルを composer に載せ、送信は人間が押す | 計画 (要件確定・実装未着手。ADR 0008) |
+| Web ペインの引き継ぎ書ワークフロー | brief.md と実ファイルをまとめて Web タブへ渡す `gpt` ラッパーと、ファイル添付 (CDP `DOM.setFileInputFiles`) | 計画 (Web タブ本体と `web.push` のテキスト投入は配信済み → [6 章](#6-エージェントを起動する)。ADR 0008) |
 | 未返信メール監視「メール」 | Gmail から「こちらが返す番のメール」だけを機械判定し、タイトルバーに未返信件数を出す。下書き作成まで | 計画 (仕様 v4。Phase 0a の文書作業のみ着手可。**メール送信はしない**) |
 | PTY デーモン分離 | mycmux を閉じても・落ちても・更新しても PTY が生き続ける構造 (tmux の server/client 分離に相当) | 計画 (設計のみ・実装の承認なし) |
 | iPhone リモート PWA の全面刷新 | 正規の status feed を消費し、構造化した承認/拒否・per-device token・push 通知・resume-from-offset を持たせる | 計画 (設計文書あり・実装ゼロ) |
@@ -936,7 +954,7 @@ Rust コマンドは 144 件 / 31 ファイルで、`lib.rs` の `generate_handl
 
 ## 付録 B ランチャー項目全一覧
 
-番号は launcher.sh 基準です。launcher.ps1 では 14〜16 がありません (合計 13 項目)。
+番号は launcher.sh 基準です。launcher.ps1 では 17〜19 がありません (合計 16 項目)。
 
 | # | ラベル | コマンド | ps1 との差 |
 | ---: | --- | --- | --- |
@@ -944,20 +962,25 @@ Rust コマンドは 144 件 / 31 ファイルで、`lib.rs` の `generate_handl
 | 2 | `Codex` | `codex --no-alt-screen` | 同一 |
 | 3 | `claude-codex (Codex Models)` | `claude-codex --backend gpt` | 同一 |
 | 4 | `Grok Build` | `grok --no-alt-screen --permission-mode auto` | 同一 |
-| 5 | `Codex (Fugu Ultra)` | `codex --no-alt-screen --profile fugu-ultra` | 同一 |
-| 6 | `claude-codex (Fugu)` | `claude-codex --backend fugu` | 同一 |
-| 7 | `claude-codex (Open Models)` | `claude-codex --backend fcc` | 同一 |
-| 8 | `Antigravity (agy)` | `agy` | ps1 は起動時に `NO_COLOR=1` を付ける |
-| 9 | `Claude Code (resume)` | `claude --allow-dangerously-skip-permissions --permission-mode auto --resume` | 同一 |
-| 10 | `Codex (resume)` | `codex resume --no-alt-screen` | 同一 |
-| 11 | `claude-codex (resume)` | `claude-codex --resume` | 同一 |
-| 12 | `Grok Build (resume)` | `grok --no-alt-screen --resume` | 同一 |
-| 13 | `Custom...` | プロンプトを出して自由入力 | 同一 |
-| 14 | `Change directory (開発)...` | 開発の起動ルート一覧 | ps1 に無し |
-| 15 | `Change directory (案件)...` | 案件の起動ルート一覧 | ps1 に無し |
-| 16 | `Change directory (最近・フォルダを辿る)...` | ディレクトリ選択のトップ画面 | ps1 に無し |
+| 5 | `claude-codex (Open Models)` | `claude-codex --backend fcc` | 同一 |
+| 6 | `Antigravity (agy)` | `agy` | 同一 |
+| 7 | `ChatGPT (Web)` | 疑似コマンド `__web_chatgpt__` → `web-open --preset chatgpt --replace-anchor` | 同一 |
+| 8 | `Gemini (Web)` | 疑似コマンド `__web_gemini__` | 同一 |
+| 9 | `Grok (Web)` | 疑似コマンド `__web_grok__` | 同一 |
+| 10 | `Claude.ai (Web)` | 疑似コマンド `__web_claude__` | 同一 |
+| 11 | `NotebookLM (Web)` | 疑似コマンド `__web_notebooklm__` | 同一 |
+| 12 | `Claude Code (resume)` | `claude --allow-dangerously-skip-permissions --permission-mode auto --resume` | 同一 |
+| 13 | `Codex (resume)` | `codex resume --no-alt-screen` | 同一 |
+| 14 | `claude-codex (resume)` | `claude-codex --resume` | 同一 |
+| 15 | `Grok Build (resume)` | `grok --no-alt-screen --resume` | 同一 |
+| 16 | `Custom...` | プロンプトを出して自由入力 | 同一 |
+| 17 | `Change directory (開発)...` | 開発の起動ルート一覧 | ps1 に無し |
+| 18 | `Change directory (案件)...` | 案件の起動ルート一覧 | ps1 に無し |
+| 19 | `Change directory (最近・フォルダを辿る)...` | ディレクトリ選択のトップ画面 | ps1 に無し |
 
-launcher.ps1 の各項目 (`Antigravity (agy)` と `Custom...` を除く) は `RequiredCommand` を持ち、PATH に無ければ起動せず `  <command> was not found on PATH.` と表示して戻ります。環境変数 `MYCMUX_LAUNCH_TARGET` でメニューを飛ばして直接起動もできます (launcher.sh は 19 キー / launcher.ps1 は 17 キー)。値は `claude` `claude-resume` `codex` `codex-resume` `grok` `grok-resume` `claude-codex` `claude-codex-resume` `codex-fugu-ultra` `claude-codex-fugu` `claude-codex-open` `fcc` `fcc-claude` `custom` `gemini` `agy` `antigravity` `aider` `shell` です (末尾 2 つは launcher.sh のみ)。
+Web タブの 5 項目はプロセスではないので eval されません。ソケット経由で本体に Web タブを頼み、失敗したら理由を必ず表示します (黙って戻ると「押しても何も起きない」に見えるため)。
+
+launcher.ps1 の各項目 (`Antigravity (agy)`・Web タブ 5 項目・`Custom...` を除く) は `RequiredCommand` を持ち、PATH に無ければ起動せず `  <command> was not found on PATH.` と表示して戻ります。環境変数 `MYCMUX_LAUNCH_TARGET` でメニューを飛ばして直接起動もできます (launcher.sh は 28 キー / launcher.ps1 は 26 キー)。値は `claude` `claude-resume` `codex` `codex-resume` `grok` `grok-resume` `claude-codex` `claude-codex-resume` `claude-codex-open` `fcc` `fcc-claude` `custom` `chatgpt` `web-chatgpt` `web-gemini` `gemini-web` `web-grok` `grok-web` `web-claude` `claude-web` `claude-ai` `web-notebooklm` `notebooklm` `gemini` `agy` `antigravity` `aider` `shell` です (末尾 2 つは launcher.sh のみ)。`gemini` は Web タブではなく Antigravity CLI を指したままです (Web 版は `web-gemini`)。
 
 メニューを出さずに直接起動する経路がもう 2 系統あります。mycmux が spawn や復元のときに環境変数で指示するもので、人が手で使うものではありません。
 
@@ -1073,6 +1096,8 @@ bootstrap の文言は `Handoff from previous session. Read "<MYCMUX_HANDOFF_PRO
 | 11 | `MYCMUX_AGENT_KIND` | agent 種別。`MYCMUX_RESUME` が無いときの fallback |
 | 12 | `MYCMUX_RESUME_FORK` | `"1"` で resume を fork (claude / claude-codex / grok のみ) |
 | 13 | `MYCMUX_LAUNCH_TARGET` | ランチャーの起動ターゲット選択キー |
+| 13a | `MYCMUX_LAUNCH_MODEL` | 起動時に渡すモデル (`--model` 等へ翻訳。英数字始まりのみ受理) |
+| 13b | `MYCMUX_LAUNCH_EFFORT` | 起動時に渡す effort (`--effort` / `-c model_reasoning_effort` 等へ翻訳) |
 | 14 | `MYCMUX_HANDOFF` | 引き継ぎ先の agent 種別 |
 | 15 | `MYCMUX_HANDOFF_FROM` | 引き継ぎ元の agent 種別 |
 | 16 | `MYCMUX_HANDOFF_PROMPT_FILE` | 引き継ぎプロンプト本文のファイルパス |

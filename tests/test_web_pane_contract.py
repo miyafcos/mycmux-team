@@ -27,7 +27,46 @@ def test_child_webview_uses_isolated_profile_and_explicit_lifecycle() -> None:
     assert ".hide()" in rust
     assert ".show()" in rust
     assert ".close()" in rust
-    assert "Cookie" not in rust
+    # Credentials stay in the browser profile where the OS protects them: the
+    # pane shares a folder, it never reads or moves a cookie itself. Naming the
+    # cookie database in a comment is how the \\?\ bug is explained, so the ban
+    # is on the APIs, not on the word.
+    for api in ("set_cookie", "cookies_for_url", "cookie_manager", "ICoreWebView2CookieManager"):
+        assert api not in rust, api
+
+
+def test_the_profile_path_handed_to_webview2_is_not_extended_length() -> None:
+    """`std::fs::canonicalize` is the bug, not a style preference.
+
+    On Windows it returns a `\\\\?\\` path, and Chromium's sandboxed network
+    service will not create `Default\\Network\\Cookies` under one. The profile
+    still loads and history and local storage still persist, so the pane looks
+    healthy while every login is lost the moment the app closes -- which is
+    exactly how this shipped between 2026-08-29 and 2026-09-03.
+    """
+    rust = read("src-tauri/src/commands/webpane.rs")
+    assert "dunce::canonicalize" in rust, "the profile path is no longer normalised safely"
+    assert ".canonicalize()" not in rust, (
+        "std::fs::canonicalize is back: it hands WebView2 a \\\\?\\ path and cookies stop persisting"
+    )
+    cargo = read("src-tauri/Cargo.toml")
+    assert re.search(r"^dunce = ", cargo, re.MULTILINE), "dunce is not a declared dependency"
+
+
+def test_the_sign_in_window_targets_the_folder_webview2_reads() -> None:
+    """WebView2 keeps its profile in `EBWebView` under the data directory.
+
+    A sign-in browser aimed at the parent seeds `<profile>\\Default`, which the
+    pane never reads -- the 2026-08-28 spike concluded the handoff worked while
+    the pane's own folder held no cookie database at all.
+    """
+    rust = read("src-tauri/src/commands/webpane.rs")
+    assert 'join("EBWebView")' in rust
+    assert "--user-data-dir=" in rust
+    assert "msedge.exe" in rust
+    # The folder can only be owned by one browser process at a time.
+    assert "lockfile" in rust
+    assert "wait_for_profile_release" in rust
 
 
 def test_webpane_push_command_is_wired_to_dom_acknowledged_evaluation() -> None:
@@ -89,8 +128,8 @@ def test_web_tab_can_be_opened_from_the_launcher() -> None:
     launcher = read("src-tauri/src/launcher.sh")
     assert '"ChatGPT (Web)"' in launcher, "menu label is missing"
     assert '"__web_chatgpt__"' in launcher, "menu command slot is missing"
-    assert "__web_chatgpt__)" in launcher, "the dispatch never handles the web entry"
-    assert "web-open --preset chatgpt --replace-anchor" in launcher, (
+    assert "__web_chatgpt__|" in launcher, "the dispatch never handles the web entry"
+    assert 'web-open --preset "$preset" --replace-anchor' in launcher, (
         "the dispatch does not ask for a web tab in place of the launcher tab"
     )
 
@@ -102,6 +141,69 @@ def test_web_tab_can_be_opened_from_the_launcher() -> None:
     socket_commands = read("src/components/layout/socketCommands.ts")
     assert 'case "web.open"' in socket_commands, "the socket has no web.open branch"
     assert "addWebTabToPane(" in socket_commands, "the web branch never creates a web tab"
+
+
+def test_every_registered_preset_has_a_launcher_entry_in_both_launchers() -> None:
+    """A preset nobody can reach from the launcher is not shipped.
+
+    Presets are declared once in Rust; each launcher needs a menu slot and a
+    dispatch arm per preset. Deriving the expected set from the Rust table
+    means adding a service cannot quietly skip one of the two launchers.
+    """
+    rust = read("src-tauri/src/commands/webpane.rs")
+    presets = re.findall(r'^\s+id: "(\w+)",$', rust, re.MULTILINE)
+    assert sorted(presets) == ["chatgpt", "claude", "gemini", "grok", "notebooklm"], presets
+
+    shell = read("src-tauri/src/launcher.sh")
+    ps = read("src-tauri/src/launcher.ps1")
+    for preset in presets:
+        pseudo = f"__web_{preset}__"
+        assert f'"{pseudo}"' in shell, f"launcher.sh has no menu slot for {preset}"
+        assert pseudo in ps, f"launcher.ps1 has no menu slot for {preset}"
+        assert f'-eq "{pseudo}"' in ps, f"launcher.ps1 has no dispatch arm for {preset}"
+        assert f'Invoke-MycmuxWebTab "{preset}"' in ps, (
+            f"launcher.ps1 never asks for the {preset} preset"
+        )
+
+
+def test_the_powershell_launch_target_table_points_at_the_right_rows() -> None:
+    """`$LaunchTargets` indexes `$Options` by position, so an insert shifts it.
+
+    Four web entries landed in the middle of the list on 2026-09-03. A stale
+    index here does not fail loudly -- it launches a different program.
+    """
+    ps = read("src-tauri/src/launcher.ps1")
+    labels = re.findall(r'New-MycmuxOption\s+"([^"]+)"', ps)
+    targets = dict(re.findall(r'^\s*"([\w.-]+)" = \$Options\[(\d+)\]', ps, re.MULTILINE))
+    expected = {
+        "claude": "Claude Code",
+        "codex": "Codex",
+        "grok": "Grok Build",
+        "agy": "Antigravity (agy)",
+        "web-chatgpt": "ChatGPT (Web)",
+        "web-gemini": "Gemini (Web)",
+        "web-grok": "Grok (Web)",
+        "web-claude": "Claude.ai (Web)",
+        "web-notebooklm": "NotebookLM (Web)",
+        "claude-resume": "Claude Code (resume)",
+        "grok-resume": "Grok Build (resume)",
+        "custom": "Custom...",
+    }
+    for name, label in expected.items():
+        assert name in targets, f"{name} has no launch target"
+        assert labels[int(targets[name])] == label, (
+            f"{name} points at {labels[int(targets[name])]!r}, expected {label!r}"
+        )
+
+
+def test_the_shell_launcher_menu_and_command_arrays_stay_aligned() -> None:
+    """Both arrays are indexed by the same cursor, so a missed line launches
+    the neighbouring entry instead of failing."""
+    shell = read("src-tauri/src/launcher.sh")
+    options = re.search(r"  options=\(\n(.*?)\n  \)", shell, re.S)
+    commands = re.search(r"  commands=\(\n(.*?)\n  \)", shell, re.S)
+    assert options and commands, "the launcher menu arrays could not be found"
+    assert len(options.group(1).splitlines()) == len(commands.group(1).splitlines())
 
 
 def test_spawn_tab_refuses_a_web_target_instead_of_opening_a_shell() -> None:
@@ -169,11 +271,15 @@ def test_the_web_tab_launcher_arms_do_not_swallow_their_failure() -> None:
     PowerShell breakage presented itself.
     """
     shell = read("src-tauri/src/launcher.sh")
-    arm = shell[shell.index("__web_chatgpt__)") :]
+    opener = shell[shell.index("__open_web_tab() {") :]
+    opener = opener[: opener.index("\n}\n")]
+    assert 'web-open --preset "$preset" --replace-anchor' in opener
+    assert ">/dev/null 2>&1" not in opener, "the shell arm throws the failure away"
+    assert "web_rc" in opener, "the shell arm never inspects the exit code"
+    # The menu arm must actually reach that shared opener.
+    arm = shell[shell.index("__web_chatgpt__|__web_gemini__") :]
     arm = arm[: arm.index(";;")]
-    assert "web-open --preset chatgpt --replace-anchor" in arm
-    assert ">/dev/null 2>&1" not in arm, "the shell arm throws the failure away"
-    assert "web_rc" in arm, "the shell arm never inspects the exit code"
+    assert "__open_web_tab_from_pseudo_command" in arm
 
     ps = read("src-tauri/src/launcher.ps1")
     assert "function Invoke-MycmuxWebTab" in ps, "the PowerShell arm has no handler"

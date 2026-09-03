@@ -6,6 +6,12 @@ import type { PaneConfig } from "../lib/ipc";
 import { agentIdForSessionKind } from "../lib/agentSessionConfig";
 import { getGridTemplate } from "../lib/gridTemplates";
 import { getDefaultAgent } from "../lib/agents";
+import {
+  buildLaunchSpecEnv,
+  getCatalogEntry,
+  SHELL_TARGET,
+  type PaneLaunchSpec,
+} from "../lib/agentCatalog";
 import { makeSessionId } from "../lib/constants";
 import { normalizeReadableSplitColumns, reconcileSplitColumnsForPanes } from "../lib/layoutColumns";
 import { useWorkspaceListStore } from "./workspaceListStore";
@@ -98,7 +104,7 @@ type SplitInsertDirection = "left" | "right" | "up" | "down";
 function buildPanes(
   workspaceId: string,
   gridTemplateId: GridTemplateId,
-  agentAssignments?: Record<number, string>,
+  paneSpecs?: Record<number, PaneLaunchSpec>,
 ): BuildPanesResult {
   const template = getGridTemplate(gridTemplateId);
   const defaultAgentId = getDefaultAgent().id;
@@ -112,8 +118,20 @@ function buildPanes(
     for (let r = 0; r < template.rows; r++) {
       if (paneIndex < template.paneCount) {
         const paneId = uuid();
-        const agentId = agentAssignments?.[paneIndex] ?? defaultAgentId;
-        const tab = makeTab(workspaceId, paneId, agentId);
+        const spec = paneSpecs?.[paneIndex];
+        // Everything but a plain shell starts through the launcher, which reads
+        // the target out of launchEnv — the same path pane.spawn already uses.
+        const agentId = spec?.target === SHELL_TARGET ? SHELL_TARGET : defaultAgentId;
+        const launchEnv = buildLaunchSpecEnv(spec);
+        const tab = makeTab(
+          workspaceId,
+          paneId,
+          agentId,
+          "terminal",
+          launchEnv
+            ? { launchEnv, agentKind: getCatalogEntry(spec?.target)?.agentKind }
+            : undefined,
+        );
         panes.push({
           id: paneId,
           agentId,
@@ -588,7 +606,7 @@ interface WorkspaceLayoutState {
   buildInitialPanes: (
     workspaceId: string,
     gridTemplateId: GridTemplateId,
-    agentAssignments?: Record<number, string>
+    paneSpecs?: Record<number, PaneLaunchSpec>
   ) => BuildPanesResult;
 
   restorePanes: (
@@ -600,8 +618,8 @@ interface WorkspaceLayoutState {
 }
 
 export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
-  buildInitialPanes: (workspaceId, gridTemplateId, agentAssignments) => {
-    return buildPanes(workspaceId, gridTemplateId, agentAssignments);
+  buildInitialPanes: (workspaceId, gridTemplateId, paneSpecs) => {
+    return buildPanes(workspaceId, gridTemplateId, paneSpecs);
   },
 
   restorePanes: (workspaceId, configs, savedSplitColumns, gridTemplateId) => {

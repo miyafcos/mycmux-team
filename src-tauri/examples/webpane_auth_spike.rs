@@ -13,7 +13,11 @@ const CHATGPT_URL: &str = "https://chatgpt.com";
 fn main() -> Result<(), Box<dyn Error>> {
     let data_directory = parse_data_directory()?;
     fs::create_dir_all(&data_directory)?;
-    let data_directory = data_directory.canonicalize()?;
+    // Not `std::fs::canonicalize`: it returns a `\\?\` path on Windows, and
+    // Chromium's network service will not create its cookie database under
+    // one. The 2026-08-28 run of this spike concluded the profile handoff
+    // worked while the folder it produced held no cookies at all.
+    let data_directory = dunce::canonicalize(&data_directory)?;
     let started_at_ms = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis();
 
     println!("SPIKE_STARTED_AT_UNIX_MS={started_at_ms}");

@@ -18,6 +18,7 @@ import { paneDndStrings } from "./paneDndStrings";
 import { terminalPaneStrings } from "./terminalPaneStrings";
 import XTermWrapper, { evictTerminalCache, hasTerminalBuffer } from "../terminal/XTermWrapper";
 import BrowserPane from "./BrowserPane";
+import WebPaneStatusBar from "./WebPaneStatusBar";
 import OnlinePanel from "../online/OnlinePanel";
 import {
   useWorkspaceLayoutStore,
@@ -864,18 +865,7 @@ export default memo(function TerminalPane({ pane, workspaceId, onClose, onSplitR
             data-web-pane-content="true"
             style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column" }}
           >
-            <div
-              style={{
-                flexShrink: 0,
-                padding: "5px 8px",
-                borderBottom: "1px solid var(--cmux-border)",
-                color: "var(--cmux-text-secondary)",
-                background: "var(--cmux-surface)",
-                fontSize: 11,
-              }}
-            >
-              初回ログインは別の窓で行ってください（埋め込み画面では Google ログインできません）。
-            </div>
+            <WebPaneStatusBar tabId={activeTab.id} presetId={activeTab.presetId ?? ""} />
             <div
               data-web-pane-host-tab-id={activeTab.id}
               data-web-pane-preset-id={activeTab.presetId}

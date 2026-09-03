@@ -32,6 +32,7 @@ vi.mock("../../src/components/workspace/PaneTabBar", () => ({
   },
 }));
 vi.mock("../../src/components/workspace/BrowserPane", () => ({ default: () => null }));
+vi.mock("../../src/components/workspace/WebPaneStatusBar", () => ({ default: () => null }));
 vi.mock("../../src/components/online/OnlinePanel", () => ({ default: () => null }));
 vi.mock("../../src/components/composer/PaneComposer", () => ({ PaneComposer: () => null }));
 vi.mock("../../src/components/terminal/XTermWrapper", async () => {

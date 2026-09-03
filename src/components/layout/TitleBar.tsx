@@ -19,6 +19,8 @@ import { countNotifications } from "../../lib/notificationEntries";
 interface TitleBarProps {
   uiVariant?: "default" | "cmux";
   onNewWorkspace?: () => void;
+  /** Opens the dialog that picks the layout, folder, agents and models. */
+  onOpenWorkspaceSetup?: () => void;
   onOpenOnlinePanel: () => void;
   onOpenCrsmPalette?: () => void;
 }
@@ -53,6 +55,12 @@ const PlusIcon = () => (
   </svg>
 );
 
+const CaretDownIcon = () => (
+  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+    <polyline points="6 9 12 15 18 9"></polyline>
+  </svg>
+);
+
 const SettingsIcon = () => (
   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
     <circle cx="12" cy="12" r="3"></circle>
@@ -63,6 +71,7 @@ const SettingsIcon = () => (
 export default function TitleBar({
   uiVariant = "default",
   onNewWorkspace,
+  onOpenWorkspaceSetup,
   onOpenOnlinePanel,
   onOpenCrsmPalette,
 }: TitleBarProps) {
@@ -233,6 +242,9 @@ export default function TitleBar({
           </button>
         )}
 
+        {/* Split button: the plus creates a workspace outright, the caret opens
+            the dialog for the times a layout, folder or model actually matters.
+            No context menu — a native WebView2 menu froze the app once. */}
         <button
           onClick={onNewWorkspace}
           title="New Workspace (Ctrl+Shift+N)"
@@ -250,6 +262,28 @@ export default function TitleBar({
         >
           <PlusIcon />
         </button>
+
+        {onOpenWorkspaceSetup && (
+          <button
+            onClick={onOpenWorkspaceSetup}
+            title="New Workspace with agents and models (Ctrl+Shift+Alt+N)"
+            aria-label="New Workspace with agents and models"
+            className="cmux-title-btn"
+            style={{
+              background: "none",
+              border: "none",
+              color: "var(--cmux-text-tertiary)",
+              cursor: "pointer",
+              padding: "3px 2px",
+              marginLeft: -4,
+              display: "flex",
+              alignItems: "center",
+              borderRadius: 3,
+            }}
+          >
+            <CaretDownIcon />
+          </button>
+        )}
       </div>
 
       {/* Center: TERMINAL · WorkspaceName (drag region + click-based maximize) */}

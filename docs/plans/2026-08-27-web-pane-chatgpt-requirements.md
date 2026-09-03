@@ -158,7 +158,48 @@ Google は OAuth を埋め込み webview から行うことを仕様として拒
 この方式の利点は、サービスが増えても手順が変わらないこと。
 「専用フォルダを 1 つ足し、初回だけ実ブラウザで入る」で Claude も Gemini も Grok も同じ形になる。
 
-### 検証結果 — **A1 で通った** (2026-08-28 実測・spike S1)
+### 訂正 (2026-09-03 実測) — **A1 の「通った」は成立していなかった**
+
+下の 2026-08-28 の記述は**そのままでは誤り**。現物と食い違うので、実装前に必ずここを読むこと。
+
+| 測ったこと | 結果 |
+|---|---|
+| Edge が seed した Cookie の実在位置 | `…\a1-edge-seeded\Default\Network\Cookies` (86KB・実在) |
+| WebView2 が読む位置 | `…\a1-edge-seeded\EBWebView\Default\Network\Cookies` — **ファイルごと存在しない** |
+| 本番プロファイル `web-profiles\chatgpt\EBWebView` | 同じく **Cookie DB なし**。History・Favicons・LocalStorage は在る |
+| 機内の他 WebView2 プロファイル 20 個 | 全部 `Cookies` を持っている |
+
+原因は 2 つあり、どちらも spike では見えなかった。
+
+1. **フォルダの高さが 1 段ずれている**。WebView2 は渡された data directory の下に `EBWebView` を掘る。
+   Edge を `--user-data-dir=<専用フォルダ>` で起動すると `<専用フォルダ>\Default` に書くので、
+   両者は**別のプロファイル**になる。seed 先は `<専用フォルダ>\EBWebView` でなければならない。
+2. **`\\?\` 拡張長パス**。`webpane_create` が `std::fs::canonicalize` の結果を `data_directory` に
+   渡していた。Chromium のサンドボックス下のネットワークサービスはこの形式のパスに
+   `Default\Network\Cookies` を作らず、Cookie は**メモリのみ**になる。同一 Edge・同一ページで
+   plain / `\\?\` を振った対照実験では、差分は `Cookies` と `Cookies-journal` の 2 ファイルだけだった。
+   履歴もローカルストレージも残るので、症状は「毎回ログインし直し」としてしか出ない。
+
+3 つめに、`on_new_window` ハンドラが未設定だった。wry はハンドラが無いと `window.open` を
+`SetHandled(true)` で握りつぶすので、「Google で続ける」は**押しても何も起きない**状態だった。
+Google の埋め込み webview 拒否とは別の、独立した原因。
+
+修正 (2026-09-03): `dunce::canonicalize` へ置換 / sign-in は `<profile>\EBWebView` を
+`--user-data-dir` に渡す / `on_new_window` で認証ホストのポップアップを `Allow`。
+回帰は `tests/test_web_pane_contract.py` と `webpane.rs` のユニットテストで縛った。
+
+**修正後の実測 (2026-09-03・同じ spike を新しい空フォルダで再実行)**: 同じ example を
+`dunce::canonicalize` に直して走らせると `SPIKE_DATA_DIRECTORY` は plain パスになり、
+chatgpt.com のロード後に `EBWebView\Default\Network\Cookies` が生成された。中身も
+`.chatgpt.com` 4 件 / `chatgpt.com` 2 件で、Cookie が実際に書かれている。
+**8/28 の実行では同じサイトを開いても Cookie DB がファイルごと生成されなかった**ので、
+この差がそのまま修正の成否になる。
+
+暗号鍵の互換は実測で確認済み: Edge も WebView2 も `os_crypt.encrypted_key` は素の DPAPI
+(`DPAPI\x01` 始まり) で、App-Bound Encryption ではない。Edge が書いた Cookie を WebView2 が
+同一ユーザーで復号できる。
+
+### 検証結果 (2026-08-28 spike S1 の当時の記述・上の訂正を優先すること)
 
 | # | 確認したこと | 結果 |
 |---|---|---|

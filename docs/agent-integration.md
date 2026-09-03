@@ -142,16 +142,25 @@ python scripts/mycmux_agent_cli.py spawn --target grok --prompt-file <spec.md>
 4. **ランチャー**: `src-tauri/src/launcher.ps1` (Windows 本命) と `launcher.sh`。
    メニュー項目・`$LaunchTargets` / `MYCMUX_LAUNCH_TARGET` の case・handoff 分岐・resume 分岐・
    セッションID注入。**両ファイルともインデックス直書きがあるので既存項目の番号を全部振り直す**
-5. **表示**: `agentDisplayKind.ts` / `agentKindColors.ts` / `AgentIcons.tsx` / `PaneTabBar.tsx`
-6. **Rust**: `pty/monitor/detection.rs` の `DetectedAgentKind`、`pty/monitor/runner.rs` の
+5. **GUI の台帳**: `src/lib/agentCatalog.ts` の `AGENT_CATALOG` — New Workspace ダイアログが
+   出す行はここが正本。`target` と `label` をランチャーと一致させ、`cli` と model / effort の
+   選択肢を書く。CLI が model / effort を取るなら、あわせて3箇所:
+   ①ランチャー2本の翻訳アーム (`Add-MycmuxLaunchSpecToCommandArray` / `__add_launch_spec_to_cmd`)
+   ②ランチャー2本の選択肢台帳 (`$LaunchSpecCatalog` / `__spec_models_for`・`__spec_efforts_for`・
+   `__spec_has_target`) ③メニュー行と target の対応 (`New-MycmuxOption` の第4引数 /
+   `spec_targets` 配列)。
+   `tests/test_launcher_catalog_contract.py` が欠落を機械検出し、両ランチャーに同じ入力を与えて
+   出力一致まで確認する (選択肢リストは PowerShell と bash を実際に走らせて突き合わせる)
+6. **表示**: `agentDisplayKind.ts` / `agentKindColors.ts` / `AgentIcons.tsx` / `PaneTabBar.tsx`
+7. **Rust**: `pty/monitor/detection.rs` の `DetectedAgentKind`、`pty/monitor/runner.rs` の
    match アーム (**非網羅だとコンパイルエラー**)、`commands/session_mapping.rs` の allowlist、
    `commands/terminal.rs` の resume 可否、`commands/terminal/agent_restore.rs` の存在確認
-7. **契約テスト**: `tests/perf/test_week1_day1_behavior_contracts.py` が launcher のメニュー配列と
+8. **契約テスト**: `tests/perf/test_week1_day1_behavior_contracts.py` が launcher のメニュー配列と
    数字キー割当を**行文字列レベルで固定**している。`tests/unit/agentDisplayKind.test.ts` は
    `COMMAND_DISPLAY_KINDS` を `toEqual` で丸ごと固定。`tests/test_no_agent_kind_in_stall_path.py` の
    `FORBIDDEN` にも名前を足す (停滞判定はエージェント非依存が契約なので、`promptShape.ts` /
    `stallVerdict.ts` にはエージェント名を書かない)
-8. **アカウント/使用量**: `CliProvider` / `cli_accounts/` / `usage/` / `PROVIDER_ORDER` を同時に追加し、
+9. **アカウント/使用量**: `CliProvider` / `cli_accounts/` / `usage/` / `PROVIDER_ORDER` を同時に追加し、
    登録・切替・使用量とログイン staging の全経路を確認する
 
 ### 完了検知の規約

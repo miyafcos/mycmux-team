@@ -12,6 +12,8 @@ EXPECTED_EPHEMERAL_ENV_KEYS = {
     "MYCMUX_AGENT_KIND",
     "MYCMUX_RESUME_FORK",
     "MYCMUX_LAUNCH_TARGET",
+    "MYCMUX_LAUNCH_MODEL",
+    "MYCMUX_LAUNCH_EFFORT",
     "MYCMUX_HANDOFF",
     "MYCMUX_HANDOFF_FROM",
     "MYCMUX_HANDOFF_PROMPT_FILE",
@@ -114,9 +116,13 @@ def test_ephemeral_env_keys_stay_in_sync_across_all_guards() -> None:
         ),
         "src-tauri/src/commands/terminal.rs sanitize_launch_env arrays": (
             set().union(*extract_terminal_grouped_keys().values()),
-            # This key is intentional launch input and must reach launcher.sh.
-            # Unlike canonical internal paths, terminal.rs must not strip it.
-            EXPECTED_EPHEMERAL_ENV_KEYS - {"MYCMUX_LAUNCH_TARGET"},
+            # These keys are intentional launch input and must reach launcher.sh.
+            # Unlike canonical internal paths, terminal.rs must not strip them.
+            EXPECTED_EPHEMERAL_ENV_KEYS - {
+                "MYCMUX_LAUNCH_TARGET",
+                "MYCMUX_LAUNCH_MODEL",
+                "MYCMUX_LAUNCH_EFFORT",
+            },
         ),
         "src/components/layout/SocketListener.tsx persistence filter": (
             extract_socket_listener_keys(),

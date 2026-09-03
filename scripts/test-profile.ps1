@@ -115,6 +115,15 @@ if (-not (Test-Path -LiteralPath $profileData -PathType Leaf)) {
   Write-Host "Starting empty: no layout, no sessions, nothing shared with the live machine's window state."
 }
 
+# WebView2 runs one browser process per user-data folder, so a test machine
+# without a folder of its own rides on the live machine's. On 2026-09-03 that
+# left the test window painting nothing and answering no socket calls while its
+# PTYs ran fine underneath -- the launcher was on screen in the scrollback and
+# nowhere on screen. Its own folder also keeps localStorage separate, which is
+# why the test machine starts on default settings.
+$webviewFolder = Join-Path $env:LOCALAPPDATA "com.miyazaki.mycmux\EBWebView-$Name"
+New-Item -ItemType Directory -Force -Path $webviewFolder | Out-Null
+
 # Start-Process hands this shell's environment to the app, and portable-pty then
 # hands it to every pane. A test machine launched from an agent shell would run
 # every pane under that shell's NO_COLOR/TERM, which reads as "the build lost all
@@ -129,13 +138,19 @@ foreach ($envKey in @('NO_COLOR', 'FORCE_COLOR', 'CLICOLOR', 'CLICOLOR_FORCE', '
     Remove-Item -LiteralPath "Env:$envKey" -ErrorAction SilentlyContinue
   }
 }
+$hadWebviewFolder = Test-Path Env:\WEBVIEW2_USER_DATA_FOLDER
+$previousWebviewFolder = $env:WEBVIEW2_USER_DATA_FOLDER
+$env:WEBVIEW2_USER_DATA_FOLDER = $webviewFolder
 try {
   Start-Process -FilePath $exePath -ArgumentList @('--profile', $Name) -WorkingDirectory (Split-Path -Parent $exePath)
 } finally {
+  if ($hadWebviewFolder) { $env:WEBVIEW2_USER_DATA_FOLDER = $previousWebviewFolder }
+  else { Remove-Item -LiteralPath 'Env:\WEBVIEW2_USER_DATA_FOLDER' -ErrorAction SilentlyContinue }
   foreach ($entry in $launchScrubbed.GetEnumerator()) {
     Set-Item -LiteralPath "Env:$($entry.Key)" -Value $entry.Value
   }
 }
+Write-Host "WebView2 profile: $webviewFolder"
 if ($launchScrubbed.Count -gt 0) {
   Write-Host "Scrubbed from the launch environment: $($launchScrubbed.Keys -join ', ')"
 }

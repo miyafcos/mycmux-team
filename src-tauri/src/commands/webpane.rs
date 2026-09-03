@@ -4,9 +4,22 @@ use std::time::Duration;
 
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
+use tauri::webview::NewWindowResponse;
 use tauri::{
-    AppHandle, LogicalPosition, LogicalSize, Manager, Webview, WebviewBuilder, WebviewUrl, Window,
+    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Url, Webview, WebviewBuilder,
+    WebviewUrl, Window,
 };
+
+/// How `web.push` reaches a service's message box. `None` on a preset means the
+/// service is readable in a pane but has no wired composer -- pushing to it is
+/// refused out loud rather than typing into whatever element happens to match.
+#[derive(Clone, Copy, Debug)]
+pub struct WebPaneComposer {
+    /// The element text is inserted into.
+    pub selector: &'static str,
+    /// Tried before the enclosing form's `button[type=submit]`.
+    pub submit_selector: &'static str,
+}
 
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -14,22 +27,110 @@ pub struct WebPanePreset {
     pub id: &'static str,
     pub label: &'static str,
     pub url: &'static str,
+    /// Folder under `web-profiles/`. Presets may share one: everything that
+    /// signs in through Google shares `google`, so one login covers them all.
     pub profile_dir: &'static str,
+    /// Hosts that stay inside the pane. A popup for anything else is handed to
+    /// the OS browser -- the pane is not a general-purpose browser.
+    #[serde(skip)]
+    pub allowed_hosts: &'static [&'static str],
+    /// URL substrings that mean "this service is showing a signed-out screen".
+    #[serde(skip)]
+    pub signed_out_patterns: &'static [&'static str],
+    #[serde(skip)]
+    pub composer: Option<WebPaneComposer>,
 }
 
-const WEB_PANE_PRESETS: &[WebPanePreset] = &[WebPanePreset {
-    id: "chatgpt",
-    label: "ChatGPT",
-    url: "https://chatgpt.com/",
-    profile_dir: "chatgpt",
-}];
+/// Sign-in popups are the same handful of identity providers for every service,
+/// so they are allowed for all presets rather than repeated in each row.
+const WEB_PANE_AUTH_HOSTS: &[&str] = &[
+    "accounts.google.com",
+    "accounts.youtube.com",
+    "appleid.apple.com",
+    "login.microsoftonline.com",
+    "login.live.com",
+    "auth.openai.com",
+    "auth0.openai.com",
+    "x.com",
+    "twitter.com",
+];
+
+const WEB_PANE_PRESETS: &[WebPanePreset] = &[
+    WebPanePreset {
+        id: "chatgpt",
+        label: "ChatGPT",
+        url: "https://chatgpt.com/",
+        profile_dir: "google",
+        allowed_hosts: &["chatgpt.com", "openai.com", "oaistatic.com", "oaiusercontent.com"],
+        signed_out_patterns: &["chatgpt.com/auth/", "auth.openai.com", "auth0.openai.com"],
+        composer: Some(WebPaneComposer {
+            selector: "#prompt-textarea",
+            submit_selector: "[data-testid=\"send-button\"]",
+        }),
+    },
+    WebPanePreset {
+        id: "gemini",
+        label: "Gemini",
+        url: "https://gemini.google.com/app",
+        profile_dir: "google",
+        allowed_hosts: &["gemini.google.com", "google.com", "gstatic.com"],
+        signed_out_patterns: &["accounts.google.com"],
+        composer: Some(WebPaneComposer {
+            selector: "rich-textarea .ql-editor",
+            submit_selector: "button[aria-label*=\"Send\"], button.send-button",
+        }),
+    },
+    WebPanePreset {
+        id: "grok",
+        label: "Grok",
+        url: "https://grok.com/",
+        profile_dir: "grok",
+        allowed_hosts: &["grok.com", "x.ai", "x.com", "twitter.com"],
+        signed_out_patterns: &["grok.com/sign-in", "x.com/i/flow/login", "accounts.google.com"],
+        composer: Some(WebPaneComposer {
+            selector: "textarea[aria-label], form textarea",
+            submit_selector: "button[type=\"submit\"], button[aria-label*=\"Submit\"]",
+        }),
+    },
+    WebPanePreset {
+        id: "claude",
+        label: "Claude.ai",
+        url: "https://claude.ai/",
+        profile_dir: "google",
+        allowed_hosts: &["claude.ai", "anthropic.com"],
+        signed_out_patterns: &["claude.ai/login", "accounts.google.com"],
+        composer: Some(WebPaneComposer {
+            selector: "div[contenteditable=\"true\"].ProseMirror",
+            submit_selector: "button[aria-label*=\"Send\"]",
+        }),
+    },
+    WebPanePreset {
+        id: "notebooklm",
+        label: "NotebookLM",
+        url: "https://notebooklm.google.com/",
+        profile_dir: "google",
+        allowed_hosts: &["notebooklm.google.com", "google.com", "gstatic.com"],
+        signed_out_patterns: &["accounts.google.com"],
+        // Notebook-scoped chat has no stable composer selector worth guessing at.
+        composer: None,
+    },
+];
 
 const WEB_PANE_KEYDOWN_EVENT: &str = "mycmux:web-pane-keydown";
+const WEB_PANE_URL_EVENT: &str = "mycmux:web-pane-url";
+const WEB_PANE_SIGNIN_EVENT: &str = "mycmux:web-pane-signin";
 const WEB_PANE_SHORTCUT_STATE: &str = "__MYCMUX_WEB_PANE_SHORTCUT_STATE__";
 const WEB_PANE_PUSH_TIMEOUT: Duration = Duration::from_secs(5);
 const WEB_PANE_MAX_TEXT_BYTES: usize = 256 * 1024;
-const CHATGPT_COMPOSER_HOST: &str = "chatgpt.com";
+/// How long the browser process gets to release the profile folder after its
+/// last webview closes, before the sign-in window is launched anyway.
+const WEB_PANE_PROFILE_RELEASE_TIMEOUT: Duration = Duration::from_secs(15);
+/// A sign-in browser that dies inside this window never showed a window: it was
+/// handed off to an instance that already owned the profile folder.
+const WEB_PANE_SIGNIN_LIVENESS_DELAY: Duration = Duration::from_secs(2);
 static WEB_PANE_PUSH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+/// webview label -> preset id, so sign-in knows which panes share a profile.
+static WEB_PANE_OPEN_PRESETS: OnceLock<DashMap<String, &'static str>> = OnceLock::new();
 static WEB_PANE_PUSH_RESULTS: OnceLock<
     DashMap<
         String,
@@ -101,6 +202,123 @@ fn profile_directory(base: PathBuf, preset: WebPanePreset) -> Result<PathBuf, St
     Ok(base
         .join("web-profiles")
         .join(safe_directory_component(preset.profile_dir)?))
+}
+
+/// WebView2 keeps its profile in an `EBWebView` folder under the data directory
+/// it is handed. A sign-in browser has to be pointed at that folder, not at its
+/// parent -- aiming one level too high seeds a profile nothing ever reads.
+fn webview2_user_data_directory(profile_dir: &Path) -> PathBuf {
+    profile_dir.join("EBWebView")
+}
+
+/// While a Chromium browser process owns a user data folder it keeps a
+/// `lockfile` there, and removes it on a clean exit. That is the signal for
+/// "the folder is free now".
+fn profile_lock_file(profile_dir: &Path) -> PathBuf {
+    webview2_user_data_directory(profile_dir).join("lockfile")
+}
+
+/// `std::fs::canonicalize` returns an extended-length (`\\?\`) path on Windows,
+/// and Chromium's sandboxed network service will not create its cookie database
+/// under one: the profile loads, browsing history and local storage persist,
+/// and every cookie silently lives in memory until the app closes. Measured
+/// 2026-09-03 by running one Edge build against the same page with the same
+/// folder in both spellings -- `Cookies` and `Cookies-journal` were the only
+/// difference. `dunce` keeps the short spelling whenever Windows accepts it.
+fn normalize_profile_directory(profile_dir: &Path) -> Result<PathBuf, String> {
+    dunce::canonicalize(profile_dir)
+        .map_err(|error| format!("failed to canonicalize web pane profile directory: {error}"))
+}
+
+fn host_matches(host: &str, allowed: &[&str]) -> bool {
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    allowed.iter().any(|candidate| {
+        let candidate = candidate.to_ascii_lowercase();
+        host == candidate || host.ends_with(&format!(".{candidate}"))
+    })
+}
+
+fn preset_keeps_url_inside_pane(preset: WebPanePreset, url: &Url) -> bool {
+    let host = url.host_str().unwrap_or_default();
+    host_matches(host, preset.allowed_hosts) || host_matches(host, WEB_PANE_AUTH_HOSTS)
+}
+
+/// Two signals, because either one alone is unreliable. Being parked on
+/// somebody else's host means an identity provider has the page -- that catches
+/// every Google service without guessing a path. The explicit patterns catch
+/// the login screens a service serves from its own host, where the first rule
+/// sees nothing wrong. A missed signal is not cosmetic: the sign-in button
+/// lives on this bar, so a service that never reports signed out is a service
+/// the operator cannot fix.
+fn url_looks_signed_out(preset: WebPanePreset, url: &str) -> bool {
+    if preset
+        .signed_out_patterns
+        .iter()
+        .any(|pattern| url.contains(pattern))
+    {
+        return true;
+    }
+    let Ok(parsed) = url.parse::<Url>() else {
+        return false;
+    };
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return false;
+    }
+    let Ok(own_host) = composer_host(preset) else {
+        return false;
+    };
+    !host_matches(parsed.host_str().unwrap_or_default(), &[own_host.as_str()])
+}
+
+/// The composer only fires on the service's own site. Derived from the preset
+/// URL so a new preset cannot forget to declare it.
+fn composer_host(preset: WebPanePreset) -> Result<String, String> {
+    let url: Url = preset
+        .url
+        .parse()
+        .map_err(|error| format!("invalid web pane preset URL: {error}"))?;
+    url.host_str()
+        .map(|host| host.to_ascii_lowercase())
+        .ok_or_else(|| format!("web pane preset {} has no host", preset.id))
+}
+
+fn open_presets() -> &'static DashMap<String, &'static str> {
+    WEB_PANE_OPEN_PRESETS.get_or_init(DashMap::new)
+}
+
+fn preset_for_label(label: &str) -> Option<WebPanePreset> {
+    let id = open_presets().get(label).map(|entry| *entry.value())?;
+    preset_by_id(id).ok()
+}
+
+fn tab_id_from_label(label: &str) -> Option<&str> {
+    label.strip_prefix("web-pane-")
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WebPaneUrlPayload {
+    tab_id: String,
+    preset_id: String,
+    url: String,
+    signed_out: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WebPaneSigninPayload {
+    profile_dir: String,
+    tab_ids: Vec<String>,
+    state: &'static str,
+    error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebPaneSigninResult {
+    profile_dir: String,
+    tab_ids: Vec<String>,
+    browser_path: String,
 }
 
 fn webview_label(tab_id: &str) -> Result<String, String> {
@@ -197,10 +415,17 @@ fn shortcut_update_script(shortcuts: &[String]) -> Result<String, String> {
 }
 
 fn composer_push_script(
+    preset: WebPanePreset,
     request_id: &str,
     text: Option<&str>,
     submit: bool,
 ) -> Result<String, String> {
+    let composer = preset.composer.ok_or_else(|| {
+        format!(
+            "web pane push is not wired for {}: it has no composer selector",
+            preset.label
+        )
+    })?;
     if text.is_none() && !submit {
         return Err("web pane push requires text or submit=true".to_string());
     }
@@ -214,6 +439,12 @@ fn composer_push_script(
 
     let request_id = serde_json::to_string(request_id)
         .map_err(|error| format!("failed to serialize web pane push request: {error}"))?;
+    let service = serde_json::to_string(preset.label)
+        .map_err(|error| format!("failed to serialize web pane service label: {error}"))?;
+    let composer_selector = serde_json::to_string(composer.selector)
+        .map_err(|error| format!("failed to serialize web pane composer selector: {error}"))?;
+    let submit_selector = serde_json::to_string(composer.submit_selector)
+        .map_err(|error| format!("failed to serialize web pane submit selector: {error}"))?;
     let insert_script = match text {
         Some(text) => {
             let text = serde_json::to_string(text)
@@ -223,7 +454,7 @@ fn composer_push_script(
     composer.focus();
     if (composer instanceof HTMLTextAreaElement) {{
       const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
-      if (!setter) throw new Error("ChatGPT composer value setter is unavailable");
+      if (!setter) throw new Error(service + " composer value setter is unavailable");
       setter.call(composer, text);
     }} else {{
       composer.textContent = text;
@@ -240,12 +471,12 @@ fn composer_push_script(
     let submit_script = if submit {
         r#"window.setTimeout(() => {
       try {
-        const submitButton = document.querySelector('[data-testid="send-button"]')
+        const submitButton = document.querySelector(submitSelector)
           ?? composer.closest("form")?.querySelector('button[type="submit"]');
         if (!(submitButton instanceof HTMLButtonElement)) {
-          throw new Error("ChatGPT submit button was not found");
+          throw new Error(service + " submit button was not found");
         }
-        if (submitButton.disabled) throw new Error("ChatGPT submit button is disabled");
+        if (submitButton.disabled) throw new Error(service + " submit button is disabled");
         submitButton.click();
         finish({ ok: true });
       } catch (error) {
@@ -259,6 +490,9 @@ fn composer_push_script(
     Ok(format!(
         r##"(() => {{
   const requestId = {request_id};
+  const service = {service};
+  const composerSelector = {composer_selector};
+  const submitSelector = {submit_selector};
   const finish = (payload) => {{
     void window.__TAURI_INTERNALS__.invoke("webpane_push_result", {{
       requestId,
@@ -272,9 +506,9 @@ fn composer_push_script(
     error: error instanceof Error ? error.message : String(error)
   }});
   try {{
-    const composer = document.querySelector("#prompt-textarea");
+    const composer = document.querySelector(composerSelector);
     if (!(composer instanceof HTMLElement)) {{
-      throw new Error("ChatGPT composer #prompt-textarea was not found");
+      throw new Error(service + " composer " + composerSelector + " was not found");
     }}
     {insert_script}
     {submit_script}
@@ -320,6 +554,9 @@ pub async fn webpane_create(
                 "web pane {tab_id} is attached to a different window"
             ));
         }
+        // Re-assert the mapping: a sign-in run drops it while the webview is
+        // being torn down, and push needs to know the service either way.
+        open_presets().insert(label.clone(), preset_by_id(&preset_id)?.id);
         webview
             .eval(shortcut_update_script(&forwarded_shortcuts)?)
             .map_err(|error| format!("failed to update web pane shortcuts: {error}"))?;
@@ -341,21 +578,44 @@ pub async fn webpane_create(
     )?;
     std::fs::create_dir_all(&profile_dir)
         .map_err(|error| format!("failed to create web pane profile directory: {error}"))?;
-    let profile_dir = profile_dir
-        .canonicalize()
-        .map_err(|error| format!("failed to canonicalize web pane profile directory: {error}"))?;
+    let profile_dir = normalize_profile_directory(&profile_dir)?;
     let url = preset
         .url
         .parse()
         .map_err(|error| format!("invalid web pane preset URL: {error}"))?;
 
+    let page_load_app = app.clone();
+    let page_load_tab_id = tab_id.clone();
+    let new_window_app = app.clone();
     let builder = WebviewBuilder::new(label.clone(), WebviewUrl::External(url))
         .focused(false)
         .data_directory(profile_dir)
         .initialization_script(shortcut_initialization_script(
             &tab_id,
             &forwarded_shortcuts,
-        )?);
+        )?)
+        .on_page_load(move |_webview, payload| {
+            let url = payload.url().to_string();
+            let _ = page_load_app.emit(
+                WEB_PANE_URL_EVENT,
+                WebPaneUrlPayload {
+                    tab_id: page_load_tab_id.clone(),
+                    preset_id: preset.id.to_string(),
+                    signed_out: url_looks_signed_out(preset, &url),
+                    url,
+                },
+            );
+        })
+        // Without a handler wry answers every window.open with SetHandled(true),
+        // which is why "continue with Google" did nothing at all: the OAuth
+        // popup was swallowed before it could be refused or shown.
+        .on_new_window(move |url, _features| {
+            if preset_keeps_url_inside_pane(preset, &url) {
+                return NewWindowResponse::Allow;
+            }
+            open_in_os_browser(&new_window_app, url.as_str());
+            NewWindowResponse::Deny
+        });
     let webview = window
         .add_child(
             builder,
@@ -363,10 +623,23 @@ pub async fn webpane_create(
             LogicalSize::new(bounds.width, bounds.height),
         )
         .map_err(|error| format!("failed to create web pane: {error}"))?;
+    open_presets().insert(label.clone(), preset.id);
     webview
         .show()
         .map_err(|error| format!("failed to show web pane: {error}"))?;
     Ok(label)
+}
+
+fn open_in_os_browser(app: &AppHandle, url: &str) {
+    use tauri_plugin_shell::ShellExt;
+    // tauri-plugin-opener is the un-deprecated route, but it is not installed
+    // here and one call does not earn a new plugin. The shell plugin already
+    // ships with the app and does the same thing.
+    #[allow(deprecated)]
+    let opened = app.shell().open(url, None);
+    if let Err(error) = opened {
+        eprintln!("[web-pane] failed to open {url} in the OS browser: {error}");
+    }
 }
 
 #[tauri::command]
@@ -402,12 +675,152 @@ pub async fn webpane_update(
 #[tauri::command]
 pub async fn webpane_destroy(app: AppHandle, tab_id: String) -> Result<(), String> {
     let label = webview_label(&tab_id)?;
+    open_presets().remove(&label);
     if let Some(webview) = app.get_webview(&label) {
         webview
             .close()
             .map_err(|error| format!("failed to destroy web pane: {error}"))?;
     }
     Ok(())
+}
+
+/// Open a real browser window on the pane's own profile folder so the operator
+/// can sign in once. Google refuses OAuth from an embedded webview, and the
+/// pane's profile is the one place a login can be left where the pane will find
+/// it again -- so the browser is pointed at that exact folder rather than a
+/// copy, and no credential is ever moved by hand.
+#[tauri::command]
+pub async fn webpane_signin(app: AppHandle, preset_id: String) -> Result<WebPaneSigninResult, String> {
+    let preset = preset_by_id(&preset_id)?;
+    let browser = find_signin_browser()?;
+    let local_data_dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|error| format!("failed to resolve local app data directory: {error}"))?;
+    let profile_dir = profile_directory(
+        crate::test_profile::app_data_dir_from(local_data_dir),
+        preset,
+    )?;
+    let user_data_dir = webview2_user_data_directory(&profile_dir);
+    std::fs::create_dir_all(&user_data_dir)
+        .map_err(|error| format!("failed to create web pane profile directory: {error}"))?;
+
+    // Every pane on this profile has to let go of the folder first: two browser
+    // processes cannot own one user data folder.
+    let closing: Vec<(String, String)> = open_presets()
+        .iter()
+        .filter(|entry| {
+            preset_by_id(entry.value())
+                .map(|other| other.profile_dir == preset.profile_dir)
+                .unwrap_or(false)
+        })
+        .filter_map(|entry| {
+            let label = entry.key().clone();
+            tab_id_from_label(&label).map(|tab| (label.clone(), tab.to_string()))
+        })
+        .collect();
+    let tab_ids: Vec<String> = closing.iter().map(|(_, tab)| tab.clone()).collect();
+    for (label, _) in &closing {
+        open_presets().remove(label);
+        if let Some(webview) = app.get_webview(label) {
+            let _ = webview.close();
+        }
+    }
+    let _ = app.emit(
+        WEB_PANE_SIGNIN_EVENT,
+        WebPaneSigninPayload {
+            profile_dir: preset.profile_dir.to_string(),
+            tab_ids: tab_ids.clone(),
+            state: "running",
+            error: None,
+        },
+    );
+
+    wait_for_profile_release(&profile_dir).await;
+
+    let mut child = std::process::Command::new(&browser)
+        .arg(format!("--user-data-dir={}", user_data_dir.display()))
+        .arg("--no-first-run")
+        .arg(preset.url)
+        .spawn()
+        .map_err(|error| {
+            let message = format!("failed to start the sign-in browser: {error}");
+            emit_signin_finished(&app, preset, tab_ids.clone(), Some(message.clone()));
+            message
+        })?;
+
+    tokio::time::sleep(WEB_PANE_SIGNIN_LIVENESS_DELAY).await;
+    if matches!(child.try_wait(), Ok(Some(_))) {
+        let message = format!(
+            "the sign-in browser exited immediately -- the {} profile is still held by another process. Close the {} panes (or mycmux) and try again.",
+            preset.profile_dir, preset.label
+        );
+        emit_signin_finished(&app, preset, tab_ids.clone(), Some(message.clone()));
+        return Err(message);
+    }
+
+    let finish_app = app.clone();
+    let finish_tabs = tab_ids.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let error = child.wait().err().map(|error| error.to_string());
+        emit_signin_finished(&finish_app, preset, finish_tabs, error);
+    });
+
+    Ok(WebPaneSigninResult {
+        profile_dir: preset.profile_dir.to_string(),
+        tab_ids,
+        browser_path: browser.display().to_string(),
+    })
+}
+
+fn emit_signin_finished(
+    app: &AppHandle,
+    preset: WebPanePreset,
+    tab_ids: Vec<String>,
+    error: Option<String>,
+) {
+    let _ = app.emit(
+        WEB_PANE_SIGNIN_EVENT,
+        WebPaneSigninPayload {
+            profile_dir: preset.profile_dir.to_string(),
+            tab_ids,
+            state: if error.is_some() { "failed" } else { "finished" },
+            error,
+        },
+    );
+}
+
+async fn wait_for_profile_release(profile_dir: &Path) {
+    let lock = profile_lock_file(profile_dir);
+    let deadline = std::time::Instant::now() + WEB_PANE_PROFILE_RELEASE_TIMEOUT;
+    while lock.exists() && std::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+/// The sign-in window has to be Edge: WebView2 *is* Edge, so the two write the
+/// same profile format and use the same DPAPI cookie key. A different browser
+/// would leave a profile WebView2 cannot read.
+fn find_signin_browser() -> Result<PathBuf, String> {
+    let candidates = [
+        std::env::var_os("ProgramFiles(x86)"),
+        std::env::var_os("ProgramFiles"),
+        std::env::var_os("LOCALAPPDATA"),
+    ];
+    for base in candidates.into_iter().flatten() {
+        let path = PathBuf::from(base)
+            .join("Microsoft")
+            .join("Edge")
+            .join("Application")
+            .join("msedge.exe");
+        if path.is_file() {
+            return Ok(path);
+        }
+    }
+    Err(
+        "Microsoft Edge was not found, so the sign-in window cannot be opened. WebView2 shares Edge's profile format, so the sign-in has to happen in Edge."
+            .to_string(),
+    )
 }
 
 #[tauri::command]
@@ -426,17 +839,21 @@ pub async fn webpane_push(
     let webview = app
         .get_webview(&label)
         .ok_or_else(|| format!("web pane does not exist: {tab_id}"))?;
+    let preset = preset_for_label(&label)
+        .ok_or_else(|| format!("web pane {tab_id} has no known preset"))?;
     let current_url = webview
         .url()
         .map_err(|error| format!("failed to read web pane URL: {error}"))?;
     let host = current_url.host_str().unwrap_or_default();
-    if host != CHATGPT_COMPOSER_HOST && !host.ends_with(&format!(".{CHATGPT_COMPOSER_HOST}")) {
+    let expected_host = composer_host(preset)?;
+    if !host_matches(host, &[expected_host.as_str()]) {
         return Err(format!(
-            "web pane is not on an allowed ChatGPT composer host: {host}"
+            "web pane is not on an allowed {} composer host: {host}",
+            preset.label
         ));
     }
     let request_id = uuid::Uuid::new_v4().to_string();
-    let script = composer_push_script(&request_id, text.as_deref(), submit)?;
+    let script = composer_push_script(preset, &request_id, text.as_deref(), submit)?;
     let (sender, receiver) = tokio::sync::oneshot::channel();
     WEB_PANE_PUSH_RESULTS
         .get_or_init(DashMap::new)
@@ -505,13 +922,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn preset_registry_is_generic_and_resolves_chatgpt() {
-        assert_eq!(WEB_PANE_PRESETS.len(), 1);
+    fn preset_registry_is_generic_and_resolves_every_service() {
+        assert_eq!(WEB_PANE_PRESETS.len(), 5);
+        for id in ["chatgpt", "gemini", "grok", "claude", "notebooklm"] {
+            let preset = preset_by_id(id).unwrap();
+            assert!(!preset.label.is_empty(), "{id}");
+            assert!(preset.url.starts_with("https://"), "{id}");
+            assert!(
+                safe_directory_component(preset.profile_dir).is_ok(),
+                "{id} has an unusable profile directory"
+            );
+            assert!(!preset.signed_out_patterns.is_empty(), "{id}");
+            assert!(!preset.allowed_hosts.is_empty(), "{id}");
+            assert!(composer_host(preset).is_ok(), "{id}");
+        }
         let preset = preset_by_id("chatgpt").unwrap();
         assert_eq!(preset.label, "ChatGPT");
         assert_eq!(preset.url, "https://chatgpt.com/");
-        assert_eq!(preset.profile_dir, "chatgpt");
         assert!(preset_by_id("missing").is_err());
+    }
+
+    #[test]
+    fn google_services_share_one_profile_so_one_login_covers_them() {
+        // The point of the shared folder: signing in to Google once has to be
+        // enough for every service that federates through it.
+        for id in ["chatgpt", "gemini", "claude", "notebooklm"] {
+            assert_eq!(preset_by_id(id).unwrap().profile_dir, "google", "{id}");
+        }
+        // Grok signs in through X, so it keeps its own.
+        assert_eq!(preset_by_id("grok").unwrap().profile_dir, "grok");
     }
 
     #[test]
@@ -520,13 +959,117 @@ mod tests {
         let base = PathBuf::from(r"C:\Users\test\AppData\Local\com.miyazaki.mycmux");
         assert_eq!(
             profile_directory(base.clone(), preset).unwrap(),
-            base.join("web-profiles").join("chatgpt")
+            base.join("web-profiles").join("google")
         );
         let invalid = WebPanePreset {
             profile_dir: "../escape",
             ..preset
         };
         assert!(profile_directory(base, invalid).is_err());
+    }
+
+    #[test]
+    fn the_profile_path_handed_to_webview2_is_never_an_extended_length_path() {
+        // Regression guard for the cookie bug: with a `\\?\` prefix Chromium's
+        // network service never creates Default\Network\Cookies, so every login
+        // is lost when the app closes. Nothing about the pane looks broken --
+        // history and local storage still persist -- so only a test catches it.
+        let base = std::env::temp_dir().join("mycmux-webpane-normalize-test");
+        std::fs::create_dir_all(&base).unwrap();
+        let normalized = normalize_profile_directory(&base).unwrap();
+        let rendered = normalized.to_string_lossy().into_owned();
+        assert!(
+            !rendered.starts_with(r"\\?\"),
+            "web pane profile path must not be extended-length: {rendered}"
+        );
+        assert!(normalized.is_absolute());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn the_sign_in_browser_is_pointed_at_the_folder_webview2_actually_reads() {
+        // Seeding <profile>\Default instead of <profile>\EBWebView\Default is
+        // how the 2026-08-28 spike concluded the handoff worked while the pane
+        // kept none of the cookies.
+        let profile = PathBuf::from(r"C:\profiles\google");
+        assert_eq!(
+            webview2_user_data_directory(&profile),
+            profile.join("EBWebView")
+        );
+        assert_eq!(
+            profile_lock_file(&profile),
+            profile.join("EBWebView").join("lockfile")
+        );
+    }
+
+    #[test]
+    fn host_matching_covers_subdomains_without_matching_lookalikes() {
+        assert!(host_matches("chatgpt.com", &["chatgpt.com"]));
+        assert!(host_matches("cdn.chatgpt.com", &["chatgpt.com"]));
+        assert!(host_matches("CHATGPT.COM.", &["chatgpt.com"]));
+        assert!(!host_matches("notchatgpt.com", &["chatgpt.com"]));
+        assert!(!host_matches("chatgpt.com.evil.example", &["chatgpt.com"]));
+        assert!(!host_matches("", &["chatgpt.com"]));
+    }
+
+    #[test]
+    fn oauth_popups_stay_in_the_pane_and_everything_else_leaves() {
+        let preset = preset_by_id("chatgpt").unwrap();
+        for inside in [
+            "https://chatgpt.com/c/abc",
+            "https://accounts.google.com/o/oauth2/v2/auth",
+            "https://auth.openai.com/authorize",
+        ] {
+            assert!(
+                preset_keeps_url_inside_pane(preset, &inside.parse().unwrap()),
+                "{inside}"
+            );
+        }
+        for outside in ["https://example.com/", "https://github.com/anthropics"] {
+            assert!(
+                !preset_keeps_url_inside_pane(preset, &outside.parse().unwrap()),
+                "{outside}"
+            );
+        }
+    }
+
+    #[test]
+    fn signed_out_screens_are_recognised_per_service() {
+        let chatgpt = preset_by_id("chatgpt").unwrap();
+        // Same host, login path: only the explicit pattern sees this.
+        assert!(url_looks_signed_out(
+            chatgpt,
+            "https://chatgpt.com/auth/login"
+        ));
+        assert!(!url_looks_signed_out(chatgpt, "https://chatgpt.com/c/abc"));
+        assert!(!url_looks_signed_out(chatgpt, "https://cdn.chatgpt.com/x"));
+        let gemini = preset_by_id("gemini").unwrap();
+        assert!(url_looks_signed_out(
+            gemini,
+            "https://accounts.google.com/ServiceLogin"
+        ));
+        assert!(!url_looks_signed_out(
+            gemini,
+            "https://gemini.google.com/app/1234"
+        ));
+    }
+
+    #[test]
+    fn a_service_parked_on_someone_elses_host_counts_as_signed_out() {
+        // The sign-in button lives on the bar this drives, so a preset whose
+        // login path was guessed wrong must still be reachable. Sitting on an
+        // identity provider is the signal that needs no guessing.
+        for id in ["chatgpt", "gemini", "grok", "claude", "notebooklm"] {
+            let preset = preset_by_id(id).unwrap();
+            assert!(
+                url_looks_signed_out(preset, "https://accounts.google.com/ServiceLogin"),
+                "{id}"
+            );
+            assert!(
+                !url_looks_signed_out(preset, preset.url),
+                "{id} reads its own landing page as signed out"
+            );
+        }
     }
 
     #[test]
@@ -598,29 +1141,52 @@ mod tests {
         assert!(!script.contains("ctrl+c"));
     }
 
+    fn chatgpt() -> WebPanePreset {
+        preset_by_id("chatgpt").unwrap()
+    }
+
     #[test]
     fn composer_push_inserts_without_submitting_by_default() {
-        let script = composer_push_script("push-result", Some("draft only"), false).unwrap();
+        let script = composer_push_script(chatgpt(), "push-result", Some("draft only"), false)
+            .unwrap();
         assert!(script.contains("#prompt-textarea"));
         assert!(script.contains("InputEvent"));
-        assert!(!script.contains("send-button"));
         assert!(!script.contains("submitButton.click()"));
     }
 
     #[test]
     fn composer_push_submits_only_when_explicitly_requested() {
-        let draft = composer_push_script("push-result", Some("draft"), false).unwrap();
-        let submitted = composer_push_script("push-result", Some("send"), true).unwrap();
+        let draft = composer_push_script(chatgpt(), "push-result", Some("draft"), false).unwrap();
+        let submitted =
+            composer_push_script(chatgpt(), "push-result", Some("send"), true).unwrap();
         assert!(!draft.contains("submitButton.click()"));
         assert!(submitted.contains("submitButton.click()"));
         assert!(submitted.contains("send-button"));
     }
 
     #[test]
+    fn composer_push_uses_the_selectors_of_the_service_it_targets() {
+        let gemini = preset_by_id("gemini").unwrap();
+        let script = composer_push_script(gemini, "push-result", Some("hello"), false).unwrap();
+        assert!(script.contains("rich-textarea .ql-editor"));
+        assert!(script.contains("Gemini"));
+        assert!(!script.contains("#prompt-textarea"));
+    }
+
+    #[test]
+    fn composer_push_refuses_a_service_with_no_wired_composer() {
+        let notebooklm = preset_by_id("notebooklm").unwrap();
+        let error = composer_push_script(notebooklm, "push-result", Some("hello"), false)
+            .unwrap_err();
+        assert!(error.contains("NotebookLM"));
+        assert!(error.contains("composer"));
+    }
+
+    #[test]
     fn composer_push_json_encodes_quotes_newlines_backslashes_and_script_text() {
         let text = "quote: \"hello\"\npath: C:\\tmp\\file\n</script>";
         let encoded = serde_json::to_string(text).unwrap();
-        let script = composer_push_script("push-result", Some(text), false).unwrap();
+        let script = composer_push_script(chatgpt(), "push-result", Some(text), false).unwrap();
         assert!(script.contains(&format!("const text = {encoded};")));
         assert!(!script.contains("const text = \"quote: \"hello\""));
     }
@@ -628,16 +1194,17 @@ mod tests {
     #[test]
     fn composer_push_rejects_oversized_text_before_building_a_script() {
         let at_limit = "a".repeat(WEB_PANE_MAX_TEXT_BYTES);
-        assert!(composer_push_script("push-result", Some(&at_limit), false).is_ok());
+        assert!(composer_push_script(chatgpt(), "push-result", Some(&at_limit), false).is_ok());
         let oversized = "a".repeat(WEB_PANE_MAX_TEXT_BYTES + 1);
-        let error = composer_push_script("push-result", Some(&oversized), false).unwrap_err();
+        let error = composer_push_script(chatgpt(), "push-result", Some(&oversized), false)
+            .unwrap_err();
         assert!(error.contains("exceeds"));
         assert!(error.contains(&WEB_PANE_MAX_TEXT_BYTES.to_string()));
     }
 
     #[test]
     fn composer_push_requires_text_unless_submit_is_requested() {
-        assert!(composer_push_script("push-result", None, false).is_err());
-        assert!(composer_push_script("push-result", None, true).is_ok());
+        assert!(composer_push_script(chatgpt(), "push-result", None, false).is_err());
+        assert!(composer_push_script(chatgpt(), "push-result", None, true).is_ok());
     }
 }

@@ -32,7 +32,7 @@ interface AgentDefinition {
 
 ## How Agents Are Used
 
-1. **Workspace creation**: `AgentSelector` + `AgentSlotList` let users assign agents to each pane slot
+1. **Workspace creation**: `AgentSelector` + `AgentSlotList` let users pick a launch spec (agent, model, effort) per pane slot. Those come from `src/lib/agentCatalog.ts`, not from `BUILT_IN_AGENTS` — everything but a plain shell starts through the launcher via `MYCMUX_LAUNCH_TARGET`
 2. **Tab creation**: `addTabToPane(workspaceId, paneId, agentId)` — agent determines the command spawned
 3. **PTY spawn**: `XTermWrapper` receives `command` and `args` from the agent definition
 4. **Default**: `getDefaultAgent()` returns `shell` (first in BUILT_IN_AGENTS array)
@@ -49,11 +49,29 @@ If an agent ID doesn't match any built-in, falls back to shell.
 
 ## Adding New Agents
 
-Add an entry to `BUILT_IN_AGENTS` array in `src/lib/agents.ts`. No other changes needed — the agent appears in `AgentSelector` automatically.
+`BUILT_IN_AGENTS` (`src/lib/agents.ts`) only holds the two entries that spawn a
+PTY directly — the launcher and a plain shell. Every real agent lives in
+`src/lib/agentCatalog.ts` and is started by the launcher, so adding one means:
+
+1. the launcher menu row, its `$LaunchTargets` / `MYCMUX_LAUNCH_TARGET` case, and
+   its entry in the row-to-target mapping (`New-MycmuxOption`'s fourth argument /
+   the `spec_targets` array) in **both** `src-tauri/src/launcher.ps1` and
+   `launcher.sh`
+2. an entry in `AGENT_CATALOG` with the same `target` and `label`, its `cli`,
+   and the model / effort choices it accepts
+3. if the CLI takes a model or an effort: a translation arm
+   (`Add-MycmuxLaunchSpecToCommandArray` / `__add_launch_spec_to_cmd`) and the
+   choices the launcher's own model menu offers (`$LaunchSpecCatalog` /
+   `__spec_models_for`, `__spec_efforts_for`, `__spec_has_target`) — in both
+
+`tests/test_launcher_catalog_contract.py` fails when any of the three is
+missing, and also runs both launchers over the same input to check they produce
+the same command line. The full new-agent checklist is in
+`docs/agent-integration.md`.
 
 ## Future
 
-Custom user-defined agents (JSON config) are not yet implemented. Currently only the 5 built-in agents are available.
+Custom user-defined agents (JSON config) are not yet implemented.
 
 ## Session Resume (v0.4.0 廃止 → v0.5.6 再導入)
 

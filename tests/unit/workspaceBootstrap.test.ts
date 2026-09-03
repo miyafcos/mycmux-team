@@ -4,6 +4,7 @@ import {
   applyCwdToPanes,
   normalizeCwd,
   resolveEmptyWorkspaceState,
+  uniqueWorkspaceName,
   workspaceNameFromCwd,
 } from "../../src/lib/workspaceBootstrap";
 
@@ -125,5 +126,26 @@ describe("resolveEmptyWorkspaceState", () => {
         hasCreatedWorkspace: true,
       }),
     ).toBeNull();
+  });
+});
+
+describe("uniqueWorkspaceName", () => {
+  it("keeps the folder name when nothing else uses it", () => {
+    expect(uniqueWorkspaceName("mycmux", [])).toBe("mycmux");
+    expect(uniqueWorkspaceName("mycmux", ["other"])).toBe("mycmux");
+  });
+
+  it("numbers a repeat so two workspaces in one folder stay apart", () => {
+    expect(uniqueWorkspaceName("mycmux", ["mycmux"])).toBe("mycmux 2");
+    expect(uniqueWorkspaceName("mycmux", ["mycmux", "mycmux 2"])).toBe("mycmux 3");
+  });
+
+  it("fills a gap left by a closed workspace", () => {
+    expect(uniqueWorkspaceName("mycmux", ["mycmux", "mycmux 3"])).toBe("mycmux 2");
+  });
+
+  it("falls back to the base name once the suffixes run out", () => {
+    const taken = ["mycmux", ...Array.from({ length: 98 }, (_, i) => `mycmux ${i + 2}`)];
+    expect(uniqueWorkspaceName("mycmux", taken)).toBe("mycmux");
   });
 });

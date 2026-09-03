@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, useRef, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import type { GridTemplateId, ThemeBackgroundSettings, ThemeDefinition } from "../../types";
+import type { ThemeBackgroundSettings, ThemeDefinition } from "../../types";
 import {
   useWorkspaceListStore,
   useWorkspaceLayoutStore,
@@ -20,7 +20,14 @@ import PaneDragOverlay from "../workspace/PaneDragOverlay";
 import SavepointDragOverlay from "../online/SavepointDragOverlay";
 import WorkspaceSetup from "../setup/WorkspaceSetup";
 import EmptyWorkspaceState from "../setup/EmptyWorkspaceState";
-import { resolveEmptyWorkspaceState } from "../../lib/workspaceBootstrap";
+import type { WorkspaceSetupResult } from "../setup/WorkspaceSetup";
+import {
+  activeWorkspaceCwd,
+  createWorkspaceAtCwd,
+  resolveEmptyWorkspaceState,
+  uniqueWorkspaceName,
+  workspaceNameFromCwd,
+} from "../../lib/workspaceBootstrap";
 import SocketListener from "./SocketListener";
 import KeybindingsModal from "./KeybindingsModal";
 import CrsmPalette, { preloadCrsmSessions } from "../CommandPalette/CrsmPalette";
@@ -521,6 +528,7 @@ export function SidebarResizer({
 
 export default function AppShell({ uiVariant = "default" }: AppShellProps) {
   const [showSetup, setShowSetup] = useState(false);
+  const [setupDefaultCwd, setSetupDefaultCwd] = useState("");
   // Sticky once this session has held a workspace — drives first-run vs
   // "you closed your last workspace" copy in the empty state.
   const [hasCreatedWorkspace, setHasCreatedWorkspace] = useState(false);
@@ -705,35 +713,32 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
     };
   }, []);
 
+  // One click, one workspace: the dialog only ever got its Launch button
+  // pressed, so the button now does that directly and the dialog moved to the
+  // caret next to it. The new workspace inherits the folder the user is looking
+  // at, which is what they would have typed into the dialog anyway.
   const handleNewWorkspace = useCallback(() => {
+    const cwd = activeWorkspaceCwd();
+    const taken = useWorkspaceListStore.getState().workspaces.map((workspace) => workspace.name);
+    createWorkspaceAtCwd(cwd, {
+      name: uniqueWorkspaceName(workspaceNameFromCwd(cwd), taken),
+    });
+  }, []);
+
+  const handleOpenSetup = useCallback(() => {
+    // Resolved once, on open: the live cwd would otherwise move under the
+    // dialog while it is on screen.
+    setSetupDefaultCwd(activeWorkspaceCwd());
     setShowSetup(true);
   }, []);
 
   const handleLaunch = useCallback(
-    (
-      name: string,
-      gridTemplateId: GridTemplateId,
-      agentAssignments: Record<number, string>,
-    ) => {
-      // Build panes using layout store
-      const workspaceId = crypto.randomUUID();
-      const { panes, splitColumns } = useWorkspaceLayoutStore.getState().buildInitialPanes(
-        workspaceId,
-        gridTemplateId,
-        agentAssignments
-      );
-
-      // Create workspace in list store
-      useWorkspaceListStore.getState().createWorkspace(
-        name,
-        gridTemplateId,
-        panes,
-        splitColumns,
-        {
-          id: workspaceId,
-        },
-      );
-      
+    (result: WorkspaceSetupResult) => {
+      createWorkspaceAtCwd(result.cwd, {
+        name: result.name,
+        gridTemplateId: result.gridTemplateId,
+        paneSpecs: result.paneSpecs,
+      });
       setShowSetup(false);
     },
     [],
@@ -944,7 +949,11 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
           break;
 
         case "workspace.new":
-          setShowSetup(true);
+          handleNewWorkspace();
+          break;
+
+        case "workspace.new.advanced":
+          handleOpenSetup();
           break;
 
         case "workspace.next":
@@ -1209,6 +1218,7 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
             <TitleBar
               uiVariant={uiVariant}
               onNewWorkspace={handleNewWorkspace}
+              onOpenWorkspaceSetup={handleOpenSetup}
               onOpenOnlinePanel={() => {
                 const workspace = workspaces.find((candidate) => candidate.id === activeId);
                 const sourcePane = workspace?.panes.find((pane) =>
@@ -1285,14 +1295,18 @@ export default function AppShell({ uiVariant = "default" }: AppShellProps) {
           {emptyStateVariant && (
             <div data-cmux-native-webview-occluder="true" style={{ position: "absolute", inset: 0, zIndex: 45, background: "var(--cmux-bg)" }}>
               <ErrorBoundary fallback={chromeCrashFallback("ワークスペース未作成画面")}>
-                <EmptyWorkspaceState variant={emptyStateVariant} onOpenSetup={handleNewWorkspace} />
+                <EmptyWorkspaceState variant={emptyStateVariant} onOpenSetup={handleOpenSetup} />
               </ErrorBoundary>
             </div>
           )}
           {showSetup && (
             <div data-cmux-native-webview-occluder="true" style={{ position: "absolute", inset: 0, zIndex: 50, background: "var(--cmux-bg)" }}>
               <ErrorBoundary fallback={chromeCrashFallback("ワークスペース作成画面")}>
-                <WorkspaceSetup onLaunch={handleLaunch} onCancel={handleCancelSetup} />
+                <WorkspaceSetup
+                  defaultCwd={setupDefaultCwd}
+                  onLaunch={handleLaunch}
+                  onCancel={handleCancelSetup}
+                />
               </ErrorBoundary>
             </div>
           )}

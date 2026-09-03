@@ -14,6 +14,7 @@ const apiMocks = vi.hoisted(() => ({
   createWebPane: vi.fn(),
   destroyWebPane: vi.fn(),
   updateWebPane: vi.fn(),
+  WEB_PANE_SIGNIN_EVENT: "mycmux:web-pane-signin",
 }));
 const eventMocks = vi.hoisted(() => ({
   listen: vi.fn(),
@@ -111,5 +112,66 @@ describe("WebPaneController lifecycle", () => {
 
     expect(apiMocks.destroyWebPane).toHaveBeenCalledTimes(1);
     expect(apiMocks.destroyWebPane).toHaveBeenCalledWith("web-tab");
+  });
+
+  it("holds the pane closed while a sign-in window owns the profile, then reopens it", async () => {
+    // Rust closes these webviews itself so the sign-in browser can take the
+    // profile folder. If the controller still believed the webview existed the
+    // pane would stay blank for good; if it rebuilt one straight away the two
+    // browsers would fight over the folder.
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal("requestAnimationFrame", vi.fn((callback: FrameRequestCallback) => {
+      frames.push(callback);
+      return frames.length;
+    }));
+    const host = document.createElement("div");
+    host.dataset.webPaneHostTabId = "web-tab";
+    host.getBoundingClientRect = () => ({
+      x: 0, y: 0, width: 800, height: 600, top: 0, left: 0, right: 800, bottom: 600,
+      toJSON: () => ({}),
+    }) as DOMRect;
+    document.body.appendChild(host);
+
+    const runFrame = async () => {
+      const next = frames.shift();
+      await act(async () => {
+        next?.(0);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+    };
+
+    await act(async () => {
+      root.render(<WebPaneController />);
+      await Promise.resolve();
+    });
+    await runFrame();
+    expect(apiMocks.createWebPane).toHaveBeenCalledTimes(1);
+
+    const signinListener = eventMocks.listen.mock.calls
+      .find(([event]) => event === apiMocks.WEB_PANE_SIGNIN_EVENT)?.[1] as
+        (event: { payload: unknown }) => void;
+    expect(signinListener).toBeTypeOf("function");
+
+    await act(async () => {
+      signinListener({
+        payload: { profileDir: "google", tabIds: ["web-tab"], state: "running", error: null },
+      });
+      await Promise.resolve();
+    });
+    await runFrame();
+    await runFrame();
+    expect(apiMocks.createWebPane).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      signinListener({
+        payload: { profileDir: "google", tabIds: ["web-tab"], state: "finished", error: null },
+      });
+      await Promise.resolve();
+    });
+    await runFrame();
+    expect(apiMocks.createWebPane).toHaveBeenCalledTimes(2);
+
+    host.remove();
   });
 });

@@ -63,7 +63,8 @@ env 構築は純関数 `resolveSpawnPlan` に分離してあり、`tests/unit/so
 ## 安全設計
 
 - ループバック限定 + プロセス固有トークン (上記「認証」)。GUI パレットで人間ができる操作を、トークンを読める呼び出し元にだけ開放している
-- `MYCMUX_LAUNCH_TARGET` は ephemeral env ガード3層 (lib.rs 起動時 `remove_var` / SocketListener の永続化フィルタ / 契約テスト `tests/test_ephemeral_env_keys_contract.py`) に登録済み。data.json に残らないため、復元時にエージェントが勝手に起動する事故 (v0.4.0 の env 汚染事故と同型) は起きない
+- `MYCMUX_LAUNCH_TARGET` と、New Workspace ダイアログが同じ経路で渡す `MYCMUX_LAUNCH_MODEL` / `MYCMUX_LAUNCH_EFFORT` は ephemeral env ガード3層 (lib.rs 起動時 `remove_var` / SocketListener の永続化フィルタ / 契約テスト `tests/test_ephemeral_env_keys_contract.py`) に登録済み。data.json に残らないため、復元時にエージェントが勝手に起動する事故 (v0.4.0 の env 汚染事故と同型) は起きない
+- model / effort の値はコマンドラインに載るので、`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$` に合うものだけを通す (先頭を英数字に固定してフラグ偽装を封じる)。検証は GUI 側 (`src/lib/agentCatalog.ts`) とランチャー2本の両方に置き、ランチャーは読んだ直後に env から消す
 - `pane.send_text` は生の端末入力。CLI ヘルプにも「対象 sessionId を確認してから使う」旨を明記
 
 ## CLI 使用例

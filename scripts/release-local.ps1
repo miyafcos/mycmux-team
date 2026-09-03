@@ -495,6 +495,33 @@ See ``CHANGELOG.md`` for details.
   $verifyScript = Join-Path $PSScriptRoot "verify_updater_feed.py"
   Invoke-NativeVisible -FilePath "python" -Arguments @($verifyScript, "--expect-version", $Version) -Label "updater feed の署名 key-id 検証"
   Write-Host "updater feed の署名 key-id 検証: PASS"
+  # 公開ミラーはチームに配っている唯一の見える面なので、リリースのたびにここまで
+  # 自動で追従させる (2026-09-02 宮崎さん指示: 配っている方はメインの copy として
+  # 勝手に更新されて使えるように)。履歴は持ち込まず、master の tree だけを載せた
+  # sync コミットを 1 本積む。
+  Write-Stage "公開ミラーの master を同期"
+  $mirrorRemote = "public"
+  $remoteNames = @(Invoke-NativeCapture -FilePath "git" -Arguments @("remote") -Label "git remote の一覧") -split "\r?\n"
+  if ($remoteNames -notcontains $mirrorRemote) {
+    throw "git remote '$mirrorRemote' が見つかりません ($targetRepo を指す remote を追加してください)。"
+  }
+  Invoke-NativeVisible -FilePath "git" -Arguments @("fetch", $mirrorRemote, "master") -Label "公開ミラーの取得"
+  $mirrorHead = Invoke-NativeCapture -FilePath "git" -Arguments @("rev-parse", "$mirrorRemote/master") -Label "公開ミラー HEAD の確認"
+  $localTree = Invoke-NativeCapture -FilePath "git" -Arguments @("rev-parse", "master^{tree}") -Label "master tree の確認"
+  $mirrorTree = Invoke-NativeCapture -FilePath "git" -Arguments @("rev-parse", "$mirrorHead^{tree}") -Label "公開ミラー tree の確認"
+  if ($mirrorTree -eq $localTree) {
+    Write-Host "公開ミラー: SKIP (tree は既に master と一致)"
+  } else {
+    $syncCommit = Invoke-NativeCapture -FilePath "git" -Arguments @("commit-tree", "master^{tree}", "-p", $mirrorHead, "-m", "sync: mycmux $tag") -Label "sync コミットの作成"
+    Invoke-NativeVisible -FilePath "git" -Arguments @("push", $mirrorRemote, "${syncCommit}:refs/heads/master") -Label "公開ミラーへの push"
+    # 自己申告ではなく実体で確かめる: push した commit の tree が master と同一か。
+    $pushedHead = Invoke-NativeCapture -FilePath "git" -Arguments @("ls-remote", $mirrorRemote, "refs/heads/master") -Label "公開ミラー HEAD の再確認"
+    if (-not ($pushedHead -like "$syncCommit*")) {
+      throw "公開ミラーの master が push した commit と一致しません (remote: $pushedHead, pushed: $syncCommit)。"
+    }
+    Write-Host "公開ミラー: PASS (tree $localTree)"
+  }
+
 } finally {
   $plainStoredPassword = $null
 
