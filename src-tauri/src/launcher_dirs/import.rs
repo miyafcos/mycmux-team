@@ -154,6 +154,7 @@ fn apply_row(entry: &mut LauncherDirEntry, row: &ImportedRow) {
 
 pub fn initial_import(rows: &[ImportedRow]) -> LauncherDirsDoc {
     let mut doc = LauncherDirsDoc::default();
+    super::rules::seed_defaults(&mut doc);
     let mut keys = HashSet::new();
     for row in rows {
         if keys.insert(path_key(&row.path)) {

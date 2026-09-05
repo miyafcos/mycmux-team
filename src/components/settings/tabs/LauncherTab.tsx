@@ -5,6 +5,9 @@ import { useSettingsStore } from "../../../stores/settingsStore";
 import { useLauncherDirsStore } from "../../../stores/launcherDirsStore";
 import { AGENT_CATALOG } from "../../../lib/agentCatalog";
 import { revealInExplorer } from "../../../lib/ipc";
+import type { LauncherDirSection } from "../../../lib/ipc";
+import { RULE_TYPES, formatCandidate, readLastScan, readRule, ruleForm, ruleId, ruleSummary, ruleTypeLabel, ruleTypeNote, validateRuleForm } from "../../../lib/launcherDirsModel";
+import type { LauncherRule, RuleForm, RuleMode } from "../../../lib/launcherDirsModel";
 import { dirSections, middleEllipsis, shortLabel } from "../../workspace/launcherModel";
 import { AgentKindIcon } from "../../icons/AgentIcons";
 import { checkboxLabelStyle, dialogButtonStyle, dividerStyle, sectionHeadingStyle } from "../tabStyles";
@@ -94,6 +97,84 @@ function EditableLabel({ value, disabled, onSave, onEmpty }: {
   );
 }
 
+const fieldStyle: CSSProperties = {
+  width: "100%", minWidth: 0, boxSizing: "border-box", padding: "5px 7px", borderRadius: 4,
+  border: "1px solid var(--cmux-border)", background: "var(--cmux-surface)", color: "var(--cmux-text)",
+  font: "inherit", fontSize: "var(--cmux-font-size-sm)",
+};
+const cardStyle: CSSProperties = { border: "1px solid var(--cmux-border-hairline)", borderRadius: 8, padding: "8px 10px", marginBottom: 8 };
+const accentButton: CSSProperties = { ...smallButton, borderColor: "var(--cmux-accent)", color: "var(--cmux-accent-text)" };
+
+function ModeFields({ name, mode, onChange, disabled }: { name: string; mode: RuleMode; onChange: (mode: RuleMode) => void; disabled: boolean }) {
+  return <span style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+    {(["suggest", "auto"] as const).map((value) => <label key={value} style={{ ...checkboxLabelStyle, padding: 0, fontSize: "var(--cmux-font-size-xs)" }}>
+      <input type="radio" name={name} value={value} checked={mode === value} disabled={disabled} onChange={() => onChange(value)} />
+      {value === "suggest" ? T.modeSuggest : T.modeAuto}
+    </label>)}
+  </span>;
+}
+
+function RuleEditor({ initial, sections, busy, onSave, onCancel }: {
+  initial: RuleForm; sections: LauncherDirSection[]; busy: boolean;
+  onSave: (rule: LauncherRule) => Promise<boolean>; onCancel: () => void;
+}) {
+  const [form, setForm] = useState(initial);
+  const [error, setError] = useState<string | null>(null);
+  const set = <K extends keyof RuleForm>(key: K, value: RuleForm[K]) => setForm((old) => ({ ...old, [key]: value }));
+  const isGit = form.type === "git-parents", isFolder = form.type === "folder-root", isCwd = form.type === "session-cwd";
+  const pick = async () => {
+    try {
+      const path = await openDialog({ directory: true, multiple: false, title: T.pickFolderForRule });
+      if (typeof path === "string") setForm((old) => isGit ? { ...old, parents: [old.parents.trim(), path].filter(Boolean).join("\n") } : { ...old, root: path });
+    } catch (error) { setError(String(error)); }
+  };
+  const textField = (key: "parents" | "root" | "depth_overrides" | "exclude_prefixes" | "exclude_names" | "exclude_substrings" | "top_level_exclude", label: string, multiline = true) => <label style={{ display: "block", marginTop: 8 }}>
+    <span style={{ display: "block", ...noteStyle, marginBottom: 3 }}>{label}</span>
+    {multiline ? <textarea aria-label={label} rows={3} value={form[key]} onChange={(event) => set(key, event.target.value)} style={{ ...fieldStyle, resize: "vertical", fontFamily: "var(--cmux-font-mono)" }} />
+      : <input aria-label={label} value={form[key]} onChange={(event) => set(key, event.target.value)} style={fieldStyle} />}
+  </label>;
+  const numberField = (key: "window_days" | "max" | "depth" | "max_depth" | "min_sessions" | "min_mentions", label: string) => <label style={{ flex: "1 1 120px", minWidth: 0 }}>
+    <span style={{ display: "block", ...noteStyle, marginBottom: 3 }}>{label}</span>
+    <input aria-label={label} type="number" min="1" step="1" value={form[key]} onChange={(event) => set(key, event.target.value)} style={fieldStyle} />
+  </label>;
+  return <form noValidate style={{ ...cardStyle, borderColor: "var(--cmux-accent)" }} onSubmit={(event) => {
+    event.preventDefault();
+    if (busy) return;
+    const checked = validateRuleForm(form, T);
+    setError(checked.error);
+    if (checked.rule) void onSave(checked.rule).then((saved) => { if (saved) onCancel(); });
+  }}>
+    <div style={{ fontWeight: 600, marginBottom: 8 }}>{initial.id ? T.editorTitleEdit : T.editorTitleNew}{" \u00b7 "}{ruleTypeLabel(form.type, T)}</div>
+    <fieldset disabled={busy} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
+      <div style={detailsRow}><span style={noteStyle}>{T.fieldSection}</span>
+        {sections.map((section) => <button key={section.id} type="button" aria-pressed={form.section === section.id} style={form.section === section.id ? accentButton : smallButton} onClick={() => set("section", section.id)}>{section.label}</button>)}
+      </div>
+      <div style={detailsRow}><span style={noteStyle}>{T.fieldMode}</span><ModeFields name={`edit-${form.id || "new"}`} mode={form.mode} onChange={(mode) => set("mode", mode)} disabled={busy} /></div>
+      {isGit ? textField("parents", T.fieldParents) : textField("root", isCwd ? T.fieldRootOptional : T.fieldRoot, false)}
+      <button type="button" style={{ ...smallButton, marginTop: 4 }} onClick={() => { void pick(); }}>{T.pickFolderForRule}{isGit ? ` ${T.addFolderToList}` : ""}</button>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginTop: 10 }}>
+        {numberField("window_days", T.fieldWindowDays)}{numberField("max", T.fieldMax)}
+        {!isGit && !isCwd && numberField("depth", T.fieldDepth)}
+        {isFolder && numberField("max_depth", T.fieldMaxDepth)}
+        {isCwd && numberField("min_sessions", T.fieldMinSessions)}
+        {form.type === "session-mentions" && numberField("min_mentions", T.fieldMinMentions)}
+      </div>
+      {!isGit && !isCwd && textField("depth_overrides", T.fieldDepthOverrides)}
+      {(isGit || isFolder) && <>
+        {textField("exclude_prefixes", T.fieldExcludePrefixes)}
+        {isGit && textField("exclude_names", T.fieldExcludeNames)}
+        {textField("exclude_substrings", T.fieldExcludeSubstrings)}
+      </>}
+      {isFolder && textField("top_level_exclude", T.fieldTopLevelExclude)}
+      {error && <div role="alert" style={{ ...noteStyle, color: "var(--cmux-red)", marginTop: 8 }}>{error}</div>}
+      <div style={{ ...detailsRow, marginTop: 8 }}>
+        <button type="submit" style={accentButton}>{T.saveRule}</button>
+        <button type="button" style={smallButton} onClick={onCancel}>{T.cancelEdit}</button>
+      </div>
+    </fieldset>
+  </form>;
+}
+
 export function LauncherTab() {
   const hiddenIds = useSettingsStore((state) => state.launcherHiddenIds);
   const setHiddenIds = useSettingsStore((state) => state.setLauncherHiddenIds);
@@ -101,8 +182,12 @@ export function LauncherTab() {
   const store = useLauncherDirsStore();
   const { view, load, loading } = store;
   const sections = useMemo(() => dirSections(view), [view]);
-  const [errorArea, setErrorArea] = useState<"folders" | "details">("folders");
+  const [errorArea, setErrorArea] = useState<"folders" | "candidates" | "rules" | "details">("folders");
   const [localError, setLocalError] = useState<string | null>(null);
+  const [editingRule, setEditingRule] = useState<RuleForm | null>(null);
+  const [choosingType, setChoosingType] = useState(false);
+  const scan = readLastScan(view?.doc.last_scan);
+  const rules = view?.doc.rules ?? [];
 
   useEffect(() => { void load(); }, [load]);
 
@@ -112,7 +197,7 @@ export function LauncherTab() {
     else next.add(id);
     setHiddenIds([...next]);
   };
-  const run = (area: "folders" | "details", operation: () => Promise<unknown>) => {
+  const run = (area: "folders" | "candidates" | "rules" | "details", operation: () => Promise<unknown>) => {
     setErrorArea(area);
     setLocalError(null);
     void operation().catch((error: unknown) => setLocalError(error instanceof Error ? error.message : String(error)));
@@ -127,11 +212,12 @@ export function LauncherTab() {
     if (!rawError) return null;
     if (rawError === "label is empty") return T.labelEmpty;
     if (rawError === "not a directory") return T.notADirectory;
+    if (rawError.startsWith("not a directory: ")) return T.validationNotADirectory(rawError.slice("not a directory: ".length));
     const sectionId = rawError.match(/^already registered in (.+)$/)?.[1];
     if (sectionId) return T.alreadyRegistered(view?.doc.sections.find((section) => section.id === sectionId)?.label ?? sectionId);
     return T.saveFailed(rawError);
   })();
-  const errorBlock = (area: "folders" | "details") => errorArea === area && errorText ? (
+  const errorBlock = (area: "folders" | "candidates" | "rules" | "details") => errorArea === area && errorText ? (
     <div role="alert" style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-red)", marginTop: 8, overflowWrap: "anywhere" }}>{errorText}</div>
   ) : null;
 
@@ -147,6 +233,15 @@ export function LauncherTab() {
       </span>
     </label>
   );
+  const editor = (initial: RuleForm) => <RuleEditor key={initial.id || "new-rule"} initial={initial} sections={view?.doc.sections ?? []} busy={loading}
+    onCancel={() => setEditingRule(null)} onSave={(rule) => { setErrorArea("rules"); setLocalError(null); return store.upsertRule(rule); }} />;
+  const scanNow = (area: "candidates" | "rules") => run(area, store.scanNow);
+  const ruleLabel = (id: string) => {
+    const rule = readRule(rules.find((value) => ruleId(value) === id));
+    if (!rule) return T.ruleTypeUnknown;
+    const section = view?.doc.sections.find((section) => section.id === rule.section)?.label ?? rule.section;
+    return `${section} \u00b7 ${ruleTypeLabel(rule.type, T)}`;
+  };
   const writtenAt = formatWhen(view?.doc.export.roots_txt_written_at ?? null);
   const mergedAt = formatWhen(view?.doc.export.last_external_merge_at ?? null);
 
@@ -219,6 +314,72 @@ export function LauncherTab() {
       })}
       <div style={noteStyle}>{T.markLegend}</div>
       {errorBlock("folders")}
+
+      <div style={dividerStyle} />
+      <div style={sectionHeadingStyle}>{T.candidatesHeading}</div>
+      <div style={noteStyle}>{T.candidatesNote}</div>
+      <div style={detailsRow}>
+        <button type="button" style={smallButton} disabled={loading || store.scanning} onClick={() => scanNow("candidates")}>{store.scanning ? T.scanning : T.refreshCandidates}</button>
+        <span role="status" style={noteStyle}>{scan ? T.lastScan(formatWhen(scan.at)) : T.lastScanNever}</span>
+      </div>
+      {scan && Object.entries(scan.results).map(([id, result]) => <div key={id} style={{ ...noteStyle, marginBottom: 3, overflowWrap: "anywhere", color: result.error ? "var(--cmux-red)" : noteStyle.color }}>
+        {result.error ? T.scanFailed(ruleLabel(id), result.error) : `${ruleLabel(id)}: ${result.count}`}
+        {result.truncated ? ` (${T.scanTruncated})` : ""}
+      </div>)}
+      {!scan?.candidates.length ? <div style={{ ...noteStyle, padding: "6px 0" }}>{T.noCandidates}</div> : scan.candidates.map((candidate) => {
+        const formatted = formatCandidate(candidate, T);
+        return <div key={candidate.path} style={{ borderTop: "1px solid var(--cmux-border-hairline)", padding: "7px 0" }}>
+          <div style={{ display: "flex", gap: 7, alignItems: "baseline", minWidth: 0 }}>
+            <span style={noteStyle}>{formatted.mark}</span>
+            <span style={{ minWidth: 0, overflowWrap: "anywhere" }}>{candidate.label}</span>
+            <span style={{ ...noteStyle, marginLeft: "auto", whiteSpace: "nowrap" }}>{formatted.signal}</span>
+          </div>
+          <div style={{ ...detailsRow, paddingBottom: 0 }}>
+            <span title={formatted.title} style={{ ...pathStyle, flex: "1 1 200px" }}>{formatted.path}</span>
+            {view?.doc.sections.map((section) => <button key={section.id} type="button" disabled={loading}
+              style={candidate.section === section.id ? accentButton : smallButton}
+              onClick={() => run("candidates", () => store.registerCandidate(section.id, candidate.path))}>{T.registerTo(section.label)}</button>)}
+            <button type="button" style={smallButton} disabled={loading} title={T.ignoreTooltip} onClick={() => run("candidates", () => store.ignorePath(candidate.path))}>{T.ignore}</button>
+          </div>
+        </div>;
+      })}
+      {scan && scan.more > 0 && <div style={{ ...noteStyle, marginTop: 5 }}>{T.moreCandidates(scan.more)}</div>}
+      {errorBlock("candidates")}
+
+      <div style={dividerStyle} />
+      <div style={sectionHeadingStyle}>{T.rulesHeading}</div>
+      <div style={{ ...noteStyle, marginBottom: 8 }}>{T.rulesNote}</div>
+      {rules.length === 0 && <div style={{ ...noteStyle, padding: "6px 0" }}>{T.noRules}</div>}
+      {rules.map((value, index) => {
+        const rule = readRule(value), id = ruleId(value);
+        if (id && editingRule?.id === id) return editor(editingRule);
+        return <div key={id ?? `unknown-${index}`} style={{ ...cardStyle, opacity: rule ? 1 : 0.55 }}>
+          <div style={{ fontWeight: 600 }}>{rule ? ruleLabel(rule.id) : T.ruleTypeUnknown}</div>
+          <div title={ruleSummary(value, view?.home_path ?? "", T)} style={{ ...noteStyle, margin: "3px 0 6px", overflowWrap: "anywhere" }}>{ruleSummary(value, view?.home_path ?? "", T)}</div>
+          <div style={detailsRow}>
+            {rule && <>
+              <ModeFields name={rule.id} mode={rule.mode} disabled={loading} onChange={(mode) => run("rules", () => store.setRuleMode(rule.id, mode))} />
+              <label style={{ ...checkboxLabelStyle, padding: 0, fontSize: "var(--cmux-font-size-xs)", marginLeft: "auto" }}>
+                <input type="checkbox" checked={rule.enabled} disabled={loading} onChange={(event) => run("rules", () => store.setRuleEnabled(rule.id, event.target.checked))} />{T.ruleEnabled}
+              </label>
+            </>}
+            <button type="button" style={smallButton} disabled={loading || !rule} onClick={() => { if (rule) { setChoosingType(false); setEditingRule(ruleForm(rule.type, rule.section, rule)); } }}>{T.editRule}</button>
+            <button type="button" style={smallButton} disabled={loading || id === null} title={T.deleteRuleNote} onClick={() => { if (id !== null) run("rules", () => store.deleteRule(id)); }}>{T.deleteRule}</button>
+          </div>
+        </div>;
+      })}
+      {editingRule?.id === "" && editor(editingRule)}
+      {choosingType && <div style={{ ...detailsRow, marginBottom: 8 }}>
+        {RULE_TYPES.map((type) => <button key={type} type="button" style={smallButton} title={ruleTypeNote(type, T)} disabled={loading} onClick={() => {
+          setEditingRule(ruleForm(type, view?.doc.sections[0]?.id ?? "dev")); setChoosingType(false);
+        }}>{ruleTypeLabel(type, T)}</button>)}
+      </div>}
+      <div style={detailsRow}>
+        <button type="button" style={smallButton} disabled={loading || editingRule !== null} aria-expanded={choosingType} onClick={() => setChoosingType(!choosingType)}>{T.addRule}</button>
+        <button type="button" style={smallButton} disabled={loading || store.scanning} onClick={() => scanNow("rules")}>{store.scanning ? T.scanning : T.scanNow}</button>
+      </div>
+      <div style={noteStyle}>{view?.test_profile_active ? T.scheduleOffInTest : T.scheduleNote}</div>
+      {errorBlock("rules")}
 
       <div style={dividerStyle} />
       <div style={sectionHeadingStyle}>{T.detailsHeading}</div>

@@ -51,6 +51,12 @@ fn backup_roots(runtime_dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn fresh_doc() -> LauncherDirsDoc {
+    let mut doc = LauncherDirsDoc::default();
+    super::rules::seed_defaults(&mut doc);
+    doc
+}
+
 // Only called while LOCK is held (or with an isolated tempdir in unit tests).
 fn load(runtime_dir: &Path) -> Result<LauncherDirsDoc, String> {
     fs::create_dir_all(runtime_dir).map_err(|e| e.to_string())?;
@@ -87,7 +93,7 @@ fn load(runtime_dir: &Path) -> Result<LauncherDirsDoc, String> {
                         "launch-roots.txt",
                     )
                 } else {
-                    (LauncherDirsDoc::default(), "empty defaults")
+                    (fresh_doc(), "empty defaults")
                 };
                 crate::diag_warn!(
                     "launcher_dirs",
@@ -100,7 +106,7 @@ fn load(runtime_dir: &Path) -> Result<LauncherDirsDoc, String> {
         Err(error) if error.kind() == ErrorKind::NotFound => {
             match fs::read_to_string(runtime_dir.join("launch-roots.txt")) {
                 Ok(contents) => initial_import(&parse_roots_txt(&contents)),
-                Err(error) if error.kind() == ErrorKind::NotFound => LauncherDirsDoc::default(),
+                Err(error) if error.kind() == ErrorKind::NotFound => fresh_doc(),
                 Err(error) => return Err(error.to_string()),
             }
         }
@@ -155,6 +161,7 @@ where
     let mut doc = load(runtime_dir)?;
     sync_external(runtime_dir, &mut doc)?;
     f(&mut doc)?;
+    super::scan::prune_candidates(&mut doc);
     persist(runtime_dir, &mut doc)?;
     Ok(LauncherDirsView::new(runtime_dir, doc))
 }
@@ -189,6 +196,21 @@ pub fn record_dir_mru(runtime_dir: &Path, path: &str) -> Result<(), String> {
 mod tests {
     use super::super::model::Source;
     use super::*;
+
+    #[test]
+    fn defaults_are_seeded_only_when_creating_json_or_importing_txt() {
+        for with_txt in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            if with_txt { fs::write(root.path().join("launch-roots.txt"), "Manual|C:/manual\n").unwrap(); }
+            let doc = load(root.path()).unwrap();
+            assert_eq!(doc.rules.len(), 2);
+            assert!(doc.rules.iter().all(|value| value["mode"] == "suggest"));
+        }
+        let root = tempfile::tempdir().unwrap();
+        let existing = LauncherDirsDoc::default();
+        fs::write(root.path().join("launch-dirs.json"), serde_json::to_vec(&existing).unwrap()).unwrap();
+        assert!(load(root.path()).unwrap().rules.is_empty());
+    }
 
     #[test]
     fn fresh_profile_creates_an_empty_document_and_derived_file() {

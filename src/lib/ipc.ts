@@ -1582,6 +1582,8 @@ export interface LauncherDirsView {
   entries_exist: Array<[string, boolean]>;
   json_path: string;
   roots_txt_path: string;
+  home_path: string;
+  test_profile_active: boolean;
 }
 
 export async function launcherDirsGet(): Promise<LauncherDirsView> {
@@ -1622,6 +1624,48 @@ export async function launcherDirsUnignorePath(path: string): Promise<LauncherDi
 
 export async function launcherDirsExportRoots(): Promise<LauncherDirsView> {
   return invoke<LauncherDirsView>("launcher_dirs_export_roots");
+}
+
+export interface LauncherDirCandidate {
+  path: string;
+  label: string;
+  section: string;
+  signal: NonNullable<LauncherDirEntry["signal"]>;
+  seen_at: string | null;
+  rule_id: string | null;
+  source: "rule" | "mru";
+}
+
+export interface LauncherDirsLastScan {
+  at: string;
+  duration_ms: number;
+  results: Record<string, { count: number; truncated: boolean; error: string | null }>;
+  candidates: LauncherDirCandidate[];
+  more: number;
+}
+
+export async function launcherDirsScanNow(): Promise<LauncherDirsView> {
+  return invoke<LauncherDirsView>("launcher_dirs_scan_now");
+}
+
+export async function launcherDirsUpsertRule(rule: unknown): Promise<LauncherDirsView> {
+  return invoke<LauncherDirsView>("launcher_dirs_upsert_rule", { rule });
+}
+
+export async function launcherDirsDeleteRule(id: string): Promise<LauncherDirsView> {
+  return invoke<LauncherDirsView>("launcher_dirs_delete_rule", { id });
+}
+
+export async function launcherDirsSetRuleEnabled(id: string, enabled: boolean): Promise<LauncherDirsView> {
+  return invoke<LauncherDirsView>("launcher_dirs_set_rule_enabled", { id, enabled });
+}
+
+export async function launcherDirsSetRuleMode(id: string, mode: "auto" | "suggest"): Promise<LauncherDirsView> {
+  return invoke<LauncherDirsView>("launcher_dirs_set_rule_mode", { id, mode });
+}
+
+export async function launcherDirsRegisterCandidate(sectionId: string, path: string): Promise<LauncherDirsView> {
+  return invoke<LauncherDirsView>("launcher_dirs_register_candidate", { sectionId, path });
 }
 
 export async function launcherRecordDirMru(path: string): Promise<void> {

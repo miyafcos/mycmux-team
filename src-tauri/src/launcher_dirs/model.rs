@@ -253,12 +253,51 @@ impl LauncherDirsDoc {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CandidateSource { Rule, Mru }
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Candidate {
+    pub path: String,
+    pub label: String,
+    pub section: String,
+    pub signal: Signal,
+    pub seen_at: Option<String>,
+    pub rule_id: Option<String>,
+    pub source: CandidateSource,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScanStats {
+    pub count: usize,
+    pub truncated: bool,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LastScan {
+    pub at: String,
+    pub duration_ms: u64,
+    pub results: std::collections::BTreeMap<String, ScanStats>,
+    pub candidates: Vec<Candidate>,
+    pub more: usize,
+}
+
+impl LauncherDirsDoc {
+    pub fn scan_data(&self) -> Option<LastScan> {
+        self.last_scan.as_ref().and_then(|value| serde_json::from_value(value.clone()).ok())
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct LauncherDirsView {
     pub doc: LauncherDirsDoc,
     pub entries_exist: Vec<(String, bool)>,
     pub json_path: String,
     pub roots_txt_path: String,
+    pub home_path: String,
+    pub test_profile_active: bool,
 }
 
 impl LauncherDirsView {
@@ -273,6 +312,8 @@ impl LauncherDirsView {
             doc,
             json_path: display_path(runtime_dir.join("launch-dirs.json")),
             roots_txt_path: display_path(runtime_dir.join("launch-roots.txt")),
+            home_path: normalize_path("~"),
+            test_profile_active: crate::test_profile::is_active(),
         }
     }
 }

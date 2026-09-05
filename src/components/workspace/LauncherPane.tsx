@@ -32,6 +32,7 @@ import { useSettingsStore } from "../../stores/settingsStore";
 import {
   cycleChoice,
   dirSections,
+  dirCandidateCount,
   launchItems,
   middleEllipsis,
   moveSpecRow,
@@ -820,6 +821,7 @@ export default function LauncherPane({
               style={moreButton}
             >
               {S.dirEmptyAction}
+              {dirCandidateCount(view) > 0 && ` ${S.dirEmptyCandidates(dirCandidateCount(view))}`}
             </button>
           </div>,
         );

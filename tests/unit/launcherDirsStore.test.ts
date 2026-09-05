@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   pin: vi.fn(),
   ignore: vi.fn(),
   open: vi.fn(),
+  scan: vi.fn(), upsertRule: vi.fn(), deleteRule: vi.fn(), enabled: vi.fn(), mode: vi.fn(), register: vi.fn(),
 }));
 
 vi.mock("@tauri-apps/api/event", () => ({ listen: mocks.listen }));
@@ -30,6 +31,12 @@ vi.mock("../../src/lib/ipc", () => ({
   launcherDirsUnignorePath: vi.fn(),
   launcherDirsExportRoots: vi.fn(),
   revealInExplorer: vi.fn(),
+  launcherDirsScanNow: mocks.scan,
+  launcherDirsUpsertRule: mocks.upsertRule,
+  launcherDirsDeleteRule: mocks.deleteRule,
+  launcherDirsSetRuleEnabled: mocks.enabled,
+  launcherDirsSetRuleMode: mocks.mode,
+  launcherDirsRegisterCandidate: mocks.register,
 }));
 
 import { useLauncherDirsStore } from "../../src/stores/launcherDirsStore";
@@ -46,7 +53,7 @@ function view(label: string): LauncherDirsView {
       version: 1, sections: [{ id: "dev", label }], entries: [], ignored_paths: [], rules: [], last_scan: null,
       export: { roots_txt_mtime_ms: null, roots_txt_written_at: null, last_external_merge_at: null },
     },
-    entries_exist: [], json_path: "C:/profile/launch-dirs.json", roots_txt_path: "C:/profile/launch-roots.txt",
+    entries_exist: [], json_path: "C:/profile/launch-dirs.json", roots_txt_path: "C:/profile/launch-roots.txt", home_path: "C:/Users/test", test_profile_active: true,
   };
 }
 
@@ -58,7 +65,8 @@ beforeEach(() => {
   mocks.pin.mockReset();
   mocks.ignore.mockReset();
   mocks.open.mockReset();
-  useLauncherDirsStore.setState({ view: null, error: null, loading: false });
+  for (const mock of [mocks.scan, mocks.upsertRule, mocks.deleteRule, mocks.enabled, mocks.mode, mocks.register]) mock.mockReset();
+  useLauncherDirsStore.setState({ view: null, error: null, loading: false, scanning: false });
 });
 
 describe("launcher settings interactions", () => {
@@ -109,6 +117,69 @@ describe("launcher settings interactions", () => {
   const key = async (key: string) => {
     await act(async () => { input().dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key })); });
   };
+
+  it("shows saved candidates, scan results and test scheduling status, then registers the selected label", async () => {
+    const path = "C:/Work Root/client/project";
+    const saved = { ...data, doc: { ...data.doc, rules: [{ id: "r1", type: "session-cwd", section: "anken", enabled: true, mode: "suggest" }],
+      last_scan: { at: "2026-09-05T12:00:00+09:00", duration_ms: 42, more: 4,
+        results: { r1: { count: 1, truncated: true, error: null } },
+        candidates: [{ path, label: "Candidate project", section: "anken", signal: "session", seen_at: "2026-09-05", rule_id: "r1", source: "rule" }] } } };
+    await act(async () => { useLauncherDirsStore.setState({ view: saved }); });
+    expect(container.textContent).toContain(T.scanTruncated);
+    expect(container.textContent).toContain(T.scheduleOffInTest);
+    expect(container.textContent).toContain(T.moreCandidates(4));
+    expect(container.querySelector(`[title="${path}"]`)).not.toBeNull();
+    expect(byLabel(T.registerTo("Clients")).style.borderColor).toBe("var(--cmux-accent)");
+    mocks.register.mockResolvedValue(data);
+    await act(async () => { byLabel(T.registerTo("Clients")).click(); });
+    expect(mocks.register).toHaveBeenCalledWith("anken", path);
+    expect(container.textContent).not.toContain("Candidate project");
+  });
+
+  it("creates a type-specific rule with validation and leaves an unsuccessful save open", async () => {
+    await act(async () => { byLabel(T.addRule).click(); });
+    expect(byLabel(T.ruleTypeGit).title).toBe(T.ruleTypeGitNote);
+    await act(async () => { byLabel(T.ruleTypeGit).click(); });
+    expect(container.querySelector(`[aria-label="${T.fieldParents}"]`)).not.toBeNull();
+    expect(container.querySelector(`[aria-label="${T.fieldMinSessions}"]`)).toBeNull();
+    await act(async () => { byLabel(T.saveRule).click(); });
+    expect(container.textContent).toContain(T.validationParentsRequired);
+    expect(mocks.upsertRule).not.toHaveBeenCalled();
+    mocks.open.mockResolvedValue("C:/chosen parent");
+    await act(async () => { byLabel(`${T.pickFolderForRule} ${T.addFolderToList}`).click(); });
+    expect((container.querySelector(`[aria-label="${T.fieldParents}"]`) as HTMLTextAreaElement).value).toBe("C:/chosen parent");
+    mocks.upsertRule.mockRejectedValueOnce("not a directory: C:/chosen parent").mockResolvedValueOnce(data);
+    await act(async () => { byLabel(T.saveRule).click(); });
+    expect(container.textContent).toContain(T.validationNotADirectory("C:/chosen parent"));
+    expect(container.querySelector("form")).not.toBeNull();
+    await act(async () => { byLabel(T.saveRule).click(); });
+    expect(mocks.upsertRule).toHaveBeenLastCalledWith(expect.objectContaining({ type: "git-parents", mode: "suggest", parents: ["C:/chosen parent"], max: 10, window_days: 30 }));
+    expect(container.querySelector("form")).toBeNull();
+    expect(container.querySelector("select, datalist")).toBeNull();
+  });
+
+  it("edits, toggles and deletes known rules and lets unknown rule types be deleted", async () => {
+    const known = { id: "known", type: "session-cwd", section: "dev", enabled: true, mode: "suggest" };
+    const saved = { ...data, doc: { ...data.doc, rules: [known, { id: "future", type: "future", custom: [1, 2] }] } };
+    for (const mock of [mocks.mode, mocks.enabled, mocks.deleteRule]) mock.mockResolvedValue(saved);
+    await act(async () => { useLauncherDirsStore.setState({ view: saved }); });
+    const edits = buttons().filter((button) => button.textContent === T.editRule);
+    expect(edits.map((button) => button.disabled)).toEqual([false, true]);
+    const auto = container.querySelector<HTMLInputElement>('input[name="known"][value="auto"]')!;
+    await act(async () => { auto.click(); });
+    expect(mocks.mode).toHaveBeenCalledWith("known", "auto");
+    const enabled = [...container.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')].find((input) => input.parentElement?.textContent === T.ruleEnabled)!;
+    await act(async () => { enabled.click(); });
+    expect(mocks.enabled).toHaveBeenCalledWith("known", false);
+    await act(async () => { byLabel(T.editRule).click(); });
+    expect(container.querySelector(`[aria-label="${T.fieldRootOptional}"]`)).not.toBeNull();
+    expect(container.querySelector(`[aria-label="${T.fieldMinSessions}"]`)).not.toBeNull();
+    expect(container.querySelector(`[aria-label="${T.fieldDepth}"]`)).toBeNull();
+    await act(async () => { byLabel(T.cancelEdit).click(); });
+    const deletes = buttons().filter((button) => button.title === T.deleteRuleNote);
+    await act(async () => { deletes[1].click(); });
+    expect(mocks.deleteRule).toHaveBeenCalledWith("future");
+  });
 
   it("shows hidden sections for editing and enables only valid manual moves", async () => {
     expect(container.textContent).toContain("Clients");
@@ -177,6 +248,51 @@ describe("launcher settings interactions", () => {
 });
 
 describe("launcher directory store", () => {
+  it("serializes rule changes and candidate registration through the existing queue", async () => {
+    const next = view("Updated");
+    for (const mock of [mocks.upsertRule, mocks.deleteRule, mocks.enabled, mocks.mode, mocks.register]) mock.mockResolvedValue(next);
+    const state = useLauncherDirsStore.getState();
+    const rule = { id: "r1", type: "session-cwd" };
+    expect(await state.upsertRule(rule)).toBe(true);
+    await state.setRuleEnabled("r1", false);
+    await state.setRuleMode("r1", "auto");
+    await state.registerCandidate("anken", "C:/candidate");
+    await state.deleteRule("r1");
+    expect(mocks.upsertRule).toHaveBeenCalledWith(rule);
+    expect(mocks.enabled).toHaveBeenCalledWith("r1", false);
+    expect(mocks.mode).toHaveBeenCalledWith("r1", "auto");
+    expect(mocks.register).toHaveBeenCalledWith("anken", "C:/candidate");
+    expect(mocks.deleteRule).toHaveBeenCalledWith("r1");
+    expect(useLauncherDirsStore.getState().view).toEqual(next);
+  });
+
+  it("keeps scanning true while queued and in flight, coalesces clicks and recovers after errors", async () => {
+    let finishRead!: (value: LauncherDirsView) => void;
+    let finishScan!: (value: LauncherDirsView) => void;
+    mocks.get.mockReturnValue(new Promise<LauncherDirsView>((resolve) => { finishRead = resolve; }));
+    mocks.scan.mockReturnValueOnce(new Promise<LauncherDirsView>((resolve) => { finishScan = resolve; }));
+    const state = useLauncherDirsStore.getState();
+    const read = state.load();
+    const scan = state.scanNow();
+    expect(state.scanNow()).toBe(scan);
+    expect(useLauncherDirsStore.getState().scanning).toBe(true);
+    await Promise.resolve();
+    expect(mocks.scan).not.toHaveBeenCalled();
+    finishRead(view("Before"));
+    await read;
+    await vi.waitFor(() => expect(mocks.scan).toHaveBeenCalledTimes(1));
+    expect(useLauncherDirsStore.getState().scanning).toBe(true);
+    finishScan(view("Scanned"));
+    expect(await scan).toBe(true);
+    expect(useLauncherDirsStore.getState().scanning).toBe(false);
+    mocks.scan.mockRejectedValueOnce("scan already running");
+    expect(await state.scanNow()).toBe(false);
+    expect(useLauncherDirsStore.getState().error).toBe("scan already running");
+    expect(useLauncherDirsStore.getState().scanning).toBe(false);
+    mocks.scan.mockResolvedValueOnce(view("Recovered"));
+    expect(await state.scanNow()).toBe(true);
+  });
+
   it("subscribes once and reloads on the all-window change event", async () => {
     mocks.get.mockResolvedValue(view("Updated"));
     expect(mocks.listen).toHaveBeenCalledTimes(1);

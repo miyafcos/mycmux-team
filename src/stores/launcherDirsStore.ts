@@ -11,12 +11,19 @@ import {
   launcherDirsIgnorePath,
   launcherDirsUnignorePath,
   launcherDirsExportRoots,
+  launcherDirsScanNow,
+  launcherDirsUpsertRule,
+  launcherDirsDeleteRule,
+  launcherDirsSetRuleEnabled,
+  launcherDirsSetRuleMode,
+  launcherDirsRegisterCandidate,
   type LauncherDirsView,
 } from "../lib/ipc";
 
 interface LauncherDirsState {
   view: LauncherDirsView | null;
   loading: boolean;
+  scanning: boolean;
   error: string | null;
   load: () => Promise<boolean>;
   setSectionLabel: (sectionId: string, label: string) => Promise<boolean>;
@@ -28,6 +35,12 @@ interface LauncherDirsState {
   ignorePath: (path: string) => Promise<boolean>;
   unignorePath: (path: string) => Promise<boolean>;
   exportRoots: () => Promise<boolean>;
+  scanNow: () => Promise<boolean>;
+  upsertRule: (rule: unknown) => Promise<boolean>;
+  deleteRule: (id: string) => Promise<boolean>;
+  setRuleEnabled: (id: string, enabled: boolean) => Promise<boolean>;
+  setRuleMode: (id: string, mode: "auto" | "suggest") => Promise<boolean>;
+  registerCandidate: (sectionId: string, path: string) => Promise<boolean>;
 }
 
 export const useLauncherDirsStore = create<LauncherDirsState>((set) => {
@@ -35,6 +48,7 @@ export const useLauncherDirsStore = create<LauncherDirsState>((set) => {
   // must not let a delayed snapshot replace a newer edit in this window.
   let queue: Promise<unknown> = Promise.resolve();
   let pending = 0;
+  let scanPending: Promise<boolean> | null = null;
   const run = (operation: () => Promise<LauncherDirsView>, clearError = true): Promise<boolean> => {
     pending += 1;
     set({ loading: true });
@@ -59,6 +73,7 @@ export const useLauncherDirsStore = create<LauncherDirsState>((set) => {
   return {
     view: null,
     loading: false,
+    scanning: false,
     error: null,
     load: () => run(launcherDirsGet, false),
     setSectionLabel: (sectionId, label) => run(() => launcherDirsSetSectionLabel(sectionId, label)),
@@ -70,6 +85,20 @@ export const useLauncherDirsStore = create<LauncherDirsState>((set) => {
     ignorePath: (path) => run(() => launcherDirsIgnorePath(path)),
     unignorePath: (path) => run(() => launcherDirsUnignorePath(path)),
     exportRoots: () => run(launcherDirsExportRoots),
+    scanNow: () => {
+      if (scanPending) return scanPending;
+      set({ scanning: true });
+      scanPending = run(launcherDirsScanNow).finally(() => {
+        scanPending = null;
+        set({ scanning: false });
+      });
+      return scanPending;
+    },
+    upsertRule: (rule) => run(() => launcherDirsUpsertRule(rule)),
+    deleteRule: (id) => run(() => launcherDirsDeleteRule(id)),
+    setRuleEnabled: (id, enabled) => run(() => launcherDirsSetRuleEnabled(id, enabled)),
+    setRuleMode: (id, mode) => run(() => launcherDirsSetRuleMode(id, mode)),
+    registerCandidate: (sectionId, path) => run(() => launcherDirsRegisterCandidate(sectionId, path)),
   };
 });
 

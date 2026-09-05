@@ -441,6 +441,12 @@ pub fn run() {
             commands::launcher::launcher_dirs_ignore_path,
             commands::launcher::launcher_dirs_unignore_path,
             commands::launcher::launcher_dirs_export_roots,
+            commands::launcher::launcher_dirs_scan_now,
+            commands::launcher::launcher_dirs_upsert_rule,
+            commands::launcher::launcher_dirs_delete_rule,
+            commands::launcher::launcher_dirs_set_rule_enabled,
+            commands::launcher::launcher_dirs_set_rule_mode,
+            commands::launcher::launcher_dirs_register_candidate,
             commands::launcher::launcher_record_dir_mru,
             commands::webpane::webpane_list_presets,
             commands::webpane::webpane_create,
@@ -586,6 +592,7 @@ pub fn run() {
             session_retention::run_startup_retention(app_data_parent, mycmux_dir);
             if !test_profile::is_active() {
                 ailog::mirror::start_scheduler(app_handle.clone());
+                launcher_dirs::scheduler::start(app_handle.clone());
             }
             let ms = state.metadata_store.clone();
             pty::monitor::start_monitor(

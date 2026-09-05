@@ -153,3 +153,18 @@ done
         "dev|Repo|C:/work/repo",
         "anken|Client (\u25cf09/05)|C:/work/client with spaces",
     ]
+
+
+def test_rule_roots_are_exported_as_short_root_comments() -> None:
+    exporter = read(ROOT / "src-tauri" / "src" / "launcher_dirs" / "export.rs")
+    loop = re.search(r"for root in doc([\s\S]*?)    for section", exporter)
+    assert loop is not None
+    source = loop.group(1)
+    assert ".rules" in source
+    assert 'rule.get("root")' in source
+    assert "normalize_path(root)" in source
+    assert "strings::SHORT_ROOT_KEY" in source
+    assert '{root}\\n' in source
+    key = re.search(r'pub const SHORT_ROOT_KEY: &str = "([^"]+)";', read(STRINGS))
+    assert key is not None
+    assert key.group(1) in shell_function("__load_short_roots")

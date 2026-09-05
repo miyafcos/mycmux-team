@@ -124,6 +124,12 @@ export function dirMark(item: Pick<LauncherDirEntry, "source" | "signal" | "seen
   return `${dot}${date}`;
 }
 
+export function dirCandidateCount(view: LauncherDirsView | null): number {
+  const scan = view?.doc.last_scan;
+  if (!scan || typeof scan !== "object" || !("candidates" in scan)) return 0;
+  return Array.isArray(scan.candidates) ? scan.candidates.length : 0;
+}
+
 export function dirSections(
   view: LauncherDirsView | null,
   hiddenIds: readonly string[] = [],

@@ -69,6 +69,36 @@ pub async fn launcher_dirs_export_roots(app: tauri::AppHandle) -> Result<Launche
 }
 
 #[tauri::command]
+pub async fn launcher_dirs_scan_now(app: tauri::AppHandle) -> Result<LauncherDirsView, String> {
+    crate::launcher_dirs::scheduler::scan_now(app).await
+}
+
+#[tauri::command]
+pub async fn launcher_dirs_upsert_rule(app: tauri::AppHandle, rule: serde_json::Value) -> Result<LauncherDirsView, String> {
+    change(app, move |doc| doc.upsert_rule(&rule)).await
+}
+
+#[tauri::command]
+pub async fn launcher_dirs_delete_rule(app: tauri::AppHandle, id: String) -> Result<LauncherDirsView, String> {
+    change(app, move |doc| { doc.delete_rule(&id); Ok(()) }).await
+}
+
+#[tauri::command]
+pub async fn launcher_dirs_set_rule_enabled(app: tauri::AppHandle, id: String, enabled: bool) -> Result<LauncherDirsView, String> {
+    change(app, move |doc| doc.set_rule_enabled(&id, enabled)).await
+}
+
+#[tauri::command]
+pub async fn launcher_dirs_set_rule_mode(app: tauri::AppHandle, id: String, mode: String) -> Result<LauncherDirsView, String> {
+    change(app, move |doc| doc.set_rule_mode(&id, &mode)).await
+}
+
+#[tauri::command]
+pub async fn launcher_dirs_register_candidate(app: tauri::AppHandle, section_id: String, path: String) -> Result<LauncherDirsView, String> {
+    change(app, move |doc| doc.register_candidate(&section_id, &path)).await
+}
+
+#[tauri::command]
 pub async fn launcher_record_dir_mru(path: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || store::record_dir_mru(&crate::test_profile::runtime_dir()?, &path))
         .await.map_err(|error| error.to_string())?

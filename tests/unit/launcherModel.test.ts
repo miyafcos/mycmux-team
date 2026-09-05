@@ -3,6 +3,7 @@ import { AGENT_CATALOG, getCatalogEntry } from "../../src/lib/agentCatalog";
 import {
   cycleChoice,
   dirSections,
+  dirCandidateCount,
   dirMark,
   launchItems,
   middleEllipsis,
@@ -28,7 +29,7 @@ function view(entries: LauncherDirEntry[]): LauncherDirsView {
       entries, rules: [], ignored_paths: [], last_scan: null,
       export: { roots_txt_mtime_ms: null, roots_txt_written_at: null, last_external_merge_at: null },
     },
-    entries_exist: entries.map((entry) => [entry.id, true]), json_path: "C:/profile/launch-dirs.json", roots_txt_path: "C:/profile/launch-roots.txt",
+    entries_exist: entries.map((entry) => [entry.id, true]), json_path: "C:/profile/launch-dirs.json", roots_txt_path: "C:/profile/launch-roots.txt", home_path: "C:/Users/test", test_profile_active: true,
   };
 }
 
@@ -298,5 +299,20 @@ describe("previewLine", () => {
     expect(previewLine("a\n\n  b\tc")).toBe("a b c");
     expect(previewLine("x".repeat(300)).length).toBe(120);
     expect(previewLine("x".repeat(300), 40).length).toBe(40);
+  });
+});
+
+
+describe("empty directory section candidate count", () => {
+  it("counts saved candidates across sections and omits missing or old scan JSON", () => {
+    const data = view([]);
+    expect(dirCandidateCount(null)).toBe(0);
+    expect(dirCandidateCount(data)).toBe(0);
+    data.doc.last_scan = { future: true };
+    expect(dirCandidateCount(data)).toBe(0);
+    data.doc.last_scan = { candidates: [{ section: "dev" }, { section: "anken" }], more: 12 };
+    expect(dirCandidateCount(data)).toBe(2);
+    data.doc.last_scan = { candidates: [] };
+    expect(dirCandidateCount(data)).toBe(0);
   });
 });

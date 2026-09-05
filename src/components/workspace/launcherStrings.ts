@@ -33,6 +33,8 @@ export const launcherStrings = {
   dirEmpty: "登録なし —",
   dirEmptyAction: "設定で登録",
   dirEmptyTooltip: "設定 → ランチャー を開く",
+  // 候補があるときだけ件数を添える (Phase 2)。
+  dirEmptyCandidates: (n: number) => `(候補 ${n} 件)`,
   // 右端に収まる長さで。日付より「どれくらい前か」の方が探しやすい。
   relativeWhen: (iso: string, now: number = Date.now()): string => {
     const at = Date.parse(iso);

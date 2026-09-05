@@ -351,3 +351,24 @@ master に合流済み (`c3ec4cb9`〜`5cc370fb` の 14 コミット・origin/mas
 **レーンで出た BLOCKER 2 件と裁定:** ①受け入れ条件の比較基準 `master..HEAD` は master がレーン開始後に進むため拾い過ぎる → 開始点 `c3ec4cb9..HEAD` に変更 (次回の spec も開始点固定で書く)。②`tests/test_profile_isolation_contract.py` が削除した `__refresh_anken_roots_bg` 内のガード行を検査していた → 親が「私設リフレッシュが無いこと」の検査に書き換え。
 
 **未実施:** テスト機での目視 (feed 前に行う・Phase 3)。macOS 実機。README 4 箇所 (Phase 3)。
+
+---
+
+## 15. Phase 2 実装記録 (2026-09-05)
+
+master に合流済み (`85beb840`〜`0e12ea5e`・origin/master `65b2994e` からの ff・親の準備 1 + Codex `gpt-6-astra` max の 5 コミット)。委譲 spec と裁定 = `C:/Users/miyaz/dispatch/260905-launcher-dirs-p2/` (`spec.md` / `RESOLVE-1.md` / `DONE.md`)。
+
+**受け入れ (親が独立実行):** tsc 0 / vitest 3,843 (+12) / Rust 1,095 (+17・`run_windows_tests.py`) / pytest 451 (+1)。変更 24 ファイル (新規 10)。
+
+**実装の要点と、仕様から確定した細部:**
+- ルールは JSON に `Vec<Value>` のまま保存し、使うときに `rules.rs::Rule::from_value` で解釈する (未知の `type` は保持して走査しない)。既定値: window 30/21/30/14 日・max 10/20/20/20・depth 2・max_depth 6・min_mentions 3・min_sessions 1。
+- 走査は 1 ルールずつ・`spawn_blocking`・LOCK の外。予算 = 1 ルール 30 秒 / 50,000 ディレクトリ (打ち切りでも集めた分は適用し `truncated` を記録)。リンク判定は `file_type().is_symlink()` (Windows ではジャンクションを含む) だけ — **Dropbox / OneDrive のクラウド用 reparse point を「リンク」扱いすると走査対象が丸ごと消えるため**、属性 0x400 での一律除外はしない (レーンの自己修正 `0e12ea5e`)。
+- 除外語の大小区別は移植元に忠実: 案件 (`folder-root`) は区別あり・開発 (`git-parents`) は小文字化して比較。
+- 適用: `auto` は自ルール由来の行を置き換え (同パスは id・added_at を保つ)、手動・他ルール・無視は保護。あるセクションで `auto` ルールが 1 本でも成功したら legacy 行を消す。ルール削除・auto→suggest で自ルールの自動行を消す。`ScanOutcome` はルールのスナップショットを持ち、走査中にルールが変わったら結果を捨てる。
+- 候補 = suggest ルール ∪ `session-cwd` ∪ MRU − 登録 − 無視。優先 mention > session > git > folder > MRU。上限 30 + `more`。変更・取り込みのたびに `prune_candidates` で登録済みを落とす。
+- スケジューラ: 起動 15 秒後に `last_scan.at` が無いか 3 時間超なら走査、以後 3 時間おき。`test_profile::is_active()` のときは起動しない (手動「今すぐ走査」は動く)。二重実行は `AtomicBool`。
+- 既定ルール (新規作成時のみ): `git-parents` (parents = ホーム・suggest) と `session-cwd` (suggest)。
+- `session-cwd` は ailog の `session` テーブル (`cwd` / `COALESCE(started_at, ended_at)` ms / `is_sidechain = 0` / `user_msg_count > 0`) を query-only で読む。DB が無ければそのルールだけ error。
+- レーンの BLOCKER 1 = 既存テスト `ailog/tests/rule_check_tests.rs` の実 DB 読み取り smoke が「本番不触」条件に見えた件 → 既存テストは境界外として親が裁定 (候補 A)。
+
+**テスト機 (2026-09-05 夜):** プロファイル `ldirs` (`~/.mycmux-ldirs`) に本番の `launch-roots.txt` / MRU を写し、`launch-dirs.json` に §5.2 のルール 4 本 (session-cwd 候補・git-parents / session-mentions / folder-root 自動) を仕込んで `scripts/test-profile.ps1 -Name ldirs -CloneAiLog` で起動。宮崎さんの目視 GO → Phase 3。
