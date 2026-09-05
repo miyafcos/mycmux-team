@@ -132,6 +132,7 @@ impl Price {
 /// OpenAI rows: GPT-5.6 Sol/Terra/Luna lineup recorded 2026-08-10;
 /// terra/luna corrected and gpt-5.5 / gpt-5.4 added 2026-08-18
 /// (independent aggregator cross-check + cache-read = 10% of input).
+/// GPT-6 Astra: official OpenAI documentation verified by dispatch spec 2026-09-05.
 pub const DEFAULT_PRICES: &[(&str, Price)] = &[
     // --- Anthropic -------------------------------------------------------
     ("fable-5", Price::anthropic(10.0, 50.0)),
@@ -144,6 +145,7 @@ pub const DEFAULT_PRICES: &[(&str, Price)] = &[
     ("sonnet-4.6", Price::anthropic(3.0, 15.0)),
     ("haiku-4.5", Price::anthropic(1.0, 5.0)),
     // --- OpenAI (Codex) --------------------------------------------------
+    ("gpt-6-astra", Price::openai(10.0, 50.0, 1.00)),
     ("gpt-5.6-sol", Price::openai(5.0, 30.0, 0.50)),
     ("gpt-5.6-terra", Price::openai(2.0, 12.0, 0.20)),
     ("gpt-5.6-luna", Price::openai(0.20, 1.20, 0.02)),
@@ -169,6 +171,7 @@ const FAMILY_STEMS: &[(&str, &str)] = &[
     ("claude-sonnet-4-5", "sonnet-4.5"),
     ("claude-sonnet-4-0", "sonnet-4.0"),
     ("claude-haiku-4-5", "haiku-4.5"),
+    ("gpt-6", "gpt-6"),
     ("gpt-5.6", "gpt-5.6"),
     ("gpt-5.5", "gpt-5.5"),
 ];

@@ -515,9 +515,21 @@ struct Discovery {
 fn discover_sessions(session_limit: usize) -> Result<Discovery, String> {
     let current_dir =
         std::env::current_dir().map_err(|error| format!("read current directory: {error}"))?;
+    let home_dir = std::env::var_os("HISTORY_EVAL_HOME")
+        .map(PathBuf::from)
+        .or_else(dirs::home_dir)
+        .ok_or_else(|| "home directory is not available".to_string())?;
+    discover_sessions_from(session_limit, &current_dir, &home_dir)
+}
+
+fn discover_sessions_from(
+    session_limit: usize,
+    current_dir: &Path,
+    home_dir: &Path,
+) -> Result<Discovery, String> {
     let current_cwd = normalize_path(&current_dir.to_string_lossy());
-    let claude = discover_claude_sessions(&current_dir)?;
-    let codex = discover_codex_sessions(&current_cwd)?;
+    let claude = discover_claude_sessions(current_dir, home_dir)?;
+    let codex = discover_codex_sessions(&current_cwd, home_dir)?;
     let discovered = claude.len() + codex.sessions.len();
     let mut selected = Vec::new();
     let claude_target = session_limit / 2;
@@ -526,11 +538,11 @@ fn discover_sessions(session_limit: usize) -> Result<Discovery, String> {
     selected.extend(codex.sessions.into_iter().take(codex_target));
     if selected.len() < session_limit {
         let needed = session_limit - selected.len();
-        let extra = discover_claude_sessions(&current_dir)?
+        let extra = discover_claude_sessions(current_dir, home_dir)?
             .into_iter()
             .skip(claude_target)
             .chain(
-                discover_codex_sessions(&current_cwd)?
+                discover_codex_sessions(&current_cwd, home_dir)?
                     .sessions
                     .into_iter()
                     .skip(codex_target),
@@ -576,9 +588,11 @@ fn interleave_kinds(sessions: Vec<SourceSession>) -> Vec<SourceSession> {
     }
 }
 
-fn discover_claude_sessions(current_dir: &Path) -> Result<Vec<SourceSession>, String> {
-    let root =
-        PathBuf::from(r"C:\Users\miyaz\.claude\projects").join(claude_project_key(current_dir));
+fn discover_claude_sessions(
+    current_dir: &Path,
+    home_dir: &Path,
+) -> Result<Vec<SourceSession>, String> {
+    let root = claude_transcript_root(current_dir, home_dir);
     let mut paths = Vec::new();
     collect_jsonl_paths(&root, &mut paths)?;
     let mut sessions = paths
@@ -590,13 +604,23 @@ fn discover_claude_sessions(current_dir: &Path) -> Result<Vec<SourceSession>, St
     Ok(sessions)
 }
 
+fn claude_transcript_root(current_dir: &Path, home_dir: &Path) -> PathBuf {
+    home_dir
+        .join(".claude")
+        .join("projects")
+        .join(claude_project_key(current_dir))
+}
+
 struct CodexDiscovery {
     sessions: Vec<SourceSession>,
     excluded: usize,
 }
 
-fn discover_codex_sessions(current_cwd: &str) -> Result<CodexDiscovery, String> {
-    let root = PathBuf::from(r"C:\Users\miyaz\.codex\sessions\2026");
+fn discover_codex_sessions(
+    current_cwd: &str,
+    home_dir: &Path,
+) -> Result<CodexDiscovery, String> {
+    let root = codex_transcript_root(home_dir);
     let mut paths = Vec::new();
     collect_jsonl_paths(&root, &mut paths)?;
     paths.sort_by(|left, right| newest_path_first(left, right));
@@ -628,6 +652,10 @@ fn discover_codex_sessions(current_cwd: &str) -> Result<CodexDiscovery, String> 
     let mut sessions = grouped.into_values().collect::<Vec<_>>();
     sessions.sort_by(newest_first);
     Ok(CodexDiscovery { sessions, excluded })
+}
+
+fn codex_transcript_root(home_dir: &Path) -> PathBuf {
+    home_dir.join(".codex").join("sessions")
 }
 
 fn claude_project_key(path: &Path) -> String {
@@ -1487,8 +1515,9 @@ fn configured_session_limit() -> usize {
 }
 
 /// Requires local transcript data and is deliberately ignored by the standard
-/// test suite. Set HISTORY_EVAL_SESSION_LIMIT (default 20) and run this exact
-/// test with `--ignored --exact --nocapture` after the Windows manifest step.
+/// test suite. Optionally set HISTORY_EVAL_HOME to a fixture home, set
+/// HISTORY_EVAL_SESSION_LIMIT (default 20), and run this exact test with
+/// `--ignored --exact --nocapture`.
 #[test]
 #[ignore = "reads machine-local Claude/Codex transcripts; run deliberately with --ignored --nocapture"]
 fn real_log_search_evaluation() {
@@ -1501,6 +1530,20 @@ fn real_log_search_evaluation() {
     assert_eq!(
         report.integrity.mtime_changed, 0,
         "source mtimes changed during evaluation"
+    );
+}
+
+#[test]
+fn transcript_roots_are_derived_from_an_injected_posix_home() {
+    let home = Path::new("/Users/example");
+    let cwd = Path::new("/Users/example/work/mycmux");
+    assert_eq!(
+        claude_transcript_root(cwd, home),
+        PathBuf::from("/Users/example/.claude/projects/-Users-example-work-mycmux")
+    );
+    assert_eq!(
+        codex_transcript_root(home),
+        PathBuf::from("/Users/example/.codex/sessions")
     );
 }
 

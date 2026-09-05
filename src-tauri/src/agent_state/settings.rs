@@ -14,6 +14,17 @@ const GROK_BLOCK_START: &str = "# mycmux-managed-hooks:start";
 const GROK_BLOCK_END: &str = "# mycmux-managed-hooks:end";
 const HELPER_BYTES: &[u8] = include_bytes!("../../hooks/mycmux_hook.py");
 
+fn hook_python_command() -> &'static str {
+    #[cfg(target_os = "windows")]
+    {
+        "python"
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        "python3"
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct HookInstallPaths {
     pub claude_settings: PathBuf,
@@ -200,10 +211,11 @@ fn provider_events(provider: Provider) -> Vec<(&'static str, &'static str)> {
 
 fn managed_group(helper: &Path, provider: Provider, event_kind: &str) -> Value {
     let helper = helper.to_string_lossy().replace('\\', "/");
+    let python = hook_python_command();
     json!({
         "hooks": [{
             "type": "command",
-            "command": format!("python \"{helper}\" --provider {} --event-kind {event_kind}", provider.as_str()),
+            "command": format!("{python} \"{helper}\" --provider {} --event-kind {event_kind}", provider.as_str()),
             "timeout": 1,
             "statusMessage": "mycmux lifecycle observation",
             (OWNERSHIP_MARKER): true,
@@ -369,6 +381,7 @@ fn remove_grok_block(current: &str) -> Result<String, String> {
 
 fn append_grok_block(current: &str, helper: &Path) -> String {
     let helper = helper.to_string_lossy().replace('\\', "/");
+    let python = hook_python_command();
     let mut next = current.to_string();
     if !next.is_empty() {
         next.push('\n');
@@ -377,7 +390,7 @@ fn append_grok_block(current: &str, helper: &Path) -> String {
     next.push('\n');
     for (event, event_kind) in provider_events(Provider::Grok) {
         next.push_str(&format!(
-            "[[hooks.{event}]]\n  [[hooks.{event}.hooks]]\n  type = \"command\"\n  command = 'python \"{helper}\" --provider grok --event-kind {event_kind}'\n  timeout = 1\n  statusMessage = \"mycmux lifecycle observation\"\n  {OWNERSHIP_MARKER} = true\n\n"
+            "[[hooks.{event}]]\n  [[hooks.{event}.hooks]]\n  type = \"command\"\n  command = '{python} \"{helper}\" --provider grok --event-kind {event_kind}'\n  timeout = 1\n  statusMessage = \"mycmux lifecycle observation\"\n  {OWNERSHIP_MARKER} = true\n\n"
         ));
     }
     next.push_str(GROK_BLOCK_END);
@@ -602,6 +615,21 @@ mod tests {
         assert_eq!(groups.len(), 2);
         assert!(!is_managed_group(&groups[0]));
         assert!(is_managed_group(&groups[1]));
+    }
+
+    #[test]
+    fn managed_hooks_use_the_platform_python_command() {
+        let managed = managed_group(&helper(), Provider::Claude, "turn_ended");
+        let command = managed["hooks"][0]["command"].as_str().unwrap();
+        let grok = append_grok_block("", &helper());
+
+        #[cfg(target_os = "windows")]
+        let expected = "python ";
+        #[cfg(not(target_os = "windows"))]
+        let expected = "python3 ";
+
+        assert!(command.starts_with(expected));
+        assert!(grok.contains(&format!("command = '{expected}")));
     }
 
     #[test]

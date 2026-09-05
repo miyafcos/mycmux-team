@@ -13,6 +13,80 @@ mycmux のリリース・配布・自動更新の運用手順。
 | **mycmux** (個人版) | `master` | `miyafcos/mycmux` (private) | 自分用、`C:\Users\miyaz\mycmux-app\` |
 | ~~mycmux-lite (チーム版)~~ | ~~`release/public-lite`~~ | `miyafcos/mycmux-team` (public) | **配布終了 (2026-07-23)**。public repo は個人版の履歴分離ミラー + updater feed 置き場として継続 |
 
+## macOS の配布と自動更新
+
+Windows と同じことを Mac でもできるようにするための節。**署名鍵はマシン間で共有するが、
+パスワードは各 OS の保管庫に入れる** — Windows は DPAPI、macOS は Keychain。どちらの機械にも
+平文のパスワードは置かない。
+
+### 初回だけ必要な作業 (Mac 側・2手)
+
+**1. 鍵ファイルを Windows から持ってくる**
+
+```
+Windows: C:\Users\miyaz\.tauri\mycmux-updater.key
+   ↓
+Mac:     ~/.tauri/mycmux-updater.key
+```
+
+鍵ファイル自体はパスワードで暗号化されているが、署名鍵であることに変わりはない。
+USB か 1Password か、資格情報として扱える経路で運ぶこと。チャットに貼らない。
+
+**2. パスワードを Keychain に入れる**
+
+```bash
+./scripts/mac-signing-key.sh set
+```
+
+パスワードを聞かれる。**入力されたパスワードは、保存する前に実際に鍵で署名して検証する** —
+一致しないパスワードを保存してしまうと、次のリリースの最中に初めて気づくことになるため。
+検証に通らなければ何も保存されない。
+
+状態は `./scripts/mac-signing-key.sh check` で確認できる (パスワードは表示されない)。
+消すときは `remove`。
+
+### 以降のリリース (Mac)
+
+```bash
+bash scripts/build-mac.sh
+```
+
+鍵と Keychain のパスワードが揃っていれば、`.app` / `.dmg` に加えて updater 用の
+`.app.tar.gz` とその `.sig` まで作る。揃っていなければ updater 成果物だけ黙って飛ばし、
+`.app` と `.dmg` は作る。
+
+Apple のコード署名は別物で、`APPLE_SIGNING_IDENTITY` を渡したときだけ行う。
+配布用は未署名でよい (受け取る側は再ビルドしないので、初回の Gatekeeper 警告1回で済む)。
+
+### なぜ CI ではなくローカルなのか
+
+`release.yml` には `test-macos` / `build-macos` を置いてあるが、`macos-14` は GitHub-hosted で、
+**Actions の課金が止まっている間は動かない** (2026-09-05 時点で直近の run は 8/25 の failure、
+self-hosted は Windows 1台のみで offline)。課金が戻れば CI レーンがそのまま使える。
+
+### 配布先
+
+`.dmg` は public の固定 feed リリース (`miyafcos/mycmux-team` の `mycmux-personal-updater` タグ) へ
+アップロードする。ここは匿名 GET できるので、他の Mac ユーザーがそのまま落とせる。
+
+```bash
+gh release upload mycmux-personal-updater \
+  src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/mycmux_X.Y.Z_aarch64.dmg \
+  --repo miyafcos/mycmux-team
+```
+
+### updater feed に darwin を載せる
+
+`latest.json` の `platforms` に `darwin-aarch64` を足す。`.app.tar.gz` と `.sig` の両方が要る
+(`.dmg` は updater が見ない・手動ダウンロード用)。feed の更新には
+`scripts/mirror_personal_updater_feed.py` と `scripts/normalize_updater_feed.py` を使う
+(PowerShell 版と同じ処理を Mac からも実行できるように移植したもの)。
+
+**公開鍵を変えてはいけない。** `tauri.conf.json` の pubkey が変わると、既存の Windows ユーザーの
+updater が全部壊れる。鍵を作り直すのではなく、既存の鍵を運ぶこと。
+
+---
+
 ## バージョニング
 
 - 個人版タグ: `vX.Y.Z` (semver pure、例 `v0.21.17`)

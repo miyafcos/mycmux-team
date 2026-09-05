@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ランチャー フォルダ設定モック — 2026-09-05</title>
+<style>
+:root {
+  /* mycmux src/global.css の実値 (2026-09-03 モックと同じ) */
+  --cmux-bg: #0a0a0a;
+  --cmux-surface: #161616;
+  --cmux-popover: #262626;
+  --cmux-accent: #0A84FF;
+  --cmux-accent-text: #0A84FF;
+  --cmux-border: rgba(255, 255, 255, 0.1);
+  --cmux-border-hairline: rgba(255, 255, 255, 0.07);
+  --cmux-text: rgba(255, 255, 255, 0.9);
+  --cmux-text-secondary: rgba(255, 255, 255, 0.6);
+  --cmux-text-tertiary: rgba(255, 255, 255, 0.3);
+  --cmux-text-dim: rgba(255, 255, 255, 0.42);
+  --cmux-hover: rgba(255, 255, 255, 0.06);
+  --cmux-selected: rgba(255, 255, 255, 0.08);
+  --cmux-yellow: #f5c542;
+  --cmux-green: #7dcc97;
+  --cmux-font-size-xs: 11px;   /* 日本語の下限 (uiQualityTokens) */
+  --cmux-font-size-sm: 12px;
+  --ui: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Yu Gothic UI", sans-serif;
+  --mono: "UDEV Gothic NF", "UDEV Gothic", "JetBrains Mono", Consolas, monospace;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: #050505; color: var(--cmux-text); font-family: var(--ui); font-size: 13px; line-height: 1.6; padding: 28px 24px 60px; }
+h1 { font-size: 19px; margin: 0 0 4px; font-weight: 620; }
+.lede { color: var(--cmux-text-secondary); font-size: 12px; margin: 0 0 6px; max-width: 960px; }
+.meta { color: var(--cmux-text-tertiary); font-size: 11px; margin: 0 0 26px; font-family: var(--mono); }
+.stage { display: flex; gap: 40px; align-items: flex-start; flex-wrap: wrap; }
+.col > h2 { font-size: 13px; margin: 0 0 2px; font-weight: 620; }
+.col > .sub { font-size: 11px; color: var(--cmux-text-secondary); margin: 0 0 10px; max-width: 720px; line-height: 1.5; }
+.ruler { border-top: 1px solid var(--cmux-accent); color: var(--cmux-accent-text); font-size: 11px; font-family: var(--mono); text-align: center; padding-top: 2px; margin-bottom: 6px; position: relative; }
+.ruler::before, .ruler::after { content: ""; position: absolute; top: -4px; width: 1px; height: 8px; background: var(--cmux-accent); }
+.ruler::before { left: 0; } .ruler::after { right: 0; }
+
+/* ── 設定ダイアログ (本文幅 720px) ── */
+.dialog { width: 720px; background: var(--cmux-surface); border: 1px solid var(--cmux-border); border-radius: 10px; padding: 20px; font-size: 12px; }
+.h { font-size: 12px; font-weight: 700; margin: 0 0 10px; }
+.h small { font-weight: 400; color: var(--cmux-text-tertiary); margin-left: 8px; }
+.divider { height: 1px; background: var(--cmux-border); margin: 16px 0; }
+label.chk { display: flex; align-items: center; gap: 8px; padding: 5px 0; cursor: pointer; }
+label.chk input { margin: 0; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0 6px; }
+.chip { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--cmux-border); border-radius: 999px; padding: 3px 10px; font-size: 11px; color: var(--cmux-text-secondary); }
+.chip .dot { width: 8px; height: 8px; border-radius: 50%; }
+.btn { display: inline-flex; align-items: center; gap: 5px; padding: 5px 10px; font-size: 12px; border-radius: 6px; border: 1px solid var(--cmux-border); background: transparent; color: var(--cmux-text); cursor: pointer; font-family: inherit; }
+.btn.small { padding: 2px 8px; font-size: 11px; color: var(--cmux-text-secondary); }
+.btn.accent { border-color: var(--cmux-accent); color: var(--cmux-accent-text); }
+.btn.quiet { border-color: transparent; color: var(--cmux-text-tertiary); }
+.btn:hover { background: var(--cmux-hover); }
+
+.sec { border: 1px solid var(--cmux-border-hairline); border-radius: 8px; padding: 8px 10px 4px; margin-bottom: 10px; }
+.sec-head { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
+.sec-head .name { font-weight: 600; font-size: 12px; border-bottom: 1px dashed var(--cmux-text-tertiary); cursor: text; }
+.sec-head .count { color: var(--cmux-text-tertiary); font-size: 11px; }
+.sec-head .spacer { flex: 1; }
+.sec-head label.chk { padding: 0; font-size: 11px; color: var(--cmux-text-secondary); }
+
+.row { display: grid; grid-template-columns: 14px 1fr 260px 44px 40px auto; align-items: center; gap: 8px; padding: 4px 2px; border-top: 1px solid var(--cmux-border-hairline); font-size: 12px; }
+.row:first-of-type { border-top: 0; }
+.row .grip { color: var(--cmux-text-tertiary); cursor: grab; font-size: 12px; }
+.row .grip.off { visibility: hidden; }
+.row .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row .path { color: var(--cmux-text-dim); font-family: var(--mono); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row .mark { color: var(--cmux-text-tertiary); font-family: var(--mono); font-size: 11px; text-align: right; }
+.badge { display: inline-block; font-size: 11px; padding: 0 6px; border-radius: 4px; border: 1px solid var(--cmux-border); color: var(--cmux-text-secondary); line-height: 16px; white-space: nowrap; }
+.badge.auto { color: var(--cmux-green); border-color: rgba(125, 204, 151, 0.35); }
+.row .acts { display: flex; gap: 4px; justify-content: flex-end; }
+.row.missing .name, .row.missing .path { opacity: 0.45; }
+.row.missing .name::after { content: " — 見つかりません"; color: var(--cmux-yellow); font-size: 11px; }
+.empty { color: var(--cmux-text-tertiary); font-size: 11px; padding: 6px 2px 8px; }
+
+.cand { grid-template-columns: 14px 1fr 240px 1fr auto; }
+.cand .sig { color: var(--cmux-text-secondary); font-size: 11px; }
+.cand .glyph { color: var(--cmux-text-tertiary); font-family: var(--mono); font-size: 11px; }
+
+.rule { display: grid; grid-template-columns: 110px 1fr auto auto; gap: 10px; align-items: center; border: 1px solid var(--cmux-border-hairline); border-radius: 6px; padding: 6px 10px; margin-bottom: 6px; font-size: 12px; }
+.rule .kind { font-weight: 600; }
+.rule .sum { color: var(--cmux-text-secondary); font-size: 11px; font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rule .mode { display: flex; gap: 10px; font-size: 11px; color: var(--cmux-text-secondary); }
+.rule .mode label { display: flex; gap: 4px; align-items: center; cursor: pointer; }
+.rule .acts { display: flex; gap: 4px; }
+
+.banner { border: 1px solid rgba(245, 197, 66, 0.4); background: rgba(245, 197, 66, 0.06); border-radius: 6px; padding: 8px 10px; font-size: 11px; display: flex; gap: 10px; align-items: center; margin: 8px 0; }
+.banner .t { flex: 1; color: var(--cmux-text-secondary); }
+.kv { font-size: 11px; color: var(--cmux-text-secondary); font-family: var(--mono); display: flex; gap: 10px; align-items: center; padding: 3px 0; }
+.kv .k { color: var(--cmux-text-tertiary); min-width: 60px; font-family: var(--ui); }
+.legend { font-size: 11px; color: var(--cmux-text-tertiary); margin: 2px 0 0; }
+.legend code { font-family: var(--mono); color: var(--cmux-text-secondary); }
+
+/* ── 240px ペイン (前段モックと同寸) ── */
+.pane { width: 240px; height: 560px; background: var(--cmux-surface); border: 1px solid var(--cmux-border); border-radius: 8px; display: flex; flex-direction: column; overflow: hidden; font-size: 12px; }
+.pane .search { flex: 0 0 auto; padding: 8px; border-bottom: 1px solid var(--cmux-border-hairline); display: flex; gap: 7px; align-items: center; color: var(--cmux-text-tertiary); }
+.pane .search span { color: var(--cmux-text-dim); font-size: 12px; }
+.pane .body { flex: 1 1 auto; overflow-y: auto; padding: 2px 0 10px; }
+.pane .sh { font-size: 11px; color: var(--cmux-text-tertiary); padding: 11px 10px 4px; display: flex; justify-content: space-between; align-items: baseline; }
+.pane .sh .more { color: var(--cmux-text-dim); }
+.pane .pills { display: flex; flex-wrap: wrap; gap: 5px; padding: 3px 10px 6px; }
+.pane .pill { border: 1px solid var(--cmux-border); border-radius: 999px; padding: 3px 9px; font-size: 11px; color: var(--cmux-text-secondary); display: inline-flex; gap: 5px; align-items: center; }
+.pane .pill .dot { width: 8px; height: 8px; border-radius: 50%; }
+.pane .r { display: flex; align-items: center; gap: 8px; padding: 5px 10px; border-left: 2px solid transparent; }
+.pane .r.sel { background: var(--cmux-selected); border-left-color: var(--cmux-accent); }
+.pane .r .lbl { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.pane .r .mk { flex: 0 0 auto; font-size: 11px; color: var(--cmux-text-tertiary); font-family: var(--mono); }
+.pane .r .fg { width: 13px; height: 13px; flex: 0 0 auto; opacity: 0.65; }
+.pane .hint { padding: 6px 12px; font-size: 11px; color: var(--cmux-text-tertiary); }
+.pane .hint a { color: var(--cmux-accent-text); text-decoration: none; }
+.pane .foot { flex: 0 0 auto; border-top: 1px solid var(--cmux-border-hairline); padding: 6px 10px; font-size: 11px; color: var(--cmux-text-dim); display: flex; gap: 6px; align-items: center; }
+.pane .foot .cwd { font-family: var(--mono); color: var(--cmux-text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pane .foot .chg { margin-left: auto; color: var(--cmux-text-dim); }
+.note { max-width: 960px; font-size: 12px; color: var(--cmux-text-secondary); margin-top: 28px; line-height: 1.7; }
+.note b { color: var(--cmux-text); }
+</style>
+</head>
+<body>
+<h1>ランチャー フォルダ設定モック — 2026-09-05</h1>
+<p class="lede">「開発」「案件」の中身を、設定タブから <b>登録・削除・並べ替え</b> し、<b>候補</b> から拾い、<b>ルール</b> で自動登録する。データは宮崎さんの現行台帳 (`launch-roots.txt` の dev 28 / anken 20 / MRU 8) から抜粋した実物。</p>
+<p class="meta">正本 = docs/plans/2026-09-05-launcher-dirs-settings-requirements.md / 語彙は §3 に固定 / 日本語は 11px 以上 (uiQualityTokens) / ネイティブ select・datalist は使わない</p>
+
+<div class="stage">
+
+<!-- ═══════════ A. 設定 → ランチャー ═══════════ -->
+<div class="col">
+  <h2>A. 設定 → ランチャー (本文幅 720px)</h2>
+  <p class="sub">上から「表示 → フォルダ → 候補 → 自動登録 → 詳細」。今あるもの → 入れられるもの → 入る仕組み の順。</p>
+  <div class="ruler" style="width:720px">720px</div>
+  <div class="dialog">
+
+    <div class="h">新規に起動</div>
+    <div class="chips">
+      <span class="chip"><input type="checkbox" checked> <span class="dot" style="background:#f0a878"></span>Claude Code</span>
+      <span class="chip"><input type="checkbox" checked> <span class="dot" style="background:#8ab8e8"></span>Codex</span>
+      <span class="chip"><input type="checkbox" checked> <span class="dot" style="background:#7dcc97"></span>claude-codex</span>
+      <span class="chip"><input type="checkbox"> <span class="dot" style="background:#7dcc97"></span>cc (Open)</span>
+      <span class="chip"><input type="checkbox" checked> <span class="dot" style="background:#f38ba8"></span>Grok</span>
+      <span class="chip"><input type="checkbox" checked> <span class="dot" style="background:#4285f4"></span>agy</span>
+    </div>
+    <div class="h" style="margin-top:8px">Web <small>(既存のまま・省略)</small></div>
+
+    <div class="divider"></div>
+
+    <div class="h">フォルダ <small>登録済み。手動は並べ替え可、自動は新しい順</small></div>
+
+    <div class="sec">
+      <div class="sec-head">
+        <span class="name" title="クリックで表示名を編集">開発</span>
+        <span class="count">28 件 (手動 18・自動 10)</span>
+        <span class="spacer"></span>
+        <label class="chk"><input type="checkbox" checked> 表示</label>
+        <button class="btn small">フォルダを選んで登録…</button>
+      </div>
+      <div class="row"><span class="grip">⠿</span><span class="name">mycmux (master)</span><span class="path" title="C:/Users/miyaz/cmux-for-linux-dev-master">C:/Users/miyaz/cmux-for-linux-dev-master</span><span class="mark"></span><span class="badge">手動</span><span class="acts"><button class="btn small quiet">削除</button></span></div>
+      <div class="row"><span class="grip">⠿</span><span class="name">staff-ops-portal (案件・財務 新システム)</span><span class="path">C:/Users/miyaz/staff-ops-portal</span><span class="mark"></span><span class="badge">手動</span><span class="acts"><button class="btn small quiet">削除</button></span></div>
+      <div class="row missing"><span class="grip">⠿</span><span class="name">mycmux (lite)</span><span class="path">C:/Users/miyaz/cmux-for-linux-dev</span><span class="mark"></span><span class="badge">手動</span><span class="acts"><button class="btn small quiet">削除</button></span></div>
+      <div class="row"><span class="grip off">⠿</span><span class="name">staff-ops-portal-p4c</span><span class="path">C:/Users/miyaz/staff-ops-portal-p4c</span><span class="mark">09/02</span><span class="badge auto">自動</span><span class="acts"><button class="btn small">固定</button><button class="btn small quiet">無視</button></span></div>
+      <div class="row"><span class="grip off">⠿</span><span class="name">pocket-mycmux</span><span class="path">C:/Users/miyaz/pocket-mycmux</span><span class="mark">09/02</span><span class="badge auto">自動</span><span class="acts"><button class="btn small">固定</button><button class="btn small quiet">無視</button></span></div>
+      <div class="empty">… あと 23 件 <a href="#" style="color:var(--cmux-accent-text);text-decoration:none">すべて表示</a></div>
+    </div>
+
+    <div class="sec">
+      <div class="sec-head">
+        <span class="name" title="クリックで表示名を編集">案件</span>
+        <span class="count">21 件 (手動 3・自動 18)</span>
+        <span class="spacer"></span>
+        <label class="chk"><input type="checkbox" checked> 表示</label>
+        <button class="btn small">フォルダを選んで登録…</button>
+      </div>
+      <div class="row"><span class="grip">⠿</span><span class="name">これヤバ (なるゼミ数学)</span><span class="path" title="…/事務関係/なるゼミ/数学">…/事務関係/なるゼミ/数学</span><span class="mark"></span><span class="badge">手動</span><span class="acts"><button class="btn small quiet">削除</button></span></div>
+      <div class="row"><span class="grip">⠿</span><span class="name">モモスタ数学</span><span class="path">…/事務関係/駿台/モモスタ/数学</span><span class="mark"></span><span class="badge">手動</span><span class="acts"><button class="btn small quiet">削除</button></span></div>
+      <div class="row"><span class="grip off">⠿</span><span class="name">エデュトリアル/弘学館中学校</span><span class="path">…/事務関係/エデュトリアル/弘学館中学校</span><span class="mark">●09/04</span><span class="badge auto">自動</span><span class="acts"><button class="btn small">固定</button><button class="btn small quiet">無視</button></span></div>
+      <div class="row"><span class="grip off">⠿</span><span class="name">東洋食品工業短期大学/2027年度入試</span><span class="path">…/事務関係/東洋食品工業短期大学/2027年度入試</span><span class="mark">●09/04</span><span class="badge auto">自動</span><span class="acts"><button class="btn small">固定</button><button class="btn small quiet">無視</button></span></div>
+      <div class="empty">… あと 17 件 <a href="#" style="color:var(--cmux-accent-text);text-decoration:none">すべて表示</a></div>
+    </div>
+    <p class="legend">印: <code>●09/04</code> = 自分のセッションで触れた / <code>09/02</code> = リポジトリやファイルの更新。手動には印が付かない。</p>
+
+    <div class="divider"></div>
+
+    <div class="h">候補 <small>見つかったが未登録のフォルダ。押した分だけ登録される</small></div>
+    <div style="display:flex;gap:10px;align-items:center;margin-bottom:6px">
+      <button class="btn small">候補を更新</button>
+      <span class="kv"><span class="k">最終走査</span> 09/05 06:35 (r1: 10 / r2: 20 / r3: 0)</span>
+    </div>
+    <div class="row cand"><span class="glyph">●</span><span class="name">エデュトリアル/都立中学校適性検査</span><span class="path">…/事務関係/エデュトリアル/都立中学校適性検査</span><span class="sig">最近使った</span><span class="acts"><button class="btn small">開発に登録</button><button class="btn small accent">案件に登録</button><button class="btn small quiet">無視</button></span></div>
+    <div class="row cand"><span class="glyph">●</span><span class="name">mulmoclaude-dev</span><span class="path">C:/Users/miyaz/mulmoclaude-dev</span><span class="sig">セッション 4 件 · 09/03</span><span class="acts"><button class="btn small accent">開発に登録</button><button class="btn small">案件に登録</button><button class="btn small quiet">無視</button></span></div>
+    <div class="row cand"><span class="glyph">&nbsp;</span><span class="name">tools/holo-desktop-cli</span><span class="path">C:/Users/miyaz/tools/holo-desktop-cli</span><span class="sig">git 活動 08/30</span><span class="acts"><button class="btn small accent">開発に登録</button><button class="btn small">案件に登録</button><button class="btn small quiet">無視</button></span></div>
+    <div class="empty">… さらに 6 件</div>
+
+    <div class="divider"></div>
+
+    <div class="h">自動登録 <small>ルールが走査して候補にする / そのまま登録する</small></div>
+    <div class="rule">
+      <span class="kind">開発 · git リポジトリ</span>
+      <span class="sum" title="~ ~/apps ~/tools ~/agmsg-research の直下 / 30 日 / 上限 10 / 除外 _ . ~$ AppData Dropbox OneDrive backup">~ ~/apps ~/tools ~/agmsg-research の直下 · 30 日 · 上限 10</span>
+      <span class="mode"><label><input type="radio" name="m1"> 候補にする</label><label><input type="radio" name="m1" checked> 自動で登録</label></span>
+      <span class="acts"><label class="chk" style="padding:0;font-size:11px"><input type="checkbox" checked> 有効</label><button class="btn small quiet">編集</button><button class="btn small quiet">削除</button></span>
+    </div>
+    <div class="rule">
+      <span class="kind">案件 · セッションで触れた</span>
+      <span class="sum" title="…/事務関係 / 代表階層 2 (駿台は 3) / 14 日 / 3 回以上 / 上限 20">…/事務関係 · 階層 2 (駿台 3) · 14 日 · 3 回以上 · 上限 20</span>
+      <span class="mode"><label><input type="radio" name="m2"> 候補にする</label><label><input type="radio" name="m2" checked> 自動で登録</label></span>
+      <span class="acts"><label class="chk" style="padding:0;font-size:11px"><input type="checkbox" checked> 有効</label><button class="btn small quiet">編集</button><button class="btn small quiet">削除</button></span>
+    </div>
+    <div class="rule">
+      <span class="kind">案件 · ファイル更新</span>
+      <span class="sum">…/事務関係 · 階層 2 (駿台 3) · 21 日 · 上限 20 · 除外 13 語</span>
+      <span class="mode"><label><input type="radio" name="m3"> 候補にする</label><label><input type="radio" name="m3" checked> 自動で登録</label></span>
+      <span class="acts"><label class="chk" style="padding:0;font-size:11px"><input type="checkbox" checked> 有効</label><button class="btn small quiet">編集</button><button class="btn small quiet">削除</button></span>
+    </div>
+    <div class="rule" style="border-style:dashed;opacity:0.85">
+      <span class="kind">開発 · 動かした場所</span>
+      <span class="sum">エージェントを動かした作業フォルダ · 30 日 · 上限 20 (新規インストールの既定)</span>
+      <span class="mode"><label><input type="radio" name="m4" checked> 候補にする</label><label><input type="radio" name="m4"> 自動で登録</label></span>
+      <span class="acts"><label class="chk" style="padding:0;font-size:11px"><input type="checkbox" checked> 有効</label><button class="btn small quiet">編集</button><button class="btn small quiet">削除</button></span>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;margin-top:8px">
+      <button class="btn small">ルールを追加 ▾</button>
+      <button class="btn small">今すぐ走査</button>
+      <span class="kv"><span class="k">次回</span> 09/05 09:35 (3 時間おき)</span>
+    </div>
+    <p class="legend">ルールの種類は 4 つ: git リポジトリ (親フォルダ直下) / ファイル更新 (根の下を代表階層で束ねる) / 動かした場所 (エージェントの作業フォルダ) / セッションで触れた (本文に出たパス)。</p>
+
+    <div class="divider"></div>
+
+    <div class="h">詳細</div>
+    <div class="kv"><span class="k">正本</span> ~/.mycmux/launch-dirs.json <button class="btn small quiet">開く</button></div>
+    <div class="kv"><span class="k">bash 用</span> ~/.mycmux/launch-roots.txt (書き出し 09/05 06:35)</div>
+    <div class="banner"><span class="t">launch-roots.txt が外部で変更されています (09/05 06:31)。</span><button class="btn small">取り込む</button><button class="btn small quiet">上書き</button></div>
+    <div class="kv"><span class="k">無視</span> C:/Users/miyaz/cmux-for-linux-dev <button class="btn small quiet">解除</button></div>
+  </div>
+</div>
+
+<!-- ═══════════ B. ペイン ═══════════ -->
+<div class="col">
+  <h2>B. ランチャーペイン (240px)</h2>
+  <p class="sub">左 = 新規インストール直後 (登録 0)。右 = 登録後 (手動 → 自動、印は自動だけ)。ペインは候補を並べない。</p>
+  <div style="display:flex;gap:24px">
+    <div>
+      <div class="ruler" style="width:240px">240px · 新規インストール</div>
+      <div class="pane">
+        <div class="search">🔍<span>打って探す / そのまま選ぶ</span></div>
+        <div class="body">
+          <div class="sh"><span>新規に起動</span></div>
+          <div class="pills"><span class="pill"><span class="dot" style="background:#f0a878"></span>Claude Code</span><span class="pill"><span class="dot" style="background:#8ab8e8"></span>Codex</span><span class="pill"><span class="dot" style="background:#f38ba8"></span>Grok</span></div>
+          <div class="sh"><span>Web</span></div>
+          <div class="pills"><span class="pill">ChatGPT</span><span class="pill">Gemini</span><span class="pill">Claude.ai</span></div>
+          <div class="sh"><span>開発</span></div>
+          <div class="hint">登録なし — <a href="#">設定で登録</a> (候補 7 件)</div>
+          <div class="sh"><span>案件</span></div>
+          <div class="hint">登録なし — <a href="#">設定で登録</a></div>
+          <div class="sh"><span>続きから</span></div>
+          <div class="hint">再開できるセッションがありません</div>
+        </div>
+        <div class="foot"><svg class="fg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" width="13" height="13"><path d="M1.5 4.5h5l1.5 2h6.5v7h-13z"/></svg><span class="cwd">(起動先は既定)</span><span class="chg">変更</span></div>
+      </div>
+    </div>
+    <div>
+      <div class="ruler" style="width:240px">240px · 登録後</div>
+      <div class="pane">
+        <div class="search">🔍<span>打って探す / そのまま選ぶ</span></div>
+        <div class="body">
+          <div class="sh"><span>新規に起動</span></div>
+          <div class="pills"><span class="pill"><span class="dot" style="background:#f0a878"></span>Claude Code</span><span class="pill"><span class="dot" style="background:#8ab8e8"></span>Codex</span><span class="pill"><span class="dot" style="background:#f38ba8"></span>Grok</span></div>
+          <div class="sh"><span>Web</span></div>
+          <div class="pills"><span class="pill">ChatGPT</span><span class="pill">Gemini</span><span class="pill">Claude.ai</span></div>
+          <div class="sh"><span>開発</span><span class="more">すべて (28)</span></div>
+          <div class="r sel"><svg class="fg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M1.5 4.5h5l1.5 2h6.5v7h-13z"/></svg><span class="lbl">mycmux (master)</span></div>
+          <div class="r"><svg class="fg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M1.5 4.5h5l1.5 2h6.5v7h-13z"/></svg><span class="lbl">staff-ops-portal (案件…)</span></div>
+          <div class="r"><svg class="fg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M1.5 4.5h5l1.5 2h6.5v7h-13z"/></svg><span class="lbl">staff-ops-portal-p4c</span><span class="mk">09/02</span></div>
+          <div class="r"><svg class="fg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M1.5 4.5h5l1.5 2h6.5v7h-13z"/></svg><span class="lbl">pocket-mycmux</span><span class="mk">09/02</span></div>
+          <div class="sh"><span>案件</span><span class="more">すべて (21)</span></div>
+          <div class="r"><svg class="fg" viewBox="0 0 16 16" fill="none" stroke="var(--cmux-accent)" stroke-width="1.4"><path d="M1.5 4.5h5l1.5 2h6.5v7h-13z"/></svg><span class="lbl">これヤバ (なるゼミ数学)</span></div>
+          <div class="r"><svg class="fg" viewBox="0 0 16 16" fill="none" stroke="var(--cmux-accent)" stroke-width="1.4"><path d="M1.5 4.5h5l1.5 2h6.5v7h-13z"/></svg><span class="lbl">モモスタ数学</span></div>
+          <div class="r"><svg class="fg" viewBox="0 0 16 16" fill="none" stroke="var(--cmux-accent)" stroke-width="1.4"><path d="M1.5 4.5h5l1.5 2h6.5v7h-13z"/></svg><span class="lbl">エデュトリア…弘学館中学校</span><span class="mk">●09/04</span></div>
+          <div class="r"><svg class="fg" viewBox="0 0 16 16" fill="none" stroke="var(--cmux-accent)" stroke-width="1.4"><path d="M1.5 4.5h5l1.5 2h6.5v7h-13z"/></svg><span class="lbl">東洋食品工…2027年度入試</span><span class="mk">●09/04</span></div>
+          <div class="sh"><span>続きから</span><span class="more">すべて (40)</span></div>
+          <div class="r"><span class="dot" style="width:8px;height:8px;border-radius:50%;background:#f0a878;flex:0 0 auto"></span><span class="lbl">cmux-for-linux-dev-master</span><span class="mk">12分前</span></div>
+        </div>
+        <div class="foot"><svg class="fg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" width="13" height="13"><path d="M1.5 4.5h5l1.5 2h6.5v7h-13z"/></svg><span class="cwd">miyaz/cmux-for-linux-dev-master</span><span class="chg">変更</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+</div>
+
+<div class="note">
+<b>ここで見てほしい判断 3 つ。</b>
+(1) セクションは 2 つのまま、名前だけ変えられる (「Repos / Clients」と付け替えられる)。増やす機能は付けない。
+(2) 候補はこの設定タブにだけ出る。ペインは空のときに「設定で登録 (候補 N 件)」の 1 行を出すだけ。
+(3) 自動で入った行は次の走査で入れ替わる。残したい行は「固定」で手動に昇格させる。宮崎さんの PINNED 3 件はこの手動として写す。
+</div>
+</body>
+</html>

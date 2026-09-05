@@ -3,7 +3,7 @@
 // TerminalPane 側のハンドラは非 ASCII を持たない (委譲先の文字化け防止)。
 export const terminalPaneStrings = {
   openFailed: "開けませんでした",
-  revealFailed: "エクスプローラーで表示できませんでした",
+  revealFailed: "ファイルの場所を表示できませんでした",
   // プレビューに失敗し、既定のアプリへのフォールバックも失敗したとき (別の障害面として区別する)
   previewFallbackFailed: "プレビューに失敗し、既定のアプリでも開けませんでした",
 } as const;

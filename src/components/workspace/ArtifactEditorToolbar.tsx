@@ -437,7 +437,7 @@ function ArtifactEditorToolbarImpl({
             <ExternalLink size={iconSize} />
           </ToolbarButton>
           <ToolbarButton
-            title="Show document location in Explorer"
+            title="Show document location"
             disabled={!sourcePath || isBusy}
             onClick={onRevealSource}
           >

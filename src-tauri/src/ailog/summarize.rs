@@ -733,6 +733,7 @@ fn execute_session(
     let cwd = env::current_dir().map_err(|err| format!("summary working directory: {err}"))?;
     let mut command = crate::ai::build_command(ai, env::vars());
     command.current_dir(cwd);
+    configure_process_group(&mut command);
     let mut child = command
         .spawn()
         .map_err(|err| format!("start AI summarizer: {err}"))?;
@@ -814,16 +815,38 @@ fn execute_session(
 }
 
 pub fn stop_child_tree(mut child: Child) {
-    let mut taskkill = Command::new("taskkill");
-    taskkill.args(["/PID", &child.id().to_string(), "/T", "/F"]);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
+        let mut taskkill = Command::new("taskkill");
+        taskkill.args(["/PID", &child.id().to_string(), "/T", "/F"]);
         taskkill.creation_flags(crate::util::process::CREATE_NO_WINDOW);
+        let _ = taskkill.status();
     }
-    let _ = taskkill.status();
+    #[cfg(unix)]
+    {
+        // The child starts a dedicated process group, so a negative PID cannot
+        // target mycmux's own group and terminates descendants as well.
+        if let Ok(pid) = i32::try_from(child.id()) {
+            // SAFETY: `pid` names the isolated child process group configured
+            // before spawn; no pointer or shared memory is involved.
+            unsafe {
+                libc::kill(-pid, libc::SIGKILL);
+            }
+        }
+    }
     let _ = child.kill();
     let _ = child.wait();
+}
+
+fn configure_process_group(command: &mut Command) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    #[cfg(not(unix))]
+    let _ = command;
 }
 
 fn validate_output(raw: &str, expected_id: &str) -> Result<ValidResult, String> {

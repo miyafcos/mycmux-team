@@ -47,10 +47,24 @@ describe("Launch Menu shell wiring", () => {
     ]);
   });
 
-  it("leaves non-macOS zsh shells on the existing bare-shell path", async () => {
-    const launcher = await loadLauncherAgent({ command: "/bin/zsh", args: ["-l"] }, "Linux x86_64");
+  it("sources the bash launcher for zsh even when the platform does not read as mac", async () => {
+    // The macOS WKWebView reported a non-mac platform here, which dropped every
+    // launcher pane back to a bare `zsh -i`: the menu drew, and picking an
+    // agent started nothing. The shell leaf alone has to decide.
+    const launcher = await loadLauncherAgent({ command: "/bin/zsh", args: ["-l"] }, "");
 
-    expect(launcher.command).toBe("/bin/zsh");
+    expect(launcher.command).toBe("/bin/bash");
+    expect(launcher.args).toEqual([
+      "-i",
+      "-c",
+      'if [ -f "$HOME/.mycmux/bin/launcher.sh" ]; then source "$HOME/.mycmux/bin/launcher.sh"; fi; exec "${SHELL:-/bin/zsh}" -i',
+    ]);
+  });
+
+  it("leaves a non-bash, non-zsh shell on the bare-shell path", async () => {
+    const launcher = await loadLauncherAgent({ command: "/usr/bin/fish", args: ["-l"] }, "Linux x86_64");
+
+    expect(launcher.command).toBe("/usr/bin/fish");
     expect(launcher.args).toEqual(["-l"]);
   });
 });

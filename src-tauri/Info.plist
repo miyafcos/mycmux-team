@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+		macOS shows these sentences in the permission dialog it raises the first
+		time a pane touches one of these folders. Without them the dialog falls
+		back to a bare, unexplained prompt. Tauri merges this file into the
+		bundle's generated Info.plist; it has no effect on Windows or Linux
+		builds.
+	-->
+	<key>NSDesktopFolderUsageDescription</key>
+	<string>ターミナルで開いたフォルダやファイルを読み書きするために使います。</string>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>ターミナルで開いたフォルダやファイルを読み書きするために使います。</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>ターミナルで開いたフォルダやファイルを読み書きするために使います。</string>
+	<key>NSRemovableVolumesUsageDescription</key>
+	<string>外付けドライブ上のファイルをターミナルから扱うために使います。</string>
+	<key>NSNetworkVolumesUsageDescription</key>
+	<string>ネットワーク上の共有フォルダをターミナルから扱うために使います。</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>ターミナルから他のアプリを操作するために使います。</string>
+</dict>
+</plist>

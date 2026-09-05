@@ -1,3 +1,5 @@
+# Windows-only WebView2 paint benchmark. WKWebView does not expose the same
+# process counters; measure-mac.sh is the accepted macOS resource substitute.
 <#
 .SYNOPSIS
 Samples CPU usage for the WebView2 GPU process owned by a running mycmux.

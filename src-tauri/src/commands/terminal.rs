@@ -221,7 +221,25 @@ pub fn create_session(
     if incoming_launcher_done {
         env_map.insert("__CMUX_LAUNCHER_DONE".to_string(), "1".to_string());
     }
+    // macOS hands a Finder/Dock-launched app launchd's PATH, which holds none
+    // of the agents. See `commands::shell::login_shell_path`.
+    #[cfg(target_os = "macos")]
+    if !env_map.contains_key("PATH") {
+        if let Some(path) = crate::commands::shell::login_shell_path() {
+            env_map.insert("PATH".to_string(), path.to_string());
+        }
+    }
     let command = prepare_spawn_command(&requested_command, &mut args);
+    // A launcher pane that starts the plain shell instead of the launcher looks
+    // identical on screen to one whose CLI exited instantly, and the frontend
+    // decides the command, so record what was actually spawned: it is the one
+    // line that separates "the launcher never ran" from "the CLI failed".
+    if let Some(target) = env_map.get("MYCMUX_LAUNCH_TARGET") {
+        crate::diag::warn(
+            "launch",
+            &format!("target={target} command={command} args={args:?}"),
+        );
+    }
     inject_osc7_hook(&command, &mut args, &mut env_map);
     inject_no_color_for_agy(&command, &mut env_map);
     if should_trust_claude_workspace(&requested_command, &env_map) {

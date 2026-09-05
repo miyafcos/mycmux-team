@@ -22,12 +22,14 @@ use crate::util::ids::is_uuid_like;
 /// Path of the Claude Code transcript for `session_id` under `cwd`.
 fn claude_session_path(cwd: &str, session_id: &str) -> Option<PathBuf> {
     let home = dirs::home_dir()?;
-    Some(
-        home.join(".claude")
-            .join("projects")
-            .join(claude_project_key(cwd))
-            .join(format!("{session_id}.jsonl")),
-    )
+    Some(claude_session_path_from_home(&home, cwd, session_id))
+}
+
+fn claude_session_path_from_home(home: &Path, cwd: &str, session_id: &str) -> PathBuf {
+    home.join(".claude")
+        .join("projects")
+        .join(claude_project_key(cwd))
+        .join(format!("{session_id}.jsonl"))
 }
 
 /// Codex names its rollout logs `rollout-<timestamp>-<uuid>.jsonl`; the id is
@@ -434,6 +436,39 @@ mod tests {
             Some(r"C:\Users\miyaz\expected-project"),
             session_id,
         ));
+    }
+
+    #[test]
+    fn claude_session_is_restorable_from_a_posix_project_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let projects_dir = dir.path().join("projects");
+        let session_id = "019bc371-82cf-7d82-ad0b-96d026aaca73";
+        let cwd = "/Users/example/work/mycmux";
+        let project_dir = projects_dir.join(claude_project_key(cwd));
+        std::fs::create_dir_all(&project_dir).unwrap();
+        std::fs::write(project_dir.join(format!("{session_id}.jsonl")), "{}\n").unwrap();
+
+        assert!(claude_session_exists_in_projects_dir(
+            &projects_dir,
+            Some(cwd),
+            session_id,
+        ));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn claude_session_path_uses_the_macos_home_directory() {
+        let home = dirs::home_dir().expect("macOS home directory should resolve");
+        let path = claude_session_path_from_home(
+            &home,
+            "/Users/example/work/mycmux",
+            "019bc371-82cf-7d82-ad0b-96d026aaca73",
+        );
+        assert!(path.starts_with(&home));
+        assert_eq!(
+            path.strip_prefix(&home).unwrap(),
+            Path::new(".claude/projects/-Users-example-work-mycmux/019bc371-82cf-7d82-ad0b-96d026aaca73.jsonl")
+        );
     }
 
     #[test]

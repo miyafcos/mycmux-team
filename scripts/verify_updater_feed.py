@@ -37,6 +37,12 @@ DEFAULT_FEED_URL = (
     "mycmux-personal-updater/latest.json"
 )
 _COMMENT_PREFIXES = ("untrusted comment:", "trusted comment:")
+REQUIRED_PLATFORMS = {
+    "windows-x86_64",
+    "windows-x86_64-msi",
+    "windows-x86_64-nsis",
+    "darwin-aarch64",
+}
 
 
 class VerificationError(Exception):
@@ -117,6 +123,13 @@ def verify_feed(feed: Dict[str, Any], expected_version: str, expected_key_id: st
     if not isinstance(platforms, dict) or not platforms:
         failures.append("feed has no platforms[] entries")
         platforms = {}
+
+    missing_platforms = REQUIRED_PLATFORMS - set(platforms)
+    if missing_platforms:
+        failures.append(
+            "feed is missing required platform entries: "
+            + ", ".join(sorted(missing_platforms))
+        )
 
     print(f"expected key-id (tauri.conf.json pubkey): {expected_key_id}")
     for name in sorted(platforms):

@@ -4,6 +4,15 @@
 
 ---
 
+## [Unreleased]
+
+- New: **ランチャーの Codex モデルに GPT-6 Astra が並んだ** — 「Astra (flagship)」が既定の次の行。Sol は「Sol (5.6 fallback)」に改名し、Terra / Luna はそのまま
+  - GUI (`agentCatalog.ts`)・PowerShell・bash の 3 か所を同じ順で更新。契約テスト (`test_launcher_catalog_contract.py`) の行番号ケースも新しい並びに合わせた
+  - effort に **ultra** (自動タスク分割・Codex CLI 0.153〜) を追加。claude-codex 側の effort は従来どおり (ultra なし)
+- New: **ailog が GPT-6 Astra を知った** — 価格表 (`price.rs`: $10 / $50 / キャッシュ読み $1) と系列色の梯子 (`modelColors.ts`) に `gpt-6-astra` を最上段として登録
+  - openai の梯子は 5 段のまま (Astra / Sol / Terra / Luna / 5.5)。GPT-5.4 は legacy として 5.5 の淡色に寄せた — 6 段にすると隣接段の色差が床 (ΔE 0.035) を割るため (実測 0.032 → 5 段で 0.041)
+  - バックグラウンド AI のプリセットにも Astra を追加 (既定は luna のまま)
+
 ## [0.61.0] - 2026-09-03
 
 ワークスペースが1クリックで作れるようになり、Web タブが5サービスに増えた版。Web ペインの「開くたびにログインし直し」は仕様ではなく不具合だったので直した。

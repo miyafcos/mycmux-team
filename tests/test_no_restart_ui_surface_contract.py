@@ -33,7 +33,10 @@ def test_pane_and_workspace_ui_surfaces_remain_wired() -> None:
             "onClick={() => { if (!draggingRef.current) onClick(ws.id); }}",
             "onClose={onCloseWorkspace}",
             "onClose={() => onClose(ws.id)}",
-            'title="New workspace (Ctrl+Shift+N)"',
+            # The shortcut is rendered from the live binding rather than written
+            # out, so it follows a rebind and prints the macOS glyphs. The
+            # tooltip still has to be there, which is what this pins.
+            "title={`New workspace (${newWorkspaceShortcut})`}",
         ],
     )
     assert_snippets(

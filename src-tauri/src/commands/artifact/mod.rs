@@ -1030,6 +1030,7 @@ mod tests {
         assert_eq!(decode_file_uri("%zz"), "%zz");
     }
 
+    #[cfg(windows)]
     #[test]
     fn artifact_path_from_raw_windows_path_trims_cli_decoration() {
         let path = artifact_path_from_uri(r"C:\Users\miyaz\report.html＋＋＋").unwrap();

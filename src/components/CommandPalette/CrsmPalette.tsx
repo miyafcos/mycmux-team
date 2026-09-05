@@ -18,6 +18,8 @@ import { OVERLAY_EXIT_MS, useDeferredUnmount } from "../../hooks/useDeferredUnmo
 import { KIND_COLORS } from "../../lib/agentKindColors";
 import { DocumentIcon, PencilIcon, TaskIcon } from "../icons/ChromeIcons";
 import { openTabSweepInDashboard } from "../layout/tabSweep";
+import { formatShortcutLabel } from "../../lib/keybindings";
+import { useKeybindingStore } from "../../stores/keybindingStore";
 import "./CrsmPalette.css";
 
 interface CrsmPaletteProps {
@@ -487,6 +489,7 @@ export function preloadCrsmSessions(): void {
 }
 
 export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
+  const tabSweepShortcut = useKeybindingStore((s) => formatShortcutLabel(s.keybindings["tab.sweep"]));
   const { mounted, closing } = useDeferredUnmount(open, OVERLAY_EXIT_MS);
   const [sessions, setSessions] = useState<CrsmSessionEntry[]>([]);
   const [query, setQuery] = useState("");
@@ -988,7 +991,7 @@ export default function CrsmPalette({ open, onClose }: CrsmPaletteProps) {
           }}
         >
           <span><strong>操作</strong> · タブ掃除を開く</span>
-          <kbd style={{ color: "var(--cmux-text-tertiary)", fontFamily: "inherit", fontSize: 10 }}>Ctrl+Shift+K</kbd>
+          <kbd style={{ color: "var(--cmux-text-tertiary)", fontFamily: "inherit", fontSize: 10 }}>{tabSweepShortcut}</kbd>
         </button>
         <div style={styles.targetRow}>
           {enabledTargets.map((kind) => (

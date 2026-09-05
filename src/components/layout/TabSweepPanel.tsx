@@ -27,6 +27,8 @@ import {
 } from "./tabSweep";
 import { useAiSettingsStore } from "../../stores/aiSettingsStore";
 import { aiSettingsStrings } from "../settings/settingsStrings";
+import { formatShortcutLabel } from "../../lib/keybindings";
+import { useKeybindingStore } from "../../stores/keybindingStore";
 
 interface TabSweepPanelProps {
   open: boolean;
@@ -194,6 +196,7 @@ export function TabSweepPanel({ open, visible, closing = false, onClose }: TabSw
   const aiProvider = useAiSettingsStore((s) => s.aiProvider);
   const aiModel = useAiSettingsStore((s) => s.aiModel);
   const aiEnabled = useAiSettingsStore((s) => s.aiEnabled);
+  const reopenTabShortcut = useKeybindingStore((s) => formatShortcutLabel(s.keybindings["pane.reopen"]));
 
   const rescan = useCallback(async (clearJudge = true): Promise<boolean> => {
     setScanning(true);
@@ -566,14 +569,14 @@ export function TabSweepPanel({ open, visible, closing = false, onClose }: TabSw
               {formatSweepAiNote("judge", aiProvider, aiModel, aiEnabled)}
             </div>
             <div style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-secondary)" }}>
-              閉じたタブは Ctrl+Shift+T で復元できます（会話も再開されます）
+              閉じたタブは {reopenTabShortcut} で復元できます（会話も再開されます）
             </div>
           </div>
           <ActionButton
             danger
             primary={selectedCount > 0}
             disabled={busy || selectedCount === 0}
-            ariaLabel={`選択した${selectedCount}件のタブを閉じる。Ctrl+Shift+Tで復元できます`}
+            ariaLabel={`選択した${selectedCount}件のタブを閉じる。${reopenTabShortcut}で復元できます`}
             onClick={closeSelected}
           >
             {`選択した${selectedCount}件を閉じる`}

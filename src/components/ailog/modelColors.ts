@@ -20,7 +20,7 @@ export const PROVIDER_HUE: Record<string, number> = {
 
 export const TIER_LADDER: Record<string, readonly string[]> = {
   anthropic: ["fable-5", "opus-5", "sonnet-5", "haiku-4.5"],
-  openai: ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4"],
+  openai: ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"],
   xai: ["grok-4.6"],
   google: [],
 };
@@ -31,10 +31,12 @@ export const LEGACY_FAMILIES: Record<string, string> = {
   "opus-4.5": "opus-5", "opus-4.1": "opus-5", "opus-4.0": "opus-5",
   "sonnet-4.6": "sonnet-5", "sonnet-4.5": "sonnet-5", "sonnet-4.0": "sonnet-5",
   "grok-4.6-build": "grok-4.6",
+  "gpt-5.4": "gpt-5.5",
 };
 
 /** Variant-collapsed display families resolve to this explicitly chosen rung. */
 export const FAMILY_REPRESENTATIVE: Record<string, string> = {
+  "gpt-6": "gpt-6-astra",
   "gpt-5.6": "gpt-5.6-terra",
 };
 
@@ -44,7 +46,7 @@ export const FAMILY_STEMS: readonly (readonly [string, string])[] = [
   ["claude-opus-5", "opus-5"], ["claude-opus-4-8", "opus-4.8"], ["claude-opus-4-7", "opus-4.7"],
   ["claude-opus-4-6", "opus-4.6"], ["claude-opus-4-5", "opus-4.5"], ["claude-opus-4-1", "opus-4.1"], ["claude-opus-4-0", "opus-4.0"],
   ["claude-sonnet-5", "sonnet-5"], ["claude-sonnet-4-6", "sonnet-4.6"], ["claude-sonnet-4-5", "sonnet-4.5"], ["claude-sonnet-4-0", "sonnet-4.0"],
-  ["claude-haiku-4-5", "haiku-4.5"], ["gpt-5.6", "gpt-5.6"], ["gpt-5.5", "gpt-5.5"],
+  ["claude-haiku-4-5", "haiku-4.5"], ["gpt-6", "gpt-6"], ["gpt-5.6", "gpt-5.6"], ["gpt-5.5", "gpt-5.5"],
 ];
 
 // Chroma zero on purpose: this is the "no company" colour, so it must not read

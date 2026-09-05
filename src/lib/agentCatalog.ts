@@ -42,8 +42,12 @@ export interface AgentCatalogEntry {
 
 /** Claude Code and its fork: `--effort low|medium|high|xhigh|max`. */
 const CLAUDE_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
-/** Codex reasoning effort has a sixth step ("none") the Claude CLIs lack. */
-const CODEX_EFFORTS = ["none", "low", "medium", "high", "xhigh", "max"] as const;
+/**
+ * Codex reasoning effort has a sixth step ("none") the Claude CLIs lack, and
+ * since GPT-6 Astra (Codex CLI 0.153, 2026-09) a seventh: "ultra" = maximum
+ * reasoning with automatic task delegation to internal sub-agents.
+ */
+const CODEX_EFFORTS = ["none", "low", "medium", "high", "xhigh", "max", "ultra"] as const;
 /** grok and agy both document three steps. */
 const SHORT_EFFORTS = ["low", "medium", "high"] as const;
 
@@ -58,8 +62,14 @@ const CLAUDE_MODELS: readonly ModelChoice[] = [
   { value: "haiku", label: "Haiku" },
 ];
 
+/**
+ * GPT-6 Astra (GA 2026-09-03) took the flagship seat on 2026-09-05; the 5.6
+ * tiers stay selectable as the cost lane (terra), the scan lane (luna) and the
+ * fallback when Astra is rate-limited (sol).
+ */
 const CODEX_MODELS: readonly ModelChoice[] = [
-  { value: "gpt-5.6-sol", label: "Sol (flagship)" },
+  { value: "gpt-6-astra", label: "Astra (flagship)" },
+  { value: "gpt-5.6-sol", label: "Sol (5.6 fallback)" },
   { value: "gpt-5.6-terra", label: "Terra (standard)" },
   { value: "gpt-5.6-luna", label: "Luna (light)" },
 ];

@@ -1,3 +1,5 @@
+# Windows-only full UI/AILog benchmark. On macOS, use measure-mac.sh for launch,
+# RSS, and CPU sampling; UI automation and AILog parity are not covered there.
 [CmdletBinding()]
 param(
     [string]$RepoRoot = "",

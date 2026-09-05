@@ -1,4 +1,6 @@
 ﻿#requires -Version 5.1
+# Windows-only local release orchestrator (MSVC, NSIS, and MSI). Apple Silicon
+# releases use .github/workflows/release.yml; local Mac bundles use build-mac.sh.
 [CmdletBinding()]
 param(
   [string]$Version,
@@ -475,8 +477,8 @@ See ``CHANGELOG.md`` for details.
   Write-Host "GitHub Release: PASS ($releaseUrl)"
 
   Write-Stage "公開 updater feed へミラー"
-  $mirrorScript = Join-Path $PSScriptRoot "mirror-personal-updater-feed.ps1"
-  Invoke-NativeVisible -FilePath "powershell.exe" -Arguments @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $mirrorScript, "-SourceTag", $tag) -Label "updater feed のミラー"
+  $mirrorScript = Join-Path $PSScriptRoot "mirror_personal_updater_feed.py"
+  Invoke-NativeVisible -FilePath "python" -Arguments @($mirrorScript, "--source-tag", $tag) -Label "updater feed のミラー"
   Write-Host "updater feed ミラー: PASS"
 
   Write-Stage "公開 updater feed を検証"

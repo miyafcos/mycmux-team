@@ -61,12 +61,78 @@ mod single_instance {
     }
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(unix)]
 mod single_instance {
-    pub struct InstanceGuard;
+    use std::fs::{self, File, OpenOptions};
+    use std::os::fd::AsRawFd;
+    use std::path::{Path, PathBuf};
+
+    pub struct InstanceGuard(File);
+
+    impl Drop for InstanceGuard {
+        fn drop(&mut self) {
+            unsafe {
+                libc::flock(self.0.as_raw_fd(), libc::LOCK_UN);
+            }
+        }
+    }
+
+    fn lock_path(runtime_dir: &Path) -> PathBuf {
+        runtime_dir.join("single-instance.lock")
+    }
+
+    fn acquire_at(runtime_dir: &Path) -> Result<Option<InstanceGuard>, String> {
+        fs::create_dir_all(runtime_dir)
+            .map_err(|error| format!("Failed to create single-instance lock directory: {error}"))?;
+        // Nothing is ever written into this file — it exists only to carry
+        // the flock — so truncation is irrelevant. Say so, rather than leave
+        // the behaviour to the default.
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(lock_path(runtime_dir))
+            .map_err(|error| format!("Failed to open single-instance lock: {error}"))?;
+        let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        if result == 0 {
+            return Ok(Some(InstanceGuard(file)));
+        }
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() == Some(libc::EWOULDBLOCK)
+            || error.raw_os_error() == Some(libc::EAGAIN)
+        {
+            Ok(None)
+        } else {
+            Err(format!("Failed to acquire single-instance lock: {error}"))
+        }
+    }
 
     pub fn acquire(_profile: Option<&str>) -> Result<Option<InstanceGuard>, String> {
-        Ok(Some(InstanceGuard))
+        let runtime_dir = crate::test_profile::runtime_dir()?;
+        acquire_at(&runtime_dir)
+    }
+
+    #[cfg(test)]
+    pub fn acquire_for_runtime_dir(runtime_dir: &Path) -> Result<Option<InstanceGuard>, String> {
+        acquire_at(runtime_dir)
+    }
+}
+
+#[cfg(all(test, unix))]
+mod single_instance_tests {
+    use super::single_instance;
+
+    #[test]
+    fn second_acquire_for_the_same_lock_file_returns_none() {
+        let runtime_dir = tempfile::tempdir().unwrap();
+        let _first = single_instance::acquire_for_runtime_dir(runtime_dir.path())
+            .unwrap()
+            .expect("the first acquire must own the lock");
+
+        assert!(single_instance::acquire_for_runtime_dir(runtime_dir.path())
+            .unwrap()
+            .is_none());
     }
 }
 

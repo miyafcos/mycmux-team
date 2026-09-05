@@ -86,13 +86,13 @@ pub(crate) fn sync_default(conn: &Connection, now: i64) -> Result<bool, String> 
 }
 
 fn default_snapshot_path() -> Option<PathBuf> {
-    std::env::var_os("USERPROFILE")
-        .map(PathBuf::from)
-        .map(|home| {
-            home.join("session-board")
-                .join("data")
-                .join("attention_snapshot.json")
-        })
+    dirs::home_dir().map(|home| default_snapshot_path_for_home(&home))
+}
+
+fn default_snapshot_path_for_home(home: &Path) -> PathBuf {
+    home.join("session-board")
+        .join("data")
+        .join("attention_snapshot.json")
 }
 
 pub(crate) fn sync_path(conn: &Connection, path: &Path, now: i64) -> Result<bool, String> {
@@ -585,30 +585,29 @@ mod tests {
     }
 
     #[test]
-    fn consumes_the_default_written_snapshot_when_it_exists() {
-        let Some(path) = default_snapshot_path() else {
-            return;
-        };
-        if !path.is_file() {
-            return;
-        }
-        let payload: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        let coverage = payload
-            .pointer("/coverage/state")
-            .and_then(serde_json::Value::as_str)
-            .unwrap();
+    fn default_snapshot_path_preserves_the_windows_layout() {
+        assert_eq!(
+            default_snapshot_path_for_home(Path::new(r"C:\Users\miyaz")),
+            PathBuf::from(r"C:\Users\miyaz")
+                .join("session-board")
+                .join("data")
+                .join("attention_snapshot.json")
+        );
+    }
+
+    #[test]
+    fn syncs_a_snapshot_from_the_default_home_layout() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = default_snapshot_path_for_home(directory.path());
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, COMPLETE).unwrap();
         let conn = Connection::open_in_memory().unwrap();
         store::init_for_test(&conn).unwrap();
 
-        sync_path(&conn, &path, 1_000).unwrap();
+        assert!(sync_path(&conn, &path, 1_000).unwrap());
         assert!(cached_stamp(&conn).unwrap().is_some());
         let cards = store::list_open_cards(&conn).unwrap();
-        if coverage == "complete" {
-            let expected = payload["items"].as_array().unwrap().len();
-            assert_eq!(cards.len(), expected);
-        } else {
-            assert_eq!(cards.len(), 1);
-            assert_eq!(cards[0].fingerprint, INCOMPLETE_FINGERPRINT);
-        }
+        let payload: serde_json::Value = serde_json::from_str(COMPLETE).unwrap();
+        assert_eq!(cards.len(), payload["items"].as_array().unwrap().len());
     }
 }

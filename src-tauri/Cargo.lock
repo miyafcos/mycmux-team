@@ -2324,6 +2324,7 @@ dependencies = [
  "hex",
  "imagesize",
  "kuchikiki",
+ "libc",
  "objc",
  "portable-pty",
  "qrcode",

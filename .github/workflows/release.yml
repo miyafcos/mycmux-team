@@ -71,6 +71,45 @@ jobs:
       - name: Pytest
         run: python -m pytest tests/ -q
 
+  test-macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - run: npm ci
+
+      - name: TypeScript check
+        run: npx tsc --noEmit
+
+      - name: Vitest
+        run: npx vitest run
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Cargo test (library)
+        working-directory: src-tauri
+        run: cargo test --lib
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Updater feed contract
+        run: |
+          python3 -m pip install --upgrade pip pytest
+          python3 -m pytest tests/test_updater_feed_contract.py -q
+
   build-personal:
     needs: test
     runs-on: ${{ github.event.inputs.runner || 'windows-latest' }}
@@ -159,45 +198,115 @@ jobs:
           releaseDraft: false
           prerelease: false
 
-      - name: Mirror personal updater feed
+  build-macos:
+    needs: [test-macos, build-personal]
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - run: npm ci
+
+      - name: Enable updater artifacts
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          path = Path("src-tauri/tauri.conf.json")
+          config = json.loads(path.read_text(encoding="utf-8"))
+          config["bundle"]["createUpdaterArtifacts"] = True
+          path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+          PY
+
+      # Apple code signing and notarization are intentionally disabled. The
+      # TAURI_* key signs updater archives only; it is not an Apple identity.
+      # Local developers can set APPLE_SIGNING_IDENTITY via scripts/build-mac.sh.
+      - name: Build unsigned Apple Silicon release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_KEY_PERSONAL }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PERSONAL_PASSWORD }}
+        with:
+          tagName: ${{ github.event.inputs.tag || github.ref_name }}
+          releaseName: "mycmux ${{ github.event.inputs.tag || github.ref_name }}"
+          releaseBody: |
+            mycmux personal build (${{ github.event.inputs.tag || github.ref_name }}).
+
+            See `CHANGELOG.md` for details.
+
+            **macOS**: this build is not notarized. On first launch, use right-click → Open or remove quarantine with `xattr -cr /Applications/mycmux.app`.
+          releaseDraft: false
+          prerelease: false
+          uploadUpdaterJson: false
+          args: --target aarch64-apple-darwin --bundles app,dmg --no-sign
+
+      - name: Assert macOS release artifacts
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          root = Path("src-tauri/target/aarch64-apple-darwin/release/bundle")
+          required = {
+              "dmg": list(root.rglob("*.dmg")),
+              "app updater": list(root.rglob("*.app.tar.gz")),
+              "app updater signature": list(root.rglob("*.app.tar.gz.sig")),
+          }
+          missing = [name for name, paths in required.items() if len(paths) != 1]
+          for name, paths in required.items():
+              print(f"{name}: {[str(path) for path in paths]}")
+          if missing:
+              raise SystemExit(f"expected exactly one artifact for: {', '.join(missing)}")
+          PY
+
+  mirror-updater-feed:
+    needs: build-macos
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Mirror combined Windows and macOS updater feed
         id: mirror
-        shell: powershell
-        # continue-on-error keeps the mirror's own diagnostics visible instead of
-        # aborting the job mid-step; the verification step below is what actually
-        # fails the release when the mirror was skipped or did not land.
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.MYCMUX_TEAM_RELEASE_TOKEN }}
           SOURCE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
-          if (-not $env:GH_TOKEN) {
-            $message = "MYCMUX_TEAM_RELEASE_TOKEN is not configured; skipping the public personal updater feed mirror. Existing installations will NOT see this release via the in-app updater until this is fixed."
-            Write-Host "::error::$message"
-            if ($env:GITHUB_STEP_SUMMARY) {
-              Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "## :x: Updater feed mirror skipped`n`n$message"
-            }
+          if [ -z "$GH_TOKEN" ]; then
+            message="MYCMUX_TEAM_RELEASE_TOKEN is not configured; the public updater feed was not updated."
+            echo "::error::$message"
+            printf '## :x: Updater feed mirror skipped\n\n%s\n' "$message" >> "$GITHUB_STEP_SUMMARY"
             exit 1
-          }
-          .\scripts\mirror-personal-updater-feed.ps1 -SourceTag $env:SOURCE_TAG
+          fi
+          python3 scripts/mirror_personal_updater_feed.py --source-tag "$SOURCE_TAG"
 
-      # Two real incidents this step exists for:
-      #   1. the mirror step above is continue-on-error, so a missing
-      #      MYCMUX_TEAM_RELEASE_TOKEN used to leave the whole release green
-      #      while the public updater feed never advanced (silent skip);
-      #   2. v0.21.16 (2026-08-05) was signed with a rotated-away key because
-      #      the CI secret still held the old one -- the feed had the right
-      #      version, so version-only checks passed and users' update button
-      #      failed with a signature verification error.
-      # Failing here is intentional: a release that users cannot install is not
-      # a successful release.
-      - name: Verify public updater feed (version + signing key-id)
-        shell: bash
+      # The mirror is continue-on-error so its diagnostics remain visible. This
+      # separate gate makes missing tokens, missing Darwin assets, stale versions,
+      # and updater signing-key mismatches fail the overall release.
+      - name: Verify public updater feed (platforms + version + signing key-id)
         env:
           MIRROR_OUTCOME: ${{ steps.mirror.outcome }}
           SOURCE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
           if [ "$MIRROR_OUTCOME" != "success" ]; then
-            echo "::error::updater feed mirror step did not succeed (outcome=$MIRROR_OUTCOME); the public feed was not updated and existing installations will not see this release."
+            echo "::error::updater feed mirror step did not succeed (outcome=$MIRROR_OUTCOME)."
             exit 1
           fi
-          python scripts/verify_updater_feed.py --expect-version "${SOURCE_TAG#v}"
+          python3 scripts/verify_updater_feed.py --expect-version "${SOURCE_TAG#v}"

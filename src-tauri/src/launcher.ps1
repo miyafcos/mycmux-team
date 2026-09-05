@@ -755,7 +755,8 @@ $ClaudeModels = @(
   New-MycmuxModelChoice "Haiku" "haiku"
 )
 $CodexModels = @(
-  New-MycmuxModelChoice "Sol (flagship)" "gpt-5.6-sol"
+  New-MycmuxModelChoice "Astra (flagship)" "gpt-6-astra"
+  New-MycmuxModelChoice "Sol (5.6 fallback)" "gpt-5.6-sol"
   New-MycmuxModelChoice "Terra (standard)" "gpt-5.6-terra"
   New-MycmuxModelChoice "Luna (light)" "gpt-5.6-luna"
 )
@@ -769,7 +770,7 @@ $AgyModels = @(
   New-MycmuxModelChoice "Claude Sonnet 4.6 (Thinking)" "claude-sonnet-4-6"
 )
 $ClaudeEfforts = @("low", "medium", "high", "xhigh", "max")
-$CodexEfforts = @("none", "low", "medium", "high", "xhigh", "max")
+$CodexEfforts = @("none", "low", "medium", "high", "xhigh", "max", "ultra")
 $ShortEfforts = @("low", "medium", "high")
 
 $LaunchSpecCatalog = @{

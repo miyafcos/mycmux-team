@@ -5,6 +5,8 @@ use std::time::Duration;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use tauri::webview::NewWindowResponse;
+#[cfg(target_os = "macos")]
+use tauri::webview::PageLoadEvent;
 use tauri::{
     AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Url, Webview, WebviewBuilder,
     WebviewUrl, Window,
@@ -118,15 +120,18 @@ const WEB_PANE_PRESETS: &[WebPanePreset] = &[
 
 const WEB_PANE_KEYDOWN_EVENT: &str = "mycmux:web-pane-keydown";
 const WEB_PANE_URL_EVENT: &str = "mycmux:web-pane-url";
+#[cfg(target_os = "windows")]
 const WEB_PANE_SIGNIN_EVENT: &str = "mycmux:web-pane-signin";
 const WEB_PANE_SHORTCUT_STATE: &str = "__MYCMUX_WEB_PANE_SHORTCUT_STATE__";
 const WEB_PANE_PUSH_TIMEOUT: Duration = Duration::from_secs(5);
 const WEB_PANE_MAX_TEXT_BYTES: usize = 256 * 1024;
 /// How long the browser process gets to release the profile folder after its
 /// last webview closes, before the sign-in window is launched anyway.
+#[cfg(target_os = "windows")]
 const WEB_PANE_PROFILE_RELEASE_TIMEOUT: Duration = Duration::from_secs(15);
 /// A sign-in browser that dies inside this window never showed a window: it was
 /// handed off to an instance that already owned the profile folder.
+#[cfg(target_os = "windows")]
 const WEB_PANE_SIGNIN_LIVENESS_DELAY: Duration = Duration::from_secs(2);
 static WEB_PANE_PUSH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 /// webview label -> preset id, so sign-in knows which panes share a profile.
@@ -204,9 +209,25 @@ fn profile_directory(base: PathBuf, preset: WebPanePreset) -> Result<PathBuf, St
         .join(safe_directory_component(preset.profile_dir)?))
 }
 
+/// WKWebView ignores `data_directory`, so macOS 14+ needs a stable custom data
+/// store. The namespace prevents an accidental collision with another hash use,
+/// while `profile_dir` preserves the sharing declared by the preset registry.
+#[cfg(target_os = "macos")]
+fn macos_data_store_identifier(profile_dir: &str) -> [u8; 16] {
+    use sha2::{Digest, Sha256};
+
+    let digest = Sha256::digest(
+        [b"com.miyazaki.mycmux/web-pane/".as_slice(), profile_dir.as_bytes()].concat(),
+    );
+    let mut identifier = [0_u8; 16];
+    identifier.copy_from_slice(&digest[..16]);
+    identifier
+}
+
 /// WebView2 keeps its profile in an `EBWebView` folder under the data directory
 /// it is handed. A sign-in browser has to be pointed at that folder, not at its
 /// parent -- aiming one level too high seeds a profile nothing ever reads.
+#[cfg(target_os = "windows")]
 fn webview2_user_data_directory(profile_dir: &Path) -> PathBuf {
     profile_dir.join("EBWebView")
 }
@@ -214,6 +235,7 @@ fn webview2_user_data_directory(profile_dir: &Path) -> PathBuf {
 /// While a Chromium browser process owns a user data folder it keeps a
 /// `lockfile` there, and removes it on a clean exit. That is the signal for
 /// "the folder is free now".
+#[cfg(target_os = "windows")]
 fn profile_lock_file(profile_dir: &Path) -> PathBuf {
     webview2_user_data_directory(profile_dir).join("lockfile")
 }
@@ -241,6 +263,11 @@ fn host_matches(host: &str, allowed: &[&str]) -> bool {
 fn preset_keeps_url_inside_pane(preset: WebPanePreset, url: &Url) -> bool {
     let host = url.host_str().unwrap_or_default();
     host_matches(host, preset.allowed_hosts) || host_matches(host, WEB_PANE_AUTH_HOSTS)
+}
+
+#[cfg(target_os = "macos")]
+fn page_load_reports_status(event: PageLoadEvent) -> bool {
+    matches!(event, PageLoadEvent::Finished)
 }
 
 /// Two signals, because either one alone is unreliable. Being parked on
@@ -291,6 +318,7 @@ fn preset_for_label(label: &str) -> Option<WebPanePreset> {
     preset_by_id(id).ok()
 }
 
+#[cfg(target_os = "windows")]
 fn tab_id_from_label(label: &str) -> Option<&str> {
     label.strip_prefix("web-pane-")
 }
@@ -306,6 +334,7 @@ struct WebPaneUrlPayload {
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg(target_os = "windows")]
 struct WebPaneSigninPayload {
     profile_dir: String,
     tab_ids: Vec<String>,
@@ -319,6 +348,17 @@ pub struct WebPaneSigninResult {
     profile_dir: String,
     tab_ids: Vec<String>,
     browser_path: String,
+    external_signin_required: bool,
+}
+
+#[cfg(target_os = "macos")]
+fn direct_signin_result(preset: WebPanePreset) -> WebPaneSigninResult {
+    WebPaneSigninResult {
+        profile_dir: preset.profile_dir.to_string(),
+        tab_ids: Vec::new(),
+        browser_path: String::new(),
+        external_signin_required: false,
+    }
 }
 
 fn webview_label(tab_id: &str) -> Result<String, String> {
@@ -593,8 +633,27 @@ pub async fn webpane_create(
         .initialization_script(shortcut_initialization_script(
             &tab_id,
             &forwarded_shortcuts,
-        )?)
+        )?);
+    #[cfg(target_os = "macos")]
+    let builder = {
+        let identifier = macos_data_store_identifier(preset.profile_dir);
+        eprintln!(
+            "[web-pane] macOS data store profile={} identifier={}",
+            preset.profile_dir,
+            hex::encode(identifier)
+        );
+        // Tauri forwards this to wry's WebViewBuilderExtDarwin. wry selects the
+        // custom store on macOS 14+ and its default store on older macOS.
+        builder.data_store_identifier(identifier)
+    };
+    let builder = builder
         .on_page_load(move |_webview, payload| {
+            // Started fires for redirects too. Only a completed top-level URL
+            // is allowed to become the status bar's signed-in/out state.
+            #[cfg(target_os = "macos")]
+            if !page_load_reports_status(payload.event()) {
+                return;
+            }
             let url = payload.url().to_string();
             let _ = page_load_app.emit(
                 WEB_PANE_URL_EVENT,
@@ -684,14 +743,40 @@ pub async fn webpane_destroy(app: AppHandle, tab_id: String) -> Result<(), Strin
     Ok(())
 }
 
-/// Open a real browser window on the pane's own profile folder so the operator
-/// can sign in once. Google refuses OAuth from an embedded webview, and the
-/// pane's profile is the one place a login can be left where the pane will find
-/// it again -- so the browser is pointed at that exact folder rather than a
-/// copy, and no credential is ever moved by hand.
+/// Start the platform's sign-in flow. Windows opens Edge against the pane's
+/// WebView2 profile; macOS reports that WKWebView can sign in directly.
 #[tauri::command]
-pub async fn webpane_signin(app: AppHandle, preset_id: String) -> Result<WebPaneSigninResult, String> {
+pub async fn webpane_signin(
+    app: AppHandle,
+    preset_id: String,
+) -> Result<WebPaneSigninResult, String> {
     let preset = preset_by_id(&preset_id)?;
+
+    #[cfg(target_os = "macos")]
+    {
+        let _ = &app;
+        // WKWebView uses Safari's engine and can complete Google OAuth inside
+        // the pane. There is no external-profile handoff to perform on macOS.
+        Ok(direct_signin_result(preset))
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        let _ = &app;
+        Err("external web-pane sign-in is not supported on this platform".to_string())
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        webpane_signin_windows(app, preset).await
+    }
+}
+
+#[cfg(target_os = "windows")]
+async fn webpane_signin_windows(
+    app: AppHandle,
+    preset: WebPanePreset,
+) -> Result<WebPaneSigninResult, String> {
     let browser = find_signin_browser()?;
     let local_data_dir = app
         .path()
@@ -770,9 +855,11 @@ pub async fn webpane_signin(app: AppHandle, preset_id: String) -> Result<WebPane
         profile_dir: preset.profile_dir.to_string(),
         tab_ids,
         browser_path: browser.display().to_string(),
+        external_signin_required: true,
     })
 }
 
+#[cfg(target_os = "windows")]
 fn emit_signin_finished(
     app: &AppHandle,
     preset: WebPanePreset,
@@ -790,6 +877,7 @@ fn emit_signin_finished(
     );
 }
 
+#[cfg(target_os = "windows")]
 async fn wait_for_profile_release(profile_dir: &Path) {
     let lock = profile_lock_file(profile_dir);
     let deadline = std::time::Instant::now() + WEB_PANE_PROFILE_RELEASE_TIMEOUT;
@@ -801,6 +889,7 @@ async fn wait_for_profile_release(profile_dir: &Path) {
 /// The sign-in window has to be Edge: WebView2 *is* Edge, so the two write the
 /// same profile format and use the same DPAPI cookie key. A different browser
 /// would leave a profile WebView2 cannot read.
+#[cfg(target_os = "windows")]
 fn find_signin_browser() -> Result<PathBuf, String> {
     let candidates = [
         std::env::var_os("ProgramFiles(x86)"),
@@ -953,6 +1042,30 @@ mod tests {
         assert_eq!(preset_by_id("grok").unwrap().profile_dir, "grok");
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_data_store_identifier_is_deterministic_and_profile_scoped() {
+        let first_launch = macos_data_store_identifier("google");
+        let second_launch = macos_data_store_identifier("google");
+        eprintln!(
+            "[web-pane] deterministic test profile=google identifier={}",
+            hex::encode(first_launch)
+        );
+        assert_eq!(first_launch, second_launch);
+        assert_ne!(first_launch, macos_data_store_identifier("grok"));
+        assert_eq!(first_launch.len(), 16);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_signin_contract_requires_no_external_browser() {
+        let result = direct_signin_result(preset_by_id("chatgpt").unwrap());
+        assert_eq!(result.profile_dir, "google");
+        assert!(result.tab_ids.is_empty());
+        assert!(result.browser_path.is_empty());
+        assert!(!result.external_signin_required);
+    }
+
     #[test]
     fn profile_directory_stays_below_web_profiles() {
         let preset = preset_by_id("chatgpt").unwrap();
@@ -986,6 +1099,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
+    #[cfg(target_os = "windows")]
     #[test]
     fn the_sign_in_browser_is_pointed_at_the_folder_webview2_actually_reads() {
         // Seeding <profile>\Default instead of <profile>\EBWebView\Default is
@@ -1014,17 +1128,25 @@ mod tests {
 
     #[test]
     fn oauth_popups_stay_in_the_pane_and_everything_else_leaves() {
-        let preset = preset_by_id("chatgpt").unwrap();
-        for inside in [
-            "https://chatgpt.com/c/abc",
-            "https://accounts.google.com/o/oauth2/v2/auth",
-            "https://auth.openai.com/authorize",
-        ] {
+        let inside_flows = [
+            ("chatgpt", "https://chatgpt.com/c/abc"),
+            ("chatgpt", "https://auth.openai.com/authorize"),
+            ("gemini", "https://accounts.google.com/o/oauth2/v2/auth"),
+            ("notebooklm", "https://notebook.google.com/login"),
+            ("claude", "https://accounts.google.com/o/oauth2/v2/auth"),
+            ("grok", "https://accounts.x.ai/sign-in"),
+            ("grok", "https://x.com/i/flow/login"),
+            ("grok", "https://accounts.google.com/o/oauth2/v2/auth"),
+            ("grok", "https://appleid.apple.com/auth/authorize"),
+        ];
+        for (preset_id, inside) in inside_flows {
+            let preset = preset_by_id(preset_id).unwrap();
             assert!(
                 preset_keeps_url_inside_pane(preset, &inside.parse().unwrap()),
-                "{inside}"
+                "{preset_id}: {inside}"
             );
         }
+        let preset = preset_by_id("chatgpt").unwrap();
         for outside in ["https://example.com/", "https://github.com/anthropics"] {
             assert!(
                 !preset_keeps_url_inside_pane(preset, &outside.parse().unwrap()),
@@ -1052,6 +1174,13 @@ mod tests {
             gemini,
             "https://gemini.google.com/app/1234"
         ));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn signed_out_status_waits_for_the_finished_url() {
+        assert!(!page_load_reports_status(PageLoadEvent::Started));
+        assert!(page_load_reports_status(PageLoadEvent::Finished));
     }
 
     #[test]

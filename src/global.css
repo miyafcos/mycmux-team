@@ -158,6 +158,32 @@
   animation: cmux-overlay-panel-in var(--cmux-motion-fast) var(--cmux-ease);
 }
 
+/* See-through mode: for a settings tab whose controls change what is behind
+   the dialog. The scrim and blur come off so the terminal shows, and the panel
+   itself fades until it is hovered or focused — adjust a control, move the
+   pointer off, and the result is on the real terminal. Without this the dialog
+   covers the very thing being adjusted and had to be closed to see it. */
+.cmux-overlay-backdrop[data-see-through="true"] {
+  background: transparent;
+  backdrop-filter: none;
+}
+
+.cmux-overlay-panel[data-see-through="true"] {
+  opacity: 0.26;
+  transition: opacity var(--cmux-motion-fast) var(--cmux-ease);
+}
+
+.cmux-overlay-panel[data-see-through="true"]:hover,
+.cmux-overlay-panel[data-see-through="true"]:focus-within {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cmux-overlay-panel[data-see-through="true"] {
+    transition: none;
+  }
+}
+
 .cmux-overlay-backdrop.is-closing {
   animation: cmux-overlay-backdrop-out var(--cmux-motion-fast) var(--cmux-ease);
   animation-fill-mode: forwards;

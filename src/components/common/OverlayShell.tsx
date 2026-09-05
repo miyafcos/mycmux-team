@@ -14,6 +14,13 @@ interface OverlayShellProps {
   id?: string;
   closeOnBackdrop?: boolean;
   closeOnEscape?: boolean;
+  /**
+   * Let the page behind show through, for a tab whose settings change it —
+   * terminal font size, theme colors. The scrim and blur come off and the panel
+   * fades out until it is hovered or focused, so a change lands on the real
+   * terminal instead of a mock-up that can drift from it.
+   */
+  seeThrough?: boolean;
   onEscape?: () => boolean;
   children: ReactNode;
 }
@@ -95,6 +102,7 @@ export function OverlayShell({
   closeOnBackdrop = true,
   closeOnEscape = true,
   onEscape,
+  seeThrough = false,
   children,
 }: OverlayShellProps) {
   const panelRef = useRef<HTMLDivElement>(null);
@@ -202,6 +210,7 @@ export function OverlayShell({
     <div
       data-cmux-overlay-root="true"
       className={`cmux-overlay-backdrop${closing ? " is-closing" : ""}`}
+      data-see-through={seeThrough ? "true" : undefined}
       inert={closing ? true : undefined}
       aria-hidden={closing ? true : undefined}
       style={backdropStyle(layer)}
@@ -213,6 +222,7 @@ export function OverlayShell({
         id={id}
         ref={panelRef}
         className={`cmux-overlay-panel${closing ? " is-closing" : ""}`}
+        data-see-through={seeThrough ? "true" : undefined}
         role="dialog"
         aria-modal="true"
         aria-label={ariaLabel}

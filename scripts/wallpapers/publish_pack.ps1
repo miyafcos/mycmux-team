@@ -1,3 +1,5 @@
+# Cross-platform when PowerShell 7 (pwsh) and gh are installed. Wallpaper pack
+# publishing is independent from the application release and updater feed.
 <#
 .SYNOPSIS
   Publishes the wallpaper pack that the app downloads from.

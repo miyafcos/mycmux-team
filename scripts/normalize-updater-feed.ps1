@@ -1,4 +1,6 @@
 #requires -Version 5.1
+# Windows PowerShell compatibility entry point. The cross-platform release path
+# uses normalize_updater_feed.py and preserves Darwin platform entries.
 <#
 .SYNOPSIS
   Normalizes a Tauri updater latest.json so the plain "windows-x86_64" platform

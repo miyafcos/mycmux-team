@@ -3,7 +3,8 @@ import type { CSSProperties } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
 import { useWorkspaceListStore, useUiStore, usePaneMetadataStore } from "../../stores/workspaceStore";
-import { IS_MAC } from "../../lib/keybindings";
+import { formatShortcutLabel, IS_MAC } from "../../lib/keybindings";
+import { useKeybindingStore } from "../../stores/keybindingStore";
 import NotificationPanel from "./NotificationPanel";
 import SettingsDialog from "../settings/SettingsDialog";
 import { AiLogButton } from "../ailog/AiLogButton";
@@ -84,6 +85,9 @@ export default function TitleBar({
   const activeWorkspace = useWorkspaceListStore((s) => s.getActiveWorkspace());
   const activeWorkspaceColor = resolveWorkspaceColor(activeWorkspace?.color);
   const toggleSidebar = useUiStore((s) => s.toggleSidebar);
+  const sidebarShortcut = useKeybindingStore((s) => formatShortcutLabel(s.keybindings["sidebar.toggle"]));
+  const newWorkspaceShortcut = useKeybindingStore((s) => formatShortcutLabel(s.keybindings["workspace.new"]));
+  const advancedWorkspaceShortcut = useKeybindingStore((s) => formatShortcutLabel(s.keybindings["workspace.new.advanced"]));
   // Counted off live tabs, not the raw metadata map: the badge must never
   // claim notifications the panel cannot list (see collectNotificationEntries).
   const workspacesForNotifications = useWorkspaceListStore((s) => s.workspaces);
@@ -181,7 +185,7 @@ export default function TitleBar({
       >
         <button
           onClick={toggleSidebar}
-          title="Toggle Sidebar (Ctrl+B)"
+          title={`Toggle Sidebar (${sidebarShortcut})`}
           className="cmux-title-btn"
           style={{
             background: "none",
@@ -247,7 +251,7 @@ export default function TitleBar({
             No context menu — a native WebView2 menu froze the app once. */}
         <button
           onClick={onNewWorkspace}
-          title="New Workspace (Ctrl+Shift+N)"
+          title={`New Workspace (${newWorkspaceShortcut})`}
           className="cmux-title-btn"
           style={{
             background: "none",
@@ -266,7 +270,7 @@ export default function TitleBar({
         {onOpenWorkspaceSetup && (
           <button
             onClick={onOpenWorkspaceSetup}
-            title="New Workspace with agents and models (Ctrl+Shift+Alt+N)"
+            title={`New Workspace with agents and models (${advancedWorkspaceShortcut})`}
             aria-label="New Workspace with agents and models"
             className="cmux-title-btn"
             style={{

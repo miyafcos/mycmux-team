@@ -42,15 +42,16 @@ function expectedNear(actual: string, expected: string): void {
 const measured = [
   ["fable-5", "#a63b11", "#8b523f"], ["opus-5", "#b15232", "#976352"],
   ["sonnet-5", "#ba674c", "#a37566"], ["haiku-4.5", "#c37c65", "#ae8679"],
-  ["gpt-5.6-sol", "#2460b7", "#456492"], ["gpt-5.6-terra", "#376dbc", "#53709a"],
-  ["gpt-5.6-luna", "#497ac1", "#617ba2"], ["gpt-5.5", "#5b86c7", "#6f87aa"],
-  ["gpt-5.4", "#6c92cb", "#7d92b2"], ["grok-4.6", "#a55b96", "#936b8a"],
+  ["gpt-6-astra", "#2460b7", "#456492"], ["gpt-5.6-sol", "#376dbc", "#53709a"],
+  ["gpt-5.6-terra", "#497ac1", "#617ba2"], ["gpt-5.6-luna", "#5b86c7", "#6f87aa"],
+  ["gpt-5.5", "#6c92cb", "#7d92b2"], ["grok-4.6", "#a55b96", "#936b8a"],
 ] as const;
 
 // Providers intentionally drawn in NEUTRAL rather than a company hue.
 const HUELESS_PROVIDERS = new Set(["local", "other"]);
 
 const legacyForRung: Record<string, string> = {
+  "gpt-5.5": "gpt-5.4",
   "fable-5": "mythos-5", "opus-5": "opus-4.8", "sonnet-5": "sonnet-4.6", "grok-4.6": "grok-4.6-build",
 };
 
@@ -185,7 +186,7 @@ describe("ailog OKLCH palette", () => {
   it("M: resolves collapsed families and every tier rung as solid model series", () => {
     expect(seriesPaint("gpt-5.6", "model")).toEqual({ color: modelPaint("gpt-5.6-terra").color, tone: "solid" });
     expect(seriesPaint("opus-5", "model")).toEqual({ color: modelPaint("claude-opus-5").color, tone: "solid" });
-    expect(FAMILY_REPRESENTATIVE).toEqual({ "gpt-5.6": "gpt-5.6-terra" });
+    expect(FAMILY_REPRESENTATIVE).toEqual({ "gpt-6": "gpt-6-astra", "gpt-5.6": "gpt-5.6-terra" });
     const rungs = Object.values(TIER_LADDER).flat();
     expect(rungs).toHaveLength(10);
     for (const rung of rungs) expect(seriesPaint(rung, "model").tone, rung).not.toBe("muted");

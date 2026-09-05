@@ -140,27 +140,29 @@ function isBashLikeShell(command: string): boolean {
   return leaf === "bash" || leaf === "sh";
 }
 
-function isMacPlatform(): boolean {
-  if (typeof navigator === "undefined") return false;
-  const nav = navigator as Navigator & { userAgentData?: { platform?: string } };
-  const platform = nav.userAgentData?.platform || nav.platform || "";
-  return platform === "macOS" || /Mac/i.test(platform);
-}
-
-function isMacZshShell(command: string): boolean {
-  return isMacPlatform() && shellLeaf(command) === "zsh";
+/**
+ * launcher.sh is bash — its arrays and [[ ]] do not survive zsh — so a zsh
+ * default shell has to reach it through bash and only then exec back into zsh.
+ * This used to be gated on a navigator platform sniff, which reported false
+ * inside the macOS WKWebView and silently dropped every launcher pane back to a
+ * bare `zsh -i`: the launch menu rendered, and picking an agent started nothing.
+ * The shell leaf alone decides it now — a zsh user on any OS needs the same
+ * bash hop.
+ */
+function isZshShell(command: string): boolean {
+  return shellLeaf(command) === "zsh";
 }
 
 function shouldSourceLauncherWithBash(command: string): boolean {
-  return isBashLikeShell(command) || isMacZshShell(command);
+  return isBashLikeShell(command) || isZshShell(command);
 }
 
 function launcherCommand(command: string): string {
-  return isMacZshShell(command) ? "/bin/bash" : command;
+  return isZshShell(command) ? "/bin/bash" : command;
 }
 
 function launcherFallbackShell(command: string): string {
-  return isMacZshShell(command) ? "/bin/zsh" : "/bin/bash";
+  return isZshShell(command) ? "/bin/zsh" : "/bin/bash";
 }
 
 function isPowerShellLikeShell(command: string): boolean {

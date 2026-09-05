@@ -106,7 +106,7 @@ describe("DashboardLinkedText", () => {
 
     expect([...container.querySelectorAll("button")].map((button) => button.textContent)).toEqual([
       "既定のアプリで開く",
-      "エクスプローラーで表示",
+      "ファイルの場所を表示",
     ]);
     expect(mocks.openInDashboardPreview).not.toHaveBeenCalled();
     expect(mocks.preview).not.toHaveBeenCalled();
@@ -171,7 +171,7 @@ describe("DashboardLinkedText", () => {
     expect(mocks.openPreviewPane).not.toHaveBeenCalled();
     expect([...container.querySelectorAll("button")].map((button) => button.textContent)).toEqual([
       "既定のアプリで開く",
-      "エクスプローラーで表示",
+      "ファイルの場所を表示",
     ]);
   });
 

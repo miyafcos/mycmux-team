@@ -9,6 +9,10 @@
 #  - rss_kb_after_30s_idle: アイドル 30 秒後の常駐メモリ
 #  - cpu_pct_initial: 起動直後の瞬時 CPU%
 #  - idle_30s_cpu_sec: アイドル 30 秒間の累積 CPU 時間
+#
+# Coverage boundary: this is the macOS substitute for basic launch/RSS/CPU
+# sampling only. The Windows-only scripts/perf tools additionally inspect
+# WebView2 paint and AILog/UI flows, which have no WKWebView-equivalent metric.
 
 set -uo pipefail
 

@@ -5,9 +5,12 @@ pub struct DefaultShellInfo {
 }
 
 fn is_bash_like_shell_path(path: &str) -> bool {
-    let leaf = std::path::Path::new(path)
-        .file_name()
-        .and_then(|name| name.to_str())
+    // Split on both separators rather than through `Path`: the value comes from
+    // SHELL and can be a Windows path, which a non-Windows `Path` treats as one
+    // long file name.
+    let leaf = path
+        .rsplit(['/', '\\'])
+        .next()
         .unwrap_or(path)
         .to_ascii_lowercase();
     matches!(leaf.as_str(), "bash" | "bash.exe" | "sh" | "sh.exe")
@@ -47,6 +50,76 @@ fn prefer_wrapper_bash(shell: &str) -> String {
     } else {
         shell.to_string()
     }
+}
+
+/// The PATH a pane should run with, or `None` when the process already has a
+/// usable one.
+///
+/// A macOS app launched from Finder or the Dock inherits launchd's PATH —
+/// `/usr/bin:/bin:/usr/sbin:/sbin` — instead of the one the user's shell
+/// builds. Every agent lives outside those four directories (Homebrew,
+/// `~/.local/bin`, `~/.cargo/bin`), so the launcher menu drew fine, a pick
+/// exited 127, and the pane fell through to a bare shell that had just fixed
+/// its own PATH from `.zshrc` — which is exactly why it looked like the
+/// launcher did nothing. Windows never saw this: its PATH is inherited by
+/// every process regardless of how the app started.
+///
+/// So ask the login shell once for the PATH it would build. It runs
+/// interactively (`-i`) because a zsh user's PATH usually lives in `.zshrc`,
+/// which a login-only shell never reads.
+#[cfg(target_os = "macos")]
+pub(crate) fn login_shell_path() -> Option<&'static str> {
+    static RESOLVED: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    RESOLVED
+        .get_or_init(resolve_login_shell_path)
+        .as_deref()
+}
+
+#[cfg(target_os = "macos")]
+fn resolve_login_shell_path() -> Option<String> {
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+    if !std::path::Path::new(&shell).exists() {
+        return None;
+    }
+    // On its own thread with a deadline: a login shell that blocks on some
+    // interactive rc line must not hold up the first pane forever.
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let output = std::process::Command::new(&shell)
+            .args(["-l", "-i", "-c", "printf %s \"$PATH\""])
+            .stdin(std::process::Stdio::null())
+            .output();
+        let _ = sender.send(output);
+    });
+    let output = receiver
+        .recv_timeout(std::time::Duration::from_secs(8))
+        .ok()?
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let reported = String::from_utf8(output.stdout).ok()?;
+    let path = usable_login_path(&reported, &std::env::var("PATH").unwrap_or_default())?;
+    crate::diag::warn("shell", &format!("resolved login PATH for panes: {path}"));
+    Some(path)
+}
+
+/// Whether a shell's reported PATH is worth handing to a pane.
+///
+/// Split out from the shell call so the rules are testable: reject what is not
+/// a PATH at all, and reject one that matches what the process already has,
+/// since overriding with an identical value only hides where a pane's PATH
+/// came from.
+#[cfg(any(target_os = "macos", test))]
+fn usable_login_path(reported: &str, current: &str) -> Option<String> {
+    let path = reported.trim();
+    if path.is_empty() || !path.contains('/') {
+        return None;
+    }
+    if path == current {
+        return None;
+    }
+    Some(path.to_string())
 }
 
 #[tauri::command(async)]
@@ -111,6 +184,27 @@ pub fn get_default_shell() -> DefaultShellInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn login_path_is_taken_when_it_differs_from_the_process_path() {
+        let launchd = "/usr/bin:/bin:/usr/sbin:/sbin";
+        let from_shell = "/Users/x/.local/bin:/opt/homebrew/bin:/usr/bin:/bin\n";
+
+        assert_eq!(
+            usable_login_path(from_shell, launchd).as_deref(),
+            Some("/Users/x/.local/bin:/opt/homebrew/bin:/usr/bin:/bin"),
+        );
+    }
+
+    #[test]
+    fn login_path_is_ignored_when_it_adds_nothing_or_is_not_a_path() {
+        let launchd = "/usr/bin:/bin:/usr/sbin:/sbin";
+
+        assert_eq!(usable_login_path(launchd, launchd), None);
+        assert_eq!(usable_login_path("  ", launchd), None);
+        // A shell that printed an error or a bare word instead of a PATH.
+        assert_eq!(usable_login_path("command not found", launchd), None);
+    }
 
     #[test]
     fn default_shell_detection_accepts_only_bash_like_shell_env() {

@@ -1038,7 +1038,11 @@ mod tests {
         let helper = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("hooks")
             .join("mycmux_hook.py");
-        let mut child = Command::new("python")
+        #[cfg(target_os = "windows")]
+        let python = "python";
+        #[cfg(not(target_os = "windows"))]
+        let python = "python3";
+        let mut child = Command::new(python)
             .arg(helper)
             .args(["--provider", "codex", "--event-kind", "turn_ended"])
             .env("MYCMUX_HOOK_CAP", &grant.hook_cap)

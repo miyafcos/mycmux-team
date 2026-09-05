@@ -1,3 +1,5 @@
+# Windows-only: this visual fixture intentionally drives installed Microsoft
+# Edge. macOS release and updater verification do not depend on this script.
 [CmdletBinding()]
 param()
 

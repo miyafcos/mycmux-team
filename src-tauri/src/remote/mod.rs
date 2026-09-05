@@ -10,6 +10,7 @@ use axum::Router;
 use serde::Serialize;
 use session::RemoteSessionManager;
 use std::net::SocketAddr;
+use std::path::Path;
 use std::sync::atomic::{AtomicU16, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -450,8 +451,18 @@ fn is_generic_workspace_name(name: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn is_home_dir(path: &str) -> bool {
+fn is_home_dir_for(path: &str, home_dir: Option<&Path>) -> bool {
     let normalized = path.replace('\\', "/").trim_end_matches('/').to_lowercase();
+    if home_dir.is_some_and(|home| {
+        normalized
+            == home
+                .to_string_lossy()
+                .replace('\\', "/")
+                .trim_end_matches('/')
+                .to_lowercase()
+    }) {
+        return true;
+    }
     // Match common home directory patterns
     normalized.starts_with("/c/users/") && normalized.matches('/').count() == 3
         || normalized.starts_with("c:/users/") && normalized.matches('/').count() == 2
@@ -462,6 +473,15 @@ fn build_pane_label(
     cwd: Option<&str>,
     git_branch: Option<&str>,
     process_name: Option<&str>,
+) -> String {
+    build_pane_label_for(cwd, git_branch, process_name, dirs::home_dir().as_deref())
+}
+
+fn build_pane_label_for(
+    cwd: Option<&str>,
+    git_branch: Option<&str>,
+    process_name: Option<&str>,
+    home_dir: Option<&Path>,
 ) -> String {
     // Prefer git branch as the most distinctive identifier
     if let Some(branch) = git_branch.filter(|branch| !branch.trim().is_empty()) {
@@ -474,7 +494,7 @@ fn build_pane_label(
     }
 
     // Use cwd basename, but skip if it's just the home directory
-    if let Some(path) = cwd.filter(|p| !is_home_dir(p)) {
+    if let Some(path) = cwd.filter(|path| !is_home_dir_for(path, home_dir)) {
         if let Some(name) = basename(path) {
             return name.to_string();
         }
@@ -738,8 +758,37 @@ async fn serve_static(uri: axum::http::Uri) -> impl axum::response::IntoResponse
 #[cfg(test)]
 mod tests {
     use super::apply_remote_enabled_transition;
+    use super::{build_pane_label_for, is_home_dir_for};
     use super::configured_port_for;
     use super::extract_workspace_id;
+    use std::path::Path;
+
+    #[test]
+    fn pane_label_treats_platform_and_windows_home_paths_as_terminal() {
+        assert!(is_home_dir_for(
+            "/Users/example",
+            Some(Path::new("/Users/example"))
+        ));
+        assert!(is_home_dir_for(
+            "/Users/example/",
+            Some(Path::new("/Users/example"))
+        ));
+        assert!(is_home_dir_for(r"C:\Users\example", None));
+        assert!(is_home_dir_for("/c/Users/example", None));
+        assert!(!is_home_dir_for(
+            "/Users/example/project",
+            Some(Path::new("/Users/example"))
+        ));
+        assert_eq!(
+            build_pane_label_for(
+                Some("/Users/example"),
+                None,
+                Some("zsh"),
+                Some(Path::new("/Users/example")),
+            ),
+            "Terminal"
+        );
+    }
 
     #[cfg(windows)]
     #[tokio::test]

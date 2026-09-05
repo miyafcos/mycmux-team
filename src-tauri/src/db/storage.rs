@@ -66,12 +66,72 @@ mod interprocess_data_lock {
     }
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(unix)]
 mod interprocess_data_lock {
-    pub struct DataLockGuard;
+    use std::fs::{self, File, OpenOptions};
+    use std::os::fd::AsRawFd;
+    use std::path::{Path, PathBuf};
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    const LOCK_TIMEOUT: Duration = Duration::from_secs(30);
+    const LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(50);
+
+    pub struct DataLockGuard(File);
+
+    impl Drop for DataLockGuard {
+        fn drop(&mut self) {
+            unsafe {
+                libc::flock(self.0.as_raw_fd(), libc::LOCK_UN);
+            }
+        }
+    }
+
+    fn lock_path(runtime_dir: &Path) -> PathBuf {
+        runtime_dir.join("data.json.lock")
+    }
+
+    fn acquire_at(runtime_dir: &Path) -> Result<DataLockGuard, String> {
+        fs::create_dir_all(runtime_dir)
+            .map_err(|error| format!("Failed to create data-file lock directory: {error}"))?;
+        // Nothing is ever written into this file — it exists only to carry
+        // the flock — so truncation is irrelevant. Say so, rather than leave
+        // the behaviour to the default.
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(lock_path(runtime_dir))
+            .map_err(|error| format!("Failed to open data-file lock: {error}"))?;
+        let started = Instant::now();
+
+        loop {
+            let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+            if result == 0 {
+                return Ok(DataLockGuard(file));
+            }
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() != Some(libc::EWOULDBLOCK)
+                && error.raw_os_error() != Some(libc::EAGAIN)
+            {
+                return Err(format!("Failed to acquire data-file lock: {error}"));
+            }
+            if started.elapsed() >= LOCK_TIMEOUT {
+                return Err("Timed out waiting for data-file lock".to_string());
+            }
+            thread::sleep(LOCK_RETRY_INTERVAL);
+        }
+    }
 
     pub fn acquire() -> Result<DataLockGuard, String> {
-        Ok(DataLockGuard)
+        let runtime_dir = crate::test_profile::runtime_dir()?;
+        acquire_at(&runtime_dir)
+    }
+
+    #[cfg(test)]
+    pub fn acquire_for_runtime_dir(runtime_dir: &Path) -> Result<DataLockGuard, String> {
+        acquire_at(runtime_dir)
     }
 }
 
@@ -245,6 +305,14 @@ impl PersistentStorageError {
         }
     }
 
+    // The wire kind is part of the contract `ipc.ts` decodes, and
+    // test_data_json_schema_guard_contract.py pins the cfg that keeps this
+    // constructor reachable off Windows. Nothing calls it there today -- the
+    // platform seal that used to is gone -- so clippy would flag it as dead;
+    // the allow says that is deliberate rather than an oversight, and keeps the
+    // variant constructible if a non-Windows path ever needs to refuse a write
+    // again.
+    #[cfg_attr(not(test), allow(dead_code))]
     #[cfg(any(test, not(windows)))]
     fn unsupported_platform(message: impl Into<String>) -> Self {
         Self::UnsupportedPlatform {
@@ -981,16 +1049,8 @@ pub(crate) fn load<T: PersistentDataTarget + ?Sized>(target: &T) -> Result<Persi
         .ok_or_else(|| unsupported_schema_error(envelope.schema_version))
 }
 
-#[cfg(windows)]
 fn ensure_persistence_write_platform_supported() -> Result<(), PersistentStorageError> {
     Ok(())
-}
-
-#[cfg(not(windows))]
-fn ensure_persistence_write_platform_supported() -> Result<(), PersistentStorageError> {
-    Err(PersistentStorageError::unsupported_platform(
-        "data.json writes are disabled on this platform until cross-process locking is supported",
-    ))
 }
 
 pub(crate) fn update<T, F>(target: &T, updater: F) -> Result<(), PersistentStorageError>
@@ -1003,6 +1063,14 @@ where
         PersistentStorageError::storage(format!("Failed to lock data file: {error}"))
     })?;
     let _process_guard = interprocess_data_lock::acquire().map_err(PersistentStorageError::from)?;
+    update_while_locked(target, updater)
+}
+
+fn update_while_locked<T, F>(target: &T, updater: F) -> Result<(), PersistentStorageError>
+where
+    T: PersistentDataTarget + ?Sized,
+    F: FnOnce(&mut PersistentData),
+{
     if let Some(schema_version) = quarantined_schema_version() {
         return Err(PersistentStorageError::unsupported_schema(schema_version));
     }
@@ -1026,6 +1094,25 @@ where
         return Err(PersistentStorageError::unsupported_schema(schema_version));
     }
     save_preflighted_to_path(&path, &data)
+}
+
+#[cfg(all(test, unix))]
+fn update_for_runtime_dir<T, F>(
+    target: &T,
+    runtime_dir: &Path,
+    updater: F,
+) -> Result<(), PersistentStorageError>
+where
+    T: PersistentDataTarget + ?Sized,
+    F: FnOnce(&mut PersistentData),
+{
+    ensure_persistence_write_platform_supported()?;
+    let _guard = save_lock().lock().map_err(|error| {
+        PersistentStorageError::storage(format!("Failed to lock data file: {error}"))
+    })?;
+    let _process_guard = interprocess_data_lock::acquire_for_runtime_dir(runtime_dir)
+        .map_err(PersistentStorageError::from)?;
+    update_while_locked(target, updater)
 }
 
 #[cfg(test)]
@@ -1061,17 +1148,33 @@ mod tests {
 
     #[cfg(not(windows))]
     #[test]
-    fn unsupported_platform_rejects_before_resolving_the_target_or_running_the_updater() {
-        struct PanickingTarget;
-        impl PersistentDataTarget for PanickingTarget {
-            fn persistent_data_path(&self) -> Result<PathBuf, String> {
-                panic!("target path must not be resolved")
-            }
-        }
-        let updater_ran = std::cell::Cell::new(false);
-        let error = update(&PanickingTarget, |_| updater_ran.set(true)).unwrap_err();
-        assert_eq!(error.kind(), "unsupportedPlatform");
-        assert!(!updater_ran.get());
+    fn update_persists_data_on_non_windows_using_a_temporary_runtime_directory() {
+        let runtime_dir = tempfile::tempdir().unwrap();
+        let path = runtime_dir.path().join("data.json");
+
+        update_for_runtime_dir(path.as_path(), runtime_dir.path(), |data| {
+            data.active_workspace_id = Some("restored-workspace".to_string());
+        })
+        .unwrap();
+
+        assert_eq!(
+            load_from_path(&path)
+                .unwrap()
+                .active_workspace_id
+                .as_deref(),
+            Some("restored-workspace")
+        );
+        assert!(runtime_dir.path().join("data.json").is_file());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn data_lock_is_created_in_the_runtime_directory() {
+        let runtime_dir = tempfile::tempdir().unwrap();
+        let _first = interprocess_data_lock::acquire_for_runtime_dir(runtime_dir.path()).unwrap();
+        let lock_path = runtime_dir.path().join("data.json.lock");
+
+        assert!(lock_path.is_file());
     }
 
     fn sha256_hex(bytes: &[u8]) -> String {

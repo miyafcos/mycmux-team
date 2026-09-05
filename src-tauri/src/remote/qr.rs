@@ -148,18 +148,45 @@ async fn tailscale_serve_status_json() -> Option<String> {
 }
 
 async fn run_tailscale(args: &[&str]) -> Option<String> {
-    let paths = [
-        r"C:\Program Files\Tailscale\tailscale.exe",
-        r"C:\Program Files (x86)\Tailscale\tailscale.exe",
-    ];
-    for path in &paths {
-        if std::path::Path::new(path).exists() {
-            if let Some(output) = run_tailscale_cmd(path, args).await {
-                return Some(output);
-            }
+    for path in existing_tailscale_paths(std::path::Path::exists) {
+        if let Some(output) = run_tailscale_cmd(path, args).await {
+            return Some(output);
         }
     }
     run_tailscale_cmd("tailscale", args).await
+}
+
+fn existing_tailscale_paths(
+    exists: impl Fn(&std::path::Path) -> bool,
+) -> Vec<&'static str> {
+    tailscale_absolute_candidates()
+        .iter()
+        .copied()
+        .filter(|path| exists(std::path::Path::new(path)))
+        .collect()
+}
+
+#[cfg(target_os = "windows")]
+fn tailscale_absolute_candidates() -> &'static [&'static str] {
+    &[
+        r"C:\Program Files\Tailscale\tailscale.exe",
+        r"C:\Program Files (x86)\Tailscale\tailscale.exe",
+    ]
+}
+
+#[cfg(target_os = "macos")]
+fn tailscale_absolute_candidates() -> &'static [&'static str] {
+    &[
+        "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
+        "/Applications/Tailscale.app/Contents/MacOS/tailscale",
+        "/usr/local/bin/tailscale",
+        "/opt/homebrew/bin/tailscale",
+    ]
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+fn tailscale_absolute_candidates() -> &'static [&'static str] {
+    &[]
 }
 
 async fn run_tailscale_cmd(program: &str, args: &[&str]) -> Option<String> {
@@ -311,5 +338,28 @@ mod tests {
             .expect("7682 proxy should win over 3001");
         assert_eq!(entry.host, "miyazaki.tail3c3d6a.ts.net");
         assert_eq!(entry.port, 7683);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_tailscale_candidates_include_the_app_bundle_and_common_cli_links() {
+        assert_eq!(
+            tailscale_absolute_candidates(),
+            &[
+                "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
+                "/Applications/Tailscale.app/Contents/MacOS/tailscale",
+                "/usr/local/bin/tailscale",
+                "/opt/homebrew/bin/tailscale",
+            ]
+        );
+        assert_eq!(
+            existing_tailscale_paths(|path| {
+                path == std::path::Path::new(
+                    "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
+                )
+            }),
+            vec!["/Applications/Tailscale.app/Contents/MacOS/Tailscale"]
+        );
+        assert!(existing_tailscale_paths(|_| false).is_empty());
     }
 }

@@ -9,8 +9,10 @@ Tauri v2 (Rust) + React 19 + xterm.js のターミナルワークスペースア
 
 - フロント: `src/` (React + TypeScript + Zustand)
 - バックエンド: `src-tauri/src/` (Rust + Tauri v2)、PTY 管理は `src-tauri/src/pty/`
-- 設定保存: `%APPDATA%/com.miyazaki.mycmux/data.json` / ソケット: `~/.mycmux/mycmux.port` (+ 認証トークン `~/.mycmux/mycmux.token` — 全リクエストに `"token"` 必須。逃げ道 `MYCMUX_SOCKET_AUTH=off`)
+- 設定保存: Windows `%APPDATA%/com.miyazaki.mycmux/data.json` / macOS `~/Library/Application Support/com.miyazaki.mycmux/data.json` — ソケット: `~/.mycmux/mycmux.port` (+ 認証トークン `~/.mycmux/mycmux.token` — 全リクエストに `"token"` 必須。逃げ道 `MYCMUX_SOCKET_AUTH=off`)
 - 稼働中 exe: `%LOCALAPPDATA%\mycmux\mycmux.exe` (= `~/AppData/Local/mycmux/`)。**updater 管理下**で、宮崎さんが「設定 → アプリ情報 → 更新を確認」を押すとここが入れ替わる。`~/mycmux-app/mycmux.exe` は**ミラー**であって稼働中ではない — `deploy-update.ps1` が `$installed` (前者) と `$mirror` (後者) の両方を差し替えるが、updater 経由の更新では前者しか動かないのでミラーは取り残されて古くなる (2026-08-31 実測: 稼働 8/30・ミラー 8/29)。**どちらが動いているかを確かめずに deploy しない**
+- **macOS の稼働中アプリ: `/Applications/mycmux.app`** (Windows の `%LOCALAPPDATA%\mycmux\mycmux.exe` とは別系統)。updater feed に `darwin-aarch64` を載せた (2026-09-05・key id `CC53077A2D38F2BB` で Windows と同一鍵) ので「更新を確認」から更新できる。ローカルからの更新は `bash scripts/build-mac.sh` → `/Applications` 差し替え。**旧プロセスを完全終了してから新版を起動する** — v0.62.0 から `flock` の single-instance ガードが macOS でも効くようになり、2個目は静かに終了するため「アイコンを押しても何も起きない」に見える
+- **macOS の WebView データ**: `~/Library/WebKit/com.miyazaki.mycmux/WebsiteData/` (IndexedDB・LocalStorage) と `~/Library/HTTPStorages/com.miyazaki.mycmux.binarycookies` (クッキー)。`web-profiles/` は WebView2 用で macOS では使われない
 - ランチャー: `~/.mycmux/bin/launcher.sh` (新規ペインの起動メニュー。`~/bin/launcher.sh` は旧世代)
 - エージェント委譲規約: `docs/agent-integration.md` — mycmux 内の Codex/Claude/Grok 委譲は `scripts/mycmux_agent_cli.py spawn` で可視タブを立てるのが正 (各エージェント側ルールの所在・新エージェント登録チェックリストもここに記載)
 - 対応エージェント種別は `claude` / `codex` / `claude-codex` / `grok` の4種。文字列リテラルが型・ランチャー・検出・契約テストに散っているので、追加時は上記チェックリストを通す
@@ -24,6 +26,12 @@ python scripts/run_windows_tests.py   # Rust テスト (素の cargo test は使
 python -m pytest tests/               # sync-command allowlist 契約テスト含む
 ```
 
+- **macOS ではこのコマンド列がそのままは使えない**。`run_windows_tests.py` は mt.exe に依存するので、
+  代わりに `cargo test --manifest-path src-tauri/Cargo.toml --lib` を使う。
+  `vitest` は macOS で **348 件が環境由来で常に落ちる** (jsdom の getContext 未実装 / React act /
+  localStorage 未提供)。**生の失敗数では退行を判定できない** — `git worktree` で変更前を切り出して
+  同じテストを回し、失敗数の一致で判断する。`clippy` も同様に 180 件が定常。ビルドは
+  `bash scripts/build-mac.sh` (未署名が既定。`APPLE_SIGNING_IDENTITY` を渡すと署名する)
 - **Rust テストは `cargo test --release` を直接叩かない。`scripts/run_windows_tests.py` を使う (2026-08-05 恒久化)**:
   素の `cargo test --release` は lib テストハーネス (`mycmux_lib-*.exe`) が起動する前に
   `STATUS_ENTRYPOINT_NOT_FOUND (0xc0000139)` で落ちる。原因は test harness に Common Controls v6
@@ -67,6 +75,12 @@ python -m pytest tests/               # sync-command allowlist 契約テスト�
     **現行の key-id は `CC53077A2D38F2BB`** (2026-08-31 実測・v0.60.4 で 3 プラットフォームとも一致)。
     minisign の署名は base64 を 1 段ほどいた 2 行目がさらに base64 で、その `[2:10]` が key ID
     (little-endian)。先頭のコメント行を眺めても key-id は出てこない
+- **macOS 版のリリースは CI を通さない**。`release.yml` に `test-macos` / `build-macos` を置いてあるが
+  `runs-on: macos-14` は GitHub-hosted で、Actions の課金が止まっている間は動かない (2026-09-05 時点で
+  直近の run は 8/25 の failure、self-hosted は Windows 1台のみで offline)。macOS は
+  `bash scripts/build-mac.sh` でローカルビルドし、`.dmg` と `.app.tar.gz` を Release へ手動で
+  アップロードする。**配布物は未署名** — Developer ID を持たないため。受け取った側は初回だけ
+  右クリック→開く、または `xattr -cr` が要る (再ビルドしない限り許可は維持されるので初回のみ)
 - **self-hosted runner の起動は `scripts/start-release-runner.ps1` を使う** (手動の env 剥がしをやめる)。
   BASH_FUNC_*/MYCMUX_*/CLAUDE* に加えて **FUGU_API_KEY 等の秘密系ユーザー env も剥がす** —
   剥がさないと runner が継承し、ビルド中の環境ダンプ経由で **CI ログに平文で残る**

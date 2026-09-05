@@ -5,6 +5,10 @@ use crate::ailog::Range;
 
 #[test]
 fn known_models_split_into_family_and_variant() {
+    let id = price::normalize("gpt-6-astra");
+    assert_eq!(id.family, "gpt-6");
+    assert_eq!(id.variant.as_deref(), Some("astra"));
+
     let id = price::normalize("claude-opus-5[1m]");
     assert_eq!(id.family, "opus-5");
     assert_eq!(id.variant.as_deref(), Some("1m"));
@@ -58,6 +62,13 @@ fn longest_stem_wins() {
 #[test]
 fn price_lookup_walks_raw_then_variant_then_family() {
     let table = PriceTable::from_defaults();
+
+    for model in ["gpt-6-astra", "gpt-6[astra]"] {
+        let astra = table.lookup(model).expect("astra priced");
+        assert_eq!(astra.price.input, 10.0);
+        assert_eq!(astra.price.output, 50.0);
+        assert_eq!(astra.price.cache_read, 1.0);
+    }
 
     // Codex tiers are priced individually even though they share a family.
     let sol = table.lookup("gpt-5.6-sol").expect("sol priced");

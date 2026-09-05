@@ -72,7 +72,10 @@ def test_tab_sweep_ui_contract_covers_all_entry_points_and_safety_copy() -> None
     # checkboxes, it is not a gate on the close button.
     assert 'manualCloseCandidateTabIds' in panel
     assert 'closeCandidateTabIds' not in panel
-    assert "閉じたタブは Ctrl+Shift+T で復元できます（会話も再開されます）" in panel
+    # The shortcut comes from the live binding now, so the sentence is split
+    # around it. Both halves still have to be present: the point of the check is
+    # that the panel tells the operator the close is undoable.
+    assert "閉じたタブは {reopenTabShortcut} で復元できます（会話も再開されます）" in panel
     # The model is a user setting now, so the disclosure is built in
     # tabSweep.ts. What must not regress is that it still says exactly what
     # leaves the machine.

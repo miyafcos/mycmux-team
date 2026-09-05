@@ -16,6 +16,9 @@ def test_child_webview_uses_isolated_profile_and_explicit_lifecycle() -> None:
     assert '.app_local_data_dir()' in rust
     assert '.join("web-profiles")' in rust
     assert ".data_directory(profile_dir)" in rust
+    assert "fn macos_data_store_identifier(profile_dir: &str) -> [u8; 16]" in rust
+    assert "builder.data_store_identifier(identifier)" in rust
+    assert "hex::encode(identifier)" in rust
     assert ".initialization_script(" in rust
     assert '"plugin:event|emit"' in rust
     assert "event.isTrusted" in rust
@@ -27,6 +30,7 @@ def test_child_webview_uses_isolated_profile_and_explicit_lifecycle() -> None:
     assert ".hide()" in rust
     assert ".show()" in rust
     assert ".close()" in rust
+    assert "PageLoadEvent::Finished" in rust
     # Credentials stay in the browser profile where the OS protects them: the
     # pane shares a folder, it never reads or moves a cookie itself. Naming the
     # cookie database in a comment is how the \\?\ bug is explained, so the ban
@@ -53,17 +57,22 @@ def test_the_profile_path_handed_to_webview2_is_not_extended_length() -> None:
     assert re.search(r"^dunce = ", cargo, re.MULTILINE), "dunce is not a declared dependency"
 
 
-def test_the_sign_in_window_targets_the_folder_webview2_reads() -> None:
-    """WebView2 keeps its profile in `EBWebView` under the data directory.
+def test_sign_in_follows_the_platform_browser_contract() -> None:
+    """Windows hands the WebView2 profile to Edge; macOS stays in WKWebView.
 
     A sign-in browser aimed at the parent seeds `<profile>\\Default`, which the
     pane never reads -- the 2026-08-28 spike concluded the handoff worked while
     the pane's own folder held no cookie database at all.
     """
     rust = read("src-tauri/src/commands/webpane.rs")
+    assert '#[cfg(target_os = "windows")]\nfn find_signin_browser' in rust
     assert 'join("EBWebView")' in rust
     assert "--user-data-dir=" in rust
     assert "msedge.exe" in rust
+    assert '#[cfg(target_os = "macos")]' in rust
+    assert "external_signin_required: false" in rust
+    assert "external_signin_required: true" in rust
+    assert "WKWebView uses Safari's engine" in rust
     # The folder can only be owned by one browser process at a time.
     assert "lockfile" in rust
     assert "wait_for_profile_release" in rust

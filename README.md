@@ -1,6 +1,6 @@
 # mycmux
 
-mycmux は、Claude Code / Codex / claude-codex / Grok Build といった AI エージェント CLI を、ワークスペース・ペイン・タブの単位で並べて動かすターミナルワークスペースです。Windows を主戦場に、エージェントが出したパスをワンクリックで開く、作業の区切りを保存して人へ渡す、複数アカウントの使用量をタイトルバーで見張る、エージェント自身が可視タブで別のエージェントを起動する、といった実務向けの機能を足しています。[cmux-for-linux (ptrcode)](https://github.com/cai0baa/cmux-for-linux) のフォークで、ライセンスは GPL-3.0 です。配布物は公開ミラーの固定 feed リリース ([mycmux-personal-updater](https://github.com/miyafcos/mycmux-team/releases/tag/mycmux-personal-updater)) から取得します。現行版は v0.60.1 (2026-08-30) です。
+mycmux は、Claude Code / Codex / claude-codex / Grok Build といった AI エージェント CLI を、ワークスペース・ペイン・タブの単位で並べて動かすターミナルワークスペースです。Windows と macOS (Apple Silicon) で動き、エージェントが出したパスをワンクリックで開く、作業の区切りを保存して人へ渡す、複数アカウントの使用量をタイトルバーで見張る、エージェント自身が可視タブで別のエージェントを起動する、といった実務向けの機能を足しています。[cmux-for-linux (ptrcode)](https://github.com/cai0baa/cmux-for-linux) のフォークで、ライセンスは GPL-3.0 です。配布物は公開ミラーの固定 feed リリース ([mycmux-personal-updater](https://github.com/miyafcos/mycmux-team/releases/tag/mycmux-personal-updater)) から取得します。現行版は v0.62.0 (2026-09-05) です。
 
 読み方は 2 通りに分かれます。**1〜3 章は初回に通読**してください (何ができるか / 入れ方 / 最初の 10 分)。**4 章以降は必要になったときに引く**参照部で、章の中は「〜したい → こうする」の逆引きと表で並べてあります。付録 A〜H はキー・コマンド・設定項目・保存先の全一覧です。
 
@@ -99,9 +99,27 @@ npm install
 npm run tauri dev
 ```
 
-### macOS (ソースビルド)
+### macOS
 
-macOS 向けの公式 release バイナリは現状ありません。ソースから `.app` を作って `/Applications` に置く運用で、Apple Silicon (arm64) を想定しています。前提は Xcode Command Line Tools (`xcode-select --install`)、Rust (rustup)、Node.js / npm です。
+**Apple Silicon (arm64) 専用**です。Intel Mac 向けのビルドは現状ありません。
+
+配布物は Windows と同じ固定 feed リリースに置いてあります。`mycmux_<version>_aarch64.dmg` をダウンロードし、中の `mycmux.app` を `/Applications` にコピーしてください。
+
+<https://github.com/miyafcos/mycmux-team/releases/tag/mycmux-personal-updater>
+
+**未署名で配っているので、初回だけ Gatekeeper に止められます。** 解除の導線は macOS のバージョンで違います。
+
+- **macOS 14 まで**: Finder で `.app` を右クリックして「開く」を選びます
+- **macOS 15 (Sequoia) 以降**: 右クリックの「開く」では通りません。一度起動して弾かれたあと、システム設定 → プライバシーとセキュリティ → 「このまま開く」を押します
+- どちらのバージョンでも、`xattr -cr /Applications/mycmux.app` を一度実行する方法が使えます
+
+二度目からは普通に開きます。以後の更新は「設定 → アプリ情報 → 更新を確認」から入ります (feed に `darwin-aarch64` を載せてあります)。
+
+**エージェントの CLI は別途入れてください。** mycmux はログインシェルの PATH から `claude` / `codex` などを起動します。その Mac に CLI が無いと、ペインを開いても何も立ち上がりません。
+
+#### ソースからビルドする
+
+前提は Xcode Command Line Tools (`xcode-select --install`)、Rust (rustup)、Node.js / npm。ビルドは `scripts/build-mac.sh` にまとめてあります (`npm run tauri build` を直接叩いてもかまいません)。
 
 ```bash
 git clone https://github.com/miyafcos/mycmux.git ~/dev/mycmux
@@ -110,13 +128,27 @@ npm install
 npm run tauri build
 mv "/Applications/mycmux.app" ~/.Trash/ 2>/dev/null   # 既存があれば
 cp -R src-tauri/target/release/bundle/macos/mycmux.app /Applications/
-xattr -cr /Applications/mycmux.app                    # Gatekeeper の quarantine 属性を除去
 open /Applications/mycmux.app
 ```
 
+自分でビルドした `.app` には quarantine 属性が付かないので、`xattr -cr` は要りません。必要になるのは
+ダウンロードした `.dmg` から入れたときだけです。
+
+**毎回システム許可を聞かれる場合**は署名が原因です。ビルドしたままの `.app` はリンカが付けた
+アドホック署名しか持たず、macOS はこれを CDHash で識別します。CDHash はビルドのたびに変わるので、
+OS からは毎回別のアプリに見えて許可がリセットされます。ローカルのコード署名証明書を1枚作り、
+環境変数で渡してビルドすると固定されます。
+
+```bash
+APPLE_SIGNING_IDENTITY="あなたの証明書名" bash scripts/build-mac.sh
+```
+
+証明書はキーチェーンアクセスの「証明書アシスタント」で自己署名のコード署名証明書を作れば足ります
+(Apple Developer Program も Xcode も不要)。
+
 Resume palette (`Cmd+P`) を使うには `crsm` を `git clone https://github.com/miyafcos/crsm.git ~/crsm` → `cd ~/crsm` → `cargo build --release` で先に用意します (以後 `~/crsm/target/release/crsm` を自動検出します)。
 
-> **macOS のキー表記**: 本文は `Ctrl+…` で書いています。macOS では `Cmd+P` のように `Cmd` だけを修飾に使うショートカットが `Ctrl` 相当として動きます。`Cmd+Shift+N` のような `Cmd+Shift` の組み合わせは現行の橋渡しでは効かないので、`Ctrl+Shift+N` をそのまま使ってください。タイトルバー右端の最小化・最大化・閉じるはネイティブのトラフィックライトに置き換わります。
+> **macOS のキー表記**: 本文は `Ctrl+…` で書いていますが、macOS では `Cmd` に読み替えて押せます。`Cmd+B` のような単独修飾だけでなく、`Cmd+Shift+N` や `Option+Cmd+D` のような組み合わせも通ります (v0.62.0 で修飾キーの照合方式を直しました)。`Ctrl` のままでも動くので、`Cmd+Tab` が OS に取られる場面では `Ctrl+Tab` を使ってください。設定の「キーボードショートカット」一覧は macOS では `⌘⇧N` のような記号表記で出ます。タイトルバー右端の最小化・最大化・閉じるはネイティブのトラフィックライトに置き換わります。
 
 ### 旧 lite 版 (mycmux-lite) を入れている場合
 
@@ -858,7 +890,27 @@ python -m pytest tests/
 npm run tauri build
 ```
 
-macOS では Rust テストを `cargo test --manifest-path src-tauri/Cargo.toml --lib` で走らせます。起動の体感は `bash scripts/measure-mac.sh baseline` で計れます。ビルド成果物は `src-tauri/target/release/bundle/macos/mycmux.app` で、`/Applications` に置くときは `xattr -cr` を忘れずに。
+**macOS の場合**は上の一覧のうち `run_windows_tests.py` が使えません (mt.exe に依存します)。代わりに次を走らせます。
+
+```bash
+npx tsc --noEmit
+npx vitest run
+cargo test --manifest-path src-tauri/Cargo.toml --lib
+cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets
+bash scripts/build-mac.sh
+```
+
+`vitest` は macOS だと **348 件が常に落ちます**。jsdom の `getContext` 未実装、React の act まわり、
+localStorage 未提供によるもので、Windows では出ません。**生の失敗数を見ても退行の判定になりません** —
+`git worktree` で変更前のコミットを切り出して同じテストを回し、失敗数が一致するかで判断してください。
+
+```bash
+git worktree add /tmp/baseline <変更前のコミット>
+cd /tmp/baseline && npx vitest run   # ここの失敗数と突き合わせる
+```
+
+`clippy` も同様に、現状 180 件の warning が出ます。増えていなければ退行なしです。
+起動の体感は `bash scripts/measure-mac.sh baseline` で計れます。
 
 ### ビルドの絶対ルール
 
@@ -866,7 +918,7 @@ macOS では Rust テストを `cargo test --manifest-path src-tauri/Cargo.toml 
 
 ### リリース
 
-ローカル経路は `powershell -File scripts/release-local.ps1` で、ビルド → 署名 → GitHub Release 作成 → 公開 updater feed ミラー → 検証まで一括で走ります (署名パスワードの初回登録は `-SetPassword`)。CI 経路は `release.yml` の workflow_dispatch のみで (tag push トリガーは GitHub-hosted Actions の課金停止のため無効)、runner は `windows-latest` か `self-hosted` を選べます。feed のミラーだけ流したいときは `scripts/mirror-personal-updater-feed.ps1 -SourceTag vX.Y.Z` です。リリース後は `latest.json` の version だけでなく、署名の key-id が `tauri.conf.json` の pubkey と一致することまで確認してください。手順の詳細は [docs/DEPLOY.md](docs/DEPLOY.md) にあります。
+ローカル経路は `powershell -File scripts/release-local.ps1` で、ビルド → 署名 → GitHub Release 作成 → 公開 updater feed ミラー → 検証まで一括で走ります (署名パスワードの初回登録は `-SetPassword`)。CI 経路は `release.yml` の workflow_dispatch のみで (tag push トリガーは GitHub-hosted Actions の課金停止のため無効)、runner は `windows-latest` か `self-hosted` を選べます。**macOS のジョブ (`test-macos` / `build-macos`) も置いてありますが、`macos-14` は GitHub-hosted なので課金が止まっている間は動きません。** macOS 版は当面ローカルビルドが正で、`bash scripts/build-mac.sh` で `.dmg` と `.app.tar.gz` を作り、Release へ手動でアップロードします。feed のミラーだけ流したいときは `scripts/mirror-personal-updater-feed.ps1 -SourceTag vX.Y.Z` です。リリース後は `latest.json` の version だけでなく、署名の key-id が `tauri.conf.json` の pubkey と一致することまで確認してください。手順の詳細は [docs/DEPLOY.md](docs/DEPLOY.md) にあります。
 
 ### 主要な契約テスト
 

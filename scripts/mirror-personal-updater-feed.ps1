@@ -1,4 +1,6 @@
 #requires -Version 5.1
+# Windows-only legacy implementation. New release paths use the cross-platform
+# mirror_personal_updater_feed.py, which also publishes darwin-aarch64 assets.
 [CmdletBinding()]
 param(
   [Parameter(Mandatory = $true)]

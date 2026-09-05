@@ -26,6 +26,8 @@ import { isOutsideWindowViewport } from "../../lib/windowEdge";
 import { TearOutBanner } from "../workspace/PaneDragOverlay";
 import { paneDndStrings } from "../workspace/paneDndStrings";
 import { useToastStore } from "../../stores/toastStore";
+import { formatShortcutLabel } from "../../lib/keybindings";
+import { useKeybindingStore } from "../../stores/keybindingStore";
 import type { Workspace } from "../../types";
 import { resolvePet } from "../../lib/pets";
 import { usePetSettingsStore } from "../../stores/petSettingsStore";
@@ -345,6 +347,7 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
   const hoverWorkspaceId = paneMoveHoverWorkspaceId ?? savepointHoverWorkspaceId;
   const newWorkspaceDropActive = usePaneDragStore((s) => s.target?.kind === "new-workspace");
   const tearOutMeasurement = usePaneDragStore((s) => s.tearOutMeasurement);
+  const newWorkspaceShortcut = useKeybindingStore((s) => formatShortcutLabel(s.keybindings["workspace.new"]));
 
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [dropIndex, setDropIndex] = useState<number | null>(null);
@@ -619,7 +622,7 @@ export default function TabBar({ uiVariant = "default", onNewWorkspace, onCloseW
         type="button"
         data-dnd-new-workspace-target="true"
         onClick={onNewWorkspace}
-        title="New workspace (Ctrl+Shift+N)"
+        title={`New workspace (${newWorkspaceShortcut})`}
         className={`tab-new-workspace-btn${uiVariant === "cmux" ? " cmux-title-btn" : ""}`}
         data-pane-drag-active={paneDragActive ? "true" : undefined}
         style={{

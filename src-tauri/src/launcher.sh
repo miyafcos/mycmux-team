@@ -14,6 +14,20 @@ __mycmux_is_windows_shell() {
   [ "$__MYCMUX_PLATFORM" = "windows" ]
 }
 
+__mycmux_python() {
+  local candidate
+  if __mycmux_is_windows_shell; then
+    for candidate in python python3; do
+      command -v "$candidate" >/dev/null 2>&1 && { command -v "$candidate"; return 0; }
+    done
+  else
+    for candidate in python3 python; do
+      command -v "$candidate" >/dev/null 2>&1 && { command -v "$candidate"; return 0; }
+    done
+  fi
+  return 1
+}
+
 __mycmux_lower_ascii_into() {
   local value="$1"
   value="${value//A/a}"
@@ -69,8 +83,10 @@ __mycmux_read_key_with_timeout() {
 # the functions for the interactive shell that replaces the launcher.
 __mycmux_issue_hook_cap() {
   local provider="$1"
+  local python
   [ -n "${MYCMUX_PANE_SESSION_ID:-}" ] || return 1
-  MYCMUX_HOOK_PROVIDER="$provider" python - <<'PY' 2>/dev/null
+  python="$(__mycmux_python)" || return 1
+  MYCMUX_HOOK_PROVIDER="$provider" "$python" - <<'PY' 2>/dev/null
 import json
 import os
 import socket
@@ -174,14 +190,16 @@ __write_session_mapping() {
 
 __claude_project_key() {
   local path="$1"
-  PYTHONIOENCODING=utf-8 MYCMUX_CLAUDE_PROJECT_PATH="$path" python - <<'PY' 2>/dev/null
+  local python
+  python="$(__mycmux_python)" || return 1
+  PYTHONIOENCODING=utf-8 MYCMUX_CLAUDE_PROJECT_PATH="$path" "$python" - <<'PY' 2>/dev/null
 import os
 import re
 
 path = os.environ.get("MYCMUX_CLAUDE_PROJECT_PATH", "").rstrip("/\\")
 if re.match(r"^/[a-zA-Z]/", path):
     path = f"{path[1].upper()}:{path[2:]}"
-print(re.sub(r"[^A-Za-z0-9-]", "-", path).lstrip("-"), end="")
+print(re.sub(r"[^A-Za-z0-9-]", "-", path), end="")
 PY
 }
 
@@ -193,10 +211,12 @@ __get_claude_project_dir() {
 
 __find_claude_session_file() {
   local session_id="$1"
+  local python
   [[ "$session_id" =~ ^[0-9a-fA-F-]{36}$ ]] || return 1
   local root="$HOME/.claude/projects"
   [ -d "$root" ] || return 1
-  PYTHONIOENCODING=utf-8 MYCMUX_CLAUDE_PROJECTS_ROOT="$root" MYCMUX_CLAUDE_SESSION_ID="$session_id" python - <<'PY' 2>/dev/null
+  python="$(__mycmux_python)" || return 1
+  PYTHONIOENCODING=utf-8 MYCMUX_CLAUDE_PROJECTS_ROOT="$root" MYCMUX_CLAUDE_SESSION_ID="$session_id" "$python" - <<'PY' 2>/dev/null
 import os
 from pathlib import Path
 
@@ -221,7 +241,9 @@ PY
 
 __claude_session_cwd() {
   local session_file="$1"
-  PYTHONIOENCODING=utf-8 MYCMUX_CLAUDE_SESSION_FILE="$session_file" python - <<'PY' 2>/dev/null
+  local python
+  python="$(__mycmux_python)" || return 1
+  PYTHONIOENCODING=utf-8 MYCMUX_CLAUDE_SESSION_FILE="$session_file" "$python" - <<'PY' 2>/dev/null
 import json
 import os
 import re
@@ -234,7 +256,7 @@ def claude_project_key(cwd):
     cwd = cwd.rstrip("/\\")
     if re.match(r"^/[a-zA-Z]/", cwd):
         cwd = f"{cwd[1].upper()}:{cwd[2:]}"
-    return re.sub(r"[^A-Za-z0-9-]", "-", cwd).lstrip("-")
+    return re.sub(r"[^A-Za-z0-9-]", "-", cwd)
 
 try:
     with open(path, "r", encoding="utf-8-sig") as handle:
@@ -294,7 +316,9 @@ __single_unclaimed_session_since() {
   local kind="$6"
   local launch_cwd="$7"
   local runtime_dir="${MYCMUX_RUNTIME_DIR:-$HOME/.mycmux}"
-  PYTHONIOENCODING=utf-8 MYCMUX_TRACK_DIR="$dir" MYCMUX_TRACK_PATTERN="$pattern" MYCMUX_TRACK_SINCE="$since" MYCMUX_TRACK_DEPTH="$depth" MYCMUX_TRACK_PANE_ID="$pane_id" MYCMUX_TRACK_KIND="$kind" MYCMUX_TRACK_CWD="$launch_cwd" MYCMUX_TRACK_RUNTIME_DIR="$runtime_dir" python - <<'PY' 2>/dev/null
+  local python
+  python="$(__mycmux_python)" || return 1
+  PYTHONIOENCODING=utf-8 MYCMUX_TRACK_DIR="$dir" MYCMUX_TRACK_PATTERN="$pattern" MYCMUX_TRACK_SINCE="$since" MYCMUX_TRACK_DEPTH="$depth" MYCMUX_TRACK_PANE_ID="$pane_id" MYCMUX_TRACK_KIND="$kind" MYCMUX_TRACK_CWD="$launch_cwd" MYCMUX_TRACK_RUNTIME_DIR="$runtime_dir" "$python" - <<'PY' 2>/dev/null
 import json
 import os
 import re
@@ -316,7 +340,10 @@ def normalize_cwd(value):
 root = Path(os.environ["MYCMUX_TRACK_DIR"])
 pattern = os.environ["MYCMUX_TRACK_PATTERN"]
 depth = os.environ["MYCMUX_TRACK_DEPTH"]
-since = float(os.environ["MYCMUX_TRACK_SINCE"])
+try:
+    since = float(os.environ["MYCMUX_TRACK_SINCE"])
+except (TypeError, ValueError):
+    raise SystemExit
 pane_id = os.environ["MYCMUX_TRACK_PANE_ID"]
 kind = os.environ["MYCMUX_TRACK_KIND"]
 expected_cwd = normalize_cwd(os.environ["MYCMUX_TRACK_CWD"])
@@ -425,7 +452,7 @@ __track_latest_jsonl_in_dir() {
   [ ! -d "$project_dir" ] && return
 
   local started_at
-  started_at=$(date +%s.%N)
+  started_at=$(date +%s)
   local launch_cwd
   launch_cwd="$(pwd)"
   local session_id
@@ -451,7 +478,7 @@ __track_codex_session() {
   [ ! -d "$sessions_dir" ] && return
 
   local started_at
-  started_at=$(date +%s.%N)
+  started_at=$(date +%s)
   local launch_cwd
   launch_cwd="$(pwd)"
   local session_id
@@ -485,10 +512,12 @@ __track_command_session() {
 }
 
 __make_uuid() {
+  local python
   if command -v uuidgen >/dev/null 2>&1; then
     uuidgen | tr '[:upper:]' '[:lower:]'
   else
-    python - <<'PY' 2>/dev/null
+    python="$(__mycmux_python)" || return 1
+    "$python" - <<'PY' 2>/dev/null
 import uuid
 print(uuid.uuid4())
 PY
@@ -581,12 +610,13 @@ __grok_needs_new_session_id() {
 
 __trust_claude_cwd() {
   [ "$MYCMUX_DISABLE_CLAUDE_AUTO_TRUST" = "1" ] && return
-  local cwd
+  local cwd python
   cwd="$(pwd -W 2>/dev/null || pwd)"
   cwd="${cwd//\\//}"
   cwd="${cwd%/}"
   [ -z "$cwd" ] && return
-  MYCMUX_CLAUDE_TRUST_CWD="$cwd" python - <<'PY' 2>/dev/null
+  python="$(__mycmux_python)" || return 1
+  MYCMUX_CLAUDE_TRUST_CWD="$cwd" "$python" - <<'PY' 2>/dev/null
 import json
 import os
 from pathlib import Path
@@ -811,7 +841,7 @@ fi
 __open_web_tab() {
   local preset="$1"
   local cli="$HOME/cmux-for-linux-dev-master/scripts/mycmux_agent_cli.py"
-  local web_out="" web_rc=0
+  local web_out="" web_rc=0 python
   if [ ! -f "$cli" ]; then
     printf '  mycmux_agent_cli.py が見つかりません:
     %s
@@ -819,7 +849,8 @@ __open_web_tab() {
 ' "$cli"
     return 1
   fi
-  web_out=$(PYTHONIOENCODING=utf-8 python "$cli" web-open --preset "$preset" --replace-anchor 2>&1)
+  python="$(__mycmux_python)" || return 1
+  web_out=$(PYTHONIOENCODING=utf-8 "$python" "$cli" web-open --preset "$preset" --replace-anchor 2>&1)
   web_rc=$?
   # 失敗を握りつぶすと「押しても何も起きない」に見える。理由は必ず出す。
   if [ "$web_rc" -ne 0 ]; then
@@ -926,7 +957,7 @@ __spec_models_for() {
     claude)
       printf '%s\n' "Fable (flagship)|fable" "Opus|opus" "Sonnet|sonnet" "Haiku|haiku" ;;
     codex|claude-codex)
-      printf '%s\n' "Sol (flagship)|gpt-5.6-sol" "Terra (standard)|gpt-5.6-terra" "Luna (light)|gpt-5.6-luna" ;;
+      printf '%s\n' "Astra (flagship)|gpt-6-astra" "Sol (5.6 fallback)|gpt-5.6-sol" "Terra (standard)|gpt-5.6-terra" "Luna (light)|gpt-5.6-luna" ;;
     agy)
       printf '%s\n' \
         "Gemini 3.1 Pro (High)|gemini-3.1-pro-high" \
@@ -946,7 +977,7 @@ __spec_models_for() {
 __spec_efforts_for() {
   case "$1" in
     claude|claude-codex|claude-codex-open) printf '%s\n' low medium high xhigh max ;;
-    codex) printf '%s\n' none low medium high xhigh max ;;
+    codex) printf '%s\n' none low medium high xhigh max ultra ;;
     grok|agy) printf '%s\n' low medium high ;;
   esac
   return 0
@@ -1192,13 +1223,14 @@ __refresh_anken_roots_bg() {
   local log="$__LAUNCH_RUNTIME_DIR/launch-roots-anken.log"
   local lock="$__LAUNCH_RUNTIME_DIR/launch-roots-anken.lock"
   local script="$HOME/.claude/scripts/update_launch_anken.py"
+  local python
   [ -f "$script" ] || return 0
-  command -v python >/dev/null 2>&1 || return 0
+  python="$(__mycmux_python)" || return 0
   # 3時間以内に更新済みなら何もしない / 15分以内のロックがあれば実行中と見なす
   [ -n "$(find "$log" -mmin -180 2>/dev/null)" ] && return 0
   [ -n "$(find "$lock" -mmin -15 2>/dev/null)" ] && return 0
   touch "$lock"
-  ( python "$script" >/dev/null 2>&1; rm -f "$lock" ) &
+  ( "$python" "$script" >/dev/null 2>&1; rm -f "$lock" ) &
   disown 2>/dev/null || true
 }
 

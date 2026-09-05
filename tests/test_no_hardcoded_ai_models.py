@@ -4,6 +4,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 RUST_ROOT = ROOT / "src-tauri" / "src"
 MODEL_IDS = (
+    "gpt-6-astra",
     "claude-haiku-4-5-20251001",
     "claude-sonnet-5",
     "claude-opus-5",

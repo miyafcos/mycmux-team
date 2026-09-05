@@ -36,6 +36,7 @@ export const AI_PROVIDERS: readonly AiProviderDef[] = [
     cli: "codex",
     defaultModel: "gpt-5.6-luna",
     presets: [
+      { id: "gpt-6-astra", note: "最上位・最高コスト" },
       { id: "gpt-5.6-luna", note: "既定・高速" },
       { id: "gpt-5.6-terra", note: "標準" },
       { id: "gpt-5.6-sol", note: "高精度・高コスト" },

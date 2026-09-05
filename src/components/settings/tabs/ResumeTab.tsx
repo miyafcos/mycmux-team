@@ -1,4 +1,6 @@
 import { useSettingsStore } from "../../../stores/settingsStore";
+import { formatShortcutLabel } from "../../../lib/keybindings";
+import { useKeybindingStore } from "../../../stores/keybindingStore";
 import { checkboxLabelStyle, dialogButtonStyle, dividerStyle, sectionHeadingStyle } from "../tabStyles";
 
 interface ResumeTabProps {
@@ -20,6 +22,7 @@ export function ResumeTab({ onOpenCrsmPalette, onClose }: ResumeTabProps) {
   const setHideSessionsWithoutUserMessages = useSettingsStore(
     (s) => s.setHideSessionsWithoutUserMessages,
   );
+  const crsmPaletteShortcut = useKeybindingStore((s) => formatShortcutLabel(s.keybindings["crsm.palette"]));
 
   const rows: Array<{ label: string; checked: boolean; onChange: (v: boolean) => void }> = [
     { label: "Claude Code", checked: showClaude, onChange: setShowClaude },
@@ -49,7 +52,7 @@ export function ResumeTab({ onOpenCrsmPalette, onClose }: ResumeTabProps) {
           }}
         >
           <span>Resume（セッション再開）</span>
-          <span style={{ color: "var(--cmux-text-dim, rgba(255,255,255,0.55))", fontSize: 11 }}>Ctrl+P</span>
+          <span style={{ color: "var(--cmux-text-dim, rgba(255,255,255,0.55))", fontSize: 11 }}>{crsmPaletteShortcut}</span>
         </button>
       )}
 

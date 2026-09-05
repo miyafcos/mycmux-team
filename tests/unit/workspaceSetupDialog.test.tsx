@@ -137,11 +137,13 @@ describe("WorkspaceSetup", () => {
     setControlValue(agentSelect(), "codex");
     const datalist = container.querySelector("datalist");
     expect(Array.from(datalist?.querySelectorAll("option") ?? []).map((o) => o.value)).toEqual([
+      "gpt-6-astra",
       "gpt-5.6-sol",
       "gpt-5.6-terra",
       "gpt-5.6-luna",
     ]);
-    // Codex has a "none" step the Claude CLIs do not.
+    // Codex has a "none" step the Claude CLIs do not, and (since GPT-6 Astra)
+    // an "ultra" step above max.
     expect(Array.from(effortSelect().options).map((o) => o.value)).toEqual([
       "",
       "none",
@@ -150,6 +152,7 @@ describe("WorkspaceSetup", () => {
       "high",
       "xhigh",
       "max",
+      "ultra",
     ]);
 
     setControlValue(agentSelect(), "claude");

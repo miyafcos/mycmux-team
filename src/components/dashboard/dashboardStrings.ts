@@ -219,7 +219,7 @@ export const dashboardStrings = {
   nextActionFailed: (reason: string): string => `AI案を作れませんでした: ${reason}`,
   // パスリンクの操作 (DashboardLinkedText) — 失敗は無言にせず日本語で見える化 (2026-08-20)
   pathActionOpenDefault: "既定のアプリで開く",
-  pathActionReveal: "エクスプローラーで表示",
+  pathActionReveal: "ファイルの場所を表示",
   pathActionFailed: (reason: string): string => `開けませんでした: ${reason}`,
   // 「機械信号」「機械」は実装都合の語なので画面には出さない (2026-08-15 FB)。
   previewColumnTitle: "プレビュー",

@@ -170,6 +170,11 @@ export default function SettingsDialog({ closing = false, onClose, onOpenCrsmPal
       onClose={onClose}
       size="full"
       ariaLabel="設定"
+      // The appearance tab changes the terminal behind this dialog — font size,
+      // line height, theme colors — and the dialog is full-bleed, so it hid the
+      // only thing that shows whether a value is right. See-through mode lets
+      // the change land in view; every other tab keeps the solid panel.
+      seeThrough={activeTab === "appearance"}
     >
         <div
           style={{

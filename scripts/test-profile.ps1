@@ -1,3 +1,5 @@
+# Windows-only isolated WebView2 profile launcher. It is not part of the macOS
+# CI/release path; macOS profile isolation remains outside this release lot.
 <#
 .SYNOPSIS
   Launches the built mycmux as an isolated test machine, alongside the real one.

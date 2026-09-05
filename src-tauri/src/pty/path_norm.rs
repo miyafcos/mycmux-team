@@ -39,9 +39,7 @@ pub fn strip_extended_length_prefix(path: &str) -> String {
 /// pane's CWD against the CWD recorded inside an agent session file.
 ///
 /// The three steps each fix a different way the same directory gets spelled:
-///   1. Git-Bash drive paths (`/c/Users/me`) become Windows paths, and every
-///      separator becomes a backslash, because a pane's CWD may arrive from a
-///      POSIX-style shell while the agent wrote a Windows path (or vice versa).
+///   1. Git-Bash drive paths (`/c/Users/me`) become Windows paths.
 ///   2. Trailing separators are dropped (`C:\src\` and `C:\src` are one place).
 ///   3. `canonicalize` resolves junctions, symlinks, 8.3 short names, and case,
 ///      so a pane launched through `C:\PROGRA~1\x` matches a session recorded
@@ -54,13 +52,34 @@ pub fn strip_extended_length_prefix(path: &str) -> String {
 /// The `\\?\` prefix `canonicalize` adds is stripped again so the key can also
 /// be shown in an error message.
 pub fn normalize_agent_cwd(cwd: &str) -> String {
-    let normalized = posix_drive_to_windows(cwd).replace('/', "\\");
+    let normalized = posix_drive_to_windows(cwd);
+    #[cfg(not(windows))]
+    let is_windows_drive_path = normalized
+        .as_bytes()
+        .get(1)
+        .is_some_and(|byte| *byte == b':')
+        && normalized
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_alphabetic);
     let trimmed = normalized.trim_end_matches(['\\', '/']);
     let resolved = std::path::Path::new(trimmed)
         .canonicalize()
         .map(|path| path.to_string_lossy().to_string())
         .unwrap_or_else(|_| trimmed.to_string());
-    strip_extended_length_prefix(&resolved)
+    let resolved = strip_extended_length_prefix(&resolved);
+    #[cfg(windows)]
+    {
+        resolved.replace('/', "\\")
+    }
+    #[cfg(not(windows))]
+    {
+        if is_windows_drive_path {
+            resolved.replace('/', "\\")
+        } else {
+            resolved
+        }
+    }
 }
 
 /// Case-insensitive form of [`normalize_agent_cwd`], for use as a lookup or
@@ -86,9 +105,7 @@ pub fn claude_project_key(path: &str) -> String {
                 '-'
             }
         })
-        .collect::<String>()
-        .trim_start_matches('-')
-        .to_string()
+        .collect()
 }
 
 #[cfg(test)]
@@ -191,9 +208,35 @@ mod tests {
         );
     }
 
+    #[cfg(not(windows))]
     #[test]
-    fn claude_project_key_strips_leading_separator_dash() {
-        assert_eq!(claude_project_key("/Users/foo/bar"), "Users-foo-bar");
+    fn normalize_agent_cwd_resolves_posix_symlink_before_any_separator_rewrite() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target");
+        let link = dir.path().join("link");
+        std::fs::create_dir(&target).unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        assert_eq!(
+            normalize_agent_cwd(&link.to_string_lossy()),
+            normalize_agent_cwd(&target.to_string_lossy())
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn normalize_agent_cwd_handles_the_real_macos_home_path() {
+        let home = dirs::home_dir().expect("macOS home directory should resolve");
+        let indirect = home.join(".");
+        assert_eq!(
+            normalize_agent_cwd(&indirect.to_string_lossy()),
+            home.canonicalize().unwrap().to_string_lossy()
+        );
+    }
+
+    #[test]
+    fn claude_project_key_preserves_leading_separator_dash() {
+        assert_eq!(claude_project_key("/Users/foo/bar"), "-Users-foo-bar");
     }
 
     #[test]

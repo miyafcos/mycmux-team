@@ -1,3 +1,5 @@
+# Windows-only self-hosted runner bootstrap. The supported macOS release lane
+# uses GitHub-hosted macos-14 and does not require a local runner bootstrap.
 # Start the self-hosted GitHub Actions runner with a sanitized environment.
 #
 # Why this script exists (each item caused a real CI failure or leak):
