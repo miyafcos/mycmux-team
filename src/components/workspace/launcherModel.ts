@@ -11,7 +11,7 @@
 import Fuse from "fuse.js";
 import type { IFuseOptions } from "fuse.js";
 import { AGENT_CATALOG, type AgentCatalogEntry } from "../../lib/agentCatalog";
-import type { LauncherDirEntry, LauncherDirs } from "../../lib/ipc";
+import type { LauncherDirEntry, LauncherDirsView } from "../../lib/ipc";
 
 export interface LauncherLaunchItem {
   kind: "agent" | "web";
@@ -25,14 +25,10 @@ export interface LauncherLaunchItem {
   iconKind: string;
 }
 
-export interface LauncherDirItem {
+export interface LauncherDirItem extends LauncherDirEntry {
   kind: "dir";
-  section: "dev" | "anken";
-  /** The row's own label with the `(●MM/DD)` freshness mark split off. */
-  label: string;
-  /** `●MM/DD` when update_launch_anken.py stamped one, else undefined. */
   mark?: string;
-  path: string;
+  exists: boolean;
 }
 
 /**
@@ -121,25 +117,33 @@ export function launchItems(): LauncherLaunchItem[] {
   }));
 }
 
-/** `駿台/モモスタ/数学 (●09/03)` → label + mark, so the mark can right-align. */
-export function splitDirLabel(raw: string): { label: string; mark?: string } {
-  const match = /^(.*?)\s*\((●[^)]*)\)\s*$/.exec(raw);
-  if (!match) return { label: raw.trim() };
-  return { label: match[1].trim(), mark: match[2] };
+export function dirMark(item: Pick<LauncherDirEntry, "source" | "signal" | "seen_at">): string | undefined {
+  if (item.source === "manual" || !item.signal || !item.seen_at || !/^\d{4}-\d{2}-\d{2}$/.test(item.seen_at)) return undefined;
+  const date = item.seen_at.slice(5).replace("-", "/");
+  const dot = item.signal === "mention" || item.signal === "session" ? "\u25cf" : "";
+  return `${dot}${date}`;
 }
 
-function toDirItems(entries: readonly LauncherDirEntry[], section: "dev" | "anken"): LauncherDirItem[] {
-  return entries.map((entry) => {
-    const { label, mark } = splitDirLabel(entry.label);
-    return { kind: "dir", section, label, mark, path: entry.path };
+export function dirSections(
+  view: LauncherDirsView | null,
+  hiddenIds: readonly string[] = [],
+): Array<{ id: string; label: string; items: LauncherDirItem[] }> {
+  if (!view) return [];
+  const hidden = new Set(hiddenIds);
+  const exists = new Map(view.entries_exist);
+  return view.doc.sections.filter((section) => !hidden.has(section.id)).map((section) => {
+    const entries = view.doc.entries.filter((entry) => entry.section === section.id);
+    const manual = entries.filter((entry) => entry.source === "manual");
+    const auto = entries.filter((entry) => entry.source === "auto").sort((a, b) =>
+      (b.seen_at ?? "").localeCompare(a.seen_at ?? "") || b.added_at.localeCompare(a.added_at));
+    return {
+      id: section.id,
+      label: section.label,
+      items: [...manual, ...auto].map((entry) => ({
+        ...entry, kind: "dir" as const, mark: dirMark(entry), exists: exists.get(entry.id) ?? true,
+      })),
+    };
   });
-}
-
-export function dirItems(dirs: LauncherDirs | null): { dev: LauncherDirItem[]; anken: LauncherDirItem[] } {
-  return {
-    dev: toDirItems(dirs?.dev ?? [], "dev"),
-    anken: toDirItems(dirs?.anken ?? [], "anken"),
-  };
 }
 
 /**

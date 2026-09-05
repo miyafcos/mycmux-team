@@ -1546,18 +1546,84 @@ export async function listCliLoginSessions(): Promise<CliLoginSessionStatus[]> {
 
 // ─── Launcher commands ─────────────────────────────────────────────
 
+export interface LauncherDirSection {
+  id: string;
+  label: string;
+}
+
 export interface LauncherDirEntry {
+  id: string;
+  section: string;
   label: string;
   path: string;
+  source: "manual" | "auto";
+  added_at: string;
+  rule_id?: string;
+  signal?: "git" | "folder" | "session" | "mention";
+  seen_at?: string;
 }
 
-export interface LauncherDirs {
-  dev: LauncherDirEntry[];
-  anken: LauncherDirEntry[];
-  mru: string[];
+export interface LauncherDirsDoc {
+  version: number;
+  sections: LauncherDirSection[];
+  entries: LauncherDirEntry[];
+  ignored_paths: string[];
+  rules: unknown[];
+  last_scan: unknown | null;
+  export: {
+    roots_txt_mtime_ms: number | null;
+    roots_txt_written_at: string | null;
+    last_external_merge_at: string | null;
+  };
 }
 
-/** The same two files launcher.sh reads; absent files come back empty. */
-export async function listLauncherDirs(): Promise<LauncherDirs> {
-  return invoke<LauncherDirs>("launcher_list_dirs");
+export interface LauncherDirsView {
+  doc: LauncherDirsDoc;
+  entries_exist: Array<[string, boolean]>;
+  json_path: string;
+  roots_txt_path: string;
+}
+
+export async function launcherDirsGet(): Promise<LauncherDirsView> {
+  return invoke<LauncherDirsView>("launcher_dirs_get");
+}
+
+export async function launcherDirsSetSectionLabel(sectionId: string, label: string): Promise<LauncherDirsView> {
+  return invoke<LauncherDirsView>("launcher_dirs_set_section_label", { sectionId, label });
+}
+
+export async function launcherDirsAddEntry(sectionId: string, path: string, label?: string): Promise<LauncherDirsView> {
+  return invoke<LauncherDirsView>("launcher_dirs_add_entry", { sectionId, path, label });
+}
+
+export async function launcherDirsUpdateEntry(id: string, label: string): Promise<LauncherDirsView> {
+  return invoke<LauncherDirsView>("launcher_dirs_update_entry", { id, label });
+}
+
+export async function launcherDirsRemoveEntry(id: string): Promise<LauncherDirsView> {
+  return invoke<LauncherDirsView>("launcher_dirs_remove_entry", { id });
+}
+
+export async function launcherDirsMoveEntry(id: string, direction: "up" | "down"): Promise<LauncherDirsView> {
+  return invoke<LauncherDirsView>("launcher_dirs_move_entry", { id, direction });
+}
+
+export async function launcherDirsPinEntry(id: string): Promise<LauncherDirsView> {
+  return invoke<LauncherDirsView>("launcher_dirs_pin_entry", { id });
+}
+
+export async function launcherDirsIgnorePath(path: string): Promise<LauncherDirsView> {
+  return invoke<LauncherDirsView>("launcher_dirs_ignore_path", { path });
+}
+
+export async function launcherDirsUnignorePath(path: string): Promise<LauncherDirsView> {
+  return invoke<LauncherDirsView>("launcher_dirs_unignore_path", { path });
+}
+
+export async function launcherDirsExportRoots(): Promise<LauncherDirsView> {
+  return invoke<LauncherDirsView>("launcher_dirs_export_roots");
+}
+
+export async function launcherRecordDirMru(path: string): Promise<void> {
+  return invoke<void>("launcher_record_dir_mru", { path });
 }

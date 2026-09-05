@@ -212,7 +212,7 @@ mycmux (master)|C:/Users/miyaz/cmux-for-linux-dev-master
 2. **フォルダ** — セクションごとに 1 ブロック。見出し行 = `[表示名 (クリックで編集)] [N 件] [表示 ☑] [フォルダを選んで登録…]`。行 = §6.2。空なら「登録がありません。下の候補から登録するか、フォルダを選んでください」。
 3. **候補** — §5.4 の一覧。行 = `[印] [名前] [パス (薄字・中間省略)] [信号の説明] [開発に登録] [案件に登録] [無視]`。上に `[候補を更新] 最終走査 09/05 06:35`。0 件なら「候補はありません」。
 4. **自動登録** — セクションごとにルールのカード。カード = `[種類のラベル] [要約 1 行 (例: ~ ~/apps ~/tools の直下・30 日・上限 10)] [候補にする ○ / 自動で登録する ○] [有効 ☑] [編集] [削除]`。下に `[ルールを追加 ▾]` (4 種の説明つき) と `[今すぐ走査]`。走査中はボタンを減光して「走査中…」。
-5. **詳細** — `正本: ~/.mycmux/launch-dirs.json [開く]` / `bash 用: ~/.mycmux/launch-roots.txt (書き出し 09/05 06:35)` / 外部変更バナー (§9.2) / 無視リスト (`[パス] [解除]`) / `[旧 launch-roots.txt から取り込む]` (未取り込みのときだけ)。
+5. **詳細** — `正本: ~/.mycmux/launch-dirs.json [開く]` / `bash 用: ~/.mycmux/launch-roots.txt (書き出し 09/05 06:35) [今すぐ書き出す]` / 外部変更の取り込み結果 1 行 (§9.2・ボタンは無い) / 無視リスト (`[パス] [解除]`)。旧 `launch-roots.txt` の取り込みは初回起動で自動 (§9.2) なのでボタンは置かない。
 
 ### 6.2 フォルダ行の構成
 
@@ -262,7 +262,7 @@ JSON が無ければ §5.3 の既定で作る。`launch-roots.txt` も無いの�
 
 1. 初回起動で JSON が無く txt がある → **取り込み**: `#` 以外の全行を読み、`案件:` の有無でセクションを決める。`# === AUTO-DEV` / `# === AUTO-ANKEN` ブロック内の行は `source: auto, rule_id: legacy-dev | legacy-anken` として入れ、ブロック外は `manual`。`(●MM/DD)` / `(~MM/DD)` / `(MM/DD)` の印は `seen_at` と `signal` に写す (`~` は `folder`、`●` は `mention`、無印は `git`)。
 2. `launch-roots.txt.bak-YYYYMMDD` を残し、派生ファイルを書き直す。`export.roots_txt_written_at` を記録。
-3. 以後、txt の mtime が `roots_txt_written_at` より新しければ設定タブの詳細に「launch-roots.txt が外部で変更されています」バナー。`[取り込む]` = 差分行を手動として追加して書き直す / `[上書き]` = JSON から書き直す。ランチャーペインはバナーを出さず、JSON だけを見る。
+3. 以後、txt の mtime が前回書き出し時 (`export.roots_txt_mtime_ms`) より新しければ **読み込みのたびに自動で取り込む** (Phase 1 着手時 2026-09-05 に「バナー + 取り込む / 上書き」から変更。宮崎さんの私設スクリプトが Phase 3 まで毎朝 txt を書くので、その更新を止めずに流すため。README を読んで手書きした利用者の編集も同じ経路で拾える)。規則: AUTO ブロック内の行は `legacy-*` の自動行を丸ごと置き換える (増減と印を写す) / ブロック外の行で未登録・未無視のパスは手動として追加する / 手動の行は txt から消えていても消さない / 無視したパスは取り込まない。取り込み後に派生ファイルを書き直し、設定タブの詳細に「launch-roots.txt の外部変更を取り込みました (時刻)」を 1 行出す。ランチャーペインは JSON だけを見る。
 4. `legacy-*` の自動行は、対応するルール (`r1` / `r2` / `r3`) の初回走査で置き換わる。ルールが無い環境ではそのまま残る (消えない)。
 
 ### 9.3 宮崎さん環境 (Phase 3・GO 後に弊社が実施)
@@ -298,11 +298,11 @@ JSON が無ければ §5.3 の既定で作る。`launch-roots.txt` も無いの�
 
 ## 11. 段階
 
-- **Phase 1 — 台帳と手動登録。** Rust `launcher_dirs/{model,store,import,export}.rs` と非同期コマンド (`launcher_dirs_get` / `_set_section_label` / `_add_entry` / `_update_entry` / `_remove_entry` / `_move_entry` / `_ignore_path` / `_unignore_path` / `_import_roots` / `_export_roots` / `launcher_record_dir_mru`)。取り込み・派生書き出し (§9.2)。設定タブのブロック 1・2・5 (§6)。ペインは JSON を読む (§7)。`launcher.sh` の 3 箇所 (§8)。**この段階で GitHub 利用者は画面から登録・削除・並べ替えができる。**
+- **Phase 1 — 台帳と手動登録。** Rust `launcher_dirs/{model,paths,store,import,export,strings}.rs` と非同期コマンド (`launcher_dirs_get` / `_set_section_label` / `_add_entry` / `_update_entry` / `_remove_entry` / `_move_entry` / `_pin_entry` / `_ignore_path` / `_unignore_path` / `_export_roots` / `launcher_record_dir_mru`)。取り込みは自動 (§9.2) なのでコマンドを持たない。派生書き出し (§4.3)。設定タブのブロック 1・2・5 (§6)。ペインは JSON を読む (§7)。`launcher.sh` の 3 箇所 (§8)。委譲 spec = `C:/Users/miyaz/dispatch/260905-launcher-dirs-p1/spec.md`。**この段階で GitHub 利用者は画面から登録・削除・並べ替えができる。**
 - **Phase 2 — 自動登録と候補。** 走査エンジン 4 種 (§5.1)・スケジューラ (D8)・候補の合成 (§5.4)・設定タブのブロック 3・4 (§6)・ルール編集フォーム (§6.3)。§5.3 の既定ルール。
 - **Phase 3 — 移行と文書。** §9.3 の宮崎さん環境移行 (機械照合つき)・README 4 箇所・CHANGELOG・version bump (5 ファイル)・テスト機で触って GO → feed。
 
-規模の見込み: Rust 1,100 行 / TS 900 行 / テスト 700 行。3 ファイル超なので実行と監査を分ける (`rules/delegation.md`)。Codex は 2026-09-08 まで利用枠切れのため、実行は Opus 5 の可視タブ、監査は親が観点 A〜G で引き取る (前段 §12 と同じ体制)。
+規模の見込み: Rust 1,100 行 / TS 900 行 / テスト 700 行。3 ファイル超なので実行と監査を分ける (`rules/delegation.md`)。実行は Codex `gpt-6-astra` max の可視タブ (設計時点の「Codex 枠切れ」は 9/5 の GPT-6 切替で解消していた)、監査は親が引き取る。実績は §14。
 
 ---
 
@@ -333,3 +333,21 @@ grep -n "settingsTab" src/components/layout/TitleBar.tsx src/stores/uiStore.ts  
 ```
 
 見つかったら作らずに呼ぶ。仕様との差分だけを実装する。モックを実装の手本として渡すときは、モック自身が日本語 11px 以上を満たしているかを先に検査する (前段 A-06 の再発防止)。
+
+---
+
+## 14. Phase 1 実装記録 (2026-09-05)
+
+master に合流済み (`c3ec4cb9`〜`5cc370fb` の 14 コミット・origin/master `4c75d324` の上に rebase・ff-merge)。委譲 spec と裁定 = `C:/Users/miyaz/dispatch/260905-launcher-dirs-p1/` (`spec.md` / `RESOLVE-1.md` / `RESOLVE-2.md` / `fix_spec_1.md` / `DONE.md` / `DONE-2.md`)。実行 = Codex `gpt-6-astra` max (可視タブ・8 + 5 コミット)、親の準備 1 + テスト修正 1。
+
+**受け入れ (rebase 後のツリーで親が独立実行):** tsc 0 / vitest 3,831 (master 3,822 + 9) / Rust 1,078 (1,051 + 27) / pytest 450 (442 + 8)。変更 26 ファイル (レーン 21 + 親 5)。
+
+**仕様からの変更 (実装中に確定):**
+- §9.2 step 3 — 外部変更は「バナー + 取り込む / 上書き」でなく読み込みのたびに自動取り込み (宮崎さんの私設スクリプトが Phase 3 まで毎朝 txt を書くため)。
+- §4.3 — 派生 txt は legacy 由来の自動行を `# === AUTO-DEV BEGIN ===`〜`END` / `AUTO-ANKEN` で囲んで書く (親監査 F1)。私設スクリプトはこの目印の内側だけを書き換えるので、目印が無いと「マーカーが見つからない」で止まる。legacy 行が無い環境では目印を書かない。
+- 保存は内容が変わったときだけ (F2・`.bak` は変更前の版を保つ)。JSON 破損時は `.bak` → txt 取り込み → 既定の順で復旧 (F3)。MRU 記録は変更イベントを出さない (F4)。印の解釈は legacy ブロック内の行だけ (F5)。
+- 「続きから」の表示チェックはブロック 1 の下に 1 行 (dev / anken だけ見出しへ移した)。深リンク (U7) は `uiStore.requestedSettingsTab` + `SettingsDialog` の `initialTab` 追従。
+
+**レーンで出た BLOCKER 2 件と裁定:** ①受け入れ条件の比較基準 `master..HEAD` は master がレーン開始後に進むため拾い過ぎる → 開始点 `c3ec4cb9..HEAD` に変更 (次回の spec も開始点固定で書く)。②`tests/test_profile_isolation_contract.py` が削除した `__refresh_anken_roots_bg` 内のガード行を検査していた → 親が「私設リフレッシュが無いこと」の検査に書き換え。
+
+**未実施:** テスト機での目視 (feed 前に行う・Phase 3)。macOS 実機。README 4 箇所 (Phase 3)。

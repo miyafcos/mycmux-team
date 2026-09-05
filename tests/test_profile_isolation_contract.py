@@ -86,7 +86,12 @@ def test_profile_launcher_and_transcript_fallbacks_are_fail_closed() -> None:
 
     assert '__LAUNCH_RUNTIME_DIR="${MYCMUX_RUNTIME_DIR:-$HOME/.mycmux}"' in launcher_sh
     assert '"$__LAUNCH_RUNTIME_DIR/bin/launcher.local.sh"' in launcher_sh
-    assert '[ "${MYCMUX_TEST_PROFILE:-}" = "1" ] && return 0' in launcher_sh
+    # The test-profile guard used to sit inside __refresh_anken_roots_bg, which
+    # kicked a private script (~/.claude/scripts/update_launch_anken.py) in the
+    # background. That refresh moved into the app's own ledger (launcher_dirs),
+    # so the fail-closed property is now that the launcher spawns nothing at all.
+    assert "__refresh_anken_roots_bg" not in launcher_sh
+    assert "update_launch_anken" not in launcher_sh
     assert "$localRuntimeDir = if ($env:MYCMUX_RUNTIME_DIR)" in launcher_ps1
     assert '"MYCMUX_TEST_PROFILE".to_string(), "1".to_string()' in terminal
     assert transcripts.count("if crate::test_profile::is_active() {") >= 3

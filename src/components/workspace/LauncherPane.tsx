@@ -22,16 +22,16 @@ import {
 import { agentIdForSessionKind } from "../../lib/agentSessionConfig";
 import {
   crsmListSessions,
-  listLauncherDirs,
+  launcherRecordDirMru,
   type CrsmSessionEntry,
-  type LauncherDirs,
 } from "../../lib/ipc";
 import { useWorkspaceLayoutStore } from "../../stores/workspaceLayoutStore";
 import { useUiStore } from "../../stores/uiStore";
+import { useLauncherDirsStore } from "../../stores/launcherDirsStore";
 import { useSettingsStore } from "../../stores/settingsStore";
 import {
   cycleChoice,
-  dirItems,
+  dirSections,
   launchItems,
   middleEllipsis,
   moveSpecRow,
@@ -290,7 +290,8 @@ export default function LauncherPane({
   cwd,
 }: LauncherPaneProps) {
   const [query, setQuery] = useState("");
-  const [dirs, setDirs] = useState<LauncherDirs | null>(null);
+  const view = useLauncherDirsStore((state) => state.view);
+  const loadDirs = useLauncherDirsStore((state) => state.load);
   const [targetCwd, setTargetCwd] = useState<string | undefined>(cwd);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [specTarget, setSpecTarget] = useState<string | null>(null);
@@ -342,20 +343,8 @@ export default function LauncherPane({
   }, [isActive, specEntry, specRow]);
 
   useEffect(() => {
-    let cancelled = false;
-    listLauncherDirs()
-      .then((loaded) => {
-        if (!cancelled) setDirs(loaded);
-      })
-      .catch(() => {
-        // A missing roots file is normal on a fresh machine; the agent and web
-        // sections still stand on their own.
-        if (!cancelled) setDirs({ dev: [], anken: [], mru: [] });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+    void loadDirs();
+  }, [loadDirs]);
 
   const allLaunch = useMemo(
     () => launchItems().filter((item) => !hidden.has(item.target)),
@@ -363,11 +352,9 @@ export default function LauncherPane({
   );
   const agents = useMemo(() => allLaunch.filter((item) => item.kind === "agent"), [allLaunch]);
   const webs = useMemo(() => allLaunch.filter((item) => item.kind === "web"), [allLaunch]);
-  const { dev, anken } = useMemo(() => dirItems(dirs), [dirs]);
+  const sections = useMemo(() => dirSections(view, hiddenIds), [view, hiddenIds]);
 
   const showResume = !hidden.has("resume");
-  const showDev = !hidden.has("dev");
-  const showAnken = !hidden.has("anken");
 
   useEffect(() => {
     if (!showResume) {
@@ -417,12 +404,9 @@ export default function LauncherPane({
     () => searchItems(allLaunch, trimmed),
     [allLaunch, trimmed],
   );
-  const shownDev = useMemo(() => (showDev ? dev : []), [showDev, dev]);
-  const shownAnken = useMemo(() => (showAnken ? anken : []), [showAnken, anken]);
-
   const matchedDirs = useMemo(
-    () => searchItems([...shownDev, ...shownAnken], trimmed),
-    [shownDev, shownAnken, trimmed],
+    () => searchItems(sections.flatMap((section) => section.items), trimmed),
+    [sections, trimmed],
   );
   const matchedResumes = useMemo(
     () => searchItems(resumes, trimmed),
@@ -437,13 +421,12 @@ export default function LauncherPane({
     return [
       ...agents,
       ...webs,
-      ...slice(shownDev, "dev"),
-      ...slice(shownAnken, "anken"),
+      ...sections.flatMap((section) => slice(section.items, section.id)),
       ...slice(resumes, "resume"),
     ];
   }, [
     trimmed, matchedLaunch, matchedDirs, matchedResumes,
-    agents, webs, shownDev, shownAnken, resumes, expanded,
+    agents, webs, sections, resumes, expanded,
   ]);
 
   useEffect(() => {
@@ -520,6 +503,7 @@ export default function LauncherPane({
       if (item.kind === "dir") {
         // Changing where a launch lands, not launching (§2.1 ordering).
         setTargetCwd(item.path);
+        void launcherRecordDirMru(item.path).catch(() => {});
         inputRef.current?.focus();
         return;
       }
@@ -712,15 +696,19 @@ export default function LauncherPane({
     <button
       type="button"
       onMouseDown={keepFocus}
-      key={`${item.section}:${item.path}`}
+      key={item.id}
       data-nav={index}
       title={item.path}
       onClick={() => activate(item)}
-      style={{ ...row, ...(isActive && index === cursor ? rowSelected : null) }}
+      style={{
+        ...row,
+        ...(isActive && index === cursor ? rowSelected : null),
+        ...(item.exists === false ? { color: "var(--cmux-text-dim)" } : null),
+      }}
     >
       <FolderGlyph anken={item.section === "anken"} />
       <span style={primaryText}>{middleEllipsis(item.label, 26)}</span>
-      {item.mark && <span style={markText}>{item.mark}</span>}
+      {item.mark && <span style={{ ...markText, ...(item.exists === false ? { color: "var(--cmux-text-dim)" } : null) }}>{item.mark}</span>}
     </button>
   );
 
@@ -813,21 +801,29 @@ export default function LauncherPane({
       </div>,
     );
     offset += webs.length;
-    if (showDev) {
-      const devShown = expanded.dev ? shownDev : shownDev.slice(0, SECTION_PREVIEW);
+    for (const section of sections) {
+      const shown = expanded[section.id] ? section.items : section.items.slice(0, SECTION_PREVIEW);
       body.push(
-        <div key="h-dev">{heading(S.dev, shownDev.length, "dev")}</div>,
-        ...devShown.map((item, i) => dirRow(item, offset + i)),
+        <div key={`h-${section.id}`}>{heading(section.label, section.items.length, section.id)}</div>,
+        ...shown.map((item, i) => dirRow(item, offset + i)),
       );
-      offset += devShown.length;
-    }
-    if (showAnken) {
-      const ankenShown = expanded.anken ? shownAnken : shownAnken.slice(0, SECTION_PREVIEW);
-      body.push(
-        <div key="h-anken">{heading(S.anken, shownAnken.length, "anken")}</div>,
-        ...ankenShown.map((item, i) => dirRow(item, offset + i)),
-      );
-      offset += ankenShown.length;
+      offset += shown.length;
+      if (section.items.length === 0) {
+        body.push(
+          <div key={`empty-${section.id}`} style={{ padding: "6px 12px", fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-dim)" }}>
+            {S.dirEmpty}{" "}
+            <button
+              type="button"
+              onMouseDown={keepFocus}
+              onClick={() => useUiStore.getState().requestSettingsTab("launcher")}
+              title={S.dirEmptyTooltip}
+              style={moreButton}
+            >
+              {S.dirEmptyAction}
+            </button>
+          </div>,
+        );
+      }
     }
     if (showResume) {
       const resumeShown = expanded.resume ? resumes : resumes.slice(0, SECTION_PREVIEW);
@@ -1042,7 +1038,10 @@ export default function LauncherPane({
           onMouseDown={keepFocus}
           onClick={() => {
             setQuery("");
-            setExpanded((prev) => ({ ...prev, dev: true, anken: true }));
+            setExpanded((prev) => ({
+              ...prev,
+              ...Object.fromEntries((view?.doc.sections ?? []).map((section) => [section.id, true])),
+            }));
             inputRef.current?.focus();
           }}
           style={{ ...moreButton, marginLeft: "auto", flex: "0 0 auto" }}

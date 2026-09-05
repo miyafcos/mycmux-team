@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import "./SettingsDialog.css";
 import { OverlayShell } from "../common/OverlayShell";
 import { useUsageStore } from "../../stores/usageStore";
@@ -18,7 +18,7 @@ import { tabBodyStyle } from "./tabStyles";
 import { onlineStrings } from "../online/onlineStrings";
 import { aiSettingsStrings, petSettingsStrings, settingsStrings } from "./settingsStrings";
 
-type SettingsTabId =
+export type SettingsTabId =
   | "appearance"
   | "pet"
   | "notifications"
@@ -159,6 +159,9 @@ interface SettingsDialogProps {
 
 export default function SettingsDialog({ closing = false, onClose, onOpenCrsmPalette, onOpenOnlinePanel, initialTab }: SettingsDialogProps) {
   const [activeTab, setActiveTab] = useState<SettingsTabId>(initialTab ?? "appearance");
+  useEffect(() => {
+    if (initialTab) setActiveTab(initialTab);
+  }, [initialTab]);
 
   const usageAccounts = useUsageStore((s) => s.accounts);
   const usageReauthCount = usageAccounts.filter((a) => a.state === "needs_relogin").length;

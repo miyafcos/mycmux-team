@@ -1198,12 +1198,40 @@ __norm_path() {
   echo "$__NORM_RESULT"
 }
 
-# 表示用の短縮 (案件は 事務関係/ 以降、ホーム配下は ~ 起点)。
+# Load configured display roots once, including for subshell-based callers.
+__SHORT_ROOTS=()
+__SHORT_ROOTS_LOADED=0
+__load_short_roots() {
+  [ "${__SHORT_ROOTS_LOADED:-0}" = 1 ] && return 0
+  __SHORT_ROOTS_LOADED=1
+  __SHORT_ROOTS=()
+  [ -f "$__ROOTS_FILE" ] || return 0
+  local line root
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      '# short-root:'*)
+        root="${line#\# short-root:}"
+        root="${root#"${root%%[![:space:]]*}"}"
+        root="${root%"${root##*[![:space:]]}"}"
+        root="${root//\\//}"
+        [ -n "$root" ] && __SHORT_ROOTS+=("$root")
+        ;;
+    esac
+  done < "$__ROOTS_FILE"
+  return 0
+}
+__load_short_roots
+
+# Configured roots shorten first; the existing home fallback stays available.
 __short_path_into() {
-  local p="${1//\\//}"
-  case "$p" in
-    *事務関係/*) __SHORT_RESULT="…/${p#*事務関係/}"; return ;;
-  esac
+  local p="${1//\\//}" root
+  __load_short_roots
+  for root in "${__SHORT_ROOTS[@]}"; do
+    root="${root%/}"
+    case "$p" in
+      "$root"/*) __SHORT_RESULT=$'\342\200\246'"/${p#"$root"/}"; return ;;
+    esac
+  done
   case "$p" in
     "$HOME") __SHORT_RESULT="~"; return ;;
     "$HOME"/*) __SHORT_RESULT="~${p#$HOME}"; return ;;
@@ -1214,24 +1242,6 @@ __short_path_into() {
 __short_path() {
   __short_path_into "$1"
   echo "$__SHORT_RESULT"
-}
-
-# 案件メニューを開いたとき、最終更新が3時間より古ければ裏で再生成を蹴る (走査2〜3分・
-# 表示は現行リストのまま待たせない。次にメニューを開いた時に新しくなっている)。
-__refresh_anken_roots_bg() {
-  [ "${MYCMUX_TEST_PROFILE:-}" = "1" ] && return 0
-  local log="$__LAUNCH_RUNTIME_DIR/launch-roots-anken.log"
-  local lock="$__LAUNCH_RUNTIME_DIR/launch-roots-anken.lock"
-  local script="$HOME/.claude/scripts/update_launch_anken.py"
-  local python
-  [ -f "$script" ] || return 0
-  python="$(__mycmux_python)" || return 0
-  # 3時間以内に更新済みなら何もしない / 15分以内のロックがあれば実行中と見なす
-  [ -n "$(find "$log" -mmin -180 2>/dev/null)" ] && return 0
-  [ -n "$(find "$lock" -mmin -15 2>/dev/null)" ] && return 0
-  touch "$lock"
-  ( "$python" "$script" >/dev/null 2>&1; rm -f "$lock" ) &
-  disown 2>/dev/null || true
 }
 
 # ピッカー用の1入力イベント。メインメニューの __read_menu_event と違い、印字可能文字を
@@ -1476,9 +1486,8 @@ __select_launch_root() {
   local r_title
   case "$r_mode" in
     anken)
-      __refresh_anken_roots_bg
       __load_roots_section anken
-      r_title="案件  (自動更新: update_launch_anken.py)"
+      r_title="案件  (設定 → ランチャーで編集)"
       ;;
     mru)
       __PICK_LABELS=(); __PICK_PATHS=()
@@ -1494,7 +1503,7 @@ __select_launch_root() {
       ;;
     *)
       __load_roots_section dev
-      r_title="開発  (edit ~/.mycmux/launch-roots.txt)"
+      r_title="開発  (設定 → ランチャーで編集)"
       ;;
   esac
   if [ ${#__PICK_LABELS[@]} -eq 0 ]; then

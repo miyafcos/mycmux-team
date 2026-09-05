@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import type { SettingsTabId } from "../components/settings/SettingsDialog";
 import { clampSidebarWidth, SIDEBAR_DEFAULT_WIDTH } from "../lib/constants";
 
 /**
@@ -13,6 +14,9 @@ interface UiState {
   lastActivePaneId: string | null;
   focusRevision: number;
   zoomedPaneId: string | null;
+  requestedSettingsTab: SettingsTabId | null;
+  requestSettingsTab: (tab: SettingsTabId) => void;
+  clearRequestedSettingsTab: () => void;
 
   toggleSidebar: () => void;
   setSidebarWidth: (width: number) => void;
@@ -30,6 +34,9 @@ export const useUiStore = create<UiState>((set) => ({
   lastActivePaneId: null,
   focusRevision: 0,
   zoomedPaneId: null,
+  requestedSettingsTab: null,
+  requestSettingsTab: (tab) => set({ requestedSettingsTab: tab }),
+  clearRequestedSettingsTab: () => set({ requestedSettingsTab: null }),
 
   toggleSidebar: () => set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed })),
   setSidebarWidth: (width) => set({ sidebarWidth: clampSidebarWidth(width) }),

@@ -29,6 +29,10 @@ export const launcherStrings = {
   changeCwdTooltip: "起動先を変える (開発・案件をすべて開く)",
   resume: "続きから",
   resumeEmpty: "再開できるセッションがありません",
+  // セクションに登録が無いとき (2026-09-05)。候補の件数は Phase 2 で足す。
+  dirEmpty: "登録なし —",
+  dirEmptyAction: "設定で登録",
+  dirEmptyTooltip: "設定 → ランチャー を開く",
   // 右端に収まる長さで。日付より「どれくらい前か」の方が探しやすい。
   relativeWhen: (iso: string, now: number = Date.now()): string => {
     const at = Date.parse(iso);

@@ -11,6 +11,7 @@ mod dispatch;
 mod events;
 mod history;
 mod livebrief;
+mod launcher_dirs;
 mod pty;
 mod remote;
 mod session_retention;
@@ -430,7 +431,17 @@ pub fn run() {
             commands::attention::attention_list_tracked,
             commands::workspace::load_persistent_data,
             commands::workspace::save_persistent_data,
-            commands::launcher::launcher_list_dirs,
+            commands::launcher::launcher_dirs_get,
+            commands::launcher::launcher_dirs_set_section_label,
+            commands::launcher::launcher_dirs_add_entry,
+            commands::launcher::launcher_dirs_update_entry,
+            commands::launcher::launcher_dirs_remove_entry,
+            commands::launcher::launcher_dirs_move_entry,
+            commands::launcher::launcher_dirs_pin_entry,
+            commands::launcher::launcher_dirs_ignore_path,
+            commands::launcher::launcher_dirs_unignore_path,
+            commands::launcher::launcher_dirs_export_roots,
+            commands::launcher::launcher_record_dir_mru,
             commands::webpane::webpane_list_presets,
             commands::webpane::webpane_create,
             commands::webpane::webpane_update,

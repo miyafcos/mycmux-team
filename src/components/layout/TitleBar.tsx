@@ -6,7 +6,7 @@ import { useWorkspaceListStore, useUiStore, usePaneMetadataStore } from "../../s
 import { formatShortcutLabel, IS_MAC } from "../../lib/keybindings";
 import { useKeybindingStore } from "../../stores/keybindingStore";
 import NotificationPanel from "./NotificationPanel";
-import SettingsDialog from "../settings/SettingsDialog";
+import SettingsDialog, { type SettingsTabId } from "../settings/SettingsDialog";
 import { AiLogButton } from "../ailog/AiLogButton";
 import { DashboardButton } from "../dashboard/DashboardButton";
 import { AccountsButton } from "./AccountsButton";
@@ -96,7 +96,15 @@ export default function TitleBar({
   );
   const [notificationPanelOpen, setNotificationPanelOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [settingsTab, setSettingsTab] = useState<"appearance" | "usage">("appearance");
+  const [settingsTab, setSettingsTab] = useState<SettingsTabId>("appearance");
+  const requestedSettingsTab = useUiStore((state) => state.requestedSettingsTab);
+  const clearRequestedSettingsTab = useUiStore((state) => state.clearRequestedSettingsTab);
+  useEffect(() => {
+    if (!requestedSettingsTab) return;
+    setSettingsTab(requestedSettingsTab);
+    setIsSettingsOpen(true);
+    clearRequestedSettingsTab();
+  }, [requestedSettingsTab, clearRequestedSettingsTab]);
   const { mounted: notificationPanelMounted, closing: notificationPanelClosing } = useDeferredUnmount(
     notificationPanelOpen,
     OVERLAY_EXIT_MS,

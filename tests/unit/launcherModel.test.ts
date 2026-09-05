@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import { AGENT_CATALOG, getCatalogEntry } from "../../src/lib/agentCatalog";
 import {
   cycleChoice,
-  dirItems,
+  dirSections,
+  dirMark,
   launchItems,
   middleEllipsis,
   moveSpecRow,
@@ -10,10 +11,26 @@ import {
   searchItems,
   specRowsFor,
   tailPath,
-  splitDirLabel,
   type SpecRow,
 } from "../../src/components/workspace/launcherModel";
 import { launcherStrings as S } from "../../src/components/workspace/launcherStrings";
+
+import type { LauncherDirEntry, LauncherDirsView } from "../../src/lib/ipc";
+
+function entry(id: string, section: string, label: string, path: string, extra: Partial<LauncherDirEntry> = {}): LauncherDirEntry {
+  return { id, section, label, path, source: "manual", added_at: "2026-09-05T12:00:00+09:00", ...extra };
+}
+
+function view(entries: LauncherDirEntry[]): LauncherDirsView {
+  return {
+    doc: {
+      version: 1, sections: [{ id: "dev", label: "Repos" }, { id: "anken", label: "Clients" }],
+      entries, rules: [], ignored_paths: [], last_scan: null,
+      export: { roots_txt_mtime_ms: null, roots_txt_written_at: null, last_external_merge_at: null },
+    },
+    entries_exist: entries.map((entry) => [entry.id, true]), json_path: "C:/profile/launch-dirs.json", roots_txt_path: "C:/profile/launch-roots.txt",
+  };
+}
 
 describe("launcher spec keyboard navigation", () => {
   const claude = getCatalogEntry("claude")!;
@@ -137,18 +154,12 @@ describe("launcher search", () => {
     expect(searchItems(launch, "zzzzzzzz")).toHaveLength(0);
   });
 
-  const { dev, anken } = dirItems({
-    dev: [
-      { label: "mycmux (master)", path: "C:/Users/miyaz/cmux-for-linux-dev-master" },
-      { label: "ime-dev (自作IME)", path: "C:/Users/miyaz/ime-dev" },
-    ],
-    anken: [
-      { label: "駿台/モモスタ/数学 (●09/03)", path: "C:/Users/miyaz/anken/math" },
-      { label: "東洋食品工業短期大学/2027年度入試 (●09/03)", path: "C:/Users/miyaz/anken/toyo" },
-    ],
-    mru: [],
-  });
-  const dirs = [...dev, ...anken];
+  const dirs = dirSections(view([
+    entry("master", "dev", "mycmux (master)", "C:/Users/miyaz/cmux-for-linux-dev-master"),
+    entry("ime", "dev", "ime-dev (\u81ea\u4f5cIME)", "C:/Users/miyaz/ime-dev"),
+    entry("math", "anken", "\u99ff\u53f0/\u30e2\u30e2\u30b9\u30bf/\u6570\u5b66", "C:/Users/miyaz/anken/math", { source: "auto", signal: "mention", seen_at: "2026-09-03" }),
+    entry("toyo", "anken", "\u6771\u6d0b\u98df\u54c1\u5de5\u696d\u77ed\u671f\u5927\u5b66/2027\u5e74\u5ea6\u5165\u8a66", "C:/Users/miyaz/anken/toyo"),
+  ])).flatMap((section) => section.items);
 
   it("finds a japanese label by a japanese substring", () => {
     expect(searchItems(dirs, "モモ").map((i) => i.label)).toContain("駿台/モモスタ/数学");
@@ -169,22 +180,51 @@ describe("launcher search", () => {
 });
 
 describe("directory rows", () => {
-  it("splits the freshness mark off so it can right-align", () => {
-    expect(splitDirLabel("駿台/モモスタ/数学 (●09/03)")).toEqual({
-      label: "駿台/モモスタ/数学",
-      mark: "●09/03",
-    });
+  it("puts manual rows first in document order and auto rows in descending date order", () => {
+    const data = view([
+      entry("old", "dev", "Old", "C:/old", { source: "auto", seen_at: "2026-09-02", added_at: "2026-09-03" }),
+      entry("m2", "dev", "Second manual", "C:/m2"),
+      entry("tie", "dev", "Tie", "C:/tie", { source: "auto", seen_at: "2026-09-02", added_at: "2026-09-04" }),
+      entry("m1", "dev", "First manual", "C:/m1"),
+      entry("new", "dev", "New", "C:/new", { source: "auto", seen_at: "2026-09-05", added_at: "2026-09-02" }),
+      entry("unknown", "dev", "No date", "C:/unknown", { source: "auto" }),
+    ]);
+    const original = [...data.doc.entries];
+    const sections = dirSections(data);
+    expect(sections.map((section) => section.label)).toEqual(["Repos", "Clients"]);
+    expect(sections[0].items.map((item) => item.id)).toEqual(["m2", "m1", "new", "tie", "old", "unknown"]);
+    expect(data.doc.entries).toEqual(original);
   });
 
-  it("leaves a label that carries no mark alone", () => {
-    expect(splitDirLabel("mycmux (master)")).toEqual({ label: "mycmux (master)" });
-    expect(splitDirLabel("HTML Hub (旧html-editor拡張)")).toEqual({
-      label: "HTML Hub (旧html-editor拡張)",
-    });
+  it("derives marks from metadata and never parses a user's label", () => {
+    expect(dirMark({ source: "auto", signal: "mention", seen_at: "2026-09-03" })).toBe("\u25cf09/03");
+    expect(dirMark({ source: "auto", signal: "session", seen_at: "2026-09-04" })).toBe("\u25cf09/04");
+    expect(dirMark({ source: "auto", signal: "git", seen_at: "2026-01-02" })).toBe("01/02");
+    expect(dirMark({ source: "auto", signal: "folder", seen_at: "2026-01-02" })).toBe("01/02");
+    expect(dirMark({ source: "manual", signal: "mention", seen_at: "2026-09-03" })).toBeUndefined();
+    expect(dirMark({ source: "auto", signal: "mention" })).toBeUndefined();
+    const item = dirSections(view([entry("one", "dev", "Name (09/03)", "C:/one")]))[0].items[0];
+    expect(item.label).toBe("Name (09/03)");
+    expect(item.mark).toBeUndefined();
   });
 
-  it("survives an absent roots file", () => {
-    expect(dirItems(null)).toEqual({ dev: [], anken: [] });
+  it("honors section visibility and order, including empty sections", () => {
+    const data = view([entry("repo", "dev", "Repo", "C:/repo")]);
+    data.doc.sections.reverse();
+    expect(dirSections(data).map((section) => section.id)).toEqual(["anken", "dev"]);
+    expect(dirSections(data, ["dev", "unknown"]).map((section) => section.id)).toEqual(["anken"]);
+    expect(dirSections(data, ["dev"])[0].items).toEqual([]);
+    expect(dirSections(data, ["dev", "anken"])).toEqual([]);
+  });
+
+  it("retains missing paths and carries their existence flag without losing metadata", () => {
+    const data = view([entry("gone", "dev", "Gone", "C:/gone", { source: "auto", signal: "git", seen_at: "2026-09-03" })]);
+    data.entries_exist = [["gone", false]];
+    expect(dirSections(data)[0].items[0]).toMatchObject({ id: "gone", source: "auto", signal: "git", seen_at: "2026-09-03", exists: false, mark: "09/03" });
+  });
+
+  it("survives an unloaded view", () => {
+    expect(dirSections(null)).toEqual([]);
   });
 });
 
