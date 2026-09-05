@@ -69,8 +69,9 @@ The installed executable is `C:\Users\miyaz\mycmux-app\mycmux.exe`. Deployment m
 1. Update the five version surfaces and `CHANGELOG.md`.
 2. Run the full verification baseline below.
 3. Commit `chore(release): vX.Y.Z`, create tag `vX.Y.Z`, and push the branch and tag to `origin`. Tag pushes do NOT trigger CI; build either locally with `scripts\release-local.ps1` or by manually dispatching `.github/workflows/release.yml` (runner selectable: `windows-latest` / `self-hosted`).
-4. Run `scripts\mirror-personal-updater-feed.ps1 -SourceTag vX.Y.Z` locally and verify the resulting `latest.json` version. The CI mirror step may skip when its secret is absent. Also decode the `latest.json` signature and confirm its key-id matches the `pubkey` in `tauri.conf.json`; a version-only check misses a signing-key mismatch.
-5. Create a history-isolated public sync commit from the private `master` tree and push only that commit to `public/master`.
+4. Build the macOS assets on a Mac (`bash scripts/build-mac.sh`) and attach `mycmux_X.Y.Z_aarch64.app.tar.gz` and its `.sig` to the same release. The feed serves both operating systems from one file, so mirroring before this step publishes a feed that has no darwin entry and silently kills "Check for updates" on every Mac.
+5. Run `python scripts/mirror_personal_updater_feed.py --source-tag vX.Y.Z` locally and verify the resulting `latest.json` version and platform list. The CI mirror step may skip when its secret is absent. Also decode the `latest.json` signature and confirm its key-id matches the `pubkey` in `tauri.conf.json`; a version-only check misses a signing-key mismatch. The legacy `scripts\mirror-personal-updater-feed.ps1` copies the release's own Windows-only `latest.json` wholesale and now refuses to run when platforms would be lost.
+6. Create a history-isolated public sync commit from the private `master` tree and push only that commit to `public/master`.
 
 ## Verification Baseline
 

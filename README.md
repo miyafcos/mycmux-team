@@ -101,9 +101,19 @@ npm run tauri dev
 
 ### macOS
 
-**Apple Silicon (arm64) 専用**です。Intel Mac 向けのビルドは現状ありません。
+配布物は **universal** です。x86_64 と arm64 の両方を含むので、Apple Silicon でも Intel Mac でも同じ `.dmg` が使えます。
 
-配布物は Windows と同じ固定 feed リリースに置いてあります。`mycmux_<version>_aarch64.dmg` をダウンロードし、中の `mycmux.app` を `/Applications` にコピーしてください。
+**Intel Mac での実機確認はしていません。** バイナリに x86_64 スライスが入っていること (`lipo -info` で確認) と署名が通ることまでは検証済みですが、実際に Intel 機で起動するかは未検証です。
+
+ソースからビルドする場合も既定が universal です (`rustup target add x86_64-apple-darwin` が前提)。Apple Silicon 専用の小さいビルドが要るときは:
+
+```bash
+MYCMUX_TARGET=aarch64-apple-darwin bash scripts/build-mac.sh
+```
+
+universal は 30MB、arm64 単体は 14MB です。配布を universal に寄せているのは、リリースのたびに「どちらを載せたか」を判断する必要をなくすためで、その判断が抜けた事故を実際に起こしたためです。
+
+配布物は Windows と同じ固定 feed リリースに置いてあります。`mycmux_<version>_universal.dmg` をダウンロードし、開いて `mycmux.app` を `Applications` へドラッグしてください。
 
 <https://github.com/miyafcos/mycmux-team/releases/tag/mycmux-personal-updater>
 
@@ -918,7 +928,7 @@ cd /tmp/baseline && npx vitest run   # ここの失敗数と突き合わせる
 
 ### リリース
 
-ローカル経路は `powershell -File scripts/release-local.ps1` で、ビルド → 署名 → GitHub Release 作成 → 公開 updater feed ミラー → 検証まで一括で走ります (署名パスワードの初回登録は `-SetPassword`)。CI 経路は `release.yml` の workflow_dispatch のみで (tag push トリガーは GitHub-hosted Actions の課金停止のため無効)、runner は `windows-latest` か `self-hosted` を選べます。**macOS のジョブ (`test-macos` / `build-macos`) も置いてありますが、`macos-14` は GitHub-hosted なので課金が止まっている間は動きません。** macOS 版は当面ローカルビルドが正で、`bash scripts/build-mac.sh` で `.dmg` と `.app.tar.gz` を作り、Release へ手動でアップロードします。feed のミラーだけ流したいときは `scripts/mirror-personal-updater-feed.ps1 -SourceTag vX.Y.Z` です。リリース後は `latest.json` の version だけでなく、署名の key-id が `tauri.conf.json` の pubkey と一致することまで確認してください。手順の詳細は [docs/DEPLOY.md](docs/DEPLOY.md) にあります。
+ローカル経路は `powershell -File scripts/release-local.ps1` で、ビルド → 署名 → GitHub Release 作成 → 公開 updater feed ミラー → 検証まで一括で走ります (署名パスワードの初回登録は `-SetPassword`)。CI 経路は `release.yml` の workflow_dispatch のみで (tag push トリガーは GitHub-hosted Actions の課金停止のため無効)、runner は `windows-latest` か `self-hosted` を選べます。**macOS のジョブ (`test-macos` / `build-macos`) も置いてありますが、`macos-14` は GitHub-hosted なので課金が止まっている間は動きません。** macOS 版は当面ローカルビルドが正で、`bash scripts/build-mac.sh` で `.dmg` と `.app.tar.gz` を作り、Release へ手動でアップロードします。feed のミラーだけ流したいときは `python scripts/mirror_personal_updater_feed.py --source-tag vX.Y.Z` です (Windows と darwin の両方を組み立てます)。**feed は 2 つの OS の資産の合成物なので、macOS 分を作る前に feed を更新しないでください** — 旧 `mirror-personal-updater-feed.ps1` は Windows だけのリリースを流すと darwin エントリを消してしまうため、現在は不足を検出して停止します。リリース後は `latest.json` の version だけでなく、署名の key-id が `tauri.conf.json` の pubkey と一致することまで確認してください。手順の詳細は [docs/DEPLOY.md](docs/DEPLOY.md) にあります。
 
 ### 主要な契約テスト
 

@@ -14,7 +14,8 @@ export const launcherStrings = {
   flatCount: (count: number) => `— 横断 ${count} 件 (セクションなし) —`,
   noMatch: (query: string) => `「${query}」に一致なし`,
   // model / effort は delegation のティア運用が依存しているので必ず残す (§6.3)。
-  specTooltip: (label: string) => `${label} のモデル・effort を選ぶ`,
+  specTooltip: (label: string) => `${label} のモデル・effort を選ぶ (Tab / Shift+Enter)`,
+  specKeyHint: "←→ 選ぶ　↑↓ Tab 行　Enter 起動　Esc 戻る",
   modelLabel: "モデル",
   modelDefault: "モデル (既定)",
   effortLabel: "effort",

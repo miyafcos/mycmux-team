@@ -1,15 +1,85 @@
 import { describe, expect, it } from "vitest";
-import { AGENT_CATALOG } from "../../src/lib/agentCatalog";
+import { AGENT_CATALOG, getCatalogEntry } from "../../src/lib/agentCatalog";
 import {
+  cycleChoice,
   dirItems,
   launchItems,
   middleEllipsis,
+  moveSpecRow,
   previewLine,
   searchItems,
+  specRowsFor,
   tailPath,
   splitDirLabel,
+  type SpecRow,
 } from "../../src/components/workspace/launcherModel";
 import { launcherStrings as S } from "../../src/components/workspace/launcherStrings";
+
+describe("launcher spec keyboard navigation", () => {
+  const claude = getCatalogEntry("claude")!;
+
+  it("selects max by moving left from the default Claude effort", () => {
+    expect(cycleChoice("", claude.efforts, -1)).toBe("max");
+  });
+
+  it("returns to the default after max", () => {
+    expect(cycleChoice("max", claude.efforts, 1)).toBe("");
+  });
+
+  it("advances from xhigh to max", () => {
+    expect(cycleChoice("xhigh", claude.efforts, 1)).toBe("max");
+  });
+
+  it("walks model choices in both directions through the default", () => {
+    const choices = claude.models.map((choice) => choice.value);
+    expect(cycleChoice("", choices, 1)).toBe("fable");
+    expect(cycleChoice("fable", choices, -1)).toBe("");
+    expect(cycleChoice("opus", choices, -1)).toBe("fable");
+  });
+
+  it("returns the default when choices are empty", () => {
+    expect(cycleChoice("custom", [], 1)).toBe("");
+    expect(cycleChoice("", [], -1)).toBe("");
+  });
+
+  it("treats an unknown value as the default when cycling", () => {
+    expect(cycleChoice("custom", claude.efforts, 1)).toBe("low");
+    expect(cycleChoice("custom", claude.efforts, -1)).toBe("max");
+  });
+
+  it("includes model, effort, and launch for Claude", () => {
+    expect(specRowsFor(claude)).toEqual(["model", "effort", "launch"]);
+  });
+
+  it.each(["grok", "claude-codex-open"])("keeps the free-text model row for %s", (target) => {
+    const entry = getCatalogEntry(target)!;
+    expect(entry.models).toHaveLength(0);
+    expect(specRowsFor(entry)).toEqual(["model", "effort", "launch"]);
+  });
+
+  it("omits effort only when no efforts exist", () => {
+    expect(specRowsFor({ models: [], efforts: [] })).toEqual(["model", "launch"]);
+    expect(specRowsFor({ models: claude.models, efforts: [] })).toEqual(["model", "launch"]);
+  });
+
+  it("moves through rows and stops at both ends", () => {
+    const rows: readonly SpecRow[] = ["model", "effort", "launch"];
+    expect(moveSpecRow(rows, "model", -1)).toBe("model");
+    expect(moveSpecRow(rows, "model", 1)).toBe("effort");
+    expect(moveSpecRow(rows, "effort", 1)).toBe("launch");
+    expect(moveSpecRow(rows, "launch", 1)).toBe("launch");
+    expect(moveSpecRow(rows, "launch", -1)).toBe("effort");
+    expect(moveSpecRow(rows, "effort", -1)).toBe("model");
+  });
+
+  it("moves directly between model and launch when effort is absent", () => {
+    const rows = specRowsFor({ models: [], efforts: [] });
+    expect(moveSpecRow(rows, "model", 1)).toBe("launch");
+    expect(moveSpecRow(rows, "launch", -1)).toBe("model");
+    expect(moveSpecRow(rows, "model", -1)).toBe("model");
+    expect(moveSpecRow(rows, "launch", 1)).toBe("launch");
+  });
+});
 
 describe("launcher launch rows", () => {
   it("carries every catalog row, both claude-codex backends included", () => {

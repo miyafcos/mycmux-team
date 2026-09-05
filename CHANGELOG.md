@@ -4,7 +4,7 @@
 
 ---
 
-## [Unreleased]
+## [0.63.0] - 2026-09-05
 
 - New: **ランチャーの Codex モデルに GPT-6 Astra が並んだ** — 「Astra (flagship)」が既定の次の行。Sol は「Sol (5.6 fallback)」に改名し、Terra / Luna はそのまま
   - GUI (`agentCatalog.ts`)・PowerShell・bash の 3 か所を同じ順で更新。契約テスト (`test_launcher_catalog_contract.py`) の行番号ケースも新しい並びに合わせた

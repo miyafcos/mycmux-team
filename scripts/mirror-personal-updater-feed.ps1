@@ -154,6 +154,28 @@ if ($rewrittenJson -notmatch [regex]::Escape($targetPrefix)) {
   throw "latest.json does not reference target URL prefix: $targetPrefix"
 }
 
+# Refuse to publish a feed that is missing platforms the live one already serves.
+# This script copies the source release's latest.json wholesale, and a Windows-only
+# release build produces a Windows-only latest.json. Uploading that overwrites the
+# published feed, so every darwin entry disappears and "Check for updates" on macOS
+# starts reporting no update forever -- silently, because a Windows operator never
+# sees it. The missing piece is Mac release assets, not a feed edit, so fail here
+# and let the operator finish the release instead of shipping a feed that drops
+# users. mirror_personal_updater_feed.py builds both halves and is the way in.
+$publishing = $rewrittenJson | ConvertFrom-Json
+$publishedPlatforms = @($publishing.platforms.PSObject.Properties.Name)
+$requiredPlatforms = @("windows-x86_64", "windows-x86_64-msi", "windows-x86_64-nsis", "darwin-aarch64")
+$absent = @($requiredPlatforms | Where-Object { $publishedPlatforms -notcontains $_ })
+if ($absent.Count -gt 0) {
+  throw @"
+Refusing to publish: latest.json for $SourceTag has no $($absent -join ', ') entry.
+Uploading it would delete those platforms from the live feed and break their updater.
+Build and attach the missing release assets first, then mirror with
+  python scripts/mirror_personal_updater_feed.py --source-tag $SourceTag
+which assembles the Windows and darwin halves together.
+"@
+}
+
 Ensure-TargetRelease -Repo $TargetRepo -Tag $TargetTag
 
 $uploadArgs = @(

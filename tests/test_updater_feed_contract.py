@@ -26,6 +26,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 NORMALIZE_SCRIPT = REPO_ROOT / "scripts" / "normalize-updater-feed.ps1"
 NORMALIZE_PYTHON_SCRIPT = REPO_ROOT / "scripts" / "normalize_updater_feed.py"
@@ -420,7 +422,26 @@ def test_verify_cli_requires_an_expected_version() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_mirror_asset_selection_requires_windows_and_apple_silicon_bundles() -> None:
+def test_mirror_asset_selection_requires_windows_and_universal_macos_bundles() -> None:
+    names = [
+        "mycmux_9.9.9_x64-setup.exe",
+        "mycmux_9.9.9_x64-setup.exe.sig",
+        "mycmux_9.9.9_x64_en-US.msi",
+        "mycmux_9.9.9_x64_en-US.msi.sig",
+        "mycmux_9.9.9_universal.dmg",
+        "mycmux.app.tar.gz",
+        "mycmux.app.tar.gz.sig",
+    ]
+
+    selected = mirror_personal_updater_feed.select_asset_names(names)
+
+    assert set(selected) == set(mirror_personal_updater_feed.ASSET_PATTERNS)
+
+
+def test_mirror_asset_selection_rejects_an_apple_silicon_only_dmg() -> None:
+    # The macOS bundle went universal so Intel Macs get a build at all. An
+    # arm64-only .dmg carries no x86_64 slice, so shipping one leaves the
+    # darwin-x86_64 feed entry pointing at something those machines cannot run.
     names = [
         "mycmux_9.9.9_x64-setup.exe",
         "mycmux_9.9.9_x64-setup.exe.sig",
@@ -431,9 +452,10 @@ def test_mirror_asset_selection_requires_windows_and_apple_silicon_bundles() -> 
         "mycmux.app.tar.gz.sig",
     ]
 
-    selected = mirror_personal_updater_feed.select_asset_names(names)
+    with pytest.raises(mirror_personal_updater_feed.MirrorError) as excinfo:
+        mirror_personal_updater_feed.select_asset_names(names)
 
-    assert set(selected) == set(mirror_personal_updater_feed.ASSET_PATTERNS)
+    assert "macos_dmg" in str(excinfo.value)
 
 
 def test_combined_feed_contains_darwin_aarch64_and_preserves_windows_fallback() -> None:
@@ -442,7 +464,7 @@ def test_combined_feed_contains_darwin_aarch64_and_preserves_windows_fallback() 
         "windows_nsis_sig": "mycmux_9.9.9_x64-setup.exe.sig",
         "windows_msi": "mycmux_9.9.9_x64_en-US.msi",
         "windows_msi_sig": "mycmux_9.9.9_x64_en-US.msi.sig",
-        "macos_dmg": "mycmux_9.9.9_aarch64.dmg",
+        "macos_dmg": "mycmux_9.9.9_universal.dmg",
         "macos_updater": "mycmux.app.tar.gz",
         "macos_updater_sig": "mycmux.app.tar.gz.sig",
     }

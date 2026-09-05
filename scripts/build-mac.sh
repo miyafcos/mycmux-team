@@ -60,16 +60,29 @@ else
   echo "No signing key available; skipping updater artifacts."
 fi
 
+# Universal by default: one artifact that runs on both architectures. The 30MB
+# against 14MB is paid once, and it removes a per-release decision -- which
+# build did this version ship, were both uploaded -- that produced two feed
+# incidents on 2026-09-05, each from assets that were only partly in place.
+# MYCMUX_TARGET=aarch64-apple-darwin still builds the smaller one for local use.
+TARGET="${MYCMUX_TARGET:-universal-apple-darwin}"
+echo "Target: $TARGET"
+
 npm run tauri -- build \
-  --target aarch64-apple-darwin \
+  --target "$TARGET" \
   --bundles app \
   --config "{\"bundle\":{\"createUpdaterArtifacts\":$UPDATER_ARTIFACTS}}" \
   ${SIGNING_ARGS[@]+"${SIGNING_ARGS[@]}"}
 
-BUNDLE_DIR="src-tauri/target/aarch64-apple-darwin/release/bundle"
+BUNDLE_DIR="src-tauri/target/$TARGET/release/bundle"
 APP="$BUNDLE_DIR/macos/mycmux.app"
 VERSION=$(node -p "require('./package.json').version")
-DMG="$BUNDLE_DIR/dmg/mycmux_${VERSION}_aarch64.dmg"
+case "$TARGET" in
+  universal-apple-darwin) ARCH_SUFFIX="universal" ;;
+  x86_64-apple-darwin)    ARCH_SUFFIX="x64" ;;
+  *)                      ARCH_SUFFIX="aarch64" ;;
+esac
+DMG="$BUNDLE_DIR/dmg/mycmux_${VERSION}_${ARCH_SUFFIX}.dmg"
 
 if [[ ! -d "$APP" ]]; then
   echo "expected $APP to exist after the build" >&2

@@ -30,16 +30,20 @@ import { useWorkspaceLayoutStore } from "../../stores/workspaceLayoutStore";
 import { useUiStore } from "../../stores/uiStore";
 import { useSettingsStore } from "../../stores/settingsStore";
 import {
+  cycleChoice,
   dirItems,
   launchItems,
   middleEllipsis,
+  moveSpecRow,
   previewLine,
   searchItems,
+  specRowsFor,
   tailPath,
   type LauncherDirItem,
   type LauncherItem,
   type LauncherLaunchItem,
   type LauncherResumeItem,
+  type SpecRow,
 } from "./launcherModel";
 import { launcherStrings as S } from "./launcherStrings";
 
@@ -290,12 +294,15 @@ export default function LauncherPane({
   const [targetCwd, setTargetCwd] = useState<string | undefined>(cwd);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [specTarget, setSpecTarget] = useState<string | null>(null);
+  const [specRow, setSpecRow] = useState<SpecRow>("model");
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState("");
   const [cursor, setCursor] = useState(0);
   const [sessions, setSessions] = useState<CrsmSessionEntry[]>([]);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const modelInputRef = useRef<HTMLInputElement | null>(null);
   const paneRef = useRef<HTMLDivElement | null>(null);
+  const specEntry = specTarget ? getCatalogEntry(specTarget) : undefined;
 
   const hiddenIds = useSettingsStore((s) => s.launcherHiddenIds);
   const hidden = useMemo(() => new Set(hiddenIds), [hiddenIds]);
@@ -326,8 +333,13 @@ export default function LauncherPane({
   // S2: the pane is opened to be typed into — but only once it is the focused
   // one, or opening a background pane would steal the caret.
   useEffect(() => {
-    if (isActive) inputRef.current?.focus();
-  }, [isActive]);
+    if (!isActive) return;
+    if (specEntry && specRow === "model" && specEntry.models.length === 0) {
+      modelInputRef.current?.focus();
+    } else {
+      inputRef.current?.focus();
+    }
+  }, [isActive, specEntry, specRow]);
 
   useEffect(() => {
     let cancelled = false;
@@ -521,12 +533,69 @@ export default function LauncherPane({
   );
 
   const openSpec = useCallback((target: string) => {
+    const entry = getCatalogEntry(target);
+    if (!entry || entry.kind !== "agent") return;
     setSpecTarget(target);
+    setSpecRow(specRowsFor(entry)[0]);
     setModel("");
     setEffort("");
   }, []);
 
+  const closeSpec = () => {
+    setSpecTarget(null);
+    inputRef.current?.focus();
+  };
+
+  const launchSpec = () => {
+    if (specTarget) launchAgent(specTarget, { model, effort });
+  };
+
+  const onModelKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (!isActive || !specEntry || event.nativeEvent.isComposing) return;
+    if (!["Enter", "Escape", "ArrowDown", "ArrowUp", "Tab"].includes(event.key)) return;
+    event.preventDefault();
+    // Focus can change below; do not let the document listener handle this key again.
+    event.stopPropagation();
+    if (event.key === "Enter") launchSpec();
+    else if (event.key === "Escape") closeSpec();
+    else {
+      const step = event.key === "ArrowUp" || (event.key === "Tab" && event.shiftKey) ? -1 : 1;
+      const next = moveSpecRow(specRowsFor(specEntry), "model", step);
+      setSpecRow(next);
+      if (next !== "model") inputRef.current?.focus();
+    }
+  };
+
   const onKeyDown = (event: React.KeyboardEvent | KeyboardEvent) => {
+    if (specTarget) {
+      if (!specEntry) return;
+      if (event.key === "ArrowDown" || event.key === "ArrowUp" || event.key === "Tab") {
+        event.preventDefault();
+        const step = event.key === "ArrowUp" || (event.key === "Tab" && event.shiftKey) ? -1 : 1;
+        setSpecRow((current) => moveSpecRow(specRowsFor(specEntry), current, step));
+      } else if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+        event.preventDefault();
+        const step = event.key === "ArrowLeft" ? -1 : 1;
+        if (specRow === "model" && specEntry.models.length > 0) {
+          setModel((current) => cycleChoice(current, specEntry.models.map((choice) => choice.value), step));
+        } else if (specRow === "effort") {
+          setEffort((current) => cycleChoice(current, specEntry.efforts, step));
+        }
+      } else if (event.key === "Enter") {
+        event.preventDefault();
+        launchSpec();
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        closeSpec();
+      }
+      return;
+    }
+    if (event.key === "Tab" || (event.key === "Enter" && event.shiftKey)) {
+      event.preventDefault();
+      const item = navigable[cursor];
+      if (item?.kind === "agent" && getCatalogEntry(item.target)) openSpec(item.target);
+      return;
+    }
     // Left/right walk the list too, because the launch rows are pills laid out
     // across — but only while nothing is typed, or they would stop moving the
     // caret inside the query.
@@ -545,8 +614,7 @@ export default function LauncherPane({
       }
     } else if (event.key === "Escape") {
       event.preventDefault();
-      if (specTarget) setSpecTarget(null);
-      else setQuery("");
+      setQuery("");
     }
   };
 
@@ -695,7 +763,6 @@ export default function LauncherPane({
     </div>
   );
 
-  const specEntry = specTarget ? getCatalogEntry(specTarget) : undefined;
   const modelRejected = model.trim().length > 0 && !isValidLaunchSpecValue(model.trim());
 
   let offset = 0;
@@ -853,7 +920,7 @@ export default function LauncherPane({
           <div style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-secondary)" }}>
             {specEntry.label}
           </div>
-          <div style={specLabel}>{S.modelLabel}</div>
+          <div style={{ ...specLabel, ...(isActive && specRow === "model" ? { color: "var(--cmux-accent-text)" } : null) }}>{S.modelLabel}</div>
           {specEntry.models.length > 0 ? (
             <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
               <button
@@ -881,7 +948,10 @@ export default function LauncherPane({
             // grok and the open-model backend publish no id list, so the value
             // is typed. sanitizeLaunchSpecValue still guards what reaches the CLI.
             <input
+              ref={modelInputRef}
               value={model}
+              onFocus={() => setSpecRow("model")}
+              onKeyDown={onModelKeyDown}
               onChange={(event) => setModel(event.target.value)}
               placeholder={S.modelDefault}
               aria-label={S.modelLabel}
@@ -891,7 +961,7 @@ export default function LauncherPane({
           )}
           {specEntry.efforts.length > 0 && (
             <>
-              <div style={specLabel}>{S.effortLabel}</div>
+              <div style={{ ...specLabel, ...(isActive && specRow === "effort" ? { color: "var(--cmux-accent-text)" } : null) }}>{S.effortLabel}</div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
                 <button
                   type="button"
@@ -919,20 +989,21 @@ export default function LauncherPane({
             <button
               type="button"
               onMouseDown={keepFocus}
-              onClick={() => launchAgent(specEntry.target, { model, effort })}
-              style={{ ...specControl, cursor: "pointer", borderColor: "var(--cmux-accent)", color: "var(--cmux-accent)", width: "auto", flex: 1 }}
+              onClick={launchSpec}
+              style={{ ...specControl, cursor: "pointer", borderColor: "var(--cmux-accent)", color: "var(--cmux-accent)", width: "auto", flex: 1, ...(isActive && specRow === "launch" ? { backgroundColor: "var(--cmux-selected)" } : null) }}
             >
               {S.launchButton}
             </button>
             <button
               type="button"
               onMouseDown={keepFocus}
-              onClick={() => setSpecTarget(null)}
+              onClick={closeSpec}
               style={{ ...specControl, cursor: "pointer", width: "auto", flex: "0 0 auto", color: "var(--cmux-text-tertiary)" }}
             >
               {S.cancel}
             </button>
           </div>
+          <div style={{ fontSize: "var(--cmux-font-size-xs)", color: "var(--cmux-text-tertiary)" }}>{S.specKeyHint}</div>
         </div>
       )}
 

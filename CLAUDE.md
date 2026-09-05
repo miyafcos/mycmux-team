@@ -60,7 +60,7 @@ python -m pytest tests/               # sync-command allowlist 契約テスト�
 
 - **push は既定 ON — ブランチもタグも** (2026-07-12 宮崎さん指示): master へのコミット後はそのまま `git push origin master` まで実施。リリースすべき変更がまとまったらタグも Claude 判断で打って push してよい (検証コマンド全通過が前提)。すべて事後報告。GitHub が常に最新になる設計が基本
 - 複数タグは1個ずつ push (multi-tag push は workflow trigger 漏れあり)
-- **updater の署名鍵は `~/.tauri/mycmux-updater.key` が正**。key-id は 2026-08-31 実測で **`CC53077A2D38F2BB`** (ここは長く `bbf2382d7a0753cc` と書かれていたが、`tauri.conf.json` の pubkey と一致しない古い値だった)。
+- **updater の署名鍵は `~/.tauri/mycmux-updater.key` が正**。key-id の表記は **2 通りあるが同じ鍵**: `CC53077A2D38F2BB` と `bbf2382d7a0753cc` は**バイト順が逆なだけ** (`bytes.fromhex(a)[::-1]` で相互変換できる・2026-09-05 に実機で確認)。`scripts/verify_updater_feed.py` は後者の並びで出力するので、**それを見て「古い鍵だ」と判断しない** (このファイルが長くそう書いていた)。判定は同スクリプトの PASS/FAIL で行い、目視の突き合わせに頼らない。
   パスワードは `~/.tauri/mycmux-updater.pass` に DPAPI で暗号化保存 (`ConvertTo-SecureString` で復号・平文ではない)。
   CI secret (`TAURI_KEY_PERSONAL` / `_PASSWORD`) は 2026-08-05 にこの鍵へ更新済み。
   - 経緯: 7/31 の鍵ローテートで `~/.tauri` と tauri.conf.json は新鍵に揃えたが **secret だけ旧鍵 (`edfd48df84ad2477`)
@@ -72,9 +72,11 @@ python -m pytest tests/               # sync-command allowlist 契約テスト�
     `printf '%s' "$(tr -d '\r\n' < ~/.tauri/mycmux-updater.key)" | gh secret set TAURI_KEY_PERSONAL --repo miyafcos/mycmux`
   - **リリース後の feed 検証は版数だけでは不十分**。latest.json の signature をデコードして key-id が
     tauri.conf.json の pubkey と一致することまで確認する (一致しないと更新ボタンが検証エラーで失敗する)。
-    **現行の key-id は `CC53077A2D38F2BB`** (2026-08-31 実測・v0.60.4 で 3 プラットフォームとも一致)。
+    **現行の key-id は `CC53077A2D38F2BB` = `bbf2382d7a0753cc`** (同じ鍵の 2 表記・上記参照。
+    2026-09-05 に v0.63.0 の 5 プラットフォームとも一致を実測)。
     minisign の署名は base64 を 1 段ほどいた 2 行目がさらに base64 で、その `[2:10]` が key ID
-    (little-endian)。先頭のコメント行を眺めても key-id は出てこない
+    (little-endian)。先頭のコメント行を眺めても key-id は出てこない。**バイト順をどちらで読むかで
+    見た目が変わるだけなので、2 つの値を並べて「不一致」と読まない**
 - **macOS 版のリリースは CI を通さない**。`release.yml` に `test-macos` / `build-macos` を置いてあるが
   `runs-on: macos-14` は GitHub-hosted で、Actions の課金が止まっている間は動かない (2026-09-05 時点で
   直近の run は 8/25 の failure、self-hosted は Windows 1台のみで offline)。macOS は
@@ -85,7 +87,8 @@ python -m pytest tests/               # sync-command allowlist 契約テスト�
   BASH_FUNC_*/MYCMUX_*/CLAUDE* に加えて **FUGU_API_KEY 等の秘密系ユーザー env も剥がす** —
   剥がさないと runner が継承し、ビルド中の環境ダンプ経由で **CI ログに平文で残る**
   (run 30975163089 で実害。ログに出た鍵はローテーション推奨)。bash の Git 解決チェックも内蔵
-- タグ push 後の updater feed: CI の mirror ステップは secret 未設定で**成功表示のままスキップされる**。`scripts/mirror-personal-updater-feed.ps1 -SourceTag vX.Y.Z` をローカル実行し latest.json の version を確認
+- タグ push 後の updater feed: CI の mirror ステップは secret 未設定で**成功表示のままスキップされる**。`python scripts/mirror_personal_updater_feed.py --source-tag vX.Y.Z` をローカル実行し latest.json の version を確認。**旧 `mirror-personal-updater-feed.ps1` を使わない** — あれはリリースの latest.json を丸ごと公開 feed に上書きするので、Windows だけのリリースを流すと **darwin エントリが消えて Mac の「更新を確認」が黙って死ぬ** (2026-09-05 に v0.63.0 で踏みかけた)。現在は required platform チェックで throw するが、正は .py の方
+- **feed は Windows と macOS の合成物**。片方の資産だけが揃った状態で feed を更新しない。macOS 資産 (`mycmux_X_aarch64.app.tar.gz` + `.sig`) は Mac 実機でしか作れないので、**リリースは「Windows 資産 → Mac 資産 → feed 更新」の順**。順序を崩すと、更新できないプラットフォームが出る
 - **リリース後は公開ミラーも更新**: `git commit-tree "master^{tree}" -p <team masterのHEAD> -m "sync: ..."` で履歴を持ち込まない sync コミットを作り `git push public <sha>:refs/heads/master`。ブランチをそのまま public へ push するのは禁止 (private 履歴が漏れる)。**2026-09-02 から `release-local.ps1` の最終段でこれを自動実行する** (tree が既に一致していれば SKIP)
 - **`miyafcos/mycmux-team` を private にすると更新ボタンが死ぬ**。updater の endpoint は認証ヘッダを持たない匿名 URL (`.../releases/download/mycmux-personal-updater/latest.json`) なので、repo が private だと**全バージョンの資産が匿名 GET で 404** になる。endpoint は exe にビルド時に焼き込まれるため、向け先を変えても**既に配ったビルドは救えない** (次の版から)。2026-09-01 に private 化されて 9/2 まで気づかず、v0.60.4 の更新も落ちていた。feed 検証 (`verify_updater_feed.py`) は匿名で取りに行くので、この状態は必ず FAIL で出る
 

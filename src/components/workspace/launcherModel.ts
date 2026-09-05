@@ -58,6 +58,24 @@ export interface LauncherResumeItem {
 
 export type LauncherItem = LauncherLaunchItem | LauncherDirItem | LauncherResumeItem;
 
+export type SpecRow = "model" | "effort" | "launch";
+
+export function specRowsFor(entry: { models: readonly unknown[]; efforts: readonly string[] }): SpecRow[] {
+  // Model is always present, either as chips or as a free-text input.
+  return entry.efforts.length > 0 ? ["model", "effort", "launch"] : ["model", "launch"];
+}
+
+export function moveSpecRow(rows: readonly SpecRow[], current: SpecRow, step: 1 | -1): SpecRow {
+  const index = Math.max(0, rows.indexOf(current));
+  return rows[Math.max(0, Math.min(rows.length - 1, index + step))] ?? current;
+}
+
+export function cycleChoice(current: string, choices: readonly string[], step: 1 | -1): string {
+  const values = ["", ...choices];
+  const index = Math.max(0, values.indexOf(current));
+  return values[(index + step + values.length) % values.length];
+}
+
 /**
  * Chip labels for the rows whose catalog name overflows 240px. Everything else
  * falls back to the catalog label with a trailing " (Web)" removed — the Web

@@ -30,7 +30,10 @@ ASSET_PATTERNS = {
     "windows_nsis_sig": re.compile(r"^mycmux_.*_x64-setup\.exe\.sig$"),
     "windows_msi": re.compile(r"^mycmux_.*_x64_en-US\.msi$"),
     "windows_msi_sig": re.compile(r"^mycmux_.*_x64_en-US\.msi\.sig$"),
-    "macos_dmg": re.compile(r"^mycmux_.*_aarch64\.dmg$"),
+    # One universal dmg, not one per architecture. Two builds meant deciding
+    # each time which one a given release carried, and both feed incidents on
+    # 2026-09-05 started from assets that were only partly in place.
+    "macos_dmg": re.compile(r"^mycmux_.*_universal\.dmg$"),
     "macos_updater": re.compile(r"^mycmux\.app\.tar\.gz$", re.IGNORECASE),
     "macos_updater_sig": re.compile(r"^mycmux\.app\.tar\.gz\.sig$", re.IGNORECASE),
 }
@@ -92,10 +95,14 @@ def build_feed(
     selected: Dict[str, str],
     signatures: Dict[str, str],
 ) -> Dict[str, Any]:
-    """Build a combined Windows and darwin-aarch64 static updater feed."""
+    """Build a combined Windows and macOS static updater feed."""
     nsis_entry = {
         "signature": signatures["windows_nsis_sig"],
         "url": asset_url(target_repo, target_tag, selected["windows_nsis"]),
+    }
+    macos_entry = {
+        "signature": signatures["macos_updater_sig"],
+        "url": asset_url(target_repo, target_tag, selected["macos_updater"]),
     }
     feed: Dict[str, Any] = {
         "version": version,
@@ -108,10 +115,13 @@ def build_feed(
                 "url": asset_url(target_repo, target_tag, selected["windows_msi"]),
             },
             "windows-x86_64-nsis": nsis_entry,
-            "darwin-aarch64": {
-                "signature": signatures["macos_updater_sig"],
-                "url": asset_url(target_repo, target_tag, selected["macos_updater"]),
-            },
+            # Both darwin keys point at the same universal archive. An Intel
+            # Mac asks for darwin-x86_64 and an Apple Silicon one asks for
+            # darwin-aarch64; the bundle carries both slices, so either answer
+            # is the same file. Omitting the x86_64 key would leave an Intel
+            # user's updater with nothing to fetch.
+            "darwin-aarch64": macos_entry,
+            "darwin-x86_64": macos_entry,
         },
     }
     return normalize_feed(feed)
@@ -277,6 +287,7 @@ def mirror_release(
         "windows-x86_64-msi",
         "windows-x86_64-nsis",
         "darwin-aarch64",
+        "darwin-x86_64",
     } - set(published.get("platforms", {}))
     if missing:
         raise MirrorError(f"published latest.json is missing platforms: {sorted(missing)}")
