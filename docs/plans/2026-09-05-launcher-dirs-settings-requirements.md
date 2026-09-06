@@ -412,6 +412,8 @@ master に合流済み (`85beb840`〜`0e12ea5e`・origin/master `65b2994e` か�
 
 **最終受け入れ (親が独立実行・`4aa44258`〜`e0caa65c`):** Windows = tsc 0 / vitest 3,847 (+4) / Rust 1,118 (+23・`run_windows_tests.py`・デタッチ実行) / pytest 456 (+5)。macOS (m1book・`4aa44258`) = `cargo test --lib` 1,106 pass / 0 fail・vitest 357 fail / 3,490 pass (失敗集合の差分 = Grok が足した 2 本のみ・同じ環境要因)。
 
+**リリース (2026-09-07 00:55):** master `8a4257ae` (版上げ) / tag `v0.64.0` / GitHub Release に Windows 4 点 (`mycmux_0.64.0_x64-setup.exe` / `mycmux_0.64.0_x64_en-US.msi` + 各 `.sig`) と macOS 3 点 (`mycmux_0.64.0_universal.dmg` 32.1 MB・`mycmux.app.tar.gz` 28.9 MB・`.sig`) / 公開 feed `latest.json` = 0.64.0・5 プラットフォーム・key-id 5 つとも `CC53077A2D38F2BB` (`verify_updater_feed.py --expect-version 0.64.0` PASS) / 公開ミラー同期 (tree 4df008f4)。`release-local.ps1` は 4 回目で通った: 1 回目 = ビルドが再生成した `gen/schemas/*.json` の autocrlf ノイズで clean ガード / 2 回目 = デタッチ runner の bash が WSL スタブに解決して bash 依存 pytest 25 本 / 3 回目 = `CARGO_TARGET_DIR` (共有 target) に成果物が出て `必要な署名済み成果物が見つかりません` → クローンの `src-tauri/target` をジャンクションに。Mac は `build-mac.sh` の `--no-sign` が updater 署名も飛ばすため `tauri signer sign` を別途実行 (パスワードは ssh stdin・PowerShell が付ける UTF-8 BOM を受け側で除去)、`hdiutil` は `-size 300m` を明示。
+
 **移行 (§9.3・宮崎さん環境):** v0.64.0 の更新ボタン後に実施 (`seed_rules.py` でルール 4 本 → タスク 2 本を Disable → 私設スクリプト 2 本を `_retired/` へ → 初回走査後に dev 28 / anken 20 の集合照合)。結果はこの節に追記する。
 
 **残課題:** F-09 (上記)。macOS の実機での手触り (宮崎さんの Mac で更新後に確認)。vitest の macOS 環境失敗 (baseline 348 + 7) は本機能の問題ではないが未解消。
