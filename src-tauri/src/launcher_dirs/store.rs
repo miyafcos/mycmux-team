@@ -1,6 +1,8 @@
 use std::{fs, io::ErrorKind, path::Path, sync::Mutex, time::UNIX_EPOCH};
 
-use super::export::{roots_mtime_ms, write_roots_txt};
+use super::export::{roots_txt_digest, write_roots_txt};
+#[cfg(test)]
+use super::export::roots_mtime_ms;
 use super::import::{initial_import, merge_external, parse_mru, parse_roots_txt};
 use super::model::{now, LauncherDirsDoc, LauncherDirsView};
 use super::paths::{normalize_path, path_key};
@@ -27,12 +29,16 @@ fn save_json(runtime_dir: &Path, doc: &LauncherDirsDoc, backup: bool) -> Result<
     fs::rename(&tmp, &path).map_err(|e| e.to_string())
 }
 
-fn persist(runtime_dir: &Path, doc: &mut LauncherDirsDoc) -> Result<(), String> {
+fn persist(
+    runtime_dir: &Path,
+    doc: &mut LauncherDirsDoc,
+    expected: Option<&[u8]>,
+) -> Result<(), String> {
     // Commit the source before exporting it. A failed export cannot discard a
-    // user's edit. Then persist the actual mtime without rotating the backup
-    // a second time, so .bak still holds the previous document revision.
+    // user's edit. Then persist the confirmed digest and mtime without rotating
+    // the backup a second time, so .bak still holds the previous revision.
     save_json(runtime_dir, doc, true)?;
-    write_roots_txt(runtime_dir, doc)?;
+    write_roots_txt(runtime_dir, doc, expected)?;
     save_json(runtime_dir, doc, false)
 }
 
@@ -106,44 +112,42 @@ fn load(runtime_dir: &Path) -> Result<LauncherDirsDoc, String> {
         Err(error) if error.kind() == ErrorKind::NotFound => {
             match fs::read_to_string(runtime_dir.join("launch-roots.txt")) {
                 Ok(contents) => initial_import(&parse_roots_txt(&contents)),
-                Err(error) if error.kind() == ErrorKind::NotFound => fresh_doc(),
+                Err(error) if matches!(error.kind(), ErrorKind::NotFound | ErrorKind::InvalidData) => fresh_doc(),
                 Err(error) => return Err(error.to_string()),
             }
         }
         Err(error) => return Err(error.to_string()),
     };
     backup_roots(runtime_dir)?;
-    persist(runtime_dir, &mut doc)?;
+    persist(runtime_dir, &mut doc, None)?;
     Ok(doc)
 }
 
-fn sync_external(runtime_dir: &Path, doc: &mut LauncherDirsDoc) -> Result<bool, String> {
-    let path = runtime_dir.join("launch-roots.txt");
-    match fs::metadata(&path) {
-        Err(error) if error.kind() == ErrorKind::NotFound => {
-            persist(runtime_dir, doc)?;
-            return Ok(false);
-        }
-        Err(_) => return Ok(false),
-        Ok(_) => {}
-    }
-    let Some(mtime) = roots_mtime_ms(&path) else {
-        return Ok(false);
+fn sync_external(
+    runtime_dir: &Path,
+    doc: &mut LauncherDirsDoc,
+) -> Result<(bool, Vec<u8>), String> {
+    let snapshot = match fs::read(runtime_dir.join("launch-roots.txt")) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok((false, Vec::new())),
+        Err(error) => return Err(error.to_string()),
     };
-    if doc
-        .export
-        .roots_txt_mtime_ms
-        .is_some_and(|previous| mtime <= previous)
+    // A failed export can leave our previous TXT behind after JSON was saved.
+    if doc.export.roots_txt_digest.as_deref()
+        .is_some_and(|digest| roots_txt_digest(&snapshot) == digest)
     {
-        return Ok(false);
+        return Ok((false, snapshot));
     }
-    let Ok(contents) = fs::read_to_string(&path) else {
-        return Ok(false);
+    if snapshot == super::export::render_roots_txt(doc).as_bytes() {
+        return Ok((false, snapshot));
+    }
+    // Export preserves undecodable bytes by renaming them before replacement.
+    let Ok(contents) = std::str::from_utf8(&snapshot) else {
+        return Ok((false, snapshot));
     };
-    let changed = merge_external(doc, &parse_roots_txt(&contents));
+    let changed = merge_external(doc, &parse_roots_txt(contents));
     doc.export.last_external_merge_at = Some(now());
-    persist(runtime_dir, doc)?;
-    Ok(changed)
+    Ok((changed, snapshot))
 }
 
 pub fn with_doc<F>(f: F) -> Result<LauncherDirsView, String>
@@ -159,14 +163,17 @@ where
 {
     let _guard = LOCK.lock().map_err(|e| e.to_string())?;
     let mut doc = load(runtime_dir)?;
-    sync_external(runtime_dir, &mut doc)?;
+    let (external_imported, snapshot) = sync_external(runtime_dir, &mut doc)?;
     f(&mut doc)?;
     super::scan::prune_candidates(&mut doc);
-    persist(runtime_dir, &mut doc)?;
-    Ok(LauncherDirsView::new(runtime_dir, doc))
+    persist(runtime_dir, &mut doc, Some(&snapshot))?;
+    let mut view = LauncherDirsView::new(runtime_dir, doc);
+    view.external_imported = external_imported;
+    Ok(view)
 }
 
 pub fn record_dir_mru(runtime_dir: &Path, path: &str) -> Result<(), String> {
+    // ponytail: last-writer-wins across bash and Rust; add a runtime-dir lock file if lost MRU rows ever matter
     let _guard = LOCK.lock().map_err(|e| e.to_string())?;
     let path = normalize_path(path);
     if path.is_empty() {
@@ -187,7 +194,7 @@ pub fn record_dir_mru(runtime_dir: &Path, path: &str) -> Result<(), String> {
             .filter(|path| keys.insert(path_key(path)))
             .take(7),
     );
-    let tmp = runtime_dir.join("launch-dirs-mru.txt.tmp");
+    let tmp = runtime_dir.join(format!("launch-dirs-mru.txt.tmp-{}", std::process::id()));
     fs::write(&tmp, format!("{}\n", paths.join("\n"))).map_err(|e| e.to_string())?;
     fs::rename(tmp, file).map_err(|e| e.to_string())
 }
@@ -312,55 +319,132 @@ mod tests {
     }
 
     #[test]
-    fn sync_uses_strict_milliseconds_and_records_external_import() {
+    fn stale_successful_export_does_not_resurrect_a_deleted_manual_entry() {
         let runtime = tempfile::tempdir().unwrap();
-        let mut doc = load(runtime.path()).unwrap();
+        let repo = runtime.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        let first = with_doc_at(runtime.path(), |doc| {
+            doc.add_entry("dev", &repo.to_string_lossy(), Some("Repo"))
+        }).unwrap();
         let path = runtime.path().join("launch-roots.txt");
-        let stamp = doc.export.roots_txt_mtime_ms.unwrap();
-        let written_at = doc.export.roots_txt_written_at.clone();
-        let mut external = doc.clone();
-        external
-            .entries
-            .push(super::super::model::LauncherDirEntry::manual(
-                "dev",
-                "External",
-                "C:/external",
-            ));
-        fs::write(&path, super::super::export::render_roots_txt(&external)).unwrap();
-        let file = fs::OpenOptions::new().write(true).open(&path).unwrap();
-        file.set_modified(UNIX_EPOCH + std::time::Duration::from_millis(stamp))
-            .unwrap();
-        assert!(!sync_external(runtime.path(), &mut doc).unwrap());
-        assert!(doc.entries.is_empty());
-        file.set_modified(UNIX_EPOCH + std::time::Duration::from_millis(stamp + 1))
-            .unwrap();
-        assert!(sync_external(runtime.path(), &mut doc).unwrap());
-        assert_eq!(doc.entries[0].label, "External");
-        assert!(doc.export.last_external_merge_at.is_some());
-        assert_eq!(doc.export.roots_txt_mtime_ms, Some(stamp + 1));
-        assert_eq!(roots_mtime_ms(&path), Some(stamp + 1));
-        assert_eq!(doc.export.roots_txt_written_at, written_at);
-        let merged = doc.clone();
-        assert!(!sync_external(runtime.path(), &mut doc).unwrap());
-        assert_eq!(doc, merged);
-        doc.export.roots_txt_mtime_ms = None;
-        fs::write(&path, "Other|C:/other\n").unwrap();
-        assert!(sync_external(runtime.path(), &mut doc).unwrap());
-        assert_eq!(doc.entries.len(), 2);
+        let previous = fs::read(&path).unwrap();
+        assert_eq!(first.doc.export.roots_txt_digest, Some(roots_txt_digest(&previous)));
+
+        let mut deleted = first.doc.clone();
+        deleted.remove_entry(&first.doc.entries[0].id);
+        // Simulate interruption after the source commit and before TXT export.
+        save_json(runtime.path(), &deleted, true).unwrap();
+        assert!(load(runtime.path()).unwrap().entries.is_empty());
+        assert_eq!(fs::read(&path).unwrap(), previous);
+
+        let recovered = with_doc_at(runtime.path(), |_| Ok(())).unwrap();
+        assert!(recovered.doc.entries.is_empty());
+        assert!(!recovered.external_imported);
+        assert_eq!(recovered.doc.export.last_external_merge_at, None);
+        let current = fs::read(&path).unwrap();
+        assert_ne!(current, previous);
+        assert_eq!(current, super::super::export::render_roots_txt(&recovered.doc).as_bytes());
+        assert_eq!(recovered.doc.export.roots_txt_digest, Some(roots_txt_digest(&current)));
+        assert_eq!(load(runtime.path()).unwrap(), recovered.doc);
+        let again = with_doc_at(runtime.path(), |_| Ok(())).unwrap();
+        assert_eq!(again.doc, recovered.doc);
+        assert!(!again.external_imported);
     }
 
     #[test]
-    fn missing_txt_is_reexported_and_unreadable_external_txt_is_not_merged() {
+    fn sync_uses_content_even_with_equal_or_older_mtime_and_records_import_once() {
+        use super::super::model::LauncherDirEntry;
+
         let runtime = tempfile::tempdir().unwrap();
-        let mut doc = load(runtime.path()).unwrap();
+        let first = with_doc_at(runtime.path(), |_| Ok(())).unwrap();
         let path = runtime.path().join("launch-roots.txt");
-        fs::rename(&path, runtime.path().join("removed-roots.txt")).unwrap();
-        assert!(!sync_external(runtime.path(), &mut doc).unwrap());
-        assert!(path.is_file());
-        fs::write(&path, [0xff, 0xfe]).unwrap();
-        doc.export.roots_txt_mtime_ms = None;
-        assert!(!sync_external(runtime.path(), &mut doc).unwrap());
-        assert!(doc.export.last_external_merge_at.is_none());
+        let stamp = first.doc.export.roots_txt_mtime_ms.unwrap();
+        let written_at = first.doc.export.roots_txt_written_at.clone();
+        for (index, external_stamp) in [stamp, stamp.saturating_sub(86_400_000)].into_iter().enumerate() {
+            let before = with_doc_at(runtime.path(), |_| Ok(())).unwrap();
+            let mut external = before.doc.clone();
+            external.entries.push(LauncherDirEntry::manual(
+                "dev", &format!("External {index}"), &format!("C:/external{index}"),
+            ));
+            let bytes = super::super::export::render_roots_txt(&external).into_bytes();
+            fs::write(&path, &bytes).unwrap();
+            fs::OpenOptions::new().write(true).open(&path).unwrap()
+                .set_modified(UNIX_EPOCH + std::time::Duration::from_millis(external_stamp)).unwrap();
+            let actual_time = fs::metadata(&path).unwrap().modified().unwrap();
+            let imported = with_doc_at(runtime.path(), |_| Ok(())).unwrap();
+            assert!(imported.external_imported);
+            assert_eq!(imported.doc.entries.len(), index + 1);
+            assert!(imported.doc.export.last_external_merge_at.is_some());
+            assert_eq!(imported.doc.export.roots_txt_mtime_ms, roots_mtime_ms(&path));
+            assert_eq!(imported.doc.export.roots_txt_written_at, written_at);
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+            assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), actual_time);
+            let again = with_doc_at(runtime.path(), |_| Ok(())).unwrap();
+            assert!(!again.external_imported);
+            assert_eq!(again.doc, imported.doc);
+        }
+        let before = with_doc_at(runtime.path(), |_| Ok(())).unwrap();
+        fs::OpenOptions::new().write(true).open(&path).unwrap()
+            .set_modified(UNIX_EPOCH + std::time::Duration::from_millis(stamp + 10_000)).unwrap();
+        let actual_time = fs::metadata(&path).unwrap().modified().unwrap();
+        let same = with_doc_at(runtime.path(), |_| Ok(())).unwrap();
+        assert!(!same.external_imported);
+        assert_eq!(same.doc.entries, before.doc.entries);
+        assert_eq!(same.doc.export.last_external_merge_at, before.doc.export.last_external_merge_at);
+        assert_eq!(same.doc.export.roots_txt_mtime_ms, roots_mtime_ms(&path));
+        assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), actual_time);
+    }
+
+    #[test]
+    fn missing_txt_is_reexported_and_unreadable_bytes_are_preserved_before_export() {
+        for existing_json in [false, true] {
+            let runtime = tempfile::tempdir().unwrap();
+            let path = runtime.path().join("launch-roots.txt");
+            if existing_json {
+                with_doc_at(runtime.path(), |_| Ok(())).unwrap();
+                fs::rename(&path, runtime.path().join("removed-roots.txt")).unwrap();
+                let missing = with_doc_at(runtime.path(), |_| Ok(())).unwrap();
+                assert!(!missing.external_imported);
+                assert!(path.is_file());
+            }
+            let invalid = b"\xff\xfeU\0n\0r\0e\0a\0d\0";
+            fs::write(&path, invalid).unwrap();
+            let view = with_doc_at(runtime.path(), |_| Ok(())).unwrap();
+            assert!(!view.external_imported);
+            assert!(view.doc.export.last_external_merge_at.is_none());
+            assert_eq!(fs::read_to_string(&path).unwrap(), super::super::export::render_roots_txt(&view.doc));
+            let backups: Vec<_> = fs::read_dir(runtime.path()).unwrap()
+                .map(Result::unwrap)
+                .filter(|entry| entry.file_name().to_string_lossy().starts_with("launch-roots.txt.unreadable-"))
+                .collect();
+            assert_eq!(backups.len(), 1);
+            assert_eq!(fs::read(backups[0].path()).unwrap(), invalid);
+            assert!(!with_doc_at(runtime.path(), |_| Ok(())).unwrap().external_imported);
+        }
+    }
+
+    #[test]
+    fn a_second_external_edit_after_import_survives_the_following_persist() {
+        let runtime = tempfile::tempdir().unwrap();
+        let first = with_doc_at(runtime.path(), |_| Ok(())).unwrap();
+        let path = runtime.path().join("launch-roots.txt");
+        fs::write(&path, "First|C:/first\n").unwrap();
+        let raced = with_doc_at(runtime.path(), |doc| {
+            doc.set_section_label("dev", "Repos")?;
+            fs::write(&path, "Second|C:/second\n").map_err(|e| e.to_string())
+        }).unwrap();
+        assert!(raced.external_imported);
+        assert_eq!(raced.doc.entries.len(), 1);
+        assert_eq!(raced.doc.entries[0].label, "First");
+        assert_eq!(fs::read_to_string(&path).unwrap(), "Second|C:/second\n");
+        assert_eq!(raced.doc.export.roots_txt_mtime_ms, first.doc.export.roots_txt_mtime_ms);
+        assert_eq!(raced.doc.export.roots_txt_written_at, first.doc.export.roots_txt_written_at);
+        assert_eq!(raced.doc.export.roots_txt_digest, first.doc.export.roots_txt_digest);
+        let next = with_doc_at(runtime.path(), |_| Ok(())).unwrap();
+        assert!(next.external_imported);
+        assert_eq!(next.doc.entries.len(), 2);
+        assert_eq!(next.doc.sections[0].label, "Repos");
+        assert!(!with_doc_at(runtime.path(), |_| Ok(())).unwrap().external_imported);
     }
 
     #[test]
@@ -451,12 +535,14 @@ mod tests {
     fn mru_prepends_normalizes_deduplicates_and_caps_at_eight() {
         let runtime = tempfile::tempdir().unwrap();
         let file = runtime.path().join("launch-dirs-mru.txt");
+        let duplicate = if cfg!(windows) { "/c/a/" } else { "C:/a/" };
         fs::write(
             &file,
-            "\nC:/a\n/c/a/\nC:/b\nC:/c\nC:/d\nC:/e\nC:/f\nC:/g\nC:/h\nC:/i\n",
+            format!("\nC:/a\n{duplicate}\nC:/b\nC:/c\nC:/d\nC:/e\nC:/f\nC:/g\nC:/h\nC:/i\n"),
         )
         .unwrap();
-        record_dir_mru(runtime.path(), "/c/b/").unwrap();
+        let recent = if cfg!(windows) { "/c/b/" } else { "C:/b/" };
+        record_dir_mru(runtime.path(), recent).unwrap();
         let paths = parse_mru(&fs::read_to_string(&file).unwrap());
         assert_eq!(
             paths,
@@ -466,6 +552,8 @@ mod tests {
         let paths = parse_mru(&fs::read_to_string(file).unwrap());
         assert_eq!(paths[0], "C:/new");
         assert_eq!(paths.len(), 8);
-        assert!(!runtime.path().join("launch-dirs-mru.txt.tmp").exists());
+        assert!(!fs::read_dir(runtime.path()).unwrap().any(|entry| {
+            entry.unwrap().file_name().to_string_lossy().starts_with("launch-dirs-mru.txt.tmp")
+        }));
     }
 }

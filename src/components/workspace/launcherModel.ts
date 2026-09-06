@@ -216,9 +216,10 @@ export function tailPath(path: string, segments = 2): string {
  * the end would make two rows indistinguishable (S6).
  */
 export function middleEllipsis(text: string, max: number): string {
-  if (text.length <= max) return text;
-  if (max <= 1) return "…";
+  const chars = Array.from(text);
+  if (chars.length <= max) return text;
+  if (max <= 1) return "\u2026";
   const head = Math.ceil((max - 1) / 2);
   const tail = max - 1 - head;
-  return `${text.slice(0, head)}…${tail > 0 ? text.slice(text.length - tail) : ""}`;
+  return `${chars.slice(0, head).join("")}\u2026${tail > 0 ? chars.slice(chars.length - tail).join("") : ""}`;
 }

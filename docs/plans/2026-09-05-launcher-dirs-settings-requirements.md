@@ -372,3 +372,46 @@ master に合流済み (`85beb840`〜`0e12ea5e`・origin/master `65b2994e` か�
 - レーンの BLOCKER 1 = 既存テスト `ailog/tests/rule_check_tests.rs` の実 DB 読み取り smoke が「本番不触」条件に見えた件 → 既存テストは境界外として親が裁定 (候補 A)。
 
 **テスト機 (2026-09-05 夜):** プロファイル `ldirs` (`~/.mycmux-ldirs`) に本番の `launch-roots.txt` / MRU を写し、`launch-dirs.json` に §5.2 のルール 4 本 (session-cwd 候補・git-parents / session-mentions / folder-root 自動) を仕込んで `scripts/test-profile.ps1 -Name ldirs -CloneAiLog` で起動。宮崎さんの目視 GO → Phase 3。
+
+## 16. Phase 3 実装記録 (2026-09-06) — 本番投入 (v0.64.0) と mac / win 両対応
+
+宮崎さんの GO (9/6「モック確認した・本番に入れる・mac/win 両対応・Astra と Grok と協力」)。体制 = Astra (Codex `gpt-6-astra` max) の読みレビュー → 親の裁定 → 修正 2 レーン (Astra = Rust / Grok = bash + TypeScript の canary) → Astra の閉鎖監査 → 親の独立検証 (Windows 4 本 + macOS `cargo test --lib`)。委譲 spec と成果 = `C:/Users/miyaz/dispatch/260906-launcher-dirs-p3-review/` (FINDINGS.md 19 件・AUDIT-1.md) / `…-p3-fix/` (Rust・4 コミット `ad51511a`〜`857b8b8e` + FIX-2 `2f378254`) / `…-p3-fixb/` (bash + TS・`6d152a44` `d00ce85a`・親が `55c9e8ee` で合流)。
+
+**macOS で実測して分かったこと (m1book・`cargo test --lib`・修正前):** 1,076 pass / 6 fail。落ちた 6 本はすべて `scan/mod.rs::safe_dir` の「祖先にシンボリックリンクがあれば拒否」が原因 — macOS では `/var` → `/private/var`、`/tmp` → `/private/tmp`、**`~/Dropbox` → `~/Library/CloudStorage/Dropbox`** がリンクなので、テストの tempdir だけでなく Dropbox 配下の案件フォルダを根にしたルールが本番でも「not a directory or linked root」になる。D8 の「リンクを追わない」は**走査で見つけた子に降りない**ことであって、利用者が明示した根や実際に使った場所を拒否する意味ではない、と裁定して直した (F-16)。vitest は 355 fail (macOS 環境要因の baseline 348 + `launcherDirsStore.test.ts` 7 本 = zustand persist の `localStorage` 未定義・同じ環境要因)。
+
+**レビュー 19 件の裁定 (全数):**
+
+| # | 重さ | 要旨 | 裁定 |
+|---|---|---|---|
+| F-01 | High | auto ルールを 1 本ずつ照合すると、別ルールが持つ行が次の走査で一度消える・§5.2 の優先が効かない | 修正: 成功した auto ルール全体で 1 回照合。優先 mention > session > git > folder・同点はルール順。所有権の移転は id・added_at を保つ |
+| F-02 | High | 親フォルダが無い (外付け未接続) と成功 0 件扱いで既存の自動行が消える | 修正: 親が無ければそのルールは error (既存行は残る) |
+| F-03 | High | 言及の帰属が根の末尾名だけで、別の場所の同名フォルダを数える | 修正: 区切りの直前にある絶対パスは接頭辞まで含めて根と一致するときだけ数える。相対の言及は従来どおり。**FIX-2**: 最初の実装は空白を区切りにしていて、宮崎さんの根 (`…合同会社 Dropbox/事務関係`) の絶対パス言及を全部落とす退行 → 硬い区切り (引用符・括弧など) だけで窓を切り、空白直後の各開始位置で候補を試す |
+| F-04 | Medium | 同じ ms・古い mtime の外部編集を見落として上書き | 修正: 検出は mtime でなく内容 (書き出し予定の内容とバイト比較)。書き出し直前に再確認し、間に変わっていれば書かない |
+| F-05 | Medium | UTF-8 で読めない txt を黙って上書き | 修正: `launch-roots.txt.unreadable-<秒>` へ退避してから書き出す |
+| F-06 | Medium | 初回取り込みで AUTO 行が先にあると同じパスの手動行が負ける | 修正: 並び順に関係なく手動が勝つ |
+| F-07 | Medium | MSYS の `/c/` 書き換えが macOS / Linux でも動く | 修正: Windows だけ (レーンの BLOCKER 1 = 既存テストの断定も Windows 限定に。候補 A 承認) |
+| F-08 | Medium | 相対パスのルール・登録が保存される | 修正: 絶対パス必須 (`絶対パスで指定してください`) |
+| F-09 | Medium | macOS の File Provider (dataless) フォルダの列挙は 30 秒の締切で止められない | **保留・既知の制限**: 走査は `spawn_blocking` で UI を止めず、ルール単位の上限あり。実害が出たら CloudStorage 配下の扱いを設計する |
+| F-10 | Medium | `session-cwd` の reader が初回にスキーマ初期化を走らせる | **変更なし**: `ailog/db.rs` の設計どおり (アプリ自身の DB を起動時に初期化済み・reader は `query_only`) |
+| F-11 | Medium | 3 時間刻みの due 判定が 1 秒差で次の刻みまで飛ぶ | 修正: 60 秒の許容 |
+| F-12 | Medium | bash の読み手が CRLF の `\r` を残す・最終行に改行が無いと落とす | 修正 (bash): `\|\| [ -n ]` と `\r` 除去 |
+| F-13 | Medium | `#` 始まりのラベルがコメント扱い・`案件` 始まりの開発行が bash で案件に行く | 修正: 書き出しで先頭 `#` → `＃`・開発行の `案件:` → `案件：`。bash の判定を `案件:` (コロン形) に揃えた |
+| F-14 | Medium | 改行を含むフォルダ名が行形式を壊す | 修正: 受付で拒否 (`パスに改行は使えません`)・書き出しで飛ばす |
+| F-15 | Medium | bash と Rust の MRU 書き手が同じ一時ファイル名 | 修正: 書き手ごとの一時名 (`.tmp-<pid>` / `.tmp.$$`)。プロセス間ロックは入れない (`ponytail:`) |
+| F-16 | Medium | tempdir が symlink 配下だとテストが落ちる (= 上の macOS 障害) | 修正 (製品コード): 明示された根・実在確認は `metadata` (リンクを辿る)、走査の子はリンクに降りない |
+| F-17 | Medium | 外部取り込みが起きた読み込みが他の窓に通知されない | 修正: `LauncherDirsView.external_imported` → 取り込んだときだけ `launcher-dirs://changed` |
+| F-18 | Medium | 新規 git ルールに §5.1 の既定除外が入らない | 修正: Rust の既定生成と TS の新規フォームの両方に `_` `.` `~$` / `AppData` `Dropbox` `OneDrive` / `backup` (契約テスト `tests/test_launcher_git_exclude_defaults.py` で同値を固定) |
+| F-19 | Low | 中間省略がサロゲートペアを割る | 修正: コードポイント単位 |
+
+**受け入れ (親が独立実行・`2f378254`):** Windows = tsc 0 / vitest 3,846 (+3) / Rust 1,113 (+18・`run_windows_tests.py`・デタッチ実行) / pytest 455 (+4)。macOS (m1book・同じ `2f378254` を detached で取得) = `cargo test --lib` 1,101 pass / 0 fail / 10 ignored (修正前の 6 件はすべて解消)・vitest 356 fail / 3,490 pass — 失敗集合の差分は新規テスト `launcherDirsStore.test.ts › translates absolute-path and line-break validation errors` の 1 本だけで、同ファイルの他 7 本と同じ `localStorage` 未定義 (環境要因)。消えた失敗なし・増えた失敗はこの 1 本のみ。
+
+**閉鎖監査 (Astra・レビュー担当と同じタブ・読み取り専用・2 回):**
+- `AUDIT-1.md` (2f378254): Fixed 15 / Partially fixed 2 (F-08・F-14 = ルール保存のエラーが `invalid rule: ` 付きで届き、TS 側の対応づけが素通りしていた) / NEW Medium 3 (N-01 書き出し失敗直後の古い txt を外部編集と誤認して消した行が復活 / N-02 FIX-2 の末尾プローズ切り詰めが引用符付きの存在しない名前まで短い既存フォルダに丸める / N-03 pytest の fixture が tmp パスを ASCII エンコード) / Low 1 (N-04 EOF の空行)。
+- Round 2 = Astra `fix_spec_3.md` (N-01: 最後に成功した書き出し内容の FNV-1a 64 bit ダイジェストを `export.roots_txt_digest` に持ち、一致する古い txt は取り込まずに書き直す / N-02: 要素の終端文字を返し、行末で終わった場合だけプローズ切り詰めを許す) `764774f4` + Grok `fixb/fix_spec_2.md` (`invalid rule: ` を 1 回剥がしてから対応づけ・fixture を UTF-8 化・EOF) `e99f2fd8` → 合流 `ebc688d2`・契約テスト `4aa44258`。
+- `AUDIT-2.md` (4aa44258): 6 件すべて Fixed / NEW Medium 1 (N-05 = 新テストの `LC_ALL=C.UTF-8` が macOS に無い) → 親が `LC_ALL=C` + UTF-8 バイト数比較に直した (`e0caa65c`・Mac で `bytes=16` を実測)。High 以上ゼロで閉鎖。
+
+**最終受け入れ (親が独立実行・`4aa44258`〜`e0caa65c`):** Windows = tsc 0 / vitest 3,847 (+4) / Rust 1,118 (+23・`run_windows_tests.py`・デタッチ実行) / pytest 456 (+5)。macOS (m1book・`4aa44258`) = `cargo test --lib` 1,106 pass / 0 fail・vitest 357 fail / 3,490 pass (失敗集合の差分 = Grok が足した 2 本のみ・同じ環境要因)。
+
+**移行 (§9.3・宮崎さん環境):** v0.64.0 の更新ボタン後に実施 (`seed_rules.py` でルール 4 本 → タスク 2 本を Disable → 私設スクリプト 2 本を `_retired/` へ → 初回走査後に dev 28 / anken 20 の集合照合)。結果はこの節に追記する。
+
+**残課題:** F-09 (上記)。macOS の実機での手触り (宮崎さんの Mac で更新後に確認)。vitest の macOS 環境失敗 (baseline 348 + 7) は本機能の問題ではないが未解消。

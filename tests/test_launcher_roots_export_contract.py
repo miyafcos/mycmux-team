@@ -45,7 +45,10 @@ def test_anken_prefix_and_field_separator_match_the_bash_reader() -> None:
     assert prefix.group(1) == "\u6848\u4ef6: "
     assert "pub const FIELD_SEPARATOR: char = '|';" in strings
     reader = shell_function("__load_roots_section")
-    assert "\u6848\u4ef6*)" in reader
+    # Only the colon form routes to anken; a dev label such as "\u6848\u4ef6tool"
+    # stays in dev, exactly like the Rust importer (strip_prefix on "\u6848\u4ef6:").
+    assert "'\u6848\u4ef6:'*)" in reader
+    assert "\u6848\u4ef6*)" not in reader
     assert "IFS='|'" in reader
 
 
@@ -168,3 +171,126 @@ def test_rule_roots_are_exported_as_short_root_comments() -> None:
     key = re.search(r'pub const SHORT_ROOT_KEY: &str = "([^"]+)";', read(STRINGS))
     assert key is not None
     assert key.group(1) in shell_function("__load_short_roots")
+
+
+def run_shell_bytes(script: str) -> bytes:
+    bash = shutil.which("bash")
+    if not bash:
+        pytest.skip("bash is not available")
+    result = subprocess.run(
+        [bash, "--noprofile", "--norc", "-s"],
+        input=script.encode("utf-8"),
+        capture_output=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
+    return result.stdout
+
+
+def test_bash_roots_reader_tolerates_crlf_and_missing_final_newline(tmp_path: Path) -> None:
+    roots = tmp_path / "launch-roots.txt"
+    # CRLF rows, last row has CR but no LF. Paths are ASCII so ${#path} is bytes.
+    repo, client = "C:/work/repo", "C:/work/client"
+    roots.write_bytes(
+        f"Repo|{repo}\r\n".encode("ascii")
+        + f"\u6848\u4ef6: Client|{client}\r".encode("utf-8"),
+    )
+    script = (
+        f"__ROOTS_FILE={shlex.quote(roots.as_posix())}\n"
+        + shell_function("__load_roots_section") + "\n"
+        + r'''
+__load_roots_section dev
+printf '%s|%s|%s\n' "${__PICK_LABELS[0]}" "${__PICK_PATHS[0]}" "${#__PICK_PATHS[0]}"
+__load_roots_section anken
+printf '%s|%s|%s\n' "${__PICK_LABELS[0]}" "${__PICK_PATHS[0]}" "${#__PICK_PATHS[0]}"
+'''
+    )
+    raw = run_shell_bytes(script)
+    assert b"\r" not in raw
+    assert raw.decode("utf-8").split("\n") == [
+        f"Repo|{repo}|{len(repo)}",
+        f"Client|{client}|{len(client)}",
+        "",
+    ]
+
+
+def test_anken_routing_uses_colon_form_only(tmp_path: Path) -> None:
+    roots = tmp_path / "launch-roots.txt"
+    roots.write_text(
+        "\u6848\u4ef6tool|C:/d\n"
+        "\u6848\u4ef6: Client|C:/c\n"
+        "\u6848\u4ef6\uff1atool|C:/t\n",
+        encoding="utf-8",
+    )
+    script = (
+        f"__ROOTS_FILE={shlex.quote(roots.as_posix())}\n"
+        + shell_function("__load_roots_section") + "\n"
+        + r'''
+__load_roots_section dev
+printf 'dev-count=%s\n' "${#__PICK_LABELS[@]}"
+printf 'dev0|%s|%s\n' "${__PICK_LABELS[0]}" "${__PICK_PATHS[0]}"
+printf 'dev1|%s|%s\n' "${__PICK_LABELS[1]}" "${__PICK_PATHS[1]}"
+__load_roots_section anken
+printf 'anken-count=%s\n' "${#__PICK_LABELS[@]}"
+printf 'anken0|%s|%s\n' "${__PICK_LABELS[0]}" "${__PICK_PATHS[0]}"
+'''
+    )
+    assert run_shell(script) == [
+        "dev-count=2",
+        "dev0|\u6848\u4ef6tool|C:/d",
+        "dev1|\u6848\u4ef6\uff1atool|C:/t",
+        "anken-count=1",
+        "anken0|Client|C:/c",
+    ]
+
+
+def test_record_dir_mru_uses_per_process_temp_and_leaves_no_tmp(tmp_path: Path) -> None:
+    mru = tmp_path / "launch-dirs-mru.txt"
+    p1 = (tmp_path / "one").as_posix()
+    p2 = (tmp_path / "two").as_posix()
+    p3 = (tmp_path / "three").as_posix()
+    script = (
+        f"__DIR_MRU_FILE={shlex.quote(mru.as_posix())}\n"
+        + shell_function("__record_dir_mru") + "\n"
+        + f"__record_dir_mru {shlex.quote(p1)}\n"
+        + f"__record_dir_mru {shlex.quote(p2)}\n"
+        + f"__record_dir_mru {shlex.quote(p3)}\n"
+        + f"__record_dir_mru {shlex.quote(p2)}\n"
+        + "printf '%s\\n' \"$(cat \"$__DIR_MRU_FILE\")\"\n"
+    )
+    assert run_shell(script) == [p2, p3, p1]
+    assert mru.read_text(encoding="utf-8").splitlines() == [p2, p3, p1]
+    assert list(tmp_path.glob("launch-dirs-mru.txt.tmp*")) == []
+
+
+def test_mru_reader_tolerates_crlf_and_missing_final_newline(tmp_path: Path) -> None:
+    target = tmp_path / "\u65e5\u672c" / "repo"
+    target.mkdir(parents=True)
+    path = target.as_posix()
+    mru = tmp_path / "launch-dirs-mru.txt"
+    mru.write_bytes(f"{path}\r".encode("utf-8"))
+    # The C locale exists everywhere (macOS has no C.UTF-8), and under it Bash's
+    # ${#var} counts bytes, so the length is compared against the UTF-8 byte count.
+    script = (
+        "export LC_ALL=C\n"
+        f"__DIR_MRU_FILE={shlex.quote(mru.as_posix())}\n"
+        f"__ROOTS_FILE={shlex.quote((tmp_path / 'missing.txt').as_posix())}\n"
+        + "\n".join(shell_function(name) for name in (
+            "__load_short_roots", "__short_path_into", "__short_path", "__select_launch_root",
+        )) + "\n"
+        + r'''
+__pick_list() {
+  printf '%s|%s\n' "${__PICK_PATHS[0]}" "${#__PICK_PATHS[0]}"
+  return 1
+}
+__select_launch_root mru || true
+'''
+    )
+    raw = run_shell_bytes(script)
+    assert b"\r" not in raw
+    decoded = raw.decode("utf-8")
+    assert decoded.split("\n") == [f"{path}|{len(path.encode('utf-8'))}", ""]
+    assert decoded.startswith(path)
+    reader = shell_function("__select_launch_root")
+    assert "while IFS= read -r line || [ -n \"$line\" ]; do" in reader
+    assert "line=\"${line%$'\\r'}\"" in reader

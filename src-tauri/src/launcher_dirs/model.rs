@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use super::paths::{folder_name, normalize_path, path_key};
+use super::paths::{folder_name, is_absolute_path, normalize_path, path_key};
 use super::strings;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -65,6 +65,8 @@ impl LauncherDirEntry {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExportState {
+    #[serde(default)]
+    pub roots_txt_digest: Option<String>,
     pub roots_txt_mtime_ms: Option<u64>,
     pub roots_txt_written_at: Option<String>,
     pub last_external_merge_at: Option<String>,
@@ -135,7 +137,13 @@ impl LauncherDirsDoc {
         if !self.sections.iter().any(|section| section.id == section_id) {
             return Err("unknown section".to_string());
         }
+        if path.contains(['\r', '\n']) {
+            return Err("path contains a line break".to_string());
+        }
         let path = normalize_path(path);
+        if !is_absolute_path(&path) {
+            return Err(format!("path must be absolute: {path}"));
+        }
         if !Path::new(&path).is_dir() {
             return Err("not a directory".to_string());
         }
@@ -298,6 +306,7 @@ pub struct LauncherDirsView {
     pub roots_txt_path: String,
     pub home_path: String,
     pub test_profile_active: bool,
+    pub external_imported: bool,
 }
 
 impl LauncherDirsView {
@@ -314,6 +323,7 @@ impl LauncherDirsView {
             roots_txt_path: display_path(runtime_dir.join("launch-roots.txt")),
             home_path: normalize_path("~"),
             test_profile_active: crate::test_profile::is_active(),
+            external_imported: false,
         }
     }
 }
@@ -356,6 +366,45 @@ mod tests {
             4
         );
         assert_eq!(doc.entries[0].id.len(), 32);
+    }
+
+    #[test]
+    fn old_json_defaults_the_export_digest_and_new_values_round_trip() {
+        let mut value = serde_json::to_value(LauncherDirsDoc::default()).unwrap();
+        value["export"].as_object_mut().unwrap().remove("roots_txt_digest");
+        let mut doc: LauncherDirsDoc = serde_json::from_value(value).unwrap();
+        assert_eq!(doc.export.roots_txt_digest, None);
+        doc.export.roots_txt_digest = Some("0123456789abcdef".into());
+        assert_eq!(
+            serde_json::from_slice::<LauncherDirsDoc>(&serde_json::to_vec(&doc).unwrap()).unwrap(),
+            doc
+        );
+    }
+
+    #[test]
+    fn add_rejects_relative_paths_before_directory_lookup() {
+        let mut doc = LauncherDirsDoc::default();
+        for path in [".", "repos", "~someone/x"] {
+            assert_eq!(
+                doc.add_entry("dev", path, None).unwrap_err(),
+                format!("path must be absolute: {path}")
+            );
+        }
+        assert!(doc.entries.is_empty());
+    }
+
+    #[test]
+    fn add_rejects_line_breaks_before_trimming_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_string_lossy();
+        let mut doc = LauncherDirsDoc::default();
+        for input in [format!("\r{path}"), format!("{path}\n"), format!("{path}/a\nb")] {
+            assert_eq!(
+                doc.add_entry("dev", &input, None).unwrap_err(),
+                "path contains a line break"
+            );
+        }
+        assert!(doc.entries.is_empty());
     }
 
     #[test]
@@ -428,11 +477,12 @@ mod tests {
             (&entry.rule_id, &entry.signal, &entry.seen_at),
             (&None, &None, &None)
         );
+        #[cfg(windows)]
         doc.ignore_path("/c/auto/");
         doc.ignore_path("C:\\auto");
         assert_eq!(doc.ignored_paths, vec!["C:/auto"]);
         assert!(!doc.entries.iter().any(|e| e.id == auto.id));
-        doc.unignore_path("/c/auto");
+        doc.unignore_path("C:/auto");
         assert!(doc.ignored_paths.is_empty());
         doc.remove_entry("absent");
         doc.remove_entry(&first.id);

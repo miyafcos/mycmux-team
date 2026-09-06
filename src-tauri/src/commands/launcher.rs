@@ -19,8 +19,11 @@ where F: FnOnce(&mut LauncherDirsDoc) -> Result<(), String> + Send + 'static {
 
 #[tauri::command]
 pub async fn launcher_dirs_get(app: tauri::AppHandle) -> Result<LauncherDirsView, String> {
-    let _ = app;
-    read_doc().await
+    let view = read_doc().await?;
+    if view.external_imported {
+        app.emit("launcher-dirs://changed", ()).map_err(|error| error.to_string())?;
+    }
+    Ok(view)
 }
 
 #[tauri::command]

@@ -142,15 +142,22 @@ export interface RuleForm {
   top_level_exclude: string;
 }
 
+export const DEFAULT_GIT_EXCLUDE_PREFIXES = ["_", ".", "~$"];
+export const DEFAULT_GIT_EXCLUDE_NAMES = ["AppData", "Dropbox", "OneDrive"];
+export const DEFAULT_GIT_EXCLUDE_SUBSTRINGS = ["backup"];
+
 export function ruleForm(type: RuleType, section = "dev", rule?: LauncherRule): RuleForm {
+  const gitDefaults = !rule && type === "git-parents";
   return {
     id: rule?.id ?? "", type, section: rule?.section ?? section, mode: rule?.mode ?? "suggest", enabled: rule?.enabled ?? true,
     parents: rule?.parents?.join("\n") ?? "", root: rule?.root ?? "",
     window_days: String(rule?.window_days ?? daysFor(type)), max: String(rule?.max ?? (type === "git-parents" ? 10 : 20)),
     depth: String(rule?.depth ?? 2), depth_overrides: rule?.depth_overrides?.map((item) => `${item.prefix}=${item.depth}`).join("\n") ?? "",
     max_depth: String(rule?.max_depth ?? 6), min_sessions: String(rule?.min_sessions ?? 1), min_mentions: String(rule?.min_mentions ?? 3),
-    exclude_prefixes: rule?.exclude?.prefixes.join("\n") ?? "", exclude_names: rule?.exclude?.names.join("\n") ?? "",
-    exclude_substrings: rule?.exclude?.substrings.join("\n") ?? "", top_level_exclude: rule?.top_level_exclude?.join("\n") ?? "",
+    exclude_prefixes: rule?.exclude?.prefixes.join("\n") ?? (gitDefaults ? DEFAULT_GIT_EXCLUDE_PREFIXES.join("\n") : ""),
+    exclude_names: rule?.exclude?.names.join("\n") ?? (gitDefaults ? DEFAULT_GIT_EXCLUDE_NAMES.join("\n") : ""),
+    exclude_substrings: rule?.exclude?.substrings.join("\n") ?? (gitDefaults ? DEFAULT_GIT_EXCLUDE_SUBSTRINGS.join("\n") : ""),
+    top_level_exclude: rule?.top_level_exclude?.join("\n") ?? "",
   };
 }
 

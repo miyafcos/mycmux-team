@@ -125,4 +125,6 @@ export const launcherTabStrings = {
   validationParentsRequired: "親フォルダを 1 つ以上指定してください",
   validationPositiveInteger: (field: string) => `${field} は 1 以上の整数にしてください`,
   validationNotADirectory: (path: string) => `フォルダが見つかりません: ${path}`,
+  validationAbsolutePath: (path: string) => `絶対パスで指定してください: ${path}`,
+  validationLineBreakInPath: "パスに改行は使えません",
 } as const;

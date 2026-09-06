@@ -1,6 +1,6 @@
 use std::{collections::HashMap, fs, path::Path};
 
-use super::{budget::Budget, is_link, safe_dir, ScanContext, ScanHit};
+use super::{budget::Budget, existing_dir, is_link, ScanContext, ScanHit};
 use crate::launcher_dirs::{
     model::Signal,
     paths::{folder_name, normalize_path, path_key},
@@ -66,7 +66,7 @@ pub fn scan(
         if !budget.visit() {
             break;
         }
-        if !safe_dir(Path::new(&cwd)) {
+        if !existing_dir(Path::new(&cwd)) {
             continue;
         }
         let Some(time) = chrono::DateTime::from_timestamp_millis(time) else {

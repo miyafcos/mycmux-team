@@ -133,13 +133,14 @@ fn is_link(metadata: &fs::Metadata) -> bool {
     metadata.file_type().is_symlink()
 }
 
-// Check ancestors too: an explicitly supplied root can be inside a junction.
+/// Follow links for explicitly configured roots and previously used paths.
+fn existing_dir(path: &Path) -> bool {
+    fs::metadata(path).is_ok_and(|meta| meta.is_dir())
+}
+
+/// Never follow a link discovered as a child while traversing a directory.
 fn safe_dir(path: &Path) -> bool {
     fs::symlink_metadata(path).is_ok_and(|meta| meta.is_dir() && !is_link(&meta))
-        && path
-            .ancestors()
-            .filter(|path| !path.as_os_str().is_empty())
-            .all(|path| fs::symlink_metadata(path).is_ok_and(|meta| !is_link(&meta)))
 }
 
 pub fn remove_orphans(doc: &mut LauncherDirsDoc) {
@@ -168,6 +169,15 @@ fn available_rules(doc: &LauncherDirsDoc, outcome: &ScanOutcome) -> Vec<Rule> {
         .collect()
 }
 
+fn signal_priority(signal: &Signal) -> u8 {
+    match signal {
+        Signal::Mention => 4,
+        Signal::Session => 3,
+        Signal::Git => 2,
+        Signal::Folder => 1,
+    }
+}
+
 pub fn apply(doc: &mut LauncherDirsDoc, outcome: &ScanOutcome, mru: &[String]) {
     use super::{
         model::{Candidate, CandidateSource, LastScan, LauncherDirEntry, ScanStats, Source},
@@ -177,16 +187,22 @@ pub fn apply(doc: &mut LauncherDirsDoc, outcome: &ScanOutcome, mru: &[String]) {
 
     remove_orphans(doc);
     let rules = available_rules(doc, outcome);
-    let successful_auto: HashSet<_> = rules
+    let successful: Vec<_> = rules
         .iter()
-        .filter(|rule| {
-            rule.mode == Mode::Auto
-                && outcome
-                    .results
-                    .iter()
-                    .any(|result| result.rule_id == rule.id && result.error.is_none())
+        .filter(|rule| rule.mode == Mode::Auto)
+        .filter_map(|rule| {
+            outcome.results.iter()
+                .find(|result| result.rule_id == rule.id && result.error.is_none())
+                .map(|result| (rule, result))
         })
-        .map(|rule| rule.section.as_str())
+        .collect();
+    let successful_auto: HashSet<_> = successful
+        .iter()
+        .map(|(rule, _)| rule.section.as_str())
+        .collect();
+    let successful_ids: HashSet<_> = successful
+        .iter()
+        .map(|(rule, _)| rule.id.as_str())
         .collect();
     doc.entries.retain(|entry| {
         !(entry.source == Source::Auto
@@ -214,43 +230,55 @@ pub fn apply(doc: &mut LauncherDirsDoc, outcome: &ScanOutcome, mru: &[String]) {
                 error: result.error.clone(),
             },
         );
-        if rule.mode != Mode::Auto || result.error.is_some() {
-            continue;
-        }
-        let owns = |entry: &LauncherDirEntry| {
-            entry.source == Source::Auto && entry.rule_id.as_deref() == Some(rule.id.as_str())
-        };
-        let blocked: HashSet<_> = doc
-            .entries
-            .iter()
-            .filter(|entry| !owns(entry))
-            .map(|entry| path_key(&entry.path))
-            .chain(ignored.iter().cloned())
-            .collect();
-        let mut desired: HashMap<_, _> = result
-            .hits
-            .iter()
-            .filter(|hit| !blocked.contains(&path_key(&hit.path)))
-            .map(|hit| (path_key(&hit.path), hit))
-            .collect();
-        doc.entries.retain_mut(|entry| {
-            if !owns(entry) {
-                return true;
-            }
-            let Some(hit) = desired.remove(&path_key(&entry.path)) else {
-                return false;
-            };
-            entry.section = rule.section.clone();
-            entry.path = normalize_path(&hit.path);
-            entry.label = hit.label.clone();
-            entry.signal = Some(hit.signal.clone());
-            entry.seen_at = Some(hit.seen_at.clone());
-            true
-        });
+    }
+    // Reconcile all successful owners together before deleting any old rows.
+    let replaceable = |entry: &LauncherDirEntry| {
+        entry.source == Source::Auto
+            && entry.rule_id.as_deref().is_some_and(|id| successful_ids.contains(id))
+    };
+    let protected: HashSet<_> = doc.entries.iter()
+        .filter(|entry| !replaceable(entry))
+        .map(|entry| path_key(&entry.path))
+        .chain(ignored.iter().cloned())
+        .collect();
+    let mut desired: HashMap<String, (&Rule, &ScanHit)> = HashMap::new();
+    // Iteration follows doc.rules, so equal signals keep the earlier rule/hit.
+    for (rule, result) in &successful {
         for hit in &result.hits {
-            if desired.remove(&path_key(&hit.path)).is_none() {
+            let key = path_key(&hit.path);
+            if !protected.contains(&key)
+                && desired.get(&key).is_none_or(|(_, old)| {
+                    signal_priority(&hit.signal) > signal_priority(&old.signal)
+                })
+            {
+                desired.insert(key, (rule, hit));
+            }
+        }
+    }
+    doc.entries.retain_mut(|entry| {
+        if !replaceable(entry) {
+            return true;
+        }
+        let Some((rule, hit)) = desired.remove(&path_key(&entry.path)) else {
+            return false;
+        };
+        entry.rule_id = Some(rule.id.clone());
+        entry.section = rule.section.clone();
+        entry.path = normalize_path(&hit.path);
+        entry.label = hit.label.clone();
+        entry.signal = Some(hit.signal.clone());
+        entry.seen_at = Some(hit.seen_at.clone());
+        true
+    });
+    for (rule, result) in &successful {
+        for hit in &result.hits {
+            let key = path_key(&hit.path);
+            if !desired.get(&key).is_some_and(|(winner, winner_hit)| {
+                winner.id == rule.id && std::ptr::eq(*winner_hit, hit)
+            }) {
                 continue;
             }
+            desired.remove(&key);
             let mut entry = LauncherDirEntry::manual(&rule.section, &hit.label, &hit.path);
             entry.source = Source::Auto;
             entry.rule_id = Some(rule.id.clone());
@@ -270,12 +298,7 @@ pub fn apply(doc: &mut LauncherDirsDoc, outcome: &ScanOutcome, mru: &[String]) {
         if candidate.source == CandidateSource::Mru {
             0
         } else {
-            match candidate.signal {
-                Signal::Mention => 4,
-                Signal::Session => 3,
-                Signal::Git => 2,
-                Signal::Folder => 1,
-            }
+            signal_priority(&candidate.signal)
         }
     };
     let mut add = |candidate: Candidate| {
@@ -429,6 +452,97 @@ mod tests {
             error: None,
             truncated: false,
         }
+    }
+
+    #[test]
+    fn auto_transfers_folder_ownership_to_mentions_without_losing_identity() {
+        for folder_still_matches in [false, true] {
+            let mut doc = LauncherDirsDoc::default();
+            let mut folder = fixture("folder-root");
+            folder.id = "folder".into();
+            folder.mode = Mode::Auto;
+            let mut mention = fixture("session-mentions");
+            mention.id = "mention".into();
+            mention.mode = Mode::Auto;
+            mention.section = "anken".into();
+            doc.rules = vec![folder.to_value(), mention.to_value()];
+            let saved = automatic("C:/shared/", "folder");
+            doc.entries = vec![saved.clone()];
+            let mut winner = hit("C:/shared", Signal::Mention);
+            winner.label = "Mention label".into();
+            let folder_hits = if folder_still_matches {
+                vec![hit("C:/shared", Signal::Folder)]
+            } else {
+                Vec::new()
+            };
+            let scan = outcome(&doc, vec![
+                result("mention", vec![winner.clone()]),
+                result("folder", folder_hits),
+            ]);
+            apply(&mut doc, &scan, &[]);
+            assert_eq!(doc.entries.len(), 1);
+            let entry = &doc.entries[0];
+            assert_eq!(entry.id, saved.id);
+            assert_eq!(entry.added_at, saved.added_at);
+            assert_eq!(entry.rule_id.as_deref(), Some("mention"));
+            assert_eq!(entry.section, "anken");
+            assert_eq!(entry.path, winner.path);
+            assert_eq!(entry.label, winner.label);
+            assert_eq!(entry.signal.as_ref(), Some(&winner.signal));
+            assert_eq!(entry.seen_at.as_deref(), Some(winner.seen_at.as_str()));
+        }
+    }
+
+    #[test]
+    fn failed_and_disabled_auto_owners_are_protected_from_stronger_hits() {
+        for disabled in [false, true] {
+            let mut doc = LauncherDirsDoc::default();
+            let mut folder = fixture("folder-root");
+            folder.id = "folder".into();
+            folder.mode = Mode::Auto;
+            folder.enabled = !disabled;
+            let mut mention = fixture("session-mentions");
+            mention.id = "mention".into();
+            mention.mode = Mode::Auto;
+            doc.rules = vec![mention.to_value(), folder.to_value()];
+            let saved = automatic("C:/shared", "folder");
+            doc.entries = vec![saved.clone()];
+            let mut failed = result("folder", Vec::new());
+            failed.error = Some("offline".into());
+            let scan = outcome(&doc, vec![
+                result("mention", vec![hit("C:/shared", Signal::Mention)]), failed,
+            ]);
+            apply(&mut doc, &scan, &[]);
+            assert_eq!(doc.entries, vec![saved]);
+        }
+    }
+
+    #[test]
+    fn auto_winners_use_signal_priority_then_rule_order_and_append_in_hit_order() {
+        let mut doc = LauncherDirsDoc::default();
+        let mut results = Vec::new();
+        for (id, signal) in [
+            ("folder", Signal::Folder), ("git", Signal::Git),
+            ("session", Signal::Session), ("mention", Signal::Mention),
+            ("tie", Signal::Mention),
+        ] {
+            let mut rule = fixture("session-cwd");
+            rule.id = id.into();
+            rule.mode = Mode::Auto;
+            doc.rules.push(rule.to_value());
+            results.push(result(id, vec![
+                hit("C:/shared", signal.clone()), hit(&format!("C:/{id}"), signal),
+            ]));
+        }
+        results.reverse();
+        let scan = outcome(&doc, results);
+        apply(&mut doc, &scan, &[]);
+        assert_eq!(
+            doc.entries.iter().map(|entry| entry.path.as_str()).collect::<Vec<_>>(),
+            vec!["C:/folder", "C:/git", "C:/session", "C:/shared", "C:/mention", "C:/tie"]
+        );
+        assert_eq!(doc.entries[3].rule_id.as_deref(), Some("mention"));
+        assert_eq!(doc.entries[3].signal, Some(Signal::Mention));
     }
 
     #[test]

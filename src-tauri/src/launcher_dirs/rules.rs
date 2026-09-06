@@ -1,7 +1,11 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use super::{model::LauncherDirsDoc, paths::normalize_path};
+use super::{model::LauncherDirsDoc, paths::{is_absolute_path, normalize_path}};
+
+pub const DEFAULT_GIT_EXCLUDE_PREFIXES: [&str; 3] = ["_", ".", "~$"];
+pub const DEFAULT_GIT_EXCLUDE_NAMES: [&str; 3] = ["AppData", "Dropbox", "OneDrive"];
+pub const DEFAULT_GIT_EXCLUDE_SUBSTRINGS: [&str; 1] = ["backup"];
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -127,6 +131,9 @@ impl Rule {
         object.entry("window_days").or_insert(json!(days));
         object.entry("max").or_insert(json!(max));
         let mut rule: Self = serde_json::from_value(value).map_err(|error| error.to_string())?;
+        if rule.directories().iter().any(|path| path.contains(['\r', '\n'])) {
+            return Err("path contains a line break".into());
+        }
         if !matches!(rule.section.as_str(), "dev" | "anken") {
             return Err("unknown section".into());
         }
@@ -140,6 +147,9 @@ impl Rule {
                 }
                 for path in parents {
                     *path = normalize_path(path);
+                    if !is_absolute_path(path) {
+                        return Err(format!("path must be absolute: {path}"));
+                    }
                 }
             }
             RuleKind::FolderRoot {
@@ -199,6 +209,9 @@ fn normalize_root(root: &mut String) -> Result<(), String> {
         return Err("root is required".into());
     }
     *root = normalize_path(root);
+    if !is_absolute_path(root) {
+        return Err(format!("path must be absolute: {root}"));
+    }
     Ok(())
 }
 
@@ -226,10 +239,17 @@ pub fn seed_defaults(doc: &mut LauncherDirsDoc) {
         return;
     }
     for kind in ["git-parents", "session-cwd"] {
-        let value = json!({
+        let mut value = json!({
             "id": uuid::Uuid::new_v4().simple().to_string(), "section": "dev",
             "type": kind, "enabled": true, "mode": "suggest", "parents": [normalize_path("~")]
         });
+        if kind == "git-parents" {
+            value["exclude"] = json!({
+                "prefixes": DEFAULT_GIT_EXCLUDE_PREFIXES,
+                "names": DEFAULT_GIT_EXCLUDE_NAMES,
+                "substrings": DEFAULT_GIT_EXCLUDE_SUBSTRINGS,
+            });
+        }
         doc.rules.push(Rule::from_value(&value).unwrap().to_value());
     }
 }
@@ -320,9 +340,14 @@ impl LauncherDirsDoc {
 
 #[cfg(test)]
 pub(crate) fn fixture(kind: &str) -> Rule {
+    let (parent, root) = if cfg!(windows) {
+        ("C:/repos", "C:/work")
+    } else {
+        ("/repos", "/work")
+    };
     Rule::from_value(
         &json!({"id":"r1", "section":"dev", "type":kind, "mode":"suggest",
-        "enabled":true, "parents":["C:/repos"], "root":"C:/work"}),
+        "enabled":true, "parents":[parent], "root":root}),
     )
     .unwrap()
 }
@@ -330,6 +355,68 @@ pub(crate) fn fixture(kind: &str) -> Rule {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn seeds_git_exclusions_without_changing_explicitly_empty_saved_rules() {
+        let mut doc = LauncherDirsDoc::default();
+        seed_defaults(&mut doc);
+        let expected = json!({
+            "prefixes": ["_", ".", "~$"],
+            "names": ["AppData", "Dropbox", "OneDrive"],
+            "substrings": ["backup"],
+        });
+        assert_eq!(doc.rules[0]["type"], "git-parents");
+        assert_eq!(doc.rules[0]["exclude"], expected);
+        let root = tempfile::tempdir().unwrap();
+        let mut rule = doc.rules[0].clone();
+        rule["parents"] = json!([root.path().to_string_lossy()]);
+        rule["exclude"] = json!({"prefixes": [], "names": [], "substrings": []});
+        doc.upsert_rule(&rule).unwrap();
+        seed_defaults(&mut doc);
+        assert_eq!(doc.rules[0]["exclude"], rule["exclude"]);
+        let RuleKind::GitParents { exclude, .. } = Rule::parse(&doc.rules[0]).unwrap().kind else {
+            panic!("wrong rule kind");
+        };
+        assert_eq!(exclude, Exclude::default());
+        rule.as_object_mut().unwrap().remove("exclude");
+        let RuleKind::GitParents { exclude, .. } = Rule::parse(&rule).unwrap().kind else {
+            panic!("wrong rule kind");
+        };
+        assert_eq!(exclude, Exclude::default());
+    }
+
+    #[test]
+    fn rejects_relative_paths_for_every_rule_kind() {
+        for kind in ["git-parents", "folder-root", "session-cwd", "session-mentions"] {
+            for path in [".", "repos", "~someone/x"] {
+                let mut value = fixture(kind).to_value();
+                if kind == "git-parents" {
+                    value["parents"] = json!([path]);
+                } else {
+                    value["root"] = json!(path);
+                }
+                assert_eq!(
+                    Rule::parse(&value).unwrap_err(),
+                    format!("path must be absolute: {path}")
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_line_breaks_before_normalizing_rule_paths() {
+        for kind in ["git-parents", "folder-root", "session-cwd", "session-mentions"] {
+            for path in ["\n", "/work\n", "\r/work", "/work\r/project"] {
+                let mut value = fixture(kind).to_value();
+                if kind == "git-parents" {
+                    value["parents"] = json!([path]);
+                } else {
+                    value["root"] = json!(path);
+                }
+                assert_eq!(Rule::parse(&value).unwrap_err(), "path contains a line break");
+            }
+        }
+    }
 
     #[test]
     fn parses_all_kinds_defaults_and_normalized_paths() {

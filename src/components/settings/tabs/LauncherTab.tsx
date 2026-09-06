@@ -210,10 +210,13 @@ export function LauncherTab() {
   const rawError = localError ?? store.error;
   const errorText = (() => {
     if (!rawError) return null;
-    if (rawError === "label is empty") return T.labelEmpty;
-    if (rawError === "not a directory") return T.notADirectory;
-    if (rawError.startsWith("not a directory: ")) return T.validationNotADirectory(rawError.slice("not a directory: ".length));
-    const sectionId = rawError.match(/^already registered in (.+)$/)?.[1];
+    const bare = rawError.startsWith("invalid rule: ") ? rawError.slice("invalid rule: ".length) : rawError;
+    if (bare === "label is empty") return T.labelEmpty;
+    if (bare === "not a directory") return T.notADirectory;
+    if (bare.startsWith("not a directory: ")) return T.validationNotADirectory(bare.slice("not a directory: ".length));
+    if (bare.startsWith("path must be absolute: ")) return T.validationAbsolutePath(bare.slice("path must be absolute: ".length));
+    if (bare === "path contains a line break") return T.validationLineBreakInPath;
+    const sectionId = bare.match(/^already registered in (.+)$/)?.[1];
     if (sectionId) return T.alreadyRegistered(view?.doc.sections.find((section) => section.id === sectionId)?.label ?? sectionId);
     return T.saveFailed(rawError);
   })();

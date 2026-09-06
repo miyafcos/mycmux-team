@@ -242,6 +242,12 @@ describe("middleEllipsis", () => {
   it("leaves a label that already fits untouched", () => {
     expect(middleEllipsis("mycmux", 26)).toBe("mycmux");
   });
+
+  it("does not split a surrogate pair", () => {
+    const out = middleEllipsis(`${"a".repeat(12)}\u{1F600}${"b".repeat(20)}`, 26);
+    expect(out).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(^|[^\uD800-\uDBFF])[\uDC00-\uDFFF]/);
+    expect(Array.from(out).length).toBe(26);
+  });
 });
 
 describe("relativeWhen", () => {

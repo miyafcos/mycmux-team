@@ -10,7 +10,8 @@ pub fn normalize_path(raw: &str) -> String {
         }
     }
     let bytes = path.as_bytes();
-    if bytes.len() >= 2
+    if cfg!(windows)
+        && bytes.len() >= 2
         && bytes[0] == b'/'
         && bytes[1].is_ascii_alphabetic()
         && (bytes.len() == 2 || bytes[2] == b'/')
@@ -22,7 +23,7 @@ pub fn normalize_path(raw: &str) -> String {
         );
     }
     let bytes = path.as_bytes();
-    if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+    if cfg!(windows) && bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
         path.replace_range(..1, &(bytes[0] as char).to_ascii_uppercase().to_string());
     }
     while path.ends_with('/') && path.len() > 1 {
@@ -32,6 +33,19 @@ pub fn normalize_path(raw: &str) -> String {
         path.pop();
     }
     path
+}
+
+pub fn is_absolute_path(normalized: &str) -> bool {
+    if cfg!(windows) {
+        let bytes = normalized.as_bytes();
+        normalized.starts_with("//")
+            || (bytes.len() >= 3
+                && bytes[0].is_ascii_alphabetic()
+                && bytes[1] == b':'
+                && bytes[2] == b'/')
+    } else {
+        normalized.starts_with('/')
+    }
 }
 
 pub fn path_key(path: &str) -> String {
@@ -58,18 +72,37 @@ mod tests {
 
     #[test]
     fn normalizes_separators_drives_and_trailing_slashes() {
-        assert_eq!(
-            normalize_path("c:\\Users\\example\\repo\\"),
-            "C:/Users/example/repo"
-        );
-        assert_eq!(
-            normalize_path("/c/Users/example/repo/"),
-            "C:/Users/example/repo"
-        );
-        assert_eq!(normalize_path("c:////"), "C:/");
-        assert_eq!(normalize_path("/c/"), "C:/");
+        #[cfg(windows)]
+        {
+            assert_eq!(
+                normalize_path("c:\\Users\\example\\repo\\"),
+                "C:/Users/example/repo"
+            );
+            assert_eq!(
+                normalize_path("/c/Users/example/repo/"),
+                "C:/Users/example/repo"
+            );
+            assert_eq!(normalize_path("c:////"), "C:/");
+            assert_eq!(normalize_path("/c/"), "C:/");
+        }
+        #[cfg(not(windows))]
+        {
+            assert_eq!(normalize_path("/c/Users/x"), "/c/Users/x");
+            assert_eq!(normalize_path("/c/"), "/c");
+            assert_eq!(normalize_path("c:\\Users\\x\\"), "c:/Users/x");
+        }
         assert_eq!(normalize_path("/"), "/");
         assert_eq!(normalize_path("/tmp/repo/"), "/tmp/repo");
+    }
+
+    #[test]
+    fn absolute_paths_follow_the_host_platform() {
+        for path in [".", "repos", "~someone/x", "C:repo"] {
+            assert!(!is_absolute_path(path), "{path}");
+        }
+        assert!(is_absolute_path("//server/share"));
+        assert_eq!(is_absolute_path("C:/repo"), cfg!(windows));
+        assert_eq!(is_absolute_path("/repos"), !cfg!(windows));
     }
 
     #[test]
@@ -86,6 +119,7 @@ mod tests {
 
     #[test]
     fn keys_fold_case_only_on_windows() {
+        #[cfg(windows)]
         assert_eq!(path_key("/c/Repo/"), path_key("C:\\Repo"));
         assert_eq!(path_key("C:/REPO") == path_key("c:/repo"), cfg!(windows));
     }

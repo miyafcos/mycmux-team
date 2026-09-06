@@ -1152,7 +1152,8 @@ if [ -n "$MYCMUX_LAUNCH_TARGET" ]; then
 fi
 
 # ディレクトリ選択。候補は ~/.mycmux/launch-roots.txt (name|path 形式)。
-# 表示名が「案件」始まりの行は案件セクション、それ以外は開発セクションに出る。
+# 表示名が「案件:」で始まる行は案件セクション、それ以外は開発セクションに出る (Rust の
+# 取り込み側 launcher_dirs/import.rs と同じ判定。「案件」だけで始まる開発行は開発に残る)。
 # 選択で cd してメインメニューに戻る。以降の起動はそのディレクトリで行われるため、
 # Claude Code はそのリポジトリの CLAUDE.md / プロジェクト履歴を持つセッションになる。
 #
@@ -1167,7 +1168,7 @@ __DIR_MRU_FILE="$__LAUNCH_RUNTIME_DIR/launch-dirs-mru.txt"
 __record_dir_mru() {
   local target="$1"
   [ -z "$target" ] && return
-  local tmp="${__DIR_MRU_FILE}.tmp"
+  local tmp="${__DIR_MRU_FILE}.tmp.$$"
   mkdir -p "$(dirname "$__DIR_MRU_FILE")" 2>/dev/null
   # 初回や全行除外で grep が 1 を返してもブロック全体を失敗にしないこと (mv が飛ぶ)
   {
@@ -1177,7 +1178,7 @@ __record_dir_mru() {
     fi
     true
   } > "$tmp" 2>/dev/null
-  [ -s "$tmp" ] && mv -f "$tmp" "$__DIR_MRU_FILE" 2>/dev/null
+  if [ -s "$tmp" ]; then mv -f "$tmp" "$__DIR_MRU_FILE" 2>/dev/null; else rm -f "$tmp" 2>/dev/null; fi
   return 0
 }
 
@@ -1464,11 +1465,13 @@ __load_roots_section() {
   local mode="$1" name path
   __PICK_LABELS=(); __PICK_PATHS=()
   [ -f "$__ROOTS_FILE" ] || return
-  while IFS='|' read -r name path; do
+  while IFS='|' read -r name path || [ -n "$name" ]; do
+    name="${name%$'\r'}"
+    path="${path%$'\r'}"
     case "$name" in ''|'#'*) continue ;; esac
     [ -z "$path" ] && continue
     case "$name" in
-      案件*)
+      '案件:'*)
         [ "$mode" = "anken" ] || continue
         name="${name#案件: }"; name="${name#案件:}"
         ;;
@@ -1493,7 +1496,8 @@ __select_launch_root() {
       __PICK_LABELS=(); __PICK_PATHS=()
       if [ -f "$__DIR_MRU_FILE" ]; then
         local line
-        while IFS= read -r line; do
+        while IFS= read -r line || [ -n "$line" ]; do
+          line="${line%$'\r'}"
           [ -z "$line" ] && continue
           [ -d "$line" ] || continue
           __PICK_LABELS+=("$(__short_path "$line")"); __PICK_PATHS+=("$line")

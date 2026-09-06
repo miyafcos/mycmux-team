@@ -14,6 +14,13 @@ fn render_entry(entry: &LauncherDirEntry) -> String {
             other => other,
         })
         .collect();
+    if label.starts_with('#') {
+        label.replace_range(..1, &strings::LABEL_COMMENT_REPLACEMENT.to_string());
+    }
+    let anken_prefix = strings::ANKEN_PREFIX.trim_end();
+    if entry.section != "anken" && label.starts_with(anken_prefix) {
+        label.replace_range(..anken_prefix.len(), strings::ANKEN_PREFIX_COLON_REPLACEMENT);
+    }
     if entry.source == Source::Auto {
         if let Some(date) = entry
             .seen_at
@@ -61,6 +68,7 @@ pub fn render_roots_txt(doc: &LauncherDirsDoc) -> String {
             .entries
             .iter()
             .filter(|entry| entry.section == section.id && entry.source == Source::Manual)
+            .filter(|entry| !entry.path.contains(['\r', '\n']))
         {
             text.push_str(&render_entry(entry));
         }
@@ -68,6 +76,7 @@ pub fn render_roots_txt(doc: &LauncherDirsDoc) -> String {
             .entries
             .iter()
             .filter(|entry| entry.section == section.id && entry.source == Source::Auto)
+            .filter(|entry| !entry.path.contains(['\r', '\n']))
             .collect();
         auto.sort_by(|a, b| {
             b.seen_at
@@ -106,6 +115,16 @@ pub fn render_roots_txt(doc: &LauncherDirsDoc) -> String {
     text
 }
 
+// Stable FNV-1a 64-bit identity for the last successfully exported bytes.
+pub(super) fn roots_txt_digest(bytes: &[u8]) -> String {
+    let mut hash = 0xcbf29ce484222325_u64;
+    for &byte in bytes {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{hash:016x}")
+}
+
 pub fn roots_mtime_ms(path: &Path) -> Option<u64> {
     fs::metadata(path)
         .ok()?
@@ -116,20 +135,59 @@ pub fn roots_mtime_ms(path: &Path) -> Option<u64> {
         .and_then(|duration| u64::try_from(duration.as_millis()).ok())
 }
 
-pub fn write_roots_txt(runtime_dir: &Path, doc: &mut LauncherDirsDoc) -> Result<(), String> {
+pub fn write_roots_txt(
+    runtime_dir: &Path,
+    doc: &mut LauncherDirsDoc,
+    expected: Option<&[u8]>,
+) -> Result<(), String> {
     let path = runtime_dir.join("launch-roots.txt");
     let text = render_roots_txt(doc);
-    let changed = match fs::read(&path) {
-        Ok(contents) => contents != text.as_bytes(),
-        Err(error) if error.kind() == ErrorKind::NotFound => true,
-        Err(error) => return Err(error.to_string()),
+    let read_current = || match fs::read(&path) {
+        Ok(contents) => Ok(Some(contents)),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.to_string()),
     };
-    if changed {
+    // An empty snapshot also represents a missing file; neither holds rows.
+    let conflicts = |current: &Option<Vec<u8>>| {
+        expected.is_some_and(|expected| current.as_deref().unwrap_or_default() != expected)
+    };
+    let mut current = read_current()?;
+    if conflicts(&current) {
+        crate::diag_warn!("launcher_dirs", "External roots changed after import; skipping export");
+        return Ok(());
+    }
+    if current.as_deref() != Some(text.as_bytes()) {
         let tmp = runtime_dir.join("launch-roots.txt.tmp");
-        fs::write(&tmp, text).map_err(|e| e.to_string())?;
+        fs::write(&tmp, &text).map_err(|e| e.to_string())?;
+        current = match read_current() {
+            Ok(current) => current,
+            Err(error) => {
+                let _ = fs::remove_file(&tmp);
+                return Err(error);
+            }
+        };
+        if conflicts(&current) {
+            fs::remove_file(&tmp).map_err(|e| e.to_string())?;
+            crate::diag_warn!("launcher_dirs", "External roots changed before replacement; skipping export");
+            return Ok(());
+        }
+        if current.as_ref().is_some_and(|bytes| std::str::from_utf8(bytes).is_err()) {
+            let mut stamp = std::time::SystemTime::now()
+                .duration_since(UNIX_EPOCH).map_err(|e| e.to_string())?.as_secs();
+            let mut backup = runtime_dir.join(format!("launch-roots.txt.unreadable-{stamp}"));
+            while backup.exists() {
+                stamp += 1;
+                backup = runtime_dir.join(format!("launch-roots.txt.unreadable-{stamp}"));
+            }
+            fs::rename(&path, &backup).map_err(|e| e.to_string())?;
+            crate::diag_warn!(
+                "launcher_dirs", "Unreadable roots moved to {}", backup.display()
+            );
+        }
         fs::rename(&tmp, &path).map_err(|e| e.to_string())?;
         doc.export.roots_txt_written_at = Some(now());
     }
+    doc.export.roots_txt_digest = Some(roots_txt_digest(text.as_bytes()));
     doc.export.roots_txt_mtime_ms = roots_mtime_ms(&path);
     Ok(())
 }
@@ -138,6 +196,71 @@ pub fn write_roots_txt(runtime_dir: &Path, doc: &mut LauncherDirsDoc) -> Result<
 mod tests {
     use super::super::import::{initial_import, merge_external, parse_roots_txt};
     use super::*;
+
+    #[test]
+    fn roots_txt_digest_uses_stable_fnv1a64_vectors() {
+        for (bytes, expected) in [
+            (b"".as_slice(), "cbf29ce484222325"),
+            (b"a".as_slice(), "af63dc4c8601ec8c"),
+            (b"foobar".as_slice(), "85944171f73967e8"),
+        ] {
+            assert_eq!(roots_txt_digest(bytes), expected);
+        }
+    }
+
+    #[test]
+    fn failed_export_keeps_the_last_successful_digest() {
+        let runtime = tempfile::tempdir().unwrap();
+        let mut doc = LauncherDirsDoc::default();
+        write_roots_txt(runtime.path(), &mut doc, None).unwrap();
+        let path = runtime.path().join("launch-roots.txt");
+        let previous = fs::read(&path).unwrap();
+        let export = doc.export.clone();
+        doc.entries.push(LauncherDirEntry::manual("dev", "New", "/new"));
+        fs::create_dir(runtime.path().join("launch-roots.txt.tmp")).unwrap();
+        assert!(write_roots_txt(runtime.path(), &mut doc, Some(&previous)).is_err());
+        assert_eq!(doc.export, export);
+        assert_eq!(fs::read(path).unwrap(), previous);
+    }
+
+    #[test]
+    fn reserved_dev_labels_round_trip_without_becoming_comments_or_anken() {
+        let mut doc = LauncherDirsDoc::default();
+        doc.entries = vec![
+            LauncherDirEntry::manual("dev", "#Repo", "C:/repo"),
+            LauncherDirEntry::manual("dev", "\u{6848}\u{4ef6}:tool", "C:/tool"),
+        ];
+        let original = doc.clone();
+        let text = render_roots_txt(&doc);
+        let rows = parse_roots_txt(&text);
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|row| row.section == "dev"));
+        assert_eq!(rows[0].label, format!("{}Repo", strings::LABEL_COMMENT_REPLACEMENT));
+        assert_eq!(rows[1].label, format!("{}tool", strings::ANKEN_PREFIX_COLON_REPLACEMENT));
+        assert_eq!(doc, original);
+    }
+
+    #[test]
+    fn skips_manual_and_auto_paths_containing_line_breaks() {
+        let mut doc = LauncherDirsDoc::default();
+        for section in ["dev", "anken"] {
+            for source in [Source::Manual, Source::Auto] {
+                for path in ["/work/a\rb", "/work/a\nb"] {
+                    let mut entry = LauncherDirEntry::manual(section, "unsafe", "/unused");
+                    entry.path = path.into();
+                    entry.source = source.clone();
+                    entry.rule_id = Some(strings::LEGACY_DEV_RULE_ID.into());
+                    doc.entries.push(entry);
+                }
+            }
+        }
+        doc.entries.push(LauncherDirEntry::manual("dev", "safe", "/safe"));
+        let text = render_roots_txt(&doc);
+        assert!(!text.contains("unsafe"));
+        let rows = parse_roots_txt(&text);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].label, "safe");
+    }
 
     fn legacy_document() -> LauncherDirsDoc {
         let mark = chrono::Local::now().format("%m/%d");
@@ -296,7 +419,7 @@ mod tests {
             text.lines()
                 .filter(|line| line.starts_with(strings::SHORT_ROOT_KEY))
                 .count(),
-            1
+            if cfg!(windows) { 1 } else { 2 }
         );
         let rows: Vec<_> = text.lines().filter(|line| !line.starts_with('#')).collect();
         assert_eq!(
@@ -335,10 +458,35 @@ mod tests {
     }
 
     #[test]
+    fn changed_snapshot_is_not_overwritten_or_recorded_as_an_export() {
+        for later in [b"Later|/later\n".as_slice(), b"\xff\xfe".as_slice()] {
+            let runtime = tempfile::tempdir().unwrap();
+            let path = runtime.path().join("launch-roots.txt");
+            let expected = b"Earlier|/earlier\n";
+            fs::write(&path, later).unwrap();
+            let stamp = fs::metadata(&path).unwrap().modified().unwrap();
+            let mut doc = LauncherDirsDoc::default();
+            doc.export.roots_txt_mtime_ms = Some(123);
+            doc.export.roots_txt_digest = Some(roots_txt_digest(expected));
+            let export = doc.export.clone();
+            write_roots_txt(runtime.path(), &mut doc, Some(expected)).unwrap();
+            assert_eq!(fs::read(&path).unwrap(), later);
+            assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), stamp);
+            assert_eq!(doc.export, export);
+            assert!(!runtime.path().join("launch-roots.txt.tmp").exists());
+            assert_eq!(fs::read_dir(runtime.path()).unwrap().count(), 1);
+        }
+    }
+
+    #[test]
     fn writes_atomically_and_records_the_files_actual_mtime() {
         let runtime = tempfile::tempdir().unwrap();
         let mut doc = LauncherDirsDoc::default();
-        write_roots_txt(runtime.path(), &mut doc).unwrap();
+        write_roots_txt(runtime.path(), &mut doc, None).unwrap();
+        assert_eq!(
+            doc.export.roots_txt_digest,
+            Some(roots_txt_digest(&fs::read(runtime.path().join("launch-roots.txt")).unwrap()))
+        );
         assert_eq!(
             doc.export.roots_txt_mtime_ms,
             roots_mtime_ms(&runtime.path().join("launch-roots.txt"))
@@ -354,12 +502,17 @@ mod tests {
     fn unchanged_txt_keeps_its_timestamp_but_refreshes_the_recorded_mtime() {
         let runtime = tempfile::tempdir().unwrap();
         let mut doc = LauncherDirsDoc::default();
-        write_roots_txt(runtime.path(), &mut doc).unwrap();
+        write_roots_txt(runtime.path(), &mut doc, None).unwrap();
         let path = runtime.path().join("launch-roots.txt");
         let stamp = fs::metadata(&path).unwrap().modified().unwrap();
         let written_at = doc.export.roots_txt_written_at.clone();
         doc.export.roots_txt_mtime_ms = None;
-        write_roots_txt(runtime.path(), &mut doc).unwrap();
+        doc.export.roots_txt_digest = None;
+        write_roots_txt(runtime.path(), &mut doc, None).unwrap();
+        assert_eq!(
+            doc.export.roots_txt_digest,
+            Some(roots_txt_digest(&fs::read(&path).unwrap()))
+        );
         assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), stamp);
         assert_eq!(doc.export.roots_txt_mtime_ms, roots_mtime_ms(&path));
         assert_eq!(doc.export.roots_txt_written_at, written_at);

@@ -1,6 +1,6 @@
 use std::{collections::HashMap, fs, path::Path, time::SystemTime};
 
-use super::{budget::Budget, is_link, recent, safe_dir, ScanContext, ScanHit};
+use super::{budget::Budget, existing_dir, is_link, recent, ScanContext, ScanHit};
 use crate::launcher_dirs::{
     model::Signal,
     rules::{representative_depth, Rule, RuleKind},
@@ -23,9 +23,9 @@ pub fn scan(
         unreachable!()
     };
     let root = Path::new(root);
-    if !safe_dir(root) {
+    if !existing_dir(root) {
         return Err(format!(
-            "not a directory or linked root: {}",
+            "not a directory: {}",
             root.display()
         ));
     }
@@ -80,7 +80,7 @@ pub fn scan(
                 let path = key
                     .iter()
                     .fold(root.to_path_buf(), |path, part| path.join(part));
-                if safe_dir(&path) {
+                if existing_dir(&path) {
                     let hit = ScanHit::new(&path, key.join("/"), Signal::Folder, time);
                     latest.insert(key, (time, hit));
                 }
@@ -175,7 +175,7 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn junctions_are_not_followed_even_when_supplied_as_the_root() {
+    fn junction_roots_are_allowed_but_discovered_junctions_are_not_followed() {
         let root = tempfile::tempdir().unwrap();
         let target = tempfile::tempdir().unwrap();
         write_at(
@@ -190,8 +190,9 @@ mod tests {
             .output()
             .unwrap();
         assert!(status.status.success());
-        assert!(!safe_dir(&link));
-        assert!(!safe_dir(&link.join("client")));
+        assert!(existing_dir(&link));
+        assert!(existing_dir(&link.join("client")));
+        assert!(!super::super::safe_dir(&link));
         let mut rule = fixture("folder-root");
         if let RuleKind::FolderRoot { root: path, .. } = &mut rule.kind {
             *path = root.path().to_string_lossy().into();
@@ -199,5 +200,35 @@ mod tests {
         assert!(scan(&rule, &context(root.path()), &mut Budget::new())
             .unwrap()
             .is_empty());
+        if let RuleKind::FolderRoot { root: path, .. } = &mut rule.kind {
+            *path = link.to_string_lossy().into();
+        }
+        let hits = scan(&rule, &context(root.path()), &mut Budget::new()).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].label, "client/project");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_roots_are_allowed_but_discovered_symlinks_are_not_followed() {
+        let root = tempfile::tempdir().unwrap();
+        let container = root.path().join("container");
+        let target = root.path().join("target");
+        fs::create_dir(&container).unwrap();
+        let ctx = context(root.path());
+        write_at(&target.join("client/project/file"), ctx.now);
+        let link = container.join("linked");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let mut rule = fixture("folder-root");
+        if let RuleKind::FolderRoot { root: path, .. } = &mut rule.kind {
+            *path = link.to_string_lossy().into();
+        }
+        let hits = scan(&rule, &ctx, &mut Budget::new()).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].label, "client/project");
+        if let RuleKind::FolderRoot { root: path, .. } = &mut rule.kind {
+            *path = container.to_string_lossy().into();
+        }
+        assert!(scan(&rule, &ctx, &mut Budget::new()).unwrap().is_empty());
     }
 }

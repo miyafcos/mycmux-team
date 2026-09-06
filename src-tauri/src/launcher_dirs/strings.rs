@@ -24,6 +24,16 @@ pub const ANKEN_PREFIX: &str = "案件: ";
 pub const FIELD_SEPARATOR: char = '|';
 pub const LABEL_SEPARATOR_REPLACEMENT: char = '｜';
 
+/// A label whose first character is `#` would read as a comment line in
+/// `launch-roots.txt`; export writes this character instead (the JSON keeps the
+/// user's label unchanged).
+pub const LABEL_COMMENT_REPLACEMENT: char = '＃';
+
+/// A dev-section label that starts with `案件:` would be routed to the anken
+/// section by both readers; export writes the colon as this full-width form
+/// (`案件：`) for dev rows so the row stays in the dev section.
+pub const ANKEN_PREFIX_COLON_REPLACEMENT: &str = "案件：";
+
 /// Comment key whose value is a directory the bash launcher shortens paths under.
 pub const SHORT_ROOT_KEY: &str = "# short-root:";
 

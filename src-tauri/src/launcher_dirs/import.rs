@@ -155,9 +155,17 @@ fn apply_row(entry: &mut LauncherDirEntry, row: &ImportedRow) {
 pub fn initial_import(rows: &[ImportedRow]) -> LauncherDirsDoc {
     let mut doc = LauncherDirsDoc::default();
     super::rules::seed_defaults(&mut doc);
+    let manual_keys: HashSet<_> = rows.iter()
+        .filter(|row| row.legacy.is_none())
+        .map(|row| path_key(&row.path))
+        .collect();
     let mut keys = HashSet::new();
     for row in rows {
-        if keys.insert(path_key(&row.path)) {
+        let key = path_key(&row.path);
+        if row.legacy.is_some() && manual_keys.contains(&key) {
+            continue;
+        }
+        if keys.insert(key) {
             doc.entries.push(from_row(row));
         }
     }
@@ -305,7 +313,7 @@ mod tests {
         assert_eq!(rows[0].seen_at, None);
         assert_eq!(rows[1].legacy, Some("dev"));
         assert_eq!(rows[1].label, "Repo");
-        assert_eq!(rows[1].path, "C:/Repo");
+        assert_eq!(rows[1].path, if cfg!(windows) { "C:/Repo" } else { "/c/Repo" });
         assert_eq!(rows[1].signal, Some(Signal::Git));
         assert_eq!(rows[1].seen_at.as_deref(), Some("2026-01-02"));
         assert_eq!(rows[2].label, "dev: outside");
@@ -321,11 +329,34 @@ mod tests {
     }
 
     #[test]
+    fn initial_import_prefers_later_manual_rows_at_their_original_positions() {
+        let rows = parse_roots_at(concat!(
+            "# === AUTO-DEV BEGIN\n",
+            "dev: duplicate (01/01)|C:/same/\n",
+            "dev: retained (01/01)|C:/retained\n",
+            "# === AUTO-DEV END\n",
+            "Middle|C:/middle\n",
+            "Pinned|C:/same\n",
+            "Last|C:/last\n",
+        ), today());
+        let doc = initial_import(&rows);
+        assert_eq!(
+            doc.entries.iter().map(|entry| entry.label.as_str()).collect::<Vec<_>>(),
+            vec!["retained", "Middle", "Pinned", "Last"]
+        );
+        let pinned = &doc.entries[2];
+        assert_eq!(pinned.path, "C:/same");
+        assert_eq!(pinned.source, Source::Manual);
+        assert!(pinned.rule_id.is_none());
+        assert!(pinned.signal.is_none());
+    }
+
+    #[test]
     fn initial_import_preserves_file_order_and_first_path_wins() {
         let rows = parse_roots_at(
             concat!(
                 "manual (01/01)|C:/same\n",
-                "# === AUTO-DEV BEGIN\ndev: duplicate (01/01)|/c/same/\n",
+                "# === AUTO-DEV BEGIN\ndev: duplicate (01/01)|C:/same/\n",
                 "dev: new (01/01)|C:/new\n# === AUTO-DEV END\n",
                 "# === AUTO-ANKEN BEGIN\n案件: Client (~01/01)|C:/client\n# === AUTO-ANKEN END\n",
             ),

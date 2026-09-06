@@ -52,8 +52,13 @@ pub fn start(app: AppHandle) {
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             interval.tick().await;
-            let due = tauri::async_runtime::spawn_blocking(|| {
-                let doc = store::with_doc(|_| Ok(()))?.doc;
+            let schedule_app = app.clone();
+            let due = tauri::async_runtime::spawn_blocking(move || {
+                let view = store::with_doc(|_| Ok(()))?;
+                if view.external_imported {
+                    schedule_app.emit("launcher-dirs://changed", ()).map_err(|error| error.to_string())?;
+                }
+                let doc = view.doc;
                 let at = doc
                     .last_scan
                     .as_ref()
@@ -62,7 +67,7 @@ pub fn start(app: AppHandle) {
                     .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok());
                 Ok::<_, String>(at.is_none_or(|at| {
                     chrono::Local::now().signed_duration_since(at).num_seconds()
-                        >= INTERVAL.as_secs() as i64
+                        >= INTERVAL.as_secs() as i64 - 60
                 }))
             })
             .await;

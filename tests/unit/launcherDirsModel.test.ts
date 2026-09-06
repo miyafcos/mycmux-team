@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { RULE_TYPES, formatCandidate, readLastScan, readRule, ruleForm, ruleSummary, validateRuleForm } from "../../src/lib/launcherDirsModel";
+import { DEFAULT_GIT_EXCLUDE_NAMES, DEFAULT_GIT_EXCLUDE_PREFIXES, DEFAULT_GIT_EXCLUDE_SUBSTRINGS, RULE_TYPES, formatCandidate, readLastScan, readRule, ruleForm, ruleSummary, validateRuleForm } from "../../src/lib/launcherDirsModel";
 import { launcherTabStrings as T } from "../../src/components/settings/tabs/launcherTabStrings";
 import type { LauncherDirCandidate } from "../../src/lib/ipc";
 
@@ -50,6 +50,20 @@ describe("launcher rule forms", () => {
       expect(validateRuleForm({ ...form, depth_overrides: invalid }, T).error).toBe(T.validationPositiveInteger(T.fieldDepthOverrides));
     }
     expect(validateRuleForm(ruleForm("session-cwd"), T).rule?.root).toBeNull();
+  });
+
+  it("prefills git-parents exclusions only for a new form", () => {
+    const created = validateRuleForm({ ...ruleForm("git-parents"), parents: "C:/repos" }, T);
+    expect(created.rule?.exclude).toEqual({
+      prefixes: DEFAULT_GIT_EXCLUDE_PREFIXES,
+      names: DEFAULT_GIT_EXCLUDE_NAMES,
+      substrings: DEFAULT_GIT_EXCLUDE_SUBSTRINGS,
+    });
+    const existing = readRule({ ...raw("git-parents"), exclude: { prefixes: [], names: [], substrings: [] } })!;
+    const kept = ruleForm("git-parents", "dev", existing);
+    expect([kept.exclude_prefixes, kept.exclude_names, kept.exclude_substrings]).toEqual(["", "", ""]);
+    const folder = ruleForm("folder-root");
+    expect([folder.exclude_prefixes, folder.exclude_names, folder.exclude_substrings]).toEqual(["", "", ""]);
   });
 
   it("round trips every form and only includes fields used by its rule type", () => {

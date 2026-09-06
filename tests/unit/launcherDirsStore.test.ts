@@ -158,6 +158,20 @@ describe("launcher settings interactions", () => {
     expect(container.querySelector("select, datalist")).toBeNull();
   });
 
+  it("translates prefixed rule-save path errors", async () => {
+    await act(async () => { byLabel(T.addRule).click(); });
+    await act(async () => { byLabel(T.ruleTypeGit).click(); });
+    mocks.open.mockResolvedValue("C:/chosen parent");
+    await act(async () => { byLabel(`${T.pickFolderForRule} ${T.addFolderToList}`).click(); });
+    mocks.upsertRule.mockRejectedValueOnce("invalid rule: path must be absolute: repos");
+    await act(async () => { byLabel(T.saveRule).click(); });
+    expect(container.querySelector("[role=alert]")?.textContent).toBe(T.validationAbsolutePath("repos"));
+    expect(container.querySelector("form")).not.toBeNull();
+    mocks.upsertRule.mockRejectedValueOnce("invalid rule: path contains a line break");
+    await act(async () => { byLabel(T.saveRule).click(); });
+    expect(container.querySelector("[role=alert]")?.textContent).toBe(T.validationLineBreakInPath);
+  });
+
   it("edits, toggles and deletes known rules and lets unknown rule types be deleted", async () => {
     const known = { id: "known", type: "session-cwd", section: "dev", enabled: true, mode: "suggest" };
     const saved = { ...data, doc: { ...data.doc, rules: [known, { id: "future", type: "future", custom: [1, 2] }] } };
@@ -232,6 +246,16 @@ describe("launcher settings interactions", () => {
     mocks.open.mockResolvedValue(null);
     await act(async () => { byLabel(T.pickFolder).click(); });
     expect(mocks.add).toHaveBeenCalledTimes(1);
+  });
+
+  it("translates absolute-path and line-break validation errors", async () => {
+    mocks.open.mockResolvedValue("C:/x");
+    mocks.add.mockRejectedValueOnce("path must be absolute: C:/x");
+    await act(async () => { byLabel(T.pickFolder).click(); });
+    expect(container.querySelector("[role=alert]")?.textContent).toBe(T.validationAbsolutePath("C:/x"));
+    mocks.add.mockRejectedValueOnce("path contains a line break");
+    await act(async () => { byLabel(T.pickFolder).click(); });
+    expect(container.querySelector("[role=alert]")?.textContent).toBe(T.validationLineBreakInPath);
   });
 
   it("shares visibility ids without losing unrelated hidden rows, and routes settings requests", async () => {

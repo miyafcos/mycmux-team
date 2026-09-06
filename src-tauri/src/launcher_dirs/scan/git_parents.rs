@@ -4,7 +4,7 @@ use std::{
     time::SystemTime,
 };
 
-use super::{budget::Budget, is_link, recent, safe_dir, ScanContext, ScanHit};
+use super::{budget::Budget, existing_dir, is_link, recent, safe_dir, ScanContext, ScanHit};
 use crate::launcher_dirs::{
     model::Signal,
     paths::{folder_name, path_key},
@@ -34,7 +34,7 @@ fn activity(repo: &Path, budget: &mut Budget) -> Option<SystemTime> {
     } else {
         return None;
     };
-    if !safe_dir(&gitdir) {
+    if !existing_dir(&gitdir) {
         return None;
     }
     ["index", "HEAD", "FETCH_HEAD", "COMMIT_EDITMSG"]
@@ -60,14 +60,17 @@ pub fn scan(
     let RuleKind::GitParents { parents, exclude } = &rule.kind else {
         unreachable!()
     };
+    // Validate every parent before collecting even partial results.
+    for parent in parents {
+        if !existing_dir(Path::new(parent)) {
+            return Err(format!("not a directory: {parent}"));
+        }
+    }
     let mut hits = Vec::new();
     for parent in parents {
         let path = Path::new(parent);
         if !budget.visit() {
             break;
-        }
-        if !safe_dir(path) {
-            continue;
         }
         let entries = fs::read_dir(path).map_err(|error| format!("read {parent}: {error}"))?;
         for entry in entries {
@@ -77,10 +80,7 @@ pub fn scan(
             let Ok(entry) = entry else {
                 continue;
             };
-            let Ok(meta) = fs::symlink_metadata(entry.path()) else {
-                continue;
-            };
-            if !meta.is_dir() || is_link(&meta) {
+            if !safe_dir(&entry.path()) {
                 continue;
             }
             if !budget.visit() {
@@ -115,6 +115,41 @@ mod tests {
         scan::{context, finish_hits, write_at},
     };
     use std::time::Duration;
+
+    #[test]
+    fn missing_parent_errors_and_apply_preserves_existing_auto_rows() {
+        use crate::launcher_dirs::{
+            model::{LauncherDirEntry, LauncherDirsDoc, Source},
+            rules::Mode,
+            scan::{apply, run_all_at},
+        };
+
+        let root = tempfile::tempdir().unwrap();
+        let ctx = context(root.path());
+        write_at(&root.path().join("repo/.git/HEAD"), ctx.now);
+        let missing = root.path().join("missing").to_string_lossy().into_owned();
+        let mut rule = fixture("git-parents");
+        rule.mode = Mode::Auto;
+        if let RuleKind::GitParents { parents, .. } = &mut rule.kind {
+            *parents = vec![root.path().to_string_lossy().into_owned(), missing.clone()];
+        }
+        assert_eq!(
+            scan(&rule, &ctx, &mut Budget::new()).unwrap_err(),
+            format!("not a directory: {missing}")
+        );
+        let mut entry = LauncherDirEntry::manual(
+            "dev", "saved", &root.path().join("repo").to_string_lossy(),
+        );
+        entry.source = Source::Auto;
+        entry.rule_id = Some(rule.id.clone());
+        let mut doc = LauncherDirsDoc::default();
+        doc.rules = vec![rule.to_value()];
+        doc.entries = vec![entry.clone()];
+        let outcome = run_all_at(&doc, &ctx);
+        assert!(outcome.results[0].error.is_some());
+        apply(&mut doc, &outcome, &[]);
+        assert_eq!(doc.entries, vec![entry]);
+    }
 
     #[test]
     fn normal_and_relative_worktree_activity_exclusions_window_and_max() {
