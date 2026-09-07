@@ -276,6 +276,15 @@ def build_parser() -> argparse.ArgumentParser:
     web_open.add_argument("--preset", default="chatgpt")
     web_open.add_argument("--anchor-session")
     web_open.add_argument("--replace-anchor", action="store_true")
+    web_open.add_argument("--url")
+    web_open.add_argument("--background", action="store_true")
+
+    web_read = subparsers.add_parser("web-read", help="Read a web pane conversation")
+    web_read_target = web_read.add_mutually_exclusive_group()
+    web_read_target.add_argument("--tab")
+    web_read_target.add_argument("--preset")
+    web_close = subparsers.add_parser("web-close", help="Close a web pane tab")
+    web_close.add_argument("--tab", required=True)
 
     subparsers.add_parser("web-list", help="List web pane tabs")
 
@@ -529,7 +538,18 @@ def request_for(namespace: argparse.Namespace) -> tuple[str, dict[str, Any]]:
         )
         if namespace.replace_anchor:
             args["replaceAnchor"] = True
+        optional_arg(args, "url", namespace.url)
+        if namespace.background:
+            args["background"] = True
         return "web.open", args
+    if namespace.subcommand == "web-read":
+        if namespace.tab:
+            return "web.read", {"tabId": namespace.tab}
+        args = {"presetId": namespace.preset or "chatgpt"}
+        optional_arg(args, "anchorSessionId", os.environ.get("MYCMUX_PANE_SESSION_ID"))
+        return "web.read", args
+    if namespace.subcommand == "web-close":
+        return "web.close", {"tabId": namespace.tab}
     if namespace.subcommand == "web-list":
         return "web.list", {}
     if namespace.subcommand == "web-push":
@@ -561,13 +581,12 @@ def send_web_push_with_open(args: dict[str, Any]) -> Any:
         if str(exc) != WEB_PUSH_NO_MATCH_ERROR or "tabId" in args:
             raise
 
-    open_args = {"presetId": args.get("presetId", "chatgpt")}
+    open_args = {"presetId": args.get("presetId", "chatgpt"), "background": True}
     optional_arg(open_args, "anchorSessionId", args.get("anchorSessionId"))
     opened = send_request("web.open", open_args)
     tab_id = opened.get("tabId") if isinstance(opened, dict) else None
     if not isinstance(tab_id, str) or not tab_id:
         raise RuntimeError("web.open returned an invalid tabId")
-    send_request("web.focus", {"tabId": tab_id})
     retry_args = {
         key: value
         for key, value in args.items()

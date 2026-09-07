@@ -1,13 +1,16 @@
-"""Watch one session dispatch and verify its declared machine gate.
+"""Watch one session dispatch and verify its declared machine gate (B3).
 
-Requires env MYCMUX_AGENT_CLI = full path to mycmux's scripts/mycmux_agent_cli.py
-(used for auto-closing the tab after the gate passes).
+fail-closed の原則:
+- close-tab は「この dispatch の行に spawn 応答由来として記録された tab_session_id」だけに撃つ。
+  slug 後勝ちマージで別日の同名 dispatch から引き継いだ値は使わない (台帳の読みは dispatch_ledger)。
+- 台帳上すでにクローズ済み集合の dispatch には一切操作しない。
+- 同じ slug に active な dispatch が複数あるときは撃たずに CONFIG-ERROR で止まる (--spawn-ts で特定)。
+- RUNNING / STALL 判定は pin 済み子セッションログ 1 本だけを見る (dispatch_status.dispatch_activity)。
 """
 
 from __future__ import annotations
 
 import argparse
-import json
 import locale
 import os
 import re
@@ -18,19 +21,29 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from dispatch_status import session_activity
+import dispatch_ledger
+from dispatch_ledger import Dispatch, find_dispatches, load_dispatches
+from dispatch_status import dispatch_activity
 
+DEFAULT_LEDGER = dispatch_ledger.DEFAULT_LEDGER
 
-DEFAULT_LEDGER = Path.home() / ".claude" / "dispatch" / "ledger.jsonl"
+def resolve_agent_cli() -> Path:
+    import os
+    import sys
+    explicit = os.environ.get("MYCMUX_AGENT_CLI")
+    candidates = [Path(explicit).expanduser()] if explicit else []
+    candidates.append(Path.home() / ".mycmux" / "bin" / "mycmux_agent_cli.py")
+    candidates.extend(parent / "scripts" / "mycmux_agent_cli.py"
+                      for parent in Path(__file__).resolve().parents)
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    print("mycmux agent CLI not found. From the mycmux checkout run: "
+          "python scripts/install_claude_skills.py install", file=sys.stderr)
+    raise SystemExit(7)
+
+CLOSE_CLI = resolve_agent_cli()
 HEADING_RE = re.compile(r"^##\s+自動検収")
-
-
-def close_cli_path() -> Path | None:
-    raw = os.environ.get("MYCMUX_AGENT_CLI", "").strip()
-    if not raw:
-        return None
-    path = Path(raw).expanduser()
-    return path if path.is_file() else None
 
 
 @dataclass
@@ -54,21 +67,24 @@ def local_timestamp() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
-def load_entries(path: Path) -> dict[str, dict[str, object]]:
-    entries: dict[str, dict[str, object]] = {}
-    if not path.is_file():
-        return entries
-    for line in path.read_text(encoding="utf-8-sig").splitlines():
-        try:
-            record = json.loads(line)
-        except (json.JSONDecodeError, TypeError):
-            continue
-        if not isinstance(record, dict):
-            continue
-        slug = record.get("slug")
-        if isinstance(slug, str) and slug:
-            entries[slug] = {**entries.get(slug, {}), **record}
-    return entries
+def select_dispatch(
+    ledger: Path, slug: str, spawn_ts: str | None = None
+) -> tuple[Dispatch | None, str]:
+    """撃ってよい dispatch を1件だけ確定する (曖昧なら撃たない)."""
+    matches = find_dispatches(load_dispatches(ledger), slug, spawn_ts)
+    if not matches:
+        return None, f"slug is missing from ledger: {slug}"
+    active = [dispatch for dispatch in matches if not dispatch.closed]
+    if not active:
+        statuses = ", ".join(sorted({dispatch.status for dispatch in matches}))
+        return None, f"dispatch is already closed (status={statuses}): {slug}"
+    if len(active) > 1:
+        spawn_list = ", ".join(dispatch.spawn_ts for dispatch in active)
+        return None, (
+            f"multiple active dispatches share this slug: {slug} "
+            f"(spawn_ts: {spawn_list}) — pass --spawn-ts"
+        )
+    return active[0], ""
 
 
 def parse_gate(spec_path: Path) -> Gate | None:
@@ -102,19 +118,13 @@ def parse_gate(spec_path: Path) -> Gate | None:
     return Gate(commands, auto_close) if commands else None
 
 
-def shell_argv(command: str) -> list[str]:
-    if sys.platform == "win32":
-        return ["powershell", "-NoProfile", "-Command", command]
-    return ["bash", "-lc", command]
-
-
 def run_gate(gate: Gate, cwd: Path) -> list[CommandResult]:
     results: list[CommandResult] = []
     output_encoding = locale.getpreferredencoding(False)
     for command in gate.commands:
         try:
             proc = subprocess.run(
-                shell_argv(command),
+                ["powershell", "-NoProfile", "-Command", command],
                 cwd=cwd,
                 capture_output=True,
                 text=True,
@@ -126,8 +136,16 @@ def run_gate(gate: Gate, cwd: Path) -> list[CommandResult]:
             output = (proc.stdout or "") + (proc.stderr or "")
             results.append(CommandResult(command, proc.returncode, output))
         except subprocess.TimeoutExpired as exc:
-            stdout = (exc.stdout or b"").decode(output_encoding, "replace") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
-            stderr = (exc.stderr or b"").decode(output_encoding, "replace") if isinstance(exc.stderr, bytes) else (exc.stderr or "")
+            stdout = (
+                (exc.stdout or b"").decode(output_encoding, "replace")
+                if isinstance(exc.stdout, bytes)
+                else (exc.stdout or "")
+            )
+            stderr = (
+                (exc.stderr or b"").decode(output_encoding, "replace")
+                if isinstance(exc.stderr, bytes)
+                else (exc.stderr or "")
+            )
             results.append(CommandResult(command, "TIMEOUT", stdout + stderr))
         except OSError as exc:
             results.append(CommandResult(command, "ERROR", str(exc)))
@@ -135,12 +153,9 @@ def run_gate(gate: Gate, cwd: Path) -> list[CommandResult]:
 
 
 def close_tab(session_id: str) -> str | None:
-    cli = close_cli_path()
-    if cli is None:
-        return "MYCMUX_AGENT_CLI is not set or does not point to a file"
     try:
         proc = subprocess.run(
-            [sys.executable, str(cli), "close-tab", "--session", session_id],
+            [sys.executable, str(CLOSE_CLI), "close-tab", "--session", session_id],
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -153,12 +168,6 @@ def close_tab(session_id: str) -> str | None:
     if proc.returncode == 0:
         return None
     return ((proc.stdout or "") + (proc.stderr or "")).strip() or f"exit {proc.returncode}"
-
-
-def append_ledger(path: Path, record: dict[str, object]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="ascii", newline="") as stream:
-        stream.write(json.dumps(record, ensure_ascii=True) + "\n")
 
 
 def write_verdict(
@@ -176,18 +185,31 @@ def write_verdict(
 
 
 def finish(
+    dispatch: Dispatch,
     dispatch_dir: Path,
     ledger: Path,
-    slug: str,
     label: str,
     exit_code: int,
     results: list[CommandResult] | None = None,
-    ledger_record: dict[str, object] | None = None,
+    ledger_fields: dict[str, object] | None = None,
 ) -> int:
     timestamp = local_timestamp()
     write_verdict(dispatch_dir / "VERDICT.md", label, timestamp, results or [])
-    if ledger_record is not None:
-        append_ledger(ledger, {"ts": timestamp, "slug": slug, **ledger_record})
+    if ledger_fields is not None:
+        fields = dict(ledger_fields)
+        status = fields.pop("status", None)
+        try:
+            dispatch_ledger.update_record(
+                ledger,
+                slug=dispatch.slug,
+                spawn_ts=dispatch.spawn_ts,
+                tab_session_id=dispatch.tab_session_id,
+                status=str(status) if status is not None else None,
+                ledger_ts=timestamp,
+                **fields,
+            )
+        except ValueError as exc:
+            print(f"LEDGER-WRITE-SKIPPED: {exc}", flush=True)
     print(f"VERDICT {label}", flush=True)
     return exit_code
 
@@ -199,32 +221,36 @@ def positive_number(value: str) -> float:
     return number
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--slug", required=True)
+    parser.add_argument("--spawn-ts", help="同一 slug が複数あるときの特定用")
     parser.add_argument("--timeout-min", type=positive_number, default=180.0)
     parser.add_argument("--stall-exit-min", type=positive_number, default=45.0)
     parser.add_argument("--poll-sec", type=positive_number, default=20.0)
     parser.add_argument("--dry-run", action="store_true")
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
-def main() -> int:
-    args = parse_args()
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
     ledger = Path(os.environ.get("DISPATCH_LEDGER", str(DEFAULT_LEDGER))).expanduser()
     if not ledger.is_file():
         print(f"CONFIG-ERROR: ledger is missing: {ledger}")
         return 3
-    record = load_entries(ledger).get(args.slug)
+    record, error = select_dispatch(ledger, args.slug, args.spawn_ts)
     if record is None:
-        print(f"CONFIG-ERROR: slug is missing from ledger: {args.slug}")
+        print(f"CONFIG-ERROR: {error}")
         return 3
-    missing = [name for name in ("dir", "tab_session_id", "cwd") if not record.get(name)]
+    missing = [name for name in ("dir", "cwd") if not record.get(name)]
+    if not record.tab_session_id:
+        missing.append("tab_session_id")
     if missing:
         print(f"CONFIG-ERROR: required field is missing: {', '.join(missing)}")
         return 3
-    dispatch_dir = Path(str(record["dir"]))
-    cwd = Path(str(record["cwd"]))
+
+    dispatch_dir = Path(str(record.get("dir")))
+    cwd = Path(str(record.get("cwd")))
     spec_path = dispatch_dir / "spec.md"
     if not dispatch_dir.is_dir():
         print(f"CONFIG-ERROR: dispatch dir is missing: {dispatch_dir}")
@@ -238,7 +264,6 @@ def main() -> int:
 
     gate = parse_gate(spec_path)
     done_path = dispatch_dir / "DONE.md"
-    ask_path = dispatch_dir / "ASK.md"
     start = time.monotonic()
     no_log_since: float | None = None
     polls = 0
@@ -248,56 +273,61 @@ def main() -> int:
             if gate is None:
                 label = f"DONE-NEEDS-REVIEW (no machine gate) slug={args.slug}"
                 row = {"status": "done", "verify": "auto-fail"}
-                return finish(dispatch_dir, ledger, args.slug, label, 1, ledger_record=row)
+                return finish(record, dispatch_dir, ledger, label, 1, ledger_fields=row)
             results = run_gate(gate, cwd)
             failed = [result.command for result in results if not result.passed]
             if failed:
                 joined = "; ".join(failed)
                 label = f"DONE-NEEDS-REVIEW slug={args.slug} failed={joined}"
                 row = {"status": "done", "verify": "auto-fail"}
-                return finish(dispatch_dir, ledger, args.slug, label, 1, results, row)
+                return finish(record, dispatch_dir, ledger, label, 1, results, row)
             if not gate.auto_close or args.dry_run:
                 label = f"DONE-VERIFIED-KEEP slug={args.slug}"
                 row = {"status": "done", "verify": "auto-pass"}
-                return finish(dispatch_dir, ledger, args.slug, label, 0, results, row)
-            close_error = close_tab(str(record["tab_session_id"]))
-            if close_error:
+                return finish(record, dispatch_dir, ledger, label, 0, results, row)
+            # close-tab はこの dispatch の行が持つ tab_session_id のみ (マージ由来を使わない)
+            close_error = close_tab(str(record.tab_session_id))
+            if close_error is not None:
                 short_error = close_error[:400].replace("\r", " ").replace("\n", " ")
-                label = f"DONE-VERIFIED-CLOSED slug={args.slug} (close-tab FAILED: {short_error})"
-                ledger_row = {"status": "closed", "verify": "auto-pass", "close_error": close_error[:400]}
+                label = (
+                    f"DONE-VERIFIED-CLOSE-FAILED slug={args.slug} "
+                    f"(close-tab FAILED: {short_error})"
+                )
+                ledger_row = {
+                    "status": dispatch_ledger.STATUS_CLOSE_FAILED,
+                    "verify": "auto-pass",
+                    "close_error": close_error[:400],
+                }
+                return finish(record, dispatch_dir, ledger, label, 1, results, ledger_row)
             else:
                 label = f"DONE-VERIFIED-CLOSED slug={args.slug}"
                 ledger_row = {"status": "closed", "verify": "auto-pass"}
-            return finish(dispatch_dir, ledger, args.slug, label, 0, results, ledger_row)
+            return finish(record, dispatch_dir, ledger, label, 0, results, ledger_row)
 
-        # A child waiting on ASK.md is a legitimate pause, not a stall. Exit so the
-        # parent gets notified; after answering, the parent re-launches this watcher.
-        if ask_path.is_file():
-            return finish(dispatch_dir, ledger, args.slug, f"ASK-WAITING slug={args.slug}", 2)
-
-        log_name, log_age = session_activity(str(record["cwd"]))
+        activity = dispatch_activity(record, ledger=ledger)
+        log_age = activity.age_min if activity.state in ("RUNNING", "STALL") else -1.0
+        log_name = activity.log_name
         now = time.monotonic()
-        # A log last written before this watcher started belongs to an older
-        # session in the same cwd, not to the child we are watching.
-        if log_age >= 0 and log_age > elapsed_min + 1.0:
-            log_age = -1.0
-            log_name = ""
         if log_age >= args.stall_exit_min:
-            return finish(dispatch_dir, ledger, args.slug, f"STALL slug={args.slug}", 2)
+            return finish(record, dispatch_dir, ledger, f"STALL slug={args.slug}", 2)
         if log_age < 0:
             no_log_since = no_log_since or now
             no_log_age = (now - no_log_since) / 60.0
             if no_log_age >= 5.0 + args.stall_exit_min:
-                return finish(dispatch_dir, ledger, args.slug, f"STALL slug={args.slug}", 2)
-            state = "NO-LOG"
+                return finish(record, dispatch_dir, ledger, f"STALL slug={args.slug}", 2)
+            state = activity.state
         else:
             no_log_since = None
             state = "RUNNING"
         if elapsed_min >= args.timeout_min:
-            return finish(dispatch_dir, ledger, args.slug, f"TIMEOUT slug={args.slug}", 2)
+            return finish(record, dispatch_dir, ledger, f"TIMEOUT slug={args.slug}", 2)
         polls += 1
         if polls % 10 == 0:
-            print(f"{state} slug={args.slug} elapsed_min={elapsed_min:.1f} log={log_name or '-'}", flush=True)
+            print(
+                f"{state} slug={args.slug} elapsed_min={elapsed_min:.1f} "
+                f"log={log_name or '-'}",
+                flush=True,
+            )
         time.sleep(args.poll_sec)
 
 

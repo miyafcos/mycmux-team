@@ -4,6 +4,7 @@ mod agent_state;
 mod attention;
 mod ai;
 mod cli_accounts;
+mod claude_skills;
 mod commands;
 mod db;
 mod diag;
@@ -356,6 +357,8 @@ pub fn run() {
         .manage(usage::UsageState::new())
         .manage(cli_accounts::login_watch::LoginRegistry::default())
         .invoke_handler(tauri::generate_handler![
+            claude_skills::claude_skills_status,
+            claude_skills::claude_skills_install,
             commands::terminal::create_session,
             commands::terminal::write_to_session,
             commands::terminal::get_session_input_revision,
@@ -455,6 +458,8 @@ pub fn run() {
             commands::webpane::webpane_signin,
             commands::webpane::webpane_push,
             commands::webpane::webpane_push_result,
+            commands::webpane::webpane_read,
+            commands::webpane::webpane_read_result,
             commands::wallpapers::get_wallpaper_cache_state,
             commands::wallpapers::download_wallpaper,
             commands::wallpapers::clear_wallpaper_cache,

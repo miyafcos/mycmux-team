@@ -173,3 +173,32 @@ def test_plan_scopes_byte_preservation_to_data_json_not_local_storage() -> None:
     assert "localStorage" in plan
     assert "data.json" in plan
     assert "対象外" in plan
+
+
+def test_web_automation_options_are_absent_from_projected_json() -> None:
+    import json
+    import subprocess
+
+    script = """
+const fs = require('node:fs');
+const ts = require('typescript');
+const Module = require('node:module');
+const path = require('node:path');
+const filename = path.resolve('src/lib/persistentLayoutProjection.ts');
+const source = fs.readFileSync(filename, 'utf8');
+const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS } });
+const moduleUnderTest = new Module(filename);
+moduleUnderTest._compile(compiled.outputText, filename);
+const tab = { id: 'web', sessionId: 'session', agentId: 'web', type: 'web',
+  presetId: 'chatgpt', webBackground: true, webInitialUrl: 'https://chatgpt.com/c/private' };
+console.log(JSON.stringify(moduleUnderTest.exports.persistentTabProjection(tab)));
+"""
+    result = subprocess.run(
+        ["node", "-e", script], cwd=REPO_ROOT, capture_output=True, text=True,
+        encoding="utf-8", check=True,
+    )
+    projected = json.loads(result.stdout)
+    assert projected["presetId"] == "chatgpt"
+    assert "webBackground" not in projected
+    assert "webInitialUrl" not in projected
+    assert "private" not in result.stdout

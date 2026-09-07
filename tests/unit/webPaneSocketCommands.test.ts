@@ -12,6 +12,7 @@ const tauriMocks = vi.hoisted(() => ({
         { id: "other", label: "Other", url: "https://example.com/", profileDir: "other" },
       ];
     }
+    if (command === "webpane_read") return { tabId: args?.tabId, turns: [], generating: false };
     if (command === "webpane_push") {
       return {
         tabId: args?.tabId,
@@ -109,6 +110,8 @@ describe("web socket commands", () => {
         url: "https://chatgpt.com/",
         title: "Project",
         workspaceId: "first",
+        background: false,
+        active: false,
       },
       {
         tabId: "other",
@@ -116,6 +119,8 @@ describe("web socket commands", () => {
         url: "https://example.com/",
         title: "Other",
         workspaceId: "second",
+        background: false,
+        active: true,
       },
     ]);
   });
@@ -223,4 +228,71 @@ describe("web socket commands", () => {
     expect(tauriMocks.invoke).not.toHaveBeenCalledWith("webpane_push", expect.anything());
     expect(useWorkspaceListStore.getState().workspaces[0].panes[0].tabs).toEqual([anchor]);
   });
+  it.each([false, true])("opens behind the anchor without changing foreground state (other workspace=%s)", async (other) => {
+    if (other) {
+      const foreground = workspace("foreground", [pane("foreground-pane", [terminalTab("fg", "fg-session")])]);
+      useWorkspaceListStore.setState({
+        workspaces: [...useWorkspaceListStore.getState().workspaces, foreground],
+        activeWorkspaceId: foreground.id,
+      });
+      useUiStore.setState({ activePaneId: "fg-session", lastActivePaneId: "fg-session", focusRevision: 9 });
+    }
+    const { activePaneId, lastActivePaneId, focusRevision } = useUiStore.getState();
+    const activeWorkspaceId = useWorkspaceListStore.getState().activeWorkspaceId;
+    const result = await handleSocketCommand("web.open", {
+      presetId: "chatgpt", anchorSessionId: anchor.sessionId, background: true,
+      url: "https://chatgpt.com/c/abc",
+    }) as { tabId: string; background: boolean };
+    expect(result.background).toBe(true);
+    const target = useWorkspaceListStore.getState().getWorkspace("active")!.panes[0];
+    expect(target.activeTabId).toBe(anchor.id);
+    expect(target.tabs[1]).toMatchObject({
+      id: result.tabId, webBackground: true, webInitialUrl: "https://chatgpt.com/c/abc",
+    });
+    expect(useUiStore.getState()).toMatchObject({ activePaneId, lastActivePaneId, focusRevision });
+    expect(useWorkspaceListStore.getState().activeWorkspaceId).toBe(activeWorkspaceId);
+    expect(await handleSocketCommand("web.list", {})).toContainEqual(expect.objectContaining({
+      tabId: result.tabId, background: true, active: false,
+    }));
+  });
+
+  it("passes foreground initial URLs and rejects non-HTTPS or conflicting open options", async () => {
+    const result = await handleSocketCommand("web.open", {
+      presetId: "chatgpt", url: "https://chatgpt.com/c/abc",
+    }) as { tabId: string; background: boolean };
+    expect(result.background).toBe(false);
+    expect(useWorkspaceListStore.getState().workspaces[0].panes[0].tabs[1].webInitialUrl)
+      .toBe("https://chatgpt.com/c/abc");
+    await expect(handleSocketCommand("web.open", { presetId: "chatgpt", url: "http://chatgpt.com" }))
+      .rejects.toThrow("web.open url must be https");
+    await expect(handleSocketCommand("web.open", { presetId: "chatgpt", replaceAnchor: true, background: true }))
+      .rejects.toThrow("cannot combine replaceAnchor and background");
+  });
+
+  it("reads the latest preset in the anchor workspace and gives explicit tabId priority", async () => {
+    const active = workspace("active", [pane("active-pane", [anchor, webTab("old"), webTab("new")])]);
+    const other = workspace("other", [pane("other-pane", [webTab("foreign")])]);
+    useWorkspaceListStore.setState({ workspaces: [active, other], activeWorkspaceId: other.id });
+    await expect(handleSocketCommand("web.read", { presetId: "chatgpt", anchorSessionId: anchor.sessionId }))
+      .resolves.toEqual({ tabId: "new", turns: [], generating: false });
+    expect(tauriMocks.invoke).toHaveBeenLastCalledWith("webpane_read", { tabId: "new" });
+    await handleSocketCommand("web.read", { tabId: "old", presetId: "other" });
+    expect(tauriMocks.invoke).toHaveBeenLastCalledWith("webpane_read", { tabId: "old" });
+    await expect(handleSocketCommand("web.read", { presetId: "missing", anchorSessionId: anchor.sessionId }))
+      .rejects.toThrow("web.read found no matching web tab in the target workspace");
+    await expect(handleSocketCommand("web.read", { anchorSessionId: "missing" }))
+      .rejects.toThrow("web.read found no matching web tab in the target workspace");
+    await expect(handleSocketCommand("web.read", { tabId: anchor.id })).rejects.toThrow("web tab not found");
+  });
+
+  it("closes only Web tabs and preserves the terminal", async () => {
+    const active = workspace("active", [pane("active-pane", [anchor, webTab("chat")])]);
+    useWorkspaceListStore.setState({ workspaces: [active] });
+    await expect(handleSocketCommand("web.close", { tabId: anchor.id }))
+      .rejects.toThrow("web.close requires a web tab");
+    await expect(handleSocketCommand("web.close", { tabId: "chat" }))
+      .resolves.toEqual({ tabId: "chat", closed: true });
+    expect(useWorkspaceListStore.getState().workspaces[0].panes[0].tabs).toEqual([anchor]);
+  });
+
 });

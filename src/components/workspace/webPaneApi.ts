@@ -29,8 +29,12 @@ export function createWebPane(
   presetId: string,
   bounds: WebPaneBounds,
   forwardedShortcuts: readonly string[],
+  options?: { visible?: boolean; url?: string },
 ): Promise<string> {
-  return invoke<string>("webpane_create", { tabId, presetId, bounds, forwardedShortcuts });
+  return invoke<string>("webpane_create", {
+    tabId, presetId, bounds, forwardedShortcuts,
+    visible: options?.visible, initialUrl: options?.url,
+  });
 }
 
 export function updateWebPane(
@@ -38,8 +42,9 @@ export function updateWebPane(
   bounds: WebPaneBounds | null,
   visible: boolean,
   forwardedShortcuts: readonly string[],
+  options?: { park?: boolean },
 ): Promise<void> {
-  return invoke<void>("webpane_update", { tabId, bounds, visible, forwardedShortcuts });
+  return invoke<void>("webpane_update", { tabId, bounds, visible, forwardedShortcuts, park: options?.park });
 }
 
 export function destroyWebPane(tabId: string): Promise<void> {
@@ -78,4 +83,24 @@ export interface WebPaneSigninResult {
  */
 export function startWebPaneSignin(presetId: string): Promise<WebPaneSigninResult> {
   return invoke<WebPaneSigninResult>("webpane_signin", { presetId });
+}
+
+export interface WebPaneReadResult {
+  tabId: string;
+  presetId: string;
+  url: string;
+  title: string;
+  signedOut: boolean;
+  composerPresent: boolean;
+  generating: boolean;
+  turns: { role: "user" | "assistant"; text: string }[];
+  lastAssistant: string;
+  lastAssistantLinks: string[];
+  /** Unicode code points in retained turn text. */
+  chars: number;
+  truncated: boolean;
+}
+
+export function readWebPane(tabId: string): Promise<WebPaneReadResult> {
+  return invoke<WebPaneReadResult>("webpane_read", { tabId });
 }

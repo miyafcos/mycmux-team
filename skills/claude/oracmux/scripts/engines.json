@@ -1,0 +1,330 @@
+{
+  "_schema": "oracmux-engines-v1",
+  "_measured": "2026-09-07 DOM probe on OracleChrome (Chrome 151, CDP 9222). Selector notes and drift history: references/engine-notes.md",
+  "cdp": {
+    "host": "127.0.0.1",
+    "port": 9222
+  },
+  "chatgpt": {
+    "label": "ChatGPT",
+    "url": "https://chatgpt.com/",
+    "pane_preset": "chatgpt",
+    "composer": [
+      "#prompt-textarea"
+    ],
+    "send": [
+      "[data-testid='send-button']"
+    ],
+    "generating": [
+      "[data-testid='stop-button']"
+    ],
+    "assistant": [
+      "[data-message-author-role='assistant']"
+    ],
+    "user_turns": [
+      "[data-message-author-role='user']"
+    ],
+    "new_chat": [
+      "[data-testid='create-new-chat-button']"
+    ],
+    "history": [
+      "nav a[href^='/c/']"
+    ],
+    "history_skip_aria": [
+      "pinned"
+    ],
+    "conversation_url_pattern": "^https://chatgpt\\.com/c/",
+    "login": [
+      "[data-testid='login-button']",
+      "button:has-text('Log in')"
+    ],
+    "captcha": [
+      "iframe[title*='challenge']"
+    ],
+    "limit_texts": [
+      "Weekly limit",
+      "Add credits"
+    ],
+    "dismiss": [],
+    "mode_label": [
+      "[data-testid='model-switcher-dropdown-button']"
+    ],
+    "default_mode": "current",
+    "modes": {
+      "current": {
+        "steps": [],
+        "note": "Web UI の選択状態に従う (宮崎さんが picker で GPT-6 Pro を選んだ状態が前提)"
+      },
+      "deep-research": {
+        "steps": [
+          [
+            "[data-testid='composer-plus-btn']"
+          ],
+          [
+            "div.__menu-item:has-text('Deep research')"
+          ]
+        ],
+        "labels": [
+          "Deep research",
+          "ディープリサーチ"
+        ]
+      }
+    },
+    "max_inline_chars": 60000,
+    "timeouts": {
+      "answer_appear_sec": 900,
+      "stable_sec": 30,
+      "min_wait_sec": 20,
+      "overall_min": 60
+    },
+    "answer_strip_patterns": [
+      "ChatGPT said:",
+      "ChatGPT の発言:",
+      "Thought for .*",
+      "Reasoned for .*",
+      "Thinking\\.\\.\\."
+    ]
+  },
+  "gemini": {
+    "label": "Gemini",
+    "url": "https://gemini.google.com/app",
+    "pane_preset": "gemini",
+    "composer": [
+      "div.ql-editor[role='textbox']",
+      "rich-textarea div[contenteditable='true']"
+    ],
+    "send": [
+      "button[aria-label='プロンプトを送信']",
+      "button[aria-label*='送信']",
+      "button[aria-label*='Send']"
+    ],
+    "generating": [
+      "button[aria-label*='停止']",
+      "button[aria-label*='Stop']"
+    ],
+    "assistant": [
+      "model-response"
+    ],
+    "user_turns": [
+      "user-query"
+    ],
+    "new_chat": [
+      "[data-test-id='new-chat-button']",
+      "a[aria-label='チャットを新規作成']"
+    ],
+    "history": [
+      "a[href^='/app/']"
+    ],
+    "history_skip_aria": [],
+    "conversation_url_pattern": "^https://gemini\\.google\\.com/app/[0-9a-f]+",
+    "login": [
+      "a:has-text('ログイン')",
+      "a:has-text('Sign in')"
+    ],
+    "captcha": [
+      "iframe[title*='challenge']"
+    ],
+    "limit_texts": [],
+    "dismiss": [],
+    "mode_label": [
+      "button[aria-label*='モード選択']",
+      "[data-test-id='bard-mode-menu-button']",
+      "bard-mode-switcher button"
+    ],
+    "default_mode": "current",
+    "modes": {
+      "current": {
+        "steps": [],
+        "note": "2026-09-07 実測: picker ラベルは Pro (= 3.1 Pro)。button[aria-label] は「モード選択ツールを開く（現在のモデル: Pro）」"
+      },
+      "pro": {
+        "steps": [
+          [
+            "button[aria-label*='モード選択']",
+            "[data-test-id='bard-mode-menu-button']",
+            "bard-mode-switcher button"
+          ]
+        ],
+        "labels": [
+          "3.1 Pro",
+          "Pro"
+        ],
+        "active": [
+          "button[aria-label*='モード選択']:has-text('Pro')",
+          "[data-test-id='bard-mode-menu-button']:has-text('Pro')"
+        ]
+      },
+      "thinking": {
+        "steps": [
+          [
+            "button[aria-label*='モード選択']",
+            "[data-test-id='bard-mode-menu-button']",
+            "bard-mode-switcher button"
+          ]
+        ],
+        "labels": [
+          "強化版思考モード"
+        ]
+      },
+      "fast": {
+        "steps": [
+          [
+            "button[aria-label*='モード選択']",
+            "[data-test-id='bard-mode-menu-button']",
+            "bard-mode-switcher button"
+          ]
+        ],
+        "labels": [
+          "3.7 Flash",
+          "Flash"
+        ],
+        "active": [
+          "button[aria-label*='モード選択']:has-text('Flash')",
+          "[data-test-id='bard-mode-menu-button']:has-text('Flash')"
+        ]
+      },
+      "deep-research": {
+        "steps": [
+          [
+            "button[aria-label='アップロードとツール']"
+          ]
+        ],
+        "labels": [
+          "Deep Research",
+          "Deep research",
+          "ディープリサーチ"
+        ]
+      }
+    },
+    "max_inline_chars": 60000,
+    "timeouts": {
+      "answer_appear_sec": 300,
+      "stable_sec": 20,
+      "min_wait_sec": 10,
+      "overall_min": 25
+    },
+    "answer_strip_patterns": [
+      "Gemini の回答",
+      "Gemini said",
+      "思考プロセスを表示",
+      "Show thinking"
+    ]
+  },
+  "grok": {
+    "label": "Grok",
+    "url": "https://grok.com/",
+    "pane_preset": "grok",
+    "composer": [
+      "div.tiptap[role='textbox']",
+      "[data-testid='chat-input'] [role='textbox']",
+      "div[role='textbox'][aria-label='Ask Grok anything']"
+    ],
+    "send": [
+      "[data-testid='chat-submit']",
+      "form button[type='submit']"
+    ],
+    "generating": [
+      "button[aria-label='Stop']",
+      "button[aria-label*='Stop']"
+    ],
+    "assistant": [
+      "[data-testid='assistant-message']"
+    ],
+    "user_turns": [
+      "[data-testid='user-message']"
+    ],
+    "new_chat": [
+      "a[data-testid='new-chat']"
+    ],
+    "history": [
+      "a[href^='/c/']"
+    ],
+    "history_skip_aria": [],
+    "conversation_url_pattern": "^https://grok\\.com/c/",
+    "login": [
+      "button:has-text('Sign in')",
+      "a:has-text('Sign in')"
+    ],
+    "captcha": [
+      "iframe[title*='challenge']"
+    ],
+    "limit_texts": [
+      "reached your limit"
+    ],
+    "dismiss": [
+      "button:has-text('No, thank you')",
+      "button:has-text('Dismiss')"
+    ],
+    "mode_label": [
+      "button#model-select-trigger",
+      "button[aria-label='Model select']"
+    ],
+    "default_mode": "current",
+    "modes": {
+      "current": {
+        "steps": [],
+        "note": "2026-09-07 実測: Model select = Expert"
+      },
+      "expert": {
+        "steps": [
+          [
+            "button[aria-label='Model select']"
+          ],
+          [
+            "[role='menuitemradio']:has-text('Expert'):not(:has-text('Auto')):not(:has-text('Heavy'))"
+          ]
+        ],
+        "labels": [
+          "Expert"
+        ],
+        "active": [
+          "button[aria-label='Model select']:has-text('Expert')"
+        ]
+      },
+      "auto": {
+        "steps": [
+          [
+            "button[aria-label='Model select']"
+          ],
+          [
+            "[role='menuitemradio']:has-text('Auto')"
+          ]
+        ],
+        "labels": [
+          "Auto"
+        ],
+        "active": [
+          "button[aria-label='Model select']:has-text('Auto')"
+        ]
+      },
+      "heavy": {
+        "steps": [
+          [
+            "button[aria-label='Model select']"
+          ],
+          [
+            "[role='menuitemradio']:has-text('Heavy')"
+          ]
+        ],
+        "labels": [
+          "Heavy"
+        ],
+        "active": [
+          "button[aria-label='Model select']:has-text('Heavy')"
+        ]
+      }
+    },
+    "max_inline_chars": 60000,
+    "timeouts": {
+      "answer_appear_sec": 300,
+      "stable_sec": 20,
+      "min_wait_sec": 10,
+      "overall_min": 25
+    },
+    "answer_strip_patterns": [
+      "Worked for .*",
+      "Thought for .*",
+      "Thinking\\.\\.\\."
+    ]
+  }
+}

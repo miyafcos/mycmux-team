@@ -174,4 +174,48 @@ describe("WebPaneController lifecycle", () => {
 
     host.remove();
   });
+  it.each([false, true])("creates hostless tabs only with webBackground=%s and reconciles visibility", async (background) => {
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal("requestAnimationFrame", vi.fn((callback: FrameRequestCallback) => {
+      frames.push(callback);
+      return frames.length;
+    }));
+    const workspace = workspaceWithWebTab();
+    workspace.panes[0].activeTabId = "terminal-tab";
+    workspace.panes[0].tabs[1].webBackground = background;
+    workspace.panes[0].tabs[1].webInitialUrl = "https://chatgpt.com/c/abc";
+    useWorkspaceListStore.setState({ workspaces: [workspace], activeWorkspaceId: "another-workspace" });
+    const runFrame = async () => {
+      await act(async () => {
+        frames.shift()?.(0);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+    };
+    await act(async () => root.render(<WebPaneController />));
+    await runFrame();
+    await runFrame();
+    if (!background) {
+      expect(apiMocks.createWebPane).not.toHaveBeenCalled();
+      return;
+    }
+    expect(apiMocks.createWebPane).toHaveBeenCalledExactlyOnceWith(
+      "web-tab", "chatgpt", { x: 0, y: 0, width: 1024, height: 768 }, expect.any(Array),
+      { visible: false, url: "https://chatgpt.com/c/abc" },
+    );
+    expect(apiMocks.updateWebPane).toHaveBeenLastCalledWith("web-tab", null, false, expect.any(Array), { park: true });
+    const host = document.createElement("div");
+    host.dataset.webPaneHostTabId = "web-tab";
+    host.getBoundingClientRect = () => ({ x: 10, y: 20, width: 800, height: 600 }) as DOMRect;
+    container.appendChild(host);
+    await runFrame();
+    expect(apiMocks.updateWebPane).toHaveBeenLastCalledWith(
+      "web-tab", { x: 10, y: 20, width: 800, height: 600 }, true, expect.any(Array),
+    );
+    host.remove();
+    await runFrame();
+    expect(apiMocks.updateWebPane).toHaveBeenLastCalledWith("web-tab", null, false, expect.any(Array), { park: true });
+    expect(apiMocks.createWebPane).toHaveBeenCalledTimes(1);
+  });
+
 });

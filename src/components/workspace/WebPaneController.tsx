@@ -31,12 +31,14 @@ const OCCLUDER_SELECTOR = [
 export interface WebPaneTabDescriptor {
   tabId: string;
   presetId: string;
+  webBackground?: boolean;
+  webInitialUrl?: string;
 }
 
 export function collectWebPaneTabs(workspaces: readonly Workspace[]): WebPaneTabDescriptor[] {
   return workspaces.flatMap((workspace) => workspace.panes.flatMap((pane) => (
     pane.tabs.flatMap((tab) => tab.type === "web" && tab.presetId
-      ? [{ tabId: tab.id, presetId: tab.presetId }]
+      ? [{ tabId: tab.id, presetId: tab.presetId, webBackground: tab.webBackground, webInitialUrl: tab.webInitialUrl }]
       : [])
   )));
 }
@@ -84,6 +86,8 @@ export default function WebPaneController() {
   );
   const shortcutsSignature = forwardedShortcuts.join("|");
 
+  const descriptorsRef = useRef(tabs);
+  descriptorsRef.current = tabs;
   const desiredRef = useRef(new Map<string, string>());
   const knownRef = useRef(new Map<string, string>());
   const createdRef = useRef(new Set<string>());
@@ -194,18 +198,26 @@ export default function WebPaneController() {
         const bounds = blocked ? null : webPaneBoundsForHost(findHost(tabId));
         const key = `${frameKey(bounds)}:${shortcutsSignature}`;
 
-        if (bounds && !createdRef.current.has(tabId) && !openingRef.current.has(tabId) && !failedRef.current.has(tabId)) {
+        const tab = descriptorsRef.current.find((candidate) => candidate.tabId === tabId);
+        if ((bounds || tab?.webBackground) && !createdRef.current.has(tabId) && !openingRef.current.has(tabId) && !failedRef.current.has(tabId)) {
           openingRef.current.add(tabId);
           enqueue(tabId, async () => {
             try {
-              await createWebPane(tabId, presetId, bounds, forwardedShortcuts);
+              if (bounds) {
+                await createWebPane(tabId, presetId, bounds, forwardedShortcuts,
+                  tab?.webInitialUrl === undefined ? undefined : { url: tab.webInitialUrl });
+              } else {
+                await createWebPane(tabId, presetId,
+                  { x: 0, y: 0, width: 1024, height: 768 }, forwardedShortcuts,
+                  { visible: false, url: tab?.webInitialUrl });
+              }
               if (!desiredRef.current.has(tabId)) {
                 await destroyWebPane(tabId);
                 createdRef.current.delete(tabId);
                 return;
               }
               createdRef.current.add(tabId);
-              lastFrameRef.current.set(tabId, key);
+              lastFrameRef.current.delete(tabId);
             } catch (error) {
               failedRef.current.add(tabId);
               throw error;
@@ -215,7 +227,13 @@ export default function WebPaneController() {
           });
         } else if (createdRef.current.has(tabId) && lastFrameRef.current.get(tabId) !== key) {
           lastFrameRef.current.set(tabId, key);
-          enqueue(tabId, () => updateWebPane(tabId, bounds, bounds !== null, forwardedShortcuts));
+          // A background tab is parked off-screen rather than hidden: a hidden
+          // WebView2 pauses requestAnimationFrame and Gemini's streamed answer
+          // never reaches the DOM (2026-09-07).
+          const park = bounds === null && tab?.webBackground === true;
+          enqueue(tabId, () => (park
+            ? updateWebPane(tabId, null, false, forwardedShortcuts, { park: true })
+            : updateWebPane(tabId, bounds, bounds !== null, forwardedShortcuts)));
         }
       }
 

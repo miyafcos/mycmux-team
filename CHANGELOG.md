@@ -4,6 +4,18 @@
 
 ---
 
+## [0.65.0] - 2026-09-07
+
+Web ペインを裏タブでもエージェントから使えるようにし、mycmux 前提の Claude Code スキルを同梱・導入できるようにした版 (Windows と macOS の資産をそろえて配信)。
+
+- New: **Web ペインの裏タブ操作**。`web.open` に `url` と `background` (フォーカスを奪わずに開く)、`web.read` (ペインの会話を JSON で読む)、`web.close` を追加し、`web.list` に background / active を載せた。裏タブの webview は隠さず画面外に置くので、ChatGPT / Gemini / Grok の逐次表示が裏でも止まらない
+- Fix: Web ペインの送信ボタンを Gemini の日本語ラベル「プロンプトを送信」でも見つける (出現待ちつき)。Grok の入力欄 (TipTap) への貼り付けと送信
+- New: **Claude Code スキルパック**。`skills/claude/` に session-dispatch・mycmux-bridge・oracmux と agent CLI を同梱し、`python scripts/install_claude_skills.py install` で `~/.claude/skills/` へ導入できる。manifest (LF 正規化 SHA-256) で照合し、ローカル改変は黙って潰さない
+- New: 設定 → AI の「Claude Code スキル」から同梱の 3 スキルと agent CLI を導入・更新でき、ローカル改変は旧フォルダを退避して置き換える。前提 (Claude Code / Python 3.10 以上) の有無もカードに表示する
+- Docs: README「Claude Code スキルを入れる」節、`docs/agent-integration.md` の配布物・展開チェックリスト、`docs/features/implemented/socket-api-and-automation.md` の `web.*` 追記
+
+---
+
 ## [0.64.1] - 2026-09-07
 
 Claude Code の hook 登録が起動のたびに増えていく不具合を止めた版 (Windows 資産を先行公開。macOS 資産と updater feed は Mac 側のビルド後に追加)。

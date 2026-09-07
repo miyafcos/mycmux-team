@@ -46,8 +46,11 @@ mycmux は起動時に `127.0.0.1` のランダムポートで TCP を待ち受�
 | `pane.list_all` | なし | 全ワークスペースのペイン一覧 |
 | `pane.activate_tab` / `pane.close_tab` / `pane.rename_tab` | `sessionId` 等 | タブの選択・終了・改名 |
 | `web.open` / `web.list` / `web.focus` / `web.push` | `presetId`、`tabId` 等 | サービス Web タブの操作 |
+| `web.read` / `web.close` | `tabId` (`web.read` は `presetId`、`anchorSessionId` でも指定可) | 会話を JSON で取得 / Web タブを閉じる |
 | `pane.send_text` | `sessionId`, `text`, `enter?` | 既存ペインの端末へ入力を送る |
 | `pane.read` | `sessionId`, `lines?` (既定80、最大400) | 既存ペインの画面末尾を読む |
+
+`web.open` は `url` (HTTPS) と `background: true` (フォーカス維持、`replaceAnchor` と併用不可) に対応。`web.list` は `background` / `active` を返す。
 
 一覧・ワークスペース操作には snake_case の別名 (`list_workspaces` など) もあります。全コマンドは `socketCommands.ts` の dispatcher と `mycmux_agent_cli.py` の parser が正本です。
 `status.subscribe` / `status.snapshot` は `socket.rs` が直接扱う状態フィードで、PTY 生出力のストリーミングとは別です。

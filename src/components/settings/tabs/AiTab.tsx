@@ -5,6 +5,8 @@ import { useSettingsStore } from "../../../stores/settingsStore";
 import { aiSettingsStrings } from "../settingsStrings";
 import { checkboxLabelStyle, checkboxLabelStyleFor, dividerStyle, sectionHeadingStyle } from "../tabStyles";
 
+import { ClaudeSkillsSection } from "./ClaudeSkillsSection";
+
 const CUSTOM_MODEL_VALUE = "__custom__";
 const hintStyle = { marginTop: 4, fontSize: 11, lineHeight: 1.6, color: "var(--cmux-text-dim)" } as const;
 const selectStyle = { width: 300, fontSize: 12, padding: "5px 8px" } as const;
@@ -196,6 +198,7 @@ export function AiTab() {
       </div>
 
       <div style={dividerStyle} />
+      <ClaudeSkillsSection />
     </div>
   );
 }

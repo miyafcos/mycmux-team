@@ -89,8 +89,6 @@ def test_cli_opens_and_retries_only_for_the_no_matching_tab_error(
             raise RuntimeError(cli.WEB_PUSH_NO_MATCH_ERROR)
         if command == "web.open":
             return {"tabId": "opened-tab"}
-        if command == "web.focus":
-            return {"tabId": "opened-tab", "workspaceId": "workspace"}
         return {"tabId": "opened-tab", "submitted": False}
 
     monkeypatch.setattr(cli, "send_request", fake_send)
@@ -116,11 +114,7 @@ def test_cli_opens_and_retries_only_for_the_no_matching_tab_error(
         ),
         (
             "web.open",
-            {"presetId": "chatgpt", "anchorSessionId": "caller-session"},
-        ),
-        (
-            "web.focus",
-            {"tabId": "opened-tab"},
+            {"presetId": "chatgpt", "anchorSessionId": "caller-session", "background": True},
         ),
         (
             "web.push",
@@ -140,3 +134,28 @@ def test_cli_does_not_open_for_other_push_errors(monkeypatch: pytest.MonkeyPatch
     with pytest.raises(RuntimeError, match="composer"):
         cli.send_web_push_with_open({"presetId": "chatgpt", "text": "draft"})
     assert calls == ["web.push"]
+
+
+def test_web_open_url_and_background(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("MYCMUX_PANE_SESSION_ID", "caller")
+    assert route(["web-open", "--url", "https://chatgpt.com/c/abc", "--background"]) == (
+        "web.open",
+        {"presetId": "chatgpt", "anchorSessionId": "caller",
+         "url": "https://chatgpt.com/c/abc", "background": True},
+    )
+
+
+def test_web_read_and_close_routes(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("MYCMUX_PANE_SESSION_ID", "caller")
+    assert route(["web-read", "--tab", "chat"]) == ("web.read", {"tabId": "chat"})
+    assert route(["web-read", "--preset", "grok"]) == (
+        "web.read", {"presetId": "grok", "anchorSessionId": "caller"},
+    )
+    assert route(["web-read"]) == (
+        "web.read", {"presetId": "chatgpt", "anchorSessionId": "caller"},
+    )
+    assert route(["web-close", "--tab", "chat"]) == ("web.close", {"tabId": "chat"})
+    with pytest.raises(SystemExit):
+        route(["web-read", "--tab", "chat", "--preset", "grok"])
+    with pytest.raises(SystemExit):
+        route(["web-close"])

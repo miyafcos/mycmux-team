@@ -449,6 +449,9 @@ interface DeclaredLaunchOptions {
 interface WebTabOptions {
   presetId: string;
   label: string;
+  activate?: boolean;
+  background?: boolean;
+  initialUrl?: string;
 }
 
 interface WorkspaceLayoutState {
@@ -959,12 +962,14 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>(() => ({
         label: options.label,
         presetId: options.presetId,
       });
+      tab.webBackground = options.background;
+      tab.webInitialUrl = options.initialUrl;
       activatedSessionId = tab.sessionId;
-      return appendTabsToPane(pane, [tab], tab.id);
+      return appendTabsToPane(pane, [tab], options.activate === false ? pane.activeTabId : tab.id);
     });
 
     useWorkspaceListStore.getState()._updateWorkspacePanes(workspaceId, newPanes);
-    applyStructuralActivation(activatedSessionId);
+    if (options.activate !== false) applyStructuralActivation(activatedSessionId);
   },
 
   addTabToPaneWithOptions: (workspaceId, paneId, options) => {

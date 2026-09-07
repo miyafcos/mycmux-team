@@ -23,6 +23,14 @@ pub struct WebPaneComposer {
     pub submit_selector: &'static str,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct WebPaneReader {
+    pub assistant: &'static str,
+    pub user: &'static str,
+    pub generating: &'static str,
+    pub composer: &'static str,
+}
+
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WebPanePreset {
@@ -41,6 +49,8 @@ pub struct WebPanePreset {
     pub signed_out_patterns: &'static [&'static str],
     #[serde(skip)]
     pub composer: Option<WebPaneComposer>,
+    #[serde(skip)]
+    pub reader: Option<WebPaneReader>,
 }
 
 /// Sign-in popups are the same handful of identity providers for every service,
@@ -69,6 +79,13 @@ const WEB_PANE_PRESETS: &[WebPanePreset] = &[
             selector: "#prompt-textarea",
             submit_selector: "[data-testid=\"send-button\"]",
         }),
+        // oracmux/scripts/engines.json 2026-09-07
+        reader: Some(WebPaneReader {
+            assistant: r#"[data-message-author-role="assistant"]"#,
+            user: r#"[data-message-author-role="user"]"#,
+            generating: r#"[data-testid="stop-button"]"#,
+            composer: r#"#prompt-textarea"#,
+        }),
     },
     WebPanePreset {
         id: "gemini",
@@ -79,7 +96,17 @@ const WEB_PANE_PRESETS: &[WebPanePreset] = &[
         signed_out_patterns: &["accounts.google.com"],
         composer: Some(WebPaneComposer {
             selector: "rich-textarea .ql-editor",
-            submit_selector: "button[aria-label*=\"Send\"], button.send-button",
+            // The Gemini UI is served in the account's language: the send
+            // button is `プロンプトを送信` for a Japanese account (measured
+            // 2026-08-23 / 09-07), `Send message` for English.
+            submit_selector: "button[aria-label=\"プロンプトを送信\"], button[aria-label*=\"送信\"], button[aria-label*=\"Send\"], button.send-button",
+        }),
+        // oracmux/scripts/engines.json 2026-09-07
+        reader: Some(WebPaneReader {
+            assistant: r#"model-response"#,
+            user: r#"user-query"#,
+            generating: r#"button[aria-label*="停止"], button[aria-label*="Stop"]"#,
+            composer: r#"rich-textarea .ql-editor"#,
         }),
     },
     WebPanePreset {
@@ -90,8 +117,15 @@ const WEB_PANE_PRESETS: &[WebPanePreset] = &[
         allowed_hosts: &["grok.com", "x.ai", "x.com", "twitter.com"],
         signed_out_patterns: &["grok.com/sign-in", "x.com/i/flow/login", "accounts.google.com"],
         composer: Some(WebPaneComposer {
-            selector: "textarea[aria-label], form textarea",
-            submit_selector: "button[type=\"submit\"], button[aria-label*=\"Submit\"]",
+            selector: r#"div.tiptap[role="textbox"], [data-testid="chat-input"] [role="textbox"]"#,
+            submit_selector: r#"[data-testid="chat-submit"], form button[type="submit"]"#,
+        }),
+        // oracmux/scripts/engines.json 2026-09-07
+        reader: Some(WebPaneReader {
+            assistant: r#"[data-testid="assistant-message"]"#,
+            user: r#"[data-testid="user-message"]"#,
+            generating: r#"button[aria-label="Stop"], button[aria-label*="Stop"]"#,
+            composer: r#"div.tiptap[role="textbox"]"#,
         }),
     },
     WebPanePreset {
@@ -105,6 +139,7 @@ const WEB_PANE_PRESETS: &[WebPanePreset] = &[
             selector: "div[contenteditable=\"true\"].ProseMirror",
             submit_selector: "button[aria-label*=\"Send\"]",
         }),
+        reader: None,
     },
     WebPanePreset {
         id: "notebooklm",
@@ -115,6 +150,7 @@ const WEB_PANE_PRESETS: &[WebPanePreset] = &[
         signed_out_patterns: &["accounts.google.com"],
         // Notebook-scoped chat has no stable composer selector worth guessing at.
         composer: None,
+        reader: None,
     },
 ];
 
@@ -123,6 +159,26 @@ const WEB_PANE_URL_EVENT: &str = "mycmux:web-pane-url";
 #[cfg(target_os = "windows")]
 const WEB_PANE_SIGNIN_EVENT: &str = "mycmux:web-pane-signin";
 const WEB_PANE_SHORTCUT_STATE: &str = "__MYCMUX_WEB_PANE_SHORTCUT_STATE__";
+const WEB_PANE_READ_TIMEOUT: Duration = Duration::from_secs(5);
+/// Where a background web tab's webview is parked while its tab is not the
+/// active one. Hiding the control (IsVisible=false) makes the page think it is
+/// hidden and pauses requestAnimationFrame, which stops Gemini's streamed
+/// answer from ever reaching the DOM (2026-09-07). Parking it far outside the
+/// window keeps the page visible to itself while nothing of it is painted.
+const WEB_PANE_PARKED_POSITION: (f64, f64) = (-20000.0, -20000.0);
+
+fn park_webview(webview: &tauri::Webview) -> Result<(), String> {
+    webview
+        .set_position(LogicalPosition::new(
+            WEB_PANE_PARKED_POSITION.0,
+            WEB_PANE_PARKED_POSITION.1,
+        ))
+        .map_err(|error| format!("failed to park web pane: {error}"))?;
+    webview
+        .show()
+        .map_err(|error| format!("failed to show parked web pane: {error}"))
+}
+const WEB_PANE_MAX_READ_BYTES: usize = 512 * 1024;
 const WEB_PANE_PUSH_TIMEOUT: Duration = Duration::from_secs(5);
 const WEB_PANE_MAX_TEXT_BYTES: usize = 256 * 1024;
 /// How long the browser process gets to release the profile folder after its
@@ -145,6 +201,120 @@ static WEB_PANE_PUSH_RESULTS: OnceLock<
         ),
     >,
 > = OnceLock::new();
+
+static WEB_PANE_READ_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+type WebPaneReadReply = Result<WebPaneReadResult, String>;
+static WEB_PANE_READ_RESULTS: OnceLock<
+    DashMap<String, (String, tokio::sync::oneshot::Sender<WebPaneReadReply>)>,
+> = OnceLock::new();
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebPaneReadTurn {
+    role: String,
+    text: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebPaneReadResult {
+    tab_id: String,
+    preset_id: String,
+    url: String,
+    title: String,
+    signed_out: bool,
+    composer_present: bool,
+    generating: bool,
+    turns: Vec<WebPaneReadTurn>,
+    last_assistant: String,
+    last_assistant_links: Vec<String>,
+    /// Unicode code points in retained turn text.
+    chars: usize,
+    truncated: bool,
+}
+
+fn initial_webpane_url(preset: WebPanePreset, initial_url: Option<&str>) -> Result<Url, String> {
+    let value = initial_url.unwrap_or(preset.url);
+    let url: Url = value
+        .parse()
+        .map_err(|error| format!("invalid web pane URL: {error}"))?;
+    if !preset_keeps_url_inside_pane(preset, &url) {
+        return Err(format!(
+            "web pane url is outside the preset's allowed hosts: {value}"
+        ));
+    }
+    Ok(url)
+}
+
+fn read_script(preset: WebPanePreset, request_id: &str) -> Result<String, String> {
+    let reader = preset.reader.ok_or_else(|| {
+        format!(
+            "web pane read is not wired for {}: it has no reader",
+            preset.label
+        )
+    })?;
+    let config = serde_json::json!({
+        "assistant": reader.assistant, "user": reader.user,
+        "generating": reader.generating, "composer": reader.composer,
+        "requestId": request_id, "presetId": preset.id,
+        "host": composer_host(preset)?, "limit": WEB_PANE_MAX_READ_BYTES,
+    });
+    Ok(format!(
+        r#"(() => {{
+  const config = {config};
+  const reply = (result, error) => window.__TAURI_INTERNALS__.invoke("webpane_read_result", {{
+    requestId: config.requestId, result, error
+  }}).catch(() => undefined);
+  try {{
+    const host = location.hostname.toLowerCase().replace(/\.$/, "");
+    if (host !== config.host && !host.endsWith("." + config.host)) throw new Error("web pane read host changed");
+    const nodes = [...document.querySelectorAll(config.user + ", " + config.assistant)];
+    const turns = nodes.map(node => ({{
+      role: node.matches(config.assistant) ? "assistant" : "user", text: node.innerText || ""
+    }}));
+    const last = nodes.filter(node => node.matches(config.assistant)).pop();
+    const result = {{
+      tabId: "", presetId: config.presetId, url: location.href, title: document.title,
+      signedOut: false, composerPresent: document.querySelector(config.composer) !== null,
+      generating: [...document.querySelectorAll(config.generating)].some(node =>
+        node.offsetParent !== null || node.getClientRects().length > 0),
+      turns, lastAssistant: last?.innerText || "",
+      lastAssistantLinks: last ? [...last.querySelectorAll('a[href^="http"]')].map(a => a.href) : [],
+      chars: 0, truncated: false
+    }};
+    // Reserve space for the native tab id (at most 128 ASCII bytes).
+    const limit = config.limit - 128;
+    const size = () => new TextEncoder().encode(JSON.stringify(result)).length;
+    result.chars = turns.reduce((n, turn) => n + [...turn.text].length, 0);
+    if (size() > limit) {{
+      result.truncated = true;
+      // Drop complete oldest turns first, counting UTF-8 JSON bytes, not UTF-16 units.
+      while (result.turns.length && size() > limit) {{
+        result.chars -= [...result.turns.shift().text].length;
+      }}
+      while (result.lastAssistantLinks.length && size() > limit) result.lastAssistantLinks.shift();
+      // A single answer or metadata field can itself exceed the entire budget.
+      // Keep its prefix without splitting a Unicode code point.
+      for (const field of ["lastAssistant", "title", "url"]) {{
+        if (size() <= limit) break;
+        const chars = [...result[field]];
+        let low = 0, high = chars.length;
+        result[field] = "";
+        while (low < high) {{
+          const mid = Math.ceil((low + high) / 2);
+          result[field] = chars.slice(0, mid).join("");
+          if (size() <= limit) low = mid; else high = mid - 1;
+        }}
+        result[field] = chars.slice(0, low).join("");
+      }}
+    }}
+    void reply(result, null);
+  }} catch (error) {{
+    void reply(null, String(error?.message || error));
+  }}
+}})();"#
+    ))
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -217,7 +387,11 @@ fn macos_data_store_identifier(profile_dir: &str) -> [u8; 16] {
     use sha2::{Digest, Sha256};
 
     let digest = Sha256::digest(
-        [b"com.miyazaki.mycmux/web-pane/".as_slice(), profile_dir.as_bytes()].concat(),
+        [
+            b"com.miyazaki.mycmux/web-pane/".as_slice(),
+            profile_dir.as_bytes(),
+        ]
+        .concat(),
     );
     let mut identifier = [0_u8; 16];
     identifier.copy_from_slice(&digest[..16]);
@@ -509,20 +683,35 @@ fn composer_push_script(
         None => "composer.focus();".to_string(),
     };
     let submit_script = if submit {
-        r#"window.setTimeout(() => {
+        // The send button is rendered by the page's framework after the
+        // input event (Angular / React change detection), and it only exists
+        // once the composer holds text. Poll for it briefly instead of
+        // reading the DOM on the next tick (2026-09-07: Gemini's button was not
+        // there yet at setTimeout(0)).
+        r#"const findSubmit = () => {
+      const candidate = document.querySelector(submitSelector)
+        ?? composer.closest("form")?.querySelector('button[type="submit"]');
+      return candidate instanceof HTMLButtonElement ? candidate : null;
+    };
+    let attempts = 0;
+    const trySubmit = () => {
       try {
-        const submitButton = document.querySelector(submitSelector)
-          ?? composer.closest("form")?.querySelector('button[type="submit"]');
-        if (!(submitButton instanceof HTMLButtonElement)) {
-          throw new Error(service + " submit button was not found");
+        const submitButton = findSubmit();
+        if (!submitButton || submitButton.disabled) {
+          attempts += 1;
+          if (attempts < 30) {
+            window.setTimeout(trySubmit, 100);
+            return;
+          }
+          throw new Error(service + (submitButton ? " submit button is disabled" : " submit button was not found"));
         }
-        if (submitButton.disabled) throw new Error(service + " submit button is disabled");
         submitButton.click();
         finish({ ok: true });
       } catch (error) {
         fail(error);
       }
-    }, 0);"#
+    };
+    window.setTimeout(trySubmit, 0);"#
     } else {
         "finish({ ok: true });"
     };
@@ -583,10 +772,14 @@ pub async fn webpane_create(
     preset_id: String,
     bounds: WebPaneBounds,
     forwarded_shortcuts: Vec<String>,
+    visible: Option<bool>,
+    initial_url: Option<String>,
 ) -> Result<String, String> {
     let label = webview_label(&tab_id)?;
     let bounds = bounds.validate()?;
     let forwarded_shortcuts = validate_forwarded_shortcuts(forwarded_shortcuts)?;
+    let preset = preset_by_id(&preset_id)?;
+    let url = initial_webpane_url(preset, initial_url.as_deref())?;
 
     if let Some(webview) = app.get_webview(&label) {
         if webview.window().label() != window.label() {
@@ -600,14 +793,17 @@ pub async fn webpane_create(
         webview
             .eval(shortcut_update_script(&forwarded_shortcuts)?)
             .map_err(|error| format!("failed to update web pane shortcuts: {error}"))?;
-        set_webview_bounds(&webview, bounds)?;
-        webview
-            .show()
-            .map_err(|error| format!("failed to show web pane: {error}"))?;
+        if visible == Some(false) {
+            park_webview(&webview)?;
+        } else {
+            set_webview_bounds(&webview, bounds)?;
+            webview
+                .show()
+                .map_err(|error| format!("failed to show web pane: {error}"))?;
+        }
         return Ok(label);
     }
 
-    let preset = preset_by_id(&preset_id)?;
     let local_data_dir = app
         .path()
         .app_local_data_dir()
@@ -619,11 +815,6 @@ pub async fn webpane_create(
     std::fs::create_dir_all(&profile_dir)
         .map_err(|error| format!("failed to create web pane profile directory: {error}"))?;
     let profile_dir = normalize_profile_directory(&profile_dir)?;
-    let url = preset
-        .url
-        .parse()
-        .map_err(|error| format!("invalid web pane preset URL: {error}"))?;
-
     let page_load_app = app.clone();
     let page_load_tab_id = tab_id.clone();
     let new_window_app = app.clone();
@@ -683,9 +874,13 @@ pub async fn webpane_create(
         )
         .map_err(|error| format!("failed to create web pane: {error}"))?;
     open_presets().insert(label.clone(), preset.id);
-    webview
-        .show()
-        .map_err(|error| format!("failed to show web pane: {error}"))?;
+    if visible == Some(false) {
+        park_webview(&webview)?;
+    } else {
+        webview
+            .show()
+            .map_err(|error| format!("failed to show web pane: {error}"))?;
+    }
     Ok(label)
 }
 
@@ -708,6 +903,7 @@ pub async fn webpane_update(
     bounds: Option<WebPaneBounds>,
     visible: bool,
     forwarded_shortcuts: Vec<String>,
+    park: Option<bool>,
 ) -> Result<(), String> {
     let label = webview_label(&tab_id)?;
     let webview = app
@@ -719,6 +915,11 @@ pub async fn webpane_update(
         .map_err(|error| format!("failed to update web pane shortcuts: {error}"))?;
 
     if !visible {
+        // A background tab keeps rendering off-screen; a plain inactive tab
+        // is hidden as before.
+        if park == Some(true) {
+            return park_webview(&webview);
+        }
         return webview
             .hide()
             .map_err(|error| format!("failed to hide web pane: {error}"));
@@ -871,7 +1072,11 @@ fn emit_signin_finished(
         WebPaneSigninPayload {
             profile_dir: preset.profile_dir.to_string(),
             tab_ids,
-            state: if error.is_some() { "failed" } else { "finished" },
+            state: if error.is_some() {
+                "failed"
+            } else {
+                "finished"
+            },
             error,
         },
     );
@@ -928,8 +1133,8 @@ pub async fn webpane_push(
     let webview = app
         .get_webview(&label)
         .ok_or_else(|| format!("web pane does not exist: {tab_id}"))?;
-    let preset = preset_for_label(&label)
-        .ok_or_else(|| format!("web pane {tab_id} has no known preset"))?;
+    let preset =
+        preset_for_label(&label).ok_or_else(|| format!("web pane {tab_id} has no known preset"))?;
     let current_url = webview
         .url()
         .map_err(|error| format!("failed to read web pane URL: {error}"))?;
@@ -1006,9 +1211,255 @@ pub async fn webpane_push_result(
         .map_err(|_| "web pane push request receiver closed".to_string())
 }
 
+#[tauri::command]
+pub async fn webpane_read(
+    caller: Webview,
+    app: AppHandle,
+    tab_id: String,
+) -> Result<WebPaneReadResult, String> {
+    if caller.label() != caller.window().label() {
+        return Err("webpane_read is only available to the primary app webview".to_string());
+    }
+    let _read_guard = WEB_PANE_READ_LOCK.lock().await;
+    let label = webview_label(&tab_id)?;
+    let webview = app
+        .get_webview(&label)
+        .ok_or_else(|| format!("web pane does not exist: {tab_id}"))?;
+    let preset =
+        preset_for_label(&label).ok_or_else(|| format!("web pane {tab_id} has no known preset"))?;
+    let current_url = webview
+        .url()
+        .map_err(|error| format!("failed to read web pane URL: {error}"))?;
+    let host = current_url.host_str().unwrap_or_default();
+    let expected_host = composer_host(preset)?;
+    if !host_matches(host, &[expected_host.as_str()]) {
+        return Err(format!(
+            "web pane is not on an allowed {} composer host: {host}",
+            preset.label
+        ));
+    }
+    let request_id = uuid::Uuid::new_v4().to_string();
+    let script = read_script(preset, &request_id)?;
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    WEB_PANE_READ_RESULTS
+        .get_or_init(DashMap::new)
+        .insert(request_id.clone(), (label.clone(), sender));
+
+    if let Err(error) = webview.eval(script) {
+        WEB_PANE_READ_RESULTS
+            .get_or_init(DashMap::new)
+            .remove(&request_id);
+        return Err(format!("failed to evaluate web pane read script: {error}"));
+    }
+
+    let payload = match tokio::time::timeout(WEB_PANE_READ_TIMEOUT, receiver).await {
+        Ok(Ok(payload)) => payload,
+        Ok(Err(_)) => {
+            WEB_PANE_READ_RESULTS
+                .get_or_init(DashMap::new)
+                .remove(&request_id);
+            return Err("web pane read result channel closed".to_string());
+        }
+        Err(_) => {
+            WEB_PANE_READ_RESULTS
+                .get_or_init(DashMap::new)
+                .remove(&request_id);
+            return Err("web pane read timed out waiting for the reader".to_string());
+        }
+    };
+    let mut result = payload?;
+    result.tab_id = tab_id;
+    result.preset_id = preset.id.to_string();
+    result.signed_out = url_looks_signed_out(preset, &result.url);
+    result.chars = result
+        .turns
+        .iter()
+        .map(|turn| turn.text.chars().count())
+        .sum();
+    if serde_json::to_vec(&result)
+        .map_err(|error| error.to_string())?
+        .len()
+        > WEB_PANE_MAX_READ_BYTES
+    {
+        return Err("web pane read result exceeds the 512 KB limit".to_string());
+    }
+    Ok(result)
+}
+
+#[tauri::command]
+pub async fn webpane_read_result(
+    caller: Webview,
+    request_id: String,
+    result: Option<WebPaneReadResult>,
+    error: Option<String>,
+) -> Result<(), String> {
+    let pending = WEB_PANE_READ_RESULTS.get_or_init(DashMap::new);
+    let expected_label = pending
+        .get(&request_id)
+        .map(|entry| entry.value().0.clone())
+        .ok_or_else(|| "unknown web pane read request".to_string())?;
+    if caller.label() != expected_label {
+        return Err("web pane read result came from the wrong webview".to_string());
+    }
+    let payload = match (result, error) {
+        (_, Some(error)) => Err(error),
+        (Some(result), None) => Ok(result),
+        (None, None) => Err("web pane read returned no result".to_string()),
+    };
+    let (_, (_, sender)) = pending
+        .remove(&request_id)
+        .ok_or_else(|| "web pane read request already completed".to_string())?;
+    sender
+        .send(payload)
+        .map_err(|_| "web pane read request receiver closed".to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn readers_match_measured_services_and_scripts_include_selectors_and_request() {
+        for id in ["chatgpt", "gemini", "grok"] {
+            let preset = preset_by_id(id).unwrap();
+            let reader = preset.reader.unwrap();
+            let script = read_script(preset, "read-request-123").unwrap();
+            for selector in [
+                reader.assistant,
+                reader.user,
+                reader.generating,
+                reader.composer,
+            ] {
+                assert!(script.contains(&serde_json::to_string(selector).unwrap()));
+            }
+            assert!(script.contains("read-request-123"));
+            assert!(script.contains("webpane_read_result"));
+            assert!(script.contains("524288"));
+        }
+        for id in ["claude", "notebooklm"] {
+            let preset = preset_by_id(id).unwrap();
+            assert!(preset.reader.is_none());
+            assert!(read_script(preset, "request")
+                .unwrap_err()
+                .contains("no reader"));
+        }
+    }
+
+    #[test]
+    fn reader_script_extracts_document_order_visibility_links_and_bounds_utf8_json() {
+        let script = read_script(preset_by_id("chatgpt").unwrap(), "read-fixture").unwrap();
+        let fixture = r#"
+const assert = require("node:assert/strict");
+let reply;
+global.window = { __TAURI_INTERNALS__: { invoke: (command, payload) => {
+  assert.equal(command, "webpane_read_result"); reply = payload; return Promise.resolve();
+}}};
+global.location = { hostname: "chatgpt.com", href: "https://chatgpt.com/c/fixture" };
+let nodes = [], stops = [], composer = true;
+global.document = {
+  title: "Fixture",
+  querySelectorAll: selector => selector.includes("stop-button") ? stops : nodes,
+  querySelector: () => composer ? {} : null,
+};
+const node = (role, text, links = []) => ({
+  innerText: text, matches: selector => selector.includes(role),
+  querySelectorAll: () => links.map(href => ({ href })),
+});
+const run = () => { SCRIPT };
+nodes = [node("user", "question"), node("assistant", "old"),
+         node("user", "next"), node("assistant", "answer", ["https://example.com/source"])];
+stops = [{ offsetParent: null, getClientRects: () => [1] }];
+run();
+assert.equal(reply.requestId, "read-fixture");
+assert.deepEqual(reply.result.turns.map(t => t.role), ["user", "assistant", "user", "assistant"]);
+assert.equal(reply.result.lastAssistant, "answer");
+assert.deepEqual(reply.result.lastAssistantLinks, ["https://example.com/source"]);
+assert.equal(reply.result.generating, true);
+assert.equal(reply.result.composerPresent, true);
+assert.equal(reply.result.truncated, false);
+stops = [{ offsetParent: null, getClientRects: () => [] }];
+composer = false;
+nodes = [];
+run();
+assert.equal(reply.result.generating, false);
+assert.equal(reply.result.composerPresent, false);
+assert.deepEqual(reply.result.turns, []);
+assert.equal(reply.result.lastAssistant, "");
+nodes = [node("user", "\u65e5".repeat(200000)), node("assistant", "latest")];
+run();
+assert.equal(reply.result.truncated, true);
+assert.deepEqual(reply.result.turns, [{ role: "assistant", text: "latest" }]);
+assert.equal(reply.result.chars, 6);
+nodes = [node("assistant", "\u{1f600}".repeat(200000))];
+run();
+assert.equal(reply.result.truncated, true);
+assert.ok(Buffer.byteLength(JSON.stringify(reply.result), "utf8") <= 512 * 1024 - 128);
+assert.ok(reply.result.lastAssistant.length > 0);
+assert.ok(!/[\uD800-\uDBFF]$/.test(reply.result.lastAssistant));
+location.hostname = "chatgpt.com.evil.example";
+run();
+assert.equal(reply.result, null);
+assert.match(reply.error, /host changed/);
+"#;
+        let output = std::process::Command::new("node")
+            .arg("-e")
+            .arg(fixture.replace("SCRIPT", &script))
+            .output()
+            .expect("Node is required by the frontend test toolchain");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn initial_url_must_stay_inside_the_preset_allowed_hosts() {
+        let preset = preset_by_id("chatgpt").unwrap();
+        assert_eq!(
+            initial_webpane_url(preset, None).unwrap().as_str(),
+            preset.url
+        );
+        assert_eq!(
+            initial_webpane_url(preset, Some("https://chatgpt.com/c/x"))
+                .unwrap()
+                .as_str(),
+            "https://chatgpt.com/c/x"
+        );
+        assert!(
+            initial_webpane_url(preset, Some("https://gemini.google.com/"))
+                .unwrap_err()
+                .starts_with("web pane url is outside the preset's allowed hosts:")
+        );
+        assert!(initial_webpane_url(preset, Some("https://chatgpt.com.evil.example/")).is_err());
+    }
+
+    #[test]
+    fn grok_uses_the_measured_tiptap_composer_and_submit_button() {
+        let composer = preset_by_id("grok").unwrap().composer.unwrap();
+        assert_eq!(
+            composer.selector,
+            r#"div.tiptap[role="textbox"], [data-testid="chat-input"] [role="textbox"]"#
+        );
+        assert_eq!(
+            composer.submit_selector,
+            r#"[data-testid="chat-submit"], form button[type="submit"]"#
+        );
+    }
+
+    #[test]
+    fn gemini_submit_matches_the_japanese_ui_and_push_polls_for_the_button() {
+        // 2026-09-07 test machine: `web.push --send` on a Japanese Gemini pane
+        // failed with "submit button was not found" -- the button is
+        // `プロンプトを送信`, and it is rendered after the input event.
+        let composer = preset_by_id("gemini").unwrap().composer.unwrap();
+        assert!(composer.submit_selector.contains("プロンプトを送信"));
+        assert!(composer.submit_selector.contains("Send"));
+        let script =
+            composer_push_script(preset_by_id("gemini").unwrap(), "req", Some("hi"), true).unwrap();
+        assert!(script.contains("trySubmit"));
+        assert!(script.contains("attempts < 30"));
+    }
 
     #[test]
     fn preset_registry_is_generic_and_resolves_every_service() {
@@ -1276,8 +1727,8 @@ mod tests {
 
     #[test]
     fn composer_push_inserts_without_submitting_by_default() {
-        let script = composer_push_script(chatgpt(), "push-result", Some("draft only"), false)
-            .unwrap();
+        let script =
+            composer_push_script(chatgpt(), "push-result", Some("draft only"), false).unwrap();
         assert!(script.contains("#prompt-textarea"));
         assert!(script.contains("InputEvent"));
         assert!(!script.contains("submitButton.click()"));
@@ -1286,8 +1737,7 @@ mod tests {
     #[test]
     fn composer_push_submits_only_when_explicitly_requested() {
         let draft = composer_push_script(chatgpt(), "push-result", Some("draft"), false).unwrap();
-        let submitted =
-            composer_push_script(chatgpt(), "push-result", Some("send"), true).unwrap();
+        let submitted = composer_push_script(chatgpt(), "push-result", Some("send"), true).unwrap();
         assert!(!draft.contains("submitButton.click()"));
         assert!(submitted.contains("submitButton.click()"));
         assert!(submitted.contains("send-button"));
@@ -1305,8 +1755,8 @@ mod tests {
     #[test]
     fn composer_push_refuses_a_service_with_no_wired_composer() {
         let notebooklm = preset_by_id("notebooklm").unwrap();
-        let error = composer_push_script(notebooklm, "push-result", Some("hello"), false)
-            .unwrap_err();
+        let error =
+            composer_push_script(notebooklm, "push-result", Some("hello"), false).unwrap_err();
         assert!(error.contains("NotebookLM"));
         assert!(error.contains("composer"));
     }
@@ -1325,8 +1775,8 @@ mod tests {
         let at_limit = "a".repeat(WEB_PANE_MAX_TEXT_BYTES);
         assert!(composer_push_script(chatgpt(), "push-result", Some(&at_limit), false).is_ok());
         let oversized = "a".repeat(WEB_PANE_MAX_TEXT_BYTES + 1);
-        let error = composer_push_script(chatgpt(), "push-result", Some(&oversized), false)
-            .unwrap_err();
+        let error =
+            composer_push_script(chatgpt(), "push-result", Some(&oversized), false).unwrap_err();
         assert!(error.contains("exceeds"));
         assert!(error.contains(&WEB_PANE_MAX_TEXT_BYTES.to_string()));
     }

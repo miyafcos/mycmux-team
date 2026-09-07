@@ -377,6 +377,21 @@ Google は埋め込み webview からの OAuth を仕様として拒むことが
 
 「この続きの実装は Codex にやらせたい」というとき、これまではセッション要約を人間がコピーして貼り直すか、エージェントが裏で別プロセスを起動して見えないまま作業させるかの二択でした。mycmux ではエージェント自身が引き継ぎ書を書き、**目に見えるタブ**を開いて相手を起動します。作業は画面上のタブとして動くので途中経過を目で追えますし、そのタブをいつでも人間が直接引き継げます。mycmux 側はエージェントの振る舞いを強制しません。「委譲は見える形で行う」という方針は各エージェント側のルールファイルに書くことで成立します。契約の正本は [docs/agent-integration.md](docs/agent-integration.md) です。
 
+### Claude Code スキルを入れる
+
+mycmux の「設定 → AI → Claude Code スキル → 導入」から、同梱の 3 スキルと agent CLI を導入できます (git・ZIP 不要)。アプリ更新後は同じカードから更新でき、ローカル改変は確認後に旧フォルダを退避して置き換えます。以下はリポジトリから導入する場合の手順です。
+
+[Claude Code スキルパック](skills/claude/README.md) に session-dispatch、mycmux-bridge、oracmux を同梱しています。
+リポジトリのルートで次を実行すると、3 スキルと agent CLI をホームへ導入できます (Python 3.10 以上)。
+
+```text
+python scripts/install_claude_skills.py install
+python scripts/install_claude_skills.py check
+```
+
+更新も `install` の再実行です。ローカル改変があれば停止するので、差分を確認してから `--force` を使います。
+Web ペインのログインは各自で行ってください。アプリのインストーラとは別の導入手順です。
+
 ### 仕組みとトークン認証
 
 mycmux は起動時に 127.0.0.1 のランダムポートで待ち受け、ポート番号を `~/.mycmux/mycmux.port` に書き出します。リポジトリ同梱の CLI (`scripts/mycmux_agent_cli.py`・Python 3 の標準ライブラリだけで動きます) がこのポートへ改行区切りの JSON を 1 行送り、mycmux 側がペイン操作を実行して結果の JSON を返します。**この CLI はインストーラには含まれません**。使うにはリポジトリの checkout と Python 3 が要り、本書のコマンド例はリポジトリのルートで実行する前提です。

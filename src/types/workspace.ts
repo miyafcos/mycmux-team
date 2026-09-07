@@ -49,6 +49,9 @@ export interface PaneTab {
   type?: "terminal" | "browser" | "online" | "web" | "launcher";
   /** Native child-webview preset. Present only when type is "web". */
   presetId?: string;
+  /** Runtime-only automation options for Web tabs; never persisted. */
+  webBackground?: boolean;
+  webInitialUrl?: string;
   cwd?: string;
   lastProcess?: string;
   claudeSessionId?: string;
@@ -142,7 +145,7 @@ export interface Workspace {
 /** Raw fields excluded from persistent layout state. Keep this list explicit. */
 export type WorkspaceNonPersistentKey = never;
 export type PaneNonPersistentKey = never;
-export type PaneTabNonPersistentKey = never;
+export type PaneTabNonPersistentKey = "webBackground" | "webInitialUrl";
 
 export type PersistentWorkspaceKey = Exclude<keyof Workspace, WorkspaceNonPersistentKey>;
 export type PersistentPaneKey = Exclude<keyof Pane, PaneNonPersistentKey>;

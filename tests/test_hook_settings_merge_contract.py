@@ -44,12 +44,36 @@ SYNTHETIC: dict[str, Any] = {
 }
 
 
+def holds_our_hook(settings: dict[str, Any]) -> bool:
+    """True when mycmux has already installed its hook into these settings.
+
+    The round-trip tests assume a file that does not yet carry our handler.
+    On a machine where mycmux is running, the real settings file does (the
+    app registers on start), and install/uninstall on such a file legitimately
+    does not return to the original. Those shapes still ship, but they cannot
+    serve as the "before" of a round trip (v0.65.0 release run, 2026-09-07).
+    """
+    for groups in settings.get("hooks", {}).values():
+        if not isinstance(groups, list):
+            continue
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            for handler in group.get("hooks", []):
+                if not isinstance(handler, dict):
+                    continue
+                command = str(handler.get("command", ""))
+                if "mycmux_hook" in command or "mycmux-hook" in command or handler.get(OWNERSHIP_MARKER):
+                    return True
+    return False
+
+
 def load_fixture() -> dict[str, Any]:
     """Prefer the real settings file so the tests exercise real shapes."""
     if REAL_SETTINGS.is_file():
         try:
             loaded = json.loads(REAL_SETTINGS.read_text(encoding="utf-8"))
-            if isinstance(loaded, dict):
+            if isinstance(loaded, dict) and not holds_our_hook(loaded):
                 return loaded
         except (json.JSONDecodeError, OSError):
             pass
@@ -103,11 +127,17 @@ def is_managed_group(group: Any) -> bool:
 
 
 def user_groups(settings: dict[str, Any]) -> dict[str, list[Any]]:
-    """Every group the user owns, keyed by event, in order."""
-    return {
+    """Every group the user owns, keyed by event, in order.
+
+    An event that carries only our handler contributes nothing: installing into
+    an event the user never used must not read as a changed user group (the
+    synthetic fixture has no PreToolUse; the real one did, which hid this).
+    """
+    owned = {
         event: [g for g in groups if not is_managed_group(g)]
         for event, groups in settings.get("hooks", {}).items()
     }
+    return {event: groups for event, groups in owned.items() if groups}
 
 
 def test_install_preserves_every_user_group_and_its_order() -> None:

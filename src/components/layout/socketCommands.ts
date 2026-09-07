@@ -984,6 +984,10 @@ async function openWebPane(args: SocketArgs) {
   const presetId = socketArgString(args, "presetId", "preset_id");
   if (!presetId) throw new Error("web.open requires presetId");
   const replaceAnchor = socketOptionalBoolean(args, "replaceAnchor") ?? false;
+  const background = socketOptionalBoolean(args, "background") ?? false;
+  if (replaceAnchor && background) throw new Error("web.open cannot combine replaceAnchor and background");
+  const url = typeof args?.url === "string" ? args.url : undefined;
+  if (url !== undefined && !url.startsWith("https://")) throw new Error("web.open url must be https");
   const { loadWebPanePresets } = await import("../workspace/webPaneApi");
   const preset = (await loadWebPanePresets()).find((candidate) => candidate.id === presetId);
   if (!preset) throw new Error(`unknown web preset: ${presetId}`);
@@ -1024,10 +1028,13 @@ async function openWebPane(args: SocketArgs) {
 
   const beforeTabIds = new Set(pane.tabs.map((tab) => tab.id));
   const layout = useWorkspaceLayoutStore.getState();
-  layout.addWebTabToPane(workspace.id, pane.id, { presetId, label: preset.label });
-  if (workspace.id === foregroundWorkspaceId) {
+  layout.addWebTabToPane(workspace.id, pane.id, {
+    presetId, label: preset.label, initialUrl: url,
+    ...(background ? { activate: false, background: true } : {}),
+  });
+  if (!background && workspace.id === foregroundWorkspaceId) {
     useUiStore.getState().setActivePaneId(null);
-  } else {
+  } else if (!background) {
     // addWebTabToPane is a human-oriented action and activates globally. A
     // socket open in a background workspace must restore the operator state.
     useUiStore.setState(foregroundUi);
@@ -1055,7 +1062,7 @@ async function openWebPane(args: SocketArgs) {
       );
     }
   }
-  return { tabId: created[0].id };
+  return { tabId: created[0].id, background };
 }
 
 async function listWebPanes() {
@@ -1073,6 +1080,8 @@ async function listWebPanes() {
         url: preset.url,
         title: tab.label ?? preset.label,
         workspaceId: workspace.id,
+        background: tab.webBackground === true,
+        active: pane.activeTabId === tab.id,
       }];
     }))
   ));
@@ -1096,6 +1105,48 @@ async function focusWebPane(args: SocketArgs) {
   );
   useUiStore.getState().setActivePaneId(null);
   return { tabId, workspaceId: target.workspace.id };
+}
+
+async function readWebPane(args: SocketArgs) {
+  const tabId = socketArgString(args, "tabId", "tab_id");
+  const presetId = socketArgString(args, "presetId", "preset_id");
+  const { useWorkspaceListStore } = await import("../../stores/workspaceStore");
+  const workspaceState = useWorkspaceListStore.getState();
+  let target = tabId ? findTabById(workspaceState.workspaces, tabId) : null;
+  if (tabId && (!target || target.tab.type !== "web")) {
+    throw new Error(`web tab not found: ${tabId}`);
+  }
+  if (!tabId) {
+    const workspace = webWorkspaceForArgs(
+      args,
+      workspaceState.workspaces,
+      workspaceState.activeWorkspaceId,
+    );
+    if (!workspace) throw new Error("web.read found no matching web tab in the target workspace");
+    const matchingPreset = presetId ?? "chatgpt";
+    const candidates = workspace.panes.flatMap((pane) => (
+      pane.tabs
+        .filter((tab) => tab.type === "web" && tab.presetId === matchingPreset)
+        .map((tab) => ({ workspace, pane, tab }))
+    ));
+    // PaneTab has no creation timestamp; append order is the persisted ordering
+    // available in Phase 1, so the last matching tab is the latest candidate.
+    target = candidates[candidates.length - 1] ?? null;
+  }
+  if (!target) throw new Error("web.read found no matching web tab in the target workspace");
+
+  return invoke("webpane_read", { tabId: target.tab.id });
+}
+
+async function closeWebPane(args: SocketArgs) {
+  const tabId = socketArgString(args, "tabId", "tab_id");
+  if (!tabId) throw new Error("web.close requires tabId");
+  const { useWorkspaceLayoutStore, useWorkspaceListStore } = await import("../../stores/workspaceStore");
+  const target = findTabById(useWorkspaceListStore.getState().workspaces, tabId);
+  if (!target) throw new Error(`web tab not found: ${tabId}`);
+  if (target.tab.type !== "web") throw new Error("web.close requires a web tab");
+  useWorkspaceLayoutStore.getState().removeTabFromPane(target.workspace.id, target.pane.id, tabId);
+  return { tabId, closed: true };
 }
 
 async function pushWebPane(args: SocketArgs) {
@@ -2026,6 +2077,10 @@ export async function handleSocketCommand(cmd: string, args: SocketArgs): Promis
       return listWebPanes();
     case "web.focus":
       return focusWebPane(args);
+    case "web.read":
+      return readWebPane(args);
+    case "web.close":
+      return closeWebPane(args);
     case "web.push":
       return pushWebPane(args);
     default:

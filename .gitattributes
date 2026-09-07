@@ -1,0 +1,6 @@
+skills/claude/** text eol=lf
+scripts/install_claude_skills.py text eol=lf
+scripts/sync_claude_skills.py text eol=lf
+scripts/mycmux_agent_cli.py text eol=lf
+tests/test_claude_skills_pack_contract.py text eol=lf
+examples/claude-skills/** text eol=lf

@@ -28,6 +28,9 @@ mycmux はエージェント (Claude Code / Codex) の振る舞いを強制し�
 
 ### CLI (`scripts/mycmux_agent_cli.py`)
 
+Web 操作: `web-open --url https://chatgpt.com/c/abc --background`、`web-read --tab <id>` (または `--preset <id>`)、`web-close --tab <id>`。結果は JSON で返す。
+`web-push` がタブを新規作成するときは裏タブで開き、呼び出し元のフォーカスを維持する。前面で開く場合は `web-open` → `web-push --tab <id>` を使う。
+
 ```
 python scripts/mycmux_agent_cli.py spawn --target <claude|codex> --prompt-file <spec.md>
 ```
@@ -180,11 +183,25 @@ spawn したタブの完了・生存は画面でなく**実体を3層でポー�
 - AskUserQuestion への回答は通常メッセージ送信と分け、数字1バイトまたは規定の multiSelect sequence を使う
 - サブエージェントの自己申告 (「保存しました」) を成果と見なさない
 
-## 配布物: session-dispatch スキル (Claude Code 用)
+## 配布物: Claude Code スキルパック
 
-本契約を Claude Code 側で実運用するスキルの移植版を `examples/claude-skills/session-dispatch/`
-に同梱している (spec 生成 → 裏タブ spawn → 台帳 → 自動検収 → 自動 close)。
-別環境へ展開するときは同フォルダの README.md に従って `~/.claude/skills/` へコピーする。
+mycmux の「設定 → AI → Claude Code スキル → 導入」からも、3 スキルと agent CLI を導入できます (git・ZIP 不要)。パックはアプリに同梱され、アプリ更新後はカードから更新できます。コマンド導入と同じ manifest・導入マーカーで改変を保護し、置き換えるときは旧フォルダを退避します。
+
+[skills/claude/README.md](../skills/claude/README.md) に 3 スキルの用途・前提・導入手順をまとめています。
+旧 `examples/claude-skills/session-dispatch/` はパックへ移動しました。
+
+```text
+python scripts/install_claude_skills.py install
+python scripts/install_claude_skills.py check
+```
+
+3 スキルは `~/.claude/skills/`、CLI は `~/.mycmux/bin/mycmux_agent_cli.py` に入ります。
+更新も install です。導入後の改変がある場合は停止し、確認後の `--force` で旧フォルダを退避して置き換えます。
+CLI は `MYCMUX_AGENT_CLI` → ホームの導入先 → スクリプトがあるリポジトリの順で解決し、欠落時は導入手順を表示して exit 7 です。
+
+保守者の同期は `python scripts/sync_claude_skills.py --from-live --write-manifest`、
+検証は `python scripts/sync_claude_skills.py --check` です。manifest と live の配布用変換後の SHA-256 を照合します。
+逆方向の `--to-live` は保守者だけが実行します。個人用の rules は同梱しません。
 
 ## 各エージェント側のルールの所在 (このマシン)
 
@@ -197,8 +214,10 @@ spawn したタブの完了・生存は画面でなく**実体を3層でポー�
 
 ## 新しい環境に展開するときのチェックリスト
 
-1. この repo の `scripts/mycmux_agent_cli.py` が動くこと (`spawn --target claude` で素振り)
-2. `~/.claude/rules/delegation.md` に「呼び出し経路」節があること (なければ本書の方針を書き写す)
-3. `~/.codex/AGENTS.md` に「mycmux 統合」節があること
-4. openai-codex プラグイン (`claude plugin list` で `codex@openai-codex`) が**入っていない**こと
+1. Python 3.10 以上と Claude Code を用意し、リポジトリのルートで `python scripts/install_claude_skills.py install` を実行する
+2. `python scripts/install_claude_skills.py check` が 3 スキルと CLI を最新と表示し、exit 0 になること
+3. mycmux 内で Claude Code を起動し、スキルの一覧・状態取得を確認する。Web ペインは各自でログインする
+4. oracmux の送信禁止フォルダが必要なら guard.example.json を基に設定する
+5. 個人用の委譲ルールは任意で整備する。既存の rules や Codex の AGENTS.md は installer の変更対象にしない
+6. openai-codex プラグイン (`claude plugin list` で `codex@openai-codex`) が**入っていない**こと
    — 入っていると `codex:codex-rescue` が自己推薦して裏バックグラウンドジョブが復活する

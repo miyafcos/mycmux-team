@@ -12,23 +12,25 @@ spawn される新しい Claude セッションへの初回プロンプト。子
 
 ## 境界 (調査・変更してよい範囲)
 - 対象: <フォルダ / ファイルのフルパス>
-- 変更禁止: <触ってはいけないもの。例: 正本ファイル・.env・他案件フォルダ>
+- 変更禁止: <触ってはいけないもの。例: 正本 docx・.env・他案件フォルダ>
 
 ## 接続先 (一次資料 — 母艦の要約でなく実物を読むこと)
 - <実ファイル・実 PDF・実フォルダのフルパス列挙>
+- 関連 memory: <あれば project_*.md / feedback_*.md の名前>
 
 ## 完了条件 (受け入れテスト)
 - <実行コマンド or 照合手順。「〜が PASS」「差分ゼロ」など機械判定できる形で>
 
 ## 判断者
 - 採否・仕様の最終判断は母艦セッション側
-- **走行中にブロッキング判断が出たら**: 下の「ASK 契約」の型で `<dispatch-dir>/ASK.md` を書いて待機する。
-  対象は「それが無いと実質前に進めない」判断のみ (要件衝突 / 範囲変更 / 非可逆・作り直し級 /
-  オーナーだけが持つ業務判断 / 権限・安全)
+- **走行中にブロッキング判断が出たら**: `references/ask-card-contract.md` の型で判断カードを投げて待機する
+  (対象 = external_commit / requirement_conflict / scope_change / irreversible / owner_judgment / permission_safety のみ)。
+  投入コマンドの雛形は同契約に記載。**1セッション1 pending・生ログ参照禁止**
 - **可逆な判断は聞かず推奨案で続行**し、DONE.md の「要判断」に「仮定: <選んだ案> (理由)」として残す
 
 ## 実行指定
-- effort: <max / xhigh / high>  (このセッション内でこの深さで作業する)
+- effort: <max / xhigh / high>  (このセッション内で /effort 相当の深さで作業する)
+- 適用 feedback: <該当する feedback_*.md 名。例: feedback_md_pipeline_line_drop_traps>
 
 ## 自動検収 (machine gate)
 
@@ -37,25 +39,10 @@ spawn される新しい Claude セッションへの初回プロンプト。子
 auto_close: true
 
 ```verify
-# 1行=1コマンド (Windows は PowerShell、それ以外は bash で実行される)。全行 exit 0 で PASS → watcher がタブを自動 close する
-Test-Path <成果物のフルパス>
+# 1行=1コマンド (PowerShell)。全行 exit 0 で PASS → watcher がタブを自動 close する
+if (-not (Test-Path -LiteralPath "<成果物のフルパス>")) { exit 1 }
 <照合スクリプト実行など。行数チェック例: if ((Get-Content <path> | Measure-Object -Line).Lines -ge 100) { exit 0 } else { exit 1 }>
 ```
-
-## ASK 契約 (走行中のブロッキング判断)
-
-`<dispatch-dir>/ASK.md` を次の型で書き、**書いたら追加作業をせず待機する** (催促・ポーリングしない):
-
-```markdown
-# ASK: <論点を一言>
-- 質問: <1文・読んだだけで選べる問い>
-- 背景: <3行以内で自己完結。「ログを見て」等の外部参照は禁止>
-- 選択肢: A) <20字以内> / B) <20字以内>
-- 推奨: <A or B> — <理由1行>
-```
-
-- 1カード = 1判断。回答は composer に直接届くので、届いたら通常の指示として続行する
-- 黙って止まるのは契約違反。判断が要るなら ASK、要らないなら続行、の二択
 
 ## DONE 契約 (完了時に必ず・この順で)
 1. 成果物を保存する (保存先は「境界」内)
